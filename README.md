@@ -469,19 +469,27 @@ channel=DO&value=1
 
 ### Аппаратная платформа
 
+В основе СА-02м лежит процессорный модуль **[SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)** производства [Starterkit](http://starterkit.ru).
+
 | Параметр | СА-02м (1eth) | СА-02м-2 (2eth) |
 |----------|--------------|----------------|
-| Процессор | Allwinner A40i (sun8i-r40), ARM Cortex-A7 × 4, до 1.2 ГГц | ← то же |
-| Плата | Starterkit SK-A40i-NANO-2E | ← то же |
+| Процессор | [Allwinner A40i](http://starterkit.ru/html/index.php?name=shop&op=view&id=178) — 4× ARM Cortex-A7, 1200 МГц | ← то же |
+| Плата | [SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178), 30×51×4 мм | ← то же |
+| ОЗУ | 512 МБ DDR3-1200 | ← то же |
 | Хранилище | eMMC 8 ГБ (`/dev/mmcblk2`) | ← то же |
-| ОЗУ | 512 МБ DDR3 | ← то же |
-| Ethernet | 1× (EMAC, eth0) | **2×** (EMAC eth0 + GMAC eth1) |
+| Ethernet | 1× 100/10M (EMAC, eth0) | **2×** 100/10M (EMAC eth0 + GMAC eth1) |
+| USB | 2× USB-host | ← то же |
 | RS-485 / COM | **5** портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) | **4** порта (ttyS3, ttyS4, ttyS5, ttyS7) |
+| Интерфейсы | CAN, UART, SPI, I2C, PWM, GPIO | ← то же |
 | DO / Beeper / LED | **есть** (PCA9536 I2C) | Beeper + LED (**без DO**) |
 | RTC | PCF8563 (I2C3, адрес `0x51`) | ← то же |
 | GPIO расширитель | PCA9536 (I2C шина 2, адрес `0x41`) | ← то же |
-| DTS model | `"Cyntron A40i-2Eth"` | `"Cyntron A40i-2Eth"` |
+| Питание | 5 В | ← то же |
+| Температура | −40 … +85 °C (индустриальный диапазон) | ← то же |
 | DTS compatible | `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` | ← то же |
+
+> Модуль SK-A40i-NANO-2E совместим и взаимозаменяем с SK-iMX6ULL-NANO-2E, ES-T113-NANO, SK-NUC906-NANO.  
+> Документация, схема и инструкция пользователя: [starterkit.ru](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)
 
 ---
 
