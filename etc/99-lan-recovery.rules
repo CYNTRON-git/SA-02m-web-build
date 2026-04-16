@@ -1,0 +1,19 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 99-lan-recovery.rules  —  udev: запуск восстановления сети при появлении
+# ethernet-интерфейса (физическое подключение кабеля или привязка драйвера).
+#
+# ВАЖНО:
+#   --no-block  обязателен: без него udev ждёт завершения systemctl,
+#               что вызывает дедлок (udev сам заблокирован).
+#   IFACE=$name передаёт имя интерфейса в сервис через Environment.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# eth0 — основной интерфейс
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
+
+# eth1 — второй интерфейс (если сконфигурирован)
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
+
+# Bind-событие: сетевой драйвер привязался к устройству (после загрузки модуля)
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"

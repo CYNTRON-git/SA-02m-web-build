@@ -1,0 +1,28 @@
+[Unit]
+Description=SA-02m network recovery (udev trigger)
+Documentation=file:/usr/local/bin/fix-eth.sh
+# Ждём, пока сетевые интерфейсы появятся в ядре
+After=network.target sys-subsystem-net-devices-eth0.device
+# Не запускать при остановке системы
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=oneshot
+# Передаём имя интерфейса из переменной окружения udev (IFACE= из rules)
+ExecStart=/usr/local/bin/fix-eth.sh ${IFACE}
+# Достаточно времени: ifdown + sleep + ifup + ping = до 30 с
+TimeoutSec=45
+# Не оставаться в состоянии active после выхода
+# (иначе следующий restart из udev будет stop+start — медленнее)
+RemainAfterExit=no
+# Логировать через journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fix-eth
+
+# Ограничение частоты перезапусков: не более 3 раз в 60 секунд
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=Служба восстановления сети eth0
+After=network.target
+Conflicts=shutdown.target
+StartLimitIntervalSec=5
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fix-eth.sh
+TimeoutSec=10
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

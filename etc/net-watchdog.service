@@ -1,0 +1,26 @@
+[Unit]
+Description=SA-02m network interface watchdog
+Documentation=file:/usr/local/bin/net-watchdog.sh
+# Запускаться после того как базовая сеть поднята
+After=network.target network-online.target
+Wants=network-online.target
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/net-watchdog.sh
+# Перезапускаться всегда — если скрипт упал, watchdog не должен останавливаться
+Restart=always
+RestartSec=10
+# Watchdog не должен прерываться системой по таймауту
+TimeoutStopSec=5
+TimeoutStartSec=30
+# Логировать через journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=net-watchdog
+# Не считать ошибкой ненулевой exit (бывает при первом ifup)
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

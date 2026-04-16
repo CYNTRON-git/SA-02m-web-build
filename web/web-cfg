@@ -1,0 +1,1200 @@
+#!/bin/bash
+# Полная установка и настройка сервера СА-02м версия 12.0
+# Дата последнего изменения: 02.04.2025
+
+### Глобальные параметры ###
+LOG_FILE="/var/log/sa02m_install.log"
+NET_LOG="/var/log/fix-eth.log"
+WEB_ROOT="/var/www/network_config"
+PORT=9999
+TMP_ROOT="/tmp/sa02m_install"
+IP_ADDRESS="192.168.1.136"
+NETMASK="255.255.255.0"
+GATEWAY="192.168.1.1"
+DNS_SERVERS="77.88.8.8 77.88.8.1"
+NET_IFACE="eth0"
+AUTH_FILE="/etc/nginx/.htpasswd"
+
+### Функции ###
+
+log() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo -e "[${timestamp}] [${level}] ${message}" | tee -a "$LOG_FILE"
+}
+
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        log "ERROR" "Требуются права root! Запустите скрипт с sudo."
+        exit 1
+    fi
+}
+
+error_exit() {
+    log "ERROR" "Критическая ошибка в строке $1: $2"
+    exit 1
+}
+
+check_eth0() {
+    if ip link show ${NET_IFACE} >/dev/null 2>&1; then
+        local link_state=$(cat /sys/class/net/${NET_IFACE}/carrier 2>/dev/null)
+        if [ "$link_state" -eq 1 ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+configure_network() {
+    log "INFO" "Настройка сетевого интерфейса ${NET_IFACE}"
+    
+    log "INFO" "Запись параметров в eth0.conf"
+    CFG_FILE="/etc/network/interfaces.d/eth0.conf"
+    cat > ${CFG_FILE} <<EOF
+auto ${NET_IFACE}
+iface ${NET_IFACE} inet static
+    address ${IP_ADDRESS}
+    netmask ${NETMASK}
+    gateway ${GATEWAY}
+    dns-nameservers ${DNS_SERVERS}
+	#       hwaddress ether 02:53:8B:00:D4:30
+	#       pre-up /sbin/ifconfig eth0 mtu 3838
+        post-up /home/klogic/adjust-eth0 || /bin/true
+        post-up /sbin/ifconfig eth0 promisc # Альтернатива некоторым оптимизациям
+		 # Разрешение портов
+    ufw allow 80/tcp     # lighttpd
+    ufw allow 9999/tcp  # Настройки
+    ufw allow 8043/tcp  # MasterSCADA4D
+    ufw --force enable
+EOF
+
+	 log "INFO" "Создаем правило для автоматического восстановления"
+	sudo tee /etc/udev/rules.d/99-lan-recovery.rules > /dev/null <<EOF
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl restart 
+fix-eth.service"
+EOF
+	 
+    systemctl restart networking.service >> "$LOG_FILE" 2>&1 || {
+        log "ERROR" "Ошибка перезапуска сети!"
+        return 1
+    }
+
+    cat > /usr/local/bin/fix-eth.sh <<EOF
+#!/bin/bash
+INTERFACE="eth0"
+LOG_FILE="/var/log/fix-eth.log"
+MAX_RETRIES=2
+DELAY=3
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> $LOG_FILE
+}
+
+check_interface() {
+    # Проверка состояния интерфейса и IP через ifconfig
+    /sbin/ifconfig $INTERFACE | grep -q "UP" && \
+    /sbin/ifconfig $INTERFACE | grep -q "inet "
+}
+
+reset_interface() {
+    log "Начало сброса интерфейса (net-tools)"
+    /sbin/ifconfig $INTERFACE down
+    sleep $DELAY
+    /sbin/ifconfig $INTERFACE up
+    sleep $DELAY
+}
+
+main() {
+    log "Запуск процедуры восстановления (net-tools)"
+    
+    # Проверка физического подключения через mii-tool
+    if ! /sbin/mii-tool $INTERFACE 2>/dev/null | grep -q "link ok"; then
+        log "Кабель отключен, выход"
+        return 1
+    fi
+
+    # Основной цикл восстановления
+    for ((i=1; i<=$MAX_RETRIES; i++)); do
+        reset_interface
+        
+        if check_interface; then
+            log "Интерфейс $INTERFACE успешно восстановлен (ifconfig)"
+            return 0
+        else
+            log "Попытка $i/$MAX_RETRIES не удалась"
+        fi
+    done
+    
+    log "Все попытки восстановления исчерпаны"
+    return 1
+}
+
+main
+EOF
+
+    cat > /etc/systemd/system/fix-eth.service <<EOF
+[Unit]
+Description=Служба восстановления сети ${NET_IFACE}
+After=network.target
+Conflicts=shutdown.target
+StartLimitIntervalSec=60
+StartLimitBurst=2
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fix-eth.sh
+TimeoutSec=40
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+   sudo chmod +x /usr/local/bin/fix-eth.sh
+    systemctl daemon-reload
+    systemctl enable --now fix-eth.service >> "$LOG_FILE" 2>&1
+}
+
+configure_web_interface() {
+    log "INFO" "Настройка веб-интерфейса"
+    
+    # Очистка и создание структуры каталогов
+    rm -rf "$WEB_ROOT"
+    mkdir -p "$WEB_ROOT/cgi-bin"
+    mkdir -p "$WEB_ROOT/static"
+    
+    # Создание файла перенаправления с правильными правами
+    log "INFO" "Создание системы перенаправления"
+    cat > "$WEB_ROOT/index.html" <<'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="refresh" content="0; url=/cgi-bin/index.cgi">
+    <title>Перенаправление</title>
+</head>
+<body>
+    <h1>Перенаправление на панель управления</h1>
+    <p>Если автоматическое перенаправление не сработало, <a 
+href="/cgi-bin/index.cgi">нажмите здесь</a>.</p>
+</body>
+</html>
+EOF
+
+   
+    chmod 755 "$WEB_ROOT/cgi-bin"/*.cgi 2>/dev/null
+    
+    # Настройка владельца
+    chown -R www-data:www-data "$WEB_ROOT"
+	# Добавить в секцию настройки прав для задания времени
+
+    log "INFO" "Создание файла паролей"
+    echo -n "admin:" | sudo tee "$AUTH_FILE" >/dev/null
+    openssl passwd -apr1 cyntron | sudo tee -a "$AUTH_FILE" >/dev/null
+    chmod 640 "$AUTH_FILE"
+    chown www-data:www-data "$AUTH_FILE"
+	
+
+
+   log "INFO" "Установка векторного логотипа"
+    cat > "$WEB_ROOT/static/logo.svg" <<'EOF'
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="230.45209mm"
+   height="105mm"
+   viewBox="0 0 871.00002 396.85051"
+   fill="none"
+   version="1.1"
+   id="svg30"
+   sodipodi:docname="logo-vector.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs30" />
+  <sodipodi:namedview
+     id="namedview30"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="3.1056257"
+     inkscape:cx="402.81738"
+     inkscape:cy="200.1207"
+     inkscape:window-width="3840"
+     inkscape:window-height="2054"
+     inkscape:window-x="-11"
+     inkscape:window-y="-11"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg30"
+     inkscape:document-units="mm" />
+  <path
+     d="m 209.38528,387.50645 v -38.602 h -5.106 v 33.495 h -7.66 v -21.458 h -60.728 v 
+-80.8507 h 7.659 v 73.9207 h 53.069 v -79.0271 h -17.872 v 67.0511 h 5.107 v 
+-61.9447 h 7.659 v 68.8137 h -42.857 v -73.9201 h -17.872 v 91.0631 h 60.729 v 
+21.459 z"
+     fill="#3c67d7"
+     id="path1" />
+  <path
+     d="m 296.95828,274.98435 -50.942,85.9561 h -10.578 v -80.8498 h 7.66 v 72.1578 l 
+45.835,-77.2641 h -5.957 l -34.772,58.6011 v -58.6011 h -17.872 v 91.0631 h 18.602 
+l 47.72,-80.4857 v 75.3787 h -7.66 v -48.996 l -5.106,8.6322 v 45.4708 h 17.872 v 
+-91.0631 z"
+     fill="#3c67d7"
+     id="path2" />
+  <path
+     d="m 380.77328,274.98435 v 34.6501 h -46.261 v -29.5438 h 7.66 v 22.6138 h 5.106 v 
+-27.7201 h -17.872 v 39.7564 h 56.473 v -34.6501 h 7.66 v 80.8498 h -7.66 v 
+-39.2696 h -56.473 v 44.3766 h 17.872 v -32.34 h -5.106 v 27.233 h -7.66 v -34.163 
+h 46.261 v 39.27 h 17.872 v -91.0631 z"
+     fill="#3c67d7"
+     id="path3" />
+  <path
+     d="m 455.27828,274.98435 v 85.9561 h -7.66 v -85.9561 h -28.875 v 17.1427 h 16.11 v 
+-5.1063 h -11.003 v -6.9301 h 18.662 v 85.9568 h 17.872 v -85.9568 h 18.602 v 
+6.9301 h -10.942 v 5.1063 h 16.048 v -17.1427 z"
+     fill="#3c67d7"
+     id="path4" />
+  <path
+     d="m 535.77128,274.98435 h -31.489 v 91.0631 h 17.872 v -42.675 h 14.468 c 11.854,0 
+18.724,-6.7472 18.724,-18.5404 0,-11.0029 -6.87,-17.8113 -17.872,-17.8113 h -20.426 
+v 24.3158 h 5.106 v -19.2095 h 15.32 c 8.206,0 12.765,4.62 12.765,12.705 0,7.2948 
+-3.1,13.4346 -13.617,13.4346 h -19.574 v 42.6738 h -7.659 v -80.8498 h 26.382 c 
+24.559,0 27.234,17.2643 27.234,24.7414 0,15.319 -9.422,25.4714 -24.984,25.4714 h 
+-8.207 v 5.106 h 8.207 c 19.148,0 30.09,-13.1915 30.09,-30.5774 0,-15.7445 
+-9.422,-29.8477 -32.34,-29.8477 z"
+     fill="#3c67d7"
+     id="path5" />
+  <path
+     d="m 636.89828,274.92365 v 5.2887 c 16.961,5.0455 24.681,22.7353 24.681,40.2428 
+0,20.7903 -10.821,41.7623 -34.893,41.7623 -24.073,0 -34.894,-20.972 
+-34.894,-41.7623 0,-19.9998 10.031,-40.1212 32.341,-41.641 v 12.158 c 0.79,-0.1216 
+1.641,-0.1824 2.553,-0.1824 16.17,0 22.127,16.8995 22.127,29.6654 0,12.7653 
+-5.896,29.7263 -22.127,29.7263 -16.231,0 -22.128,-16.961 -22.128,-29.7263 0,-9.544 
+3.344,-21.5196 11.915,-26.8691 v -5.775 c -11.611,5.2279 -17.021,19.3311 
+-17.021,32.6441 0,16.7783 8.511,34.8323 27.234,34.8323 18.723,0 27.233,-18.054 
+27.233,-34.8323 0,-15.9269 -7.781,-33.0696 -24.68,-34.6502 v -12.0363 c 
+-0.851,-0.0608 -1.702,-0.1216 -2.553,-0.1216 -25.532,0 -40,21.2764 -40,46.8081 
+0,25.5313 14.468,46.8683 40,46.8683 25.531,0 39.999,-21.337 39.999,-46.8683 
+0,-21.8843 -10.638,-40.6075 -29.787,-45.5315 z"
+     fill="#3c67d7"
+     id="path6" />
+  <path
+     d="m 741.21128,274.98435 v 34.6501 h -46.261 v -29.5438 h 7.659 v 22.6138 h 5.107 v 
+-27.7201 h -17.873 v 39.7564 h 56.474 v -34.6501 h 7.659 v 80.8498 h -7.659 v 
+-39.2696 h -56.474 v 44.3766 h 17.873 v -32.34 h -5.107 v 27.233 h -7.659 v -34.163 
+h 46.261 v 39.27 h 17.872 v -91.0631 z"
+     fill="#3c67d7"
+     id="path7" />
+  <rect
+     x="406.58914"
+     y="97.664856"
+     width="63.9175"
+     height="63.9175"
+     rx="2"
+     fill="#3c67d7"
+     id="rect7" />
+  <rect
+     x="379.78494"
+     y="70.860756"
+     width="49.484501"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect8" />
+  <rect
+     x="474.63113"
+     y="70.860756"
+     width="22.680401"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect9" />
+  <rect
+     x="447.82614"
+     y="70.860756"
+     width="10.3093"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect10" />
+  <rect
+     x="513.80511"
+     y="83.231857"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect11" />
+  <rect
+     y="83.231857"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect12"
+     x="336.48615" />
+  <rect
+     x="204.88165"
+     y="-484.94016"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect13" />
+  <rect
+     x="29.623655"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect14"
+     y="-484.94012" />
+  <rect
+     x="513.80511"
+     y="110.03606"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect15" />
+  <rect
+     y="110.03606"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect16"
+     x="336.48615" />
+  <rect
+     x="204.88165"
+     y="-458.13513"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect17" />
+  <rect
+     x="29.623661"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect18"
+     y="-458.13513" />
+  <rect
+     x="513.80511"
+     y="138.90166"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect19" />
+  <rect
+     y="138.90166"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect20"
+     x="336.48615" />
+  <rect
+     x="204.88165"
+     y="-429.26984"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect21" />
+  <rect
+     x="29.623659"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect22"
+     y="-429.26984" />
+  <rect
+     x="513.80511"
+     y="165.70566"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect23" />
+  <rect
+     y="165.70566"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect24"
+     x="336.48615" />
+  <rect
+     x="204.88165"
+     y="-402.46564"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect25" />
+  <rect
+     x="29.623659"
+     width="24.7423"
+     height="10.3093"
+     rx="4"
+     transform="rotate(90)"
+     fill="#3c67d7"
+     id="rect26"
+     y="-402.46564" />
+  <rect
+     x="379.78494"
+     y="178.07765"
+     width="117.526"
+     height="10.3093"
+     rx="4"
+     fill="#3c67d7"
+     id="rect27" />
+  <rect
+     x="-188.38666"
+     y="379.78494"
+     width="117.526"
+     height="10.3093"
+     rx="4"
+     transform="rotate(-90)"
+     fill="#3c67d7"
+     id="rect28" />
+  <rect
+     x="-188.38666"
+     y="487.00214"
+     width="117.526"
+     height="10.3093"
+     rx="4"
+     transform="rotate(-90)"
+     fill="#3c67d7"
+     id="rect29" />
+  <rect
+     x="405.16382"
+     y="96.239159"
+     width="66.309303"
+     height="66.309303"
+     rx="2"
+     fill="#3c67d7"
+     id="rect30" />
+</svg>
+
+EOF
+
+    chmod 644 "$WEB_ROOT/static/logo.svg"
+    chown www-data:www-data "$WEB_ROOT/static/logo.svg"
+
+    cat > "$WEB_ROOT/cgi-bin/login.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=utf-8"
+echo "Set-Cookie: session_token=cyntron_session; Path=/; HttpOnly"
+echo "Location: /cgi-bin/index.cgi"
+echo ""
+
+read -r POST_DATA
+LOGIN=$(echo "$POST_DATA" | sed -n 's/^.*login=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+PASSWORD=$(echo "$POST_DATA" | sed -n 's/^.*password=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+
+if [[ "$LOGIN" == "admin" && "$PASSWORD" == "cyntron" ]]; then
+    exit 0
+else
+    echo "Ошибка авторизации!" >&2
+    exit 1
+fi
+EOF
+
+    cat > "$WEB_ROOT/cgi-bin/logout.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=utf-8"
+echo "Set-Cookie: session_token=; expires=Thu, 01 Jan 1970 00:00:00 GMT; Path=/;"
+echo "Location: /cgi-bin/index.cgi"
+echo ""
+EOF
+
+    cat > "$WEB_ROOT/cgi-bin/index.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=UTF-8"
+echo ""
+
+check_auth() {
+    [[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] && 
+return 0
+    return 1
+}
+
+if ! check_auth; then
+    cat <<HTML
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Авторизация</title>
+    <style>
+        body { 
+            background: #ffffff;
+            height: 100vh;
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+        }
+        .logo {
+            height: 80px;
+            margin-bottom: 30px;
+        }
+        .login-box { 
+            width: 300px; 
+            padding: 40px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        input { 
+            width: 100%; 
+            padding: 12px; 
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+        }
+        button { 
+            background: #1976d2;
+            color: white; 
+            border: none; 
+            padding: 14px; 
+            width: 100%;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+        button:hover { background: #1565c0; }
+    </style>
+</head>
+<body>
+    <img src="/static/logo.svg" class="logo" alt="ЦИНТРОН">
+    <div class="login-box">
+        <form method="POST" action="/cgi-bin/login.cgi">
+            <input type="text" name="login" placeholder="Логин" required>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <button type="submit">Войти</button>
+        </form>
+    </div>
+</body>
+</html>
+HTML
+    exit 0
+fi
+
+CURRENT_IP=$(if [ -f /etc/network/interfaces.d/eth0.conf ]; then 
+    awk '/^[[:space:]]*address / {
+        split($2, arr, "/");   # Обрезаем маску сети если есть (192.168.1.1/24)
+        print arr[1]; 
+        exit
+    }' /etc/network/interfaces.d/eth0.conf || echo "недоступен"
+else
+    echo "недоступен"
+fi)
+CURRENT_TIME=$(TZ='Europe/Moscow' date "+%d.%m.%Y %H:%M:%S %Z")
+
+STATUS_MSG=""
+case "$QUERY_STRING" in
+    *status=reboot*) STATUS_MSG="<div class='alert success'>Система 
+перезагружается...</div>" ;;
+    *status=services*) STATUS_MSG="<div class='alert success'>Службы успешно 
+перезапущены</div>" ;;
+    *status=applied*) STATUS_MSG="<div class='alert success'>Настройки успешно 
+применены</div>" ;;
+    *status=error*) STATUS_MSG="<div class='alert error'>Ошибка выполнения 
+операции!</div>" ;;
+	 *status=time_updated*) STATUS_MSG="<div class='alert success'>Время успешно 
+обновлено</div>" ;;
+        *status=error_time*) STATUS_MSG="<div class='alert error'>Некорректное значение 
+времени!</div>" ;;
+        *status=error_tz*) STATUS_MSG="<div class='alert error'>Ошибка выбора часового 
+пояса!</div>" ;;
+esac
+
+cat <<HTML
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Управление СА-02м</title>
+    <style>
+        :root {
+            --primary: #1976d2;
+            --primary-dark: #1565c0;
+            --background: #ffffff;
+            --surface: #ffffff;
+        }
+
+        body { 
+            font-family: 'Segoe UI', Arial, sans-serif;
+            margin: 0;
+            background: var(--background);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 20px auto;
+            background: var(--surface);
+            border-radius: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #eee;
+        }
+
+        .logo {
+            height: 50px;
+            width: auto;
+        }
+
+        .status-info {
+            flex-grow: 1;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            box-sizing: border-box;
+            font-size: 16px;
+        }
+
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: var(--primary-dark);
+        }
+
+        .alert {
+            padding: 15px;
+            margin: 20px;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #eee;
+            justify-content: flex-end;
+        }
+
+        .logout-btn {
+            background: #d32f2f;
+            padding: 10px 20px;
+        }
+
+        .logout-btn:hover {
+            background: #b71c1c;
+        }
+		 .select-box {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: white;
+            font-size: 16px;
+        }
+
+        input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+            filter: invert(0.5);
+        }
+    </style>
+	 <script>
+          document.addEventListener('DOMContentLoaded', function() {
+            // Функция обновления времени с проверкой ошибок
+            function updateLiveTime() {
+                try {
+                    const options = {
+                        timeZone: 'Europe/Moscow',
+                        hour12: false,
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    };
+                    
+                    document.querySelectorAll('.live-time').forEach(el => {
+                        const now = new Date();
+                        const timeString = now.toLocaleTimeString('ru-RU', options);
+                        const dateString = now.toLocaleDateString('ru-RU', options);
+                        el.innerHTML = `${dateString} ${timeString}`;
+                    });
+                } catch(e) {
+                    console.error('Ошибка обновления времени:', e);
+                }
+            }
+
+            // Первоначальное обновление
+            updateLiveTime();
+            
+            // Запуск периодического обновления
+            let timeUpdateInterval = setInterval(updateLiveTime, 1000);
+
+            // Очистка при размонтировании компонента
+            window.addEventListener('beforeunload', () => {
+                clearInterval(timeUpdateInterval);
+            });
+    });
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img src="/static/logo.svg" class="logo" alt="ЦИНТРОН">
+            <div class="status-info">
+                <h2 style="margin: 0 0 5px 0;">СА-02м Панель управления</h2>
+               <div style="font-size: 0.9em; color: #666;">
+    <span class="live-time">${CURRENT_TIME}</span> |  <!-- Добавлен класс live-time -->
+    <span>IP: ${CURRENT_IP}</span>
+</div>
+            </div>
+            <form method="POST" action="/cgi-bin/logout.cgi">
+                <button type="submit" class="logout-btn">Выйти</button>
+            </form>
+        </div>
+
+        ${STATUS_MSG}
+
+        <div class="content">
+            <form method="POST" action="/cgi-bin/apply.cgi">
+                <div class="form-group">
+                    <label>IP-адрес:</label>
+                    <input type="text" name="ip" value="${CURRENT_IP}" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Маска подсети:</label>
+                    <input type="text" name="netmask" value="255.255.255.0" required>
+                </div>
+
+                <div class="form-group">
+                    <label>Шлюз:</label>
+                    <input type="text" name="gateway" placeholder="192.168.0.1">
+                </div>
+
+                <div class="form-group">
+                    <label>DNS-серверы:</label>
+                    <input type="text" name="dns" placeholder="77.88.8.8 77.88.8.1">
+                </div>
+<div class="form-group">
+                    <label>Дата и время:</label>
+                    <input type="datetime-local" 
+                           name="datetime" 
+                           value="$(TZ='Europe/Moscow' date +"%Y-%m-%dT%H:%M")"
+                           required>
+                </div>
+
+                <div class="form-group">
+                    <label>Часовой пояс:</label>
+                    <select name="timezone" class="select-box">
+                        <option value="Europe/Moscow">Москва (Europe/Moscow)</option>
+                        <option value="Asia/Yekaterinburg">Екатеринбург 
+(Asia/Yekaterinburg)</option>
+                        <option value="Asia/Novosibirsk">Новосибирск 
+(Asia/Novosibirsk)</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button type="submit">Применить настройки</button>
+                    <button type="submit" formaction="/cgi-bin/restart_services.cgi" 
+style="background: #0288d1;">Перезапустить службы</button>
+                    <button type="submit" formaction="/cgi-bin/reboot.cgi" 
+style="background: #ef6c00;">Перезагрузить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</body>
+</html>
+HTML
+EOF
+
+    cat > "$WEB_ROOT/cgi-bin/apply.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=utf-8"
+echo "Location: /cgi-bin/index.cgi?status=applied"
+echo ""
+
+read -r POST_DATA
+IP=$(echo "$POST_DATA" | sed -n 's/^.*ip=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+NETMASK=$(echo "$POST_DATA" | sed -n 's/^.*netmask=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+GATEWAY=$(echo "$POST_DATA" | sed -n 's/^.*gateway=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+DNS=$(echo "$POST_DATA" | sed -n 's/^.*dns=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+DATETIME=$(echo "$POST_DATA" | sed -n 's/^.*datetime=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+TIMEZONE=$(echo "$POST_DATA" | sed -n 's/^.*timezone=\([^&]*\).*$/\1/p' | sed 
+'s/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' | xargs -0 printf '%b')
+
+# Обновление часового пояса
+if timedatectl list-timezones | grep -qx "$TIMEZONE"; then
+    timedatectl set-timezone "$TIMEZONE" || {
+        echo "Location: /cgi-bin/index.cgi?status=error_tz"
+        exit 0
+    }
+else
+    echo "Location: /cgi-bin/index.cgi?status=error_tz"
+    exit 0
+fi
+
+# Установка времени
+if date -d "$DATETIME" &>/dev/null; then
+    if sudo /bin/date -s "$(date --date="$DATETIME" '+%Y-%m-%d %H:%M:%S %z')" >/dev/null 2>&1; 
+	then
+        sudo /sbin/hwclock -w
+        echo "Location: /cgi-bin/index.cgi?status=time_updated"
+    else
+        echo "Location: /cgi-bin/index.cgi?status=error_time"
+    fi
+else
+    echo "Location: /cgi-bin/index.cgi?status=error_time"
+fi
+{
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Применение новых параметров:"
+echo "IP: $IP"
+echo "Netmask: $NETMASK"
+echo "Gateway: $GATEWAY"
+echo "DNS: $DNS"
+} >> /var/log/sa02m_install.log 2>&1
+
+exit 0
+EOF
+
+    cat > "$WEB_ROOT/cgi-bin/reboot.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=utf-8"
+echo "Location: /cgi-bin/index.cgi?status=reboot"
+echo ""
+sleep 2
+sudo reboot
+exit 0
+EOF
+
+    cat > "$WEB_ROOT/cgi-bin/restart_services.cgi" <<'EOF'
+#!/bin/bash
+echo "Content-type: text/html; charset=utf-8"
+echo "Location: /cgi-bin/index.cgi?status=services"
+echo ""
+systemctl restart nginx fcgiwrap fix-eth.service >/dev/null 2>&1
+exit 0
+EOF
+
+    # Конфигурация Nginx (добавлены важные директивы)
+    log "INFO" "Генерация конфига Nginx"
+    cat > /etc/nginx/sites-available/network.conf <<EOF
+    # Веб-интерфейс настроек (порт 9999)
+    server {
+    listen 9999;       # Только IPv4
+    server_name _;
+    root ${WEB_ROOT};
+    
+    index index.html index.cgi;
+    autoindex off;
+    
+    # Базовые настройки безопасности
+    server_tokens off;
+    charset utf-8;
+    
+    # Обработка статических файлов
+    location /static/ {
+        alias ${WEB_ROOT}/static/;
+        expires 30d;
+        access_log off;
+        add_header Cache-Control "public";
+    }
+
+    # Обработка CGI-скриптов
+    location /cgi-bin/ {
+        gzip off;
+        fastcgi_pass unix:/var/run/fcgiwrap.socket;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    # Перенаправление корневого URL
+    location = / {
+        return 302 /cgi-bin/index.cgi;
+    }
+
+    # Запрет доступа к скрытым файлам
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+	
+}
+EOF
+
+cat > /etc/network/interfaces.d/eth0.conf <<EOF
+
+allow-hotplug eth0
+no-auto-down eth0
+iface eth0 inet static
+address 192.168.1.136
+netmask 255.255.255.0
+hwaddress ether 02:53:8B:00:D4:30
+gateway 192.168.1.1
+
+EOF
+
+cat > /etc/network/interfaces.d/eth1.conf <<EOF
+
+allow-hotplug eth1
+no-auto-down eth1
+iface eth1 inet static
+address 192.168.2.136
+netmask 255.255.255.0
+# hwaddress ether 02:53:8B:00:D4:35
+gateway 192.168.2.1
+
+EOF
+
+cat > /etc/sudoers.d/www-data <<EOF
+www-data ALL=(ALL) NOPASSWD: /sbin/ifdown, /sbin/ifup, /usr/bin/tee, /sbin/reboot, /usr/bin/timedatectl, /bin/systemctl
+EOF
+
+
+# Удалить дефолтный конфиг Nginx:
+rm -f /etc/nginx/sites-enabled/default
+
+ # Установка прав для всей структуры
+    find "$WEB_ROOT" -type d -exec chmod 755 {} \;
+    find "$WEB_ROOT" -type f -exec chmod 644 {} \;
+chmod +x "$WEB_ROOT/cgi-bin"/*.cgi
+chown -R www-data:www-data "$WEB_ROOT"
+
+    # Дополнительные проверки
+    nginx -t 2>&1 | tee -a "$LOG_FILE"
+    systemctl restart nginx lighttpd
+    log "INFO" "Веб-интерфейс сконфигурирован"
+
+
+    chmod +x "$WEB_ROOT/cgi-bin"/*.cgi
+    chown -R www-data:www-data "$WEB_ROOT"
+    ln -sf /etc/nginx/sites-available/network.conf /etc/nginx/sites-enabled/
+    
+    systemctl enable --now fcgiwrap.socket
+    systemctl restart nginx lighttpd
+}
+
+### Основной процесс ###
+check_root
+trap 'error_exit $LINENO "Прерывание выполнения"' SIGINT
+
+log "INFO" "=== Начало установки ==="
+
+# Синхронизация времени
+log "INFO" "Выполнение синхронизации времени..."
+{
+    # Установка chrony при необходимости
+    if ! command -v chronyc >/dev/null; then
+        apt-get install -y chrony
+    fi
+
+    # Конфигурация NTP-серверов
+    CHRONY_CONF="/etc/chrony/chrony.conf"
+    RUS_SERVERS=(
+        "ntp1.vniiftri.ru"
+        "ntp2.vniiftri.ru"
+        "ntp3.vniiftri.ru"
+        "ntp1.ntp-servers.ru"
+        "ntp2.ntp-servers.ru"
+        "ntp.zebra.ru"
+    )
+
+    # Резервное копирование конфига
+    TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+    cp "$CHRONY_CONF" "${CHRONY_CONF}.bak-$TIMESTAMP"
+
+    # Добавление российских серверов
+    log "INFO" "Обновление списка NTP-серверов..."
+    {
+        sed -i '/^pool/d;/^server\s.*\.pool\.ntp\.org/d' "$CHRONY_CONF"
+        for server in "${RUS_SERVERS[@]}"; do
+            echo "server $server iburst"
+        done >> "$CHRONY_CONF"
+    } >> "$LOG_FILE" 2>&1
+
+    # Активация службы chrony
+    if systemctl is-active chrony >/dev/null; then
+        log "INFO" "Служба chrony уже активна"
+    else
+        systemctl unmask chrony.service
+        systemctl enable --now chrony.service
+        systemctl restart chrony.service
+        log "INFO" "Служба chrony успешно активирована"
+    fi
+
+    # Настройка часового пояса
+    CURRENT_TZ=$(timedatectl show --property=Timezone --value)
+    [ "$CURRENT_TZ" = "Europe/Moscow" ] || {
+        timedatectl set-timezone Europe/Moscow
+        log "INFO" "Установлен часовой пояс Europe/Moscow"
+    }
+
+  # Обновление конфига chrony
+    CHRONY_CONF="/etc/chrony/chrony.conf"
+    sed -i 's/^#.*rtcsync/rtcsync/' $CHRONY_CONF
+    echo "makestep 1 3" >> $CHRONY_CONF
+	
+    # Настройка аппаратных часов
+    if timedatectl | grep -q "RTC in local TZ: yes"; then
+        timedatectl set-local-rtc 0
+        log "INFO" "RTC переведен на UTC"
+    fi
+
+    # Принудительная синхронизация
+    log "INFO" "Запуск синхронизации времени..."
+    chronyc -a makestep >/dev/null 2>&1
+    systemctl restart chrony.service
+    sleep 2
+
+    # Проверка синхронизации
+    if chronyc waitsync 30 0.01 >/dev/null 2>&1; then
+        hwclock -wu >/dev/null 2>&1
+        log "INFO" "Синхронизация успешна. Системное время: $(date '+%F %T %Z')"
+    else
+        error_exit $LINENO "Ошибка синхронизации с NTP-серверами"
+    fi
+
+    # Финализация
+    timedatectl set-ntp true
+    log "INFO" "Фоновая синхронизация активирована"
+
+} || error_exit $LINENO "Ошибка настройки времени"
+
+sed -i '/[::]/d' /etc/nginx/sites-available/default
+chmod 777 "$LOG_FILE"
+log "INFO" "1. Обновление системы"
+apt-get update >> "$LOG_FILE" 2>&1 || error_exit $LINENO "Ошибка обновления пакетов"
+apt-get -y upgrade >> "$LOG_FILE" 2>&1 || error_exit $LINENO "Ошибка обновления системы"
+
+log "INFO" "2. Установка пакетов"
+apt-get -y install \
+    usb-modeswitch \
+    libi2c-dev \
+    libgpiod-dev \
+    nginx \
+    fcgiwrap \
+    ethtool \
+    net-tools \
+	dialog \
+    dos2unix \
+    ipcalc >> "$LOG_FILE" 2>&1 || error_exit $LINENO "Ошибка установки пакетов"
+
+log "INFO" "Настройка прав для управления временем"
+echo "www-data ALL=(ALL) NOPASSWD: /bin/date, /sbin/hwclock" > /etc/sudoers.d/time-sync
+chmod 440 /etc/sudoers.d/time-sync
+
+chmod 755 "$WEB_ROOT/cgi-bin"/*.cgi
+
+log "INFO" "3. Сетевая настройка"
+if check_eth0; then
+    configure_network
+else
+    log "WARNING" "Сетевая настройка пропущена: интерфейс недоступен"
+fi
+
+log "INFO" "4. Системные параметры"
+{
+hostnamectl set-hostname SA-02m
+systemctl disable serial-getty@ttyS0
+systemctl mask serial-getty@ttyS0
+systemctl enable getty@ttyGS0
+timedatectl set-timezone Europe/Moscow
+sed -i '/^BOARD_NAME=/d' /etc/armbian-release
+echo "BOARD_NAME=SA-02m" >> /etc/armbian-release
+sed -i '/^VENDOR=/d' /etc/armbian-release
+echo "VENDOR=CYNTRON" >> /etc/armbian-release
+sed -i '/^BOARD=/d' /etc/armbian-image-release
+echo "BOARD=SA-02m" >> /etc/armbian-image-release
+sed -i '/^BOARD_NAME=/d' /etc/armbian-image-release
+echo "BOARD_NAME=SA-02m" >> /etc/armbian-image-release
+sed -i '/^VENDOR=/d' /etc/armbian-image-release
+echo "VENDOR=CYNTRON" >> /etc/armbian-image-release
+} >> "$LOG_FILE" 2>&1
+
+log "INFO" "5. Веб-интерфейс"
+configure_web_interface
+
+log "INFO" "6. Финализация установки"
+{
+echo "Установка завершена: $(date)"
+echo "URL: http://${IP_ADDRESS}:${PORT}"
+echo "Данные для входа:"
+echo "Логин: admin"
+echo "Пароль: cyntron"
+echo ""
+echo "=== Проверка статуса служб ==="
+systemctl status nginx fcgiwrap.socket fix-eth.service --no-pager
+echo "=== Проверка открытых портов ==="
+    ss -tulpn | grep -E ':80|:9999|:8043'
+} | tee -a "$LOG_FILE"
+log "INFO" "Проверка временных настроек:"
+{
+    echo "=== Timezone ==="
+    timedatectl | grep "Time zone"
+    echo "=== System time ==="
+    date
+    echo "=== RTC time ==="
+    hwclock --show
+} | tee -a "$LOG_FILE"
+log "OK" "Установка успешно завершена!"
+exit 0
