@@ -1,2 +1,0 @@
-ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl restart 
-fix-eth.service"
