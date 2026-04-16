@@ -97,6 +97,13 @@ function svcBadge(id, state) {
 let fetchBusy = false;
 const _prevRs = {};
 
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+function threshColor(val, warnAt, critAt) {
+  return val >= critAt ? cssVar('--red') : val >= warnAt ? cssVar('--yellow') : cssVar('--cyan');
+}
+
 function applyStatus(d) {
   const ARC = 126;
 
@@ -105,7 +112,7 @@ function applyStatus(d) {
   const cpuArc = document.getElementById('cpu-arc');
   if (cpuArc) {
     cpuArc.style.strokeDasharray = arcDash(d.cpu_usage, ARC);
-    cpuArc.style.stroke = d.cpu_usage > 80 ? '#f85149' : d.cpu_usage > 60 ? '#e3b341' : '#22d3ee';
+    cpuArc.style.stroke = threshColor(d.cpu_usage, 60, 80);
   }
 
   /* RAM */
@@ -116,7 +123,7 @@ function applyStatus(d) {
   const ramBar = document.getElementById('ram-bar');
   if (ramBar) {
     ramBar.style.width = d.ram_pct + '%';
-    ramBar.style.background = d.ram_pct > 90 ? '#f85149' : d.ram_pct > 70 ? '#e3b341' : '#22d3ee';
+    ramBar.style.background = threshColor(d.ram_pct, 70, 90);
   }
 
   /* SWAP */
@@ -128,7 +135,7 @@ function applyStatus(d) {
     const swapBar = document.getElementById('swap-bar');
     if (swapBar) {
       swapBar.style.width = d.swap_pct + '%';
-      swapBar.style.background = d.swap_pct > 80 ? '#f85149' : '#f0883e';
+      swapBar.style.background = d.swap_pct > 80 ? cssVar('--red') : cssVar('--orange');
     }
   }
 
@@ -137,7 +144,7 @@ function applyStatus(d) {
   const tempArc = document.getElementById('temp-arc');
   if (tempArc) {
     tempArc.style.strokeDasharray = arcDash(Math.min(d.temp_c, 100), ARC);
-    tempArc.style.stroke = d.temp_c > 80 ? '#f85149' : d.temp_c > 60 ? '#e3b341' : '#f0883e';
+    tempArc.style.stroke = d.temp_c > 80 ? cssVar('--red') : d.temp_c > 60 ? cssVar('--yellow') : cssVar('--orange');
   }
 
   /* Disk */
@@ -148,7 +155,7 @@ function applyStatus(d) {
   const diskBar = document.getElementById('disk-bar');
   if (diskBar) {
     diskBar.style.width = d.disk_pct + '%';
-    diskBar.style.background = d.disk_pct > 90 ? '#f85149' : d.disk_pct > 70 ? '#e3b341' : '#3fb950';
+    diskBar.style.background = threshColor(d.disk_pct, 70, 90);
   }
   if (d.disk_io_read_b !== undefined)
     setText('disk-io', 'R ' + fmtBytes(d.disk_io_read_b) + ' / W ' + fmtBytes(d.disk_io_write_b));
