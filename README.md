@@ -468,17 +468,19 @@ channel=DO&value=1
 
 ### Аппаратная платформа
 
-| Параметр | Значение |
-|----------|----------|
-| Процессор | Allwinner A40i (sun8i-r40), ARM Cortex-A7 × 4, до 1.2 ГГц |
-| Плата | Starterkit SK-A40i-NANO-2E |
-| Хранилище | eMMC (`/dev/mmcblk2`) |
-| ОЗУ | 1 ГБ DDR3 |
-| Ethernet | 2× (EMAC eth0 + GMAC eth1) |
-| RS-485 / COM | 5 портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) |
-| RTC | PCF8563 (I2C3, адрес `0x51`) |
-| GPIO расширитель | PCA9536 (I2C, шина 2, адрес `0x41`) |
-| DTS model | `"Cyntron A40i-2Eth"`, compatible `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` |
+| Параметр | СА-02м (1eth) | СА-02м-2 (2eth) |
+|----------|--------------|----------------|
+| Процессор | Allwinner A40i (sun8i-r40), ARM Cortex-A7 × 4, до 1.2 ГГц | ← то же |
+| Плата | Starterkit SK-A40i-NANO-2E | ← то же |
+| Хранилище | eMMC (`/dev/mmcblk2`) | ← то же |
+| ОЗУ | 1 ГБ DDR3 | ← то же |
+| Ethernet | 1× (EMAC, eth0) | **2×** (EMAC eth0 + GMAC eth1) |
+| RS-485 / COM | **5** портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) | **4** порта (ttyS3, ttyS4, ttyS5, ttyS7) |
+| DO / Beeper / LED | **есть** (PCA9536 I2C) | **нет** |
+| RTC | PCF8563 (I2C3, адрес `0x51`) | ← то же |
+| GPIO расширитель | PCA9536 (I2C шина 2, адрес `0x41`) | — |
+| DTS model | `"Cyntron A40i-2Eth"` | `"Cyntron A40i-2Eth"` |
+| DTS compatible | `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` | ← то же |
 
 ---
 
@@ -771,10 +773,16 @@ make
 
 ### RS-485 и COM симлинки
 
-Для удобства работы с портами создаются постоянные симлинки через udev (автоматически при установке `install.sh`), либо вручную:
+Симлинки создаются автоматически установщиком `install.sh` через udev-правила. Конфигурация зависит от версии устройства.
 
-| Симлинк | Устройство | Интерфейс |
-|---------|-----------|-----------|
+> **Различия версий:**
+> - **СА-02м** (1 Ethernet) — 5 портов RS-485, `ttyS0` доступен
+> - **СА-02м-2** (2 Ethernet) — 4 порта RS-485, `ttyS0` занят второй Ethernet-функцией
+
+#### СА-02м — 1 Ethernet, 5 портов RS-485
+
+| Симлинк | Устройство | Описание |
+|---------|-----------|----------|
 | `/dev/RS-485-0` → `/dev/COM1` | `/dev/ttyS0` | RS-485 порт 1 |
 | `/dev/RS-485-1` → `/dev/COM2` | `/dev/ttyS3` | RS-485 порт 2 |
 | `/dev/RS-485-2` → `/dev/COM3` | `/dev/ttyS4` | RS-485 порт 3 |
@@ -789,7 +797,26 @@ ln -sf /dev/ttyS5 /dev/COM4  && ln -sf /dev/ttyS5 /dev/RS-485-3
 ln -sf /dev/ttyS7 /dev/COM5  && ln -sf /dev/ttyS7 /dev/RS-485-4
 ```
 
-Проверить обнаруженные UART:
+#### СА-02м-2 — 2 Ethernet, 4 порта RS-485 (без DO)
+
+`ttyS0` используется второй Ethernet-подсистемой и **недоступен** как RS-485.  
+GPIO-расширитель (DO, Beeper, Alarm LED) в этой версии **отсутствует**.
+
+| Симлинк | Устройство | Описание |
+|---------|-----------|----------|
+| `/dev/RS-485-0` → `/dev/COM1` | `/dev/ttyS3` | RS-485 порт 1 |
+| `/dev/RS-485-1` → `/dev/COM2` | `/dev/ttyS4` | RS-485 порт 2 |
+| `/dev/RS-485-2` → `/dev/COM3` | `/dev/ttyS5` | RS-485 порт 3 |
+| `/dev/RS-485-3` → `/dev/COM4` | `/dev/ttyS7` | RS-485 порт 4 |
+
+```bash
+ln -sf /dev/ttyS3 /dev/COM1  && ln -sf /dev/ttyS3 /dev/RS-485-0
+ln -sf /dev/ttyS4 /dev/COM2  && ln -sf /dev/ttyS4 /dev/RS-485-1
+ln -sf /dev/ttyS5 /dev/COM3  && ln -sf /dev/ttyS5 /dev/RS-485-2
+ln -sf /dev/ttyS7 /dev/COM4  && ln -sf /dev/ttyS7 /dev/RS-485-3
+```
+
+#### Диагностика UART
 
 ```bash
 # Через dmesg (сразу после загрузки)
