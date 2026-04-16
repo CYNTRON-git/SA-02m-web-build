@@ -6,65 +6,9 @@
   <title>СА-02м — Вход</title>
   <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
   <link rel="stylesheet" href="/static/css/main.css">
-  <style>
-    /* ── Fire canvas ──────────────────────────────────────────────────────── */
-    #fire-canvas {
-      position: fixed; inset: 0; width: 100%; height: 100%;
-      z-index: 0;
-      transition: opacity .6s ease;
-    }
-    #fire-canvas.hidden { opacity: 0; pointer-events: none; }
-
-    /* ── Login page overlay ───────────────────────────────────────────────── */
-    .login-page {
-      position: relative; z-index: 10;
-      min-height: 100vh;
-      display: flex; align-items: center; justify-content: center;
-    }
-    .login-card {
-      /* glass effect on top of fire */
-      background: rgba(30, 30, 30, 0.82);
-      backdrop-filter: blur(14px) saturate(1.4);
-      -webkit-backdrop-filter: blur(14px) saturate(1.4);
-      border: 1px solid rgba(255,255,255,.09);
-    }
-
-    /* ── Fire toggle (top-right) ──────────────────────────────────────────── */
-    .fire-toggle-wrap {
-      position: fixed; top: 18px; right: 22px; z-index: 20;
-      display: flex; align-items: center; gap: 8px;
-      font-size: .75rem; color: rgba(255,255,255,.55);
-      user-select: none;
-    }
-    .fire-toggle-wrap svg {
-      width: 15px; height: 15px;
-      opacity: .65;
-      animation: flicker 1.8s ease-in-out infinite alternate;
-    }
-    @keyframes flicker {
-      0%   { opacity: .5; transform: scale(1)    rotate(-2deg); }
-      35%  { opacity: .9; transform: scale(1.08) rotate(1deg);  }
-      70%  { opacity: .6; transform: scale(.95)  rotate(-1deg); }
-      100% { opacity: 1;  transform: scale(1.05) rotate(2deg);  }
-    }
-  </style>
 </head>
 <body>
 
-<!-- Fire canvas (background) -->
-<canvas id="fire-canvas"></canvas>
-
-<!-- Fire toggle -->
-<label class="fire-toggle-wrap" title="Анимация огня">
-  <svg viewBox="0 0 24 24" fill="#f0883e" stroke="none">
-    <path d="M12 2C9 5.5 7 8 7 11a5 5 0 0010 0c0-3-2-5.5-5-9z"/>
-    <path d="M10 17c0 1.1.9 2 2 2s2-.9 2-2-1-2.5-2-4c-1 1.5-2 2.9-2 4z" fill="#fbbf24"/>
-  </svg>
-  <input type="checkbox" id="fire-toggle" class="toggle" checked>
-  <span>Эффект огня</span>
-</label>
-
-<!-- Login card -->
 <div class="login-page">
   <div class="login-card">
 
@@ -101,139 +45,12 @@
 </div>
 
 <script>
-/* ══════════════════════════════════════════════════════════════════════════
-   Auth redirects
-   ══════════════════════════════════════════════════════════════════════════ */
 if (new URLSearchParams(location.search).get('error')) {
   document.getElementById('login-error').style.display = 'block';
 }
 if (document.cookie.split(';').some(c => c.trim().startsWith('session_token='))) {
   window.location.replace('/');
 }
-
-/* ══════════════════════════════════════════════════════════════════════════
-   DOOM-style Fire Simulation
-   Algorithm: each pixel = avg of 4 pixels below it, minus random decay
-   Palette: black → dark red → red → orange → yellow → white
-   ══════════════════════════════════════════════════════════════════════════ */
-(function () {
-  const canvas  = document.getElementById('fire-canvas');
-  const toggle  = document.getElementById('fire-toggle');
-  const SCALE   = 3;          // pixel size (3 = good perf on SBCs)
-  const DECAY   = 1;          // cooling factor per step
-
-  let W, H, firePixels, palette, imgData, ctx, rafId, running = true;
-
-  /* ── Build colour palette (256 entries, black→red→orange→yellow→white) ── */
-  function buildPalette() {
-    palette = new Uint32Array(256);
-    for (let i = 0; i < 256; i++) {
-      const r = Math.min(255, i * 3);
-      const g = Math.min(255, Math.max(0, i * 3 - 255));
-      const b = Math.min(255, Math.max(0, i * 3 - 510));
-      // ABGR in little-endian typed array → RGBA on canvas
-      palette[i] = (255 << 24) | (b << 16) | (g << 8) | r;
-    }
-  }
-
-  /* ── Resize handler ──────────────────────────────────────────────────── */
-  function resize() {
-    W = Math.ceil(window.innerWidth  / SCALE);
-    H = Math.ceil(window.innerHeight / SCALE);
-    canvas.width  = W;
-    canvas.height = H;
-    canvas.style.imageRendering = 'pixelated';
-    ctx = canvas.getContext('2d');
-    imgData    = ctx.createImageData(W, H);
-    firePixels = new Uint8Array(W * H);
-    seedBottom();
-  }
-
-  /* ── Seed bottom row with max heat ────────────────────────────────────── */
-  function seedBottom() {
-    const base = (H - 1) * W;
-    for (let x = 0; x < W; x++) firePixels[base + x] = 255;
-    // Second row from bottom too for thicker base
-    if (H > 1) {
-      const base2 = (H - 2) * W;
-      for (let x = 0; x < W; x++) firePixels[base2 + x] = 230;
-    }
-  }
-
-  /* ── One simulation step ─────────────────────────────────────────────── */
-  function stepFire() {
-    const buf32 = new Uint32Array(imgData.data.buffer);
-    for (let y = 0; y < H - 1; y++) {
-      for (let x = 0; x < W; x++) {
-        const src = (y + 1) * W;
-        // Average of three pixels below (left, center, right)
-        const val = (
-          firePixels[src + ((x - 1 + W) % W)] +
-          firePixels[src + x] +
-          firePixels[src + ((x + 1) % W)] +
-          firePixels[Math.min(y + 2, H - 1) * W + x]
-        ) >> 2;
-        const cooled = val - (Math.random() < 0.4 ? DECAY : 0);
-        firePixels[y * W + x] = cooled < 0 ? 0 : cooled;
-        buf32[y * W + x] = palette[firePixels[y * W + x]];
-      }
-    }
-    // Keep bottom hot
-    const base = (H - 1) * W;
-    for (let x = 0; x < W; x++) {
-      buf32[base + x] = palette[255];
-    }
-    ctx.putImageData(imgData, 0, 0);
-  }
-
-  /* ── Animation loop ──────────────────────────────────────────────────── */
-  function loop() {
-    if (!running) return;
-    stepFire();
-    rafId = requestAnimationFrame(loop);
-  }
-
-  function start() {
-    if (rafId) return;
-    running = true;
-    seedBottom();
-    loop();
-  }
-
-  function stop() {
-    running = false;
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    // Fade out canvas (CSS handles opacity transition)
-    canvas.classList.add('hidden');
-  }
-
-  /* ── Toggle control ──────────────────────────────────────────────────── */
-  const LS_KEY = 'sa02m_fire';
-
-  function applyState(on) {
-    if (on) {
-      canvas.classList.remove('hidden');
-      start();
-    } else {
-      stop();
-    }
-    try { localStorage.setItem(LS_KEY, on ? '1' : '0'); } catch(_) {}
-  }
-
-  toggle.addEventListener('change', () => applyState(toggle.checked));
-
-  /* ── Init ─────────────────────────────────────────────────────────────── */
-  buildPalette();
-  resize();
-  window.addEventListener('resize', () => { resize(); if (running) seedBottom(); });
-
-  // Read saved preference (default = on)
-  let savedOn = true;
-  try { const v = localStorage.getItem(LS_KEY); if (v === '0') savedOn = false; } catch(_) {}
-  toggle.checked = savedOn;
-  applyState(savedOn);
-
-})();
 </script>
 </body>
 </html>
