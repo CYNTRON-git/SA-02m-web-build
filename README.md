@@ -476,9 +476,9 @@ channel=DO&value=1
 | ОЗУ | 1 ГБ DDR3 | ← то же |
 | Ethernet | 1× (EMAC, eth0) | **2×** (EMAC eth0 + GMAC eth1) |
 | RS-485 / COM | **5** портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) | **4** порта (ttyS3, ttyS4, ttyS5, ttyS7) |
-| DO / Beeper / LED | **есть** (PCA9536 I2C) | **нет** |
+| DO / Beeper / LED | **есть** (PCA9536 I2C) | Beeper + LED (**без DO**) |
 | RTC | PCF8563 (I2C3, адрес `0x51`) | ← то же |
-| GPIO расширитель | PCA9536 (I2C шина 2, адрес `0x41`) | — |
+| GPIO расширитель | PCA9536 (I2C шина 2, адрес `0x41`) | ← то же |
 | DTS model | `"Cyntron A40i-2Eth"` | `"Cyntron A40i-2Eth"` |
 | DTS compatible | `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` | ← то же |
 
@@ -800,7 +800,7 @@ ln -sf /dev/ttyS7 /dev/COM5  && ln -sf /dev/ttyS7 /dev/RS-485-4
 #### СА-02м-2 — 2 Ethernet, 4 порта RS-485 (без DO)
 
 `ttyS0` используется второй Ethernet-подсистемой и **недоступен** как RS-485.  
-GPIO-расширитель (DO, Beeper, Alarm LED) в этой версии **отсутствует**.
+Beeper и Alarm LED присутствуют (PCA9536), **дискретный выход DO отсутствует**.
 
 | Симлинк | Устройство | Описание |
 |---------|-----------|----------|
