@@ -32,6 +32,16 @@
   - [Страница входа](#страница-входа)
 - [CGI API](#cgi-api)
 - [Конфигурация GPIO](#конфигурация-gpio)
+- [Сборка образа для СА-02м](#сборка-образа-для-са-02м)
+  - [Аппаратная платформа](#аппаратная-платформа)
+  - [Виртуальная машина для сборки](#виртуальная-машина-для-сборки)
+  - [Процесс сборки Buildroot](#процесс-сборки-buildroot)
+  - [Прошивка образа на eMMC](#прошивка-образа-на-emmc)
+  - [Первоначальная настройка системы](#первоначальная-настройка-системы)
+  - [Отключение UART-консоли](#отключение-uart-консоли)
+  - [RS-485 и COM симлинки](#rs-485-и-com-симлинки)
+  - [GPIO и периферия](#gpio-и-периферия)
+  - [RTC (часы реального времени)](#rtc-часы-реального-времени)
 - [Сетевой watchdog](#сетевой-watchdog)
 - [Структура файлов на устройстве](#структура-файлов-на-устройстве)
 - [Обновление](#обновление)
@@ -447,6 +457,440 @@ channel=DO&value=1
 - Эффект на карточке входа: `backdrop-filter: blur(14px)` — стеклянный эффект
 
 Параметры алгоритма: SCALE=3 (оптимизация для ARM), DECAY=1, палитра 256 цветов.
+
+---
+
+## Сборка образа для СА-02м
+
+Этот раздел описывает процесс сборки собственного образа Linux для одноплатного компьютера СА-02м на базе **Allwinner A40i** (Starterkit SK-A40i-NANO-2E).
+
+---
+
+### Аппаратная платформа
+
+| Параметр | Значение |
+|----------|----------|
+| Процессор | Allwinner A40i (sun8i-r40), ARM Cortex-A7 × 4, до 1.2 ГГц |
+| Плата | Starterkit SK-A40i-NANO-2E |
+| Хранилище | eMMC (`/dev/mmcblk2`) |
+| ОЗУ | 1 ГБ DDR3 |
+| Ethernet | 2× (EMAC eth0 + GMAC eth1) |
+| RS-485 / COM | 5 портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) |
+| RTC | PCF8563 (I2C3, адрес `0x51`) |
+| GPIO расширитель | PCA9536 (I2C, шина 2, адрес `0x41`) |
+| DTS model | `"Cyntron A40i-2Eth"`, compatible `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` |
+
+---
+
+### Виртуальная машина для сборки
+
+Для сборки образа предоставляется готовая виртуальная машина Linux с установленным Buildroot и всеми зависимостями.
+
+**Скачать VM и материалы:**  
+📦 **[https://disk.yandex.ru/d/wtRZcuZ-m1xOuA](https://disk.yandex.ru/d/wtRZcuZ-m1xOuA)**
+
+Содержимое архива:
+- Виртуальная машина для VirtualBox / VMware
+- Buildroot `buildroot-2022.08.4-sk-a40i` с патчами для SK-A40i
+- Готовые конфигурационные файлы (`defconfig`)
+- Документация по плате SK-A40i-NANO (PDF)
+- Готовые бинарные образы (для записи без сборки)
+
+**Логин в VM:** `root` / `root`
+
+> **Важно:** Сборка занимает **несколько часов** при первом запуске (компилируется toolchain, ядро, u-boot). Последующие пересборки — значительно быстрее.
+
+---
+
+### Процесс сборки Buildroot
+
+#### 1. Запустите VM и откройте терминал
+
+```bash
+cd /home/user/src/buildroot-2022.08.4-sk-a40i
+```
+
+#### 2. Выберите конфигурацию
+
+Доступны два варианта сборки:
+
+| Конфигурация | Описание |
+|-------------|---------|
+| `sk_min_defconfig` | Минимальная файловая система, только базовые пакеты |
+| `sk_qt5_defconfig` | Расширенная сборка с Qt5, стилями и сервисами |
+
+```bash
+# Очистить предыдущую сборку (при смене конфигурации)
+make clean
+
+# Загрузить нужный defconfig
+make sk_min_defconfig
+```
+
+#### 3. Настройте параметры сборки
+
+```bash
+make menuconfig
+```
+
+В меню:
+- **Target options** → выбрать плату: `Bootloaders → Starterkit A40i board → sk-a40i-nano-2e`
+- **Filesystem images** → `exact size` установить нужный размер образа (по умолчанию 512 МБ)
+
+Дополнительные опции:
+
+```bash
+# Конфигурация ядра Linux
+make linux-menuconfig
+
+# Конфигурация U-Boot
+make uboot-menuconfig
+
+# Конфигурация Busybox
+make busybox-menuconfig
+```
+
+#### 4. Запустите сборку
+
+```bash
+make
+```
+
+#### 5. Результат сборки
+
+После завершения файлы образа находятся в `output/images/`:
+
+| Файл | Описание |
+|------|----------|
+| `sdcard.img` | Готовый образ для записи на eMMC (весь диск) |
+| `zImage` | Ядро Linux |
+| `sun8i-a40i-sk.dtb` / `sun8i-a40i-nano2e-none-sk.dtb` | Device Tree Blob |
+| `u-boot-sunxi-with-spl.bin` | U-Boot с SPL |
+| `boot.scr` | Скрипт загрузки U-Boot |
+| `rootfs.ext4` | Корневая файловая система |
+
+#### Полезные команды Buildroot
+
+```bash
+make                          # полная сборка системы
+make linux-rebuild            # принудительная пересборка ядра
+make uboot-rebuild            # принудительная пересборка U-Boot
+make busybox-rebuild          # принудительная пересборка Busybox
+make host-uboot-tools-rebuild # пересборка mkimage (нужно для boot.scr)
+make <package>-rebuild        # пересборка любого пакета
+```
+
+> **Предупреждение:** `make clean` удаляет всё содержимое `output/`. Перед очисткой сохраните нужные конфигурации.
+
+---
+
+### Прошивка образа на eMMC
+
+#### Способ 1 — запись образа через SD-карту (FEL/загрузчик)
+
+Подходит для первоначального программирования через USB-OTG.
+
+1. Скачайте `sdcard.img` из папки `output/images/`
+2. Запишите на SD-карту с помощью [balenaEtcher](https://www.balena.io/etcher/) или `dd`:
+
+```bash
+# Linux
+sudo dd if=sdcard.img of=/dev/sdX bs=4M status=progress && sync
+
+# Windows (через balenaEtcher или ImageUSB)
+```
+
+3. Вставьте SD-карту в устройство, загрузитесь с неё
+4. Скопируйте образ eMMC:
+
+```bash
+dd if=/mnt/sdcard.img of=/dev/mmcblk2 bs=1M && sync
+```
+
+5. Извлеките SD-карту и перезагрузитесь с eMMC.
+
+#### Способ 2 — обновление только U-Boot (по сети)
+
+Если система уже запущена и нужно обновить только загрузчик:
+
+```bash
+# На ПК — скопировать U-Boot на устройство
+scp output/images/u-boot-sunxi-with-spl.bin root@192.168.1.136:/root/
+
+# На устройстве — записать U-Boot в начало eMMC (seek=1 = 8KB offset)
+ssh root@192.168.1.136 "dd if=/root/u-boot-sunxi-with-spl.bin of=/dev/mmcblk2 bs=8k seek=1 && sync"
+
+# Перезагрузить
+ssh root@192.168.1.136 reboot
+```
+
+#### Способ 3 — обновление ядра и DTB (по сети)
+
+```bash
+# Скопировать ядро и DTB на устройство
+scp output/images/zImage root@192.168.1.136:/boot/
+scp output/images/sun8i-a40i-nano2e-none-sk.dtb root@192.168.1.136:/boot/dtb/
+
+ssh root@192.168.1.136 reboot
+```
+
+---
+
+### Первоначальная настройка системы
+
+После первой загрузки выполните следующие шаги (по SSH или через последовательный порт).
+
+**Доступ по умолчанию:** `root` / `1234`
+
+#### Задать hostname
+
+```bash
+hostnamectl set-hostname SA-02
+```
+
+#### Обновить систему (при наличии интернета)
+
+```bash
+apt-get update && apt-get -y upgrade
+```
+
+#### Установить полезные утилиты
+
+```bash
+apt-get install -y mc net-tools psmisc i2c-tools
+```
+
+#### Настроить статический IP (eth0)
+
+```bash
+cat > /etc/network/interfaces.d/eth0.conf << 'EOF'
+auto eth0
+allow-hotplug eth0
+iface eth0 inet static
+    address 192.168.1.136
+    netmask 255.255.255.0
+    gateway 192.168.1.1
+    dns-nameservers 77.88.8.8 77.88.8.1
+EOF
+
+ifdown eth0 && ifup eth0
+```
+
+#### Настройка MAC-адреса (если нужен фиксированный)
+
+```bash
+# Через nmcli
+nmcli connection modify "Wired connection 1" ethernet.cloned-mac-address 02:53:8B:00:D4:30
+
+# Или в /etc/network/interfaces.d/eth0.conf добавить:
+# hwaddress ether 02:53:8B:00:D4:30
+```
+
+#### Редактирование Device Tree (DTS → DTB)
+
+```bash
+# Декомпиляция DTB в DTS для редактирования
+dtc -I dtb -O dts /boot/dtb/sun8i-a40i-nano2e-none-sk.dtb \
+    -o /boot/dtb/sun8i-a40i-nano2e-none-sk.dts
+
+# После редактирования — компиляция обратно
+dtc -I dts -O dtb /boot/dtb/sun8i-a40i-nano2e-none-sk.dts \
+    -o /boot/dtb/sun8i-a40i-nano2e-none-sk.dtb
+```
+
+---
+
+### Отключение UART-консоли
+
+По умолчанию ttyS0 занят консолью загрузчика и ядра. Для освобождения порта под RS-485:
+
+#### Отключение getty на ttyS0
+
+```bash
+rm /etc/systemd/system/getty.target.wants/serial-getty@ttyS0.service
+systemctl daemon-reload
+```
+
+#### Отключение консоли в U-Boot (через Buildroot)
+
+```bash
+make uboot-menuconfig
+```
+
+Отключить опции:
+
+```
+SPL / TPL --->
+  [ ] Support serial          ← снять
+
+Device Drivers --->
+  [*] Serial --->
+    [ ] Require a serial port for console
+    [ ] Provide a serial driver
+    [ ] Provide a serial driver in SPL
+```
+
+```bash
+make uboot-rebuild
+make
+```
+
+#### Отключение консоли в ядре (через DTS)
+
+В файле `output/build/linux-custom/arch/arm/boot/dts/sun8i-a40i-nano2e-none-sk.dts`:
+
+```dts
+chosen {
+    /* убрать: stdout-path = "serial0:115200n8"; */
+};
+```
+
+```bash
+make linux-rebuild
+make
+```
+
+#### Отключение консоли в скрипте загрузки U-Boot
+
+В файле `board/starterkit/sk-a40i-sodimm/boot.cmd` удалить из строки параметры UART:
+
+```bash
+# Было:
+setenv bootargs console=ttyS0,115200 earlyprintk root=/dev/mmcblk2p2 rootwait
+
+# Стало:
+setenv bootargs root=/dev/mmcblk2p2 rootwait
+```
+
+```bash
+make host-uboot-tools-rebuild
+make
+```
+
+---
+
+### RS-485 и COM симлинки
+
+Для удобства работы с портами создаются постоянные симлинки через udev (автоматически при установке `install.sh`), либо вручную:
+
+| Симлинк | Устройство | Интерфейс |
+|---------|-----------|-----------|
+| `/dev/RS-485-0` → `/dev/COM1` | `/dev/ttyS0` | RS-485 порт 1 |
+| `/dev/RS-485-1` → `/dev/COM2` | `/dev/ttyS3` | RS-485 порт 2 |
+| `/dev/RS-485-2` → `/dev/COM3` | `/dev/ttyS4` | RS-485 порт 3 |
+| `/dev/RS-485-3` → `/dev/COM4` | `/dev/ttyS5` | RS-485 порт 4 |
+| `/dev/RS-485-4` → `/dev/COM5` | `/dev/ttyS7` | RS-485 порт 5 |
+
+```bash
+ln -sf /dev/ttyS0 /dev/COM1  && ln -sf /dev/ttyS0 /dev/RS-485-0
+ln -sf /dev/ttyS3 /dev/COM2  && ln -sf /dev/ttyS3 /dev/RS-485-1
+ln -sf /dev/ttyS4 /dev/COM3  && ln -sf /dev/ttyS4 /dev/RS-485-2
+ln -sf /dev/ttyS5 /dev/COM4  && ln -sf /dev/ttyS5 /dev/RS-485-3
+ln -sf /dev/ttyS7 /dev/COM5  && ln -sf /dev/ttyS7 /dev/RS-485-4
+```
+
+Проверить обнаруженные UART:
+
+```bash
+# Через dmesg (сразу после загрузки)
+dmesg | grep tty
+
+# Через /proc (статистика TX/RX/ошибки)
+cat /proc/tty/driver/serial
+
+# Через setserial
+setserial -g /dev/ttyS[0-9]
+```
+
+---
+
+### GPIO и периферия
+
+Управление дискретными выходами (DO), пищалкой (Beeper) и аварийным LED производится через I2C-расширитель **PCA9536** (I2C шина 2, адрес `0x41`).
+
+#### Конфигурация направлений (все пины — выходы)
+
+```bash
+i2cset -y 2 0x41 0x03 0x00
+```
+
+#### Управление выходами
+
+```bash
+i2cset -y 2 0x41 0x01 0x0E   # Включить выход 1 (DO — белый индикатор)
+i2cset -y 2 0x41 0x01 0x0D   # Включить выход 2 (Beeper)
+i2cset -y 2 0x41 0x01 0x0B   # Включить выход 3 (Alarm LED)
+i2cset -y 2 0x41 0x01 0x07   # Включить выход 4 (синяя система OK)
+i2cset -y 2 0x41 0x01 0x00   # Выключить всё
+i2cset -y 2 0x41 0x01 0xff   # Включить всё
+```
+
+#### Диагностика I2C шины
+
+```bash
+# Список I2C шин
+i2cdetect -l
+
+# Сканирование шины 2 (найти PCA9536 по адресу 0x41)
+i2cdetect -y 2
+
+# Сканирование шины 3 (PCF8563 RTC по адресу 0x51)
+i2cdetect -y 3
+```
+
+#### Включение i2c-tools в образе (через Buildroot)
+
+```bash
+make menuconfig
+# Target packages → Hardware handling → [*] i2c-tools
+make
+```
+
+---
+
+### RTC (часы реального времени)
+
+Внешний RTC **PCF8563** подключён к I2C3 (адрес `0x51`).
+
+#### Добавление в DTS
+
+В файле `output/build/linux-custom/arch/arm/boot/dts/sun8i-a40i-nano2e-none-sk.dts`:
+
+```dts
+&i2c3 {
+    status = "okay";
+    pcf8563: rtc@51 {
+        compatible = "nxp,pcf8563";
+        reg = <0x51>;
+    };
+};
+```
+
+#### Включение драйвера в ядре (через Buildroot)
+
+```bash
+make linux-menuconfig
+# Device Drivers → Real Time Clock → <*> Philips PCF8563/Epson RTC8564
+```
+
+#### Настройка системы на использование PCF8563
+
+По умолчанию система использует встроенный RTC (`rtc0`). PCF8563 при инициализации регистрируется как `rtc1`. Чтобы указать системе использовать его:
+
+```bash
+make linux-menuconfig
+# Device Drivers → Real Time Clock →
+#   [*] Set system time from RTC on startup and resume
+#   (rtc1) RTC used to set the system time
+```
+
+Проверка после загрузки:
+
+```bash
+dmesg | grep rtc
+ls /dev/rtc*
+hwclock -r   # прочитать время из PCF8563
+```
 
 ---
 
