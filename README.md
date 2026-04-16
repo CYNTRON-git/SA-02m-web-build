@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-13.0-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.1-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -78,7 +78,7 @@
 
 ### Безопасность
 - HTTP Basic Auth + сессионный cookie
-- Страница входа с анимацией огня (Doom-style fire)
+- Чистая минималистичная страница входа
 - sudoers с минимально необходимыми правами для www-data
 
 ### Сетевой watchdog
@@ -90,7 +90,7 @@
 
 ## Скриншоты
 
-> _Тёмная тема с циановыми акцентами, вдохновлённая [mongoose.ws](https://mongoose.ws)._
+> _Тёмная тема с циановыми акцентами и скруглёнными элементами в стиле Apple UI._
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -139,14 +139,14 @@
 ### Шаг 1 — Скачайте файлы на ПК
 
 Скачайте ZIP-архив репозитория с GitHub:  
-**[Code → Download ZIP](https://github.com/CYNTRON-git/web/archive/refs/heads/main.zip)**
+**[Code → Download ZIP](https://github.com/CYNTRON-git/SA-02m-web-build/archive/refs/heads/main.zip)**
 
 Или клонируйте через git:
 ```bash
-git clone https://github.com/CYNTRON-git/web.git
+git clone https://github.com/CYNTRON-git/SA-02m-web-build.git
 ```
 
-Распакуйте архив. Должна получиться папка `web` (или `web-main`) с файлами `install.sh`, `scripts/`, `etc/`, `www/`.
+Распакуйте архив. Должна получиться папка `SA-02m-web-build` (или `SA-02m-web-build-main`) с файлами `install.sh`, `scripts/`, `etc/`, `www/`.
 
 ---
 
@@ -177,13 +177,13 @@ git clone https://github.com/CYNTRON-git/web.git
 3. Нажмите **Login**
 4. В левой панели (ПК) откройте папку с распакованным репозиторием
 5. В правой панели (устройство) перейдите в `/tmp`
-6. Скопируйте папку `web` (или `web-main`) в `/tmp` на устройстве
+6. Скопируйте папку `SA-02m-web-build` (или `SA-02m-web-build-main`) в `/tmp` на устройстве
 
-После копирования на устройстве должна существовать папка `/tmp/web/` с файлами `install.sh`, `scripts/`, `etc/`, `www/`.
+После копирования на устройстве должна существовать папка `/tmp/SA-02m-web-build/` с файлами `install.sh`, `scripts/`, `etc/`, `www/`.
 
 > **Альтернатива WinSCP** — через PowerShell:
 > ```powershell
-> scp -r .\web root@192.168.1.136:/tmp/web
+> scp -r .\SA-02m-web-build root@192.168.1.136:/tmp/
 > ```
 
 ---
@@ -194,7 +194,7 @@ git clone https://github.com/CYNTRON-git/web.git
 
 ```bash
 # 1. Перейти в папку с установщиком
-cd /tmp/web
+cd /tmp/SA-02m-web-build
 
 # 2. Сделать скрипты исполняемыми
 chmod +x install.sh scripts/*.sh etc/*.sh
@@ -248,8 +248,8 @@ apt-get install -y nginx fcgiwrap openssl net-tools psmisc
 ```bash
 # В SSH-сессии на устройстве:
 apt-get install -y git
-git clone https://github.com/CYNTRON-git/web.git /tmp/web
-cd /tmp/web
+git clone https://github.com/CYNTRON-git/SA-02m-web-build.git /tmp/SA-02m-web-build
+cd /tmp/SA-02m-web-build
 chmod +x install.sh scripts/*.sh etc/*.sh
 ./install.sh --ip 192.168.1.136 --pass cyntron
 ```
@@ -456,14 +456,12 @@ channel=DO&value=1
 
 ### Страница входа
 
-Полноэкранная анимация огня (алгоритм **Doom 1993 fire**) на `<canvas>`.
+Минималистичная страница авторизации в стиле Apple UI.
 
-- Тумблер в правом верхнем углу — включить/выключить анимацию
-- Состояние сохраняется в `localStorage` (ключ `sa02m_fire`)
-- По умолчанию: **включено**
-- Эффект на карточке входа: `backdrop-filter: blur(14px)` — стеклянный эффект
-
-Параметры алгоритма: SCALE=3 (оптимизация для ARM), DECAY=1, палитра 256 цветов.
+- Карточка входа с эффектом матового стекла (`backdrop-filter: blur`)
+- Скруглённые углы (`border-radius: 22px`) и многослойные тени
+- Валидация полей прямо в браузере
+- При успешном входе — редирект на Dashboard (`/`)
 
 ---
 
@@ -1135,6 +1133,7 @@ tail -f /var/log/fix-eth.log
 
 ```bash
 # Обновить только веб-файлы без переконфигурации системы
+cd /tmp/SA-02m-web-build
 git pull
 sudo cp -r www/network_config/* /var/www/network_config/
 sudo chmod +x /var/www/network_config/cgi-bin/*.cgi
