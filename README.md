@@ -488,7 +488,7 @@ channel=DO&value=1
 | Температура | −40 … +85 °C (индустриальный диапазон) | ← то же |
 | DTS compatible | `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` | ← то же |
 
-> Модуль SK-A40i-NANO-2E совместим и взаимозаменяем с SK-iMX6ULL-NANO-2E, ES-T113-NANO, SK-NUC906-NANO.  
+
 > Документация, схема и инструкция пользователя: [starterkit.ru](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)
 
 ---
