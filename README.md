@@ -7,7 +7,13 @@
   <img src="https://img.shields.io/badge/version-13.0-cyan?style=flat-square"/>
 </p>
 
-Веб-интерфейс для **сервера автоматизации СА-02м** на базе одноплатных компьютеров (Orange Pi, Raspberry Pi и аналоги) под управлением Armbian / Debian Linux.
+Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
+
+| Устройство | Описание | Ссылка |
+|-----------|----------|--------|
+| **СА-02м** | 5×RS-485, DO, uSD, USB, RTC, 1×Eth | [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/) |
+| **СА-02м-2** | 4×RS-485, uSD, USB, RTC, 2×Eth | [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/) |
+| **A40i-2eth** | Процессорный модуль (SoM), производство Россия | [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) |
 
 ---
 
@@ -469,12 +475,12 @@ channel=DO&value=1
 
 ### Аппаратная платформа
 
-В основе СА-02м лежит процессорный модуль **[SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)** производства [Starterkit](http://starterkit.ru).
+В основе СА-02м лежит процессорный модуль **[A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/)** (ЦИНТРОН) на базе SoM **[SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)** (Starterkit). Производство — Россия.
 
 | Параметр | СА-02м (1eth) | СА-02м-2 (2eth) |
 |----------|--------------|----------------|
-| Процессор | [Allwinner A40i](http://starterkit.ru/html/index.php?name=shop&op=view&id=178) — 4× ARM Cortex-A7, 1200 МГц | ← то же |
-| Плата | [SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178), 30×51×4 мм | ← то же |
+| Процессор | [Allwinner A40i](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) — 4× ARM Cortex-A7, 1200 МГц | ← то же |
+| Плата | [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) / [SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178), 30×51×4 мм | ← то же |
 | ОЗУ | 512 МБ DDR3-1200 | ← то же |
 | Хранилище | eMMC 8 ГБ (`/dev/mmcblk2`) | ← то же |
 | Ethernet | 1× 100/10M (EMAC, eth0) | **2×** 100/10M (EMAC eth0 + GMAC eth1) |
@@ -489,7 +495,7 @@ channel=DO&value=1
 | DTS compatible | `"sk,a40i-nano-2e"`, `"allwinner,sun8i-r40"` | ← то же |
 
 
-> Документация, схема и инструкция пользователя: [starterkit.ru](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)
+> Купить модуль A40i-2eth: [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) · Документация и схема: [starterkit.ru](http://starterkit.ru/html/index.php?name=shop&op=view&id=178)
 
 ---
 
