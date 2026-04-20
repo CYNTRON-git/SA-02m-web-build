@@ -28,6 +28,7 @@ function initNav() {
       if (pane) pane.classList.add('active');
       if (tab === 'system') loadLog();
       if (tab === 'network' || tab === 'time') loadConfig();
+      if (tab === 'flasher' && window.flasherInit) window.flasherInit();
     });
   });
 }
