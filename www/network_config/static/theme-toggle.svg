@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="70" height="30" viewBox="0 0 70 30" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="thumb_shadow" x="0" y="0" width="30" height="30" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feMorphology radius="1" operator="dilate" in="SourceAlpha" result="effect1_dropShadow"/>
+      <feOffset dy="1"/>
+      <feGaussianBlur stdDeviation="2"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.25 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow" result="shape"/>
+    </filter>
+  </defs>
+
+  <style type="text/css"><![CDATA[
+    #switcher { cursor: pointer; }
+    #switcher:hover #hover_overlay { display: inline; }
+    #switcher:active #press_overlay { display: inline; }
+
+    #switcher #thumb { transition: transform 0.2s ease-in-out; }
+    #switcher #fon { transition: fill 0.2s ease-in-out; }
+    #switcher #thumb circle { transition: fill 0.2s ease-in-out; }
+    #hover_overlay .ov_thumb { transition: transform 0.2s ease-in-out; }
+
+    /* Трек 60×14 с x=5: центр ползунка слева 17, справа 53 (диаметр 24) */
+    #switcher.Stop #thumb { transform: translate(5px, 3px); }
+    #switcher.Start #thumb { transform: translate(41px, 3px); }
+
+    #switcher.Stop #hover_overlay .ov_thumb { transform: translate(5px, 3px); }
+    #switcher.Start #hover_overlay .ov_thumb { transform: translate(41px, 3px); }
+
+    #switcher.Dark #fon { fill: #3a3a3c; }
+    #switcher.Light #fon { fill: #c7ccd4; }
+
+    /* Только заливка круга: тёмная тема приложения — светлый кружок */
+    #switcher.Dark #thumb circle { fill: #f2f2f7; stroke: none; }
+    /* Светлая тема приложения — тёмный кружок */
+    #switcher.Light #thumb circle { fill: #2c2c2e; stroke: none; }
+
+    #fon { stroke: #545454; stroke-width: 0.25; stroke-opacity: 0.55; }
+  ]]></style>
+
+  <g id="switcher" class="Dark Stop" role="button" aria-label="Переключатель темы">
+    <rect id="fon" x="5" y="8" width="60" height="14" rx="7" fill="#3a3a3c" />
+
+    <g id="thumb" filter="url(#thumb_shadow)">
+      <circle cx="12" cy="12" r="12" fill="#f2f2f7" />
+    </g>
+
+    <g id="hover_overlay" style="display: none; pointer-events: none;">
+      <rect x="5" y="8" width="60" height="14" rx="7" fill="#ffffff" fill-opacity="0.12" stroke="none" />
+      <circle class="ov_thumb" cx="12" cy="12" r="12" fill="#ffffff" fill-opacity="0.12" stroke="none" />
+    </g>
+
+    <g id="press_overlay" style="display: none; pointer-events: none;">
+      <rect x="5" y="8" width="60" height="14" rx="7" fill="#000000" fill-opacity="0.15" stroke="none" />
+    </g>
+  </g>
+</svg>

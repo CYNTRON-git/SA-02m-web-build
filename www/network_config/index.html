@@ -4,8 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/logo.svg">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg">
   <link rel="stylesheet" href="/static/css/main.css">
+  <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
 
@@ -14,16 +15,19 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
-        <rect width="28" height="28" rx="6" fill="#0891b2"/>
-        <path d="M7 14h14M14 7v14" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
-      </svg>
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg" height="28" width="120" alt="ЦИНТРОН">
       <div>
         <div class="topbar-title">СА-02м</div>
-        <div class="topbar-sub">Сервер автоматизации</div>
+        <div class="topbar-sub-row">
+          <span class="topbar-sub">Сервер автоматизации</span>
+          <span class="topbar-ver mono" id="app-version" title="Версия веб-интерфейса"></span>
+        </div>
       </div>
     </div>
     <div class="topbar-sep"></div>
+    <div class="topbar-theme-wrap" title="Светлая / тёмная тема">
+      <object id="theme-obj" data="/static/theme-toggle.svg" type="image/svg+xml" width="70" height="30" aria-label="Тема"></object>
+    </div>
     <div class="topbar-ip mono" id="tb-ip">—</div>
     <div class="topbar-user">
       <svg width="15" height="15" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
@@ -39,7 +43,7 @@
       <div class="nav-section">Мониторинг</div>
       <div class="nav-item active" data-tab="dashboard">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-        Dashboard
+        Общая информация
       </div>
 
       <div class="nav-section">Настройки</div>
@@ -65,30 +69,45 @@
       <!-- ═══════════════════════════════ DASHBOARD ══════════════════════ -->
       <div id="tab-dashboard" class="tab-pane active">
         <div class="page-header">
-          <h2>Dashboard</h2>
+          <h2>Общая информация</h2>
           <p>Состояние системы и интерфейсов в реальном времени</p>
         </div>
 
         <div class="dash-grid">
 
-          <!-- CPU -->
+          <!-- Загрузка CPU -->
           <div class="widget">
-            <div class="widget-title">CPU</div>
+            <div class="widget-title">Загрузка CPU</div>
             <div class="gauge-wrap">
               <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="round"/>
+                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
                 <path id="cpu-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
-                      stroke="#22d3ee" stroke-width="8" fill="none"
-                      stroke-dasharray="0 126" stroke-dashoffset="0"/>
-                <text x="55" y="52" text-anchor="middle" font-size="16" font-weight="700" fill="#e6edf3" id="cpu-val">—</text>
+                      stroke="#22d3ee" stroke-width="8" fill="none" stroke-linecap="butt"
+                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
+                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="cpu-val">—</text>
               </svg>
-              <div class="gauge-label">Нагрузка процессора</div>
+              <div class="gauge-label">Загрузка ядер процессора</div>
             </div>
           </div>
 
-          <!-- RAM -->
+          <!-- Температура CPU -->
           <div class="widget">
-            <div class="widget-title">RAM</div>
+            <div class="widget-title">Температура CPU</div>
+            <div class="gauge-wrap">
+              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
+                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
+                <path id="temp-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
+                      stroke="#248a3d" stroke-width="8" fill="none" stroke-linecap="butt"
+                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
+                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="temp-val">—</text>
+              </svg>
+              <div class="gauge-label gauge-label-temp" id="temp-gauge-hint">Температура в норме</div>
+            </div>
+          </div>
+
+          <!-- ОЗУ -->
+          <div class="widget">
+            <div class="widget-title">ОЗУ</div>
             <div class="widget-val" id="ram-val">—</div>
             <div class="widget-sub" id="ram-sub">из —</div>
             <div class="bar-row">
@@ -102,53 +121,64 @@
             </div>
           </div>
 
-          <!-- Temperature -->
+          <!-- Диск eMMC -->
           <div class="widget">
-            <div class="widget-title">Температура</div>
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="round"/>
-                <path id="temp-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
-                      stroke="#f0883e" stroke-width="8" fill="none"
-                      stroke-dasharray="0 126" stroke-dashoffset="0"/>
-                <text x="55" y="52" text-anchor="middle" font-size="16" font-weight="700" fill="#e6edf3" id="temp-val">—</text>
-              </svg>
-              <div class="gauge-label">Температура CPU, °C</div>
-            </div>
-          </div>
-
-          <!-- Disk -->
-          <div class="widget">
-            <div class="widget-title">Диск (/)</div>
+            <div class="widget-title">Диск eMMC</div>
             <div class="widget-val" id="disk-val">—</div>
             <div class="widget-sub" id="disk-sub">из —</div>
             <div class="bar-row">
               <div class="bar-track"><div class="bar-fill" id="disk-bar" style="width:0%;background:var(--green)"></div></div>
               <div class="bar-meta"><span id="disk-pct">0%</span><span id="disk-free"></span></div>
             </div>
-            <div class="widget-sub" id="disk-io" style="margin-top:8px;font-size:.72rem"></div>
+            <div class="widget-sub" id="disk-io" style="margin-top:8px;font-size:13px"></div>
+          </div>
+
+          <!-- USB (точка монтирования /media/usb, см. драйвер mplc) -->
+          <div class="widget">
+            <div class="widget-title">USB-накопитель</div>
+            <div class="widget-val" id="usb-val">—</div>
+            <div id="usb-detail">
+              <div class="widget-sub" id="usb-sub">из —</div>
+              <div class="bar-row">
+                <div class="bar-track"><div class="bar-fill" id="usb-bar" style="width:0%;background:var(--green)"></div></div>
+                <div class="bar-meta"><span id="usb-pct">0%</span><span id="usb-free"></span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- microSD (/media/sdcard) -->
+          <div class="widget">
+            <div class="widget-title widget-title-preserve">microSD</div>
+            <div class="widget-val" id="sd-val">—</div>
+            <div id="sd-detail">
+              <div class="widget-sub" id="sd-sub">из —</div>
+              <div class="bar-row">
+                <div class="bar-track"><div class="bar-fill" id="sd-bar" style="width:0%;background:var(--green)"></div></div>
+                <div class="bar-meta"><span id="sd-pct">0%</span><span id="sd-free"></span></div>
+              </div>
+            </div>
           </div>
 
           <!-- Uptime -->
           <div class="widget">
             <div class="widget-title">Uptime</div>
-            <div class="widget-val" id="uptime-val">—</div>
+            <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
           </div>
 
           <!-- Network eth0 -->
           <div class="widget">
             <div class="widget-title">Ethernet 0 (eth0)</div>
             <div class="svc-list">
-              <div class="svc-row"><span class="name">RX</span><span class="mono text-sm" id="net-rx">—</span></div>
-              <div class="svc-row"><span class="name">TX</span><span class="mono text-sm" id="net-tx">—</span></div>
+              <div class="svc-row svc-row-eth-traffic"><span class="name">RX</span><span class="mono eth-traffic-val" id="net-rx">—</span></div>
+              <div class="svc-row svc-row-eth-traffic"><span class="name">TX</span><span class="mono eth-traffic-val" id="net-tx">—</span></div>
             </div>
           </div>
 
           <!-- Network eth1 -->
           <div class="widget">
             <div class="widget-title">Ethernet 1 (eth1)</div>
-            <div style="margin-bottom:8px"><span id="eth1-state" class="eth-state absent">● не найден</span></div>
-            <div class="widget-sub mono" id="eth1-traf"></div>
+            <div style="margin-bottom:8px"><span id="eth1-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
+            <div class="mono eth-traffic-line" id="eth1-traf"></div>
           </div>
 
           <!-- Load averages -->
@@ -166,7 +196,7 @@
           <!-- System info -->
           <div class="widget">
             <div class="widget-title">Система</div>
-            <div style="font-size:.82rem;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
+            <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
             <div class="widget-sub" id="cpu-model"></div>
             <div class="widget-sub" id="kernel-info" style="margin-top:4px"></div>
           </div>
@@ -179,18 +209,18 @@
               <div class="svc-row"><span class="name">fcgiwrap</span><span class="badge badge-unk" id="svc-fcgi">…</span></div>
               <div class="svc-row" style="margin-top:4px"><span class="name">mplc</span><span class="badge badge-unk" id="svc-mplc">…</span></div>
             </div>
-            <div class="widget-sub" id="mplc-uptime" style="margin-top:6px;font-size:.7rem"></div>
+            <div class="widget-sub" id="mplc-uptime" style="margin-top:6px;font-size:13px"></div>
           </div>
 
           <!-- HW outputs — full width -->
           <div class="widget dash-full">
-            <div class="widget-title">Дискретный выход и индикация</div>
+            <div class="widget-title">Дискретный выход, USB-питание и индикация</div>
             <div class="hw-hint" id="hw-hint">Загрузка…</div>
             <div class="hw-grid">
               <div class="hw-item">
                 <div class="hw-item-title">DO (дискретный выход)</div>
                 <div class="hw-state na" id="hw-do-st">н/д</div>
-                <div class="hw-btns">
+                <div class="hw-btns" data-hw-ch="do">
                   <button class="btn btn-sm btn-danger"  onclick="setHw('do',0)">Выкл</button>
                   <button class="btn btn-sm btn-success" onclick="setHw('do',1)">Вкл</button>
                 </div>
@@ -198,7 +228,7 @@
               <div class="hw-item">
                 <div class="hw-item-title">Пищалка</div>
                 <div class="hw-state na" id="hw-beep-st">н/д</div>
-                <div class="hw-btns">
+                <div class="hw-btns" data-hw-ch="beeper">
                   <button class="btn btn-sm btn-danger"  onclick="setHw('beeper',0)">Тихо</button>
                   <button class="btn btn-sm btn-success" onclick="setHw('beeper',1)">Звук</button>
                 </div>
@@ -206,9 +236,17 @@
               <div class="hw-item">
                 <div class="hw-item-title">Аварийный LED (красный)</div>
                 <div class="hw-state na" id="hw-led-st">н/д</div>
-                <div class="hw-btns">
+                <div class="hw-btns" data-hw-ch="alarm_led">
                   <button class="btn btn-sm btn-danger"  onclick="setHw('alarm_led',0)">Выкл</button>
                   <button class="btn btn-sm btn-success" onclick="setHw('alarm_led',1)">Вкл</button>
+                </div>
+              </div>
+              <div class="hw-item">
+                <div class="hw-item-title">Питание USB (USB_POWER)</div>
+                <div class="hw-state na" id="hw-usb-st">н/д</div>
+                <div class="hw-btns" data-hw-ch="usb_power">
+                  <button class="btn btn-sm btn-danger"  onclick="setHw('usb_power',0)">Выкл</button>
+                  <button class="btn btn-sm btn-success" onclick="setHw('usb_power',1)">Вкл</button>
                 </div>
               </div>
             </div>
@@ -235,21 +273,29 @@
           <h3>Ethernet 0 (eth0)</h3>
           <form id="net-form">
             <input type="hidden" name="net_iface" value="eth0">
-            <div class="field">
-              <label>IP-адрес</label>
-              <input id="f-ip" name="ip" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.136">
+            <div class="field toggle-field-row">
+              <span class="toggle-field-label">Включить статический адрес на eth0</span>
+              <label class="toggle-inline" aria-label="Статический eth0">
+                <input type="checkbox" class="toggle toggle-wide" id="eth0-en" name="eth0_enable" value="1">
+              </label>
             </div>
-            <div class="field">
-              <label>Маска подсети</label>
-              <input id="f-mask" name="netmask" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
-            </div>
-            <div class="field">
-              <label>Шлюз</label>
-              <input id="f-gw" name="gateway" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.1">
-            </div>
-            <div class="field">
-              <label>DNS-серверы</label>
-              <input id="f-dns" name="dns" type="text" placeholder="77.88.8.8 77.88.8.1">
+            <div id="eth0-fields" style="opacity:.4;transition:opacity .3s">
+              <div class="field">
+                <label>IP-адрес</label>
+                <input id="f-ip" name="ip" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.136">
+              </div>
+              <div class="field">
+                <label>Маска подсети</label>
+                <input id="f-mask" name="netmask" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
+              </div>
+              <div class="field">
+                <label>Шлюз</label>
+                <input id="f-gw" name="gateway" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.1">
+              </div>
+              <div class="field">
+                <label>DNS-серверы</label>
+                <input id="f-dns" name="dns" type="text" placeholder="77.88.8.8 77.88.8.1">
+              </div>
             </div>
             <div class="btn-group">
               <button type="submit" class="btn btn-primary">Применить eth0</button>
@@ -261,10 +307,10 @@
           <h3>Ethernet 1 (eth1)</h3>
           <form id="net-form-eth1">
             <input type="hidden" name="net_iface" value="eth1">
-            <div class="field" style="margin-bottom:20px">
-              <label class="toggle-label">
-                <input type="checkbox" class="toggle" id="eth1-en" name="eth1_enable" value="1">
-                <span>Включить статический адрес на eth1</span>
+            <div class="field toggle-field-row">
+              <span class="toggle-field-label">Включить статический адрес на eth1</span>
+              <label class="toggle-inline" aria-label="Включить eth1">
+                <input type="checkbox" class="toggle toggle-wide" id="eth1-en" name="eth1_enable" value="1">
               </label>
             </div>
             <div id="eth1-fields" style="opacity:.4;transition:opacity .3s">
@@ -299,24 +345,38 @@
           <p>Таймзона и синхронизация системных часов</p>
         </div>
 
+        <div class="form-section" style="margin-bottom:22px">
+          <h3 style="margin-bottom:12px;font-size:.95rem">Текущее время на устройстве</h3>
+          <div class="time-readout">
+            <div class="time-readout-row">
+              <span class="time-readout-lbl">Текущее время</span>
+              <span class="mono time-readout-val" id="time-sys-disp">—</span>
+            </div>
+            <div class="time-readout-row">
+              <span class="time-readout-lbl">Время с RTC</span>
+              <span class="mono time-readout-val" id="time-rtc-disp">—</span>
+            </div>
+          </div>
+        </div>
+
         <div class="form-section">
           <form id="time-form">
             <input type="hidden" name="skip_network" value="1">
             <div class="field">
               <label>Часовой пояс</label>
               <select id="f-tz" name="timezone">
-                <option value="Europe/Moscow">Europe/Moscow (UTC+3)</option>
-                <option value="Europe/Samara">Europe/Samara (UTC+4)</option>
-                <option value="Asia/Yekaterinburg">Asia/Yekaterinburg (UTC+5)</option>
-                <option value="Asia/Omsk">Asia/Omsk (UTC+6)</option>
-                <option value="Asia/Krasnoyarsk">Asia/Krasnoyarsk (UTC+7)</option>
-                <option value="Asia/Irkutsk">Asia/Irkutsk (UTC+8)</option>
-                <option value="Asia/Yakutsk">Asia/Yakutsk (UTC+9)</option>
-                <option value="Asia/Vladivostok">Asia/Vladivostok (UTC+10)</option>
-                <option value="Asia/Magadan">Asia/Magadan (UTC+11)</option>
-                <option value="Asia/Kamchatka">Asia/Kamchatka (UTC+12)</option>
-                <option value="Europe/Kaliningrad">Europe/Kaliningrad (UTC+2)</option>
-                <option value="UTC">UTC</option>
+                <option value="Europe/Moscow">Москва, Санкт-Петербург (UTC+3)</option>
+                <option value="Europe/Samara">Самара, Ижевск (UTC+4)</option>
+                <option value="Asia/Yekaterinburg">Екатеринбург, Челябинск (UTC+5)</option>
+                <option value="Asia/Omsk">Омск (UTC+6)</option>
+                <option value="Asia/Krasnoyarsk">Красноярск, Новосибирск (UTC+7)</option>
+                <option value="Asia/Irkutsk">Иркутск (UTC+8)</option>
+                <option value="Asia/Yakutsk">Якутск (UTC+9)</option>
+                <option value="Asia/Vladivostok">Владивосток, Хабаровск (UTC+10)</option>
+                <option value="Asia/Magadan">Магадан, Сахалин (UTC+11)</option>
+                <option value="Asia/Kamchatka">Камчатка, Чукотка (UTC+12)</option>
+                <option value="Europe/Kaliningrad">Калининград (UTC+2)</option>
+                <option value="UTC">Всемирное время (UTC±0)</option>
               </select>
             </div>
             <div class="field">
@@ -325,7 +385,9 @@
               <div class="field-hint">Оставьте пустым, чтобы не менять время</div>
             </div>
             <div class="btn-group">
-              <button type="submit" class="btn btn-primary">Применить</button>
+              <button type="button" class="btn" onclick="syncTimeFromPC(false)">Взять дату/время с этого ПК</button>
+              <button type="button" class="btn btn-primary" onclick="syncTimeFromPC(true)">Синхронизировать с этим ПК</button>
+              <button type="submit" class="btn">Применить вручную</button>
             </div>
           </form>
         </div>
@@ -340,34 +402,67 @@
 
         <div class="ctrl-grid">
           <div class="ctrl-card">
-            <h3>Службы</h3>
-            <p>Перезапустить nginx, fcgiwrap и сеть.</p>
-            <button class="btn btn-warn" onclick="doRestart()">
+            <div class="ctrl-card-main">
+              <h3>Службы</h3>
+              <p>Перезапустить nginx, fcgiwrap и сеть.<br><br></p>
+            </div>
+            <button type="button" class="btn btn-warn" onclick="doRestart()">
               <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               Перезапустить
             </button>
           </div>
           <div class="ctrl-card">
-            <h3>Перезагрузка</h3>
-            <p>Полная перезагрузка контроллера. Подключение прервётся на ~30 секунд.</p>
-            <button class="btn btn-danger" onclick="doReboot()">
-              <svg viewBox="0 0 24 24"><path d="M18.36 6.64A9 9 0 1 1 12 3v0"/><polyline points="12 3 12 8 16 8"/></svg>
+            <div class="ctrl-card-main">
+              <h3>Перезагрузка</h3>
+              <p>Полная перезагрузка контроллера. Подключение прервётся на ~30 секунд.</p>
+            </div>
+            <button type="button" class="btn btn-danger" onclick="doReboot()">
+              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
               Перезагрузить
             </button>
           </div>
           <div class="ctrl-card">
-            <h3>GPIO конфигурация</h3>
-            <p>Файл конфигурации GPIO:<br><span class="mono text-sm">/etc/sa02m_hw.conf</span></p>
-            <div class="field-hint">SA02M_GPIO_DO, SA02M_GPIO_BEEPER, SA02M_GPIO_ALARM_LED</div>
+            <div class="ctrl-card-main">
+              <h3>GPIO конфигурация</h3>
+              <p>Файл конфигурации GPIO:<br><span class="mono text-sm">/etc/sa02m_hw.conf</span></p>
+              <div class="field-hint">SA02M_GPIO_DO, SA02M_GPIO_BEEPER, SA02M_GPIO_ALARM_LED, SA02M_GPIO_USB_POWER</div>
+            </div>
           </div>
         </div>
 
-        <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал установки</h3>
+        <div class="form-section" style="max-width:560px;margin-bottom:24px">
+          <h3>Доступ к веб-интерфейсу</h3>
+          <p class="field-hint" style="margin-bottom:12px">Смена логина и пароля (файл <span class="mono">/etc/sa02m_web.env</span>).</p>
+          <form id="web-creds-form">
+            <div class="field">
+              <label for="wc-cur">Текущий пароль</label>
+              <input id="wc-cur" name="current_password" type="password" required autocomplete="current-password">
+            </div>
+            <div class="field">
+              <label for="wc-user">Новый логин</label>
+              <input id="wc-user" name="new_username" type="text" pattern="[a-zA-Z0-9_.-]{1,32}" value="admin" required autocomplete="username">
+            </div>
+            <div class="field">
+              <label for="wc-p1">Новый пароль</label>
+              <input id="wc-p1" name="new_password" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
+            </div>
+            <div class="field">
+              <label for="wc-p2">Повтор пароля</label>
+              <input id="wc-p2" name="new_password_confirm" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
+            </div>
+            <div class="btn-group">
+              <button type="submit" class="btn btn-primary">Сохранить</button>
+            </div>
+          </form>
+        </div>
+
+        <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал событий</h3>
         <div class="btn-group" style="margin-bottom:12px">
           <button class="btn btn-sm" onclick="loadLog()">
             <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Обновить
           </button>
+          <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
         </div>
         <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала</div>
       </div><!-- /tab-system -->

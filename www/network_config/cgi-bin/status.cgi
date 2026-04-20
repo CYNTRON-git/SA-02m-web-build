@@ -10,7 +10,7 @@ check_auth() {
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 
 HW_CONF="/etc/sa02m_hw.conf"
-SA02M_GPIO_DO=""; SA02M_GPIO_BEEPER=""; SA02M_GPIO_ALARM_LED=""
+SA02M_GPIO_DO=""; SA02M_GPIO_BEEPER=""; SA02M_GPIO_ALARM_LED=""; SA02M_GPIO_USB_POWER=""
 [ -f "$HW_CONF" ] && . "$HW_CONF" 2>/dev/null
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -75,6 +75,29 @@ cpu_temp() {
 SERIAL_DRIVER_FILES=""
 for _f in /proc/tty/driver/*; do [ -f "$_f" ] && SERIAL_DRIVER_FILES="$SERIAL_DRIVER_FILES $_f"; done
 
+# Проверка «порт занят»: fuser/lsof на serial без ограничения времени на целевом
+# железе дают многосекундные зависания × число портов → весь UI ждёт status.cgi.
+rs485_tty_in_use() {
+    local dev=$1
+    [ -z "$dev" ] && return 1
+    if command -v timeout >/dev/null 2>&1; then
+        if command -v fuser >/dev/null 2>&1; then
+            timeout 0.4 fuser "$dev" >/dev/null 2>&1 && return 0
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            timeout 0.4 lsof "$dev" >/dev/null 2>&1 && return 0
+        fi
+    else
+        if command -v fuser >/dev/null 2>&1; then
+            fuser "$dev" >/dev/null 2>&1 && return 0
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            lsof "$dev" >/dev/null 2>&1 && return 0
+        fi
+    fi
+    return 1
+}
+
 rs485_port_json() {
     local num=$1
     local dev="/dev/RS-485-${num}"
@@ -105,21 +128,34 @@ rs485_port_json() {
     fi
 
     local inuse=0
-    if command -v fuser >/dev/null 2>&1; then
-        fuser "$real" >/dev/null 2>&1 && inuse=1
-    elif command -v lsof >/dev/null 2>&1; then
-        lsof "$real" >/dev/null 2>&1 && inuse=1
-    fi
+    rs485_tty_in_use "$real" && inuse=1
 
     printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s}' \
         "$num" "$ttyname" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe"
 }
 
+# part=core — полный JSON без RS-485 (быстро). part=rs485 — только массив rs485.
+# Без query — прежнее поведение (всё в одном ответе).
+STATUS_PART=full
+case "${QUERY_STRING:-}" in *part=core*) STATUS_PART=core ;; *part=rs485*) STATUS_PART=rs485 ;; esac
+
+if [ "$STATUS_PART" = rs485 ]; then
+    RS485_JSON=""
+    for _i in 0 1 2 3 4; do
+        [ -n "$RS485_JSON" ] && RS485_JSON="${RS485_JSON},"
+        RS485_JSON="${RS485_JSON}$(rs485_port_json $_i)"
+    done
+    printf '{"rs485":[%s]}\n' "$RS485_JSON"
+    exit 0
+fi
+
 RS485_JSON=""
-for _i in 0 1 2 3 4; do
-    [ -n "$RS485_JSON" ] && RS485_JSON="${RS485_JSON},"
-    RS485_JSON="${RS485_JSON}$(rs485_port_json $_i)"
-done
+if [ "$STATUS_PART" = full ]; then
+    for _i in 0 1 2 3 4; do
+        [ -n "$RS485_JSON" ] && RS485_JSON="${RS485_JSON},"
+        RS485_JSON="${RS485_JSON}$(rs485_port_json $_i)"
+    done
+fi
 
 # ── Gather all metrics ────────────────────────────────────────────────────────
 CPU_USAGE=$(cpu_usage)
@@ -135,6 +171,36 @@ DISK_DATA=($(df / 2>/dev/null | awk 'NR==2{print $2,$3,$4}'))
 DISK_TOTAL=${DISK_DATA[0]:-0}; DISK_USED=${DISK_DATA[1]:-0}; DISK_FREE=${DISK_DATA[2]:-0}
 DISK_PCT=0; (( DISK_TOTAL > 0 )) && DISK_PCT=$(( DISK_USED * 100 / DISK_TOTAL ))
 
+# ── USB (/media/usb) и microSD (/media/sdcard) — см. mplc simple_test_protocol.cpp ──
+removable_mounted() {
+    local mp=$1
+    if command -v findmnt >/dev/null 2>&1; then
+        findmnt -n "$mp" >/dev/null 2>&1 && return 0
+    fi
+    mount 2>/dev/null | grep -qF " ${mp} " && return 0
+    return 1
+}
+removable_df_kb() {
+    local mp=$1
+    df "$mp" 2>/dev/null | awk 'NR==2{print $2,$3,$4}'
+}
+
+USB_M=0; USB_TOTAL=0; USB_USED=0; USB_FREE=0; USB_PCT=0
+if removable_mounted /media/usb; then
+    USB_M=1
+    USB_DATA=($(removable_df_kb /media/usb))
+    USB_TOTAL=${USB_DATA[0]:-0}; USB_USED=${USB_DATA[1]:-0}; USB_FREE=${USB_DATA[2]:-0}
+    (( USB_TOTAL > 0 )) && USB_PCT=$(( USB_USED * 100 / USB_TOTAL ))
+fi
+
+SD_M=0; SD_TOTAL=0; SD_USED=0; SD_FREE=0; SD_PCT=0
+if removable_mounted /media/sdcard; then
+    SD_M=1
+    SD_DATA=($(removable_df_kb /media/sdcard))
+    SD_TOTAL=${SD_DATA[0]:-0}; SD_USED=${SD_DATA[1]:-0}; SD_FREE=${SD_DATA[2]:-0}
+    (( SD_TOTAL > 0 )) && SD_PCT=$(( SD_USED * 100 / SD_TOTAL ))
+fi
+
 UPTIME_SEC=$(awk '{printf "%d",$1}' /proc/uptime)
 UPTIME_D=$(( UPTIME_SEC/86400 )); UPTIME_H=$(( (UPTIME_SEC%86400)/3600 )); UPTIME_M=$(( (UPTIME_SEC%3600)/60 ))
 
@@ -149,10 +215,32 @@ fi
 HW_DO=$(gpio_state "$SA02M_GPIO_DO")
 HW_BEEP=$(gpio_state "$SA02M_GPIO_BEEPER")
 HW_LED=$(gpio_state "$SA02M_GPIO_ALARM_LED")
+HW_USB=$(gpio_state "$SA02M_GPIO_USB_POWER")
 HW_CFG=0
-[[ "$SA02M_GPIO_DO"       =~ ^[0-9]+$ ]] && HW_CFG=1
-[[ "$SA02M_GPIO_BEEPER"   =~ ^[0-9]+$ ]] && HW_CFG=1
-[[ "$SA02M_GPIO_ALARM_LED" =~ ^[0-9]+$ ]] && HW_CFG=1
+[[ "$SA02M_GPIO_DO"          =~ ^[0-9]+$ ]] && HW_CFG=1
+[[ "$SA02M_GPIO_BEEPER"     =~ ^[0-9]+$ ]] && HW_CFG=1
+[[ "$SA02M_GPIO_ALARM_LED"  =~ ^[0-9]+$ ]] && HW_CFG=1
+[[ "$SA02M_GPIO_USB_POWER"  =~ ^[0-9]+$ ]] && HW_CFG=1
+PIN_DO=0; [[ "$SA02M_GPIO_DO"          =~ ^[0-9]+$ ]] && PIN_DO=1
+PIN_BEEP=0; [[ "$SA02M_GPIO_BEEPER"    =~ ^[0-9]+$ ]] && PIN_BEEP=1
+PIN_LED=0; [[ "$SA02M_GPIO_ALARM_LED" =~ ^[0-9]+$ ]] && PIN_LED=1
+PIN_USB=0; [[ "$SA02M_GPIO_USB_POWER"  =~ ^[0-9]+$ ]] && PIN_USB=1
+
+# ── I2C PCA9536 (шина 2, 0x41) — нет ответа → подсказка «нет связи с расширителем»
+# Только sysfs (мгновенно) или один i2cget под timeout: без timeout не вызываем i2cget —
+# на «мёртвой» шине драйвер может ждать ответ десятки секунд на каждый вызов.
+HW_I2C_EXP_ABS=0
+if [ -d /sys/bus/i2c/devices/2-0041 ]; then
+  HW_I2C_EXP_ABS=0
+elif [ -c /dev/i2c-2 ] && command -v i2cget >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+  _ig=$(command -v i2cget)
+  if timeout 1 "$_ig" -y 2 0x41 0 >/dev/null 2>&1 \
+      || timeout 1 sudo -n "$_ig" -y 2 0x41 0 >/dev/null 2>&1; then
+    HW_I2C_EXP_ABS=0
+  else
+    HW_I2C_EXP_ABS=1
+  fi
+fi
 
 SVC_NGINX=$(svc_is_active nginx)
 SVC_FCGI=$(svc_is_active fcgiwrap)
@@ -223,6 +311,17 @@ if [ -n "$ROOT_DEV" ] && [ -f "/sys/block/${ROOT_DEV}/stat" ]; then
     DISK_IO_WRITE=$(( ${_stat[6]:-0} * 512 ))  # sectors written → bytes
 fi
 
+# ── Системное время и RTC (вкладка «Время») ─────────────────────────────────
+DATETIME_SYS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+DATETIME_SYS_JSON=$(printf '%s' "$DATETIME_SYS" | sed 's/\\/\\\\/g; s/"/\\"/g')
+RTC_DT=""
+if [ -r /sys/class/rtc/rtc0/date ] && [ -r /sys/class/rtc/rtc0/time ]; then
+    RTC_DT="$(tr -d '\n\r' < /sys/class/rtc/rtc0/date) $(tr -d '\n\r' < /sys/class/rtc/rtc0/time)"
+elif command -v hwclock >/dev/null 2>&1; then
+    RTC_DT=$(hwclock -r 2>/dev/null | head -1 | tr -d '\r')
+fi
+RTC_JSON=$(printf '%s' "$RTC_DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
 # ── Output JSON ──────────────────────────────────────────────────────────────
 cat <<JSON
 {
@@ -246,6 +345,18 @@ cat <<JSON
   "disk_pct": ${DISK_PCT},
   "disk_io_read_b": ${DISK_IO_READ},
   "disk_io_write_b": ${DISK_IO_WRITE},
+  "usb_mounted": ${USB_M},
+  "usb_total_kb": ${USB_TOTAL},
+  "usb_used_kb": ${USB_USED},
+  "usb_free_kb": ${USB_FREE},
+  "usb_pct": ${USB_PCT},
+  "sd_mounted": ${SD_M},
+  "sd_total_kb": ${SD_TOTAL},
+  "sd_used_kb": ${SD_USED},
+  "sd_free_kb": ${SD_FREE},
+  "sd_pct": ${SD_PCT},
+  "datetime_sys": "${DATETIME_SYS_JSON}",
+  "rtc_datetime": "${RTC_JSON}",
   "uptime_sec": ${UPTIME_SEC},
   "uptime_str": "${UPTIME_D}д ${UPTIME_H}ч ${UPTIME_M}м",
   "load_1": ${LOAD_1},
@@ -266,9 +377,15 @@ cat <<JSON
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
   "hw_configured": ${HW_CFG},
+  "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
+  "hw_pin_do": ${PIN_DO},
+  "hw_pin_beeper": ${PIN_BEEP},
+  "hw_pin_alarm_led": ${PIN_LED},
+  "hw_pin_usb_power": ${PIN_USB},
   "hw_do": ${HW_DO},
   "hw_beeper": ${HW_BEEP},
   "hw_alarm_led": ${HW_LED},
+  "hw_usb_power": ${HW_USB},
   "rs485": [${RS485_JSON}]
 }
 JSON

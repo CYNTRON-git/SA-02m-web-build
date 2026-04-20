@@ -5,6 +5,9 @@
 
 'use strict';
 
+/** Версия веб-интерфейса (синхронизируйте с install.sh). */
+const APP_VERSION = '1.0.2';
+
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
   const hasCookie = document.cookie.split(';').some(c => c.trim().startsWith('session_token='));
@@ -77,24 +80,55 @@ function setHtml(id, val)  { const e = document.getElementById(id); if (e) e.inn
 function setStyle(id, prop, val) { const e = document.getElementById(id); if (e) e.style[prop] = val; }
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-/* ── Gauge helper (SVG stroke-dasharray arc) ─────────────────────────────── */
-function arcDash(pct, maxArc = 126) {
-  const fill = Math.min(1, Math.max(0, pct / 100)) * maxArc;
-  return fill + ' ' + (maxArc - fill);
+/* ── Gauge helper (SVG stroke-dasharray arc) ───────────────────────────────
+   Длина дуги M10 58 A45 45 0 0 1 100 58 ≈ π·45 ≈ 141.37, не 126 — иначе паттерн
+   dash+gap короче пути и повторяется, справа появляется ложный «хвост». */
+let _gaugeArcPathLen = null;
+function gaugeArcPathLength() {
+  if (_gaugeArcPathLen != null) return _gaugeArcPathLen;
+  const el = document.getElementById('cpu-arc');
+  if (el && typeof el.getTotalLength === 'function') {
+    const L = el.getTotalLength();
+    if (L > 1) {
+      _gaugeArcPathLen = L;
+      return L;
+    }
+  }
+  _gaugeArcPathLen = Math.PI * 45;
+  return _gaugeArcPathLen;
+}
+/** Сброс после смены разметки SVG дуг */
+function invalidateGaugeArcCache() {
+  _gaugeArcPathLen = null;
+}
+
+function arcDash(pct, pathLen) {
+  const L = pathLen > 0 ? pathLen : gaugeArcPathLength();
+  const fill = Math.min(1, Math.max(0, pct / 100)) * L;
+  return fill + ' ' + (L - fill);
+}
+
+/** Дуга температуры: 30 °C = 0&nbsp;%, 100 °C = 100&nbsp;% */
+function tempToGaugePct(celsius) {
+  const t = parseFloat(celsius);
+  if (Number.isNaN(t)) return 0;
+  return Math.min(100, Math.max(0, ((t - 30) / (100 - 30)) * 100));
 }
 
 /* ── Service badge ────────────────────────────────────────────────────────── */
 function svcBadge(id, state) {
   const el = document.getElementById(id);
   if (!el) return;
-  el.textContent = state === 'active' ? 'active' : (state || '?');
-  el.className = 'badge ' + (state === 'active' ? 'badge-ok pulse' : 'badge-err');
+  const ok = state === 'active';
+  el.textContent = ok ? 'Активен' : 'Неактивен';
+  el.className = 'badge ' + (ok ? 'badge-ok pulse' : 'badge-err');
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   STATUS POLLING
+   STATUS POLLING — core и rs485 отдельно: дашборд обновляется сразу, RS-485 по готовности
    ══════════════════════════════════════════════════════════════════════════ */
-let fetchBusy = false;
+let statusCoreBusy = false;
+let statusRs485Busy = false;
 const _prevRs = {};
 
 function cssVar(name) {
@@ -104,14 +138,42 @@ function threshColor(val, warnAt, critAt) {
   return val >= critAt ? cssVar('--red') : val >= warnAt ? cssVar('--yellow') : cssVar('--cyan');
 }
 
+/** USB / microSD: префикс полей в JSON — usb_* или sd_* */
+function applyRemovableDisk(mounted, base, d) {
+  const val = document.getElementById(base + '-val');
+  const detail = document.getElementById(base + '-detail');
+  if (!val || !detail) return;
+  if (!mounted) {
+    val.textContent = 'НЕ УСТАНОВЛЕН';
+    val.classList.add('widget-val-removable-empty');
+    detail.style.display = 'none';
+    return;
+  }
+  val.classList.remove('widget-val-removable-empty');
+  detail.style.display = '';
+  const used = d[base + '_used_kb'];
+  const total = d[base + '_total_kb'];
+  const free = d[base + '_free_kb'];
+  const pct = parseInt(d[base + '_pct'], 10) || 0;
+  setText(base + '-val', fmtKB(used));
+  setText(base + '-sub', 'из ' + fmtKB(total));
+  setText(base + '-pct', pct + '%');
+  setText(base + '-free', 'свободно ' + fmtKB(free));
+  const bar = document.getElementById(base + '-bar');
+  if (bar) {
+    bar.style.width = pct + '%';
+    bar.style.background = threshColor(pct, 70, 90);
+  }
+}
+
 function applyStatus(d) {
-  const ARC = 126;
+  const arcLen = gaugeArcPathLength();
 
   /* CPU */
   setText('cpu-val', d.cpu_usage + '%');
   const cpuArc = document.getElementById('cpu-arc');
   if (cpuArc) {
-    cpuArc.style.strokeDasharray = arcDash(d.cpu_usage, ARC);
+    cpuArc.style.strokeDasharray = arcDash(d.cpu_usage, arcLen);
     cpuArc.style.stroke = threshColor(d.cpu_usage, 60, 80);
   }
 
@@ -139,12 +201,20 @@ function applyStatus(d) {
     }
   }
 
-  /* Temperature */
+  /* Температура: дуга 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
   setText('temp-val', d.temp_c + '°');
   const tempArc = document.getElementById('temp-arc');
+  const tempHint = document.getElementById('temp-gauge-hint');
   if (tempArc) {
-    tempArc.style.strokeDasharray = arcDash(Math.min(d.temp_c, 100), ARC);
-    tempArc.style.stroke = d.temp_c > 80 ? cssVar('--red') : d.temp_c > 60 ? cssVar('--yellow') : cssVar('--orange');
+    tempArc.style.strokeDasharray = arcDash(tempToGaugePct(d.temp_c), arcLen);
+    const tc = parseFloat(d.temp_c) || 0;
+    const tempStroke = tc >= 80 ? cssVar('--red') : tc >= 70 ? cssVar('--yellow') : cssVar('--green');
+    tempArc.style.stroke = tempStroke;
+    if (tempHint) {
+      tempHint.textContent = tc >= 80
+        ? 'Температура выше нормы'
+        : 'Температура в норме';
+    }
   }
 
   /* Disk */
@@ -160,6 +230,16 @@ function applyStatus(d) {
   if (d.disk_io_read_b !== undefined)
     setText('disk-io', 'R ' + fmtBytes(d.disk_io_read_b) + ' / W ' + fmtBytes(d.disk_io_write_b));
 
+  applyRemovableDisk(!!d.usb_mounted, 'usb', d);
+  applyRemovableDisk(!!d.sd_mounted, 'sd', d);
+
+  /* Вкладка «Время»: живое системное время и RTC */
+  if (d.datetime_sys) setText('time-sys-disp', d.datetime_sys);
+  if (document.getElementById('time-rtc-disp') && d.rtc_datetime !== undefined) {
+    const r = (d.rtc_datetime && String(d.rtc_datetime).trim()) ? String(d.rtc_datetime).trim() : '';
+    setText('time-rtc-disp', r || '—');
+  }
+
   /* Uptime */
   setText('uptime-val', d.uptime_str || fmtUptime(d.uptime_sec));
 
@@ -171,7 +251,7 @@ function applyStatus(d) {
   const st = d.eth1_operstate || 'absent';
   const ethEl = document.getElementById('eth1-state');
   if (ethEl) {
-    ethEl.textContent = st === 'up' ? '● UP' : st === 'down' ? '● DOWN' : '● не найден';
+    ethEl.textContent = st === 'up' ? '● В сети' : st === 'down' ? '● Нет линка' : '● Нет адаптера';
     ethEl.className = 'eth-state ' + (st === 'up' ? 'up' : st === 'down' ? 'down' : 'absent');
   }
   setText('eth1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
@@ -201,31 +281,58 @@ function applyStatus(d) {
 
   /* HW GPIO */
   const hint = document.getElementById('hw-hint');
-  if (hint) hint.textContent = d.hw_configured
-    ? 'GPIO настроены (/etc/sa02m_hw.conf)'
-    : 'GPIO не заданы — отредактируйте /etc/sa02m_hw.conf';
+  if (hint) {
+    if (d.hw_i2c_expander_absent === 1) {
+      hint.textContent = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
+    } else if (d.hw_configured) {
+      hint.textContent = 'GPIO настроены (/etc/sa02m_hw.conf)';
+    } else {
+      hint.textContent = 'GPIO не заданы — отредактируйте /etc/sa02m_hw.conf';
+    }
+  }
   setHwRow('hw-do-st',   d.hw_do);
   setHwRow('hw-beep-st', d.hw_beeper);
   setHwRow('hw-led-st',  d.hw_alarm_led);
-  document.querySelectorAll('.hw-btns .btn').forEach(b => {
-    b.disabled = !d.hw_configured;
-  });
+  setHwRow('hw-usb-st',  d.hw_usb_power);
+  const pin = (k, legacy) => (d[k] !== undefined ? !!d[k] : !!legacy);
+  const anyHw = !!d.hw_configured;
+  setHwChannelBtns('do',        pin('hw_pin_do', anyHw));
+  setHwChannelBtns('beeper',    pin('hw_pin_beeper', anyHw));
+  setHwChannelBtns('alarm_led', pin('hw_pin_alarm_led', anyHw));
+  setHwChannelBtns('usb_power', pin('hw_pin_usb_power', anyHw));
 
-  /* RS-485 */
+  /* RS-485 (в ответе part=core приходит [] — не трогаем карточки, ждём part=rs485) */
   if (d.rs485 && d.rs485.length) renderRs485(d.rs485);
 
   /* Topbar IP */
   if (d.ip) setText('tb-ip', d.ip);
 }
 
-function fetchStatus() {
-  if (fetchBusy) return;
-  fetchBusy = true;
-  fetch('/cgi-bin/status.cgi', { cache: 'no-store' })
+function fetchStatusCore() {
+  if (statusCoreBusy) return;
+  statusCoreBusy = true;
+  fetch('/cgi-bin/status.cgi?part=core', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => { if (!d.error) applyStatus(d); })
     .catch(() => {})
-    .finally(() => { fetchBusy = false; });
+    .finally(() => { statusCoreBusy = false; });
+}
+
+function fetchStatusRs485() {
+  if (statusRs485Busy) return;
+  statusRs485Busy = true;
+  fetch('/cgi-bin/status.cgi?part=rs485', { cache: 'no-store', credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.rs485 && d.rs485.length) renderRs485(d.rs485);
+    })
+    .catch(() => {})
+    .finally(() => { statusRs485Busy = false; });
+}
+
+function fetchStatus() {
+  fetchStatusCore();
+  fetchStatusRs485();
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -239,6 +346,12 @@ function setHwRow(id, v) {
   }
   el.textContent = v ? 'ВКЛ' : 'ВЫКЛ';
   el.className = 'hw-state ' + (v ? 'on' : 'off');
+}
+
+function setHwChannelBtns(channel, enabled) {
+  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] .btn').forEach(b => {
+    b.disabled = !enabled;
+  });
 }
 
 function setHw(channel, value) {
@@ -308,11 +421,15 @@ function loadConfig() {
     .then(r => r.json())
     .then(d => {
       configLoaded = true;
+      invalidateGaugeArcCache();
       /* eth0 */
+      const eth0en = document.getElementById('eth0-en');
+      if (eth0en) eth0en.checked = !!(d.eth0 && d.eth0.enabled);
       setVal('f-ip',   d.eth0?.ip || '');
       setVal('f-mask', d.eth0?.netmask || '');
       setVal('f-gw',   d.eth0?.gateway || '');
       setVal('f-dns',  d.eth0?.dns || '');
+      toggleEth0Fields();
       /* eth1 */
       const eth1en = document.getElementById('eth1-en');
       if (eth1en) eth1en.checked = d.eth1?.enabled || false;
@@ -325,16 +442,34 @@ function loadConfig() {
       const tzSel = document.getElementById('f-tz');
       if (tzSel && d.timezone) tzSel.value = d.timezone;
       if (d.datetime) setVal('f-datetime', d.datetime);
+      if (document.getElementById('time-sys-disp'))
+        setText('time-sys-disp', d.datetime || '—');
+      if (document.getElementById('time-rtc-disp')) {
+        const r = (d.rtc_datetime && String(d.rtc_datetime).trim()) ? String(d.rtc_datetime).trim() : '';
+        setText('time-rtc-disp', r || '—');
+      }
     })
     .catch(() => {});
 }
 
 function setVal(id, val) { const e = document.getElementById(id); if (e) e.value = val; }
 
+function toggleEth0Fields() {
+  const en = document.getElementById('eth0-en');
+  const wrap = document.getElementById('eth0-fields');
+  if (en && wrap) {
+    wrap.style.opacity = en.checked ? '1' : '.4';
+    wrap.style.pointerEvents = en.checked ? '' : 'none';
+  }
+}
+
 function toggleEth1Fields() {
   const en = document.getElementById('eth1-en');
   const wrap = document.getElementById('eth1-fields');
-  if (en && wrap) wrap.style.opacity = en.checked ? '1' : '.4';
+  if (en && wrap) {
+    wrap.style.opacity = en.checked ? '1' : '.4';
+    wrap.style.pointerEvents = en.checked ? '' : 'none';
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -345,7 +480,14 @@ function initForms() {
   const f0 = document.getElementById('net-form');
   if (f0) f0.addEventListener('submit', e => {
     e.preventDefault();
-    if (!validateNetForm(f0)) return;
+    const en = document.getElementById('eth0-en')?.checked;
+    if (en) {
+      if (!validateNetForm(f0)) return;
+      if (!document.getElementById('f-ip')?.value.trim() || !document.getElementById('f-mask')?.value.trim()) {
+        toast('Укажите IP и маску для eth0', 'error');
+        return;
+      }
+    }
     submitForm(f0, () => { configLoaded = false; toast('Настройки eth0 применены. Перезагрузите сеть.', 'success'); });
   });
 
@@ -367,14 +509,19 @@ function initForms() {
     submitForm(ft, () => toast('Время/таймзона применены', 'success'));
   });
 
-  /* eth1 toggle */
+  /* eth0 / eth1 toggles */
+  const eth0en = document.getElementById('eth0-en');
+  if (eth0en) eth0en.addEventListener('change', toggleEth0Fields);
   const eth1en = document.getElementById('eth1-en');
   if (eth1en) eth1en.addEventListener('change', toggleEth1Fields);
 }
 
 function validateNetForm(form) {
   let ok = true;
+  const skipEth0Static =
+    form.id === 'net-form' && !document.getElementById('eth0-en')?.checked;
   form.querySelectorAll('input[pattern]').forEach(inp => {
+    if (skipEth0Static && inp.closest('#eth0-fields')) return;
     const v = inp.value.trim();
     if (v && !new RegExp('^' + inp.pattern + '$').test(v)) {
       inp.classList.add('invalid'); ok = false;
@@ -470,15 +617,166 @@ function handleUrlStatus() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   TIME — синхронизация с браузером (ПК)
+   ══════════════════════════════════════════════════════════════════════════ */
+function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+function fmtLocalDateTimeForDevice(d) {
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+    pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+function browserIanaTz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/** @param {boolean} applyNow — если true, сразу POST в apply.cgi */
+function syncTimeFromPC(applyNow) {
+  const ft = document.getElementById('time-form');
+  if (!ft) return;
+  const tz = browserIanaTz();
+  if (tz) {
+    const sel = document.getElementById('f-tz');
+    if (sel) {
+      const known = Array.from(sel.options).some(o => o.value === tz);
+      if (known) sel.value = tz;
+      else toast('Часовой пояс ПК (' + tz + ') не в списке — выберите вручную', 'info', 5500);
+    }
+  }
+  setVal('f-datetime', fmtLocalDateTimeForDevice(new Date()));
+  if (!applyNow) {
+    toast('Дата и время подставлены с этого ПК. При необходимости нажмите «Применить вручную».', 'success');
+    return;
+  }
+  const data = new URLSearchParams(new FormData(ft));
+  const btn = ft.querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  fetch('/cgi-bin/apply.cgi', { method: 'POST', body: data, redirect: 'manual' })
+    .then(() => {
+      configLoaded = false;
+      toast('Время синхронизировано с этим ПК', 'success');
+      setTimeout(loadConfig, 400);
+    })
+    .catch(() => toast('Ошибка отправки', 'error'))
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
+function exportInstallLog() {
+  window.location.href = '/cgi-bin/log_export.cgi';
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   WEB CREDENTIALS
+   ══════════════════════════════════════════════════════════════════════════ */
+function initWebCredsForm() {
+  const form = document.getElementById('web-creds-form');
+  if (!form) return;
+  form.addEventListener('submit', e => {
+    e.preventDefault();
+    const body = new URLSearchParams(new FormData(form));
+    const btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    fetch('/cgi-bin/web_creds.cgi', {
+      method: 'POST',
+      body,
+      headers: { Accept: 'application/json' },
+    })
+      .then(r => r.json())
+      .then(j => {
+        if (j.ok) {
+          toast('Сохранено. При следующем входе используйте новый логин и пароль.', 'success', 6500);
+          const cur = document.getElementById('wc-cur');
+          const p1 = document.getElementById('wc-p1');
+          const p2 = document.getElementById('wc-p2');
+          if (cur) cur.value = '';
+          if (p1) p1.value = '';
+          if (p2) p2.value = '';
+        } else {
+          const map = {
+            unauthorized: 'Сессия истекла. Войдите снова.',
+            wrong_password: 'Неверный текущий пароль',
+            mismatch: 'Новый пароль и повтор не совпадают',
+            bad_username: 'Недопустимый логин (латиница, цифры, . _ - , до 32 символов)',
+            bad_password_len: 'Длина пароля 4–128 символов',
+            bad_password_char: 'Пароль не может содержать символ \'',
+            no_password: 'Укажите новый пароль',
+            no_user: 'Укажите логин',
+            no_current: 'Укажите текущий пароль',
+            no_auth_file: 'Файл учётных данных на устройстве недоступен',
+            save_failed: 'Не удалось сохранить настройки',
+          };
+          toast(map[j.error] || ('Ошибка: ' + (j.error || 'unknown')), 'error');
+        }
+      })
+      .catch(() => toast('Нет связи с сервером', 'error'))
+      .finally(() => { if (btn) btn.disabled = false; });
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   THEME (SVG toggle в шапке)
+   ══════════════════════════════════════════════════════════════════════════ */
+function syncThemeSwitcherVisual() {
+  const obj = document.getElementById('theme-obj');
+  if (!obj || !obj.contentDocument) return;
+  const sw = obj.contentDocument.getElementById('switcher');
+  if (!sw) return;
+  const light = document.documentElement.getAttribute('data-theme') === 'light';
+  sw.classList.remove('Dark', 'Light', 'Stop', 'Start');
+  sw.classList.add(light ? 'Light' : 'Dark', light ? 'Start' : 'Stop');
+}
+
+function initThemeToggle() {
+  const obj = document.getElementById('theme-obj');
+  if (!obj) return;
+  const bind = () => {
+    const doc = obj.contentDocument;
+    if (!doc) return;
+    const sw = doc.getElementById('switcher');
+    if (!sw) return;
+    sw.addEventListener('click', ev => {
+      ev.preventDefault();
+      const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+      if (isLight) {
+        document.documentElement.removeAttribute('data-theme');
+        try { localStorage.setItem('sa02m-theme', 'dark'); } catch (_) {}
+      } else {
+        document.documentElement.setAttribute('data-theme', 'light');
+        try { localStorage.setItem('sa02m-theme', 'light'); } catch (_) {}
+      }
+      syncThemeSwitcherVisual();
+    });
+    syncThemeSwitcherVisual();
+  };
+  if (obj.contentDocument && obj.contentDocument.getElementById('switcher')) bind();
+  else obj.addEventListener('load', bind, { once: true });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    INIT
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
+  const verEl = document.getElementById('app-version');
+  if (verEl) verEl.textContent = 'v' + APP_VERSION;
+
   initNav();
   initForms();
   initValidation();
+  initWebCredsForm();
+  initThemeToggle();
   handleUrlStatus();
 
-  fetchStatus();
+  /* Первый опрос не блокирует отрисовку: парсинг DOM/CSS и первый кадр — до fetch status.cgi */
+  const scheduleStatus = () => { fetchStatus(); };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => { requestAnimationFrame(scheduleStatus); });
+  } else {
+    setTimeout(scheduleStatus, 0);
+  }
   setInterval(fetchStatus, 4000);
 
   /* Expose globals for inline onclick */
@@ -487,4 +785,6 @@ document.addEventListener('DOMContentLoaded', () => {
   window.doReboot  = doReboot;
   window.doLogout  = doLogout;
   window.loadLog   = loadLog;
+  window.syncTimeFromPC = syncTimeFromPC;
+  window.exportInstallLog = exportInstallLog;
 });
