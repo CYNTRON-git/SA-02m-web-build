@@ -47,6 +47,78 @@
   --shadow-glow: 0 0 0 3px var(--cyan-dim);
 
   --transition:  0.18s ease;
+
+  /* Шапка: отдельный токен, чтобы фон гарантированно переключался с темой */
+  --topbar-bg:   #1c1c1e;
+
+  /* Кнопка «Перезапустить» (warn): жёлтый текст + тёмно-жёлтый фон */
+  --warn-btn-bg:     #2a1e00;
+  --warn-btn-border: #5c4d14;
+  --warn-btn-hover:  #3a2a00;
+
+  /* Бейджи служб / заливки «ВКЛ» на дашборде */
+  --badge-ok-bg:     #0f2a0f;
+  --badge-ok-border: #1e4a1e;
+  --badge-err-bg:    #2a0f0f;
+  --badge-err-border:#4a1e1e;
+}
+
+:root,
+html {
+  --topbar-h: 52px;
+}
+
+/* ── Светлая тема ───────────────────────────────────────────────────────── */
+html[data-theme="light"] {
+  --bg:          #ececf3;
+  --bg-nav:      #ffffff;
+  --bg-card:     #ffffff;
+  --bg-panel:    #f2f2f7;
+  --bg-input:    #ffffff;
+  --bg-toolbar:  #f2f2f7;
+  --bg-hover:    #e5e5ea;
+
+  --border:      #d1d1d6;
+  --border-md:   #c7c7cc;
+  --border-li:   #aeaeb2;
+
+  --text:        #1c1c1e;
+  --text-sec:    #636366;
+  --text-dim:    #aeaeb2;
+
+  --cyan:        #0891b2;
+  --cyan-btn:    #0891b2;
+  --cyan-hover:  #0e7490;
+  --cyan-dim:    #0891b233;
+
+  --green:       #248a3d;
+  --yellow:      #b45309;
+  --red:         #c41e3a;
+  --red-dim:     #fde8ec;
+  --orange:      #c2410c;
+
+  --shadow-sm:   0 1px 3px #00000012, 0 1px 2px #00000008;
+  --shadow:      0 4px 16px #00000014, 0 1px 4px #0000000a;
+  --shadow-lg:   0 8px 32px #00000018, 0 2px 8px #0000000c;
+  --shadow-glow: 0 0 0 3px var(--cyan-dim);
+
+  --topbar-bg:   #ffffff;
+
+  --warn-btn-bg:     #fff8e6;
+  --warn-btn-border: #f5e0b8;
+  --warn-btn-hover:  #fff0cc;
+
+  --badge-ok-bg:     #ecfdf5;
+  --badge-ok-border: #86efac;
+  --badge-err-bg:    #fef2f2;
+  --badge-err-border:#fecaca;
+}
+
+html[data-theme="light"] .gauge-arc-bg { stroke: #d8d8dc !important; }
+html[data-theme="light"] .log-box {
+  background: #fafafa;
+  border-color: var(--border);
+  color: var(--text-sec);
 }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
@@ -61,20 +133,57 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 0 20px; height: 52px;
-  background: rgba(44,44,46,.92);
+  padding: 0 16px 0 20px;
+  height: var(--topbar-h, 52px);
+  /* только background-color: шорткат background + backdrop иногда «съедает» смену темы */
+  background-color: var(--topbar-bg);
   backdrop-filter: blur(20px) saturate(1.6);
   -webkit-backdrop-filter: blur(20px) saturate(1.6);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0; z-index: 50;
+  transition: background-color .22s ease, border-color .22s ease;
 }
-.topbar-logo { display: flex; align-items: center; gap: 10px; }
-.topbar-logo img, .topbar-logo svg { width: 28px; height: 28px; }
+
+/* Явные фоны шапки: часть WebKit/встраиваемых браузеров не перерисовывает var() у предка при смене data-theme */
+html[data-theme="light"] .topbar {
+  background-color: #ffffff;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+html:not([data-theme="light"]) .topbar {
+  background-color: #1c1c1e;
+}
+.topbar-logo {
+  display: flex; align-items: center; gap: 10px;
+  height: 100%;
+  min-width: 0;
+}
+.topbar-logo svg { width: 28px; height: 28px; }
+/* Лого в шапке: «28 на 120» — высота 28 px, ширина 120 px (в CSS: width, height) */
+.topbar-logo-img {
+  width: 120px;
+  height: 28px;
+  object-fit: contain;
+  object-position: left center;
+  flex-shrink: 0;
+  display: block;
+}
+.topbar-logo > div:last-child {
+  min-width: 0;
+}
+.topbar-theme-wrap {
+  display: flex; align-items: center; flex-shrink: 0;
+  margin-right: 4px;
+}
+.topbar-theme-wrap object { display: block; cursor: pointer; pointer-events: auto; }
 .topbar-title { font-size: .95rem; font-weight: 700; color: var(--text); white-space: nowrap; }
+.topbar-sub-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .topbar-sub   { font-size: .72rem; color: var(--text-sec); }
+.topbar-ver   { font-size: .65rem; color: var(--text-dim); letter-spacing: 0.02em; }
 .topbar-sep   { flex: 1; }
-.topbar-ip    { font-size: .78rem; color: var(--text-sec); font-family: 'Courier New', monospace; }
-.topbar-user  { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--text-sec); }
+.topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
+.topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 
 .body { display: flex; flex: 1; overflow: hidden; }
 
@@ -113,6 +222,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .page-header { margin-bottom: 20px; }
 .page-header h2 { font-size: 1.1rem; font-weight: 700; color: var(--text); }
 .page-header p  { font-size: .8rem; color: var(--text-sec); margin-top: 3px; }
+/* Дашборд «Общая информация» — крупнее заголовок и подзаголовок */
+#tab-dashboard .page-header h2 { font-size: 1.38rem; letter-spacing: -0.02em; }
+#tab-dashboard .page-header p  { font-size: .95rem; margin-top: 6px; line-height: 1.45; }
 
 /* ── Dashboard grid ──────────────────────────────────────────────────────── */
 .dash-grid {
@@ -131,36 +243,79 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 }
 .widget:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
 .widget-title {
-  font-size: .7rem; font-weight: 700; text-transform: uppercase;
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
   letter-spacing: .06em; color: var(--text-sec); margin-bottom: 12px;
 }
-.widget-val  { font-size: 1.6rem; font-weight: 700; color: var(--text); line-height: 1; }
-.widget-sub  { font-size: .75rem; color: var(--text-sec); margin-top: 3px; }
+.widget-title.widget-title-preserve {
+  text-transform: none;
+  letter-spacing: .04em;
+}
+.widget-val  { font-size: 26px; font-weight: 700; color: var(--text); line-height: 1; }
+.widget-val.widget-val-centered {
+  text-align: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+/* Uptime: пустая строка перед значением */
+.widget-val.uptime-readout {
+  padding-top: 0.9em;
+}
+/* USB / microSD: «НЕ УСТАНОВЛЕН» — крупнее (~×1.5), две пустые строки над текстом */
+.widget-val.widget-val-removable-empty {
+  font-size: calc(11px * 1.5);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  text-align: center;
+  white-space: nowrap;
+  width: 100%;
+  box-sizing: border-box;
+  padding-top: 1.85em;
+}
+.widget-sub  { font-size: 13px; color: var(--text-sec); margin-top: 3px; }
 
 /* ── Gauge (SVG half-circle) ─────────────────────────────────────────────── */
 .gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .gauge-svg  { display: block; }
-.gauge-label { font-size: .7rem; color: var(--text-sec); }
-.gauge-arc-bg { stroke: #2a2a2a; }
-.gauge-arc    { stroke-linecap: round; transition: stroke-dasharray .4s ease, stroke .3s ease; }
+.gauge-label { font-size: 13px; color: var(--text-sec); }
+.gauge-label-temp {
+  font-size: 13px;
+  max-width: 220px;
+  text-align: center;
+  line-height: 1.35;
+}
+.gauge-arc-bg { stroke: #2a2a2a; stroke-linecap: butt; }
+/* butt: иначе round + неверная длина dash давали «кляксу» на конце дуги */
+.gauge-arc    { stroke-linecap: butt; transition: stroke-dasharray .4s ease, stroke .3s ease; }
+/* Числа на дугах CPU/температура — стандартный кегль 30px (ближайший к «крупнее ~19.5») */
+svg .gauge-num {
+  fill: var(--text);
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  paint-order: stroke fill;
+  stroke: none;
+}
 
 /* ── Progress bar ────────────────────────────────────────────────────────── */
 .bar-row { margin-top: 10px; }
 .bar-track { background: #2c2c2e; border-radius: var(--radius-pill); height: 7px; overflow: hidden; }
 .bar-fill  { height: 100%; border-radius: var(--radius-pill); transition: width .4s ease, background .3s ease; }
-.bar-meta  { display: flex; justify-content: space-between; font-size: .72rem; color: var(--text-sec); margin-top: 4px; }
+.bar-meta  { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-sec); margin-top: 4px; }
 
 /* ── Service badges ──────────────────────────────────────────────────────── */
 .svc-list { display: flex; flex-direction: column; gap: 7px; }
-.svc-row  { display: flex; align-items: center; justify-content: space-between; font-size: .82rem; }
+.svc-row  { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
 .svc-row .name { color: var(--text); }
 .badge {
-  font-size: .65rem; font-weight: 700; text-transform: uppercase;
+  font-size: 12px; font-weight: 700;
+  text-transform: none;
+  letter-spacing: .02em;
   padding: 3px 9px; border-radius: var(--radius-pill);
-  letter-spacing: .04em; box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-sm);
 }
-.badge-ok  { background: #0f2a0f; color: var(--green);  border: 1px solid #1e4a1e; }
-.badge-err { background: #2a0f0f; color: var(--red);    border: 1px solid #4a1e1e; }
+.badge-ok  { background: var(--badge-ok-bg); color: var(--green);  border: 1px solid var(--badge-ok-border); }
+.badge-err { background: var(--badge-err-bg); color: var(--red);    border: 1px solid var(--badge-err-border); }
 .badge-unk { background: var(--bg-panel); color: var(--text-sec); border: 1px solid var(--border-md); }
 .badge-ok.pulse { animation: badge-pulse 2s infinite; }
 @keyframes badge-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
@@ -168,10 +323,14 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 /* ── Toggle switch (mongoose-exact) ─────────────────────────────────────── */
 .toggle {
   appearance: none; -webkit-appearance: none;
+  box-sizing: border-box;
   cursor: pointer; vertical-align: top;
   background: #555; border: none; border-radius: var(--radius-pill);
   outline: none; width: 44px; height: 24px;
-  position: relative; flex-shrink: 0;
+  min-width: 44px; min-height: 24px;
+  padding: 0; margin: 0;
+  position: relative; flex: 0 0 auto;
+  flex-shrink: 0;
   transition: background .3s ease;
 }
 .toggle::after {
@@ -179,15 +338,69 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
   background: #fafafa; border-radius: 50%;
   width: 18px; height: 18px;
   position: absolute; top: 3px; left: 3px;
+  box-sizing: border-box;
   transition: transform .3s cubic-bezier(.34,1.56,.64,1), background .3s ease;
 }
 .toggle:checked             { background: var(--cyan-btn); }
 .toggle:checked::after      { transform: translateX(20px); }
+/* Сеть eth0/eth1 — широкий тумблер 60×24 (ползунок 20px, зазор 2px) */
+.toggle.toggle-wide {
+  width: 60px;
+  height: 24px;
+  min-width: 60px;
+  max-width: 60px;
+  min-height: 24px;
+  flex-shrink: 0;
+  border-radius: 12px;
+}
+.toggle.toggle-wide::after {
+  width: 20px;
+  height: 20px;
+  top: 2px;
+  left: 2px;
+}
+.toggle.toggle-wide:checked::after {
+  transform: translateX(36px);
+}
 .toggle:hover:not(:disabled) { box-shadow: 0 0 0 2px var(--cyan-dim); }
 .toggle:disabled            { cursor: not-allowed; background: #333 !important; opacity: .5; }
 .toggle:disabled::after     { background: #888; }
 .toggle-label { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
 .toggle-label span { font-size: .85rem; color: var(--text); }
+
+/* Переключатель в строке: подпись слева, тумблер компактно справа */
+.toggle-field-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+  min-height: 36px;
+}
+.toggle-field-label {
+  flex: 1;
+  font-size: .85rem;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.35;
+}
+.toggle-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  align-self: center;
+  cursor: pointer;
+  margin: 0;
+  padding: 4px 0 4px 8px;
+  min-height: 32px;
+}
+.toggle-inline .toggle {
+  flex-shrink: 0;
+  align-self: center;
+}
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
@@ -221,16 +434,31 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .btn-danger   { background: var(--red-dim); border-color: #6a2020; color: var(--red); }
 .btn-danger:hover:not(:disabled)  { background: #5a1a1a; box-shadow: 0 4px 14px #ff453a22; }
 
-.btn-warn     { background: #2a1e00; border-color: #4a3800; color: var(--yellow); }
-.btn-warn:hover:not(:disabled)    { background: #3a2a00; box-shadow: 0 4px 14px #ffd60a22; }
+/* Жёлтый текст + тон жёлтого фона в обеих темах (перебивает общий .btn:hover) */
+.btn.btn-warn {
+  background: var(--warn-btn-bg);
+  border-color: var(--warn-btn-border);
+  color: var(--yellow);
+}
+.btn.btn-warn:hover:not(:disabled) {
+  background: var(--warn-btn-hover);
+  border-color: var(--warn-btn-border);
+  color: var(--yellow);
+  box-shadow: 0 4px 14px #ffd60a33;
+}
+.btn.btn-warn:active:not(:disabled) {
+  background: var(--warn-btn-hover);
+  color: var(--yellow);
+}
 
 .btn-sm { padding: 6px 13px; font-size: .78rem; border-radius: var(--radius-xs); }
+.widget .btn-sm { font-size: 13px; padding: 7px 14px; }
 .btn-lg { padding: 13px 26px; font-size: .92rem; border-radius: var(--radius); }
 
 .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ── HW control cards ────────────────────────────────────────────────────── */
-.hw-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+.hw-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
 .hw-item {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 16px;
@@ -238,13 +466,17 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
   transition: box-shadow var(--transition), border-color var(--transition);
 }
 .hw-item:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
-.hw-item-title { font-size: .78rem; color: var(--text-sec); margin-bottom: 8px; font-weight: 600; }
-.hw-state      { font-size: .92rem; font-weight: 700; margin-bottom: 10px; }
-.hw-state.on   { color: var(--green); }
-.hw-state.off  { color: var(--text-sec); }
-.hw-state.na   { color: var(--text-dim); }
+.hw-item-title { font-size: 14px; color: var(--text-sec); margin-bottom: 8px; font-weight: 600; }
+.hw-state {
+  font-size: 15px; font-weight: 700; margin-bottom: 10px;
+  display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+}
+.hw-state.on   { background: var(--badge-ok-bg); border-color: var(--badge-ok-border); color: var(--green); }
+.hw-state.off  { background: var(--bg-panel); border-color: var(--border-md); color: var(--text-sec); }
+.hw-state.na   { background: transparent; border-color: transparent; color: var(--text-dim); padding-left: 0; padding-right: 0; }
 .hw-btns       { display: flex; gap: 6px; }
-.hw-hint       { font-size: .72rem; color: var(--text-sec); line-height: 1.45; }
+.hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
 /* ── RS-485 cards ────────────────────────────────────────────────────────── */
 .rs485-grid {
@@ -265,53 +497,131 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .rs485-dot.on     { background: var(--green); box-shadow: 0 0 5px var(--green); }
 .rs485-dot.idle   { background: #484f58; }
 .rs485-dot.absent { background: var(--red); }
-.rs485-name { font-size: .84rem; font-weight: 700; color: var(--text); }
-.rs485-dev  { font-size: .68rem; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; }
-.rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: .76rem; margin-top: 3px; }
+.rs485-name { font-size: 15px; font-weight: 700; color: var(--text); }
+.rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; }
+.rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; }
 .rs485-row .rl { color: var(--text-sec); }
 .rs485-row .rv { font-weight: 600; color: var(--text); font-family: 'Courier New', monospace; }
 .rs485-row .rv.act { color: var(--cyan); }
-.rs485-err  { font-size: .7rem; color: var(--red); margin-top: 5px; }
-.rs485-open   { font-size: .7rem; color: var(--green); margin-top: 3px; }
-.rs485-closed { font-size: .7rem; color: var(--text-dim); margin-top: 3px; }
+.rs485-err  { font-size: 12px; color: var(--red); margin-top: 5px; }
+.rs485-open {
+  font-size: 12px; font-weight: 600; color: var(--green); margin-top: 6px;
+  display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill);
+  background: var(--badge-ok-bg); border: 1px solid var(--badge-ok-border);
+}
+.rs485-closed {
+  font-size: 12px; font-weight: 600; color: var(--text-sec); margin-top: 6px;
+  display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill);
+  background: var(--bg-panel); border: 1px solid var(--border-md);
+}
 
 /* ── Load-avg mini grid ──────────────────────────────────────────────────── */
 .load-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
 .load-item { text-align: center; background: var(--bg-panel); border-radius: var(--radius-sm); padding: 9px 4px; box-shadow: var(--shadow-sm); }
-.load-num  { font-size: .95rem; font-weight: 700; color: var(--text); }
-.load-lbl  { font-size: .65rem; color: var(--text-sec); margin-top: 2px; }
+.load-num  { font-size: 15px; font-weight: 700; color: var(--text); }
+.load-lbl  { font-size: 12px; color: var(--text-sec); margin-top: 2px; }
 
 /* ── Swap mini-bar ───────────────────────────────────────────────────────── */
 .swap-block { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
-.swap-title { font-size: .67rem; color: var(--text-sec); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
+.swap-title { font-size: 12px; color: var(--text-sec); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
 
 /* ── eth1 status ─────────────────────────────────────────────────────────── */
-.eth-row    { display: flex; justify-content: space-between; align-items: center; font-size: .8rem; }
-.eth-state  { font-size: .8rem; font-weight: 600; }
-.eth-state.up   { color: var(--green); }
-.eth-state.down { color: var(--yellow); }
-.eth-state.absent { color: var(--text-dim); }
+.eth-row    { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+.eth-state {
+  font-size: 14px; font-weight: 600;
+  display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill);
+  border: 1px solid transparent;
+}
+/* Ethernet 1: строка состояния — крупнее и жирнее */
+.eth-state.eth-state-prominent {
+  font-size: 1.06rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+/* Ethernet 0/1: строки RX/TX — крупнее и жирнее */
+.svc-row-eth-traffic {
+  font-size: 1.02rem;
+}
+.svc-row-eth-traffic .name {
+  font-weight: 700;
+  color: var(--text-sec);
+}
+.eth-traffic-val {
+  font-size: 1.12rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.eth-traffic-line {
+  font-size: 1.12rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.45;
+  color: var(--text);
+  margin-top: 4px;
+}
+.eth-state.up {
+  color: var(--green);
+  background: var(--badge-ok-bg);
+  border-color: var(--badge-ok-border);
+}
+.eth-state.down {
+  color: var(--yellow);
+  background: var(--warn-btn-bg);
+  border-color: var(--warn-btn-border);
+}
+.eth-state.absent {
+  color: var(--text-sec);
+  background: var(--bg-panel);
+  border-color: var(--border-md);
+}
 
 /* ── Forms ───────────────────────────────────────────────────────────────── */
 .form-section { max-width: 560px; }
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
 
+.time-readout {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+.time-readout-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  font-size: .86rem;
+  padding: 6px 0;
+}
+.time-readout-row + .time-readout-row {
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  padding-top: 10px;
+}
+.time-readout-lbl { color: var(--text-sec); flex-shrink: 0; }
+.time-readout-val { color: var(--text); font-weight: 600; text-align: right; word-break: break-all; }
+
 .field       { margin-bottom: 16px; }
-.field label { display: block; font-size: .78rem; color: var(--text-sec); margin-bottom: 5px; font-weight: 600; }
-.field input,
+/* Подпись поля: не трогаем label тумблера в строке eth0/eth1 */
+.field label:not(.toggle-inline) {
+  display: block; font-size: .78rem; color: var(--text-sec); margin-bottom: 5px; font-weight: 600;
+}
+.field input:not(.toggle),
 .field select {
   width: 100%; background: var(--bg-panel); border: 1px solid var(--border-md);
   border-radius: var(--radius-sm); color: var(--text); font-size: .88rem;
   padding: 10px 13px; transition: border-color var(--transition), box-shadow var(--transition);
   outline: none; box-shadow: var(--shadow-sm);
 }
-.field input:focus,
+.field input:not(.toggle):focus,
 .field select:focus {
   border-color: var(--cyan-btn);
   box-shadow: var(--shadow-glow), var(--shadow-sm);
 }
-.field input.invalid { border-color: var(--red); box-shadow: 0 0 0 3px #ff453a22; }
+.field input:not(.toggle).invalid { border-color: var(--red); box-shadow: 0 0 0 3px #ff453a22; }
 .field-hint { font-size: .72rem; color: var(--text-sec); margin-top: 4px; }
 .field-hint.warn { color: var(--yellow); }
 
@@ -333,17 +643,37 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 14px; margin-bottom: 28px;
+  align-items: stretch;
 }
 .ctrl-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 20px;
-  display: flex; flex-direction: column; gap: 10px;
+  display: flex; flex-direction: column; gap: 12px;
+  min-height: 100%;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--transition), border-color var(--transition);
 }
+.ctrl-card-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ctrl-card > .btn {
+  margin-top: auto;
+  align-self: flex-start;
+}
 .ctrl-card:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
-.ctrl-card h3 { font-size: .88rem; font-weight: 700; color: var(--text); }
-.ctrl-card p  { font-size: .76rem; color: var(--text-sec); line-height: 1.5; }
+/* Вкладка «Управление»: Службы / Перезагрузка / GPIO — читаемый кегль */
+.ctrl-card h3 { font-size: 1.05rem; font-weight: 700; color: var(--text); }
+.ctrl-card p  { font-size: .93rem; color: var(--text-sec); line-height: 1.55; }
+.ctrl-card .field-hint {
+  font-size: .88rem;
+  line-height: 1.45;
+  margin-top: 6px;
+}
+.ctrl-card .mono.text-sm { font-size: .9rem; }
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
 .toast-area { position: fixed; top: 64px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
@@ -375,6 +705,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 }
 .login-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
 .login-logo svg { width: 32px; height: 32px; }
+.login-logo-img { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; border-radius: 10px; }
 .login-logo h1  { font-size: 1rem; font-weight: 700; color: var(--text); }
 .login-logo p   { font-size: .72rem; color: var(--text-sec); }
 .login-error {
@@ -388,6 +719,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; 
 .divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
 .text-sec { color: var(--text-sec); }
 .text-sm  { font-size: .78rem; }
+.widget .text-sm { font-size: 13px; }
 .mono     { font-family: 'Courier New', monospace; }
 .nowrap   { white-space: nowrap; }
 .flex     { display: flex; }

@@ -17,6 +17,7 @@ HW_CONF="/etc/sa02m_hw.conf"
 SA02M_GPIO_DO=""
 SA02M_GPIO_BEEPER=""
 SA02M_GPIO_ALARM_LED=""
+SA02M_GPIO_USB_POWER=""
 [ -f "$HW_CONF" ] && . "$HW_CONF" 2>/dev/null
 
 read -r POST_DATA
@@ -33,6 +34,7 @@ case "$CH" in
     do)         PIN=$SA02M_GPIO_DO ;;
     beeper)     PIN=$SA02M_GPIO_BEEPER ;;
     alarm_led)  PIN=$SA02M_GPIO_ALARM_LED ;;
+    usb_power)  PIN=$SA02M_GPIO_USB_POWER ;;
     *)          echo '{"ok":false,"error":"bad_channel"}'; exit 0 ;;
 esac
 
