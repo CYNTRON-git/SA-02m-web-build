@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg">
-  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.2">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.2">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg" height="28" width="120" alt="ЦИНТРОН">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.2" height="28" width="120" alt="ЦИНТРОН">
       <div>
         <div class="topbar-title">СА-02м</div>
         <div class="topbar-sub-row">
@@ -25,8 +25,9 @@
       </div>
     </div>
     <div class="topbar-sep"></div>
-    <div class="topbar-theme-wrap" title="Светлая / тёмная тема">
-      <object id="theme-obj" data="/static/theme-toggle.svg" type="image/svg+xml" width="70" height="30" aria-label="Тема"></object>
+    <div class="topbar-theme-wrap" title="Переключение темы: тёмная или светлая">
+      <span class="topbar-theme-label">Темная / Светлая</span>
+      <object id="theme-obj" data="/static/theme-toggle.svg?v=1.0.2" type="image/svg+xml" width="70" height="30" aria-label="Переключатель темы: тёмная или светлая"></object>
     </div>
     <div class="topbar-ip mono" id="tb-ip">—</div>
     <div class="topbar-user">
@@ -471,6 +472,6 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js"></script>
+<script src="/static/js/app.js?v=1.0.2"></script>
 </body>
 </html>

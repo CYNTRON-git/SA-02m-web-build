@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Вход</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg">
-  <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.2">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.2">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -14,10 +14,10 @@
   <div class="login-card">
 
     <div class="login-logo">
-      <img class="login-logo-img" src="/static/favicon_cyntron.svg" width="48" height="48" alt="ЦИНТРОН">
+      <img class="login-logo-img" src="/static/favicon_cyntron.svg?v=1.0.2" width="56" height="56" alt="ЦИНТРОН">
       <div>
-        <h1 style="font-size:1rem;font-weight:700;color:#f2f2f7;line-height:1.2">СА-02м</h1>
-        <p style="font-size:.72rem;color:#8e8e93;margin-top:1px">Сервер автоматизации ЦИНТРОН</p>
+        <h1 class="login-logo-title">СА-02м</h1>
+        <p class="login-logo-sub">Сервер автоматизации ЦИНТРОН</p>
       </div>
     </div>
 
@@ -43,11 +43,42 @@
 </div>
 
 <script>
+const PRIORITY_WARMUP_KEY = 'sa02m-priority-warmup';
+function readWarmupCache() {
+  try {
+    return JSON.parse(sessionStorage.getItem(PRIORITY_WARMUP_KEY) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
+function writeWarmupPart(part, data) {
+  try {
+    const cache = readWarmupCache();
+    cache[part] = { ts: Date.now(), data };
+    sessionStorage.setItem(PRIORITY_WARMUP_KEY, JSON.stringify(cache));
+  } catch (e) {}
+}
+function prefetchPriorityPart(part) {
+  fetch('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), { cache: 'no-store', credentials: 'omit' })
+    .then(r => r.json())
+    .then(d => { if (!d.error) writeWarmupPart(part, d); })
+    .catch(() => {});
+}
+function prefetchPriorityWidgets() {
+  prefetchPriorityPart('cpu');
+  setTimeout(() => prefetchPriorityPart('temp'), 40);
+  setTimeout(() => prefetchPriorityPart('ram'), 80);
+  setTimeout(() => prefetchPriorityPart('disk'), 120);
+}
+
 if (new URLSearchParams(location.search).get('error')) {
   document.getElementById('login-error').style.display = 'block';
 }
 if (document.cookie.split(';').some(c => c.trim().startsWith('session_token='))) {
   window.location.replace('/');
+} else {
+  prefetchPriorityWidgets();
+  setInterval(prefetchPriorityWidgets, 5000);
 }
 </script>
 </body>
