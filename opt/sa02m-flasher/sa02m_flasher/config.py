@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 DEFAULT_CONF_PATH = Path("/etc/sa02m_flasher.conf")
 
-DEFAULT_SOCKET_PATH = "/run/sa02m-flasher.sock"
+DEFAULT_SOCKET_PATH = "/run/sa02m-flasher/flasher.sock"
 DEFAULT_CACHE_DIR = "/var/lib/sa02m-flasher/firmware"
 DEFAULT_LOG_DIR = "/var/log/sa02m-flasher"
 DEFAULT_LOCK_DIR = "/var/lock"

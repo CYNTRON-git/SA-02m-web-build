@@ -1,25 +1,13 @@
 # -*- sudo rules for sa02m-flasher -*-
-# Минимально необходимые команды: старт/стоп служб, опрос занятости /dev/COMx.
+# Минимально необходимые команды: systemctl и fuser для координации доступа к RS-485.
 # Все остальное — под правами пользователя sa02m-flasher (группа dialout для /dev/ttyS*).
 #
 # Внимание: устанавливать с правами 0440, см. scripts/04-flasher.sh.
 Cmnd_Alias SA02M_FLASHER = \
-    /bin/systemctl start mplc.service, \
-    /bin/systemctl stop  mplc.service, \
-    /bin/systemctl is-active mplc.service, \
-    /bin/systemctl start mplc, \
-    /bin/systemctl stop  mplc, \
-    /bin/systemctl is-active mplc, \
-    /usr/bin/systemctl start mplc.service, \
-    /usr/bin/systemctl stop  mplc.service, \
-    /usr/bin/systemctl is-active mplc.service, \
-    /usr/bin/systemctl start mplc, \
-    /usr/bin/systemctl stop  mplc, \
-    /usr/bin/systemctl is-active mplc, \
-    /bin/fuser /dev/COM[1-5], \
-    /bin/fuser /dev/ttyS[0-9], \
-    /usr/bin/fuser /dev/COM[1-5], \
-    /usr/bin/fuser /dev/ttyS[0-9]
+    /bin/systemctl, \
+    /usr/bin/systemctl, \
+    /bin/fuser, \
+    /usr/bin/fuser
 
 sa02m-flasher ALL=(root) NOPASSWD: SA02M_FLASHER
 Defaults:sa02m-flasher !requiretty

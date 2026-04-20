@@ -2,7 +2,7 @@
 """
 HTTP-сервис демона (stdlib http.server поверх unix-socket).
 
-Слушает unix-socket (по умолчанию /run/sa02m-flasher.sock). Маршруты:
+Слушает unix-socket (по умолчанию /run/sa02m-flasher/flasher.sock). Маршруты:
     GET  /ports                       — список COM-портов (из конфига + проверка доступа/занятости)
     GET  /firmware                    — статус репозитория + список прошивок
     POST /firmware/refresh            — обновить манифест (JSON: {"download": bool})
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import cgi
+import grp
 import io
 import json
 import logging
@@ -44,8 +45,19 @@ from .auth import check_internal_token, check_session
 from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
-from .mplc_lease import is_service_active, port_occupants
+from .mplc_lease import port_occupants
 from . import runner
+
+
+def _unit_display_name(unit: Optional[str]) -> str:
+    """Короткое имя для UI: mplc4 вместо mplc4.service."""
+    if not unit:
+        return ""
+    s = str(unit).strip()
+    for suf in (".service", ".socket"):
+        if s.endswith(suf):
+            return s[: -len(suf)]
+    return s
 
 log = logging.getLogger("sa02m_flasher.service")
 
@@ -67,6 +79,12 @@ class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
         except FileNotFoundError:
             pass
         super().__init__(socket_path, handler_cls)
+        try:
+            os.chown(socket_path, -1, grp.getgrnam("www-data").gr_gid)
+        except KeyError:
+            log.warning("Группа www-data не найдена, сокет останется в группе процесса")
+        except OSError:
+            log.exception("Не удалось сменить группу сокета %s на www-data", socket_path)
         # Права на сокет: владелец — демон, группа www-data, mode 0660.
         try:
             os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IWGRP)
@@ -205,6 +223,10 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "GET" and p == "/ports":
                 return self._handle_ports(ctx)
+            if method == "POST" and p == "/ports/release":
+                return self._handle_ports_release(ctx)
+            if method == "POST" and p == "/ports/restore":
+                return self._handle_ports_restore(ctx)
             if method == "GET" and p == "/firmware":
                 return self._handle_firmware_list(ctx)
             if method == "POST" and p == "/firmware/refresh":
@@ -247,29 +269,72 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── Ручки ────────────────────────────────────────────────────────────────
 
+    def _describe_port(self, ctx: ServiceContext, key: str) -> Dict[str, Any]:
+        cfg = ctx.cfg
+        if key not in cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {key}")
+        device_path = cfg.ports_map[key]
+        label = cfg.ports_labels.get(key, key)
+        exists = os.path.exists(device_path)
+        occupants: list = port_occupants(device_path) if exists else []
+        active_job = ctx.jobs.active_job_on_port(key)
+        active_services = []
+        for svc in cfg.mplc_stop_services:
+            actual = mplc_lease.active_service_name(svc)
+            if actual and actual not in active_services:
+                active_services.append(actual)
+        released = set(mplc_lease.released_services())
+        released_services = []
+        for svc in cfg.mplc_stop_services:
+            actual = mplc_lease.resolve_service_name(svc)
+            if actual and actual in released and actual not in released_services:
+                released_services.append(actual)
+        return {
+            "key": key,
+            "label": label,
+            "device_path": device_path,
+            "exists": exists,
+            "busy_pids": occupants,
+            "active_job": active_job,
+            "mplc_active": bool(active_services),
+            "managed_services": [_unit_display_name(s) for s in cfg.mplc_stop_services],
+            "active_services": [_unit_display_name(a) for a in active_services],
+            "released_services": [_unit_display_name(a) for a in released_services],
+        }
+
     def _handle_ports(self, ctx: ServiceContext) -> None:
         cfg = ctx.cfg
         ports: list = []
         for key, device_path in cfg.ports_map.items():
-            label = cfg.ports_labels.get(key, key)
-            exists = os.path.exists(device_path)
-            occupants: list = port_occupants(device_path) if exists else []
-            active_job = ctx.jobs.active_job_on_port(key)
-            occupied_by_mplc = False
-            for svc in cfg.mplc_stop_services:
-                if is_service_active(svc):
-                    occupied_by_mplc = True
-                    break
-            ports.append({
-                "key": key,
-                "label": label,
-                "device_path": device_path,
-                "exists": exists,
-                "busy_pids": occupants,
-                "active_job": active_job,
-                "mplc_active": occupied_by_mplc,
-            })
-        _send_json(self, {"ports": ports, "mplc_services": list(cfg.mplc_stop_services)})
+            _ = device_path
+            ports.append(self._describe_port(ctx, key))
+        _send_json(
+            self,
+            {
+                "ports": ports,
+                "mplc_services": [_unit_display_name(s) for s in cfg.mplc_stop_services],
+            },
+        )
+
+    def _handle_ports_release(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        port = str(data.get("port") or "").strip()
+        if not port:
+            raise ValueError("Поле 'port' обязательно")
+        if ctx.jobs.active_job_on_port(port):
+            raise RuntimeError(f"Порт {port} занят активной задачей")
+        result = mplc_lease.release_pollers(ctx.cfg.mplc_stop_services)
+        _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
+
+    def _handle_ports_restore(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        port = str(data.get("port") or "").strip()
+        if not port:
+            raise ValueError("Поле 'port' обязательно")
+        if ctx.jobs.active_job_on_port(port):
+            raise RuntimeError(f"Порт {port} занят активной задачей")
+        result = mplc_lease.restore_pollers(ctx.cfg.mplc_stop_services)
+        _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
 
     def _handle_firmware_list(self, ctx: ServiceContext) -> None:
         _send_json(self, ctx.repo.status())
@@ -417,15 +482,19 @@ def main() -> int:
     ctx = ServiceContext(cfg)
     server = UnixHTTPServer(cfg.socket_path, Handler, ctx)
 
-    stop_event = threading.Event()
-
     def _shutdown(*_args: Any) -> None:
+        if stop_event.is_set():
+            return
         log.info("Получен сигнал остановки, закрываю сервер")
         stop_event.set()
-        try:
-            mplc_lease._restore_all_on_exit()
-        finally:
-            server.shutdown_server()
+        def _shutdown_worker() -> None:
+            try:
+                mplc_lease._restore_all_on_exit()
+            finally:
+                server.shutdown_server()
+        threading.Thread(target=_shutdown_worker, name="sa02m-flasher-shutdown", daemon=True).start()
+
+    stop_event = threading.Event()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)

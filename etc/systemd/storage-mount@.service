@@ -1,0 +1,10 @@
+[Unit]
+Description=Mount storage device %i (USB / microSD)
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/storage-mount.sh add %i
+ExecStop=/usr/local/bin/storage-mount.sh remove %i
+TimeoutStartSec=30
+TimeoutStopSec=30

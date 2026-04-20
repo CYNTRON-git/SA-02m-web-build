@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * flasher.js  •  UI вкладки «Устройства MR-02м»
+ * flasher.js  •  UI вкладки «Устройства RS-485»
  * Работает с демоном sa02m-flasher через /api/flasher/*. SSE-стрим событий
  * по /api/flasher/jobs/<id>/events. Кука session_token прокидывается nginx'ом.
  * ──────────────────────────────────────────────────────────────────────────── */
@@ -16,9 +16,32 @@
     flashJobId: null,
     scanStream: null,
     flashStream: null,
+    scanPending: false,
+    flashPending: false,
+    portActionBusy: false,
   };
 
   function $(id) { return document.getElementById(id); }
+
+  function unitUiLabel(name) {
+    return String(name || '').replace(/\.(service|socket)$/i, '');
+  }
+
+  function currentPort() {
+    const sel = $('flasher-port');
+    return state.ports.find(p => p.key === sel.value) || null;
+  }
+
+  function selectedBaudrates() {
+    return Array.from(document.querySelectorAll('#flasher-baudrates input:checked')).map(el => parseInt(el.value, 10));
+  }
+
+  function setBadge(id, text, kind) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'badge ' + (kind === 'ok' ? 'badge-ok' : kind === 'err' ? 'badge-err' : 'badge-unk');
+  }
 
   function toast(msg, type) {
     if (window.toast) window.toast(msg, type || 'info'); else console.log('[flasher]', msg);
@@ -64,6 +87,7 @@
       const data = await apiGet('/ports');
       state.ports = data.ports || [];
       const sel = $('flasher-port');
+      const prev = sel.value;
       sel.innerHTML = '';
       state.ports.forEach(p => {
         const opt = document.createElement('option');
@@ -76,22 +100,101 @@
         opt.disabled = !p.exists;
         sel.appendChild(opt);
       });
+      if (state.ports.length) {
+        const fallback = state.ports.find(p => p.exists) || state.ports[0];
+        sel.value = state.ports.some(p => p.key === prev) ? prev : fallback.key;
+      }
       updatePortHint();
     } catch (err) {
       toast('Порты: ' + err.message, 'error');
     }
   }
 
+  function updateScanSummary() {
+    const port = currentPort();
+    const mode = $('flasher-mode');
+    const modeText = mode.options[mode.selectedIndex] ? mode.options[mode.selectedIndex].textContent : '—';
+    const addrMin = parseInt($('flasher-addr-min').value, 10) || 1;
+    const addrMax = parseInt($('flasher-addr-max').value, 10) || 10;
+    const bauds = selectedBaudrates();
+    const parts = [];
+    if (port) parts.push(`${port.label || port.key} (${port.device_path})`);
+    parts.push(modeText);
+    parts.push(`адреса ${addrMin}-${addrMax}`);
+    parts.push(`скорости ${bauds.length ? bauds.join(', ') : 'не выбраны'}`);
+    $('flasher-scan-summary').textContent = parts.join(' · ');
+  }
+
+  function syncActionButtons() {
+    const port = currentPort();
+    const scanRunning = state.scanPending || !!state.scanJobId;
+    const flashRunning = state.flashPending || !!state.flashJobId;
+    const jobBusy = !!(port && port.active_job);
+    const activeServices = port && port.active_services ? port.active_services : [];
+    const releasedServices = port && port.released_services ? port.released_services : [];
+    const managedN = port && Array.isArray(port.managed_services) ? port.managed_services.length : 0;
+    const anyChecked = state.devices.some(d => d.__selected);
+    const hasFw = !!$('flasher-fw-select').value;
+
+    $('flasher-scan-btn').disabled = !port || !port.exists || scanRunning || flashRunning || jobBusy || state.portActionBusy;
+    $('flasher-scan-cancel-btn').disabled = !state.scanJobId || state.scanPending;
+    // Остановка служб из managed_services (конфиг MPLC_STOP_SERVICES). Кнопка не зависит только от
+    // active_services: порт может быть занят, а systemd/fuser на стороне UI выглядеть «пусто».
+    const canStopPollers = !!(port && port.exists && managedN);
+    $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
+    $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
+    $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && hasFw);
+    $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending;
+  }
+
   function updatePortHint() {
-    const sel = $('flasher-port');
-    const key = sel.value;
-    const port = state.ports.find(p => p.key === key);
+    const port = currentPort();
     const hint = $('flasher-port-hint');
-    if (!port) { hint.textContent = ''; return; }
+    if (!port) {
+      $('flasher-port-label').textContent = '—';
+      $('flasher-port-device').textContent = 'Выберите порт для работы с линией';
+      setBadge('flasher-port-badge', 'Нет данных', 'unk');
+      setBadge('flasher-poller-badge', 'Опрос не оценён', 'unk');
+      hint.textContent = 'Выберите порт, чтобы увидеть состояние линии и опроса.';
+      updateScanSummary();
+      syncActionButtons();
+      return;
+    }
+
+    $('flasher-port-label').textContent = port.label || port.key;
+    $('flasher-port-device').textContent = port.device_path || '—';
+
+    if (!port.exists) setBadge('flasher-port-badge', 'Нет линии', 'err');
+    else if (port.active_job) setBadge('flasher-port-badge', 'Задача активна', 'unk');
+    else if (port.busy_pids && port.busy_pids.length) setBadge('flasher-port-badge', 'Порт занят', 'err');
+    else setBadge('flasher-port-badge', 'Порт свободен', 'ok');
+
+    if (port.active_services && port.active_services.length) setBadge('flasher-poller-badge', 'Опрос активен', 'unk');
+    else if (port.released_services && port.released_services.length) setBadge('flasher-poller-badge', 'Опрос освобождён', 'ok');
+    else if (port.busy_pids && port.busy_pids.length) setBadge('flasher-poller-badge', 'Опрос не определён', 'unk');
+    else setBadge('flasher-poller-badge', 'Опрос не активен', 'ok');
+
     const bits = [];
-    if (port.mplc_active) bits.push('При сканировании/прошивке служба mplc.service будет остановлена и восстановлена автоматически.');
-    if (port.busy_pids && port.busy_pids.length) bits.push('Внимание: порт удерживают PID ' + port.busy_pids.join(', ') + ' — возможна ошибка занятости.');
+    if (port.active_services && port.active_services.length) {
+      bits.push('Линию сейчас опрашивают: ' + port.active_services.map(unitUiLabel).join(', ') + '. При сканировании опрос будет остановлен автоматически; кнопка «Остановить службы опроса» делает это вручную.');
+    } else if (port.managed_services && port.managed_services.length) {
+      bits.push('Ручная остановка опроса: «Остановить службы опроса» — по списку unit’ов из конфигурации демона (см. active_services / managed_services).');
+    }
+    if (port.released_services && port.released_services.length) {
+      bits.push('Опрос вручную освобождён: ' + port.released_services.map(unitUiLabel).join(', ') + '.');
+    }
+    if (port.busy_pids && port.busy_pids.length) {
+      bits.push('Порт удерживают PID ' + port.busy_pids.join(', ') + '.' +
+        (port.active_services && port.active_services.length
+          ? ' Если это не служба опроса, освободите процесс вручную.'
+          : ' systemd не сообщает об активном unit опроса — порт может держать другой процесс; при необходимости проверьте systemctl status и fuser на устройстве.'));
+    }
+    if (port.active_job) bits.push('На линии выполняется активная задача, дождитесь её завершения.');
+    if (!port.exists) bits.push('Устройство порта не найдено в системе.');
+    if (!bits.length) bits.push('Линия готова к сканированию и прошивке.');
     hint.textContent = bits.join(' ');
+    updateScanSummary();
+    syncActionButtons();
   }
 
   /* ── Репозиторий прошивок ─────────────────────────────────────────────── */
@@ -198,9 +301,7 @@
   }
 
   function updateFlashControls() {
-    const anyChecked = state.devices.some(d => d.__selected);
-    const hasFw = !!$('flasher-fw-select').value;
-    $('flasher-flash-btn').disabled = !(anyChecked && hasFw);
+    syncActionButtons();
   }
 
   /* ── Прогресс/лог SSE ─────────────────────────────────────────────────── */
@@ -286,13 +387,15 @@
     const mode = $('flasher-mode').value;
     const addrMin = parseInt($('flasher-addr-min').value, 10) || 1;
     const addrMax = parseInt($('flasher-addr-max').value, 10) || 10;
-    const bauds = Array.from($('flasher-baudrates').selectedOptions).map(o => parseInt(o.value, 10));
+    const bauds = selectedBaudrates();
+    if (!bauds.length) { toast('Выберите хотя бы одну скорость', 'warn'); return; }
 
     state.devices = [];
     renderDevices();
     logReset('Старт сканирования на ' + port);
     setProgress(0, 'Подготовка порта');
-    setScanButtons(true);
+    state.scanPending = true;
+    setScanButtons();
 
     try {
       const res = await apiPost('/scan', {
@@ -304,7 +407,9 @@
         parity: 'N',
         stopbits: 1,
       });
+      state.scanPending = false;
       state.scanJobId = res.job_id;
+      setScanButtons();
       state.scanStream = openStream(res.job_id, {
         onDeviceFound: dev => {
           const exists = state.devices.find(d => (
@@ -316,19 +421,21 @@
           }
         },
         onEnd: async state2 => {
-          state.scanJobId = null; setScanButtons(false); hideProgress();
+          state.scanJobId = null; setScanButtons(); hideProgress();
           try {
             const snap = await apiGet('/jobs/' + res.job_id);
             state.devices = (snap.devices || []).map(d => Object.assign({}, d));
             renderDevices();
           } catch (_) {}
+          await loadPorts();
           if (state2 === 'error') toast('Сканирование завершилось с ошибкой', 'error');
           else if (state2 === 'cancelled') toast('Сканирование отменено', 'warn');
           else toast('Сканирование завершено: ' + state.devices.length + ' устройств', 'success');
         },
       });
     } catch (err) {
-      setScanButtons(false); hideProgress();
+      state.scanPending = false;
+      setScanButtons(); hideProgress();
       toast('Сканирование: ' + err.message, 'error');
     }
   }
@@ -338,9 +445,8 @@
     try { await apiPost('/cancel', { job_id: state.scanJobId }); } catch (_) {}
   }
 
-  function setScanButtons(running) {
-    $('flasher-scan-btn').disabled = running;
-    $('flasher-scan-cancel-btn').disabled = !running;
+  function setScanButtons() {
+    syncActionButtons();
   }
 
   /* ── Прошивка ─────────────────────────────────────────────────────────── */
@@ -358,7 +464,8 @@
 
     logReset(`Прошивка ${targets.length} устройств файлом ${file}`);
     setProgress(0, 'Запуск');
-    setFlashButtons(true);
+    state.flashPending = true;
+    setFlashButtons();
 
     try {
       const res = await apiPost('/flash_batch', {
@@ -374,17 +481,21 @@
           in_bootloader: t.in_bootloader,
         })),
       });
+      state.flashPending = false;
       state.flashJobId = res.job_id;
+      setFlashButtons();
       state.flashStream = openStream(res.job_id, {
         onEnd: async state2 => {
-          state.flashJobId = null; setFlashButtons(false); hideProgress();
+          state.flashJobId = null; setFlashButtons(); hideProgress();
+          await loadPorts();
           if (state2 === 'error') toast('Прошивка завершилась с ошибкой', 'error');
           else if (state2 === 'cancelled') toast('Прошивка отменена', 'warn');
           else toast('Прошивка завершена', 'success');
         },
       });
     } catch (err) {
-      setFlashButtons(false); hideProgress();
+      state.flashPending = false;
+      setFlashButtons(); hideProgress();
       toast('Прошивка: ' + err.message, 'error');
     }
   }
@@ -394,9 +505,63 @@
     try { await apiPost('/cancel', { job_id: state.flashJobId }); } catch (_) {}
   }
 
-  function setFlashButtons(running) {
-    $('flasher-flash-btn').disabled = running;
-    $('flasher-flash-cancel-btn').disabled = !running;
+  function setFlashButtons() {
+    syncActionButtons();
+  }
+
+  async function releasePortPollers() {
+    const port = currentPort();
+    if (!port) return;
+    state.portActionBusy = true;
+    syncActionButtons();
+    try {
+      const res = await apiPost('/ports/release', { port: port.key });
+      const lab = (a) => (a || []).map(unitUiLabel).join(', ');
+      if (res.failed && res.failed.length) {
+        throw new Error('не удалось остановить: ' + lab(res.failed));
+      }
+      const stopped = res.stopped_now || [];
+      const already = res.already_released || [];
+      const inactive = res.inactive || [];
+      if (stopped.length) {
+        toast('Службы опроса остановлены: ' + lab(stopped), 'success');
+      } else if (already.length) {
+        toast('Уже были остановлены ранее (сессия демона): ' + lab(already), 'info');
+      } else if (inactive.length) {
+        toast('Службы не были в состоянии active (ничего не останавливали): ' + lab(inactive), 'info');
+      } else {
+        toast('Нет служб для остановки по текущей конфигурации', 'info');
+      }
+    } catch (err) {
+      toast('Освобождение RS-485: ' + err.message, 'error');
+    } finally {
+      state.portActionBusy = false;
+      await loadPorts();
+    }
+  }
+
+  async function restorePortPollers() {
+    const port = currentPort();
+    if (!port) return;
+    state.portActionBusy = true;
+    syncActionButtons();
+    try {
+      const res = await apiPost('/ports/restore', { port: port.key });
+      const lab = (a) => (a || []).map(unitUiLabel).join(', ');
+      if (res.failed && res.failed.length) {
+        throw new Error('не удалось запустить: ' + lab(res.failed));
+      }
+      if (res.restarted && res.restarted.length) {
+        toast('Опрос восстановлен: ' + lab(res.restarted), 'success');
+      } else {
+        toast('Штатный опрос уже работает или не был освобождён вручную', 'info');
+      }
+    } catch (err) {
+      toast('Восстановление опроса: ' + err.message, 'error');
+    } finally {
+      state.portActionBusy = false;
+      await loadPorts();
+    }
   }
 
   /* ── Инициализация ────────────────────────────────────────────────────── */
@@ -404,6 +569,14 @@
   function wireEvents() {
     $('flasher-port').addEventListener('change', updatePortHint);
     $('flasher-refresh-ports-btn').addEventListener('click', loadPorts);
+    $('flasher-release-port-btn').addEventListener('click', releasePortPollers);
+    $('flasher-restore-port-btn').addEventListener('click', restorePortPollers);
+    $('flasher-mode').addEventListener('change', updateScanSummary);
+    $('flasher-addr-min').addEventListener('input', updateScanSummary);
+    $('flasher-addr-max').addEventListener('input', updateScanSummary);
+    document.querySelectorAll('#flasher-baudrates input').forEach(el => {
+      el.addEventListener('change', updateScanSummary);
+    });
     $('flasher-scan-btn').addEventListener('click', startScan);
     $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
     $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(false));

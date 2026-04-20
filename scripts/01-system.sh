@@ -17,7 +17,7 @@ timedatectl set-timezone Europe/Moscow >> "$LOG_FILE" 2>&1 || true
 # ── Required packages ──────────────────────────────────────────────────────
 log INFO "Установка пакетов"
 apt-get update -qq >> "$LOG_FILE" 2>&1
-pkg_install nginx fcgiwrap openssl net-tools psmisc
+pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs
 
 # ── User hmi ──────────────────────────────────────────────────────────────
 if ! id hmi &>/dev/null; then
@@ -55,6 +55,50 @@ KERNEL=="ttyS5", SYMLINK+="RS-485-3 COM4"
 KERNEL=="ttyS7", SYMLINK+="RS-485-4 COM5"
 UDEV
 udevadm control --reload-rules 2>/dev/null || true
+
+# ── USB / microSD: убрать устаревшую связку 99-local.rules + usb-mount@ ─────
+OLD_LOCAL=/etc/udev/rules.d/99-local.rules
+if [ -f "$OLD_LOCAL" ] && grep -q 'usb-mount@' "$OLD_LOCAL" 2>/dev/null; then
+    grep -v 'usb-mount@' "$OLD_LOCAL" > /tmp/99-local.sa02m-strip.tmp 2>/dev/null || true
+    if [ -s /tmp/99-local.sa02m-strip.tmp ]; then
+        mv /tmp/99-local.sa02m-strip.tmp "$OLD_LOCAL"
+        log INFO "Из $OLD_LOCAL удалены строки с usb-mount@"
+    else
+        rm -f "$OLD_LOCAL" /tmp/99-local.sa02m-strip.tmp
+        log INFO "Удалён устаревший $OLD_LOCAL (правила usb-mount)"
+    fi
+    udevadm control --reload-rules 2>/dev/null || true
+fi
+if [ -f /etc/systemd/system/usb-mount@.service ]; then
+    log INFO "Удаление устаревшего usb-mount@.service"
+    systemctl list-units --no-pager --type=service 2>/dev/null \
+        | grep -oE 'usb-mount@[^[:space:]]+\.service' | sort -u \
+        | while read -r u; do systemctl stop "$u" 2>/dev/null || true; done
+    rm -f /etc/systemd/system/usb-mount@.service
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+fi
+if [ -f /usr/local/bin/usb-mount.sh ]; then
+    log INFO "Удаление устаревшего /usr/local/bin/usb-mount.sh"
+    rm -f /usr/local/bin/usb-mount.sh
+fi
+
+# ── USB / microSD: udev + storage-mount (exFAT при пустой ФС или NTFS) ─────
+ETC_REPO="$SCRIPT_DIR/../etc"
+if [ -f "$ETC_REPO/storage-mount.sh" ]; then
+    log INFO "Установка storage-mount (USB / microSD)"
+    install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
+    install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
+    install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
+    install -m 644 "$ETC_REPO/udev/99-storage.rules" /etc/udev/rules.d/99-storage.rules
+    if [ ! -f /etc/sa02m_storage.conf ]; then
+        install -m 644 "$ETC_REPO/sa02m_storage.conf" /etc/sa02m_storage.conf
+    fi
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    udevadm control --reload-rules 2>/dev/null || true
+    log OK "storage-mount и udev 99-storage.rules установлены"
+else
+    log WARN "Нет $ETC_REPO/storage-mount.sh — пропуск установки съёмных носителей"
+fi
 
 # ── Mask unnecessary timers ────────────────────────────────────────────────
 for unit in apt-daily.timer apt-daily-upgrade.timer; do

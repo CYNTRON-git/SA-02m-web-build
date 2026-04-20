@@ -9,18 +9,20 @@ Wants=fcgiwrap.service
 Type=simple
 User=sa02m-flasher
 Group=sa02m-flasher
-SupplementaryGroups=dialout www-data
+SupplementaryGroups=dialout
 WorkingDirectory=/opt/sa02m-flasher
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/sa02m-flasher
 ExecStart=/usr/bin/python3 -m sa02m_flasher.service --config /etc/sa02m_flasher.conf
 # При любом останове — гарантированно запустить mplc обратно, если демон остановил его и не успел восстановить.
-ExecStopPost=-/bin/systemctl start mplc.service
+ExecStopPost=+/bin/sh -c 'for unit in mplc.service mplc4.service; do state=$(/bin/systemctl show -p LoadState --value "$unit" 2>/dev/null || true); [ "$state" = "not-found" ] || /bin/systemctl start "$unit" || true; done'
 Restart=on-failure
 RestartSec=3
+RuntimeDirectory=sa02m-flasher
+RuntimeDirectoryMode=0755
 
 # Жёсткие ограничения файловой системы
-ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run /var/lock
+ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run/sa02m-flasher /var/lock
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes

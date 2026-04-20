@@ -49,6 +49,9 @@ SA02M_GPIO_USB_POWER=""
 
 CACHE_DIR="/tmp/sa02m_status_cache"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
+OPTIONAL_SVCS_JSON="[]"
+SVC_NGINX_UPTIME_S=0
+SVC_FCGIWRAP_UPTIME_S=0
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 json_escape() {
@@ -72,7 +75,8 @@ cache_print_or_build() {
     tmp="${file}.$$"
     if "$builder" > "$tmp"; then
         mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
-        cat "$tmp"
+        # После mv временный путь исчез — читаем уже атомарно записанный кэш.
+        cat "$file"
         rm -f "$tmp"
         return 0
     fi
@@ -96,6 +100,96 @@ gpio_state() {
 
 svc_is_active() {
     systemctl is-active "$1" 2>/dev/null
+}
+
+# Короткое имя для UI: mplc4 вместо mplc4.service (аналогично .socket).
+unit_display_id() {
+    local s=${1:-}
+    case "$s" in
+        *.service) s=${s%.service} ;;
+        *.socket)  s=${s%.socket} ;;
+    esac
+    printf '%s' "$s"
+}
+
+# Аптайн unit в секундах (по MainPID и /proc/<pid>/stat); 0 если не активен или не вычислилось.
+# Нужен заранее вызванный gather_uptime_metrics → UPTIME_SEC.
+unit_uptime_seconds() {
+    local unit=$1 pid boot_j clock_hz proc_start up
+    command -v systemctl >/dev/null 2>&1 || { echo 0; return; }
+    systemctl is-active --quiet "$unit" 2>/dev/null || { echo 0; return; }
+    pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null | head -n1 | tr -d '\r')
+    case "$pid" in ''|0) echo 0; return ;; esac
+    [ -r "/proc/${pid}/stat" ] || { echo 0; return; }
+    boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+    clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    proc_start=$(( boot_j / clock_hz ))
+    up=$(( UPTIME_SEC - proc_start ))
+    (( up < 0 )) && up=0
+    echo "$up"
+}
+
+# Аптайн по slice (MainPID=0 у mplc4 и др.): берём максимум среди PID в cgroup.procs.
+uptime_from_cgroup_slice() {
+    local slice=$1 f pid boot_j clock_hz proc_start up best=0
+    case "$slice" in *.service) ;; *) slice="${slice}.service" ;; esac
+    for f in \
+        "/sys/fs/cgroup/system.slice/${slice}/cgroup.procs" \
+        "/sys/fs/cgroup/unified/system.slice/${slice}/cgroup.procs"; do
+        [ -r "$f" ] || continue
+        while IFS= read -r pid; do
+            case "$pid" in ''|*[!0-9]*) continue ;; esac
+            [ -r "/proc/${pid}/stat" ] || continue
+            boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+            clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+            proc_start=$(( boot_j / clock_hz ))
+            up=$(( UPTIME_SEC - proc_start ))
+            (( up < 0 )) && up=0
+            (( up > best )) && best=$up
+        done < "$f"
+        (( best > 0 )) && echo "$best" && return 0
+    done
+    echo 0
+}
+
+# Доп. платформенные unit’ы (если установлены — показываем в «Службы»).
+# Порядок: сначала типичные имена; дубликаты по Id после unit_display_id отбрасываем.
+gather_optional_platform_services() {
+    OPTIONAL_SVCS_JSON="[]"
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local parts="" sep="" u load id_raw id_disp st_raw st_esc id_esc seen up_sec
+    seen=" "
+    for u in \
+        node-red.service \
+        nodered.service \
+        codesys.service \
+        codesys3.service \
+        codesyscontrol.service \
+        klogic.service \
+        klogicd.service \
+        CODESYSControl.service \
+        CODESYSControlRuntime.service; do
+        load=$(systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+        case "$load" in not-found|'') continue ;; esac
+        id_raw=$(systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+        [ -z "$id_raw" ] && id_raw=$u
+        id_disp=$(unit_display_id "$id_raw")
+        [ -z "$id_disp" ] && continue
+        case "$seen" in *" ${id_disp} "*) continue ;; esac
+        seen="${seen}${id_disp} "
+        # Не использовать «is-active || echo inactive» — при failed/activating попадёт два слова.
+        st_raw=$(systemctl show -p ActiveState --value "$id_raw" 2>/dev/null | head -n1 | tr -d '\r')
+        [ -z "$st_raw" ] && st_raw="inactive"
+        # В списке только реально работающие службы (без failed/activating и «пустых» unit).
+        [ "$st_raw" != "active" ] && continue
+        up_sec=$(unit_uptime_seconds "$id_raw")
+        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$id_raw")
+        id_esc=$(json_escape "$id_disp")
+        st_esc=$(json_escape "$st_raw")
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        sep=,
+    done
+    [ -n "$parts" ] && OPTIONAL_SVCS_JSON="[${parts}]" || OPTIONAL_SVCS_JSON="[]"
 }
 
 net_iface_stats() {
@@ -404,32 +498,119 @@ gather_system_metrics() {
     CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
     CPU_MODEL=$(json_escape "$CPU_MODEL")
     KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
+    STORAGE_AUTO_FORMAT_UI=1
+    STORAGE_MOUNT_INSTALLED=0
+    [ -x /usr/local/bin/storage-mount.sh ] && STORAGE_MOUNT_INSTALLED=1
+    if [ -f /etc/sa02m_storage.conf ]; then
+        # shellcheck source=/dev/null
+        . /etc/sa02m_storage.conf 2>/dev/null || true
+    fi
+    case "${STORAGE_AUTO_FORMAT:-1}" in
+        1|yes|true|on|ON|Y) STORAGE_AUTO_FORMAT_UI=1 ;;
+        *) STORAGE_AUTO_FORMAT_UI=0 ;;
+    esac
 }
 
 gather_services_metrics() {
-    local proc_pids
+    # Статус опроса RS-485: на части образов активен mplc4.service / процесс mplc4,
+    # а mplc.service — только алиас или отсутствует. Раньше учитывался только pgrep -x mplc,
+    # из-за чего дашборд показывал «Неактивен», хотя порт удерживал опрос.
+    # MPLC_UNIT — короткое имя для UI (например mplc4), из systemctl Id / cgroup.
+    local proc_pids active_unit mpl_pid cg_unit mpl_slice try up_try
+    OPTIONAL_SVCS_JSON="[]"
+    mpl_slice=""
     SVC_NGINX=$(svc_is_active nginx)
     SVC_FCGI=$(svc_is_active fcgiwrap)
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
+    MPLC_UNIT_RAW=""
+    SVC_NGINX_UPTIME_S=0
+    SVC_FCGIWRAP_UPTIME_S=0
     gather_uptime_metrics
-    proc_pids=$(pgrep -x mplc 2>/dev/null || true)
-    if [ -n "$proc_pids" ]; then
+
+    SVC_NGINX_UPTIME_S=$(unit_uptime_seconds nginx.service)
+    (( SVC_NGINX_UPTIME_S == 0 )) && SVC_NGINX_UPTIME_S=$(unit_uptime_seconds nginx)
+    SVC_FCGIWRAP_UPTIME_S=$(unit_uptime_seconds fcgiwrap.service)
+    (( SVC_FCGIWRAP_UPTIME_S == 0 )) && SVC_FCGIWRAP_UPTIME_S=$(unit_uptime_seconds fcgiwrap)
+
+    mpl_pid=""
+    active_unit=""
+    if command -v systemctl >/dev/null 2>&1; then
+        for u in mplc.service mplc mplc4.service mplc4; do
+            if systemctl is-active --quiet "$u" 2>/dev/null; then
+                active_unit=$u
+                mpl_pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+                case "$mpl_pid" in ''|0) mpl_pid="" ;; esac
+                break
+            fi
+        done
+    fi
+
+    if [ -n "$active_unit" ]; then
         MPLC_STATUS="active"
-        MPLC_PID=${proc_pids%%$'\n'*}
-        if [ -n "$MPLC_PID" ] && [ -r "/proc/${MPLC_PID}/stat" ]; then
-            BOOT_JIFFIES=$(awk '{print $22}' "/proc/${MPLC_PID}/stat" 2>/dev/null || echo 0)
-            CLOCK_HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
-            PROC_START_S=$(( BOOT_JIFFIES / CLOCK_HZ ))
-            MPLC_UPTIME_S=$(( UPTIME_SEC - PROC_START_S ))
-            (( MPLC_UPTIME_S < 0 )) && MPLC_UPTIME_S=0
+        MPLC_UNIT_RAW=$(systemctl show -p Id --value "$active_unit" 2>/dev/null | head -n1 | tr -d '\r')
+        mpl_slice=$MPLC_UNIT_RAW
+    fi
+
+    if [ -z "$mpl_pid" ]; then
+        proc_pids=$(pgrep -x mplc 2>/dev/null || true)
+        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
+        if [ -n "$proc_pids" ]; then
+            MPLC_STATUS="active"
+            mpl_pid=${proc_pids%%$'\n'*}
         fi
     fi
+
+    if [ -n "$mpl_pid" ] && [ -r "/proc/${mpl_pid}/stat" ]; then
+        BOOT_JIFFIES=$(awk '{print $22}' "/proc/${mpl_pid}/stat" 2>/dev/null || echo 0)
+        CLOCK_HZ=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        PROC_START_S=$(( BOOT_JIFFIES / CLOCK_HZ ))
+        MPLC_UPTIME_S=$(( UPTIME_SEC - PROC_START_S ))
+        (( MPLC_UPTIME_S < 0 )) && MPLC_UPTIME_S=0
+    fi
+
+    if [ -z "$MPLC_UNIT_RAW" ] && [ -n "$mpl_pid" ] && [ -r "/proc/${mpl_pid}/cgroup" ]; then
+        cg_unit=$(grep -oE 'mplc[a-zA-Z0-9._-]*\.service' "/proc/${mpl_pid}/cgroup" 2>/dev/null | head -n1)
+        [ -n "$cg_unit" ] && MPLC_UNIT_RAW=$cg_unit
+        [ -n "$cg_unit" ] && mpl_slice=$cg_unit
+    fi
+
+    if [ -z "$MPLC_UNIT_RAW" ] && command -v systemctl >/dev/null 2>&1; then
+        for u in mplc4.service mplc.service; do
+            case "$(systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')" in
+                not-found|'') continue ;;
+            esac
+            MPLC_UNIT_RAW=$(systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+            [ -n "$MPLC_UNIT_RAW" ] && mpl_slice=$MPLC_UNIT_RAW
+            [ -n "$MPLC_UNIT_RAW" ] && break
+        done
+    fi
+
+    if [ "$MPLC_STATUS" = "active" ] && (( MPLC_UPTIME_S == 0 )); then
+        case "$mpl_slice" in
+            '') [ -n "$MPLC_UNIT_RAW" ] && mpl_slice=$MPLC_UNIT_RAW ;;
+        esac
+        case "$mpl_slice" in
+            *.service) ;;
+            *) [ -n "$mpl_slice" ] && mpl_slice="${mpl_slice}.service" ;;
+        esac
+        [ -n "$mpl_slice" ] && MPLC_UPTIME_S=$(uptime_from_cgroup_slice "$mpl_slice")
+        if (( MPLC_UPTIME_S == 0 )); then
+            for try in mplc4.service mplc.service; do
+                up_try=$(uptime_from_cgroup_slice "$try")
+                (( up_try > 0 )) && MPLC_UPTIME_S=$up_try && break
+            done
+        fi
+    fi
+
+    MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
+    gather_optional_platform_services
 
     SVC_NGINX=$(json_escape "$SVC_NGINX")
     SVC_FCGI=$(json_escape "$SVC_FCGI")
     MPLC_STATUS=$(json_escape "$MPLC_STATUS")
+    MPLC_UNIT=$(json_escape "${MPLC_UNIT_RAW:-}")
 }
 
 gather_hardware_metrics() {
@@ -598,7 +779,9 @@ print_system_json() {
 {
   "board": "${BOARD}",
   "cpu_model": "${CPU_MODEL}",
-  "kernel": "${KERNEL_VER}"
+  "kernel": "${KERNEL_VER}",
+  "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
+  "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED}
 }
 JSON
 }
@@ -607,9 +790,13 @@ print_services_json() {
     cat <<JSON
 {
   "svc_nginx": "${SVC_NGINX}",
+  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
+  "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
-  "mplc_uptime_s": ${MPLC_UPTIME_S}
+  "mplc_unit": "${MPLC_UNIT}",
+  "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "optional_services": ${OPTIONAL_SVCS_JSON:-[]}
 }
 JSON
 }
@@ -664,9 +851,13 @@ print_main_json() {
   "net1_tx_bytes": ${NET1_TX},
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
+  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
+  "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
+  "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
@@ -730,9 +921,13 @@ print_core_json() {
   "net1_tx_bytes": ${NET1_TX},
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
+  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
+  "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
+  "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
@@ -797,9 +992,13 @@ print_full_json() {
   "net1_tx_bytes": ${NET1_TX},
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
+  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
+  "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
+  "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",

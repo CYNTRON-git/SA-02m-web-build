@@ -164,7 +164,8 @@ cat > /etc/sudoers.d/sa02m-www <<'SUDO'
 www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, \
     /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, \
     /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \
-    /usr/bin/systemctl restart networking, /usr/sbin/i2cget, /usr/bin/i2cget
+    /usr/bin/systemctl restart networking, /usr/sbin/i2cget, /usr/bin/i2cget, \
+    /usr/local/sbin/sa02m-set-storage-auto-format
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
