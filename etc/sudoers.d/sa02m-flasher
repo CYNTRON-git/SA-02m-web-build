@@ -10,16 +10,16 @@ Cmnd_Alias SA02M_FLASHER = \
     /bin/systemctl start mplc, \
     /bin/systemctl stop  mplc, \
     /bin/systemctl is-active mplc, \
-    /usr/bin/fuser /dev/COM1, \
-    /usr/bin/fuser /dev/COM2, \
-    /usr/bin/fuser /dev/COM3, \
-    /usr/bin/fuser /dev/COM4, \
-    /usr/bin/fuser /dev/COM5, \
-    /usr/bin/fuser /dev/ttyS0, \
-    /usr/bin/fuser /dev/ttyS3, \
-    /usr/bin/fuser /dev/ttyS4, \
-    /usr/bin/fuser /dev/ttyS5, \
-    /usr/bin/fuser /dev/ttyS7
+    /usr/bin/systemctl start mplc.service, \
+    /usr/bin/systemctl stop  mplc.service, \
+    /usr/bin/systemctl is-active mplc.service, \
+    /usr/bin/systemctl start mplc, \
+    /usr/bin/systemctl stop  mplc, \
+    /usr/bin/systemctl is-active mplc, \
+    /bin/fuser /dev/COM[1-5], \
+    /bin/fuser /dev/ttyS[0-9], \
+    /usr/bin/fuser /dev/COM[1-5], \
+    /usr/bin/fuser /dev/ttyS[0-9]
 
 sa02m-flasher ALL=(root) NOPASSWD: SA02M_FLASHER
 Defaults:sa02m-flasher !requiretty
