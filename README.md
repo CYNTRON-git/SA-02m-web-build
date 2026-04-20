@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.2-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.3-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -35,6 +35,7 @@
   - [Настройки сети](#настройки-сети)
   - [Управление железом (GPIO)](#управление-железом-gpio)
   - [RS-485 интерфейсы](#rs-485-интерфейсы)
+  - [Устройства MR-02м (flasher)](#устройства-mr-02м-flasher)
   - [Страница входа](#страница-входа)
 - [CGI API](#cgi-api)
 - [Конфигурация GPIO](#конфигурация-gpio)
@@ -78,6 +79,14 @@
 - Два Ethernet-интерфейса (eth0, eth1) — статические IP, маска, шлюз, DNS
 - Часовой пояс и дата/время
 - Перезапуск служб / перезагрузка устройства
+
+### Устройства MR-02м (RS-485)
+- **Сканирование COM1–COM5** по Modbus RTU (стандартный адресный режим) и быстрому Modbus (`0xFD 0x46 0x01`, Wiren Board extended scan), подбор скоростей 9600/19200/38400/57600/115200 N1/N2.
+- **Таблица найденных устройств** — адрес, серийный номер, сигнатура, версия приложения и бутлоадера, рабочая скорость, флаг «в bootloader».
+- **Обновление прошивки MR-02м** — по адресу (`reg 0x1000` + `0x2000`) и по серийному номеру через быстрый Modbus (`0xFD 0x46 0x08`), пакетная прошивка нескольких устройств, автоматический переход в bootloader (`reg 129`) и запуск приложения (`reg 1004`).
+- **Репозиторий прошивок** — манифест `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json` с проверкой `sha256`, локальный кеш в `/var/lib/sa02m-flasher/firmware/`, ручная загрузка `.fw/.bin/.elf` через веб-UI.
+- **Координация с опросом** — сервис `mplc.service` и любые другие службы из `MPLC_STOP_SERVICES` в `/etc/sa02m_flasher.conf` автоматически останавливаются на время операции и восстанавливаются после.
+- **Backend** — Python-демон `sa02m-flasher` (systemd unit), unix-сокет `/run/sa02m-flasher.sock`, HTTP API на stdlib, SSE-стрим событий, API-авторизация через тот же session cookie, что и CGI.
 
 ### Безопасность
 - HTTP Basic Auth + сессионный cookie
@@ -219,6 +228,7 @@ apt-get install -y nginx fcgiwrap openssl net-tools psmisc
 | `01-system.sh` | Установка пакетов, настройка locale, udev-симлинки RS-485 |
 | `02-network.sh` | Конфигурация eth0, деплой сетевого watchdog |
 | `03-webserver.sh` | Настройка nginx + fcgiwrap, деплой веб-файлов, sudoers |
+| `04-flasher.sh` | Демон `sa02m-flasher` (Python + systemd), перенос библиотек Modbus/flasher, sudoers, logrotate |
 
 Процесс занимает **1–3 минуты**. По окончании в терминале появится:
 
@@ -330,26 +340,55 @@ web/
 │   ├── lib.sh                    ← общие функции (log, pkg_install, svc_enable)
 │   ├── 01-system.sh              ← система: пакеты, locale, udev, RS-485 симлинки
 │   ├── 02-network.sh             ← сеть: eth0/1, watchdog, udev правила
-│   └── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
+│   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
+│   └── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
 │
 ├── etc/
 │   ├── nginx/
-│   │   └── network_config.conf   ← шаблон nginx (токены __PORT__, __WEB_ROOT__)
+│   │   └── network_config.conf   ← шаблон nginx (токены __PORT__, __WEB_ROOT__) + /api/flasher/
 │   ├── fix-eth.sh                ← скрипт восстановления интерфейса
 │   ├── fix-eth.service           ← systemd unit (oneshot, запуск udev)
 │   ├── net-watchdog.sh           ← демон мониторинга сети
 │   ├── net-watchdog.service      ← systemd unit (Restart=always)
 │   ├── 99-lan-recovery.rules     ← udev правила (eth0/eth1, add/bind)
 │   ├── sa02m_hw.conf             ← шаблон GPIO-пинов
-│   └── sa02m_network.conf        ← шаблон настроек watchdog
+│   ├── sa02m_network.conf        ← шаблон настроек watchdog
+│   ├── sa02m_flasher.conf        ← конфиг демона flasher (URL манифеста, ports, services)
+│   ├── sa02m-flasher.service     ← systemd unit демона flasher
+│   ├── sudoers.d/sa02m-flasher   ← NOPASSWD: systemctl stop/start mplc, fuser
+│   └── logrotate.d/sa02m-flasher ← ротация /var/log/sa02m-flasher/*.log
+│
+├── opt/
+│   └── sa02m-flasher/
+│       ├── requirements.txt
+│       └── sa02m_flasher/        ← Python-пакет демона
+│           ├── service.py        ← HTTP API (stdlib, unix-socket, SSE)
+│           ├── jobs.py           ← очередь задач + события
+│           ├── runner.py         ← связка scanner / flash_protocol
+│           ├── firmware_repo.py  ← index.json, sha256, upload
+│           ├── mplc_lease.py     ← остановка/запуск mplc.service
+│           ├── auth.py           ← проверка session cookie + internal token
+│           ├── config.py         ← загрузка /etc/sa02m_flasher.conf
+│           ├── modbus_rtu.py     ← Modbus RTU + быстрый Modbus (0xFD 0x46)
+│           ├── flash_protocol.py ← прошивка (reg 0x1000/0x2000, 129, 1004)
+│           ├── scanner.py        ← сканер шины
+│           ├── firmware.py       ← разбор .fw/.bin/.elf
+│           ├── serial_port.py    ← serial + flock
+│           ├── serial_ranges.py  ← diapasons серийников
+│           ├── module_profiles.py← сигнатуры MR-02m
+│           ├── modbus_io.py      ← чтение/запись с повторами
+│           ├── modbus_tcp.py     ← опционально
+│           └── flasher_log.py    ← callback-логи
 │
 └── www/
     └── network_config/
-        ├── index.html            ← SPA-шаблон (Dashboard, Сеть, Время, Управление)
+        ├── index.html            ← SPA (Dashboard, Сеть, Время, Управление, Устройства MR-02м)
         ├── login.html            ← страница входа + анимация огня
         ├── static/
-        │   ├── css/main.css      ← дизайн-система (тёмная тема, анимации)
-        │   └── js/app.js         ← вся логика SPA (vanilla JS, без фреймворков)
+        │   ├── css/main.css      ← дизайн-система (тёмная тема, анимации, flasher-*)
+        │   └── js/
+        │       ├── app.js        ← вся логика SPA (vanilla JS, без фреймворков)
+        │       └── flasher.js    ← вкладка «Устройства MR-02м» (SSE, scan/flash)
         └── cgi-bin/
             ├── status.cgi        ← GET /cgi-bin/status.cgi  → JSON метрики
             ├── config.cgi        ← GET /cgi-bin/config.cgi  → JSON настройки
@@ -357,6 +396,7 @@ web/
             ├── apply.cgi         ← POST /cgi-bin/apply.cgi  → сохранить сеть/время
             ├── login.cgi         ← POST /cgi-bin/login.cgi  → аутентификация
             ├── logout.cgi        ← GET  /cgi-bin/logout.cgi → выход
+            ├── auth_check.cgi    ← GET  /_auth_check        → 204/401 для auth_request (flasher)
             ├── restart.cgi       ← POST /cgi-bin/restart.cgi → перезапуск служб
             ├── reboot.cgi        ← POST /cgi-bin/reboot.cgi → перезагрузка
             └── log.cgi           ← GET  /cgi-bin/log.cgi    → журнал установки
@@ -469,6 +509,54 @@ channel=DO&value=1
 
 Симлинки создаются в `/dev/RS-485-N` через udev-правила.  
 Статистика читается из `/proc/tty/driver/serial`.
+
+---
+
+### Устройства MR-02м (flasher)
+
+Вкладка **«Устройства MR-02м»** в веб-интерфейсе предназначена для поиска модулей расширения MR-02м на шинах RS-485 и обновления их прошивки. Все операции выполняются фоновым демоном `sa02m-flasher` (см. [scripts/04-flasher.sh](scripts/04-flasher.sh)).
+
+**Поиск:**
+
+- Выбор любого из COM1–COM5 (соответствуют `/dev/COM1..COM5` и далее `/dev/RS-485-*`).
+- Режим **Modbus RTU** (классический адресный опрос, диапазон `1..247`) и **быстрый Modbus** (Wiren Board extended scan `0xFD 0x46 0x01`, поиск по серийному номеру).
+- Подбор скорости 9600 / 19200 / 38400 / 57600 / 115200 и формата кадра (1/2 стоп-бита).
+- Таблица найденных устройств: адрес, серийный номер, сигнатура (`MR-02m-xxx`), версия приложения и бутлоадера, рабочая скорость, индикатор «в bootloader».
+
+**Обновление прошивки:**
+
+- **По адресу** — стандартный путь `reg 129 → 0x1000 → 0x2000` на скорости 115200 (bootloader).
+- **По серийному номеру** — быстрый Modbus (`0xFD 0x46 0x08/0x09`) — работает даже без уникального адреса на шине.
+- **Пакетный режим** — выбрать несколько устройств и прошить их последовательно.
+- Переход в bootloader выполняется автоматически (`reg 129`), запуск приложения — после прошивки (`reg 1004`).
+
+**Репозиторий прошивок:**
+
+- Удалённый манифест: `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json` (формат описан в [CHANGELOG.md](CHANGELOG.md#103)).
+- Локальный кеш: `/var/lib/sa02m-flasher/firmware/`.
+- Проверка `sha256` перед прошивкой.
+- Ручная загрузка `.fw/.bin/.elf` через UI, с автоматическим извлечением сигнатуры и версии.
+
+**Координация с опросом RS-485:**
+
+На время поиска/прошивки демон временно останавливает службы из `MPLC_STOP_SERVICES` (`/etc/sa02m_flasher.conf`), по умолчанию `mplc.service`, и получает эксклюзивный `flock` на `/dev/COMx`. После завершения или падения демона службы гарантированно восстанавливаются (`atexit` + `ExecStopPost` в systemd unit).
+
+**Архитектура:**
+
+```
+Browser (flasher.js, SSE)
+  ↓ /api/flasher/* (auth_request на session cookie)
+nginx → unix-socket /run/sa02m-flasher.sock
+  ↓
+sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользователь sa02m-flasher)
+  ├── jobs.py           — очередь задач, SSE-события
+  ├── runner.py         — связка scanner.py / flash_protocol.py
+  ├── mplc_lease.py     — sudo systemctl stop/start mplc.service
+  ├── firmware_repo.py  — index.json, sha256, upload
+  └── /dev/COMx (flock, dialout)
+```
+
+**HTTP API:** `/api/flasher/ports`, `/scan`, `/flash`, `/flash_batch`, `/firmware`, `/firmware/refresh`, `/firmware/upload`, `/jobs/<id>`, `/jobs/<id>/events` (SSE), `/jobs/<id>/cancel`.
 
 ---
 
@@ -1101,6 +1189,44 @@ channel=ALARM_LED&value=1 → {"ok": true}
 ```
 Устройство перезагружается через 2 секунды.
 
+### Flasher API (`/api/flasher/*`)
+
+Проксируется nginx на unix-socket `/run/sa02m-flasher.sock`. Требует аутентификации через session cookie (`auth_request → auth_check.cgi`).
+
+| Метод | URL | Назначение |
+|-------|-----|-----------|
+| `GET`  | `/api/flasher/ports` | Список портов COM1–COM5 и их текущее использование (`fuser`) |
+| `POST` | `/api/flasher/scan` | Запустить задачу поиска (`ports[]`, `mode: rtu \| fast \| both`, `bauds[]`, `addr_from/addr_to`) |
+| `POST` | `/api/flasher/flash` | Прошить одно устройство (`port`, `address`, `firmware_id`, `via: address \| serial`) |
+| `POST` | `/api/flasher/flash_batch` | Пакетная прошивка (`items[]`) |
+| `GET`  | `/api/flasher/firmware` | Список прошивок (кеш + манифест) |
+| `POST` | `/api/flasher/firmware/refresh` | Обновить манифест с cyntron.ru |
+| `POST` | `/api/flasher/firmware/upload` | Ручная загрузка `.fw/.bin/.elf` (multipart) |
+| `GET`  | `/api/flasher/jobs/<id>` | Статус задачи |
+| `GET`  | `/api/flasher/jobs/<id>/events` | SSE-поток (логи, прогресс, найденные устройства) |
+| `POST` | `/api/flasher/jobs/<id>/cancel` | Отменить задачу |
+
+Формат `index.json` на cyntron.ru:
+
+```json
+{
+  "schema": 1,
+  "updated": "2025-10-20T12:00:00Z",
+  "firmwares": [
+    {
+      "file": "MR-02m_DI16_1.4.2.fw",
+      "version": "1.4.2",
+      "signatures": ["MR-02m-DI16"],
+      "device": "MR-02m DI16",
+      "size": 65536,
+      "sha256": "…",
+      "released": "2025-09-15",
+      "notes": "Исправлен фронт счётчика"
+    }
+  ]
+}
+```
+
 ---
 
 ## Конфигурация GPIO
@@ -1193,8 +1319,16 @@ tail -f /var/log/fix-eth.log
 | GPIO конфиг | `/etc/sa02m_hw.conf` |
 | Watchdog конфиг | `/etc/sa02m_network.conf` |
 | Пароль nginx | `/etc/nginx/.htpasswd` |
-| Sudoers | `/etc/sudoers.d/sa02m-www` |
+| Sudoers (www) | `/etc/sudoers.d/sa02m-www` |
 | Журнал установки | `/var/log/sa02m_install.log` |
+| Flasher — код | `/opt/sa02m-flasher/` |
+| Flasher — конфиг | `/etc/sa02m_flasher.conf` |
+| Flasher — unit | `/etc/systemd/system/sa02m-flasher.service` |
+| Flasher — sudoers | `/etc/sudoers.d/sa02m-flasher` |
+| Flasher — logrotate | `/etc/logrotate.d/sa02m-flasher` |
+| Flasher — кеш прошивок | `/var/lib/sa02m-flasher/firmware/` |
+| Flasher — логи | `/var/log/sa02m-flasher/` |
+| Flasher — unix-socket | `/run/sa02m-flasher.sock` |
 
 ---
 
