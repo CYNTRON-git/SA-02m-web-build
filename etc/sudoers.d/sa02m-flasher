@@ -1,0 +1,25 @@
+# -*- sudo rules for sa02m-flasher -*-
+# Минимально необходимые команды: старт/стоп служб, опрос занятости /dev/COMx.
+# Все остальное — под правами пользователя sa02m-flasher (группа dialout для /dev/ttyS*).
+#
+# Внимание: устанавливать с правами 0440, см. scripts/04-flasher.sh.
+Cmnd_Alias SA02M_FLASHER = \
+    /bin/systemctl start mplc.service, \
+    /bin/systemctl stop  mplc.service, \
+    /bin/systemctl is-active mplc.service, \
+    /bin/systemctl start mplc, \
+    /bin/systemctl stop  mplc, \
+    /bin/systemctl is-active mplc, \
+    /usr/bin/fuser /dev/COM1, \
+    /usr/bin/fuser /dev/COM2, \
+    /usr/bin/fuser /dev/COM3, \
+    /usr/bin/fuser /dev/COM4, \
+    /usr/bin/fuser /dev/COM5, \
+    /usr/bin/fuser /dev/ttyS0, \
+    /usr/bin/fuser /dev/ttyS3, \
+    /usr/bin/fuser /dev/ttyS4, \
+    /usr/bin/fuser /dev/ttyS5, \
+    /usr/bin/fuser /dev/ttyS7
+
+sa02m-flasher ALL=(root) NOPASSWD: SA02M_FLASHER
+Defaults:sa02m-flasher !requiretty
