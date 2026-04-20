@@ -1,0 +1,4 @@
+# SA-02m flasher: минимальные зависимости.
+# pyserial достаточно для Modbus RTU и быстрого Modbus (0xFD 0x46).
+# HTTP-сервер и SSE — stdlib (http.server + ThreadingMixIn), без aiohttp.
+pyserial>=3.5
