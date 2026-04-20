@@ -173,8 +173,16 @@ html:not([data-theme="light"]) .topbar {
   min-width: 0;
 }
 .topbar-theme-wrap {
-  display: flex; align-items: center; flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
   margin-right: 4px;
+}
+.topbar-theme-label {
+  font-size: .76rem;
+  font-weight: 600;
+  color: var(--text-sec);
+  line-height: 1.2;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
 }
 .topbar-theme-wrap object { display: block; cursor: pointer; pointer-events: auto; }
 .topbar-title { font-size: .95rem; font-weight: 700; color: var(--text); white-space: nowrap; }
@@ -490,13 +498,18 @@ svg .gauge-num {
   box-shadow: var(--shadow-sm);
   transition: border-color .35s ease, box-shadow .35s ease;
 }
-.rs485-port.absent { opacity: .35; }
+.rs485-port.absent { opacity: .92; }
 .rs485-port.act    { border-color: var(--cyan-btn); box-shadow: 0 0 16px #0891b244, var(--shadow-sm); }
 .rs485-hdr { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
-.rs485-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background .4s; }
+.rs485-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background .4s, box-shadow .4s; }
+/* порт есть, опрос активен, без ошибок */
 .rs485-dot.on     { background: var(--green); box-shadow: 0 0 5px var(--green); }
-.rs485-dot.idle   { background: #484f58; }
-.rs485-dot.absent { background: var(--red); }
+/* порт есть, свободен / нет ошибок — нейтральный серый */
+.rs485-dot.idle   { background: var(--text-dim); }
+/* нет устройства / нет опроса — серый */
+.rs485-dot.nopoll { background: var(--text-dim); opacity: 0.85; }
+/* ошибки линии FE, PE, OE */
+.rs485-dot.err    { background: var(--red); box-shadow: 0 0 6px var(--red); }
 .rs485-name { font-size: 15px; font-weight: 700; color: var(--text); }
 .rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; }
 .rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; }
@@ -698,22 +711,43 @@ svg .gauge-num {
 }
 .login-card {
   background: rgba(36,36,38,.9); border: 1px solid var(--border-md);
-  border-radius: var(--radius-xl); padding: 38px 42px;
-  width: 380px; box-shadow: var(--shadow-lg);
+  border-radius: var(--radius-xl); padding: 40px 44px;
+  width: 420px; box-shadow: var(--shadow-lg);
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  font-size: 16px;
 }
-.login-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+.login-logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
 .login-logo svg { width: 32px; height: 32px; }
-.login-logo-img { width: 48px; height: 48px; object-fit: contain; flex-shrink: 0; border-radius: 10px; }
-.login-logo h1  { font-size: 1rem; font-weight: 700; color: var(--text); }
-.login-logo p   { font-size: .72rem; color: var(--text-sec); }
+.login-logo-img { width: 56px; height: 56px; object-fit: contain; flex-shrink: 0; border-radius: 12px; }
+.login-logo-title {
+  font-size: 1.28rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.login-logo-sub {
+  font-size: .9rem;
+  color: var(--text-sec);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.login-card .field label:not(.toggle-inline) {
+  font-size: .95rem;
+  margin-bottom: 8px;
+}
+.login-card .field input:not(.toggle) {
+  font-size: 1.05rem;
+  padding: 13px 16px;
+}
 .login-error {
   background: #2a0f0f; border: 1px solid #4a1e1e; color: var(--red);
-  border-radius: var(--radius-sm); padding: 11px 14px;
-  font-size: .82rem; margin-bottom: 16px;
+  border-radius: var(--radius-sm); padding: 13px 16px;
+  font-size: .95rem; font-weight: 600; line-height: 1.4;
+  margin-bottom: 16px;
 }
-.login-btn { width: 100%; padding: 12px; font-size: .92rem; margin-top: 10px; border-radius: var(--radius-sm); }
+.login-btn { width: 100%; padding: 14px 16px; font-size: 1.05rem; font-weight: 700; margin-top: 12px; border-radius: var(--radius-sm); }
 
 /* ── Misc ────────────────────────────────────────────────────────────────── */
 .divider { border: none; border-top: 1px solid var(--border); margin: 20px 0; }
