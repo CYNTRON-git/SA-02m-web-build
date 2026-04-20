@@ -1,7 +1,7 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# СА-02м  •  Installer  v1.0.2
-# Дата: 2025
+# СА-02м  •  Installer  v1.0.3
+# Дата: 2026
 # Использование: sudo ./install.sh [--ip X.X.X.X] [--port 9999] [--pass cyntron]
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -40,7 +40,7 @@ check_root
 
 echo ""
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║   СА-02м  Installer  v1.0.2          ║"
+echo "  ║   СА-02м  Installer  v1.0.3          ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 echo "  IP    : $IP_ADDRESS"
@@ -52,6 +52,7 @@ echo ""
 bash "$SCRIPT_DIR/scripts/01-system.sh"
 bash "$SCRIPT_DIR/scripts/02-network.sh"
 bash "$SCRIPT_DIR/scripts/03-webserver.sh"
+bash "$SCRIPT_DIR/scripts/04-flasher.sh"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
@@ -63,7 +64,7 @@ log OK "════════════════════════
 echo ""
 
 # ── Check services ─────────────────────────────────────────────────────────
-for svc in nginx fcgiwrap; do
+for svc in nginx fcgiwrap sa02m-flasher; do
     if systemctl is-active "$svc" &>/dev/null; then
         log OK " ✓ $svc работает"
     else

@@ -1,7 +1,127 @@
 # СА-02м Web Interface — Журнал изменений
 
-**Версия 13.0** | Апрель 2025  
-Платформа: Armbian Linux (ARM) · nginx + fcgiwrap · Bash CGI
+**Версия 1.0.3** | Апрель 2026  
+Платформа: Armbian Linux (ARM) · nginx + fcgiwrap · Bash CGI + Python-демон `sa02m-flasher`
+
+---
+
+## 1.0.3 — Устройства MR-02м (RS-485 / Modbus RTU / прошивка)
+
+### Что нового
+
+- Новая вкладка «Устройства MR-02м» в веб-интерфейсе: выбор RS-485 (COM1–COM5),
+  запуск сканирования в двух режимах (стандартный адресный и быстрый Modbus
+  `0xFD 0x46 0x01`), таблица найденных устройств (адрес, S/N, сигнатура, версии
+  приложения и бутлоадера, скорость), массовая прошивка выбранных устройств.
+- Поддержка прошивки MR-02m по адресу (reg `0x1000` + `0x2000`) и по серийному
+  номеру через быстрый Modbus (`0xFD 0x46 0x08/0x09`), автоматический перевод в
+  бутлоадер (reg `129`) и переход в приложение (reg `1004`) после прошивки.
+- Репозиторий прошивок:
+  - основной источник — манифест `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json`
+    (схема описана ниже), с локальным кешем в `/var/lib/sa02m-flasher/firmware/`;
+  - резервный путь — ручная загрузка `.fw/.bin/.elf` через веб-UI (сигнатура и
+    версия извлекаются из info-блока `.fw`).
+- Координация с опросом RS-485: на время сканирования/прошивки демон
+  останавливает службу `mplc.service` (список настраивается в
+  `/etc/sa02m_flasher.conf`, ключ `MPLC_STOP_SERVICES`) и гарантированно
+  запускает её обратно (в том числе `ExecStopPost`).
+- Эксклюзивный захват порта через `flock` на `/var/lock/sa02m-flasher-<port>.lock`
+  и предварительная проверка `fuser` — исключает конфликт двух операций.
+
+### Архитектура
+
+- **Backend:** Python 3 демон `sa02m-flasher` (systemd unit
+  `/etc/systemd/system/sa02m-flasher.service`). HTTP-API на stdlib
+  `http.server.ThreadingHTTPServer` поверх unix-сокета
+  `/run/sa02m-flasher.sock`. События (прогресс, лог, найденные устройства)
+  стримятся в UI через Server-Sent Events.
+- **Библиотека Modbus/flash:** перенос из референсного проекта
+  `MR-02m-flasher/flasher_windows` (модули `modbus_rtu.py`, `modbus_io.py`,
+  `serial_port.py`, `scanner.py`, `flash_protocol.py`, `firmware.py`,
+  `serial_ranges.py`, `module_profiles.py`, `flasher_log.py`,
+  `modbus_tcp.py`). Копируются как есть, без GUI-кода.
+- **Nginx:** новые location-блоки `/_auth_check` (внутренняя авторизация
+  через cookie `session_token`) и `/api/flasher/*` → `proxy_pass`
+  `http://unix:/run/sa02m-flasher.sock`. SSE-эндпоинт выделен отдельно с
+  `proxy_buffering off` и `proxy_read_timeout 3600s`.
+- **Frontend:** новая страница `Устройства MR-02м` (`index.html`),
+  модуль `www/network_config/static/js/flasher.js`, стили в
+  `static/css/main.css`.
+
+### Безопасность
+
+- Отдельный системный пользователь `sa02m-flasher` (не `www-data`):
+  в группах `dialout` (для `/dev/ttyS*`) и `www-data` (для доступа к сокету).
+- `sudoers.d/sa02m-flasher` разрешает только конкретные команды
+  (`systemctl {start,stop,is-active} mplc.service` и `fuser /dev/COM{1..5}`,
+  `fuser /dev/ttyS{0,3,4,5,7}`).
+- Systemd unit с усиленными параметрами (`ProtectSystem=strict`,
+  `PrivateTmp`, `NoNewPrivileges`, `ReadWritePaths`).
+- Авторизация API — по cookie `session_token=cyntron_session` через
+  `auth_request /_auth_check` (CGI `auth_check.cgi`). При необходимости —
+  дополнительный общий секрет `INTERNAL_TOKEN` (заголовок `X-SA02M-Auth`).
+
+### Схема `index.json` на cyntron.ru
+
+```json
+{
+  "schema": 1,
+  "updated": "2026-04-20",
+  "channels": {
+    "stable": [
+      {
+        "file": "MR-02m_1.2.3.0.fw",
+        "version": "1.2.3.0",
+        "signatures": ["mp02m"],
+        "device": "MR-02m",
+        "size": 34816,
+        "sha256": "…",
+        "released": "2026-03-15",
+        "notes": "исправление опроса ADS1220"
+      }
+    ],
+    "beta": []
+  }
+}
+```
+
+Поля: `schema` (версия формата, сейчас `1`), `updated` (дата обновления
+манифеста), `channels.<name>[]` (каналы `stable`/`beta`). Для каждой прошивки:
+`file` (имя в каталоге `firmware/`), `version` (обязательно X.Y.Z.W — видно в
+UI), `signatures[]` (допустимые сигнатуры устройств — демон подбирает
+совместимые прошивки по сигнатуре из Modbus-регистра `290`), `size`, `sha256`
+(для контроля целостности при скачивании), `released`, `notes`.
+
+### Файлы
+
+| Назначение | Путь в репозитории | На устройстве |
+|-----------|--------------------|---------------|
+| Python-демон | `opt/sa02m-flasher/sa02m_flasher/` | `/opt/sa02m-flasher/` |
+| Конфигурация демона | `etc/sa02m_flasher.conf` | `/etc/sa02m_flasher.conf` |
+| systemd unit | `etc/sa02m-flasher.service` | `/etc/systemd/system/sa02m-flasher.service` |
+| sudoers | `etc/sudoers.d/sa02m-flasher` | `/etc/sudoers.d/sa02m-flasher` |
+| logrotate | `etc/logrotate.d/sa02m-flasher` | `/etc/logrotate.d/sa02m-flasher` |
+| CGI auth для nginx | `www/network_config/cgi-bin/auth_check.cgi` | `/var/www/network_config/cgi-bin/auth_check.cgi` |
+| UI вкладка | `www/network_config/index.html` + `static/js/flasher.js` + `static/css/main.css` | `/var/www/network_config/…` |
+| Скрипт установки | `scripts/04-flasher.sh` (+ правки `install.sh`, `03-webserver.sh` — nginx) | — |
+
+### HTTP API (короткая справка)
+
+Все эндпоинты — под префиксом `/api/flasher/`.
+
+| Метод | Путь | Описание |
+|-------|------|----------|
+| GET  | `/health` | Проверка живости (открыт без авторизации). |
+| GET  | `/ports` | Список COM1..COM5 (device_path, занятость, активная задача, статус mplc). |
+| GET  | `/firmware` | Статус репозитория + список прошивок. |
+| POST | `/firmware/refresh` | Перечитать `index.json`. Тело `{"download": bool}`. |
+| POST | `/firmware/upload` | multipart/form-data `file=<.fw/.bin/.elf>`. |
+| POST | `/scan` | Старт сканирования (JSON: `port`, `mode`, `baudrates[]`, `addr_min/max`, `parity`, `stopbits`). |
+| POST | `/flash` / `/flash_batch` | Прошивка одного/нескольких устройств. |
+| POST | `/cancel` | `{"job_id": "..."}` — отмена задачи. |
+| GET  | `/jobs` | Список последних задач (snapshot). |
+| GET  | `/jobs/<id>` | Снэпшот задачи (state, progress, events, devices). |
+| GET  | `/jobs/<id>/events` | SSE-стрим (Content-Type: text/event-stream). |
 
 ---
 
