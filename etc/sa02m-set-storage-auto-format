@@ -1,0 +1,16 @@
+#!/bin/bash
+# Вызывается от root (sudo). Аргумент: 0 | 1
+set -euo pipefail
+case "${1:-}" in
+  0|1) ;;
+  *) exit 1 ;;
+esac
+umask 022
+cat > /etc/sa02m_storage.conf <<EOF
+# Управляется веб-панелью СА-02м (scripts install). Не правьте вручную без необходимости.
+# 1 — при подключении пустой или NTFS раздел перезаписывается в exFAT; 0 — форматирование отключено.
+STORAGE_AUTO_FORMAT=$1
+EOF
+chmod 644 /etc/sa02m_storage.conf
+rm -f /tmp/sa02m_status_cache/system.json 2>/dev/null || true
+exit 0

@@ -1,0 +1,7 @@
+# USB-накопители: systemd шаблон storage-mount@.service
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
+
+# microSD на mmcblk3 (как на типичном образе СА-02м)
+SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"

@@ -313,8 +313,74 @@ svg .gauge-num {
 
 /* ── Service badges ──────────────────────────────────────────────────────── */
 .svc-list { display: flex; flex-direction: column; gap: 7px; }
-.svc-row  { display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
-.svc-row .name { color: var(--text); }
+.widget-svc {
+  min-width: 0;
+  overflow: hidden;
+}
+.widget-svc .widget-title {
+  text-align: left;
+  margin-bottom: 6px;
+}
+.widget-svc .svc-list {
+  min-width: 0;
+  gap: 3px;
+  align-items: stretch;
+}
+/* Строка сетки: по умолчанию только контейнер (детали — .widget-svc / .svc-row-eth-traffic) */
+.svc-row {
+  display: grid;
+  align-items: center;
+  min-width: 0;
+}
+/* Виджет «Службы»: одна компактная строка на службу (имя · аптайм · статус) */
+.widget-svc .svc-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  line-height: 1.2;
+  box-sizing: border-box;
+}
+.widget-svc .svc-row .name {
+  color: var(--text);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: left;
+}
+.widget-svc .svc-row .svc-uptime {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+  color: var(--text-sec);
+  font-size: 9px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.widget-svc .svc-row .badge {
+  flex: 0 0 auto;
+  max-width: 38%;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  letter-spacing: 0;
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .badge {
   font-size: 12px; font-weight: 700;
   text-transform: none;
@@ -551,13 +617,26 @@ svg .gauge-num {
   font-weight: 800;
   letter-spacing: -0.02em;
 }
-/* Ethernet 0/1: строки RX/TX — крупнее и жирнее */
+/* Ethernet 0: RX/TX — две колонки, не как «Службы» */
 .svc-row-eth-traffic {
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 10px;
+  justify-items: stretch;
+  text-align: inherit;
+  min-height: 0;
+  padding: 0;
+  line-height: inherit;
   font-size: 1.02rem;
 }
 .svc-row-eth-traffic .name {
   font-weight: 700;
   color: var(--text-sec);
+  justify-self: start;
+  text-align: left;
+}
+.svc-row-eth-traffic .eth-traffic-val {
+  justify-self: end;
+  text-align: right;
 }
 .eth-traffic-val {
   font-size: 1.12rem;
@@ -658,6 +737,15 @@ svg .gauge-num {
   gap: 14px; margin-bottom: 28px;
   align-items: stretch;
 }
+/* Управление: четыре карточки в один ряд (узкий экран — гориз. прокрутка) */
+.ctrl-grid.ctrl-grid-actions {
+  grid-template-columns: repeat(4, minmax(200px, 1fr));
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.ctrl-grid.ctrl-grid-actions > .ctrl-card {
+  min-width: 200px;
+}
 .ctrl-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 20px;
@@ -687,6 +775,12 @@ svg .gauge-num {
   margin-top: 6px;
 }
 .ctrl-card .mono.text-sm { font-size: .9rem; }
+.storage-fmt-hint {
+  font-size: .9rem;
+  color: var(--text-sec);
+  line-height: 1.45;
+  margin: 0;
+}
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
 .toast-area { position: fixed; top: 64px; right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; }
@@ -774,8 +868,15 @@ svg .gauge-num {
 .pulse { animation: pulse 2s infinite; }
 .blink { animation: blink 1.2s ease infinite; }
 
-/* ── Flasher (MR-02м) ────────────────────────────────────────────────────── */
+/* ── Flasher (RS-485) ────────────────────────────────────────────────────── */
 .widget-wide { grid-column: 1 / -1; }
+
+.flasher-control-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
 
 .flasher-grid {
   display: grid;
@@ -784,31 +885,103 @@ svg .gauge-num {
   margin-top: 14px;
 }
 
-.flasher-row {
+.flasher-port-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.flasher-port-value {
+  font-size: 24px;
+  letter-spacing: -0.03em;
+}
+.flasher-icon-btn {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+}
+.flasher-icon-btn svg { width: 16px; height: 16px; }
+
+.flasher-badge-stack {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
-  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 10px;
 }
 .flasher-field {
   display: flex; flex-direction: column; gap: 4px;
   font-size: .78rem; color: var(--text-sec);
 }
+.flasher-field + .flasher-field { margin-top: 10px; }
 .flasher-field select,
 .flasher-field input[type="number"] {
   background: var(--bg-input); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 6px 8px; min-width: 150px;
+  padding: 8px 10px; min-width: 0; width: 100%;
 }
-.flasher-field select[multiple] { min-width: 110px; }
 .flasher-range {
-  display: inline-flex; align-items: center; gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
   color: var(--text);
 }
-.flasher-range input { width: 70px; }
+.flasher-range input { width: 100%; min-width: 0; }
+
+.flasher-baud-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  gap: 8px;
+}
+.flasher-baud-chip {
+  display: block;
+}
+.flasher-baud-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.flasher-baud-chip span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-sec);
+  font-weight: 600;
+  transition: border-color var(--transition), background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+.flasher-baud-chip input:focus-visible + span {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow);
+}
+.flasher-baud-chip input:checked + span {
+  border-color: var(--cyan);
+  background: var(--cyan-dim);
+  color: var(--text);
+}
+
 .flasher-actions {
   display: inline-flex; align-items: center; gap: 8px;
   margin-left: auto;
+}
+.flasher-actions-widget {
+  margin-left: 0;
+  flex-wrap: wrap;
+}
+.flasher-port-actions {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.flasher-status-text {
+  min-height: 3.8em;
+  line-height: 1.45;
 }
 .flasher-hint {
   margin-top: 8px; font-size: .78rem; color: var(--text-sec);
@@ -816,7 +989,7 @@ svg .gauge-num {
 }
 
 .flasher-progress {
-  margin-top: 12px;
+  margin-top: 0;
   display: flex; flex-direction: column; gap: 4px;
 }
 .flasher-progress-bar {
@@ -897,4 +1070,5 @@ svg .gauge-num {
   .hw-grid    { grid-template-columns: 1fr; }
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
+  .flasher-control-grid { grid-template-columns: 1fr; }
 }

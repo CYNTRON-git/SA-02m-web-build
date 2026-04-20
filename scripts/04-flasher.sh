@@ -32,8 +32,6 @@ if ! id "$FLASHER_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$FLASHER_USER"
 fi
 usermod -aG dialout "$FLASHER_USER" >/dev/null 2>&1 || true
-# Для доступа к /run/sa02m-flasher.sock из www-data (nginx) — общая группа.
-usermod -aG www-data "$FLASHER_USER" >/dev/null 2>&1 || true
 
 # ── Каталоги ──────────────────────────────────────────────────────────────
 install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$INSTALL_DIR"
@@ -54,10 +52,16 @@ if [ ! -f /etc/sa02m_flasher.conf ]; then
     install -m 0640 -o root -g "$FLASHER_USER" "$ETC_DIR/sa02m_flasher.conf" /etc/sa02m_flasher.conf
 else
     log INFO "/etc/sa02m_flasher.conf уже существует — оставляю без изменений"
+    if grep -q '^SOCKET_PATH=/run/sa02m-flasher\.sock$' /etc/sa02m_flasher.conf; then
+        log INFO "Миграция SOCKET_PATH → /run/sa02m-flasher/flasher.sock"
+        sed -i 's|^SOCKET_PATH=/run/sa02m-flasher\.sock$|SOCKET_PATH=/run/sa02m-flasher/flasher.sock|' /etc/sa02m_flasher.conf
+    fi
 fi
 
 # sudoers для управления службами/fuser
 install -m 0440 -o root -g root "$ETC_DIR/sudoers.d/sa02m-flasher" /etc/sudoers.d/sa02m-flasher
+# visudo на Linux не принимает CRLF в sudoers-файлах, а репозиторий может приезжать с Windows line endings.
+sed -i 's/\r$//' /etc/sudoers.d/sa02m-flasher
 visudo -cf /etc/sudoers.d/sa02m-flasher >> "$LOG_FILE" 2>&1 && log OK "sudoers flasher OK" \
     || log WARN "visudo не принял sudoers.d/sa02m-flasher — проверьте вручную"
 
@@ -73,11 +77,14 @@ systemctl restart sa02m-flasher.service >> "$LOG_FILE" 2>&1 && log OK "sa02m-fla
     || log WARN "sa02m-flasher не стартовал (journalctl -u sa02m-flasher -n 100)"
 
 # ── Проверки ──────────────────────────────────────────────────────────────
-sleep 1
-if [ -S /run/sa02m-flasher.sock ]; then
-    log OK "Unix-сокет /run/sa02m-flasher.sock создан"
+for _ in $(seq 1 10); do
+    [ -S /run/sa02m-flasher/flasher.sock ] && break
+    sleep 1
+done
+if [ -S /run/sa02m-flasher/flasher.sock ]; then
+    log OK "Unix-сокет /run/sa02m-flasher/flasher.sock создан"
 else
-    log WARN "Сокет /run/sa02m-flasher.sock не создан — смотрите journalctl"
+    log WARN "Сокет /run/sa02m-flasher/flasher.sock не создан — смотрите journalctl"
 fi
 
 log OK "=== [04] sa02m-flasher установлен ==="

@@ -86,7 +86,7 @@
 - **Обновление прошивки MR-02м** — по адресу (`reg 0x1000` + `0x2000`) и по серийному номеру через быстрый Modbus (`0xFD 0x46 0x08`), пакетная прошивка нескольких устройств, автоматический переход в bootloader (`reg 129`) и запуск приложения (`reg 1004`).
 - **Репозиторий прошивок** — манифест `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json` с проверкой `sha256`, локальный кеш в `/var/lib/sa02m-flasher/firmware/`, ручная загрузка `.fw/.bin/.elf` через веб-UI.
 - **Координация с опросом** — сервис `mplc.service` и любые другие службы из `MPLC_STOP_SERVICES` в `/etc/sa02m_flasher.conf` автоматически останавливаются на время операции и восстанавливаются после.
-- **Backend** — Python-демон `sa02m-flasher` (systemd unit), unix-сокет `/run/sa02m-flasher.sock`, HTTP API на stdlib, SSE-стрим событий, API-авторизация через тот же session cookie, что и CGI.
+- **Backend** — Python-демон `sa02m-flasher` (systemd unit), unix-сокет `/run/sa02m-flasher/flasher.sock`, HTTP API на stdlib, SSE-стрим событий, API-авторизация через тот же session cookie, что и CGI.
 
 ### Безопасность
 - HTTP Basic Auth + сессионный cookie
@@ -546,7 +546,7 @@ channel=DO&value=1
 ```
 Browser (flasher.js, SSE)
   ↓ /api/flasher/* (auth_request на session cookie)
-nginx → unix-socket /run/sa02m-flasher.sock
+nginx → unix-socket /run/sa02m-flasher/flasher.sock
   ↓
 sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользователь sa02m-flasher)
   ├── jobs.py           — очередь задач, SSE-события
@@ -1191,7 +1191,7 @@ channel=ALARM_LED&value=1 → {"ok": true}
 
 ### Flasher API (`/api/flasher/*`)
 
-Проксируется nginx на unix-socket `/run/sa02m-flasher.sock`. Требует аутентификации через session cookie (`auth_request → auth_check.cgi`).
+Проксируется nginx на unix-socket `/run/sa02m-flasher/flasher.sock`. Требует аутентификации через session cookie (`auth_request → auth_check.cgi`).
 
 | Метод | URL | Назначение |
 |-------|-----|-----------|
@@ -1330,7 +1330,7 @@ tail -f /var/log/fix-eth.log
 | Flasher — logrotate | `/etc/logrotate.d/sa02m-flasher` |
 | Flasher — кеш прошивок | `/var/lib/sa02m-flasher/firmware/` |
 | Flasher — логи | `/var/log/sa02m-flasher/` |
-| Flasher — unix-socket | `/run/sa02m-flasher.sock` |
+| Flasher — unix-socket | `/run/sa02m-flasher/flasher.sock` |
 
 ---
 

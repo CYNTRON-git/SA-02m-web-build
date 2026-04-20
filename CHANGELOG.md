@@ -33,7 +33,7 @@
 - **Backend:** Python 3 демон `sa02m-flasher` (systemd unit
   `/etc/systemd/system/sa02m-flasher.service`). HTTP-API на stdlib
   `http.server.ThreadingHTTPServer` поверх unix-сокета
-  `/run/sa02m-flasher.sock`. События (прогресс, лог, найденные устройства)
+  `/run/sa02m-flasher/flasher.sock`. События (прогресс, лог, найденные устройства)
   стримятся в UI через Server-Sent Events.
 - **Библиотека Modbus/flash:** перенос из референсного проекта
   `MR-02m-flasher/flasher_windows` (модули `modbus_rtu.py`, `modbus_io.py`,
@@ -42,7 +42,7 @@
   `modbus_tcp.py`). Копируются как есть, без GUI-кода.
 - **Nginx:** новые location-блоки `/_auth_check` (внутренняя авторизация
   через cookie `session_token`) и `/api/flasher/*` → `proxy_pass`
-  `http://unix:/run/sa02m-flasher.sock`. SSE-эндпоинт выделен отдельно с
+  `http://unix:/run/sa02m-flasher/flasher.sock`. SSE-эндпоинт выделен отдельно с
   `proxy_buffering off` и `proxy_read_timeout 3600s`.
 - **Frontend:** новая страница `Устройства MR-02м` (`index.html`),
   модуль `www/network_config/static/js/flasher.js`, стили в

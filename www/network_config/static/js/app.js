@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
@@ -26,7 +26,10 @@ function initNav() {
       el.classList.add('active');
       const pane = document.getElementById('tab-' + tab);
       if (pane) pane.classList.add('active');
-      if (tab === 'system') loadLog();
+      if (tab === 'system') {
+        loadLog();
+        fetchSystemWidget();
+      }
       if (tab === 'network' || tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
     });
@@ -75,6 +78,31 @@ function fmtUptime(s) {
   if (d) return d + 'д ' + h + 'ч ' + m + 'м';
   if (h) return h + 'ч ' + m + 'м';
   return m + 'м ' + (s % 60) + 'с';
+}
+
+/** Компактный аптайм для колонки «Службы» (короче, без секунд при наличии минут). */
+function fmtUptimeSvc(s) {
+  s = parseInt(s, 10) || 0;
+  if (s <= 0) return '—';
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return d + 'д\u00a0' + h + 'ч';
+  if (h) return h + 'ч\u00a0' + m + 'м';
+  if (m) return m + 'м';
+  return s + 'с';
+}
+
+/** Колонка аптайма в строке «Службы»: — если нет данных или 0 с. */
+function setSvcRowUptime(elId, sec) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const s = parseInt(sec, 10);
+  if (!Number.isFinite(s) || s <= 0) {
+    el.textContent = '—';
+    el.removeAttribute('title');
+  } else {
+    el.textContent = fmtUptimeSvc(s);
+    el.title = fmtUptime(s);
+  }
 }
 function setText(id, val)  { const e = document.getElementById(id); if (e) e.textContent = val; }
 function setHtml(id, val)  { const e = document.getElementById(id); if (e) e.innerHTML = val; }
@@ -159,6 +187,46 @@ function svcBadge(id, state) {
   const ok = state === 'active';
   el.textContent = ok ? 'Активен' : 'Неактивен';
   el.className = 'badge ' + (ok ? 'badge-ok pulse' : 'badge-err');
+}
+
+/** Короткое имя unit для подписи (mplc4 вместо mplc4.service). */
+function unitUiLabel(name) {
+  return String(name || '').replace(/\.(service|socket)$/i, '');
+}
+
+/** Динамические строки: node-red, CODESYS, klogic и др. (если unit есть на образе). */
+function renderOptionalServices(list) {
+  const host = document.getElementById('svc-optional-rows');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!Array.isArray(list) || !list.length) return;
+  list.forEach((s, i) => {
+    const id = (s && s.id) ? unitUiLabel(String(s.id)) : '';
+    if (!id) return;
+    const safe = id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'name mono';
+    nameSpan.textContent = id;
+    const upSpan = document.createElement('span');
+    upSpan.className = 'svc-uptime mono';
+    const up = parseInt(s.uptime_s, 10);
+    if (!Number.isFinite(up) || up <= 0) {
+      upSpan.textContent = '—';
+    } else {
+      upSpan.textContent = fmtUptimeSvc(up);
+      upSpan.title = fmtUptime(up);
+    }
+    const badge = document.createElement('span');
+    badge.className = 'badge badge-unk';
+    badge.id = 'svc-opt-' + safe + '-' + i;
+    row.appendChild(nameSpan);
+    row.appendChild(upSpan);
+    row.appendChild(badge);
+    host.appendChild(row);
+    svcBadge(badge.id, s.status);
+  });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -342,15 +410,86 @@ function applySystemStatus(d) {
   if (d.board)     setText('board-info',  d.board);
   if (d.cpu_model) setText('cpu-model',   d.cpu_model);
   if (d.kernel)    setText('kernel-info', 'Ядро: ' + d.kernel);
+
+  const btn = document.getElementById('storage-format-toggle');
+  const lbl = document.getElementById('storage-format-toggle-label');
+  if (btn) {
+    const installed = d.storage_mount_installed === 1;
+    const on = d.storage_auto_format === 1;
+    btn.dataset.storageOn = on ? '1' : '0';
+    if (!installed) {
+      btn.disabled = true;
+      if (lbl) lbl.textContent = 'НЕ УСТАНОВЛЕНО';
+      btn.className = 'btn btn-danger';
+      btn.title = 'Нет storage-mount — выполните установку системы (install.sh)';
+    } else {
+      btn.disabled = false;
+      btn.title = 'Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется';
+      if (lbl) lbl.textContent = on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО';
+      btn.className = 'btn btn-danger';
+    }
+  }
+}
+
+function toggleStorageAutoFormat() {
+  const btn = document.getElementById('storage-format-toggle');
+  if (!btn || btn.disabled) return;
+  const on = btn.dataset.storageOn === '1';
+  setStorageAutoFormat(on ? 0 : 1);
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+  const ms = timeoutMs || 12000;
+  const c = new AbortController();
+  const t = setTimeout(function () { c.abort(); }, ms);
+  return fetch(url, Object.assign({}, options || {}, { signal: c.signal })).finally(function () {
+    clearTimeout(t);
+  });
+}
+
+function setStorageAutoFormat(enabled) {
+  const body = 'enabled=' + encodeURIComponent(enabled ? '1' : '0');
+  fetchWithTimeout('/cgi-bin/storage_format_set.cgi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+    credentials: 'same-origin'
+  }, 12000)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j.ok) {
+        fetchSystemWidget();
+        toast(enabled ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО', 'success');
+      } else if (j.error === 'storage_tools_not_installed') {
+        toast('На устройстве не установлен storage-mount (запустите установщик)', 'error');
+      } else {
+        toast('Ошибка: ' + (j.error || 'unknown'), 'error');
+      }
+    })
+    .catch(function (e) {
+      if (e && e.name === 'AbortError') {
+        toast('Таймаут запроса — интерфейс не завис, повторите', 'error');
+      } else {
+        toast('Нет связи с сервером', 'error');
+      }
+    });
 }
 
 function applyServicesStatus(d) {
   svcBadge('svc-nginx',    d.svc_nginx);
   svcBadge('svc-fcgi',     d.svc_fcgiwrap);
   svcBadge('svc-mplc',     d.mplc_status);
-  if (d.mplc_status === 'active' && d.mplc_uptime_s > 0)
-    setText('mplc-uptime', fmtUptime(d.mplc_uptime_s));
-  else setText('mplc-uptime', '');
+  setSvcRowUptime('svc-nginx-uptime', d.svc_nginx_uptime_s);
+  setSvcRowUptime('svc-fcgi-uptime', d.svc_fcgiwrap_uptime_s);
+  const unitEl = document.getElementById('mplc-svc-name');
+  if (unitEl) {
+    const u = (d.mplc_unit !== undefined && d.mplc_unit !== null && String(d.mplc_unit).trim())
+      ? unitUiLabel(String(d.mplc_unit).trim())
+      : '';
+    unitEl.textContent = u || '—';
+  }
+  setSvcRowUptime('mplc-svc-uptime', d.mplc_uptime_s);
+  renderOptionalServices(d.optional_services);
 }
 
 function applyHardwareStatus(d) {
@@ -999,4 +1138,5 @@ document.addEventListener('DOMContentLoaded', () => {
   window.loadLog   = loadLog;
   window.syncTimeFromPC = syncTimeFromPC;
   window.exportInstallLog = exportInstallLog;
+  window.toggleStorageAutoFormat = toggleStorageAutoFormat;
 });

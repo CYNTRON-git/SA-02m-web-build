@@ -52,12 +52,64 @@ def _run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
     )
 
 
-def is_service_active(service: str) -> bool:
+def _service_candidates(service: str) -> List[str]:
+    raw = str(service or "").strip()
+    if not raw:
+        return []
+    candidates: List[str] = []
+
+    def add(name: str) -> None:
+        name = str(name or "").strip()
+        if name and name not in candidates:
+            candidates.append(name)
+
+    add(raw)
+    bare = raw[:-8] if raw.endswith(".service") else raw
+    add(bare)
+    add(f"{bare}.service")
+    if bare == "mplc":
+        add("mplc4")
+        add("mplc4.service")
+    elif bare == "mplc4":
+        add("mplc")
+        add("mplc.service")
+    return candidates
+
+
+def service_load_state(service: str) -> str:
     systemctl = _systemctl()
     if not systemctl:
-        return False
-    res = _run([systemctl, "is-active", "--quiet", service], timeout=5.0)
-    return res.returncode == 0
+        return "unknown"
+    res = _run([systemctl, "show", "-p", "LoadState", "--value", service], timeout=5.0)
+    if res.returncode != 0:
+        return "unknown"
+    return (res.stdout or "").strip() or "unknown"
+
+
+def service_exists(service: str) -> bool:
+    return service_load_state(service) != "not-found"
+
+
+def resolve_service_name(service: str) -> Optional[str]:
+    for candidate in _service_candidates(service):
+        if service_exists(candidate):
+            return candidate
+    return None
+
+
+def active_service_name(service: str) -> Optional[str]:
+    systemctl = _systemctl()
+    if not systemctl:
+        return None
+    for candidate in _service_candidates(service):
+        res = _run([systemctl, "is-active", "--quiet", candidate], timeout=5.0)
+        if res.returncode == 0:
+            return candidate
+    return None
+
+
+def is_service_active(service: str) -> bool:
+    return active_service_name(service) is not None
 
 
 def stop_service(service: str) -> bool:
@@ -66,10 +118,14 @@ def stop_service(service: str) -> bool:
     if not systemctl:
         log.warning("systemctl не найден, пропускаю stop %s", service)
         return False
-    cmd = [sudo, systemctl, "stop", service] if sudo else [systemctl, "stop", service]
+    actual = resolve_service_name(service)
+    if not actual:
+        log.info("Служба %s не найдена, stop пропущен", service)
+        return False
+    cmd = [sudo, systemctl, "stop", actual] if sudo else [systemctl, "stop", actual]
     res = _run(cmd, timeout=15.0)
     ok = res.returncode == 0
-    log.info("systemctl stop %s → rc=%d stderr=%r", service, res.returncode, (res.stderr or "").strip())
+    log.info("systemctl stop %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
     return ok
 
 
@@ -79,10 +135,14 @@ def start_service(service: str) -> bool:
     if not systemctl:
         log.warning("systemctl не найден, пропускаю start %s", service)
         return False
-    cmd = [sudo, systemctl, "start", service] if sudo else [systemctl, "start", service]
+    actual = resolve_service_name(service)
+    if not actual:
+        log.info("Служба %s не найдена, start пропущен", service)
+        return False
+    cmd = [sudo, systemctl, "start", actual] if sudo else [systemctl, "start", actual]
     res = _run(cmd, timeout=15.0)
     ok = res.returncode == 0
-    log.info("systemctl start %s → rc=%d stderr=%r", service, res.returncode, (res.stderr or "").strip())
+    log.info("systemctl start %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
     return ok
 
 
@@ -118,6 +178,79 @@ class PortBusyError(RuntimeError):
         )
 
 
+def released_services() -> List[str]:
+    with _LEASE_LOCK:
+        return sorted(_STOPPED_SERVICES)
+
+
+def release_pollers(services_to_stop: Iterable[str]) -> dict:
+    stopped_now: List[str] = []
+    already_released: List[str] = []
+    inactive: List[str] = []
+    missing: List[str] = []
+    failed: List[str] = []
+
+    with _LEASE_LOCK:
+        for svc in list(services_to_stop):
+            actual = resolve_service_name(svc)
+            if not actual:
+                missing.append(svc)
+                continue
+            if actual in _STOPPED_SERVICES:
+                already_released.append(actual)
+                continue
+            if not is_service_active(actual):
+                inactive.append(actual)
+                continue
+            if stop_service(actual):
+                _STOPPED_SERVICES.add(actual)
+                stopped_now.append(actual)
+            else:
+                failed.append(actual)
+
+    return {
+        "stopped_now": stopped_now,
+        "already_released": already_released,
+        "inactive": inactive,
+        "missing": missing,
+        "failed": failed,
+    }
+
+
+def restore_pollers(services_to_start: Iterable[str]) -> dict:
+    restarted: List[str] = []
+    already_running: List[str] = []
+    not_released: List[str] = []
+    missing: List[str] = []
+    failed: List[str] = []
+
+    with _LEASE_LOCK:
+        for svc in list(services_to_start):
+            actual = resolve_service_name(svc)
+            if not actual:
+                missing.append(svc)
+                continue
+            if actual not in _STOPPED_SERVICES:
+                if is_service_active(actual):
+                    already_running.append(actual)
+                else:
+                    not_released.append(actual)
+                continue
+            if start_service(actual):
+                _STOPPED_SERVICES.discard(actual)
+                restarted.append(actual)
+            else:
+                failed.append(actual)
+
+    return {
+        "restarted": restarted,
+        "already_running": already_running,
+        "not_released": not_released,
+        "missing": missing,
+        "failed": failed,
+    }
+
+
 @contextmanager
 def port_lease(
     device_path: str,
@@ -135,14 +268,15 @@ def port_lease(
     stopped_now: List[str] = []
     with _LEASE_LOCK:
         for svc in list(services_to_stop):
-            if not svc:
+            actual = resolve_service_name(svc)
+            if not actual:
                 continue
-            if svc in _STOPPED_SERVICES:
+            if actual in _STOPPED_SERVICES:
                 continue
-            if is_service_active(svc):
-                if stop_service(svc):
-                    _STOPPED_SERVICES.add(svc)
-                    stopped_now.append(svc)
+            if is_service_active(actual):
+                if stop_service(actual):
+                    _STOPPED_SERVICES.add(actual)
+                    stopped_now.append(actual)
     try:
         if require_free:
             pids = port_occupants(device)

@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.2">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3-8">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.2" height="28" width="120" alt="ЦИНТРОН">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН">
       <div>
         <div class="topbar-title">СА-02м</div>
         <div class="topbar-sub-row">
@@ -27,7 +27,7 @@
     <div class="topbar-sep"></div>
     <div class="topbar-theme-wrap" title="Переключение темы: тёмная или светлая">
       <span class="topbar-theme-label">Темная / Светлая</span>
-      <object id="theme-obj" data="/static/theme-toggle.svg?v=1.0.2" type="image/svg+xml" width="70" height="30" aria-label="Переключатель темы: тёмная или светлая"></object>
+      <object id="theme-obj" data="/static/theme-toggle.svg?v=1.0.3" type="image/svg+xml" width="70" height="30" aria-label="Переключатель темы: тёмная или светлая"></object>
     </div>
     <div class="topbar-ip mono" id="tb-ip">—</div>
     <div class="topbar-user">
@@ -59,7 +59,7 @@
 
       <div class="nav-item" data-tab="flasher">
         <svg viewBox="0 0 24 24"><path d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01"/></svg>
-        Устройства MR-02м
+        Устройства RS-485
       </div>
 
       <div class="nav-section">Система</div>
@@ -208,14 +208,26 @@
           </div>
 
           <!-- Services -->
-          <div class="widget">
+          <div class="widget widget-svc">
             <div class="widget-title">Службы</div>
             <div class="svc-list">
-              <div class="svc-row"><span class="name">nginx</span><span class="badge badge-unk" id="svc-nginx">…</span></div>
-              <div class="svc-row"><span class="name">fcgiwrap</span><span class="badge badge-unk" id="svc-fcgi">…</span></div>
-              <div class="svc-row" style="margin-top:4px"><span class="name">mplc</span><span class="badge badge-unk" id="svc-mplc">…</span></div>
+              <div class="svc-row">
+                <span class="name">nginx</span>
+                <span class="svc-uptime mono" id="svc-nginx-uptime">—</span>
+                <span class="badge badge-unk" id="svc-nginx">…</span>
+              </div>
+              <div class="svc-row">
+                <span class="name">fcgiwrap</span>
+                <span class="svc-uptime mono" id="svc-fcgi-uptime">—</span>
+                <span class="badge badge-unk" id="svc-fcgi">…</span>
+              </div>
+              <div id="svc-optional-rows"></div>
+              <div class="svc-row svc-row-tight">
+                <span class="name mono" id="mplc-svc-name" title="Служба опроса RS-485 (systemd)">—</span>
+                <span class="svc-uptime mono" id="mplc-svc-uptime">—</span>
+                <span class="badge badge-unk" id="svc-mplc">…</span>
+              </div>
             </div>
-            <div class="widget-sub" id="mplc-uptime" style="margin-top:6px;font-size:13px"></div>
           </div>
 
           <!-- HW outputs — full width -->
@@ -406,7 +418,7 @@
           <p>Службы, перезагрузка и журнал событий</p>
         </div>
 
-        <div class="ctrl-grid">
+        <div class="ctrl-grid ctrl-grid-actions">
           <div class="ctrl-card">
             <div class="ctrl-card-main">
               <h3>Службы</h3>
@@ -433,6 +445,16 @@
               <p>Файл конфигурации GPIO:<br><span class="mono text-sm">/etc/sa02m_hw.conf</span></p>
               <div class="field-hint">SA02M_GPIO_DO, SA02M_GPIO_BEEPER, SA02M_GPIO_ALARM_LED, SA02M_GPIO_USB_POWER</div>
             </div>
+          </div>
+          <div class="ctrl-card">
+            <div class="ctrl-card-main">
+              <h3>USB / microSD</h3>
+              <p class="storage-fmt-hint">Автоформат в exFAT при пустой ФС или NTFS (по умолчанию вкл.).</p>
+            </div>
+            <button type="button" class="btn btn-danger" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
+              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
+            </button>
           </div>
         </div>
 
@@ -476,19 +498,45 @@
       <!-- ═══════════════════════════════ FLASHER ═══════════════════════ -->
       <div id="tab-flasher" class="tab-pane">
         <div class="page-header">
-          <h2>Устройства MR-02м</h2>
-          <p>Поиск модулей по RS-485 (Modbus RTU / быстрый Modbus) и обновление прошивки</p>
+          <h2>Устройства RS-485</h2>
+          <p>Поиск модулей на линии RS-485, управление опросом порта и обновление прошивки</p>
         </div>
 
-        <!-- Панель выбора порта и действий -->
-        <div class="widget widget-wide" id="flasher-top">
-          <div class="flasher-row">
+        <div class="flasher-control-grid">
+          <div class="widget">
+            <div class="widget-title">Порт RS-485</div>
+            <div class="flasher-port-head">
+              <div>
+                <div class="widget-val flasher-port-value" id="flasher-port-label">—</div>
+                <div class="widget-sub mono" id="flasher-port-device">Выберите порт для работы с линией</div>
+              </div>
+              <button class="btn btn-sm flasher-icon-btn" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
+                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              </button>
+            </div>
             <label class="flasher-field">
-              <span>RS-485 порт</span>
+              <span>Выберите линию</span>
               <select id="flasher-port"></select>
             </label>
+          </div>
+
+          <div class="widget">
+            <div class="widget-title">Состояние линии</div>
+            <div class="flasher-badge-stack">
+              <span class="badge badge-unk" id="flasher-port-badge">Нет данных</span>
+              <span class="badge badge-unk" id="flasher-poller-badge">Опрос не оценён</span>
+            </div>
+            <div class="widget-sub flasher-status-text" id="flasher-port-hint">Выберите порт, чтобы увидеть состояние линии и опроса.</div>
+            <div class="btn-group flasher-port-actions">
+              <button class="btn btn-sm" id="flasher-release-port-btn" type="button" title="Остановить unit’ы опроса RS-485 из конфигурации демона (MPLC_STOP_SERVICES)">Остановить службы опроса</button>
+              <button class="btn btn-sm" id="flasher-restore-port-btn" type="button" title="Запустить обратно службы, остановленные вручную">Вернуть опрос</button>
+            </div>
+          </div>
+
+          <div class="widget">
+            <div class="widget-title">Параметры поиска</div>
             <label class="flasher-field">
-              <span>Режим скана</span>
+              <span>Режим поиска</span>
               <select id="flasher-mode">
                 <option value="standard">Стандартный (адресный)</option>
                 <option value="fast">Быстрый Modbus (0xFD 0x46)</option>
@@ -502,17 +550,24 @@
                 <input type="number" id="flasher-addr-max" value="10" min="1" max="247" />
               </span>
             </label>
-            <label class="flasher-field">
-              <span>Скорости</span>
-              <select id="flasher-baudrates" multiple size="3">
-                <option value="9600">9600</option>
-                <option value="19200" selected>19200</option>
-                <option value="38400">38400</option>
-                <option value="57600">57600</option>
-                <option value="115200">115200</option>
-              </select>
-            </label>
-            <div class="flasher-actions">
+          </div>
+
+          <div class="widget">
+            <div class="widget-title">Скорости</div>
+            <div class="flasher-baud-grid" id="flasher-baudrates">
+              <label class="flasher-baud-chip"><input type="checkbox" value="9600" /><span>9600</span></label>
+              <label class="flasher-baud-chip"><input type="checkbox" value="19200" checked /><span>19200</span></label>
+              <label class="flasher-baud-chip"><input type="checkbox" value="38400" /><span>38400</span></label>
+              <label class="flasher-baud-chip"><input type="checkbox" value="57600" /><span>57600</span></label>
+              <label class="flasher-baud-chip"><input type="checkbox" value="115200" /><span>115200</span></label>
+            </div>
+            <div class="widget-sub flasher-status-text">Можно выбрать сразу несколько скоростей для одного прохода сканирования.</div>
+          </div>
+
+          <div class="widget">
+            <div class="widget-title">Сканирование</div>
+            <div class="widget-sub flasher-status-text" id="flasher-scan-summary">Выберите порт и параметры поиска, затем запустите сканирование.</div>
+            <div class="flasher-actions flasher-actions-widget">
               <button class="btn btn-primary" id="flasher-scan-btn" type="button">
                 <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
                 Сканировать
@@ -520,12 +575,12 @@
               <button class="btn btn-sm" id="flasher-scan-cancel-btn" type="button" disabled>
                 Отмена
               </button>
-              <button class="btn btn-sm" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              </button>
             </div>
           </div>
-          <div class="flasher-hint" id="flasher-port-hint"></div>
+        </div>
+
+        <div class="widget widget-wide" id="flasher-top">
+          <div class="widget-title">Ход операции</div>
           <div class="flasher-progress" id="flasher-progress" hidden>
             <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
             <div class="flasher-progress-label" id="flasher-progress-label">—</div>
@@ -534,7 +589,7 @@
 
         <!-- Таблица найденных устройств -->
         <div class="widget widget-wide">
-          <div class="widget-title">Найденные устройства</div>
+          <div class="widget-title">Найденные устройства RS-485</div>
           <div class="flasher-table-wrap">
             <table class="flasher-table" id="flasher-devices-table">
               <thead>
@@ -550,7 +605,7 @@
                 </tr>
               </thead>
               <tbody>
-                <tr><td colspan="8" class="flasher-empty">Нажмите «Сканировать», чтобы найти модули на выбранном RS-485.</td></tr>
+                <tr><td colspan="8" class="flasher-empty">Нажмите «Сканировать», чтобы найти устройства на выбранной линии RS-485.</td></tr>
               </tbody>
             </table>
           </div>
@@ -611,7 +666,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3"></script>
-<script src="/static/js/flasher.js?v=1.0.3"></script>
+<script src="/static/js/app.js?v=1.0.3-7"></script>
+<script src="/static/js/flasher.js?v=1.0.3-4"></script>
 </body>
 </html>
