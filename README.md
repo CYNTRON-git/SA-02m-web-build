@@ -556,7 +556,7 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
   └── /dev/COMx (flock, dialout)
 ```
 
-**HTTP API:** `/api/flasher/ports`, `/scan`, `/flash`, `/flash_batch`, `/firmware`, `/firmware/refresh`, `/firmware/upload`, `/jobs/<id>`, `/jobs/<id>/events` (SSE), `/jobs/<id>/cancel`.
+**HTTP API:** `/api/flasher/ports`, `/scan`, `/flash`, `/flash_batch`, `/firmware`, `/firmware/refresh`, `/firmware/upload`, `/jobs`, `/jobs/<id>`, `/jobs/<id>/events` (SSE), `/cancel` (POST `{job_id}`), `/health`.
 
 ---
 
@@ -1202,9 +1202,11 @@ channel=ALARM_LED&value=1 → {"ok": true}
 | `GET`  | `/api/flasher/firmware` | Список прошивок (кеш + манифест) |
 | `POST` | `/api/flasher/firmware/refresh` | Обновить манифест с cyntron.ru |
 | `POST` | `/api/flasher/firmware/upload` | Ручная загрузка `.fw/.bin/.elf` (multipart) |
+| `GET`  | `/api/flasher/jobs` | Снэпшот всех последних задач |
 | `GET`  | `/api/flasher/jobs/<id>` | Статус задачи |
 | `GET`  | `/api/flasher/jobs/<id>/events` | SSE-поток (логи, прогресс, найденные устройства) |
-| `POST` | `/api/flasher/jobs/<id>/cancel` | Отменить задачу |
+| `POST` | `/api/flasher/cancel` | Отменить задачу (`{job_id}`) |
+| `GET`  | `/api/flasher/health` | Health-check (без авторизации) |
 
 Формат `index.json` на cyntron.ru:
 
