@@ -24,7 +24,10 @@ ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run /var/lock
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-NoNewPrivileges=yes
+# NoNewPrivileges=yes несовместим с sudo (mplc_lease → systemctl/fuser через sudoers).
+# Ограничение привилегий выполняется через sudoers.d/sa02m-flasher (NOPASSWD на
+# конкретные команды: systemctl start|stop|is-active mplc.service, fuser /dev/COM*).
+NoNewPrivileges=no
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
