@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.1-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.2-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -57,6 +57,9 @@
 ## Возможности
 
 ### Мониторинг (Dashboard)
+- **Независимые виджеты** — каждый блок обновляется отдельным CGI-запросом и не блокирует остальные
+- **Приоритетная загрузка** — CPU, температура, RAM и eMMC приходят первыми
+- **Фоновая догрузка после входа** — сеть, uptime, службы, железо, RS-485 и прочие блоки подтягиваются отдельно
 - **CPU** — загрузка с историей, модель, частота (с throttle-индикатором), load averages 1/5/15 мин
 - **RAM + Swap** — использование памяти, прогресс-бары
 - **Температура** — по всем thermal-зонам (zone0, zone1...)
@@ -365,7 +368,22 @@ web/
 
 ### Dashboard
 
-Автоматически обновляется каждые **4 секунды** через `GET /cgi-bin/status.cgi`.
+Дашборд обновляется асинхронно: быстрые приоритетные виджеты приходят первыми, остальные блоки догружаются отдельными запросами без общего «тяжёлого» ответа.
+
+Приоритет запуска после входа:
+1. CPU
+2. Температура CPU
+3. RAM / Swap
+4. Диск eMMC
+5. Uptime
+6. Сеть
+7. Load / частота CPU
+8. Службы
+9. Накопители USB / microSD и disk I/O
+10. GPIO / аппаратные состояния
+11. Системная информация
+12. Время / RTC
+13. RS-485
 
 #### Виджет CPU
 - Процент загрузки (SVG-дуга с плавной анимацией)
@@ -461,6 +479,7 @@ channel=DO&value=1
 - Карточка входа с эффектом матового стекла (`backdrop-filter: blur`)
 - Скруглённые углы (`border-radius: 22px`) и многослойные тени
 - Валидация полей прямо в браузере
+- До входа выполняется прогрев приоритетных метрик (`cpu`, `temp`, `ram`, `disk`) в `sessionStorage`
 - При успешном входе — редирект на Dashboard (`/`)
 
 ---
@@ -938,10 +957,40 @@ hwclock -r   # прочитать время из PCF8563
 
 Все CGI-скрипты возвращают **JSON** (без HTML). Аутентификация через cookie `session_token`.
 
+Начиная с `1.0.2`, `status.cgi` поддерживает раздельные части ответа, чтобы виджеты обновлялись независимо и не ждали общий медленный JSON.
+
 ### `GET /cgi-bin/status.cgi`
 
+Поддерживаемые режимы:
+
+- `part=cpu`
+- `part=temp`
+- `part=ram`
+- `part=disk`
+- `part=storage`
+- `part=time`
+- `part=uptime`
+- `part=network`
+- `part=load`
+- `part=system`
+- `part=services`
+- `part=hardware`
+- `part=rs485`
+- `part=priority`
+- `part=main`
+- без `part` — полный совместимый ответ
+
+Публично доступны без логина только ранние прогревочные части:
+
+- `part=cpu`
+- `part=temp`
+- `part=ram`
+- `part=disk`
+
+Остальные части требуют действующую сессию.
+
 <details>
-<summary>Пример ответа</summary>
+<summary>Пример полного ответа</summary>
 
 ```json
 {
@@ -992,6 +1041,26 @@ hwclock -r   # прочитать время из PCF8563
 ```
 
 </details>
+
+Примеры маленьких ответов для независимых виджетов:
+
+```json
+GET /cgi-bin/status.cgi?part=cpu
+{ "cpu_usage": 16 }
+```
+
+```json
+GET /cgi-bin/status.cgi?part=ram
+{
+  "ram_total_kb": 504344,
+  "ram_used_kb": 101468,
+  "ram_free_kb": 402876,
+  "ram_pct": 20,
+  "swap_total_kb": 0,
+  "swap_used_kb": 0,
+  "swap_pct": 0
+}
+```
 
 ### `GET /cgi-bin/config.cgi`
 
