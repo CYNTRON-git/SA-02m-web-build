@@ -1,0 +1,37 @@
+[Unit]
+Description=SA-02m RS-485 scanner and MR-02m firmware flasher
+Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
+After=network.target
+# fcgiwrap и nginx обращаются к сокету демона — но не являются жёсткой зависимостью.
+Wants=fcgiwrap.service
+
+[Service]
+Type=simple
+User=sa02m-flasher
+Group=sa02m-flasher
+SupplementaryGroups=dialout www-data
+WorkingDirectory=/opt/sa02m-flasher
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/sa02m-flasher
+ExecStart=/usr/bin/python3 -m sa02m_flasher.service --config /etc/sa02m_flasher.conf
+# При любом останове — гарантированно запустить mplc обратно, если демон остановил его и не успел восстановить.
+ExecStopPost=-/bin/systemctl start mplc.service
+Restart=on-failure
+RestartSec=3
+
+# Жёсткие ограничения файловой системы
+ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run /var/lock
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+/var/log/sa02m-flasher/*.log {
+    weekly
+    rotate 8
+    size 5M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su sa02m-flasher sa02m-flasher
+    create 0640 sa02m-flasher sa02m-flasher
+}
