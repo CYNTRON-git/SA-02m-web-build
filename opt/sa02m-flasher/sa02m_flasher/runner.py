@@ -23,6 +23,7 @@ from . import scanner as scn
 from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo
 from .jobs import Job
+from .module_profiles import device_allowed_for_mr_firmware_flash
 from .mplc_lease import port_lease, PortBusyError, device_path_exists
 from .serial_port import open_port, send_receive
 
@@ -258,7 +259,7 @@ def _flash_one_device(
     file_signature: str,
     *,
     use_fast_modbus: bool,
-    force_signature_mismatch: bool,
+    force_unlisted_signature: bool,
     cancel_evt,
     log_cb: Callable[[str, str], None],
     progress_cb: Callable[[int, str], None],
@@ -269,12 +270,16 @@ def _flash_one_device(
     serial = int(device.get("serial") or 0) & 0xFFFFFFFF
     dev_sig = str(device.get("signature") or "").strip()
 
-    if file_signature and dev_sig and file_signature != "NONE" and dev_sig != "NONE":
-        if file_signature != dev_sig and not force_signature_mismatch:
-            return (
-                f"Сигнатура устройства '{dev_sig}' не совпадает с сигнатурой файла '{file_signature}'. "
-                "Выберите подходящий .fw или подтвердите принудительную прошивку."
-            )
+    # Один образ на всю линейку MR-02м: не сравниваем сигнатуру файла с модулем.
+    # Разрешаем прошивку только для «наших» сигнатур (MR/MP-02м…), либо с флагом обхода (отладка).
+    if not device_allowed_for_mr_firmware_flash(dev_sig, allow_unlisted=force_unlisted_signature):
+        return (
+            f"Сигнатура «{dev_sig}» не распознана как модуль расширения MR/MP-02м. "
+            "Прошивка отменена. Для лабораторных случаев включите опцию «Разрешить устройство вне списка сигнатур»."
+        )
+
+    # Для .bin info-блок собирается из сигнатуры; для .fw первые 32 B берутся из файла — там параметр не используется.
+    info_sig = (dev_sig if dev_sig and dev_sig.upper() != "NONE" else file_signature) or fp.DEFAULT_SIGNATURE
 
     def prog(sent: int, total: int) -> None:
         total = max(1, int(total))
@@ -290,7 +295,7 @@ def _flash_one_device(
             flasher,
             serial,
             image,
-            file_signature or dev_sig or fp.DEFAULT_SIGNATURE,
+            info_sig,
             progress_cb=prog,
             cancel_cb=cancel_evt.is_set,
         )
@@ -300,7 +305,7 @@ def _flash_one_device(
             flasher,
             addr,
             image,
-            file_signature or dev_sig or fp.DEFAULT_SIGNATURE,
+            info_sig,
             progress_cb=prog,
             cancel_cb=cancel_evt.is_set,
         )
@@ -330,13 +335,15 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
         use_fast_modbus    — bool
         firmware_channel   — канал
         firmware_file      — имя файла
-        force_mismatch     — прошивать несмотря на несовпадение сигнатур
+        force_signature_mismatch / force_unlisted_signature — обход whitelist сигнатур MR/MP-02м (только отладка)
     """
     params = job.params
     port_key = str(params.get("port") or job.port)
     target = params.get("target") or {}
     use_fast = bool(params.get("use_fast_modbus"))
-    force_mismatch = bool(params.get("force_signature_mismatch"))
+    force_unlisted = bool(
+        params.get("force_unlisted_signature", params.get("force_signature_mismatch"))
+    )
 
     log_cb = ctx["log"]
     progress_cb = ctx["progress"]
@@ -365,7 +372,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                     image,
                     file_sig,
                     use_fast_modbus=use_fast,
-                    force_signature_mismatch=force_mismatch,
+                    force_unlisted_signature=force_unlisted,
                     cancel_evt=cancel_evt,
                     log_cb=log_cb,
                     progress_cb=progress_cb,
@@ -385,13 +392,15 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     Пакетная прошивка нескольких устройств на одном COM.
 
     params.targets — список dict: {address, serial, signature, in_bootloader, ...}
-    params.firmware_* — одна прошивка на всю партию (сигнатуры будут проверяться поэлементно).
+    params.firmware_* — одна прошивка на всю партию; допуск только для сигнатур MR/MP-02м (или force_*).
     """
     params = job.params
     port_key = str(params.get("port") or job.port)
     targets: List[Dict[str, Any]] = list(params.get("targets") or [])
     use_fast = bool(params.get("use_fast_modbus", True))
-    force_mismatch = bool(params.get("force_signature_mismatch"))
+    force_unlisted = bool(
+        params.get("force_unlisted_signature", params.get("force_signature_mismatch"))
+    )
     skip_on_error = bool(params.get("skip_on_error", True))
 
     if not targets:
@@ -435,7 +444,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                         image,
                         file_sig,
                         use_fast_modbus=use_fast,
-                        force_signature_mismatch=force_mismatch,
+                        force_unlisted_signature=force_unlisted,
                         cancel_evt=cancel_evt,
                         log_cb=log_cb,
                         progress_cb=sub_progress,

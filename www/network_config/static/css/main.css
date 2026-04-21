@@ -1021,6 +1021,7 @@ svg .gauge-num {
 }
 .flasher-table tr:hover { background: var(--bg-hover); }
 .flasher-sub { font-size: .7rem; color: var(--text-sec); }
+.flasher-fw-update-hint { color: #6ecf8c; font-weight: 500; }
 .flasher-empty {
   text-align: center; color: var(--text-sec);
   padding: 18px 0 !important;

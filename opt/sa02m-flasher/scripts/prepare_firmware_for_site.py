@@ -78,7 +78,8 @@ def _process_one(path: Path, *, include_slug: bool) -> Tuple[str, Dict[str, Any]
     entry = {
         "file": target,
         "version": _normalize_version(version),
-        "signatures": [signature] if signature and signature != "NONE" else [],
+        # Один образ на всю линейку MR-02м — в index.json не привязываем к сигнатуре варианта.
+        "signatures": [],
         "device": f"MR-02m ({signature})" if signature != "NONE" else "MR-02m",
         "size": path.stat().st_size,
         "sha256": sha,

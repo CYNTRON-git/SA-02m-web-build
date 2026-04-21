@@ -13,6 +13,8 @@
              "beta":   [ ... ]
            }
          }
+     Один образ прошивки на все варианты MR-02м: поле ``signatures`` опционально (метаданные);
+     подбор «какая прошивка новее» — по ``version``, а не по сигнатуре модуля.
   2. Ручная загрузка через UI (POST /firmware/upload) — файл парсится (signature/версия берутся
      из info-блока .fw или имени MR-02m_<ver>.{fw,bin,elf}).
 
@@ -43,6 +45,26 @@ HTTP_TIMEOUT_S = 15.0
 USER_AGENT = "sa02m-flasher/1.0"
 VALID_EXTENSIONS = {".fw", ".bin", ".elf"}
 INDEX_CACHE_NAME = ".index.json"
+
+
+def version_tuple(version: str) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Разбор версии X.Y.Z.W для сравнения (только цифровые компоненты, до четырёх).
+    «1.2» → (1, 2, 0, 0). Некорректная строка → None.
+    """
+    version = (version or "").strip()
+    if not version or version == "?":
+        return None
+    parts: List[int] = []
+    for seg in version.split(".")[:4]:
+        if not seg.isdigit():
+            return None
+        parts.append(int(seg))
+    if not parts:
+        return None
+    while len(parts) < 4:
+        parts.append(0)
+    return (parts[0], parts[1], parts[2], parts[3])
 
 
 @dataclass
@@ -92,7 +114,8 @@ class FirmwareRepo:
         refresh(download=False) — обновить манифест (и при необходимости скачать файлы).
         list_entries()          — все известные записи (манифест + локальные).
         download(entry)         — принудительно скачать файл под запись.
-        find_for_signature(sig) — отфильтровать подходящие под сигнатуру устройства.
+        find_for_signature(sig) — устаревшее имя: возвращает все записи (образ общий для линейки).
+        version_tuple / latest_stable_version — сравнение версий для подсказки «есть обновление».
         add_upload(data, name)  — добавить .fw/.bin/.elf из UI (копирует в кеш).
         path_for(entry)         — локальный путь к файлу (или None).
     """
@@ -282,20 +305,37 @@ class FirmwareRepo:
                 "manifest_updated": self._manifest_updated,
                 "manifest_error": self._manifest_error,
                 "last_refresh_ts": self._last_refresh_ts,
+                "latest_stable_version": self.latest_stable_version(),
                 "entries": [e.to_dict() for e in self.list_entries()],
             }
 
-    def find_for_signature(self, signature: str) -> List[FirmwareEntry]:
-        """Отфильтровать подходящие прошивки под сигнатуру устройства."""
-        sig = (signature or "").strip()
-        result: List[FirmwareEntry] = []
-        for e in self.list_entries():
-            if not sig:
-                result.append(e)
+    def latest_stable_version(self) -> str:
+        """Наибольшая ``version`` среди записей канала ``stable`` из манифеста (для сравнения с версией на модуле)."""
+        best: Optional[Tuple[int, int, int, int]] = None
+        best_raw = ""
+        with self._lock:
+            candidates = [
+                e
+                for e in self._entries.values()
+                if e.channel == "stable" and e.source == "manifest"
+            ]
+        for e in candidates:
+            t = version_tuple(e.version)
+            if t is None:
                 continue
-            if not e.signatures or sig in e.signatures:
-                result.append(e)
-        return result
+            if best is None or t > best:
+                best = t
+                best_raw = str(e.version).strip()
+        return best_raw
+
+    def find_for_signature(self, signature: str) -> List[FirmwareEntry]:
+        """
+        Вернуть все записи репозитория.
+
+        Один файл прошивки на все варианты MR-02м: отбор по полю ``signatures`` в манифесте
+        не выполняется (аргумент ``signature`` игнорируется — имя метода сохранено для совместимости).
+        """
+        return self.list_entries()
 
     def get(self, channel: str, file: str) -> Optional[FirmwareEntry]:
         with self._lock:
