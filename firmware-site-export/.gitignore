@@ -3,3 +3,4 @@
 *.bin
 *.elf
 index.json
+site-deploy.config.json

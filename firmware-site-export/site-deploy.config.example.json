@@ -1,0 +1,7 @@
+{
+  "sshHost": "YOUR_SSH_HOSTNAME_OR_IP",
+  "sshUser": "YOUR_SSH_LOGIN",
+  "defaultPpkPath": "C:\\\\Users\\\\YOU\\\\path\\\\to\\\\deploy_key.ppk",
+  "defaultRemoteFirmwareDir": "/home/bitrix/ext_www/YOUR_SITE/upload/medialibrary/YOUR_VENDOR/firmware",
+  "defaultPackScanDir": "C:\\\\Users\\\\YOU\\\\path\\\\to\\\\MR-02m\\\\build\\\\AppBoot"
+}

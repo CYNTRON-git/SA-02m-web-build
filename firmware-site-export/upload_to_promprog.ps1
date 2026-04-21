@@ -1,29 +1,62 @@
 # Выгрузка firmware-site-export на сервер (PuTTY pscp + ключ .ppk).
-# Учётная запись: promprog@84.201.134.96
-# OpenSSH (ssh/scp) не использует Pageant — нужен pscp из PuTTY и -i store_private.ppk
+# Хост, пользователь и пути по умолчанию — в site-deploy.config.json (копия с site-deploy.config.example.json)
+# или переменные окружения FW_UPLOAD_SSH_HOST, FW_UPLOAD_SSH_USER, FW_UPLOAD_PPK (и устар. STORE_SITE_PPK).
+# OpenSSH (ssh/scp) не использует Pageant — нужен pscp из PuTTY и -i key.ppk
 param(
-  [Parameter(Mandatory = $true, Position = 0)]
-  [string] $RemotePath,
+  [Parameter(Mandatory = $false, Position = 0)]
+  [string] $RemotePath = "",
   [Parameter(Position = 1)]
   [string] $Ppk = ""
 )
-if (-not $Ppk.Trim()) {
-  $Ppk = $env:STORE_SITE_PPK
-}
-if (-not $Ppk.Trim()) {
-  $Ppk = "C:\Users\admin\YandexDisk\ЦИНТРОН\Сайт\store_private.ppk"
-}
 
 $ErrorActionPreference = "Stop"
-$SshHost = "84.201.134.96"
-$User = "promprog"
 $Root = $PSScriptRoot
+$CfgPath = Join-Path $Root "site-deploy.config.json"
+$Cfg = $null
+if (Test-Path -LiteralPath $CfgPath) {
+  try {
+    $Cfg = Get-Content -LiteralPath $CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    Write-Error "Некорректный JSON в ${CfgPath}: $_"
+  }
+}
+
+function _trim([string] $s) { if ($null -eq $s) { "" } else { $s.Trim() } }
+
+$SshHost = _trim $env:FW_UPLOAD_SSH_HOST
+if (-not $SshHost -and $Cfg) { $SshHost = _trim [string]$Cfg.sshHost }
+
+$SshUser = _trim $env:FW_UPLOAD_SSH_USER
+if (-not $SshUser -and $Cfg) { $SshUser = _trim [string]$Cfg.sshUser }
+
+$RemoteNorm = _trim $RemotePath
+if (-not $RemoteNorm -and $Cfg) { $RemoteNorm = _trim [string]$Cfg.defaultRemoteFirmwareDir }
+
+if (-not $SshHost) {
+  Write-Error "Не задан SSH-хост: скопируйте site-deploy.config.example.json → site-deploy.config.json и заполните sshHost, либо задайте `$env:FW_UPLOAD_SSH_HOST"
+}
+if (-not $SshUser) {
+  Write-Error "Не задан SSH-пользователь: site-deploy.config.json (sshUser) или `$env:FW_UPLOAD_SSH_USER"
+}
+if (-not $RemoteNorm) {
+  Write-Error "Не задан каталог прошивок на сервере: передайте первым аргументом или задайте defaultRemoteFirmwareDir в site-deploy.config.json"
+}
+
+if (-not $Ppk.Trim()) {
+  $Ppk = _trim $env:FW_UPLOAD_PPK
+}
+if (-not $Ppk.Trim()) {
+  $Ppk = _trim $env:STORE_SITE_PPK
+}
+if (-not $Ppk.Trim() -and $Cfg) {
+  $Ppk = _trim [string]$Cfg.defaultPpkPath
+}
+if (-not (Test-Path -LiteralPath $Ppk)) {
+  Write-Error "Не найден ключ .ppk: $Ppk`nПередайте вторым аргументом, задайте `$env:FW_UPLOAD_PPK / STORE_SITE_PPK или defaultPpkPath в site-deploy.config.json"
+}
 
 if (-not (Test-Path -LiteralPath (Join-Path $Root "index.json") -PathType Leaf)) {
   Write-Error "Нет index.json в $Root — сначала выполните pack_for_site.ps1"
-}
-if (-not (Test-Path -LiteralPath $Ppk)) {
-  Write-Error "Не найден ключ .ppk: $Ppk`nПередайте путь вторым аргументом или задайте `$env:STORE_SITE_PPK"
 }
 
 # PuTTY кладёт pscp в Program Files; PATH в текущей сессии может быть старым
@@ -58,19 +91,19 @@ if (-not (Test-Path -LiteralPath $Plink)) {
 }
 Write-Host "Используется plink: $Plink"
 
-$RemoteNorm = $RemotePath.Trim().Replace("\", "/").TrimEnd("/")
+$RemoteNorm = $RemoteNorm.Trim().Replace("\", "/").TrimEnd("/")
 $PscpArgs = @("-batch", "-i", $Ppk)
-$DestPrefix = "${User}@${SshHost}:${RemoteNorm}/"
+$DestPrefix = "${SshUser}@${SshHost}:${RemoteNorm}/"
 
-# Каталог сайта bitrix: promprog не пишет напрямую — pscp в /tmp, затем sudo cp + chown.
+# Каталог сайта bitrix: пользователь не пишет напрямую — pscp в /tmp, затем sudo cp + chown.
 $useSudoStaging = $RemoteNorm.StartsWith("/home/bitrix") -or ($env:FW_UPLOAD_USE_STAGING -eq "1")
 
 if ($useSudoStaging) {
   $tmp = "/tmp/sa02m_fw_staging"
   Write-Host "Режим sudo: загрузка в $tmp, затем установка в $RemoteNorm/"
-  & $Plink @("-batch", "-i", $Ppk, "${User}@${SshHost}", "mkdir -p $tmp && rm -f $tmp/*")
+  & $Plink @("-batch", "-i", $Ppk, "${SshUser}@${SshHost}", "mkdir -p $tmp && rm -f $tmp/*")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  $DestTmp = "${User}@${SshHost}:${tmp}/"
+  $DestTmp = "${SshUser}@${SshHost}:${tmp}/"
 
   Write-Host "Копирование index.json → $tmp"
   & $Pscp @PscpArgs (Join-Path $Root "index.json") $DestTmp
@@ -89,12 +122,12 @@ if ($useSudoStaging) {
   $names = @("index.json") + @($fw | ForEach-Object { $_.Name })
   foreach ($n in $names) {
     $cmd = "sudo cp $tmp/$n $RemoteNorm/$n && sudo chown bitrix:bitrix $RemoteNorm/$n && sudo chmod 644 $RemoteNorm/$n && rm -f $tmp/$n"
-    & $Plink @("-batch", "-i", $Ppk, "${User}@${SshHost}", $cmd)
+    & $Plink @("-batch", "-i", $Ppk, "${SshUser}@${SshHost}", $cmd)
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   }
-  & $Plink @("-batch", "-i", $Ppk, "${User}@${SshHost}", "rmdir $tmp 2>/dev/null || true")
+  & $Plink @("-batch", "-i", $Ppk, "${SshUser}@${SshHost}", "rmdir $tmp 2>/dev/null || true")
   Write-Host "Готово (sudo): $RemoteNorm/"
-  & $Plink @("-batch", "-i", $Ppk, "${User}@${SshHost}", "sudo ls -la $RemoteNorm")
+  & $Plink @("-batch", "-i", $Ppk, "${SshUser}@${SshHost}", "sudo ls -la $RemoteNorm")
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   exit 0
 }

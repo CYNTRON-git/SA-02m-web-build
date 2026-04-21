@@ -1,11 +1,39 @@
 #!/usr/bin/env bash
-# Выгрузка firmware-site-export на 84.201.134.96 (promprog): scp + при пути /home/bitrix/* — staging + sudo.
+# Выгрузка firmware-site-export: scp + при пути /home/bitrix/* — staging + sudo.
+# Хост/пользователь: site-deploy.config.json (копия site-deploy.config.example.json) или
+# FW_UPLOAD_SSH_HOST, FW_UPLOAD_SSH_USER. Ключ: SSH_IDENTITY_FILE (OpenSSH) для scp/ssh.
 set -euo pipefail
-SSH_HOST="84.201.134.96"
-SSH_USER="promprog"
-REMOTE="${1:?Укажите каталог, например: $0 /home/bitrix/ext_www/promprog.store/upload/medialibrary/cyntron/firmware}"
+
 DIR="$(cd "$(dirname "$0")" && pwd)"
+CFG="$DIR/site-deploy.config.json"
+
+cfg_get() {
+  local key="$1"
+  python3 -c "import json,sys; p,k=sys.argv[1],sys.argv[2]; d=json.load(open(p,encoding='utf-8')); v=d.get(k); sys.stdout.write('' if v is None else str(v))" "$CFG" "$key" 2>/dev/null || true
+}
+
+SSH_HOST="${FW_UPLOAD_SSH_HOST:-}"
+SSH_USER="${FW_UPLOAD_SSH_USER:-}"
+REMOTE_DEFAULT=""
+
+if [[ -f "$CFG" ]]; then
+  [[ -n "$SSH_HOST" ]] || SSH_HOST="$(cfg_get sshHost)"
+  [[ -n "$SSH_USER" ]] || SSH_USER="$(cfg_get sshUser)"
+  REMOTE_DEFAULT="$(cfg_get defaultRemoteFirmwareDir)"
+fi
+
+REMOTE="${1:-$REMOTE_DEFAULT}"
 REMOTE="${REMOTE%/}"
+
+if [[ -z "$SSH_HOST" || -z "$SSH_USER" ]]; then
+  echo "Задайте FW_UPLOAD_SSH_HOST и FW_UPLOAD_SSH_USER или создайте site-deploy.config.json из site-deploy.config.example.json" >&2
+  exit 1
+fi
+if [[ -z "$REMOTE" ]]; then
+  echo "Укажите каталог на сервере первым аргументом или defaultRemoteFirmwareDir в site-deploy.config.json" >&2
+  exit 1
+fi
+
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 if [[ -n "${SSH_IDENTITY_FILE:-}" ]]; then
   SSH_OPTS=(-i "$SSH_IDENTITY_FILE" "${SSH_OPTS[@]}")

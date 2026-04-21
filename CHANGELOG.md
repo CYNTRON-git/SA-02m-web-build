@@ -32,6 +32,11 @@
   останавливает службу `mplc.service` (список настраивается в
   `/etc/sa02m_flasher.conf`, ключ `MPLC_STOP_SERVICES`) и гарантированно
   запускает её обратно (в том числе `ExecStopPost`).
+- Выгрузка прошивок на хостинг: хост SSH, пользователь, каталог на сервере и
+  путь к `.ppk` не захардкожены в скриптах — задаются в локальном
+  `firmware-site-export/site-deploy.config.json` (копия с
+  `site-deploy.config.example.json`) или через переменные окружения
+  `FW_UPLOAD_*` / `FW_PACK_SCAN_DIR`.
 - Эксклюзивный захват порта через `flock` на `/var/lock/sa02m-flasher-<port>.lock`
   и предварительная проверка `fuser` — исключает конфликт двух операций.
 - Post-mortem: каждое событие, уходящее в SSE (`jobs.py`), дублируется строкой
@@ -46,10 +51,11 @@
   — канонические имена `MR-02m_<X.Y.Z.W>.fw` / `MR-02m_bootloader_<X.Y.Z.W>.fw` /
   `MR-02m_<slug>_<X.Y.Z.W>.fw` и `index.json` из каталога с `.fw`; опция
   `--bundle-dir` копирует переименованные `.fw` и пишет манифест в один каталог
-  для выгрузки на сайт. В корне репозитория: каталог `firmware-site-export/` — в git
-  отслеживается только шаблон **`SITE_AND_FIRMWARE_UPLOAD.md.example`**; скрипты
-  `pack_*` / `upload_*`, манифест `index.json`, приватная памятка
-  `SITE_AND_FIRMWARE_UPLOAD.md` и прочие `*.md` в этом каталоге — в **`.gitignore`**.
+  для выгрузки на сайт. Каталог `firmware-site-export/`: в git — скрипты `pack_*` /
+  `upload_*`, шаблоны **`site-deploy.config.example.json`** и
+  **`SITE_AND_FIRMWARE_UPLOAD.md.example`**; не в git — **`site-deploy.config.json`**
+  (хост, пользователь, пути, путь к `.ppk`), манифест **`index.json`**, бинарники
+  **`*.fw`**, приватная памятка **`SITE_AND_FIRMWARE_UPLOAD.md`** (см. **`.gitignore`**).
 
 ### Архитектура
 

@@ -543,9 +543,10 @@ channel=DO&value=1
   [`opt/sa02m-flasher/scripts/prepare_firmware_for_site.py`](opt/sa02m-flasher/scripts/prepare_firmware_for_site.py)
   — канонические имена `MR-02m_<X.Y.Z.W>.fw` (опция `--include-signature` для различения модулей) и
   черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`, **`--bundle-dir`** для готового каталога выгрузки).
-- Выгрузка на хостинг (SSH, Bitrix, PuTTY `.ppk`, staging + `sudo`): в репозитории только шаблон
+- Выгрузка на хостинг (SSH, Bitrix, PuTTY `.ppk`, staging + `sudo`): шаблоны
+  [firmware-site-export/site-deploy.config.example.json](firmware-site-export/site-deploy.config.example.json) и
   [firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example](firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example);
-  полная памятка, скрипты `pack_*` / `upload_*` и `index.json` — в `firmware-site-export/` и в git не входят (см. `.gitignore`).
+  скрипты `pack_*` / `upload_*` в репозитории; хост/пользователь/пути — в **локальном** `site-deploy.config.json` (не в git) или в переменных окружения. `index.json` и `*.fw` в этом каталоге не коммитятся.
 - Post-mortem по задачам: каждое SSE-событие дополнительно пишется строкой JSON в
   `/var/log/sa02m-flasher/events.log` (ротация вместе с остальными `*.log` демона).
 - Один файл прошивки на все варианты MR-02м: подсказка «есть …» только для сигнатур
