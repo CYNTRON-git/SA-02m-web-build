@@ -12,6 +12,7 @@
     ports: [],
     devices: [],        // последний результат сканирования
     firmware: [],       // список прошивок (entries)
+    latestStableVersion: '', // с бэкенда: max stable manifest (сравнение с app_version на модуле)
     scanJobId: null,
     flashJobId: null,
     scanStream: null,
@@ -203,6 +204,7 @@
     try {
       const data = await apiGet('/firmware');
       state.firmware = data.entries || [];
+      state.latestStableVersion = (data.latest_stable_version || '').trim();
       renderFirmware(data);
       updateFlashControls();
     } catch (err) {
@@ -223,9 +225,11 @@
       state.firmware.forEach(e => {
         const row = document.createElement('div');
         row.className = 'flasher-fw-row';
-        const sig = (e.signatures && e.signatures.length) ? e.signatures.join(', ') : '—';
+        const sig = (e.signatures && e.signatures.length)
+          ? e.signatures.join(', ')
+          : 'все варианты MR-02м (общий образ)';
         row.innerHTML = `<span class="flasher-fw-name">${escapeHtml(e.file)}</span>` +
-          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')} · sig ${escapeHtml(sig)} · ${e.size || '?'} B · ${e.channel}${e.downloaded ? '' : ' · не скачан'}</span>`;
+          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${e.channel}${e.downloaded ? '' : ' · не скачан'}</span>`;
         list.appendChild(row);
       });
     }
@@ -264,6 +268,38 @@
     }
   }
 
+  /* ── Версии: сравнение с манифестом (общий образ — только по version) ─── */
+
+  function parseVersionTuple(s) {
+    if (s == null || s === '') return null;
+    const parts = String(s).trim().split('.').slice(0, 4);
+    const nums = [];
+    for (const p of parts) {
+      if (!/^\d+$/.test(p)) return null;
+      nums.push(parseInt(p, 10));
+    }
+    if (!nums.length) return null;
+    while (nums.length < 4) nums.push(0);
+    return nums;
+  }
+
+  function compareVersionTuple(a, b) {
+    for (let i = 0; i < 4; i++) {
+      if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+  }
+
+  function firmwareUpdateHintForDevice(d) {
+    const latest = state.latestStableVersion;
+    if (!latest) return '';
+    const lv = parseVersionTuple(latest);
+    const dv = parseVersionTuple(d.app_version);
+    if (!lv || !dv) return '';
+    if (compareVersionTuple(lv, dv) <= 0) return '';
+    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}</div>`;
+  }
+
   /* ── Таблица устройств ────────────────────────────────────────────────── */
 
   function renderDevices() {
@@ -281,7 +317,7 @@
         <td>${d.address ?? '—'}</td>
         <td>${d.serial_hex || '—'}<div class="flasher-sub">${d.serial_dec || ''}</div></td>
         <td>${escapeHtml(d.signature || '—')}</td>
-        <td>${escapeHtml(d.app_version || '—')}</td>
+        <td>${escapeHtml(d.app_version || '—')}${firmwareUpdateHintForDevice(d)}</td>
         <td>${escapeHtml(d.bootloader_version || '—')}</td>
         <td>${d.baudrate || '—'} ${d.parity || ''}${d.stopbits || ''}</td>
         <td>${d.in_bootloader ? 'в bootloader' : ''}${d.duplicate_address ? ' dup' : ''}</td>

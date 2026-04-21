@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sa02m_flasher.firmware import FW_INFO_SIZE
-from sa02m_flasher.firmware_repo import FirmwareRepo
+from sa02m_flasher.firmware_repo import FirmwareRepo, version_tuple
 
 
 def _minimal_fw_bytes(sig: str = "MR-02m-DI16", payload_size: int = 100) -> bytes:
@@ -154,7 +154,7 @@ class TestFirmwareRepoRefreshAndDownload(unittest.TestCase):
 
 
 class TestFirmwareRepoFindForSignature(unittest.TestCase):
-    def test_filters_by_signature(self) -> None:
+    def test_find_returns_all_manifest_entries(self) -> None:
         manifest = {
             "schema": 1,
             "updated": "2026-04-21",
@@ -188,7 +188,34 @@ class TestFirmwareRepoFindForSignature(unittest.TestCase):
             (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
             repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
             found = repo.find_for_signature("MR-02m-DI16")
-            self.assertEqual({e.file for e in found}, {"a.fw"})
+            self.assertEqual({e.file for e in found}, {"a.fw", "b.fw"})
+
+
+class TestVersionTuple(unittest.TestCase):
+    def test_version_tuple(self) -> None:
+        self.assertEqual(version_tuple("1.2.3.4"), (1, 2, 3, 4))
+        self.assertEqual(version_tuple("1.2"), (1, 2, 0, 0))
+        self.assertIsNone(version_tuple("x.y"))
+        self.assertIsNone(version_tuple(""))
+
+
+class TestLatestStableVersion(unittest.TestCase):
+    def test_picks_max_stable(self) -> None:
+        manifest = {
+            "schema": 1,
+            "updated": "2026-04-21",
+            "channels": {
+                "stable": [
+                    {"file": "a.fw", "version": "1.0.0.0", "signatures": [], "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                    {"file": "b.fw", "version": "2.0.0.0", "signatures": [], "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            self.assertEqual(repo.latest_stable_version(), "2.0.0.0")
 
 
 if __name__ == "__main__":

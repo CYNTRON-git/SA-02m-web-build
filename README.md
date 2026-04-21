@@ -545,6 +545,9 @@ channel=DO&value=1
   черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`).
 - Post-mortem по задачам: каждое SSE-событие дополнительно пишется строкой JSON в
   `/var/log/sa02m-flasher/events.log` (ротация вместе с остальными `*.log` демона).
+- Один файл прошивки на все варианты MR-02м: в таблице устройств подсказка «есть
+  X.Y.Z.W» строится по сравнению `app_version` с `latest_stable_version` из манифеста;
+  сигнатура модуля используется только как **whitelist** «наших» расширений, а не для выбора .fw.
 - Unit-тесты демона (из каталога `opt/sa02m-flasher` на ПК разработчика или CI):
   `PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v`
 

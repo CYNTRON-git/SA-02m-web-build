@@ -106,6 +106,20 @@ _EXTRA_SIG_TOKENS_FOR_BATCH = (
 )
 
 
+def device_allowed_for_mr_firmware_flash(signature: str, *, allow_unlisted: bool = False) -> bool:
+    """
+    Разрешена ли прошивка MR-02м «общим» образом для данной сигнатуры устройства.
+
+    Один файл прошивки на всю линейку: проверяем только принадлежность к нашим
+    модулям расширения (MR/MP-02м и совместимые), а не совпадение сигнатуры с полем в .fw.
+
+    ``allow_unlisted=True`` — обход whitelist (только для отладки; в UI — отдельный флаг).
+    """
+    if allow_unlisted:
+        return True
+    return is_mp_module_signature_for_batch_flash(signature)
+
+
 def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     """
     Линейка MP-02m / MR-02m: для «Обновить все» прошиваем только устройства с этой сигнатурой.
@@ -120,9 +134,11 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     for tok in _EXTRA_SIG_TOKENS_FOR_BATCH:
         if tok in n:
             return True
+    # Сигнатуры с дефисами (MR-02m-DI16): сравниваем без - и _
+    n_compact = n.replace("-", "").replace("_", "")
     for token in ("MP02M", "MR02M", "ENMETER", "EN_METER"):
         compact = token.replace("_", "")
-        if compact in n:
+        if compact in n_compact:
             return True
     return False
 
