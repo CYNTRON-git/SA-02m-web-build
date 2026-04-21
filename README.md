@@ -1222,24 +1222,26 @@ channel=ALARM_LED&value=1 → {"ok": true}
 | `POST` | `/api/flasher/cancel` | Отменить задачу (`{job_id}`) |
 | `GET`  | `/api/flasher/health` | Health-check (без авторизации) |
 
-Формат `index.json` на cyntron.ru:
+Формат `index.json` на cyntron.ru (схема демона — `channels`; один образ на всю линейку — поле `signatures` можно оставить пустым `[]`):
 
 ```json
 {
   "schema": 1,
   "updated": "2025-10-20T12:00:00Z",
-  "firmwares": [
-    {
-      "file": "MR-02m_DI16_1.4.2.fw",
-      "version": "1.4.2",
-      "signatures": ["MR-02m-DI16"],
-      "device": "MR-02m DI16",
-      "size": 65536,
-      "sha256": "…",
-      "released": "2025-09-15",
-      "notes": "Исправлен фронт счётчика"
-    }
-  ]
+  "channels": {
+    "stable": [
+      {
+        "file": "MR-02m_1.4.2.0.fw",
+        "version": "1.4.2.0",
+        "signatures": [],
+        "device": "MR-02m (все варианты)",
+        "size": 65536,
+        "sha256": "…",
+        "released": "2025-09-15",
+        "notes": "Общий образ приложения для всех модулей расширения"
+      }
+    ]
+  }
 }
 ```
 
