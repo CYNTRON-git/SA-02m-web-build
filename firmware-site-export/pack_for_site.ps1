@@ -21,7 +21,10 @@ if ($args.Count -ge 1 -and $args[0]) {
   $Scan = $args[0]
 }
 if (-not $Scan.Trim()) {
-  $Scan = ($env:FW_PACK_SCAN_DIR).Trim()
+  $envScan = $env:FW_PACK_SCAN_DIR
+  if ($null -ne $envScan) {
+    $Scan = $envScan.Trim()
+  }
 }
 if (-not $Scan.Trim() -and $Cfg) {
   $Scan = ([string]$Cfg.defaultPackScanDir).Trim()
