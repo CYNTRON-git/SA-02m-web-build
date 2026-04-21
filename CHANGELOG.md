@@ -27,6 +27,17 @@
   запускает её обратно (в том числе `ExecStopPost`).
 - Эксклюзивный захват порта через `flock` на `/var/lock/sa02m-flasher-<port>.lock`
   и предварительная проверка `fuser` — исключает конфликт двух операций.
+- Post-mortem: каждое событие, уходящее в SSE (`jobs.py`), дублируется строкой
+  JSON в `/var/log/sa02m-flasher/events.log` (ротация через тот же шаблон
+  `*.log` в `logrotate.d/sa02m-flasher`).
+- Unit-тесты (`unittest`): `opt/sa02m-flasher/tests/` — разбор манифеста и
+  проверка `sha256` при скачивании (`test_firmware_repo.py`), cookie-сессия и
+  internal token (`test_auth.py`), запись `events.log` (`test_jobs_events_log.py`).
+  Запуск из каталога `opt/sa02m-flasher`:  
+  `PYTHONPATH=. python -m unittest discover -s tests -p "test_*.py" -v`
+- Скрипт подготовки файлов для сайта: `opt/sa02m-flasher/scripts/prepare_firmware_for_site.py`
+  — канонические имена `MR-02m_<X.Y.Z.W>.fw` / `MR-02m_<slug>_<X.Y.Z.W>.fw` и
+  черновик `index.json` из каталога с `.fw` (например `build/AppBoot` проекта MR-02m).
 
 ### Архитектура
 
@@ -56,7 +67,8 @@
   (`systemctl {start,stop,is-active} mplc.service` и `fuser /dev/COM{1..5}`,
   `fuser /dev/ttyS{0,3,4,5,7}`).
 - Systemd unit с усиленными параметрами (`ProtectSystem=strict`,
-  `PrivateTmp`, `NoNewPrivileges`, `ReadWritePaths`).
+  `PrivateTmp`, `NoNewPrivileges=no` — иначе недоступен `sudo` для
+  `mplc_lease`, `ReadWritePaths`).
 - Авторизация API — по cookie `session_token=cyntron_session` через
   `auth_request /_auth_check` (CGI `auth_check.cgi`). При необходимости —
   дополнительный общий секрет `INTERNAL_TOKEN` (заголовок `X-SA02M-Auth`).
