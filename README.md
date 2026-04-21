@@ -542,12 +542,16 @@ channel=DO&value=1
 - Подготовка каталога прошивок для Bitrix: скрипт
   [`opt/sa02m-flasher/scripts/prepare_firmware_for_site.py`](opt/sa02m-flasher/scripts/prepare_firmware_for_site.py)
   — канонические имена `MR-02m_<X.Y.Z.W>.fw` (опция `--include-signature` для различения модулей) и
-  черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`).
+  черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`, **`--bundle-dir`** для готового каталога выгрузки).
+- Выгрузка на хостинг (SSH, Bitrix, PuTTY `.ppk`, staging + `sudo`): в репозитории только шаблон
+  [firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example](firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example);
+  полная памятка, скрипты `pack_*` / `upload_*` и `index.json` — в `firmware-site-export/` и в git не входят (см. `.gitignore`).
 - Post-mortem по задачам: каждое SSE-событие дополнительно пишется строкой JSON в
   `/var/log/sa02m-flasher/events.log` (ротация вместе с остальными `*.log` демона).
-- Один файл прошивки на все варианты MR-02м: в таблице устройств подсказка «есть
-  X.Y.Z.W» строится по сравнению `app_version` с `latest_stable_version` из манифеста;
-  сигнатура модуля используется только как **whitelist** «наших» расширений, а не для выбора .fw.
+- Один файл прошивки на все варианты MR-02м: подсказка «есть …» только для сигнатур
+  whitelist MR/MP-02м; сравнение с `latest_stable_version` (приложение) и при наличии
+  записей в манифесте — с `latest_bootloader_version` (бутлоадер, `kind: bootloader` или
+  имя `MR-02m_bootloader_*.fw`). Сигнатура не выбирает файл .fw на сайте.
 - Unit-тесты демона (из каталога `opt/sa02m-flasher` на ПК разработчика или CI):
   `PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v`
 

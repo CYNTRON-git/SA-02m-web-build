@@ -1,0 +1,37 @@
+# Сайт и выгрузка прошивок (шаблон — скопируйте в SITE_AND_FIRMWARE_UPLOAD.md)
+
+Скопируйте файл в **`SITE_AND_FIRMWARE_UPLOAD.md`** в том же каталоге и заполните свои значения.  
+Файл **`SITE_AND_FIRMWARE_UPLOAD.md`** в git **не отслеживается** (см. корневой `.gitignore`).
+
+## Плейсхолдеры
+
+| Плейсхолдер | Пример смысла |
+|-------------|----------------|
+| `<SSH_HOST>` | IP или имя сервера |
+| `<SSH_USER>` | Учётная запись для деплоя |
+| `<BITRIX_DOCROOT>` | Корень сайта на диске |
+| `<FIRMWARE_DIR>` | `<BITRIX_DOCROOT>/upload/medialibrary/<каталог>/firmware` |
+| `<MANIFEST_URL>` | HTTPS к `index.json` (как в `MANIFEST_URL` в `etc/sa02m_flasher.conf`) |
+| `<PATH_TO_PPK>` | Путь к ключу PuTTY на Windows |
+
+## Команды (подставьте пути)
+
+**Пакет:**
+
+```bash
+cd opt/sa02m-flasher
+python scripts/prepare_firmware_for_site.py --scan "<MR-02m>/build/AppBoot" --bundle-dir "../../firmware-site-export"
+```
+
+**Выгрузка (Windows, после копирования скриптов в `firmware-site-export/`):**
+
+```powershell
+.\firmware-site-export\upload_to_promprog.ps1 "<FIRMWARE_DIR>"
+```
+
+Подробности поведения скриптов см. в исходниках `pack_for_site.ps1` и `upload_to_promprog.ps1` у себя локально (в репозитории они не хранятся).
+
+## Связь с демоном
+
+- `etc/sa02m_flasher.conf`: `MANIFEST_URL`, `FIRMWARE_BASE_URL`, `CACHE_DIR`.
+- Формат манифеста и UI: `CHANGELOG.md` (раздел про MR-02м).

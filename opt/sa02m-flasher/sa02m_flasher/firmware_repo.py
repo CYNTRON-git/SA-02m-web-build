@@ -47,6 +47,18 @@ VALID_EXTENSIONS = {".fw", ".bin", ".elf"}
 INDEX_CACHE_NAME = ".index.json"
 
 
+def _infer_kind_from_filename(file_name: str) -> str:
+    """
+    Классификация артефакта для сравнения версий с модулем.
+
+    Явное поле ``kind`` в манифесте предпочтительнее; иначе — по имени файла.
+    """
+    n = (file_name or "").lower()
+    if "mr-02m_bootloader" in n or n.endswith("_bootloader.fw") or n == "bootloader.fw":
+        return "bootloader"
+    return "app"
+
+
 def version_tuple(version: str) -> Optional[Tuple[int, int, int, int]]:
     """
     Разбор версии X.Y.Z.W для сравнения (только цифровые компоненты, до четырёх).
@@ -78,6 +90,7 @@ class FirmwareEntry:
     released: str = ""
     notes: str = ""
     channel: str = "stable"
+    kind: str = "app"               # app | bootloader — для latest_* и подсказки в UI
     url: str = ""                   # абсолютный URL (resolved)
     downloaded: bool = False        # файл есть в локальном кеше
     local_path: Optional[str] = None
@@ -115,7 +128,7 @@ class FirmwareRepo:
         list_entries()          — все известные записи (манифест + локальные).
         download(entry)         — принудительно скачать файл под запись.
         find_for_signature(sig) — устаревшее имя: возвращает все записи (образ общий для линейки).
-        version_tuple / latest_stable_version — сравнение версий для подсказки «есть обновление».
+        version_tuple / latest_stable_version / latest_bootloader_version — подсказка «есть обновление».
         add_upload(data, name)  — добавить .fw/.bin/.elf из UI (копирует в кеш).
         path_for(entry)         — локальный путь к файлу (или None).
     """
@@ -219,6 +232,11 @@ class FirmwareRepo:
                     signatures = raw.get("signatures") or []
                     if not isinstance(signatures, list):
                         signatures = [str(signatures)]
+                    kind_raw = str(raw.get("kind") or "").strip().lower()
+                    if kind_raw in ("app", "bootloader"):
+                        kind = kind_raw
+                    else:
+                        kind = _infer_kind_from_filename(file_name)
                     entry = FirmwareEntry(
                         file=file_name,
                         version=str(raw.get("version") or "?"),
@@ -229,6 +247,7 @@ class FirmwareRepo:
                         released=str(raw.get("released") or ""),
                         notes=str(raw.get("notes") or ""),
                         channel=str(channel),
+                        kind=kind,
                         url=self._resolve_url(str(raw.get("url") or file_name)),
                         source="manifest",
                     )
@@ -275,6 +294,7 @@ class FirmwareRepo:
         except Exception:
             log.exception("Не удалось разобрать .fw %s", path)
         size = path.stat().st_size
+        kind = _infer_kind_from_filename(path.name)
         return FirmwareEntry(
             file=path.name,
             version=version,
@@ -283,6 +303,7 @@ class FirmwareRepo:
             size=size,
             sha256=_sha256_of(path),
             channel="local",
+            kind=kind,
             source=source,
             downloaded=True,
             local_path=str(path),
@@ -306,18 +327,19 @@ class FirmwareRepo:
                 "manifest_error": self._manifest_error,
                 "last_refresh_ts": self._last_refresh_ts,
                 "latest_stable_version": self.latest_stable_version(),
+                "latest_bootloader_version": self.latest_bootloader_version(),
                 "entries": [e.to_dict() for e in self.list_entries()],
             }
 
-    def latest_stable_version(self) -> str:
-        """Наибольшая ``version`` среди записей канала ``stable`` из манифеста (для сравнения с версией на модуле)."""
+    def _latest_version_for_kind(self, kind: str) -> str:
+        """Наибольшая ``version`` среди manifest-записей ``stable`` с заданным ``kind``."""
         best: Optional[Tuple[int, int, int, int]] = None
         best_raw = ""
         with self._lock:
             candidates = [
                 e
                 for e in self._entries.values()
-                if e.channel == "stable" and e.source == "manifest"
+                if e.channel == "stable" and e.source == "manifest" and e.kind == kind
             ]
         for e in candidates:
             t = version_tuple(e.version)
@@ -327,6 +349,14 @@ class FirmwareRepo:
                 best = t
                 best_raw = str(e.version).strip()
         return best_raw
+
+    def latest_stable_version(self) -> str:
+        """Наибольшая версия приложения (``kind`` = app) в канале ``stable`` манифеста."""
+        return self._latest_version_for_kind("app")
+
+    def latest_bootloader_version(self) -> str:
+        """Наибольшая версия образа бутлоадера (``kind`` = bootloader) в канале ``stable`` манифеста."""
+        return self._latest_version_for_kind("bootloader")
 
     def find_for_signature(self, signature: str) -> List[FirmwareEntry]:
         """
