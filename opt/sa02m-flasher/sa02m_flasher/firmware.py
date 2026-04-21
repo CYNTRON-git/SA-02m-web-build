@@ -53,6 +53,10 @@ def parse_version_from_filename(filename: str) -> Optional[str]:
     Извлекает версию из имени файла MR-02m_<version>.fw / .bin.
     Поддерживаются 1–4 компонента: 1, 1.0, 1.0.0, 1.0.0.0 (недостающие дополняются нулями до X.Y.Z.W).
     """
+    # Бутлоадер: MR-02m_bootloader_X.Y.Z.W.fw (до общего MR-02m_<ver>, иначе ver = «bootloader_0…»)
+    m = re.match(r"MR-02m_bootloader_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
+    if m:
+        return m.group(1)
     # Строго: четыре числа (X.Y.Z.W)
     m = re.match(r"MR-02m_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
     if m:

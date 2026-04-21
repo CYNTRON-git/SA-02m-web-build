@@ -12,7 +12,8 @@
     ports: [],
     devices: [],        // последний результат сканирования
     firmware: [],       // список прошивок (entries)
-    latestStableVersion: '', // с бэкенда: max stable manifest (сравнение с app_version на модуле)
+    latestStableVersion: '', // max stable manifest, kind=app
+    latestBootloaderVersion: '', // max stable manifest, kind=bootloader
     scanJobId: null,
     flashJobId: null,
     scanStream: null,
@@ -205,6 +206,7 @@
       const data = await apiGet('/firmware');
       state.firmware = data.entries || [];
       state.latestStableVersion = (data.latest_stable_version || '').trim();
+      state.latestBootloaderVersion = (data.latest_bootloader_version || '').trim();
       renderFirmware(data);
       updateFlashControls();
     } catch (err) {
@@ -228,8 +230,9 @@
         const sig = (e.signatures && e.signatures.length)
           ? e.signatures.join(', ')
           : 'все варианты MR-02м (общий образ)';
+        const kindTag = e.kind && e.kind !== 'app' ? ` · ${escapeHtml(e.kind)}` : '';
         row.innerHTML = `<span class="flasher-fw-name">${escapeHtml(e.file)}</span>` +
-          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${e.channel}${e.downloaded ? '' : ' · не скачан'}</span>`;
+          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')}${kindTag} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${e.channel}${e.downloaded ? '' : ' · не скачан'}</span>`;
         list.appendChild(row);
       });
     }
@@ -290,11 +293,52 @@
     return 0;
   }
 
-  function firmwareUpdateHintForDevice(d) {
+  /* Синхронизировать логику с sa02m_flasher.module_profiles.is_mp_module_signature_for_batch_flash */
+  function stripBootloaderSignatureSuffix(sig) {
+    let s = String(sig || '').trim();
+    if (s.toUpperCase().endsWith('_BL')) return s.slice(0, -3).trim();
+    return s;
+  }
+
+  function isMpModuleSignatureForFirmwareHint(sig) {
+    let s = stripBootloaderSignatureSuffix(sig);
+    const n = s.toUpperCase().replace(/\s/g, '');
+    if (!n || n === 'NONE' || n === '—' || n === '?') return false;
+    const hintKeys = [
+      '6DO8DI', '16DO', '12AO', '6DO', '14DI', '10DICON', '6DO5DI2AO', '6AO6AI', '12AI',
+      '4DO6DI', '4TO6DI', 'TO4DI6',
+    ];
+    for (const key of hintKeys) {
+      if (n.includes(key) || n.startsWith(key.slice(0, 4))) return true;
+    }
+    const extra = ['DO6DI8', '6DO5DI2AO', 'DO4DI6', 'TO4DI6', '4TO6DI'];
+    for (const tok of extra) {
+      if (n.includes(tok)) return true;
+    }
+    const compact = n.replace(/-/g, '').replace(/_/g, '');
+    for (const token of ['MP02M', 'MR02M', 'ENMETER']) {
+      if (compact.includes(token)) return true;
+    }
+    return false;
+  }
+
+  function firmwareAppUpdateHintForDevice(d) {
+    if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
     const latest = state.latestStableVersion;
     if (!latest) return '';
     const lv = parseVersionTuple(latest);
     const dv = parseVersionTuple(d.app_version);
+    if (!lv || !dv) return '';
+    if (compareVersionTuple(lv, dv) <= 0) return '';
+    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}</div>`;
+  }
+
+  function firmwareBlUpdateHintForDevice(d) {
+    if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
+    const latest = state.latestBootloaderVersion;
+    if (!latest) return '';
+    const lv = parseVersionTuple(latest);
+    const dv = parseVersionTuple(d.bootloader_version);
     if (!lv || !dv) return '';
     if (compareVersionTuple(lv, dv) <= 0) return '';
     return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}</div>`;
@@ -317,8 +361,8 @@
         <td>${d.address ?? '—'}</td>
         <td>${d.serial_hex || '—'}<div class="flasher-sub">${d.serial_dec || ''}</div></td>
         <td>${escapeHtml(d.signature || '—')}</td>
-        <td>${escapeHtml(d.app_version || '—')}${firmwareUpdateHintForDevice(d)}</td>
-        <td>${escapeHtml(d.bootloader_version || '—')}</td>
+        <td>${escapeHtml(d.app_version || '—')}${firmwareAppUpdateHintForDevice(d)}</td>
+        <td>${escapeHtml(d.bootloader_version || '—')}${firmwareBlUpdateHintForDevice(d)}</td>
         <td>${d.baudrate || '—'} ${d.parity || ''}${d.stopbits || ''}</td>
         <td>${d.in_bootloader ? 'в bootloader' : ''}${d.duplicate_address ? ' dup' : ''}</td>
       `;

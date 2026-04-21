@@ -217,6 +217,60 @@ class TestLatestStableVersion(unittest.TestCase):
             repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
             self.assertEqual(repo.latest_stable_version(), "2.0.0.0")
 
+    def test_bootloader_stable_does_not_raise_app_latest(self) -> None:
+        manifest = {
+            "schema": 1,
+            "updated": "2026-04-21",
+            "channels": {
+                "stable": [
+                    {"file": "app.fw", "version": "1.0.0.0", "signatures": [], "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                    {
+                        "file": "MR-02m_bootloader_9.9.9.9.fw",
+                        "version": "9.9.9.9",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": 1,
+                        "sha256": "",
+                        "released": "",
+                        "notes": "",
+                    },
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            self.assertEqual(repo.latest_stable_version(), "1.0.0.0")
+            self.assertEqual(repo.latest_bootloader_version(), "9.9.9.9")
+
+    def test_status_includes_latest_bootloader(self) -> None:
+        manifest = {
+            "schema": 1,
+            "updated": "2026-04-21",
+            "channels": {
+                "stable": [
+                    {
+                        "file": "MR-02m_bootloader_1.0.0.2.fw",
+                        "version": "1.0.0.2",
+                        "kind": "bootloader",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": 1,
+                        "sha256": "",
+                        "released": "",
+                        "notes": "",
+                    },
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            st = repo.status()
+            self.assertEqual(st.get("latest_bootloader_version"), "1.0.0.2")
+
 
 if __name__ == "__main__":
     unittest.main()
