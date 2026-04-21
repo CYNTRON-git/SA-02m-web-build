@@ -15,6 +15,7 @@ __pycache__/
 
 # Сайт и выгрузка прошивок: манифест и приватные заметки не в репо (скрипты pack/upload — в репо)
 firmware-site-export/index.json
+firmware-site-export/site-deploy.config.json
 firmware-site-export/*.md
 !firmware-site-export/*.example.md
 # Локальные правки скрипта подготовки под сайт (если появятся)
