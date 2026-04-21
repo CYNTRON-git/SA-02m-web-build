@@ -379,6 +379,9 @@ web/
 │           ├── modbus_io.py      ← чтение/запись с повторами
 │           ├── modbus_tcp.py     ← опционально
 │           └── flasher_log.py    ← callback-логи
+│       ├── scripts/
+│       │   └── prepare_firmware_for_site.py  ← канонические имена .fw + черновик index.json
+│       └── tests/                ← unittest (auth, firmware_repo, events.log)
 │
 └── www/
     └── network_config/
@@ -536,6 +539,14 @@ channel=DO&value=1
 - Локальный кеш: `/var/lib/sa02m-flasher/firmware/`.
 - Проверка `sha256` перед прошивкой.
 - Ручная загрузка `.fw/.bin/.elf` через UI, с автоматическим извлечением сигнатуры и версии.
+- Подготовка каталога прошивок для Bitrix: скрипт
+  [`opt/sa02m-flasher/scripts/prepare_firmware_for_site.py`](opt/sa02m-flasher/scripts/prepare_firmware_for_site.py)
+  — канонические имена `MR-02m_<X.Y.Z.W>.fw` (опция `--include-signature` для различения модулей) и
+  черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`).
+- Post-mortem по задачам: каждое SSE-событие дополнительно пишется строкой JSON в
+  `/var/log/sa02m-flasher/events.log` (ротация вместе с остальными `*.log` демона).
+- Unit-тесты демона (из каталога `opt/sa02m-flasher` на ПК разработчика или CI):
+  `PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v`
 
 **Координация с опросом RS-485:**
 
@@ -1330,6 +1341,7 @@ tail -f /var/log/fix-eth.log
 | Flasher — logrotate | `/etc/logrotate.d/sa02m-flasher` |
 | Flasher — кеш прошивок | `/var/lib/sa02m-flasher/firmware/` |
 | Flasher — логи | `/var/log/sa02m-flasher/` |
+| Flasher — SSE post-mortem (JSON Lines) | `/var/log/sa02m-flasher/events.log` |
 | Flasher — unix-socket | `/run/sa02m-flasher/flasher.sock` |
 
 ---

@@ -112,7 +112,7 @@ class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer)
 class ServiceContext:
     def __init__(self, cfg: FlasherConfig) -> None:
         self.cfg = cfg
-        self.jobs = JobManager()
+        self.jobs = JobManager(events_log_path=cfg.log_dir / "events.log")
         self.repo = FirmwareRepo(
             cache_dir=cfg.cache_dir,
             manifest_url=cfg.manifest_url,

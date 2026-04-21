@@ -19,6 +19,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional
 
 log = logging.getLogger(__name__)
@@ -114,12 +115,14 @@ class JobManager:
     ctx — словарь удобных хуков (append_log, set_progress, add_device, cancel_evt).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, events_log_path: Optional[Path] = None) -> None:
         self._lock = threading.RLock()
         self._jobs: Dict[str, Job] = {}
         self._cancel_events: Dict[str, threading.Event] = {}
         self._subs: Dict[str, List[_Subscriber]] = {}
         self._port_jobs: Dict[str, str] = {}   # port → active job_id (for serialization)
+        self._events_log_path: Optional[Path] = Path(events_log_path) if events_log_path else None
+        self._events_log_lock = threading.Lock()
 
     # ─── Управление жизненным циклом ──────────────────────────────────────────
 
@@ -269,8 +272,32 @@ class JobManager:
         with self._lock:
             job.events.append(event)
             subs = list(self._subs.get(job.id, []))
+        self._append_events_log(job.id, event)
         for sub in subs:
             sub.push(event)
+
+    def _append_events_log(self, job_id: str, event: JobEvent) -> None:
+        """JSON Lines в events.log для post-mortem (каждая строка — одно SSE-событие)."""
+        path = self._events_log_path
+        if not path:
+            return
+        record = {
+            "job_id": job_id,
+            "ts": event.ts,
+            "kind": event.kind,
+            "level": event.level,
+            "message": event.message,
+            "data": event.data,
+        }
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        with self._events_log_lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as fp:
+                    fp.write(line)
+                    fp.flush()
+            except OSError:
+                log.debug("Не удалось записать в %s", path, exc_info=True)
 
     def _emit_id(self, job_id: str, kind: str, level: str, message: str) -> None:
         with self._lock:
