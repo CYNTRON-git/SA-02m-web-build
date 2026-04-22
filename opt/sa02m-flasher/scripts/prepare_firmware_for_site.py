@@ -139,8 +139,8 @@ def main() -> int:
         print(f"Не каталог: {scan}", file=sys.stderr)
         return 2
 
-    # Канонические имена из Makefile MR-02m: MR-02m_<ver>.fw, MR-02m_bootloader_<ver>.fw —
-    # не тащить в пакет boot_fw.fw / mp-02m.fw (дубликаты и другая схема имён).
+    # Makefile MR-02m (full_build) уже кладёт в каталог MR-02m_<ver>.fw и MR-02m_bootloader_<ver>.fw.
+    # Не тащить в пакет boot_fw.fw / mp-02m.fw (другая схема имён; при наличии MR-02m*.fw они не используются).
     fw_files = sorted(scan.glob("MR-02m*.fw"))
     if not fw_files:
         fw_files = sorted(scan.glob("*.fw"))
