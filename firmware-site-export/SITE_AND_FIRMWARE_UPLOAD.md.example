@@ -24,6 +24,8 @@
 
 ## Команды
 
+После `make full_build` в репозитории **MR-02m** каталог `build/AppBoot/` уже содержит **`MR-02m_<M.N.P.S>.fw`**, **`MR-02m_bootloader_<BL>.fw`** и при необходимости **`MR-02m_full_<M.N.P.S>.*`** — их подхватывает `pack_for_site` / `prepare_firmware_for_site.py` (маска `MR-02m*.fw`). Короткие имена `boot_fw.*`, `bootloader.fw` остаются для совместимости.
+
 **Пакет** (после настройки `site-deploy.config.json` или аргумента):
 
 ```powershell
