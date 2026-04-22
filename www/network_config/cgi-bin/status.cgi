@@ -453,6 +453,12 @@ gather_uptime_metrics() {
 
 gather_network_metrics() {
     local net0 net1
+    ETH0_ST="absent"
+    if [ -d /sys/class/net/eth0 ]; then
+        IFS= read -r ETH0_ST < /sys/class/net/eth0/operstate
+        ETH0_ST=${ETH0_ST:-unknown}
+    fi
+
     net0=($(net_iface_stats eth0))
     NET0_RX=${net0[0]:-0}
     NET0_TX=${net0[1]:-0}
@@ -471,6 +477,7 @@ gather_network_metrics() {
     IP=$(awk '/^[[:space:]]*address /{split($2,a,"/");print a[1];exit}' /etc/network/interfaces.d/eth0.conf 2>/dev/null)
     [ -n "$IP" ] || IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
+    ETH0_ST=$(json_escape "$ETH0_ST")
     ETH1_ST=$(json_escape "$ETH1_ST")
     IP=$(json_escape "$IP")
 }
@@ -754,6 +761,7 @@ print_network_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
+  "eth0_operstate": "${ETH0_ST}",
   "eth1_operstate": "${ETH1_ST}",
   "ip": "${IP}"
 }
@@ -849,6 +857,7 @@ print_main_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
+  "eth0_operstate": "${ETH0_ST}",
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
@@ -919,6 +928,7 @@ print_core_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
+  "eth0_operstate": "${ETH0_ST}",
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
@@ -990,6 +1000,7 @@ print_full_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
+  "eth0_operstate": "${ETH0_ST}",
   "eth1_operstate": "${ETH1_ST}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},

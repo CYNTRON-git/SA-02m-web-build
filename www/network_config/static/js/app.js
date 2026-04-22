@@ -186,7 +186,7 @@ function svcBadge(id, state) {
   if (!el) return;
   const ok = state === 'active';
   el.textContent = ok ? 'Активен' : 'Неактивен';
-  el.className = 'badge ' + (ok ? 'badge-ok pulse' : 'badge-err');
+  el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
 }
 
 /** Короткое имя unit для подписи (mplc4 вместо mplc4.service). */
@@ -382,15 +382,34 @@ function applyUptimeStatus(d) {
   setText('uptime-val', d.uptime_str || fmtUptime(d.uptime_sec));
 }
 
-function applyNetworkStatus(d) {
-  setText('net-rx', fmtBytes(d.net_rx_bytes));
-  setText('net-tx', fmtBytes(d.net_tx_bytes));
-  const st = d.eth1_operstate || 'absent';
-  const ethEl = document.getElementById('eth1-state');
-  if (ethEl) {
-    ethEl.textContent = st === 'up' ? '● В сети' : st === 'down' ? '● Нет линка' : '● Нет адаптера';
-    ethEl.className = 'eth-state ' + (st === 'up' ? 'up' : st === 'down' ? 'down' : 'absent');
+/** missingFallback — если operstate нет в JSON (старый status.cgi), не показывать «Нет адаптера» для реального eth0. */
+function applyEthIfaceState(spanId, operstate, missingFallback) {
+  const el = document.getElementById(spanId);
+  if (!el) return;
+  let v = operstate;
+  if (v === undefined || v === '') {
+    v = missingFallback !== undefined ? missingFallback : 'absent';
   }
+  const s = String(v).trim().toLowerCase();
+  let text; let cls;
+  if (s === 'absent') {
+    text = '● Нет адаптера';
+    cls = 'absent';
+  } else if (s === 'up') {
+    text = '● Есть линк';
+    cls = 'up';
+  } else {
+    text = '● Нет линка';
+    cls = 'down';
+  }
+  el.textContent = text;
+  el.className = 'eth-state eth-state-prominent ' + cls;
+}
+
+function applyNetworkStatus(d) {
+  applyEthIfaceState('eth0-state', d.eth0_operstate, 'unknown');
+  applyEthIfaceState('eth1-state', d.eth1_operstate);
+  setText('eth0-traf', 'RX ' + fmtBytes(d.net_rx_bytes || 0) + '  TX ' + fmtBytes(d.net_tx_bytes || 0));
   setText('eth1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
   if (d.ip) setText('tb-ip', d.ip);
 }

@@ -373,13 +373,16 @@ svg .gauge-num {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 9px;
-  font-weight: 700;
-  padding: 1px 6px;
+  font-weight: 400;
+  padding: 3px 7px;
+  min-width: 4.85rem;
+  min-height: 18px;
   letter-spacing: 0;
   line-height: 1.2;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  text-align: center;
 }
 .badge {
   font-size: 12px; font-weight: 700;
@@ -607,15 +610,16 @@ svg .gauge-num {
 /* ── eth1 status ─────────────────────────────────────────────────────────── */
 .eth-row    { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
 .eth-state {
-  font-size: 14px; font-weight: 600;
+  font-size: 14px;
+  font-weight: 400;
   display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill);
   border: 1px solid transparent;
 }
-/* Ethernet 1: строка состояния — крупнее и жирнее */
+/* Ethernet: строка состояния чуть крупнее базового, без жирного — иначе «мыло» на экране */
 .eth-state.eth-state-prominent {
   font-size: 1.06rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+  font-weight: 400;
+  letter-spacing: 0;
 }
 /* Ethernet 0: RX/TX — две колонки, не как «Службы» */
 .svc-row-eth-traffic {
