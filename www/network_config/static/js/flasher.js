@@ -51,7 +51,20 @@
 
   async function apiGet(path) {
     const res = await fetch(API + path, { credentials: 'same-origin' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const j = await res.json();
+          if (j && j.error) detail = ': ' + j.error;
+        } else {
+          const t = (await res.text()).trim().slice(0, 200);
+          if (t) detail = ': ' + t;
+        }
+      } catch (_) {}
+      throw new Error(`HTTP ${res.status}${detail}`);
+    }
     return res.json();
   }
 
@@ -91,6 +104,15 @@
       const sel = $('flasher-port');
       const prev = sel.value;
       sel.innerHTML = '';
+      if (!state.ports.length) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Нет портов в ответе демона (проверьте sa02m-flasher и /etc/sa02m_flasher.conf)';
+        opt.disabled = true;
+        sel.appendChild(opt);
+        updatePortHint();
+        return;
+      }
       state.ports.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.key;
@@ -99,16 +121,59 @@
         if (p.busy_pids && p.busy_pids.length) status.push('занят (PID ' + p.busy_pids.join(',') + ')');
         if (p.active_job) status.push('активная задача');
         opt.textContent = `${p.label || p.key} — ${p.device_path}` + (status.length ? ' [' + status.join(', ') + ']' : '');
-        opt.disabled = !p.exists;
+        /* Не отключаем option: во многих браузерах select с одним выбранным disabled-пунктом «пустой» и ломает value. */
+        opt.disabled = false;
+        opt.title = !p.exists ? 'Устройство ' + p.device_path + ' не найдено — проверьте udev/симлинки COM/RS-485' : '';
         sel.appendChild(opt);
       });
-      if (state.ports.length) {
-        const fallback = state.ports.find(p => p.exists) || state.ports[0];
-        sel.value = state.ports.some(p => p.key === prev) ? prev : fallback.key;
+      const fallback = state.ports.find(p => p.exists) || state.ports[0];
+      const want = state.ports.some(p => p.key === prev) ? prev : fallback.key;
+      sel.value = want;
+      if (!sel.value && fallback) {
+        const ix = state.ports.findIndex(p => p.key === fallback.key);
+        if (ix >= 0) sel.selectedIndex = ix;
       }
       updatePortHint();
     } catch (err) {
       toast('Порты: ' + err.message, 'error');
+    }
+  }
+
+  /** Подставить в журнал последние события последней задачи (GET /jobs), пока нет активного SSE. */
+  async function loadRecentJobJournal() {
+    if (state.scanJobId || state.flashJobId || state.scanPending || state.flashPending) return;
+    try {
+      const data = await apiGet('/jobs');
+      if (state.scanJobId || state.flashJobId || state.scanPending || state.flashPending) return;
+      const jobs = data.jobs || [];
+      if (!jobs.length) {
+        const box = $('flasher-log');
+        if (box) {
+          box.innerHTML = '';
+          logAppend('Нет задач в памяти демона. Запустите сканирование или прошивку — строки журнала появятся здесь.', 'info');
+        }
+        return;
+      }
+      const j = jobs[0];
+      const evs = j.events || [];
+      logReset('Последняя задача: ' + (j.kind || '—') + ', порт ' + (j.port || '—') + ', состояние ' + (j.state || '—'));
+      evs.forEach(e => {
+        if (!e || typeof e.message !== 'string') return;
+        if (e.kind === 'log' || e.kind === 'status' || e.kind === 'error') {
+          logAppend(e.message, e.level || 'info');
+        } else if (e.kind === 'progress' && e.message) {
+          logAppend(e.message, e.level || 'info');
+        }
+      });
+      if (!evs.length) {
+        logAppend('(В снимке задачи нет сохранённых строк журнала)', 'debug');
+      }
+    } catch (err) {
+      const box = $('flasher-log');
+      if (box) {
+        box.innerHTML = '';
+        logAppend('Не удалось загрузить журнал с сервера: ' + err.message, 'error');
+      }
     }
   }
 
@@ -416,7 +481,8 @@
 
   function openStream(jobId, handlers) {
     const url = `${API}/jobs/${jobId}/events`;
-    const es = new EventSource(url, { withCredentials: true });
+    /* Только URL: для same-origin куки и так уходят; EventSourceInit/withCredentials ломает часть WebView. */
+    const es = new EventSource(url);
     es.addEventListener('log', ev => {
       const p = safeParse(ev.data);
       if (p) logAppend(p.message || '', p.level);
@@ -445,8 +511,12 @@
       if (handlers && handlers.onEnd) handlers.onEnd(p ? p.state : 'done');
       es.close();
     });
+    let errOnce = false;
     es.onerror = () => {
-      // соединение будет переоткрыто автоматически; не логируем, чтобы не засорять.
+      if (!errOnce) {
+        errOnce = true;
+        logAppend('Потеряно SSE-соединение с демоном (сеть/прокси). При необходимости обновите страницу.', 'warn');
+      }
     };
     return es;
   }
@@ -679,11 +749,13 @@
     if (state.initialised) {
       loadPorts();
       loadFirmware();
+      loadRecentJobJournal();
       return;
     }
     state.initialised = true;
     wireEvents();
     loadPorts();
     loadFirmware();
+    loadRecentJobJournal();
   };
 })();

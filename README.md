@@ -162,7 +162,23 @@ git clone https://github.com/CYNTRON-git/SA-02m-web-build.git
 
 ---
 
-### Шаг 2 — Подключитесь по SSH (PuTTY)
+### Шаг 2 — Подключитесь по SSH (PuTTY или ключ)
+
+**Адрес и логин по умолчанию:** `root@192.168.1.136`, порт `22`.
+
+#### Вариант с закрытым ключом (типично для СА-02м: ключ **SA02m_SA02**)
+
+Сохраните выданный приватный ключ, например в `%USERPROFILE%\.ssh\sa02m_sa02` (в проводнике имя может отображаться как `SA02m_SA02` — важно именно содержимое файла ключа в формате OpenSSH).
+
+Из **PowerShell** или **Windows Terminal** (замените IP при необходимости):
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\sa02m_sa02" -o StrictHostKeyChecking=accept-new root@192.168.1.136
+```
+
+В **PuTTY** укажите тот же ключ: *Connection → SSH → Auth → Credentials* — файл `.ppk` (если у вас только OpenSSH-ключ, конвертируйте через PuTTYgen: *Conversions → Import key → Save private key*).
+
+#### Вариант по паролю (PuTTY и т.п.)
 
 1. Запустите **PuTTY** (или Windows Terminal, MobaXterm и т.п.)
 2. Введите:
@@ -185,7 +201,7 @@ git clone https://github.com/CYNTRON-git/SA-02m-web-build.git
    - **Host name:** `192.168.1.136`
    - **Port:** `22`
    - **User name:** `root`
-   - **Password:** `cyntron`
+   - либо **Password:** `cyntron`, либо на вкладке **Advanced → SSH → Authentication** укажите **Private key file** (`.ppk` или ключ, который WinSCP принимает напрямую)
 3. Нажмите **Login**
 4. В левой панели (ПК) откройте папку с распакованным репозиторием
 5. В правой панели (устройство) перейдите в `/tmp`
@@ -193,10 +209,22 @@ git clone https://github.com/CYNTRON-git/SA-02m-web-build.git
 
 После копирования на устройстве должна существовать папка `/tmp/SA-02m-web-build/` с файлами `install.sh`, `scripts/`, `etc/`, `www/`.
 
-> **Альтернатива WinSCP** — через PowerShell:
+> **Альтернатива WinSCP** — через PowerShell (**без ключа** пароль запросят интерактивно; **с ключом SA02m_SA02** — укажите `-i`):
 > ```powershell
 > scp -r .\SA-02m-web-build root@192.168.1.136:/tmp/
 > ```
+> ```powershell
+> scp -i "$env:USERPROFILE\.ssh\sa02m_sa02" -o StrictHostKeyChecking=accept-new -r .\SA-02m-web-build root@192.168.1.136:/tmp/
+> ```
+>
+> Точечное обновление веб-файлов с ПК (ключ **SA02m_SA02** как `sa02m_sa02` в `%USERPROFILE%\.ssh\`):
+> ```powershell
+> $K = "$env:USERPROFILE\.ssh\sa02m_sa02"
+> $H = "root@192.168.1.136"
+> scp -i $K -o StrictHostKeyChecking=accept-new www\network_config\static\js\app.js "${H}:/var/www/network_config/static/js/app.js"
+> scp -i $K -o StrictHostKeyChecking=accept-new www\network_config\static\css\main.css "${H}:/var/www/network_config/static/css/main.css"
+> ```
+> Либо на устройстве из каталога с репозиторием: `sudo bash scripts/update-www-only.sh`. Пути `/var/www/network_config/…` — типичные для `install.sh`; при другом `WEB_ROOT` замените каталог.
 
 ---
 
