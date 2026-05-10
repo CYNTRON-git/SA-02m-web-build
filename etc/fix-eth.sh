@@ -3,7 +3,7 @@
 # fix-eth.sh  —  Static-IP interface recovery
 # Called by: udev (ACTION==add/bind) or net-watchdog.service
 #
-# Логика: проверяет carrier → IP → gateway ping.
+# Логика: проверяет carrier → IP → ping-target.
 # Если что-то не так — делает ifdown/ifup (читает /etc/network/interfaces.d/).
 # Поддерживает eth0 и eth1 (если существует eth1.conf).
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11,6 +11,7 @@
 LOG_FILE="/var/log/fix-eth.log"
 LOG_MAX_BYTES=524288          # 512 KB — ротация лога
 LOCK_DIR="/run/fix-eth"       # lock-файлы для предотвращения параллельных запусков
+STATE_DIR="/run/fix-eth-state"
 RECOVER_COOLDOWN=60           # секунд между восстановлениями одного интерфейса
 PING_COUNT=2
 PING_TIMEOUT=3
@@ -19,6 +20,7 @@ PING_TIMEOUT=3
 # Там можно задать:
 #   WATCHDOG_PING_ETH0=192.168.1.1     — хост для пинга на eth0 (переопределяет шлюз)
 #   WATCHDOG_PING_ETH1=10.0.0.2        — хост для пинга на eth1 (когда шлюза нет)
+#   WATCHDOG_PING_ETH0=skip            — не пинговать, считать рабочим по carrier+IP
 #   RECOVER_COOLDOWN=90                — изменить cooldown
 [ -f /etc/sa02m_network.conf ] && source /etc/sa02m_network.conf
 
@@ -41,7 +43,7 @@ rotate_log() {
     fi
 }
 
-# ── Link / IP / gateway detection (без ethtool) ────────────────────────────
+# ── Link / IP / ping-target detection (без ethtool) ───────────────────────
 carrier_up() {
     # /sys/class/net/ethX/carrier = 1 если физический линк есть
     local iface=$1
@@ -62,6 +64,27 @@ get_gateway() {
     [ -f "$conf" ] && awk '/^[[:space:]]*gateway/{print $2; exit}' "$conf"
 }
 
+state_file_for_iface() {
+    local iface=$1
+    echo "${STATE_DIR}/${iface}.last_ok_target"
+}
+
+remember_target_success() {
+    local iface=$1
+    local target=$2
+    mkdir -p "$STATE_DIR"
+    printf '%s\n' "$target" > "$(state_file_for_iface "$iface")"
+}
+
+target_was_reachable_before() {
+    local iface=$1
+    local target=$2
+    local state_file
+
+    state_file=$(state_file_for_iface "$iface")
+    [ -f "$state_file" ] || return 1
+    [ "$(cat "$state_file" 2>/dev/null)" = "$target" ]
+}
 
 # check_connectivity iface
 # Уровни проверки (применяется первый подходящий):
@@ -71,14 +94,18 @@ get_gateway() {
 # Возвращает: 0 — OK/пропущено, 1 — хост недоступен
 check_connectivity() {
     local iface=$1
-    local iface_upper; iface_upper=$(echo "$iface" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+    local iface_upper target_source custom_ping_var target
+    iface_upper=$(echo "$iface" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+    target_source="gateway"
 
     # Явно заданная цель пинга для интерфейса (переопределяет шлюз)
     # Пример: WATCHDOG_PING_ETH1=10.0.0.2 в /etc/sa02m_network.conf
-    local custom_ping_var="WATCHDOG_PING_${iface_upper}"
-    local target="${!custom_ping_var:-}"
+    custom_ping_var="WATCHDOG_PING_${iface_upper}"
+    target="${!custom_ping_var:-}"
 
-    if [ -z "$target" ]; then
+    if [ -n "$target" ]; then
+        target_source="custom"
+    else
         target=$(get_gateway "$iface")
     fi
 
@@ -92,11 +119,19 @@ check_connectivity() {
     fi
 
     if ping -c "$PING_COUNT" -W "$PING_TIMEOUT" -q "$target" >/dev/null 2>&1; then
+        remember_target_success "$iface" "$target"
         return 0
-    else
-        log WARN "$iface: хост ${target} недоступен"
-        return 1
     fi
+
+    # Если используем fallback на gateway и он ни разу не отвечал после запуска,
+    # не считаем это аварией: на isolated-LAN шлюз может быть указан формально.
+    if [ "$target_source" = "gateway" ] && ! target_was_reachable_before "$iface" "$target"; then
+        log INFO "$iface: шлюз ${target} пока недоступен и ещё ни разу не отвечал; считаем интерфейс рабочим по carrier+IP"
+        return 0
+    fi
+
+    log WARN "$iface: хост ${target} недоступен"
+    return 1
 }
 
 # ── Lock: предотвращает параллельный запуск для одного интерфейса ──────────
@@ -192,6 +227,7 @@ recover_iface() {
 # ── Точка входа ────────────────────────────────────────────────────────────
 rotate_log
 mkdir -p "$LOCK_DIR"
+mkdir -p "$STATE_DIR"
 
 # Если передан конкретный интерфейс (из udev: KERNEL==ethX) — работаем только с ним
 # Иначе — проверяем все сконфигурированные интерфейсы

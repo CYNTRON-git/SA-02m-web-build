@@ -10,6 +10,12 @@ CHECK_INTERVAL=30       # секунд между проверками
 FIX_SCRIPT="/usr/local/bin/fix-eth.sh"
 LOG_FILE="/var/log/fix-eth.log"
 
+[ -f /etc/sa02m_network.conf ] && source /etc/sa02m_network.conf
+
+if [ -n "${WATCHDOG_INTERVAL:-}" ]; then
+    CHECK_INTERVAL="$WATCHDOG_INTERVAL"
+fi
+
 log() {
     local ts; ts=$(date '+%Y-%m-%d %H:%M:%S')
     echo "[${ts}] [WDG] $*" >> "$LOG_FILE" 2>/dev/null || true

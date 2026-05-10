@@ -20,3 +20,6 @@ firmware-site-export/*.md
 !firmware-site-export/*.example.md
 # Локальные правки скрипта подготовки под сайт (если появятся)
 opt/sa02m-flasher/scripts/prepare_firmware_for_site.local.py
+
+# Локальные приватные файлы (не в репо)
+private/
