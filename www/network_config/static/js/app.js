@@ -256,6 +256,62 @@ const backgroundLoaded = {
   rs485: false
 };
 const _prevRs = {};
+const statusFailures = {
+  cpu: 0, temp: 0, ram: 0, disk: 0,
+  storage: 0, time: 0, uptime: 0, network: 0, load: 0,
+  system: 0, services: 0, hardware: 0, rs485: 0
+};
+const statusPauseUntil = { hardware: 0, rs485: 0 };
+const STATUS_TIMEOUT_MS = {
+  cpu: 2500,
+  temp: 2500,
+  ram: 2500,
+  disk: 2500,
+  uptime: 3000,
+  network: 3000,
+  load: 3000,
+  time: 3000,
+  services: 3500,
+  system: 3500,
+  storage: 4000,
+  hardware: 4000,
+  rs485: 4000
+};
+
+function statusRequestTimeout(part) {
+  return STATUS_TIMEOUT_MS[part] || 3500;
+}
+
+function isStatusPartPaused(part) {
+  return (statusPauseUntil[part] || 0) > Date.now();
+}
+
+function setStatusPartPause(part, ms) {
+  statusPauseUntil[part] = Date.now() + ms;
+}
+
+function noteStatusFailure(part, err) {
+  statusFailures[part] = (statusFailures[part] || 0) + 1;
+  const isTimeout = err && err.name === 'AbortError';
+  if ((part === 'hardware' || part === 'rs485') && statusFailures[part] >= 2) {
+    setStatusPartPause(part, 60000);
+    if (part === 'hardware') {
+      const hint = document.getElementById('hw-hint');
+      if (hint) {
+        hint.textContent = isTimeout
+          ? 'ОПРОС АППАРАТНОЙ ЧАСТИ ВРЕМЕННО ОСТАНОВЛЕН ИЗ-ЗА ТАЙМАУТА'
+          : 'ОПРОС АППАРАТНОЙ ЧАСТИ ВРЕМЕННО ОСТАНОВЛЕН ИЗ-ЗА ОШИБКИ';
+      }
+    }
+  }
+}
+
+function noteStatusSuccess(part) {
+  statusFailures[part] = 0;
+  if (part === 'hardware' || part === 'rs485') {
+    statusPauseUntil[part] = 0;
+  }
+}
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -564,14 +620,21 @@ function applyStatus(d) {
 function fetchPriorityPart(part, persist = true) {
   if (widgetBusy[part]) return;
   widgetBusy[part] = true;
-  fetch('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), { cache: 'no-store', credentials: 'same-origin' })
-    .then(r => r.json())
+  fetchWithTimeout('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), {
+    cache: 'no-store',
+    credentials: 'same-origin'
+  }, statusRequestTimeout(part))
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(d => {
       if (d.error) return;
       applyPriorityStatus(d);
       if (persist) writePriorityWarmupPart(part, d);
+      noteStatusSuccess(part);
     })
-    .catch(() => {})
+    .catch((e) => { noteStatusFailure(part, e); })
     .finally(() => { widgetBusy[part] = false; });
 }
 
@@ -593,15 +656,23 @@ function fetchDiskWidget() {
 
 function fetchBackgroundPart(part, applyFn) {
   if (backgroundBusy[part]) return;
+  if (isStatusPartPaused(part)) return;
   backgroundBusy[part] = true;
-  fetch('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), { cache: 'no-store', credentials: 'same-origin' })
-    .then(r => r.json())
+  fetchWithTimeout('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), {
+    cache: 'no-store',
+    credentials: 'same-origin'
+  }, statusRequestTimeout(part))
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
     .then(d => {
       if (d.error) return;
       applyFn(d);
       backgroundLoaded[part] = true;
+      noteStatusSuccess(part);
     })
-    .catch(() => {})
+    .catch((e) => { noteStatusFailure(part, e); })
     .finally(() => { backgroundBusy[part] = false; });
 }
 

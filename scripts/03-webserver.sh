@@ -49,6 +49,9 @@ server {
         include        fastcgi_params;
         fastcgi_param  SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param  HTTP_COOKIE     \$http_cookie;
+        fastcgi_connect_timeout 2s;
+        fastcgi_send_timeout    8s;
+        fastcgi_read_timeout    8s;
         fastcgi_pass   unix:/run/fcgiwrap.socket;
     }
 
