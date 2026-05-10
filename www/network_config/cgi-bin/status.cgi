@@ -82,6 +82,15 @@ cache_print_or_build() {
     return 1
 }
 
+status_timeout_run() {
+    local sec=${STATUS_CMD_TIMEOUT_SEC:-2}
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$sec" "$@"
+    else
+        "$@"
+    fi
+}
+
 gpio_state() {
     local n=$1 v
     if [ -z "$n" ] || ! [[ "$n" =~ ^[0-9]+$ ]]; then
@@ -97,7 +106,7 @@ gpio_state() {
 }
 
 svc_is_active() {
-    systemctl is-active "$1" 2>/dev/null
+    status_timeout_run systemctl is-active "$1" 2>/dev/null
 }
 
 # Короткое имя для UI: mplc4 вместо mplc4.service (аналогично .socket).
@@ -115,8 +124,8 @@ unit_display_id() {
 unit_uptime_seconds() {
     local unit=$1 pid boot_j clock_hz proc_start up
     command -v systemctl >/dev/null 2>&1 || { echo 0; return; }
-    systemctl is-active --quiet "$unit" 2>/dev/null || { echo 0; return; }
-    pid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null | head -n1 | tr -d '\r')
+    status_timeout_run systemctl is-active --quiet "$unit" 2>/dev/null || { echo 0; return; }
+    pid=$(status_timeout_run systemctl show -p MainPID --value "$unit" 2>/dev/null | head -n1 | tr -d '\r')
     case "$pid" in ''|0) echo 0; return ;; esac
     [ -r "/proc/${pid}/stat" ] || { echo 0; return; }
     boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
@@ -167,16 +176,16 @@ gather_optional_platform_services() {
         klogicd.service \
         CODESYSControl.service \
         CODESYSControlRuntime.service; do
-        load=$(systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+        load=$(status_timeout_run systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
         case "$load" in not-found|'') continue ;; esac
-        id_raw=$(systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+        id_raw=$(status_timeout_run systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
         [ -z "$id_raw" ] && id_raw=$u
         id_disp=$(unit_display_id "$id_raw")
         [ -z "$id_disp" ] && continue
         case "$seen" in *" ${id_disp} "*) continue ;; esac
         seen="${seen}${id_disp} "
         # Не использовать «is-active || echo inactive» — при failed/activating попадёт два слова.
-        st_raw=$(systemctl show -p ActiveState --value "$id_raw" 2>/dev/null | head -n1 | tr -d '\r')
+        st_raw=$(status_timeout_run systemctl show -p ActiveState --value "$id_raw" 2>/dev/null | head -n1 | tr -d '\r')
         [ -z "$st_raw" ] && st_raw="inactive"
         # В списке только реально работающие службы (без failed/activating и «пустых» unit).
         [ "$st_raw" != "active" ] && continue
@@ -202,7 +211,7 @@ net_iface_stats() {
 iface_ipv4_addr() {
     local iface=$1 ip=""
     if command -v ip >/dev/null 2>&1; then
-        ip=$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
+        ip=$(status_timeout_run ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
     fi
     printf '%s' "${ip:-}"
 }
@@ -268,9 +277,9 @@ root_disk_device() {
 removable_mounted() {
     local mp=$1
     if command -v findmnt >/dev/null 2>&1; then
-        findmnt -n "$mp" >/dev/null 2>&1 && return 0
+        status_timeout_run findmnt -n "$mp" >/dev/null 2>&1 && return 0
     fi
-    mount 2>/dev/null | grep -qF " ${mp} " && return 0
+    status_timeout_run mount 2>/dev/null | grep -qF " ${mp} " && return 0
     return 1
 }
 
@@ -457,7 +466,7 @@ gather_time_metrics() {
         IFS= read -r rtc_time < /sys/class/rtc/rtc0/time
         RTC_DT="${rtc_date:-} ${rtc_time:-}"
     elif command -v hwclock >/dev/null 2>&1; then
-        RTC_DT=$(hwclock -r 2>/dev/null | head -1 | tr -d '\r')
+        RTC_DT=$(status_timeout_run hwclock -r 2>/dev/null | head -1 | tr -d '\r')
     fi
     RTC_JSON=$(json_escape "$RTC_DT")
 }
@@ -500,7 +509,7 @@ gather_network_metrics() {
     # Для верхней панели оставляем единый IP (первый доступный).
     IP="${ETH0_IP:-}"
     [ -n "$IP" ] || IP="${ETH1_IP:-}"
-    [ -n "$IP" ] || IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -n "$IP" ] || IP=$(status_timeout_run hostname -I 2>/dev/null | awk '{print $1}')
 
     ETH0_ST=$(json_escape "$ETH0_ST")
     ETH1_ST=$(json_escape "$ETH1_ST")
@@ -574,9 +583,9 @@ gather_services_metrics() {
     active_unit=""
     if command -v systemctl >/dev/null 2>&1; then
         for u in mplc.service mplc mplc4.service mplc4; do
-            if systemctl is-active --quiet "$u" 2>/dev/null; then
+            if status_timeout_run systemctl is-active --quiet "$u" 2>/dev/null; then
                 active_unit=$u
-                mpl_pid=$(systemctl show -p MainPID --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+                mpl_pid=$(status_timeout_run systemctl show -p MainPID --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
                 case "$mpl_pid" in ''|0) mpl_pid="" ;; esac
                 break
             fi
@@ -585,7 +594,7 @@ gather_services_metrics() {
 
     if [ -n "$active_unit" ]; then
         MPLC_STATUS="active"
-        MPLC_UNIT_RAW=$(systemctl show -p Id --value "$active_unit" 2>/dev/null | head -n1 | tr -d '\r')
+        MPLC_UNIT_RAW=$(status_timeout_run systemctl show -p Id --value "$active_unit" 2>/dev/null | head -n1 | tr -d '\r')
         mpl_slice=$MPLC_UNIT_RAW
     fi
 
@@ -614,10 +623,10 @@ gather_services_metrics() {
 
     if [ -z "$MPLC_UNIT_RAW" ] && command -v systemctl >/dev/null 2>&1; then
         for u in mplc4.service mplc.service; do
-            case "$(systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')" in
+            case "$(status_timeout_run systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')" in
                 not-found|'') continue ;;
             esac
-            MPLC_UNIT_RAW=$(systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
+            MPLC_UNIT_RAW=$(status_timeout_run systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
             [ -n "$MPLC_UNIT_RAW" ] && mpl_slice=$MPLC_UNIT_RAW
             [ -n "$MPLC_UNIT_RAW" ] && break
         done
