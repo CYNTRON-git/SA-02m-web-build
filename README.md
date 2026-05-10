@@ -483,7 +483,7 @@ web/
 
 #### Виджет Hardware Outputs
 Три переключателя: **DO** (дискретный выход), **Beeper**, **Alarm LED**.  
-Состояние читается из `/sys/class/gpio/gpioN/value`, управление через `POST /cgi-bin/hw_set.cgi`.
+Для реального устройства по умолчанию используется `PCA9536` на `I2C-2` (`0x41`): чтение и запись идут через `i2cget`/`i2cset` с `timeout` и межпроцессным `flock`, чтобы веб-интерфейс не зависал, если шину временно удерживает другая служба. Для старых ревизий остаётся fallback на `/sys/class/gpio/gpioN/value`.
 
 ---
 
@@ -501,9 +501,34 @@ web/
 
 ---
 
-### Управление железом (GPIO)
+### Управление железом (GPIO / I2C expander)
 
-GPIO-пины настраиваются в `/etc/sa02m_hw.conf`:
+Аппаратные каналы настраиваются в `/etc/sa02m_hw.conf`.
+
+Для **реального СА-02м** рекомендуется штатный backend `PCA9536`:
+
+```bash
+SA02M_HW_BACKEND=auto
+SA02M_I2C_EXP_BUS=2
+SA02M_I2C_EXP_ADDR=0x41
+SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
+SA02M_I2C_LOCK_WAIT_SEC=0.4
+SA02M_I2C_TIMEOUT_SEC=1
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_RESPECT_OWNER=1
+SA02M_I2C_ACTIVE_LOW_MASK=auto
+SA02M_I2C_BIT_DO=1
+SA02M_I2C_BIT_BEEPER=2
+SA02M_I2C_BIT_ALARM_LED=0
+SA02M_I2C_BIT_USB_POWER=
+```
+
+`auto` выбирает `gpio_sysfs` только если явно заданы `SA02M_GPIO_*`. Это позволяет сохранить совместимость со старыми платами и одновременно готовит перенос на реальное устройство с микросхемой расширения по I2C.
+
+Для штатного драйвера `MPLC` карта линий `PCA9536` такая: `bit0 = Alarm/Red LED`, `bit1 = DO`, `bit2 = Buzzer`, `bit3 = Blue LED`. `USB_POWER` на реальном устройстве управляется не через `PCA9536`, а отдельной GPIO-линией.
+
+Для старых ревизий с прямыми GPIO остаётся fallback:
 
 ```bash
 SA02M_GPIO_DO=78          # дискретный выход
@@ -517,12 +542,12 @@ SA02M_GPIO_ALARM_LED=80   # аварийный LED
 POST /cgi-bin/hw_set.cgi
 Content-Type: application/x-www-form-urlencoded
 
-channel=DO&value=1
+channel=do&value=1
 ```
 
-Ответ: `{"ok": true, "channel": "DO", "value": 1}`
+Ответ: `{"ok": true, "channel": "do", "value": 1}`
 
-`www-data` имеет право писать в `/sys/class/gpio/` через `sudoers` без пароля.
+Если шина занята другой службой, API возвращает `{"ok":false,"error":"i2c_busy"}` вместо зависания CGI.
 
 ---
 
@@ -1002,6 +1027,13 @@ setserial -g /dev/ttyS[0-9]
 
 Управление дискретными выходами (DO), пищалкой (Beeper) и аварийным LED производится через I2C-расширитель **PCA9536** (I2C шина 2, адрес `0x41`).
 
+Веб-интерфейс теперь работает с этой микросхемой через общий helper:
+- чтение регистра `0x01` (Output Port) и проверка `0x03` (Configuration);
+- при первом доступе перевод нужных линий в выходы;
+- `timeout` на каждую операцию I2C;
+- `flock` на lock-файл, чтобы параллельные обращения не конфликтовали;
+- при занятой шине возвращается ошибка `i2c_busy`, а не зависание страницы.
+
 #### Конфигурация направлений (все пины — выходы)
 
 ```bash
@@ -1285,7 +1317,27 @@ channel=ALARM_LED&value=1 → {"ok": true}
 Отредактируйте `/etc/sa02m_hw.conf` на устройстве:
 
 ```bash
-# Номера GPIO-пинов (sysfs)
+# Реальное устройство: PCA9536 на I2C
+SA02M_HW_BACKEND=auto
+SA02M_I2C_EXP_BUS=2
+SA02M_I2C_EXP_ADDR=0x41
+SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
+SA02M_I2C_LOCK_WAIT_SEC=0.4
+SA02M_I2C_TIMEOUT_SEC=1
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_RESPECT_OWNER=1
+SA02M_I2C_ACTIVE_LOW_MASK=auto
+SA02M_I2C_BIT_DO=1
+SA02M_I2C_BIT_BEEPER=2
+SA02M_I2C_BIT_ALARM_LED=0
+SA02M_I2C_BIT_USB_POWER=
+```
+
+Для старых ревизий с прямыми GPIO:
+
+```bash
+SA02M_HW_BACKEND=gpio_sysfs
 SA02M_GPIO_DO=78
 SA02M_GPIO_BEEPER=79
 SA02M_GPIO_ALARM_LED=80
@@ -1328,12 +1380,24 @@ net-watchdog.service ──→ net-watchdog.sh  ─ активная защит�
 
 ### Настройка `/etc/sa02m_network.conf`
 
+По умолчанию `fix-eth.sh` сначала проверяет `carrier + IP`. Если в `ethX.conf`
+задан `gateway`, он используется как fallback-цель пинга только после того,
+как хотя бы один раз успешно ответил. Это не даёт изолированной сети попасть
+в бесконечный цикл `ifdown/ifup`, если gateway указан в шаблоне, но реально
+недоступен.
+
 ```bash
-# Пинговать конкретный хост вместо шлюза для eth0
+# Сеть с реальным маршрутизатором: пинговать конкретный хост для eth0
 WATCHDOG_PING_ETH0=192.168.1.1
 
-# eth1 без шлюза — отключить пинг (считать здоровым при наличии carrier + IP)
+# Изолированная сеть / прямое подключение: не проверять reachability по ping
+WATCHDOG_PING_ETH0=skip
+
+# eth1 без шлюза — отключить пинг, считать здоровым при наличии carrier + IP
 WATCHDOG_PING_ETH1=skip
+
+# Интервал обхода watchdog (секунды, по умолчанию 30)
+WATCHDOG_INTERVAL=30
 
 # Cooldown между попытками восстановления (секунды, по умолчанию 60)
 RECOVER_COOLDOWN=90

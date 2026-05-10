@@ -411,6 +411,12 @@ function applyNetworkStatus(d) {
   applyEthIfaceState('eth1-state', d.eth1_operstate);
   setText('eth0-traf', 'RX ' + fmtBytes(d.net_rx_bytes || 0) + '  TX ' + fmtBytes(d.net_tx_bytes || 0));
   setText('eth1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
+  const ip0 = (d.eth0_ip !== undefined && d.eth0_ip !== null) ? String(d.eth0_ip).trim() : '';
+  const ip1 = (d.eth1_ip !== undefined && d.eth1_ip !== null) ? String(d.eth1_ip).trim() : '';
+  const m0 = (d.eth0_mode !== undefined && d.eth0_mode !== null) ? String(d.eth0_mode).trim().toLowerCase() : '';
+  const m1 = (d.eth1_mode !== undefined && d.eth1_mode !== null) ? String(d.eth1_mode).trim().toLowerCase() : '';
+  setText('eth0-ip', ip0 ? ip0 : (m0 === 'dhcp' ? 'DHCP' : '—'));
+  setText('eth1-ip', ip1 ? ip1 : (m1 === 'dhcp' ? 'DHCP' : '—'));
   if (d.ip) setText('tb-ip', d.ip);
 }
 
@@ -514,12 +520,16 @@ function applyServicesStatus(d) {
 function applyHardwareStatus(d) {
   const hint = document.getElementById('hw-hint');
   if (hint) {
-    if (d.hw_i2c_expander_absent === 1) {
+    if (d.hw_i2c_busy === 1) {
+      hint.textContent = 'ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ';
+    } else if (d.hw_i2c_expander_absent === 1) {
       hint.textContent = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
+    } else if (d.hw_backend === 'i2c_expander' && d.hw_configured) {
+      hint.textContent = 'PCA9536 настроен через /etc/sa02m_hw.conf';
     } else if (d.hw_configured) {
-      hint.textContent = 'GPIO настроены (/etc/sa02m_hw.conf)';
+      hint.textContent = 'Аппаратные каналы настроены (/etc/sa02m_hw.conf)';
     } else {
-      hint.textContent = 'GPIO не заданы — отредактируйте /etc/sa02m_hw.conf';
+      hint.textContent = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
   }
   setHwRow('hw-do-st',   d.hw_do);
@@ -697,7 +707,9 @@ function setHw(channel, value) {
     .then(r => r.json())
     .then(j => {
       if (j.ok) { fetchStatus(); toast('Применено', 'success'); }
-      else if (j.error === 'gpio_not_configured') toast('GPIO не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'gpio_not_configured') toast('Канал не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'i2c_busy') toast('Шина I2C занята другой службой', 'error');
+      else if (j.error === 'i2c_tools_missing') toast('На устройстве нет i2c-tools', 'error');
       else toast('Ошибка: ' + (j.error || 'unknown'), 'error');
     })
     .catch(() => toast('Нет связи с сервером', 'error'));

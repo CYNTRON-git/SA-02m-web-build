@@ -3,6 +3,8 @@ echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-cache"
 echo ""
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 STATUS_PART=full
 case "${QUERY_STRING:-}" in
     *part=cpu*)      STATUS_PART=cpu ;;
@@ -41,11 +43,7 @@ if ! allow_public_part "$STATUS_PART" && ! check_auth; then
 fi
 
 HW_CONF="/etc/sa02m_hw.conf"
-SA02M_GPIO_DO=""
-SA02M_GPIO_BEEPER=""
-SA02M_GPIO_ALARM_LED=""
-SA02M_GPIO_USB_POWER=""
-[ -f "$HW_CONF" ] && . "$HW_CONF" 2>/dev/null
+. "$SCRIPT_DIR/lib_hw.sh"
 
 CACHE_DIR="/tmp/sa02m_status_cache"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
@@ -199,6 +197,26 @@ net_iface_stats() {
         IFS= read -r tx < "/sys/class/net/${iface}/statistics/tx_bytes"
     fi
     echo "${rx:-0} ${tx:-0}"
+}
+
+iface_ipv4_addr() {
+    local iface=$1 ip=""
+    if command -v ip >/dev/null 2>&1; then
+        ip=$(ip -o -4 addr show dev "$iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
+    fi
+    printf '%s' "${ip:-}"
+}
+
+iface_mode() {
+    local iface=$1 conf="/etc/network/interfaces.d/${iface}.conf"
+    [ -f "$conf" ] || { echo "unknown"; return; }
+    if grep -qiE "iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]+dhcp" "$conf" 2>/dev/null; then
+        echo "dhcp"; return
+    fi
+    if grep -qiE "^[[:space:]]*address[[:space:]]+" "$conf" 2>/dev/null; then
+        echo "static"; return
+    fi
+    echo "unknown"
 }
 
 cpu_usage() {
@@ -474,11 +492,22 @@ gather_network_metrics() {
         NET1_TX=${net1[1]:-0}
     fi
 
-    IP=$(awk '/^[[:space:]]*address /{split($2,a,"/");print a[1];exit}' /etc/network/interfaces.d/eth0.conf 2>/dev/null)
+    ETH0_IP=$(iface_ipv4_addr eth0)
+    ETH1_IP=$(iface_ipv4_addr eth1)
+    ETH0_MODE=$(iface_mode eth0)
+    ETH1_MODE=$(iface_mode eth1)
+
+    # Для верхней панели оставляем единый IP (первый доступный).
+    IP="${ETH0_IP:-}"
+    [ -n "$IP" ] || IP="${ETH1_IP:-}"
     [ -n "$IP" ] || IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
     ETH0_ST=$(json_escape "$ETH0_ST")
     ETH1_ST=$(json_escape "$ETH1_ST")
+    ETH0_IP=$(json_escape "$ETH0_IP")
+    ETH1_IP=$(json_escape "$ETH1_IP")
+    ETH0_MODE=$(json_escape "$ETH0_MODE")
+    ETH1_MODE=$(json_escape "$ETH1_MODE")
     IP=$(json_escape "$IP")
 }
 
@@ -621,27 +650,7 @@ gather_services_metrics() {
 }
 
 gather_hardware_metrics() {
-    HW_DO=$(gpio_state "$SA02M_GPIO_DO")
-    HW_BEEP=$(gpio_state "$SA02M_GPIO_BEEPER")
-    HW_LED=$(gpio_state "$SA02M_GPIO_ALARM_LED")
-    HW_USB=$(gpio_state "$SA02M_GPIO_USB_POWER")
-
-    HW_CFG=0
-    [[ "$SA02M_GPIO_DO" =~ ^[0-9]+$ ]] && HW_CFG=1
-    [[ "$SA02M_GPIO_BEEPER" =~ ^[0-9]+$ ]] && HW_CFG=1
-    [[ "$SA02M_GPIO_ALARM_LED" =~ ^[0-9]+$ ]] && HW_CFG=1
-    [[ "$SA02M_GPIO_USB_POWER" =~ ^[0-9]+$ ]] && HW_CFG=1
-
-    PIN_DO=0
-    PIN_BEEP=0
-    PIN_LED=0
-    PIN_USB=0
-    [[ "$SA02M_GPIO_DO" =~ ^[0-9]+$ ]] && PIN_DO=1
-    [[ "$SA02M_GPIO_BEEPER" =~ ^[0-9]+$ ]] && PIN_BEEP=1
-    [[ "$SA02M_GPIO_ALARM_LED" =~ ^[0-9]+$ ]] && PIN_LED=1
-    [[ "$SA02M_GPIO_USB_POWER" =~ ^[0-9]+$ ]] && PIN_USB=1
-
-    HW_I2C_EXP_ABS=$(i2c_expander_absent)
+    sa02m_hw_collect_metrics
 }
 
 gather_main_metrics() {
@@ -763,6 +772,10 @@ print_network_json() {
   "net1_tx_bytes": ${NET1_TX},
   "eth0_operstate": "${ETH0_ST}",
   "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "ip": "${IP}"
 }
 JSON
@@ -812,8 +825,10 @@ JSON
 print_hardware_json() {
     cat <<JSON
 {
+  "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
+  "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
   "hw_pin_beeper": ${PIN_BEEP},
   "hw_pin_alarm_led": ${PIN_LED},
@@ -870,8 +885,10 @@ print_main_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
+  "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
   "hw_pin_beeper": ${PIN_BEEP},
   "hw_pin_alarm_led": ${PIN_LED},
@@ -941,8 +958,10 @@ print_core_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
+  "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
   "hw_pin_beeper": ${PIN_BEEP},
   "hw_pin_alarm_led": ${PIN_LED},
@@ -1013,8 +1032,10 @@ print_full_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
+  "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
   "hw_pin_beeper": ${PIN_BEEP},
   "hw_pin_alarm_led": ${PIN_LED},
