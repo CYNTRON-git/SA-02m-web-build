@@ -22,6 +22,10 @@
 | `<MANIFEST_URL>` | HTTPS к `index.json` (как в `MANIFEST_URL` в `etc/sa02m_flasher.conf`) |
 | `<PATH_TO_PPK>` | Путь к ключу PuTTY на Windows |
 
+## Архив на сервере (old)
+
+Перед выгрузкой **`upload_to_promprog.ps1`** / **`upload_to_promprog.sh`** по SSH переносит уже лежащие в **`defaultRemoteFirmwareDir`** файлы **`MR-02m*.fw`** и **`index.json`** в подкаталог **`old/<yyyyMMdd_HHmmss>/`** на том же уровне, что и `firmware` (т.е. путь на диске `.../firmware/old/<ts>/`). Публичный URL для cyntron.ru: **`https://cyntron.ru/upload/medialibrary/cyntron/firmware/old/<yyyyMMdd_HHmmss>/`**. Локальный **`pack_for_site`** в `firmware-site-export/` **не** перемещает файлы в `old` — только собирает новый пакет.
+
 ## Команды
 
 После `make full_build` в репозитории **MR-02m** каталог `build/AppBoot/` уже содержит **`MR-02m_<M.N.P.S>.fw`**, **`MR-02m_bootloader_<BL>.fw`** и при необходимости **`MR-02m_full_<M.N.P.S>.*`** — их подхватывает `pack_for_site` / `prepare_firmware_for_site.py` (маска `MR-02m*.fw`). Короткие имена `boot_fw.*`, `bootloader.fw` остаются для совместимости.

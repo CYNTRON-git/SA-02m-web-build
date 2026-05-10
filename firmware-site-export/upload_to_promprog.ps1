@@ -2,6 +2,11 @@
 # Хост, пользователь и пути по умолчанию — в site-deploy.config.json (копия с site-deploy.config.example.json)
 # или переменные окружения FW_UPLOAD_SSH_HOST, FW_UPLOAD_SSH_USER, FW_UPLOAD_PPK (и устар. STORE_SITE_PPK).
 # OpenSSH (ssh/scp) не использует Pageant — нужен pscp из PuTTY и -i key.ppk
+#
+# Перед загрузкой новых MR-02m*.fw и index.json текущие файлы из defaultRemoteFirmwareDir
+# переносятся на сервере в подкаталог old/<yyyyMMdd_HHmmss>/ (рядом с каталогом прошивок).
+# Пример URL: https://cyntron.ru/upload/medialibrary/cyntron/firmware/old/<yyyyMMdd_HHmmss>/
+# (путь на диске: .../upload/medialibrary/cyntron/firmware/old/<ts>/).
 param(
   [Parameter(Mandatory = $false, Position = 0)]
   [string] $RemotePath = "",
@@ -24,13 +29,14 @@ if (Test-Path -LiteralPath $CfgPath) {
 function _trim([string] $s) { if ($null -eq $s) { "" } else { $s.Trim() } }
 
 $SshHost = _trim $env:FW_UPLOAD_SSH_HOST
-if (-not $SshHost -and $Cfg) { $SshHost = _trim [string]$Cfg.sshHost }
+# PS 5.1: [string]$Cfg.sshHost трактуется как ([string]$Cfg).sshHost — ломает хост/пользователя/путь к ключу.
+if (-not $SshHost -and $Cfg) { $SshHost = _trim ([string]($Cfg.sshHost)) }
 
 $SshUser = _trim $env:FW_UPLOAD_SSH_USER
-if (-not $SshUser -and $Cfg) { $SshUser = _trim [string]$Cfg.sshUser }
+if (-not $SshUser -and $Cfg) { $SshUser = _trim ([string]($Cfg.sshUser)) }
 
 $RemoteNorm = _trim $RemotePath
-if (-not $RemoteNorm -and $Cfg) { $RemoteNorm = _trim [string]$Cfg.defaultRemoteFirmwareDir }
+if (-not $RemoteNorm -and $Cfg) { $RemoteNorm = _trim ([string]($Cfg.defaultRemoteFirmwareDir)) }
 
 if (-not $SshHost) {
   Write-Error "Не задан SSH-хост: скопируйте site-deploy.config.example.json → site-deploy.config.json и заполните sshHost, либо задайте `$env:FW_UPLOAD_SSH_HOST"
@@ -49,7 +55,7 @@ if (-not $Ppk.Trim()) {
   $Ppk = _trim $env:STORE_SITE_PPK
 }
 if (-not $Ppk.Trim() -and $Cfg) {
-  $Ppk = _trim [string]$Cfg.defaultPpkPath
+  $Ppk = _trim ([string]($Cfg.defaultPpkPath))
 }
 if (-not (Test-Path -LiteralPath $Ppk)) {
   Write-Error "Не найден ключ .ppk: $Ppk`nПередайте вторым аргументом, задайте `$env:FW_UPLOAD_PPK / STORE_SITE_PPK или defaultPpkPath в site-deploy.config.json"
@@ -97,6 +103,20 @@ $DestPrefix = "${SshUser}@${SshHost}:${RemoteNorm}/"
 
 # Каталог сайта bitrix: пользователь не пишет напрямую — pscp в /tmp, затем sudo cp + chown.
 $useSudoStaging = $RemoteNorm.StartsWith("/home/bitrix") -or ($env:FW_UPLOAD_USE_STAGING -eq "1")
+
+# Перед заливкой — на сервере: MR-02m*.fw и index.json из каталога прошивок -> old/<ts>/ (см. заголовок скрипта)
+$tsRemote = Get-Date -Format "yyyyMMdd_HHmmss"
+Write-Host "Remote: archive -> ${RemoteNorm}/old/${tsRemote} (site .../firmware/old/${tsRemote}/)"
+if ($useSudoStaging) {
+  $archiveRemote = 'sudo mkdir -p "__REM__/old/__TS__" && cd "__REM__" && (shopt -s nullglob; for f in MR-02m*.fw index.json; do [ -f "$f" ] && sudo mv -- "$f" "__REM__/old/__TS__/"; done)'
+} else {
+  $archiveRemote = 'mkdir -p "__REM__/old/__TS__" && cd "__REM__" && (shopt -s nullglob; for f in MR-02m*.fw index.json; do [ -f "$f" ] && mv -- "$f" "__REM__/old/__TS__/"; done)'
+}
+$archiveRemote = $archiveRemote.Replace("__REM__", $RemoteNorm).Replace("__TS__", $tsRemote)
+& $Plink @("-batch", "-i", $Ppk, "${SshUser}@${SshHost}", "bash", "-lc", $archiveRemote)
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "Не удалось заархивировать старые прошивки на сервере (plink exit $LASTEXITCODE)"
+}
 
 if ($useSudoStaging) {
   $tmp = "/tmp/sa02m_fw_staging"

@@ -27,5 +27,14 @@ if [[ ! -d "$SCAN" ]]; then
   echo "Каталог не найден: $SCAN" >&2
   exit 1
 fi
+# Архив старых файлов на сайте — только в upload_to_promprog (серверный каталог old).
+
+SCAN="$(cd "$SCAN" && pwd)"
+REPO_ROOT="$(cd "$SCAN/../.." && pwd)"
+CLEAN="$REPO_ROOT/mk/clean_appboot_before_pack.py"
+if [[ -f "$CLEAN" ]]; then
+  echo "clean_appboot_before_pack: $SCAN"
+  python3 "$CLEAN" "$SCAN" "$REPO_ROOT"
+fi
 python3 "$SCRIPT" --scan "$SCAN" --bundle-dir "$OUT_DIR"
 echo "Готово. Загрузите на сайт: $OUT_DIR"

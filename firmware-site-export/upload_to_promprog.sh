@@ -2,6 +2,10 @@
 # Выгрузка firmware-site-export: scp + при пути /home/bitrix/* — staging + sudo.
 # Хост/пользователь: site-deploy.config.json (копия site-deploy.config.example.json) или
 # FW_UPLOAD_SSH_HOST, FW_UPLOAD_SSH_USER. Ключ: SSH_IDENTITY_FILE (OpenSSH) для scp/ssh.
+#
+# Перед загрузкой новых файлов на сервере текущие MR-02m*.fw и index.json из REMOTE
+# переносятся в REMOTE/old/<yyyyMMdd_HHmmss>/ (веб: .../firmware/old/<ts>/, напр.
+# https://cyntron.ru/upload/medialibrary/cyntron/firmware/old/<ts>/).
 set -euo pipefail
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -43,6 +47,16 @@ if [[ ! -f "$DIR/index.json" ]]; then
   exit 1
 fi
 ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" "echo ok" >/dev/null
+
+TS="$(date +%Y%m%d_%H%M%S)"
+echo "Remote: archive -> $REMOTE/old/$TS (site .../firmware/old/$TS/)"
+if [[ "$REMOTE" == *"/home/bitrix"* ]] || [[ "${FW_UPLOAD_USE_STAGING:-}" == "1" ]]; then
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" \
+    "sudo mkdir -p \"$REMOTE/old/$TS\" && cd \"$REMOTE\" && (shopt -s nullglob; for f in MR-02m*.fw index.json; do [ -f \"\$f\" ] && sudo mv -- \"\$f\" \"$REMOTE/old/$TS/\"; done)"
+else
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${SSH_HOST}" \
+    "mkdir -p \"$REMOTE/old/$TS\" && cd \"$REMOTE\" && (shopt -s nullglob; for f in MR-02m*.fw index.json; do [ -f \"\$f\" ] && mv -- \"\$f\" \"$REMOTE/old/$TS/\"; done)"
+fi
 
 shopt -s nullglob
 fw=( "$DIR"/*.fw )

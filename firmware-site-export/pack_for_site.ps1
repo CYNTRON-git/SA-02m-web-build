@@ -27,7 +27,7 @@ if (-not $Scan.Trim()) {
   }
 }
 if (-not $Scan.Trim() -and $Cfg) {
-  $Scan = ([string]$Cfg.defaultPackScanDir).Trim()
+  $Scan = ([string]($Cfg.defaultPackScanDir)).Trim()
 }
 if (-not $Scan.Trim()) {
   Write-Error "Не задан каталог MR-02m build/AppBoot: передайте аргументом, задайте FW_PACK_SCAN_DIR или defaultPackScanDir в site-deploy.config.json (шаблон: site-deploy.config.example.json)"
@@ -37,6 +37,17 @@ if (-not (Test-Path -LiteralPath $Scan -PathType Container)) {
   Write-Error "Каталог со сборкой не найден: $Scan`nУкажите путь: .\pack_for_site.ps1 'D:\MR-02m\build\AppBoot'"
 }
 
-python "$Script" --scan "$Scan" --bundle-dir $Root
+# Архив прежних MR-02m*.fw / index.json на сайте — только в upload_to_promprog (каталог old на сервере).
+
+$ScanAbs = (Resolve-Path -LiteralPath $Scan).Path
+$repoRoot = Split-Path (Split-Path $ScanAbs -Parent) -Parent
+$cleanScript = Join-Path $repoRoot "mk\clean_appboot_before_pack.py"
+if (Test-Path -LiteralPath $cleanScript) {
+  Write-Host "clean_appboot_before_pack: $ScanAbs"
+  python "$cleanScript" "$ScanAbs" "$repoRoot"
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+python "$Script" --scan "$ScanAbs" --bundle-dir $Root
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "Готово. Загрузите на сайт содержимое: $Root"
