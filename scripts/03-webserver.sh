@@ -148,8 +148,27 @@ chown -R www-data:www-data "$WEB_ROOT"
 if [ ! -f /etc/sa02m_hw.conf ]; then
     log INFO "Создание /etc/sa02m_hw.conf (шаблон)"
     cat > /etc/sa02m_hw.conf <<'HWCONF'
-# GPIO для DO / пищалки / аварийного LED / питания USB (sysfs /sys/class/gpio/gpioN)
-# Заполните номер линии для вашей платы; пусто = функция отключена
+# Backend: auto | i2c_expander | gpio_sysfs
+# auto: если GPIO-пины заданы явно, используется sysfs GPIO; иначе PCA9536 по I2C.
+SA02M_HW_BACKEND=auto
+
+# PCA9536 (I2C bus 2, addr 0x41). Для занятых шин используется flock + timeout.
+SA02M_I2C_EXP_BUS=2
+SA02M_I2C_EXP_ADDR=0x41
+SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
+SA02M_I2C_LOCK_WAIT_SEC=0.4
+SA02M_I2C_TIMEOUT_SEC=1
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_RESPECT_OWNER=1
+SA02M_I2C_ACTIVE_LOW_MASK=auto
+SA02M_I2C_BIT_DO=1
+SA02M_I2C_BIT_BEEPER=2
+SA02M_I2C_BIT_ALARM_LED=0
+SA02M_I2C_BIT_USB_POWER=
+
+# Fallback для старых ревизий, где каналы заведены в sysfs GPIO.
+# Заполните только если хотите принудительно использовать gpio_sysfs.
 SA02M_GPIO_DO=
 SA02M_GPIO_BEEPER=
 SA02M_GPIO_ALARM_LED=
@@ -165,6 +184,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, \
     /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, \
     /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \
     /usr/bin/systemctl restart networking, /usr/sbin/i2cget, /usr/bin/i2cget, \
+    /usr/sbin/i2cset, /usr/bin/i2cset, \
     /usr/local/sbin/sa02m-set-storage-auto-format
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
