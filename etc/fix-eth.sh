@@ -56,6 +56,35 @@ has_ip() {
     ip -4 addr show dev "$iface" 2>/dev/null | grep -q 'inet '
 }
 
+debug_iface_state() {
+    local iface=$1 addr route carrier oper
+    carrier=$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo "?")
+    oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")
+    addr=$(ip -4 addr show dev "$iface" 2>/dev/null | awk '/inet /{print $2}' | tr '\n' ' ')
+    route=$(ip route show dev "$iface" 2>/dev/null | tr '\n' ';')
+    log INFO "$iface: debug carrier=${carrier} operstate=${oper} addr='${addr:-none}' routes='${route:-none}'"
+}
+
+iface_bootstrap_in_progress() {
+    local iface=$1
+    local unit state substate
+
+    # Во время boot/restart networking.service и ifup@ethX могут поднимать
+    # интерфейс параллельно. В этот момент нельзя запускать своё ifdown/ifup:
+    # это приводит к гонке за ifupdown lock и откладывает восстановление.
+    for unit in networking.service "ifup@${iface}.service"; do
+        state=$(systemctl show -p ActiveState --value "$unit" 2>/dev/null)
+        substate=$(systemctl show -p SubState --value "$unit" 2>/dev/null)
+        case "${state}:${substate}" in
+            activating:*|active:running|active:start*|deactivating:*)
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
 get_gateway() {
     # Читаем шлюз из interfaces.d (не из routing table — она может быть пустой).
     # Возвращает пустую строку если шлюз не задан — это нормально для LAN-only интерфейсов.
@@ -167,11 +196,18 @@ recover_iface() {
     # Нет физического устройства
     [ -d "/sys/class/net/${iface}" ] || return 0
 
+    if iface_bootstrap_in_progress "$iface"; then
+        log INFO "$iface: базовый ifupdown ещё поднимает интерфейс, recovery пропущен"
+        debug_iface_state "$iface"
+        return 0
+    fi
+
     local need_recover=0
 
     # 1. Нет физического линка — ждать нечего, восстановить нельзя
     if ! carrier_up "$iface"; then
         log INFO "$iface: нет физического линка (carrier=0), пропуск"
+        debug_iface_state "$iface"
         return 0
     fi
 
@@ -193,6 +229,7 @@ recover_iface() {
     acquire_lock "$iface" || return 0
 
     log INFO "$iface: начало процедуры восстановления"
+    debug_iface_state "$iface"
 
     # ifdown/ifup — применяет статику из interfaces.d правильно
     if command -v ifdown >/dev/null 2>&1; then
@@ -217,10 +254,14 @@ recover_iface() {
 
     if has_ip "$iface"; then
         log INFO "$iface: восстановлен, IP=$(ip -4 addr show dev "$iface" | awk '/inet /{print $2}')"
+        debug_iface_state "$iface"
         release_lock "$iface"
     else
         log ERROR "$iface: восстановление не удалось"
-        # Сохраняем lock — следующий cooldown не пройдёт сразу
+        debug_iface_state "$iface"
+        # Не держим lock после неудачи: следующая проверка watchdog сможет
+        # повторить попытку без дополнительной минутной задержки.
+        release_lock "$iface"
     fi
 }
 

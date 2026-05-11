@@ -653,9 +653,8 @@ function applyMainStatusBundle(d) {
   applyNetworkStatus(d);
   applyLoadStatus(d);
   applySystemStatus(d);
-  applyServicesStatus(d);
   applyHardwareStatus(d);
-  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'].forEach((part) => {
+  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'hardware'].forEach((part) => {
     backgroundLoaded[part] = true;
   });
 }
@@ -732,7 +731,7 @@ function fetchSystemWidget() {
 }
 
 function fetchServicesWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('services', applyServicesStatus);
 }
 
 function fetchHardwareWidget() {
@@ -813,7 +812,9 @@ function setHw(channel, value) {
 function renderRs485(ports) {
   const grid = document.getElementById('rs485-grid');
   if (!grid) return;
+  const seen = new Set();
   ports.forEach(p => {
+    seen.add('rs485c-' + p.n);
     const absent = p.st === 'absent';
     const prev   = _prevRs[p.n] || { tx: p.tx, rx: p.rx };
     const actNow = !absent && (p.tx !== prev.tx || p.rx !== prev.rx);
@@ -849,6 +850,9 @@ function renderRs485(ports) {
       '<div class="rs485-row"><span class="rl">TX</span>' + tx + '</div>' +
       '<div class="rs485-row"><span class="rl">RX</span>' + rx + '</div>' +
       stat + err;
+  });
+  Array.from(grid.children).forEach(card => {
+    if (card.id && !seen.has(card.id)) card.remove();
   });
 }
 
@@ -1006,21 +1010,39 @@ function doLogout() {
 /* ══════════════════════════════════════════════════════════════════════════
    LOG
    ══════════════════════════════════════════════════════════════════════════ */
+function renderLogText(box, text) {
+  box.innerHTML = text.split('\n').map(line => {
+    if (/error|ошибк|failed|timeout|timed out|broken pipe|banner exchange|reset|refused/i.test(line)) {
+      return '<span class="log-err">' + escHtml(line) + '</span>';
+    }
+    if (/warn|degrad|inactive|missing|unavailable/i.test(line)) {
+      return '<span class="log-warn">' + escHtml(line) + '</span>';
+    }
+    if (/ok|успешн|applied|reboot|started|active|listening/i.test(line)) {
+      return '<span class="log-ok">' + escHtml(line) + '</span>';
+    }
+    return escHtml(line);
+  }).join('\n');
+  box.scrollTop = box.scrollHeight;
+}
+
 function loadLog() {
   const box = document.getElementById('log-box');
   if (!box) return;
   fetch('/cgi-bin/log.cgi', { cache: 'no-store' })
     .then(r => r.text())
-    .then(t => {
-      box.innerHTML = t.split('\n').map(line => {
-        if (/error|ошибк/i.test(line)) return '<span class="log-err">' + escHtml(line) + '</span>';
-        if (/warn/i.test(line))         return '<span class="log-warn">' + escHtml(line) + '</span>';
-        if (/ok|успешн|applied|reboot|started/i.test(line)) return '<span class="log-ok">' + escHtml(line) + '</span>';
-        return escHtml(line);
-      }).join('\n');
-      box.scrollTop = box.scrollHeight;
-    })
+    .then(t => renderLogText(box, t))
     .catch(() => { if (box) box.textContent = 'Не удалось загрузить журнал'; });
+}
+
+function loadSshDebug() {
+  const box = document.getElementById('log-box');
+  if (!box) return;
+  box.textContent = 'Загрузка SSH-диагностики...';
+  fetch('/cgi-bin/ssh_debug.cgi', { cache: 'no-store' })
+    .then(r => r.text())
+    .then(t => renderLogText(box, t))
+    .catch(() => { if (box) box.textContent = 'Не удалось загрузить SSH-диагностику'; });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1239,6 +1261,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.doReboot  = doReboot;
   window.doLogout  = doLogout;
   window.loadLog   = loadLog;
+  window.loadSshDebug = loadSshDebug;
   window.syncTimeFromPC = syncTimeFromPC;
   window.exportInstallLog = exportInstallLog;
   window.toggleStorageAutoFormat = toggleStorageAutoFormat;

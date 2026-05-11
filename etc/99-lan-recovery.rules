@@ -3,17 +3,20 @@
 # ethernet-интерфейса (физическое подключение кабеля или привязка драйвера).
 #
 # ВАЖНО:
-#   --no-block  обязателен: без него udev ждёт завершения systemctl,
-#               что вызывает дедлок (udev сам заблокирован).
-#   IFACE=$name передаёт имя интерфейса в сервис через Environment.
+#   --no-block обязателен: без него udev ждёт завершения systemctl,
+#              что вызывает дедлок (udev сам заблокирован).
+#   Используем template-unit fix-eth@.service, чтобы надёжно передать имя
+#   интерфейса через instance (%I) и не зависеть от окружения udev/systemd.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # eth0 — основной интерфейс
-ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
+# При boot PHY может подняться с задержкой или после краткого link flap.
+# Ловим carrier=1, чтобы восстановление шло сразу при реальном link-up.
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth0", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
 
 # eth1 — второй интерфейс (если сконфигурирован)
-ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
-
-# Bind-событие: сетевой драйвер привязался к устройству (после загрузки модуля)
-ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
-ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth.service"
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth1", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 DEFAULT_CONF_PATH = Path("/etc/sa02m_flasher.conf")
+DEFAULT_SERIAL_MAP_PATH = Path("/etc/sa02m_serial_map.conf")
 
 DEFAULT_SOCKET_PATH = "/run/sa02m-flasher/flasher.sock"
 DEFAULT_CACHE_DIR = "/var/lib/sa02m-flasher/firmware"
@@ -88,11 +89,39 @@ def _parse_shell_conf(path: Path) -> Dict[str, str]:
     return result
 
 
+def _load_serial_map(path: Optional[Path] = None) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Прочитать сгенерированную installer-ом карту COM↔tty для конкретной платы."""
+    path = path or DEFAULT_SERIAL_MAP_PATH
+    values = _parse_shell_conf(path)
+    try:
+        count = int(values.get("SA02M_SERIAL_COUNT", "0"))
+    except ValueError:
+        count = 0
+
+    if count <= 0:
+        return {}, {}
+
+    ports_map: Dict[str, str] = {}
+    ports_labels: Dict[str, str] = {}
+    for idx in range(count):
+        tty = values.get(f"SA02M_TTY_{idx}", "").strip()
+        if not tty:
+            continue
+        com = f"COM{idx + 1}"
+        ports_map[com] = f"/dev/{com}"
+        ports_labels[com] = values.get(f"SA02M_RS485_{idx}", f"RS-485-{idx}")
+    return ports_map, ports_labels
+
+
 def load_config(conf_path: Optional[Path] = None) -> FlasherConfig:
     """Собрать конфиг из: defaults → /etc/sa02m_flasher.conf → переменные SA02M_FLASHER_*."""
     cfg = FlasherConfig()
     path = conf_path or DEFAULT_CONF_PATH
     file_vars = _parse_shell_conf(path)
+    serial_map, serial_labels = _load_serial_map()
+    if serial_map:
+        cfg.ports_map = serial_map
+        cfg.ports_labels = serial_labels
     for src in (file_vars, os.environ):
         def g(key: str, default: Optional[str] = None) -> Optional[str]:
             return src.get(key, src.get("SA02M_FLASHER_" + key, default))

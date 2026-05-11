@@ -27,4 +27,15 @@ find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -ex
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT"
 
+if [ -f /etc/sudoers.d/sa02m-www ]; then
+    log INFO "Синхронизация sudoers для restart/reboot CGI"
+    if ! grep -q '/usr/bin/systemctl restart fix-eth.service' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(ALL) NOPASSWD: /usr/sbin/reboot, /usr/bin/systemctl reboot, /usr/bin/systemctl restart networking.service, /usr/bin/systemctl restart fix-eth.service
+SUDO
+    fi
+    chmod 440 /etc/sudoers.d/sa02m-www
+    visudo -cf /etc/sudoers.d/sa02m-www >/dev/null
+fi
+
 log OK "Веб-интерфейс обновлён: $WEB_ROOT (nginx перезапускать не требуется)"
