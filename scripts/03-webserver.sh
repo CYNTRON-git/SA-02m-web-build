@@ -15,6 +15,7 @@ log INFO "=== [03] Настройка веб-сервера ==="
 
 ETC_DIR="$SCRIPT_DIR/../etc"
 WWW_DIR="$SCRIPT_DIR/../www/network_config"
+SYSTEMD_DIR="$ETC_DIR/systemd"
 
 # ── htpasswd ──────────────────────────────────────────────────────────────
 log INFO "Создание htpasswd"
@@ -52,7 +53,7 @@ server {
         fastcgi_connect_timeout 2s;
         fastcgi_send_timeout    8s;
         fastcgi_read_timeout    8s;
-        fastcgi_pass   unix:/run/fcgiwrap.socket;
+        fastcgi_pass   unix:/run/fcgiwrap/fcgiwrap.socket;
     }
 
     location / {
@@ -65,13 +66,17 @@ server {
 NGINX
 fi
 
-# Сокет fcgiwrap: в шаблоне /run; если на образе только /var/run — подставить существующий путь
-ACTIVE_FCGI="/run/fcgiwrap.socket"
-[ -S "$ACTIVE_FCGI" ] || ACTIVE_FCGI="/var/run/fcgiwrap.socket"
-if [ -S "$ACTIVE_FCGI" ]; then
-    sed -i "s|unix:/run/fcgiwrap.socket|unix:${ACTIVE_FCGI}|g" /etc/nginx/sites-available/network_config
-else
-    log WARN "Сокет fcgiwrap не найден (/run и /var/run) — проверьте unit fcgiwrap.socket"
+# Сокет fcgiwrap: по умолчанию используем prefork-сокет в runtime-каталоге.
+# Если на образе уже есть рабочий legacy-сокет, nginx автоматически подстроится под него.
+ACTIVE_FCGI="/run/fcgiwrap/fcgiwrap.socket"
+for cand in /run/fcgiwrap/fcgiwrap.socket /run/fcgiwrap.socket /var/run/fcgiwrap.socket; do
+    if [ -S "$cand" ]; then
+        ACTIVE_FCGI="$cand"
+        break
+    fi
+done
+if [ "$ACTIVE_FCGI" != "/run/fcgiwrap/fcgiwrap.socket" ]; then
+    sed -i "s|unix:/run/fcgiwrap/fcgiwrap.socket|unix:${ACTIVE_FCGI}|g" /etc/nginx/sites-available/network_config
 fi
 
 # ── Один vhost на порту $PORT (иначе второй server { listen …; server_name _; } перехватывает запросы → 403)
@@ -151,7 +156,9 @@ chown -R www-data:www-data "$WEB_ROOT"
 if [ ! -f /etc/sa02m_hw.conf ]; then
     log INFO "Создание /etc/sa02m_hw.conf (шаблон)"
     cat > /etc/sa02m_hw.conf <<'HWCONF'
-# Backend: auto | i2c_expander | gpio_sysfs
+# Backend: auto | i2c_expander | gpio_sysfs | disabled
+# disabled: временно полностью отключает web-опрос/управление аппаратной частью
+# без обращений к PCA9536/I2C и без fallback на GPIO.
 # auto: если GPIO-пины заданы явно, используется sysfs GPIO; иначе PCA9536 по I2C.
 SA02M_HW_BACKEND=auto
 
@@ -214,6 +221,13 @@ grep -q 'sa02m-commit-web-env' /etc/sudoers.d/sa02m-www 2>/dev/null || {
     chmod 440 /etc/sudoers.d/sa02m-www
     visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 || log WARN "visudo после доп. правила — проверьте sudoers"
 }
+
+# ── fcgiwrap: prefork service вместо узкого socket-activation ──────────────
+if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
+    install -m 644 "$SYSTEMD_DIR/fcgiwrap.service" /etc/systemd/system/fcgiwrap.service
+    systemctl disable --now fcgiwrap.socket >> "$LOG_FILE" 2>&1 || true
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+fi
 
 # ── Start services ────────────────────────────────────────────────────────
 svc_enable fcgiwrap
