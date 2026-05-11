@@ -1,0 +1,22 @@
+[Unit]
+Description=Simple server for running CGI applications over FastCGI
+After=network.target
+Conflicts=fcgiwrap.socket
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+PermissionsStartOnly=true
+Environment=FCGI_CHILDREN=8
+EnvironmentFile=-/etc/default/fcgiwrap
+RuntimeDirectory=fcgiwrap
+RuntimeDirectoryMode=0755
+ExecStartPre=/bin/rm -f /run/fcgiwrap/fcgiwrap.socket /run/fcgiwrap.socket /var/run/fcgiwrap.socket
+ExecStart=/bin/sh -c 'exec /usr/sbin/fcgiwrap -f -c "${FCGI_CHILDREN:-8}" -s unix:/run/fcgiwrap/fcgiwrap.socket'
+Restart=always
+RestartSec=1
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

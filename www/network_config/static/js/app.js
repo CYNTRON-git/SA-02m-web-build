@@ -232,8 +232,9 @@ function renderOptionalServices(list) {
 /* ══════════════════════════════════════════════════════════════════════════
    STATUS POLLING — приоритетные виджеты отдельно, остальное в фоне
    ══════════════════════════════════════════════════════════════════════════ */
-const widgetBusy = { cpu: false, temp: false, ram: false, disk: false };
+const widgetBusy = { priority: false };
 const backgroundBusy = {
+  main: false,
   storage: false,
   time: false,
   uptime: false,
@@ -245,6 +246,7 @@ const backgroundBusy = {
   rs485: false
 };
 const backgroundLoaded = {
+  main: false,
   storage: false,
   time: false,
   uptime: false,
@@ -257,24 +259,14 @@ const backgroundLoaded = {
 };
 const _prevRs = {};
 const statusFailures = {
-  cpu: 0, temp: 0, ram: 0, disk: 0,
-  storage: 0, time: 0, uptime: 0, network: 0, load: 0,
-  system: 0, services: 0, hardware: 0, rs485: 0
+  priority: 0,
+  main: 0,
+  rs485: 0
 };
-const statusPauseUntil = { hardware: 0, rs485: 0 };
+const statusPauseUntil = { main: 0, rs485: 0 };
 const STATUS_TIMEOUT_MS = {
-  cpu: 2500,
-  temp: 2500,
-  ram: 2500,
-  disk: 2500,
-  uptime: 3000,
-  network: 3000,
-  load: 3000,
-  time: 3000,
-  services: 3500,
-  system: 3500,
-  storage: 4000,
-  hardware: 4000,
+  priority: 3000,
+  main: 4500,
   rs485: 4000
 };
 
@@ -293,14 +285,14 @@ function setStatusPartPause(part, ms) {
 function noteStatusFailure(part, err) {
   statusFailures[part] = (statusFailures[part] || 0) + 1;
   const isTimeout = err && err.name === 'AbortError';
-  if ((part === 'hardware' || part === 'rs485') && statusFailures[part] >= 2) {
+  if ((part === 'main' || part === 'rs485') && statusFailures[part] >= 2) {
     setStatusPartPause(part, 60000);
-    if (part === 'hardware') {
+    if (part === 'main') {
       const hint = document.getElementById('hw-hint');
       if (hint) {
         hint.textContent = isTimeout
-          ? 'ОПРОС АППАРАТНОЙ ЧАСТИ ВРЕМЕННО ОСТАНОВЛЕН ИЗ-ЗА ТАЙМАУТА'
-          : 'ОПРОС АППАРАТНОЙ ЧАСТИ ВРЕМЕННО ОСТАНОВЛЕН ИЗ-ЗА ОШИБКИ';
+          ? 'ОБНОВЛЕНИЕ ОСНОВНЫХ БЛОКОВ ВРЕМЕННО ОСТАНОВЛЕНО ИЗ-ЗА ТАЙМАУТА'
+          : 'ОБНОВЛЕНИЕ ОСНОВНЫХ БЛОКОВ ВРЕМЕННО ОСТАНОВЛЕНО ИЗ-ЗА ОШИБКИ';
       }
     }
   }
@@ -308,7 +300,7 @@ function noteStatusFailure(part, err) {
 
 function noteStatusSuccess(part) {
   statusFailures[part] = 0;
-  if (part === 'hardware' || part === 'rs485') {
+  if (part === 'main' || part === 'rs485') {
     statusPauseUntil[part] = 0;
   }
 }
@@ -617,13 +609,13 @@ function applyStatus(d) {
   applyRs485Status(d);
 }
 
-function fetchPriorityPart(part, persist = true) {
-  if (widgetBusy[part]) return;
-  widgetBusy[part] = true;
-  fetchWithTimeout('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), {
+function fetchPriorityPart(_part, persist = true) {
+  if (widgetBusy.priority) return;
+  widgetBusy.priority = true;
+  fetchWithTimeout('/cgi-bin/status.cgi?part=priority', {
     cache: 'no-store',
     credentials: 'same-origin'
-  }, statusRequestTimeout(part))
+  }, statusRequestTimeout('priority'))
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.json();
@@ -631,11 +623,11 @@ function fetchPriorityPart(part, persist = true) {
     .then(d => {
       if (d.error) return;
       applyPriorityStatus(d);
-      if (persist) writePriorityWarmupPart(part, d);
-      noteStatusSuccess(part);
+      if (persist) ['cpu', 'temp', 'ram', 'disk'].forEach((part) => writePriorityWarmupPart(part, d));
+      noteStatusSuccess('priority');
     })
-    .catch((e) => { noteStatusFailure(part, e); })
-    .finally(() => { widgetBusy[part] = false; });
+    .catch((e) => { noteStatusFailure('priority', e); })
+    .finally(() => { widgetBusy.priority = false; });
 }
 
 function fetchCpuWidget() {
@@ -654,7 +646,46 @@ function fetchDiskWidget() {
   fetchPriorityPart('disk');
 }
 
+function applyMainStatusBundle(d) {
+  applyStorageStatus(d);
+  applyTimeStatus(d);
+  applyUptimeStatus(d);
+  applyNetworkStatus(d);
+  applyLoadStatus(d);
+  applySystemStatus(d);
+  applyServicesStatus(d);
+  applyHardwareStatus(d);
+  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'].forEach((part) => {
+    backgroundLoaded[part] = true;
+  });
+}
+
+function fetchMainBundle() {
+  if (backgroundBusy.main) return;
+  if (isStatusPartPaused('main')) return;
+  backgroundBusy.main = true;
+  fetchWithTimeout('/cgi-bin/status.cgi?part=main', {
+    cache: 'no-store',
+    credentials: 'same-origin'
+  }, statusRequestTimeout('main'))
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(d => {
+      if (d.error) return;
+      applyMainStatusBundle(d);
+      noteStatusSuccess('main');
+    })
+    .catch((e) => { noteStatusFailure('main', e); })
+    .finally(() => { backgroundBusy.main = false; });
+}
+
 function fetchBackgroundPart(part, applyFn) {
+  if (part !== 'rs485') {
+    fetchMainBundle();
+    return;
+  }
   if (backgroundBusy[part]) return;
   if (isStatusPartPaused(part)) return;
   backgroundBusy[part] = true;
@@ -677,46 +708,39 @@ function fetchBackgroundPart(part, applyFn) {
 }
 
 function fetchStorageWidget() {
-  fetchBackgroundPart('storage', applyStorageStatus);
+  fetchMainBundle();
 }
 
 function fetchTimeWidget() {
-  fetchBackgroundPart('time', applyTimeStatus);
+  fetchMainBundle();
 }
 
 function fetchUptimeWidget() {
-  fetchBackgroundPart('uptime', applyUptimeStatus);
+  fetchMainBundle();
 }
 
 function fetchNetworkWidget() {
-  fetchBackgroundPart('network', applyNetworkStatus);
+  fetchMainBundle();
 }
 
 function fetchLoadWidget() {
-  fetchBackgroundPart('load', applyLoadStatus);
+  fetchMainBundle();
 }
 
 function fetchSystemWidget() {
-  fetchBackgroundPart('system', applySystemStatus);
+  fetchMainBundle();
 }
 
 function fetchServicesWidget() {
-  fetchBackgroundPart('services', applyServicesStatus);
+  fetchMainBundle();
 }
 
 function fetchHardwareWidget() {
-  fetchBackgroundPart('hardware', applyHardwareStatus);
+  fetchMainBundle();
 }
 
 function fetchStatusMain() {
-  fetchStorageWidget();
-  fetchTimeWidget();
-  fetchUptimeWidget();
-  fetchNetworkWidget();
-  fetchLoadWidget();
-  fetchSystemWidget();
-  fetchServicesWidget();
-  fetchHardwareWidget();
+  fetchMainBundle();
 }
 
 function fetchStatusRs485() {
@@ -724,10 +748,7 @@ function fetchStatusRs485() {
 }
 
 function fetchStatus() {
-  fetchCpuWidget();
-  fetchTempWidget();
-  fetchRamWidget();
-  fetchDiskWidget();
+  fetchPriorityPart('priority');
   fetchStatusMain();
   fetchStatusRs485();
 }
@@ -1194,19 +1215,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Сначала отдельные первые виджеты, потом тяжелее блоки. */
   const scheduleStatus = () => {
-    fetchCpuWidget();
-    setTimeout(fetchTempWidget, 50);
-    setTimeout(fetchRamWidget, 100);
-    setTimeout(fetchDiskWidget, 150);
-    setTimeout(fetchUptimeWidget, 220);
-    setTimeout(fetchNetworkWidget, 320);
-    setTimeout(fetchLoadWidget, 420);
-    setTimeout(fetchServicesWidget, 520);
-    setTimeout(fetchStorageWidget, 620);
-    setTimeout(fetchHardwareWidget, 760);
-    setTimeout(fetchSystemWidget, 900);
-    setTimeout(fetchTimeWidget, 1040);
-    setTimeout(fetchStatusRs485, 1180);
+    fetchPriorityPart('priority');
+    setTimeout(fetchStatusMain, 180);
+    setTimeout(fetchStatusRs485, 420);
   };
   if (typeof requestAnimationFrame === 'function') {
     requestAnimationFrame(() => { requestAnimationFrame(scheduleStatus); });
@@ -1214,18 +1225,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(scheduleStatus, 0);
   }
   bootstrapBackgroundWidgets();
-  setInterval(fetchCpuWidget, 4000);
-  setInterval(fetchTempWidget, 5000);
-  setInterval(fetchRamWidget, 5000);
-  setInterval(fetchDiskWidget, 7000);
-  setInterval(fetchUptimeWidget, 4000);
-  setInterval(fetchNetworkWidget, 5000);
-  setInterval(fetchLoadWidget, 5000);
-  setInterval(fetchServicesWidget, 7000);
-  setInterval(fetchStorageWidget, 10000);
-  setInterval(fetchHardwareWidget, 10000);
-  setInterval(fetchTimeWidget, 5000);
-  setInterval(fetchSystemWidget, 30000);
+  setInterval(() => fetchPriorityPart('priority'), 4000);
+  setInterval(fetchStatusMain, 6000);
   setInterval(fetchStatusRs485, 8000);
 
   document.addEventListener('visibilitychange', () => {

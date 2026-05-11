@@ -32,6 +32,7 @@ SA02M_HW_RC_TOOL=78
 
 sa02m_hw_backend() {
     case "${SA02M_HW_BACKEND:-auto}" in
+        off|disabled|none) echo "disabled" ;;
         i2c|i2c_expander) echo "i2c_expander" ;;
         gpio|gpio_sysfs)  echo "gpio_sysfs" ;;
         *)
@@ -114,6 +115,10 @@ sa02m_hw_i2c_default_output_dec() {
 }
 
 sa02m_hw_channel_available() {
+    if [ "$(sa02m_hw_backend)" = "disabled" ]; then
+        return 1
+    fi
+
     if sa02m_hw_use_i2c; then
         sa02m_hw_i2c_channel_mask "$1" >/dev/null 2>&1
         return $?
@@ -376,6 +381,10 @@ sa02m_hw_collect_metrics() {
     PIN_BEEP=0
     PIN_LED=0
     PIN_USB=0
+
+    if [ "$HW_BACKEND" = "disabled" ]; then
+        return 0
+    fi
 
     if sa02m_hw_use_i2c; then
         local reg rc

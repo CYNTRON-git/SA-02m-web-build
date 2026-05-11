@@ -50,6 +50,7 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || true
 OPTIONAL_SVCS_JSON="[]"
 SVC_NGINX_UPTIME_S=0
 SVC_FCGIWRAP_UPTIME_S=0
+STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 json_escape() {
@@ -61,25 +62,60 @@ cache_is_fresh() {
     [ -f "$file" ] || return 1
     now=$(date +%s 2>/dev/null || echo 0)
     mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
+    (( mtime > now )) && return 1
     (( now - mtime < ttl ))
 }
 
 cache_print_or_build() {
-    local file=$1 ttl=$2 builder=$3 tmp
+    local file=$1 ttl=$2 builder=$3 tmp lock_file rc have_lock=0
     if cache_is_fresh "$file" "$ttl"; then
         cat "$file"
         return 0
     fi
+
+    lock_file="${file}.lock"
+    if command -v flock >/dev/null 2>&1; then
+        exec 8>"$lock_file" 2>/dev/null || true
+        if flock -w "$STATUS_CACHE_LOCK_WAIT_SEC" 8 >/dev/null 2>&1; then
+            have_lock=1
+            if cache_is_fresh "$file" "$ttl"; then
+                cat "$file"
+                flock -u 8 >/dev/null 2>&1 || true
+                exec 8>&-
+                return 0
+            fi
+        else
+            exec 8>&-
+            if [ -f "$file" ]; then
+                cat "$file"
+                return 0
+            fi
+        fi
+    fi
+
     tmp="${file}.$$"
     if "$builder" > "$tmp"; then
         mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
         # После mv временный путь исчез — читаем уже атомарно записанный кэш.
         cat "$file"
         rm -f "$tmp"
+        if (( have_lock )); then
+            flock -u 8 >/dev/null 2>&1 || true
+            exec 8>&-
+        fi
         return 0
     fi
+    rc=$?
     rm -f "$tmp"
-    return 1
+    if (( have_lock )); then
+        flock -u 8 >/dev/null 2>&1 || true
+        exec 8>&-
+    fi
+    if [ -f "$file" ]; then
+        cat "$file"
+        return 0
+    fi
+    return "$rc"
 }
 
 status_timeout_run() {
@@ -1198,7 +1234,7 @@ case "$STATUS_PART" in
         build_priority_json
         ;;
     main)
-        cache_print_or_build "${CACHE_DIR}/main.json" 10 build_main_json
+        build_main_json
         ;;
     rs485)
         cache_print_or_build "${CACHE_DIR}/rs485.json" 4 build_rs485_json
