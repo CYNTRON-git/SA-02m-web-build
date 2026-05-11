@@ -490,9 +490,10 @@
             <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             Обновить
           </button>
+          <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
           <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
         </div>
-        <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала</div>
+        <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала или «SSH-отладка» для диагностики доступа по SSH</div>
       </div><!-- /tab-system -->
 
       <!-- ═══════════════════════════════ FLASHER ═══════════════════════ -->
@@ -666,7 +667,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3-9"></script>
+<script src="/static/js/app.js?v=1.0.3-10"></script>
 <script src="/static/js/flasher.js?v=1.0.3-5"></script>
 </body>
 </html>

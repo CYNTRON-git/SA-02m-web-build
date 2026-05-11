@@ -28,7 +28,7 @@ NET
 mkdir -p /etc/network/interfaces.d
 log INFO "eth0 → $IP_ADDRESS / $NETMASK"
 cat > /etc/network/interfaces.d/eth0.conf <<ETH0
-auto eth0
+allow-hotplug eth0
 iface eth0 inet static
     address $IP_ADDRESS
     netmask $NETMASK
@@ -52,6 +52,11 @@ fi
 if [ -f "$ETC_DIR/fix-eth.service" ]; then
     log INFO "Установка fix-eth.service"
     install -m 644 "$ETC_DIR/fix-eth.service" /etc/systemd/system/fix-eth.service
+fi
+
+if [ -f "$ETC_DIR/fix-eth@.service" ]; then
+    log INFO "Установка fix-eth@.service"
+    install -m 644 "$ETC_DIR/fix-eth@.service" /etc/systemd/system/fix-eth@.service
 fi
 
 if [ -f "$ETC_DIR/net-watchdog.service" ]; then

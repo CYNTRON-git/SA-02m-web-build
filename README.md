@@ -514,8 +514,8 @@ SA02M_I2C_EXP_ADDR=0x41
 SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=0.4
 SA02M_I2C_TIMEOUT_SEC=1
-SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
 SA02M_I2C_RESPECT_OWNER=1
 SA02M_I2C_ACTIVE_LOW_MASK=auto
 SA02M_I2C_BIT_DO=1
@@ -858,7 +858,6 @@ apt-get install -y mc net-tools psmisc i2c-tools
 
 ```bash
 cat > /etc/network/interfaces.d/eth0.conf << 'EOF'
-auto eth0
 allow-hotplug eth0
 iface eth0 inet static
     address 192.168.1.136
@@ -1324,8 +1323,8 @@ SA02M_I2C_EXP_ADDR=0x41
 SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=0.4
 SA02M_I2C_TIMEOUT_SEC=1
-SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
 SA02M_I2C_RESPECT_OWNER=1
 SA02M_I2C_ACTIVE_LOW_MASK=auto
 SA02M_I2C_BIT_DO=1

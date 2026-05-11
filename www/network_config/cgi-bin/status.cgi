@@ -44,6 +44,8 @@ fi
 
 HW_CONF="/etc/sa02m_hw.conf"
 . "$SCRIPT_DIR/lib_hw.sh"
+STATUS_BLOCKS_CONF="${STATUS_BLOCKS_CONF:-/etc/sa02m_status_blocks.conf}"
+[ -f "$STATUS_BLOCKS_CONF" ] && . "$STATUS_BLOCKS_CONF" 2>/dev/null || true
 
 CACHE_DIR="/tmp/sa02m_status_cache"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
@@ -127,6 +129,140 @@ status_timeout_run() {
     fi
 }
 
+load_serial_map_conf() {
+    local conf=/etc/sa02m_serial_map.conf
+    SA02M_SERIAL_COUNT=${SA02M_SERIAL_COUNT:-5}
+    [ -f "$conf" ] || return 0
+    # shellcheck disable=SC1090
+    . "$conf" 2>/dev/null || return 0
+    case "${SA02M_SERIAL_COUNT:-}" in
+        ''|*[!0-9]*) SA02M_SERIAL_COUNT=5 ;;
+    esac
+}
+
+load_serial_map_conf
+
+rtc_hwclock_bin() {
+    local bin
+    for bin in /sbin/hwclock /usr/sbin/hwclock "$(command -v hwclock 2>/dev/null)"; do
+        [ -n "${bin:-}" ] || continue
+        [ -x "$bin" ] || continue
+        printf '%s' "$bin"
+        return 0
+    done
+    return 1
+}
+
+rtc_hwclock_read() {
+    local dev="${1:-}" hw
+    hw=$(rtc_hwclock_bin) || return 1
+    if [ -n "$dev" ]; then
+        status_timeout_run "$hw" -r -f "$dev"
+    else
+        status_timeout_run "$hw" -r
+    fi
+}
+
+rtc_hwclock_sync() {
+    local dev="${1:-}" hw rc
+    hw=$(rtc_hwclock_bin) || return 1
+    if [ -n "$dev" ]; then
+        status_timeout_run "$hw" -s -f "$dev" >/dev/null 2>&1
+        rc=$?
+        if [ $rc -ne 0 ] && command -v sudo >/dev/null 2>&1; then
+            status_timeout_run sudo -n "$hw" -s -f "$dev" >/dev/null 2>&1
+            return $?
+        fi
+        return $rc
+    fi
+    status_timeout_run "$hw" -s >/dev/null 2>&1
+}
+
+rtc_try_attach_ds3231() {
+    local new_device=/sys/class/i2c-adapter/i2c-0/new_device i
+    [ -c /dev/rtc1 ] && return 0
+    [ -e "$new_device" ] || return 1
+
+    if [ -w "$new_device" ]; then
+        printf '%s\n' 'ds3231 0x68' > "$new_device" 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
+        printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$new_device" >/dev/null 2>&1 || true
+    fi
+
+    for i in 1 2 3 4 5; do
+        [ -c /dev/rtc1 ] || break
+        rtc_hwclock_sync /dev/rtc1 || true
+        if rtc_hwclock_read /dev/rtc1 >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+
+    [ -c /dev/rtc1 ]
+}
+
+rtc_sysfs_datetime() {
+    local rtc_dir="" fallback="" name rtc_date rtc_time
+    for name in /sys/class/rtc/rtc*; do
+        [ -d "$name" ] || continue
+        [ -r "$name/date" ] || continue
+        [ -r "$name/time" ] || continue
+        if [ -r "$name/name" ]; then
+            IFS= read -r rtc_dir < "$name/name"
+            case "${rtc_dir:-}" in
+                *pcf8563*|*ds3231*)
+                    rtc_dir=$name
+                    break
+                    ;;
+            esac
+        fi
+        [ -z "$fallback" ] && fallback=$name
+    done
+
+    [ -n "${rtc_dir:-}" ] || rtc_dir=$fallback
+    [ -n "${rtc_dir:-}" ] || return 1
+
+    IFS= read -r rtc_date < "$rtc_dir/date" || return 1
+    IFS= read -r rtc_time < "$rtc_dir/time" || return 1
+    printf '%s %s' "${rtc_date:-}" "${rtc_time:-}"
+}
+
+read_rtc_datetime() {
+    local out=""
+    if out=$(rtc_sysfs_datetime 2>/dev/null); then
+        printf '%s' "$out"
+        return 0
+    fi
+    rtc_try_attach_ds3231 >/dev/null 2>&1 || true
+    if out=$(rtc_sysfs_datetime 2>/dev/null); then
+        printf '%s' "$out"
+        return 0
+    fi
+    out=$(rtc_hwclock_read /dev/rtc1 2>/dev/null | head -1 | tr -d '\r')
+    if [ -n "${out:-}" ]; then
+        printf '%s' "$out"
+        return 0
+    fi
+    out=$(rtc_hwclock_read 2>/dev/null | head -1 | tr -d '\r')
+    [ -n "${out:-}" ] || return 1
+    printf '%s' "$out"
+}
+
+status_block_enabled() {
+    case "$1" in
+        storage)  [ "${SA02M_STATUS_ENABLE_STORAGE:-1}" = "1" ] ;;
+        time)     [ "${SA02M_STATUS_ENABLE_TIME:-1}" = "1" ] ;;
+        uptime)   [ "${SA02M_STATUS_ENABLE_UPTIME:-1}" = "1" ] ;;
+        network)  [ "${SA02M_STATUS_ENABLE_NETWORK:-1}" = "1" ] ;;
+        load)     [ "${SA02M_STATUS_ENABLE_LOAD:-1}" = "1" ] ;;
+        system)   [ "${SA02M_STATUS_ENABLE_SYSTEM:-1}" = "1" ] ;;
+        services) [ "${SA02M_STATUS_ENABLE_SERVICES:-1}" = "1" ] ;;
+        hardware) [ "${SA02M_STATUS_ENABLE_HARDWARE:-1}" = "1" ] ;;
+        rs485)    [ "${SA02M_STATUS_ENABLE_RS485:-1}" = "1" ] ;;
+        *) return 0 ;;
+    esac
+}
+
 gpio_state() {
     local n=$1 v
     if [ -z "$n" ] || ! [[ "$n" =~ ^[0-9]+$ ]]; then
@@ -143,6 +279,86 @@ gpio_state() {
 
 svc_is_active() {
     status_timeout_run systemctl is-active "$1" 2>/dev/null
+}
+
+proc_is_running() {
+    local name=$1
+    command -v pgrep >/dev/null 2>&1 || return 1
+    pgrep -x "$name" >/dev/null 2>&1
+}
+
+port_is_listening() {
+    local port=$1
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR==1{found=1} END{exit(found?0:1)}'
+}
+
+proc_uptime_seconds_by_name() {
+    local name=$1 pid best=0 boot_j clock_hz proc_start up
+    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+    while IFS= read -r pid; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -r "/proc/${pid}/stat" ] || continue
+        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        proc_start=$(( boot_j / clock_hz ))
+        up=$(( UPTIME_SEC - proc_start ))
+        (( up < 0 )) && up=0
+        (( up > best )) && best=$up
+    done < <(pgrep -x "$name" 2>/dev/null || true)
+    echo "$best"
+}
+
+fast_service_state() {
+    case "$1" in
+        ssh|ssh.service)
+            if port_is_listening 22 || proc_is_running sshd; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        nginx|nginx.service)
+            if proc_is_running nginx || port_is_listening 80 || port_is_listening 9999; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        fcgiwrap|fcgiwrap.service)
+            if proc_is_running fcgiwrap || [ -S /run/fcgiwrap/fcgiwrap.socket ] || [ -S /run/fcgiwrap.socket ]; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        mplc|mplc.service|mplc4|mplc4.service)
+            if proc_is_running mplc || proc_is_running mplc4 || proc_is_running mplc_monitor; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        *)
+            svc_is_active "$1"
+            ;;
+    esac
+}
+
+fast_service_uptime() {
+    case "$1" in
+        ssh|ssh.service) proc_uptime_seconds_by_name sshd ;;
+        nginx|nginx.service) proc_uptime_seconds_by_name nginx ;;
+        fcgiwrap|fcgiwrap.service) proc_uptime_seconds_by_name fcgiwrap ;;
+        mplc|mplc.service) proc_uptime_seconds_by_name mplc ;;
+        mplc4|mplc4.service)
+            local up
+            up=$(proc_uptime_seconds_by_name mplc4)
+            (( up == 0 )) && up=$(proc_uptime_seconds_by_name mplc_monitor)
+            echo "$up"
+            ;;
+        *) unit_uptime_seconds "$1" ;;
+    esac
 }
 
 # Короткое имя для UI: mplc4 вместо mplc4.service (аналогично .socket).
@@ -412,8 +628,19 @@ rs485_port_json() {
 }
 
 build_rs485_array() {
-    local json="" i
-    for i in 0 1 2 3 4; do
+    local json="" i port_count
+    port_count=${SA02M_SERIAL_COUNT:-5}
+
+    if ! status_block_enabled rs485; then
+        for (( i=0; i<port_count; i++ )); do
+            [ -n "$json" ] && json="${json},"
+            json+='{"n":'"$i"',"dev":"","st":"disabled","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0}'
+        done
+        printf '%s' "$json"
+        return 0
+    fi
+
+    for (( i=0; i<port_count; i++ )); do
         [ -n "$json" ] && json="${json},"
         json="${json}$(rs485_port_json "$i")"
     done
@@ -452,6 +679,22 @@ gather_priority_metrics() {
 }
 
 gather_storage_metrics() {
+    if ! status_block_enabled storage; then
+        USB_M=0
+        USB_TOTAL=0
+        USB_USED=0
+        USB_FREE=0
+        USB_PCT=0
+        SD_M=0
+        SD_TOTAL=0
+        SD_USED=0
+        SD_FREE=0
+        SD_PCT=0
+        DISK_IO_READ=0
+        DISK_IO_WRITE=0
+        return 0
+    fi
+
     local usb_data sd_data root_dev stat_line
 
     USB_M=0
@@ -493,21 +736,29 @@ gather_storage_metrics() {
 }
 
 gather_time_metrics() {
-    local rtc_date rtc_time
+    if ! status_block_enabled time; then
+        DATETIME_SYS=""
+        DATETIME_SYS_JSON=""
+        RTC_DT=""
+        RTC_JSON=""
+        return 0
+    fi
+
+    RTC_DT=$(read_rtc_datetime 2>/dev/null || true)
     DATETIME_SYS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     DATETIME_SYS_JSON=$(json_escape "$DATETIME_SYS")
-    RTC_DT=""
-    if [ -r /sys/class/rtc/rtc0/date ] && [ -r /sys/class/rtc/rtc0/time ]; then
-        IFS= read -r rtc_date < /sys/class/rtc/rtc0/date
-        IFS= read -r rtc_time < /sys/class/rtc/rtc0/time
-        RTC_DT="${rtc_date:-} ${rtc_time:-}"
-    elif command -v hwclock >/dev/null 2>&1; then
-        RTC_DT=$(status_timeout_run hwclock -r 2>/dev/null | head -1 | tr -d '\r')
-    fi
     RTC_JSON=$(json_escape "$RTC_DT")
 }
 
 gather_uptime_metrics() {
+    if ! status_block_enabled uptime; then
+        UPTIME_SEC=0
+        UPTIME_D=0
+        UPTIME_H=0
+        UPTIME_M=0
+        return 0
+    fi
+
     UPTIME_SEC=$(awk '{printf "%d",$1}' /proc/uptime 2>/dev/null)
     UPTIME_D=$(( UPTIME_SEC / 86400 ))
     UPTIME_H=$(( (UPTIME_SEC % 86400) / 3600 ))
@@ -515,6 +766,21 @@ gather_uptime_metrics() {
 }
 
 gather_network_metrics() {
+    if ! status_block_enabled network; then
+        ETH0_ST="unknown"
+        ETH1_ST="unknown"
+        NET0_RX=0
+        NET0_TX=0
+        NET1_RX=0
+        NET1_TX=0
+        ETH0_IP=""
+        ETH1_IP=""
+        ETH0_MODE="unknown"
+        ETH1_MODE="unknown"
+        IP=""
+        return 0
+    fi
+
     local net0 net1
     ETH0_ST="absent"
     if [ -d /sys/class/net/eth0 ]; then
@@ -557,6 +823,19 @@ gather_network_metrics() {
 }
 
 gather_load_metrics() {
+    if ! status_block_enabled load; then
+        LOAD_1=0
+        LOAD_5=0
+        LOAD_15=0
+        PROC_RUN=0
+        PROC_TOT=0
+        CPU_FREQ_KHZ=0
+        CPU_MAX_KHZ=0
+        CPU_FREQ_MHZ=0
+        CPU_THROTTLE=0
+        return 0
+    fi
+
     local load_raw
     load_raw=($(cat /proc/loadavg 2>/dev/null))
     LOAD_1=${load_raw[0]:-0}
@@ -574,6 +853,15 @@ gather_load_metrics() {
 }
 
 gather_system_metrics() {
+    if ! status_block_enabled system; then
+        BOARD=""
+        CPU_MODEL=""
+        KERNEL_VER=""
+        STORAGE_AUTO_FORMAT_UI=0
+        STORAGE_MOUNT_INSTALLED=0
+        return 0
+    fi
+
     BOARD_RAW=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
     BOARD=$(json_escape "${BOARD_RAW:-—}")
     CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
@@ -593,6 +881,19 @@ gather_system_metrics() {
 }
 
 gather_services_metrics() {
+    if ! status_block_enabled services; then
+        OPTIONAL_SVCS_JSON="[]"
+        MPLC_STATUS="unknown"
+        MPLC_UPTIME_S=0
+        MPLC_UNIT_RAW=""
+        SVC_NGINX="unknown"
+        SVC_FCGI="unknown"
+        SVC_NGINX_UPTIME_S=0
+        SVC_FCGIWRAP_UPTIME_S=0
+        MPLC_UNIT=""
+        return 0
+    fi
+
     # Статус опроса RS-485: на части образов активен mplc4.service / процесс mplc4,
     # а mplc.service — только алиас или отсутствует. Раньше учитывался только pgrep -x mplc,
     # из-за чего дашборд показывал «Неактивен», хотя порт удерживал опрос.
@@ -600,8 +901,8 @@ gather_services_metrics() {
     local proc_pids active_unit mpl_pid cg_unit mpl_slice try up_try
     OPTIONAL_SVCS_JSON="[]"
     mpl_slice=""
-    SVC_NGINX=$(svc_is_active nginx)
-    SVC_FCGI=$(svc_is_active fcgiwrap)
+    SVC_NGINX=$(fast_service_state nginx)
+    SVC_FCGI=$(fast_service_state fcgiwrap)
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
@@ -610,33 +911,30 @@ gather_services_metrics() {
     SVC_FCGIWRAP_UPTIME_S=0
     gather_uptime_metrics
 
-    SVC_NGINX_UPTIME_S=$(unit_uptime_seconds nginx.service)
-    (( SVC_NGINX_UPTIME_S == 0 )) && SVC_NGINX_UPTIME_S=$(unit_uptime_seconds nginx)
-    SVC_FCGIWRAP_UPTIME_S=$(unit_uptime_seconds fcgiwrap.service)
-    (( SVC_FCGIWRAP_UPTIME_S == 0 )) && SVC_FCGIWRAP_UPTIME_S=$(unit_uptime_seconds fcgiwrap)
+    SVC_NGINX_UPTIME_S=$(fast_service_uptime nginx.service)
+    (( SVC_NGINX_UPTIME_S == 0 )) && SVC_NGINX_UPTIME_S=$(fast_service_uptime nginx)
+    SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap.service)
+    (( SVC_FCGIWRAP_UPTIME_S == 0 )) && SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap)
 
     mpl_pid=""
     active_unit=""
-    if command -v systemctl >/dev/null 2>&1; then
-        for u in mplc.service mplc mplc4.service mplc4; do
-            if status_timeout_run systemctl is-active --quiet "$u" 2>/dev/null; then
-                active_unit=$u
-                mpl_pid=$(status_timeout_run systemctl show -p MainPID --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
-                case "$mpl_pid" in ''|0) mpl_pid="" ;; esac
-                break
-            fi
-        done
-    fi
+    for u in mplc.service mplc mplc4.service mplc4; do
+        if [ "$(fast_service_state "$u")" = "active" ]; then
+            active_unit=$u
+            break
+        fi
+    done
 
     if [ -n "$active_unit" ]; then
         MPLC_STATUS="active"
-        MPLC_UNIT_RAW=$(status_timeout_run systemctl show -p Id --value "$active_unit" 2>/dev/null | head -n1 | tr -d '\r')
-        mpl_slice=$MPLC_UNIT_RAW
+        MPLC_UNIT_RAW=$active_unit
+        mpl_slice=$active_unit
     fi
 
     if [ -z "$mpl_pid" ]; then
         proc_pids=$(pgrep -x mplc 2>/dev/null || true)
         [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
+        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc_monitor 2>/dev/null || true)
         if [ -n "$proc_pids" ]; then
             MPLC_STATUS="active"
             mpl_pid=${proc_pids%%$'\n'*}
@@ -657,15 +955,14 @@ gather_services_metrics() {
         [ -n "$cg_unit" ] && mpl_slice=$cg_unit
     fi
 
-    if [ -z "$MPLC_UNIT_RAW" ] && command -v systemctl >/dev/null 2>&1; then
-        for u in mplc4.service mplc.service; do
-            case "$(status_timeout_run systemctl show -p LoadState --value "$u" 2>/dev/null | head -n1 | tr -d '\r')" in
-                not-found|'') continue ;;
-            esac
-            MPLC_UNIT_RAW=$(status_timeout_run systemctl show -p Id --value "$u" 2>/dev/null | head -n1 | tr -d '\r')
-            [ -n "$MPLC_UNIT_RAW" ] && mpl_slice=$MPLC_UNIT_RAW
-            [ -n "$MPLC_UNIT_RAW" ] && break
-        done
+    if [ -z "$MPLC_UNIT_RAW" ] && [ -n "$mpl_pid" ]; then
+        if proc_is_running mplc4 || proc_is_running mplc_monitor; then
+            MPLC_UNIT_RAW="mplc4"
+            mpl_slice="mplc4.service"
+        elif proc_is_running mplc; then
+            MPLC_UNIT_RAW="mplc"
+            mpl_slice="mplc.service"
+        fi
     fi
 
     if [ "$MPLC_STATUS" = "active" ] && (( MPLC_UPTIME_S == 0 )); then
@@ -686,7 +983,10 @@ gather_services_metrics() {
     fi
 
     MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
-    gather_optional_platform_services
+    # На рабочих платах systemctl может отвечать с большими задержками из-за
+    # зависших device jobs. Не строим optional_services через systemctl, чтобы
+    # не валить весь services endpoint в 504.
+    OPTIONAL_SVCS_JSON="[]"
 
     SVC_NGINX=$(json_escape "$SVC_NGINX")
     SVC_FCGI=$(json_escape "$SVC_FCGI")
@@ -695,10 +995,35 @@ gather_services_metrics() {
 }
 
 gather_hardware_metrics() {
+    if ! status_block_enabled hardware; then
+        HW_BACKEND="disabled"
+        HW_CFG=0
+        HW_I2C_EXP_ABS=0
+        HW_I2C_BUSY=0
+        PIN_DO=0
+        PIN_BEEP=0
+        PIN_LED=0
+        PIN_USB=0
+        HW_DO=-1
+        HW_BEEP=-1
+        HW_LED=-1
+        HW_USB=-1
+        return 0
+    fi
+
     sa02m_hw_collect_metrics
 }
 
 gather_main_metrics() {
+    SVC_NGINX="unknown"
+    SVC_FCGI="unknown"
+    MPLC_STATUS="unknown"
+    MPLC_UPTIME_S=0
+    MPLC_UNIT=""
+    OPTIONAL_SVCS_JSON="[]"
+    SVC_NGINX_UPTIME_S=0
+    SVC_FCGIWRAP_UPTIME_S=0
+
     gather_storage_metrics
     gather_uptime_metrics
     gather_network_metrics
@@ -1225,7 +1550,7 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/system.json" 30 build_system_json
         ;;
     services)
-        cache_print_or_build "${CACHE_DIR}/services.json" 5 build_services_json
+        cache_print_or_build "${CACHE_DIR}/services.json" 30 build_services_json
         ;;
     hardware)
         cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json

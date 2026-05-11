@@ -157,10 +157,10 @@ if [ ! -f /etc/sa02m_hw.conf ]; then
     log INFO "Создание /etc/sa02m_hw.conf (шаблон)"
     cat > /etc/sa02m_hw.conf <<'HWCONF'
 # Backend: auto | i2c_expander | gpio_sysfs | disabled
-# disabled: временно полностью отключает web-опрос/управление аппаратной частью
-# без обращений к PCA9536/I2C и без fallback на GPIO.
+# disabled: безопасный дефолт перед установкой в рабочую плату — web/CGI
+# не трогают PCA9536/I2C до явного пошагового включения.
 # auto: если GPIO-пины заданы явно, используется sysfs GPIO; иначе PCA9536 по I2C.
-SA02M_HW_BACKEND=auto
+SA02M_HW_BACKEND=disabled
 
 # PCA9536 (I2C bus 2, addr 0x41). Для занятых шин используется flock + timeout.
 SA02M_I2C_EXP_BUS=2
@@ -168,8 +168,8 @@ SA02M_I2C_EXP_ADDR=0x41
 SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=0.4
 SA02M_I2C_TIMEOUT_SEC=1
-SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4"
+SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
 SA02M_I2C_RESPECT_OWNER=1
 SA02M_I2C_ACTIVE_LOW_MASK=auto
 SA02M_I2C_BIT_DO=1
@@ -187,13 +187,39 @@ HWCONF
     chmod 644 /etc/sa02m_hw.conf
 fi
 
+if [ ! -f /etc/sa02m_status_blocks.conf ] && [ -f "$ETC_DIR/sa02m_status_blocks.conf" ]; then
+    install -m 644 "$ETC_DIR/sa02m_status_blocks.conf" /etc/sa02m_status_blocks.conf
+fi
+
+if [ -f "$ETC_DIR/sa02m-hw-backend-guard.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-hw-backend-guard.sh" /usr/local/sbin/sa02m-hw-backend-guard
+fi
+if [ -f "$ETC_DIR/sa02m-status-blocks-guard.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-status-blocks-guard.sh" /usr/local/sbin/sa02m-status-blocks-guard
+fi
+if [ -f "$ETC_DIR/sa02m-prepare-working-board.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-prepare-working-board.sh" /usr/local/sbin/sa02m-prepare-working-board
+fi
+if [ -f "$ETC_DIR/sa02m-failure-monitor.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
+fi
+if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
+    install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
+fi
+if [ -f "$ETC_DIR/sa02m-failure-monitor.service" ]; then
+    install -m 644 "$ETC_DIR/sa02m-failure-monitor.service" /etc/systemd/system/sa02m-failure-monitor.service
+fi
+
 # ── sudoers for www-data ──────────────────────────────────────────────────
 log INFO "Настройка sudoers"
 cat > /etc/sudoers.d/sa02m-www <<'SUDO'
 www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, \
-    /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, \
+    /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, /usr/sbin/reboot, \
+    /usr/bin/systemctl reboot, \
     /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \
-    /usr/bin/systemctl restart networking, /usr/sbin/i2cget, /usr/bin/i2cget, \
+    /usr/bin/systemctl restart networking, /usr/bin/systemctl restart networking.service, \
+    /usr/bin/systemctl restart fix-eth.service, \
+    /usr/sbin/i2cget, /usr/bin/i2cget, \
     /usr/sbin/i2cset, /usr/bin/i2cset, \
     /usr/local/sbin/sa02m-set-storage-auto-format
 SUDO
@@ -229,9 +255,18 @@ if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 fi
 
+systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+
+if [ -x /usr/local/sbin/sa02m-prepare-working-board ]; then
+    log INFO "Включение безопасного режима для рабочей платы"
+    /usr/local/sbin/sa02m-prepare-working-board prepare >> "$LOG_FILE" 2>&1 || \
+        log WARN "Не удалось принудительно включить safe mode через sa02m-prepare-working-board"
+fi
+
 # ── Start services ────────────────────────────────────────────────────────
 svc_enable fcgiwrap
 svc_restart nginx
 svc_restart fcgiwrap
+svc_enable sa02m-failure-monitor
 
 log OK "=== [03] Веб-сервер запущен на http://<IP>:${PORT} ==="

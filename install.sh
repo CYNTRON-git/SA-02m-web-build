@@ -18,6 +18,7 @@ export NET_IFACE="eth0"
 export PORT="9999"
 export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
+export SA02M_SERIAL_PROFILE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -26,6 +27,7 @@ while [[ $# -gt 0 ]]; do
         --gw)     GATEWAY="$2";     shift 2 ;;
         --port)   PORT="$2";        shift 2 ;;
         --pass)   ADMIN_PASS="$2";  shift 2 ;;
+        --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
         *)        shift ;;
     esac
 done

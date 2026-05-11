@@ -42,6 +42,14 @@ def _fuser() -> Optional[str]:
     return shutil.which("fuser")
 
 
+def _timeout_cmd() -> Optional[str]:
+    return shutil.which("timeout")
+
+
+def _pkill() -> Optional[str]:
+    return shutil.which("pkill")
+
+
 def _run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
     return subprocess.run(
         args,
@@ -50,6 +58,62 @@ def _run(args: List[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
         timeout=timeout,
         check=False,
     )
+
+
+def _service_unit_files(service: str) -> List[str]:
+    bare = str(service or "").strip()
+    if bare.endswith(".service"):
+        bare = bare[:-8]
+    if not bare:
+        return []
+    return [
+        f"/etc/systemd/system/{bare}.service",
+        f"/lib/systemd/system/{bare}.service",
+        f"/usr/lib/systemd/system/{bare}.service",
+    ]
+
+
+def _service_file_exists(service: str) -> bool:
+    return any(Path(p).exists() for p in _service_unit_files(service))
+
+
+def _is_mplc_family(service: str) -> bool:
+    bare = str(service or "").strip()
+    if bare.endswith(".service"):
+        bare = bare[:-8]
+    return bare in {"mplc", "mplc4"}
+
+
+def _mplc_process_names(service: str) -> List[str]:
+    bare = str(service or "").strip()
+    if bare.endswith(".service"):
+        bare = bare[:-8]
+    if bare == "mplc4":
+        return ["mplc4", "mplc_monitor"]
+    return ["mplc", "mplc4", "mplc_monitor"]
+
+
+def _proc_is_running(name: str) -> bool:
+    try:
+        res = _run(["pgrep", "-x", name], timeout=2.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return res.returncode == 0
+
+
+def _pkill_names(names: List[str]) -> bool:
+    pkill = _pkill()
+    if not pkill:
+        return False
+    any_match = False
+    for name in names:
+        try:
+            res = _run([pkill, "-x", name], timeout=5.0)
+        except subprocess.TimeoutExpired:
+            continue
+        if res.returncode == 0:
+            any_match = True
+    return any_match
 
 
 def _service_candidates(service: str) -> List[str]:
@@ -77,10 +141,20 @@ def _service_candidates(service: str) -> List[str]:
 
 
 def service_load_state(service: str) -> str:
+    if _is_mplc_family(service):
+        if _service_file_exists("mplc4"):
+            return "loaded"
+        if _service_file_exists("mplc"):
+            return "loaded"
+        return "not-found"
     systemctl = _systemctl()
     if not systemctl:
         return "unknown"
-    res = _run([systemctl, "show", "-p", "LoadState", "--value", service], timeout=5.0)
+    try:
+        res = _run([systemctl, "show", "-p", "LoadState", "--value", service], timeout=5.0)
+    except subprocess.TimeoutExpired:
+        log.warning("systemctl show LoadState завис для %s", service)
+        return "unknown"
     if res.returncode != 0:
         return "unknown"
     return (res.stdout or "").strip() or "unknown"
@@ -91,6 +165,20 @@ def service_exists(service: str) -> bool:
 
 
 def resolve_service_name(service: str) -> Optional[str]:
+    if _is_mplc_family(service):
+        if _proc_is_running("mplc4") or _proc_is_running("mplc_monitor"):
+            if _service_file_exists("mplc4"):
+                return "mplc4.service"
+            return "mplc4"
+        if _proc_is_running("mplc"):
+            if _service_file_exists("mplc"):
+                return "mplc.service"
+            return "mplc"
+        if _service_file_exists("mplc4"):
+            return "mplc4.service"
+        if _service_file_exists("mplc"):
+            return "mplc.service"
+        return None
     for candidate in _service_candidates(service):
         if service_exists(candidate):
             return candidate
@@ -98,11 +186,21 @@ def resolve_service_name(service: str) -> Optional[str]:
 
 
 def active_service_name(service: str) -> Optional[str]:
+    if _is_mplc_family(service):
+        if _proc_is_running("mplc4") or _proc_is_running("mplc_monitor"):
+            return "mplc4.service" if _service_file_exists("mplc4") else "mplc4"
+        if _proc_is_running("mplc"):
+            return "mplc.service" if _service_file_exists("mplc") else "mplc"
+        return None
     systemctl = _systemctl()
     if not systemctl:
         return None
     for candidate in _service_candidates(service):
-        res = _run([systemctl, "is-active", "--quiet", candidate], timeout=5.0)
+        try:
+            res = _run([systemctl, "is-active", "--quiet", candidate], timeout=5.0)
+        except subprocess.TimeoutExpired:
+            log.warning("systemctl is-active завис для %s", candidate)
+            continue
         if res.returncode == 0:
             return candidate
     return None
@@ -123,10 +221,23 @@ def stop_service(service: str) -> bool:
         log.info("Служба %s не найдена, stop пропущен", service)
         return False
     cmd = [sudo, systemctl, "stop", actual] if sudo else [systemctl, "stop", actual]
-    res = _run(cmd, timeout=15.0)
-    ok = res.returncode == 0
-    log.info("systemctl stop %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
-    return ok
+    try:
+        res = _run(cmd, timeout=15.0)
+        ok = res.returncode == 0
+        log.info("systemctl stop %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
+        if ok:
+            return True
+    except subprocess.TimeoutExpired:
+        log.warning("systemctl stop %s (%s) завис; пробую pkill fallback", service, actual)
+
+    if _is_mplc_family(actual):
+        names = _mplc_process_names(actual)
+        killed = _pkill_names(names)
+        still_active = any(_proc_is_running(name) for name in names)
+        ok = killed or not still_active
+        log.info("pkill fallback stop %s (%s) → killed=%s still_active=%s", service, actual, killed, still_active)
+        return ok
+    return False
 
 
 def start_service(service: str) -> bool:
@@ -140,7 +251,11 @@ def start_service(service: str) -> bool:
         log.info("Служба %s не найдена, start пропущен", service)
         return False
     cmd = [sudo, systemctl, "start", actual] if sudo else [systemctl, "start", actual]
-    res = _run(cmd, timeout=15.0)
+    try:
+        res = _run(cmd, timeout=15.0)
+    except subprocess.TimeoutExpired:
+        log.warning("systemctl start %s (%s) завис", service, actual)
+        return False
     ok = res.returncode == 0
     log.info("systemctl start %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
     return ok
@@ -155,10 +270,16 @@ def port_occupants(device_path: str) -> List[str]:
     if not fuser:
         return []
     sudo = _sudo()
-    cmd = [sudo, fuser, device_path] if sudo else [fuser, device_path]
+    timeout_cmd = _timeout_cmd()
+    cmd: List[str] = []
+    if timeout_cmd:
+        cmd.extend([timeout_cmd, "-s", "KILL", "1"])
+    if sudo:
+        cmd.append(sudo)
+    cmd.extend([fuser, device_path])
     try:
-        res = _run(cmd, timeout=3.0)
-    except subprocess.TimeoutExpired:
+        res = _run(cmd, timeout=2.0 if timeout_cmd else 1.0)
+    except (subprocess.TimeoutExpired, PermissionError):
         return []
     if res.returncode != 0:
         # fuser без совпадений возвращает код 1 и пустой stdout.

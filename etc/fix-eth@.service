@@ -1,0 +1,17 @@
+[Unit]
+Description=SA-02m network recovery for %I
+Documentation=file:/usr/local/bin/fix-eth.sh
+After=network.target sys-subsystem-net-devices-%i.device
+BindsTo=sys-subsystem-net-devices-%i.device
+Conflicts=shutdown.target reboot.target halt.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/fix-eth.sh %I
+TimeoutSec=45
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fix-eth
