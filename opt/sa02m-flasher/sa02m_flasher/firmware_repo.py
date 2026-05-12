@@ -179,7 +179,10 @@ class FirmwareRepo:
             self._manifest_error = f"JSON: {exc}"
             status["error"] = self._manifest_error
             return status
-        self._apply_manifest(data)
+        if not self._apply_manifest(data):
+            self._manifest_error = "Некорректный формат манифеста"
+            status["error"] = self._manifest_error
+            return status
         self._manifest_error = ""
         self._last_refresh_ts = time.time()
         try:
@@ -205,16 +208,16 @@ class FirmwareRepo:
             status["entries"] = len(self._entries)
         return status
 
-    def _apply_manifest(self, data: Any) -> None:
+    def _apply_manifest(self, data: Any) -> bool:
         if not isinstance(data, dict):
-            return
+            return False
         schema = data.get("schema", 1)
         if schema != 1:
             log.warning("Незнакомая схема манифеста %r, попытка всё равно прочитать", schema)
         self._manifest_updated = str(data.get("updated") or "")
         channels = data.get("channels") or {}
         if not isinstance(channels, dict):
-            return
+            return False
         with self._lock:
             # Удалить старые manifest-записи (локальные/upload — сохранить).
             for key in list(self._entries.keys()):
@@ -222,12 +225,12 @@ class FirmwareRepo:
                     del self._entries[key]
             for channel, items in channels.items():
                 if not isinstance(items, list):
-                    continue
+                    return False
                 for raw in items:
                     if not isinstance(raw, dict):
                         continue
                     file_name = str(raw.get("file") or "").strip()
-                    if not file_name:
+                    if not self._valid_manifest_file_name(file_name):
                         continue
                     signatures = raw.get("signatures") or []
                     if not isinstance(signatures, list):
@@ -251,18 +254,45 @@ class FirmwareRepo:
                         url=self._resolve_url(str(raw.get("url") or file_name)),
                         source="manifest",
                     )
-                    local = self.cache_dir / entry.file
-                    if local.is_file():
+                    local = self._cache_path_for_entry(entry)
+                    if local.is_file() and self._cached_file_valid(entry, local):
                         entry.downloaded = True
                         entry.local_path = str(local)
                         if not entry.size:
                             entry.size = local.stat().st_size
                     self._entries[(entry.channel, entry.file)] = entry
+        return True
 
     def _resolve_url(self, url_or_name: str) -> str:
         if url_or_name.startswith(("http://", "https://")):
             return url_or_name
         return urllib.parse.urljoin(self.firmware_base_url, url_or_name)
+
+    @staticmethod
+    def _valid_manifest_file_name(file_name: str) -> bool:
+        if not file_name:
+            return False
+        p = Path(file_name)
+        if p.is_absolute() or p.name != file_name:
+            return False
+        if file_name in (".", "..") or ".." in p.parts:
+            return False
+        return p.suffix.lower() in VALID_EXTENSIONS
+
+    def _cache_path_for_entry(self, entry: FirmwareEntry) -> Path:
+        if not self._valid_manifest_file_name(entry.file):
+            raise ValueError(f"Недопустимое имя файла прошивки в манифесте: {entry.file}")
+        return self.cache_dir / entry.file
+
+    def _cached_file_valid(self, entry: FirmwareEntry, path: Path) -> bool:
+        try:
+            if entry.size and path.stat().st_size != int(entry.size):
+                return False
+            if entry.sha256 and _sha256_of(path).lower() != entry.sha256.lower():
+                return False
+        except OSError:
+            return False
+        return True
 
     # ─── Локальные файлы ──────────────────────────────────────────────────────
 
@@ -379,28 +409,33 @@ class FirmwareRepo:
 
     def path_for(self, entry: FirmwareEntry) -> Optional[Path]:
         if entry.local_path and Path(entry.local_path).is_file():
-            return Path(entry.local_path)
-        local = self.cache_dir / entry.file
-        if local.is_file():
+            local_path = Path(entry.local_path)
+            if self._cached_file_valid(entry, local_path):
+                return local_path
+            entry.local_path = None
+            entry.downloaded = False
+        local = self._cache_path_for_entry(entry)
+        if local.is_file() and self._cached_file_valid(entry, local):
             entry.local_path = str(local)
             entry.downloaded = True
             return local
+        entry.local_path = None
+        entry.downloaded = False
         return None
 
     def download(self, entry: FirmwareEntry) -> Path:
         """Скачать файл прошивки в кеш с проверкой sha256 (если указана)."""
         if not entry.url:
             raise RuntimeError(f"У записи {entry.file} не указан URL")
-        target = self.cache_dir / entry.file
+        target = self._cache_path_for_entry(entry)
         tmp = target.with_suffix(target.suffix + ".part")
         log.info("Скачиваю %s → %s", entry.url, target)
         raw = _http_get(entry.url, timeout=HTTP_TIMEOUT_S * 4)
         tmp.write_bytes(raw)
-        if entry.sha256:
-            got = hashlib.sha256(raw).hexdigest()
-            if got.lower() != entry.sha256.lower():
-                tmp.unlink(missing_ok=True)
-                raise RuntimeError(f"Sha256 не совпадает: ожидался {entry.sha256}, получено {got}")
+        if not self._cached_file_valid(entry, tmp):
+            got = hashlib.sha256(raw).hexdigest() if entry.sha256 else f"размер {tmp.stat().st_size}"
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f"Sha256/размер не совпадает: ожидался {entry.sha256 or entry.size}, получено {got}")
         tmp.replace(target)
         entry.downloaded = True
         entry.local_path = str(target)

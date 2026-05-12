@@ -999,7 +999,10 @@ function doRestart() {
 function doReboot() {
   if (!confirm('Перезагрузить контроллер?')) return;
   fetch('/cgi-bin/reboot.cgi', { method: 'POST', redirect: 'manual' })
-    .then(() => toast('Перезагрузка… подождите 30с', 'info', 30000))
+    .then(() => {
+      toast('Перезагрузка… страница обновится через 60 с', 'info', 65000);
+      setTimeout(() => location.reload(), 60000);
+    })
     .catch(() => {});
 }
 

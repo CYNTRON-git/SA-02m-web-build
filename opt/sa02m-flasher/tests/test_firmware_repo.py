@@ -191,6 +191,60 @@ class TestFirmwareRepoFindForSignature(unittest.TestCase):
             self.assertEqual({e.file for e in found}, {"a.fw", "b.fw"})
 
 
+class TestFirmwareRepoValidation(unittest.TestCase):
+    def test_manifest_rejects_path_traversal_file_names(self) -> None:
+        manifest = {
+            "schema": 1,
+            "updated": "2026-04-21",
+            "channels": {
+                "stable": [
+                    {"file": "../evil.fw", "version": "9.9.9.9", "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                    {"file": "nested/app.fw", "version": "9.9.9.8", "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                    {"file": "MR-02m_1.0.0.0.fw", "version": "1.0.0.0", "device": "MR-02m", "size": 1, "sha256": "", "released": "", "notes": ""},
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            with patch("sa02m_flasher.firmware_repo._http_get", return_value=json.dumps(manifest).encode("utf-8")):
+                status = repo.refresh()
+            self.assertTrue(status["ok"])
+            self.assertIsNone(repo.get("stable", "../evil.fw"))
+            self.assertIsNone(repo.get("stable", "nested/app.fw"))
+            self.assertIsNotNone(repo.get("stable", "MR-02m_1.0.0.0.fw"))
+
+    def test_path_for_rejects_corrupt_cached_file(self) -> None:
+        good = _minimal_fw_bytes()
+        sha = hashlib.sha256(good).hexdigest()
+        manifest = {
+            "schema": 1,
+            "updated": "2026-04-21",
+            "channels": {
+                "stable": [
+                    {
+                        "file": "app.fw",
+                        "version": "1.2.3.4",
+                        "device": "MR-02m",
+                        "size": len(good),
+                        "sha256": sha,
+                        "released": "",
+                        "notes": "",
+                    }
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (cache / "app.fw").write_bytes(b"broken")
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            entry = repo.get("stable", "app.fw")
+            assert entry is not None
+            self.assertFalse(entry.downloaded)
+            self.assertIsNone(repo.path_for(entry))
+
+
 class TestVersionTuple(unittest.TestCase):
     def test_version_tuple(self) -> None:
         self.assertEqual(version_tuple("1.2.3.4"), (1, 2, 3, 4))

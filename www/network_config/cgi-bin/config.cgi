@@ -15,65 +15,6 @@ timeout_run() {
     fi
 }
 
-rtc_hwclock_bin() {
-    local bin
-    for bin in /sbin/hwclock /usr/sbin/hwclock "$(command -v hwclock 2>/dev/null)"; do
-        [ -n "${bin:-}" ] || continue
-        [ -x "$bin" ] || continue
-        printf '%s' "$bin"
-        return 0
-    done
-    return 1
-}
-
-rtc_hwclock_read() {
-    local dev="${1:-}" hw
-    hw=$(rtc_hwclock_bin) || return 1
-    if [ -n "$dev" ]; then
-        timeout_run 2 "$hw" -r -f "$dev"
-    else
-        timeout_run 2 "$hw" -r
-    fi
-}
-
-rtc_hwclock_sync() {
-    local dev="${1:-}" hw rc
-    hw=$(rtc_hwclock_bin) || return 1
-    if [ -n "$dev" ]; then
-        timeout_run 3 "$hw" -s -f "$dev" >/dev/null 2>&1
-        rc=$?
-        if [ $rc -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-            timeout_run 3 sudo -n "$hw" -s -f "$dev" >/dev/null 2>&1
-            return $?
-        fi
-        return $rc
-    fi
-    timeout_run 3 "$hw" -s >/dev/null 2>&1
-}
-
-rtc_try_attach_ds3231() {
-    local new_device=/sys/class/i2c-adapter/i2c-0/new_device i
-    [ -c /dev/rtc1 ] && return 0
-    [ -e "$new_device" ] || return 1
-
-    if [ -w "$new_device" ]; then
-        printf '%s\n' 'ds3231 0x68' > "$new_device" 2>/dev/null || true
-    elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
-        printf '%s\n' 'ds3231 0x68' | timeout_run 2 sudo -n tee "$new_device" >/dev/null 2>&1 || true
-    fi
-
-    for i in 1 2 3 4 5; do
-        [ -c /dev/rtc1 ] || break
-        rtc_hwclock_sync /dev/rtc1 || true
-        if rtc_hwclock_read /dev/rtc1 >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-
-    [ -c /dev/rtc1 ]
-}
-
 read_timezone() {
     local tz=""
     if [ -r /etc/timezone ]; then
@@ -97,7 +38,7 @@ rtc_sysfs_datetime() {
         if [ -r "$name/name" ]; then
             IFS= read -r rtc_name < "$name/name"
             case "${rtc_name:-}" in
-                *pcf8563*|*ds3231*)
+                *pcf8563*)
                     rtc_dir=$name
                     break
                     ;;
@@ -112,27 +53,6 @@ rtc_sysfs_datetime() {
     IFS= read -r rtc_date < "$rtc_dir/date" || return 1
     IFS= read -r rtc_time < "$rtc_dir/time" || return 1
     printf '%s %s' "${rtc_date:-}" "${rtc_time:-}"
-}
-
-read_rtc_datetime() {
-    local out=""
-    if out=$(rtc_sysfs_datetime 2>/dev/null); then
-        printf '%s' "$out"
-        return 0
-    fi
-    rtc_try_attach_ds3231 >/dev/null 2>&1 || true
-    if out=$(rtc_sysfs_datetime 2>/dev/null); then
-        printf '%s' "$out"
-        return 0
-    fi
-    out=$(rtc_hwclock_read /dev/rtc1 2>/dev/null | head -1 | tr -d '\r')
-    if [ -n "${out:-}" ]; then
-        printf '%s' "$out"
-        return 0
-    fi
-    out=$(rtc_hwclock_read 2>/dev/null | head -1 | tr -d '\r')
-    [ -n "${out:-}" ] || return 1
-    printf '%s' "$out"
 }
 
 read_iface_conf() {
@@ -155,9 +75,14 @@ read_iface_conf() {
 ETH0=$(read_iface_conf /etc/network/interfaces.d/eth0.conf)
 ETH1=$(read_iface_conf /etc/network/interfaces.d/eth1.conf)
 TZ=$(read_timezone)
-RTC_DT=""
-RTC_DT=$(read_rtc_datetime 2>/dev/null || true)
 DT=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+
+RTC_DT=""
+if RTC_DT=$(rtc_sysfs_datetime 2>/dev/null); then
+    :
+elif command -v hwclock >/dev/null 2>&1; then
+    RTC_DT=$(timeout_run 2 hwclock -r 2>/dev/null | head -1 | tr -d '\r')
+fi
 RTC_JSON=$(printf '%s' "$RTC_DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
 DT_JSON=$(printf '%s' "$DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
 TZ_JSON=$(printf '%s' "$TZ" | sed 's/\\/\\\\/g; s/"/\\"/g')
