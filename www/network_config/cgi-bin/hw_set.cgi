@@ -18,7 +18,7 @@ fi
 HW_CONF="/etc/sa02m_hw.conf"
 . "$SCRIPT_DIR/lib_hw.sh"
 
-read -r POST_DATA
+read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
 decode() {
     echo "$POST_DATA" | sed -n "s/^.*$1=\([^&]*\).*$/\1/p" \
         | sed 's/%\([0-9A-F][0-9A-F]\)/\\x\1/gI' \
