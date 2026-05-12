@@ -653,8 +653,9 @@ function applyMainStatusBundle(d) {
   applyNetworkStatus(d);
   applyLoadStatus(d);
   applySystemStatus(d);
+  applyServicesStatus(d);
   applyHardwareStatus(d);
-  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'hardware'].forEach((part) => {
+  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'].forEach((part) => {
     backgroundLoaded[part] = true;
   });
 }
