@@ -181,6 +181,7 @@ rtc_hwclock_sync() {
 rtc_try_attach_ds3231() {
     local new_device=/sys/class/i2c-adapter/i2c-0/new_device i
     [ -c /dev/rtc1 ] && return 0
+    [ -d /sys/bus/i2c/devices/0-0068 ] && return 0
     [ -e "$new_device" ] || return 1
 
     if [ -w "$new_device" ]; then

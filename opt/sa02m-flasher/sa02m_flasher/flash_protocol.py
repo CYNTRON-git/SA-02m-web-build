@@ -13,6 +13,7 @@ from __future__ import annotations
 import struct
 import sys
 import time
+import zlib
 from typing import Callable, List, Optional, Tuple
 
 from . import modbus_rtu
@@ -137,6 +138,41 @@ def _fw_payload_first_8_bytes_to_le(fw_data: bytes) -> bytes:
     return struct.pack("<II", sp, res)
 
 
+def _image_starts_like_appboot_vector_table(image: bytes) -> bool:
+    """Первые байты похожи на таблицу векторов приложения (RAM SP), а не на ASCII-сигнатуру .fw."""
+    if len(image) < 8:
+        return False
+    sp = struct.unpack_from("<I", image, 0)[0]
+    if sp == 0 or sp == 0xFFFFFFFF:
+        return False
+    return (sp & 0x2FFE0000) == 0x20000000
+
+
+def _image_has_embedded_fw_header(image: bytes) -> bool:
+    """
+    Полный файл .fw: 12 B sig + 4 B size LE + b'CRC2' + crc32 + pad.
+
+    У сырого AppBoot .bin по offset 12 может случайно оказаться число из допустимого диапазона,
+    поэтому для ветки .fw проверяем наличие CRC2-маркера. Для старого .fw без CRC2 оставляем
+    совместимость: печатная сигнатура в начале и отсутствие таблицы векторов приложения.
+    """
+    if len(image) < INFO_BLOCK_BYTES:
+        return False
+    size_le = struct.unpack_from("<I", image, 12)[0]
+    if not (1 <= size_le <= MAX_FIRMWARE_SIZE_BYTES):
+        return False
+    if image[16:20] == b"CRC2":
+        return True
+    if _image_starts_like_appboot_vector_table(image):
+        return False
+    sig_raw = image[:12].split(b"\x00", 1)[0]
+    if len(sig_raw) < 2:
+        return False
+    if not all(0x20 <= b <= 0x7E for b in sig_raw):
+        return False
+    return True
+
+
 def check_app_vector_table(image: bytes) -> Optional[str]:
     """
     Проверка: первые 8 байт образа — таблица векторов для 0x08000800.
@@ -183,10 +219,17 @@ def _hex_packet_log(data: bytes, bytes_per_line: int = 16) -> str:
     return "\n".join(lines)
 
 
-def build_info_block(signature: str, firmware_size: int) -> bytes:
-    """32 байта: сигнатура 12 (ASCII, null-pad), размер 4 B LE, резерв 16."""
-    sig = signature.encode("ascii")[:12].ljust(12, b"\x00")
-    return sig + struct.pack("<I", firmware_size) + (b"\x00" * 16)
+def build_info_block(signature: str, firmware_size: int, payload: bytes) -> bytes:
+    """
+    32 байта как в make_fw.py:
+    сигнатура 12 (ASCII, null-pad), размер 4 B LE, b'CRC2', CRC32 полезной нагрузки LE, pad до 32.
+    """
+    sig = signature.encode("ascii", errors="replace")[:12].ljust(12, b"\x00")
+    n = len(payload)
+    if int(firmware_size) != n:
+        raise ValueError("build_info_block: firmware_size must equal len(payload)")
+    crc = zlib.crc32(payload) & 0xFFFFFFFF
+    return sig + struct.pack("<I", n) + b"CRC2" + struct.pack("<I", crc) + (b"\x00" * 8)
 
 
 def info_block_to_registers(info: bytes) -> List[int]:
@@ -428,10 +471,10 @@ class FlasherProtocol:
         return sig or None, ver, None
 
     def send_info_block_by_serial(
-        self, serial: int, signature: str, firmware_size: int
+        self, serial: int, signature: str, firmware_size: int, image_payload: bytes
     ) -> Optional[str]:
-        """Отправка info-блока (0x1000) по серийному номеру (сборка из signature + size)."""
-        info = build_info_block(signature, firmware_size)
+        """Отправка info-блока (0x1000) по серийному: signature + size + CRC2 + crc32(payload)."""
+        info = build_info_block(signature, firmware_size, image_payload)
         regs = info_block_to_registers(info)
         return self.write_multiple_registers_by_serial(
             serial, INFO_BLOCK_REG, regs
@@ -477,10 +520,14 @@ class FlasherProtocol:
         )
 
     def send_info_block_bootloader_by_serial(
-        self, serial: int, signature: str, size: int = BL_IMAGE_TOTAL_BYTES
+        self,
+        serial: int,
+        signature: str,
+        image: bytes,
+        size: int = BL_IMAGE_TOTAL_BYTES,
     ) -> Optional[str]:
         """Info-блок для бутлоадера по серийному."""
-        info = build_info_block(signature, size)
+        info = build_info_block(signature, size, image)
         regs = info_block_to_registers(info)
         return self.write_multiple_registers_by_serial(
             serial, INFO_BLOCK_REG, regs
@@ -720,10 +767,10 @@ class FlasherProtocol:
         )
 
     def send_info_block(
-        self, slave: int, signature: str, firmware_size: int
+        self, slave: int, signature: str, firmware_size: int, image_payload: bytes
     ) -> Optional[str]:
-        """Отправка info-блока (0x1000): сигнатура + размер прошивки."""
-        info = build_info_block(signature, firmware_size)
+        """Отправка info-блока (0x1000): сигнатура + размер + CRC2 + crc32(payload)."""
+        info = build_info_block(signature, firmware_size, image_payload)
         regs = info_block_to_registers(info)
         return self.write_multiple_registers(slave, INFO_BLOCK_REG, regs)
 
@@ -786,10 +833,14 @@ class FlasherProtocol:
         )
 
     def send_info_block_bootloader(
-        self, slave: int, signature: str, size: int = BL_IMAGE_TOTAL_BYTES
+        self,
+        slave: int,
+        signature: str,
+        image: bytes,
+        size: int = BL_IMAGE_TOTAL_BYTES,
     ) -> Optional[str]:
         """Info-блок для бутлоадера: сигнатура 12 B + размер 34 КБ (4 B LE)."""
-        info = build_info_block(signature, size)
+        info = build_info_block(signature, size, image)
         regs = info_block_to_registers(info)
         return self.write_multiple_registers(slave, INFO_BLOCK_REG, regs)
 
@@ -943,76 +994,75 @@ def run_flash_sequence_by_address(
     Прошивка приложения по Modbus-адресу. Как у WB: если образ с info-блоком (первые 32 B файла .fw) — отправляем их как 16 рег BE; иначе — сборка из signature + size (для .bin).
     """
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE (как в make_fw.py)
-    if len(image) >= INFO_BLOCK_BYTES:
+    if _image_has_embedded_fw_header(image):
         size_from_file = struct.unpack_from("<I", image, 12)[0]
-        if 1 <= size_from_file <= MAX_FIRMWARE_SIZE_BYTES:
-            # В .fw данные с offset 32 хранятся как 16-bit BE; первые 8 байт payload = таблица векторов в BE-словах
-            vt_be = image[INFO_BLOCK_BYTES : INFO_BLOCK_BYTES + 8]
-            vt_le = _fw_payload_first_8_bytes_to_le(vt_be)
-            if vt_le:
-                err_vt = check_app_vector_table(vt_le)
-                if err_vt:
-                    return err_vt
-            size = size_from_file
-            if flasher.log_cb:
-                flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) на адрес {slave}...")
-            err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
-            for _ in range(3):
-                if err and "Таймаут" in (err or ""):
-                    time.sleep(INFO_RETRY_SLEEP_S)
-                    err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
-                else:
+        # В .fw данные с offset 32 хранятся как 16-bit BE; первые 8 байт payload = таблица векторов в BE-словах
+        vt_be = image[INFO_BLOCK_BYTES : INFO_BLOCK_BYTES + 8]
+        vt_le = _fw_payload_first_8_bytes_to_le(vt_be)
+        if vt_le:
+            err_vt = check_app_vector_table(vt_le)
+            if err_vt:
+                return err_vt
+        size = size_from_file
+        if flasher.log_cb:
+            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) на адрес {slave}...")
+        err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
+        for _ in range(3):
+            if err and "Таймаут" in (err or ""):
+                time.sleep(INFO_RETRY_SLEEP_S)
+                err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
+            else:
+                break
+        if err:
+            return f"Ошибка отправки info-блока: {err}"
+        time.sleep(ERASE_WAIT_AFTER_INFO_S)
+        if flasher.log_cb:
+            flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
+        total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
+        t_start = time.perf_counter()
+        if progress_cb:
+            progress_cb(0, total_blocks)
+        blocks_sent = 0
+        for idx in range(total_blocks):
+            if cancel_cb and cancel_cb():
+                return "Отменено пользователем"
+            start = INFO_BLOCK_BYTES + idx * DATA_BLOCK_BYTES
+            block = image[start : start + DATA_BLOCK_BYTES]
+            if len(block) < DATA_BLOCK_BYTES:
+                block = block + b"\xff" * (DATA_BLOCK_BYTES - len(block))
+            block_ok = False
+            last_err: Optional[str] = None
+            for attempt in range(APP_MAX_ERROR_COUNT):
+                log_timeout = attempt == APP_MAX_ERROR_COUNT - 1
+                err = flasher.send_data_block(
+                    slave, idx, block, log_timeout=log_timeout, app_from_fw=True
+                )
+                if err is None:
+                    block_ok = True
                     break
-            if err:
-                return f"Ошибка отправки info-блока: {err}"
-            time.sleep(ERASE_WAIT_AFTER_INFO_S)
-            if flasher.log_cb:
-                flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
-            total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
-            t_start = time.perf_counter()
+                last_err = err
+                if attempt < APP_MAX_ERROR_COUNT - 1:
+                    if flasher.log_cb:
+                        flasher.log_cb(
+                            f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
+                        )
+                    time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+            if not block_ok:
+                return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
+            blocks_sent += 1
             if progress_cb:
-                progress_cb(0, total_blocks)
-            blocks_sent = 0
-            for idx in range(total_blocks):
-                if cancel_cb and cancel_cb():
-                    return "Отменено пользователем"
-                start = INFO_BLOCK_BYTES + idx * DATA_BLOCK_BYTES
-                block = image[start : start + DATA_BLOCK_BYTES]
-                if len(block) < DATA_BLOCK_BYTES:
-                    block = block + b"\xff" * (DATA_BLOCK_BYTES - len(block))
-                block_ok = False
-                last_err: Optional[str] = None
-                for attempt in range(APP_MAX_ERROR_COUNT):
-                    log_timeout = attempt == APP_MAX_ERROR_COUNT - 1
-                    err = flasher.send_data_block(
-                        slave, idx, block, log_timeout=log_timeout, app_from_fw=True
-                    )
-                    if err is None:
-                        block_ok = True
-                        break
-                    last_err = err
-                    if attempt < APP_MAX_ERROR_COUNT - 1:
-                        if flasher.log_cb:
-                            flasher.log_cb(
-                                f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
-                            )
-                        time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
-                if not block_ok:
-                    return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
-                blocks_sent += 1
-                if progress_cb:
-                    progress_cb(blocks_sent, total_blocks)
-                if flasher.log_cb and (
-                    blocks_sent % 50 == 0 or blocks_sent == total_blocks
-                ):
-                    elapsed = max(0.001, time.perf_counter() - t_start)
-                    bps = blocks_sent / elapsed
-                    eta = (total_blocks - blocks_sent) / max(0.001, bps)
-                    flasher.log_cb(
-                        f"Скорость: {bps:.1f} бл/с, ETA: {eta:.1f} с ({blocks_sent}/{total_blocks})"
-                    )
-                time.sleep(BLOCK_DELAY_FIRST_BLOCK_S if idx == 0 else BLOCK_DELAY_AFTER_RESPONSE_S)
-            return None
+                progress_cb(blocks_sent, total_blocks)
+            if flasher.log_cb and (
+                blocks_sent % 50 == 0 or blocks_sent == total_blocks
+            ):
+                elapsed = max(0.001, time.perf_counter() - t_start)
+                bps = blocks_sent / elapsed
+                eta = (total_blocks - blocks_sent) / max(0.001, bps)
+                flasher.log_cb(
+                    f"Скорость: {bps:.1f} бл/с, ETA: {eta:.1f} с ({blocks_sent}/{total_blocks})"
+                )
+            time.sleep(BLOCK_DELAY_FIRST_BLOCK_S if idx == 0 else BLOCK_DELAY_AFTER_RESPONSE_S)
+        return None
 
     # Образ без info-блока (.bin): сборка info из signature + size
     err_vt = check_app_vector_table(image)
@@ -1026,11 +1076,11 @@ def run_flash_sequence_by_address(
         )
     if flasher.log_cb:
         flasher.log_cb(f"Отправка info-блока с сигнатурой «{signature}» (размер {size} байт) на адрес {slave}...")
-    err = flasher.send_info_block(slave, signature, size)
+    err = flasher.send_info_block(slave, signature, size, image)
     for _ in range(3):
         if err and "Таймаут" in (err or ""):
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block(slave, signature, size)
+            err = flasher.send_info_block(slave, signature, size, image)
         else:
             break
     if err:
@@ -1105,63 +1155,62 @@ def run_flash_sequence(
         return "Для прошивки по 0x46 нужен серийный номер устройства (выполните сканирование и выберите по серийному №)."
 
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE
-    if len(image) >= INFO_BLOCK_BYTES:
+    if _image_has_embedded_fw_header(image):
         size_from_file = struct.unpack_from("<I", image, 12)[0]
-        if 1 <= size_from_file <= MAX_FIRMWARE_SIZE_BYTES:
-            vt_be = image[INFO_BLOCK_BYTES : INFO_BLOCK_BYTES + 8]
-            vt_le = _fw_payload_first_8_bytes_to_le(vt_be)
-            if vt_le:
-                err_vt = check_app_vector_table(vt_le)
-                if err_vt:
-                    return err_vt
-            size = size_from_file
-            payload_start = INFO_BLOCK_BYTES
+        vt_be = image[INFO_BLOCK_BYTES : INFO_BLOCK_BYTES + 8]
+        vt_le = _fw_payload_first_8_bytes_to_le(vt_be)
+        if vt_le:
+            err_vt = check_app_vector_table(vt_le)
+            if err_vt:
+                return err_vt
+        size = size_from_file
+        payload_start = INFO_BLOCK_BYTES
+        if flasher.log_cb:
+            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) по серийному 0x{serial:08X}...")
+        err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
+        for _ in range(3):
+            if err and "Таймаут" in (err or ""):
+                time.sleep(INFO_RETRY_SLEEP_S)
+                err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
+            else:
+                break
+        if not err:
+            time.sleep(ERASE_WAIT_AFTER_INFO_S)
             if flasher.log_cb:
-                flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) по серийному 0x{serial:08X}...")
-            err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
-            for _ in range(3):
-                if err and "Таймаут" in (err or ""):
-                    time.sleep(INFO_RETRY_SLEEP_S)
-                    err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
-                else:
-                    break
-            if not err:
-                time.sleep(ERASE_WAIT_AFTER_INFO_S)
-                if flasher.log_cb:
-                    flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
-                total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
-                t_start = time.perf_counter()
+                flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
+            total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
+            t_start = time.perf_counter()
+            if progress_cb:
+                progress_cb(0, total_blocks)
+            blocks_sent = 0
+            for idx in range(total_blocks):
+                if cancel_cb and cancel_cb():
+                    return "Отменено пользователем"
+                start = payload_start + idx * DATA_BLOCK_BYTES
+                block = image[start : start + DATA_BLOCK_BYTES]
+                if len(block) < DATA_BLOCK_BYTES:
+                    block = block + b"\xff" * (DATA_BLOCK_BYTES - len(block))
+                block_ok = False
+                last_err_s = None
+                for attempt in range(APP_MAX_ERROR_COUNT):
+                    log_t = attempt == APP_MAX_ERROR_COUNT - 1
+                    err = flasher.send_data_block_by_serial(
+                        serial, idx, block, log_timeout=log_t, app_from_fw=True
+                    )
+                    if err is None:
+                        block_ok = True
+                        break
+                    last_err_s = err
+                    if attempt < APP_MAX_ERROR_COUNT - 1:
+                        time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+                if not block_ok:
+                    return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err_s} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
+                blocks_sent += 1
                 if progress_cb:
-                    progress_cb(0, total_blocks)
-                blocks_sent = 0
-                for idx in range(total_blocks):
-                    if cancel_cb and cancel_cb():
-                        return "Отменено пользователем"
-                    start = payload_start + idx * DATA_BLOCK_BYTES
-                    block = image[start : start + DATA_BLOCK_BYTES]
-                    if len(block) < DATA_BLOCK_BYTES:
-                        block = block + b"\xff" * (DATA_BLOCK_BYTES - len(block))
-                    block_ok = False
-                    last_err_s = None
-                    for attempt in range(APP_MAX_ERROR_COUNT):
-                        log_t = attempt == APP_MAX_ERROR_COUNT - 1
-                        err = flasher.send_data_block_by_serial(
-                            serial, idx, block, log_timeout=log_t, app_from_fw=True
-                        )
-                        if err is None:
-                            block_ok = True
-                            break
-                        last_err_s = err
-                        if attempt < APP_MAX_ERROR_COUNT - 1:
-                            time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
-                    if not block_ok:
-                        return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err_s} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
-                    blocks_sent += 1
-                    if progress_cb:
-                        progress_cb(blocks_sent, total_blocks)
-                    time.sleep(BLOCK_DELAY_AFTER_RESPONSE_S_FAST if idx else BLOCK_DELAY_FIRST_BLOCK_S_FAST)
-                return None
-            return err or "Ошибка отправки info-блока"
+                    progress_cb(blocks_sent, total_blocks)
+                time.sleep(BLOCK_DELAY_AFTER_RESPONSE_S_FAST if idx else BLOCK_DELAY_FIRST_BLOCK_S_FAST)
+            return None
+        return err or "Ошибка отправки info-блока"
 
     size = len(image)
     if size <= 0 or size > MAX_FIRMWARE_SIZE_BYTES:
@@ -1171,11 +1220,11 @@ def run_flash_sequence(
         )
     if flasher.log_cb:
         flasher.log_cb(f"Отправка info-блока с сигнатурой «{signature}» (размер {size} байт) по серийному 0x{serial:08X}...")
-    err = flasher.send_info_block_by_serial(serial, signature, size)
+    err = flasher.send_info_block_by_serial(serial, signature, size, image)
     for _ in range(3):
         if err and "Таймаут" in err:
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_by_serial(serial, signature, size)
+            err = flasher.send_info_block_by_serial(serial, signature, size, image)
         else:
             break
     if err:
@@ -1365,11 +1414,11 @@ def run_flash_bootloader_sequence_by_address(
         flasher.log_cb(
             f"Отправка info-блока (сигнатура «{signature}», размер {BL_IMAGE_TOTAL_BYTES} байт)..."
         )
-    err = flasher.send_info_block_bootloader(slave, signature)
+    err = flasher.send_info_block_bootloader(slave, signature, image)
     for _ in range(3):
         if err and "Таймаут" in str(err):
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_bootloader(slave, signature)
+            err = flasher.send_info_block_bootloader(slave, signature, image)
         else:
             break
     if err:
@@ -1482,11 +1531,11 @@ def run_flash_sequence_bootloader(
         flasher.log_cb(
             f"Отправка info-блока (сигнатура «{signature}», размер {BL_IMAGE_TOTAL_BYTES} байт)..."
         )
-    err = flasher.send_info_block_bootloader_by_serial(serial, signature)
+    err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
     for _ in range(3):
         if err and "Таймаут" in str(err):
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_bootloader_by_serial(serial, signature)
+            err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
         else:
             break
     if err:

@@ -28,23 +28,21 @@ BL_CODE_SIZE = 32768
 BL_IMAGE_TOTAL_BYTES = BL_VECTORS_SIZE + BL_CODE_SIZE  # 34816
 
 
-# Байты заполнения линкера (хвост образа отбрасываем при расчёте эффективного размера)
-_FILL_BYTES = frozenset((0xFF, 0x00, 0xA5, 0xCD))
-
-
 def _effective_size(image: bytes) -> int:
     """
-    Размер образа без хвоста из типичных заполнителей (0xFF, 0x00, 0xA5, 0xCD).
-    Выравнивание по 4 байта для записи в Flash.
+    Размер образа без хвоста из незапрограммированного Flash (только 0xFF).
+
+    Не обрезать по 0x00/0xA5/0xCD: в конце AppBoot .bin это могут быть валидные байты
+    машинного кода или данных. Размер выравнивается по 4 байта для записи во Flash.
     """
     if not image:
         return 0
     last = len(image) - 1
-    while last >= 0 and image[last] in _FILL_BYTES:
+    while last >= 0 and image[last] == 0xFF:
         last -= 1
     used = last + 1
     if used == 0:
-        return len(image)  # не обрезать до 0
+        return len(image)
     return (used + 3) & ~3
 
 
@@ -53,6 +51,17 @@ def parse_version_from_filename(filename: str) -> Optional[str]:
     Извлекает версию из имени файла MR-02m_<version>.fw / .bin.
     Поддерживаются 1–4 компонента: 1, 1.0, 1.0.0, 1.0.0.0 (недостающие дополняются нулями до X.Y.Z.W).
     """
+    m = re.match(r"ce-02m-3_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
+    if m:
+        return m.group(1)
+    m = re.match(r"ce-02m-3_(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?\.(?:fw|bin)$", filename, re.I)
+    if m:
+        parts = [m.group(1), m.group(2) or "0", m.group(3) or "0", m.group(4) or "0"]
+        return ".".join(parts)
+    m = re.match(r"ce-02m-3_(.+)\.(?:fw|bin)$", filename, re.I)
+    if m:
+        ver = m.group(1).strip()
+        return ver if re.match(r"^[\d.]+$", ver) else "?"
     # Бутлоадер: MR-02m_bootloader_X.Y.Z.W.fw (до общего MR-02m_<ver>, иначе ver = «bootloader_0…»)
     m = re.match(r"MR-02m_bootloader_(\d+\.\d+\.\d+\.\d+)\.(?:fw|bin)$", filename, re.I)
     if m:
@@ -477,19 +486,51 @@ def check_bootloader_vector_table(image: bytes) -> Tuple[bool, Optional[str]]:
 
 def load_bootloader_fw(path: Path) -> bytes:
     """
-    Загрузить bootloader.fw (сырой образ 34 КБ: 2 КБ векторы + 32 КБ код).
-    Формат: как make_bootloader_fw.py — без заголовка, ровно BL_IMAGE_TOTAL_BYTES.
+    Загрузить bootloader.fw.
+
+    Поддерживаются два формата:
+    1) сырой образ 34 КБ: 2 КБ векторы + 32 КБ код;
+    2) контейнер make_fw.py: 32 B info + блоки по 246 B, где каждое 16-битное слово
+       записано big-endian для Modbus-регистров.
     """
     data = path.read_bytes()
-    if len(data) < BL_IMAGE_TOTAL_BYTES:
-        raise ValueError(
-            f"Файл bootloader.fw слишком короткий: {len(data)} байт, требуется {BL_IMAGE_TOTAL_BYTES}."
-        )
-    image = data[:BL_IMAGE_TOTAL_BYTES]
+    if len(data) >= BL_IMAGE_TOTAL_BYTES:
+        image = data[:BL_IMAGE_TOTAL_BYTES]
+        ok, err = check_bootloader_vector_table(image)
+        if ok:
+            return image
+
+    image = _load_bootloader_fw_container(data)
     ok, err = check_bootloader_vector_table(image)
     if not ok:
         raise ValueError(f"Неверная таблица векторов в bootloader.fw: {err}")
     return image
+
+
+def _load_bootloader_fw_container(data: bytes) -> bytes:
+    """Decode make_fw.py bootloader .fw into raw [vectors + code] image."""
+    if len(data) < FW_INFO_SIZE:
+        raise ValueError(
+            f"Файл bootloader.fw слишком короткий: {len(data)} байт "
+            f"(нужен сырой образ {BL_IMAGE_TOTAL_BYTES} байт или .fw с info-блоком)."
+        )
+    size = struct.unpack_from("<I", data, 12)[0]
+    if size <= 0 or size > BL_IMAGE_TOTAL_BYTES:
+        raise ValueError(
+            f"В bootloader.fw указан размер {size} байт — ожидается 1..{BL_IMAGE_TOTAL_BYTES}."
+        )
+    encoded = data[FW_INFO_SIZE:]
+    needed_encoded = ((size + 1) // 2) * 2
+    if len(encoded) < needed_encoded:
+        raise ValueError(
+            f"bootloader.fw повреждён: данных {len(encoded)} байт, требуется не менее {needed_encoded}."
+        )
+    raw = bytearray()
+    for i in range(0, needed_encoded, 2):
+        w = (encoded[i] << 8) | encoded[i + 1]
+        raw.append(w & 0xFF)
+        raw.append((w >> 8) & 0xFF)
+    return bytes(raw[:size]).ljust(BL_IMAGE_TOTAL_BYTES, b"\xff")
 
 
 def load_bootloader_image(path: Path) -> bytes:
