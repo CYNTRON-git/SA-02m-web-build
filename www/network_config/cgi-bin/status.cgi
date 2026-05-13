@@ -179,17 +179,27 @@ rtc_hwclock_sync() {
 }
 
 rtc_try_attach_ds3231() {
-    local new_device=/sys/class/i2c-adapter/i2c-0/new_device i
+    local bus new_device delete_device i
     [ -c /dev/rtc1 ] && return 0
-    [ -d /sys/bus/i2c/devices/0-0068 ] && return 0
-    [ -e "$new_device" ] || return 1
-
-    if [ -w "$new_device" ]; then
-        printf '%s\n' 'ds3231 0x68' > "$new_device" 2>/dev/null || true
-    elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
-        printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$new_device" >/dev/null 2>&1 || true
-    fi
-
+    # Probe i2c-0..i2c-2: DS3231 bus varies by board revision
+    for bus in 0 1 2; do
+        new_device=/sys/class/i2c-adapter/i2c-${bus}/new_device
+        [ -e "$new_device" ] || continue
+        # Delete stale instantiation before re-adding (idempotent guard)
+        delete_device=/sys/class/i2c-adapter/i2c-${bus}/delete_device
+        if [ -w "$delete_device" ]; then
+            printf '%s\n' 'ds3231 0x68' > "$delete_device" 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
+            printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$delete_device" >/dev/null 2>&1 || true
+        fi
+        if [ -w "$new_device" ]; then
+            printf '%s\n' 'ds3231 0x68' > "$new_device" 2>/dev/null || true
+        elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
+            printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$new_device" >/dev/null 2>&1 || true
+        fi
+        [ -c /dev/rtc1 ] && break
+    done
+    [ -c /dev/rtc1 ] || return 1
     for i in 1 2 3 4 5; do
         [ -c /dev/rtc1 ] || break
         rtc_hwclock_sync /dev/rtc1 || true
@@ -198,7 +208,6 @@ rtc_try_attach_ds3231() {
         fi
         sleep 1
     done
-
     [ -c /dev/rtc1 ]
 }
 
@@ -1260,6 +1269,8 @@ print_main_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
+  "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
@@ -1337,6 +1348,8 @@ print_core_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
+  "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
@@ -1415,6 +1428,8 @@ print_full_json() {
   "board": "${BOARD}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
+  "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
+  "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
