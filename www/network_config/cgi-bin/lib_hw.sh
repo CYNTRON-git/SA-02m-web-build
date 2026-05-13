@@ -74,18 +74,98 @@ sa02m_hw_usb_power_use_gpiod() {
     [[ "${SA02M_GPIO_USB_GPIOD_LINE:-}" =~ ^[0-9]+$ ]]
 }
 
+# Смысл в UI/Modbus: 1 = питание USB включено, 0 = выключено.
+# Запись на линию без инверсии: value 1 → gpioset …=1 (как в ca_02m.sh по умолчанию).
+# Если gpioget даёт «0» при реально включённом питании — инвертируем только отображаемое/опрашиваемое значение.
+sa02m_hw_usb_power_read_invert() {
+    case "${SA02M_USB_POWER_INVERT:-0}" in
+        1|yes|true|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+sa02m_hw_usb_line_to_user_logical() {
+    local raw=$1
+    if sa02m_hw_usb_power_read_invert; then
+        case "$raw" in
+            0) echo 1 ;;
+            1) echo 0 ;;
+            *) echo "$raw" ;;
+        esac
+    else
+        printf '%s\n' "$raw"
+    fi
+}
+
 sa02m_hw_usb_gpiod_chip() {
     printf '%s' "${SA02M_GPIO_USB_GPIOD_CHIP:-0}"
 }
 
+# Pid в /tmp (www-data не пишет в /run). Остановка процесса root — через sudo kill (см. sudoers).
+sa02m_hw_usb_gpiod_pidfile() {
+    local chip line
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    printf '%s' "/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.pid"
+}
+
+sa02m_hw_usb_gpiod_stop_holder() {
+    local pf pid
+    pf=$(sa02m_hw_usb_gpiod_pidfile)
+    [ -f "$pf" ] || return 0
+    pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
+    [[ "$pid" =~ ^[0-9]+$ ]] || { rm -f "$pf"; return 0; }
+    sudo -n kill -TERM "$pid" 2>/dev/null || sudo kill -TERM "$pid" 2>/dev/null || true
+    sleep 0.08
+    sudo -n kill -KILL "$pid" 2>/dev/null || sudo kill -KILL "$pid" 2>/dev/null || true
+    rm -f "$pf"
+}
+
 sa02m_hw_usb_gpiod_write() {
-    local val=$1 chip line gs
+    local val=$1 chip line gs help pf
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || return 1
     [ "$val" = "0" ] || [ "$val" = "1" ] || return 1
     gs=$(command -v gpioset 2>/dev/null) || return 1
-    if "$gs" -h 2>&1 | grep -q -- '-m'; then
+    help=$("$gs" -h 2>&1 || true)
+
+    sa02m_hw_usb_gpiod_stop_holder
+    pf=$(sa02m_hw_usb_gpiod_pidfile)
+
+    if echo "$help" | grep -q -- '-m'; then
+        if echo "$help" | grep -qi 'wait'; then
+            if sudo -n "$gs" -m wait "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                return 0
+            fi
+            if sudo "$gs" -m wait "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                return 0
+            fi
+        fi
+        if echo "$help" | grep -qi 'time'; then
+            if echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
+                if sudo -n "$gs" -m time -s 604800 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                    return 0
+                fi
+                if sudo "$gs" -m time -s 604800 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+            if echo "$help" | grep -qi usec; then
+                if sudo -n "$gs" -m time --usec=604800000000 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                    return 0
+                fi
+                if sudo "$gs" -m time --usec=604800000000 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+                    return 0
+                fi
+            fi
+        fi
         sa02m_hw_timeout_run sudo -n "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
         sa02m_hw_timeout_run sudo "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
     fi
@@ -105,10 +185,10 @@ sa02m_hw_usb_gpiod_read() {
         || { echo -1; return; }
     v=$(printf '%s' "$v" | tr -d '\r\n\t ')
     case "$v" in
-        0|1) printf '%s\n' "$v" ; return 0 ;;
+        0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
     esac
     if [[ "$v" =~ (^|.*[=:])([01])($|[^0-9].*) ]]; then
-        printf '%s\n' "${BASH_REMATCH[2]}"
+        sa02m_hw_usb_line_to_user_logical "${BASH_REMATCH[2]}"
         return 0
     fi
     echo -1
@@ -492,5 +572,8 @@ sa02m_hw_collect_metrics() {
         HW_USB=$(sa02m_hw_usb_gpiod_read)
     else
         HW_USB=$(sa02m_hw_gpio_state "${SA02M_GPIO_USB_POWER:-}")
+        case "$HW_USB" in
+            0|1) HW_USB=$(sa02m_hw_usb_line_to_user_logical "$HW_USB") ;;
+        esac
     fi
 }

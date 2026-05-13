@@ -81,8 +81,11 @@ REG_VERSION_SUFFIX = 323
 REG_BOOTLOADER_VER = 330
 REG_BOOTLOADER_VER_COUNT = 8
 
-SCAN_TIMEOUT_MS = 250   # таймаут ответа при скане (один запрос на адрес: reg 0, count 2)
+# После WB-скана (0xFD 0x46) и на 115200 250 мс часто недостаточно для первого FC03 из загрузчика.
+SCAN_TIMEOUT_MS = 520
 BOOTLOADER_BAUD = 115200
+# Чтение 290/330 по 0xFD 0x46 0x08 после WB: дольше, чем обычный Modbus-скан.
+FILL_BOOTLOADER_BY_SERIAL_TIMEOUT_MS = 3800
 
 
 def _rtu_char_time_s(baudrate: int, parity: str, stopbits: int) -> float:
@@ -195,6 +198,20 @@ def device_eligible_for_module_config_window(dev: DeviceInfo) -> bool:
     ) and device_identity_complete_for_module_config(dev)
 
 
+def _extended_scan_ensure_bootloader_line(
+    config_order: List[SpeedConfig],
+    scan_mode: ScanMode,
+) -> List[SpeedConfig]:
+    """В «быстрый модбас» добавить 115200 8N1, если её нет: загрузчик MP-02m на этой линии, WB-скан иначе молчит."""
+    if scan_mode != ScanMode.EXTENDED_ONLY:
+        return config_order
+    bl = (BOOTLOADER_BAUD, "N", 1)
+    for b, p, s in config_order:
+        if int(b) == BOOTLOADER_BAUD and str(p).upper() == "N" and int(s) == 1:
+            return config_order
+    return [bl] + list(config_order)
+
+
 def _apply_signature_from_serial_if_missing(dev: DeviceInfo) -> DeviceInfo:
     """
     Если рег. 290 дал пустую/бинарную сигнатуру (например EEPROM 240 занят блобом 4TO6DI),
@@ -216,7 +233,7 @@ def _fill_bootloader_info_by_serial(
     serial: int,
     dev: "DeviceInfo",
     log_cb: Optional[Callable[[str], None]] = None,
-    response_timeout_ms: int = 1200,
+    response_timeout_ms: int = FILL_BOOTLOADER_BY_SERIAL_TIMEOUT_MS,
 ) -> None:
     """Сигнатура 290, версия бутлоадера 330 и при необходимости версия приложения 320–323 по 0xFD 0x46 0x08 (один проход)."""
     try:
@@ -226,6 +243,7 @@ def _fill_bootloader_info_by_serial(
                 ser.reset_input_buffer()
             except Exception:
                 pass
+            _wb_ext_scan_host_preamble(ser, None, silent=True)
             proto = FlasherProtocol(
                 lambda req: send_receive(ser, req, response_timeout_ms=response_timeout_ms),
                 log_cb=None,
@@ -299,6 +317,7 @@ def _poll_identity_fast_modbus_for_dup_addr(
                 ser.reset_input_buffer()
             except Exception:
                 pass
+            _wb_ext_scan_host_preamble(ser, None, silent=True)
             proto = FlasherProtocol(
                 lambda req: send_receive(ser, req, response_timeout_ms=response_timeout_ms),
                 log_cb=None,
@@ -694,11 +713,13 @@ def scan_address(
     on_partial: Optional[Callable[[DeviceInfo], None]] = None,
     wb_serial_hint: Optional[int] = None,
     wb_scan_row_serial: Optional[int] = None,
+    prime_wb_cycle: bool = False,
 ) -> Optional[DeviceInfo]:
     """Опрос одного адреса: reg 0, затем 270–271, версия, сигнатура, версия загрузчика.
     on_partial вызывается после каждого шага с накопленным DeviceInfo (для постепенного обновления таблицы в GUI).
     wb_serial_hint — из WB extended: при каждом on_partial сверять с рег. 270–271 (подстановка до опроса и reconcile после).
-    wb_scan_row_serial — стабильный SN строки WB-скана (два устройства с одним адресом)."""
+    wb_scan_row_serial — стабильный SN строки WB-скана (два устройства с одним адресом).
+    prime_wb_cycle — отправить 0xFD 0x46 0x04 после открытия COM (выравнивание WB в загрузчике после фазы 1)."""
     row_key: Optional[int] = (
         wb_scan_row_serial & 0xFFFFFFFF
         if wb_scan_row_serial is not None
@@ -734,6 +755,8 @@ def scan_address(
             except Exception:
                 continue
         try:
+            if tcp_ep is None and ser_local is not None and prime_wb_cycle:
+                _wb_ext_scan_host_preamble(ser_local, None, silent=True)
             _, pl0 = _read_regs(
                 port, address, REG_PROBE_0, REG_PROBE_0_COUNT,
                 baud, parity, stopbits, SCAN_TIMEOUT_MS, tcp_ep=tcp_ep,
@@ -1026,14 +1049,6 @@ def _broadcast_probe_bauds(
                     f"[{cfg}] адр.{addr} — дубликат адреса, SN {ser_str}; подробности [DUP_ADDR] в flasher_log.txt"
                 )
                 continue
-            # Сброс буфера перед опросом (остатки после WB scan могут мешать приёму ответа по обычному Modbus).
-            if tcp_ep is None:
-                try:
-                    ser = open_port(port, baudrate=baud, parity=parity, stopbits=stopbits)
-                    ser.reset_input_buffer()
-                    ser.close()
-                except Exception:
-                    pass
             wb_hint: Optional[int] = None
             if serial_from_wb is not None and (serial_from_wb & 0xFFFFFFFF) not in (0, 0xFFFFFFFF):
                 wb_hint = serial_from_wb
@@ -1052,6 +1067,7 @@ def _broadcast_probe_bauds(
                 on_partial=partial_cb if on_device_found else None,
                 wb_serial_hint=wb_hint,
                 wb_scan_row_serial=serial_from_wb,
+                prime_wb_cycle=True,
             )
             if dev is not None:
                 # Серийный из регистров — основной источник; быстрый скан подставляем только если регистры пустые.
@@ -1159,6 +1175,8 @@ def scan_all(
         config_order = [c for c in config_order if int(c[0]) == BOOTLOADER_BAUD and str(c[1]).upper() == "N" and int(c[2]) == 1]
         if not config_order:
             config_order = [(BOOTLOADER_BAUD, "N", 1)]
+    else:
+        config_order = _extended_scan_ensure_bootloader_line(config_order, scan_mode)
     tcp_ep = tcp_endpoint
     addrs_order = list(range(addr_min, addr_max + 1))
 

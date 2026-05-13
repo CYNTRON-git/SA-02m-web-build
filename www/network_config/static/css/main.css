@@ -881,18 +881,15 @@ svg .gauge-num {
   margin: 0;
 }
 
-/* Вкладка «Управление»: слева веб-доступ, справа столбец карточек */
-.system-manage-layout {
-  display: grid;
-  grid-template-columns: auto minmax(240px, 340px);
-  gap: 24px;
-  align-items: start;
+/* Вкладка «Управление»: одна сетка как «Общая информация» — auto-fill, перенос на следующую строку */
+.dash-grid.system-manage-grid {
   margin-bottom: 28px;
+  align-items: stretch;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
-.system-manage-col-left .system-manage-web-creds {
-  /* Карточка по ширине содержимого, не на всю ширину окна */
-  justify-self: start;
-  width: fit-content;
+.system-manage-grid > .system-manage-web-creds {
+  justify-self: stretch;
+  width: 100%;
   max-width: 100%;
   margin-bottom: 0;
   padding: 20px;
@@ -902,32 +899,18 @@ svg .gauge-num {
   box-shadow: var(--shadow-sm);
   box-sizing: border-box;
 }
-/* Поля на 100% внутри родителя дают нулевой intrinsic width — задаём явную ширину */
-.system-manage-web-creds .field input:not(.toggle),
-.system-manage-web-creds .field select {
+.system-manage-grid .system-manage-web-creds .field input:not(.toggle),
+.system-manage-grid .system-manage-web-creds .field select {
   width: min(320px, 100%);
   min-width: 0;
   box-sizing: border-box;
 }
-.system-manage-col-right {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.system-manage-col-right .ctrl-card {
+.system-manage-grid > .ctrl-card {
   min-height: 0;
 }
 @media (max-width: 900px) {
-  .system-manage-layout {
-    grid-template-columns: 1fr;
-  }
-  .system-manage-col-left .system-manage-web-creds {
-    width: 100%;
-    max-width: none;
-    justify-self: stretch;
-  }
-  .system-manage-web-creds .field input:not(.toggle),
-  .system-manage-web-creds .field select {
+  .system-manage-grid .system-manage-web-creds .field input:not(.toggle),
+  .system-manage-grid .system-manage-web-creds .field select {
     width: 100%;
   }
 }

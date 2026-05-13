@@ -107,6 +107,18 @@ check_root() {
     fi
 }
 
+# systemctl с таймаутом — защита от зависания при сбое D-Bus (Armbian, нагрузка MPLC и т.д.).
+SA02M_SYSTEMCTL_TIMEOUT_SEC="${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}"
+
+sa02m_systemctl() {
+    local sec=${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$sec" systemctl "$@"
+    else
+        systemctl "$@"
+    fi
+}
+
 pkg_install() {
     local pkgs=("$@")
     local missing=()
@@ -120,10 +132,10 @@ pkg_install() {
 }
 
 svc_enable() {
-    systemctl enable "$1" >> "$LOG_FILE" 2>&1 || true
-    systemctl start  "$1" >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl enable "$1" >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl start  "$1" >> "$LOG_FILE" 2>&1 || true
 }
 
 svc_restart() {
-    systemctl restart "$1" >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl restart "$1" >> "$LOG_FILE" 2>&1 || true
 }

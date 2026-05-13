@@ -4,7 +4,7 @@
 
 Обнаружение: Modbus RTU (read reg 290/330), WB extended (0xFD 0x46 0x01).
 Бутлоадер: 0xFD 0x46 0x08/0x09 по серийному или обычный Modbus по адресу 247, 115200 8N1.
-Прошивка: 0x1000 (info 32 B, 16 рег BE) → пауза 3 с (стирание) → 0x2000 (блоки).
+Прошивка: 0x1000 (info 32 B, 16 рег BE) → пауза ~2.8 с (стирание) → 0x2000 (блоки).
 Приложение: блоки 246 B (123 reg). WB: блоки 136 B (68 рег). Порядок байт для .fw — LE в Flash. Наши: 3 попытки на блок, при неудаче — прерывание; задержка 5 мс между блоками; таймаут 5 с.
 Транспорт — Modbus RTU (0x10 Write Multiple Registers).
 """
@@ -96,22 +96,36 @@ DEFAULT_SIGNATURE = "NONE"
 FAST_MODBUS_INTER_READ_GAP_S = 0.012
 
 # --- Тайминги (с), совместимость с WB (wb-mcu-fw-flasher) и бутлоадером ---
-# После info бутлоадер стирает регион (1 с init + ~21 мс/страница × 111 ≈ 3.3 с). Пауза как у WB: 0 с у них; у нас — дождаться стирания.
-ERASE_WAIT_AFTER_INFO_S = 3.0  # пауза после info перед первым блоком (дождаться полного стирания региона)
+# После info бутлоадер полностью стирает регион (см. MR-02m-flasher flash_protocol).
+ERASE_WAIT_AFTER_INFO_S = 2.8
 # Между блоками: по адресу — 5 мс (RS-485 turnaround + Flash); по 0x46 (быстрый Modbus) — 0 с, как у WB.
 BLOCK_DELAY_AFTER_RESPONSE_S = 0.005
 BLOCK_DELAY_FIRST_BLOCK_S = 0.005
 BLOCK_DELAY_AFTER_RESPONSE_S_FAST = 0.0  # прошивка по серийному 0x46 (как WB)
 BLOCK_DELAY_FIRST_BLOCK_S_FAST = 0.0
 RETRY_DELAY_BETWEEN_BLOCKS_S = 0.3    # пауза перед повтором (дать МК время дописать Flash)
+# Повтор при таймауте: увеличенная пауза (дренаж UART / переполнение буфера на МК) — как MR-02m-flasher.
+RETRY_DELAY_AFTER_TIMEOUT_S = 2.0
+RETRY_AFTER_SLAVE_FAILURE_FLASH_S = 1.0  # Modbus код 4 + 0xF2=4 (ожидание стирания)
 # Для приложения наших устройств: 3 попытки на блок; при неудаче — прерывание (пропуск блока портит образ).
 # WB: 3 попытки, пропуск блока, выход при 6 подряд — только в run_flash_sequence_wb.
 APP_MAX_ERROR_COUNT = 3
 # Таймаут ответа загрузчика при прошивке приложения (как WB: BL_MINIMAL_RESPONSE_TIMEOUT 5 с).
 BOOTLOADER_RESPONSE_TIMEOUT_S = 5.0
 BOOTLOADER_DATA_BLOCK_TIMEOUT_MS = max(600, int(BOOTLOADER_RESPONSE_TIMEOUT_S * 1000))
+# Ответ на запись info 0x1000 / чтения в сессии прошивки (RS-485, обработка в бутлоадере) — как gui_flasher_support MR-02m-flasher.
+INFO_RESPONSE_TIMEOUT_MS = 6000
+# Рег. 1005: запись серийника / тяжёлые операции во Flash.
+SERIAL_PROGRAM_RESPONSE_TIMEOUT_MS = max(8000, BOOTLOADER_DATA_BLOCK_TIMEOUT_MS)
 # Повтор info-блока при ошибке/таймауте: как у WB — пауза 3 с между попытками.
 INFO_RETRY_SLEEP_S = 3.0
+
+# --- Как MR-02m-flasher/flasher_windows/gui_flasher_support.py + gui_flasher_flash_mixin ---
+FAST_RESPONSE_TIMEOUT_MS = 500
+DATA_BLOCK_RESPONSE_TIMEOUT_MS = 600
+LINK_AND_FACTORY_WRITE_TIMEOUT_MS = 7500
+# Перевод в загрузчик (reg 129) с линии приложения: MR flash mixin держит 2000 мс на PDU.
+FLASH_ENTER_BOOTLOADER_APP_TIMEOUT_MS = 2000
 
 # --- Лимиты: область записи приложения в бутлоадере 0x08000800..0x0802F800 (до staging). ---
 FLASH_APP_START = 0x08000800
@@ -119,6 +133,153 @@ FLASH_APP_END = 0x0802F800
 BOOTLOADER_MAX_APP_BYTES = FLASH_APP_END - FLASH_APP_START  # 190464 байт (~186 КБ)
 MAX_FIRMWARE_SIZE_BYTES = BOOTLOADER_MAX_APP_BYTES
 DEFAULT_RETRIES_PER_BLOCK = 5  # для образа бутлоадера; для приложения используется APP_MAX_ERROR_COUNT (3, как WB)
+
+
+def bootloader_profiled_response_timeout_ms(
+    request: bytes,
+    *,
+    is_wb_firmware: bool = False,
+) -> int:
+    """
+    Таймаут приёма ответа транспорта в сеансе прошивки на линии загрузчика.
+    Совпадает с MR-02m-flasher/gui_flasher_flash_mixin.py::_send_recv_profiled
+    (is_wb_firmware == (suffix образа == .wbfw)).
+    """
+    fast = FAST_RESPONSE_TIMEOUT_MS
+    if len(request) < 2:
+        return fast
+    # Быстрый Modbus 0xFD 0x46 0x08: длинные кадры (блоки 0x2000) — BOOTLOADER_DATA_BLOCK_TIMEOUT_MS и т.д.
+    if request[0] == 0xFD and request[1] == 0x46:
+        to_ms = BOOTLOADER_DATA_BLOCK_TIMEOUT_MS if len(request) > 100 else 3500
+        if len(request) >= 10 and request[2] == 0x08 and request[7] == 0x10:
+            inner_start = (request[8] << 8) | request[9]
+            if inner_start == REG_PROGRAM_SERIAL:
+                to_ms = max(to_ms, SERIAL_PROGRAM_RESPONSE_TIMEOUT_MS)
+            elif inner_start == INFO_BLOCK_REG:
+                if is_wb_firmware:
+                    to_ms = max(
+                        to_ms,
+                        max(INFO_RESPONSE_TIMEOUT_MS, BOOTLOADER_INFOBLOCK_TIMEOUT_MS_WB),
+                    )
+                else:
+                    to_ms = max(to_ms, INFO_RESPONSE_TIMEOUT_MS)
+            elif inner_start == DATA_BLOCK_REG:
+                to_ms = max(
+                    to_ms,
+                    BOOTLOADER_INFOBLOCK_TIMEOUT_MS_WB
+                    if is_wb_firmware
+                    else BOOTLOADER_DATA_BLOCK_TIMEOUT_MS,
+                )
+        return to_ms
+    if request[1] == 0x03:
+        return INFO_RESPONSE_TIMEOUT_MS
+    if request[1] == 0x10 and len(request) >= 6:
+        start_addr = (request[2] << 8) | request[3]
+        if start_addr == REG_PROGRAM_SERIAL:
+            return SERIAL_PROGRAM_RESPONSE_TIMEOUT_MS
+        if request[2] == 0x10 and request[3] == 0x00:
+            if is_wb_firmware:
+                return max(INFO_RESPONSE_TIMEOUT_MS, BOOTLOADER_INFOBLOCK_TIMEOUT_MS_WB)
+            return INFO_RESPONSE_TIMEOUT_MS
+        if request[2] == 0x20 and request[3] == 0x00:
+            return (
+                BOOTLOADER_INFOBLOCK_TIMEOUT_MS_WB
+                if is_wb_firmware
+                else BOOTLOADER_DATA_BLOCK_TIMEOUT_MS
+            )
+    return fast
+
+
+def _modbus_inner_exception_code(err: Optional[str]) -> Optional[int]:
+    """Из текста «Исключение Modbus: код N» достать N (внутренний PDU в 0x46)."""
+    if not err:
+        return None
+    marker = "код "
+    i = err.find(marker)
+    if i < 0:
+        return None
+    tail = err[i + len(marker) :].strip().split()[0]
+    try:
+        return int(tail, 10)
+    except ValueError:
+        try:
+            return int(tail, 0)
+        except ValueError:
+            return None
+
+
+def _sleep_before_retry_flash_data_block_impl(
+    flasher: "FlasherProtocol",
+    err: Optional[str],
+    block_index: int,
+    read_f2: Callable[[], Tuple[Optional[bytes], Optional[str]]],
+) -> None:
+    """Пауза перед повтором блока 0x2000; при таймауте — увеличенная пауза; при коде 4 и 0xF2=4 — ожидание стирания."""
+    delay = RETRY_DELAY_BETWEEN_BLOCKS_S
+    if "Таймаут" in (err or ""):
+        delay = max(delay, RETRY_DELAY_AFTER_TIMEOUT_S)
+        if flasher.log_cb:
+            flasher.log_cb(
+                "Таймаут блока %d: пауза %.1f с перед повтором."
+                % (block_index + 1, delay)
+            )
+    elif _modbus_inner_exception_code(err) == 4:
+        pl, re = read_f2()
+        if not re and pl and len(pl) >= 2:
+            rej = (pl[0] << 8) | pl[1]
+            if rej == 4:
+                delay = max(delay, RETRY_AFTER_SLAVE_FAILURE_FLASH_S)
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Бутлоадер: 0xF2=4 (ожидание стирания), пауза %.1f с перед повтором блока %d."
+                        % (delay, block_index + 1)
+                    )
+            elif rej == 5:
+                delay = max(delay, 0.55)
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Бутлоадер: 0xF2=5 (pending), пауза %.2f с." % delay
+                    )
+        else:
+            delay = max(delay, RETRY_AFTER_SLAVE_FAILURE_FLASH_S)
+            if flasher.log_cb:
+                flasher.log_cb(
+                    "Исключение Modbus код 4 при блоке %d: пауза %.1f с перед повтором."
+                    % (block_index + 1, delay)
+                )
+    time.sleep(delay)
+
+
+def _sleep_before_retry_flash_data_block(
+    flasher: "FlasherProtocol",
+    serial: int,
+    err: Optional[str],
+    block_index: int,
+) -> None:
+    serial = serial & 0xFFFFFFFF
+
+    _sleep_before_retry_flash_data_block_impl(
+        flasher,
+        err,
+        block_index,
+        lambda: flasher.read_holding_registers_by_serial(
+            serial, REG_LAST_DATA_REJECT, 1
+        ),
+    )
+
+
+def _sleep_before_retry_flash_data_block_slave(
+    flasher: "FlasherProtocol",
+    slave: int,
+    err: Optional[str],
+    block_index: int,
+) -> None:
+    _sleep_before_retry_flash_data_block_impl(
+        flasher,
+        err,
+        block_index,
+        lambda: flasher.read_holding_registers(slave, REG_LAST_DATA_REJECT, 1),
+    )
 
 
 def _fw_payload_first_8_bytes_to_le(fw_data: bytes) -> bytes:
@@ -278,7 +439,7 @@ class FlasherProtocol:
     def __init__(
         self,
         send_receive: Callable[[bytes], Optional[bytes]],
-        timeout_ms: int = 2000,
+        timeout_ms: int = FLASH_ENTER_BOOTLOADER_APP_TIMEOUT_MS,
         log_cb: Optional[Callable[[str], None]] = None,
         verbose_exchange_log: bool = False,
     ):
@@ -1046,7 +1207,7 @@ def run_flash_sequence_by_address(
                         flasher.log_cb(
                             f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
                         )
-                    time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+                    _sleep_before_retry_flash_data_block_slave(flasher, slave, err, idx)
             if not block_ok:
                 return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
             blocks_sent += 1
@@ -1118,7 +1279,7 @@ def run_flash_sequence_by_address(
                     flasher.log_cb(
                         f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
                     )
-                time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+                _sleep_before_retry_flash_data_block_slave(flasher, slave, err, idx)
         if not block_ok:
             return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err_app} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
         blocks_sent += 1
@@ -1202,7 +1363,11 @@ def run_flash_sequence(
                         break
                     last_err_s = err
                     if attempt < APP_MAX_ERROR_COUNT - 1:
-                        time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+                        if flasher.log_cb:
+                            flasher.log_cb(
+                                f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
+                            )
+                        _sleep_before_retry_flash_data_block(flasher, serial, err, idx)
                 if not block_ok:
                     return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err_s} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
                 blocks_sent += 1
@@ -1283,7 +1448,7 @@ def run_flash_sequence(
                     flasher.log_cb(
                         f"Повтор блока {idx + 1}/{total_blocks} (попытка {attempt + 2}/{APP_MAX_ERROR_COUNT})..."
                     )
-                time.sleep(RETRY_DELAY_BETWEEN_BLOCKS_S)
+                _sleep_before_retry_flash_data_block(flasher, serial, err, idx)
         if not block_ok:
             return f"Ошибка блока {idx + 1}/{total_blocks}: {last_err_ser} (исчерпано {APP_MAX_ERROR_COUNT} попыток)."
         blocks_sent += 1

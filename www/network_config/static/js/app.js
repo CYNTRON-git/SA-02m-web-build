@@ -219,9 +219,9 @@ function unitUiLabel(name) {
   return String(name || '').replace(/\.(service|socket)$/i, '');
 }
 
-const SVC_WIDGET_MAX_ROWS = 4;
+const SVC_WIDGET_MAX_ROWS = 6;
 
-/** Виджет «Службы»: nginx, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 4). Без пустых строк. */
+/** Виджет «Службы»: nginx, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 6). Без пустых строк. */
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
@@ -255,11 +255,17 @@ function renderServicesDynamic(d) {
     ? unitUiLabel(String(d.mplc_unit).trim())
     : '';
   const mplcOn = svcStateIsActive(d.mplc_status);
-  if ((mu || mplcOn) && rows.length < SVC_WIDGET_MAX_ROWS) {
-    pushRow(mu || 'опрос RS-485', d.mplc_uptime_s, d.mplc_status, {
-      mono: !!mu,
-      title: 'Служба опроса RS-485 (systemd)',
-      tight: !mu
+  const mplcSt = normSvcState(d.mplc_status);
+  /** Подпись строки: всегда MPLC4 для mplc/mplc4/неизвестного unit; иначе — имя unit (редкие варианты). */
+  const mplcRowLabel =
+    !mu || mu === 'mplc4' || mu === 'mplc' ? 'MPLC4' : mu;
+  /** MPLC4: активна по systemd/pgrep mplc*, или неактивна (не скрывать «Неактивен»). */
+  const showMplcRow = (mplcOn || !!mu || (mplcSt && mplcSt !== 'unknown')) && rows.length < SVC_WIDGET_MAX_ROWS;
+  if (showMplcRow) {
+    pushRow(mplcRowLabel, d.mplc_uptime_s, d.mplc_status, {
+      mono: true,
+      title: 'MPLC4 — опрос линии RS-485 (systemd)',
+      tight: false
     });
   }
 
@@ -268,7 +274,8 @@ function renderServicesDynamic(d) {
       if (rows.length >= SVC_WIDGET_MAX_ROWS) break;
       const id = (s && s.id) ? unitUiLabel(String(s.id)) : '';
       if (!id) continue;
-      pushRow(id, s.uptime_s, s.status, { mono: true });
+      const disp = (s && s.label && String(s.label).trim()) ? String(s.label).trim() : id;
+      pushRow(disp, s.uptime_s, s.status, { mono: true });
     }
   }
 
@@ -647,7 +654,12 @@ function applyHardwareStatus(d) {
   applyHwChannel('hw-do-st', 'do', d.hw_do);
   applyHwChannel('hw-beep-st', 'beeper', d.hw_beeper);
   applyHwChannel('hw-led-st', 'alarm_led', d.hw_alarm_led);
-  applyHwChannel('hw-usb-st', 'usb_power', d.hw_usb_power);
+  let usbPl = d.hw_usb_power;
+  clearPendingUsbPowerIfServerMatches(usbPl);
+  if (pendingUsbPowerVal !== null && Date.now() < pendingUsbPowerUntil) {
+    usbPl = pendingUsbPowerVal;
+  }
+  applyHwChannel('hw-usb-st', 'usb_power', usbPl);
   const pin = (k, legacy) => (d[k] !== undefined ? !!d[k] : !!legacy);
   const anyHw = !!d.hw_configured;
   setHwChannelBtns('do',        pin('hw_pin_do', anyHw));
@@ -961,6 +973,18 @@ const HW_ST_BY_CH = {
   usb_power: 'hw-usb-st',
 };
 
+/** Пока status отдаёт старый hw_usb_power (gpiod/sudo), не откатывать подпись и кнопки. */
+let pendingUsbPowerUntil = 0;
+let pendingUsbPowerVal = /** @type {number|null} */ (null);
+
+function clearPendingUsbPowerIfServerMatches(v) {
+  if (pendingUsbPowerVal === null) return;
+  if (hwLogicalFromPayload(v) === pendingUsbPowerVal) {
+    pendingUsbPowerVal = null;
+    pendingUsbPowerUntil = 0;
+  }
+}
+
 /** 0/1 для GPIO/I2C в виджетах; строки из JSON и misfetches не ломают подсветку. */
 function hwLogicalFromPayload(v) {
   if (v === null || v === undefined) return -1;
@@ -972,6 +996,9 @@ function hwLogicalFromPayload(v) {
 }
 
 function syncHwButtonStyles(channel, v) {
+  if (channel === 'usb_power') {
+    return;
+  }
   const nv = hwLogicalFromPayload(v);
   const wrap = document.querySelector('.hw-btns[data-hw-ch="' + channel + '"]');
   if (!wrap) return;
@@ -1016,12 +1043,46 @@ function applyHwChannel(stId, channel, v) {
 }
 
 function setHwChannelBtns(channel, enabled) {
-  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] .hw-io-btn').forEach(function (b) {
+  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] button').forEach(function (b) {
     b.disabled = !enabled;
   });
 }
 
-function setHw(channel, value) {
+/** Питание USB: удержание «Сброс» = 0 на линии, отпускание = 1 (без фиксации). */
+let usbPowerResetHeld = false;
+
+function bindUsbPowerResetButton() {
+  const btn = document.getElementById('hw-usb-reset-btn');
+  if (!btn || btn.dataset.usbResetBound === '1') return;
+  btn.dataset.usbResetBound = '1';
+
+  const restore = () => {
+    if (!usbPowerResetHeld) return;
+    usbPowerResetHeld = false;
+    setHw('usb_power', 1, { quiet: true });
+  };
+
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    usbPowerResetHeld = true;
+    setHw('usb_power', 0, { quiet: true });
+  });
+  btn.addEventListener('pointerup', restore);
+  btn.addEventListener('pointerleave', restore);
+  btn.addEventListener('pointercancel', restore);
+
+  if (!window.__sa02mUsbPowerBlurBound) {
+    window.__sa02mUsbPowerBlurBound = true;
+    window.addEventListener('blur', () => {
+      if (!usbPowerResetHeld) return;
+      usbPowerResetHeld = false;
+      setHw('usb_power', 1, { quiet: true });
+    });
+  }
+}
+
+function setHw(channel, value, opts) {
+  const quiet = !!(opts && opts.quiet);
   const body = 'channel=' + encodeURIComponent(channel) + '&value=' + encodeURIComponent(value);
   fetch('/cgi-bin/hw_set.cgi', {
     method: 'POST',
@@ -1038,9 +1099,13 @@ function setHw(channel, value) {
         if (stId && (vApplied === 0 || vApplied === 1)) {
           applyHwChannel(stId, channel, vApplied);
         }
+        if (channel === 'usb_power' && (vApplied === 0 || vApplied === 1)) {
+          pendingUsbPowerVal = vApplied;
+          pendingUsbPowerUntil = Date.now() + 15000;
+        }
         bumpMainStatusEpoch();
         fetchMainBundle(true);
-        toast('Применено', 'success');
+        if (!quiet) toast('Применено', 'success');
       }
       else if (j.error === 'gpio_not_configured') toast('Канал не настроен в /etc/sa02m_hw.conf', 'error');
       else if (j.error === 'i2c_busy') toast('Шина I2C занята другой службой', 'error');
@@ -1548,6 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initThemeToggle();
   handleUrlStatus();
   hydratePriorityWarmup();
+  bindUsbPowerResetButton();
 
   /* Сначала отдельные первые виджеты, потом тяжелее блоки. */
   const scheduleStatus = () => {
