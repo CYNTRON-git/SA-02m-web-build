@@ -22,6 +22,20 @@ log INFO "Копирование $WWW_DIR → $WEB_ROOT"
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
 cp -a "$WWW_DIR/." "$WEB_ROOT/"
 
+REPO_ROOT="$SCRIPT_DIR/.."
+STATEDIR=/var/lib/sa02m-web-build
+if mkdir -p "$STATEDIR" 2>/dev/null; then
+    if [ -d "$REPO_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
+        if c="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)"; then
+            printf '%s\n' "$c" >"$STATEDIR/deployed_commit"
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$STATEDIR/deployed_at"
+            chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
+        fi
+    else
+        log WARN "Нет git в $REPO_ROOT — deployed_commit не обновлён (см. README / sa02m-web-update-check)"
+    fi
+fi
+
 find "$WEB_ROOT/cgi-bin" -name '*.cgi' -exec chmod 755 {} \;
 find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -exec chmod 644 {} \;
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true

@@ -1,0 +1,9 @@
+[Unit]
+Description=Периодическая проверка обновлений веб-интерфейса СА-02м (раз в час)
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

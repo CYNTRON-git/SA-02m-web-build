@@ -156,6 +156,20 @@ fi
 mkdir -p "$WEB_ROOT/cgi-bin" "$WEB_ROOT/static/css" "$WEB_ROOT/static/js"
 cp -r "$WWW_DIR/." "$WEB_ROOT/"
 
+REPO_ROOT="$SCRIPT_DIR/.."
+STATEDIR=/var/lib/sa02m-web-build
+if mkdir -p "$STATEDIR" 2>/dev/null; then
+    if [ -d "$REPO_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
+        if c="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)"; then
+            printf '%s\n' "$c" >"$STATEDIR/deployed_commit"
+            date -u +%Y-%m-%dT%H:%M:%SZ >"$STATEDIR/deployed_at"
+            chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
+        fi
+    else
+        log WARN "Нет git в $REPO_ROOT — deployed_commit не записан"
+    fi
+fi
+
 # Permissions
 find "$WEB_ROOT/cgi-bin" -name "*.cgi" -exec chmod 755 {} \;
 find "$WEB_ROOT/static"  \( -name "*.css" -o -name "*.js" -o -name "*.svg" \) -exec chmod 644 {} \;
@@ -233,6 +247,7 @@ fi
 # ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) ─────────
 cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
 f /run/lock/sa02m-pca9536.lock 0660 www-data www-data -
+d /var/lib/sa02m-web-build 0755 root root -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 
@@ -249,7 +264,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/h
     /usr/sbin/i2cset, /usr/bin/i2cset, \
     /usr/sbin/gpioset, /usr/bin/gpioset, \
     /usr/sbin/gpioget, /usr/bin/gpioget, \
-    /usr/local/sbin/sa02m-set-storage-auto-format
+    /usr/local/sbin/sa02m-set-storage-auto-format, \
+    /usr/local/sbin/sa02m-web-update-check
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
@@ -260,6 +276,16 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
 else
     log WARN "Нет etc/sa02m-commit-web-env.sh — смена пароля через веб будет недоступна"
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
+else
+    log WARN "Нет etc/sa02m-web-update-check.sh — таймер проверки обновлений веб-UI недоступен"
+fi
+for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
+    if [ -f "$SYSTEMD_DIR/$_wu_unit" ]; then
+        install -m 644 "$SYSTEMD_DIR/$_wu_unit" "/etc/systemd/system/$_wu_unit"
+    fi
+done
 if [ ! -f /etc/sa02m_web.env ]; then
     {
         echo "SA02M_WEB_USER=admin"
@@ -284,6 +310,12 @@ if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
 fi
 
 systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+
+if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
+    systemctl enable sa02m-web-update-check.timer >> "$LOG_FILE" 2>&1 || true
+    systemctl start sa02m-web-update-check.timer >> "$LOG_FILE" 2>&1 || true
+    systemctl start sa02m-web-update-check.service >> "$LOG_FILE" 2>&1 || true
+fi
 
 if [ -x /usr/local/sbin/sa02m-prepare-working-board ]; then
     log INFO "Включение безопасного режима для рабочей платы"
