@@ -1449,7 +1449,7 @@ tail -f /var/log/fix-eth.log
 
 ## Обновление
 
-Скрипт `scripts/update-www-only.sh` копирует `www/network_config` в `/var/www/network_config` и при запуске из git-корня записывает `/var/lib/sa02m-web-build/deployed_commit` (для сравнения с GitHub во вкладке **Управление** и по таймеру `sa02m-web-update-check.timer`, раз в час).
+Скрипт `scripts/update-www-only.sh` копирует `www/network_config` в `/var/www/network_config` и записывает `/var/lib/sa02m-web-build/deployed_commit`: при наличии `.git` в корне клона — полный SHA коммита, иначе — `app-<APP_VERSION>` из `app.js` или `unknown`. Файл нужен для сравнения с GitHub во вкладке **Управление** и по таймеру `sa02m-web-update-check.timer` (раз в час).
 
 ```bash
 # Обновить только веб-файлы без переконфигурации системы

@@ -820,9 +820,20 @@ function shortGitSha(sha) {
   return s.length <= 7 ? s : s.slice(0, 7);
 }
 
+function deployedRefDisplay(j) {
+  if (j && j.deployed_commit != null && typeof j.deployed_commit === 'string' && j.deployed_commit.trim()) {
+    return shortGitSha(j.deployed_commit);
+  }
+  if (j && j.deployed_label != null && String(j.deployed_label).trim()) {
+    return String(j.deployed_label).trim();
+  }
+  return '—';
+}
+
 function applyWebUpdateCheckUI(j) {
-  if (j && j.error === 'unauthorized') return;
-  setText('web-upd-deployed', shortGitSha(j.deployed_commit));
+  if (!j || typeof j !== 'object') return;
+  if (j.error === 'unauthorized') return;
+  setText('web-upd-deployed', deployedRefDisplay(j));
   setText('web-upd-remote', shortGitSha(j.remote_commit));
   setText('web-upd-checked', j.checked_at || '—');
   const st = document.getElementById('web-upd-status');
@@ -841,6 +852,9 @@ function applyWebUpdateCheckUI(j) {
   } else if (emsg) {
     st.textContent = emsg;
     st.classList.add('is-err');
+  } else if (deployedRefDisplay(j) !== '—' && j.remote_commit) {
+    st.textContent = 'На устройстве метка сборки (не git SHA). Это нормально при копировании без репозитория — для сравнения коммитов деплой из git.';
+    st.classList.add('is-warn');
   } else {
     st.textContent = 'Коммит на устройстве неизвестен — после деплоя из git выполните update-www-only.sh или install.';
     st.classList.remove('is-ok', 'is-warn', 'is-err');
