@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3-11">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3-18">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -287,6 +287,7 @@
           <p>Конфигурация Ethernet-интерфейсов</p>
         </div>
 
+        <div class="network-eth-grid">
         <div class="form-section">
           <h3>Ethernet 0 (eth0)</h3>
           <form id="net-form">
@@ -354,6 +355,7 @@
             </div>
           </form>
         </div>
+        </div><!-- /network-eth-grid -->
       </div><!-- /tab-network -->
 
       <!-- ═══════════════════════════════ TIME ══════════════════════════ -->
@@ -503,163 +505,146 @@
           <p>Поиск модулей на линии RS-485, управление опросом порта и обновление прошивки</p>
         </div>
 
-        <div class="flasher-control-grid">
-          <div class="widget">
-            <div class="widget-title">Порт RS-485</div>
-            <div class="flasher-port-head">
-              <div>
-                <div class="widget-val flasher-port-value" id="flasher-port-label">—</div>
-                <div class="widget-sub mono" id="flasher-port-device">Выберите порт для работы с линией</div>
+        <div class="flasher-layout">
+          <div class="flasher-found-col">
+            <!-- Таблица найденных устройств -->
+            <div class="widget">
+              <div class="widget-title">Найденные устройства</div>
+              <div class="flasher-table-wrap">
+                <table class="flasher-table" id="flasher-devices-table">
+                  <thead>
+                    <tr>
+                      <th><input type="checkbox" id="flasher-devices-all" /></th>
+                      <th>Адрес</th>
+                      <th>S/N</th>
+                      <th>Сигнатура</th>
+                      <th>Прошивка</th>
+                      <th>Бутлоадер</th>
+                      <th>Скорость</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td colspan="7" class="flasher-empty">Нажмите «Сканировать», чтобы найти устройства на выбранной линии RS-485.</td></tr>
+                  </tbody>
+                </table>
               </div>
-              <button class="btn btn-sm flasher-icon-btn" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              </button>
             </div>
-            <label class="flasher-field">
-              <span>Выберите линию</span>
-              <select id="flasher-port"></select>
-            </label>
-          </div>
 
-          <div class="widget">
-            <div class="widget-title">Состояние линии</div>
-            <div class="flasher-badge-stack">
-              <span class="badge badge-unk" id="flasher-port-badge">Нет данных</span>
-              <span class="badge badge-unk" id="flasher-poller-badge">Опрос не оценён</span>
-            </div>
-            <div class="widget-sub flasher-status-text" id="flasher-port-hint">Выберите порт, чтобы увидеть состояние линии и опроса.</div>
-            <div class="btn-group flasher-port-actions">
-              <button class="btn btn-sm" id="flasher-release-port-btn" type="button" title="Остановить unit’ы опроса RS-485 из конфигурации демона (MPLC_STOP_SERVICES)">Остановить службы опроса</button>
-              <button class="btn btn-sm" id="flasher-restore-port-btn" type="button" title="Запустить обратно службы, остановленные вручную">Вернуть опрос</button>
+            <div class="widget">
+              <div class="widget-title">Журнал операции</div>
+              <div class="log-box flasher-log-box" id="flasher-log">Ожидание операции…</div>
             </div>
           </div>
 
-          <div class="widget">
-            <div class="widget-title">Параметры поиска</div>
-            <label class="flasher-field">
-              <span>Режим поиска</span>
-              <select id="flasher-mode">
-                <option value="standard">Стандартный (адресный)</option>
-                <option value="fast">Быстрый Modbus (0xFD 0x46)</option>
-              </select>
-            </label>
-            <label class="flasher-field">
-              <span>Диапазон адресов</span>
-              <span class="flasher-range">
-                <input type="number" id="flasher-addr-min" value="1" min="1" max="247" />
-                <span>—</span>
-                <input type="number" id="flasher-addr-max" value="10" min="1" max="247" />
-              </span>
-            </label>
-          </div>
+          <div class="flasher-settings-col">
+            <div class="flasher-settings-row">
+              <div class="flasher-params-col">
+              <div class="widget">
+                <div class="widget-title">Параметры поиска</div>
+                <label class="flasher-field">
+                  <span>Выберите линию</span>
+                  <div class="flasher-port-select-row">
+                    <select id="flasher-port"></select>
+                    <button class="btn btn-sm flasher-icon-btn" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
+                      <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    </button>
+                  </div>
+                </label>
+                <label class="flasher-field">
+                  <span>Скорости</span>
+                </label>
+                <div class="flasher-baud-grid" id="flasher-baudrates">
+                  <label class="flasher-baud-chip"><input type="checkbox" value="115200" checked /><span>115200</span></label>
+                  <label class="flasher-baud-chip"><input type="checkbox" value="57600" /><span>57600</span></label>
+                  <label class="flasher-baud-chip"><input type="checkbox" value="38400" /><span>38400</span></label>
+                  <label class="flasher-baud-chip"><input type="checkbox" value="19200" checked /><span>19200</span></label>
+                  <label class="flasher-baud-chip"><input type="checkbox" value="9600" checked /><span>9600</span></label>
+                </div>
+                <div class="widget-sub flasher-hint" style="margin-bottom:10px">Можно выбрать сразу несколько скоростей для одного прохода сканирования.</div>
+                <label class="flasher-field">
+                  <span>Режим поиска</span>
+                  <select id="flasher-mode">
+                    <option value="standard">Стандартный (адресный)</option>
+                    <option value="fast" selected>Быстрый Modbus (Арбитраж)</option>
+                  </select>
+                </label>
+                <label class="flasher-field">
+                  <span>Диапазон адресов</span>
+                  <span class="flasher-range">
+                    <input type="number" id="flasher-addr-min" value="1" min="1" max="247" />
+                    <span>—</span>
+                    <input type="number" id="flasher-addr-max" value="10" min="1" max="247" />
+                  </span>
+                </label>
+                <div class="widget-sub flasher-status-text" id="flasher-scan-summary">Выберите порт и параметры поиска, затем запустите сканирование.</div>
+                <div class="flasher-actions flasher-actions-widget flasher-scan-pair">
+                  <button class="btn btn-primary flasher-scan-pair-btn" id="flasher-scan-btn" type="button">
+                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+                    Сканировать
+                  </button>
+                  <button class="btn flasher-scan-cancel-btn flasher-scan-pair-btn" id="flasher-scan-cancel-btn" type="button" disabled>
+                    Отмена
+                  </button>
+                </div>
+                <div class="flasher-progress" id="flasher-progress" hidden>
+                  <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
+                  <div class="flasher-progress-label" id="flasher-progress-label">—</div>
+                </div>
+              </div>
+              </div>
 
-          <div class="widget">
-            <div class="widget-title">Скорости</div>
-            <div class="flasher-baud-grid" id="flasher-baudrates">
-              <label class="flasher-baud-chip"><input type="checkbox" value="9600" /><span>9600</span></label>
-              <label class="flasher-baud-chip"><input type="checkbox" value="19200" checked /><span>19200</span></label>
-              <label class="flasher-baud-chip"><input type="checkbox" value="38400" /><span>38400</span></label>
-              <label class="flasher-baud-chip"><input type="checkbox" value="57600" /><span>57600</span></label>
-              <label class="flasher-baud-chip"><input type="checkbox" value="115200" /><span>115200</span></label>
-            </div>
-            <div class="widget-sub flasher-status-text">Можно выбрать сразу несколько скоростей для одного прохода сканирования.</div>
-          </div>
+              <div class="flasher-side-col">
+              <div class="widget">
+                <div class="widget-title">Состояние линии</div>
+                <div class="flasher-badge-stack">
+                  <span class="badge badge-unk" id="flasher-port-badge">Нет данных</span>
+                  <span class="badge badge-unk" id="flasher-poller-badge">Опрос не оценён</span>
+                </div>
+                <div class="widget-sub flasher-status-text flasher-line-hint" id="flasher-port-hint">Выберите порт, чтобы увидеть состояние линии и опроса.</div>
+                <div class="btn-group flasher-port-actions">
+                  <button class="btn btn-sm" id="flasher-release-port-btn" type="button" title="Остановить unit’ы опроса RS-485 (MPLC_STOP_SERVICES)">Остановить опрос</button>
+                  <button class="btn btn-sm" id="flasher-restore-port-btn" type="button" title="Запустить обратно службы, остановленные вручную">Вернуть опрос</button>
+                </div>
+              </div>
 
-          <div class="widget">
-            <div class="widget-title">Сканирование</div>
-            <div class="widget-sub flasher-status-text" id="flasher-scan-summary">Выберите порт и параметры поиска, затем запустите сканирование.</div>
-            <div class="flasher-actions flasher-actions-widget">
-              <button class="btn btn-primary" id="flasher-scan-btn" type="button">
-                <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
-                Сканировать
-              </button>
-              <button class="btn btn-sm" id="flasher-scan-cancel-btn" type="button" disabled>
-                Отмена
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="widget widget-wide" id="flasher-top">
-          <div class="widget-title">Ход операции</div>
-          <div class="flasher-progress" id="flasher-progress" hidden>
-            <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
-            <div class="flasher-progress-label" id="flasher-progress-label">—</div>
-          </div>
-        </div>
-
-        <!-- Таблица найденных устройств -->
-        <div class="widget widget-wide">
-          <div class="widget-title">Найденные устройства RS-485</div>
-          <div class="flasher-table-wrap">
-            <table class="flasher-table" id="flasher-devices-table">
-              <thead>
-                <tr>
-                  <th><input type="checkbox" id="flasher-devices-all" /></th>
-                  <th>Адрес</th>
-                  <th>S/N</th>
-                  <th>Сигнатура</th>
-                  <th>Прошивка</th>
-                  <th>Бутлоадер</th>
-                  <th>Скорость</th>
-                  <th>Прим.</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr><td colspan="8" class="flasher-empty">Нажмите «Сканировать», чтобы найти устройства на выбранной линии RS-485.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- Репозиторий прошивок и действия прошивки -->
-        <div class="flasher-grid">
-          <div class="widget">
-            <div class="widget-title">Репозиторий прошивок</div>
-            <div class="flasher-fw-status" id="flasher-fw-status">—</div>
-            <div class="btn-group" style="margin:8px 0">
-              <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Обновить манифест
-              </button>
-              <label class="btn btn-sm flasher-upload-label">
-                <input type="file" id="flasher-fw-upload" accept=".fw,.bin,.elf" hidden />
-                Загрузить .fw
-              </label>
-            </div>
-            <div class="flasher-fw-list" id="flasher-fw-list">Манифест ещё не загружен</div>
-          </div>
-
-          <div class="widget">
-            <div class="widget-title">Прошивка выбранных устройств</div>
-            <div class="form-row">
-              <label>Прошивка</label>
-              <select id="flasher-fw-select"></select>
-            </div>
-            <div class="form-row">
-              <label class="checkbox-line">
-                <input type="checkbox" id="flasher-use-fast" checked /> Использовать быстрый Modbus (0xFD 0x46)
-              </label>
-            </div>
-            <div class="form-row">
-              <label class="checkbox-line">
-                <input type="checkbox" id="flasher-force-mismatch" /> Разрешить устройство вне списка сигнатур MR/MP-02м (отладка)
-              </label>
-            </div>
-            <div class="btn-group">
-              <button class="btn btn-primary" id="flasher-flash-btn" type="button" disabled>
-                <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                Прошить выбранные
-              </button>
-              <button class="btn btn-sm" id="flasher-flash-cancel-btn" type="button" disabled>Отмена</button>
+              <div class="widget">
+                <div class="widget-title">Прошивка выбранных устройств</div>
+                <div class="flasher-fw-top-actions">
+                  <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button" title="Проверить манифест на сервере">
+                    <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    Проверить
+                  </button>
+                  <label class="btn btn-sm flasher-upload-label" title="Выбрать файл прошивки с устройства">
+                    <input type="file" id="flasher-fw-upload" accept=".fw,.bin,.elf" hidden />
+                    Выбрать .fw
+                  </label>
+                </div>
+                <div class="flasher-fw-list" id="flasher-fw-list">Манифест ещё не загружен</div>
+                <div class="form-row">
+                  <label>Прошивка</label>
+                  <select id="flasher-fw-select"></select>
+                </div>
+                <div class="form-row">
+                  <label class="checkbox-line">
+                    <input type="checkbox" id="flasher-use-fast" checked /> Использовать быстрый Modbus (0xFD 0x46)
+                  </label>
+                </div>
+                <div class="form-row">
+                  <label class="checkbox-line">
+                    <input type="checkbox" id="flasher-force-mismatch" /> Разрешить устройство вне списка сигнатур MR/MP-02м (отладка)
+                  </label>
+                </div>
+                <div class="btn-group">
+                  <button class="btn btn-primary" id="flasher-flash-btn" type="button" disabled>
+                    <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                    Прошить выбранные
+                  </button>
+                  <button class="btn btn-sm" id="flasher-flash-cancel-btn" type="button" disabled>Отмена</button>
+                </div>
+              </div>
+              </div>
             </div>
           </div>
-        </div>
-
-        <!-- Журнал задачи -->
-        <div class="widget widget-wide">
-          <div class="widget-title">Журнал операции</div>
-          <div class="log-box flasher-log-box" id="flasher-log">Ожидание операции…</div>
         </div>
       </div><!-- /tab-flasher -->
 
@@ -668,6 +653,6 @@
 </div><!-- /app -->
 
 <script src="/static/js/app.js?v=1.0.3-12"></script>
-<script src="/static/js/flasher.js?v=1.0.3-5"></script>
+<script src="/static/js/flasher.js?v=1.0.3-10"></script>
 </body>
 </html>

@@ -160,7 +160,7 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
 
     # Финальный снэпшот: перезаписать список устройств из результата scan_all (упорядочено).
     job.devices = [_device_to_dict(d) for d in devices]
-    progress_cb(100, "Сканирование завершено")
+    progress_cb(100, f"Сканирование завершено. Найдено {len(devices)} устройств.")
     log_cb(f"Найдено устройств: {len(devices)}", "info")
 
 
