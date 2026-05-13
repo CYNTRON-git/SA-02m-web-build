@@ -46,13 +46,23 @@ server {
         return 302 /;
     }
 
+    location = /cgi-bin/ssh_debug.cgi {
+        include        fastcgi_params;
+        fastcgi_param  SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param  HTTP_COOKIE     \$http_cookie;
+        fastcgi_connect_timeout 5s;
+        fastcgi_send_timeout    120s;
+        fastcgi_read_timeout    120s;
+        fastcgi_pass   unix:/run/fcgiwrap/fcgiwrap.socket;
+    }
+
     location /cgi-bin/ {
         include        fastcgi_params;
         fastcgi_param  SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param  HTTP_COOKIE     \$http_cookie;
         fastcgi_connect_timeout 2s;
-        fastcgi_send_timeout    8s;
-        fastcgi_read_timeout    8s;
+        fastcgi_send_timeout    20s;
+        fastcgi_read_timeout    20s;
         fastcgi_pass   unix:/run/fcgiwrap/fcgiwrap.socket;
     }
 
@@ -183,6 +193,9 @@ SA02M_GPIO_DO=
 SA02M_GPIO_BEEPER=
 SA02M_GPIO_ALARM_LED=
 SA02M_GPIO_USB_POWER=
+# Питание USB через libgpiod (как gpioset 0 268=1). Очистите LINE, если не используется.
+SA02M_GPIO_USB_GPIOD_CHIP=0
+SA02M_GPIO_USB_GPIOD_LINE=268
 HWCONF
     chmod 644 /etc/sa02m_hw.conf
 fi
@@ -234,6 +247,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/h
     /usr/bin/systemctl restart fix-eth.service, \
     /usr/sbin/i2cget, /usr/bin/i2cget, \
     /usr/sbin/i2cset, /usr/bin/i2cset, \
+    /usr/sbin/gpioset, /usr/bin/gpioset, \
+    /usr/sbin/gpioget, /usr/bin/gpioget, \
     /usr/local/sbin/sa02m-set-storage-auto-format
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www

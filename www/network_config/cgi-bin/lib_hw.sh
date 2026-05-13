@@ -8,6 +8,9 @@ SA02M_GPIO_DO="${SA02M_GPIO_DO:-}"
 SA02M_GPIO_BEEPER="${SA02M_GPIO_BEEPER:-}"
 SA02M_GPIO_ALARM_LED="${SA02M_GPIO_ALARM_LED:-}"
 SA02M_GPIO_USB_POWER="${SA02M_GPIO_USB_POWER:-}"
+# Питание USB через libgpiod (когда линия не в sysfs), например: gpioset 0 268=1
+SA02M_GPIO_USB_GPIOD_CHIP="${SA02M_GPIO_USB_GPIOD_CHIP:-}"
+SA02M_GPIO_USB_GPIOD_LINE="${SA02M_GPIO_USB_GPIOD_LINE:-}"
 
 SA02M_I2C_EXP_BUS="${SA02M_I2C_EXP_BUS:-2}"
 SA02M_I2C_EXP_ADDR="${SA02M_I2C_EXP_ADDR:-0x41}"
@@ -66,6 +69,51 @@ sa02m_hw_gpio_pin() {
     esac
 }
 
+# ── USB power через libgpiod (линия не обязана совпадать с sysfs gpioN), напр. gpioset 0 268=1
+sa02m_hw_usb_power_use_gpiod() {
+    [[ "${SA02M_GPIO_USB_GPIOD_LINE:-}" =~ ^[0-9]+$ ]]
+}
+
+sa02m_hw_usb_gpiod_chip() {
+    printf '%s' "${SA02M_GPIO_USB_GPIOD_CHIP:-0}"
+}
+
+sa02m_hw_usb_gpiod_write() {
+    local val=$1 chip line gs
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    [[ "$line" =~ ^[0-9]+$ ]] || return 1
+    [ "$val" = "0" ] || [ "$val" = "1" ] || return 1
+    gs=$(command -v gpioset 2>/dev/null) || return 1
+    if "$gs" -h 2>&1 | grep -q -- '-m'; then
+        sa02m_hw_timeout_run sudo -n "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
+        sa02m_hw_timeout_run sudo "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
+    fi
+    sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${val}" 2>/dev/null && return 0
+    sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${val}" 2>/dev/null && return 0
+    return 1
+}
+
+sa02m_hw_usb_gpiod_read() {
+    local chip line gg v
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    [[ "$line" =~ ^[0-9]+$ ]] || { echo -1; return; }
+    gg=$(command -v gpioget 2>/dev/null) || { echo -1; return; }
+    v=$(sa02m_hw_timeout_run sudo -n "$gg" "$chip" "$line" 2>/dev/null) \
+        || v=$(sa02m_hw_timeout_run sudo "$gg" "$chip" "$line" 2>/dev/null) \
+        || { echo -1; return; }
+    v=$(printf '%s' "$v" | tr -d '\r\n\t ')
+    case "$v" in
+        0|1) printf '%s\n' "$v" ; return 0 ;;
+    esac
+    if [[ "$v" =~ (^|.*[=:])([01])($|[^0-9].*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    echo -1
+}
+
 sa02m_hw_i2c_channel_bit() {
     case "$1" in
         do)        printf '%s' "${SA02M_I2C_BIT_DO:-}" ;;
@@ -117,6 +165,11 @@ sa02m_hw_i2c_default_output_dec() {
 sa02m_hw_channel_available() {
     if [ "$(sa02m_hw_backend)" = "disabled" ]; then
         return 1
+    fi
+
+    if [ "$1" = "usb_power" ] && sa02m_hw_usb_power_use_gpiod; then
+        command -v gpioset >/dev/null 2>&1 || return 1
+        return 0
     fi
 
     if sa02m_hw_use_i2c; then
@@ -298,6 +351,10 @@ sa02m_hw_i2c_write_channel_locked() {
 
 sa02m_hw_i2c_write_channel() {
     local channel=$1 logical=$2
+    if [ "$channel" = "usb_power" ] && sa02m_hw_usb_power_use_gpiod; then
+        sa02m_hw_usb_gpiod_write "$logical"
+        return $?
+    fi
     if sa02m_hw_i2c_owner_active; then
         return "$SA02M_HW_RC_BUSY"
     fi
@@ -351,6 +408,10 @@ sa02m_hw_gpio_export_out() {
 
 sa02m_hw_gpio_write_channel() {
     local channel=$1 logical=$2 pin
+    if [ "$channel" = "usb_power" ] && sa02m_hw_usb_power_use_gpiod; then
+        sa02m_hw_usb_gpiod_write "$logical"
+        return $?
+    fi
     pin=$(sa02m_hw_gpio_pin "$channel") || return 1
     [[ "$pin" =~ ^[0-9]+$ ]] || return 1
     sa02m_hw_gpio_export_out "$pin" || return 1
@@ -396,7 +457,9 @@ sa02m_hw_collect_metrics() {
                 (( PIN_DO )) && HW_DO=$(sa02m_hw_channel_logical_from_reg do "$reg")
                 (( PIN_BEEP )) && HW_BEEP=$(sa02m_hw_channel_logical_from_reg beeper "$reg")
                 (( PIN_LED )) && HW_LED=$(sa02m_hw_channel_logical_from_reg alarm_led "$reg")
-                (( PIN_USB )) && HW_USB=$(sa02m_hw_channel_logical_from_reg usb_power "$reg")
+                if (( PIN_USB )) && ! sa02m_hw_usb_power_use_gpiod; then
+                    HW_USB=$(sa02m_hw_channel_logical_from_reg usb_power "$reg")
+                fi
                 ;;
             "$SA02M_HW_RC_BUSY"|"$SA02M_HW_RC_TIMEOUT")
                 HW_I2C_BUSY=1
@@ -405,16 +468,29 @@ sa02m_hw_collect_metrics() {
                 HW_I2C_EXP_ABS=1
                 ;;
         esac
+        if (( PIN_USB )) && sa02m_hw_usb_power_use_gpiod; then
+            HW_USB=$(sa02m_hw_usb_gpiod_read)
+        fi
         return 0
     fi
 
     [[ "${SA02M_GPIO_DO:-}" =~ ^[0-9]+$ ]] && PIN_DO=1 && HW_CFG=1
     [[ "${SA02M_GPIO_BEEPER:-}" =~ ^[0-9]+$ ]] && PIN_BEEP=1 && HW_CFG=1
     [[ "${SA02M_GPIO_ALARM_LED:-}" =~ ^[0-9]+$ ]] && PIN_LED=1 && HW_CFG=1
-    [[ "${SA02M_GPIO_USB_POWER:-}" =~ ^[0-9]+$ ]] && PIN_USB=1 && HW_CFG=1
+    if sa02m_hw_usb_power_use_gpiod; then
+        PIN_USB=1
+        HW_CFG=1
+    elif [[ "${SA02M_GPIO_USB_POWER:-}" =~ ^[0-9]+$ ]]; then
+        PIN_USB=1
+        HW_CFG=1
+    fi
 
     HW_DO=$(sa02m_hw_gpio_state "${SA02M_GPIO_DO:-}")
     HW_BEEP=$(sa02m_hw_gpio_state "${SA02M_GPIO_BEEPER:-}")
     HW_LED=$(sa02m_hw_gpio_state "${SA02M_GPIO_ALARM_LED:-}")
-    HW_USB=$(sa02m_hw_gpio_state "${SA02M_GPIO_USB_POWER:-}")
+    if sa02m_hw_usb_power_use_gpiod; then
+        HW_USB=$(sa02m_hw_usb_gpiod_read)
+    else
+        HW_USB=$(sa02m_hw_gpio_state "${SA02M_GPIO_USB_POWER:-}")
+    fi
 }

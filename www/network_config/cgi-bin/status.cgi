@@ -49,6 +49,10 @@ STATUS_BLOCKS_CONF="${STATUS_BLOCKS_CONF:-/etc/sa02m_status_blocks.conf}"
 
 CACHE_DIR="/tmp/sa02m_status_cache"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
+# Свежие метрики железа после POST hw_set.cgi (иначе 3 с main.json затирает UI).
+if [[ "${QUERY_STRING:-}" == *part=main* ]] && [[ "${QUERY_STRING:-}" == *no_cache=1* ]]; then
+    rm -f "${CACHE_DIR}/main.json" "${CACHE_DIR}/main.json.lock" 2>/dev/null || true
+fi
 OPTIONAL_SVCS_JSON="[]"
 SVC_NGINX_UPTIME_S=0
 SVC_FCGIWRAP_UPTIME_S=0
