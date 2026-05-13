@@ -1449,10 +1449,15 @@ tail -f /var/log/fix-eth.log
 
 ## Обновление
 
+Скрипт `scripts/update-www-only.sh` копирует `www/network_config` в `/var/www/network_config` и при запуске из git-корня записывает `/var/lib/sa02m-web-build/deployed_commit` (для сравнения с GitHub во вкладке **Управление** и по таймеру `sa02m-web-update-check.timer`, раз в час).
+
 ```bash
 # Обновить только веб-файлы без переконфигурации системы
-cd /tmp/SA-02m-web-build
+cd /tmp/SA-02m-web-build   # или каталог клона репозитория
 git pull
+sudo bash scripts/update-www-only.sh
+
+# Устаревший вариант вручную (предпочтительно update-www-only.sh)
 sudo cp -r www/network_config/* /var/www/network_config/
 sudo chmod +x /var/www/network_config/cgi-bin/*.cgi
 sudo systemctl reload nginx

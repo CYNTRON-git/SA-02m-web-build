@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.3.6';
 
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
@@ -29,6 +29,7 @@ function initNav() {
       if (tab === 'system') {
         loadLog();
         fetchSystemWidget();
+        loadWebUpdateStatus();
       }
       if (tab === 'network' || tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
@@ -810,6 +811,85 @@ function fetchLoadWidget() {
 
 function fetchSystemWidget() {
   fetchMainBundle();
+}
+
+function shortGitSha(sha) {
+  if (sha == null || typeof sha !== 'string') return '—';
+  const s = sha.trim();
+  if (!s) return '—';
+  return s.length <= 7 ? s : s.slice(0, 7);
+}
+
+function applyWebUpdateCheckUI(j) {
+  if (j && j.error === 'unauthorized') return;
+  setText('web-upd-deployed', shortGitSha(j.deployed_commit));
+  setText('web-upd-remote', shortGitSha(j.remote_commit));
+  setText('web-upd-checked', j.checked_at || '—');
+  const st = document.getElementById('web-upd-status');
+  if (!st) return;
+  st.classList.remove('is-ok', 'is-warn', 'is-err');
+  const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
+  if (emsg && !j.remote_commit) {
+    st.textContent = 'Не удалось узнать состояние на GitHub (' + emsg + ').';
+    st.classList.add('is-err');
+  } else if (j.update_available === true) {
+    st.textContent = 'Доступно обновление на GitHub (ветка ' + (j.branch || 'main') + ').';
+    st.classList.add('is-warn');
+  } else if (j.update_available === false) {
+    st.textContent = 'Совпадает с веткой на GitHub.';
+    st.classList.add('is-ok');
+  } else if (emsg) {
+    st.textContent = emsg;
+    st.classList.add('is-err');
+  } else {
+    st.textContent = 'Коммит на устройстве неизвестен — после деплоя из git выполните update-www-only.sh или install.';
+    st.classList.remove('is-ok', 'is-warn', 'is-err');
+  }
+}
+
+function loadWebUpdateStatus() {
+  fetchWithTimeout('/cgi-bin/web_update_check.cgi', {
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.json(); })
+    .then(applyWebUpdateCheckUI)
+    .catch(function () { /* вкладка открыта без бэкенда */ });
+}
+
+function checkWebUpdatesManual() {
+  const btn = document.getElementById('web-upd-check-btn');
+  if (btn) btn.disabled = true;
+  fetchWithTimeout('/cgi-bin/web_update_check.cgi?force=1', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 25000)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      applyWebUpdateCheckUI(j);
+      if (j.error === 'unauthorized') {
+        toast('Сессия истекла', 'error');
+      } else if (j.error && j.error !== 'no_cache_yet' && !j.remote_commit) {
+        toast('Проверка не удалась: ' + j.error, 'error');
+      } else if (j.update_available === true) {
+        toast('Доступно обновление на GitHub', 'info');
+      } else if (j.update_available === false) {
+        toast('Актуальная версия ветки', 'success');
+      } else {
+        toast('Проверка выполнена', 'info');
+      }
+    })
+    .catch(function (e) {
+      if (e && e.name === 'AbortError') {
+        toast('Таймаут — повторите', 'error');
+      } else {
+        toast('Нет связи с сервером', 'error');
+      }
+    })
+    .finally(function () {
+      if (btn) btn.disabled = false;
+    });
 }
 
 function fetchServicesWidget() {

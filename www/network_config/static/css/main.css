@@ -1320,6 +1320,21 @@ svg .gauge-num {
 .form-row label { font-size: .78rem; color: var(--text-sec); }
 .checkbox-line { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
 
+.web-upd-status { margin-top: 10px; font-size: .82rem; line-height: 1.35; min-height: 1.35em; }
+.web-upd-status.is-ok   { color: #248a3d; }
+.web-upd-status.is-warn { color: #f0b429; }
+.web-upd-status.is-err  { color: #ff6b6b; }
+.web-upd-meta {
+  margin: 12px 0 0;
+  display: grid;
+  gap: 6px 12px;
+  font-size: .78rem;
+  color: var(--text-sec);
+}
+.web-upd-meta > div { display: grid; grid-template-columns: 7.5rem 1fr; gap: 8px; align-items: baseline; }
+.web-upd-meta dt { margin: 0; font-weight: 500; color: var(--text-sec); }
+.web-upd-meta dd { margin: 0; word-break: break-all; }
+
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .rs485-grid { grid-template-columns: repeat(3, 1fr); }
