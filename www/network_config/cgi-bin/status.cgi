@@ -227,6 +227,24 @@ port_is_listening() {
     ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR==1{found=1} END{exit(found?0:1)}'
 }
 
+# Аптайн по процессам, подобранным pgrep -f (для Node-RED и др.).
+proc_uptime_seconds_by_pgrep_f() {
+    local pattern=$1 pid best=0 boot_j clock_hz proc_start up
+    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+    case "$pattern" in *\'*|*\"*) echo 0; return ;; esac
+    while IFS= read -r pid; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -r "/proc/${pid}/stat" ] || continue
+        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        proc_start=$(( boot_j / clock_hz ))
+        up=$(( UPTIME_SEC - proc_start ))
+        (( up < 0 )) && up=0
+        (( up > best )) && best=$up
+    done < <(pgrep -f "$pattern" 2>/dev/null || true)
+    echo "$best"
+}
+
 proc_uptime_seconds_by_name() {
     local name=$1 pid best=0 boot_j clock_hz proc_start up
     command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
@@ -273,6 +291,20 @@ fast_service_state() {
                 echo inactive
             fi
             ;;
+        klogic|klogic.service|klogicd|klogicd.service)
+            if proc_is_running klogic || proc_is_running klogicd; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
+        node-red|node-red.service|nodered|nodered.service)
+            if port_is_listening 1880 || pgrep -f '[n]ode-red' >/dev/null 2>&1 || pgrep -f 'node_red' >/dev/null 2>&1; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
         *)
             svc_is_active "$1"
             ;;
@@ -289,6 +321,20 @@ fast_service_uptime() {
             local up
             up=$(proc_uptime_seconds_by_name mplc4)
             (( up == 0 )) && up=$(proc_uptime_seconds_by_name mplc_monitor)
+            echo "$up"
+            ;;
+        klogic|klogic.service|klogicd|klogicd.service)
+            local up up2
+            up=$(proc_uptime_seconds_by_name klogicd)
+            up2=$(proc_uptime_seconds_by_name klogic)
+            (( up2 > up )) && up=$up2
+            echo "$up"
+            ;;
+        node-red|node-red.service|nodered|nodered.service)
+            local up=0 u2
+            up=$(proc_uptime_seconds_by_pgrep_f '[n]ode-red')
+            u2=$(proc_uptime_seconds_by_pgrep_f 'node_red')
+            (( u2 > up )) && up=$u2
             echo "$up"
             ;;
         *) unit_uptime_seconds "$1" ;;
@@ -374,6 +420,66 @@ gather_optional_platform_services() {
         parts="${parts}${sep}{\"id\":\"${id_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
         sep=,
     done
+    [ -n "$parts" ] && OPTIONAL_SVCS_JSON="[${parts}]" || OPTIONAL_SVCS_JSON="[]"
+}
+
+# MPLC4 в UI (mplc_status / mplc_unit). Сюда — только службы,
+# которые не дублируют её: KLogic и Node-RED при наличии unit-файла (в т.ч. неактивны).
+systemd_unit_file_installed() {
+    local bn=$1
+    case "$bn" in
+        *.service|*.socket) ;;
+        *) bn="${bn}.service" ;;
+    esac
+    local d
+    for d in /lib/systemd/system /usr/lib/systemd/system /etc/systemd/system; do
+        [ -f "$d/$bn" ] && return 0
+    done
+    return 1
+}
+
+gather_important_optional_services_json() {
+    OPTIONAL_SVCS_JSON="[]"
+    local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw
+
+    u=""
+    if systemd_unit_file_installed klogicd.service; then
+        u="klogicd.service"
+    elif systemd_unit_file_installed klogic.service; then
+        u="klogic.service"
+    fi
+    if [ -n "$u" ]; then
+        st_raw=$(fast_service_state "$u")
+        up_sec=$(fast_service_uptime "$u")
+        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        id_disp=$(unit_display_id "$u")
+        id_esc=$(json_escape "$id_disp")
+        st_esc=$(json_escape "$st_raw")
+        label_raw="KLogic"
+        label_esc=$(json_escape "$label_raw")
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        sep=,
+    fi
+
+    u=""
+    if systemd_unit_file_installed node-red.service; then
+        u="node-red.service"
+    elif systemd_unit_file_installed nodered.service; then
+        u="nodered.service"
+    fi
+    if [ -n "$u" ]; then
+        st_raw=$(fast_service_state "$u")
+        up_sec=$(fast_service_uptime "$u")
+        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        id_disp=$(unit_display_id "$u")
+        id_esc=$(json_escape "$id_disp")
+        st_esc=$(json_escape "$st_raw")
+        label_raw="Node-RED"
+        label_esc=$(json_escape "$label_raw")
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        sep=,
+    fi
+
     [ -n "$parts" ] && OPTIONAL_SVCS_JSON="[${parts}]" || OPTIONAL_SVCS_JSON="[]"
 }
 
@@ -908,11 +1014,35 @@ gather_services_metrics() {
         fi
     fi
 
+    # Опрос остановлен, но unit в образе есть — иначе виджет «Службы» скрывает строку (нет mplc_unit и не active).
+    if [ -z "$MPLC_UNIT_RAW" ] && [ "$MPLC_STATUS" != "active" ]; then
+        local tryfile
+        for tryfile in \
+            /lib/systemd/system/mplc4.service \
+            /usr/lib/systemd/system/mplc4.service \
+            /etc/systemd/system/mplc4.service; do
+            if [ -f "$tryfile" ]; then
+                MPLC_UNIT_RAW="mplc4.service"
+                break
+            fi
+        done
+    fi
+    if [ -z "$MPLC_UNIT_RAW" ] && [ "$MPLC_STATUS" != "active" ]; then
+        for tryfile in \
+            /lib/systemd/system/mplc.service \
+            /usr/lib/systemd/system/mplc.service \
+            /etc/systemd/system/mplc.service; do
+            if [ -f "$tryfile" ]; then
+                MPLC_UNIT_RAW="mplc.service"
+                break
+            fi
+        done
+    fi
+
     MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
-    # На рабочих платах systemctl может отвечать с большими задержками из-за
-    # зависших device jobs. Не строим optional_services через systemctl, чтобы
-    # не валить весь services endpoint в 504.
-    OPTIONAL_SVCS_JSON="[]"
+    # KLogic / Node-RED в optional_services только при установленном unit-файле;
+    # активность — fast_service_state (без systemctl show, чтобы не зависать на dbus).
+    gather_important_optional_services_json
 
     SVC_NGINX=$(json_escape "$SVC_NGINX")
     SVC_FCGI=$(json_escape "$SVC_FCGI")

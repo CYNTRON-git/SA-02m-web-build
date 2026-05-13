@@ -100,7 +100,7 @@ unit_state() {
             fi
             ;;
         *)
-            timeout_run 2 systemctl is-active "$1" 2>/dev/null || echo unknown
+            timeout_run 15 systemctl is-active "$1" 2>/dev/null || echo unknown
             ;;
     esac
 }

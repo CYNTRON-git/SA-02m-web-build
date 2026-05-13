@@ -64,6 +64,11 @@ SUDO
 www-data ALL=(ALL) NOPASSWD: /usr/sbin/gpioset, /usr/bin/gpioset, /usr/sbin/gpioget, /usr/bin/gpioget
 SUDO
     fi
+    if ! grep -q '/usr/bin/kill\|/bin/kill' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(ALL) NOPASSWD: /bin/kill, /usr/bin/kill
+SUDO
+    fi
     if ! grep -q '/usr/local/sbin/sa02m-web-update-check' /etc/sudoers.d/sa02m-www; then
         cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
 www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-check

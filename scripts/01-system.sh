@@ -20,6 +20,9 @@ if [ -f "$ETC_REPO/sa02m-ssh-direct.sh" ]; then
     install -m 755 "$ETC_REPO/sa02m-ssh-direct.sh" /usr/local/sbin/sa02m-ssh-direct
     /usr/local/sbin/sa02m-ssh-direct >> "$LOG_FILE" 2>&1 || log WARN "Не удалось перевести SSH в direct service mode"
 fi
+if [ -f "$ETC_REPO/sa02m-dbus-recover.sh" ]; then
+    install -m 755 "$ETC_REPO/sa02m-dbus-recover.sh" /usr/local/sbin/sa02m-dbus-recover
+fi
 
 SERIAL_PROFILE_CONF=/etc/sa02m_serial_profile.conf
 if [ -n "${SA02M_SERIAL_PROFILE:-}" ]; then
@@ -29,6 +32,24 @@ if [ -n "${SA02M_SERIAL_PROFILE:-}" ]; then
 elif [ ! -f "$SERIAL_PROFILE_CONF" ] && [ -f "$ETC_REPO/sa02m_serial_profile.conf" ]; then
     install -m 644 "$ETC_REPO/sa02m_serial_profile.conf" "$SERIAL_PROFILE_CONF"
     log INFO "Установлен шаблон $SERIAL_PROFILE_CONF"
+fi
+
+# ── Удаление хвостов Node-RED в /etc/systemd (не входит в состав СА-02м) ────
+# Оставляем unit из пакета в /lib или /usr/lib — удаляем только переопределения в /etc.
+NR_STALE="node-red.service nodered.service"
+for NR_U in $NR_STALE; do
+    NR_PATH="/etc/systemd/system/$NR_U"
+    if [ -f "$NR_PATH" ] || [ -L "$NR_PATH" ]; then
+        log INFO "Удаление устаревшего unit Node-RED: $NR_PATH"
+        sa02m_systemctl stop "$NR_U" 2>/dev/null || true
+        sa02m_systemctl disable "$NR_U" 2>/dev/null || true
+        rm -f "$NR_PATH"
+    fi
+    rm -rf "/etc/systemd/system/${NR_U}.d" 2>/dev/null || true
+done
+if command -v systemctl >/dev/null 2>&1; then
+    sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl reset-failed >> "$LOG_FILE" 2>&1 || true
 fi
 
 # ── Required packages ──────────────────────────────────────────────────────

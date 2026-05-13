@@ -219,6 +219,8 @@ SA02M_GPIO_BEEPER=
 SA02M_GPIO_ALARM_LED=
 SA02M_GPIO_USB_POWER=
 # Питание USB через libgpiod (как gpioset 0 268=1). Очистите LINE, если не используется.
+# 1 = инвертировать опрос для UI (сырой 0 → отображение «ВКЛ»); запись 1/0 на линию без инверсии.
+SA02M_USB_POWER_INVERT=1
 SA02M_GPIO_USB_GPIOD_CHIP=0
 SA02M_GPIO_USB_GPIOD_LINE=268
 HWCONF
@@ -275,6 +277,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/h
     /usr/sbin/i2cset, /usr/bin/i2cset, \
     /usr/sbin/gpioset, /usr/bin/gpioset, \
     /usr/sbin/gpioget, /usr/bin/gpioget, \
+    /bin/kill, /usr/bin/kill, \
     /usr/local/sbin/sa02m-set-storage-auto-format, \
     /usr/local/sbin/sa02m-web-update-check
 SUDO

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.16">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.18">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -259,9 +259,8 @@
               <div class="hw-item">
                 <div class="hw-item-title">Питание USB</div>
                 <div class="hw-item-body">
-                  <div class="hw-btns" data-hw-ch="usb_power">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('usb_power',0)">Выкл</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('usb_power',1)">Вкл</button>
+                  <div class="hw-btns hw-btns-usb" data-hw-ch="usb_power" title="Удержание: питание USB отключено (уровень 0); отпускание — снова включено (1)">
+                    <button type="button" class="btn btn-sm btn-warn" id="hw-usb-reset-btn">Сброс</button>
                   </div>
                   <div class="hw-status-line">
                     <span class="hw-status-label">Состояние:</span>
@@ -421,8 +420,7 @@
           <p>Службы, перезагрузка и журнал событий</p>
         </div>
 
-        <div class="system-manage-layout">
-          <div class="system-manage-col system-manage-col-left">
+        <div class="dash-grid system-manage-grid">
             <div class="form-section system-manage-web-creds">
               <h3>Доступ к веб-интерфейсу</h3>
               <p class="field-hint" style="margin-bottom:12px">Смена логина и пароля (файл <span class="mono">/etc/sa02m_web.env</span>).</p>
@@ -448,8 +446,6 @@
                 </div>
               </form>
             </div>
-          </div>
-          <div class="system-manage-col system-manage-col-right">
             <div class="ctrl-card">
               <div class="ctrl-card-main">
                 <h3>Обновления веб-интерфейса</h3>
@@ -493,7 +489,6 @@
                 Перезагрузить
               </button>
             </div>
-          </div>
         </div>
 
         <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал событий</h3>
@@ -661,7 +656,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.16"></script>
+<script src="/static/js/app.js?v=1.0.3.20"></script>
 <script src="/static/js/flasher.js?v=1.0.3-12"></script>
 </body>
 </html>
