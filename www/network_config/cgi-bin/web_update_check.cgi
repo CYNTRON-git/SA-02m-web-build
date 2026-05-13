@@ -32,5 +32,5 @@ echo ""
 if [ -f "$CHECK_JSON" ]; then
   cat "$CHECK_JSON"
 else
-  echo '{"checked_at":null,"remote_commit":null,"deployed_commit":null,"update_available":null,"branch":"main","error":"no_cache_yet"}'
+  echo '{"checked_at":null,"remote_commit":null,"deployed_commit":null,"deployed_label":null,"update_available":null,"branch":"main","error":"no_cache_yet"}'
 fi

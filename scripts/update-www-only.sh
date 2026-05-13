@@ -32,7 +32,18 @@ if mkdir -p "$STATEDIR" 2>/dev/null; then
             chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
         fi
     else
-        log WARN "Нет git в $REPO_ROOT — deployed_commit не обновлён (см. README / sa02m-web-update-check)"
+        log WARN "Нет git в $REPO_ROOT — в deployed_commit записана пометка по APP_VERSION или unknown"
+        appver=""
+        if [ -f "$WWW_DIR/static/js/app.js" ]; then
+            appver=$(sed -n "s/^const APP_VERSION = '\\([^']*\\)'.*/\\1/p" "$WWW_DIR/static/js/app.js" | head -1) || true
+        fi
+        if [ -n "$appver" ]; then
+            printf 'app-%s\n' "$appver" >"$STATEDIR/deployed_commit"
+        else
+            printf '%s\n' unknown >"$STATEDIR/deployed_commit"
+        fi
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$STATEDIR/deployed_at"
+        chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
     fi
 fi
 
@@ -51,6 +62,11 @@ SUDO
     if ! grep -q '/usr/bin/gpioset\|/usr/sbin/gpioset' /etc/sudoers.d/sa02m-www; then
         cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
 www-data ALL=(ALL) NOPASSWD: /usr/sbin/gpioset, /usr/bin/gpioset, /usr/sbin/gpioget, /usr/bin/gpioget
+SUDO
+    fi
+    if ! grep -q '/usr/local/sbin/sa02m-web-update-check' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-check
 SUDO
     fi
     chmod 440 /etc/sudoers.d/sa02m-www

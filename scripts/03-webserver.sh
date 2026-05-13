@@ -166,7 +166,18 @@ if mkdir -p "$STATEDIR" 2>/dev/null; then
             chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
         fi
     else
-        log WARN "Нет git в $REPO_ROOT — deployed_commit не записан"
+        log WARN "Нет git в $REPO_ROOT — в deployed_commit записана пометка по APP_VERSION или unknown"
+        appver=""
+        if [ -f "$WWW_DIR/static/js/app.js" ]; then
+            appver=$(sed -n "s/^const APP_VERSION = '\\([^']*\\)'.*/\\1/p" "$WWW_DIR/static/js/app.js" | head -1) || true
+        fi
+        if [ -n "$appver" ]; then
+            printf 'app-%s\n' "$appver" >"$STATEDIR/deployed_commit"
+        else
+            printf '%s\n' unknown >"$STATEDIR/deployed_commit"
+        fi
+        date -u +%Y-%m-%dT%H:%M:%SZ >"$STATEDIR/deployed_at"
+        chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
     fi
 fi
 
