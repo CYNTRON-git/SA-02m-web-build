@@ -166,7 +166,7 @@ SA02M_HW_BACKEND=disabled
 SA02M_I2C_EXP_BUS=2
 SA02M_I2C_EXP_ADDR=0x41
 SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
-SA02M_I2C_LOCK_WAIT_SEC=0.4
+SA02M_I2C_LOCK_WAIT_SEC=1
 SA02M_I2C_TIMEOUT_SEC=1
 SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
 SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
@@ -210,10 +210,23 @@ if [ -f "$ETC_DIR/sa02m-failure-monitor.service" ]; then
     install -m 644 "$ETC_DIR/sa02m-failure-monitor.service" /etc/systemd/system/sa02m-failure-monitor.service
 fi
 
+# ── util-linux-extra (hwclock) ────────────────────────────────────────────
+if ! command -v hwclock >/dev/null 2>&1; then
+    log INFO "Установка util-linux-extra (hwclock)"
+    apt-get install -y util-linux-extra >> "$LOG_FILE" 2>&1 \
+        || log WARN "util-linux-extra не установлен — rtc_datetime будет недоступен"
+fi
+
+# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) ─────────
+cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
+f /run/lock/sa02m-pca9536.lock 0660 www-data www-data -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
+
 # ── sudoers for www-data ──────────────────────────────────────────────────
 log INFO "Настройка sudoers"
 cat > /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, \
+www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/hwclock, \
     /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, /usr/sbin/reboot, \
     /usr/bin/systemctl reboot, \
     /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \

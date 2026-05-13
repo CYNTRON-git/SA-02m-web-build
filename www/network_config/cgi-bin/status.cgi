@@ -142,120 +142,34 @@ load_serial_map_conf() {
 
 load_serial_map_conf
 
-rtc_hwclock_bin() {
-    local bin
-    for bin in /sbin/hwclock /usr/sbin/hwclock "$(command -v hwclock 2>/dev/null)"; do
-        [ -n "${bin:-}" ] || continue
-        [ -x "$bin" ] || continue
-        printf '%s' "$bin"
+read_rtc_datetime() {
+    local rtc rtc_d rtc_t raw hc
+    # Try kernel sysfs interface first (requires CONFIG_RTC_INTF_SYSFS)
+    for rtc in rtc1 rtc0; do
+        [ -f "/sys/class/rtc/${rtc}/date" ] || continue
+        [ -f "/sys/class/rtc/${rtc}/time" ] || continue
+        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || continue
+        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || continue
+        [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ] || continue
+        printf '%s %s' "$rtc_d" "$rtc_t"
+        return 0
+    done
+    # Fallback: hwclock (util-linux-extra), try rtc1 then rtc0
+    hc=$(command -v hwclock 2>/dev/null)
+    if [ -z "$hc" ] && command -v sudo >/dev/null 2>&1; then
+        hc=/usr/sbin/hwclock
+    fi
+    [ -n "$hc" ] || return 1
+    for rtc in /dev/rtc1 /dev/rtc0 /dev/rtc; do
+        [ -c "$rtc" ] || continue
+        raw=$(timeout 2 "$hc" --show --rtc "$rtc" 2>/dev/null \
+              || timeout 2 sudo -n "$hc" --show --rtc "$rtc" 2>/dev/null) || continue
+        [ -n "$raw" ] || continue
+        # hwclock output: "2025-11-25 22:01:54.123456+04:00" → "2025-11-25 22:01:54"
+        printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n'
         return 0
     done
     return 1
-}
-
-rtc_hwclock_read() {
-    local dev="${1:-}" hw
-    hw=$(rtc_hwclock_bin) || return 1
-    if [ -n "$dev" ]; then
-        status_timeout_run "$hw" -r -f "$dev"
-    else
-        status_timeout_run "$hw" -r
-    fi
-}
-
-rtc_hwclock_sync() {
-    local dev="${1:-}" hw rc
-    hw=$(rtc_hwclock_bin) || return 1
-    if [ -n "$dev" ]; then
-        status_timeout_run "$hw" -s -f "$dev" >/dev/null 2>&1
-        rc=$?
-        if [ $rc -ne 0 ] && command -v sudo >/dev/null 2>&1; then
-            status_timeout_run sudo -n "$hw" -s -f "$dev" >/dev/null 2>&1
-            return $?
-        fi
-        return $rc
-    fi
-    status_timeout_run "$hw" -s >/dev/null 2>&1
-}
-
-rtc_try_attach_ds3231() {
-    local bus new_device delete_device i
-    [ -c /dev/rtc1 ] && return 0
-    # Probe i2c-0..i2c-2: DS3231 bus varies by board revision
-    for bus in 0 1 2; do
-        new_device=/sys/class/i2c-adapter/i2c-${bus}/new_device
-        [ -e "$new_device" ] || continue
-        # Delete stale instantiation before re-adding (idempotent guard)
-        delete_device=/sys/class/i2c-adapter/i2c-${bus}/delete_device
-        if [ -w "$delete_device" ]; then
-            printf '%s\n' 'ds3231 0x68' > "$delete_device" 2>/dev/null || true
-        elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
-            printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$delete_device" >/dev/null 2>&1 || true
-        fi
-        if [ -w "$new_device" ]; then
-            printf '%s\n' 'ds3231 0x68' > "$new_device" 2>/dev/null || true
-        elif command -v sudo >/dev/null 2>&1 && command -v tee >/dev/null 2>&1; then
-            printf '%s\n' 'ds3231 0x68' | status_timeout_run sudo -n tee "$new_device" >/dev/null 2>&1 || true
-        fi
-        [ -c /dev/rtc1 ] && break
-    done
-    [ -c /dev/rtc1 ] || return 1
-    for i in 1 2 3 4 5; do
-        [ -c /dev/rtc1 ] || break
-        rtc_hwclock_sync /dev/rtc1 || true
-        if rtc_hwclock_read /dev/rtc1 >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-    [ -c /dev/rtc1 ]
-}
-
-rtc_sysfs_datetime() {
-    local rtc_dir="" fallback="" name rtc_date rtc_time
-    for name in /sys/class/rtc/rtc*; do
-        [ -d "$name" ] || continue
-        [ -r "$name/date" ] || continue
-        [ -r "$name/time" ] || continue
-        if [ -r "$name/name" ]; then
-            IFS= read -r rtc_dir < "$name/name"
-            case "${rtc_dir:-}" in
-                *pcf8563*|*ds3231*)
-                    rtc_dir=$name
-                    break
-                    ;;
-            esac
-        fi
-        [ -z "$fallback" ] && fallback=$name
-    done
-
-    [ -n "${rtc_dir:-}" ] || rtc_dir=$fallback
-    [ -n "${rtc_dir:-}" ] || return 1
-
-    IFS= read -r rtc_date < "$rtc_dir/date" || return 1
-    IFS= read -r rtc_time < "$rtc_dir/time" || return 1
-    printf '%s %s' "${rtc_date:-}" "${rtc_time:-}"
-}
-
-read_rtc_datetime() {
-    local out=""
-    if out=$(rtc_sysfs_datetime 2>/dev/null); then
-        printf '%s' "$out"
-        return 0
-    fi
-    rtc_try_attach_ds3231 >/dev/null 2>&1 || true
-    if out=$(rtc_sysfs_datetime 2>/dev/null); then
-        printf '%s' "$out"
-        return 0
-    fi
-    out=$(rtc_hwclock_read /dev/rtc1 2>/dev/null | head -1 | tr -d '\r')
-    if [ -n "${out:-}" ]; then
-        printf '%s' "$out"
-        return 0
-    fi
-    out=$(rtc_hwclock_read 2>/dev/null | head -1 | tr -d '\r')
-    [ -n "${out:-}" ] || return 1
-    printf '%s' "$out"
 }
 
 status_block_enabled() {
@@ -288,7 +202,13 @@ gpio_state() {
 }
 
 svc_is_active() {
-    status_timeout_run systemctl is-active "$1" 2>/dev/null
+    local svc=${1%.service}
+    svc=${svc%.socket}
+    if pgrep -x "$svc" >/dev/null 2>&1; then
+        echo active
+    else
+        echo inactive
+    fi
 }
 
 proc_is_running() {
@@ -384,18 +304,10 @@ unit_display_id() {
 # Аптайн unit в секундах (по MainPID и /proc/<pid>/stat); 0 если не активен или не вычислилось.
 # Нужен заранее вызванный gather_uptime_metrics → UPTIME_SEC.
 unit_uptime_seconds() {
-    local unit=$1 pid boot_j clock_hz proc_start up
-    command -v systemctl >/dev/null 2>&1 || { echo 0; return; }
-    status_timeout_run systemctl is-active --quiet "$unit" 2>/dev/null || { echo 0; return; }
-    pid=$(status_timeout_run systemctl show -p MainPID --value "$unit" 2>/dev/null | head -n1 | tr -d '\r')
-    case "$pid" in ''|0) echo 0; return ;; esac
-    [ -r "/proc/${pid}/stat" ] || { echo 0; return; }
-    boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-    clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-    proc_start=$(( boot_j / clock_hz ))
-    up=$(( UPTIME_SEC - proc_start ))
-    (( up < 0 )) && up=0
-    echo "$up"
+    local unit=$1 svc
+    svc=${unit%.service}
+    svc=${svc%.socket}
+    proc_uptime_seconds_by_name "$svc"
 }
 
 # Аптайн по slice (MainPID=0 у mplc4 и др.): берём максимум среди PID в cgroup.procs.
