@@ -1,13 +1,13 @@
 #!/bin/bash
-# Монтирование USB (/media/usb) и microSD на mmcblk3 (/media/sdcard).
+# Монтирование USB (/media/usb) и microSD (mmcblk1 или mmcblk3 → /media/sdcard).
 # Опционально: автоформат в exFAT при пустой ФС или NTFS — см. /etc/sa02m_storage.conf
 
 ACTION=$1
 DEVICE=$2
 
-if [[ $DEVICE == mmcblk3* ]]; then
+if [[ $DEVICE == mmcblk1* || $DEVICE == mmcblk3* ]]; then
   MOUNT_POINT="/media/sdcard"
-  if [[ $DEVICE == mmcblk3 ]]; then
+  if [[ $DEVICE == mmcblk1 || $DEVICE == mmcblk3 ]]; then
     DEV_PATH="/dev/${DEVICE}p1"
   else
     DEV_PATH="/dev/${DEVICE}"
@@ -57,6 +57,11 @@ do_mount() {
   if [ ! -e "${DEV_PATH}" ]; then
     log "Устройство ${DEV_PATH} не найдено"
     return 1
+  fi
+
+  if grep -q " ${MOUNT_POINT} " /proc/mounts 2>/dev/null; then
+    log "${MOUNT_POINT} уже смонтирован — пропуск повторного mount"
+    return 0
   fi
 
   FSTYPE=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)

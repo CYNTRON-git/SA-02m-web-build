@@ -2,6 +2,15 @@
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
 
-# microSD на mmcblk3 (как на типичном образе СА-02м)
+# USB: fallback, если udev не выставил ID_BUS=usb (встречается на части образов/хабов)
+SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="add", ATTR{removable}=="1", RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="remove", ATTR{removable}=="1", RUN+="/bin/systemctl stop storage-mount@%k.service"
+# Некоторые флешки/корпуса помечаются как несъёмные — ориентир на путь устройства к USB
+SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="add", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="remove", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl stop storage-mount@%k.service"
+
+# microSD: на части плат слот — mmcblk1, на других — mmcblk3 (eMMC обычно mmcblk2)
+SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
