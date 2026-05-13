@@ -153,7 +153,12 @@ class JobManager:
             with self._lock:
                 job.state = JobState.RUNNING
                 job.started_ts = time.time()
-            self._emit(job, "status", "info", f"Задача {kind.value} запущена на порту {port}")
+            self._emit(
+                job,
+                "status",
+                "debug" if kind == JobKind.SCAN else "info",
+                f"Задача {kind.value} запущена на порту {port}",
+            )
             try:
                 ctx = self._make_ctx(job, cancel_evt)
                 run_fn(job, ctx)
@@ -161,11 +166,18 @@ class JobManager:
                     if job.state == JobState.RUNNING:
                         job.state = JobState.CANCELLED if cancel_evt.is_set() else JobState.DONE
                         job.finished_ts = time.time()
+                fin_st = job.state
+                if job.kind == JobKind.SCAN and fin_st == JobState.DONE:
+                    fin_lvl: str = "debug"
+                elif fin_st == JobState.DONE:
+                    fin_lvl = "info"
+                else:
+                    fin_lvl = "warn"
                 self._emit(
                     job,
                     "status",
-                    "info" if job.state == JobState.DONE else "warn",
-                    f"Задача завершена: {job.state.value}",
+                    fin_lvl,
+                    f"Задача завершена: {fin_st.value}",
                 )
             except Exception as exc:
                 log.exception("Job %s failed", job_id)

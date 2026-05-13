@@ -61,6 +61,13 @@
   --badge-ok-border: #1e4a1e;
   --badge-err-bg:    #2a0f0f;
   --badge-err-border:#4a1e1e;
+
+  /* Дуги / полосы загрузки: одинаковые в светлой и тёмной теме (не привязаны к --cyan/--green страницы) */
+  --meter-cyan:   #22d3ee;
+  --meter-green:  #32d74b;
+  --meter-yellow: #ffd60a;
+  --meter-red:    #ff453a;
+  --meter-orange: #ff9f0a;
 }
 
 :root,
@@ -114,7 +121,7 @@ html[data-theme="light"] {
   --badge-err-border:#fecaca;
 }
 
-html[data-theme="light"] .gauge-arc-bg { stroke: #d8d8dc !important; }
+html[data-theme="light"] .gauge-arc-bg { stroke: #2a2a2a !important; }
 html[data-theme="light"] .log-box {
   background: #fafafa;
   border-color: var(--border);
@@ -543,17 +550,66 @@ svg .gauge-num {
   transition: box-shadow var(--transition), border-color var(--transition);
 }
 .hw-item:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
-.hw-item-title { font-size: 14px; color: var(--text-sec); margin-bottom: 8px; font-weight: 600; }
-.hw-state {
-  font-size: 15px; font-weight: 700; margin-bottom: 10px;
-  display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill);
-  border: 1px solid transparent;
+.hw-item-title { font-size: 14px; color: var(--text-sec); margin-bottom: 10px; font-weight: 600; }
+.hw-item-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
-.hw-state.on   { background: var(--badge-ok-bg); border-color: var(--badge-ok-border); color: var(--green); }
-.hw-state.off  { background: var(--bg-panel); border-color: var(--border-md); color: var(--text-sec); }
-.hw-state.na   { background: transparent; border-color: transparent; color: var(--text-dim); padding-left: 0; padding-right: 0; }
-.hw-btns       { display: flex; gap: 6px; }
+.hw-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.hw-status-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-left: auto;
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.hw-status-label { font-size: 13px; color: var(--text-sec); white-space: nowrap; }
+.hw-status-val {
+  font-size: 15px; font-weight: 700;
+  min-width: 4.5em;
+  text-align: left;
+}
+.hw-status-val.on  { color: var(--green); }
+.hw-status-val.off { color: var(--text-sec); }
+.hw-status-val.na  { color: var(--text-dim); font-weight: 600; }
+/* Кнопки: подсветка «текущее состояние» — нейтрально; доступное действие — зелёное (вкл) / красное (выкл) */
+.hw-io-btn.hw-io-current {
+  background: var(--bg-panel) !important;
+  color: var(--text-sec) !important;
+  border-color: var(--border-md) !important;
+}
+.hw-io-btn.hw-io-to-on {
+  background: color-mix(in srgb, var(--green) 18%, var(--bg-card)) !important;
+  color: var(--green) !important;
+  border-color: var(--green) !important;
+}
+.hw-io-btn.hw-io-to-off {
+  background: color-mix(in srgb, var(--red) 16%, var(--bg-card)) !important;
+  color: var(--red) !important;
+  border-color: var(--red) !important;
+}
+.hw-io-btn:disabled {
+  opacity: 0.45;
+  filter: grayscale(0.35);
+}
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
+
+/* Предупреждение о таймаутах опроса дашборда (не путать с hw-hint) */
+.dashboard-poll-alert {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: color-mix(in srgb, var(--meter-yellow) 22%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--meter-yellow) 55%, var(--border-md));
+}
 
 /* ── RS-485 cards ────────────────────────────────────────────────────────── */
 .rs485-grid {
@@ -756,6 +812,23 @@ svg .gauge-num {
 .log-err { color: var(--red); }
 .log-warn { color: var(--yellow); }
 
+/* SSH-диагностика: полноэкранный HTML-отчёт в iframe (не через text/plain) */
+.log-box.log-box-ssh-debug {
+  padding: 0;
+  max-height: min(85vh, 720px);
+  line-height: normal;
+  white-space: normal;
+  word-break: normal;
+}
+.log-box.log-box-ssh-debug .ssh-debug-iframe {
+  display: block;
+  width: 100%;
+  height: min(85vh, 720px);
+  min-height: 480px;
+  border: 0;
+  background: #0d1117;
+}
+
 /* ── System control grid ─────────────────────────────────────────────────── */
 .ctrl-grid {
   display: grid;
@@ -806,6 +879,57 @@ svg .gauge-num {
   color: var(--text-sec);
   line-height: 1.45;
   margin: 0;
+}
+
+/* Вкладка «Управление»: слева веб-доступ, справа столбец карточек */
+.system-manage-layout {
+  display: grid;
+  grid-template-columns: auto minmax(240px, 340px);
+  gap: 24px;
+  align-items: start;
+  margin-bottom: 28px;
+}
+.system-manage-col-left .system-manage-web-creds {
+  /* Карточка по ширине содержимого, не на всю ширину окна */
+  justify-self: start;
+  width: fit-content;
+  max-width: 100%;
+  margin-bottom: 0;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  box-sizing: border-box;
+}
+/* Поля на 100% внутри родителя дают нулевой intrinsic width — задаём явную ширину */
+.system-manage-web-creds .field input:not(.toggle),
+.system-manage-web-creds .field select {
+  width: min(320px, 100%);
+  min-width: 0;
+  box-sizing: border-box;
+}
+.system-manage-col-right {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.system-manage-col-right .ctrl-card {
+  min-height: 0;
+}
+@media (max-width: 900px) {
+  .system-manage-layout {
+    grid-template-columns: 1fr;
+  }
+  .system-manage-col-left .system-manage-web-creds {
+    width: 100%;
+    max-width: none;
+    justify-self: stretch;
+  }
+  .system-manage-web-creds .field input:not(.toggle),
+  .system-manage-web-creds .field select {
+    width: 100%;
+  }
 }
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
@@ -997,7 +1121,11 @@ svg .gauge-num {
   gap: 6px;
   color: var(--text);
 }
-.flasher-range input { width: 100%; min-width: 0; }
+.flasher-range input {
+  width: 100%;
+  min-width: 0;
+  text-align: center;
+}
 
 .flasher-baud-grid {
   display: grid;

@@ -34,6 +34,11 @@ if [ -f /etc/sudoers.d/sa02m-www ]; then
 www-data ALL=(ALL) NOPASSWD: /usr/sbin/reboot, /usr/bin/systemctl reboot, /usr/bin/systemctl restart networking.service, /usr/bin/systemctl restart fix-eth.service
 SUDO
     fi
+    if ! grep -q '/usr/bin/gpioset\|/usr/sbin/gpioset' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(ALL) NOPASSWD: /usr/sbin/gpioset, /usr/bin/gpioset, /usr/sbin/gpioget, /usr/bin/gpioget
+SUDO
+    fi
     chmod 440 /etc/sudoers.d/sa02m-www
     visudo -cf /etc/sudoers.d/sa02m-www >/dev/null
 fi

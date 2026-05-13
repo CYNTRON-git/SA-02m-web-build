@@ -159,10 +159,12 @@
       logReset('Последняя задача: ' + (j.kind || '—') + ', порт ' + (j.port || '—') + ', состояние ' + (j.state || '—'));
       evs.forEach(e => {
         if (!e || typeof e.message !== 'string') return;
+        const lv = e.level || 'info';
+        if (lv === 'debug') return;
         if (e.kind === 'log' || e.kind === 'status' || e.kind === 'error') {
-          logAppend(e.message, e.level || 'info');
+          logAppend(e.message, lv);
         } else if (e.kind === 'progress' && e.message) {
-          logAppend(e.message, e.level || 'info');
+          logAppend(e.message, lv);
         }
       });
       if (!evs.length) {
@@ -175,21 +177,6 @@
         logAppend('Не удалось загрузить журнал с сервера: ' + err.message, 'error');
       }
     }
-  }
-
-  function updateScanSummary() {
-    const port = currentPort();
-    const mode = $('flasher-mode');
-    const modeText = mode.options[mode.selectedIndex] ? mode.options[mode.selectedIndex].textContent : '—';
-    const addrMin = parseInt($('flasher-addr-min').value, 10) || 1;
-    const addrMax = parseInt($('flasher-addr-max').value, 10) || 10;
-    const bauds = selectedBaudrates();
-    const parts = [];
-    if (port) parts.push(`${port.label || port.key} (${port.device_path})`);
-    parts.push(modeText);
-    parts.push(`адреса ${addrMin}-${addrMax}`);
-    parts.push(`скорости ${bauds.length ? bauds.join(', ') : 'не выбраны'}`);
-    $('flasher-scan-summary').textContent = parts.join(' · ');
   }
 
   function syncActionButtons() {
@@ -221,7 +208,6 @@
       setBadge('flasher-port-badge', 'Нет данных', 'unk');
       setBadge('flasher-poller-badge', 'Опрос не оценён', 'unk');
       hint.textContent = 'Выберите порт, чтобы увидеть состояние линии и опроса.';
-      updateScanSummary();
       syncActionButtons();
       return;
     }
@@ -253,7 +239,6 @@
     if (!port.exists) bits.push('Устройство порта не найдено в системе.');
     if (!bits.length) bits.push('Линия готова к сканированию и прошивке.');
     hint.textContent = bits.join(' ');
-    updateScanSummary();
     syncActionButtons();
   }
 
@@ -478,7 +463,8 @@
     const es = new EventSource(url);
     es.addEventListener('log', ev => {
       const p = safeParse(ev.data);
-      if (p) logAppend(p.message || '', p.level);
+      if (!p || p.level === 'debug') return;
+      logAppend(p.message || '', p.level);
     });
     es.addEventListener('progress', ev => {
       const p = safeParse(ev.data);
@@ -492,7 +478,8 @@
     });
     es.addEventListener('status', ev => {
       const p = safeParse(ev.data);
-      if (p) logAppend(p.message || '', p.level || 'info');
+      if (!p || p.level === 'debug') return;
+      logAppend(p.message || '', p.level || 'info');
     });
     es.addEventListener('error', ev => {
       const p = safeParse(ev.data);
@@ -500,8 +487,11 @@
     });
     es.addEventListener('end', ev => {
       const p = safeParse(ev.data);
-      logAppend(`Готово: ${p && p.state ? p.state : 'done'}`, p && p.state === 'done' ? 'info' : 'warn');
-      if (handlers && handlers.onEnd) handlers.onEnd(p ? p.state : 'done');
+      const st = p && p.state ? p.state : 'done';
+      if (st !== 'done') {
+        logAppend(`Готово: ${st}`, st === 'cancelled' ? 'warn' : 'warn');
+      }
+      if (handlers && handlers.onEnd) handlers.onEnd(st);
       es.close();
     });
     let errOnce = false;
@@ -714,12 +704,6 @@
     $('flasher-refresh-ports-btn').addEventListener('click', loadPorts);
     $('flasher-release-port-btn').addEventListener('click', releasePortPollers);
     $('flasher-restore-port-btn').addEventListener('click', restorePortPollers);
-    $('flasher-mode').addEventListener('change', updateScanSummary);
-    $('flasher-addr-min').addEventListener('input', updateScanSummary);
-    $('flasher-addr-max').addEventListener('input', updateScanSummary);
-    document.querySelectorAll('#flasher-baudrates input').forEach(el => {
-      el.addEventListener('change', updateScanSummary);
-    });
     $('flasher-scan-btn').addEventListener('click', startScan);
     $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
     $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(false));

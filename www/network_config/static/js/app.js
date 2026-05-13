@@ -91,18 +91,28 @@ function fmtUptimeSvc(s) {
   return s + 'с';
 }
 
-/** Колонка аптайма в строке «Службы»: — если нет данных или 0 с. */
-function setSvcRowUptime(elId, sec) {
-  const el = document.getElementById(elId);
+/** Колонка аптайма в строке «Службы»: при активной службе и 0 с показываем «<1м». */
+function setSvcRowUptime(elOrId, sec, active) {
+  const el = typeof elOrId === 'string' ? document.getElementById(elOrId) : elOrId;
   if (!el) return;
   const s = parseInt(sec, 10);
-  if (!Number.isFinite(s) || s <= 0) {
+  if (!Number.isFinite(s) || s < 0) {
     el.textContent = '—';
     el.removeAttribute('title');
-  } else {
-    el.textContent = fmtUptimeSvc(s);
-    el.title = fmtUptime(s);
+    return;
   }
+  if (s === 0) {
+    if (active) {
+      el.textContent = '<1м';
+      el.removeAttribute('title');
+    } else {
+      el.textContent = '—';
+      el.removeAttribute('title');
+    }
+    return;
+  }
+  el.textContent = fmtUptimeSvc(s);
+  el.title = fmtUptime(s);
 }
 function setText(id, val)  { const e = document.getElementById(id); if (e) e.textContent = val; }
 function setHtml(id, val)  { const e = document.getElementById(id); if (e) e.innerHTML = val; }
@@ -181,10 +191,24 @@ function tempToGaugePct(celsius) {
 }
 
 /* ── Service badge ────────────────────────────────────────────────────────── */
+function normSvcState(v) {
+  return String(v == null ? '' : v).trim().toLowerCase();
+}
+function svcStateIsActive(v) {
+  const s = normSvcState(v);
+  return s === 'active' || s === 'running' || s === 'activating';
+}
+
 function svcBadge(id, state) {
   const el = document.getElementById(id);
   if (!el) return;
-  const ok = state === 'active';
+  const s = normSvcState(state);
+  if (!s || s === 'unknown') {
+    el.textContent = '…';
+    el.className = 'badge badge-unk';
+    return;
+  }
+  const ok = svcStateIsActive(state);
   el.textContent = ok ? 'Активен' : 'Неактивен';
   el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
 }
@@ -194,38 +218,79 @@ function unitUiLabel(name) {
   return String(name || '').replace(/\.(service|socket)$/i, '');
 }
 
-/** Динамические строки: node-red, CODESYS, klogic и др. (если unit есть на образе). */
-function renderOptionalServices(list) {
-  const host = document.getElementById('svc-optional-rows');
+const SVC_WIDGET_MAX_ROWS = 4;
+
+/** Виджет «Службы»: nginx, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 4). Без пустых строк. */
+function renderServicesDynamic(d) {
+  const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
   host.innerHTML = '';
-  if (!Array.isArray(list) || !list.length) return;
-  list.forEach((s, i) => {
-    const id = (s && s.id) ? unitUiLabel(String(s.id)) : '';
-    if (!id) return;
-    const safe = id.replace(/[^a-zA-Z0-9_-]/g, '_');
-    const row = document.createElement('div');
-    row.className = 'svc-row';
-    const nameSpan = document.createElement('span');
-    nameSpan.className = 'name mono';
-    nameSpan.textContent = id;
-    const upSpan = document.createElement('span');
-    upSpan.className = 'svc-uptime mono';
-    const up = parseInt(s.uptime_s, 10);
-    if (!Number.isFinite(up) || up <= 0) {
-      upSpan.textContent = '—';
-    } else {
-      upSpan.textContent = fmtUptimeSvc(up);
-      upSpan.title = fmtUptime(up);
+
+  const rows = [];
+  const seen = new Set();
+
+  function pushRow(label, uptimeS, state, opts) {
+    if (rows.length >= SVC_WIDGET_MAX_ROWS) return false;
+    const lab = String(label || '').trim();
+    if (!lab) return false;
+    const key = lab.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    rows.push({
+      label: lab,
+      uptimeS: uptimeS,
+      state: state,
+      mono: !!(opts && opts.mono),
+      title: opts && opts.title ? String(opts.title) : '',
+      tight: !!(opts && opts.tight)
+    });
+    return true;
+  }
+
+  pushRow('nginx', d.svc_nginx_uptime_s, d.svc_nginx);
+  pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
+
+  const mu = (d.mplc_unit != null && String(d.mplc_unit).trim())
+    ? unitUiLabel(String(d.mplc_unit).trim())
+    : '';
+  const mplcOn = svcStateIsActive(d.mplc_status);
+  if ((mu || mplcOn) && rows.length < SVC_WIDGET_MAX_ROWS) {
+    pushRow(mu || 'опрос RS-485', d.mplc_uptime_s, d.mplc_status, {
+      mono: !!mu,
+      title: 'Служба опроса RS-485 (systemd)',
+      tight: !mu
+    });
+  }
+
+  if (Array.isArray(d.optional_services) && rows.length < SVC_WIDGET_MAX_ROWS) {
+    for (const s of d.optional_services) {
+      if (rows.length >= SVC_WIDGET_MAX_ROWS) break;
+      const id = (s && s.id) ? unitUiLabel(String(s.id)) : '';
+      if (!id) continue;
+      pushRow(id, s.uptime_s, s.status, { mono: true });
     }
+  }
+
+  rows.forEach(function (row, i) {
+    const r = document.createElement('div');
+    r.className = 'svc-row' + (row.tight ? ' svc-row-tight' : '');
+    const name = document.createElement('span');
+    name.className = 'name' + (row.mono ? ' mono' : '');
+    name.textContent = row.label;
+    if (row.title) name.title = row.title;
+    const up = document.createElement('span');
+    up.className = 'svc-uptime mono';
+    const on = svcStateIsActive(row.state);
+    setSvcRowUptime(up, row.uptimeS, on);
     const badge = document.createElement('span');
     badge.className = 'badge badge-unk';
-    badge.id = 'svc-opt-' + safe + '-' + i;
-    row.appendChild(nameSpan);
-    row.appendChild(upSpan);
-    row.appendChild(badge);
-    host.appendChild(row);
-    svcBadge(badge.id, s.status);
+    const bid = 'svc-dyn-' + i;
+    badge.id = bid;
+    r.appendChild(name);
+    r.appendChild(up);
+    r.appendChild(badge);
+    host.appendChild(r);
+    svcBadge(bid, row.state);
   });
 }
 
@@ -245,6 +310,8 @@ const backgroundBusy = {
   hardware: false,
   rs485: false
 };
+/** После hw_set запрашиваем main снова; если предыдущий main ещё в полёте — не терять повтор. */
+let mainBundleRefreshQueued = false;
 const backgroundLoaded = {
   main: false,
   storage: false,
@@ -266,7 +333,8 @@ const statusFailures = {
 const statusPauseUntil = { main: 0, rs485: 0 };
 const STATUS_TIMEOUT_MS = {
   priority: 3000,
-  main: 4500,
+  /** Должен быть ≥ типичного времени status.cgi?part=main (I2C, RTC, сеть) и запас к fastcgi_read_timeout. */
+  main: 14000,
   rs485: 4000
 };
 
@@ -285,16 +353,19 @@ function setStatusPartPause(part, ms) {
 function noteStatusFailure(part, err) {
   statusFailures[part] = (statusFailures[part] || 0) + 1;
   const isTimeout = err && err.name === 'AbortError';
-  if ((part === 'main' || part === 'rs485') && statusFailures[part] >= 2) {
-    setStatusPartPause(part, 60000);
-    if (part === 'main') {
-      const hint = document.getElementById('hw-hint');
-      if (hint) {
-        hint.textContent = isTimeout
-          ? 'ОБНОВЛЕНИЕ ОСНОВНЫХ БЛОКОВ ВРЕМЕННО ОСТАНОВЛЕНО ИЗ-ЗА ТАЙМАУТА'
-          : 'ОБНОВЛЕНИЕ ОСНОВНЫХ БЛОКОВ ВРЕМЕННО ОСТАНОВЛЕНО ИЗ-ЗА ОШИБКИ';
-      }
+  const needPauseMain = part === 'main' && statusFailures[part] >= 5;
+  const needPauseRs = part === 'rs485' && statusFailures[part] >= 3;
+  if (needPauseMain) {
+    setStatusPartPause(part, 25000);
+    const el = document.getElementById('dashboard-poll-alert');
+    if (el) {
+      el.style.display = 'block';
+      el.textContent = isTimeout
+        ? 'Обновление основных виджетов приостановлено: несколько таймаутов ответа status.cgi. Проверьте нагрузку и nginx/fastcgi.'
+        : 'Обновление основных виджетов приостановлено из-за ошибок ответа status.cgi.';
     }
+  } else if (needPauseRs) {
+    setStatusPartPause(part, 25000);
   }
 }
 
@@ -303,13 +374,20 @@ function noteStatusSuccess(part) {
   if (part === 'main' || part === 'rs485') {
     statusPauseUntil[part] = 0;
   }
+  if (part === 'main') {
+    const el = document.getElementById('dashboard-poll-alert');
+    if (el) {
+      el.style.display = 'none';
+      el.textContent = '';
+    }
+  }
 }
 
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 function threshColor(val, warnAt, critAt) {
-  return val >= critAt ? cssVar('--red') : val >= warnAt ? cssVar('--yellow') : cssVar('--cyan');
+  return val >= critAt ? cssVar('--meter-red') : val >= warnAt ? cssVar('--meter-yellow') : cssVar('--meter-cyan');
 }
 
 /** USB / microSD: префикс полей в JSON — usb_* или sd_* */
@@ -375,7 +453,7 @@ function applyPriorityStatus(d) {
     const swapBar = document.getElementById('swap-bar');
     if (swapBar) {
       swapBar.style.width = d.swap_pct + '%';
-      swapBar.style.background = d.swap_pct > 80 ? cssVar('--red') : cssVar('--orange');
+      swapBar.style.background = d.swap_pct > 80 ? cssVar('--meter-red') : cssVar('--meter-orange');
     }
   }
 
@@ -387,7 +465,7 @@ function applyPriorityStatus(d) {
     if (tempArc) {
       tempArc.style.strokeDasharray = arcDash(tempToGaugePct(d.temp_c), arcLen);
       const tc = parseFloat(d.temp_c) || 0;
-      const tempStroke = tc >= 80 ? cssVar('--red') : tc >= 70 ? cssVar('--yellow') : cssVar('--green');
+      const tempStroke = tc >= 80 ? cssVar('--meter-red') : tc >= 70 ? cssVar('--meter-yellow') : cssVar('--meter-green');
       tempArc.style.stroke = tempStroke;
       if (tempHint) {
         tempHint.textContent = tc >= 80
@@ -549,20 +627,7 @@ function setStorageAutoFormat(enabled) {
 }
 
 function applyServicesStatus(d) {
-  svcBadge('svc-nginx',    d.svc_nginx);
-  svcBadge('svc-fcgi',     d.svc_fcgiwrap);
-  svcBadge('svc-mplc',     d.mplc_status);
-  setSvcRowUptime('svc-nginx-uptime', d.svc_nginx_uptime_s);
-  setSvcRowUptime('svc-fcgi-uptime', d.svc_fcgiwrap_uptime_s);
-  const unitEl = document.getElementById('mplc-svc-name');
-  if (unitEl) {
-    const u = (d.mplc_unit !== undefined && d.mplc_unit !== null && String(d.mplc_unit).trim())
-      ? unitUiLabel(String(d.mplc_unit).trim())
-      : '';
-    unitEl.textContent = u || '—';
-  }
-  setSvcRowUptime('mplc-svc-uptime', d.mplc_uptime_s);
-  renderOptionalServices(d.optional_services);
+  renderServicesDynamic(d);
 }
 
 function applyHardwareStatus(d) {
@@ -572,18 +637,16 @@ function applyHardwareStatus(d) {
       hint.textContent = 'ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ';
     } else if (d.hw_i2c_expander_absent === 1) {
       hint.textContent = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
-    } else if (d.hw_backend === 'i2c_expander' && d.hw_configured) {
-      hint.textContent = 'PCA9536 настроен через /etc/sa02m_hw.conf';
     } else if (d.hw_configured) {
       hint.textContent = 'Аппаратные каналы настроены (/etc/sa02m_hw.conf)';
     } else {
       hint.textContent = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
   }
-  setHwRow('hw-do-st',   d.hw_do);
-  setHwRow('hw-beep-st', d.hw_beeper);
-  setHwRow('hw-led-st',  d.hw_alarm_led);
-  setHwRow('hw-usb-st',  d.hw_usb_power);
+  applyHwChannel('hw-do-st', 'do', d.hw_do);
+  applyHwChannel('hw-beep-st', 'beeper', d.hw_beeper);
+  applyHwChannel('hw-led-st', 'alarm_led', d.hw_alarm_led);
+  applyHwChannel('hw-usb-st', 'usb_power', d.hw_usb_power);
   const pin = (k, legacy) => (d[k] !== undefined ? !!d[k] : !!legacy);
   const anyHw = !!d.hw_configured;
   setHwChannelBtns('do',        pin('hw_pin_do', anyHw));
@@ -660,11 +723,22 @@ function applyMainStatusBundle(d) {
   });
 }
 
-function fetchMainBundle() {
-  if (backgroundBusy.main) return;
-  if (isStatusPartPaused('main')) return;
+/** Поколение опроса main: увеличивается после hw_set, чтобы отложенный JSON не затирал UI свежими кнопками. */
+let mainStatusEpoch = 0;
+function bumpMainStatusEpoch() {
+  mainStatusEpoch++;
+}
+
+function fetchMainBundle(force) {
+  if (backgroundBusy.main) {
+    if (force) mainBundleRefreshQueued = true;
+    return;
+  }
+  if (!force && isStatusPartPaused('main')) return;
   backgroundBusy.main = true;
-  fetchWithTimeout('/cgi-bin/status.cgi?part=main', {
+  const epochAtStart = mainStatusEpoch;
+  const mainUrl = '/cgi-bin/status.cgi?part=main' + (force ? '&no_cache=1' : '');
+  fetchWithTimeout(mainUrl, {
     cache: 'no-store',
     credentials: 'same-origin'
   }, statusRequestTimeout('main'))
@@ -673,12 +747,19 @@ function fetchMainBundle() {
       return r.json();
     })
     .then(d => {
+      if (epochAtStart !== mainStatusEpoch) return;
       if (d.error) return;
       applyMainStatusBundle(d);
       noteStatusSuccess('main');
     })
     .catch((e) => { noteStatusFailure('main', e); })
-    .finally(() => { backgroundBusy.main = false; });
+    .finally(() => {
+      backgroundBusy.main = false;
+      if (mainBundleRefreshQueued) {
+        mainBundleRefreshQueued = false;
+        fetchMainBundle(true);
+      }
+    });
 }
 
 function fetchBackgroundPart(part, applyFn) {
@@ -773,18 +854,75 @@ function bootstrapBackgroundWidgets() {
 /* ══════════════════════════════════════════════════════════════════════════
    HW GPIO CONTROL
    ══════════════════════════════════════════════════════════════════════════ */
-function setHwRow(id, v) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  if (v === -1 || v === undefined || v === null) {
-    el.textContent = 'н/д'; el.className = 'hw-state na'; return;
+const HW_STATE_WORDS = {
+  do: ['ВЫКЛ', 'ВКЛ'],
+  beeper: ['Тихо', 'Звук'],
+  alarm_led: ['ВЫКЛ', 'ВКЛ'],
+  usb_power: ['ВЫКЛ', 'ВКЛ'],
+};
+const HW_ST_BY_CH = {
+  do: 'hw-do-st',
+  beeper: 'hw-beep-st',
+  alarm_led: 'hw-led-st',
+  usb_power: 'hw-usb-st',
+};
+
+/** 0/1 для GPIO/I2C в виджетах; строки из JSON и misfetches не ломают подсветку. */
+function hwLogicalFromPayload(v) {
+  if (v === null || v === undefined) return -1;
+  if (v === -1) return -1;
+  if (typeof v === 'string' && v.trim() === '') return -1;
+  const n = Number(v);
+  if (n === 0 || n === 1) return n;
+  return -1;
+}
+
+function syncHwButtonStyles(channel, v) {
+  const nv = hwLogicalFromPayload(v);
+  const wrap = document.querySelector('.hw-btns[data-hw-ch="' + channel + '"]');
+  if (!wrap) return;
+  const b0 = wrap.querySelector('.hw-io-btn[data-hw-val="0"]');
+  const b1 = wrap.querySelector('.hw-io-btn[data-hw-val="1"]');
+  [b0, b1].forEach(function (b) {
+    if (b) {
+      b.classList.remove('hw-io-current', 'hw-io-to-on', 'hw-io-to-off');
+    }
+  });
+  if (nv === -1) {
+    if (b0) b0.classList.add('hw-io-current');
+    if (b1) b1.classList.add('hw-io-current');
+    return;
   }
-  el.textContent = v ? 'ВКЛ' : 'ВЫКЛ';
-  el.className = 'hw-state ' + (v ? 'on' : 'off');
+  if (nv) {
+    if (b0) b0.classList.add('hw-io-to-off');
+    if (b1) b1.classList.add('hw-io-current');
+  } else {
+    if (b0) b0.classList.add('hw-io-current');
+    if (b1) b1.classList.add('hw-io-to-on');
+  }
+}
+
+function applyHwChannel(stId, channel, v) {
+  const nv = hwLogicalFromPayload(v);
+  const el = document.getElementById(stId);
+  const words = HW_STATE_WORDS[channel] || ['ВЫКЛ', 'ВКЛ'];
+  if (!el) {
+    syncHwButtonStyles(channel, nv);
+    return;
+  }
+  if (nv === -1) {
+    el.textContent = 'н/д';
+    el.className = 'hw-status-val na';
+    syncHwButtonStyles(channel, -1);
+    return;
+  }
+  el.textContent = nv ? words[1] : words[0];
+  el.className = 'hw-status-val ' + (nv ? 'on' : 'off');
+  syncHwButtonStyles(channel, nv);
 }
 
 function setHwChannelBtns(channel, enabled) {
-  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] .btn').forEach(b => {
+  document.querySelectorAll('.hw-btns[data-hw-ch="' + channel + '"] .hw-io-btn').forEach(function (b) {
     b.disabled = !enabled;
   });
 }
@@ -798,7 +936,18 @@ function setHw(channel, value) {
   })
     .then(r => r.json())
     .then(j => {
-      if (j.ok) { fetchStatus(); toast('Применено', 'success'); }
+      if (j.ok) {
+        const stId = HW_ST_BY_CH[channel];
+        let vApplied = j.value;
+        if (typeof vApplied !== 'number') vApplied = parseInt(String(j.value), 10);
+        if (!Number.isFinite(vApplied)) vApplied = parseInt(String(value), 10);
+        if (stId && (vApplied === 0 || vApplied === 1)) {
+          applyHwChannel(stId, channel, vApplied);
+        }
+        bumpMainStatusEpoch();
+        fetchMainBundle(true);
+        toast('Применено', 'success');
+      }
       else if (j.error === 'gpio_not_configured') toast('Канал не настроен в /etc/sa02m_hw.conf', 'error');
       else if (j.error === 'i2c_busy') toast('Шина I2C занята другой службой', 'error');
       else if (j.error === 'i2c_tools_missing') toast('На устройстве нет i2c-tools', 'error');
@@ -862,6 +1011,53 @@ function renderRs485(ports) {
    ══════════════════════════════════════════════════════════════════════════ */
 let configLoaded = false;
 
+function browserIanaTz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Выставить f-tz: сначала таймзона с устройства (если есть), иначе — текущий пояс браузера (ПК).
+ * Неизвестные IANA добавляются в список option, чтобы значение можно было применить.
+ */
+function timeZoneSelectApplyFromDeviceOrBrowser(tzSel, deviceTzRaw) {
+  if (!tzSel) return;
+  const inList = function (tz) {
+    return !!tz && Array.from(tzSel.options).some(function (o) { return o.value === tz; });
+  };
+  const ensureOpt = function (value, label) {
+    if (!value || inList(value)) return;
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label || value;
+    tzSel.appendChild(o);
+  };
+
+  const deviceTz = deviceTzRaw != null ? String(deviceTzRaw).trim() : '';
+  const browserTz = browserIanaTz();
+
+  if (deviceTz) {
+    if (inList(deviceTz)) {
+      tzSel.value = deviceTz;
+      return;
+    }
+    ensureOpt(deviceTz, deviceTz + ' (с устройства)');
+    tzSel.value = deviceTz;
+    return;
+  }
+  if (browserTz) {
+    if (inList(browserTz)) {
+      tzSel.value = browserTz;
+      return;
+    }
+    ensureOpt(browserTz, browserTz + ' (этот ПК)');
+    tzSel.value = browserTz;
+  }
+}
+
 function loadConfig() {
   if (configLoaded) return;
   fetch('/cgi-bin/config.cgi', { cache: 'no-store' })
@@ -886,8 +1082,7 @@ function loadConfig() {
       setVal('f-dns1',  d.eth1?.dns || '');
       toggleEth1Fields();
       /* time */
-      const tzSel = document.getElementById('f-tz');
-      if (tzSel && d.timezone) tzSel.value = d.timezone;
+      timeZoneSelectApplyFromDeviceOrBrowser(document.getElementById('f-tz'), d.timezone);
       if (d.datetime) setVal('f-datetime', d.datetime);
       if (document.getElementById('time-sys-disp'))
         setText('time-sys-disp', d.datetime || '—');
@@ -1033,7 +1228,8 @@ function renderLogText(box, text) {
 function loadLog() {
   const box = document.getElementById('log-box');
   if (!box) return;
-  fetch('/cgi-bin/log.cgi', { cache: 'no-store' })
+  box.classList.remove('log-box-ssh-debug');
+  fetch('/cgi-bin/log.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.text())
     .then(t => renderLogText(box, t))
     .catch(() => { if (box) box.textContent = 'Не удалось загрузить журнал'; });
@@ -1042,11 +1238,33 @@ function loadLog() {
 function loadSshDebug() {
   const box = document.getElementById('log-box');
   if (!box) return;
-  box.textContent = 'Загрузка SSH-диагностики...';
-  fetch('/cgi-bin/ssh_debug.cgi', { cache: 'no-store' })
-    .then(r => r.text())
-    .then(t => renderLogText(box, t))
-    .catch(() => { if (box) box.textContent = 'Не удалось загрузить SSH-диагностику'; });
+  box.classList.remove('log-box-ssh-debug');
+  box.textContent = 'Загрузка SSH-диагностики… (до ~2 мин)';
+  fetch('/cgi-bin/ssh_debug.cgi', { cache: 'no-store', credentials: 'same-origin' })
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    })
+    .then(t => {
+      const trimmed = (t || '').replace(/^\uFEFF/, '');
+      if (/^\s*</.test(trimmed)) {
+        box.classList.add('log-box-ssh-debug');
+        box.replaceChildren();
+        const frame = document.createElement('iframe');
+        frame.className = 'ssh-debug-iframe';
+        frame.title = 'SSH-диагностика';
+        frame.setAttribute('sandbox', 'allow-same-origin');
+        frame.srcdoc = trimmed;
+        box.appendChild(frame);
+      } else {
+        renderLogText(box, t);
+      }
+    })
+    .catch(() => {
+      if (!box) return;
+      box.classList.remove('log-box-ssh-debug');
+      box.textContent = 'Не удалось загрузить SSH-диагностику';
+    });
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1094,14 +1312,6 @@ function fmtLocalDateTimeForDevice(d) {
     pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
 }
 
-function browserIanaTz() {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-  } catch (_) {
-    return '';
-  }
-}
-
 /** @param {boolean} applyNow — если true, сразу POST в apply.cgi */
 function syncTimeFromPC(applyNow) {
   const ft = document.getElementById('time-form');
@@ -1112,7 +1322,13 @@ function syncTimeFromPC(applyNow) {
     if (sel) {
       const known = Array.from(sel.options).some(o => o.value === tz);
       if (known) sel.value = tz;
-      else toast('Часовой пояс ПК (' + tz + ') не в списке — выберите вручную', 'info', 5500);
+      else {
+        const o = document.createElement('option');
+        o.value = tz;
+        o.textContent = tz + ' (этот ПК)';
+        sel.appendChild(o);
+        sel.value = tz;
+      }
     }
   }
   setVal('f-datetime', fmtLocalDateTimeForDevice(new Date()));

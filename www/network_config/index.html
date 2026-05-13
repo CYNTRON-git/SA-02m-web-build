@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3-18">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.14">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -78,6 +78,8 @@
           <h2>Общая информация</h2>
           <p>Состояние системы и интерфейсов в реальном времени</p>
         </div>
+
+        <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
 
         <div class="dash-grid">
 
@@ -165,7 +167,10 @@
             </div>
           </div>
 
-          <!-- Uptime -->
+          <div class="widget widget-svc">
+            <div class="widget-title">Службы</div>
+            <div class="svc-list" id="svc-dynamic-list"></div>
+          </div>
           <div class="widget">
             <div class="widget-title">Uptime</div>
             <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
@@ -207,29 +212,6 @@
             <div class="widget-sub" id="kernel-info" style="margin-top:4px"></div>
           </div>
 
-          <!-- Services -->
-          <div class="widget widget-svc">
-            <div class="widget-title">Службы</div>
-            <div class="svc-list">
-              <div class="svc-row">
-                <span class="name">nginx</span>
-                <span class="svc-uptime mono" id="svc-nginx-uptime">—</span>
-                <span class="badge badge-unk" id="svc-nginx">…</span>
-              </div>
-              <div class="svc-row">
-                <span class="name">fcgiwrap</span>
-                <span class="svc-uptime mono" id="svc-fcgi-uptime">—</span>
-                <span class="badge badge-unk" id="svc-fcgi">…</span>
-              </div>
-              <div id="svc-optional-rows"></div>
-              <div class="svc-row svc-row-tight">
-                <span class="name mono" id="mplc-svc-name" title="Служба опроса RS-485 (systemd)">—</span>
-                <span class="svc-uptime mono" id="mplc-svc-uptime">—</span>
-                <span class="badge badge-unk" id="svc-mplc">…</span>
-              </div>
-            </div>
-          </div>
-
           <!-- HW outputs — full width -->
           <div class="widget dash-full">
             <div class="widget-title">Дискретный выход, USB-питание и индикация</div>
@@ -237,34 +219,54 @@
             <div class="hw-grid">
               <div class="hw-item">
                 <div class="hw-item-title">DO (дискретный выход)</div>
-                <div class="hw-state na" id="hw-do-st">н/д</div>
-                <div class="hw-btns" data-hw-ch="do">
-                  <button class="btn btn-sm btn-danger"  onclick="setHw('do',0)">Выкл</button>
-                  <button class="btn btn-sm btn-success" onclick="setHw('do',1)">Вкл</button>
+                <div class="hw-item-body">
+                  <div class="hw-btns" data-hw-ch="do">
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('do',0)">Выкл</button>
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('do',1)">Вкл</button>
+                  </div>
+                  <div class="hw-status-line">
+                    <span class="hw-status-label">Состояние:</span>
+                    <span class="hw-status-val na" id="hw-do-st">н/д</span>
+                  </div>
                 </div>
               </div>
               <div class="hw-item">
                 <div class="hw-item-title">Пищалка</div>
-                <div class="hw-state na" id="hw-beep-st">н/д</div>
-                <div class="hw-btns" data-hw-ch="beeper">
-                  <button class="btn btn-sm btn-danger"  onclick="setHw('beeper',0)">Тихо</button>
-                  <button class="btn btn-sm btn-success" onclick="setHw('beeper',1)">Звук</button>
+                <div class="hw-item-body">
+                  <div class="hw-btns" data-hw-ch="beeper">
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('beeper',0)">Тихо</button>
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('beeper',1)">Звук</button>
+                  </div>
+                  <div class="hw-status-line">
+                    <span class="hw-status-label">Состояние:</span>
+                    <span class="hw-status-val na" id="hw-beep-st">н/д</span>
+                  </div>
                 </div>
               </div>
               <div class="hw-item">
                 <div class="hw-item-title">Аварийный LED (красный)</div>
-                <div class="hw-state na" id="hw-led-st">н/д</div>
-                <div class="hw-btns" data-hw-ch="alarm_led">
-                  <button class="btn btn-sm btn-danger"  onclick="setHw('alarm_led',0)">Выкл</button>
-                  <button class="btn btn-sm btn-success" onclick="setHw('alarm_led',1)">Вкл</button>
+                <div class="hw-item-body">
+                  <div class="hw-btns" data-hw-ch="alarm_led">
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('alarm_led',0)">Выкл</button>
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('alarm_led',1)">Вкл</button>
+                  </div>
+                  <div class="hw-status-line">
+                    <span class="hw-status-label">Состояние:</span>
+                    <span class="hw-status-val na" id="hw-led-st">н/д</span>
+                  </div>
                 </div>
               </div>
               <div class="hw-item">
-                <div class="hw-item-title">Питание USB (USB_POWER)</div>
-                <div class="hw-state na" id="hw-usb-st">н/д</div>
-                <div class="hw-btns" data-hw-ch="usb_power">
-                  <button class="btn btn-sm btn-danger"  onclick="setHw('usb_power',0)">Выкл</button>
-                  <button class="btn btn-sm btn-success" onclick="setHw('usb_power',1)">Вкл</button>
+                <div class="hw-item-title">Питание USB</div>
+                <div class="hw-item-body">
+                  <div class="hw-btns" data-hw-ch="usb_power">
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('usb_power',0)">Выкл</button>
+                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('usb_power',1)">Вкл</button>
+                  </div>
+                  <div class="hw-status-line">
+                    <span class="hw-status-label">Состояние:</span>
+                    <span class="hw-status-val na" id="hw-usb-st">н/д</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -273,7 +275,6 @@
           <!-- RS-485 — full width -->
           <div class="widget dash-full">
             <div class="widget-title">Интерфейсы RS-485 — активность</div>
-            <div class="text-sec text-sm" style="margin-bottom:8px">TX/RX — накопленные байты с загрузки ОС. Подсветка = изменение за последний опрос.</div>
             <div class="rs485-grid" id="rs485-grid"></div>
           </div>
 
@@ -420,70 +421,66 @@
           <p>Службы, перезагрузка и журнал событий</p>
         </div>
 
-        <div class="ctrl-grid ctrl-grid-actions">
-          <div class="ctrl-card">
-            <div class="ctrl-card-main">
-              <h3>Службы</h3>
-              <p>Перезапустить nginx, fcgiwrap и сеть.<br><br></p>
+        <div class="system-manage-layout">
+          <div class="system-manage-col system-manage-col-left">
+            <div class="form-section system-manage-web-creds">
+              <h3>Доступ к веб-интерфейсу</h3>
+              <p class="field-hint" style="margin-bottom:12px">Смена логина и пароля (файл <span class="mono">/etc/sa02m_web.env</span>).</p>
+              <form id="web-creds-form">
+                <div class="field">
+                  <label for="wc-cur">Текущий пароль</label>
+                  <input id="wc-cur" name="current_password" type="password" required autocomplete="current-password">
+                </div>
+                <div class="field">
+                  <label for="wc-user">Новый логин</label>
+                  <input id="wc-user" name="new_username" type="text" pattern="[a-zA-Z0-9_.-]{1,32}" value="admin" required autocomplete="username">
+                </div>
+                <div class="field">
+                  <label for="wc-p1">Новый пароль</label>
+                  <input id="wc-p1" name="new_password" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
+                </div>
+                <div class="field">
+                  <label for="wc-p2">Повтор пароля</label>
+                  <input id="wc-p2" name="new_password_confirm" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
+                </div>
+                <div class="btn-group">
+                  <button type="submit" class="btn btn-primary">Сохранить</button>
+                </div>
+              </form>
             </div>
-            <button type="button" class="btn btn-warn" onclick="doRestart()">
-              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              Перезапустить
-            </button>
           </div>
-          <div class="ctrl-card">
-            <div class="ctrl-card-main">
-              <h3>Перезагрузка</h3>
-              <p>Полная перезагрузка контроллера. Подключение прервётся на ~30 секунд.</p>
+          <div class="system-manage-col system-manage-col-right">
+            <div class="ctrl-card">
+              <div class="ctrl-card-main">
+                <h3>USB / microSD</h3>
+                <p class="storage-fmt-hint">Автоформат в exFAT при пустой ФС или NTFS (по умолчанию вкл.).</p>
+              </div>
+              <button type="button" class="btn btn-danger" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
+                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
+              </button>
             </div>
-            <button type="button" class="btn btn-danger" onclick="doReboot()">
-              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              Перезагрузить
-            </button>
+            <div class="ctrl-card">
+              <div class="ctrl-card-main">
+                <h3>Службы</h3>
+                <p>Перезапустить nginx, fcgiwrap и сеть.</p>
+              </div>
+              <button type="button" class="btn btn-warn" onclick="doRestart()">
+                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Перезапустить
+              </button>
+            </div>
+            <div class="ctrl-card">
+              <div class="ctrl-card-main">
+                <h3>Перезагрузка</h3>
+                <p>Полная перезагрузка контроллера. Подключение прервётся на ~30 секунд.</p>
+              </div>
+              <button type="button" class="btn btn-danger" onclick="doReboot()">
+                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                Перезагрузить
+              </button>
+            </div>
           </div>
-          <div class="ctrl-card">
-            <div class="ctrl-card-main">
-              <h3>Аппаратная конфигурация</h3>
-              <p>Файл конфигурации каналов:<br><span class="mono text-sm">/etc/sa02m_hw.conf</span></p>
-              <div class="field-hint">SA02M_HW_BACKEND, SA02M_I2C_*, SA02M_GPIO_*</div>
-            </div>
-          </div>
-          <div class="ctrl-card">
-            <div class="ctrl-card-main">
-              <h3>USB / microSD</h3>
-              <p class="storage-fmt-hint">Автоформат в exFAT при пустой ФС или NTFS (по умолчанию вкл.).</p>
-            </div>
-            <button type="button" class="btn btn-danger" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
-              <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-              <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="form-section" style="max-width:560px;margin-bottom:24px">
-          <h3>Доступ к веб-интерфейсу</h3>
-          <p class="field-hint" style="margin-bottom:12px">Смена логина и пароля (файл <span class="mono">/etc/sa02m_web.env</span>).</p>
-          <form id="web-creds-form">
-            <div class="field">
-              <label for="wc-cur">Текущий пароль</label>
-              <input id="wc-cur" name="current_password" type="password" required autocomplete="current-password">
-            </div>
-            <div class="field">
-              <label for="wc-user">Новый логин</label>
-              <input id="wc-user" name="new_username" type="text" pattern="[a-zA-Z0-9_.-]{1,32}" value="admin" required autocomplete="username">
-            </div>
-            <div class="field">
-              <label for="wc-p1">Новый пароль</label>
-              <input id="wc-p1" name="new_password" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
-            </div>
-            <div class="field">
-              <label for="wc-p2">Повтор пароля</label>
-              <input id="wc-p2" name="new_password_confirm" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
-            </div>
-            <div class="btn-group">
-              <button type="submit" class="btn btn-primary">Сохранить</button>
-            </div>
-          </form>
         </div>
 
         <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал событий</h3>
@@ -576,7 +573,6 @@
                     <input type="number" id="flasher-addr-max" value="10" min="1" max="247" />
                   </span>
                 </label>
-                <div class="widget-sub flasher-status-text" id="flasher-scan-summary">Выберите порт и параметры поиска, затем запустите сканирование.</div>
                 <div class="flasher-actions flasher-actions-widget flasher-scan-pair">
                   <button class="btn btn-primary flasher-scan-pair-btn" id="flasher-scan-btn" type="button">
                     <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
@@ -652,7 +648,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3-12"></script>
-<script src="/static/js/flasher.js?v=1.0.3-10"></script>
+<script src="/static/js/app.js?v=1.0.3.15"></script>
+<script src="/static/js/flasher.js?v=1.0.3-12"></script>
 </body>
 </html>

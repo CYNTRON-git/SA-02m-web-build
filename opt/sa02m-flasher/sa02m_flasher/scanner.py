@@ -921,12 +921,10 @@ def _broadcast_probe_bauds(
                     f"[{cfg}] На линии несколько устройств с одним Modbus-адресом (разные серийные по WB-скану); "
                     f"в таблице — отдельная строка на каждую пару (адрес, SN)."
                 )
-            u(f"[{cfg}] быстрый поиск → адреса: {addrs_wb}")
+            # Адреса уже видны по строкам «адр.N опрошен» / таблице — отдельная сводка в UI не нужна.
         else:
-            if tcp_ep is not None:
-                u(f"[{cfg}] TCP: быстрый поиск 0xFD не выполняется (шлюз Modbus TCP)")
-            else:
-                u(f"[{cfg}] быстрый поиск — ответов нет")
+            # При вызове из scan_all в режиме WB tcp_ep всегда None; ветка зарезервирована.
+            pass
         if responses:
             addrs = sorted({item[0] for item in responses})
             v(f"[{cfg}] WB extended: ответы от адресов {addrs}.")
@@ -1189,7 +1187,7 @@ def scan_all(
         )
     else:
         link_desc = port
-    u(f"Поиск устройств, {link_desc}; линии: {cfg_summary}; режим: {scan_mode.value}")
+    v(f"Поиск: {link_desc}; линии: {cfg_summary}; режим: {scan_mode.value}")
 
     run_phase1 = (
         fast_scan
@@ -1205,23 +1203,24 @@ def scan_all(
         flasher_log.close_wb_trace()
 
     if run_phase1:
-        v("Фаза 1. Быстрое сканирование (0xFD 0x46 0x01 по выбранным скоростям и параметрам связи).")
-        u("Фаза 1: быстрый поиск (WB 0xFD 0x46)…")
+        v("Быстрое сканирование WB extended: 0xFD 0x46 0x01 по выбранным скоростям и параметрам связи.")
         wb_file_cb: Optional[Callable[[str], None]] = wb_trace_cb
         if tcp_ep is None and app_dir is not None:
             p = flasher_log.init_wb_trace(app_dir)
             if p is not None:
                 v("Детальный журнал арбитража WB (все TX/RX): %s" % p)
-                u("Полный лог арбитража WB → см. файл выше или строки [WB_ARB] в flasher_log.txt.")
+                v("Полный лог арбитража WB также: строки [WB_ARB] в flasher_log.txt.")
             else:
                 v(
                     "Не удалось создать wb_arbitration_trace.txt (нет прав?) — трассировка WB только в flasher_log.txt с префиксом [WB_ARB]."
                 )
             if wb_file_cb is None:
                 wb_file_cb = flasher_log.append_wb_trace
+        silent_wb_cfgs: List[str] = []
         for cfg in config_order:
             if cancel_cb and cancel_cb():
                 break
+            cfg_label = f"{cfg[0]} {cfg[1]}{cfg[2]}"
             _, _, devices_from_wb = _broadcast_probe_bauds(
                 port,
                 [cfg],
@@ -1235,6 +1234,8 @@ def scan_all(
                 wb_trace_cb=wb_file_cb,
                 bootloader_only=(scan_mode == ScanMode.BOOTLOADER_ONLY),
             )
+            if not devices_from_wb and tcp_ep is None:
+                silent_wb_cfgs.append(cfg_label)
             for d in devices_from_wb:
                 k = device_table_key(d)
                 if k not in seen_keys:
@@ -1246,16 +1247,15 @@ def scan_all(
             if scan_mode == ScanMode.BOOTLOADER_ONLY and any(d.in_bootloader for d in devices_from_wb):
                 v("Режим bootloader: найдено устройство(а) в загрузчике, дальнейшие скорости пропускаем.")
                 break
-        v("Фаза 1: только устройства с поддержкой 0xFD 0x46. Устройства WB (только стандартный Modbus) будут в фазе 2.")
-        u("Фаза 1 завершена. Далее — опрос Modbus по адресам.")
+        v(
+            "Быстрый скан WB: в этой сессии только узлы с 0xFD 0x46; устройства без extended — в режиме «обычный поиск»."
+        )
+        if silent_wb_cfgs and len(devices) == 0:
+            u("Нет ответов WB-скана на линии: %s." % ", ".join(silent_wb_cfgs))
     elif tcp_ep is not None and scan_mode != ScanMode.STANDARD_ONLY:
-        u("TCP: фаза 1 (0xFD) пропущена — используйте опрос по адресам.")
+        u("TCP: расширенный WB-скан 0xFD по этому соединению недоступен — используйте опрос по адресам.")
 
     if not run_phase2:
-        if scan_mode == ScanMode.EXTENDED_ONLY:
-            u("Режим «только extended» — фаза 2 не выполняется.")
-        elif scan_mode == ScanMode.BOOTLOADER_ONLY:
-            u("Режим «только bootloader» — фаза 2 (опрос адресов) отключена.")
         out = list(devices)
         if scan_mode == ScanMode.BOOTLOADER_ONLY:
             out = [d for d in out if d.in_bootloader]
@@ -1270,8 +1270,8 @@ def scan_all(
         )
         return out
 
-    v(f"Фаза 2: опрос адресов {addrs_order[0]}..{addrs_order[-1]} (по порядку).")
-    u(f"Фаза 2: опрос {num_addrs} адрес(ов)…")
+    v(f"Опрос Modbus по адресам {addrs_order[0]}..{addrs_order[-1]} (по порядку).")
+    u(f"Опрос {num_addrs} адрес(ов) Modbus…")
     for config_idx, (baud, parity, stopbits) in enumerate(config_order):
         if cancel_cb and cancel_cb():
             break
@@ -1290,8 +1290,8 @@ def scan_all(
             n_same_addr = sum(1 for d in devices if d.address == addr)
             if n_same_addr > 1:
                 v(
-                    f"Фаза 2: адрес {addr} пропущен — на линии несколько устройств с этим Modbus-адресом "
-                    f"(опрос выполнен в фазе 1 по WB-скану)."
+                    f"Опрос адресов: {addr} пропущен — на линии несколько устройств с этим Modbus-адресом "
+                    f"(идентификация выполнена по WB-скану)."
                 )
                 _sleep_interruptible(
                     _phase2_gap_between_addresses_s(baud, parity, stopbits),
