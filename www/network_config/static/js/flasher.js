@@ -218,8 +218,6 @@
     const port = currentPort();
     const hint = $('flasher-port-hint');
     if (!port) {
-      $('flasher-port-label').textContent = '—';
-      $('flasher-port-device').textContent = 'Выберите порт для работы с линией';
       setBadge('flasher-port-badge', 'Нет данных', 'unk');
       setBadge('flasher-poller-badge', 'Опрос не оценён', 'unk');
       hint.textContent = 'Выберите порт, чтобы увидеть состояние линии и опроса.';
@@ -227,9 +225,6 @@
       syncActionButtons();
       return;
     }
-
-    $('flasher-port-label').textContent = port.label || port.key;
-    $('flasher-port-device').textContent = port.device_path || '—';
 
     if (!port.exists) setBadge('flasher-port-badge', 'Нет линии', 'err');
     else if (port.active_job) setBadge('flasher-port-badge', 'Задача активна', 'unk');
@@ -243,9 +238,7 @@
 
     const bits = [];
     if (port.active_services && port.active_services.length) {
-      bits.push('Линию сейчас опрашивают: ' + port.active_services.map(unitUiLabel).join(', ') + '. При сканировании опрос будет остановлен автоматически; кнопка «Остановить службы опроса» делает это вручную.');
-    } else if (port.managed_services && port.managed_services.length) {
-      bits.push('Ручная остановка опроса: «Остановить службы опроса» — по списку unit’ов из конфигурации демона (см. active_services / managed_services).');
+      bits.push('Линию сейчас опрашивают: ' + port.active_services.map(unitUiLabel).join(', ') + '. При сканировании опрос будет остановлен автоматически; кнопка «Остановить опрос» делает это вручную.');
     }
     if (port.released_services && port.released_services.length) {
       bits.push('Опрос вручную освобождён: ' + port.released_services.map(unitUiLabel).join(', ') + '.');
@@ -280,13 +273,9 @@
   }
 
   function renderFirmware(data) {
-    const status = $('flasher-fw-status');
-    const updated = data.manifest_updated ? `манифест от ${data.manifest_updated}` : 'манифест не загружен';
-    status.textContent = `${updated}${data.manifest_error ? ' · ошибка: ' + data.manifest_error : ''} · записей: ${(data.entries || []).length}`;
-
     const list = $('flasher-fw-list');
     if (!state.firmware.length) {
-      list.textContent = 'Прошивки не найдены. Обновите манифест или загрузите .fw вручную.';
+      list.textContent = 'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.';
     } else {
       list.innerHTML = '';
       state.firmware.forEach(e => {
@@ -318,7 +307,7 @@
     try {
       const res = await apiPost('/firmware/refresh', { download: !!download });
       if (res.error) toast('Манифест: ' + res.error, 'warn');
-      else toast('Манифест обновлён (записей: ' + res.entries + ')', 'success');
+      else toast('Список прошивок обновлён (записей: ' + res.entries + ')', 'success');
       await loadFirmware();
     } catch (err) {
       toast('Манифест: ' + err.message, 'error');
@@ -415,7 +404,7 @@
     const tbody = $('flasher-devices-table').querySelector('tbody');
     tbody.innerHTML = '';
     if (!state.devices.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="flasher-empty">Устройств не найдено.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="flasher-empty">Устройств не найдено.</td></tr>';
       updateFlashControls();
       return;
     }
@@ -429,7 +418,6 @@
         <td>${escapeHtml(d.app_version || '—')}${firmwareAppUpdateHintForDevice(d)}</td>
         <td>${escapeHtml(d.bootloader_version || '—')}${firmwareBlUpdateHintForDevice(d)}</td>
         <td>${d.baudrate || '—'} ${d.parity || ''}${d.stopbits || ''}</td>
-        <td>${d.in_bootloader ? 'в bootloader' : ''}${d.duplicate_address ? ' dup' : ''}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -470,6 +458,11 @@
 
   function setProgress(pct, message) {
     const wrap = $('flasher-progress');
+    const active = state.scanPending || state.scanJobId || state.flashPending || state.flashJobId;
+    if (!active) {
+      hideProgress();
+      return;
+    }
     wrap.hidden = false;
     $('flasher-progress-fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
     $('flasher-progress-label').textContent = message || `${pct}%`;
@@ -542,9 +535,9 @@
 
     state.devices = [];
     renderDevices();
+    state.scanPending = true;
     logReset('Старт сканирования на ' + port);
     setProgress(0, 'Подготовка порта');
-    state.scanPending = true;
     setScanButtons();
 
     try {
@@ -580,7 +573,7 @@
           await loadPorts();
           if (state2 === 'error') toast('Сканирование завершилось с ошибкой', 'error');
           else if (state2 === 'cancelled') toast('Сканирование отменено', 'warn');
-          else toast('Сканирование завершено: ' + state.devices.length + ' устройств', 'success');
+          else toast('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
         },
       });
     } catch (err) {
