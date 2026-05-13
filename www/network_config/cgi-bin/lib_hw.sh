@@ -12,7 +12,7 @@ SA02M_GPIO_USB_POWER="${SA02M_GPIO_USB_POWER:-}"
 SA02M_I2C_EXP_BUS="${SA02M_I2C_EXP_BUS:-2}"
 SA02M_I2C_EXP_ADDR="${SA02M_I2C_EXP_ADDR:-0x41}"
 SA02M_I2C_LOCK_FILE="${SA02M_I2C_LOCK_FILE:-/run/lock/sa02m-pca9536.lock}"
-SA02M_I2C_LOCK_WAIT_SEC="${SA02M_I2C_LOCK_WAIT_SEC:-0.4}"
+SA02M_I2C_LOCK_WAIT_SEC="${SA02M_I2C_LOCK_WAIT_SEC:-1}"
 SA02M_I2C_TIMEOUT_SEC="${SA02M_I2C_TIMEOUT_SEC:-1}"
 SA02M_I2C_ACTIVE_LOW_MASK="${SA02M_I2C_ACTIVE_LOW_MASK:-auto}"
 SA02M_I2C_OWNER_UNITS="${SA02M_I2C_OWNER_UNITS:-mplc.service mplc4.service klogic.service klogicd.service}"
@@ -138,19 +138,10 @@ sa02m_hw_timeout_run() {
 }
 
 sa02m_hw_i2c_owner_active() {
-    local unit proc
+    local proc
     case "${SA02M_I2C_RESPECT_OWNER:-1}" in
         0|no|false|off|OFF|N) return 1 ;;
     esac
-
-    if command -v systemctl >/dev/null 2>&1; then
-        for unit in ${SA02M_I2C_OWNER_UNITS:-}; do
-            [ -n "$unit" ] || continue
-            if systemctl is-active --quiet "$unit" 2>/dev/null; then
-                return 0
-            fi
-        done
-    fi
 
     if command -v pgrep >/dev/null 2>&1; then
         for proc in ${SA02M_I2C_OWNER_PROCS:-}; do
