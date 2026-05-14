@@ -465,7 +465,18 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_device_config_snapshot(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
-        snap = device_config.snapshot_for_device(device_path, device)
+        detail = str(data.get("snapshot_detail") or "full").strip().lower()
+        active_tab = data.get("active_tab")
+        if isinstance(active_tab, str):
+            active_tab = active_tab.strip() or None
+        else:
+            active_tab = None
+        snap = device_config.snapshot_for_device(
+            device_path,
+            device,
+            snapshot_detail=detail,
+            active_tab=active_tab,
+        )
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_network(self, ctx: ServiceContext) -> None:

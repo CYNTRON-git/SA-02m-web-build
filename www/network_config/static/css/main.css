@@ -1451,14 +1451,29 @@ svg .gauge-num {
   font-weight: 600;
   cursor: pointer;
   text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
+.flasher-config-tab small {
+  display: block;
+  font-size: .72rem;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--text-dim);
+  white-space: normal;
+}
 .flasher-config-tab:hover { color: var(--text); background: var(--bg-hover); }
+.flasher-config-tab:hover small { color: var(--text-sec); }
+.flasher-config-tab.is-live small { color: var(--green); }
 .flasher-config-tab.active {
   background: var(--cyan-dim);
   border-color: var(--cyan);
   color: var(--text);
 }
+.flasher-config-tab.active small { color: var(--text); }
 .flasher-config-body {
   padding: 18px 20px 20px;
   overflow: auto;
@@ -1468,6 +1483,17 @@ svg .gauge-num {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px;
+}
+
+/* MR parity: DI — два столбца как у desktop (слева статус/частота, справа параметры входа). */
+.flasher-config-di-split {
+  grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
+}
+
+@media (max-width: 760px) {
+  .flasher-config-di-split {
+    grid-template-columns: 1fr;
+  }
 }
 .flasher-config-card {
   background: var(--bg-panel);
