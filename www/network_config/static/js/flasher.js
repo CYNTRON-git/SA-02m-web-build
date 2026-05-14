@@ -847,13 +847,13 @@
   function moduleDoTabInfo(snap, channel) {
     const bits = ((((snap || {}).mr || {}).do || {}).bits || []);
     const on = !!bits[channel - 1];
-    return { meta: on ? 'ВКЛ' : 'ВЫКЛ', live: on };
+    return { suffix: ` - ${on ? 'ВКЛ' : 'ВЫКЛ'}`, live: on };
   }
 
   function moduleDiTabInfo(snap, channel) {
     const values = ((((snap || {}).mr || {}).di || {}).values || []);
     const on = Number(values[channel - 1] || 0) !== 0;
-    return { meta: on ? 'Активен' : 'Неактивен', live: on };
+    return { suffix: ` - ${on ? 'ВКЛ' : 'ВЫКЛ'}`, live: on };
   }
 
   function moduleAoTabInfo(snap, channel) {
@@ -861,7 +861,7 @@
     const value = Number(volts[channel - 1]);
     const hasValue = Number.isFinite(value);
     return {
-      meta: hasValue ? `${formatFloat(value, 2)} В` : '—',
+      suffix: hasValue ? ` - ${formatFloat(value, 2)} В` : ' - 0.0 В',
       live: hasValue && Math.abs(value) > 0.01,
     };
   }
@@ -871,7 +871,7 @@
     const sensorCode = Number(ai && ai.sensor_code || 0);
     const tag = (ai && ai.sidebar_tag) ? String(ai.sidebar_tag) : aiSidebarTagFromCode(sensorCode);
     return {
-      meta: tag,
+      suffix: tag ? ` - ${tag}` : '',
       live: sensorCode !== 0,
     };
   }
@@ -896,11 +896,19 @@
         { id: 'info', label: 'Сведения' },
         { id: 'network', label: 'Сеть' },
       ];
-      if (meta.relay_mode_panel) tabs.push({ id: 'relay', label: 'Реле' });
-      for (let i = 1; i <= Number(meta.max_di || 0); i++) tabs.push({ id: 'di_' + i, label: 'DI' + i, ...moduleDiTabInfo(snap, i) });
-      for (let i = 1; i <= Number(meta.max_do || 0); i++) tabs.push({ id: 'do_' + i, label: 'DO' + i, ...moduleDoTabInfo(snap, i) });
-      for (let i = 1; i <= Number(meta.max_ao || 0); i++) tabs.push({ id: 'ao_' + i, label: 'AO' + i, ...moduleAoTabInfo(snap, i) });
-      for (let i = 1; i <= Number(meta.max_ai || 0); i++) tabs.push({ id: 'ai_' + i, label: 'AI' + i, ...moduleAiTabInfo(snap, i) });
+      if (meta.relay_mode_panel) tabs.push({ id: 'relay', label: 'Реле и задержки' });
+      for (let i = 1; i <= Number(meta.max_di || 0); i++) {
+        tabs.push({ id: 'di_' + i, label: 'Дискретный вход DI' + i, ...moduleDiTabInfo(snap, i) });
+      }
+      for (let i = 1; i <= Number(meta.max_do || 0); i++) {
+        tabs.push({ id: 'do_' + i, label: 'Дискретный выход DO' + i, ...moduleDoTabInfo(snap, i) });
+      }
+      for (let i = 1; i <= Number(meta.max_ao || 0); i++) {
+        tabs.push({ id: 'ao_' + i, label: 'Аналоговый выход АО' + i, ...moduleAoTabInfo(snap, i) });
+      }
+      for (let i = 1; i <= Number(meta.max_ai || 0); i++) {
+        tabs.push({ id: 'ai_' + i, label: 'Аналоговый вход AI' + i, ...moduleAiTabInfo(snap, i) });
+      }
       return tabs;
     }
     return [
@@ -999,8 +1007,8 @@
             <div class="flasher-config-row"><span>Счетчик включений</span><strong>${escapeHtml(String(counts[idx] ?? 0))}</strong></div>
           </div>
           <div class="flasher-config-actions">
-            <button class="btn btn-sm btn-primary" type="button" data-mr-do-on="${channel}">Включить</button>
-            <button class="btn btn-sm" type="button" data-mr-do-off="${channel}">Выключить</button>
+            <button class="btn btn-sm btn-primary" type="button" data-mr-do-on="${channel}" data-do-channel="${channel}">Включить</button>
+            <button class="btn btn-sm" type="button" data-mr-do-off="${channel}" data-do-channel="${channel}">Выключить</button>
             <button class="btn btn-sm" type="button" data-mr-do-reset="1">Сброс счетчиков DO</button>
           </div>
         </section>
@@ -1460,8 +1468,10 @@
       if (tab.id === state.configTab) classes.push('active');
       if (tab.live) classes.push('is-live');
       return `<button type="button" class="${classes.join(' ')}" data-config-tab="${tab.id}">` +
-        `<span>${escapeHtml(tab.label)}</span>` +
-        (tab.meta ? `<small>${escapeHtml(tab.meta)}</small>` : '') +
+        `<span class="flasher-config-tab-row">` +
+        `<span class="flasher-config-tab-main">${escapeHtml(tab.label)}</span>` +
+        (tab.suffix ? `<span class="flasher-config-tab-suffix">${escapeHtml(tab.suffix)}</span>` : '') +
+        `</span>` +
       `</button>`;
     }).join('');
     host.querySelectorAll('[data-config-tab]').forEach(btn => {
@@ -1853,8 +1863,21 @@
     if (dtvMa) dtvMa.addEventListener('click', saveDtvMovingAverage);
     const relaySave = body.querySelector('#cfg-mr-relay-save-btn');
     if (relaySave) relaySave.addEventListener('click', saveModuleRelay);
-    body.querySelectorAll('[data-mr-do-on]').forEach(btn => btn.addEventListener('click', () => toggleModuleDo(parseInt(btn.dataset.mrDoOn, 10), true)));
-    body.querySelectorAll('[data-mr-do-off]').forEach(btn => btn.addEventListener('click', () => toggleModuleDo(parseInt(btn.dataset.mrDoOff, 10), false)));
+    function parseDoChannel(btn) {
+      const raw = btn.getAttribute('data-do-channel') || btn.getAttribute('data-mr-do-on') || btn.getAttribute('data-mr-do-off');
+      const ch = parseInt(raw, 10);
+      return Number.isFinite(ch) && ch >= 1 ? ch : NaN;
+    }
+    body.querySelectorAll('[data-mr-do-on]').forEach(btn => btn.addEventListener('click', () => {
+      const ch = parseDoChannel(btn);
+      if (!Number.isFinite(ch)) return;
+      toggleModuleDo(ch, true);
+    }));
+    body.querySelectorAll('[data-mr-do-off]').forEach(btn => btn.addEventListener('click', () => {
+      const ch = parseDoChannel(btn);
+      if (!Number.isFinite(ch)) return;
+      toggleModuleDo(ch, false);
+    }));
     body.querySelectorAll('[data-mr-do-save]').forEach(btn => btn.addEventListener('click', () => saveModuleDo(parseInt(btn.dataset.mrDoSave, 10))));
     body.querySelectorAll('[data-mr-di-save]').forEach(btn => btn.addEventListener('click', () => saveModuleDi(parseInt(btn.dataset.mrDiSave, 10))));
     body.querySelectorAll('[data-mr-ao-save]').forEach(btn => btn.addEventListener('click', () => saveModuleAo(parseInt(btn.dataset.mrAoSave, 10))));
