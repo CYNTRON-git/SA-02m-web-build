@@ -435,67 +435,21 @@
 
   /* ── Таблица устройств ────────────────────────────────────────────────── */
 
-  function deviceSelectionLabel(d) {
-    const addr = Number(d && d.address);
-    const sig = String(d && d.signature || '').trim();
-    return Number.isFinite(addr) && addr > 0
-      ? `Адрес ${addr}`
-      : (sig || 'Устройство');
-  }
-
-  function deviceSelectionMeta(d) {
-    const sig = String(d && d.signature || '').trim() || 'сигнатура уточняется';
-    const sn = String(d && d.serial_hex || '').trim();
-    if (sn) return `${sig} · ${sn}`;
-    return sig;
-  }
-
-  function setAllDevicesSelected(selected) {
-    state.devices.forEach(d => { d.__selected = !!selected; });
-    renderDevices();
-  }
-
-  function renderDeviceSelectors() {
-    const wrap = $('flasher-device-select-wrap');
-    const host = $('flasher-device-picks');
-    if (!wrap || !host) return;
-    if (!state.devices.length) {
-      wrap.hidden = true;
-      host.innerHTML = '';
-      return;
-    }
-    wrap.hidden = false;
-    host.innerHTML = state.devices.map((d, idx) => `
-      <label class="flasher-device-chip">
-        <input type="checkbox" data-device-pick="${idx}" ${d.__selected ? 'checked' : ''} />
-        <span>${escapeHtml(deviceSelectionLabel(d))}<small>${escapeHtml(deviceSelectionMeta(d))}</small></span>
-      </label>
-    `).join('');
-    host.querySelectorAll('[data-device-pick]').forEach(el => {
-      el.addEventListener('change', () => {
-        const idx = parseInt(el.dataset.devicePick, 10);
-        if (!Number.isNaN(idx) && state.devices[idx]) {
-          state.devices[idx].__selected = el.checked;
-        }
-        renderDevices();
-      });
-    });
-  }
-
   function renderDevices() {
     const tbody = $('flasher-devices-table').querySelector('tbody');
     tbody.innerHTML = '';
     if (!state.devices.length) {
-      renderDeviceSelectors();
       tbody.innerHTML = '<tr><td colspan="6" class="flasher-empty">Устройств не найдено.</td></tr>';
       updateFlashControls();
       return;
     }
     state.devices.forEach((d, idx) => {
       const tr = document.createElement('tr');
+      let rowClickTimer = null;
+      tr.classList.add('is-selectable');
       if (d.__selected) tr.classList.add('is-selected');
       if (isDeviceConfigSupported(d)) {
-        tr.classList.add('flasher-config-row');
+        tr.classList.add('flasher-device-config-row');
       }
       tr.innerHTML = `
         <td>${d.address ?? '—'}</td>
@@ -506,14 +460,29 @@
         <td>${escapeHtml(String(d.baudrate || '—'))} ${escapeHtml(String(d.parity || ''))}${escapeHtml(String(d.stopbits || ''))}</td>
       `;
       tbody.appendChild(tr);
+      tr.addEventListener('click', () => {
+        if (rowClickTimer) clearTimeout(rowClickTimer);
+        rowClickTimer = setTimeout(() => {
+          rowClickTimer = null;
+          if (!state.devices[idx]) return;
+          const nextSelected = !state.devices[idx].__selected;
+          state.devices.forEach((item, itemIdx) => {
+            item.__selected = nextSelected && itemIdx === idx;
+          });
+          renderDevices();
+        }, 220);
+      });
       if (isDeviceConfigSupported(d)) {
         tr.addEventListener('dblclick', (ev) => {
+          if (rowClickTimer) {
+            clearTimeout(rowClickTimer);
+            rowClickTimer = null;
+          }
           if (ev.target && ev.target.closest && ev.target.closest('input, button, label, select')) return;
           openConfigModal(idx);
         });
       }
     });
-    renderDeviceSelectors();
     updateFlashControls();
   }
 
@@ -1673,14 +1642,13 @@
   }
 
   function replaceScannedDevices(list) {
-    const selectedKeys = new Set(
-      state.devices.filter(item => item && item.__selected).map(item => scanDeviceRowKey(item))
-    );
+    const selectedItem = state.devices.find(item => item && item.__selected);
+    const selectedKey = selectedItem ? scanDeviceRowKey(selectedItem) : '';
     state.devices = [];
     (list || []).forEach((dev) => {
       upsertScannedDevice(dev);
       const idx = state.devices.findIndex(item => scanDeviceRowKey(item) === scanDeviceRowKey(dev));
-      if (idx >= 0 && selectedKeys.has(scanDeviceRowKey(state.devices[idx]))) {
+      if (idx >= 0 && selectedKey && selectedKey === scanDeviceRowKey(state.devices[idx])) {
         state.devices[idx].__selected = true;
       }
     });
@@ -1767,8 +1735,8 @@
 
   async function startFlash() {
     if (state.flashJobId) { toast('Прошивка уже выполняется', 'warn'); return; }
-    const targets = state.devices.filter(d => d.__selected);
-    if (!targets.length) { toast('Выберите устройства', 'warn'); return; }
+    const target = state.devices.find(d => d.__selected);
+    if (!target) { toast('Выберите устройство', 'warn'); return; }
     const fwVal = $('flasher-fw-select').value;
     if (!fwVal) { toast('Выберите файл прошивки', 'warn'); return; }
     const [channel, file] = fwVal.split('::');
@@ -1776,7 +1744,7 @@
     const useFast = $('flasher-use-fast').checked;
     const forceMismatch = $('flasher-force-mismatch').checked;
 
-    logReset(`Прошивка ${targets.length} устройств файлом ${file}`);
+    logReset(`Прошивка устройства файлом ${file}`);
     setProgress(0, 'Запуск');
     state.flashPending = true;
     setFlashButtons();
@@ -1788,12 +1756,12 @@
         firmware_file: file,
         use_fast_modbus: useFast,
         force_signature_mismatch: forceMismatch,
-        targets: targets.map(t => ({
-          address: t.address,
-          serial: t.serial,
-          signature: t.signature,
-          in_bootloader: t.in_bootloader,
-        })),
+        targets: [{
+          address: target.address,
+          serial: target.serial,
+          signature: target.signature,
+          in_bootloader: target.in_bootloader,
+        }],
       });
       state.flashPending = false;
       state.flashJobId = res.job_id;
@@ -1896,8 +1864,6 @@
     $('flasher-fw-select').addEventListener('change', updateFlashControls);
     $('flasher-flash-btn').addEventListener('click', startFlash);
     $('flasher-flash-cancel-btn').addEventListener('click', cancelFlash);
-    $('flasher-devices-select-all').addEventListener('click', () => setAllDevicesSelected(true));
-    $('flasher-devices-clear-all').addEventListener('click', () => setAllDevicesSelected(false));
     configModalEl('flasher-config-close-btn').addEventListener('click', closeConfigModal);
     configModalEl('flasher-config-modal').addEventListener('click', (ev) => {
       if (ev.target && ev.target.dataset && ev.target.dataset.closeConfigModal === '1') closeConfigModal();
@@ -1920,4 +1886,12 @@
     loadFirmware();
     loadRecentJobJournal();
   };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.flasherInit) window.flasherInit();
+    }, { once: true });
+  } else if (window.flasherInit) {
+    window.flasherInit();
+  }
 })();
