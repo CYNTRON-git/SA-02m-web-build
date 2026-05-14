@@ -193,33 +193,46 @@ def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
     return None
 
 
-# AI sensor enum (прошивка)
+# AI sensor enum (прошивка) — подписи как в desktop UI
 AI_SENSOR_CHOICES: List[Tuple[int, str]] = [
     (0x0000, "Выключен"),
-    (0x0001, "NTC 10k"),
-    (0x0002, "Pt1000"),
-    (0x0003, "Pt100"),
+    (0x0001, "NTC 10k (B3950)"),
+    (0x0002, "Pt1000 (α385)"),
+    (0x0003, "Pt100 (α385)"),
     (0x0004, "Напряжение 0–10 В"),
     (0x0005, "Ток 4–20 мА"),
-    (0x0006, "Термопара (TXA / K)"),
+    (0x0006, "Термопара K (ТХА)"),
     (0x0007, "Сухой контакт"),
-    (0x0008, "Pt50"),
-    (0x0009, "Pt500"),
-    (0x000A, "NTC 100k"),
-    (0x000B, "NTC10k B3988"),
-    (0x000C, "NTC10k B3435"),
-    (0x000D, "NTC10k B3470"),
-    (0x000E, "Pt100 391"),
-    (0x000F, "Pt1000 391"),
-    (0x0010, "Pt100 428"),
-    (0x0011, "Pt1000 428"),
-    (0x0012, "Ni100"),
-    (0x0013, "Ni500"),
-    (0x0014, "Ni1000"),
+    (0x0008, "Pt50 (α385)"),
+    (0x0009, "Pt500 (α385)"),
+    (0x000A, "NTC 100k (B3950)"),
+    (0x000B, "NTC 10k (B3988)"),
+    (0x000C, "NTC 10k (B3435)"),
+    (0x000D, "NTC 10k (B3470)"),
+    (0x000E, "Pt100 (α391), 100П"),
+    (0x000F, "Pt1000 (α391), 1000П"),
+    (0x0010, "Pt100 (α428), 100М"),
+    (0x0011, "Pt1000 (α428), 1000М"),
+    (0x0012, "Ni100 (α617)"),
+    (0x0013, "Ni500 (α617)"),
+    (0x0014, "Ni1000 (α617)"),
     (0x0015, "Ток 0–5 мА"),
     (0x0016, "Ток 0–20 мА"),
-    (0x0017, "Дифф. 50 мВ"),
-    (0x0018, "Дифф. 2 В"),
+    (0x0017, "Дифф. напряжение ±50 мВ"),
+    (0x0018, "Дифф. напряжение ±2 В"),
+    (0x0019, "NTC 5k (B3470)"),
+    (0x001A, "NTC 1.8k (B3380)"),
+    (0x001B, "Pt50 (α385), 3-пров."),
+    (0x001C, "Pt100 (α385), 3-пров."),
+    (0x001D, "Pt500 (α385), 3-пров."),
+    (0x001E, "Pt1000 (α385), 3-пров."),
+    (0x001F, "Pt100 (α391), 100П, 3-пров."),
+    (0x0020, "Pt1000 (α391), 1000П, 3-пров."),
+    (0x0021, "Pt100 (α428), 100М, 3-пров."),
+    (0x0022, "Pt1000 (α428), 1000М, 3-пров."),
+    (0x0023, "Ni100 (α617), 3-пров."),
+    (0x0024, "Ni500 (α617), 3-пров."),
+    (0x0025, "Ni1000 (α617), 3-пров."),
 ]
 
 
@@ -314,8 +327,16 @@ def ai_stor_for_12ai_channel(ch_1_based: int) -> int:
 
 
 def ai_stor_for_6ao6ai_p(ch_1_based: int) -> int:
-    mapping = {1: 6, 2: 7, 3: 8, 4: 9, 5: 10, 6: 11}
-    return mapping[max(1, min(6, int(ch_1_based)))]
+    """6AO6AI: UI-канал → stor для Kalman/WB (491+stor, 533+3·stor).
+
+    Эталон MR-02m-flasher (module_profiles + tools STOR map), согласован с app_c.c AO6AI6:
+      channels[0]: адр=4, storP=6, storN=7  → UI AI1(P), AI2(N)
+      channels[1]: адр=5, storP=8, storN=9  → UI AI3(P), AI4(N)
+      channels[2]: адр=6, storP=10, storN=11 → UI AI5(P), AI6(N)
+    Для вкладки по логическому каналу k=1..6 используется stor = 5+k (слоты верхнего ряда).
+    """
+    m = {1: 6, 2: 7, 3: 8, 4: 9, 5: 10, 6: 11}
+    return m[max(1, min(6, int(ch_1_based)))]
 
 
 def ai_adc_coerce_sample_rate_sps(v: int) -> int:
@@ -323,3 +344,119 @@ def ai_adc_coerce_sample_rate_sps(v: int) -> int:
     if vv in AI_ADC_SAMPLE_RATES_SPS:
         return vv
     return min(AI_ADC_SAMPLE_RATES_SPS, key=lambda item: abs(item - vv))
+
+
+# --- AI UI grouping (desktop module_config_window parity) ---
+AI_UI_BUCKET_OFF = "off"
+AI_UI_BUCKET_NTC = "ntc"
+AI_UI_BUCKET_RTD = "rtd"
+AI_UI_BUCKET_VOLT = "volt"
+AI_UI_BUCKET_CURR = "curr"
+AI_UI_BUCKET_TC_K = "tc_k"
+AI_UI_BUCKET_DRY = "dry"
+
+AI_UI_BUCKET_LABELS: Dict[str, str] = {
+    AI_UI_BUCKET_OFF: "Выключен",
+    AI_UI_BUCKET_NTC: "NTC",
+    AI_UI_BUCKET_RTD: "Pt / Ni RTD",
+    AI_UI_BUCKET_VOLT: "Напряжение",
+    AI_UI_BUCKET_CURR: "Ток",
+    AI_UI_BUCKET_TC_K: "Термопара K",
+    AI_UI_BUCKET_DRY: "Сухой контакт",
+}
+
+AI_UI_BUCKET_ORDER: Tuple[str, ...] = (
+    AI_UI_BUCKET_OFF,
+    AI_UI_BUCKET_NTC,
+    AI_UI_BUCKET_RTD,
+    AI_UI_BUCKET_VOLT,
+    AI_UI_BUCKET_CURR,
+    AI_UI_BUCKET_TC_K,
+    AI_UI_BUCKET_DRY,
+)
+
+_NTC_CODES = frozenset({0x0001, 0x000A, 0x000B, 0x000C, 0x000D, 0x0019, 0x001A})
+_RTD_CODES = frozenset(
+    {
+        0x0002,
+        0x0003,
+        0x0008,
+        0x0009,
+        0x000E,
+        0x000F,
+        0x0010,
+        0x0011,
+        0x0012,
+        0x0013,
+        0x0014,
+        0x001B,
+        0x001C,
+        0x001D,
+        0x001E,
+        0x001F,
+        0x0020,
+        0x0021,
+        0x0022,
+        0x0023,
+        0x0024,
+        0x0025,
+    }
+)
+_VOLT_CODES = frozenset({0x0004, 0x0017, 0x0018})
+_CURR_CODES = frozenset({0x0005, 0x0015, 0x0016})
+_TC_K_CODES = frozenset({0x0006})
+_DRY_CODES = frozenset({0x0007})
+
+
+def ai_ui_sensor_bucket(sensor_code: int) -> str:
+    c = int(sensor_code) & 0xFFFF
+    if c == 0:
+        return AI_UI_BUCKET_OFF
+    if c in _NTC_CODES:
+        return AI_UI_BUCKET_NTC
+    if c in _RTD_CODES:
+        return AI_UI_BUCKET_RTD
+    if c in _VOLT_CODES:
+        return AI_UI_BUCKET_VOLT
+    if c in _CURR_CODES:
+        return AI_UI_BUCKET_CURR
+    if c in _TC_K_CODES:
+        return AI_UI_BUCKET_TC_K
+    if c in _DRY_CODES:
+        return AI_UI_BUCKET_DRY
+    return AI_UI_BUCKET_OFF
+
+
+def ai_sidebar_nav_mode_tag(sensor_code: int) -> str:
+    """Короткая подпись для сайдбара (desktop secondary label)."""
+    b = ai_ui_sensor_bucket(sensor_code)
+    if b == AI_UI_BUCKET_OFF:
+        return "Выкл"
+    labels = {
+        AI_UI_BUCKET_NTC: "NTC",
+        AI_UI_BUCKET_RTD: "RTD",
+        AI_UI_BUCKET_VOLT: "U",
+        AI_UI_BUCKET_CURR: "I",
+        AI_UI_BUCKET_TC_K: "TC-K",
+        AI_UI_BUCKET_DRY: "Сух",
+    }
+    return labels.get(b, "AI")
+
+
+def ai_ui_subchoices_for_bucket(bucket: str) -> List[Tuple[int, str]]:
+    b = str(bucket or AI_UI_BUCKET_OFF)
+    if b == AI_UI_BUCKET_OFF:
+        return [(0x0000, "Выключен")]
+    out: List[Tuple[int, str]] = []
+    for code, lbl in AI_SENSOR_CHOICES:
+        if int(code) == 0:
+            continue
+        if ai_ui_sensor_bucket(int(code)) == b:
+            out.append((int(code), lbl))
+    return out
+
+
+def ai_ui_temperature_calibration_applicable(sensor_code: int) -> bool:
+    """Калибровка смещения температуры (holding base+4): только температурные режимы."""
+    b = ai_ui_sensor_bucket(sensor_code)
+    return b in (AI_UI_BUCKET_NTC, AI_UI_BUCKET_RTD, AI_UI_BUCKET_TC_K)

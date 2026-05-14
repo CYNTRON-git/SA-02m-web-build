@@ -28,6 +28,7 @@
     configTab: '',
     configSnapshot: null,
     configPollTimer: null,
+    configNetworkDirty: false,
   };
 
   function $(id) { return document.getElementById(id); }
@@ -509,7 +510,7 @@
     stopConfigPolling();
     if (!state.configOpen) return;
     state.configPollTimer = setTimeout(() => {
-      if (state.configOpen && !state.configBusy) refreshConfigSnapshot(true);
+      if (state.configOpen && !state.configBusy) refreshConfigSnapshot(true, 'panel');
     }, 4000);
   }
 
@@ -598,6 +599,101 @@
     { value: 1, label: '1 - Кнопка' },
   ];
   const MODULE_AI_SAMPLE_RATES = [20, 45, 90, 175, 330, 600, 1000];
+  const MODULE_AI_UI_BUCKETS = [
+    { id: 'off', label: 'Выключен' },
+    { id: 'ntc', label: 'NTC' },
+    { id: 'rtd', label: 'Pt / Ni RTD' },
+    { id: 'volt', label: 'Напряжение' },
+    { id: 'curr', label: 'Ток' },
+    { id: 'tc_k', label: 'Термопара K' },
+    { id: 'dry', label: 'Сухой контакт' },
+  ];
+  const _AI_NTC = new Set([0x0001, 0x000A, 0x000B, 0x000C, 0x000D, 0x0019, 0x001A]);
+  const _AI_RTD = new Set([
+    0x0002, 0x0003, 0x0008, 0x0009, 0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014,
+    0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+  ]);
+  const _AI_VOLT = new Set([0x0004, 0x0017, 0x0018]);
+  const _AI_CURR = new Set([0x0005, 0x0015, 0x0016]);
+  const _AI_TC_K = new Set([0x0006]);
+  const _AI_DRY = new Set([0x0007]);
+
+  function aiUiSensorBucket(code) {
+    const c = Number(code) & 0xFFFF;
+    if (!c) return 'off';
+    if (_AI_NTC.has(c)) return 'ntc';
+    if (_AI_RTD.has(c)) return 'rtd';
+    if (_AI_VOLT.has(c)) return 'volt';
+    if (_AI_CURR.has(c)) return 'curr';
+    if (_AI_TC_K.has(c)) return 'tc_k';
+    if (_AI_DRY.has(c)) return 'dry';
+    return 'off';
+  }
+
+  function aiUiSubchoicesForBucket(bucket) {
+    const b = String(bucket || 'off');
+    if (b === 'off') return [[0x0000, 'Выключен']];
+    const out = [];
+    MODULE_AI_SENSOR_CHOICES.forEach(item => {
+      const code = item[0];
+      if (!code) return;
+      if (aiUiSensorBucket(code) === b) out.push(item);
+    });
+    return out.length ? out : [[0x0000, 'Выключен']];
+  }
+
+  function aiUiCalibrationApplicable(sensorCode) {
+    const b = aiUiSensorBucket(sensorCode);
+    return b === 'ntc' || b === 'rtd' || b === 'tc_k';
+  }
+
+  function aiSidebarTagFromCode(code) {
+    const b = aiUiSensorBucket(code);
+    if (b === 'off') return 'Выкл';
+    const map = { ntc: 'NTC', rtd: 'RTD', volt: 'U', curr: 'I', tc_k: 'TC-K', dry: 'Сух' };
+    return map[b] || 'AI';
+  }
+
+  const MODULE_AI_SENSOR_CHOICES = [
+    [0x0000, 'Выключен'],
+    [0x0001, 'NTC 10k (B3950)'],
+    [0x0002, 'Pt1000 (α385)'],
+    [0x0003, 'Pt100 (α385)'],
+    [0x0004, 'Напряжение 0–10 В'],
+    [0x0005, 'Ток 4–20 мА'],
+    [0x0006, 'Термопара K (ТХА)'],
+    [0x0007, 'Сухой контакт'],
+    [0x0008, 'Pt50 (α385)'],
+    [0x0009, 'Pt500 (α385)'],
+    [0x000A, 'NTC 100k (B3950)'],
+    [0x000B, 'NTC 10k (B3988)'],
+    [0x000C, 'NTC 10k (B3435)'],
+    [0x000D, 'NTC 10k (B3470)'],
+    [0x000E, 'Pt100 (α391), 100П'],
+    [0x000F, 'Pt1000 (α391), 1000П'],
+    [0x0010, 'Pt100 (α428), 100М'],
+    [0x0011, 'Pt1000 (α428), 1000М'],
+    [0x0012, 'Ni100 (α617)'],
+    [0x0013, 'Ni500 (α617)'],
+    [0x0014, 'Ni1000 (α617)'],
+    [0x0015, 'Ток 0–5 мА'],
+    [0x0016, 'Ток 0–20 мА'],
+    [0x0017, 'Дифф. напряжение ±50 мВ'],
+    [0x0018, 'Дифф. напряжение ±2 В'],
+    [0x0019, 'NTC 5k (B3470)'],
+    [0x001A, 'NTC 1.8k (B3380)'],
+    [0x001B, 'Pt50 (α385), 3-пров.'],
+    [0x001C, 'Pt100 (α385), 3-пров.'],
+    [0x001D, 'Pt500 (α385), 3-пров.'],
+    [0x001E, 'Pt1000 (α385), 3-пров.'],
+    [0x001F, 'Pt100 (α391), 100П, 3-пров.'],
+    [0x0020, 'Pt1000 (α391), 1000П, 3-пров.'],
+    [0x0021, 'Pt100 (α428), 100М, 3-пров.'],
+    [0x0022, 'Pt1000 (α428), 1000М, 3-пров.'],
+    [0x0023, 'Ni100 (α617), 3-пров.'],
+    [0x0024, 'Ni500 (α617), 3-пров.'],
+    [0x0025, 'Ni1000 (α617), 3-пров.'],
+  ];
 
   function clampInt(value, min, max, fallback) {
     const parsed = parseInt(value, 10);
@@ -617,6 +713,167 @@
   function moduleAiChannel(snap, channel) {
     const items = (((snap || {}).mr || {}).ai || {}).channels || [];
     return items.find(item => Number(item.channel) === Number(channel)) || null;
+  }
+
+  function mergeMrMinimalIntoFull(prevMr, minMr) {
+    if (!prevMr || !minMr) return minMr || prevMr;
+    const out = JSON.parse(JSON.stringify(prevMr));
+    out.module = Object.assign({}, out.module || {}, minMr.module || {});
+    out.inactivity_s = minMr.inactivity_s;
+    out.relay = Object.assign({}, out.relay || {}, minMr.relay || {});
+    if (minMr.do) {
+      const md = minMr.do;
+      out.do = out.do || {};
+      if (Array.isArray(md.safe) && md.safe.length) {
+        out.do = {
+          bits: (md.bits || []).slice(),
+          counts: (md.counts || []).slice(),
+          safe: (md.safe || []).slice(),
+          timer_words: (md.timer_words || []).slice(),
+          redelay: (md.redelay || []).slice(),
+        };
+      } else {
+        if (md.bits) out.do.bits = md.bits.slice();
+        if (md.counts) out.do.counts = md.counts.slice();
+      }
+    }
+    if (minMr.di) {
+      const mdi = minMr.di;
+      out.di = out.di || {};
+      if (Array.isArray(mdi.mode) && mdi.mode.length > 0) {
+        out.di = {
+          values: (mdi.values || []).slice(),
+          counts: (mdi.counts || []).slice(),
+          short_counts: (mdi.short_counts || []).slice(),
+          long_counts: (mdi.long_counts || []).slice(),
+          double_counts: (mdi.double_counts || []).slice(),
+          freq: (mdi.freq || []).slice(),
+          mode: (mdi.mode || []).slice(),
+          debounce: (mdi.debounce || []).slice(),
+          long_press: (mdi.long_press || []).slice(),
+          double_click: (mdi.double_click || []).slice(),
+          freq_mode: (mdi.freq_mode || []).slice(),
+        };
+      } else if (mdi.values) {
+        out.di.values = mdi.values.slice();
+      }
+    }
+    if (minMr.ao) {
+      const ma = minMr.ao;
+      out.ao = out.ao || {};
+      if (Array.isArray(ma.setpoint) && ma.setpoint.length) {
+        out.ao = {
+          current_raw: (ma.current_raw || []).slice(),
+          current_volts: (ma.current_volts || []).slice(),
+          setpoint: (ma.setpoint || []).slice(),
+          safe: (ma.safe || []).slice(),
+          safe_holding_regs: (ma.safe_holding_regs || []).slice(),
+        };
+      } else if (ma.current_raw && ma.current_raw.length) {
+        out.ao.current_raw = ma.current_raw.slice();
+        out.ao.current_volts = (ma.current_volts || []).slice();
+      }
+    }
+    if (minMr.ai && Array.isArray(minMr.ai.channels)) {
+      const deepAi =
+        minMr.ai.channels.some(
+          c => c && (Object.prototype.hasOwnProperty.call(c, 'measured_raw') || Object.prototype.hasOwnProperty.call(c, 'filters')),
+        );
+      if (deepAi) {
+        out.ai = { channels: JSON.parse(JSON.stringify(minMr.ai.channels)) };
+      } else {
+        const maxAi = Number((out.module || {}).max_ai || 0);
+        const byCh = {};
+        (out.ai && out.ai.channels ? out.ai.channels : []).forEach(c => {
+          byCh[Number(c.channel)] = Object.assign({}, c);
+        });
+        minMr.ai.channels.forEach(mc => {
+          const ch = Number(mc.channel);
+          const base = byCh[ch] || {};
+          byCh[ch] = Object.assign({}, base, mc);
+        });
+        const list = [];
+        for (let ch = 1; ch <= maxAi; ch++) {
+          if (byCh[ch]) list.push(byCh[ch]);
+        }
+        out.ai = out.ai || {};
+        out.ai.channels = list;
+      }
+    }
+    return out;
+  }
+
+  function mergeDeviceConfigSnapshot(prev, snap) {
+    if (
+      !snap ||
+      (snap.snapshot_detail !== 'minimal' && snap.snapshot_detail !== 'panel') ||
+      !prev ||
+      prev.kind !== snap.kind
+    )
+      return snap;
+    if (snap.kind !== 'mr') return snap;
+    const merged = Object.assign({}, snap);
+    merged.mr = mergeMrMinimalIntoFull(prev.mr, snap.mr);
+    merged.snapshot_detail = 'full';
+    if (state.configTab === 'network' && state.configNetworkDirty) {
+      const pn = prev.network || {};
+      merged.network = Object.assign({}, pn);
+      merged.info = Object.assign({}, merged.info || {}, snap.info || {});
+      merged.info.address = pn.address;
+      merged.info.line = {
+        baudrate: pn.baudrate,
+        parity: pn.parity,
+        stopbits: pn.stopbits,
+      };
+    }
+    return merged;
+  }
+
+  /** Не перерисовывать тело модалки во время правки уставок AO (desktop parity). */
+  function shouldSkipConfigBodyRerender() {
+    if (!state.configOpen || !state.configSnapshot || state.configSnapshot.kind !== 'mr') return false;
+    const el = document.activeElement;
+    if (!el || !el.id) return false;
+    return /^cfg-mr-ao-(set|safe|inactivity)-/.test(el.id);
+  }
+
+  function aoSafeHoldingRegForChannel(snap, channel) {
+    const regs = ((((snap || {}).mr || {}).ao || {}).safe_holding_regs || []);
+    const idx = channel - 1;
+    if (idx >= 0 && idx < regs.length) return clampInt(regs[idx], 0, 65535, 503 + idx);
+    return 503 + channel - 1;
+  }
+
+  function moduleDoTabInfo(snap, channel) {
+    const bits = ((((snap || {}).mr || {}).do || {}).bits || []);
+    const on = !!bits[channel - 1];
+    return { meta: on ? 'ВКЛ' : 'ВЫКЛ', live: on };
+  }
+
+  function moduleDiTabInfo(snap, channel) {
+    const values = ((((snap || {}).mr || {}).di || {}).values || []);
+    const on = Number(values[channel - 1] || 0) !== 0;
+    return { meta: on ? 'Активен' : 'Неактивен', live: on };
+  }
+
+  function moduleAoTabInfo(snap, channel) {
+    const volts = ((((snap || {}).mr || {}).ao || {}).current_volts || []);
+    const value = Number(volts[channel - 1]);
+    const hasValue = Number.isFinite(value);
+    return {
+      meta: hasValue ? `${formatFloat(value, 2)} В` : '—',
+      live: hasValue && Math.abs(value) > 0.01,
+    };
+  }
+
+  function moduleAiTabInfo(snap, channel) {
+    const ai = moduleAiChannel(snap, channel);
+    const sensorCode = Number(ai && ai.sensor_code || 0);
+    const tag = (ai && ai.sidebar_tag) ? String(ai.sidebar_tag) : aiSidebarTagFromCode(sensorCode);
+    return {
+      meta: tag,
+      live: sensorCode !== 0,
+    };
   }
 
   function configTabsForSnapshot(snap) {
@@ -640,10 +897,10 @@
         { id: 'network', label: 'Сеть' },
       ];
       if (meta.relay_mode_panel) tabs.push({ id: 'relay', label: 'Реле' });
-      for (let i = 1; i <= Number(meta.max_do || 0); i++) tabs.push({ id: 'do_' + i, label: 'DO' + i });
-      for (let i = 1; i <= Number(meta.max_di || 0); i++) tabs.push({ id: 'di_' + i, label: 'DI' + i });
-      for (let i = 1; i <= Number(meta.max_ao || 0); i++) tabs.push({ id: 'ao_' + i, label: 'AO' + i });
-      for (let i = 1; i <= Number(meta.max_ai || 0); i++) tabs.push({ id: 'ai_' + i, label: 'AI' + i });
+      for (let i = 1; i <= Number(meta.max_di || 0); i++) tabs.push({ id: 'di_' + i, label: 'DI' + i, ...moduleDiTabInfo(snap, i) });
+      for (let i = 1; i <= Number(meta.max_do || 0); i++) tabs.push({ id: 'do_' + i, label: 'DO' + i, ...moduleDoTabInfo(snap, i) });
+      for (let i = 1; i <= Number(meta.max_ao || 0); i++) tabs.push({ id: 'ao_' + i, label: 'AO' + i, ...moduleAoTabInfo(snap, i) });
+      for (let i = 1; i <= Number(meta.max_ai || 0); i++) tabs.push({ id: 'ai_' + i, label: 'AI' + i, ...moduleAiTabInfo(snap, i) });
       return tabs;
     }
     return [
@@ -679,7 +936,18 @@
             <div><dt>AO текущие</dt><dd>${escapeHtml(aoLive)}</dd></div>
             <div><dt>Прошивка</dt><dd>${escapeHtml((snap.info || {}).app_version || '—')}</dd></div>
           </dl>
-          <div class="flasher-config-note">Для модулей MR/MP-02м доступны панели каналов слева: DO, DI, AO, AI, а для релейных модулей дополнительно общая вкладка реле.</div>
+          <div class="flasher-config-note">Для модулей MR/MP-02м порядок каналов как в desktop: сначала DI, затем DO; релейная панель только для DO6DI8 / DO4DI6.</div>
+        </section>
+        <section class="flasher-config-card">
+          <h4>Modbus watchdog</h4>
+          <div class="flasher-config-form">
+            <label for="cfg-mr-inactivity-global">Таймаут без опроса линии, с (рег. 134)</label>
+            <input id="cfg-mr-inactivity-global" type="number" min="0" max="255" value="${escapeHtml(String(mr.inactivity_s ?? 0))}" />
+          </div>
+          <div class="flasher-config-actions">
+            <button class="btn btn-primary" type="button" id="cfg-mr-inactivity-save-btn">Сохранить таймаут</button>
+          </div>
+          <div class="flasher-config-note">Общий регистр 134 для модуля (не дублируется по каналам DO).</div>
         </section>
       </div>
     `;
@@ -691,7 +959,7 @@
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
-          <h4>Режимы реле</h4>
+          <h4>Реле и задержки</h4>
           <div class="flasher-config-form">
             <label for="cfg-mr-relay-mode">Режим работы</label>
             <select id="cfg-mr-relay-mode">
@@ -741,8 +1009,6 @@
           <div class="flasher-config-form">
             <label for="cfg-mr-do-safe-${channel}">Безопасное состояние, 0/1</label>
             <input id="cfg-mr-do-safe-${channel}" type="number" min="0" max="1" value="${escapeHtml(String(safe[idx] ?? 0))}" />
-            <label for="cfg-mr-do-inactivity-${channel}">Время без опроса, с</label>
-            <input id="cfg-mr-do-inactivity-${channel}" type="number" min="0" max="255" value="${escapeHtml(String(mr.inactivity_s ?? 0))}" />
             ${idx < timerWords.length ? `
               <label for="cfg-mr-do-mode-${channel}">Таймер, режим</label>
               <select id="cfg-mr-do-mode-${channel}">
@@ -754,6 +1020,7 @@
               <input id="cfg-mr-do-redelay-${channel}" type="number" min="0" max="999" value="${escapeHtml(String(redelay[idx] ?? 0))}" />
             ` : ''}
           </div>
+          <div class="flasher-config-note">Таймеры / redelay — только DO1…DO6 (как в desktop).</div>
           <div class="flasher-config-actions">
             <button class="btn btn-primary" type="button" data-mr-do-save="${channel}">Сохранить DO${channel}</button>
           </div>
@@ -767,7 +1034,7 @@
     const di = mr.di || {};
     const idx = channel - 1;
     return `
-      <div class="flasher-config-grid">
+      <div class="flasher-config-grid flasher-config-di-split">
         <section class="flasher-config-card">
           <h4>DI${channel}</h4>
           <div class="flasher-config-list">
@@ -838,33 +1105,39 @@
     const ai = moduleAiChannel(snap, channel);
     if (!ai) return '<div class="flasher-empty">Канал AI не найден.</div>';
     const filters = ai.filters || null;
+    const sensorCode = Number(ai.sensor_code || 0);
+    const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
+    const subchoices = aiUiSubchoicesForBucket(bucket);
+    const calOk = ai.calibration_applicable != null ? !!ai.calibration_applicable : aiUiCalibrationApplicable(sensorCode);
+    const subchoiceOptions = subchoices.map(item => {
+      const sel = Number(item[0]) === sensorCode ? 'selected' : '';
+      return `<option value="${item[0]}" ${sel}>${escapeHtml(item[1])}</option>`;
+    }).join('');
+    const bucketOptions = MODULE_AI_UI_BUCKETS.map(b =>
+      `<option value="${escapeHtml(b.id)}" ${b.id === bucket ? 'selected' : ''}>${escapeHtml(b.label)}</option>`
+    ).join('');
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
           <h4>AI${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Тип датчика</span><strong>${escapeHtml(ai.sensor_label || '—')}</strong></div>
+            <div class="flasher-config-row"><span>Тип</span><strong>${escapeHtml(ai.sensor_label || '—')}</strong></div>
             <div class="flasher-config-row"><span>Измеренное raw</span><strong>${escapeHtml(String(ai.measured_raw ?? '—'))}</strong></div>
             <div class="flasher-config-row"><span>Пересчитанное raw</span><strong>${escapeHtml(String(ai.scaled_raw ?? '—'))}</strong></div>
-            <div class="flasher-config-row"><span>Калибровка</span><strong>${escapeHtml(String(ai.calibration ?? 0))}</strong></div>
           </div>
         </section>
         <section class="flasher-config-card">
           <h4>Настройки входа</h4>
           <div class="flasher-config-form">
-            <label for="cfg-mr-ai-sensor-${channel}">Тип датчика</label>
-            <select id="cfg-mr-ai-sensor-${channel}">
-              ${[
-                [0x0000, 'Выключен'], [0x0001, 'NTC 10k'], [0x0002, 'Pt1000'], [0x0003, 'Pt100'],
-                [0x0004, '0-10 В'], [0x0005, '4-20 мА'], [0x0006, 'Термопара K'], [0x0007, 'Сухой контакт'],
-                [0x0008, 'Pt50'], [0x0009, 'Pt500'], [0x000A, 'NTC 100k'], [0x000B, 'NTC10k B3988'],
-                [0x000C, 'NTC10k B3435'], [0x000D, 'NTC10k B3470'], [0x000E, 'Pt100 391'], [0x000F, 'Pt1000 391'],
-                [0x0010, 'Pt100 428'], [0x0011, 'Pt1000 428'], [0x0012, 'Ni100'], [0x0013, 'Ni500'],
-                [0x0014, 'Ni1000'], [0x0015, '0-5 мА'], [0x0016, '0-20 мА'], [0x0017, 'Дифф. 50 мВ'], [0x0018, 'Дифф. 2 В'],
-              ].map(item => `<option value="${item[0]}" ${Number(item[0]) === Number(ai.sensor_code || 0) ? 'selected' : ''}>${escapeHtml(item[1])}</option>`).join('')}
-            </select>
-            <label for="cfg-mr-ai-cal-${channel}">Калибровка, int16</label>
-            <input id="cfg-mr-ai-cal-${channel}" type="number" min="-32768" max="32767" value="${escapeHtml(String(ai.calibration ?? 0))}" />
+            <label for="cfg-mr-ai-bucket-${channel}">Режим датчика</label>
+            <select id="cfg-mr-ai-bucket-${channel}">${bucketOptions}</select>
+            <label for="cfg-mr-ai-sensor-${channel}">Подтип</label>
+            <select id="cfg-mr-ai-sensor-${channel}">${subchoiceOptions}</select>
+            <div id="cfg-mr-ai-cal-wrap-${channel}" ${calOk ? '' : 'hidden'}>
+              <label for="cfg-mr-ai-cal-${channel}">Калибровка температуры, int16</label>
+              <input id="cfg-mr-ai-cal-${channel}" type="number" min="-32768" max="32767" value="${escapeHtml(String(ai.calibration ?? 0))}" />
+            </div>
+            <div id="cfg-mr-ai-cal-note-${channel}" class="flasher-config-note" ${calOk ? 'hidden' : ''}>Калибровка смещения доступна только для температурных датчиков.</div>
             ${filters ? `
               <label class="checkbox-line"><input id="cfg-mr-ai-kalman-${channel}" type="checkbox" ${Number(filters.kalman || 0) ? 'checked' : ''} /> Фильтр Калмана</label>
               <label for="cfg-mr-ai-sps-${channel}">Частота АЦП, выб/сек</label>
@@ -1182,47 +1455,68 @@
     const host = configModalEl('flasher-config-tabs');
     if (!host) return;
     const tabs = configTabsForSnapshot(state.configSnapshot);
-    host.innerHTML = tabs.map(tab => (
-      `<button type="button" class="flasher-config-tab ${tab.id === state.configTab ? 'active' : ''}" data-config-tab="${tab.id}">${escapeHtml(tab.label)}</button>`
-    )).join('');
+    host.innerHTML = tabs.map(tab => {
+      const classes = ['flasher-config-tab'];
+      if (tab.id === state.configTab) classes.push('active');
+      if (tab.live) classes.push('is-live');
+      return `<button type="button" class="${classes.join(' ')}" data-config-tab="${tab.id}">` +
+        `<span>${escapeHtml(tab.label)}</span>` +
+        (tab.meta ? `<small>${escapeHtml(tab.meta)}</small>` : '') +
+      `</button>`;
+    }).join('');
     host.querySelectorAll('[data-config-tab]').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', async () => {
         state.configTab = btn.dataset.configTab || 'info';
         renderConfigTabs();
         renderConfigBody();
+        await refreshConfigSnapshot(true, 'full');
       });
     });
   }
 
   function applyConfigSnapshot(snap, silent) {
-    state.configSnapshot = snap;
-    configDeviceFromSnapshot(snap);
+    let merged = snap;
+    if (
+      snap &&
+      (snap.snapshot_detail === 'minimal' || snap.snapshot_detail === 'panel') &&
+      state.configSnapshot &&
+      state.configSnapshot.kind === snap.kind
+    ) {
+      merged = mergeDeviceConfigSnapshot(state.configSnapshot, snap);
+    }
+    state.configSnapshot = merged;
+    configDeviceFromSnapshot(merged);
     renderDevices();
     const title = configModalEl('flasher-config-title');
     const sub = configModalEl('flasher-config-sub');
     const kicker = configModalEl('flasher-config-kicker');
-    if (title) title.textContent = deviceConfigTitle(snap.kind, snap.info && snap.info.signature);
-    if (kicker) kicker.textContent = snap.kind === 'dtv' ? 'Настройка датчика' : snap.kind === 'ce' ? 'Настройка анализатора сети' : 'Настройка модуля расширения';
+    if (title) title.textContent = deviceConfigTitle(merged.kind, merged.info && merged.info.signature);
+    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : 'Настройка модуля расширения';
     if (sub) {
-      const info = snap.info || {};
-      sub.textContent = `${info.address ?? '—'} адр. · ${(snap.network && snap.network.baudrate) || '—'} ${(snap.network && snap.network.parity) || 'N'}${(snap.network && snap.network.stopbits) || 1} · ${serialHex(info.serial)}`;
+      const info = merged.info || {};
+      sub.textContent = `${info.address ?? '—'} адр. · ${(merged.network && merged.network.baudrate) || '—'} ${(merged.network && merged.network.parity) || 'N'}${(merged.network && merged.network.stopbits) || 1} · ${serialHex(info.serial)}`;
     }
     if (!state.configTab) state.configTab = 'info';
-    const available = configTabsForSnapshot(snap).map(t => t.id);
+    const available = configTabsForSnapshot(merged).map(t => t.id);
     if (!available.includes(state.configTab)) state.configTab = available[0] || 'info';
     renderConfigTabs();
-    renderConfigBody();
+    if (!shouldSkipConfigBodyRerender()) renderConfigBody();
     if (!silent) setConfigBanner('', '');
     scheduleConfigPolling();
   }
 
-  async function refreshConfigSnapshot(silent) {
+  async function refreshConfigSnapshot(silent, detail) {
     const dev = currentConfigDevice();
     const port = $('flasher-port').value;
     if (!dev || !port) return;
     setConfigBusy(true);
     try {
-      const snap = await configApi('/device_config/snapshot', { port, device: dev });
+      const snap = await configApi('/device_config/snapshot', {
+        port,
+        device: dev,
+        snapshot_detail: detail || 'full',
+        active_tab: state.configTab || '',
+      });
       applyConfigSnapshot(snap, !!silent);
     } catch (err) {
       setConfigBanner('Не удалось загрузить настройки: ' + err.message, 'error');
@@ -1242,6 +1536,7 @@
     state.configDeviceIdx = idx;
     state.configTab = 'info';
     state.configSnapshot = null;
+    state.configNetworkDirty = false;
     configModalEl('flasher-config-modal').hidden = false;
     document.body.style.overflow = 'hidden';
     renderConfigBody();
@@ -1274,6 +1569,7 @@
     try {
       const snap = await configApi('/device_config/network', { port, device: dev, network });
       applyConfigSnapshot(snap, false);
+      state.configNetworkDirty = false;
       toast('Параметры сети сохранены', 'success');
     } catch (err) {
       setConfigBanner('Сохранение сети: ' + err.message, 'error');
@@ -1404,12 +1700,26 @@
   }
 
   async function toggleModuleDo(channel, on) {
+    const prev = state.configSnapshot;
+    if (prev && prev.kind === 'mr' && prev.mr && prev.mr.do && Array.isArray(prev.mr.do.bits)) {
+      try {
+        const copy = JSON.parse(JSON.stringify(prev));
+        const bits = copy.mr.do.bits.slice();
+        const ix = channel - 1;
+        if (ix >= 0 && ix < bits.length) bits[ix] = !!on;
+        copy.mr.do.bits = bits;
+        state.configSnapshot = copy;
+        renderConfigTabs();
+        renderConfigBody();
+      } catch (_) {}
+    }
     setConfigBusy(true);
     try {
       await writeConfigCoil(channel, !!on, on ? `DO${channel} включен` : `DO${channel} выключен`);
     } catch (err) {
       setConfigBanner(`DO${channel}: ` + err.message, 'error');
       toast(`DO${channel}: ` + err.message, 'error');
+      await refreshConfigSnapshot(false, 'full');
     } finally {
       setConfigBusy(false);
     }
@@ -1419,10 +1729,15 @@
     await writeHoldingBatch([{ reg: 135, value: 1 }], 'Счетчики DO сброшены', 'DO: ');
   }
 
+  async function saveMrGlobalInactivity() {
+    await writeHoldingBatch([
+      { reg: 134, value: clampInt(configModalEl('cfg-mr-inactivity-global').value, 0, 255, 0) },
+    ], 'Таймаут линии сохранён', 'Modbus: ');
+  }
+
   async function saveModuleDo(channel) {
     const items = [
       { reg: 600 + channel - 1, value: clampInt(configModalEl(`cfg-mr-do-safe-${channel}`).value, 0, 1, 0) },
-      { reg: 134, value: clampInt(configModalEl(`cfg-mr-do-inactivity-${channel}`).value, 0, 255, 0) },
     ];
     const modeEl = configModalEl(`cfg-mr-do-mode-${channel}`);
     const timeEl = configModalEl(`cfg-mr-do-time-${channel}`);
@@ -1453,9 +1768,10 @@
   }
 
   async function saveModuleAo(channel) {
+    const safeReg = aoSafeHoldingRegForChannel(state.configSnapshot, channel);
     await writeHoldingBatch([
       { reg: 33 + channel - 1, value: clampInt(configModalEl(`cfg-mr-ao-set-${channel}`).value, 0, 1000, 0) },
-      { reg: 503 + channel - 1, value: clampInt(configModalEl(`cfg-mr-ao-safe-${channel}`).value, 0, 1000, 0) },
+      { reg: safeReg, value: clampInt(configModalEl(`cfg-mr-ao-safe-${channel}`).value, 0, 1000, 0) },
       { reg: 134, value: clampInt(configModalEl(`cfg-mr-ao-inactivity-${channel}`).value, 0, 255, 0) },
     ], `Настройки AO${channel} сохранены`, `AO${channel}: `);
   }
@@ -1463,10 +1779,12 @@
   async function saveModuleAi(channel) {
     const ai = moduleAiChannel(state.configSnapshot, channel);
     if (!ai) return;
-    const items = [
-      { reg: Number(ai.register_base), value: clampInt(configModalEl(`cfg-mr-ai-sensor-${channel}`).value, 0, 0xFFFF, 0) },
-      { reg: Number(ai.register_base) + 4, value: signedToUint16(configModalEl(`cfg-mr-ai-cal-${channel}`).value) },
-    ];
+    const base = Number(ai.register_base);
+    const sensorVal = clampInt(configModalEl(`cfg-mr-ai-sensor-${channel}`).value, 0, 0xFFFF, 0);
+    const items = [{ reg: base, value: sensorVal }];
+    if (aiUiCalibrationApplicable(sensorVal)) {
+      items.push({ reg: base + 4, value: signedToUint16(configModalEl(`cfg-mr-ai-cal-${channel}`).value) });
+    }
     if (ai.filters) {
       const stor = Number(ai.filters.stor || 0);
       const rawSps = clampInt(configModalEl(`cfg-mr-ai-sps-${channel}`).value, 20, 1000, 45);
@@ -1479,13 +1797,52 @@
     await writeHoldingBatch(items, `Настройки AI${channel} сохранены`, `AI${channel}: `);
   }
 
+  function refreshAiCalibrationVisibility(channel) {
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    const wrap = configModalEl(`cfg-mr-ai-cal-wrap-${channel}`);
+    const note = configModalEl(`cfg-mr-ai-cal-note-${channel}`);
+    if (!sensorEl || !wrap) return;
+    const ok = aiUiCalibrationApplicable(parseInt(sensorEl.value, 10) || 0);
+    wrap.hidden = !ok;
+    if (note) note.hidden = ok;
+  }
+
+  function setupAiBucketHandlers(body) {
+    body.querySelectorAll('select[id^="cfg-mr-ai-bucket-"]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const channel = parseInt(sel.id.replace('cfg-mr-ai-bucket-', ''), 10);
+        const bucket = sel.value;
+        const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+        if (!sensorEl) return;
+        const choices = aiUiSubchoicesForBucket(bucket);
+        const prev = sensorEl.value;
+        sensorEl.innerHTML = choices.map(([code, lbl]) => {
+          const isSel = String(code) === String(prev) ? 'selected' : '';
+          return `<option value="${code}" ${isSel}>${escapeHtml(lbl)}</option>`;
+        }).join('');
+        if (!choices.some(([code]) => String(code) === prev)) {
+          sensorEl.value = String(choices[0][0]);
+        }
+        refreshAiCalibrationVisibility(channel);
+      });
+    });
+    body.querySelectorAll('select[id^="cfg-mr-ai-sensor-"]').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
+        refreshAiCalibrationVisibility(channel);
+      });
+      const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
+      refreshAiCalibrationVisibility(channel);
+    });
+  }
+
   function wireConfigBodyEvents() {
     const body = configModalEl('flasher-config-body');
     if (!body) return;
     const saveNet = body.querySelector('#cfg-net-save-btn');
     if (saveNet) saveNet.addEventListener('click', saveConfigNetwork);
     const refreshNet = body.querySelector('#cfg-net-refresh-btn');
-    if (refreshNet) refreshNet.addEventListener('click', () => refreshConfigSnapshot(false));
+    if (refreshNet) refreshNet.addEventListener('click', () => refreshConfigSnapshot(false, 'full'));
     const ceSave = body.querySelector('#cfg-ce-save-btn');
     if (ceSave) ceSave.addEventListener('click', saveCeSettings);
     const dtvMain = body.querySelector('#cfg-dtv-main-save-btn');
@@ -1504,6 +1861,16 @@
     body.querySelectorAll('[data-mr-ai-save]').forEach(btn => btn.addEventListener('click', () => saveModuleAi(parseInt(btn.dataset.mrAiSave, 10))));
     body.querySelectorAll('[data-mr-do-reset]').forEach(btn => btn.addEventListener('click', resetModuleDoCounters));
     body.querySelectorAll('[data-mr-di-reset]').forEach(btn => btn.addEventListener('click', resetModuleDiCounters));
+    const mrInactSave = body.querySelector('#cfg-mr-inactivity-save-btn');
+    if (mrInactSave) mrInactSave.addEventListener('click', saveMrGlobalInactivity);
+    ['cfg-net-addr', 'cfg-net-baud', 'cfg-net-parity', 'cfg-net-stop'].forEach(id => {
+      const el = body.querySelector('#' + id);
+      if (el) el.addEventListener('input', () => { state.configNetworkDirty = true; });
+      if (el) el.addEventListener('change', () => { state.configNetworkDirty = true; });
+    });
+    const fastEl = body.querySelector('#cfg-net-fast');
+    if (fastEl) fastEl.addEventListener('change', () => { state.configNetworkDirty = true; });
+    setupAiBucketHandlers(body);
   }
 
   /* ── Прогресс/лог SSE ─────────────────────────────────────────────────── */
