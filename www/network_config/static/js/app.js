@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.3.6';
+const APP_VERSION = '1.0.3.7';
 
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
@@ -855,21 +855,26 @@ function applyWebUpdateCheckUI(j) {
   if (emsg && !j.remote_commit) {
     st.textContent = 'Не удалось узнать состояние на GitHub (' + emsg + ').';
     st.classList.add('is-err');
+    st.hidden = false;
   } else if (j.update_available === true) {
     st.textContent = 'Доступно обновление на GitHub (ветка ' + (j.branch || 'main') + ').';
     st.classList.add('is-warn');
+    st.hidden = false;
   } else if (j.update_available === false) {
     st.textContent = 'Совпадает с веткой на GitHub.';
     st.classList.add('is-ok');
+    st.hidden = false;
   } else if (emsg) {
     st.textContent = emsg;
     st.classList.add('is-err');
+    st.hidden = false;
   } else if (deployedRefDisplay(j) !== '—' && j.remote_commit) {
     st.textContent = 'На устройстве метка сборки (не git SHA). Это нормально при копировании без репозитория — для сравнения коммитов деплой из git.';
     st.classList.add('is-warn');
+    st.hidden = false;
   } else {
-    st.textContent = 'Коммит на устройстве неизвестен — после деплоя из git выполните update-www-only.sh или install.';
-    st.classList.remove('is-ok', 'is-warn', 'is-err');
+    st.textContent = '';
+    st.hidden = true;
   }
 }
 

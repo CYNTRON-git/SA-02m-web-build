@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.18">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.19">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -446,11 +446,37 @@
                 </div>
               </form>
             </div>
+            <div class="ctrl-card system-manage-actions-card">
+              <div class="ctrl-card-main system-manage-actions-main">
+                <div class="system-action-block">
+                  <div class="system-action-label">USB / microSD</div>
+                  <p class="storage-fmt-hint system-action-desc">Автоформат в exFAT</p>
+                  <button type="button" class="btn btn-danger system-action-btn" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
+                  </button>
+                </div>
+                <div class="system-action-block">
+                  <div class="system-action-label">Службы</div>
+                  <button type="button" class="btn btn-warn system-action-btn" onclick="doRestart()">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    Перезапустить
+                  </button>
+                </div>
+                <div class="system-action-block">
+                  <div class="system-action-label">Перезагрузка устройства</div>
+                  <button type="button" class="btn btn-danger system-action-btn" onclick="doReboot()">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    Перезагрузить
+                  </button>
+                </div>
+              </div>
+            </div>
             <div class="ctrl-card">
               <div class="ctrl-card-main">
                 <h3>Обновления веб-интерфейса</h3>
-                <p>Ветка <span class="mono">main</span> — <a href="https://github.com/CYNTRON-git/SA-02m-web-build" target="_blank" rel="noopener">GitHub</a>. Проверка по таймеру (каждый час) и вручную.</p>
-                <div id="web-upd-status" class="web-upd-status" role="status"></div>
+                <p>Ветка <span class="mono">main</span> — <a href="https://github.com/CYNTRON-git/SA-02m-web-build" target="_blank" rel="noopener">GitHub</a>. Проверка по таймеру (раз в час) и вручную.</p>
+                <div id="web-upd-status" class="web-upd-status" role="status" hidden></div>
                 <dl class="web-upd-meta">
                   <div><dt>Задеплоено</dt><dd id="web-upd-deployed" class="mono">—</dd></div>
                   <div><dt>На GitHub</dt><dd id="web-upd-remote" class="mono">—</dd></div>
@@ -458,36 +484,6 @@
                 </dl>
               </div>
               <button type="button" class="btn" id="web-upd-check-btn" onclick="checkWebUpdatesManual()">Проверить обновления</button>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-card-main">
-                <h3>USB / microSD</h3>
-                <p class="storage-fmt-hint">Автоформат в exFAT при пустой ФС или NTFS (по умолчанию вкл.).</p>
-              </div>
-              <button type="button" class="btn btn-danger" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
-              </button>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-card-main">
-                <h3>Службы</h3>
-                <p>Перезапустить nginx, fcgiwrap и сеть.</p>
-              </div>
-              <button type="button" class="btn btn-warn" onclick="doRestart()">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Перезапустить
-              </button>
-            </div>
-            <div class="ctrl-card">
-              <div class="ctrl-card-main">
-                <h3>Перезагрузка</h3>
-                <p>Полная перезагрузка контроллера. Подключение прервётся на ~30 секунд.</p>
-              </div>
-              <button type="button" class="btn btn-danger" onclick="doReboot()">
-                <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                Перезагрузить
-              </button>
             </div>
         </div>
 
@@ -656,7 +652,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.20"></script>
+<script src="/static/js/app.js?v=1.0.3.21"></script>
 <script src="/static/js/flasher.js?v=1.0.3-12"></script>
 </body>
 </html>
