@@ -109,6 +109,7 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
     stopbits = int(params.get("stopbits") or 1)
     addr_min = int(params.get("addr_min") or 1)
     addr_max = int(params.get("addr_max") or 247)
+    timing_profile = str(params.get("timing_profile") or "standard").strip().lower()
     speed_configs = _build_speed_configs(baudrates, parity, stopbits)
 
     device_path = resolve_device_path(cfg, port_key)
@@ -157,6 +158,7 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
                 addr_max=addr_max,
                 fast_scan=True,
                 scan_mode=mode,
+                timing_profile=("aggressive" if timing_profile == "aggressive" else "standard"),
             )
 
     # Финальный снэпшот: перезаписать список устройств из результата scan_all (упорядочено).
@@ -809,6 +811,7 @@ def _flash_one_device(
             )
 
     info_sig = (dev_sig if dev_sig and dev_sig.upper() != "NONE" else file_signature) or fp.DEFAULT_SIGNATURE
+    flash_cancel_gate = fp.FlashCancelGate(lambda: cancel_evt.is_set())
 
     def prog(sent: int, total: int) -> None:
         total = max(1, int(total))
@@ -824,6 +827,7 @@ def _flash_one_device(
             image,
             progress_cb=prog,
             cancel_cb=cancel_evt.is_set,
+            cancel_gate=flash_cancel_gate,
         )
         if err:
             return err
@@ -850,6 +854,7 @@ def _flash_one_device(
                 info_sig,
                 progress_cb=prog,
                 cancel_cb=cancel_evt.is_set,
+                cancel_gate=flash_cancel_gate,
             )
         else:
             err = fp.run_flash_sequence_by_address(
@@ -859,6 +864,7 @@ def _flash_one_device(
                 info_sig,
                 progress_cb=prog,
                 cancel_cb=cancel_evt.is_set,
+                cancel_gate=flash_cancel_gate,
             )
         if err:
             return err
@@ -914,6 +920,7 @@ def _flash_one_device(
             info_sig,
             progress_cb=prog,
             cancel_cb=cancel_evt.is_set,
+            cancel_gate=flash_cancel_gate,
         )
         if err:
             return err
@@ -928,6 +935,7 @@ def _flash_one_device(
         info_sig,
         progress_cb=prog,
         cancel_cb=cancel_evt.is_set,
+        cancel_gate=flash_cancel_gate,
     )
     if err:
         return err

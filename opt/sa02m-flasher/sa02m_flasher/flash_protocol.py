@@ -14,13 +14,16 @@ import struct
 import sys
 import time
 import zlib
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from . import modbus_rtu
 from .modbus_io import (
     decode_bootloader_version_registers_8,
     decode_signature_from_holding_290_payload,
+    uint32_from_modbus_reg_pair_be,
 )
+from .module_profiles import is_mp_module_signature_for_batch_flash
 
 # --- Параметры линии бутлоадера (прошивка всегда на этой скорости) ---
 # Должно совпадать с BL_UART_BAUDRATE / BL_BOOTLOADER_FIXED_BAUD в shared/bootloader/bootloader_config.h
@@ -133,6 +136,359 @@ FLASH_APP_END = 0x0802F800
 BOOTLOADER_MAX_APP_BYTES = FLASH_APP_END - FLASH_APP_START  # 190464 байт (~186 КБ)
 MAX_FIRMWARE_SIZE_BYTES = BOOTLOADER_MAX_APP_BYTES
 DEFAULT_RETRIES_PER_BLOCK = 5  # для образа бутлоадера; для приложения используется APP_MAX_ERROR_COUNT (3, как WB)
+
+REG_SERIAL_LO = 270
+REG_SERIAL_HI = 271
+REG_DIAG_STATE = 0xF3
+REG_DIAG_APP_VALID = 0xF4
+REG_DIAG_JUMP_FAIL_COUNT = 0xF5
+REG_DIAG_APP_MARKER_LO = 0xF6
+REG_DIAG_FAULT_MARKER_LO = 0xF8
+REG_DIAG_FLASH_STICKY_LO = 0xFA
+
+BOOT_DIAG_STATE_INFO_RECEIVED = 1 << 0
+BOOT_DIAG_STATE_ERASE_PENDING = 1 << 1
+BOOT_DIAG_STATE_ERASE_WAITING = 1 << 2
+BOOT_DIAG_STATE_ERASE_FAILED = 1 << 3
+BOOT_DIAG_STATE_FLASH_COMPLETE = 1 << 4
+BOOT_DIAG_STATE_REQUEST_JUMP = 1 << 5
+BOOT_DIAG_STATE_IMAGE_CRC_FAILED = 1 << 6
+BOOT_DIAG_STATE_PENDING_EEPROM_SIG = 1 << 7
+BOOT_DIAG_STATE_STAGING_MODE = 1 << 8
+BOOT_DIAG_STATE_TARGET_BOOTLOADER = 1 << 9
+BOOT_DIAG_STATE_REGION_PRE_ERASED = 1 << 10
+BOOT_DIAG_STATE_DATA_PENDING = 1 << 11
+
+INFO_MAX_ATTEMPTS = 3
+POST_ERASE_BEFORE_FIRST_DATA_S = 0.0
+ERASE_READY_POLL_S = 0.18
+ERASE_READY_MAX_WAIT_S = 15.0
+
+
+@dataclass(frozen=True)
+class BootloaderDiagnostics:
+    signature: Optional[str] = None
+    bootloader_version: Optional[str] = None
+    serial_u32: Optional[int] = None
+    info_reject_code: Optional[int] = None
+    info_reject_detail: Optional[int] = None
+    data_reject_code: Optional[int] = None
+    state_flags: Optional[int] = None
+    app_valid: Optional[bool] = None
+    jump_fail_count: Optional[int] = None
+    app_marker: Optional[int] = None
+    fault_marker: Optional[int] = None
+    flash_sticky: Optional[int] = None
+
+
+def _read_u16_from_payload(payload: Optional[bytes]) -> Optional[int]:
+    if not payload or len(payload) < 2:
+        return None
+    return (payload[0] << 8) | payload[1]
+
+
+def _read_u32_regs_from_payload(payload: Optional[bytes]) -> Optional[int]:
+    if not payload or len(payload) < 4:
+        return None
+    return uint32_from_modbus_reg_pair_be(payload, 0)
+
+
+def _last_info_reject_reason_text(code: Optional[int], detail: Optional[int] = None) -> Optional[str]:
+    if code is None:
+        return None
+    reasons = {
+        0: "нет",
+        1: "неверный размер образа",
+        2: "несовпадение сигнатуры с EEPROM",
+        3: "ошибка записи EEPROM сигнатуры",
+        4: "в info нет CRC2/CRC32",
+        5: "размер меньше минимального AppBoot",
+    }
+    text = reasons.get(int(code), f"код {int(code)}")
+    if int(code) == 2 and detail not in (None, 0):
+        text += f", байт {int(detail)}"
+    return text
+
+
+def _last_data_reject_reason_text(code: Optional[int]) -> Optional[str]:
+    if code is None:
+        return None
+    reasons = {
+        0: "нет",
+        1: "info ещё не принят",
+        2: "устройство в staging-режиме bootloader",
+        3: "смещение/размер блока вне диапазона",
+        4: "идёт стирание Flash",
+        5: "предыдущий блок ещё не обработан",
+        6: "таймаут стирания региона",
+        7: "CRC образа не совпала",
+        8: "read-back таблицы векторов не совпал",
+    }
+    return reasons.get(int(code), f"код {int(code)}")
+
+
+def _bootloader_ready_for_data(state_flags: Optional[int], data_reject: Optional[int]) -> bool:
+    flags = int(state_flags or 0)
+    if flags & (BOOT_DIAG_STATE_ERASE_PENDING | BOOT_DIAG_STATE_ERASE_WAITING):
+        return False
+    if data_reject in (4, 5):
+        return False
+    return True
+
+
+def _collect_bootloader_diagnostics_impl(
+    read_regs: Callable[[int, int], Tuple[Optional[bytes], Optional[str]]],
+    read_boot_info: Callable[[], Tuple[Optional[str], Optional[str], Optional[str]]],
+) -> BootloaderDiagnostics:
+    sig, bl_ver, _ = read_boot_info()
+    payload_sn, _ = read_regs(REG_SERIAL_LO, 2)
+    payload_f1, _ = read_regs(REG_LAST_INFO_REJECT, 2)
+    payload_f2, _ = read_regs(REG_LAST_DATA_REJECT, 1)
+    payload_state, _ = read_regs(REG_DIAG_STATE, 1)
+    payload_app_valid, _ = read_regs(REG_DIAG_APP_VALID, 1)
+    payload_jump_fail, _ = read_regs(REG_DIAG_JUMP_FAIL_COUNT, 1)
+    payload_app_marker, _ = read_regs(REG_DIAG_APP_MARKER_LO, 2)
+    payload_fault_marker, _ = read_regs(REG_DIAG_FAULT_MARKER_LO, 2)
+    payload_flash_sticky, _ = read_regs(REG_DIAG_FLASH_STICKY_LO, 2)
+    return BootloaderDiagnostics(
+        signature=sig,
+        bootloader_version=bl_ver,
+        serial_u32=_read_u32_regs_from_payload(payload_sn),
+        info_reject_code=_read_u16_from_payload(payload_f1),
+        info_reject_detail=((payload_f1[2] << 8) | payload_f1[3]) if payload_f1 and len(payload_f1) >= 4 else None,
+        data_reject_code=_read_u16_from_payload(payload_f2),
+        state_flags=_read_u16_from_payload(payload_state),
+        app_valid=(bool(_read_u16_from_payload(payload_app_valid)) if _read_u16_from_payload(payload_app_valid) is not None else None),
+        jump_fail_count=_read_u16_from_payload(payload_jump_fail),
+        app_marker=_read_u32_regs_from_payload(payload_app_marker),
+        fault_marker=_read_u32_regs_from_payload(payload_fault_marker),
+        flash_sticky=_read_u32_regs_from_payload(payload_flash_sticky),
+    )
+
+
+def collect_bootloader_diagnostics_by_serial(
+    flasher: "FlasherProtocol",
+    serial: int,
+) -> BootloaderDiagnostics:
+    return _collect_bootloader_diagnostics_impl(
+        lambda start, count: flasher.read_holding_registers_by_serial(serial, start, count),
+        lambda: flasher.read_bootloader_info_by_serial(serial),
+    )
+
+
+def collect_bootloader_diagnostics_by_address(
+    flasher: "FlasherProtocol",
+    slave: int,
+) -> BootloaderDiagnostics:
+    return _collect_bootloader_diagnostics_impl(
+        lambda start, count: flasher.read_holding_registers(slave, start, count),
+        lambda: flasher.read_bootloader_info(slave),
+    )
+
+
+def _wait_bootloader_ready_for_data_impl(
+    flasher: "FlasherProtocol",
+    read_regs: Callable[[int, int], Tuple[Optional[bytes], Optional[str]]],
+    target_label: str,
+    *,
+    max_wait_s: float = ERASE_READY_MAX_WAIT_S,
+) -> Optional[str]:
+    started_at = time.perf_counter()
+    deadline = started_at + max_wait_s
+    last_state: Optional[int] = None
+    last_reject: Optional[int] = None
+    last_err: Optional[str] = None
+    legacy_wait_due_to_missing_diag = False
+    if flasher.log_cb:
+        flasher.log_cb(
+            "Ожидание готовности bootloader к первому блоку данных (%s): опрос diag/state вместо фиксированной паузы."
+            % target_label
+        )
+    while time.perf_counter() < deadline:
+        payload_state, err_state = read_regs(REG_DIAG_STATE, 1)
+        payload_f2, err_f2 = read_regs(REG_LAST_DATA_REJECT, 1)
+        state_unsupported = _modbus_inner_exception_code(err_state) == 2
+        reject_unsupported = _modbus_inner_exception_code(err_f2) == 2
+        if state_unsupported and not legacy_wait_due_to_missing_diag:
+            legacy_wait_due_to_missing_diag = True
+            if flasher.log_cb:
+                missing = ["0xF3"]
+                if reject_unsupported:
+                    missing.append("0xF2")
+                flasher.log_cb(
+                    "Bootloader не поддерживает %s для %s; используем совместимый fallback "
+                    "с legacy-паузой %.1f с перед первым блоком данных."
+                    % ("/".join(missing), target_label, ERASE_WAIT_AFTER_INFO_S)
+                )
+        if state_unsupported:
+            err_state = None
+            payload_state = None
+        if reject_unsupported:
+            err_f2 = None
+            payload_f2 = None
+        state = _read_u16_from_payload(payload_state)
+        reject = _read_u16_from_payload(payload_f2)
+        if err_state:
+            last_err = err_state
+        elif err_f2:
+            last_err = err_f2
+        else:
+            last_state = state
+            last_reject = reject
+            if state is not None and (state & BOOT_DIAG_STATE_ERASE_FAILED):
+                return (
+                    "Bootloader сообщил ошибку стирания региона перед первым блоком данных "
+                    f"({target_label}, state=0x{state:04X}, 0xF2={reject})."
+                )
+            if legacy_wait_due_to_missing_diag and state is None:
+                if reject in (4, 5):
+                    time.sleep(ERASE_READY_POLL_S)
+                    continue
+                if (time.perf_counter() - started_at) < ERASE_WAIT_AFTER_INFO_S:
+                    time.sleep(ERASE_READY_POLL_S)
+                    continue
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Bootloader готов к приёму первого блока данных (%s) по fallback без 0xF3. 0xF2=%s."
+                        % (target_label, "—" if reject is None else str(int(reject)))
+                    )
+                return None
+            if _bootloader_ready_for_data(state, reject):
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Bootloader готов к приёму первого блока данных (%s). state=0x%04X, 0xF2=%s."
+                        % (target_label, int(state or 0), "—" if reject is None else str(int(reject)))
+                    )
+                return None
+        time.sleep(ERASE_READY_POLL_S)
+    detail = []
+    if last_state is not None:
+        detail.append(f"state=0x{int(last_state):04X}")
+    if last_reject is not None:
+        detail.append(f"0xF2={int(last_reject)}")
+    if last_err:
+        detail.append(last_err)
+    suffix = ("; ".join(detail)) if detail else "нет ответа от диагностических регистров"
+    return (
+        "Не дождались готовности bootloader к первому блоку данных "
+        f"({target_label}) за {max_wait_s:.1f} с: {suffix}."
+    )
+
+
+def wait_bootloader_ready_for_data_by_serial(
+    flasher: "FlasherProtocol",
+    serial: int,
+) -> Optional[str]:
+    return _wait_bootloader_ready_for_data_impl(
+        flasher,
+        lambda start, count: flasher.read_holding_registers_by_serial(serial, start, count),
+        "0x46",
+    )
+
+
+def wait_bootloader_ready_for_data_by_address(
+    flasher: "FlasherProtocol",
+    slave: int,
+) -> Optional[str]:
+    return _wait_bootloader_ready_for_data_impl(
+        flasher,
+        lambda start, count: flasher.read_holding_registers(slave, start, count),
+        "addr %d" % int(slave),
+    )
+
+
+def _validate_bootloader_board_signature_for_bin_flash(
+    board_sig: Optional[str],
+) -> Optional[str]:
+    s = (board_sig or "").strip()
+    if not s:
+        return (
+            "Не удалось прочитать сигнатуру нижней платы (рег. 290) в загрузчике. "
+            "Проверьте адрес загрузчика, скорость 115200 8N1 и режим bootloader."
+        )
+    if not is_mp_module_signature_for_batch_flash(s):
+        return (
+            f"Сигнатура «{s}» не поддерживается для прошивки приложения из MR-02m Flasher по Modbus. "
+            "Используйте образ .fw из каталога для вашей платы или проверьте подключение."
+        )
+    return None
+
+
+def _read_board_signature_bootloader_warmup(
+    flasher: "FlasherProtocol",
+    *,
+    slave: Optional[int] = None,
+    serial: Optional[int] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    if serial is not None and (serial & 0xFFFFFFFF) not in (0, 0xFFFFFFFF):
+        sn = int(serial) & 0xFFFFFFFF
+        flasher.read_holding_registers_by_serial(sn, REG_SIGNATURE, REG_SIGNATURE_COUNT)
+        time.sleep(max(FAST_MODBUS_INTER_READ_GAP_S, 0.03))
+        sig, _ver, err = flasher.read_bootloader_info_by_serial(sn)
+        if err:
+            return None, err
+        return (sig.strip() if sig else None), None
+    if slave is not None and 1 <= int(slave) <= 247:
+        a = int(slave)
+        flasher.read_holding_registers(a, REG_SIGNATURE, REG_SIGNATURE_COUNT)
+        time.sleep(max(FAST_MODBUS_INTER_READ_GAP_S, 0.03))
+        sig, _ver, err = flasher.read_bootloader_info(a)
+        if err:
+            return None, err
+        return (sig.strip() if sig else None), None
+    return None, "Не задан адрес загрузчика или серийный номер для чтения рег. 290."
+
+
+class FlashCancelGate:
+    """
+    Отмена до mark_irreversible() — прерывание прошивки.
+    После mark_irreversible() запрос отмены только блокируется.
+    """
+
+    __slots__ = ("_cancel_cb", "_on_blocked", "irreversible")
+
+    def __init__(
+        self,
+        cancel_cb: Optional[Callable[[], bool]],
+        *,
+        on_cancel_blocked: Optional[Callable[[], None]] = None,
+    ) -> None:
+        self._cancel_cb = cancel_cb
+        self._on_blocked = on_cancel_blocked
+        self.irreversible = False
+
+    @classmethod
+    def legacy_cancel(cls, cancel_cb: Optional[Callable[[], bool]]) -> "FlashCancelGate":
+        return cls(cancel_cb, on_cancel_blocked=None)
+
+    def mark_irreversible(self) -> None:
+        self.irreversible = True
+
+    def should_abort(self) -> bool:
+        if not self._cancel_cb or not self._cancel_cb():
+            return False
+        if self.irreversible:
+            if self._on_blocked:
+                self._on_blocked()
+            return False
+        return True
+
+    def sleep(self, total_s: float, step_s: float = 0.12) -> bool:
+        end = time.perf_counter() + float(total_s)
+        while time.perf_counter() < end:
+            if self.should_abort():
+                return True
+            time.sleep(min(step_s, max(0.0, end - time.perf_counter())))
+        return False
+
+
+def _resolve_flash_cancel_gate(
+    cancel_cb: Optional[Callable[[], bool]],
+    cancel_gate: Optional[FlashCancelGate],
+) -> FlashCancelGate:
+    if cancel_gate is not None:
+        return cancel_gate
+    return FlashCancelGate.legacy_cancel(cancel_cb)
 
 
 def bootloader_profiled_response_timeout_ms(
@@ -1150,10 +1506,12 @@ def run_flash_sequence_by_address(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
     retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
+    cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
     Прошивка приложения по Modbus-адресу. Как у WB: если образ с info-блоком (первые 32 B файла .fw) — отправляем их как 16 рег BE; иначе — сборка из signature + size (для .bin).
     """
+    gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE (как в make_fw.py)
     if _image_has_embedded_fw_header(image):
         size_from_file = struct.unpack_from("<I", image, 12)[0]
@@ -1166,26 +1524,42 @@ def run_flash_sequence_by_address(
                 return err_vt
         size = size_from_file
         if flasher.log_cb:
-            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) на адрес {slave}...")
-        err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
-        for _ in range(3):
-            if err and "Таймаут" in (err or ""):
-                time.sleep(INFO_RETRY_SLEEP_S)
-                err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
-            else:
+            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) на адрес {slave}.")
+        err = None
+        for info_try in range(INFO_MAX_ATTEMPTS):
+            if gate.should_abort():
+                return "Отменено пользователем"
+            err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
+            if err is None:
                 break
+            if info_try < INFO_MAX_ATTEMPTS - 1:
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Повтор info-блока (%d/%d): %s"
+                        % (info_try + 2, INFO_MAX_ATTEMPTS, err)
+                    )
+                if gate.should_abort():
+                    return "Отменено пользователем"
+                time.sleep(INFO_RETRY_SLEEP_S)
         if err:
             return f"Ошибка отправки info-блока: {err}"
-        time.sleep(ERASE_WAIT_AFTER_INFO_S)
-        if flasher.log_cb:
-            flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
+        gate.mark_irreversible()
+        ready_err = wait_bootloader_ready_for_data_by_address(flasher, slave)
+        if ready_err:
+            return ready_err
+        gate.sleep(POST_ERASE_BEFORE_FIRST_DATA_S)
+        if flasher.log_cb and POST_ERASE_BEFORE_FIRST_DATA_S > 0:
+            flasher.log_cb(
+                "Пауза %.2f с перед первым блоком данных (0x2000)."
+                % POST_ERASE_BEFORE_FIRST_DATA_S
+            )
         total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
         t_start = time.perf_counter()
         if progress_cb:
             progress_cb(0, total_blocks)
         blocks_sent = 0
         for idx in range(total_blocks):
-            if cancel_cb and cancel_cb():
+            if gate.should_abort():
                 return "Отменено пользователем"
             start = INFO_BLOCK_BYTES + idx * DATA_BLOCK_BYTES
             block = image[start : start + DATA_BLOCK_BYTES]
@@ -1225,7 +1599,7 @@ def run_flash_sequence_by_address(
             time.sleep(BLOCK_DELAY_FIRST_BLOCK_S if idx == 0 else BLOCK_DELAY_AFTER_RESPONSE_S)
         return None
 
-    # Образ без info-блока (.bin): сборка info из signature + size
+    # Образ без info-блока (.bin): сигнатура для info берётся с платы (рег. 290), как в эталоне.
     err_vt = check_app_vector_table(image)
     if err_vt:
         return err_vt
@@ -1235,21 +1609,75 @@ def run_flash_sequence_by_address(
             f"Недопустимый размер образа: {size} байт "
             f"(допустимо 1..{MAX_FIRMWARE_SIZE_BYTES})"
         )
+    board_sig, read_err = _read_board_signature_bootloader_warmup(
+        flasher, slave=slave, serial=None
+    )
+    if read_err:
+        return read_err
+    reject = _validate_bootloader_board_signature_for_bin_flash(board_sig)
+    if reject:
+        return reject
+    info_sig = ((board_sig or "").strip()[:12] or DEFAULT_SIGNATURE)
     if flasher.log_cb:
-        flasher.log_cb(f"Отправка info-блока с сигнатурой «{signature}» (размер {size} байт) на адрес {slave}...")
-    err = flasher.send_info_block(slave, signature, size, image)
-    for _ in range(3):
-        if err and "Таймаут" in (err or ""):
-            time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block(slave, signature, size, image)
-        else:
+        flasher.log_cb(
+            "Плата (рег. 290): «%s». В info 0x1000 — та же сигнатура (до 12 симв.), размер %d B, CRC2+crc32(payload)."
+            % (board_sig or "—", size)
+        )
+    if gate.should_abort():
+        return "Отменено пользователем"
+    if gate.sleep(max(FAST_MODBUS_INTER_READ_GAP_S, 0.25)):
+        return "Отменено пользователем"
+    err = None
+    for info_try in range(INFO_MAX_ATTEMPTS):
+        if gate.should_abort():
+            return "Отменено пользователем"
+        err = flasher.send_info_block(slave, info_sig, size, image)
+        if err is None:
             break
+        if info_try < INFO_MAX_ATTEMPTS - 1:
+            if flasher.log_cb:
+                flasher.log_cb(
+                    "Повтор info-блока (%d/%d): %s"
+                    % (info_try + 2, INFO_MAX_ATTEMPTS, err)
+                )
+            if gate.should_abort():
+                return "Отменено пользователем"
+            time.sleep(INFO_RETRY_SLEEP_S)
     if err:
-        return f"Ошибка отправки info-блока: {err}"
+        msg = f"Ошибка отправки info-блока: {err}"
+        if "код 4" in err or "код 04" in err.lower() or "Исключение Modbus" in (err or ""):
+            msg += (
+                " Устройство отклонило info-блок (исключение 04). "
+                "Проверьте размер образа AppBoot, CRC в info и совпадение первых 12 байт с EEPROM (рег. 290)."
+            )
+            payload_rej, err_f1 = flasher.read_holding_registers(
+                slave, REG_LAST_INFO_REJECT, 2
+            )
+            if (
+                not err_f1
+                and payload_rej
+                and len(payload_rej) >= 4
+            ):
+                code = (payload_rej[0] << 8) | payload_rej[1]
+                idx = (payload_rej[2] << 8) | payload_rej[3]
+                reason_str = _last_info_reject_reason_text(code, idx) or f"код {code}"
+                msg += f" Причина по устройству (рег. 0xF1): {reason_str}"
+                if code == 1:
+                    msg += (
+                        f". Отправлено {size} байт, макс. допустимо устройством: "
+                        f"{BOOTLOADER_MAX_APP_BYTES} байт. Используйте образ AppBoot."
+                    )
+        return msg
 
-    if flasher.log_cb:
-        flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
-    time.sleep(ERASE_WAIT_AFTER_INFO_S)
+    gate.mark_irreversible()
+    ready_err = wait_bootloader_ready_for_data_by_address(flasher, slave)
+    if ready_err:
+        return ready_err
+    gate.sleep(POST_ERASE_BEFORE_FIRST_DATA_S)
+    if flasher.log_cb and POST_ERASE_BEFORE_FIRST_DATA_S > 0:
+        flasher.log_cb(
+            "Пауза %.2f с перед первым блоком данных (0x2000)." % POST_ERASE_BEFORE_FIRST_DATA_S
+        )
 
     total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
     t_start = time.perf_counter()
@@ -1257,7 +1685,7 @@ def run_flash_sequence_by_address(
         progress_cb(0, total_blocks)
     blocks_sent = 0
     for idx in range(total_blocks):
-        if cancel_cb and cancel_cb():
+        if gate.should_abort():
             return "Отменено пользователем"
         start = idx * DATA_BLOCK_BYTES
         block = image[start : start + DATA_BLOCK_BYTES]
@@ -1308,12 +1736,14 @@ def run_flash_sequence(
     cancel_cb: Optional[Callable[[], bool]] = None,
     retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
     target_serial: Optional[int] = None,
+    cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
     Полная последовательность прошивки по серийному номеру (0xFD 0x46 0x08). Как у WB: при образе с info-блоком (.fw) — первые 32 B как 16 рег BE; иначе — сборка из signature + size.
     """
     if not serial or serial == 0xFFFFFFFF:
         return "Для прошивки по 0x46 нужен серийный номер устройства (выполните сканирование и выберите по серийному №)."
+    gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
 
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE
     if _image_has_embedded_fw_header(image):
@@ -1327,25 +1757,40 @@ def run_flash_sequence(
         size = size_from_file
         payload_start = INFO_BLOCK_BYTES
         if flasher.log_cb:
-            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) по серийному 0x{serial:08X}...")
-        err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
-        for _ in range(3):
-            if err and "Таймаут" in (err or ""):
-                time.sleep(INFO_RETRY_SLEEP_S)
-                err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
-            else:
+            flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) по серийному 0x{serial:08X}.")
+        err = None
+        for info_try in range(INFO_MAX_ATTEMPTS):
+            if gate.should_abort():
+                return "Отменено пользователем"
+            err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
+            if err is None:
                 break
+            if info_try < INFO_MAX_ATTEMPTS - 1:
+                if flasher.log_cb:
+                    flasher.log_cb(
+                        "Повтор info-блока (%d/%d): %s"
+                        % (info_try + 2, INFO_MAX_ATTEMPTS, err)
+                    )
+                if gate.should_abort():
+                    return "Отменено пользователем"
+                time.sleep(INFO_RETRY_SLEEP_S)
         if not err:
-            time.sleep(ERASE_WAIT_AFTER_INFO_S)
-            if flasher.log_cb:
-                flasher.log_cb(f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)...")
+            gate.mark_irreversible()
+            ready_err = wait_bootloader_ready_for_data_by_serial(flasher, serial)
+            if ready_err:
+                return ready_err
+            gate.sleep(POST_ERASE_BEFORE_FIRST_DATA_S)
+            if flasher.log_cb and POST_ERASE_BEFORE_FIRST_DATA_S > 0:
+                flasher.log_cb(
+                    "Пауза %.2f с перед первым блоком данных (0x2000)." % POST_ERASE_BEFORE_FIRST_DATA_S
+                )
             total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
             t_start = time.perf_counter()
             if progress_cb:
                 progress_cb(0, total_blocks)
             blocks_sent = 0
             for idx in range(total_blocks):
-                if cancel_cb and cancel_cb():
+                if gate.should_abort():
                     return "Отменено пользователем"
                 start = payload_start + idx * DATA_BLOCK_BYTES
                 block = image[start : start + DATA_BLOCK_BYTES]
@@ -1383,21 +1828,46 @@ def run_flash_sequence(
             f"Недопустимый размер образа: {size} байт "
             f"(допустимо 1..{MAX_FIRMWARE_SIZE_BYTES})"
         )
+    board_sig, read_err = _read_board_signature_bootloader_warmup(
+        flasher, slave=None, serial=serial
+    )
+    if read_err:
+        return read_err
+    reject = _validate_bootloader_board_signature_for_bin_flash(board_sig)
+    if reject:
+        return reject
+    info_sig = ((board_sig or "").strip()[:12] or DEFAULT_SIGNATURE)
     if flasher.log_cb:
-        flasher.log_cb(f"Отправка info-блока с сигнатурой «{signature}» (размер {size} байт) по серийному 0x{serial:08X}...")
-    err = flasher.send_info_block_by_serial(serial, signature, size, image)
-    for _ in range(3):
-        if err and "Таймаут" in err:
-            time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_by_serial(serial, signature, size, image)
-        else:
+        flasher.log_cb(
+            "Плата (рег. 290): «%s». В info по серийному 0x%08X — та же сигнатура в info, размер %d B, CRC2+crc32."
+            % (board_sig or "—", serial & 0xFFFFFFFF, size)
+        )
+    if gate.should_abort():
+        return "Отменено пользователем"
+    if gate.sleep(max(FAST_MODBUS_INTER_READ_GAP_S, 0.25)):
+        return "Отменено пользователем"
+    err = None
+    for info_try in range(INFO_MAX_ATTEMPTS):
+        if gate.should_abort():
+            return "Отменено пользователем"
+        err = flasher.send_info_block_by_serial(serial, info_sig, size, image)
+        if err is None:
             break
+        if info_try < INFO_MAX_ATTEMPTS - 1:
+            if flasher.log_cb:
+                flasher.log_cb(
+                    "Повтор info-блока (%d/%d): %s"
+                    % (info_try + 2, INFO_MAX_ATTEMPTS, err)
+                )
+            if gate.should_abort():
+                return "Отменено пользователем"
+            time.sleep(INFO_RETRY_SLEEP_S)
     if err:
         msg = f"Ошибка отправки info-блока: {err}"
         if "код 4" in err or "код 04" in err.lower():
             msg += (
                 " Устройство отклонило блок (исключение 04). "
-                "Часто — несовпадение сигнатуры с EEPROM: укажите сигнатуру нижней платы (NONE или 6DO8DI, 12AI, 14DI …) в поле «Сигнатура»."
+                "Проверьте размер AppBoot, CRC в info и совпадение сигнатуры в info с EEPROM (рег. 290)."
             )
             payload_rej, _ = flasher.read_holding_registers_by_serial(
                 serial, REG_LAST_INFO_REJECT, 2
@@ -1405,20 +1875,24 @@ def run_flash_sequence(
             if payload_rej and len(payload_rej) >= 4:
                 code = (payload_rej[0] << 8) | payload_rej[1]
                 idx = (payload_rej[2] << 8) | payload_rej[3]
-                reasons = {0: "нет", 1: "неверный размер (size)", 2: "несовпадение сигнатуры с EEPROM (sig_mismatch)", 3: "ошибка записи EEPROM (eeprom_write)"}
-                reason_str = reasons.get(code, f"код {code}")
+                reason_str = _last_info_reject_reason_text(code, idx) or f"код {code}"
                 msg += f" Причина по устройству (рег. 0xF1): {reason_str}"
                 if code == 1:
-                    msg += f". Отправлено {size} байт, макс. допустимо устройством: {BOOTLOADER_MAX_APP_BYTES} байт. Используйте образ AppBoot, умещающийся в область приложения (0x08000800..0x0802F800)."
-                elif code == 2 and idx < 12:
-                    msg += f", байт {idx}"
+                    msg += (
+                        f". Отправлено {size} байт, макс. допустимо устройством: {BOOTLOADER_MAX_APP_BYTES} байт. "
+                        "Используйте образ AppBoot."
+                    )
         return msg
 
-    if flasher.log_cb:
+    gate.mark_irreversible()
+    ready_err = wait_bootloader_ready_for_data_by_serial(flasher, serial)
+    if ready_err:
+        return ready_err
+    gate.sleep(POST_ERASE_BEFORE_FIRST_DATA_S)
+    if flasher.log_cb and POST_ERASE_BEFORE_FIRST_DATA_S > 0:
         flasher.log_cb(
-            f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с (стирание Flash на устройстве)..."
+            "Пауза %.2f с перед первым блоком данных (0x2000)." % POST_ERASE_BEFORE_FIRST_DATA_S
         )
-    time.sleep(ERASE_WAIT_AFTER_INFO_S)
 
     total_blocks = (size + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
     t_start = time.perf_counter()
@@ -1426,7 +1900,7 @@ def run_flash_sequence(
         progress_cb(0, total_blocks)
     blocks_sent = 0
     for idx in range(total_blocks):
-        if cancel_cb and cancel_cb():
+        if gate.should_abort():
             return "Отменено пользователем"
         start = idx * DATA_BLOCK_BYTES
         block = image[start : start + DATA_BLOCK_BYTES]
@@ -1475,6 +1949,7 @@ def run_flash_sequence_wb(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
     retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
+    cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
     Прошивка WB (.wbfw) по алгоритму wb-mcu-fw-flasher (flasher.c):
@@ -1482,6 +1957,7 @@ def run_flash_sequence_wb(
     - Data: блоки по 136 B в 0x2000 (BE). Между блоками — без задержки (interFrameDelay).
     - При ошибке блока: до 3 попыток; после 3 неудач — пропуск блока; при 6 подряд ошибках — выход.
     """
+    gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
     if len(image) < INFO_BLOCK_BYTES:
         return f"Образ слишком короткий: {len(image)} байт (минимум {INFO_BLOCK_BYTES} для info-блока)."
     size = len(image)
@@ -1496,18 +1972,23 @@ def run_flash_sequence_wb(
     info_block = image[:INFO_BLOCK_BYTES]
     if flasher.log_cb:
         flasher.log_cb(f"Wiren Board: отправка info-блока (32 B, 16 рег BE) на адрес {slave}...")
+    if gate.should_abort():
+        return "Отменено пользователем"
     err = flasher.send_info_block_wb(slave, info_block)
     for attempt in range(WB_MAX_ERROR_COUNT):
         if err is None:
             break
         if flasher.log_cb:
             flasher.log_cb(f"Ошибка info-блока: {err}. Повтор через {WB_INFO_RETRY_SLEEP_S} с (попытка {attempt + 2}/{WB_MAX_ERROR_COUNT})...")
+        if gate.should_abort():
+            return "Отменено пользователем"
         time.sleep(WB_INFO_RETRY_SLEEP_S)
         err = flasher.send_info_block_wb(slave, info_block)
     if err:
         hint = " Устройство WB при несовпадении сигнатуры возвращает исключение 4." if ("код 4" in (err or "") or "Исключение Modbus" in (err or "")) else ""
         return f"Ошибка отправки info-блока (WB): {err}{hint}"
-    time.sleep(ERASE_WAIT_AFTER_INFO_S_WB)
+    gate.mark_irreversible()
+    gate.sleep(ERASE_WAIT_AFTER_INFO_S_WB)
     if ERASE_WAIT_AFTER_INFO_S_WB > 0 and flasher.log_cb:
         flasher.log_cb(f"Пауза {ERASE_WAIT_AFTER_INFO_S_WB} с после info.")
     total_blocks = (size - INFO_BLOCK_BYTES + DATA_BLOCK_BYTES_WB - 1) // DATA_BLOCK_BYTES_WB
@@ -1517,7 +1998,7 @@ def run_flash_sequence_wb(
     consecutive_errors = 0
     blocks_sent = 0
     for idx in range(total_blocks):
-        if cancel_cb and cancel_cb():
+        if gate.should_abort():
             return "Отменено пользователем"
         start = INFO_BLOCK_BYTES + idx * DATA_BLOCK_BYTES_WB
         block = image[start : start + DATA_BLOCK_BYTES_WB]
@@ -1557,11 +2038,13 @@ def run_flash_bootloader_sequence_by_address(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
     retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
+    cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
     Прошивка образа бутлоадера (34 КБ) по Modbus-адресу (обычный Modbus): 0x1001=0x424C → info 0x1000 → блоки → commit 0x1006.
     slave: адрес устройства в загрузчике (обычно 247).
     """
+    gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
     if len(image) != BL_IMAGE_TOTAL_BYTES:
         return (
             f"Образ бутлоадера должен быть {BL_IMAGE_TOTAL_BYTES} байт, получено {len(image)}. "
@@ -1570,10 +2053,13 @@ def run_flash_bootloader_sequence_by_address(
 
     if flasher.log_cb:
         flasher.log_cb("Режим обновления бутлоадера: запись 0x424C в 0x1001 на адрес %d..." % slave)
+    if gate.should_abort():
+        return "Отменено пользователем"
     err = flasher.write_firmware_type_bootloader(slave)
     if err:
         return f"Ошибка установки режима бутлоадера: {err}"
-    time.sleep(0.2)
+    if gate.sleep(0.2):
+        return "Отменено пользователем"
 
     if flasher.log_cb:
         flasher.log_cb(
@@ -1582,6 +2068,8 @@ def run_flash_bootloader_sequence_by_address(
     err = flasher.send_info_block_bootloader(slave, signature, image)
     for _ in range(3):
         if err and "Таймаут" in str(err):
+            if gate.should_abort():
+                return "Отменено пользователем"
             time.sleep(INFO_RETRY_SLEEP_S)
             err = flasher.send_info_block_bootloader(slave, signature, image)
         else:
@@ -1589,11 +2077,12 @@ def run_flash_bootloader_sequence_by_address(
     if err:
         return f"Ошибка отправки info-блока бутлоадера: {err}"
 
+    gate.mark_irreversible()
     if flasher.log_cb:
         flasher.log_cb(
             f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с перед блоками данных..."
         )
-    time.sleep(ERASE_WAIT_AFTER_INFO_S)
+    gate.sleep(ERASE_WAIT_AFTER_INFO_S)
 
     total_blocks = BL_BLOCKS_FULL_COUNT + 1
     t_start = time.perf_counter()
@@ -1601,7 +2090,7 @@ def run_flash_bootloader_sequence_by_address(
         progress_cb(0, total_blocks)
 
     for idx in range(total_blocks):
-        if cancel_cb and cancel_cb():
+        if gate.should_abort():
             return "Отменено пользователем"
         if idx < BL_BLOCKS_FULL_COUNT:
             start = idx * DATA_BLOCK_BYTES_BOOTLOADER
@@ -1672,11 +2161,13 @@ def run_flash_sequence_bootloader(
     progress_cb: Optional[Callable[[int, int], None]] = None,
     cancel_cb: Optional[Callable[[], bool]] = None,
     retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
+    cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
     Прошивка образа бутлоадера (34 КБ) по серийному номеру (0x46): 0x1001=0x424C → info 0x1000 → блоки → commit 0x1006.
     image: ровно BL_IMAGE_TOTAL_BYTES.
     """
+    gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
     if len(image) != BL_IMAGE_TOTAL_BYTES:
         return (
             f"Образ бутлоадера должен быть {BL_IMAGE_TOTAL_BYTES} байт, получено {len(image)}. "
@@ -1687,10 +2178,13 @@ def run_flash_sequence_bootloader(
 
     if flasher.log_cb:
         flasher.log_cb("Режим обновления бутлоадера: запись 0x424C в 0x1001 по серийному...")
+    if gate.should_abort():
+        return "Отменено пользователем"
     err = flasher.write_firmware_type_bootloader_by_serial(serial)
     if err:
         return f"Ошибка установки режима бутлоадера: {err}"
-    time.sleep(0.2)
+    if gate.sleep(0.2):
+        return "Отменено пользователем"
 
     if flasher.log_cb:
         flasher.log_cb(
@@ -1699,6 +2193,8 @@ def run_flash_sequence_bootloader(
     err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
     for _ in range(3):
         if err and "Таймаут" in str(err):
+            if gate.should_abort():
+                return "Отменено пользователем"
             time.sleep(INFO_RETRY_SLEEP_S)
             err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
         else:
@@ -1706,11 +2202,12 @@ def run_flash_sequence_bootloader(
     if err:
         return f"Ошибка отправки info-блока бутлоадера: {err}"
 
+    gate.mark_irreversible()
     if flasher.log_cb:
         flasher.log_cb(
             f"Ожидание {ERASE_WAIT_AFTER_INFO_S} с перед блоками данных..."
         )
-    time.sleep(ERASE_WAIT_AFTER_INFO_S)
+    gate.sleep(ERASE_WAIT_AFTER_INFO_S)
 
     total_blocks = BL_BLOCKS_FULL_COUNT + 1  # 143: 142 по 244 B + 1 по 168 B
     t_start = time.perf_counter()
@@ -1718,7 +2215,7 @@ def run_flash_sequence_bootloader(
         progress_cb(0, total_blocks)
 
     for idx in range(total_blocks):
-        if cancel_cb and cancel_cb():
+        if gate.should_abort():
             return "Отменено пользователем"
         if idx < BL_BLOCKS_FULL_COUNT:
             start = idx * DATA_BLOCK_BYTES_BOOTLOADER

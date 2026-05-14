@@ -858,7 +858,7 @@ apt-get install -y mc net-tools psmisc i2c-tools
 
 ```bash
 cat > /etc/network/interfaces.d/eth0.conf << 'EOF'
-allow-hotplug eth0
+auto eth0
 iface eth0 inet static
     address 192.168.1.136
     netmask 255.255.255.0
@@ -1039,16 +1039,28 @@ setserial -g /dev/ttyS[0-9]
 i2cset -y 2 0x41 0x03 0x00
 ```
 
-#### Управление выходами
+#### Управление выходами (активный низкий уровень, как в драйвере MasterPLC)
+
+Маска выходного регистра `0x01`: **все выключены** = `0xFF`. Включить канал = **сбросить** соответствующий бит:
+
+| Канал | Бит | Включить (`i2cset … 0x01 <маска>`) |
+|-------|-----|-------------------------------------|
+| RED / Alarm LED | 0 | `0xFE` |
+| DOUT | 1 | `0xFD` |
+| Beeper | 2 | `0xFB` |
+| BLUE LED | 3 | `0xF7` |
+
+Источник логики: репозиторий [PCA9536-driver-for-MasterPLC](https://github.com/CYNTRON-git/PCA9536-driver-for-MasterPLC.git) (`examples/mplc_fb_ca02m/test_fb.cpp`, `simple_test_protocol.cpp`).
 
 ```bash
-i2cset -y 2 0x41 0x01 0x0E   # Включить выход 1 (DO — белый индикатор)
-i2cset -y 2 0x41 0x01 0x0D   # Включить выход 2 (Beeper)
-i2cset -y 2 0x41 0x01 0x0B   # Включить выход 3 (Alarm LED)
-i2cset -y 2 0x41 0x01 0x07   # Включить выход 4 (синяя система OK)
-i2cset -y 2 0x41 0x01 0x00   # Выключить всё
-i2cset -y 2 0x41 0x01 0xff   # Включить всё
+i2cset -y 2 0x41 0x01 0xFE   # RED LED вкл
+i2cset -y 2 0x41 0x01 0xFD   # DOUT вкл
+i2cset -y 2 0x41 0x01 0xFB   # Beeper вкл
+i2cset -y 2 0x41 0x01 0xF7   # BLUE LED вкл
+i2cset -y 2 0x41 0x01 0xFF   # всё выкл (неактивное состояние)
 ```
+
+Питание USB (не PCA9536): в покое линия **`gpioset 0 268=1`**; кратковременный сброс в драйвере FB — **`268=0`** (см. `test_fb.cpp`).
 
 #### Диагностика I2C шины
 

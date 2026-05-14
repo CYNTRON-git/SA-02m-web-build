@@ -3,6 +3,7 @@
 Сканирование RS-485: сначала быстрый скан WB extended (0xFD 0x46 0x01) по всем выбранным скоростям, затем опрос диапазона адресов по всем скоростям. Порядок скоростей: 115200 → 38400 → 19200 → 9600.
 Через Modbus TCP (шлюз, MBAP) или RTU over TCP (сырой RTU по сокету) доступна только фаза 2 (стандартный Modbus); 0xFD по TCP обычно не поддерживается.
 """
+import threading
 import time
 from enum import Enum
 from pathlib import Path
@@ -20,6 +21,7 @@ from .modbus_io import (
 )
 from .modbus_tcp import modbus_rtu_over_tcp_transact, modbus_tcp_transact
 from .serial_port import (
+    format_serial_open_error_user_message,
     open_port,
     send_receive,
     send_receive_all,
@@ -81,11 +83,38 @@ REG_VERSION_SUFFIX = 323
 REG_BOOTLOADER_VER = 330
 REG_BOOTLOADER_VER_COUNT = 8
 
-# После WB-скана (0xFD 0x46) и на 115200 250 мс часто недостаточно для первого FC03 из загрузчика.
-SCAN_TIMEOUT_MS = 520
+# Потоковый контекст таймингов на время scan_all.
+_scan_tls = threading.local()
+
+SCAN_TIMING_STANDARD: Dict[str, Any] = {
+    "scan_timeout_ms": 280.0,
+    "tcp_ms": 980.0,
+    "tcp_probe_ms": 450.0,
+    "broadcast_collect_ms": 920.0,
+    "gap_lo_mul": 2.35,
+    "gap_hi_mul": 2.6,
+    "gap_floor_slow": 0.005,
+    "gap_floor_fast": 0.0022,
+}
+SCAN_TIMING_AGGRESSIVE: Dict[str, Any] = {
+    "scan_timeout_ms": 115.0,
+    "tcp_ms": 320.0,
+    "tcp_probe_ms": 145.0,
+    "broadcast_collect_ms": 460.0,
+    "gap_lo_mul": 1.28,
+    "gap_hi_mul": 1.42,
+    "gap_floor_slow": 0.0026,
+    "gap_floor_fast": 0.0014,
+}
+
+SCAN_TIMEOUT_MS = int(SCAN_TIMING_STANDARD["scan_timeout_ms"])
 BOOTLOADER_BAUD = 115200
 # Чтение 290/330 по 0xFD 0x46 0x08 после WB: дольше, чем обычный Modbus-скан.
 FILL_BOOTLOADER_BY_SERIAL_TIMEOUT_MS = 3800
+
+
+def _active_scan_timing() -> Dict[str, Any]:
+    return getattr(_scan_tls, "timing", SCAN_TIMING_STANDARD)
 
 
 def _rtu_char_time_s(baudrate: int, parity: str, stopbits: int) -> float:
@@ -113,11 +142,21 @@ def _rtu_inter_frame_delay_s(baudrate: int, parity: str, stopbits: int) -> float
 
 
 def _phase2_gap_between_addresses_s(baudrate: int, parity: str, stopbits: int) -> float:
-    """Пауза между опросами разных адресов (фаза 2): быстрее на высоких бодах, безопасно на 9600."""
+    """Пауза между опросами разных адресов (фаза 2) по активному профилю таймингов."""
     d = _rtu_inter_frame_delay_s(baudrate, parity, stopbits)
+    t = _active_scan_timing()
     if int(baudrate) <= 19200:
-        return max(d * 2.2, 0.0045)
-    return max(d * 2.5, 0.002)
+        return max(d * t["gap_lo_mul"], t["gap_floor_slow"])
+    return max(d * t["gap_hi_mul"], t["gap_floor_fast"])
+
+
+def _tcp_scan_response_timeout_ms(requested_ms: int) -> int:
+    t = _active_scan_timing()
+    want = int(requested_ms)
+    tcp_full = int(t["tcp_ms"])
+    if want >= tcp_full:
+        return want
+    return max(want, int(t["tcp_probe_ms"]))
 # Таймаут приёма ответов на один broadcast (устройства с арбитражем отвечают с задержкой)
 BROADCAST_COLLECT_TIMEOUT_MS = 800
 # Резерв: число попыток broadcast «один запрос — один ответ», если приём всех ответов пуст
@@ -143,6 +182,53 @@ SpeedConfig = Tuple[int, str, int]
 def _default_speed_configs() -> List[SpeedConfig]:
     """Конфиги по умолчанию: все скорости, 8N1."""
     return [(b, DEFAULT_PARITY, DEFAULT_STOPBITS) for b in SCAN_BAUDRATES]
+
+
+def build_scan_config_order(
+    speed_configs: List[SpeedConfig],
+    scan_mode: ScanMode,
+) -> List[SpeedConfig]:
+    """Тот же порядок профилей линии, что и в scan_all."""
+    baud_order = {b: i for i, b in enumerate(SCAN_BAUDRATES)}
+    cfg_order = sorted(
+        speed_configs,
+        key=lambda c: (baud_order.get(c[0], 999), c[1], c[2]),
+    )
+    if scan_mode == ScanMode.BOOTLOADER_ONLY:
+        cfg_order = [
+            c
+            for c in cfg_order
+            if int(c[0]) == BOOTLOADER_BAUD and str(c[1]).upper() == "N" and int(c[2]) == 1
+        ]
+        if not cfg_order:
+            cfg_order = [(BOOTLOADER_BAUD, "N", 1)]
+    return cfg_order
+
+
+def try_open_com_scan_preflight(
+    port: str,
+    speed_configs: List[SpeedConfig],
+    scan_mode: ScanMode,
+) -> Optional[str]:
+    """
+    Проверить, что COM открывается первым профилем так же, как в scan_all.
+    """
+    p = (port or "").strip()
+    if not p or not speed_configs:
+        return None
+    order = build_scan_config_order(list(speed_configs), scan_mode)
+    if not order:
+        return None
+    b0, p0, s0 = order[0]
+    try:
+        ser = open_port(p, baudrate=int(b0), parity=str(p0), stopbits=int(s0))
+        try:
+            ser.close()
+        except Exception:
+            pass
+    except Exception as exc:
+        return format_serial_open_error_user_message(p, exc)
+    return None
 
 
 @dataclass
@@ -392,13 +478,14 @@ def _read_regs(
             th, tp, tmode = tcp_endpoint_host_port_mode(tcp_ep)
             if th is None or tp is None:
                 return (None, None)
+            tcp_timeout_ms = _tcp_scan_response_timeout_ms(timeout_ms)
             if tmode == "rtu_tcp":
                 rsp = modbus_rtu_over_tcp_transact(
-                    th, tp, req, timeout_ms, cancel_check=cancel_cb
+                    th, tp, req, tcp_timeout_ms, cancel_check=cancel_cb
                 )
             else:
                 rsp = modbus_tcp_transact(
-                    th, tp, req, timeout_ms, cancel_check=cancel_cb
+                    th, tp, req, tcp_timeout_ms, cancel_check=cancel_cb
                 )
             if rsp is None:
                 return (None, None)
@@ -911,7 +998,7 @@ def _broadcast_probe_bauds(
     responsive: List[SpeedConfig] = []
     broadcast_seen: Set[Tuple[int, int, str, int]] = set()
     devices_found: List[DeviceInfo] = []
-    timeout_ms = BROADCAST_COLLECT_TIMEOUT_MS
+    timeout_ms = int(_active_scan_timing()["broadcast_collect_ms"])
     for (baud, parity, stopbits) in speed_configs:
         if cancel_cb and cancel_cb():
             break
@@ -1153,6 +1240,7 @@ def scan_all(
     tcp_endpoint: Optional[Tuple[Any, ...]] = None,
     wb_trace_cb: Optional[Callable[[str], None]] = None,
     app_dir: Optional[Path] = None,
+    timing_profile: str = "standard",
 ) -> List[DeviceInfo]:
     """Сканирование по режиму scan_mode; фаза 2 — последовательный опрос addr_min..addr_max.
     tcp_endpoint=(host, port) или (host, port, 'mbap') — Modbus TCP (MBAP); (host, port, 'rtu_tcp') — RTU по TCP без MBAP. Фаза 1 по 0xFD при любом TCP отключается.
@@ -1164,120 +1252,198 @@ def scan_all(
     addr_max = max(1, min(addr_max, 247))
     if addr_min > addr_max:
         addr_min, addr_max = addr_max, addr_min
-    # Порядок по убыванию скорости
-    baud_order = {b: i for i, b in enumerate(SCAN_BAUDRATES)}
-    config_order = sorted(
-        speed_configs,
-        key=lambda c: (baud_order.get(c[0], 999), c[1], c[2]),
+    _scan_tls.timing = (
+        SCAN_TIMING_AGGRESSIVE if timing_profile == "aggressive" else SCAN_TIMING_STANDARD
     )
-    if scan_mode == ScanMode.BOOTLOADER_ONLY:
-        # Бутлоадер: 115200 N1 (см. BOOTLOADER_BAUD / flash_protocol.BOOTLOADER_BAUDRATE).
-        config_order = [c for c in config_order if int(c[0]) == BOOTLOADER_BAUD and str(c[1]).upper() == "N" and int(c[2]) == 1]
-        if not config_order:
-            config_order = [(BOOTLOADER_BAUD, "N", 1)]
-    else:
-        config_order = _extended_scan_ensure_bootloader_line(config_order, scan_mode)
-    tcp_ep = tcp_endpoint
-    addrs_order = list(range(addr_min, addr_max + 1))
+    try:
+        config_order = build_scan_config_order(list(speed_configs), scan_mode)
+        if scan_mode != ScanMode.BOOTLOADER_ONLY:
+            config_order = _extended_scan_ensure_bootloader_line(config_order, scan_mode)
+        tcp_ep = tcp_endpoint
+        addrs_order = list(range(addr_min, addr_max + 1))
 
-    def v(msg: str) -> None:
-        if log_verbose_cb:
-            log_verbose_cb(msg)
-        elif log_cb:
-            log_cb(msg)
+        def v(msg: str) -> None:
+            if log_verbose_cb:
+                log_verbose_cb(msg)
+            elif log_cb:
+                log_cb(msg)
 
-    def u(msg: str) -> None:
-        if log_ui_cb:
-            log_ui_cb(msg)
-        elif log_cb:
-            log_cb(msg)
+        def u(msg: str) -> None:
+            if log_ui_cb:
+                log_ui_cb(msg)
+            elif log_cb:
+                log_cb(msg)
 
-    devices: List[DeviceInfo] = []
-    seen_keys: Set[Tuple[int, int, str, int, int]] = set()
-    num_addrs = len(addrs_order)
-    total = len(config_order) * num_addrs
-    cfg_summary = ", ".join(f"{b} {p}{s}" for (b, p, s) in config_order)
-    v(f"Сканирование: порядок по скорости {[f'{b} {p}{s}' for (b, p, s) in config_order]}.")
-    if tcp_ep:
-        _h, _p, _m = tcp_endpoint_host_port_mode(tcp_ep)
-        link_desc = (
-            f"RTU/TCP {_h}:{_p}" if _m == "rtu_tcp" else f"Modbus TCP {_h}:{_p}"
+        devices: List[DeviceInfo] = []
+        seen_keys: Set[Tuple[int, int, str, int, int]] = set()
+        num_addrs = len(addrs_order)
+        total = len(config_order) * num_addrs
+        cfg_summary = ", ".join(f"{b} {p}{s}" for (b, p, s) in config_order)
+        if tcp_ep is None and config_order:
+            pf_err = try_open_com_scan_preflight(port, list(speed_configs), scan_mode)
+            if pf_err is not None:
+                v(pf_err)
+                u(f"COM-порт {port} занят или недоступен — поиск не выполнен.")
+                return []
+        v(f"Сканирование: порядок по скорости {[f'{b} {p}{s}' for (b, p, s) in config_order]}.")
+        if tcp_ep:
+            _h, _p, _m = tcp_endpoint_host_port_mode(tcp_ep)
+            link_desc = (
+                f"RTU/TCP {_h}:{_p}" if _m == "rtu_tcp" else f"Modbus TCP {_h}:{_p}"
+            )
+        else:
+            link_desc = port
+        v(f"Поиск: {link_desc}; линии: {cfg_summary}; режим: {scan_mode.value}")
+        v(
+            "Таймауты и паузы между адресами: %s."
+            % (
+                "минимальные (первый запуск после смены параметров)"
+                if timing_profile == "aggressive"
+                else "стандартные"
+            )
         )
-    else:
-        link_desc = port
-    v(f"Поиск: {link_desc}; линии: {cfg_summary}; режим: {scan_mode.value}")
 
-    run_phase1 = (
-        fast_scan
-        and tcp_ep is None
-        and scan_mode in (ScanMode.EXTENDED_ONLY, ScanMode.BOOTLOADER_ONLY)
-    )
-    if scan_mode == ScanMode.STANDARD_ONLY:
-        run_phase1 = False
-    # В режиме bootloader используем только WB extended (0xFD 0x46):
-    # не опрашиваем диапазон адресов 1..N, чтобы не цеплять устройства в приложении.
-    run_phase2 = scan_mode == ScanMode.STANDARD_ONLY
-    if not run_phase1:
-        flasher_log.close_wb_trace()
+        run_phase1 = (
+            fast_scan
+            and tcp_ep is None
+            and scan_mode in (ScanMode.EXTENDED_ONLY, ScanMode.BOOTLOADER_ONLY)
+        )
+        if scan_mode == ScanMode.STANDARD_ONLY:
+            run_phase1 = False
+        run_phase2 = scan_mode == ScanMode.STANDARD_ONLY
+        if not run_phase1:
+            flasher_log.close_wb_trace()
 
-    if run_phase1:
-        v("Быстрое сканирование WB extended: 0xFD 0x46 0x01 по выбранным скоростям и параметрам связи.")
-        wb_file_cb: Optional[Callable[[str], None]] = wb_trace_cb
-        if tcp_ep is None and app_dir is not None:
-            p = flasher_log.init_wb_trace(app_dir)
-            if p is not None:
-                v("Детальный журнал арбитража WB (все TX/RX): %s" % p)
-                v("Полный лог арбитража WB также: строки [WB_ARB] в flasher_log.txt.")
-            else:
-                v(
-                    "Не удалось создать wb_arbitration_trace.txt (нет прав?) — трассировка WB только в flasher_log.txt с префиксом [WB_ARB]."
+        if run_phase1:
+            v("Быстрое сканирование WB extended: 0xFD 0x46 0x01 по выбранным скоростям и параметрам связи.")
+            wb_file_cb: Optional[Callable[[str], None]] = wb_trace_cb
+            if tcp_ep is None and app_dir is not None:
+                p = flasher_log.init_wb_trace(app_dir)
+                if p is not None:
+                    v("Детальный журнал арбитража WB (все TX/RX): %s" % p)
+                    v("Полный лог арбитража WB также: строки [WB_ARB] в flasher_log.txt.")
+                else:
+                    v(
+                        "Не удалось создать wb_arbitration_trace.txt (нет прав?) — трассировка WB только в flasher_log.txt с префиксом [WB_ARB]."
+                    )
+                if wb_file_cb is None:
+                    wb_file_cb = flasher_log.append_wb_trace
+            silent_wb_cfgs: List[str] = []
+            for cfg in config_order:
+                if cancel_cb and cancel_cb():
+                    break
+                cfg_label = f"{cfg[0]} {cfg[1]}{cfg[2]}"
+                _, _, devices_from_wb = _broadcast_probe_bauds(
+                    port,
+                    [cfg],
+                    log_verbose_cb=log_verbose_cb,
+                    log_ui_cb=log_ui_cb,
+                    log_cb=log_cb,
+                    on_device_found=on_device_found,
+                    cancel_cb=cancel_cb,
+                    log_listen=log_listen,
+                    tcp_ep=tcp_ep,
+                    wb_trace_cb=wb_file_cb,
+                    bootloader_only=(scan_mode == ScanMode.BOOTLOADER_ONLY),
                 )
-            if wb_file_cb is None:
-                wb_file_cb = flasher_log.append_wb_trace
-        silent_wb_cfgs: List[str] = []
-        for cfg in config_order:
+                if not devices_from_wb and tcp_ep is None:
+                    silent_wb_cfgs.append(cfg_label)
+                for d in devices_from_wb:
+                    k = device_table_key(d)
+                    if k not in seen_keys:
+                        d1 = replace(d, supports_fast_modbus=True)
+                        devices.append(d1)
+                        seen_keys.add(k)
+                        if on_device_found:
+                            on_device_found(d1)
+                if scan_mode == ScanMode.BOOTLOADER_ONLY and any(d.in_bootloader for d in devices_from_wb):
+                    v("Режим bootloader: найдено устройство(а) в загрузчике, дальнейшие скорости пропускаем.")
+                    break
+            v(
+                "Быстрый скан WB: в этой сессии только узлы с 0xFD 0x46; устройства без extended — в режиме «обычный поиск»."
+            )
+            if silent_wb_cfgs and len(devices) == 0:
+                u("Нет ответов WB-скана на линии: %s." % ", ".join(silent_wb_cfgs))
+        elif tcp_ep is not None and scan_mode != ScanMode.STANDARD_ONLY:
+            u("TCP: расширенный WB-скан 0xFD по этому соединению недоступен — используйте опрос по адресам.")
+
+        if not run_phase2:
+            out = list(devices)
+            if scan_mode == ScanMode.BOOTLOADER_ONLY:
+                out = [d for d in out if d.in_bootloader]
+            out.sort(
+                key=lambda d: (
+                    d.baudrate,
+                    d.parity,
+                    d.stopbits,
+                    wb_arb_sort_key(d),
+                    d.address,
+                )
+            )
+            return out
+
+        v(f"Опрос Modbus по адресам {addrs_order[0]}..{addrs_order[-1]} (по порядку).")
+        u(f"Опрос {num_addrs} адрес(ов) Modbus…")
+        for config_idx, (baud, parity, stopbits) in enumerate(config_order):
             if cancel_cb and cancel_cb():
                 break
-            cfg_label = f"{cfg[0]} {cfg[1]}{cfg[2]}"
-            _, _, devices_from_wb = _broadcast_probe_bauds(
-                port,
-                [cfg],
-                log_verbose_cb=log_verbose_cb,
-                log_ui_cb=log_ui_cb,
-                log_cb=log_cb,
-                on_device_found=on_device_found,
-                cancel_cb=cancel_cb,
-                log_listen=log_listen,
-                tcp_ep=tcp_ep,
-                wb_trace_cb=wb_file_cb,
-                bootloader_only=(scan_mode == ScanMode.BOOTLOADER_ONLY),
-            )
-            if not devices_from_wb and tcp_ep is None:
-                silent_wb_cfgs.append(cfg_label)
-            for d in devices_from_wb:
-                k = device_table_key(d)
-                if k not in seen_keys:
-                    d1 = replace(d, supports_fast_modbus=True)
-                    devices.append(d1)
-                    seen_keys.add(k)
-                    if on_device_found:
-                        on_device_found(d1)
-            if scan_mode == ScanMode.BOOTLOADER_ONLY and any(d.in_bootloader for d in devices_from_wb):
-                v("Режим bootloader: найдено устройство(а) в загрузчике, дальнейшие скорости пропускаем.")
-                break
-        v(
-            "Быстрый скан WB: в этой сессии только узлы с 0xFD 0x46; устройства без extended — в режиме «обычный поиск»."
-        )
-        if silent_wb_cfgs and len(devices) == 0:
-            u("Нет ответов WB-скана на линии: %s." % ", ".join(silent_wb_cfgs))
-    elif tcp_ep is not None and scan_mode != ScanMode.STANDARD_ONLY:
-        u("TCP: расширенный WB-скан 0xFD по этому соединению недоступен — используйте опрос по адресам.")
+            cfg = (baud, parity, stopbits)
+            for idx, addr in enumerate(addrs_order):
+                if cancel_cb and cancel_cb():
+                    break
+                done = config_idx * num_addrs + idx + 1
+                if progress_cb:
+                    progress_cb(done, total, addr, cfg)
 
-    if not run_phase2:
-        out = list(devices)
-        if scan_mode == ScanMode.BOOTLOADER_ONLY:
-            out = [d for d in out if d.in_bootloader]
-        out.sort(
+                def _current_cb(a: int, b: int, p: str, s: int, _step=idx) -> None:
+                    if progress_cb:
+                        progress_cb(config_idx * num_addrs + _step + 1, total, a, (b, p, s))
+
+                n_same_addr = sum(1 for d in devices if d.address == addr)
+                if n_same_addr > 1:
+                    v(
+                        f"Опрос адресов: {addr} пропущен — на линии несколько устройств с этим Modbus-адресом "
+                        f"(идентификация выполнена по WB-скану)."
+                    )
+                    _sleep_interruptible(
+                        _phase2_gap_between_addresses_s(baud, parity, stopbits),
+                        cancel_cb,
+                        step=0.02,
+                    )
+                    continue
+
+                dev = scan_address(
+                    port,
+                    addr,
+                    [cfg],
+                    v,
+                    current_cb=_current_cb,
+                    tcp_ep=tcp_ep,
+                    cancel_cb=cancel_cb,
+                    on_partial=on_device_found,
+                )
+                if dev is not None:
+                    k2 = device_table_key(dev)
+                    if k2 not in seen_keys:
+                        devices.append(dev)
+                        seen_keys.add(k2)
+                        if on_device_found:
+                            on_device_found(dev)
+                        ser_str = format_serial_for_display(dev.serial)
+                        v(
+                            f"Modbus (сканирование): адрес {addr}, {dev.baudrate} бод; "
+                            f"серийный № {ser_str}, версия пр. {dev.app_version}, версия загрузчика {dev.bootloader_version}"
+                        )
+                        u(
+                            f"  адр.{addr} @ {dev.baudrate} {parity}{stopbits} — SN {ser_str}"
+                        )
+                _sleep_interruptible(
+                    _phase2_gap_between_addresses_s(baud, parity, stopbits),
+                    cancel_cb,
+                    step=0.02,
+                )
+
+        devices.sort(
             key=lambda d: (
                 d.baudrate,
                 d.parity,
@@ -1286,78 +1452,11 @@ def scan_all(
                 d.address,
             )
         )
-        return out
-
-    v(f"Опрос Modbus по адресам {addrs_order[0]}..{addrs_order[-1]} (по порядку).")
-    u(f"Опрос {num_addrs} адрес(ов) Modbus…")
-    for config_idx, (baud, parity, stopbits) in enumerate(config_order):
-        if cancel_cb and cancel_cb():
-            break
-        cfg = (baud, parity, stopbits)
-        for idx, addr in enumerate(addrs_order):
-            if cancel_cb and cancel_cb():
-                break
-            done = config_idx * num_addrs + idx + 1
-            if progress_cb:
-                progress_cb(done, total, addr, cfg)
-
-            def _current_cb(a: int, b: int, p: str, s: int, _step=idx) -> None:
-                if progress_cb:
-                    progress_cb(config_idx * num_addrs + _step + 1, total, a, (b, p, s))
-
-            n_same_addr = sum(1 for d in devices if d.address == addr)
-            if n_same_addr > 1:
-                v(
-                    f"Опрос адресов: {addr} пропущен — на линии несколько устройств с этим Modbus-адресом "
-                    f"(идентификация выполнена по WB-скану)."
-                )
-                _sleep_interruptible(
-                    _phase2_gap_between_addresses_s(baud, parity, stopbits),
-                    cancel_cb,
-                    step=0.02,
-                )
-                continue
-
-            dev = scan_address(
-                port,
-                addr,
-                [cfg],
-                v,
-                current_cb=_current_cb,
-                tcp_ep=tcp_ep,
-                cancel_cb=cancel_cb,
-                on_partial=on_device_found,
-            )
-            if dev is not None:
-                k2 = device_table_key(dev)
-                if k2 not in seen_keys:
-                    devices.append(dev)
-                    seen_keys.add(k2)
-                    if on_device_found:
-                        on_device_found(dev)
-                    ser_str = format_serial_for_display(dev.serial)
-                    v(
-                        f"Modbus (сканирование): адрес {addr}, {dev.baudrate} бод; "
-                        f"серийный № {ser_str}, версия пр. {dev.app_version}, версия загрузчика {dev.bootloader_version}"
-                    )
-                    u(
-                        f"  адр.{addr} @ {dev.baudrate} {parity}{stopbits} — SN {ser_str}"
-                    )
-            _sleep_interruptible(
-                _phase2_gap_between_addresses_s(baud, parity, stopbits),
-                cancel_cb,
-                step=0.02,
-            )
-
-    devices.sort(
-        key=lambda d: (
-            d.baudrate,
-            d.parity,
-            d.stopbits,
-            wb_arb_sort_key(d),
-            d.address,
-        )
-    )
-    if scan_mode == ScanMode.BOOTLOADER_ONLY:
-        devices = [d for d in devices if d.in_bootloader]
-    return devices
+        if scan_mode == ScanMode.BOOTLOADER_ONLY:
+            devices = [d for d in devices if d.in_bootloader]
+        return devices
+    finally:
+        try:
+            delattr(_scan_tls, "timing")
+        except AttributeError:
+            pass

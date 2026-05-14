@@ -147,36 +147,37 @@ load_serial_map_conf() {
 load_serial_map_conf
 
 read_rtc_datetime() {
-    local rtc rtc_d rtc_t raw hc
-    # Try kernel sysfs interface first (requires CONFIG_RTC_INTF_SYSFS)
-    for rtc in rtc1 rtc0; do
-        [ -f "/sys/class/rtc/${rtc}/date" ] || continue
-        [ -f "/sys/class/rtc/${rtc}/time" ] || continue
-        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || continue
-        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || continue
-        [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ] || continue
-        case "$rtc_d" in
-            1970-*) continue ;;
-        esac
-        printf '%s %s' "$rtc_d" "$rtc_t"
-        return 0
-    done
-    # Fallback: hwclock (util-linux-extra), try rtc1 then rtc0
+    local rtc=rtc1 rtc_d rtc_t raw hc cleaned
+    # СА-02м: только внешняя I2C RTC — rtc1 / /dev/rtc1 (встроенный rtc0 не читаем).
+    if [ -f "/sys/class/rtc/${rtc}/date" ] && [ -f "/sys/class/rtc/${rtc}/time" ]; then
+        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || rtc_d=""
+        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || rtc_t=""
+        if [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ]; then
+            case "$rtc_d" in
+                1970-*) ;;
+                *)
+                    printf '%s %s' "$rtc_d" "$rtc_t"
+                    return 0
+                    ;;
+            esac
+        fi
+    fi
     hc=$(command -v hwclock 2>/dev/null)
     if [ -z "$hc" ] && command -v sudo >/dev/null 2>&1; then
         hc=/usr/sbin/hwclock
     fi
     [ -n "$hc" ] || return 1
-    for rtc in /dev/rtc1 /dev/rtc0 /dev/rtc; do
-        [ -c "$rtc" ] || continue
-        raw=$(timeout 2 "$hc" --show --rtc "$rtc" 2>/dev/null \
-              || timeout 2 sudo -n "$hc" --show --rtc "$rtc" 2>/dev/null) || continue
-        [ -n "$raw" ] || continue
-        # hwclock output: "2025-11-25 22:01:54.123456+04:00" → "2025-11-25 22:01:54"
-        printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n'
-        return 0
-    done
-    return 1
+    [ -c /dev/rtc1 ] || return 1
+    raw=$(timeout 2 "$hc" --show --rtc /dev/rtc1 2>/dev/null \
+          || timeout 2 sudo -n "$hc" --show --rtc /dev/rtc1 2>/dev/null) || return 1
+    [ -n "$raw" ] || return 1
+    cleaned=$(printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n')
+    [ -n "$cleaned" ] || return 1
+    case "$cleaned" in
+        1970-*) return 1 ;;
+    esac
+    printf '%s' "$cleaned"
+    return 0
 }
 
 status_block_enabled() {
@@ -575,6 +576,35 @@ removable_df_kb() {
     df "$mp" 2>/dev/null | awk 'NR==2{print $2,$3,$4}'
 }
 
+# microSD: /media/sdcard от storage-mount; иначе любой смонтированный mmcblk1/3, кроме носителя с корнем /.
+sdcard_mountpoint() {
+    local root_src dev mnt rb db
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null | head -1)
+    case "$root_src" in
+        /dev/mmcblk*) rb=${root_src#/dev/mmcblk}; rb=${rb%%p*} ;;
+        *) rb="" ;;
+    esac
+    if removable_mounted /media/sdcard; then
+        printf '%s\n' /media/sdcard
+        return 0
+    fi
+    while read -r dev mnt _; do
+        [ -n "$dev" ] && [ -n "$mnt" ] || continue
+        [ "$mnt" = / ] && continue
+        case "$dev" in
+            /dev/mmcblk1*|/dev/mmcblk3*)
+                db=${dev#/dev/mmcblk}; db=${db%%p*}
+                if [ -n "$rb" ] && [ "$db" = "$rb" ]; then
+                    continue
+                fi
+                printf '%s\n' "$mnt"
+                return 0
+                ;;
+        esac
+    done < /proc/mounts
+    return 1
+}
+
 i2c_expander_absent() {
     local cache_file="${CACHE_DIR}/i2c_expander_absent" state=0 ig
     if cache_is_fresh "$cache_file" 60; then
@@ -751,9 +781,11 @@ gather_storage_metrics() {
     SD_USED=0
     SD_FREE=0
     SD_PCT=0
-    if removable_mounted /media/sdcard; then
+    sd_mp=""
+    sd_mp=$(sdcard_mountpoint 2>/dev/null) || sd_mp=""
+    if [ -n "$sd_mp" ]; then
         SD_M=1
-        sd_data=($(removable_df_kb /media/sdcard))
+        sd_data=($(removable_df_kb "$sd_mp"))
         SD_TOTAL=${sd_data[0]:-0}
         SD_USED=${sd_data[1]:-0}
         SD_FREE=${sd_data[2]:-0}
@@ -904,7 +936,9 @@ gather_system_metrics() {
     KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
     STORAGE_AUTO_FORMAT_UI=1
     STORAGE_MOUNT_INSTALLED=0
-    [ -x /usr/local/bin/storage-mount.sh ] && STORAGE_MOUNT_INSTALLED=1
+    if [ -x /usr/local/bin/storage-mount.sh ] && [ -x /usr/local/sbin/sa02m-set-storage-auto-format ]; then
+        STORAGE_MOUNT_INSTALLED=1
+    fi
     if [ -f /etc/sa02m_storage.conf ]; then
         # shellcheck source=/dev/null
         . /etc/sa02m_storage.conf 2>/dev/null || true

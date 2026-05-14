@@ -9,7 +9,7 @@ SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION==
 SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="add", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="remove", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl stop storage-mount@%k.service"
 
-# microSD: на части плат слот — mmcblk1, на других — mmcblk3 (eMMC обычно mmcblk2)
+# microSD: mmcblk1/mmcblk3; eMMC на СА-02м — mmcblk2 (не трогаем).
 SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"

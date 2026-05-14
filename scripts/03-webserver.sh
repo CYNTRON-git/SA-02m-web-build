@@ -267,8 +267,10 @@ systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 # ── sudoers for www-data ──────────────────────────────────────────────────
 log INFO "Настройка sudoers"
 cat > /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/hwclock, \
-    /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, /usr/sbin/reboot, \
+www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclock, /usr/sbin/hwclock, \
+    /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, /usr/sbin/reboot, /usr/bin/reboot, \
+    /sbin/reboot -f, /usr/sbin/reboot -f, /usr/bin/reboot -f, \
+    /sbin/shutdown -r now, /usr/sbin/shutdown -r now, \
     /usr/bin/systemctl reboot, \
     /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \
     /usr/bin/systemctl restart networking, /usr/bin/systemctl restart networking.service, \
@@ -279,7 +281,9 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /sbin/hwclock, /usr/sbin/h
     /usr/sbin/gpioget, /usr/bin/gpioget, \
     /bin/kill, /usr/bin/kill, \
     /usr/local/sbin/sa02m-set-storage-auto-format, \
-    /usr/local/sbin/sa02m-web-update-check
+    /usr/local/sbin/sa02m-web-update-check, \
+    /usr/local/sbin/sa02m-web-reboot.sh, \
+    /usr/local/sbin/sa02m-web-restart-services.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
@@ -294,6 +298,16 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
 else
     log WARN "Нет etc/sa02m-web-update-check.sh — таймер проверки обновлений веб-UI недоступен"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
+else
+    log WARN "Нет etc/sa02m-web-reboot.sh — перезагрузка из веб может не сработать при сбое systemd"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
+else
+    log WARN "Нет etc/sa02m-web-restart-services.sh — перезапуск служб из веб без расширенных fallback"
 fi
 for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     if [ -f "$SYSTEMD_DIR/$_wu_unit" ]; then
@@ -331,7 +345,7 @@ if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
     systemctl start sa02m-web-update-check.service >> "$LOG_FILE" 2>&1 || true
 fi
 
-if [ -x /usr/local/sbin/sa02m-prepare-working-board ]; then
+if [ -x /usr/local/sbin/sa02m-prepare-working-board ] && [ "${SA02M_PREPARE_WORKING_BOARD:-0}" = "1" ]; then
     log INFO "Включение безопасного режима для рабочей платы"
     /usr/local/sbin/sa02m-prepare-working-board prepare >> "$LOG_FILE" 2>&1 || \
         log WARN "Не удалось принудительно включить safe mode через sa02m-prepare-working-board"

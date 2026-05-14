@@ -1,23 +1,12 @@
 #!/bin/bash
-# Монтирование USB (/media/usb) и microSD (mmcblk1 или mmcblk3 → /media/sdcard).
+# Монтирование USB (/media/usb) и microSD (mmcblk1/3 → /media/sdcard; eMMC на СА-02м обычно mmcblk2).
 # Опционально: автоформат в exFAT при пустой ФС или NTFS — см. /etc/sa02m_storage.conf
 
-ACTION=$1
-DEVICE=$2
-
-if [[ $DEVICE == mmcblk1* || $DEVICE == mmcblk3* ]]; then
-  MOUNT_POINT="/media/sdcard"
-  if [[ $DEVICE == mmcblk1 || $DEVICE == mmcblk3 ]]; then
-    DEV_PATH="/dev/${DEVICE}p1"
-  else
-    DEV_PATH="/dev/${DEVICE}"
-  fi
-  TYPE="sdcard"
-else
-  MOUNT_POINT="/media/usb"
-  DEV_PATH="/dev/${DEVICE}"
-  TYPE="usb"
-fi
+ACTION=${1:-}
+DEVICE=${2:-}
+MOUNT_POINT=""
+DEV_PATH=""
+TYPE=""
 
 STORAGE_AUTO_FORMAT=1
 if [ -f /etc/sa02m_storage.conf ]; then
@@ -32,6 +21,33 @@ esac
 log() {
   logger -t storage-mount "$1"
   echo "$1"
+}
+
+set_device_context() {
+  local device=${1:-}
+  if [ -z "$device" ]; then
+    log "Не передано имя устройства"
+    return 1
+  fi
+
+  if [[ $device == mmcblk1* || $device == mmcblk3* ]]; then
+    MOUNT_POINT="/media/sdcard"
+    if [[ $device == mmcblk1 || $device == mmcblk3 ]]; then
+      # Чаще p1; суперфлоппи без таблицы разделов — только /dev/mmcblkN
+      if [ -b "/dev/${device}p1" ]; then
+        DEV_PATH="/dev/${device}p1"
+      else
+        DEV_PATH="/dev/${device}"
+      fi
+    else
+      DEV_PATH="/dev/${device}"
+    fi
+    TYPE="sdcard"
+  else
+    MOUNT_POINT="/media/usb"
+    DEV_PATH="/dev/${device}"
+    TYPE="usb"
+  fi
 }
 
 format_exfat() {
@@ -119,8 +135,68 @@ do_unmount() {
   log "Устройство ${DEV_PATH} полностью отключено"
 }
 
+is_usb_candidate() {
+  local device=$1
+  local base=${device%%[0-9]*}
+
+  if [ -r "/sys/block/${base}/removable" ] && [ "$(cat "/sys/block/${base}/removable" 2>/dev/null)" = "1" ]; then
+    return 0
+  fi
+
+  udevadm info --query=property --name "/dev/${device}" 2>/dev/null | grep -Eq '^(ID_BUS=usb|ID_PATH=.*usb)'
+}
+
+scan_and_mount() {
+  local name type pk target
+  local scanned=0
+  local succeeded=0
+  local seen=" "
+
+  while read -r name type pk; do
+    [ -n "${name:-}" ] || continue
+    target=""
+
+    case "${name}:${type}" in
+      mmcblk1:disk|mmcblk3:disk)
+        target="$name"
+        ;;
+      mmcblk1p*:part|mmcblk3p*:part)
+        target="${pk:-${name%%p*}}"
+        ;;
+      sd[a-z]:disk)
+        if is_usb_candidate "$name"; then
+          target="$name"
+        fi
+        ;;
+      sd[a-z][0-9]*:part)
+        if is_usb_candidate "$name" || { [ -n "${pk:-}" ] && is_usb_candidate "$pk"; }; then
+          target="$name"
+        fi
+        ;;
+    esac
+
+    [ -n "$target" ] || continue
+    case "$seen" in
+      *" ${target} "*) continue ;;
+    esac
+    seen="${seen}${target} "
+    scanned=$((scanned + 1))
+
+    if set_device_context "$target" && do_mount; then
+      succeeded=$((succeeded + 1))
+    fi
+  done < <(lsblk -nr -o NAME,TYPE,PKNAME 2>/dev/null)
+
+  if (( scanned > 0 && succeeded == 0 )); then
+    log "Ни один найденный накопитель не удалось смонтировать"
+    return 1
+  fi
+  return 0
+}
+
 case "${ACTION}" in
-  add) do_mount ;;
-  remove) do_unmount ;;
+  add) set_device_context "$DEVICE" && do_mount ;;
+  remove) set_device_context "$DEVICE" && do_unmount ;;
+  scan) scan_and_mount ;;
   *) log "Неверное действие: ${ACTION}" ;;
 esac

@@ -1,0 +1,14 @@
+[Unit]
+Description=SA-02m early start (USB power, optional DS3231 RTC, PCA9536 beep)
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udevd.service
+Before=time-set.target time-sync.target
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sa02m-pre-start.sh
+
+[Install]
+WantedBy=sysinit.target

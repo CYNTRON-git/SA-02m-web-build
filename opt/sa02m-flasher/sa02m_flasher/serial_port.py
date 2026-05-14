@@ -73,6 +73,31 @@ def open_port(
     )
 
 
+def format_serial_open_error_user_message(port: str, exc: BaseException) -> str:
+    """Понятный текст для UI: занят COM или обычная ошибка открытия."""
+    s = str(exc).lower()
+    errn = getattr(exc, "winerror", None)
+    if errn is None:
+        errn = getattr(exc, "errno", None)
+    busy_hints = (
+        "could not open port",
+        "access is denied",
+        "permission denied",
+        "busy",
+        "being used",
+        "отказано в доступе",
+        "занят",
+        "device is being used",
+    )
+    if errn in (5, 13, 16, 32, 112) or any(h in s for h in busy_hints):
+        return (
+            f"COM-порт {port} занят или недоступен.\n\n"
+            "Выберите другой порт или завершите программу, которая уже открыла этот COM.\n\n"
+            f"Подробности: {exc!r}"
+        )
+    return f"Не удалось открыть {port}:\n{exc}"
+
+
 def send_receive(
     ser: serial.Serial,
     request: bytes,

@@ -140,6 +140,8 @@ if [ -f "$ETC_REPO/storage-mount.sh" ]; then
     log INFO "Установка storage-mount (USB / microSD)"
     install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
     install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
+    # Репозиторий часто синхронизируется с Windows: удаляем CRLF у shebang helper-скрипта.
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-set-storage-auto-format
     install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
     install -m 644 "$ETC_REPO/udev/99-storage.rules" /etc/udev/rules.d/99-storage.rules
     if [ ! -f /etc/sa02m_storage.conf ]; then
@@ -150,6 +152,22 @@ if [ -f "$ETC_REPO/storage-mount.sh" ]; then
     log OK "storage-mount и udev 99-storage.rules установлены"
 else
     log WARN "Нет $ETC_REPO/storage-mount.sh — пропуск установки съёмных носителей"
+fi
+
+# ── Ранний PRE-START: USB, RTC (DS3231 при отсутствии rtc1), PCA9536 ────────
+if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
+    log INFO "Установка sa02m-pre-start.service"
+    install -m 755 "$ETC_REPO/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
+    if [ -f "$ETC_REPO/systemd/sa02m-pre-start.service" ]; then
+        install -m 644 "$ETC_REPO/systemd/sa02m-pre-start.service" /etc/systemd/system/sa02m-pre-start.service
+    fi
+    if [ -f "$ETC_REPO/systemd/mplc4.service" ] && [ -x /etc/init.d/mplc4 ]; then
+        install -m 644 "$ETC_REPO/systemd/mplc4.service" /etc/systemd/system/mplc4.service
+    fi
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable sa02m-pre-start.service >> "$LOG_FILE" 2>&1 || true
+    systemctl enable mplc4.service >> "$LOG_FILE" 2>&1 || true
+    log OK "sa02m-pre-start установлен и включён"
 fi
 
 # ── Mask unnecessary timers ────────────────────────────────────────────────
