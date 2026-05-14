@@ -881,6 +881,30 @@ svg .gauge-num {
   margin: 0;
 }
 
+.system-manage-actions-card .system-manage-actions-main {
+  gap: 18px;
+}
+.system-action-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.system-action-label {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+}
+.system-action-desc {
+  margin: 0 !important;
+}
+.system-manage-actions-card .system-action-btn {
+  margin-top: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Вкладка «Управление»: одна сетка как «Общая информация» — auto-fill, перенос на следующую строку */
 .dash-grid.system-manage-grid {
   margin-bottom: 28px;
@@ -1304,6 +1328,7 @@ svg .gauge-num {
 .checkbox-line { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
 
 .web-upd-status { margin-top: 10px; font-size: .82rem; line-height: 1.35; min-height: 1.35em; }
+.web-upd-status[hidden] { display: none !important; margin: 0; min-height: 0; padding: 0; }
 .web-upd-status.is-ok   { color: #248a3d; }
 .web-upd-status.is-warn { color: #f0b429; }
 .web-upd-status.is-err  { color: #ff6b6b; }
