@@ -37,33 +37,36 @@ read_timezone() {
     printf '%s' "$tz"
 }
 
-# Тот же подход, что в status.cgi: сначала rtc1 (часто внешний PCF8563), без даты эпохи из rtc0.
+# СА-02м: внешняя I2C RTC (PCF8563 и др.) — в ядре обычно rtc1, /dev/rtc1. Встроенный rtc0 не используем.
 read_rtc_datetime() {
-    local rtc rtc_d rtc_t raw hc
-    for rtc in rtc1 rtc0; do
-        [ -r "/sys/class/rtc/${rtc}/date" ] || continue
-        [ -r "/sys/class/rtc/${rtc}/time" ] || continue
-        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || continue
-        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || continue
-        [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ] || continue
-        case "$rtc_d" in
-            1970-*) continue ;;
-        esac
-        printf '%s %s' "$rtc_d" "$rtc_t"
-        return 0
-    done
+    local rtc=rtc1 rtc_d rtc_t raw hc cleaned
+    if [ -r "/sys/class/rtc/${rtc}/date" ] && [ -r "/sys/class/rtc/${rtc}/time" ]; then
+        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || rtc_d=""
+        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || rtc_t=""
+        if [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ]; then
+            case "$rtc_d" in
+                1970-*) ;;
+                *)
+                    printf '%s %s' "$rtc_d" "$rtc_t"
+                    return 0
+                    ;;
+            esac
+        fi
+    fi
     hc=$(command -v hwclock 2>/dev/null)
     [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
     [ -n "$hc" ] || return 1
-    for rtc in /dev/rtc1 /dev/rtc0 /dev/rtc; do
-        [ -c "$rtc" ] || continue
-        raw=$(timeout_run 2 "$hc" --show --rtc="$rtc" 2>/dev/null \
-              || timeout_run 2 sudo -n "$hc" --show --rtc="$rtc" 2>/dev/null) || continue
-        [ -n "$raw" ] || continue
-        printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n'
-        return 0
-    done
-    return 1
+    [ -c /dev/rtc1 ] || return 1
+    raw=$(timeout_run 2 "$hc" --show --rtc=/dev/rtc1 2>/dev/null \
+          || timeout_run 2 sudo -n "$hc" --show --rtc=/dev/rtc1 2>/dev/null) || return 1
+    [ -n "$raw" ] || return 1
+    cleaned=$(printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n')
+    [ -n "$cleaned" ] || return 1
+    case "$cleaned" in
+        1970-*) return 1 ;;
+    esac
+    printf '%s' "$cleaned"
+    return 0
 }
 
 read_iface_conf() {

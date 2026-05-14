@@ -12,5 +12,10 @@ cat > /etc/sa02m_storage.conf <<EOF
 STORAGE_AUTO_FORMAT=$1
 EOF
 chmod 644 /etc/sa02m_storage.conf
-rm -f /tmp/sa02m_status_cache/system.json 2>/dev/null || true
+
+if [ "$1" = "1" ] && [ -x /usr/local/bin/storage-mount.sh ]; then
+  /usr/local/bin/storage-mount.sh scan
+fi
+
+rm -f /tmp/sa02m_status_cache/system.json /tmp/sa02m_status_cache/storage.json 2>/dev/null || true
 exit 0

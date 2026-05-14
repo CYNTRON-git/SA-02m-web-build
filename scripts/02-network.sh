@@ -28,7 +28,7 @@ NET
 mkdir -p /etc/network/interfaces.d
 log INFO "eth0 → $IP_ADDRESS / $NETMASK"
 cat > /etc/network/interfaces.d/eth0.conf <<ETH0
-allow-hotplug eth0
+auto eth0
 iface eth0 inet static
     address $IP_ADDRESS
     netmask $NETMASK

@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.3.8';
+const APP_VERSION = '1.0.3.7';
 
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
@@ -1224,7 +1224,7 @@ function timeZoneSelectApplyFromDeviceOrBrowser(tzSel, deviceTzRaw) {
 
 function loadConfig() {
   if (configLoaded) return;
-  fetch('/cgi-bin/config.cgi', { cache: 'no-store' })
+  fetch('/cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => {
       configLoaded = true;
@@ -1336,12 +1336,52 @@ function validateNetForm(form) {
   return ok;
 }
 
+/** Разбор ответа apply.cgi (302 + Location: /?status=...) */
+function parseApplyRedirect(response) {
+  if (response.type === 'opaqueredirect') return { kind: 'unknown' };
+  const loc = response.headers.get('Location') || '';
+  if (loc.indexOf('error_time') !== -1) return { kind: 'error_time' };
+  if (loc.indexOf('error_tz') !== -1) return { kind: 'error_tz' };
+  if (loc.indexOf('applied_tz_failed') !== -1) return { kind: 'applied_tz_failed' };
+  return { kind: 'ok' };
+}
+
 function submitForm(form, onSuccess) {
   const data = new URLSearchParams(new FormData(form));
   const btn = form.querySelector('button[type=submit]');
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/apply.cgi', { method: 'POST', body: data, redirect: 'manual' })
-    .then(() => { onSuccess && onSuccess(); })
+  fetch('/cgi-bin/apply.cgi', {
+    method: 'POST',
+    body: data,
+    redirect: 'manual',
+    credentials: 'same-origin'
+  })
+    .then((r) => {
+      if (!r.ok && r.status !== 302 && r.status !== 301) {
+        toast('Ошибка сервера: ' + r.status, 'error');
+        return;
+      }
+      const pr = parseApplyRedirect(r);
+      if (pr.kind === 'error_time') {
+        toast(
+          'Не удалось установить время. Проверьте формат и /var/log/sa02m_install.log на устройстве.',
+          'error'
+        );
+        return;
+      }
+      if (pr.kind === 'error_tz') {
+        toast('Таймзона не применена.', 'error');
+        return;
+      }
+      if (pr.kind === 'applied_tz_failed') {
+        configLoaded = false;
+        toast('Настройки применены; таймзона не изменилась.', 'warn', 6000);
+        onSuccess && onSuccess();
+        return;
+      }
+      configLoaded = false;
+      onSuccess && onSuccess();
+    })
     .catch(() => toast('Ошибка отправки', 'error'))
     .finally(() => { if (btn) btn.disabled = false; });
 }
@@ -1351,19 +1391,56 @@ function submitForm(form, onSuccess) {
    ══════════════════════════════════════════════════════════════════════════ */
 function doRestart() {
   if (!confirm('Перезапустить службы nginx и fcgiwrap?')) return;
-  fetch('/cgi-bin/restart.cgi', { method: 'POST', redirect: 'manual' })
-    .then(() => { toast('Службы перезапущены', 'success'); setTimeout(fetchStatus, 2000); })
-    .catch(() => toast('Ошибка', 'error'));
+  fetch('/cgi-bin/restart.cgi', {
+    method: 'POST',
+    redirect: 'manual',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: '{}',
+  })
+    .then(async (r) => {
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error((t || '').trim().slice(0, 120) || ('HTTP ' + r.status));
+      }
+      const j = await r.json().catch(() => ({}));
+      if (j && j.ok === false) throw new Error(j.error || 'отклонено');
+      return j;
+    })
+    .then(() => {
+      toast('Команда перезапуска отправлена. Если systemd недоступен, смотрите /var/log/sa02m_install.log', 'success', 8000);
+      setTimeout(fetchStatus, 2000);
+    })
+    .catch((e) => {
+      toast('Перезапуск служб: ' + (e && e.message ? e.message : String(e)), 'error');
+    });
 }
 
 function doReboot() {
   if (!confirm('Перезагрузить контроллер?')) return;
-  fetch('/cgi-bin/reboot.cgi', { method: 'POST', redirect: 'manual' })
+  fetch('/cgi-bin/reboot.cgi', {
+    method: 'POST',
+    redirect: 'manual',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: '{}',
+  })
+    .then(async (r) => {
+      if (!r.ok) {
+        const t = await r.text().catch(() => '');
+        throw new Error((t || '').trim().slice(0, 120) || ('HTTP ' + r.status));
+      }
+      const j = await r.json().catch(() => ({}));
+      if (j && j.ok === false) throw new Error(j.error || 'отклонено');
+      return j;
+    })
     .then(() => {
       toast('Перезагрузка… страница обновится через 60 с', 'info', 65000);
       setTimeout(() => location.reload(), 60000);
     })
-    .catch(() => {});
+    .catch((e) => {
+      toast('Перезагрузка не запущена: ' + (e && e.message ? e.message : String(e)), 'error');
+    });
 }
 
 function doLogout() {
@@ -1455,11 +1532,12 @@ function handleUrlStatus() {
   const s = params.get('status');
   if (!s) return;
   const map = {
-    applied:      ['Настройки применены', 'success'],
-    error_tz:     ['Ошибка: неверная таймзона', 'error'],
-    error_time:   ['Ошибка: не удалось установить время', 'error'],
-    services:     ['Службы перезапущены', 'success'],
-    reboot:       ['Перезагрузка запущена…', 'info'],
+    applied:             ['Настройки применены', 'success'],
+    applied_tz_failed:   ['Время применено; таймзона не изменилась', 'warn'],
+    error_tz:            ['Ошибка: неверная таймзона', 'error'],
+    error_time:          ['Ошибка: не удалось установить время', 'error'],
+    services:            ['Службы перезапущены', 'success'],
+    reboot:              ['Перезагрузка запущена…', 'info'],
   };
   const [msg, type] = map[s] || ['Статус: ' + s, 'info'];
   toast(msg, type);
@@ -1503,8 +1581,32 @@ function syncTimeFromPC(applyNow) {
   const data = new URLSearchParams(new FormData(ft));
   const btn = ft.querySelector('button[type="submit"]');
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/apply.cgi', { method: 'POST', body: data, redirect: 'manual' })
-    .then(() => {
+  fetch('/cgi-bin/apply.cgi', {
+    method: 'POST',
+    body: data,
+    redirect: 'manual',
+    credentials: 'same-origin'
+  })
+    .then((r) => {
+      if (!r.ok && r.status !== 302 && r.status !== 301) {
+        toast('Ошибка сервера: ' + r.status, 'error');
+        return;
+      }
+      const pr = parseApplyRedirect(r);
+      if (pr.kind === 'error_time') {
+        toast('Не удалось установить время с этого ПК.', 'error');
+        return;
+      }
+      if (pr.kind === 'error_tz') {
+        toast('Таймзона не применена.', 'error');
+        return;
+      }
+      if (pr.kind === 'applied_tz_failed') {
+        configLoaded = false;
+        toast('Время синхронизировано; таймзона не изменилась.', 'warn', 6000);
+        setTimeout(loadConfig, 400);
+        return;
+      }
       configLoaded = false;
       toast('Время синхронизировано с этим ПК', 'success');
       setTimeout(loadConfig, 400);
@@ -1531,6 +1633,7 @@ function initWebCredsForm() {
     fetch('/cgi-bin/web_creds.cgi', {
       method: 'POST',
       body,
+      credentials: 'same-origin',
       headers: { Accept: 'application/json' },
     })
       .then(r => r.json())

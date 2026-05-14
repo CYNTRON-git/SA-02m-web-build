@@ -74,9 +74,10 @@ sa02m_hw_usb_power_use_gpiod() {
     [[ "${SA02M_GPIO_USB_GPIOD_LINE:-}" =~ ^[0-9]+$ ]]
 }
 
-# Смысл в UI/Modbus: 1 = питание USB включено, 0 = выключено.
-# Запись на линию без инверсии: value 1 → gpioset …=1 (как в ca_02m.sh по умолчанию).
-# Если gpioget даёт «0» при реально включённом питании — инвертируем только отображаемое/опрашиваемое значение.
+# Смысл в UI/Modbus: 1 = питание USB включено, 0 = выключено (сброс линии).
+# Опрос: при SA02M_USB_POWER_INVERT=1 сырой уровень gpio в инверсии к подписи UI.
+# Запись: то же отображение — UI «ВКЛ»(1) преобразуется в сырое значение для gpioset (см. sa02m_hw_usb_logical_to_raw_line).
+# На типичной СА-02м VBUS включено при gpioset …=1 → держите SA02M_USB_POWER_INVERT=0 (см. pre-start).
 sa02m_hw_usb_power_read_invert() {
     case "${SA02M_USB_POWER_INVERT:-0}" in
         1|yes|true|on|ON) return 0 ;;
@@ -94,6 +95,20 @@ sa02m_hw_usb_line_to_user_logical() {
         esac
     else
         printf '%s\n' "$raw"
+    fi
+}
+
+# UI-логика → значение для gpioset (линия 268=1 = питание на типичной плате при INVERT=0).
+sa02m_hw_usb_logical_to_raw_line() {
+    local logical=$1
+    if sa02m_hw_usb_power_read_invert; then
+        case "$logical" in
+            1) printf '0' ;;
+            0) printf '1' ;;
+            *) printf '%s' "$logical" ;;
+        esac
+    else
+        printf '%s' "$logical"
     fi
 }
 
@@ -122,11 +137,13 @@ sa02m_hw_usb_gpiod_stop_holder() {
 }
 
 sa02m_hw_usb_gpiod_write() {
-    local val=$1 chip line gs help pf
+    local logical=$1 chip line gs help pf raw
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || return 1
-    [ "$val" = "0" ] || [ "$val" = "1" ] || return 1
+    [ "$logical" = "0" ] || [ "$logical" = "1" ] || return 1
+    raw=$(sa02m_hw_usb_logical_to_raw_line "$logical")
+    [ "$raw" = "0" ] || [ "$raw" = "1" ] || return 1
     gs=$(command -v gpioset 2>/dev/null) || return 1
     help=$("$gs" -h 2>&1 || true)
 
@@ -135,42 +152,41 @@ sa02m_hw_usb_gpiod_write() {
 
     if echo "$help" | grep -q -- '-m'; then
         if echo "$help" | grep -qi 'wait'; then
-            if sudo -n "$gs" -m wait "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+            if sudo -n "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                 echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                 return 0
             fi
-            if sudo "$gs" -m wait "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+            if sudo "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                 echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                 return 0
             fi
         fi
         if echo "$help" | grep -qi 'time'; then
             if echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
-                if sudo -n "$gs" -m time -s 604800 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                if sudo -n "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                     echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                     return 0
                 fi
-                if sudo "$gs" -m time -s 604800 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                if sudo "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                     echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                     return 0
                 fi
             fi
             if echo "$help" | grep -qi usec; then
-                if sudo -n "$gs" -m time --usec=604800000000 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                if sudo -n "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                     echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                     return 0
                 fi
-                if sudo "$gs" -m time --usec=604800000000 "$chip" "${line}=${val}" </dev/null >/dev/null 2>&1 & then
+                if sudo "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
                     echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
                     return 0
                 fi
             fi
         fi
-        sa02m_hw_timeout_run sudo -n "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
-        sa02m_hw_timeout_run sudo "$gs" -m exit "$chip" "${line}=${val}" 2>/dev/null && return 0
+        # Не использовать -m exit: процесс завершается — линия часто отпускается (USB гаснет).
     fi
-    sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${val}" 2>/dev/null && return 0
-    sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${val}" 2>/dev/null && return 0
+    sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${raw}" 2>/dev/null && return 0
+    sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${raw}" 2>/dev/null && return 0
     return 1
 }
 

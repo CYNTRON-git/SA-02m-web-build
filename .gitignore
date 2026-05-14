@@ -23,3 +23,6 @@ opt/sa02m-flasher/scripts/prepare_firmware_for_site.local.py
 
 # Локальные приватные файлы (не в репо)
 private/
+
+# Локальный клон для сверки с драйвером PCA9536 (не в репо)
+.tmp-pca9536-sdk/

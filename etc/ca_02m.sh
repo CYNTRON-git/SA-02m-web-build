@@ -1,4 +1,5 @@
 #!/bin/bash
+# Для загрузки используйте: sa02m-pre-start.service → /usr/local/sbin/sa02m-pre-start.sh
 # ╨▓╨║╨╗╤О╤З╨╡╨╜╨╕╨╡ ╨┐╨╕╤В╨░╨╜╨╕╤П USB
 	gpioset 0 268=1
        
