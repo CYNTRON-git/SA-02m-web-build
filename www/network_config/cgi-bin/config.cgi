@@ -26,33 +26,44 @@ read_timezone() {
     if [ -z "${tz:-}" ] && command -v timedatectl >/dev/null 2>&1; then
         tz=$(timeout_run 2 timedatectl show --property=Timezone --value 2>/dev/null | head -1 | tr -d '\r')
     fi
-    printf '%s' "${tz:-UTC}"
+    tz=$(printf '%s' "${tz:-}" | tr -d '\r\n\t ')
+    [ -n "$tz" ] || tz="UTC"
+    # Дефолт устройства СА-02м — Москва; Etc/UTC из образа не показываем в UI как «лишнюю» зону
+    case "$tz" in
+        UTC|Etc/UTC|Etc/Universal|Etc/Zulu|Etc/GMT|Etc/GMT-0|Etc/GMT+0|Etc/GMT0|GMT|Universal|Zulu)
+            tz='Europe/Moscow'
+            ;;
+    esac
+    printf '%s' "$tz"
 }
 
-rtc_sysfs_datetime() {
-    local rtc_dir="" fallback="" name rtc_name rtc_date rtc_time
-    for name in /sys/class/rtc/rtc*; do
-        [ -d "$name" ] || continue
-        [ -r "$name/date" ] || continue
-        [ -r "$name/time" ] || continue
-        if [ -r "$name/name" ]; then
-            IFS= read -r rtc_name < "$name/name"
-            case "${rtc_name:-}" in
-                *pcf8563*)
-                    rtc_dir=$name
-                    break
-                    ;;
-            esac
-        fi
-        [ -z "$fallback" ] && fallback=$name
+# Тот же подход, что в status.cgi: сначала rtc1 (часто внешний PCF8563), без даты эпохи из rtc0.
+read_rtc_datetime() {
+    local rtc rtc_d rtc_t raw hc
+    for rtc in rtc1 rtc0; do
+        [ -r "/sys/class/rtc/${rtc}/date" ] || continue
+        [ -r "/sys/class/rtc/${rtc}/time" ] || continue
+        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || continue
+        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || continue
+        [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ] || continue
+        case "$rtc_d" in
+            1970-*) continue ;;
+        esac
+        printf '%s %s' "$rtc_d" "$rtc_t"
+        return 0
     done
-
-    [ -n "${rtc_dir:-}" ] || rtc_dir=$fallback
-    [ -n "${rtc_dir:-}" ] || return 1
-
-    IFS= read -r rtc_date < "$rtc_dir/date" || return 1
-    IFS= read -r rtc_time < "$rtc_dir/time" || return 1
-    printf '%s %s' "${rtc_date:-}" "${rtc_time:-}"
+    hc=$(command -v hwclock 2>/dev/null)
+    [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
+    [ -n "$hc" ] || return 1
+    for rtc in /dev/rtc1 /dev/rtc0 /dev/rtc; do
+        [ -c "$rtc" ] || continue
+        raw=$(timeout_run 2 "$hc" --show --rtc="$rtc" 2>/dev/null \
+              || timeout_run 2 sudo -n "$hc" --show --rtc="$rtc" 2>/dev/null) || continue
+        [ -n "$raw" ] || continue
+        printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n'
+        return 0
+    done
+    return 1
 }
 
 read_iface_conf() {
@@ -78,10 +89,8 @@ TZ=$(read_timezone)
 DT=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
 
 RTC_DT=""
-if RTC_DT=$(rtc_sysfs_datetime 2>/dev/null); then
+if RTC_DT=$(read_rtc_datetime 2>/dev/null); then
     :
-elif command -v hwclock >/dev/null 2>&1; then
-    RTC_DT=$(timeout_run 2 hwclock -r 2>/dev/null | head -1 | tr -d '\r')
 fi
 RTC_JSON=$(printf '%s' "$RTC_DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
 DT_JSON=$(printf '%s' "$DT" | sed 's/\\/\\\\/g; s/"/\\"/g')

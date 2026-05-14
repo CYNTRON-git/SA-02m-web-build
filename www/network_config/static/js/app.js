@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.3.7';
+const APP_VERSION = '1.0.3.8';
 
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
@@ -1208,7 +1208,7 @@ function timeZoneSelectApplyFromDeviceOrBrowser(tzSel, deviceTzRaw) {
       tzSel.value = deviceTz;
       return;
     }
-    ensureOpt(deviceTz, deviceTz + ' (с устройства)');
+    ensureOpt(deviceTz, deviceTz);
     tzSel.value = deviceTz;
     return;
   }
@@ -1217,7 +1217,7 @@ function timeZoneSelectApplyFromDeviceOrBrowser(tzSel, deviceTzRaw) {
       tzSel.value = browserTz;
       return;
     }
-    ensureOpt(browserTz, browserTz + ' (этот ПК)');
+    ensureOpt(browserTz, browserTz);
     tzSel.value = browserTz;
   }
 }
