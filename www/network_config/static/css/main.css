@@ -883,12 +883,15 @@ svg .gauge-num {
 
 .system-manage-actions-card .system-manage-actions-main {
   gap: 18px;
+  align-items: center;
+  text-align: center;
 }
 .system-action-block {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
+  width: 100%;
 }
 .system-action-label {
   font-size: 1.05rem;
@@ -905,14 +908,30 @@ svg .gauge-num {
   gap: 8px;
 }
 
+/* Вкладка «Управление»: высота карточек по содержимому, без растягивания по самой высокой колонке */
+.system-manage-actions-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-self: start;
+  min-width: 0;
+}
+.system-manage-web-update-card .ctrl-card-main {
+  gap: 8px;
+}
+.system-manage-web-update-card .web-upd-meta {
+  margin: 4px 0 0;
+}
+
 /* Вкладка «Управление»: одна сетка как «Общая информация» — auto-fill, перенос на следующую строку */
 .dash-grid.system-manage-grid {
   margin-bottom: 28px;
-  align-items: stretch;
+  align-items: start;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 .system-manage-grid > .system-manage-web-creds {
   justify-self: stretch;
+  align-self: start;
   width: 100%;
   max-width: 100%;
   margin-bottom: 0;
@@ -929,8 +948,14 @@ svg .gauge-num {
   min-width: 0;
   box-sizing: border-box;
 }
-.system-manage-grid > .ctrl-card {
+.system-manage-grid > .ctrl-card,
+.system-manage-actions-stack > .ctrl-card {
   min-height: 0;
+  align-self: start;
+  width: 100%;
+}
+.system-manage-actions-card {
+  min-height: unset;
 }
 @media (max-width: 900px) {
   .system-manage-grid .system-manage-web-creds .field input:not(.toggle),
@@ -1169,6 +1194,67 @@ svg .gauge-num {
   background: var(--cyan-dim);
   color: var(--text);
 }
+.flasher-device-select-wrap {
+  margin-bottom: 14px;
+}
+.flasher-device-select-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  color: var(--text-sec);
+  font-size: .8rem;
+}
+.flasher-device-select-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.flasher-device-grid {
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.flasher-device-chip {
+  display: block;
+}
+.flasher-device-chip input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.flasher-device-chip span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 48px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-sec);
+  font-weight: 600;
+  transition: border-color var(--transition), background var(--transition), color var(--transition), box-shadow var(--transition);
+}
+.flasher-device-chip small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: .72rem;
+  font-weight: 500;
+}
+.flasher-device-chip input:focus-visible + span {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow);
+}
+.flasher-device-chip input:checked + span {
+  border-color: var(--cyan);
+  background: var(--cyan-dim);
+  color: var(--text);
+}
+.flasher-device-chip input:checked + span small {
+  color: var(--text-sec);
+}
 
 .flasher-actions {
   display: inline-flex; align-items: center; gap: 8px;
@@ -1264,6 +1350,8 @@ svg .gauge-num {
   position: sticky; top: 0;
 }
 .flasher-table tr:hover { background: var(--bg-hover); }
+.flasher-table tr.is-selected { background: color-mix(in srgb, var(--cyan-dim) 68%, var(--bg-card)); }
+.flasher-table tr.flasher-config-row { cursor: pointer; }
 .flasher-sub { font-size: .7rem; color: var(--text-sec); }
 .flasher-fw-top-actions {
   display: grid;
@@ -1323,6 +1411,242 @@ svg .gauge-num {
 .flasher-log-box .log-warn { color: #f0b429; }
 .flasher-log-box .log-dim  { color: var(--text-sec); }
 
+.flasher-config-modal[hidden] { display: none !important; }
+.flasher-config-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+}
+.flasher-config-backdrop {
+  position: absolute;
+  inset: 0;
+  background: #00000073;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.flasher-config-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(1120px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  margin: 24px auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.flasher-config-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 88%, var(--bg-panel));
+}
+.flasher-config-kicker {
+  font-size: .74rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--text-sec);
+  margin-bottom: 4px;
+}
+.flasher-config-head h3 {
+  font-size: 1.18rem;
+  color: var(--text);
+  margin: 0;
+}
+.flasher-config-sub {
+  color: var(--text-sec);
+  font-size: .8rem;
+  margin-top: 4px;
+}
+.flasher-config-close { flex-shrink: 0; }
+.flasher-config-banner {
+  margin: 14px 20px 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--warn-btn-border);
+  background: var(--warn-btn-bg);
+  color: var(--yellow);
+  font-size: .82rem;
+  line-height: 1.45;
+}
+.flasher-config-banner.is-error {
+  border-color: var(--badge-err-border);
+  background: var(--badge-err-bg);
+  color: var(--red);
+}
+.flasher-config-main {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.flasher-config-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--bg-panel));
+  overflow: auto;
+}
+.flasher-config-tab {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-sec);
+  font-size: .83rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.flasher-config-tab:hover { color: var(--text); background: var(--bg-hover); }
+.flasher-config-tab.active {
+  background: var(--cyan-dim);
+  border-color: var(--cyan);
+  color: var(--text);
+}
+.flasher-config-body {
+  padding: 18px 20px 20px;
+  overflow: auto;
+  min-width: 0;
+}
+.flasher-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.flasher-config-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.flasher-config-card h4 {
+  margin: 0 0 12px;
+  font-size: .78rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-sec);
+}
+.flasher-config-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 16px;
+  align-items: baseline;
+}
+.flasher-config-kv div { display: contents; }
+.flasher-config-kv dt {
+  color: var(--text-sec);
+  font-size: .8rem;
+}
+.flasher-config-kv dd {
+  margin: 0;
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+}
+.flasher-config-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, 240px);
+  gap: 10px 16px;
+  align-items: center;
+}
+.flasher-config-form label {
+  color: var(--text-sec);
+  font-size: .8rem;
+}
+.flasher-config-form input,
+.flasher-config-form select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+}
+.flasher-config-form .checkbox-line {
+  grid-column: 1 / -1;
+}
+.flasher-config-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.flasher-config-measure-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+.flasher-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.flasher-config-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.flasher-config-row span:first-child {
+  color: var(--text-sec);
+  font-size: .8rem;
+}
+.flasher-config-row strong {
+  color: var(--text);
+  font-size: .9rem;
+  text-align: right;
+}
+.flasher-config-inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(80px, 120px);
+  gap: 8px;
+  align-items: center;
+}
+.flasher-config-inline-fields input,
+.flasher-config-inline-fields select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.flasher-config-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.flasher-config-mini-card {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.flasher-config-mini-card .mono {
+  display: block;
+  font-size: .95rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 4px;
+}
+.flasher-config-note {
+  color: var(--text-sec);
+  font-size: .78rem;
+  line-height: 1.45;
+  margin-top: 10px;
+}
+
 .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .form-row label { font-size: .78rem; color: var(--text-sec); }
 .checkbox-line { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
@@ -1350,6 +1674,15 @@ svg .gauge-num {
   .flasher-layout { grid-template-columns: 1fr; }
   .flasher-grid { grid-template-columns: 1fr; }
   .flasher-settings-row { grid-template-columns: 1fr; }
+  .flasher-config-dialog { width: calc(100vw - 20px); margin: 10px auto; max-height: calc(100vh - 20px); }
+  .flasher-config-main { grid-template-columns: 1fr; }
+  .flasher-config-tabs {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .flasher-config-form { grid-template-columns: 1fr; }
 }
 @media (max-width: 700px) {
   .sidebar    { display: none; }

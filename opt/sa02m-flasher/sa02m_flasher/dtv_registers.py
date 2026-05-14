@@ -1,0 +1,39 @@
+# -*- coding: utf-8 -*-
+"""
+Modbus-регистры DTV (CYNTRON DTV-RS-485 / RTU_SENSOR) для веб-конфигуратора.
+
+Синхронизировано с логикой MR-02m-flasher и картой DTV-RS-485.
+"""
+
+from __future__ import annotations
+
+DTV_INPUT_LIVE_START = 1
+DTV_INPUT_LIVE_COUNT = 30
+
+DTV_HOLDING_EXT_TEMP_SELECT = 6
+DTV_HOLDING_PRESENCE_OFF_DELAY = 27
+
+DTV_CALIB_TEMP_REGS = range(31, 37)
+DTV_CALIB_HUM_REGS = range(37, 40)
+DTV_CALIB_TEMP_MIN = -100
+DTV_CALIB_TEMP_MAX = 100
+DTV_CALIB_HUM_MIN = -200
+DTV_CALIB_HUM_MAX = 200
+
+DTV_MOV_AVG_HOLDING_ANCHOR = 533
+DTV_MOV_AVG_HOLDING_LAST = 559
+DTV_MOV_AVG_HOLDING_SPAN = DTV_MOV_AVG_HOLDING_LAST - DTV_MOV_AVG_HOLDING_ANCHOR + 1
+DTV_MOV_AVG_SLOT_COUNT = 9
+DTV_MOV_AVG_DEPTH_MIN = 1
+DTV_MOV_AVG_DEPTH_MAX = 50
+DTV_MOV_AVG_DEPTH_REGS = tuple(
+    DTV_MOV_AVG_HOLDING_ANCHOR + 3 * slot + 1
+    for slot in range(DTV_MOV_AVG_SLOT_COUNT)
+)
+
+DTV_COIL_BUZZER = 1
+DTV_COIL_LEDS_ALL = 2
+
+
+def dtv_u16_to_s16(v: int) -> int:
+    return v - 0x10000 if v >= 0x8000 else v
