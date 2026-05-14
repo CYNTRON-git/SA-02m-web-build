@@ -68,6 +68,7 @@
   --meter-yellow: #ffd60a;
   --meter-red:    #ff453a;
   --meter-orange: #ff9f0a;
+  --meter-track:  #2c2c2e;
 }
 
 :root,
@@ -119,9 +120,10 @@ html[data-theme="light"] {
   --badge-ok-border: #86efac;
   --badge-err-bg:    #fef2f2;
   --badge-err-border:#fecaca;
+  --meter-track:     #d1d1d6;
 }
 
-html[data-theme="light"] .gauge-arc-bg { stroke: #2a2a2a !important; }
+html[data-theme="light"] .gauge-arc-bg { stroke: var(--meter-track) !important; }
 html[data-theme="light"] .log-box {
   background: #fafafa;
   border-color: var(--border);
@@ -299,7 +301,7 @@ html:not([data-theme="light"]) .topbar {
   text-align: center;
   line-height: 1.35;
 }
-.gauge-arc-bg { stroke: #2a2a2a; stroke-linecap: butt; }
+.gauge-arc-bg { stroke: var(--meter-track); stroke-linecap: butt; }
 /* butt: иначе round + неверная длина dash давали «кляксу» на конце дуги */
 .gauge-arc    { stroke-linecap: butt; transition: stroke-dasharray .4s ease, stroke .3s ease; }
 /* Числа на дугах CPU/температура — стандартный кегль 30px (ближайший к «крупнее ~19.5») */
@@ -314,7 +316,7 @@ svg .gauge-num {
 
 /* ── Progress bar ────────────────────────────────────────────────────────── */
 .bar-row { margin-top: 10px; }
-.bar-track { background: #2c2c2e; border-radius: var(--radius-pill); height: 7px; overflow: hidden; }
+.bar-track { background: var(--meter-track); border-radius: var(--radius-pill); height: 7px; overflow: hidden; }
 .bar-fill  { height: 100%; border-radius: var(--radius-pill); transition: width .4s ease, background .3s ease; }
 .bar-meta  { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-sec); margin-top: 4px; }
 
@@ -1194,67 +1196,6 @@ svg .gauge-num {
   background: var(--cyan-dim);
   color: var(--text);
 }
-.flasher-device-select-wrap {
-  margin-bottom: 14px;
-}
-.flasher-device-select-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-  color: var(--text-sec);
-  font-size: .8rem;
-}
-.flasher-device-select-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-.flasher-device-grid {
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-}
-.flasher-device-chip {
-  display: block;
-}
-.flasher-device-chip input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-.flasher-device-chip span {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  min-height: 48px;
-  padding: 8px 10px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-input);
-  color: var(--text-sec);
-  font-weight: 600;
-  transition: border-color var(--transition), background var(--transition), color var(--transition), box-shadow var(--transition);
-}
-.flasher-device-chip small {
-  display: block;
-  margin-top: 2px;
-  color: var(--text-dim);
-  font-size: .72rem;
-  font-weight: 500;
-}
-.flasher-device-chip input:focus-visible + span {
-  border-color: var(--cyan);
-  box-shadow: var(--shadow-glow);
-}
-.flasher-device-chip input:checked + span {
-  border-color: var(--cyan);
-  background: var(--cyan-dim);
-  color: var(--text);
-}
-.flasher-device-chip input:checked + span small {
-  color: var(--text-sec);
-}
 
 .flasher-actions {
   display: inline-flex; align-items: center; gap: 8px;
@@ -1269,6 +1210,7 @@ svg .gauge-num {
   flex-direction: row;
   width: 100%;
   gap: 8px;
+  margin-top: 8px;
   align-items: stretch;
   flex-wrap: nowrap;
 }
@@ -1350,8 +1292,12 @@ svg .gauge-num {
   position: sticky; top: 0;
 }
 .flasher-table tr:hover { background: var(--bg-hover); }
-.flasher-table tr.is-selected { background: color-mix(in srgb, var(--cyan-dim) 68%, var(--bg-card)); }
-.flasher-table tr.flasher-config-row { cursor: pointer; }
+.flasher-table tr.is-selected {
+  background: var(--cyan-dim);
+  box-shadow: inset 0 0 0 1px var(--cyan);
+}
+.flasher-table tr.is-selectable { cursor: pointer; }
+.flasher-table tr.flasher-device-config-row { cursor: pointer; }
 .flasher-sub { font-size: .7rem; color: var(--text-sec); }
 .flasher-fw-top-actions {
   display: grid;

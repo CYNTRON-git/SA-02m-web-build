@@ -118,7 +118,7 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
     device_found_cb = ctx["device_found"]
     cancel_evt = ctx["cancel_evt"]
 
-    log_cb(f"Скан {port_key} ({device_path}), {mode.value}", "debug")
+    log_cb(f"Скан {port_key} ({device_path}), {mode.value}", "info")
     progress_cb(0, "Подготовка порта")
 
     with port_lease(device_path, cfg.mplc_stop_services):

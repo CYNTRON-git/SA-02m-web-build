@@ -151,7 +151,7 @@ def service_load_state(service: str) -> str:
     if not systemctl:
         return "unknown"
     try:
-        res = _run([systemctl, "show", "-p", "LoadState", "--value", service], timeout=5.0)
+        res = _run([systemctl, "show", "-p", "LoadState", "--value", service], timeout=1.5)
     except subprocess.TimeoutExpired:
         log.warning("systemctl show LoadState завис для %s", service)
         return "unknown"
@@ -197,7 +197,7 @@ def active_service_name(service: str) -> Optional[str]:
         return None
     for candidate in _service_candidates(service):
         try:
-            res = _run([systemctl, "is-active", "--quiet", candidate], timeout=5.0)
+            res = _run([systemctl, "is-active", "--quiet", candidate], timeout=1.5)
         except subprocess.TimeoutExpired:
             log.warning("systemctl is-active завис для %s", candidate)
             continue
@@ -211,18 +211,31 @@ def is_service_active(service: str) -> bool:
 
 
 def stop_service(service: str) -> bool:
+    actual = resolve_service_name(service)
+    if not actual:
+        log.info("Служба %s не найдена, stop пропущен", service)
+        return False
+    if _is_mplc_family(actual):
+        names = _mplc_process_names(actual)
+        killed = _pkill_names(names)
+        still_active = any(_proc_is_running(name) for name in names)
+        ok = killed or not still_active
+        log.info(
+            "direct stop %s (%s) via pkill → killed=%s still_active=%s",
+            service,
+            actual,
+            killed,
+            still_active,
+        )
+        return ok
     systemctl = _systemctl()
     sudo = _sudo()
     if not systemctl:
         log.warning("systemctl не найден, пропускаю stop %s", service)
         return False
-    actual = resolve_service_name(service)
-    if not actual:
-        log.info("Служба %s не найдена, stop пропущен", service)
-        return False
     cmd = [sudo, systemctl, "stop", actual] if sudo else [systemctl, "stop", actual]
     try:
-        res = _run(cmd, timeout=15.0)
+        res = _run(cmd, timeout=3.0)
         ok = res.returncode == 0
         log.info("systemctl stop %s (%s) → rc=%d stderr=%r", service, actual, res.returncode, (res.stderr or "").strip())
         if ok:
@@ -252,7 +265,7 @@ def start_service(service: str) -> bool:
         return False
     cmd = [sudo, systemctl, "start", actual] if sudo else [systemctl, "start", actual]
     try:
-        res = _run(cmd, timeout=15.0)
+        res = _run(cmd, timeout=3.0)
     except subprocess.TimeoutExpired:
         log.warning("systemctl start %s (%s) завис", service, actual)
         return False
