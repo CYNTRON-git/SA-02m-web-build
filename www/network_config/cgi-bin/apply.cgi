@@ -67,7 +67,11 @@ fi
 # ── System time ────────────────────────────────────────────────────────────
 if [ -n "$DATETIME" ] && [ "$REDIRECT" = "applied" ]; then
     if sudo date -s "$DATETIME" >/dev/null 2>&1; then
-        sudo hwclock -w >/dev/null 2>&1 || true
+        if [ -c /dev/rtc1 ]; then
+            sudo hwclock -w --rtc=/dev/rtc1 >/dev/null 2>&1 || sudo hwclock -w >/dev/null 2>&1 || true
+        else
+            sudo hwclock -w >/dev/null 2>&1 || true
+        fi
         echo "$(date '+%Y-%m-%d %H:%M:%S') datetime set to $DATETIME" >> /var/log/sa02m_install.log 2>&1
     else
         REDIRECT="error_time"

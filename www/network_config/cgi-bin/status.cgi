@@ -155,6 +155,9 @@ read_rtc_datetime() {
         IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || continue
         IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || continue
         [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ] || continue
+        case "$rtc_d" in
+            1970-*) continue ;;
+        esac
         printf '%s %s' "$rtc_d" "$rtc_t"
         return 0
     done
