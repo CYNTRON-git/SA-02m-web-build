@@ -1451,29 +1451,43 @@ svg .gauge-num {
   font-weight: 600;
   cursor: pointer;
   text-align: left;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
+  display: block;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
-.flasher-config-tab small {
-  display: block;
+.flasher-config-tab-row {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.flasher-config-tab-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.flasher-config-tab-suffix {
+  flex: 0 0 auto;
   font-size: .72rem;
-  font-weight: 500;
-  line-height: 1.35;
+  font-weight: 600;
+  line-height: 1.25;
   color: var(--text-dim);
-  white-space: normal;
+  white-space: nowrap;
 }
 .flasher-config-tab:hover { color: var(--text); background: var(--bg-hover); }
-.flasher-config-tab:hover small { color: var(--text-sec); }
-.flasher-config-tab.is-live small { color: var(--green); }
+.flasher-config-tab:hover .flasher-config-tab-suffix { color: var(--text-sec); }
+.flasher-config-tab.is-live .flasher-config-tab-suffix { color: var(--green); }
 .flasher-config-tab.active {
   background: var(--cyan-dim);
   border-color: var(--cyan);
   color: var(--text);
 }
-.flasher-config-tab.active small { color: var(--text); }
+.flasher-config-tab.active .flasher-config-tab-suffix { color: var(--text-sec); }
+.flasher-config-tab.active.is-live .flasher-config-tab-suffix { color: var(--green); }
 .flasher-config-body {
   padding: 18px 20px 20px;
   overflow: auto;
