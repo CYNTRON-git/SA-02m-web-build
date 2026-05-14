@@ -66,6 +66,12 @@ TYPE_IO_CAPS: Dict[int, Tuple[int, int, int, int]] = {
     DTV:          (0, 0, 0, 0),
 }
 
+AI_ADC_SAMPLE_RATES_SPS: Tuple[int, ...] = (20, 45, 90, 175, 330, 600, 1000)
+MODBUS_AI_WB_FILTER_BASE = 533
+MODBUS_AI_KALMAN_PER_STOR_BASE = 491
+REG_AO_SAFE_BASE_MAIN = 503
+REG_AO_SAFE_BASE_6AO6AI = 503
+
 
 @dataclass
 class ModuleKind:
@@ -224,8 +230,96 @@ def ai_sensor_label(code: int) -> str:
     return f"код 0x{code:04X}"
 
 
-def ai_channel_base_register(channel_1_based: int) -> int:
-    """Первый holding регистра канала AI (тип P): канал 1 → 400."""
+def is_6ao6ai_module(kind: Optional[ModuleKind]) -> bool:
+    if kind is None:
+        return False
+    if kind.code == MP02_AO6AI6:
+        return True
+    return (
+        kind.code == 0
+        and kind.max_do == 0
+        and kind.max_di == 0
+        and kind.max_ao == 6
+        and kind.max_ai == 6
+    )
+
+
+def is_12ai_module(kind: Optional[ModuleKind]) -> bool:
+    if kind is None:
+        return False
+    if kind.code == MP02_AI12:
+        return True
+    return (
+        kind.code == 0
+        and kind.max_do == 0
+        and kind.max_di == 0
+        and kind.max_ao == 0
+        and kind.max_ai == 12
+    )
+
+
+def kind_has_mp_ai_adc_filters(kind: Optional[ModuleKind]) -> bool:
+    return is_6ao6ai_module(kind) or is_12ai_module(kind)
+
+
+def ao_safe_holding_register(channel_1_based: int, kind: Optional[ModuleKind] = None) -> int:
+    ch = max(1, int(channel_1_based))
+    if kind is not None and is_6ao6ai_module(kind):
+        return REG_AO_SAFE_BASE_6AO6AI + ch - 1
+    return REG_AO_SAFE_BASE_MAIN + ch - 1
+
+
+def ai_channel_stride(
+    type_code: Optional[int] = None,
+    kind: Optional[ModuleKind] = None,
+) -> int:
+    if kind is not None and (is_6ao6ai_module(kind) or is_12ai_module(kind)):
+        return 7
+    if type_code in (MP02_AO6AI6, MP02_AI12):
+        return 7
+    return 14
+
+
+def ai_channel_base_register(
+    channel_1_based: int,
+    type_code: Optional[int] = None,
+    kind: Optional[ModuleKind] = None,
+) -> int:
+    """Первый holding регистра канала AI: канал 1 → 400."""
     if channel_1_based < 1:
         raise ValueError("channel >= 1")
-    return 400 + (channel_1_based - 1) * 14
+    return 400 + (channel_1_based - 1) * ai_channel_stride(type_code, kind)
+
+
+def ai_calibration_holding_register(
+    channel_1_based: int,
+    type_code: Optional[int] = None,
+    kind: Optional[ModuleKind] = None,
+) -> int:
+    return ai_channel_base_register(channel_1_based, type_code, kind) + 4
+
+
+def ai_wb_filter_holding_regs(stor: int) -> Tuple[int, int, int]:
+    s = max(0, int(stor))
+    base = MODBUS_AI_WB_FILTER_BASE + 3 * s
+    return (base, base + 1, base + 2)
+
+
+def ai_kalman_holding_reg(stor: int) -> int:
+    return MODBUS_AI_KALMAN_PER_STOR_BASE + max(0, int(stor))
+
+
+def ai_stor_for_12ai_channel(ch_1_based: int) -> int:
+    return max(0, min(11, int(ch_1_based) - 1))
+
+
+def ai_stor_for_6ao6ai_p(ch_1_based: int) -> int:
+    mapping = {1: 6, 2: 7, 3: 8, 4: 9, 5: 10, 6: 11}
+    return mapping[max(1, min(6, int(ch_1_based)))]
+
+
+def ai_adc_coerce_sample_rate_sps(v: int) -> int:
+    vv = int(v)
+    if vv in AI_ADC_SAMPLE_RATES_SPS:
+        return vv
+    return min(AI_ADC_SAMPLE_RATES_SPS, key=lambda item: abs(item - vv))

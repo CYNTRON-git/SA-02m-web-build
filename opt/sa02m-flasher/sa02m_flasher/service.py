@@ -3,7 +3,7 @@
 HTTP-сервис демона (stdlib http.server поверх unix-socket).
 
 Слушает unix-socket (по умолчанию /run/sa02m-flasher/flasher.sock). Маршруты:
-    GET  /ports                       — список COM-портов (из конфига + проверка доступа/занятости)
+    GET  /ports                       — список COM-портов (конфиг + занятость). ?quick=1 — только пути/exists, без fuser и опроса systemd
     GET  /firmware                    — статус репозитория + список прошивок
     POST /firmware/refresh            — обновить манифест (JSON: {"download": bool})
     POST /firmware/upload             — multipart/form-data: file=<бинарь>
@@ -36,7 +36,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__
@@ -46,7 +46,7 @@ from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
 from .mplc_lease import port_occupants
-from . import runner
+from . import device_config, runner
 
 
 def _unit_display_name(unit: Optional[str]) -> str:
@@ -189,6 +189,29 @@ _ROUTE_JOB_EVENTS_RE = re.compile(r"^/jobs/([0-9a-fA-F]+)/events$")
 _ROUTE_JOB_ID_RE = re.compile(r"^/jobs/([0-9a-fA-F]+)$")
 
 
+def _truthy_query(q: Dict[str, List[str]], key: str) -> bool:
+    for v in q.get(key) or []:
+        if str(v).strip().lower() in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
+def _compute_mplc_lists(cfg: FlasherConfig) -> Tuple[List[str], List[str]]:
+    """Один проход MPLC на весь ответ /ports (не дублировать на каждый порт)."""
+    active_services: List[str] = []
+    for svc in cfg.mplc_stop_services:
+        actual = mplc_lease.active_service_name(svc)
+        if actual and actual not in active_services:
+            active_services.append(actual)
+    released = set(mplc_lease.released_services())
+    released_services: List[str] = []
+    for svc in cfg.mplc_stop_services:
+        actual = mplc_lease.resolve_service_name(svc)
+        if actual and actual in released and actual not in released_services:
+            released_services.append(actual)
+    return active_services, released_services
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"SA02M-Flasher/{__version__}"
     protocol_version = "HTTP/1.1"
@@ -222,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                 return _send_error(self, HTTPStatus.UNAUTHORIZED, "unauthorized")
 
             if method == "GET" and p == "/ports":
-                return self._handle_ports(ctx)
+                return self._handle_ports(ctx, q)
             if method == "POST" and p == "/ports/release":
                 return self._handle_ports_release(ctx)
             if method == "POST" and p == "/ports/restore":
@@ -239,6 +262,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_flash(ctx)
             if method == "POST" and p == "/flash_batch":
                 return self._handle_flash_batch(ctx)
+            if method == "POST" and p == "/device_config/snapshot":
+                return self._handle_device_config_snapshot(ctx)
+            if method == "POST" and p == "/device_config/network":
+                return self._handle_device_config_network(ctx)
+            if method == "POST" and p == "/device_config/holding":
+                return self._handle_device_config_holding(ctx)
+            if method == "POST" and p == "/device_config/coil":
+                return self._handle_device_config_coil(ctx)
             if method == "POST" and p == "/cancel":
                 return self._handle_cancel(ctx)
             if method == "GET" and p == "/jobs":
@@ -269,26 +300,41 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── Ручки ────────────────────────────────────────────────────────────────
 
-    def _describe_port(self, ctx: ServiceContext, key: str) -> Dict[str, Any]:
+    def _describe_port(
+        self,
+        ctx: ServiceContext,
+        key: str,
+        *,
+        quick: bool = False,
+        mplc_lists: Optional[Tuple[List[str], List[str]]] = None,
+    ) -> Dict[str, Any]:
         cfg = ctx.cfg
         if key not in cfg.ports_map:
             raise ValueError(f"Неизвестный порт: {key}")
         device_path = cfg.ports_map[key]
         label = cfg.ports_labels.get(key, key)
         exists = os.path.exists(device_path)
-        occupants: list = port_occupants(device_path) if exists else []
         active_job = ctx.jobs.active_job_on_port(key)
-        active_services = []
-        for svc in cfg.mplc_stop_services:
-            actual = mplc_lease.active_service_name(svc)
-            if actual and actual not in active_services:
-                active_services.append(actual)
-        released = set(mplc_lease.released_services())
-        released_services = []
-        for svc in cfg.mplc_stop_services:
-            actual = mplc_lease.resolve_service_name(svc)
-            if actual and actual in released and actual not in released_services:
-                released_services.append(actual)
+        managed = [_unit_display_name(s) for s in cfg.mplc_stop_services]
+
+        if quick:
+            return {
+                "key": key,
+                "label": label,
+                "device_path": device_path,
+                "exists": exists,
+                "busy_pids": None,
+                "active_job": active_job,
+                "mplc_active": False,
+                "managed_services": managed,
+                "active_services": None,
+                "released_services": None,
+            }
+
+        occupants: List[str] = port_occupants(device_path) if exists else []
+        if mplc_lists is None:
+            mplc_lists = _compute_mplc_lists(cfg)
+        active_raw, released_raw = mplc_lists
         return {
             "key": key,
             "label": label,
@@ -296,18 +342,22 @@ class Handler(BaseHTTPRequestHandler):
             "exists": exists,
             "busy_pids": occupants,
             "active_job": active_job,
-            "mplc_active": bool(active_services),
-            "managed_services": [_unit_display_name(s) for s in cfg.mplc_stop_services],
-            "active_services": [_unit_display_name(a) for a in active_services],
-            "released_services": [_unit_display_name(a) for a in released_services],
+            "mplc_active": bool(active_raw),
+            "managed_services": managed,
+            "active_services": [_unit_display_name(a) for a in active_raw],
+            "released_services": [_unit_display_name(a) for a in released_raw],
         }
 
-    def _handle_ports(self, ctx: ServiceContext) -> None:
+    def _handle_ports(self, ctx: ServiceContext, q: Dict[str, List[str]]) -> None:
         cfg = ctx.cfg
+        quick = _truthy_query(q, "quick") or _truthy_query(q, "lite")
+        mplc_lists: Optional[Tuple[List[str], List[str]]] = None
+        if not quick:
+            mplc_lists = _compute_mplc_lists(cfg)
         ports: list = []
         for key, device_path in cfg.ports_map.items():
             _ = device_path
-            ports.append(self._describe_port(ctx, key))
+            ports.append(self._describe_port(ctx, key, quick=quick, mplc_lists=mplc_lists))
         _send_json(
             self,
             {
@@ -385,6 +435,63 @@ class Handler(BaseHTTPRequestHandler):
 
         job = ctx.jobs.submit(JobKind.FLASH_BATCH, port, data, run_fn)
         _send_json(self, {"job_id": job.id})
+
+    def _device_config_request(
+        self,
+        ctx: ServiceContext,
+        data: Dict[str, Any],
+    ) -> Tuple[str, Dict[str, Any]]:
+        port = str(data.get("port") or "").strip()
+        if not port:
+            raise ValueError("Поле 'port' обязательно")
+        device = data.get("device")
+        if not isinstance(device, dict):
+            raise ValueError("Поле 'device' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
+        if ctx.jobs.active_job_on_port(port):
+            raise RuntimeError(f"Порт {port} занят активной задачей")
+        device_path = ctx.cfg.ports_map[port]
+        if not os.path.exists(device_path):
+            raise FileNotFoundError(f"Устройство порта не найдено: {device_path}")
+        occupants = port_occupants(device_path)
+        if occupants:
+            raise RuntimeError(
+                "Линия занята другим процессом (PID %s). Остановите опрос и повторите."
+                % ", ".join(str(x) for x in occupants)
+            )
+        return device_path, device
+
+    def _handle_device_config_snapshot(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        snap = device_config.snapshot_for_device(device_path, device)
+        _send_json(self, {"ok": True, **snap})
+
+    def _handle_device_config_network(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        network = data.get("network")
+        if not isinstance(network, dict):
+            raise ValueError("Поле 'network' обязательно")
+        snap = device_config.apply_network_settings(device_path, device, network)
+        _send_json(self, {"ok": True, **snap})
+
+    def _handle_device_config_holding(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        reg = int(data.get("reg") or 0)
+        value = int(data.get("value") or 0)
+        snap = device_config.write_allowed_holding(device_path, device, reg, value)
+        _send_json(self, {"ok": True, **snap})
+
+    def _handle_device_config_coil(self, ctx: ServiceContext) -> None:
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        coil = int(data.get("coil") or 0)
+        on = bool(data.get("value"))
+        snap = device_config.write_allowed_coil(device_path, device, coil, on)
+        _send_json(self, {"ok": True, **snap})
 
     def _handle_cancel(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
