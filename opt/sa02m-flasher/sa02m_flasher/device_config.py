@@ -77,9 +77,103 @@ REG_DI_DOUBLE_CLICK_BASE = 678
 REG_RESET_DI_COUNTERS = 694
 REG_DI_FREQ_MODE_BASE = 750
 
+# MR-02м MCU diagnostics (как в desktop module_config_window.py)
+REG_MCU_OP_DAYS = 114          # Holding 114: наработка в днях (uint16)
+REG_MCU_POWER_TEMP = 123       # Holding 123-124: vdd_raw (×0.01 В), tmcu_raw (×0.1 °C, int16)
+INP_MCU_UPTIME_LO = 105        # Input 105-106: uptime seconds (uint32, lo-hi)
+INP_MCU_DIAG_START = 65505     # Input 65505: свободная ОЗУ; 65506: используемая; 65507: стек;
+                               # 65508: причина перезагрузки; 65509-65510: счётчик обновлений u32 lo-hi
+
 PARITY_CHAR_TO_REG = {"N": 0, "O": 1, "E": 2}
 PARITY_REG_TO_CHAR = {v: k for k, v in PARITY_CHAR_TO_REG.items()}
 ALLOWED_BAUD_REG_CODES = (12, 24, 48, 96, 192, 384, 576, 1152)
+
+
+def _info_plural_days(days: int) -> str:
+    d = abs(days) % 100
+    d1 = d % 10
+    if 11 <= d <= 19:
+        return f"{days} дней"
+    if d1 == 1:
+        return f"{days} день"
+    if 2 <= d1 <= 4:
+        return f"{days} дня"
+    return f"{days} дней"
+
+
+def _info_reset_reason(code: int) -> str:
+    reasons = {
+        0: "неизвестно",
+        1: "NRST",
+        2: "POR/PDR",
+        3: "SW-сброс",
+        4: "IWDG",
+        5: "WWDG",
+        6: "LPM",
+        7: "OBL",
+        8: "FIREWIRE",
+    }
+    return reasons.get(int(code) & 0xFFFF, f"код {code & 0xFFFF}")
+
+
+def _info_format_uptime(seconds: int) -> str:
+    s = int(seconds)
+    d = s // 86400
+    h = (s % 86400) // 3600
+    m = (s % 3600) // 60
+    ss = s % 60
+    if d > 0:
+        return f"{d} д {h} ч {m} мин"
+    if h > 0:
+        return f"{h} ч {m} мин {ss} с"
+    return f"{m} мин {ss} с"
+
+
+def _read_mr_mcu_info(send, slave: int) -> Dict[str, Any]:
+    """Чтение диагностики МК модуля MR/MP-02м для вкладки Сведения."""
+    out: Dict[str, Any] = {
+        "power_v": None,
+        "temp_c": None,
+        "uptime_s": None,
+        "uptime_str": None,
+        "op_days": None,
+        "op_days_str": None,
+        "ram_free": None,
+        "ram_used": None,
+        "fw_updates": None,
+        "reset_reason": None,
+    }
+    # Holding 123-124: питание (vdd × 0.01 В) и температура (tmcu × 0.1 °C, int16)
+    pt_regs = _read_regs(send, slave, REG_MCU_POWER_TEMP, 2, input_regs=False, timeout_ms=900)
+    if len(pt_regs) >= 2:
+        vdd_raw = int(pt_regs[0]) & 0xFFFF
+        tmcu_raw = int(pt_regs[1]) & 0xFFFF
+        if tmcu_raw >= 0x8000:
+            tmcu_raw -= 0x10000
+        out["power_v"] = round(vdd_raw / 100.0, 2)
+        out["temp_c"] = round(tmcu_raw / 10.0, 1)
+    # Holding 114: наработка в днях
+    op_regs = _read_regs(send, slave, REG_MCU_OP_DAYS, 1, input_regs=False, timeout_ms=700)
+    if len(op_regs) >= 1:
+        days = int(op_regs[0]) & 0xFFFF
+        out["op_days"] = days
+        out["op_days_str"] = _info_plural_days(days)
+    # Input 105-106: uptime seconds (uint32 lo-hi)
+    up_regs = _read_regs(send, slave, INP_MCU_UPTIME_LO, 2, input_regs=True, timeout_ms=900)
+    if len(up_regs) >= 2:
+        up_s = (int(up_regs[1]) & 0xFFFF) << 16 | (int(up_regs[0]) & 0xFFFF)
+        out["uptime_s"] = up_s
+        out["uptime_str"] = _info_format_uptime(up_s)
+    # Input 65505-65510: диагностика МК
+    diag_regs = _read_regs(send, slave, INP_MCU_DIAG_START, 6, input_regs=True, timeout_ms=1000)
+    if len(diag_regs) >= 2:
+        out["ram_free"] = int(diag_regs[0]) & 0xFFFF
+        out["ram_used"] = int(diag_regs[1]) & 0xFFFF
+    if len(diag_regs) >= 6:
+        out["reset_reason"] = _info_reset_reason(int(diag_regs[3]) & 0xFFFF)
+        fw_cnt = ((int(diag_regs[5]) & 0xFFFF) << 16) | (int(diag_regs[4]) & 0xFFFF)
+        out["fw_updates"] = fw_cnt
+    return out
 
 
 def _normalize_parity(parity: Any) -> str:
@@ -418,6 +512,7 @@ def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any]) -> Dict[str, A
         "ai": {"channels": _read_ai_channels(send, slave, kind)},
         "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
         "relay": _mr_relay_block(send, slave, kind),
+        "mcu": _read_mr_mcu_info(send, slave),
     }
     return payload
 
@@ -475,6 +570,7 @@ def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dic
         "ai": {"channels": ai_channels},
         "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
         "relay": _mr_relay_block(send, slave, kind),
+        "mcu": {},
     }
     payload["ao"]["current_volts"] = [_ao_raw_to_volts(raw) for raw in payload["ao"]["current_raw"]]
     return payload
@@ -503,9 +599,12 @@ def _read_mr_snapshot_panel(
         "ai": {"channels": list(base["ai"]["channels"])},
         "inactivity_s": base["inactivity_s"],
         "relay": dict(base["relay"]),
+        "mcu": base.get("mcu", {}),
     }
 
-    if tab.startswith("do_") and max_do > 0:
+    if tab == "info":
+        out["mcu"] = _read_mr_mcu_info(send, slave)
+    elif tab.startswith("do_") and max_do > 0:
         out["do"] = _mr_do_block_full(send, slave, kind)
     elif tab.startswith("di_") and max_di > 0:
         out["di"] = _mr_di_block_full(send, slave, kind)
@@ -531,6 +630,7 @@ def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
         allowed.update(range(REG_REDELAY_DO_FIRST, REG_REDELAY_DO_FIRST + min(6, max_do)))
         allowed.add(REG_MODBUS_INACTIVITY_S)
         allowed.add(REG_RESET_DO_COUNTERS)
+    allowed.add(120)  # Команда перезагрузки устройства
     if _relay_mode_module(kind):
         allowed.update({REG_RELAY_MODE, REG_RELAY_OPTIONS, REG_POWER_STAGGER})
     if max_di > 0:
@@ -895,7 +995,8 @@ def write_allowed_holding(
             )
         if reg not in allowed_regs:
             raise ValueError("Запись этого регистра через веб-окно не разрешена")
-        err = write_single(send, slave, reg, int(value) & 0xFFFF, 1000)
+        target_val = int(value) & 0xFFFF
+        err = write_single(send, slave, reg, target_val, 700)
         if err:
             raise RuntimeError(f"Запись рег. {reg}: {err}")
     finally:

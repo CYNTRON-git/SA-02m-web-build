@@ -58,6 +58,9 @@ fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
+fi
 
 # USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
 ETC_REPO="$SCRIPT_DIR/../etc"

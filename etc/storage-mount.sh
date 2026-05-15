@@ -83,7 +83,12 @@ do_mount() {
   FSTYPE=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)
 
   if [[ -z "${FSTYPE}" || "${FSTYPE}" == "ntfs" ]]; then
-    if (( STORAGE_AUTO_FORMAT != 1 )); then
+    # Сначала пробуем встроенный ядерный драйвер ntfs3 (Linux ≥ 5.15).
+    if mount -t ntfs3 -o rw,noatime,uid=1000,gid=1000,umask=000 "${DEV_PATH}" "${MOUNT_POINT}" 2>/dev/null; then
+      log "Успешно смонтировано ${DEV_PATH} (ntfs3 kernel driver)"
+      return 0
+    fi
+    if [[ -z "${FSTYPE}" ]] || (( STORAGE_AUTO_FORMAT != 1 )); then
       log "Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел ${DEV_PATH} без подходящей ФС для монтирования без mkfs — пропуск."
       return 1
     fi

@@ -124,6 +124,15 @@ sa02m_hw_usb_gpiod_pidfile() {
     printf '%s' "/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.pid"
 }
 
+# Файл состояния: хранит последнее записанное raw-значение линии (0 или 1).
+# Используется в read когда gpioget не может прочитать занятую линию (-m signal держит её).
+sa02m_hw_usb_gpiod_statefile() {
+    local chip line
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    printf '%s' "/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.state"
+}
+
 sa02m_hw_usb_gpiod_stop_holder() {
     local pf pid
     pf=$(sa02m_hw_usb_gpiod_pidfile)
@@ -137,7 +146,7 @@ sa02m_hw_usb_gpiod_stop_holder() {
 }
 
 sa02m_hw_usb_gpiod_write() {
-    local logical=$1 chip line gs help pf raw
+    local logical=$1 chip line gs help pf sf raw
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || return 1
@@ -149,56 +158,72 @@ sa02m_hw_usb_gpiod_write() {
 
     sa02m_hw_usb_gpiod_stop_holder
     pf=$(sa02m_hw_usb_gpiod_pidfile)
+    sf=$(sa02m_hw_usb_gpiod_statefile)
+
+    # Вспомогательная: записать PID и state-файл, вернуть 0.
+    _usb_gpiod_save_and_ok() {
+        echo $1 >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
+        printf '%s' "$raw" >"$sf" 2>/dev/null && chmod 644 "$sf" 2>/dev/null || true
+        return 0
+    }
 
     if echo "$help" | grep -q -- '-m'; then
+        # Предпочитаем -m signal: держит линию до SIGTERM/SIGINT, не падает от EOF stdin.
+        # -m wait + /dev/null = немедленный выход, линия отпускается, питание гаснет.
+        if echo "$help" | grep -qi 'signal'; then
+            if sudo -n "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
+                _usb_gpiod_save_and_ok $!; return 0
+            fi
+            if sudo "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
+                _usb_gpiod_save_and_ok $!; return 0
+            fi
+        fi
         if echo "$help" | grep -qi 'wait'; then
             if sudo -n "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                return 0
+                _usb_gpiod_save_and_ok $!; return 0
             fi
             if sudo "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                return 0
+                _usb_gpiod_save_and_ok $!; return 0
             fi
         fi
         if echo "$help" | grep -qi 'time'; then
             if echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
                 if sudo -n "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                    return 0
+                    _usb_gpiod_save_and_ok $!; return 0
                 fi
                 if sudo "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                    return 0
+                    _usb_gpiod_save_and_ok $!; return 0
                 fi
             fi
             if echo "$help" | grep -qi usec; then
                 if sudo -n "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                    return 0
+                    _usb_gpiod_save_and_ok $!; return 0
                 fi
                 if sudo "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    echo $! >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-                    return 0
+                    _usb_gpiod_save_and_ok $!; return 0
                 fi
             fi
         fi
         # Не использовать -m exit: процесс завершается — линия часто отпускается (USB гаснет).
     fi
-    sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${raw}" 2>/dev/null && return 0
-    sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${raw}" 2>/dev/null && return 0
+    if sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
+        printf '%s' "$raw" >"$sf" 2>/dev/null || true; return 0
+    fi
+    if sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
+        printf '%s' "$raw" >"$sf" 2>/dev/null || true; return 0
+    fi
     return 1
 }
 
 sa02m_hw_usb_gpiod_read() {
-    local chip line gg v
+    local chip line gg v pf sf pid
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || { echo -1; return; }
     gg=$(command -v gpioget 2>/dev/null) || { echo -1; return; }
     v=$(sa02m_hw_timeout_run sudo -n "$gg" "$chip" "$line" 2>/dev/null) \
         || v=$(sa02m_hw_timeout_run sudo "$gg" "$chip" "$line" 2>/dev/null) \
-        || { echo -1; return; }
+        || v=""
     v=$(printf '%s' "$v" | tr -d '\r\n\t ')
     case "$v" in
         0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
@@ -206,6 +231,28 @@ sa02m_hw_usb_gpiod_read() {
     if [[ "$v" =~ (^|.*[=:])([01])($|[^0-9].*) ]]; then
         sa02m_hw_usb_line_to_user_logical "${BASH_REMATCH[2]}"
         return 0
+    fi
+    # gpioget провалился (линия занята gpioset -m signal).
+    # Читаем последнее записанное raw-значение из state-файла.
+    pf=$(sa02m_hw_usb_gpiod_pidfile)
+    sf=$(sa02m_hw_usb_gpiod_statefile)
+    if [ -f "$pf" ] && [ -f "$sf" ]; then
+        pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+            v=$(tr -d ' \r\n\t' <"$sf" 2>/dev/null)
+            case "$v" in
+                0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
+            esac
+        fi
+    fi
+    # PID мёртв, но gpioget тоже упал — значит линия всё ещё занята:
+    # gpioset был переусыновлён PID 1 (sudo-родитель умер, gpioset жив).
+    # Если state-файл существует — доверяем последнему записанному значению.
+    if [ -f "$sf" ]; then
+        v=$(tr -d ' \r\n\t' <"$sf" 2>/dev/null)
+        case "$v" in
+            0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
+        esac
     fi
     echo -1
 }
