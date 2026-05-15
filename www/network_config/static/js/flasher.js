@@ -653,13 +653,13 @@
   ];
   const MODULE_AI_SAMPLE_RATES = [20, 45, 90, 175, 330, 600, 1000];
   const MODULE_AI_UI_BUCKETS = [
-    { id: 'off', label: 'Выключен' },
-    { id: 'ntc', label: 'NTC' },
-    { id: 'rtd', label: 'Pt / Ni RTD' },
-    { id: 'volt', label: 'Напряжение' },
-    { id: 'curr', label: 'Ток' },
-    { id: 'tc_k', label: 'Термопара K' },
-    { id: 'dry', label: 'Сухой контакт' },
+    { id: 'off',  label: 'Выключен' },
+    { id: 'ntc',  label: 'NTC' },
+    { id: 'rtd',  label: 'RTD' },
+    { id: 'volt', label: '0–10 В' },
+    { id: 'curr', label: '4–20 мА' },
+    { id: 'dry',  label: 'DIN' },
+    { id: 'tc_k', label: 'ТХА' },
   ];
   const _AI_NTC = new Set([0x0001, 0x000A, 0x000B, 0x000C, 0x000D, 0x0019, 0x001A]);
   const _AI_RTD = new Set([
@@ -723,6 +723,42 @@
     if (b === 'off') return 'Выкл';
     const map = { ntc: 'NTC', rtd: 'RTD', volt: 'U', curr: 'I', tc_k: 'TC-K', dry: 'Сух' };
     return map[b] || 'AI';
+  }
+
+  // Справочные пределы температуры (десятые °C) по коду типа датчика — из таблиц прошивки MR-02m
+  const _AI_SENSOR_LIMITS_TENTHS = {
+    0x0001: [-400, 1200], 0x000A: [-400, 1200],
+    0x000B: [-550, 1550], 0x000C: [-550, 1250], 0x000D: [-550, 1250],
+    0x0019: [-550, 1250], 0x001A: [-500, 1500],
+    0x0002: [-2000, 3000], 0x0003: [-2000, 3000],
+    0x0008: [-2000, 3000], 0x0009: [-2000, 3000],
+    0x000E: [-2000, 8500], 0x000F: [-2000, 8500],
+    0x0010: [-1800, 2000], 0x0011: [-1800, 2000],
+    0x0012: [-600, 1800],  0x0013: [-600, 1800],  0x0014: [-600, 1800],
+    0x001B: [-2000, 3000], 0x001C: [-2000, 3000],
+    0x001D: [-2000, 3000], 0x001E: [-2000, 3000],
+    0x001F: [-2000, 8500], 0x0020: [-2000, 8500],
+    0x0021: [-1800, 2000], 0x0022: [-1800, 2000],
+    0x0023: [-600, 1800],  0x0024: [-600, 1800],  0x0025: [-600, 1800],
+    0x0006: [-2700, 13690],
+  };
+
+  function aiSensorRefLimits(code) {
+    const c = Number(code) & 0xFFFF;
+    const lim = _AI_SENSOR_LIMITS_TENTHS[c];
+    if (!lim) return null;
+    return { lo: (lim[0] / 10).toFixed(1) + ' °C', hi: (lim[1] / 10).toFixed(1) + ' °C' };
+  }
+
+  function aiUiQuantityLabels(bucket) {
+    const b = String(bucket || 'off');
+    if (b === 'off')  return ['—', '—'];
+    if (b === 'ntc' || b === 'rtd') return ['Сопротивление', 'Ом'];
+    if (b === 'volt') return ['Напряжение', 'В'];
+    if (b === 'curr') return ['Ток', 'мА'];
+    if (b === 'dry')  return ['Логический вход', '—'];
+    if (b === 'tc_k') return ['Термопара', 'мВ'];
+    return ['—', '—'];
   }
 
   const MODULE_AI_SENSOR_CHOICES = [
@@ -1314,76 +1350,114 @@
     const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
     const calOk = ai.calibration_applicable != null ? !!ai.calibration_applicable : aiUiCalibrationApplicable(sensorCode);
 
-    // RTD: определяем схему подключения (2 или 3 провода) из текущего кода
     const isRtd = bucket === 'rtd';
     const rtdTwoWire = isRtd ? aiRtdTwoWireFromCode(sensorCode) : true;
     const subchoices = isRtd ? aiUiRtdSubchoicesForWire(rtdTwoWire) : aiUiSubchoicesForBucket(bucket);
-
     const subchoiceOptions = subchoices.map(item => {
       const sel = Number(item[0]) === sensorCode ? 'selected' : '';
       return `<option value="${item[0]}" ${sel}>${escapeHtml(item[1])}</option>`;
     }).join('');
-    const bucketOptions = MODULE_AI_UI_BUCKETS.map(b =>
-      `<option value="${escapeHtml(b.id)}" ${b.id === bucket ? 'selected' : ''}>${escapeHtml(b.label)}</option>`
-    ).join('');
+
     const measuredStr = aiFormatMeasuredDisplay(sensorCode, ai.measured_raw);
     const scaledStr   = aiFormatScaledDisplay(sensorCode, ai.scaled_raw);
+    const [magnitude, unit] = aiUiQuantityLabels(bucket);
+    const refLimits = aiSensorRefLimits(sensorCode);
+
+    const modeRadios = MODULE_AI_UI_BUCKETS.map(b => `
+      <label class="ai-mode-radio-label">
+        <input type="radio" name="cfg-mr-ai-mode-${channel}" value="${escapeHtml(b.id)}"
+          data-mr-ai-bucket="${channel}" ${b.id === bucket ? 'checked' : ''} />
+        <span>${escapeHtml(b.label)}</span>
+      </label>`).join('');
+
+    const limitsHtml = refLimits ? `
+      <div class="ai-limits-row">
+        <span>Нижний предел:</span><strong>${escapeHtml(refLimits.lo)}</strong>
+      </div>
+      <div class="ai-limits-row">
+        <span>Верхний предел:</span><strong>${escapeHtml(refLimits.hi)}</strong>
+      </div>` : '';
+
+    const rtdWireHtml = isRtd ? `
+      <div class="ai-wire-row">
+        <span>Подключение</span>
+        <div class="ai-wire-toggle" id="cfg-mr-ai-wire-wrap-${channel}">
+          <button class="ai-wire-btn${rtdTwoWire ? ' active' : ''}"
+            data-mr-ai-wire="${channel}" data-wire="2">Двухпроводное</button>
+          <button class="ai-wire-btn${!rtdTwoWire ? ' active' : ''}"
+            data-mr-ai-wire="${channel}" data-wire="3">Трёхпроводное</button>
+        </div>
+      </div>` : '';
+
+    const filterHtml = filters ? `
+      <label class="ai-filter-check">
+        <input id="cfg-mr-ai-kalman-${channel}" type="checkbox"
+          ${Number(filters.kalman || 0) ? 'checked' : ''} data-mr-ai-filter="${channel}" />
+        Фильтр Калмана
+      </label>
+      <div class="ai-filter-row">
+        <span>Частота опроса АЦП, выб./сек:</span>
+        <select id="cfg-mr-ai-sps-${channel}" data-mr-ai-filter="${channel}">
+          ${MODULE_AI_SAMPLE_RATES.map(r => `<option value="${r}" ${Number(r) === Number(filters.sps || 45) ? 'selected' : ''}>${r}</option>`).join('')}
+        </select>
+      </div>
+      <div class="ai-filter-row">
+        <span>Число выборок, 0...50:</span>
+        <input id="cfg-mr-ai-avg-${channel}" type="number" min="0" max="50"
+          value="${escapeHtml(String(filters.avg ?? 0))}" data-mr-ai-filter="${channel}" />
+      </div>
+      <div class="ai-filter-row">
+        <span>Пост. времени НЧ-фильтра, мс.:</span>
+        <input id="cfg-mr-ai-tau-${channel}" type="number" min="0" max="65535"
+          value="${escapeHtml(String(filters.tau ?? 0))}" data-mr-ai-filter="${channel}" />
+      </div>` : '';
 
     return `
-      <div class="flasher-config-grid">
-        <section class="flasher-config-card">
-          <h4>AI${channel}</h4>
-          <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Тип датчика</span><strong>${escapeHtml(ai.sensor_label || '—')}</strong></div>
-            <div class="flasher-config-row"><span>Измеренное</span><strong class="ai-raw-fmt">${escapeHtml(measuredStr)}</strong></div>
-            <div class="flasher-config-row"><span>Пересчитанное</span><strong>${escapeHtml(scaledStr)}</strong></div>
+      <div class="ai-channel-panel">
+        <h3 class="ai-channel-title">Аналоговый вход AI${channel}</h3>
+
+        <section class="flasher-config-card ai-section-measures">
+          <h4>ИЗМЕРЕНИЯ</h4>
+          <div class="ai-measures-grid">
+            <div class="ai-measure-row">
+              <span>Измеренное значение с АЦП</span>
+              <strong class="ai-raw-fmt">${escapeHtml(measuredStr)}</strong>
+            </div>
+            <div class="ai-measure-row">
+              <span>Пересчитанное значение</span>
+              <div class="ai-measure-value-group">
+                <strong>${escapeHtml(scaledStr)}</strong>
+                <div class="ai-cal-strip" id="cfg-mr-ai-cal-strip-${channel}" ${calOk ? '' : 'hidden'}>
+                  <span>Калибровка</span>
+                  <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="-1">−</button>
+                  <input id="cfg-mr-ai-cal-${channel}" type="number" min="-100" max="100"
+                    value="${escapeHtml(String(ai.calibration ?? 0))}"
+                    data-mr-ai-cal="${channel}" class="ai-cal-input-sm" />
+                  <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="1">+</button>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
-        <section class="flasher-config-card">
-          <h4>Настройки канала</h4>
-          <div class="flasher-config-form">
-            <label for="cfg-mr-ai-bucket-${channel}">Режим датчика</label>
-            <select id="cfg-mr-ai-bucket-${channel}">${bucketOptions}</select>
-            ${isRtd ? `
-              <label>Схема подключения</label>
-              <div class="ai-wire-scheme" id="cfg-mr-ai-wire-wrap-${channel}">
-                <label class="radio-line">
-                  <input type="radio" name="cfg-mr-ai-wire-${channel}" value="2"
-                    id="cfg-mr-ai-wire-2-${channel}" ${rtdTwoWire ? 'checked' : ''}
-                    data-mr-ai-wire="${channel}" /> 2-проводная
-                </label>
-                <label class="radio-line">
-                  <input type="radio" name="cfg-mr-ai-wire-${channel}" value="3"
-                    id="cfg-mr-ai-wire-3-${channel}" ${!rtdTwoWire ? 'checked' : ''}
-                    data-mr-ai-wire="${channel}" /> 3-проводная
-                </label>
-              </div>
-            ` : ''}
-            <label for="cfg-mr-ai-sensor-${channel}">Подтип</label>
-            <select id="cfg-mr-ai-sensor-${channel}" data-mr-ai-sensor="${channel}">${subchoiceOptions}</select>
-            <div id="cfg-mr-ai-cal-wrap-${channel}" ${calOk ? '' : 'hidden'}>
-              <label class="ai-cal-inline">
-                <input id="cfg-mr-ai-cal-${channel}" type="number" min="-32768" max="32767"
-                  value="${escapeHtml(String(ai.calibration ?? 0))}" data-mr-ai-cal="${channel}"
-                  class="ai-cal-input" />
-                Калибровка, °C×0.1
-              </label>
+
+        <section class="flasher-config-card ai-section-settings">
+          <h4>НАСТРОЙКА ВХОДА</h4>
+          <div class="ai-settings-3col">
+            <div class="ai-mode-col">
+              <div class="ai-col-subtitle">РЕЖИМ РАБОТЫ</div>
+              <div class="ai-mode-radios">${modeRadios}</div>
             </div>
-            <div id="cfg-mr-ai-cal-note-${channel}" class="flasher-config-note" ${calOk ? 'hidden' : ''}>Калибровка смещения — только для температурных датчиков.</div>
-            ${filters ? `
-              <label class="checkbox-line"><input id="cfg-mr-ai-kalman-${channel}" type="checkbox"
-                ${Number(filters.kalman || 0) ? 'checked' : ''} data-mr-ai-filter="${channel}" /> Фильтр Калмана</label>
-              <label for="cfg-mr-ai-sps-${channel}">Частота АЦП, выб/сек</label>
-              <select id="cfg-mr-ai-sps-${channel}" data-mr-ai-filter="${channel}">
-                ${MODULE_AI_SAMPLE_RATES.map(rate => `<option value="${rate}" ${Number(rate) === Number(filters.sps || 45) ? 'selected' : ''}>${rate}</option>`).join('')}
-              </select>
-              <label for="cfg-mr-ai-avg-${channel}">Число выборок</label>
-              <input id="cfg-mr-ai-avg-${channel}" type="number" min="0" max="50"
-                value="${escapeHtml(String(filters.avg ?? 0))}" data-mr-ai-filter="${channel}" />
-              <label for="cfg-mr-ai-tau-${channel}">Пост. времени НЧ, мс</label>
-              <input id="cfg-mr-ai-tau-${channel}" type="number" min="0" max="65535"
-                value="${escapeHtml(String(filters.tau ?? 0))}" data-mr-ai-filter="${channel}" />
-            ` : ''}
+            <div class="ai-sensor-col">
+              <div class="ai-quantity-row"><span>Величина:</span><strong id="cfg-mr-ai-mag-${channel}">${escapeHtml(magnitude)}</strong></div>
+              <div class="ai-quantity-row"><span>Единица:</span><strong id="cfg-mr-ai-unit-${channel}">${escapeHtml(unit)}</strong></div>
+              <select id="cfg-mr-ai-sensor-${channel}" class="ai-sensor-select" data-mr-ai-sensor="${channel}">${subchoiceOptions}</select>
+              <div id="cfg-mr-ai-wire-row-${channel}">${rtdWireHtml}</div>
+              <div id="cfg-mr-ai-limits-${channel}" class="ai-limits-block">${limitsHtml}</div>
+            </div>
+            <div class="ai-filter-col" id="cfg-mr-ai-filter-col-${channel}">
+              <div class="ai-col-subtitle">AI${channel}: ФИЛЬТР И ОПРОС АЦП</div>
+              ${filterHtml}
+            </div>
           </div>
         </section>
       </div>
@@ -2087,12 +2161,10 @@
 
   function refreshAiCalibrationVisibility(channel) {
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
-    const wrap = configModalEl(`cfg-mr-ai-cal-wrap-${channel}`);
-    const note = configModalEl(`cfg-mr-ai-cal-note-${channel}`);
-    if (!sensorEl || !wrap) return;
+    const strip = configModalEl(`cfg-mr-ai-cal-strip-${channel}`);
+    if (!sensorEl) return;
     const ok = aiUiCalibrationApplicable(parseInt(sensorEl.value, 10) || 0);
-    wrap.hidden = !ok;
-    if (note) note.hidden = ok;
+    if (strip) strip.hidden = !ok;
   }
 
   function _aiRebuildSensorOptions(channel, choices) {
@@ -2108,52 +2180,112 @@
     }
   }
 
+  function _aiUpdateModeUi(channel, bucket) {
+    const isRtd = bucket === 'rtd';
+    const [mag, unit] = aiUiQuantityLabels(bucket);
+
+    const magEl  = configModalEl(`cfg-mr-ai-mag-${channel}`);
+    const unitEl = configModalEl(`cfg-mr-ai-unit-${channel}`);
+    if (magEl)  magEl.textContent  = mag;
+    if (unitEl) unitEl.textContent = unit;
+
+    // Wire toggle: показываем для RTD; перестраиваем с 2-проводной по умолчанию
+    const wireRow = configModalEl(`cfg-mr-ai-wire-row-${channel}`);
+    if (wireRow) {
+      if (isRtd) {
+        wireRow.innerHTML = `
+          <div class="ai-wire-row">
+            <span>Подключение</span>
+            <div class="ai-wire-toggle" id="cfg-mr-ai-wire-wrap-${channel}">
+              <button class="ai-wire-btn active" data-mr-ai-wire="${channel}" data-wire="2">Двухпроводное</button>
+              <button class="ai-wire-btn" data-mr-ai-wire="${channel}" data-wire="3">Трёхпроводное</button>
+            </div>
+          </div>`;
+        wireRow.querySelectorAll('[data-mr-ai-wire]').forEach(btn => {
+          btn.addEventListener('click', () => _aiOnWireToggle(channel, btn.dataset.wire === '2'));
+        });
+      } else {
+        wireRow.innerHTML = '';
+      }
+    }
+
+    // Подтипы
+    const choices = isRtd ? aiUiRtdSubchoicesForWire(true) : aiUiSubchoicesForBucket(bucket);
+    _aiRebuildSensorOptions(channel, choices);
+    refreshAiCalibrationVisibility(channel);
+    _aiUpdateLimits(channel);
+  }
+
+  function _aiOnWireToggle(channel, twoWire) {
+    const wrap = configModalEl(`cfg-mr-ai-wire-wrap-${channel}`);
+    if (wrap) {
+      wrap.querySelectorAll('.ai-wire-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.wire === (twoWire ? '2' : '3'));
+      });
+    }
+    const choices = aiUiRtdSubchoicesForWire(twoWire);
+    _aiRebuildSensorOptions(channel, choices);
+    refreshAiCalibrationVisibility(channel);
+    applyAiSensorCode(channel);
+    _aiUpdateLimits(channel);
+  }
+
+  function _aiUpdateLimits(channel) {
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    const limBox   = configModalEl(`cfg-mr-ai-limits-${channel}`);
+    if (!limBox) return;
+    const code = sensorEl ? (parseInt(sensorEl.value, 10) || 0) : 0;
+    const lim = aiSensorRefLimits(code);
+    limBox.innerHTML = lim ? `
+      <div class="ai-limits-row"><span>Нижний предел:</span><strong>${escapeHtml(lim.lo)}</strong></div>
+      <div class="ai-limits-row"><span>Верхний предел:</span><strong>${escapeHtml(lim.hi)}</strong></div>` : '';
+  }
+
   function setupAiBucketHandlers(body) {
-    // Bucket: обновляет список подтипов, пишет выбранный тип сразу
-    body.querySelectorAll('select[id^="cfg-mr-ai-bucket-"]').forEach(sel => {
-      sel.addEventListener('change', () => {
-        const channel = parseInt(sel.id.replace('cfg-mr-ai-bucket-', ''), 10);
-        const bucket = sel.value;
-        const isRtd = bucket === 'rtd';
-        // Показываем/скрываем блок выбора схемы RTD
-        const wireWrap = configModalEl(`cfg-mr-ai-wire-wrap-${channel}`);
-        if (wireWrap) wireWrap.closest('div.ai-wire-scheme')
-          ? (wireWrap.hidden = !isRtd)
-          : null;
-        const choices = isRtd
-          ? aiUiRtdSubchoicesForWire(true)   // по умолчанию 2-проводная
-          : aiUiSubchoicesForBucket(bucket);
-        _aiRebuildSensorOptions(channel, choices);
-        refreshAiCalibrationVisibility(channel);
-        applyAiSensorCode(channel);
-      });
-    });
-
-    // RTD wire scheme radio: перестраивает подтипы при смене схемы
-    body.querySelectorAll('[data-mr-ai-wire]').forEach(radio => {
+    // Режим работы: radio buttons
+    body.querySelectorAll('[data-mr-ai-bucket]').forEach(radio => {
       radio.addEventListener('change', () => {
-        const channel = parseInt(radio.dataset.mrAiWire, 10);
-        const twoWire = radio.value === '2';
-        const choices = aiUiRtdSubchoicesForWire(twoWire);
-        _aiRebuildSensorOptions(channel, choices);
-        refreshAiCalibrationVisibility(channel);
+        if (!radio.checked) return;
+        const channel = parseInt(radio.dataset.mrAiBucket, 10);
+        _aiUpdateModeUi(channel, radio.value);
         applyAiSensorCode(channel);
       });
     });
 
-    // Подтип: пишет сразу при изменении (как в desktop-эталоне)
+    // RTD wire toggle buttons (статически вставленные при первом рендере для RTD-каналов)
+    body.querySelectorAll('[data-mr-ai-wire]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const channel = parseInt(btn.dataset.mrAiWire, 10);
+        _aiOnWireToggle(channel, btn.dataset.wire === '2');
+      });
+    });
+
+    // Подтип: пишет сразу при изменении + обновляет пределы
     body.querySelectorAll('select[id^="cfg-mr-ai-sensor-"]').forEach(sel => {
+      const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
       sel.addEventListener('change', () => {
-        const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
         refreshAiCalibrationVisibility(channel);
+        _aiUpdateLimits(channel);
         applyAiSensorCode(channel);
       });
-      refreshAiCalibrationVisibility(parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10));
+      refreshAiCalibrationVisibility(channel);
+      _aiUpdateLimits(channel);
     });
 
-    // Калибровка: пишет при потере фокуса
+    // Калибровка: поле — blur; кнопки ± — step
     body.querySelectorAll('[data-mr-ai-cal]').forEach(el => {
       el.addEventListener('blur', () => applyAiCalibration(parseInt(el.dataset.mrAiCal, 10)));
+    });
+    body.querySelectorAll('[data-mr-ai-cal-step]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const channel = parseInt(btn.dataset.mrAiCalStep, 10);
+        const step = parseInt(btn.dataset.step, 10) || 0;
+        const inp = configModalEl(`cfg-mr-ai-cal-${channel}`);
+        if (!inp) return;
+        const cur = parseInt(inp.value, 10) || 0;
+        inp.value = Math.max(-100, Math.min(100, cur + step));
+        applyAiCalibration(channel);
+      });
     });
 
     // Фильтры АЦП: change для select/checkbox, blur для числовых полей

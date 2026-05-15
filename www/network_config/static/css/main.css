@@ -1697,6 +1697,269 @@ svg .gauge-num {
   font-size: .83rem;
   cursor: pointer;
 }
+
+/* ── AI channel panel (reference layout) ─────────────────────────────── */
+.ai-channel-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ai-channel-title {
+  margin: 0 0 2px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: .01em;
+}
+
+/* Measurements section */
+.ai-section-measures h4,
+.ai-section-settings h4 {
+  margin: 0 0 12px;
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-sec);
+}
+.ai-measures-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-measure-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ai-measure-row > span {
+  color: var(--text-sec);
+  font-size: .82rem;
+  min-width: 200px;
+}
+.ai-measure-row > strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.ai-measure-value-group {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+/* Calibration strip (inline in measurements) */
+.ai-cal-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-cal-strip > span {
+  font-size: .78rem;
+  color: var(--text-sec);
+}
+.ai-cal-btn {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border-md);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: .95rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition);
+}
+.ai-cal-btn:hover { background: var(--bg-hover); }
+.ai-cal-input-sm {
+  width: 62px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-xs);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: .82rem;
+  text-align: center;
+}
+
+/* 3-column settings layout */
+.ai-settings-3col {
+  display: grid;
+  grid-template-columns: 130px 1fr 1fr;
+  gap: 0 24px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .ai-settings-3col {
+    grid-template-columns: 1fr;
+    gap: 16px 0;
+  }
+}
+
+/* Mode column */
+.ai-col-subtitle {
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-sec);
+  margin-bottom: 8px;
+}
+.ai-mode-radios {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ai-mode-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .84rem;
+  color: var(--text);
+  cursor: pointer;
+  padding: 3px 0;
+}
+.ai-mode-radio-label input[type="radio"] {
+  cursor: pointer;
+  accent-color: var(--cyan);
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Sensor detail column */
+.ai-sensor-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-quantity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: .82rem;
+}
+.ai-quantity-row > span {
+  color: var(--text-sec);
+  min-width: 60px;
+}
+.ai-quantity-row > strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.ai-sensor-select {
+  width: 100%;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: .84rem;
+}
+
+/* RTD wire toggle buttons */
+.ai-wire-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ai-wire-row > span {
+  font-size: .82rem;
+  color: var(--text-sec);
+}
+.ai-wire-toggle {
+  display: flex;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border-md);
+}
+.ai-wire-btn {
+  padding: 6px 12px;
+  font-size: .8rem;
+  background: var(--bg-input);
+  color: var(--text-sec);
+  border: none;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  white-space: nowrap;
+}
+.ai-wire-btn + .ai-wire-btn {
+  border-left: 1px solid var(--border-md);
+}
+.ai-wire-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.ai-wire-btn.active {
+  background: var(--cyan-btn);
+  color: #fff;
+  font-weight: 600;
+}
+
+/* Temperature limits */
+.ai-limits-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ai-limits-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: .8rem;
+  color: var(--text-sec);
+}
+.ai-limits-row > strong {
+  color: var(--text-sec);
+  font-weight: 400;
+}
+
+/* Filter column */
+.ai-filter-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 0;
+}
+.ai-filter-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: .84rem;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 2px;
+}
+.ai-filter-check input[type="checkbox"] {
+  accent-color: var(--cyan);
+  cursor: pointer;
+}
+.ai-filter-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+.ai-filter-row > span {
+  font-size: .78rem;
+  color: var(--text-sec);
+}
+.ai-filter-row select,
+.ai-filter-row input {
+  width: 80px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-xs);
+  padding: 5px 7px;
+  font-size: .82rem;
+  text-align: center;
+}
 .flasher-config-inline-fields {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(80px, 120px);
