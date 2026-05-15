@@ -2124,7 +2124,20 @@
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     if (!sensorEl) return;
     const sensorVal = clampInt(sensorEl.value, 0, 0xFFFF, 0);
-    await writeHoldingBatch([{ reg: base, value: sensorVal }], `Тип AI${channel} применён`, `AI${channel}: `);
+    setConfigBusy(true);
+    try {
+      await writeConfigHolding(base, sensorVal, '');
+      toast(`Тип AI${channel} применён`, 'success');
+    } catch (err) {
+      setConfigBanner(`AI${channel}: ` + err.message, 'error');
+      toast(`AI${channel}: ` + err.message, 'error');
+      return;
+    } finally {
+      setConfigBusy(false);
+    }
+    // Немедленный full-refresh: обновляет sensor_code, measured_raw, scaled_raw в снимке —
+    // без этого UI показывает старый формат данных до следующего фонового опроса (4 с).
+    refreshConfigSnapshot(true, 'full');
   }
 
   async function applyAiCalibration(channel) {
