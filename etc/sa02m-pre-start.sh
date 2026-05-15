@@ -9,9 +9,10 @@ logp() {
 
 # Держим VBUS как в веб-backend; pid-файл совпадает с lib_hw.sh для последующих hw_set.
 sa02m_boot_usb_vbus_on() {
-  local chip=0 line=268 raw=1 gs help pf pid
+  local chip=0 line=268 raw=1 gs help pf sf pid
   gs=$(command -v gpioset 2>/dev/null) || { logp "gpioset missing"; return; }
   pf="/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.pid"
+  sf="/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.state"
   if [ -f "$pf" ]; then
     pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
@@ -22,24 +23,32 @@ sa02m_boot_usb_vbus_on() {
     rm -f "$pf"
   fi
   help=$("$gs" -h 2>&1 || true)
-  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi wait; then
-    if "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-      echo $! >"$pf"
-      chmod 644 "$pf" 2>/dev/null || true
-      disown 2>/dev/null || true
-      return
+  # Предпочитаем -m signal: процесс держит линию до SIGTERM/SIGINT и не завершается при EOF stdin.
+  # -m wait с /dev/null читает EOF немедленно и выходит — линия отпускается, питание гаснет.
+  _save_and_return() {
+    echo $1 >"$pf"
+    chmod 644 "$pf" 2>/dev/null || true
+    printf '%s' "$raw" >"$sf"
+    chmod 644 "$sf" 2>/dev/null || true
+    disown 2>/dev/null || true
+  }
+  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi signal; then
+    if "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
+      _save_and_return $!; return
     fi
   fi
   if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi time && echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
     if "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-      echo $! >"$pf"
-      chmod 644 "$pf" 2>/dev/null || true
-      disown 2>/dev/null || true
-      return
+      _save_and_return $!; return
+    fi
+  fi
+  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi wait; then
+    if "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
+      _save_and_return $!; return
     fi
   fi
   if "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
-    return
+    printf '%s' "$raw" >"$sf" 2>/dev/null || true; return
   fi
   logp "gpioset legacy usb power failed"
 }
