@@ -219,8 +219,8 @@ SA02M_GPIO_BEEPER=
 SA02M_GPIO_ALARM_LED=
 SA02M_GPIO_USB_POWER=
 # Питание USB через libgpiod (как gpioset 0 268=1). Очистите LINE, если не используется.
-# 1 = инвертировать опрос для UI (сырой 0 → отображение «ВКЛ»); запись 1/0 на линию без инверсии.
-SA02M_USB_POWER_INVERT=1
+# 0 = без инверсии (gpioset 268=1 → UI «ВКЛ»); 1 = инвертировать (gpioset 268=0 → UI «ВКЛ»).
+SA02M_USB_POWER_INVERT=0
 SA02M_GPIO_USB_GPIOD_CHIP=0
 SA02M_GPIO_USB_GPIOD_LINE=268
 HWCONF

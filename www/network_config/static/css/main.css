@@ -1428,7 +1428,7 @@ svg .gauge-num {
 }
 .flasher-config-main {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   min-height: 0;
   flex: 1 1 auto;
 }
@@ -1450,25 +1450,25 @@ svg .gauge-num {
   font-size: .83rem;
   font-weight: 600;
   cursor: pointer;
-  text-align: left;
+  text-align: center;
   display: block;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
 .flasher-config-tab-row {
   display: flex;
   flex-direction: row;
-  align-items: baseline;
-  justify-content: space-between;
+  align-items: flex-start;
+  justify-content: center;
   gap: 8px;
   width: 100%;
+  flex-wrap: wrap;
 }
 .flasher-config-tab-main {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  text-align: center;
 }
 .flasher-config-tab-suffix {
   flex: 0 0 auto;
@@ -1480,6 +1480,11 @@ svg .gauge-num {
 }
 .flasher-config-tab:hover { color: var(--text); background: var(--bg-hover); }
 .flasher-config-tab:hover .flasher-config-tab-suffix { color: var(--text-sec); }
+.flasher-config-tab.is-live {
+  background: var(--badge-ok-bg);
+  border-color: var(--badge-ok-border);
+  color: var(--green);
+}
 .flasher-config-tab.is-live .flasher-config-tab-suffix { color: var(--green); }
 .flasher-config-tab.active {
   background: var(--cyan-dim);
@@ -1487,6 +1492,11 @@ svg .gauge-num {
   color: var(--text);
 }
 .flasher-config-tab.active .flasher-config-tab-suffix { color: var(--text-sec); }
+.flasher-config-tab.active.is-live {
+  background: var(--cyan-dim);
+  border-color: var(--cyan);
+  color: var(--text);
+}
 .flasher-config-tab.active.is-live .flasher-config-tab-suffix { color: var(--green); }
 .flasher-config-body {
   padding: 18px 20px 20px;
@@ -1497,6 +1507,49 @@ svg .gauge-num {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px;
+}
+
+/* ── Вкладка Сведения: плитки МК (Питание / Температура / Uptime) ── */
+.cfg-info-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (max-width: 680px) {
+  .cfg-info-tiles { grid-template-columns: 1fr; }
+}
+.cfg-info-tile {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px 16px;
+  text-align: center;
+  box-shadow: var(--shadow-sm);
+}
+.cfg-info-tile-title {
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-sec);
+  margin-bottom: 8px;
+}
+.cfg-info-tile-val {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+}
+.cfg-info-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cfg-info-config-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* MR parity: DI — два столбца как у desktop (слева статус/частота, справа параметры входа). */
@@ -1561,6 +1614,14 @@ svg .gauge-num {
 }
 .flasher-config-form .checkbox-line {
   grid-column: 1 / -1;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+.flasher-config-form .checkbox-line input[type="checkbox"] {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 .flasher-config-actions {
   margin-top: 14px;
@@ -1592,6 +1653,49 @@ svg .gauge-num {
   color: var(--text);
   font-size: .9rem;
   text-align: right;
+}
+.do-state-value {
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.do-state-on {
+  background: #28a745;
+  color: #fff;
+}
+.ai-raw-fmt {
+  font-size: .78rem;
+  word-break: break-all;
+}
+.ai-cal-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .83rem;
+  color: var(--text-sec);
+  cursor: default;
+  grid-column: 1 / -1;
+}
+.ai-cal-input {
+  width: 80px;
+  flex-shrink: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: .83rem;
+}
+.ai-wire-scheme {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+.radio-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: .83rem;
+  cursor: pointer;
 }
 .flasher-config-inline-fields {
   display: grid;
@@ -1635,7 +1739,8 @@ svg .gauge-num {
 
 .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .form-row label { font-size: .78rem; color: var(--text-sec); }
-.checkbox-line { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.checkbox-line { display: flex; align-items: flex-start; gap: 6px; color: var(--text); }
+.checkbox-line input[type="checkbox"] { flex-shrink: 0; margin-top: 2px; }
 
 .web-upd-status { margin-top: 10px; font-size: .82rem; line-height: 1.35; min-height: 1.35em; }
 .web-upd-status[hidden] { display: none !important; margin: 0; min-height: 0; padding: 0; }

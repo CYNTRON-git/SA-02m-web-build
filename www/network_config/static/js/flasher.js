@@ -24,12 +24,24 @@
     lastScanConfigKey: '',
     configOpen: false,
     configBusy: false,
+    configBackgroundBusy: false,
     configDeviceIdx: -1,
     configTab: '',
     configSnapshot: null,
     configPollTimer: null,
     configNetworkDirty: false,
+    configPortReleased: false,
   };
+
+  // Счётчик поколений опроса: позволяет отбросить устаревший ответ, если
+  // был запущен более новый запрос (переключение вкладки, явное обновление).
+  let _configPollSeq = 0;
+  // Промис текущей операции restore-порта; release ждёт его завершения.
+  let _portOpPromise = null;
+  // Промис текущего фонового опроса (panel) от таймера.
+  // Запрос вкладки ждёт его, прежде чем послать свой запрос — иначе два
+  // одновременных Modbus-запроса на одном порту → 409.
+  let _bgPollPromise = null;
 
   function $(id) { return document.getElementById(id); }
 
@@ -510,8 +522,44 @@
     stopConfigPolling();
     if (!state.configOpen) return;
     state.configPollTimer = setTimeout(() => {
-      if (state.configOpen && !state.configBusy) refreshConfigSnapshot(true, 'panel');
+      if (!state.configOpen || state.configBusy || state.configBackgroundBusy) return;
+      _bgPollPromise = refreshConfigSnapshot(true, 'panel')
+        .finally(() => { _bgPollPromise = null; });
     }, 4000);
+  }
+
+  async function _autoReleasePortForConfig() {
+    // Ожидаем завершения любой текущей операции restore, чтобы
+    // не получить ситуацию: restore завершается ПОСЛЕ нашего release
+    // и перезапускает опросчик, пока окно конфигурации открыто.
+    if (_portOpPromise) {
+      try { await _portOpPromise; } catch (_) {}
+      _portOpPromise = null;
+    }
+    const portKey = $('flasher-port').value;
+    if (!portKey) return;
+    try {
+      await apiPost('/ports/release', { port: portKey });
+      state.configPortReleased = true;
+    } catch (_) {}
+  }
+
+  async function _autoRestorePortForConfig() {
+    if (!state.configPortReleased) return;
+    const portKey = $('flasher-port').value;
+    if (!portKey) return;
+    state.configPortReleased = false;
+    // Сохраняем промис, чтобы следующий _autoReleasePortForConfig мог его дождаться.
+    const p = (async () => {
+      try {
+        await apiPost('/ports/restore', { port: portKey });
+        await loadPorts();
+      } catch (_) {}
+      if (_portOpPromise === p) _portOpPromise = null;
+    })();
+    _portOpPromise = p;
+    // Не await здесь — closeConfigModal синхронный, restore работает фоново.
+    // release в следующем openConfigModal дождётся завершения через _portOpPromise.
   }
 
   function setConfigBanner(text, type) {
@@ -528,10 +576,15 @@
     el.className = 'flasher-config-banner' + (type === 'error' ? ' is-error' : '');
   }
 
-  function setConfigBusy(busy) {
+  function setConfigBusy(busy, disableClose = true) {
     state.configBusy = !!busy;
-    const closeBtn = configModalEl('flasher-config-close-btn');
-    if (closeBtn) closeBtn.disabled = !!busy;
+    if (disableClose) {
+      const closeBtn = configModalEl('flasher-config-close-btn');
+      if (closeBtn) closeBtn.disabled = !!busy;
+    } else if (!busy) {
+      const closeBtn = configModalEl('flasher-config-close-btn');
+      if (closeBtn) closeBtn.disabled = false;
+    }
   }
 
   async function configApi(path, body) {
@@ -617,6 +670,24 @@
   const _AI_CURR = new Set([0x0005, 0x0015, 0x0016]);
   const _AI_TC_K = new Set([0x0006]);
   const _AI_DRY = new Set([0x0007]);
+
+  const _AI_RTD_2WIRE = new Set([
+    0x0002, 0x0003, 0x0008, 0x0009,
+    0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014,
+  ]);
+  const _AI_RTD_3WIRE = new Set([
+    0x001B, 0x001C, 0x001D, 0x001E,
+    0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+  ]);
+
+  function aiRtdTwoWireFromCode(code) {
+    return !_AI_RTD_3WIRE.has(Number(code) & 0xFFFF);
+  }
+
+  function aiUiRtdSubchoicesForWire(twoWire) {
+    const allow = twoWire ? _AI_RTD_2WIRE : _AI_RTD_3WIRE;
+    return MODULE_AI_SENSOR_CHOICES.filter(([code]) => allow.has(Number(code) & 0xFFFF));
+  }
 
   function aiUiSensorBucket(code) {
     const c = Number(code) & 0xFFFF;
@@ -704,6 +775,86 @@
   function signedToUint16(value) {
     const n = clampInt(value, -32768, 32767, 0);
     return ((n % 0x10000) + 0x10000) % 0x10000;
+  }
+
+  // ── AI: engineering kind ──────────────────────────────────────────────────
+
+  const _AI_ENG_S32_MAX = 2147483647;
+
+  function aiSensorEngineeringKind(code) {
+    const c = Number(code) & 0xFFFF;
+    if (!c) return 'off';
+    if (c === 0x0004) return 'voltage_010';
+    if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'current';
+    if (c === 0x0007) return 'logic';
+    if (c === 0x0017) return 'diff_mv';
+    if (c === 0x0018) return 'diff_v';
+    if (c === 0x0019 || c === 0x001A) return 'temp';
+    if ((c >= 0x0001 && c <= 0x0014) || (c >= 0x001B && c <= 0x0025)) {
+      if (c !== 0x0004 && c !== 0x0005 && c !== 0x0007) return 'temp';
+    }
+    return 'unknown';
+  }
+
+  function aiSensorRawPhysicalKind(code) {
+    const c = Number(code) & 0xFFFF;
+    if (!c) return 'off';
+    if (c === 0x0004) return 'microvolt';
+    if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'nanoamp';
+    if (c === 0x0006) return 'microvolt';
+    if (c === 0x0007) return 'centiohm';
+    if (c === 0x0017 || c === 0x0018) return 'microvolt';
+    if (c === 0x0019 || c === 0x001A) return 'centiohm';
+    if ((c >= 0x0001 && c <= 0x0014) || (c >= 0x001B && c <= 0x0025)) {
+      if (c !== 0x0004 && c !== 0x0005 && c !== 0x0006 && c !== 0x0007) return 'centiohm';
+    }
+    return 'unknown';
+  }
+
+  function aiFormatScaledDisplay(sensorCode, scaledInt) {
+    const k = aiSensorEngineeringKind(sensorCode);
+    if (k === 'off') return '—';
+    if (scaledInt == null) return '—';
+    const v = Number(scaledInt);
+    if (!Number.isFinite(v) || v === _AI_ENG_S32_MAX) return '—';
+    if (k === 'temp')        return (v / 10).toFixed(1) + ' °C';
+    if (k === 'current')     return (v / 10).toFixed(1) + ' мА';
+    if (k === 'voltage_010') return (v / 100).toFixed(2) + ' В';
+    if (k === 'diff_mv')     return (v / 10).toFixed(1) + ' мВ';
+    if (k === 'diff_v')      return (v / 100).toFixed(2) + ' В';
+    return String(v);
+  }
+
+  function aiFormatMeasuredDisplay(sensorCode, rawS32) {
+    const rk = aiSensorRawPhysicalKind(sensorCode);
+    if (rk === 'off') return '—';
+    if (rawS32 == null) return '—';
+    const v = Number(rawS32);
+    if (!Number.isFinite(v)) return '—';
+    if (rk === 'centiohm') {
+      if (v === _AI_ENG_S32_MAX || v < 0) return '—';
+      const ohms = v / 100;
+      const parts = [String(v), ohms.toFixed(2) + '\u00a0Ом'];
+      if (ohms >= 1e6) parts.push((ohms / 1e6).toFixed(3) + '\u00a0МОм');
+      else if (ohms >= 1000) parts.push((ohms / 1000).toFixed(2) + '\u00a0кОм');
+      return parts.join(' → ');
+    }
+    if (rk === 'nanoamp') {
+      if (v === _AI_ENG_S32_MAX || v < 0) return '—';
+      const ua = v / 1000;
+      const parts = [String(v), ua.toFixed(2) + '\u00a0мкА'];
+      if (ua >= 1e6) parts.push((ua / 1e6).toFixed(3) + '\u00a0А');
+      else if (ua >= 1000) parts.push((ua / 1000).toFixed(2) + '\u00a0мА');
+      return parts.join(' → ');
+    }
+    if (rk === 'microvolt') {
+      if (v === _AI_ENG_S32_MAX) return '—';
+      const mv = v / 1000;
+      const parts = [String(v), mv.toFixed(1) + '\u00a0мВ'];
+      if (Math.abs(v) >= 1e6) parts.push((v / 1e6).toFixed(2) + '\u00a0В');
+      return parts.join(' → ');
+    }
+    return String(v);
   }
 
   function moduleMeta(snap) {
@@ -829,12 +980,19 @@
     return merged;
   }
 
-  /** Не перерисовывать тело модалки во время правки уставок AO (desktop parity). */
+  /**
+   * Не перерисовывать тело модалки, если пользователь активно редактирует
+   * любое поле ввода в теле конфиг-окна (input/select/textarea).
+   * Предотвращает сброс введённых значений при фоновом опросе каждые 4 с.
+   */
   function shouldSkipConfigBodyRerender() {
-    if (!state.configOpen || !state.configSnapshot || state.configSnapshot.kind !== 'mr') return false;
+    if (!state.configOpen || !state.configSnapshot) return false;
     const el = document.activeElement;
-    if (!el || !el.id) return false;
-    return /^cfg-mr-ao-(set|safe|inactivity)-/.test(el.id);
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag !== 'INPUT' && tag !== 'SELECT' && tag !== 'TEXTAREA') return false;
+    const body = configModalEl('flasher-config-body');
+    return body ? body.contains(el) : false;
   }
 
   function aoSafeHoldingRegForChannel(snap, channel) {
@@ -870,10 +1028,10 @@
     const ai = moduleAiChannel(snap, channel);
     const sensorCode = Number(ai && ai.sensor_code || 0);
     const tag = (ai && ai.sidebar_tag) ? String(ai.sidebar_tag) : aiSidebarTagFromCode(sensorCode);
-    return {
-      suffix: tag ? ` - ${tag}` : '',
-      live: sensorCode !== 0,
-    };
+    // Зелёный фон вкладки — только для сухого контакта (DIN) в состоянии ВКЛ
+    const isDin = aiUiSensorBucket(sensorCode) === 'dry';
+    const live = isDin && Number(ai && ai.scaled_raw != null ? ai.scaled_raw : 0) !== 0;
+    return { suffix: tag ? ` - ${tag}` : '', live };
   }
 
   function configTabsForSnapshot(snap) {
@@ -918,45 +1076,84 @@
   }
 
   function renderModuleInfoTab(snap) {
-    const meta = moduleMeta(snap) || {};
+    const info = snap.info || {};
     const mr = snap.mr || {};
-    const liveDo = ((mr.do || {}).bits || []).filter(Boolean).length;
-    const liveDi = ((mr.di || {}).values || []).filter(Boolean).length;
-    const aoLive = ((mr.ao || {}).current_volts || []).map(v => formatFloat(v, 2) + ' В').join(' / ') || '—';
+    const mcu = mr.mcu || {};
+    const serialNum = info.serial != null ? (info.serial >>> 0) : null;
+    const serialHexStr = serialNum != null ? ('0x' + serialNum.toString(16).toUpperCase().padStart(8, '0')) : '—';
+    const serialDecStr = serialNum != null ? String(serialNum >>> 0) : '—';
+
+    function fmtRam(bytes) {
+      if (bytes == null) return '—';
+      const b = Number(bytes);
+      if (!Number.isFinite(b)) return '—';
+      return b < 1024 ? b + ' байт' : (b / 1024).toFixed(1) + ' КБ';
+    }
+    function fmtVal(v, fallback) { return v != null ? String(v) : (fallback || '—'); }
+
+    const powerStr  = mcu.power_v  != null ? mcu.power_v.toFixed(2) + ' В' : '—';
+    const tempStr   = mcu.temp_c   != null ? mcu.temp_c.toFixed(1) + ' °C' : '—';
+    const uptimeStr = mcu.uptime_str != null ? mcu.uptime_str : '—';
+
     return `
-      <div class="flasher-config-grid">
+      <div class="cfg-info-section">
+
+        <!-- ── 3 плитки МК ── -->
+        <div class="cfg-info-tiles">
+          <div class="cfg-info-tile">
+            <div class="cfg-info-tile-title">Питание МК</div>
+            <div class="cfg-info-tile-val">${escapeHtml(powerStr)}</div>
+          </div>
+          <div class="cfg-info-tile">
+            <div class="cfg-info-tile-title">Температура МК</div>
+            <div class="cfg-info-tile-val">${escapeHtml(tempStr)}</div>
+          </div>
+          <div class="cfg-info-tile">
+            <div class="cfg-info-tile-title">Время с загрузки МК</div>
+            <div class="cfg-info-tile-val" style="font-size:1.05rem">${escapeHtml(uptimeStr)}</div>
+          </div>
+        </div>
+
+        <!-- ── Устройство ── -->
         <section class="flasher-config-card">
-          <h4>Модуль</h4>
+          <h4>Устройство</h4>
           <dl class="flasher-config-kv">
-            <div><dt>Тип</dt><dd>${escapeHtml(String(meta.name || 'MR/MP-02м'))}</dd></div>
-            <div><dt>Код</dt><dd>${escapeHtml(String(meta.code ?? '—'))}</dd></div>
-            <div><dt>DO / DI</dt><dd>${escapeHtml(String(meta.max_do || 0))} / ${escapeHtml(String(meta.max_di || 0))}</dd></div>
-            <div><dt>AO / AI</dt><dd>${escapeHtml(String(meta.max_ao || 0))} / ${escapeHtml(String(meta.max_ai || 0))}</dd></div>
-            <div><dt>Входов активно</dt><dd>${escapeHtml(String(liveDi))}</dd></div>
-            <div><dt>Выходов активно</dt><dd>${escapeHtml(String(liveDo))}</dd></div>
+            <div><dt>Тип</dt><dd>Модуль расширения МР-02м</dd></div>
+            <div><dt>Модель</dt><dd>${escapeHtml(info.signature || '—')}</dd></div>
+            <div><dt>Серийный № (hex)</dt><dd class="mono">${escapeHtml(serialHexStr)}</dd></div>
+            <div><dt>Серийный № (дек)</dt><dd class="mono">${escapeHtml(serialDecStr)}</dd></div>
+            <div><dt>Версия ПО</dt><dd>${escapeHtml(info.app_version || '—')}</dd></div>
+            <div><dt>Загрузчик</dt><dd>${escapeHtml(info.bootloader_version || '—')}</dd></div>
+            <div><dt>Сигнатура</dt><dd>${escapeHtml(info.signature || '—')}</dd></div>
+            <div><dt>Наработка в днях</dt><dd>${escapeHtml(fmtVal(mcu.op_days_str))}</dd></div>
+            <div><dt>Свободная ОЗУ</dt><dd>${escapeHtml(fmtRam(mcu.ram_free))}</dd></div>
+            <div><dt>Используемая ОЗУ</dt><dd>${escapeHtml(fmtRam(mcu.ram_used))}</dd></div>
+            <div><dt>Счётчик обновлений</dt><dd>${escapeHtml(fmtVal(mcu.fw_updates))}</dd></div>
+            <div><dt>Причина перезагрузки</dt><dd>${escapeHtml(fmtVal(mcu.reset_reason))}</dd></div>
           </dl>
         </section>
+
+        <!-- ── Конфигурация файлом ── -->
         <section class="flasher-config-card">
-          <h4>Линия и watchdog</h4>
-          <dl class="flasher-config-kv">
-            <div><dt>Modbus inactivity</dt><dd>${escapeHtml(String((mr.inactivity_s ?? 0)))} с</dd></div>
-            <div><dt>Fast Modbus</dt><dd>${snap.network && snap.network.fast_modbus ? 'Вкл.' : 'Выкл.'}</dd></div>
-            <div><dt>AO текущие</dt><dd>${escapeHtml(aoLive)}</dd></div>
-            <div><dt>Прошивка</dt><dd>${escapeHtml((snap.info || {}).app_version || '—')}</dd></div>
-          </dl>
-          <div class="flasher-config-note">Для модулей MR/MP-02м порядок каналов как в desktop: сначала DI, затем DO; релейная панель только для DO6DI8 / DO4DI6.</div>
-        </section>
-        <section class="flasher-config-card">
-          <h4>Modbus watchdog</h4>
-          <div class="flasher-config-form">
-            <label for="cfg-mr-inactivity-global">Таймаут без опроса линии, с (рег. 134)</label>
-            <input id="cfg-mr-inactivity-global" type="number" min="0" max="255" value="${escapeHtml(String(mr.inactivity_s ?? 0))}" />
+          <h4>Конфигурация файлом</h4>
+          <p class="flasher-config-note" style="margin-bottom:12px">Экспорт / импорт настроек модуля в JSON; перезагрузка устройства.</p>
+          <div class="cfg-info-config-btns">
+            <button class="btn btn-sm btn-warn" type="button" id="cfg-mr-reboot-btn">Перезагрузить</button>
+            <label class="btn btn-sm" style="cursor:pointer" title="Загрузить конфигурацию из JSON-файла">
+              Загрузить
+              <input type="file" id="cfg-mr-import-file" accept=".json" hidden />
+            </label>
+            <button class="btn btn-sm" type="button" id="cfg-mr-export-btn">Сохранить</button>
           </div>
-          <div class="flasher-config-actions">
-            <button class="btn btn-primary" type="button" id="cfg-mr-inactivity-save-btn">Сохранить таймаут</button>
+          <div class="flasher-config-note" style="margin-top:10px">
+            Modbus watchdog (рег. 134):
+            <input id="cfg-mr-inactivity-global" type="number" min="0" max="255"
+              value="${escapeHtml(String(mr.inactivity_s ?? 0))}"
+              style="width:70px;margin:0 6px;padding:4px 6px;background:var(--bg-input);border:1px solid var(--border-md);border-radius:var(--radius-xs);color:var(--text);" /> с
+            <button class="btn btn-sm" type="button" id="cfg-mr-inactivity-save-btn" style="margin-left:4px">Сохранить</button>
           </div>
-          <div class="flasher-config-note">Общий регистр 134 для модуля (не дублируется по каналам DO).</div>
         </section>
+
       </div>
     `;
   }
@@ -1003,12 +1200,12 @@
         <section class="flasher-config-card">
           <h4>DO${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Состояние</span><strong>${bits[idx] ? 'Вкл' : 'Выкл'}</strong></div>
+            <div class="flasher-config-row"><span>Состояние</span><strong class="do-state-value${bits[idx] ? ' do-state-on' : ''}">${bits[idx] ? 'Вкл' : 'Выкл'}</strong></div>
             <div class="flasher-config-row"><span>Счетчик включений</span><strong>${escapeHtml(String(counts[idx] ?? 0))}</strong></div>
           </div>
           <div class="flasher-config-actions">
-            <button class="btn btn-sm btn-primary" type="button" data-mr-do-on="${channel}" data-do-channel="${channel}">Включить</button>
-            <button class="btn btn-sm" type="button" data-mr-do-off="${channel}" data-do-channel="${channel}">Выключить</button>
+            <button class="btn btn-sm ${bits[idx] ? 'btn-success' : 'btn-primary'}" type="button" data-mr-do-on="${channel}" data-do-channel="${channel}">Включить</button>
+            <button class="btn btn-sm ${bits[idx] ? '' : 'btn-danger'}" type="button" data-mr-do-off="${channel}" data-do-channel="${channel}">Выключить</button>
             <button class="btn btn-sm" type="button" data-mr-do-reset="1">Сброс счетчиков DO</button>
           </div>
         </section>
@@ -1115,8 +1312,13 @@
     const filters = ai.filters || null;
     const sensorCode = Number(ai.sensor_code || 0);
     const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
-    const subchoices = aiUiSubchoicesForBucket(bucket);
     const calOk = ai.calibration_applicable != null ? !!ai.calibration_applicable : aiUiCalibrationApplicable(sensorCode);
+
+    // RTD: определяем схему подключения (2 или 3 провода) из текущего кода
+    const isRtd = bucket === 'rtd';
+    const rtdTwoWire = isRtd ? aiRtdTwoWireFromCode(sensorCode) : true;
+    const subchoices = isRtd ? aiUiRtdSubchoicesForWire(rtdTwoWire) : aiUiSubchoicesForBucket(bucket);
+
     const subchoiceOptions = subchoices.map(item => {
       const sel = Number(item[0]) === sensorCode ? 'selected' : '';
       return `<option value="${item[0]}" ${sel}>${escapeHtml(item[1])}</option>`;
@@ -1124,42 +1326,64 @@
     const bucketOptions = MODULE_AI_UI_BUCKETS.map(b =>
       `<option value="${escapeHtml(b.id)}" ${b.id === bucket ? 'selected' : ''}>${escapeHtml(b.label)}</option>`
     ).join('');
+    const measuredStr = aiFormatMeasuredDisplay(sensorCode, ai.measured_raw);
+    const scaledStr   = aiFormatScaledDisplay(sensorCode, ai.scaled_raw);
+
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
           <h4>AI${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Тип</span><strong>${escapeHtml(ai.sensor_label || '—')}</strong></div>
-            <div class="flasher-config-row"><span>Измеренное raw</span><strong>${escapeHtml(String(ai.measured_raw ?? '—'))}</strong></div>
-            <div class="flasher-config-row"><span>Пересчитанное raw</span><strong>${escapeHtml(String(ai.scaled_raw ?? '—'))}</strong></div>
+            <div class="flasher-config-row"><span>Тип датчика</span><strong>${escapeHtml(ai.sensor_label || '—')}</strong></div>
+            <div class="flasher-config-row"><span>Измеренное</span><strong class="ai-raw-fmt">${escapeHtml(measuredStr)}</strong></div>
+            <div class="flasher-config-row"><span>Пересчитанное</span><strong>${escapeHtml(scaledStr)}</strong></div>
           </div>
         </section>
         <section class="flasher-config-card">
-          <h4>Настройки входа</h4>
+          <h4>Настройки канала</h4>
           <div class="flasher-config-form">
             <label for="cfg-mr-ai-bucket-${channel}">Режим датчика</label>
             <select id="cfg-mr-ai-bucket-${channel}">${bucketOptions}</select>
+            ${isRtd ? `
+              <label>Схема подключения</label>
+              <div class="ai-wire-scheme" id="cfg-mr-ai-wire-wrap-${channel}">
+                <label class="radio-line">
+                  <input type="radio" name="cfg-mr-ai-wire-${channel}" value="2"
+                    id="cfg-mr-ai-wire-2-${channel}" ${rtdTwoWire ? 'checked' : ''}
+                    data-mr-ai-wire="${channel}" /> 2-проводная
+                </label>
+                <label class="radio-line">
+                  <input type="radio" name="cfg-mr-ai-wire-${channel}" value="3"
+                    id="cfg-mr-ai-wire-3-${channel}" ${!rtdTwoWire ? 'checked' : ''}
+                    data-mr-ai-wire="${channel}" /> 3-проводная
+                </label>
+              </div>
+            ` : ''}
             <label for="cfg-mr-ai-sensor-${channel}">Подтип</label>
-            <select id="cfg-mr-ai-sensor-${channel}">${subchoiceOptions}</select>
+            <select id="cfg-mr-ai-sensor-${channel}" data-mr-ai-sensor="${channel}">${subchoiceOptions}</select>
             <div id="cfg-mr-ai-cal-wrap-${channel}" ${calOk ? '' : 'hidden'}>
-              <label for="cfg-mr-ai-cal-${channel}">Калибровка температуры, int16</label>
-              <input id="cfg-mr-ai-cal-${channel}" type="number" min="-32768" max="32767" value="${escapeHtml(String(ai.calibration ?? 0))}" />
+              <label class="ai-cal-inline">
+                <input id="cfg-mr-ai-cal-${channel}" type="number" min="-32768" max="32767"
+                  value="${escapeHtml(String(ai.calibration ?? 0))}" data-mr-ai-cal="${channel}"
+                  class="ai-cal-input" />
+                Калибровка, °C×0.1
+              </label>
             </div>
-            <div id="cfg-mr-ai-cal-note-${channel}" class="flasher-config-note" ${calOk ? 'hidden' : ''}>Калибровка смещения доступна только для температурных датчиков.</div>
+            <div id="cfg-mr-ai-cal-note-${channel}" class="flasher-config-note" ${calOk ? 'hidden' : ''}>Калибровка смещения — только для температурных датчиков.</div>
             ${filters ? `
-              <label class="checkbox-line"><input id="cfg-mr-ai-kalman-${channel}" type="checkbox" ${Number(filters.kalman || 0) ? 'checked' : ''} /> Фильтр Калмана</label>
+              <label class="checkbox-line"><input id="cfg-mr-ai-kalman-${channel}" type="checkbox"
+                ${Number(filters.kalman || 0) ? 'checked' : ''} data-mr-ai-filter="${channel}" /> Фильтр Калмана</label>
               <label for="cfg-mr-ai-sps-${channel}">Частота АЦП, выб/сек</label>
-              <select id="cfg-mr-ai-sps-${channel}">
+              <select id="cfg-mr-ai-sps-${channel}" data-mr-ai-filter="${channel}">
                 ${MODULE_AI_SAMPLE_RATES.map(rate => `<option value="${rate}" ${Number(rate) === Number(filters.sps || 45) ? 'selected' : ''}>${rate}</option>`).join('')}
               </select>
               <label for="cfg-mr-ai-avg-${channel}">Число выборок</label>
-              <input id="cfg-mr-ai-avg-${channel}" type="number" min="0" max="50" value="${escapeHtml(String(filters.avg ?? 0))}" />
+              <input id="cfg-mr-ai-avg-${channel}" type="number" min="0" max="50"
+                value="${escapeHtml(String(filters.avg ?? 0))}" data-mr-ai-filter="${channel}" />
               <label for="cfg-mr-ai-tau-${channel}">Пост. времени НЧ, мс</label>
-              <input id="cfg-mr-ai-tau-${channel}" type="number" min="0" max="65535" value="${escapeHtml(String(filters.tau ?? 0))}" />
+              <input id="cfg-mr-ai-tau-${channel}" type="number" min="0" max="65535"
+                value="${escapeHtml(String(filters.tau ?? 0))}" data-mr-ai-filter="${channel}" />
             ` : ''}
-          </div>
-          <div class="flasher-config-actions">
-            <button class="btn btn-primary" type="button" data-mr-ai-save="${channel}">Сохранить AI${channel}</button>
           </div>
         </section>
       </div>
@@ -1477,8 +1701,15 @@
     host.querySelectorAll('[data-config-tab]').forEach(btn => {
       btn.addEventListener('click', async () => {
         state.configTab = btn.dataset.configTab || 'info';
+        // Отменяем таймер фонового опроса, чтобы он не запустился параллельно.
+        stopConfigPolling();
         renderConfigTabs();
         renderConfigBody();
+        // Если фоновый opрос уже в полёте — ждём его завершения. Два
+        // одновременных Modbus-запроса на одном порту дают 409 Conflict.
+        if (_bgPollPromise) {
+          try { await _bgPollPromise; } catch (_) {}
+        }
         await refreshConfigSnapshot(true, 'full');
       });
     });
@@ -1519,7 +1750,14 @@
     const dev = currentConfigDevice();
     const port = $('flasher-port').value;
     if (!dev || !port) return;
-    setConfigBusy(true);
+    // Каждый вызов получает порядковый номер. Устаревший ответ (когда уже
+    // запущен более новый опрос) отбрасывается, не обновляя UI.
+    const mySeq = ++_configPollSeq;
+    if (silent) {
+      state.configBackgroundBusy = true;
+    } else {
+      setConfigBusy(true);
+    }
     try {
       const snap = await configApi('/device_config/snapshot', {
         port,
@@ -1527,12 +1765,25 @@
         snapshot_detail: detail || 'full',
         active_tab: state.configTab || '',
       });
+      if (mySeq !== _configPollSeq) return; // более новый запрос уже запущен — игнорируем
       applyConfigSnapshot(snap, !!silent);
     } catch (err) {
-      setConfigBanner('Не удалось загрузить настройки: ' + err.message, 'error');
-      if (!silent) toast('Настройка устройства: ' + err.message, 'error');
+      if (mySeq !== _configPollSeq) return; // устаревшая ошибка — молча отбрасываем
+      if (silent) {
+        // Фоновая ошибка: не блокируем UI баннером, просто перепланируем опрос
+        scheduleConfigPolling();
+      } else {
+        setConfigBanner('Не удалось загрузить настройки: ' + err.message, 'error');
+        toast('Настройка устройства: ' + err.message, 'error');
+        // Явный запрос тоже перепланирует, чтобы опрос не остановился
+        scheduleConfigPolling();
+      }
     } finally {
-      setConfigBusy(false);
+      if (silent) {
+        state.configBackgroundBusy = false;
+      } else {
+        setConfigBusy(false);
+      }
     }
   }
 
@@ -1550,18 +1801,24 @@
     configModalEl('flasher-config-modal').hidden = false;
     document.body.style.overflow = 'hidden';
     renderConfigBody();
+    await _autoReleasePortForConfig();
     await refreshConfigSnapshot(false);
   }
 
   function closeConfigModal() {
     stopConfigPolling();
+    ++_configPollSeq; // инвалидируем все текущие in-flight запросы этой сессии
+    _bgPollPromise = null;
     state.configOpen = false;
+    state.configBusy = false;
+    state.configBackgroundBusy = false;
     state.configDeviceIdx = -1;
     state.configSnapshot = null;
     state.configTab = '';
     const modal = configModalEl('flasher-config-modal');
     if (modal) modal.hidden = true;
     document.body.style.overflow = '';
+    _autoRestorePortForConfig();
   }
 
   async function saveConfigNetwork() {
@@ -1786,25 +2043,46 @@
     ], `Настройки AO${channel} сохранены`, `AO${channel}: `);
   }
 
-  async function saveModuleAi(channel) {
+  async function applyAiSensorCode(channel) {
     const ai = moduleAiChannel(state.configSnapshot, channel);
     if (!ai) return;
     const base = Number(ai.register_base);
-    const sensorVal = clampInt(configModalEl(`cfg-mr-ai-sensor-${channel}`).value, 0, 0xFFFF, 0);
-    const items = [{ reg: base, value: sensorVal }];
-    if (aiUiCalibrationApplicable(sensorVal)) {
-      items.push({ reg: base + 4, value: signedToUint16(configModalEl(`cfg-mr-ai-cal-${channel}`).value) });
-    }
-    if (ai.filters) {
-      const stor = Number(ai.filters.stor || 0);
-      const rawSps = clampInt(configModalEl(`cfg-mr-ai-sps-${channel}`).value, 20, 1000, 45);
-      const sps = MODULE_AI_SAMPLE_RATES.reduce((best, item) => Math.abs(item - rawSps) < Math.abs(best - rawSps) ? item : best, MODULE_AI_SAMPLE_RATES[0]);
-      items.push({ reg: 491 + stor, value: configModalEl(`cfg-mr-ai-kalman-${channel}`).checked ? 1 : 0 });
-      items.push({ reg: 533 + 3 * stor, value: sps });
-      items.push({ reg: 534 + 3 * stor, value: clampInt(configModalEl(`cfg-mr-ai-avg-${channel}`).value, 0, 50, 0) });
-      items.push({ reg: 535 + 3 * stor, value: clampInt(configModalEl(`cfg-mr-ai-tau-${channel}`).value, 0, 65535, 0) });
-    }
-    await writeHoldingBatch(items, `Настройки AI${channel} сохранены`, `AI${channel}: `);
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    if (!sensorEl) return;
+    const sensorVal = clampInt(sensorEl.value, 0, 0xFFFF, 0);
+    await writeHoldingBatch([{ reg: base, value: sensorVal }], `Тип AI${channel} применён`, `AI${channel}: `);
+  }
+
+  async function applyAiCalibration(channel) {
+    const ai = moduleAiChannel(state.configSnapshot, channel);
+    if (!ai) return;
+    const base = Number(ai.register_base);
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    const calEl = configModalEl(`cfg-mr-ai-cal-${channel}`);
+    if (!sensorEl || !calEl) return;
+    if (!aiUiCalibrationApplicable(clampInt(sensorEl.value, 0, 0xFFFF, 0))) return;
+    await writeHoldingBatch(
+      [{ reg: base + 4, value: signedToUint16(calEl.value) }],
+      `Калибровка AI${channel} применена`, `AI${channel}: `
+    );
+  }
+
+  async function applyAiFilters(channel) {
+    const ai = moduleAiChannel(state.configSnapshot, channel);
+    if (!ai || !ai.filters) return;
+    const stor = Number(ai.filters.stor || 0);
+    const rawSps = clampInt(configModalEl(`cfg-mr-ai-sps-${channel}`) && configModalEl(`cfg-mr-ai-sps-${channel}`).value, 20, 1000, 45);
+    const sps = MODULE_AI_SAMPLE_RATES.reduce((best, item) => Math.abs(item - rawSps) < Math.abs(best - rawSps) ? item : best, MODULE_AI_SAMPLE_RATES[0]);
+    const kalmanEl = configModalEl(`cfg-mr-ai-kalman-${channel}`);
+    const avgEl = configModalEl(`cfg-mr-ai-avg-${channel}`);
+    const tauEl = configModalEl(`cfg-mr-ai-tau-${channel}`);
+    const items = [
+      { reg: 491 + stor, value: kalmanEl && kalmanEl.checked ? 1 : 0 },
+      { reg: 533 + 3 * stor, value: sps },
+      { reg: 534 + 3 * stor, value: avgEl ? clampInt(avgEl.value, 0, 50, 0) : 0 },
+      { reg: 535 + 3 * stor, value: tauEl ? clampInt(tauEl.value, 0, 65535, 0) : 0 },
+    ];
+    await writeHoldingBatch(items, `Фильтры AI${channel} применены`, `AI${channel}: `);
   }
 
   function refreshAiCalibrationVisibility(channel) {
@@ -1817,33 +2095,167 @@
     if (note) note.hidden = ok;
   }
 
+  function _aiRebuildSensorOptions(channel, choices) {
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    if (!sensorEl) return;
+    const prev = sensorEl.value;
+    sensorEl.innerHTML = choices.map(([code, lbl]) => {
+      const isSel = String(code) === String(prev) ? 'selected' : '';
+      return `<option value="${code}" ${isSel}>${escapeHtml(lbl)}</option>`;
+    }).join('');
+    if (!choices.some(([code]) => String(code) === prev)) {
+      sensorEl.value = String(choices[0][0]);
+    }
+  }
+
   function setupAiBucketHandlers(body) {
+    // Bucket: обновляет список подтипов, пишет выбранный тип сразу
     body.querySelectorAll('select[id^="cfg-mr-ai-bucket-"]').forEach(sel => {
       sel.addEventListener('change', () => {
         const channel = parseInt(sel.id.replace('cfg-mr-ai-bucket-', ''), 10);
         const bucket = sel.value;
-        const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
-        if (!sensorEl) return;
-        const choices = aiUiSubchoicesForBucket(bucket);
-        const prev = sensorEl.value;
-        sensorEl.innerHTML = choices.map(([code, lbl]) => {
-          const isSel = String(code) === String(prev) ? 'selected' : '';
-          return `<option value="${code}" ${isSel}>${escapeHtml(lbl)}</option>`;
-        }).join('');
-        if (!choices.some(([code]) => String(code) === prev)) {
-          sensorEl.value = String(choices[0][0]);
-        }
+        const isRtd = bucket === 'rtd';
+        // Показываем/скрываем блок выбора схемы RTD
+        const wireWrap = configModalEl(`cfg-mr-ai-wire-wrap-${channel}`);
+        if (wireWrap) wireWrap.closest('div.ai-wire-scheme')
+          ? (wireWrap.hidden = !isRtd)
+          : null;
+        const choices = isRtd
+          ? aiUiRtdSubchoicesForWire(true)   // по умолчанию 2-проводная
+          : aiUiSubchoicesForBucket(bucket);
+        _aiRebuildSensorOptions(channel, choices);
         refreshAiCalibrationVisibility(channel);
+        applyAiSensorCode(channel);
       });
     });
+
+    // RTD wire scheme radio: перестраивает подтипы при смене схемы
+    body.querySelectorAll('[data-mr-ai-wire]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        const channel = parseInt(radio.dataset.mrAiWire, 10);
+        const twoWire = radio.value === '2';
+        const choices = aiUiRtdSubchoicesForWire(twoWire);
+        _aiRebuildSensorOptions(channel, choices);
+        refreshAiCalibrationVisibility(channel);
+        applyAiSensorCode(channel);
+      });
+    });
+
+    // Подтип: пишет сразу при изменении (как в desktop-эталоне)
     body.querySelectorAll('select[id^="cfg-mr-ai-sensor-"]').forEach(sel => {
       sel.addEventListener('change', () => {
         const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
         refreshAiCalibrationVisibility(channel);
+        applyAiSensorCode(channel);
       });
-      const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
-      refreshAiCalibrationVisibility(channel);
+      refreshAiCalibrationVisibility(parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10));
     });
+
+    // Калибровка: пишет при потере фокуса
+    body.querySelectorAll('[data-mr-ai-cal]').forEach(el => {
+      el.addEventListener('blur', () => applyAiCalibration(parseInt(el.dataset.mrAiCal, 10)));
+    });
+
+    // Фильтры АЦП: change для select/checkbox, blur для числовых полей
+    body.querySelectorAll('[data-mr-ai-filter]').forEach(el => {
+      const ch = parseInt(el.dataset.mrAiFilter, 10);
+      if (el.tagName === 'SELECT' || el.type === 'checkbox') {
+        el.addEventListener('change', () => applyAiFilters(ch));
+      } else {
+        el.addEventListener('blur', () => applyAiFilters(ch));
+      }
+    });
+  }
+
+  function exportModuleConfig() {
+    const snap = state.configSnapshot;
+    if (!snap) { toast('Нет данных для экспорта', 'warn'); return; }
+    const info = snap.info || {};
+    const mr = snap.mr || {};
+    const payload = {
+      _meta: {
+        exported_at: new Date().toISOString(),
+        signature: info.signature || '',
+        serial_hex: info.serial != null ? ('0x' + (info.serial >>> 0).toString(16).toUpperCase().padStart(8, '0')) : '',
+        app_version: info.app_version || '',
+      },
+      mr: {
+        relay: mr.relay || {},
+        inactivity_s: mr.inactivity_s ?? 0,
+        do: { safe: (mr.do || {}).safe || [], timer_words: (mr.do || {}).timer_words || [], redelay: (mr.do || {}).redelay || [] },
+        di: { mode: (mr.di || {}).mode || [], debounce: (mr.di || {}).debounce || [], long_press: (mr.di || {}).long_press || [], double_click: (mr.di || {}).double_click || [] },
+        ao: { safe_holding_regs: (mr.ao || {}).safe_holding_regs || [] },
+        ai: { channels: ((mr.ai || {}).channels || []).map(ch => ({ channel: ch.channel, sensor_code: ch.sensor_code, calibration: ch.calibration })) },
+      },
+    };
+    const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const sig = (info.signature || 'module').replace(/[^a-zA-Z0-9_-]/g, '_');
+    a.href = url;
+    a.download = `config_${sig}_${(info.serial != null ? (info.serial >>> 0).toString(16).toUpperCase() : 'unknown')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Конфигурация сохранена в файл', 'success');
+  }
+
+  async function importModuleConfig(fileInput) {
+    if (!fileInput || !fileInput.files || !fileInput.files[0]) return;
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    let json;
+    try {
+      json = JSON.parse(await file.text());
+    } catch (e) {
+      toast('Ошибка чтения JSON-файла: ' + e.message, 'error');
+      return;
+    }
+    const snap = state.configSnapshot;
+    if (!snap || snap.kind !== 'mr') { toast('Откройте окно модуля MR/MP-02м', 'warn'); return; }
+    const mr = json.mr || {};
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    if (!dev || !port) return;
+    setConfigBusy(true);
+    try {
+      // inactivity
+      if (mr.inactivity_s != null) await configApi('/device_config/holding', { port, device: dev, reg: 134, value: Math.max(0, Math.min(255, parseInt(mr.inactivity_s, 10) || 0)) });
+      // relay
+      const relay = mr.relay || {};
+      if (relay.mode != null) await configApi('/device_config/holding', { port, device: dev, reg: 130, value: parseInt(relay.mode, 10) & 0xFFFF });
+      if (relay.options != null) await configApi('/device_config/holding', { port, device: dev, reg: 131, value: parseInt(relay.options, 10) & 0xFFFF });
+      if (relay.power_stagger != null) await configApi('/device_config/holding', { port, device: dev, reg: 622, value: Math.max(0, Math.min(65535, parseInt(relay.power_stagger, 10) || 0)) });
+      toast('Конфигурация загружена из файла', 'success');
+      await refreshConfigSnapshot(false, 'full');
+    } catch (err) {
+      setConfigBanner('Импорт конфигурации: ' + err.message, 'error');
+      toast('Импорт конфигурации: ' + err.message, 'error');
+    } finally {
+      setConfigBusy(false);
+    }
+  }
+
+  async function rebootModuleDevice() {
+    if (!confirm('Перезагрузить модуль?\nЛиния может быть временно недоступна.')) return;
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    if (!dev || !port) return;
+    setConfigBusy(true);
+    try {
+      // Запись в рег. 120 — команда перезагрузки модуля (FC06 reg=120, как в desktop flasher)
+      await configApi('/device_config/holding', { port, device: dev, reg: 120, value: 1 });
+      toast('Команда перезагрузки отправлена', 'success');
+      await new Promise(r => setTimeout(r, 2000));
+      await refreshConfigSnapshot(false, 'full');
+    } catch (err) {
+      // Таймаут при перезагрузке — нормально; обновляем снимок
+      toast('Перезагрузка: ' + err.message, 'warn');
+      await new Promise(r => setTimeout(r, 2000));
+      await refreshConfigSnapshot(false, 'full');
+    } finally {
+      setConfigBusy(false);
+    }
   }
 
   function wireConfigBodyEvents() {
@@ -1881,11 +2293,18 @@
     body.querySelectorAll('[data-mr-do-save]').forEach(btn => btn.addEventListener('click', () => saveModuleDo(parseInt(btn.dataset.mrDoSave, 10))));
     body.querySelectorAll('[data-mr-di-save]').forEach(btn => btn.addEventListener('click', () => saveModuleDi(parseInt(btn.dataset.mrDiSave, 10))));
     body.querySelectorAll('[data-mr-ao-save]').forEach(btn => btn.addEventListener('click', () => saveModuleAo(parseInt(btn.dataset.mrAoSave, 10))));
-    body.querySelectorAll('[data-mr-ai-save]').forEach(btn => btn.addEventListener('click', () => saveModuleAi(parseInt(btn.dataset.mrAiSave, 10))));
+    // AI: setupAiBucketHandlers обрабатывает все события AI (sensor/cal/filters)
+    setupAiBucketHandlers(body);
     body.querySelectorAll('[data-mr-do-reset]').forEach(btn => btn.addEventListener('click', resetModuleDoCounters));
     body.querySelectorAll('[data-mr-di-reset]').forEach(btn => btn.addEventListener('click', resetModuleDiCounters));
     const mrInactSave = body.querySelector('#cfg-mr-inactivity-save-btn');
     if (mrInactSave) mrInactSave.addEventListener('click', saveMrGlobalInactivity);
+    const mrExportBtn = body.querySelector('#cfg-mr-export-btn');
+    if (mrExportBtn) mrExportBtn.addEventListener('click', exportModuleConfig);
+    const mrImportFile = body.querySelector('#cfg-mr-import-file');
+    if (mrImportFile) mrImportFile.addEventListener('change', () => importModuleConfig(mrImportFile));
+    const mrRebootBtn = body.querySelector('#cfg-mr-reboot-btn');
+    if (mrRebootBtn) mrRebootBtn.addEventListener('click', rebootModuleDevice);
     ['cfg-net-addr', 'cfg-net-baud', 'cfg-net-parity', 'cfg-net-stop'].forEach(id => {
       const el = body.querySelector('#' + id);
       if (el) el.addEventListener('input', () => { state.configNetworkDirty = true; });
@@ -1893,7 +2312,6 @@
     });
     const fastEl = body.querySelector('#cfg-net-fast');
     if (fastEl) fastEl.addEventListener('change', () => { state.configNetworkDirty = true; });
-    setupAiBucketHandlers(body);
   }
 
   /* ── Прогресс/лог SSE ─────────────────────────────────────────────────── */
