@@ -1240,8 +1240,8 @@
             <div class="flasher-config-row"><span>Счетчик включений</span><strong>${escapeHtml(String(counts[idx] ?? 0))}</strong></div>
           </div>
           <div class="flasher-config-actions">
-            <button class="btn btn-sm ${bits[idx] ? 'btn-success' : 'btn-primary'}" type="button" data-mr-do-on="${channel}" data-do-channel="${channel}">Включить</button>
-            <button class="btn btn-sm ${bits[idx] ? '' : 'btn-danger'}" type="button" data-mr-do-off="${channel}" data-do-channel="${channel}">Выключить</button>
+            <button class="btn btn-sm ${bits[idx] ? '' : 'btn-success'}" type="button" data-mr-do-on="${channel}" data-do-channel="${channel}">Включить</button>
+            <button class="btn btn-sm ${bits[idx] ? 'btn-danger' : ''}" type="button" data-mr-do-off="${channel}" data-do-channel="${channel}">Выключить</button>
             <button class="btn btn-sm" type="button" data-mr-do-reset="1">Сброс счетчиков DO</button>
           </div>
         </section>
