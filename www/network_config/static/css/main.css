@@ -1659,8 +1659,9 @@ svg .gauge-num {
   border-radius: 4px;
 }
 .do-state-on {
-  background: #28a745;
-  color: #fff;
+  background: var(--badge-ok-bg);
+  border: 1px solid var(--badge-ok-border);
+  color: var(--green);
 }
 .ai-raw-fmt {
   font-size: .78rem;
