@@ -77,9 +77,103 @@ REG_DI_DOUBLE_CLICK_BASE = 678
 REG_RESET_DI_COUNTERS = 694
 REG_DI_FREQ_MODE_BASE = 750
 
+# MR-02м MCU diagnostics (как в desktop module_config_window.py)
+REG_MCU_OP_DAYS = 114          # Holding 114: наработка в днях (uint16)
+REG_MCU_POWER_TEMP = 123       # Holding 123-124: vdd_raw (×0.01 В), tmcu_raw (×0.1 °C, int16)
+INP_MCU_UPTIME_LO = 105        # Input 105-106: uptime seconds (uint32, lo-hi)
+INP_MCU_DIAG_START = 65505     # Input 65505: свободная ОЗУ; 65506: используемая; 65507: стек;
+                               # 65508: причина перезагрузки; 65509-65510: счётчик обновлений u32 lo-hi
+
 PARITY_CHAR_TO_REG = {"N": 0, "O": 1, "E": 2}
 PARITY_REG_TO_CHAR = {v: k for k, v in PARITY_CHAR_TO_REG.items()}
 ALLOWED_BAUD_REG_CODES = (12, 24, 48, 96, 192, 384, 576, 1152)
+
+
+def _info_plural_days(days: int) -> str:
+    d = abs(days) % 100
+    d1 = d % 10
+    if 11 <= d <= 19:
+        return f"{days} дней"
+    if d1 == 1:
+        return f"{days} день"
+    if 2 <= d1 <= 4:
+        return f"{days} дня"
+    return f"{days} дней"
+
+
+def _info_reset_reason(code: int) -> str:
+    reasons = {
+        0: "неизвестно",
+        1: "NRST",
+        2: "POR/PDR",
+        3: "SW-сброс",
+        4: "IWDG",
+        5: "WWDG",
+        6: "LPM",
+        7: "OBL",
+        8: "FIREWIRE",
+    }
+    return reasons.get(int(code) & 0xFFFF, f"код {code & 0xFFFF}")
+
+
+def _info_format_uptime(seconds: int) -> str:
+    s = int(seconds)
+    d = s // 86400
+    h = (s % 86400) // 3600
+    m = (s % 3600) // 60
+    ss = s % 60
+    if d > 0:
+        return f"{d} д {h} ч {m} мин"
+    if h > 0:
+        return f"{h} ч {m} мин {ss} с"
+    return f"{m} мин {ss} с"
+
+
+def _read_mr_mcu_info(send, slave: int) -> Dict[str, Any]:
+    """Чтение диагностики МК модуля MR/MP-02м для вкладки Сведения."""
+    out: Dict[str, Any] = {
+        "power_v": None,
+        "temp_c": None,
+        "uptime_s": None,
+        "uptime_str": None,
+        "op_days": None,
+        "op_days_str": None,
+        "ram_free": None,
+        "ram_used": None,
+        "fw_updates": None,
+        "reset_reason": None,
+    }
+    # Holding 123-124: питание (vdd × 0.01 В) и температура (tmcu × 0.1 °C, int16)
+    pt_regs = _read_regs(send, slave, REG_MCU_POWER_TEMP, 2, input_regs=False, timeout_ms=900)
+    if len(pt_regs) >= 2:
+        vdd_raw = int(pt_regs[0]) & 0xFFFF
+        tmcu_raw = int(pt_regs[1]) & 0xFFFF
+        if tmcu_raw >= 0x8000:
+            tmcu_raw -= 0x10000
+        out["power_v"] = round(vdd_raw / 100.0, 2)
+        out["temp_c"] = round(tmcu_raw / 10.0, 1)
+    # Holding 114: наработка в днях
+    op_regs = _read_regs(send, slave, REG_MCU_OP_DAYS, 1, input_regs=False, timeout_ms=700)
+    if len(op_regs) >= 1:
+        days = int(op_regs[0]) & 0xFFFF
+        out["op_days"] = days
+        out["op_days_str"] = _info_plural_days(days)
+    # Input 105-106: uptime seconds (uint32 lo-hi)
+    up_regs = _read_regs(send, slave, INP_MCU_UPTIME_LO, 2, input_regs=True, timeout_ms=900)
+    if len(up_regs) >= 2:
+        up_s = (int(up_regs[1]) & 0xFFFF) << 16 | (int(up_regs[0]) & 0xFFFF)
+        out["uptime_s"] = up_s
+        out["uptime_str"] = _info_format_uptime(up_s)
+    # Input 65505-65510: диагностика МК
+    diag_regs = _read_regs(send, slave, INP_MCU_DIAG_START, 6, input_regs=True, timeout_ms=1000)
+    if len(diag_regs) >= 2:
+        out["ram_free"] = int(diag_regs[0]) & 0xFFFF
+        out["ram_used"] = int(diag_regs[1]) & 0xFFFF
+    if len(diag_regs) >= 6:
+        out["reset_reason"] = _info_reset_reason(int(diag_regs[3]) & 0xFFFF)
+        fw_cnt = ((int(diag_regs[5]) & 0xFFFF) << 16) | (int(diag_regs[4]) & 0xFFFF)
+        out["fw_updates"] = fw_cnt
+    return out
 
 
 def _normalize_parity(parity: Any) -> str:
@@ -284,6 +378,9 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
             "register_base": module_profiles.ai_channel_base_register(ch, kind.code, kind),
             "sensor_code": sensor_code,
             "sensor_label": module_profiles.ai_sensor_label(sensor_code),
+            "sidebar_tag": module_profiles.ai_sidebar_nav_mode_tag(sensor_code),
+            "ui_bucket": module_profiles.ai_ui_sensor_bucket(sensor_code),
+            "calibration_applicable": module_profiles.ai_ui_temperature_calibration_applicable(sensor_code),
             "measured_raw": measured_raw,
             "scaled_raw": scaled_raw,
             "calibration": _s16_from_reg(hold[4]) if len(hold) > 4 else 0,
@@ -309,61 +406,216 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
     return channels
 
 
+def _mr_module_payload(kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+    max_do = int(kind.max_do)
+    max_di = int(kind.max_di)
+    max_ao = int(kind.max_ao)
+    max_ai = int(kind.max_ai)
+    return {
+        "code": int(kind.code),
+        "name": kind.name,
+        "max_do": max_do,
+        "max_di": max_di,
+        "max_ao": max_ao,
+        "max_ai": max_ai,
+        "relay_mode_panel": _relay_mode_module(kind),
+    }
+
+
+def _mr_do_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+    max_do = int(kind.max_do)
+    if max_do <= 0:
+        return {"bits": [], "counts": [], "safe": [], "timer_words": [], "redelay": []}
+    return {
+        "bits": _read_do_bits(send, slave, max_do),
+        "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, input_regs=True, timeout_ms=1000),
+        "safe": _read_regs(send, slave, REG_SAFE_DO_BASE, max_do, timeout_ms=1000),
+        "timer_words": _read_regs(send, slave, REG_TIMER_DO_BASE, min(6, max_do), timeout_ms=1000),
+        "redelay": _read_regs(send, slave, REG_REDELAY_DO_FIRST, min(6, max_do), timeout_ms=1000),
+    }
+
+
+def _mr_di_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+    max_di = int(kind.max_di)
+    if max_di <= 0:
+        return {
+            "values": [],
+            "counts": [],
+            "short_counts": [],
+            "long_counts": [],
+            "double_counts": [],
+            "freq": [],
+            "mode": [],
+            "debounce": [],
+            "long_press": [],
+            "double_click": [],
+            "freq_mode": [],
+        }
+    return {
+        "values": [
+            1 if int(v) else 0
+            for v in _read_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
+        ],
+        "counts": _read_u32_pairs(send, slave, INP_DI_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "short_counts": _read_regs(send, slave, INP_DI_SHORT_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "long_counts": _read_regs(send, slave, INP_DI_LONG_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "double_counts": _read_regs(send, slave, INP_DI_DOUBLE_CNT_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "freq": _read_regs(send, slave, INP_DI_FREQ_BASE, max_di, input_regs=True, timeout_ms=1000),
+        "mode": _read_regs(send, slave, REG_DI_MODE_BASE, max_di, timeout_ms=1000),
+        "debounce": _read_regs(send, slave, REG_DI_DEBOUNCE_BASE, max_di, timeout_ms=1000),
+        "long_press": _read_regs(send, slave, REG_DI_LONG_PRESS_BASE, max_di, timeout_ms=1000),
+        "double_click": _read_regs(send, slave, REG_DI_DOUBLE_CLICK_BASE, max_di, timeout_ms=1000),
+        "freq_mode": _read_bit_mirror(send, slave, REG_DI_FREQ_MODE_BASE, min(8, max_di)),
+    }
+
+
+def _mr_ao_block_full(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+    max_ao = int(kind.max_ao)
+    if max_ao <= 0:
+        return {"current_raw": [], "setpoint": [], "safe": [], "safe_holding_regs": [], "current_volts": []}
+    current_raw = _read_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
+    payload: Dict[str, Any] = {
+        "current_raw": current_raw,
+        "setpoint": _read_regs(send, slave, INP_AO_FIRST, max_ao, timeout_ms=1000),
+        "safe": _read_regs(
+            send,
+            slave,
+            module_profiles.ao_safe_holding_register(1, kind),
+            max_ao,
+            timeout_ms=1000,
+        ),
+        "safe_holding_regs": [
+            module_profiles.ao_safe_holding_register(ch, kind) for ch in range(1, max_ao + 1)
+        ],
+    }
+    payload["current_volts"] = [_ao_raw_to_volts(raw) for raw in current_raw]
+    return payload
+
+
+def _mr_relay_block(send, slave: int, kind: module_profiles.ModuleKind) -> Dict[str, Any]:
+    if not _relay_mode_module(kind):
+        return {"mode": 0, "options": 0, "power_stagger": 0}
+    return {
+        "mode": int(_read_u16(send, slave, REG_RELAY_MODE, 800) or 0),
+        "options": int(_read_u16(send, slave, REG_RELAY_OPTIONS, 800) or 0),
+        "power_stagger": int(_read_u16(send, slave, REG_POWER_STAGGER, 800) or 0),
+    }
+
+
 def _read_mr_snapshot(send, slave: int, identity: Dict[str, Any]) -> Dict[str, Any]:
+    kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
+    payload: Dict[str, Any] = {
+        "module": _mr_module_payload(kind),
+        "do": _mr_do_block_full(send, slave, kind),
+        "di": _mr_di_block_full(send, slave, kind),
+        "ao": _mr_ao_block_full(send, slave, kind),
+        "ai": {"channels": _read_ai_channels(send, slave, kind)},
+        "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
+        "relay": _mr_relay_block(send, slave, kind),
+        "mcu": _read_mr_mcu_info(send, slave),
+    }
+    return payload
+
+
+def _read_mr_snapshot_minimal(send, slave: int, identity: Dict[str, Any]) -> Dict[str, Any]:
+    """Лёгкий снимок для сайдбара и live-подписей (без полных AI/DI/AO настроек)."""
     kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
     max_do = int(kind.max_do)
     max_di = int(kind.max_di)
     max_ao = int(kind.max_ao)
     max_ai = int(kind.max_ai)
+
+    ai_channels: List[Dict[str, Any]] = []
+    if max_ai > 0:
+        stride = module_profiles.ai_channel_stride(kind.code, kind)
+        total_regs = max_ai * stride
+        holding_regs = _read_regs(send, slave, 400, total_regs, timeout_ms=1200)
+        for ch in range(1, max_ai + 1):
+            offset = (ch - 1) * stride
+            sensor_code = (
+                int(holding_regs[offset]) & 0xFFFF if offset < len(holding_regs) else 0
+            )
+            ai_channels.append(
+                {
+                    "channel": ch,
+                    "register_base": module_profiles.ai_channel_base_register(ch, kind.code, kind),
+                    "sensor_code": sensor_code,
+                    "sensor_label": module_profiles.ai_sensor_label(sensor_code),
+                    "sidebar_tag": module_profiles.ai_sidebar_nav_mode_tag(sensor_code),
+                    "ui_bucket": module_profiles.ai_ui_sensor_bucket(sensor_code),
+                }
+            )
+
     payload: Dict[str, Any] = {
-        "module": {
-            "code": int(kind.code),
-            "name": kind.name,
-            "max_do": max_do,
-            "max_di": max_di,
-            "max_ao": max_ao,
-            "max_ai": max_ai,
-            "relay_mode_panel": _relay_mode_module(kind),
-        },
+        "module": _mr_module_payload(kind),
         "do": {
             "bits": _read_do_bits(send, slave, max_do) if max_do > 0 else [],
-            "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, input_regs=True, timeout_ms=1000) if max_do > 0 else [],
-            "safe": _read_regs(send, slave, REG_SAFE_DO_BASE, max_do, timeout_ms=1000) if max_do > 0 else [],
-            "timer_words": _read_regs(send, slave, REG_TIMER_DO_BASE, min(6, max_do), timeout_ms=1000) if max_do > 0 else [],
-            "redelay": _read_regs(send, slave, REG_REDELAY_DO_FIRST, min(6, max_do), timeout_ms=1000) if max_do > 0 else [],
+            "counts": _read_u32_pairs(send, slave, INP_DO_CNT_BASE, max_do, input_regs=True, timeout_ms=1000)
+            if max_do > 0
+            else [],
         },
         "di": {
-            "values": [1 if int(v) else 0 for v in _read_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)] if max_di > 0 else [],
-            "counts": _read_u32_pairs(send, slave, INP_DI_CNT_BASE, max_di, input_regs=True, timeout_ms=1000) if max_di > 0 else [],
-            "short_counts": _read_regs(send, slave, INP_DI_SHORT_CNT_BASE, max_di, input_regs=True, timeout_ms=1000) if max_di > 0 else [],
-            "long_counts": _read_regs(send, slave, INP_DI_LONG_CNT_BASE, max_di, input_regs=True, timeout_ms=1000) if max_di > 0 else [],
-            "double_counts": _read_regs(send, slave, INP_DI_DOUBLE_CNT_BASE, max_di, input_regs=True, timeout_ms=1000) if max_di > 0 else [],
-            "freq": _read_regs(send, slave, INP_DI_FREQ_BASE, max_di, input_regs=True, timeout_ms=1000) if max_di > 0 else [],
-            "mode": _read_regs(send, slave, REG_DI_MODE_BASE, max_di, timeout_ms=1000) if max_di > 0 else [],
-            "debounce": _read_regs(send, slave, REG_DI_DEBOUNCE_BASE, max_di, timeout_ms=1000) if max_di > 0 else [],
-            "long_press": _read_regs(send, slave, REG_DI_LONG_PRESS_BASE, max_di, timeout_ms=1000) if max_di > 0 else [],
-            "double_click": _read_regs(send, slave, REG_DI_DOUBLE_CLICK_BASE, max_di, timeout_ms=1000) if max_di > 0 else [],
-            "freq_mode": _read_bit_mirror(send, slave, REG_DI_FREQ_MODE_BASE, min(8, max_di)) if max_di > 0 else [],
+            "values": [
+                1 if int(v) else 0
+                for v in _read_regs(send, slave, INP_DI_FIRST, max_di, input_regs=True, timeout_ms=1000)
+            ]
+            if max_di > 0
+            else [],
         },
         "ao": {
-            "current_raw": _read_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000) if max_ao > 0 else [],
-            "setpoint": _read_regs(send, slave, INP_AO_FIRST, max_ao, timeout_ms=1000) if max_ao > 0 else [],
-            "safe": _read_regs(send, slave, module_profiles.ao_safe_holding_register(1, kind), max_ao, timeout_ms=1000) if max_ao > 0 else [],
+            "current_raw": _read_regs(send, slave, INP_AO_FIRST, max_ao, input_regs=True, timeout_ms=1000)
+            if max_ao > 0
+            else [],
         },
-        "ai": {
-            "channels": _read_ai_channels(send, slave, kind),
-        },
+        "ai": {"channels": ai_channels},
         "inactivity_s": int(_read_u16(send, slave, REG_MODBUS_INACTIVITY_S, 800) or 0),
-        "relay": {
-            "mode": int(_read_u16(send, slave, REG_RELAY_MODE, 800) or 0),
-            "options": int(_read_u16(send, slave, REG_RELAY_OPTIONS, 800) or 0),
-            "power_stagger": int(_read_u16(send, slave, REG_POWER_STAGGER, 800) or 0),
-        },
+        "relay": _mr_relay_block(send, slave, kind),
+        "mcu": {},
     }
-    payload["ao"]["current_volts"] = [
-        _ao_raw_to_volts(raw) for raw in payload["ao"]["current_raw"]
-    ]
+    payload["ao"]["current_volts"] = [_ao_raw_to_volts(raw) for raw in payload["ao"]["current_raw"]]
     return payload
+
+
+def _read_mr_snapshot_panel(
+    send,
+    slave: int,
+    identity: Dict[str, Any],
+    active_tab: Optional[str],
+) -> Dict[str, Any]:
+    """Снимок для фонового опроса: минимум для сайдбара + полный блок только активной вкладки IO."""
+    kind = _module_kind_from_identity(identity.get("signature", ""), identity.get("type_code"))
+    base = _read_mr_snapshot_minimal(send, slave, identity)
+    tab = str(active_tab or "").strip().lower()
+    max_do = int(kind.max_do)
+    max_di = int(kind.max_di)
+    max_ao = int(kind.max_ao)
+    max_ai = int(kind.max_ai)
+
+    out: Dict[str, Any] = {
+        "module": base["module"],
+        "do": dict(base["do"]),
+        "di": dict(base["di"]),
+        "ao": dict(base["ao"]),
+        "ai": {"channels": list(base["ai"]["channels"])},
+        "inactivity_s": base["inactivity_s"],
+        "relay": dict(base["relay"]),
+        "mcu": base.get("mcu", {}),
+    }
+
+    if tab == "info":
+        out["mcu"] = _read_mr_mcu_info(send, slave)
+    elif tab.startswith("do_") and max_do > 0:
+        out["do"] = _mr_do_block_full(send, slave, kind)
+    elif tab.startswith("di_") and max_di > 0:
+        out["di"] = _mr_di_block_full(send, slave, kind)
+    elif tab.startswith("ao_") and max_ao > 0:
+        out["ao"] = _mr_ao_block_full(send, slave, kind)
+    elif tab.startswith("ai_") and max_ai > 0:
+        out["ai"] = {"channels": _read_ai_channels(send, slave, kind)}
+    elif tab == "relay" and _relay_mode_module(kind):
+        out["relay"] = _mr_relay_block(send, slave, kind)
+
+    return out
 
 
 def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
@@ -378,6 +630,7 @@ def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
         allowed.update(range(REG_REDELAY_DO_FIRST, REG_REDELAY_DO_FIRST + min(6, max_do)))
         allowed.add(REG_MODBUS_INACTIVITY_S)
         allowed.add(REG_RESET_DO_COUNTERS)
+    allowed.add(120)  # Команда перезагрузки устройства
     if _relay_mode_module(kind):
         allowed.update({REG_RELAY_MODE, REG_RELAY_OPTIONS, REG_POWER_STAGGER})
     if max_di > 0:
@@ -584,7 +837,20 @@ def _read_dtv_snapshot(send, slave: int) -> Dict[str, Any]:
     }
 
 
-def snapshot_for_device(device_path: str, device: Dict[str, Any]) -> Dict[str, Any]:
+def snapshot_for_device(
+    device_path: str,
+    device: Dict[str, Any],
+    *,
+    snapshot_detail: str = "full",
+    active_tab: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Снимок для web UI.
+    ``snapshot_detail``: ``full`` — полный MR-блок; ``minimal`` — только live сайдбара;
+    ``panel`` — minimal + расширенное чтение блока, соответствующего ``active_tab`` (как desktop wake-тик).
+    """
+    detail = str(snapshot_detail or "full").strip().lower()
+    if detail not in ("full", "minimal", "panel"):
+        detail = "full"
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
@@ -611,12 +877,22 @@ def snapshot_for_device(device_path: str, device: Dict[str, Any]) -> Dict[str, A
             },
             "network": network,
         }
+        detail_out = detail
         if kind == "ce":
             payload["ce"] = _read_ce_snapshot(send, slave)
+            detail_out = "full"
         elif kind == "dtv":
             payload["dtv"] = _read_dtv_snapshot(send, slave)
+            detail_out = "full"
         elif kind == "mr":
-            payload["mr"] = _read_mr_snapshot(send, slave, identity)
+            if detail == "minimal":
+                payload["mr"] = _read_mr_snapshot_minimal(send, slave, identity)
+            elif detail == "panel":
+                payload["mr"] = _read_mr_snapshot_panel(send, slave, identity, active_tab)
+            else:
+                payload["mr"] = _read_mr_snapshot(send, slave, identity)
+        payload["snapshot_detail"] = detail_out
+        payload["active_tab"] = active_tab
         return payload
     finally:
         close_transport()
@@ -690,7 +966,7 @@ def apply_network_settings(
             "stopbits": stopbits,
         }
     )
-    return snapshot_for_device(device_path, updated_device)
+    return snapshot_for_device(device_path, updated_device, snapshot_detail="full")
 
 
 def write_allowed_holding(
@@ -719,12 +995,13 @@ def write_allowed_holding(
             )
         if reg not in allowed_regs:
             raise ValueError("Запись этого регистра через веб-окно не разрешена")
-        err = write_single(send, slave, reg, int(value) & 0xFFFF, 1000)
+        target_val = int(value) & 0xFFFF
+        err = write_single(send, slave, reg, target_val, 700)
         if err:
             raise RuntimeError(f"Запись рег. {reg}: {err}")
     finally:
         close_transport()
-    return snapshot_for_device(device_path, device)
+    return snapshot_for_device(device_path, device, snapshot_detail="full")
 
 
 def write_allowed_coil(
@@ -746,14 +1023,22 @@ def write_allowed_coil(
             if coil < DO_COIL_START or coil >= DO_COIL_START + int(module_kind.max_do):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")
             if _relay_mode_module(module_kind):
-                relay_err = write_single(send, slave, REG_RELAY_MODE, 0, 1000)
-                if relay_err:
-                    raise RuntimeError(f"Запись рег. {REG_RELAY_MODE}: {relay_err}")
+                # Как в desktop flasher: для релейных модулей сначала пытаемся
+                # перевести устройство в ручной режим, но не блокируем управление
+                # DO, если эта вспомогательная запись не ответила.
+                relay_mode = _read_u16(send, slave, REG_RELAY_MODE, 800)
+                if relay_mode is None or int(relay_mode) != 0:
+                    write_single(send, slave, REG_RELAY_MODE, 0, 1200)
         else:
             raise ValueError("Запись этой катушки через веб-окно не разрешена")
-        err = write_coil(send, slave, coil, bool(on), 1000)
+        err = write_coil(send, slave, coil, bool(on), 2000)
+        if err and kind == "mr":
+            bit_idx = int(coil) - DO_COIL_START
+            bits = _read_do_bits(send, slave, int(module_kind.max_do))
+            if 0 <= bit_idx < len(bits) and bool(bits[bit_idx]) == bool(on):
+                err = None
         if err:
             raise RuntimeError(f"Запись coil {coil}: {err}")
     finally:
         close_transport()
-    return snapshot_for_device(device_path, device)
+    return snapshot_for_device(device_path, device, snapshot_detail="full")

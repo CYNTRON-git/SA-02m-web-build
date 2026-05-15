@@ -132,7 +132,9 @@ def send_receive(
             # Ранний выход: как только сформирован целый Modbus-кадр, не ждём тишину/дедлайн.
             data_now = b"".join(chunks)
             # Убираем эхо запроса из начала (часть адаптеров отзеркаливает TX в RX).
-            if len(request) > 0 and len(data_now) >= len(request) and data_now[:len(request)] == request:
+            # Условие > (не >=): для FC06 ответ == запрос (8 байт), при адаптере без TX-эха
+            # принятые байты == len(request) — это И ЕСТЬ ответ, а не эхо. Не срезаем.
+            if len(request) > 0 and len(data_now) > len(request) and data_now[:len(request)] == request:
                 data_now = data_now[len(request):]
             if len(data_now) >= 5:
                 func = data_now[1]
@@ -162,7 +164,7 @@ def send_receive(
             # Выход по тишине только при полном Modbus-кадре (не по 5+ байтам), иначе теряем ответ или возвращаем обрезок → таймаут/ошибка.
             if chunks and (time.perf_counter() - last_recv) > 0.02:
                 data_after_strip = b"".join(chunks)
-                if len(request) > 0 and len(data_after_strip) >= len(request) and data_after_strip[:len(request)] == request:
+                if len(request) > 0 and len(data_after_strip) > len(request) and data_after_strip[:len(request)] == request:
                     data_after_strip = data_after_strip[len(request):]
                 if len(data_after_strip) >= 5:
                     func = data_after_strip[1]
@@ -188,8 +190,9 @@ def send_receive(
     if not chunks:
         return None
     data = b"".join(chunks)
-    # Убрать эхо своего запроса из начала буфера (некоторые USB-RS485 отдают TX в RX)
-    if len(request) > 0 and len(data) >= len(request) and data[:len(request)] == request:
+    # Убрать эхо своего запроса из начала буфера (некоторые USB-RS485 отдают TX в RX).
+    # Условие > (не >=): для FC06 ответ == запрос — не срезаем (иначе возвращаем None).
+    if len(request) > 0 and len(data) > len(request) and data[:len(request)] == request:
         data = data[len(request):]
     if len(data) < 5:
         return None  # после отсечения эха нет полного ответа
@@ -259,14 +262,14 @@ def send_receive_tcp(
             chunks.append(chunk)
             last_recv = time.perf_counter()
             data_now = b"".join(chunks)
-            if len(request) > 0 and len(data_now) >= len(request) and data_now[: len(request)] == request:
+            if len(request) > 0 and len(data_now) > len(request) and data_now[: len(request)] == request:
                 data_now = data_now[len(request) :]
             if _rtu_response_complete(data_now):
                 break
         else:
             if chunks and (time.perf_counter() - last_recv) > 0.02:
                 data_after_strip = b"".join(chunks)
-                if len(request) > 0 and len(data_after_strip) >= len(request) and data_after_strip[: len(request)] == request:
+                if len(request) > 0 and len(data_after_strip) > len(request) and data_after_strip[: len(request)] == request:
                     data_after_strip = data_after_strip[len(request) :]
                 if _rtu_response_complete(data_after_strip):
                     break
@@ -275,7 +278,7 @@ def send_receive_tcp(
     if not chunks:
         return None
     data = b"".join(chunks)
-    if len(request) > 0 and len(data) >= len(request) and data[: len(request)] == request:
+    if len(request) > 0 and len(data) > len(request) and data[: len(request)] == request:
         data = data[len(request) :]
     if len(data) < 5:
         return None
