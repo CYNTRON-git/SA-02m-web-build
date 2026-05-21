@@ -44,6 +44,7 @@
   - [Виртуальная машина для сборки](#виртуальная-машина-для-сборки)
   - [Процесс сборки Buildroot](#процесс-сборки-buildroot)
   - [Прошивка образа на eMMC](#прошивка-образа-на-emmc)
+  - [Тиражирование компактного образа SA-02m (web)](#способ-4--тиражирование-компактного-образа-sa-02m-web)
   - [Первоначальная настройка системы](#первоначальная-настройка-системы)
   - [Отключение UART-консоли](#отключение-uart-консоли)
   - [RS-485 и COM симлинки](#rs-485-и-com-симлинки)
@@ -52,6 +53,7 @@
 - [Сетевой watchdog](#сетевой-watchdog)
 - [Структура файлов на устройстве](#структура-файлов-на-устройстве)
 - [Обновление](#обновление)
+- [Документация (docs/)](#документация-docs)
 
 ---
 
@@ -410,6 +412,16 @@ web/
 │       ├── scripts/
 │       │   └── prepare_firmware_for_site.py  ← канонические имена .fw + черновик index.json
 │       └── tests/                ← unittest (auth, firmware_repo, events.log)
+│
+├── tools/
+│   └── imaging/                  ← снятие и тиражирование образа eMMC
+│       ├── cleanup-donor.sh      ← подготовка донора перед dd
+│       ├── make-image.sh         ← полный цикл: ssh stream + PiShrink (WSL2)
+│       ├── flash-receiver.sh     ← заливка .img.xz на приёмник (autorun)
+│       └── README.md             ← краткая инструкция
+│
+├── docs/
+│   └── SA02M_IMAGING_GUIDE.md    ← полное руководство по образам eMMC
 │
 └── www/
     └── network_config/
@@ -827,6 +839,31 @@ scp output/images/sun8i-a40i-nano2e-none-sk.dtb root@192.168.1.136:/boot/dtb/
 
 ssh root@192.168.1.136 reboot
 ```
+
+#### Способ 4 — тиражирование компактного образа SA-02m (web)
+
+Подходит для **массовой заливки** уже настроенной SA-02m (Armbian + web-интерфейс из этого репозитория) на другие платы. Заменяет старый `autorun.sh` с полным `dd if=/dev/mmcblk2` (7.28 GiB) на **компактный** `.img.xz` (~350–500 MiB) с автоматическим расширением rootfs при первой загрузке.
+
+| Документ | Описание |
+|----------|----------|
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Полное руководство:** разметка eMMC, cleanup, PiShrink, заливка, чек-листы, FAQ |
+| [**tools/imaging/README.md**](tools/imaging/README.md) | Краткая инструкция и быстрый старт |
+| `tools/imaging/make-image.sh` | Снятие образа с донора по SSH (WSL2 Ubuntu) |
+| `tools/imaging/prepare-flash-media.sh` | Упаковка USB: образ + sha256 + flash-receiver + autorun |
+| `tools/imaging/flash-receiver.sh` | Заливка на приёмник (замена `autorun.sh`) |
+
+**Быстрый цикл (на ПК с WSL2):**
+
+```bash
+cd tools/imaging
+./make-image.sh --ip 192.168.1.136 --key ~/.ssh/sa02m_sa02 --out-dir ./out \
+    --profile sa02m-1eth --version 1.0.0
+# → out/sa02m-1eth-v1.0.0-shrunk.img.xz + .sha256 + .manifest.json
+
+./prepare-flash-media.sh --image ./out/sa02m-1eth-v1.0.0-shrunk.img.xz --dest /mnt/c/USB/SA02m
+```
+
+> Подробности, ограничения vfat 4 GiB, zero-fill, PiShrink и поведение клонов при первой загрузке — в [SA02M_IMAGING_GUIDE.md](docs/SA02M_IMAGING_GUIDE.md).
 
 ---
 
@@ -1628,6 +1665,19 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 > dpkg --get-selections | grep install   # все deb-пакеты
 > pip3 list                              # Python-пакеты
 > ```
+
+---
+
+## Документация (docs/)
+
+| Документ | Назначение |
+|----------|------------|
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию; чек-листы, FAQ, профили 1eth/2eth, manifest |
+| [tools/imaging/README.md](tools/imaging/README.md) | Быстрый старт: `make-image.sh`, `prepare-flash-media.sh`, `flash-receiver.sh` |
+| [tools/imaging/manifest.example.json](tools/imaging/manifest.example.json) | Шаблон метаданных релиза образа |
+| [docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md](docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md) | SSH: задержки, post-auth hang, PAM/MOTD |
+| [docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md](docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md) | Профили serial 1eth/2eth, карта COM |
+| [MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md](MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md) | Сборка драйвера на устройстве (до/после cleanup донора) |
 
 ---
 

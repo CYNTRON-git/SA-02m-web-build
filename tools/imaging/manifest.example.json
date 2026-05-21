@@ -1,0 +1,53 @@
+{
+  "image_name": "sa02m-1eth-v1.0.0-shrunk.img.xz",
+  "image_sha256": "REPLACE_AFTER_sha256sum",
+  "created_at": "2026-05-20T12:00:00Z",
+  "pipeline": {
+    "tool": "make-image.sh",
+    "version": "1.1",
+    "pishrink": true,
+    "zerofill": true,
+    "cleanup": true,
+    "final_xz_level": "9e"
+  },
+  "source_device": {
+    "ip": "192.168.1.136",
+    "hostname": "SA-02",
+    "emmc_device": "/dev/mmcblk2",
+    "emmc_size_gib": 7.28,
+    "emmc_model": "008GB0"
+  },
+  "platform": {
+    "board": "Cyntron A40i-2Eth",
+    "os": "Armbian 25.11.2 noble",
+    "kernel": "6.1.0-rc6",
+    "armbian_bsp": "armbian-bsp-cli-bananapim2ultra-current 25.11.2"
+  },
+  "sa02m_web_build": {
+    "git_commit": "58dea9227014fea21cc4cfa415c58a9df221b187",
+    "app_version": "1.0.3"
+  },
+  "serial_profile": "sa02m-1eth",
+  "partitions": {
+    "boot": {
+      "device": "mmcblk2p1",
+      "size_mib": 64,
+      "fstype": "vfat",
+      "uuid": "D8CE-50BA",
+      "partuuid": "852073e2-01"
+    },
+    "root": {
+      "device": "mmcblk2p2",
+      "fstype": "ext4",
+      "label": "armbi_root",
+      "uuid": "3599389b-2279-4cc9-8fd1-43135f13a73b",
+      "partuuid": "852073e2-02"
+    }
+  },
+  "expected_sizes": {
+    "shrunk_img_xz_mib_min": 300,
+    "shrunk_img_xz_mib_max": 600,
+    "root_used_after_first_boot_gib": 1.2
+  },
+  "notes": "Golden image for SA-02m production. Default IP 192.168.1.136 after clone until reconfigured."
+}

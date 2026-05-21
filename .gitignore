@@ -26,3 +26,7 @@ private/
 
 # Локальный клон для сверки с драйвером PCA9536 (не в репо)
 .tmp-pca9536-sdk/
+
+# Артефакты снятия образа eMMC (make-image.sh)
+tools/imaging/out/
+tools/imaging/flash-media/
