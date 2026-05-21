@@ -15,7 +15,7 @@ log "останов orphan dd (если есть)"
 pkill -TERM -f 'dd if=/dev/mmcblk2' 2>/dev/null || true
 sleep 1
 pkill -KILL -f 'dd if=/dev/mmcblk2' 2>/dev/null || true
-rm -f /zero.fill 2>/dev/null || true
+rm -f /zero.fill /run/sa02m-imaging.lock 2>/dev/null || true
 
 if [ "$PREFLIGHT" -eq 1 ]; then
     log "preflight OK (dd остановлен)"
@@ -38,7 +38,7 @@ systemctl enable regen-ssh-host-keys.service 2>/dev/null || true
 systemctl enable ssh 2>/dev/null || true
 systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
 
-rm -f /root/.not_logged_in_yet
+rm -f /root/.not_logged_in_yet /run/sa02m-imaging.lock 2>/dev/null || true
 
 log "запуск сервисов"
 systemctl start nginx fcgiwrap sa02m-flasher php8.3-fpm 2>/dev/null || true

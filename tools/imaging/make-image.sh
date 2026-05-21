@@ -46,10 +46,14 @@ while [ $# -gt 0 ]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
 STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
 FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
+WATCHDOG_SCRIPT="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
+WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
 SSH=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "root@$DEVICE_IP")
+SCP=(scp -i "$SSH_KEY" "${SSH_OPTS[@]}")
 
 STAMP="$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT_DIR" "$WORK"
@@ -160,6 +164,22 @@ if [ -r "$FIX_DONOR_SCRIPT" ]; then
     "${SSH[@]}" 'bash -s -- --preflight' < "$FIX_DONOR_SCRIPT" || true
 fi
 
+deploy_userspace_watchdog() {
+    [ -r "$WATCHDOG_SCRIPT" ] || return 0
+    log "    deploy: userspace watchdog (imaging lock + FAIL_THRESHOLD=60)"
+    "${SCP[@]}" "$WATCHDOG_SCRIPT" "root@${DEVICE_IP}:/usr/local/sbin/sa02m-userspace-watchdog"
+    if [ -r "$WATCHDOG_CONF" ]; then
+        "${SCP[@]}" "$WATCHDOG_CONF" "root@${DEVICE_IP}:/etc/sa02m_userspace_watchdog.conf"
+    else
+        "${SSH[@]}" 'grep -q "^FAIL_THRESHOLD=" /etc/sa02m_userspace_watchdog.conf 2>/dev/null && \
+            sed -i "s/^FAIL_THRESHOLD=.*/FAIL_THRESHOLD=60/" /etc/sa02m_userspace_watchdog.conf || \
+            echo "FAIL_THRESHOLD=60" >> /etc/sa02m_userspace_watchdog.conf' || true
+    fi
+    "${SSH[@]}" 'chmod 755 /usr/local/sbin/sa02m-userspace-watchdog; \
+        systemctl restart sa02m-userspace-watchdog.service 2>/dev/null || true'
+}
+deploy_userspace_watchdog
+
 log "    метаданные донора"
 DONOR_META="$(collect_donor_metadata)"
 export DONOR_META DEVICE_IP RELEASE_PROFILE RELEASE_VERSION
@@ -193,11 +213,17 @@ sudo pishrink.sh -a -v "$RAW_IMG"
 
 log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
 rm -f "$SHRUNK_XZ" "$FINAL_IMG"
-cp -f "$RAW_IMG" "$FINAL_IMG"
+FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"
+cp -f "$RAW_IMG" "$FINAL_IMG_WORK"
 FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_XZ")"
-xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG" > "$FINAL_XZ_TMP"
+xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG_WORK" > "$FINAL_XZ_TMP"
 cp -f "$FINAL_XZ_TMP" "$SHRUNK_XZ"
-[ "$KEEP_RAW_IMG" -eq 1 ] || rm -f "$FINAL_IMG"
+if [ "$KEEP_RAW_IMG" -eq 1 ]; then
+    cp -f "$FINAL_IMG_WORK" "$FINAL_IMG"
+else
+    rm -f "$FINAL_IMG"
+fi
+rm -f "$FINAL_IMG_WORK"
 
 log "[5/6] sha256"
 ( cd "$OUT_DIR" && sha256sum "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )

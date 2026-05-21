@@ -22,6 +22,11 @@ done
 
 log() { printf '[stream %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
+IMAGING_LOCK="${IMAGING_LOCK:-/run/sa02m-imaging.lock}"
+log "блокировка userspace watchdog ($IMAGING_LOCK)"
+date -Iseconds >"$IMAGING_LOCK" 2>/dev/null || echo 1 >"$IMAGING_LOCK"
+sync
+
 install_regen_ssh_service() {
     cat > /etc/systemd/system/regen-ssh-host-keys.service <<'EOF'
 [Unit]

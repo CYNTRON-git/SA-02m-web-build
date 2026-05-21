@@ -44,6 +44,7 @@ log "REPO_ROOT=$REPO_ROOT"
 
 if [ -d "$REPO_ROOT/etc" ]; then
     SRC_WATCHDOG="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
+    SRC_WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
     SRC_WATCHDOG_UNIT="$REPO_ROOT/etc/systemd/sa02m-userspace-watchdog.service"
     SRC_FAILURE_MON="$REPO_ROOT/etc/sa02m-failure-monitor.sh"
     SRC_FAILURE_UNIT="$REPO_ROOT/etc/sa02m-failure-monitor.service"
@@ -78,6 +79,9 @@ if [ "$LOCAL_FILES" = 1 ] && [ -r "$SRC_WATCHDOG" ]; then
     install -m 755 "$SRC_WATCHDOG" /usr/local/sbin/sa02m-userspace-watchdog
 else
     echo "WARN: $SRC_WATCHDOG не найден — пропустил установку бинарника" >&2
+fi
+if [ "$LOCAL_FILES" = 1 ] && [ -r "$SRC_WATCHDOG_CONF" ]; then
+    install -m 644 "$SRC_WATCHDOG_CONF" /etc/sa02m_userspace_watchdog.conf
 fi
 
 log "[4/7] sa02m-userspace-watchdog.service"

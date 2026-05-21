@@ -27,8 +27,9 @@ LOG_ROTATE_KEEP_BYTES="${LOG_ROTATE_KEEP_BYTES:-1048576}"
 
 # Базовые параметры
 CHECK_INTERVAL="${CHECK_INTERVAL:-10}"          # секунд между проверками
-FAIL_THRESHOLD="${FAIL_THRESHOLD:-9}"           # ≈ 9 × 10 c = 90 c подряд → reboot
+FAIL_THRESHOLD="${FAIL_THRESHOLD:-60}"          # ≈ 60 × 10 c = 10 мин подряд → reboot
 GRACE_AFTER_BOOT_SEC="${GRACE_AFTER_BOOT_SEC:-180}"  # не реагировать первые N сек после загрузки
+IMAGING_LOCK="${IMAGING_LOCK:-/run/sa02m-imaging.lock}"  # make-image: без reboot пока файл есть
 HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-300}"
 
 # Что мониторим
@@ -85,6 +86,10 @@ mem_available_kb() {
 
 uptime_sec() {
     awk '{ printf "%d\n", $1 }' /proc/uptime 2>/dev/null || echo 0
+}
+
+imaging_active() {
+    [ -f "$IMAGING_LOCK" ]
 }
 
 # ───────────────────────────── checks ─────────────────────────────────────
@@ -267,14 +272,21 @@ main() {
         fi
 
         if [ "$grace_done" -eq 1 ]; then
-            run_check "procs"     check_required_procs
-            run_check "ssh-port"  check_port "$SSH_PORT"
-            run_check "web-port"  check_port "$WEB_PORT"
-            run_check "http"      check_http "$HTTP_PROBE_URL"
-            run_check "iface"     check_iface "$NET_IFACE"
-            run_check "load"      check_load
-            run_check "mem"       check_mem
-            log_watched_procs
+            if imaging_active; then
+                if [ $(( loop % 6 )) -eq 0 ]; then
+                    log "imaging lock active ($IMAGING_LOCK) — reboot checks paused"
+                fi
+                log_watched_procs
+            else
+                run_check "procs"     check_required_procs
+                run_check "ssh-port"  check_port "$SSH_PORT"
+                run_check "web-port"  check_port "$WEB_PORT"
+                run_check "http"      check_http "$HTTP_PROBE_URL"
+                run_check "iface"     check_iface "$NET_IFACE"
+                run_check "load"      check_load
+                run_check "mem"       check_mem
+                log_watched_procs
+            fi
         fi
 
         now=$(date +%s)
