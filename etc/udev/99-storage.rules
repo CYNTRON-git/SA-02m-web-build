@@ -1,6 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 99-storage.rules  — монтирование USB-накопителей и microSD на СА-02м
+#
+# ВАЖНО: правила НАМЕРЕННО игнорируют:
+#   • оптические приводы и образы CD/DVD (KERNEL sr*, ID_TYPE=cd, ID_CDROM)
+#   • USB-модемы в «storage-фазе» (Huawei/ZTE в режиме CD-ROM до modeswitch)
+#     Они появляются как /dev/sr0 (sr*) — не как sda — и/или имеют ID_CDROM=1.
+#     Даже если вдруг выставится SUBSYSTEM=block без ID_CDROM, скрипт
+#     storage-mount.sh при STORAGE_AUTO_FORMAT=0 ничего не форматирует.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Оптические носители (sr*) и CD-образы — пропускаем целиком.
+SUBSYSTEM=="block", KERNEL=="sr*",         GOTO="storage_rules_end"
+SUBSYSTEM=="block", ENV{ID_CDROM}=="1",    GOTO="storage_rules_end"
+SUBSYSTEM=="block", ENV{ID_TYPE}=="cd",    GOTO="storage_rules_end"
+
 # USB-накопители: systemd шаблон storage-mount@.service
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
-SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
+# Только для партиций ИЛИ для дисков без таблицы разделов (super-floppy).
+# Иначе сервис запускался дважды (sda и sda1) и гонялся за один и тот же
+# /media/usb, плюс пытался смонтировать "целый диск" /dev/sda как FS,
+# что для NTFS флешки с GPT/MBR никогда не сработает.
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", ACTION=="add",    RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="partition", ACTION=="remove", RUN+="/bin/systemctl stop  storage-mount@%k.service"
+# Super-floppy (USB-флешка без таблицы разделов, FS прямо на /dev/sdX):
+# срабатываем только если на диске нет ни одной партиции.
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="disk", ENV{ID_PART_TABLE_TYPE}=="", ACTION=="add",    RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="disk", ENV{ID_PART_TABLE_TYPE}=="", ACTION=="remove", RUN+="/bin/systemctl stop  storage-mount@%k.service"
 
 # USB: fallback, если udev не выставил ID_BUS=usb (встречается на части образов/хабов)
 SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="add", ATTR{removable}=="1", RUN+="/bin/systemctl start storage-mount@%k.service"
@@ -14,3 +38,5 @@ SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="add", RUN+="/bin/systemctl star
 SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
+
+LABEL="storage_rules_end"

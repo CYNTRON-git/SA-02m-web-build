@@ -1,0 +1,5 @@
+#!/bin/bash
+# /etc/ppp/ip-down.d/sa02m-modem
+# Вызывается pppd при разрыве PPP-соединения.
+IFACE="${1:-ppp0}"
+logger -t ppp-modem "DOWN iface=$IFACE"

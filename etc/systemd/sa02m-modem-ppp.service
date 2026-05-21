@@ -1,0 +1,20 @@
+[Unit]
+Description=SA-02m PPP modem connection
+Documentation=man:pppd(8)
+# Запускается когда появляется /dev/modem (симлинк из udev на ttyUSB)
+ConditionPathExists=/dev/modem
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=forking
+PIDFile=/run/ppp-modem.pid
+ExecStart=/usr/sbin/pppd call modem updetach
+ExecStop=/usr/sbin/pppd call modem down
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=60
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

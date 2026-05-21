@@ -1,0 +1,23 @@
+[Unit]
+Description=SA-02m DHCP on USB modem interface %I
+Documentation=man:dhclient(8)
+# Запускается udev при появлении USB-ethernet интерфейса (CDC-ECM/RNDIS/NCM).
+# %I = имя интерфейса (eth1, usb0 и т.п.)
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=forking
+PIDFile=/run/dhclient.%i.pid
+# Поднимаем интерфейс и запускаем DHCP.
+# -nw = немедленно уйти в фон (no-wait), не ждать получения адреса.
+# Метрика маршрута устанавливается в /etc/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric.
+ExecStartPre=/sbin/ip link set %i up
+ExecStart=/sbin/dhclient -4 -nw -pf /run/dhclient.%i.pid \
+          -lf /var/lib/dhcp/dhclient.%i.leases %i
+ExecStop=/sbin/dhclient -r -pf /run/dhclient.%i.pid %i
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

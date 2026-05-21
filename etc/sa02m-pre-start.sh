@@ -68,22 +68,24 @@ if [ ! -e /dev/rtc1 ] && [ -w /sys/class/i2c-adapter/i2c-1/new_device ]; then
       logp "ds3231 new_device failed (no chip or already registered)"
     fi
   fi
-  # Дать udev время создать /dev/rtc*
-  sleep 0.3
-  I=0
-  while [ "$I" -lt 5 ]; do
-    if [ -n "$HWC" ] && [ -c /dev/rtc1 ] && "$HWC" -s -f /dev/rtc1 >/dev/null 2>&1; then
-      HCTOSYS_DEVICE=rtc1
-      I=5
-    else
-      I=$((I + 1))
-      sleep 1
-    fi
+  # Ждём появления /dev/rtc1 не более 1.5 с (3 × 0.5). Без чипа дальше ждать
+  # бессмысленно — раньше было 5 × 1 с = +4 с к каждой загрузке.
+  for try in 1 2 3; do
+    [ -c /dev/rtc1 ] && break
+    sleep 0.5
   done
-  if [ -c "/dev/${HCTOSYS_DEVICE}" ]; then
-    rm -f /dev/rtc
-    ln -sf "/dev/${HCTOSYS_DEVICE}" /dev/rtc 2>/dev/null || logp "could not symlink /dev/rtc → ${HCTOSYS_DEVICE}"
+fi
+# Если rtc1 существует (после probe выше или с прошлой загрузки) — читаем
+# время из него и кладём в системные часы. Делаем это всегда, не только при
+# первой регистрации: иначе rtc1 с правильным временем не использовался бы.
+if [ -n "$HWC" ] && [ -c /dev/rtc1 ]; then
+  if "$HWC" -s -f /dev/rtc1 >/dev/null 2>&1; then
+    HCTOSYS_DEVICE=rtc1
   fi
+fi
+if [ -c "/dev/${HCTOSYS_DEVICE}" ]; then
+  rm -f /dev/rtc
+  ln -sf "/dev/${HCTOSYS_DEVICE}" /dev/rtc 2>/dev/null || logp "could not symlink /dev/rtc → ${HCTOSYS_DEVICE}"
 fi
 
 # Системное время → аппаратные часы: предпочтительно внешний rtc1 (PCF8563/DS3231 на СА-02м)
@@ -107,7 +109,8 @@ PCA9536_MASK_ALL_OFF=0xFF
 PCA9536_MASK_BUZZ_ON=0xFB
 
 if command -v i2cset >/dev/null 2>&1 && command -v i2cget >/dev/null 2>&1; then
-  if timeout 2 i2cget -y 2 "$PCA9536_ADDR" >/dev/null 2>&1; then
+  # Уменьшили timeout с 2 c до 0.5 c: при отсутствии чипа это даёт −1.5 c к boot.
+  if timeout 0.5 i2cget -y 2 "$PCA9536_ADDR" >/dev/null 2>&1; then
     i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_CFG" 0x00 2>/dev/null || true
     i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_OUT" "$PCA9536_MASK_BUZZ_ON" 2>/dev/null || true
     sleep 0.1

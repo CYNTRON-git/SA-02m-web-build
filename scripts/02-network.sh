@@ -49,6 +49,11 @@ if [ -f "$ETC_DIR/net-watchdog.sh" ]; then
     install -m 755 "$ETC_DIR/net-watchdog.sh" /usr/local/bin/net-watchdog.sh
 fi
 
+if [ -f "$ETC_DIR/inet-failover.sh" ]; then
+    log INFO "Установка inet-failover.sh"
+    install -m 755 "$ETC_DIR/inet-failover.sh" /usr/local/bin/inet-failover.sh
+fi
+
 if [ -f "$ETC_DIR/fix-eth.service" ]; then
     log INFO "Установка fix-eth.service"
     install -m 644 "$ETC_DIR/fix-eth.service" /etc/systemd/system/fix-eth.service
