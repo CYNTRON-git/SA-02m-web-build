@@ -1,17 +1,6 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════════════════
-#  SA-02m  •  make-image.sh   v1.1
-#  Снимает компактный образ eMMC c донорского SA-02m по ssh и уменьшает
-#  его через PiShrink. Запускается на ХОСТЕ (Linux / WSL2 Ubuntu).
-#
-#  Документация: docs/SA02M_IMAGING_GUIDE.md §9
-#
-#  Использование:
-#      ./make-image.sh [--ip 192.168.1.136] [--key ~/.ssh/sa02m_sa02] \
-#                      [--out-dir ./out] [--profile sa02m-1eth] \
-#                      [--version 1.0.0] [--no-cleanup] [--no-zerofill] \
-#                      [--no-manifest] [--xz-level 1] [--final-xz-level 9e]
-# ═══════════════════════════════════════════════════════════════════════════
+# SA-02m • make-image.sh v1.3
+# cleanup (фазы 1–4) → одна ssh-сессия: zerofill + id reset + dd → PiShrink → xz
 set -euo pipefail
 LC_ALL=C
 
@@ -20,13 +9,19 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/sa02m_sa02}"
 OUT_DIR="$(pwd)/out"
 DO_CLEANUP=1
 DO_ZEROFILL=1
+DO_ID_RESET=1
 DO_MANIFEST=1
+KEEP_RAW_IMG=0
 STREAM_XZ_LEVEL="1"
 FINAL_XZ_LEVEL="9e"
 RELEASE_PROFILE=""
 RELEASE_VERSION=""
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
-          -o ServerAliveInterval=30 -o ServerAliveCountMax=6)
+OUTPUT_NAME=""
+EMMC_BYTES=7818182656
+WORK="${TMPDIR:-/tmp}/sa02m-make-image-$$"
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15
+          -o ServerAliveInterval=15 -o ServerAliveCountMax=9999
+          -o TCPKeepAlive=yes)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -35,13 +30,16 @@ while [ $# -gt 0 ]; do
         --out-dir)         OUT_DIR="$2";          shift 2 ;;
         --profile)         RELEASE_PROFILE="$2";  shift 2 ;;
         --version)         RELEASE_VERSION="$2";  shift 2 ;;
+        --name)            OUTPUT_NAME="$2"; KEEP_RAW_IMG=1; shift 2 ;;
         --no-cleanup)      DO_CLEANUP=0;          shift ;;
         --no-zerofill)     DO_ZEROFILL=0;         shift ;;
+        --no-id-reset)     DO_ID_RESET=0;         shift ;;
         --no-manifest)     DO_MANIFEST=0;         shift ;;
+        --keep-raw-img)    KEEP_RAW_IMG=1;        shift ;;
         --xz-level)        STREAM_XZ_LEVEL="$2";  shift 2 ;;
         --final-xz-level)  FINAL_XZ_LEVEL="$2";   shift 2 ;;
         -h|--help)
-            sed -n '1,20p' "$0" | grep '^#' | sed 's/^# \?//'
+            grep '^#' "$0" | head -20 | sed 's/^# \?//'
             exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -49,17 +47,28 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
+STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
+FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
 SSH=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "root@$DEVICE_IP")
 
 STAMP="$(date +%Y%m%d-%H%M)"
+mkdir -p "$OUT_DIR" "$WORK"
+RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"
 RAW_XZ="$OUT_DIR/sa02m-${STAMP}-raw.img.xz"
-RAW_IMG="$OUT_DIR/sa02m-${STAMP}-raw.img"
 
-if [ -n "$RELEASE_PROFILE" ] && [ -n "$RELEASE_VERSION" ]; then
+if [ -n "$OUTPUT_NAME" ]; then
+    SHRUNK_XZ="$OUT_DIR/${OUTPUT_NAME}.img.xz"
+    FINAL_IMG="$OUT_DIR/${OUTPUT_NAME}.img"
+elif [ -n "$RELEASE_PROFILE" ] && [ -n "$RELEASE_VERSION" ]; then
     SHRUNK_XZ="$OUT_DIR/${RELEASE_PROFILE}-v${RELEASE_VERSION}-shrunk.img.xz"
+    FINAL_IMG="$OUT_DIR/${RELEASE_PROFILE}-v${RELEASE_VERSION}-shrunk.img"
 else
     SHRUNK_XZ="$OUT_DIR/sa02m-${STAMP}-shrunk.img.xz"
+    FINAL_IMG="$OUT_DIR/sa02m-${STAMP}-shrunk.img"
 fi
+
+cleanup_work() { rm -rf "$WORK"; }
+trap cleanup_work EXIT
 
 log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -83,8 +92,7 @@ write_manifest() {
     local img_path=$1
     local sha_file="${img_path}.sha256"
     local manifest_path="${img_path%.img.xz}.manifest.json"
-    local host_json
-    host_json=$(python3 - "$img_path" "$sha256" "$manifest_path" <<'PY'
+    python3 - "$img_path" "$sha_file" "$manifest_path" <<'PY'
 import json, sys, datetime, os
 img, sha_file, out = sys.argv[1:4]
 with open(sha_file, encoding="utf-8") as f:
@@ -103,24 +111,16 @@ doc = {
     "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "pipeline": {
         "tool": "make-image.sh",
-        "version": "1.1",
+        "version": "1.3",
         "pishrink": True,
         "zerofill": os.environ.get("PIPE_ZEROFILL") == "1",
         "cleanup": os.environ.get("PIPE_CLEANUP") == "1",
+        "id_reset_in_stream": os.environ.get("PIPE_ID_RESET") == "1",
         "final_xz_level": os.environ.get("PIPE_XZ_LEVEL", "9e"),
     },
-    "source_device": {
-        "ip": os.environ.get("DEVICE_IP", ""),
-        "hostname": hostname,
-        "emmc_device": "/dev/mmcblk2",
-        "emmc_size_gib": 7.28,
-    },
-    "platform": {
-        "board": board,
-        "os": os_name,
-        "kernel": kernel,
-        "armbian_bsp": f"armbian-bsp-cli-bananapim2ultra-current {bsp}" if bsp != "unknown" else "unknown",
-    },
+    "source_device": {"ip": os.environ.get("DEVICE_IP", ""), "hostname": hostname, "emmc_device": "/dev/mmcblk2", "emmc_size_gib": 7.28},
+    "platform": {"board": board, "os": os_name, "kernel": kernel,
+                 "armbian_bsp": f"armbian-bsp-cli-bananapim2ultra-current {bsp}" if bsp != "unknown" else "unknown"},
     "sa02m_web_build": {"git_commit": git_commit},
     "serial_profile": serial_profile,
     "partitions": {
@@ -135,77 +135,82 @@ with open(out, "w", encoding="utf-8") as f:
     f.write("\n")
 print(out)
 PY
-)
-    log "    manifest: $host_json"
+    log "    manifest: ${img_path%.img.xz}.manifest.json"
 }
 
-# ── 0) Проверка зависимостей ────────────────────────────────────────────
 log "[0/6] Проверка окружения"
 for bin in ssh xz e2fsck resize2fs parted truncate sha256sum dd python3; do
-    command -v "$bin" >/dev/null || die "не найден '$bin' в PATH"
+    command -v "$bin" >/dev/null || die "не найден '$bin'"
 done
-command -v pishrink.sh >/dev/null || die "не найден pishrink.sh — см. docs/SA02M_IMAGING_GUIDE.md §7.1"
+command -v pishrink.sh >/dev/null || die "не найден pishrink.sh"
 [ -r "$SSH_KEY" ] || die "ssh-ключ не найден: $SSH_KEY"
 [ -r "$CLEANUP_SCRIPT" ] || die "не найден $CLEANUP_SCRIPT"
-mkdir -p "$OUT_DIR"
+[ -r "$STREAM_SCRIPT" ] || die "не найден $STREAM_SCRIPT"
 
-log "    Проверка ssh до $DEVICE_IP"
-"${SSH[@]}" "uname -nrm" || die "ssh до $DEVICE_IP не работает"
+log "    ssh → $DEVICE_IP (ожидание до 5 мин после reboot)"
+WAIT_SCRIPT="$SCRIPT_DIR/wait-donor.sh"
+if [ -x "$WAIT_SCRIPT" ] || [ -f "$WAIT_SCRIPT" ]; then
+    IP="$DEVICE_IP" bash "$WAIT_SCRIPT" || die "донор недоступен по ssh"
+else
+    "${SSH[@]}" "uname -nrm" || die "ssh до $DEVICE_IP не работает"
+fi
 
-log "    Сбор метаданных донора (до cleanup)"
+if [ -r "$FIX_DONOR_SCRIPT" ]; then
+    log "    preflight: orphan dd на доноре"
+    "${SSH[@]}" 'bash -s -- --preflight' < "$FIX_DONOR_SCRIPT" || true
+fi
+
+log "    метаданные донора"
 DONOR_META="$(collect_donor_metadata)"
 export DONOR_META DEVICE_IP RELEASE_PROFILE RELEASE_VERSION
-export PIPE_CLEANUP="$DO_CLEANUP" PIPE_ZEROFILL="$DO_ZEROFILL" PIPE_XZ_LEVEL="$FINAL_XZ_LEVEL"
+export PIPE_CLEANUP="$DO_CLEANUP" PIPE_ZEROFILL="$DO_ZEROFILL" PIPE_ID_RESET="$DO_ID_RESET" PIPE_XZ_LEVEL="$FINAL_XZ_LEVEL"
 
-# ── 1) Cleanup ───────────────────────────────────────────────────────────
 if [ "$DO_CLEANUP" -eq 1 ]; then
-    log "[1/6] Cleanup на доноре"
+    log "[1/6] Cleanup на доноре (фазы 1–4, ssh остаётся рабочим)"
     "${SSH[@]}" 'bash -s' < "$CLEANUP_SCRIPT"
 else
     log "[1/6] Cleanup пропущен (--no-cleanup)"
 fi
 
-# ── 2) Zero-fill ─────────────────────────────────────────────────────────
-if [ "$DO_ZEROFILL" -eq 1 ]; then
-    log "[2/6] Zero-fill свободного места rootfs"
-    "${SSH[@]}" 'set -e; \
-        dd if=/dev/zero of=/zero.fill bs=4M status=none 2>/dev/null || true; \
-        sync; rm -f /zero.fill; sync; df -hT /'
-else
-    log "[2/6] Zero-fill пропущен (--no-zerofill)"
-fi
+STREAM_ARGS=()
+[ "$DO_ZEROFILL" -eq 0 ] && STREAM_ARGS+=(--no-zerofill)
+[ "$DO_ID_RESET" -eq 0 ] && STREAM_ARGS+=(--no-id-reset)
 
-# ── 3) Stream dd → xz ────────────────────────────────────────────────────
-log "[3/6] Снятие образа: dd /dev/mmcblk2 → $RAW_XZ"
-"${SSH[@]}" '
-    set -e
-    systemctl stop nginx fcgiwrap sa02m-flasher mplc mplc4 php8.3-fpm 2>/dev/null || true
-    rmmod -f g_mass_storage 2>/dev/null || true
-    sync; sync
-    dd if=/dev/mmcblk2 bs=4M status=none
-' | xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c > "$RAW_XZ"
+log "[2/6] Zero-fill + id reset + dd (одна ssh-сессия, stdout → raw)"
+log "    ⚠ после начала dd не прерывайте — новый ssh на доноре будет недоступен до reboot"
+rm -f "$RAW_IMG"
+"${SSH[@]}" "bash -s -- ${STREAM_ARGS[*]}" < "$STREAM_SCRIPT" > "$RAW_IMG"
 
-log "    raw xz size: $(numfmt --to=iec --suffix=B "$(stat -c%s "$RAW_XZ")")"
+RAW_SIZE=$(stat -c%s "$RAW_IMG")
+log "    raw: $(numfmt --to=iec --suffix=B "$RAW_SIZE")"
+[ "$RAW_SIZE" -eq "$EMMC_BYTES" ] || die "размер raw $RAW_SIZE != $EMMC_BYTES"
 
-# ── 4) PiShrink ──────────────────────────────────────────────────────────
-log "[4/6] Распаковка raw → PiShrink"
-xz -d -k -v "$RAW_XZ"
+log "[3/6] Архив raw (опционально) + PiShrink"
+XZ_TMP="$WORK/$(basename "$RAW_XZ")"
+xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$XZ_TMP"
+cp -f "$XZ_TMP" "$RAW_XZ"
 sudo pishrink.sh -a -v "$RAW_IMG"
 
-log "    финальное xz (-T0 -${FINAL_XZ_LEVEL})"
-xz "-T0" "-${FINAL_XZ_LEVEL}" -v -f "$RAW_IMG"
-mv "${RAW_IMG}.xz" "$SHRUNK_XZ"
+log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
+rm -f "$SHRUNK_XZ" "$FINAL_IMG"
+cp -f "$RAW_IMG" "$FINAL_IMG"
+FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_XZ")"
+xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG" > "$FINAL_XZ_TMP"
+cp -f "$FINAL_XZ_TMP" "$SHRUNK_XZ"
+[ "$KEEP_RAW_IMG" -eq 1 ] || rm -f "$FINAL_IMG"
 
-# ── 5) sha256 ────────────────────────────────────────────────────────────
-log "[5/6] sha256sum"
+log "[5/6] sha256"
 ( cd "$OUT_DIR" && sha256sum "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )
 
-# ── 6) manifest ──────────────────────────────────────────────────────────
 if [ "$DO_MANIFEST" -eq 1 ]; then
     log "[6/6] manifest.json"
     write_manifest "$SHRUNK_XZ"
 else
-    log "[6/6] manifest пропущен (--no-manifest)"
+    log "[6/6] manifest пропущен"
+fi
+
+if [ "$KEEP_RAW_IMG" -eq 1 ]; then
+    cp -f "$RAW_IMG" "$FINAL_IMG"
 fi
 
 FINAL_SIZE=$(stat -c%s "$SHRUNK_XZ")
@@ -214,8 +219,8 @@ echo "    ═══════════════════════�
 echo "    READY: $SHRUNK_XZ"
 echo "           размер: $(numfmt --to=iec --suffix=B "$FINAL_SIZE")"
 echo "           sha256: $(awk '{print $1}' "${SHRUNK_XZ}.sha256")"
+[ "$KEEP_RAW_IMG" -eq 1 ] && echo "           raw img: $FINAL_IMG"
 [ "$DO_MANIFEST" -eq 1 ] && echo "           manifest: ${SHRUNK_XZ%.img.xz}.manifest.json"
 echo "    ════════════════════════════════════════════════════════════════"
-echo
-echo "    USB для приёмника:"
-echo "      ./prepare-flash-media.sh --image $SHRUNK_XZ [--dest /mnt/c/USB/SA02m]"
+echo "    После снятия образа донор без ssh host keys — выполните reboot."
+echo "    USB: ./prepare-flash-media.sh --image $SHRUNK_XZ [--dest /mnt/c/USB/SA02m]"

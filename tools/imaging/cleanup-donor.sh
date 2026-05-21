@@ -1,42 +1,22 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════════════════
-#  SA-02m  •  cleanup-donor.sh   v1.0
-#  Готовит донорское устройство (192.168.1.136 по умолчанию) к снятию
-#  компактного образа eMMC. Выполняется ВНУТРИ устройства (по ssh -s).
-#
-#  Что делает:
-#    1) Удаляет временный мусор в /root и /home (build-результаты, swap-файлы)
-#    2) Удаляет тулчейн (gcc / build-essential / dkms / linux-headers)
-#    3) Чистит apt cache, journald, лог-файлы, /tmp, /var/tmp
-#    4) Сбрасывает уникальные идентификаторы:
-#         /etc/machine-id, /var/lib/dbus/machine-id, ssh host keys
-#       (будут регенерированы на клонах при первой загрузке)
-#    5) Включает Armbian firstrun (touch /root/.not_logged_in_yet) →
-#       при первой загрузке клона armbian-resize-filesystem.service
-#       растянет rootfs на всю eMMC
-#    6) Регистрирует systemd-сервис regen-ssh-host-keys.service
-#       для генерации ssh host keys при первой загрузке клона
-#
-#  ВНИМАНИЕ: после запуска gcc / make / dkms перестанут быть доступны
-#  на доноре. Если планируется снова собирать драйверы — переустановите
-#  пакеты из MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md или с apt cache до cleanup.
-# ═══════════════════════════════════════════════════════════════════════════
+# cleanup-donor.sh — фазы 1–4 (без сброса ID / ssh keys).
+# Шаги 5–7 (machine-id, host keys, firstrun) выполняет stream-after-cleanup.sh
+# в той же ssh-сессии, что и zero-fill + dd — иначе новые подключения к sshd падают.
 set -euo pipefail
 LC_ALL=C
 export DEBIAN_FRONTEND=noninteractive
 
-log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: cleanup-donor.sh должен запускаться от root" >&2
     exit 1
 fi
 
-log "[0/7] Состояние до cleanup"
+log "[1/4] Состояние до cleanup"
 df -hT / | sed 's/^/    /'
 
-# ─────────────────────────────────────────────────────────────────────────
-log "[1/7] Удаление мусора в /root и /home"
+log "[2/4] Удаление мусора в /root и /home"
 rm -rf \
     /root/backup \
     /root/mplc_cyntron_build \
@@ -54,8 +34,7 @@ for h in /home/*/; do
     rm -rf "$h/.cache" "$h/.bash_history" "$h/.local/share/Trash" 2>/dev/null || true
 done
 
-# ─────────────────────────────────────────────────────────────────────────
-log "[2/7] Удаление тулчейна (build tools / kernel headers)"
+log "[3/4] Удаление тулчейна (build tools / kernel headers)"
 PURGE_PATTERNS=(
     'build-essential' 'dkms' 'make'
     'gcc' 'gcc-1?' 'g++*' 'cpp' 'cpp-1?'
@@ -77,53 +56,37 @@ else
 fi
 apt-get autoremove --purge -y || true
 
-# ─────────────────────────────────────────────────────────────────────────
-log "[3/7] Очистка apt cache и списков"
+log "[4/4] Очистка apt cache, journald, логов, /tmp"
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 mkdir -p /var/lib/apt/lists/partial
-
-# ─────────────────────────────────────────────────────────────────────────
-log "[4/7] Очистка journald и логов"
-journalctl --rotate || true
-journalctl --vacuum-time=1s || true
+journalctl --rotate 2>/dev/null || true
+journalctl --vacuum-time=1s 2>/dev/null || true
 find /var/log -type f \( -name '*.log' -o -name '*.log.*' -o -name '*.gz' \) \
      -exec truncate -s 0 {} \; 2>/dev/null || true
 find /var/log -type f -regex '.*\.[0-9]+\(\.gz\)?$' -delete 2>/dev/null || true
 rm -rf /var/tmp/* /tmp/* 2>/dev/null || true
 
-# ─────────────────────────────────────────────────────────────────────────
-log "[5/7] Сброс уникальных идентификаторов (machine-id, ssh host keys)"
-truncate -s 0 /etc/machine-id
-rm -f /var/lib/dbus/machine-id
-ln -sf /etc/machine-id /var/lib/dbus/machine-id
-rm -f /etc/ssh/ssh_host_*
+log "    cleanup фазы 1–4 завершены"
+df -hT / | sed 's/^/    /'
 
+# Сервис regen ставим заранее (до сброса keys в stream-after-cleanup.sh),
+# чтобы после reboot донора sshd мог подняться, если сессия dd прервётся.
 cat > /etc/systemd/system/regen-ssh-host-keys.service <<'EOF'
 [Unit]
 Description=Regenerate SSH host keys on first boot (after image clone)
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service sshd.service
 ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
-Before=ssh.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/ssh-keygen -A
-RemainAfterExit=no
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable regen-ssh-host-keys.service >/dev/null
-
-# ─────────────────────────────────────────────────────────────────────────
-log "[6/7] Включение Armbian firstrun (resize + initial setup)"
-touch /root/.not_logged_in_yet
-sync
-
-# ─────────────────────────────────────────────────────────────────────────
-log "[7/7] Состояние после cleanup"
-df -hT / | sed 's/^/    /'
-echo
-echo "    cleanup-donor.sh завершён успешно."
-echo "    Следующий шаг (на хосте): zero-fill свободного места + dd образа."
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable regen-ssh-host-keys.service 2>/dev/null || true

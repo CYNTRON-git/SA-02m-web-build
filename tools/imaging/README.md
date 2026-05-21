@@ -67,8 +67,12 @@ chmod +x *.sh
 
 | Файл | Где | Назначение |
 |---|---|---|
-| [`cleanup-donor.sh`](cleanup-donor.sh) | донор (ssh) | подготовка к снятию |
-| [`make-image.sh`](make-image.sh) | хост WSL2 | cleanup → zero-fill → dd\|xz → PiShrink → manifest |
+| [`cleanup-donor.sh`](cleanup-donor.sh) | донор (ssh) | фазы 1–4: мусор, тулчейн, apt/logs (**без** сброса ssh keys) |
+| [`stream-after-cleanup.sh`](stream-after-cleanup.sh) | донор (одна ssh-сессия) | zerofill → id reset → dd по **Ethernet/SSH** |
+| [`serial-restore-ssh.py`](serial-restore-ssh.py) | хост (COM7 115200) | **только** восстановление sshd; образ по serial **не** передаётся |
+| [`fix-donor-after-abort.sh`](fix-donor-after-abort.sh) | донор (ssh/serial) | после прерванного снятия: kill dd, machine-id, ssh keys, сервисы |
+| [`restore-donor-ssh.sh`](restore-donor-ssh.sh) | донор | обёртка над `fix-donor-after-abort.sh` |
+| [`make-image.sh`](make-image.sh) | хост WSL2 | cleanup → stream по ssh → PiShrink → manifest |
 | [`prepare-flash-media.sh`](prepare-flash-media.sh) | хост | упаковка USB для flash-receiver |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
@@ -92,6 +96,22 @@ chmod +x *.sh
 |---|---|
 | [**SA02M_IMAGING_GUIDE.md**](../../docs/SA02M_IMAGING_GUIDE.md) | полное руководство |
 | [README §Способ 4](../../README.md#способ-4--тиражирование-компактного-образа-sa-02m-web) | краткая ссылка из основного README |
+
+---
+
+## Восстановление после сбоя
+
+Если `make-image` прервался (ssh timeout, обрыв dd):
+
+```bash
+# WSL — полное восстановление донора
+ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 'bash -s' < fix-donor-after-abort.sh
+
+# Windows serial (COM7) — то же через консоль
+py -3 serial-restore-ssh.py COM7
+```
+
+IP донора по умолчанию **192.168.1.136** (не путать с IP хоста). Переопределение: `DEVICE_IP=192.168.1.136 ./capture-SA-02m_210526.sh`.
 
 ---
 

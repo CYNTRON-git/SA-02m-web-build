@@ -851,7 +851,7 @@ reboot
 |---|---|---|
 | `pishrink.sh: not found` | не установлен на хосте | см. [§7.1](#71-установка-wsl2-ubuntu) |
 | `ssh: connect timed out` | донор offline / неверный IP | ping, проверить eth0, кабель |
-| `Permission denied (publickey)` | неверный ключ / права | `chmod 600 sa02m_sa02` |
+| `Connection reset` / `Connection refused` после cleanup | host keys удалены до dd, sshd не стартует | см. [`restore-donor-ssh.sh`](../tools/imaging/restore-donor-ssh.sh) на serial; **make-image v1.2+** делает id reset только в одной сессии с dd |
 | raw.img.xz > 2.5 GiB | не был cleanup или zerofill | повторить с cleanup + zerofill |
 | shrunk.img.xz > 800 MiB | много данных на доноре | проверить `du -hxd1 /` на доноре |
 | `e2fsck: Bad magic number` | повреждение при dd/stream | повторить stream; проверить сеть |
