@@ -90,6 +90,26 @@ fi
 log "остановка сервисов перед dd"
 systemctl stop nginx fcgiwrap sa02m-flasher mplc mplc4 php8.3-fpm 2>/dev/null || true
 rmmod -f g_mass_storage 2>/dev/null || true
+
+# Prevent CPU from entering deep sleep (schedutil/ondemand drops freq → slow SSH).
+# Set performance governor for all CPUs; restore on script exit.
+_PREV_GOV=""
+_cpu_governor_restore() {
+    [ -n "$_PREV_GOV" ] || return 0
+    for cpu in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+        echo "$_PREV_GOV" > "$cpu" 2>/dev/null || true
+    done
+}
+trap _cpu_governor_restore EXIT
+_gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+if [ -f "$_gov_file" ]; then
+    _PREV_GOV=$(cat "$_gov_file" 2>/dev/null || true)
+    for cpu in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+        echo performance > "$cpu" 2>/dev/null || true
+    done
+    log "cpu governor: ${_PREV_GOV} → performance (для dd)"
+fi
+
 sync
 sync
 

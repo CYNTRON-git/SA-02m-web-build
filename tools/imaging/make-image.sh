@@ -199,11 +199,17 @@ STREAM_ARGS=()
 log "[2/6] Zero-fill + id reset + dd (одна ssh-сессия, stdout → raw)"
 log "    ⚠ после начала dd не прерывайте — новый ssh на доноре будет недоступен до reboot"
 rm -f "$RAW_IMG"
+# SSH may report "Broken Pipe" when the remote dd completes and closes the channel
+# while the client is still sending a keepalive — this is harmless.  We treat
+# any SSH exit as "try to recover": the authoritative check is the raw image size.
+set +e
 "${SSH[@]}" "bash -s -- ${STREAM_ARGS[*]}" < "$STREAM_SCRIPT" > "$RAW_IMG"
+SSH_RC=$?
+set -e
 
-RAW_SIZE=$(stat -c%s "$RAW_IMG")
-log "    raw: $(numfmt --to=iec --suffix=B "$RAW_SIZE")"
-[ "$RAW_SIZE" -eq "$EMMC_BYTES" ] || die "размер raw $RAW_SIZE != $EMMC_BYTES"
+RAW_SIZE=$(stat -c%s "$RAW_IMG" 2>/dev/null || echo 0)
+log "    raw: $(numfmt --to=iec --suffix=B "$RAW_SIZE") (ssh_rc=${SSH_RC})"
+[ "$RAW_SIZE" -eq "$EMMC_BYTES" ] || die "размер raw $RAW_SIZE != $EMMC_BYTES (ssh_rc=${SSH_RC})"
 
 log "[3/6] Архив raw (опционально) + PiShrink"
 XZ_TMP="$WORK/$(basename "$RAW_XZ")"
