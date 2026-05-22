@@ -254,6 +254,18 @@ sa02m_hw_usb_gpiod_read() {
             0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
         esac
     fi
+    # Финальный фоллбэк: ищем живой gpioset-процесс, удерживающий эту линию,
+    # и читаем значение из cmdline (например: "gpioset -m signal 0 268=1").
+    local _gs_pid _gs_cmd _gs_val
+    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
+        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
+        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
+            _gs_val="${BASH_REMATCH[2]}"
+            case "$_gs_val" in
+                0|1) sa02m_hw_usb_line_to_user_logical "$_gs_val"; return 0 ;;
+            esac
+        fi
+    done
     echo -1
 }
 
@@ -578,6 +590,11 @@ sa02m_hw_collect_metrics() {
     PIN_USB=0
 
     if [ "$HW_BACKEND" = "disabled" ]; then
+        # USB power через gpiod не зависит от backend — читаем в любом случае.
+        if sa02m_hw_usb_power_use_gpiod; then
+            PIN_USB=1
+            HW_USB=$(sa02m_hw_usb_gpiod_read)
+        fi
         return 0
     fi
 

@@ -500,8 +500,52 @@ function applyPriorityStatus(d) {
 function applyStorageStatus(d) {
   if (d.disk_io_read_b !== undefined)
     setText('disk-io', 'R ' + fmtBytes(d.disk_io_read_b) + ' / W ' + fmtBytes(d.disk_io_write_b));
-  applyRemovableDisk(!!d.usb_mounted, 'usb', d);
+  if (d.usb_modem_present) {
+    applyUsbModem(d);
+  } else {
+    var sv = document.getElementById('usb-storage-view');
+    var mv = document.getElementById('usb-modem-view');
+    var tt = document.getElementById('usb-widget-title');
+    if (sv) sv.style.display = '';
+    if (mv) mv.style.display = 'none';
+    if (tt) tt.textContent = 'USB-накопитель';
+    applyRemovableDisk(!!d.usb_mounted, 'usb', d);
+  }
   applyRemovableDisk(!!d.sd_mounted, 'sd', d);
+}
+
+function applyUsbModem(d) {
+  var sv = document.getElementById('usb-storage-view');
+  var mv = document.getElementById('usb-modem-view');
+  var tt = document.getElementById('usb-widget-title');
+  if (sv) sv.style.display = 'none';
+  if (mv) mv.style.display = '';
+  if (tt) tt.textContent = 'USB-модем';
+
+  var stateEl = document.getElementById('usb-modem-state-val');
+  if (stateEl) {
+    var st = d.usb_modem_state || '';
+    if (st === 'up') {
+      stateEl.textContent = 'Подключён';
+      stateEl.className = 'widget-val on';
+    } else if (st === 'down' || st === 'unknown') {
+      stateEl.textContent = 'Нет сети';
+      stateEl.className = 'widget-val off';
+    } else {
+      stateEl.textContent = st;
+      stateEl.className = 'widget-val';
+    }
+  }
+
+  var parts = [d.usb_modem_vendor, d.usb_modem_model].filter(function(s) { return s && s.trim(); });
+  setText('usb-modem-model', parts.join(' — ') || '');
+
+  var iface = d.usb_modem_iface ? '[' + d.usb_modem_iface + ']' : '';
+  setText('usb-modem-ip', d.usb_modem_ip ? d.usb_modem_ip + ' ' + iface : iface);
+
+  var rx = typeof d.usb_modem_rx === 'number' ? fmtBytes(d.usb_modem_rx) : '—';
+  var tx = typeof d.usb_modem_tx === 'number' ? fmtBytes(d.usb_modem_tx) : '—';
+  setText('usb-modem-traffic', '↓ ' + rx + ' / ↑ ' + tx);
 }
 
 function applyTimeStatus(d) {
@@ -849,6 +893,7 @@ function applyWebUpdateCheckUI(j) {
   setText('web-upd-remote', shortGitSha(j.remote_commit));
   setText('web-upd-checked', j.checked_at || '—');
   const st = document.getElementById('web-upd-status');
+  const applyBtn = document.getElementById('web-upd-apply-btn');
   if (!st) return;
   st.classList.remove('is-ok', 'is-warn', 'is-err');
   const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
@@ -860,10 +905,12 @@ function applyWebUpdateCheckUI(j) {
     st.textContent = 'Доступно обновление на GitHub (ветка ' + (j.branch || 'main') + ').';
     st.classList.add('is-warn');
     st.hidden = false;
+    if (applyBtn) applyBtn.hidden = false;
   } else if (j.update_available === false) {
     st.textContent = 'Совпадает с веткой на GitHub.';
     st.classList.add('is-ok');
     st.hidden = false;
+    if (applyBtn) applyBtn.hidden = true;
   } else if (emsg) {
     st.textContent = emsg;
     st.classList.add('is-err');
@@ -872,6 +919,7 @@ function applyWebUpdateCheckUI(j) {
     st.textContent = 'На устройстве метка сборки (не git SHA). Это нормально при копировании без репозитория — для сравнения коммитов деплой из git.';
     st.classList.add('is-warn');
     st.hidden = false;
+    if (applyBtn) applyBtn.hidden = false;
   } else {
     st.textContent = '';
     st.hidden = true;
@@ -921,6 +969,75 @@ function checkWebUpdatesManual() {
     .finally(function () {
       if (btn) btn.disabled = false;
     });
+}
+
+var _webUpdPollTimer = null;
+
+function applyWebUpdate() {
+  const applyBtn = document.getElementById('web-upd-apply-btn');
+  const checkBtn = document.getElementById('web-upd-check-btn');
+  const logEl = document.getElementById('web-upd-log');
+  const st = document.getElementById('web-upd-status');
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Применяется…'; }
+  if (checkBtn) checkBtn.disabled = true;
+  if (logEl) { logEl.textContent = ''; logEl.hidden = false; }
+  if (st) { st.textContent = 'Загрузка и установка обновления…'; st.className = 'web-upd-status is-warn'; st.hidden = false; }
+
+  fetchWithTimeout('/cgi-bin/web_update_apply.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 10000)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j.status === 'running' || j.status === 'idle') {
+        _webUpdStartPolling();
+      } else {
+        _webUpdFinish(j.status, j.log || '');
+      }
+    })
+    .catch(function () {
+      _webUpdFinish('error', 'Нет ответа от сервера');
+    });
+}
+
+function _webUpdStartPolling() {
+  if (_webUpdPollTimer) clearInterval(_webUpdPollTimer);
+  _webUpdPollTimer = setInterval(function () {
+    fetchWithTimeout('/cgi-bin/web_update_apply.cgi', {
+      credentials: 'same-origin', cache: 'no-store'
+    }, 8000)
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var logEl = document.getElementById('web-upd-log');
+        if (logEl && j.log) logEl.textContent = j.log;
+        if (j.status !== 'running') {
+          clearInterval(_webUpdPollTimer);
+          _webUpdPollTimer = null;
+          _webUpdFinish(j.status, j.log || '');
+        }
+      })
+      .catch(function () {});
+  }, 2000);
+}
+
+function _webUpdFinish(status, log) {
+  var applyBtn = document.getElementById('web-upd-apply-btn');
+  var checkBtn = document.getElementById('web-upd-check-btn');
+  var st = document.getElementById('web-upd-status');
+  var logEl = document.getElementById('web-upd-log');
+  if (checkBtn) checkBtn.disabled = false;
+  if (logEl && log) logEl.textContent = log;
+  if (status === 'done') {
+    if (st) { st.textContent = 'Обновление применено. Страница перезагрузится через 5 секунд…'; st.className = 'web-upd-status is-ok'; st.hidden = false; }
+    if (applyBtn) applyBtn.hidden = true;
+    toast('Обновление применено успешно', 'success');
+    setTimeout(function () { location.reload(); }, 5000);
+  } else {
+    if (st) { st.textContent = 'Ошибка обновления. Проверьте лог ниже.'; st.className = 'web-upd-status is-err'; st.hidden = false; }
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Применить обновление'; }
+    toast('Ошибка обновления', 'error');
+  }
 }
 
 function fetchServicesWidget() {
