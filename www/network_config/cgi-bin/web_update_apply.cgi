@@ -11,24 +11,22 @@ STATUS_FILE="$STATEDIR/update_status"
 LOGFILE="$STATEDIR/update.log"
 
 METHOD="${REQUEST_METHOD:-GET}"
-QS="${QUERY_STRING:-}"
 
 _json_status() {
   local status="${1:-idle}"
   local log_tail=""
   if [ -f "$LOGFILE" ]; then
-    log_tail=$(tail -30 "$LOGFILE" 2>/dev/null | \
-      sed 's/\\/\\\\/g; s/"/\\"/g; s/$/\\n/' | tr -d '\r\n')
+    log_tail=$(tail -40 "$LOGFILE" 2>/dev/null | \
+      sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s\\n",$0}')
     log_tail="${log_tail%\\n}"
   fi
-  local lock_alive=0
+  # Живой процесс → принудительно "running"
   if [ -f "$LOCKFILE" ]; then
-    local pid; pid=$(cat "$LOCKFILE" 2>/dev/null || echo "")
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      lock_alive=1
+    local pid; pid=$(tr -d ' \r\n' < "$LOCKFILE" 2>/dev/null)
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      status="running"
     fi
   fi
-  [ "$lock_alive" = "1" ] && status="running"
   printf '{"status":"%s","log":"%s"}\n' "$status" "$log_tail"
 }
 
@@ -44,31 +42,27 @@ fi
 
 # POST — запуск обновления
 if [ -f "$LOCKFILE" ]; then
-  pid=$(cat "$LOCKFILE" 2>/dev/null || echo "")
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  pid=$(tr -d ' \r\n' < "$LOCKFILE" 2>/dev/null || echo "")
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
     _json_status "running"
     exit 0
   fi
-  rm -f "$LOCKFILE"
 fi
-
-printf 'running' > "$STATUS_FILE" 2>/dev/null || true
-chmod 644 "$STATUS_FILE" 2>/dev/null || true
 
 if ! command -v sudo >/dev/null 2>&1; then
   printf '{"status":"error","log":"sudo не найден"}\n'
-  printf 'error' > "$STATUS_FILE" 2>/dev/null || true
   exit 0
 fi
 
-# Запускаем в фоне; sudo пишет stdout/stderr в LOGFILE
-sudo -n /usr/local/sbin/sa02m-web-update-apply >> "$LOGFILE" 2>&1 &
+# Запускаем обновление в фоне; скрипт сам создаёт lockfile и пишет в logfile
+nohup sudo -n /usr/local/sbin/sa02m-web-update-apply >/dev/null 2>&1 &
 BGPID=$!
 
-# Небольшая пауза — проверяем что процесс не упал мгновенно
-sleep 0.5
-if kill -0 "$BGPID" 2>/dev/null || [ -f "$LOCKFILE" ]; then
-  printf '{"status":"running","log":"Обновление запущено (pid %d)"}\n' "$BGPID"
+sleep 1
+
+# Проверяем что lockfile появился (скрипт стартовал) или процесс ещё жив
+if [ -f "$LOCKFILE" ] || kill -0 "$BGPID" 2>/dev/null; then
+  printf '{"status":"running","log":"Обновление запущено..."}\n'
 else
   status="error"
   [ -f "$STATUS_FILE" ] && status=$(tr -d ' \r\n' < "$STATUS_FILE" 2>/dev/null || echo "error")
