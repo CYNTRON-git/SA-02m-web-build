@@ -757,6 +757,14 @@ gather_storage_metrics() {
         SD_PCT=0
         DISK_IO_READ=0
         DISK_IO_WRITE=0
+        USB_MODEM_PRESENT=0
+        USB_MODEM_VENDOR=""
+        USB_MODEM_MODEL=""
+        USB_MODEM_IFACE=""
+        USB_MODEM_IP=""
+        USB_MODEM_STATE="unknown"
+        USB_MODEM_RX=0
+        USB_MODEM_TX=0
         return 0
     fi
 
@@ -800,6 +808,60 @@ gather_storage_metrics() {
         DISK_IO_READ=$(( ${stat_line[2]:-0} * 512 ))
         DISK_IO_WRITE=$(( ${stat_line[6]:-0} * 512 ))
     fi
+
+    gather_usb_modem_metrics
+}
+
+# ── USB-модем (CDC-ECM / RNDIS / NCM интерфейс) ──────────────────────────────
+gather_usb_modem_metrics() {
+    USB_MODEM_PRESENT=0
+    USB_MODEM_VENDOR=""
+    USB_MODEM_MODEL=""
+    USB_MODEM_IFACE=""
+    USB_MODEM_IP=""
+    USB_MODEM_STATE="unknown"
+    USB_MODEM_RX=0
+    USB_MODEM_TX=0
+
+    # Известные USB ID модемных вендоров (ZTE, Huawei, Quectel, Sierra, Ericsson, Dell/Option)
+    local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7"
+    local iface vendor product manufacturer usb_dir d
+
+    for iface in $(ls /sys/class/net/ 2>/dev/null); do
+        # Резолвим sysfs-путь устройства (должен проходить через /usb)
+        d=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || continue
+        printf '%s' "$d" | grep -q '/usb' || continue
+
+        # Идём вверх по пути до директории USB-устройства с idVendor
+        usb_dir="$d"
+        vendor=""
+        while [ -n "$usb_dir" ] && [ "$usb_dir" != "/" ]; do
+            if [ -f "${usb_dir}/idVendor" ]; then
+                vendor=$(tr -d '[:space:]' < "${usb_dir}/idVendor" 2>/dev/null)
+                break
+            fi
+            usb_dir=$(dirname "$usb_dir")
+        done
+        [ -n "$vendor" ] || continue
+
+        # Проверяем что это модемный вендор
+        printf ' %s ' "$modem_vendors" | grep -qF " ${vendor} " || continue
+
+        product=$(cat "${usb_dir}/product" 2>/dev/null || cat "${usb_dir}/idProduct" 2>/dev/null || echo "")
+        manufacturer=$(cat "${usb_dir}/manufacturer" 2>/dev/null || echo "")
+
+        USB_MODEM_PRESENT=1
+        USB_MODEM_VENDOR=$(json_escape "${manufacturer}")
+        USB_MODEM_MODEL=$(json_escape "${product}")
+        USB_MODEM_IFACE=$(json_escape "$iface")
+        USB_MODEM_STATE=$(json_escape "$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")")
+        USB_MODEM_RX=$(cat "/sys/class/net/${iface}/statistics/rx_bytes" 2>/dev/null || echo 0)
+        USB_MODEM_TX=$(cat "/sys/class/net/${iface}/statistics/tx_bytes" 2>/dev/null || echo 0)
+        local _ip
+        _ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{gsub("/.*","",$2); print $2; exit}')
+        USB_MODEM_IP=$(json_escape "${_ip}")
+        break
+    done
 }
 
 gather_time_metrics() {
@@ -1203,7 +1265,15 @@ print_storage_json() {
   "sd_total_kb": ${SD_TOTAL},
   "sd_used_kb": ${SD_USED},
   "sd_free_kb": ${SD_FREE},
-  "sd_pct": ${SD_PCT}
+  "sd_pct": ${SD_PCT},
+  "usb_modem_present": ${USB_MODEM_PRESENT},
+  "usb_modem_vendor": "${USB_MODEM_VENDOR}",
+  "usb_modem_model": "${USB_MODEM_MODEL}",
+  "usb_modem_iface": "${USB_MODEM_IFACE}",
+  "usb_modem_ip": "${USB_MODEM_IP}",
+  "usb_modem_state": "${USB_MODEM_STATE}",
+  "usb_modem_rx": ${USB_MODEM_RX},
+  "usb_modem_tx": ${USB_MODEM_TX}
 }
 JSON
 }
@@ -1322,6 +1392,14 @@ print_main_json() {
   "sd_used_kb": ${SD_USED},
   "sd_free_kb": ${SD_FREE},
   "sd_pct": ${SD_PCT},
+  "usb_modem_present": ${USB_MODEM_PRESENT},
+  "usb_modem_vendor": "${USB_MODEM_VENDOR}",
+  "usb_modem_model": "${USB_MODEM_MODEL}",
+  "usb_modem_iface": "${USB_MODEM_IFACE}",
+  "usb_modem_ip": "${USB_MODEM_IP}",
+  "usb_modem_state": "${USB_MODEM_STATE}",
+  "usb_modem_rx": ${USB_MODEM_RX},
+  "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
   "uptime_sec": ${UPTIME_SEC},
@@ -1401,6 +1479,14 @@ print_core_json() {
   "sd_used_kb": ${SD_USED},
   "sd_free_kb": ${SD_FREE},
   "sd_pct": ${SD_PCT},
+  "usb_modem_present": ${USB_MODEM_PRESENT},
+  "usb_modem_vendor": "${USB_MODEM_VENDOR}",
+  "usb_modem_model": "${USB_MODEM_MODEL}",
+  "usb_modem_iface": "${USB_MODEM_IFACE}",
+  "usb_modem_ip": "${USB_MODEM_IP}",
+  "usb_modem_state": "${USB_MODEM_STATE}",
+  "usb_modem_rx": ${USB_MODEM_RX},
+  "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
   "uptime_sec": ${UPTIME_SEC},
@@ -1481,6 +1567,14 @@ print_full_json() {
   "sd_used_kb": ${SD_USED},
   "sd_free_kb": ${SD_FREE},
   "sd_pct": ${SD_PCT},
+  "usb_modem_present": ${USB_MODEM_PRESENT},
+  "usb_modem_vendor": "${USB_MODEM_VENDOR}",
+  "usb_modem_model": "${USB_MODEM_MODEL}",
+  "usb_modem_iface": "${USB_MODEM_IFACE}",
+  "usb_modem_ip": "${USB_MODEM_IP}",
+  "usb_modem_state": "${USB_MODEM_STATE}",
+  "usb_modem_rx": ${USB_MODEM_RX},
+  "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
   "uptime_sec": ${UPTIME_SEC},

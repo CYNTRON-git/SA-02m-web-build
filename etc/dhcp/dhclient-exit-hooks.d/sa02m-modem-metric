@@ -1,0 +1,30 @@
+#!/bin/sh
+# SA-02m: устанавливаем metric 100 для default-маршрута USB-модемных интерфейсов.
+# Это гарантирует что eth0 (metric 0 / onlink) остаётся приоритетным для
+# управляющего трафика, а модем используется как запасной/internet шлюз.
+#
+# Интерфейсы USB-ethernet (CDC-ECM/RNDIS/NCM) именуются:
+#   - enx<mac>  — predictable naming (systemd/udev)
+#   - usb[0-9]  — старый стиль
+#   - eth[1-9]  — когда eth0 уже занят
+
+case "$interface" in
+    enx*|usb[0-9]*|eth[1-9]*)
+        ;;
+    *)
+        return 0 ;;
+esac
+
+case "$reason" in
+    BOUND|RENEW|REBIND|REBOOT)
+        if [ -n "$new_routers" ]; then
+            # Удаляем маршрут без метрики (добавленный dhclient автоматически)
+            /sbin/ip route del default dev "$interface" 2>/dev/null || true
+            # Добавляем с metric 100 (ниже eth0 с metric 0)
+            /sbin/ip route add default via "$new_routers" dev "$interface" metric 100 2>/dev/null || true
+        fi
+        ;;
+    EXPIRE|FAIL|RELEASE|STOP)
+        /sbin/ip route del default dev "$interface" metric 100 2>/dev/null || true
+        ;;
+esac

@@ -1,0 +1,45 @@
+# /etc/ppp/peers/modem — шаблон PPP-подключения через USB-модем (3G/4G)
+#
+# Использование: pppd call modem
+# Или через sa02m-modem-ppp.service (запускается автоматически при
+# появлении /dev/modem via udev).
+#
+# Обязательно отредактируйте APN для вашего оператора:
+#   МТС:      internet.mts.ru
+#   Билайн:   internet.beeline.ru
+#   МегаФон:  internet
+#   Tele2:    internet.tele2.ru
+#   YOTA:     internet.yota
+# Или укажите через /etc/sa02m_modem.conf: MODEM_APN=internet.mts.ru
+
+/dev/modem
+115200
+connect '/usr/sbin/chat -v \
+  TIMEOUT 30 \
+  ABORT "ERROR" \
+  ABORT "NO CARRIER" \
+  "" AT \
+  OK ATZ \
+  OK AT+CGDCONT=1,"IP","MODEM_APN_PLACEHOLDER" \
+  OK ATD*99# \
+  CONNECT ""'
+
+# Параметры соединения
+noauth
+defaultroute
+usepeerdns
+noipdefault
+novj
+novjccomp
+nopcomp
+noaccomp
+noccp
+
+# Автоматический перезапуск при разрыве
+persist
+maxfail 0
+holdoff 5
+
+# Логирование
+debug
+logfile /var/log/ppp-modem.log

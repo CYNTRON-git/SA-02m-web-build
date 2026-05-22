@@ -34,24 +34,6 @@ elif [ ! -f "$SERIAL_PROFILE_CONF" ] && [ -f "$ETC_REPO/sa02m_serial_profile.con
     log INFO "Установлен шаблон $SERIAL_PROFILE_CONF"
 fi
 
-# ── Удаление хвостов Node-RED в /etc/systemd (не входит в состав СА-02м) ────
-# Оставляем unit из пакета в /lib или /usr/lib — удаляем только переопределения в /etc.
-NR_STALE="node-red.service nodered.service"
-for NR_U in $NR_STALE; do
-    NR_PATH="/etc/systemd/system/$NR_U"
-    if [ -f "$NR_PATH" ] || [ -L "$NR_PATH" ]; then
-        log INFO "Удаление устаревшего unit Node-RED: $NR_PATH"
-        sa02m_systemctl stop "$NR_U" 2>/dev/null || true
-        sa02m_systemctl disable "$NR_U" 2>/dev/null || true
-        rm -f "$NR_PATH"
-    fi
-    rm -rf "/etc/systemd/system/${NR_U}.d" 2>/dev/null || true
-done
-if command -v systemctl >/dev/null 2>&1; then
-    sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    sa02m_systemctl reset-failed >> "$LOG_FILE" 2>&1 || true
-fi
-
 # ── Required packages ──────────────────────────────────────────────────────
 log INFO "Установка пакетов"
 apt-get update -qq >> "$LOG_FILE" 2>&1
@@ -146,13 +128,95 @@ if [ -f "$ETC_REPO/storage-mount.sh" ]; then
     install -m 644 "$ETC_REPO/udev/99-storage.rules" /etc/udev/rules.d/99-storage.rules
     if [ ! -f /etc/sa02m_storage.conf ]; then
         install -m 644 "$ETC_REPO/sa02m_storage.conf" /etc/sa02m_storage.conf
+    else
+        # Лечим случай, когда предыдущая правка через sed оставила хвост
+        # вроде «STORAGE_AUTO_FORMAT=0n» — иначе скрипт парсит как «не 0
+        # и не 1» и идёт в безопасный default, что путает диагностику.
+        sed -i -E 's/^(STORAGE_AUTO_FORMAT=)([01])[A-Za-z]+/\1\2/' /etc/sa02m_storage.conf
+    fi
+    # ntfs-3g (FUSE) — userspace-фолбэк для NTFS, на случай если kernel
+    # ntfs3 откажется монтировать «грязную» NTFS после Windows quick-eject.
+    # На некоторых сборках Armbian пакет недоступен — установка опциональна.
+    if ! command -v mount.ntfs-3g >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get -y install ntfs-3g >>"$LOG_FILE" 2>&1 || \
+            log WARN "ntfs-3g недоступен в репозитории — оставляем только kernel ntfs3"
     fi
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
     udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger --subsystem-match=block --action=change 2>/dev/null || true
     log OK "storage-mount и udev 99-storage.rules установлены"
 else
     log WARN "Нет $ETC_REPO/storage-mount.sh — пропуск установки съёмных носителей"
 fi
+
+# ── USB-модем: пакеты, udev-правила, сервисы, шаблон PPP ─────────────────────
+log INFO "Настройка USB-модема"
+
+# Необходимые пакеты.
+# modemmanager — управляет 3G/4G модемами (PPP, QMI, MBIM, signal, PIN).
+# ppp          — PPP-стек для ttyUSB-модемов (AT-команды + соединение).
+# isc-dhcp-client (dhclient) — DHCP для CDC-ECM/RNDIS/NCM USB-ethernet-модемов.
+# usb-modeswitch + data — уже установлены в образе; добавляем на всякий случай.
+MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data"
+for pkg in $MODEM_PKGS; do
+    dpkg -s "$pkg" >/dev/null 2>&1 || \
+        DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >>"$LOG_FILE" 2>&1 || \
+        log WARN "Пакет $pkg не удалось установить (возможно, не в репозитории)"
+done
+
+# udev-правила для модемов.
+if [ -f "$ETC_REPO/udev/99-modem.rules" ]; then
+    install -m 644 "$ETC_REPO/udev/99-modem.rules" /etc/udev/rules.d/99-modem.rules
+fi
+
+# Сервис DHCP для CDC-ethernet модемов.
+if [ -f "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" ]; then
+    install -m 644 "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" \
+        /etc/systemd/system/sa02m-modem-dhcp@.service
+fi
+
+# Сервис PPP для ttyUSB-модемов (не запускаем автоматически — только по udev).
+if [ -f "$ETC_REPO/systemd/sa02m-modem-ppp.service" ]; then
+    install -m 644 "$ETC_REPO/systemd/sa02m-modem-ppp.service" \
+        /etc/systemd/system/sa02m-modem-ppp.service
+fi
+
+# PPP-конфигурация: peers/modem, ip-up/down хуки.
+mkdir -p /etc/ppp/peers /etc/ppp/ip-up.d /etc/ppp/ip-down.d
+if [ -f "$ETC_REPO/ppp/peers/modem" ] && [ ! -f /etc/ppp/peers/modem ]; then
+    install -m 600 "$ETC_REPO/ppp/peers/modem" /etc/ppp/peers/modem
+fi
+if [ -f "$ETC_REPO/ppp/ip-up.d/sa02m-modem" ]; then
+    install -m 755 "$ETC_REPO/ppp/ip-up.d/sa02m-modem" /etc/ppp/ip-up.d/sa02m-modem
+fi
+if [ -f "$ETC_REPO/ppp/ip-down.d/sa02m-modem" ]; then
+    install -m 755 "$ETC_REPO/ppp/ip-down.d/sa02m-modem" /etc/ppp/ip-down.d/sa02m-modem
+fi
+
+# dhclient exit-hook: metric 100 для USB-модемных интерфейсов (enx*/usb*/eth1+).
+# Предотвращает замену eth0-default маршрута (onlink) модемным маршрутом.
+if [ -f "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" ]; then
+    mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+    install -m 755 "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" \
+        /etc/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric
+fi
+
+# Конфиг модема (только шаблон, не перезаписываем пользовательский).
+if [ -f "$ETC_REPO/sa02m_modem.conf" ] && [ ! -f /etc/sa02m_modem.conf ]; then
+    install -m 644 "$ETC_REPO/sa02m_modem.conf" /etc/sa02m_modem.conf
+fi
+
+# ModemManager: разрешаем управлять модемами, но НЕ перегружаем NetworkManager.
+# ModemManager работает самостоятельно (mmcli, pppd) без NM.
+sa02m_systemctl unmask ModemManager.service 2>/dev/null || true
+sa02m_systemctl enable ModemManager.service >>"$LOG_FILE" 2>&1 || \
+    log WARN "ModemManager не удалось включить"
+sa02m_systemctl start ModemManager.service >>"$LOG_FILE" 2>&1 || \
+    log WARN "ModemManager не запустился (возможно, не установлен)"
+
+systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+udevadm control --reload-rules 2>/dev/null || true
+log OK "USB-модем: пакеты, udev, сервисы установлены"
 
 # ── Ранний PRE-START: USB, RTC (DS3231 при отсутствии rtc1), PCA9536 ────────
 if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
@@ -174,5 +238,138 @@ fi
 for unit in apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask "$unit" 2>/dev/null || true
 done
+
+# ── SSH hardening: ClientAlive + UseDNS=no (без зависаний при потере линка) ──
+if [ -f "$ETC_REPO/ssh/sshd_config.d/10-sa02m.conf" ]; then
+    log INFO "Установка /etc/ssh/sshd_config.d/10-sa02m.conf"
+    install -d -m 755 /etc/ssh/sshd_config.d
+    install -m 644 "$ETC_REPO/ssh/sshd_config.d/10-sa02m.conf" /etc/ssh/sshd_config.d/10-sa02m.conf
+    if sshd -t 2>>"$LOG_FILE"; then
+        sa02m_systemctl reload ssh.service >>"$LOG_FILE" 2>&1 || sa02m_systemctl restart ssh.service >>"$LOG_FILE" 2>&1 || true
+    fi
+fi
+
+# ── Hardware watchdog: используем встроенный PID1-фидер systemd ─────────────
+# Старая ad-hoc реализация (printf 1 > /dev/watchdog в цикле) каждые 10 c
+# открывала и закрывала устройство, и ядро спамило "watchdog did not stop!".
+# systemd сам держит fd открытым и корректно закрывает на shutdown.
+log INFO "Активация systemd PID1 watchdog (RuntimeWatchdogSec=10s)"
+install -d -m 755 /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/sa02m-watchdog.conf <<'WDG'
+[Manager]
+# Раз в треть таймаута драйвера sunxi-wdt (~30s) кормим /dev/watchdog.
+RuntimeWatchdogSec=10s
+# Грейс-период во время shutdown: если что-то зависло — sunxi-wdt
+# сделает hardware reset.
+ShutdownWatchdogSec=4min
+RebootWatchdogSec=4min
+WDG
+
+# Уменьшаем умолчательный stop-timeout сервисов: иначе при reboot, если
+# какой-нибудь сервис «застрял», systemd ждёт 90 секунд прежде чем
+# отправить SIGKILL и продолжить — итог: reboot занимает 2-3 минуты.
+cat > /etc/systemd/system.conf.d/sa02m-timeouts.conf <<'TMO'
+[Manager]
+DefaultTimeoutStopSec=15s
+DefaultTimeoutStartSec=30s
+TMO
+install -d -m 755 /etc/systemd/user.conf.d
+cat > /etc/systemd/user.conf.d/sa02m-timeouts.conf <<'TMO'
+[Manager]
+DefaultTimeoutStopSec=15s
+DefaultTimeoutStartSec=30s
+TMO
+
+# Если на устройстве остался устаревший feeder-юнит — отключаем и маскируем.
+for u in sa02m-watchdog-feed.service watchdog.service software-watchdog.service; do
+    sa02m_systemctl stop "$u" 2>/dev/null || true
+    sa02m_systemctl disable "$u" 2>/dev/null || true
+    sa02m_systemctl mask "$u" 2>/dev/null || true
+done
+
+# ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
+# ── ни eth1 (нет cable). Только тормозил boot на 6 секунд.                  ──
+log INFO "Маскируем NetworkManager (eth0/can0/eth1 — unmanaged)"
+for u in NetworkManager.service NetworkManager-wait-online.service NetworkManager-dispatcher.service; do
+    sa02m_systemctl stop "$u" 2>/dev/null || true
+    sa02m_systemctl disable "$u" 2>/dev/null || true
+    sa02m_systemctl mask "$u" 2>/dev/null || true
+done
+
+# ── Время: fake-hwclock + chrony (timesyncd в этом Armbian не пакетируется) ─
+log INFO "Настройка времени: fake-hwclock + chrony"
+if ! dpkg -l fake-hwclock 2>/dev/null | grep -q '^ii'; then
+    DEBIAN_FRONTEND=noninteractive apt-get -y install fake-hwclock >>"$LOG_FILE" 2>&1 || true
+fi
+# В Armbian образе fake-hwclock.service замаскирован vendor-симлинком в
+# /lib/systemd/system → /dev/null. Стандартный `systemctl unmask` НЕ снимает
+# vendor-маску. Создаём собственный unit в /etc/systemd/system/ — он имеет
+# приоритет над /lib/systemd/system/ и над /usr/lib/systemd/system/.
+cat > /etc/systemd/system/fake-hwclock.service <<'FHS'
+[Unit]
+Description=Restore / save the current clock (SA-02m unmasked)
+DefaultDependencies=no
+Documentation=man:fake-hwclock(8)
+Before=local-fs-pre.target
+After=systemd-remount-fs.service
+ConditionPathExists=!/run/systemd/fake-hwclock-loaded
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/fake-hwclock load
+ExecStart=/bin/touch /run/systemd/fake-hwclock-loaded
+ExecStop=/usr/sbin/fake-hwclock save
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+FHS
+install -d -m 755 /etc/systemd/system/fake-hwclock.service.d
+cat > /etc/systemd/system/fake-hwclock.service.d/sa02m-save-onstop.conf <<'FHC'
+[Service]
+ExecStop=/usr/sbin/fake-hwclock save
+RemainAfterExit=yes
+FHC
+sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+sa02m_systemctl enable fake-hwclock.service >>"$LOG_FILE" 2>&1 || true
+# Запишем текущее время как fallback (если оно валидное).
+if [ "$(date +%Y)" -ge 2024 ]; then
+    fake-hwclock save 2>/dev/null || true
+fi
+
+# Chrony: лёгкий NTP-клиент. Без интернета не повредит — просто будет
+# unsynced, время возьмётся из RTC/fake-hwclock.
+if ! command -v chronyd >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get -y install chrony >>"$LOG_FILE" 2>&1 || true
+fi
+install -d -m 755 /etc/chrony/sources.d
+cat > /etc/chrony/sources.d/sa02m.sources <<'NTP'
+# SA-02m NTP sources
+pool pool.ntp.org iburst maxsources 4
+pool ru.pool.ntp.org iburst maxsources 4
+server time.cloudflare.com iburst
+NTP
+if [ -f /etc/chrony/chrony.conf ]; then
+    grep -qE '^[[:space:]]*sourcedir[[:space:]]+/etc/chrony/sources.d' /etc/chrony/chrony.conf \
+        || echo 'sourcedir /etc/chrony/sources.d' >> /etc/chrony/chrony.conf
+    grep -qE '^[[:space:]]*rtcsync'  /etc/chrony/chrony.conf || echo 'rtcsync'  >> /etc/chrony/chrony.conf
+    grep -qE '^[[:space:]]*makestep' /etc/chrony/chrony.conf || echo 'makestep 1.0 3' >> /etc/chrony/chrony.conf
+fi
+sa02m_systemctl unmask chrony.service chronyd.service 2>/dev/null || true
+sa02m_systemctl enable --now chrony.service 2>/dev/null \
+    || sa02m_systemctl enable --now chronyd.service 2>/dev/null || true
+
+# Если shadow-дата root в будущем (из-за прежних сбоев RTC) — выравниваем,
+# иначе PAM пишет "account root has password changed in future" при каждом
+# SSH-логине и эту запись потом сложно отличить от реальной проблемы.
+ROOT_LAST=$(awk -F: '/^root:/{print $3}' /etc/shadow)
+CUR_DAYS=$(( $(date +%s) / 86400 ))
+if [ -n "$ROOT_LAST" ] && [ "$ROOT_LAST" -gt "$CUR_DAYS" ]; then
+    log INFO "shadow root lastchange=$ROOT_LAST > today=$CUR_DAYS, выравниваем"
+    chage -d "$(date +%Y-%m-%d)" root 2>/dev/null || true
+fi
+
+# Применить изменения PID1 без перезагрузки.
+sa02m_systemctl daemon-reexec 2>/dev/null || true
 
 log OK "=== [01] Системная настройка завершена ==="
