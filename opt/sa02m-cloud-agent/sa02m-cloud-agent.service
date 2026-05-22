@@ -1,0 +1,22 @@
+[Unit]
+Description=SA-02m Cloud Agent
+Documentation=https://cloud.cyntron.ru/docs
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/sa02m-cloud-agent/sa02m-cloud-agent.py
+Restart=on-failure
+RestartSec=10s
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+# Security hardening
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
