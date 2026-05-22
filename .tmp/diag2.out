@@ -1,0 +1,174 @@
+===BOOT-TIMINGS===
+Startup finished in 1.061s (kernel) + 18.903s (userspace) = 19.964s 
+graphical.target reached after 15.720s in userspace.
+
+===BOOT-CRITICAL-CHAIN===
+The time when unit became active or started is printed after the "@" character.
+The time the unit took to start is printed after the "+" character.
+
+graphical.target @15.720s
+└─multi-user.target @15.718s
+  └─getty.target @15.583s
+    └─getty@ttyGS0.service @15.580s
+      └─system-getty.slice @15.559s
+        └─setvtrgb.service @15.443s +60ms
+          └─plymouth-quit-wait.service @15.280s +52ms
+            └─systemd-user-sessions.service @15.064s +162ms
+              └─network.target @14.867s
+                └─NetworkManager.service @8.509s +6.349s
+                  └─dbus.service @7.910s +232ms
+                    └─basic.target @7.801s
+                      └─sysinit.target @7.771s
+                        └─systemd-update-utmp.service @6.144s +562ms
+                          └─systemd-tmpfiles-setup.service @5.902s +158ms
+                            └─local-fs.target @5.863s
+                              └─tmp.mount @5.824s +35ms
+                                └─local-fs-pre.target @5.819s
+                                  └─systemd-tmpfiles-setup-dev.service @5.742s +75ms
+                                    └─systemd-tmpfiles-setup-dev-early.service @5.150s +194ms
+                                      └─systemd-journald.socket @4.886s
+                                        └─-.mount @4.853s
+                                          └─-.slice @4.853s
+
+===BLAME-TOP===
+6.349s NetworkManager.service
+3.690s sa02m-pre-start.service
+2.434s ifupdown-pre.service
+2.283s dev-mmcblk2p2.device
+1.784s networking.service
+ 750ms systemd-udev-trigger.service
+ 656ms loadcpufreq.service
+ 626ms e2scrub_reap.service
+ 583ms keyboard-setup.service
+ 562ms systemd-update-utmp.service
+ 552ms rng-tools-debian.service
+ 527ms rsyslog.service
+ 495ms systemd-logind.service
+ 407ms systemd-journald.service
+ 377ms mplc4.service
+ 370ms alsa-restore.service
+ 345ms systemd-tmpfiles-clean.service
+ 316ms systemd-udevd.service
+ 313ms storage-mount@mmcblk3.service
+ 305ms systemd-remount-fs.service
+ 304ms ssh.service
+ 248ms storage-mount@sda1.service
+ 232ms dbus.service
+ 230ms systemd-fsck-root.service
+ 226ms dev-mqueue.mount
+ 218ms sys-kernel-debug.mount
+ 194ms systemd-tmpfiles-setup-dev-early.service
+ 193ms systemd-timedated.service
+ 185ms nginx.service
+ 181ms modprobe@configfs.service
+
+===NETWORK-ONLINE===
+● network-online.target - Network is Online
+     Loaded: loaded (/usr/lib/systemd/system/network-online.target; static)
+     Active: active since Sun 2000-01-02 00:29:22 MSK; 1h 51min ago
+       Docs: man:systemd.special(7)
+             https://systemd.io/NETWORK_ONLINE
+
+Notice: journal has been rotated since unit was started, output may be incomplete.
+
+○ systemd-networkd-wait-online.service - Wait for Network to be Configured
+     Loaded: loaded (/usr/lib/systemd/system/systemd-networkd-wait-online.service; disabled; preset: enabled)
+     Active: inactive (dead)
+       Docs: man:systemd-networkd-wait-online.service(8)
+
+● NetworkManager-wait-online.service - Network Manager Wait Online
+     Loaded: loaded (/usr/lib/systemd/system/NetworkManager-wait-online.service; enabled; preset: enabled)
+     Active: active (exited) since Sun 2000-01-02 00:33:06 MSK; 1h 47min ago
+       Docs: man:NetworkManager-wait-online.service(8)
+   Main PID: 2458 (code=exited, status=0/SUCCESS)
+        CPU: 112ms
+
+Notice: journal has been rotated since unit was started, output may be incomplete.
+
+● networking.service - Raise network interfaces
+     Loaded: loaded (/usr/lib/systemd/system/networking.service; enabled; preset: enabled)
+     Active: active (exited) since Sun 2000-01-02 00:29:18 MSK; 1h 51min ago
+       Docs: man:interfaces(5)
+   Main PID: 743 (code=exited, status=0/SUCCESS)
+        CPU: 511ms
+
+Notice: journal has been rotated since unit was started, output may be incomplete.
+
+===TIME-RTC===
+               Local time: Вс 2000-01-02 02:21:05 MSK
+           Universal time: Сб 2000-01-01 23:21:05 UTC
+                 RTC time: Сб 2000-01-01 23:21:04
+                Time zone: Europe/Moscow (MSK, +0300)
+System clock synchronized: no
+              NTP service: inactive
+          RTC in local TZ: no
+
+---HWCLOCK---
+1970-01-01 04:51:59.012664+03:00
+---FAKE-HWCLOCK---
+ls: cannot access '/var/lib/fake-hwclock/saved-data': No such file or directory
+-rw-r--r-- 1 root root 20 мая  4  2026 /etc/fake-hwclock.data
+2026-05-04 10:34:27
+○ fake-hwclock.service
+     Loaded: masked (Reason: Unit fake-hwclock.service is masked.)
+     Active: inactive (dead)
+---TIMESYNCD---
+Unit systemd-timesyncd.service could not be found.
+
+===WATCHDOG-DAEMONS===
+Unit watchdog.service could not be found.
+Unit software-watchdog.service could not be found.
+root        39  0.0  0.0      0     0 ?        S    00:29   0:00  \_ [watchdogd]
+root       815  0.0  0.4   7148  2320 ?        Ss   00:29   0:01 /bin/bash /usr/local/bin/net-watchdog.sh
+root       825  0.0  0.4   7148  2264 ?        Ss   00:29   0:02 /bin/bash -c while true; do printf 1 > /dev/watchdog 2>/dev/null || true; sleep 10; done
+crw------- 1 root root  10, 130 ноя 25  2025 /dev/watchdog
+crw------- 1 root root 247,   0 ноя 25  2025 /dev/watchdog0
+---SYSCTL-WATCHDOG---
+---WATCHDOG-CFG---
+---WATCHDOG-DEV-INFO---
+
+===KERN-MOD===
+
+===SA02M-SCRIPTS===
+fix-eth.sh
+net-watchdog.sh
+
+===RC-LOCAL===
+#!/bin/bash
+if [ ! -f /etc/ssh/ssh_host_ed25519_key ]; then
+    /usr/bin/ssh-keygen -A
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null || true
+fi
+exit 0
+
+===CMDLINE===
+root=/dev/mmcblk2p2 rootwait
+
+===ARMBIANENV===
+verbosity=1
+bootlogo=false
+console=both
+disp_mode=1920x1080p60
+overlay_prefix=sun8i-r40
+rootdev=UUID=3599389b-2279-4cc9-8fd1-43135f13a73b
+rootfstype=ext4
+usbstoragequirks=0x2537:0x1066:u,0x2537:0x1068:u
+
+===SERVICES-ENABLED===
+net-watchdog.service               enabled enabled
+networking.service                 enabled enabled
+NetworkManager-dispatcher.service  enabled enabled
+NetworkManager-wait-online.service enabled enabled
+NetworkManager.service             enabled enabled
+nginx.service                      enabled enabled
+regen-ssh-host-keys.service        enabled enabled
+sa02m-flasher.service              enabled enabled
+sa02m-pre-start.service            enabled enabled
+sa02m-watchdog-feed.service        enabled enabled
+ssh.service                        enabled enabled
+dpkg-db-backup.timer               enabled enabled
+e2scrub_all.timer                  enabled enabled
+fstrim.timer                       enabled enabled
+lighttpd-maint.timer               enabled enabled
+logrotate.timer                    enabled enabled
+man-db.timer                       enabled enabled

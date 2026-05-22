@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SA-02m — Облако</title>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3e;
+    --text: #e2e8f0; --muted: #64748b;
+    --green: #22c55e; --yellow: #f59e0b; --red: #ef4444; --blue: #3b82f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; padding: 24px; }
+  h1 { font-size: 18px; margin-bottom: 24px; color: #fff; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 16px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .row:last-child { border-bottom: none; }
+  .label { color: var(--muted); }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+  .badge.green  { background: #14532d; color: var(--green); }
+  .badge.yellow { background: #451a03; color: var(--yellow); }
+  .badge.red    { background: #450a0a; color: var(--red); }
+  .badge.gray   { background: #1e293b; color: var(--muted); }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 10px 12px; background: #0f1117;
+    border: 1px solid var(--border); border-radius: 8px;
+    color: var(--text); font-size: 14px; margin-bottom: 12px;
+  }
+  input:focus { outline: none; border-color: var(--blue); }
+  button {
+    width: 100%; padding: 10px; background: var(--blue); border: none;
+    border-radius: 8px; color: #fff; font-size: 14px; font-weight: 600;
+    cursor: pointer; transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .msg { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; }
+  .msg.ok  { background: #14532d; color: var(--green); display: block; }
+  .msg.err { background: #450a0a; color: var(--red);   display: block; }
+  label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+
+<h1>☁ Облачное подключение</h1>
+
+<div class="card" id="status-card">
+  <h2>Статус</h2>
+  <div class="row">
+    <span class="label">Агент</span>
+    <span id="svc-state"><span class="badge gray">…</span></span>
+  </div>
+  <div class="row">
+    <span class="label">Соединение</span>
+    <span id="cloud-state"><span class="badge gray">…</span></span>
+  </div>
+  <div class="row" id="row-vpn" style="display:none">
+    <span class="label">VPN IP</span>
+    <span id="vpn-ip" style="font-family:monospace"></span>
+  </div>
+  <div class="row" id="row-serial" style="display:none">
+    <span class="label">Серийный номер</span>
+    <span id="dev-serial" style="font-family:monospace;font-size:12px"></span>
+  </div>
+  <div class="row" id="row-ts" style="display:none">
+    <span class="label">Последний отчёт</span>
+    <span id="last-ts" style="color:var(--muted)"></span>
+  </div>
+</div>
+
+<div class="card" id="activate-card">
+  <h2>Активация</h2>
+  <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+    Получите токен активации в личном кабинете на <b>cloud.cyntron.ru</b>
+    и вставьте его ниже. Устройство автоматически подключится к облаку.
+  </p>
+  <label>Токен активации</label>
+  <input type="password" id="token" placeholder="Вставьте токен…" autocomplete="off">
+  <label>Облачный сервер</label>
+  <input type="text" id="server" value="cloud.cyntron.ru">
+  <button id="btn-activate" onclick="activate()">Подключить к облаку</button>
+  <div class="msg" id="msg"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function badge(text, color) {
+  return `<span class="badge ${color}">${text}</span>`;
+}
+
+function relativeTime(ts) {
+  const diff = Math.floor(Date.now()/1000) - ts;
+  if (diff < 60)  return `${diff}с назад`;
+  if (diff < 3600) return `${Math.floor(diff/60)}м назад`;
+  return `${Math.floor(diff/3600)}ч назад`;
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch('/cgi-bin/cloud.cgi', {cache:'no-store'});
+    const d = await r.json();
+
+    // Service badge
+    const svcActive = d.service_active === 'active';
+    $('svc-state').innerHTML = svcActive
+      ? badge('Работает', 'green') : badge(d.service_active || 'не запущен', 'gray');
+
+    // Cloud state badge
+    const stateMap = {
+      active:            ['Подключено',      'green'],
+      standby:           ['Ожидание токена',  'yellow'],
+      activating:        ['Активация…',       'yellow'],
+      activation_failed: ['Ошибка активации', 'red'],
+      unknown:           ['Нет данных',       'gray'],
+    };
+    const [stateText, stateColor] = stateMap[d.state] || ['Неизвестно', 'gray'];
+    $('cloud-state').innerHTML = badge(stateText, stateColor);
+
+    if (d.vpn_ip) {
+      $('row-vpn').style.display = '';
+      $('vpn-ip').textContent = d.vpn_ip;
+    }
+    if (d.serial) {
+      $('row-serial').style.display = '';
+      $('dev-serial').textContent = d.serial;
+    }
+    if (d.last_metrics) {
+      $('row-ts').style.display = '';
+      $('last-ts').textContent = relativeTime(d.last_metrics);
+    }
+
+    // Hide activation form if already active
+    if (d.state === 'active') {
+      $('activate-card').style.display = 'none';
+    }
+  } catch(e) {
+    $('cloud-state').innerHTML = badge('Ошибка', 'red');
+  }
+}
+
+async function activate() {
+  const token  = $('token').value.trim();
+  const server = $('server').value.trim();
+  const btn    = $('btn-activate');
+  const msg    = $('msg');
+
+  if (!token) { showMsg('Введите токен активации', false); return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Подключение…';
+  msg.className = 'msg'; msg.style.display = 'none';
+
+  try {
+    const r = await fetch('/cgi-bin/cloud.cgi', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({token, server}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      showMsg(d.message || 'Активация запущена', true);
+      $('token').value = '';
+      setTimeout(refreshStatus, 3000);
+      setTimeout(refreshStatus, 8000);
+      setTimeout(refreshStatus, 15000);
+    } else {
+      showMsg(d.error || 'Ошибка', false);
+    }
+  } catch(e) {
+    showMsg('Ошибка соединения с устройством', false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Подключить к облаку';
+  }
+}
+
+function showMsg(text, ok) {
+  const msg = $('msg');
+  msg.textContent = text;
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+
+refreshStatus();
+setInterval(refreshStatus, 10000);
+</script>
+</body>
+</html>

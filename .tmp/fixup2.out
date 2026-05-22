@@ -1,0 +1,48 @@
+--- watchdog-feed status ---
+○ sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog)
+     Loaded: loaded (/etc/systemd/system/sa02m-watchdog-feed.service; disabled; preset: enabled)
+     Active: inactive (dead)
+       Docs: file:/usr/local/sbin/sa02m-watchdog-feed.sh
+
+янв 02 02:26:18 SA-02 systemd[1]: Stopping sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog)...
+янв 02 02:26:18 SA-02 systemd[1]: sa02m-watchdog-feed.service: Killing process 25156 (sleep) with signal SIGKILL.
+янв 02 02:26:18 SA-02 systemd[1]: sa02m-watchdog-feed.service: Deactivated successfully.
+янв 02 02:26:18 SA-02 systemd[1]: Stopped sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog).
+янв 02 02:26:18 SA-02 systemd[1]: sa02m-watchdog-feed.service: Consumed 6.926s CPU time.
+янв 02 02:26:18 SA-02 systemd[1]: Started sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog).
+мая 04 13:34:36 SA-02 systemd[1]: Stopping sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog)...
+мая 04 13:34:39 SA-02 systemd[1]: sa02m-watchdog-feed.service: Deactivated successfully.
+мая 04 13:34:39 SA-02 systemd[1]: Stopped sa02m-watchdog-feed.service - SA-02m hardware watchdog feeder (kernel /dev/watchdog).
+
+--- recent watchdog spam (last 20) ---
+мая 04 13:34:44 SA-02 systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+мая 04 13:34:44 SA-02 systemd[1]: Watchdog running with a timeout of 16s.
+
+--- /dev/watchdog users ---
+/dev/watchdog0:          1
+
+--- ntp / chrony availability ---
+systemd-timesyncd:
+  Установлен: (отсутствует)
+  Кандидат:   (отсутствует)
+  Таблица версий:
+chrony:
+ntp:
+
+--- chrony quick test ---
+/usr/sbin/chronyd
+
+--- hwclock ---
+1970-01-01 04:58:25.593137+03:00
+lrwxrwxrwx 1 root root      9 янв  2  2000 /dev/rtc -> /dev/rtc1
+crw------- 1 root root 253, 0 ноя 25 21:16 /dev/rtc0
+crw------- 1 root root 253, 1 янв  2  2000 /dev/rtc1
+
+--- time-sources ---
+               Local time: Пн 2026-05-04 13:35:33 MSK
+           Universal time: Пн 2026-05-04 10:35:33 UTC
+                 RTC time: Пн 2026-05-04 10:35:33
+                Time zone: Europe/Moscow (MSK, +0300)
+System clock synchronized: no
+              NTP service: inactive
+          RTC in local TZ: no

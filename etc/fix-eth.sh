@@ -115,6 +115,14 @@ target_was_reachable_before() {
     [ "$(cat "$state_file" 2>/dev/null)" = "$target" ]
 }
 
+# Состояние «шлюз заведомо недоступен, но интерфейс считаем рабочим»
+# пишем в файл, чтобы не повторять один и тот же INFO каждые 30 секунд.
+# Сообщение появится только при изменении состояния (ok→fail или новый boot).
+gateway_warned_state_file() {
+    local iface=$1
+    echo "${STATE_DIR}/${iface}.gw_unreachable_warned"
+}
+
 # check_connectivity iface
 # Уровни проверки (применяется первый подходящий):
 #   1. WATCHDOG_PING_<IFACE> задан явно → пинг этого хоста
@@ -123,7 +131,7 @@ target_was_reachable_before() {
 # Возвращает: 0 — OK/пропущено, 1 — хост недоступен
 check_connectivity() {
     local iface=$1
-    local iface_upper target_source custom_ping_var target
+    local iface_upper target_source custom_ping_var target warn_file
     iface_upper=$(echo "$iface" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
     target_source="gateway"
 
@@ -147,19 +155,36 @@ check_connectivity() {
         return 0
     fi
 
+    warn_file=$(gateway_warned_state_file "$iface")
+
     if ping -c "$PING_COUNT" -W "$PING_TIMEOUT" -q "$target" >/dev/null 2>&1; then
         remember_target_success "$iface" "$target"
+        # Восстановились — лог только если ранее писали WARN.
+        if [ -f "$warn_file" ]; then
+            log INFO "$iface: связь со шлюзом ${target} восстановлена"
+            rm -f "$warn_file"
+        fi
         return 0
     fi
 
     # Если используем fallback на gateway и он ни разу не отвечал после запуска,
     # не считаем это аварией: на isolated-LAN шлюз может быть указан формально.
+    # Лог пишем ОДИН раз, потом молчим.
     if [ "$target_source" = "gateway" ] && ! target_was_reachable_before "$iface" "$target"; then
-        log INFO "$iface: шлюз ${target} пока недоступен и ещё ни разу не отвечал; считаем интерфейс рабочим по carrier+IP"
+        if [ ! -f "$warn_file" ]; then
+            log INFO "$iface: шлюз ${target} недоступен с момента старта; интерфейс считаем рабочим по carrier+IP"
+            mkdir -p "$STATE_DIR"
+            : > "$warn_file"
+        fi
         return 0
     fi
 
-    log WARN "$iface: хост ${target} недоступен"
+    # Шлюз ранее был доступен — пишем WARN один раз.
+    if [ ! -f "$warn_file" ]; then
+        log WARN "$iface: хост ${target} недоступен"
+        mkdir -p "$STATE_DIR"
+        : > "$warn_file"
+    fi
     return 1
 }
 
@@ -202,8 +227,6 @@ recover_iface() {
         return 0
     fi
 
-    local need_recover=0
-
     # 1. Нет физического линка — ждать нечего, восстановить нельзя
     if ! carrier_up "$iface"; then
         log INFO "$iface: нет физического линка (carrier=0), пропуск"
@@ -211,19 +234,17 @@ recover_iface() {
         return 0
     fi
 
-    # 2. Нет IP-адреса
+    # 2. Нет IP-адреса — единственная причина для ifdown/ifup.
+    #    Недоступность шлюза/интернета НЕ является поводом для сброса интерфейса:
+    #    ifdown/ifup не поможет если проблема на стороне шлюза, но при этом
+    #    принудительно опускает link на 4+ секунд → пропадают пакеты.
     if ! has_ip "$iface"; then
         log WARN "$iface: нет IP-адреса"
-        need_recover=1
+    else
+        # IP есть — только логируем состояние шлюза, восстановление не нужно.
+        check_connectivity "$iface"
+        return 0
     fi
-
-    # 3. Проверка связности (шлюз или custom-хост) — только если IP уже есть.
-    #    Если шлюз не задан и WATCHDOG_PING_<IFACE> не задан — шаг пропускается.
-    if [ "$need_recover" -eq 0 ] && ! check_connectivity "$iface"; then
-        need_recover=1
-    fi
-
-    [ "$need_recover" -eq 0 ] && return 0
 
     # ── Восстановление ────────────────────────────────────────────────────
     acquire_lock "$iface" || return 0

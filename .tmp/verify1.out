@@ -1,0 +1,120 @@
+=== watchdog spam check (last 2 minutes) ===
+0
+
+=== storage-mount log ===
+мая 04 13:38:13 SA-02 systemd[1]: Starting storage-mount@sda.service - Mount storage device sda (USB / microSD)...
+мая 04 13:38:14 SA-02 storage-mount.sh[739]: Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел /dev/sda без подходящей ФС для монтирования без mkfs — пропуск.
+мая 04 13:38:14 SA-02 systemd[1]: storage-mount@sda.service: Main process exited, code=exited, status=1/FAILURE
+мая 04 13:38:14 SA-02 systemd[1]: storage-mount@sda.service: Failed with result 'exit-code'.
+мая 04 13:38:14 SA-02 systemd[1]: Failed to start storage-mount@sda.service - Mount storage device sda (USB / microSD).
+
+=== storage-mount unit ===
+[Unit]
+Description=Mount storage device %i (USB / microSD)
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/bin/storage-mount.sh add %i
+ExecStop=/usr/local/bin/storage-mount.sh remove %i
+TimeoutStartSec=30
+TimeoutStopSec=30
+
+=== userspace-watchdog (unknown unit) ===
+# /etc/systemd/system/sa02m-userspace-watchdog.service
+[Unit]
+Description=SA-02m userspace watchdog (forces reboot on persistent userspace failures)
+Documentation=file:/usr/local/sbin/sa02m-userspace-watchdog
+After=network.target network-online.target nginx.service ssh.service mplc4.service
+Wants=network-online.target
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sa02m-userspace-watchdog
+Restart=always
+RestartSec=5
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-userspace-watchdog
+# Watchdog должен иметь право вызвать reboot
+CapabilityBoundingSet=CAP_SYS_BOOT CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_BOOT
+# Не убиваем по OOM — он критичен
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target
+
+=== last 5 boots ===
+IDX BOOT ID                          FIRST ENTRY                 LAST ENTRY
+  0 6fb665d019164026bb3fe707907f711d Mon 2026-05-04 13:38:08 MSK Mon 2026-05-04 13:40:01 MSK
+
+=== boot -1 last kernel messages ===
+
+=== ethtool link timing for eth0 ===
+	Link partner advertised link modes:  10baseT/Half 10baseT/Full
+	Link partner advertised pause frame use: Symmetric Receive-only
+	Link partner advertised auto-negotiation: Yes
+	Link partner advertised FEC modes: Not reported
+	Speed: 100Mb/s
+	Duplex: Full
+	Auto-negotiation: on
+	Link detected: yes
+
+=== ssh start chain ===
+мая 04 13:38:19 SA-02 systemd[1]: Started ssh.service - OpenBSD Secure Shell server.
+мая 04 13:38:21 SA-02 sshd[1082]: Connection closed by 192.168.1.5 port 37843
+мая 04 13:38:24 SA-02 sshd[1113]: Connection closed by 192.168.1.5 port 40617
+мая 04 13:38:47 SA-02 sshd[1395]: Accepted publickey for root from 192.168.1.5 port 40223 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+мая 04 13:38:48 SA-02 sshd[1395]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+мая 04 13:39:54 SA-02 sshd[1395]: Received disconnect from 192.168.1.5 port 40223:11: disconnected by user
+мая 04 13:39:54 SA-02 sshd[1395]: Disconnected from user root 192.168.1.5 port 40223
+мая 04 13:39:54 SA-02 sshd[1395]: pam_unix(sshd:session): session closed for user root
+мая 04 13:40:01 SA-02 sshd[2475]: Accepted publickey for root from 192.168.1.5 port 38191 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+мая 04 13:40:01 SA-02 sshd[2475]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+
+=== how soon was ssh available after boot ===
+мая 04 13:38:08 SA-02 kernel:   HighMem  empty
+мая 04 13:38:08 SA-02 kernel: Movable zone start for each node
+мая 04 13:38:08 SA-02 kernel: Early memory node ranges
+мая 04 13:38:08 SA-02 kernel:   node   0: [mem 0x0000000040000000-0x000000005fffffff]
+мая 04 13:38:08 SA-02 kernel: Initmem setup node 0 [mem 0x0000000040000000-0x000000005fffffff]
+мая 04 13:38:08 SA-02 kernel: psci: probing for conduit method from DT.
+мая 04 13:38:08 SA-02 kernel: psci: Using PSCI v0.1 Function IDs from DT
+мая 04 13:38:08 SA-02 kernel: percpu: Embedded 11 pages/cpu s15764 r8192 d21100 u45056
+мая 04 13:38:08 SA-02 kernel: pcpu-alloc: s15764 r8192 d21100 u45056 alloc=11*4096
+мая 04 13:38:08 SA-02 kernel: pcpu-alloc: [0] 0 [0] 1 [0] 2 [0] 3 
+
+=== chrony sources ===
+MS Name/IP address         Stratum Poll Reach LastRx Last sample               
+===============================================================================
+Reference ID    : 00000000 ()
+Stratum         : 0
+Ref time (UTC)  : Thu Jan 01 00:00:00 1970
+System time     : 0.000000001 seconds slow of NTP time
+Last offset     : +0.000000000 seconds
+RMS offset      : 0.000000000 seconds
+Frequency       : 12.190 ppm slow
+Residual freq   : +0.000 ppm
+Skew            : 0.000 ppm
+Root delay      : 1.000000000 seconds
+Root dispersion : 1.000000000 seconds
+Update interval : 0.0 seconds
+Leap status     : Not synchronised
+
+=== logs spam in last 2 minutes ===
+759
+(messages count)
+
+=== fix-eth.log last 5 ===
+[2026-05-04 13:37:30] [WDG] Watchdog запущен (интервал 30с)
+[2026-05-04 13:37:32] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+[2026-05-04 13:38:18] [WDG] Watchdog запущен (интервал 30с)
+[2026-05-04 13:38:22] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+[2026-05-04 13:38:22] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+
+=== nodered residual ===
+0
+(nodered messages count)

@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 99-modem.rules  — СА-02м: USB-модемы (3G/4G/LTE)
+#
+# Поддерживаемые режимы:
+#   A) CDC-ECM / RNDIS / CDC-NCM — модем выглядит как ethernet-интерфейс
+#      (eth1, usb0 и т.д.); ядро поднимает его автоматически через
+#      cdc_ether / rndis_host / cdc_ncm. Нужен только DHCP.
+#   B) CDC-ACM / Option / ttyUSB — модем даёт /dev/ttyUSBx; работает через
+#      PPP (pppd /etc/ppp/peers/modem) или AT-команды.
+#   C) QMI / MBIM — современные LTE-модемы Quectel/Sierra/Telit;
+#      управляются через qmicli/mbimcli и cdc-wdm.
+#
+# Режим A самый распространённый для 4G-USB-донглов Huawei/ZTE после
+# usb_modeswitch. Режимы B/C требуют явной команды на соединение.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── A. CDC-ECM / RNDIS / NCM — USB-ethernet-модем ────────────────────────────
+# Когда ядро поднимает USB-ethernet интерфейс, запускаем DHCP.
+#
+# ENV{ID_NET_DRIVER} и ENV{ID_BUS} не заполняются на момент события add,
+# поэтому используем SUBSYSTEMS=="usb" (проверяет родительские устройства)
+# и DRIVERS=="cdc_ether|..." (драйвер родительского USB-интерфейса).
+ACTION=="add", SUBSYSTEM=="net", \
+  SUBSYSTEMS=="usb", \
+  DRIVERS=="cdc_ether|rndis_host|cdc_ncm|cdc_mbim|qmi_wwan", \
+  RUN+="/bin/systemctl start sa02m-modem-dhcp@%k.service"
+
+ACTION=="remove", SUBSYSTEM=="net", \
+  SUBSYSTEMS=="usb", \
+  DRIVERS=="cdc_ether|rndis_host|cdc_ncm|cdc_mbim|qmi_wwan", \
+  RUN+="/bin/systemctl stop sa02m-modem-dhcp@%k.service"
+
+# ── B. ttyUSB / ttyACM — последовательный (PPP/AT) модем ─────────────────────
+# Создаём символическую ссылку /dev/modem → /dev/ttyUSBx для pppd.
+# Берём первый ttyUSB (интерфейс 0 или 1 обычно AT-порт, 2+ — data).
+ACTION=="add", SUBSYSTEM=="tty", \
+  KERNEL=="ttyUSB*", \
+  SUBSYSTEMS=="usb", \
+  ATTRS{bInterfaceNumber}=="00", \
+  SYMLINK+="modem_at"
+
+ACTION=="add", SUBSYSTEM=="tty", \
+  KERNEL=="ttyUSB*|ttyACM*", \
+  SUBSYSTEMS=="usb", \
+  ATTRS{bInterfaceNumber}=="02", \
+  SYMLINK+="modem"
+
+# ── C. QMI / MBIM — cdc-wdm контроллер ───────────────────────────────────────
+ACTION=="add", SUBSYSTEM=="usbmisc", \
+  KERNEL=="cdc-wdm*", \
+  SUBSYSTEMS=="usb", \
+  SYMLINK+="cdc-wdm-modem"

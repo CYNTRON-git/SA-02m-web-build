@@ -1,0 +1,36 @@
+[02:26:16] === 1/8 Watchdog-feed: устанавливаем корректную реализацию ===
+[02:26:19]   -> sa02m-watchdog-feed: active
+[02:26:19] === 2/8 SSH: ClientAliveInterval + reverse-DNS off ===
+[02:26:19]   -> ssh reloaded ok
+[02:26:19] === 3/8 Time/RTC: unmask fake-hwclock, install/enable timesyncd ===
+Пн 04 мая 2026 10:34:27 UTC
+доступен из источников, не упомянутых в sources.list
+
+E: Для пакета «systemd-timesyncd» не найден кандидат на установку
+[13:34:30]   -> timesyncd: inactive
+n/a
+[13:34:30]   -> fake-hwclock saved: 2026-05-04 10:34:27
+[13:34:30] === 4/8 fix-eth.sh: устанавливаем версию с дедупликацией логов ===
+[13:34:30] === 5/8 NetworkManager-wait-online: отключаем (блокирует boot на 6 с) ===
+[13:34:36] === 6/8 NodeRed: останавливаем и маскируем (стабильно падает по env) ===
+[13:34:44] === 7/8 storage-mount@sda: сбрасываем failed-состояние ===
+[13:34:47] === 8/8 fake-hwclock сохранение при штатной остановке ===
+[13:34:52] === Установка завершена. Статусы: ===
+--- timesyncd ---
+                   Local time: Пн 2026-05-04 13:34:55 MSK
+               Universal time: Пн 2026-05-04 10:34:55 UTC
+                     RTC time: Сб 2000-01-01 23:26:56
+                    Time zone: Europe/Moscow (MSK, +0300)
+    System clock synchronized: no
+                  NTP service: inactive
+              RTC in local TZ: no
+--- watchdog-feed ---
+inactive
+--- ssh ---
+active
+--- net-watchdog ---
+active
+--- failed units ---
+      UNIT LOAD ACTIVE SUB DESCRIPTION
+    
+    0 loaded units listed.

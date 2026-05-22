@@ -8,6 +8,7 @@
 
 CHECK_INTERVAL=30       # секунд между проверками
 FIX_SCRIPT="/usr/local/bin/fix-eth.sh"
+FAILOVER_SCRIPT="/usr/local/bin/inet-failover.sh"
 LOG_FILE="/var/log/fix-eth.log"
 
 [ -f /etc/sa02m_network.conf ] && source /etc/sa02m_network.conf
@@ -27,10 +28,17 @@ log() {
 log "Watchdog запущен (интервал ${CHECK_INTERVAL}с)"
 
 while true; do
+    # 1. Восстановление интерфейсов (только при потере IP)
     for conf in /etc/network/interfaces.d/eth*.conf; do
         [ -f "$conf" ] || continue
         iface=$(basename "$conf" .conf)
         "$FIX_SCRIPT" "$iface"
     done
+
+    # 2. Переключение маршрутов по наличию интернета (eth0/eth1 > модем)
+    if [ -x "$FAILOVER_SCRIPT" ]; then
+        "$FAILOVER_SCRIPT"
+    fi
+
     sleep "$CHECK_INTERVAL"
 done

@@ -1,0 +1,21 @@
+#!/bin/bash
+# /etc/ppp/ip-up.d/sa02m-modem
+# Вызывается pppd при успешном PPP-соединении.
+# Переменные pppd: $IFNAME $IPREMOTE $IPLOCAL $DNS1 $DNS2 $SPEED $TTY
+
+IFACE="${1:-ppp0}"
+PEER_IP="${5:-}"
+OUR_IP="${4:-}"
+
+logger -t ppp-modem "UP iface=$IFACE our=$OUR_IP peer=$PEER_IP"
+
+# Добавить дефолтный маршрут через PPP если его нет
+if ! ip route show default 2>/dev/null | grep -q ppp; then
+    ip route add default dev "$IFACE" metric 100 2>/dev/null || true
+fi
+
+# Обновить resolv.conf DNS из pppd (если usepeerdns включён)
+if [ -n "${DNS1:-}" ]; then
+    echo "nameserver $DNS1" > /etc/resolv.conf
+    [ -n "${DNS2:-}" ] && echo "nameserver $DNS2" >> /etc/resolv.conf
+fi

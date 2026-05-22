@@ -1,0 +1,6 @@
+imaging: не перезагружать донор во время снятия eMMC-образа
+
+Userspace watchdog: FAIL_THRESHOLD 60 (~10 мин), при /run/sa02m-imaging.lock
+reboot-проверки отключены. Lock выставляет stream-after-cleanup, снимает
+fix-donor. make-image деплоит watchdog на донор; PiShrink/xz в /tmp WSL.
+Добавлен /etc/sa02m_userspace_watchdog.conf, установка conf в system-hardening.

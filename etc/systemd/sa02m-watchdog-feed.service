@@ -1,0 +1,24 @@
+[Unit]
+Description=SA-02m hardware watchdog feeder (kernel /dev/watchdog)
+Documentation=file:/usr/local/sbin/sa02m-watchdog-feed.sh
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udevd.service local-fs.target
+Conflicts=shutdown.target reboot.target halt.target
+Before=shutdown.target reboot.target halt.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sa02m-watchdog-feed.sh
+# При SIGTERM скрипт пишет 'V' (Magic Close) — драйвер выключит
+# watchdog без warning и без reset.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-watchdog-feed
+
+[Install]
+WantedBy=multi-user.target

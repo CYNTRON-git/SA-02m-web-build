@@ -69,6 +69,59 @@ format_exfat() {
   return 0
 }
 
+probe_fstype() {
+  # Читаем FSTYPE с ретраями. При boot-time udev ещё не успевает прочесть
+  # таблицу разделов и blkid возвращает пусто. Делаем до 5 попыток с
+  # backoff: 0, 0.5, 1, 1.5, 2 c — суммарно ~5 c, для USB это безопасно.
+  # Сначала пробуем udev (он берёт значение из стандартного property
+  # ID_FS_TYPE), потом blkid как fallback.
+  local fs=""
+  for i in 1 2 3 4 5; do
+    udevadm settle --timeout=2 -E "${DEV_PATH}" 2>/dev/null || true
+    fs=$(udevadm info --query=property --name "${DEV_PATH}" 2>/dev/null \
+            | awk -F= '/^ID_FS_TYPE=/{print $2; exit}')
+    [ -n "$fs" ] && { printf '%s' "$fs"; return; }
+    fs=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)
+    [ -n "$fs" ] && { printf '%s' "$fs"; return; }
+    sleep "0.$((i * 5))"
+  done
+  printf ''
+}
+
+is_disk_with_partitions() {
+  # Если это «целый диск» (sda, не sda1) И у него есть хотя бы одна
+  # партиция — НЕ пытаемся монтировать его как FS: партиция будет
+  # обработана отдельным вызовом storage-mount@sdaN.service.
+  local base="${DEV_PATH##*/}"
+  case "$base" in
+    sd[a-z]|mmcblk[0-9]) ;;
+    *) return 1 ;;
+  esac
+  local parts
+  parts=$(lsblk -nro NAME "/dev/${base}" 2>/dev/null | tail -n +2 | wc -l)
+  [ "$parts" -gt 0 ]
+}
+
+try_mount_ntfs() {
+  # NTFS: предпочитаем kernel-драйвер ntfs3 (быстрее, без FUSE-оверхеда).
+  # Если он отказывается (например файловая система помечена грязной от
+  # Windows quick-eject), пробуем ntfs-3g (userspace) — он умеет «replay
+  # log» и монтирует более терпимо.
+  if mount -t ntfs3 -o rw,noatime,uid=1000,gid=1000,umask=000 \
+       "${DEV_PATH}" "${MOUNT_POINT}" 2>/dev/null; then
+    log "Успешно смонтировано ${DEV_PATH} (ntfs3 kernel driver)"
+    return 0
+  fi
+  if command -v mount.ntfs-3g >/dev/null 2>&1; then
+    if mount -t ntfs-3g -o rw,noatime,uid=1000,gid=1000,umask=000,big_writes,recover \
+         "${DEV_PATH}" "${MOUNT_POINT}" 2>/dev/null; then
+      log "Успешно смонтировано ${DEV_PATH} (ntfs-3g FUSE fallback)"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 do_mount() {
   if [ ! -e "${DEV_PATH}" ]; then
     log "Устройство ${DEV_PATH} не найдено"
@@ -80,17 +133,27 @@ do_mount() {
     return 0
   fi
 
-  FSTYPE=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)
+  # Целый диск с таблицей разделов — обработают отдельные сервисы для
+  # каждой партиции. Не ругаемся, выходим тихо с return 0.
+  if is_disk_with_partitions; then
+    log "${DEV_PATH}: диск с таблицей разделов — пропуск, ждём партиции"
+    return 0
+  fi
+
+  FSTYPE=$(probe_fstype)
 
   if [[ -z "${FSTYPE}" || "${FSTYPE}" == "ntfs" ]]; then
-    # Сначала пробуем встроенный ядерный драйвер ntfs3 (Linux ≥ 5.15).
-    if mount -t ntfs3 -o rw,noatime,uid=1000,gid=1000,umask=000 "${DEV_PATH}" "${MOUNT_POINT}" 2>/dev/null; then
-      log "Успешно смонтировано ${DEV_PATH} (ntfs3 kernel driver)"
+    mkdir -p "${MOUNT_POINT}"
+    chmod 777 "${MOUNT_POINT}"
+    if try_mount_ntfs; then
       return 0
     fi
     if [[ -z "${FSTYPE}" ]] || (( STORAGE_AUTO_FORMAT != 1 )); then
       log "Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел ${DEV_PATH} без подходящей ФС для монтирования без mkfs — пропуск."
-      return 1
+      # Намеренный «нечего монтировать» — НЕ ошибка сервиса. Возвращаем 0,
+      # чтобы systemd не показывал unit как failed (UI «1 loaded units listed»
+      # после каждой загрузки сбивал с толку).
+      return 0
     fi
     if ! format_exfat; then
       return 1

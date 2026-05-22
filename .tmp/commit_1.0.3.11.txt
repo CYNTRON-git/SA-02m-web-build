@@ -1,0 +1,24 @@
+imaging: compact eMMC golden image pipeline for SA-02m mass deploy
+
+Add tools/imaging/ and full guide for shrinking Armbian eMMC images
+(~350-500 MiB .img.xz instead of 7.28 GiB raw dd), aligned with
+docs/SA02M_IMAGING_GUIDE.md.
+
+Scripts (tools/imaging/):
+- cleanup-donor.sh: purge build toolchain, apt cache, logs; reset
+  machine-id and SSH host keys; enable Armbian firstrun + regen-ssh-host-keys
+- make-image.sh v1.1: ssh stream dd|xz, PiShrink on WSL2 host, sha256,
+  auto manifest.json; flags --profile/--version/--no-cleanup/--no-zerofill
+- prepare-flash-media.sh: pack USB for receivers (sa02m-shrunk.img.xz,
+  .sha256, flash-receiver.sh, autorun symlink, manifest)
+- flash-receiver.sh: sha256 verify, xz|dd to /dev/mmcblk2, reboot
+- setup-wsl-network.ps1, wsl-net-fix.sh, wsl.conf.snippet: WSL2 networking
+  helpers for make-image over ssh
+
+Docs:
+- docs/SA02M_IMAGING_GUIDE.md: hardware layout, PiShrink pipeline, QA
+  checklists, 1eth/2eth profiles, manifest, SSH/Windows notes, roadmap
+- README: Способ 4 (compact image), project tree, docs/ index
+- tools/imaging/README.md, manifest.example.json
+
+.gitignore: exclude tools/imaging/out/ and flash-media/ artifacts

@@ -44,6 +44,11 @@
   - [Виртуальная машина для сборки](#виртуальная-машина-для-сборки)
   - [Процесс сборки Buildroot](#процесс-сборки-buildroot)
   - [Прошивка образа на eMMC](#прошивка-образа-на-emmc)
+  - [Тиражирование компактного образа SA-02m (web)](#способ-4--тиражирование-компактного-образа-sa-02m-web)
+    - [Что понадобится](#способ-4-что-понадобится)
+    - [Снятие образа с эталонного устройства](#способ-4-снятие-образа-с-эталонного-устройства)
+    - [Заливка образа на новое устройство](#способ-4-заливка-образа-на-новое-устройство)
+    - [Проверка после заливки](#способ-4-проверка-после-заливки)
   - [Первоначальная настройка системы](#первоначальная-настройка-системы)
   - [Отключение UART-консоли](#отключение-uart-консоли)
   - [RS-485 и COM симлинки](#rs-485-и-com-симлинки)
@@ -52,6 +57,7 @@
 - [Сетевой watchdog](#сетевой-watchdog)
 - [Структура файлов на устройстве](#структура-файлов-на-устройстве)
 - [Обновление](#обновление)
+- [Документация (docs/)](#документация-docs)
 
 ---
 
@@ -410,6 +416,18 @@ web/
 │       ├── scripts/
 │       │   └── prepare_firmware_for_site.py  ← канонические имена .fw + черновик index.json
 │       └── tests/                ← unittest (auth, firmware_repo, events.log)
+│
+├── tools/
+│   └── imaging/                  ← снятие и тиражирование образа eMMC
+│       ├── cleanup-donor.sh      ← подготовка донора перед dd
+│       ├── make-image.sh         ← полный цикл: ssh stream + PiShrink (WSL2)
+│       ├── prepare-flash-media.sh← упаковка USB для приёмника
+│       ├── flash-receiver.sh     ← заливка .img.xz на приёмник (autorun)
+│       ├── setup-wsl-network.ps1 ← зеркальная сеть WSL2 (один раз)
+│       └── README.md             ← краткая инструкция
+│
+├── docs/
+│   └── SA02M_IMAGING_GUIDE.md    ← полное руководство по образам eMMC
 │
 └── www/
     └── network_config/
@@ -827,6 +845,162 @@ scp output/images/sun8i-a40i-nano2e-none-sk.dtb root@192.168.1.136:/boot/dtb/
 
 ssh root@192.168.1.136 reboot
 ```
+
+#### Способ 4 — тиражирование компактного образа SA-02m (web)
+
+Подходит для **массовой заливки** уже настроенной SA-02m (Armbian + web-интерфейс из этого репозитория) на другие платы. Заменяет старый `autorun.sh` с полным `dd if=/dev/mmcblk2` (7.28 GiB) на **компактный** `.img.xz` (~350–500 MiB) с автоматическим расширением rootfs при первой загрузке.
+
+| Документ | Описание |
+|----------|----------|
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | Полное руководство: разметка eMMC, FAQ, troubleshooting |
+| [**tools/imaging/README.md**](tools/imaging/README.md) | Краткая шпаргалка для оператора |
+
+> **Не путать с sa02m-flasher:** flasher прошивает модули **MR-02м** по RS-485. Здесь речь об образе **всей Linux-системы** на eMMC (`/dev/mmcblk2`).
+
+##### Способ 4: что понадобится
+
+| Роль | Описание |
+|------|----------|
+| **Донор (эталон)** | SA-02m с финальной конфигурацией: `install.sh`, web UI, нужный профиль `sa02m-1eth` / `sa02m-2eth` |
+| **Хост (ПК)** | Windows 10/11 + **WSL2 Ubuntu**, ≥ 3 GiB свободного места в `tools/imaging/out/` |
+| **Приёмник** | Новая или перепрошиваемая SA-02m |
+| **USB-флешка** | Для заливки на приёмник (формат NTFS/exFAT, ≥ 1 GiB) |
+
+**SSH на донор:** `root@192.168.1.136` (или ваш IP), ключ из `private/.ssh/sa02m_sa02` (не коммитится в git — возьмите у администратора).
+
+**Важно перед снятием образа:**
+
+- На доноре скрипт cleanup **удалит gcc/dkms** и кэш apt — после снятия образа собирать драйверы на этом же доноре нельзя без переустановки пакетов.
+- Cleanup **сбрасывает** SSH host keys и `machine-id` — на клонах они создадутся заново при первой загрузке.
+- Для изделия **1eth** явно задайте профиль: `echo 'SA02M_SERIAL_PROFILE=sa02m-1eth' > /etc/sa02m_serial_profile.conf` (не полагайтесь на автоопределение по `eth1` на стенде).
+
+##### Способ 4: снятие образа с эталонного устройства
+
+Выполняется **на ПК с WSL2**. Образ снимается по сети (SSH), без записи 7 GiB на SD-карту.
+
+**Шаг 1 — один раз: подготовить WSL2**
+
+```powershell
+# PowerShell от администратора (зеркальная сеть WSL → доступ к 192.168.x.x)
+powershell -ExecutionPolicy Bypass -File tools\imaging\setup-wsl-network.ps1
+```
+
+В Ubuntu (WSL):
+
+```bash
+sudo apt update
+sudo apt install -y kpartx parted util-linux e2fsprogs xz-utils wget openssh-client python3
+sudo wget -O /usr/local/bin/pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
+sudo chmod +x /usr/local/bin/pishrink.sh
+
+mkdir -p ~/.ssh && chmod 600 ~/.ssh
+cp /mnt/c/ПУТЬ/К/SA-02m-web-build/private/.ssh/sa02m_sa02 ~/.ssh/
+chmod 600 ~/.ssh/sa02m_sa02
+
+# проверка связи с донором
+ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 "uname -a; df -h /"
+```
+
+**Шаг 2 — снять и уменьшить образ**
+
+```bash
+cd /mnt/c/ПУТЬ/К/SA-02m-web-build/tools/imaging
+chmod +x *.sh
+
+./make-image.sh \
+    --ip 192.168.1.136 \
+    --key ~/.ssh/sa02m_sa02 \
+    --out-dir ./out \
+    --profile sa02m-1eth \
+    --version 1.0.0
+```
+
+Скрипт автоматически:
+
+1. Очистит донор (`cleanup-donor.sh`) — мусор, gcc, apt cache, логи.
+2. Заполнит свободное место нулями (лучше сжимается xz).
+3. Снимет `dd` всего `/dev/mmcblk2` по SSH (включая U-Boot).
+4. Уменьшит образ через **PiShrink** на ПК.
+5. Сожмёт в `.img.xz` и посчитает **SHA256** + **manifest.json**.
+
+**Время:** ~30–60 мин (зависит от сети и xz).
+
+**Результат в `tools/imaging/out/`:**
+
+| Файл | Назначение |
+|------|------------|
+| `sa02m-1eth-v1.0.0-shrunk.img.xz` | образ для заливки (~350–500 MiB) |
+| `sa02m-1eth-v1.0.0-shrunk.img.xz.sha256` | контрольная сумма |
+| `sa02m-1eth-v1.0.0-shrunk.manifest.json` | метаданные релиза (версия, git commit, UUID) |
+
+Флаги `--no-cleanup` / `--no-zerofill` — только для отладки; для production не используйте.
+
+Подробности: [SA02M_IMAGING_GUIDE.md §8–§10](docs/SA02M_IMAGING_GUIDE.md).
+
+##### Способ 4: заливка образа на новое устройство
+
+**Вариант A — USB + autorun (рекомендуется для цеха)**
+
+1. Подготовить флешку на ПК (WSL):
+
+```bash
+cd tools/imaging
+./prepare-flash-media.sh \
+    --image ./out/sa02m-1eth-v1.0.0-shrunk.img.xz \
+    --dest /mnt/c/USB/SA02m
+```
+
+На флешке появятся:
+
+```
+sa02m-shrunk.img.xz
+sa02m-shrunk.img.xz.sha256
+flash-receiver.sh
+autorun.sh          → symlink на flash-receiver.sh
+manifest.json       (если был у образа)
+```
+
+2. Вставить USB в **приёмник** SA-02m (или подключить через USB mass storage gadget, если так настроено производство).
+3. Подать питание / запустить `flash-receiver.sh` (или `autorun.sh`).
+4. Скрипт проверит SHA256, запишет образ в **`/dev/mmcblk2`** и перезагрузит плату.
+
+> **Внимание:** запись **полностью стирает** eMMC приёмника. Убедитесь, что это не донор с единственной копией эталона.
+
+**Вариант B — по SSH (если приёмник уже в сети)**
+
+```bash
+scp -i ~/.ssh/sa02m_sa02 out/sa02m-1eth-v1.0.0-shrunk.img.xz root@192.168.1.XXX:/tmp/
+scp -i ~/.ssh/sa02m_sa02 out/sa02m-1eth-v1.0.0-shrunk.img.xz.sha256 root@192.168.1.XXX:/tmp/
+
+ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.XXX \
+  'cd /tmp && sha256sum -c sa02m-1eth-v1.0.0-shrunk.img.xz.sha256 && \
+   systemctl stop nginx sa02m-flasher mplc mplc4 2>/dev/null; \
+   xz -dc sa02m-1eth-v1.0.0-shrunk.img.xz | dd of=/dev/mmcblk2 bs=4M conv=fsync && sync && reboot'
+```
+
+При обрыве SSH во время `dd` устройство может не загрузиться — повторите заливку с USB (вариант A).
+
+**Вариант C — голая плата (FEL / ImageUSB)**
+
+Распакуйте `.img.xz` на ПК и запишите `.img` через ImageUSB или загрузитесь с SD и выполните `dd` на `/dev/mmcblk2`. Подробнее: [SA02M_IMAGING_GUIDE.md §11.2](docs/SA02M_IMAGING_GUIDE.md#112-вариант-b--fel--imageusb-голые-платы).
+
+##### Способ 4: проверка после заливки
+
+После первой загрузки с eMMC (без SD в слоте):
+
+```bash
+ssh -o StrictHostKeyChecking=accept-new root@<IP_ПРИЁМНИКА>
+
+df -h /                    # Size ≈ 7 GiB (rootfs расширился), Used ≈ 1.2 GiB
+cat /etc/machine-id        # не пустой
+ls /etc/ssh/ssh_host_*     # новые ключи (не как на доноре)
+systemctl is-active nginx sa02m-flasher
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:9999/   # 200 или 401
+```
+
+На каждом приёмнике задайте **уникальный IP** (веб «Сеть» или `install.sh --ip`) и при необходимости смените пароли.
+
+Полный чек-лист: [SA02M_IMAGING_GUIDE.md §14.4](docs/SA02M_IMAGING_GUIDE.md#144-после-заливки-приёмник).
 
 ---
 
@@ -1628,6 +1802,19 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 > dpkg --get-selections | grep install   # все deb-пакеты
 > pip3 list                              # Python-пакеты
 > ```
+
+---
+
+## Документация (docs/)
+
+| Документ | Назначение |
+|----------|------------|
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию; чек-листы, FAQ, профили 1eth/2eth, manifest |
+| [tools/imaging/README.md](tools/imaging/README.md) | Быстрый старт: `make-image.sh`, `prepare-flash-media.sh`, `flash-receiver.sh` |
+| [tools/imaging/manifest.example.json](tools/imaging/manifest.example.json) | Шаблон метаданных релиза образа |
+| [docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md](docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md) | SSH: задержки, post-auth hang, PAM/MOTD |
+| [docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md](docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md) | Профили serial 1eth/2eth, карта COM |
+| [MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md](MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md) | Сборка драйвера на устройстве (до/после cleanup донора) |
 
 ---
 

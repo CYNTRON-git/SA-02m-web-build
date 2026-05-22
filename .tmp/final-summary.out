@@ -1,0 +1,67 @@
+===5MIN-JOURNAL-LINES===
+28
+
+===TOP-NOISE===
+      1 sshd[8797]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+      1 sshd[8797]: Accepted publickey for root from 192.168.1.5 port 41697 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+      1 sshd[8219]: Received disconnect from 192.168.1.5 port 39233:11: disconnected by user
+      1 sshd[8219]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+      1 sshd[8219]: pam_unix(sshd:session): session closed for user root
+      1 sshd[8219]: Disconnected from user root 192.168.1.5 port 39233
+      1 sshd[8219]: Accepted publickey for root from 192.168.1.5 port 39233 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+      1 sshd[6385]: Received disconnect from 192.168.1.5 port 39497:11: disconnected by user
+      1 sshd[6385]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+      1 sshd[6385]: pam_unix(sshd:session): session closed for user root
+
+===WATCHDOG-MESSAGES-IN-5MIN===
+4
+
+===CPU-TEMP===
+  67,9C
+  67,0C
+
+===NEW-FAILED===
+  UNIT LOAD ACTIVE SUB DESCRIPTION
+
+0 loaded units listed.
+
+===SSH-CONFIG-ACTIVE===
+clientalivecountmax 4
+clientaliveinterval 15
+maxsessions 10
+maxstartups 30:30:100
+tcpkeepalive yes
+usedns no
+
+===WATCHDOG-CONFIG-ACTIVE===
+RuntimeWatchdogUSec=15s
+RebootWatchdogUSec=2min
+DefaultTimeoutStartUSec=30s
+DefaultTimeoutStopUSec=15s
+
+===CHRONY===
+MS Name/IP address         Stratum Poll Reach LastRx Last sample               
+===============================================================================
+
+===FIX-ETH-LOG-RECENT===
+[2026-05-04 13:49:39] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+[2026-05-04 13:49:39] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+[2026-05-04 13:58:34] [WDG] Watchdog запущен (интервал 30с)
+[2026-05-04 13:58:38] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+[2026-05-04 13:58:38] [INFO] eth0: шлюз 192.168.1.1 недоступен с момента старта; интерфейс считаем рабочим по carrier+IP
+
+===SA02M-SERVICES===
+  ssh                              active=active     enabled=enabled
+  nginx                            active=active     enabled=enabled
+  chrony                           active=active     enabled=enabled
+  net-watchdog                     active=active     enabled=enabled
+  fix-eth                          active=inactive   enabled=disabled
+  fake-hwclock                     active=inactive   enabled=masked
+  sa02m-userspace-watchdog         active=active     enabled=enabled
+  sa02m-flasher                    active=active     enabled=enabled
+  sa02m-pre-start                  active=active     enabled=enabled
+  sa02m-watchdog-feed              active=inactive   enabled=disabled
+  NetworkManager                   active=inactive   enabled=masked
+  NetworkManager-wait-online       active=inactive   enabled=masked
+  nodered                          active=inactive   enabled=masked
+  fcgiwrap                         active=active     enabled=enabled

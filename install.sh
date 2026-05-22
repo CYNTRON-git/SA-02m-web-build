@@ -55,6 +55,7 @@ bash "$SCRIPT_DIR/scripts/01-system.sh"
 bash "$SCRIPT_DIR/scripts/02-network.sh"
 bash "$SCRIPT_DIR/scripts/03-webserver.sh"
 bash "$SCRIPT_DIR/scripts/04-flasher.sh"
+bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
@@ -66,7 +67,7 @@ log OK "════════════════════════
 echo ""
 
 # ── Check services ─────────────────────────────────────────────────────────
-for svc in nginx fcgiwrap sa02m-flasher; do
+for svc in nginx fcgiwrap sa02m-flasher sa02m-cloud-agent; do
     if systemctl is-active "$svc" &>/dev/null; then
         log OK " ✓ $svc работает"
     else
