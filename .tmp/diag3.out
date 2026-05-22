@@ -1,0 +1,296 @@
+===WATCHDOG-FEED-UNIT===
+[Unit]
+Description=SA-02m hardware watchdog feeder
+After=network.target
+DefaultDependencies=no
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do printf 1 > /dev/watchdog 2>/dev/null || true; sleep 10; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+===WATCHDOG-FEED-FULL-CMD===
+  PID CMD
+  825 /bin/bash -c while true; do printf 1 > /dev/watchdog 2>/dev/null || true; sleep 10; done
+/bin/bash -c while true; do printf 1 > /dev/watchdog 2>/dev/null || true; sleep 10; done 
+
+# /etc/systemd/system/sa02m-watchdog-feed.service
+[Unit]
+Description=SA-02m hardware watchdog feeder
+After=network.target
+DefaultDependencies=no
+
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do printf 1 > /dev/watchdog 2>/dev/null || true; sleep 10; done'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+===PRE-START-UNIT===
+# /etc/systemd/system/sa02m-pre-start.service
+[Unit]
+Description=SA-02m early start (USB power, optional DS3231 RTC, PCA9536 beep)
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udevd.service
+Before=time-set.target time-sync.target
+Wants=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/sa02m-pre-start.sh
+
+[Install]
+WantedBy=sysinit.target
+
+===PRE-START-LOG===
+-- No entries --
+
+===NM-WAIT-ONLINE===
+-- No entries --
+
+===NM-CONNECTIONS===
+lo:2443c164-c63e-4a6c-862e-c23592ada138:loopback:lo
+Wired connection 1:d9f6c44e-b054-3ac5-ae74-7c8aed353097:802-3-ethernet:
+
+===NM-DEVICE-STATUS===
+lo:loopback:connected (externally):lo
+eth1:ethernet:unavailable:
+can0:can:unmanaged:
+eth0:ethernet:unmanaged:
+
+===NM-MANAGED-ETH0===
+[main]
+dns=default
+rc-manager=file
+plugins=ifupdown,keyfile
+
+[ifupdown]
+managed=false
+
+[device]
+wifi.scan-rand-mac-address=no
+default-wifi-powersave-on.conf
+rс.conf
+zz-10-override-wifi-random-mac-disable.conf
+zz-20-override-wifi-powersave-disable.conf
+
+===SA02M-FLASHER===
+# /etc/systemd/system/sa02m-flasher.service
+[Unit]
+Description=SA-02m RS-485 scanner and MR-02m firmware flasher
+Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
+After=network.target
+# fcgiwrap и nginx обращаются к сокету демона — но не являются жёсткой зависимостью.
+Wants=fcgiwrap.service
+
+[Service]
+Type=simple
+User=sa02m-flasher
+Group=sa02m-flasher
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/sa02m-flasher
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/sa02m-flasher
+ExecStart=/usr/bin/python3 -m sa02m_flasher.service --config /etc/sa02m_flasher.conf
+# При любом останове — гарантированно запустить mplc обратно, если демон остановил его и не успел восстановить.
+ExecStopPost=+/bin/sh -c 'for unit in mplc.service mplc4.service; do state=$(/bin/systemctl show -p LoadState --value "$unit" 2>/dev/null || true); [ "$state" = "not-found" ] || /bin/systemctl start "$unit" || true; done'
+Restart=on-failure
+RestartSec=3
+RuntimeDirectory=sa02m-flasher
+RuntimeDirectoryMode=0755
+
+# Жёсткие ограничения файловой системы
+ReadWritePaths=/var/lib/sa02m-flasher /var/log/sa02m-flasher /run/sa02m-flasher /var/lock
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# NoNewPrivileges=yes несовместим с sudo (mplc_lease → systemctl/fuser через sudoers).
+# Ограничение привилегий выполняется через sudoers.d/sa02m-flasher (NOPASSWD на
+# конкретные команды: systemctl start|stop|is-active mplc.service, fuser /dev/COM*).
+NoNewPrivileges=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
+
+===NGINX===
+● nginx.service - A high performance web server and a reverse proxy server
+     Loaded: loaded (/usr/lib/systemd/system/nginx.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2000-01-02 01:17:28 MSK; 1h 4min ago
+       Docs: man:nginx(8)
+    Process: 17345 ExecStartPre=/usr/sbin/nginx -t -q -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+    Process: 17348 ExecStart=/usr/sbin/nginx -g daemon on; master_process on; (code=exited, status=0/SUCCESS)
+   Main PID: 17356 (nginx)
+        CPU: 120ms
+     CGroup: /system.slice/nginx.service
+             ├─17356 "nginx: master process /usr/sbin/nginx -g daemon on; master_process on;"
+             ├─17359 "nginx: worker process"
+             ├─17360 "nginx: worker process"
+             ├─17363 "nginx: worker process"
+             └─17364 "nginx: worker process"
+
+янв 02 01:17:28 SA-02 systemd[1]: Starting nginx.service - A high performance web server and a reverse proxy server...
+янв 02 01:17:28 SA-02 systemd[1]: Started nginx.service - A high performance web server and a reverse proxy server.
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+
+===LOGS-RECENT-WARN===
+янв 02 02:12:15 SA-02 (env)[23227]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:12:15 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:12:36 SA-02 (env)[23261]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:12:36 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:12:56 SA-02 (env)[23272]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:12:56 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:13:16 SA-02 (env)[23338]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:13:16 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:13:36 SA-02 (env)[23346]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:13:36 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:13:57 SA-02 (env)[23383]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:13:57 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:14:17 SA-02 (env)[23446]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:14:17 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:14:37 SA-02 (env)[23457]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:14:37 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:14:57 SA-02 (env)[23493]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:14:57 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:15:18 SA-02 (env)[23559]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:15:18 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:15:38 SA-02 (env)[23595]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:15:38 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:15:58 SA-02 (env)[23628]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:15:58 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:16:18 SA-02 (env)[23671]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:16:18 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:16:39 SA-02 (env)[23707]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:16:39 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:16:59 SA-02 (env)[23715]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:16:59 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:17:19 SA-02 (env)[23792]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:17:19 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:17:39 SA-02 (env)[23825]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:17:39 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:18:00 SA-02 (env)[23836]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:18:00 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:18:20 SA-02 (env)[23904]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:18:20 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:18:40 SA-02 (env)[23929]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:18:40 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:19:00 SA-02 (env)[23965]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:19:00 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:19:21 SA-02 (env)[24029]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:19:21 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:19:41 SA-02 (env)[24093]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:19:41 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:20:01 SA-02 (env)[24129]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:20:01 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:20:21 SA-02 (env)[24184]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:20:21 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:20:42 SA-02 (env)[24255]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:20:42 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:21:02 SA-02 (env)[24351]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:21:02 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:21:22 SA-02 (env)[24429]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:21:22 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:21:42 SA-02 (env)[24492]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:21:42 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+янв 02 02:22:03 SA-02 (env)[24518]: nodered.service: Referenced but unset environment variable evaluates to an empty string: NODE_RED_OPTIONS
+янв 02 02:22:03 SA-02 systemd[1]: nodered.service: Failed with result 'exit-code'.
+
+===SHADOW-DATE===
+root:19691
+Чт 30 ноя 2023 00:00:00 MSK
+
+===STORAGE-MOUNT===
+× storage-mount@sda.service - Mount storage device sda (USB / microSD)
+     Loaded: loaded (/etc/systemd/system/storage-mount@.service; static)
+     Active: failed (Result: exit-code) since Sun 2000-01-02 00:29:18 MSK; 1h 52min ago
+   Main PID: 746 (code=exited, status=1/FAILURE)
+        CPU: 80ms
+
+Notice: journal has been rotated since unit was started, output may be incomplete.
+/etc/systemd/system/storage-mount@.service
+/usr/local/bin/storage-mount.sh
+
+===REGEN-SSH===
+# /etc/systemd/system/regen-ssh-host-keys.service
+[Unit]
+Description=Regenerate SSH host keys on first boot (after image clone)
+DefaultDependencies=no
+After=local-fs.target
+Before=ssh.service sshd.service
+ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/ssh-keygen -A
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+-- No entries --
+
+===SSH-LOGS===
+янв 02 02:20:31 SA-02 sshd[24219]: Accepted publickey for root from 192.168.1.5 port 50305 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+янв 02 02:20:31 SA-02 sshd[24219]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+янв 02 02:20:32 SA-02 sshd[24219]: Received disconnect from 192.168.1.5 port 50305:11: disconnected by user
+янв 02 02:20:32 SA-02 sshd[24219]: Disconnected from user root 192.168.1.5 port 50305
+янв 02 02:20:32 SA-02 sshd[24219]: pam_unix(sshd:session): session closed for user root
+янв 02 02:20:59 SA-02 sshd[24324]: pam_unix(sshd:account): account root has password changed in future
+янв 02 02:20:59 SA-02 sshd[24324]: Accepted publickey for root from 192.168.1.5 port 63499 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+янв 02 02:20:59 SA-02 sshd[24324]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+янв 02 02:21:00 SA-02 sshd[24324]: Received disconnect from 192.168.1.5 port 63499:11: disconnected by user
+янв 02 02:21:00 SA-02 sshd[24324]: Disconnected from user root 192.168.1.5 port 63499
+янв 02 02:21:00 SA-02 sshd[24324]: pam_unix(sshd:session): session closed for user root
+янв 02 02:21:31 SA-02 sshd[24436]: pam_unix(sshd:account): account root has password changed in future
+янв 02 02:21:31 SA-02 sshd[24436]: Accepted publickey for root from 192.168.1.5 port 64065 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+янв 02 02:21:31 SA-02 sshd[24436]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+янв 02 02:21:31 SA-02 crontab[24454]: (root) LIST (root)
+янв 02 02:21:32 SA-02 sshd[24436]: Received disconnect from 192.168.1.5 port 64065:11: disconnected by user
+янв 02 02:21:32 SA-02 sshd[24436]: Disconnected from user root 192.168.1.5 port 64065
+янв 02 02:21:32 SA-02 sshd[24436]: pam_unix(sshd:session): session closed for user root
+янв 02 02:21:48 SA-02 sshd[24498]: pam_unix(sshd:account): account root has password changed in future
+янв 02 02:21:48 SA-02 sshd[24498]: Accepted publickey for root from 192.168.1.5 port 64070 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+янв 02 02:21:48 SA-02 sshd[24498]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+янв 02 02:21:48 SA-02 sshd[24498]: Received disconnect from 192.168.1.5 port 64070:11: disconnected by user
+янв 02 02:21:48 SA-02 sshd[24498]: Disconnected from user root 192.168.1.5 port 64070
+янв 02 02:21:48 SA-02 sshd[24498]: pam_unix(sshd:session): session closed for user root
+янв 02 02:22:10 SA-02 sshd[24039]: Received disconnect from 192.168.1.5 port 40653:11: disconnected by user
+янв 02 02:22:10 SA-02 sshd[24039]: Disconnected from user root 192.168.1.5 port 40653
+янв 02 02:22:10 SA-02 sshd[24039]: pam_unix(sshd:session): session closed for user root
+янв 02 02:22:12 SA-02 sshd[24556]: pam_unix(sshd:account): account root has password changed in future
+янв 02 02:22:12 SA-02 sshd[24556]: Accepted publickey for root from 192.168.1.5 port 39889 ssh2: ED25519 SHA256:TSk/8e4yFM6C9YI58JuvyfpyEdiMWa67xDwprmYGVfk
+янв 02 02:22:12 SA-02 sshd[24556]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+
+===NET-WATCHDOG-FREQUENCY===
+CHECK_INTERVAL=30       # секунд между проверками
+    CHECK_INTERVAL="$WATCHDOG_INTERVAL"
+
+===INTERFACES-INFO===
+3: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP mode DEFAULT group default qlen 1000\    link/ether 02:53:1f:58:b7:60 brd ff:ff:ff:ff:ff:ff
+4: eth1: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc mq state DOWN mode DEFAULT group default qlen 1000\    link/ether 12:53:1f:58:b7:60 brd ff:ff:ff:ff:ff:ff
+
+===DBUS===
+● dbus.service - D-Bus System Message Bus
+     Loaded: loaded (/usr/lib/systemd/system/dbus.service; static)
+     Active: active (running) since Sun 2000-01-02 00:29:15 MSK; 1h 52min ago
+TriggeredBy: ● dbus.socket
+       Docs: man:dbus-daemon(1)
+   Main PID: 381 (dbus-daemon)
+        CPU: 11.915s
+     CGroup: /system.slice/dbus.service
+             └─381 @dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only
+

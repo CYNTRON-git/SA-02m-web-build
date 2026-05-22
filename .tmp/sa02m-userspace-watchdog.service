@@ -1,0 +1,24 @@
+[Unit]
+Description=SA-02m userspace watchdog (forces reboot on persistent userspace failures)
+Documentation=file:/usr/local/sbin/sa02m-userspace-watchdog
+After=network.target network-online.target nginx.service ssh.service mplc4.service
+Wants=network-online.target
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sa02m-userspace-watchdog
+Restart=always
+RestartSec=5
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-userspace-watchdog
+# Watchdog должен иметь право вызвать reboot
+CapabilityBoundingSet=CAP_SYS_BOOT CAP_NET_RAW CAP_NET_ADMIN CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_BOOT
+# Не убиваем по OOM — он критичен
+OOMScoreAdjust=-900
+
+[Install]
+WantedBy=multi-user.target

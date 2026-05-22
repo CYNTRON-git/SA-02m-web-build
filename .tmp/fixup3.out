@@ -1,0 +1,21 @@
+[13:36:39] === A. Watchdog: переходим на встроенный systemd PID1 watchdog ===
+[13:36:45]   -> systemd watchdog status (после daemon-reexec):
+мая 04 13:36:42 SA-02 systemd[1]: Using hardware watchdog 'sunxi-wdt', version 0, device /dev/watchdog0
+мая 04 13:36:42 SA-02 systemd[1]: Watchdog running with a timeout of 10s.
+    runtime=10s
+[13:36:46] === B. Chrony: настраиваем NTP-клиент (timesyncd недоступен) ===
+[13:37:00]   -> chrony status: active
+MS Name/IP address         Stratum Poll Reach LastRx Last sample               
+===============================================================================
+[13:37:00] === C. Установка обновлённого fix-eth.sh ===
+[13:37:00] === D. Проверка статусов ===
+ssh=active
+sa02m-watchdog-feed=inactive
+chrony=active
+net-watchdog=active
+---
+RuntimeWatchdog: 10s
+ShutdownWatchdog: 
+Time: Пн 04 мая 2026 13:37:00 MSK
+RTC : 2026-05-04 13:37:00.077822+03:00
+Synced: no

@@ -1,0 +1,1 @@
+{"port":"COM4","device":{"address":6,"baudrate":115200,"parity":"N","stopbits":2,"serial":null,"fast_modbus":false},"reg":428,"value":28}

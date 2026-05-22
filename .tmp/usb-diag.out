@@ -1,0 +1,77 @@
+=== lsblk ===
+NAME          SIZE TYPE FSTYPE LABEL                MOUNTPOINT    VENDOR   MODEL
+sda           7,2G disk                                           UFD 2.0  Silicon-Power8G
+└─sda1        7,2G part ntfs   GSP1RMCPRFRER_RU_DVD                        
+mmcblk3      29,1G disk vfat                        /media/sdcard          
+mmcblk2       7,3G disk                                                    
+├─mmcblk2p1    64M part vfat                                               
+└─mmcblk2p2   7,1G part ext4   armbi_root           /                      
+mmcblk2boot0    8M disk                                                    
+mmcblk2boot1    8M disk                                                    
+
+=== blkid ===
+/dev/mmcblk3: UUID="5CFF-5598" BLOCK_SIZE="512" TYPE="vfat"
+/dev/mmcblk2p1: SEC_TYPE="msdos" UUID="D8CE-50BA" BLOCK_SIZE="512" TYPE="vfat" PARTUUID="852073e2-01"
+/dev/mmcblk2p2: LABEL="armbi_root" UUID="3599389b-2279-4cc9-8fd1-43135f13a73b" BLOCK_SIZE="4096" TYPE="ext4" PARTUUID="852073e2-02"
+/dev/sda1: LABEL="GSP1RMCPRFRER_RU_DVD" BLOCK_SIZE="512" UUID="2A7A0BEC7A0BB41B" TYPE="ntfs" PARTUUID="0007ef01-01"
+
+=== /proc/mounts (только sda/sdcard/usb/exfat/ntfs) ===
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot 0 0
+/dev/mmcblk3 /media/sdcard vfat rw,noatime,nodiratime,uid=1000,gid=1000,fmask=0000,dmask=0000,allow_utime=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+
+=== /media/usb /media/sdcard ===
+total 24
+drwxr-xr-x  3 root     root      4096 мая  4 13:58 .
+drwxr-xr-x 25 root     root      4096 янв  2  2000 ..
+drwxrwxrwx  2 murdemon murdemon 16384 янв  1  1970 sdcard
+
+=== storage-mount log (последние 30 строк) ===
+мая 04 14:09:27 SA-02 systemd[1]: Starting storage-mount@mmcblk3.service - Mount storage device mmcblk3 (USB / microSD)...
+мая 04 14:09:27 SA-02 storage-mount.sh[401]: Монтирование /dev/mmcblk3 (vfat) в /media/sdcard с опциями: rw,noatime,nodiratime,uid=1000,gid=1000,umask=000,dmask=000,fmask=000
+мая 04 14:09:27 SA-02 storage-mount.sh[401]: Успешно смонтировано /dev/mmcblk3
+мая 04 14:09:27 SA-02 systemd[1]: Finished storage-mount@mmcblk3.service - Mount storage device mmcblk3 (USB / microSD).
+мая 04 14:09:30 SA-02 systemd[1]: Starting storage-mount@sda.service - Mount storage device sda (USB / microSD)...
+мая 04 14:09:30 SA-02 storage-mount[850]: Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел /dev/sda без подходящей ФС для монтирования без mkfs — пропуск.
+мая 04 14:09:30 SA-02 storage-mount.sh[843]: Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел /dev/sda без подходящей ФС для монтирования без mkfs — пропуск.
+мая 04 14:09:30 SA-02 systemd[1]: Finished storage-mount@sda.service - Mount storage device sda (USB / microSD).
+мая 04 14:09:31 SA-02 systemd[1]: Starting storage-mount@sda1.service - Mount storage device sda1 (USB / microSD)...
+мая 04 14:09:31 SA-02 storage-mount.sh[904]: Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел /dev/sda1 без подходящей ФС для монтирования без mkfs — пропуск.
+мая 04 14:09:31 SA-02 systemd[1]: Finished storage-mount@sda1.service - Mount storage device sda1 (USB / microSD).
+
+=== udev для sda ===
+DEVPATH=/devices/platform/soc/1c19000.usb/usb1/1-1/1-1:1.0/host0/target0:0:0/0:0:0:0/block/sda
+DEVNAME=/dev/sda
+ID_BUS=usb
+ID_MODEL=Silicon-Power8G
+ID_MODEL_ENC=Silicon-Power8G\x20
+ID_MODEL_ID=4100
+ID_VENDOR=UFD_2.0
+ID_VENDOR_ENC=UFD\x202.0\x20
+ID_VENDOR_ID=13fe
+
+=== попробуем mount ntfs3 руками ===
+mount: /media/usb: wrong fs type, bad option, bad superblock on /dev/sda, missing codepage or helper program, or other error.
+       dmesg(1) may have more information after failed mount system call.
+exit=32
+after-mount /proc/mounts:
+/dev/mmcblk3 /media/sdcard vfat rw,noatime,nodiratime,uid=1000,gid=1000,fmask=0000,dmask=0000,allow_utime=0022,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro 0 0
+
+=== попробуем mount ntfs3 на sda1 если есть ===
+exit=0
+/dev/sda1 /media/usb ntfs3 rw,noatime,uid=1000,gid=1000,fmask=37777600000,dmask=37777600000,iocharset=utf8 0 0
+  (размонтирован)
+
+=== kernel ntfs / ntfs3 модули ===
+	ntfs3
+name:           ntfs3
+filename:       (builtin)
+alias:          fs-ntfs3
+
+=== ntfs-3g/fuse в системе? ===
+ii  fuse           2.9.9-8.1build1        armhf        Filesystem in Userspace
+
+=== storage-mount config ===
+STORAGE_AUTO_FORMAT=0n
+=== как web смотрит на USB ===
+/var/www/network_config/index.html
+/var/www/network_config/cgi-bin/status.cgi
