@@ -141,16 +141,24 @@
             <div class="widget-sub" id="disk-io" style="margin-top:8px;font-size:13px"></div>
           </div>
 
-          <!-- USB (точка монтирования /media/usb, см. драйвер mplc) -->
+          <!-- USB (точка монтирования /media/usb или USB-модем) -->
           <div class="widget">
-            <div class="widget-title">USB-накопитель</div>
-            <div class="widget-val" id="usb-val">—</div>
-            <div id="usb-detail">
-              <div class="widget-sub" id="usb-sub">из —</div>
-              <div class="bar-row">
-                <div class="bar-track"><div class="bar-fill" id="usb-bar" style="width:0%;background:var(--green)"></div></div>
-                <div class="bar-meta"><span id="usb-pct">0%</span><span id="usb-free"></span></div>
+            <div class="widget-title" id="usb-widget-title">USB-накопитель</div>
+            <div id="usb-storage-view">
+              <div class="widget-val" id="usb-val">—</div>
+              <div id="usb-detail">
+                <div class="widget-sub" id="usb-sub">из —</div>
+                <div class="bar-row">
+                  <div class="bar-track"><div class="bar-fill" id="usb-bar" style="width:0%;background:var(--green)"></div></div>
+                  <div class="bar-meta"><span id="usb-pct">0%</span><span id="usb-free"></span></div>
+                </div>
               </div>
+            </div>
+            <div id="usb-modem-view" style="display:none">
+              <div class="widget-val" id="usb-modem-state-val">—</div>
+              <div class="widget-sub" id="usb-modem-model" style="margin-top:4px"></div>
+              <div class="widget-sub" id="usb-modem-ip" style="margin-top:2px;font-family:monospace;font-size:12px"></div>
+              <div class="widget-sub" id="usb-modem-traffic" style="margin-top:2px;font-size:12px"></div>
             </div>
           </div>
 
@@ -484,8 +492,12 @@
                   <div><dt>На GitHub</dt><dd id="web-upd-remote" class="mono">—</dd></div>
                   <div><dt>Проверка (UTC)</dt><dd id="web-upd-checked" class="mono">—</dd></div>
                 </dl>
+                <pre id="web-upd-log" class="web-upd-log" hidden></pre>
               </div>
-              <button type="button" class="btn" id="web-upd-check-btn" onclick="checkWebUpdatesManual()">Проверить обновления</button>
+              <div class="btn-group" style="flex-wrap:wrap;gap:6px">
+                <button type="button" class="btn" id="web-upd-check-btn" onclick="checkWebUpdatesManual()">Проверить обновления</button>
+                <button type="button" class="btn btn-warning" id="web-upd-apply-btn" hidden onclick="applyWebUpdate()">Применить обновление</button>
+              </div>
             </div>
             </div>
         </div>
@@ -673,7 +685,7 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.7-2"></script>
+<script src="/static/js/app.js?v=1.0.3.14"></script>
 <script src="/static/js/flasher.js?v=1.0.3-13"></script>
 </body>
 </html>
