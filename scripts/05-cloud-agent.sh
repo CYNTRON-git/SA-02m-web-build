@@ -38,9 +38,9 @@ log OK "Агент скопирован"
 log INFO "Устанавливаю systemd unit..."
 cp "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"
 systemctl daemon-reload
-# Не запускаем автоматически — только после активации
-systemctl disable sa02m-cloud-agent 2>/dev/null || true
-log OK "Unit установлен (не запущен — нужна активация)"
+# Включаем сразу — агент сам уйдёт в standby и дождётся токена
+systemctl enable sa02m-cloud-agent
+log OK "Unit установлен и включён (ждёт токен активации)"
 
 # ── 4. Конфиг-директория ─────────────────────────────────────────────────────
 mkdir -p /etc/sa02m-cloud
