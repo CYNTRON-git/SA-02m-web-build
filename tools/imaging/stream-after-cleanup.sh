@@ -91,6 +91,12 @@ log "остановка сервисов перед dd"
 systemctl stop nginx fcgiwrap sa02m-flasher mplc mplc4 php8.3-fpm 2>/dev/null || true
 rmmod -f g_mass_storage 2>/dev/null || true
 
+# Disable NIC offloads that cause out-of-order packet delivery under eMMC DMA load.
+# TSO/GSO batching on Allwinner GMAC creates packet reordering, which triggers
+# massive duplicate ACKs and TCP congestion collapse during sustained dd transfer.
+ethtool -K eth0 gso off gro off tso off 2>/dev/null || true
+log "eth0 offloads: GSO/GRO/TSO отключены (предотвращение out-of-order TCP)"
+
 # Prevent CPU from entering deep sleep (schedutil/ondemand drops freq → slow SSH).
 # Set performance governor for all CPUs; restore on script exit.
 _PREV_GOV=""
@@ -119,4 +125,4 @@ if [ "$DO_ID_RESET" = "1" ]; then
 fi
 
 log "dd /dev/mmcblk2 -> stdout (не закрывайте ssh до конца передачи)"
-exec dd if=/dev/mmcblk2 bs=4M status=none
+exec dd if=/dev/mmcblk2 bs=1M status=none
