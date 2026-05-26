@@ -25,7 +25,10 @@ log() {
 
 [ -x "$FIX_SCRIPT" ] || { echo "fix-eth.sh не найден: $FIX_SCRIPT" >&2; exit 1; }
 
-log "Watchdog запущен (интервал ${CHECK_INTERVAL}с)"
+STARTUP_DELAY="${STARTUP_DELAY:-60}"
+
+log "Watchdog запущен (интервал ${CHECK_INTERVAL}с, начальная задержка ${STARTUP_DELAY}с)"
+sleep "$STARTUP_DELAY"
 
 while true; do
     # 1. Восстановление интерфейсов (только при потере IP)
