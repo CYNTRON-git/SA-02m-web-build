@@ -21,6 +21,9 @@ INET_CHECK_TIMEOUT=4
 INET_CHECK_URL="http://connectivitycheck.gstatic.com/generate_204"
 # Fallback URL если первый недоступен
 INET_CHECK_URL2="http://1.1.1.1/"
+# DISABLE_INET_CHECK=1 — отключить интернет-проверку; метрики не трогать.
+# Полезно при LAN-only конфигурации без интернета.
+# Задаётся в /etc/sa02m_network.conf
 
 # Метрики
 declare -A IFACE_METRIC=( [eth0]=10 [eth1]=20 )
@@ -130,6 +133,12 @@ get_modem_iface() {
 
 # ── Основная логика ────────────────────────────────────────────────────────
 run_failover() {
+    # INET_FAILOVER_ENABLED=no in /etc/sa02m_network.conf disables metric switching.
+    # Use this on LAN-only devices where there is no internet — prevents degrading
+    # the default route to metric 300 just because connectivitycheck.gstatic.com
+    # is unreachable, which would break outbound routing entirely.
+    [ "${INET_FAILOVER_ENABLED:-yes}" = "no" ] && return 0
+
     local eth0_inet=0 eth1_inet=0 modem_inet=0
     local modem_iface; modem_iface=$(get_modem_iface)
 
@@ -178,4 +187,4 @@ run_failover() {
     # Если интернета на модеме нет, но eth0/eth1 тоже нет — оставляем как есть.
 }
 
-run_failover
+[ "${DISABLE_INET_CHECK:-0}" = "1" ] || run_failover
