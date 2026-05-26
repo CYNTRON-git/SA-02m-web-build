@@ -715,7 +715,8 @@
           <div class="widget-title">
             Устройства на шине
             <div style="float:right;display:flex;gap:6px">
-              <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Добавить</button>
+              <button class="btn btn-primary" onclick="mqttShowScanModal()">🔍 Поиск устройств</button>
+              <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Вручную</button>
             </div>
           </div>
           <table class="mqtt-device-table">
@@ -748,6 +749,57 @@
           <div id="mqtt-monitor-log" class="mqtt-monitor-log"></div>
         </div>
 
+        <!-- Scan modal -->
+        <div id="mqtt-scan-modal" class="mqtt-modal-overlay" hidden>
+          <div class="mqtt-modal-dialog mqtt-modal-wide">
+            <div class="mqtt-modal-head">
+              <h3>🔍 Поиск устройств на шине</h3>
+              <button class="btn btn-sm" onclick="mqttHideScanModal()">✕</button>
+            </div>
+            <div class="mqtt-modal-body">
+              <div class="mqtt-scan-params">
+                <div class="form-row">
+                  <label>Порт</label>
+                  <select id="mqtt-scan-port">
+                    <option>/dev/COM1</option>
+                    <option>/dev/COM2</option>
+                    <option>/dev/COM3</option>
+                    <option>/dev/COM4</option>
+                    <option>/dev/COM5</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Скорость</label>
+                  <select id="mqtt-scan-baud">
+                    <option value="115200" selected>115200</option>
+                    <option value="57600">57600</option>
+                    <option value="38400">38400</option>
+                    <option value="19200">19200</option>
+                    <option value="9600">9600</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <label>Адреса</label>
+                  <select id="mqtt-scan-range">
+                    <option value="32">1 – 32</option>
+                    <option value="64">1 – 64</option>
+                    <option value="247">1 – 247 (медл.)</option>
+                  </select>
+                </div>
+                <div class="form-row" style="flex:0">
+                  <label>&nbsp;</label>
+                  <button class="btn btn-primary" id="mqtt-scan-btn" onclick="mqttRunScan()">Сканировать</button>
+                </div>
+              </div>
+              <div id="mqtt-scan-status" class="mqtt-scan-status"></div>
+              <div id="mqtt-scan-results" class="mqtt-scan-results"></div>
+            </div>
+            <div class="mqtt-modal-foot">
+              <button class="btn btn-sm" onclick="mqttHideScanModal()">Закрыть</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Add device modal -->
         <div id="mqtt-add-modal" class="mqtt-modal-overlay" hidden>
           <div class="mqtt-modal-dialog">
@@ -759,9 +811,9 @@
               <div class="form-row">
                 <label>Тип устройства</label>
                 <select id="mqtt-add-type" onchange="mqttUpdateId()">
-                  <option value="mr02m">MR-02м / MP-02м</option>
-                  <option value="dtv">cyntron-dtv (RTU-Sensor)</option>
-                  <option value="ce02m3">CE-02m-3</option>
+                  <option value="mr02m">МР-02м</option>
+                  <option value="dtv">ДТВ-RS-485</option>
+                  <option value="ce02m3">СЭ-02м-3</option>
                 </select>
               </div>
               <div class="form-row">

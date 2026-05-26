@@ -228,7 +228,7 @@ function renderDeviceList() {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'MR-02м', dtv:'DTV', ce02m3:'CE-02m-3'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -531,6 +531,147 @@ function getOrCreateChannel(channels, kind, idx) {
   return ch;
 }
 
+// ── Scan modal ────────────────────────────────────────────────────────────────
+function showScanModal() {
+  const m = document.getElementById('mqtt-scan-modal');
+  if (!m) return;
+  m.removeAttribute('hidden');
+  document.getElementById('mqtt-scan-results').innerHTML = '';
+  document.getElementById('mqtt-scan-status').textContent = '';
+  const btn = document.getElementById('mqtt-scan-btn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Сканировать'; }
+}
+
+function hideScanModal() {
+  const m = document.getElementById('mqtt-scan-modal');
+  if (m) m.setAttribute('hidden', '');
+}
+
+async function runScan() {
+  const port  = document.getElementById('mqtt-scan-port').value;
+  const baud  = Number(document.getElementById('mqtt-scan-baud').value);
+  const range = Number(document.getElementById('mqtt-scan-range').value);
+  const btn   = document.getElementById('mqtt-scan-btn');
+  const statusEl  = document.getElementById('mqtt-scan-status');
+  const resultsEl = document.getElementById('mqtt-scan-results');
+
+  btn.disabled = true;
+  btn.textContent = 'Сканирование…';
+  statusEl.innerHTML = '<span class="mqtt-scan-spinner"></span>Поиск устройств на ' + port + ' (' + baud + ' бод)…';
+  resultsEl.innerHTML = '';
+
+  const data = await apiPost('/cgi-bin/mqtt_scan.cgi', {port, baudrate: baud, max_addr: range})
+    .catch(e => ({ok: false, error: String(e), devices: []}));
+
+  btn.disabled = false;
+  btn.textContent = 'Сканировать';
+
+  if (!data.ok) {
+    statusEl.textContent = 'Ошибка: ' + (data.error || 'неизвестная');
+    return;
+  }
+
+  const devices = data.devices || [];
+  if (devices.length === 0) {
+    statusEl.textContent = 'Устройства не найдены. Проверьте порт, скорость и подключение.';
+    return;
+  }
+
+  statusEl.textContent = 'Найдено: ' + devices.length + ' устройств(а). Выберите тип и добавьте нужные.';
+  renderScanResults(port, baud, devices);
+}
+
+function renderScanResults(port, baud, devices) {
+  const el = document.getElementById('mqtt-scan-results');
+  el.innerHTML = '';
+
+  const table = h('table', {'class': 'mqtt-device-table'});
+  table.appendChild(h('thead', {}, h('tr', {},
+    h('th', {}, 'Адрес'), h('th', {}, 'Тип'), h('th', {}, 'Имя'), h('th', {})
+  )));
+  const tbody = h('tbody');
+
+  for (const dev of devices) {
+    const typeSelect = h('select', {'class': 'mqtt-select-small'});
+    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3']]) {
+      const opt = h('option', {value: val}, lbl);
+      if (val === dev.type) opt.selected = true;
+      typeSelect.appendChild(opt);
+    }
+
+    const nameInput = h('input', {
+      'type': 'text', 'class': 'mqtt-ch-label-input',
+      'placeholder': 'Имя устройства',
+      'value': dev.name || ('Устройство ' + dev.addr),
+      'style': 'width:130px'
+    });
+
+    const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+    addBtn.onclick = () => {
+      addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud);
+      addBtn.disabled = true;
+      addBtn.textContent = '✓';
+    };
+
+    tbody.appendChild(h('tr', {},
+      h('td', {'class': 'mono'}, String(dev.addr)),
+      h('td', {}, typeSelect),
+      h('td', {}, nameInput),
+      h('td', {}, addBtn)
+    ));
+  }
+
+  table.appendChild(tbody);
+
+  const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'},
+    '+ Добавить все (' + devices.length + ')');
+  addAllBtn.onclick = () => {
+    tbody.querySelectorAll('tr').forEach((tr, i) => {
+      const d = devices[i];
+      const sel = tr.querySelector('select');
+      const inp = tr.querySelector('input');
+      const btn = tr.querySelector('button');
+      if (!btn.disabled) {
+        addDeviceFromScan(d, sel.value, inp.value, port, baud);
+        btn.disabled = true;
+        btn.textContent = '✓';
+      }
+    });
+  };
+
+  el.appendChild(table);
+  el.appendChild(addAllBtn);
+}
+
+function addDeviceFromScan(scanDev, type, name, port, baud) {
+  const addr = scanDev.addr;
+  const id   = makeDeviceId(type, port, addr);
+
+  if (_config.devices.find(d => d.id === id)) {
+    showToast('Устройство ' + id + ' уже добавлено', 'warn');
+    return;
+  }
+
+  const dev = {id, type, port, baudrate: baud || 115200, address: addr, name: name || id};
+  if (type === 'mr02m') {
+    dev.module_type = scanDev.module_type || 0;
+    dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 5; dev.poll_diag_s = 60;
+    dev.channels = {};
+  } else if (type === 'dtv') {
+    dev.poll_sensors_s = 10; dev.poll_presence_s = 2; dev.poll_diag_s = 60;
+    dev.sensors_present = DTV_SENSORS.map(s => s.key);
+  } else if (type === 'ce02m3') {
+    dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
+    dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
+  }
+
+  _config.devices.push(dev);
+  markUnsaved();
+  renderDeviceList();
+  renderAccordion();
+  showToast((name || id) + ' добавлено');
+}
+
 // ── Add/Remove device ─────────────────────────────────────────────────────────
 function removeDevice(id) {
   if (!confirm(`Удалить устройство ${id}?`)) return;
@@ -691,6 +832,9 @@ window.mqttShowAddModal  = showAddModal;
 window.mqttHideAddModal  = hideAddModal;
 window.mqttConfirmAdd    = confirmAddDevice;
 window.mqttUpdateId      = updateAddModalId;
+window.mqttShowScanModal = showScanModal;
+window.mqttHideScanModal = hideScanModal;
+window.mqttRunScan       = runScan;
 window.mqttStartMonitor  = startMonitor;
 window.mqttStopMonitor   = stopMonitor;
 window.mqttClearMonitor  = clearMonitor;

@@ -2231,6 +2231,8 @@ svg .gauge-num {
   align-items: center;
   justify-content: center;
 }
+/* hidden attribute must override display:flex */
+.mqtt-modal-overlay[hidden] { display: none !important; }
 .mqtt-modal-dialog {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -2255,6 +2257,18 @@ svg .gauge-num {
   border-top: 1px solid var(--border);
   justify-content: flex-end;
 }
+
+.mqtt-modal-dialog.mqtt-modal-wide { width: 560px; }
+.mqtt-scan-params { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.mqtt-scan-params .form-row { flex: 1; min-width: 120px; margin: 0; }
+.mqtt-scan-status { margin: 10px 0 6px; font-size: .85rem; color: var(--muted); min-height: 1.2em; }
+.mqtt-scan-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--muted);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite;
+  vertical-align: middle; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.mqtt-scan-results { max-height: 280px; overflow-y: auto; margin-top: 4px; }
+.mqtt-scan-results table { width: 100%; }
+.mqtt-scan-results td input[type=text] { width: 130px; }
 
 /* Toast */
 .mqtt-toast {
