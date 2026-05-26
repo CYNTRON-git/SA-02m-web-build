@@ -55,6 +55,75 @@ sa02m_boot_usb_vbus_on() {
 
 sa02m_boot_usb_vbus_on
 
+# ── Reboot reason logger ────────────────────────────────────────────────────
+# Запускается первым — до любых операций с железом.
+# Определяет причину перезагрузки и сохраняет диагностику в лог.
+#
+# Маркер чистого выключения: /run/sa02m-clean-shutdown
+#   Создаётся сервисом sa02m-shutdown-marker при штатном halt/reboot.
+#   Если маркера нет → предыдущий останов был аварийным.
+SA02M_REBOOT_LOG=/var/log/sa02m-reboot-reason.log
+SA02M_CLEAN_MARKER=/var/lib/sa02m-clean-shutdown
+
+{
+  echo ""
+  echo "════════════════════════════════════════════════════════"
+  echo "  Boot: $(date '+%Y-%m-%d %H:%M:%S')"
+
+  # ── Причина предыдущего останова ──
+  if [ -f "$SA02M_CLEAN_MARKER" ]; then
+    prev_reason=$(cat "$SA02M_CLEAN_MARKER" 2>/dev/null)
+    echo "  prev shutdown: CLEAN ($prev_reason)"
+    logp "prev shutdown: CLEAN ($prev_reason)"
+  else
+    echo "  prev shutdown: UNEXPECTED (watchdog / power loss / kernel panic)"
+    logp "REBOOT REASON: unexpected — no clean-shutdown marker (watchdog/panic/power loss)"
+  fi
+  rm -f "$SA02M_CLEAN_MARKER" 2>/dev/null || true
+
+  # ── Watchdog bootstatus (если драйвер поддерживает) ──
+  for wd_bs in /sys/class/watchdog/watchdog*/bootstatus; do
+    [ -r "$wd_bs" ] || continue
+    val=$(cat "$wd_bs" 2>/dev/null)
+    if [ "$val" = "0" ]; then
+      echo "  watchdog bootstatus: 0 (normal)"
+    else
+      echo "  watchdog bootstatus: $val  ← WATCHDOG HW RESET"
+      logp "REBOOT REASON: hardware watchdog fired (bootstatus=$val)"
+    fi
+  done
+
+  # ── Kernel crash/panic dump (pstore) ──
+  if ls /sys/fs/pstore/*.txt 2>/dev/null | grep -q .; then
+    echo "  pstore: CRASH DUMP FOUND"
+    logp "REBOOT REASON: kernel crash dump in pstore"
+    ls -la /sys/fs/pstore/ 2>/dev/null
+  fi
+
+  # ── I2C шины при старте (детектируем i2c-2 = верхняя плата подключена) ──
+  i2c_buses=$(ls /sys/bus/i2c/devices/ 2>/dev/null | grep '^i2c-' | tr '\n' ' ')
+  echo "  i2c buses: $i2c_buses"
+  echo "$i2c_buses" | grep -q 'i2c-2' && \
+    echo "  WARNING: i2c-2 present at boot (expansion board connected — may cause lockup if unbind fails)"
+
+  # ── Хвост предыдущего boot-журнала ──
+  echo "  --- prev boot last 80 lines ---"
+  journalctl -b -1 --no-pager -n 80 -o short-monotonic 2>/dev/null \
+    || echo "  (no previous boot journal available)"
+  echo "  --- end ---"
+  echo "════════════════════════════════════════════════════════"
+
+} >> "$SA02M_REBOOT_LOG" 2>/dev/null || true
+
+# Ротация: последние 512 КБ если файл > 1 МБ
+{
+  sz=$(stat -c%s "$SA02M_REBOOT_LOG" 2>/dev/null || echo 0)
+  if [ "$sz" -gt 1048576 ]; then
+    tmp="${SA02M_REBOOT_LOG}.tmp"
+    tail -c 524288 "$SA02M_REBOOT_LOG" > "$tmp" 2>/dev/null && mv "$tmp" "$SA02M_REBOOT_LOG" 2>/dev/null || true
+  fi
+} || true
+
 # ── RTC: если нет rtc1 — пробуем объявить DS3231 на шине i2c-1, адрес 0x68 ───
 HCTOSYS_DEVICE=rtc0
 HWC=/sbin/hwclock
@@ -97,18 +166,20 @@ if [ -n "$HWC" ]; then
   fi
 fi
 
-# ── PCA9536 beeper (i2c-2, 0x41) ──────────────────────────────────────────────
-# CRITICAL: do NOT probe i2c-2 when expansion board is connected.
-# The expansion board chip holds SDA low on power-up → mv64xxx locks I2C bus →
-# kernel retries every 5s → CPU load >3 → hardware watchdog misses feed → reboot loop.
-#
-# Fix: unbind i2c-2 driver unconditionally to stop lockup retries.
-# PCA9536 beeper is skipped until GPIO bit-bang recovery is implemented
-# (PB20=GPIO52=SCL, PB21=GPIO53=SDA on Allwinner H3).
-I2C2_DRIVER="/sys/bus/platform/drivers/mv64xxx_i2c"
-if [ -d "/sys/bus/i2c/devices/i2c-2" ]; then
-  echo "1c2b800.i2c" > "${I2C2_DRIVER}/unbind" 2>/dev/null || true
-  logp "i2c-2 unbound — prevents expansion board PCA9536 bus lockup"
-fi
+# ── LED eth0 (PB2, /sys/class/leds/eth0_link) — 3 моргания при старте ────────
+_eth0_led_blink() {
+  local led=/sys/class/leds/eth0_link i
+  [ -d "$led" ] || return 0
+  echo none > "$led/trigger" 2>/dev/null || true
+  for i in 1 2 3; do
+    echo 1 > "$led/brightness" 2>/dev/null || true
+    sleep 0.5
+    echo 0 > "$led/brightness" 2>/dev/null || true
+    sleep 0.5
+  done
+}
+_eth0_led_blink
+
+# PCA9536 beeper handled by udev (sa02m-i2c2-unbind.sh) — fires before this service.
 
 exit 0

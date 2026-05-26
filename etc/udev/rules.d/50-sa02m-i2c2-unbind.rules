@@ -1,0 +1,7 @@
+# SA-02m: unbind i2c-2 controller immediately when the adapter appears.
+# The PCA9536 expansion board pulls SDA low on power-up, which causes
+# mv64xxx_i2c/i2c-sunxi to start bus-recovery IRQ retries → CPU spike →
+# watchdog starvation → reboot.  Unbinding here (udev, synchronous with
+# device enumeration) stops the retry loop before it escalates.
+ACTION=="add", SUBSYSTEM=="i2c", KERNEL=="i2c-2", \
+    RUN{program}+="/usr/local/sbin/sa02m-i2c2-unbind.sh"
