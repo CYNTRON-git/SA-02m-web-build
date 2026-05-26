@@ -97,26 +97,59 @@ if [ -n "$HWC" ]; then
   fi
 fi
 
-# ── PCA9536 — как в MasterPLC: PCA9536-driver-for-MasterPLC (mplc_fb_ca02m /
-# simple_test_protocol): шина 2, 0x41, reg 0x03 = направление, 0x01 = выходы;
-# активный низкий уровень: «вкл» = сброс бита в маске, стартовая маска 0xFF.
+# ── PCA9536 beeper (i2c-2, 0x41) ──────────────────────────────────────────────
+# ВАЖНО: когда верхняя плата (expansion board) подключена, её чип удерживает
+# SDA в низком состоянии при включении питания. Попытка i2cget без
+# предварительного восстановления шины блокирует mv64xxx I2C-контроллер
+# (kernel: "i2c i2c-2: mv64xxx: I2C bus locked"), который затем повторяет
+# попытки каждые 5 с, сжигая CPU (load >3) → hardware watchdog не успевает
+# кормиться → hard reset каждые ~60 с.
+#
+# Восстановление шины требует GPIO bit-bang на PB20 (SCL, GPIO 52) и
+# PB21 (SDA, GPIO 53). До реализации recovery — i2c-2 unbind перед
+# обращением: если после rebind шина снова блокируется, доступ пропускается.
 PCA9536_ADDR=0x41
 PCA9536_REG_CFG=0x03
 PCA9536_REG_OUT=0x01
-# Все линии 0..3 — выходы (драйвер: i2cset … 0x03 0x00).
 PCA9536_MASK_ALL_OFF=0xFF
-# Бипер — bit2: вкл = ~ (1<<2) & 0xFF = 0xFB
 PCA9536_MASK_BUZZ_ON=0xFB
+I2C2_DEV="1c2b800.i2c"
+I2C2_DRIVER_PATH="/sys/bus/platform/drivers/mv64xxx_i2c"
+
+_i2c2_is_bound() {
+  [ -d "/sys/bus/i2c/devices/i2c-2" ]
+}
+
+_i2c2_unbind() {
+  [ -w "${I2C2_DRIVER_PATH}/unbind" ] && \
+    echo "$I2C2_DEV" > "${I2C2_DRIVER_PATH}/unbind" 2>/dev/null || true
+}
+
+_i2c2_bind() {
+  [ -w "${I2C2_DRIVER_PATH}/bind" ] && \
+    echo "$I2C2_DEV" > "${I2C2_DRIVER_PATH}/bind" 2>/dev/null || true
+  sleep 0.2
+}
 
 if command -v i2cset >/dev/null 2>&1 && command -v i2cget >/dev/null 2>&1; then
-  # Уменьшили timeout с 2 c до 0.5 c: при отсутствии чипа это даёт −1.5 c к boot.
-  if timeout 0.5 i2cget -y 2 "$PCA9536_ADDR" >/dev/null 2>&1; then
+  # Unbind i2c-2, then rebind — clears any pending lock from previous state
+  _i2c2_unbind
+  sleep 0.1
+  _i2c2_bind
+
+  # Check if bus is healthy: probe with very short timeout
+  # If the bus is still locked after rebind (expansion board holds SDA low),
+  # the probe will fail/hang → we unbind permanently and skip PCA9536.
+  if timeout 0.3 i2cget -y 2 "$PCA9536_ADDR" >/dev/null 2>&1; then
     i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_CFG" 0x00 2>/dev/null || true
     i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_OUT" "$PCA9536_MASK_BUZZ_ON" 2>/dev/null || true
     sleep 0.1
     i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_OUT" "$PCA9536_MASK_ALL_OFF" 2>/dev/null || true
+    logp "PCA9536 beep OK"
   else
-    logp "PCA9536 (0x41 on i2c-2) not reachable, skip"
+    # Bus locked or chip absent — unbind i2c-2 to prevent CPU-burning lockup retries
+    logp "PCA9536 (0x41 on i2c-2) not reachable — unbinding i2c-2 to prevent lockup"
+    _i2c2_unbind
   fi
 else
   logp "i2c-tools missing, skip PCA9536"
