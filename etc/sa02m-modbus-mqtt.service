@@ -1,0 +1,20 @@
+[Unit]
+Description=SA-02m Modbus to MQTT bridge
+After=mosquitto.service network.target
+Wants=mosquitto.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py
+Restart=on-failure
+RestartSec=10s
+WatchdogSec=120s
+NotifyAccess=main
+User=root
+WorkingDirectory=/opt/sa02m-modbus-mqtt
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-modbus-mqtt
+
+[Install]
+WantedBy=multi-user.target

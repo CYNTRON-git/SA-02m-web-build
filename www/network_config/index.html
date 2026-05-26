@@ -62,6 +62,11 @@
         Устройства RS-485
       </div>
 
+      <div class="nav-item" data-tab="mqtt">
+        <svg viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/><circle cx="9" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="9" cy="18" r="2" fill="currentColor"/></svg>
+        MQTT
+      </div>
+
       <div class="nav-section">Система</div>
       <div class="nav-item" data-tab="system">
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
@@ -681,11 +686,122 @@
         </div>
       </div><!-- /tab-flasher -->
 
+      <!-- ═══════════════════════════════════ MQTT TAB ═══════════════════════ -->
+      <div id="tab-mqtt" class="tab-pane">
+        <div class="page-header">
+          <h2>MQTT</h2>
+          <p>Конфигурация Modbus→MQTT моста и мониторинг топиков</p>
+        </div>
+
+        <!-- Toast -->
+        <div id="mqtt-toast" class="mqtt-toast"></div>
+
+        <!-- Broker status bar -->
+        <div class="widget mqtt-broker-bar">
+          <div class="mqtt-broker-row">
+            <span id="mqtt-broker-badge" class="badge badge-unk">● Нет данных</span>
+            <span class="mqtt-broker-ports">1883 (локал.) · 1884 (внешний)</span>
+            <span id="mqtt-broker-clients" class="widget-sub">Клиентов: —</span>
+            <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">● Мост —</span>
+            <div style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">⟳ Перезапустить</button>
+              <button class="btn btn-primary" id="mqtt-save-btn" onclick="mqttSaveAndApply()">Сохранить и применить</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Device table -->
+        <div class="widget">
+          <div class="widget-title">
+            Устройства на шине
+            <div style="float:right;display:flex;gap:6px">
+              <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Добавить</button>
+            </div>
+          </div>
+          <table class="mqtt-device-table">
+            <thead>
+              <tr><th>Тип</th><th>Имя</th><th>Порт</th><th>Addr</th><th>Каналов</th><th></th></tr>
+            </thead>
+            <tbody id="mqtt-device-tbody"></tbody>
+          </table>
+        </div>
+
+        <!-- Channels accordion -->
+        <div class="widget">
+          <div class="widget-title">Каналы</div>
+          <div id="mqtt-accordion"></div>
+        </div>
+
+        <!-- Topic monitor -->
+        <div class="widget">
+          <div class="widget-title">
+            Монитор топиков
+            <div style="float:right;display:flex;gap:6px;align-items:center">
+              <select id="mqtt-monitor-filter" class="mqtt-select-small" onchange="mqttStartMonitor()">
+                <option value="">Все устройства</option>
+              </select>
+              <button class="btn btn-sm" onclick="mqttTogglePause()">⏸ Пауза</button>
+              <button class="btn btn-sm" onclick="mqttClearMonitor()">✕ Очистить</button>
+              <button class="btn btn-sm" onclick="mqttStartMonitor()">⟳</button>
+            </div>
+          </div>
+          <div id="mqtt-monitor-log" class="mqtt-monitor-log"></div>
+        </div>
+
+        <!-- Add device modal -->
+        <div id="mqtt-add-modal" class="mqtt-modal-overlay" hidden>
+          <div class="mqtt-modal-dialog">
+            <div class="mqtt-modal-head">
+              <h3>Добавить устройство</h3>
+              <button class="btn btn-sm" onclick="mqttHideAddModal()">Закрыть</button>
+            </div>
+            <div class="mqtt-modal-body">
+              <div class="form-row">
+                <label>Тип устройства</label>
+                <select id="mqtt-add-type" onchange="mqttUpdateId()">
+                  <option value="mr02m">MR-02м / MP-02м</option>
+                  <option value="dtv">cyntron-dtv (RTU-Sensor)</option>
+                  <option value="ce02m3">CE-02m-3</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Порт</label>
+                <select id="mqtt-add-port" onchange="mqttUpdateId()">
+                  <option>/dev/COM1</option>
+                  <option>/dev/COM2</option>
+                  <option>/dev/COM3</option>
+                  <option>/dev/COM4</option>
+                  <option>/dev/COM5</option>
+                </select>
+              </div>
+              <div class="form-row">
+                <label>Адрес Modbus</label>
+                <input type="number" id="mqtt-add-addr" value="1" min="1" max="247" oninput="mqttUpdateId()">
+              </div>
+              <div class="form-row">
+                <label>Имя устройства</label>
+                <input type="text" id="mqtt-add-name" placeholder="Щит освещения">
+              </div>
+              <div class="form-row">
+                <label>MQTT Device ID</label>
+                <input type="text" id="mqtt-add-id" class="mono">
+              </div>
+            </div>
+            <div class="mqtt-modal-foot">
+              <button class="btn btn-primary" onclick="mqttConfirmAdd()">Добавить</button>
+              <button class="btn btn-sm" onclick="mqttHideAddModal()">Отмена</button>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /tab-mqtt -->
+
     </main><!-- /main -->
   </div><!-- /body -->
 </div><!-- /app -->
 
 <script src="/static/js/app.js?v=1.0.3.14"></script>
 <script src="/static/js/flasher.js?v=1.0.3-13"></script>
+<script src="/static/js/mqtt.js?v=1.0.0"></script>
 </body>
 </html>

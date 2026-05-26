@@ -1,0 +1,87 @@
+# SA-02m — Modbus→MQTT bridge configuration
+# Этот файл управляется через веб-интерфейс (вкладка «MQTT»).
+# Редактировать вручную можно, затем перезапустить: systemctl restart sa02m-modbus-mqtt
+
+mqtt:
+  broker: 127.0.0.1
+  port: 1883
+  client_id: sa02m-modbus-bridge
+  qos: 1
+  retain: true
+  reconnect_delay_s: 5
+
+devices:
+  # ── Пример: MR-02м DO6DI8, COM1, addr=5 ─────────────────────────────────
+  # - id: mr02m-COM1-5
+  #   type: mr02m
+  #   port: /dev/COM1
+  #   baudrate: 115200
+  #   address: 5
+  #   name: "MR-02м DO6DI8 (COM1 addr=5)"
+  #   # fast_modbus: true   # включить Wiren Board Fast Modbus events (мгновенный DO/DI)
+  #   # module_type: 1      # тип модуля для fast_modbus events (если не авто-определять FC04)
+  #   poll_do_di_s: 1
+  #   poll_ai_ao_s: 5
+  #   poll_diag_s: 60
+  #   channels:
+  #     do:
+  #       - {ch: 1, label: "Выход 1", enabled: true}
+  #       - {ch: 2, label: "Выход 2", enabled: true}
+  #       - {ch: 3, label: "Выход 3", enabled: true}
+  #       - {ch: 4, label: "Выход 4", enabled: true}
+  #       - {ch: 5, label: "Выход 5", enabled: true}
+  #       - {ch: 6, label: "Выход 6", enabled: true}
+  #     di:
+  #       - {ch: 1, label: "Вход 1", enabled: true, counter: true}
+  #       - {ch: 2, label: "Вход 2", enabled: true, counter: true}
+  #       - {ch: 3, label: "Вход 3", enabled: true, counter: false}
+  #       - {ch: 4, label: "Вход 4", enabled: true, counter: false}
+  #       - {ch: 5, label: "Вход 5", enabled: true, counter: false}
+  #       - {ch: 6, label: "Вход 6", enabled: true, counter: false}
+  #       - {ch: 7, label: "Вход 7", enabled: true, counter: false}
+  #       - {ch: 8, label: "Вход 8", enabled: true, counter: false}
+
+  # ── Пример: cyntron-dtv RTU-Sensor, COM3, addr=1 ─────────────────────────
+  # - id: dtv-COM3-1
+  #   type: dtv
+  #   port: /dev/COM3
+  #   baudrate: 19200
+  #   address: 1
+  #   name: "DTV-RS-485 (COM3 addr=1)"
+  #   poll_sensors_s: 10
+  #   poll_presence_s: 2
+  #   poll_diag_s: 60
+  #   sensors_present:
+  #     - temp_ds18b20
+  #     - temp_bme680
+  #     - humidity_bme680
+  #     - pressure_bme680_kpa
+  #     - iaq_bme680
+  #     - eco2_bme680
+  #     - tvoc_zmod
+  #     - presence
+  #     - moving_distance
+
+  # ── Пример: CE-02m-3, COM2, addr=14 ─────────────────────────────────────
+  # - id: ce02m3-COM2-14
+  #   type: ce02m3
+  #   port: /dev/COM2
+  #   baudrate: 115200
+  #   address: 14
+  #   name: "CE-02m-3 (COM2 addr=14)"
+  #   poll_power_s: 5
+  #   poll_energy_s: 60
+  #   poll_diag_s: 120
+  #   ct_ratio: 4000
+  #   phases: [A, B, C]
+  #   publish_per_phase_energy: false
+  #   channels_enabled:
+  #     voltages: true
+  #     line_voltages: true
+  #     currents: true
+  #     power_active: true
+  #     power_reactive: true
+  #     power_apparent: false
+  #     power_factor: true
+  #     frequency: true
+  #     energy: true

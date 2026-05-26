@@ -33,6 +33,8 @@ function initNav() {
       }
       if (tab === 'network' || tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
+      if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
+      if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
     });
   });
 }
@@ -250,6 +252,10 @@ function renderServicesDynamic(d) {
 
   pushRow('nginx', d.svc_nginx_uptime_s, d.svc_nginx);
   pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
+  if (d.svc_mosquitto && d.svc_mosquitto !== 'unknown')
+    pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
+  if (d.svc_bridge && d.svc_bridge !== 'unknown')
+    pushRow('modbus-mqtt', d.svc_bridge_uptime_s, d.svc_bridge);
 
   const mu = (d.mplc_unit != null && String(d.mplc_unit).trim())
     ? unitUiLabel(String(d.mplc_unit).trim())
