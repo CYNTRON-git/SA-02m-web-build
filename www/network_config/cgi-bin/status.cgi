@@ -56,6 +56,10 @@ fi
 OPTIONAL_SVCS_JSON="[]"
 SVC_NGINX_UPTIME_S=0
 SVC_FCGIWRAP_UPTIME_S=0
+SVC_MOSQUITTO="unknown"
+SVC_BRIDGE="unknown"
+SVC_MOSQUITTO_UPTIME_S=0
+SVC_BRIDGE_UPTIME_S=0
 STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1021,6 +1025,10 @@ gather_services_metrics() {
         SVC_FCGI="unknown"
         SVC_NGINX_UPTIME_S=0
         SVC_FCGIWRAP_UPTIME_S=0
+        SVC_MOSQUITTO="unknown"
+        SVC_BRIDGE="unknown"
+        SVC_MOSQUITTO_UPTIME_S=0
+        SVC_BRIDGE_UPTIME_S=0
         MPLC_UNIT=""
         return 0
     fi
@@ -1034,6 +1042,8 @@ gather_services_metrics() {
     mpl_slice=""
     SVC_NGINX=$(fast_service_state nginx)
     SVC_FCGI=$(fast_service_state fcgiwrap)
+    SVC_MOSQUITTO=$(fast_service_state mosquitto)
+    SVC_BRIDGE=$(fast_service_state sa02m-modbus-mqtt)
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
@@ -1046,6 +1056,10 @@ gather_services_metrics() {
     (( SVC_NGINX_UPTIME_S == 0 )) && SVC_NGINX_UPTIME_S=$(fast_service_uptime nginx)
     SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap.service)
     (( SVC_FCGIWRAP_UPTIME_S == 0 )) && SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap)
+    SVC_MOSQUITTO_UPTIME_S=$(fast_service_uptime mosquitto.service)
+    (( SVC_MOSQUITTO_UPTIME_S == 0 )) && SVC_MOSQUITTO_UPTIME_S=$(fast_service_uptime mosquitto)
+    SVC_BRIDGE_UPTIME_S=$(fast_service_uptime sa02m-modbus-mqtt.service)
+    (( SVC_BRIDGE_UPTIME_S == 0 )) && SVC_BRIDGE_UPTIME_S=$(fast_service_uptime sa02m-modbus-mqtt)
 
     mpl_pid=""
     active_unit=""
@@ -1145,6 +1159,8 @@ gather_services_metrics() {
 
     SVC_NGINX=$(json_escape "$SVC_NGINX")
     SVC_FCGI=$(json_escape "$SVC_FCGI")
+    SVC_MOSQUITTO=$(json_escape "$SVC_MOSQUITTO")
+    SVC_BRIDGE=$(json_escape "$SVC_BRIDGE")
     MPLC_STATUS=$(json_escape "$MPLC_STATUS")
     MPLC_UNIT=$(json_escape "${MPLC_UNIT_RAW:-}")
 }
@@ -1172,12 +1188,16 @@ gather_hardware_metrics() {
 gather_main_metrics() {
     SVC_NGINX="unknown"
     SVC_FCGI="unknown"
+    SVC_MOSQUITTO="unknown"
+    SVC_BRIDGE="unknown"
     MPLC_STATUS="unknown"
     MPLC_UPTIME_S=0
     MPLC_UNIT=""
     OPTIONAL_SVCS_JSON="[]"
     SVC_NGINX_UPTIME_S=0
     SVC_FCGIWRAP_UPTIME_S=0
+    SVC_MOSQUITTO_UPTIME_S=0
+    SVC_BRIDGE_UPTIME_S=0
 
     gather_storage_metrics
     gather_uptime_metrics
@@ -1347,6 +1367,10 @@ print_services_json() {
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_mosquitto": "${SVC_MOSQUITTO}",
+  "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_bridge": "${SVC_BRIDGE}",
+  "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
@@ -1423,6 +1447,10 @@ print_main_json() {
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_mosquitto": "${SVC_MOSQUITTO}",
+  "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_bridge": "${SVC_BRIDGE}",
+  "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
@@ -1510,6 +1538,10 @@ print_core_json() {
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_mosquitto": "${SVC_MOSQUITTO}",
+  "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_bridge": "${SVC_BRIDGE}",
+  "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
@@ -1598,6 +1630,10 @@ print_full_json() {
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_mosquitto": "${SVC_MOSQUITTO}",
+  "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_bridge": "${SVC_BRIDGE}",
+  "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},

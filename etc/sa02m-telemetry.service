@@ -1,0 +1,18 @@
+[Unit]
+Description=SA-02m system telemetry to MQTT
+After=mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/sa02m-modbus-mqtt/sa02m_telemetry.py
+Restart=on-failure
+RestartSec=10s
+User=root
+WorkingDirectory=/opt/sa02m-modbus-mqtt
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-telemetry
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,183 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# 05-mqtt.sh  •  Установка MQTT-инфраструктуры на СА-02м
+#   - Mosquitto broker (apt)
+#   - Python-зависимости (paho-mqtt, pyyaml)
+#   - Modbus→MQTT мост (sa02m-modbus-mqtt.service)
+#   - Системная телеметрия (sa02m-telemetry.service)
+#   - Конфиг nginx (SSE для mqtt_monitor.cgi)
+#   - sudoers для www-data
+# ═══════════════════════════════════════════════════════════════════════════
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
+check_root
+
+log INFO "=== [05] Установка MQTT инфраструктуры ==="
+
+BASE_DIR="$SCRIPT_DIR/.."
+ETC_DIR="$BASE_DIR/etc"
+OPT_DIR="$BASE_DIR/opt/sa02m-modbus-mqtt"
+WWW_DIR="$BASE_DIR/www/network_config"
+
+# ── 1. Mosquitto ──────────────────────────────────────────────────────────────
+log INFO "Установка Mosquitto..."
+pkg_install mosquitto mosquitto-clients
+
+# Конфиг listeners
+MOSQ_CONF_DIR="/etc/mosquitto/conf.d"
+mkdir -p "$MOSQ_CONF_DIR"
+install -m 0644 -o root -g root "$ETC_DIR/mosquitto/10listeners.conf" \
+    "$MOSQ_CONF_DIR/10listeners.conf"
+log OK "Конфиг Mosquitto установлен: $MOSQ_CONF_DIR/10listeners.conf"
+
+# Создать ACL и passwd директории если нет
+mkdir -p /etc/mosquitto/passwd /etc/mosquitto/acl
+
+# ACL шаблон
+if [ ! -f /etc/mosquitto/acl/default.conf ]; then
+    install -m 0640 -o root -g mosquitto \
+        "$ETC_DIR/mosquitto/acl_default.conf" /etc/mosquitto/acl/default.conf
+    log OK "ACL установлен"
+fi
+
+# Создать пользователя mqttuser если нет файла паролей
+if [ ! -f /etc/mosquitto/passwd/default.conf ]; then
+    log INFO "Создаю пользователя mqttuser для внешнего MQTT-доступа..."
+    # Генерируем случайный пароль
+    MQTT_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16 || echo "cyntron_mqtt_$(date +%s)")
+    mosquitto_passwd -b -c /etc/mosquitto/passwd/default.conf mqttuser "$MQTT_PASS"
+    log OK "Пользователь mqttuser создан. Пароль: $MQTT_PASS"
+    log WARN "Сохраните пароль! Он больше не отображается."
+    echo "MQTT_USER=mqttuser" > /etc/sa02m_mqtt.env
+    echo "MQTT_PASS=$MQTT_PASS" >> /etc/sa02m_mqtt.env
+    chmod 0600 /etc/sa02m_mqtt.env
+fi
+
+sa02m_systemctl enable mosquitto >> "$LOG_FILE" 2>&1 || true
+sa02m_systemctl restart mosquitto >> "$LOG_FILE" 2>&1 && log OK "Mosquitto запущен" \
+    || log WARN "Mosquitto не стартовал — проверьте: journalctl -u mosquitto -n 50"
+
+# Проверка порта 1883
+sleep 1
+if ss -H -ltn "sport = :1883" 2>/dev/null | grep -q ':1883'; then
+    log OK "Mosquitto слушает порт 1883 (localhost)"
+else
+    log WARN "Порт 1883 не обнаружен — Mosquitto, возможно, не запустился"
+fi
+
+# ── 2. Python-зависимости ─────────────────────────────────────────────────────
+log INFO "Установка Python-зависимостей..."
+for pkg in python3 python3-pip; do
+    dpkg -l "$pkg" >/dev/null 2>&1 || apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1
+done
+
+pip3 install --quiet paho-mqtt pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
+# Также попробовать minimalmodbus если нет pyserial-based реализации
+pip3 install --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -2
+log OK "Python-зависимости установлены (paho-mqtt, pyyaml, pyserial)"
+
+# ── 3. Modbus→MQTT мост ───────────────────────────────────────────────────────
+log INFO "Деплой Modbus→MQTT моста..."
+
+BRIDGE_DIR="/opt/sa02m-modbus-mqtt"
+install -d -m 0755 -o root -g root "$BRIDGE_DIR"
+
+# Копируем Python-скрипты
+install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
+install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
+
+# Конфиг YAML (только если не существует — не перетираем пользовательские настройки)
+if [ ! -f /etc/sa02m-modbus-mqtt.yaml ]; then
+    install -m 0640 -o root -g root "$OPT_DIR/sa02m-modbus-mqtt.yaml" /etc/sa02m-modbus-mqtt.yaml
+    log OK "Конфиг /etc/sa02m-modbus-mqtt.yaml создан (шаблон)"
+else
+    log INFO "/etc/sa02m-modbus-mqtt.yaml уже существует — оставляю без изменений"
+fi
+
+# Systemd units
+install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
+    /etc/systemd/system/sa02m-modbus-mqtt.service
+install -m 0644 -o root -g root "$ETC_DIR/sa02m-telemetry.service" \
+    /etc/systemd/system/sa02m-telemetry.service
+
+sa02m_systemctl daemon-reload
+sa02m_systemctl enable sa02m-modbus-mqtt.service >> "$LOG_FILE" 2>&1 || true
+sa02m_systemctl enable sa02m-telemetry.service   >> "$LOG_FILE" 2>&1 || true
+
+# Не запускаем мост автоматически — сначала пользователь должен настроить устройства
+log INFO "sa02m-modbus-mqtt.service включён (не запущен — настройте устройства через веб-интерфейс)"
+
+# Телеметрию запускаем сразу
+sa02m_systemctl restart sa02m-telemetry.service >> "$LOG_FILE" 2>&1 && \
+    log OK "sa02m-telemetry запущен" || log WARN "sa02m-telemetry не стартовал"
+
+# ── 4. CGI-скрипты веб-интерфейса ────────────────────────────────────────────
+log INFO "Установка CGI MQTT..."
+CGI_SRC="$WWW_DIR/cgi-bin"
+CGI_DST="/var/www/sa02m/cgi-bin"
+
+if [ -d "$CGI_DST" ]; then
+    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi; do
+        if [ -f "$CGI_SRC/$cgi" ]; then
+            install -m 0755 -o root -g www-data "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
+            sed -i 's/\r$//' "$CGI_DST/$cgi"
+            log OK "Установлен $cgi"
+        else
+            log WARN "CGI не найден в репозитории: $CGI_SRC/$cgi"
+        fi
+    done
+else
+    log WARN "CGI директория $CGI_DST не найдена — пропускаем"
+fi
+
+# ── 5. Sudoers для www-data ───────────────────────────────────────────────────
+log INFO "Устанавливаю sudoers sa02m-mqtt..."
+install -m 0440 -o root -g root "$ETC_DIR/sudoers.d/sa02m-mqtt" /etc/sudoers.d/sa02m-mqtt
+sed -i 's/\r$//' /etc/sudoers.d/sa02m-mqtt
+visudo -cf /etc/sudoers.d/sa02m-mqtt >> "$LOG_FILE" 2>&1 && log OK "sudoers sa02m-mqtt OK" \
+    || log WARN "visudo не принял sudoers sa02m-mqtt — проверьте вручную"
+
+# ── 6. nginx: добавить location для SSE mqtt_monitor.cgi ─────────────────────
+NGINX_CONF_SRC="$ETC_DIR/nginx/network_config.conf"
+NGINX_CONF_DST=""
+for f in /etc/nginx/sites-enabled/sa02m \
+          /etc/nginx/conf.d/sa02m.conf \
+          /etc/nginx/sites-available/sa02m; do
+    [ -f "$f" ] && NGINX_CONF_DST="$f" && break
+done
+
+if [ -n "$NGINX_CONF_DST" ]; then
+    # Добавить location для mqtt_monitor.cgi если его ещё нет
+    if ! grep -q "mqtt_monitor.cgi" "$NGINX_CONF_DST" 2>/dev/null; then
+        # Вставить перед location /cgi-bin/
+        SNIPPET='    location = /cgi-bin/mqtt_monitor.cgi {\n        include        fastcgi_params;\n        fastcgi_param  SCRIPT_FILENAME $document_root$fastcgi_script_name;\n        fastcgi_param  HTTP_COOKIE     $http_cookie;\n        fastcgi_connect_timeout 5s;\n        fastcgi_send_timeout    300s;\n        fastcgi_read_timeout    300s;\n        fastcgi_buffering      off;\n        fastcgi_pass   unix:/run/fcgiwrap/fcgiwrap.socket;\n    }'
+        sed -i "s|# include первым:|${SNIPPET}\n\n    # include первым:|" "$NGINX_CONF_DST" 2>/dev/null \
+            || log WARN "Не удалось автоматически обновить nginx.conf — добавьте mqtt_monitor.cgi location вручную"
+        nginx -t >> "$LOG_FILE" 2>&1 && sa02m_systemctl reload nginx && log OK "nginx перезагружен" \
+            || log WARN "nginx reload не удался"
+    else
+        log INFO "nginx уже содержит location mqtt_monitor.cgi"
+    fi
+else
+    log WARN "Конфиг nginx не найден — SSE для MQTT monitor не настроен"
+fi
+
+# ── 7. Финальная проверка ─────────────────────────────────────────────────────
+log INFO "--- Итог ---"
+for svc in mosquitto sa02m-telemetry; do
+    if pgrep -x "$svc" >/dev/null 2>&1 || (command -v systemctl && systemctl is-active "$svc" >/dev/null 2>&1); then
+        log OK "$svc: запущен"
+    else
+        log WARN "$svc: не запущен"
+    fi
+done
+
+if ss -H -ltn "sport = :1883" 2>/dev/null | grep -q ':1883'; then
+    log OK "MQTT broker доступен на localhost:1883"
+fi
+if ss -H -ltn "sport = :1884" 2>/dev/null | grep -q ':1884'; then
+    log OK "MQTT broker доступен на :1884 (внешний, с паролем)"
+fi
+
+log OK "=== [05] MQTT инфраструктура установлена ==="
+log INFO "Следующий шаг: откройте веб-интерфейс → вкладка MQTT → Сканировать устройства"

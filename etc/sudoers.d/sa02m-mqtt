@@ -1,0 +1,25 @@
+# -*- sudo rules for sa02m-mqtt web UI -*-
+# Позволяет www-data управлять Mosquitto и Python-мостом через CGI.
+# Устанавливать с правами 0440.
+Cmnd_Alias SA02M_MQTT = \
+    /bin/systemctl restart mosquitto, \
+    /usr/bin/systemctl restart mosquitto, \
+    /bin/systemctl start mosquitto, \
+    /usr/bin/systemctl start mosquitto, \
+    /bin/systemctl stop mosquitto, \
+    /usr/bin/systemctl stop mosquitto, \
+    /bin/systemctl restart sa02m-modbus-mqtt, \
+    /usr/bin/systemctl restart sa02m-modbus-mqtt, \
+    /bin/systemctl start sa02m-modbus-mqtt, \
+    /usr/bin/systemctl start sa02m-modbus-mqtt, \
+    /bin/systemctl stop sa02m-modbus-mqtt, \
+    /usr/bin/systemctl stop sa02m-modbus-mqtt, \
+    /bin/systemctl restart sa02m-telemetry, \
+    /usr/bin/systemctl restart sa02m-telemetry, \
+    /bin/systemctl start sa02m-telemetry, \
+    /usr/bin/systemctl start sa02m-telemetry, \
+    /bin/systemctl stop sa02m-telemetry, \
+    /usr/bin/systemctl stop sa02m-telemetry
+
+www-data ALL=(root) NOPASSWD: SA02M_MQTT
+Defaults:www-data !requiretty
