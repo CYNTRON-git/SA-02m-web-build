@@ -187,4 +187,9 @@ run_failover() {
     # Если интернета на модеме нет, но eth0/eth1 тоже нет — оставляем как есть.
 }
 
-[ "${DISABLE_INET_CHECK:-0}" = "1" ] || run_failover
+# Support both variable names for backward compatibility
+# DISABLE_INET_CHECK=1 or INET_FAILOVER_ENABLED=no
+_skip_inet=0
+[ "${DISABLE_INET_CHECK:-0}" = "1" ] && _skip_inet=1
+[ "${INET_FAILOVER_ENABLED:-yes}" = "no" ] && _skip_inet=1
+[ "$_skip_inet" -eq 0 ] && run_failover
