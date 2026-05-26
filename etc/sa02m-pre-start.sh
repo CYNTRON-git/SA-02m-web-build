@@ -98,61 +98,17 @@ if [ -n "$HWC" ]; then
 fi
 
 # ── PCA9536 beeper (i2c-2, 0x41) ──────────────────────────────────────────────
-# ВАЖНО: когда верхняя плата (expansion board) подключена, её чип удерживает
-# SDA в низком состоянии при включении питания. Попытка i2cget без
-# предварительного восстановления шины блокирует mv64xxx I2C-контроллер
-# (kernel: "i2c i2c-2: mv64xxx: I2C bus locked"), который затем повторяет
-# попытки каждые 5 с, сжигая CPU (load >3) → hardware watchdog не успевает
-# кормиться → hard reset каждые ~60 с.
+# CRITICAL: do NOT probe i2c-2 when expansion board is connected.
+# The expansion board chip holds SDA low on power-up → mv64xxx locks I2C bus →
+# kernel retries every 5s → CPU load >3 → hardware watchdog misses feed → reboot loop.
 #
-# Восстановление шины требует GPIO bit-bang на PB20 (SCL, GPIO 52) и
-# PB21 (SDA, GPIO 53). До реализации recovery — i2c-2 unbind перед
-# обращением: если после rebind шина снова блокируется, доступ пропускается.
-PCA9536_ADDR=0x41
-PCA9536_REG_CFG=0x03
-PCA9536_REG_OUT=0x01
-PCA9536_MASK_ALL_OFF=0xFF
-PCA9536_MASK_BUZZ_ON=0xFB
-I2C2_DEV="1c2b800.i2c"
-I2C2_DRIVER_PATH="/sys/bus/platform/drivers/mv64xxx_i2c"
-
-_i2c2_is_bound() {
-  [ -d "/sys/bus/i2c/devices/i2c-2" ]
-}
-
-_i2c2_unbind() {
-  [ -w "${I2C2_DRIVER_PATH}/unbind" ] && \
-    echo "$I2C2_DEV" > "${I2C2_DRIVER_PATH}/unbind" 2>/dev/null || true
-}
-
-_i2c2_bind() {
-  [ -w "${I2C2_DRIVER_PATH}/bind" ] && \
-    echo "$I2C2_DEV" > "${I2C2_DRIVER_PATH}/bind" 2>/dev/null || true
-  sleep 0.2
-}
-
-if command -v i2cset >/dev/null 2>&1 && command -v i2cget >/dev/null 2>&1; then
-  # Unbind i2c-2, then rebind — clears any pending lock from previous state
-  _i2c2_unbind
-  sleep 0.1
-  _i2c2_bind
-
-  # Check if bus is healthy: probe with very short timeout
-  # If the bus is still locked after rebind (expansion board holds SDA low),
-  # the probe will fail/hang → we unbind permanently and skip PCA9536.
-  if timeout 0.3 i2cget -y 2 "$PCA9536_ADDR" >/dev/null 2>&1; then
-    i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_CFG" 0x00 2>/dev/null || true
-    i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_OUT" "$PCA9536_MASK_BUZZ_ON" 2>/dev/null || true
-    sleep 0.1
-    i2cset -y 2 "$PCA9536_ADDR" "$PCA9536_REG_OUT" "$PCA9536_MASK_ALL_OFF" 2>/dev/null || true
-    logp "PCA9536 beep OK"
-  else
-    # Bus locked or chip absent — unbind i2c-2 to prevent CPU-burning lockup retries
-    logp "PCA9536 (0x41 on i2c-2) not reachable — unbinding i2c-2 to prevent lockup"
-    _i2c2_unbind
-  fi
-else
-  logp "i2c-tools missing, skip PCA9536"
+# Fix: unbind i2c-2 driver unconditionally to stop lockup retries.
+# PCA9536 beeper is skipped until GPIO bit-bang recovery is implemented
+# (PB20=GPIO52=SCL, PB21=GPIO53=SDA on Allwinner H3).
+I2C2_DRIVER="/sys/bus/platform/drivers/mv64xxx_i2c"
+if [ -d "/sys/bus/i2c/devices/i2c-2" ]; then
+  echo "1c2b800.i2c" > "${I2C2_DRIVER}/unbind" 2>/dev/null || true
+  logp "i2c-2 unbound — prevents expansion board PCA9536 bus lockup"
 fi
 
 exit 0
