@@ -1,0 +1,14 @@
+[Unit]
+Description=SA-02m clean shutdown marker
+DefaultDependencies=no
+Before=shutdown.target reboot.target halt.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/bin/sh -c 'mkdir -p /var/lib && printf "halt at %s" "$(date +%Y-%m-%dT%H:%M:%S)" > /var/lib/sa02m-clean-shutdown && sync'
+
+[Install]
+WantedBy=multi-user.target
