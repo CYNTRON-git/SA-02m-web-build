@@ -23,9 +23,11 @@ if [ ! -c "$DEV" ]; then
 fi
 
 # Открываем устройство один раз. Дальше работаем с fd 3.
-if ! exec 3>"$DEV"; then
-    echo "watchdog-feed: не удалось открыть ${DEV}" >&2
-    exit 1
+# If the device is busy (e.g. systemd already holds it via RuntimeWatchdogSec),
+# exit cleanly — systemd handles the hardware watchdog on its own.
+if ! exec 3>"$DEV" 2>/dev/null; then
+    echo "watchdog-feed: ${DEV} занят или недоступен; systemd вероятно управляет WDT напрямую (RuntimeWatchdogSec)" >&2
+    exit 0
 fi
 
 # При остановке: 'V' = Magic Close. Драйвер закроет устройство без reset

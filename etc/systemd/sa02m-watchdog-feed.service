@@ -14,8 +14,12 @@ ExecStart=/usr/local/sbin/sa02m-watchdog-feed.sh
 KillMode=mixed
 KillSignal=SIGTERM
 TimeoutStopSec=5
+# If systemd manages /dev/watchdog via RuntimeWatchdogSec, the script exits 0
+# (device busy) and should not restart — systemd handles it natively.
 Restart=on-failure
-RestartSec=5
+RestartSec=30
+StartLimitIntervalSec=60
+StartLimitBurst=2
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sa02m-watchdog-feed
