@@ -1305,7 +1305,7 @@ def main() -> None:
 
     cfg         = load_config()
     mqtt_cfg    = cfg.get("mqtt", {})
-    devices_cfg = cfg.get("devices", [])
+    devices_cfg = cfg.get("devices") or []
 
     pub = MQTTPublisher(mqtt_cfg)
     pub.connect()
