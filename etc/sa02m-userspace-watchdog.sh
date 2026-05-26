@@ -160,16 +160,21 @@ check_http() {
 }
 
 check_iface() {
-    local iface=$1 oper
+    local iface=$1 oper carrier
     if [ ! -e "/sys/class/net/${iface}/operstate" ]; then
-        echo "no-iface"
-        return 0
+        echo "no-iface"; return 0
+    fi
+    # No physical carrier means cable is unplugged — rebooting cannot fix this.
+    # Return OK so we don't trigger a pointless reboot loop.
+    carrier=$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)
+    if [ "$carrier" != "1" ]; then
+        echo "no-carrier-skip"; return 0
     fi
     oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
     case "$oper" in
-        up)        echo "$oper"; return 0 ;;
-        unknown)   echo "$oper"; return 0 ;;  # некоторые драйверы всегда unknown
-        *)         echo "$oper"; return 1 ;;
+        up)      echo "$oper"; return 0 ;;
+        unknown) echo "$oper"; return 0 ;;  # some drivers always report unknown
+        *)       echo "$oper"; return 1 ;;
     esac
 }
 

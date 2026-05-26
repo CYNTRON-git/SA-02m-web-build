@@ -227,10 +227,22 @@ recover_iface() {
         return 0
     fi
 
-    # 1. Нет физического линка — ждать нечего, восстановить нельзя
+    # 1. Нет физического линка — попытаться согласовать PHY один раз,
+    #    потом пропустить (кабель не воткнут — ifdown/ifup не поможет).
     if ! carrier_up "$iface"; then
-        log INFO "$iface: нет физического линка (carrier=0), пропуск"
-        debug_iface_state "$iface"
+        local oper; oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
+        if [ "$oper" = "down" ] && ! [ -f "${LOCK_DIR}/${iface}.link_cycled" ]; then
+            log INFO "$iface: carrier=0 operstate=down, forcing link cycle to renegotiate PHY"
+            mkdir -p "$LOCK_DIR"
+            touch "${LOCK_DIR}/${iface}.link_cycled"
+            ip link set "$iface" down 2>/dev/null || true
+            sleep 0.5
+            ip link set "$iface" up   2>/dev/null || true
+            sleep 3
+        else
+            log INFO "$iface: нет физического линка (carrier=0), пропуск"
+            debug_iface_state "$iface"
+        fi
         return 0
     fi
 
