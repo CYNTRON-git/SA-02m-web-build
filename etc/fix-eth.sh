@@ -270,6 +270,10 @@ recover_iface() {
     # 3. Если networking.service ещё назначает IP — не мешаем, bounce уже выполнен.
     if iface_bootstrap_in_progress "$iface"; then
         log INFO "$iface: ifupdown в процессе, IP-recovery пропущен (bounce выполнен)"
+        # LED: PHY сбросит trigger после link-up; ставим с задержкой 5с в фоне —
+        # к этому моменту PHY уже стабилен и networking назначил IP.
+        ( sleep 5; [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh ) &
+        disown 2>/dev/null || true
         return 0
     fi
 
