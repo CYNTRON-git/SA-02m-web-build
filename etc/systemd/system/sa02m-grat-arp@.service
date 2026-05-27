@@ -1,0 +1,19 @@
+[Unit]
+Description=SA-02m gratuitous ARP burst on %i
+After=networking.service network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# 15 grat-ARP пакетов каждую секунду — перекрывает окно когда Windows
+# выходит из ARP FAILED состояния (~15-20с после device offline).
+ExecStart=/bin/bash -c '\
+  iface=%i; \
+  cmd="python3 /usr/local/bin/sa02m-grat-arp.py $iface"; \
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
+    $cmd 2>/dev/null || true; sleep 1; \
+  done'
+TimeoutStartSec=30s
+
+[Install]
+WantedBy=multi-user.target

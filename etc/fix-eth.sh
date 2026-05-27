@@ -230,12 +230,6 @@ recover_iface() {
     # Нет физического устройства
     [ -d "/sys/class/net/${iface}" ] || return 0
 
-    if iface_bootstrap_in_progress "$iface"; then
-        log INFO "$iface: базовый ifupdown ещё поднимает интерфейс, recovery пропущен"
-        debug_iface_state "$iface"
-        return 0
-    fi
-
     # 1. Нет физического линка — попытаться согласовать PHY один раз,
     #    потом пропустить (кабель не воткнут — ifdown/ifup не поможет).
     if ! carrier_up "$iface"; then
@@ -257,63 +251,67 @@ recover_iface() {
         return 0
     fi
 
-    # 2. Нет IP-адреса — единственная причина для ifdown/ifup.
-    #    Недоступность шлюза/интернета НЕ является поводом для сброса интерфейса:
-    #    ifdown/ifup не поможет если проблема на стороне шлюза, но при этом
-    #    принудительно опускает link на 4+ секунд → пропадают пакеты.
+    # 2. Ранний link bounce при ПЕРВОМ появлении carrier — до bootstrap check!
+    #    Выполняется ПРЕЖДЕ чем networking.service назначит IP, поэтому peer
+    #    (коммутатор/Windows) видит carrier loss и сбрасывает ARP-кэш.
+    #    Когда затем arp_notify=1 пошлёт grat-ARP при RTM_NEWADDR, peer его примет.
+    local bounce_marker="${STATE_DIR}/${iface}.bounce_done"
+    if [ ! -f "$bounce_marker" ]; then
+        touch "$bounce_marker"
+        ip link set "$iface" down 2>/dev/null || true
+        sleep 0.1
+        ip link set "$iface" up   2>/dev/null || true
+        sleep 0.2
+        # Восстанавливаем LED: PHY restart при down/up сбрасывает trigger в [none]
+        local _led=/sys/class/leds/eth0_link
+        if [ -d "$_led" ]; then
+            local _phy
+            _phy=$(tr ' ' '\n' < "$_led/trigger" 2>/dev/null \
+                   | sed 's/^\[//; s/\]$//' \
+                   | grep -E 'mdio.*:link$' | head -1)
+            if [ -n "$_phy" ]; then
+                echo "$_phy" > "$_led/trigger" 2>/dev/null || true
+            else
+                echo "netdev"  > "$_led/trigger"     2>/dev/null || true
+                echo "$iface"  > "$_led/device_name" 2>/dev/null || true
+                echo "1"       > "$_led/link"        2>/dev/null || true
+            fi
+        fi
+    fi
+
+    # 3. Если networking.service ещё назначает IP — не мешаем, bounce уже выполнен.
+    if iface_bootstrap_in_progress "$iface"; then
+        log INFO "$iface: ifupdown в процессе, IP-recovery пропущен (bounce выполнен)"
+        return 0
+    fi
+
+    # 4. Нет IP-адреса — единственная причина для ifdown/ifup.
+    #    Недоступность шлюза/интернета НЕ является поводом для сброса интерфейса.
     if ! has_ip "$iface"; then
         log WARN "$iface: нет IP-адреса"
     else
         # IP есть — только логируем состояние шлюза, восстановление не нужно.
         check_connectivity "$iface"
-        # Gratuitous ARP burst: преодоление Windows ARP negative caching (~45s FAILED).
-        # Отправляем сразу при появлении IP — и затем каждые 3с на 30с,
-        # чтобы попасть в окно когда Windows переходит из FAILED→STALE→PROBE.
-        # Только один раз за загрузку (маркер в /run/ — очищается при ребуте).
+        # Gratuitous ARP burst: каждую секунду 15с — перекрывает окно когда
+        # Windows выходит из ARP FAILED (~15-20с от device offline).
+        # Один раз за загрузку (маркер в /run/).
         local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
         if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \
            && [ -f /usr/local/bin/sa02m-grat-arp.py ]; then
             touch "$grat_marker"
-
-            # Сразу шлём grat-ARP и запускаем фоновый burst (до link bounce).
             python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
             (
-                for _rep in 2 3 4 5 6 7 8 9 10; do
-                    sleep 3
+                for _rep in 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+                    sleep 1
                     python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
                 done
             ) &
             disown 2>/dev/null || true
-
-            # SW link bounce (0.3s): PHY briefly goes offline → подключённый коммутатор/ПК
-            # видит carrier loss → сбрасывает ARP-кэш → при подъёме линка принимает
-            # наш gratuitous ARP (тот же эффект что физическое передёргивание кабеля).
-            ip link set "$iface" down 2>/dev/null || true
-            sleep 0.3
-            ip link set "$iface" up   2>/dev/null || true
-            sleep 0.5
-
-            # Восстанавливаем LED trigger: link bounce сбрасывает его в [none]
-            # (PHY driver перезапускается при down/up).
-            local _led=/sys/class/leds/eth0_link
-            if [ -d "$_led" ]; then
-                local _phy
-                _phy=$(tr ' ' '\n' < "$_led/trigger" 2>/dev/null \
-                       | sed 's/^\[//; s/\]$//' \
-                       | grep -E 'mdio.*:link$' | head -1)
-                if [ -n "$_phy" ]; then
-                    echo "$_phy" > "$_led/trigger" 2>/dev/null || true
-                else
-                    echo "netdev"  > "$_led/trigger"     2>/dev/null || true
-                    echo "$iface"  > "$_led/device_name" 2>/dev/null || true
-                    echo "1"       > "$_led/link"        2>/dev/null || true
-                fi
-            fi
         fi
         return 0
     fi
 
-    # ── Восстановление ────────────────────────────────────────────────────
+    # ── Восстановление IP ─────────────────────────────────────────────────
     acquire_lock "$iface" || return 0
 
     log INFO "$iface: начало процедуры восстановления"
@@ -344,11 +342,23 @@ recover_iface() {
         log INFO "$iface: восстановлен, IP=$(ip -4 addr show dev "$iface" | awk '/inet /{print $2}')"
         debug_iface_state "$iface"
         release_lock "$iface"
+        # Grat-ARP burst после восстановления IP (тот же механизм что и при has_ip)
+        local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
+        if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \
+           && [ -f /usr/local/bin/sa02m-grat-arp.py ]; then
+            touch "$grat_marker"
+            python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
+            (
+                for _rep in 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+                    sleep 1
+                    python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
+                done
+            ) &
+            disown 2>/dev/null || true
+        fi
     else
         log ERROR "$iface: восстановление не удалось"
         debug_iface_state "$iface"
-        # Не держим lock после неудачи: следующая проверка watchdog сможет
-        # повторить попытку без дополнительной минутной задержки.
         release_lock "$iface"
     fi
 }
