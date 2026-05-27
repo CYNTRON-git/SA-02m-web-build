@@ -266,6 +266,50 @@ recover_iface() {
     else
         # IP есть — только логируем состояние шлюза, восстановление не нужно.
         check_connectivity "$iface"
+        # Gratuitous ARP burst: преодоление Windows ARP negative caching (~45s FAILED).
+        # Отправляем сразу при появлении IP — и затем каждые 3с на 30с,
+        # чтобы попасть в окно когда Windows переходит из FAILED→STALE→PROBE.
+        # Только один раз за загрузку (маркер в /run/ — очищается при ребуте).
+        local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
+        if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \
+           && [ -f /usr/local/bin/sa02m-grat-arp.py ]; then
+            touch "$grat_marker"
+
+            # Сразу шлём grat-ARP и запускаем фоновый burst (до link bounce).
+            python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
+            (
+                for _rep in 2 3 4 5 6 7 8 9 10; do
+                    sleep 3
+                    python3 /usr/local/bin/sa02m-grat-arp.py "$iface" 2>/dev/null || true
+                done
+            ) &
+            disown 2>/dev/null || true
+
+            # SW link bounce (0.3s): PHY briefly goes offline → подключённый коммутатор/ПК
+            # видит carrier loss → сбрасывает ARP-кэш → при подъёме линка принимает
+            # наш gratuitous ARP (тот же эффект что физическое передёргивание кабеля).
+            ip link set "$iface" down 2>/dev/null || true
+            sleep 0.3
+            ip link set "$iface" up   2>/dev/null || true
+            sleep 0.5
+
+            # Восстанавливаем LED trigger: link bounce сбрасывает его в [none]
+            # (PHY driver перезапускается при down/up).
+            local _led=/sys/class/leds/eth0_link
+            if [ -d "$_led" ]; then
+                local _phy
+                _phy=$(tr ' ' '\n' < "$_led/trigger" 2>/dev/null \
+                       | sed 's/^\[//; s/\]$//' \
+                       | grep -E 'mdio.*:link$' | head -1)
+                if [ -n "$_phy" ]; then
+                    echo "$_phy" > "$_led/trigger" 2>/dev/null || true
+                else
+                    echo "netdev"  > "$_led/trigger"     2>/dev/null || true
+                    echo "$iface"  > "$_led/device_name" 2>/dev/null || true
+                    echo "1"       > "$_led/link"        2>/dev/null || true
+                fi
+            fi
+        fi
         return 0
     fi
 

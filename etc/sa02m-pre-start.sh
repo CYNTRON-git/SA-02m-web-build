@@ -217,6 +217,28 @@ if [ -n "$HWC" ]; then
 fi
 
 # ── LED eth0 (on-board PHY link LED) — 3 моргания ───────────────────────────
+# Устанавливает trigger для постоянной индикации линка.
+# Приоритет: PHY-trigger (mdio*:link) → netdev.
+# Одна функция используется и из pre-start, и из fix-eth (после link bounce).
+eth0_led_set_link_trigger() {
+  local led=/sys/class/leds/eth0_link
+  local iface=${1:-eth0}
+  [ -d "$led" ] || return 0
+  # Ищем любой PHY-trigger вида "*mdio*:link" среди доступных
+  local phy
+  phy=$(tr ' ' '\n' < "$led/trigger" 2>/dev/null \
+        | sed 's/^\[//; s/\]$//' \
+        | grep -E 'mdio.*:link$' \
+        | head -1)
+  if [ -n "$phy" ]; then
+    echo "$phy" > "$led/trigger" 2>/dev/null || true
+  else
+    echo "netdev" > "$led/trigger"     2>/dev/null || true
+    echo "$iface"  > "$led/device_name" 2>/dev/null || true
+    echo "1"       > "$led/link"        2>/dev/null || true
+  fi
+}
+
 _eth0_led_blink() {
   local led=/sys/class/leds/eth0_link i
   [ -d "$led" ] || return 0
@@ -227,9 +249,7 @@ _eth0_led_blink() {
     echo 0 > "$led/brightness" 2>/dev/null || true
     sleep 0.5
   done
-  echo "netdev" > "$led/trigger" 2>/dev/null || true
-  echo "eth0" > "$led/device_name" 2>/dev/null || true
-  echo "1" > "$led/link" 2>/dev/null || true
+  eth0_led_set_link_trigger eth0
 }
 _eth0_led_blink
 
