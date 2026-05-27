@@ -1,0 +1,8 @@
+# SA-02m: Periodic gratuitous ARP for eth0
+# Keeps ARP caches on all LAN hosts fresh so that one ping never fails
+# due to ARP cache expiry on the observing side.
+# Runs every minute; needs python3 (always available on Armbian).
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+* * * * * root python3 /usr/local/sbin/sa02m-grat-arp.py eth0 2>/dev/null || true

@@ -157,7 +157,16 @@ check_connectivity() {
 
     warn_file=$(gateway_warned_state_file "$iface")
 
-    if ping -c "$PING_COUNT" -W "$PING_TIMEOUT" -q "$target" >/dev/null 2>&1; then
+    # Если шлюз уже помечен как «никогда не отвечал» — используем короткий ping
+    # (1 пакет, 1 сек) чтобы проверить, не появился ли он, без 6-секундной задержки.
+    local _pc="$PING_COUNT" _pt="$PING_TIMEOUT"
+    if [ "$target_source" = "gateway" ] \
+       && ! target_was_reachable_before "$iface" "$target" \
+       && [ -f "$warn_file" ]; then
+        _pc=1; _pt=1
+    fi
+
+    if ping -c "$_pc" -W "$_pt" -q "$target" >/dev/null 2>&1; then
         remember_target_success "$iface" "$target"
         # Восстановились — лог только если ранее писали WARN.
         if [ -f "$warn_file" ]; then
