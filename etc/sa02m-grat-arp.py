@@ -41,15 +41,17 @@ def send_gratuitous_arp(iface: str) -> None:
     # Ethernet frame: dst=broadcast, src=our MAC, ethertype=ARP
     eth = b'\xff\xff\xff\xff\xff\xff' + mac + b'\x08\x06'
 
-    # ARP request: hwtype=Ethernet(1), proto=IPv4(0x0800),
-    #              hwsize=6, protosize=4, op=request(1),
-    #              sender_mac+ip, target_mac=00:00:00:00:00:00, target_ip=our IP
-    arp = struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1)
-    arp += mac + ip + b'\x00' * 6 + ip
-
     with socket.socket(socket.AF_PACKET, socket.SOCK_RAW) as s:
         s.bind((iface, 0))
-        s.send(eth + arp)
+        # op=1 ARP REQUEST (RFC 5227 ARP Announcement): target_mac=00:00:00:00:00:00
+        arp_req = struct.pack('!HHBBH', 1, 0x0800, 6, 4, 1)
+        arp_req += mac + ip + b'\x00' * 6 + ip
+        s.send(eth + arp_req)
+        # op=2 ARP REPLY (gratuitous reply): target_mac=broadcast
+        # More widely accepted by Windows in ARP FAILED/STALE states
+        arp_rep = struct.pack('!HHBBH', 1, 0x0800, 6, 4, 2)
+        arp_rep += mac + ip + b'\xff' * 6 + ip
+        s.send(eth + arp_rep)
 
 
 if __name__ == '__main__':
