@@ -238,7 +238,9 @@ recover_iface() {
             ip link set "$iface" down 2>/dev/null || true
             sleep 0.5
             ip link set "$iface" up   2>/dev/null || true
-            sleep 3
+            sleep 0.5
+            ethtool -r "$iface" 2>/dev/null || true
+            sleep 2
         else
             log INFO "$iface: нет физического линка (carrier=0), пропуск"
             debug_iface_state "$iface"
