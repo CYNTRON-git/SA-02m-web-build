@@ -298,6 +298,14 @@ for u in sa02m-watchdog-feed.service watchdog.service software-watchdog.service;
     sa02m_systemctl mask "$u" 2>/dev/null || true
 done
 
+# Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
+# (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
+log INFO "Маскируем userspace-watchdog сервисы"
+for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watchdog.service; do
+    sa02m_systemctl stop "$u" 2>/dev/null || true
+    sa02m_systemctl mask "$u" 2>/dev/null || true
+done
+
 # ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
 # ── ни eth1 (нет cable). Только тормозил boot на 6 секунд.                  ──
 log INFO "Маскируем NetworkManager (eth0/can0/eth1 — unmanaged)"

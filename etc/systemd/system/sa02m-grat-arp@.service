@@ -1,6 +1,10 @@
 [Unit]
 Description=SA-02m gratuitous ARP burst on %i
-After=networking.service network.target
+# Не ждём networking.service: он блокируется на ifupdown lock до 5 мин
+# когда ifup@%i.service уже держит тот же lock.
+# ifup@%i.service завершается сразу после назначения IP (~12-15с).
+After=ifup@%i.service network.target
+Wants=ifup@%i.service
 
 [Service]
 Type=oneshot
