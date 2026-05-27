@@ -234,6 +234,17 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log OK "sa02m-pre-start установлен и включён"
 fi
 
+# ca_02m.service (After=network.target) заменён ранним sa02m-pre-start — отключаем дубль
+if [ -f "$ETC_REPO/ca_02m.sh" ]; then
+    install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/sbin/ca_02m.sh
+    [ -f /usr/local/bin/ca_02m.sh ] && install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/bin/ca_02m.sh
+    if [ -f "$ETC_REPO/systemd/ca_02m.service" ]; then
+        install -m 644 "$ETC_REPO/systemd/ca_02m.service" /etc/systemd/system/ca_02m.service
+    fi
+    systemctl disable --now ca_02m.service >> "$LOG_FILE" 2>&1 || true
+    log OK "ca_02m: no-op, сервис отключён (индикация в sa02m-pre-start)"
+fi
+
 # ── Mask unnecessary timers ────────────────────────────────────────────────
 for unit in apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask "$unit" 2>/dev/null || true
