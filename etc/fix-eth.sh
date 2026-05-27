@@ -262,21 +262,9 @@ recover_iface() {
         sleep 0.1
         ip link set "$iface" up   2>/dev/null || true
         sleep 0.2
-        # Восстанавливаем LED: PHY restart при down/up сбрасывает trigger в [none]
-        local _led=/sys/class/leds/eth0_link
-        if [ -d "$_led" ]; then
-            local _phy
-            _phy=$(tr ' ' '\n' < "$_led/trigger" 2>/dev/null \
-                   | sed 's/^\[//; s/\]$//' \
-                   | grep -E 'mdio.*:link$' | head -1)
-            if [ -n "$_phy" ]; then
-                echo "$_phy" > "$_led/trigger" 2>/dev/null || true
-            else
-                echo "netdev"  > "$_led/trigger"     2>/dev/null || true
-                echo "$iface"  > "$_led/device_name" 2>/dev/null || true
-                echo "1"       > "$_led/link"        2>/dev/null || true
-            fi
-        fi
+        # LED: udev-правило 99-lan-recovery.rules вызовет sa02m-eth0-led.sh
+        # при следующем carrier=1 и корректно установит netdev trigger.
+        # Здесь ничего не делаем — PHY trigger не читает текущее состояние.
     fi
 
     # 3. Если networking.service ещё назначает IP — не мешаем, bounce уже выполнен.
@@ -308,6 +296,9 @@ recover_iface() {
             ) &
             disown 2>/dev/null || true
         fi
+        # LED eth0_link: устанавливаем здесь — PHY уже стабилен (после bounce),
+        # нет race condition с PHY driver который сбрасывает trigger при link-up.
+        [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
         return 0
     fi
 
@@ -356,6 +347,7 @@ recover_iface() {
             ) &
             disown 2>/dev/null || true
         fi
+        [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh || true
     else
         log ERROR "$iface: восстановление не удалось"
         debug_iface_state "$iface"
