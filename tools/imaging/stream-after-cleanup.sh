@@ -48,12 +48,20 @@ EOF
     systemctl enable regen-ssh-host-keys.service 2>/dev/null || true
 }
 
+prepare_firstboot_resize() {
+    log "firstrun resize: enable services (донор уже отключил armbian-resize после своего первого boot)"
+    rm -f /var/lib/sa02m-rootfs-expand.done
+    systemctl enable armbian-resize-filesystem.service 2>/dev/null || true
+    systemctl enable sa02m-rootfs-expand.service 2>/dev/null || true
+}
+
 prepare_clone_ids() {
     log "сброс machine-id (ssh keys — непосредственно перед dd)"
     truncate -s 0 /etc/machine-id
     rm -f /var/lib/dbus/machine-id
     ln -sf /etc/machine-id /var/lib/dbus/machine-id
     install_regen_ssh_service
+    prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync
 }

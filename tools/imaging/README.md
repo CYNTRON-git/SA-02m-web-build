@@ -47,7 +47,9 @@ chmod +x *.sh
 - `sa02m-1eth-v1.0.0-shrunk.img.xz.sha256`
 - `sa02m-1eth-v1.0.0-shrunk.manifest.json`
 
-### 3. Подготовить USB для приёмника
+### 3. Подготовить носитель / образ для приёмника
+
+**Вариант A — USB + flash-receiver (цех, устройство само пишет eMMC):**
 
 ```bash
 ./prepare-flash-media.sh \
@@ -57,9 +59,26 @@ chmod +x *.sh
 
 На носителе: `sa02m-shrunk.img.xz`, `.sha256`, `flash-receiver.sh`, `autorun.sh` → symlink.
 
+**Вариант B — ImageUSB (Windows, FEL/USB → запись .img на eMMC):**
+
+```bash
+./prepare-imageusb.sh \
+    --image ./out/sa02m-1eth-v1.0.0-shrunk.img.xz \
+    --dest /mnt/c/Users/admin/Downloads/SA02m-imageusb
+```
+
+На ПК: распакованный `.img` + `.sha256` + `IMAGEUSB.txt`. **xz распаковывается на хосте**, ImageUSB пишет `.img` напрямую.
+
+> ⚠ **Не** заливать только `.img` без fix first-boot resize в образе. При снятии образа `stream-after-cleanup.sh` включает `sa02m-rootfs-expand` и `armbian-resize-filesystem`. Старые образы (до fix) после ImageUSB дают rootfs ~1.8G — нужен пересбор или ручной resize.
+
 ### 4. Залить на новую плату
 
-Подключить USB → питание → `flash-receiver.sh` / `autorun.sh` → reboot → QA (§14.4 в guide).
+| Режим | Действие | Первая загрузка |
+|---|---|---|
+| flash-receiver | USB → `flash-receiver.sh` → reboot | rootfs ~7G (sa02m-rootfs-expand) |
+| ImageUSB | ImageUSB → Write `.img` на eMMC | то же |
+
+Проверка: `df -h /` → **Size ≈ 7.0G**, не 1.8G.
 
 ---
 
@@ -74,6 +93,7 @@ chmod +x *.sh
 | [`restore-donor-ssh.sh`](restore-donor-ssh.sh) | донор | обёртка над `fix-donor-after-abort.sh` |
 | [`make-image.sh`](make-image.sh) | хост WSL2 | cleanup → stream по ssh → PiShrink → manifest |
 | [`prepare-flash-media.sh`](prepare-flash-media.sh) | хост | упаковка USB для flash-receiver |
+| [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
 

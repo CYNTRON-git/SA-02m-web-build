@@ -1,0 +1,18 @@
+[Unit]
+Description=SA-02m expand rootfs to full eMMC after PiShrink clone
+DefaultDependencies=no
+After=local-fs.target
+Before=sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watchdog.service basic.target
+ConditionPathExists=!/var/lib/sa02m-rootfs-expand.done
+ConditionPathExists=!/root/.no_rootfs_resize
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=6min
+ExecStart=/usr/local/sbin/sa02m-rootfs-expand.sh start
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=basic.target

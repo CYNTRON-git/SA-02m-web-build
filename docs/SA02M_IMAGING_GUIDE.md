@@ -685,14 +685,15 @@ IMG_NAME=sa02m-20260520-shrunk.img.xz sh /mnt/flash-receiver.sh
 3. **Либо** записать распакованный `.img` через ImageUSB / `dd` с ПК (нужен **полный** `.img`, не `.xz`).
 4. **Либо** загрузиться с SD/USB и запустить `flash-receiver.sh`.
 
-Распаковка на хосте перед ImageUSB:
+Распаковка на хосте перед ImageUSB (или `./prepare-imageusb.sh --image …`):
 
 ```bash
-xz -d -k sa02m-YYYYMMDD-shrunk.img.xz
-# записать sa02m-YYYYMMDD-shrunk.img через ImageUSB на eMMC
+./prepare-imageusb.sh --image ./out/sa02m-YYYYMMDD-shrunk.img.xz --dest /mnt/c/SA02m
+# ImageUSB → Write → sa02m-…-shrunk.img
 ```
 
-> ImageUSB пишет **файл образа** напрямую — xz нужно распаковать заранее.
+> ImageUSB пишет **файл образа** напрямую — xz нужно распаковать **на ПК**, не на устройстве.  
+> После первой загрузки `sa02m-rootfs-expand.service` (или `armbian-resize-filesystem`) растягивает p2 до ~7 GiB.
 
 ### 11.3. Вариант C — заливка по SSH (если приёмник уже в сети)
 
@@ -858,7 +859,7 @@ reboot
 | PiShrink завис на resize2fs | фрагментация ext4 | на доноре: `e2fsck -fy /dev/mmcblk2p2`; повторить |
 | `No space left on device` при zero-fill | диск реально полон | cleanup, `df -h /` |
 | После заливки: kernel panic / не грузится | битый образ / прерванный dd | проверить sha256; повторить заливку |
-| rootfs не расширился (df ~1.5G) | не сработал armbian-resize | `growpart /dev/mmcblk2 2 && resize2fs /dev/mmcblk2p2 && reboot` |
+| rootfs не расширился (df ~1.5G) | в образе `armbian-resize-filesystem` **disabled** (донор уже прошёл firstrun) | пересобрать образ (`stream-after-cleanup` включает resize); на уже прошитой плате: `/usr/lib/armbian/armbian-resize-filesystem start` или `/usr/local/sbin/sa02m-rootfs-expand.sh start` |
 | SSH: тот же host key на двух платах | cleanup не делали перед образом | на клоне: `rm /etc/ssh/ssh_host_*; ssh-keygen -A; systemctl restart ssh` |
 | `sha256 mismatch` в flash-receiver | повреждён файл на носителе | перекопировать образ + .sha256 |
 | `xz: Cannot allocate memory` на приёмнике | 512 MiB RAM мало для xz -9 | xz -dc использует ~50–100 MiB — обычно OK; закрыть лишние процессы |

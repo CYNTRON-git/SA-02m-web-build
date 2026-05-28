@@ -41,47 +41,45 @@ PYEOF
 fi
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
-    # Read POST body safely to a temp file; avoid shell variable injection
     TMP_IN=$(mktemp /tmp/sa02m-mqcfg-in.XXXXXX)
-    TMP_CHK=$(mktemp /tmp/sa02m-mqcfg-chk.XXXXXX)
-    trap "rm -f '$TMP_IN' '$TMP_CHK'" EXIT
+    TMP_OUT=$(mktemp /tmp/sa02m-mqcfg-out.XXXXXX)
+    trap "rm -f '$TMP_IN' '$TMP_OUT'" EXIT
 
     dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP_IN"
 
-    # Validate JSON
-    if ! python3 -c "import sys,json; json.load(open('$TMP_IN'))" 2>/dev/null; then
+    if ! python3 -c "import json; json.load(open('$TMP_IN'))" 2>/dev/null; then
         echo '{"ok":false,"error":"invalid_json"}'
         exit 0
     fi
 
-    # Convert JSON → YAML and write atomically
-    python3 - "$TMP_IN" <<'PYEOF'
-import sys, json, yaml, pathlib, os
-
+    RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" <<'PYEOF'
+import sys, json, yaml, pathlib
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
-except Exception as e:
-    print(json.dumps({"ok": False, "error": f"json: {e}"}))
-    sys.exit(0)
-
-cfg_path = pathlib.Path("/etc/sa02m-modbus-mqtt.yaml")
-tmp_path = cfg_path.with_suffix(".yaml.tmp")
-
-try:
-    with open(tmp_path, "w") as f:
+    tmp_path = pathlib.Path(sys.argv[2])
+    with open(tmp_path, "w", encoding="utf-8") as f:
         f.write("# SA-02m Modbus\u2192MQTT bridge configuration\n")
         f.write("# Managed by web UI. Edit manually or via MQTT tab.\n\n")
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    os.replace(tmp_path, cfg_path)
     print(json.dumps({"ok": True}))
 except Exception as e:
-    if tmp_path.exists():
-        tmp_path.unlink(missing_ok=True)
     print(json.dumps({"ok": False, "error": str(e)}))
 PYEOF
+)
 
-    # Restart bridge if requested
+    if ! echo "$RESULT" | python3 -c "import sys,json; sys.exit(0 if json.load(sys.stdin).get('ok') else 1)" 2>/dev/null; then
+        echo "$RESULT"
+        exit 0
+    fi
+
+    if ! sudo /usr/local/sbin/sa02m-mqtt-config-apply.sh "$TMP_OUT" 2>/dev/null; then
+        echo '{"ok":false,"error":"config_apply_failed"}'
+        exit 0
+    fi
+
+    echo '{"ok":true}'
+
     if python3 -c "import sys,json; d=json.load(open('$TMP_IN')); sys.exit(0 if d.get('restart') else 1)" 2>/dev/null; then
         sudo /usr/bin/systemctl restart sa02m-modbus-mqtt 2>/dev/null || true
     fi
