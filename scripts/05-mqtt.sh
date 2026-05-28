@@ -46,6 +46,8 @@ if [ ! -f /etc/mosquitto/passwd/default.conf ]; then
     # Генерируем случайный пароль
     MQTT_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16 || echo "cyntron_mqtt_$(date +%s)")
     mosquitto_passwd -b -c /etc/mosquitto/passwd/default.conf mqttuser "$MQTT_PASS"
+    chown root:mosquitto /etc/mosquitto/passwd/default.conf
+    chmod 0640 /etc/mosquitto/passwd/default.conf
     log OK "Пользователь mqttuser создан. Пароль: $MQTT_PASS"
     log WARN "Сохраните пароль! Он больше не отображается."
     echo "MQTT_USER=mqttuser" > /etc/sa02m_mqtt.env
@@ -71,9 +73,8 @@ for pkg in python3 python3-pip; do
     dpkg -l "$pkg" >/dev/null 2>&1 || apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1
 done
 
-pip3 install --quiet paho-mqtt pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
-# Также попробовать minimalmodbus если нет pyserial-based реализации
-pip3 install --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -2
+pip3 install --break-system-packages --quiet paho-mqtt pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
+pip3 install --break-system-packages --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -2
 log OK "Python-зависимости установлены (paho-mqtt, pyyaml, pyserial)"
 
 # ── 3. Modbus→MQTT мост ───────────────────────────────────────────────────────
@@ -85,14 +86,20 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 # Копируем Python-скрипты
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
 install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
+install -m 0755 -o root -g root "$OPT_DIR/mqtt_bus_scan.py"     "$BRIDGE_DIR/mqtt_bus_scan.py"
 
 # Конфиг YAML (только если не существует — не перетираем пользовательские настройки)
 if [ ! -f /etc/sa02m-modbus-mqtt.yaml ]; then
-    install -m 0640 -o root -g root "$OPT_DIR/sa02m-modbus-mqtt.yaml" /etc/sa02m-modbus-mqtt.yaml
+    install -m 0660 -o root -g www-data "$OPT_DIR/sa02m-modbus-mqtt.yaml" /etc/sa02m-modbus-mqtt.yaml
     log OK "Конфиг /etc/sa02m-modbus-mqtt.yaml создан (шаблон)"
 else
-    log INFO "/etc/sa02m-modbus-mqtt.yaml уже существует — оставляю без изменений"
+    chown root:www-data /etc/sa02m-modbus-mqtt.yaml 2>/dev/null || true
+    chmod 0660 /etc/sa02m-modbus-mqtt.yaml 2>/dev/null || true
+    log INFO "/etc/sa02m-modbus-mqtt.yaml уже существует — права обновлены для www-data"
 fi
+
+install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
+sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
 
 # Systemd units
 install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
@@ -114,10 +121,11 @@ sa02m_systemctl restart sa02m-telemetry.service >> "$LOG_FILE" 2>&1 && \
 # ── 4. CGI-скрипты веб-интерфейса ────────────────────────────────────────────
 log INFO "Установка CGI MQTT..."
 CGI_SRC="$WWW_DIR/cgi-bin"
-CGI_DST="/var/www/sa02m/cgi-bin"
+: "${WEB_ROOT:=/var/www/network_config}"
+CGI_DST="$WEB_ROOT/cgi-bin"
 
 if [ -d "$CGI_DST" ]; then
-    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi; do
+    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi mqtt_scan.cgi; do
         if [ -f "$CGI_SRC/$cgi" ]; then
             install -m 0755 -o root -g www-data "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
             sed -i 's/\r$//' "$CGI_DST/$cgi"
@@ -141,8 +149,10 @@ visudo -cf /etc/sudoers.d/sa02m-mqtt >> "$LOG_FILE" 2>&1 && log OK "sudoers sa02
 NGINX_CONF_SRC="$ETC_DIR/nginx/network_config.conf"
 NGINX_CONF_DST=""
 for f in /etc/nginx/sites-enabled/sa02m \
+          /etc/nginx/sites-enabled/000-sa02m-network_config \
           /etc/nginx/conf.d/sa02m.conf \
-          /etc/nginx/sites-available/sa02m; do
+          /etc/nginx/sites-available/sa02m \
+          /etc/nginx/sites-available/network_config; do
     [ -f "$f" ] && NGINX_CONF_DST="$f" && break
 done
 

@@ -298,6 +298,15 @@ for u in sa02m-watchdog-feed.service watchdog.service software-watchdog.service;
     sa02m_systemctl mask "$u" 2>/dev/null || true
 done
 
+# Расширение rootfs после PiShrink-клона (до userspace-watchdog).
+if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
+    log INFO "Установка sa02m-rootfs-expand (first-boot eMMC resize)"
+    install -m 755 "$ETC_REPO/sa02m-rootfs-expand.sh" /usr/local/sbin/sa02m-rootfs-expand.sh
+    install -m 644 "$ETC_REPO/systemd/sa02m-rootfs-expand.service" /etc/systemd/system/sa02m-rootfs-expand.service
+    sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+    sa02m_systemctl enable sa02m-rootfs-expand.service >>"$LOG_FILE" 2>&1 || true
+fi
+
 # Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
 # (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
 log INFO "Маскируем userspace-watchdog сервисы"

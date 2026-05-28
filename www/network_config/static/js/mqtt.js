@@ -155,6 +155,11 @@ function makeDeviceId(type, port, addr) {
   return `${prefix}-${comName}-${addr}`;
 }
 
+function getModuleTypeCode(dev) {
+  const mt = dev.module_type ?? dev._module_type_code;
+  return mt != null && mt !== '' ? Number(mt) : 1;
+}
+
 function topicPath(deviceId, chName) {
   return `/devices/${deviceId}/controls/${chName}`;
 }
@@ -261,7 +266,7 @@ function countChannelsEnabled(dev) {
 function countChannelsTotal(dev) {
   if (dev.type === 'mr02m') {
     for (const [code, mt] of Object.entries(MR02M_TYPES)) {
-      if (String(code) === String(dev._module_type_code)) {
+      if (String(code) === String(getModuleTypeCode(dev))) {
         return mt.do + mt.di + mt.ao + mt.ai;
       }
     }
@@ -311,7 +316,7 @@ function toggleAccordion(id) {
 
 function buildMR02mChannels(dev, container) {
   const channels = dev.channels || {};
-  const mtCode = dev._module_type_code;
+  const mtCode = getModuleTypeCode(dev);
   const mt = MR02M_TYPES[mtCode] || {do:6,di:8,ao:0,ai:0};
 
   // Polling intervals
@@ -654,7 +659,7 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
 
   const dev = {id, type, port, baudrate: baud || 115200, address: addr, name: name || id};
   if (type === 'mr02m') {
-    dev.module_type = scanDev.module_type || 0;
+    dev.module_type = scanDev.module_type || 1;
     dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 5; dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
@@ -717,6 +722,7 @@ function confirmAddDevice() {
 
   const dev = {id, type, port, baudrate, address: addr, name: name || id};
   if (type === 'mr02m') {
+    dev.module_type = 1;
     dev.poll_do_di_s = 1;
     dev.poll_ai_ao_s = 5;
     dev.poll_diag_s = 60;
