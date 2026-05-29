@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    СА-02м  — Шлюз RS-485 → Ethernet
-   gateway.js  v1.0.0
+   gateway.js  v1.0.3.19
    ═══════════════════════════════════════════════════════════════════════════ */
 
 'use strict';
@@ -11,48 +11,91 @@
 const PORTS   = ['COM1', 'COM2', 'COM3', 'COM4', 'COM5'];
 const MODES   = [
   { value: 'disabled',     label: 'Отключён' },
-  { value: 'modbus_tcp',   label: 'Modbus TCP (MBAP↔RTU)' },
-  { value: 'rtu_over_tcp', label: 'RTU over TCP (raw RTU)' },
-  { value: 'transparent',  label: 'Прозрачный (raw bytes)' },
+  { value: 'modbus_tcp',   label: 'Modbus TCP' },
+  { value: 'rtu_over_tcp', label: 'RTU over TCP' },
+  { value: 'transparent',  label: 'Прозрачный' },
 ];
-const BAUDS   = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
-const PARITIES   = [
+const BAUDS     = [1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200];
+const PARITIES  = [
   { value: 'none', label: 'Нет (N)' },
   { value: 'even', label: 'Чётный (E)' },
   { value: 'odd',  label: 'Нечётный (O)' },
 ];
-const STOPBITS   = [{ value: 1, label: '1' }, { value: 2, label: '2' }];
-const DATABITS   = [7, 8];
-
-// Default TCP ports per port index (502–506, 8502–8506, 9502–9506)
+const STOPBITS  = [{ value: 1, label: '1' }, { value: 2, label: '2' }];
+const DATABITS  = [7, 8];
 const DEFAULT_TCP_PORTS = { COM1: 502, COM2: 503, COM3: 504, COM4: 505, COM5: 506 };
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let _config        = {};     // { COM1: {...}, COM2: {...}, ... }
-let _status        = {};     // from gateway_status.cgi
-let _activePort    = PORTS[0];
-let _pollTimer     = null;
-let _initialized   = false;
-let _dirty         = {};     // ports with unsaved changes
+let _config      = {};
+let _status      = {};
+let _activeSub   = 'device';
+let _pollTimer   = null;
+let _initialized = false;
+let _dirty       = {};
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-window.gatewayInit = async function gatewayInit() {
+// ── Public API ────────────────────────────────────────────────────────────────
+window.gatewayInit = async function () {
+  _openSubNav();
   if (_initialized) {
     _startPolling();
+    _selectSub(_activeSub);
     return;
   }
   _initialized = true;
-  _buildUI();
+  _buildContentArea();
+  _bindSubNavClicks();
   await _loadAll();
+  _selectSub(_activeSub);
   _startPolling();
 };
 
-window.gatewayDestroy = function gatewayDestroy() {
+window.gatewayDestroy = function () {
   _stopPolling();
+  _closeSubNav();
 };
 
-// ── UI builder ────────────────────────────────────────────────────────────────
-function _buildUI() {
+// ── Sidebar sub-nav management ────────────────────────────────────────────────
+function _openSubNav() {
+  const sub  = document.getElementById('nav-gateway-sub');
+  const item = document.getElementById('nav-gateway');
+  if (sub)  sub.classList.add('open');
+  if (item) item.classList.add('expanded');
+}
+
+function _closeSubNav() {
+  const sub  = document.getElementById('nav-gateway-sub');
+  const item = document.getElementById('nav-gateway');
+  if (sub)  sub.classList.remove('open');
+  if (item) item.classList.remove('expanded');
+}
+
+function _bindSubNavClicks() {
+  const sub = document.getElementById('nav-gateway-sub');
+  if (!sub) return;
+  sub.querySelectorAll('[data-gateway-sub]').forEach(el => {
+    el.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      _selectSub(this.dataset.gatewaySub);
+    });
+  });
+}
+
+function _selectSub(key) {
+  _activeSub = key;
+  document.querySelectorAll('#nav-gateway-sub [data-gateway-sub]').forEach(el => {
+    el.classList.toggle('active', el.dataset.gatewaySub === key);
+  });
+  const area = document.getElementById('gw-content');
+  if (!area) return;
+  if (key === 'device') {
+    _renderDevicePanel(area);
+  } else if (PORTS.includes(key)) {
+    _renderPortPanel(area, key);
+  }
+}
+
+// ── Content area skeleton ─────────────────────────────────────────────────────
+function _buildContentArea() {
   const pane = document.getElementById('tab-gateway');
   if (!pane) return;
   pane.innerHTML = `
@@ -60,196 +103,226 @@ function _buildUI() {
       <h2>Шлюз RS-485 → Ethernet</h2>
       <p>Преобразователь интерфейсов RS-485/TCP: Modbus TCP, RTU over TCP, прозрачный режим</p>
     </div>
-
-    <div id="gw-svc-bar" class="widget gw-svc-bar">
-      <div class="gw-svc-row">
-        <span id="gw-svc-badge" class="badge badge-unk">● Сервис —</span>
-        <div style="margin-left:auto;display:flex;gap:6px">
-          <button class="btn btn-sm" onclick="gatewayCtrl('start')">Запустить</button>
-          <button class="btn btn-sm" onclick="gatewayCtrl('reload')">↺ Перезагрузить конфиг</button>
-          <button class="btn btn-sm btn-warn" onclick="gatewayCtrl('restart')">⟳ Перезапустить</button>
-          <button class="btn btn-sm btn-danger" onclick="gatewayCtrl('stop')">Остановить</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="gw-layout">
-      <div class="gw-port-tabs" id="gw-port-tabs">
-        ${PORTS.map(p => `
-          <button class="gw-port-tab${p === _activePort ? ' active' : ''}"
-                  data-port="${p}" onclick="gatewaySelectPort('${p}')" type="button">
-            <span class="gw-port-tab-name">${p}</span>
-            <span class="gw-port-tab-badge" id="gw-tab-badge-${p}"></span>
-          </button>`).join('')}
-      </div>
-
-      <div class="gw-port-panel widget" id="gw-port-panel">
-        <div id="gw-form-area"><!-- filled by _renderPortForm --></div>
-      </div>
-    </div>`;
+    <div id="gw-content"></div>`;
 }
 
-// ── Port tab switch ────────────────────────────────────────────────────────────
-window.gatewaySelectPort = function(port) {
-  _activePort = port;
-  document.querySelectorAll('.gw-port-tab').forEach(el => {
-    el.classList.toggle('active', el.dataset.port === port);
+// ── Device panel ──────────────────────────────────────────────────────────────
+function _renderDevicePanel(area) {
+  const active = _status.service_active;
+  const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
+  const svcText  = active ? '● Сервис активен' : '● Сервис остановлен';
+
+  const activePorts = PORTS.filter(p => (_config[p] || {}).enabled);
+  const runningPorts = PORTS.filter(p => {
+    const st = (_status.ports || {})[p];
+    return st && st.running;
   });
-  _renderPortForm(port);
-};
-
-// ── Form renderer ─────────────────────────────────────────────────────────────
-function _renderPortForm(port) {
-  const area = document.getElementById('gw-form-area');
-  if (!area) return;
-
-  const cfg = _config[port] || _defaultPortCfg(port);
-  const st  = (_status.ports || {})[port] || {};
-  const mode = cfg.mode || 'disabled';
-  const running = st.running || false;
-
-  const dirty = _dirty[port] ? ' <span class="gw-dirty-dot" title="Несохранённые изменения">●</span>' : '';
 
   area.innerHTML = `
-    <div class="gw-port-form-head">
-      <div>
-        <h3 style="margin:0 0 4px;font-size:1rem">${port}${dirty}</h3>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          ${_statusBadgeHtml(st, cfg)}
-        </div>
+    <div class="widget" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+        <span id="gw-svc-badge" class="${svcClass}">${svcText}</span>
+        <span style="color:var(--text-sec);font-size:.82rem">
+          Включено портов: ${activePorts.length} / 5 &nbsp;|&nbsp; Работают: ${runningPorts.length}
+        </span>
       </div>
-      <div class="gw-port-counters" id="gw-counters-${port}">
-        ${_countersHtml(st)}
-      </div>
-    </div>
-
-    <div class="gw-form-grid">
-      <div class="form-section gw-section">
-        <h4>Режим и TCP</h4>
-
-        <div class="field toggle-field-row">
-          <span class="toggle-field-label">Включить порт</span>
-          <label class="toggle-inline">
-            <input type="checkbox" class="toggle toggle-wide" id="gw-en-${port}"
-                   ${cfg.enabled ? 'checked' : ''}
-                   onchange="gatewayFieldChange('${port}')">
-          </label>
-        </div>
-
-        <div class="field">
-          <label>Режим работы</label>
-          <select id="gw-mode-${port}" onchange="gatewayModeChange('${port}')">
-            ${MODES.map(m =>
-              `<option value="${m.value}"${mode === m.value ? ' selected' : ''}>${m.label}</option>`
-            ).join('')}
-          </select>
-          <p class="field-hint" id="gw-mode-hint-${port}">${_modeHint(mode)}</p>
-        </div>
-
-        <div id="gw-tcp-fields-${port}" ${mode === 'disabled' ? 'style="display:none"' : ''}>
-          <div class="field">
-            <label>TCP-порт</label>
-            <input type="number" id="gw-tcpport-${port}"
-                   value="${cfg.tcp_port || DEFAULT_TCP_PORTS[port]}"
-                   min="1" max="65535"
-                   onchange="gatewayFieldChange('${port}')">
-          </div>
-        </div>
-
-        <div id="gw-fmb-field-${port}"
-             ${mode === 'modbus_tcp' ? '' : 'style="display:none"'}>
-          <div class="field toggle-field-row">
-            <span class="toggle-field-label">Fast Modbus probe (FC 0x47)</span>
-            <label class="toggle-inline">
-              <input type="checkbox" class="toggle toggle-wide" id="gw-fmb-${port}"
-                     ${cfg.fast_modbus_probe !== false ? 'checked' : ''}
-                     onchange="gatewayFieldChange('${port}')">
-            </label>
-          </div>
-          <p class="field-hint">Отвечать локально на WB Fast Modbus probe без обращения к RS-485</p>
-        </div>
-      </div>
-
-      <div class="form-section gw-section">
-        <h4>Параметры RS-485</h4>
-
-        <div class="field">
-          <label>Скорость (бод)</label>
-          <select id="gw-baud-${port}" onchange="gatewayFieldChange('${port}')">
-            ${BAUDS.map(b =>
-              `<option value="${b}"${parseInt(cfg.baudrate) === b ? ' selected' : ''}>${b}</option>`
-            ).join('')}
-          </select>
-        </div>
-
-        <div class="field">
-          <label>Чётность</label>
-          <select id="gw-parity-${port}" onchange="gatewayFieldChange('${port}')">
-            ${PARITIES.map(p =>
-              `<option value="${p.value}"${cfg.parity === p.value ? ' selected' : ''}>${p.label}</option>`
-            ).join('')}
-          </select>
-        </div>
-
-        <div class="field">
-          <label>Стоп-биты</label>
-          <select id="gw-stop-${port}" onchange="gatewayFieldChange('${port}')">
-            ${STOPBITS.map(s =>
-              `<option value="${s.value}"${parseInt(cfg.stopbits) === s.value ? ' selected' : ''}>${s.label}</option>`
-            ).join('')}
-          </select>
-        </div>
-
-        <div class="field">
-          <label>Биты данных</label>
-          <select id="gw-data-${port}" onchange="gatewayFieldChange('${port}')">
-            ${DATABITS.map(d =>
-              `<option value="${d}"${parseInt(cfg.databits) === d ? ' selected' : ''}>${d}</option>`
-            ).join('')}
-          </select>
-        </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <button class="btn btn-sm" id="gw-btn-start">Запустить</button>
+        <button class="btn btn-sm" id="gw-btn-reload">↺ Перезагрузить конфиг</button>
+        <button class="btn btn-sm btn-warn" id="gw-btn-restart">⟳ Перезапустить</button>
+        <button class="btn btn-sm btn-danger" id="gw-btn-stop">Остановить</button>
       </div>
     </div>
 
-    <div class="btn-group gw-save-row">
-      <button class="btn btn-primary" onclick="gatewaySavePort('${port}')">
-        Сохранить ${port}
-      </button>
-      <button class="btn btn-sm" onclick="gatewayResetPort('${port}')">Сбросить</button>
-    </div>
-    <div class="gw-save-status" id="gw-save-status-${port}"></div>
-  `;
+    <div class="widget">
+      <h3 style="font-size:.95rem;margin:0 0 12px">Порты</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+        <thead>
+          <tr style="color:var(--text-sec)">
+            <th style="text-align:left;padding:4px 8px;font-weight:500">Порт</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:500">Режим</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:500">TCP</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:500">Бод</th>
+            <th style="text-align:left;padding:4px 8px;font-weight:500">Статус</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${PORTS.map(p => {
+            const cfg = _config[p] || {};
+            const st  = (_status.ports || {})[p] || {};
+            const modeLabel = MODES.find(m => m.value === (cfg.mode || 'disabled'))?.label || '—';
+            const running = st.running;
+            const dot = cfg.enabled
+              ? (running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--red)">●</span>')
+              : '<span style="color:var(--text-dim)">○</span>';
+            return `<tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px 8px"><a href="#" class="gw-port-link" data-port="${p}" style="color:var(--cyan);text-decoration:none">${p}</a></td>
+              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled ? modeLabel : '—'}</td>
+              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled && cfg.mode !== 'disabled' ? (cfg.tcp_port || DEFAULT_TCP_PORTS[p]) : '—'}</td>
+              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled ? (cfg.baudrate || 9600) : '—'}</td>
+              <td style="padding:6px 8px">${dot}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  area.querySelectorAll('.gw-port-link').forEach(a => {
+    a.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      _selectSub(this.dataset.port);
+    });
+  });
+  area.querySelector('#gw-btn-start').onclick   = () => _svcCtrl('start');
+  area.querySelector('#gw-btn-reload').onclick  = () => _svcCtrl('reload');
+  area.querySelector('#gw-btn-restart').onclick = () => _svcCtrl('restart');
+  area.querySelector('#gw-btn-stop').onclick    = () => _svcCtrl('stop');
 }
 
-// ── Mode change: show/hide conditional fields ─────────────────────────────────
-window.gatewayModeChange = function(port) {
-  const mode = document.getElementById(`gw-mode-${port}`)?.value || 'disabled';
-  const tcpDiv = document.getElementById(`gw-tcp-fields-${port}`);
-  const fmbDiv = document.getElementById(`gw-fmb-field-${port}`);
-  const hint   = document.getElementById(`gw-mode-hint-${port}`);
+// ── Port panel ────────────────────────────────────────────────────────────────
+function _renderPortPanel(area, port) {
+  const cfg  = _config[port] || _defaultPortCfg(port);
+  const st   = (_status.ports || {})[port] || {};
+  const mode = cfg.mode || 'disabled';
+
+  area.innerHTML = `
+    <div class="widget">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+        <h3 style="margin:0;font-size:1rem">${port}</h3>
+        ${_statusBadgeHtml(st, cfg)}
+        <div id="gw-counters-${port}" style="margin-left:auto">${_countersHtml(st)}</div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px 24px">
+
+        <div>
+          <p class="field-label" style="margin-bottom:6px;font-size:.78rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:.04em">Режим и TCP</p>
+
+          <div class="field toggle-field-row" style="margin-bottom:10px">
+            <span class="toggle-field-label">Включить порт</span>
+            <label class="toggle-inline">
+              <input type="checkbox" class="toggle toggle-wide" id="gw-en-${port}"
+                     ${cfg.enabled ? 'checked' : ''}>
+            </label>
+          </div>
+
+          <div class="field" style="margin-bottom:10px">
+            <label style="font-size:.82rem;color:var(--text-sec)">Режим работы</label>
+            <select id="gw-mode-${port}" style="margin-top:4px">
+              ${MODES.map(m =>
+                `<option value="${m.value}"${mode === m.value ? ' selected' : ''}>${m.label}</option>`
+              ).join('')}
+            </select>
+            <p class="field-hint" id="gw-mode-hint-${port}" style="margin-top:4px;font-size:.77rem;color:var(--text-sec)">${_modeHint(mode)}</p>
+          </div>
+
+          <div id="gw-tcp-fields-${port}" ${mode === 'disabled' ? 'style="display:none"' : ''}>
+            <div class="field" style="margin-bottom:10px">
+              <label style="font-size:.82rem;color:var(--text-sec)">TCP-порт</label>
+              <input type="number" id="gw-tcpport-${port}" style="margin-top:4px"
+                     value="${cfg.tcp_port || DEFAULT_TCP_PORTS[port]}" min="1" max="65535">
+            </div>
+          </div>
+
+          <div id="gw-fmb-field-${port}" ${mode === 'modbus_tcp' ? '' : 'style="display:none"'}>
+            <div class="field toggle-field-row" style="margin-bottom:4px">
+              <span class="toggle-field-label" style="font-size:.82rem">Fast Modbus probe (FC&nbsp;0x47)</span>
+              <label class="toggle-inline">
+                <input type="checkbox" class="toggle toggle-wide" id="gw-fmb-${port}"
+                       ${cfg.fast_modbus_probe !== false ? 'checked' : ''}>
+              </label>
+            </div>
+            <p class="field-hint" style="font-size:.77rem;color:var(--text-sec);margin-bottom:10px">Отвечать локально на WB Fast Modbus probe</p>
+          </div>
+        </div>
+
+        <div>
+          <p class="field-label" style="margin-bottom:6px;font-size:.78rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:.04em">Параметры RS-485</p>
+
+          <div class="field" style="margin-bottom:10px">
+            <label style="font-size:.82rem;color:var(--text-sec)">Скорость (бод)</label>
+            <select id="gw-baud-${port}" style="margin-top:4px">
+              ${BAUDS.map(b =>
+                `<option value="${b}"${parseInt(cfg.baudrate) === b ? ' selected' : ''}>${b}</option>`
+              ).join('')}
+            </select>
+          </div>
+
+          <div class="field" style="margin-bottom:10px">
+            <label style="font-size:.82rem;color:var(--text-sec)">Чётность</label>
+            <select id="gw-parity-${port}" style="margin-top:4px">
+              ${PARITIES.map(p =>
+                `<option value="${p.value}"${cfg.parity === p.value ? ' selected' : ''}>${p.label}</option>`
+              ).join('')}
+            </select>
+          </div>
+
+          <div class="field" style="margin-bottom:10px">
+            <label style="font-size:.82rem;color:var(--text-sec)">Стоп-биты</label>
+            <select id="gw-stop-${port}" style="margin-top:4px">
+              ${STOPBITS.map(s =>
+                `<option value="${s.value}"${parseInt(cfg.stopbits) === s.value ? ' selected' : ''}>${s.label}</option>`
+              ).join('')}
+            </select>
+          </div>
+
+          <div class="field" style="margin-bottom:10px">
+            <label style="font-size:.82rem;color:var(--text-sec)">Биты данных</label>
+            <select id="gw-data-${port}" style="margin-top:4px">
+              ${DATABITS.map(d =>
+                `<option value="${d}"${parseInt(cfg.databits) === d ? ' selected' : ''}>${d}</option>`
+              ).join('')}
+            </select>
+          </div>
+        </div>
+
+      </div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn btn-primary" id="gw-save-btn-${port}">Сохранить</button>
+        <button class="btn btn-sm" id="gw-reset-btn-${port}">Сбросить</button>
+        <span id="gw-save-status-${port}" style="font-size:.82rem"></span>
+      </div>
+    </div>`;
+
+  const modeEl = area.querySelector(`#gw-mode-${port}`);
+  modeEl.addEventListener('change', () => _onModeChange(port));
+
+  area.querySelector(`#gw-save-btn-${port}`).addEventListener('click', () => _savePort(port));
+  area.querySelector(`#gw-reset-btn-${port}`).addEventListener('click', () => {
+    delete _dirty[port];
+    const a = document.getElementById('gw-content');
+    if (a) _renderPortPanel(a, port);
+  });
+
+  const fields = ['gw-en-', 'gw-tcpport-', 'gw-fmb-', 'gw-baud-', 'gw-parity-', 'gw-stop-', 'gw-data-'];
+  fields.forEach(prefix => {
+    const el = area.querySelector(`#${prefix}${port}`);
+    if (el) el.addEventListener('change', () => { _dirty[port] = true; });
+  });
+}
+
+function _onModeChange(port) {
+  const area = document.getElementById('gw-content');
+  if (!area) return;
+  const mode = area.querySelector(`#gw-mode-${port}`)?.value || 'disabled';
+  const tcpDiv = area.querySelector(`#gw-tcp-fields-${port}`);
+  const fmbDiv = area.querySelector(`#gw-fmb-field-${port}`);
+  const hint   = area.querySelector(`#gw-mode-hint-${port}`);
   if (tcpDiv) tcpDiv.style.display = mode === 'disabled' ? 'none' : '';
   if (fmbDiv) fmbDiv.style.display = mode === 'modbus_tcp' ? '' : 'none';
   if (hint)   hint.textContent = _modeHint(mode);
-  gatewayFieldChange(port);
-};
-
-window.gatewayFieldChange = function(port) {
   _dirty[port] = true;
-  const dot = document.querySelector(`#gw-form-area .gw-dirty-dot`);
-  if (!dot) {
-    const h3 = document.querySelector(`#gw-form-area h3`);
-    if (h3) h3.innerHTML += ' <span class="gw-dirty-dot" title="Несохранённые изменения">●</span>';
-  }
-};
+}
 
 // ── Save port ─────────────────────────────────────────────────────────────────
-window.gatewaySavePort = async function(port) {
+async function _savePort(port) {
   const cfg = _readFormCfg(port);
   if (!cfg) return;
 
   _config[port] = cfg;
   const statusEl = document.getElementById(`gw-save-status-${port}`);
-  if (statusEl) { statusEl.textContent = 'Сохранение…'; statusEl.className = 'gw-save-status'; }
+  if (statusEl) { statusEl.textContent = 'Сохранение…'; statusEl.style.color = 'var(--text-sec)'; }
 
   try {
     const resp = await fetch('/cgi-bin/gateway_config.cgi', {
@@ -260,26 +333,20 @@ window.gatewaySavePort = async function(port) {
     const data = await resp.json();
     if (data.ok) {
       delete _dirty[port];
-      _renderPortForm(port);   // re-render clears dirty dot
-      _updateTabBadges();
-      if (statusEl) { statusEl.textContent = ''; }
+      _updateSubNavDots();
+      if (statusEl) { statusEl.textContent = 'Сохранено'; statusEl.style.color = 'var(--green)'; }
       if (typeof toast === 'function') toast(`${port} сохранён`, 'ok');
     } else {
-      if (statusEl) { statusEl.textContent = 'Ошибка: ' + (data.error || '?'); statusEl.className = 'gw-save-status gw-save-err'; }
+      if (statusEl) { statusEl.textContent = 'Ошибка: ' + (data.error || '?'); statusEl.style.color = 'var(--red)'; }
     }
   } catch (e) {
-    if (statusEl) { statusEl.textContent = 'Сетевая ошибка: ' + e.message; statusEl.className = 'gw-save-status gw-save-err'; }
+    if (statusEl) { statusEl.textContent = 'Сетевая ошибка: ' + e.message; statusEl.style.color = 'var(--red)'; }
   }
-};
-
-window.gatewayResetPort = function(port) {
-  delete _dirty[port];
-  _renderPortForm(port);
-};
+}
 
 function _readFormCfg(port) {
-  const getVal  = id => document.getElementById(id)?.value;
-  const getChk  = id => document.getElementById(id)?.checked ?? false;
+  const getVal = id => document.getElementById(id)?.value;
+  const getChk = id => document.getElementById(id)?.checked ?? false;
   const mode = getVal(`gw-mode-${port}`) || 'disabled';
   return {
     enabled:           getChk(`gw-en-${port}`),
@@ -294,7 +361,7 @@ function _readFormCfg(port) {
 }
 
 // ── Service control ────────────────────────────────────────────────────────────
-window.gatewayCtrl = async function(action) {
+async function _svcCtrl(action) {
   try {
     const resp = await fetch('/cgi-bin/gateway_ctrl.cgi', {
       method: 'POST',
@@ -311,9 +378,9 @@ window.gatewayCtrl = async function(action) {
   } catch (e) {
     if (typeof toast === 'function') toast('Сетевая ошибка: ' + e.message, 'error');
   }
-};
+}
 
-// ── Load / refresh ────────────────────────────────────────────────────────────
+// ── Load / refresh ─────────────────────────────────────────────────────────────
 async function _loadAll() {
   await Promise.all([_loadConfig(), _loadStatus()]);
 }
@@ -324,13 +391,10 @@ async function _loadConfig() {
     const data = await resp.json();
     if (data.ports) {
       _config = data.ports;
-      // Fill defaults for any missing port
       for (const p of PORTS) {
         if (!_config[p]) _config[p] = _defaultPortCfg(p);
       }
     }
-    _renderPortForm(_activePort);
-    _updateTabBadges();
   } catch (e) {
     console.error('[gateway] loadConfig:', e);
   }
@@ -340,11 +404,22 @@ async function _loadStatus() {
   try {
     const resp = await fetch('/cgi-bin/gateway_status.cgi');
     _status = await resp.json();
-    _updateServiceBadge();
-    _updateTabBadges();
-    _updateCounters();
+    _updateSubNavDots();
+    _refreshActivePanel();
   } catch (e) {
     console.error('[gateway] loadStatus:', e);
+  }
+}
+
+function _refreshActivePanel() {
+  const area = document.getElementById('gw-content');
+  if (!area) return;
+  if (_activeSub === 'device') {
+    _renderDevicePanel(area);
+  } else if (PORTS.includes(_activeSub)) {
+    const countersEl = document.getElementById(`gw-counters-${_activeSub}`);
+    const st = (_status.ports || {})[_activeSub] || {};
+    if (countersEl) countersEl.innerHTML = _countersHtml(st);
   }
 }
 
@@ -357,67 +432,28 @@ function _stopPolling() {
   if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
 }
 
-// ── UI updaters ────────────────────────────────────────────────────────────────
-function _updateServiceBadge() {
-  const badge = document.getElementById('gw-svc-badge');
-  if (!badge) return;
-  const active = _status.service_active;
-  badge.className = 'badge ' + (active ? 'badge-ok' : 'badge-err');
-  badge.textContent = '● Сервис ' + (active ? 'активен' : 'остановлен');
-}
-
-function _updateTabBadges() {
-  const portStatus = (_status.ports) || {};
+// ── Sub-nav dot badges ─────────────────────────────────────────────────────────
+function _updateSubNavDots() {
+  const portStatus = _status.ports || {};
   for (const port of PORTS) {
-    const el  = document.getElementById(`gw-tab-badge-${port}`);
-    if (!el) continue;
+    const dot = document.getElementById(`gwdot-${port}`);
+    if (!dot) continue;
     const st  = portStatus[port];
     const cfg = _config[port];
     if (!cfg || !cfg.enabled) {
-      el.textContent = '';
-      el.className   = 'gw-port-tab-badge';
+      dot.textContent = '';
+      dot.className = 'gw-sub-dot';
     } else if (st && st.running) {
-      el.textContent = '●';
-      el.className   = 'gw-port-tab-badge gw-badge-ok';
+      dot.textContent = '●';
+      dot.className = 'gw-sub-dot gw-sub-dot-ok';
     } else {
-      el.textContent = '●';
-      el.className   = 'gw-port-tab-badge gw-badge-err';
+      dot.textContent = '●';
+      dot.className = 'gw-sub-dot gw-sub-dot-err';
     }
   }
 }
 
-function _updateCounters() {
-  const portStatus = (_status.ports) || {};
-  const el = document.getElementById(`gw-counters-${_activePort}`);
-  if (!el) return;
-  const st = portStatus[_activePort];
-  if (!st) return;
-  el.innerHTML = _countersHtml(st);
-  // also refresh status badge inside active port form
-  const formBadgeEl = document.querySelector('#gw-form-area .gw-port-form-head .badge');
-  if (formBadgeEl) {
-    const cfg = _config[_activePort] || {};
-    formBadgeEl.outerHTML = _statusBadgeHtml(st, cfg);
-  }
-}
-
-function _countersHtml(st) {
-  if (!st || !st.running) return '';
-  const fmtBytes = b => {
-    b = parseInt(b) || 0;
-    if (b >= 1048576) return (b/1048576).toFixed(1) + ' МБ';
-    if (b >= 1024)    return (b/1024).toFixed(0) + ' КБ';
-    return b + ' Б';
-  };
-  return `<div class="gw-counters">
-    <span title="TCP-клиентов">Клиентов: <b>${st.tcp_clients ?? 0}</b></span>
-    <span title="Байт TX">TX: <b>${fmtBytes(st.bytes_tx)}</b></span>
-    <span title="Байт RX">RX: <b>${fmtBytes(st.bytes_rx)}</b></span>
-    <span title="Запросов">Запросов: <b>${st.requests ?? 0}</b></span>
-    ${st.errors > 0 ? `<span class="gw-counter-err" title="Ошибок">Ошибок: <b>${st.errors}</b></span>` : ''}
-  </div>`;
-}
-
+// ── Status helpers ────────────────────────────────────────────────────────────
 function _statusBadgeHtml(st, cfg) {
   if (!cfg || !cfg.enabled) {
     return '<span class="badge badge-unk">Отключён</span>';
@@ -426,13 +462,30 @@ function _statusBadgeHtml(st, cfg) {
     const modeLabel = MODES.find(m => m.value === cfg.mode)?.label || cfg.mode;
     return `<span class="badge badge-ok">● Работает</span>
             <span class="badge" style="background:var(--bg-panel);color:var(--text-sec);border:1px solid var(--border)">
-              ${modeLabel} :${cfg.tcp_port || '?'}</span>`;
+              ${modeLabel}&nbsp;:${cfg.tcp_port || '?'}</span>`;
   }
-  const err = (st && st.last_error) ? ` — ${st.last_error}` : '';
+  const err = st && st.last_error ? ` — ${st.last_error}` : '';
   return `<span class="badge badge-err">● Остановлен${err}</span>`;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+function _countersHtml(st) {
+  if (!st || !st.running) return '';
+  const fmtBytes = b => {
+    b = parseInt(b) || 0;
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + ' МБ';
+    if (b >= 1024)    return (b / 1024).toFixed(0) + ' КБ';
+    return b + ' Б';
+  };
+  return `<span style="display:flex;gap:10px;font-size:.78rem;color:var(--text-sec);flex-wrap:wrap">
+    <span>Клиентов: <b style="color:var(--text)">${st.tcp_clients ?? 0}</b></span>
+    <span>TX: <b style="color:var(--text)">${fmtBytes(st.bytes_tx)}</b></span>
+    <span>RX: <b style="color:var(--text)">${fmtBytes(st.bytes_rx)}</b></span>
+    <span>Запросов: <b style="color:var(--text)">${st.requests ?? 0}</b></span>
+    ${st.errors > 0 ? `<span style="color:var(--red)">Ошибок: <b>${st.errors}</b></span>` : ''}
+  </span>`;
+}
+
+// ── Defaults ──────────────────────────────────────────────────────────────────
 function _defaultPortCfg(port) {
   const idx = PORTS.indexOf(port);
   return {
@@ -450,9 +503,9 @@ function _defaultPortCfg(port) {
 function _modeHint(mode) {
   const hints = {
     disabled:     'Порт не используется шлюзом.',
-    modbus_tcp:   'Modbus TCP сервер (MBAP↔RTU). SCADA/ПЛК подключается как Modbus TCP мастер на указанный TCP-порт.',
-    rtu_over_tcp: 'Сырые RTU-фреймы передаются через TCP без MBAP-обёртки. TCP-порт 8502+N по умолчанию.',
-    transparent:  'Прозрачный мост: все байты RS-485 ↔ TCP. Подходит для любого протокола поверх RS-485.',
+    modbus_tcp:   'Modbus TCP сервер (MBAP↔RTU). SCADA/ПЛК подключается как Modbus TCP мастер.',
+    rtu_over_tcp: 'Сырые RTU-фреймы передаются через TCP без MBAP-обёртки.',
+    transparent:  'Прозрачный мост: все байты RS-485 ↔ TCP.',
   };
   return hints[mode] || '';
 }
