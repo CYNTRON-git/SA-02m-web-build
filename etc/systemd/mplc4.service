@@ -1,13 +1,14 @@
 [Unit]
 Description=MPLC4 / MasterSCADA 4D (обёртка над /etc/init.d/mplc4)
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/etc/init.d/mplc4 start
 ExecStop=/etc/init.d/mplc4 stop
+TimeoutStopSec=15
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=SA-02m CA-02m legacy hook (superseded by sa02m-pre-start)
+# Раньше: After=network.target — бипер/LED только после появления линка.
+# Индикация теперь в sa02m-pre-start.service (sysinit.target).
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ca_02m.sh
+RemainAfterExit=yes
+
+[Install]
+# Не включать в multi-user — только ручной запуск при отладке.
+# WantedBy=multi-user.target
