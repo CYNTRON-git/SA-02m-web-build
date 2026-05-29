@@ -228,6 +228,23 @@ html:not([data-theme="light"]) .topbar {
 }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
+.nav-parent { justify-content: flex-start; }
+.nav-parent > span { flex: 1; }
+.nav-arrow { width: 8px !important; height: 12px !important; margin-left: auto; opacity: .5; transition: transform var(--transition); color: currentColor; }
+.nav-parent.expanded .nav-arrow { transform: rotate(90deg); opacity: .8; }
+.nav-sub-list { overflow: hidden; max-height: 0; transition: max-height .28s ease; margin: 0 8px 0 22px; padding-left: 10px; border-left: 2px solid var(--border-md); }
+.nav-sub-list.open { max-height: 280px; }
+.nav-sub-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border-radius: var(--radius-sm);
+  color: var(--text-sec); font-size: .82rem; cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.nav-sub-item:hover { background: var(--bg-hover); color: var(--text); }
+.nav-sub-item.active { color: var(--cyan); background: var(--cyan-dim, rgba(34,211,238,.08)); }
+.gw-sub-dot { margin-left: auto; font-size: .7rem; }
+.gw-sub-dot-ok  { color: var(--green); }
+.gw-sub-dot-err { color: var(--red); }
 
 .main { flex: 1; overflow-y: auto; padding: 24px; background: var(--bg); }
 

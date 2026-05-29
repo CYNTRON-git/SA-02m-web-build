@@ -67,9 +67,21 @@
         MQTT
       </div>
 
-      <div class="nav-item" data-tab="gateway">
+      <div class="nav-item nav-parent" id="nav-gateway" data-tab="gateway">
         <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/><path d="M8 12h8M12 8v8"/></svg>
-        Шлюз RS-485
+        <span>Шлюз RS-485</span>
+        <svg class="nav-arrow" viewBox="0 0 8 12" width="8" height="12" aria-hidden="true"><path d="M2 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="nav-sub-list" id="nav-gateway-sub">
+        <div class="nav-sub-item" data-gateway-sub="device">
+          <svg viewBox="0 0 24 24" width="13" height="13"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          Шлюз
+        </div>
+        <div class="nav-sub-item" data-gateway-sub="COM1">COM1 <span class="gw-sub-dot" id="gwdot-COM1"></span></div>
+        <div class="nav-sub-item" data-gateway-sub="COM2">COM2 <span class="gw-sub-dot" id="gwdot-COM2"></span></div>
+        <div class="nav-sub-item" data-gateway-sub="COM3">COM3 <span class="gw-sub-dot" id="gwdot-COM3"></span></div>
+        <div class="nav-sub-item" data-gateway-sub="COM4">COM4 <span class="gw-sub-dot" id="gwdot-COM4"></span></div>
+        <div class="nav-sub-item" data-gateway-sub="COM5">COM5 <span class="gw-sub-dot" id="gwdot-COM5"></span></div>
       </div>
 
       <div class="nav-section">Система</div>
