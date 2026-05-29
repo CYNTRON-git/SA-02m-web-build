@@ -1,23 +1,23 @@
 {
   "device_type": "mr02m-ai12",
-  "title": {"ru": "MR-02м AI12", "en": "MR-02m AI12"},
+  "title": {"ru": "MR-02м AI12 (12×AI универсальных)", "en": "MR-02m AI12 (12×AI universal)"},
   "device_type_id": 7,
   "protocol": "modbus_rtu",
   "baudrate": 115200,
   "channels": {
     "ai": [
-      {"ch":  1, "label": "Аналог. вход 1",  "label_en": "Analog input 1",  "enabled": true, "sensor_type": 2},
-      {"ch":  2, "label": "Аналог. вход 2",  "label_en": "Analog input 2",  "enabled": true, "sensor_type": 2},
-      {"ch":  3, "label": "Аналог. вход 3",  "label_en": "Analog input 3",  "enabled": true, "sensor_type": 2},
-      {"ch":  4, "label": "Аналог. вход 4",  "label_en": "Analog input 4",  "enabled": true, "sensor_type": 2},
-      {"ch":  5, "label": "Аналог. вход 5",  "label_en": "Analog input 5",  "enabled": true, "sensor_type": 2},
-      {"ch":  6, "label": "Аналог. вход 6",  "label_en": "Analog input 6",  "enabled": true, "sensor_type": 2},
-      {"ch":  7, "label": "Аналог. вход 7",  "label_en": "Analog input 7",  "enabled": true, "sensor_type": 2},
-      {"ch":  8, "label": "Аналог. вход 8",  "label_en": "Analog input 8",  "enabled": true, "sensor_type": 2},
-      {"ch":  9, "label": "Аналог. вход 9",  "label_en": "Analog input 9",  "enabled": true, "sensor_type": 2},
-      {"ch": 10, "label": "Аналог. вход 10", "label_en": "Analog input 10", "enabled": true, "sensor_type": 2},
-      {"ch": 11, "label": "Аналог. вход 11", "label_en": "Analog input 11", "enabled": true, "sensor_type": 2},
-      {"ch": 12, "label": "Аналог. вход 12", "label_en": "Analog input 12", "enabled": true, "sensor_type": 2}
+      {"ch":  1, "label": "Унив. вход 1",  "label_en": "Universal input 1",  "enabled": true},
+      {"ch":  2, "label": "Унив. вход 2",  "label_en": "Universal input 2",  "enabled": true},
+      {"ch":  3, "label": "Унив. вход 3",  "label_en": "Universal input 3",  "enabled": true},
+      {"ch":  4, "label": "Унив. вход 4",  "label_en": "Universal input 4",  "enabled": true},
+      {"ch":  5, "label": "Унив. вход 5",  "label_en": "Universal input 5",  "enabled": true},
+      {"ch":  6, "label": "Унив. вход 6",  "label_en": "Universal input 6",  "enabled": true},
+      {"ch":  7, "label": "Унив. вход 7",  "label_en": "Universal input 7",  "enabled": true},
+      {"ch":  8, "label": "Унив. вход 8",  "label_en": "Universal input 8",  "enabled": true},
+      {"ch":  9, "label": "Унив. вход 9",  "label_en": "Universal input 9",  "enabled": true},
+      {"ch": 10, "label": "Унив. вход 10", "label_en": "Universal input 10", "enabled": true},
+      {"ch": 11, "label": "Унив. вход 11", "label_en": "Universal input 11", "enabled": true},
+      {"ch": 12, "label": "Унив. вход 12", "label_en": "Universal input 12", "enabled": true}
     ]
   }
 }

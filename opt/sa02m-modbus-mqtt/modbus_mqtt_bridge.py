@@ -991,12 +991,19 @@ class MR02mPoller(DevicePoller):
         for i in range(1, self._ai + 1):
             n = f"ai_{i}"
             ch = self._ch_cfg("ai", i)
-            st = int(ch.get("sensor_type", 2))  # default Pt100 2-wire
+            # sensor_type in config is a hint; actual type is read from device on first poll.
+            # Use -1 as sentinel meaning "not yet read from device".
+            cfg_st = ch.get("sensor_type")
+            st = int(cfg_st) if cfg_st is not None else -1
             self._ai_types[i] = st
-            mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
+            if st >= 0:
+                mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
+            else:
+                mqtt_type, units = "value", ""
             self.pub.pub_control_meta(self.device_id, n, "type", mqtt_type)
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-            self.pub.pub_control_units(self.device_id, n, units)
+            if units:
+                self.pub.pub_control_units(self.device_id, n, units)
             title = self._ch_title("ai", i, f"AI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
@@ -1046,6 +1053,14 @@ class MR02mPoller(DevicePoller):
             try:
                 regs = self.read_holding_registers(self.address, base, 7)
                 # regs[0]=type, [1/2]=base int32, [3]=scaled, [4]=cal, [5]=hi, [6]=lo
+                dev_st = regs[0]
+                prev_st = self._ai_types.get(i, -1)
+                if dev_st != prev_st:
+                    self._ai_types[i] = dev_st
+                    mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
+                    self.pub.pub_control_meta(self.device_id, f"ai_{i}", "type", mqtt_type)
+                    if units:
+                        self.pub.pub_control_units(self.device_id, f"ai_{i}", units)
                 raw = regs[3]
                 if raw >= 0x8000:
                     raw -= 0x10000
