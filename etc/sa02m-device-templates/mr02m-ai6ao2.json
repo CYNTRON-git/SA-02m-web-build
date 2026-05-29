@@ -1,21 +1,21 @@
 {
   "device_type": "mr02m-ai6ao2",
-  "title": {"ru": "MR-02м AI6AO2", "en": "MR-02m AI6AO2"},
+  "title": {"ru": "MR-02м AI6AO2 (6×AI унив. + 2×AO 0-10В)", "en": "MR-02m AI6AO2 (6×AI universal + 2×AO 0-10V)"},
   "device_type_id": 12,
   "protocol": "modbus_rtu",
   "baudrate": 115200,
   "channels": {
     "ao": [
-      {"ch": 1, "label": "Аналог. выход 1", "label_en": "Analog output 1", "enabled": true},
-      {"ch": 2, "label": "Аналог. выход 2", "label_en": "Analog output 2", "enabled": true}
+      {"ch": 1, "label": "Аналог. выход 1 (0-10В)", "label_en": "Analog output 1 (0-10V)", "enabled": true},
+      {"ch": 2, "label": "Аналог. выход 2 (0-10В)", "label_en": "Analog output 2 (0-10V)", "enabled": true}
     ],
     "ai": [
-      {"ch": 1, "label": "Аналог. вход 1", "label_en": "Analog input 1", "enabled": true, "sensor_type": 2},
-      {"ch": 2, "label": "Аналог. вход 2", "label_en": "Analog input 2", "enabled": true, "sensor_type": 2},
-      {"ch": 3, "label": "Аналог. вход 3", "label_en": "Analog input 3", "enabled": true, "sensor_type": 2},
-      {"ch": 4, "label": "Аналог. вход 4", "label_en": "Analog input 4", "enabled": true, "sensor_type": 2},
-      {"ch": 5, "label": "Аналог. вход 5", "label_en": "Analog input 5", "enabled": true, "sensor_type": 2},
-      {"ch": 6, "label": "Аналог. вход 6", "label_en": "Analog input 6", "enabled": true, "sensor_type": 2}
+      {"ch": 1, "label": "Унив. вход 1", "label_en": "Universal input 1", "enabled": true},
+      {"ch": 2, "label": "Унив. вход 2", "label_en": "Universal input 2", "enabled": true},
+      {"ch": 3, "label": "Унив. вход 3", "label_en": "Universal input 3", "enabled": true},
+      {"ch": 4, "label": "Унив. вход 4", "label_en": "Universal input 4", "enabled": true},
+      {"ch": 5, "label": "Унив. вход 5", "label_en": "Universal input 5", "enabled": true},
+      {"ch": 6, "label": "Унив. вход 6", "label_en": "Universal input 6", "enabled": true}
     ]
   }
 }
