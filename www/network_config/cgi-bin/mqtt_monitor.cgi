@@ -60,6 +60,10 @@ mosquitto_sub -h 127.0.0.1 -v -t "$TOPIC" -q 2 2>/dev/null | while IFS= read -r 
         */meta/title|*/meta/order|*/meta/type|*/meta/units|\
         */meta/readonly|*/meta/driver|*/meta/name)
             continue ;;
+        */meta/error)
+            # Пустой payload = сброс ошибки (WB); в мониторе даёт шум «(null)».
+            [ -z "$payload" ] && continue
+            ;;
     esac
     ts=$(date '+%H:%M:%S')
     payload_esc=$(printf '%s' "$payload" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().rstrip()))" 2>/dev/null || printf '"%s"' "$payload")

@@ -21,6 +21,59 @@ const MR02M_TYPES = {
   15: {name:'4TO6DI',    do:4,  di:6,  ao:4,  ai:0},
 };
 
+/** Русские подписи типов МР-02м для таблицы и аккордеона (порядок каналов: DO/DI/AO/AI). */
+const MR02M_TYPE_LABELS_RU = {
+  1:  '6DO 8DI',
+  2:  '16DO',
+  3:  '12AO',
+  4:  '6DO',
+  5:  '14DI',
+  6:  '6AI 6AO',
+  7:  '12AI',
+  8:  '4DO 6DI',
+  9:  'Тензо 2',
+  10: '10 DI',
+  11: '6DO 5DI 2AO',
+  12: '6AI 2AO',
+  15: '4TO 6DI',
+};
+
+function mr02mTypeLabelRu(mtCode) {
+  const c = Number(mtCode);
+  if (MR02M_TYPE_LABELS_RU[c]) return MR02M_TYPE_LABELS_RU[c];
+  const mt = MR02M_TYPES[c];
+  return mt ? mt.name : String(mtCode);
+}
+
+function formatDeviceDisplayName(dev) {
+  const comName = (dev.port || '').replace('/dev/', '');
+  const addr = dev.address != null ? dev.address : (dev.addr != null ? dev.addr : '—');
+  if (dev.type === 'mr02m') {
+    const typePart = mr02mTypeLabelRu(getModuleTypeCode(dev));
+    return `МР-02м ${typePart} (${comName} addr=${addr})`;
+  }
+  if (dev.type === 'dtv') {
+    const base = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : 'ДТВ-RS-485';
+    return `${base} (${comName} addr=${addr})`;
+  }
+  if (dev.type === 'ce02m3') {
+    const base = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : 'СЭ-02м-3';
+    return `${base} (${comName} addr=${addr})`;
+  }
+  return `${dev.name || dev.id} (${comName} addr=${addr})`;
+}
+
+function defaultScanDeviceName(scanDev, type, port) {
+  const comName = (port || '').replace('/dev/', '');
+  const addr = scanDev.addr;
+  if (type === 'mr02m') {
+    return `МР-02м ${mr02mTypeLabelRu(scanDev.module_type || 1)} (${comName} addr=${addr})`;
+  }
+  if (type === 'dtv') return `ДТВ-RS-485 (${comName} addr=${addr})`;
+  if (type === 'ce02m3') return `СЭ-02м-3 (${comName} addr=${addr})`;
+  return `Устройство (${comName} addr=${addr})`;
+}
+
 // ai_sensor_t codes 0..38 — must match MODBUS_VARIABLES.txt and modbus_mqtt_bridge.py
 const AI_SENSOR_LABELS = [
   {code:0,  label:'0 — Отключён'},
@@ -155,9 +208,32 @@ function makeDeviceId(type, port, addr) {
   return `${prefix}-${comName}-${addr}`;
 }
 
+/** Если module_type не сохранён в YAML — угадать по legacy-имени (AO6AI6, DO4DI6, …). */
+function inferModuleTypeFromName(name) {
+  const n = String(name || '').toUpperCase().replace(/[\s_-]/g, '');
+  const tokens = [
+    ['AO6AI6', 6], ['6AO6AI', 6],
+    ['AI6AO2', 12], ['6AI2AO', 12],
+    ['DO6DI8', 1], ['6DO8DI', 1],
+    ['DO4DI6', 8], ['4DO6DI', 8],
+    ['6DO5DI2AO', 11],
+    ['4TO6DI', 15], ['TO4DI6', 15],
+    ['10DICON', 10],
+    ['DO16', 2], ['AO12', 3], ['AI12', 7], ['DI14', 5], ['DO6', 4],
+    ['TENZO2', 9],
+  ];
+  for (const [tok, code] of tokens) {
+    if (n.includes(tok)) return code;
+  }
+  return null;
+}
+
 function getModuleTypeCode(dev) {
   const mt = dev.module_type ?? dev._module_type_code;
-  return mt != null && mt !== '' ? Number(mt) : 1;
+  if (mt != null && mt !== '') return Number(mt);
+  const inferred = inferModuleTypeFromName(dev.name);
+  if (inferred != null) return inferred;
+  return 1;
 }
 
 function topicPath(deviceId, chName) {
@@ -220,7 +296,7 @@ function renderDeviceList() {
     const comName = (dev.port || '').replace('/dev/', '');
     const tr = h('tr', {},
       h('td', {}, deviceTypeBadge(dev.type)),
-      h('td', {}, dev.name || dev.id),
+      h('td', {}, formatDeviceDisplayName(dev)),
       h('td', {'class':'mono'}, comName),
       h('td', {'class':'mono'}, String(dev.address || '—')),
       h('td', {}, `${chEnabled}/${chTotal}`),
@@ -287,8 +363,7 @@ function renderAccordion() {
 }
 
 function buildDeviceSection(dev) {
-  const comName = (dev.port || '').replace('/dev/', '');
-  const title = `${dev.name || dev.id} (${dev.type?.toUpperCase()} · ${comName} · addr=${dev.address})`;
+  const title = formatDeviceDisplayName(dev);
 
   const body = h('div', {'class':'mqtt-accordion-body', 'id': `acc-body-${dev.id}`, 'hidden': ''});
 
@@ -318,19 +393,6 @@ function buildMR02mChannels(dev, container) {
   const channels = dev.channels || {};
   const mtCode = getModuleTypeCode(dev);
   const mt = MR02M_TYPES[mtCode] || {do:6,di:8,ao:0,ai:0};
-
-  // Polling intervals
-  const intervals = h('div', {'class':'mqtt-form-row'},
-    h('label', {}, 'Опрос DO/DI:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_do_di_s || 1,
-      'oninput': e => { dev.poll_do_di_s = Number(e.target.value); markUnsaved(); }}),
-    h('span', {}, 'с'),
-    h('label', {'style':'margin-left:12px'}, 'AI/AO:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_ai_ao_s || 5,
-      'oninput': e => { dev.poll_ai_ao_s = Number(e.target.value); markUnsaved(); }}),
-    h('span', {}, 'с')
-  );
-  container.appendChild(intervals);
 
   // DO channels
   if (mt.do > 0) {
@@ -423,11 +485,11 @@ function buildDTVChannels(dev, container) {
   // Polling intervals
   const intervals = h('div', {'class':'mqtt-form-row'},
     h('label', {}, 'Опрос датчиков:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_sensors_s || 10,
+    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_sensors_s || 1,
       'oninput': e => { dev.poll_sensors_s = Number(e.target.value); markUnsaved(); }}),
     h('span', {}, 'с'),
     h('label', {'style':'margin-left:12px'}, 'Присутствие:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_presence_s || 2,
+    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_presence_s || 1,
       'oninput': e => { dev.poll_presence_s = Number(e.target.value); markUnsaved(); }}),
     h('span', {}, 'с')
   );
@@ -462,7 +524,7 @@ function buildCE02M3Channels(dev, container) {
   // Poll intervals row
   const intervals = h('div', {'class':'mqtt-form-row'},
     h('label', {}, 'Опрос мощности:'),
-    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_power_s || 5,
+    h('input', {'type':'number','class':'mqtt-input-small','value': dev.poll_power_s || 1,
       'oninput': e => { dev.poll_power_s = Number(e.target.value); markUnsaved(); }}),
     h('span', {}, 'с'),
     h('label', {'style':'margin-left:12px'}, 'Счётчики:'),
@@ -607,7 +669,7 @@ function renderScanResults(port, baud, devices) {
     const nameInput = h('input', {
       'type': 'text', 'class': 'mqtt-ch-label-input',
       'placeholder': 'Имя устройства',
-      'value': dev.name || ('Устройство ' + dev.addr),
+      'value': dev.name || defaultScanDeviceName(dev, dev.type || 'mr02m', port),
       'style': 'width:130px'
     });
 
@@ -660,13 +722,13 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
   const dev = {id, type, port, baudrate: baud || 115200, address: addr, name: name || id};
   if (type === 'mr02m') {
     dev.module_type = scanDev.module_type || 1;
-    dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 5; dev.poll_diag_s = 60;
+    dev.poll_s = 1; dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 1; dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
-    dev.poll_sensors_s = 10; dev.poll_presence_s = 2; dev.poll_diag_s = 60;
+    dev.poll_sensors_s = 1; dev.poll_presence_s = 1; dev.poll_diag_s = 60;
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
-    dev.poll_power_s = 5; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
+    dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   }
 
@@ -723,17 +785,18 @@ function confirmAddDevice() {
   const dev = {id, type, port, baudrate, address: addr, name: name || id};
   if (type === 'mr02m') {
     dev.module_type = 1;
+    dev.poll_s = 1;
     dev.poll_do_di_s = 1;
-    dev.poll_ai_ao_s = 5;
+    dev.poll_ai_ao_s = 1;
     dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
-    dev.poll_sensors_s = 10;
-    dev.poll_presence_s = 2;
+    dev.poll_sensors_s = 1;
+    dev.poll_presence_s = 1;
     dev.poll_diag_s = 60;
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
-    dev.poll_power_s = 5;
+    dev.poll_power_s = 1;
     dev.poll_energy_s = 60;
     dev.poll_diag_s = 120;
     dev.ct_ratio = 4000;

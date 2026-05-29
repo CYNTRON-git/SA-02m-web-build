@@ -40,7 +40,7 @@ DEFAULT_PORTS_LABELS: Dict[str, str] = {
     "COM5": "RS-485-4",
 }
 
-DEFAULT_MPLC_STOP_SERVICES: List[str] = ["mplc.service"]
+DEFAULT_MPLC_STOP_SERVICES: List[str] = ["mplc.service", "sa02m-modbus-mqtt.service"]
 
 # Лимиты и тайминги.
 DEFAULT_MAX_JOB_SECONDS = 1800       # страховка на одну задачу (до 30 мин)

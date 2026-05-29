@@ -64,6 +64,9 @@ MR02M_MODULE_TYPES: dict[int, tuple[int, int, int, int]] = {
     12: (0,  0,  2,  6),   # AI6AO2
     15: (4,  6,  4,  0),   # 4TO6DI (triac dimmers)
 }
+# Holding 400+7*(ch-1): reg0 = ai_sensor_t (MODBUS_VARIABLES / module_profiles)
+MR02M_AI_HOLDING_BASE = 400
+MR02M_AI_CHANNEL_STRIDE = 7
 MR02M_TYPE_NAMES: dict[int, str] = {
     1: "DO6DI8", 2: "DO16", 3: "AO12", 4: "DO6", 5: "DI14",
     6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2",
@@ -624,6 +627,8 @@ class MQTTPublisher:
         self._device_online: dict[str, bool] = {}
         self._poll_errors = 0
         self._bridge_meta_done = False
+        # Последнее meta/error по каналу — не дублировать пустое «сброс ошибки» в MQTT.
+        self._ctrl_errors: dict[tuple[str, str], str] = {}
 
         try:
             # paho-mqtt >= 2.0: use VERSION2 to avoid deprecation warning
@@ -724,8 +729,17 @@ class MQTTPublisher:
                 self.pub_control_meta(device_id, name, "precision", prec)
 
     def pub_error(self, device_id: str, name: str, error: str) -> None:
+        err = error if error else ""
+        key = (device_id, name)
+        with self._lock:
+            prev = self._ctrl_errors.get(key)
+            if prev == err:
+                return
+            if err == "" and prev is None:
+                return
+            self._ctrl_errors[key] = err
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/error",
-                 error, retain=True)
+                 err, retain=True)
 
     def pub_device_error(self, device_id: str, error: str) -> None:
         """Device-level error flag (wb-mqtt-serial: whole device offline = "r")."""
@@ -880,11 +894,80 @@ class DevicePoller:
     def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
         return self._io(self.get_port().read_input_registers, addr, start, count)
 
+    def write_register(self, addr: int, reg: int, value: int) -> None:
+        self.get_port().write_register(addr, reg, value)
+
     def stop(self) -> None:
         self._stop.set()
 
+    def setup(self) -> None:
+        """Однократная инициализация (вызывается из потока порта)."""
+
+    def poll_io(self) -> None:
+        """Один проход основных измерений (в общем цикле порта)."""
+
+    def poll_slow_if_due(self, now: float) -> None:
+        """Редкий опрос (диагностика, счётчики энергии) по своим интервалам."""
+
     def run(self) -> None:
         raise NotImplementedError
+
+
+# ── Port poll scheduler (one RS-485 line → continuous round-robin) ───────────
+class PortPollScheduler:
+    """
+    Один поток на port:baud: без пауз между циклами — после обхода всех addr
+    сразу следующий круг (скорость ограничена только Modbus/RS-485).
+    """
+
+    def __init__(self, port_path: str, baudrate: int, pollers: list[DevicePoller]):
+        self._port_path = port_path
+        self._baudrate = baudrate
+        self._pollers = pollers
+        self._stop = threading.Event()
+        tag = port_path.replace("/dev/", "")
+        self._log = logging.getLogger(f"port.{tag}")
+
+    def stop(self) -> None:
+        self._stop.set()
+        for p in self._pollers:
+            p.stop()
+
+    def run(self) -> None:
+        time.sleep(0.5)
+        for p in self._pollers:
+            if self._stop.is_set():
+                return
+            try:
+                p.setup()
+            except Exception as e:
+                self._log.error("setup %s: %s", p.device_id, e)
+
+        self._log.info("continuous poll on %s, %d device(s)",
+                        self._port_path, len(self._pollers))
+
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            polled = False
+            for p in self._pollers:
+                if self._stop.is_set():
+                    break
+                if p.in_backoff():
+                    continue
+                polled = True
+                try:
+                    p.poll_io()
+                except Exception as e:
+                    self._log.debug("poll_io %s: %s", p.device_id, e)
+                try:
+                    p.poll_slow_if_due(t0)
+                except Exception as e:
+                    self._log.debug("poll_slow %s: %s", p.device_id, e)
+
+            if not polled:
+                # Все устройства в backoff — не крутить CPU впустую.
+                if self._stop.wait(0.1):
+                    break
 
 
 # ── MR-02m poller ─────────────────────────────────────────────────────────────
@@ -894,11 +977,10 @@ class MR02mPoller(DevicePoller):
         super().__init__(cfg, pub)
         self._mod_type: int | None = None
         self._do = self._di = self._ao = self._ai = 0
-        self._poll_do_di_s  = float(cfg.get("poll_do_di_s",  1))
-        self._poll_ai_ao_s  = float(cfg.get("poll_ai_ao_s",  5))
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  60))
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
+        self._t_diag        = 0.0
 
     def _ch_cfg(self, kind: str, ch: int) -> dict:
         for e in self._channels.get(kind, []):
@@ -949,10 +1031,51 @@ class MR02mPoller(DevicePoller):
             self.log.info("type=%d(%s) do=%d di=%d ao=%d ai=%d",
                           mt, type_name, self._do, self._di, self._ao, self._ai)
             self._publish_channel_meta()
+            self._apply_configured_ai_sensor_types()
             return True
         except Exception as e:
             self.log.error("init_module: %s", e)
             return False
+
+    def _apply_configured_ai_sensor_types(self) -> None:
+        """Записать sensor_type из YAML в holding 400+7*(ch-1), reg0."""
+        if self._ai <= 0:
+            return
+        for i in range(1, self._ai + 1):
+            if not self._ch_enabled("ai", i):
+                continue
+            ch = self._ch_cfg("ai", i)
+            if ch.get("sensor_type") is None:
+                continue
+            st = int(ch["sensor_type"]) & 0xFFFF
+            reg = MR02M_AI_HOLDING_BASE + (i - 1) * MR02M_AI_CHANNEL_STRIDE
+            for attempt in range(4):
+                try:
+                    cur = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
+                    if cur == st:
+                        self._ai_types[i] = st
+                        break
+                    self.write_register(self.address, reg, st)
+                    time.sleep(0.12)
+                    verify = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
+                    if verify == st:
+                        self._ai_types[i] = st
+                        mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
+                        self.pub.pub_control_meta(self.device_id, f"ai_{i}", "type", mqtt_type)
+                        if units:
+                            self.pub.pub_control_units(self.device_id, f"ai_{i}", units)
+                        self.log.info("AI%d sensor_type %d -> %d", i, cur, st)
+                        time.sleep(0.25)
+                        break
+                    self.log.warning("AI%d sensor_type verify %d != %d (try %d)",
+                                     i, verify, st, attempt + 1)
+                except Exception as e:
+                    if attempt >= 3:
+                        self.log.warning("AI%d sensor_type write %d: %s", i, st, e)
+                    time.sleep(0.15 * (attempt + 1))
+            else:
+                continue
+            time.sleep(0.08)
 
     def _publish_channel_meta(self) -> None:
         for i in range(1, self._do + 1):
@@ -1023,10 +1146,11 @@ class MR02mPoller(DevicePoller):
 
         if self._di > 0:
             try:
-                inputs = self.read_discrete_inputs(self.address, 18, self._di)
-                for i, v in enumerate(inputs, 1):
+                # DI — Input Reg 18..(17+N), FC04 (как FMB_EVT_INPUT и device_config).
+                regs = self.read_input_registers(self.address, 18, self._di)
+                for i, raw in enumerate(regs, 1):
                     if self._ch_enabled("di", i):
-                        self.pub.pub_control(self.device_id, f"di_{i}", str(v))
+                        self.pub.pub_control(self.device_id, f"di_{i}", str(raw & 1))
                         self.pub.pub_error(self.device_id, f"di_{i}", "")
             except Exception as e:
                 self.log.warning("DI read: %s", e)
@@ -1046,30 +1170,45 @@ class MR02mPoller(DevicePoller):
                 for i in range(1, self._ao + 1):
                     self.pub.pub_error(self.device_id, f"ao_{i}", "r")
 
-        for i in range(1, self._ai + 1):
-            if not self._ch_enabled("ai", i):
-                continue
-            base = 400 + (i - 1) * 7
+        if self._ai > 0:
             try:
-                regs = self.read_holding_registers(self.address, base, 7)
-                # regs[0]=type, [1/2]=base int32, [3]=scaled, [4]=cal, [5]=hi, [6]=lo
-                dev_st = regs[0]
-                prev_st = self._ai_types.get(i, -1)
-                if dev_st != prev_st:
-                    self._ai_types[i] = dev_st
-                    mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
-                    self.pub.pub_control_meta(self.device_id, f"ai_{i}", "type", mqtt_type)
-                    if units:
-                        self.pub.pub_control_units(self.device_id, f"ai_{i}", units)
-                raw = regs[3]
-                if raw >= 0x8000:
-                    raw -= 0x10000
-                _, _, scale = AI_SENSOR_TYPES.get(self._ai_types.get(i, 2), _TEMP)
-                self.pub.pub_control(self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
-                self.pub.pub_error(self.device_id, f"ai_{i}", "")
+                # Один FC03 на все AI (меньше гонок на half-duplex RS-485 с несколькими addr).
+                total = self._ai * MR02M_AI_CHANNEL_STRIDE
+                block = self.read_holding_registers(
+                    self.address, MR02M_AI_HOLDING_BASE, total)
             except Exception as e:
-                self.log.debug("AI ch%d: %s", i, e)
-                self.pub.pub_error(self.device_id, f"ai_{i}", "r")
+                self.log.warning("AI block read: %s", e)
+                for i in range(1, self._ai + 1):
+                    if self._ch_enabled("ai", i):
+                        self.pub.pub_error(self.device_id, f"ai_{i}", "r")
+            else:
+                for i in range(1, self._ai + 1):
+                    if not self._ch_enabled("ai", i):
+                        continue
+                    off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
+                    regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
+                    dev_st = regs[0] & 0xFFFF
+                    if dev_st == 0:
+                        cfg_st = self._ch_cfg("ai", i).get("sensor_type")
+                        if cfg_st is not None:
+                            dev_st = int(cfg_st) & 0xFFFF
+                    prev_st = self._ai_types.get(i, -1)
+                    if dev_st != prev_st:
+                        self._ai_types[i] = dev_st
+                        mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
+                        self.pub.pub_control_meta(
+                            self.device_id, f"ai_{i}", "type", mqtt_type)
+                        if units:
+                            self.pub.pub_control_units(
+                                self.device_id, f"ai_{i}", units)
+                    raw = regs[3]
+                    if raw >= 0x8000:
+                        raw -= 0x10000
+                    _, _, scale = AI_SENSOR_TYPES.get(
+                        self._ai_types.get(i, 2), _TEMP)
+                    self.pub.pub_control(
+                        self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
+                    self.pub.pub_error(self.device_id, f"ai_{i}", "")
 
     def _poll_diag(self) -> None:
         try:
@@ -1130,33 +1269,23 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
 
-    def run(self) -> None:
-        time.sleep(1)
-        while not self._stop.is_set():
+    def setup(self) -> None:
+        for _ in range(60):
+            if self._stop.is_set():
+                return
             if self._init_module():
                 break
             time.sleep(5)
-        if self._stop.is_set():
-            return
-
         self._setup_writeback()
-        t_do_di = t_ai_ao = t_diag = 0.0
 
-        while not self._stop.is_set():
-            if self.in_backoff():
-                time.sleep(0.1)
-                continue
-            now = time.monotonic()
-            if now - t_do_di >= self._poll_do_di_s:
-                self._poll_do_di()
-                t_do_di = now
-            if now - t_ai_ao >= self._poll_ai_ao_s:
-                self._poll_ai_ao()
-                t_ai_ao = now
-            if now - t_diag >= self._poll_diag_s:
-                self._poll_diag()
-                t_diag = now
-            time.sleep(0.05)
+    def poll_io(self) -> None:
+        self._poll_do_di()
+        self._poll_ai_ao()
+
+    def poll_slow_if_due(self, now: float) -> None:
+        if now - self._t_diag >= self._poll_diag_s:
+            self._poll_diag()
+            self._t_diag = now
 
 
 # ── cyntron-dtv (RTU-Sensor) poller ───────────────────────────────────────────
@@ -1200,8 +1329,9 @@ class DTVPoller(DevicePoller):
         super().__init__(cfg, pub)
         self._sensors_present: set[str] = set()
         self._poll_sensors_s  = float(cfg.get("poll_sensors_s",  10))
-        self._poll_presence_s = float(cfg.get("poll_presence_s",  2))
+        self._poll_presence_s = float(cfg.get("poll_presence_s", 2))
         self._poll_diag_s     = float(cfg.get("poll_diag_s",     60))
+        self._t_diag          = 0.0
         # Optional explicit list of sensor names to poll
         explicit = cfg.get("sensors_present")
         if isinstance(explicit, list):
@@ -1304,36 +1434,28 @@ class DTVPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, ch_name, make_cb(coil_num, ch_name))
 
-    def run(self) -> None:
-        time.sleep(1)
+    def setup(self) -> None:
         if self._autodetect:
             for _ in range(5):
+                if self._stop.is_set():
+                    return
                 self._autodetect_sensors()
                 if self._sensors_present:
                     break
                 time.sleep(3)
         if not self._sensors_present:
             self._sensors_present = {v[0] for v in self.DTV_REGS.values()}
-
         self._publish_meta()
         self._setup_writeback()
 
-        t_sensors = t_presence = t_diag = 0.0
-        while not self._stop.is_set():
-            if self.in_backoff():
-                time.sleep(0.1)
-                continue
-            now = time.monotonic()
-            if now - t_sensors >= self._poll_sensors_s:
-                self._poll_sensors()
-                t_sensors = now
-            if now - t_presence >= self._poll_presence_s:
-                self._poll_coils()
-                t_presence = now
-            if now - t_diag >= self._poll_diag_s:
-                self._poll_diag()
-                t_diag = now
-            time.sleep(0.05)
+    def poll_io(self) -> None:
+        self._poll_sensors()
+        self._poll_coils()
+
+    def poll_slow_if_due(self, now: float) -> None:
+        if now - self._t_diag >= self._poll_diag_s:
+            self._poll_diag()
+            self._t_diag = now
 
 
 # ── CE-02m-3 (3-phase energy meter) poller ────────────────────────────────────
@@ -1347,6 +1469,8 @@ class CE02M3Poller(DevicePoller):
         self._poll_power_s  = float(cfg.get("poll_power_s",   5))
         self._poll_energy_s = float(cfg.get("poll_energy_s", 60))
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  120))
+        self._t_energy       = 0.0
+        self._t_diag         = 0.0
         ch = cfg.get("channels_enabled", {})
         self._en_volt  = ch.get("voltages", True)
         self._en_lvolt = ch.get("line_voltages", True)
@@ -1506,25 +1630,19 @@ class CE02M3Poller(DevicePoller):
         except Exception:
             pass
 
-    def run(self) -> None:
-        time.sleep(1)
+    def setup(self) -> None:
         self._publish_meta()
-        t_power = t_energy = t_diag = 0.0
-        while not self._stop.is_set():
-            if self.in_backoff():
-                time.sleep(0.1)
-                continue
-            now = time.monotonic()
-            if now - t_power >= self._poll_power_s:
-                self._poll_power()
-                t_power = now
-            if now - t_energy >= self._poll_energy_s:
-                self._poll_energy()
-                t_energy = now
-            if now - t_diag >= self._poll_diag_s:
-                self._poll_diag()
-                t_diag = now
-            time.sleep(0.05)
+
+    def poll_io(self) -> None:
+        self._poll_power()
+
+    def poll_slow_if_due(self, now: float) -> None:
+        if now - self._t_energy >= self._poll_energy_s:
+            self._poll_energy()
+            self._t_energy = now
+        if now - self._t_diag >= self._poll_diag_s:
+            self._poll_diag()
+            self._t_diag = now
 
 
 # ── Global state ───────────────────────────────────────────────────────────────
@@ -1534,6 +1652,7 @@ POLLER_CLASSES: dict[str, type] = {
     "ce02m3": CE02M3Poller,
 }
 _pollers:  list[DevicePoller] = []
+_port_schedulers: list[PortPollScheduler] = []
 _fmb_mgrs: list[FastModbusEventPortManager] = []
 _threads:  list[threading.Thread] = []
 _stop_ev   = threading.Event()
@@ -1557,6 +1676,8 @@ def watchdog_thread(interval_s: float) -> None:
 def signal_handler(sig, frame) -> None:
     log.info("Signal %d received — shutting down", sig)
     _stop_ev.set()
+    for s in _port_schedulers:
+        s.stop()
     for p in _pollers:
         p.stop()
     for m in _fmb_mgrs:
@@ -1598,7 +1719,8 @@ def main() -> None:
                 dev_cfg["port"], int(dev_cfg.get("baudrate", 115200)), pub
             )
 
-    # Start device pollers
+    # Build device pollers and group by RS-485 port (one scheduler thread per line)
+    by_port: dict[str, list[DevicePoller]] = {}
     for dev_cfg in devices_cfg:
         dev_type = dev_cfg.get("type", "").lower()
         cls = POLLER_CLASSES.get(dev_type)
@@ -1609,24 +1731,30 @@ def main() -> None:
         poller = cls(dev_cfg, pub)
         _pollers.append(poller)
         pub.register_device(dev_cfg["id"])
-        t = threading.Thread(target=poller.run,
-                             name=f"poll-{dev_cfg['id']}", daemon=True)
-        _threads.append(t)
-        t.start()
-        log.info("Started %s poller for %s", dev_type, dev_cfg["id"])
+        port_key = f"{dev_cfg.get('port', '/dev/COM1')}:{int(dev_cfg.get('baudrate', 115200))}"
+        by_port.setdefault(port_key, []).append(poller)
+        log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
 
-        # Register in FMB manager (counts filled after init, default to max for type)
         if dev_cfg.get("fast_modbus", False) and dev_type == "mr02m":
-            port_key = f"{dev_cfg.get('port','')}:{dev_cfg.get('baudrate', 115200)}"
             mgr = fmb_ports.get(port_key)
             if mgr:
-                # Use explicit do/di counts or default to largest possible
-                mt  = dev_cfg.get("module_type", 1)
+                mt = dev_cfg.get("module_type", 1)
                 do, di, ao, ai = MR02M_MODULE_TYPES.get(mt, (6, 8, 0, 0))
                 mgr.register_device(
                     int(dev_cfg.get("address", 1)), dev_cfg["id"],
                     dev_type, do, di, ao, ai
                 )
+
+    for port_key, pollers in by_port.items():
+        port_path, baud_s = port_key.rsplit(":", 1)
+        sched = PortPollScheduler(port_path, int(baud_s), pollers)
+        _port_schedulers.append(sched)
+        t = threading.Thread(target=sched.run, name=f"port-{port_path}",
+                             daemon=True)
+        _threads.append(t)
+        t.start()
+        addrs = ", ".join(str(p.address) for p in pollers)
+        log.info("Started continuous port poll %s — addr [%s]", port_key, addrs)
 
     # Start Fast Modbus event managers
     for mgr in fmb_ports.values():

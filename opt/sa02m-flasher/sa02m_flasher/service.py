@@ -45,19 +45,27 @@ from .auth import check_internal_token, check_session
 from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
-from .mplc_lease import port_occupants
+from .mplc_lease import port_occupants, port_poll_service_labels
 from . import device_config, runner
 
 
+_UNIT_UI_ALIASES = {
+    "mplc": "MPLC4",
+    "mplc4": "MPLC4",
+    "sa02m-modbus-mqtt": "MQTT",
+    "modbus-mqtt": "MQTT",
+}
+
+
 def _unit_display_name(unit: Optional[str]) -> str:
-    """Короткое имя для UI: mplc4 вместо mplc4.service."""
+    """Короткое имя для UI: mplc4 → MPLC4, sa02m-modbus-mqtt → MQTT."""
     if not unit:
         return ""
     s = str(unit).strip()
     for suf in (".service", ".socket"):
         if s.endswith(suf):
-            return s[: -len(suf)]
-    return s
+            s = s[: -len(suf)]
+    return _UNIT_UI_ALIASES.get(s.lower(), s) if s else ""
 
 log = logging.getLogger("sa02m_flasher.service")
 
@@ -332,9 +340,15 @@ class Handler(BaseHTTPRequestHandler):
             }
 
         occupants: List[str] = port_occupants(device_path) if exists else []
+        port_labels: List[str] = port_poll_service_labels(device_path) if exists else []
         if mplc_lists is None:
             mplc_lists = _compute_mplc_lists(cfg)
         active_raw, released_raw = mplc_lists
+        if port_labels:
+            active_services = [_unit_display_name(l) for l in port_labels]
+        else:
+            active_services = []
+        mplc_on_port = any(l in ("MPLC4", "MPLC") for l in active_services)
         return {
             "key": key,
             "label": label,
@@ -342,9 +356,9 @@ class Handler(BaseHTTPRequestHandler):
             "exists": exists,
             "busy_pids": occupants,
             "active_job": active_job,
-            "mplc_active": bool(active_raw),
+            "mplc_active": mplc_on_port,
             "managed_services": managed,
-            "active_services": [_unit_display_name(a) for a in active_raw],
+            "active_services": active_services,
             "released_services": [_unit_display_name(a) for a in released_raw],
         }
 

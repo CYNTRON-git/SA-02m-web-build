@@ -313,6 +313,14 @@ fast_service_state() {
                 echo inactive
             fi
             ;;
+        sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
+            if pgrep -f '[m]odbus_mqtt_bridge' >/dev/null 2>&1 \
+                || pgrep -f '[s]a02m-modbus-mqtt' >/dev/null 2>&1; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
         *)
             svc_is_active "$1"
             ;;
@@ -342,6 +350,13 @@ fast_service_uptime() {
             local up=0 u2
             up=$(proc_uptime_seconds_by_pgrep_f '[n]ode-red')
             u2=$(proc_uptime_seconds_by_pgrep_f 'node_red')
+            (( u2 > up )) && up=$u2
+            echo "$up"
+            ;;
+        sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
+            local up=0 u2
+            up=$(proc_uptime_seconds_by_pgrep_f '[m]odbus_mqtt_bridge')
+            u2=$(proc_uptime_seconds_by_pgrep_f '[s]a02m-modbus-mqtt')
             (( u2 > up )) && up=$u2
             echo "$up"
             ;;
