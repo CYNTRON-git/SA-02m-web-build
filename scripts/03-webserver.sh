@@ -283,7 +283,10 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-set-storage-auto-format, \
     /usr/local/sbin/sa02m-web-update-check, \
     /usr/local/sbin/sa02m-web-reboot.sh, \
-    /usr/local/sbin/sa02m-web-restart-services.sh
+    /usr/local/sbin/sa02m-web-restart-services.sh, \
+    /usr/local/sbin/sa02m-web-service-ctl.sh list, \
+    /usr/local/sbin/sa02m-web-service-ctl.sh start *, \
+    /usr/local/sbin/sa02m-web-service-ctl.sh stop *
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
@@ -308,6 +311,11 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
 else
     log WARN "Нет etc/sa02m-web-restart-services.sh — перезапуск служб из веб без расширенных fallback"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
+else
+    log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
 fi
 for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     if [ -f "$SYSTEMD_DIR/$_wu_unit" ]; then

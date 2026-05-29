@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.22">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.30">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -452,9 +452,8 @@
         </div>
 
         <div class="dash-grid system-manage-grid">
-            <div class="form-section system-manage-web-creds">
-              <h3>Доступ к веб-интерфейсу</h3>
-              <p class="field-hint" style="margin-bottom:12px">Смена логина и пароля (файл <span class="mono">/etc/sa02m_web.env</span>).</p>
+            <div class="system-manage-tile system-manage-web-creds">
+              <h3 class="system-manage-tile-title">Доступ</h3>
               <form id="web-creds-form">
                 <div class="field">
                   <label for="wc-cur">Текущий пароль</label>
@@ -472,13 +471,13 @@
                   <label for="wc-p2">Повтор пароля</label>
                   <input id="wc-p2" name="new_password_confirm" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
                 </div>
-                <div class="btn-group">
+                <div class="btn-group web-creds-footer">
                   <button type="submit" class="btn btn-primary">Сохранить</button>
+                  <span class="field-hint mono web-creds-env-path">/etc/sa02m_web.env</span>
                 </div>
               </form>
             </div>
-            <div class="system-manage-actions-stack">
-            <div class="ctrl-card system-manage-actions-card">
+            <div class="ctrl-card system-manage-tile system-manage-actions-card">
               <div class="ctrl-card-main system-manage-actions-main">
                 <div class="system-action-block">
                   <div class="system-action-label">USB / microSD</div>
@@ -504,15 +503,14 @@
                 </div>
               </div>
             </div>
-            <div class="ctrl-card system-manage-web-update-card">
+            <div class="ctrl-card system-manage-tile system-manage-web-update-card">
               <div class="ctrl-card-main">
-                <h3>Обновление веб</h3>
-                <p>Ветка <span class="mono">main</span> — <a href="https://github.com/CYNTRON-git/SA-02m-web-build" target="_blank" rel="noopener">GitHub</a>.</p>
+                <h3 class="system-manage-tile-title">Обновление веб</h3>
                 <div id="web-upd-status" class="web-upd-status" role="status" hidden></div>
                 <dl class="web-upd-meta">
                   <div><dt>Задеплоено</dt><dd id="web-upd-deployed" class="mono">—</dd></div>
                   <div><dt>На GitHub</dt><dd id="web-upd-remote" class="mono">—</dd></div>
-                  <div><dt>Проверка (UTC)</dt><dd id="web-upd-checked" class="mono">—</dd></div>
+                  <div><dt>Проверка</dt><dd id="web-upd-checked" class="mono">—</dd></div>
                 </dl>
                 <pre id="web-upd-log" class="web-upd-log" hidden></pre>
               </div>
@@ -521,6 +519,16 @@
                 <button type="button" class="btn btn-warning" id="web-upd-apply-btn" hidden onclick="applyWebUpdate()">Применить обновление</button>
               </div>
             </div>
+            <div class="ctrl-card system-manage-tile system-manage-services-card widget-svc">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title">Службы</h3>
+                <div id="svc-ctl-list" class="svc-list" role="list" aria-live="polite">
+                  <p class="field-hint">Загрузка…</p>
+                </div>
+              </div>
+              <div class="btn-group">
+                <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
+              </div>
             </div>
         </div>
 
@@ -908,9 +916,9 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.15"></script>
+<script src="/static/js/app.js?v=1.0.3.22"></script>
 <script src="/static/js/flasher.js?v=1.0.3-14"></script>
-<script src="/static/js/mqtt.js?v=1.0.3"></script>
+<script src="/static/js/mqtt.js?v=1.0.6"></script>
 <script src="/static/js/gateway.js?v=1.0.3.19"></script>
 </body>
 </html>
