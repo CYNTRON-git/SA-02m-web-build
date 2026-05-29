@@ -226,9 +226,25 @@ def rs485_stats(port_idx: int) -> dict:
 class TelemetryClient:
     def __init__(self):
         self._device_id = get_device_id()
-        self._client = mqtt.Client(client_id=f"{self._device_id}-telemetry")
+        # Pin paho to the v1 callback API so the (client, userdata, flags, rc)
+        # signatures below stay valid on paho-mqtt 2.x (default there is v2).
+        try:
+            self._client = mqtt.Client(
+                client_id=f"{self._device_id}-telemetry",
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            )
+        except (AttributeError, TypeError):
+            # paho-mqtt 1.x has no callback_api_version argument.
+            self._client = mqtt.Client(client_id=f"{self._device_id}-telemetry")
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
+        # Last Will (single per connection): device-level error marks the
+        # controller offline if telemetry crashes. ``connection`` is published
+        # actively (1 on connect, 0 on graceful stop).
+        self._client.will_set(
+            f"{DEVICE_BASE}/{self._device_id}/meta/error", "r",
+            qos=MQTT_QOS, retain=True,
+        )
         self._connected = False
         self._hw: PCA9536Control | None = None
         self._meta_done = False
@@ -238,6 +254,8 @@ class TelemetryClient:
             self._connected = True
             log.info("MQTT connected")
             self._subscribe_writeback()
+            self._pub("controls/connection", "1")
+            self._pub("meta/error", "")
         else:
             log.warning("MQTT connect rc=%d", rc)
 
@@ -277,6 +295,9 @@ class TelemetryClient:
             return
         self._pub("meta/name", f"СА-02м ({socket.gethostname()})")
         self._pub("meta/driver", "sa02m-telemetry")
+        # Availability control (paired with the Last Will above)
+        self._pub("controls/connection/meta/type", "switch")
+        self._pub("controls/connection/meta/readonly", "1")
         # Control meta
         for ctrl, ctype in [
             ("cpu_pct", "value"), ("temp_c", "temperature"),
@@ -343,6 +364,15 @@ class TelemetryClient:
                 log.error("publish error: %s", e)
             _stop.wait(POLL_INTERVAL_S)
 
+        # Graceful offline before exit (avoid leaving stale "online" retained).
+        try:
+            self._pub("controls/connection", "0")
+            self._pub("meta/error", "r")
+            time.sleep(0.2)
+            self._client.loop_stop()
+            self._client.disconnect()
+        except Exception:
+            pass
         log.info("Telemetry stopped")
 
 

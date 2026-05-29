@@ -9,6 +9,17 @@ mqtt:
   qos: 1
   retain: true
   reconnect_delay_s: 5
+  # username: mqttuser        # опционально (если broker требует авторизацию)
+  # password: ""
+  # ── Доступность (в стиле wb-mqtt-serial) ──────────────────────────────────
+  # availability: true        # LWT + device-level /meta/error + статус-устройство моста
+  # bridge_device_id: sa02m-bridge   # id устройства-статуса моста в /devices/<id>
+
+# Параметры доступности по умолчанию для каждого устройства (можно
+# переопределить внутри конкретного устройства):
+#   offline_after_fails: 3    # подряд неуспешных чтений → устройство offline (meta/error="r")
+#   backoff_base_s: 2.0       # стартовая пауза опроса «мёртвого» устройства
+#   backoff_max_s: 30.0       # максимальная пауза (чтобы не нагружать half-duplex шину)
 
 devices:
   # ── Пример: MR-02м DO6DI8, COM1, addr=5 ─────────────────────────────────
@@ -23,6 +34,9 @@ devices:
   #   poll_do_di_s: 1
   #   poll_ai_ao_s: 5
   #   poll_diag_s: 60
+  #   offline_after_fails: 3    # доступность: после N неответов → offline + backoff
+  #   backoff_base_s: 2.0
+  #   backoff_max_s: 30.0
   #   channels:
   #     do:
   #       - {ch: 1, label: "Выход 1", enabled: true}

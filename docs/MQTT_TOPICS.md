@@ -13,6 +13,36 @@
 | Восстановление | `/controls/{name}/meta/error` = `""` (cleared) |
 | Запись значения | `/controls/{name}/on` ← write `0` / `1` / float |
 | Публикация meta | Один раз при старте (retained) |
+| **Устройство offline** | `/devices/{id}/meta/error` = `"r"` (device-level, retained) |
+| **Устройство online** | `/devices/{id}/meta/error` = `""` (cleared) |
+
+---
+
+## Доступность (как в wb-mqtt-serial)
+
+Мост повторяет ключевые надёжностные практики `wb-mqtt-serial`:
+
+| Механизм | Поведение |
+|----------|-----------|
+| **Last Will (LWT)** | MQTT допускает один will на соединение. Будучи единым каналом ошибок, will публикует `/devices/sa02m-bridge/meta/error="r"` при падении/обрыве моста — монитор `/devices/+/meta/error` ловит крах моста так же, как offline отдельного устройства. `controls/connection` публикуется активно (`1` в работе, `0` при штатной остановке). |
+| **Device-level error** | Когда устройство перестаёт отвечать (≥ `offline_after_fails` подряд), публикуется `/devices/{id}/meta/error="r"`; при восстановлении — `""`. Значения `controls/*` сохраняют последнее good-значение. |
+| **Error back-off** | «Мёртвое» устройство не опрашивается на полной скорости: пауза растёт экспоненциально (`backoff_base_s` … `backoff_max_s`), чтобы не блокировать half-duplex RS-485 для живых устройств. |
+| **Graceful offline** | При штатной остановке (`systemctl stop`) мост помечает все устройства и себя offline до отключения. |
+
+### Устройство-статус моста — `sa02m-bridge`
+
+```
+/devices/sa02m-bridge/meta/name              "SA-02m Modbus→MQTT bridge"
+/devices/sa02m-bridge/meta/driver            "sa02m-modbus-mqtt"
+/devices/sa02m-bridge/meta/error             ""        (LWT → "r" при падении моста)
+/devices/sa02m-bridge/controls/connection    type=switch  "1" online / "0" штатная остановка
+/devices/sa02m-bridge/controls/devices_total  type=value  всего устройств в конфиге
+/devices/sa02m-bridge/controls/devices_online type=value  отвечающих сейчас
+/devices/sa02m-bridge/controls/poll_errors    type=value  накопленный счётчик отказов опроса
+```
+
+Настройки (в `mqtt:` и/или на устройство) — см. `sa02m-modbus-mqtt.yaml`:
+`availability`, `bridge_device_id`, `offline_after_fails`, `backoff_base_s`, `backoff_max_s`.
 
 ---
 
@@ -34,6 +64,10 @@ Device ID: `sa02m-{hostname}` (пример: `sa02m-SA-02`)
 ```
 /devices/sa02m-SA-02/meta/name          "СА-02м (192.168.1.136)"
 /devices/sa02m-SA-02/meta/driver        "sa02m-telemetry"
+/devices/sa02m-SA-02/meta/error         ""    (LWT → "r" при падении телеметрии)
+
+# Доступность контроллера (connection — активная публикация; offline через LWT meta/error)
+/devices/sa02m-SA-02/controls/connection  type=switch  "1" online / "0" штатная остановка
 
 # Системные показатели (интервал 30 с)
 /devices/sa02m-SA-02/controls/cpu_pct           type=value      %
@@ -330,8 +364,12 @@ mosquitto_pub -h 127.0.0.1 -t '/devices/dtv-COM3-1/controls/buzzer/on' -m '1'
 # CE-02m-3
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/ce02m3-COM2-14/controls/+' -C 30
 
-# Ошибки опроса
+# Ошибки опроса (по каналам)
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/+/controls/+/meta/error'
+
+# Доступность устройств (device-level) и статус моста
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/+/meta/error'
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-bridge/#'
 
 # Внешний доступ (порт 1884)
 mosquitto_sub -h 192.168.1.136 -p 1884 -u mqttuser -P <pass> -v -t '/devices/#'

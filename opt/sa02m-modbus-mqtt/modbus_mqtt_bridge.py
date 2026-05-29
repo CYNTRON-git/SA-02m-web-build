@@ -559,6 +559,19 @@ class FastModbusEventPortManager:
 
 # ── MQTTPublisher ──────────────────────────────────────────────────────────────
 class MQTTPublisher:
+    """Wiren Board MQTT publisher with availability tracking (wb-mqtt-serial style).
+
+    Reliability features modelled on wb-mqtt-serial:
+      * Last Will Testament — broker marks the bridge device offline if the
+        process crashes or loses its connection, so consumers never trust
+        stale retained data.
+      * Per-device availability — a whole device is flagged offline via
+        ``/devices/<id>/meta/error = "r"`` when it stops answering, and cleared
+        on recovery (driven by the pollers' error back-off state machine).
+      * Bridge status device — ``/devices/<bridge_id>/...`` exposes connection
+        state and online/total device counters for monitoring.
+    """
+
     def __init__(self, cfg: dict):
         self._broker = cfg.get("broker", "127.0.0.1")
         self._port   = int(cfg.get("port", 1883))
@@ -566,18 +579,43 @@ class MQTTPublisher:
         self._qos    = int(cfg.get("qos", 1))
         self._retain = bool(cfg.get("retain", True))
         self._reconnect_delay = int(cfg.get("reconnect_delay_s", 5))
+        self._availability = bool(cfg.get("availability", True))
+        self._bridge_id = cfg.get("bridge_device_id", "sa02m-bridge")
+        self._username = cfg.get("username") or None
+        self._password = cfg.get("password") or None
         self._lock   = threading.Lock()
+
+        # Availability bookkeeping
+        self._device_online: dict[str, bool] = {}
+        self._poll_errors = 0
+        self._bridge_meta_done = False
 
         self._client = mqtt.Client(
             client_id=self._client_id,
             callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
         )
+        if self._username:
+            self._client.username_pw_set(self._username, self._password)
         self._client.on_connect    = self._on_connect
         self._client.on_disconnect = self._on_disconnect
         self._client.reconnect_delay_set(min_delay=1, max_delay=30)
+        # Last Will: MQTT allows exactly ONE will per connection, so use the
+        # bridge device-level error as the unified offline signal — a monitor
+        # watching /devices/+/meta/error catches a bridge crash the same way it
+        # catches a single device going offline. ``connection`` is published
+        # actively (1 while running, 0 on graceful stop).
+        if self._availability:
+            self._client.will_set(
+                f"{DEVICE_BASE}/{self._bridge_id}/meta/error", "r",
+                qos=1, retain=True,
+            )
         self._connected = False
         # Track subscriptions for re-subscribe on reconnect
         self._subscriptions: dict[str, callable] = {}
+
+    @property
+    def bridge_id(self) -> str:
+        return self._bridge_id
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -587,6 +625,9 @@ class MQTTPublisher:
             for topic, cb in self._subscriptions.items():
                 client.subscribe(topic, qos=1)
                 client.message_callback_add(topic, cb)
+            # (Re)announce bridge availability after every (re)connect.
+            if self._availability:
+                self._publish_bridge_status(online=True)
         else:
             log.warning("MQTT connect failed rc=%d", rc)
 
@@ -632,6 +673,68 @@ class MQTTPublisher:
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/error",
                  error, retain=True)
 
+    def pub_device_error(self, device_id: str, error: str) -> None:
+        """Device-level error flag (wb-mqtt-serial: whole device offline = "r")."""
+        self.pub(f"{DEVICE_BASE}/{device_id}/meta/error", error, retain=True)
+
+    # --- Availability registry -------------------------------------------------
+
+    def register_device(self, device_id: str) -> None:
+        with self._lock:
+            self._device_online.setdefault(device_id, True)
+
+    def device_online(self, device_id: str, online: bool) -> None:
+        """Update one device's online state; refresh bridge counters on change."""
+        with self._lock:
+            changed = self._device_online.get(device_id) != online
+            self._device_online[device_id] = online
+        if not online:
+            with self._lock:
+                self._poll_errors += 1
+        if changed and self._availability:
+            self.pub_device_error(device_id, "" if online else "r")
+            self._publish_bridge_status(online=True)
+
+    def _publish_bridge_status(self, online: bool) -> None:
+        if not self._availability:
+            return
+        if not self._bridge_meta_done:
+            self.pub_meta(self._bridge_id, "name", "SA-02m Modbus→MQTT bridge")
+            self.pub_meta(self._bridge_id, "driver", "sa02m-modbus-mqtt")
+            for ctrl, ctype in (("connection", "switch"),
+                                ("devices_total", "value"),
+                                ("devices_online", "value"),
+                                ("poll_errors", "value")):
+                self.pub_control_meta(self._bridge_id, ctrl, "type", ctype)
+                self.pub_control_meta(self._bridge_id, ctrl, "readonly", "1")
+            self._bridge_meta_done = True
+        with self._lock:
+            total = len(self._device_online)
+            up = sum(1 for v in self._device_online.values() if v)
+            errors = self._poll_errors
+        self.pub(f"{DEVICE_BASE}/{self._bridge_id}/controls/connection",
+                 "1" if online else "0", retain=True)
+        self.pub_control(self._bridge_id, "devices_total", str(total))
+        self.pub_control(self._bridge_id, "devices_online", str(up))
+        self.pub_control(self._bridge_id, "poll_errors", str(errors))
+        self.pub_device_error(self._bridge_id, "" if online else "r")
+
+    def announce_bridge(self) -> None:
+        self._publish_bridge_status(online=True)
+
+    def shutdown(self, device_ids: list[str]) -> None:
+        """Graceful offline: mark bridge + all devices offline, then disconnect."""
+        if self._availability:
+            for did in device_ids:
+                self.pub_device_error(did, "r")
+            self._publish_bridge_status(online=False)
+        time.sleep(0.2)   # let final publishes flush
+        try:
+            self._client.loop_stop()
+            self._client.disconnect()
+        except Exception:
+            pass
+
     def subscribe_writeback(self, device_id: str, name: str, callback) -> None:
         topic = f"{DEVICE_BASE}/{device_id}/controls/{name}/on"
         self._subscriptions[topic] = callback
@@ -651,6 +754,17 @@ class DevicePoller:
         self._stop     = threading.Event()
         self._meta_ok  = False
         self.log       = logging.getLogger(f"dev.{self.device_id}")
+        # Availability / error back-off (wb-mqtt-serial style). A device that
+        # stops answering must not keep hammering the shared half-duplex RS-485
+        # bus and starving healthy devices, so failed reads back off
+        # exponentially up to ``backoff_max_s`` and the device is flagged
+        # offline (device-level meta/error="r") after ``offline_after_fails``.
+        self._fail_threshold = max(1, int(cfg.get("offline_after_fails", 3)))
+        self._backoff_base_s = float(cfg.get("backoff_base_s", 2.0))
+        self._backoff_max_s  = float(cfg.get("backoff_max_s", 30.0))
+        self._fail_count     = 0
+        self._online         = True
+        self._backoff_until  = 0.0
 
     def get_port(self) -> ModbusSerial:
         return get_port(self.port_path, self.baudrate)
@@ -661,6 +775,56 @@ class DevicePoller:
         self.pub.pub_meta(self.device_id, "name", name)
         self.pub.pub_meta(self.device_id, "driver", driver)
         self._meta_ok = True
+
+    # --- Availability state machine ------------------------------------------
+
+    def mark_ok(self) -> None:
+        """A read succeeded — device is alive again."""
+        self._fail_count = 0
+        self._backoff_until = 0.0
+        if not self._online:
+            self._online = True
+            self.log.info("device back online")
+            self.pub.device_online(self.device_id, True)
+
+    def mark_fail(self) -> None:
+        """A read failed — count it and (once past threshold) go offline + back off."""
+        self._fail_count += 1
+        if self._fail_count >= self._fail_threshold:
+            over = self._fail_count - self._fail_threshold
+            delay = min(self._backoff_base_s * (2 ** over), self._backoff_max_s)
+            self._backoff_until = time.monotonic() + delay
+            if self._online:
+                self._online = False
+                self.log.warning("device offline after %d failed reads — "
+                                  "backing off polling", self._fail_count)
+                self.pub.device_online(self.device_id, False)
+
+    def in_backoff(self) -> bool:
+        return time.monotonic() < self._backoff_until
+
+    def _io(self, fn, *args):
+        """Run a Modbus read and feed the availability state machine."""
+        try:
+            res = fn(*args)
+            self.mark_ok()
+            return res
+        except Exception:
+            self.mark_fail()
+            raise
+
+    # Read wrappers that drive availability (writes do not affect device online state).
+    def read_coils(self, addr: int, start: int, count: int) -> list[int]:
+        return self._io(self.get_port().read_coils, addr, start, count)
+
+    def read_discrete_inputs(self, addr: int, start: int, count: int) -> list[int]:
+        return self._io(self.get_port().read_discrete_inputs, addr, start, count)
+
+    def read_holding_registers(self, addr: int, start: int, count: int) -> list[int]:
+        return self._io(self.get_port().read_holding_registers, addr, start, count)
+
+    def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
+        return self._io(self.get_port().read_input_registers, addr, start, count)
 
     def stop(self) -> None:
         self._stop.set()
@@ -696,7 +860,7 @@ class MR02mPoller(DevicePoller):
 
     def _init_module(self) -> bool:
         try:
-            regs = self.get_port().read_input_registers(self.address, 0, 1)
+            regs = self.read_input_registers(self.address, 0, 1)
             mt = regs[0]
             if mt not in MR02M_MODULE_TYPES:
                 self.log.error("Unknown module_type=%d", mt)
@@ -762,7 +926,7 @@ class MR02mPoller(DevicePoller):
     def _poll_do_di(self) -> None:
         if self._do > 0:
             try:
-                coils = self.get_port().read_coils(self.address, 1, self._do)
+                coils = self.read_coils(self.address, 1, self._do)
                 for i, v in enumerate(coils, 1):
                     if self._ch_enabled("do", i):
                         self.pub.pub_control(self.device_id, f"do_{i}", str(v))
@@ -774,7 +938,7 @@ class MR02mPoller(DevicePoller):
 
         if self._di > 0:
             try:
-                inputs = self.get_port().read_discrete_inputs(self.address, 18, self._di)
+                inputs = self.read_discrete_inputs(self.address, 18, self._di)
                 for i, v in enumerate(inputs, 1):
                     if self._ch_enabled("di", i):
                         self.pub.pub_control(self.device_id, f"di_{i}", str(v))
@@ -787,7 +951,7 @@ class MR02mPoller(DevicePoller):
     def _poll_ai_ao(self) -> None:
         if self._ao > 0:
             try:
-                regs = self.get_port().read_holding_registers(self.address, 33, self._ao)
+                regs = self.read_holding_registers(self.address, 33, self._ao)
                 for i, v in enumerate(regs, 1):
                     if self._ch_enabled("ao", i):
                         self.pub.pub_control(self.device_id, f"ao_{i}", str(v))
@@ -802,7 +966,7 @@ class MR02mPoller(DevicePoller):
                 continue
             base = 400 + (i - 1) * 7
             try:
-                regs = self.get_port().read_holding_registers(self.address, base, 7)
+                regs = self.read_holding_registers(self.address, base, 7)
                 # regs[0]=type, [1/2]=base int32, [3]=scaled, [4]=cal, [5]=hi, [6]=lo
                 raw = regs[3]
                 if raw >= 0x8000:
@@ -817,13 +981,13 @@ class MR02mPoller(DevicePoller):
     def _poll_diag(self) -> None:
         try:
             # Uptime: reg 105 = LSW, reg 106 = MSW
-            r = self.get_port().read_input_registers(self.address, 105, 2)
+            r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
         try:
             # Serial: reg 270 = LSW, reg 271 = MSW
-            r = self.get_port().read_input_registers(self.address, 270, 2)
+            r = self.read_input_registers(self.address, 270, 2)
             self.pub.pub_control(self.device_id, "serial", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
@@ -836,7 +1000,7 @@ class MR02mPoller(DevicePoller):
                 try:
                     # DI1 counter: reg 77 (LSW), 78 (MSW)
                     base = 77 + (i - 1) * 2
-                    r = self.get_port().read_input_registers(self.address, base, 2)
+                    r = self.read_input_registers(self.address, base, 2)
                     self.pub.pub_control(self.device_id, f"di_{i}_count",
                                          str(r[0] | (r[1] << 16)))
                 except Exception:
@@ -886,6 +1050,9 @@ class MR02mPoller(DevicePoller):
         t_do_di = t_ai_ao = t_diag = 0.0
 
         while not self._stop.is_set():
+            if self.in_backoff():
+                time.sleep(0.1)
+                continue
             now = time.monotonic()
             if now - t_do_di >= self._poll_do_di_s:
                 self._poll_do_di()
@@ -954,7 +1121,7 @@ class DTVPoller(DevicePoller):
         """Read regs 1-30 once; mark those returning non-0x8000 as present."""
         self._sensors_present = set()
         try:
-            regs = self.get_port().read_input_registers(self.address, 1, 30)
+            regs = self.read_input_registers(self.address, 1, 30)
             for idx in range(30):
                 reg = idx + 1
                 if reg not in self.DTV_REGS:
@@ -985,7 +1152,7 @@ class DTVPoller(DevicePoller):
     def _poll_sensors(self) -> None:
         # Bulk read regs 1-30
         try:
-            regs = self.get_port().read_input_registers(self.address, 1, 30)
+            regs = self.read_input_registers(self.address, 1, 30)
             for idx in range(30):
                 reg = idx + 1
                 if reg not in self.DTV_REGS:
@@ -1006,7 +1173,7 @@ class DTVPoller(DevicePoller):
 
     def _poll_coils(self) -> None:
         try:
-            coils = self.get_port().read_coils(self.address, 1, 2)
+            coils = self.read_coils(self.address, 1, 2)
             for coil_num, (ch_name, _) in self.DTV_COILS.items():
                 self.pub.pub_control(self.device_id, ch_name, str(coils[coil_num - 1]))
         except Exception:
@@ -1015,14 +1182,14 @@ class DTVPoller(DevicePoller):
     def _poll_diag(self) -> None:
         try:
             # Uptime: reg 105 = LSW, 106 = MSW
-            r = self.get_port().read_input_registers(self.address, 105, 2)
+            r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
         for reg, (ch_name, scale, _, _) in [(k, v) for k, v in self.DTV_REGS.items()
                                              if k in (123, 124)]:
             try:
-                r = self.get_port().read_input_registers(self.address, reg, 1)
+                r = self.read_input_registers(self.address, reg, 1)
                 raw = r[0]
                 if raw >= 0x8000:
                     raw -= 0x10000
@@ -1061,6 +1228,9 @@ class DTVPoller(DevicePoller):
 
         t_sensors = t_presence = t_diag = 0.0
         while not self._stop.is_set():
+            if self.in_backoff():
+                time.sleep(0.1)
+                continue
             now = time.monotonic()
             if now - t_sensors >= self._poll_sensors_s:
                 self._poll_sensors()
@@ -1134,7 +1304,7 @@ class CE02M3Poller(DevicePoller):
     def _poll_power(self) -> None:
         # Regs 500-547: 48 registers
         try:
-            regs = self.get_port().read_input_registers(self.address, 500, 48)
+            regs = self.read_input_registers(self.address, 500, 48)
         except Exception as e:
             self.log.warning("power poll: %s", e)
             return
@@ -1210,7 +1380,7 @@ class CE02M3Poller(DevicePoller):
             return
         try:
             # 580-599: 5 × uint64 (total AP, AN, RP, RN, S)
-            regs = self.get_port().read_input_registers(self.address, 580, 20)
+            regs = self.read_input_registers(self.address, 580, 20)
             names = ["energy_active_import", "energy_active_export",
                      "energy_reactive_import", "energy_reactive_export",
                      "energy_apparent"]
@@ -1223,7 +1393,7 @@ class CE02M3Poller(DevicePoller):
         if self._per_phase_energy:
             try:
                 # 600-611: per-phase active import A,B,C
-                regs = self.get_port().read_input_registers(self.address, 600, 12)
+                regs = self.read_input_registers(self.address, 600, 12)
                 for i, ph in enumerate(["a", "b", "c"]):
                     val = self._uint64(regs[i*4], regs[i*4+1], regs[i*4+2], regs[i*4+3])
                     self.pub.pub_control(self.device_id, f"energy_active_import_{ph}", str(val))
@@ -1233,12 +1403,12 @@ class CE02M3Poller(DevicePoller):
     def _poll_diag(self) -> None:
         try:
             # Uptime: reg 105 = LSW, 106 = MSW
-            r = self.get_port().read_input_registers(self.address, 105, 2)
+            r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
         try:
-            r = self.get_port().read_input_registers(self.address, 123, 2)
+            r = self.read_input_registers(self.address, 123, 2)
             self.pub.pub_control(self.device_id, "mcu_vdd", str(round(r[0] * 0.01, 2)))
             self.pub.pub_control(self.device_id, "mcu_temp", str(self._s16(r[1])))
         except Exception:
@@ -1249,6 +1419,9 @@ class CE02M3Poller(DevicePoller):
         self._publish_meta()
         t_power = t_energy = t_diag = 0.0
         while not self._stop.is_set():
+            if self.in_backoff():
+                time.sleep(0.1)
+                continue
             now = time.monotonic()
             if now - t_power >= self._poll_power_s:
                 self._poll_power()
@@ -1343,6 +1516,7 @@ def main() -> None:
             continue
         poller = cls(dev_cfg, pub)
         _pollers.append(poller)
+        pub.register_device(dev_cfg["id"])
         t = threading.Thread(target=poller.run,
                              name=f"poll-{dev_cfg['id']}", daemon=True)
         _threads.append(t)
@@ -1374,9 +1548,15 @@ def main() -> None:
     if not _pollers:
         log.warning("No devices configured — bridge idle")
 
+    # Announce bridge availability now that the device registry is populated.
+    pub.announce_bridge()
+
     while not _stop_ev.is_set():
         time.sleep(1)
 
+    # Graceful offline: tell consumers the bridge and its devices went down
+    # cleanly (instead of leaving stale retained "online" data behind).
+    pub.shutdown([p.device_id for p in _pollers])
     log.info("Bridge stopped")
 
 
