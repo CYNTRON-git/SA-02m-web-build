@@ -9,6 +9,9 @@ Wants=systemd-udevd.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/sa02m-pre-start.sh
+# Save DS3231 and fake-hwclock on shutdown/reboot with the last known
+# (ideally NTP-synced) system time before power is cut.
+ExecStop=/usr/local/sbin/sa02m-rtc-sync.sh
 
 [Install]
 WantedBy=sysinit.target

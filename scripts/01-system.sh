@@ -243,6 +243,23 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log OK "sa02m-pre-start установлен и включён"
 fi
 
+# ── DS3231 RTC sync: периодическая запись NTP→DS3231 + сохранение при shutdown ──
+# Алгоритм синхронизации времени:
+#   Boot:     fake-hwclock.service → система; sa02m-pre-start → DS3231→система (если год≥2020)
+#   Работа:   sa02m-rtc-sync.timer каждые 30 мин → DS3231 ← система (если NTP synced)
+#   Shutdown: sa02m-pre-start.service ExecStop → DS3231 ← система (последнее актуальное время)
+#             fake-hwclock.service ExecStop → fake-hwclock.data ← система
+if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
+    log INFO "Установка sa02m-rtc-sync (DS3231 periodic sync)"
+    install -m 755 "$ETC_REPO/sa02m-rtc-sync.sh" /usr/local/sbin/sa02m-rtc-sync.sh
+    install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.service" /etc/systemd/system/sa02m-rtc-sync.service
+    install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.timer"   /etc/systemd/system/sa02m-rtc-sync.timer
+    sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl enable sa02m-rtc-sync.timer >> "$LOG_FILE" 2>&1 \
+        && log OK "sa02m-rtc-sync.timer включён" \
+        || log WARN "sa02m-rtc-sync.timer не включился"
+fi
+
 # ca_02m.service (After=network.target) заменён ранним sa02m-pre-start — отключаем дубль
 if [ -f "$ETC_REPO/ca_02m.sh" ]; then
     install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/sbin/ca_02m.sh
@@ -415,6 +432,21 @@ CUR_DAYS=$(( $(date +%s) / 86400 ))
 if [ -n "$ROOT_LAST" ] && [ "$ROOT_LAST" -gt "$CUR_DAYS" ]; then
     log INFO "shadow root lastchange=$ROOT_LAST > today=$CUR_DAYS, выравниваем"
     chage -d "$(date +%Y-%m-%d)" root 2>/dev/null || true
+fi
+
+# ── DNS fallback: 8.8.8.8 / 8.8.4.4 через resolvconf ───────────────────────
+# ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии eth0.
+# Если eth0 не был явно переподнят (нет reboot), base-файл гарантирует
+# что DNS-запросы не падают до первого DHCP-ответа.
+if command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ]; then
+    mkdir -p /etc/resolvconf/resolv.conf.d
+    cat > /etc/resolvconf/resolv.conf.d/base <<'DNS'
+# SA-02m fallback DNS (используется когда DHCP ещё не ответил или нет DHCP)
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+DNS
+    resolvconf -u 2>/dev/null || true
+    log OK "DNS fallback 8.8.8.8/8.8.4.4 настроен через resolvconf"
 fi
 
 # Применить изменения PID1 без перезагрузки.

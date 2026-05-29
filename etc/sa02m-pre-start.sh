@@ -199,22 +199,30 @@ if [ ! -e /dev/rtc1 ] && [ -w /sys/class/i2c-adapter/i2c-1/new_device ]; then
     sleep 0.5
   done
 fi
+# Load DS3231 → system clock only if the year is plausible (2020–2035).
+# fake-hwclock.service already loaded fake-hwclock.data earlier; DS3231
+# overrides it when its time is valid and ≥ the fake-hwclock timestamp.
 if [ -n "$HWC" ] && [ -c /dev/rtc1 ]; then
-  if "$HWC" -s -f /dev/rtc1 >/dev/null 2>&1; then
-    HCTOSYS_DEVICE=rtc1
+  DS3231_STR=$("$HWC" --show --rtc /dev/rtc1 2>/dev/null | head -1)
+  DS3231_YEAR=$(echo "$DS3231_STR" | awk '{print substr($1,1,4); exit}')
+  if [ -n "$DS3231_YEAR" ] && [ "$DS3231_YEAR" -ge 2020 ] && \
+     [ "$DS3231_YEAR" -le 2035 ] 2>/dev/null; then
+    if "$HWC" -s -f /dev/rtc1 >/dev/null 2>&1; then
+      HCTOSYS_DEVICE=rtc1
+      logp "RTC: DS3231 loaded — $(date '+%Y-%m-%d %H:%M:%S') (year=${DS3231_YEAR})"
+    fi
+  else
+    logp "RTC: DS3231 year=${DS3231_YEAR:-?} invalid — keeping fake-hwclock time"
   fi
 fi
+# Point /dev/rtc symlink at the authoritative source (DS3231 when present).
 if [ -c "/dev/${HCTOSYS_DEVICE}" ]; then
   rm -f /dev/rtc
   ln -sf "/dev/${HCTOSYS_DEVICE}" /dev/rtc 2>/dev/null || true
 fi
-if [ -n "$HWC" ]; then
-  if [ -c /dev/rtc1 ]; then
-    "$HWC" -w -f /dev/rtc1 >/dev/null 2>&1 || true
-  else
-    "$HWC" -w >/dev/null 2>&1 || true
-  fi
-fi
+# Write-back at boot is intentionally omitted: writing DS3231 with the just-
+# loaded DS3231 time is a no-op. sa02m-rtc-sync.timer will write the
+# NTP-corrected time 5 min after boot and then every 30 min.
 
 # ── LED eth0 (on-board PHY link LED) — 3 моргания ───────────────────────────
 # Использует netdev trigger: опрашивает carrier активно, загорается сразу.

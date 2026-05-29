@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodic SA-02m DS3231 RTC sync (5 min after boot, then every 30 min)
+Requires=sa02m-rtc-sync.service
+
+[Timer]
+# First sync 5 min after boot — by then chrony has likely done its initial step.
+OnBootSec=5min
+# Re-sync every 30 min to keep DS3231 accurate.
+OnUnitActiveSec=30min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
