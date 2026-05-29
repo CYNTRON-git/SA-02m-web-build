@@ -2070,6 +2070,104 @@ svg .gauge-num {
 
 /* Broker status bar */
 .mqtt-broker-bar { margin-bottom: 16px; }
+
+.mqtt-top-row {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.mqtt-client-compact {
+  flex: 0 0 272px;
+  max-width: 300px;
+  margin-bottom: 0;
+  padding: 12px 14px;
+}
+.mqtt-client-compact .widget-title {
+  font-size: .92rem;
+  margin-bottom: 4px;
+}
+.mqtt-client-hint {
+  margin: 0 0 8px;
+  font-size: .72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+.mqtt-client-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .8rem;
+}
+.mqtt-client-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 3px 8px 3px 0;
+  width: 52px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.mqtt-client-table td {
+  padding: 3px 0;
+  vertical-align: middle;
+  word-break: break-all;
+}
+.mqtt-devices-widget {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+.mqtt-devices-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.mqtt-devices-title > span { flex: 1 1 auto; }
+.mqtt-devices-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.mqtt-devices-table-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: auto;
+}
+@media (max-width: 900px) {
+  .mqtt-top-row {
+    flex-direction: column;
+  }
+  .mqtt-client-compact {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+.mqtt-copy-cell,
+.mqtt-secret-cell {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin: -2px -6px;
+  transition: background .15s;
+}
+.mqtt-copy-cell:hover,
+.mqtt-secret-cell:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, .06));
+}
+.mqtt-secret-cell {
+  color: var(--text-muted);
+  letter-spacing: .04em;
+  user-select: none;
+}
+.mqtt-secret-cell.mqtt-secret-revealed {
+  color: var(--text);
+  letter-spacing: normal;
+  user-select: text;
+}
 .mqtt-broker-row {
   display: flex;
   align-items: center;

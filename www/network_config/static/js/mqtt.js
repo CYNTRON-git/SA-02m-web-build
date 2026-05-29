@@ -255,6 +255,98 @@ async function apiPost(url, data) {
   return r.json();
 }
 
+// ── External MQTT credentials (tab UI) ───────────────────────────────────────
+let _mqttClientInfoBound = false;
+
+async function copyTextToClipboard(text) {
+  if (!text) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (_) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+}
+
+function renderMqttClientInfo(st) {
+  const hostEl = document.getElementById('mqtt-ext-host');
+  const portEl = document.getElementById('mqtt-ext-port');
+  const userEl = document.getElementById('mqtt-ext-user');
+  const passEl = document.getElementById('mqtt-ext-pass');
+  const host = (st.host || '').trim() || window.location.hostname || '—';
+  const port = String(st.port_external != null ? st.port_external : 1884);
+  const user = (st.mqtt_user || 'mqttuser').trim();
+  const secret = (st.mqtt_password || '').trim();
+
+  if (hostEl) {
+    hostEl.textContent = host;
+    hostEl.dataset.copyText = host === '—' ? '' : host;
+  }
+  if (portEl) {
+    portEl.textContent = port;
+    portEl.dataset.copyText = port;
+  }
+  if (userEl) {
+    userEl.textContent = user;
+    userEl.dataset.copyText = user;
+  }
+  if (passEl) {
+    passEl.dataset.secret = secret;
+    passEl.dataset.revealed = '0';
+    passEl.textContent = 'password';
+  }
+}
+
+function bindMqttClientInfoCells() {
+  if (_mqttClientInfoBound) return;
+  _mqttClientInfoBound = true;
+
+  document.querySelectorAll('.mqtt-copy-cell').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const text = el.dataset.copyText || el.textContent || '';
+      if (!text || text === '—') {
+        showToast('Нечего копировать', 'warn');
+        return;
+      }
+      if (await copyTextToClipboard(text)) showToast('Скопировано: ' + text, 'ok');
+      else showToast('Не удалось скопировать', 'err');
+    });
+  });
+
+  const passEl = document.getElementById('mqtt-ext-pass');
+  if (passEl) {
+    passEl.addEventListener('click', async () => {
+      const secret = passEl.dataset.secret || '';
+      if (!secret) {
+        showToast('Пароль не задан (/etc/sa02m_mqtt.env)', 'warn');
+        return;
+      }
+      passEl.textContent = secret;
+      passEl.dataset.revealed = '1';
+      passEl.classList.add('mqtt-secret-revealed');
+      if (await copyTextToClipboard(secret)) showToast('Пароль скопирован', 'ok');
+      else showToast('Не удалось скопировать пароль', 'err');
+    });
+    passEl.addEventListener('blur', () => {
+      if (passEl.dataset.revealed === '1') {
+        passEl.textContent = 'password';
+        passEl.dataset.revealed = '0';
+        passEl.classList.remove('mqtt-secret-revealed');
+      }
+    });
+  }
+}
+
 // ── Broker status ─────────────────────────────────────────────────────────────
 async function refreshBrokerStatus() {
   const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
@@ -273,6 +365,8 @@ async function refreshBrokerStatus() {
     bridgeBadge.className = `badge ${st.bridge_active ? 'badge-ok' : 'badge-unk'}`;
     bridgeBadge.textContent = st.bridge_active ? '● Мост активен' : '● Мост остановлен';
   }
+  renderMqttClientInfo(st);
+  bindMqttClientInfoCells();
 }
 
 // ── Load config ───────────────────────────────────────────────────────────────

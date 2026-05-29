@@ -100,6 +100,8 @@ fi
 
 install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
+install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
+sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-external-info.py
 
 # Systemd units
 install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
