@@ -1,0 +1,32 @@
+[Unit]
+Description=SA-02m RS-485 to Ethernet gateway
+Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /opt/sa02m-serial-gateway/serial_gateway.py \
+    --config /etc/sa02m-gateway.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=15
+WatchdogSec=30s
+NotifyAccess=main
+
+User=root
+Group=dialout
+WorkingDirectory=/opt/sa02m-serial-gateway
+
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-serial-gateway
+
+# /run/sa02m-gateway/ is created automatically by systemd
+RuntimeDirectory=sa02m-gateway
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target

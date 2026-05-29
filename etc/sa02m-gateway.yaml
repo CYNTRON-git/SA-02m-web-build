@@ -1,0 +1,67 @@
+# SA-02m RS-485 → Ethernet gateway configuration
+# Managed by web UI ("Шлюз RS-485" tab). Edit manually or via the web interface.
+#
+# Modes:
+#   modbus_tcp   — Modbus TCP server (MBAP↔RTU). TCP port 502–506 by default.
+#   rtu_over_tcp — Raw RTU bytes over TCP (no MBAP header). Port 8502–8506.
+#   transparent  — Raw serial bytes ↔ TCP, multi-client. Port 9502–9506.
+#   disabled     — Port not used by the gateway.
+#
+# Reload config without restart (SIGHUP):
+#   systemctl reload sa02m-serial-gateway
+# Or full restart:
+#   systemctl restart sa02m-serial-gateway
+#
+# NOTE: An enabled port is exclusively locked (sa02m-gateway-COMx.lock).
+# Disable the port here before using it in sa02m-modbus-mqtt or sa02m-flasher.
+
+ports:
+  COM1:
+    enabled: false
+    mode: modbus_tcp
+    tcp_port: 502
+    baudrate: 9600
+    parity: none        # none | even | odd
+    stopbits: 2         # 1 | 2
+    databits: 8
+    fast_modbus_probe: true   # respond to WB Fast Modbus probe locally (FC 0x47)
+
+  COM2:
+    enabled: false
+    mode: modbus_tcp
+    tcp_port: 503
+    baudrate: 9600
+    parity: none
+    stopbits: 2
+    databits: 8
+    fast_modbus_probe: true
+
+  COM3:
+    enabled: false
+    mode: modbus_tcp
+    tcp_port: 504
+    baudrate: 9600
+    parity: none
+    stopbits: 2
+    databits: 8
+    fast_modbus_probe: true
+
+  COM4:
+    enabled: false
+    mode: modbus_tcp
+    tcp_port: 505
+    baudrate: 9600
+    parity: none
+    stopbits: 2
+    databits: 8
+    fast_modbus_probe: true
+
+  COM5:
+    enabled: false
+    mode: modbus_tcp
+    tcp_port: 506
+    baudrate: 9600
+    parity: none
+    stopbits: 2
+    databits: 8
+    fast_modbus_probe: true

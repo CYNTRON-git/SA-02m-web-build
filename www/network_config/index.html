@@ -67,6 +67,11 @@
         MQTT
       </div>
 
+      <div class="nav-item" data-tab="gateway">
+        <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/><path d="M8 12h8M12 8v8"/></svg>
+        Шлюз RS-485
+      </div>
+
       <div class="nav-section">Система</div>
       <div class="nav-item" data-tab="system">
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
@@ -848,12 +853,18 @@
 
       </div><!-- /tab-mqtt -->
 
+      <!-- ══════════════════════════════════ GATEWAY ════════════════════════ -->
+      <div id="tab-gateway" class="tab-pane">
+        <!-- Built dynamically by gateway.js gatewayInit() -->
+      </div><!-- /tab-gateway -->
+
     </main><!-- /main -->
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.14"></script>
-<script src="/static/js/flasher.js?v=1.0.3-13"></script>
-<script src="/static/js/mqtt.js?v=1.0.0"></script>
+<script src="/static/js/app.js?v=1.0.3.15"></script>
+<script src="/static/js/flasher.js?v=1.0.3-14"></script>
+<script src="/static/js/mqtt.js?v=1.0.1"></script>
+<script src="/static/js/gateway.js?v=1.0.3.19"></script>
 </body>
 </html>

@@ -35,6 +35,8 @@ function initNav() {
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
       if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
       if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
+      if (tab === 'gateway' && window.gatewayInit) window.gatewayInit();
+      if (tab !== 'gateway' && window.gatewayDestroy) window.gatewayDestroy();
     });
   });
 }
@@ -255,7 +257,10 @@ function renderServicesDynamic(d) {
   if (d.svc_mosquitto && d.svc_mosquitto !== 'unknown')
     pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
   if (d.svc_bridge && d.svc_bridge !== 'unknown')
-    pushRow('modbus-mqtt', d.svc_bridge_uptime_s, d.svc_bridge);
+    pushRow('MQTT', d.svc_bridge_uptime_s, d.svc_bridge, {
+      title: 'Modbus→MQTT мост (sa02m-modbus-mqtt)',
+      mono: true
+    });
 
   const mu = (d.mplc_unit != null && String(d.mplc_unit).trim())
     ? unitUiLabel(String(d.mplc_unit).trim())
