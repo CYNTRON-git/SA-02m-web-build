@@ -233,6 +233,7 @@ AI_SENSOR_CHOICES: List[Tuple[int, str]] = [
     (0x0023, "Ni100 (α617), 3-пров."),
     (0x0024, "Ni500 (α617), 3-пров."),
     (0x0025, "Ni1000 (α617), 3-пров."),
+    (0x0026, "Напряжение 0–30 В"),
 ]
 
 
@@ -402,7 +403,7 @@ _RTD_CODES = frozenset(
         0x0025,
     }
 )
-_VOLT_CODES = frozenset({0x0004, 0x0017, 0x0018})
+_VOLT_CODES = frozenset({0x0004, 0x0017, 0x0018, 0x0026})
 _CURR_CODES = frozenset({0x0005, 0x0015, 0x0016})
 _TC_K_CODES = frozenset({0x0006})
 _DRY_CODES = frozenset({0x0007})

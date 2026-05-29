@@ -274,6 +274,43 @@ def start_service(service: str) -> bool:
     return ok
 
 
+def _pid_cmdline(pid: str) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _poll_label_from_cmdline(cmd: str) -> str:
+    c = (cmd or "").lower()
+    if not c or "agetty" in c or "getty" in c or "/bin/login" in c:
+        return ""
+    if "modbus_mqtt_bridge" in c or "sa02m-modbus-mqtt" in c:
+        return "MQTT"
+    if "mplc_daemon" in c or "mplc_monitor" in c or "mplc4" in c:
+        return "MPLC4"
+    if "mplc" in c:
+        return "MPLC4"
+    if "sa02m-flasher" in c or "flasher" in c:
+        return "Flasher"
+    return ""
+
+
+def port_poll_service_labels(device_path: str) -> List[str]:
+    """Какая служба реально держит /dev/COM* (по fuser + cmdline), не глобальный systemd MPLC."""
+    labels: List[str] = []
+    seen: Set[str] = set()
+    for pid in port_occupants(device_path):
+        label = _poll_label_from_cmdline(_pid_cmdline(pid))
+        if not label:
+            continue
+        if label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return labels
+
+
 def port_occupants(device_path: str) -> List[str]:
     """
     Вернуть список PID'ов, удерживающих /dev/<port>. Пустой список = свободен.

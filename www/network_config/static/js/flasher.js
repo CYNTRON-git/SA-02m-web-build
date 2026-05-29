@@ -46,7 +46,15 @@
   function $(id) { return document.getElementById(id); }
 
   function unitUiLabel(name) {
-    return String(name || '').replace(/\.(service|socket)$/i, '');
+    const bare = String(name || '').replace(/\.(service|socket)$/i, '');
+    const aliases = {
+      mplc: 'MPLC4',
+      mplc4: 'MPLC4',
+      'sa02m-modbus-mqtt': 'MQTT',
+      'modbus-mqtt': 'MQTT',
+      MQTT: 'MQTT',
+    };
+    return aliases[bare] || bare;
   }
 
   function currentPort() {
@@ -658,15 +666,15 @@
     { id: 'rtd',  label: 'RTD' },
     { id: 'volt', label: '0–10 В' },
     { id: 'curr', label: '4–20 мА' },
-    { id: 'dry',  label: 'DIN' },
     { id: 'tc_k', label: 'ТХА' },
+    { id: 'dry',  label: 'DIN' },
   ];
   const _AI_NTC = new Set([0x0001, 0x000A, 0x000B, 0x000C, 0x000D, 0x0019, 0x001A]);
   const _AI_RTD = new Set([
     0x0002, 0x0003, 0x0008, 0x0009, 0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014,
     0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
   ]);
-  const _AI_VOLT = new Set([0x0004, 0x0017, 0x0018]);
+  const _AI_VOLT = new Set([0x0004, 0x0017, 0x0018, 0x0026]);
   const _AI_CURR = new Set([0x0005, 0x0015, 0x0016]);
   const _AI_TC_K = new Set([0x0006]);
   const _AI_DRY = new Set([0x0007]);
@@ -800,6 +808,7 @@
     [0x0023, 'Ni100 (α617), 3-пров.'],
     [0x0024, 'Ni500 (α617), 3-пров.'],
     [0x0025, 'Ni1000 (α617), 3-пров.'],
+    [0x0026, 'Напряжение 0–30 В'],
   ];
 
   function clampInt(value, min, max, fallback) {
@@ -820,7 +829,7 @@
   function aiSensorEngineeringKind(code) {
     const c = Number(code) & 0xFFFF;
     if (!c) return 'off';
-    if (c === 0x0004) return 'voltage_010';
+    if (c === 0x0004 || c === 0x0026) return 'voltage_010';
     if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'current';
     if (c === 0x0007) return 'logic';
     if (c === 0x0017) return 'diff_mv';
@@ -835,7 +844,7 @@
   function aiSensorRawPhysicalKind(code) {
     const c = Number(code) & 0xFFFF;
     if (!c) return 'off';
-    if (c === 0x0004) return 'microvolt';
+    if (c === 0x0004 || c === 0x0026) return 'microvolt';
     if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'nanoamp';
     if (c === 0x0006) return 'microvolt';
     if (c === 0x0007) return 'centiohm';

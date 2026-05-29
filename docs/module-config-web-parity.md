@@ -74,8 +74,11 @@
 ## AI UI (desktop parity)
 
 - Группировка: «режим» (bucket) + динамический список подтипов из `AI_SENSOR_CHOICES`.
-- Калибровка (int16, base+4): только для температурных датчиков (NTC, Pt/Ni, ТХА и т.д.), не для «Выключен», напряжения/тока без температурной модели — см. `ai_ui_temperature_calibration_applicable()` в `module_profiles.py`.
-- Фильтры Kalman / SPS / avg / tau: только `6AO6AI` и `12AI`, слоты как в прошивке.
+- **Порядок кнопок режима** (как в desktop `ai_ui_mode_radio_labels()`): Выключен → NTC → RTD → 0–10 В → 4–20 мА → **ТХА → DIN** (ТХА до DIN).
+- **Коды датчиков**: полный диапазон 0x0000–0x0026, включая `0x0026` (Напряжение 0–30 В) в группе «0–10 В» (bucket `volt`). Источник истины — `MR-02m-flasher/flasher_windows/module_profiles.py` `AI_SENSOR_CODES`.
+- **RTD 2/3-провод**: коды 0x001B–0x0025 — трёхпроводные; 0x0002–0x0014 (кроме не-RTD) — двухпроводные. Переключатель 2/3-провод показывается только для режима RTD.
+- Калибровка (int16, base+4): только для температурных датчиков (NTC, Pt/Ni, ТХА и т.д.), не для «Выключен», напряжения/тока — см. `ai_ui_temperature_calibration_applicable()` в `module_profiles.py`.
+- Фильтры Kalman / SPS / avg / tau: только `6AO6AI` и `12AI`, слоты как в прошивке (`ai_stor_for_6ao6ai_p` / `ai_stor_for_12ai_channel`).
 
 ## Приёмка
 
