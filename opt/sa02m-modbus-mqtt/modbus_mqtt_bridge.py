@@ -67,6 +67,10 @@ MR02M_MODULE_TYPES: dict[int, tuple[int, int, int, int]] = {
 # Holding 400+7*(ch-1): reg0 = ai_sensor_t (MODBUS_VARIABLES / module_profiles)
 MR02M_AI_HOLDING_BASE = 400
 MR02M_AI_CHANNEL_STRIDE = 7
+# Пауза на RS-485 между кадрами (Modbus T3.5 + время обработки slave), как в flasher send_receive.
+MODBUS_INTER_FRAME_DELAY_S = 0.05
+# Доп. пауза перед AO после крупного FC03 AI (6AO6AI6: 42 рег.) — время обработки slave.
+MODBUS_POST_AI_BLOCK_GAP_S = 0.05
 MR02M_TYPE_NAMES: dict[int, str] = {
     1: "DO6DI8", 2: "DO16", 3: "AO12", 4: "DO6", 5: "DI14",
     6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2",
@@ -183,6 +187,20 @@ def build_request(addr: int, fc: int, reg: int, count: int) -> bytes:
     return _append_crc(bytes([addr, fc, reg >> 8, reg & 0xFF, count >> 8, count & 0xFF]))
 
 
+def _modbus_read_frame_len(data: bytes) -> int:
+    """Длина RTU-ответа FC01–04: [addr, func, byte_count, data…, crc]."""
+    if len(data) < 3:
+        return 0
+    func = data[1]
+    if func not in (0x01, 0x02, 0x03, 0x04):
+        return 0
+    return 3 + int(data[2]) + 2
+
+
+def _rtu_char_time_s(baudrate: int) -> float:
+    return 10.0 / max(baudrate, 300)
+
+
 def build_write_coil(addr: int, coil: int, value: bool) -> bytes:
     v = 0xFF00 if value else 0x0000
     return _append_crc(bytes([addr, 0x05, coil >> 8, coil & 0xFF, v >> 8, v & 0xFF]))
@@ -216,12 +234,57 @@ def build_fmb_configure_events(addr: int, evt_type: int,
 class ModbusSerial:
     """Thread-safe Modbus RTU over serial, with Fast Modbus support."""
 
-    def __init__(self, port: str, baudrate: int, timeout: float = 0.3):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int,
+        timeout: float = 0.3,
+        inter_frame_delay_s: float = MODBUS_INTER_FRAME_DELAY_S,
+    ):
         self._port = port
         self._baudrate = baudrate
         self._timeout = timeout
+        self._inter_frame_delay_s = max(0.0, float(inter_frame_delay_s))
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
+
+    def _bus_gap(self) -> None:
+        if self._inter_frame_delay_s > 0:
+            time.sleep(self._inter_frame_delay_s)
+
+    def _read_rtu_response(self, ser: serial.Serial, request: bytes,
+                           timeout: float | None = None) -> bytes:
+        """Чтение полного RTU-кадра (как sa02m-flasher send_receive), не один read(N)."""
+        tlim = timeout if timeout is not None else self._timeout
+        char_time = _rtu_char_time_s(self._baudrate)
+        post_send = max(0.001, min(0.02, char_time * 3.5 + 0.002))
+        time.sleep(post_send)
+        deadline = time.monotonic() + tlim
+        buf = b""
+        last_recv = time.monotonic()
+        silence = max(0.02, char_time * 3.5)
+        while time.monotonic() < deadline:
+            if ser.in_waiting:
+                buf += ser.read(ser.in_waiting)
+                last_recv = time.monotonic()
+                if (len(request) > 0 and len(buf) > len(request)
+                        and buf[:len(request)] == request):
+                    buf = buf[len(request):]
+                flen = _modbus_read_frame_len(buf)
+                if flen and len(buf) >= flen:
+                    return buf[:flen]
+            elif buf and (time.monotonic() - last_recv) >= silence:
+                if (len(request) > 0 and len(buf) > len(request)
+                        and buf[:len(request)] == request):
+                    buf = buf[len(request):]
+                flen = _modbus_read_frame_len(buf)
+                if flen and len(buf) >= flen:
+                    return buf[:flen]
+            time.sleep(0.001)
+        if (len(request) > 0 and len(buf) > len(request)
+                and buf[:len(request)] == request):
+            buf = buf[len(request):]
+        return buf
 
     def _ensure_open(self) -> serial.Serial:
         if self._ser is None or not self._ser.is_open:
@@ -241,17 +304,23 @@ class ModbusSerial:
 
     def _transact(self, request: bytes, expected: int) -> bytes:
         ser = self._ensure_open()
-        ser.reset_input_buffer()
-        ser.write(request)
-        resp = ser.read(expected)
-        if len(resp) < expected:
-            raise IOError(f"Short response: {len(resp)}/{expected} bytes")
-        recv_crc = resp[-2] | (resp[-1] << 8)
-        if crc16(resp[:-2]) != recv_crc:
-            raise IOError(f"CRC mismatch on FC{request[1]:02X}")
-        if resp[1] & 0x80:
-            raise IOError(f"Modbus exception {resp[2]} on FC{request[1] & 0x7F:02X}")
-        return resp
+        try:
+            self._bus_gap()
+            ser.reset_input_buffer()
+            ser.write(request)
+            ser.flush()
+            resp = self._read_rtu_response(ser, request)
+            if len(resp) < expected:
+                raise IOError(f"Short response: {len(resp)}/{expected} bytes")
+            recv_crc = resp[-2] | (resp[-1] << 8)
+            if crc16(resp[:-2]) != recv_crc:
+                raise IOError(f"CRC mismatch on FC{request[1]:02X}")
+            if resp[1] & 0x80:
+                raise IOError(
+                    f"Modbus exception {resp[2]} on FC{request[1] & 0x7F:02X}")
+            return resp
+        finally:
+            self._bus_gap()
 
     # --- Standard Modbus reads ------------------------------------------------
 
@@ -312,6 +381,7 @@ class ModbusSerial:
                 return buf if len(buf) >= min_resp else b""
             finally:
                 ser.timeout = old_t
+                self._bus_gap()
 
 
 # ── Port pool (shared serial per port:baud) ────────────────────────────────────
@@ -1158,18 +1228,7 @@ class MR02mPoller(DevicePoller):
                     self.pub.pub_error(self.device_id, f"di_{i}", "r")
 
     def _poll_ai_ao(self) -> None:
-        if self._ao > 0:
-            try:
-                regs = self.read_holding_registers(self.address, 33, self._ao)
-                for i, v in enumerate(regs, 1):
-                    if self._ch_enabled("ao", i):
-                        self.pub.pub_control(self.device_id, f"ao_{i}", str(v))
-                        self.pub.pub_error(self.device_id, f"ao_{i}", "")
-            except Exception as e:
-                self.log.warning("AO read: %s", e)
-                for i in range(1, self._ao + 1):
-                    self.pub.pub_error(self.device_id, f"ao_{i}", "r")
-
+        # Сначала AI (крупный FC03), затем AO — на 6AO6AI6 первый кадр AO часто срывался без паузы.
         if self._ai > 0:
             try:
                 # Один FC03 на все AI (меньше гонок на half-duplex RS-485 с несколькими addr).
@@ -1209,6 +1268,30 @@ class MR02mPoller(DevicePoller):
                     self.pub.pub_control(
                         self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
                     self.pub.pub_error(self.device_id, f"ai_{i}", "")
+
+        if self._ao > 0:
+            if self._ai > 0 and MODBUS_POST_AI_BLOCK_GAP_S > 0:
+                time.sleep(MODBUS_POST_AI_BLOCK_GAP_S)
+            regs = None
+            last_err: Exception | None = None
+            for attempt in range(3):
+                try:
+                    regs = self.read_holding_registers(self.address, 33, self._ao)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+            if regs is not None:
+                for i, v in enumerate(regs, 1):
+                    if self._ch_enabled("ao", i):
+                        self.pub.pub_control(self.device_id, f"ao_{i}", str(v))
+                        self.pub.pub_error(self.device_id, f"ao_{i}", "")
+            else:
+                self.log.warning("AO read: %s", last_err)
+                for i in range(1, self._ao + 1):
+                    self.pub.pub_error(self.device_id, f"ao_{i}", "r")
 
     def _poll_diag(self) -> None:
         try:

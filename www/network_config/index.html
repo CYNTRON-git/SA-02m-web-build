@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.21">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.22">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -727,21 +727,55 @@
           </div>
         </div>
 
-        <!-- Device table -->
-        <div class="widget">
-          <div class="widget-title">
-            Устройства на шине
-            <div style="float:right;display:flex;gap:6px">
-              <button class="btn btn-primary" onclick="mqttShowScanModal()">🔍 Поиск устройств</button>
-              <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Вручную</button>
+        <div class="mqtt-top-row">
+          <!-- External MQTT client (PC / SCADA) -->
+          <div class="widget mqtt-client-widget mqtt-client-compact">
+            <div class="widget-title">Подключение MQTT с ПК</div>
+            <p class="mqtt-client-hint">1884 + пароль · 1883 только localhost</p>
+            <table class="mqtt-client-table">
+              <tbody>
+                <tr>
+                  <th>Хост</th>
+                  <td><span id="mqtt-ext-host" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">—</span></td>
+                </tr>
+                <tr>
+                  <th>Порт</th>
+                  <td><span id="mqtt-ext-port" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">1884</span></td>
+                </tr>
+                <tr>
+                  <th>Логин</th>
+                  <td><span id="mqtt-ext-user" class="mono mqtt-copy-cell" title="Нажмите, чтобы скопировать">mqttuser</span></td>
+                </tr>
+                <tr>
+                  <th>Пароль</th>
+                  <td><span id="mqtt-ext-pass" class="mono mqtt-secret-cell" title="Нажмите, чтобы показать и скопировать">password</span></td>
+                </tr>
+                <tr>
+                  <th>Топик</th>
+                  <td><span class="mono mqtt-copy-cell" data-copy-text="/devices/#" title="Нажмите, чтобы скопировать">/devices/#</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Device table -->
+          <div class="widget mqtt-devices-widget">
+            <div class="widget-title mqtt-devices-title">
+              <span>Устройства на шине</span>
+              <div class="mqtt-devices-actions">
+                <button class="btn btn-primary" onclick="mqttShowScanModal()">🔍 Поиск</button>
+                <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Вручную</button>
+              </div>
+            </div>
+            <div class="mqtt-devices-table-wrap">
+              <table class="mqtt-device-table">
+                <thead>
+                  <tr><th>Тип</th><th>Имя</th><th>Порт</th><th>Addr</th><th>Каналов</th><th></th></tr>
+                </thead>
+                <tbody id="mqtt-device-tbody"></tbody>
+              </table>
             </div>
           </div>
-          <table class="mqtt-device-table">
-            <thead>
-              <tr><th>Тип</th><th>Имя</th><th>Порт</th><th>Addr</th><th>Каналов</th><th></th></tr>
-            </thead>
-            <tbody id="mqtt-device-tbody"></tbody>
-          </table>
         </div>
 
         <!-- Channels accordion -->
@@ -876,7 +910,7 @@
 
 <script src="/static/js/app.js?v=1.0.3.15"></script>
 <script src="/static/js/flasher.js?v=1.0.3-14"></script>
-<script src="/static/js/mqtt.js?v=1.0.1"></script>
+<script src="/static/js/mqtt.js?v=1.0.2"></script>
 <script src="/static/js/gateway.js?v=1.0.3.19"></script>
 </body>
 </html>

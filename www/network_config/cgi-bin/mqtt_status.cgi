@@ -1,15 +1,18 @@
 #!/bin/bash
-echo "Content-type: application/json; charset=UTF-8"
-echo "Cache-Control: no-store"
-echo ""
+# MQTT broker / bridge status + параметры внешнего подключения (mqttuser).
 
 check_auth() {
     [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
     return 1
 }
-if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
+if ! check_auth; then
+    echo "Content-type: application/json; charset=UTF-8"
+    echo "Cache-Control: no-store"
+    echo ""
+    echo '{"error":"unauthorized"}'
+    exit 0
+fi
 
-# Статус Mosquitto
 mosq_active=0
 mosq_uptime_s=0
 if pgrep -x mosquitto >/dev/null 2>&1; then
@@ -24,19 +27,16 @@ if pgrep -x mosquitto >/dev/null 2>&1; then
     fi
 fi
 
-# Статус sa02m-modbus-mqtt
 bridge_active=0
 if pgrep -f "modbus_mqtt_bridge" >/dev/null 2>&1; then
     bridge_active=1
 fi
 
-# Статус sa02m-telemetry
 telemetry_active=0
 if pgrep -f "sa02m_telemetry" >/dev/null 2>&1; then
     telemetry_active=1
 fi
 
-# Клиенты брокера из $SYS (быстро, без блокировки)
 clients_connected=0
 if command -v mosquitto_sub >/dev/null 2>&1 && (( mosq_active == 1 )); then
     c=$(timeout 0.5 mosquitto_sub -h 127.0.0.1 -t '$SYS/broker/clients/connected' \
@@ -44,14 +44,48 @@ if command -v mosquitto_sub >/dev/null 2>&1 && (( mosq_active == 1 )); then
     [[ "$c" =~ ^[0-9]+$ ]] && clients_connected=$c
 fi
 
-cat <<JSON
-{
-  "mosquitto_active": ${mosq_active},
-  "mosquitto_uptime_s": ${mosq_uptime_s},
-  "bridge_active": ${bridge_active},
-  "telemetry_active": ${telemetry_active},
-  "clients_connected": ${clients_connected},
-  "port_local": 1883,
-  "port_external": 1884
-}
-JSON
+export MOSQ_ACTIVE=$mosq_active
+export MOSQ_UPTIME=$mosq_uptime_s
+export BRIDGE_ACTIVE=$bridge_active
+export TELEMETRY_ACTIVE=$telemetry_active
+export CLIENTS_CONNECTED=$clients_connected
+
+python3 <<'PY'
+import json
+import os
+import subprocess
+
+ext = {"host": "", "mqtt_user": "mqttuser", "mqtt_password": ""}
+try:
+    r = subprocess.run(
+        ["sudo", "-n", "/usr/local/sbin/sa02m-mqtt-external-info.py"],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    if r.returncode == 0 and r.stdout.strip():
+        ext.update(json.loads(r.stdout))
+except Exception:
+    pass
+
+print("Content-type: application/json; charset=UTF-8")
+print("Cache-Control: no-store")
+print()
+print(
+    json.dumps(
+        {
+            "mosquitto_active": int(os.environ.get("MOSQ_ACTIVE", 0)),
+            "mosquitto_uptime_s": int(os.environ.get("MOSQ_UPTIME", 0)),
+            "bridge_active": int(os.environ.get("BRIDGE_ACTIVE", 0)),
+            "telemetry_active": int(os.environ.get("TELEMETRY_ACTIVE", 0)),
+            "clients_connected": int(os.environ.get("CLIENTS_CONNECTED", 0)),
+            "port_local": 1883,
+            "port_external": 1884,
+            "host": ext.get("host") or "",
+            "mqtt_user": ext.get("mqtt_user") or "mqttuser",
+            "mqtt_password": ext.get("mqtt_password") or "",
+        },
+        ensure_ascii=False,
+    )
+)
+PY
