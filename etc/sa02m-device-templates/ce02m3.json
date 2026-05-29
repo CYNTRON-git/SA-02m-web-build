@@ -1,0 +1,22 @@
+{
+  "device_type": "ce02m3",
+  "title": {"ru": "CE-02m-3 Счётчик", "en": "CE-02m-3 Energy Meter"},
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "poll_power_s": 5,
+  "poll_energy_s": 60,
+  "poll_diag_s": 120,
+  "ct_ratio": 4000,
+  "phases": ["A", "B", "C"],
+  "channels_enabled": {
+    "voltages": true,
+    "line_voltages": true,
+    "currents": true,
+    "power_active": true,
+    "power_reactive": true,
+    "power_apparent": false,
+    "power_factor": true,
+    "frequency": true,
+    "energy": true
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "device_type": "dtv-sensor",
+  "title": {"ru": "DTV RTU-Сенсор", "en": "DTV RTU-Sensor"},
+  "protocol": "modbus_rtu",
+  "baudrate": 19200,
+  "poll_sensors_s": 10,
+  "poll_presence_s": 2,
+  "poll_diag_s": 60,
+  "sensors_present": [
+    "temp_ds18b20",
+    "temp_bme680",
+    "humidity_bme680",
+    "pressure_bme680_kpa",
+    "iaq_bme680",
+    "eco2_bme680",
+    "tvoc_zmod",
+    "presence",
+    "moving_distance"
+  ]
+}

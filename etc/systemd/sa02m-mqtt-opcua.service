@@ -1,0 +1,22 @@
+[Unit]
+Description=SA-02m MQTT→OPC UA gateway
+Documentation=https://github.com/wirenboard/wb-mqtt-opcua
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/bin/python3 /opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py -c /etc/sa02m-mqtt-opcua.conf
+Restart=on-failure
+RestartSec=10
+WatchdogSec=60
+TimeoutStartSec=60
+User=root
+WorkingDirectory=/opt/sa02m-mqtt-opcua
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
