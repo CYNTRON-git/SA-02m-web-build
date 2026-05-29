@@ -2,17 +2,17 @@
 """SA-02m MQTT→OPC UA gateway.
 
 Subscribes to MQTT Wiren Board topics and exposes all controls as OPC UA nodes.
-Supports write-back for non-readonly controls.
+Supports write-back for non-readonly controls via OPC UA writes.
 
 Based on:  https://github.com/wirenboard/wb-mqtt-opcua (MIT License)
 Config:    /etc/sa02m-mqtt-opcua.conf  (JSON, mirrors WB wb-mqtt-opcua.conf)
 Systemd:   sd_notify READY=1 / WATCHDOG=1
 
 Dependencies (on target):
-    pip3 install paho-mqtt asyncua
+    pip3 install opcua --break-system-packages
+    (paho-mqtt already installed)
 """
 
-import asyncio
 import json
 import logging
 import os
@@ -29,10 +29,10 @@ except ImportError:
     sys.exit("paho-mqtt not installed: pip3 install paho-mqtt")
 
 try:
-    from asyncua import Server as OPCUAServer, ua
-    from asyncua.ua import NodeId
+    from opcua import Server as OpcuaServer, ua
+    from opcua.server.user_manager import UserManager
 except ImportError:
-    sys.exit("asyncua not installed: pip3 install asyncua")
+    sys.exit("opcua not installed: pip3 install opcua --break-system-packages")
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -41,6 +41,9 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("mqtt-opcua")
+# Reduce noise from opcua library
+logging.getLogger("opcua").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 CONFIG_PATH = Path(os.environ.get("SA02M_OPCUA_CONFIG", "/etc/sa02m-mqtt-opcua.conf"))
 DEVICE_BASE = "/devices"
@@ -64,10 +67,9 @@ def sd_notify(msg: str) -> None:
 # ── Config ─────────────────────────────────────────────────────────────────────
 def load_config(path: Path) -> dict:
     if not path.exists():
-        # Create default config
         default = {
             "debug": False,
-            "opcua": {"host": "", "port": 4840},
+            "opcua": {"host": "0.0.0.0", "port": 4840},
             "mqtt": {"host": "localhost", "port": 1883, "keepalive": 60,
                      "auth": False, "username": "", "password": ""},
             "groups": []
@@ -84,11 +86,10 @@ def load_config(path: Path) -> dict:
         sys.exit(6)
 
 
-def _is_enabled(cfg: dict, device_id: str, ctrl_name: str) -> bool:
-    """Check if a topic is enabled in the groups config."""
+def _is_topic_enabled(cfg: dict, device_id: str, ctrl_name: str) -> bool:
     groups = cfg.get("groups", [])
     if not groups:
-        return True  # Auto-discover all
+        return True  # Auto-discover all controls
     topic = f"{device_id}/{ctrl_name}"
     for group in groups:
         if not group.get("enabled", True):
@@ -99,10 +100,10 @@ def _is_enabled(cfg: dict, device_id: str, ctrl_name: str) -> bool:
     return False
 
 
-# ── Control registry (MQTT meta + values) ─────────────────────────────────────
+# ── Control info (thread-safe) ─────────────────────────────────────────────────
 class ControlInfo:
     __slots__ = ("device_id", "ctrl_name", "ctrl_type", "readonly",
-                 "units", "title", "value", "node", "order")
+                 "units", "title", "value", "order")
 
     def __init__(self, device_id: str, ctrl_name: str):
         self.device_id = device_id
@@ -112,66 +113,102 @@ class ControlInfo:
         self.units = ""
         self.title = ""
         self.value: str | None = None
-        self.node = None
         self.order = 0
 
-    @property
-    def topic(self) -> str:
-        return f"{device_id}/{ctrl_name}" if False else \
-               f"{self.device_id}/{self.ctrl_name}"
+
+def _to_ua_value(ctrl_type: str, value_str: str):
+    """Convert MQTT string value to Python value for OPC UA node."""
+    try:
+        if ctrl_type == "switch":
+            return bool(int(value_str))
+        if ctrl_type in ("temperature", "voltage", "current", "power",
+                         "value", "rel_humidity", "pressure"):
+            return float(value_str)
+        if ctrl_type == "range":
+            return int(float(value_str))
+    except (ValueError, TypeError):
+        pass
+    return str(value_str)
 
 
-# ── MQTT side ──────────────────────────────────────────────────────────────────
-class MQTTBridge:
-    def __init__(self, cfg: dict, loop: asyncio.AbstractEventLoop):
-        mcfg = cfg.get("mqtt", {})
-        self._host = mcfg.get("host", "localhost")
-        self._port = int(mcfg.get("port", 1883))
-        self._keepalive = int(mcfg.get("keepalive", 60))
-        self._auth = mcfg.get("auth", False)
-        self._loop = loop
+# ── Write handler for OPC UA → MQTT ───────────────────────────────────────────
+class ControlWriteHandler:
+    """Called when OPC UA client writes to a node."""
+    def __init__(self, gateway: "OpcuaGateway", device_id: str, ctrl_name: str):
+        self._gw = gateway
+        self._device_id = device_id
+        self._ctrl_name = ctrl_name
+
+    def datachange_notification(self, node, val, data):
+        pass
+
+    def event_notification(self, event):
+        pass
+
+
+# ── OPC UA + MQTT gateway ──────────────────────────────────────────────────────
+class OpcuaGateway:
+    def __init__(self, cfg: dict):
         self._cfg = cfg
         self._debug = cfg.get("debug", False)
+        ocfg = cfg.get("opcua", {})
+        mcfg = cfg.get("mqtt", {})
 
-        self._controls: dict[tuple[str, str], ControlInfo] = {}
+        self._opcua_host = ocfg.get("host", "0.0.0.0") or "0.0.0.0"
+        self._opcua_port = int(ocfg.get("port", 4840))
+        self._mqtt_host = mcfg.get("host", "localhost")
+        self._mqtt_port = int(mcfg.get("port", 1883))
+        self._mqtt_keepalive = int(mcfg.get("keepalive", 60))
+
+        self._controls: dict[tuple, ControlInfo] = {}
+        self._nodes: dict[tuple, object] = {}      # key → opcua Variable node
+        self._device_objs: dict[str, object] = {}  # device_id → opcua Object node
         self._lock = threading.Lock()
-        self._value_queue: asyncio.Queue = asyncio.Queue()
+        self._stop = threading.Event()
+        self._ns_idx = 0
 
-        self._client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
-                                   client_id="sa02m-mqtt-opcua")
-        if self._auth:
-            self._client.username_pw_set(
+        # OPC UA server
+        self._server = OpcuaServer()
+        self._server.set_endpoint(
+            f"opc.tcp://{self._opcua_host}:{self._opcua_port}/sa02m/")
+        self._server.set_server_name("SA-02m MQTT-OPC UA Gateway")
+        self._server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
+
+        # MQTT client
+        self._mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
+                                 client_id="sa02m-mqtt-opcua")
+        if mcfg.get("auth"):
+            self._mqtt.username_pw_set(
                 mcfg.get("username", ""), mcfg.get("password", ""))
-        self._client.on_connect = self._on_connect
-        self._client.on_message = self._on_message
+        self._mqtt.on_connect = self._on_mqtt_connect
+        self._mqtt.on_message = self._on_mqtt_message
+        self._mqtt.on_disconnect = self._on_mqtt_disconnect
 
-    def _on_connect(self, client, userdata, flags, rc, props=None):
+    # ── MQTT callbacks ─────────────────────────────────────────────────────────
+    def _on_mqtt_connect(self, client, userdata, flags, rc, props=None):
         if rc == 0:
-            log.info("MQTT connected to %s:%d", self._host, self._port)
+            log.info("MQTT connected to %s:%d", self._mqtt_host, self._mqtt_port)
             client.subscribe(f"{DEVICE_BASE}/+/controls/+", qos=1)
-            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/type", qos=1)
-            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/readonly", qos=1)
-            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/units", qos=1)
-            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/title", qos=1)
-            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/order", qos=1)
+            client.subscribe(f"{DEVICE_BASE}/+/controls/+/meta/+", qos=1)
         else:
             log.warning("MQTT connect failed rc=%d", rc)
 
-    def _on_message(self, client, userdata, msg):
+    def _on_mqtt_disconnect(self, client, userdata, rc, props=None, reasoncode=None):
+        log.warning("MQTT disconnected, will reconnect...")
+
+    def _on_mqtt_message(self, client, userdata, msg):
         topic: str = msg.topic
         payload: str = msg.payload.decode(errors="replace").strip()
-
-        # /devices/<id>/controls/<name>/meta/<key>
         if "/controls/" not in topic:
             return
         parts = topic.split("/")
-        # parts: ['', 'devices', dev_id, 'controls', ctrl, ...]
+        # /devices/<dev>/controls/<ctrl>[/meta/<key>]
         if len(parts) < 5:
             return
         dev_id = parts[2]
         ctrl = parts[4]
 
-        if not _is_enabled(self._cfg, dev_id, ctrl):
+        if not _is_topic_enabled(self._cfg, dev_id, ctrl):
             return
 
         key = (dev_id, ctrl)
@@ -192,7 +229,12 @@ class MQTTBridge:
                 elif meta_key == "units":
                     info.units = payload
                 elif meta_key == "title":
-                    info.title = payload
+                    # May be JSON {"ru":"..","en":".."}
+                    try:
+                        t = json.loads(payload)
+                        info.title = t.get("en") or t.get("ru") or payload
+                    except (json.JSONDecodeError, AttributeError):
+                        info.title = payload
                 elif meta_key == "order":
                     try:
                         info.order = int(payload)
@@ -202,215 +244,159 @@ class MQTTBridge:
             # Value update
             with self._lock:
                 info.value = payload
-            asyncio.run_coroutine_threadsafe(
-                self._value_queue.put((key, payload)), self._loop
-            )
+            self._update_node(key, payload)
             if self._debug:
                 log.debug("MQTT %s/%s = %s", dev_id, ctrl, payload)
 
-    def publish_write(self, dev_id: str, ctrl: str, value: str) -> None:
-        topic = f"{DEVICE_BASE}/{dev_id}/controls/{ctrl}/on"
-        self._client.publish(topic, value, qos=1)
-        log.debug("Write %s/%s = %s", dev_id, ctrl, value)
-
-    def start(self) -> None:
-        self._client.connect(self._host, self._port, self._keepalive)
-        self._client.loop_start()
-
-    def stop(self) -> None:
-        self._client.loop_stop()
-        self._client.disconnect()
-
-    def get_controls_snapshot(self) -> list[ControlInfo]:
-        with self._lock:
-            return list(self._controls.values())
-
-    async def value_updates(self):
-        """Async generator yielding (key, value) as they arrive."""
-        while True:
-            item = await self._value_queue.get()
-            yield item
-
-
-# ── OPC UA side ────────────────────────────────────────────────────────────────
-def _to_opcua_variant(ctrl_type: str, value_str: str) -> ua.Variant:
-    """Convert MQTT string value to appropriate OPC UA variant."""
-    try:
-        if ctrl_type in ("switch",):
-            return ua.Variant(bool(int(value_str)), ua.VariantType.Boolean)
-        if ctrl_type in ("temperature", "voltage", "current", "power",
-                         "value", "rel_humidity", "pressure"):
-            return ua.Variant(float(value_str), ua.VariantType.Float)
-        if ctrl_type == "range":
-            return ua.Variant(int(float(value_str)), ua.VariantType.Int32)
-    except (ValueError, TypeError):
-        pass
-    return ua.Variant(str(value_str), ua.VariantType.String)
-
-
-class WriteHandler:
-    """Handles OPC UA write-back to MQTT."""
-    def __init__(self, bridge: "MQTTBridge", info: ControlInfo):
-        self._bridge = bridge
-        self._info = info
-
-    async def write(self, node, val, attr=None):
-        raw_val = val.Value.Value
-        value_str = "1" if raw_val is True else "0" if raw_val is False else str(raw_val)
-        self._bridge.publish_write(self._info.device_id, self._info.ctrl_name, value_str)
-
-
-class OPCUABridge:
-    def __init__(self, cfg: dict, mqtt_bridge: MQTTBridge):
-        ocfg = cfg.get("opcua", {})
-        self._host = ocfg.get("host", "0.0.0.0")
-        self._port = int(ocfg.get("port", 4840))
-        self._debug = cfg.get("debug", False)
-        self._mqtt = mqtt_bridge
-        self._server: OPCUAServer | None = None
-        self._ns_idx = 0
-        self._nodes: dict[tuple[str, str], object] = {}
-        self._device_folders: dict[str, object] = {}
-
-    async def setup(self) -> None:
-        self._server = OPCUAServer()
-        await self._server.init()
-
-        endpoint = f"opc.tcp://{self._host or '0.0.0.0'}:{self._port}"
-        self._server.set_endpoint(endpoint)
-        self._server.set_server_name("SA-02m MQTT-OPC UA Gateway")
-
-        self._ns_idx = await self._server.register_namespace(OPCUA_NS)
-
-        objects = self._server.nodes.objects
-        self._root = await objects.add_object(
-            self._ns_idx, "SA02m_Devices"
-        )
-        log.info("OPC UA server endpoint: %s", endpoint)
-
-    async def _ensure_device_folder(self, dev_id: str):
-        if dev_id not in self._device_folders:
-            folder = await self._root.add_object(self._ns_idx, dev_id)
-            self._device_folders[dev_id] = folder
-        return self._device_folders[dev_id]
-
-    async def add_or_update_node(self, info: ControlInfo) -> None:
-        key = (info.device_id, info.ctrl_name)
-        if key in self._nodes:
-            # Update value
-            node = self._nodes[key]
-            if info.value is not None:
-                variant = _to_opcua_variant(info.ctrl_type, info.value)
-                await node.write_value(variant)
-            return
-
-        folder = await self._ensure_device_folder(info.device_id)
-        node_name = f"{info.ctrl_name}"
-        if info.value is not None:
-            init_val = _to_opcua_variant(info.ctrl_type, info.value)
-        else:
-            init_val = ua.Variant("", ua.VariantType.String)
-
-        writable = not info.readonly
-        node = await folder.add_variable(self._ns_idx, node_name, init_val)
-        if writable:
-            await node.set_writable()
-            # Subscribe to writes
-            handler = WriteHandler(self._mqtt, info)
-            node.aio_obj.set_attr_data_value(ua.DataValue(init_val))
-            # Note: full write-back subscription requires DataChange subscription;
-            # simplified: client writes directly to the node, we poll changes.
-
-        self._nodes[key] = node
-
-        # Set engineering units extension object if units present
-        if info.units:
-            try:
-                eu_range = ua.EUInformation()
-                eu_range.DisplayName = ua.LocalizedText(info.units)
-                await node.set_attribute(
-                    ua.AttributeIds.Description,
-                    ua.DataValue(ua.Variant(
-                        ua.LocalizedText(f"{info.title or info.ctrl_name} [{info.units}]"),
-                        ua.VariantType.LocalizedText
-                    ))
-                )
-            except Exception:
-                pass
-
+    def _mqtt_write(self, device_id: str, ctrl: str, value: str) -> None:
+        topic = f"{DEVICE_BASE}/{device_id}/controls/{ctrl}/on"
+        self._mqtt.publish(topic, value, qos=1)
         if self._debug:
-            log.debug("OPC UA node: %s/%s", info.device_id, info.ctrl_name)
+            log.debug("OPC UA→MQTT write %s/%s = %s", device_id, ctrl, value)
 
-    async def update_node_value(self, key: tuple, value: str) -> None:
+    # ── OPC UA node management ─────────────────────────────────────────────────
+    def _ensure_device_obj(self, dev_id: str):
+        if dev_id not in self._device_objs:
+            root = self._server.nodes.objects
+            obj = root.add_object(self._ns_idx, dev_id)
+            self._device_objs[dev_id] = obj
+        return self._device_objs[dev_id]
+
+    def _add_node(self, key: tuple) -> None:
+        with self._lock:
+            info = self._controls.get(key)
+        if info is None or key in self._nodes:
+            return
+        try:
+            dev_obj = self._ensure_device_obj(info.device_id)
+            node_name = info.ctrl_name
+            if info.title:
+                node_name = f"{info.ctrl_name} ({info.title})"
+            init_val = _to_ua_value(info.ctrl_type,
+                                    info.value if info.value is not None else "")
+            var = dev_obj.add_variable(self._ns_idx, node_name, init_val)
+            if not info.readonly:
+                var.set_writable()
+            self._nodes[key] = var
+            if self._debug:
+                log.debug("Created OPC UA node: %s/%s", info.device_id, info.ctrl_name)
+        except Exception as e:
+            log.warning("add_node %s: %s", key, e)
+
+    def _update_node(self, key: tuple, value_str: str) -> None:
         node = self._nodes.get(key)
         if node is None:
-            return
-        with self._mqtt._lock:
-            info = self._mqtt._controls.get(key)
+            # Node doesn't exist yet — create it first
+            self._add_node(key)
+            node = self._nodes.get(key)
+            if node is None:
+                return
+        with self._lock:
+            info = self._controls.get(key)
         if info is None:
             return
-        variant = _to_opcua_variant(info.ctrl_type, value)
         try:
-            await node.write_value(variant)
+            ua_val = _to_ua_value(info.ctrl_type, value_str)
+            node.set_value(ua_val)
         except Exception as e:
-            log.debug("Node write error %s: %s", key, e)
+            log.debug("set_value %s: %s", key, e)
 
-    async def run(self) -> None:
-        async with self._server:
-            sd_notify("READY=1")
-            log.info("OPC UA bridge running")
-
-            # Initial population of known controls
-            await asyncio.sleep(2.0)  # Let MQTT populate initial state
-            for info in self._mqtt.get_controls_snapshot():
+    # ── Polling writable nodes for OPC UA→MQTT write-back ─────────────────────
+    def _writeback_poller(self) -> None:
+        """Periodically check writable nodes for value changes (OPC UA client wrote)."""
+        known_values: dict[tuple, object] = {}
+        while not self._stop.is_set():
+            with self._lock:
+                writable_keys = [
+                    k for k, info in self._controls.items()
+                    if not info.readonly and k in self._nodes
+                ]
+            for key in writable_keys:
+                node = self._nodes.get(key)
+                if node is None:
+                    continue
                 try:
-                    await self.add_or_update_node(info)
-                except Exception as e:
-                    log.warning("Add node %s/%s: %s",
-                                info.device_id, info.ctrl_name, e)
+                    current = node.get_value()
+                    prev = known_values.get(key)
+                    if prev is not None and current != prev:
+                        with self._lock:
+                            info = self._controls.get(key)
+                        if info:
+                            val_str = "1" if current is True else \
+                                      "0" if current is False else str(current)
+                            self._mqtt_write(info.device_id, info.ctrl_name, val_str)
+                    known_values[key] = current
+                except Exception:
+                    pass
+            self._stop.wait(1.0)
 
-            # Process value updates
-            async for key, value in self._mqtt.value_updates():
-                info = None
-                with self._mqtt._lock:
-                    info = self._mqtt._controls.get(key)
+    # ── Main lifecycle ─────────────────────────────────────────────────────────
+    def start(self) -> None:
+        # Register namespace
+        uri_idx = self._server.register_namespace(OPCUA_NS)
+        self._ns_idx = uri_idx
 
-                if info is not None and key not in self._nodes:
-                    try:
-                        await self.add_or_update_node(info)
-                    except Exception as e:
-                        log.warning("Add node %s: %s", key, e)
-                elif info is not None:
-                    await self.update_node_value(key, value)
+        # Start OPC UA server
+        self._server.start()
+        log.info("OPC UA server started: opc.tcp://%s:%d/sa02m/",
+                 self._opcua_host, self._opcua_port)
 
+        # Start MQTT
+        self._mqtt.connect(self._mqtt_host, self._mqtt_port, self._mqtt_keepalive)
+        self._mqtt.loop_start()
 
-# ── Daemon ─────────────────────────────────────────────────────────────────────
-async def async_main(cfg: dict) -> None:
-    loop = asyncio.get_event_loop()
-    mqtt_bridge = MQTTBridge(cfg, loop)
-    opcua_bridge = OPCUABridge(cfg, mqtt_bridge)
+        # Wait for initial MQTT state to settle
+        time.sleep(3.0)
 
-    mqtt_bridge.start()
-    await asyncio.sleep(1.0)
+        # Populate nodes from already-received controls
+        with self._lock:
+            keys = list(self._controls.keys())
+        for key in keys:
+            self._add_node(key)
 
-    await opcua_bridge.setup()
+        sd_notify("READY=1")
+        log.info("SA-02m MQTT→OPC UA gateway ready (%d initial nodes)",
+                 len(self._nodes))
 
-    # Systemd watchdog in background
-    wdog_us = int(os.environ.get("WATCHDOG_USEC", "0"))
-    if wdog_us:
-        async def _watchdog():
-            interval = wdog_us / 2_000_000
-            while True:
+        # Start write-back poller thread
+        wb_thread = threading.Thread(target=self._writeback_poller,
+                                     daemon=True, name="opcua-writeback")
+        wb_thread.start()
+
+        # Systemd watchdog + periodic node creation for new controls
+        wdog_us = int(os.environ.get("WATCHDOG_USEC", "0"))
+        wdog_interval = wdog_us / 2_000_000 if wdog_us else 0
+        last_node_check = time.time()
+
+        while not self._stop.is_set():
+            if wdog_interval:
                 sd_notify("WATCHDOG=1")
-                await asyncio.sleep(interval)
-        asyncio.create_task(_watchdog())
 
-    try:
-        await opcua_bridge.run()
-    finally:
-        mqtt_bridge.stop()
+            # Every 5s: add nodes for any newly-discovered controls
+            if time.time() - last_node_check >= 5.0:
+                with self._lock:
+                    new_keys = [k for k in self._controls if k not in self._nodes]
+                for key in new_keys:
+                    self._add_node(key)
+                last_node_check = time.time()
+
+            self._stop.wait(wdog_interval if wdog_interval else 5.0)
+
+    def stop(self) -> None:
+        log.info("Stopping...")
+        self._stop.set()
+        try:
+            self._mqtt.loop_stop()
+            self._mqtt.disconnect()
+        except Exception:
+            pass
+        try:
+            self._server.stop()
+        except Exception:
+            pass
 
 
+# ── Entry point ────────────────────────────────────────────────────────────────
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="SA-02m MQTT→OPC UA gateway")
@@ -426,15 +412,15 @@ def main() -> None:
     if cfg.get("debug"):
         log.setLevel(logging.DEBUG)
 
-    def _stop(signum, frame):
-        log.info("Stopping...")
-        asyncio.get_event_loop().stop()
+    gw = OpcuaGateway(cfg)
+
+    def _sig(signum, frame):
+        gw.stop()
         sys.exit(0)
 
-    signal.signal(signal.SIGINT, _stop)
-    signal.signal(signal.SIGTERM, _stop)
-
-    asyncio.run(async_main(cfg))
+    signal.signal(signal.SIGINT, _sig)
+    signal.signal(signal.SIGTERM, _sig)
+    gw.start()
 
 
 if __name__ == "__main__":

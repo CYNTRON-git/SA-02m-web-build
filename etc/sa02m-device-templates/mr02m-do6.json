@@ -1,0 +1,17 @@
+{
+  "device_type": "mr02m-do6",
+  "title": {"ru": "MR-02м DO6", "en": "MR-02m DO6"},
+  "device_type_id": 4,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "channels": {
+    "do": [
+      {"ch": 1, "label": "Выход 1", "label_en": "Output 1", "enabled": true},
+      {"ch": 2, "label": "Выход 2", "label_en": "Output 2", "enabled": true},
+      {"ch": 3, "label": "Выход 3", "label_en": "Output 3", "enabled": true},
+      {"ch": 4, "label": "Выход 4", "label_en": "Output 4", "enabled": true},
+      {"ch": 5, "label": "Выход 5", "label_en": "Output 5", "enabled": true},
+      {"ch": 6, "label": "Выход 6", "label_en": "Output 6", "enabled": true}
+    ]
+  }
+}

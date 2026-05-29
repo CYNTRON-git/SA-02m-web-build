@@ -9,9 +9,11 @@ Config:    /etc/sa02m-mqtt-snmp.conf  (JSON, mirrors WB wb-mqtt-snmp.conf)
 Systemd:   sd_notify READY=1 / WATCHDOG=1
 
 Dependencies (on target):
-    pip3 install paho-mqtt pysnmp
+    pip3 install 'pysnmp>=6.0' --break-system-packages
+    (paho-mqtt already installed)
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -21,7 +23,6 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 try:
     import paho.mqtt.client as mqtt
@@ -29,18 +30,32 @@ except ImportError:
     sys.exit("paho-mqtt not installed: pip3 install paho-mqtt")
 
 try:
-    from pysnmp.hlapi import (
+    from pysnmp.hlapi.asyncio import (
         CommunityData,
         ContextData,
         ObjectIdentity,
         ObjectType,
         SnmpEngine,
         UdpTransportTarget,
-        getCmd,
+        get_cmd,
     )
     from pysnmp.proto.rfc1902 import TimeTicks
+    _PYSNMP7 = True
 except ImportError:
-    sys.exit("pysnmp not installed: pip3 install pysnmp")
+    try:
+        from pysnmp.hlapi import (
+            CommunityData,
+            ContextData,
+            ObjectIdentity,
+            ObjectType,
+            SnmpEngine,
+            UdpTransportTarget,
+            getCmd as _get_cmd,
+        )
+        from pysnmp.proto.rfc1902 import TimeTicks
+        _PYSNMP7 = False
+    except ImportError:
+        sys.exit("pysnmp not installed: pip3 install 'pysnmp>=6.0' --break-system-packages")
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -52,6 +67,7 @@ log = logging.getLogger("mqtt-snmp")
 
 CONFIG_PATH = Path(os.environ.get("SA02M_SNMP_CONFIG", "/etc/sa02m-mqtt-snmp.conf"))
 DEVICE_BASE = "/devices"
+
 
 # ── sd_notify ──────────────────────────────────────────────────────────────────
 def sd_notify(msg: str) -> None:
@@ -72,7 +88,7 @@ _PRECISION_MAP: dict[str, str] = {
     "°C": "1", "°F": "1",
     "V":  "3", "kV": "3", "mV": "1",
     "A":  "3", "mA": "2",
-    "W":  "1", "kW": "3", "MW": "3",
+    "W":  "1", "kW": "3",
     "kWh": "3", "Wh": "1",
     "Hz": "2",
     "%":  "1", "%, RH": "1",
@@ -153,10 +169,38 @@ class MQTTClient:
         self.pub(f"{DEVICE_BASE}/{dev_id}/controls/{ctrl}/meta/error", err)
 
 
-# ── SNMP poller ────────────────────────────────────────────────────────────────
-class SNMPDevice:
-    """One SNMP device: polls channels and publishes to MQTT."""
+# ── SNMP get (async wrapper) ───────────────────────────────────────────────────
+async def _snmp_get_async(engine: SnmpEngine, community: str, mp_model: int,
+                          address: str, timeout: int, oid_str: str):
+    """Async SNMP GET using pysnmp 7.x API."""
+    err_indication, err_status, _, var_binds = await get_cmd(
+        engine,
+        CommunityData(community, mpModel=mp_model),
+        await UdpTransportTarget.create((address, 161),
+                                         timeout=timeout, retries=1),
+        ContextData(),
+        ObjectType(ObjectIdentity(oid_str)),
+    )
+    return err_indication, err_status, var_binds
 
+
+def _snmp_get_sync(engine: SnmpEngine, community: str, mp_model: int,
+                   address: str, timeout: int, oid_str: str):
+    """Sync SNMP GET using pysnmp 4.x API (fallback)."""
+    err_indication, err_status, _, var_binds = next(
+        _get_cmd(
+            engine,
+            CommunityData(community, mpModel=mp_model),
+            UdpTransportTarget((address, 161), timeout=timeout, retries=1),
+            ContextData(),
+            ObjectType(ObjectIdentity(oid_str)),
+        )
+    )
+    return err_indication, err_status, var_binds
+
+
+# ── SNMP device poller ─────────────────────────────────────────────────────────
+class SNMPDevice:
     def __init__(self, dcfg: dict, mqtt_client: MQTTClient,
                  max_unchanged_interval: int, debug: bool):
         self._cfg = dcfg
@@ -164,7 +208,8 @@ class SNMPDevice:
         self._max_unchanged = max_unchanged_interval
         self._debug = debug
 
-        self._id: str = dcfg.get("id", dcfg.get("address", "snmp").replace(".", "_"))
+        self._id: str = dcfg.get("id",
+                                  dcfg.get("address", "snmp").replace(".", "_"))
         self._name: str = dcfg.get("name", self._id)
         self._address: str = dcfg["address"]
         self._community: str = dcfg.get("community", "public")
@@ -172,16 +217,18 @@ class SNMPDevice:
         self._timeout: int = int(dcfg.get("snmp_timeout", 5))
         self._poll_ms: int = int(dcfg.get("poll_interval", 10000))
         self._oid_prefix: str = dcfg.get("oid_prefix", "")
-
         self._channels: list[dict] = [
             ch for ch in dcfg.get("channels", []) if ch.get("enabled", True)
         ]
-
         self._meta_published = False
         self._last_values: dict[str, str] = {}
         self._last_pub_time: dict[str, float] = {}
         self._engine = SnmpEngine()
+        self._mp_model = 1 if self._version == "2c" else 0
         self._log = logging.getLogger(f"snmp.{self._id}")
+
+        # Per-device asyncio event loop (thread-local)
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _make_oid(self, ch: dict) -> str:
         oid = ch.get("oid", "")
@@ -191,14 +238,6 @@ class SNMPDevice:
         if prefix and not oid.startswith(".") and "::" not in oid:
             return f"{prefix}::{oid}"
         return oid
-
-    def _community_data(self) -> CommunityData:
-        mp = 1 if self._version == "2c" else 0
-        return CommunityData(self._community, mpModel=mp)
-
-    def _transport(self) -> UdpTransportTarget:
-        return UdpTransportTarget((self._address, 161),
-                                  timeout=self._timeout, retries=1)
 
     def _publish_meta(self) -> None:
         self._mqtt.pub_meta(self._id, "name", self._name)
@@ -216,14 +255,48 @@ class SNMPDevice:
                     self._mqtt.pub_ctrl_meta(self._id, ctrl, "precision", prec)
             title = ch.get("title", "")
             if isinstance(title, dict):
-                import json as _j
-                self._mqtt.pub_ctrl_meta(self._id, ctrl, "title", _j.dumps(title, ensure_ascii=False))
+                self._mqtt.pub_ctrl_meta(
+                    self._id, ctrl, "title",
+                    json.dumps(title, ensure_ascii=False))
             elif title:
                 self._mqtt.pub_ctrl_meta(self._id, ctrl, "title", title)
         self._meta_published = True
 
+    def _format_value(self, ch: dict, raw: str, val_obj) -> str:
+        ctrl_type = ch.get("control_type", "text")
+        scale = float(ch.get("scale", 1.0))
+        units = ch.get("units", "")
+        if ctrl_type not in ("value", "temperature", "voltage", "power",
+                              "current", "rel_humidity", "pressure"):
+            return raw
+        try:
+            num = float(raw)
+            if isinstance(val_obj, TimeTicks):
+                num /= 100.0
+            if scale != 1.0:
+                num *= scale
+            prec = _precision(units)
+            if prec is not None:
+                return f"{num:.{prec}f}"
+            # Round to remove floating-point noise
+            return f"{num:.6g}"
+        except (ValueError, TypeError):
+            return raw
+
+    def _snmp_get(self, oid_str: str):
+        """Perform one SNMP GET — handles both pysnmp 7.x (async) and 4.x."""
+        if _PYSNMP7:
+            if self._loop is None or self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+            return self._loop.run_until_complete(
+                _snmp_get_async(self._engine, self._community, self._mp_model,
+                                self._address, self._timeout, oid_str)
+            )
+        else:
+            return _snmp_get_sync(self._engine, self._community, self._mp_model,
+                                  self._address, self._timeout, oid_str)
+
     def poll(self) -> None:
-        """Poll all channels once; called periodically."""
         if not self._meta_published:
             self._publish_meta()
 
@@ -232,19 +305,8 @@ class SNMPDevice:
             if not oid_str:
                 continue
             ctrl = ch["name"]
-            scale = float(ch.get("scale", 1.0))
-            ctrl_type = ch.get("control_type", "text")
-
             try:
-                err_indication, err_status, _, var_binds = next(
-                    getCmd(
-                        self._engine,
-                        self._community_data(),
-                        self._transport(),
-                        ContextData(),
-                        ObjectType(ObjectIdentity(oid_str)),
-                    )
-                )
+                err_indication, err_status, var_binds = self._snmp_get(oid_str)
                 if err_indication:
                     raise IOError(str(err_indication))
                 if err_status:
@@ -252,25 +314,7 @@ class SNMPDevice:
 
                 _, val_obj = var_binds[0]
                 raw = val_obj.prettyPrint()
-
-                # Apply scale for numeric types
-                value = raw
-                if ctrl_type in ("value", "temperature", "voltage", "power", "current"):
-                    try:
-                        num = float(raw)
-                        # TimeTicks are in centiseconds → convert to seconds
-                        if isinstance(val_obj, TimeTicks):
-                            num /= 100.0
-                        if scale != 1.0:
-                            num *= scale
-                        units = ch.get("units", "")
-                        prec = _precision(units)
-                        if prec is not None:
-                            value = f"{num:.{prec}f}"
-                        else:
-                            value = str(num) if scale != 1.0 else raw
-                    except (ValueError, TypeError):
-                        value = raw
+                value = self._format_value(ch, raw, val_obj)
 
                 now = time.time()
                 last = self._last_values.get(ctrl)
@@ -299,7 +343,6 @@ class SNMPDevice:
 class SNMPDaemon:
     def __init__(self, cfg: dict, mqtt_client: MQTTClient):
         self._debug = cfg.get("debug", False)
-        self._num_workers = min(int(cfg.get("num_workers", 4)), 64)
         self._max_unchanged = int(cfg.get("max_unchanged_interval", -1))
         self._mqtt = mqtt_client
         self._stop_event = threading.Event()
@@ -340,7 +383,6 @@ class SNMPDaemon:
         sd_notify("READY=1")
         log.info("SA-02m MQTT-SNMP bridge started (%d devices)", len(self._devices))
 
-        # Systemd watchdog
         wdog_us = int(os.environ.get("WATCHDOG_USEC", "0"))
         wdog_interval = wdog_us / 2_000_000 if wdog_us else 0
 
@@ -361,10 +403,8 @@ class SNMPDaemon:
 def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(description="SA-02m MQTT-SNMP bridge")
-    parser.add_argument("-c", "--config", default=str(CONFIG_PATH),
-                        help="Config file path")
-    parser.add_argument("-d", "--debug", action="store_true",
-                        help="Enable debug logging")
+    parser.add_argument("-c", "--config", default=str(CONFIG_PATH))
+    parser.add_argument("-d", "--debug", action="store_true")
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))

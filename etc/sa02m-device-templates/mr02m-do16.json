@@ -1,0 +1,27 @@
+{
+  "device_type": "mr02m-do16",
+  "title": {"ru": "MR-02м DO16", "en": "MR-02m DO16"},
+  "device_type_id": 2,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "channels": {
+    "do": [
+      {"ch":  1, "label": "Выход 1",  "label_en": "Output 1",  "enabled": true},
+      {"ch":  2, "label": "Выход 2",  "label_en": "Output 2",  "enabled": true},
+      {"ch":  3, "label": "Выход 3",  "label_en": "Output 3",  "enabled": true},
+      {"ch":  4, "label": "Выход 4",  "label_en": "Output 4",  "enabled": true},
+      {"ch":  5, "label": "Выход 5",  "label_en": "Output 5",  "enabled": true},
+      {"ch":  6, "label": "Выход 6",  "label_en": "Output 6",  "enabled": true},
+      {"ch":  7, "label": "Выход 7",  "label_en": "Output 7",  "enabled": true},
+      {"ch":  8, "label": "Выход 8",  "label_en": "Output 8",  "enabled": true},
+      {"ch":  9, "label": "Выход 9",  "label_en": "Output 9",  "enabled": true},
+      {"ch": 10, "label": "Выход 10", "label_en": "Output 10", "enabled": true},
+      {"ch": 11, "label": "Выход 11", "label_en": "Output 11", "enabled": true},
+      {"ch": 12, "label": "Выход 12", "label_en": "Output 12", "enabled": true},
+      {"ch": 13, "label": "Выход 13", "label_en": "Output 13", "enabled": true},
+      {"ch": 14, "label": "Выход 14", "label_en": "Output 14", "enabled": true},
+      {"ch": 15, "label": "Выход 15", "label_en": "Output 15", "enabled": true},
+      {"ch": 16, "label": "Выход 16", "label_en": "Output 16", "enabled": true}
+    ]
+  }
+}

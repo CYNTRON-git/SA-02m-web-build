@@ -1,0 +1,23 @@
+{
+  "device_type": "mr02m-ao12",
+  "title": {"ru": "MR-02м AO12", "en": "MR-02m AO12"},
+  "device_type_id": 3,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "channels": {
+    "ao": [
+      {"ch":  1, "label": "Аналог. выход 1",  "label_en": "Analog output 1",  "enabled": true},
+      {"ch":  2, "label": "Аналог. выход 2",  "label_en": "Analog output 2",  "enabled": true},
+      {"ch":  3, "label": "Аналог. выход 3",  "label_en": "Analog output 3",  "enabled": true},
+      {"ch":  4, "label": "Аналог. выход 4",  "label_en": "Analog output 4",  "enabled": true},
+      {"ch":  5, "label": "Аналог. выход 5",  "label_en": "Analog output 5",  "enabled": true},
+      {"ch":  6, "label": "Аналог. выход 6",  "label_en": "Analog output 6",  "enabled": true},
+      {"ch":  7, "label": "Аналог. выход 7",  "label_en": "Analog output 7",  "enabled": true},
+      {"ch":  8, "label": "Аналог. выход 8",  "label_en": "Analog output 8",  "enabled": true},
+      {"ch":  9, "label": "Аналог. выход 9",  "label_en": "Analog output 9",  "enabled": true},
+      {"ch": 10, "label": "Аналог. выход 10", "label_en": "Analog output 10", "enabled": true},
+      {"ch": 11, "label": "Аналог. выход 11", "label_en": "Analog output 11", "enabled": true},
+      {"ch": 12, "label": "Аналог. выход 12", "label_en": "Analog output 12", "enabled": true}
+    ]
+  }
+}
