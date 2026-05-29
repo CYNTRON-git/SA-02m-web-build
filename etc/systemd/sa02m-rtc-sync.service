@@ -1,0 +1,9 @@
+[Unit]
+Description=SA-02m DS3231 RTC sync from system time (periodic + shutdown)
+After=fake-hwclock.service sa02m-pre-start.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-rtc-sync.sh
+StandardOutput=journal
+SyslogIdentifier=sa02m-rtc-sync
