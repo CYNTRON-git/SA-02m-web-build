@@ -1,0 +1,21 @@
+{
+  "device_type": "mr02m-ai6ao2",
+  "title": {"ru": "MR-02м AI6AO2", "en": "MR-02m AI6AO2"},
+  "device_type_id": 12,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "channels": {
+    "ao": [
+      {"ch": 1, "label": "Аналог. выход 1", "label_en": "Analog output 1", "enabled": true},
+      {"ch": 2, "label": "Аналог. выход 2", "label_en": "Analog output 2", "enabled": true}
+    ],
+    "ai": [
+      {"ch": 1, "label": "Аналог. вход 1", "label_en": "Analog input 1", "enabled": true, "sensor_type": 2},
+      {"ch": 2, "label": "Аналог. вход 2", "label_en": "Analog input 2", "enabled": true, "sensor_type": 2},
+      {"ch": 3, "label": "Аналог. вход 3", "label_en": "Analog input 3", "enabled": true, "sensor_type": 2},
+      {"ch": 4, "label": "Аналог. вход 4", "label_en": "Analog input 4", "enabled": true, "sensor_type": 2},
+      {"ch": 5, "label": "Аналог. вход 5", "label_en": "Analog input 5", "enabled": true, "sensor_type": 2},
+      {"ch": 6, "label": "Аналог. вход 6", "label_en": "Analog input 6", "enabled": true, "sensor_type": 2}
+    ]
+  }
+}

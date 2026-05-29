@@ -1,0 +1,9 @@
+{
+  "device_type": "mr02m-tenzo2",
+  "title": {"ru": "MR-02м TENZO2 (тензодатчики)", "en": "MR-02m TENZO2 (strain gauges)"},
+  "device_type_id": 9,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "_note": "Специальный тип: тензодатчики. Каналы определяются прошивкой.",
+  "channels": {}
+}

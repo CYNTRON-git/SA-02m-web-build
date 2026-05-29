@@ -1,0 +1,25 @@
+{
+  "device_type": "mr02m-di14",
+  "title": {"ru": "MR-02м DI14", "en": "MR-02m DI14"},
+  "device_type_id": 5,
+  "protocol": "modbus_rtu",
+  "baudrate": 115200,
+  "channels": {
+    "di": [
+      {"ch":  1, "label": "Вход 1",  "label_en": "Input 1",  "enabled": true, "counter": false},
+      {"ch":  2, "label": "Вход 2",  "label_en": "Input 2",  "enabled": true, "counter": false},
+      {"ch":  3, "label": "Вход 3",  "label_en": "Input 3",  "enabled": true, "counter": false},
+      {"ch":  4, "label": "Вход 4",  "label_en": "Input 4",  "enabled": true, "counter": false},
+      {"ch":  5, "label": "Вход 5",  "label_en": "Input 5",  "enabled": true, "counter": false},
+      {"ch":  6, "label": "Вход 6",  "label_en": "Input 6",  "enabled": true, "counter": false},
+      {"ch":  7, "label": "Вход 7",  "label_en": "Input 7",  "enabled": true, "counter": false},
+      {"ch":  8, "label": "Вход 8",  "label_en": "Input 8",  "enabled": true, "counter": false},
+      {"ch":  9, "label": "Вход 9",  "label_en": "Input 9",  "enabled": true, "counter": false},
+      {"ch": 10, "label": "Вход 10", "label_en": "Input 10", "enabled": true, "counter": false},
+      {"ch": 11, "label": "Вход 11", "label_en": "Input 11", "enabled": true, "counter": false},
+      {"ch": 12, "label": "Вход 12", "label_en": "Input 12", "enabled": true, "counter": false},
+      {"ch": 13, "label": "Вход 13", "label_en": "Input 13", "enabled": true, "counter": false},
+      {"ch": 14, "label": "Вход 14", "label_en": "Input 14", "enabled": true, "counter": false}
+    ]
+  }
+}
