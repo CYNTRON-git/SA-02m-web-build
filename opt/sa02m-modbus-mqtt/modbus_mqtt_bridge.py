@@ -9,6 +9,7 @@ Config:   /etc/sa02m-modbus-mqtt.yaml  (env SA02M_MQTT_CONFIG to override)
 Systemd:  sd_notify READY=1 / WATCHDOG=1
 """
 
+import json as _json
 import os
 import sys
 import time
@@ -98,7 +99,41 @@ for _code in (
 ):
     AI_SENSOR_TYPES.setdefault(_code, _TEMP)
 
-# Fast Modbus event type codes (WB standard, from fast_mb_events.h)
+# ── WB conventions: precision per units ───────────────────────────────────────
+# /devices/.../controls/.../meta/precision (number of decimal places to display)
+# Source: https://github.com/wirenboard/conventions
+_PRECISION_BY_UNITS: dict[str, str] = {
+    "°C":    "1",  "°F":    "1",
+    "V":     "3",  "kV":    "3",  "mV": "1",
+    "A":     "3",  "mA":    "2",
+    "W":     "1",  "kW":    "3",
+    "kWh":   "3",  "Wh":    "1",
+    "var":   "1",  "kvar":  "3",
+    "VA":    "1",  "kVA":   "3",
+    "Hz":    "2",
+    "%":     "1",  "%, RH": "1",
+    "kPa":   "2",  "Pa":    "0",  "mbar": "1", "bar": "3", "mmHg": "0",
+    "kΩ":    "2",  "Ω":     "1",
+    "ppm":   "1",  "ppb":   "2",
+    "mg/m³": "2",
+    "IAQ":   "1",
+    "cm":    "0",  "m":     "2",
+}
+
+def _ctrl_precision(units: str) -> str | None:
+    """Return WB precision meta value for given units string, or None."""
+    return _PRECISION_BY_UNITS.get(units)
+
+
+# ── WB conventions: bilingual title helper ────────────────────────────────────
+def _make_title(label_ru: str, label_en: str = "") -> str:
+    """Return JSON bilingual title if both provided, else plain string."""
+    if label_en:
+        return _json.dumps({"ru": label_ru, "en": label_en}, ensure_ascii=False)
+    return label_ru
+
+
+# ── Fast Modbus event type codes (WB standard, from fast_mb_events.h) ─────────
 FMB_EVT_COIL     = 0x00   # DO coil,  1 byte payload
 FMB_EVT_DISCRETE = 0x01   # DI discrete, 1 byte payload
 FMB_EVT_HOLDING  = 0x02   # AO holding, 2 bytes payload (BE)
@@ -680,6 +715,14 @@ class MQTTPublisher:
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/{key}",
                  value, retain=True)
 
+    def pub_control_units(self, device_id: str, name: str, units: str) -> None:
+        """Publish units + auto precision (WB conventions)."""
+        if units:
+            self.pub_control_meta(device_id, name, "units", units)
+            prec = _ctrl_precision(units)
+            if prec is not None:
+                self.pub_control_meta(device_id, name, "precision", prec)
+
     def pub_error(self, device_id: str, name: str, error: str) -> None:
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/error",
                  error, retain=True)
@@ -869,6 +912,23 @@ class MR02mPoller(DevicePoller):
     def _ch_label(self, kind: str, ch: int) -> str:
         return self._ch_cfg(kind, ch).get("label", f"{kind.upper()}{ch}")
 
+    def _ch_title(self, kind: str, ch: int, default: str) -> str | None:
+        """Return bilingual JSON title or plain label, None if default."""
+        cfg = self._ch_cfg(kind, ch)
+        lbl = cfg.get("label", default)
+        lbl_en = cfg.get("label_en", "")
+        if lbl == default and not lbl_en:
+            return None
+        return _make_title(lbl, lbl_en)
+
+    def _ch_enum(self, kind: str, ch: int) -> str | None:
+        """Return JSON enum string if configured, e.g. {"0":"Выкл","1":"Вкл"}."""
+        e = self._ch_cfg(kind, ch).get("enum")
+        if e and isinstance(e, dict):
+            return _json.dumps({str(k): str(v) for k, v in e.items()},
+                               ensure_ascii=False)
+        return None
+
     def _init_module(self) -> bool:
         try:
             regs = self.read_input_registers(self.address, 0, 1)
@@ -897,28 +957,36 @@ class MR02mPoller(DevicePoller):
     def _publish_channel_meta(self) -> None:
         for i in range(1, self._do + 1):
             n = f"do_{i}"
-            self.pub.pub_control_meta(self.device_id, n, "type", "switch")
+            enum = self._ch_enum("do", i)
+            ctrl_type = "enum" if enum else "switch"
+            self.pub.pub_control_meta(self.device_id, n, "type", ctrl_type)
             self.pub.pub_control_meta(self.device_id, n, "order", str(i))
-            lbl = self._ch_label("do", i)
-            if lbl != f"DO{i}":
-                self.pub.pub_control_meta(self.device_id, n, "title", lbl)
+            if enum:
+                self.pub.pub_control_meta(self.device_id, n, "enum", enum)
+            title = self._ch_title("do", i, f"DO{i}")
+            if title:
+                self.pub.pub_control_meta(self.device_id, n, "title", title)
 
         for i in range(1, self._di + 1):
             n = f"di_{i}"
-            self.pub.pub_control_meta(self.device_id, n, "type", "switch")
+            enum = self._ch_enum("di", i)
+            ctrl_type = "enum" if enum else "switch"
+            self.pub.pub_control_meta(self.device_id, n, "type", ctrl_type)
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-            lbl = self._ch_label("di", i)
-            if lbl != f"DI{i}":
-                self.pub.pub_control_meta(self.device_id, n, "title", lbl)
+            if enum:
+                self.pub.pub_control_meta(self.device_id, n, "enum", enum)
+            title = self._ch_title("di", i, f"DI{i}")
+            if title:
+                self.pub.pub_control_meta(self.device_id, n, "title", title)
 
         for i in range(1, self._ao + 1):
             n = f"ao_{i}"
             self.pub.pub_control_meta(self.device_id, n, "type", "range")
             self.pub.pub_control_meta(self.device_id, n, "min", "0")
             self.pub.pub_control_meta(self.device_id, n, "max", "1000")
-            lbl = self._ch_label("ao", i)
-            if lbl != f"AO{i}":
-                self.pub.pub_control_meta(self.device_id, n, "title", lbl)
+            title = self._ch_title("ao", i, f"AO{i}")
+            if title:
+                self.pub.pub_control_meta(self.device_id, n, "title", title)
 
         for i in range(1, self._ai + 1):
             n = f"ai_{i}"
@@ -928,11 +996,10 @@ class MR02mPoller(DevicePoller):
             mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
             self.pub.pub_control_meta(self.device_id, n, "type", mqtt_type)
             self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-            if units:
-                self.pub.pub_control_meta(self.device_id, n, "units", units)
-            lbl = self._ch_label("ai", i)
-            if lbl != f"AI{i}":
-                self.pub.pub_control_meta(self.device_id, n, "title", lbl)
+            self.pub.pub_control_units(self.device_id, n, units)
+            title = self._ch_title("ai", i, f"AI{i}")
+            if title:
+                self.pub.pub_control_meta(self.device_id, n, "title", title)
 
     def _poll_do_di(self) -> None:
         if self._do > 0:
@@ -1155,8 +1222,7 @@ class DTVPoller(DevicePoller):
                 continue
             self.pub.pub_control_meta(self.device_id, ch_name, "type", mqtt_type)
             self.pub.pub_control_meta(self.device_id, ch_name, "readonly", "1")
-            if units:
-                self.pub.pub_control_meta(self.device_id, ch_name, "units", units)
+            self.pub.pub_control_units(self.device_id, ch_name, units)
         for coil, (ch_name, _) in self.DTV_COILS.items():
             self.pub.pub_control_meta(self.device_id, ch_name, "type", "switch")
 
@@ -1304,13 +1370,13 @@ class CE02M3Poller(DevicePoller):
                                ("apparent", "VA"), ("pf", "")]:
                 n = f"{pfx}_{ph}"
                 self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
-                if unit:
-                    self.pub.pub_control_meta(self.device_id, n, "units", unit)
+                self.pub.pub_control_units(self.device_id, n, unit)
         for sfx, unit in [("total", "W"), ("reactive_total", "var"),
                           ("apparent_total", "VA"), ("pf_total", "")]:
             self.pub.pub_control_meta(self.device_id, sfx, "readonly", "1")
-        self.pub.pub_control_meta(self.device_id, "frequency", "units", "Hz")
-        self.pub.pub_control_meta(self.device_id, "asic_temp", "units", "°C")
+            self.pub.pub_control_units(self.device_id, sfx, unit)
+        self.pub.pub_control_units(self.device_id, "frequency", "Hz")
+        self.pub.pub_control_units(self.device_id, "asic_temp", "°C")
 
     def _poll_power(self) -> None:
         # Regs 500-547: 48 registers
