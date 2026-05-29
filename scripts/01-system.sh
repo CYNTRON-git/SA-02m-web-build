@@ -46,10 +46,19 @@ if ! id hmi &>/dev/null; then
 fi
 
 # ── Disable serial console getty ─────────────────────────────────────────
-for tty in ttyS0 ttyS1; do
+# ttyS0/ttyS1: standard UARTs.
+# ttyGS0: USB gadget serial — holds flock on /dev/console, which blocks
+#         systemd's event loop and makes all systemctl calls time out.
+for tty in ttyS0 ttyS1 ttyGS0; do
     systemctl disable "serial-getty@${tty}" 2>/dev/null || true
     systemctl mask    "serial-getty@${tty}" 2>/dev/null || true
 done
+# getty@ttyGS0 (non-serial variant) also uses /dev/console flock
+systemctl disable "getty@ttyGS0" 2>/dev/null || true
+systemctl mask    "getty@ttyGS0" 2>/dev/null || true
+# Remove wants symlinks so they are not re-enabled on daemon-reload
+rm -f /etc/systemd/system/getty.target.wants/getty@ttyGS0.service \
+      /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyGS0.service 2>/dev/null || true
 
 # ── RS-485 / COM symlinks ──────────────────────────────────────────────────
 SERIAL_PROFILE=$(sa02m_serial_profile)
@@ -321,6 +330,17 @@ log INFO "Маскируем NetworkManager (eth0/can0/eth1 — unmanaged)"
 for u in NetworkManager.service NetworkManager-wait-online.service NetworkManager-dispatcher.service; do
     sa02m_systemctl stop "$u" 2>/dev/null || true
     sa02m_systemctl disable "$u" 2>/dev/null || true
+    sa02m_systemctl mask "$u" 2>/dev/null || true
+done
+
+# ── Маскировка network-online.target провайдеров ────────────────────────────
+# На этой системе сеть поднимается через ifupdown (networking.service).
+# systemd-networkd-wait-online и ifupdown-wait-online создают pending-job
+# для network-online.target, который никогда не завершается — это замораживает
+# очередь jobs systemd и делает все systemctl-вызовы недоступными (timeout).
+log INFO "Маскируем systemd-networkd-wait-online и ifupdown-wait-online"
+for u in systemd-networkd-wait-online.service ifupdown-wait-online.service; do
+    sa02m_systemctl stop "$u" 2>/dev/null || true
     sa02m_systemctl mask "$u" 2>/dev/null || true
 done
 

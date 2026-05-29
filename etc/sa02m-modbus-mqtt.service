@@ -7,8 +7,7 @@ Wants=mosquitto.service
 ExecStart=/usr/bin/python3 /opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py
 Restart=on-failure
 RestartSec=10s
-WatchdogSec=120s
-NotifyAccess=main
+TimeoutStopSec=10
 User=root
 WorkingDirectory=/opt/sa02m-modbus-mqtt
 Environment=PYTHONUNBUFFERED=1

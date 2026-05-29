@@ -590,10 +590,15 @@ class MQTTPublisher:
         self._poll_errors = 0
         self._bridge_meta_done = False
 
-        self._client = mqtt.Client(
-            client_id=self._client_id,
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
-        )
+        try:
+            # paho-mqtt >= 2.0: use VERSION2 to avoid deprecation warning
+            self._client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self._client_id,
+            )
+        except (AttributeError, TypeError):
+            # paho-mqtt < 2.0
+            self._client = mqtt.Client(client_id=self._client_id)
         if self._username:
             self._client.username_pw_set(self._username, self._password)
         self._client.on_connect    = self._on_connect
@@ -617,24 +622,30 @@ class MQTTPublisher:
     def bridge_id(self) -> str:
         return self._bridge_id
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            self._connected = True
-            log.info("MQTT connected to %s:%d", self._broker, self._port)
-            # Re-subscribe
-            for topic, cb in self._subscriptions.items():
-                client.subscribe(topic, qos=1)
-                client.message_callback_add(topic, cb)
-            # (Re)announce bridge availability after every (re)connect.
-            if self._availability:
-                self._publish_bridge_status(online=True)
-        else:
-            log.warning("MQTT connect failed rc=%d", rc)
+    # paho-mqtt v1: (client, userdata, flags, rc)
+    # paho-mqtt v2: (client, userdata, connect_flags, reason_code, properties)
+    # Using *_ absorbs the extra `properties` arg in v2.
+    def _on_connect(self, client, userdata, flags, rc, *_):
+        failed = rc.is_failure if hasattr(rc, "is_failure") else bool(rc)
+        if failed:
+            log.warning("MQTT connect failed: %s", rc)
+            return
+        self._connected = True
+        log.info("MQTT connected to %s:%d", self._broker, self._port)
+        for topic, cb in self._subscriptions.items():
+            client.subscribe(topic, qos=1)
+            client.message_callback_add(topic, cb)
+        if self._availability:
+            self._publish_bridge_status(online=True)
 
-    def _on_disconnect(self, client, userdata, rc):
+    # paho-mqtt v1: (client, userdata, rc)
+    # paho-mqtt v2: (client, userdata, disconnect_flags, reason_code, properties)
+    def _on_disconnect(self, client, userdata, flags_or_rc, *extra):
         self._connected = False
-        if rc != 0:
-            log.warning("MQTT unexpected disconnect rc=%d — reconnecting", rc)
+        rc = extra[0] if extra else flags_or_rc
+        unexpected = rc.is_failure if hasattr(rc, "is_failure") else bool(rc)
+        if unexpected:
+            log.warning("MQTT unexpected disconnect: %s — reconnecting", rc)
 
     def connect(self) -> None:
         while True:

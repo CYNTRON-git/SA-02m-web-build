@@ -229,12 +229,13 @@ class TelemetryClient:
         # Pin paho to the v1 callback API so the (client, userdata, flags, rc)
         # signatures below stay valid on paho-mqtt 2.x (default there is v2).
         try:
+            # paho-mqtt >= 2.0: use VERSION2 to avoid deprecation warning
             self._client = mqtt.Client(
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                 client_id=f"{self._device_id}-telemetry",
-                callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
             )
         except (AttributeError, TypeError):
-            # paho-mqtt 1.x has no callback_api_version argument.
+            # paho-mqtt < 2.0
             self._client = mqtt.Client(client_id=f"{self._device_id}-telemetry")
         self._client.on_connect = self._on_connect
         self._client.on_disconnect = self._on_disconnect
@@ -249,19 +250,25 @@ class TelemetryClient:
         self._hw: PCA9536Control | None = None
         self._meta_done = False
 
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            self._connected = True
-            log.info("MQTT connected")
-            self._subscribe_writeback()
-            self._pub("controls/connection", "1")
-            self._pub("meta/error", "")
-        else:
-            log.warning("MQTT connect rc=%d", rc)
+    # paho-mqtt v1: (client, userdata, flags, rc)
+    # paho-mqtt v2: (client, userdata, connect_flags, reason_code, properties)
+    def _on_connect(self, client, userdata, flags, rc, *_):
+        failed = rc.is_failure if hasattr(rc, "is_failure") else bool(rc)
+        if failed:
+            log.warning("MQTT connect failed: %s", rc)
+            return
+        self._connected = True
+        log.info("MQTT connected")
+        self._subscribe_writeback()
+        self._pub("controls/connection", "1")
+        self._pub("meta/error", "")
 
-    def _on_disconnect(self, client, userdata, rc):
+    # paho-mqtt v1: (client, userdata, rc)
+    # paho-mqtt v2: (client, userdata, disconnect_flags, reason_code, properties)
+    def _on_disconnect(self, client, userdata, flags_or_rc, *extra):
         self._connected = False
-        log.warning("MQTT disconnected rc=%d", rc)
+        rc = extra[0] if extra else flags_or_rc
+        log.warning("MQTT disconnected: %s", rc)
 
     def _subscribe_writeback(self) -> None:
         dev = self._device_id
