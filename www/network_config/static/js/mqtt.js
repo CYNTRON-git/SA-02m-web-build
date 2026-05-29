@@ -256,6 +256,7 @@ async function apiPost(url, data) {
 }
 
 // ── External MQTT credentials (tab UI) ───────────────────────────────────────
+const MQTT_PASS_MASK = '******';
 let _mqttClientInfoBound = false;
 
 async function copyTextToClipboard(text) {
@@ -303,7 +304,7 @@ function renderMqttClientInfo(st) {
   if (passEl) {
     passEl.dataset.secret = secret;
     passEl.dataset.revealed = '0';
-    passEl.textContent = 'password';
+    passEl.textContent = MQTT_PASS_MASK;
   }
 }
 
@@ -339,7 +340,7 @@ function bindMqttClientInfoCells() {
     });
     passEl.addEventListener('blur', () => {
       if (passEl.dataset.revealed === '1') {
-        passEl.textContent = 'password';
+        passEl.textContent = MQTT_PASS_MASK;
         passEl.dataset.revealed = '0';
         passEl.classList.remove('mqtt-secret-revealed');
       }
