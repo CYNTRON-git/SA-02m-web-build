@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Modbus bus scanner for MQTT device discovery (runs as root via sudo from CGI)."""
 import json
+import struct
 import sys
 import time
 from pathlib import Path
@@ -11,12 +12,22 @@ except ImportError:
     print(json.dumps({"ok": False, "error": "pyserial not installed", "devices": []}))
     sys.exit(0)
 
+FMB_ADDR = 0xFD
 
 MR02M_MODULE_TYPES = {
     1: "DO6DI8", 2: "DO16", 3: "AO12", 4: "DO6", 5: "DI14",
     6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2", 10: "10DIcon",
     11: "6DO5DI2AO", 12: "AI6AO2", 15: "4TO6DI",
 }
+
+# Подписи как MR02M_TYPE_LABELS_RU в mqtt.js
+MR02M_TYPE_LABELS_RU = {
+    1: "6DO 8DI", 2: "16DO", 3: "12AO", 4: "6DO", 5: "14DI",
+    6: "6AI 6AO", 7: "12AI", 8: "4DO 6DI", 9: "Тензо 2", 10: "10 DI",
+    11: "6DO 5DI 2AO", 12: "6AI 2AO", 15: "4TO 6DI",
+}
+
+_TO4DI6_AO_EEPROM_MAGIC = 0xA8
 
 
 def crc16(data):
@@ -28,8 +39,14 @@ def crc16(data):
     return crc
 
 
-def make_pdu(addr, func, *payload):
-    data = bytes([addr, func]) + bytes(payload)
+def make_pdu(addr, func, reg, count):
+    data = bytes([addr, func, reg >> 8, reg & 0xFF, count >> 8, count & 0xFF])
+    c = crc16(data)
+    return data + bytes([c & 0xFF, c >> 8])
+
+
+def make_fmb5(sub):
+    data = bytes([FMB_ADDR, 0x46, sub])
     c = crc16(data)
     return data + bytes([c & 0xFF, c >> 8])
 
@@ -41,43 +58,66 @@ def valid_crc(pkt):
     return (c & 0xFF) == pkt[-2] and (c >> 8) == pkt[-1]
 
 
-def read_resp(ser, timeout=0.07):
+def read_resp(ser, timeout=0.08, max_len=64):
     ser.timeout = timeout
     buf = b""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        chunk = ser.read(64)
+        chunk = ser.read(max_len - len(buf))
+        if chunk:
+            buf += chunk
+        elif buf:
+            break
+        else:
+            time.sleep(0.002)
+    return buf
+
+
+def read_fixed(ser, nbytes, timeout=0.5):
+    ser.timeout = timeout
+    buf = b""
+    deadline = time.monotonic() + timeout
+    while len(buf) < nbytes and time.monotonic() < deadline:
+        chunk = ser.read(nbytes - len(buf))
         if chunk:
             buf += chunk
     return buf
 
 
-def fast_scan(ser):
-    found = set()
+def fast_scan_fmb(ser):
+    """Fast Modbus: begin_scan → answer_scan (0x03) × N → end_scan."""
+    found = []
     try:
-        pdu = make_pdu(0xFD, 0x46, 0x04)
         ser.reset_input_buffer()
-        ser.write(pdu)
-        time.sleep(0.35)
-        resp = ser.read(256)
-        i = 0
-        while i < len(resp) - 3:
-            if resp[i] == 0xFD and resp[i + 1] == 0x46 and i + 8 <= len(resp):
-                pkt = resp[i:i + 8]
-                if valid_crc(pkt) and 1 <= pkt[2] <= 247:
-                    found.add(pkt[2])
-                i += 8
-            else:
-                i += 1
+        ser.write(make_fmb5(0x01))
+        time.sleep(0.02)
+        for _ in range(32):
+            resp = read_fixed(ser, 10, timeout=0.5)
+            if len(resp) < 10:
+                break
+            if resp[0] != FMB_ADDR or resp[1] != 0x46 or resp[2] != 0x03:
+                break
+            if not valid_crc(resp[:10]):
+                break
+            addr = resp[7]
+            if 1 <= addr <= 247:
+                serial = struct.unpack(">I", resp[3:7])[0]
+                found.append({"addr": addr, "serial": serial})
+            ser.reset_input_buffer()
+            ser.write(make_fmb5(0x02))
+            time.sleep(0.01)
+        ser.write(make_fmb5(0x04))
+        time.sleep(0.05)
     except Exception:
         pass
     return found
 
 
 def std_scan(ser, max_a):
+    """Классический опрос FC03 reg0 по адресам 1..max_a."""
     found = {}
     for addr in range(1, max_a + 1):
-        pdu = make_pdu(addr, 0x03, 0x00, 0x00, 0x00, 0x01)
+        pdu = make_pdu(addr, 0x03, 0, 1)
         try:
             ser.reset_input_buffer()
             ser.write(pdu)
@@ -90,26 +130,93 @@ def std_scan(ser, max_a):
     return found
 
 
-def read_reg(ser, addr, reg):
-    pdu = make_pdu(addr, 0x03, reg >> 8, reg & 0xFF, 0x00, 0x01)
+def read_holding(ser, addr, reg, count=1):
+    pdu = make_pdu(addr, 0x03, int(reg), int(count))
     ser.reset_input_buffer()
     ser.write(pdu)
-    resp = read_resp(ser, timeout=0.08)
-    if len(resp) >= 7 and resp[0] == addr and resp[1] == 0x03:
-        return (resp[3] << 8) | resp[4]
-    return None
+    need = 5 + count * 2
+    resp = read_resp(ser, timeout=0.1, max_len=need + 8)
+    if len(resp) < need or resp[0] != addr or resp[1] != 0x03:
+        return None
+    if not valid_crc(resp[:need]):
+        return None
+    bc = resp[2]
+    if bc != count * 2:
+        return None
+    return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
+
+
+def read_input(ser, addr, reg, count=1):
+    pdu = make_pdu(addr, 0x04, int(reg), int(count))
+    ser.reset_input_buffer()
+    ser.write(pdu)
+    need = 5 + count * 2
+    resp = read_resp(ser, timeout=0.1, max_len=need + 8)
+    if len(resp) < need or resp[0] != addr or resp[1] != 0x04:
+        return None
+    if not valid_crc(resp[:need]):
+        return None
+    bc = resp[2]
+    if bc != count * 2:
+        return None
+    return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
+
+
+def decode_signature(regs):
+    """Holding 290..301 — ASCII сигнатура (как sa02m-flasher modbus_io)."""
+    if not regs or len(regs) < 12:
+        return ""
+    raw = bytes((r & 0xFF) for r in regs[:12])
+    if len(raw) >= 2 and raw[0] == _TO4DI6_AO_EEPROM_MAGIC and raw[1] in (1, 2):
+        return "4TO6DI"
+    disp = "".join(chr(b) if 32 <= b <= 126 else "." for b in raw).rstrip(". ")
+    if len(disp) > 12:
+        disp = disp[:12]
+    if disp and any(c.isalnum() for c in disp):
+        return disp
+    return ""
 
 
 def detect_type(ser, addr):
-    mt = read_reg(ser, addr, 0x0100)
-    if mt is not None and 1 <= mt <= 15:
-        return "mr02m", mt, MR02M_MODULE_TYPES.get(mt, f"type{mt}")
-    r1 = read_reg(ser, addr, 0x0001)
-    if r1 == 0xCE02:
-        return "ce02m3", 0, "СЭ-02м-3"
-    if r1 == 0xD712:
-        return "dtv", 0, "ДТВ-RS-485"
-    return "mr02m", mt or 0, MR02M_MODULE_TYPES.get(mt, "unknown") if mt else "unknown"
+    """Определить тип устройства и код модуля MR-02m (Input reg 0)."""
+    r1 = read_holding(ser, addr, 1)
+    if r1 is not None and len(r1) >= 1:
+        if r1[0] == 0xCE02:
+            return "ce02m3", 0, "СЭ-02м-3", ""
+        if r1[0] == 0xD712:
+            return "dtv", 0, "ДТВ-RS-485", ""
+
+    mt = None
+    inp = read_input(ser, addr, 0, 1)
+    if inp and inp[0] in MR02M_MODULE_TYPES:
+        mt = inp[0]
+
+    signature = ""
+    sig_regs = read_holding(ser, addr, 290, 12)
+    if sig_regs:
+        signature = decode_signature(sig_regs)
+
+    if mt is not None:
+        type_name = MR02M_MODULE_TYPES[mt]
+        return "mr02m", mt, type_name, signature
+
+    return "unknown", 0, "unknown", signature
+
+
+def scan_short_name(dev_type, module_type, _type_name, addr, signature=""):
+    """Короткое имя для поля в UI; суффикс (COMx addr=n) добавляет веб при сохранении."""
+    if dev_type == "mr02m" and module_type in MR02M_MODULE_TYPES:
+        sig = (signature or "").strip()
+        if sig:
+            return sig
+        return MR02M_MODULE_TYPES[module_type]
+    if dev_type == "dtv":
+        return "ДТВ-RS-485"
+    if dev_type == "ce02m3":
+        return "СЭ-02м-3"
+    if signature and signature not in ("unknown", ""):
+        return signature
+    return f"Устройство {addr}"
 
 
 def load_params(path: Path) -> dict:
@@ -130,30 +237,40 @@ def main() -> None:
         if not Path(port).exists():
             raise FileNotFoundError(f"Порт {port} не найден")
 
-        with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1, timeout=0.1) as ser:
-            fast_addrs = fast_scan(ser)
-            std_found = std_scan(ser, max_addr)
-            for addr in fast_addrs:
-                if addr not in std_found:
-                    pdu = make_pdu(addr, 0x03, 0x00, 0x00, 0x00, 0x01)
-                    ser.reset_input_buffer()
-                    ser.write(pdu)
-                    resp = read_resp(ser, timeout=0.08)
-                    if len(resp) >= 7 and resp[0] == addr and resp[1] == 0x03:
-                        std_found[addr] = (resp[3] << 8) | resp[4]
+        with serial.Serial(port, baud, bytesize=8, parity="N", stopbits=1,
+                           timeout=0.1) as ser:
+            time.sleep(0.05)
+            fast_list = fast_scan_fmb(ser)
+            fast_addrs = {d["addr"] for d in fast_list}
+
+            if fast_addrs:
+                scan_method = "fast"
+                addrs = sorted(fast_addrs)
+            else:
+                scan_method = "standard"
+                std_found = std_scan(ser, max_addr)
+                addrs = sorted(std_found.keys())
 
             devices = []
-            for addr in sorted(std_found.keys()):
-                dev_type, module_type, type_name = detect_type(ser, addr)
+            for addr in addrs:
+                dev_type, module_type, type_name, signature = detect_type(ser, addr)
                 devices.append({
                     "addr": addr,
                     "type": dev_type,
                     "module_type": module_type,
                     "type_name": type_name,
-                    "name": f"Устройство {addr}",
+                    "signature": signature,
+                    "name": scan_short_name(
+                        dev_type, module_type, type_name, addr, signature),
                 })
 
-        print(json.dumps({"ok": True, "devices": devices, "port": port, "baudrate": baud}))
+        print(json.dumps({
+            "ok": True,
+            "devices": devices,
+            "port": port,
+            "baudrate": baud,
+            "scan_method": scan_method,
+        }, ensure_ascii=False))
     except FileNotFoundError as e:
         print(json.dumps({"ok": False, "error": str(e), "devices": []}))
     except serial.SerialException as e:

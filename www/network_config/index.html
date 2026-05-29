@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.30">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.32">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -729,6 +729,7 @@
             <span id="mqtt-broker-clients" class="widget-sub">Клиентов: —</span>
             <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">● Мост —</span>
             <div style="margin-left:auto;display:flex;gap:6px">
+              <button class="btn btn-sm btn-warn" type="button" id="mqtt-bridge-toggle-btn" onclick="mqttToggleBridge()" title="Освободить COM для прошивальщика / сканирования">Остановить</button>
               <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">⟳ Перезапустить</button>
               <button class="btn btn-primary" id="mqtt-save-btn" onclick="mqttSaveAndApply()">Сохранить и применить</button>
             </div>
@@ -918,7 +919,7 @@
 
 <script src="/static/js/app.js?v=1.0.3.22"></script>
 <script src="/static/js/flasher.js?v=1.0.3-14"></script>
-<script src="/static/js/mqtt.js?v=1.0.6"></script>
+<script src="/static/js/mqtt.js?v=1.1.3"></script>
 <script src="/static/js/gateway.js?v=1.0.3.19"></script>
 </body>
 </html>

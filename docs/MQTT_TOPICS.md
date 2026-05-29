@@ -122,6 +122,13 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 /devices/mr02m-COM1-5/controls/module_type   type=text
 /devices/mr02m-COM1-5/controls/uptime_s     type=value  с
 /devices/mr02m-COM1-5/controls/serial        type=text
+/devices/mr02m-COM1-5/controls/mcu_temp      type=temperature  °C  (Holding 124, ×0.1)
+/devices/mr02m-COM1-5/controls/mcu_vdd       type=voltage  V  (Holding 123, ×0.01)
+/devices/mr02m-COM1-5/controls/op_days       type=value  дн  (Holding 114)
+/devices/mr02m-COM1-5/controls/mcu_ram_free  type=value  (Input 65505)
+/devices/mr02m-COM1-5/controls/mcu_ram_used  type=value  (Input 65506)
+/devices/mr02m-COM1-5/controls/reset_reason  type=text  (Input 65508)
+/devices/mr02m-COM1-5/controls/fw_updates    type=value  (Input 65509–65510, uint32)
 ```
 
 ### DO (дискретные выходы — coils 1..N, R/W)
@@ -139,9 +146,9 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 /devices/mr02m-COM1-5/controls/di_1_freq   type=value  Hz
 ```
 
-### AO (аналоговые выходы — holding regs 33..32+N, 0–1000 ‰, R/W)
+### AO (аналоговые выходы — holding regs 33..32+N, сырое ×0,01 В, R/W)
 ```
-/devices/mr02m-COM1-5/controls/ao_1    type=range  min=0 max=1000
+/devices/mr02m-COM1-5/controls/ao_1    type=range  min=0 max=1000  meta/units=V
 /devices/mr02m-COM1-5/controls/ao_1/on ← write 0–1000
 # ... до ao_12
 ```
