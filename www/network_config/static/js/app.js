@@ -30,6 +30,7 @@ function initNav() {
         loadLog();
         fetchSystemWidget();
         loadWebUpdateStatus();
+        loadServicesControl(false);
       }
       if (tab === 'network' || tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
@@ -897,43 +898,65 @@ function deployedRefDisplay(j) {
   return '—';
 }
 
+/** ISO UTC → DD.MM.YY HH:mm:ss (например 22.05.26 12:09:35). */
+function fmtWebUpdChecked(raw) {
+  if (raw == null || raw === '') return '—';
+  const s = String(raw).trim();
+  if (!s || s === '—') return '—';
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})/);
+  if (m) {
+    return m[3] + '.' + m[2] + '.' + m[1].slice(-2) + ' ' + m[4] + ':' + m[5] + ':' + m[6];
+  }
+  return s;
+}
+
+function webUpdResolveAvailable(j) {
+  if (j.update_available === true) return true;
+  if (j.update_available === false) return false;
+  const rem = String(j.remote_commit || '').trim().toLowerCase();
+  if (!rem) return null;
+  const dep = String(j.deployed_commit || '').trim().toLowerCase();
+  if (dep) {
+    return dep !== rem && !rem.startsWith(dep) && !dep.startsWith(rem.slice(0, 7));
+  }
+  const lab = deployedRefDisplay(j).toLowerCase();
+  if (lab !== '—' && /^[a-f0-9]{7,40}$/.test(lab)) {
+    return lab !== rem && !rem.startsWith(lab);
+  }
+  return null;
+}
+
 function applyWebUpdateCheckUI(j) {
   if (!j || typeof j !== 'object') return;
   if (j.error === 'unauthorized') return;
   setText('web-upd-deployed', deployedRefDisplay(j));
   setText('web-upd-remote', shortGitSha(j.remote_commit));
-  setText('web-upd-checked', j.checked_at || '—');
+  setText('web-upd-checked', fmtWebUpdChecked(j.checked_at));
   const st = document.getElementById('web-upd-status');
   const applyBtn = document.getElementById('web-upd-apply-btn');
   if (!st) return;
   st.classList.remove('is-ok', 'is-warn', 'is-err');
   const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
-  if (emsg && !j.remote_commit) {
-    st.textContent = 'Не удалось узнать состояние на GitHub (' + emsg + ').';
-    st.classList.add('is-err');
-    st.hidden = false;
-  } else if (j.update_available === true) {
-    st.textContent = 'Доступно обновление на GitHub (ветка ' + (j.branch || 'main') + ').';
+  const ua = webUpdResolveAvailable(j);
+  if (ua === true) {
+    st.textContent = 'Есть обновление.';
     st.classList.add('is-warn');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = false;
-  } else if (j.update_available === false) {
-    st.textContent = 'Совпадает с веткой на GitHub.';
+  } else if (ua === false) {
+    st.textContent = 'Обновлений нет.';
     st.classList.add('is-ok');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = true;
-  } else if (emsg) {
-    st.textContent = emsg;
+  } else if (emsg && !j.remote_commit) {
+    st.textContent = 'Проверка не удалась.';
     st.classList.add('is-err');
     st.hidden = false;
-  } else if (deployedRefDisplay(j) !== '—' && j.remote_commit) {
-    st.textContent = 'На устройстве метка сборки (не git SHA). Это нормально при копировании без репозитория — для сравнения коммитов деплой из git.';
-    st.classList.add('is-warn');
-    st.hidden = false;
-    if (applyBtn) applyBtn.hidden = false;
+    if (applyBtn) applyBtn.hidden = true;
   } else {
     st.textContent = '';
     st.hidden = true;
+    if (applyBtn) applyBtn.hidden = true;
   }
 }
 
@@ -962,12 +985,11 @@ function checkWebUpdatesManual() {
         toast('Сессия истекла', 'error');
       } else if (j.error && j.error !== 'no_cache_yet' && !j.remote_commit) {
         toast('Проверка не удалась: ' + j.error, 'error');
-      } else if (j.update_available === true) {
-        toast('Доступно обновление на GitHub', 'info');
-      } else if (j.update_available === false) {
-        toast('Актуальная версия ветки', 'success');
       } else {
-        toast('Проверка выполнена', 'info');
+        const ua = webUpdResolveAvailable(j);
+        if (ua === true) toast('Есть обновление', 'info');
+        else if (ua === false) toast('Обновлений нет', 'success');
+        else toast('Проверка выполнена', 'info');
       }
     })
     .catch(function (e) {
@@ -977,9 +999,7 @@ function checkWebUpdatesManual() {
         toast('Нет связи с сервером', 'error');
       }
     })
-    .finally(function () {
-      if (btn) btn.disabled = false;
-    });
+    .finally(function () { if (btn) btn.disabled = false; });
 }
 
 var _webUpdPollTimer = null;
@@ -1515,6 +1535,122 @@ function submitForm(form, onSuccess) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   APPLICATION SERVICES (Management tab)
+   ══════════════════════════════════════════════════════════════════════════ */
+function svcCtlDisplayLabel(svc) {
+  const id = String((svc && svc.id) || '').trim();
+  const lab = String((svc && svc.label) || '').trim();
+  if (id === 'mqtt-bridge') return 'MQTT';
+  if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';
+  if (lab) return lab;
+  return unitUiLabel(id);
+}
+
+function svcCtlRowState(svc) {
+  if (svc.masked || svc.user_disabled) return 'inactive';
+  return svc.active || 'inactive';
+}
+
+function renderServicesControl(data) {
+  const host = document.getElementById('svc-ctl-list');
+  if (!host) return;
+  const list = (data && data.services) || [];
+  if (!list.length) {
+    host.innerHTML = '<p class="field-hint">Нет управляемых служб</p>';
+    return;
+  }
+  host.innerHTML = '';
+  list.forEach(function (svc, i) {
+    const off = !!(svc.masked || svc.user_disabled);
+    const action = off ? 'start' : 'stop';
+    const btnLabel = off ? 'Вкл' : 'Стоп';
+    const btnClass = off ? 'btn btn-primary btn-sm svc-ctl-btn' : 'btn btn-warn btn-sm svc-ctl-btn';
+
+    const r = document.createElement('div');
+    r.className = 'svc-row svc-ctl-row';
+    r.setAttribute('role', 'listitem');
+
+    const name = document.createElement('span');
+    name.className = 'name mono';
+    name.textContent = svcCtlDisplayLabel(svc);
+
+    const mid = document.createElement('span');
+    mid.className = 'svc-ctl-mid';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = btnClass;
+    btn.textContent = btnLabel;
+    btn.dataset.svcId = svc.id;
+    btn.dataset.svcAction = action;
+    btn.addEventListener('click', function () { serviceCtlAction(btn); });
+    mid.appendChild(btn);
+
+    const badge = document.createElement('span');
+    badge.className = 'badge badge-unk';
+    const bid = 'svc-ctl-badge-' + i;
+    badge.id = bid;
+
+    r.appendChild(name);
+    r.appendChild(mid);
+    r.appendChild(badge);
+    host.appendChild(r);
+    svcBadge(bid, svcCtlRowState(svc));
+  });
+}
+
+function loadServicesControl(forceToast) {
+  const host = document.getElementById('svc-ctl-list');
+  const btn = document.getElementById('svc-ctl-refresh-btn');
+  if (!host) return;
+  if (btn) btn.disabled = true;
+  if (!host.querySelector('.svc-row')) {
+    host.innerHTML = '<p class="field-hint">Загрузка…</p>';
+  }
+  fetch('/cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error === 'unauthorized') throw new Error('нет доступа');
+      if (j.error === 'ctl_missing') throw new Error('скрипт управления не установлен на устройстве');
+      if (!j.ok && j.error) throw new Error(j.error);
+      renderServicesControl(j);
+      if (forceToast) toast('Список служб обновлён', 'success');
+      setTimeout(fetchStatus, 1500);
+    })
+    .catch((e) => {
+      host.innerHTML = '<p class="field-hint log-err">' + escHtml(e && e.message ? e.message : String(e)) + '</p>';
+      if (forceToast) toast('Службы: ' + (e && e.message ? e.message : String(e)), 'error');
+    })
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
+function serviceCtlAction(btn) {
+  const id = btn && btn.dataset ? btn.dataset.svcId : '';
+  const action = btn && btn.dataset ? btn.dataset.svcAction : '';
+  if (!id || !action) return;
+  const label = btn.closest('.svc-row')?.querySelector('.name')?.textContent || id;
+  const verb = action === 'stop' ? 'остановить' : 'включить';
+  if (!confirm(verb.charAt(0).toUpperCase() + verb.slice(1) + ' «' + label + '»?')) return;
+  btn.disabled = true;
+  fetch('/cgi-bin/services_ctrl.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ id, action }),
+  })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+      toast(action === 'stop' ? 'Служба остановлена и отключена' : 'Служба включена', 'success');
+      return loadServicesControl(false);
+    })
+    .catch((e) => {
+      toast('Служба: ' + (e && e.message ? e.message : String(e)), 'error');
+      loadServicesControl(false);
+    })
+    .finally(() => { btn.disabled = false; });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    SYSTEM ACTIONS
    ══════════════════════════════════════════════════════════════════════════ */
 function doRestart() {
@@ -1875,6 +2011,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.setHw    = setHw;
   window.doRestart = doRestart;
   window.doReboot  = doReboot;
+  window.loadServicesControl = loadServicesControl;
+  window.serviceCtlAction = serviceCtlAction;
   window.doLogout  = doLogout;
   window.loadLog   = loadLog;
   window.loadSshDebug = loadSshDebug;
