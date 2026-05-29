@@ -5,6 +5,33 @@
 
 ---
 
+## 1.0.3.17 — MQTT: доступность и надёжность в стиле wb-mqtt-serial
+
+Применимо к Modbus→MQTT мосту (`opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`) и
+системной телеметрии (`sa02m_telemetry.py`) — для всех модулей: **MR-02м**, **ДТВ**,
+**СЭ-02м-3**.
+
+- **Last Will (LWT):** при падении/обрыве моста брокер сам публикует
+  `/devices/sa02m-bridge/meta/error="r"` (единый канал ошибок). Телеметрия — то же
+  для `/devices/sa02m-<host>/meta/error`. Клиенты не доверяют устаревшим retained.
+- **Доступность устройства (device-level):** после `offline_after_fails` подряд
+  неответов мост публикует `/devices/<id>/meta/error="r"`, при восстановлении — `""`.
+  Значения `controls/*` сохраняют последнее достоверное значение.
+- **Экспоненциальный back-off опроса** «мёртвого» устройства (`backoff_base_s` …
+  `backoff_max_s`) — не блокирует half-duplex RS-485 для живых устройств на шине.
+- **Устройство-статус моста** `/devices/sa02m-bridge`: `connection` (switch),
+  `devices_total`, `devices_online`, `poll_errors`.
+- **Корректный graceful offline** при `systemctl stop` (мост и устройства помечаются
+  offline до отключения от брокера).
+- **Совместимость paho-mqtt 2.x:** телеметрия переведена на callback API v1
+  (как мост) — фикс несовпадения сигнатур колбэков.
+- Новые ключи конфигурации (`/etc/sa02m-modbus-mqtt.yaml`): `mqtt.availability`,
+  `mqtt.bridge_device_id`, `mqtt.username`/`password`, и на устройство —
+  `offline_after_fails`, `backoff_base_s`, `backoff_max_s`. Топики описаны в
+  [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md#доступность-как-в-wb-mqtt-serial).
+
+---
+
 ## 1.0.3 — Устройства MR-02м (RS-485 / Modbus RTU / прошивка)
 
 ### Совместимость с репозиторием MR-02m (имена `.fw`, 2026-04)
