@@ -76,6 +76,40 @@ MR02M_TYPE_NAMES: dict[int, str] = {
     6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2",
     10: "10DIcon", 11: "6DO5DI2AO", 12: "AI6AO2", 15: "4TO6DI",
 }
+# MR/MP-02m MCU diagnostics (как sa02m_flasher device_config / module_config_window)
+MR_MCU_HOLD_OP_DAYS = 114
+MR_MCU_HOLD_POWER_TEMP = 123
+MR_INP_MCU_UPTIME_LO = 105
+MR_INP_MCU_DIAG_START = 65505
+MR_RESET_REASON_LABELS: dict[int, str] = {
+    0: "неизвестно",
+    1: "NRST",
+    2: "POR/PDR",
+    3: "SW-сброс",
+    4: "IWDG",
+    5: "WWDG",
+    6: "LPM",
+    7: "OBL",
+    8: "FIREWIRE",
+}
+# (control_name, mqtt_type, units, title_ru)
+MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
+    ("uptime_s", "value", "с", "Время работы"),
+    ("serial", "text", "", "Серийный номер"),
+    ("mcu_temp", "temperature", "°C", "Температура МК"),
+    ("mcu_vdd", "voltage", "V", "Питание МК"),
+    ("op_days", "value", "дн", "Наработка"),
+    ("mcu_ram_free", "value", "", "ОЗУ свободно"),
+    ("mcu_ram_used", "value", "", "ОЗУ занято"),
+    ("reset_reason", "text", "", "Причина перезагрузки"),
+    ("fw_updates", "value", "", "Счётчик обновлений FW"),
+)
+# 6AO6AI6: N-нога берёт тип с P только для ТХА и 3-проводного RTD (как прошивальщик).
+AI_RTD_CODES_3_WIRE = frozenset({
+    0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022,
+    0x0023, 0x0024, 0x0025,
+})
+AI_TC_K_CODE = 0x0006
 
 # AI sensor type codes → (mqtt_type, units, scale)
 # Scaled register units per MODBUS_VARIABLES.txt (ai_sensor_t, codes 0..38):
@@ -1058,8 +1092,39 @@ class MR02mPoller(DevicePoller):
                 return e
         return {}
 
+    @staticmethod
+    def _ai_n_parent_ch(ch: int) -> int | None:
+        """6AO6AI6: N-нога (AI2, AI4, AI6) → номер P-канала (AI1, AI3, AI5)."""
+        return {2: 1, 4: 3, 6: 5}.get(ch)
+
+    @staticmethod
+    def _ai_mirror_type_from_parent(sensor_code: int) -> bool:
+        c = int(sensor_code) & 0xFFFF
+        return c == AI_TC_K_CODE or c in AI_RTD_CODES_3_WIRE
+
+    def _ai_effective_sensor_type(self, ch: int) -> int | None:
+        """6AO6AI6: N наследует тип P только для ТХА и 3-проводного RTD."""
+        parent = self._ai_n_parent_ch(ch) if self._mod_type == 6 else None
+        if parent:
+            p_st = self._ch_cfg("ai", parent).get("sensor_type")
+            if p_st is not None and self._ai_mirror_type_from_parent(int(p_st)):
+                return int(p_st) & 0xFFFF
+        st = self._ch_cfg("ai", ch).get("sensor_type")
+        if st is not None:
+            return int(st) & 0xFFFF
+        return None
+
     def _ch_enabled(self, kind: str, ch: int) -> bool:
         return self._ch_cfg(kind, ch).get("enabled", True)
+
+    def _sys_ch_cfg(self, key: str) -> dict:
+        for e in self._channels.get("sys", []):
+            if isinstance(e, dict) and str(e.get("key", "")) == str(key):
+                return e
+        return {}
+
+    def _sys_enabled(self, key: str) -> bool:
+        return self._sys_ch_cfg(key).get("enabled", True)
 
     def _ch_label(self, kind: str, ch: int) -> str:
         return self._ch_cfg(kind, ch).get("label", f"{kind.upper()}{ch}")
@@ -1114,10 +1179,9 @@ class MR02mPoller(DevicePoller):
         for i in range(1, self._ai + 1):
             if not self._ch_enabled("ai", i):
                 continue
-            ch = self._ch_cfg("ai", i)
-            if ch.get("sensor_type") is None:
+            st = self._ai_effective_sensor_type(i)
+            if st is None:
                 continue
-            st = int(ch["sensor_type"]) & 0xFFFF
             reg = MR02M_AI_HOLDING_BASE + (i - 1) * MR02M_AI_CHANNEL_STRIDE
             for attempt in range(4):
                 try:
@@ -1177,6 +1241,8 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, n, "type", "range")
             self.pub.pub_control_meta(self.device_id, n, "min", "0")
             self.pub.pub_control_meta(self.device_id, n, "max", "1000")
+            # Текущее AO в прошивке — целое ×0,01 В (как MR-02m-flasher).
+            self.pub.pub_control_units(self.device_id, n, "V")
             title = self._ch_title("ao", i, f"AO{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
@@ -1186,8 +1252,8 @@ class MR02mPoller(DevicePoller):
             ch = self._ch_cfg("ai", i)
             # sensor_type in config is a hint; actual type is read from device on first poll.
             # Use -1 as sentinel meaning "not yet read from device".
-            cfg_st = ch.get("sensor_type")
-            st = int(cfg_st) if cfg_st is not None else -1
+            eff = self._ai_effective_sensor_type(i)
+            st = int(eff) if eff is not None else -1
             self._ai_types[i] = st
             if st >= 0:
                 mqtt_type, units, _ = AI_SENSOR_TYPES.get(st, _TEMP)
@@ -1200,6 +1266,21 @@ class MR02mPoller(DevicePoller):
             title = self._ch_title("ai", i, f"AI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
+
+        self._publish_mr_sys_meta()
+
+    def _publish_mr_sys_meta(self) -> None:
+        for name, ctype, units, title in MR02M_SYS_CONTROLS:
+            if not self._sys_enabled(name):
+                continue
+            self.pub.pub_control_meta(self.device_id, name, "type", ctype)
+            self.pub.pub_control_meta(self.device_id, name, "readonly", "1")
+            if units:
+                self.pub.pub_control_units(self.device_id, name, units)
+            self.pub.pub_control_meta(
+                self.device_id, name, "title",
+                _make_title(title, ""),
+            )
 
     def _poll_do_di(self) -> None:
         if self._do > 0:
@@ -1248,7 +1329,7 @@ class MR02mPoller(DevicePoller):
                     regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
                     dev_st = regs[0] & 0xFFFF
                     if dev_st == 0:
-                        cfg_st = self._ch_cfg("ai", i).get("sensor_type")
+                        cfg_st = self._ai_effective_sensor_type(i)
                         if cfg_st is not None:
                             dev_st = int(cfg_st) & 0xFFFF
                     prev_st = self._ai_types.get(i, -1)
@@ -1293,19 +1374,72 @@ class MR02mPoller(DevicePoller):
                 for i in range(1, self._ao + 1):
                     self.pub.pub_error(self.device_id, f"ao_{i}", "r")
 
+    @staticmethod
+    def _s16_word(raw: int) -> int:
+        v = int(raw) & 0xFFFF
+        return v - 0x10000 if v >= 0x8000 else v
+
     def _poll_diag(self) -> None:
-        try:
-            # Uptime: reg 105 = LSW, reg 106 = MSW
-            r = self.read_input_registers(self.address, 105, 2)
-            self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
-        except Exception:
-            pass
-        try:
-            # Serial: reg 270 = LSW, reg 271 = MSW
-            r = self.read_input_registers(self.address, 270, 2)
-            self.pub.pub_control(self.device_id, "serial", str(r[0] | (r[1] << 16)))
-        except Exception:
-            pass
+        if self._sys_enabled("uptime_s"):
+            try:
+                r = self.read_input_registers(self.address, MR_INP_MCU_UPTIME_LO, 2)
+                self.pub.pub_control(
+                    self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
+            except Exception:
+                pass
+        if self._sys_enabled("serial"):
+            try:
+                r = self.read_input_registers(self.address, 270, 2)
+                self.pub.pub_control(
+                    self.device_id, "serial", str(r[0] | (r[1] << 16)))
+            except Exception:
+                pass
+        if self._sys_enabled("mcu_vdd") or self._sys_enabled("mcu_temp"):
+            try:
+                pt = self.read_holding_registers(
+                    self.address, MR_MCU_HOLD_POWER_TEMP, 2)
+                if self._sys_enabled("mcu_vdd"):
+                    self.pub.pub_control(
+                        self.device_id, "mcu_vdd",
+                        str(round(int(pt[0]) / 100.0, 2)))
+                if self._sys_enabled("mcu_temp"):
+                    self.pub.pub_control(
+                        self.device_id, "mcu_temp",
+                        str(round(self._s16_word(pt[1]) / 10.0, 1)))
+            except Exception:
+                pass
+        if self._sys_enabled("op_days"):
+            try:
+                days = self.read_holding_registers(
+                    self.address, MR_MCU_HOLD_OP_DAYS, 1)[0]
+                self.pub.pub_control(
+                    self.device_id, "op_days", str(int(days) & 0xFFFF))
+            except Exception:
+                pass
+        if any(self._sys_enabled(k) for k in (
+                "mcu_ram_free", "mcu_ram_used", "reset_reason", "fw_updates")):
+            try:
+                diag = self.read_input_registers(
+                    self.address, MR_INP_MCU_DIAG_START, 6)
+                if len(diag) >= 2:
+                    if self._sys_enabled("mcu_ram_free"):
+                        self.pub.pub_control(
+                            self.device_id, "mcu_ram_free",
+                            str(int(diag[0]) & 0xFFFF))
+                    if self._sys_enabled("mcu_ram_used"):
+                        self.pub.pub_control(
+                            self.device_id, "mcu_ram_used",
+                            str(int(diag[1]) & 0xFFFF))
+                if len(diag) >= 4 and self._sys_enabled("reset_reason"):
+                    code = int(diag[3]) & 0xFFFF
+                    self.pub.pub_control(
+                        self.device_id, "reset_reason",
+                        MR_RESET_REASON_LABELS.get(code, f"код {code}"))
+                if len(diag) >= 6 and self._sys_enabled("fw_updates"):
+                    fw = (int(diag[5]) & 0xFFFF) << 16 | (int(diag[4]) & 0xFFFF)
+                    self.pub.pub_control(self.device_id, "fw_updates", str(fw))
+            except Exception:
+                pass
         # DI pulse counters (if enabled in channel config)
         if self._di > 0:
             for i in range(1, min(self._di + 1, 15)):

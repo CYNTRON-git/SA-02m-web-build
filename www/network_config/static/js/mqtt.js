@@ -48,6 +48,8 @@ function mr02mTypeLabelRu(mtCode) {
 function formatDeviceDisplayName(dev) {
   const comName = (dev.port || '').replace('/dev/', '');
   const addr = dev.address != null ? dev.address : (dev.addr != null ? dev.addr : '—');
+  const stored = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : '';
+  if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
   if (dev.type === 'mr02m') {
     const typePart = mr02mTypeLabelRu(getModuleTypeCode(dev));
     return `МР-02м ${typePart} (${comName} addr=${addr})`;
@@ -63,15 +65,58 @@ function formatDeviceDisplayName(dev) {
   return `${dev.name || dev.id} (${comName} addr=${addr})`;
 }
 
-function defaultScanDeviceName(scanDev, type, port) {
-  const comName = (port || '').replace('/dev/', '');
+function normalizeSigKey(s) {
+  return String(s || '').toUpperCase().replace(/[\s_.\-]/g, '');
+}
+
+function scanShortName(scanDev, type) {
   const addr = scanDev.addr;
-  if (type === 'mr02m') {
-    return `МР-02м ${mr02mTypeLabelRu(scanDev.module_type || 1)} (${comName} addr=${addr})`;
+  if (type === 'mr02m' && scanDev.module_type && MR02M_TYPES[scanDev.module_type]) {
+    const sig = (scanDev.signature || '').trim();
+    if (sig) return sig;
+    return MR02M_TYPES[scanDev.module_type].name;
   }
-  if (type === 'dtv') return `ДТВ-RS-485 (${comName} addr=${addr})`;
-  if (type === 'ce02m3') return `СЭ-02м-3 (${comName} addr=${addr})`;
-  return `Устройство (${comName} addr=${addr})`;
+  if (type === 'dtv') return 'ДТВ-RS-485';
+  if (type === 'ce02m3') return 'СЭ-02м-3';
+  if (scanDev.signature) return String(scanDev.signature).trim();
+  return `Устройство ${addr}`;
+}
+
+function stripComAddrSuffix(name) {
+  return String(name || '').replace(/\s*\([^)]*addr=\d+[^)]*\)\s*$/i, '').trim();
+}
+
+function findListedDevice(port, addr) {
+  const a = Number(addr);
+  return (_config.devices || []).find((d) => {
+    const da = Number(d.address != null ? d.address : d.addr);
+    return d.port === port && da === a;
+  }) || null;
+}
+
+function buildDeviceConfigName(shortName, port, addr) {
+  const comName = (port || '').replace('/dev/', '');
+  const base = (shortName || '').trim() || `Устройство ${addr}`;
+  return `${base} (${comName} addr=${addr})`;
+}
+
+function scanTypeHint(dev) {
+  if (dev.type === 'mr02m' && dev.module_type && MR02M_TYPES[dev.module_type]) {
+    const sig = (dev.signature || '').trim();
+    const label = mr02mTypeLabelRu(dev.module_type);
+    const code = MR02M_TYPES[dev.module_type].name;
+    if (!sig) return label;
+    const sigK = normalizeSigKey(sig);
+    if (sigK === normalizeSigKey(label) || sigK === normalizeSigKey(code)) return label;
+    return `${label} · ${sig}`;
+  }
+  if (dev.type_name && dev.type_name !== 'unknown') return dev.type_name;
+  if (dev.signature) return dev.signature;
+  return '—';
+}
+
+function scanListedCheck() {
+  return h('span', {'class': 'mqtt-scan-check', 'title': 'Уже в списке'}, '✓');
 }
 
 // ai_sensor_t codes 0..38 — must match MODBUS_VARIABLES.txt and modbus_mqtt_bridge.py
@@ -117,6 +162,13 @@ const AI_SENSOR_LABELS = [
   {code:38, label:'38 — Напряжение 0–30 В'},
 ];
 
+const DTV_SENSOR_UNITS = {
+  temp_ds18b20: '°C', temp_mcp9808: '°C', temp_hdc1080: '°C', temp_bme280: '°C',
+  temp_bme680: '°C', temp_ext: '°C', humidity_hdc1080: '%', humidity_bme280: '%',
+  humidity_bme680: '%', pressure_bme280_mmhg: 'mmHg', pressure_bme680_mmhg: 'mmHg',
+  pressure_bme280_kpa: 'kPa', iaq_bme680: 'IAQ', presence_ld2412: '',
+};
+
 const DTV_SENSORS = [
   {key:'temp_ds18b20',  label:'Темп. DS18B20',    group:'temperature'},
   {key:'temp_mcp9808',  label:'Темп. MCP9808',    group:'temperature'},
@@ -141,6 +193,16 @@ const DTV_SENSORS = [
   {key:'buzzer',        label:'Зуммер',           group:'outputs'},
   {key:'leds',          label:'Светодиоды',       group:'outputs'},
 ];
+
+const CE02M3_UNITS = {
+  voltage_a: 'V', voltage_b: 'V', voltage_c: 'V', voltage_ab: 'V', voltage_bc: 'V', voltage_ca: 'V',
+  current_a: 'A', current_b: 'A', current_c: 'A', current_n: 'A',
+  power_a: 'W', power_b: 'W', power_c: 'W', power_total: 'W',
+  reactive_a: 'var', reactive_b: 'var', reactive_c: 'var', reactive_total: 'var',
+  pf_a: '', pf_b: '', pf_c: '', pf_total: '', frequency: 'Hz',
+  energy_active_import: 'kWh', energy_active_export: 'kWh',
+  energy_reactive_import: 'kvarh', energy_reactive_export: 'kvarh',
+};
 
 const CE02M3_CHANNELS = [
   {key:'voltage_a',   label:'Ua', group:'voltages'},
@@ -208,6 +270,11 @@ function makeDeviceId(type, port, addr) {
   return `${prefix}-${comName}-${addr}`;
 }
 
+/** Уже в конфиге на этом COM и Modbus-адресе. */
+function scanDeviceAlreadyListed(port, addr) {
+  return !!findListedDevice(port, addr);
+}
+
 /** Если module_type не сохранён в YAML — угадать по legacy-имени (AO6AI6, DO4DI6, …). */
 function inferModuleTypeFromName(name) {
   const n = String(name || '').toUpperCase().replace(/[\s_-]/g, '');
@@ -236,8 +303,269 @@ function getModuleTypeCode(dev) {
   return 1;
 }
 
+/** 6AO6AI6: чётный AI — N-нога пары (P = ch − 1), как в прошивке MR-02m. */
+const MR02M_AI_N_PARENT = { 2: 1, 4: 3, 6: 5 };
+
+function mr02mAiIsNLeg(mt, ch) {
+  return Number(mt) === 6 && ch % 2 === 0 && MR02M_AI_N_PARENT[ch] != null;
+}
+
+function mr02mAiPairParent(ch) {
+  return MR02M_AI_N_PARENT[ch] || null;
+}
+
+const _AI_NTC_CODES = new Set([1, 10, 11, 12, 13, 19, 20, 25, 26]);
+const _AI_RTD_CODES = new Set([
+  2, 3, 8, 9, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+]);
+const _AI_TC_K_CODES = new Set([6]);
+/** Трёхпроводные RTD (как module_profiles.AI_RTD_CODES_3_WIRE / flasher.js). */
+const _AI_RTD_3WIRE = new Set([
+  0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+]);
+
+function mr02mAiMirrorTypeToN(code) {
+  const c = Number(code) & 0xffff;
+  return _AI_TC_K_CODES.has(c) || _AI_RTD_3WIRE.has(c);
+}
+
+function aiSensorBucketJs(code) {
+  const c = Number(code) & 0xffff;
+  if (c === 0) return 'off';
+  if (_AI_NTC_CODES.has(c)) return 'ntc';
+  if (_AI_RTD_CODES.has(c)) return 'rtd';
+  if (_AI_TC_K_CODES.has(c)) return 'tc_k';
+  return 'other';
+}
+
+/** Как в прошивальщике: тип на N дублируется с P только для ТХА и 3-проводного RTD. */
+function syncMr02mPairAfterParentChange(dev, parentCh) {
+  const mt = getModuleTypeCode(dev);
+  const nCh = parentCh + 1;
+  if (!mr02mAiIsNLeg(mt, nCh)) return;
+  if (!dev.channels) dev.channels = {};
+  const pCfg = getOrCreateChannel(dev.channels, 'ai', parentCh);
+  const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+  if (!mr02mAiMirrorTypeToN(st)) return;
+  const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
+  nCfg.sensor_type = st;
+}
+
+function normalizeMr02mAiPairsAll(dev) {
+  if (dev.type !== 'mr02m' || getModuleTypeCode(dev) !== 6) return;
+  if (!dev.channels) dev.channels = {};
+  for (const nCh of [2, 4, 6]) {
+    const pCh = mr02mAiPairParent(nCh);
+    if (!pCh) continue;
+    const pCfg = getOrCreateChannel(dev.channels, 'ai', pCh);
+    const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+    if (!mr02mAiMirrorTypeToN(st)) continue;
+    const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
+    nCfg.sensor_type = st;
+  }
+}
+
 function topicPath(deviceId, chName) {
   return `/devices/${deviceId}/controls/${chName}`;
+}
+
+/** Системные показатели модуля MR-02m (публикует мост в _poll_diag). */
+const MR02M_SYS_VARS = [
+  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'serial', label: 'Серийный номер', unit: ''},
+  {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
+  {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
+  {key: 'op_days', label: 'Наработка', unit: 'дн'},
+  {key: 'mcu_ram_free', label: 'ОЗУ свободно', unit: 'сл'},
+  {key: 'mcu_ram_used', label: 'ОЗУ занято', unit: 'сл'},
+  {key: 'reset_reason', label: 'Причина перезагрузки', unit: ''},
+  {key: 'fw_updates', label: 'Обновлений прошивки', unit: ''},
+];
+
+const DTV_SYS_VARS = [
+  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
+  {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
+];
+
+const CE02M3_SYS_VARS = [
+  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
+  {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
+];
+
+const _liveByDevice = Object.create(null);
+const _liveUnits = Object.create(null);
+
+function aiUnitsForCode(code) {
+  const c = Number(code) & 0xffff;
+  if (c === 0) return '';
+  if (c === 4 || c === 24 || c === 38) return 'В';
+  if (c === 23) return 'мВ';
+  if (c === 5 || c === 21 || c === 22) return 'мА';
+  if (c === 7) return '';
+  return '°C';
+}
+
+/** Единицы MQTT meta (WB) → подпись как в MR-02m-flasher. */
+function formatUnitLabel(u) {
+  if (!u) return '';
+  switch (String(u)) {
+    case 'V': return 'В';
+    case 'mA': return 'мА';
+    case 'mV': return 'мВ';
+    case 'A': return 'А';
+    case 'kV': return 'кВ';
+    case 'Hz': return 'Гц';
+    default: return String(u);
+  }
+}
+
+function liveUnitFor(devId, controlName, fallback) {
+  const u = _liveUnits[devId] && _liveUnits[devId][controlName];
+  const raw = u != null && u !== '' ? u : (fallback || '');
+  return formatUnitLabel(raw);
+}
+
+function formatLiveDisplay(controlName, rec) {
+  if (!rec) return '—';
+  if (rec.isError) return '⚠';
+  const v = rec.value;
+  if (v === '' || v == null) return '—';
+  if (controlName === 'uptime_s') {
+    const s = parseInt(v, 10);
+    if (!Number.isNaN(s) && s >= 0) {
+      const d = Math.floor(s / 86400);
+      const h = Math.floor((s % 86400) / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      if (d > 0) return `${d}д ${h}ч ${m}м`;
+      if (h > 0) return `${h}ч ${m}м`;
+      return `${m}м ${s % 60}с`;
+    }
+  }
+  if (/^do_\d+$/.test(controlName) || /^di_\d+$/.test(controlName)) {
+    if (v === '1') return 'вкл';
+    if (v === '0') return 'выкл';
+  }
+  if (/^ao_\d+$/.test(controlName)) {
+    const raw = parseInt(v, 10);
+    if (!Number.isNaN(raw)) return (raw / 100).toFixed(2);
+  }
+  return String(v);
+}
+
+function setLiveValue(devId, controlName, value, isError) {
+  if (!_liveByDevice[devId]) _liveByDevice[devId] = Object.create(null);
+  _liveByDevice[devId][controlName] = {
+    value: value == null ? '' : String(value),
+    isError: !!isError,
+  };
+  updateLiveCell(devId, controlName);
+}
+
+function updateLiveCell(devId, controlName) {
+  const el = document.querySelector(`[data-live="${devId}:${controlName}"]`);
+  if (!el) return;
+  const rec = _liveByDevice[devId] && _liveByDevice[devId][controlName];
+  el.textContent = formatLiveDisplay(controlName, rec);
+  el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
+  const unitEl = document.querySelector(`[data-unit="${devId}:${controlName}"]`);
+  if (unitEl) {
+    const u = liveUnitFor(devId, controlName, unitEl.getAttribute('data-unit-default') || '');
+    unitEl.textContent = u;
+    unitEl.hidden = !u;
+  }
+}
+
+function refreshAllLiveCells() {
+  document.querySelectorAll('[data-live]').forEach(el => {
+    const key = el.getAttribute('data-live');
+    if (!key) return;
+    const i = key.indexOf(':');
+    if (i < 1) return;
+    updateLiveCell(key.slice(0, i), key.slice(i + 1));
+  });
+}
+
+function liveSpan(devId, controlName, unit) {
+  const rec = _liveByDevice[devId] && _liveByDevice[devId][controlName];
+  const u = liveUnitFor(devId, controlName, unit || '');
+  const wrap = h('span', {'class': 'mqtt-ch-live-wrap'});
+  wrap.appendChild(h('span', {
+    'class': 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : ''),
+    'data-live': `${devId}:${controlName}`,
+    'title': 'Текущее значение с шины (MQTT)',
+  }, formatLiveDisplay(controlName, rec)));
+  wrap.appendChild(h('span', {
+    'class': 'mqtt-ch-unit',
+    'data-unit': `${devId}:${controlName}`,
+    'data-unit-default': unit || '',
+    hidden: !u ? '' : undefined,
+  }, u));
+  return wrap;
+}
+
+function ingestMonitorTopic(topic, value) {
+  const unitsM = /^\/devices\/([^/]+)\/controls\/([^/]+)\/meta\/units$/.exec(topic);
+  if (unitsM) {
+    if (!_liveUnits[unitsM[1]]) _liveUnits[unitsM[1]] = Object.create(null);
+    _liveUnits[unitsM[1]][unitsM[2]] = String(value);
+    updateLiveCell(unitsM[1], unitsM[2]);
+    return;
+  }
+  const errM = /^\/devices\/([^/]+)\/controls\/([^/]+)\/meta\/error$/.exec(topic);
+  if (errM) {
+    setLiveValue(errM[1], errM[2], value, value !== '' && value != null);
+    return;
+  }
+  const m = /^\/devices\/([^/]+)\/controls\/([^/]+)$/.exec(topic);
+  if (!m || m[2] === 'module_type' || m[2] === 'connection') return;
+  setLiveValue(m[1], m[2], value, false);
+}
+
+function getOrCreateSysChannel(dev, item) {
+  if (!dev.channels) dev.channels = {};
+  if (!dev.channels.sys) dev.channels.sys = [];
+  let ch = dev.channels.sys.find(c => c.key === item.key);
+  if (!ch) {
+    ch = {key: item.key, label: item.label, enabled: true};
+    dev.channels.sys.push(ch);
+  }
+  return ch;
+}
+
+function buildSysChannelGroup(dev, title, vars) {
+  const grp = buildChannelGroup(title);
+  for (const item of vars) {
+    const chCfg = getOrCreateSysChannel(dev, item);
+    const topic = topicPath(dev.id, item.key);
+    grp.appendChild(h('div', {'class': 'mqtt-ch-row'},
+      h('label', {'class': 'mqtt-ch-toggle'},
+        h('input', {
+          'type': 'checkbox',
+          checked: chCfg.enabled !== false ? '' : undefined,
+          'onchange': e => {
+            chCfg.enabled = e.target.checked;
+            markUnsaved();
+          },
+        }),
+      ),
+      h('input', {
+        'type': 'text',
+        'class': 'mqtt-ch-label-input',
+        'placeholder': item.label,
+        'value': chCfg.label || item.label,
+        'oninput': e => {
+          chCfg.label = e.target.value;
+          markUnsaved();
+        },
+      }),
+      h('span', {'class': 'topic-preview mono', 'title': topic}, item.key),
+      liveSpan(dev.id, item.key, item.unit || ''),
+    ));
+  }
+  return grp;
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -366,6 +694,15 @@ async function refreshBrokerStatus() {
     bridgeBadge.className = `badge ${st.bridge_active ? 'badge-ok' : 'badge-unk'}`;
     bridgeBadge.textContent = st.bridge_active ? '● Мост активен' : '● Мост остановлен';
   }
+  const bridgeToggle = document.getElementById('mqtt-bridge-toggle-btn');
+  if (bridgeToggle) {
+    const on = !!st.bridge_active;
+    bridgeToggle.textContent = on ? 'Остановить' : 'Запустить';
+    bridgeToggle.className = on ? 'btn btn-sm btn-warn' : 'btn btn-sm btn-primary';
+    bridgeToggle.title = on
+      ? 'Остановить мост Modbus→MQTT и освободить COM-порты'
+      : 'Запустить мост Modbus→MQTT';
+  }
   renderMqttClientInfo(st);
   bindMqttClientInfoCells();
 }
@@ -375,6 +712,9 @@ async function loadConfig() {
   const data = await apiGet('/cgi-bin/mqtt_config.cgi').catch(() => null);
   if (data && !data.error) {
     _config = data;
+    for (const dev of _config.devices || []) {
+      normalizeMr02mAiPairsAll(dev);
+    }
     renderDeviceList();
     renderAccordion();
   }
@@ -411,7 +751,7 @@ function deviceTypeBadge(type) {
 function countChannelsEnabled(dev) {
   if (dev.type === 'mr02m') {
     let n = 0;
-    for (const kind of ['do','di','ao','ai']) {
+    for (const kind of ['do','di','ao','ai','sys']) {
       for (const ch of (dev.channels?.[kind] || [])) {
         if (ch.enabled !== false) n++;
       }
@@ -455,6 +795,7 @@ function renderAccordion() {
   for (const dev of _config.devices || []) {
     container.appendChild(buildDeviceSection(dev));
   }
+  refreshAllLiveCells();
 }
 
 function buildDeviceSection(dev) {
@@ -484,71 +825,126 @@ function toggleAccordion(id) {
   if (arrow) arrow.textContent = open ? '▼' : '▶';
 }
 
+function appendMr02mDoGroup(parent, dev, channels, count) {
+  const grp = buildChannelGroup('DO — дискретные выходы');
+  for (let i = 1; i <= count; i++) {
+    const chCfg = getOrCreateChannel(channels, 'do', i);
+    grp.appendChild(buildChannelRow(chCfg, topicPath(dev.id, `do_${i}`), 'do', i, dev, `do_${i}`, ''));
+  }
+  parent.appendChild(grp);
+}
+
+function appendMr02mDiGroup(parent, dev, channels, count) {
+  const grp = buildChannelGroup('DI — дискретные входы');
+  for (let i = 1; i <= count; i++) {
+    const chCfg = getOrCreateChannel(channels, 'di', i);
+    const row = buildChannelRow(chCfg, topicPath(dev.id, `di_${i}`), 'di', i, dev, `di_${i}`, '');
+    const countLive = liveSpan(dev.id, `di_${i}_count`, '');
+    if (!chCfg.counter) countLive.hidden = true;
+    row.appendChild(h('label', {'class': 'mqtt-counter-label'},
+      h('input', {'type': 'checkbox', checked: chCfg.counter ? '' : undefined,
+        'onchange': e => {
+          chCfg.counter = e.target.checked;
+          countLive.hidden = !e.target.checked;
+          markUnsaved();
+        }}),
+      ' счётчик',
+    ));
+    row.appendChild(countLive);
+    grp.appendChild(row);
+  }
+  parent.appendChild(grp);
+}
+
+function appendMr02mAoGroup(parent, dev, channels, count) {
+  const grp = buildChannelGroup('AO — аналоговые выходы');
+  for (let i = 1; i <= count; i++) {
+    const chCfg = getOrCreateChannel(channels, 'ao', i);
+    grp.appendChild(buildChannelRow(
+      chCfg, topicPath(dev.id, `ao_${i}`), 'ao', i, dev, `ao_${i}`, 'В'));
+  }
+  parent.appendChild(grp);
+}
+
+function appendMr02mAiGroup(parent, dev, channels, mtCode, count) {
+  const grp = buildChannelGroup('AI — аналоговые входы');
+  for (let i = 1; i <= count; i++) {
+    const chCfg = getOrCreateChannel(channels, 'ai', i);
+    const ctrl = `ai_${i}`;
+    const row = buildChannelRow(
+      chCfg, topicPath(dev.id, ctrl), 'ai', i, dev, ctrl, '', {skipLive: true});
+    const sel = h('select', {'class': 'mqtt-select-small',
+      'onchange': e => {
+        chCfg.sensor_type = Number(e.target.value);
+        if (!mr02mAiIsNLeg(mtCode, i)) syncMr02mPairAfterParentChange(dev, i);
+        const u = aiUnitsForCode(chCfg.sensor_type);
+        const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
+        if (unitEl) {
+          unitEl.setAttribute('data-unit-default', u);
+          unitEl.textContent = liveUnitFor(dev.id, ctrl, u);
+          unitEl.hidden = !u ? '' : undefined;
+        }
+        markUnsaved();
+      }});
+    for (const s of AI_SENSOR_LABELS) {
+      const opt = h('option', {'value': String(s.code)}, s.label);
+      if (s.code === (chCfg.sensor_type ?? 2)) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    row.appendChild(sel);
+    row.appendChild(liveSpan(dev.id, ctrl, aiUnitsForCode(chCfg.sensor_type ?? 2)));
+    grp.appendChild(row);
+  }
+  parent.appendChild(grp);
+}
+
 function buildMR02mChannels(dev, container) {
   const channels = dev.channels || {};
   const mtCode = getModuleTypeCode(dev);
   const mt = MR02M_TYPES[mtCode] || {do:6,di:8,ao:0,ai:0};
 
-  // DO channels
-  if (mt.do > 0) {
-    const grp = buildChannelGroup('DO — Дискретные выходы');
-    for (let i = 1; i <= mt.do; i++) {
-      const chCfg = getOrCreateChannel(channels, 'do', i);
-      const topicHint = topicPath(dev.id, `do_${i}`);
-      grp.appendChild(buildChannelRow(chCfg, topicHint, 'do', i, dev));
-    }
-    container.appendChild(grp);
-  }
-  // DI channels
-  if (mt.di > 0) {
-    const grp = buildChannelGroup('DI — Дискретные входы');
-    for (let i = 1; i <= mt.di; i++) {
-      const chCfg = getOrCreateChannel(channels, 'di', i);
-      const topicHint = topicPath(dev.id, `di_${i}`);
-      const row = buildChannelRow(chCfg, topicHint, 'di', i, dev);
-      // Counter toggle
-      const counterLabel = h('label', {'class':'mqtt-counter-label'},
-        h('input', {'type':'checkbox', checked: chCfg.counter ? '' : undefined,
-          'onchange': e => { chCfg.counter = e.target.checked; markUnsaved(); }}),
-        ' счётчик'
-      );
-      row.appendChild(counterLabel);
-      grp.appendChild(row);
-    }
-    container.appendChild(grp);
-  }
-  // AO channels
-  if (mt.ao > 0) {
-    const grp = buildChannelGroup('AO — Аналоговые выходы (0–1000 ‰)');
-    for (let i = 1; i <= mt.ao; i++) {
-      const chCfg = getOrCreateChannel(channels, 'ao', i);
-      grp.appendChild(buildChannelRow(chCfg, topicPath(dev.id, `ao_${i}`), 'ao', i, dev));
-    }
-    container.appendChild(grp);
-  }
-  // AI channels
-  if (mt.ai > 0) {
-    const grp = buildChannelGroup('AI — Аналоговые входы');
-    for (let i = 1; i <= mt.ai; i++) {
-      const chCfg = getOrCreateChannel(channels, 'ai', i);
-      const row = buildChannelRow(chCfg, topicPath(dev.id, `ai_${i}`), 'ai', i, dev);
-      // Sensor type dropdown
-      const sel = h('select', {'class':'mqtt-select-small',
-        'onchange': e => { chCfg.sensor_type = Number(e.target.value); markUnsaved(); }});
-      for (const s of AI_SENSOR_LABELS) {
-        const opt = h('option', {'value': String(s.code)}, s.label);
-        if (s.code === (chCfg.sensor_type ?? 2)) opt.selected = true;
-        sel.appendChild(opt);
-      }
-      row.appendChild(sel);
-      grp.appendChild(row);
-    }
-    container.appendChild(grp);
-  }
+  container.appendChild(buildSysChannelGroup(dev, 'Система — модуль MR-02m', MR02M_SYS_VARS));
+
+  const hasLeft = mt.di > 0 || mt.ai > 0;
+  const hasRight = mt.do > 0 || mt.ao > 0;
+  if (!hasLeft && !hasRight) return;
+
+  const leftTitle = mt.di > 0 ? 'Входы — DI' : 'Входы — AI';
+  const rightTitle = mt.do > 0 ? 'Выходы — DO' : 'Выходы — AO';
+
+  const cols = h('div', {'class': 'mqtt-ch-cols'});
+  cols.style.display = 'flex';
+  cols.style.flexDirection = 'row';
+  cols.style.flexWrap = 'nowrap';
+  cols.style.gap = '28px';
+  cols.style.width = '100%';
+
+  const colL = h('div', {'class': 'mqtt-ch-col'});
+  const colR = h('div', {'class': 'mqtt-ch-col'});
+  colL.style.flex = '1 1 0';
+  colR.style.flex = '1 1 0';
+  colL.style.minWidth = '0';
+  colR.style.minWidth = '0';
+
+  colL.appendChild(h('div', {'class': 'mqtt-ch-col-title'}, leftTitle));
+  colR.appendChild(h('div', {'class': 'mqtt-ch-col-title'}, rightTitle));
+
+  cols.appendChild(colL);
+  cols.appendChild(colR);
+  container.appendChild(cols);
+
+  if (mt.di > 0) appendMr02mDiGroup(colL, dev, channels, mt.di);
+  else if (mt.ai > 0) appendMr02mAiGroup(colL, dev, channels, mtCode, mt.ai);
+  else colL.appendChild(h('p', {'class': 'field-hint'}, '—'));
+
+  if (mt.do > 0) appendMr02mDoGroup(colR, dev, channels, mt.do);
+  else if (mt.ao > 0) appendMr02mAoGroup(colR, dev, channels, mt.ao);
+  else colR.appendChild(h('p', {'class': 'field-hint'}, '—'));
 }
 
 function buildDTVChannels(dev, container) {
   if (!dev.sensors_present) dev.sensors_present = DTV_SENSORS.map(s => s.key);
+  container.appendChild(buildSysChannelGroup(dev, 'Система — DTV', DTV_SYS_VARS));
   const groups = {};
   for (const s of DTV_SENSORS) {
     if (!groups[s.group]) {
@@ -573,7 +969,8 @@ function buildDTVChannels(dev, container) {
           }}),
         h('span', {'class':'mqtt-ch-name'}, s.label)
       ),
-      h('span', {'class':'topic-preview', 'title': topic}, topic)
+      h('span', {'class':'topic-preview', 'title': topic}, topic),
+      liveSpan(dev.id, s.key, s.unit || ''),
     );
     groups[s.group].appendChild(row);
   }
@@ -594,6 +991,8 @@ function buildDTVChannels(dev, container) {
 function buildCE02M3Channels(dev, container) {
   if (!dev.channels_enabled) dev.channels_enabled = {};
   const en = dev.channels_enabled;
+
+  container.appendChild(buildSysChannelGroup(dev, 'Система — CE-02m-3', CE02M3_SYS_VARS));
 
   // CT ratio
   const ctRow = h('div', {'class':'mqtt-ch-group'},
@@ -656,7 +1055,8 @@ function buildCE02M3Channels(dev, container) {
           }}),
         h('span', {'class':'mqtt-ch-name'}, ch.label)
       ),
-      h('span', {'class':'topic-preview', 'title': topic}, topic)
+      h('span', {'class':'topic-preview', 'title': topic}, topic),
+      liveSpan(dev.id, ch.key, CE02M3_UNITS[ch.key] || ''),
     );
     groups[gk].appendChild(row);
   }
@@ -668,18 +1068,34 @@ function buildChannelGroup(title) {
   );
 }
 
-function buildChannelRow(chCfg, topicHint, kind, idx, dev) {
-  const row = h('div', {'class':'mqtt-ch-row'},
-    h('label', {'class':'mqtt-ch-toggle'},
-      h('input', {'type':'checkbox', checked: chCfg.enabled !== false ? '' : undefined,
-        'onchange': e => { chCfg.enabled = e.target.checked; markUnsaved(); }}),
+function buildChannelRow(chCfg, topicHint, kind, idx, dev, controlName, unit, opts) {
+  const ctrl = controlName || `${kind}_${idx}`;
+  const row = h('div', {'class': 'mqtt-ch-row'},
+    h('label', {'class': 'mqtt-ch-toggle'},
+      h('input', {
+        'type': 'checkbox',
+        checked: chCfg.enabled !== false ? '' : undefined,
+        'onchange': e => {
+          chCfg.enabled = e.target.checked;
+          markUnsaved();
+        },
+      }),
     ),
-    h('input', {'type':'text','class':'mqtt-ch-label-input',
+    h('input', {
+      'type': 'text',
+      'class': 'mqtt-ch-label-input',
       'placeholder': `${kind.toUpperCase()}${idx}`,
       'value': chCfg.label || '',
-      'oninput': e => { chCfg.label = e.target.value; markUnsaved(); }}),
-    h('span', {'class':'topic-preview', 'title': topicHint}, topicHint)
+      'oninput': e => {
+        chCfg.label = e.target.value;
+        markUnsaved();
+      },
+    }),
+    h('span', {'class': 'topic-preview mono', 'title': topicHint}, ctrl),
   );
+  if (!opts || !opts.skipLive) {
+    row.appendChild(liveSpan(dev.id, ctrl, unit || ''));
+  }
   return row;
 }
 
@@ -739,7 +1155,10 @@ async function runScan() {
     return;
   }
 
-  statusEl.textContent = 'Найдено: ' + devices.length + ' устройств(а). Выберите тип и добавьте нужные.';
+  const method = data.scan_method === 'fast'
+    ? 'быстрый Modbus'
+    : (data.scan_method === 'standard' ? 'опрос адресов' : 'сканирование');
+  statusEl.textContent = `Найдено: ${devices.length} (${method}). Проверьте имя и добавьте нужные.`;
   renderScanResults(port, baud, devices);
 }
 
@@ -749,60 +1168,77 @@ function renderScanResults(port, baud, devices) {
 
   const table = h('table', {'class': 'mqtt-device-table'});
   table.appendChild(h('thead', {}, h('tr', {},
-    h('th', {}, 'Адрес'), h('th', {}, 'Тип'), h('th', {}, 'Имя'), h('th', {})
+    h('th', {}, 'Адрес'), h('th', {}, 'Сигнатура'), h('th', {}, 'Тип'), h('th', {}, 'Имя'), h('th', {})
   )));
   const tbody = h('tbody');
 
   for (const dev of devices) {
+    const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
     const typeSelect = h('select', {'class': 'mqtt-select-small'});
     for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3']]) {
       const opt = h('option', {value: val}, lbl);
-      if (val === dev.type) opt.selected = true;
+      if (val === devType) opt.selected = true;
       typeSelect.appendChild(opt);
     }
+    typeSelect.addEventListener('change', () => {
+      const d = {...dev, type: typeSelect.value};
+      delete d.name;
+      nameInput.value = scanShortName(d, typeSelect.value);
+    });
+
+    const listedDev = findListedDevice(port, dev.addr);
+    const nameValue = listedDev
+      ? (stripComAddrSuffix(listedDev.name) || scanShortName(dev, devType))
+      : scanShortName(dev, devType);
 
     const nameInput = h('input', {
       'type': 'text', 'class': 'mqtt-ch-label-input',
-      'placeholder': 'Имя устройства',
-      'value': dev.name || defaultScanDeviceName(dev, dev.type || 'mr02m', port),
-      'style': 'width:130px'
+      'placeholder': 'Сигнатура / имя',
+      'value': nameValue,
     });
 
-    const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
-    addBtn.onclick = () => {
-      addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud);
-      addBtn.disabled = true;
-      addBtn.textContent = '✓';
-    };
+    const listed = !!listedDev;
+    const actionCell = listed
+      ? h('td', {'class': 'mqtt-scan-action'}, scanListedCheck())
+      : h('td', {'class': 'mqtt-scan-action'}, (() => {
+          const addBtn = h('button', {'class': 'btn btn-primary btn-sm'}, '+ Добавить');
+          addBtn.onclick = () => {
+            addDeviceFromScan(dev, typeSelect.value, nameInput.value, port, baud);
+            addBtn.replaceWith(scanListedCheck());
+          };
+          return addBtn;
+        })());
 
     tbody.appendChild(h('tr', {},
       h('td', {'class': 'mono'}, String(dev.addr)),
+      h('td', {'class': 'mqtt-scan-sig'}, scanTypeHint(dev)),
       h('td', {}, typeSelect),
       h('td', {}, nameInput),
-      h('td', {}, addBtn)
+      actionCell
     ));
   }
 
   table.appendChild(tbody);
 
-  const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'},
-    '+ Добавить все (' + devices.length + ')');
-  addAllBtn.onclick = () => {
-    tbody.querySelectorAll('tr').forEach((tr, i) => {
-      const d = devices[i];
-      const sel = tr.querySelector('select');
-      const inp = tr.querySelector('input');
-      const btn = tr.querySelector('button');
-      if (!btn.disabled) {
-        addDeviceFromScan(d, sel.value, inp.value, port, baud);
-        btn.disabled = true;
-        btn.textContent = '✓';
-      }
-    });
-  };
-
+  const newCount = devices.filter((d) => !scanDeviceAlreadyListed(port, d.addr)).length;
   el.appendChild(table);
-  el.appendChild(addAllBtn);
+  if (newCount > 0) {
+    const addAllBtn = h('button', {'class': 'btn btn-sm', 'style': 'margin-top:8px'},
+      '+ Добавить все (' + newCount + ')');
+    addAllBtn.onclick = () => {
+      tbody.querySelectorAll('tr').forEach((tr, i) => {
+        const d = devices[i];
+        if (scanDeviceAlreadyListed(port, d.addr)) return;
+        const sel = tr.querySelector('select');
+        const inp = tr.querySelector('input');
+        const btn = tr.querySelector('button');
+        if (!btn) return;
+        addDeviceFromScan(d, sel.value, inp.value, port, baud);
+        btn.replaceWith(scanListedCheck());
+      });
+    };
+    el.appendChild(addAllBtn);
+  }
 }
 
 function addDeviceFromScan(scanDev, type, name, port, baud) {
@@ -814,9 +1250,14 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
     return;
   }
 
-  const dev = {id, type, port, baudrate: baud || 115200, address: addr, name: name || id};
+  const shortName = (name || '').trim() || scanShortName(scanDev, type);
+  const dev = {
+    id, type, port, baudrate: baud || 115200, address: addr,
+    name: buildDeviceConfigName(shortName, port, addr),
+  };
   if (type === 'mr02m') {
-    dev.module_type = scanDev.module_type || 1;
+    const mt = Number(scanDev.module_type);
+    dev.module_type = (mt && MR02M_TYPES[mt]) ? mt : 1;
     dev.poll_s = 1; dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 1; dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
@@ -911,6 +1352,9 @@ async function saveAndApply() {
   const btn = document.getElementById('mqtt-save-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
 
+  for (const dev of _config.devices || []) {
+    normalizeMr02mAiPairsAll(dev);
+  }
   const payload = Object.assign({}, _config, {restart: true});
   const res = await apiPost('/cgi-bin/mqtt_config.cgi', payload).catch(() => null);
 
@@ -942,6 +1386,7 @@ function startMonitor() {
     if (_monitorPaused) return;
     try {
       const msg = JSON.parse(e.data);
+      ingestMonitorTopic(msg.topic, msg.value);
       appendMonitorLine(msg.ts, msg.topic, msg.value);
     } catch {}
   };
@@ -1007,6 +1452,31 @@ window.mqttCtrl          = async (action) => {
   const res = await apiPost('/cgi-bin/mqtt_ctrl.cgi', {action}).catch(() => null);
   if (res?.ok) { showToast(`Выполнено: ${action}`); setTimeout(refreshBrokerStatus, 1500); }
   else showToast('Ошибка: ' + (res?.error || '?'), 'err');
+};
+
+window.mqttToggleBridge = async function mqttToggleBridge() {
+  const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
+  const on = !!(st && st.bridge_active);
+  const action = on ? 'stop_bridge' : 'start_bridge';
+  const msg = on
+    ? 'Остановить мост Modbus→MQTT? COM-порты освободятся для прошивальщика и сканирования.'
+    : 'Запустить мост Modbus→MQTT?';
+  if (!confirm(msg)) return;
+  const btn = document.getElementById('mqtt-bridge-toggle-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await apiPost('/cgi-bin/mqtt_ctrl.cgi', {action});
+    if (res?.ok) {
+      showToast(on ? 'Мост остановлен' : 'Мост запущен', 'success');
+      setTimeout(refreshBrokerStatus, 1200);
+    } else {
+      showToast('Ошибка: ' + (res?.error || '?'), 'err');
+    }
+  } catch (_) {
+    showToast('Ошибка управления мостом', 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 };
 
 })();

@@ -2312,7 +2312,42 @@ svg .gauge-num {
   border-top: 1px solid var(--border);
 }
 
-/* Channel group */
+/* Два столбца каналов MR-02m: входы (DI/AI) | выходы (DO/AO) */
+.mqtt-accordion-body .mqtt-ch-cols {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: flex-start;
+  gap: 28px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.mqtt-accordion-body .mqtt-ch-col {
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.mqtt-ch-col-title {
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin: 0 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.05));
+}
+@media (max-width: 480px) {
+  .mqtt-accordion-body .mqtt-ch-cols {
+    flex-direction: column;
+    flex-wrap: wrap;
+  }
+  .mqtt-accordion-body .mqtt-ch-col {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+}
 .mqtt-ch-group {
   margin-bottom: 14px;
 }
@@ -2332,6 +2367,44 @@ svg .gauge-num {
   gap: 8px;
   padding: 4px 0;
   flex-wrap: wrap;
+}
+.mqtt-ch-live-wrap {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.mqtt-ch-live {
+  font-family: var(--font-mono);
+  font-size: .82rem;
+  font-weight: 600;
+  min-width: 2.5rem;
+  text-align: right;
+  color: var(--text);
+}
+.mqtt-ch-unit {
+  font-size: .72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.mqtt-ch-live-err { color: var(--err, #e55); }
+.mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
+.mqtt-ch-row-ai .mqtt-select-small {
+  max-width: 11rem;
+  flex: 1 1 8rem;
+  min-width: 7rem;
+}
+.mqtt-ch-row-ai-n .mqtt-ch-label-input {
+  opacity: .92;
+}
+.mqtt-ai-pair-type {
+  font-size: .78rem;
+  color: var(--text-sec);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .mqtt-ch-toggle {
   display: flex;
