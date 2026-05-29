@@ -2291,3 +2291,102 @@ svg .gauge-num {
 .mqtt-toast-ok   { border-color: var(--green, #4ade80); }
 .mqtt-toast-warn { border-color: var(--yellow, #facc15); }
 .mqtt-toast-err  { border-color: var(--red, #f87171); }
+
+/* ── Gateway (RS-485 → Ethernet) ────────────────────────────────────────── */
+.gw-svc-bar { margin-bottom: 16px; }
+.gw-svc-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.gw-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.gw-port-tabs {
+  display: flex;
+  flex-direction: row;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: -1px;
+  position: relative;
+  z-index: 1;
+}
+.gw-port-tab {
+  padding: 8px 18px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  background: var(--bg-panel);
+  color: var(--text-sec);
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: background var(--transition), color var(--transition);
+}
+.gw-port-tab:hover { background: var(--bg-hover); color: var(--text); }
+.gw-port-tab.active {
+  background: var(--bg-card);
+  color: var(--text);
+  border-color: var(--border);
+  border-bottom: 1px solid var(--bg-card);
+}
+.gw-port-tab-name { font-size: .85rem; }
+.gw-port-tab-badge { font-size: .65rem; line-height: 1; }
+.gw-badge-ok  { color: var(--green); }
+.gw-badge-err { color: var(--red); }
+
+.gw-port-panel {
+  border-radius: 0 var(--radius) var(--radius) var(--radius);
+  padding: 18px 20px 20px;
+  min-height: 200px;
+}
+.gw-port-form-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.gw-counters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: .8rem;
+  color: var(--text-sec);
+}
+.gw-counter-err { color: var(--red); }
+.gw-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.gw-section h4 {
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin: 0 0 12px;
+}
+.gw-save-row { margin-top: 4px; }
+.gw-save-status {
+  font-size: .82rem;
+  min-height: 1.4em;
+  margin-top: 6px;
+  color: var(--text-sec);
+}
+.gw-save-err { color: var(--red); }
+.gw-dirty-dot { color: var(--orange); font-size: .75rem; vertical-align: super; }
+
+@media (max-width: 600px) {
+  .gw-port-tabs { gap: 4px; }
+  .gw-port-tab  { padding: 7px 12px; font-size: .8rem; }
+}
