@@ -25,12 +25,14 @@ devices:
   # ── Пример: MR-02м DO6DI8, COM1, addr=5 ─────────────────────────────────
   # - id: mr02m-COM1-5
   #   type: mr02m
+  #   module_type: 1        # ОБЯЗАТЕЛЬНО: тип модуля (1=DO6DI8, 6=AO6AI6, 8=DO4DI6 и т.д.)
+  #                         # Используется веб-UI для отображения каналов; мост авто-определяет
+  #                         # тип через FC04 при старте, но module_type нужен для корректного UI
   #   port: /dev/COM1
   #   baudrate: 115200
   #   address: 5
-  #   name: "MR-02м DO6DI8 (COM1 addr=5)"
+  #   name: "MR-02m DO6DI8 (COM1 addr=5)"
   #   # fast_modbus: true   # включить Wiren Board Fast Modbus events (мгновенный DO/DI)
-  #   # module_type: 1      # тип модуля для fast_modbus events (если не авто-определять FC04)
   #   poll_do_di_s: 1
   #   poll_ai_ao_s: 5
   #   poll_diag_s: 60
