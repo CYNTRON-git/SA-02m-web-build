@@ -25,9 +25,9 @@ for i, name in enumerate(['COM1','COM2','COM3','COM4','COM5'], start=1):
         "enabled": False,
         "mode": "modbus_tcp",
         "tcp_port": 501 + i,
-        "baudrate": 9600,
+        "baudrate": 115200 if name in ('COM4', 'COM5') else 19200,
         "parity": "none",
-        "stopbits": 2,
+        "stopbits": 1,
         "databits": 8,
         "fast_modbus_probe": True,
     }
@@ -68,13 +68,13 @@ def validate_port(name, pcfg):
     mode = pcfg.get('mode', 'disabled')
     if mode not in VALID_MODES:
         errs.append(f"{name}: unknown mode '{mode}'")
-    baud = int(pcfg.get('baudrate', 9600))
+    baud = int(pcfg.get('baudrate', 115200 if name in ('COM4', 'COM5') else 19200))
     if baud not in VALID_BAUDRATES:
         errs.append(f"{name}: invalid baudrate {baud}")
     par = str(pcfg.get('parity', 'none')).lower()
     if par not in VALID_PARITIES:
         errs.append(f"{name}: invalid parity '{par}'")
-    sb = pcfg.get('stopbits', 2)
+    sb = pcfg.get('stopbits', 1)
     if int(sb) not in VALID_STOPBITS:
         errs.append(f"{name}: invalid stopbits {sb}")
     port = int(pcfg.get('tcp_port', 502))
@@ -100,9 +100,9 @@ try:
             "enabled":           bool(pcfg.get('enabled', False)),
             "mode":              str(pcfg.get('mode', 'disabled')),
             "tcp_port":          int(pcfg.get('tcp_port', 502)),
-            "baudrate":          int(pcfg.get('baudrate', 9600)),
+            "baudrate":          int(pcfg.get('baudrate', 115200 if name in ('COM4', 'COM5') else 19200)),
             "parity":            str(pcfg.get('parity', 'none')).lower(),
-            "stopbits":          int(pcfg.get('stopbits', 2)),
+            "stopbits":          int(pcfg.get('stopbits', 1)),
             "databits":          int(pcfg.get('databits', 8)),
             "fast_modbus_probe": bool(pcfg.get('fast_modbus_probe', True)),
         }

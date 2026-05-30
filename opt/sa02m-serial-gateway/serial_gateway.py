@@ -92,6 +92,35 @@ def _inter_frame_sec(baudrate: int) -> float:
     char_time = 11.0 / max(baudrate, 1)       # 8 data + start + stop + parity
     return max(3.5 * char_time, 0.00175) + 0.001
 
+def _default_serial(port_name: str) -> tuple[int, int]:
+    """Factory defaults: (baudrate, stopbits) per COM port."""
+    if port_name in ('COM4', 'COM5'):
+        return 115200, 1
+    return 19200, 1
+
+def _rtu_char_time_s(baudrate: int) -> float:
+    return 10.0 / max(baudrate, 300)
+
+def _modbus_read_frame_len(data: bytes) -> int:
+    """Expected RTU response length once header bytes are present."""
+    if len(data) < 3:
+        return 0
+    func = data[1]
+    if func & 0x80:
+        return 5
+    if func in (0x01, 0x02, 0x03, 0x04):
+        return 3 + int(data[2]) + 2
+    if func in (0x06, 0x10):
+        return 8
+    return 0
+
+def _strip_rtu_echo(request: bytes, data: bytes) -> bytes:
+    """Remove TX echo from RS-485 adapters (use > not >=: FC06 reply == request)."""
+    if (len(request) > 0 and len(data) > len(request)
+            and data[:len(request)] == request):
+        return data[len(request):]
+    return data
+
 # ── Serial worker (blocking, thread-safe) ─────────────────────────────────────
 
 class SerialWorker:
@@ -103,7 +132,10 @@ class SerialWorker:
         self._cfg      = cfg
         self._ser: serial.Serial | None = None
         self._lock     = threading.Lock()
-        self._gap      = _inter_frame_sec(cfg.get('baudrate', 9600))
+        def_baud, def_stop = _default_serial(port_name)
+        self._def_baud = def_baud
+        self._def_stop = def_stop
+        self._gap      = _inter_frame_sec(cfg.get('baudrate', def_baud))
         self._pending_rx: bytes = b''   # for transparent read_pending()
 
     # ── serial.Serial attribute maps ──────────────────────────────────────────
@@ -119,12 +151,12 @@ class SerialWorker:
     }
 
     def open(self):
-        baudrate = int(self._cfg.get('baudrate', 9600))
+        baudrate = int(self._cfg.get('baudrate', self._def_baud))
         parity   = self._PARITY_MAP.get(
             str(self._cfg.get('parity', 'none')).lower(), serial.PARITY_NONE
         )
         stopbits = self._STOPBITS_MAP.get(
-            self._cfg.get('stopbits', 2), serial.STOPBITS_TWO
+            self._cfg.get('stopbits', self._def_stop), serial.STOPBITS_ONE
         )
         databits = int(self._cfg.get('databits', 8))
         self._gap = _inter_frame_sec(baudrate)
@@ -144,7 +176,7 @@ class SerialWorker:
                  self._cfg.get('databits', 8),
                  {'none': 'N', 'even': 'E', 'odd': 'O'}.get(
                      str(self._cfg.get('parity', 'none')).lower(), 'N'),
-                 self._cfg.get('stopbits', 2))
+                 self._cfg.get('stopbits', self._def_stop))
 
     def close(self):
         if self._ser and self._ser.is_open:
@@ -154,34 +186,51 @@ class SerialWorker:
                 pass
 
     def exchange(self, request: bytes, response_timeout: float = 1.0) -> bytes:
-        """Send bytes on RS-485, receive response. Blocking, thread-safe."""
+        """Send bytes on RS-485, receive Modbus RTU response. Blocking, thread-safe."""
         with self._lock:
             if not self._ser or not self._ser.is_open:
                 raise RuntimeError("Port not open")
             try:
+                time.sleep(self._gap)
                 self._ser.reset_input_buffer()
                 self._ser.write(request)
                 self._ser.flush()
             except serial.SerialException as exc:
                 raise RuntimeError(f"Write error: {exc}") from exc
 
-            response  = b''
-            deadline  = time.monotonic() + response_timeout
-            last_rx   = None
+            baudrate = int(self._cfg.get('baudrate', self._def_baud))
+            char_time = _rtu_char_time_s(baudrate)
+            post_send = max(0.001, min(0.02, char_time * 3.5 + 0.002))
+            time.sleep(post_send)
+
+            deadline = time.monotonic() + response_timeout
+            buf = b""
+            last_recv = time.monotonic()
+            silence = max(0.02, char_time * 3.5)
 
             while time.monotonic() < deadline:
                 waiting = self._ser.in_waiting
                 if waiting:
-                    chunk = self._ser.read(max(waiting, 1))
-                    if chunk:
-                        response += chunk
-                        last_rx = time.monotonic()
-                elif last_rx is not None and (time.monotonic() - last_rx) >= self._gap:
+                    buf += self._ser.read(max(waiting, 1))
+                    last_recv = time.monotonic()
+                    buf = _strip_rtu_echo(request, buf)
+                    flen = _modbus_read_frame_len(buf)
+                    if flen and len(buf) >= flen:
+                        time.sleep(self._gap)
+                        return buf[:flen]
+                elif buf and (time.monotonic() - last_recv) >= silence:
+                    buf = _strip_rtu_echo(request, buf)
+                    flen = _modbus_read_frame_len(buf)
+                    if flen and len(buf) >= flen:
+                        time.sleep(self._gap)
+                        return buf[:flen]
                     break
                 else:
                     time.sleep(0.001)
 
-            return response
+            buf = _strip_rtu_echo(request, buf)
+            time.sleep(self._gap)
+            return buf
 
     def write_raw(self, data: bytes):
         """Write raw bytes without awaiting a response (transparent TX)."""

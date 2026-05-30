@@ -347,14 +347,15 @@ async function _savePort(port) {
 function _readFormCfg(port) {
   const getVal = id => document.getElementById(id)?.value;
   const getChk = id => document.getElementById(id)?.checked ?? false;
+  const defs = _defaultPortCfg(port);
   const mode = getVal(`gw-mode-${port}`) || 'disabled';
   return {
     enabled:           getChk(`gw-en-${port}`),
     mode,
     tcp_port:          parseInt(getVal(`gw-tcpport-${port}`)) || DEFAULT_TCP_PORTS[port],
-    baudrate:          parseInt(getVal(`gw-baud-${port}`)) || 9600,
+    baudrate:          parseInt(getVal(`gw-baud-${port}`)) || defs.baudrate,
     parity:            getVal(`gw-parity-${port}`) || 'none',
-    stopbits:          parseInt(getVal(`gw-stop-${port}`)) || 2,
+    stopbits:          parseInt(getVal(`gw-stop-${port}`)) || defs.stopbits,
     databits:          parseInt(getVal(`gw-data-${port}`)) || 8,
     fast_modbus_probe: getChk(`gw-fmb-${port}`),
   };
@@ -488,13 +489,14 @@ function _countersHtml(st) {
 // ── Defaults ──────────────────────────────────────────────────────────────────
 function _defaultPortCfg(port) {
   const idx = PORTS.indexOf(port);
+  const highSpeed = port === 'COM4' || port === 'COM5';
   return {
     enabled: false,
     mode: 'modbus_tcp',
     tcp_port: 502 + idx,
-    baudrate: 9600,
+    baudrate: highSpeed ? 115200 : 19200,
     parity: 'none',
-    stopbits: 2,
+    stopbits: 1,
     databits: 8,
     fast_modbus_probe: true,
   };
