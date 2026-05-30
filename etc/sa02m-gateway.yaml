@@ -20,9 +20,9 @@ ports:
     enabled: false
     mode: modbus_tcp
     tcp_port: 502
-    baudrate: 9600
+    baudrate: 19200
     parity: none        # none | even | odd
-    stopbits: 2         # 1 | 2
+    stopbits: 1         # 1 | 2
     databits: 8
     fast_modbus_probe: true   # respond to WB Fast Modbus probe locally (FC 0x47)
 
@@ -30,9 +30,9 @@ ports:
     enabled: false
     mode: modbus_tcp
     tcp_port: 503
-    baudrate: 9600
+    baudrate: 19200
     parity: none
-    stopbits: 2
+    stopbits: 1
     databits: 8
     fast_modbus_probe: true
 
@@ -40,9 +40,9 @@ ports:
     enabled: false
     mode: modbus_tcp
     tcp_port: 504
-    baudrate: 9600
+    baudrate: 19200
     parity: none
-    stopbits: 2
+    stopbits: 1
     databits: 8
     fast_modbus_probe: true
 
@@ -50,9 +50,9 @@ ports:
     enabled: false
     mode: modbus_tcp
     tcp_port: 505
-    baudrate: 9600
+    baudrate: 115200
     parity: none
-    stopbits: 2
+    stopbits: 1
     databits: 8
     fast_modbus_probe: true
 
@@ -60,8 +60,8 @@ ports:
     enabled: false
     mode: modbus_tcp
     tcp_port: 506
-    baudrate: 9600
+    baudrate: 115200
     parity: none
-    stopbits: 2
+    stopbits: 1
     databits: 8
     fast_modbus_probe: true
