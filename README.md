@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.3-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.3.20-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -36,6 +36,9 @@
   - [Управление железом (GPIO)](#управление-железом-gpio)
   - [RS-485 интерфейсы](#rs-485-интерфейсы)
   - [Устройства MR-02м (flasher)](#устройства-mr-02м-flasher)
+  - [MQTT (Modbus→MQTT)](#mqtt-modbusmqtt)
+  - [Шлюз RS-485 → Ethernet](#шлюз-rs-485--ethernet)
+  - [Управление системой](#управление-системой)
   - [Страница входа](#страница-входа)
 - [CGI API](#cgi-api)
 - [Конфигурация GPIO](#конфигурация-gpio)
@@ -94,6 +97,37 @@
 - **Координация с опросом** — сервис `mplc.service` и любые другие службы из `MPLC_STOP_SERVICES` в `/etc/sa02m_flasher.conf` автоматически останавливаются на время операции и восстанавливаются после.
 - **Backend** — Python-демон `sa02m-flasher` (systemd unit), unix-сокет `/run/sa02m-flasher/flasher.sock`, HTTP API на stdlib, SSE-стрим событий, API-авторизация через тот же session cookie, что и CGI.
 
+### MQTT (Modbus→MQTT мост)
+- **Брокер Mosquitto** — локальный порт `1883` (только localhost), внешний `1884` с ACL и пользователем `mqttuser` для подключения SCADA/ПК.
+- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3 по RS-485 и публикация в формате **Wiren Board MQTT** (`/devices/<id>/controls/*`).
+- **Шаблоны устройств** — 15 JSON-шаблонов в `etc/sa02m-device-templates/` (все варианты MR-02м, ДТВ, CE-02m-3): каналы DO/DI/AO/AI, счётчики импульсов, AI в вольтах как в desktop flasher.
+- **Веб-вкладка «MQTT»** — поиск устройств на шине, ручное добавление, настройка каналов, live-значения, монитор топиков (SSE), панель подключения с ПК (пароль маскируется как `******`).
+- **Доступность в стиле wb-mqtt-serial** — Last Will, device-level `/meta/error`, экспоненциальный back-off «мёртвых» устройств, статус-устройство `sa02m-bridge`, graceful offline при `systemctl stop`.
+- **Системная телеметрия** (`sa02m-telemetry.service`) — CPU, RAM, температура, uptime, DO/Beeper/Alarm LED контроллера в MQTT.
+- **Fast Modbus** — мгновенные события DO/DI через Wiren Board extended scan (`0xFD 0x46`).
+- **Northbound-драйверы** (опционально): `sa02m-mqtt-snmp` (SNMP→MQTT), `sa02m-mqtt-opcua` (OPC UA→MQTT) — конфиги в `/etc/sa02m-mqtt-snmp.conf`, `/etc/sa02m-mqtt-opcua.conf`.
+- **Координация с flasher** — кнопка «Остановить мост» освобождает COM-порт для прошивки/сканирования MR-02м.
+
+### Шлюз RS-485 → Ethernet
+- **Сервис `sa02m-serial-gateway`** — преобразование RS-485 портов COM1–COM5 в TCP-сервисы для SCADA и внешних клиентов.
+- **Режимы на порт:** `modbus_tcp` (MBAP↔RTU, порты 502–506), `rtu_over_tcp` (сырой RTU без MBAP, 8502–8506), `transparent` (прозрачный serial↔TCP, 9502–9506), `disabled`.
+- **Fast Modbus probe** — локальный ответ на WB-пробу (`FC 0x47`) без нагрузки на шину.
+- **Веб-вкладка «Шлюз RS-485»** — боковое подменю по COM1–COM5, настройка скорости/чётности, статус TCP-клиентов, сохранение в `/etc/sa02m-gateway.yaml`.
+- **Эксклюзивный захват порта** — включённый порт блокируется lock-файлом; перед использованием в MQTT/flasher его нужно отключить в конфиге шлюза.
+
+### Управление системой
+- **Вкладка «Управление»** — смена логина/пароля веб-интерфейса (`/etc/sa02m_web.env`), перезапуск служб, перезагрузка устройства.
+- **Управление прикладными службами** — start/stop/mask для Mosquitto, Modbus MQTT, телеметрии, MPLC4, Node-RED, KLogic через `services_ctrl.cgi`.
+- **Обновление веб-интерфейса** — сравнение задеплоенного коммита с GitHub, ручная проверка и применение (`update-www-only.sh`).
+- **Журнал событий** — установочный лог, SSH-отладка, экспорт.
+
+### Сеть и надёжность загрузки
+- **Gratuitous ARP** — dual REQUEST+REPLY при поднятии IP для быстрого обнаружения устройства в LAN (boot-to-ping ~15 с).
+- **LED eth0** — netdev trigger после стабилизации PHY (без ложных миганий при загрузке).
+- **Изолированная LAN** — `WATCHDOG_PING=skip`, `arp_notify`, `INET_FAILOVER_ENABLED=no` для сетей без шлюза.
+- **I2C-2 / плата расширения** — udev unbind PCA9536 при блокировке шины, защита от reboot loop.
+- **RTC DS3231 + NTP** — синхронизация времени через `sa02m-rtc-sync.timer`, расширение rootfs при первой загрузке с PiShrink-образа.
+
 ### Безопасность
 - HTTP Basic Auth + сессионный cookie
 - Чистая минималистичная страница входа
@@ -112,14 +146,14 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  СА-02м         Dashboard  Сеть  Время  Управление   Выход │
+│  СА-02м    Dashboard  Сеть  Время  MR-02м  MQTT  Шлюз  …  │
 ├──────────┬──────────────────────────────────────────────────┤
 │          │  CPU 12%   RAM 34%   Temp 52°C   Disk 18%        │
-│          │  ─────────────────────────────────────────────   │
-│ Dashboard│  Load  1m:0.14  5m:0.08  15m:0.05  | 48 proc    │
-│ Сеть     │  eth0  192.168.1.136  UP  ↑12.4M ↓2.1M          │
-│ Время    │  RS-485-0 ████ TX:12345 RX:67890  [ACTIVE]       │
-│ Управл.  │  DO: ○  Beeper: ○  Alarm: ○                      │
+│ Dashboard│  MQTT: ● Mosquitto  ● Мост  1883/1884            │
+│ Сеть     │  RS-485-0 ████ TX:12345 RX:67890  [ACTIVE]       │
+│ MR-02м   │  Шлюз COM1: Modbus TCP :502  ● 2 клиента         │
+│ MQTT     │  DO: ○  Beeper: ○  Alarm: ○                      │
+│ Управл.  │  Службы: mosquitto ●  mqtt-bridge ●  mplc4 ○     │
 └──────────┴──────────────────────────────────────────────────┘
 ```
 
@@ -251,6 +285,10 @@ apt-get install -y nginx fcgiwrap openssl net-tools psmisc
 # 4. Запустить установщик
 # Укажите нужный IP-адрес устройства, шлюз и пароль для веб-интерфейса
 ./install.sh --ip 192.168.1.136 --mask 255.255.255.0 --gw 192.168.1.1 --pass cyntron
+
+# 5. (Опционально) MQTT и шлюз RS-485 — отдельные скрипты после install.sh
+sudo bash scripts/05-mqtt.sh
+sudo bash scripts/06-gateway.sh
 ```
 
 > Если устройство **без интернета** — пропустите шаг `apt-get`. Пакеты должны быть установлены заранее (например, из базового образа). Установщик проверит их наличие.
@@ -263,6 +301,9 @@ apt-get install -y nginx fcgiwrap openssl net-tools psmisc
 | `02-network.sh` | Конфигурация eth0, деплой сетевого watchdog |
 | `03-webserver.sh` | Настройка nginx + fcgiwrap, деплой веб-файлов, sudoers |
 | `04-flasher.sh` | Демон `sa02m-flasher` (Python + systemd), перенос библиотек Modbus/flasher, sudoers, logrotate |
+| `05-cloud-agent.sh` | Агент облачного подключения (если используется) |
+| `05-mqtt.sh` *(опционально)* | Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI, sudoers |
+| `06-gateway.sh` *(опционально)* | RS-485→Ethernet шлюз, gateway CGI, systemd unit |
 
 Процесс занимает **1–3 минуты**. По окончании в терминале появится:
 
@@ -375,12 +416,17 @@ web/
 │   ├── 01-system.sh              ← система: пакеты, locale, udev, RS-485 симлинки
 │   ├── 02-network.sh             ← сеть: eth0/1, watchdog, udev правила
 │   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
-│   └── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
+│   ├── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
+│   ├── 05-mqtt.sh                ← Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI
+│   └── 06-gateway.sh             ← RS-485→Ethernet шлюз (serial_gateway.py)
 │
 ├── etc/
 │   ├── nginx/
 │   │   └── network_config.conf   ← шаблон nginx (токены __PORT__, __WEB_ROOT__) + /api/flasher/
-│   ├── fix-eth.sh                ← скрипт восстановления интерфейса
+│   ├── mosquitto/                ← listeners (1883/1884), ACL
+│   ├── sa02m-device-templates/   ← JSON-шаблоны MR-02м, ДТВ, CE-02m-3
+│   ├── sa02m-gateway.yaml        ← конфиг RS-485→Ethernet шлюза
+│   ├── fix-eth.sh                ← восстановление интерфейса, grat-ARP, LED eth0
 │   ├── fix-eth.service           ← systemd unit (oneshot, запуск udev)
 │   ├── net-watchdog.sh           ← демон мониторинга сети
 │   ├── net-watchdog.service      ← systemd unit (Restart=always)
@@ -388,34 +434,19 @@ web/
 │   ├── sa02m_hw.conf             ← шаблон GPIO-пинов
 │   ├── sa02m_network.conf        ← шаблон настроек watchdog
 │   ├── sa02m_flasher.conf        ← конфиг демона flasher (URL манифеста, ports, services)
+│   ├── sa02m-modbus-mqtt.service ← systemd unit Modbus→MQTT моста
+│   ├── sa02m-serial-gateway.service ← systemd unit RS-485 шлюза
 │   ├── sa02m-flasher.service     ← systemd unit демона flasher
 │   ├── sudoers.d/sa02m-flasher   ← NOPASSWD: systemctl stop/start mplc, fuser
+│   ├── sudoers.d/sa02m-mqtt      ← NOPASSWD: mqtt config apply, systemctl
 │   └── logrotate.d/sa02m-flasher ← ротация /var/log/sa02m-flasher/*.log
 │
 ├── opt/
-│   └── sa02m-flasher/
-│       ├── requirements.txt
-│       └── sa02m_flasher/        ← Python-пакет демона
-│           ├── service.py        ← HTTP API (stdlib, unix-socket, SSE)
-│           ├── jobs.py           ← очередь задач + события
-│           ├── runner.py         ← связка scanner / flash_protocol
-│           ├── firmware_repo.py  ← index.json, sha256, upload
-│           ├── mplc_lease.py     ← остановка/запуск mplc.service
-│           ├── auth.py           ← проверка session cookie + internal token
-│           ├── config.py         ← загрузка /etc/sa02m_flasher.conf
-│           ├── modbus_rtu.py     ← Modbus RTU + быстрый Modbus (0xFD 0x46)
-│           ├── flash_protocol.py ← прошивка (reg 0x1000/0x2000, 129, 1004)
-│           ├── scanner.py        ← сканер шины
-│           ├── firmware.py       ← разбор .fw/.bin/.elf
-│           ├── serial_port.py    ← serial + flock
-│           ├── serial_ranges.py  ← diapasons серийников
-│           ├── module_profiles.py← сигнатуры MR-02m
-│           ├── modbus_io.py      ← чтение/запись с повторами
-│           ├── modbus_tcp.py     ← опционально
-│           └── flasher_log.py    ← callback-логи
-│       ├── scripts/
-│       │   └── prepare_firmware_for_site.py  ← канонические имена .fw + черновик index.json
-│       └── tests/                ← unittest (auth, firmware_repo, events.log)
+│   ├── sa02m-flasher/            ← демон прошивки MR-02м (service.py, modbus_rtu, flash_protocol…)
+│   ├── sa02m-modbus-mqtt/        ← Modbus→MQTT мост + mqtt_bus_scan + sa02m_telemetry
+│   ├── sa02m-serial-gateway/     ← serial_gateway.py (Modbus TCP / RTU over TCP / transparent)
+│   ├── sa02m-mqtt-snmp/          ← SNMP→MQTT northbound-драйвер
+│   └── sa02m-mqtt-opcua/         ← OPC UA→MQTT northbound-драйвер
 │
 ├── tools/
 │   └── imaging/                  ← снятие и тиражирование образа eMMC
@@ -427,28 +458,29 @@ web/
 │       └── README.md             ← краткая инструкция
 │
 ├── docs/
-│   └── SA02M_IMAGING_GUIDE.md    ← полное руководство по образам eMMC
+│   ├── SA02M_IMAGING_GUIDE.md    ← тиражирование образа eMMC
+│   ├── MQTT_TOPICS.md            ← схема топиков Wiren Board MQTT
+│   ├── MPLC4_MQTT.md             ← интеграция MPLC4 vs Python-мост
+│   └── bugs/BUGLOG.md            ← известные проблемы и обходные пути
 │
 └── www/
     └── network_config/
-        ├── index.html            ← SPA (Dashboard, Сеть, Время, Управление, Устройства MR-02м)
+        ├── index.html            ← SPA (Dashboard, Сеть, Время, MR-02м, MQTT, Шлюз, Управление)
         ├── login.html            ← страница входа + анимация огня
         ├── static/
-        │   ├── css/main.css      ← дизайн-система (тёмная тема, анимации, flasher-*)
+        │   ├── css/main.css      ← дизайн-система (тёмная тема, flasher/mqtt/gateway)
         │   └── js/
-        │       ├── app.js        ← вся логика SPA (vanilla JS, без фреймворков)
-        │       └── flasher.js    ← вкладка «Устройства MR-02м» (SSE, scan/flash)
+        │       ├── app.js        ← SPA: dashboard, сеть, управление, службы
+        │       ├── flasher.js    ← вкладка «Устройства MR-02м»
+        │       ├── mqtt.js       ← вкладка «MQTT»
+        │       └── gateway.js    ← вкладка «Шлюз RS-485»
         └── cgi-bin/
-            ├── status.cgi        ← GET /cgi-bin/status.cgi  → JSON метрики
-            ├── config.cgi        ← GET /cgi-bin/config.cgi  → JSON настройки
-            ├── hw_set.cgi        ← POST /cgi-bin/hw_set.cgi → управление GPIO
-            ├── apply.cgi         ← POST /cgi-bin/apply.cgi  → сохранить сеть/время
-            ├── login.cgi         ← POST /cgi-bin/login.cgi  → аутентификация
-            ├── logout.cgi        ← GET  /cgi-bin/logout.cgi → выход
-            ├── auth_check.cgi    ← GET  /_auth_check        → 204/401 для auth_request (flasher)
-            ├── restart.cgi       ← POST /cgi-bin/restart.cgi → перезапуск служб
-            ├── reboot.cgi        ← POST /cgi-bin/reboot.cgi → перезагрузка
-            └── log.cgi           ← GET  /cgi-bin/log.cgi    → журнал установки
+            ├── status.cgi        ← GET метрики (part=cpu|ram|…)
+            ├── config.cgi        ← GET настройки сети/времени
+            ├── mqtt_*.cgi        ← config, status, ctrl, scan, monitor (SSE)
+            ├── gateway_*.cgi     ← config, status, ctrl
+            ├── services_ctrl.cgi ← управление прикладными службами
+            └── …                 ← login, apply, hw_set, restart, reboot, log
 ```
 
 ---
@@ -647,6 +679,84 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
 ```
 
 **HTTP API:** `/api/flasher/ports`, `/scan`, `/flash`, `/flash_batch`, `/firmware`, `/firmware/refresh`, `/firmware/upload`, `/jobs`, `/jobs/<id>`, `/jobs/<id>/events` (SSE), `/cancel` (POST `{job_id}`), `/health`.
+
+---
+
+### MQTT (Modbus→MQTT)
+
+Вкладка **«MQTT»** настраивает опрос полевых устройств по RS-485 и публикацию данных в локальный брокер Mosquitto. Конфигурация хранится в `/etc/sa02m-modbus-mqtt.yaml`, управляется через веб-UI и применяется скриптом `sa02m-mqtt-config-apply.sh`.
+
+**Поддерживаемые устройства:**
+
+| Тип | Device ID | Примеры модулей |
+|-----|-----------|-----------------|
+| MR-02м | `mr02m-{COM}-{addr}` | DO6DI8, AI6AO2, AO12, DI14, DO16… (15 шаблонов) |
+| ДТВ (cyntron-dtv) | `dtv-{COM}-{addr}` | RTU-сенсор BME680, присутствие |
+| CE-02m-3 | `ce02m3-{COM}-{addr}` | Счётчик электроэнергии |
+
+**Ключевые возможности UI:**
+
+- Поиск устройств на COM1–COM5 (модальное окно сканирования, как у flasher).
+- Ручное добавление устройства с выбором шаблона и `module_type`.
+- Аккордеон каналов — включение/отключение DO/DI/AO/AI, подписи, счётчики импульсов, live-значения.
+- Монитор топиков в реальном времени (SSE через `mqtt_monitor.cgi`).
+- Панель «Подключение MQTT с ПК» — хост, порт `1884`, логин `mqttuser`, маскированный пароль.
+- Остановка/запуск моста для освобождения COM под flasher.
+
+**Конвенция топиков** — Wiren Board MQTT, подробно в [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md):
+
+```
+/devices/mr02m-COM1-5/controls/do_1
+/devices/mr02m-COM1-5/controls/di_1
+/devices/mr02m-COM1-5/controls/ai_1
+/devices/sa02m-SA-02/controls/cpu_pct
+/devices/sa02m-bridge/controls/devices_online
+```
+
+**Службы:**
+
+| Unit | Назначение |
+|------|------------|
+| `mosquitto.service` | MQTT-брокер (1883 localhost, 1884 external) |
+| `sa02m-modbus-mqtt.service` | Modbus RTU → MQTT мост |
+| `sa02m-telemetry.service` | Телеметрия контроллера (CPU, RAM, DO…) |
+| `sa02m-mqtt-snmp.service` | SNMP→MQTT (опционально) |
+| `sa02m-mqtt-opcua.service` | OPC UA→MQTT (опционально) |
+
+**Установка:** `sudo bash scripts/05-mqtt.sh` (после `install.sh`).
+
+---
+
+### Шлюз RS-485 → Ethernet
+
+Вкладка **«Шлюз RS-485»** с боковым подменю (общий статус + COM1…COM5) настраивает сервис `sa02m-serial-gateway`. Конфиг: `/etc/sa02m-gateway.yaml`.
+
+**Режимы работы (на каждый COM отдельно):**
+
+| Режим | Описание | TCP-порт (по умолчанию) |
+|-------|----------|-------------------------|
+| `modbus_tcp` | Modbus TCP сервер (MBAP↔RTU трансляция) | 502–506 |
+| `rtu_over_tcp` | Сырой Modbus RTU поверх TCP (без MBAP) | 8502–8506 |
+| `transparent` | Прозрачный serial↔TCP, несколько клиентов | 9502–9506 |
+| `disabled` | Порт свободен для MQTT/flasher/MPLC | — |
+
+**Параметры порта:** baudrate, parity (N/E/O), stopbits, databits, `fast_modbus_probe` (локальный ответ на WB-пробу без нагрузки шины).
+
+**Важно:** включённый порт эксклюзивно захватывается lock-файлом `sa02m-gateway-COMx.lock`. Перед сканированием/прошивкой MR-02м или добавлением устройства в MQTT отключите порт в конфиге шлюза.
+
+**Установка:** `sudo bash scripts/06-gateway.sh` (после `install.sh`).
+
+---
+
+### Управление системой
+
+Вкладка **«Управление»** объединяет административные функции:
+
+- **Доступ** — смена логина и пароля веб-интерфейса (запись в `/etc/sa02m_web.env`, htpasswd).
+- **Службы** — список прикладных сервисов с кнопками start/stop (Mosquitto, Modbus MQTT, телеметрия, MPLC4, Node-RED, KLogic). Stop выполняет `disable + mask`, чтобы служба не стартовала после перезагрузки.
+- **Обновление веб** — сравнение `/var/lib/sa02m-web-build/deployed_commit` с GitHub, кнопки «Проверить» / «Применить» (`update-www-only.sh`).
+- **USB/microSD** — переключатель автоформатирования подключённых носителей в exFAT.
+- **Журнал** — установочный лог, SSH-отладка, экспорт.
 
 ---
 
@@ -1495,6 +1605,33 @@ channel=ALARM_LED&value=1 → {"ok": true}
 }
 ```
 
+### MQTT CGI
+
+| Метод | URL | Назначение |
+|-------|-----|-----------|
+| `GET`  | `/cgi-bin/mqtt_config.cgi` | Чтение/запись YAML-конфига моста |
+| `GET`  | `/cgi-bin/mqtt_status.cgi` | Статус Mosquitto, моста, внешнего доступа |
+| `POST` | `/cgi-bin/mqtt_ctrl.cgi` | start/stop/restart mosquitto, моста, телеметрии |
+| `POST` | `/cgi-bin/mqtt_scan.cgi` | Запуск сканирования RS-485 для MQTT |
+| `GET`  | `/cgi-bin/mqtt_monitor.cgi` | SSE-поток топиков (live monitor) |
+
+Конфигурация на устройстве: `/etc/sa02m-modbus-mqtt.yaml`. Пароль внешнего MQTT: `/etc/sa02m_mqtt.env`.
+
+### Gateway CGI
+
+| Метод | URL | Назначение |
+|-------|-----|-----------|
+| `GET`/`POST` | `/cgi-bin/gateway_config.cgi` | Чтение/запись `/etc/sa02m-gateway.yaml` |
+| `GET`  | `/cgi-bin/gateway_status.cgi` | Статус службы, TCP-клиенты, lock-файлы |
+| `POST` | `/cgi-bin/gateway_ctrl.cgi` | start/stop/reload/restart `sa02m-serial-gateway` |
+
+### Services CGI
+
+| Метод | URL | Назначение |
+|-------|-----|-----------|
+| `GET`  | `/cgi-bin/services_ctrl.cgi?action=list` | Список прикладных служб и их состояние |
+| `POST` | `/cgi-bin/services_ctrl.cgi` | `action=start\|stop`, `id=mosquitto\|mqtt-bridge\|…` |
+
 ---
 
 ## Конфигурация GPIO
@@ -1630,6 +1767,14 @@ tail -f /var/log/fix-eth.log
 | Flasher — логи | `/var/log/sa02m-flasher/` |
 | Flasher — SSE post-mortem (JSON Lines) | `/var/log/sa02m-flasher/events.log` |
 | Flasher — unix-socket | `/run/sa02m-flasher/flasher.sock` |
+| MQTT — конфиг моста | `/etc/sa02m-modbus-mqtt.yaml` |
+| MQTT — код моста | `/opt/sa02m-modbus-mqtt/` |
+| MQTT — пароль external | `/etc/sa02m_mqtt.env` |
+| MQTT — Mosquitto ACL | `/etc/mosquitto/acl/default.conf` |
+| Gateway — конфиг | `/etc/sa02m-gateway.yaml` |
+| Gateway — код | `/opt/sa02m-serial-gateway/` |
+| Web — deployed commit | `/var/lib/sa02m-web-build/deployed_commit` |
+| Web — учётные данные | `/etc/sa02m_web.env` |
 
 ---
 
@@ -1692,6 +1837,7 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 |-------|--------|------------|
 | `nginx` | 1.24.0 | Веб-сервер / reverse-proxy (порт 9999) |
 | `fcgiwrap` | 1.1.0 | FastCGI-обёртка для Bash CGI скриптов |
+| `mosquitto` | 2.x | MQTT-брокер (порты 1883/1884, Modbus→MQTT) |
 | `openssh-server` | 9.6p1 | SSH-сервер (удалённый доступ) |
 | `openssh-client` | 9.6p1 | SSH-клиент |
 | `openssl` | 3.0.13 | SSL/TLS утилиты и библиотека |
@@ -1789,8 +1935,9 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 | Пакет | Версия | Назначение |
 |-------|--------|------------|
 | `pyserial` | 3.5 | Modbus RTU через RS-485 (COM-порты) |
+| `paho-mqtt` | 2.x | MQTT-клиент (Modbus→MQTT мост, телеметрия) |
 | `cryptography` | 41.0.7 | Криптографические примитивы |
-| `PyYAML` | 6.0.1 | Разбор YAML (конфигурация) |
+| `PyYAML` | 6.0.1 | Конфигурация YAML (мост, шлюз) |
 | `PyJWT` | 2.7.0 | JSON Web Tokens |
 | `blinker` | 1.7.0 | Сигналы/события |
 | `pip` | 24.0 | Менеджер пакетов Python |
@@ -1809,7 +1956,11 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 
 | Документ | Назначение |
 |----------|------------|
-| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию; чек-листы, FAQ, профили 1eth/2eth, manifest |
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию |
+| [**docs/MQTT_TOPICS.md**](docs/MQTT_TOPICS.md) | Схема топиков Wiren Board MQTT, доступность, device ID |
+| [**docs/MPLC4_MQTT.md**](docs/MPLC4_MQTT.md) | Когда использовать MPLC4 vs Python-мост, настройка Modbus/MQTT в MasterSCADA |
+| [**docs/bugs/BUGLOG.md**](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
+| [CHANGELOG.md](CHANGELOG.md) | Полный журнал изменений по версиям |
 | [tools/imaging/README.md](tools/imaging/README.md) | Быстрый старт: `make-image.sh`, `prepare-flash-media.sh`, `flash-receiver.sh` |
 | [tools/imaging/manifest.example.json](tools/imaging/manifest.example.json) | Шаблон метаданных релиза образа |
 | [docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md](docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md) | SSH: задержки, post-auth hang, PAM/MOTD |
