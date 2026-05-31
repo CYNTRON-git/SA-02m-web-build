@@ -90,7 +90,7 @@
 - Перезапуск служб / перезагрузка устройства
 
 ### Устройства MR-02м (RS-485)
-- **Сканирование COM1–COM5** по Modbus RTU (стандартный адресный режим) и быстрому Modbus (`0xFD 0x46 0x01`, Wiren Board extended scan), подбор скоростей 9600/19200/38400/57600/115200 N1/N2.
+- **Сканирование COM1–COM5** по Modbus RTU (стандартный адресный режим) и быстрому Modbus (`0xFD 0x46 0x01`, extended scan), подбор скоростей 9600/19200/38400/57600/115200 N1/N2.
 - **Таблица найденных устройств** — адрес, серийный номер, сигнатура, версия приложения и бутлоадера, рабочая скорость, флаг «в bootloader».
 - **Обновление прошивки MR-02м** — по адресу (`reg 0x1000` + `0x2000`) и по серийному номеру через быстрый Modbus (`0xFD 0x46 0x08`), пакетная прошивка нескольких устройств, автоматический переход в bootloader (`reg 129`) и запуск приложения (`reg 1004`).
 - **Координация с опросом** — сервис `mplc.service` и любые другие службы из `MPLC_STOP_SERVICES` в `/etc/sa02m_flasher.conf` автоматически останавливаются на время операции и восстанавливаются после.
@@ -98,12 +98,12 @@
 
 ### MQTT (Modbus→MQTT мост)
 - **Брокер Mosquitto** — локальный порт `1883` (только localhost), внешний `1884` с ACL и пользователем `mqttuser` для подключения SCADA/ПК.
-- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3 по RS-485 и публикация в формате **Wiren Board MQTT** (`/devices/<id>/controls/*`).
+- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3 по RS-485 и публикация в MQTT (`/devices/<id>/controls/*`).
 - **Шаблоны устройств** — 15 JSON-шаблонов в `etc/sa02m-device-templates/` (все варианты MR-02м, ДТВ, CE-02m-3): каналы DO/DI/AO/AI, счётчики импульсов, AI в вольтах как в desktop flasher.
 - **Веб-вкладка «MQTT»** — поиск устройств на шине, ручное добавление, настройка каналов, live-значения, монитор топиков (SSE), панель подключения с ПК (пароль маскируется как `******`).
 - **Доступность в стиле wb-mqtt-serial** — Last Will, device-level `/meta/error`, экспоненциальный back-off «мёртвых» устройств, статус-устройство `sa02m-bridge`, graceful offline при `systemctl stop`.
 - **Системная телеметрия** (`sa02m-telemetry.service`) — CPU, RAM, температура, uptime, DO/Beeper/Alarm LED контроллера в MQTT.
-- **Fast Modbus** — мгновенные события DO/DI через Wiren Board extended scan (`0xFD 0x46`).
+- **Fast Modbus** — мгновенные события DO/DI через extended scan (`0xFD 0x46`).
 - **Northbound-драйверы** (опционально): `sa02m-mqtt-snmp` (SNMP→MQTT), `sa02m-mqtt-opcua` (OPC UA→MQTT) — конфиги в `/etc/sa02m-mqtt-snmp.conf`, `/etc/sa02m-mqtt-opcua.conf`.
 - **Координация с flasher** — кнопка «Остановить мост» освобождает COM-порт для прошивки/сканирования MR-02м.
 
@@ -458,7 +458,7 @@ web/
 │
 ├── docs/
 │   ├── SA02M_IMAGING_GUIDE.md    ← тиражирование образа eMMC
-│   ├── MQTT_TOPICS.md            ← схема топиков Wiren Board MQTT
+│   ├── MQTT_TOPICS.md            ← схема MQTT-топиков
 │   ├── MPLC4_MQTT.md             ← интеграция MPLC4 vs Python-мост
 │   └── bugs/BUGLOG.md            ← известные проблемы и обходные пути
 │
@@ -624,7 +624,7 @@ channel=do&value=1
 **Поиск:**
 
 - Выбор любого из COM1–COM5 (соответствуют `/dev/COM1..COM5` и далее `/dev/RS-485-*`).
-- Режим **Modbus RTU** (классический адресный опрос, диапазон `1..247`) и **быстрый Modbus** (Wiren Board extended scan `0xFD 0x46 0x01`, поиск по серийному номеру).
+- Режим **Modbus RTU** (классический адресный опрос, диапазон `1..247`) и **быстрый Modbus** (extended scan `0xFD 0x46 0x01`, поиск по серийному номеру).
 - Подбор скорости 9600 / 19200 / 38400 / 57600 / 115200 и формата кадра (1/2 стоп-бита).
 - Таблица найденных устройств: адрес, серийный номер, сигнатура (`MR-02m-xxx`), версия приложения и бутлоадера, рабочая скорость, индикатор «в bootloader».
 
@@ -679,7 +679,7 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
 - Панель «Подключение MQTT с ПК» — хост, порт `1884`, логин `mqttuser`, маскированный пароль.
 - Остановка/запуск моста для освобождения COM под flasher.
 
-**Конвенция топиков** — Wiren Board MQTT, подробно в [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md):
+**Конвенция топиков** — MQTT (`/devices/<id>/controls/*`), подробно в [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md):
 
 ```
 /devices/mr02m-COM1-5/controls/do_1
@@ -1933,7 +1933,7 @@ sudo ./install.sh --ip <IP> --pass <PASS>
 | Документ | Назначение |
 |----------|------------|
 | [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию |
-| [**docs/MQTT_TOPICS.md**](docs/MQTT_TOPICS.md) | Схема топиков Wiren Board MQTT, доступность, device ID |
+| [**docs/MQTT_TOPICS.md**](docs/MQTT_TOPICS.md) | Схема MQTT-топиков, доступность, device ID |
 | [**docs/MPLC4_MQTT.md**](docs/MPLC4_MQTT.md) | Когда использовать MPLC4 vs Python-мост, настройка Modbus/MQTT в MasterSCADA |
 | [**docs/bugs/BUGLOG.md**](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
 | [CHANGELOG.md](CHANGELOG.md) | Полный журнал изменений по версиям |
