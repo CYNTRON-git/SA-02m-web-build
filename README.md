@@ -93,7 +93,6 @@
 - **Сканирование COM1–COM5** по Modbus RTU (стандартный адресный режим) и быстрому Modbus (`0xFD 0x46 0x01`, Wiren Board extended scan), подбор скоростей 9600/19200/38400/57600/115200 N1/N2.
 - **Таблица найденных устройств** — адрес, серийный номер, сигнатура, версия приложения и бутлоадера, рабочая скорость, флаг «в bootloader».
 - **Обновление прошивки MR-02м** — по адресу (`reg 0x1000` + `0x2000`) и по серийному номеру через быстрый Modbus (`0xFD 0x46 0x08`), пакетная прошивка нескольких устройств, автоматический переход в bootloader (`reg 129`) и запуск приложения (`reg 1004`).
-- **Репозиторий прошивок** — манифест `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json` с проверкой `sha256`, локальный кеш в `/var/lib/sa02m-flasher/firmware/`, ручная загрузка `.fw/.bin/.elf` через веб-UI.
 - **Координация с опросом** — сервис `mplc.service` и любые другие службы из `MPLC_STOP_SERVICES` в `/etc/sa02m_flasher.conf` автоматически останавливаются на время операции и восстанавливаются после.
 - **Backend** — Python-демон `sa02m-flasher` (systemd unit), unix-сокет `/run/sa02m-flasher/flasher.sock`, HTTP API на stdlib, SSE-стрим событий, API-авторизация через тот же session cookie, что и CGI.
 
@@ -635,29 +634,6 @@ channel=do&value=1
 - **По серийному номеру** — быстрый Modbus (`0xFD 0x46 0x08/0x09`) — работает даже без уникального адреса на шине.
 - **Пакетный режим** — выбрать несколько устройств и прошить их последовательно.
 - Переход в bootloader выполняется автоматически (`reg 129`), запуск приложения — после прошивки (`reg 1004`).
-
-**Репозиторий прошивок:**
-
-- Удалённый манифест: `https://cyntron.ru/upload/medialibrary/cyntron/firmware/index.json` (формат описан в [CHANGELOG.md](CHANGELOG.md#103)).
-- Локальный кеш: `/var/lib/sa02m-flasher/firmware/`.
-- Проверка `sha256` перед прошивкой.
-- Ручная загрузка `.fw/.bin/.elf` через UI, с автоматическим извлечением сигнатуры и версии.
-- Подготовка каталога прошивок для Bitrix: скрипт
-  [`opt/sa02m-flasher/scripts/prepare_firmware_for_site.py`](opt/sa02m-flasher/scripts/prepare_firmware_for_site.py)
-  — канонические имена `MR-02m_<X.Y.Z.W>.fw` (опция `--include-signature` для различения модулей) и
-  черновик `index.json` (`--out-json`, опционально `--rename` / `--dry-run`, **`--bundle-dir`** для готового каталога выгрузки).
-- Выгрузка на хостинг (SSH, Bitrix, PuTTY `.ppk`, staging + `sudo`): шаблоны
-  [firmware-site-export/site-deploy.config.example.json](firmware-site-export/site-deploy.config.example.json) и
-  [firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example](firmware-site-export/SITE_AND_FIRMWARE_UPLOAD.md.example);
-  скрипты `pack_*` / `upload_*` в репозитории; хост/пользователь/пути — в **локальном** `site-deploy.config.json` (не в git) или в переменных окружения. `index.json` и `*.fw` в этом каталоге не коммитятся.
-- Post-mortem по задачам: каждое SSE-событие дополнительно пишется строкой JSON в
-  `/var/log/sa02m-flasher/events.log` (ротация вместе с остальными `*.log` демона).
-- Один файл прошивки на все варианты MR-02м: подсказка «есть …» только для сигнатур
-  whitelist MR/MP-02м; сравнение с `latest_stable_version` (приложение) и при наличии
-  записей в манифесте — с `latest_bootloader_version` (бутлоадер, `kind: bootloader` или
-  имя `MR-02m_bootloader_*.fw`). Сигнатура не выбирает файл .fw на сайте.
-- Unit-тесты демона (из каталога `opt/sa02m-flasher` на ПК разработчика или CI):
-  `PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py' -v`
 
 **Координация с опросом RS-485:**
 
