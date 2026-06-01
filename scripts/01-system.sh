@@ -208,6 +208,7 @@ if [ -f "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" ]; then
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
     install -m 755 "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" \
         /etc/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric
+    sed -i 's/\r$//' /etc/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric
 fi
 
 # Конфиг модема (только шаблон, не перезаписываем пользовательский).
