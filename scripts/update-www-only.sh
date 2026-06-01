@@ -52,6 +52,14 @@ find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -ex
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT"
 
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 fi
@@ -110,6 +118,11 @@ SUDO
     if ! grep -q '/usr/local/sbin/sa02m-web-update-check' /etc/sudoers.d/sa02m-www; then
         cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
 www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-check
+SUDO
+    fi
+    if ! grep -q '/usr/local/sbin/sa02m-web-update-apply' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-apply
 SUDO
     fi
     if ! grep -q '/usr/bin/date' /etc/sudoers.d/sa02m-www; then

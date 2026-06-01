@@ -64,7 +64,6 @@ sleep 1
 if [ -f "$LOCKFILE" ] || kill -0 "$BGPID" 2>/dev/null; then
   printf '{"status":"running","log":"Обновление запущено..."}\n'
 else
-  status="error"
-  [ -f "$STATUS_FILE" ] && status=$(tr -d ' \r\n' < "$STATUS_FILE" 2>/dev/null || echo "error")
-  _json_status "$status"
+  printf 'error' > "$STATUS_FILE" 2>/dev/null || true
+  _json_status "error"
 fi

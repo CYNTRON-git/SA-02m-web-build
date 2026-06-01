@@ -275,6 +275,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /bin/kill, /usr/bin/kill, \
     /usr/local/sbin/sa02m-set-storage-auto-format, \
     /usr/local/sbin/sa02m-web-update-check, \
+    /usr/local/sbin/sa02m-web-update-apply, \
     /usr/local/sbin/sa02m-web-reboot.sh, \
     /usr/local/sbin/sa02m-web-restart-services.sh, \
     /usr/local/sbin/sa02m-web-service-ctl.sh list, \
@@ -292,8 +293,15 @@ else
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check
 else
     log WARN "Нет etc/sa02m-web-update-check.sh — таймер проверки обновлений веб-UI недоступен"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
+else
+    log WARN "Нет etc/sa02m-web-update-apply.sh — применение обновлений веб-UI из GitHub недоступно"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
