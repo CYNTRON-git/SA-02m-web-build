@@ -73,7 +73,7 @@ Device ID: `sa02m-{hostname}` (пример: `sa02m-SA-02`)
 /devices/sa02m-SA-02/controls/cpu_pct           type=value      %
 /devices/sa02m-SA-02/controls/temp_c            type=temperature °C
 /devices/sa02m-SA-02/controls/ram_pct           type=value      %
-/devices/sa02m-SA-02/controls/uptime_s          type=value      с
+/devices/sa02m-SA-02/controls/uptime_s          type=value      (д/ч/м, без ед.)
 
 # Управляемые выходы PCA9536 (R/W)
 /devices/sa02m-SA-02/controls/do                type=switch
@@ -120,13 +120,13 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 /devices/mr02m-COM1-5/meta/name         "MR-02м DO6DI8 (COM1 addr=5)"
 /devices/mr02m-COM1-5/meta/driver       "modbus-rtu"
 /devices/mr02m-COM1-5/controls/module_type   type=text
-/devices/mr02m-COM1-5/controls/uptime_s     type=value  с
+/devices/mr02m-COM1-5/controls/uptime_s     type=value  (д/ч/м, без ед.)
 /devices/mr02m-COM1-5/controls/serial        type=text
 /devices/mr02m-COM1-5/controls/mcu_temp      type=temperature  °C  (Holding 124, ×0.1)
 /devices/mr02m-COM1-5/controls/mcu_vdd       type=voltage  V  (Holding 123, ×0.01)
 /devices/mr02m-COM1-5/controls/op_days       type=value  дн  (Holding 114)
-/devices/mr02m-COM1-5/controls/mcu_ram_free  type=value  (Input 65505)
-/devices/mr02m-COM1-5/controls/mcu_ram_used  type=value  (Input 65506)
+/devices/mr02m-COM1-5/controls/mcu_ram_free  type=value  B  (Input 65505)
+/devices/mr02m-COM1-5/controls/mcu_ram_used  type=value  B  (Input 65506)
 /devices/mr02m-COM1-5/controls/reset_reason  type=text  (Input 65508)
 /devices/mr02m-COM1-5/controls/fw_updates    type=value  (Input 65509–65510, uint32)
 ```
@@ -197,7 +197,7 @@ Baudrate: 19200 (по умолчанию). Адрес: 1 (по умолчани�
 ```
 /devices/dtv-COM3-1/meta/name           "DTV-RS-485 (COM3 addr=1)"
 /devices/dtv-COM3-1/meta/driver         "modbus-rtu"
-/devices/dtv-COM3-1/controls/uptime_s   type=value  с
+/devices/dtv-COM3-1/controls/uptime_s   type=value  (д/ч/м, без ед.)
 /devices/dtv-COM3-1/controls/fw_version type=text
 
 # Температуры (reg→channel)
@@ -284,7 +284,7 @@ Baudrate: 115200. Адрес: 14 (по умолчанию).
 ```
 /devices/ce02m3-COM2-14/meta/name       "CE-02m-3 (COM2 addr=14)"
 /devices/ce02m3-COM2-14/meta/driver     "modbus-rtu"
-/devices/ce02m3-COM2-14/controls/uptime_s     type=value  с
+/devices/ce02m3-COM2-14/controls/uptime_s     type=value  (д/ч/м, без ед.)
 
 # Напряжения (В)
 /devices/ce02m3-COM2-14/controls/voltage_a    type=voltage  units=V
