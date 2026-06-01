@@ -46,6 +46,64 @@ log = logging.getLogger("bridge")
 CONFIG_PATH = Path(os.environ.get("SA02M_MQTT_CONFIG", "/etc/sa02m-modbus-mqtt.yaml"))
 DEVICE_BASE = "/devices"
 FMB_ADDR = 0xFD          # Fast Modbus broadcast address
+LIVE_CACHE_DIR = Path(os.environ.get("SA02M_MQTT_LIVE_CACHE", "/run/sa02m-modbus-mqtt"))
+
+
+class DeviceLiveCache:
+    """Снимок последних значений controls для быстрого mqtt_live.cgi (<10 ms)."""
+
+    _lock = threading.Lock()
+    _controls: dict[str, dict[str, str]] = {}
+    _units: dict[str, dict[str, str]] = {}
+    _errors: dict[str, dict[str, str]] = {}
+
+    @classmethod
+    def set_control(cls, device_id: str, name: str, value: str) -> None:
+        with cls._lock:
+            cls._controls.setdefault(device_id, {})[name] = value
+
+    @classmethod
+    def set_unit(cls, device_id: str, name: str, units: str) -> None:
+        if not units:
+            return
+        with cls._lock:
+            cls._units.setdefault(device_id, {})[name] = units
+
+    @classmethod
+    def set_error(cls, device_id: str, name: str, err: str) -> None:
+        with cls._lock:
+            bucket = cls._errors.setdefault(device_id, {})
+            if err:
+                bucket[name] = err
+            else:
+                bucket.pop(name, None)
+
+    @classmethod
+    def flush_file(cls, device_id: str) -> None:
+        with cls._lock:
+            controls = dict(cls._controls.get(device_id, {}))
+            units = dict(cls._units.get(device_id, {}))
+            errors = dict(cls._errors.get(device_id, {}))
+        if not controls and not units:
+            return
+        try:
+            LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            path = LIVE_CACHE_DIR / f"{device_id}.json"
+            tmp = path.with_suffix(".json.tmp")
+            payload = {
+                "ok": True,
+                "device": device_id,
+                "source": "cache",
+                "controls": controls,
+                "units": units,
+                "errors": errors,
+                "ts": time.time(),
+            }
+            tmp.write_text(
+                _json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(path)
+        except OSError as e:
+            log.debug("live cache %s: %s", device_id, e)
 
 # MR-02m module type → (do_count, di_count, ao_count, ai_count)
 # Source: Core/Inc/main.h, MODBUS_VARIABLES.txt, subagent exploration
@@ -94,13 +152,13 @@ MR_RESET_REASON_LABELS: dict[int, str] = {
 }
 # (control_name, mqtt_type, units, title_ru)
 MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
-    ("uptime_s", "value", "с", "Время работы"),
+    ("uptime_s", "value", "", "Время работы"),
     ("serial", "text", "", "Серийный номер"),
     ("mcu_temp", "temperature", "°C", "Температура МК"),
     ("mcu_vdd", "voltage", "V", "Питание МК"),
     ("op_days", "value", "дн", "Наработка"),
-    ("mcu_ram_free", "value", "", "ОЗУ свободно"),
-    ("mcu_ram_used", "value", "", "ОЗУ занято"),
+    ("mcu_ram_free", "value", "B", "ОЗУ свободно"),
+    ("mcu_ram_used", "value", "B", "ОЗУ занято"),
     ("reset_reason", "text", "", "Причина перезагрузки"),
     ("fw_updates", "value", "", "Счётчик обновлений FW"),
 )
@@ -818,6 +876,7 @@ class MQTTPublisher:
 
     def pub_control(self, device_id: str, name: str, value: str) -> None:
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}", value)
+        DeviceLiveCache.set_control(device_id, name, value)
 
     def pub_control_meta(self, device_id: str, name: str,
                          key: str, value: str) -> None:
@@ -827,6 +886,7 @@ class MQTTPublisher:
     def pub_control_units(self, device_id: str, name: str, units: str) -> None:
         """Publish units + auto precision (WB conventions)."""
         if units:
+            DeviceLiveCache.set_unit(device_id, name, units)
             self.pub_control_meta(device_id, name, "units", units)
             prec = _ctrl_precision(units)
             if prec is not None:
@@ -844,6 +904,7 @@ class MQTTPublisher:
             self._ctrl_errors[key] = err
         self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}/meta/error",
                  err, retain=True)
+        DeviceLiveCache.set_error(device_id, name, err)
 
     def pub_device_error(self, device_id: str, error: str) -> None:
         """Device-level error flag (wb-mqtt-serial: whole device offline = "r")."""
@@ -1328,10 +1389,16 @@ class MR02mPoller(DevicePoller):
                     off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
                     regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
                     dev_st = regs[0] & 0xFFFF
-                    if dev_st == 0:
-                        cfg_st = self._ai_effective_sensor_type(i)
-                        if cfg_st is not None:
-                            dev_st = int(cfg_st) & 0xFFFF
+                    eff_st = self._ai_effective_sensor_type(i)
+                    if eff_st is not None:
+                        dev_st = int(eff_st) & 0xFFFF
+                    elif dev_st == 0:
+                        parent = self._ai_n_parent_ch(i) if self._mod_type == 6 else None
+                        if parent:
+                            p_off = (parent - 1) * MR02M_AI_CHANNEL_STRIDE
+                            p_st = block[p_off] & 0xFFFF
+                            if p_st and self._ai_mirror_type_from_parent(p_st):
+                                dev_st = p_st
                     prev_st = self._ai_types.get(i, -1)
                     if dev_st != prev_st:
                         self._ai_types[i] = dev_st
@@ -1341,11 +1408,16 @@ class MR02mPoller(DevicePoller):
                         if units:
                             self.pub.pub_control_units(
                                 self.device_id, f"ai_{i}", units)
-                    raw = regs[3]
+                    value_ch = i
+                    parent = self._ai_n_parent_ch(i) if self._mod_type == 6 else None
+                    if parent and self._ai_mirror_type_from_parent(dev_st):
+                        value_ch = parent
+                    v_off = (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE
+                    raw = block[v_off + 3]
                     if raw >= 0x8000:
                         raw -= 0x10000
                     _, _, scale = AI_SENSOR_TYPES.get(
-                        self._ai_types.get(i, 2), _TEMP)
+                        self._ai_types.get(i, dev_st), _TEMP)
                     self.pub.pub_control(
                         self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
                     self.pub.pub_error(self.device_id, f"ai_{i}", "")
@@ -1498,11 +1570,13 @@ class MR02mPoller(DevicePoller):
     def poll_io(self) -> None:
         self._poll_do_di()
         self._poll_ai_ao()
+        DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now
+            DeviceLiveCache.flush_file(self.device_id)
 
 
 # ── cyntron-dtv (RTU-Sensor) poller ───────────────────────────────────────────
@@ -1668,11 +1742,13 @@ class DTVPoller(DevicePoller):
     def poll_io(self) -> None:
         self._poll_sensors()
         self._poll_coils()
+        DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now
+            DeviceLiveCache.flush_file(self.device_id)
 
 
 # ── CE-02m-3 (3-phase energy meter) poller ────────────────────────────────────
@@ -1852,11 +1928,13 @@ class CE02M3Poller(DevicePoller):
 
     def poll_io(self) -> None:
         self._poll_power()
+        DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
         if now - self._t_energy >= self._poll_energy_s:
             self._poll_energy()
             self._t_energy = now
+            DeviceLiveCache.flush_file(self.device_id)
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now

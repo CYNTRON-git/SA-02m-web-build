@@ -87,6 +87,8 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
 install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
 install -m 0755 -o root -g root "$OPT_DIR/mqtt_bus_scan.py"     "$BRIDGE_DIR/mqtt_bus_scan.py"
+install -m 0755 -o root -g root "$OPT_DIR/mqtt_live_snapshot.py" "$BRIDGE_DIR/mqtt_live_snapshot.py"
+install -m 0755 -o root -g root "$OPT_DIR/mqtt_monitor_stream.py" "$BRIDGE_DIR/mqtt_monitor_stream.py"
 
 # Конфиг YAML (только если не существует — не перетираем пользовательские настройки)
 if [ ! -f /etc/sa02m-modbus-mqtt.yaml ]; then
@@ -127,7 +129,7 @@ CGI_SRC="$WWW_DIR/cgi-bin"
 CGI_DST="$WEB_ROOT/cgi-bin"
 
 if [ -d "$CGI_DST" ]; then
-    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi mqtt_scan.cgi; do
+    for cgi in mqtt_config.cgi mqtt_status.cgi mqtt_monitor.cgi mqtt_ctrl.cgi mqtt_scan.cgi mqtt_live.cgi; do
         if [ -f "$CGI_SRC/$cgi" ]; then
             install -m 0755 -o root -g www-data "$CGI_SRC/$cgi" "$CGI_DST/$cgi"
             sed -i 's/\r$//' "$CGI_DST/$cgi"

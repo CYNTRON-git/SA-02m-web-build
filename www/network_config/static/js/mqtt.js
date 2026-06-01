@@ -21,21 +21,21 @@ const MR02M_TYPES = {
   15: {name:'4TO6DI',    do:4,  di:6,  ao:4,  ai:0},
 };
 
-/** Русские подписи типов МР-02м для таблицы и аккордеона (порядок каналов: DO/DI/AO/AI). */
+/** Русские подписи типов МР-02м (как в интерфейсе: МР-02м 6АИ 6АО). */
 const MR02M_TYPE_LABELS_RU = {
-  1:  '6DO 8DI',
-  2:  '16DO',
-  3:  '12AO',
-  4:  '6DO',
-  5:  '14DI',
-  6:  '6AI 6AO',
-  7:  '12AI',
-  8:  '4DO 6DI',
+  1:  '6ДО 8ДИ',
+  2:  '16ДО',
+  3:  '12АО',
+  4:  '6ДО',
+  5:  '14ДИ',
+  6:  '6АИ 6АО',
+  7:  '12АИ',
+  8:  '4ДО 6ДИ',
   9:  'Тензо 2',
-  10: '10 DI',
-  11: '6DO 5DI 2AO',
-  12: '6AI 2AO',
-  15: '4TO 6DI',
+  10: '10ДИ',
+  11: '6ДО 5ДИ 2АО',
+  12: '6АИ 2АО',
+  15: '4ТО 6ДИ',
 };
 
 function mr02mTypeLabelRu(mtCode) {
@@ -69,12 +69,43 @@ function normalizeSigKey(s) {
   return String(s || '').toUpperCase().replace(/[\s_.\-]/g, '');
 }
 
+/** Латиница + кириллица А/О/И/Д/Т → DO/AI/AO/DI для сравнения с EEPROM. */
+function latinizeMr02mStr(s) {
+  return String(s || '').toUpperCase()
+    .replace(/\u0410/g, 'A')
+    .replace(/\u0412/g, 'V')
+    .replace(/\u041e/g, 'O')
+    .replace(/\u0418/g, 'I')
+    .replace(/\u0414/g, 'D')
+    .replace(/\u0422/g, 'T')
+    .replace(/[\s_.\-]/g, '');
+}
+
+function mr02mSigDescribesType(signature, moduleType) {
+  const mt = Number(moduleType);
+  if (!mt || !MR02M_TYPES[mt]) return false;
+  const sig = (signature || '').trim();
+  if (!sig) return true;
+  const sk = latinizeMr02mStr(sig);
+  const labelK = latinizeMr02mStr(MR02M_TYPE_LABELS_RU[mt] || '');
+  const codeK = latinizeMr02mStr(MR02M_TYPES[mt].name || '');
+  if (sk === labelK || sk === codeK) return true;
+  return inferModuleTypeFromName(sig) === mt;
+}
+
+function mr02mScanDisplayLabel(dev) {
+  const label = mr02mTypeLabelRu(dev.module_type);
+  const sig = (dev.signature || '').trim();
+  if (!sig || mr02mSigDescribesType(sig, dev.module_type)) return label;
+  return `${label} · ${sig}`;
+}
+
 function scanShortName(scanDev, type) {
   const addr = scanDev.addr;
   if (type === 'mr02m' && scanDev.module_type && MR02M_TYPES[scanDev.module_type]) {
     const sig = (scanDev.signature || '').trim();
-    if (sig) return sig;
-    return MR02M_TYPES[scanDev.module_type].name;
+    if (sig && !mr02mSigDescribesType(sig, scanDev.module_type)) return sig;
+    return `МР-02м ${mr02mTypeLabelRu(scanDev.module_type)}`;
   }
   if (type === 'dtv') return 'ДТВ-RS-485';
   if (type === 'ce02m3') return 'СЭ-02м-3';
@@ -102,16 +133,17 @@ function buildDeviceConfigName(shortName, port, addr) {
 
 function scanTypeHint(dev) {
   if (dev.type === 'mr02m' && dev.module_type && MR02M_TYPES[dev.module_type]) {
-    const sig = (dev.signature || '').trim();
-    const label = mr02mTypeLabelRu(dev.module_type);
-    const code = MR02M_TYPES[dev.module_type].name;
-    if (!sig) return label;
-    const sigK = normalizeSigKey(sig);
-    if (sigK === normalizeSigKey(label) || sigK === normalizeSigKey(code)) return label;
-    return `${label} · ${sig}`;
+    return mr02mScanDisplayLabel(dev);
   }
-  if (dev.type_name && dev.type_name !== 'unknown') return dev.type_name;
-  if (dev.signature) return dev.signature;
+  if (dev.type === 'dtv') return 'ДТВ-RS-485';
+  if (dev.type === 'ce02m3') return 'СЭ-02м-3';
+  const tn = (dev.type_name || '').trim();
+  const sig = (dev.signature || '').trim();
+  if (tn && tn !== 'unknown' && sig && normalizeSigKey(tn) !== normalizeSigKey(sig)) {
+    return `${tn} · ${sig}`;
+  }
+  if (tn && tn !== 'unknown') return tn;
+  if (sig) return sig;
   return '—';
 }
 
@@ -236,8 +268,15 @@ const CE02M3_CHANNELS = [
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _config = {mqtt:{broker:'127.0.0.1',port:1883,qos:1,retain:true}, devices:[]};
-let _monitorEs = null;
+let _monitorPollTimer = null;
 let _monitorPaused = false;
+let _monitorLastVal = Object.create(null);
+let _monitorPrimed = false;
+let _channelPollTimer = null;
+let _channelPollDevId = null;
+let _accordionBuilt = new Set();
+let _liveDomScheduled = false;
+let _liveDirtyDevices = new Set();
 let _unsaved = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -277,16 +316,20 @@ function scanDeviceAlreadyListed(port, addr) {
 
 /** Если module_type не сохранён в YAML — угадать по legacy-имени (AO6AI6, DO4DI6, …). */
 function inferModuleTypeFromName(name) {
-  const n = String(name || '').toUpperCase().replace(/[\s_-]/g, '');
+  const n = latinizeMr02mStr(name);
   const tokens = [
-    ['AO6AI6', 6], ['6AO6AI', 6],
-    ['AI6AO2', 12], ['6AI2AO', 12],
-    ['DO6DI8', 1], ['6DO8DI', 1],
-    ['DO4DI6', 8], ['4DO6DI', 8],
+    ['AO6AI6', 6], ['6AO6AI', 6], ['6AI6AO', 6], ['AI6AO6', 6],
+    ['AI6AO2', 12], ['6AI2AO', 12], ['6AO2AI', 12], ['AO6AI2', 12],
+    ['DO6DI8', 1], ['6DO8DI', 1], ['8DI6DO', 1],
+    ['DO4DI6', 8], ['4DO6DI', 8], ['6DI4DO', 8],
     ['6DO5DI2AO', 11],
-    ['4TO6DI', 15], ['TO4DI6', 15],
-    ['10DICON', 10],
-    ['DO16', 2], ['AO12', 3], ['AI12', 7], ['DI14', 5], ['DO6', 4],
+    ['4TO6DI', 15], ['TO4DI6', 15], ['4TO6DI', 15],
+    ['10DICON', 10], ['10DI', 10],
+    ['DO16', 2], ['16DO', 2],
+    ['AO12', 3], ['12AO', 3],
+    ['AI12', 7], ['12AI', 7],
+    ['DI14', 5], ['14DI', 5],
+    ['DO6', 4], ['6DO', 4],
     ['TENZO2', 9],
   ];
   for (const [tok, code] of tokens) {
@@ -372,25 +415,25 @@ function topicPath(deviceId, chName) {
 
 /** Системные показатели модуля MR-02m (публикует мост в _poll_diag). */
 const MR02M_SYS_VARS = [
-  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'uptime_s', label: 'Время работы', unit: ''},
   {key: 'serial', label: 'Серийный номер', unit: ''},
   {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
   {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
   {key: 'op_days', label: 'Наработка', unit: 'дн'},
-  {key: 'mcu_ram_free', label: 'ОЗУ свободно', unit: 'сл'},
-  {key: 'mcu_ram_used', label: 'ОЗУ занято', unit: 'сл'},
+  {key: 'mcu_ram_free', label: 'ОЗУ свободно', unit: 'байт'},
+  {key: 'mcu_ram_used', label: 'ОЗУ занято', unit: 'байт'},
   {key: 'reset_reason', label: 'Причина перезагрузки', unit: ''},
   {key: 'fw_updates', label: 'Обновлений прошивки', unit: ''},
 ];
 
 const DTV_SYS_VARS = [
-  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'uptime_s', label: 'Время работы', unit: ''},
   {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
   {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
 ];
 
 const CE02M3_SYS_VARS = [
-  {key: 'uptime_s', label: 'Время работы', unit: 'с'},
+  {key: 'uptime_s', label: 'Время работы', unit: ''},
   {key: 'mcu_temp', label: 'Температура МК', unit: '°C'},
   {key: 'mcu_vdd', label: 'Питание МК', unit: 'В'},
 ];
@@ -418,11 +461,28 @@ function formatUnitLabel(u) {
     case 'A': return 'А';
     case 'kV': return 'кВ';
     case 'Hz': return 'Гц';
+    case 'B':
+    case 'byte':
+    case 'bytes':
+      return 'байт';
     default: return String(u);
   }
 }
 
+function mr02mAiEffectiveSensorType(dev, ch, channels) {
+  const mt = getModuleTypeCode(dev);
+  const parent = mr02mAiPairParent(ch);
+  if (mr02mAiIsNLeg(mt, ch) && parent) {
+    const pCfg = getOrCreateChannel(channels, 'ai', parent);
+    const pst = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+    if (mr02mAiMirrorTypeToN(pst)) return pst;
+  }
+  const chCfg = getOrCreateChannel(channels, 'ai', ch);
+  return chCfg.sensor_type != null ? Number(chCfg.sensor_type) : 2;
+}
+
 function liveUnitFor(devId, controlName, fallback) {
+  if (controlName === 'uptime_s') return '';
   const u = _liveUnits[devId] && _liveUnits[devId][controlName];
   const raw = u != null && u !== '' ? u : (fallback || '');
   return formatUnitLabel(raw);
@@ -455,13 +515,31 @@ function formatLiveDisplay(controlName, rec) {
   return String(v);
 }
 
-function setLiveValue(devId, controlName, value, isError) {
+function isAccordionOpen(devId) {
+  const body = document.getElementById(`acc-body-${devId}`);
+  return body && !body.hasAttribute('hidden');
+}
+
+function scheduleLiveDomRefresh(devId) {
+  if (!devId || !isAccordionOpen(devId)) return;
+  _liveDirtyDevices.add(devId);
+  if (_liveDomScheduled) return;
+  _liveDomScheduled = true;
+  requestAnimationFrame(() => {
+    _liveDomScheduled = false;
+    for (const id of _liveDirtyDevices) refreshLiveCellsForDevice(id);
+    _liveDirtyDevices.clear();
+  });
+}
+
+function setLiveValue(devId, controlName, value, isError, opts) {
   if (!_liveByDevice[devId]) _liveByDevice[devId] = Object.create(null);
   _liveByDevice[devId][controlName] = {
     value: value == null ? '' : String(value),
     isError: !!isError,
   };
-  updateLiveCell(devId, controlName);
+  if (opts && opts.skipDom) return;
+  if (isAccordionOpen(devId)) scheduleLiveDomRefresh(devId);
 }
 
 function updateLiveCell(devId, controlName) {
@@ -478,14 +556,54 @@ function updateLiveCell(devId, controlName) {
   }
 }
 
-function refreshAllLiveCells() {
-  document.querySelectorAll('[data-live]').forEach(el => {
+function refreshLiveCellsForDevice(devId) {
+  if (!devId || !_accordionBuilt.has(devId)) return;
+  const prefix = `${devId}:`;
+  document.querySelectorAll(`[data-live^="${prefix}"]`).forEach(el => {
     const key = el.getAttribute('data-live');
-    if (!key) return;
-    const i = key.indexOf(':');
-    if (i < 1) return;
-    updateLiveCell(key.slice(0, i), key.slice(i + 1));
+    if (!key || key.indexOf(':') < 1) return;
+    updateLiveCell(devId, key.slice(prefix.length));
   });
+}
+
+function refreshAllLiveCells() {
+  for (const devId of _accordionBuilt) refreshLiveCellsForDevice(devId);
+}
+
+async function prefetchDeviceLive(devId) {
+  const data = await apiGet(
+    `/cgi-bin/mqtt_live.cgi?device=${encodeURIComponent(devId)}`).catch(() => null);
+  if (!data || !data.ok) return;
+  for (const [ctrl, val] of Object.entries(data.controls || {})) {
+    setLiveValue(devId, ctrl, val, false, {skipDom: true});
+  }
+  for (const [ctrl, u] of Object.entries(data.units || {})) {
+    if (!_liveUnits[devId]) _liveUnits[devId] = Object.create(null);
+    _liveUnits[devId][ctrl] = String(u);
+  }
+  for (const [ctrl, err] of Object.entries(data.errors || {})) {
+    setLiveValue(devId, ctrl, err, true, {skipDom: true});
+  }
+  refreshLiveCellsForDevice(devId);
+}
+
+function stopChannelPoll() {
+  if (_channelPollTimer) {
+    clearInterval(_channelPollTimer);
+    _channelPollTimer = null;
+  }
+  _channelPollDevId = null;
+}
+
+function startChannelPoll(devId) {
+  stopChannelPoll();
+  if (!devId) return;
+  _channelPollDevId = devId;
+  _channelPollTimer = setInterval(() => {
+    if (_channelPollDevId === devId && isAccordionOpen(devId)) {
+      prefetchDeviceLive(devId);
+    }
+  }, 1500);
 }
 
 function liveSpan(devId, controlName, unit) {
@@ -511,7 +629,7 @@ function ingestMonitorTopic(topic, value) {
   if (unitsM) {
     if (!_liveUnits[unitsM[1]]) _liveUnits[unitsM[1]] = Object.create(null);
     _liveUnits[unitsM[1]][unitsM[2]] = String(value);
-    updateLiveCell(unitsM[1], unitsM[2]);
+    scheduleLiveDomRefresh(unitsM[1]);
     return;
   }
   const errM = /^\/devices\/([^/]+)\/controls\/([^/]+)\/meta\/error$/.exec(topic);
@@ -535,12 +653,20 @@ function getOrCreateSysChannel(dev, item) {
   return ch;
 }
 
+function buildChannelWidget(title) {
+  const widget = h('div', {'class': 'widget mqtt-ch-widget'});
+  widget.appendChild(h('div', {'class': 'widget-title'}, title));
+  const body = h('div', {'class': 'mqtt-ch-widget-body'});
+  widget.appendChild(body);
+  return {widget, body};
+}
+
 function buildSysChannelGroup(dev, title, vars) {
-  const grp = buildChannelGroup(title);
+  const pack = buildChannelWidget(title);
   for (const item of vars) {
     const chCfg = getOrCreateSysChannel(dev, item);
     const topic = topicPath(dev.id, item.key);
-    grp.appendChild(h('div', {'class': 'mqtt-ch-row'},
+    pack.body.appendChild(h('div', {'class': 'mqtt-ch-row'},
       h('label', {'class': 'mqtt-ch-toggle'},
         h('input', {
           'type': 'checkbox',
@@ -565,7 +691,11 @@ function buildSysChannelGroup(dev, title, vars) {
       liveSpan(dev.id, item.key, item.unit || ''),
     ));
   }
-  return grp;
+  return pack.widget;
+}
+
+function mqttChannelWidgetsRow() {
+  return h('div', {'class': 'mqtt-ch-widgets dash-grid'});
 }
 
 // ── API calls ─────────────────────────────────────────────────────────────────
@@ -721,10 +851,23 @@ async function loadConfig() {
 }
 
 // ── Device list table ─────────────────────────────────────────────────────────
+function refreshMonitorFilterOptions() {
+  const sel = document.getElementById('mqtt-monitor-filter');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  sel.appendChild(h('option', {value: ''}, '— выберите устройство —'));
+  for (const dev of _config.devices || []) {
+    sel.appendChild(h('option', {value: dev.id}, formatDeviceDisplayName(dev)));
+  }
+  if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+
 function renderDeviceList() {
   const tbody = document.getElementById('mqtt-device-tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
+  refreshMonitorFilterOptions();
   for (const dev of _config.devices || []) {
     const chEnabled = countChannelsEnabled(dev);
     const chTotal = countChannelsTotal(dev);
@@ -791,51 +934,89 @@ function countChannelsTotal(dev) {
 function renderAccordion() {
   const container = document.getElementById('mqtt-accordion');
   if (!container) return;
+  stopChannelPoll();
+  _accordionBuilt.clear();
   container.innerHTML = '';
   for (const dev of _config.devices || []) {
     container.appendChild(buildDeviceSection(dev));
   }
-  refreshAllLiveCells();
+}
+
+function buildDeviceChannels(dev, container) {
+  if (dev.type === 'mr02m') buildMR02mChannels(dev, container);
+  else if (dev.type === 'dtv') buildDTVChannels(dev, container);
+  else if (dev.type === 'ce02m3') buildCE02M3Channels(dev, container);
+}
+
+function ensureAccordionBody(dev) {
+  if (_accordionBuilt.has(dev.id)) return;
+  const body = document.getElementById(`acc-body-${dev.id}`);
+  if (!body) return;
+  body.innerHTML = '';
+  buildDeviceChannels(dev, body);
+  _accordionBuilt.add(dev.id);
 }
 
 function buildDeviceSection(dev) {
   const title = formatDeviceDisplayName(dev);
-
-  const body = h('div', {'class':'mqtt-accordion-body', 'id': `acc-body-${dev.id}`, 'hidden': ''});
-
-  if (dev.type === 'mr02m') buildMR02mChannels(dev, body);
-  else if (dev.type === 'dtv') buildDTVChannels(dev, body);
-  else if (dev.type === 'ce02m3') buildCE02M3Channels(dev, body);
-
+  const body = h('div', {
+    'class': 'mqtt-accordion-body',
+    'id': `acc-body-${dev.id}`,
+    'hidden': '',
+    'data-device-id': dev.id,
+  });
   const header = h('div', {'class':'mqtt-accordion-header', 'onclick': () => toggleAccordion(dev.id)},
     h('span', {'class':'mqtt-accordion-arrow', 'id': `acc-arrow-${dev.id}`}, '▶'),
     h('span', {}, title)
   );
-
-  const section = h('div', {'class':'mqtt-accordion-section'}, header, body);
-  return section;
+  return h('div', {'class':'mqtt-accordion-section'}, header, body);
 }
 
 function toggleAccordion(id) {
   const body = document.getElementById(`acc-body-${id}`);
   const arrow = document.getElementById(`acc-arrow-${id}`);
   if (!body) return;
-  const open = body.hasAttribute('hidden');
-  body.toggleAttribute('hidden', !open);
-  if (arrow) arrow.textContent = open ? '▼' : '▶';
+  const opening = body.hasAttribute('hidden');
+  if (opening) {
+    document.querySelectorAll('.mqtt-accordion-body').forEach(el => {
+      if (el.id !== `acc-body-${id}`) el.setAttribute('hidden', '');
+    });
+    document.querySelectorAll('.mqtt-accordion-arrow').forEach(el => {
+      if (el.id !== `acc-arrow-${id}`) el.textContent = '▶';
+    });
+    body.removeAttribute('hidden');
+    if (arrow) arrow.textContent = '▼';
+    const dev = (_config.devices || []).find(d => d.id === id);
+    if (dev) void openDeviceChannels(dev);
+    return;
+  }
+  body.setAttribute('hidden', '');
+  if (arrow) arrow.textContent = '▶';
+  if (_channelPollDevId === id) stopChannelPoll();
 }
 
-function appendMr02mDoGroup(parent, dev, channels, count) {
-  const grp = buildChannelGroup('DO — дискретные выходы');
+async function openDeviceChannels(dev) {
+  const devId = dev.id;
+  const body = document.getElementById(`acc-body-${devId}`);
+  if (body) body.classList.add('mqtt-ch-loading');
+  const liveP = prefetchDeviceLive(devId);
+  ensureAccordionBody(dev);
+  await liveP;
+  if (body) body.classList.remove('mqtt-ch-loading');
+  if (isAccordionOpen(devId)) startChannelPoll(devId);
+}
+
+function appendMr02mDoGroup(dev, channels, count) {
+  const pack = buildChannelWidget('DO — дискретные выходы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'do', i);
-    grp.appendChild(buildChannelRow(chCfg, topicPath(dev.id, `do_${i}`), 'do', i, dev, `do_${i}`, ''));
+    pack.body.appendChild(buildChannelRow(chCfg, topicPath(dev.id, `do_${i}`), 'do', i, dev, `do_${i}`, ''));
   }
-  parent.appendChild(grp);
+  return pack.widget;
 }
 
-function appendMr02mDiGroup(parent, dev, channels, count) {
-  const grp = buildChannelGroup('DI — дискретные входы');
+function appendMr02mDiGroup(dev, channels, count) {
+  const pack = buildChannelWidget('DI — дискретные входы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'di', i);
     const row = buildChannelRow(chCfg, topicPath(dev.id, `di_${i}`), 'di', i, dev, `di_${i}`, '');
@@ -851,26 +1032,27 @@ function appendMr02mDiGroup(parent, dev, channels, count) {
       ' счётчик',
     ));
     row.appendChild(countLive);
-    grp.appendChild(row);
+    pack.body.appendChild(row);
   }
-  parent.appendChild(grp);
+  return pack.widget;
 }
 
-function appendMr02mAoGroup(parent, dev, channels, count) {
-  const grp = buildChannelGroup('AO — аналоговые выходы');
+function appendMr02mAoGroup(dev, channels, count) {
+  const pack = buildChannelWidget('AO — аналоговые выходы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'ao', i);
-    grp.appendChild(buildChannelRow(
+    pack.body.appendChild(buildChannelRow(
       chCfg, topicPath(dev.id, `ao_${i}`), 'ao', i, dev, `ao_${i}`, 'В'));
   }
-  parent.appendChild(grp);
+  return pack.widget;
 }
 
-function appendMr02mAiGroup(parent, dev, channels, mtCode, count) {
-  const grp = buildChannelGroup('AI — аналоговые входы');
+function appendMr02mAiGroup(dev, channels, mtCode, count) {
+  const pack = buildChannelWidget('AI — аналоговые входы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'ai', i);
     const ctrl = `ai_${i}`;
+    const effType = mr02mAiEffectiveSensorType(dev, i, channels);
     const row = buildChannelRow(
       chCfg, topicPath(dev.id, ctrl), 'ai', i, dev, ctrl, '', {skipLive: true});
     const sel = h('select', {'class': 'mqtt-select-small',
@@ -886,73 +1068,55 @@ function appendMr02mAiGroup(parent, dev, channels, mtCode, count) {
         }
         markUnsaved();
       }});
+    const nMirror = mr02mAiIsNLeg(mtCode, i) && mr02mAiMirrorTypeToN(effType);
+    if (nMirror) {
+      chCfg.sensor_type = effType;
+      sel.disabled = true;
+      sel.title = 'Тип наследуется с P-канала (ТХА / 3-проводный RTD)';
+    }
     for (const s of AI_SENSOR_LABELS) {
       const opt = h('option', {'value': String(s.code)}, s.label);
-      if (s.code === (chCfg.sensor_type ?? 2)) opt.selected = true;
+      if (s.code === effType) opt.selected = true;
       sel.appendChild(opt);
     }
     row.appendChild(sel);
-    row.appendChild(liveSpan(dev.id, ctrl, aiUnitsForCode(chCfg.sensor_type ?? 2)));
-    grp.appendChild(row);
+    row.appendChild(liveSpan(dev.id, ctrl, aiUnitsForCode(effType)));
+    pack.body.appendChild(row);
   }
-  parent.appendChild(grp);
+  return pack.widget;
 }
 
 function buildMR02mChannels(dev, container) {
   const channels = dev.channels || {};
   const mtCode = getModuleTypeCode(dev);
-  const mt = MR02M_TYPES[mtCode] || {do:6,di:8,ao:0,ai:0};
+  const mt = MR02M_TYPES[mtCode] || {do:6, di:8, ao:0, ai:0};
 
-  container.appendChild(buildSysChannelGroup(dev, 'Система — модуль MR-02m', MR02M_SYS_VARS));
+  const row = mqttChannelWidgetsRow();
+  container.appendChild(row);
 
-  const hasLeft = mt.di > 0 || mt.ai > 0;
-  const hasRight = mt.do > 0 || mt.ao > 0;
-  if (!hasLeft && !hasRight) return;
-
-  const leftTitle = mt.di > 0 ? 'Входы — DI' : 'Входы — AI';
-  const rightTitle = mt.do > 0 ? 'Выходы — DO' : 'Выходы — AO';
-
-  const cols = h('div', {'class': 'mqtt-ch-cols'});
-  cols.style.display = 'flex';
-  cols.style.flexDirection = 'row';
-  cols.style.flexWrap = 'nowrap';
-  cols.style.gap = '28px';
-  cols.style.width = '100%';
-
-  const colL = h('div', {'class': 'mqtt-ch-col'});
-  const colR = h('div', {'class': 'mqtt-ch-col'});
-  colL.style.flex = '1 1 0';
-  colR.style.flex = '1 1 0';
-  colL.style.minWidth = '0';
-  colR.style.minWidth = '0';
-
-  colL.appendChild(h('div', {'class': 'mqtt-ch-col-title'}, leftTitle));
-  colR.appendChild(h('div', {'class': 'mqtt-ch-col-title'}, rightTitle));
-
-  cols.appendChild(colL);
-  cols.appendChild(colR);
-  container.appendChild(cols);
-
-  if (mt.di > 0) appendMr02mDiGroup(colL, dev, channels, mt.di);
-  else if (mt.ai > 0) appendMr02mAiGroup(colL, dev, channels, mtCode, mt.ai);
-  else colL.appendChild(h('p', {'class': 'field-hint'}, '—'));
-
-  if (mt.do > 0) appendMr02mDoGroup(colR, dev, channels, mt.do);
-  else if (mt.ao > 0) appendMr02mAoGroup(colR, dev, channels, mt.ao);
-  else colR.appendChild(h('p', {'class': 'field-hint'}, '—'));
+  row.appendChild(buildSysChannelGroup(dev, 'Системные', MR02M_SYS_VARS));
+  if (mt.do > 0) row.appendChild(appendMr02mDoGroup(dev, channels, mt.do));
+  if (mt.di > 0) row.appendChild(appendMr02mDiGroup(dev, channels, mt.di));
+  if (mt.ai > 0) row.appendChild(appendMr02mAiGroup(dev, channels, mtCode, mt.ai));
+  if (mt.ao > 0) row.appendChild(appendMr02mAoGroup(dev, channels, mt.ao));
 }
 
 function buildDTVChannels(dev, container) {
   if (!dev.sensors_present) dev.sensors_present = DTV_SENSORS.map(s => s.key);
-  container.appendChild(buildSysChannelGroup(dev, 'Система — DTV', DTV_SYS_VARS));
+
+  const row = mqttChannelWidgetsRow();
+  container.appendChild(row);
+  row.appendChild(buildSysChannelGroup(dev, 'Системные', DTV_SYS_VARS));
+
   const groups = {};
   for (const s of DTV_SENSORS) {
     if (!groups[s.group]) {
       const label = {temperature:'Температура',humidity:'Влажность / Давление',
         pressure:'Давление', iaq:'Качество воздуха',presence:'Присутствие LD2412',
         outputs:'Выходы'}[s.group] || s.group;
-      groups[s.group] = buildChannelGroup(label);
-      container.appendChild(groups[s.group]);
+      const pack = buildChannelWidget(label);
+      groups[s.group] = pack.body;
+      row.appendChild(pack.widget);
     }
     const enabled = dev.sensors_present.includes(s.key);
     const topic = topicPath(dev.id, s.key);
@@ -992,19 +1156,18 @@ function buildCE02M3Channels(dev, container) {
   if (!dev.channels_enabled) dev.channels_enabled = {};
   const en = dev.channels_enabled;
 
-  container.appendChild(buildSysChannelGroup(dev, 'Система — CE-02m-3', CE02M3_SYS_VARS));
+  const row = mqttChannelWidgetsRow();
+  container.appendChild(row);
+  row.appendChild(buildSysChannelGroup(dev, 'Системные', CE02M3_SYS_VARS));
 
-  // CT ratio
-  const ctRow = h('div', {'class':'mqtt-ch-group'},
-    h('div', {'class':'mqtt-ch-group-title'}, 'Параметры CT'),
-    h('div', {'class':'mqtt-form-row'},
-      h('label', {}, 'Коэффициент CT (K×1000):'),
-      h('input', {'type':'number','class':'mqtt-input-small','value': dev.ct_ratio || 4000,
-        'oninput': e => { dev.ct_ratio = Number(e.target.value); markUnsaved(); }}),
-      h('span', {}, '(4000 = CT 4А, 1000 = 1А)')
-    )
-  );
-  container.appendChild(ctRow);
+  const ctPack = buildChannelWidget('Параметры CT');
+  ctPack.body.appendChild(h('div', {'class': 'mqtt-form-row'},
+    h('label', {}, 'Коэффициент CT (K×1000):'),
+    h('input', {'type': 'number', 'class': 'mqtt-input-small', 'value': dev.ct_ratio || 4000,
+      'oninput': e => { dev.ct_ratio = Number(e.target.value); markUnsaved(); }}),
+    h('span', {}, '(4000 = CT 4А, 1000 = 1А)'),
+  ));
+  row.appendChild(ctPack.widget);
 
   const groupMeta = {
     voltages: 'Напряжения (В)',
@@ -1030,8 +1193,9 @@ function buildCE02M3Channels(dev, container) {
 
   const groups = {};
   for (const [gk, gl] of Object.entries(groupMeta)) {
-    groups[gk] = buildChannelGroup(gl);
-    container.appendChild(groups[gk]);
+    const pack = buildChannelWidget(gl);
+    groups[gk] = pack.body;
+    row.appendChild(pack.widget);
   }
 
   for (const ch of CE02M3_CHANNELS) {
@@ -1060,12 +1224,6 @@ function buildCE02M3Channels(dev, container) {
     );
     groups[gk].appendChild(row);
   }
-}
-
-function buildChannelGroup(title) {
-  return h('div', {'class':'mqtt-ch-group'},
-    h('div', {'class':'mqtt-ch-group-title'}, title)
-  );
 }
 
 function buildChannelRow(chCfg, topicHint, kind, idx, dev, controlName, unit, opts) {
@@ -1376,55 +1534,102 @@ function markUnsaved() {
 }
 
 // ── Topic monitor ─────────────────────────────────────────────────────────────
+async function pollMonitorDevice(deviceId) {
+  if (_monitorPaused || !deviceId) return;
+  const data = await apiGet(
+    `/cgi-bin/mqtt_monitor_poll.cgi?device=${encodeURIComponent(deviceId)}`).catch(() => null);
+  const logEl = document.getElementById('mqtt-monitor-log');
+  if (!data || !data.ok) return;
+  const hint = logEl?.querySelector('.mqtt-monitor-hint');
+  if (hint) hint.remove();
+  const batch = [];
+  for (const ev of data.events || []) {
+    if (!ev || !ev.topic) continue;
+    const prev = _monitorLastVal[ev.topic];
+    if (!_monitorPrimed || prev !== ev.value) {
+      _monitorLastVal[ev.topic] = ev.value;
+      batch.push(ev);
+    }
+  }
+  if (batch.length) {
+    for (const ev of batch) queueMonitorLine(ev.ts, ev.topic, ev.value);
+  }
+  _monitorPrimed = true;
+}
+
 function startMonitor() {
   stopMonitor();
   _monitorPaused = false;
+  _monitorLastVal = Object.create(null);
+  _monitorPrimed = false;
   const filter = document.getElementById('mqtt-monitor-filter')?.value || '';
-  const url = '/cgi-bin/mqtt_monitor.cgi' + (filter ? `?device=${encodeURIComponent(filter)}` : '');
-  _monitorEs = new EventSource(url);
-  _monitorEs.onmessage = e => {
-    if (_monitorPaused) return;
-    try {
-      const msg = JSON.parse(e.data);
-      ingestMonitorTopic(msg.topic, msg.value);
-      appendMonitorLine(msg.ts, msg.topic, msg.value);
-    } catch {}
-  };
-  _monitorEs.onerror = () => {
-    const el = document.getElementById('mqtt-monitor-log');
-    if (el) { const p = h('div', {'class':'mqtt-monitor-err'}, '[SSE ошибка — переподключение...]'); el.appendChild(p); }
-  };
+  const logEl = document.getElementById('mqtt-monitor-log');
+  if (!filter) {
+    if (logEl && !logEl.children.length) {
+      logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'},
+        'Выберите устройство в списке — поток топиков не запускается на «все», чтобы не блокировать каналы.'));
+    }
+    return;
+  }
+  if (logEl) {
+    const hint = logEl.querySelector('.mqtt-monitor-hint');
+    if (hint) hint.remove();
+    logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'}, 'Загрузка…'));
+  }
+  void pollMonitorDevice(filter);
+  _monitorPollTimer = setInterval(() => pollMonitorDevice(filter), 1000);
 }
 
 function stopMonitor() {
-  if (_monitorEs) { _monitorEs.close(); _monitorEs = null; }
+  if (_monitorPollTimer) {
+    clearInterval(_monitorPollTimer);
+    _monitorPollTimer = null;
+  }
+}
+
+const _monitorQueue = [];
+let _monitorFlushRaf = 0;
+
+function queueMonitorLine(ts, topic, value) {
+  _monitorQueue.push({ts, topic, value});
+  if (!_monitorFlushRaf) {
+    _monitorFlushRaf = requestAnimationFrame(flushMonitorQueue);
+  }
+}
+
+function flushMonitorQueue() {
+  _monitorFlushRaf = 0;
+  const el = document.getElementById('mqtt-monitor-log');
+  if (!el || !_monitorQueue.length) return;
+  const frag = document.createDocumentFragment();
+  for (const m of _monitorQueue) {
+    frag.appendChild(h('div', {'class': 'mqtt-monitor-line'},
+      h('span', {'class': 'mqtt-monitor-ts'}, m.ts),
+      h('span', {'class': 'mqtt-monitor-topic'}, m.topic),
+      h('span', {'class': 'mqtt-monitor-val'}, m.value),
+    ));
+  }
+  _monitorQueue.length = 0;
+  el.appendChild(frag);
+  while (el.children.length > 100) el.removeChild(el.firstChild);
+  el.scrollTop = el.scrollHeight;
 }
 
 function appendMonitorLine(ts, topic, value) {
-  const el = document.getElementById('mqtt-monitor-log');
-  if (!el) return;
-  const line = h('div', {'class':'mqtt-monitor-line'},
-    h('span', {'class':'mqtt-monitor-ts'}, ts),
-    h('span', {'class':'mqtt-monitor-topic'}, topic),
-    h('span', {'class':'mqtt-monitor-val'}, value)
-  );
-  el.appendChild(line);
-  // Keep max 100 lines
-  while (el.children.length > 100) el.removeChild(el.firstChild);
-  el.scrollTop = el.scrollHeight;
+  queueMonitorLine(ts, topic, value);
 }
 
 function clearMonitor() {
   const el = document.getElementById('mqtt-monitor-log');
   if (el) el.innerHTML = '';
+  _monitorLastVal = Object.create(null);
+  _monitorPrimed = false;
 }
 
 // ── Tab init ──────────────────────────────────────────────────────────────────
 window.mqttTabInit = function() {
   refreshBrokerStatus();
   loadConfig();
-  // Start monitor when tab opens
-  startMonitor();
   // Refresh broker status every 10s
   const timer = setInterval(refreshBrokerStatus, 10000);
   window._mqttStatusTimer = timer;
@@ -1432,6 +1637,7 @@ window.mqttTabInit = function() {
 
 window.mqttTabDestroy = function() {
   stopMonitor();
+  stopChannelPoll();
   if (window._mqttStatusTimer) clearInterval(window._mqttStatusTimer);
 };
 
