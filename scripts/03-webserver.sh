@@ -286,6 +286,18 @@ chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
 
 # ── Учётные данные веб-интерфейса (/etc/sa02m_web.env) ─────────────────────
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
+else
+    log WARN "Нет etc/sa02m-web-auth-lib.sh — безопасная запись sa02m_web.env недоступна"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
+else
+    log WARN "Нет etc/sa02m-repair-web-env.sh — repair sa02m_web.env недоступен"
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
 else
@@ -324,13 +336,23 @@ for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     fi
 done
 if [ ! -f /etc/sa02m_web.env ]; then
-    {
-        echo "SA02M_WEB_USER=admin"
-        echo "SA02M_WEB_PASS=${ADMIN_PASS}"
-    } > /tmp/sa02m_web.env.bootstrap
+    if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
+        # shellcheck disable=SC1091
+        . /usr/local/lib/sa02m-web-auth-lib.sh
+        web_auth_write admin "${ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+    else
+        {
+            echo "SA02M_WEB_USER='admin'"
+            printf "SA02M_WEB_PASS='%s'\n" "$(printf '%s' "${ADMIN_PASS}" | sed "s/'/'\\\\''/g")"
+        } > /tmp/sa02m_web.env.bootstrap
+    fi
     install -m 640 -o root -g www-data /tmp/sa02m_web.env.bootstrap /etc/sa02m_web.env
     rm -f /tmp/sa02m_web.env.bootstrap
     log INFO "Создан /etc/sa02m_web.env (логин admin)"
+fi
+if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
+    /usr/local/sbin/sa02m-repair-web-env >> "$LOG_FILE" 2>&1 || \
+        log WARN "sa02m-repair-web-env завершился с ошибкой"
 fi
 
 grep -q 'sa02m-commit-web-env' /etc/sudoers.d/sa02m-www 2>/dev/null || {

@@ -60,6 +60,15 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
+    /usr/local/sbin/sa02m-repair-web-env 2>/dev/null || true
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 fi
