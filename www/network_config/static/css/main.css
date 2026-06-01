@@ -2312,54 +2312,43 @@ svg .gauge-num {
   border-top: 1px solid var(--border);
 }
 
-/* Два столбца каналов MR-02m: входы (DI/AI) | выходы (DO/AO) */
-.mqtt-accordion-body .mqtt-ch-cols {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  gap: 28px;
-  width: 100%;
-  box-sizing: border-box;
+/* Каналы MQTT: блоки типов сигналов в одну линию (как dash-grid на «Общая информация») */
+.mqtt-accordion-body.mqtt-ch-loading {
+  opacity: 0.55;
+  pointer-events: none;
 }
-.mqtt-accordion-body .mqtt-ch-col {
-  flex: 1 1 0;
-  width: 0;
+.mqtt-accordion-body .mqtt-ch-widgets.dash-grid {
+  grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+  margin-top: 4px;
+}
+.mqtt-ch-widget {
   min-width: 0;
-  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
 }
-.mqtt-ch-col-title {
-  font-size: .78rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  margin: 0 0 8px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.05));
+.mqtt-ch-widget .widget-title {
+  margin-bottom: 10px;
 }
-@media (max-width: 480px) {
-  .mqtt-accordion-body .mqtt-ch-cols {
-    flex-direction: column;
-    flex-wrap: wrap;
-  }
-  .mqtt-accordion-body .mqtt-ch-col {
-    width: 100%;
-    flex: 1 1 auto;
-  }
+.mqtt-ch-widget-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 440px;
+  overflow-y: auto;
+  padding-right: 2px;
 }
-.mqtt-ch-group {
-  margin-bottom: 14px;
+.mqtt-ch-widget .mqtt-ch-row {
+  border-bottom: 1px solid var(--border-faint, rgba(255, 255, 255, .05));
 }
-.mqtt-ch-group-title {
-  font-size: .78rem;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  margin-bottom: 6px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.05));
+.mqtt-ch-widget .mqtt-ch-row:last-child {
+  border-bottom: none;
+}
+.mqtt-ch-widget .mqtt-form-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
 }
 .mqtt-ch-row {
   display: flex;
@@ -2496,6 +2485,7 @@ svg .gauge-num {
 .mqtt-monitor-topic { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mqtt-monitor-val { color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .mqtt-monitor-err { color: var(--red, #f87171); padding: 4px 0; }
+.mqtt-monitor-hint { color: var(--text-muted); padding: 8px 4px; font-size: 0.9em; }
 
 /* Modal */
 .mqtt-modal-overlay {
