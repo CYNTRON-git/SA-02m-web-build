@@ -271,9 +271,10 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 # Укажите нужный IP-адрес устройства, шлюз и пароль для веб-интерфейса
 ./install.sh --ip 192.168.1.136 --mask 255.255.255.0 --gw 192.168.1.1 --pass cyntron
 
-# 5. (Опционально) MQTT и шлюз RS-485 — отдельные скрипты после install.sh
+# 5. (Опционально) MQTT, шлюз RS-485 и Node-RED — отдельные скрипты после install.sh
 sudo bash scripts/05-mqtt.sh
 sudo bash scripts/06-gateway.sh
+sudo bash scripts/07-nodered.sh
 ```
 
 > Установщик автоматически устанавливает все зависимости (`nginx`, `fcgiwrap` и др.) через `apt`. Не нужно запускать `apt-get install` вручную перед `install.sh` — это может создать конфликт сокетов fcgiwrap и вызвать ошибку **502 Bad Gateway** в веб-интерфейсе.
@@ -291,6 +292,7 @@ sudo bash scripts/06-gateway.sh
 | `05-cloud-agent.sh` | Агент облачного подключения (если используется) |
 | `05-mqtt.sh` *(опционально)* | Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI, sudoers |
 | `06-gateway.sh` *(опционально)* | RS-485→Ethernet шлюз, gateway CGI, systemd unit |
+| `07-nodered.sh` *(опционально)* | Node.js 20 LTS + Node-RED, `nodered.service`, UI на порту 1880 |
 
 Процесс занимает **3–5 минут** (первый запуск с обновлением пакетов). По окончании в терминале появится:
 
@@ -447,7 +449,8 @@ web/
 │   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
 │   ├── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
 │   ├── 05-mqtt.sh                ← Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI
-│   └── 06-gateway.sh             ← RS-485→Ethernet шлюз (serial_gateway.py)
+│   ├── 06-gateway.sh             ← RS-485→Ethernet шлюз (serial_gateway.py)
+│   └── 07-nodered.sh             ← Node-RED (Node.js LTS + nodered.service)
 │
 ├── etc/
 │   ├── nginx/
@@ -751,6 +754,56 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
 **Важно:** включённый порт эксклюзивно захватывается lock-файлом `sa02m-gateway-COMx.lock`. Перед сканированием/прошивкой MR-02м или добавлением устройства в MQTT отключите порт в конфиге шлюза.
 
 **Установка:** `sudo bash scripts/06-gateway.sh` (после `install.sh`).
+
+---
+
+### Node-RED
+
+Визуальный редактор потоков для автоматизации (Modbus, MQTT, HTTP и др.). Устанавливается **опционально** скриптом `07-nodered.sh` — не входит в базовый `install.sh`.
+
+**Что делает скрипт:**
+
+| Шаг | Действие |
+|-----|----------|
+| Зависимости | `curl`, `build-essential`, проверка доступа к npm |
+| Node.js | 20 LTS через официальный инсталлятор Node-RED |
+| Node-RED | глобальный `npm install -g node-red`, пользователь `nodered` |
+| systemd | `nodered.service`, `enable` + `start` |
+| Настройки | `uiHost: 0.0.0.0`, порт **1880**, лимит RAM 256 MiB |
+
+**Установка** (на устройстве, из каталога репозитория, **нужен интернет**):
+
+```bash
+cd /tmp/SA-02m-web-build
+sudo bash scripts/07-nodered.sh
+# или с явным IP для подсказки в логе:
+sudo bash scripts/07-nodered.sh --ip 192.168.1.136
+```
+
+По окончании:
+
+```
+[OK] === [07] Node-RED установлен ===
+[OK] Node-RED слушает порт 1880
+[INFO] UI: http://192.168.1.136:1880/
+```
+
+**Доступ:** `http://<IP-шлюза>:1880` (например `http://192.168.1.136:1880`).
+
+**Управление:**
+
+```bash
+sudo systemctl enable nodered.service   # уже выполняется скриптом
+sudo systemctl start nodered.service
+sudo systemctl status nodered.service
+journalctl -u nodered.service -f
+```
+
+Перезагрузка для старта **не обязательна** — скрипт включает и запускает службу сразу. После `reboot` Node-RED поднимется автоматически, если не был остановлен через веб (**Управление → Службы → Node-RED**).
+
+> **Безопасность:** не публикуйте порт 1880 в интернет без `adminAuth` в `settings.js`. Руководство: [Securing Node-RED](https://nodered.org/docs/user-guide/runtime/securing-node-red).
+
+Журнал установки: `/var/log/sa02m_install.log` и `/var/log/nodered-install.log`.
 
 ---
 
@@ -1779,6 +1832,9 @@ tail -f /var/log/fix-eth.log
 | MQTT — Mosquitto ACL | `/etc/mosquitto/acl/default.conf` |
 | Gateway — конфиг | `/etc/sa02m-gateway.yaml` |
 | Gateway — код | `/opt/sa02m-serial-gateway/` |
+| Node-RED — flows / settings | `/home/nodered/.node-red/` |
+| Node-RED — unit | `/lib/systemd/system/nodered.service` |
+| Node-RED — журнал установки | `/var/log/nodered-install.log` |
 | Web — deployed commit | `/var/lib/sa02m-web-build/deployed_commit` |
 | Web — учётные данные | `/etc/sa02m_web.env` |
 
