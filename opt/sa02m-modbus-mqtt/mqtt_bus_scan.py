@@ -22,10 +22,45 @@ MR02M_MODULE_TYPES = {
 
 # Подписи как MR02M_TYPE_LABELS_RU в mqtt.js
 MR02M_TYPE_LABELS_RU = {
-    1: "6DO 8DI", 2: "16DO", 3: "12AO", 4: "6DO", 5: "14DI",
-    6: "6AI 6AO", 7: "12AI", 8: "4DO 6DI", 9: "Тензо 2", 10: "10 DI",
-    11: "6DO 5DI 2AO", 12: "6AI 2AO", 15: "4TO 6DI",
+    1: "6ДО 8ДИ", 2: "16ДО", 3: "12АО", 4: "6ДО", 5: "14ДИ",
+    6: "6АИ 6АО", 7: "12АИ", 8: "4ДО 6ДИ", 9: "Тензо 2", 10: "10ДИ",
+    11: "6ДО 5ДИ 2АО", 12: "6АИ 2АО", 15: "4ТО 6ДИ",
 }
+
+_SIG_LATIN = str.maketrans("АВОИДТ", "AVOIDT")
+
+
+def _latinize_sig(s: str) -> str:
+    return (s or "").upper().translate(_SIG_LATIN).replace(" ", "").replace("_", "").replace("-", "")
+
+
+def _sig_implies_module_type(signature: str, module_type: int) -> bool:
+    if module_type not in MR02M_MODULE_TYPES:
+        return False
+    sig = (signature or "").strip()
+    if not sig:
+        return True
+    sk = _latinize_sig(sig)
+    label_k = _latinize_sig(MR02M_TYPE_LABELS_RU.get(module_type, ""))
+    code_k = _latinize_sig(MR02M_MODULE_TYPES.get(module_type, ""))
+    if sk == label_k or sk == code_k:
+        return True
+    aliases = {
+        6: ("AO6AI6", "6AO6AI", "6AI6AO", "AI6AO6"),
+        12: ("AI6AO2", "6AI2AO", "6AO2AI", "AO6AI2"),
+        1: ("DO6DI8", "6DO8DI", "8DI6DO"),
+        8: ("DO4DI6", "4DO6DI", "6DI4DO"),
+        11: ("6DO5DI2AO",),
+        15: ("4TO6DI", "TO4DI6"),
+        10: ("10DICON", "10DI"),
+        2: ("DO16", "16DO"),
+        3: ("AO12", "12AO"),
+        7: ("AI12", "12AI"),
+        5: ("DI14", "14DI"),
+        4: ("DO6", "6DO"),
+        9: ("TENZO2",),
+    }
+    return any(tok in sk for tok in aliases.get(module_type, ()))
 
 _TO4DI6_AO_EEPROM_MAGIC = 0xA8
 
@@ -92,7 +127,7 @@ def fast_scan_fmb(ser):
         ser.write(make_fmb5(0x01))
         time.sleep(0.02)
         for _ in range(32):
-            resp = read_fixed(ser, 10, timeout=0.5)
+            resp = read_fixed(ser, 10, timeout=0.15)
             if len(resp) < 10:
                 break
             if resp[0] != FMB_ADDR or resp[1] != 0x46 or resp[2] != 0x03:
@@ -130,12 +165,12 @@ def std_scan(ser, max_a):
     return found
 
 
-def read_holding(ser, addr, reg, count=1):
+def read_holding(ser, addr, reg, count=1, timeout=0.08):
     pdu = make_pdu(addr, 0x03, int(reg), int(count))
     ser.reset_input_buffer()
     ser.write(pdu)
     need = 5 + count * 2
-    resp = read_resp(ser, timeout=0.1, max_len=need + 8)
+    resp = read_resp(ser, timeout=timeout, max_len=need + 8)
     if len(resp) < need or resp[0] != addr or resp[1] != 0x03:
         return None
     if not valid_crc(resp[:need]):
@@ -146,12 +181,12 @@ def read_holding(ser, addr, reg, count=1):
     return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
 
 
-def read_input(ser, addr, reg, count=1):
+def read_input(ser, addr, reg, count=1, timeout=0.08):
     pdu = make_pdu(addr, 0x04, int(reg), int(count))
     ser.reset_input_buffer()
     ser.write(pdu)
     need = 5 + count * 2
-    resp = read_resp(ser, timeout=0.1, max_len=need + 8)
+    resp = read_resp(ser, timeout=timeout, max_len=need + 8)
     if len(resp) < need or resp[0] != addr or resp[1] != 0x04:
         return None
     if not valid_crc(resp[:need]):
@@ -177,29 +212,30 @@ def decode_signature(regs):
     return ""
 
 
-def detect_type(ser, addr):
-    """Определить тип устройства и код модуля MR-02m (Input reg 0)."""
-    r1 = read_holding(ser, addr, 1)
+def detect_type(ser, addr, *, read_signature: bool = False):
+    """Тип устройства для скана. EEPROM-сигнатура (reg 290) — только при read_signature=True."""
+    r1 = read_holding(ser, addr, 1, timeout=0.05)
     if r1 is not None and len(r1) >= 1:
         if r1[0] == 0xCE02:
             return "ce02m3", 0, "СЭ-02м-3", ""
         if r1[0] == 0xD712:
             return "dtv", 0, "ДТВ-RS-485", ""
 
-    mt = None
-    inp = read_input(ser, addr, 0, 1)
+    inp = read_input(ser, addr, 0, 1, timeout=0.05)
     if inp and inp[0] in MR02M_MODULE_TYPES:
         mt = inp[0]
+        signature = ""
+        if read_signature:
+            sig_regs = read_holding(ser, addr, 290, 12, timeout=0.07)
+            if sig_regs:
+                signature = decode_signature(sig_regs)
+        return "mr02m", mt, MR02M_MODULE_TYPES[mt], signature
 
     signature = ""
-    sig_regs = read_holding(ser, addr, 290, 12)
-    if sig_regs:
-        signature = decode_signature(sig_regs)
-
-    if mt is not None:
-        type_name = MR02M_MODULE_TYPES[mt]
-        return "mr02m", mt, type_name, signature
-
+    if read_signature:
+        sig_regs = read_holding(ser, addr, 290, 12, timeout=0.07)
+        if sig_regs:
+            signature = decode_signature(sig_regs)
     return "unknown", 0, "unknown", signature
 
 
@@ -207,9 +243,9 @@ def scan_short_name(dev_type, module_type, _type_name, addr, signature=""):
     """Короткое имя для поля в UI; суффикс (COMx addr=n) добавляет веб при сохранении."""
     if dev_type == "mr02m" and module_type in MR02M_MODULE_TYPES:
         sig = (signature or "").strip()
-        if sig:
+        if sig and not _sig_implies_module_type(sig, module_type):
             return sig
-        return MR02M_MODULE_TYPES[module_type]
+        return f"МР-02м {MR02M_TYPE_LABELS_RU[module_type]}"
     if dev_type == "dtv":
         return "ДТВ-RS-485"
     if dev_type == "ce02m3":
@@ -253,7 +289,8 @@ def main() -> None:
 
             devices = []
             for addr in addrs:
-                dev_type, module_type, type_name, signature = detect_type(ser, addr)
+                dev_type, module_type, type_name, signature = detect_type(
+                    ser, addr, read_signature=False)
                 devices.append({
                     "addr": addr,
                     "type": dev_type,

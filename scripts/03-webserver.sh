@@ -76,18 +76,11 @@ server {
 NGINX
 fi
 
-# Сокет fcgiwrap: по умолчанию используем prefork-сокет в runtime-каталоге.
-# Если на образе уже есть рабочий legacy-сокет, nginx автоматически подстроится под него.
-ACTIVE_FCGI="/run/fcgiwrap/fcgiwrap.socket"
-for cand in /run/fcgiwrap/fcgiwrap.socket /run/fcgiwrap.socket /var/run/fcgiwrap.socket; do
-    if [ -S "$cand" ]; then
-        ACTIVE_FCGI="$cand"
-        break
-    fi
-done
-if [ "$ACTIVE_FCGI" != "/run/fcgiwrap/fcgiwrap.socket" ]; then
-    sed -i "s|unix:/run/fcgiwrap/fcgiwrap.socket|unix:${ACTIVE_FCGI}|g" /etc/nginx/sites-available/network_config
-fi
+# Сокет fcgiwrap всегда /run/fcgiwrap/fcgiwrap.socket — создаётся нашим
+# кастомным fcgiwrap.service (RuntimeDirectory=fcgiwrap). Не детектируем
+# legacy-сокет здесь: на чистом Ubuntu/Debian apt автозапускает stock
+# fcgiwrap.socket с путём /run/fcgiwrap.socket, детекция подставляла бы
+# его в nginx.conf, а затем наш сервис поднимал другой путь → 502.
 
 # ── Один vhost на порту $PORT (иначе второй server { listen …; server_name _; } перехватывает запросы → 403)
 OUR_SITE_REAL=$(readlink -f /etc/nginx/sites-available/network_config)
@@ -341,7 +334,15 @@ grep -q 'sa02m-commit-web-env' /etc/sudoers.d/sa02m-www 2>/dev/null || {
 # ── fcgiwrap: prefork service вместо узкого socket-activation ──────────────
 if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
     install -m 644 "$SYSTEMD_DIR/fcgiwrap.service" /etc/systemd/system/fcgiwrap.service
-    systemctl disable --now fcgiwrap.socket >> "$LOG_FILE" 2>&1 || true
+    # Останавливаем ВСЕ варианты stock socket-activation (Ubuntu/Debian),
+    # чтобы их сокет-файлы (/run/fcgiwrap.socket) исчезли до старта нашего сервиса.
+    for _sock_unit in fcgiwrap.socket fcgiwrap@.socket; do
+        systemctl stop    "$_sock_unit" >> "$LOG_FILE" 2>&1 || true
+        systemctl disable "$_sock_unit" >> "$LOG_FILE" 2>&1 || true
+        systemctl mask    "$_sock_unit" >> "$LOG_FILE" 2>&1 || true
+    done
+    # Удаляем осиротевшие сокет-файлы вручную (systemd иногда не убирает их при stop)
+    rm -f /run/fcgiwrap.socket /var/run/fcgiwrap.socket
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 fi
 
@@ -361,8 +362,24 @@ fi
 
 # ── Start services ────────────────────────────────────────────────────────
 svc_enable fcgiwrap
-svc_restart nginx
 svc_restart fcgiwrap
+svc_restart nginx
 svc_enable sa02m-failure-monitor
+
+# ── Верификация: сокет fcgiwrap должен появиться в течение 5 с ──────────────
+FCGI_SOCK="/run/fcgiwrap/fcgiwrap.socket"
+_waited=0
+while [ $_waited -lt 5 ]; do
+    [ -S "$FCGI_SOCK" ] && break
+    sleep 1
+    _waited=$(( _waited + 1 ))
+done
+if [ -S "$FCGI_SOCK" ]; then
+    log OK "fcgiwrap сокет готов: $FCGI_SOCK"
+else
+    log WARN "fcgiwrap сокет не найден после 5 с — проверьте: systemctl status fcgiwrap"
+    log WARN "Возможная причина: stock fcgiwrap.socket мешал установке. Попробуйте:"
+    log WARN "  systemctl mask fcgiwrap.socket && systemctl restart fcgiwrap"
+fi
 
 log OK "=== [03] Веб-сервер запущен на http://<IP>:${PORT} ==="

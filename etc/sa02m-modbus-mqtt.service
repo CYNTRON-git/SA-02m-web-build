@@ -10,6 +10,8 @@ RestartSec=10s
 TimeoutStopSec=10
 User=root
 WorkingDirectory=/opt/sa02m-modbus-mqtt
+RuntimeDirectory=sa02m-modbus-mqtt
+RuntimeDirectoryMode=0755
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
