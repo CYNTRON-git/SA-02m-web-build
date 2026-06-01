@@ -65,13 +65,21 @@ chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT" 2>/dev/null || true
 
 # Обновляем вспомогательные скрипты из репозитория
-for src in etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh; do
+for src in etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh; do
     if [ -f "$TMPDIR/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "${src%.sh}")"
-        install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
+            tgt="/usr/local/lib/sa02m-web-auth-lib.sh"
+            install -m 644 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        else
+            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        fi
         log "Обновлён $tgt"
     fi
 done
+if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
+    /usr/local/sbin/sa02m-repair-web-env >>"$LOGFILE" 2>&1 || true
+fi
 
 # Записываем задеплоенный коммит
 NEW_COMMIT=$(git -C "$TMPDIR/repo" rev-parse HEAD 2>/dev/null || echo "")

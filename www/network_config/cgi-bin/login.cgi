@@ -13,9 +13,13 @@ USERNAME=$(get_field "username")
 PASSWORD=$(get_field "password")
 
 AUTH_ENV="/etc/sa02m_web.env"
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
+
+SA02M_WEB_USER=admin
+SA02M_WEB_PASS=cyntron
 if [ -f "$AUTH_ENV" ]; then
-    # shellcheck disable=1090
-    . "$AUTH_ENV"
+  web_auth_read "$AUTH_ENV" || true
 fi
 : "${SA02M_WEB_USER:=admin}"
 : "${SA02M_WEB_PASS:=cyntron}"

@@ -27,23 +27,26 @@ json_err() { echo "{\"error\":\"$1\"}"; exit 0; }
 [[ "$NEWU" =~ ^[a-zA-Z0-9_.-]{1,32}$ ]] || json_err "bad_username"
 [[ ${#NEWP} -ge 4 && ${#NEWP} -le 128 ]] || json_err "bad_password_len"
 [[ "$NEWP" != *$'\n'* ]] || json_err "bad_password"
-[[ "$NEWP" != *"'"* ]] || json_err "bad_password_char"
+case "$NEWP" in
+  *"'"*|*'$'*|*'`'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*) json_err "bad_password_char" ;;
+esac
+
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 
 AUTH=/etc/sa02m_web.env
 if [ ! -f "$AUTH" ]; then
   json_err "no_auth_file"
 fi
-# shellcheck disable=1090
-. "$AUTH"
+SA02M_WEB_USER=admin
+SA02M_WEB_PASS=cyntron
+web_auth_read "$AUTH" || json_err "no_auth_file"
 : "${SA02M_WEB_USER:=admin}"
 : "${SA02M_WEB_PASS:=cyntron}"
 
 [ "$CUR" = "$SA02M_WEB_PASS" ] || json_err "wrong_password"
 
-{
-  printf 'SA02M_WEB_USER=%s\n' "$NEWU"
-  printf 'SA02M_WEB_PASS=%s\n' "$NEWP"
-} > /tmp/sa02m_web.env.new
+web_auth_write "$NEWU" "$NEWP" > /tmp/sa02m_web.env.new
 chmod 600 /tmp/sa02m_web.env.new
 
 if ! sudo /usr/local/sbin/sa02m-commit-web-env 2>/dev/null; then
