@@ -27,6 +27,14 @@ NET
 # ── end0 static config ────────────────────────────────────────────────────
 mkdir -p /etc/network/interfaces.d
 log INFO "end0 → $IP_ADDRESS / $NETMASK"
+
+# На SA-02m-2 end0 получает metric 200, чтобы end1 DHCP (metric 100) был
+# дефолтным маршрутом когда end0 без кабеля (NO-CARRIER).
+END0_METRIC_LINE=""
+if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
+    END0_METRIC_LINE="    metric 200"
+fi
+
 cat > /etc/network/interfaces.d/end0.conf <<END0
 auto end0
 iface end0 inet static
@@ -34,6 +42,7 @@ iface end0 inet static
     netmask $NETMASK
     gateway $GATEWAY
     dns-nameservers $DNS_SERVERS
+${END0_METRIC_LINE}
 END0
 
 # ── end1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
