@@ -27,6 +27,13 @@ def primary_ipv4() -> str:
         return ""
 
 
+def _env_value(raw: str) -> str:
+    v = raw.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        v = v[1:-1]
+    return v.strip()
+
+
 def load_mqtt_env() -> tuple[str, str]:
     user, passwd = "mqttuser", ""
     path = "/etc/sa02m_mqtt.env"
@@ -38,9 +45,9 @@ def load_mqtt_env() -> tuple[str, str]:
             if not line or line.startswith("#"):
                 continue
             if line.startswith("MQTT_USER="):
-                user = line.split("=", 1)[1]
-            elif line.startswith("MQTT_PASS="):
-                passwd = line.split("=", 1)[1]
+                user = _env_value(line.split("=", 1)[1]) or user
+            elif line.startswith("MQTT_PASS=") or line.startswith("MQTT_PASSWORD="):
+                passwd = _env_value(line.split("=", 1)[1])
     return user, passwd
 
 

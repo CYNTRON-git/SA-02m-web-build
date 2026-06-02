@@ -24,5 +24,7 @@ Cmnd_Alias SA02M_MQTT = \
     /usr/local/sbin/sa02m-mqtt-config-apply.sh *, \
     /usr/local/sbin/sa02m-mqtt-external-info.py
 
-www-data ALL=(root) NOPASSWD: SA02M_MQTT
+Cmnd_Alias SA02M_MQTT_ENV = /usr/bin/cat /etc/sa02m_mqtt.env
+
+www-data ALL=(root) NOPASSWD: SA02M_MQTT, SA02M_MQTT_ENV
 Defaults:www-data !requiretty

@@ -55,6 +55,19 @@ import json
 import os
 import subprocess
 
+def _parse_mqtt_env_text(text: str) -> dict:
+    user, passwd = "mqttuser", ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("MQTT_USER="):
+            user = line.split("=", 1)[1].strip().strip("'\"")
+        elif line.startswith("MQTT_PASS=") or line.startswith("MQTT_PASSWORD="):
+            passwd = line.split("=", 1)[1].strip().strip("'\"")
+    return {"mqtt_user": user or "mqttuser", "mqtt_password": passwd}
+
+
 ext = {"host": "", "mqtt_user": "mqttuser", "mqtt_password": ""}
 try:
     r = subprocess.run(
@@ -67,6 +80,21 @@ try:
         ext.update(json.loads(r.stdout))
 except Exception:
     pass
+
+if not (ext.get("mqtt_password") or "").strip():
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "cat", "/etc/sa02m_mqtt.env"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            parsed = _parse_mqtt_env_text(r.stdout)
+            ext["mqtt_user"] = parsed.get("mqtt_user") or ext.get("mqtt_user")
+            ext["mqtt_password"] = parsed.get("mqtt_password") or ""
+    except Exception:
+        pass
 
 print("Content-type: application/json; charset=UTF-8")
 print("Cache-Control: no-store")

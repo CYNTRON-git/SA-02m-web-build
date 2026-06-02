@@ -27,6 +27,13 @@ log "блокировка userspace watchdog ($IMAGING_LOCK)"
 date -Iseconds >"$IMAGING_LOCK" 2>/dev/null || echo 1 >"$IMAGING_LOCK"
 sync
 
+# Страховка: make-image.sh маскирует watchdog до stream; повторяем на случай ручного запуска.
+for _svc in sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog sa02m-watchdog-feed; do
+    systemctl stop "$_svc" 2>/dev/null || true
+    systemctl mask "$_svc" 2>/dev/null || true
+done
+systemctl set-property --runtime Manager RuntimeWatchdogSec=0 2>/dev/null || true
+
 install_regen_ssh_service() {
     cat > /etc/systemd/system/regen-ssh-host-keys.service <<'EOF'
 [Unit]

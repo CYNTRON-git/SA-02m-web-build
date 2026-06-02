@@ -1,3 +1,43 @@
+## [2026-06-02 12:57] branch: 1.0.3.22
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/tests/test_firmware_repo.py`
+**Тип:** Некорректное поведение
+**Описание:** В «Прошивка выбранных устройств» отображались неподдерживаемые и устаревшие образы (например `MR-02m_full_*.bin`).
+**Причина:** Репозиторий показывал все файлы из манифеста/кеша без фильтра под Modbus-прошивальщик и без удаления старых версий.
+**Исправление:** `is_flasher_supported_file` (отсев `*_full_*`, .elf, oversized .bin); в каждой паре channel+kind остаётся только max version; старые/неподдерживаемые файлы удаляются из `/var/lib/sa02m-flasher/firmware/`; проверка в `runner._load_firmware_for_flash`.
+
+---
+
+## [2026-06-02 12:57] branch: 1.0.3.22
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/js/app.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение / доработка UI
+**Описание:** Ethernet 0/1 (end0/end1) в дашборде и вкладке «Сеть»; RX/TX в одной строке; лишняя подсказка hw.conf; широкие блоки настроек.
+**Причина:** Устаревшие подписи и вёрстка; `end0-traf` одной строкой; подсказка «Аппаратные каналы настроены» при нормальной конфигурации.
+**Исправление:** Переименование в Ethernet № 1/№ 2; RX и TX отдельными строками; настройки в `.widget`; скрытие hw-hint при OK; вкладка «Сеть» — `width: 50%` для пары виджетов; кнопки «Применить».
+
+---
+
+## [2026-06-02 14:00] branch: 1.0.3.22
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `etc/sa02m-mqtt-external-info.py`, `etc/sudoers.d/sa02m-mqtt`
+**Тип:** Некорректное поведение
+**Описание:** В «Подключение MQTT с ПК» при клике на пароль — «Пароль не задан», хотя `MQTT_PASS` есть в `/etc/sa02m_mqtt.env`.
+**Причина:** Пароль не попадал в JSON (сбой/ограничение sudo для www-data); UI не перезапрашивал credentials при клике; маска `******` показывалась и при пустом пароле.
+**Исправление:** Fallback чтения env через `sudo cat`; парсинг `MQTT_PASS`/`MQTT_PASSWORD`; sudoers `SA02M_MQTT_ENV`; в UI — повторный запрос при клике, «—» если пароль недоступен, копирование после успешной загрузки.
+
+---
+
+## [2026-06-02 12:30] branch: 1.0.3.22
+
+**Файл(ы):** `tools/imaging/make-image.sh`, `tools/imaging/stream-after-cleanup.sh`
+**Тип:** Некорректное поведение
+**Описание:** Донор 192.168.1.136 перезагружался через ~1–2 мин после старта zero-fill при `make-image.sh` (unexpected reboot, снятие образа прерывалось).
+**Причина:** `RuntimeWatchdogSec=10s` (systemd HW watchdog) + нагрузка zero-fill на eMMC блокировали систему дольше таймаута; userspace watchdog с imaging lock не успевал помочь.
+**Исправление:** Перед stream: stop+mask `sa02m-userspace-watchdog`, `sa02m-failure-monitor`, `net-watchdog`, `sa02m-watchdog-feed`; `systemctl set-property --runtime Manager RuntimeWatchdogSec=0`. То же в начале `stream-after-cleanup.sh`. Убран `systemctl restart sa02m-userspace-watchdog` перед снятием.
+
+---
+
 ## [2026-06-02 12:03] branch: 1.0.3.22
 
 **Файл(ы):** `etc/sa02m-armbian-branding.sh`, `/etc/update-motd.d/10-armbian-header`, `/etc/armbian-release`, `/etc/armbian-image-release` (192.168.1.113, 192.168.1.136)

@@ -175,10 +175,27 @@ deploy_userspace_watchdog() {
             sed -i "s/^FAIL_THRESHOLD=.*/FAIL_THRESHOLD=60/" /etc/sa02m_userspace_watchdog.conf || \
             echo "FAIL_THRESHOLD=60" >> /etc/sa02m_userspace_watchdog.conf' || true
     fi
-    "${SSH[@]}" 'chmod 755 /usr/local/sbin/sa02m-userspace-watchdog; \
-        systemctl restart sa02m-userspace-watchdog.service 2>/dev/null || true'
+    "${SSH[@]}" 'chmod 755 /usr/local/sbin/sa02m-userspace-watchdog'
 }
+
+prepare_donor_watchdogs_for_imaging() {
+    log "    stop/mask watchdog + disable HW RuntimeWatchdogSec for imaging"
+    "${SSH[@]}" 'bash -s' <<'REMOTE'
+set -euo pipefail
+for svc in sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog sa02m-watchdog-feed; do
+    systemctl stop "$svc" 2>/dev/null || true
+    systemctl mask "$svc" 2>/dev/null || true
+done
+# Zero-fill/dd на eMMC может блокировать PID1 >10s — отключаем HW watchdog до reboot.
+systemctl set-property --runtime Manager RuntimeWatchdogSec=0 2>/dev/null || \
+    busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+        org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t 0 2>/dev/null || true
+sync
+REMOTE
+}
+
 deploy_userspace_watchdog
+prepare_donor_watchdogs_for_imaging
 
 log "    метаданные донора"
 DONOR_META="$(collect_donor_metadata)"

@@ -762,8 +762,37 @@ function renderMqttClientInfo(st) {
   if (passEl) {
     passEl.dataset.secret = secret;
     passEl.dataset.revealed = '0';
-    passEl.textContent = MQTT_PASS_MASK;
+    passEl.classList.remove('mqtt-secret-revealed');
+    if (secret) {
+      passEl.textContent = MQTT_PASS_MASK;
+      passEl.title = 'Нажмите, чтобы показать и скопировать';
+    } else {
+      passEl.textContent = '—';
+      passEl.title = 'Пароль не получен с устройства; нажмите для повторной проверки';
+    }
   }
+}
+
+async function fetchMqttExternalCredentials() {
+  const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
+  if (!st || st.error) return null;
+  return st;
+}
+
+async function resolveMqttPassword(passEl) {
+  let secret = (passEl.dataset.secret || '').trim();
+  if (secret) return secret;
+  const st = await fetchMqttExternalCredentials();
+  if (!st) return '';
+  secret = (st.mqtt_password || '').trim();
+  if (secret) {
+    passEl.dataset.secret = secret;
+    if (passEl.dataset.revealed !== '1') {
+      passEl.textContent = MQTT_PASS_MASK;
+      passEl.title = 'Нажмите, чтобы показать и скопировать';
+    }
+  }
+  return secret;
 }
 
 function bindMqttClientInfoCells() {
@@ -785,9 +814,12 @@ function bindMqttClientInfoCells() {
   const passEl = document.getElementById('mqtt-ext-pass');
   if (passEl) {
     passEl.addEventListener('click', async () => {
-      const secret = passEl.dataset.secret || '';
+      const secret = await resolveMqttPassword(passEl);
       if (!secret) {
-        showToast('Пароль не задан (/etc/sa02m_mqtt.env)', 'warn');
+        showToast(
+          'Пароль MQTT не найден. На устройстве проверьте /etc/sa02m_mqtt.env (MQTT_PASS=…) или выполните scripts/05-mqtt.sh.',
+          'warn'
+        );
         return;
       }
       passEl.textContent = secret;

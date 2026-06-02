@@ -11,7 +11,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sa02m_flasher.firmware import FW_INFO_SIZE
-from sa02m_flasher.firmware_repo import FirmwareRepo, version_tuple
+from sa02m_flasher.firmware_repo import (
+    FirmwareRepo,
+    is_flasher_supported_file,
+    version_tuple,
+)
 
 
 def _minimal_fw_bytes(sig: str = "MR-02m-DI16", payload_size: int = 100) -> bytes:
@@ -188,7 +192,7 @@ class TestFirmwareRepoFindForSignature(unittest.TestCase):
             (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
             repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
             found = repo.find_for_signature("MR-02m-DI16")
-            self.assertEqual({e.file for e in found}, {"a.fw", "b.fw"})
+            self.assertEqual({e.file for e in found}, {"b.fw"})
 
 
 class TestFirmwareRepoValidation(unittest.TestCase):
@@ -324,6 +328,65 @@ class TestLatestStableVersion(unittest.TestCase):
             repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
             st = repo.status()
             self.assertEqual(st.get("latest_bootloader_version"), "1.0.0.2")
+
+
+class TestFlasherSupportedFilter(unittest.TestCase):
+    def test_rejects_full_bin_and_elf(self) -> None:
+        self.assertFalse(is_flasher_supported_file("MR-02m_full_1.0.8.24.bin", kind="app", size=256000))
+        self.assertFalse(is_flasher_supported_file("image.elf", kind="app", size=1000))
+        self.assertTrue(is_flasher_supported_file("MR-02m_1.0.8.25.fw", kind="app", size=50000))
+
+    def test_prunes_old_stable_app_keeps_latest(self) -> None:
+        manifest = {
+            "schema": 1,
+            "updated": "2026-06-02",
+            "channels": {
+                "stable": [
+                    {
+                        "file": "MR-02m_1.0.8.24.fw",
+                        "version": "1.0.8.24",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": 100,
+                        "sha256": "",
+                        "released": "",
+                        "notes": "",
+                    },
+                    {
+                        "file": "MR-02m_1.0.8.25.fw",
+                        "version": "1.0.8.25",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": 100,
+                        "sha256": "",
+                        "released": "",
+                        "notes": "",
+                    },
+                    {
+                        "file": "MR-02m_full_1.0.8.24.bin",
+                        "version": "1.0.8.24",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": 300000,
+                        "sha256": "",
+                        "released": "",
+                        "notes": "",
+                    },
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (cache / "MR-02m_1.0.8.24.fw").write_bytes(_minimal_fw_bytes())
+            (cache / "MR-02m_1.0.8.25.fw").write_bytes(_minimal_fw_bytes())
+            (cache / "MR-02m_full_1.0.8.24.bin").write_bytes(b"\xff" * 300000)
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            files = {e.file for e in repo.list_entries()}
+            self.assertEqual(files, {"MR-02m_1.0.8.25.fw"})
+            self.assertFalse((cache / "MR-02m_1.0.8.24.fw").exists())
+            self.assertFalse((cache / "MR-02m_full_1.0.8.24.bin").exists())
+            self.assertTrue((cache / "MR-02m_1.0.8.25.fw").exists())
 
 
 if __name__ == "__main__":

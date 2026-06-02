@@ -600,8 +600,10 @@ function applyEthIfaceState(spanId, operstate, missingFallback) {
 function applyNetworkStatus(d) {
   applyEthIfaceState('end0-state', d.end0_operstate, 'unknown');
   applyEthIfaceState('end1-state', d.end1_operstate);
-  setText('end0-traf', 'RX ' + fmtBytes(d.net_rx_bytes || 0) + '  TX ' + fmtBytes(d.net_tx_bytes || 0));
-  setText('end1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
+  setText('end0-rx', 'RX ' + fmtBytes(d.net_rx_bytes || 0));
+  setText('end0-tx', 'TX ' + fmtBytes(d.net_tx_bytes || 0));
+  setText('end1-rx', 'RX ' + fmtBytes(d.net1_rx_bytes || 0));
+  setText('end1-tx', 'TX ' + fmtBytes(d.net1_tx_bytes || 0));
   const ip0 = (d.end0_ip !== undefined && d.end0_ip !== null) ? String(d.end0_ip).trim() : '';
   const ip1 = (d.end1_ip !== undefined && d.end1_ip !== null) ? String(d.end1_ip).trim() : '';
   const m0 = (d.end0_mode !== undefined && d.end0_mode !== null) ? String(d.end0_mode).trim().toLowerCase() : '';
@@ -711,15 +713,16 @@ function applyVariantVisibility(variant) {
 function applyHardwareStatus(d) {
   const hint = document.getElementById('hw-hint');
   if (hint) {
+    let msg = '';
     if (d.hw_i2c_busy === 1) {
-      hint.textContent = 'ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ';
+      msg = 'ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ';
     } else if (d.hw_i2c_expander_absent === 1) {
-      hint.textContent = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
-    } else if (d.hw_configured) {
-      hint.textContent = 'Аппаратные каналы настроены (/etc/sa02m_hw.conf)';
-    } else {
-      hint.textContent = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
+      msg = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
+    } else if (!d.hw_configured) {
+      msg = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
+    hint.textContent = msg;
+    hint.style.display = msg ? '' : 'none';
   }
   if (d.hw_variant !== undefined) applyVariantVisibility(d.hw_variant);
   applyHwChannel('hw-do-st', 'do', d.hw_do);
@@ -1453,11 +1456,11 @@ function initForms() {
     if (en) {
       if (!validateNetForm(f0)) return;
       if (!document.getElementById('f-ip')?.value.trim() || !document.getElementById('f-mask')?.value.trim()) {
-        toast('Укажите IP и маску для end0', 'error');
+        toast('Укажите IP и маску для Ethernet № 1', 'error');
         return;
       }
     }
-    submitForm(f0, () => { configLoaded = false; toast('Настройки end0 применены. Перезагрузите сеть.', 'success'); });
+    submitForm(f0, () => { configLoaded = false; toast('Настройки Ethernet № 1 применены. Перезагрузите сеть.', 'success'); });
   });
 
   /* end1 */
@@ -1466,9 +1469,9 @@ function initForms() {
     e.preventDefault();
     const en = document.getElementById('end1-en')?.checked;
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
-      toast('Укажите IP для end1', 'error'); return;
+      toast('Укажите IP для Ethernet № 2', 'error'); return;
     }
-    submitForm(f1, () => { configLoaded = false; toast('Настройки end1 применены.', 'success'); });
+    submitForm(f1, () => { configLoaded = false; toast('Настройки Ethernet № 2 применены.', 'success'); });
   });
 
   /* time */

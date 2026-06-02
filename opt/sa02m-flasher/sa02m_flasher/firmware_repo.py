@@ -47,6 +47,46 @@ VALID_EXTENSIONS = {".fw", ".bin", ".elf"}
 INDEX_CACHE_NAME = ".index.json"
 
 
+# Полный дамп Flash / ELF / слишком большой .bin — не для Modbus-прошивальщика (см. firmware.load_firmware).
+_FULL_BIN_MIN_BYTES = 0x40000
+
+
+def is_flasher_supported_file(file_name: str, *, kind: str = "app", size: int = 0) -> bool:
+    """
+    Можно ли использовать файл в задаче прошивки (runner → load_firmware / load_bootloader).
+
+    Отсекаются полные образы (*_full_*.bin), ELF, .wbfw и слишком большие артефакты приложения.
+    """
+    name = (file_name or "").strip()
+    if not name:
+        return False
+    low = name.lower()
+    suf = Path(name).suffix.lower()
+    if suf == ".elf":
+        return False
+    if "_full_" in low or low.endswith("_full.bin"):
+        return False
+    k = (kind or "app").strip().lower()
+    if k == "bootloader":
+        return suf in (".fw", ".bin")
+    if suf not in (".fw", ".bin"):
+        return False
+    sz = int(size or 0)
+    if suf == ".bin" and sz >= _FULL_BIN_MIN_BYTES:
+        return False
+    if k == "app" and sz > fw_parser.MAX_FIRMWARE_SIZE:
+        return False
+    return True
+
+
+def is_flasher_supported_entry(entry: FirmwareEntry) -> bool:
+    return is_flasher_supported_file(
+        entry.file,
+        kind=entry.kind,
+        size=entry.size,
+    )
+
+
 def _infer_kind_from_filename(file_name: str) -> str:
     """
     Классификация артефакта для сравнения версий с модулем.
@@ -202,6 +242,7 @@ class FirmwareRepo:
                         self.download(e)
                     except Exception:
                         log.exception("Ошибка скачивания %s", e.file)
+        self._consolidate_repository()
         with self._lock:
             status["ok"] = True
             status["updated"] = self._manifest_updated
@@ -232,6 +273,17 @@ class FirmwareRepo:
                     file_name = str(raw.get("file") or "").strip()
                     if not self._valid_manifest_file_name(file_name):
                         continue
+                    kind_probe = str(raw.get("kind") or "").strip().lower()
+                    if kind_probe in ("app", "bootloader"):
+                        kind_pre = kind_probe
+                    else:
+                        kind_pre = _infer_kind_from_filename(file_name)
+                    if not is_flasher_supported_file(
+                        file_name,
+                        kind=kind_pre,
+                        size=int(raw.get("size") or 0),
+                    ):
+                        continue
                     signatures = raw.get("signatures") or []
                     if not isinstance(signatures, list):
                         signatures = [str(signatures)]
@@ -261,6 +313,7 @@ class FirmwareRepo:
                         if not entry.size:
                             entry.size = local.stat().st_size
                     self._entries[(entry.channel, entry.file)] = entry
+            self._consolidate_repository_locked()
         return True
 
     def _resolve_url(self, url_or_name: str) -> str:
@@ -307,8 +360,75 @@ class FirmwareRepo:
                     continue
                 if path.name in known:
                     continue
+                try:
+                    sz = path.stat().st_size
+                except OSError:
+                    continue
+                kind_guess = _infer_kind_from_filename(path.name)
+                if not is_flasher_supported_file(path.name, kind=kind_guess, size=sz):
+                    try:
+                        path.unlink()
+                        log.info("Удалён неподдерживаемый файл прошивки из кеша: %s", path.name)
+                    except OSError:
+                        log.warning("Не удалось удалить %s", path, exc_info=True)
+                    continue
                 entry = self._entry_from_file(path, source="upload")
                 self._entries[(entry.channel, entry.file)] = entry
+
+    def _remove_entry_and_cache_file(self, entry: FirmwareEntry) -> None:
+        """Убрать запись из индекса и удалить локальный файл (если есть)."""
+        with self._lock:
+            self._entries.pop((entry.channel, entry.file), None)
+        path = self.cache_dir / entry.file
+        if path.is_file():
+            try:
+                path.unlink()
+                log.info("Удалён файл прошивки из кеша: %s", entry.file)
+            except OSError:
+                log.warning("Не удалось удалить %s", path, exc_info=True)
+        part = path.with_suffix(path.suffix + ".part")
+        if part.is_file():
+            part.unlink(missing_ok=True)
+
+    def _consolidate_repository_locked(self) -> None:
+        """
+        Оставить только артефакты, пригодные для прошивальщика; в каждой паре (channel, kind)
+        — одну запись с максимальной version.
+        """
+        to_drop: List[FirmwareEntry] = []
+        for entry in list(self._entries.values()):
+            if not is_flasher_supported_entry(entry):
+                to_drop.append(entry)
+        for entry in to_drop:
+            self._remove_entry_and_cache_file(entry)
+
+        groups: Dict[Tuple[str, str], List[FirmwareEntry]] = {}
+        for entry in self._entries.values():
+            groups.setdefault((entry.channel, entry.kind), []).append(entry)
+
+        for entries in groups.values():
+            if len(entries) <= 1:
+                continue
+            best: Optional[FirmwareEntry] = None
+            best_t: Optional[Tuple[int, int, int, int]] = None
+            for entry in entries:
+                t = version_tuple(entry.version)
+                if t is None:
+                    if best is None:
+                        best = entry
+                    continue
+                if best_t is None or t > best_t:
+                    best = entry
+                    best_t = t
+            if best is None:
+                continue
+            for entry in entries:
+                if entry is not best:
+                    self._remove_entry_and_cache_file(entry)
+
+    def _consolidate_repository(self) -> None:
+        with self._lock:
+            self._consolidate_repository_locked()
 
     def _entry_from_file(self, path: Path, *, source: str = "upload") -> FirmwareEntry:
         """Построить запись из локального файла. Для .fw читаем сигнатуру и версию из info-блока."""
@@ -344,6 +464,7 @@ class FirmwareRepo:
 
     def list_entries(self) -> List[FirmwareEntry]:
         self._scan_local_files()
+        self._consolidate_repository()
         with self._lock:
             items = list(self._entries.values())
         items.sort(key=lambda e: (e.channel != "stable", e.file))
@@ -453,6 +574,12 @@ class FirmwareRepo:
         safe = self._SAFE_NAME_RE.sub("_", filename).strip("._-") or "upload.fw"
         if not any(safe.lower().endswith(ext) for ext in VALID_EXTENSIONS):
             raise ValueError(f"Недопустимое расширение: {filename} (допустимо: {sorted(VALID_EXTENSIONS)})")
+        kind_guess = _infer_kind_from_filename(safe)
+        if not is_flasher_supported_file(safe, kind=kind_guess, size=len(data)):
+            raise ValueError(
+                f"Файл {filename} не поддерживается прошивальщиком "
+                "(нужен .fw/.bin приложения или бутлоадера, не полный дамп *_full_* и не .elf)."
+            )
         target = self.cache_dir / safe
         i = 1
         base = Path(safe).stem
@@ -464,5 +591,6 @@ class FirmwareRepo:
         entry = self._entry_from_file(target, source="upload")
         with self._lock:
             self._entries[(entry.channel, entry.file)] = entry
+        self._consolidate_repository()
         log.info("Загружена прошивка %s (sig=%s, size=%d)", entry.file, entry.signatures, entry.size)
         return entry

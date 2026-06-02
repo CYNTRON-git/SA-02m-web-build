@@ -186,6 +186,13 @@ def _load_firmware_for_flash(repo: FirmwareRepo, params: Dict[str, Any]) -> Tupl
     entry = repo.get(channel, file_name) or repo.get("local", file_name) or repo.get("stable", file_name)
     if entry is None:
         raise FileNotFoundError(f"Прошивка {channel}/{file_name} не найдена в репозитории")
+    from .firmware_repo import is_flasher_supported_entry
+
+    if not is_flasher_supported_entry(entry):
+        raise ValueError(
+            f"Прошивка {entry.file} не поддерживается прошивальщиком "
+            "(полные дампы *_full_*, .elf и устаревшие образы исключены из репозитория)."
+        )
 
     path = repo.path_for(entry)
     if path is None:

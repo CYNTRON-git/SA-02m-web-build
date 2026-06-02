@@ -696,7 +696,7 @@ svg .gauge-num {
   font-weight: 400;
   letter-spacing: 0;
 }
-/* Ethernet 0: RX/TX — две колонки, не как «Службы» */
+/* Ethernet № 1: RX/TX — отдельные строки */
 .svc-row-eth-traffic {
   grid-template-columns: auto minmax(0, 1fr);
   column-gap: 10px;
@@ -722,6 +722,15 @@ svg .gauge-num {
   font-weight: 800;
   letter-spacing: -0.02em;
   color: var(--text);
+}
+.eth-traffic-stack {
+  margin-top: 4px;
+}
+.eth-traffic-stack .eth-traffic-line {
+  margin-top: 0;
+}
+.eth-traffic-stack .eth-traffic-line + .eth-traffic-line {
+  margin-top: 2px;
 }
 .eth-traffic-line {
   font-size: 1.12rem;
@@ -752,25 +761,33 @@ svg .gauge-num {
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
 
-/* Вкладка «Сеть»: два столбца eth0 / eth1 */
+/* Вкладка «Сеть»: два виджета Ethernet № 1 / № 2 (половина ширины вкладки) */
 .network-eth-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 24px;
-  align-items: start;
+  gap: 16px;
+  align-items: stretch;
+  width: 50%;
+  max-width: 560px;
+  min-width: 0;
 }
-.network-eth-grid > .form-section { max-width: none; }
-.network-eth-grid > .form-section + .form-section {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: none;
+.network-eth-widget .widget-title {
+  margin-bottom: 14px;
+}
+.network-eth-widget .toggle-field-row {
+  margin-bottom: 12px;
+}
+.network-eth-widget .field {
+  margin-bottom: 12px;
+}
+.network-eth-widget .btn-group {
+  margin-top: 4px;
 }
 @media (max-width: 960px) {
-  .network-eth-grid { grid-template-columns: 1fr; }
-  .network-eth-grid > .form-section + .form-section {
-    margin-top: 32px;
-    padding-top: 28px;
-    border-top: 1px solid var(--border);
+  .network-eth-grid {
+    grid-template-columns: 1fr;
+    width: 100%;
+    max-width: none;
   }
 }
 
