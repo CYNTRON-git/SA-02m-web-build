@@ -1,3 +1,13 @@
+## [2026-06-02 16:00] branch: main+1
+
+**Файл(ы):** `etc/sa02m-restore-dtb.sh`, `etc/systemd/sa02m-restore-dtb.service`, `etc/apt/99-sa02m-dtb-protect`, `tools/imaging/out/sun8i-a40i-sk-fixed.dtb`
+**Тип:** Некорректное поведение / Регрессия после обновления
+**Описание:** После `apt upgrade` второй Ethernet `end1` (GMAC, `allwinner,sun8i-r40-gmac`) переставал появляться в системе. DHCP на `end1` не работал.
+**Причина:** FAT-раздел (`/dev/mmcblk2p1`) содержит `sun8i-a40i-sk.dtb`, загружаемый U-Boot напрямую. В версии DTB от мая 2026 г. узел `ethernet@1c50000` (GMAC) содержал `status = "disabled"` вместо `"okay"`. Ядро не инициализировало `dwmac-sun8i`, интерфейс `end1` не создавался. Диагностические признаки: `vcc-gmac-phy: disabling` в dmesg; отсутствие `end1` в `ip link`; `/proc/device-tree/soc/ethernet@1c50000/status = disabled`.
+**Исправление:** Восстановлен оригинальный DTB (`sun8i-a40i-sk.dtb`, GMAC `status = "okay"`) на FAT-разделе. Создан `end1.conf` с DHCP. Для предотвращения повторения: эталонная копия DTB размещена в `/usr/local/share/sa02m/sun8i-a40i-sk.dtb`; скрипт `/usr/local/sbin/sa02m-restore-dtb.sh` проверяет и восстанавливает DTB по md5; systemd-сервис `sa02m-restore-dtb.service` запускает его при каждой загрузке (`Before=networking.service`); apt-хук `/etc/apt/apt.conf.d/99-sa02m-dtb-protect` вызывает скрипт после любого `apt install/upgrade`.
+
+---
+
 ## [2026-06-02 13:05] branch: 1.0.3.22
 
 **Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `etc/sa02m-mqtt-external-info.py`

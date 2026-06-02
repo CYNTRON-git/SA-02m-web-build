@@ -1,0 +1,3 @@
+// SA-02m: restore custom DTB after apt installs/upgrades kernel or DTB packages
+// Triggered after: apt install, apt upgrade, apt dist-upgrade
+DPkg::Post-Invoke {"if [ -x /usr/local/sbin/sa02m-restore-dtb.sh ]; then /usr/local/sbin/sa02m-restore-dtb.sh; fi";};
