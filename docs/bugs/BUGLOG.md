@@ -1,3 +1,13 @@
+## [2026-06-02 17:00] branch: 1.0.3.23
+
+**Файл(ы):** `/etc/network/interfaces.d/end1.conf`
+**Тип:** Логическая ошибка / зависание загрузки
+**Описание:** После включения GMAC (`end1`) устройство зависало при загрузке на рабочей плате с RTC и I2C-устройствами: SSH недоступен ~5 минут, иногда дольше.
+**Причина:** `end1.conf` содержал `auto end1` вместо `allow-hotplug end1`. При `auto` `networking.service` ждёт завершения `ifup end1` (DHCP) синхронно — до 300 секунд, если DHCP-сервер не ответил на порту end1 рабочей платы. I2C-шина (`i2c-2`, `1c2b800.i2c`, TWI3, PI0/PI1) с PCA9536 не является причиной: пины I2C3 (PI0/PI1) не пересекаются с GMAC (PA0-PA15); IRQ storm уже обрабатывается существующим udev-правилом `50-sa02m-i2c2-unbind.rules` + `sa02m-pre-start.sh`.
+**Исправление:** `auto end1` → `allow-hotplug end1` в `/etc/network/interfaces.d/end1.conf`. При `allow-hotplug` `ifup` запускается в фоне когда появляется link, не блокируя `networking.service` и SSH. Время загрузки до SSH снизилось с >300с до <40с.
+
+---
+
 ## [2026-06-02 16:00] branch: main+1
 
 **Файл(ы):** `etc/sa02m-restore-dtb.sh`, `etc/systemd/sa02m-restore-dtb.service`, `etc/apt/99-sa02m-dtb-protect`, `tools/imaging/out/sun8i-a40i-sk-fixed.dtb`
