@@ -105,6 +105,15 @@
 
         <div class="dash-grid">
 
+          <!-- Система -->
+          <div class="widget">
+            <div class="widget-title">Система</div>
+            <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
+            <div class="widget-sub" id="cpu-model"></div>
+            <div class="widget-sub" id="armbian-info" style="margin-top:4px"></div>
+            <div class="widget-sub" id="kernel-info" style="margin-top:4px"></div>
+          </div>
+
           <!-- Загрузка CPU -->
           <div class="widget">
             <div class="widget-title">Загрузка CPU</div>
@@ -120,6 +129,18 @@
             </div>
           </div>
 
+          <!-- Нагрузка (load avg) -->
+          <div class="widget">
+            <div class="widget-title">Нагрузка (load avg)</div>
+            <div class="load-grid">
+              <div class="load-item"><div class="load-num" id="load-1">—</div><div class="load-lbl">1 мин</div></div>
+              <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
+              <div class="load-item"><div class="load-num" id="load-15">—</div><div class="load-lbl">15 мин</div></div>
+            </div>
+            <div class="widget-sub" id="proc-info"></div>
+            <div class="widget-sub" id="cpu-freq" style="margin-top:3px"></div>
+          </div>
+
           <!-- Температура CPU -->
           <div class="widget">
             <div class="widget-title">Температура CPU</div>
@@ -133,6 +154,12 @@
               </svg>
               <div class="gauge-label gauge-label-temp" id="temp-gauge-hint">Температура в норме</div>
             </div>
+          </div>
+
+          <!-- Uptime -->
+          <div class="widget">
+            <div class="widget-title">Uptime</div>
+            <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
           </div>
 
           <!-- ОЗУ -->
@@ -161,6 +188,12 @@
               <div class="bar-meta"><span id="disk-pct">0%</span><span id="disk-free"></span></div>
             </div>
             <div class="widget-sub" id="disk-io" style="margin-top:8px;font-size:13px"></div>
+          </div>
+
+          <!-- Службы -->
+          <div class="widget widget-svc">
+            <div class="widget-title">Службы</div>
+            <div class="svc-list" id="svc-dynamic-list"></div>
           </div>
 
           <!-- USB (точка монтирования /media/usb или USB-модем) -->
@@ -197,15 +230,6 @@
             </div>
           </div>
 
-          <div class="widget widget-svc">
-            <div class="widget-title">Службы</div>
-            <div class="svc-list" id="svc-dynamic-list"></div>
-          </div>
-          <div class="widget">
-            <div class="widget-title">Uptime</div>
-            <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
-          </div>
-
           <!-- Network end0 -->
           <div class="widget">
             <div class="widget-title widget-title-preserve">Ethernet № 1</div>
@@ -217,8 +241,8 @@
             </div>
           </div>
 
-          <!-- Network end1 -->
-          <div class="widget">
+          <!-- Network end1 (только СА-02м-2) -->
+          <div class="widget" data-hide-for="sa02m-1eth">
             <div class="widget-title widget-title-preserve">Ethernet № 2</div>
             <div class="widget-sub mono" id="end1-ip">—</div>
             <div style="margin-bottom:8px"><span id="end1-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
@@ -226,27 +250,6 @@
               <div class="mono eth-traffic-line" id="end1-rx">RX —</div>
               <div class="mono eth-traffic-line" id="end1-tx">TX —</div>
             </div>
-          </div>
-
-          <!-- Load averages -->
-          <div class="widget">
-            <div class="widget-title">Нагрузка (load avg)</div>
-            <div class="load-grid">
-              <div class="load-item"><div class="load-num" id="load-1">—</div><div class="load-lbl">1 мин</div></div>
-              <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
-              <div class="load-item"><div class="load-num" id="load-15">—</div><div class="load-lbl">15 мин</div></div>
-            </div>
-            <div class="widget-sub" id="proc-info"></div>
-            <div class="widget-sub" id="cpu-freq" style="margin-top:3px"></div>
-          </div>
-
-          <!-- System info -->
-          <div class="widget">
-            <div class="widget-title">Система</div>
-            <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
-            <div class="widget-sub" id="cpu-model"></div>
-            <div class="widget-sub" id="armbian-info" style="margin-top:4px"></div>
-            <div class="widget-sub" id="kernel-info" style="margin-top:4px"></div>
           </div>
 
           <!-- HW outputs — full width -->
@@ -321,10 +324,10 @@
       <div id="tab-network" class="tab-pane">
         <div class="page-header">
           <h2>Настройки сети</h2>
-          <p>Конфигурация Ethernet-интерфейсов</p>
+          <p id="network-page-desc">Конфигурация Ethernet № 1</p>
         </div>
 
-        <div class="network-eth-grid">
+        <div class="network-eth-grid network-eth-grid-single">
           <div class="widget network-eth-widget">
             <div class="widget-title widget-title-preserve">Ethernet № 1</div>
             <form id="net-form">
@@ -359,7 +362,7 @@
             </form>
           </div>
 
-          <div class="widget network-eth-widget">
+          <div class="widget network-eth-widget" data-hide-for="sa02m-1eth">
             <div class="widget-title widget-title-preserve">Ethernet № 2</div>
             <form id="net-form-end1">
               <input type="hidden" name="net_iface" value="end1">

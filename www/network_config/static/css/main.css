@@ -771,6 +771,11 @@ svg .gauge-num {
   max-width: 560px;
   min-width: 0;
 }
+.network-eth-grid.network-eth-grid-single {
+  grid-template-columns: 1fr;
+  width: 25%;
+  max-width: 280px;
+}
 .network-eth-widget .widget-title {
   margin-bottom: 14px;
 }
@@ -784,7 +789,8 @@ svg .gauge-num {
   margin-top: 4px;
 }
 @media (max-width: 960px) {
-  .network-eth-grid {
+  .network-eth-grid,
+  .network-eth-grid.network-eth-grid-single {
     grid-template-columns: 1fr;
     width: 100%;
     max-width: none;

@@ -8,6 +8,9 @@
 /** Версия веб-интерфейса (синхронизируйте с install.sh). */
 const APP_VERSION = '1.0.3.22';
 
+/** Текущий вариант платы (sa02m-1eth / sa02m-2eth) для видимости Ethernet № 2. */
+let _boardVariant = 'sa02m-1eth';
+
 /* ── Auth guard ──────────────────────────────────────────────────────────── */
 (function () {
   const hasCookie = document.cookie.split(';').some(c => c.trim().startsWith('session_token='));
@@ -33,7 +36,11 @@ function initNav() {
         loadServicesControl(false);
         loadVariant();
       }
-      if (tab === 'network' || tab === 'time') loadConfig();
+      if (tab === 'network') {
+        applyVariantVisibility(_boardVariant);
+        loadConfig();
+      }
+      if (tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
       if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
       if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
@@ -700,13 +707,25 @@ function applyServicesStatus(d) {
 }
 
 function applyVariantVisibility(variant) {
+  const v = variant || 'sa02m-1eth';
+  _boardVariant = v;
   document.querySelectorAll('[data-hide-for]').forEach(function(el) {
-    const hideFor = el.dataset.hideFor.split(' ');
-    el.style.display = hideFor.includes(variant) ? 'none' : '';
+    const hideFor = el.dataset.hideFor.split(/\s+/).filter(Boolean);
+    el.style.display = hideFor.includes(v) ? 'none' : '';
   });
+  const ethGrid = document.querySelector('.network-eth-grid');
+  if (ethGrid) {
+    ethGrid.classList.toggle('network-eth-grid-single', v !== 'sa02m-2eth');
+  }
   const title = document.getElementById('device-title');
   if (title) {
-    title.textContent = variant === 'sa02m-2eth' ? 'СА-02м-2' : 'СА-02м';
+    title.textContent = v === 'sa02m-2eth' ? 'СА-02м-2' : 'СА-02м';
+  }
+  const netDesc = document.getElementById('network-page-desc');
+  if (netDesc) {
+    netDesc.textContent = v === 'sa02m-2eth'
+      ? 'Конфигурация Ethernet № 1 и № 2'
+      : 'Конфигурация Ethernet № 1';
   }
 }
 
@@ -2039,6 +2058,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (verEl) verEl.textContent = 'v' + APP_VERSION;
 
   initNav();
+  applyVariantVisibility('sa02m-1eth');
   initForms();
   initValidation();
   initWebCredsForm();
