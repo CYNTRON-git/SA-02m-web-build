@@ -4,7 +4,7 @@
 **Тип:** Некорректное поведение
 **Описание:** В виджете «Система» не отображалась версия Armbian (только плата, CPU, ядро).
 **Причина:** Поле `armbian_version` не собиралось в `gather_system_metrics()` и не выводилось в UI (`index.html` / `applySystemStatus`). Отключение `SA02M_STATUS_ENABLE_HARDWARE=0` на .113 не связано — блок hardware управляет виджетом дискретных выходов, не «Система». `SA02M_STATUS_ENABLE_SYSTEM=1` на обоих устройствах.
-**Исправление:** Чтение `ARMBIAN_PRETTY_NAME` из `/etc/os-release` (fallback: `VERSION` из `/etc/armbian-release`), поле в JSON `part=system`/`main`; строка `#armbian-info` в виджете. Развёрнуто на .113 и .136; сброшен кэш `/tmp/sa02m_status_cache/system.json`.
+**Исправление:** Чтение `ARMBIAN_PRETTY_NAME` из `/etc/os-release` (fallback: `VERSION` из `/etc/armbian-release`), поле в JSON `part=system`/`main`; строка `#armbian-info` в виджете. Развёрнуто на .113 и .136; на .113 дополнительно `sa02m-status-blocks-guard set hardware 1` + `confirm`; сброшен кэш status.cgi.
 
 ---
 
