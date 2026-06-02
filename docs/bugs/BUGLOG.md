@@ -1,3 +1,13 @@
+## [2026-06-02 17:30] branch: 1.0.3.23
+
+**Файл(ы):** `/mnt/fat/boot.scr`, `/usr/local/share/sa02m/boot.scr`, `/usr/local/sbin/sa02m-restore-dtb.sh`
+**Тип:** Зависание системы / IRQ storm
+**Описание:** Устройство полностью зависало (SSH + serial недоступны) при загрузке на рабочей плате с RTC и PCA9536 (расширитель I/O на I2C3 / `1c2b800.i2c`). Проблема возникла после включения GMAC (`end1`).
+**Причина:** PCA9536 на рабочей плате удерживает SDA низким при старте. Драйвер `mv64xxx_i2c` для шины `i2c-2` (`1c2b800.i2c`, TWI3, PI0/PI1) при такой ситуации входил в бесконечный IRQ storm (непрерывные прерывания). Без GMAC нагрузки хватало ресурсов CPU для выполнения `udev unbind` + `sa02m-pre-start.sh` до заморозки. С включённым GMAC (дополнительная нагрузка: dwmac-sun8i probe + MDIO/PHY init) совокупный IRQ storm успевал заморозить систему до того как userspace-механизм мог вмешаться.
+**Исправление:** Добавлен `threadirqs` в `bootargs` в `/mnt/fat/boot.scr` через `mkimage`. `threadirqs` переводит все аппаратные IRQ в kernel threads — планировщик может вытеснять поток I2C IRQ и давать CPU другим задачам (udev unbind, sa02m-pre-start). Система перестала зависать. Canonical `boot.scr` сохранён в `/usr/local/share/sa02m/boot.scr`. Скрипт `sa02m-restore-dtb.sh` расширен для защиты и `boot.scr` вместе с DTB.
+
+---
+
 ## [2026-06-02 17:00] branch: 1.0.3.23
 
 **Файл(ы):** `/etc/network/interfaces.d/end1.conf`
