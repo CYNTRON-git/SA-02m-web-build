@@ -1,0 +1,13 @@
+[Unit]
+Description=SA-02m: restore custom DTB on FAT boot partition after updates
+DefaultDependencies=no
+After=local-fs.target
+Before=networking.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-restore-dtb.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
