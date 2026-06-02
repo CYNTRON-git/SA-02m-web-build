@@ -6,7 +6,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 check_root
 
+ETC_REPO="$SCRIPT_DIR/../etc"
+
 log INFO "=== [01] Системная настройка ==="
+
+# ── Armbian board branding (MOTD / release metadata) ───────────────────────
+if [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
+    install -m 755 "$ETC_REPO/sa02m-armbian-branding.sh" /usr/local/sbin/sa02m-armbian-branding
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-armbian-branding
+    /usr/local/sbin/sa02m-armbian-branding >> "$LOG_FILE" 2>&1 \
+        && log OK "Armbian branding: CYNTRON SA-02m" \
+        || log WARN "Не удалось применить Armbian branding"
+fi
 
 # ── Locale & timezone ──────────────────────────────────────────────────────
 log INFO "Настройка локали и таймзоны"
@@ -15,7 +26,6 @@ update-locale LANG=ru_RU.UTF-8 >> "$LOG_FILE" 2>&1 || true
 timedatectl set-timezone Europe/Moscow >> "$LOG_FILE" 2>&1 || true
 
 # ── SSH: direct service mode instead of socket activation ──────────────────
-ETC_REPO="$SCRIPT_DIR/../etc"
 if [ -f "$ETC_REPO/sa02m-ssh-direct.sh" ]; then
     install -m 755 "$ETC_REPO/sa02m-ssh-direct.sh" /usr/local/sbin/sa02m-ssh-direct
     /usr/local/sbin/sa02m-ssh-direct >> "$LOG_FILE" 2>&1 || log WARN "Не удалось перевести SSH в direct service mode"

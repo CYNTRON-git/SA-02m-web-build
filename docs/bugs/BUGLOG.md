@@ -1,4 +1,13 @@
-## [2026-06-02 11:56] branch: 1.0.3.22
+## [2026-06-02 12:02] branch: 1.0.3.22
+
+**Файл(ы):** `/etc/armbian-release`, `/etc/armbian-image-release` (192.168.1.113), `etc/sa02m-armbian-branding.sh`, `scripts/01-system.sh`
+**Тип:** Некорректное поведение
+**Описание:** MOTD и login banner показывали «Banana Pi M2 Ultra» вместо «CYNTRON SA-02m».
+**Причина:** `/etc/armbian-release` сохранял upstream `BOARD=bananapim2ultra` и `BOARD_NAME="Banana Pi M2 Ultra"`; MOTD (`10-armbian-header`) подхватывает `BOARD_NAME` из этого файла после `armbian-image-release`.
+**Исправление:** На .113: `BOARD=SA-02m`, `BOARD_NAME="CYNTRON SA-02m"`, `VENDOR=CYNTRON` в обоих release-файлах. В репозитории: idempotent `etc/sa02m-armbian-branding.sh`, вызов из `scripts/01-system.sh`.
+
+---
+
 
 **Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
 **Тип:** Некорректное поведение
