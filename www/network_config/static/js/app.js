@@ -625,6 +625,8 @@ function applyLoadStatus(d) {
 function applySystemStatus(d) {
   if (d.board)     setText('board-info',  d.board);
   if (d.cpu_model) setText('cpu-model',   d.cpu_model);
+  if (d.armbian_version) setText('armbian-info', d.armbian_version);
+  else setText('armbian-info', '');
   if (d.kernel)    setText('kernel-info', 'Ядро: ' + d.kernel);
 
   const btn = document.getElementById('storage-format-toggle');

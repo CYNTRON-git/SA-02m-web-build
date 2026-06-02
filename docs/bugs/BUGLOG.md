@@ -1,3 +1,13 @@
+## [2026-06-02 11:56] branch: 1.0.3.22
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В виджете «Система» не отображалась версия Armbian (только плата, CPU, ядро).
+**Причина:** Поле `armbian_version` не собиралось в `gather_system_metrics()` и не выводилось в UI (`index.html` / `applySystemStatus`). Отключение `SA02M_STATUS_ENABLE_HARDWARE=0` на .113 не связано — блок hardware управляет виджетом дискретных выходов, не «Система». `SA02M_STATUS_ENABLE_SYSTEM=1` на обоих устройствах.
+**Исправление:** Чтение `ARMBIAN_PRETTY_NAME` из `/etc/os-release` (fallback: `VERSION` из `/etc/armbian-release`), поле в JSON `part=system`/`main`; строка `#armbian-info` в виджете. Развёрнуто на .113 и .136; сброшен кэш `/tmp/sa02m_status_cache/system.json`.
+
+---
+
 ## [2026-06-02 11:49] branch: 1.0.3.22
 
 **Файл(ы):** `www/network_config/static/js/app.js`, `/var/www/network_config/static/js/app.js` (192.168.1.113)

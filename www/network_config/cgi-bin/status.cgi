@@ -1013,6 +1013,7 @@ gather_system_metrics() {
         BOARD=""
         CPU_MODEL=""
         KERNEL_VER=""
+        ARMBIAN_VER=""
         STORAGE_AUTO_FORMAT_UI=0
         STORAGE_MOUNT_INSTALLED=0
         return 0
@@ -1023,6 +1024,16 @@ gather_system_metrics() {
     CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
     CPU_MODEL=$(json_escape "$CPU_MODEL")
     KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
+    ARMBIAN_VER=""
+    if [ -r /etc/os-release ]; then
+        ARMBIAN_VER=$(awk -F= '/^ARMBIAN_PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        [ -z "$ARMBIAN_VER" ] && ARMBIAN_VER=$(awk -F= '/^PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+    fi
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/armbian-release ]; then
+        ARMBIAN_VER=$(awk -F= '/^VERSION=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/armbian-release 2>/dev/null)
+        [ -n "$ARMBIAN_VER" ] && ARMBIAN_VER="Armbian ${ARMBIAN_VER}"
+    fi
+    ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
     STORAGE_AUTO_FORMAT_UI=1
     STORAGE_MOUNT_INSTALLED=0
     if [ -x /usr/local/bin/storage-mount.sh ] && [ -x /usr/local/sbin/sa02m-set-storage-auto-format ]; then
@@ -1377,6 +1388,7 @@ print_system_json() {
 {
   "board": "${BOARD}",
   "cpu_model": "${CPU_MODEL}",
+  "armbian_version": "${ARMBIAN_VER}",
   "kernel": "${KERNEL_VER}",
   "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
   "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED}
@@ -1481,6 +1493,7 @@ print_main_json() {
   "mplc_uptime_s": ${MPLC_UPTIME_S},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
+  "armbian_version": "${ARMBIAN_VER}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
   "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
@@ -1573,6 +1586,7 @@ print_core_json() {
   "mplc_uptime_s": ${MPLC_UPTIME_S},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
+  "armbian_version": "${ARMBIAN_VER}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
   "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
@@ -1666,6 +1680,7 @@ print_full_json() {
   "mplc_uptime_s": ${MPLC_UPTIME_S},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
+  "armbian_version": "${ARMBIAN_VER}",
   "kernel": "${KERNEL_VER}",
   "ip": "${IP}",
   "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
