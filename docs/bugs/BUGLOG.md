@@ -1,3 +1,13 @@
+## [2026-06-02 12:03] branch: 1.0.3.22
+
+**Файл(ы):** `etc/sa02m-armbian-branding.sh`, `/etc/update-motd.d/10-armbian-header`, `/etc/armbian-release`, `/etc/armbian-image-release` (192.168.1.113, 192.168.1.136)
+**Тип:** Некорректное поведение
+**Описание:** В MOTD при SSH-логине отображалось `Support: DIY (community maintained)` вместо поддержки CYNTRON.
+**Причина:** `10-armbian-header` выводит `HARDWARE_STATUS` по `BOARD_TYPE=csc`; скрипт брендинга менял только BOARD/VENDOR в release-файлах, не строку Support.
+**Исправление:** В `sa02m-armbian-branding.sh` — патч MOTD для SA-02m/CYNTRON → `cyntron.ru` (зелёный), `VENDORSUPPORT=https://cyntron.ru` в release-файлах; развёрнуто на .113 и .136.
+
+---
+
 ## [2026-06-02 12:02] branch: 1.0.3.22
 
 **Файл(ы):** `/etc/armbian-release`, `/etc/armbian-image-release` (192.168.1.113), `etc/sa02m-armbian-branding.sh`, `scripts/01-system.sh`
