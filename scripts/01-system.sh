@@ -96,6 +96,9 @@ UDEV_RULE="/etc/udev/rules.d/99-sa02m-serial.rules"
         echo "KERNEL==\"${tty}\", SYMLINK+=\"RS-485-${idx} COM${com_idx}\""
     done
 } > "$UDEV_RULE"
+# Remove legacy 99-com-aliases.rules: it duplicates or conflicts with
+# 99-sa02m-serial.rules (e.g. stale 1-eth ttyS0=COM1 on a 2-eth device).
+rm -f /etc/udev/rules.d/99-com-aliases.rules
 udevadm control --reload-rules 2>/dev/null || true
 write_sa02m_serial_map_conf /etc/sa02m_serial_map.conf
 log INFO "Карта serial-портов записана в /etc/sa02m_serial_map.conf"
