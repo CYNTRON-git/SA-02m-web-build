@@ -1,3 +1,13 @@
+## [2026-06-02 13:05] branch: 1.0.3.22
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `etc/sa02m-mqtt-external-info.py`
+**Тип:** Некорректное поведение
+**Описание:** Вкладка MQTT: «● Нет данных» у брокера/моста, на дашборде службы MQTT активны.
+**Причина:** `/usr/local/sbin/sa02m-mqtt-external-info.py` с CRLF в shebang (`python3\r`) — sudo от www-data падал; `apiGet` не проверял HTTP/ошибку JSON; при сбое UI оставался начальный «Нет данных».
+**Исправление:** `sed` LF на устройстве; fallback `systemctl is-active` в `mqtt_status.cgi`; хост из bash; устойчивый `refreshBrokerStatus` и `apiGet` в mqtt.js v1.2.1.
+
+---
+
 ## [2026-06-02 12:57] branch: 1.0.3.22
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/tests/test_firmware_repo.py`

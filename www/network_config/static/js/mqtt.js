@@ -700,8 +700,11 @@ function mqttChannelWidgetsRow() {
 
 // ── API calls ─────────────────────────────────────────────────────────────────
 async function apiGet(url) {
-  const r = await fetch(url, {credentials:'include'});
-  return r.json();
+  const r = await fetch(url, { credentials: 'include', cache: 'no-store' });
+  const data = await r.json().catch(() => null);
+  if (!r.ok || !data) return null;
+  if (data.error) return data;
+  return data;
 }
 
 async function apiPost(url, data) {
@@ -840,12 +843,23 @@ function bindMqttClientInfoCells() {
 
 // ── Broker status ─────────────────────────────────────────────────────────────
 async function refreshBrokerStatus() {
-  const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
-  if (!st) return;
-
+  const st = await apiGet('/cgi-bin/mqtt_status.cgi');
   const badge = document.getElementById('mqtt-broker-badge');
   const clients = document.getElementById('mqtt-broker-clients');
   const bridgeBadge = document.getElementById('mqtt-bridge-badge');
+
+  if (!st || st.error) {
+    if (badge) {
+      badge.className = 'badge badge-err';
+      badge.textContent = st && st.error === 'unauthorized' ? '● Нет доступа' : '● Нет данных';
+    }
+    if (bridgeBadge) {
+      bridgeBadge.className = 'badge badge-unk';
+      bridgeBadge.textContent = '● Мост —';
+    }
+    if (clients) clients.textContent = 'Клиентов: —';
+    return;
+  }
 
   if (badge) {
     badge.className = `badge ${st.mosquitto_active ? 'badge-ok' : 'badge-err'}`;
@@ -1660,17 +1674,22 @@ function clearMonitor() {
 
 // ── Tab init ──────────────────────────────────────────────────────────────────
 window.mqttTabInit = function() {
-  refreshBrokerStatus();
-  loadConfig();
-  // Refresh broker status every 10s
-  const timer = setInterval(refreshBrokerStatus, 10000);
-  window._mqttStatusTimer = timer;
+  if (window._mqttStatusTimer) {
+    clearInterval(window._mqttStatusTimer);
+    window._mqttStatusTimer = null;
+  }
+  void refreshBrokerStatus();
+  void loadConfig();
+  window._mqttStatusTimer = setInterval(refreshBrokerStatus, 10000);
 };
 
 window.mqttTabDestroy = function() {
   stopMonitor();
   stopChannelPoll();
-  if (window._mqttStatusTimer) clearInterval(window._mqttStatusTimer);
+  if (window._mqttStatusTimer) {
+    clearInterval(window._mqttStatusTimer);
+    window._mqttStatusTimer = null;
+  }
 };
 
 // ── Expose to global for HTML onclick ────────────────────────────────────────

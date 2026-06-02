@@ -25,10 +25,14 @@ if pgrep -x mosquitto >/dev/null 2>&1; then
         mosq_uptime_s=$(( uptime_sys - boot_j / clock_hz ))
         (( mosq_uptime_s < 0 )) && mosq_uptime_s=0
     fi
+elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet mosquitto.service 2>/dev/null; then
+    mosq_active=1
 fi
 
 bridge_active=0
 if pgrep -f "modbus_mqtt_bridge" >/dev/null 2>&1; then
+    bridge_active=1
+elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sa02m-modbus-mqtt.service 2>/dev/null; then
     bridge_active=1
 fi
 
@@ -44,11 +48,21 @@ if command -v mosquitto_sub >/dev/null 2>&1 && (( mosq_active == 1 )); then
     [[ "$c" =~ ^[0-9]+$ ]] && clients_connected=$c
 fi
 
+PRIMARY_HOST=""
+if command -v ip >/dev/null 2>&1; then
+    for _iface in end0 end1; do
+        PRIMARY_HOST=$(ip -o -4 addr show dev "$_iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
+        [ -n "$PRIMARY_HOST" ] && break
+    done
+fi
+[ -z "$PRIMARY_HOST" ] && PRIMARY_HOST=$(hostname -I 2>/dev/null | awk '{print $1}' | tr -d '\r')
+
 export MOSQ_ACTIVE=$mosq_active
 export MOSQ_UPTIME=$mosq_uptime_s
 export BRIDGE_ACTIVE=$bridge_active
 export TELEMETRY_ACTIVE=$telemetry_active
 export CLIENTS_CONNECTED=$clients_connected
+export PRIMARY_HOST
 
 python3 <<'PY'
 import json
@@ -109,7 +123,7 @@ print(
             "clients_connected": int(os.environ.get("CLIENTS_CONNECTED", 0)),
             "port_local": 1883,
             "port_external": 1884,
-            "host": ext.get("host") or "",
+            "host": ext.get("host") or os.environ.get("PRIMARY_HOST") or "",
             "mqtt_user": ext.get("mqtt_user") or "mqttuser",
             "mqtt_password": ext.get("mqtt_password") or "",
         },
