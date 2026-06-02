@@ -176,6 +176,11 @@ do_mount() {
   for attempt in {1..3}; do
     if mount -o "${OPTS}" -t "${FSTYPE}" "${DEV_PATH}" "${MOUNT_POINT}"; then
       log "Успешно смонтировано ${DEV_PATH}"
+      # Автозапуск autorun.sh если есть на USB (прошивка приёмника через flash-receiver.sh)
+      if [ "${TYPE}" = "usb" ] && [ -f "${MOUNT_POINT}/autorun.sh" ]; then
+        log "autorun.sh обнаружен на ${MOUNT_POINT} — запуск в фоне"
+        (bash "${MOUNT_POINT}/autorun.sh" >> /var/log/flash-receiver.log 2>&1) &
+      fi
       return 0
     fi
 

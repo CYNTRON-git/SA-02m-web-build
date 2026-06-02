@@ -217,6 +217,53 @@ xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$XZ_TMP"
 cp -f "$XZ_TMP" "$RAW_XZ"
 sudo pishrink.sh -a -v "$RAW_IMG"
 
+# Патч образа: восстанавливаем нормальные watchdog unit-файлы,
+# которые stream-after-cleanup мог оставить как noop (/bin/true) от предыдущего фикса.
+# Делаем через loop mount сразу после PiShrink, до финального xz.
+patch_image() {
+    local img="$1"
+    local loop mnt rootpart
+    log "    [patch] loop-mount образа для патча watchdog unit-файлов"
+    loop=$(sudo losetup --partscan -f --show "$img" 2>/dev/null) || {
+        log "    [patch] WARN: losetup не удался — патч пропущен (не критично)"
+        return 0
+    }
+    mnt=$(mktemp -d /tmp/sa02m-img-patch-XXXXXX)
+    rootpart="${loop}p2"
+    local i
+    for i in 1 2 3 4 5; do [ -b "$rootpart" ] && break; sleep 1; done
+    if ! sudo mount "$rootpart" "$mnt" 2>/dev/null; then
+        log "    [patch] WARN: mount образа не удался — патч пропущен"
+        sudo losetup -d "$loop" 2>/dev/null || true
+        rm -rf "$mnt"; return 0
+    fi
+
+    # 1. Нормальные watchdog unit-файлы из репозитория
+    sudo cp -f "$REPO_ROOT/etc/systemd/sa02m-userspace-watchdog.service" \
+        "$mnt/etc/systemd/system/sa02m-userspace-watchdog.service" 2>/dev/null || true
+    sudo cp -f "$REPO_ROOT/etc/net-watchdog.service" \
+        "$mnt/etc/systemd/system/net-watchdog.service" 2>/dev/null || true
+    sudo cp -f "$REPO_ROOT/etc/sa02m-failure-monitor.service" \
+        "$mnt/etc/systemd/system/sa02m-failure-monitor.service" 2>/dev/null || true
+
+    # 2. Watchdog drop-in (RuntimeWatchdogSec=10s из репо)
+    sudo install -d "$mnt/etc/systemd/system.conf.d"
+    sudo cp -f "$REPO_ROOT/etc/systemd/sa02m-watchdog.conf" \
+        "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf" 2>/dev/null || true
+    # Убрать прямую правку RuntimeWatchdogSec в system.conf (управляется drop-in'ом)
+    sudo sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \
+        "$mnt/etc/systemd/system.conf" 2>/dev/null || true
+
+    # 3. Убрать DONE-флаг expand (на случай если stream не удалил)
+    sudo rm -f "$mnt/var/lib/sa02m-rootfs-expand.done"
+
+    log "    [patch] watchdog unit-файлы восстановлены, DONE-флаг удалён"
+    sudo umount "$mnt"
+    sudo losetup -d "$loop" 2>/dev/null || true
+    rm -rf "$mnt"
+}
+patch_image "$RAW_IMG"
+
 log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
 rm -f "$SHRUNK_XZ" "$FINAL_IMG"
 FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"

@@ -59,7 +59,10 @@ cp -f "$IMAGE" "$DEST/$FLASH_NAME"
 printf '%s  %s\n' "$SHA" "$FLASH_NAME" > "$DEST/${FLASH_NAME}.sha256"
 cp -f "$RECEIVER" "$DEST/flash-receiver.sh"
 chmod +x "$DEST/flash-receiver.sh"
-ln -sfn flash-receiver.sh "$DEST/autorun.sh"
+# Копия вместо симлинка — FAT32 не поддерживает symlinks
+rm -f "$DEST/autorun.sh"
+cp -f "$RECEIVER" "$DEST/autorun.sh"
+chmod +x "$DEST/autorun.sh"
 
 MANIFEST_SRC="${IMAGE%.img.xz}.manifest.json"
 if [ -f "$MANIFEST_SRC" ]; then

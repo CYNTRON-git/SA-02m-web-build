@@ -334,6 +334,20 @@ if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
     sa02m_systemctl enable sa02m-rootfs-expand.service >>"$LOG_FILE" 2>&1 || true
 fi
 
+# ── Автообновление link-файлов при смене MAC (перенос образа на новое железо) ──
+# Запускается ДО systemd-networkd, обновляет /etc/systemd/network/10-eth0.link
+# и 11-eth1.link если обнаруживает, что MAC физических интерфейсов изменились.
+if [ -f "$ETC_REPO/sa02m-net-autolink.sh" ]; then
+    log INFO "Установка sa02m-net-autolink"
+    install -m 755 "$ETC_REPO/sa02m-net-autolink.sh" /usr/local/sbin/sa02m-net-autolink.sh
+    install -m 644 "$ETC_REPO/systemd/sa02m-net-autolink.service" \
+        /etc/systemd/system/sa02m-net-autolink.service
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable sa02m-net-autolink.service >> "$LOG_FILE" 2>&1 \
+        && log OK "sa02m-net-autolink установлен и включён" \
+        || log WARN "sa02m-net-autolink не включился"
+fi
+
 # Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
 # (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
 log INFO "Маскируем userspace-watchdog сервисы"

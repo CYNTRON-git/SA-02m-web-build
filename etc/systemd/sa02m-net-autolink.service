@@ -1,0 +1,17 @@
+[Unit]
+Description=SA-02m: auto-update network link files on MAC change
+Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
+DefaultDependencies=no
+Before=systemd-networkd.service network-pre.target
+After=local-fs.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-net-autolink.sh
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

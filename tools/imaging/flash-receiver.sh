@@ -1,6 +1,6 @@
 #!/bin/sh
 # ═══════════════════════════════════════════════════════════════════════════
-#  SA-02m  •  flash-receiver.sh   v1.1
+#  SA-02m  •  flash-receiver.sh   v1.2
 #
 #  ВАЖНО: этот скрипт запускается на ПРИЁМНИКЕ, загруженном с ВНЕШНЕГО
 #  носителя (USB mass storage gadget или физический USB/SD).
@@ -10,7 +10,7 @@
 #      sa02m-shrunk.img.xz
 #      sa02m-shrunk.img.xz.sha256
 #      flash-receiver.sh
-#      autorun.sh  (= ln -s flash-receiver.sh)
+#      autorun.sh  (= копия flash-receiver.sh)
 #
 #  Поведение:
 #    1) выгружает g_mass_storage (освобождает mmcblk2 от USB gadget'а)
@@ -23,7 +23,12 @@
 # ═══════════════════════════════════════════════════════════════════════════
 set -eu
 
-IMG_DIR="${IMG_DIR:-/mnt}"
+# IMG_DIR: автоопределение по директории скрипта.
+# Работает из /media/usb, /mnt, /media/sdcard и любого другого места.
+# Переопределяется переменной окружения: IMG_DIR=/other/path sh flash-receiver.sh
+_SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+_SELF_DIR="$(dirname "$_SELF")"
+IMG_DIR="${IMG_DIR:-$_SELF_DIR}"
 IMG_NAME="${IMG_NAME:-sa02m-shrunk.img.xz}"
 TARGET_DEV="${TARGET_DEV:-/dev/mmcblk2}"
 LOG="/var/log/flash-receiver.log"

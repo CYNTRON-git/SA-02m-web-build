@@ -12,7 +12,7 @@ log INFO "=== [02] Настройка сети ==="
 : "${NETMASK:=255.255.255.0}"
 : "${GATEWAY:=192.168.1.1}"
 : "${DNS_SERVERS:=77.88.8.8 77.88.8.1}"
-: "${NET_IFACE:=eth0}"
+: "${NET_IFACE:=end0}"
 
 # ── /etc/network/interfaces ────────────────────────────────────────────────
 log INFO "Создание /etc/network/interfaces"
@@ -24,17 +24,17 @@ auto lo
 iface lo inet loopback
 NET
 
-# ── eth0 static config ────────────────────────────────────────────────────
+# ── end0 static config ────────────────────────────────────────────────────
 mkdir -p /etc/network/interfaces.d
-log INFO "eth0 → $IP_ADDRESS / $NETMASK"
-cat > /etc/network/interfaces.d/eth0.conf <<ETH0
-auto eth0
-iface eth0 inet static
+log INFO "end0 → $IP_ADDRESS / $NETMASK"
+cat > /etc/network/interfaces.d/end0.conf <<END0
+auto end0
+iface end0 inet static
     address $IP_ADDRESS
     netmask $NETMASK
     gateway $GATEWAY
     dns-nameservers $DNS_SERVERS
-ETH0
+END0
 
 # ── Network watchdog deployment ────────────────────────────────────────────
 ETC_DIR="$SCRIPT_DIR/../etc"
