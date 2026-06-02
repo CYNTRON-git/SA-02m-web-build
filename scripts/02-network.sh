@@ -48,7 +48,7 @@ END0
 # ── end1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/end1.conf ]; then
     cat > /etc/network/interfaces.d/end1.conf <<'END1'
-auto end1
+allow-hotplug end1
 iface end1 inet dhcp
     metric 100
     post-up ip route replace default via 192.168.1.1 dev end1 metric 100 || true
