@@ -247,7 +247,7 @@
             <div class="widget-title">Дискретный выход, USB-питание и индикация</div>
             <div class="hw-hint" id="hw-hint">Загрузка…</div>
             <div class="hw-grid">
-              <div class="hw-item">
+              <div class="hw-item" data-hide-for="sa02m-2eth">
                 <div class="hw-item-title">DO (дискретный выход)</div>
                 <div class="hw-item-body">
                   <div class="hw-btns" data-hw-ch="do">
@@ -530,6 +530,23 @@
                 <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
               </div>
             </div>
+        </div>
+
+        <div class="form-section" id="hw-variant-section" style="margin-bottom:22px">
+          <h3>Аппаратный вариант</h3>
+          <div class="field">
+            <label>Тип устройства</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <select id="hw-variant-select">
+                <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
+                <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
+              </select>
+              <button type="button" class="btn btn-primary" id="apply-variant-btn">Применить</button>
+              <span id="variant-status" style="font-size:.85rem"></span>
+            </div>
+            <p class="field-hint" style="margin-top:6px">Изменяет только симлинки COM-портов (/dev/COMx, /dev/RS-485-x). Сетевые настройки не затрагиваются.</p>
+          </div>
+          <div id="serial-map-info" style="margin-top:10px;font-size:.8rem;color:var(--text-sec);font-family:monospace;white-space:pre-wrap;max-height:120px;overflow:auto"></div>
         </div>
 
         <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал событий</h3>

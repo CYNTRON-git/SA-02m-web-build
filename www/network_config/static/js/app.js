@@ -31,6 +31,7 @@ function initNav() {
         fetchSystemWidget();
         loadWebUpdateStatus();
         loadServicesControl(false);
+        loadVariant();
       }
       if (tab === 'network' || tab === 'time') loadConfig();
       if (tab === 'flasher' && window.flasherInit) window.flasherInit();
@@ -694,6 +695,13 @@ function applyServicesStatus(d) {
   renderServicesDynamic(d);
 }
 
+function applyVariantVisibility(variant) {
+  document.querySelectorAll('[data-hide-for]').forEach(function(el) {
+    const hideFor = el.dataset.hideFor.split(' ');
+    el.style.display = hideFor.includes(variant) ? 'none' : '';
+  });
+}
+
 function applyHardwareStatus(d) {
   const hint = document.getElementById('hw-hint');
   if (hint) {
@@ -707,6 +715,7 @@ function applyHardwareStatus(d) {
       hint.textContent = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
   }
+  if (d.hw_variant !== undefined) applyVariantVisibility(d.hw_variant);
   applyHwChannel('hw-do-st', 'do', d.hw_do);
   applyHwChannel('hw-beep-st', 'beeper', d.hw_beeper);
   applyHwChannel('hw-led-st', 'alarm_led', d.hw_alarm_led);
@@ -1972,6 +1981,59 @@ function initThemeToggle() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   HARDWARE VARIANT
+   ══════════════════════════════════════════════════════════════════════════ */
+function showSerialMap(b64) {
+  const el = document.getElementById('serial-map-info');
+  if (!el) return;
+  if (!b64) { el.textContent = ''; return; }
+  try {
+    el.textContent = atob(b64);
+  } catch (_) {
+    el.textContent = '';
+  }
+}
+
+async function loadVariant() {
+  try {
+    const r = await fetch('/cgi-bin/variant.cgi');
+    if (!r.ok) return;
+    const d = await r.json();
+    const sel = document.getElementById('hw-variant-select');
+    if (sel) sel.value = d.variant || 'sa02m-1eth';
+    showSerialMap(d.serial_map);
+  } catch (_) {}
+}
+
+async function applyVariant() {
+  const sel = document.getElementById('hw-variant-select');
+  const status = document.getElementById('variant-status');
+  if (!sel || !status) return;
+  const variant = sel.value;
+  status.textContent = 'Применяю…';
+  status.style.color = 'var(--text-sec)';
+  try {
+    const r = await fetch('/cgi-bin/variant.cgi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'variant=' + encodeURIComponent(variant)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      status.textContent = '\u2713 Применено: ' + d.variant + ', ' + d.serial_count + ' COM-порт(а)';
+      status.style.color = 'var(--green, #4caf50)';
+      await loadVariant();
+    } else {
+      status.textContent = '\u2717 Ошибка: ' + (d.error || 'неизвестно');
+      status.style.color = 'var(--red, #f44336)';
+    }
+  } catch (e) {
+    status.textContent = '\u2717 ' + e.message;
+    status.style.color = 'var(--red, #f44336)';
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    INIT
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
@@ -2019,4 +2081,6 @@ document.addEventListener('DOMContentLoaded', () => {
   window.syncTimeFromPC = syncTimeFromPC;
   window.exportInstallLog = exportInstallLog;
   window.toggleStorageAutoFormat = toggleStorageAutoFormat;
+
+  document.getElementById('apply-variant-btn')?.addEventListener('click', applyVariant);
 });
