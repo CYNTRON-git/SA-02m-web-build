@@ -230,7 +230,7 @@ fi
 # состояние линка — LED остаётся выключен до следующей смены состояния.
 eth0_led_set_link_trigger() {
   local led=/sys/class/leds/eth0_link
-  local iface=${1:-eth0}
+  local iface=${1:-end0}
   [ -d "$led" ] || return 0
   echo "netdev" > "$led/trigger"     2>/dev/null || true
   echo "$iface"  > "$led/device_name" 2>/dev/null || true
@@ -247,7 +247,7 @@ _eth0_led_blink() {
     echo 0 > "$led/brightness" 2>/dev/null || true
     sleep 0.5
   done
-  eth0_led_set_link_trigger eth0
+  eth0_led_set_link_trigger end0
 }
 _eth0_led_blink
 

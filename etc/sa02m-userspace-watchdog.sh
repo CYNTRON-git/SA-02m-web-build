@@ -36,7 +36,7 @@ HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-300}"
 SSH_PORT="${SSH_PORT:-22}"
 WEB_PORT="${WEB_PORT:-9999}"
 HTTP_PROBE_URL="${HTTP_PROBE_URL:-http://127.0.0.1:9999/login.html}"
-NET_IFACE="${NET_IFACE:-eth0}"
+NET_IFACE="${NET_IFACE:-end0}"
 # REQUIRED_PROCS — отсутствие любого из них на FAIL_THRESHOLD подряд → reboot.
 # Кладём сюда ТОЛЬКО критичную для управления плитой инфраструктуру.
 # mplc4 здесь НЕТ умышленно: на части плат он по дизайну отключён,

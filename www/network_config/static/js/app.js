@@ -572,7 +572,7 @@ function applyUptimeStatus(d) {
   setText('uptime-val', d.uptime_str || fmtUptime(d.uptime_sec));
 }
 
-/** missingFallback — если operstate нет в JSON (старый status.cgi), не показывать «Нет адаптера» для реального eth0. */
+/** missingFallback — если operstate нет в JSON (старый status.cgi), не показывать «Нет адаптера» для реального end0. */
 function applyEthIfaceState(spanId, operstate, missingFallback) {
   const el = document.getElementById(spanId);
   if (!el) return;
@@ -597,16 +597,16 @@ function applyEthIfaceState(spanId, operstate, missingFallback) {
 }
 
 function applyNetworkStatus(d) {
-  applyEthIfaceState('eth0-state', d.eth0_operstate, 'unknown');
-  applyEthIfaceState('eth1-state', d.eth1_operstate);
-  setText('eth0-traf', 'RX ' + fmtBytes(d.net_rx_bytes || 0) + '  TX ' + fmtBytes(d.net_tx_bytes || 0));
-  setText('eth1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
-  const ip0 = (d.eth0_ip !== undefined && d.eth0_ip !== null) ? String(d.eth0_ip).trim() : '';
-  const ip1 = (d.eth1_ip !== undefined && d.eth1_ip !== null) ? String(d.eth1_ip).trim() : '';
-  const m0 = (d.eth0_mode !== undefined && d.eth0_mode !== null) ? String(d.eth0_mode).trim().toLowerCase() : '';
-  const m1 = (d.eth1_mode !== undefined && d.eth1_mode !== null) ? String(d.eth1_mode).trim().toLowerCase() : '';
-  setText('eth0-ip', ip0 ? ip0 : (m0 === 'dhcp' ? 'DHCP' : '—'));
-  setText('eth1-ip', ip1 ? ip1 : (m1 === 'dhcp' ? 'DHCP' : '—'));
+  applyEthIfaceState('end0-state', d.end0_operstate, 'unknown');
+  applyEthIfaceState('end1-state', d.end1_operstate);
+  setText('end0-traf', 'RX ' + fmtBytes(d.net_rx_bytes || 0) + '  TX ' + fmtBytes(d.net_tx_bytes || 0));
+  setText('end1-traf', 'RX ' + fmtBytes(d.net1_rx_bytes || 0) + '  TX ' + fmtBytes(d.net1_tx_bytes || 0));
+  const ip0 = (d.end0_ip !== undefined && d.end0_ip !== null) ? String(d.end0_ip).trim() : '';
+  const ip1 = (d.end1_ip !== undefined && d.end1_ip !== null) ? String(d.end1_ip).trim() : '';
+  const m0 = (d.end0_mode !== undefined && d.end0_mode !== null) ? String(d.end0_mode).trim().toLowerCase() : '';
+  const m1 = (d.end1_mode !== undefined && d.end1_mode !== null) ? String(d.end1_mode).trim().toLowerCase() : '';
+  setText('end0-ip', ip0 ? ip0 : (m0 === 'dhcp' ? 'DHCP' : '—'));
+  setText('end1-ip', ip1 ? ip1 : (m1 === 'dhcp' ? 'DHCP' : '—'));
   if (d.ip) setText('tb-ip', d.ip);
 }
 
@@ -1377,21 +1377,21 @@ function loadConfig() {
     .then(d => {
       configLoaded = true;
       invalidateGaugeArcCache();
-      /* eth0 */
-      const eth0en = document.getElementById('eth0-en');
-      if (eth0en) eth0en.checked = !!(d.eth0 && d.eth0.enabled);
-      setVal('f-ip',   d.eth0?.ip || '');
-      setVal('f-mask', d.eth0?.netmask || '');
-      setVal('f-gw',   d.eth0?.gateway || '');
-      setVal('f-dns',  d.eth0?.dns || '');
+      /* end0 */
+      const eth0en = document.getElementById('end0-en');
+      if (eth0en) eth0en.checked = !!(d.end0 && d.end0.enabled);
+      setVal('f-ip',   d.end0?.ip || '');
+      setVal('f-mask', d.end0?.netmask || '');
+      setVal('f-gw',   d.end0?.gateway || '');
+      setVal('f-dns',  d.end0?.dns || '');
       toggleEth0Fields();
-      /* eth1 */
-      const eth1en = document.getElementById('eth1-en');
-      if (eth1en) eth1en.checked = d.eth1?.enabled || false;
-      setVal('f-ip1',   d.eth1?.ip || '');
-      setVal('f-mask1', d.eth1?.netmask || '');
-      setVal('f-gw1',   d.eth1?.gateway || '');
-      setVal('f-dns1',  d.eth1?.dns || '');
+      /* end1 */
+      const eth1en = document.getElementById('end1-en');
+      if (eth1en) eth1en.checked = d.end1?.enabled || false;
+      setVal('f-ip1',   d.end1?.ip || '');
+      setVal('f-mask1', d.end1?.netmask || '');
+      setVal('f-gw1',   d.end1?.gateway || '');
+      setVal('f-dns1',  d.end1?.dns || '');
       toggleEth1Fields();
       /* time */
       timeZoneSelectApplyFromDeviceOrBrowser(document.getElementById('f-tz'), d.timezone);
@@ -1409,8 +1409,8 @@ function loadConfig() {
 function setVal(id, val) { const e = document.getElementById(id); if (e) e.value = val; }
 
 function toggleEth0Fields() {
-  const en = document.getElementById('eth0-en');
-  const wrap = document.getElementById('eth0-fields');
+  const en = document.getElementById('end0-en');
+  const wrap = document.getElementById('end0-fields');
   if (en && wrap) {
     wrap.style.opacity = en.checked ? '1' : '.4';
     wrap.style.pointerEvents = en.checked ? '' : 'none';
@@ -1418,8 +1418,8 @@ function toggleEth0Fields() {
 }
 
 function toggleEth1Fields() {
-  const en = document.getElementById('eth1-en');
-  const wrap = document.getElementById('eth1-fields');
+  const en = document.getElementById('end1-en');
+  const wrap = document.getElementById('end1-fields');
   if (en && wrap) {
     wrap.style.opacity = en.checked ? '1' : '.4';
     wrap.style.pointerEvents = en.checked ? '' : 'none';
@@ -1430,30 +1430,30 @@ function toggleEth1Fields() {
    FORM SUBMISSION — network / time
    ══════════════════════════════════════════════════════════════════════════ */
 function initForms() {
-  /* eth0 */
+  /* end0 */
   const f0 = document.getElementById('net-form');
   if (f0) f0.addEventListener('submit', e => {
     e.preventDefault();
-    const en = document.getElementById('eth0-en')?.checked;
+    const en = document.getElementById('end0-en')?.checked;
     if (en) {
       if (!validateNetForm(f0)) return;
       if (!document.getElementById('f-ip')?.value.trim() || !document.getElementById('f-mask')?.value.trim()) {
-        toast('Укажите IP и маску для eth0', 'error');
+        toast('Укажите IP и маску для end0', 'error');
         return;
       }
     }
-    submitForm(f0, () => { configLoaded = false; toast('Настройки eth0 применены. Перезагрузите сеть.', 'success'); });
+    submitForm(f0, () => { configLoaded = false; toast('Настройки end0 применены. Перезагрузите сеть.', 'success'); });
   });
 
-  /* eth1 */
-  const f1 = document.getElementById('net-form-eth1');
+  /* end1 */
+  const f1 = document.getElementById('net-form-end1');
   if (f1) f1.addEventListener('submit', e => {
     e.preventDefault();
-    const en = document.getElementById('eth1-en')?.checked;
+    const en = document.getElementById('end1-en')?.checked;
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
-      toast('Укажите IP для eth1', 'error'); return;
+      toast('Укажите IP для end1', 'error'); return;
     }
-    submitForm(f1, () => { configLoaded = false; toast('Настройки eth1 применены.', 'success'); });
+    submitForm(f1, () => { configLoaded = false; toast('Настройки end1 применены.', 'success'); });
   });
 
   /* time */
@@ -1463,19 +1463,19 @@ function initForms() {
     submitForm(ft, () => toast('Время/таймзона применены', 'success'));
   });
 
-  /* eth0 / eth1 toggles */
-  const eth0en = document.getElementById('eth0-en');
+  /* end0 / end1 toggles */
+  const eth0en = document.getElementById('end0-en');
   if (eth0en) eth0en.addEventListener('change', toggleEth0Fields);
-  const eth1en = document.getElementById('eth1-en');
+  const eth1en = document.getElementById('end1-en');
   if (eth1en) eth1en.addEventListener('change', toggleEth1Fields);
 }
 
 function validateNetForm(form) {
   let ok = true;
   const skipEth0Static =
-    form.id === 'net-form' && !document.getElementById('eth0-en')?.checked;
+    form.id === 'net-form' && !document.getElementById('end0-en')?.checked;
   form.querySelectorAll('input[pattern]').forEach(inp => {
-    if (skipEth0Static && inp.closest('#eth0-fields')) return;
+    if (skipEth0Static && inp.closest('#end0-fields')) return;
     const v = inp.value.trim();
     if (v && !new RegExp('^' + inp.pattern + '$').test(v)) {
       inp.classList.add('invalid'); ok = false;

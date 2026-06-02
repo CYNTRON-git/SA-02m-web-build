@@ -52,7 +52,7 @@ sa02m_serial_profile() {
         return 0
     fi
 
-    if [ -d /sys/class/net/eth1 ]; then
+    if [ -d /sys/class/net/end1 ]; then
         printf '%s\n' "sa02m-2eth"
     else
         printf '%s\n' "sa02m-1eth"

@@ -3,7 +3,7 @@
 # Вызывается из fix-eth.sh после подтверждения IP (PHY уже стабилен).
 # netdev trigger активно опрашивает carrier и включает LED немедленно.
 LED=/sys/class/leds/eth0_link
-IFACE=eth0
+IFACE=end0
 
 [ -d "$LED" ] || exit 0
 

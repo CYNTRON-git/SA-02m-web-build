@@ -1,13 +1,22 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════════
-# sa02m-net-autolink.sh
+# sa02m-net-autolink.sh  — УСТАРЕЛО / DEPRECATED
+#
+# Начиная с образа, где используются стабильные предсказуемые имена end0/end1,
+# этот скрипт не нужен. Ядро само даёт интерфейсам имена по аппаратному пути
+# (end0 = EMAC, end1 = GMAC), не зависящие от MAC. Link-файлы не требуются.
+#
+# Оставлен для совместимости; в новых установках 01-system.sh маскирует
+# sa02m-net-autolink.service и удаляет link-файлы.
+#
+# — — — исходная документация — — —
 # Auto-update systemd-networkd link files when MAC addresses change.
-# Runs before systemd-networkd so renamed interfaces (eth0/eth1) are available
+# Runs before systemd-networkd so renamed interfaces (end0/end1) are available
 # from the first boot on any hardware the image is cloned to.
 #
 # Designed for Cyntron A40i-2Eth:
-#   eth0 → MAC prefix 02:53:xx  (first physical interface)
-#   eth1 → MAC prefix 12:53:xx  (second physical interface, MSB differs)
+#   end0 → MAC prefix 02:53:xx  (first physical interface)
+#   end1 → MAC prefix 12:53:xx  (second physical interface, MSB differs)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 LINK_DIR="/etc/systemd/network"
@@ -16,8 +25,8 @@ LOG_FILE="/var/log/sa02m_net_autolink.log"
 # Link-file definitions: <filename> <link-name> <expected-mac-prefix>
 # Order matters: first match wins for each prefix bucket.
 LINK_FILES=(
-    "10-eth0.link eth0 02:53:"
-    "11-eth1.link eth1 12:53:"
+    "10-end0.link end0 02:53:"
+    "11-end1.link end1 12:53:"
 )
 
 _log() {

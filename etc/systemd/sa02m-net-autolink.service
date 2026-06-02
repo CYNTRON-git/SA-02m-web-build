@@ -1,5 +1,5 @@
 [Unit]
-Description=SA-02m: auto-update network link files on MAC change
+Description=SA-02m: auto-update network link files on MAC change [DEPRECATED: use end0/end1]
 Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
 DefaultDependencies=no
 Before=systemd-networkd.service network-pre.target

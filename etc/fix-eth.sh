@@ -5,7 +5,7 @@
 #
 # Логика: проверяет carrier → IP → ping-target.
 # Если что-то не так — делает ifdown/ifup (читает /etc/network/interfaces.d/).
-# Поддерживает eth0 и eth1 (если существует eth1.conf).
+# Поддерживает end0 и end1 (если существует end1.conf).
 # ═══════════════════════════════════════════════════════════════════════════
 
 LOG_FILE="/var/log/fix-eth.log"
@@ -369,7 +369,7 @@ mkdir -p "$STATE_DIR"
 if [ -n "$1" ]; then
     recover_iface "$1"
 else
-    for conf in /etc/network/interfaces.d/eth*.conf; do
+    for conf in /etc/network/interfaces.d/end*.conf; do
         [ -f "$conf" ] || continue
         iface=$(basename "$conf" .conf)
         recover_iface "$iface"

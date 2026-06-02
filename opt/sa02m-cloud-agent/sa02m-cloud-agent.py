@@ -280,7 +280,7 @@ def collect_metrics() -> dict:
     try:
         with open("/proc/net/dev") as f:
             for line in f:
-                if "eth0:" in line:
+                if "end0:" in line:
                     p = line.split()
                     m["eth0_rx_b"] = int(p[1]); m["eth0_tx_b"] = int(p[9])
                     break
@@ -289,7 +289,7 @@ def collect_metrics() -> dict:
 
     try:
         out = subprocess.check_output(
-            ["ip", "-4", "addr", "show", "eth0"], stderr=subprocess.DEVNULL, timeout=3
+            ["ip", "-4", "addr", "show", "end0"], stderr=subprocess.DEVNULL, timeout=3
         ).decode()
         m["eth0_ip"] = next((p.split("/")[0] for p in out.split() if "." in p and "/" in p), "")
     except Exception:

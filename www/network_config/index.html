@@ -206,20 +206,20 @@
             <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
           </div>
 
-          <!-- Network eth0 -->
+          <!-- Network end0 -->
           <div class="widget">
-            <div class="widget-title">Ethernet 0 (eth0)</div>
-            <div class="widget-sub mono" id="eth0-ip">—</div>
-            <div style="margin-bottom:8px"><span id="eth0-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
-            <div class="mono eth-traffic-line" id="eth0-traf">RX —  TX —</div>
+            <div class="widget-title">Ethernet 0 (end0)</div>
+            <div class="widget-sub mono" id="end0-ip">—</div>
+            <div style="margin-bottom:8px"><span id="end0-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
+            <div class="mono eth-traffic-line" id="end0-traf">RX —  TX —</div>
           </div>
 
-          <!-- Network eth1 -->
+          <!-- Network end1 -->
           <div class="widget">
-            <div class="widget-title">Ethernet 1 (eth1)</div>
-            <div class="widget-sub mono" id="eth1-ip">—</div>
-            <div style="margin-bottom:8px"><span id="eth1-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
-            <div class="mono eth-traffic-line" id="eth1-traf">RX —  TX —</div>
+            <div class="widget-title">Ethernet 1 (end1)</div>
+            <div class="widget-sub mono" id="end1-ip">—</div>
+            <div style="margin-bottom:8px"><span id="end1-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
+            <div class="mono eth-traffic-line" id="end1-traf">RX —  TX —</div>
           </div>
 
           <!-- Load averages -->
@@ -319,16 +319,16 @@
 
         <div class="network-eth-grid">
         <div class="form-section">
-          <h3>Ethernet 0 (eth0)</h3>
+          <h3>Ethernet 0 (end0)</h3>
           <form id="net-form">
-            <input type="hidden" name="net_iface" value="eth0">
+            <input type="hidden" name="net_iface" value="end0">
             <div class="field toggle-field-row">
-              <span class="toggle-field-label">Включить статический адрес на eth0</span>
-              <label class="toggle-inline" aria-label="Статический eth0">
-                <input type="checkbox" class="toggle toggle-wide" id="eth0-en" name="eth0_enable" value="1">
+              <span class="toggle-field-label">Включить статический адрес на end0</span>
+              <label class="toggle-inline" aria-label="Статический end0">
+                <input type="checkbox" class="toggle toggle-wide" id="end0-en" name="end0_enable" value="1">
               </label>
             </div>
-            <div id="eth0-fields" style="opacity:.4;transition:opacity .3s">
+            <div id="end0-fields" style="opacity:.4;transition:opacity .3s">
               <div class="field">
                 <label>IP-адрес</label>
                 <input id="f-ip" name="ip" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.136">
@@ -347,41 +347,41 @@
               </div>
             </div>
             <div class="btn-group">
-              <button type="submit" class="btn btn-primary">Применить eth0</button>
+              <button type="submit" class="btn btn-primary">Применить end0</button>
             </div>
           </form>
         </div>
 
         <div class="form-section">
-          <h3>Ethernet 1 (eth1)</h3>
-          <form id="net-form-eth1">
-            <input type="hidden" name="net_iface" value="eth1">
+          <h3>Ethernet 1 (end1)</h3>
+          <form id="net-form-end1">
+            <input type="hidden" name="net_iface" value="end1">
             <div class="field toggle-field-row">
-              <span class="toggle-field-label">Включить статический адрес на eth1</span>
-              <label class="toggle-inline" aria-label="Включить eth1">
-                <input type="checkbox" class="toggle toggle-wide" id="eth1-en" name="eth1_enable" value="1">
+              <span class="toggle-field-label">Включить статический адрес на end1</span>
+              <label class="toggle-inline" aria-label="Включить end1">
+                <input type="checkbox" class="toggle toggle-wide" id="end1-en" name="end1_enable" value="1">
               </label>
             </div>
-            <div id="eth1-fields" style="opacity:.4;transition:opacity .3s">
+            <div id="end1-fields" style="opacity:.4;transition:opacity .3s">
               <div class="field">
-                <label>IP-адрес eth1</label>
-                <input id="f-ip1" name="ip_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
+                <label>IP-адрес end1</label>
+                <input id="f-ip1" name="ip_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
               </div>
               <div class="field">
                 <label>Маска подсети</label>
-                <input id="f-mask1" name="netmask_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
+                <input id="f-mask1" name="netmask_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
               </div>
               <div class="field">
                 <label>Шлюз</label>
-                <input id="f-gw1" name="gateway_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
+                <input id="f-gw1" name="gateway_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
               </div>
               <div class="field">
                 <label>DNS-серверы</label>
-                <input id="f-dns1" name="dns_eth1" type="text" placeholder="">
+                <input id="f-dns1" name="dns_end1" type="text" placeholder="">
               </div>
             </div>
             <div class="btn-group">
-              <button type="submit" class="btn btn-primary">Применить eth1</button>
+              <button type="submit" class="btn btn-primary">Применить end1</button>
             </div>
           </form>
         </div>

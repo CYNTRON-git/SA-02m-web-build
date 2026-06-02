@@ -2,7 +2,7 @@
 Description=SA-02m network recovery (all configured interfaces)
 Documentation=file:/usr/local/bin/fix-eth.sh
 # Ждём, пока сетевые интерфейсы появятся в ядре
-After=network.target sys-subsystem-net-devices-eth0.device
+After=network.target sys-subsystem-net-devices-end0.device
 # Не запускать при остановке системы
 Conflicts=shutdown.target reboot.target halt.target
 StartLimitIntervalSec=60

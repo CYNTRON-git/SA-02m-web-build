@@ -931,30 +931,30 @@ gather_network_metrics() {
 
     local net0 net1
     ETH0_ST="absent"
-    if [ -d /sys/class/net/eth0 ]; then
-        IFS= read -r ETH0_ST < /sys/class/net/eth0/operstate
+    if [ -d /sys/class/net/end0 ]; then
+        IFS= read -r ETH0_ST < /sys/class/net/end0/operstate
         ETH0_ST=${ETH0_ST:-unknown}
     fi
 
-    net0=($(net_iface_stats eth0))
+    net0=($(net_iface_stats end0))
     NET0_RX=${net0[0]:-0}
     NET0_TX=${net0[1]:-0}
 
     ETH1_ST="absent"
     NET1_RX=0
     NET1_TX=0
-    if [ -d /sys/class/net/eth1 ]; then
-        IFS= read -r ETH1_ST < /sys/class/net/eth1/operstate
+    if [ -d /sys/class/net/end1 ]; then
+        IFS= read -r ETH1_ST < /sys/class/net/end1/operstate
         ETH1_ST=${ETH1_ST:-absent}
-        net1=($(net_iface_stats eth1))
+        net1=($(net_iface_stats end1))
         NET1_RX=${net1[0]:-0}
         NET1_TX=${net1[1]:-0}
     fi
 
-    ETH0_IP=$(iface_ipv4_addr eth0)
-    ETH1_IP=$(iface_ipv4_addr eth1)
-    ETH0_MODE=$(iface_mode eth0)
-    ETH1_MODE=$(iface_mode eth1)
+    ETH0_IP=$(iface_ipv4_addr end0)
+    ETH1_IP=$(iface_ipv4_addr end1)
+    ETH0_MODE=$(iface_mode end0)
+    ETH1_MODE=$(iface_mode end1)
 
     # Для верхней панели оставляем единый IP (первый доступный).
     IP="${ETH0_IP:-}"
@@ -1338,12 +1338,12 @@ print_network_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "eth0_operstate": "${ETH0_ST}",
-  "eth1_operstate": "${ETH1_ST}",
-  "eth0_ip": "${ETH0_IP}",
-  "eth1_ip": "${ETH1_IP}",
-  "eth0_mode": "${ETH0_MODE}",
-  "eth1_mode": "${ETH1_MODE}",
+  "end0_operstate": "${ETH0_ST}",
+  "end1_operstate": "${ETH1_ST}",
+  "end0_ip": "${ETH0_IP}",
+  "end1_ip": "${ETH1_IP}",
+  "end0_mode": "${ETH0_MODE}",
+  "end1_mode": "${ETH1_MODE}",
   "ip": "${IP}"
 }
 JSON
@@ -1452,12 +1452,12 @@ print_main_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "eth0_operstate": "${ETH0_ST}",
-  "eth1_operstate": "${ETH1_ST}",
-  "eth0_ip": "${ETH0_IP}",
-  "eth1_ip": "${ETH1_IP}",
-  "eth0_mode": "${ETH0_MODE}",
-  "eth1_mode": "${ETH1_MODE}",
+  "end0_operstate": "${ETH0_ST}",
+  "end1_operstate": "${ETH1_ST}",
+  "end0_ip": "${ETH0_IP}",
+  "end1_ip": "${ETH1_IP}",
+  "end0_mode": "${ETH0_MODE}",
+  "end1_mode": "${ETH1_MODE}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
@@ -1543,12 +1543,12 @@ print_core_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "eth0_operstate": "${ETH0_ST}",
-  "eth1_operstate": "${ETH1_ST}",
-  "eth0_ip": "${ETH0_IP}",
-  "eth1_ip": "${ETH1_IP}",
-  "eth0_mode": "${ETH0_MODE}",
-  "eth1_mode": "${ETH1_MODE}",
+  "end0_operstate": "${ETH0_ST}",
+  "end1_operstate": "${ETH1_ST}",
+  "end0_ip": "${ETH0_IP}",
+  "end1_ip": "${ETH1_IP}",
+  "end0_mode": "${ETH0_MODE}",
+  "end1_mode": "${ETH1_MODE}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
@@ -1635,12 +1635,12 @@ print_full_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "eth0_operstate": "${ETH0_ST}",
-  "eth1_operstate": "${ETH1_ST}",
-  "eth0_ip": "${ETH0_IP}",
-  "eth1_ip": "${ETH1_IP}",
-  "eth0_mode": "${ETH0_MODE}",
-  "eth1_mode": "${ETH1_MODE}",
+  "end0_operstate": "${ETH0_ST}",
+  "end1_operstate": "${ETH1_ST}",
+  "end0_ip": "${ETH0_IP}",
+  "end1_ip": "${ETH1_IP}",
+  "end0_mode": "${ETH0_MODE}",
+  "end1_mode": "${ETH1_MODE}",
   "svc_nginx": "${SVC_NGINX}",
   "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",

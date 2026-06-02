@@ -202,8 +202,8 @@ if [ -f "$ETC_REPO/ppp/ip-down.d/sa02m-modem" ]; then
     install -m 755 "$ETC_REPO/ppp/ip-down.d/sa02m-modem" /etc/ppp/ip-down.d/sa02m-modem
 fi
 
-# dhclient exit-hook: metric 100 для USB-модемных интерфейсов (enx*/usb*/eth1+).
-# Предотвращает замену eth0-default маршрута (onlink) модемным маршрутом.
+# dhclient exit-hook: metric 100 для USB-модемных интерфейсов (enx*/usb*/end1+).
+# Предотвращает замену end0-default маршрута (onlink) модемным маршрутом.
 if [ -f "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" ]; then
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
     install -m 755 "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" \
@@ -334,19 +334,18 @@ if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
     sa02m_systemctl enable sa02m-rootfs-expand.service >>"$LOG_FILE" 2>&1 || true
 fi
 
-# ── Автообновление link-файлов при смене MAC (перенос образа на новое железо) ──
-# Запускается ДО systemd-networkd, обновляет /etc/systemd/network/10-eth0.link
-# и 11-eth1.link если обнаруживает, что MAC физических интерфейсов изменились.
-if [ -f "$ETC_REPO/sa02m-net-autolink.sh" ]; then
-    log INFO "Установка sa02m-net-autolink"
-    install -m 755 "$ETC_REPO/sa02m-net-autolink.sh" /usr/local/sbin/sa02m-net-autolink.sh
-    install -m 644 "$ETC_REPO/systemd/sa02m-net-autolink.service" \
-        /etc/systemd/system/sa02m-net-autolink.service
-    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    systemctl enable sa02m-net-autolink.service >> "$LOG_FILE" 2>&1 \
-        && log OK "sa02m-net-autolink установлен и включён" \
-        || log WARN "sa02m-net-autolink не включился"
-fi
+# sa02m-net-autolink — УСТАРЕЛО: ранее обновлял link-файлы 10-eth0.link/11-eth1.link
+# при смене MAC при переносе образа. Начиная с этой версии используются стабильные
+# предсказуемые имена end0/end1 без MAC-based переименования — link-файлы не нужны.
+# Если сервис был установлен ранее — маскируем его.
+for _u in sa02m-net-autolink.service; do
+    systemctl stop    "$_u" 2>/dev/null || true
+    systemctl disable "$_u" 2>/dev/null || true
+    systemctl mask    "$_u" 2>/dev/null || true
+done
+# Удаляем link-файлы, чтобы ядро использовало предсказуемые имена end0/end1.
+rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/11-eth1.link 2>/dev/null || true
+log OK "sa02m-net-autolink отключён; link-файлы удалены — используются end0/end1"
 
 # Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
 # (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
@@ -356,9 +355,9 @@ for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watc
     sa02m_systemctl mask "$u" 2>/dev/null || true
 done
 
-# ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
-# ── ни eth1 (нет cable). Только тормозил boot на 6 секунд.                  ──
-log INFO "Маскируем NetworkManager (eth0/can0/eth1 — unmanaged)"
+# ── Маскировка NetworkManager: не управляет ни end0 (ifupdown), ни can0,    ──
+# ── ни end1 (нет cable). Только тормозил boot на 6 секунд.                  ──
+log INFO "Маскируем NetworkManager (end0/can0/end1 — unmanaged)"
 for u in NetworkManager.service NetworkManager-wait-online.service NetworkManager-dispatcher.service; do
     sa02m_systemctl stop "$u" 2>/dev/null || true
     sa02m_systemctl disable "$u" 2>/dev/null || true
@@ -450,8 +449,8 @@ if [ -n "$ROOT_LAST" ] && [ "$ROOT_LAST" -gt "$CUR_DAYS" ]; then
 fi
 
 # ── DNS fallback: 8.8.8.8 / 8.8.4.4 через resolvconf ───────────────────────
-# ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии eth0.
-# Если eth0 не был явно переподнят (нет reboot), base-файл гарантирует
+# ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии end0.
+# Если end0 не был явно переподнят (нет reboot), base-файл гарантирует
 # что DNS-запросы не падают до первого DHCP-ответа.
 if command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ]; then
     mkdir -p /etc/resolvconf/resolv.conf.d

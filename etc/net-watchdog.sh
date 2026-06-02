@@ -32,13 +32,13 @@ sleep "$STARTUP_DELAY"
 
 while true; do
     # 1. Восстановление интерфейсов (только при потере IP)
-    for conf in /etc/network/interfaces.d/eth*.conf; do
+    for conf in /etc/network/interfaces.d/end*.conf; do
         [ -f "$conf" ] || continue
         iface=$(basename "$conf" .conf)
         "$FIX_SCRIPT" "$iface"
     done
 
-    # 2. Переключение маршрутов по наличию интернета (eth0/eth1 > модем)
+    # 2. Переключение маршрутов по наличию интернета (end0/end1 > модем)
     if [ -x "$FAILOVER_SCRIPT" ]; then
         "$FAILOVER_SCRIPT"
     fi
