@@ -700,6 +700,10 @@ function applyVariantVisibility(variant) {
     const hideFor = el.dataset.hideFor.split(' ');
     el.style.display = hideFor.includes(variant) ? 'none' : '';
   });
+  const title = document.getElementById('device-title');
+  if (title) {
+    title.textContent = variant === 'sa02m-2eth' ? 'СА-02м-2' : 'СА-02м';
+  }
 }
 
 function applyHardwareStatus(d) {
@@ -1983,17 +1987,6 @@ function initThemeToggle() {
 /* ══════════════════════════════════════════════════════════════════════════
    HARDWARE VARIANT
    ══════════════════════════════════════════════════════════════════════════ */
-function showSerialMap(b64) {
-  const el = document.getElementById('serial-map-info');
-  if (!el) return;
-  if (!b64) { el.textContent = ''; return; }
-  try {
-    el.textContent = atob(b64);
-  } catch (_) {
-    el.textContent = '';
-  }
-}
-
 async function loadVariant() {
   try {
     const r = await fetch('/cgi-bin/variant.cgi');
@@ -2001,7 +1994,7 @@ async function loadVariant() {
     const d = await r.json();
     const sel = document.getElementById('hw-variant-select');
     if (sel) sel.value = d.variant || 'sa02m-1eth';
-    showSerialMap(d.serial_map);
+    applyVariantVisibility(d.variant || 'sa02m-1eth');
   } catch (_) {}
 }
 
@@ -2048,6 +2041,7 @@ document.addEventListener('DOMContentLoaded', () => {
   handleUrlStatus();
   hydratePriorityWarmup();
   bindUsbPowerResetButton();
+  loadVariant();
 
   /* Сначала отдельные первые виджеты, потом тяжелее блоки. */
   const scheduleStatus = () => {

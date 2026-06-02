@@ -17,7 +17,7 @@
     <div class="topbar-logo">
       <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН">
       <div>
-        <div class="topbar-title">СА-02м</div>
+        <div class="topbar-title" id="device-title">СА-02м</div>
         <div class="topbar-sub-row">
           <span class="topbar-sub">Сервер автоматизации</span>
           <span class="topbar-ver mono" id="app-version" title="Версия веб-интерфейса"></span>
@@ -93,23 +93,6 @@
 
     <!-- ── Main content ───────────────────────────────────────────────────── -->
     <main class="main">
-
-      <!-- ── HW variant selector (always visible at top) ──────────────────── -->
-      <div class="form-section" id="hw-variant-section" style="margin-bottom:16px">
-        <h3>Аппаратный вариант</h3>
-        <div class="field">
-          <label>Тип устройства</label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <select id="hw-variant-select">
-              <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
-              <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
-            </select>
-            <button type="button" class="btn btn-primary" id="apply-variant-btn">Применить</button>
-            <span id="variant-status" style="font-size:.85rem"></span>
-          </div>
-        </div>
-        <div id="serial-map-info" style="margin-top:10px;font-size:.8rem;color:var(--text-sec);font-family:monospace;white-space:pre-wrap;max-height:120px;overflow:auto"></div>
-      </div>
 
       <!-- ═══════════════════════════════ DASHBOARD ══════════════════════ -->
       <div id="tab-dashboard" class="tab-pane active">
@@ -463,6 +446,23 @@
 
       <!-- ═══════════════════════════════ SYSTEM ════════════════════════ -->
       <div id="tab-system" class="tab-pane">
+
+        <!-- ── HW variant selector ──────────────────────────────────────── -->
+        <div class="form-section" id="hw-variant-section" style="margin-bottom:16px">
+          <h3>Аппаратный вариант</h3>
+          <div class="field">
+            <label>Тип устройства</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <select id="hw-variant-select">
+                <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
+                <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
+              </select>
+              <button type="button" class="btn btn-primary" id="apply-variant-btn">Применить</button>
+              <span id="variant-status" style="font-size:.85rem"></span>
+            </div>
+          </div>
+        </div>
+
         <div class="page-header">
           <h2>Управление системой</h2>
           <p>Службы, перезагрузка и журнал событий</p>
