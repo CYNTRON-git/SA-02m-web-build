@@ -21,7 +21,7 @@ log() {
 }
 
 sa02m_hw_variant() {
-    # Priority: env var → config file → autodetect by physical Ethernet count
+    # Priority: env var → config file → default sa02m-1eth (no autodetect — A40i always has 2 MACs)
     case "${SA02M_HW_VARIANT:-}" in
         sa02m-1eth|sa02m-2eth) printf '%s\n' "${SA02M_HW_VARIANT}"; return 0 ;;
     esac
@@ -32,15 +32,7 @@ sa02m_hw_variant() {
             sa02m-1eth|sa02m-2eth) printf '%s\n' "$v"; return 0 ;;
         esac
     fi
-    local count=0
-    for iface in /sys/class/net/end*/device; do
-        [ -e "$iface" ] && count=$((count+1))
-    done
-    if [ "$count" -ge 2 ]; then
-        printf '%s\n' "sa02m-2eth"
-    else
-        printf '%s\n' "sa02m-1eth"
-    fi
+    printf '%s\n' "sa02m-1eth"
 }
 
 sa02m_default_ip() {
@@ -89,11 +81,7 @@ sa02m_serial_profile() {
         return 0
     fi
 
-    if [ -d /sys/class/net/end1 ]; then
-        printf '%s\n' "sa02m-2eth"
-    else
-        printf '%s\n' "sa02m-1eth"
-    fi
+    sa02m_hw_variant
 }
 
 sa02m_serial_targets() {
