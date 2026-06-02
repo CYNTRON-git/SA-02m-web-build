@@ -20,6 +20,43 @@ log() {
     echo    "[${ts}] [${level}] ${msg}" >> "$LOG_FILE" 2>/dev/null || true
 }
 
+sa02m_hw_variant() {
+    # Priority: env var → config file → autodetect by physical Ethernet count
+    case "${SA02M_HW_VARIANT:-}" in
+        sa02m-1eth|sa02m-2eth) printf '%s\n' "${SA02M_HW_VARIANT}"; return 0 ;;
+    esac
+    local conf=/etc/sa02m_hw_variant.conf
+    if [ -f "$conf" ]; then
+        local v; v=$(awk -F= '/^SA02M_HW_VARIANT=/{gsub(/^[ \t"]+|[ \t"]+$/,"",$2);print $2;exit}' "$conf" 2>/dev/null)
+        case "$v" in
+            sa02m-1eth|sa02m-2eth) printf '%s\n' "$v"; return 0 ;;
+        esac
+    fi
+    local count=0
+    for iface in /sys/class/net/end*/device; do
+        [ -e "$iface" ] && count=$((count+1))
+    done
+    if [ "$count" -ge 2 ]; then
+        printf '%s\n' "sa02m-2eth"
+    else
+        printf '%s\n' "sa02m-1eth"
+    fi
+}
+
+sa02m_default_ip() {
+    case "$(sa02m_hw_variant)" in
+        sa02m-2eth) printf '%s\n' "192.168.0.136" ;;
+        *)           printf '%s\n' "192.168.1.136" ;;
+    esac
+}
+
+sa02m_default_gw() {
+    case "$(sa02m_hw_variant)" in
+        sa02m-2eth) printf '%s\n' "192.168.0.1" ;;
+        *)           printf '%s\n' "192.168.1.1" ;;
+    esac
+}
+
 sa02m_board_model() {
     tr -d '\0' < /proc/device-tree/model 2>/dev/null \
         || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null \

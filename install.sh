@@ -10,25 +10,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export LOG_FILE="/var/log/sa02m_install.log"
 
 # ── Parse arguments ────────────────────────────────────────────────────────
-export IP_ADDRESS="192.168.1.136"
 export NETMASK="255.255.255.0"
-export GATEWAY="192.168.1.1"
 export DNS_SERVERS="77.88.8.8 77.88.8.1"
 export NET_IFACE="end0"
 export PORT="9999"
 export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
 export SA02M_SERIAL_PROFILE=""
+export SA02M_HW_VARIANT=""
+# IP_ADDRESS and GATEWAY are resolved after lib.sh is sourced (variant-aware defaults)
+_ARG_IP=""
+_ARG_GW=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --ip)     IP_ADDRESS="$2";  shift 2 ;;
-        --mask)   NETMASK="$2";     shift 2 ;;
-        --gw)     GATEWAY="$2";     shift 2 ;;
-        --port)   PORT="$2";        shift 2 ;;
-        --pass)   ADMIN_PASS="$2";  shift 2 ;;
+        --ip)      _ARG_IP="$2";             shift 2 ;;
+        --mask)    NETMASK="$2";             shift 2 ;;
+        --gw)      _ARG_GW="$2";             shift 2 ;;
+        --port)    PORT="$2";                shift 2 ;;
+        --pass)    ADMIN_PASS="$2";          shift 2 ;;
         --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
-        *)        shift ;;
+        --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
+        *)         shift ;;
     esac
 done
 
@@ -40,12 +43,23 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') Установка СА-02м начата" >>
 source "$SCRIPT_DIR/scripts/lib.sh"
 check_root
 
+# Persist variant if explicitly provided, then resolve IP/GW defaults
+if [ -n "$SA02M_HW_VARIANT" ]; then
+    printf 'SA02M_HW_VARIANT=%s\n' "$SA02M_HW_VARIANT" > /etc/sa02m_hw_variant.conf
+    chmod 644 /etc/sa02m_hw_variant.conf
+fi
+export IP_ADDRESS="${_ARG_IP:-$(sa02m_default_ip)}"
+export GATEWAY="${_ARG_GW:-$(sa02m_default_gw)}"
+HW_VARIANT=$(sa02m_hw_variant)
+
 echo ""
 echo "  ╔══════════════════════════════════════╗"
 echo "  ║   СА-02м  Installer  v1.0.3          ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
+echo "  Вариант: $HW_VARIANT"
 echo "  IP    : $IP_ADDRESS"
+echo "  Шлюз  : $GATEWAY"
 echo "  PORT  : $PORT"
 echo "  LOG   : $LOG_FILE"
 echo ""

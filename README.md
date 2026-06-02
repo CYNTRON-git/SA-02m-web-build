@@ -15,6 +15,33 @@
 | **СА-02м-2** | 4×RS-485, uSD, USB, RTC, 2×Eth | [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/) |
 | **A40i-2eth** | Процессорный модуль (SoM), производство Россия | [cyntron.ru](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) |
 
+### Аппаратные варианты SA-02m / SA-02m-2
+
+Установщик и образ **универсальны** — вариант определяется автоматически по числу физических Ethernet-интерфейсов.
+
+| Параметр | SA-02m (1-eth) | SA-02m-2 (2-eth) |
+|---|---|---|
+| Ethernet | 1 порт (end0) | 2 порта (end0 + end1) |
+| IP end0 по умолчанию | `192.168.1.136` | `192.168.0.136` |
+| Шлюз по умолчанию | `192.168.1.1` | `192.168.0.1` |
+| end1 | — | DHCP (metric 100) |
+| COM-портов | 5 (ttyS0+S3+S4+S5+S7) | 4 (ttyS3+S4+S5+S7) |
+| Serial профиль | `sa02m-1eth` | `sa02m-2eth` |
+| Конфиг варианта | `/etc/sa02m_hw_variant.conf` | то же |
+
+Вариант можно задать явно при установке:
+
+```bash
+sudo ./install.sh --variant sa02m-1eth   # SA-02m  (1 Ethernet)
+sudo ./install.sh --variant sa02m-2eth   # SA-02m-2 (2 Ethernet)
+```
+
+Или записать в файл вручную:
+
+```bash
+echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
+```
+
 ---
 
 ## Содержание
@@ -413,9 +440,11 @@ systemctl reload nginx
 ```bash
 sudo ./install.sh [ПАРАМЕТРЫ]
 
-  --ip   <addr>    IP-адрес end0              (по умолчанию: 192.168.1.136)
+  --variant <v>    Аппаратный вариант: sa02m-1eth | sa02m-2eth
+                   (по умолчанию: автодетект по числу физических Ethernet)
+  --ip   <addr>    IP-адрес end0              (по умолчанию: зависит от --variant)
   --mask <mask>    Маска подсети               (по умолчанию: 255.255.255.0)
-  --gw   <gw>      Шлюз по умолчанию          (по умолчанию: 192.168.1.1)
+  --gw   <gw>      Шлюз по умолчанию          (по умолчанию: зависит от --variant)
   --port <port>    Порт nginx                  (по умолчанию: 9999)
   --pass <pass>    Пароль пользователя admin   (по умолчанию: cyntron)
 ```

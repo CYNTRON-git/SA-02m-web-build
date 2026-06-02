@@ -984,6 +984,46 @@ sudo ./install.sh --ip 192.168.1.136 --pass cyntron --serial-profile sa02m-1eth
 
 На стенде с **двумя Ethernet** (eth1 присутствует) установщик может ошибочно выбрать `sa02m-2eth`, даже если изделие **1eth**. На доноре для образа **1eth** профиль задавайте **явно** — см. [`SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md`](SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md).
 
+### Автодетект варианта (универсальный образ)
+
+Начиная с версии 1.0.3.22 образ и установщик **универсальны**: вариант определяется автоматически по числу физических Ethernet-интерфейсов (`/sys/class/net/end*/device`).
+
+#### Приоритет определения
+
+1. Переменная окружения `SA02M_HW_VARIANT=sa02m-1eth|sa02m-2eth`
+2. Файл `/etc/sa02m_hw_variant.conf` (строка `SA02M_HW_VARIANT=…`)
+3. Автодетект: ≥2 физических `end*` → `sa02m-2eth`, иначе `sa02m-1eth`
+
+#### Фиксация варианта при установке
+
+```bash
+# SA-02m (1 Ethernet):
+sudo ./install.sh --variant sa02m-1eth
+
+# SA-02m-2 (2 Ethernet):
+sudo ./install.sh --variant sa02m-2eth
+```
+
+#### Ручная запись конфига на устройстве
+
+```bash
+echo 'SA02M_HW_VARIANT=sa02m-1eth' > /etc/sa02m_hw_variant.conf  # донор 192.168.1.136
+echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf  # SA-02m-2 192.168.1.113
+```
+
+#### Что настраивается автоматически по варианту
+
+| Параметр | sa02m-1eth | sa02m-2eth |
+|---|---|---|
+| IP end0 | `192.168.1.136` | `192.168.0.136` |
+| Шлюз | `192.168.1.1` | `192.168.0.1` |
+| end1 | — | DHCP (metric 100) |
+| COM-портов | 5 (ttyS0+S3+S4+S5+S7) | 4 (ttyS3+S4+S5+S7) |
+
+#### Шаблон конфига
+
+Репозиторий содержит шаблон `/etc/sa02m_hw_variant.conf` → файл `etc/sa02m_hw_variant.conf` в корне репо. Устанавливается скриптами 01-system.sh.
+
 ### Именование образов
 
 ```
@@ -1103,3 +1143,4 @@ chmod 600 ~/.ssh/sa02m_sa02
 | 1.0 | 2026-05-20 | Первоначальная версия: диагностика 192.168.1.136, скрипты tools/imaging/, PiShrink pipeline |
 | 1.1 | 2026-05-20 | Аудит эталона, профили 1eth/2eth, manifest, SSH/Windows, roadmap |
 | 1.2 | 2026-05-20 | `prepare-flash-media.sh`; make-image: `--profile`, `--version`, auto manifest |
+| 1.3 | 2026-06-02 | Универсальный образ SA-02m/SA-02m-2: автодетект варианта, `--variant`, auto IP/GW |

@@ -24,6 +24,14 @@ if [ -f "$ETC_REPO/sa02m-dbus-recover.sh" ]; then
     install -m 755 "$ETC_REPO/sa02m-dbus-recover.sh" /usr/local/sbin/sa02m-dbus-recover
 fi
 
+# ── Persist hardware variant ───────────────────────────────────────────────
+HW_VARIANT=$(sa02m_hw_variant)
+if [ ! -f /etc/sa02m_hw_variant.conf ] || [ -n "${SA02M_HW_VARIANT:-}" ]; then
+    printf 'SA02M_HW_VARIANT=%s\n' "$HW_VARIANT" > /etc/sa02m_hw_variant.conf
+    chmod 644 /etc/sa02m_hw_variant.conf
+    log INFO "Аппаратный вариант: $HW_VARIANT"
+fi
+
 SERIAL_PROFILE_CONF=/etc/sa02m_serial_profile.conf
 if [ -n "${SA02M_SERIAL_PROFILE:-}" ]; then
     printf 'SA02M_SERIAL_PROFILE=%s\n' "$SA02M_SERIAL_PROFILE" > "$SERIAL_PROFILE_CONF"

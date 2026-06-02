@@ -8,9 +8,9 @@ check_root
 
 log INFO "=== [02] Настройка сети ==="
 
-: "${IP_ADDRESS:=192.168.1.136}"
+: "${IP_ADDRESS:=$(sa02m_default_ip)}"
 : "${NETMASK:=255.255.255.0}"
-: "${GATEWAY:=192.168.1.1}"
+: "${GATEWAY:=$(sa02m_default_gw)}"
 : "${DNS_SERVERS:=77.88.8.8 77.88.8.1}"
 : "${NET_IFACE:=end0}"
 
@@ -35,6 +35,16 @@ iface end0 inet static
     gateway $GATEWAY
     dns-nameservers $DNS_SERVERS
 END0
+
+# ── end1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
+if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/end1.conf ]; then
+    cat > /etc/network/interfaces.d/end1.conf <<'END1'
+auto end1
+iface end1 inet dhcp
+    metric 100
+END1
+    log OK "end1 DHCP конфиг создан"
+fi
 
 # ── Network watchdog deployment ────────────────────────────────────────────
 ETC_DIR="$SCRIPT_DIR/../etc"
