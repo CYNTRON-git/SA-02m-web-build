@@ -9,7 +9,7 @@ Wants=fcgiwrap.service
 Type=simple
 User=sa02m-flasher
 Group=sa02m-flasher
-SupplementaryGroups=dialout
+SupplementaryGroups=dialout www-data
 WorkingDirectory=/opt/sa02m-flasher
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=/opt/sa02m-flasher

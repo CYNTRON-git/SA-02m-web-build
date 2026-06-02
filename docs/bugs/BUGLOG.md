@@ -4,6 +4,46 @@
 Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
 Новые записи добавляются **сверху**.
 
+## [2026-06-02 11:33] branch: 1.0.3.22
+
+**Файл(ы):** `etc/fix-eth.sh`
+**Тип:** Логическая ошибка
+**Описание:** После перезагрузки на SA-02m-2 (2 Ethernet) default route для DHCP-интерфейса end1 исчезал после первого запуска net-watchdog (~60 сек после boot).
+**Причина:** fix-eth.sh содержал "early link bounce" (ip link set end1 down/up), который сбрасывал kernel-маршруты. После bounce dhclient переходил в RENEW/REBIND и не всегда переустанавливал default route. В репозиторной версии bounce уже был убран, но на устройстве оставалась старая версия скрипта.
+**Исправление:** 1) Развёрнута актуальная версия fix-eth.sh (без bounce). 2) Добавлена проверка: если DHCP-интерфейс имеет IP но нет default route, восстанавливать маршрут из lease-файла `/var/lib/dhcp/dhclient.<iface>.leases`.
+
+---
+
+## [2026-06-02 11:33] branch: 1.0.3.22
+
+**Файл(ы):** `/etc/init.d/start_nodered`, `/etc/fstab`, `systemd`
+**Тип:** Некорректное поведение (failed services)
+**Описание:** На новом устройстве 3 failed сервиса: `start_nodered` (init-скрипт с синтаксической ошибкой), `postfix` (не нужен), `smartd` (нет SMART-дисков). Дублирующиеся записи в `/etc/fstab` для `/dev/sda1`.
+**Причина:** Node-RED был удалён, но init-скрипт `/etc/init.d/start_nodered` остался. postfix и smartd установились как зависимости. fstab имел две записи для USB (ntfs-3g и exfat).
+**Исправление:** Удалён `/etc/init.d/start_nodered`, postfix и smartd замаскированы, fstab приведён в соответствие с донором (только exfat для USB).
+
+---
+
+## [2026-06-02 11:33] branch: 1.0.3.22
+
+**Файл(ы):** `/etc/systemd/system/sa02m-userspace-watchdog.service`
+**Тип:** Отсутствующий компонент
+**Описание:** На новом устройстве отсутствовал service-файл `sa02m-userspace-watchdog.service`, сервис не запускался.
+**Причина:** При установке сервис не был скопирован (установщик не включал его явно).
+**Исправление:** Скопирован с донора, включён через `systemctl enable --now`.
+
+---
+
+## [2026-06-02 10:37] branch: 1.0.3.22
+
+**Файл(ы):** `.tmp/debug_eth.py` (история git), `.gitignore`
+**Тип:** Другое (утечка секрета / GitGuardian)
+**Описание:** GitGuardian: в репозитории обнаружен `chpasswd` с парой `root:cyntron` (push 2026-06-02 ~06:23 UTC).
+**Причина:** В коммите `4cf136e` в git попала папка `.tmp/` с отладочным скриптом `echo 'root:cyntron' | chpasswd`; удаление из индекса в `36883a0` не стирало историю.
+**Исправление:** `git filter-repo --path .tmp --invert-paths` — каталог `.tmp/` вырезан из всей истории; локальный `debug_eth.py` переведён на переменные окружения без паролей в коде. Требуется `git push --force-with-lease` и смена пароля root на устройствах.
+
+---
+
 ## [2026-06-02 10:10] branch: 1.0.3.22
 
 **Файл(ы):** `www/network_config/index.html`, `www/network_config/static/js/app.js`

@@ -51,8 +51,29 @@ if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/
 auto end1
 iface end1 inet dhcp
     metric 100
+    post-up ip route replace default via 192.168.1.1 dev end1 metric 100 || true
 END1
     log OK "end1 DHCP конфиг создан"
+fi
+
+# ── end1 DHCP: принудительный default route при RFC3442 (option 121) ─────────
+# Некоторые DHCP-серверы шлют option 121 (classless static routes), что заставляет
+# dhclient-script игнорировать option 3 (routers) согласно RFC3442.
+# Хук гарантирует, что default route через DHCP-шлюз будет применён всегда.
+if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
+    mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+    cat > /etc/dhcp/dhclient-exit-hooks.d/end1-default-route <<'HOOK'
+#!/bin/sh
+if [ "$interface" = "end1" ] && [ -n "$new_routers" ]; then
+    case "$reason" in
+        BOUND|RENEW|REBIND|REBOOT)
+            ip route replace default via $new_routers dev end1 metric 100 2>/dev/null || true
+            ;;
+    esac
+fi
+HOOK
+    chmod 755 /etc/dhcp/dhclient-exit-hooks.d/end1-default-route
+    log OK "dhclient exit hook для end1 default route установлен"
 fi
 
 # ── Network watchdog deployment ────────────────────────────────────────────

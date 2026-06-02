@@ -251,25 +251,9 @@ recover_iface() {
         return 0
     fi
 
-    # 2. Ранний link bounce при ПЕРВОМ появлении carrier — до bootstrap check!
-    #    Выполняется ПРЕЖДЕ чем networking.service назначит IP, поэтому peer
-    #    (коммутатор/Windows) видит carrier loss и сбрасывает ARP-кэш.
-    #    Когда затем arp_notify=1 пошлёт grat-ARP при RTM_NEWADDR, peer его примет.
-    local bounce_marker="${STATE_DIR}/${iface}.bounce_done"
-    if [ ! -f "$bounce_marker" ]; then
-        touch "$bounce_marker"
-        ip link set "$iface" down 2>/dev/null || true
-        sleep 0.1
-        ip link set "$iface" up   2>/dev/null || true
-        sleep 0.2
-        # LED: udev-правило 99-lan-recovery.rules вызовет sa02m-eth0-led.sh
-        # при следующем carrier=1 и корректно установит netdev trigger.
-        # Здесь ничего не делаем — PHY trigger не читает текущее состояние.
-    fi
-
-    # 3. Если networking.service ещё назначает IP — не мешаем, bounce уже выполнен.
+    # 2. Если networking.service ещё назначает IP — не мешаем.
     if iface_bootstrap_in_progress "$iface"; then
-        log INFO "$iface: ifupdown в процессе, IP-recovery пропущен (bounce выполнен)"
+        log INFO "$iface: ifupdown в процессе, IP-recovery пропущен"
         # LED: PHY сбросит trigger после link-up; ставим с задержкой 5с в фоне —
         # к этому моменту PHY уже стабилен и networking назначил IP.
         ( sleep 5; [ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh ) &
@@ -277,12 +261,26 @@ recover_iface() {
         return 0
     fi
 
-    # 4. Нет IP-адреса — единственная причина для ifdown/ifup.
+    # 3. Нет IP-адреса — единственная причина для ifdown/ifup.
     #    Недоступность шлюза/интернета НЕ является поводом для сброса интерфейса.
     if ! has_ip "$iface"; then
         log WARN "$iface: нет IP-адреса"
     else
         # IP есть — только логируем состояние шлюза, восстановление не нужно.
+        # Для DHCP-интерфейсов: проверяем наличие default route (может пропасть
+        # после link bounce / перезагрузки сети) и восстанавливаем из lease-файла.
+        local iface_type
+        iface_type=$(awk '/^[[:space:]]*iface[[:space:]]/{print $4; exit}' "$conf" 2>/dev/null)
+        if [ "$iface_type" = "dhcp" ] && ! ip route show default dev "$iface" | grep -q .; then
+            local gw metric
+            gw=$(awk '/option routers/{gsub(/;/,"",$3); print $3; exit}' \
+                 "/var/lib/dhcp/dhclient.${iface}.leases" 2>/dev/null)
+            metric=$(awk '/^[[:space:]]*metric/{print $2; exit}' "$conf" 2>/dev/null)
+            if [ -n "$gw" ]; then
+                log INFO "$iface: маршрут по умолчанию отсутствует, восстанавливаем via ${gw}"
+                ip route add default via "$gw" dev "$iface" ${metric:+metric $metric} 2>/dev/null || true
+            fi
+        fi
         check_connectivity "$iface"
         # Gratuitous ARP burst: каждую секунду 15с — перекрывает окно когда
         # Windows выходит из ARP FAILED (~15-20с от device offline).
