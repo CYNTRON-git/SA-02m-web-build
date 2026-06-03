@@ -2,7 +2,7 @@
 Description=SA-02m early start (USB power, optional DS3231 RTC, PCA9536 beep)
 DefaultDependencies=no
 After=systemd-modules-load.service systemd-udevd.service
-Before=time-set.target time-sync.target
+Before=time-set.target time-sync.target networking.service
 Wants=systemd-udevd.service
 
 [Service]
