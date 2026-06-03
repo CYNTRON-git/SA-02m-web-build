@@ -17,11 +17,6 @@ if "dc1sw {" in s:
         )
     s = head + "dc1sw {" + body + "};" + tail
 
-# PHY reset-deassert-us: 500 ms for both GMAC and EMAC PHYs.
-# IP101A cold-boot: oscillator + PLL need adequate time after reset deassert
-# before MDIO access; 200 ms was insufficient on production boards.
-s = re.sub(r'reset-deassert-us\s*=\s*<0x[0-9a-f]+>', 'reset-deassert-us = <0x0007a120>', s)
-
 # i2c@1c2b800: должен быть okay (pre-start + PCA9536); unbind — через udev на platform
 node_start = s.find("i2c@1c2b800 {")
 if node_start >= 0:

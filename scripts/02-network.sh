@@ -120,9 +120,30 @@ if [ -f "$ETC_DIR/sa02m_network.conf" ] && [ ! -f /etc/sa02m_network.conf ]; the
     install -m 644 "$ETC_DIR/sa02m_network.conf" /etc/sa02m_network.conf
 fi
 
+if [ -f "$ETC_DIR/sa02m-end1-coldboot.sh" ]; then
+    log INFO "Установка sa02m-end1-coldboot.sh"
+    install -m 755 "$ETC_DIR/sa02m-end1-coldboot.sh" /usr/local/bin/sa02m-end1-coldboot.sh
+fi
+
+if [ -f "$ETC_DIR/systemd/sa02m-end1-coldboot.service" ]; then
+    log INFO "Установка sa02m-end1-coldboot.service"
+    install -m 644 "$ETC_DIR/systemd/sa02m-end1-coldboot.service" \
+        /etc/systemd/system/sa02m-end1-coldboot.service
+fi
+
+# Remove legacy phy-coldboot service if still present on this system
+if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
+    systemctl stop sa02m-phy-coldboot 2>/dev/null || true
+    systemctl disable sa02m-phy-coldboot 2>/dev/null || true
+    rm -f /etc/systemd/system/sa02m-phy-coldboot.service
+    log INFO "Удалён устаревший sa02m-phy-coldboot.service"
+fi
+rm -f /usr/local/bin/sa02m-phy-coldboot.sh
+
 systemctl daemon-reload
 udevadm control --reload-rules 2>/dev/null || true
 svc_enable net-watchdog
+svc_enable sa02m-end1-coldboot
 log OK "Network watchdog активирован"
 
 # ── Apply now ─────────────────────────────────────────────────────────────

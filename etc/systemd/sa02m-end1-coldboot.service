@@ -1,0 +1,12 @@
+[Unit]
+Description=SA-02m: end1 cold-boot autoneg recovery (single ethtool -r if no carrier)
+After=network.target networking.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/bin/sa02m-end1-coldboot.sh
+
+[Install]
+WantedBy=multi-user.target

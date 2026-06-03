@@ -13,7 +13,7 @@ LOG_MAX_BYTES=524288          # 512 KB — ротация лога
 LOCK_DIR="/run/fix-eth"       # lock-файлы для предотвращения параллельных запусков
 STATE_DIR="/run/fix-eth-state"
 RECOVER_COOLDOWN=60           # секунд между восстановлениями одного интерфейса
-MAX_LINK_CYCLES=20            # макс. попыток link cycle при cold-boot PHY (20 × 30с = 10 мин)
+MAX_LINK_CYCLES=5             # макс. попыток link cycle при cold-boot PHY (5 × 30с = 2.5 мин)
 PING_COUNT=2
 PING_TIMEOUT=3
 
@@ -232,51 +232,26 @@ recover_iface() {
     [ -d "/sys/class/net/${iface}" ] || return 0
 
     # 1. Нет физического линка — повторять link cycle до MAX_LINK_CYCLES раз.
-    #    IP101A cold-boot: ip link set down/up НЕ вызывает аппаратный сброс GPIO —
-    #    он происходит только при phy_probe() (bind/unbind драйвера).
-    #    Поэтому используем unbind/rebind для настоящего GPIO-сброса PHY.
-    #    Без кабеля operstate → down только если интерфейс явно поднят;
-    #    счётчик не растёт при unknown/dormant (нет кабеля).
+    #    IP101A на cold boot может требовать нескольких попыток autoneg
+    #    (ядро успевает прочитать MDIO до стабилизации PHY-осциллятора).
+    #    Без кабеля operstate переходит в unknown/dormant после первого up →
+    #    счётчик перестаёт расти, лишних cycl не будет.
     if ! carrier_up "$iface"; then
         local oper; oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
         local _cycle_count_file="${LOCK_DIR}/${iface}.link_cycle_count"
         local _cycle_count; _cycle_count=$(cat "$_cycle_count_file" 2>/dev/null || echo 0)
-        if [ "$oper" = "down" ] && [ "$_cycle_count" -lt "${MAX_LINK_CYCLES:-20}" ]; then
+        if [ "$oper" = "down" ] && [ "$_cycle_count" -lt "${MAX_LINK_CYCLES:-5}" ]; then
             _cycle_count=$(( _cycle_count + 1 ))
             mkdir -p "$LOCK_DIR"
             printf '%s\n' "$_cycle_count" > "$_cycle_count_file"
-
-            # Определяем PHY-устройство MDIO bus для данного интерфейса
-            local phy_dev phy_drv_path
-            case "$iface" in
-                end1) phy_dev="stmmac-1:00" ;;
-                end0) phy_dev="1c0b080.mdio-mii:00" ;;
-                *)    phy_dev="" ;;
-            esac
-            phy_drv_path=$(readlink -f "/sys/bus/mdio_bus/devices/${phy_dev}/driver" 2>/dev/null) || true
-
-            if [ -n "$phy_dev" ] && [ -n "$phy_drv_path" ] && [ -w "${phy_drv_path}/unbind" ]; then
-                # Аппаратный GPIO-сброс PHY через unbind/rebind: вызывает phy_probe()
-                # → phy_device_reset() → GPIO assert (reset-assert-us) → deassert → wait
-                log INFO "$iface: cold-boot PHY hard reset cycle ${_cycle_count}/${MAX_LINK_CYCLES:-20} (unbind/rebind ${phy_dev})"
-                ip link set "$iface" down 2>/dev/null || true
-                sleep 1
-                printf '%s' "$phy_dev" > "${phy_drv_path}/unbind" 2>/dev/null || true
-                sleep 0.5
-                printf '%s' "$phy_dev" > "${phy_drv_path}/bind"   2>/dev/null || true
-                sleep 1  # wait for reset-deassert-us (500 ms) + PHY init
-                ip link set "$iface" up 2>/dev/null || true
-                sleep 5  # wait for autoneg (IP101A: ~2-3 s)
-            else
-                # Fallback: мягкий link cycle (не аппаратный сброс)
-                log INFO "$iface: carrier=0 operstate=down, soft link cycle ${_cycle_count}/${MAX_LINK_CYCLES:-20}"
-                ip link set "$iface" down 2>/dev/null || true
-                sleep 1
-                ip link set "$iface" up   2>/dev/null || true
-                sleep 1
-                mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
-                sleep 3
-            fi
+            log INFO "$iface: carrier=0 operstate=down, link cycle ${_cycle_count}/${MAX_LINK_CYCLES:-5} (cold-boot PHY renegotiate)"
+            ip link set "$iface" down 2>/dev/null || true
+            sleep 1
+            ip link set "$iface" up   2>/dev/null || true
+            sleep 1
+            # mii-tool -r перезапускает autoneg через MDIO напрямую (независимо от ядра)
+            mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
+            sleep 3
         else
             log INFO "$iface: нет физического линка (carrier=0, cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
