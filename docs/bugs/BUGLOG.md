@@ -1,3 +1,14 @@
+## [2026-06-03 11:52] branch: 1.0.3.24
+
+**Файл(ы):** `etc/fix-eth.sh`, `etc/sa02m-phy-coldboot.sh`, `etc/systemd/sa02m-phy-coldboot.service`, `tools/imaging/out/patch_dtb_all.py`, DTB `sun8i-a40i-sk.dtb`
+**Тип:** Некорректное поведение — end1 не линкуется при первом холодном старте на рабочей плате
+**Описание:** На рабочей плате (с PCA9536) end1 поднимался только со второго power-cycle reboot. На тестовой плате также нестабильно. Предыдущий fix (MAX_LINK_CYCLES=5, reset-deassert-us=200ms) оказался недостаточным: link cycle через `ip link set down/up` НЕ вызывает аппаратный GPIO-сброс PHY (только `phy_probe()` при bind/unbind драйвера). После 5 циклов (~3 мин) watchdog прекращал попытки, тогда как switch мог ещё не завершить загрузку.
+**Причина:** (1) `ip link set down/up` перезапускает `phylink` state machine, но не вызывает `phy_device_reset()` — PHY остаётся в изначально «неудавшемся» состоянии cold-boot. (2) MAX_LINK_CYCLES=5 → watchdog сдавался раньше, чем switch-партнёр завершал boot (~3–5 мин). (3) reset-deassert-us=200ms — граница для стабилизации осциллятора IP101A на данной плате.
+**Исправление:** (1) `fix-eth.sh`: link cycle переведён на PHY driver unbind/rebind (`/sys/bus/mdio_bus/drivers/Generic PHY/unbind|bind`) — вызывает `phy_probe()` → `phy_device_reset()` → GPIO-сброс с правильными таймингами. MAX_LINK_CYCLES увеличен 5→20 (≈10 мин). Fallback на soft-cycle если unbind недоступен. (2) Новый `sa02m-phy-coldboot.service` (Type=oneshot, Before=net-watchdog.service): ранний аппаратный reset PHY при cold-boot с retry 12×30с=6 мин — запускается до net-watchdog, при warm-boot сразу выходит. (3) DTB: `reset-deassert-us` 200ms→500ms для обоих PHY (GMAC и EMAC). `patch_dtb_all.py` обновлён для применения в будущих образах.
+**Проверка:** На тестовой плате end1 получил IP 192.168.1.114 с первого boot, Link is Up через 15.8 с. `link_cycle_count` не создан — link cycles не понадобились. `sa02m-phy-coldboot` нашёл carrier уже поднятым и вышел. Производственная плата (с I2C/RTC) ожидает тест.
+
+---
+
 ## [2026-06-03 10:15] branch: 1.0.3.24
 
 **Файл(ы):** `etc/fix-eth.sh`, DTB `sun8i-a40i-sk.dtb`

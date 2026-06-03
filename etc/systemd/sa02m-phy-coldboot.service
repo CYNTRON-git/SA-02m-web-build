@@ -1,0 +1,22 @@
+[Unit]
+Description=SA-02m: IP101A cold-boot PHY hardware reset recovery for end1
+Documentation=file:/usr/local/bin/sa02m-phy-coldboot.sh
+# Start after end1 device appears in the kernel
+After=sys-subsystem-net-devices-end1.device network.target
+# Must finish before net-watchdog to avoid concurrent link manipulation
+Before=net-watchdog.service
+# Skip if system is shutting down
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/local/bin/sa02m-phy-coldboot.sh
+# 6 min max (12 attempts × 30 s) + 30 s margin
+TimeoutStartSec=400
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-phy-coldboot
+
+[Install]
+WantedBy=multi-user.target
