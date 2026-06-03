@@ -1,3 +1,33 @@
+## [2026-06-03 10:15] branch: 1.0.3.24
+
+**Файл(ы):** `etc/fix-eth.sh`, DTB `sun8i-a40i-sk.dtb`
+**Тип:** Некорректное поведение — end1 линк не поднимается с первого холодного старта
+**Описание:** После фикса `dc1sw regulator-always-on` (DTB) accidental power-cycle PHY при boot был устранён. Вместе с ним устранился и side-effect: раньше при cold boot PHY терял питание (~30 с), потом его восстанавливал `sa02m-end1-link.service` (~74 с) и PHY автоматически сбрасывался. После фикса при cold boot IP101A PHY инициализируется только один раз (~11 с) и если за это время autoneg не завершился — линк не поднимается вообще. Второй reboot помогал (PHY сохранял состояние через power-on VCCIO).
+**Причина:** (1) `fix-eth.sh` делал link cycle однократно (маркер-файл `link_cycled`), после чего повторные попытки блокировались — при cold boot IP101A может требовать нескольких renegotiate-циклов. (2) В DTB `reset-deassert-us` = 100 мс — для IP101A при cold start осциллятор может стабилизироваться > 100 мс.
+**Исправление:** (1) `fix-eth.sh`: маркер `link_cycled` (boolean) заменён на `link_cycle_count` (счётчик), добавлен `MAX_LINK_CYCLES=5` — link cycle будет повторяться до 5 раз (≈2.5 мин) пока не появится carrier. `mii-tool -r` добавлен как основной способ рестарта autoneg через MDIO. Задержки увеличены: 0.5 с → 1 с между down/up, 2 с → 3 с ожидание. (2) DTB: `reset-deassert-us` увеличен 100 мс → 200 мс (осцилляторный запас IP101A при cold start). **Проверка:** после применения DTB-патча на тестовой плате — end1 получил IP 192.168.1.114 с первого cold boot без link cycle (link_cycle_count пустой). vcc-gmac-phy:disabling отсутствует. Проблема решена.
+
+---
+
+## [2026-06-03 09:40] branch: main
+
+**Файл(ы):** `tools/imaging/out/patch_dc1sw_v2.py`, `etc/udev/rules.d/50-sa02m-i2c2-unbind.rules`
+**Тип:** Некорректное поведение / неполный патч DTB + CRLF в logrotate конфиге
+**Описание:** При ревью выявлено: (1) `dc1sw` (vcc-gmac-phy) в задеплоенном DTB НЕ имел `regulator-always-on` — предыдущий патч не был применён корректно. `dmesg` показывал `vcc-gmac-phy: disabling` на ~30 с после загрузки → `sa02m-end1-link.service` вынужденно перезапускал PHY на ~74 с. (2) `/etc/logrotate.d/sa02m-flasher` имел CRLF-окончания → `logrotate` падал на каждом boot. (3) Platform udev-правило для раннего unbind `1c2b800.i2c` было только в репо, не задеплоено на устройство.
+**Причина:** (1) `patch_dc1sw_v2.py` содержал ошибку Python (capture_output+stderr conflict). Предыдущий патч-скрипт нашёл другой узел `regulator-always-on` в DTS но не `dc1sw`. (2) Файл logrotate был создан на Windows (CRLF). (3) Deployment gap.
+**Исправление:** (1) Исправлен `patch_dc1sw_v2.py`, применён на устройстве — `dc1sw { regulator-always-on; }` подтверждён через `dtc -O dts`. Результат: `vcc-gmac-phy: disabling` исчезло, end1 инициализируется за 11 с (было 74 с), `sa02m-end1-link` больше не запускается. (2) `sed -i 's/\r//'` исправил CRLF — logrotate работает, 0 failed services. (3) Platform udev-правило задеплоено через `pscp`.
+
+---
+
+## [2026-06-03 09:00] branch: main
+
+**Файл(ы):** `etc/udev/rules.d/50-sa02m-i2c2-unbind.rules`, `etc/sa02m-i2c2-unbind.sh`, `tools/imaging/out/patch_dtb_all.py`
+**Тип:** Логическая ошибка / линк end0/end1 на рабочей плате
+**Описание:** На рабочей плате с PCA9536 снова не поднимался линк (та же картина, что раньше): GMAC инициализировался одновременно с IRQ storm на `i2c-2` (`1c2b800.i2c`).
+**Причина:** udev unbind срабатывал только при появлении адаптера `i2c-2` — уже после начала bus-recovery IRQ. Промежуточно в DTB ошибочно оставили `i2c@1c2b800 status = "disabled"` (ломало PCA9536); эталонный DTB на FAT/share должен быть с `status = "okay"` и ранним unbind.
+**Исправление:** Правило udev дополнено: unbind на `SUBSYSTEM=="platform", KERNEL=="1c2b800.i2c"` (раньше, чем `i2c-2`). `sa02m-i2c2-unbind.sh` учитывает `SUBSYSTEM=platform`. Эталонный DTB: GMAC `okay`, `syscon=0x02`, `dc1sw` + `regulator-always-on`, `i2c@1c2b800` = `okay` (md5 `d521407b...`). Полный набор из BUGLOG: `threadirqs`, `allow-hotplug end1`, restore-dtb.
+
+---
+
 ## [2026-06-02 17:30] branch: 1.0.3.23
 
 **Файл(ы):** `/mnt/fat/boot.scr`, `/usr/local/share/sa02m/boot.scr`, `/usr/local/sbin/sa02m-restore-dtb.sh`

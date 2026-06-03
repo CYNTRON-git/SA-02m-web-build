@@ -7,9 +7,13 @@
 # Flag set by sa02m-pre-start.sh BEFORE rebind — i2c-2 is intentionally bound.
 [ -f /run/sa02m-i2c2-recovered ] && exit 0
 
-# Use $DEVPATH from udev environment (always set, reliable at add time):
-# DEVPATH=/devices/platform/soc/1c2b800.i2c/i2c-2 → extract 1c2b800.i2c
-PDEV=$(printf '%s' "${DEVPATH:-}" | sed 's|.*/soc/\([^/]*\)/.*|\1|')
+# Platform add: KERNEL=1c2b800.i2c (раньше, чем i2c-2 adapter — меньше IRQ storm при GMAC)
+if [ "${SUBSYSTEM:-}" = "platform" ] && [ -n "${KERNEL:-}" ]; then
+    PDEV="${KERNEL}"
+else
+    # i2c adapter add: DEVPATH=/devices/platform/soc/1c2b800.i2c/i2c-2
+    PDEV=$(printf '%s' "${DEVPATH:-}" | sed 's|.*/soc/\([^/]*\)/.*|\1|')
+fi
 
 # Fallback: readlink (slower but works outside udev context)
 if [ -z "$PDEV" ] || [ "$PDEV" = "${DEVPATH:-}" ]; then

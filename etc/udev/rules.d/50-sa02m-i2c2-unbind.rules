@@ -3,5 +3,8 @@
 # mv64xxx_i2c/i2c-sunxi to start bus-recovery IRQ retries → CPU spike →
 # watchdog starvation → reboot.  Unbinding here (udev, synchronous with
 # device enumeration) stops the retry loop before it escalates.
+# Раньше i2c-2: unbind на platform 1c2b800 до появления адаптера (IRQ storm vs GMAC)
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="1c2b800.i2c", \
+    RUN{program}+="/usr/local/sbin/sa02m-i2c2-unbind.sh"
 ACTION=="add", SUBSYSTEM=="i2c", KERNEL=="i2c-2", \
     RUN{program}+="/usr/local/sbin/sa02m-i2c2-unbind.sh"
