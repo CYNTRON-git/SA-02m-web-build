@@ -224,17 +224,20 @@ fi
 # loaded DS3231 time is a no-op. sa02m-rtc-sync.timer will write the
 # NTP-corrected time 5 min after boot and then every 30 min.
 
-# ── LED eth0 (on-board PHY link LED) — 3 моргания ───────────────────────────
-# Использует netdev trigger: опрашивает carrier активно, загорается сразу.
-# PHY trigger (mdio*:link) отклонён: при назначении не читает текущее
-# состояние линка — LED остаётся выключен до следующей смены состояния.
-eth0_led_set_link_trigger() {
+# ── LED eth0 (platform gpio-led eth0_link) — 3 моргания ─────────────────────
+# netdev trigger недоступен (нет device_name/link в sysfs); только brightness.
+eth0_led_sync_carrier() {
   local led=/sys/class/leds/eth0_link
   local iface=${1:-end0}
+  local carrier
   [ -d "$led" ] || return 0
-  echo "netdev" > "$led/trigger"     2>/dev/null || true
-  echo "$iface"  > "$led/device_name" 2>/dev/null || true
-  echo "1"       > "$led/link"        2>/dev/null || true
+  echo none > "$led/trigger" 2>/dev/null || true
+  carrier=$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)
+  if [ "$carrier" = "1" ]; then
+    echo 1 > "$led/brightness" 2>/dev/null || true
+  else
+    echo 0 > "$led/brightness" 2>/dev/null || true
+  fi
 }
 
 _eth0_led_blink() {
@@ -247,7 +250,7 @@ _eth0_led_blink() {
     echo 0 > "$led/brightness" 2>/dev/null || true
     sleep 0.5
   done
-  eth0_led_set_link_trigger end0
+  eth0_led_sync_carrier end0
 }
 _eth0_led_blink
 

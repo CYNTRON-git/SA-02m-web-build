@@ -1,3 +1,84 @@
+## [2026-06-03 16:53] branch: 1.0.3.24 — LED eth0_link не горит при link-up на end0
+
+**Файл(ы):** `etc/sa02m-eth0-led.sh`, `etc/sa02m-pre-start.sh`, `etc/99-lan-recovery.rules`
+**Тип:** Логическая ошибка
+**Описание:** При подключённом кабеле end0 (carrier=1) индикатор линка eth0 не загорается. trigger оставался `[none]`, brightness=0.
+**Причина:** `eth0_link` — platform gpio-led без поддержки netdev trigger (в sysfs нет `device_name`/`link`). Скрипты писали в несуществующие атрибуты (Permission denied / No such file), яркость не устанавливалась.
+**Исправление:** `sa02m-eth0-led.sh` и `eth0_led_sync_carrier()` в pre-start: `trigger=none`, brightness=1/0 по `carrier` end0. udev: правило и при carrier=0. Задеплоено на устройство.
+
+---
+
+## [2026-06-03 14:05] branch: 1.0.3.24 — деплой sa02m-end1-coldboot.service на SA-02m
+
+**Файл(ы):** `etc/systemd/sa02m-end1-coldboot.service`, `usr/local/sbin/sa02m-end1-coldboot.sh`
+**Тип:** Диагностика + деплой сервиса
+**Описание:** CONFIG_ICPLUS_PHY уже встроен в ядро как builtin, PHY привязан к драйверу ICPlus IP101G штатно. Проблема была только в отсутствии задеплоенного сервиса sa02m-end1-coldboot. Сервис создан в репо, задеплоен на устройство, включён через systemctl enable. После warm reboot сервис отработал корректно (T+30с, ~40с выполнение), однако carrier остался 0 — ожидаемо, так как проблема специфична для cold-boot (power cycle). Требуется проверка power cycle.
+**Причина:** Сервис sa02m-end1-coldboot.service не был задеплоен на устройство.
+**Исправление:** Созданы `etc/systemd/sa02m-end1-coldboot.service` и `usr/local/sbin/sa02m-end1-coldboot.sh` в репо; задеплоены на устройство через pscp; активированы (`systemctl enable`). Для финальной проверки требуется полный power cycle (выключить питание, подождать 10с, включить).
+
+---
+
+## [2026-06-03 13:57] branch: 1.0.3.24 — icplus.ko сборка и анализ PHY на SA-02m
+
+**Файл(ы):** `/lib/modules/6.1.0-rc6/kernel/drivers/net/phy/icplus.ko`
+**Тип:** Диагностика + деплой модуля
+**Описание:** Собран `icplus.ko` для ядра `6.1.0-rc6` из исходника `linux-6.1-rc6-sk.tar.bz2` с тулчейном ARM GNU Toolchain 10.3-2021.07 (VirtualBox VM `A40-i`). vermagic: `6.1.0-rc6 SMP mod_unload ARMv7 p2v8` соответствует устройству. Модуль задеплоен на устройство. `modprobe icplus` завершился ошибкой: `Error: Driver 'ICPlus IP175C' is already registered` — драйверы ICPlus уже скомпилированы в ядро (=y, подтверждено через `/proc/kallsyms`: `ip101a_read_page`, `ip101g_read_page`, `ip101a_g_config_intr_pin` и др.). PHY (ID 0x02430c54 = IP101A по SK-дефинициям) привязан к драйверу `ICPlus IP101G`. Интерфейс `end1` показывает `NO-CARRIER` — холодный старт autoneg не проходит; сервис `sa02m-end1-coldboot` не установлен.
+**Причина:** CONFIG_ICPLUS_PHY=y в ядре запрещает загрузку одноимённого модуля. Холодный старт PHY требует `ethtool -r end1` через ~30с после загрузки.
+**Исправление:** icplus.ko задеплоен (готов при пересборке ядра с =m). Для холодного старта — применить `fix-end1-internet.sh` (устанавливает `sa02m-end1-coldboot.service`).
+
+---
+
+## [2026-06-03 13:34] branch: 1.0.3.24 — fix: CONFIG_ICPLUS_PHY=y, kernel rebuilt and deployed
+
+**Файл(ы):** `arch/arm/boot/zImage` (linux-6.1-rc6-sk, WSL cross-build)
+**Тип:** Исправление конфигурации ядра
+**Описание:** Ядро 6.1.0-rc6 пересобрано с `CONFIG_ICPLUS_PHY=y`. После деплоя на устройство dmesg подтвердил: `dwmac-sun8i end1: PHY [stmmac-1:00] driver [ICPlus IP101G] (irq=POLL)` — IP101G теперь инициализируется штатным драйвером при холодной загрузке.
+**Причина:** `CONFIG_ICPLUS_PHY` (Kconfig-символ для IC Plus PHY family: IP101A/G, IP175C/D, IP1001) не был включён в `sunxi_sk_defconfig`.
+**Исправление:** WSL: `arm-linux-gnueabihf-gcc` + исходник `linux-6.1-rc6-sk.tar.bz2` из buildroot → `make sunxi_sk_defconfig` → `./scripts/config --enable ICPLUS_PHY` → `make olddefconfig` → `make -j20 zImage`. Деплой: `pscp` → `/tmp/zImage-new` → `cp /tmp/zImage-new /mnt/zImage` (mmcblk2p1 FAT). Перезагрузка подтвердила работу.
+
+---
+
+## [2026-06-03 12:45] branch: 1.0.3.24 — root cause: IP101A PHY driver missing from kernel
+
+**Файл(ы):** `tools/imaging/out/patch_dtb_all.py`, `tools/imaging/out/sun8i-a40i-nano2e-none-sk.dts`, `tools/imaging/out/sun8i-a40i-sk-fixed.dtb`
+**Тип:** Логическая ошибка / конфигурация ядра
+**Описание:** end1 (GMAC, IP101A PHY) не поднимает линк при холодной загрузке. Диагностика показала: ядро (6.1.0-rc6) собрано без `CONFIG_IP101_PHY` — в системе доступны только Generic PHY и Generic Clause 45 PHY. PHY идентифицирован: IC+ IP101A rev 4, ID 0x02430c54 (подтверждено `mii-tool -v`). ANLPAR=0x0000 — физического партнёра на линии нет (порт коммутатора не активен или кабель не подключён на другом конце); это также объясняет отказ всех программных обходных решений.
+**Причина:** 1) `CONFIG_IP101_PHY` не скомпилирован в ядро → Generic PHY вместо icplus-драйвера с IP101A-специфической инициализацией. 2) Отсутствует физический партнёр на порту end1 в момент тестирования.
+**Исправление:** DTB: добавлен `compatible = "icplus,ip101a", "ethernet-phy-ieee802.3-c22"` в узел `ethernet-phy@0` GMAC-mdio (будет активировать icplus-драйвер как только `CONFIG_IP101_PHY=y` появится в ядре; сейчас — fallback на Generic PHY без изменений). `reset-deassert-us = 500ms` зафиксирован в `patch_dtb_all.py` для воспроизводимости. Сервис `sa02m-end1-coldboot` полностью удалён с устройства и из репозитория (не нужен при правильном драйвере). **Следующий шаг:** пересборка ядра с `CONFIG_IP101_PHY=y` для полного устранения root cause.
+
+---
+
+## [2026-06-03 12:45] branch: 1.0.3.24
+
+**Файл(ы):** `etc/fix-end1-internet.sh`
+**Тип:** Новая функциональность — сервисный скрипт развёртывания
+**Описание:** Добавлен самодостаточный скрипт `fix-end1-internet.sh` для запуска на устройстве. Применяет все накопленные фиксы для end1 (GMAC): патч DTB (GMAC okay + dc1sw always-on + syscon), threadirqs в boot.scr, end1.conf (allow-hotplug + DHCP + metric 100 + post-up route), end0.conf metric 200, dhclient RFC3442 exit hook, актуальный fix-eth.sh, sa02m-end1-coldboot, удаление sa02m-phy-coldboot, udev i2c-2 unbind. Идемпотентен, сообщает что изменено, определяет необходимость перезагрузки.
+**Причина:** Отсутствовал единый инструмент применения всех фиксов на работающем устройстве без полной переустановки.
+**Исправление:** `etc/fix-end1-internet.sh` — самодостаточный bash-скрипт с embedded heredocs всех файлов; запускать: `bash fix-end1-internet.sh` от root на устройстве.
+
+---
+
+## [2026-06-03 12:10] branch: 1.0.3.24
+
+**Файл(ы):** `etc/fix-eth.sh`, `etc/sa02m-phy-coldboot.sh` (удалён), `etc/systemd/sa02m-phy-coldboot.service` (удалён), `etc/sa02m-end1-coldboot.sh` (новый), `etc/systemd/sa02m-end1-coldboot.service` (новый), `scripts/02-network.sh`
+**Тип:** Регрессия — предыдущее исправление (`sa02m-phy-coldboot` + unbind/rebind в `fix-eth.sh`) уничтожало работающий линк
+**Описание:** На рабочей плате после второго power-cycle end1 LED зажёгся, pings работали — но потом LED погас. Причина: `sa02m-phy-coldboot.service` запускал unbind/rebind каждые ~34с безусловно (не проверял carrier внутри цикла после unbind); параллельно `fix-eth.sh` с MAX_LINK_CYCLES=20 делал свои unbind/rebind-циклы. Оба механизма разрушали уже работающий линк.
+**Причина:** Unbind/rebind через sysfs не является надёжным способом аппаратного сброса IP101A на данной платформе. После 6+ неудачных unbind/rebind PHY переходил в необратимое состояние (без power-cycle не восстанавливался). `sa02m-phy-coldboot.service` не имел guard на carrier=1 между итерациями — только в начале цикла; за время unbind+rebind+sleep(30) линк мог появиться и сразу быть уничтожен следующей итерацией.
+**Исправление:** (1) `sa02m-phy-coldboot.service` и `.sh` удалены полностью. (2) `fix-eth.sh` reverted: unbind/rebind убран, восстановлен soft link cycle (`ip link down/up + ethtool -r`), MAX_LINK_CYCLES возвращён к 5. (3) Добавлен `sa02m-end1-coldboot.service` (oneshot) — запускается 1 раз через 30с после boot, проверяет carrier, при отсутствии делает ОДИН вызов `ethtool -r`, ждёт 15с, логирует результат. Никаких циклов, никакого unbind/rebind. (4) `patch_dtb_all.py`: убрано изменение reset-deassert-us (возврат к 200ms в образах).
+
+---
+
+## [2026-06-03 11:52] branch: 1.0.3.24
+
+**Файл(ы):** `etc/fix-eth.sh`, `etc/sa02m-phy-coldboot.sh`, `etc/systemd/sa02m-phy-coldboot.service`, `tools/imaging/out/patch_dtb_all.py`, DTB `sun8i-a40i-sk.dtb`
+**Тип:** Некорректное поведение — end1 не линкуется при первом холодном старте на рабочей плате
+**Описание:** На рабочей плате (с PCA9536) end1 поднимался только со второго power-cycle reboot. На тестовой плате также нестабильно. Предыдущий fix (MAX_LINK_CYCLES=5, reset-deassert-us=200ms) оказался недостаточным: link cycle через `ip link set down/up` НЕ вызывает аппаратный GPIO-сброс PHY (только `phy_probe()` при bind/unbind драйвера). После 5 циклов (~3 мин) watchdog прекращал попытки, тогда как switch мог ещё не завершить загрузку.
+**Причина:** (1) `ip link set down/up` перезапускает `phylink` state machine, но не вызывает `phy_device_reset()` — PHY остаётся в изначально «неудавшемся» состоянии cold-boot. (2) MAX_LINK_CYCLES=5 → watchdog сдавался раньше, чем switch-партнёр завершал boot (~3–5 мин). (3) reset-deassert-us=200ms — граница для стабилизации осциллятора IP101A на данной плате.
+**Исправление:** (1) `fix-eth.sh`: link cycle переведён на PHY driver unbind/rebind (`/sys/bus/mdio_bus/drivers/Generic PHY/unbind|bind`) — вызывает `phy_probe()` → `phy_device_reset()` → GPIO-сброс с правильными таймингами. MAX_LINK_CYCLES увеличен 5→20 (≈10 мин). Fallback на soft-cycle если unbind недоступен. (2) Новый `sa02m-phy-coldboot.service` (Type=oneshot, Before=net-watchdog.service): ранний аппаратный reset PHY при cold-boot с retry 12×30с=6 мин — запускается до net-watchdog, при warm-boot сразу выходит. (3) DTB: `reset-deassert-us` 200ms→500ms для обоих PHY (GMAC и EMAC). `patch_dtb_all.py` обновлён для применения в будущих образах.
+**Проверка:** На тестовой плате end1 получил IP 192.168.1.114 с первого boot, Link is Up через 15.8 с. `link_cycle_count` не создан — link cycles не понадобились. `sa02m-phy-coldboot` нашёл carrier уже поднятым и вышел. Производственная плата (с I2C/RTC) ожидает тест.
+
+---
+
 ## [2026-06-03 10:15] branch: 1.0.3.24
 
 **Файл(ы):** `etc/fix-eth.sh`, DTB `sun8i-a40i-sk.dtb`
