@@ -13,6 +13,7 @@ LOG_MAX_BYTES=524288          # 512 KB — ротация лога
 LOCK_DIR="/run/fix-eth"       # lock-файлы для предотвращения параллельных запусков
 STATE_DIR="/run/fix-eth-state"
 RECOVER_COOLDOWN=60           # секунд между восстановлениями одного интерфейса
+MAX_LINK_CYCLES=5             # макс. попыток link cycle при cold-boot PHY (5 × 30с = 2.5 мин)
 PING_COUNT=2
 PING_TIMEOUT=3
 
@@ -230,22 +231,29 @@ recover_iface() {
     # Нет физического устройства
     [ -d "/sys/class/net/${iface}" ] || return 0
 
-    # 1. Нет физического линка — попытаться согласовать PHY один раз,
-    #    потом пропустить (кабель не воткнут — ifdown/ifup не поможет).
+    # 1. Нет физического линка — повторять link cycle до MAX_LINK_CYCLES раз.
+    #    IP101A на cold boot может требовать нескольких попыток autoneg
+    #    (ядро успевает прочитать MDIO до стабилизации PHY-осциллятора).
+    #    Без кабеля operstate переходит в unknown/dormant после первого up →
+    #    счётчик перестаёт расти, лишних cycl не будет.
     if ! carrier_up "$iface"; then
         local oper; oper=$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo unknown)
-        if [ "$oper" = "down" ] && ! [ -f "${LOCK_DIR}/${iface}.link_cycled" ]; then
-            log INFO "$iface: carrier=0 operstate=down, forcing link cycle to renegotiate PHY"
+        local _cycle_count_file="${LOCK_DIR}/${iface}.link_cycle_count"
+        local _cycle_count; _cycle_count=$(cat "$_cycle_count_file" 2>/dev/null || echo 0)
+        if [ "$oper" = "down" ] && [ "$_cycle_count" -lt "${MAX_LINK_CYCLES:-5}" ]; then
+            _cycle_count=$(( _cycle_count + 1 ))
             mkdir -p "$LOCK_DIR"
-            touch "${LOCK_DIR}/${iface}.link_cycled"
+            printf '%s\n' "$_cycle_count" > "$_cycle_count_file"
+            log INFO "$iface: carrier=0 operstate=down, link cycle ${_cycle_count}/${MAX_LINK_CYCLES:-5} (cold-boot PHY renegotiate)"
             ip link set "$iface" down 2>/dev/null || true
-            sleep 0.5
+            sleep 1
             ip link set "$iface" up   2>/dev/null || true
-            sleep 0.5
-            ethtool -r "$iface" 2>/dev/null || true
-            sleep 2
+            sleep 1
+            # mii-tool -r перезапускает autoneg через MDIO напрямую (независимо от ядра)
+            mii-tool -r "$iface" 2>/dev/null || ethtool -r "$iface" 2>/dev/null || true
+            sleep 3
         else
-            log INFO "$iface: нет физического линка (carrier=0), пропуск"
+            log INFO "$iface: нет физического линка (carrier=0, cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
         fi
         return 0
