@@ -1,3 +1,13 @@
+## [2026-06-03 16:53] branch: 1.0.3.24 — LED eth0_link не горит при link-up на end0
+
+**Файл(ы):** `etc/sa02m-eth0-led.sh`, `etc/sa02m-pre-start.sh`, `etc/99-lan-recovery.rules`
+**Тип:** Логическая ошибка
+**Описание:** При подключённом кабеле end0 (carrier=1) индикатор линка eth0 не загорается. trigger оставался `[none]`, brightness=0.
+**Причина:** `eth0_link` — platform gpio-led без поддержки netdev trigger (в sysfs нет `device_name`/`link`). Скрипты писали в несуществующие атрибуты (Permission denied / No such file), яркость не устанавливалась.
+**Исправление:** `sa02m-eth0-led.sh` и `eth0_led_sync_carrier()` в pre-start: `trigger=none`, brightness=1/0 по `carrier` end0. udev: правило и при carrier=0. Задеплоено на устройство.
+
+---
+
 ## [2026-06-03 14:05] branch: 1.0.3.24 — деплой sa02m-end1-coldboot.service на SA-02m
 
 **Файл(ы):** `etc/systemd/sa02m-end1-coldboot.service`, `usr/local/sbin/sa02m-end1-coldboot.sh`
