@@ -131,6 +131,11 @@ if [ -f "$ETC_DIR/systemd/sa02m-end1-coldboot.service" ]; then
         /etc/systemd/system/sa02m-end1-coldboot.service
 fi
 
+if [ -f "$ETC_DIR/fix-end1-internet.sh" ]; then
+    log INFO "Установка fix-end1-internet.sh"
+    install -m 755 "$ETC_DIR/fix-end1-internet.sh" /usr/local/sbin/fix-end1-internet.sh
+fi
+
 # Remove legacy phy-coldboot service if still present on this system
 if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
     systemctl stop sa02m-phy-coldboot 2>/dev/null || true
