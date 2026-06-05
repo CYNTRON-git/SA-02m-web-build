@@ -137,7 +137,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Шлюз RS-485 → Ethernet
 - **Сервис `sa02m-serial-gateway`** — преобразование RS-485 портов COM1–COM5 в TCP-сервисы для SCADA и внешних клиентов.
 - **Режимы на порт:** `modbus_tcp` (MBAP↔RTU, порты 502–506), `rtu_over_tcp` (сырой RTU без MBAP, 8502–8506), `transparent` (прозрачный serial↔TCP, 9502–9506), `disabled`.
-- **Fast Modbus probe** — локальный ответ на WB-пробу (`FC 0x47`) без нагрузки на шину.
+- **Fast Modbus probe** — локальный ответ на Modbus TCP-пробу (`FC 0x47`, `WB-FAST-MODBUS?`) без выхода на RS-485; сканирование и обмен на шине — Fast Modbus `0xFD 0x46` (как в MR-02m / WB).
 - **Веб-вкладка «Шлюз RS-485»** — боковое подменю по COM1–COM5, настройка скорости/чётности, статус TCP-клиентов, сохранение в `/etc/sa02m-gateway.yaml`.
 - **Эксклюзивный захват порта** — включённый порт блокируется lock-файлом; перед использованием в MQTT/flasher его нужно отключить в конфиге шлюза.
 
@@ -766,7 +766,7 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
 | `transparent` | Прозрачный serial↔TCP, несколько клиентов | 9502–9506 |
 | `disabled` | Порт свободен для MQTT/flasher/MPLC | — |
 
-**Параметры порта:** baudrate, parity (N/E/O), stopbits, databits, `fast_modbus_probe` (локальный ответ на WB-пробу без нагрузки шины).
+**Параметры порта:** baudrate, parity (N/E/O), stopbits, databits, `fast_modbus_probe` (Modbus TCP FC 0x47; на RS-485 — `0xFD 0x46`).
 
 **Важно:** включённый порт эксклюзивно захватывается lock-файлом `sa02m-gateway-COMx.lock`. Перед сканированием/прошивкой MR-02м или добавлением устройства в MQTT отключите порт в конфиге шлюза.
 
