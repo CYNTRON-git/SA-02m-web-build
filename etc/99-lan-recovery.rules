@@ -16,8 +16,10 @@ ACTION=="bind", SUBSYSTEM=="net", KERNEL=="end0", RUN+="/usr/bin/systemctl --no-
 # Ловим carrier=1, чтобы восстановление шло сразу при реальном link-up.
 ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end0.service"
 # eth0_link: platform gpio-led — яркость по carrier (netdev trigger недоступен).
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", ATTR{carrier}=="1", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", ATTR{carrier}=="0", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
+# ВНИМАНИЕ: ATTR{carrier}=="0" не работает — при link-down ядро возвращает EINVAL
+# вместо "0", поэтому условие никогда не совпадает. Запускаем скрипт на любое
+# change-событие; скрипт сам читает carrier (с fallback 0 при ошибке).
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
 
 # end1 — второй интерфейс (если сконфигурирован)
 ACTION=="add", SUBSYSTEM=="net", KERNEL=="end1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end1.service"
