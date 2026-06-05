@@ -1,3 +1,50 @@
+## [2026-06-05 16:57] branch: 1.0.3.25
+
+**Файл(ы):** `(runtime)` — аудит устройства SA-02m  
+**Тип:** Некорректное поведение / Конфигурация  
+**Описание (5 найденных проблем):**
+
+1. **Ядро без PREEMPT_RT** — запущено `6.1.0-rc6 #1 SMP` вместо RT. При этом модули `6.1.0-rc6-rt4` уже установлены (120 модулей), кастомный DTB в FAT-разделе готов. Отсутствует только `zImage` с RT-патчем.
+2. **CPU governor `schedutil`** — `sugov:0` потребляет 12.6% CPU постоянно. Для RT-устройства нужен `performance`.
+3. **`vm.swappiness = 100`** при отсутствии swap-раздела — добавляет латентность без пользы.
+4. **`chronyd` IPv6 socket error** — chrony пытается слушать `[::1]:323`, IPv6 недоступен. Исправляется `cmdaddress 127.0.0.1` в chrony.conf.
+5. **`sa02m-eth0-led.path/.service` FAILED** — path unit ищет интерфейс `eth0`, переименован в `end0` в Ubuntu 24.04. Требует `sed -i 's/eth0/end0/'` в unit-файлах.
+
+**Причина:** Переход на Armbian 26.2.1 / Ubuntu 24.04 + неполный деплой RT-ядра (модули скопированы, zImage не обновлён).  
+**Исправление:** Подробный план с командами — `docs/codesys-rt/README.md`.
+
+---
+
+## [2026-06-05 16:13] branch: 1.0.3.25 — LED с задержкой 30 с: path unit не работает на sysfs
+
+**Файл(ы):** `etc/sa02m-eth0-led-poll.sh`, `etc/systemd/sa02m-eth0-led-poll.service`, `scripts/02-network.sh`
+**Тип:** Логическая ошибка
+**Описание:** LED гас и загорался с задержкой ~30 с.
+**Причина:** `systemd path unit` (PathChanged) не работает на sysfs — inotify не получает события от `/sys/class/net/end0/carrier`. Реакция шла только через `net-watchdog` (интервал 30 с).
+**Исправление:** Новый `sa02m-eth0-led-poll.service` — цикл `sleep 1` + поллинг carrier. LED реагирует в течение 1–2 с. Path unit отключён.
+
+---
+
+## [2026-06-05 16:10] branch: 1.0.3.25 — LED eth0_link не гаснет: fix-eth не вызывал скрипт при carrier=0
+
+**Файл(ы):** `etc/sa02m-eth0-led.sh`, `etc/fix-eth.sh`, `etc/net-watchdog.sh`, `etc/systemd/sa02m-eth0-led.path`, `etc/systemd/sa02m-eth0-led.service`, `scripts/02-network.sh`
+**Тип:** Логическая ошибка
+**Описание:** После правки udev LED всё равно не гас при отключении кабеля. В логе fix-eth carrier=0 фиксировался, но LED оставался включённым.
+**Причина:** `fix-eth.sh` при `carrier=0` выходил без вызова `sa02m-eth0-led.sh`. udev `change` на link-down ненадёжен. Скрипт LED проверял только carrier без operstate.
+**Исправление:** Вызов LED-скрипта в ветке no-carrier fix-eth и в net-watchdog; systemd path unit на carrier/operstate end0 для мгновенной реакции; установка скрипта и path unit через 02-network.sh.
+
+---
+
+## [2026-06-05 15:57] branch: 1.0.3.25 — LED eth0_link не гаснет при отключении кабеля
+
+**Файл(ы):** `etc/99-lan-recovery.rules`
+**Тип:** Логическая ошибка
+**Описание:** При вытаскивании сетевого кабеля LED eth0_link оставался включённым.
+**Причина:** udev-правило `ATTR{carrier}=="0"` никогда не совпадает: при link-down ядро возвращает `EINVAL` при чтении `/sys/class/net/end0/carrier` вместо строки `"0"`, поэтому скрипт `sa02m-eth0-led.sh` не вызывался при отключении кабеля.
+**Исправление:** Убраны оба условия `ATTR{carrier}=="1/0"` из LED-правила. Теперь скрипт вызывается на любое `change`-событие end0 и сам читает carrier с fallback 0 при ошибке.
+
+---
+
 ## [2026-06-03 16:53] branch: 1.0.3.24 — LED eth0_link не горит при link-up на end0
 
 **Файл(ы):** `etc/sa02m-eth0-led.sh`, `etc/sa02m-pre-start.sh`, `etc/99-lan-recovery.rules`

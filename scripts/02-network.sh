@@ -79,6 +79,11 @@ fi
 # ── Network watchdog deployment ────────────────────────────────────────────
 ETC_DIR="$SCRIPT_DIR/../etc"
 
+if [ -f "$ETC_DIR/sa02m-eth0-led.sh" ]; then
+    log INFO "Установка sa02m-eth0-led.sh"
+    install -m 755 "$ETC_DIR/sa02m-eth0-led.sh" /usr/local/bin/sa02m-eth0-led.sh
+fi
+
 if [ -f "$ETC_DIR/fix-eth.sh" ]; then
     log INFO "Установка fix-eth.sh"
     install -m 755 "$ETC_DIR/fix-eth.sh" /usr/local/bin/fix-eth.sh
@@ -107,6 +112,16 @@ fi
 if [ -f "$ETC_DIR/net-watchdog.service" ]; then
     log INFO "Установка net-watchdog.service"
     install -m 644 "$ETC_DIR/net-watchdog.service" /etc/systemd/system/net-watchdog.service
+fi
+
+if [ -f "$ETC_DIR/sa02m-eth0-led-poll.sh" ]; then
+    log INFO "Установка sa02m-eth0-led-poll.sh"
+    install -m 755 "$ETC_DIR/sa02m-eth0-led-poll.sh" /usr/local/bin/sa02m-eth0-led-poll.sh
+fi
+
+if [ -f "$ETC_DIR/systemd/sa02m-eth0-led-poll.service" ]; then
+    log INFO "Установка sa02m-eth0-led-poll.service"
+    install -m 644 "$ETC_DIR/systemd/sa02m-eth0-led-poll.service" /etc/systemd/system/sa02m-eth0-led-poll.service
 fi
 
 if [ -f "$ETC_DIR/99-lan-recovery.rules" ]; then
@@ -149,6 +164,7 @@ systemctl daemon-reload
 udevadm control --reload-rules 2>/dev/null || true
 svc_enable net-watchdog
 svc_enable sa02m-end1-coldboot
+svc_enable sa02m-eth0-led-poll
 log OK "Network watchdog активирован"
 
 # ── Apply now ─────────────────────────────────────────────────────────────

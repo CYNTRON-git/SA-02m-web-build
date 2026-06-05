@@ -256,6 +256,9 @@ recover_iface() {
             log INFO "$iface: нет физического линка (carrier=0, cycles=${_cycle_count}), пропуск"
             debug_iface_state "$iface"
         fi
+        if [ "$iface" = "end0" ] && [ -x /usr/local/bin/sa02m-eth0-led.sh ]; then
+            /usr/local/bin/sa02m-eth0-led.sh || true
+        fi
         return 0
     fi
 

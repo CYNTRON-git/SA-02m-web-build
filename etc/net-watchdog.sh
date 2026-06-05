@@ -43,5 +43,10 @@ while true; do
         "$FAILOVER_SCRIPT"
     fi
 
+    # 3. eth0_link LED — udev change на carrier=0 ненадёжен, держим в sync здесь.
+    if [ -x /usr/local/bin/sa02m-eth0-led.sh ]; then
+        /usr/local/bin/sa02m-eth0-led.sh || true
+    fi
+
     sleep "$CHECK_INTERVAL"
 done

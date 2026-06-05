@@ -144,7 +144,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Управление системой
 - **Вкладка «Управление»** — смена логина/пароля веб-интерфейса (`/etc/sa02m_web.env`), перезапуск служб, перезагрузка устройства.
 - **Управление прикладными службами** — start/stop/mask для Mosquitto, Modbus MQTT, телеметрии, MPLC4, Node-RED, KLogic через `services_ctrl.cgi`.
-- **Обновление веб-интерфейса** — сравнение задеплоенного коммита с GitHub, ручная проверка и применение (`update-www-only.sh`).
+- **Обновление веб-интерфейса** — проверка и применение с GitHub через вкладку **Управление** (требуется интернет на устройстве, ~20 мин).
 - **Журнал событий** — установочный лог, SSH-отладка, экспорт.
 
 ### Сетевой watchdog
@@ -259,15 +259,6 @@ ssh -i "$env:USERPROFILE\.ssh\sa02m_sa02" -o StrictHostKeyChecking=accept-new ro
 > ```powershell
 > scp -i "$env:USERPROFILE\.ssh\sa02m_sa02" -o StrictHostKeyChecking=accept-new -r .\SA-02m-web-build root@192.168.1.136:/tmp/
 > ```
->
-> Точечное обновление веб-файлов с ПК (ключ **SA02m_SA02** как `sa02m_sa02` в `%USERPROFILE%\.ssh\`):
-> ```powershell
-> $K = "$env:USERPROFILE\.ssh\sa02m_sa02"
-> $H = "root@192.168.1.136"
-> scp -i $K -o StrictHostKeyChecking=accept-new www\network_config\static\js\app.js "${H}:/var/www/network_config/static/js/app.js"
-> scp -i $K -o StrictHostKeyChecking=accept-new www\network_config\static\css\main.css "${H}:/var/www/network_config/static/css/main.css"
-> ```
-> Либо на устройстве из каталога с репозиторием: `sudo bash scripts/update-www-only.sh`. Пути `/var/www/network_config/…` — типичные для `install.sh`; при другом `WEB_ROOT` замените каталог.
 
 ---
 
@@ -830,7 +821,7 @@ journalctl -u nodered.service -f
 
 - **Доступ** — смена логина и пароля веб-интерфейса (запись в `/etc/sa02m_web.env`, htpasswd).
 - **Службы** — список прикладных сервисов с кнопками start/stop (Mosquitto, Modbus MQTT, телеметрия, MPLC4, Node-RED, KLogic). Stop выполняет `disable + mask`, чтобы служба не стартовала после перезагрузки.
-- **Обновление веб** — сравнение `/var/lib/sa02m-web-build/deployed_commit` с GitHub, кнопки «Проверить» / «Применить» (`update-www-only.sh`).
+- **Обновление веб** — сравнение `/var/lib/sa02m-web-build/deployed_commit` с GitHub, кнопки «Проверить» / «Применить». **Требуется интернет** на устройстве; процесс занимает порядка **20 минут** (зависит от скорости канала).
 - **USB/microSD** — переключатель автоформатирования подключённых носителей в exFAT.
 - **Журнал** — установочный лог, SSH-отладка, экспорт.
 
@@ -1859,23 +1850,28 @@ tail -f /var/log/fix-eth.log
 
 ## Обновление
 
-Скрипт `scripts/update-www-only.sh` копирует `www/network_config` в `/var/www/network_config` и записывает `/var/lib/sa02m-web-build/deployed_commit`: при наличии `.git` в корне клона — полный SHA коммита, иначе — `app-<APP_VERSION>` из `app.js` или `unknown`. Файл нужен для сравнения с GitHub во вкладке **Управление** и по таймеру `sa02m-web-update-check.timer` (раз в час).
+Обновление веб-интерфейса выполняется **только при наличии доступа в интернет** на СА-02м (исходящий HTTPS к GitHub). Без интернета обновление недоступно — перенос отдельных файлов с ПК (scp/WinSCP) не поддерживается.
+
+### Через веб-интерфейс (рекомендуется)
+
+1. Подключите устройство к сети с доступом в интернет (end0, end1 или USB-модем).
+2. Откройте **Управление → Обновление веб**.
+3. Нажмите **«Проверить обновления»** — сравнение с веткой `main` на GitHub.
+4. При наличии новой версии — **«Применить обновление»**.
+
+Скрипт `sa02m-web-update-apply.sh` клонирует репозиторий с GitHub и разворачивает файлы в `/var/www/network_config`. Прогресс и журнал отображаются в том же блоке интерфейса.
+
+**Время:** порядка **20 минут** — зависит от скорости интернет-подключения (загрузка репозитория, копирование файлов, обновление прав).
+
+Автоматическая проверка новых версий — раз в час (`sa02m-web-update-check.timer`); ручная проверка доступна в любой момент.
+
+### Через SSH (при наличии интернета)
 
 ```bash
-# Обновить только веб-файлы без переконфигурации системы
-cd /tmp/SA-02m-web-build   # или каталог клона репозитория
-git pull
-sudo bash scripts/update-www-only.sh
-
-# Устаревший вариант вручную (предпочтительно update-www-only.sh)
-sudo cp -r www/network_config/* /var/www/network_config/
-sudo chmod +x /var/www/network_config/cgi-bin/*.cgi
-sudo systemctl reload nginx
-
-# Полная переустановка
-git pull
-sudo ./install.sh --ip <IP> --pass <PASS>
+sudo /usr/local/sbin/sa02m-web-update-apply
 ```
+
+Журнал: `/var/lib/sa02m-web-build/update.log`.
 
 ---
 

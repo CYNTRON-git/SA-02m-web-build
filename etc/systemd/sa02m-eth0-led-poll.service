@@ -1,0 +1,12 @@
+[Unit]
+Description=Fast eth0_link LED sync (polls end0 carrier every second)
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sa02m-eth0-led-poll.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
