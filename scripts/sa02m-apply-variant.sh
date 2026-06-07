@@ -100,5 +100,11 @@ udevadm control --reload-rules 2>/dev/null || true
 # Update serial map config
 write_sa02m_serial_map_conf /etc/sa02m_serial_map.conf "$VARIANT"
 
+# Re-map link LEDs (eth0_link/eth1_link) for the new variant
+if [ -x /usr/local/bin/sa02m-eth0-led.sh ]; then
+    /usr/local/bin/sa02m-eth0-led.sh || true
+fi
+systemctl try-restart sa02m-eth0-led-poll.service 2>/dev/null || true
+
 SERIAL_COUNT=${#SERIAL_TARGETS[@]}
 printf '{"ok":true,"variant":"%s","serial_count":%d}\n' "$VARIANT" "$SERIAL_COUNT"

@@ -1,21 +1,27 @@
 #!/bin/sh
-# sa02m-eth0-led-poll.sh — быстрый поллинг carrier end0, обновляет LED за 1-2 сек.
-LED=/sys/class/leds/eth0_link
-IFACE=end0
-
-[ -d "$LED" ] || exit 0
-echo none > "$LED/trigger" 2>/dev/null || true
+# sa02m-eth0-led-poll.sh — poll carrier, update link LEDs within 1-2 s.
+LIB=/usr/local/lib/sa02m-eth-led-lib.sh
+[ -f "$LIB" ] || exit 0
+. "$LIB"
 
 last=""
+
 while true; do
-    carrier=$(cat "/sys/class/net/${IFACE}/carrier" 2>/dev/null || echo 0)
-    if [ "$carrier" != "$last" ]; then
-        if [ "$carrier" = "1" ]; then
-            echo 1 > "$LED/brightness" 2>/dev/null || true
-        else
-            echo 0 > "$LED/brightness" 2>/dev/null || true
-        fi
-        last="$carrier"
+    variant=$(sa02m_hw_variant)
+    case "$variant" in
+        sa02m-2eth)
+            c0=$(cat /sys/class/net/end1/carrier 2>/dev/null || echo 0)
+            c1=$(cat /sys/class/net/end0/carrier 2>/dev/null || echo 0)
+            key="${variant}:${c0}:${c1}"
+            ;;
+        *)
+            c0=$(cat /sys/class/net/end0/carrier 2>/dev/null || echo 0)
+            key="${variant}:${c0}:"
+            ;;
+    esac
+    if [ "$key" != "$last" ]; then
+        sa02m_led_sync_all
+        last=$key
     fi
     sleep 1
 done
