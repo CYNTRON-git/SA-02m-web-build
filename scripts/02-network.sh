@@ -79,6 +79,12 @@ fi
 # ── Network watchdog deployment ────────────────────────────────────────────
 ETC_DIR="$SCRIPT_DIR/../etc"
 
+if [ -f "$ETC_DIR/sa02m-eth-led-lib.sh" ]; then
+    log INFO "Установка sa02m-eth-led-lib.sh"
+    mkdir -p /usr/local/lib
+    install -m 644 "$ETC_DIR/sa02m-eth-led-lib.sh" /usr/local/lib/sa02m-eth-led-lib.sh
+fi
+
 if [ -f "$ETC_DIR/sa02m-eth0-led.sh" ]; then
     log INFO "Установка sa02m-eth0-led.sh"
     install -m 755 "$ETC_DIR/sa02m-eth0-led.sh" /usr/local/bin/sa02m-eth0-led.sh

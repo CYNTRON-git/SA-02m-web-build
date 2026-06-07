@@ -224,34 +224,23 @@ fi
 # loaded DS3231 time is a no-op. sa02m-rtc-sync.timer will write the
 # NTP-corrected time 5 min after boot and then every 30 min.
 
-# ── LED eth0 (platform gpio-led eth0_link) — 3 моргания ─────────────────────
-# netdev trigger недоступен (нет device_name/link в sysfs); только brightness.
-eth0_led_sync_carrier() {
-  local led=/sys/class/leds/eth0_link
-  local iface=${1:-end0}
-  local carrier
-  [ -d "$led" ] || return 0
-  echo none > "$led/trigger" 2>/dev/null || true
-  carrier=$(cat "/sys/class/net/${iface}/carrier" 2>/dev/null || echo 0)
-  if [ "$carrier" = "1" ]; then
-    echo 1 > "$led/brightness" 2>/dev/null || true
-  else
-    echo 0 > "$led/brightness" 2>/dev/null || true
+# ── Link LEDs (platform gpio-led) — 3 моргания основного, затем sync по variant ─
+# sa02m-1eth: eth0_link←end0; sa02m-2eth: eth0_link←end1, eth1_link←end0.
+LED_LIB=/usr/local/lib/sa02m-eth-led-lib.sh
+if [ -f "$LED_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$LED_LIB"
+  led=/sys/class/leds/eth0_link
+  if [ -d "$led" ]; then
+    echo none > "$led/trigger" 2>/dev/null || true
+    for i in 1 2 3; do
+      echo 1 > "$led/brightness" 2>/dev/null || true
+      sleep 0.5
+      echo 0 > "$led/brightness" 2>/dev/null || true
+      sleep 0.5
+    done
+    sa02m_led_sync_all
   fi
-}
-
-_eth0_led_blink() {
-  local led=/sys/class/leds/eth0_link i
-  [ -d "$led" ] || return 0
-  echo none > "$led/trigger" 2>/dev/null || true
-  for i in 1 2 3; do
-    echo 1 > "$led/brightness" 2>/dev/null || true
-    sleep 0.5
-    echo 0 > "$led/brightness" 2>/dev/null || true
-    sleep 0.5
-  done
-  eth0_led_sync_carrier end0
-}
-_eth0_led_blink
+fi
 
 exit 0
