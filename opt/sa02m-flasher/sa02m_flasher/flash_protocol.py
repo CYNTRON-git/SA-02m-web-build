@@ -787,6 +787,15 @@ def payload_block_to_registers_app_le(block: bytes) -> List[int]:
     return [(block[i + 1] << 8) | block[i] for i in range(0, DATA_BLOCK_BYTES, 2)]
 
 
+def payload_bytes_to_registers_le(block: bytes) -> List[int]:
+    """Произвольный чётный буфер (.fw payload байт-своп) → регистры app_le:
+    swap каждой пары → в staging окажется raw binary."""
+    n = len(block)
+    if n % 2 != 0:
+        raise ValueError("block length must be even")
+    return [(block[i + 1] << 8) | block[i] for i in range(0, n, 2)]
+
+
 def info_block_to_registers_le(info: bytes) -> List[int]:
     """32 байта как 16 слов LE (формат .wbfw) → 16 регистров для Modbus (BE на линии)."""
     if len(info) < INFO_BLOCK_BYTES:
@@ -1071,8 +1080,10 @@ class FlasherProtocol:
         serial: int,
         block_data: bytes,
         log_timeout: bool = True,
+        app_from_fw: bool = False,
     ) -> Optional[str]:
-        """Отправка одного блока образа бутлоадера по серийному."""
+        """Отправка одного блока образа бутлоадера по серийному.
+        app_from_fw=True: payload из .fw (байт-своп) → app_le-кодирование → staging = raw binary."""
         size = len(block_data)
         if size not in (DATA_BLOCK_BYTES_BOOTLOADER, DATA_BLOCK_LAST_BYTES_BOOTLOADER):
             if size < DATA_BLOCK_LAST_BYTES_BOOTLOADER:
@@ -1085,10 +1096,11 @@ class FlasherProtocol:
                     DATA_BLOCK_BYTES_BOOTLOADER - size
                 )
                 size = DATA_BLOCK_BYTES_BOOTLOADER
-        regs = [
-            (block_data[i] << 8) | block_data[i + 1]
-            for i in range(0, size, 2)
-        ]
+        regs = (
+            payload_bytes_to_registers_le(block_data)
+            if app_from_fw
+            else [(block_data[i] << 8) | block_data[i + 1] for i in range(0, size, 2)]
+        )
         return self.write_multiple_registers_by_serial(
             serial, DATA_BLOCK_REG, regs, log_timeout=log_timeout
         )
@@ -1382,8 +1394,10 @@ class FlasherProtocol:
         slave: int,
         block_data: bytes,
         log_timeout: bool = True,
+        app_from_fw: bool = False,
     ) -> Optional[str]:
-        """Отправка одного блока для образа бутлоадера (0x2000): 244 B (122 reg) или 168 B (84 reg) последний."""
+        """Отправка одного блока для образа бутлоадера (0x2000): 244 B (122 reg) или 168 B (84 reg) последний.
+        app_from_fw=True: payload из .fw (байт-своп) → app_le-кодирование → в staging попадает raw binary."""
         size = len(block_data)
         if size not in (DATA_BLOCK_BYTES_BOOTLOADER, DATA_BLOCK_LAST_BYTES_BOOTLOADER):
             if size < DATA_BLOCK_LAST_BYTES_BOOTLOADER:
@@ -1392,7 +1406,11 @@ class FlasherProtocol:
             else:
                 block_data = block_data + b"\xff" * (DATA_BLOCK_BYTES_BOOTLOADER - size)
                 size = DATA_BLOCK_BYTES_BOOTLOADER
-        regs = [(block_data[i] << 8) | block_data[i + 1] for i in range(0, size, 2)]
+        regs = (
+            payload_bytes_to_registers_le(block_data)
+            if app_from_fw
+            else [(block_data[i] << 8) | block_data[i + 1] for i in range(0, size, 2)]
+        )
         return self.write_multiple_registers(
             slave, DATA_BLOCK_REG, regs, log_timeout=log_timeout
         )
@@ -2061,11 +2079,19 @@ def run_flash_bootloader_sequence_by_address(
     slave: адрес устройства в загрузчике (обычно 247).
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    # .fw формат: 32 байта info-заголовка (CRC над raw binary) + байт-свопированный payload.
+    # При app_from_fw кодировании payload_block_to_registers_app_le: в staging попадает raw binary,
+    # running_crc = CRC32(raw binary) = CRC из заголовка .fw → коммит проходит.
+    fw_info_bytes: Optional[bytes] = None
+    if len(image) == BL_IMAGE_TOTAL_BYTES + INFO_BLOCK_BYTES:
+        fw_info_bytes = image[:INFO_BLOCK_BYTES]
+        image = image[INFO_BLOCK_BYTES:]
     if len(image) != BL_IMAGE_TOTAL_BYTES:
         return (
             f"Образ бутлоадера должен быть {BL_IMAGE_TOTAL_BYTES} байт, получено {len(image)}. "
-            "Используйте .bin 34 КБ или .elf бутлоадера."
+            "Используйте .fw или .bin 34 КБ бутлоадера."
         )
+    from_fw = fw_info_bytes is not None
 
     if flasher.log_cb:
         flasher.log_cb("Режим обновления бутлоадера: запись 0x424C в 0x1001 на адрес %d..." % slave)
@@ -2081,13 +2107,20 @@ def run_flash_bootloader_sequence_by_address(
         flasher.log_cb(
             f"Отправка info-блока (сигнатура «{signature}», размер {BL_IMAGE_TOTAL_BYTES} байт)..."
         )
-    err = flasher.send_info_block_bootloader(slave, signature, image)
+    # .fw: CRC в заголовке — над raw binary; app_le-кодирование блоков → staging = raw binary → running_crc совпадёт.
+    # .bin: CRC пересчитываем через build_info_block(image), BE-кодирование.
+    def _send_info() -> Optional[str]:
+        if fw_info_bytes is not None:
+            return flasher.send_info_block_wb(slave, fw_info_bytes)
+        return flasher.send_info_block_bootloader(slave, signature, image)
+
+    err = _send_info()
     for _ in range(3):
         if err and "Таймаут" in str(err):
             if gate.should_abort():
                 return "Отменено пользователем"
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_bootloader(slave, signature, image)
+            err = _send_info()
         else:
             break
     if err:
@@ -2117,7 +2150,7 @@ def run_flash_bootloader_sequence_by_address(
         last_err: Optional[str] = None
         for attempt in range(retries_per_block):
             log_timeout = attempt == retries_per_block - 1
-            err = flasher.send_data_block_bootloader(slave, block, log_timeout=log_timeout)
+            err = flasher.send_data_block_bootloader(slave, block, log_timeout=log_timeout, app_from_fw=from_fw)
             if err is None:
                 last_err = None
                 break
@@ -2184,11 +2217,16 @@ def run_flash_sequence_bootloader(
     image: ровно BL_IMAGE_TOTAL_BYTES.
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    fw_info_bytes_s: Optional[bytes] = None
+    if len(image) == BL_IMAGE_TOTAL_BYTES + INFO_BLOCK_BYTES:
+        fw_info_bytes_s = image[:INFO_BLOCK_BYTES]
+        image = image[INFO_BLOCK_BYTES:]
     if len(image) != BL_IMAGE_TOTAL_BYTES:
         return (
             f"Образ бутлоадера должен быть {BL_IMAGE_TOTAL_BYTES} байт, получено {len(image)}. "
-            "Используйте .bin 34 КБ или .elf бутлоадера."
+            "Используйте .fw или .bin 34 КБ бутлоадера."
         )
+    from_fw_s = fw_info_bytes_s is not None
     if not serial or serial == 0xFFFFFFFF:
         return "Для прошивки по 0x46 нужен серийный номер устройства."
 
@@ -2206,13 +2244,18 @@ def run_flash_sequence_bootloader(
         flasher.log_cb(
             f"Отправка info-блока (сигнатура «{signature}», размер {BL_IMAGE_TOTAL_BYTES} байт)..."
         )
-    err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
+    def _send_info_s() -> Optional[str]:
+        if fw_info_bytes_s is not None:
+            return flasher.send_info_block_bytes_by_serial(serial, fw_info_bytes_s)
+        return flasher.send_info_block_bootloader_by_serial(serial, signature, image)
+
+    err = _send_info_s()
     for _ in range(3):
         if err and "Таймаут" in str(err):
             if gate.should_abort():
                 return "Отменено пользователем"
             time.sleep(INFO_RETRY_SLEEP_S)
-            err = flasher.send_info_block_bootloader_by_serial(serial, signature, image)
+            err = _send_info_s()
         else:
             break
     if err:
@@ -2243,7 +2286,7 @@ def run_flash_sequence_bootloader(
         for attempt in range(retries_per_block):
             log_timeout = attempt == retries_per_block - 1
             err = flasher.send_data_block_bootloader_by_serial(
-                serial, block, log_timeout=log_timeout
+                serial, block, log_timeout=log_timeout, app_from_fw=from_fw_s
             )
             if err is None:
                 last_err = None

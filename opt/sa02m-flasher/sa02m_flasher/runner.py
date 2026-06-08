@@ -404,9 +404,12 @@ def _enter_bootloader_from_application_line(
     """MR: reg 129 с линии приложения (закрыть порт)."""
     if device.get("in_bootloader"):
         return None
-    baud = int(device.get("baudrate") or 0) or 19200
+    # MR-02m: 115200 N1; WB: 19200 N2. Если не задано явно — берём из словаря или используем 115200 N1 (MR-default).
+    _default_baud = 19200 if is_wb_firmware else 115200
+    _default_stop = 2 if is_wb_firmware else 1
+    baud = int(device.get("baudrate") or 0) or _default_baud
     parity = str(device.get("parity") or "N").upper() or "N"
-    stopbits = int(device.get("stopbits") or 2) or 2
+    stopbits = int(device.get("stopbits") or 0) or _default_stop
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
 
     log_cb(f"Перевод адр.{addr} в bootloader (app baud {baud} {parity}{stopbits})", "info")
