@@ -672,7 +672,9 @@ def _run_bootloader_flash_session(
             )
             else None
         )
-        addr_probe = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
+        # После входа в bootloader (reg 129) устройство всегда отвечает на адресе 247.
+        # addr приложения используется только для самого входа (enter_bootloader_wb/enter_bootloader).
+        addr_probe = fp.BOOTLOADER_DEFAULT_ADDR
         probe_addr = None if probe_serial is not None else addr_probe
         prime_for_wait = bool(probe_serial and duplicate_on_line)
 
@@ -806,7 +808,9 @@ def _flash_one_device(
     serial = int(device.get("serial") or 0) & 0xFFFFFFFF
     dev_sig = str(device.get("signature") or "").strip()
 
-    boot_addr_for_address_path = addr
+    # Bootloader всегда отвечает на адресе 247 (BOOTLOADER_DEFAULT_ADDR),
+    # независимо от Modbus-адреса приложения.
+    boot_addr_for_address_path = fp.BOOTLOADER_DEFAULT_ADDR
 
     if not is_wb_firmware and not is_bootloader_firmware:
         if not device_allowed_for_mr_firmware_flash(

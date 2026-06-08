@@ -307,8 +307,17 @@ def _wait_bootloader_ready_for_data_impl(
     while time.perf_counter() < deadline:
         payload_state, err_state = read_regs(REG_DIAG_STATE, 1)
         payload_f2, err_f2 = read_regs(REG_LAST_DATA_REJECT, 1)
-        state_unsupported = _modbus_inner_exception_code(err_state) == 2
-        reject_unsupported = _modbus_inner_exception_code(err_f2) == 2
+        # Exc 02 = регистр не поддерживается (старый bootloader).
+        # Таймаут = bootloader занят блокирующим стиранием Flash (bl_nmbs_poll не вызывается).
+        # В обоих случаях переключаемся на legacy-паузу ERASE_WAIT_AFTER_INFO_S.
+        state_unsupported = (
+            _modbus_inner_exception_code(err_state) == 2
+            or _fp_is_timeout_err(err_state)
+        )
+        reject_unsupported = (
+            _modbus_inner_exception_code(err_f2) == 2
+            or _fp_is_timeout_err(err_f2)
+        )
         if state_unsupported and not legacy_wait_due_to_missing_diag:
             legacy_wait_due_to_missing_diag = True
             if flasher.log_cb:
@@ -562,6 +571,13 @@ def _modbus_inner_exception_code(err: Optional[str]) -> Optional[int]:
             return int(tail, 0)
         except ValueError:
             return None
+
+
+def _fp_is_timeout_err(err: object) -> bool:
+    if not err:
+        return False
+    e = str(err).lower()
+    return "таймаут" in e or "timeout" in e
 
 
 def _sleep_before_retry_flash_data_block_impl(
