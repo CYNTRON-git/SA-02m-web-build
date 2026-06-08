@@ -1,19 +1,42 @@
-## [2026-06-05 16:57] branch: 1.0.3.25
+## [2026-06-08 21:03] branch: 1.0.3.27 — fix-eth.sh не восстанавливал default route для static-интерфейса после cold-boot
 
-**Файл(ы):** `(runtime)` — аудит устройства SA-02m  
-**Тип:** Некорректное поведение / Конфигурация  
-**Описание (5 найденных проблем):**
+**Файл(ы):** `etc/fix-eth.sh`
+**Тип:** Логическая ошибка
+**Описание:** При cold-boot PHY-линк end0 поднялся через ~5 мин после запуска `ifup@end0.service`. К моменту прихода carrier IP уже был назначен (ifup выполнился), но gateway route не добавился, т.к. `ip route add default` в `ifup` провалился при `linkdown`. `fix-eth.sh` видел `has_ip=true` и переходил к проверке connectivity, но восстановление default route было реализовано только для DHCP-интерфейсов. В итоге устройство работало без default gateway до ручного вмешательства или перезапуска.
+**Причина:** Блок восстановления default route содержал условие `if [ "$iface_type" = "dhcp" ]`, static-интерфейс с `gateway` в конфиге игнорировался.
+**Исправление:** Условие переработано: для любого типа интерфейса при отсутствии `ip route default dev $iface` — восстанавливать маршрут: для dhcp из lease-файла, для static из `gateway` в `interfaces.d/*.conf`.
 
-1. **Ядро без PREEMPT_RT** — запущено `6.1.0-rc6 #1 SMP` вместо RT. При этом модули `6.1.0-rc6-rt4` уже установлены (120 модулей), кастомный DTB в FAT-разделе готов. Отсутствует только `zImage` с RT-патчем.
-2. **CPU governor `schedutil`** — `sugov:0` потребляет 12.6% CPU постоянно. Для RT-устройства нужен `performance`.
-3. **`vm.swappiness = 100`** при отсутствии swap-раздела — добавляет латентность без пользы.
-4. **`chronyd` IPv6 socket error** — chrony пытается слушать `[::1]:323`, IPv6 недоступен. Исправляется `cmdaddress 127.0.0.1` в chrony.conf.
-5. **`sa02m-eth0-led.path/.service` FAILED** — path unit ищет интерфейс `eth0`, переименован в `end0` в Ubuntu 24.04. Требует `sed -i 's/eth0/end0/'` в unit-файлах.
+## [2026-06-08 21:21] branch: 1.0.3.27 — Неверный baud rate при входе в bootloader MR-02m
 
-**Причина:** Переход на Armbian 26.2.1 / Ubuntu 24.04 + неполный деплой RT-ядра (модули скопированы, zImage не обновлён).  
-**Исправление:** Подробный план с командами — `docs/codesys-rt/README.md`.
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/runner.py`
+**Тип:** Логическая ошибка
+**Описание:** `_enter_bootloader_from_application_line` использовала baud rate 19200 baud, 2 стоп-бита по умолчанию (значения для Wiren Board), тогда как MR-02m работает на 115200 N1. Команда reg 129 не доходила до устройства, оно оставалось в режиме приложения.
+**Причина:** `baud = int(device.get("baudrate") or 0) or 19200` и `stopbits = int(device.get("stopbits") or 2) or 2` — жёсткий fallback 19200/2 без учёта типа прошивки.
+**Исправление:** Добавлены `_default_baud`/`_default_stop` зависящие от `is_wb_firmware`: для MR-firmware = 115200 N1, для WB = 19200 N2.
 
----
+## [2026-06-08 21:21] branch: 1.0.3.27 — Неверное кодирование блоков данных при прошивке bootloader из .fw
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py`
+**Тип:** Логическая ошибка
+**Описание:** При прошивке бутлоадера из `.fw`-файла данные кодировались в big-endian (`payload_block_to_registers`), тогда как `.fw` содержит байт-свопированный payload. В staging Flash записывались байт-свопированные данные → вектор SP не соответствовал диапазону → команда `commit` (0x1006) возвращала исключение 4 (Server Device Failure). CRC совпадал (т.к. вычислялся над byte-swapped данными), но Flash содержимое было некорректным.
+**Причина:** Отсутствовал учёт того, что `.fw` payload — это `raw_binary` после byte-swap каждой 16-битной пары. Нужно применить обратный swap при кодировании в Modbus-регистры, чтобы в staging попали оригинальные LE-байты.
+**Исправление:** Добавлена функция `payload_bytes_to_registers_le`; `send_data_block_bootloader` и `send_data_block_bootloader_by_serial` получили параметр `app_from_fw=True`. При `.fw` формате: header (первые 32 байта) передаётся как есть через `send_info_block_wb` (содержит CRC32 над raw binary), данные кодируются через `payload_bytes_to_registers_le` → `data_bl` = raw binary → `running_crc` = CRC32(raw binary) = expected_crc ✓ → Flash = raw binary ✓ → commit проходит ✓.
+
+## [2026-06-08 19:46] branch: 1.0.3.27 — Прошивка модулей расширения по адресу приложения вместо 247
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/runner.py`
+**Тип:** Логическая ошибка
+**Описание:** После входа в bootloader (reg 129) сервис пытался зондировать и прошивать модуль по адресу приложения (напр. 8), тогда как bootloader всегда отвечает по адресу 247 (BOOTLOADER_DEFAULT_ADDR). Прошивка не начиналась: все Modbus-запросы на адрес 8 уходили в таймаут.
+**Причина:** `addr_probe` и `boot_addr_for_address_path` инициализировались из `device.get("address")` (адрес приложения), а не из `fp.BOOTLOADER_DEFAULT_ADDR`.
+**Исправление:** `addr_probe = fp.BOOTLOADER_DEFAULT_ADDR`; `boot_addr_for_address_path = fp.BOOTLOADER_DEFAULT_ADDR` в `_run_bootloader_flash_session` и `_flash_one_device`.
+
+## [2026-06-08 19:46] branch: 1.0.3.27 — Таймаут при ожидании готовности bootloader после info-блока
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py`
+**Тип:** Логическая ошибка
+**Описание:** После отправки info-блока bootloader начинает блокирующее стирание Flash (~2 с), в течение которого не отвечает на Modbus. Функция `_wait_bootloader_ready_for_data_impl` считала «не поддерживается» только Modbus exception 02, а таймаут не распознавала, поэтому fallback на фиксированную паузу 2.8 с не срабатывал — 15 с поллинга и ошибка.
+**Причина:** `state_unsupported = _modbus_inner_exception_code(err_state) == 2` — условие не учитывало таймаут ответа.
+**Исправление:** Добавлена функция `_fp_is_timeout_err`; условие расширено: `state_unsupported = (exc_code == 2) or _fp_is_timeout_err(err_state)`.
 
 ## [2026-06-05 16:13] branch: 1.0.3.25 — LED с задержкой 30 с: path unit не работает на sysfs
 

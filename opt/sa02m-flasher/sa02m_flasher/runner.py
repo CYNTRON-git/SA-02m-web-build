@@ -404,9 +404,12 @@ def _enter_bootloader_from_application_line(
     """MR: reg 129 с линии приложения (закрыть порт)."""
     if device.get("in_bootloader"):
         return None
-    baud = int(device.get("baudrate") or 0) or 19200
+    # MR-02m: 115200 N1; WB: 19200 N2. Если не задано явно — берём из словаря или используем 115200 N1 (MR-default).
+    _default_baud = 19200 if is_wb_firmware else 115200
+    _default_stop = 2 if is_wb_firmware else 1
+    baud = int(device.get("baudrate") or 0) or _default_baud
     parity = str(device.get("parity") or "N").upper() or "N"
-    stopbits = int(device.get("stopbits") or 2) or 2
+    stopbits = int(device.get("stopbits") or 0) or _default_stop
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
 
     log_cb(f"Перевод адр.{addr} в bootloader (app baud {baud} {parity}{stopbits})", "info")
@@ -672,7 +675,9 @@ def _run_bootloader_flash_session(
             )
             else None
         )
-        addr_probe = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
+        # После входа в bootloader (reg 129) устройство всегда отвечает на адресе 247.
+        # addr приложения используется только для самого входа (enter_bootloader_wb/enter_bootloader).
+        addr_probe = fp.BOOTLOADER_DEFAULT_ADDR
         probe_addr = None if probe_serial is not None else addr_probe
         prime_for_wait = bool(probe_serial and duplicate_on_line)
 
@@ -806,7 +811,9 @@ def _flash_one_device(
     serial = int(device.get("serial") or 0) & 0xFFFFFFFF
     dev_sig = str(device.get("signature") or "").strip()
 
-    boot_addr_for_address_path = addr
+    # Bootloader всегда отвечает на адресе 247 (BOOTLOADER_DEFAULT_ADDR),
+    # независимо от Modbus-адреса приложения.
+    boot_addr_for_address_path = fp.BOOTLOADER_DEFAULT_ADDR
 
     if not is_wb_firmware and not is_bootloader_firmware:
         if not device_allowed_for_mr_firmware_flash(
