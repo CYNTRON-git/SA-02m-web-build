@@ -274,17 +274,21 @@ recover_iface() {
     #    Недоступность шлюза/интернета НЕ является поводом для сброса интерфейса.
     if ! has_ip "$iface"; then
         log WARN "$iface: нет IP-адреса"
-    else
+    else  # carrier up, IP assigned
         # IP есть — только логируем состояние шлюза, восстановление не нужно.
-        # Для DHCP-интерфейсов: проверяем наличие default route (может пропасть
-        # после link bounce / перезагрузки сети) и восстанавливаем из lease-файла.
+        # Проверяем наличие default route (может пропасть после link bounce / boot
+        # когда PHY поднялся позже ifup) и восстанавливаем из конфига или lease-файла.
         local iface_type
         iface_type=$(awk '/^[[:space:]]*iface[[:space:]]/{print $4; exit}' "$conf" 2>/dev/null)
-        if [ "$iface_type" = "dhcp" ] && ! ip route show default dev "$iface" | grep -q .; then
+        if ! ip route show default dev "$iface" | grep -q .; then
             local gw metric
-            gw=$(awk '/option routers/{gsub(/;/,"",$3); print $3; exit}' \
-                 "/var/lib/dhcp/dhclient.${iface}.leases" 2>/dev/null)
             metric=$(awk '/^[[:space:]]*metric/{print $2; exit}' "$conf" 2>/dev/null)
+            if [ "$iface_type" = "dhcp" ]; then
+                gw=$(awk '/option routers/{gsub(/;/,"",$3); print $3; exit}' \
+                     "/var/lib/dhcp/dhclient.${iface}.leases" 2>/dev/null)
+            else
+                gw=$(awk '/^[[:space:]]*gateway/{print $2; exit}' "$conf" 2>/dev/null)
+            fi
             if [ -n "$gw" ]; then
                 log INFO "$iface: маршрут по умолчанию отсутствует, восстанавливаем via ${gw}"
                 ip route add default via "$gw" dev "$iface" ${metric:+metric $metric} 2>/dev/null || true
