@@ -35,7 +35,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import firmware as fw_parser
 
@@ -150,13 +150,62 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
-def _http_get(url: str, *, timeout: float = HTTP_TIMEOUT_S) -> bytes:
+def _format_network_error(exc: Exception, *, url: str = "") -> str:
+    """Понятное сообщение об ошибке скачивания (RU) для UI и логов."""
+    msg = str(exc).strip()
+    low = msg.lower()
+    host = ""
+    if url:
+        try:
+            host = urllib.parse.urlparse(url).hostname or ""
+        except Exception:
+            host = ""
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, OSError) and reason.errno in (-2, -3):
+            hint = (
+                "Не удалось разрешить имя сервера прошивок"
+                + (f" ({host})" if host else "")
+                + ". Проверьте DNS на шлюзе: при раздаче интернета с ПК (ICS) "
+                "укажите nameserver = IP ПК-шлюза (например 192.168.1.5), "
+                "либо загрузите .fw через «Выбрать .fw» / выберите уже скачанный файл."
+            )
+            return hint
+        if "timed out" in low or "timeout" in low:
+            return (
+                "Таймаут при скачивании с сервера прошивок. "
+                "Проверьте доступ в интернет или загрузите .fw вручную."
+            )
+    if "temporary failure in name resolution" in low or "name or service not known" in low:
+        return (
+            "DNS не разрешает имя сервера прошивок"
+            + (f" ({host})" if host else "")
+            + ". При ICS с ПК добавьте nameserver IP шлюза в /etc/resolv.conf "
+            "или загрузите файл прошивки через веб-интерфейс."
+        )
+    if url:
+        return f"Ошибка скачивания {url}: {msg}"
+    return msg or "Ошибка скачивания прошивки"
+
+
+def _http_get(url: str, *, timeout: float = HTTP_TIMEOUT_S, retries: int = 2) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        code = getattr(resp, "status", resp.getcode())
-        if code != 200:
-            raise urllib.error.HTTPError(url, code, "non-200", resp.headers, None)
-        return resp.read()
+    last_exc: Optional[Exception] = None
+    for attempt in range(max(1, int(retries))):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                code = getattr(resp, "status", resp.getcode())
+                if code != 200:
+                    raise urllib.error.HTTPError(url, code, "non-200", resp.headers, None)
+                return resp.read()
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < retries:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            raise RuntimeError(_format_network_error(exc, url=url)) from exc
+    assert last_exc is not None
+    raise RuntimeError(_format_network_error(last_exc, url=url)) from last_exc
 
 
 class FirmwareRepo:
@@ -203,13 +252,31 @@ class FirmwareRepo:
         except Exception:
             log.exception("Не удалось прочитать закэшированный манифест %s", path)
 
-    def refresh(self, *, download: bool = False) -> Dict[str, Any]:
-        """Скачать и применить index.json. При download=True — дополнительно скачать файлы."""
-        status = {"ok": False, "error": "", "updated": "", "entries": 0}
+    def refresh(
+        self,
+        *,
+        download: bool = False,
+        keep_current: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Скачать и применить index.json.
+
+        При download=True — скачать отсутствующие образы «текущей» (keep_current)
+        и последней stable-версии (app + bootloader), затем удалить из кеша все
+        остальные .fw/.bin/.elf (кроме .index.json и *.part).
+        """
+        status: Dict[str, Any] = {
+            "ok": False,
+            "error": "",
+            "updated": "",
+            "entries": 0,
+            "download_errors": [],
+            "purged": [],
+        }
         try:
             raw = _http_get(self.manifest_url)
         except Exception as exc:
-            self._manifest_error = f"{type(exc).__name__}: {exc}"
+            self._manifest_error = _format_network_error(exc, url=self.manifest_url)
             status["error"] = self._manifest_error
             log.warning("Манифест недоступен: %s", self._manifest_error)
             return status
@@ -232,19 +299,19 @@ class FirmwareRepo:
         except OSError:
             log.exception("Не удалось сохранить кэш манифеста")
         if download:
-            with self._lock:
-                entries = list(self._entries.values())
-            for e in entries:
-                if e.source != "manifest":
-                    continue
-                if not e.downloaded:
-                    try:
-                        self.download(e)
-                    except Exception:
-                        log.exception("Ошибка скачивания %s", e.file)
+            keep_versions = self._resolve_keep_versions(keep_current)
+            status["keep_versions"] = {
+                kind: sorted(vers) for kind, vers in keep_versions.items() if vers
+            }
+            download_errors = self._download_keep_versions(keep_versions)
+            status["download_errors"] = download_errors
+            if download_errors:
+                status["error"] = "; ".join(download_errors)
+            purged = self._purge_cache_except_versions(keep_versions)
+            status["purged"] = purged
         self._consolidate_repository()
         with self._lock:
-            status["ok"] = True
+            status["ok"] = not download or not status["download_errors"]
             status["updated"] = self._manifest_updated
             status["entries"] = len(self._entries)
         return status
@@ -391,10 +458,7 @@ class FirmwareRepo:
             part.unlink(missing_ok=True)
 
     def _consolidate_repository_locked(self) -> None:
-        """
-        Оставить только артефакты, пригодные для прошивальщика; в каждой паре (channel, kind)
-        — одну запись с максимальной version.
-        """
+        """Удалить из кеша артефакты, непригодные для прошивальщика."""
         to_drop: List[FirmwareEntry] = []
         for entry in list(self._entries.values()):
             if not is_flasher_supported_entry(entry):
@@ -402,29 +466,132 @@ class FirmwareRepo:
         for entry in to_drop:
             self._remove_entry_and_cache_file(entry)
 
-        groups: Dict[Tuple[str, str], List[FirmwareEntry]] = {}
-        for entry in self._entries.values():
-            groups.setdefault((entry.channel, entry.kind), []).append(entry)
+    @staticmethod
+    def _normalize_keep_version(version: str) -> str:
+        v = (version or "").strip()
+        if not v or v == "?":
+            return ""
+        return v
 
-        for entries in groups.values():
-            if len(entries) <= 1:
-                continue
-            best: Optional[FirmwareEntry] = None
-            best_t: Optional[Tuple[int, int, int, int]] = None
-            for entry in entries:
-                t = version_tuple(entry.version)
-                if t is None:
-                    if best is None:
-                        best = entry
+    def _resolve_keep_versions(
+        self,
+        keep_current: Optional[Dict[str, str]],
+    ) -> Dict[str, Set[str]]:
+        """
+        Версии, которые должны остаться в локальном кеше: latest stable + текущие с линии.
+        """
+        keep: Dict[str, Set[str]] = {"app": set(), "bootloader": set()}
+        latest_app = self._normalize_keep_version(self.latest_stable_version())
+        latest_bl = self._normalize_keep_version(self.latest_bootloader_version())
+        if latest_app:
+            keep["app"].add(latest_app)
+        if latest_bl:
+            keep["bootloader"].add(latest_bl)
+        if keep_current:
+            cur_app = self._normalize_keep_version(str(keep_current.get("app") or ""))
+            cur_bl = self._normalize_keep_version(str(keep_current.get("bootloader") or ""))
+            if cur_app:
+                keep["app"].add(cur_app)
+            if cur_bl:
+                keep["bootloader"].add(cur_bl)
+        return keep
+
+    def _stable_entries_for_version(self, kind: str, version: str) -> List[FirmwareEntry]:
+        """Manifest-записи stable с заданным kind и version."""
+        target = self._normalize_keep_version(version)
+        if not target:
+            return []
+        out: List[FirmwareEntry] = []
+        with self._lock:
+            for entry in self._entries.values():
+                if (
+                    entry.channel == "stable"
+                    and entry.source == "manifest"
+                    and entry.kind == kind
+                    and self._normalize_keep_version(entry.version) == target
+                ):
+                    out.append(entry)
+        return out
+
+    def _download_keep_versions(self, keep_versions: Dict[str, Set[str]]) -> List[str]:
+        """Скачать отсутствующие образы из keep_versions; вернуть список ошибок (RU)."""
+        errors: List[str] = []
+        seen: Set[Tuple[str, str]] = set()
+        for kind in ("app", "bootloader"):
+            for ver in sorted(keep_versions.get(kind) or ()):
+                for entry in self._stable_entries_for_version(kind, ver):
+                    key = (entry.channel, entry.file)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if entry.downloaded and self.path_for(entry):
+                        continue
+                    try:
+                        self.download(entry)
+                    except Exception as exc:
+                        log.exception("Ошибка скачивания %s", entry.file)
+                        label = "приложения" if kind == "app" else "бутлоадера"
+                        detail = _format_network_error(exc, url=entry.url)
+                        errors.append(
+                            f"Не удалось скачать {label} v{ver} ({entry.file}): {detail}"
+                        )
+        return errors
+
+    def _purge_cache_except_versions(self, keep_versions: Dict[str, Set[str]]) -> List[str]:
+        """
+        Удалить локальные .fw/.bin/.elf, версия которых не входит в keep_versions.
+        Записи манифеста сохраняются (downloaded=False).
+        """
+        purged: List[str] = []
+
+        def _should_keep(entry: FirmwareEntry) -> bool:
+            kind = entry.kind if entry.kind in ("app", "bootloader") else "app"
+            ver = self._normalize_keep_version(entry.version)
+            if not ver:
+                return False
+            return ver in (keep_versions.get(kind) or set())
+
+        with self._lock:
+            for entry in list(self._entries.values()):
+                path = self.cache_dir / entry.file
+                if not path.is_file():
+                    entry.downloaded = False
+                    entry.local_path = None
                     continue
-                if best_t is None or t > best_t:
-                    best = entry
-                    best_t = t
-            if best is None:
-                continue
-            for entry in entries:
-                if entry is not best:
-                    self._remove_entry_and_cache_file(entry)
+                if _should_keep(entry):
+                    continue
+                try:
+                    path.unlink()
+                    log.info("Удалён из кеша (не current/latest): %s", entry.file)
+                    purged.append(entry.file)
+                except OSError:
+                    log.warning("Не удалось удалить %s", path, exc_info=True)
+                part = path.with_suffix(path.suffix + ".part")
+                part.unlink(missing_ok=True)
+                entry.downloaded = False
+                entry.local_path = None
+
+            known = {e.file for e in self._entries.values()}
+            for path in self.cache_dir.iterdir():
+                if not path.is_file() or path.name.startswith("."):
+                    continue
+                if path.suffix.lower() not in VALID_EXTENSIONS:
+                    continue
+                if path.name.endswith(".part"):
+                    continue
+                if path.name in known:
+                    continue
+                entry = self._entry_from_file(path, source="upload")
+                if _should_keep(entry):
+                    self._entries[(entry.channel, entry.file)] = entry
+                    continue
+                try:
+                    path.unlink()
+                    log.info("Удалён неучтённый файл из кеша: %s", path.name)
+                    purged.append(path.name)
+                except OSError:
+                    log.warning("Не удалось удалить %s", path, exc_info=True)
+        return purged
 
     def _consolidate_repository(self) -> None:
         with self._lock:
@@ -544,6 +711,21 @@ class FirmwareRepo:
         entry.downloaded = False
         return None
 
+    def ensure_local_path(self, entry: FirmwareEntry, *, allow_download: bool = True) -> Path:
+        """
+        Вернуть локальный путь к образу. При отсутствии файла — скачать (если allow_download).
+        Исключение — понятное сообщение на русском (DNS/офлайн/ручная загрузка).
+        """
+        path = self.path_for(entry)
+        if path is not None:
+            return path
+        if not allow_download:
+            raise FileNotFoundError(
+                f"Файл {entry.file} не скачан в кеш шлюза. "
+                "Нажмите «Скачать прошивки», выберите другой образ или загрузите .fw вручную."
+            )
+        return self.download(entry)
+
     def download(self, entry: FirmwareEntry) -> Path:
         """Скачать файл прошивки в кеш с проверкой sha256 (если указана)."""
         if not entry.url:
@@ -551,7 +733,12 @@ class FirmwareRepo:
         target = self._cache_path_for_entry(entry)
         tmp = target.with_suffix(target.suffix + ".part")
         log.info("Скачиваю %s → %s", entry.url, target)
-        raw = _http_get(entry.url, timeout=HTTP_TIMEOUT_S * 4)
+        try:
+            raw = _http_get(entry.url, timeout=HTTP_TIMEOUT_S * 4)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(_format_network_error(exc, url=entry.url)) from exc
         tmp.write_bytes(raw)
         if not self._cached_file_valid(entry, tmp):
             got = hashlib.sha256(raw).hexdigest() if entry.sha256 else f"размер {tmp.stat().st_size}"

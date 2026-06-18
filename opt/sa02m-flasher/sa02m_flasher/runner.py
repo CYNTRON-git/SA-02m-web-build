@@ -22,9 +22,14 @@ from . import scanner as scn
 from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo
 from .jobs import Job
-from .module_profiles import device_allowed_for_mr_firmware_flash
+from .module_profiles import (
+    application_line_profile,
+    device_flash_route,
+    line_profile_family,
+    validate_firmware_device_route,
+)
 from .modbus_io import uint32_from_modbus_reg_pair_be
-from .mplc_lease import port_lease, PortBusyError, device_path_exists
+from .mplc_lease import port_lease, PortBusyError, device_path_exists, is_port_poll_free
 from .scanner import REG_SERIAL_LO
 from .serial_port import open_port, send_receive, send_receive_wb_ext_scan
 
@@ -119,7 +124,10 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
     cancel_evt = ctx["cancel_evt"]
 
     log_cb(f"Скан {port_key} ({device_path}), {mode.value}", "info")
-    progress_cb(0, "Подготовка порта")
+    if is_port_poll_free(device_path):
+        progress_cb(0, f"Опрос адреса {addr_min}")
+    else:
+        progress_cb(0, "Подготовка порта")
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -197,12 +205,49 @@ def _load_firmware_for_flash(repo: FirmwareRepo, params: Dict[str, Any]) -> Tupl
     path = repo.path_for(entry)
     if path is None:
         if not params.get("download_if_missing", True):
-            raise FileNotFoundError(f"Файл {entry.file} не скачан")
-        path = repo.download(entry)
+            raise FileNotFoundError(
+                f"Файл {entry.file} не скачан в кеш шлюза. "
+                "Нажмите «Скачать прошивки», выберите другой образ или загрузите .fw вручную."
+            )
+        path = repo.ensure_local_path(entry, allow_download=True)
 
     from . import firmware as fw_parser
     image, _size, version, signature = fw_parser.load_firmware(path)
     return image, signature, version, entry
+
+
+def _application_line_params(
+    device: Dict[str, Any],
+    *,
+    is_wb_firmware: bool,
+) -> Tuple[int, str, int]:
+    """
+    Скорость/формат для обмена с приложением (reg 129 → bootloader).
+    Профиль по сигнатуре устройства (module_profiles.application_line_profile), не blind scan baud.
+    """
+    sig = str(device.get("signature") or "")
+    profile = application_line_profile(sig, device=device, is_wb_firmware=is_wb_firmware)
+    return profile.as_tuple()
+
+
+def _firmware_signature_for_log(
+    file_sig: str,
+    entry: FirmwareEntry,
+    device: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Сигнатура для строки лога: из .fw, иначе manifest, иначе из скана устройства."""
+    fs = str(file_sig or "").strip()
+    if fs and fs.upper() != "NONE":
+        return fs
+    for sig in entry.signatures or []:
+        s = str(sig).strip()
+        if s and s.upper() != "NONE":
+            return s
+    if device:
+        ds = str(device.get("signature") or "").strip()
+        if ds and ds.upper() != "NONE":
+            return ds
+    return fs or "NONE"
 
 
 def _make_flasher(
@@ -297,6 +342,20 @@ def _duplicate_modbus_address_on_line(
         return False
     k = _device_line_key(device)
     return sum(1 for d in peers if _device_line_key(d) == k) > 1
+
+
+def _resolve_use_fast_modbus(
+    requested: bool,
+    *,
+    duplicate_on_line: bool,
+    is_wb_firmware: bool,
+) -> bool:
+    """По умолчанию обычный Modbus; при дубликате адреса на линии — быстрый 0xFD 0x46 по серийному."""
+    if is_wb_firmware:
+        return False
+    if duplicate_on_line:
+        return True
+    return bool(requested)
 
 
 def _serial_valid_fast_modbus_u32(serial: int) -> bool:
@@ -404,13 +463,16 @@ def _enter_bootloader_from_application_line(
     """MR: reg 129 с линии приложения (закрыть порт)."""
     if device.get("in_bootloader"):
         return None
-    # MR-02m: 115200 N1; WB: 19200 N2. Если не задано явно — берём из словаря или используем 115200 N1 (MR-default).
-    _default_baud = 19200 if is_wb_firmware else 115200
-    _default_stop = 2 if is_wb_firmware else 1
-    baud = int(device.get("baudrate") or 0) or _default_baud
-    parity = str(device.get("parity") or "N").upper() or "N"
-    stopbits = int(device.get("stopbits") or 0) or _default_stop
+    baud, parity, stopbits = _application_line_params(device, is_wb_firmware=is_wb_firmware)
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
+    scan_baud = int(device.get("baudrate") or 0)
+    family = line_profile_family(str(device.get("signature") or ""), is_wb_firmware=is_wb_firmware)
+    if scan_baud and (scan_baud, str(device.get("parity") or "N").upper(), int(device.get("stopbits") or 1)) != (baud, parity, stopbits):
+        log_cb(
+            f"Профиль {family}: скан {scan_baud} {device.get('parity') or 'N'}{device.get('stopbits') or 1} "
+            f"→ для reg 129 используем {baud} {parity}{stopbits}",
+            "debug",
+        )
 
     log_cb(f"Перевод адр.{addr} в bootloader (app baud {baud} {parity}{stopbits})", "info")
     flasher, ser = _make_flasher(
@@ -628,7 +690,6 @@ def _run_bootloader_flash_session(
     recovery: bool,
     image: bytes,
     file_signature: str,
-    force_unlisted_signature: bool,
 ) -> Optional[str]:
     """
     Одна сессия: перевод из приложения (при необходимости) → один COM на скорости загрузчика
@@ -774,7 +835,6 @@ def _run_bootloader_flash_session(
             ser=ser,
             duplicate_on_line=duplicate_on_line,
             use_fast_modbus=use_fast_modbus,
-            force_unlisted_signature=force_unlisted_signature,
             is_wb_firmware=is_wb_firmware,
             is_bootloader_firmware=is_bootloader_firmware,
             recovery=recovery,
@@ -799,7 +859,6 @@ def _flash_one_device(
     ser: Any,
     duplicate_on_line: bool,
     use_fast_modbus: bool,
-    force_unlisted_signature: bool,
     is_wb_firmware: bool = False,
     is_bootloader_firmware: bool = False,
     recovery: bool = False,
@@ -814,15 +873,6 @@ def _flash_one_device(
     # Bootloader всегда отвечает на адресе 247 (BOOTLOADER_DEFAULT_ADDR),
     # независимо от Modbus-адреса приложения.
     boot_addr_for_address_path = fp.BOOTLOADER_DEFAULT_ADDR
-
-    if not is_wb_firmware and not is_bootloader_firmware:
-        if not device_allowed_for_mr_firmware_flash(
-            dev_sig, allow_unlisted=force_unlisted_signature
-        ):
-            return (
-                f"Сигнатура «{dev_sig}» не распознана как модуль расширения MR/MP-02м. "
-                "Прошивка отменена. Для лабораторных случаев включите опцию «Разрешить устройство вне списка сигнатур»."
-            )
 
     info_sig = (dev_sig if dev_sig and dev_sig.upper() != "NONE" else file_signature) or fp.DEFAULT_SIGNATURE
     flash_cancel_gate = fp.FlashCancelGate(lambda: cancel_evt.is_set())
@@ -968,6 +1018,32 @@ def _flash_one_device(
     return None
 
 
+def _firmware_file_is_wb(entry: FirmwareEntry) -> bool:
+    return str(entry.file).lower().endswith(".wbfw")
+
+
+def _resolve_flash_route_for_device(
+    device: Dict[str, Any],
+    entry: FirmwareEntry,
+) -> Tuple[bool, Optional[str]]:
+    """
+    Определить is_wb_firmware и проверить соответствие сигнатуры устройства и типа образа.
+    Маршрут задаётся сигнатурой (mp_mr vs wb), не только расширением файла.
+    """
+    dev_sig = str(device.get("signature") or "").strip()
+    firmware_is_wb = _firmware_file_is_wb(entry)
+    is_bl_fw = (entry.kind or "").lower() == "bootloader"
+    err = validate_firmware_device_route(
+        dev_sig,
+        firmware_is_wb=firmware_is_wb,
+        is_bootloader_firmware=is_bl_fw,
+    )
+    if err:
+        return False, err
+    route = device_flash_route(dev_sig)
+    return route == "wb", None
+
+
 def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: FirmwareRepo) -> None:
     """
     Задача прошивки одного устройства.
@@ -978,15 +1054,11 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
         use_fast_modbus    — bool
         firmware_channel   — канал
         firmware_file      — имя файла
-        force_signature_mismatch / force_unlisted_signature — обход whitelist сигнатур MR/MP-02м (только отладка)
     """
     params = job.params
     port_key = str(params.get("port") or job.port)
     target = params.get("target") or {}
     use_fast = bool(params.get("use_fast_modbus"))
-    force_unlisted = bool(
-        params.get("force_unlisted_signature", params.get("force_signature_mismatch"))
-    )
 
     log_cb = ctx["log"]
     progress_cb = ctx["progress"]
@@ -994,8 +1066,15 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
-    is_wb = str(entry.file).lower().endswith(".wbfw")
-    log_cb(f"Файл: {entry.file} sig={file_sig} ver={file_ver} size={len(image)}", "info")
+    is_wb, route_err = _resolve_flash_route_for_device(target, entry)
+    if route_err:
+        raise RuntimeError(route_err)
+    log_sig = _firmware_signature_for_log(file_sig, entry, target)
+    route_name = device_flash_route(str(target.get("signature") or ""))
+    log_cb(
+        f"Файл: {entry.file} sig={log_sig} ver={file_ver} size={len(image)} route={route_name}",
+        "info",
+    )
     progress_cb(1, "Открытие порта")
 
     with port_lease(device_path, cfg.mplc_stop_services):
@@ -1003,6 +1082,14 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
             peers_raw = params.get("devices_on_port")
             peers: Optional[List[Dict[str, Any]]] = peers_raw if isinstance(peers_raw, list) else None
             dup = _duplicate_modbus_address_on_line(target, peers)
+            use_fast = _resolve_use_fast_modbus(
+                use_fast, duplicate_on_line=dup, is_wb_firmware=is_wb
+            )
+            if dup and not bool(params.get("use_fast_modbus")):
+                log_cb(
+                    "Быстрый Modbus (0xFD 0x46): включён автоматически — на линии несколько устройств с одним Modbus-адресом.",
+                    "info",
+                )
             is_bl_fw = (entry.kind or "").lower() == "bootloader"
             recovery = bool(params.get("recovery"))
             err = _run_bootloader_flash_session(
@@ -1018,7 +1105,6 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                 recovery=recovery,
                 image=image,
                 file_signature=file_sig,
-                force_unlisted_signature=force_unlisted,
             )
             if err:
                 raise RuntimeError(err)
@@ -1030,16 +1116,17 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     Пакетная прошивка нескольких устройств на одном COM.
 
     params.targets — список dict: {address, serial, signature, in_bootloader, ...}
-    params.firmware_* — одна прошивка на всю партию; допуск только для сигнатур MR/MP-02м (или force_*).
+    params.firmware_* — одна прошивка на всю партию; маршрут по сигнатуре каждого устройства.
     """
     params = job.params
     port_key = str(params.get("port") or job.port)
     targets: List[Dict[str, Any]] = list(params.get("targets") or [])
-    use_fast = bool(params.get("use_fast_modbus", True))
-    force_unlisted = bool(
-        params.get("force_unlisted_signature", params.get("force_signature_mismatch"))
-    )
+    use_fast_requested = bool(params.get("use_fast_modbus"))
     skip_on_error = bool(params.get("skip_on_error", True))
+    peers_raw = params.get("devices_on_port")
+    batch_peers: Optional[List[Dict[str, Any]]] = (
+        list(peers_raw) if isinstance(peers_raw, list) and peers_raw else targets
+    )
 
     if not targets:
         raise ValueError("Список устройств для пакетной прошивки пуст")
@@ -1050,8 +1137,8 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
-    is_wb = str(entry.file).lower().endswith(".wbfw")
-    log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={file_sig} ver={file_ver}", "info")
+    log_sig = _firmware_signature_for_log(file_sig, entry, targets[0] if targets else None)
+    log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={log_sig} ver={file_ver}", "info")
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -1062,13 +1149,35 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                 if cancel_evt.is_set():
                     log_cb("Отмена пакетной прошивки", "warn")
                     break
-                log_cb(f"[{i+1}/{total}] Прошивка устройства {dev.get('address')} sn=0x{int(dev.get('serial') or 0):08X}", "info")
+                is_wb, route_err = _resolve_flash_route_for_device(dev, entry)
+                if route_err:
+                    errors.append((dev, route_err))
+                    log_cb(f"Ошибка: {route_err}", "error")
+                    if not skip_on_error:
+                        raise RuntimeError(route_err)
+                    continue
+                route_name = device_flash_route(str(dev.get("signature") or ""))
+                log_cb(
+                    f"[{i+1}/{total}] Прошивка устройства {dev.get('address')} "
+                    f"sn=0x{int(dev.get('serial') or 0):08X} route={route_name}",
+                    "info",
+                )
 
                 def sub_progress(pct: int, message: str) -> None:
                     overall = int((i + pct / 100.0) * 100 / total)
                     progress_cb(overall, f"[{i+1}/{total}] {message}")
 
-                dup = _duplicate_modbus_address_on_line(dev, targets)
+                dup = _duplicate_modbus_address_on_line(dev, batch_peers)
+                use_fast = _resolve_use_fast_modbus(
+                    use_fast_requested,
+                    duplicate_on_line=dup,
+                    is_wb_firmware=is_wb,
+                )
+                if dup and not use_fast_requested:
+                    log_cb(
+                        "Быстрый Modbus (0xFD 0x46): включён автоматически — на линии несколько устройств с одним Modbus-адресом.",
+                        "info",
+                    )
                 recovery = bool(dev.get("recovery") or params.get("recovery"))
                 err = _run_bootloader_flash_session(
                     device_path,
@@ -1083,7 +1192,6 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     recovery=recovery,
                     image=image,
                     file_signature=file_sig,
-                    force_unlisted_signature=force_unlisted,
                 )
                 if err:
                     errors.append((dev, err))

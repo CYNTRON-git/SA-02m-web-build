@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.35">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.28-12">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,13 +15,9 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН">
-      <div>
-        <div class="topbar-title" id="device-title">СА-02м</div>
-        <div class="topbar-sub-row">
-          <span class="topbar-sub">Сервер автоматизации</span>
-          <span class="topbar-ver mono" id="app-version" title="Версия веб-интерфейса"></span>
-        </div>
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН" title="Общая информация">
+      <div class="topbar-branding">
+        <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
     </div>
     <div class="topbar-sep"></div>
@@ -41,13 +37,11 @@
 
     <!-- ── Sidebar ───────────────────────────────────────────────────────── -->
     <nav class="sidebar">
-      <div class="nav-section">Мониторинг</div>
       <div class="nav-item active" data-tab="dashboard">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         Общая информация
       </div>
 
-      <div class="nav-section">Настройки</div>
       <div class="nav-item" data-tab="network">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-5 6M12 11l5 6"/></svg>
         Сеть
@@ -68,7 +62,7 @@
       </div>
 
       <div class="nav-item nav-parent" id="nav-gateway" data-tab="gateway">
-        <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/><path d="M8 12h8M12 8v8"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 8c5 0 5 8 10 8s5-8 10-8"/><path d="M2 16c5 0 5-8 10-8s5 8 10 8"/></svg>
         <span>Шлюз RS-485</span>
         <svg class="nav-arrow" viewBox="0 0 8 12" width="8" height="12" aria-hidden="true"><path d="M2 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
@@ -84,7 +78,6 @@
         <div class="nav-sub-item" data-gateway-sub="COM5">COM5 <span class="gw-sub-dot" id="gwdot-COM5"></span></div>
       </div>
 
-      <div class="nav-section">Система</div>
       <div class="nav-item" data-tab="system">
         <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         Управление
@@ -98,7 +91,6 @@
       <div id="tab-dashboard" class="tab-pane active">
         <div class="page-header">
           <h2>Общая информация</h2>
-          <p>Состояние системы и интерфейсов в реальном времени</p>
         </div>
 
         <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
@@ -252,8 +244,8 @@
             </div>
           </div>
 
-          <!-- HW outputs — full width -->
-          <div class="widget dash-full">
+          <!-- HW outputs — ширина верхнего ряда (4 колонки) -->
+          <div class="widget dash-span-top4">
             <div class="widget-title">Дискретный выход, USB-питание и индикация</div>
             <div class="hw-hint" id="hw-hint" style="display:none"></div>
             <div class="hw-grid">
@@ -265,7 +257,6 @@
                     <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('do',1)">Вкл</button>
                   </div>
                   <div class="hw-status-line">
-                    <span class="hw-status-label">Состояние:</span>
                     <span class="hw-status-val na" id="hw-do-st">н/д</span>
                   </div>
                 </div>
@@ -278,7 +269,6 @@
                     <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('beeper',1)">Звук</button>
                   </div>
                   <div class="hw-status-line">
-                    <span class="hw-status-label">Состояние:</span>
                     <span class="hw-status-val na" id="hw-beep-st">н/д</span>
                   </div>
                 </div>
@@ -291,7 +281,6 @@
                     <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('alarm_led',1)">Вкл</button>
                   </div>
                   <div class="hw-status-line">
-                    <span class="hw-status-label">Состояние:</span>
                     <span class="hw-status-val na" id="hw-led-st">н/д</span>
                   </div>
                 </div>
@@ -303,7 +292,6 @@
                     <button type="button" class="btn btn-sm btn-warn" id="hw-usb-reset-btn">Сброс</button>
                   </div>
                   <div class="hw-status-line">
-                    <span class="hw-status-label">Состояние:</span>
                     <span class="hw-status-val na" id="hw-usb-st">н/д</span>
                   </div>
                 </div>
@@ -311,8 +299,8 @@
             </div>
           </div>
 
-          <!-- RS-485 — full width -->
-          <div class="widget dash-full">
+          <!-- RS-485 — та же ширина, что и HW (4 колонки) -->
+          <div class="widget dash-span-top4">
             <div class="widget-title">Интерфейсы RS-485 — активность</div>
             <div class="rs485-grid" id="rs485-grid"></div>
           </div>
@@ -575,7 +563,7 @@
       <div id="tab-flasher" class="tab-pane">
         <div class="page-header">
           <h2>Устройства RS-485</h2>
-          <p>Поиск модулей на линии RS-485, управление опросом порта и обновление прошивки</p>
+          <p>Поиск модулей на линии RS-485, настройка и обновление прошивки</p>
         </div>
 
         <div class="flasher-layout">
@@ -632,7 +620,7 @@
                   <label class="flasher-baud-chip"><input type="checkbox" value="19200" checked /><span>19200</span></label>
                   <label class="flasher-baud-chip"><input type="checkbox" value="9600" checked /><span>9600</span></label>
                 </div>
-                <div class="widget-sub flasher-hint" style="margin-bottom:10px">Можно выбрать сразу несколько скоростей для одного прохода сканирования.</div>
+                <div class="widget-sub flasher-hint" style="margin-bottom:10px">Можно выбрать сразу несколько скоростей.</div>
                 <label class="flasher-field">
                   <span>Режим поиска</span>
                   <select id="flasher-mode">
@@ -661,11 +649,12 @@
                   <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
                   <div class="flasher-progress-label" id="flasher-progress-label">—</div>
                 </div>
+                <div id="flasher-scan-status" class="flasher-scan-status" hidden aria-live="polite"></div>
               </div>
               </div>
 
               <div class="flasher-side-col">
-              <div class="widget">
+              <div class="widget flasher-line-status-widget">
                 <div class="widget-title">Состояние линии</div>
                 <div class="flasher-badge-stack">
                   <span class="badge badge-unk" id="flasher-port-badge">Нет данных</span>
@@ -681,36 +670,25 @@
               <div class="widget">
                 <div class="widget-title">Прошивка выбранных устройств</div>
                 <div class="flasher-fw-top-actions">
-                  <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button" title="Проверить манифест на сервере">
+                  <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button" title="Обновить манифест и скачать последнюю stable-прошивку (и текущую с линии) в кеш шлюза">
                     <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    Проверить
+                    Скачать прошивки
                   </button>
                   <label class="btn btn-sm flasher-upload-label" title="Выбрать файл прошивки с устройства">
                     <input type="file" id="flasher-fw-upload" accept=".fw,.bin,.elf" hidden />
                     Выбрать .fw
                   </label>
                 </div>
+                <div class="flasher-fw-list-label">Доступные прошивки</div>
                 <div class="flasher-fw-list" id="flasher-fw-list">Манифест ещё не загружен</div>
-                <div class="form-row">
-                  <label>Прошивка</label>
-                  <select id="flasher-fw-select"></select>
-                </div>
-                <div class="form-row">
-                  <label class="checkbox-line">
-                    <input type="checkbox" id="flasher-use-fast" checked /> Использовать быстрый Modbus (0xFD 0x46)
-                  </label>
-                </div>
-                <div class="form-row">
-                  <label class="checkbox-line">
-                    <input type="checkbox" id="flasher-force-mismatch" /> Разрешить устройство вне списка сигнатур MR/MP-02м (отладка)
-                  </label>
-                </div>
-                <div class="btn-group">
-                  <button class="btn btn-primary" id="flasher-flash-btn" type="button" disabled>
+                <div class="flasher-fw-mismatch" id="flasher-fw-mismatch" hidden aria-live="polite">Выберите корректную прошивку</div>
+                <div class="flasher-sub" id="flasher-fw-hint"></div>
+                <div class="flasher-flash-actions">
+                  <button class="btn btn-primary btn-sm" id="flasher-flash-btn" type="button" disabled>
                     <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                    Прошить выбранные
+                    <span class="flasher-flash-btn-label">Прошить</span>
                   </button>
-                  <button class="btn btn-sm" id="flasher-flash-cancel-btn" type="button" disabled>Отмена</button>
+                  <button class="btn btn-sm" id="flasher-flash-cancel-btn" type="button" disabled>Отменить</button>
                 </div>
               </div>
               </div>
@@ -944,9 +922,9 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/app.js?v=1.0.3.22"></script>
-<script src="/static/js/flasher.js?v=1.0.3-14"></script>
+<script src="/static/js/app.js?v=1.0.3.28-2"></script>
+<script src="/static/js/flasher.js?v=1.0.3.28-4"></script>
 <script src="/static/js/mqtt.js?v=1.2.1"></script>
-<script src="/static/js/gateway.js?v=1.0.3.19"></script>
+<script src="/static/js/gateway.js?v=1.0.3.28-7"></script>
 </body>
 </html>

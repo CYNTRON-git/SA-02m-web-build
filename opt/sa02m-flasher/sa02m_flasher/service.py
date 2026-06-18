@@ -5,7 +5,7 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
 Слушает unix-socket (по умолчанию /run/sa02m-flasher/flasher.sock). Маршруты:
     GET  /ports                       — список COM-портов (конфиг + занятость). ?quick=1 — только пути/exists, без fuser и опроса systemd
     GET  /firmware                    — статус репозитория + список прошивок
-    POST /firmware/refresh            — обновить манифест (JSON: {"download": bool})
+    POST /firmware/refresh            — обновить манифест (JSON: {"download": bool, "keep_current": {"app": "...", "bootloader": "..."}})
     POST /firmware/upload             — multipart/form-data: file=<бинарь>
     POST /scan                        — начать сканирование (JSON: port, mode, baudrates[], parity, stopbits, addr_min, addr_max)
     POST /flash                       — начать прошивку одного устройства
@@ -406,7 +406,10 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_firmware_refresh(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         download = bool(data.get("download"))
-        status = ctx.repo.refresh(download=download)
+        keep_current = data.get("keep_current")
+        if keep_current is not None and not isinstance(keep_current, dict):
+            keep_current = None
+        status = ctx.repo.refresh(download=download, keep_current=keep_current)
         _send_json(self, status)
 
     def _handle_firmware_upload(self, ctx: ServiceContext) -> None:
@@ -443,6 +446,14 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
+        targets = data.get("targets")
+        if not isinstance(targets, list) or not targets:
+            raise ValueError("Поле 'targets' обязательно (непустой список)")
+        from sa02m_flasher.module_profiles import validate_batch_flash_targets
+
+        batch_err = validate_batch_flash_targets(targets)
+        if batch_err:
+            raise ValueError(batch_err)
 
         def run_fn(job: Job, rctx: Dict[str, Any]) -> None:
             runner.run_flash_batch_job(job, rctx, ctx.cfg, ctx.repo)

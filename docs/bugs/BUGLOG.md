@@ -1,3 +1,109 @@
+## [2026-06-18 14:52] branch: 1.0.3.28 - Dashboard: HW над RS-485, hover, без «Состояние:»
+
+**Файл(ы):** www/network_config/index.html, www/network_config/static/css/main.css, www/network_config/static/js/app.js
+**Тип:** Некорректное поведение
+**Описание:** Виджеты HW и RS-485 занимали всю ширину в разном порядке; подписи «Состояние:» дублировали индикаторы; виджеты дашборда не выделялись при наведении.
+**Причина:** Разметка dash-full и фиксированный порядок блоков; отсутствие отдельного стиля hover для #tab-dashboard .widget.
+**Исправление:** HW блок выше RS-485; класс dash-span-top4 (4 колонки); удалены hw-status-label; синяя рамка/тень при :hover. Cache-bust CSS/JS.
+
+## [2026-06-18 14:52] branch: 1.0.3.28 - RS-485 Dashboard: 4 цвета точки, без «○ свободен»
+
+**Файл(ы):** www/network_config/static/js/app.js, www/network_config/static/css/main.css
+**Тип:** Некорректное поведение
+**Описание:** Текст «○ свободен» / «● активен» загромождал карточки; не различались «опрос без ответов» и «ошибки линии».
+**Причина:** Бинарная логика dot + статусная строка вместо семантики poll/errors/responses.
+**Исправление:** Классы idle / on / warn / 
+oresponse (+ 
+opoll при absent); подсказки в 	itle; строки open/closed убраны.
+
+## [2026-06-18 14:52] branch: 1.0.3.28 - Gateway UI: COM панели, nav toggle, таблица портов
+
+**Файл(ы):** www/network_config/static/js/gateway.js, www/network_config/static/css/main.css, www/network_config/index.html
+**Тип:** Некорректное поведение
+**Описание:** Неравная ширина панелей COM, лишние hints режимов, нельзя свернуть подменю шлюза повторным кликом; таблица портов без единого стиля/ширины.
+**Причина:** Inline-стили и ield-hint под каждым режимом; подменю только открывалось; таблица без gw-ports-table.
+**Исправление:** gw-device-stack, удалены gw-mode-hint, gatewayNavClick для collapse; стили gw-ports-table, zebra; убран COM5-текст для 4-портового профиля.
+
+## [2026-06-18 14:19] branch: 1.0.3.28 — hourly spam `network_or_git_failed` в event log
+
+**Файл(ы):** `etc/sa02m-web-update-check.sh`, `www/network_config/cgi-bin/web_update_check.cgi`, `etc/systemd/sa02m-web-update-check.service`
+**Тип:** Некорректное поведение
+**Описание:** Журнал событий (`/var/log/sa02m_install.log`) каждый час получал строку `sa02m-web-update-check: network_or_git_failed`, даже без действий пользователя.
+**Причина:** `sa02m-web-update-check.timer` (OnCalendar=hourly) запускал тот же скрипт, что и кнопка «Проверить обновления»; при недоступности GitHub/git скрипт всегда писал ошибку в install.log.
+**Исправление:** Флаг `--manual` / `SA02M_WEB_UPDATE_CHECK_MANUAL=1` — запись в install.log только при ручной проверке (CGI `?force=1` передаёт `--manual`). Автоматический timer по-прежнему обновляет `check.json`, но молчит при offline. В unit добавлены `StandardOutput=null` / `StandardError=null`. Задеплоено на 192.168.1.136.
+
+## [2026-06-18 14:12] branch: 1.0.3.28 — multi-select пакетная прошивка в веб-UI
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `opt/sa02m-flasher/tests/test_flash_route.py`
+**Тип:** Некорректное поведение
+**Описание:** В веб-прошивальщике можно было выбрать только одно устройство; повторный клик заменял выбор, пакетная прошивка нескольких MR/MP или WB по очереди была недоступна.
+**Причина:** Single-select через `__selected` на строке таблицы; `startFlash` отправлял один target в `/flash_batch`.
+**Исправление:** Multi-select (`selectedDeviceIndices` Set), клик переключает выделение; «Прошить (N)» шлёт все targets последовательно через существующий `run_flash_batch_job` ([1/N] прогресс). `validateMultiFlashSelection()` и backend `validate_batch_flash_targets()` блокируют смешение MR/MP и WB. Задеплоено на 192.168.1.136.
+
+## [2026-06-18 13:55] branch: 1.0.3.28 — «Подготовка порта» ~3.7 с при свободном COM
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/mplc_lease.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/tests/test_mplc_lease.py`
+**Тип:** Некорректное поведение
+**Описание:** Перед каждым сканированием UI показывал «Подготовка порта» ~3–4 с, даже когда fuser на `/dev/COM4` пуст и опросчики порт не держали.
+**Причина:** `port_lease()` всегда вызывал `systemctl stop` для `mplc4` и `sa02m-modbus-mqtt` по глобальному `is-active`, независимо от фактической занятости порта (~3.7 с: stop/start mqtt + pkill mplc).
+**Исправление:** Быстрый путь: `is_port_poll_free()` (один fuser) → пропуск stop/restart; при занятом порте — прежняя логика. UI: «Сканирование» вместо «Подготовка порта» по кешу `/ports`. Замер после фикса: prep→scan ~0.34 с (было ~3.67 с). Задеплоено на 192.168.1.136.
+
+## [2026-06-18 13:48] branch: 1.0.3.28 — веб показывал устаревшую версию 1.0.3.22
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`, `www/network_config/VERSION`, `scripts/sync-app-version.py`
+**Тип:** Некорректное поведение
+**Описание:** В шапке «Сервер автоматизации» отображалась v1.0.3.22 при ветке 1.0.3.28.
+**Причина:** `APP_VERSION` и cache-bust `app.js?v=` в index.html не обновлялись при bump ветки.
+**Исправление:** Версия вынесена в `www/network_config/VERSION`; добавлен `scripts/sync-app-version.py` (читает git-ветку, обновляет VERSION, app.js, index.html). Синхронизировано на 1.0.3.28, задеплоено на 192.168.1.136.
+
+## [2026-06-18 13:40] branch: 1.0.3.28 — авто-маршрут прошивки по сигнатуре
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `www/network_config/index.html`, `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/tests/test_flash_route.py`
+**Тип:** Некорректное поведение
+**Описание:** Для прошивки сторонних модулей (Wiren Board) требовалась отладочная галочка «Разрешить устройство вне списка сигнатур MR/MP-02m»; без неё MR .fw на WB-устройство блокировался, а правильный WB-путь не выбирался автоматически.
+**Причина:** Whitelist MR/MP с обходом через `force_unlisted_signature`; `is_wb_firmware` определялся только по расширению файла без проверки согласованности с сигнатурой устройства.
+**Исправление:** Удалена галочка из UI/API. Добавлены `device_flash_route()` и `validate_firmware_device_route()`: MR/MP → .fw / 115200 N1 / fast Modbus; не наши (WB) → .wbfw / 19200 N2 / WB algorithm. Явные ошибки при несовпадении типа прошивки и сигнатуры. Задеплоено на 192.168.1.136.
+
+## [2026-06-18 13:28] branch: 1.0.3.28 — SSE обрыв при прошивке: перезапуск демона
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`
+**Тип:** Некорректное поведение
+**Описание:** UI показывал «Потеряно SSE-соединение» ~40 с после старта прошивки MR-02m_1.0.9.0.fw; итог прошивки в UI неизвестен.
+**Причина:** `systemctl restart sa02m-flasher` в 11:50:30 MSK (~43 с после старта flash_batch) оборвал SSE и уничтожил in-memory job (404 на reconnect). Прошивка на устройстве остановилась на блоке 197/628. nginx `proxy_read_timeout 3600s` и heartbeat в service.py не при чём.
+**Исправление:** В `openStream` при `onerror` — опрос `GET /jobs/<id>` каждые 2 с; при 404 — явное сообщение о перезапуске демона и совет сканировать; обновлён toast при ошибке прошивки. Задеплоено на 192.168.1.136.
+
+## [2026-06-18 13:21] branch: 1.0.3.28 — Прошивка падала на скачивании .fw: DNS/UX
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `scripts/01-system.sh`
+**Тип:** Некорректное поведение
+**Описание:** UI показывал «есть 1.0.9.0» после обновления манифеста, но прошивка падала до Modbus с `Temporary failure in name resolution` при попытке скачать `MR-02m_1.0.9.0.fw`. Пользователь воспринимал это как «интернет есть».
+**Причина:** (1) Манифest index.json (~4 KB) мог обновиться ранее, а файл .fw (~150 KB) не был в кешe; подсказка «есть X» бралась из `latestStableVersion` манifesta, не из `downloaded`. (2) При ICS (WiFi→Ethernet с ПК) шлюз 192.168.1.5 доступен, но внешние DNS (8.8.8.8) с шлюза не проходят — `getent/curl` к cyntron.ru падают; на устройстве не был прописан DNS через IP шлюза.
+**Исправление:** `_format_network_error` + `ensure_local_path` — понятные RU-сообщения; кнопка «Скачать прошивки» (`refresh download=true` + keep_current); блокировка «Прошить» для «не скачан»; подсказка «есть X (не скачан)»; `01-system.sh` — nameserver шлюза в resolvconf head. На устройстве: resolvconf head `nameserver 192.168.1.5` (если ICS не отдаёт DNS — загрузка .fw вручную или MR-02m_1.0.8.26.fw из кеша).
+
+## [2026-06-18 13:24] branch: 1.0.3.28 — signature-based UART profiles для reg 129
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/tests/test_module_line_profiles.py`, `opt/sa02m-flasher/tests/test_runner_app_line.py`
+**Тип:** Логическая ошибка
+**Описание:** Вход в bootloader (reg 129) использовал baud/stop из скана (19200 N2 на шлюзе) вместо профиля по сигнатуре модуля; MR-02m требует 115200 N1.
+**Причина:** Жёсткий fallback 19200/2 и/или слепое доверие scan baud без классификации MP/MR vs WB vs CE/DTV.
+**Исправление:** `Rs485LineProfile` + `application_line_profile()` по сигнатуре (MR/MP/CE/DTV → 115200 N1; WB/.wbfw → scan или 19200 N2). Runner и flasher.js передают `app_line_*` в flash_batch; WB .wbfw path без изменений.
+
+## [2026-06-18 13:15] branch: 1.0.3.28
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `www/network_config/static/js/flasher.js`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Проверить» только обновляла манифест без скачивания; `_consolidate_repository` оставлял лишь максимальную версию на (channel, kind), удаляя текущие образы модулей с линии.
+**Причина:** `refresh(download=False)` на кнопке; политика кеша не учитывала версии, реально работающие на RS-485.
+**Исправление:** «Проверить» вызывает `refresh(download=true)` с `keep_current` (max app/bl с результатов сканирования); скачиваются current+latest stable app/bl; из кеша удаляются остальные .fw/.bin/.elf.
+
+## [2026-06-18 13:16] branch: 1.0.3.28 — MR-02m: reg 129 всё ещё на 19200 N2 при прошивке .fw
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/runner.py`, `www/network_config/static/js/flasher.js`
+**Тип:** Логическая ошибка
+**Описание:** При прошивке MR-02m_1.0.9.0.fw лог показывал «Перевод адр.4 в bootloader (app baud 19200 N2)» — reg 129 не доходила до приложения, fast Modbus по серийному 0xFD 0x46 таймаутил.
+**Причина:** Частичный fix 1.0.3.27 менял только fallback при отсутствии baud в target, но (1) старый runner на устройстве всё ещё имел hardcode 19200/2; (2) даже с fix — если в target попадал baudrate/stopbits из скана (19200 N2), они переопределяли MR-default; UI не передавал line-параметры, а на старом коде это давало 19200 N2.
+**Исправление:** `_application_line_params`: для MR .fw всегда 115200 N1 (игнор scan baud); для WB — scan или 19200 N2. UI передаёт baudrate/parity/stopbits из скана (для WB). `_firmware_signature_for_log` — sig в логе из manifest/скана, если в .fw NONE.
+
 ## [2026-06-08 21:03] branch: 1.0.3.27 — fix-eth.sh не восстанавливал default route для static-интерфейса после cold-boot
 
 **Файл(ы):** `etc/fix-eth.sh`

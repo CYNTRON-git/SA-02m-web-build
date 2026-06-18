@@ -177,6 +177,7 @@ html:not([data-theme="light"]) .topbar {
   object-position: left center;
   flex-shrink: 0;
   display: block;
+  cursor: pointer;
 }
 .topbar-logo > div:last-child {
   min-width: 0;
@@ -194,10 +195,26 @@ html:not([data-theme="light"]) .topbar {
   letter-spacing: 0.02em;
 }
 .topbar-theme-wrap object { display: block; cursor: pointer; pointer-events: auto; }
-.topbar-title { font-size: .95rem; font-weight: 700; color: var(--text); white-space: nowrap; }
-.topbar-sub-row { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.topbar-sub   { font-size: .72rem; color: var(--text-sec); }
-.topbar-ver   { font-size: .65rem; color: var(--text-dim); letter-spacing: 0.02em; }
+.topbar-branding {
+  min-width: 0;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.15;
+  white-space: pre;
+  letter-spacing: 0.01em;
+}
+.topbar-brand-text,
+#device-title {
+  font-size: calc(.95rem * 2 - 2pt);
+  font-weight: inherit;
+  color: inherit;
+}
+.topbar-brand-ver,
+#app-version {
+  font-size: calc((.95rem * 2 - 2pt) / 2);
+  font-weight: inherit;
+  color: var(--text-sec);
+}
 .topbar-sep   { flex: 1; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
@@ -210,8 +227,6 @@ html:not([data-theme="light"]) .topbar {
   display: flex; flex-direction: column; padding: 16px 0;
   overflow-y: auto;
 }
-.nav-section { padding: 0 12px 6px; font-size: .67rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: .08em; margin-top: 16px; }
-.nav-section:first-child { margin-top: 0; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 14px; margin: 2px 8px;
@@ -259,6 +274,10 @@ html:not([data-theme="light"]) .topbar {
 /* Дашборд «Общая информация» — крупнее заголовок и подзаголовок */
 #tab-dashboard .page-header h2 { font-size: 1.38rem; letter-spacing: -0.02em; }
 #tab-dashboard .page-header p  { font-size: .95rem; margin-top: 6px; line-height: 1.45; }
+#tab-dashboard .widget:hover {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow);
+}
 
 /* ── Dashboard grid ──────────────────────────────────────────────────────── */
 .dash-grid {
@@ -266,6 +285,8 @@ html:not([data-theme="light"]) .topbar {
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 14px;
 }
+/* HW-блок: ширина верхнего ряда (4 виджета + промежутки), auto-fill сохраняет размер карточек */
+.dash-span-top4 { grid-column: 1 / span 4; }
 .dash-full { grid-column: 1 / -1; }
 
 /* ── Widget card ─────────────────────────────────────────────────────────── */
@@ -571,27 +592,21 @@ svg .gauge-num {
 .hw-item:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
 .hw-item-title { font-size: 14px; color: var(--text-sec); margin-bottom: 10px; font-weight: 600; }
 .hw-item-body {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
+  gap: 10px 12px;
 }
-.hw-btns { display: flex; gap: 6px; flex-shrink: 0; }
+.hw-btns { display: flex; gap: 6px; flex-shrink: 0; min-width: 0; }
 .hw-status-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-left: auto;
-  flex: 1;
-  justify-content: flex-end;
-  min-width: 0;
+  justify-self: end;
+  text-align: right;
+  flex-shrink: 0;
 }
-.hw-status-label { font-size: 13px; color: var(--text-sec); white-space: nowrap; }
 .hw-status-val {
   font-size: 15px; font-weight: 700;
-  min-width: 4.5em;
-  text-align: left;
+  white-space: nowrap;
+  text-align: right;
 }
 .hw-status-val.on  { color: var(--green); }
 .hw-status-val.off { color: var(--text-sec); }
@@ -646,14 +661,16 @@ svg .gauge-num {
 .rs485-port.act    { border-color: var(--cyan-btn); box-shadow: 0 0 16px #0891b244, var(--shadow-sm); }
 .rs485-hdr { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
 .rs485-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background .4s, box-shadow .4s; }
-/* порт есть, опрос активен, без ошибок */
-.rs485-dot.on     { background: var(--green); box-shadow: 0 0 5px var(--green); }
-/* порт есть, свободен / нет ошибок — нейтральный серый */
-.rs485-dot.idle   { background: var(--text-dim); }
-/* нет устройства / нет опроса — серый */
-.rs485-dot.nopoll { background: var(--text-dim); opacity: 0.85; }
-/* ошибки линии FE, PE, OE */
-.rs485-dot.err    { background: var(--red); box-shadow: 0 0 6px var(--red); }
+/* опрос активен, ответы устройств в норме */
+.rs485-dot.on          { background: var(--green); box-shadow: 0 0 5px var(--green); }
+/* порт свободен / опрос не выполняется */
+.rs485-dot.idle        { background: var(--text-dim); }
+/* интерфейс отсутствует */
+.rs485-dot.nopoll      { background: var(--text-dim); opacity: 0.85; }
+/* опрос активен, ошибки линии FE/PE/OE */
+.rs485-dot.warn        { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+/* опрос активен, нет ответов устройств */
+.rs485-dot.noresponse  { background: var(--red); box-shadow: 0 0 6px var(--red); }
 .rs485-name { font-size: 15px; font-weight: 700; color: var(--text); }
 .rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; }
 .rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; }
@@ -661,16 +678,6 @@ svg .gauge-num {
 .rs485-row .rv { font-weight: 600; color: var(--text); font-family: 'Courier New', monospace; }
 .rs485-row .rv.act { color: var(--cyan); }
 .rs485-err  { font-size: 12px; color: var(--red); margin-top: 5px; }
-.rs485-open {
-  font-size: 12px; font-weight: 600; color: var(--green); margin-top: 6px;
-  display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill);
-  background: var(--badge-ok-bg); border: 1px solid var(--badge-ok-border);
-}
-.rs485-closed {
-  font-size: 12px; font-weight: 600; color: var(--text-sec); margin-top: 6px;
-  display: inline-block; padding: 3px 10px; border-radius: var(--radius-pill);
-  background: var(--bg-panel); border: 1px solid var(--border-md);
-}
 
 /* ── Load-avg mini grid ──────────────────────────────────────────────────── */
 .load-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
@@ -1377,8 +1384,15 @@ svg .gauge-num {
   min-height: 3.8em;
   line-height: 1.45;
 }
+.flasher-line-status-widget .flasher-badge-stack {
+  min-height: 32px;
+  align-items: center;
+}
 .flasher-status-text.flasher-line-hint {
-  min-height: 0;
+  min-height: 1.45em;
+}
+.flasher-line-status-widget .flasher-port-actions {
+  min-height: 36px;
 }
 .flasher-hint {
   margin-top: 8px; font-size: .78rem; color: var(--text-sec);
@@ -1405,6 +1419,17 @@ svg .gauge-num {
   font-size: .78rem; color: var(--text-sec);
 }
 
+.flasher-scan-status {
+  margin-top: 8px;
+  font-size: .78rem;
+  color: var(--text-sec);
+  min-height: 1.2em;
+}
+.flasher-scan-status[hidden] { display: none !important; }
+.flasher-scan-status.success { color: var(--green); }
+.flasher-scan-status.warn { color: var(--yellow, #facc15); }
+.flasher-scan-status.error { color: var(--red); }
+
 .flasher-table-wrap { overflow-x: auto; }
 .flasher-table {
   width: 100%; border-collapse: collapse;
@@ -1423,6 +1448,15 @@ svg .gauge-num {
 .flasher-table tr.is-selected {
   background: var(--cyan-dim);
   box-shadow: inset 0 0 0 1px var(--cyan);
+}
+#flasher-devices-table tbody tr:nth-child(even) {
+  background: var(--bg-card);
+}
+#flasher-devices-table tbody tr:nth-child(even):hover {
+  background: var(--bg-hover);
+}
+#flasher-devices-table tbody tr:nth-child(even).is-selected {
+  background: var(--cyan-dim);
 }
 .flasher-table tr.is-selectable { cursor: pointer; }
 .flasher-table tr.flasher-device-config-row { cursor: pointer; }
@@ -1458,6 +1492,12 @@ svg .gauge-num {
 }
 
 .flasher-fw-status { font-size: .82rem; color: var(--text-sec); }
+.flasher-fw-list-label {
+  font-size: .78rem;
+  font-weight: 600;
+  color: var(--text-sec);
+  margin: 0 0 6px;
+}
 .flasher-fw-list {
   max-height: 220px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
@@ -1467,11 +1507,45 @@ svg .gauge-num {
   display: flex; flex-direction: column; gap: 2px;
   padding: 6px 8px; border-radius: var(--radius-sm);
 }
+.flasher-fw-row.is-selectable {
+  cursor: pointer;
+  transition: background var(--transition), box-shadow var(--transition);
+}
+.flasher-fw-row.is-selectable:hover {
+  background: var(--bg-hover);
+}
+.flasher-fw-row.is-selected {
+  background: var(--cyan-dim);
+  box-shadow: inset 0 0 0 1px var(--cyan);
+}
 .flasher-fw-row + .flasher-fw-row {
   border-top: 1px dashed var(--border);
 }
+.flasher-fw-mismatch {
+  margin-top: 8px;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--red);
+  line-height: 1.35;
+}
+.flasher-fw-mismatch[hidden] {
+  display: none !important;
+}
 .flasher-fw-name { font-weight: 600; }
 .flasher-fw-meta { font-size: .72rem; color: var(--text-sec); }
+.flasher-flash-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  gap: 8px;
+  margin-top: 8px;
+}
+.flasher-flash-actions > .btn {
+  flex: none;
+  width: auto;
+}
 .flasher-upload-label { cursor: pointer; display: inline-flex; align-items: center; }
 
 .flasher-log-box {
@@ -2152,6 +2226,7 @@ svg .gauge-num {
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
+  .dash-span-top4 { grid-column: 1 / -1; }
   .rs485-grid { grid-template-columns: repeat(3, 1fr); }
   .hw-grid    { grid-template-columns: 1fr 1fr; }
   .flasher-layout { grid-template-columns: 1fr; }
@@ -2617,6 +2692,96 @@ svg .gauge-num {
   flex-direction: column;
   gap: 0;
 }
+#tab-gateway #gw-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+#tab-gateway #gw-content > .widget {
+  width: fit-content;
+  max-width: 100%;
+  align-self: flex-start;
+}
+#tab-gateway #gw-content > .gw-device-stack {
+  display: grid;
+  grid-template-columns: minmax(0, max-content);
+  width: max-content;
+  max-width: 100%;
+  gap: 16px;
+  align-self: flex-start;
+}
+#tab-gateway #gw-content > .gw-device-stack > .widget {
+  width: 100%;
+  max-width: none;
+}
+#tab-gateway #gw-content > .widget.gw-port-panel {
+  width: max-content;
+  min-width: 680px;
+  max-width: 100%;
+  min-height: 420px;
+  box-sizing: border-box;
+}
+#tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
+  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  width: 100%;
+  align-items: stretch;
+}
+#tab-gateway #gw-content .gw-port-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 300px;
+}
+#tab-gateway #gw-content .gw-col-label {
+  margin: 0 0 6px;
+  font-size: .78rem;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+#tab-gateway #gw-content .gw-field-row {
+  margin-bottom: 10px;
+}
+#tab-gateway #gw-content .gw-field-label {
+  display: block;
+  font-size: .82rem;
+  color: var(--text-sec);
+}
+#tab-gateway #gw-content .gw-field-control {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+}
+#tab-gateway #gw-content .gw-port-title {
+  margin: 0;
+  font-size: 1rem;
+}
+#tab-gateway #gw-content .gw-block-tcp {
+  min-height: 58px;
+}
+#tab-gateway #gw-content .gw-block-fmb {
+  min-height: 76px;
+}
+#tab-gateway #gw-content .gw-fmb-hint {
+  font-size: .77rem;
+  color: var(--text-sec);
+  margin: 0 0 10px;
+}
+#tab-gateway #gw-content .gw-block-collapsed {
+  visibility: hidden;
+  pointer-events: none;
+}
+#tab-gateway #gw-content .gw-save-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+#tab-gateway #gw-content .gw-save-status {
+  font-size: .82rem;
+  min-height: 1.4em;
+  color: var(--text-sec);
+}
 .gw-port-tabs {
   display: flex;
   flex-direction: row;
@@ -2654,9 +2819,7 @@ svg .gauge-num {
 .gw-badge-err { color: var(--red); }
 
 .gw-port-panel {
-  border-radius: 0 var(--radius) var(--radius) var(--radius);
   padding: 18px 20px 20px;
-  min-height: 200px;
 }
 .gw-port-form-head {
   display: flex;
@@ -2676,9 +2839,10 @@ svg .gauge-num {
 .gw-counter-err { color: var(--red); }
 .gw-form-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(2, minmax(260px, max-content));
+  gap: 10px 24px;
+  width: fit-content;
+  max-width: 100%;
 }
 .gw-section h4 {
   font-size: .85rem;
@@ -2689,14 +2853,45 @@ svg .gauge-num {
   margin: 0 0 12px;
 }
 .gw-save-row { margin-top: 4px; }
-.gw-save-status {
-  font-size: .82rem;
-  min-height: 1.4em;
-  margin-top: 6px;
-  color: var(--text-sec);
-}
 .gw-save-err { color: var(--red); }
 .gw-dirty-dot { color: var(--orange); font-size: .75rem; vertical-align: super; }
+
+.gw-ports-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .82rem;
+}
+.gw-ports-table th,
+.gw-ports-table td {
+  padding: 6px 8px;
+  text-align: left;
+}
+.gw-ports-table thead tr {
+  color: var(--text-sec);
+}
+.gw-ports-table th {
+  font-weight: 500;
+  padding: 4px 8px;
+}
+.gw-ports-table tbody tr {
+  border-top: 1px solid var(--border);
+}
+.gw-ports-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+.gw-ports-table .gw-port-link {
+  color: var(--cyan);
+  text-decoration: none;
+}
+.gw-ports-table .gw-ports-muted {
+  color: var(--text-sec);
+}
+#gw-ports-table tbody tr:nth-child(even) {
+  background: var(--bg-card);
+}
+#gw-ports-table tbody tr:nth-child(even):hover {
+  background: var(--bg-hover);
+}
 
 @media (max-width: 600px) {
   .gw-port-tabs { gap: 4px; }

@@ -469,14 +469,22 @@ if [ -n "$ROOT_LAST" ] && [ "$ROOT_LAST" -gt "$CUR_DAYS" ]; then
     chage -d "$(date +%Y-%m-%d)" root 2>/dev/null || true
 fi
 
-# ── DNS fallback: 8.8.8.8 / 8.8.4.4 через resolvconf ───────────────────────
+# ── DNS fallback через resolvconf ───────────────────────────────────────────
 # ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии end0.
-# Если end0 не был явно переподнят (нет reboot), base-файл гарантирует
-# что DNS-запросы не падают до первого DHCP-ответа.
+# При раздаче интернета с ПК (ICS) внешние DNS (8.8.8.8) часто недоступны —
+# первым nameserver должен быть IP шлюза (ПК). Затем публичные DNS как запасной вариант.
 if command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ]; then
     mkdir -p /etc/resolvconf/resolv.conf.d
+    GW_DNS="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')"
+    if [ -n "$GW_DNS" ]; then
+        cat > /etc/resolvconf/resolv.conf.d/head <<EOF
+# SA-02m: DNS через шлюз (ICS / раздача интернета с ПК)
+nameserver ${GW_DNS}
+EOF
+        log OK "DNS через шлюз ${GW_DNS} (resolvconf head)"
+    fi
     cat > /etc/resolvconf/resolv.conf.d/base <<'DNS'
-# SA-02m fallback DNS (используется когда DHCP ещё не ответил или нет DHCP)
+# SA-02m fallback DNS (если шлюз не отвечает как DNS)
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 DNS

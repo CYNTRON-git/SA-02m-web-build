@@ -193,6 +193,8 @@ _Тёмная тема с циановыми акцентами и скругл�
 
 **Адрес и логин по умолчанию:** `root@192.168.1.136`, порт `22`.
 
+> **Для агентов Cursor / автоматизации (Windows):** неинтерактивный SSH — [`docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`](docs/AGENTS_SSH_AND_DEVICE_ACCESS.md), скрипты [`tools/ssh/sa02m_remote.py`](tools/ssh/sa02m_remote.py) и [`tools/ssh/sa02m-remote.ps1`](tools/ssh/sa02m-remote.ps1).
+
 #### Вариант с закрытым ключом (типично для СА-02м: ключ **SA02m_SA02**)
 
 Сохраните выданный приватный ключ, например в `%USERPROFILE%\.ssh\sa02m_sa02` (в проводнике имя может отображаться как `SA02m_SA02` — важно именно содержимое файла ключа в формате OpenSSH).

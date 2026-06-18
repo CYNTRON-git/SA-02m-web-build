@@ -11,9 +11,11 @@
     initialised: false,
     ports: [],
     devices: [],        // последний результат сканирования
+    selectedDeviceIndices: new Set(), // индексы выбранных строк таблицы (multi-select)
     firmware: [],       // список прошивок (entries)
     latestStableVersion: '', // max stable manifest, kind=app
     latestBootloaderVersion: '', // max stable manifest, kind=bootloader
+    selectedFirmwareKey: '', // channel::file
     scanJobId: null,
     flashJobId: null,
     scanStream: null,
@@ -22,6 +24,7 @@
     flashPending: false,
     portActionBusy: false,
     lastScanConfigKey: '',
+    lastScanRequest: null,
     configOpen: false,
     configBusy: false,
     configBackgroundBusy: false,
@@ -42,6 +45,37 @@
   // Запрос вкладки ждёт его, прежде чем послать свой запрос — иначе два
   // одновременных Modbus-запроса на одном порту → 409.
   let _bgPollPromise = null;
+
+  const STATUS_AUTO_CLEAR_MS = 3000;
+  const _inlineStatusTimers = Object.create(null);
+  const _inlineStatusGen = Object.create(null);
+
+  function bumpInlineStatusGen(key) {
+    _inlineStatusGen[key] = (_inlineStatusGen[key] || 0) + 1;
+    return _inlineStatusGen[key];
+  }
+
+  function clearInlineStatusTimer(key) {
+    if (_inlineStatusTimers[key]) {
+      clearTimeout(_inlineStatusTimers[key]);
+      delete _inlineStatusTimers[key];
+    }
+  }
+
+  function cancelInlineStatusAutoClear(key) {
+    clearInlineStatusTimer(key);
+    bumpInlineStatusGen(key);
+  }
+
+  function scheduleInlineStatusAutoClear(key, clearFn) {
+    clearInlineStatusTimer(key);
+    const gen = bumpInlineStatusGen(key);
+    _inlineStatusTimers[key] = setTimeout(() => {
+      delete _inlineStatusTimers[key];
+      if (_inlineStatusGen[key] !== gen) return;
+      clearFn();
+    }, STATUS_AUTO_CLEAR_MS);
+  }
 
   function $(id) { return document.getElementById(id); }
 
@@ -74,7 +108,8 @@
   }
 
   function toast(msg, type) {
-    if (window.toast) window.toast(msg, type || 'info'); else console.log('[flasher]', msg);
+    if (window.toast) window.toast(msg, type || 'info', STATUS_AUTO_CLEAR_MS);
+    else console.log('[flasher]', msg);
   }
 
   async function apiGet(path) {
@@ -179,6 +214,20 @@
     }
   }
 
+  /** После scan/flash port_lease на сервере уже освободил порт; полный GET /ports не нужен. */
+  function markPortIdleAfterJob(portKey) {
+    const p = state.ports.find(x => x.key === portKey);
+    if (!p) return false;
+    p.active_job = null;
+    if (Array.isArray(p.busy_pids)) p.busy_pids = [];
+    updatePortHint();
+    return true;
+  }
+
+  function portHasCompleteLineState(port) {
+    return !!(port && port.busy_pids != null && port.active_services != null);
+  }
+
   /** Подставить в журнал последние события последней задачи (GET /jobs), пока нет активного SSE. */
   async function loadRecentJobJournal() {
     if (state.scanJobId || state.flashJobId || state.scanPending || state.flashPending) return;
@@ -219,26 +268,151 @@
     }
   }
 
+  function firmwareEntryKey(entry) {
+    if (!entry) return '';
+    return `${entry.channel}::${entry.file}`;
+  }
+
+  function selectedFirmwareEntry() {
+    const fwVal = state.selectedFirmwareKey;
+    if (!fwVal) return null;
+    const [channel, file] = fwVal.split('::');
+    return state.firmware.find(e => e.channel === channel && e.file === file)
+      || state.firmware.find(e => firmwareEntryKey(e) === fwVal)
+      || state.firmware.find(e => e.file === file)
+      || null;
+  }
+
+  function selectedDevicesForFlash() {
+    return [...state.selectedDeviceIndices]
+      .sort((a, b) => a - b)
+      .map(i => state.devices[i])
+      .filter(Boolean);
+  }
+
+  function selectedDeviceKeysFromIndices() {
+    return new Set(
+      selectedDevicesForFlash().map(d => scanDeviceRowKey(d))
+    );
+  }
+
+  function restoreSelectionByKeys(keys) {
+    state.selectedDeviceIndices.clear();
+    if (!keys || !keys.size) return;
+    state.devices.forEach((d, idx) => {
+      if (keys.has(scanDeviceRowKey(d))) state.selectedDeviceIndices.add(idx);
+    });
+  }
+
+  function toggleDeviceSelection(idx) {
+    if (!state.devices[idx]) return;
+    if (state.selectedDeviceIndices.has(idx)) {
+      state.selectedDeviceIndices.delete(idx);
+    } else {
+      state.selectedDeviceIndices.add(idx);
+    }
+  }
+
+  function validateMultiFlashSelection(devices) {
+    const list = devices || selectedDevicesForFlash();
+    if (!list.length) return 'Выберите устройство';
+    const routes = list.map(d => resolveDeviceFlashRoute(d.signature));
+    const unknown = list.filter((d, i) => routes[i] === 'unknown');
+    if (unknown.length) {
+      const sigs = unknown
+        .map(d => stripBootloaderSignatureSuffix(d.signature) || '?')
+        .join(', ');
+      return `Сигнатура не распознана: ${sigs}. Выполните сканирование.`;
+    }
+    const hasMpMr = routes.some(r => r === 'mp_mr');
+    const hasWb = routes.some(r => r === 'wb');
+    if (hasMpMr && hasWb) {
+      return 'Нельзя прошивать вместе модули MR/MP и Wiren Board. Выберите устройства одного типа.';
+    }
+    return '';
+  }
+
+  function firmwareSelectionMismatch(selectedDevices, fwEntry) {
+    const list = Array.isArray(selectedDevices)
+      ? selectedDevices
+      : (selectedDevices ? [selectedDevices] : []);
+    if (!list.length || !fwEntry) return false;
+    return list.some(d => validateFirmwareSelectionForDevice(d.signature, fwEntry));
+  }
+
+  function isFirmwareEntryDownloaded(entry) {
+    if (!entry) return false;
+    if (entry.channel === 'local' || entry.source === 'upload') return true;
+    return !!entry.downloaded;
+  }
+
+  function stableEntryForVersion(kind, version) {
+    const ver = String(version || '').trim();
+    if (!ver) return null;
+    return state.firmware.find(e =>
+      e.channel === 'stable' && e.kind === kind && String(e.version || '').trim() === ver
+    ) || null;
+  }
+
   function syncActionButtons() {
     const port = currentPort();
     const scanRunning = state.scanPending || !!state.scanJobId;
     const flashRunning = state.flashPending || !!state.flashJobId;
     const jobBusy = !!(port && port.active_job);
-    const activeServices = port && port.active_services ? port.active_services : [];
     const releasedServices = port && port.released_services ? port.released_services : [];
     const managedN = port && Array.isArray(port.managed_services) ? port.managed_services.length : 0;
-    const anyChecked = state.devices.some(d => d.__selected);
-    const hasFw = !!$('flasher-fw-select').value;
+    const selectedDevices = selectedDevicesForFlash();
+    const anyChecked = selectedDevices.length > 0;
+    const fwEntry = selectedFirmwareEntry();
+    const hasFw = !!fwEntry;
+    const fwReady = hasFw && isFirmwareEntryDownloaded(fwEntry);
+    const selectionErr = anyChecked ? validateMultiFlashSelection(selectedDevices) : '';
+    const fwMismatch = firmwareSelectionMismatch(selectedDevices, fwEntry);
+    const flashBlocked = !!(selectionErr || fwMismatch);
 
     $('flasher-scan-btn').disabled = !port || !port.exists || scanRunning || flashRunning || jobBusy || state.portActionBusy;
     $('flasher-scan-cancel-btn').disabled = !state.scanJobId || state.scanPending;
-    // Остановка служб из managed_services (конфиг MPLC_STOP_SERVICES). Кнопка не зависит только от
-    // active_services: порт может быть занят, а systemd/fuser на стороне UI выглядеть «пусто».
     const canStopPollers = !!(port && port.exists && managedN);
     $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
     $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
-    $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && hasFw);
+    $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
     $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending;
+
+    const flashBtn = $('flasher-flash-btn');
+    if (flashBtn) {
+      updateFlashButtonLabel(selectedDevices.length);
+    }
+
+    const mismatchEl = $('flasher-fw-mismatch');
+    if (mismatchEl) {
+      const mismatchText = selectionErr || (fwMismatch ? 'Выберите корректную прошивку' : '');
+      if (mismatchText) {
+        const wasHidden = mismatchEl.hidden;
+        mismatchEl.textContent = mismatchText;
+        mismatchEl.hidden = false;
+        if (wasHidden) {
+          scheduleInlineStatusAutoClear('flasher-fw-mismatch', () => {
+            mismatchEl.textContent = '';
+            mismatchEl.hidden = true;
+          });
+        }
+      } else {
+        cancelInlineStatusAutoClear('flasher-fw-mismatch');
+        mismatchEl.textContent = '';
+        mismatchEl.hidden = true;
+      }
+    }
+
+    const fwHint = $('flasher-fw-hint');
+    if (fwHint) {
+      if (!hasFw) {
+        fwHint.textContent = 'Выберите файл прошивки из списка или загрузите .fw вручную.';
+      } else if (!fwReady) {
+        fwHint.textContent = 'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать прошивки» или «Выбрать .fw».';
+      } else {
+        fwHint.textContent = '';
+      }
+    }
   }
 
   function updatePortHint() {
@@ -253,13 +427,13 @@
     }
 
     if (!port.exists) setBadge('flasher-port-badge', 'Нет линии', 'err');
-    else if (port.busy_pids == null) setBadge('flasher-port-badge', 'Проверка занятости…', 'unk');
+    else if (port.busy_pids == null) setBadge('flasher-port-badge', 'Проверка порта', 'unk');
     else if (port.active_job) setBadge('flasher-port-badge', 'Задача активна', 'unk');
     else if (port.busy_pids.length) setBadge('flasher-port-badge', 'Порт занят', 'err');
     else setBadge('flasher-port-badge', 'Порт свободен', 'ok');
 
     if (!port.exists) setBadge('flasher-poller-badge', 'Нет линии', 'unk');
-    else if (port.active_services == null) setBadge('flasher-poller-badge', 'Проверка опроса…', 'unk');
+    else if (port.active_services == null) setBadge('flasher-poller-badge', 'Проверка опроса', 'unk');
     else if (port.active_services.length) setBadge('flasher-poller-badge', 'Опрос активен', 'unk');
     else if (port.released_services && port.released_services.length) setBadge('flasher-poller-badge', 'Опрос освобождён', 'ok');
     else if (port.busy_pids != null && port.busy_pids.length) setBadge('flasher-poller-badge', 'Опрос не определён', 'unk');
@@ -268,7 +442,7 @@
     const pendingDetails =
       port.exists && (port.busy_pids == null || port.active_services == null);
     if (pendingDetails) {
-      hint.textContent = 'Загружается занятость порта и состояние опроса…';
+      hint.textContent = 'Проверка порта и опроса';
       syncActionButtons();
       return;
     }
@@ -310,40 +484,75 @@
 
   function renderFirmware(data) {
     const list = $('flasher-fw-list');
+    const prevKey = state.selectedFirmwareKey;
     if (!state.firmware.length) {
       list.textContent = 'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.';
+      state.selectedFirmwareKey = '';
     } else {
       list.innerHTML = '';
       state.firmware.forEach(e => {
         const row = document.createElement('div');
-        row.className = 'flasher-fw-row';
+        const key = firmwareEntryKey(e);
+        row.className = 'flasher-fw-row is-selectable';
+        if (key === prevKey) row.classList.add('is-selected');
         const sig = (e.signatures && e.signatures.length)
           ? e.signatures.join(', ')
           : 'все варианты MR-02м (общий образ)';
         const kindTag = e.kind && e.kind !== 'app' ? ` · ${escapeHtml(e.kind)}` : '';
+        const dlTag = isFirmwareEntryDownloaded(e) ? '' : ' · не скачан';
         row.innerHTML = `<span class="flasher-fw-name">${escapeHtml(e.file)}</span>` +
-          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')}${kindTag} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${e.channel}${e.downloaded ? '' : ' · не скачан'}</span>`;
+          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')}${kindTag} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${escapeHtml(e.channel)}${escapeHtml(dlTag)}</span>`;
+        row.addEventListener('click', () => {
+          state.selectedFirmwareKey = state.selectedFirmwareKey === key ? '' : key;
+          renderFirmware(data);
+          updateFlashControls();
+        });
         list.appendChild(row);
       });
+      if (prevKey && !state.firmware.some(e => firmwareEntryKey(e) === prevKey)) {
+        state.selectedFirmwareKey = '';
+      }
     }
+  }
 
-    const sel = $('flasher-fw-select');
-    const prev = sel.value;
-    sel.innerHTML = '';
-    state.firmware.forEach(e => {
-      const opt = document.createElement('option');
-      opt.value = `${e.channel}::${e.file}`;
-      opt.textContent = `[${e.channel}] ${e.file} (v${e.version || '?'})`;
-      sel.appendChild(opt);
-    });
-    if (prev) sel.value = prev;
+  function maxVersionFromDevices(field) {
+    let best = null;
+    let bestRaw = '';
+    for (const d of state.devices) {
+      const raw = String(d[field] || '').trim();
+      const t = parseVersionTuple(raw);
+      if (!t) continue;
+      if (!best || compareVersionTuple(t, best) > 0) {
+        best = t;
+        bestRaw = raw;
+      }
+    }
+    return bestRaw;
   }
 
   async function refreshManifest(download) {
     try {
-      const res = await apiPost('/firmware/refresh', { download: !!download });
-      if (res.error) toast('Манифест: ' + res.error, 'warn');
-      else toast('Список прошивок обновлён (записей: ' + res.entries + ')', 'success');
+      const body = { download: !!download };
+      if (download) {
+        const app = maxVersionFromDevices('app_version');
+        const bl = maxVersionFromDevices('bootloader_version');
+        if (app || bl) {
+          body.keep_current = {};
+          if (app) body.keep_current.app = app;
+          if (bl) body.keep_current.bootloader = bl;
+        }
+      }
+      const res = await apiPost('/firmware/refresh', body);
+      if (res.error) {
+        const dlErr = (res.download_errors || []).join('; ');
+        toast('Манифест: ' + res.error + (dlErr && dlErr !== res.error ? ' (' + dlErr + ')' : ''), 'warn');
+      } else {
+        let msg = 'Список прошивок обновлён (записей: ' + res.entries + ')';
+        if (res.purged && res.purged.length) {
+          msg += ', очищено из кеша: ' + res.purged.length;
+        }
+        toast(msg, 'success');
+      }
       await loadFirmware();
     } catch (err) {
       toast('Манифест: ' + err.message, 'error');
@@ -396,10 +605,11 @@
     if (!n || n === 'NONE' || n === '—' || n === '?') return false;
     const hintKeys = [
       '6DO8DI', '16DO', '12AO', '6DO', '14DI', '10DICON', '6DO5DI2AO', '6AO6AI', '12AI',
-      '4DO6DI', '4TO6DI', 'TO4DI6',
+      '4DO6DI', '4TO6DI', 'TO4DI6', 'CE02M3', 'CE-02M-3', 'ENMETER', 'EN_METER',
+      'SENSOR', 'SENS.',
     ];
     for (const key of hintKeys) {
-      if (n.includes(key) || n.startsWith(key.slice(0, 4))) return true;
+      if (n.includes(key.replace(/-/g, '')) || n.includes(key) || n.startsWith(key.slice(0, 4))) return true;
     }
     const extra = ['DO6DI8', '6DO5DI2AO', 'DO4DI6', 'TO4DI6', '4TO6DI'];
     for (const tok of extra) {
@@ -410,6 +620,179 @@
       if (compact.includes(token)) return true;
     }
     return false;
+  }
+
+  const WB_RELAY_SIG_PREFIXES = ['MR2M', 'MR3', 'MR6', 'MRPS', 'MRWL', 'MRWM', 'MRM2'];
+  const WB_MAO4_SIG_PREFIXES = ['MAO4'];
+  const LINE_PROFILE_MP_MR = { baudrate: 115200, parity: 'N', stopbits: 1 };
+  const LINE_PROFILE_WB_APP = { baudrate: 19200, parity: 'N', stopbits: 2 };
+
+  function isWirenboardModuleSignature(sig) {
+    let s = stripBootloaderSignatureSuffix(sig);
+    if (!s) return false;
+    const u = s.toUpperCase();
+    if (u === 'NONE' || u === '—' || u === '?' || u === 'UNKNOWN') return false;
+    if (isMpModuleSignatureForFirmwareHint(s)) return false;
+    const n = s.toUpperCase().replace(/\s/g, '');
+    for (const prefix of WB_MAO4_SIG_PREFIXES) {
+      if (n.startsWith(prefix)) return true;
+    }
+    for (const prefix of WB_RELAY_SIG_PREFIXES) {
+      if (n.startsWith(prefix)) return true;
+    }
+    if (s.length < 2 || s.length > 32) return false;
+    if (!/^[A-Za-z0-9._-]+$/.test(s)) return false;
+    if (!/[A-Za-z]/.test(s)) return false;
+    return true;
+  }
+
+  function lineProfileFromScan(device, fallback) {
+    const d = device || {};
+    const fb = fallback || LINE_PROFILE_WB_APP;
+    const baud = Number(d.baudrate) || fb.baudrate;
+    let parity = String(d.parity || fb.parity).toUpperCase();
+    if (parity !== 'N' && parity !== 'E' && parity !== 'O') parity = fb.parity;
+    let stopbits = Number(d.stopbits) || fb.stopbits;
+    if (stopbits !== 1 && stopbits !== 2) stopbits = fb.stopbits;
+    return { baudrate: baud, parity, stopbits };
+  }
+
+  function resolveDeviceFlashRoute(signature) {
+    if (isMpModuleSignatureForFirmwareHint(signature)) return 'mp_mr';
+    if (isWirenboardModuleSignature(signature)) return 'wb';
+    return 'unknown';
+  }
+
+  function validateFirmwareForDevice(signature, fileName) {
+    const route = resolveDeviceFlashRoute(signature);
+    const fwIsWbfw = isWbfwFirmwareFile(fileName);
+    const sig = stripBootloaderSignatureSuffix(signature) || '?';
+    if (route === 'unknown') {
+      return `Сигнатура «${sig}» не распознана. Выполните сканирование.`;
+    }
+    if (route === 'mp_mr' && fwIsWbfw) {
+      return `Для модуля MR/MP-02m («${sig}») выберите прошивку .fw, не .wbfw.`;
+    }
+    if (route === 'wb' && !fwIsWbfw) {
+      return `Для устройства «${sig}» (Wiren Board) выберите прошивку .wbfw.`;
+    }
+    return '';
+  }
+
+  function normalizeProductToken(value) {
+    return String(value || '').trim().toUpperCase().replace(/\s/g, '').replace(/-/g, '').replace(/_/g, '');
+  }
+
+  function tokenLooksLikeDtv(token) {
+    const n = normalizeProductToken(token);
+    if (!n) return false;
+    return n.includes('DTV') || n.includes('RTUSENSOR') || n.includes('SENSOR') || n.startsWith('SENS');
+  }
+
+  function tokenLooksLikeCe(token) {
+    const n = normalizeProductToken(token);
+    if (!n) return false;
+    return n.includes('CE02M3') || n.includes('CE02M');
+  }
+
+  function deviceProductKindForFlash(signature) {
+    const cfgKind = deviceConfigKindFromSignature(signature);
+    if (cfgKind) return cfgKind;
+    if (resolveDeviceFlashRoute(signature) === 'wb') return 'wb';
+    return '';
+  }
+
+  function firmwareProductKindFromEntry(entry) {
+    if (!entry) return '';
+    const file = String(entry.file || '');
+    if (isWbfwFirmwareFile(file)) return 'wb';
+    const dev = normalizeProductToken(entry.device);
+    if (tokenLooksLikeDtv(dev)) return 'dtv';
+    if (tokenLooksLikeCe(dev)) return 'ce';
+    for (const sig of (entry.signatures || [])) {
+      if (tokenLooksLikeDtv(sig)) return 'dtv';
+      if (tokenLooksLikeCe(sig)) return 'ce';
+    }
+    const fn = normalizeProductToken(file);
+    if (tokenLooksLikeDtv(fn)) return 'dtv';
+    if (tokenLooksLikeCe(fn)) return 'ce';
+    if ((entry.kind || 'app') === 'bootloader') return 'mr';
+    if (fn.includes('MR02M') || fn.includes('MP02M') || dev.includes('MR02M') || dev.includes('MP02M')) return 'mr';
+    if (file.toLowerCase().endsWith('.fw') || file.toLowerCase().endsWith('.bin')) return 'mr';
+    return '';
+  }
+
+  function validateFirmwareSelectionForDevice(signature, entry) {
+    const routeErr = validateFirmwareForDevice(signature, entry && entry.file);
+    if (routeErr) return routeErr;
+    const devKind = deviceProductKindForFlash(signature);
+    const fwKind = firmwareProductKindFromEntry(entry);
+    if (!devKind || !fwKind) return '';
+    if (devKind === fwKind) return '';
+    return 'Выберите корректную прошивку';
+  }
+
+  function resolveApplicationLineProfile(signature, device, isWbfwFirmware) {
+    const d = device || {};
+    const appBaud = Number(d.app_line_baud);
+    if (Number.isFinite(appBaud) && appBaud > 0) {
+      return {
+        baudrate: appBaud,
+        parity: String(d.app_line_parity || 'N').toUpperCase(),
+        stopbits: Number(d.app_line_stopbits) || 1,
+      };
+    }
+    if (isWbfwFirmware || isWirenboardModuleSignature(signature)) {
+      return lineProfileFromScan(d, LINE_PROFILE_WB_APP);
+    }
+    if (isMpModuleSignatureForFirmwareHint(signature) || !isWbfwFirmware) {
+      return Object.assign({}, LINE_PROFILE_MP_MR);
+    }
+    return lineProfileFromScan(d, LINE_PROFILE_WB_APP);
+  }
+
+  function buildFlashTargetFromDevice(dev) {
+    const sig = dev && dev.signature;
+    const route = resolveDeviceFlashRoute(sig);
+    const isWbRoute = route === 'wb';
+    const line = resolveApplicationLineProfile(sig, dev, isWbRoute);
+    return {
+      address: dev.address,
+      serial: dev.serial,
+      signature: dev.signature,
+      in_bootloader: dev.in_bootloader,
+      baudrate: line.baudrate,
+      parity: line.parity,
+      stopbits: line.stopbits,
+      app_line_baud: line.baudrate,
+      app_line_parity: line.parity,
+      app_line_stopbits: line.stopbits,
+    };
+  }
+
+  function countDevicesWithSameModbusAddress(address, devices) {
+    const addr = Number(address);
+    if (!Number.isFinite(addr) || addr < 1 || addr > 247) return 0;
+    return (devices || []).filter(d => Number(d && d.address) === addr).length;
+  }
+
+  function duplicateModbusAddressOnLine(device, devices) {
+    if (device && device.duplicate_modbus_address_on_line === true) return true;
+    return countDevicesWithSameModbusAddress(device && device.address, devices) > 1;
+  }
+
+  function resolveUseFastModbusForFlash(device, devices) {
+    const duplicate = duplicateModbusAddressOnLine(device, devices);
+    return { useFast: duplicate, duplicate };
+  }
+
+  function serialValidForFastModbus(serial) {
+    const sn = Number(serial) >>> 0;
+    return sn !== 0 && sn !== 0xFFFFFFFF && (sn & 0xFFFF0000) === 0x0E0A0000;
+  }
+
+  function isWbfwFirmwareFile(fileName) {
+    return String(fileName || '').toLowerCase().endsWith('.wbfw');
   }
 
   function deviceConfigKindFromSignature(sig) {
@@ -440,7 +823,10 @@
     const dv = parseVersionTuple(d.app_version);
     if (!lv || !dv) return '';
     if (compareVersionTuple(lv, dv) <= 0) return '';
-    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}</div>`;
+    const entry = stableEntryForVersion('app', latest);
+    const cached = entry && isFirmwareEntryDownloaded(entry);
+    const suffix = cached ? '' : ' (не скачан — «Скачать прошивки»)';
+    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
   }
 
   function firmwareBlUpdateHintForDevice(d) {
@@ -451,7 +837,10 @@
     const dv = parseVersionTuple(d.bootloader_version);
     if (!lv || !dv) return '';
     if (compareVersionTuple(lv, dv) <= 0) return '';
-    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}</div>`;
+    const entry = stableEntryForVersion('bootloader', latest);
+    const cached = entry && isFirmwareEntryDownloaded(entry);
+    const suffix = cached ? '' : ' (не скачан — «Скачать прошивки»)';
+    return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
   }
 
   /* ── Таблица устройств ────────────────────────────────────────────────── */
@@ -468,7 +857,7 @@
       const tr = document.createElement('tr');
       let rowClickTimer = null;
       tr.classList.add('is-selectable');
-      if (d.__selected) tr.classList.add('is-selected');
+      if (state.selectedDeviceIndices.has(idx)) tr.classList.add('is-selected');
       if (isDeviceConfigSupported(d)) {
         tr.classList.add('flasher-device-config-row');
       }
@@ -486,10 +875,7 @@
         rowClickTimer = setTimeout(() => {
           rowClickTimer = null;
           if (!state.devices[idx]) return;
-          const nextSelected = !state.devices[idx].__selected;
-          state.devices.forEach((item, itemIdx) => {
-            item.__selected = nextSelected && itemIdx === idx;
-          });
+          toggleDeviceSelection(idx);
           renderDevices();
         }, 220);
       });
@@ -573,7 +959,9 @@
   function setConfigBanner(text, type) {
     const el = configModalEl('flasher-config-banner');
     if (!el) return;
+    const key = 'flasher-config-banner';
     if (!text) {
+      cancelInlineStatusAutoClear(key);
       el.hidden = true;
       el.textContent = '';
       el.className = 'flasher-config-banner';
@@ -582,6 +970,7 @@
     el.hidden = false;
     el.textContent = text;
     el.className = 'flasher-config-banner' + (type === 'error' ? ' is-error' : '');
+    scheduleInlineStatusAutoClear(key, () => setConfigBanner(''));
   }
 
   function setConfigBusy(busy, disableClose = true) {
@@ -2503,10 +2892,81 @@
     $('flasher-progress').hidden = true;
   }
 
+  function setScanStatus(msg, type) {
+    const el = $('flasher-scan-status');
+    if (!el) return;
+    const key = 'flasher-scan-status';
+    if (!msg) {
+      cancelInlineStatusAutoClear(key);
+      el.hidden = true;
+      el.textContent = '';
+      el.className = 'flasher-scan-status';
+      return;
+    }
+    el.hidden = false;
+    el.textContent = msg;
+    el.className = 'flasher-scan-status' + (type ? ' ' + type : '');
+    scheduleInlineStatusAutoClear(key, () => setScanStatus(''));
+  }
+
+  function clearScanStatus() {
+    setScanStatus('');
+  }
+
   function openStream(jobId, handlers) {
     const url = `${API}/jobs/${jobId}/events`;
     /* Только URL: для same-origin куки и так уходят; EventSourceInit/withCredentials ломает часть WebView. */
     const es = new EventSource(url);
+    let finished = false;
+    let pollTimer = null;
+    let errLogged = false;
+
+    function teardown() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      try { es.close(); } catch (_) {}
+    }
+
+    function finish(st) {
+      if (finished) return;
+      finished = true;
+      teardown();
+      if (handlers && handlers.onEnd) handlers.onEnd(st);
+    }
+
+    async function pollJobStatus() {
+      if (finished) return;
+      try {
+        const snap = await apiGet('/jobs/' + jobId);
+        if (typeof snap.progress === 'number') {
+          setProgress(snap.progress, snap.message || `${snap.progress}%`);
+        }
+        const st = snap.state;
+        if (st === 'running' || st === 'pending') return;
+        if (snap.error) logAppend('Ошибка: ' + snap.error, 'error');
+        const lastEv = (snap.events || []).slice(-1)[0];
+        if (lastEv && lastEv.message) logAppend(lastEv.message, lastEv.level || 'info');
+        if (st !== 'done') logAppend(`Готово: ${st}`, st === 'cancelled' ? 'warn' : 'warn');
+        finish(st);
+      } catch (err) {
+        if (String(err.message || '').includes('HTTP 404')) {
+          logAppend(
+            'Задача не найдена (демон перезапущен?). Прошивка могла прерваться — выполните сканирование.',
+            'warn',
+          );
+          finish('error');
+        }
+      }
+    }
+
+    function startPollFallback() {
+      if (pollTimer || finished) return;
+      pollJobStatus();
+      pollTimer = setInterval(pollJobStatus, 2000);
+    }
+
     es.addEventListener('log', ev => {
       const p = safeParse(ev.data);
       if (!p || p.level === 'debug') return;
@@ -2537,15 +2997,17 @@
       if (st !== 'done') {
         logAppend(`Готово: ${st}`, st === 'cancelled' ? 'warn' : 'warn');
       }
-      if (handlers && handlers.onEnd) handlers.onEnd(st);
-      es.close();
+      finish(st);
     });
-    let errOnce = false;
     es.onerror = () => {
-      if (!errOnce) {
-        errOnce = true;
-        logAppend('Потеряно SSE-соединение с демоном (сеть/прокси). При необходимости обновите страницу.', 'warn');
+      if (!errLogged) {
+        errLogged = true;
+        logAppend(
+          'Потеряно SSE-соединение с демоном (сеть/прокси или перезапуск сервиса). Опрос статуса задачи…',
+          'warn',
+        );
       }
+      startPollFallback();
     };
     return es;
   }
@@ -2599,62 +3061,100 @@
     Object.keys(dev || {}).forEach((field) => {
       merged[field] = mergeScanField(prev[field], dev[field]);
     });
-    merged.__selected = !!prev.__selected;
     state.devices[idx] = merged;
   }
 
   function replaceScannedDevices(list) {
-    const selectedItem = state.devices.find(item => item && item.__selected);
-    const selectedKey = selectedItem ? scanDeviceRowKey(selectedItem) : '';
+    const selectedKeys = selectedDeviceKeysFromIndices();
     state.devices = [];
+    state.selectedDeviceIndices.clear();
     (list || []).forEach((dev) => {
       upsertScannedDevice(dev);
-      const idx = state.devices.findIndex(item => scanDeviceRowKey(item) === scanDeviceRowKey(dev));
-      if (idx >= 0 && selectedKey && selectedKey === scanDeviceRowKey(state.devices[idx])) {
-        state.devices[idx].__selected = true;
-      }
     });
+    restoreSelectionByKeys(selectedKeys);
+  }
+
+  function deviceSerialNumeric(dev) {
+    if (!dev) return 0xFFFFFFFF;
+    if (dev.serial != null) {
+      const sn = Number(dev.serial);
+      if (Number.isFinite(sn)) return sn >>> 0;
+    }
+    if (dev.serial_dec) {
+      const dec = Number(dev.serial_dec);
+      if (Number.isFinite(dec)) return dec >>> 0;
+    }
+    return 0xFFFFFFFF;
+  }
+
+  function sortDevicesBySerial() {
+    const selectedKeys = selectedDeviceKeysFromIndices();
+    state.devices.sort((a, b) => {
+      const sa = deviceSerialNumeric(a);
+      const sb = deviceSerialNumeric(b);
+      if (sa !== sb) return sa - sb;
+      return (Number(a.address) || 0) - (Number(b.address) || 0);
+    });
+    restoreSelectionByKeys(selectedKeys);
   }
 
   /* ── Запуск сканирования ─────────────────────────────────────────────── */
 
-  async function startScan() {
-    if (state.scanJobId) { toast('Сканирование уже выполняется', 'warn'); return; }
+  function scanConfigKeyFromBody(body) {
+    return JSON.stringify({
+      port: body.port,
+      mode: body.mode,
+      addrMin: body.addr_min,
+      addrMax: body.addr_max,
+      bauds: (body.baudrates || []).slice().sort((a, b) => a - b),
+      parity: body.parity || 'N',
+      stopbits: body.stopbits || 1,
+    });
+  }
+
+  function buildScanRequestFromUi() {
     const port = $('flasher-port').value;
     const mode = $('flasher-mode').value;
     const addrMin = parseInt($('flasher-addr-min').value, 10) || 1;
     const addrMax = parseInt($('flasher-addr-max').value, 10) || 10;
     const bauds = selectedBaudrates();
-    const scanConfigKey = JSON.stringify({
-      port,
-      mode,
-      addrMin,
-      addrMax,
-      bauds: bauds.slice().sort((a, b) => a - b),
+    const body = {
+      port: port,
+      mode: mode,
+      addr_min: addrMin,
+      addr_max: addrMax,
+      baudrates: bauds,
       parity: 'N',
       stopbits: 1,
-    });
-    const timingProfile = state.lastScanConfigKey === scanConfigKey ? 'standard' : 'aggressive';
-    if (!bauds.length) { toast('Выберите хотя бы одну скорость', 'warn'); return; }
+    };
+    const scanConfigKey = scanConfigKeyFromBody(body);
+    body.timing_profile = state.lastScanConfigKey === scanConfigKey ? 'standard' : 'aggressive';
+    return { body, scanConfigKey, baudCount: bauds.length };
+  }
+
+  function portReadyForScan(portKey) {
+    const port = (state.ports || []).find(p => p.key === portKey);
+    if (!port || !port.exists) return false;
+    if (port.active_job) return false;
+    const busy = port.busy_pids && port.busy_pids.length;
+    const polling = port.active_services && port.active_services.length;
+    return !busy && !polling;
+  }
+
+  async function startScanJob(body, scanConfigKey, logIntro) {
+    if (state.scanJobId || state.scanPending) return false;
 
     state.devices = [];
+    state.selectedDeviceIndices.clear();
     renderDevices();
+    clearScanStatus();
     state.scanPending = true;
-    logReset('Старт сканирования на ' + port);
-    setProgress(0, 'Подготовка порта');
+    logReset(logIntro + ' на ' + body.port);
+    setProgress(0, portReadyForScan(body.port) ? 'Сканирование' : 'Подготовка порта');
     setScanButtons();
 
     try {
-      const res = await apiPost('/scan', {
-        port: port,
-        mode: mode,
-        addr_min: addrMin,
-        addr_max: addrMax,
-        baudrates: bauds,
-        parity: 'N',
-        stopbits: 1,
-        timing_profile: timingProfile,
-      });
+      const res = await apiPost('/scan', body);
       state.lastScanConfigKey = scanConfigKey;
       state.scanPending = false;
       state.scanJobId = res.job_id;
@@ -2669,19 +3169,53 @@
           try {
             const snap = await apiGet('/jobs/' + res.job_id);
             replaceScannedDevices((snap.devices || []).map(d => Object.assign({}, d)));
+            sortDevicesBySerial();
             renderDevices();
           } catch (_) {}
-          await loadPorts();
-          if (state2 === 'error') toast('Сканирование завершилось с ошибкой', 'error');
-          else if (state2 === 'cancelled') toast('Сканирование отменено', 'warn');
-          else toast('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
+          const portRec = state.ports.find(p => p.key === body.port);
+          if (state2 === 'done' && portHasCompleteLineState(portRec)) {
+            markPortIdleAfterJob(body.port);
+          } else {
+            await loadPorts();
+          }
+          if (state2 === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
+          else if (state2 === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
+          else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
         },
       });
+      return true;
     } catch (err) {
       state.scanPending = false;
       setScanButtons(); hideProgress();
-      toast('Сканирование: ' + err.message, 'error');
+      setScanStatus('Сканирование: ' + err.message, 'error');
+      return false;
     }
+  }
+
+  async function startScan() {
+    if (state.scanJobId) { setScanStatus('Сканирование уже выполняется', 'warn'); return; }
+    const req = buildScanRequestFromUi();
+    if (!req.baudCount) { setScanStatus('Выберите хотя бы одну скорость', 'warn'); return; }
+    state.lastScanRequest = Object.assign({}, req.body);
+    await startScanJob(req.body, req.scanConfigKey, 'Старт сканирования');
+  }
+
+  async function refreshScanAfterFlash() {
+    if (state.scanJobId || state.scanPending) return;
+
+    let body;
+    let scanConfigKey;
+    if (state.lastScanRequest) {
+      body = Object.assign({}, state.lastScanRequest, { timing_profile: 'standard' });
+      scanConfigKey = scanConfigKeyFromBody(body);
+    } else {
+      const req = buildScanRequestFromUi();
+      if (!req.baudCount) return;
+      body = req.body;
+      scanConfigKey = req.scanConfigKey;
+    }
+
+    await startScanJob(body, scanConfigKey, 'Обновление списка устройств');
   }
 
   async function cancelScan() {
@@ -2695,18 +3229,79 @@
 
   /* ── Прошивка ─────────────────────────────────────────────────────────── */
 
+  function updateFlashButtonLabel(count) {
+    const flashBtn = $('flasher-flash-btn');
+    if (!flashBtn) return;
+    const n = Number(count) || 0;
+    const label = n > 1 ? `Прошить (${n})` : 'Прошить';
+    let textEl = flashBtn.querySelector('.flasher-flash-btn-label');
+    if (!textEl) {
+      textEl = document.createElement('span');
+      textEl.className = 'flasher-flash-btn-label';
+      flashBtn.appendChild(textEl);
+    }
+    textEl.textContent = label;
+  }
+
   async function startFlash() {
     if (state.flashJobId) { toast('Прошивка уже выполняется', 'warn'); return; }
-    const target = state.devices.find(d => d.__selected);
-    if (!target) { toast('Выберите устройство', 'warn'); return; }
-    const fwVal = $('flasher-fw-select').value;
-    if (!fwVal) { toast('Выберите файл прошивки', 'warn'); return; }
-    const [channel, file] = fwVal.split('::');
-    const port = $('flasher-port').value;
-    const useFast = $('flasher-use-fast').checked;
-    const forceMismatch = $('flasher-force-mismatch').checked;
+    const targets = selectedDevicesForFlash();
+    if (!targets.length) { toast('Выберите устройство', 'warn'); return; }
+    const selectionErr = validateMultiFlashSelection(targets);
+    if (selectionErr) {
+      toast(selectionErr, 'warn');
+      return;
+    }
+    const fwEntry = selectedFirmwareEntry();
+    if (!fwEntry) { toast('Выберите файл прошивки', 'warn'); return; }
+    if (!isFirmwareEntryDownloaded(fwEntry)) {
+      toast('Образ не скачан в кеш шлюза. Нажмите «Скачать прошивки» или загрузите .fw вручную.', 'warn');
+      return;
+    }
+    for (const target of targets) {
+      const routeErr = validateFirmwareSelectionForDevice(target.signature, fwEntry);
+      if (routeErr) {
+        toast(routeErr, 'warn');
+        return;
+      }
+    }
 
-    logReset(`Прошивка устройства файлом ${file}`);
+    const channel = fwEntry.channel;
+    const file = fwEntry.file;
+    const port = $('flasher-port').value;
+    const allPeers = state.devices.map(d => buildFlashTargetFromDevice(d));
+    const flashTargets = targets.map((target) => {
+      const flashTarget = buildFlashTargetFromDevice(target);
+      const { duplicate } = resolveUseFastModbusForFlash(target, state.devices);
+      if (duplicate) flashTarget.duplicate_modbus_address_on_line = true;
+      return flashTarget;
+    });
+
+    for (const target of targets) {
+      const { useFast } = resolveUseFastModbusForFlash(target, state.devices);
+      if (useFast && !serialValidForFastModbus(target.serial)) {
+        toast('При одинаковых Modbus-адресах на линии нужен серийный номер. Выполните сканирование и выберите устройство.', 'warn');
+        return;
+      }
+    }
+
+    const useFastAny = targets.some(t => resolveUseFastModbusForFlash(t, state.devices).useFast);
+
+    const intro = targets.length > 1
+      ? `Пакетная прошивка ${targets.length} устройств файлом ${file}`
+      : `Прошивка устройства файлом ${file}`;
+    logReset(intro);
+    if (useFastAny) {
+      targets.forEach((target) => {
+        const { useFast } = resolveUseFastModbusForFlash(target, state.devices);
+        if (!useFast) return;
+        const dupCount = countDevicesWithSameModbusAddress(target.address, state.devices);
+        logAppend(
+          `Быстрый Modbus (0xFD 0x46): адр.${target.address} — ${dupCount} устройств с этим адресом, прошивка по SN ${serialHex(target.serial)}.`,
+          'info',
+        );
+      });
+    }
     setProgress(0, 'Запуск');
     state.flashPending = true;
     setFlashButtons();
@@ -2716,14 +3311,9 @@
         port: port,
         firmware_channel: channel,
         firmware_file: file,
-        use_fast_modbus: useFast,
-        force_signature_mismatch: forceMismatch,
-        targets: [{
-          address: target.address,
-          serial: target.serial,
-          signature: target.signature,
-          in_bootloader: target.in_bootloader,
-        }],
+        use_fast_modbus: useFastAny,
+        devices_on_port: allPeers,
+        targets: flashTargets,
       });
       state.flashPending = false;
       state.flashJobId = res.job_id;
@@ -2731,10 +3321,14 @@
       state.flashStream = openStream(res.job_id, {
         onEnd: async state2 => {
           state.flashJobId = null; setFlashButtons(); hideProgress();
-          await loadPorts();
-          if (state2 === 'error') toast('Прошивка завершилась с ошибкой', 'error');
-          else if (state2 === 'cancelled') toast('Прошивка отменена', 'warn');
-          else toast('Прошивка завершена', 'success');
+          if (state2 === 'error' || state2 === 'cancelled') {
+            await loadPorts();
+            if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
+            else toast('Прошивка отменена', 'warn');
+          } else {
+            toast('Прошивка завершена', 'success');
+            await refreshScanAfterFlash();
+          }
         },
       });
     } catch (err) {
@@ -2817,13 +3411,12 @@
     $('flasher-restore-port-btn').addEventListener('click', restorePortPollers);
     $('flasher-scan-btn').addEventListener('click', startScan);
     $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
-    $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(false));
+    $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(true));
     $('flasher-fw-upload').addEventListener('change', (ev) => {
       const f = ev.target.files && ev.target.files[0];
       if (f) uploadFirmware(f);
       ev.target.value = '';
     });
-    $('flasher-fw-select').addEventListener('change', updateFlashControls);
     $('flasher-flash-btn').addEventListener('click', startFlash);
     $('flasher-flash-cancel-btn').addEventListener('click', cancelFlash);
     configModalEl('flasher-config-close-btn').addEventListener('click', closeConfigModal);

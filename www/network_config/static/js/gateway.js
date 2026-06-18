@@ -69,6 +69,25 @@ function _closeSubNav() {
   if (item) item.classList.remove('expanded');
 }
 
+function _isSubNavOpen() {
+  const sub = document.getElementById('nav-gateway-sub');
+  return !!(sub && sub.classList.contains('open'));
+}
+
+function _isGatewayTabActive() {
+  const pane = document.getElementById('tab-gateway');
+  return !!(pane && pane.classList.contains('active'));
+}
+
+/** Parent nav click: collapse when gateway tab active and sub-nav already open. */
+window.gatewayNavClick = function () {
+  if (_isGatewayTabActive() && _isSubNavOpen()) {
+    _closeSubNav();
+    return true;
+  }
+  return false;
+};
+
 function _bindSubNavClicks() {
   const sub = document.getElementById('nav-gateway-sub');
   if (!sub) return;
@@ -119,7 +138,8 @@ function _renderDevicePanel(area) {
   });
 
   area.innerHTML = `
-    <div class="widget" style="margin-bottom:16px">
+    <div class="gw-device-stack">
+    <div class="widget">
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
         <span id="gw-svc-badge" class="${svcClass}">${svcText}</span>
         <span style="color:var(--text-sec);font-size:.82rem">
@@ -136,14 +156,14 @@ function _renderDevicePanel(area) {
 
     <div class="widget">
       <h3 style="font-size:.95rem;margin:0 0 12px">Порты</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+      <table id="gw-ports-table" class="gw-ports-table">
         <thead>
-          <tr style="color:var(--text-sec)">
-            <th style="text-align:left;padding:4px 8px;font-weight:500">Порт</th>
-            <th style="text-align:left;padding:4px 8px;font-weight:500">Режим</th>
-            <th style="text-align:left;padding:4px 8px;font-weight:500">TCP</th>
-            <th style="text-align:left;padding:4px 8px;font-weight:500">Бод</th>
-            <th style="text-align:left;padding:4px 8px;font-weight:500">Статус</th>
+          <tr>
+            <th>Порт</th>
+            <th>Режим</th>
+            <th>TCP</th>
+            <th>Бод</th>
+            <th>Статус</th>
           </tr>
         </thead>
         <tbody>
@@ -155,16 +175,17 @@ function _renderDevicePanel(area) {
             const dot = cfg.enabled
               ? (running ? '<span style="color:var(--green)">●</span>' : '<span style="color:var(--red)">●</span>')
               : '<span style="color:var(--text-dim)">○</span>';
-            return `<tr style="border-top:1px solid var(--border)">
-              <td style="padding:6px 8px"><a href="#" class="gw-port-link" data-port="${p}" style="color:var(--cyan);text-decoration:none">${p}</a></td>
-              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled ? modeLabel : '—'}</td>
-              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled && cfg.mode !== 'disabled' ? (cfg.tcp_port || DEFAULT_TCP_PORTS[p]) : '—'}</td>
-              <td style="padding:6px 8px;color:var(--text-sec)">${cfg.enabled ? (cfg.baudrate || 9600) : '—'}</td>
-              <td style="padding:6px 8px">${dot}</td>
+            return `<tr>
+              <td><a href="#" class="gw-port-link" data-port="${p}">${p}</a></td>
+              <td class="gw-ports-muted">${cfg.enabled ? modeLabel : '—'}</td>
+              <td class="gw-ports-muted">${cfg.enabled && cfg.mode !== 'disabled' ? (cfg.tcp_port || DEFAULT_TCP_PORTS[p]) : '—'}</td>
+              <td class="gw-ports-muted">${cfg.enabled ? (cfg.baudrate || 9600) : '—'}</td>
+              <td>${dot}</td>
             </tr>`;
           }).join('')}
         </tbody>
       </table>
+    </div>
     </div>`;
 
   area.querySelectorAll('.gw-port-link').forEach(a => {
@@ -186,19 +207,19 @@ function _renderPortPanel(area, port) {
   const mode = cfg.mode || 'disabled';
 
   area.innerHTML = `
-    <div class="widget">
-      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-        <h3 style="margin:0;font-size:1rem">${port}</h3>
+    <div class="widget gw-port-panel">
+      <div class="gw-port-form-head">
+        <h3 class="gw-port-title">${port}</h3>
         ${_statusBadgeHtml(st, cfg)}
-        <div id="gw-counters-${port}" style="margin-left:auto">${_countersHtml(st)}</div>
+        <div id="gw-counters-${port}" class="gw-counters">${_countersHtml(st)}</div>
       </div>
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px 24px">
+      <div class="gw-form-grid">
 
-        <div>
-          <p class="field-label" style="margin-bottom:6px;font-size:.78rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:.04em">Режим и TCP</p>
+        <div class="gw-port-col">
+          <p class="field-label gw-col-label">Режим и TCP</p>
 
-          <div class="field toggle-field-row" style="margin-bottom:10px">
+          <div class="field toggle-field-row gw-field-row">
             <span class="toggle-field-label">Включить порт</span>
             <label class="toggle-inline">
               <input type="checkbox" class="toggle toggle-wide" id="gw-en-${port}"
@@ -206,69 +227,68 @@ function _renderPortPanel(area, port) {
             </label>
           </div>
 
-          <div class="field" style="margin-bottom:10px">
-            <label style="font-size:.82rem;color:var(--text-sec)">Режим работы</label>
-            <select id="gw-mode-${port}" style="margin-top:4px">
+          <div class="field gw-field-row">
+            <label class="gw-field-label">Режим работы</label>
+            <select id="gw-mode-${port}" class="gw-field-control">
               ${MODES.map(m =>
                 `<option value="${m.value}"${mode === m.value ? ' selected' : ''}>${m.label}</option>`
               ).join('')}
             </select>
-            <p class="field-hint" id="gw-mode-hint-${port}" style="margin-top:4px;font-size:.77rem;color:var(--text-sec)">${_modeHint(mode)}</p>
           </div>
 
-          <div id="gw-tcp-fields-${port}" ${mode === 'disabled' ? 'style="display:none"' : ''}>
-            <div class="field" style="margin-bottom:10px">
-              <label style="font-size:.82rem;color:var(--text-sec)">TCP-порт</label>
-              <input type="number" id="gw-tcpport-${port}" style="margin-top:4px"
+          <div id="gw-tcp-fields-${port}" class="gw-cond-block gw-block-tcp${mode === 'disabled' ? ' gw-block-collapsed' : ''}">
+            <div class="field gw-field-row">
+              <label class="gw-field-label">TCP-порт</label>
+              <input type="number" id="gw-tcpport-${port}" class="gw-field-control"
                      value="${cfg.tcp_port || DEFAULT_TCP_PORTS[port]}" min="1" max="65535">
             </div>
           </div>
 
-          <div id="gw-fmb-field-${port}" ${mode === 'modbus_tcp' ? '' : 'style="display:none"'}>
-            <div class="field toggle-field-row" style="margin-bottom:4px">
-              <span class="toggle-field-label" style="font-size:.82rem">Fast Modbus probe (FC&nbsp;0x47)</span>
+          <div id="gw-fmb-field-${port}" class="gw-cond-block gw-block-fmb${mode === 'modbus_tcp' ? '' : ' gw-block-collapsed'}">
+            <div class="field toggle-field-row gw-field-row">
+              <span class="toggle-field-label gw-field-label">Fast Modbus probe (FC&nbsp;0x47)</span>
               <label class="toggle-inline">
                 <input type="checkbox" class="toggle toggle-wide" id="gw-fmb-${port}"
                        ${cfg.fast_modbus_probe !== false ? 'checked' : ''}>
               </label>
             </div>
-            <p class="field-hint" style="font-size:.77rem;color:var(--text-sec);margin-bottom:10px">Отвечать локально на WB Fast Modbus probe</p>
+            <p class="field-hint gw-fmb-hint">Отвечать локально на WB Fast Modbus probe</p>
           </div>
         </div>
 
-        <div>
-          <p class="field-label" style="margin-bottom:6px;font-size:.78rem;color:var(--text-sec);text-transform:uppercase;letter-spacing:.04em">Параметры RS-485</p>
+        <div class="gw-port-col">
+          <p class="field-label gw-col-label">Параметры RS-485</p>
 
-          <div class="field" style="margin-bottom:10px">
-            <label style="font-size:.82rem;color:var(--text-sec)">Скорость (бод)</label>
-            <select id="gw-baud-${port}" style="margin-top:4px">
+          <div class="field gw-field-row">
+            <label class="gw-field-label">Скорость (бод)</label>
+            <select id="gw-baud-${port}" class="gw-field-control">
               ${BAUDS.map(b =>
                 `<option value="${b}"${parseInt(cfg.baudrate) === b ? ' selected' : ''}>${b}</option>`
               ).join('')}
             </select>
           </div>
 
-          <div class="field" style="margin-bottom:10px">
-            <label style="font-size:.82rem;color:var(--text-sec)">Чётность</label>
-            <select id="gw-parity-${port}" style="margin-top:4px">
+          <div class="field gw-field-row">
+            <label class="gw-field-label">Чётность</label>
+            <select id="gw-parity-${port}" class="gw-field-control">
               ${PARITIES.map(p =>
                 `<option value="${p.value}"${cfg.parity === p.value ? ' selected' : ''}>${p.label}</option>`
               ).join('')}
             </select>
           </div>
 
-          <div class="field" style="margin-bottom:10px">
-            <label style="font-size:.82rem;color:var(--text-sec)">Стоп-биты</label>
-            <select id="gw-stop-${port}" style="margin-top:4px">
+          <div class="field gw-field-row">
+            <label class="gw-field-label">Стоп-биты</label>
+            <select id="gw-stop-${port}" class="gw-field-control">
               ${STOPBITS.map(s =>
                 `<option value="${s.value}"${parseInt(cfg.stopbits) === s.value ? ' selected' : ''}>${s.label}</option>`
               ).join('')}
             </select>
           </div>
 
-          <div class="field" style="margin-bottom:10px">
-            <label style="font-size:.82rem;color:var(--text-sec)">Биты данных</label>
-            <select id="gw-data-${port}" style="margin-top:4px">
+          <div class="field gw-field-row">
+            <label class="gw-field-label">Биты данных</label>
+            <select id="gw-data-${port}" class="gw-field-control">
               ${DATABITS.map(d =>
                 `<option value="${d}"${parseInt(cfg.databits) === d ? ' selected' : ''}>${d}</option>`
               ).join('')}
@@ -278,10 +298,10 @@ function _renderPortPanel(area, port) {
 
       </div>
 
-      <div style="display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap">
+      <div class="gw-save-row">
         <button class="btn btn-primary" id="gw-save-btn-${port}">Сохранить</button>
         <button class="btn btn-sm" id="gw-reset-btn-${port}">Сбросить</button>
-        <span id="gw-save-status-${port}" style="font-size:.82rem"></span>
+        <span id="gw-save-status-${port}" class="gw-save-status"></span>
       </div>
     </div>`;
 
@@ -308,10 +328,8 @@ function _onModeChange(port) {
   const mode = area.querySelector(`#gw-mode-${port}`)?.value || 'disabled';
   const tcpDiv = area.querySelector(`#gw-tcp-fields-${port}`);
   const fmbDiv = area.querySelector(`#gw-fmb-field-${port}`);
-  const hint   = area.querySelector(`#gw-mode-hint-${port}`);
-  if (tcpDiv) tcpDiv.style.display = mode === 'disabled' ? 'none' : '';
-  if (fmbDiv) fmbDiv.style.display = mode === 'modbus_tcp' ? '' : 'none';
-  if (hint)   hint.textContent = _modeHint(mode);
+  if (tcpDiv) tcpDiv.classList.toggle('gw-block-collapsed', mode === 'disabled');
+  if (fmbDiv) fmbDiv.classList.toggle('gw-block-collapsed', mode !== 'modbus_tcp');
   _dirty[port] = true;
 }
 
@@ -500,16 +518,6 @@ function _defaultPortCfg(port) {
     databits: 8,
     fast_modbus_probe: true,
   };
-}
-
-function _modeHint(mode) {
-  const hints = {
-    disabled:     'Порт не используется шлюзом.',
-    modbus_tcp:   'Modbus TCP сервер (MBAP↔RTU). SCADA/ПЛК подключается как Modbus TCP мастер.',
-    rtu_over_tcp: 'Сырые RTU-фреймы передаются через TCP без MBAP-обёртки.',
-    transparent:  'Прозрачный мост: все байты RS-485 ↔ TCP.',
-  };
-  return hints[mode] || '';
 }
 
 })();

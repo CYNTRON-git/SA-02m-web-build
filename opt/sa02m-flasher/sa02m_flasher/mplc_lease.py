@@ -349,6 +349,16 @@ class PortBusyError(RuntimeError):
         )
 
 
+def is_port_poll_free(device_path: str) -> bool:
+    """
+    Порт свободен для flasher: fuser пуст (ни MPLC, ни MQTT не держат этот /dev/COM*).
+    Не смотрит на глобальный systemctl active — только фактическое удержание порта.
+    """
+    if not device_path_exists(device_path):
+        return False
+    return not port_occupants(device_path)
+
+
 def released_services() -> List[str]:
     with _LEASE_LOCK:
         return sorted(_STOPPED_SERVICES)
@@ -434,22 +444,30 @@ def port_lease(
     возвращает список фактически остановленных служб (для логов), по выходу — запускает их обратно.
 
     Безопасен при вложении (если одна служба уже в _STOPPED_SERVICES — не трогает её повторно).
+
+    Быстрый путь: если fuser пуст и опросчики (MPLC/MQTT) не держат этот порт — не вызываем
+    systemctl stop/start глобальных служб (экономит ~3–4 с на каждом скане).
     """
     device = str(device_path)
     stopped_now: List[str] = []
+    poll_free = False
     with _LEASE_LOCK:
-        for svc in list(services_to_stop):
-            actual = resolve_service_name(svc)
-            if not actual:
-                continue
-            if actual in _STOPPED_SERVICES:
-                continue
-            if is_service_active(actual):
-                if stop_service(actual):
-                    _STOPPED_SERVICES.add(actual)
-                    stopped_now.append(actual)
+        poll_free = is_port_poll_free(device)
+        if poll_free:
+            log.debug("port_lease: быстрый путь для %s (порт не удерживается опросчиками)", device)
+        else:
+            for svc in list(services_to_stop):
+                actual = resolve_service_name(svc)
+                if not actual:
+                    continue
+                if actual in _STOPPED_SERVICES:
+                    continue
+                if is_service_active(actual):
+                    if stop_service(actual):
+                        _STOPPED_SERVICES.add(actual)
+                        stopped_now.append(actual)
     try:
-        if require_free:
+        if require_free and not poll_free:
             pids = port_occupants(device)
             if pids:
                 raise PortBusyError(device, pids)

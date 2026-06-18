@@ -12,8 +12,9 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 # mp02_t как в MODBUS_VARIABLES.txt / get_type_module
 MP02_DO6DI8 = 1
@@ -119,7 +120,7 @@ def device_allowed_for_mr_firmware_flash(signature: str, *, allow_unlisted: bool
     Один файл прошивки на всю линейку: проверяем только принадлежность к нашим
     модулям расширения (MR/MP-02м и совместимые), а не совпадение сигнатуры с полем в .fw.
 
-    ``allow_unlisted=True`` — обход whitelist (только для отладки; в UI — отдельный флаг).
+    ``allow_unlisted=True`` — только для внутренних/тестовых сценариев (не API/UI).
     """
     if allow_unlisted:
         return True
@@ -140,6 +141,9 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     for tok in _EXTRA_SIG_TOKENS_FOR_BATCH:
         if tok in n:
             return True
+    c_sig = code_from_signature(s)
+    if c_sig in (MP02_CE02M3, DTV):
+        return True
     # Сигнатуры с дефисами (MR-02m-DI16): сравниваем без - и _
     n_compact = n.replace("-", "").replace("_", "")
     for token in ("MP02M", "MR02M", "ENMETER", "EN_METER"):
@@ -163,6 +167,7 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "4DO6DI":    (4, 6, 0, 0),
     "4TO6DI":    (4, 6, 4, 0),
     "TO4DI6":    (4, 6, 4, 0),
+    "CE02M3":    (0, 0, 0, 0),
 }
 
 # Сигнатуры специальных устройств → code (для _resolve_kind, если type_code не распознан)
@@ -170,10 +175,235 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
 SPECIAL_SIG_CODES: Dict[str, int] = {
     "CE02M3":  MP02_CE02M3,
     "CE-02M3": MP02_CE02M3,
+    "CE-02M-3": MP02_CE02M3,
+    "EN_METER": MP02_CE02M3,
+    "ENMETER": MP02_CE02M3,
     "SENSOR":  DTV,     # модельная строка рег. 200 у DTV
     "SENS.":   DTV,     # дефолтная сигнатура EEPROM при пустом/несфабрикованном приборе
     "SENS":    DTV,
 }
+
+# --- RS-485 line profiles (application mode / reg 129 → bootloader) ---
+# Источники: MR-02m/CE-02m-3/cyntron-dtv shared/bootloader (115200 8N1);
+# Wiren Board / gw-lwip defaults (19200 8N2 app, 9600 8N2 bootloader — см. flash_protocol).
+
+@dataclass(frozen=True)
+class Rs485LineProfile:
+    baudrate: int
+    parity: str
+    stopbits: int
+
+    def as_tuple(self) -> Tuple[int, str, int]:
+        return self.baudrate, self.parity, self.stopbits
+
+
+PROFILE_MP_MR = Rs485LineProfile(115200, "N", 1)
+PROFILE_WB_APP = Rs485LineProfile(19200, "N", 2)
+
+# bl_module_sig.c (MR-02m) + module_profiles hints + serial_ranges
+MP_MR_SIGNATURE_TOKENS: Tuple[str, ...] = (
+    "6DO8DI", "16DO", "12AO", "6DO", "14DI", "10DICON", "6DO5DI2AO",
+    "6AO6AI", "6AI6AO", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
+    "DO6DI8", "DO4DI6", "TENZO2", "CE02M3", "ENMETER", "EN_METER",
+    "MP02M", "MR02M", "SENSOR", "SENS.",
+)
+
+_WB_RELAY_SIG_PREFIXES: Tuple[str, ...] = (
+    "MR2M", "MR3", "MR6", "MRPS", "MRWL", "MRWM", "MRM2",
+)
+_WB_MAO4_SIG_PREFIXES: Tuple[str, ...] = ("MAO4",)
+
+
+def _norm_parity(p: str, default: str = "N") -> str:
+    pr = (p or default).upper()
+    return pr if pr in ("N", "E", "O") else default
+
+
+def _norm_stopbits(v: int, default: int = 1) -> int:
+    sb = int(v or default)
+    return sb if sb in (1, 2) else default
+
+
+def _profile_from_device_scan(
+    device: Optional[Mapping[str, Any]],
+    default: Rs485LineProfile,
+) -> Rs485LineProfile:
+    if not device:
+        return default
+    baud = int(device.get("baudrate") or 0) or default.baudrate
+    parity = _norm_parity(str(device.get("parity") or default.parity), default.parity)
+    stopbits = _norm_stopbits(int(device.get("stopbits") or 0), default.stopbits)
+    return Rs485LineProfile(baud, parity, stopbits)
+
+
+def is_wirenboard_module_signature(signature: str) -> bool:
+    """
+    Сторонний Modbus-модуль Wiren Board (.wbfw), не MP/MR/CE/DTV.
+    Логика согласована с MR-02m-flasher module_profiles.is_wirenboard_modbus_remote_firmware_signature.
+    """
+    s = strip_bootloader_signature_suffix((signature or "").strip())
+    if not s or s.upper() in ("NONE", "—", "?", "UNKNOWN"):
+        return False
+    if is_mp_module_signature_for_batch_flash(s):
+        return False
+    if code_from_signature(s) is not None:
+        return False
+    n = normalize_signature(s)
+    for prefix in _WB_MAO4_SIG_PREFIXES:
+        if n.startswith(prefix):
+            return True
+    for prefix in _WB_RELAY_SIG_PREFIXES:
+        if n.startswith(prefix):
+            return True
+    if len(s) < 2 or len(s) > 32:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", s):
+        return False
+    if not re.search(r"[A-Za-z]", s):
+        return False
+    return True
+
+
+def device_flash_route(signature: str) -> str:
+    """
+    Маршрут прошивки по сигнатуре устройства (рег. 290).
+
+    ``mp_mr`` — наши MR/MP-02m, CE-02m-3, DTV (.fw, 115200 8N1, fast Modbus).
+    ``wb`` — сторонние Wiren Board и прочие не-MR сигнатуры (.wbfw, 19200 8N2, WB algorithm).
+    ``unknown`` — пустая или нераспознанная сигнатура.
+    """
+    s = strip_bootloader_signature_suffix(signature)
+    if is_mp_module_signature_for_batch_flash(s):
+        return "mp_mr"
+    if is_wirenboard_module_signature(s):
+        return "wb"
+    n = normalize_signature(s)
+    if not n or n in ("NONE", "—", "?", "UNKNOWN"):
+        return "unknown"
+    return "unknown"
+
+
+def validate_firmware_device_route(
+    signature: str,
+    *,
+    firmware_is_wb: bool,
+    is_bootloader_firmware: bool = False,
+) -> Optional[str]:
+    """
+    Проверка соответствия типа прошивки и сигнатуры устройства.
+    Возвращает текст ошибки или None, если маршрут согласован.
+    """
+    dev_sig = strip_bootloader_signature_suffix(str(signature or "").strip()) or "?"
+    route = device_flash_route(dev_sig)
+
+    if route == "unknown":
+        return (
+            f"Сигнатура «{dev_sig}» не распознана. Выполните сканирование и выберите устройство "
+            "с известной сигнатурой."
+        )
+
+    if is_bootloader_firmware:
+        if route != "mp_mr":
+            return (
+                f"Прошивка bootloader (.fw) поддерживается только для модулей MR/MP-02m; "
+                f"сигнатура «{dev_sig}» относится к стороннему устройству."
+            )
+        if firmware_is_wb:
+            return "Образ bootloader должен быть в формате .fw, не .wbfw."
+        return None
+
+    if route == "mp_mr":
+        if firmware_is_wb:
+            return (
+                f"Для модуля MR/MP-02m (сигнатура «{dev_sig}») выберите прошивку .fw, "
+                "не .wbfw (Wiren Board)."
+            )
+        return None
+
+    if route == "wb":
+        if not firmware_is_wb:
+            return (
+                f"Для устройства «{dev_sig}» (сторонний Modbus / Wiren Board) выберите прошивку .wbfw, "
+                "не .fw MR/MP-02m."
+            )
+        return None
+
+    return f"Сигнатура «{dev_sig}» не поддерживается для прошивки."
+
+
+def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[str]:
+    """
+    Проверка согласованности маршрута для пакетной прошивки нескольких устройств.
+
+    Все цели должны быть одного семейства: MR/MP (mp_mr) или WB (wb), без смешения.
+    """
+    if not targets:
+        return "Список устройств для пакетной прошивки пуст"
+    routes = [
+        device_flash_route(str(t.get("signature") or ""))
+        for t in targets
+    ]
+    unknown_sigs: List[str] = []
+    for t, route in zip(targets, routes):
+        if route != "unknown":
+            continue
+        sig = strip_bootloader_signature_suffix(str(t.get("signature") or "").strip()) or "?"
+        unknown_sigs.append(sig)
+    if unknown_sigs:
+        shown = ", ".join(unknown_sigs[:4])
+        if len(unknown_sigs) > 4:
+            shown += ", …"
+        return f"Сигнатура не распознана: {shown}. Выполните сканирование."
+    has_mp = any(r == "mp_mr" for r in routes)
+    has_wb = any(r == "wb" for r in routes)
+    if has_mp and has_wb:
+        return (
+            "Нельзя прошивать вместе модули MR/MP и Wiren Board. "
+            "Выберите устройства одного типа."
+        )
+    return None
+
+
+def line_profile_family(signature: str, *, is_wb_firmware: bool = False) -> str:
+    """'mp_mr' | 'wb' | 'unknown' — для логов и UI."""
+    if is_wb_firmware:
+        return "wb"
+    if is_mp_module_signature_for_batch_flash(signature):
+        return "mp_mr"
+    if is_wirenboard_module_signature(signature):
+        return "wb"
+    return "unknown"
+
+
+def application_line_profile(
+    signature: str,
+    *,
+    device: Optional[Mapping[str, Any]] = None,
+    is_wb_firmware: bool = False,
+) -> Rs485LineProfile:
+    """
+    UART-параметры для обмена с приложением (reg 129 → bootloader).
+
+    MP/MR-02m, CE-02m-3, DTV: всегда 115200 8N1 (DEFAULT_BAUD_RATE=1152 в прошивке;
+    scan на шлюзе часто ложно находит 19200 N2).
+    Wiren Board (.wbfw или сигнатура WB-MR*): baud/stop из скана или 19200 8N2.
+    """
+    if device:
+        ab = device.get("app_line_baud")
+        if ab is not None and int(ab or 0) > 0:
+            return Rs485LineProfile(
+                int(ab),
+                _norm_parity(str(device.get("app_line_parity") or "N")),
+                _norm_stopbits(int(device.get("app_line_stopbits") or 1)),
+            )
+
+    if is_wb_firmware or is_wirenboard_module_signature(signature):
+        return _profile_from_device_scan(device, PROFILE_WB_APP)
+    if is_mp_module_signature_for_batch_flash(signature):
+        return PROFILE_MP_MR
+    if not is_wb_firmware:
+        return PROFILE_MP_MR
+    return _profile_from_device_scan(device, PROFILE_WB_APP)
 
 
 def code_from_signature(signature: str) -> Optional[int]:

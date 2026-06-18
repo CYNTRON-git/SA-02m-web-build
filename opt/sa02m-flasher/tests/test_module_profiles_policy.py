@@ -19,8 +19,8 @@ class TestDeviceAllowed(unittest.TestCase):
     def test_unknown_rejected(self) -> None:
         self.assertFalse(device_allowed_for_mr_firmware_flash("ACME-UNKNOWN-99", allow_unlisted=False))
 
-    def test_force_allows_unknown(self) -> None:
-        self.assertTrue(device_allowed_for_mr_firmware_flash("ACME-UNKNOWN-99", allow_unlisted=True))
+    def test_wb_signature_not_mr_allowed(self) -> None:
+        self.assertFalse(device_allowed_for_mr_firmware_flash("mr6c_v2", allow_unlisted=False))
 
 
 class TestAiStorMappingMr02m(unittest.TestCase):

@@ -5,6 +5,36 @@
 
 ---
 
+## 1.0.3.28 — Dashboard, шлюз RS-485, прошиватель MR-02m (июнь 2026)
+
+### Веб-интерфейс (Dashboard и навигация)
+- Блок **HW outputs** перенесён выше **RS-485**; оба виджета занимают верхний ряд сетки (dash-span-top4, 4 колонки).
+- Убраны подписи «Состояние:» у каналов HW; на виджетах дашборда — синяя подсветка при наведении.
+- Шапка: единая строка «Сервер автоматизации СА-02м» + версия; клик по логотипу — «Общая информация»; убраны заголовки секций в боковом меню; иконка «Шлюз RS-485» обновлена.
+- Синхронизация версии UI: www/network_config/VERSION, scripts/sync-app-version.py, cache-bust query-параметры.
+
+### RS-485 на Dashboard
+- Убран текст «○ свободен» / «● активен»; статус — **4 состояния** индикатора (серый / зелёный / оранжевый / красный) с подсказкой в 	itle.
+
+### Шлюз RS-485 (Gateway)
+- Панели COM одинаковой ширины (gw-device-stack); убраны пояснения режимов (gw-mode-hint); таблица портов с классом gw-ports-table и zebra-строками.
+- Повторный клик по пункту «Шлюз RS-485» при открытой вкладке **сворачивает** подменю COM (gatewayNavClick).
+- Убран лишний текст/упоминание COM5 в UI (профиль 1-eth: 4 порта).
+
+### Прошиватель MR-02m (sa02m-flasher + UI)
+- Маршрут прошивки по сигнатуре устройства (MR/MP .fw 115200 N1 vs WB .wbfw 19200 N2); multi-select и пакетная прошивка; UX манифеста («Скачать прошивки», список файлов, сообщения при DNS/offline).
+- Быстрый prep→scan: пропуск stop/restart MPLC, если порт свободен по `fuser` (mplc_lease.is_port_poll_free).
+- Политика кеша репозитория: «Проверить» скачивает stable/current; консолидация по channel/kind.
+- Line profiles по сигнатуре (reg 129 / app line); исправления SSE reconnect после restart сервиса.
+- Тесты: 	est_flash_route, 	est_module_line_profiles, 	est_runner_app_line, расширения firmware_repo/mplc_lease.
+
+### Система и агенты
+- sa02m-web-update-check: ручной режим (--manual / CGI orce=1) без спама 
+etwork_or_git_failed в install.log; timer не пишет в journal.
+- scripts/01-system.sh: DNS через шлюз (resolvconf head); документация SSH для агентов: docs/AGENTS_SSH_AND_DEVICE_ACCESS.md, 	ools/ssh/sa02m_remote.py.
+
+---
+
 ## 1.0.3.17 — MQTT: доступность и надёжность в стиле wb-mqtt-serial
 
 Применимо к Modbus→MQTT мосту (`opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`) и

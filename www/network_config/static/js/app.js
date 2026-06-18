@@ -5,8 +5,8 @@
 
 'use strict';
 
-/** Версия веб-интерфейса (синхронизируйте с install.sh). */
-const APP_VERSION = '1.0.3.22';
+/** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
+const APP_VERSION = '1.0.3.28';
 
 /** Текущий вариант платы (sa02m-1eth / sa02m-2eth) для видимости Ethernet № 2. */
 let _boardVariant = 'sa02m-1eth';
@@ -20,34 +20,45 @@ let _boardVariant = 'sa02m-1eth';
 })();
 
 /* ── Navigation ──────────────────────────────────────────────────────────── */
+function switchTab(tab) {
+  const navEl = document.querySelector('.nav-item[data-tab="' + tab + '"]');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  if (navEl) navEl.classList.add('active');
+  const pane = document.getElementById('tab-' + tab);
+  if (pane) pane.classList.add('active');
+  if (tab === 'system') {
+    loadLog();
+    fetchSystemWidget();
+    loadWebUpdateStatus();
+    loadServicesControl(false);
+    loadVariant();
+  }
+  if (tab === 'network') {
+    applyVariantVisibility(_boardVariant);
+    loadConfig();
+  }
+  if (tab === 'time') loadConfig();
+  if (tab === 'flasher' && window.flasherInit) window.flasherInit();
+  if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
+  if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
+  if (tab === 'gateway' && window.gatewayInit) window.gatewayInit();
+  if (tab !== 'gateway' && window.gatewayDestroy) window.gatewayDestroy();
+}
+
 function initNav() {
   document.querySelectorAll('.nav-item[data-tab]').forEach(el => {
     el.addEventListener('click', () => {
-      const tab = el.dataset.tab;
-      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-      el.classList.add('active');
-      const pane = document.getElementById('tab-' + tab);
-      if (pane) pane.classList.add('active');
-      if (tab === 'system') {
-        loadLog();
-        fetchSystemWidget();
-        loadWebUpdateStatus();
-        loadServicesControl(false);
-        loadVariant();
+      if (el.dataset.tab === 'gateway' && window.gatewayNavClick && window.gatewayNavClick()) {
+        return;
       }
-      if (tab === 'network') {
-        applyVariantVisibility(_boardVariant);
-        loadConfig();
-      }
-      if (tab === 'time') loadConfig();
-      if (tab === 'flasher' && window.flasherInit) window.flasherInit();
-      if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
-      if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
-      if (tab === 'gateway' && window.gatewayInit) window.gatewayInit();
-      if (tab !== 'gateway' && window.gatewayDestroy) window.gatewayDestroy();
+      switchTab(el.dataset.tab);
     });
   });
+  const logo = document.querySelector('.topbar-logo-img');
+  if (logo) {
+    logo.addEventListener('click', () => switchTab('dashboard'));
+  }
 }
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
@@ -719,7 +730,9 @@ function applyVariantVisibility(variant) {
   }
   const title = document.getElementById('device-title');
   if (title) {
-    title.textContent = v === 'sa02m-2eth' ? 'СА-02м-2' : 'СА-02м';
+    title.textContent = v === 'sa02m-2eth'
+      ? 'Сервер автоматизации СА-02м-2'
+      : 'Сервер автоматизации СА-02м';
   }
   const netDesc = document.getElementById('network-page-desc');
   if (netDesc) {
@@ -1333,22 +1346,35 @@ function renderRs485(ports) {
     }
 
     const hasErr = !absent && !!(p.fe || p.pe || p.oe);
+    const polling = !absent && !!p.open;
     let dotClass = 'idle';
-    if (absent) dotClass = 'nopoll';
-    else if (hasErr) dotClass = 'err';
-    else if (p.open) dotClass = 'on';
+    let dotTitle = 'Порт свободен, опрос не выполняется';
+    if (absent) {
+      dotClass = 'nopoll';
+      dotTitle = 'Интерфейс отсутствует';
+    } else if (!polling) {
+      dotClass = 'idle';
+    } else if (hasErr) {
+      dotClass = 'warn';
+      dotTitle = 'Опрос активен, ошибки линии (FE/PE/OE)';
+    } else if ((p.rx | 0) > 0) {
+      dotClass = 'on';
+      dotTitle = 'Опрос активен, ответы устройств в норме';
+    } else {
+      dotClass = 'noresponse';
+      dotTitle = 'Опрос активен, нет ответов устройств';
+    }
 
     const tx   = actNow ? '<span class="rv act">' + fmtNum(p.tx) + '</span>' : '<span class="rv">' + fmtNum(p.tx) + '</span>';
     const rx   = actNow ? '<span class="rv act">' + fmtNum(p.rx) + '</span>' : '<span class="rv">' + fmtNum(p.rx) + '</span>';
     const err  = (p.fe || p.pe || p.oe) ? '<div class="rs485-err">Ош FE=' + p.fe + ' PE=' + p.pe + ' OE=' + p.oe + '</div>' : '';
-    const stat = absent ? '' : (p.open ? '<div class="rs485-open">● активен</div>' : '<div class="rs485-closed">○ свободен</div>');
 
     card.innerHTML =
-      '<div class="rs485-hdr"><span class="rs485-dot ' + dotClass + '"></span><span class="rs485-name">RS-485-' + p.n + '</span></div>' +
+      '<div class="rs485-hdr"><span class="rs485-dot ' + dotClass + '" title="' + dotTitle + '"></span><span class="rs485-name">RS-485-' + p.n + '</span></div>' +
       '<div class="rs485-dev">' + (absent ? 'нет опроса' : p.dev) + '</div>' +
       '<div class="rs485-row"><span class="rl">TX</span>' + tx + '</div>' +
       '<div class="rs485-row"><span class="rl">RX</span>' + rx + '</div>' +
-      stat + err;
+      err;
   });
   Array.from(grid.children).forEach(card => {
     if (card.id && !seen.has(card.id)) card.remove();
@@ -2011,6 +2037,45 @@ function initThemeToggle() {
 /* ══════════════════════════════════════════════════════════════════════════
    HARDWARE VARIANT
    ══════════════════════════════════════════════════════════════════════════ */
+const VARIANT_STATUS_AUTO_CLEAR_MS = 3000;
+let _variantStatusTimer = null;
+let _variantStatusGen = 0;
+
+function cancelVariantStatusAutoClear() {
+  if (_variantStatusTimer) {
+    clearTimeout(_variantStatusTimer);
+    _variantStatusTimer = null;
+  }
+  _variantStatusGen += 1;
+}
+
+function scheduleVariantStatusAutoClear(el) {
+  cancelVariantStatusAutoClear();
+  const gen = _variantStatusGen;
+  _variantStatusTimer = setTimeout(function () {
+    _variantStatusTimer = null;
+    if (_variantStatusGen !== gen || !el) return;
+    el.textContent = '';
+  }, VARIANT_STATUS_AUTO_CLEAR_MS);
+}
+
+function variantDisplayLabel(variant) {
+  const map = {
+    'sa02m-1eth': 'СА-02м-1eth',
+    'sa02m-2eth': 'СА-02м-2-2eth',
+  };
+  return map[variant] || String(variant || '').replace(/^sa02m-/i, 'СА-02м-');
+}
+
+function formatComPortCount(n) {
+  n = Math.abs(parseInt(n, 10) || 0);
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return n + ' COM-порт';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return n + ' COM-порта';
+  return n + ' COM-портов';
+}
+
 async function loadVariant() {
   try {
     const r = await fetch('/cgi-bin/variant.cgi');
@@ -2027,6 +2092,7 @@ async function applyVariant() {
   const status = document.getElementById('variant-status');
   if (!sel || !status) return;
   const variant = sel.value;
+  cancelVariantStatusAutoClear();
   status.textContent = 'Применяю…';
   status.style.color = 'var(--text-sec)';
   try {
@@ -2037,8 +2103,9 @@ async function applyVariant() {
     });
     const d = await r.json();
     if (d.ok) {
-      status.textContent = '\u2713 Применено: ' + d.variant + ', ' + d.serial_count + ' COM-порт(а)';
+      status.textContent = '\u2713 Применено: ' + variantDisplayLabel(d.variant) + ', ' + formatComPortCount(d.serial_count);
       status.style.color = 'var(--green, #4caf50)';
+      scheduleVariantStatusAutoClear(status);
       await loadVariant();
     } else {
       status.textContent = '\u2717 Ошибка: ' + (d.error || 'неизвестно');
@@ -2055,7 +2122,7 @@ async function applyVariant() {
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
   const verEl = document.getElementById('app-version');
-  if (verEl) verEl.textContent = 'v' + APP_VERSION;
+  if (verEl) verEl.textContent = '\tv' + APP_VERSION;
 
   initNav();
   applyVariantVisibility('sa02m-1eth');

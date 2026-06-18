@@ -5,3 +5,5 @@ Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/sa02m-web-update-check
+StandardOutput=null
+StandardError=null

@@ -20,7 +20,7 @@ case "$QS" in
 esac
 
 if [ "$FORCE" = "1" ]; then
-  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n /usr/local/sbin/sa02m-web-update-check >>/var/log/sa02m_install.log 2>&1; then
+  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n /usr/local/sbin/sa02m-web-update-check --manual >>/var/log/sa02m_install.log 2>&1; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') web_update_check.cgi: sudo sa02m-web-update-check failed" >>/var/log/sa02m_install.log 2>&1 || true
   fi
 fi

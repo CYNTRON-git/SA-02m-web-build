@@ -1,6 +1,15 @@
 #!/bin/bash
 # Сравнение задеплоенного коммита с tip ветки на GitHub. Запуск: root или systemd oneshot.
+# Ошибки в /var/log/sa02m_install.log — только при ручной проверке (--manual или SA02M_WEB_UPDATE_CHECK_MANUAL=1).
 set -euo pipefail
+
+MANUAL=0
+for arg in "$@"; do
+  case "$arg" in
+    --manual) MANUAL=1 ;;
+  esac
+done
+[ "${SA02M_WEB_UPDATE_CHECK_MANUAL:-0}" = "1" ] && MANUAL=1
 
 STATEDIR=/var/lib/sa02m-web-build
 DEPLOYED_FILE="$STATEDIR/deployed_commit"
@@ -97,6 +106,6 @@ chmod 644 "$TMP" 2>/dev/null || true
 mv -f "$TMP" "$CHECK_JSON"
 chmod 644 "$CHECK_JSON" 2>/dev/null || true
 
-if [ -n "$err" ]; then
+if [ -n "$err" ] && [ "$MANUAL" = "1" ]; then
   echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-update-check: ${err}" >>/var/log/sa02m_install.log 2>/dev/null || true
 fi

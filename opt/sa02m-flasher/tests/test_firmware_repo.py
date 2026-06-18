@@ -91,7 +91,7 @@ class TestFirmwareRepoRefreshAndDownload(unittest.TestCase):
             },
         }
 
-        def fake_http_get(url: str, *, timeout: float = 15.0) -> bytes:  # noqa: ARG001
+        def fake_http_get(url: str, *, timeout: float = 15.0, retries: int = 2) -> bytes:  # noqa: ARG001
             if url.endswith("index.json"):
                 return json.dumps(manifest).encode("utf-8")
             if "app.fw" in url:
@@ -136,7 +136,7 @@ class TestFirmwareRepoRefreshAndDownload(unittest.TestCase):
             },
         }
 
-        def fake_http_get(url: str, *, timeout: float = 15.0) -> bytes:  # noqa: ARG001
+        def fake_http_get(url: str, *, timeout: float = 15.0, retries: int = 2) -> bytes:  # noqa: ARG001
             if url.endswith("index.json"):
                 return json.dumps(manifest).encode("utf-8")
             return payload
@@ -192,7 +192,7 @@ class TestFirmwareRepoFindForSignature(unittest.TestCase):
             (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
             repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
             found = repo.find_for_signature("MR-02m-DI16")
-            self.assertEqual({e.file for e in found}, {"b.fw"})
+            self.assertEqual({e.file for e in found}, {"a.fw", "b.fw"})
 
 
 class TestFirmwareRepoValidation(unittest.TestCase):
@@ -336,29 +336,56 @@ class TestFlasherSupportedFilter(unittest.TestCase):
         self.assertFalse(is_flasher_supported_file("image.elf", kind="app", size=1000))
         self.assertTrue(is_flasher_supported_file("MR-02m_1.0.8.25.fw", kind="app", size=50000))
 
-    def test_prunes_old_stable_app_keeps_latest(self) -> None:
+    def test_refresh_download_purges_cache_except_current_and_latest(self) -> None:
+        old_payload = _minimal_fw_bytes()
+        new_payload = _minimal_fw_bytes(payload_size=120)
+        bl_payload = _minimal_fw_bytes(sig="MR-02m-BL", payload_size=80)
         manifest = {
             "schema": 1,
-            "updated": "2026-06-02",
+            "updated": "2026-06-18",
             "channels": {
                 "stable": [
                     {
                         "file": "MR-02m_1.0.8.24.fw",
                         "version": "1.0.8.24",
+                        "kind": "app",
                         "signatures": [],
                         "device": "MR-02m",
-                        "size": 100,
-                        "sha256": "",
+                        "size": len(old_payload),
+                        "sha256": hashlib.sha256(old_payload).hexdigest(),
                         "released": "",
                         "notes": "",
                     },
                     {
                         "file": "MR-02m_1.0.8.25.fw",
                         "version": "1.0.8.25",
+                        "kind": "app",
                         "signatures": [],
                         "device": "MR-02m",
-                        "size": 100,
-                        "sha256": "",
+                        "size": len(new_payload),
+                        "sha256": hashlib.sha256(new_payload).hexdigest(),
+                        "released": "",
+                        "notes": "",
+                    },
+                    {
+                        "file": "MR-02m_bootloader_0.0.0.8.fw",
+                        "version": "0.0.0.8",
+                        "kind": "bootloader",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": len(bl_payload),
+                        "sha256": hashlib.sha256(bl_payload).hexdigest(),
+                        "released": "",
+                        "notes": "",
+                    },
+                    {
+                        "file": "MR-02m_bootloader_0.0.0.9.fw",
+                        "version": "0.0.0.9",
+                        "kind": "bootloader",
+                        "signatures": [],
+                        "device": "MR-02m",
+                        "size": len(bl_payload),
+                        "sha256": hashlib.sha256(bl_payload).hexdigest(),
                         "released": "",
                         "notes": "",
                     },
@@ -375,18 +402,62 @@ class TestFlasherSupportedFilter(unittest.TestCase):
                 ]
             },
         }
+
+        def fake_http_get(url: str, *, timeout: float = 15.0, retries: int = 2) -> bytes:  # noqa: ARG001
+            if url.endswith("index.json"):
+                return json.dumps(manifest).encode("utf-8")
+            if "MR-02m_1.0.8.24.fw" in url:
+                return old_payload
+            if "MR-02m_1.0.8.25.fw" in url:
+                return new_payload
+            if "MR-02m_bootloader_0.0.0.8.fw" in url:
+                return bl_payload
+            if "MR-02m_bootloader_0.0.0.9.fw" in url:
+                return bl_payload
+            raise AssertionError(f"unexpected URL {url!r}")
+
         with tempfile.TemporaryDirectory() as td:
             cache = Path(td)
-            (cache / ".index.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (cache / "MR-02m_1.0.8.24.fw").write_bytes(_minimal_fw_bytes())
-            (cache / "MR-02m_1.0.8.25.fw").write_bytes(_minimal_fw_bytes())
+            (cache / "MR-02m_1.0.8.24.fw").write_bytes(old_payload)
+            (cache / "MR-02m_1.0.8.25.fw").write_bytes(new_payload)
+            (cache / "MR-02m_bootloader_0.0.0.8.fw").write_bytes(bl_payload)
             (cache / "MR-02m_full_1.0.8.24.bin").write_bytes(b"\xff" * 300000)
-            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
-            files = {e.file for e in repo.list_entries()}
-            self.assertEqual(files, {"MR-02m_1.0.8.25.fw"})
-            self.assertFalse((cache / "MR-02m_1.0.8.24.fw").exists())
-            self.assertFalse((cache / "MR-02m_full_1.0.8.24.bin").exists())
+            repo = FirmwareRepo(cache, "https://example.com/index.json", "https://example.com/fw/")
+            with patch("sa02m_flasher.firmware_repo._http_get", side_effect=fake_http_get):
+                st = repo.refresh(
+                    download=True,
+                    keep_current={"app": "1.0.8.24", "bootloader": "0.0.0.8"},
+                )
+            self.assertTrue(st.get("ok"))
+            self.assertTrue((cache / "MR-02m_1.0.8.24.fw").exists())
             self.assertTrue((cache / "MR-02m_1.0.8.25.fw").exists())
+            self.assertTrue((cache / "MR-02m_bootloader_0.0.0.8.fw").exists())
+            self.assertTrue((cache / "MR-02m_bootloader_0.0.0.9.fw").exists())
+            self.assertFalse((cache / "MR-02m_full_1.0.8.24.bin").exists())
+            downloaded = {
+                e.file for e in repo.list_entries() if e.downloaded
+            }
+            self.assertEqual(
+                downloaded,
+                {
+                    "MR-02m_1.0.8.24.fw",
+                    "MR-02m_1.0.8.25.fw",
+                    "MR-02m_bootloader_0.0.0.8.fw",
+                    "MR-02m_bootloader_0.0.0.9.fw",
+                },
+            )
+
+
+class TestFormatNetworkError(unittest.TestCase):
+    def test_dns_error_is_actionable_ru(self) -> None:
+        from sa02m_flasher.firmware_repo import _format_network_error
+        import urllib.error
+
+        exc = urllib.error.URLError(OSError(-3, "Temporary failure in name resolution"))
+        msg = _format_network_error(exc, url="https://cyntron.ru/fw/app.fw")
+        self.assertIn("DNS", msg)
+        self.assertIn("cyntron.ru", msg)
+        self.assertIn("ICS", msg)
 
 
 if __name__ == "__main__":
