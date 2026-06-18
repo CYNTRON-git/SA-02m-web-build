@@ -47,6 +47,36 @@ sa02m_rtc_i2c_tool() {
     return 1
 }
 
+sa02m_rtc_i2c_write_tool() {
+    local tool
+    for tool in i2cset /usr/sbin/i2cset /usr/bin/i2cset; do
+        if command -v "${tool##*/}" >/dev/null 2>&1; then
+            command -v "${tool##*/}" 2>/dev/null
+            return 0
+        fi
+        [ -x "$tool" ] || continue
+        printf '%s\n' "$tool"
+        return 0
+    done
+    return 1
+}
+
+sa02m_rtc_int_to_bcd_hex() {
+    local v=$1
+    [ "$v" -ge 0 ] 2>/dev/null || return 1
+    [ "$v" -le 99 ] 2>/dev/null || return 1
+    printf '0x%02x' $(( (v / 10) * 16 + (v % 10) ))
+}
+
+sa02m_rtc_i2c_write_reg() {
+    local bus=$1 addr=$2 reg=$3 val=$4 tool
+    tool=$(sa02m_rtc_i2c_write_tool) || return 1
+    sa02m_rtc_timeout_run 2 sudo -n "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
+        || sa02m_rtc_timeout_run 2 "$tool" -y "$bus" "$addr" "$reg" "$val" 2>/dev/null \
+        || return 1
+    return 0
+}
+
 sa02m_rtc_i2c_read_reg() {
     local bus=$1 addr=$2 reg=$3 tool raw
     tool=$(sa02m_rtc_i2c_tool) || return 1
@@ -118,6 +148,59 @@ read_ds3231_i2c_datetime() {
     return 0
 }
 
+# Write local system time to DS3231 (regs 0x00..0x06). Chip has no TZ — store local time.
+write_ds3231_i2c_datetime() {
+    local dt=${1:-} y mo d h mi s dow bus addr wday yr
+    local sec_hex min_hex hr_hex dom_hex mo_hex yr_hex
+    if [ -z "$dt" ]; then
+        dt=$(date '+%Y-%m-%d %H:%M:%S') || return 1
+    fi
+    case "$dt" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    y=${dt:0:4}
+    mo=${dt:5:2}
+    d=${dt:8:2}
+    h=${dt:11:2}
+    mi=${dt:14:2}
+    s=${dt:17:2}
+    mo=$((10#$mo))
+    d=$((10#$d))
+    h=$((10#$h))
+    mi=$((10#$mi))
+    s=$((10#$s))
+
+    sa02m_rtc_valid_ymd "$y" "$mo" "$d" || return 1
+    [ "$h" -le 23 ] 2>/dev/null || return 1
+    [ "$mi" -le 59 ] 2>/dev/null || return 1
+    [ "$s" -le 59 ] 2>/dev/null || return 1
+
+    sa02m_rtc_find_i2c_chip ds3231 || return 1
+    bus=$SA02M_RTC_I2C_BUS
+    addr=$SA02M_RTC_I2C_ADDR
+
+    wday=$(date -d "$dt" +%w 2>/dev/null) || wday=$(date +%w)
+    dow=$((wday + 1))
+
+    yr=$((y - 2000))
+    sec_hex=$(sa02m_rtc_int_to_bcd_hex "$s") || return 1
+    min_hex=$(sa02m_rtc_int_to_bcd_hex "$mi") || return 1
+    hr_hex=$(sa02m_rtc_int_to_bcd_hex "$h") || return 1
+    dom_hex=$(sa02m_rtc_int_to_bcd_hex "$d") || return 1
+    mo_hex=$(sa02m_rtc_int_to_bcd_hex "$mo") || return 1
+    yr_hex=$(sa02m_rtc_int_to_bcd_hex "$yr") || return 1
+
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x00 "$sec_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x01 "$min_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x02 "$hr_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x03 "$(sa02m_rtc_int_to_bcd_hex "$dow")" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x04 "$dom_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x05 "$mo_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x06 "$yr_hex" || return 1
+    return 0
+}
+
 # PCF8563: time regs 0x02..0x08 (sec..year) on some SA-02m boards.
 read_pcf8563_i2c_datetime() {
     local bus addr raw s m h dom mo y
@@ -145,6 +228,65 @@ read_pcf8563_i2c_datetime() {
     [ "$s" -le 59 ] 2>/dev/null || return 1
 
     printf '%04d-%02d-%02d %02d:%02d:%02d' "$y" "$mo" "$dom" "$h" "$m" "$s"
+    return 0
+}
+
+write_pcf8563_i2c_datetime() {
+    local dt=${1:-} y mo d h mi s bus addr ctrl wday yr
+    local sec_hex min_hex hr_hex dom_hex mo_hex yr_hex
+    if [ -z "$dt" ]; then
+        dt=$(date '+%Y-%m-%d %H:%M:%S') || return 1
+    fi
+    case "$dt" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
+        *) return 1 ;;
+    esac
+    y=${dt:0:4}
+    mo=${dt:5:2}
+    d=${dt:8:2}
+    h=${dt:11:2}
+    mi=${dt:14:2}
+    s=${dt:17:2}
+    mo=$((10#$mo))
+    d=$((10#$d))
+    h=$((10#$h))
+    mi=$((10#$mi))
+    s=$((10#$s))
+
+    sa02m_rtc_valid_ymd "$y" "$mo" "$d" || return 1
+    [ "$h" -le 23 ] 2>/dev/null || return 1
+    [ "$mi" -le 59 ] 2>/dev/null || return 1
+    [ "$s" -le 59 ] 2>/dev/null || return 1
+
+    sa02m_rtc_find_i2c_chip pcf8563 || return 1
+    bus=$SA02M_RTC_I2C_BUS
+    addr=$SA02M_RTC_I2C_ADDR
+
+    wday=$(date -d "$dt" +%w 2>/dev/null) || wday=$(date +%w)
+    dow=$((wday + 1))
+    yr=$((y - 2000))
+
+    sec_hex=$(sa02m_rtc_int_to_bcd_hex "$s") || return 1
+    min_hex=$(sa02m_rtc_int_to_bcd_hex "$mi") || return 1
+    hr_hex=$(sa02m_rtc_int_to_bcd_hex "$h") || return 1
+    dom_hex=$(sa02m_rtc_int_to_bcd_hex "$d") || return 1
+    mo_hex=$(sa02m_rtc_int_to_bcd_hex "$mo") || return 1
+    yr_hex=$(sa02m_rtc_int_to_bcd_hex "$yr") || return 1
+
+    ctrl=$(sa02m_rtc_i2c_read_reg "$bus" "$addr" 0x00) || ctrl=0x00
+    ctrl=$((16#${ctrl#0x}))
+    ctrl=$((ctrl | 0x20))
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x00 "$(printf '0x%02x' "$ctrl")" || return 1
+
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x02 "$sec_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x03 "$min_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x04 "$hr_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x05 "$dom_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x06 "$mo_hex" || return 1
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x07 "$yr_hex" || return 1
+
+    ctrl=$((ctrl & ~0x20))
+    sa02m_rtc_i2c_write_reg "$bus" "$addr" 0x00 "$(printf '0x%02x' "$ctrl")" || return 1
     return 0
 }
 
@@ -202,5 +344,21 @@ read_rtc_datetime() {
     fi
     read_ds3231_i2c_datetime && return 0
     read_pcf8563_i2c_datetime && return 0
+    return 1
+}
+
+# Write system clock → external RTC: hwclock on /dev/rtc1, else DS3231/PCF8563 over I2C.
+sync_rtc_from_system() {
+    local hc dev=/dev/rtc1
+    hc=$(command -v hwclock 2>/dev/null)
+    [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
+    if [ -c "$dev" ] && [ -n "$hc" ]; then
+        sa02m_rtc_timeout_run 12 "$hc" --systohc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
+        sleep 1
+        sa02m_rtc_timeout_run 12 "$hc" --systohc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    write_ds3231_i2c_datetime && return 0
+    write_pcf8563_i2c_datetime && return 0
     return 1
 }

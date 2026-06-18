@@ -214,6 +214,20 @@ if [ -n "$HWC" ] && [ -c /dev/rtc1 ]; then
   else
     logp "RTC: DS3231 year=${DS3231_YEAR:-?} invalid — keeping fake-hwclock time"
   fi
+elif [ -f /usr/local/lib/sa02m-lib-rtc.sh ]; then
+  # shellcheck source=/dev/null
+  . /usr/local/lib/sa02m-lib-rtc.sh
+  if DS3231_STR=$(read_rtc_datetime 2>/dev/null); then
+    DS3231_YEAR=${DS3231_STR%%-*}
+    if [ -n "$DS3231_YEAR" ] && [ "$DS3231_YEAR" -ge 2020 ] && \
+       [ "$DS3231_YEAR" -le 2035 ] 2>/dev/null; then
+      if date -s "$DS3231_STR" >/dev/null 2>&1; then
+        logp "RTC: DS3231 loaded via I2C — $(date '+%Y-%m-%d %H:%M:%S') (year=${DS3231_YEAR})"
+      fi
+    else
+      logp "RTC: DS3231 I2C year=${DS3231_YEAR:-?} invalid — keeping fake-hwclock time"
+    fi
+  fi
 fi
 # Point /dev/rtc symlink at the authoritative source (DS3231 when present).
 if [ -c "/dev/${HCTOSYS_DEVICE}" ]; then

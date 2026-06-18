@@ -1,3 +1,11 @@
+## [2026-06-18 18:05] branch: 1.0.3.29
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_rtc.sh`, `apply.cgi`, `etc/sa02m-rtc-sync.sh`, `etc/sa02m-pre-start.sh`, `scripts/01-system.sh`
+**Тип:** Некорректное поведение
+**Описание:** Запись системного времени в DS3231 и загрузка времени при старте не работали без `/dev/rtc1` (только чтение для веб-UI было исправлено ранее).
+**Причина:** `hwclock --systohc` и pre-start ожидали char-device rtc1; на ядре без `rtc-ds3231` запись и shutdown-sync пропускались.
+**Исправление:** `sync_rtc_from_system()` / запись BCD по I2C; apply.cgi и sa02m-rtc-sync используют общую библиотеку; pre-start читает DS3231 через I2C; install копирует lib в `/usr/local/lib/sa02m-lib-rtc.sh`.
+
 ## [2026-06-18 18:02] branch: 1.0.3.29
 
 **Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`

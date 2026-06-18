@@ -276,6 +276,12 @@ if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
     install -m 755 "$ETC_REPO/sa02m-rtc-sync.sh" /usr/local/sbin/sa02m-rtc-sync.sh
     install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.service" /etc/systemd/system/sa02m-rtc-sync.service
     install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.timer"   /etc/systemd/system/sa02m-rtc-sync.timer
+    WWW_RTC_LIB="$SCRIPT_DIR/../www/network_config/cgi-bin/lib_rtc.sh"
+    if [ -f "$WWW_RTC_LIB" ]; then
+        install -d -m 755 /usr/local/lib
+        install -m 755 "$WWW_RTC_LIB" /usr/local/lib/sa02m-lib-rtc.sh
+        log OK "sa02m-lib-rtc.sh установлен в /usr/local/lib"
+    fi
     sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
     sa02m_systemctl enable sa02m-rtc-sync.timer >> "$LOG_FILE" 2>&1 \
         && log OK "sa02m-rtc-sync.timer включён" \

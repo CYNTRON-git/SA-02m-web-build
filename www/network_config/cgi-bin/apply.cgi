@@ -82,6 +82,10 @@ if [ -n "$TIMEZONE" ]; then
 fi
 
 # ── System time + RTC ───────────────────────────────────────────────────────
+SCRIPT_DIR=$(dirname "$0")
+# shellcheck source=lib_rtc.sh
+. "$SCRIPT_DIR/lib_rtc.sh"
+
 apply_system_time() {
     local dt="$1"
     # При зависшем dbus timedatectl может не возвращаться → nginx 504; везде timeout.
@@ -99,14 +103,7 @@ apply_system_time() {
 }
 
 sync_hwclock_from_sys() {
-    # Только внешняя I2C RTC (/dev/rtc1); не трогаем встроенный rtc0.
-    hw_w() {
-        timeout_run 12 "$@" >/dev/null 2>&1
-    }
-    [ -c /dev/rtc1 ] || return 0
-    hw_w sudo -n /sbin/hwclock -w --rtc=/dev/rtc1 \
-        || hw_w sudo -n /usr/sbin/hwclock -w --rtc=/dev/rtc1 \
-        || true
+    timeout_run 12 sync_rtc_from_system >/dev/null 2>&1 || true
 }
 
 if [ -n "$DATETIME" ]; then
