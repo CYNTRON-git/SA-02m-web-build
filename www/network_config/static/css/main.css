@@ -182,19 +182,41 @@ html:not([data-theme="light"]) .topbar {
 .topbar-logo > div:last-child {
   min-width: 0;
 }
-.topbar-theme-wrap {
-  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-  margin-right: 4px;
-}
-.topbar-theme-label {
-  font-size: .76rem;
-  font-weight: 600;
+.topbar-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
   color: var(--text-sec);
-  line-height: 1.2;
-  white-space: nowrap;
-  letter-spacing: 0.02em;
+  font-size: .78rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
 }
-.topbar-theme-wrap object { display: block; cursor: pointer; pointer-events: auto; }
+.topbar-lang-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--cyan-btn);
+  box-shadow: var(--shadow);
+}
+.topbar-lang-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+#theme-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  flex-shrink: 0;
+}
 .topbar-branding {
   min-width: 0;
   font-weight: 700;
@@ -214,6 +236,7 @@ html:not([data-theme="light"]) .topbar {
   font-size: calc((.95rem * 2 - 2pt) / 2);
   font-weight: inherit;
   color: var(--text-sec);
+  margin-left: 0.45em;
 }
 .topbar-sep   { flex: 1; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
@@ -768,20 +791,20 @@ svg .gauge-num {
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
 
-/* Вкладка «Сеть»: два виджета Ethernet № 1 / № 2 (половина ширины вкладки) */
+/* Вкладка «Сеть»: два виджета Ethernet № 1 / № 2 (~60% ширины вкладки) */
 .network-eth-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
   align-items: stretch;
-  width: 50%;
-  max-width: 560px;
+  width: 62%;
+  max-width: 640px;
   min-width: 0;
 }
 .network-eth-grid.network-eth-grid-single {
   grid-template-columns: 1fr;
-  width: 25%;
-  max-width: 280px;
+  width: 35%;
+  max-width: 340px;
 }
 .network-eth-widget .widget-title {
   margin-bottom: 14px;
@@ -794,6 +817,7 @@ svg .gauge-num {
 }
 .network-eth-widget .btn-group {
   margin-top: 4px;
+  justify-content: flex-end;
 }
 @media (max-width: 960px) {
   .network-eth-grid,
@@ -1462,14 +1486,15 @@ svg .gauge-num {
 .flasher-table tr.flasher-device-config-row { cursor: pointer; }
 .flasher-sub { font-size: .7rem; color: var(--text-sec); }
 .flasher-fw-top-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 8px 0 10px;
 }
 .flasher-fw-top-actions > .btn,
 .flasher-fw-top-actions > .flasher-upload-label {
-  width: 100%;
+  flex: 1 1 12rem;
+  max-width: 100%;
   box-sizing: border-box;
   justify-content: center;
 }

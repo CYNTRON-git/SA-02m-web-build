@@ -119,10 +119,13 @@ function _buildContentArea() {
   if (!pane) return;
   pane.innerHTML = `
     <div class="page-header">
-      <h2>Шлюз RS-485 → Ethernet</h2>
-      <p>Преобразователь интерфейсов RS-485/TCP: Modbus TCP, RTU over TCP, прозрачный режим</p>
+      <h2 data-i18n="Шлюз RS-485 → Ethernet">Шлюз RS-485 → Ethernet</h2>
+      <p data-i18n="Преобразователь интерфейсов RS-485/TCP: Modbus TCP, RTU over TCP, прозрачный режим">Преобразователь интерфейсов RS-485/TCP: Modbus TCP, RTU over TCP, прозрачный режим</p>
     </div>
     <div id="gw-content"></div>`;
+  if (window.sa02mI18n && typeof window.sa02mI18n.applyDataI18n === 'function') {
+    window.sa02mI18n.applyDataI18n();
+  }
 }
 
 // ── Device panel ──────────────────────────────────────────────────────────────

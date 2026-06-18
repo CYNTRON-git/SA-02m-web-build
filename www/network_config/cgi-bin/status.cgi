@@ -158,39 +158,8 @@ load_serial_map_conf() {
 
 load_serial_map_conf
 
-read_rtc_datetime() {
-    local rtc=rtc1 rtc_d rtc_t raw hc cleaned
-    # СА-02м: только внешняя I2C RTC — rtc1 / /dev/rtc1 (встроенный rtc0 не читаем).
-    if [ -f "/sys/class/rtc/${rtc}/date" ] && [ -f "/sys/class/rtc/${rtc}/time" ]; then
-        IFS= read -r rtc_d < "/sys/class/rtc/${rtc}/date" 2>/dev/null || rtc_d=""
-        IFS= read -r rtc_t < "/sys/class/rtc/${rtc}/time" 2>/dev/null || rtc_t=""
-        if [ -n "${rtc_d:-}" ] && [ -n "${rtc_t:-}" ]; then
-            case "$rtc_d" in
-                1970-*) ;;
-                *)
-                    printf '%s %s' "$rtc_d" "$rtc_t"
-                    return 0
-                    ;;
-            esac
-        fi
-    fi
-    hc=$(command -v hwclock 2>/dev/null)
-    if [ -z "$hc" ] && command -v sudo >/dev/null 2>&1; then
-        hc=/usr/sbin/hwclock
-    fi
-    [ -n "$hc" ] || return 1
-    [ -c /dev/rtc1 ] || return 1
-    raw=$(timeout 2 "$hc" --show --rtc /dev/rtc1 2>/dev/null \
-          || timeout 2 sudo -n "$hc" --show --rtc /dev/rtc1 2>/dev/null) || return 1
-    [ -n "$raw" ] || return 1
-    cleaned=$(printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n')
-    [ -n "$cleaned" ] || return 1
-    case "$cleaned" in
-        1970-*) return 1 ;;
-    esac
-    printf '%s' "$cleaned"
-    return 0
-}
+# shellcheck source=lib_rtc.sh
+. "$SCRIPT_DIR/lib_rtc.sh"
 
 status_block_enabled() {
     case "$1" in

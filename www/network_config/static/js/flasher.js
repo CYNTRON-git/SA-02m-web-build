@@ -108,8 +108,9 @@
   }
 
   function toast(msg, type) {
-    if (window.toast) window.toast(msg, type || 'info', STATUS_AUTO_CLEAR_MS);
-    else console.log('[flasher]', msg);
+    const text = window.sa02mI18n ? window.sa02mI18n.t(String(msg)) : String(msg);
+    if (window.toast) window.toast(text, type || 'info', STATUS_AUTO_CLEAR_MS);
+    else console.log('[flasher]', text);
   }
 
   async function apiGet(path) {
@@ -271,6 +272,41 @@
   function firmwareEntryKey(entry) {
     if (!entry) return '';
     return `${entry.channel}::${entry.file}`;
+  }
+
+  function formatFirmwareSizeLabel(sizeBytes) {
+    const n = parseInt(sizeBytes, 10) || 0;
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    const kb = Math.max(1, Math.round(n / 1024));
+    return kb + ' kB';
+  }
+
+  function firmwareEntryDescription(entry) {
+    if (!entry) return '';
+    const kind = String(entry.kind || 'app').toLowerCase();
+    const product = firmwareProductKindFromEntry(entry);
+    const sizeStr = formatFirmwareSizeLabel(entry.size);
+    const channel = String(entry.channel || 'stable').trim();
+    const dlTag = isFirmwareEntryDownloaded(entry) ? '' : ' · не скачан';
+
+    if (product === 'dtv' && kind === 'bootloader') {
+      return `bootloader датчиков температуры и влажности ДТВ-RS-485 · ${sizeStr} · ${channel}`;
+    }
+    if (product === 'mr' && kind === 'bootloader') {
+      return `bootloader модулей расширения МР-02м · ${sizeStr} · ${channel}`;
+    }
+    if (product === 'dtv' && kind === 'app') {
+      return `Датчики температуры и влажности ДТВ-RS-485 · ${sizeStr} · ${channel}${dlTag}`;
+    }
+    if (product === 'mr' && kind === 'app') {
+      return `Модули расширения МР-02м · ${sizeStr} · ${channel}${dlTag}`;
+    }
+    const sig = (entry.signatures && entry.signatures.length)
+      ? entry.signatures.join(', ')
+      : 'все варианты MR-02м (общий образ)';
+    const kindTag = kind !== 'app' ? ` · ${kind}` : '';
+    return `${sig}${kindTag} · ${sizeStr} · ${channel}${dlTag}`;
   }
 
   function selectedFirmwareEntry() {
@@ -495,13 +531,8 @@
         const key = firmwareEntryKey(e);
         row.className = 'flasher-fw-row is-selectable';
         if (key === prevKey) row.classList.add('is-selected');
-        const sig = (e.signatures && e.signatures.length)
-          ? e.signatures.join(', ')
-          : 'все варианты MR-02м (общий образ)';
-        const kindTag = e.kind && e.kind !== 'app' ? ` · ${escapeHtml(e.kind)}` : '';
-        const dlTag = isFirmwareEntryDownloaded(e) ? '' : ' · не скачан';
         row.innerHTML = `<span class="flasher-fw-name">${escapeHtml(e.file)}</span>` +
-          `<span class="flasher-fw-meta">ver ${escapeHtml(e.version || '?')}${kindTag} · ${escapeHtml(sig)} · ${e.size || '?'} B · ${escapeHtml(e.channel)}${escapeHtml(dlTag)}</span>`;
+          `<span class="flasher-fw-meta">${escapeHtml(firmwareEntryDescription(e))}</span>`;
         row.addEventListener('click', () => {
           state.selectedFirmwareKey = state.selectedFirmwareKey === key ? '' : key;
           renderFirmware(data);
@@ -845,7 +876,33 @@
 
   /* ── Таблица устройств ────────────────────────────────────────────────── */
 
+  function deviceAddressNumeric(dev) {
+    const raw = dev && dev.address;
+    if (raw == null || raw === '—') return Number.MAX_SAFE_INTEGER;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+  }
+
+  function shouldSortDevicesTable() {
+    return !state.scanJobId && !state.scanPending;
+  }
+
+  function sortDevicesByAddress() {
+    const selectedKeys = selectedDeviceKeysFromIndices();
+    state.devices.sort((a, b) => {
+      const aa = deviceAddressNumeric(a);
+      const ab = deviceAddressNumeric(b);
+      if (aa !== ab) return aa - ab;
+      const ba = Number(a.baudrate) || 0;
+      const bb = Number(b.baudrate) || 0;
+      if (ba !== bb) return ba - bb;
+      return deviceSerialNumeric(a) - deviceSerialNumeric(b);
+    });
+    restoreSelectionByKeys(selectedKeys);
+  }
+
   function renderDevices() {
+    if (shouldSortDevicesTable()) sortDevicesByAddress();
     const tbody = $('flasher-devices-table').querySelector('tbody');
     tbody.innerHTML = '';
     if (!state.devices.length) {
@@ -2859,22 +2916,47 @@
 
   /* ── Прогресс/лог SSE ─────────────────────────────────────────────────── */
 
-  function logAppend(line, level) {
-    const box = $('flasher-log');
-    const ts = new Date().toLocaleTimeString();
-    const cls = level === 'error' ? 'log-err' : level === 'warn' ? 'log-warn' : level === 'debug' ? 'log-dim' : '';
+  const logBuffer = [];
+
+  function logLineText(line) {
+    return window.sa02mI18n ? window.sa02mI18n.t(String(line)) : String(line);
+  }
+
+  function renderLogRow(entry) {
+    const cls = entry.level === 'error' ? 'log-err' : entry.level === 'warn' ? 'log-warn' : entry.level === 'debug' ? 'log-dim' : '';
     const row = document.createElement('div');
     row.className = 'log-line ' + (cls || '');
-    row.textContent = `[${ts}] ${line}`;
-    box.appendChild(row);
+    row.dataset.logSrc = entry.line;
+    row.textContent = `[${entry.ts}] ${logLineText(entry.line)}`;
+    return row;
+  }
+
+  function logAppend(line, level) {
+    const box = $('flasher-log');
+    if (!box) return;
+    const ts = new Date().toLocaleTimeString();
+    const entry = { line: String(line), level: level || 'info', ts: ts };
+    logBuffer.push(entry);
+    box.appendChild(renderLogRow(entry));
     box.scrollTop = box.scrollHeight;
   }
 
   function logReset(title) {
+    logBuffer.length = 0;
     const box = $('flasher-log');
-    box.innerHTML = '';
+    if (box) box.innerHTML = '';
     if (title) logAppend(title, 'info');
   }
+
+  window.flasherRerenderLog = function () {
+    const box = $('flasher-log');
+    if (!box) return;
+    box.innerHTML = '';
+    logBuffer.forEach(function (entry) {
+      box.appendChild(renderLogRow(entry));
+    });
+    box.scrollTop = box.scrollHeight;
+  };
 
   function setProgress(pct, message) {
     const wrap = $('flasher-progress');
@@ -2885,29 +2967,39 @@
     }
     wrap.hidden = false;
     $('flasher-progress-fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
-    $('flasher-progress-label').textContent = message || `${pct}%`;
+    $('flasher-progress-label').textContent = message
+      ? (window.sa02mI18n ? window.sa02mI18n.t(String(message)) : String(message))
+      : `${pct}%`;
   }
 
   function hideProgress() {
     $('flasher-progress').hidden = true;
   }
 
+  let _lastScanStatus = null;
+
   function setScanStatus(msg, type) {
     const el = $('flasher-scan-status');
     if (!el) return;
     const key = 'flasher-scan-status';
     if (!msg) {
+      _lastScanStatus = null;
       cancelInlineStatusAutoClear(key);
       el.hidden = true;
       el.textContent = '';
       el.className = 'flasher-scan-status';
       return;
     }
+    _lastScanStatus = { msg: String(msg), type: type || '' };
     el.hidden = false;
-    el.textContent = msg;
+    el.textContent = window.sa02mI18n ? window.sa02mI18n.t(_lastScanStatus.msg) : _lastScanStatus.msg;
     el.className = 'flasher-scan-status' + (type ? ' ' + type : '');
     scheduleInlineStatusAutoClear(key, () => setScanStatus(''));
   }
+
+  window.flasherRerenderScanStatus = function () {
+    if (_lastScanStatus) setScanStatus(_lastScanStatus.msg, _lastScanStatus.type);
+  };
 
   function clearScanStatus() {
     setScanStatus('');
@@ -3087,17 +3179,6 @@
     return 0xFFFFFFFF;
   }
 
-  function sortDevicesBySerial() {
-    const selectedKeys = selectedDeviceKeysFromIndices();
-    state.devices.sort((a, b) => {
-      const sa = deviceSerialNumeric(a);
-      const sb = deviceSerialNumeric(b);
-      if (sa !== sb) return sa - sb;
-      return (Number(a.address) || 0) - (Number(b.address) || 0);
-    });
-    restoreSelectionByKeys(selectedKeys);
-  }
-
   /* ── Запуск сканирования ─────────────────────────────────────────────── */
 
   function scanConfigKeyFromBody(body) {
@@ -3169,7 +3250,6 @@
           try {
             const snap = await apiGet('/jobs/' + res.job_id);
             replaceScannedDevices((snap.devices || []).map(d => Object.assign({}, d)));
-            sortDevicesBySerial();
             renderDevices();
           } catch (_) {}
           const portRec = state.ports.find(p => p.key === body.port);

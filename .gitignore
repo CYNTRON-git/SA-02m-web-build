@@ -32,3 +32,4 @@ tools/imaging/out/
 tools/imaging/flash-media/
 # Temporary working directory
 .tmp/
+tmp/

@@ -6,7 +6,11 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.28';
+const APP_VERSION = '1.0.3.29';
+
+function uiT(s) {
+  return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
+}
 
 /** Текущий вариант платы (sa02m-1eth / sa02m-2eth) для видимости Ethernet № 2. */
 let _boardVariant = 'sa02m-1eth';
@@ -38,7 +42,10 @@ function switchTab(tab) {
     applyVariantVisibility(_boardVariant);
     loadConfig();
   }
-  if (tab === 'time') loadConfig();
+  if (tab === 'time') {
+    loadConfig();
+    refreshTimeReadouts();
+  }
   if (tab === 'flasher' && window.flasherInit) window.flasherInit();
   if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
   if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
@@ -63,6 +70,7 @@ function initNav() {
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
 function toast(msg, type = 'info', ms = 4000) {
+  const text = uiT(msg);
   let area = document.getElementById('toast-area');
   if (!area) {
     area = document.createElement('div');
@@ -72,7 +80,7 @@ function toast(msg, type = 'info', ms = 4000) {
   }
   const t = document.createElement('div');
   t.className = 'toast ' + type;
-  t.textContent = msg;
+  t.textContent = text;
   area.appendChild(t);
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; setTimeout(() => t.remove(), 400); }, ms);
 }
@@ -80,16 +88,16 @@ function toast(msg, type = 'info', ms = 4000) {
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 function fmtKB(kb) {
   kb = parseInt(kb) || 0;
-  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + ' ГБ';
-  if (kb >= 1024)    return (kb / 1024).toFixed(0) + ' МБ';
-  return kb + ' КБ';
+  if (kb >= 1048576) return (kb / 1048576).toFixed(1) + ' ' + uiT('ГБ');
+  if (kb >= 1024)    return (kb / 1024).toFixed(0) + ' ' + uiT('МБ');
+  return kb + ' ' + uiT('КБ');
 }
 function fmtBytes(b) {
   b = parseInt(b) || 0;
-  if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' ГБ';
-  if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' МБ';
-  if (b >= 1024)       return (b / 1024).toFixed(1) + ' КБ';
-  return b + ' Б';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' ' + uiT('ГБ');
+  if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' ' + uiT('МБ');
+  if (b >= 1024)       return (b / 1024).toFixed(1) + ' ' + uiT('КБ');
+  return b + ' ' + uiT('Б');
 }
 function fmtNum(n) {
   n = parseInt(n) || 0;
@@ -100,9 +108,9 @@ function fmtNum(n) {
 function fmtUptime(s) {
   s = parseInt(s) || 0;
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d) return d + 'д ' + h + 'ч ' + m + 'м';
-  if (h) return h + 'ч ' + m + 'м';
-  return m + 'м ' + (s % 60) + 'с';
+  if (d) return d + ' ' + uiT('д') + ' ' + h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
+  if (h) return h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
+  return m + ' ' + uiT('м') + ' ' + (s % 60) + ' ' + uiT('с');
 }
 
 /** Компактный аптайм для колонки «Службы» (короче, без секунд при наличии минут). */
@@ -110,10 +118,10 @@ function fmtUptimeSvc(s) {
   s = parseInt(s, 10) || 0;
   if (s <= 0) return '—';
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-  if (d) return d + 'д\u00a0' + h + 'ч';
-  if (h) return h + 'ч\u00a0' + m + 'м';
-  if (m) return m + 'м';
-  return s + 'с';
+  if (d) return d + ' ' + uiT('д') + ' ' + h + ' ' + uiT('ч');
+  if (h) return h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
+  if (m) return m + ' ' + uiT('м');
+  return s + ' ' + uiT('с');
 }
 
 /** Колонка аптайма в строке «Службы»: при активной службе и 0 с показываем «<1м». */
@@ -128,7 +136,7 @@ function setSvcRowUptime(elOrId, sec, active) {
   }
   if (s === 0) {
     if (active) {
-      el.textContent = '<1м';
+      el.textContent = uiT('<1м');
       el.removeAttribute('title');
     } else {
       el.textContent = '—';
@@ -234,7 +242,8 @@ function svcBadge(id, state) {
     return;
   }
   const ok = svcStateIsActive(state);
-  el.textContent = ok ? 'Активен' : 'Неактивен';
+  const ru = ok ? 'Активен' : 'Неактивен';
+  el.textContent = window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
   el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
 }
 
@@ -447,9 +456,9 @@ function applyRemovableDisk(mounted, base, d) {
   const free = d[base + '_free_kb'];
   const pct = parseInt(d[base + '_pct'], 10) || 0;
   setText(base + '-val', fmtKB(used));
-  setText(base + '-sub', 'из ' + fmtKB(total));
+  setText(base + '-sub', uiT('из') + ' ' + fmtKB(total));
   setText(base + '-pct', pct + '%');
-  setText(base + '-free', 'свободно ' + fmtKB(free));
+  setText(base + '-free', uiT('свободно') + ' ' + fmtKB(free));
   const bar = document.getElementById(base + '-bar');
   if (bar) {
     bar.style.width = pct + '%';
@@ -473,9 +482,9 @@ function applyPriorityStatus(d) {
   /* RAM */
   if (d.ram_used_kb !== undefined) {
     setText('ram-val', fmtKB(d.ram_used_kb));
-    setText('ram-sub', 'из ' + fmtKB(d.ram_total_kb));
+    setText('ram-sub', uiT('из') + ' ' + fmtKB(d.ram_total_kb));
     setText('ram-pct', d.ram_pct + '%');
-    setText('ram-free', 'свободно ' + fmtKB(d.ram_free_kb));
+    setText('ram-free', uiT('свободно') + ' ' + fmtKB(d.ram_free_kb));
     const ramBar = document.getElementById('ram-bar');
     if (ramBar) {
       ramBar.style.width = d.ram_pct + '%';
@@ -517,9 +526,9 @@ function applyPriorityStatus(d) {
   /* Disk */
   if (d.disk_used_kb !== undefined) {
     setText('disk-val', fmtKB(d.disk_used_kb));
-    setText('disk-sub', 'из ' + fmtKB(d.disk_total_kb));
+    setText('disk-sub', uiT('из') + ' ' + fmtKB(d.disk_total_kb));
     setText('disk-pct', d.disk_pct + '%');
-    setText('disk-free', 'свободно ' + fmtKB(d.disk_free_kb));
+    setText('disk-free', uiT('свободно') + ' ' + fmtKB(d.disk_free_kb));
     const diskBar = document.getElementById('disk-bar');
     if (diskBar) {
       diskBar.style.width = d.disk_pct + '%';
@@ -581,11 +590,25 @@ function applyUsbModem(d) {
 
 function applyTimeStatus(d) {
   if (d.datetime_sys) setText('time-sys-disp', d.datetime_sys);
-  if (document.getElementById('time-rtc-disp') && d.rtc_datetime !== undefined) {
-    const r = (d.rtc_datetime && String(d.rtc_datetime).trim()) ? String(d.rtc_datetime).trim() : '';
-    setText('time-rtc-disp', r || '—');
+  else if (d.datetime) setText('time-sys-disp', d.datetime);
+  if (document.getElementById('time-rtc-disp')) {
+    const rtc = (d.rtc_datetime !== undefined && d.rtc_datetime !== null)
+      ? String(d.rtc_datetime).trim()
+      : '';
+    setText('time-rtc-disp', rtc || '—');
   }
 }
+
+function refreshTimeReadouts() {
+  fetch('/cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
+    .then(r => r.json())
+    .then(d => {
+      applyTimeStatus({ datetime: d.datetime, rtc_datetime: d.rtc_datetime ?? '' });
+    })
+    .catch(() => {});
+}
+
+window.refreshTimeReadouts = refreshTimeReadouts;
 
 function applyUptimeStatus(d) {
   setText('uptime-val', d.uptime_str || fmtUptime(d.uptime_sec));
@@ -713,9 +736,36 @@ function setStorageAutoFormat(enabled) {
     });
 }
 
+let _lastMainStatus = null;
+let _lastServicesStatus = null;
+
 function applyServicesStatus(d) {
+  _lastServicesStatus = d;
   renderServicesDynamic(d);
 }
+
+window.refreshMainStatusI18n = function () {
+  if (_lastMainStatus) applyMainStatusBundle(_lastMainStatus);
+};
+
+window.refreshServicesDynamicI18n = function () {
+  if (_lastServicesStatus) renderServicesDynamic(_lastServicesStatus);
+};
+
+function deviceTitleRu(variant) {
+  return variant === 'sa02m-2eth'
+    ? 'Сервер автоматизации СА-02м-2'
+    : 'Сервер автоматизации СА-02м';
+}
+
+function applyDeviceTitle() {
+  const title = document.getElementById('device-title');
+  if (!title) return;
+  const ru = deviceTitleRu(_boardVariant);
+  title.textContent = window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
+}
+
+window.applyDeviceTitle = applyDeviceTitle;
 
 function applyVariantVisibility(variant) {
   const v = variant || 'sa02m-1eth';
@@ -729,11 +779,7 @@ function applyVariantVisibility(variant) {
     ethGrid.classList.toggle('network-eth-grid-single', v !== 'sa02m-2eth');
   }
   const title = document.getElementById('device-title');
-  if (title) {
-    title.textContent = v === 'sa02m-2eth'
-      ? 'Сервер автоматизации СА-02м-2'
-      : 'Сервер автоматизации СА-02м';
-  }
+  if (title) applyDeviceTitle();
   const netDesc = document.getElementById('network-page-desc');
   if (netDesc) {
     netDesc.textContent = v === 'sa02m-2eth'
@@ -829,6 +875,7 @@ function fetchDiskWidget() {
 }
 
 function applyMainStatusBundle(d) {
+  _lastMainStatus = d;
   applyStorageStatus(d);
   applyTimeStatus(d);
   applyUptimeStatus(d);
@@ -1614,19 +1661,23 @@ function svcCtlRowState(svc) {
   return svc.active || 'inactive';
 }
 
+let _lastSvcCtlData = null;
+
 function renderServicesControl(data) {
+  _lastSvcCtlData = data;
   const host = document.getElementById('svc-ctl-list');
   if (!host) return;
   const list = (data && data.services) || [];
   if (!list.length) {
-    host.innerHTML = '<p class="field-hint">Нет управляемых служб</p>';
+    host.innerHTML = '<p class="field-hint">' + (window.sa02mI18n ? window.sa02mI18n.t('Нет управляемых служб') : 'Нет управляемых служб') + '</p>';
     return;
   }
   host.innerHTML = '';
   list.forEach(function (svc, i) {
     const off = !!(svc.masked || svc.user_disabled);
     const action = off ? 'start' : 'stop';
-    const btnLabel = off ? 'Вкл' : 'Стоп';
+    const btnLabelRu = off ? 'Вкл' : 'Стоп';
+    const btnLabel = window.sa02mI18n ? window.sa02mI18n.t(btnLabelRu) : btnLabelRu;
     const btnClass = off ? 'btn btn-primary btn-sm svc-ctl-btn' : 'btn btn-warn btn-sm svc-ctl-btn';
 
     const r = document.createElement('div');
@@ -1660,6 +1711,10 @@ function renderServicesControl(data) {
     svcBadge(bid, svcCtlRowState(svc));
   });
 }
+
+window.refreshServicesControlI18n = function () {
+  if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
+};
 
 function loadServicesControl(forceToast) {
   const host = document.getElementById('svc-ctl-list');
@@ -1996,43 +2051,55 @@ function initWebCredsForm() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   THEME (SVG toggle в шапке)
+   THEME (кнопка в шапке, как gw-lwip)
    ══════════════════════════════════════════════════════════════════════════ */
-function syncThemeSwitcherVisual() {
-  const obj = document.getElementById('theme-obj');
-  if (!obj || !obj.contentDocument) return;
-  const sw = obj.contentDocument.getElementById('switcher');
-  if (!sw) return;
-  const light = document.documentElement.getAttribute('data-theme') === 'light';
-  sw.classList.remove('Dark', 'Light', 'Stop', 'Start');
-  sw.classList.add(light ? 'Light' : 'Dark', light ? 'Start' : 'Stop');
+const THEME_MOON_SVG = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M13 9A5.5 5.5 0 1 1 7 3a4 4 0 0 0 6 6z"/></svg>';
+const THEME_SUN_SVG = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="3"/><line x1="8" y1="1" x2="8" y2="2.5"/><line x1="8" y1="13.5" x2="8" y2="15"/><line x1="1" y1="8" x2="2.5" y2="8"/><line x1="13.5" y1="8" x2="15" y2="8"/><line x1="3.1" y1="3.1" x2="4.1" y2="4.1"/><line x1="11.9" y1="11.9" x2="12.9" y2="12.9"/><line x1="12.9" y1="3.1" x2="11.9" y2="4.1"/><line x1="4.1" y1="11.9" x2="3.1" y2="12.9"/></svg>';
+
+function themeTargetLabel(isDark) {
+  const ru = isDark ? 'Светлая' : 'Тёмная';
+  return window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
+}
+
+function updateThemeBtn() {
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  const icon = document.getElementById('theme-toggle-icon');
+  const label = document.getElementById('theme-toggle-label');
+  const btn = document.getElementById('theme-toggle');
+  if (icon) icon.innerHTML = isDark ? THEME_MOON_SVG : THEME_SUN_SVG;
+  if (label) label.textContent = themeTargetLabel(isDark);
+  if (btn) {
+    const en = window.sa02mI18n && window.sa02mI18n.lang === 'en';
+    btn.title = en ? 'Toggle theme' : 'Переключить тему';
+    btn.setAttribute('aria-label', en ? 'Toggle theme' : 'Переключить тему');
+  }
+}
+
+function applyTheme(theme) {
+  if (theme === 'light') {
+    document.documentElement.setAttribute('data-theme', 'light');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+    theme = 'dark';
+  }
+  try { localStorage.setItem('sa02m-theme', theme); } catch (_) {}
+  updateThemeBtn();
 }
 
 function initThemeToggle() {
-  const obj = document.getElementById('theme-obj');
-  if (!obj) return;
-  const bind = () => {
-    const doc = obj.contentDocument;
-    if (!doc) return;
-    const sw = doc.getElementById('switcher');
-    if (!sw) return;
-    sw.addEventListener('click', ev => {
-      ev.preventDefault();
-      const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-      if (isLight) {
-        document.documentElement.removeAttribute('data-theme');
-        try { localStorage.setItem('sa02m-theme', 'dark'); } catch (_) {}
-      } else {
-        document.documentElement.setAttribute('data-theme', 'light');
-        try { localStorage.setItem('sa02m-theme', 'light'); } catch (_) {}
-      }
-      syncThemeSwitcherVisual();
-    });
-    syncThemeSwitcherVisual();
-  };
-  if (obj.contentDocument && obj.contentDocument.getElementById('switcher')) bind();
-  else obj.addEventListener('load', bind, { once: true });
+  const btn = document.getElementById('theme-toggle');
+  if (!btn || btn.dataset.bound === '1') return;
+  btn.dataset.bound = '1';
+  let stored = 'dark';
+  try { stored = localStorage.getItem('sa02m-theme') || 'dark'; } catch (_) {}
+  applyTheme(stored === 'light' ? 'light' : 'dark');
+  btn.addEventListener('click', () => {
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+    applyTheme(isLight ? 'dark' : 'light');
+  });
 }
+
+window.updateThemeBtn = updateThemeBtn;
 
 /* ══════════════════════════════════════════════════════════════════════════
    HARDWARE VARIANT
@@ -2122,7 +2189,7 @@ async function applyVariant() {
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
   const verEl = document.getElementById('app-version');
-  if (verEl) verEl.textContent = '\tv' + APP_VERSION;
+  if (verEl) verEl.textContent = 'v' + APP_VERSION;
 
   initNav();
   applyVariantVisibility('sa02m-1eth');
