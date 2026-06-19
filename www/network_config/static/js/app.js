@@ -1643,16 +1643,17 @@ function usbPowerReset() {
           : USB_POWER_RESET_SEC_DEFAULT;
         setHwBlockStatus('Сброс питания на ' + sec + ' сек', 'success', (sec + 2) * 1000);
         applyHwChannel('hw-usb-st', 'usb_power', 0);
-        pendingUsbPowerVal = 1;
-        pendingUsbPowerUntil = Date.now() + (sec + 10) * 1000;
+        pendingUsbPowerVal = 0;
+        pendingUsbPowerUntil = Date.now() + (sec + 2) * 1000;
         bumpMainStatusEpoch();
         fetchMainBundle(true);
         window.setTimeout(function () {
-          applyHwChannel('hw-usb-st', 'usb_power', 1);
+          pendingUsbPowerVal = null;
+          pendingUsbPowerUntil = 0;
           if (btn) btn.disabled = false;
           bumpMainStatusEpoch();
           fetchMainBundle(true);
-        }, sec * 1000 + 300);
+        }, sec * 1000 + 500);
         return;
       }
       if (btn) btn.disabled = false;

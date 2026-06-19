@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-19 14:12] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Сброс» USB-питания отключала VBUS и не включала его обратно; статус показывал «ВКЛ» при реально выключенном питании.
+**Причина:** `gpioset` запускался через `sudo … &` — в pidfile попадал PID `sudo`, а не `gpioset`; при повторном включении старый `gpioset` не убивался (линия busy), state-файл обновлялся до «1» без реального удержания линии; UI оптимистично показывал ВКЛ через `pendingUsbPowerVal=1`.
+**Исправление:** Поиск/остановка всех `gpioset` по chip/line; ожидание и верификация holder перед commit; pid/state через `sudo tee`; read из cmdline живого gpioset; лог и patch кэша при OFF/ON в reset async; UI держит «ВЫКЛ» на время сброса и опрашивает сервер после 10 с.
+
+---
+
 ## [2026-06-19 15:28] branch: 1.0.3.31
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/js/i18n.js`, `www/network_config/index.html`

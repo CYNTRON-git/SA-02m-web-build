@@ -136,20 +136,108 @@ sa02m_hw_usb_gpiod_statefile() {
     printf '%s' "/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.state"
 }
 
-sa02m_hw_usb_gpiod_stop_holder() {
-    local pf pid
-    pf=$(sa02m_hw_usb_gpiod_pidfile)
-    [ -f "$pf" ] || return 0
-    pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
-    [[ "$pid" =~ ^[0-9]+$ ]] || { rm -f "$pf"; return 0; }
+# Найти gpioset-процессы, удерживающие нашу линию (chip/offset=value).
+sa02m_hw_usb_gpiod_foreach_holder() {
+    local chip line _gs_pid _gs_cmd _gs_val
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    [[ "$line" =~ ^[0-9]+$ ]] || return 0
+    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
+        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
+        [[ "$_gs_cmd" =~ gpioset ]] || continue
+        [[ "$_gs_cmd" =~ (^|[[:space:]])${chip}[[:space:]] ]] || continue
+        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
+            _gs_val="${BASH_REMATCH[2]}"
+            "$1" "$_gs_pid" "$_gs_val"
+        fi
+    done
+}
+
+sa02m_hw_usb_gpiod_kill_one_holder() {
+    local pid=$1
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
     sudo -n kill -TERM "$pid" 2>/dev/null || sudo kill -TERM "$pid" 2>/dev/null || true
-    sleep 0.08
+}
+
+sa02m_hw_usb_gpiod_kill_holders() {
+    local pf
+    pf=$(sa02m_hw_usb_gpiod_pidfile)
+    sa02m_hw_usb_gpiod_foreach_holder sa02m_hw_usb_gpiod_kill_one_holder
+    sleep 0.12
+    sa02m_hw_usb_gpiod_foreach_holder sa02m_hw_usb_gpiod_force_kill_one_holder
+    sudo -n rm -f "$pf" 2>/dev/null || sudo rm -f "$pf" 2>/dev/null || rm -f "$pf" 2>/dev/null || true
+}
+
+sa02m_hw_usb_gpiod_force_kill_one_holder() {
+    local pid=$1
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
     sudo -n kill -KILL "$pid" 2>/dev/null || sudo kill -KILL "$pid" 2>/dev/null || true
-    rm -f "$pf"
+}
+
+sa02m_hw_usb_gpiod_stop_holder() {
+    sa02m_hw_usb_gpiod_kill_holders
+    sleep 0.2
+}
+
+sa02m_hw_usb_gpiod_find_holder_pid_for_raw() {
+    local want_raw=$1 chip line _gs_pid _gs_cmd _gs_val
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    [[ "$line" =~ ^[0-9]+$ ]] || return 1
+    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
+        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
+        [[ "$_gs_cmd" =~ gpioset ]] || continue
+        [[ "$_gs_cmd" =~ (^|[[:space:]])${chip}[[:space:]] ]] || continue
+        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
+            _gs_val="${BASH_REMATCH[2]}"
+            if [ "$_gs_val" = "$want_raw" ]; then
+                printf '%s' "$_gs_pid"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+sa02m_hw_usb_gpiod_wait_holder() {
+    local want_raw=$1 tries=${2:-24} i holder_pid
+    [ "$want_raw" = "0" ] || [ "$want_raw" = "1" ] || return 1
+    for i in $(seq 1 "$tries"); do
+        if holder_pid=$(sa02m_hw_usb_gpiod_find_holder_pid_for_raw "$want_raw"); then
+            printf '%s' "$holder_pid"
+            return 0
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+
+sa02m_hw_usb_gpiod_commit_holder() {
+    local holder_pid=$1 raw=$2 pf sf cmd
+    pf=$(sa02m_hw_usb_gpiod_pidfile)
+    sf=$(sa02m_hw_usb_gpiod_statefile)
+    [[ "$holder_pid" =~ ^[0-9]+$ ]] || return 1
+    cmd=$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline" 2>/dev/null) || return 1
+    [[ "$cmd" =~ gpioset ]] || return 1
+    echo "$holder_pid" | sudo -n tee "$pf" >/dev/null 2>&1 \
+        || echo "$holder_pid" | sudo tee "$pf" >/dev/null 2>&1 \
+        || return 1
+    printf '%s' "$raw" | sudo -n tee "$sf" >/dev/null 2>&1 \
+        || printf '%s' "$raw" | sudo tee "$sf" >/dev/null 2>&1 \
+        || return 1
+    sudo -n chmod 644 "$pf" "$sf" 2>/dev/null || sudo chmod 644 "$pf" "$sf" 2>/dev/null || true
+    return 0
+}
+
+sa02m_hw_usb_gpiod_spawn_bg() {
+    if sudo -n "$@" </dev/null >/dev/null 2>&1 & then
+        return 0
+    fi
+    sudo "$@" </dev/null >/dev/null 2>&1 &
 }
 
 sa02m_hw_usb_gpiod_write() {
-    local logical=$1 chip line gs help pf sf raw
+    local logical=$1 chip line gs help pf sf raw holder_pid
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || return 1
@@ -163,57 +251,37 @@ sa02m_hw_usb_gpiod_write() {
     pf=$(sa02m_hw_usb_gpiod_pidfile)
     sf=$(sa02m_hw_usb_gpiod_statefile)
 
-    # Вспомогательная: записать PID и state-файл, вернуть 0.
-    _usb_gpiod_save_and_ok() {
-        echo $1 >"$pf" 2>/dev/null && chmod 644 "$pf" 2>/dev/null || true
-        printf '%s' "$raw" >"$sf" 2>/dev/null && chmod 644 "$sf" 2>/dev/null || true
-        return 0
+    _usb_gpiod_commit_after_spawn() {
+        holder_pid=$(sa02m_hw_usb_gpiod_wait_holder "$raw") || return 1
+        sa02m_hw_usb_gpiod_commit_holder "$holder_pid" "$raw"
     }
 
     if echo "$help" | grep -q -- '-m'; then
         # Предпочитаем -m signal: держит линию до SIGTERM/SIGINT, не падает от EOF stdin.
         # -m wait + /dev/null = немедленный выход, линия отпускается, питание гаснет.
         if echo "$help" | grep -qi 'signal'; then
-            if sudo -n "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                _usb_gpiod_save_and_ok $!; return 0
-            fi
-            if sudo "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                _usb_gpiod_save_and_ok $!; return 0
-            fi
+            sa02m_hw_usb_gpiod_spawn_bg "$gs" -m signal "$chip" "${line}=${raw}" \
+                && _usb_gpiod_commit_after_spawn && return 0
         fi
         if echo "$help" | grep -qi 'wait'; then
-            if sudo -n "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                _usb_gpiod_save_and_ok $!; return 0
-            fi
-            if sudo "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                _usb_gpiod_save_and_ok $!; return 0
-            fi
+            sa02m_hw_usb_gpiod_spawn_bg "$gs" -m wait "$chip" "${line}=${raw}" \
+                && _usb_gpiod_commit_after_spawn && return 0
         fi
         if echo "$help" | grep -qi 'time'; then
             if echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
-                if sudo -n "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    _usb_gpiod_save_and_ok $!; return 0
-                fi
-                if sudo "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    _usb_gpiod_save_and_ok $!; return 0
-                fi
+                sa02m_hw_usb_gpiod_spawn_bg "$gs" -m time -s 604800 "$chip" "${line}=${raw}" \
+                    && _usb_gpiod_commit_after_spawn && return 0
             fi
             if echo "$help" | grep -qi usec; then
-                if sudo -n "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    _usb_gpiod_save_and_ok $!; return 0
-                fi
-                if sudo "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-                    _usb_gpiod_save_and_ok $!; return 0
-                fi
+                sa02m_hw_usb_gpiod_spawn_bg "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" \
+                    && _usb_gpiod_commit_after_spawn && return 0
             fi
         fi
         # Не использовать -m exit: процесс завершается — линия часто отпускается (USB гаснет).
     fi
-    if sa02m_hw_timeout_run sudo -n "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
-        printf '%s' "$raw" >"$sf" 2>/dev/null || true; return 0
-    fi
-    if sa02m_hw_timeout_run sudo "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
-        printf '%s' "$raw" >"$sf" 2>/dev/null || true; return 0
+    if sa02m_hw_usb_gpiod_spawn_bg "$gs" "$chip" "${line}=${raw}" \
+        && _usb_gpiod_commit_after_spawn; then
+        return 0
     fi
     return 1
 }
@@ -235,40 +303,35 @@ sa02m_hw_usb_gpiod_read() {
         sa02m_hw_usb_line_to_user_logical "${BASH_REMATCH[2]}"
         return 0
     fi
-    # gpioget провалился (линия занята gpioset -m signal).
-    # Читаем последнее записанное raw-значение из state-файла.
+    # gpioget провалился (линия занята gpioset -m signal) — читаем из cmdline живого gpioset.
+    local _gs_pid _gs_cmd _gs_val
+    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
+        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
+        [[ "$_gs_cmd" =~ gpioset ]] || continue
+        [[ "$_gs_cmd" =~ (^|[[:space:]])${chip}[[:space:]] ]] || continue
+        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
+            _gs_val="${BASH_REMATCH[2]}"
+            case "$_gs_val" in
+                0|1)
+                    sa02m_hw_usb_gpiod_commit_holder "$_gs_pid" "$_gs_val" 2>/dev/null || true
+                    sa02m_hw_usb_line_to_user_logical "$_gs_val"
+                    return 0
+                    ;;
+            esac
+        fi
+    done
+    # Фоллбэк: pid/state только если процесс из pidfile жив и совпадает с gpioset.
     pf=$(sa02m_hw_usb_gpiod_pidfile)
     sf=$(sa02m_hw_usb_gpiod_statefile)
     if [ -f "$pf" ] && [ -f "$sf" ]; then
         pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
-        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        if [[ "$pid" =~ ^[0-9]+$ ]] && [ -r "/proc/${pid}/cmdline" ]; then
             v=$(tr -d ' \r\n\t' <"$sf" 2>/dev/null)
             case "$v" in
                 0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
             esac
         fi
     fi
-    # PID мёртв, но gpioget тоже упал — значит линия всё ещё занята:
-    # gpioset был переусыновлён PID 1 (sudo-родитель умер, gpioset жив).
-    # Если state-файл существует — доверяем последнему записанному значению.
-    if [ -f "$sf" ]; then
-        v=$(tr -d ' \r\n\t' <"$sf" 2>/dev/null)
-        case "$v" in
-            0|1) sa02m_hw_usb_line_to_user_logical "$v" ; return 0 ;;
-        esac
-    fi
-    # Финальный фоллбэк: ищем живой gpioset-процесс, удерживающий эту линию,
-    # и читаем значение из cmdline (например: "gpioset -m signal 0 268=1").
-    local _gs_pid _gs_cmd _gs_val
-    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
-        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
-        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
-            _gs_val="${BASH_REMATCH[2]}"
-            case "$_gs_val" in
-                0|1) sa02m_hw_usb_line_to_user_logical "$_gs_val"; return 0 ;;
-            esac
-        fi
-    done
     echo -1
 }
 
@@ -586,7 +649,7 @@ sa02m_hw_usb_power_reset_busy() {
 
 # Асинхронный сброс: VBUS off → sleep N s → on (как test_fb.cpp, без блокировки CGI).
 sa02m_hw_usb_power_reset_async() {
-    local sec lock=/run/lock/sa02m-usb-power-reset.lock
+    local sec lock=/run/lock/sa02m-usb-power-reset.lock log=/var/log/sa02m_install.log
     if sa02m_hw_usb_power_reset_busy; then
         return 2
     fi
@@ -596,9 +659,19 @@ sa02m_hw_usb_power_reset_async() {
     fi
     (
         trap 'rmdir "$lock" 2>/dev/null || true' EXIT
-        sa02m_hw_gpio_write_channel usb_power 0 || exit 1
+        if ! sa02m_hw_gpio_write_channel usb_power 0; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] usb_power reset: OFF failed" >>"$log" 2>&1
+            exit 1
+        fi
+        sa02m_hw_metrics_cache_patch_channel usb_power 0 2>/dev/null || true
         sleep "$sec"
-        sa02m_hw_gpio_write_channel usb_power 1 || exit 1
+        if ! sa02m_hw_gpio_write_channel usb_power 1; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] usb_power reset: ON failed after ${sec}s" >>"$log" 2>&1
+            sa02m_hw_metrics_cache_patch_channel usb_power 0 2>/dev/null || true
+            exit 1
+        fi
+        sa02m_hw_metrics_cache_patch_channel usb_power 1 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] usb_power reset: restored ON after ${sec}s" >>"$log" 2>&1
     ) >/dev/null 2>&1 &
     disown 2>/dev/null || true
     return 0
