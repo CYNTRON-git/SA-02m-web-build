@@ -409,12 +409,18 @@
     }
     const changed = added.concat(newlyDownloaded.filter(e =>
       !added.some(a => firmwareEntryKey(a) === firmwareEntryKey(e))
-    )).concat(updated.filter(e => {
+    )).concat(newlyUndownloaded).concat(updated.filter(e => {
       const key = firmwareEntryKey(e);
       return !added.some(a => firmwareEntryKey(a) === key)
         && !newlyDownloaded.some(a => firmwareEntryKey(a) === key);
     }));
-    if (!changed.length) return;
+    if (!changed.length) {
+      if (newlyUndownloaded.length || removed.length) {
+        renderFirmware();
+        updateFlashControls();
+      }
+      return;
+    }
     changed.forEach(e => promoteFirmwareEntry(e, false));
     promoteFirmwareEntry(pickFirmwareToAutoSelect(changed), true);
   }
