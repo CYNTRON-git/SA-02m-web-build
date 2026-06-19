@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-19 14:28] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`
+**Тип:** Некорректное поведение
+**Описание:** После «Очистить» файлы прошивок удалялись из кеша, но таблица в UI не обновлялась — записи оставались как скачанные, выбор не сбрасывался.
+**Причина:** UI полагался на отдельный GET `/firmware` после POST `/firmware/clear`; `applyFirmwareListChanges` не обрабатывал переход downloaded→false и удаление upload-записей; `isFirmwareEntryDownloaded()` для `local`/`upload` всегда возвращал true; API clear не возвращал актуальный список entries.
+**Исправление:** POST `/firmware/clear` возвращает полный status с entries; `clearFirmwareCache()` применяет ответ сразу и перерисовывает список; добавлены `applyFirmwareStatusPayload`, обработка newlyUndownloaded/removed; `isFirmwareEntryDownloaded` читает только `entry.downloaded`; в `list_entries()` синхронизация downloaded с диском.
+
+---
+
 ## [2026-06-19 14:04] branch: main
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/js/i18n.js`

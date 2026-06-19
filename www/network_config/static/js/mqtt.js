@@ -294,6 +294,21 @@ const _aiTypeEditGuardTimers = Object.create(null);
 const _aiTypePending = Object.create(null);
 const _AI_TYPE_EDIT_GUARD_MS = 450;
 let _unsaved = false;
+/** Выделенные строки таблицы «Устройства на шине» (id устройств). */
+let _selectedDeviceIds = new Set();
+
+function toggleDeviceListSelection(devId) {
+  if (!devId) return;
+  if (_selectedDeviceIds.has(devId)) _selectedDeviceIds.delete(devId);
+  else _selectedDeviceIds.add(devId);
+}
+
+function pruneDeviceListSelection() {
+  const ids = new Set((_config.devices || []).map(d => d.id));
+  for (const id of _selectedDeviceIds) {
+    if (!ids.has(id)) _selectedDeviceIds.delete(id);
+  }
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function h(tag, attrs, ...children) {
@@ -1062,6 +1077,7 @@ function refreshMonitorFilterOptions() {
 function renderDeviceList() {
   const tbody = document.getElementById('mqtt-device-tbody');
   if (!tbody) return;
+  pruneDeviceListSelection();
   tbody.innerHTML = '';
   refreshMonitorFilterOptions();
   for (const dev of _config.devices || []) {
@@ -1070,7 +1086,8 @@ function renderDeviceList() {
     const pollCount = countPollEnabled(dev);
     const comName = (dev.port || '').replace('/dev/', '');
     const topic = deviceTopicFilter(dev.id);
-    const tr = h('tr', {'data-device-id': dev.id},
+    const rowClass = 'is-selectable' + (_selectedDeviceIds.has(dev.id) ? ' is-selected' : '');
+    const tr = h('tr', {'data-device-id': dev.id, 'class': rowClass},
       h('td', {}, deviceTypeBadge(dev.type)),
       h('td', {}, formatDeviceDisplayName(dev)),
       h('td', {'class':'mono'}, comName),
@@ -1089,6 +1106,11 @@ function renderDeviceList() {
         h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, '✕ Удалить')
       )
     );
+    tr.addEventListener('click', (ev) => {
+      if (ev.target && ev.target.closest && ev.target.closest('button, input, select, label, a')) return;
+      toggleDeviceListSelection(dev.id);
+      renderDeviceList();
+    });
     tbody.appendChild(tr);
   }
 }
@@ -1706,6 +1728,7 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
 function removeDevice(id) {
   if (!confirm(`Удалить устройство ${id}?`)) return;
   _config.devices = _config.devices.filter(d => d.id !== id);
+  _selectedDeviceIds.delete(id);
   markUnsaved();
   renderDeviceList();
   renderAccordion();
