@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-19 16:13] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/mqtt_config.cgi`, `www/network_config/static/js/mqtt.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** При сохранении найденных MQTT-устройств — «Ошибка сохранения: неизвестная»; таблица устройств пустая, хотя в `/etc/sa02m-modbus-mqtt.yaml` уже есть mr02m-COM4-6/8.
+**Причина:** После деплоя DI-счётчиков `mqtt_config.cgi` получил `chmod 644` (не исполняемый); fcgiwrap/nginx возвращали HTTP 403 «Cannot get script name… is the script executable?». `loadConfig()` молча не загружал YAML; `saveAndApply()` через `.catch(() => null)` показывал «неизвестная» без текста ошибки.
+**Исправление:** `chmod 755` на CGI (install script уже 0755); git index `+x` для `mqtt_config.cgi`; `apiPost` возвращает `{ok:false,error:'HTTP N'}` при не-JSON/403; toast при сбое `loadConfig`; cache-bust mqtt.js `v=1.0.3.31-6`.
+
+---
+
 ## [2026-06-19 14:12] branch: 1.0.3.31
 
 **Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/static/js/app.js`

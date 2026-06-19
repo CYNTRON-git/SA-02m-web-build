@@ -863,7 +863,14 @@ async function apiPost(url, data) {
     headers:{'Content-Type':'application/json'},
     body: typeof data === 'string' ? data : JSON.stringify(data),
   });
-  return r.json();
+  const text = await r.text();
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch (_) { /* non-JSON (nginx 403 page) */ }
+  if (!r.ok) {
+    const err = (parsed && parsed.error) ? parsed.error : ('HTTP ' + r.status);
+    return { ok: false, error: err };
+  }
+  return parsed || { ok: false, error: 'invalid_response' };
 }
 
 // ── External MQTT credentials (tab UI) ───────────────────────────────────────
@@ -1058,7 +1065,10 @@ async function loadConfig() {
     }
     renderDeviceList();
     renderAccordion();
+    return;
   }
+  const msg = (data && data.error) ? data.error : 'не удалось загрузить конфигурацию (CGI недоступен)';
+  showToast('Ошибка загрузки MQTT: ' + msg, 'err');
 }
 
 // ── Device list table ─────────────────────────────────────────────────────────
@@ -1836,7 +1846,7 @@ async function saveAndApply() {
     normalizeMr02mAiPairsAll(dev);
   }
   const payload = Object.assign({}, _config, {restart: true});
-  const res = await apiPost('/cgi-bin/mqtt_config.cgi', payload).catch(() => null);
+  const res = await apiPost('/cgi-bin/mqtt_config.cgi', payload).catch(() => ({ ok: false, error: 'network' }));
 
   if (btn) { btn.disabled = false; btn.textContent = 'Сохранить и применить'; }
 
