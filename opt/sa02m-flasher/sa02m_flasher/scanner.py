@@ -1333,6 +1333,8 @@ def scan_all(
                 if cancel_cb and cancel_cb():
                     break
                 cfg_label = f"{cfg[0]} {cfg[1]}{cfg[2]}"
+                if progress_cb:
+                    progress_cb(0, f"Поиск на {cfg[0]}")
                 _, _, devices_from_wb = _broadcast_probe_bauds(
                     port,
                     [cfg],

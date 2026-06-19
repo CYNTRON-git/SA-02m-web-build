@@ -1,3 +1,27 @@
+## [2026-06-19 10:00] branch: 1.0.3.30
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/jobs.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`
+**Тип:** Логическая ошибка / падение
+**Описание:** Стандартное RS-485 сканирование падает с `TypeError: progress_cb() got an unexpected keyword argument 'address'`.
+**Причина:** `runner.py` после расширения progress-событий передаёт `address`, `baudrate`, `step`, `step_total` в `ctx["progress"]`, а `progress_cb` в `jobs.py` принимал только `(value, message)`; на устройстве был развёрнут обновлённый runner без jobs.py.
+**Исправление:** `progress_cb` принимает `**extra` и пробрасывает все не-None поля в SSE `data`; деплой jobs.py вместе с runner/scanner.
+
+## [2026-06-19 09:49] branch: 1.0.3.30
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/css/main.css`, `www/network_config/index.html`, `www/network_config/static/js/i18n.js`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/sa02m_flasher/jobs.py`
+**Тип:** Некорректное поведение
+**Описание:** При стандартном сканировании (диапазон адресов × несколько скоростей) в статус-баре не было видно текущего адреса и baud — только «Опрос адреса N» без скорости или неочевидный счётчик шагов.
+**Причина:** `sc_progress` в runner игнорировал конфиг линии (4-й аргумент) и не передавал baud в SSE; UI показывал только текст сообщения справа от полосы без отдельного блока «адрес + скорость».
+**Исправление:** Progress-события включают `address`, `baudrate`, `step`, `step_total`; сообщение «Адрес {addr}, {baud}»; слева от полосы — detail-текст, справа — `step/total` или %; режим арбитража (`fast`) без изменений.
+
+## [2026-06-19 09:47] branch: 1.0.3.30
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/css/main.css`, `www/network_config/static/js/i18n.js`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/sa02m_flasher/scanner.py`
+**Тип:** Некорректное поведение
+**Описание:** При быстром сканировании (арбитраж WB) в заголовке «Журнал операции» показывался прогресс-бар с неинформативным процентом вместо текущей скорости линии.
+**Причина:** UI всегда отображал progress bar; демон не отправлял события progress с номером скорости на фазе арбитража.
+**Исправление:** В режиме `fast` скрывается полоса прогресса, показывается текст «Поиск на {baud}»; scanner/runner шлют progress с этим сообщением при переключении скорости; добавлены i18n-ключи и CSS-класс `flasher-progress--arbitration`.
+
 ## [2026-06-18 18:05] branch: 1.0.3.29
 
 **Файл(ы):** `www/network_config/cgi-bin/lib_rtc.sh`, `apply.cgi`, `etc/sa02m-rtc-sync.sh`, `etc/sa02m-pre-start.sh`, `scripts/01-system.sh`

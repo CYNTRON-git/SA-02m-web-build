@@ -124,8 +124,20 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
     cancel_evt = ctx["cancel_evt"]
 
     log_cb(f"Скан {port_key} ({device_path}), {mode.value}", "info")
-    if is_port_poll_free(device_path):
-        progress_cb(0, f"Опрос адреса {addr_min}")
+    if mode == scn.ScanMode.EXTENDED_ONLY:
+        if is_port_poll_free(device_path):
+            first_baud = int(speed_configs[0][0]) if speed_configs else 0
+            progress_cb(0, f"Поиск на {first_baud}" if first_baud else "Поиск")
+        else:
+            progress_cb(0, "Подготовка порта")
+    elif is_port_poll_free(device_path):
+        first_baud = int(speed_configs[0][0]) if speed_configs else 0
+        progress_cb(
+            0,
+            f"Адрес {addr_min}, {first_baud}" if first_baud else f"Адрес {addr_min}",
+            address=addr_min,
+            baudrate=first_baud or None,
+        )
     else:
         progress_cb(0, "Подготовка порта")
 
@@ -143,12 +155,59 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
 
             addr_span = max(1, addr_max - addr_min + 1)
 
-            def sc_progress(current_addr: int = 0, *_rest, **_kw) -> None:
+            def _scan_step_pct(done: int, total: int) -> int:
                 try:
-                    val = int((max(0, int(current_addr) - addr_min) / addr_span) * 100)
+                    return int((int(done) / max(1, int(total))) * 100)
                 except Exception:
-                    val = 0
-                progress_cb(val, f"Опрос адреса {int(current_addr)}")
+                    return 0
+
+            def _scan_progress_message(addr: int, baud: int) -> str:
+                if baud:
+                    return f"Адрес {addr}, {baud}"
+                return f"Адрес {addr}"
+
+            def sc_progress(*args, **_kw) -> None:
+                if len(args) >= 2 and isinstance(args[1], str):
+                    progress_cb(int(args[0]), args[1])
+                    return
+                if len(args) >= 4:
+                    done, total, addr = int(args[0]), int(args[1]), int(args[2])
+                    cfg = args[3]
+                    baud = int(cfg[0]) if cfg else 0
+                    progress_cb(
+                        _scan_step_pct(done, total),
+                        _scan_progress_message(addr, baud),
+                        address=addr,
+                        baudrate=baud or None,
+                        step=done,
+                        step_total=total,
+                    )
+                    return
+                if len(args) >= 3:
+                    done, total, addr = int(args[0]), int(args[1]), int(args[2])
+                    first_baud = int(speed_configs[0][0]) if speed_configs else 0
+                    progress_cb(
+                        _scan_step_pct(done, total),
+                        _scan_progress_message(addr, first_baud),
+                        address=addr,
+                        baudrate=first_baud or None,
+                        step=done,
+                        step_total=total,
+                    )
+                    return
+                if len(args) >= 1:
+                    try:
+                        val = int((max(0, int(args[0]) - addr_min) / addr_span) * 100)
+                    except Exception:
+                        val = 0
+                    first_baud = int(speed_configs[0][0]) if speed_configs else 0
+                    addr = int(args[0])
+                    progress_cb(
+                        val,
+                        _scan_progress_message(addr, first_baud),
+                        address=addr,
+                        baudrate=first_baud or None,
+                    )
 
             def sc_found(dev: scn.DeviceInfo) -> None:
                 device_found_cb(_device_to_dict(dev))

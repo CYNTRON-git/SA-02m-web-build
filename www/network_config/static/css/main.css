@@ -1423,12 +1423,60 @@ svg .gauge-num {
   min-height: 1.2em;
 }
 
+.flasher-log-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.flasher-log-title > span {
+  flex: 0 0 auto;
+}
+.flasher-log-head-status {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  text-align: right;
+}
+.flasher-log-head-status .flasher-progress {
+  margin-top: 0;
+  width: min(240px, 100%);
+  align-self: flex-end;
+}
+.flasher-log-head-status .flasher-scan-status {
+  margin-top: 0;
+  text-align: right;
+}
+
 .flasher-progress {
   margin-top: 12px;
-  display: flex; flex-direction: column; gap: 4px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
 }
 .flasher-progress[hidden] {
   display: none !important;
+}
+.flasher-progress-detail {
+  flex: 0 0 auto;
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--cyan);
+  white-space: nowrap;
+  text-align: left;
+}
+.flasher-progress-detail[hidden] {
+  display: none !important;
+}
+.flasher-progress-track {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .flasher-progress-bar {
   width: 100%; height: 8px; background: var(--bg-panel);
@@ -1440,7 +1488,26 @@ svg .gauge-num {
   background: var(--cyan); transition: width .2s linear;
 }
 .flasher-progress-label {
-  font-size: .78rem; color: var(--text-sec);
+  flex: 0 0 auto;
+  min-width: 2.5em;
+  font-size: .78rem;
+  color: var(--text-sec);
+  text-align: right;
+}
+.flasher-progress--arbitration {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.flasher-progress--arbitration .flasher-progress-detail,
+.flasher-progress--arbitration .flasher-progress-track {
+  display: none;
+}
+.flasher-progress--arbitration .flasher-progress-label {
+  font-size: .82rem;
+  font-weight: 500;
+  color: var(--cyan);
+  min-width: 0;
 }
 
 .flasher-scan-status {

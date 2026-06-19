@@ -255,13 +255,17 @@ class JobManager:
         def log_cb(msg: str, level: str = "info", data: Optional[Dict[str, Any]] = None) -> None:
             mgr._emit(job, "log", level, str(msg), data=data or {})
 
-        def progress_cb(value: int, message: str = "") -> None:
+        def progress_cb(value: int, message: str = "", **extra: Any) -> None:
             value = max(0, min(100, int(value)))
+            data: Dict[str, Any] = {"progress": value}
+            for key, val in extra.items():
+                if val is not None:
+                    data[key] = val
             with mgr._lock:
                 job.progress = value
                 if message:
                     job.message = message
-            mgr._emit(job, "progress", "info", message or "", data={"progress": value})
+            mgr._emit(job, "progress", "info", message or "", data=data)
 
         def device_found_cb(device: Dict[str, Any]) -> None:
             with mgr._lock:

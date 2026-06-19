@@ -34,6 +34,7 @@
     configPollTimer: null,
     configNetworkDirty: false,
     configPortReleased: false,
+    scanArbitrationActive: false,
   };
 
   // Счётчик поколений опроса: позволяет отбросить устаревший ответ, если
@@ -2958,23 +2959,108 @@
     box.scrollTop = box.scrollHeight;
   };
 
-  function setProgress(pct, message) {
+  let _lastProgress = null;
+
+  function translateProgressMessage(message) {
+    return message
+      ? (window.sa02mI18n ? window.sa02mI18n.t(String(message)) : String(message))
+      : '';
+  }
+
+  function progressMetaFromData(data) {
+    const d = data && typeof data === 'object' ? data : {};
+    const meta = {};
+    if (d.address != null && d.address !== '') meta.address = Number(d.address);
+    if (d.baudrate != null && d.baudrate !== '') meta.baudrate = Number(d.baudrate);
+    if (d.step != null && d.step !== '') meta.step = Number(d.step);
+    if (d.step_total != null && d.step_total !== '') meta.stepTotal = Number(d.step_total);
+    return meta;
+  }
+
+  function formatStandardScanDetail(meta, message) {
+    const addr = meta && Number.isFinite(meta.address) ? meta.address : null;
+    const baud = meta && Number.isFinite(meta.baudrate) ? meta.baudrate : null;
+    if (addr != null && baud != null) {
+      return translateProgressMessage(`Адрес ${addr}, ${baud}`);
+    }
+    if (message) return translateProgressMessage(message);
+    return '';
+  }
+
+  function isScanArbitrationUi() {
+    return state.scanArbitrationActive && (state.scanPending || state.scanJobId);
+  }
+
+  function isStandardScanUi() {
+    return (state.scanPending || state.scanJobId) && !isScanArbitrationUi();
+  }
+
+  function setProgress(pct, message, meta) {
     const wrap = $('flasher-progress');
     const active = state.scanPending || state.scanJobId || state.flashPending || state.flashJobId;
     if (!active) {
       hideProgress();
       return;
     }
+    const arbitration = isScanArbitrationUi();
+    const standardScan = isStandardScanUi();
+    const progressMeta = meta || {};
+    _lastProgress = { pct, message, meta: progressMeta, arbitration, standardScan };
     wrap.hidden = false;
-    $('flasher-progress-fill').style.width = Math.max(0, Math.min(100, pct)) + '%';
-    $('flasher-progress-label').textContent = message
-      ? (window.sa02mI18n ? window.sa02mI18n.t(String(message)) : String(message))
-      : `${pct}%`;
+    wrap.classList.toggle('flasher-progress--arbitration', arbitration);
+    const detailEl = $('flasher-progress-detail');
+    const label = $('flasher-progress-label');
+    const msg = translateProgressMessage(message);
+    if (arbitration) {
+      if (detailEl) detailEl.hidden = true;
+      label.textContent = msg || translateProgressMessage('Поиск');
+      return;
+    }
+    const clamped = Math.max(0, Math.min(100, pct));
+    $('flasher-progress-fill').style.width = clamped + '%';
+    if (standardScan) {
+      const detailText = formatStandardScanDetail(progressMeta, message);
+      if (detailEl) {
+        if (detailText) {
+          detailEl.hidden = false;
+          detailEl.textContent = detailText;
+        } else {
+          detailEl.hidden = true;
+          detailEl.textContent = '';
+        }
+      }
+      if (Number.isFinite(progressMeta.step) && Number.isFinite(progressMeta.stepTotal) && progressMeta.stepTotal > 0) {
+        label.textContent = `${progressMeta.step}/${progressMeta.stepTotal}`;
+      } else {
+        label.textContent = `${clamped}%`;
+      }
+      return;
+    }
+    if (detailEl) {
+      detailEl.hidden = true;
+      detailEl.textContent = '';
+    }
+    label.textContent = msg || `${clamped}%`;
   }
 
   function hideProgress() {
-    $('flasher-progress').hidden = true;
+    const wrap = $('flasher-progress');
+    wrap.hidden = true;
+    wrap.classList.remove('flasher-progress--arbitration');
+    const detailEl = $('flasher-progress-detail');
+    if (detailEl) {
+      detailEl.hidden = true;
+      detailEl.textContent = '';
+    }
+    _lastProgress = null;
+    state.scanArbitrationActive = false;
   }
+
+  window.flasherRerenderProgress = function () {
+    if (_lastProgress) {
+      setProgress(_lastProgress.pct, _lastProgress.message, _lastProgress.meta || {});
+    }
+  };
 
   let _lastScanStatus = null;
 
@@ -3033,7 +3119,7 @@
       try {
         const snap = await apiGet('/jobs/' + jobId);
         if (typeof snap.progress === 'number') {
-          setProgress(snap.progress, snap.message || `${snap.progress}%`);
+          setProgress(snap.progress, snap.message || `${snap.progress}%`, progressMetaFromData(snap));
         }
         const st = snap.state;
         if (st === 'running' || st === 'pending') return;
@@ -3067,8 +3153,9 @@
     es.addEventListener('progress', ev => {
       const p = safeParse(ev.data);
       if (!p) return;
-      const pct = (p.data && typeof p.data.progress === 'number') ? p.data.progress : 0;
-      setProgress(pct, p.message || '');
+      const d = p.data || {};
+      const pct = (typeof d.progress === 'number') ? d.progress : 0;
+      setProgress(pct, p.message || '', progressMetaFromData(d));
     });
     es.addEventListener('device_found', ev => {
       const p = safeParse(ev.data);
@@ -3230,8 +3317,26 @@
     renderDevices();
     clearScanStatus();
     state.scanPending = true;
+    state.scanArbitrationActive = body.mode === 'fast';
     logReset(logIntro + ' на ' + body.port);
-    setProgress(0, portReadyForScan(body.port) ? 'Сканирование' : 'Подготовка порта');
+    if (body.mode === 'fast') {
+      const bauds = (body.baudrates || []).slice().sort((a, b) => b - a);
+      setProgress(0, portReadyForScan(body.port)
+        ? (bauds.length ? `Поиск на ${bauds[0]}` : 'Поиск')
+        : 'Подготовка порта');
+    } else {
+      const addrMin = body.addr_min || 1;
+      const bauds = (body.baudrates || []).slice().sort((a, b) => b - a);
+      const firstBaud = bauds.length ? bauds[0] : 0;
+      if (portReadyForScan(body.port)) {
+        setProgress(0, firstBaud ? `Адрес ${addrMin}, ${firstBaud}` : `Адрес ${addrMin}`, {
+          address: addrMin,
+          baudrate: firstBaud || undefined,
+        });
+      } else {
+        setProgress(0, 'Подготовка порта');
+      }
+    }
     setScanButtons();
 
     try {

@@ -156,6 +156,9 @@
     'Скорости': 'Baud Rates',
     'Можно выбрать сразу несколько скоростей.': 'Multiple baud rates can be selected.',
     'Режим поиска': 'Scan Mode',
+    'Подготовка порта': 'Preparing port',
+    'Сканирование': 'Scanning',
+    'Поиск': 'Searching',
     'Стандартный (адресный)': 'Standard (addressed)',
     'Быстрый Modbus (Арбитраж)': 'Fast Modbus (arbitration)',
     'Диапазон адресов': 'Address Range',
@@ -493,6 +496,10 @@
     [/^Сканирование отменено$/u, 'Scan cancelled'],
     [/^Сканирование: (.+)$/u, 'Scanning: $1'],
     [/^Сканирование уже выполняется$/u, 'Scan already in progress'],
+    [/^Поиск на (\d+)$/u, 'Searching at $1'],
+    [/^Адрес (\d+), (\d+)$/u, 'Address $1, $2'],
+    [/^Адрес (\d+)$/u, 'Address $1'],
+    [/^Опрос адреса (\d+)$/u, 'Polling address $1'],
     [/^Старт сканирования$/u, 'Scan started'],
   ];
 
@@ -618,6 +625,7 @@
     if (typeof window.refreshMainStatusI18n === 'function') window.refreshMainStatusI18n();
     if (typeof window.flasherRerenderLog === 'function') window.flasherRerenderLog();
     if (typeof window.flasherRerenderScanStatus === 'function') window.flasherRerenderScanStatus();
+    if (typeof window.flasherRerenderProgress === 'function') window.flasherRerenderProgress();
     const userName = document.getElementById('topbar-user-name');
     if (userName) userName.textContent = 'admin';
   }

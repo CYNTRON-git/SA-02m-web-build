@@ -600,7 +600,19 @@
             </div>
 
             <div class="widget">
-              <div class="widget-title">Журнал операции</div>
+              <div class="widget-title flasher-log-title">
+                <span data-i18n="Журнал операции">Журнал операции</span>
+                <div class="flasher-log-head-status">
+                  <div id="flasher-scan-status" class="flasher-scan-status" hidden aria-live="polite"></div>
+                  <div class="flasher-progress" id="flasher-progress" hidden>
+                    <div class="flasher-progress-detail" id="flasher-progress-detail" hidden aria-live="polite"></div>
+                    <div class="flasher-progress-track">
+                      <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
+                    </div>
+                    <div class="flasher-progress-label" id="flasher-progress-label">—</div>
+                  </div>
+                </div>
+              </div>
               <div class="log-box flasher-log-box" id="flasher-log">Ожидание операции…</div>
             </div>
           </div>
@@ -654,11 +666,6 @@
                     Отмена
                   </button>
                 </div>
-                <div class="flasher-progress" id="flasher-progress" hidden>
-                  <div class="flasher-progress-bar"><span id="flasher-progress-fill" style="width:0%"></span></div>
-                  <div class="flasher-progress-label" id="flasher-progress-label">—</div>
-                </div>
-                <div id="flasher-scan-status" class="flasher-scan-status" hidden aria-live="polite"></div>
               </div>
               </div>
 
