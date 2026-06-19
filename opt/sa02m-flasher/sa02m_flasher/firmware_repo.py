@@ -150,42 +150,100 @@ def _sha256_of(path: Path) -> str:
     return h.hexdigest()
 
 
+NO_INTERNET_USER_MSG = "Нет доступа к интернету"
+
+
+def _network_exc_root(exc: Exception) -> Exception:
+    """Развернуть цепочку __cause__ / __context__ до исходной сетевой ошибки."""
+    seen: set[int] = set()
+    cur: BaseException = exc
+    while id(cur) not in seen:
+        seen.add(id(cur))
+        nxt = cur.__cause__ or cur.__context__
+        if nxt is None or not isinstance(nxt, Exception):
+            break
+        cur = nxt
+    return cur  # type: ignore[return-value]
+
+
+def _is_offline_network_error(exc: Exception) -> bool:
+    """True, если ошибка типична для отсутствия интернета / DNS / маршрута."""
+    root = _network_exc_root(exc)
+    msg = str(root).strip().lower()
+    if isinstance(root, urllib.error.HTTPError) and root.code in (502, 503, 504):
+        return True
+    if isinstance(root, urllib.error.URLError):
+        reason = root.reason
+        if isinstance(reason, OSError):
+            if reason.errno in (-2, -3, -5, 101, 111, 113):
+                return True
+            rmsg = str(reason).lower()
+            if any(
+                token in rmsg
+                for token in (
+                    "temporary failure in name resolution",
+                    "name or service not known",
+                    "network is unreachable",
+                    "no route to host",
+                    "connection refused",
+                    "connection timed out",
+                )
+            ):
+                return True
+        if isinstance(reason, str) and any(
+            token in reason.lower() for token in ("timed out", "timeout")
+        ):
+            return True
+    if any(
+        token in msg
+        for token in (
+            "temporary failure in name resolution",
+            "name or service not known",
+            "network is unreachable",
+            "no route to host",
+            "connection refused",
+            "connection timed out",
+            "timed out",
+            "timeout",
+        )
+    ):
+        return True
+    return False
+
+
 def _format_network_error(exc: Exception, *, url: str = "") -> str:
     """Понятное сообщение об ошибке скачивания (RU) для UI и логов."""
-    msg = str(exc).strip()
+    if _is_offline_network_error(exc):
+        return NO_INTERNET_USER_MSG
+
+    root = _network_exc_root(exc)
+    msg = str(root).strip()
     low = msg.lower()
-    host = ""
-    if url:
-        try:
-            host = urllib.parse.urlparse(url).hostname or ""
-        except Exception:
-            host = ""
-    if isinstance(exc, urllib.error.URLError):
-        reason = exc.reason
+
+    if isinstance(root, urllib.error.HTTPError):
+        code = int(getattr(root, "code", 0) or 0)
+        if code == 404:
+            return "Файл прошивки не найден на сервере"
+        if code == 403:
+            return "Доступ к серверу прошивок запрещён"
+        if 400 <= code < 500:
+            return f"Сервер прошивок отклонил запрос ({code})"
+        if code >= 500:
+            return f"Сервер прошивок временно недоступен ({code})"
+
+    if isinstance(root, urllib.error.URLError):
+        reason = root.reason
         if isinstance(reason, OSError) and reason.errno in (-2, -3):
-            hint = (
-                "Не удалось разрешить имя сервера прошивок"
-                + (f" ({host})" if host else "")
-                + ". Проверьте DNS на шлюзе: при раздаче интернета с ПК (ICS) "
-                "укажите nameserver = IP ПК-шлюза (например 192.168.1.5), "
-                "либо загрузите .fw через «Выбрать .fw» / выберите уже скачанный файл."
-            )
-            return hint
+            return NO_INTERNET_USER_MSG
         if "timed out" in low or "timeout" in low:
-            return (
-                "Таймаут при скачивании с сервера прошивок. "
-                "Проверьте доступ в интернет или загрузите .fw вручную."
-            )
+            return NO_INTERNET_USER_MSG
+
     if "temporary failure in name resolution" in low or "name or service not known" in low:
-        return (
-            "DNS не разрешает имя сервера прошивок"
-            + (f" ({host})" if host else "")
-            + ". При ICS с ПК добавьте nameserver IP шлюза в /etc/resolv.conf "
-            "или загрузите файл прошивки через веб-интерфейс."
-        )
+        return NO_INTERNET_USER_MSG
+
     if url:
-        return f"Ошибка скачивания {url}: {msg}"
-    return msg or "Ошибка скачивания прошивки"
+        return f"Не удалось скачать прошивку с сервера"
+    return msg or "Не удалось скачать прошивку"
 
 
 def _http_get(url: str, *, timeout: float = HTTP_TIMEOUT_S, retries: int = 2) -> bytes:
@@ -283,11 +341,12 @@ class FirmwareRepo:
         try:
             data = json.loads(raw.decode("utf-8", errors="replace"))
         except Exception as exc:
-            self._manifest_error = f"JSON: {exc}"
+            self._manifest_error = "Некорректный ответ сервера прошивок"
             status["error"] = self._manifest_error
+            log.warning("Манифест: ошибка JSON: %s", exc)
             return status
         if not self._apply_manifest(data):
-            self._manifest_error = "Некорректный формат манифеста"
+            self._manifest_error = "Некорректный формат списка прошивок"
             status["error"] = self._manifest_error
             return status
         self._manifest_error = ""

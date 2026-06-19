@@ -61,6 +61,9 @@ mkdir -p "$CACHE_DIR" 2>/dev/null || true
 if [[ "${QUERY_STRING:-}" == *part=main* ]] && [[ "${QUERY_STRING:-}" == *no_cache=1* ]]; then
     rm -f "${CACHE_DIR}/main.json" "${CACHE_DIR}/main.json.lock" 2>/dev/null || true
 fi
+if [[ "${QUERY_STRING:-}" == *part=rs485* ]] && [[ "${QUERY_STRING:-}" == *no_cache=1* ]]; then
+    rm -f "${CACHE_DIR}/rs485.json" "${CACHE_DIR}/rs485.json.lock" 2>/dev/null || true
+fi
 OPTIONAL_SVCS_JSON="[]"
 SVC_NGINX_UPTIME_S=0
 SVC_FCGIWRAP_UPTIME_S=0
@@ -104,6 +107,15 @@ cache_print_or_build() {
             fi
         else
             exec 8>&-
+            # Кэш уже протух — не отдаём stale при таймауте flock; пересобираем без блокировки.
+            tmp="${file}.$$"
+            if "$builder" > "$tmp"; then
+                mv "$tmp" "$file" 2>/dev/null || cp "$tmp" "$file" 2>/dev/null
+                cat "$file"
+                rm -f "$tmp"
+                return 0
+            fi
+            rm -f "$tmp"
             if [ -f "$file" ]; then
                 cat "$file"
                 return 0
@@ -501,7 +513,8 @@ iface_ipv4_addr() {
 }
 
 iface_mode() {
-    local iface=$1 conf="/etc/network/interfaces.d/${iface}.conf"
+    local iface=$1
+    local conf="/etc/network/interfaces.d/${iface}.conf"
     [ -f "$conf" ] || { echo "unknown"; return; }
     if grep -qiE "iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]+dhcp" "$conf" 2>/dev/null; then
         echo "dhcp"; return
@@ -555,7 +568,22 @@ root_disk_usage_kb() {
 }
 
 root_disk_device() {
-    df / 2>/dev/null | awk 'NR==2{gsub(/[0-9]+$/,"",$1); print $1}' | xargs basename 2>/dev/null
+    local root_src dev resolved
+    root_src=$(findmnt -n -o SOURCE / 2>/dev/null | head -1)
+    if [ -z "$root_src" ]; then
+        root_src=$(df / 2>/dev/null | awk 'NR==2{print $1}')
+    fi
+    [ -z "$root_src" ] && return 1
+
+    resolved=$(readlink -f "$root_src" 2>/dev/null) || resolved="$root_src"
+    dev=$(basename "$resolved")
+
+    case "$dev" in
+        mmcblk*|nvme*) dev=${dev%%p*} ;;
+        sd[a-z]*|vd[a-z]*|hd[a-z]*|xvd[a-z]*) dev=${dev%%[0-9]*} ;;
+    esac
+
+    printf '%s\n' "$dev"
 }
 
 removable_mounted() {
@@ -622,14 +650,69 @@ i2c_expander_absent() {
 }
 
 # ── RS-485 serial statistics ──────────────────────────────────────────────────
-SERIAL_DRIVER_FILES=""
+RS485_STATS_HELPER="${RS485_STATS_HELPER:-/usr/local/sbin/sa02m-rs485-stats.sh}"
+# www-data не может читать каталог /proc/tty/driver — glob даёт пустой список.
+SERIAL_DRIVER_FILES=(/proc/tty/driver/serial)
 for _f in /proc/tty/driver/*; do
-    [ -f "$_f" ] && SERIAL_DRIVER_FILES="$SERIAL_DRIVER_FILES $_f"
+    [ -f "$_f" ] || continue
+    case " ${_f} " in
+        *" $_f "*) ;;
+        *) SERIAL_DRIVER_FILES+=("$_f") ;;
+    esac
 done
+
+rs485_driver_serial_text() {
+    local f=$1 text=""
+    [ -n "$f" ] || return 1
+    # -r врёт для www-data (каталог /proc/tty/driver недоступен) — пробуем cat, затем sudo.
+    text=$(cat "$f" 2>/dev/null) || text=""
+    [ -n "$text" ] && printf '%s' "$text" && return 0
+    if [ -x "$RS485_STATS_HELPER" ]; then
+        text=$(/usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
+        [ -n "$text" ] && printf '%s' "$text" && return 0
+    fi
+    return 1
+}
+
+RS485_DRIVER_TEXT=""
+declare -A RS485_INUSE
+
+rs485_load_driver_text() {
+    local _f text=""
+    [ -n "$RS485_DRIVER_TEXT" ] && return 0
+    for _f in "${SERIAL_DRIVER_FILES[@]}"; do
+        text=$(rs485_driver_serial_text "$_f" 2>/dev/null) || text=""
+        [ -n "$text" ] && break
+    done
+    if [ -z "$text" ] && [ -x "$RS485_STATS_HELPER" ]; then
+        text=$(/usr/bin/sudo -n "$RS485_STATS_HELPER" driver 2>/dev/null) || text=""
+    fi
+    RS485_DRIVER_TEXT="$text"
+}
+
+rs485_inuse_batch() {
+    local -a devs=("$@") dev flag
+    local line
+    [ "${#devs[@]}" -gt 0 ] || return 0
+    [ -x "$RS485_STATS_HELPER" ] || return 1
+    while IFS= read -r line; do
+        dev=${line%%:*}
+        flag=${line#*:}
+        [ -n "$dev" ] || continue
+        RS485_INUSE[$dev]=${flag:-0}
+    done < <(/usr/bin/sudo -n "$RS485_STATS_HELPER" inuse-batch "${devs[@]}" 2>/dev/null)
+}
 
 rs485_tty_in_use() {
     local dev=$1
     [ -z "$dev" ] && return 1
+    if [ -n "${RS485_INUSE[$dev]+x}" ]; then
+        [ "${RS485_INUSE[$dev]}" = "1" ] && return 0
+        return 1
+    fi
+    if [ -x "$RS485_STATS_HELPER" ]; then
+        /usr/bin/sudo -n "$RS485_STATS_HELPER" inuse "$dev" >/dev/null 2>&1 && return 0
+    fi
     if command -v timeout >/dev/null 2>&1; then
         if command -v fuser >/dev/null 2>&1; then
             timeout 0.25 fuser "$dev" >/dev/null 2>&1 && return 0
@@ -648,15 +731,71 @@ rs485_tty_in_use() {
     return 1
 }
 
+# Ядро накапливает fe/pe/oe с загрузки — для UI считаем прирост между опросами.
+RS485_ERR_PREV="${CACHE_DIR}/rs485_err_prev.state"
+declare -A RS485_ERR_PREV_FE RS485_ERR_PREV_PE RS485_ERR_PREV_OE
+RS485_ERR_PREV_LOADED=0
+
+rs485_err_prev_load() {
+    local idx fe pe oe
+    [ "$RS485_ERR_PREV_LOADED" = "1" ] && return 0
+    RS485_ERR_PREV_LOADED=1
+    [ -f "$RS485_ERR_PREV" ] || return 0
+    while IFS=: read -r idx fe pe oe _; do
+        case "$idx" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        RS485_ERR_PREV_FE[$idx]=${fe:-0}
+        RS485_ERR_PREV_PE[$idx]=${pe:-0}
+        RS485_ERR_PREV_OE[$idx]=${oe:-0}
+    done < "$RS485_ERR_PREV"
+}
+
+rs485_err_prev_save() {
+    local tmp="${RS485_ERR_PREV}.$$" idx
+    : > "$tmp"
+    for idx in "${!RS485_ERR_PREV_FE[@]}"; do
+        printf '%s:%s:%s:%s\n' "$idx" \
+            "${RS485_ERR_PREV_FE[$idx]:-0}" \
+            "${RS485_ERR_PREV_PE[$idx]:-0}" \
+            "${RS485_ERR_PREV_OE[$idx]:-0}" >> "$tmp"
+    done
+    mv "$tmp" "$RS485_ERR_PREV" 2>/dev/null || cp "$tmp" "$RS485_ERR_PREV" 2>/dev/null
+    rm -f "$tmp"
+}
+
+rs485_err_deltas() {
+    local idx=$1 fe=$2 pe=$3 oe=$4
+    local pfe ppe poe dfe dpe doe
+    rs485_err_prev_load
+    if [ -z "${RS485_ERR_PREV_FE[$idx]+x}" ]; then
+        RS485_ERR_PREV_FE[$idx]=$fe
+        RS485_ERR_PREV_PE[$idx]=$pe
+        RS485_ERR_PREV_OE[$idx]=$oe
+        printf '0 0 0'
+        return 0
+    fi
+    pfe=${RS485_ERR_PREV_FE[$idx]:-0}
+    ppe=${RS485_ERR_PREV_PE[$idx]:-0}
+    poe=${RS485_ERR_PREV_OE[$idx]:-0}
+    dfe=$(( fe - pfe )); (( dfe < 0 )) && dfe=$fe
+    dpe=$(( pe - ppe )); (( dpe < 0 )) && dpe=$pe
+    doe=$(( oe - poe )); (( doe < 0 )) && doe=$oe
+    RS485_ERR_PREV_FE[$idx]=$fe
+    RS485_ERR_PREV_PE[$idx]=$pe
+    RS485_ERR_PREV_OE[$idx]=$oe
+    printf '%s %s %s' "$dfe" "$dpe" "$doe"
+}
+
 rs485_port_json() {
-    local num=$1 dev="/dev/RS-485-${num}"
+    local num=$1 dev real ttyname portidx line tx rx fe pe oe fe_d pe_d oe_d deltas inuse driver_text
+    dev="/dev/RS-485-${num}"
 
     if [ ! -e "$dev" ]; then
-        printf '{"n":%d,"dev":"","st":"absent","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0}' "$num"
+        printf '{"n":%d,"dev":"","st":"absent","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0,"fe_d":0,"pe_d":0,"oe_d":0}' "$num"
         return
     fi
 
-    local real ttyname portidx line tx rx fe pe oe inuse
     real=$(readlink -f "$dev" 2>/dev/null)
     [ -n "$real" ] || real="$dev"
     ttyname=$(basename "$real")
@@ -668,10 +807,12 @@ rs485_port_json() {
     oe=0
 
     if [ -n "$portidx" ]; then
-        for _f in $SERIAL_DRIVER_FILES; do
-            line=$(awk -v idx="$portidx" '$1 ~ ("^" idx ":") { print; exit }' "$_f" 2>/dev/null)
-            [ -n "$line" ] && break
-        done
+        driver_text="$RS485_DRIVER_TEXT"
+        if [ -n "$driver_text" ]; then
+            line=$(printf '%s\n' "$driver_text" | awk -v idx="$portidx" '$1 ~ ("^" idx ":") { print; exit }')
+        else
+            line=""
+        fi
         if [ -n "$line" ]; then
             tx=$(printf '%s\n' "$line" | grep -o 'tx:[0-9]*' | cut -d: -f2); tx=${tx:-0}
             rx=$(printf '%s\n' "$line" | grep -o 'rx:[0-9]*' | cut -d: -f2); rx=${rx:-0}
@@ -684,8 +825,18 @@ rs485_port_json() {
     inuse=0
     rs485_tty_in_use "$real" && inuse=1
 
-    printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s}' \
-        "$num" "$(json_escape "$ttyname")" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe"
+    fe_d=0
+    pe_d=0
+    oe_d=0
+    if [ -n "$portidx" ]; then
+        deltas=$(rs485_err_deltas "$portidx" "$fe" "$pe" "$oe")
+        fe_d=$(printf '%s' "$deltas" | awk '{print $1}')
+        pe_d=$(printf '%s' "$deltas" | awk '{print $2}')
+        oe_d=$(printf '%s' "$deltas" | awk '{print $3}')
+    fi
+
+    printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s,"fe_d":%s,"pe_d":%s,"oe_d":%s}' \
+        "$num" "$(json_escape "$ttyname")" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe" "$fe_d" "$pe_d" "$oe_d"
 }
 
 build_rs485_array() {
@@ -695,16 +846,31 @@ build_rs485_array() {
     if ! status_block_enabled rs485; then
         for (( i=0; i<port_count; i++ )); do
             [ -n "$json" ] && json="${json},"
-            json+='{"n":'"$i"',"dev":"","st":"disabled","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0}'
+            json+='{"n":'"$i"',"dev":"","st":"disabled","open":0,"tx":0,"rx":0,"fe":0,"pe":0,"oe":0,"fe_d":0,"pe_d":0,"oe_d":0}'
         done
         printf '%s' "$json"
         return 0
     fi
 
+    rs485_err_prev_load
+    RS485_DRIVER_TEXT=""
+    RS485_INUSE=()
+    rs485_load_driver_text
+    local -a rs485_devs=()
+    local i real dev
+    for (( i=0; i<port_count; i++ )); do
+        dev="/dev/RS-485-${i}"
+        [ -e "$dev" ] || continue
+        real=$(readlink -f "$dev" 2>/dev/null)
+        [ -n "$real" ] || real="$dev"
+        rs485_devs+=("$real")
+    done
+    rs485_inuse_batch "${rs485_devs[@]}"
     for (( i=0; i<port_count; i++ )); do
         [ -n "$json" ] && json="${json},"
         json="${json}$(rs485_port_json "$i")"
     done
+    rs485_err_prev_save
     printf '%s' "$json"
 }
 
@@ -1169,23 +1335,15 @@ gather_services_metrics() {
 }
 
 gather_hardware_metrics() {
+    HW_POLL_DISABLED=0
     if ! status_block_enabled hardware; then
-        HW_BACKEND="disabled"
-        HW_CFG=0
-        HW_I2C_EXP_ABS=0
-        HW_I2C_BUSY=0
-        PIN_DO=0
-        PIN_BEEP=0
-        PIN_LED=0
-        PIN_USB=0
-        HW_DO=-1
-        HW_BEEP=-1
-        HW_LED=-1
-        HW_USB=-1
+        HW_POLL_DISABLED=1
+        sa02m_hw_metrics_cache_refresh
         return 0
     fi
 
     sa02m_hw_collect_metrics
+    sa02m_hw_metrics_cache_save
     [ "${HW_VARIANT:-}" = "sa02m-2eth" ] && HW_DO=null
 }
 
@@ -1389,6 +1547,7 @@ print_hardware_json() {
 {
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
+  "hw_poll_disabled": ${HW_POLL_DISABLED:-0},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
   "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
@@ -1469,6 +1628,7 @@ print_main_json() {
   "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
+  "hw_poll_disabled": ${HW_POLL_DISABLED:-0},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
   "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
@@ -1562,6 +1722,7 @@ print_core_json() {
   "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
+  "hw_poll_disabled": ${HW_POLL_DISABLED:-0},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
   "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
@@ -1656,6 +1817,7 @@ print_full_json() {
   "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED},
   "hw_backend": "$(json_escape "${HW_BACKEND:-unknown}")",
   "hw_configured": ${HW_CFG},
+  "hw_poll_disabled": ${HW_POLL_DISABLED:-0},
   "hw_i2c_expander_absent": ${HW_I2C_EXP_ABS},
   "hw_i2c_busy": ${HW_I2C_BUSY},
   "hw_pin_do": ${PIN_DO},
@@ -1815,7 +1977,7 @@ case "$STATUS_PART" in
         build_main_json
         ;;
     rs485)
-        cache_print_or_build "${CACHE_DIR}/rs485.json" 4 build_rs485_json
+        build_rs485_json
         ;;
     core)
         build_core_json

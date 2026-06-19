@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.29';
+const APP_VERSION = '1.0.3.31';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -96,6 +96,14 @@ function fmtBytes(b) {
   b = parseInt(b) || 0;
   if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' ' + uiT('ГБ');
   if (b >= 1048576)    return (b / 1048576).toFixed(1) + ' ' + uiT('МБ');
+  if (b >= 1024)       return (b / 1024).toFixed(1) + ' ' + uiT('КБ');
+  return b + ' ' + uiT('Б');
+}
+/** Ethernet TX/RX — 2 знака в МБ, чтобы малый прирост был виден между опросами. */
+function fmtTrafficBytes(b) {
+  b = parseInt(b) || 0;
+  if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' ' + uiT('ГБ');
+  if (b >= 1048576)    return (b / 1048576).toFixed(2) + ' ' + uiT('МБ');
   if (b >= 1024)       return (b / 1024).toFixed(1) + ' ' + uiT('КБ');
   return b + ' ' + uiT('Б');
 }
@@ -254,6 +262,45 @@ function unitUiLabel(name) {
 
 const SVC_WIDGET_MAX_ROWS = 6;
 
+/** Строки-заглушки до part=main (services) — та же высота, что у badge-строк. */
+function renderServicesSkeleton() {
+  if (backgroundLoaded.services) return;
+  const host = document.getElementById('svc-dynamic-list');
+  if (!host) return;
+  if (host.querySelector('.svc-row-skeleton')) return;
+  host.innerHTML = '';
+  for (let i = 0; i < SVC_WIDGET_MAX_ROWS; i += 1) {
+    const r = document.createElement('div');
+    r.className = 'svc-row svc-row-skeleton';
+    r.setAttribute('aria-hidden', 'true');
+    r.innerHTML =
+      '<span class="name mono">nginx</span>' +
+      '<span class="svc-uptime mono">&nbsp;</span>' +
+      '<span class="badge badge-unk">&nbsp;</span>';
+    host.appendChild(r);
+  }
+}
+
+/** Плейсхолдеры дашборда до первого ответа status.cgi — совпадают с типичным loaded DOM. */
+function initDashboardPlaceholders() {
+  renderServicesSkeleton();
+  renderRs485Skeleton();
+  setText('proc-info', uiT('Процессов: 0 / 0'));
+  setText('cpu-freq', '0 ' + uiT('МГц'));
+  setText('disk-io', uiT('R ' + fmtBytes(0) + ' / W ' + fmtBytes(0)));
+  ['end0-rx', 'end0-tx', 'end1-rx', 'end1-tx'].forEach(function (id) {
+    setText(id, fmtBytes(0));
+  });
+  ['cpu-model', 'armbian-info', 'kernel-info'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el && !String(el.textContent || '').trim()) el.textContent = '\u00a0';
+  });
+  ['ram-free', 'disk-free', 'usb-free', 'sd-free'].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el && !String(el.textContent || '').trim()) el.textContent = '\u00a0';
+  });
+}
+
 /** Виджет «Службы»: nginx, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 6). Без пустых строк. */
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
@@ -325,7 +372,7 @@ function renderServicesDynamic(d) {
     const name = document.createElement('span');
     name.className = 'name' + (row.mono ? ' mono' : '');
     name.textContent = row.label;
-    if (row.title) name.title = row.title;
+    if (row.title) name.title = uiT(row.title);
     const up = document.createElement('span');
     up.className = 'svc-uptime mono';
     const on = svcStateIsActive(row.state);
@@ -360,6 +407,7 @@ const backgroundBusy = {
 };
 /** После hw_set запрашиваем main снова; если предыдущий main ещё в полёте — не терять повтор. */
 let mainBundleRefreshQueued = false;
+let rs485RefreshQueued = false;
 const backgroundLoaded = {
   main: false,
   storage: false,
@@ -372,7 +420,7 @@ const backgroundLoaded = {
   hardware: false,
   rs485: false
 };
-const _prevRs = {};
+let _lastRs485Ports = null;
 const statusFailures = {
   priority: 0,
   main: 0,
@@ -383,11 +431,143 @@ const STATUS_TIMEOUT_MS = {
   priority: 3000,
   /** Должен быть ≥ типичного времени status.cgi?part=main (I2C, RTC, сеть) и запас к fastcgi_read_timeout. */
   main: 14000,
-  rs485: 4000
+  /** ≥ типичного времени status.cgi?part=rs485 (sudo driver + inuse по портам). */
+  rs485: 10000
 };
+/** Интервалы опроса и минимальный зазор между запросами одной части (клиентский rate-limit). */
+const STATUS_POLL_INTERVAL_MS = { priority: 4000, main: 6000, rs485: 4000 };
+const STATUS_MIN_GAP_MS = { priority: 800, main: 1500, rs485: 1500 };
+
+let _statusPollGeneration = 0;
+let _statusPollTimers = { priority: null, main: null, rs485: null, bootstrap: null };
+let _statusInitTimeouts = [];
+let _statusFetchAbort = { priority: null, main: null, rs485: null };
+let _statusLastFetchMs = { priority: 0, main: 0, rs485: 0 };
+let _statusLifecycleBound = false;
 
 function statusRequestTimeout(part) {
   return STATUS_TIMEOUT_MS[part] || 3500;
+}
+
+function abortStatusPart(part) {
+  const ctrl = _statusFetchAbort[part];
+  if (!ctrl) return;
+  try { ctrl.abort(); } catch (_) {}
+  _statusFetchAbort[part] = null;
+}
+
+function abortAllStatusFetches() {
+  ['priority', 'main', 'rs485'].forEach(abortStatusPart);
+}
+
+function clearStatusPollTimers() {
+  Object.keys(_statusPollTimers).forEach(function (key) {
+    if (_statusPollTimers[key]) {
+      clearInterval(_statusPollTimers[key]);
+      _statusPollTimers[key] = null;
+    }
+  });
+  _statusInitTimeouts.forEach(function (id) { clearTimeout(id); });
+  _statusInitTimeouts = [];
+}
+
+function resetBackgroundLoadedFlags() {
+  Object.keys(backgroundLoaded).forEach(function (k) { backgroundLoaded[k] = false; });
+}
+
+function teardownStatusPolling() {
+  _statusPollGeneration += 1;
+  clearStatusPollTimers();
+  abortAllStatusFetches();
+  widgetBusy.priority = false;
+  Object.keys(backgroundBusy).forEach(function (k) { backgroundBusy[k] = false; });
+  mainBundleRefreshQueued = false;
+  rs485RefreshQueued = false;
+}
+
+function canFetchStatusPart(part, force) {
+  if (!force && isStatusPartPaused(part)) return false;
+  if (force) return true;
+  const gap = STATUS_MIN_GAP_MS[part] || 1000;
+  return (Date.now() - (_statusLastFetchMs[part] || 0)) >= gap;
+}
+
+/** Fetch status.cgi с AbortController, отменой предыдущего запроса той же части и проверкой поколения. */
+function statusFetchJson(part, url, timeoutMs, gen, onTimeout) {
+  abortStatusPart(part);
+  const ctrl = new AbortController();
+  _statusFetchAbort[part] = ctrl;
+  const timer = setTimeout(function () {
+    if (onTimeout) onTimeout();
+    ctrl.abort();
+  }, timeoutMs);
+  return fetch(url, {
+    cache: 'no-store',
+    credentials: 'same-origin',
+    signal: ctrl.signal
+  }).finally(function () {
+    clearTimeout(timer);
+    if (_statusFetchAbort[part] === ctrl) _statusFetchAbort[part] = null;
+  }).then(function (r) {
+    if (gen !== _statusPollGeneration) {
+      throw Object.assign(new DOMException('Stale poll', 'AbortError'), { stale: true });
+    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+}
+
+function bindStatusPollingLifecycle() {
+  if (_statusLifecycleBound) return;
+  _statusLifecycleBound = true;
+  window.addEventListener('pagehide', teardownStatusPolling);
+  window.addEventListener('beforeunload', teardownStatusPolling);
+  window.addEventListener('pageshow', function (e) {
+    if (e.persisted) initStatusPolling();
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) fetchStatus();
+  });
+}
+
+function initStatusPolling() {
+  teardownStatusPolling();
+  resetBackgroundLoadedFlags();
+  clearHwHintPending();
+  const gen = _statusPollGeneration;
+
+  const scheduleInitial = function () {
+    if (gen !== _statusPollGeneration) return;
+    fetchPriorityPart('priority');
+    _statusInitTimeouts.push(setTimeout(function () {
+      if (gen !== _statusPollGeneration) return;
+      fetchStatusMain();
+    }, 180));
+    _statusInitTimeouts.push(setTimeout(function () {
+      if (gen !== _statusPollGeneration) return;
+      fetchStatusRs485();
+    }, 420));
+  };
+
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(function () { requestAnimationFrame(scheduleInitial); });
+  } else {
+    _statusInitTimeouts.push(setTimeout(scheduleInitial, 0));
+  }
+
+  bootstrapBackgroundWidgets(gen);
+  _statusPollTimers.priority = setInterval(function () {
+    if (gen !== _statusPollGeneration) return;
+    fetchPriorityPart('priority');
+  }, STATUS_POLL_INTERVAL_MS.priority);
+  _statusPollTimers.main = setInterval(function () {
+    if (gen !== _statusPollGeneration) return;
+    fetchStatusMain();
+  }, STATUS_POLL_INTERVAL_MS.main);
+  _statusPollTimers.rs485 = setInterval(function () {
+    if (gen !== _statusPollGeneration) return;
+    fetchStatusRs485();
+  }, STATUS_POLL_INTERVAL_MS.rs485);
 }
 
 function isStatusPartPaused(part) {
@@ -444,7 +624,7 @@ function applyRemovableDisk(mounted, base, d) {
   const detail = document.getElementById(base + '-detail');
   if (!val || !detail) return;
   if (!mounted) {
-    val.textContent = 'НЕ УСТАНОВЛЕН';
+    val.textContent = uiT('НЕ УСТАНОВЛЕН');
     val.classList.add('widget-val-removable-empty');
     detail.style.display = 'none';
     return;
@@ -466,7 +646,10 @@ function applyRemovableDisk(mounted, base, d) {
   }
 }
 
+let _lastPriorityStatus = null;
+
 function applyPriorityStatus(d) {
+  _lastPriorityStatus = d;
   const arcLen = gaugeArcPathLength();
 
   /* CPU */
@@ -492,10 +675,15 @@ function applyPriorityStatus(d) {
     }
   }
 
-  /* SWAP */
+  /* SWAP — слот зарезервирован до первого ответа priority; без swap после загрузки — убираем */
+  const sb = document.getElementById('swap-block');
   if (d.swap_total_kb > 0) {
-    const sb = document.getElementById('swap-block');
-    if (sb) sb.style.display = 'block';
+    if (sb) {
+      sb.style.display = '';
+      sb.classList.add('swap-active');
+      sb.classList.remove('swap-block-collapsed');
+      sb.removeAttribute('aria-hidden');
+    }
     setText('swap-pct', d.swap_pct + '%');
     setText('swap-lbl', fmtKB(d.swap_used_kb) + ' / ' + fmtKB(d.swap_total_kb));
     const swapBar = document.getElementById('swap-bar');
@@ -503,6 +691,11 @@ function applyPriorityStatus(d) {
       swapBar.style.width = d.swap_pct + '%';
       swapBar.style.background = d.swap_pct > 80 ? cssVar('--meter-red') : cssVar('--meter-orange');
     }
+  } else if (sb) {
+    sb.classList.remove('swap-active');
+    sb.setAttribute('aria-hidden', 'true');
+    sb.classList.add('swap-block-collapsed');
+    sb.style.display = 'none';
   }
 
   /* Температура: дуга 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
@@ -516,9 +709,9 @@ function applyPriorityStatus(d) {
       const tempStroke = tc >= 80 ? cssVar('--meter-red') : tc >= 70 ? cssVar('--meter-yellow') : cssVar('--meter-green');
       tempArc.style.stroke = tempStroke;
       if (tempHint) {
-        tempHint.textContent = tc >= 80
+        tempHint.textContent = uiT(tc >= 80
           ? 'Температура выше нормы'
-          : 'Температура в норме';
+          : 'Температура в норме');
       }
     }
   }
@@ -538,8 +731,9 @@ function applyPriorityStatus(d) {
 }
 
 function applyStorageStatus(d) {
-  if (d.disk_io_read_b !== undefined)
-    setText('disk-io', 'R ' + fmtBytes(d.disk_io_read_b) + ' / W ' + fmtBytes(d.disk_io_write_b));
+  if (d.disk_io_read_b !== undefined) {
+    setText('disk-io', uiT('R ' + fmtTrafficBytes(d.disk_io_read_b) + ' / W ' + fmtTrafficBytes(d.disk_io_write_b)));
+  }
   if (d.usb_modem_present) {
     applyUsbModem(d);
   } else {
@@ -548,7 +742,7 @@ function applyStorageStatus(d) {
     var tt = document.getElementById('usb-widget-title');
     if (sv) sv.style.display = '';
     if (mv) mv.style.display = 'none';
-    if (tt) tt.textContent = 'USB-накопитель';
+    if (tt) tt.textContent = uiT('USB-накопитель');
     applyRemovableDisk(!!d.usb_mounted, 'usb', d);
   }
   applyRemovableDisk(!!d.sd_mounted, 'sd', d);
@@ -560,16 +754,16 @@ function applyUsbModem(d) {
   var tt = document.getElementById('usb-widget-title');
   if (sv) sv.style.display = 'none';
   if (mv) mv.style.display = '';
-  if (tt) tt.textContent = 'USB-модем';
+  if (tt) tt.textContent = uiT('USB-модем');
 
   var stateEl = document.getElementById('usb-modem-state-val');
   if (stateEl) {
     var st = d.usb_modem_state || '';
     if (st === 'up') {
-      stateEl.textContent = 'Подключён';
+      stateEl.textContent = uiT('Подключён');
       stateEl.className = 'widget-val on';
     } else if (st === 'down' || st === 'unknown') {
-      stateEl.textContent = 'Нет сети';
+      stateEl.textContent = uiT('Нет сети');
       stateEl.className = 'widget-val off';
     } else {
       stateEl.textContent = st;
@@ -585,7 +779,7 @@ function applyUsbModem(d) {
 
   var rx = typeof d.usb_modem_rx === 'number' ? fmtBytes(d.usb_modem_rx) : '—';
   var tx = typeof d.usb_modem_tx === 'number' ? fmtBytes(d.usb_modem_tx) : '—';
-  setText('usb-modem-traffic', '↓ ' + rx + ' / ↑ ' + tx);
+  setText('usb-modem-traffic', uiT('↓ ' + rx + ' / ↑ ' + tx));
 }
 
 function applyTimeStatus(d) {
@@ -611,46 +805,69 @@ function refreshTimeReadouts() {
 window.refreshTimeReadouts = refreshTimeReadouts;
 
 function applyUptimeStatus(d) {
-  setText('uptime-val', d.uptime_str || fmtUptime(d.uptime_sec));
+  setText('uptime-val', fmtUptime(d.uptime_sec ?? d.uptime_s));
 }
 
-/** missingFallback — если operstate нет в JSON (старый status.cgi), не показывать «Нет адаптера» для реального end0. */
-function applyEthIfaceState(spanId, operstate, missingFallback) {
+/** Плейсхолдер pill (ширина «Нет линка») — резерв места до ответа status.cgi. */
+function ethPillPlaceholderText() {
+  return uiT('Нет линка');
+}
+
+/** Показывает только «Линк» / «Нет линка»; до ответа status.cgi и при absent — pill невидим, место зарезервировано. */
+function applyEthIfaceState(spanId, operstate) {
   const el = document.getElementById(spanId);
   if (!el) return;
-  let v = operstate;
-  if (v === undefined || v === '') {
-    v = missingFallback !== undefined ? missingFallback : 'absent';
+  const hide = () => {
+    el.textContent = ethPillPlaceholderText();
+    el.setAttribute('aria-hidden', 'true');
+    el.removeAttribute('hidden');
+    el.className = 'eth-state eth-state-prominent eth-state-hidden';
+  };
+  if (operstate === undefined || operstate === null || operstate === '') {
+    hide();
+    return;
   }
-  const s = String(v).trim().toLowerCase();
-  let text; let cls;
-  if (s === 'absent') {
-    text = '● Нет адаптера';
-    cls = 'absent';
-  } else if (s === 'up') {
-    text = '● Есть линк';
-    cls = 'up';
+  const s = String(operstate).trim().toLowerCase();
+  if (s === 'absent' || s === 'unknown') {
+    hide();
+    return;
+  }
+  el.removeAttribute('hidden');
+  el.removeAttribute('aria-hidden');
+  if (s === 'up') {
+    el.textContent = uiT('Линк');
+    el.className = 'eth-state eth-state-prominent up';
   } else {
-    text = '● Нет линка';
-    cls = 'down';
+    el.textContent = uiT('Нет линка');
+    el.className = 'eth-state eth-state-prominent down';
   }
-  el.textContent = text;
-  el.className = 'eth-state eth-state-prominent ' + cls;
+}
+
+/** Dashboard Ethernet widget: «Статический 1.2.3.4» или «DHCP: 1.2.3.4». */
+function formatEthIpWidget(ipRaw, modeRaw) {
+  const ip = (ipRaw !== undefined && ipRaw !== null) ? String(ipRaw).trim() : '';
+  let mode = (modeRaw !== undefined && modeRaw !== null) ? String(modeRaw).trim().toLowerCase() : '';
+  if (ip && mode !== 'dhcp' && mode !== 'static') mode = 'static';
+  if (mode === 'dhcp') {
+    const prefix = uiT('DHCP:');
+    return ip ? `${prefix} ${ip}` : prefix;
+  }
+  if (mode === 'static') {
+    const prefix = uiT('Статический');
+    return ip ? `${prefix} ${ip}` : prefix;
+  }
+  return ip || '—';
 }
 
 function applyNetworkStatus(d) {
-  applyEthIfaceState('end0-state', d.end0_operstate, 'unknown');
+  applyEthIfaceState('end0-state', d.end0_operstate);
   applyEthIfaceState('end1-state', d.end1_operstate);
-  setText('end0-rx', 'RX ' + fmtBytes(d.net_rx_bytes || 0));
-  setText('end0-tx', 'TX ' + fmtBytes(d.net_tx_bytes || 0));
-  setText('end1-rx', 'RX ' + fmtBytes(d.net1_rx_bytes || 0));
-  setText('end1-tx', 'TX ' + fmtBytes(d.net1_tx_bytes || 0));
-  const ip0 = (d.end0_ip !== undefined && d.end0_ip !== null) ? String(d.end0_ip).trim() : '';
-  const ip1 = (d.end1_ip !== undefined && d.end1_ip !== null) ? String(d.end1_ip).trim() : '';
-  const m0 = (d.end0_mode !== undefined && d.end0_mode !== null) ? String(d.end0_mode).trim().toLowerCase() : '';
-  const m1 = (d.end1_mode !== undefined && d.end1_mode !== null) ? String(d.end1_mode).trim().toLowerCase() : '';
-  setText('end0-ip', ip0 ? ip0 : (m0 === 'dhcp' ? 'DHCP' : '—'));
-  setText('end1-ip', ip1 ? ip1 : (m1 === 'dhcp' ? 'DHCP' : '—'));
+  setText('end0-rx', fmtTrafficBytes(d.net_rx_bytes || 0));
+  setText('end0-tx', fmtTrafficBytes(d.net_tx_bytes || 0));
+  setText('end1-rx', fmtTrafficBytes(d.net1_rx_bytes || 0));
+  setText('end1-tx', fmtTrafficBytes(d.net1_tx_bytes || 0));
+  setText('end0-ip', formatEthIpWidget(d.end0_ip, d.end0_mode));
+  setText('end1-ip', formatEthIpWidget(d.end1_ip, d.end1_mode));
   if (d.ip) setText('tb-ip', d.ip);
 }
 
@@ -658,19 +875,29 @@ function applyLoadStatus(d) {
   setText('load-1',  d.load_1  || '—');
   setText('load-5',  d.load_5  || '—');
   setText('load-15', d.load_15 || '—');
-  setText('proc-info', 'Процессов: ' + (d.proc_running || 0) + ' / ' + (d.proc_total || 0));
+  setText('proc-info', uiT('Процессов: ' + (d.proc_running || 0) + ' / ' + (d.proc_total || 0)));
   if (d.cpu_freq_mhz) {
     const thr = d.cpu_throttle ? ' (' + d.cpu_throttle + '%)' : '';
-    setText('cpu-freq', d.cpu_freq_mhz + ' МГц' + thr);
+    setText('cpu-freq', d.cpu_freq_mhz + ' ' + uiT('МГц') + thr);
+  } else {
+    setText('cpu-freq', '0 ' + uiT('МГц'));
   }
 }
 
 function applySystemStatus(d) {
   if (d.board)     setText('board-info',  d.board);
   if (d.cpu_model) setText('cpu-model',   d.cpu_model);
-  if (d.armbian_version) setText('armbian-info', d.armbian_version);
-  else setText('armbian-info', '');
-  if (d.kernel)    setText('kernel-info', 'Ядро: ' + d.kernel);
+  else setText('cpu-model', '\u00a0');
+  const armbianEl = document.getElementById('armbian-info');
+  if (d.armbian_version) {
+    setText('armbian-info', d.armbian_version);
+    if (armbianEl) armbianEl.classList.remove('widget-sub-inert');
+  } else if (armbianEl) {
+    armbianEl.textContent = '\u00a0';
+    armbianEl.classList.add('widget-sub-inert');
+  }
+  if (d.kernel)    setText('kernel-info', uiT('Ядро: ' + d.kernel));
+  else setText('kernel-info', '\u00a0');
 
   const btn = document.getElementById('storage-format-toggle');
   const lbl = document.getElementById('storage-format-toggle-label');
@@ -680,13 +907,13 @@ function applySystemStatus(d) {
     btn.dataset.storageOn = on ? '1' : '0';
     if (!installed) {
       btn.disabled = true;
-      if (lbl) lbl.textContent = 'НЕ УСТАНОВЛЕНО';
+      if (lbl) lbl.textContent = uiT('НЕ УСТАНОВЛЕНО');
       btn.className = 'btn btn-danger';
-      btn.title = 'Нет storage-mount — выполните установку системы (install.sh)';
+      btn.title = uiT('Нет storage-mount — выполните установку системы (install.sh)');
     } else {
       btn.disabled = false;
-      btn.title = 'Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется';
-      if (lbl) lbl.textContent = on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО';
+      btn.title = uiT('Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется');
+      if (lbl) lbl.textContent = uiT(on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО');
       btn.className = 'btn btn-danger';
     }
   }
@@ -748,6 +975,10 @@ window.refreshMainStatusI18n = function () {
   if (_lastMainStatus) applyMainStatusBundle(_lastMainStatus);
 };
 
+window.refreshPriorityStatusI18n = function () {
+  if (_lastPriorityStatus) applyPriorityStatus(_lastPriorityStatus);
+};
+
 window.refreshServicesDynamicI18n = function () {
   if (_lastServicesStatus) renderServicesDynamic(_lastServicesStatus);
 };
@@ -782,13 +1013,29 @@ function applyVariantVisibility(variant) {
   if (title) applyDeviceTitle();
   const netDesc = document.getElementById('network-page-desc');
   if (netDesc) {
-    netDesc.textContent = v === 'sa02m-2eth'
+    netDesc.textContent = uiT(v === 'sa02m-2eth'
       ? 'Конфигурация Ethernet № 1 и № 2'
-      : 'Конфигурация Ethernet № 1';
+      : 'Конфигурация Ethernet № 1');
   }
+  if (!backgroundLoaded.rs485) renderRs485Skeleton();
+}
+
+let _lastHwMetrics = null;
+
+function hwMetricsPayloadValid(d) {
+  return !!(d && (d.hw_configured !== undefined || d.hw_poll_disabled !== undefined));
+}
+
+function clearHwHintPending() {
+  const hint = document.getElementById('hw-hint');
+  if (!hint) return;
+  hint.textContent = '';
+  hint.style.display = 'none';
 }
 
 function applyHardwareStatus(d) {
+  if (!hwMetricsPayloadValid(d)) return;
+  _lastHwMetrics = d;
   const hint = document.getElementById('hw-hint');
   if (hint) {
     let msg = '';
@@ -796,10 +1043,10 @@ function applyHardwareStatus(d) {
       msg = 'ШИНА I2C ЗАНЯТА ДРУГОЙ СЛУЖБОЙ';
     } else if (d.hw_i2c_expander_absent === 1) {
       msg = 'НЕТ СВЯЗИ С МИКРОСХЕМОЙ РАСШИРЕНИЯ I2C';
-    } else if (!d.hw_configured) {
+    } else if (d.hw_configured === 0 && d.hw_poll_disabled !== 1) {
       msg = 'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf';
     }
-    hint.textContent = msg;
+    hint.textContent = msg ? uiT(msg) : '';
     hint.style.display = msg ? '' : 'none';
   }
   if (d.hw_variant !== undefined) applyVariantVisibility(d.hw_variant);
@@ -839,22 +1086,25 @@ function applyStatus(d) {
 
 function fetchPriorityPart(_part, persist = true) {
   if (widgetBusy.priority) return;
+  if (!canFetchStatusPart('priority', false)) return;
+  const gen = _statusPollGeneration;
   widgetBusy.priority = true;
-  fetchWithTimeout('/cgi-bin/status.cgi?part=priority', {
-    cache: 'no-store',
-    credentials: 'same-origin'
-  }, statusRequestTimeout('priority'))
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
+  _statusLastFetchMs.priority = Date.now();
+  let timedOut = false;
+  statusFetchJson('priority', '/cgi-bin/status.cgi?part=priority', statusRequestTimeout('priority'), gen, function () {
+    timedOut = true;
+  })
     .then(d => {
       if (d.error) return;
       applyPriorityStatus(d);
       if (persist) ['cpu', 'temp', 'ram', 'disk'].forEach((part) => writePriorityWarmupPart(part, d));
       noteStatusSuccess('priority');
     })
-    .catch((e) => { noteStatusFailure('priority', e); })
+    .catch((e) => {
+      if (gen !== _statusPollGeneration || (e && e.stale)) return;
+      if (e && e.name === 'AbortError' && !timedOut) return;
+      noteStatusFailure('priority', e);
+    })
     .finally(() => { widgetBusy.priority = false; });
 }
 
@@ -900,25 +1150,33 @@ function fetchMainBundle(force) {
     if (force) mainBundleRefreshQueued = true;
     return;
   }
-  if (!force && isStatusPartPaused('main')) return;
+  if (!canFetchStatusPart('main', !!force)) return;
   backgroundBusy.main = true;
   const epochAtStart = mainStatusEpoch;
+  const gen = _statusPollGeneration;
+  _statusLastFetchMs.main = Date.now();
+  let timedOut = false;
   const mainUrl = '/cgi-bin/status.cgi?part=main' + (force ? '&no_cache=1' : '');
-  fetchWithTimeout(mainUrl, {
-    cache: 'no-store',
-    credentials: 'same-origin'
-  }, statusRequestTimeout('main'))
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
+  statusFetchJson('main', mainUrl, statusRequestTimeout('main'), gen, function () {
+    timedOut = true;
+  })
     .then(d => {
       if (epochAtStart !== mainStatusEpoch) return;
       if (d.error) return;
       applyMainStatusBundle(d);
       noteStatusSuccess('main');
     })
-    .catch((e) => { noteStatusFailure('main', e); })
+    .catch((e) => {
+      if (gen !== _statusPollGeneration || (e && e.stale)) return;
+      if (e && e.name === 'AbortError' && !timedOut) return;
+      noteStatusFailure('main', e);
+      if (gen === _statusPollGeneration && !backgroundLoaded.hardware) {
+        _statusInitTimeouts.push(setTimeout(function () {
+          if (gen !== _statusPollGeneration) return;
+          fetchMainBundle(true);
+        }, 800));
+      }
+    })
     .finally(() => {
       backgroundBusy.main = false;
       if (mainBundleRefreshQueued) {
@@ -933,25 +1191,37 @@ function fetchBackgroundPart(part, applyFn) {
     fetchMainBundle();
     return;
   }
-  if (backgroundBusy[part]) return;
-  if (isStatusPartPaused(part)) return;
+  if (backgroundBusy[part]) {
+    if (part === 'rs485') rs485RefreshQueued = true;
+    return;
+  }
+  if (!canFetchStatusPart(part, false)) return;
   backgroundBusy[part] = true;
-  fetchWithTimeout('/cgi-bin/status.cgi?part=' + encodeURIComponent(part), {
-    cache: 'no-store',
-    credentials: 'same-origin'
-  }, statusRequestTimeout(part))
-    .then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    })
+  const gen = _statusPollGeneration;
+  _statusLastFetchMs[part] = Date.now();
+  let timedOut = false;
+  const rs485Url = '/cgi-bin/status.cgi?part=rs485&no_cache=1';
+  statusFetchJson(part, part === 'rs485' ? rs485Url : '/cgi-bin/status.cgi?part=' + encodeURIComponent(part), statusRequestTimeout(part), gen, function () {
+    timedOut = true;
+  })
     .then(d => {
       if (d.error) return;
       applyFn(d);
       backgroundLoaded[part] = true;
       noteStatusSuccess(part);
     })
-    .catch((e) => { noteStatusFailure(part, e); })
-    .finally(() => { backgroundBusy[part] = false; });
+    .catch((e) => {
+      if (gen !== _statusPollGeneration || (e && e.stale)) return;
+      if (e && e.name === 'AbortError' && !timedOut) return;
+      noteStatusFailure(part, e);
+    })
+    .finally(() => {
+      backgroundBusy[part] = false;
+      if (part === 'rs485' && rs485RefreshQueued) {
+        rs485RefreshQueued = false;
+        fetchBackgroundPart('rs485', applyRs485Status);
+      }
+    });
 }
 
 function fetchStorageWidget() {
@@ -1194,11 +1464,21 @@ function allBackgroundWidgetsLoaded() {
   return Object.values(backgroundLoaded).every(Boolean);
 }
 
-function bootstrapBackgroundWidgets() {
+function bootstrapBackgroundWidgets(pollGen) {
   let attempts = 0;
-  const timer = setInterval(() => {
+  if (_statusPollTimers.bootstrap) {
+    clearInterval(_statusPollTimers.bootstrap);
+    _statusPollTimers.bootstrap = null;
+  }
+  _statusPollTimers.bootstrap = setInterval(function () {
+    if (pollGen !== _statusPollGeneration) {
+      clearInterval(_statusPollTimers.bootstrap);
+      _statusPollTimers.bootstrap = null;
+      return;
+    }
     if (allBackgroundWidgetsLoaded() || attempts >= 12) {
-      clearInterval(timer);
+      clearInterval(_statusPollTimers.bootstrap);
+      _statusPollTimers.bootstrap = null;
       return;
     }
     fetchStatusMain();
@@ -1210,6 +1490,49 @@ function bootstrapBackgroundWidgets() {
 /* ══════════════════════════════════════════════════════════════════════════
    HW GPIO CONTROL
    ══════════════════════════════════════════════════════════════════════════ */
+const HW_STATUS_AUTO_CLEAR_MS = 3000;
+let _hwBlockStatusTimer = null;
+let _hwBlockStatusGen = 0;
+let _lastHwBlockStatus = null;
+
+function clearHwBlockStatusTimer() {
+  if (_hwBlockStatusTimer) {
+    clearTimeout(_hwBlockStatusTimer);
+    _hwBlockStatusTimer = null;
+  }
+}
+
+function setHwBlockStatus(msg, type, clearMs) {
+  const el = document.getElementById('hw-block-status');
+  if (!el) return;
+  clearHwBlockStatusTimer();
+  if (!msg) {
+    _hwBlockStatusGen += 1;
+    _lastHwBlockStatus = null;
+    el.hidden = true;
+    el.textContent = '';
+    el.className = 'hw-block-status';
+    return;
+  }
+  _lastHwBlockStatus = { msg: String(msg), type: type || '', clearMs: clearMs };
+  el.hidden = false;
+  el.textContent = uiT(_lastHwBlockStatus.msg);
+  el.className = 'hw-block-status' + (type ? ' ' + type : '');
+  const gen = ++_hwBlockStatusGen;
+  const autoMs = (typeof clearMs === 'number' && clearMs > 0) ? clearMs : HW_STATUS_AUTO_CLEAR_MS;
+  _hwBlockStatusTimer = setTimeout(() => {
+    _hwBlockStatusTimer = null;
+    if (_hwBlockStatusGen !== gen) return;
+    setHwBlockStatus('');
+  }, autoMs);
+}
+
+window.hwRerenderBlockStatus = function () {
+  if (_lastHwBlockStatus) {
+    setHwBlockStatus(_lastHwBlockStatus.msg, _lastHwBlockStatus.type, _lastHwBlockStatus.clearMs);
+  }
+};
+
 const HW_STATE_WORDS = {
   do: ['ВЫКЛ', 'ВКЛ'],
   beeper: ['Тихо', 'Звук'],
@@ -1282,12 +1605,12 @@ function applyHwChannel(stId, channel, v) {
     return;
   }
   if (nv === -1) {
-    el.textContent = 'н/д';
+    el.textContent = uiT('н/д');
     el.className = 'hw-status-val na';
     syncHwButtonStyles(channel, -1);
     return;
   }
-  el.textContent = nv ? words[1] : words[0];
+  el.textContent = uiT(nv ? words[1] : words[0]);
   el.className = 'hw-status-val ' + (nv ? 'on' : 'off');
   syncHwButtonStyles(channel, nv);
 }
@@ -1298,37 +1621,61 @@ function setHwChannelBtns(channel, enabled) {
   });
 }
 
-/** Питание USB: удержание «Сброс» = 0 на линии, отпускание = 1 (без фиксации). */
-let usbPowerResetHeld = false;
+/** Сброс USB по умолчанию (test_fb.cpp: 100×100 ms), если сервер не вернул reset_sec. */
+const USB_POWER_RESET_SEC_DEFAULT = 10;
+
+function usbPowerReset() {
+  const btn = document.getElementById('hw-usb-reset-btn');
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+
+  fetch('/cgi-bin/hw_set.cgi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'channel=' + encodeURIComponent('usb_power') + '&value=' + encodeURIComponent('reset'),
+    credentials: 'same-origin'
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (j.ok && j.resetting) {
+        const sec = (typeof j.reset_sec === 'number' && j.reset_sec > 0)
+          ? j.reset_sec
+          : USB_POWER_RESET_SEC_DEFAULT;
+        setHwBlockStatus('Сброс питания на ' + sec + ' сек', 'success', (sec + 2) * 1000);
+        applyHwChannel('hw-usb-st', 'usb_power', 0);
+        pendingUsbPowerVal = 1;
+        pendingUsbPowerUntil = Date.now() + (sec + 10) * 1000;
+        bumpMainStatusEpoch();
+        fetchMainBundle(true);
+        window.setTimeout(function () {
+          applyHwChannel('hw-usb-st', 'usb_power', 1);
+          if (btn) btn.disabled = false;
+          bumpMainStatusEpoch();
+          fetchMainBundle(true);
+        }, sec * 1000 + 300);
+        return;
+      }
+      if (btn) btn.disabled = false;
+      if (j.error === 'reset_busy') setHwBlockStatus('Сброс USB уже выполняется', 'warn');
+      else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
+      else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');
+      else setHwBlockStatus('Ошибка: ' + (j.error || 'unknown'), 'error');
+    })
+    .catch(function () {
+      if (btn) btn.disabled = false;
+      setHwBlockStatus('Нет связи с сервером', 'error');
+    });
+}
 
 function bindUsbPowerResetButton() {
   const btn = document.getElementById('hw-usb-reset-btn');
   if (!btn || btn.dataset.usbResetBound === '1') return;
   btn.dataset.usbResetBound = '1';
-
-  const restore = () => {
-    if (!usbPowerResetHeld) return;
-    usbPowerResetHeld = false;
-    setHw('usb_power', 1, { quiet: true });
-  };
-
-  btn.addEventListener('pointerdown', (e) => {
+  btn.addEventListener('click', function (e) {
     e.preventDefault();
-    usbPowerResetHeld = true;
-    setHw('usb_power', 0, { quiet: true });
+    usbPowerReset();
   });
-  btn.addEventListener('pointerup', restore);
-  btn.addEventListener('pointerleave', restore);
-  btn.addEventListener('pointercancel', restore);
-
-  if (!window.__sa02mUsbPowerBlurBound) {
-    window.__sa02mUsbPowerBlurBound = true;
-    window.addEventListener('blur', () => {
-      if (!usbPowerResetHeld) return;
-      usbPowerResetHeld = false;
-      setHw('usb_power', 1, { quiet: true });
-    });
-  }
 }
 
 function setHw(channel, value, opts) {
@@ -1355,78 +1702,166 @@ function setHw(channel, value, opts) {
         }
         bumpMainStatusEpoch();
         fetchMainBundle(true);
-        if (!quiet) toast('Применено', 'success');
+        if (!quiet) setHwBlockStatus('Применено', 'success');
       }
-      else if (j.error === 'gpio_not_configured') toast('Канал не настроен в /etc/sa02m_hw.conf', 'error');
-      else if (j.error === 'i2c_busy') toast('Шина I2C занята другой службой', 'error');
-      else if (j.error === 'i2c_tools_missing') toast('На устройстве нет i2c-tools', 'error');
-      else toast('Ошибка: ' + (j.error || 'unknown'), 'error');
+      else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
+      else if (j.error === 'i2c_busy') setHwBlockStatus('Шина I2C занята другой службой', 'error');
+      else if (j.error === 'i2c_tools_missing') setHwBlockStatus('На устройстве нет i2c-tools', 'error');
+      else setHwBlockStatus('Ошибка: ' + (j.error || 'unknown'), 'error');
     })
-    .catch(() => toast('Нет связи с сервером', 'error'));
+    .catch(() => setHwBlockStatus('Нет связи с сервером', 'error'));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
    RS-485 CARDS
    ══════════════════════════════════════════════════════════════════════════ */
+function rs485PortCountForVariant(variant) {
+  return variant === 'sa02m-2eth' ? 4 : 5;
+}
+
+/** RS-485-N ↔ COM(N+1): RS-485-0 = COM1, RS-485-3 = COM4 (см. /etc/sa02m_serial_map.conf). */
+function rs485PortLabel(n) {
+  return 'RS-485-' + n + ' (COM' + (n + 1) + ')';
+}
+
+function rs485ErrParts(fe, pe, oe) {
+  const parts = [];
+  if (fe) parts.push('FE=' + fe);
+  if (pe) parts.push('PE=' + pe);
+  if (oe) parts.push('OE=' + oe);
+  return parts;
+}
+
+function rs485ErrSlotHtml(fe, pe, oe) {
+  const parts = rs485ErrParts(fe, pe, oe);
+  if (parts.length) {
+    return '<div class="rs485-err">' + escHtml(uiT('Ош ' + parts.join(' '))) + '</div>';
+  }
+  return '<div class="rs485-err rs485-err-reserved" aria-hidden="true">\u00a0</div>';
+}
+
+function rs485ErrDelta(p) {
+  const hasDelta = p.fe_d != null || p.pe_d != null || p.oe_d != null;
+  if (hasDelta) {
+    return {
+      fe: p.fe_d | 0,
+      pe: p.pe_d | 0,
+      oe: p.oe_d | 0
+    };
+  }
+  return { fe: p.fe | 0, pe: p.pe | 0, oe: p.oe | 0 };
+}
+
+function rs485SkeletonCardHtml(n) {
+  return (
+    '<div class="rs485-hdr"><span class="rs485-name">' + escHtml(uiT(rs485PortLabel(n))) + '</span><span class="rs485-dot idle" aria-hidden="true"></span></div>' +
+    '<div class="rs485-dev rs485-dev-reserved" aria-hidden="true">\u00a0</div>' +
+    '<div class="rs485-row"><span class="rl">TX</span><span class="rv">0</span></div>' +
+    '<div class="rs485-row"><span class="rl">RX</span><span class="rv">0</span></div>' +
+    rs485ErrSlotHtml(0, 0, 0)
+  );
+}
+
+/** Карточки-заглушки до part=rs485 — высота виджета как после загрузки. */
+function renderRs485Skeleton(portCount) {
+  if (backgroundLoaded.rs485) return;
+  const grid = document.getElementById('rs485-grid');
+  if (!grid) return;
+  const count = portCount || rs485PortCountForVariant(_boardVariant);
+  for (let n = 0; n < count; n += 1) {
+    let card = document.getElementById('rs485c-' + n);
+    if (!card) {
+      card = document.createElement('div');
+      card.id = 'rs485c-' + n;
+      grid.appendChild(card);
+    }
+    if (!card.classList.contains('rs485-port-skeleton')) {
+      card.className = 'rs485-port rs485-port-skeleton';
+      card.innerHTML = rs485SkeletonCardHtml(n);
+    }
+  }
+  Array.from(grid.children).forEach(function (card) {
+    const m = card.id && card.id.match(/^rs485c-(\d+)$/);
+    if (m && parseInt(m[1], 10) >= count) card.remove();
+  });
+  Array.from(grid.children)
+    .sort(function (a, b) {
+      const na = parseInt((a.id || '').replace('rs485c-', ''), 10);
+      const nb = parseInt((b.id || '').replace('rs485c-', ''), 10);
+      return na - nb;
+    })
+    .forEach(function (card) { grid.appendChild(card); });
+}
+
 function renderRs485(ports) {
+  _lastRs485Ports = ports;
   const grid = document.getElementById('rs485-grid');
   if (!grid) return;
   const seen = new Set();
-  ports.forEach(p => {
+  ports.slice().sort(function (a, b) { return (a.n | 0) - (b.n | 0); }).forEach(function (p) {
     seen.add('rs485c-' + p.n);
     const absent = p.st === 'absent';
-    const prev   = _prevRs[p.n] || { tx: p.tx, rx: p.rx };
-    const actNow = !absent && (p.tx !== prev.tx || p.rx !== prev.rx);
-    _prevRs[p.n] = { tx: p.tx, rx: p.rx };
-
+    const disabled = p.st === 'disabled';
     let card = document.getElementById('rs485c-' + p.n);
     if (!card) {
       card = document.createElement('div');
       card.id = 'rs485c-' + p.n;
       grid.appendChild(card);
     }
-    card.className = 'rs485-port' + (absent ? ' absent' : '');
-    if (actNow) {
-      card.classList.add('act');
-      clearTimeout(card._actTimer);
-      card._actTimer = setTimeout(() => card.classList.remove('act'), 1800);
-    }
+    card.className = 'rs485-port' + (absent ? ' absent' : '') + (disabled ? ' disabled' : '');
 
-    const hasErr = !absent && !!(p.fe || p.pe || p.oe);
-    const polling = !absent && !!p.open;
+    const errDelta = rs485ErrDelta(p);
+    const hasErr = !absent && !disabled && !!(errDelta.fe || errDelta.pe || errDelta.oe);
+    const hasTraffic = (p.tx | 0) > 0 || (p.rx | 0) > 0;
+    const polling = !absent && !disabled && (!!p.open || hasTraffic);
     let dotClass = 'idle';
-    let dotTitle = 'Порт свободен, опрос не выполняется';
+    let dotTitle = uiT('Порт свободен, опрос не выполняется');
     if (absent) {
       dotClass = 'nopoll';
-      dotTitle = 'Интерфейс отсутствует';
+      dotTitle = uiT('Интерфейс отсутствует');
+    } else if (disabled) {
+      dotClass = 'idle';
+      dotTitle = uiT('Статистика RS-485 отключена (sa02m_status_blocks.conf)');
     } else if (!polling) {
       dotClass = 'idle';
     } else if (hasErr) {
       dotClass = 'warn';
-      dotTitle = 'Опрос активен, ошибки линии (FE/PE/OE)';
+      dotTitle = uiT('Опрос активен, ошибки линии (FE/PE/OE)');
     } else if ((p.rx | 0) > 0) {
       dotClass = 'on';
-      dotTitle = 'Опрос активен, ответы устройств в норме';
+      dotTitle = uiT('Опрос активен, ответы устройств в норме');
     } else {
       dotClass = 'noresponse';
-      dotTitle = 'Опрос активен, нет ответов устройств';
+      dotTitle = uiT('Опрос активен, нет ответов устройств');
     }
 
-    const tx   = actNow ? '<span class="rv act">' + fmtNum(p.tx) + '</span>' : '<span class="rv">' + fmtNum(p.tx) + '</span>';
-    const rx   = actNow ? '<span class="rv act">' + fmtNum(p.rx) + '</span>' : '<span class="rv">' + fmtNum(p.rx) + '</span>';
-    const err  = (p.fe || p.pe || p.oe) ? '<div class="rs485-err">Ош FE=' + p.fe + ' PE=' + p.pe + ' OE=' + p.oe + '</div>' : '';
+    const tx   = '<span class="rv">' + fmtNum(p.tx) + '</span>';
+    const rx   = '<span class="rv">' + fmtNum(p.rx) + '</span>';
+    const err  = rs485ErrSlotHtml(errDelta.fe, errDelta.pe, errDelta.oe);
+    const devLabel = absent ? uiT('нет опроса') : (disabled ? uiT('статистика отключена') : p.dev);
 
     card.innerHTML =
-      '<div class="rs485-hdr"><span class="rs485-dot ' + dotClass + '" title="' + dotTitle + '"></span><span class="rs485-name">RS-485-' + p.n + '</span></div>' +
-      '<div class="rs485-dev">' + (absent ? 'нет опроса' : p.dev) + '</div>' +
+      '<div class="rs485-hdr"><span class="rs485-name">' + escHtml(uiT(rs485PortLabel(p.n))) + '</span><span class="rs485-dot ' + dotClass + '" title="' + escHtml(dotTitle) + '"></span></div>' +
+      '<div class="rs485-dev">' + escHtml(devLabel) + '</div>' +
       '<div class="rs485-row"><span class="rl">TX</span>' + tx + '</div>' +
       '<div class="rs485-row"><span class="rl">RX</span>' + rx + '</div>' +
       err;
   });
-  Array.from(grid.children).forEach(card => {
+  Array.from(grid.children).forEach(function (card) {
     if (card.id && !seen.has(card.id)) card.remove();
   });
+  Array.from(grid.children)
+    .sort(function (a, b) {
+      const na = parseInt((a.id || '').replace('rs485c-', ''), 10);
+      const nb = parseInt((b.id || '').replace('rs485c-', ''), 10);
+      return na - nb;
+    })
+    .forEach(function (card) { grid.appendChild(card); });
 }
+
+window.refreshRs485I18n = function () {
+  if (_lastRs485Ports && _lastRs485Ports.length) renderRs485(_lastRs485Ports);
+};
 
 /* ══════════════════════════════════════════════════════════════════════════
    CONFIG — load current network/time settings into forms
@@ -2193,6 +2628,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   initNav();
   applyVariantVisibility('sa02m-1eth');
+  initDashboardPlaceholders();
   initForms();
   initValidation();
   initWebCredsForm();
@@ -2201,26 +2637,8 @@ document.addEventListener('DOMContentLoaded', () => {
   hydratePriorityWarmup();
   bindUsbPowerResetButton();
   loadVariant();
-
-  /* Сначала отдельные первые виджеты, потом тяжелее блоки. */
-  const scheduleStatus = () => {
-    fetchPriorityPart('priority');
-    setTimeout(fetchStatusMain, 180);
-    setTimeout(fetchStatusRs485, 420);
-  };
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(() => { requestAnimationFrame(scheduleStatus); });
-  } else {
-    setTimeout(scheduleStatus, 0);
-  }
-  bootstrapBackgroundWidgets();
-  setInterval(() => fetchPriorityPart('priority'), 4000);
-  setInterval(fetchStatusMain, 6000);
-  setInterval(fetchStatusRs485, 8000);
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) fetchStatus();
-  });
+  bindStatusPollingLifecycle();
+  initStatusPolling();
 
   /* Expose globals for inline onclick */
   window.setHw    = setHw;

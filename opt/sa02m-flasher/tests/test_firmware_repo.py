@@ -449,15 +449,33 @@ class TestFlasherSupportedFilter(unittest.TestCase):
 
 
 class TestFormatNetworkError(unittest.TestCase):
-    def test_dns_error_is_actionable_ru(self) -> None:
-        from sa02m_flasher.firmware_repo import _format_network_error
+    def test_dns_error_is_no_internet_ru(self) -> None:
+        from sa02m_flasher.firmware_repo import NO_INTERNET_USER_MSG, _format_network_error
         import urllib.error
 
         exc = urllib.error.URLError(OSError(-3, "Temporary failure in name resolution"))
         msg = _format_network_error(exc, url="https://cyntron.ru/fw/app.fw")
-        self.assertIn("DNS", msg)
-        self.assertIn("cyntron.ru", msg)
-        self.assertIn("ICS", msg)
+        self.assertEqual(msg, NO_INTERNET_USER_MSG)
+
+    def test_http_502_is_no_internet_ru(self) -> None:
+        from sa02m_flasher.firmware_repo import NO_INTERNET_USER_MSG, _format_network_error
+        import urllib.error
+
+        exc = urllib.error.HTTPError(
+            "https://cyntron.ru/fw/index.json", 502, "Bad Gateway", {}, None
+        )
+        msg = _format_network_error(exc, url="https://cyntron.ru/fw/index.json")
+        self.assertEqual(msg, NO_INTERNET_USER_MSG)
+
+    def test_http_404_is_readable(self) -> None:
+        from sa02m_flasher.firmware_repo import _format_network_error
+        import urllib.error
+
+        exc = urllib.error.HTTPError(
+            "https://cyntron.ru/fw/missing.fw", 404, "Not Found", {}, None
+        )
+        msg = _format_network_error(exc, url="https://cyntron.ru/fw/missing.fw")
+        self.assertIn("не найден", msg.lower())
 
 
 if __name__ == "__main__":

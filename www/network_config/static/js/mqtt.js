@@ -313,7 +313,7 @@ function h(tag, attrs, ...children) {
 function showToast(msg, type = 'ok') {
   const t = document.getElementById('mqtt-toast');
   if (!t) return;
-  t.textContent = msg;
+  t.textContent = uiT(msg);
   t.className = `mqtt-toast mqtt-toast-${type} mqtt-toast-show`;
   clearTimeout(t._timeout);
   t._timeout = setTimeout(() => t.classList.remove('mqtt-toast-show'), 3500);
@@ -495,6 +495,11 @@ function normalizeMr02mAiPairsAll(dev) {
 
 function topicPath(deviceId, chName) {
   return `/devices/${deviceId}/controls/${chName}`;
+}
+
+/** MQTT wildcard filter for a device (subscribe to all its controls/meta). */
+function deviceTopicFilter(deviceId) {
+  return `/devices/${deviceId}/#`;
 }
 
 /** Системные показатели модуля MR-02m (публикует мост в _poll_diag). */
@@ -932,16 +937,20 @@ function bindMqttClientInfoCells() {
   if (_mqttClientInfoBound) return;
   _mqttClientInfoBound = true;
 
-  document.querySelectorAll('.mqtt-copy-cell').forEach((el) => {
-    el.addEventListener('click', async () => {
-      const text = el.dataset.copyText || el.textContent || '';
-      if (!text || text === '—') {
-        showToast('Нечего копировать', 'warn');
-        return;
-      }
-      if (await copyTextToClipboard(text)) showToast('Скопировано: ' + text, 'ok');
-      else showToast('Не удалось скопировать', 'err');
-    });
+  document.addEventListener('click', async (e) => {
+    const el = e.target.closest('.mqtt-copy-cell');
+    if (!el) return;
+    const text = el.dataset.copyText || el.textContent || '';
+    if (!text || text === '—') {
+      showToast('Нечего копировать', 'warn');
+      return;
+    }
+    if (await copyTextToClipboard(text)) {
+      if (el.dataset.copyToast === 'topic') showToast('Топик скопирован', 'ok');
+      else showToast('Скопировано: ' + text, 'ok');
+    } else {
+      showToast('Не удалось скопировать', 'err');
+    }
   });
 
   const passEl = document.getElementById('mqtt-ext-pass');
@@ -982,11 +991,11 @@ function applyBrokerStatusUI(st) {
   if (!st || st.error) {
     if (badge) {
       badge.className = 'badge badge-err';
-      badge.textContent = st && st.error === 'unauthorized' ? uiT('● Нет доступа') : uiT('● Нет данных');
+      badge.textContent = st && st.error === 'unauthorized' ? uiT('Нет доступа') : uiT('Нет данных');
     }
     if (bridgeBadge) {
       bridgeBadge.className = 'badge badge-unk';
-      bridgeBadge.textContent = uiT('● Мост —');
+      bridgeBadge.textContent = uiT('Мост —');
     }
     if (clients) clients.textContent = uiT('Клиентов: —');
     return;
@@ -994,12 +1003,12 @@ function applyBrokerStatusUI(st) {
 
   if (badge) {
     badge.className = `badge ${st.mosquitto_active ? 'badge-ok' : 'badge-err'}`;
-    badge.textContent = st.mosquitto_active ? uiT('● Работает') : uiT('● Остановлен');
+    badge.textContent = st.mosquitto_active ? uiT('Работает') : uiT('Остановлен');
   }
   if (clients) clients.textContent = uiT(`Клиентов: ${st.clients_connected}`);
   if (bridgeBadge) {
     bridgeBadge.className = `badge ${st.bridge_active ? 'badge-ok' : 'badge-unk'}`;
-    bridgeBadge.textContent = st.bridge_active ? uiT('● Мост активен') : uiT('● Мост остановлен');
+    bridgeBadge.textContent = st.bridge_active ? uiT('Мост активен') : uiT('Мост остановлен');
   }
   const bridgeToggle = document.getElementById('mqtt-bridge-toggle-btn');
   if (bridgeToggle) {
@@ -1060,6 +1069,7 @@ function renderDeviceList() {
     const ioTotal = countChannelsTotal(dev);
     const pollCount = countPollEnabled(dev);
     const comName = (dev.port || '').replace('/dev/', '');
+    const topic = deviceTopicFilter(dev.id);
     const tr = h('tr', {'data-device-id': dev.id},
       h('td', {}, deviceTypeBadge(dev.type)),
       h('td', {}, formatDeviceDisplayName(dev)),
@@ -1067,6 +1077,14 @@ function renderDeviceList() {
       h('td', {'class':'mono'}, String(dev.address || '—')),
       h('td', {'class': 'mqtt-io-count'}, `${ioEnabled}/${ioTotal}`),
       h('td', {'class': 'mqtt-poll-count'}, String(pollCount)),
+      h('td', {},
+        h('span', {
+          'class': 'mono mqtt-copy-cell mqtt-device-topic',
+          'data-copy-text': topic,
+          'data-copy-toast': 'topic',
+          'title': uiT('Нажмите, чтобы скопировать'),
+        }, topic)
+      ),
       h('td', {},
         h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, '✕ Удалить')
       )

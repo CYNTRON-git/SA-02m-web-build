@@ -35,6 +35,7 @@ def read_cache_file(device: str, max_age_s: float = 8.0) -> dict | None:
         data["source"] = "cache"
         data.setdefault("units", {})
         data.setdefault("errors", {})
+        data.setdefault("sensor_types", {})
         return data
     except (OSError, json.JSONDecodeError, ValueError):
         return None

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.29-8">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.30-4">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН" title="Общая информация">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
       <div class="topbar-branding">
         <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
@@ -39,7 +39,7 @@
     <div class="topbar-user">
       <svg width="15" height="15" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
       <span id="topbar-user-name">admin</span>
-      <button class="btn btn-sm" style="margin-left:4px" onclick="doLogout()">Выход</button>
+      <button class="topbar-lang-btn" id="logout-btn" type="button" onclick="doLogout()" data-i18n="Выход">Выход</button>
     </div>
   </header>
 
@@ -49,7 +49,7 @@
     <nav class="sidebar">
       <div class="nav-item active" data-tab="dashboard">
         <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-        <span class="nav-label" data-i18n="Общая информация">Общая информация</span>
+        <span class="nav-label" data-i18n="Сведения">Сведения</span>
       </div>
 
       <div class="nav-item" data-tab="network">
@@ -61,14 +61,14 @@
         <span class="nav-label" data-i18n="Время">Время</span>
       </div>
 
-      <div class="nav-item" data-tab="flasher">
-        <svg viewBox="0 0 24 24"><path d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01"/></svg>
-        <span class="nav-label" data-i18n="Устройства RS-485">Устройства RS-485</span>
-      </div>
-
       <div class="nav-item" data-tab="mqtt">
         <svg viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/><circle cx="9" cy="6" r="2" fill="currentColor"/><circle cx="15" cy="12" r="2" fill="currentColor"/><circle cx="9" cy="18" r="2" fill="currentColor"/></svg>
         MQTT
+      </div>
+
+      <div class="nav-item" data-tab="flasher">
+        <svg viewBox="0 0 24 24"><path d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01"/></svg>
+        <span class="nav-label" data-i18n="Устройства RS-485">Устройства RS-485</span>
       </div>
 
       <div class="nav-item nav-parent" id="nav-gateway" data-tab="gateway">
@@ -100,7 +100,7 @@
       <!-- ═══════════════════════════════ DASHBOARD ══════════════════════ -->
       <div id="tab-dashboard" class="tab-pane active">
         <div class="page-header">
-          <h2>Общая информация</h2>
+          <h2>Сведения</h2>
         </div>
 
         <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
@@ -111,9 +111,9 @@
           <div class="widget">
             <div class="widget-title">Система</div>
             <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
-            <div class="widget-sub" id="cpu-model"></div>
-            <div class="widget-sub" id="armbian-info" style="margin-top:4px"></div>
-            <div class="widget-sub" id="kernel-info" style="margin-top:4px"></div>
+            <div class="widget-sub widget-sub-reserved" id="cpu-model">&nbsp;</div>
+            <div class="widget-sub widget-sub-reserved" id="armbian-info" style="margin-top:4px">&nbsp;</div>
+            <div class="widget-sub widget-sub-reserved" id="kernel-info" style="margin-top:4px">&nbsp;</div>
           </div>
 
           <!-- Загрузка CPU -->
@@ -139,8 +139,8 @@
               <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
               <div class="load-item"><div class="load-num" id="load-15">—</div><div class="load-lbl">15 мин</div></div>
             </div>
-            <div class="widget-sub" id="proc-info"></div>
-            <div class="widget-sub" id="cpu-freq" style="margin-top:3px"></div>
+            <div class="widget-sub widget-sub-reserved" id="proc-info">Процессов: 0 / 0</div>
+            <div class="widget-sub widget-sub-reserved" id="cpu-freq" style="margin-top:3px">0 МГц</div>
           </div>
 
           <!-- Температура CPU -->
@@ -173,7 +173,7 @@
               <div class="bar-track"><div class="bar-fill" id="ram-bar" style="width:0%"></div></div>
               <div class="bar-meta"><span id="ram-pct">0%</span><span id="ram-free"></span></div>
             </div>
-            <div id="swap-block" class="swap-block" style="display:none">
+            <div id="swap-block" class="swap-block swap-block-reserved" aria-hidden="true">
               <div class="swap-title">SWAP</div>
               <div class="bar-track"><div class="bar-fill" id="swap-bar" style="width:0%"></div></div>
               <div class="bar-meta"><span id="swap-pct">0%</span><span id="swap-lbl"></span></div>
@@ -189,7 +189,7 @@
               <div class="bar-track"><div class="bar-fill" id="disk-bar" style="width:0%;background:var(--green)"></div></div>
               <div class="bar-meta"><span id="disk-pct">0%</span><span id="disk-free"></span></div>
             </div>
-            <div class="widget-sub" id="disk-io" style="margin-top:8px;font-size:13px"></div>
+            <div class="widget-sub widget-sub-reserved disk-io-line" id="disk-io" style="margin-top:8px">R 0 Б / W 0 Б</div>
           </div>
 
           <!-- Службы -->
@@ -234,29 +234,36 @@
 
           <!-- Network end0 -->
           <div class="widget">
-            <div class="widget-title widget-title-preserve">Ethernet № 1</div>
-            <div class="widget-sub mono" id="end0-ip">—</div>
-            <div style="margin-bottom:8px"><span id="end0-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
-            <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-line" id="end0-rx">RX —</div>
-              <div class="mono eth-traffic-line" id="end0-tx">TX —</div>
+            <div class="widget-title eth-hdr-title widget-title-preserve">
+              <span>Ethernet № 1</span>
+              <span id="end0-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
+            <div class="eth-traffic-stack">
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end0-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end0-tx">0 Б</span></div>
+            </div>
+            <div class="widget-sub mono eth-ip" id="end0-ip">—</div>
           </div>
 
           <!-- Network end1 (только СА-02м-2) -->
           <div class="widget" data-hide-for="sa02m-1eth">
-            <div class="widget-title widget-title-preserve">Ethernet № 2</div>
-            <div class="widget-sub mono" id="end1-ip">—</div>
-            <div style="margin-bottom:8px"><span id="end1-state" class="eth-state eth-state-prominent absent">● Нет адаптера</span></div>
-            <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-line" id="end1-rx">RX —</div>
-              <div class="mono eth-traffic-line" id="end1-tx">TX —</div>
+            <div class="widget-title eth-hdr-title widget-title-preserve">
+              <span>Ethernet № 2</span>
+              <span id="end1-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
+            <div class="eth-traffic-stack">
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end1-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end1-tx">0 Б</span></div>
+            </div>
+            <div class="widget-sub mono eth-ip" id="end1-ip">—</div>
           </div>
 
           <!-- HW outputs — ширина верхнего ряда (4 колонки) -->
-          <div class="widget dash-span-top4">
-            <div class="widget-title">Дискретный выход, USB-питание и индикация</div>
+          <div class="widget hw-block dash-span-top4">
+            <div class="widget-title hw-block-title">
+              <span data-i18n="Дискретный выход, USB-питание и индикация">Дискретный выход, USB-питание и индикация</span>
+              <div id="hw-block-status" class="hw-block-status" hidden aria-live="polite"></div>
+            </div>
             <div class="hw-hint" id="hw-hint" style="display:none"></div>
             <div class="hw-grid">
               <div class="hw-item" data-hide-for="sa02m-2eth">
@@ -298,7 +305,7 @@
               <div class="hw-item">
                 <div class="hw-item-title">Питание USB</div>
                 <div class="hw-item-body">
-                  <div class="hw-btns hw-btns-usb" data-hw-ch="usb_power" title="Удержание: питание USB отключено (уровень 0); отпускание — снова включено (1)">
+                  <div class="hw-btns hw-btns-usb" data-hw-ch="usb_power" title="Сброс питания USB на 10 с (алгоритм test_fb.cpp MasterPLC)">
                     <button type="button" class="btn btn-sm btn-warn" id="hw-usb-reset-btn">Сброс</button>
                   </div>
                   <div class="hw-status-line">
@@ -310,7 +317,7 @@
           </div>
 
           <!-- RS-485 — та же ширина, что и HW (4 колонки) -->
-          <div class="widget dash-span-top4">
+          <div class="widget widget-rs485 dash-span-top4">
             <div class="widget-title">Интерфейсы RS-485 — активность</div>
             <div class="rs485-grid" id="rs485-grid"></div>
           </div>
@@ -745,10 +752,10 @@
         <!-- Broker status bar -->
         <div class="widget mqtt-broker-bar">
           <div class="mqtt-broker-row">
-            <span id="mqtt-broker-badge" class="badge badge-unk">● Нет данных</span>
+            <span id="mqtt-broker-badge" class="badge badge-unk">Нет данных</span>
             <span class="mqtt-broker-ports">1883 (локал.) · 1884 (внешний)</span>
             <span id="mqtt-broker-clients" class="widget-sub">Клиентов: —</span>
-            <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">● Мост —</span>
+            <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">Мост —</span>
             <div style="margin-left:auto;display:flex;gap:6px">
               <button class="btn btn-sm btn-warn" type="button" id="mqtt-bridge-toggle-btn" onclick="mqttToggleBridge()" title="Освободить COM для прошивальщика / сканирования">Остановить</button>
               <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">⟳ Перезапустить</button>
@@ -800,7 +807,7 @@
             <div class="mqtt-devices-table-wrap">
               <table class="mqtt-device-table">
                 <thead>
-                  <tr><th>Тип</th><th>Имя</th><th>Порт</th><th>Addr</th><th>Каналов</th><th></th></tr>
+                  <tr><th>Тип</th><th>Имя</th><th>Порт</th><th>Addr</th><th>Вх./вых.</th><th>Каналы</th><th>Топик</th><th></th></tr>
                 </thead>
                 <tbody id="mqtt-device-tbody"></tbody>
               </table>
@@ -938,9 +945,9 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.3.29-9"></script>
-<script src="/static/js/app.js?v=1.0.3.29"></script>
-<script src="/static/js/flasher.js?v=1.0.3.29-7"></script>
+<script src="/static/js/i18n.js?v=1.0.3.31-2"></script>
+<script src="/static/js/app.js?v=1.0.3.31-1"></script>
+<script src="/static/js/flasher.js?v=1.0.3.31-2"></script>
 <script src="/static/js/mqtt.js?v=1.2.1"></script>
 <script src="/static/js/gateway.js?v=1.0.3.29-5"></script>
 </body>

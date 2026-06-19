@@ -114,6 +114,51 @@
     else console.log('[flasher]', text);
   }
 
+  const FW_MSG_NO_INTERNET = 'Нет доступа к интернету';
+
+  function isFirmwareOfflineError(raw) {
+    const s = String(raw || '').trim().toLowerCase();
+    if (!s) return false;
+    if (s === FW_MSG_NO_INTERNET.toLowerCase()) return true;
+    if (/^http\s*(error\s*)?(502|503|504)\b/.test(s)) return true;
+    if (/^http\s+(502|503|504)\b/.test(s)) return true;
+    return /temporary failure|name resolution|name or service not known|\bdns\b|econnrefused|enetunreach|network is unreachable|no route to host|connection refused|connection timed out|timed out|\btimeout\b|failed to fetch|fetch failed|networkerror|err_internet_disconnected|err_network_changed/.test(s);
+  }
+
+  function formatFirmwareError(raw, context) {
+    const msg = String(raw || '').trim();
+    if (!msg) {
+      if (context === 'upload') return 'Не удалось загрузить прошивку';
+      if (context === 'load') return 'Не удалось загрузить список прошивок';
+      return 'Не удалось обновить список прошивок';
+    }
+    if (isFirmwareOfflineError(msg)) return FW_MSG_NO_INTERNET;
+
+    const http = msg.match(/^HTTP(?:\s+Error)?\s+(\d{3})\b/i);
+    if (http) {
+      const code = parseInt(http[1], 10);
+      if (code === 401 || code === 403) return 'Нет доступа';
+      if (code >= 500 && code <= 504) return FW_MSG_NO_INTERNET;
+      if (code >= 400) return 'Ошибка сервера (' + code + ')';
+    }
+
+    if (/^json:/i.test(msg)) return 'Некорректный ответ сервера прошивок';
+    if (/^ошибка скачивания https?:\/\//i.test(msg) && isFirmwareOfflineError(msg)) {
+      return FW_MSG_NO_INTERNET;
+    }
+    if (/^ошибка скачивания https?:\/\//i.test(msg)) {
+      return 'Не удалось скачать прошивку с сервера';
+    }
+    if (/^manifest:/i.test(msg)) return msg.replace(/^manifest:\s*/i, '').trim() || FW_MSG_NO_INTERNET;
+    if (/^манифест:\s*/i.test(msg)) return msg.replace(/^манифест:\s*/i, '').trim() || FW_MSG_NO_INTERNET;
+
+    return msg;
+  }
+
+  function toastFirmwareError(raw, type, context) {
+    toast(formatFirmwareError(raw, context), type || 'error');
+  }
+
   async function apiGet(path) {
     const res = await fetch(API + path, { credentials: 'same-origin' });
     if (!res.ok) {
@@ -515,7 +560,7 @@
       renderFirmware(data);
       updateFlashControls();
     } catch (err) {
-      toast('Манифест: ' + err.message, 'error');
+      toastFirmwareError(err.message, 'error', 'load');
     }
   }
 
@@ -576,8 +621,7 @@
       }
       const res = await apiPost('/firmware/refresh', body);
       if (res.error) {
-        const dlErr = (res.download_errors || []).join('; ');
-        toast('Манифест: ' + res.error + (dlErr && dlErr !== res.error ? ' (' + dlErr + ')' : ''), 'warn');
+        toastFirmwareError(res.error, 'warn', 'refresh');
       } else {
         let msg = 'Список прошивок обновлён (записей: ' + res.entries + ')';
         if (res.purged && res.purged.length) {
@@ -587,7 +631,7 @@
       }
       await loadFirmware();
     } catch (err) {
-      toast('Манифест: ' + err.message, 'error');
+      toastFirmwareError(err.message, 'error', 'refresh');
     }
   }
 
@@ -598,7 +642,7 @@
       toast('Загружено: ' + (res.entry && res.entry.file || file.name), 'success');
       await loadFirmware();
     } catch (err) {
-      toast('Загрузка прошивки: ' + err.message, 'error');
+      toastFirmwareError(err.message, 'error', 'upload');
     }
   }
 

@@ -280,7 +280,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-web-restart-services.sh, \
     /usr/local/sbin/sa02m-web-service-ctl.sh list, \
     /usr/local/sbin/sa02m-web-service-ctl.sh start *, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh stop *
+    /usr/local/sbin/sa02m-web-service-ctl.sh stop *, \
+    /usr/local/sbin/sa02m-rs485-stats.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
@@ -329,6 +330,11 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
 else
     log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
+fi
+if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
+else
+    log WARN "Нет scripts/sa02m-rs485-stats.sh — RS-485 TX/RX в дашборде без sudo-helper"
 fi
 for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     if [ -f "$SYSTEMD_DIR/$_wu_unit" ]; then

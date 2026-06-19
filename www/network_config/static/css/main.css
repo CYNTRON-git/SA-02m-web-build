@@ -241,6 +241,7 @@ html:not([data-theme="light"]) .topbar {
 .topbar-sep   { flex: 1; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
+.topbar-user #logout-btn { margin-left: 4px; }
 
 .body { display: flex; flex: 1; overflow: hidden; }
 
@@ -337,6 +338,7 @@ html:not([data-theme="light"]) .topbar {
 /* Uptime: пустая строка перед значением */
 .widget-val.uptime-readout {
   padding-top: 0.9em;
+  min-height: calc(0.9em + 26px);
 }
 /* USB / microSD: «НЕ УСТАНОВЛЕН» — крупнее (~×1.5), две пустые строки над текстом */
 .widget-val.widget-val-removable-empty {
@@ -351,6 +353,19 @@ html:not([data-theme="light"]) .topbar {
   padding-top: 1.85em;
 }
 .widget-sub  { font-size: 13px; color: var(--text-sec); margin-top: 3px; }
+.widget-sub.widget-sub-reserved { min-height: 1.35em; }
+.widget-sub.widget-sub-inert { visibility: hidden; }
+.widget-sub.disk-io-line { font-size: 13px; }
+/* Ethernet widget: IP — акцент; цвет через --text (светлый в dark, тёмный в light) */
+.widget-sub.eth-ip {
+  font-size: 1.08rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 8px;
+  margin-bottom: 0;
+  line-height: 1.35;
+  min-height: calc(1.08rem * 1.35);
+}
 
 /* ── Gauge (SVG half-circle) ─────────────────────────────────────────────── */
 .gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -379,7 +394,7 @@ svg .gauge-num {
 .bar-row { margin-top: 10px; }
 .bar-track { background: var(--meter-track); border-radius: var(--radius-pill); height: 7px; overflow: hidden; }
 .bar-fill  { height: 100%; border-radius: var(--radius-pill); transition: width .4s ease, background .3s ease; }
-.bar-meta  { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-sec); margin-top: 4px; }
+.bar-meta  { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-sec); margin-top: 4px; min-height: 1.35em; }
 
 /* ── Service badges ──────────────────────────────────────────────────────── */
 .svc-list { display: flex; flex-direction: column; gap: 7px; }
@@ -395,6 +410,12 @@ svg .gauge-num {
   min-width: 0;
   gap: 3px;
   align-items: stretch;
+  /* Резерв под ≤6 строк (badge 18px + padding) до ответа status.cgi */
+  min-height: calc(6 * 22px + 5 * 3px);
+}
+.widget-svc .svc-row.svc-row-skeleton {
+  visibility: hidden;
+  pointer-events: none;
 }
 /* Строка сетки: по умолчанию только контейнер (детали — .widget-svc / .svc-row-eth-traffic) */
 .svc-row {
@@ -605,14 +626,51 @@ svg .gauge-num {
 .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* ── HW control cards ────────────────────────────────────────────────────── */
+.hw-block-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.hw-block-title > span { flex: 0 0 auto; }
+.hw-block-status {
+  flex: 1 1 auto;
+  text-align: right;
+  margin-top: 0;
+  font-size: .78rem;
+  color: var(--text-sec);
+  min-height: 1.2em;
+}
+.hw-block-status[hidden] { display: none !important; }
+.hw-block-status.success { color: var(--green); }
+.hw-block-status.warn { color: var(--yellow, #facc15); }
+.hw-block-status.error { color: var(--red); }
+
 .hw-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px; }
+
+/* HW block: parent widget + inner sub-cards — nested hover */
+.hw-block {
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+#tab-dashboard .hw-block:hover,
+.hw-block:hover {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow);
+}
 .hw-item {
-  background: var(--bg-card); border: 1px solid var(--border);
+  background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 16px;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--transition), border-color var(--transition);
 }
-.hw-item:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
+.hw-block:hover .hw-item {
+  border-color: var(--border-md);
+}
+.hw-block:hover .hw-item:hover {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
+}
 .hw-item-title { font-size: 14px; color: var(--text-sec); margin-bottom: 10px; font-weight: 600; }
 .hw-item-body {
   display: grid;
@@ -669,6 +727,15 @@ svg .gauge-num {
 }
 
 /* ── RS-485 cards ────────────────────────────────────────────────────────── */
+/* RS-485 widget: parent + inner port cards — nested hover (как hw-block) */
+.widget-rs485 {
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+#tab-dashboard .widget-rs485:hover,
+.widget-rs485:hover {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow);
+}
 .rs485-grid {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
@@ -678,11 +745,17 @@ svg .gauge-num {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 13px 12px;
   box-shadow: var(--shadow-sm);
-  transition: border-color .35s ease, box-shadow .35s ease;
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.widget-rs485:hover .rs485-port {
+  border-color: var(--border-md);
+}
+.widget-rs485:hover .rs485-port:hover {
+  border-color: var(--cyan);
+  box-shadow: var(--shadow-glow), var(--shadow-sm);
 }
 .rs485-port.absent { opacity: .92; }
-.rs485-port.act    { border-color: var(--cyan-btn); box-shadow: 0 0 16px #0891b244, var(--shadow-sm); }
-.rs485-hdr { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.rs485-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
 .rs485-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background .4s, box-shadow .4s; }
 /* опрос активен, ответы устройств в норме */
 .rs485-dot.on          { background: var(--green); box-shadow: 0 0 5px var(--green); }
@@ -695,12 +768,25 @@ svg .gauge-num {
 /* опрос активен, нет ответов устройств */
 .rs485-dot.noresponse  { background: var(--red); box-shadow: 0 0 6px var(--red); }
 .rs485-name { font-size: 15px; font-weight: 700; color: var(--text); }
-.rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; }
+.rs485-dev  { font-size: 12px; color: var(--text-dim); margin-bottom: 7px; font-family: 'Courier New', monospace; min-height: 1.2em; }
+.rs485-dev-reserved { visibility: hidden; }
 .rs485-row  { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; margin-top: 3px; }
 .rs485-row .rl { color: var(--text-sec); }
 .rs485-row .rv { font-weight: 600; color: var(--text); font-family: 'Courier New', monospace; }
-.rs485-row .rv.act { color: var(--cyan); }
 .rs485-err  { font-size: 12px; color: var(--red); margin-top: 5px; }
+.rs485-err-reserved {
+  visibility: hidden;
+  min-height: calc(12px * 1.35 + 5px);
+  margin-top: 5px;
+}
+.rs485-port-skeleton .rs485-dot {
+  background: var(--text-dim);
+  opacity: 0.35;
+}
+.rs485-port-skeleton .rs485-dev,
+.rs485-port-skeleton .rv {
+  color: var(--text-dim);
+}
 
 /* ── Load-avg mini grid ──────────────────────────────────────────────────── */
 .load-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
@@ -710,15 +796,51 @@ svg .gauge-num {
 
 /* ── Swap mini-bar ───────────────────────────────────────────────────────── */
 .swap-block { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.swap-block.swap-block-reserved:not(.swap-active):not(.swap-block-collapsed) {
+  visibility: hidden;
+  pointer-events: none;
+}
+.swap-block.swap-block-collapsed {
+  display: none !important;
+  margin: 0;
+  padding: 0;
+  border: none;
+  min-height: 0;
+}
 .swap-title { font-size: 12px; color: var(--text-sec); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .05em; }
 
 /* ── eth1 status ─────────────────────────────────────────────────────────── */
+.eth-hdr-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: nowrap;
+  width: 100%;
+  /* Высота заголовка с pill «Линк» / «Нет линка» — и до загрузки status.cgi */
+  min-height: calc(1.06rem * 1.35 + 10px);
+}
+.eth-hdr-title > span:first-child {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.eth-hdr-title .eth-state {
+  flex: 0 0 auto;
+  margin-left: auto;
+  text-align: right;
+}
 .eth-row    { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
 .eth-state {
   font-size: 14px;
   font-weight: 400;
-  display: inline-block; padding: 4px 12px; border-radius: var(--radius-pill);
+  display: inline-block; padding: 4px 12px; border-radius: var(--radius-xs);
   border: 1px solid transparent;
+}
+.eth-state.eth-state-hidden,
+.eth-state[hidden] {
+  visibility: hidden;
+  display: inline-block !important;
+  pointer-events: none;
 }
 /* Ethernet: строка состояния чуть крупнее базового, без жирного — иначе «мыло» на экране */
 .eth-state.eth-state-prominent {
@@ -756,19 +878,37 @@ svg .gauge-num {
 .eth-traffic-stack {
   margin-top: 4px;
 }
-.eth-traffic-stack .eth-traffic-line {
-  margin-top: 0;
-}
-.eth-traffic-stack .eth-traffic-line + .eth-traffic-line {
-  margin-top: 2px;
-}
-.eth-traffic-line {
+.eth-traffic-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
   font-size: 1.12rem;
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.45;
   color: var(--text);
-  margin-top: 4px;
+  margin-top: 0;
+}
+.eth-traffic-stack .eth-traffic-row + .eth-traffic-row {
+  margin-top: 2px;
+}
+.eth-traffic-row .eth-traffic-label {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--text-sec);
+}
+.eth-traffic-row .eth-traffic-val {
+  flex: 1;
+  min-width: 0;
+  min-height: calc(1.12rem * 1.45);
+  text-align: right;
+  font-weight: 800;
+  color: var(--text);
+}
+#usb-storage-view,
+#sd-detail {
+  min-height: calc(26px + 16px + 7px + 1.35em + 4px);
 }
 .eth-state.up {
   color: var(--green);
@@ -2476,6 +2616,14 @@ svg .gauge-num {
   border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.06));
 }
 .mqtt-device-table tr:last-child td { border-bottom: none; }
+.mqtt-device-topic {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
 
 /* Accordion */
 .mqtt-accordion-section {
@@ -2749,11 +2897,11 @@ svg .gauge-num {
 .mqtt-scan-results table { width: 100%; }
 .mqtt-scan-results td input[type=text] { width: 170px; }
 
-/* Toast */
+/* Toast — upper-right, aligned with global .toast-area */
 .mqtt-toast {
   position: fixed;
-  bottom: 24px;
-  right: 24px;
+  top: 64px;
+  right: 20px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -2762,11 +2910,12 @@ svg .gauge-num {
   box-shadow: 0 4px 16px rgba(0,0,0,.3);
   z-index: 2000;
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateX(16px);
   transition: opacity .25s, transform .25s;
   pointer-events: none;
+  max-width: 360px;
 }
-.mqtt-toast-show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.mqtt-toast-show { opacity: 1; transform: translateX(0); pointer-events: auto; }
 .mqtt-toast-ok   { border-color: var(--green, #4ade80); }
 .mqtt-toast-warn { border-color: var(--yellow, #facc15); }
 .mqtt-toast-err  { border-color: var(--red, #f87171); }

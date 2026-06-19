@@ -38,6 +38,24 @@ if ! sa02m_hw_channel_available "$CH"; then
     exit 0
 fi
 
+if [ "$CH" = "usb_power" ] && [ "$VAL" = "reset" ]; then
+    reset_sec=$(sa02m_hw_usb_reset_duration_sec)
+    sa02m_hw_usb_power_reset_async
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        sa02m_hw_metrics_cache_patch_channel "$CH" 0 2>/dev/null || true
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] hw_set.cgi: usb_power reset ${reset_sec}s" >> /var/log/sa02m_install.log 2>&1
+        echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":0,\"reset_sec\":${reset_sec},\"resetting\":true}"
+        exit 0
+    fi
+    if [ "$rc" -eq 2 ]; then
+        echo '{"ok":false,"error":"reset_busy"}'
+        exit 0
+    fi
+    echo '{"ok":false,"error":"write_failed"}'
+    exit 0
+fi
+
 if [ "$VAL" != "0" ] && [ "$VAL" != "1" ]; then
     echo '{"ok":false,"error":"bad_value"}'
     exit 0
@@ -45,6 +63,7 @@ fi
 
 if sa02m_hw_use_i2c; then
     if sa02m_hw_i2c_write_channel "$CH" "$VAL"; then
+        sa02m_hw_metrics_cache_patch_channel "$CH" "$VAL" 2>/dev/null || true
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] hw_set.cgi: backend=i2c_expander channel=$CH value=$VAL bus=${SA02M_I2C_EXP_BUS} addr=${SA02M_I2C_EXP_ADDR}" >> /var/log/sa02m_install.log 2>&1
         echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":${VAL}}"
         exit 0
@@ -59,6 +78,7 @@ if sa02m_hw_use_i2c; then
 fi
 
 if sa02m_hw_gpio_write_channel "$CH" "$VAL"; then
+    sa02m_hw_metrics_cache_patch_channel "$CH" "$VAL" 2>/dev/null || true
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] hw_set.cgi: backend=gpio_sysfs channel=$CH value=$VAL" >> /var/log/sa02m_install.log 2>&1
     echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":${VAL}}"
 else

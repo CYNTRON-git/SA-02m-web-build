@@ -111,9 +111,9 @@ devices:
   #   address: 6
   #   channels:
   #     ai:
-  #       - {ch: 1, sensor_type: 1, enabled: true}
-  #       - {ch: 2, sensor_type: 1, enabled: false}
-  #       - {ch: 3, sensor_type: 28, enabled: true}
-  #       - {ch: 4, sensor_type: 28, enabled: false}
-  #       - {ch: 5, sensor_type: 6, enabled: true}
-  #       - {ch: 6, sensor_type: 6, enabled: true}
+  #       - {ch: 1, sensor_type: 3, enabled: true}   # NTC 10k
+  #       - {ch: 2, sensor_type: 3, enabled: false}
+  #       - {ch: 3, sensor_type: 22, enabled: true}  # Pt100 3-wire
+  #       - {ch: 4, sensor_type: 22, enabled: false}
+  #       - {ch: 5, sensor_type: 41, enabled: true}  # ТХА
+  #       - {ch: 6, sensor_type: 41, enabled: true}

@@ -11,6 +11,9 @@ SA02M_GPIO_USB_POWER="${SA02M_GPIO_USB_POWER:-}"
 # Питание USB через libgpiod (когда линия не в sysfs), например: gpioset 0 268=1
 SA02M_GPIO_USB_GPIOD_CHIP="${SA02M_GPIO_USB_GPIOD_CHIP:-}"
 SA02M_GPIO_USB_GPIOD_LINE="${SA02M_GPIO_USB_GPIOD_LINE:-}"
+# Сброс USB: test_fb.cpp (MasterPLC) — USB_Counter > 100 при периоде FB 100 ms → 10 s.
+SA02M_USB_POWER_RESET_CYCLES="${SA02M_USB_POWER_RESET_CYCLES:-100}"
+SA02M_USB_POWER_RESET_CYCLE_MS="${SA02M_USB_POWER_RESET_CYCLE_MS:-100}"
 
 SA02M_I2C_EXP_BUS="${SA02M_I2C_EXP_BUS:-2}"
 SA02M_I2C_EXP_ADDR="${SA02M_I2C_EXP_ADDR:-0x41}"
@@ -573,9 +576,183 @@ sa02m_hw_gpio_write_channel() {
     echo "$logical" | sudo tee "/sys/class/gpio/gpio${pin}/value" >/dev/null 2>&1
 }
 
+sa02m_hw_usb_reset_duration_sec() {
+    echo $(( (SA02M_USB_POWER_RESET_CYCLES * SA02M_USB_POWER_RESET_CYCLE_MS + 999) / 1000 ))
+}
+
+sa02m_hw_usb_power_reset_busy() {
+    [ -d /run/lock/sa02m-usb-power-reset.lock ]
+}
+
+# Асинхронный сброс: VBUS off → sleep N s → on (как test_fb.cpp, без блокировки CGI).
+sa02m_hw_usb_power_reset_async() {
+    local sec lock=/run/lock/sa02m-usb-power-reset.lock
+    if sa02m_hw_usb_power_reset_busy; then
+        return 2
+    fi
+    sec=$(sa02m_hw_usb_reset_duration_sec)
+    if ! mkdir "$lock" 2>/dev/null; then
+        return 2
+    fi
+    (
+        trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+        sa02m_hw_gpio_write_channel usb_power 0 || exit 1
+        sleep "$sec"
+        sa02m_hw_gpio_write_channel usb_power 1 || exit 1
+    ) >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    return 0
+}
+
+# Только проверка /etc/sa02m_hw.conf — без I2C/GPIO опроса (для UI при отключённом status block).
+sa02m_hw_detect_channel_pins() {
+    HW_CFG=0
+    PIN_DO=0
+    PIN_BEEP=0
+    PIN_LED=0
+    PIN_USB=0
+
+    if [ "$(sa02m_hw_backend)" = "disabled" ]; then
+        if sa02m_hw_usb_power_use_gpiod && command -v gpioset >/dev/null 2>&1; then
+            PIN_USB=1
+            HW_CFG=1
+        fi
+        return 0
+    fi
+
+    if sa02m_hw_use_i2c; then
+        sa02m_hw_channel_available do && PIN_DO=1
+        sa02m_hw_channel_available beeper && PIN_BEEP=1
+        sa02m_hw_channel_available alarm_led && PIN_LED=1
+        sa02m_hw_channel_available usb_power && PIN_USB=1
+        (( PIN_DO || PIN_BEEP || PIN_LED || PIN_USB )) && HW_CFG=1
+        return 0
+    fi
+
+    [[ "${SA02M_GPIO_DO:-}" =~ ^[0-9]+$ ]] && PIN_DO=1 && HW_CFG=1
+    [[ "${SA02M_GPIO_BEEPER:-}" =~ ^[0-9]+$ ]] && PIN_BEEP=1 && HW_CFG=1
+    [[ "${SA02M_GPIO_ALARM_LED:-}" =~ ^[0-9]+$ ]] && PIN_LED=1 && HW_CFG=1
+    if sa02m_hw_usb_power_use_gpiod && command -v gpioset >/dev/null 2>&1; then
+        PIN_USB=1
+        HW_CFG=1
+    elif [[ "${SA02M_GPIO_USB_POWER:-}" =~ ^[0-9]+$ ]]; then
+        PIN_USB=1
+        HW_CFG=1
+    fi
+}
+
+# Снимок метрик для UI при SA02M_STATUS_ENABLE_HARDWARE=0 (без I2C на каждый main).
+SA02M_HW_METRICS_CACHE="${SA02M_HW_METRICS_CACHE:-/tmp/sa02m_status_cache/hw_metrics.snapshot}"
+SA02M_HW_METRICS_CACHE_TTL="${SA02M_HW_METRICS_CACHE_TTL:-15}"
+
+sa02m_hw_metrics_cache_dir() {
+    dirname "$SA02M_HW_METRICS_CACHE"
+}
+
+sa02m_hw_metrics_cache_ensure_dir() {
+    mkdir -p "$(sa02m_hw_metrics_cache_dir)" 2>/dev/null || true
+}
+
+sa02m_hw_metrics_cache_fresh() {
+    local now mtime ttl
+    ttl=${SA02M_HW_METRICS_CACHE_TTL:-15}
+    [ -f "$SA02M_HW_METRICS_CACHE" ] || return 1
+    now=$(date +%s 2>/dev/null || echo 0)
+    mtime=$(stat -c %Y "$SA02M_HW_METRICS_CACHE" 2>/dev/null || echo 0)
+    (( mtime > now )) && return 1
+    (( now - mtime < ttl ))
+}
+
+sa02m_hw_metrics_cache_save() {
+    sa02m_hw_metrics_cache_ensure_dir
+    local tmp="${SA02M_HW_METRICS_CACHE}.$$"
+    cat > "$tmp" <<EOF
+HW_DO=${HW_DO:--1}
+HW_BEEP=${HW_BEEP:--1}
+HW_LED=${HW_LED:--1}
+HW_USB=${HW_USB:--1}
+HW_I2C_BUSY=${HW_I2C_BUSY:-0}
+HW_I2C_EXP_ABS=${HW_I2C_EXP_ABS:-0}
+HW_BACKEND=${HW_BACKEND:-unknown}
+EOF
+    mv "$tmp" "$SA02M_HW_METRICS_CACHE" 2>/dev/null \
+        || cp "$tmp" "$SA02M_HW_METRICS_CACHE" 2>/dev/null \
+        || return 1
+    rm -f "$tmp"
+    chmod 644 "$SA02M_HW_METRICS_CACHE" 2>/dev/null || true
+}
+
+sa02m_hw_metrics_cache_load() {
+    local snap=$1
+    snap=${snap:-$SA02M_HW_METRICS_CACHE}
+    [ -f "$snap" ] || return 1
+    # shellcheck disable=SC1090
+    . "$snap" 2>/dev/null || return 1
+    return 0
+}
+
+# Опрос I2C/GPIO с TTL-кэшем; при status-block hardware=0 — единственный путь к живым значениям.
+sa02m_hw_metrics_cache_refresh() {
+    HW_BACKEND=$(sa02m_hw_backend)
+    sa02m_hw_detect_channel_pins
+
+    if sa02m_hw_metrics_cache_fresh && sa02m_hw_metrics_cache_load; then
+        return 0
+    fi
+
+    sa02m_hw_metrics_cache_ensure_dir
+    local lock_file="${SA02M_HW_METRICS_CACHE}.lock"
+    if command -v flock >/dev/null 2>&1; then
+        exec 7>"$lock_file" 2>/dev/null || {
+            sa02m_hw_collect_metrics
+            sa02m_hw_metrics_cache_save
+            return 0
+        }
+        if ! flock -w 2 7 >/dev/null 2>&1; then
+            sa02m_hw_metrics_cache_load && return 0
+            exec 7>&-
+            sa02m_hw_collect_metrics
+            sa02m_hw_metrics_cache_save
+            return 0
+        fi
+        if sa02m_hw_metrics_cache_fresh && sa02m_hw_metrics_cache_load; then
+            flock -u 7 >/dev/null 2>&1 || true
+            exec 7>&-
+            return 0
+        fi
+        sa02m_hw_collect_metrics
+        sa02m_hw_metrics_cache_save
+        flock -u 7 >/dev/null 2>&1 || true
+        exec 7>&-
+        return 0
+    fi
+
+    sa02m_hw_collect_metrics
+    sa02m_hw_metrics_cache_save
+}
+
+sa02m_hw_metrics_cache_patch_channel() {
+    local channel=$1 val=$2
+    [ "$val" = "0" ] || [ "$val" = "1" ] || return 1
+    sa02m_hw_metrics_cache_ensure_dir
+    HW_BACKEND=$(sa02m_hw_backend)
+    sa02m_hw_detect_channel_pins
+    if ! sa02m_hw_metrics_cache_load 2>/dev/null; then
+        sa02m_hw_collect_metrics
+    fi
+    case "$channel" in
+        do) HW_DO=$val ;;
+        beeper) HW_BEEP=$val ;;
+        alarm_led) HW_LED=$val ;;
+        usb_power) HW_USB=$val ;;
+        *) return 1 ;;
+    esac
+    HW_I2C_BUSY=0
+    sa02m_hw_metrics_cache_save
+}
+
 sa02m_hw_collect_metrics() {
     HW_BACKEND=$(sa02m_hw_backend)
-    HW_CFG=0
     HW_I2C_EXP_ABS=0
     HW_I2C_BUSY=0
 
@@ -584,15 +761,13 @@ sa02m_hw_collect_metrics() {
     HW_LED=-1
     HW_USB=-1
 
-    PIN_DO=0
-    PIN_BEEP=0
-    PIN_LED=0
-    PIN_USB=0
+    sa02m_hw_detect_channel_pins
 
     if [ "$HW_BACKEND" = "disabled" ]; then
         # USB power через gpiod не зависит от backend — читаем в любом случае.
         if sa02m_hw_usb_power_use_gpiod; then
             PIN_USB=1
+            HW_CFG=1
             HW_USB=$(sa02m_hw_usb_gpiod_read)
         fi
         return 0
@@ -601,12 +776,6 @@ sa02m_hw_collect_metrics() {
     if sa02m_hw_use_i2c; then
         local reg rc
 
-        sa02m_hw_channel_available do && PIN_DO=1
-        sa02m_hw_channel_available beeper && PIN_BEEP=1
-        sa02m_hw_channel_available alarm_led && PIN_LED=1
-        sa02m_hw_channel_available usb_power && PIN_USB=1
-
-        (( PIN_DO || PIN_BEEP || PIN_LED || PIN_USB )) && HW_CFG=1
         (( HW_CFG )) || return 0
 
         sa02m_hw_i2c_read_output_dec
@@ -634,16 +803,7 @@ sa02m_hw_collect_metrics() {
         return 0
     fi
 
-    [[ "${SA02M_GPIO_DO:-}" =~ ^[0-9]+$ ]] && PIN_DO=1 && HW_CFG=1
-    [[ "${SA02M_GPIO_BEEPER:-}" =~ ^[0-9]+$ ]] && PIN_BEEP=1 && HW_CFG=1
-    [[ "${SA02M_GPIO_ALARM_LED:-}" =~ ^[0-9]+$ ]] && PIN_LED=1 && HW_CFG=1
-    if sa02m_hw_usb_power_use_gpiod; then
-        PIN_USB=1
-        HW_CFG=1
-    elif [[ "${SA02M_GPIO_USB_POWER:-}" =~ ^[0-9]+$ ]]; then
-        PIN_USB=1
-        HW_CFG=1
-    fi
+    (( HW_CFG )) || return 0
 
     HW_DO=$(sa02m_hw_gpio_state "${SA02M_GPIO_DO:-}")
     HW_BEEP=$(sa02m_hw_gpio_state "${SA02M_GPIO_BEEPER:-}")
