@@ -146,6 +146,7 @@ MR02M_TYPE_NAMES: dict[int, str] = {
 MR_MCU_HOLD_OP_DAYS = 114
 MR_MCU_HOLD_POWER_TEMP = 123
 MR_INP_MCU_UPTIME_LO = 105
+MR_INP_DI_CNT_BASE = 77
 MR_INP_MCU_DIAG_START = 65505
 MR_RESET_REASON_LABELS: dict[int, str] = {
     0: "неизвестно",
@@ -1311,6 +1312,12 @@ class MR02mPoller(DevicePoller):
             title = self._ch_title("di", i, f"DI{i}")
             if title:
                 self.pub.pub_control_meta(self.device_id, n, "title", title)
+            cn = f"di_{i}_count"
+            self.pub.pub_control_meta(self.device_id, cn, "type", "value")
+            self.pub.pub_control_meta(self.device_id, cn, "readonly", "1")
+            ct = self._ch_title("di", i, f"DI{i} счётчик")
+            if ct:
+                self.pub.pub_control_meta(self.device_id, cn, "title", ct)
 
         for i in range(1, self._ao + 1):
             n = f"ao_{i}"
@@ -1383,6 +1390,31 @@ class MR02mPoller(DevicePoller):
                 self.log.warning("DI read: %s", e)
                 for i in range(1, self._di + 1):
                     self.pub.pub_error(self.device_id, f"di_{i}", "r")
+        self._poll_di_counters()
+
+    def _poll_di_counters(self) -> None:
+        """DI pulse counters: Input Reg 77+2*(ch-1).. (uint32 lo-hi), FC04."""
+        if self._di <= 0:
+            return
+        chs = [i for i in range(1, self._di + 1) if self._ch_enabled("di", i)]
+        if not chs:
+            return
+        max_ch = max(chs)
+        try:
+            regs = self.read_input_registers(
+                self.address, MR_INP_DI_CNT_BASE, max_ch * 2)
+            for i in chs:
+                off = (i - 1) * 2
+                if off + 1 >= len(regs):
+                    continue
+                cnt = ((int(regs[off + 1]) & 0xFFFF) << 16
+                       | (int(regs[off]) & 0xFFFF))
+                self.pub.pub_control(self.device_id, f"di_{i}_count", str(cnt))
+                self.pub.pub_error(self.device_id, f"di_{i}_count", "")
+        except Exception as e:
+            self.log.warning("DI counters: %s", e)
+            for i in chs:
+                self.pub.pub_error(self.device_id, f"di_{i}_count", "r")
 
     def _poll_ai_ao(self) -> None:
         # Сначала AI (крупный FC03), затем AO — на 6AO6AI6 первый кадр AO часто срывался без паузы.
@@ -1528,20 +1560,6 @@ class MR02mPoller(DevicePoller):
                     self.pub.pub_control(self.device_id, "fw_updates", str(fw))
             except Exception:
                 pass
-        # DI pulse counters (if enabled in channel config)
-        if self._di > 0:
-            for i in range(1, min(self._di + 1, 15)):
-                ch = self._ch_cfg("di", i)
-                if not ch.get("counter", False):
-                    continue
-                try:
-                    # DI1 counter: reg 77 (LSW), 78 (MSW)
-                    base = 77 + (i - 1) * 2
-                    r = self.read_input_registers(self.address, base, 2)
-                    self.pub.pub_control(self.device_id, f"di_{i}_count",
-                                         str(r[0] | (r[1] << 16)))
-                except Exception:
-                    pass
 
     def _setup_writeback(self) -> None:
         for i in range(1, self._do + 1):

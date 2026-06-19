@@ -57,6 +57,10 @@ import sys, json, yaml, pathlib
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
+    data.pop("restart", None)
+    for dev in data.get("devices") or []:
+        if isinstance(dev, dict):
+            dev.pop("restart", None)
     tmp_path = pathlib.Path(sys.argv[2])
     with open(tmp_path, "w", encoding="utf-8") as f:
         f.write("# SA-02m Modbus\u2192MQTT bridge configuration\n")

@@ -1301,18 +1301,33 @@ function appendMr02mDoGroup(dev, channels, count) {
   return pack.widget;
 }
 
+function syncMr02mDiCounterFlagsFromDom(dev) {
+  if (dev.type !== 'mr02m') return;
+  const body = document.getElementById(`acc-body-${dev.id}`);
+  if (!body) return;
+  ensureMr02mChannels(dev);
+  body.querySelectorAll('.mqtt-ch-row[data-di-ch]').forEach(row => {
+    const ch = Number(row.getAttribute('data-di-ch'));
+    if (!ch) return;
+    const cb = row.querySelector('.mqtt-counter-label input[type=checkbox]');
+    if (!cb) return;
+    getOrCreateChannel(dev.channels, 'di', ch).counter = cb.checked;
+  });
+}
+
 function appendMr02mDiGroup(dev, channels, count) {
   const pack = buildChannelWidget('DI — дискретные входы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'di', i);
     const row = buildChannelRow(chCfg, topicPath(dev.id, `di_${i}`), 'di', i, dev, `di_${i}`, '');
-    const countLive = liveSpan(dev.id, `di_${i}_count`, '');
-    if (!chCfg.counter) countLive.hidden = true;
+    row.setAttribute('data-di-ch', String(i));
+    const countCtrl = `di_${i}_count`;
+    const countLive = liveSpan(dev.id, countCtrl, '');
     row.appendChild(h('label', {'class': 'mqtt-counter-label'},
-      h('input', {'type': 'checkbox', checked: chCfg.counter ? '' : undefined,
+      h('input', {'type': 'checkbox', checked: chCfg.counter !== false ? '' : undefined,
         'onchange': e => {
           chCfg.counter = e.target.checked;
-          countLive.hidden = !e.target.checked;
+          updateLiveCell(dev.id, countCtrl);
           markUnsaved();
         }}),
       ' счётчик',
@@ -1377,7 +1392,18 @@ function appendMr02mAiGroup(dev, channels, mtCode, count) {
   return pack.widget;
 }
 
+function ensureMr02mChannels(dev) {
+  if (dev.type !== 'mr02m') return;
+  const mt = mr02mProfile(dev);
+  const channels = dev.channels || (dev.channels = {});
+  for (let i = 1; i <= mt.do; i++) getOrCreateChannel(channels, 'do', i);
+  for (let i = 1; i <= mt.di; i++) getOrCreateChannel(channels, 'di', i);
+  for (let i = 1; i <= mt.ao; i++) getOrCreateChannel(channels, 'ao', i);
+  for (let i = 1; i <= mt.ai; i++) getOrCreateChannel(channels, 'ai', i);
+}
+
 function buildMR02mChannels(dev, container) {
+  ensureMr02mChannels(dev);
   const channels = dev.channels || {};
   const mtCode = getModuleTypeCode(dev);
   const mt = MR02M_TYPES[mtCode] || {do:6, di:8, ao:0, ai:0};
@@ -1803,6 +1829,10 @@ async function saveAndApply() {
   if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
 
   for (const dev of _config.devices || []) {
+    if (dev.type === 'mr02m') {
+      syncMr02mDiCounterFlagsFromDom(dev);
+      ensureMr02mChannels(dev);
+    }
     normalizeMr02mAiPairsAll(dev);
   }
   const payload = Object.assign({}, _config, {restart: true});

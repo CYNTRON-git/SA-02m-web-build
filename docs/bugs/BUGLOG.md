@@ -5,7 +5,15 @@
 
 ---
 
-## [2026-06-19 14:28] branch: main
+## [2026-06-19 14:41] branch: main
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_config.cgi`
+**Тип:** Некорректное поведение
+**Описание:** В разделе MQTT у DI-каналов колонка счётчиков показывала «—» вместо значений с шины.
+**Причина:** Цепочка: (1) мост ранее публиковал `di_N_count` только при `counter: true` в YAML и только в `_poll_diag` (60 с); конфиг устройств часто `channels: {}` — флаг counter не доходил до бэкенда; (2) UI скрывал колонку счётчика при `counter: false` и не обновлял live-ячейку при включении чекбокса; (3) `restart: true` из POST сохранялся в YAML.
+**Исправление:** `_poll_di_counters()` в `_poll_do_di` (каждый poll_s), batch FC04 Input Reg 77+; UI всегда показывает live `di_N_count`, чекбокс «счётчик» по умолчанию включён, `syncMr02mDiCounterFlagsFromDom` перед сохранением; `mqtt_config.cgi` отбрасывает `restart` при записи YAML.
+
+---
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`
 **Тип:** Некорректное поведение
