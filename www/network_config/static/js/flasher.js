@@ -386,6 +386,13 @@
       const key = firmwareEntryKey(e);
       return prevKeys.has(key) && !prevDownloaded.get(key) && isFirmwareEntryDownloaded(e);
     });
+    const newlyUndownloaded = state.firmware.filter(e => {
+      const key = firmwareEntryKey(e);
+      return prevKeys.has(key) && prevDownloaded.get(key) && !isFirmwareEntryDownloaded(e);
+    });
+    const removed = [...prevKeys].filter(key =>
+      !state.firmware.some(e => firmwareEntryKey(e) === key)
+    );
     const updated = prevMeta
       ? state.firmware.filter(e => {
         const key = firmwareEntryKey(e);
@@ -394,6 +401,12 @@
         return was != null && firmwareEntryMeta(e) !== was;
       })
       : [];
+    if (newlyUndownloaded.length || removed.length) {
+      const sel = state.selectedFirmwareKey;
+      if (sel && (removed.includes(sel) || newlyUndownloaded.some(e => firmwareEntryKey(e) === sel))) {
+        state.selectedFirmwareKey = '';
+      }
+    }
     const changed = added.concat(newlyDownloaded.filter(e =>
       !added.some(a => firmwareEntryKey(a) === firmwareEntryKey(e))
     )).concat(updated.filter(e => {
@@ -404,6 +417,15 @@
     if (!changed.length) return;
     changed.forEach(e => promoteFirmwareEntry(e, false));
     promoteFirmwareEntry(pickFirmwareToAutoSelect(changed), true);
+  }
+
+  function applyFirmwareStatusPayload(data) {
+    if (!data || !Array.isArray(data.entries)) return false;
+    state.firmware = data.entries;
+    state.latestStableVersion = (data.latest_stable_version || '').trim();
+    state.latestBootloaderVersion = (data.latest_bootloader_version || '').trim();
+    pruneFirmwareDisplayOrder();
+    return true;
   }
 
   function formatFirmwareSizeLabel(sizeBytes) {
@@ -419,26 +441,25 @@
     const kind = String(entry.kind || 'app').toLowerCase();
     const product = firmwareProductKindFromEntry(entry);
     const sizeStr = formatFirmwareSizeLabel(entry.size);
-    const channel = String(entry.channel || 'stable').trim();
     const dlTag = isFirmwareEntryDownloaded(entry) ? '' : ' · ' + t('не скачан');
 
     if (product === 'dtv' && kind === 'bootloader') {
-      return t('bootloader датчиков температуры и влажности ДТВ-RS-485') + ` · ${sizeStr} · ${channel}`;
+      return t('bootloader датчиков температуры и влажности ДТВ-RS-485') + ` · ${sizeStr}${dlTag}`;
     }
     if (product === 'mr' && kind === 'bootloader') {
-      return t('bootloader модулей расширения МР-02м') + ` · ${sizeStr} · ${channel}`;
+      return t('bootloader модулей расширения МР-02м') + ` · ${sizeStr}${dlTag}`;
     }
     if (product === 'dtv' && kind === 'app') {
-      return t('Датчики температуры и влажности ДТВ-RS-485') + ` · ${sizeStr} · ${channel}${dlTag}`;
+      return t('Датчики температуры и влажности ДТВ-RS-485') + ` · ${sizeStr}${dlTag}`;
     }
     if (product === 'mr' && kind === 'app') {
-      return t('Модули расширения МР-02м') + ` · ${sizeStr} · ${channel}${dlTag}`;
+      return t('Модули расширения МР-02м') + ` · ${sizeStr}${dlTag}`;
     }
     const sig = (entry.signatures && entry.signatures.length)
       ? entry.signatures.join(', ')
       : t('все варианты MR-02м (общий образ)');
     const kindTag = kind !== 'app' ? ` · ${kind}` : '';
-    return `${sig}${kindTag} · ${sizeStr} · ${channel}${dlTag}`;
+    return `${sig}${kindTag} · ${sizeStr}${dlTag}`;
   }
 
   function selectedFirmwareEntry() {
@@ -510,7 +531,6 @@
 
   function isFirmwareEntryDownloaded(entry) {
     if (!entry) return false;
-    if (entry.channel === 'local' || entry.source === 'upload') return true;
     return !!entry.downloaded;
   }
 
@@ -650,10 +670,7 @@
       : null;
     try {
       const data = await apiGet('/firmware');
-      state.firmware = data.entries || [];
-      state.latestStableVersion = (data.latest_stable_version || '').trim();
-      state.latestBootloaderVersion = (data.latest_bootloader_version || '').trim();
-      pruneFirmwareDisplayOrder();
+      applyFirmwareStatusPayload(data);
       if (opts.selectKey) {
         promoteFirmwareKey(opts.selectKey, true);
       } else if (opts.trackChanges) {
@@ -757,7 +774,12 @@
       const n = (res.cleared && res.cleared.length) || 0;
       toast(n ? ('Очищено файлов: ' + n) : 'Кеш прошивок уже пуст', 'success');
       state.selectedFirmwareKey = '';
-      await loadFirmware({ trackChanges: true });
+      if (!applyFirmwareStatusPayload(res)) {
+        await loadFirmware();
+        return;
+      }
+      renderFirmware();
+      updateFlashControls();
     } catch (err) {
       toastFirmwareError(err.message, 'error', 'clear');
     }

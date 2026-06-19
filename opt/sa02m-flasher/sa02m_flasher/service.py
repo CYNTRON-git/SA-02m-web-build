@@ -421,7 +421,10 @@ class Handler(BaseHTTPRequestHandler):
         _send_json(self, {"ok": True, "entry": entry.to_dict()})
 
     def _handle_firmware_clear(self, ctx: ServiceContext) -> None:
-        status = ctx.repo.clear_cache()
+        cleared = ctx.repo.clear_cache()
+        status = ctx.repo.status()
+        status["ok"] = True
+        status["cleared"] = cleared.get("cleared") or []
         _send_json(self, status)
 
     def _handle_scan(self, ctx: ServiceContext) -> None:

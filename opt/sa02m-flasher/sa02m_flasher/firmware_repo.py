@@ -475,6 +475,19 @@ class FirmwareRepo:
 
     # ─── Локальные файлы ──────────────────────────────────────────────────────
 
+    def _sync_downloaded_from_disk_locked(self) -> None:
+        """Синхронизировать downloaded/local_path с фактическим наличием файла в cache_dir."""
+        for entry in self._entries.values():
+            path = self.cache_dir / entry.file
+            if path.is_file() and self._cached_file_valid(entry, path):
+                entry.downloaded = True
+                entry.local_path = str(path)
+                if not entry.size:
+                    entry.size = path.stat().st_size
+            else:
+                entry.downloaded = False
+                entry.local_path = None
+
     def _scan_local_files(self) -> None:
         """Подхватить файлы в cache_dir, которые не описаны манифестом (ручная загрузка)."""
         with self._lock:
@@ -728,6 +741,8 @@ class FirmwareRepo:
 
     def list_entries(self) -> List[FirmwareEntry]:
         self._scan_local_files()
+        with self._lock:
+            self._sync_downloaded_from_disk_locked()
         self._consolidate_repository()
         with self._lock:
             items = list(self._entries.values())
