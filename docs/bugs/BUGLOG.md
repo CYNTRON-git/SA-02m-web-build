@@ -5,7 +5,15 @@
 
 ---
 
-## [2026-06-19 16:13] branch: 1.0.3.31
+## [2026-06-19 17:05] branch: main
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке «Сведения» виджеты накопителей, системы и Ethernet долго пустые, затем все данные появляются одновременно.
+**Причина:** Все фоновые виджеты запрашивались одним блокирующим `status.cgi?part=main`; `fetchStorageWidget` / `fetchNetworkWidget` / `fetchSystemWidget` и др. вызывали `fetchMainBundle()`, DOM обновлялся только после полного ответа (I2C, службы, сеть последовательно на сервере).
+**Исправление:** Параллельный опрос `part=storage|time|uptime|network|load|system|services|hardware`; каждый виджет обновляется сразу по приходу своего JSON; координатор `fetchStatusMain()` вместо монолитного main; cache-bust `app.js?v=1.0.3.31-2`.
+
+---
 
 **Файл(ы):** `www/network_config/cgi-bin/mqtt_config.cgi`, `www/network_config/static/js/mqtt.js`, `www/network_config/index.html`
 **Тип:** Некорректное поведение

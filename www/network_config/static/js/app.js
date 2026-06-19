@@ -262,7 +262,7 @@ function unitUiLabel(name) {
 
 const SVC_WIDGET_MAX_ROWS = 6;
 
-/** Строки-заглушки до part=main (services) — та же высота, что у badge-строк. */
+/** Строки-заглушки до part=services — та же высота, что у badge-строк. */
 function renderServicesSkeleton() {
   if (backgroundLoaded.services) return;
   const host = document.getElementById('svc-dynamic-list');
@@ -405,8 +405,11 @@ const backgroundBusy = {
   hardware: false,
   rs485: false
 };
-/** После hw_set запрашиваем main снова; если предыдущий main ещё в полёте — не терять повтор. */
+/** Части дашборда, раньше собиравшиеся в одном part=main — опрашиваются параллельно. */
+const BACKGROUND_STATUS_PARTS = ['storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'];
+/** После hw_set — повторный опрос; если раунд ещё в полёте — не терять повтор. */
 let mainBundleRefreshQueued = false;
+let statusMainRoundBusy = false;
 let rs485RefreshQueued = false;
 const backgroundLoaded = {
   main: false,
@@ -429,20 +432,43 @@ const statusFailures = {
 const statusPauseUntil = { main: 0, rs485: 0 };
 const STATUS_TIMEOUT_MS = {
   priority: 3000,
-  /** Должен быть ≥ типичного времени status.cgi?part=main (I2C, RTC, сеть) и запас к fastcgi_read_timeout. */
-  main: 14000,
-  /** ≥ типичного времени status.cgi?part=rs485 (sudo driver + inuse по портам). */
-  rs485: 10000
+  /** Координатор раунда параллельных part=* (не один монолитный main). */
+  main: 6000,
+  rs485: 10000,
+  storage: 6000,
+  time: 4000,
+  uptime: 3000,
+  network: 5000,
+  load: 3000,
+  system: 4000,
+  services: 8000,
+  hardware: 10000
 };
 /** Интервалы опроса и минимальный зазор между запросами одной части (клиентский rate-limit). */
 const STATUS_POLL_INTERVAL_MS = { priority: 4000, main: 6000, rs485: 4000 };
-const STATUS_MIN_GAP_MS = { priority: 800, main: 1500, rs485: 1500 };
+const STATUS_MIN_GAP_MS = {
+  priority: 800,
+  main: 1500,
+  rs485: 1500,
+  storage: 1200,
+  time: 1200,
+  uptime: 1200,
+  network: 1200,
+  load: 1200,
+  system: 1500,
+  services: 1500,
+  hardware: 1500
+};
 
 let _statusPollGeneration = 0;
 let _statusPollTimers = { priority: null, main: null, rs485: null, bootstrap: null };
 let _statusInitTimeouts = [];
 let _statusFetchAbort = { priority: null, main: null, rs485: null };
 let _statusLastFetchMs = { priority: 0, main: 0, rs485: 0 };
+BACKGROUND_STATUS_PARTS.forEach(function (p) {
+  _statusFetchAbort[p] = null;
+  _statusLastFetchMs[p] = 0;
+});
 let _statusLifecycleBound = false;
 
 function statusRequestTimeout(part) {
@@ -457,7 +483,7 @@ function abortStatusPart(part) {
 }
 
 function abortAllStatusFetches() {
-  ['priority', 'main', 'rs485'].forEach(abortStatusPart);
+  ['priority', 'main', 'rs485'].concat(BACKGROUND_STATUS_PARTS).forEach(abortStatusPart);
 }
 
 function clearStatusPollTimers() {
@@ -483,10 +509,12 @@ function teardownStatusPolling() {
   Object.keys(backgroundBusy).forEach(function (k) { backgroundBusy[k] = false; });
   mainBundleRefreshQueued = false;
   rs485RefreshQueued = false;
+  statusMainRoundBusy = false;
 }
 
 function canFetchStatusPart(part, force) {
   if (!force && isStatusPartPaused(part)) return false;
+  if (!force && part !== 'main' && isStatusPartPaused('main')) return false;
   if (force) return true;
   const gap = STATUS_MIN_GAP_MS[part] || 1000;
   return (Date.now() - (_statusLastFetchMs[part] || 0)) >= gap;
@@ -580,11 +608,16 @@ function setStatusPartPause(part, ms) {
 
 function noteStatusFailure(part, err) {
   statusFailures[part] = (statusFailures[part] || 0) + 1;
+  if (BACKGROUND_STATUS_PARTS.indexOf(part) >= 0) {
+    statusFailures.main = (statusFailures.main || 0) + 1;
+  }
   const isTimeout = err && err.name === 'AbortError';
   const needPauseMain = part === 'main' && statusFailures[part] >= 5;
+  const needPauseBg = BACKGROUND_STATUS_PARTS.indexOf(part) >= 0 && statusFailures.main >= 5;
   const needPauseRs = part === 'rs485' && statusFailures[part] >= 3;
-  if (needPauseMain) {
-    setStatusPartPause(part, 25000);
+  if (needPauseMain || needPauseBg) {
+    setStatusPartPause('main', 25000);
+    BACKGROUND_STATUS_PARTS.forEach(function (p) { setStatusPartPause(p, 25000); });
     const el = document.getElementById('dashboard-poll-alert');
     if (el) {
       el.style.display = 'block';
@@ -599,7 +632,7 @@ function noteStatusFailure(part, err) {
 
 function noteStatusSuccess(part) {
   statusFailures[part] = 0;
-  if (part === 'main' || part === 'rs485') {
+  if (part === 'main' || part === 'rs485' || BACKGROUND_STATUS_PARTS.indexOf(part) >= 0) {
     statusPauseUntil[part] = 0;
   }
   if (part === 'main') {
@@ -963,8 +996,38 @@ function setStorageAutoFormat(enabled) {
     });
 }
 
-let _lastMainStatus = null;
+let _lastPartStatus = {};
 let _lastServicesStatus = null;
+
+function getBackgroundPartApply(part) {
+  switch (part) {
+    case 'storage': return applyStorageStatus;
+    case 'time': return applyTimeStatus;
+    case 'uptime': return applyUptimeStatus;
+    case 'network': return applyNetworkStatus;
+    case 'load': return applyLoadStatus;
+    case 'system': return applySystemStatus;
+    case 'services': return applyServicesStatus;
+    case 'hardware': return applyHardwareStatus;
+    default: return null;
+  }
+}
+
+function allBackgroundPartsLoaded() {
+  return BACKGROUND_STATUS_PARTS.every(function (p) { return backgroundLoaded[p]; });
+}
+
+function syncMainLoadedFlag() {
+  backgroundLoaded.main = allBackgroundPartsLoaded();
+}
+
+function applyCachedBackgroundPartsI18n() {
+  BACKGROUND_STATUS_PARTS.forEach(function (part) {
+    const d = _lastPartStatus[part];
+    const applyFn = getBackgroundPartApply(part);
+    if (d && applyFn) applyFn(d);
+  });
+}
 
 function applyServicesStatus(d) {
   _lastServicesStatus = d;
@@ -972,7 +1035,7 @@ function applyServicesStatus(d) {
 }
 
 window.refreshMainStatusI18n = function () {
-  if (_lastMainStatus) applyMainStatusBundle(_lastMainStatus);
+  applyCachedBackgroundPartsI18n();
 };
 
 window.refreshPriorityStatusI18n = function () {
@@ -1125,87 +1188,101 @@ function fetchDiskWidget() {
 }
 
 function applyMainStatusBundle(d) {
-  _lastMainStatus = d;
-  applyStorageStatus(d);
-  applyTimeStatus(d);
-  applyUptimeStatus(d);
-  applyNetworkStatus(d);
-  applyLoadStatus(d);
-  applySystemStatus(d);
-  applyServicesStatus(d);
-  applyHardwareStatus(d);
-  ['main', 'storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'].forEach((part) => {
-    backgroundLoaded[part] = true;
+  BACKGROUND_STATUS_PARTS.forEach(function (part) {
+    _lastPartStatus[part] = d;
+    const applyFn = getBackgroundPartApply(part);
+    if (applyFn) applyFn(d);
   });
+  syncMainLoadedFlag();
 }
 
-/** Поколение опроса main: увеличивается после hw_set, чтобы отложенный JSON не затирал UI свежими кнопками. */
+/** Поколение опроса HW: увеличивается после hw_set, чтобы отложенный JSON не затирал UI свежими кнопками. */
 let mainStatusEpoch = 0;
 function bumpMainStatusEpoch() {
   mainStatusEpoch++;
 }
 
-function fetchMainBundle(force) {
-  if (backgroundBusy.main) {
-    if (force) mainBundleRefreshQueued = true;
+function fetchBackgroundPart(part, applyFn, force, onDone) {
+  if (part === 'rs485') {
+    if (backgroundBusy[part]) {
+      if (part === 'rs485') rs485RefreshQueued = true;
+      if (onDone) onDone(false);
+      return;
+    }
+    if (!canFetchStatusPart(part, !!force)) {
+      if (onDone) onDone(false);
+      return;
+    }
+    backgroundBusy[part] = true;
+    const gen = _statusPollGeneration;
+    _statusLastFetchMs[part] = Date.now();
+    let timedOut = false;
+    let reported = false;
+    const reportDone = function (failed) {
+      if (reported) return;
+      reported = true;
+      if (onDone) onDone(!!failed);
+    };
+    const rs485Url = '/cgi-bin/status.cgi?part=rs485&no_cache=1';
+    statusFetchJson(part, rs485Url, statusRequestTimeout(part), gen, function () {
+      timedOut = true;
+    })
+      .then(d => {
+        if (d.error) return;
+        applyFn(d);
+        backgroundLoaded[part] = true;
+        noteStatusSuccess(part);
+      })
+      .catch((e) => {
+        if (gen !== _statusPollGeneration || (e && e.stale)) return;
+        if (e && e.name === 'AbortError' && !timedOut) return;
+        noteStatusFailure(part, e);
+        reportDone(true);
+      })
+      .finally(() => {
+        backgroundBusy[part] = false;
+        if (part === 'rs485' && rs485RefreshQueued) {
+          rs485RefreshQueued = false;
+          fetchBackgroundPart('rs485', applyRs485Status);
+        }
+        reportDone(false);
+      });
     return;
   }
-  if (!canFetchStatusPart('main', !!force)) return;
-  backgroundBusy.main = true;
-  const epochAtStart = mainStatusEpoch;
-  const gen = _statusPollGeneration;
-  _statusLastFetchMs.main = Date.now();
-  let timedOut = false;
-  const mainUrl = '/cgi-bin/status.cgi?part=main' + (force ? '&no_cache=1' : '');
-  statusFetchJson('main', mainUrl, statusRequestTimeout('main'), gen, function () {
-    timedOut = true;
-  })
-    .then(d => {
-      if (epochAtStart !== mainStatusEpoch) return;
-      if (d.error) return;
-      applyMainStatusBundle(d);
-      noteStatusSuccess('main');
-    })
-    .catch((e) => {
-      if (gen !== _statusPollGeneration || (e && e.stale)) return;
-      if (e && e.name === 'AbortError' && !timedOut) return;
-      noteStatusFailure('main', e);
-      if (gen === _statusPollGeneration && !backgroundLoaded.hardware) {
-        _statusInitTimeouts.push(setTimeout(function () {
-          if (gen !== _statusPollGeneration) return;
-          fetchMainBundle(true);
-        }, 800));
-      }
-    })
-    .finally(() => {
-      backgroundBusy.main = false;
-      if (mainBundleRefreshQueued) {
-        mainBundleRefreshQueued = false;
-        fetchMainBundle(true);
-      }
-    });
-}
 
-function fetchBackgroundPart(part, applyFn) {
-  if (part !== 'rs485') {
-    fetchMainBundle();
+  if (!applyFn) applyFn = getBackgroundPartApply(part);
+  if (!applyFn) {
+    if (onDone) onDone(false);
     return;
   }
   if (backgroundBusy[part]) {
-    if (part === 'rs485') rs485RefreshQueued = true;
+    if (onDone) onDone(false);
     return;
   }
-  if (!canFetchStatusPart(part, false)) return;
+  if (!force && !canFetchStatusPart(part, false)) {
+    if (onDone) onDone(false);
+    return;
+  }
   backgroundBusy[part] = true;
+  const epochAtStart = part === 'hardware' ? mainStatusEpoch : null;
   const gen = _statusPollGeneration;
   _statusLastFetchMs[part] = Date.now();
   let timedOut = false;
-  const rs485Url = '/cgi-bin/status.cgi?part=rs485&no_cache=1';
-  statusFetchJson(part, part === 'rs485' ? rs485Url : '/cgi-bin/status.cgi?part=' + encodeURIComponent(part), statusRequestTimeout(part), gen, function () {
+  let reported = false;
+  const reportDone = function (failed) {
+    if (reported) return;
+    reported = true;
+    if (onDone) onDone(!!failed);
+  };
+  let url = '/cgi-bin/status.cgi?part=' + encodeURIComponent(part);
+  if (force) url += '&no_cache=1';
+  statusFetchJson(part, url, statusRequestTimeout(part), gen, function () {
     timedOut = true;
   })
     .then(d => {
+      if (epochAtStart !== null && epochAtStart !== mainStatusEpoch) return;
       if (d.error) return;
+      _lastPartStatus[part] = d;
       applyFn(d);
       backgroundLoaded[part] = true;
       noteStatusSuccess(part);
@@ -1214,38 +1291,71 @@ function fetchBackgroundPart(part, applyFn) {
       if (gen !== _statusPollGeneration || (e && e.stale)) return;
       if (e && e.name === 'AbortError' && !timedOut) return;
       noteStatusFailure(part, e);
+      reportDone(true);
+      if (gen === _statusPollGeneration && part === 'hardware' && !backgroundLoaded.hardware) {
+        _statusInitTimeouts.push(setTimeout(function () {
+          if (gen !== _statusPollGeneration) return;
+          fetchBackgroundPart('hardware', applyHardwareStatus, true);
+        }, 800));
+      }
     })
     .finally(() => {
       backgroundBusy[part] = false;
-      if (part === 'rs485' && rs485RefreshQueued) {
-        rs485RefreshQueued = false;
-        fetchBackgroundPart('rs485', applyRs485Status);
-      }
+      reportDone(false);
     });
 }
 
+function fetchStatusMain(force) {
+  if (statusMainRoundBusy) {
+    if (force) mainBundleRefreshQueued = true;
+    return;
+  }
+  if (!canFetchStatusPart('main', !!force)) return;
+  statusMainRoundBusy = true;
+  _statusLastFetchMs.main = Date.now();
+  let pending = 0;
+  let roundHadFailure = false;
+  const finishPart = function (failed) {
+    if (failed) roundHadFailure = true;
+    pending -= 1;
+    if (pending > 0) return;
+    statusMainRoundBusy = false;
+    syncMainLoadedFlag();
+    if (!roundHadFailure) noteStatusSuccess('main');
+    if (mainBundleRefreshQueued) {
+      mainBundleRefreshQueued = false;
+      fetchStatusMain(true);
+    }
+  };
+  BACKGROUND_STATUS_PARTS.forEach(function (part) {
+    pending += 1;
+    fetchBackgroundPart(part, null, !!force, finishPart);
+  });
+  if (pending === 0) statusMainRoundBusy = false;
+}
+
 function fetchStorageWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('storage', applyStorageStatus);
 }
 
 function fetchTimeWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('time', applyTimeStatus);
 }
 
 function fetchUptimeWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('uptime', applyUptimeStatus);
 }
 
 function fetchNetworkWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('network', applyNetworkStatus);
 }
 
 function fetchLoadWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('load', applyLoadStatus);
 }
 
 function fetchSystemWidget() {
-  fetchMainBundle();
+  fetchBackgroundPart('system', applySystemStatus);
 }
 
 function shortGitSha(sha) {
@@ -1443,11 +1553,7 @@ function fetchServicesWidget() {
 }
 
 function fetchHardwareWidget() {
-  fetchMainBundle();
-}
-
-function fetchStatusMain() {
-  fetchMainBundle();
+  fetchBackgroundPart('hardware', applyHardwareStatus);
 }
 
 function fetchStatusRs485() {
@@ -1646,13 +1752,13 @@ function usbPowerReset() {
         pendingUsbPowerVal = 0;
         pendingUsbPowerUntil = Date.now() + (sec + 2) * 1000;
         bumpMainStatusEpoch();
-        fetchMainBundle(true);
+        fetchStatusMain(true);
         window.setTimeout(function () {
           pendingUsbPowerVal = null;
           pendingUsbPowerUntil = 0;
           if (btn) btn.disabled = false;
           bumpMainStatusEpoch();
-          fetchMainBundle(true);
+          fetchStatusMain(true);
         }, sec * 1000 + 500);
         return;
       }
@@ -1702,7 +1808,7 @@ function setHw(channel, value, opts) {
           pendingUsbPowerUntil = Date.now() + 15000;
         }
         bumpMainStatusEpoch();
-        fetchMainBundle(true);
+        fetchStatusMain(true);
         if (!quiet) setHwBlockStatus('Применено', 'success');
       }
       else if (j.error === 'gpio_not_configured') setHwBlockStatus('Канал не настроен в /etc/sa02m_hw.conf', 'error');
