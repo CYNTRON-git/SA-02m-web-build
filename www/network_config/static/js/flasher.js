@@ -355,18 +355,24 @@
     return ordered;
   }
 
+  /** Записи для таблицы «Доступные прошивки»: только скачанные в кеш (manifest + upload). */
+  function visibleFirmwareEntries() {
+    return orderedFirmwareEntries().filter(isFirmwareEntryDownloaded);
+  }
+
   function pickFirmwareToAutoSelect(newEntries) {
     if (!newEntries.length) return null;
+    const downloaded = newEntries.filter(isFirmwareEntryDownloaded);
+    if (!downloaded.length) return null;
     const latestApp = state.latestStableVersion;
     if (latestApp) {
-      const match = newEntries.find(e =>
+      const match = downloaded.find(e =>
         e.channel === 'stable' && String(e.kind || 'app').toLowerCase() === 'app' &&
-        String(e.version || '').trim() === latestApp && isFirmwareEntryDownloaded(e)
+        String(e.version || '').trim() === latestApp
       );
       if (match) return match;
     }
-    const downloaded = newEntries.filter(isFirmwareEntryDownloaded);
-    return downloaded[0] || newEntries[0];
+    return downloaded[0];
   }
 
   function firmwareEntryMeta(entry) {
@@ -692,12 +698,13 @@
   function renderFirmware(data) {
     const list = $('flasher-fw-list');
     const prevKey = state.selectedFirmwareKey;
-    if (!state.firmware.length) {
-      list.textContent = t('Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.');
+    const visible = visibleFirmwareEntries();
+    if (!visible.length) {
+      list.textContent = t('Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.');
       state.selectedFirmwareKey = '';
     } else {
       list.innerHTML = '';
-      orderedFirmwareEntries().forEach(e => {
+      visible.forEach(e => {
         const row = document.createElement('div');
         const key = firmwareEntryKey(e);
         row.className = 'flasher-fw-row is-selectable';
@@ -712,7 +719,7 @@
         });
         list.appendChild(row);
       });
-      if (prevKey && !state.firmware.some(e => firmwareEntryKey(e) === prevKey)) {
+      if (prevKey && !visible.some(e => firmwareEntryKey(e) === prevKey)) {
         state.selectedFirmwareKey = '';
       }
     }
@@ -746,8 +753,18 @@
         }
       }
       const res = await apiPost('/firmware/refresh', body);
+      await loadFirmware({ trackChanges: !!download });
       if (res.error) {
         toastFirmwareError(res.error, 'warn', 'refresh');
+      } else if (download) {
+        const n = visibleFirmwareEntries().length;
+        let msg = n
+          ? ('Скачано в кеш: ' + n + ' прошивок')
+          : 'Манифест обновлён, но файлы в кеш не загружены';
+        if (res.purged && res.purged.length) {
+          msg += ', очищено из кеша: ' + res.purged.length;
+        }
+        toast(msg, n ? 'success' : 'warn');
       } else {
         let msg = 'Список прошивок обновлён (записей: ' + res.entries + ')';
         if (res.purged && res.purged.length) {
@@ -755,7 +772,6 @@
         }
         toast(msg, 'success');
       }
-      await loadFirmware({ trackChanges: !!download });
     } catch (err) {
       toastFirmwareError(err.message, 'error', 'refresh');
     }

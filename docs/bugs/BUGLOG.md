@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-19 15:28] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/js/i18n.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В блоке «Прошивка выбранных устройств» таблица показывала все записи манифеста, включая несскачанные — пустые/placeholder строки с пометкой «не скачан».
+**Причина:** `renderFirmware()` выводил все `state.firmware` из API без фильтра по `entry.downloaded`; авто-выбор мог выбирать несскачанную запись.
+**Исправление:** `visibleFirmwareEntries()` — только downloaded; пустой список с подсказкой «Скачать»/«Выбрать»; «Скачать» — refresh+download, toast по числу файлов в кеше; `pickFirmwareToAutoSelect` только среди скачанных; cache-bust flasher.js `v=1.0.3.31-5`.
+
+---
+
 ## [2026-06-19 14:41] branch: main
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_config.cgi`

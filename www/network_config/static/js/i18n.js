@@ -308,6 +308,7 @@
     'Устройство порта не найдено в системе.': 'Port device was not found in the system.',
     'Линия готова к сканированию и прошивке.': 'The line is ready for scanning and flashing.',
     'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.': 'No firmware images found. Click Check or select a .fw file manually.',
+    'Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.': 'No firmware downloaded to cache. Click Download or select a .fw file manually.',
     'все варианты MR-02м (общий образ)': 'all MR-02m variants (common image)',
     'не скачан': 'not downloaded',
     'bootloader датчиков температуры и влажности ДТВ-RS-485': 'DTV-RS-485 temperature/humidity sensor bootloader',
