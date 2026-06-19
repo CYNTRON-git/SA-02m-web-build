@@ -5,6 +5,36 @@
 
 ---
 
+## [2026-06-19 14:04] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/js/i18n.js`
+**Тип:** Некорректное поведение
+**Описание:** Описания прошивок в блоке «Устройства RS-485» оставались на русском при переключении языка на English.
+**Причина:** `firmwareEntryDescription()` формировал жёстко зашитые RU-строки в `innerHTML`; при смене локали i18n обновлял только статический DOM, без перерисовки списка прошивок.
+**Исправление:** Описания собираются через `t()`/`sa02mI18n.t` с ключами в DICT; добавлен `window.flasherRerenderFirmware`, вызываемый из `updateControl()` при смене языка.
+
+---
+
+## [2026-06-19 14:07] branch: main
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`, `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `opt/sa02m-flasher/tests/test_firmware_repo.py`
+**Тип:** Некорректное поведение
+**Описание:** Повторная загрузка уже существующего .fw создавала дубликат `filename.2.fw`; обновлённая прошивка оставалась внизу списка.
+**Причина:** `add_upload()` в цикле `while target.exists()` добавлял суффикс `.N` перед расширением; UI не поднимал запись при перезаписи того же `channel::file` (ключ уже был в списке).
+**Исправление:** Перезапись файла с тем же именем + удаление старых `.2/.3` дубликатов; `applyFirmwareListChanges` отслеживает изменение sha256/size/version; `pruneFirmwareDisplayOrder` убирает устаревшие ключи; cache-bust flasher.js `v=1.0.3.31-4`.
+
+---
+
+## [2026-06-19 14:00] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В окне настройки модуля вкладки появлялись только после полного опроса Modbus; на вкладке «Сведения» плитки МК (питание, температура, uptime) не обновлялись автоматически.
+**Причина:** `openConfigModal` не рендерил вкладки до ответа `/device_config/snapshot` (full); фоновый опрос `panel` читал `mr.mcu`, но `mergeMrMinimalIntoFull` не сливал поле `mcu` в кеш снимка.
+**Исправление:** Stub-снимок из сигнатуры сканирования (`buildConfigSnapshotStubFromDevice` + `SIGNATURE_IO_HINTS`) — вкладки сразу; слияние `mcu` при panel/minimal merge; повторное планирование опроса при занятости порта.
+
+---
+
 ## [2026-06-19 13:17] branch: 1.0.3.31
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/static/js/i18n.js`, `opt/sa02m-flasher/sa02m_flasher/firmware_repo.py`

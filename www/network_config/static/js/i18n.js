@@ -185,9 +185,11 @@
     'Вернуть опрос': 'Restore Polling',
     'Прошивка выбранных устройств': 'Firmware for Selected Devices',
     'Обновить манифест и скачать последнюю stable-прошивку (и текущую с линии) в кеш шлюза': 'Refresh manifest and download the latest stable firmware, plus current line versions, to the gateway cache',
-    'Скачать прошивки': 'Download Firmware',
+    'Скачать': 'Download',
+    'Выбрать': 'Select',
+    'Очистить': 'Clear',
+    'Удалить все скачанные прошивки из кеша шлюза': 'Delete all downloaded firmware from the gateway cache',
     'Выбрать файл прошивки с устройства': 'Select a firmware file from this device',
-    'Выбрать .fw': 'Select .fw',
     'Доступные прошивки': 'Available Firmware',
     'Манифест ещё не загружен': 'Manifest has not been loaded yet',
     'Нет доступа к интернету': 'No internet access',
@@ -287,7 +289,10 @@
     'Выберите устройство': 'Select a device',
     'Нельзя прошивать вместе модули MR/MP и Wiren Board. Выберите устройства одного типа.': 'MR/MP modules and Wiren Board devices cannot be flashed together. Select devices of one type.',
     'Выберите файл прошивки из списка или загрузите .fw вручную.': 'Select firmware from the list or upload a .fw file manually.',
-    'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать прошивки» или «Выбрать .fw».': 'The selected image is not downloaded to the gateway cache. Click Download Firmware or Select .fw.',
+    'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать» или «Выбрать».': 'The selected image is not downloaded to the gateway cache. Click Download or Select.',
+    'Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.': 'Delete all downloaded firmware from the gateway cache?\nThe manifest list will be kept; you will need to download or upload files again.',
+    'Очищено файлов: ': 'Files cleared: ',
+    'Кеш прошивок уже пуст': 'Firmware cache is already empty',
     'Нет линии': 'No Line',
     'Проверка порта': 'Checking Port',
     'Задача активна': 'Job Active',
@@ -305,6 +310,10 @@
     'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.': 'No firmware images found. Click Check or select a .fw file manually.',
     'все варианты MR-02м (общий образ)': 'all MR-02m variants (common image)',
     'не скачан': 'not downloaded',
+    'bootloader датчиков температуры и влажности ДТВ-RS-485': 'DTV-RS-485 temperature/humidity sensor bootloader',
+    'bootloader модулей расширения МР-02м': 'MR-02m expansion module bootloader',
+    'Датчики температуры и влажности ДТВ-RS-485': 'DTV-RS-485 temperature/humidity sensors',
+    'Модули расширения МР-02м': 'MR-02m expansion modules',
     'Устройств не найдено.': 'No devices found.',
     'Датчик Sens / DTV-RS-485': 'Sens / DTV-RS-485 Sensor',
     'Анализатор сети CE-02м-3': 'CE-02m-3 Power Analyzer',
@@ -432,7 +441,7 @@
     [/^Порт удерживают PID (.+)\. Если это не служба опроса, освободите процесс вручную\.$/u, 'Port is held by PID $1. If this is not a polling service, release the process manually.'],
     [/^Порт удерживают PID (.+)\. systemd не сообщает об активном unit опроса — порт может держать другой процесс; при необходимости проверьте systemctl status и fuser на устройстве\.$/u, 'Port is held by PID $1. systemd reports no active polling unit; another process may hold the port. Check systemctl status and fuser on the device if needed.'],
     [/^есть (.+)$/u, 'available $1'],
-    [/^\(не скачан — «Скачать прошивки»\)$/u, '(not downloaded: use Download Firmware)'],
+    [/^\(не скачан — «Скачать»\)$/u, '(not downloaded: use Download)'],
     [/^(.+) адр\. · (.+)$/u, '$1 addr · $2'],
     [/^Не удалось загрузить настройки: (.+)$/u, 'Failed to load settings: $1'],
     [/^Настройка устройства: (.+)$/u, 'Device configuration: $1'],
@@ -661,6 +670,7 @@
     if (typeof window.flasherRerenderScanStatus === 'function') window.flasherRerenderScanStatus();
     if (typeof window.hwRerenderBlockStatus === 'function') window.hwRerenderBlockStatus();
     if (typeof window.flasherRerenderProgress === 'function') window.flasherRerenderProgress();
+    if (typeof window.flasherRerenderFirmware === 'function') window.flasherRerenderFirmware();
     const userName = document.getElementById('topbar-user-name');
     if (userName) userName.textContent = 'admin';
   }

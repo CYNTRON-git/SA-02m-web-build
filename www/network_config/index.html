@@ -693,14 +693,12 @@
               <div class="widget">
                 <div class="widget-title">Прошивка выбранных устройств</div>
                 <div class="flasher-fw-top-actions">
-                  <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button" title="Обновить манифест и скачать последнюю stable-прошивку (и текущую с линии) в кеш шлюза">
-                    <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                    Скачать прошивки
-                  </button>
+                  <button class="btn btn-sm" id="flasher-fw-refresh-btn" type="button" title="Обновить манифест и скачать последнюю stable-прошивку (и текущую с линии) в кеш шлюза">Скачать</button>
                   <label class="btn btn-sm flasher-upload-label" title="Выбрать файл прошивки с устройства">
                     <input type="file" id="flasher-fw-upload" accept=".fw,.bin,.elf" hidden />
-                    Выбрать .fw
+                    Выбрать
                   </label>
+                  <button class="btn btn-sm" id="flasher-fw-clear-btn" type="button" title="Удалить все скачанные прошивки из кеша шлюза">Очистить</button>
                 </div>
                 <div class="flasher-fw-list-label">Доступные прошивки</div>
                 <div class="flasher-fw-list" id="flasher-fw-list">Манифест ещё не загружен</div>
@@ -947,7 +945,7 @@
 
 <script src="/static/js/i18n.js?v=1.0.3.31-2"></script>
 <script src="/static/js/app.js?v=1.0.3.31-1"></script>
-<script src="/static/js/flasher.js?v=1.0.3.31-2"></script>
+<script src="/static/js/flasher.js?v=1.0.3.31-4"></script>
 <script src="/static/js/mqtt.js?v=1.2.1"></script>
 <script src="/static/js/gateway.js?v=1.0.3.29-5"></script>
 </body>

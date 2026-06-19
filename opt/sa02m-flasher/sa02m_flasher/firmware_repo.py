@@ -652,6 +652,44 @@ class FirmwareRepo:
                     log.warning("Не удалось удалить %s", path, exc_info=True)
         return purged
 
+    def clear_cache(self) -> Dict[str, Any]:
+        """
+        Удалить все локальные образы (.fw/.bin/.elf) из cache_dir.
+        Кэш манифеста (.index.json) сохраняется; manifest-записи остаются с downloaded=False.
+        """
+        cleared: List[str] = []
+        with self._lock:
+            for path in self.cache_dir.iterdir():
+                if not path.is_file() or path.name.startswith("."):
+                    continue
+                if path.name.endswith(".part"):
+                    try:
+                        path.unlink()
+                    except OSError:
+                        log.warning("Не удалось удалить %s", path, exc_info=True)
+                    continue
+                if path.suffix.lower() not in VALID_EXTENSIONS:
+                    continue
+                try:
+                    path.unlink()
+                    log.info("Удалён из кеша (очистка): %s", path.name)
+                    cleared.append(path.name)
+                except OSError:
+                    log.warning("Не удалось удалить %s", path, exc_info=True)
+
+            for key in list(self._entries.keys()):
+                entry = self._entries[key]
+                entry.downloaded = False
+                entry.local_path = None
+                if entry.source != "manifest":
+                    del self._entries[key]
+
+        return {
+            "ok": True,
+            "cleared": cleared,
+            "entries": len(self._entries),
+        }
+
     def _consolidate_repository(self) -> None:
         with self._lock:
             self._consolidate_repository_locked()
@@ -814,6 +852,21 @@ class FirmwareRepo:
 
     _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
+    def _remove_numbered_duplicate_uploads(self, base_name: str) -> None:
+        """Удалить local-файлы вида stem.N.ext (старый dedup через .2, .3 …)."""
+        base = Path(base_name).stem
+        suffix = Path(base_name).suffix
+        dup_re = re.compile(rf"^{re.escape(base)}\.(\d+){re.escape(suffix)}$")
+        for path in list(self.cache_dir.iterdir()):
+            if not path.is_file() or not dup_re.match(path.name):
+                continue
+            try:
+                path.unlink()
+                log.info("Удалён дубликат прошивки (старый dedup): %s", path.name)
+            except OSError:
+                log.warning("Не удалось удалить %s", path, exc_info=True)
+            self._entries.pop(("local", path.name), None)
+
     def add_upload(self, data: bytes, filename: str) -> FirmwareEntry:
         if not data:
             raise ValueError("Пустой файл прошивки")
@@ -827,12 +880,10 @@ class FirmwareRepo:
                 "(нужен .fw/.bin приложения или бутлоадера, не полный дамп *_full_* и не .elf)."
             )
         target = self.cache_dir / safe
-        i = 1
-        base = Path(safe).stem
-        suffix = Path(safe).suffix
-        while target.exists():
-            i += 1
-            target = self.cache_dir / f"{base}.{i}{suffix}"
+        with self._lock:
+            self._remove_numbered_duplicate_uploads(safe)
+            self._entries.pop(("local", safe), None)
+        target.with_suffix(target.suffix + ".part").unlink(missing_ok=True)
         target.write_bytes(data)
         entry = self._entry_from_file(target, source="upload")
         with self._lock:

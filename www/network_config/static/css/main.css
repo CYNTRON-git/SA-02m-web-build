@@ -1695,24 +1695,25 @@ svg .gauge-num {
 .flasher-fw-top-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: 8px 0 10px;
 }
 .flasher-fw-top-actions > .btn,
 .flasher-fw-top-actions > .flasher-upload-label {
-  flex: 1 1 12rem;
-  max-width: 100%;
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
   box-sizing: border-box;
-  justify-content: center;
+  white-space: nowrap;
 }
 .flasher-fw-top-actions > .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
 }
 .flasher-fw-top-actions > .flasher-upload-label {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
 }

@@ -7,6 +7,7 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
     GET  /firmware                    — статус репозитория + список прошивок
     POST /firmware/refresh            — обновить манифест (JSON: {"download": bool, "keep_current": {"app": "...", "bootloader": "..."}})
     POST /firmware/upload             — multipart/form-data: file=<бинарь>
+    POST /firmware/clear              — удалить все скачанные образы из локального кеша
     POST /scan                        — начать сканирование (JSON: port, mode, baudrates[], parity, stopbits, addr_min, addr_max)
     POST /flash                       — начать прошивку одного устройства
     POST /flash_batch                 — пакетная прошивка нескольких устройств
@@ -264,6 +265,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_firmware_refresh(ctx)
             if method == "POST" and p == "/firmware/upload":
                 return self._handle_firmware_upload(ctx)
+            if method == "POST" and p == "/firmware/clear":
+                return self._handle_firmware_clear(ctx)
             if method == "POST" and p == "/scan":
                 return self._handle_scan(ctx)
             if method == "POST" and p == "/flash":
@@ -416,6 +419,10 @@ class Handler(BaseHTTPRequestHandler):
         filename, raw = _extract_multipart(self)
         entry = ctx.repo.add_upload(raw, filename)
         _send_json(self, {"ok": True, "entry": entry.to_dict()})
+
+    def _handle_firmware_clear(self, ctx: ServiceContext) -> None:
+        status = ctx.repo.clear_cache()
+        _send_json(self, status)
 
     def _handle_scan(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)

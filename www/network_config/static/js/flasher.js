@@ -16,6 +16,7 @@
     latestStableVersion: '', // max stable manifest, kind=app
     latestBootloaderVersion: '', // max stable manifest, kind=bootloader
     selectedFirmwareKey: '', // channel::file
+    firmwareDisplayOrder: [], // channel::file, newest first (UI order)
     scanJobId: null,
     flashJobId: null,
     scanStream: null,
@@ -108,8 +109,12 @@
     el.className = 'badge ' + (kind === 'ok' ? 'badge-ok' : kind === 'err' ? 'badge-err' : 'badge-unk');
   }
 
+  function t(msg) {
+    return window.sa02mI18n ? window.sa02mI18n.t(String(msg)) : String(msg);
+  }
+
   function toast(msg, type) {
-    const text = window.sa02mI18n ? window.sa02mI18n.t(String(msg)) : String(msg);
+    const text = t(msg);
     if (window.toast) window.toast(text, type || 'info', STATUS_AUTO_CLEAR_MS);
     else console.log('[flasher]', text);
   }
@@ -320,6 +325,87 @@
     return `${entry.channel}::${entry.file}`;
   }
 
+  function promoteFirmwareKey(key, select) {
+    if (!key) return;
+    state.firmwareDisplayOrder = [key, ...state.firmwareDisplayOrder.filter(k => k !== key)];
+    if (select !== false) state.selectedFirmwareKey = key;
+  }
+
+  function promoteFirmwareEntry(entry, select) {
+    promoteFirmwareKey(firmwareEntryKey(entry), select);
+  }
+
+  function orderedFirmwareEntries() {
+    const entries = state.firmware;
+    if (!entries.length) return [];
+    const byKey = new Map(entries.map(e => [firmwareEntryKey(e), e]));
+    const ordered = [];
+    const seen = new Set();
+    for (const key of state.firmwareDisplayOrder) {
+      const e = byKey.get(key);
+      if (e) {
+        ordered.push(e);
+        seen.add(key);
+      }
+    }
+    for (const e of entries) {
+      const key = firmwareEntryKey(e);
+      if (!seen.has(key)) ordered.push(e);
+    }
+    return ordered;
+  }
+
+  function pickFirmwareToAutoSelect(newEntries) {
+    if (!newEntries.length) return null;
+    const latestApp = state.latestStableVersion;
+    if (latestApp) {
+      const match = newEntries.find(e =>
+        e.channel === 'stable' && String(e.kind || 'app').toLowerCase() === 'app' &&
+        String(e.version || '').trim() === latestApp && isFirmwareEntryDownloaded(e)
+      );
+      if (match) return match;
+    }
+    const downloaded = newEntries.filter(isFirmwareEntryDownloaded);
+    return downloaded[0] || newEntries[0];
+  }
+
+  function firmwareEntryMeta(entry) {
+    if (!entry) return '';
+    return `${entry.sha256 || ''}:${entry.size || 0}:${entry.version || ''}`;
+  }
+
+  function pruneFirmwareDisplayOrder() {
+    const valid = new Set(state.firmware.map(firmwareEntryKey));
+    state.firmwareDisplayOrder = state.firmwareDisplayOrder.filter(k => valid.has(k));
+  }
+
+  function applyFirmwareListChanges(prevKeys, prevDownloaded, prevMeta) {
+    if (!prevKeys) return;
+    const added = state.firmware.filter(e => !prevKeys.has(firmwareEntryKey(e)));
+    const newlyDownloaded = state.firmware.filter(e => {
+      const key = firmwareEntryKey(e);
+      return prevKeys.has(key) && !prevDownloaded.get(key) && isFirmwareEntryDownloaded(e);
+    });
+    const updated = prevMeta
+      ? state.firmware.filter(e => {
+        const key = firmwareEntryKey(e);
+        if (!prevKeys.has(key)) return false;
+        const was = prevMeta.get(key);
+        return was != null && firmwareEntryMeta(e) !== was;
+      })
+      : [];
+    const changed = added.concat(newlyDownloaded.filter(e =>
+      !added.some(a => firmwareEntryKey(a) === firmwareEntryKey(e))
+    )).concat(updated.filter(e => {
+      const key = firmwareEntryKey(e);
+      return !added.some(a => firmwareEntryKey(a) === key)
+        && !newlyDownloaded.some(a => firmwareEntryKey(a) === key);
+    }));
+    if (!changed.length) return;
+    changed.forEach(e => promoteFirmwareEntry(e, false));
+    promoteFirmwareEntry(pickFirmwareToAutoSelect(changed), true);
+  }
+
   function formatFirmwareSizeLabel(sizeBytes) {
     const n = parseInt(sizeBytes, 10) || 0;
     if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
@@ -334,23 +420,23 @@
     const product = firmwareProductKindFromEntry(entry);
     const sizeStr = formatFirmwareSizeLabel(entry.size);
     const channel = String(entry.channel || 'stable').trim();
-    const dlTag = isFirmwareEntryDownloaded(entry) ? '' : ' · не скачан';
+    const dlTag = isFirmwareEntryDownloaded(entry) ? '' : ' · ' + t('не скачан');
 
     if (product === 'dtv' && kind === 'bootloader') {
-      return `bootloader датчиков температуры и влажности ДТВ-RS-485 · ${sizeStr} · ${channel}`;
+      return t('bootloader датчиков температуры и влажности ДТВ-RS-485') + ` · ${sizeStr} · ${channel}`;
     }
     if (product === 'mr' && kind === 'bootloader') {
-      return `bootloader модулей расширения МР-02м · ${sizeStr} · ${channel}`;
+      return t('bootloader модулей расширения МР-02м') + ` · ${sizeStr} · ${channel}`;
     }
     if (product === 'dtv' && kind === 'app') {
-      return `Датчики температуры и влажности ДТВ-RS-485 · ${sizeStr} · ${channel}${dlTag}`;
+      return t('Датчики температуры и влажности ДТВ-RS-485') + ` · ${sizeStr} · ${channel}${dlTag}`;
     }
     if (product === 'mr' && kind === 'app') {
-      return `Модули расширения МР-02м · ${sizeStr} · ${channel}${dlTag}`;
+      return t('Модули расширения МР-02м') + ` · ${sizeStr} · ${channel}${dlTag}`;
     }
     const sig = (entry.signatures && entry.signatures.length)
       ? entry.signatures.join(', ')
-      : 'все варианты MR-02м (общий образ)';
+      : t('все варианты MR-02м (общий образ)');
     const kindTag = kind !== 'app' ? ` · ${kind}` : '';
     return `${sig}${kindTag} · ${sizeStr} · ${channel}${dlTag}`;
   }
@@ -490,7 +576,7 @@
       if (!hasFw) {
         fwHint.textContent = 'Выберите файл прошивки из списка или загрузите .fw вручную.';
       } else if (!fwReady) {
-        fwHint.textContent = 'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать прошивки» или «Выбрать .fw».';
+        fwHint.textContent = 'Выбранный образ не скачан в кеш шлюза. Нажмите «Скачать» или «Выбрать».';
       } else {
         fwHint.textContent = '';
       }
@@ -551,12 +637,28 @@
 
   /* ── Репозиторий прошивок ─────────────────────────────────────────────── */
 
-  async function loadFirmware() {
+  async function loadFirmware(options) {
+    const opts = options || {};
+    const prevKeys = opts.trackChanges
+      ? new Set(state.firmware.map(firmwareEntryKey))
+      : null;
+    const prevDownloaded = opts.trackChanges
+      ? new Map(state.firmware.map(e => [firmwareEntryKey(e), isFirmwareEntryDownloaded(e)]))
+      : null;
+    const prevMeta = opts.trackChanges
+      ? new Map(state.firmware.map(e => [firmwareEntryKey(e), firmwareEntryMeta(e)]))
+      : null;
     try {
       const data = await apiGet('/firmware');
       state.firmware = data.entries || [];
       state.latestStableVersion = (data.latest_stable_version || '').trim();
       state.latestBootloaderVersion = (data.latest_bootloader_version || '').trim();
+      pruneFirmwareDisplayOrder();
+      if (opts.selectKey) {
+        promoteFirmwareKey(opts.selectKey, true);
+      } else if (opts.trackChanges) {
+        applyFirmwareListChanges(prevKeys, prevDownloaded, prevMeta);
+      }
       renderFirmware(data);
       updateFlashControls();
     } catch (err) {
@@ -568,11 +670,11 @@
     const list = $('flasher-fw-list');
     const prevKey = state.selectedFirmwareKey;
     if (!state.firmware.length) {
-      list.textContent = 'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.';
+      list.textContent = t('Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.');
       state.selectedFirmwareKey = '';
     } else {
       list.innerHTML = '';
-      state.firmware.forEach(e => {
+      orderedFirmwareEntries().forEach(e => {
         const row = document.createElement('div');
         const key = firmwareEntryKey(e);
         row.className = 'flasher-fw-row is-selectable';
@@ -581,6 +683,7 @@
           `<span class="flasher-fw-meta">${escapeHtml(firmwareEntryDescription(e))}</span>`;
         row.addEventListener('click', () => {
           state.selectedFirmwareKey = state.selectedFirmwareKey === key ? '' : key;
+          if (state.selectedFirmwareKey) promoteFirmwareKey(key, true);
           renderFirmware(data);
           updateFlashControls();
         });
@@ -629,7 +732,7 @@
         }
         toast(msg, 'success');
       }
-      await loadFirmware();
+      await loadFirmware({ trackChanges: !!download });
     } catch (err) {
       toastFirmwareError(err.message, 'error', 'refresh');
     }
@@ -640,9 +743,23 @@
     try {
       const res = await apiUpload('/firmware/upload', file);
       toast('Загружено: ' + (res.entry && res.entry.file || file.name), 'success');
-      await loadFirmware();
+      const selectKey = res.entry ? firmwareEntryKey(res.entry) : '';
+      await loadFirmware(selectKey ? { selectKey } : { trackChanges: true });
     } catch (err) {
       toastFirmwareError(err.message, 'error', 'upload');
+    }
+  }
+
+  async function clearFirmwareCache() {
+    if (!confirm('Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.')) return;
+    try {
+      const res = await apiPost('/firmware/clear', {});
+      const n = (res.cleared && res.cleared.length) || 0;
+      toast(n ? ('Очищено файлов: ' + n) : 'Кеш прошивок уже пуст', 'success');
+      state.selectedFirmwareKey = '';
+      await loadFirmware({ trackChanges: true });
+    } catch (err) {
+      toastFirmwareError(err.message, 'error', 'clear');
     }
   }
 
@@ -891,6 +1008,89 @@
     return String(sig || '').trim() || 'Модуль MR/MP-02м';
   }
 
+  /* Синхронизировать с sa02m_flasher.module_profiles._SIGNATURE_HINTS */
+  const SIGNATURE_IO_HINTS = {
+    '6DO8DI': [6, 8, 0, 0],
+    'DO6DI8': [6, 8, 0, 0],
+    '16DO': [16, 0, 0, 0],
+    '12AO': [0, 0, 12, 0],
+    '6DO': [6, 0, 0, 0],
+    '14DI': [0, 14, 0, 0],
+    '10DICON': [0, 10, 0, 0],
+    '6DO5DI2AO': [6, 5, 2, 0],
+    '6AO6AI': [0, 0, 6, 6],
+    '6AI6AO': [0, 0, 6, 6],
+    '12AI': [0, 0, 0, 12],
+    '4DO6DI': [4, 6, 0, 0],
+    'DO4DI6': [4, 6, 0, 0],
+    '4TO6DI': [4, 6, 4, 0],
+    'TO4DI6': [4, 6, 4, 0],
+    'CE02M3': [0, 0, 0, 0],
+  };
+
+  function normalizeModuleSignature(sig) {
+    return String(stripBootloaderSignatureSuffix(sig) || '').trim().toUpperCase().replace(/\s/g, '');
+  }
+
+  function capsFromSignature(sig) {
+    const n = normalizeModuleSignature(sig);
+    if (!n) return null;
+    for (const [key, caps] of Object.entries(SIGNATURE_IO_HINTS)) {
+      if (n.includes(key) || n.startsWith(key.slice(0, 4))) return caps.slice();
+    }
+    return null;
+  }
+
+  function relayModePanelFromSignature(sig) {
+    const n = normalizeModuleSignature(sig);
+    return n.includes('6DO8DI') || n.includes('DO6DI8') || n.includes('4DO6DI') || n.includes('DO4DI6');
+  }
+
+  function buildConfigSnapshotStubFromDevice(dev) {
+    if (!dev) return null;
+    const sig = dev.signature || '';
+    const kind = deviceConfigKindFromSignature(sig);
+    if (!kind) return null;
+    const line = resolveApplicationLineProfile(sig, dev, false);
+    const stub = {
+      kind,
+      snapshot_detail: 'stub',
+      info: {
+        address: dev.address,
+        serial: dev.serial,
+        signature: sig,
+        app_version: dev.app_version || '',
+        bootloader_version: dev.bootloader_version || '',
+        line: {
+          baudrate: line.baudrate,
+          parity: line.parity,
+          stopbits: line.stopbits,
+        },
+      },
+      network: {
+        address: dev.address,
+        baudrate: dev.baudrate || line.baudrate,
+        parity: dev.parity || line.parity,
+        stopbits: dev.stopbits || line.stopbits,
+        fast_modbus: false,
+      },
+    };
+    if (kind === 'mr') {
+      const caps = capsFromSignature(sig) || [0, 0, 0, 0];
+      stub.mr = {
+        module: {
+          max_do: caps[0],
+          max_di: caps[1],
+          max_ao: caps[2],
+          max_ai: caps[3],
+          relay_mode_panel: relayModePanelFromSignature(sig),
+        },
+        mcu: {},
+      };
+    }
+    return stub;
+  }
+
   function firmwareAppUpdateHintForDevice(d) {
     if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
     const latest = state.latestStableVersion;
@@ -901,7 +1101,7 @@
     if (compareVersionTuple(lv, dv) <= 0) return '';
     const entry = stableEntryForVersion('app', latest);
     const cached = entry && isFirmwareEntryDownloaded(entry);
-    const suffix = cached ? '' : ' (не скачан — «Скачать прошивки»)';
+    const suffix = cached ? '' : ' (не скачан — «Скачать»)';
     return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
   }
 
@@ -915,7 +1115,7 @@
     if (compareVersionTuple(lv, dv) <= 0) return '';
     const entry = stableEntryForVersion('bootloader', latest);
     const cached = entry && isFirmwareEntryDownloaded(entry);
-    const suffix = cached ? '' : ' (не скачан — «Скачать прошивки»)';
+    const suffix = cached ? '' : ' (не скачан — «Скачать»)';
     return `<div class="flasher-sub flasher-fw-update-hint">есть ${escapeHtml(latest)}${escapeHtml(suffix)}</div>`;
   }
 
@@ -1018,7 +1218,11 @@
     stopConfigPolling();
     if (!state.configOpen) return;
     state.configPollTimer = setTimeout(() => {
-      if (!state.configOpen || state.configBusy || state.configBackgroundBusy) return;
+      if (!state.configOpen) return;
+      if (state.configBusy || state.configBackgroundBusy) {
+        scheduleConfigPolling();
+        return;
+      }
       _bgPollPromise = refreshConfigSnapshot(true, 'panel')
         .finally(() => { _bgPollPromise = null; });
     }, 4000);
@@ -1476,6 +1680,9 @@
         out.ai = out.ai || {};
         out.ai.channels = list;
       }
+    }
+    if (minMr.mcu && typeof minMr.mcu === 'object' && Object.keys(minMr.mcu).length) {
+      out.mcu = Object.assign({}, out.mcu || {}, minMr.mcu);
     }
     return out;
   }
@@ -2364,7 +2571,12 @@
     state.configNetworkDirty = false;
     configModalEl('flasher-config-modal').hidden = false;
     document.body.style.overflow = 'hidden';
-    renderConfigBody();
+    const stub = buildConfigSnapshotStubFromDevice(state.devices[idx]);
+    if (stub) {
+      applyConfigSnapshot(stub, true);
+    } else {
+      renderConfigBody();
+    }
     await _autoReleasePortForConfig();
     await refreshConfigSnapshot(false);
   }
@@ -3117,6 +3329,12 @@
     scheduleInlineStatusAutoClear(key, () => setScanStatus(''));
   }
 
+  window.flasherRerenderFirmware = function () {
+    const list = $('flasher-fw-list');
+    if (!list) return;
+    renderFirmware();
+  };
+
   window.flasherRerenderScanStatus = function () {
     if (_lastScanStatus) setScanStatus(_lastScanStatus.msg, _lastScanStatus.type);
   };
@@ -3474,7 +3692,7 @@
     const fwEntry = selectedFirmwareEntry();
     if (!fwEntry) { toast('Выберите файл прошивки', 'warn'); return; }
     if (!isFirmwareEntryDownloaded(fwEntry)) {
-      toast('Образ не скачан в кеш шлюза. Нажмите «Скачать прошивки» или загрузите .fw вручную.', 'warn');
+      toast('Образ не скачан в кеш шлюза. Нажмите «Скачать» или загрузите .fw вручную.', 'warn');
       return;
     }
     for (const target of targets) {
@@ -3631,6 +3849,7 @@
     $('flasher-scan-btn').addEventListener('click', startScan);
     $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
     $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(true));
+    $('flasher-fw-clear-btn').addEventListener('click', clearFirmwareCache);
     $('flasher-fw-upload').addEventListener('change', (ev) => {
       const f = ev.target.files && ev.target.files[0];
       if (f) uploadFirmware(f);

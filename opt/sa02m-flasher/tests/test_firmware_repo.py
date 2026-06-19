@@ -448,6 +448,33 @@ class TestFlasherSupportedFilter(unittest.TestCase):
             )
 
 
+class TestAddUploadOverwrite(unittest.TestCase):
+    def test_overwrites_existing_file_instead_of_numbered_suffix(self) -> None:
+        payload_v1 = _minimal_fw_bytes(payload_size=80)
+        payload_v2 = _minimal_fw_bytes(payload_size=120)
+        name = "MR-02m_1.0.0.0.fw"
+        with tempfile.TemporaryDirectory() as td:
+            cache = Path(td)
+            repo = FirmwareRepo(cache, "http://x/index.json", "http://x/")
+            e1 = repo.add_upload(payload_v1, name)
+            self.assertEqual(e1.file, name)
+            dup_path = cache / "MR-02m_1.0.0.0.2.fw"
+            dup_path.write_bytes(b"\xff" * 64)
+            with repo._lock:
+                repo._entries[("local", dup_path.name)] = e1
+
+            e2 = repo.add_upload(payload_v2, name)
+            self.assertEqual(e2.file, name)
+            self.assertFalse(dup_path.exists())
+            self.assertEqual((cache / name).read_bytes(), payload_v2)
+            files = {p.name for p in cache.iterdir() if p.is_file()}
+            self.assertEqual(files, {name})
+            entries = [e for e in repo.list_entries() if e.channel == "local"]
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].file, name)
+            self.assertEqual(entries[0].size, len(payload_v2))
+
+
 class TestFormatNetworkError(unittest.TestCase):
     def test_dns_error_is_no_internet_ru(self) -> None:
         from sa02m_flasher.firmware_repo import NO_INTERNET_USER_MSG, _format_network_error
@@ -476,6 +503,29 @@ class TestFormatNetworkError(unittest.TestCase):
         )
         msg = _format_network_error(exc, url="https://cyntron.ru/fw/missing.fw")
         self.assertIn("не найден", msg.lower())
+
+    def test_clear_cache_removes_all_firmware_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            fw_path = cache / "MR-02m_1.0.0.1.fw"
+            fw_path.write_bytes(b"fake-fw")
+            (cache / ".index.json").write_text('{"schema":1,"updated":"2026-06-19","channels":{}}', encoding="utf-8")
+            repo = FirmwareRepo(
+                cache_dir=cache,
+                manifest_url="http://invalid.invalid/index.json",
+                firmware_base_url="http://invalid.invalid/fw/",
+            )
+            repo.add_upload(b"uploaded", "manual.fw")
+            self.assertTrue((cache / "manual.fw").is_file())
+            status = repo.clear_cache()
+            self.assertTrue(status["ok"])
+            self.assertIn("MR-02m_1.0.0.1.fw", status["cleared"])
+            self.assertIn("manual.fw", status["cleared"])
+            self.assertFalse(fw_path.is_file())
+            self.assertFalse((cache / "manual.fw").is_file())
+            self.assertTrue((cache / ".index.json").is_file())
+            for entry in repo.list_entries():
+                self.assertFalse(entry.downloaded)
 
 
 if __name__ == "__main__":
