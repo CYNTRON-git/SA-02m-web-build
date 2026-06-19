@@ -1,3 +1,206 @@
+# Bug Log
+
+Документация найденных и устранённых ошибок.
+Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
+
+---
+
+## [2026-06-19 13:07] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`
+**Тип:** Логическая ошибка
+**Описание:** Справочные пределы калибровки для 50П (12/25) и 50М (15/28) совпадали с Pt50 α385 (−200…300 °C), а не с α391/α428.
+**Причина:** При добавлении кодов 50P/50M лимиты скопированы от Pt50 (коды 8/21), хотя 50П/50М используют `rtd_391`/`rtd_428` с R₀=50 Ω — диапазоны как у 100П/100М (`table_rtd_alpha.h`).
+**Исправление:** 12/25 → −200…850 °C; 15/28 → −180…200 °C (десятые °C: −2000/8500 и −1800/2000).
+
+---
+
+## [2026-06-19 13:01] branch: 1.0.3.31
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `www/network_config/static/js/flasher.js`, `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`
+**Тип:** Некорректное поведение
+**Описание:** Веб/MQTT/прошивальщик использовали старые коды типов AI (enum ai_sensor_t 0x00–0x26) вместо Modbus selection codes 0–42; отсутствовали 50П (12/25) и 50М (15/28).
+**Причина:** MR-02m ≥1.0.9.1 изменил порядок кодов в регистре «тип датчика»; SA-02m-web-build не был синхронизирован.
+**Исправление:** Единая таблица 0–42 по `MR-02m/README.md`; обновлены подписи, bucket/3-wire множества, масштабы MQTT-моста, лимиты калибровки; добавлены 50P/50M по аналогии с Pt100.
+
+---
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** Карточки RS-485 (в т.ч. RS-485-3 / COM4) и числа TX/RX подсвечивались cyan при каждом обновлении опроса — отвлекало на активных линиях.
+**Причина:** `renderRs485()` сравнивал TX/RX с `_prevRs`, добавлял класс `.act` на карточку (1.8 с) и на `<span class="rv act">`; CSS `.rs485-port.act` и `.rs485-row .rv.act` давали cyan border и текст.
+**Исправление:** Удалены `_prevRs`, логика `actNow`, таймер `_actTimer` и CSS `.rs485-port.act` / `.rv.act`. TX/RX всегда `color: var(--text)`. Hover-подсветка границ (`.widget-rs485:hover .rs485-port:hover`) сохранена. Деплой app.js + main.css на 192.168.1.136.
+
+---
+
+## [2026-06-19 11:49] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `scripts/sa02m-rs485-stats.sh`
+**Тип:** Некорректное поведение
+**Описание:** Виджет RS-485 показывал TX 0 / RX 0 на всех портах (остался skeleton), хотя COM4 (RS-485-3/ttyS5) активно опрашивался Modbus-мостом.
+**Причина:** После отключения JSON-кэша rs485 `status.cgi?part=rs485` выполнял 5×sudo driver + 5×sudo inuse (~6.4 с), а клиентский таймаут `STATUS_TIMEOUT_MS.rs485` был 4 с — fetch прерывался AbortError, `backgroundLoaded.rs485` не выставлялся, UI оставался на skeleton с нулями. API при прямом curl отдавал корректные tx/rx.
+**Исправление:** Один sudo driver на запрос (`RS485_DRIVER_TEXT`), batch `inuse-batch` в helper; CGI ~4 с. Таймаут rs485 в app.js увеличен до 10 с. Деплой на 192.168.1.136; COM4: tx≈256746 rx≈1005158 (ядро ttyS5: tx≈256914 rx≈1005892).
+
+---
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Ethernet № 1 показывал только IP `192.168.1.136` без префикса «Статический» / «Static» или «DHCP:».
+**Причина:** В `iface_mode()` одна строка `local iface=$1 conf=".../${iface}.conf"` — в bash `${iface}` в той же `local` ещё пуст, путь становился `/etc/network/interfaces.d/.conf`, функция возвращала `unknown`; `formatEthIpWidget` без префикса отдавал голый IP.
+**Исправление:** Разделены объявления `local iface` и `local conf`; в JS при IP и mode≠dhcp — fallback на static. Деплой на 192.168.1.136.
+
+## [2026-06-19 11:46] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Виджет «Диск eMMC» всегда показывал «R 0 Б / W 0 Б», хотя eMMC активно использовался.
+**Причина:** `root_disk_device()` брал устройство из `df /` (`/dev/root` → basename `root`); файла `/sys/block/root/stat` нет. Реальный корень — `/dev/mmcblk2p2` (findmnt), статистика в `/sys/block/mmcblk2/stat`.
+**Исправление:** `root_disk_device()` через findmnt + readlink -f + снятие суффикса раздела (mmcblk2p2 → mmcblk2); для строки I/O — `fmtTrafficBytes` как у Ethernet RX/TX (накопленные байты с загрузки). Деплой на 192.168.1.136.
+
+## [2026-06-19 11:40] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** TX/RX в виджетах Ethernet и RS-485 «замирали» (например RS-485-3: TX 192.9 K / RX 752.6 K), хотя ядро и Modbus-опрос продолжали наращивать счётчики.
+**Причина:** `part=rs485` отдавался из файлового кэша (TTL 4 с); при таймауте `flock` (0.25 с) возвращался stale `rs485.json` без пересборки. Клиент опрашивал RS-485 раз в 8 с и пропускал цикл при `backgroundBusy.rs485`. Ethernet: `fmtBytes` округлял до 0.1 МБ — малый прирост между опросами (6 с) не был виден.
+**Исправление:** RS-485 без JSON-кэша (`build_rs485_json` напрямую); при неудачной блокировке кэша — пересборка без flock; `no_cache=1` для rs485; интервал опроса RS-485 4 с + очередь повтора; `fmtTrafficBytes` (2 знака МБ) для end0/end1 RX/TX. Деплой на 192.168.1.136.
+
+## [2026-06-19 11:31] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Виджет «Время работы» показывал «0д 18ч 20м» при нулевых днях.
+**Причина:** `applyUptimeStatus` отдавал приоритет `uptime_str` из status.cgi, где всегда включались дни (`${UPTIME_D}д ...`), хотя `fmtUptime()` уже скрывает нулевые дни.
+**Исправление:** Виджет форматирует аптайм через `fmtUptime(d.uptime_sec ?? d.uptime_s)`.
+
+## [2026-06-19 11:29] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/static/js/i18n.js`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`
+**Тип:** Некорректное поведение
+**Описание:** RS-485-3 (COM4/ttyS5) показывал «Ош FE=0 PE=0 OE=14» и жёлтый индикатор при нормальном опросе MQTT (TX/RX растут).
+**Причина:** OE — накопительный счётчик UART overrun в `/proc/tty/driver/serial` с загрузки; 14 событий за ~700K RX байт, после baseline не растёт (stale). UI показывал lifetime fe/pe/oe как активные ошибки. Конфликта портов нет (только modbus_mqtt_bridge на ttyS5).
+**Исправление:** status.cgi считает fe_d/pe_d/oe_d между опросами (baseline при первом sample); UI/dot — только по delta, строка ошибок без нулевых FE/PE; modbus bridge: exclusive open + flush RX/TX при открытии порта.
+
+## [2026-06-19 11:29] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/cgi-bin/status.cgi`, `www/network_config/cgi-bin/hw_set.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Блок «Дискретный выход, USB-питание и индикация» показывал «н/д» для DO/Beeper/Alarm LED/USB при валидном `/etc/sa02m_hw.conf`.
+**Причина:** `SA02M_STATUS_ENABLE_HARDWARE=0` отключает I2C в `gather_hardware_metrics()` — все `hw_*` принудительно `-1`; UI отображает `-1` как «н/д». Конфиг корректен, прямой `sa02m_hw_collect_metrics` на устройстве возвращает реальные 0/1.
+**Исправление:** TTL-кэш `/tmp/sa02m_status_cache/hw_metrics.snapshot` (15 с, flock): при `hw_poll_disabled` — `sa02m_hw_metrics_cache_refresh()` вместо заглушек `-1`; при включённом блоке — save после collect; `hw_set.cgi` патчит кэш сразу после записи.
+
+## [2026-06-19 11:28] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `scripts/sa02m-rs485-stats.sh`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`
+**Тип:** Некорректное поведение
+**Описание:** Виджет RS-485 для COM4 (RS-485-3 / ttyS5) показывал красный индикатор «нет ответов» и TX/RX=0, хотя sa02m-modbus-mqtt опрашивал /dev/COM4.
+**Причина:** www-data не может читать каталог `/proc/tty/driver/` — glob `driver/*` давал пустой `SERIAL_DRIVER_FILES`, статистика tx/rx не собиралась; `open=1` (fuser через sudo-helper) работал, поэтому UI показывал «опрос активен, нет ответов» (красная точка). Дополнительно `-r` для `/proc/tty/driver/serial` ложноположителен при недоступном каталоге.
+**Исправление:** Жёстко задан `/proc/tty/driver/serial` в `SERIAL_DRIVER_FILES`; чтение через `sa02m-rs485-stats.sh` (sudo); fallback на sudo при пустом driver_text; sudoers для www-data; деплой status.cgi + helper, сброс кэша rs485.json.
+
+## [2026-06-19 11:23] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Выход» в шапке не подсвечивалась при наведении курсора, в отличие от переключателей языка и темы.
+**Причина:** Кнопка использовала общие классы `.btn .btn-sm` без cyan-border hover, как у `.topbar-lang-btn`.
+**Исправление:** Класс заменён на `topbar-lang-btn` с `id="logout-btn"`; добавлен `.topbar-user #logout-btn { margin-left: 4px; }`; hover наследуется от `.topbar-lang-btn:hover` (обе темы через CSS-переменные).
+
+## [2026-06-19 11:23] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/cgi-bin/status.cgi`, `www/network_config/cgi-bin/lib_hw.sh`
+**Тип:** Некорректное поведение
+**Описание:** После частых F5 блок «Дискретный выход, USB-питание и индикация» показывал «Каналы не заданы — отредактируйте /etc/sa02m_hw.conf», хотя `/etc/sa02m_hw.conf` на устройстве настроен (i2c_expander, DO/Beeper/LED/USB gpiod).
+**Причина:** `SA02M_STATUS_ENABLE_HARDWARE=0` в `/etc/sa02m_status_blocks.conf` — `gather_hardware_metrics()` принудительно выставлял `HW_CFG=0`; UI трактовал `!hw_configured` как отсутствие конфига. При refresh-storm первый успешный `part=main` закреплял ложную ошибку; abort fetch не сбрасывал hint при bfcache.
+**Исправление:** `sa02m_hw_detect_channel_pins()` — проверка конфига без I2C; при отключённом status-block — `hw_poll_disabled:1` и корректный `hw_configured` по файлу; UI показывает «каналы не заданы» только при `hw_configured===0 && hw_poll_disabled!==1`, игнорирует неполный payload, сбрасывает hint при init, retry main после abort.
+
+## [2026-06-19 11:20] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке «Сведения» виджеты дашборда были чуть ниже до загрузки данных и «подпрыгивали» после ответа status.cgi (остаточный layout jitter после dd7c1a8b).
+**Причина:** Пустые строки «Система» (cpu-model/armbian/kernel), пустой disk-io, заниженный min-height «Служб», RX/TX «—» вместо «0 Б», отсутствие skeleton-строк служб и слота rs485-err, появление swap-block через display:none, пустые bar-meta.
+**Исправление:** Плейсхолдеры и widget-sub-reserved в HTML/JS; renderServicesSkeleton + min-height по badge; rs485ErrSlotHtml; swap-block-reserved до priority; min-height eth-ip/traffic/uptime/storage bar-meta; initDashboardPlaceholders().
+
+## [2026-06-19 11:14] branch: 1.0.3.31
+
+**Файл(ы):** `etc/sa02m_status_blocks.conf`, `scripts/sa02m-rs485-stats.sh`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/static/js/i18n.js`
+**Тип:** Некорректное поведение
+**Описание:** Виджет «Интерфейсы RS-485 — активность» не показывал трафик на COM4 при активном опросе MQTT-моста; порты отображались в обратном порядке (RS-485-0 справа); в подписи не было номера COM.
+**Причина:** (1) `SA02M_STATUS_ENABLE_RS485=0`. (2) `local num=$1 dev="/dev/RS-485-${num}"` — bash не подставляет `$1` в ту же `local`. (3) `www-data` не листает `/proc/tty/driver/` (glob пустой) и не читает `serial` без sudo — TX/RX=0; `fuser` без sudo не видит MQTT. (4) Skeleton 1-based при API 0-based.
+**Исправление:** `SA02M_STATUS_ENABLE_RS485=1`; явный путь `/proc/tty/driver/serial` + `sa02m-rs485-stats.sh` через sudo; раздельное `dev=`; подписи `RS-485-N (COMN+1)`; 0-based sort; dot по TX/RX.
+
+## [2026-06-19 11:14] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** При частом обновлении страницы «Общая информация» резко росла нагрузка на CPU устройства, данные дашборда долго не появлялись.
+**Причина:** Каждая перезагрузка создавала новые `setInterval` (priority/main/rs485 + bootstrap) без очистки; in-flight запросы к `status.cgi` не отменялись при уходе со страницы; параллельно летели перекрывающиеся fetch к одной части; bootstrap-таймер не сохранялся и не снимался.
+**Исправление:** Единый координатор опроса (`initStatusPolling` / `teardownStatusPolling`): очистка интервалов и таймаутов на `pagehide`/`beforeunload`, AbortController с отменой предыдущего запроса части, поколение poll-gen против stale-ответов, клиентский rate-limit (`STATUS_MIN_GAP_MS`), перезапуск после BFCache (`pageshow` persisted); баннер `#dashboard-poll-alert` при серии таймаутов `part=main`.
+
+## [2026-06-19 11:10] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** В блоках «Интерфейсы RS-485 — активность» при загрузке под именем порта (RS-485-N) отображался лишний символ «—», из‑за чего карточка меняла высоту после прихода данных.
+**Причина:** `rs485SkeletonCardHtml()` подставлял «—» в `.rs485-dev` и в TX/RX до ответа `part=rs485`.
+**Исправление:** `.rs485-dev` в skeleton — невидимый `\u00a0` с классом `rs485-dev-reserved` и `min-height`; TX/RX — «0» как в загруженном состоянии.
+
+## [2026-06-19 11:08] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/js/i18n.js`, `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** При переключении языка на English подписи вида «Процессов: X / Y» и другие динамические метки дашборда оставались на русском до следующего опроса status.cgi.
+**Причина:** `refreshMainStatusI18n()` после DOM-walk заново записывал русские строки без `uiT()`; часть виджетов (load avg, kernel, GPIO, RS-485, MQTT broker) не имела refresh-колбэков на lang switch.
+**Исправление:** Все смешанные метки переведены через `uiT()`; добавлены `refreshPriorityStatusI18n`, `refreshRs485I18n`, `mqttRefreshI18n`; i18n `updateControl()` вызывает их при смене языка.
+
+## [2026-06-19 11:05] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Виджеты дашборда «Общая информация» (Ethernet № 1/2, RS-485, Службы) были ниже при загрузке и вырастали после прихода данных.
+**Причина:** Pill «Линк» скрывался через `display:none`/`hidden` (коллапс заголовка); `#rs485-grid` и `#svc-dynamic-list` пустые до ответа API; строки load avg без min-height.
+**Исправление:** Pill Ethernet — `visibility:hidden` + плейсхолдер «Нет линка» и `min-height` заголовка; skeleton-карточки RS-485 по числу COM до `part=rs485`; `min-height` списка служб; зарезервированные строки proc-info/cpu-freq.
+
+## [2026-06-19 10:49] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** В таблице «Устройства на шине» у МР-02m 6АИ 6АО отображалось «Каналов 21/12»; у 4ДО 6ДИ — «0/10» при включённых каналах по умолчанию.
+**Причина:** `countChannelsEnabled()` суммировала записи YAML, включая 9 системных (`sys`: uptime, serial, …), плюс физические каналы; при пустом `channels` физические каналы не считались, хотя UI по умолчанию считает их включёнными.
+**Исправление:** Подсчёт только по профилю модуля (DO/DI/AO/AI из `MR02M_TYPES`); `sys` исключены; отсутствующая запись канала трактуется как enabled (как `getOrCreateChannel`).
+
+## [2026-06-19 10:48] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** После «Сохранить и применить» на модуле 6AI 6AO все AI-каналы кратко показывали тип «0 — отключён», затем после опроса появлялись сохранённые типы.
+**Причина:** `saveAndApply()` вызывал `aiTypeClearPendingForDevice()` — сбрасывал ожидаемые типы; во время перезапуска моста live-кэш отдавал нули, а `mr02mAiEffectiveSensorType()` предпочитал live над YAML.
+**Исправление:** Паттерн MR-02m-flasher: `aiTypeApplyPendingFromDeviceConfig()` выставляет pending для всех AI из сохранённого конфига; немедленный `refreshAiTypeSelects()`; reconcile снимает pending при совпадении с шиной; cfgType приоритетнее stale live=0.
+
+## [2026-06-19 10:43] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** При смене типа датчика AI на модуле 6AI 6AO в MQTT-вкладке селект сбрасывался обратно на «0 — отключено» во время выбора.
+**Причина:** Live-poll (`prefetchDeviceLive` каждые 1.5 с) вызывал `refreshAiTypeSelects()`, который брал тип из `_liveSensorTypes` (Modbus на шине = 0) и перезаписывал DOM до сохранения конфига; блокировки редактирования не было.
+**Исправление:** Паттерн MR-02m-flasher: `_aiTypeEditGuard` (focus/blur + 450 ms), `_aiTypePending` (ожидание подтверждения с шины), пропуск refresh для редактируемых селектов; reconcile pending после save/poll.
+
+## [2026-06-19 10:38] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** В MQTT-вкладке все AI-каналы МР-02m 6АИ 6АО показывали тип «2 — Pt1000», хотя после прошивки каналы отключены (тип 0).
+**Причина:** `mr02mAiEffectiveSensorType()` подставлял fallback `2`, если `sensor_type` отсутствовал в YAML; конфиг устройства содержал только `enabled: true` без типов; MQTT meta на шине — `value` (код 0).
+**Исправление:** Fallback изменён на `0`; типы читаются из `sensor_types` live-кэша моста; селекты обновляются после prefetch.
+
+## [2026-06-19 10:38] branch: 1.0.3.31
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `opt/sa02m-modbus-mqtt/mqtt_live_snapshot.py`
+**Тип:** Некорректное поведение
+**Описание:** Блок «Системные» (uptime, serial, mcu_temp и т.д.) не обновлял live-значения при раскрытии аккордеона устройства.
+**Причина:** Гонка: `prefetchDeviceLive()` завершался до `ensureAccordionBody()` — `refreshLiveCellsForDevice()` выходил, т.к. `_accordionBuilt` ещё не содержал device id; DOM строился уже после prefetch без повторного refresh.
+**Исправление:** Сначала построение DOM, затем prefetch; мост пишет `sensor_types` в live-кэш для UI.
+
 ## [2026-06-19 10:00] branch: 1.0.3.30
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/jobs.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`

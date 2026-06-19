@@ -56,6 +56,7 @@ class DeviceLiveCache:
     _controls: dict[str, dict[str, str]] = {}
     _units: dict[str, dict[str, str]] = {}
     _errors: dict[str, dict[str, str]] = {}
+    _sensor_types: dict[str, dict[str, str]] = {}
 
     @classmethod
     def set_control(cls, device_id: str, name: str, value: str) -> None:
@@ -79,12 +80,18 @@ class DeviceLiveCache:
                 bucket.pop(name, None)
 
     @classmethod
+    def set_sensor_type(cls, device_id: str, ai_index: int, code: int) -> None:
+        with cls._lock:
+            cls._sensor_types.setdefault(device_id, {})[f"ai_{ai_index}"] = str(code)
+
+    @classmethod
     def flush_file(cls, device_id: str) -> None:
         with cls._lock:
             controls = dict(cls._controls.get(device_id, {}))
             units = dict(cls._units.get(device_id, {}))
             errors = dict(cls._errors.get(device_id, {}))
-        if not controls and not units:
+            sensor_types = dict(cls._sensor_types.get(device_id, {}))
+        if not controls and not units and not sensor_types:
             return
         try:
             LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -97,6 +104,7 @@ class DeviceLiveCache:
                 "controls": controls,
                 "units": units,
                 "errors": errors,
+                "sensor_types": sensor_types,
                 "ts": time.time(),
             }
             tmp.write_text(
@@ -163,39 +171,34 @@ MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
     ("fw_updates", "value", "", "Счётчик обновлений FW"),
 )
 # 6AO6AI6: N-нога берёт тип с P только для ТХА и 3-проводного RTD (как прошивальщик).
-AI_RTD_CODES_3_WIRE = frozenset({
-    0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022,
-    0x0023, 0x0024, 0x0025,
-})
-AI_TC_K_CODE = 0x0006
+AI_RTD_CODES_3_WIRE = frozenset(range(21, 34))
+AI_TC_K_CODE = 41
 
-# AI sensor type codes → (mqtt_type, units, scale)
-# Scaled register units per MODBUS_VARIABLES.txt (ai_sensor_t, codes 0..38):
+# AI sensor Modbus selection codes 0..42 → (mqtt_type, units, scale)
+# Scaled register units per MODBUS_VARIABLES.txt / MR-02m README (коды 0..42):
 #   Temperature sensors:     0.1 °C  (reg × 0.1 = °C)
-#   VOLTAGE_10V  (code 4):   mV  (0..10000),  reg × 0.001 = V
-#   CURRENT_4_20 (code 5):   0.01 mA (0..2000), reg × 0.01 = mA
-#   CURRENT_0_5  (code 21):  0.01 mA (0..500),  reg × 0.01 = mA
-#   CURRENT_0_20 (code 22):  0.01 mA (0..2000), reg × 0.01 = mA
-#   DRY_CONTACT  (code 7):   0 or 1
-#   DIFF_50MV    (code 23):  raw mV (user-calibrated limits), reg × 1.0 = mV
-#   DIFF_2V      (code 24):  raw 0.001 V (user-calibrated limits), reg × 0.001 = V
-#   VOLTAGE_30V  (code 38):  0.01 V (0..3000), reg × 0.01 = V
+#   VOLTAGE_10V  (code 34):  mV  (0..10000),  reg × 0.001 = V
+#   VOLTAGE_30V  (code 35):  0.01 V (0..3000), reg × 0.01 = V
+#   CURRENT_4_20 (code 40):  0.01 mA (0..2000), reg × 0.01 = mA
+#   CURRENT_0_5  (code 38):  0.01 mA (0..500),  reg × 0.01 = mA
+#   CURRENT_0_20 (code 39):  0.01 mA (0..2000), reg × 0.01 = mA
+#   DRY_CONTACT  (code 42):  0 or 1
+#   DIFF_50MV    (code 36):  raw mV (user-calibrated limits), reg × 1.0 = mV
+#   DIFF_2V      (code 37):  raw 0.001 V (user-calibrated limits), reg × 0.001 = V
 _TEMP = ("temperature", "°C", 0.1)
 AI_SENSOR_TYPES: dict[int, tuple[str, str, float]] = {
     0:  ("value",       "",    1.0),    # Disabled
-    4:  ("voltage",     "V",   0.001), # 0–10 V  (raw 0..10000 mV)
-    5:  ("current",     "mA",  0.01),  # 4–20 mA (raw 0..2000 × 0.01 mA)
-    7:  ("switch",      "",    1.0),   # Dry contact (0/1)
-    21: ("current",     "mA",  0.01),  # 0–5 mA  (raw 0..500 × 0.01 mA)
-    22: ("current",     "mA",  0.01),  # 0–20 mA (raw 0..2000 × 0.01 mA)
-    23: ("voltage",     "mV",  1.0),   # ±50 mV differential (raw in mV)
-    24: ("voltage",     "V",   0.001), # ±2 V differential (raw × 0.001 V)
-    38: ("voltage",     "V",   0.01),  # 0–30 V  (raw 0..3000 × 0.01 V)
+    34: ("voltage",     "V",   0.001), # 0–10 V  (raw 0..10000 mV)
+    35: ("voltage",     "V",   0.01),  # 0–30 V  (raw 0..3000 × 0.01 V)
+    36: ("voltage",     "mV",  1.0),   # ±50 mV differential (raw in mV)
+    37: ("voltage",     "V",   0.001), # ±2 V differential (raw × 0.001 V)
+    38: ("current",     "mA",  0.01),  # 0–5 mA  (raw 0..500 × 0.01 mA)
+    39: ("current",     "mA",  0.01),  # 0–20 mA (raw 0..2000 × 0.01 mA)
+    40: ("current",     "mA",  0.01),  # 4–20 mA (raw 0..2000 × 0.01 mA)
+    42: ("switch",      "",    1.0),   # Dry contact (0/1)
 }
-# All temperature-type codes (RTD/NTC/thermocouple, codes 1-3, 6, 8-20, 25-37):
-for _code in (
-    list(range(1, 4)) + [6] + list(range(8, 21)) + list(range(25, 38))
-):
+# Temperature-type codes (NTC/RTD/thermocouple, codes 1-33, 41):
+for _code in list(range(1, 34)) + [41]:
     AI_SENSOR_TYPES.setdefault(_code, _TEMP)
 
 # ── WB conventions: precision per units ───────────────────────────────────────
@@ -380,12 +383,24 @@ class ModbusSerial:
 
     def _ensure_open(self) -> serial.Serial:
         if self._ser is None or not self._ser.is_open:
-            self._ser = serial.Serial(
-                self._port, baudrate=self._baudrate,
-                bytesize=8, parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE, timeout=self._timeout,
+            open_kwargs: dict = dict(
+                port=self._port,
+                baudrate=self._baudrate,
+                bytesize=8,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=self._timeout,
             )
+            try:
+                self._ser = serial.Serial(**open_kwargs, exclusive=True)
+            except TypeError:
+                self._ser = serial.Serial(**open_kwargs)
             time.sleep(0.05)
+            try:
+                self._ser.reset_input_buffer()
+                self._ser.reset_output_buffer()
+            except Exception:
+                pass
         return self._ser
 
     def close(self) -> None:
@@ -1399,6 +1414,7 @@ class MR02mPoller(DevicePoller):
                             p_st = block[p_off] & 0xFFFF
                             if p_st and self._ai_mirror_type_from_parent(p_st):
                                 dev_st = p_st
+                    DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
                     prev_st = self._ai_types.get(i, -1)
                     if dev_st != prev_st:
                         self._ai_types[i] = dev_st

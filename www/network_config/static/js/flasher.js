@@ -1116,23 +1116,19 @@
     { id: 'tc_k', label: 'ТХА' },
     { id: 'dry',  label: 'DIN' },
   ];
-  const _AI_NTC = new Set([0x0001, 0x000A, 0x000B, 0x000C, 0x000D, 0x0019, 0x001A]);
+  const _AI_NTC = new Set([1, 2, 3, 4, 5, 6, 7]);
   const _AI_RTD = new Set([
-    0x0002, 0x0003, 0x0008, 0x0009, 0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014,
-    0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+    8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
   ]);
-  const _AI_VOLT = new Set([0x0004, 0x0017, 0x0018, 0x0026]);
-  const _AI_CURR = new Set([0x0005, 0x0015, 0x0016]);
-  const _AI_TC_K = new Set([0x0006]);
-  const _AI_DRY = new Set([0x0007]);
+  const _AI_VOLT = new Set([34, 35, 36, 37]);
+  const _AI_CURR = new Set([38, 39, 40]);
+  const _AI_TC_K = new Set([41]);
+  const _AI_DRY = new Set([42]);
 
-  const _AI_RTD_2WIRE = new Set([
-    0x0002, 0x0003, 0x0008, 0x0009,
-    0x000E, 0x000F, 0x0010, 0x0011, 0x0012, 0x0013, 0x0014,
-  ]);
+  const _AI_RTD_2WIRE = new Set([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
   const _AI_RTD_3WIRE = new Set([
-    0x001B, 0x001C, 0x001D, 0x001E,
-    0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
   ]);
 
   function aiRtdTwoWireFromCode(code) {
@@ -1158,14 +1154,14 @@
 
   function aiUiSubchoicesForBucket(bucket) {
     const b = String(bucket || 'off');
-    if (b === 'off') return [[0x0000, 'Выключен']];
+    if (b === 'off') return [[0, 'Выключен']];
     const out = [];
     MODULE_AI_SENSOR_CHOICES.forEach(item => {
       const code = item[0];
       if (!code) return;
       if (aiUiSensorBucket(code) === b) out.push(item);
     });
-    return out.length ? out : [[0x0000, 'Выключен']];
+    return out.length ? out : [[0, 'Выключен']];
   }
 
   function aiUiCalibrationApplicable(sensorCode) {
@@ -1180,22 +1176,20 @@
     return map[b] || 'AI';
   }
 
-  // Справочные пределы температуры (десятые °C) по коду типа датчика — из таблиц прошивки MR-02m
+  // Справочные пределы температуры (десятые °C) по Modbus-коду типа — из таблиц прошивки MR-02m
   const _AI_SENSOR_LIMITS_TENTHS = {
-    0x0001: [-400, 1200], 0x000A: [-400, 1200],
-    0x000B: [-550, 1550], 0x000C: [-550, 1250], 0x000D: [-550, 1250],
-    0x0019: [-550, 1250], 0x001A: [-500, 1500],
-    0x0002: [-2000, 3000], 0x0003: [-2000, 3000],
-    0x0008: [-2000, 3000], 0x0009: [-2000, 3000],
-    0x000E: [-2000, 8500], 0x000F: [-2000, 8500],
-    0x0010: [-1800, 2000], 0x0011: [-1800, 2000],
-    0x0012: [-600, 1800],  0x0013: [-600, 1800],  0x0014: [-600, 1800],
-    0x001B: [-2000, 3000], 0x001C: [-2000, 3000],
-    0x001D: [-2000, 3000], 0x001E: [-2000, 3000],
-    0x001F: [-2000, 8500], 0x0020: [-2000, 8500],
-    0x0021: [-1800, 2000], 0x0022: [-1800, 2000],
-    0x0023: [-600, 1800],  0x0024: [-600, 1800],  0x0025: [-600, 1800],
-    0x0006: [-2700, 13690],
+    1: [-500, 1500],
+    2: [-550, 1250], 3: [-400, 1200], 7: [-400, 1200],
+    4: [-550, 1550], 5: [-550, 1250], 6: [-550, 1250],
+    8: [-2000, 3000], 9: [-2000, 3000], 10: [-2000, 3000], 11: [-2000, 3000],
+    12: [-2000, 8500], 13: [-2000, 8500], 14: [-2000, 8500],
+    15: [-1800, 2000], 16: [-1800, 2000], 17: [-1800, 2000],
+    18: [-600, 1800], 19: [-600, 1800], 20: [-600, 1800],
+    21: [-2000, 3000], 22: [-2000, 3000], 23: [-2000, 3000], 24: [-2000, 3000],
+    25: [-2000, 8500], 26: [-2000, 8500], 27: [-2000, 8500],
+    28: [-1800, 2000], 29: [-1800, 2000], 30: [-1800, 2000],
+    31: [-600, 1800], 32: [-600, 1800], 33: [-600, 1800],
+    41: [-2700, 13690],
   };
 
   function aiSensorRefLimits(code) {
@@ -1217,45 +1211,49 @@
   }
 
   const MODULE_AI_SENSOR_CHOICES = [
-    [0x0000, 'Выключен'],
-    [0x0001, 'NTC 10k (B3950)'],
-    [0x0002, 'Pt1000 (α385)'],
-    [0x0003, 'Pt100 (α385)'],
-    [0x0004, 'Напряжение 0–10 В'],
-    [0x0005, 'Ток 4–20 мА'],
-    [0x0006, 'Термопара K (ТХА)'],
-    [0x0007, 'Сухой контакт'],
-    [0x0008, 'Pt50 (α385)'],
-    [0x0009, 'Pt500 (α385)'],
-    [0x000A, 'NTC 100k (B3950)'],
-    [0x000B, 'NTC 10k (B3988)'],
-    [0x000C, 'NTC 10k (B3435)'],
-    [0x000D, 'NTC 10k (B3470)'],
-    [0x000E, 'Pt100 (α391), 100П'],
-    [0x000F, 'Pt1000 (α391), 1000П'],
-    [0x0010, 'Pt100 (α428), 100М'],
-    [0x0011, 'Pt1000 (α428), 1000М'],
-    [0x0012, 'Ni100 (α617)'],
-    [0x0013, 'Ni500 (α617)'],
-    [0x0014, 'Ni1000 (α617)'],
-    [0x0015, 'Ток 0–5 мА'],
-    [0x0016, 'Ток 0–20 мА'],
-    [0x0017, 'Дифф. напряжение ±50 мВ'],
-    [0x0018, 'Дифф. напряжение ±2 В'],
-    [0x0019, 'NTC 5k (B3470)'],
-    [0x001A, 'NTC 1.8k (B3380)'],
-    [0x001B, 'Pt50 (α385), 3-пров.'],
-    [0x001C, 'Pt100 (α385), 3-пров.'],
-    [0x001D, 'Pt500 (α385), 3-пров.'],
-    [0x001E, 'Pt1000 (α385), 3-пров.'],
-    [0x001F, 'Pt100 (α391), 100П, 3-пров.'],
-    [0x0020, 'Pt1000 (α391), 1000П, 3-пров.'],
-    [0x0021, 'Pt100 (α428), 100М, 3-пров.'],
-    [0x0022, 'Pt1000 (α428), 1000М, 3-пров.'],
-    [0x0023, 'Ni100 (α617), 3-пров.'],
-    [0x0024, 'Ni500 (α617), 3-пров.'],
-    [0x0025, 'Ni1000 (α617), 3-пров.'],
-    [0x0026, 'Напряжение 0–30 В'],
+    [0, 'Выключен'],
+    [1, 'NTC 1.8k (B3380)'],
+    [2, 'NTC 5k (B3470)'],
+    [3, 'NTC 10k (B3950)'],
+    [4, 'NTC 10k (B3988)'],
+    [5, 'NTC 10k (B3435)'],
+    [6, 'NTC 10k (B3470)'],
+    [7, 'NTC 100k (B3950)'],
+    [8, 'Pt50 (α385), 2-пров.'],
+    [9, 'Pt100 (α385), 2-пров.'],
+    [10, 'Pt500 (α385), 2-пров.'],
+    [11, 'Pt1000 (α385), 2-пров.'],
+    [12, 'Pt50 (α391), 50П'],
+    [13, 'Pt100 (α391), 100П'],
+    [14, 'Pt1000 (α391), 1000П'],
+    [15, 'Pt50 (α428), 50М'],
+    [16, 'Pt100 (α428), 100М'],
+    [17, 'Pt1000 (α428), 1000М'],
+    [18, 'Ni100 (α617)'],
+    [19, 'Ni500 (α617)'],
+    [20, 'Ni1000 (α617)'],
+    [21, 'Pt50 (α385), 3-пров.'],
+    [22, 'Pt100 (α385), 3-пров.'],
+    [23, 'Pt500 (α385), 3-пров.'],
+    [24, 'Pt1000 (α385), 3-пров.'],
+    [25, 'Pt50 (α391), 50П, 3-пров.'],
+    [26, 'Pt100 (α391), 100П, 3-пров.'],
+    [27, 'Pt1000 (α391), 1000П, 3-пров.'],
+    [28, 'Pt50 (α428), 50М, 3-пров.'],
+    [29, 'Pt100 (α428), 100М, 3-пров.'],
+    [30, 'Pt1000 (α428), 1000М, 3-пров.'],
+    [31, 'Ni100 (α617), 3-пров.'],
+    [32, 'Ni500 (α617), 3-пров.'],
+    [33, 'Ni1000 (α617), 3-пров.'],
+    [34, 'Напряжение 0–10 В'],
+    [35, 'Напряжение 0–30 В'],
+    [36, 'Дифф. напряжение ±50 мВ'],
+    [37, 'Дифф. напряжение ±2 В'],
+    [38, 'Ток 0–5 мА'],
+    [39, 'Ток 0–20 мА'],
+    [40, 'Ток 4–20 мА'],
+    [41, 'Термопара K (ТХА)'],
+    [42, 'Сухой контакт'],
   ];
 
   function clampInt(value, min, max, fallback) {
@@ -1276,30 +1274,22 @@
   function aiSensorEngineeringKind(code) {
     const c = Number(code) & 0xFFFF;
     if (!c) return 'off';
-    if (c === 0x0004 || c === 0x0026) return 'voltage_010';
-    if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'current';
-    if (c === 0x0007) return 'logic';
-    if (c === 0x0017) return 'diff_mv';
-    if (c === 0x0018) return 'diff_v';
-    if (c === 0x0019 || c === 0x001A) return 'temp';
-    if ((c >= 0x0001 && c <= 0x0014) || (c >= 0x001B && c <= 0x0025)) {
-      if (c !== 0x0004 && c !== 0x0005 && c !== 0x0007) return 'temp';
-    }
+    if (c === 34 || c === 35) return 'voltage_010';
+    if (c === 38 || c === 39 || c === 40) return 'current';
+    if (c === 42) return 'logic';
+    if (c === 36) return 'diff_mv';
+    if (c === 37) return 'diff_v';
+    if (_AI_NTC.has(c) || _AI_RTD.has(c) || c === 41) return 'temp';
     return 'unknown';
   }
 
   function aiSensorRawPhysicalKind(code) {
     const c = Number(code) & 0xFFFF;
     if (!c) return 'off';
-    if (c === 0x0004 || c === 0x0026) return 'microvolt';
-    if (c === 0x0005 || c === 0x0015 || c === 0x0016) return 'nanoamp';
-    if (c === 0x0006) return 'microvolt';
-    if (c === 0x0007) return 'centiohm';
-    if (c === 0x0017 || c === 0x0018) return 'microvolt';
-    if (c === 0x0019 || c === 0x001A) return 'centiohm';
-    if ((c >= 0x0001 && c <= 0x0014) || (c >= 0x001B && c <= 0x0025)) {
-      if (c !== 0x0004 && c !== 0x0005 && c !== 0x0006 && c !== 0x0007) return 'centiohm';
-    }
+    if (c === 34 || c === 35 || c === 36 || c === 37 || c === 41) return 'microvolt';
+    if (c === 38 || c === 39 || c === 40) return 'nanoamp';
+    if (c === 42) return 'centiohm';
+    if (_AI_NTC.has(c) || _AI_RTD.has(c)) return 'centiohm';
     return 'unknown';
   }
 
@@ -2579,7 +2569,7 @@
     const base = Number(ai.register_base);
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     if (!sensorEl) return;
-    const sensorVal = clampInt(sensorEl.value, 0, 0xFFFF, 0);
+    const sensorVal = clampInt(sensorEl.value, 0, 42, 0);
     setConfigBusy(true);
     try {
       await writeConfigHolding(base, sensorVal, '');
@@ -2603,7 +2593,7 @@
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     const calEl = configModalEl(`cfg-mr-ai-cal-${channel}`);
     if (!sensorEl || !calEl) return;
-    if (!aiUiCalibrationApplicable(clampInt(sensorEl.value, 0, 0xFFFF, 0))) return;
+    if (!aiUiCalibrationApplicable(clampInt(sensorEl.value, 0, 42, 0))) return;
     await writeHoldingBatch(
       [{ reg: base + 4, value: signedToUint16(calEl.value) }],
       `Калибровка AI${channel} применена`, `AI${channel}: `

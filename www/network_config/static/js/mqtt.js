@@ -3,6 +3,10 @@
 (function() {
 'use strict';
 
+function uiT(s) {
+  return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
+}
+
 // ── Module types map ──────────────────────────────────────────────────────────
 // Must match MR02M_MODULE_TYPES in modbus_mqtt_bridge.py exactly
 const MR02M_TYPES = {
@@ -151,47 +155,51 @@ function scanListedCheck() {
   return h('span', {'class': 'mqtt-scan-check', 'title': 'Уже в списке'}, '✓');
 }
 
-// ai_sensor_t codes 0..38 — must match MODBUS_VARIABLES.txt and modbus_mqtt_bridge.py
+// Modbus selection codes 0..42 (регистр «тип датчика», MR-02m ≥1.0.9.1) — must match module_profiles.py / modbus_mqtt_bridge.py
 const AI_SENSOR_LABELS = [
-  {code:0,  label:'0 — Отключён'},
-  {code:1,  label:'1 — NTC 10k B3950'},
-  {code:2,  label:'2 — Pt1000 (α0.00385)'},
-  {code:3,  label:'3 — Pt100 (α0.00385)'},
-  {code:4,  label:'4 — Напряжение 0–10 В'},
-  {code:5,  label:'5 — Ток 4–20 мА'},
-  {code:6,  label:'6 — Термопара K (ТХА)'},
-  {code:7,  label:'7 — Сухой контакт'},
-  {code:8,  label:'8 — Pt50 (α0.00385)'},
-  {code:9,  label:'9 — Pt500 (α0.00385)'},
-  {code:10, label:'10 — NTC 100k B3950'},
-  {code:11, label:'11 — NTC 10k B3988'},
-  {code:12, label:'12 — NTC 10k B3435'},
-  {code:13, label:'13 — NTC 10k B3470'},
-  {code:14, label:'14 — Pt100 100П (α0.00391)'},
-  {code:15, label:'15 — Pt1000 1000П (α0.00391)'},
-  {code:16, label:'16 — Pt100 100М (α0.00428)'},
-  {code:17, label:'17 — Pt1000 1000М (α0.00428)'},
-  {code:18, label:'18 — Ni100 (α0.00617)'},
-  {code:19, label:'19 — Ni500 (α0.00617)'},
-  {code:20, label:'20 — Ni1000 (α0.00617)'},
-  {code:21, label:'21 — Ток 0–5 мА'},
-  {code:22, label:'22 — Ток 0–20 мА'},
-  {code:23, label:'23 — Дифф. ±50 мВ'},
-  {code:24, label:'24 — Дифф. ±2 В'},
-  {code:25, label:'25 — NTC 5k B3470'},
-  {code:26, label:'26 — NTC 1.8k B3380'},
-  {code:27, label:'27 — Pt50 3-wire'},
-  {code:28, label:'28 — Pt100 3-wire'},
-  {code:29, label:'29 — Pt500 3-wire'},
-  {code:30, label:'30 — Pt1000 3-wire'},
-  {code:31, label:'31 — Pt100 100П 3-wire'},
-  {code:32, label:'32 — Pt1000 1000П 3-wire'},
-  {code:33, label:'33 — Pt100 100М 3-wire'},
-  {code:34, label:'34 — Pt1000 1000М 3-wire'},
-  {code:35, label:'35 — Ni100 3-wire'},
-  {code:36, label:'36 — Ni500 3-wire'},
-  {code:37, label:'37 — Ni1000 3-wire'},
-  {code:38, label:'38 — Напряжение 0–30 В'},
+  {code:0,  label:'0 — Выключен'},
+  {code:1,  label:'1 — NTC 1.8k (B3380)'},
+  {code:2,  label:'2 — NTC 5k (B3470)'},
+  {code:3,  label:'3 — NTC 10k (B3950)'},
+  {code:4,  label:'4 — NTC 10k (B3988)'},
+  {code:5,  label:'5 — NTC 10k (B3435)'},
+  {code:6,  label:'6 — NTC 10k (B3470)'},
+  {code:7,  label:'7 — NTC 100k (B3950)'},
+  {code:8,  label:'8 — Pt50 (α385), 2-пров.'},
+  {code:9,  label:'9 — Pt100 (α385), 2-пров.'},
+  {code:10, label:'10 — Pt500 (α385), 2-пров.'},
+  {code:11, label:'11 — Pt1000 (α385), 2-пров.'},
+  {code:12, label:'12 — Pt50 (α391), 50П'},
+  {code:13, label:'13 — Pt100 (α391), 100П'},
+  {code:14, label:'14 — Pt1000 (α391), 1000П'},
+  {code:15, label:'15 — Pt50 (α428), 50М'},
+  {code:16, label:'16 — Pt100 (α428), 100М'},
+  {code:17, label:'17 — Pt1000 (α428), 1000М'},
+  {code:18, label:'18 — Ni100 (α617)'},
+  {code:19, label:'19 — Ni500 (α617)'},
+  {code:20, label:'20 — Ni1000 (α617)'},
+  {code:21, label:'21 — Pt50 (α385), 3-пров.'},
+  {code:22, label:'22 — Pt100 (α385), 3-пров.'},
+  {code:23, label:'23 — Pt500 (α385), 3-пров.'},
+  {code:24, label:'24 — Pt1000 (α385), 3-пров.'},
+  {code:25, label:'25 — Pt50 (α391), 50П, 3-пров.'},
+  {code:26, label:'26 — Pt100 (α391), 100П, 3-пров.'},
+  {code:27, label:'27 — Pt1000 (α391), 1000П, 3-пров.'},
+  {code:28, label:'28 — Pt50 (α428), 50М, 3-пров.'},
+  {code:29, label:'29 — Pt100 (α428), 100М, 3-пров.'},
+  {code:30, label:'30 — Pt1000 (α428), 1000М, 3-пров.'},
+  {code:31, label:'31 — Ni100 (α617), 3-пров.'},
+  {code:32, label:'32 — Ni500 (α617), 3-пров.'},
+  {code:33, label:'33 — Ni1000 (α617), 3-пров.'},
+  {code:34, label:'34 — Напряжение 0–10 В'},
+  {code:35, label:'35 — Напряжение 0–30 В'},
+  {code:36, label:'36 — Дифф. ±50 мВ'},
+  {code:37, label:'37 — Дифф. ±2 В'},
+  {code:38, label:'38 — Ток 0–5 мА'},
+  {code:39, label:'39 — Ток 0–20 мА'},
+  {code:40, label:'40 — Ток 4–20 мА'},
+  {code:41, label:'41 — Термопара K (ТХА)'},
+  {code:42, label:'42 — Сухой контакт'},
 ];
 
 const DTV_SENSOR_UNITS = {
@@ -277,6 +285,14 @@ let _channelPollDevId = null;
 let _accordionBuilt = new Set();
 let _liveDomScheduled = false;
 let _liveDirtyDevices = new Set();
+/** Типы AI с шины (Modbus), ключ ai_N — приоритет над YAML при отображении. */
+const _liveSensorTypes = Object.create(null);
+/** Каналы AI под редактированием — live-poll не затирает (как _mc_entry_edit_guard). */
+const _aiTypeEditGuard = new Set();
+const _aiTypeEditGuardTimers = Object.create(null);
+/** Ожидаемый тип после выбора до подтверждения с шины (как _ai_sensor_pending). */
+const _aiTypePending = Object.create(null);
+const _AI_TYPE_EDIT_GUARD_MS = 450;
 let _unsaved = false;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -357,16 +373,19 @@ function mr02mAiPairParent(ch) {
   return MR02M_AI_N_PARENT[ch] || null;
 }
 
-const _AI_NTC_CODES = new Set([1, 10, 11, 12, 13, 19, 20, 25, 26]);
+const _AI_NTC_CODES = new Set([1, 2, 3, 4, 5, 6, 7]);
 const _AI_RTD_CODES = new Set([
-  2, 3, 8, 9, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-  27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+  8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+  21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
 ]);
-const _AI_TC_K_CODES = new Set([6]);
-/** Трёхпроводные RTD (как module_profiles.AI_RTD_CODES_3_WIRE / flasher.js). */
+const _AI_TC_K_CODES = new Set([41]);
+/** Трёхпроводные RTD (Modbus codes 21–33). */
 const _AI_RTD_3WIRE = new Set([
-  0x001B, 0x001C, 0x001D, 0x001E, 0x001F, 0x0020, 0x0021, 0x0022, 0x0023, 0x0024, 0x0025,
+  21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
 ]);
+const _AI_VOLT_CODES = new Set([34, 35, 36, 37]);
+const _AI_CURR_CODES = new Set([38, 39, 40]);
+const _AI_DRY_CODES = new Set([42]);
 
 function mr02mAiMirrorTypeToN(code) {
   const c = Number(code) & 0xffff;
@@ -389,10 +408,75 @@ function syncMr02mPairAfterParentChange(dev, parentCh) {
   if (!mr02mAiIsNLeg(mt, nCh)) return;
   if (!dev.channels) dev.channels = {};
   const pCfg = getOrCreateChannel(dev.channels, 'ai', parentCh);
-  const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+  const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 0;
   if (!mr02mAiMirrorTypeToN(st)) return;
   const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
   nCfg.sensor_type = st;
+  aiTypeSetPending(dev.id, nCh, st);
+}
+
+function aiTypeControlKey(devId, ch) {
+  return `${devId}:ai_${ch}`;
+}
+
+function aiTypeEditGuardAdd(devId, ch) {
+  const key = aiTypeControlKey(devId, ch);
+  _aiTypeEditGuard.add(key);
+  if (_aiTypeEditGuardTimers[key]) {
+    clearTimeout(_aiTypeEditGuardTimers[key]);
+    delete _aiTypeEditGuardTimers[key];
+  }
+}
+
+function aiTypeEditGuardReleaseLater(devId, ch) {
+  const key = aiTypeControlKey(devId, ch);
+  if (_aiTypeEditGuardTimers[key]) clearTimeout(_aiTypeEditGuardTimers[key]);
+  _aiTypeEditGuardTimers[key] = setTimeout(() => {
+    _aiTypeEditGuard.delete(key);
+    delete _aiTypeEditGuardTimers[key];
+  }, _AI_TYPE_EDIT_GUARD_MS);
+}
+
+function aiTypeSetPending(devId, ch, code) {
+  _aiTypePending[aiTypeControlKey(devId, ch)] = Number(code) & 0xffff;
+}
+
+function aiTypeClearPendingForDevice(devId) {
+  const prefix = `${devId}:ai_`;
+  for (const key of Object.keys(_aiTypePending)) {
+    if (key.startsWith(prefix)) delete _aiTypePending[key];
+  }
+}
+
+/** После «Сохранить и применить» — ожидаемые типы из YAML до подтверждения с шины (как _ai_sensor_pending). */
+function aiTypeApplyPendingFromDeviceConfig(dev) {
+  if (!dev || dev.type !== 'mr02m') return;
+  const mtCode = getModuleTypeCode(dev);
+  const aiCount = (MR02M_TYPES[mtCode] || {}).ai || 0;
+  const channels = dev.channels || {};
+  for (let i = 1; i <= aiCount; i++) {
+    const chCfg = getOrCreateChannel(channels, 'ai', i);
+    const st = chCfg.sensor_type != null ? Number(chCfg.sensor_type) : 0;
+    aiTypeSetPending(dev.id, i, st);
+  }
+}
+
+function aiTypeReconcilePending(devId, sensorTypes) {
+  if (!sensorTypes) return;
+  const prefix = `${devId}:ai_`;
+  for (const key of Object.keys(_aiTypePending)) {
+    if (!key.startsWith(prefix)) continue;
+    const ctrl = key.slice(devId.length + 1);
+    const live = sensorTypes[ctrl];
+    if (live == null || live === '') continue;
+    if ((Number(live) & 0xffff) === _aiTypePending[key]) delete _aiTypePending[key];
+  }
+}
+
+function aiTypeIsEditBlocked(devId, ch, sel) {
+  const key = aiTypeControlKey(devId, ch);
+  if (_aiTypeEditGuard.has(key)) return true;
+  return !!(sel && document.activeElement === sel);
 }
 
 function normalizeMr02mAiPairsAll(dev) {
@@ -402,7 +486,7 @@ function normalizeMr02mAiPairsAll(dev) {
     const pCh = mr02mAiPairParent(nCh);
     if (!pCh) continue;
     const pCfg = getOrCreateChannel(dev.channels, 'ai', pCh);
-    const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+    const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 0;
     if (!mr02mAiMirrorTypeToN(st)) continue;
     const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
     nCfg.sensor_type = st;
@@ -444,10 +528,10 @@ const _liveUnits = Object.create(null);
 function aiUnitsForCode(code) {
   const c = Number(code) & 0xffff;
   if (c === 0) return '';
-  if (c === 4 || c === 24 || c === 38) return 'В';
-  if (c === 23) return 'мВ';
-  if (c === 5 || c === 21 || c === 22) return 'мА';
-  if (c === 7) return '';
+  if (c === 34 || c === 35 || c === 37) return 'В';
+  if (c === 36) return 'мВ';
+  if (c === 38 || c === 39 || c === 40) return 'мА';
+  if (c === 42) return '';
   return '°C';
 }
 
@@ -470,15 +554,26 @@ function formatUnitLabel(u) {
 }
 
 function mr02mAiEffectiveSensorType(dev, ch, channels) {
+  const key = aiTypeControlKey(dev.id, ch);
+  const pending = _aiTypePending[key];
+  if (pending != null) return pending;
+  const chCfg = getOrCreateChannel(channels, 'ai', ch);
+  const cfgType = chCfg.sensor_type != null ? Number(chCfg.sensor_type) : null;
+  const live = _liveSensorTypes[dev.id]?.[`ai_${ch}`];
+  if (_aiTypeEditGuard.has(key) && cfgType != null) return cfgType & 0xffff;
+  if (cfgType != null && live != null && live !== '') {
+    const liveN = Number(live) & 0xffff;
+    if (liveN === 0 && (cfgType & 0xffff) !== 0) return cfgType & 0xffff;
+  }
+  if (live != null && live !== '') return Number(live) & 0xffff;
   const mt = getModuleTypeCode(dev);
   const parent = mr02mAiPairParent(ch);
   if (mr02mAiIsNLeg(mt, ch) && parent) {
     const pCfg = getOrCreateChannel(channels, 'ai', parent);
-    const pst = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 2;
+    const pst = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 0;
     if (mr02mAiMirrorTypeToN(pst)) return pst;
   }
-  const chCfg = getOrCreateChannel(channels, 'ai', ch);
-  return chCfg.sensor_type != null ? Number(chCfg.sensor_type) : 2;
+  return cfgType != null ? cfgType & 0xffff : 0;
 }
 
 function liveUnitFor(devId, controlName, fallback) {
@@ -570,10 +665,42 @@ function refreshAllLiveCells() {
   for (const devId of _accordionBuilt) refreshLiveCellsForDevice(devId);
 }
 
+function refreshAiTypeSelects(dev) {
+  if (!dev || dev.type !== 'mr02m') return;
+  const body = document.getElementById(`acc-body-${dev.id}`);
+  if (!body) return;
+  const mtCode = getModuleTypeCode(dev);
+  const channels = dev.channels || {};
+  const aiCount = (MR02M_TYPES[mtCode] || {}).ai || 0;
+  for (let i = 1; i <= aiCount; i++) {
+    const effType = mr02mAiEffectiveSensorType(dev, i, channels);
+    const row = body.querySelector(`.mqtt-ch-row[data-ai-ch="${i}"]`);
+    if (!row) continue;
+    const sel = row.querySelector('select.mqtt-select-small');
+    if (!sel) continue;
+    if (aiTypeIsEditBlocked(dev.id, i, sel)) continue;
+    sel.value = String(effType);
+    const nMirror = mr02mAiIsNLeg(mtCode, i) && mr02mAiMirrorTypeToN(effType);
+    sel.disabled = !!nMirror;
+    const ctrl = `ai_${i}`;
+    const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
+    if (unitEl) {
+      const u = aiUnitsForCode(effType);
+      unitEl.setAttribute('data-unit-default', u);
+      unitEl.textContent = liveUnitFor(dev.id, ctrl, u);
+      unitEl.hidden = !u ? '' : undefined;
+    }
+  }
+}
+
 async function prefetchDeviceLive(devId) {
   const data = await apiGet(
     `/cgi-bin/mqtt_live.cgi?device=${encodeURIComponent(devId)}`).catch(() => null);
-  if (!data || !data.ok) return;
+  if (!data || !data.ok) return null;
+  if (data.sensor_types && typeof data.sensor_types === 'object') {
+    _liveSensorTypes[devId] = Object.assign(Object.create(null), data.sensor_types);
+    aiTypeReconcilePending(devId, data.sensor_types);
+  }
   for (const [ctrl, val] of Object.entries(data.controls || {})) {
     setLiveValue(devId, ctrl, val, false, {skipDom: true});
   }
@@ -584,7 +711,10 @@ async function prefetchDeviceLive(devId) {
   for (const [ctrl, err] of Object.entries(data.errors || {})) {
     setLiveValue(devId, ctrl, err, true, {skipDom: true});
   }
+  const dev = (_config.devices || []).find(d => d.id === devId);
+  if (dev) refreshAiTypeSelects(dev);
   refreshLiveCellsForDevice(devId);
+  return data;
 }
 
 function stopChannelPoll() {
@@ -673,7 +803,7 @@ function buildSysChannelGroup(dev, title, vars) {
           checked: chCfg.enabled !== false ? '' : undefined,
           'onchange': e => {
             chCfg.enabled = e.target.checked;
-            markUnsaved();
+            onPollConfigChanged(dev.id);
           },
         }),
       ),
@@ -842,8 +972,9 @@ function bindMqttClientInfoCells() {
 }
 
 // ── Broker status ─────────────────────────────────────────────────────────────
-async function refreshBrokerStatus() {
-  const st = await apiGet('/cgi-bin/mqtt_status.cgi');
+let _lastMqttBrokerStatus = null;
+
+function applyBrokerStatusUI(st) {
   const badge = document.getElementById('mqtt-broker-badge');
   const clients = document.getElementById('mqtt-broker-clients');
   const bridgeBadge = document.getElementById('mqtt-bridge-badge');
@@ -851,37 +982,47 @@ async function refreshBrokerStatus() {
   if (!st || st.error) {
     if (badge) {
       badge.className = 'badge badge-err';
-      badge.textContent = st && st.error === 'unauthorized' ? '● Нет доступа' : '● Нет данных';
+      badge.textContent = st && st.error === 'unauthorized' ? uiT('● Нет доступа') : uiT('● Нет данных');
     }
     if (bridgeBadge) {
       bridgeBadge.className = 'badge badge-unk';
-      bridgeBadge.textContent = '● Мост —';
+      bridgeBadge.textContent = uiT('● Мост —');
     }
-    if (clients) clients.textContent = 'Клиентов: —';
+    if (clients) clients.textContent = uiT('Клиентов: —');
     return;
   }
 
   if (badge) {
     badge.className = `badge ${st.mosquitto_active ? 'badge-ok' : 'badge-err'}`;
-    badge.textContent = st.mosquitto_active ? '● Работает' : '● Остановлен';
+    badge.textContent = st.mosquitto_active ? uiT('● Работает') : uiT('● Остановлен');
   }
-  if (clients) clients.textContent = `Клиентов: ${st.clients_connected}`;
+  if (clients) clients.textContent = uiT(`Клиентов: ${st.clients_connected}`);
   if (bridgeBadge) {
     bridgeBadge.className = `badge ${st.bridge_active ? 'badge-ok' : 'badge-unk'}`;
-    bridgeBadge.textContent = st.bridge_active ? '● Мост активен' : '● Мост остановлен';
+    bridgeBadge.textContent = st.bridge_active ? uiT('● Мост активен') : uiT('● Мост остановлен');
   }
   const bridgeToggle = document.getElementById('mqtt-bridge-toggle-btn');
   if (bridgeToggle) {
     const on = !!st.bridge_active;
-    bridgeToggle.textContent = on ? 'Остановить' : 'Запустить';
+    bridgeToggle.textContent = uiT(on ? 'Остановить' : 'Запустить');
     bridgeToggle.className = on ? 'btn btn-sm btn-warn' : 'btn btn-sm btn-primary';
-    bridgeToggle.title = on
+    bridgeToggle.title = uiT(on
       ? 'Остановить мост Modbus→MQTT и освободить COM-порты'
-      : 'Запустить мост Modbus→MQTT';
+      : 'Запустить мост Modbus→MQTT');
   }
   renderMqttClientInfo(st);
   bindMqttClientInfoCells();
 }
+
+async function refreshBrokerStatus() {
+  const st = await apiGet('/cgi-bin/mqtt_status.cgi');
+  _lastMqttBrokerStatus = st;
+  applyBrokerStatusUI(st);
+}
+
+window.mqttRefreshI18n = function () {
+  if (_lastMqttBrokerStatus) applyBrokerStatusUI(_lastMqttBrokerStatus);
+};
 
 // ── Load config ───────────────────────────────────────────────────────────────
 async function loadConfig() {
@@ -915,15 +1056,17 @@ function renderDeviceList() {
   tbody.innerHTML = '';
   refreshMonitorFilterOptions();
   for (const dev of _config.devices || []) {
-    const chEnabled = countChannelsEnabled(dev);
-    const chTotal = countChannelsTotal(dev);
+    const ioEnabled = countChannelsEnabled(dev);
+    const ioTotal = countChannelsTotal(dev);
+    const pollCount = countPollEnabled(dev);
     const comName = (dev.port || '').replace('/dev/', '');
-    const tr = h('tr', {},
+    const tr = h('tr', {'data-device-id': dev.id},
       h('td', {}, deviceTypeBadge(dev.type)),
       h('td', {}, formatDeviceDisplayName(dev)),
       h('td', {'class':'mono'}, comName),
       h('td', {'class':'mono'}, String(dev.address || '—')),
-      h('td', {}, `${chEnabled}/${chTotal}`),
+      h('td', {'class': 'mqtt-io-count'}, `${ioEnabled}/${ioTotal}`),
+      h('td', {'class': 'mqtt-poll-count'}, String(pollCount)),
       h('td', {},
         h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, '✕ Удалить')
       )
@@ -932,19 +1075,46 @@ function renderDeviceList() {
   }
 }
 
+function refreshDeviceListCounts(devId) {
+  const dev = (_config.devices || []).find(d => d.id === devId);
+  if (!dev) return;
+  const tr = document.querySelector(`#mqtt-device-tbody tr[data-device-id="${devId}"]`);
+  if (!tr) return;
+  const ioTd = tr.querySelector('.mqtt-io-count');
+  const pollTd = tr.querySelector('.mqtt-poll-count');
+  if (ioTd) ioTd.textContent = `${countChannelsEnabled(dev)}/${countChannelsTotal(dev)}`;
+  if (pollTd) pollTd.textContent = String(countPollEnabled(dev));
+}
+
+function onPollConfigChanged(devId) {
+  markUnsaved();
+  refreshDeviceListCounts(devId);
+}
+
 function deviceTypeBadge(type) {
   const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
+function mr02mProfile(dev) {
+  return MR02M_TYPES[getModuleTypeCode(dev)] || {do: 0, di: 0, ao: 0, ai: 0};
+}
+
+/** Физический канал включён, если в YAML нет записи или enabled !== false (как getOrCreateChannel). */
+function mr02mPhysicalChannelEnabled(channels, kind, idx) {
+  const ch = (channels?.[kind] || []).find(c => c.ch === idx);
+  return ch ? ch.enabled !== false : true;
+}
+
 function countChannelsEnabled(dev) {
   if (dev.type === 'mr02m') {
+    const mt = mr02mProfile(dev);
+    const channels = dev.channels || {};
     let n = 0;
-    for (const kind of ['do','di','ao','ai','sys']) {
-      for (const ch of (dev.channels?.[kind] || [])) {
-        if (ch.enabled !== false) n++;
-      }
-    }
+    for (let i = 1; i <= mt.do; i++) if (mr02mPhysicalChannelEnabled(channels, 'do', i)) n++;
+    for (let i = 1; i <= mt.di; i++) if (mr02mPhysicalChannelEnabled(channels, 'di', i)) n++;
+    for (let i = 1; i <= mt.ao; i++) if (mr02mPhysicalChannelEnabled(channels, 'ao', i)) n++;
+    for (let i = 1; i <= mt.ai; i++) if (mr02mPhysicalChannelEnabled(channels, 'ai', i)) n++;
     return n;
   }
   if (dev.type === 'dtv') return (dev.sensors_present || []).length;
@@ -965,15 +1135,46 @@ function countChannelsEnabled(dev) {
 
 function countChannelsTotal(dev) {
   if (dev.type === 'mr02m') {
-    for (const [code, mt] of Object.entries(MR02M_TYPES)) {
-      if (String(code) === String(getModuleTypeCode(dev))) {
-        return mt.do + mt.di + mt.ao + mt.ai;
-      }
-    }
+    const mt = mr02mProfile(dev);
+    return mt.do + mt.di + mt.ao + mt.ai;
   }
   if (dev.type === 'dtv') return DTV_SENSORS.length;
   if (dev.type === 'ce02m3') return CE02M3_CHANNELS.length;
   return 0;
+}
+
+function sysVarsForDevice(dev) {
+  if (dev.type === 'mr02m') return MR02M_SYS_VARS;
+  if (dev.type === 'dtv') return DTV_SYS_VARS;
+  if (dev.type === 'ce02m3') return CE02M3_SYS_VARS;
+  return [];
+}
+
+/** Системный канал включён для опроса (enabled !== false, как в modbus_mqtt_bridge._sys_enabled). */
+function sysChannelPollEnabled(dev, key) {
+  const sys = dev.channels?.sys;
+  if (!sys || !Array.isArray(sys)) return true;
+  const ch = sys.find(c => c.key === key);
+  return ch ? ch.enabled !== false : true;
+}
+
+function countSysPollEnabled(dev) {
+  let n = 0;
+  for (const item of sysVarsForDevice(dev)) {
+    if (sysChannelPollEnabled(dev, item.key)) n++;
+  }
+  return n;
+}
+
+/** Число MQTT-контролов с активным опросом: системные + физические I/O / датчики. */
+function countPollEnabled(dev) {
+  let n = countSysPollEnabled(dev);
+  if (dev.type === 'mr02m' || dev.type === 'ce02m3') {
+    n += countChannelsEnabled(dev);
+  } else if (dev.type === 'dtv') {
+    n += (dev.sensors_present || []).length;
+  }
+  return n;
 }
 
 // ── Accordion ─────────────────────────────────────────────────────────────────
@@ -1045,9 +1246,8 @@ async function openDeviceChannels(dev) {
   const devId = dev.id;
   const body = document.getElementById(`acc-body-${devId}`);
   if (body) body.classList.add('mqtt-ch-loading');
-  const liveP = prefetchDeviceLive(devId);
   ensureAccordionBody(dev);
-  await liveP;
+  await prefetchDeviceLive(devId);
   if (body) body.classList.remove('mqtt-ch-loading');
   if (isAccordionOpen(devId)) startChannelPoll(devId);
 }
@@ -1101,11 +1301,16 @@ function appendMr02mAiGroup(dev, channels, mtCode, count) {
     const effType = mr02mAiEffectiveSensorType(dev, i, channels);
     const row = buildChannelRow(
       chCfg, topicPath(dev.id, ctrl), 'ai', i, dev, ctrl, '', {skipLive: true});
+    row.setAttribute('data-ai-ch', String(i));
     const sel = h('select', {'class': 'mqtt-select-small',
+      'onfocus': () => aiTypeEditGuardAdd(dev.id, i),
+      'onblur': () => aiTypeEditGuardReleaseLater(dev.id, i),
       'onchange': e => {
-        chCfg.sensor_type = Number(e.target.value);
+        const code = Number(e.target.value);
+        chCfg.sensor_type = code;
+        aiTypeSetPending(dev.id, i, code);
         if (!mr02mAiIsNLeg(mtCode, i)) syncMr02mPairAfterParentChange(dev, i);
-        const u = aiUnitsForCode(chCfg.sensor_type);
+        const u = aiUnitsForCode(code);
         const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
         if (unitEl) {
           unitEl.setAttribute('data-unit-default', u);
@@ -1175,7 +1380,7 @@ function buildDTVChannels(dev, container) {
             } else {
               dev.sensors_present = dev.sensors_present.filter(k => k !== s.key);
             }
-            markUnsaved();
+            onPollConfigChanged(dev.id);
           }}),
         h('span', {'class':'mqtt-ch-name'}, s.label)
       ),
@@ -1261,7 +1466,7 @@ function buildCE02M3Channels(dev, container) {
       h('label', {'class':'mqtt-ch-toggle'},
         h('input', {'type':'checkbox', checked: enabled ? '' : undefined,
           'onchange': e => {
-            if (enKey) { en[enKey] = e.target.checked; markUnsaved(); }
+            if (enKey) { en[enKey] = e.target.checked; onPollConfigChanged(dev.id); }
           }}),
         h('span', {'class':'mqtt-ch-name'}, ch.label)
       ),
@@ -1281,7 +1486,7 @@ function buildChannelRow(chCfg, topicHint, kind, idx, dev, controlName, unit, op
         checked: chCfg.enabled !== false ? '' : undefined,
         'onchange': e => {
           chCfg.enabled = e.target.checked;
-          markUnsaved();
+          onPollConfigChanged(dev.id);
         },
       }),
     ),
@@ -1566,8 +1771,17 @@ async function saveAndApply() {
 
   if (res && res.ok) {
     _unsaved = false;
+    for (const dev of _config.devices || []) {
+      aiTypeApplyPendingFromDeviceConfig(dev);
+      if (isAccordionOpen(dev.id)) refreshAiTypeSelects(dev);
+    }
     showToast('Настройки сохранены. Мост MQTT перезапущен.');
     setTimeout(refreshBrokerStatus, 2000);
+    setTimeout(() => {
+      for (const dev of _config.devices || []) {
+        if (isAccordionOpen(dev.id)) void prefetchDeviceLive(dev.id);
+      }
+    }, 2500);
   } else {
     showToast('Ошибка сохранения: ' + (res?.error || 'неизвестная'), 'err');
   }
