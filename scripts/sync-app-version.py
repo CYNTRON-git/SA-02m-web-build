@@ -10,7 +10,7 @@
 Обновляет:
   - www/network_config/VERSION
   - www/network_config/static/js/app.js  (APP_VERSION)
-  - www/network_config/index.html      (cache-bust ?v= для app.js)
+  - www/network_config/index.html, login.html  (all ?v= cache-bust query strings)
 """
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ WWW = REPO_ROOT / "www" / "network_config"
 VERSION_FILE = WWW / "VERSION"
 APP_JS = WWW / "static" / "js" / "app.js"
 INDEX_HTML = WWW / "index.html"
+LOGIN_HTML = WWW / "login.html"
 
 VERSION_RE = re.compile(r"^\d+(\.\d+){2,3}$")
+CACHE_BUST_RE = re.compile(r"(\?v=)(\d+(?:\.\d+){2,3}(?:[-.]\d+)?)")
 
 
 def read_version_file() -> str | None:
@@ -99,20 +101,26 @@ def patch_app_js(version: str) -> bool:
     return True
 
 
-def patch_index_html(version: str) -> bool:
-    text = INDEX_HTML.read_text(encoding="utf-8")
-    new, n = re.subn(
-        r'(<script src="/static/js/app\.js\?v=)[^"]+(">)',
-        rf"\g<1>{version}\g<2>",
-        text,
-        count=1,
-    )
-    if n != 1:
-        raise SystemExit(f"app.js cache-bust не найден в {INDEX_HTML}")
+def patch_html_cache_bust(path: Path, version: str) -> bool:
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8")
+    new = CACHE_BUST_RE.sub(rf"\g<1>{version}", text)
     if new == text:
         return False
-    INDEX_HTML.write_text(new, encoding="utf-8")
+    path.write_text(new, encoding="utf-8")
     return True
+
+
+def html_cache_bust_mismatches(path: Path, version: str) -> list[str]:
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    bad: list[str] = []
+    for m in CACHE_BUST_RE.finditer(text):
+        if m.group(2) != version:
+            bad.append(f"{path.name}: ?v={m.group(2)!r} (expected {version!r})")
+    return bad
 
 
 def current_app_version() -> str | None:
@@ -134,9 +142,8 @@ def main() -> int:
         mismatches: list[str] = []
         if cur != version:
             mismatches.append(f"app.js APP_VERSION={cur!r}, expected {version!r}")
-        idx = INDEX_HTML.read_text(encoding="utf-8")
-        if f'app.js?v={version}"' not in idx:
-            mismatches.append(f"index.html app.js?v= does not match {version}")
+        for html in (INDEX_HTML, LOGIN_HTML):
+            mismatches.extend(html_cache_bust_mismatches(html, version))
         vf = read_version_file()
         if vf != version:
             mismatches.append(f"VERSION file={vf!r}, expected {version!r}")
@@ -148,7 +155,9 @@ def main() -> int:
         return 0
 
     write_version_file(version)
-    changed = patch_app_js(version) | patch_index_html(version)
+    changed = patch_app_js(version)
+    for html in (INDEX_HTML, LOGIN_HTML):
+        changed |= patch_html_cache_bust(html, version)
     if changed:
         print(f"Synced web version to {version}")
     else:

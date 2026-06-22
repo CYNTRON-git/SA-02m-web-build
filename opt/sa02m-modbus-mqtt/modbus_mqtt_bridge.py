@@ -148,16 +148,17 @@ MR_MCU_HOLD_POWER_TEMP = 123
 MR_INP_MCU_UPTIME_LO = 105
 MR_INP_DI_CNT_BASE = 77
 MR_INP_MCU_DIAG_START = 65505
+# Коды как в MR-02m decode_reset_csr / Input 65508 (MODBUS_VARIABLES.txt, приоритет LPWR→…→V18PWR).
 MR_RESET_REASON_LABELS: dict[int, str] = {
     0: "неизвестно",
-    1: "NRST",
-    2: "POR/PDR",
-    3: "SW-сброс",
-    4: "IWDG",
-    5: "WWDG",
-    6: "LPM",
+    1: "LPWR",
+    2: "WWDG",
+    3: "IWDG",
+    4: "SW-сброс",
+    5: "POR/PDR",
+    6: "NRST",
     7: "OBL",
-    8: "FIREWIRE",
+    8: "V18PWR",
 }
 # (control_name, mqtt_type, units, title_ru)
 MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
@@ -1201,13 +1202,12 @@ class PortPollScheduler:
             for p in self._pollers:
                 if self._stop.is_set():
                     break
-                if p.in_backoff():
-                    continue
-                polled = True
-                try:
-                    p.poll_io()
-                except Exception as e:
-                    self._log.debug("poll_io %s: %s", p.device_id, e)
+                if not p.in_backoff():
+                    polled = True
+                    try:
+                        p.poll_io()
+                    except Exception as e:
+                        self._log.debug("poll_io %s: %s", p.device_id, e)
                 try:
                     p.poll_slow_if_due(t0)
                 except Exception as e:
@@ -1227,9 +1227,11 @@ class MR02mPoller(DevicePoller):
         self._mod_type: int | None = None
         self._do = self._di = self._ao = self._ai = 0
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  60))
+        self._poll_uptime_s = float(cfg.get("poll_uptime_s", 5))
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
         self._t_diag        = 0.0
+        self._t_uptime      = 0.0
 
     def _ch_cfg(self, kind: str, ch: int) -> dict:
         for e in self._channels.get(kind, []):
@@ -1574,14 +1576,17 @@ class MR02mPoller(DevicePoller):
         v = int(raw) & 0xFFFF
         return v - 0x10000 if v >= 0x8000 else v
 
+    def _poll_uptime(self) -> None:
+        if not self._sys_enabled("uptime_s"):
+            return
+        try:
+            r = self.read_input_registers(self.address, MR_INP_MCU_UPTIME_LO, 2)
+            self.pub.pub_control(
+                self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
+        except Exception:
+            pass
+
     def _poll_diag(self) -> None:
-        if self._sys_enabled("uptime_s"):
-            try:
-                r = self.read_input_registers(self.address, MR_INP_MCU_UPTIME_LO, 2)
-                self.pub.pub_control(
-                    self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
-            except Exception:
-                pass
         if self._sys_enabled("serial"):
             try:
                 r = self.read_input_registers(self.address, 270, 2)
@@ -1626,7 +1631,8 @@ class MR02mPoller(DevicePoller):
                             self.device_id, "mcu_ram_used",
                             str(int(diag[1]) & 0xFFFF))
                 if len(diag) >= 4 and self._sys_enabled("reset_reason"):
-                    code = int(diag[3]) & 0xFFFF
+                    # Младший байт — reset reason; старший может содержать SPI fault (modbus_rtu_hw.c).
+                    code = int(diag[3]) & 0xFF
                     self.pub.pub_control(
                         self.device_id, "reset_reason",
                         MR_RESET_REASON_LABELS.get(code, f"код {code}"))
@@ -1682,9 +1688,16 @@ class MR02mPoller(DevicePoller):
         DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
+        flushed = False
+        if now - self._t_uptime >= self._poll_uptime_s:
+            self._poll_uptime()
+            self._t_uptime = now
+            flushed = True
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now
+            flushed = True
+        if flushed:
             DeviceLiveCache.flush_file(self.device_id)
 
 
@@ -1731,7 +1744,9 @@ class DTVPoller(DevicePoller):
         self._poll_sensors_s  = float(cfg.get("poll_sensors_s",  10))
         self._poll_presence_s = float(cfg.get("poll_presence_s", 2))
         self._poll_diag_s     = float(cfg.get("poll_diag_s",     60))
+        self._poll_uptime_s   = float(cfg.get("poll_uptime_s",   5))
         self._t_diag          = 0.0
+        self._t_uptime        = 0.0
         # Optional explicit list of sensor names to poll
         explicit = cfg.get("sensors_present")
         if isinstance(explicit, list):
@@ -1801,13 +1816,14 @@ class DTVPoller(DevicePoller):
         except Exception:
             pass
 
-    def _poll_diag(self) -> None:
+    def _poll_uptime(self) -> None:
         try:
-            # Uptime: reg 105 = LSW, 106 = MSW
             r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
+
+    def _poll_diag(self) -> None:
         for reg, (ch_name, scale, _, _) in [(k, v) for k, v in self.DTV_REGS.items()
                                              if k in (123, 124)]:
             try:
@@ -1854,9 +1870,16 @@ class DTVPoller(DevicePoller):
         DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
+        flushed = False
+        if now - self._t_uptime >= self._poll_uptime_s:
+            self._poll_uptime()
+            self._t_uptime = now
+            flushed = True
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now
+            flushed = True
+        if flushed:
             DeviceLiveCache.flush_file(self.device_id)
 
 
@@ -1871,8 +1894,10 @@ class CE02M3Poller(DevicePoller):
         self._poll_power_s  = float(cfg.get("poll_power_s",   5))
         self._poll_energy_s = float(cfg.get("poll_energy_s", 60))
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  120))
+        self._poll_uptime_s = float(cfg.get("poll_uptime_s", 5))
         self._t_energy       = 0.0
         self._t_diag         = 0.0
+        self._t_uptime       = 0.0
         ch = cfg.get("channels_enabled", {})
         self._en_volt  = ch.get("voltages", True)
         self._en_lvolt = ch.get("line_voltages", True)
@@ -2018,13 +2043,14 @@ class CE02M3Poller(DevicePoller):
             except Exception:
                 pass
 
-    def _poll_diag(self) -> None:
+    def _poll_uptime(self) -> None:
         try:
-            # Uptime: reg 105 = LSW, 106 = MSW
             r = self.read_input_registers(self.address, 105, 2)
             self.pub.pub_control(self.device_id, "uptime_s", str(r[0] | (r[1] << 16)))
         except Exception:
             pass
+
+    def _poll_diag(self) -> None:
         try:
             r = self.read_input_registers(self.address, 123, 2)
             self.pub.pub_control(self.device_id, "mcu_vdd", str(round(r[0] * 0.01, 2)))
@@ -2040,13 +2066,21 @@ class CE02M3Poller(DevicePoller):
         DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
+        flushed = False
+        if now - self._t_uptime >= self._poll_uptime_s:
+            self._poll_uptime()
+            self._t_uptime = now
+            flushed = True
         if now - self._t_energy >= self._poll_energy_s:
             self._poll_energy()
             self._t_energy = now
-            DeviceLiveCache.flush_file(self.device_id)
+            flushed = True
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
             self._t_diag = now
+            flushed = True
+        if flushed:
+            DeviceLiveCache.flush_file(self.device_id)
 
 
 # ── Global state ───────────────────────────────────────────────────────────────

@@ -581,6 +581,8 @@ const CE02M3_SYS_VARS = [
 
 const _liveByDevice = Object.create(null);
 const _liveUnits = Object.create(null);
+const _liveUptimeAnchor = Object.create(null);
+let _uptimeTickTimer = null;
 
 function aiUnitsForCode(code) {
   const c = Number(code) & 0xffff;
@@ -645,21 +647,41 @@ function liveUnitFor(devId, controlName, fallback) {
   return formatUnitLabel(raw);
 }
 
+function formatUptimeSeconds(s) {
+  s = parseInt(s, 10);
+  if (Number.isNaN(s) || s < 0) return '—';
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (d > 0) return `${d}д ${h}ч ${m}м`;
+  if (h > 0) return `${h}ч ${m}м`;
+  return `${m}м ${s % 60}с`;
+}
+
+function setLiveUptimeAnchor(devId, sec) {
+  const s = parseInt(sec, 10);
+  if (Number.isNaN(s) || s < 0) return;
+  _liveUptimeAnchor[devId] = { sec: s, at: Date.now() };
+}
+
+function effectiveUptimeSec(devId) {
+  const anchor = _liveUptimeAnchor[devId];
+  if (anchor) {
+    return anchor.sec + Math.floor((Date.now() - anchor.at) / 1000);
+  }
+  const rec = _liveByDevice[devId] && _liveByDevice[devId].uptime_s;
+  if (!rec || rec.isError) return null;
+  const s = parseInt(rec.value, 10);
+  return Number.isNaN(s) ? null : s;
+}
+
 function formatLiveDisplay(controlName, rec) {
   if (!rec) return '—';
   if (rec.isError) return '⚠';
   const v = rec.value;
   if (v === '' || v == null) return '—';
   if (controlName === 'uptime_s') {
-    const s = parseInt(v, 10);
-    if (!Number.isNaN(s) && s >= 0) {
-      const d = Math.floor(s / 86400);
-      const h = Math.floor((s % 86400) / 3600);
-      const m = Math.floor((s % 3600) / 60);
-      if (d > 0) return `${d}д ${h}ч ${m}м`;
-      if (h > 0) return `${h}ч ${m}м`;
-      return `${m}м ${s % 60}с`;
-    }
+    return formatUptimeSeconds(v);
   }
   if (/^do_\d+$/.test(controlName) || /^di_\d+$/.test(controlName)) {
     if (v === '1') return 'вкл';
@@ -695,6 +717,9 @@ function setLiveValue(devId, controlName, value, isError, opts) {
     value: value == null ? '' : String(value),
     isError: !!isError,
   };
+  if (controlName === 'uptime_s' && !isError && value != null && value !== '') {
+    setLiveUptimeAnchor(devId, value);
+  }
   if (opts && opts.skipDom) return;
   if (isAccordionOpen(devId)) scheduleLiveDomRefresh(devId);
 }
@@ -703,8 +728,14 @@ function updateLiveCell(devId, controlName) {
   const el = document.querySelector(`[data-live="${devId}:${controlName}"]`);
   if (!el) return;
   const rec = _liveByDevice[devId] && _liveByDevice[devId][controlName];
-  el.textContent = formatLiveDisplay(controlName, rec);
-  el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
+  if (controlName === 'uptime_s') {
+    const s = effectiveUptimeSec(devId);
+    el.textContent = s == null ? '—' : formatUptimeSeconds(s);
+    el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
+  } else {
+    el.textContent = formatLiveDisplay(controlName, rec);
+    el.className = 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : '');
+  }
   const unitEl = document.querySelector(`[data-unit="${devId}:${controlName}"]`);
   if (unitEl) {
     const u = liveUnitFor(devId, controlName, unitEl.getAttribute('data-unit-default') || '');
@@ -764,6 +795,7 @@ async function prefetchDeviceLive(devId) {
     aiTypeReconcilePending(devId, data.sensor_types);
   }
   for (const [ctrl, val] of Object.entries(data.controls || {})) {
+    if (ctrl === 'uptime_s') setLiveUptimeAnchor(devId, val);
     setLiveValue(devId, ctrl, val, false, {skipDom: true});
   }
   for (const [ctrl, u] of Object.entries(data.units || {})) {
@@ -779,12 +811,29 @@ async function prefetchDeviceLive(devId) {
   return data;
 }
 
+function stopUptimeTick() {
+  if (_uptimeTickTimer) {
+    clearInterval(_uptimeTickTimer);
+    _uptimeTickTimer = null;
+  }
+}
+
+function startUptimeTick() {
+  stopUptimeTick();
+  _uptimeTickTimer = setInterval(() => {
+    const devId = _channelPollDevId;
+    if (!devId || !isAccordionOpen(devId)) return;
+    updateLiveCell(devId, 'uptime_s');
+  }, 1000);
+}
+
 function stopChannelPoll() {
   if (_channelPollTimer) {
     clearInterval(_channelPollTimer);
     _channelPollTimer = null;
   }
   _channelPollDevId = null;
+  stopUptimeTick();
 }
 
 function startChannelPoll(devId) {
@@ -796,17 +845,25 @@ function startChannelPoll(devId) {
       prefetchDeviceLive(devId);
     }
   }, 1500);
+  startUptimeTick();
 }
 
 function liveSpan(devId, controlName, unit) {
   const rec = _liveByDevice[devId] && _liveByDevice[devId][controlName];
   const u = liveUnitFor(devId, controlName, unit || '');
+  let display;
+  if (controlName === 'uptime_s') {
+    const s = effectiveUptimeSec(devId);
+    display = s == null ? formatLiveDisplay(controlName, rec) : formatUptimeSeconds(s);
+  } else {
+    display = formatLiveDisplay(controlName, rec);
+  }
   const wrap = h('span', {'class': 'mqtt-ch-live-wrap'});
   wrap.appendChild(h('span', {
     'class': 'mqtt-ch-live' + (rec && rec.isError ? ' mqtt-ch-live-err' : rec ? ' mqtt-ch-live-ok' : ''),
     'data-live': `${devId}:${controlName}`,
     'title': 'Текущее значение с шины (MQTT)',
-  }, formatLiveDisplay(controlName, rec)));
+  }, display));
   wrap.appendChild(h('span', {
     'class': 'mqtt-ch-unit',
     'data-unit': `${devId}:${controlName}`,
@@ -831,6 +888,7 @@ function ingestMonitorTopic(topic, value) {
   }
   const m = /^\/devices\/([^/]+)\/controls\/([^/]+)$/.exec(topic);
   if (!m || m[2] === 'module_type' || m[2] === 'connection') return;
+  if (m[2] === 'uptime_s') setLiveUptimeAnchor(m[1], value);
   setLiveValue(m[1], m[2], value, false);
 }
 
@@ -1936,7 +1994,10 @@ async function pollMonitorDevice(deviceId) {
     }
   }
   if (batch.length) {
-    for (const ev of batch) queueMonitorLine(ev.ts, ev.topic, ev.value);
+    for (const ev of batch) {
+      queueMonitorLine(ev.ts, ev.topic, ev.value);
+      ingestMonitorTopic(ev.topic, ev.value);
+    }
   }
   _monitorPrimed = true;
 }

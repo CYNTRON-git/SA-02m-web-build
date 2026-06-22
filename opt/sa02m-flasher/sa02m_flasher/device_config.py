@@ -102,18 +102,19 @@ def _info_plural_days(days: int) -> str:
 
 
 def _info_reset_reason(code: int) -> str:
+    """MR-02m Input 65508: decode_reset_csr в Core/Src/i2c.c (не порядок RCC-битов STM32)."""
     reasons = {
         0: "неизвестно",
-        1: "NRST",
-        2: "POR/PDR",
-        3: "SW-сброс",
-        4: "IWDG",
-        5: "WWDG",
-        6: "LPM",
+        1: "LPWR",
+        2: "WWDG",
+        3: "IWDG",
+        4: "SW-сброс",
+        5: "POR/PDR",
+        6: "NRST",
         7: "OBL",
-        8: "FIREWIRE",
+        8: "V18PWR",
     }
-    return reasons.get(int(code) & 0xFFFF, f"код {code & 0xFFFF}")
+    return reasons.get(int(code) & 0xFF, f"код {code & 0xFF}")
 
 
 def _info_format_uptime(seconds: int) -> str:
@@ -170,7 +171,7 @@ def _read_mr_mcu_info(send, slave: int) -> Dict[str, Any]:
         out["ram_free"] = int(diag_regs[0]) & 0xFFFF
         out["ram_used"] = int(diag_regs[1]) & 0xFFFF
     if len(diag_regs) >= 6:
-        out["reset_reason"] = _info_reset_reason(int(diag_regs[3]) & 0xFFFF)
+        out["reset_reason"] = _info_reset_reason(int(diag_regs[3]))
         fw_cnt = ((int(diag_regs[5]) & 0xFFFF) << 16) | (int(diag_regs[4]) & 0xFFFF)
         out["fw_updates"] = fw_cnt
     return out

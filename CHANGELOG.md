@@ -7,6 +7,17 @@
 
 ## 1.0.3.32 - CPU load, dashboard polling, MQTT AI types (июн 2026)
 
+### Reset reason (MR-02m diag, июн 2026)
+- **modbus_mqtt_bridge.py / device_config.py:** таблицы причин сброса приведены к `decode_reset_csr` (Input 65508); код **5** → POR/PDR, не WWDG.
+- Декодирование reset reason: младший байт регистра (`& 0xFF`).
+
+### MQTT system vars / uptime (июн 2026)
+- **modbus_mqtt_bridge.py:** отдельный `_poll_uptime` каждые 5 с; `poll_slow_if_due` выполняется при IO backoff.
+- **mqtt.js:** якорь uptime, 1 с tick и экстраполяция в live-ячейке; ingest monitor topics при batch poll.
+
+### Web version (июн 2026)
+- **VERSION**, `APP_VERSION`, все `?v=` в `index.html` / `login.html` — ровно **1.0.3.32** (без `.4` / `-1` суффиксов); `scripts/sync-app-version.py` синхронизирует все cache-bust в HTML.
+
 > После деплоя исправлений смотрите docs/bugs/BUGLOG.md с кратким описанием багов.
 
 ### Dashboard / status.cgi (снижение нагрузки CPU)

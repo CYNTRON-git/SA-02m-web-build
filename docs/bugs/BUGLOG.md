@@ -5,6 +5,24 @@
 
 ---
 
+## [2026-06-22 11:55] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В MQTT-вкладке блок «Системные» — «Время работы» (uptime_s) не менялся в live-ячейке; остальные diag-поля тоже обновлялись редко.
+**Причина:** Мост опрашивал uptime только в `_poll_diag` (`poll_diag_s=60`); при backoff IO-опроса `poll_slow_if_due` тоже пропускался. UI показывал снимок без экстраполяции — между опросами секунды не тикали.
+**Исправление:** Отдельный `_poll_uptime` каждые 5 с (`poll_uptime_s`); `poll_slow_if_due` выполняется даже в backoff; UI: якорь uptime + 1 с tick и экстраполяция в `updateLiveCell`; cache-bust `mqtt.js?v=1.0.3.32` (ветка, без суффиксов).
+
+## [2026-06-22 11:55] branch: 1.0.3.32
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `opt/sa02m-flasher/sa02m_flasher/device_config.py`
+**Тип:** Некорректное поведение
+**Описание:** После power cycle в MQTT UI «Системные» и прошивальщик показывали `reset_reason=WWDG`, хотя модуль перезагружался отключением питания.
+**Причина:** MR-02m кодирует причину в Input 65508 по `decode_reset_csr` (1=LPWR, 2=WWDG, …, 5=POR, 6=NRST — см. `MODBUS_VARIABLES.txt`). Мост и flasher использовали другую таблицу (похожую на порядок RCC-битов STM32): код **5** ошибочно отображался как WWDG вместо POR/PDR. На устройстве MQTT: `/devices/mr02m-COM4-6/controls/reset_reason WWDG` при фактическом коде 5. Прошивка и регистр 65508 корректны; stale cache не при чём (`poll_diag_s=60` обновляет значение).
+**Исправление:** Таблица `MR_RESET_REASON_LABELS` / `_info_reset_reason` приведена к кодам MR-02m; декодирование reset reason — младший байт регистра (`& 0xFF`), т.к. старший может нести SPI fault.
+
+---
+
 ## [2026-06-22 11:42] branch: 1.0.3.32
 
 **Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
