@@ -282,6 +282,36 @@ def _kind_from_identity(signature: str, type_code: Optional[int]) -> Optional[st
     return None
 
 
+def _device_type_code_hint(device: Dict[str, Any]) -> Optional[int]:
+    for key in ("type_code", "module_type"):
+        raw = device.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw) & 0xFFFF
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _resolve_kind(identity: Dict[str, Any], device: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+    """Определить kind; при сбое live-Modbus — сигнатура/тип из scan-записи устройства."""
+    kind = _kind_from_identity(identity["signature"], identity["type_code"])
+    if kind is not None:
+        return kind, identity
+    fb_sig = str(device.get("signature") or "").strip()
+    fb_type = _device_type_code_hint(device)
+    kind = _kind_from_identity(fb_sig, fb_type)
+    if kind is None:
+        raise ValueError("Окно настройки доступно только для устройств нашей линейки")
+    patched = dict(identity)
+    if fb_sig:
+        patched["signature"] = fb_sig
+    if fb_type is not None:
+        patched["type_code"] = fb_type
+    return kind, patched
+
+
 def _module_kind_from_identity(signature: str, type_code: Optional[int]) -> module_profiles.ModuleKind:
     code = int(type_code) if type_code is not None else 0
     if code in module_profiles.TYPE_IO_CAPS:
@@ -855,9 +885,7 @@ def snapshot_for_device(
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
-        kind = _kind_from_identity(identity["signature"], identity["type_code"])
-        if kind is None:
-            raise ValueError("Окно настройки доступно только для устройств нашей линейки")
+        kind, identity = _resolve_kind(identity, device)
 
         network = _read_network(send, slave, device)
         payload: Dict[str, Any] = {
@@ -979,7 +1007,7 @@ def write_allowed_holding(
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
-        kind = _kind_from_identity(identity["signature"], identity["type_code"])
+        kind, identity = _resolve_kind(identity, device)
         allowed_regs: set[int] = set()
         if kind == "dtv":
             allowed_regs.update({dtv_registers.DTV_HOLDING_EXT_TEMP_SELECT, dtv_registers.DTV_HOLDING_PRESENCE_OFF_DELAY})
@@ -1014,7 +1042,7 @@ def write_allowed_coil(
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
-        kind = _kind_from_identity(identity["signature"], identity["type_code"])
+        kind, identity = _resolve_kind(identity, device)
         if kind == "dtv":
             if coil not in (dtv_registers.DTV_COIL_BUZZER, dtv_registers.DTV_COIL_LEDS_ALL):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")

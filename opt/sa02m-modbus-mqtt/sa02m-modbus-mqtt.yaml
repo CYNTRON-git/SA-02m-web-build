@@ -103,17 +103,20 @@ devices:
   #     energy: true
 
   # ── Пример: MR-02m 6AI6AO COM4 addr=6 ───────────────────────────────────
+  # ai_sensor_schema: 2 — Modbus selection codes 0..42 (MR-02m ≥1.0.9.1).
+  # Без schema или schema: 1 — legacy ai_sensor_t enum 0x00..0x26 (авто-миграция).
   # 6AO6AI6: AI2/4/6 — N-нога пары; тип датчика как у AI1/3/5 (в веб-UI синхронизируется).
-  # RTD/NTC: N в MQTT обычно enabled: false; ТХА (код 6): AI5 и AI6 оба enabled.
+  # RTD/NTC: N в MQTT обычно enabled: false; ТХА (код 41): AI5 и AI6 оба enabled.
   # - id: mr02m-COM4-6
   #   module_type: 6
+  #   ai_sensor_schema: 2
   #   port: /dev/COM4
   #   address: 6
   #   channels:
   #     ai:
-  #       - {ch: 1, sensor_type: 3, enabled: true}   # NTC 10k
-  #       - {ch: 2, sensor_type: 3, enabled: false}
-  #       - {ch: 3, sensor_type: 22, enabled: true}  # Pt100 3-wire
+  #       - {ch: 1, sensor_type: 3, enabled: true}   # NTC 10k (B3950)
+  #       - {ch: 2, sensor_type: 11, enabled: true}  # Pt1000 (α385), 2-пров.
+  #       - {ch: 3, sensor_type: 22, enabled: true}  # Pt100 (α385), 3-пров.
   #       - {ch: 4, sensor_type: 22, enabled: false}
   #       - {ch: 5, sensor_type: 41, enabled: true}  # ТХА
   #       - {ch: 6, sensor_type: 41, enabled: true}

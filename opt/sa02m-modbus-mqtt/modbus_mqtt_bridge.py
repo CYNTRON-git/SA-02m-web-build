@@ -175,6 +175,74 @@ MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
 AI_RTD_CODES_3_WIRE = frozenset(range(21, 34))
 AI_TC_K_CODE = 41
 
+# Legacy ai_sensor_t enum (0x00..0x26) → Modbus selection codes 0..42 (MR-02m ≥1.0.9.1).
+# Source: opt/sa02m-flasher/sa02m_flasher/module_profiles.py AI_SENSOR_LEGACY_ENUM_MIGRATION
+AI_SENSOR_LEGACY_ENUM_MIGRATION: dict[int, int] = {
+    0x00: 0, 0x01: 3, 0x02: 11, 0x03: 9, 0x04: 34, 0x05: 40, 0x06: 41, 0x07: 42,
+    0x08: 8, 0x09: 10, 0x0A: 7, 0x0B: 4, 0x0C: 5, 0x0D: 6, 0x0E: 13, 0x0F: 14,
+    0x10: 16, 0x11: 17, 0x12: 18, 0x13: 19, 0x14: 20, 0x15: 38, 0x16: 39, 0x17: 36,
+    0x18: 37, 0x19: 2, 0x1A: 1, 0x1B: 21, 0x1C: 22, 0x1D: 23, 0x1E: 24, 0x1F: 26,
+    0x20: 27, 0x21: 29, 0x22: 30, 0x23: 31, 0x24: 32, 0x25: 33, 0x26: 35,
+}
+AI_SENSOR_SCHEMA_MODBUS = 2
+
+
+def _migrate_legacy_ai_sensor_code(code: int) -> int:
+    c = int(code) & 0xFFFF
+    if c in AI_SENSOR_LEGACY_ENUM_MIGRATION:
+        return AI_SENSOR_LEGACY_ENUM_MIGRATION[c]
+    if 0 <= c <= 42:
+        return c
+    return 0
+
+
+def _ai_register_is_legacy_enum(code: int) -> bool:
+    c = int(code) & 0xFFFF
+    mapped = AI_SENSOR_LEGACY_ENUM_MIGRATION.get(c)
+    return mapped is not None and mapped != c
+
+
+def _resolve_ai_sensor_type(bus_st: int, yaml_st: int | None) -> int:
+    """Pick effective type: YAML wins over legacy garbage in holding reg0."""
+    bus = int(bus_st) & 0xFFFF
+    yaml = int(yaml_st) if yaml_st is not None else None
+    if _ai_register_is_legacy_enum(bus):
+        if yaml is not None:
+            return yaml & 0xFFFF
+        return _migrate_legacy_ai_sensor_code(bus)
+    if bus != 0:
+        return bus
+    if yaml is not None:
+        return yaml & 0xFFFF
+    return 0
+
+
+def _migrate_config_ai_sensor_types(cfg: dict) -> None:
+    """One-time migration: legacy enum in YAML → Modbus codes 0..42."""
+    for dev in cfg.get("devices") or []:
+        if not isinstance(dev, dict):
+            continue
+        if str(dev.get("type", "")).lower() != "mr02m":
+            continue
+        schema = int(dev.get("ai_sensor_schema") or 1)
+        if schema >= AI_SENSOR_SCHEMA_MODBUS:
+            continue
+        channels = dev.get("channels")
+        if not isinstance(channels, dict):
+            continue
+        ai_list = channels.get("ai")
+        if not isinstance(ai_list, list):
+            continue
+        for entry in ai_list:
+            if not isinstance(entry, dict) or "sensor_type" not in entry:
+                continue
+            old = int(entry["sensor_type"]) & 0xFFFF
+            entry["sensor_type"] = _migrate_legacy_ai_sensor_code(old)
+        dev["ai_sensor_schema"] = AI_SENSOR_SCHEMA_MODBUS
+        log.info("Migrated legacy AI sensor_type codes for device %s",
+                 dev.get("id", "?"))
+
+
 # AI sensor Modbus selection codes 0..42 → (mqtt_type, units, scale)
 # Scaled register units per MODBUS_VARIABLES.txt / MR-02m README (коды 0..42):
 #   Temperature sensors:     0.1 °C  (reg × 0.1 = °C)
@@ -1263,6 +1331,12 @@ class MR02mPoller(DevicePoller):
             for attempt in range(4):
                 try:
                     cur = self.read_holding_registers(self.address, reg, 1)[0] & 0xFFFF
+                    if cur != 0 and cur != st and not _ai_register_is_legacy_enum(cur):
+                        self._ai_types[i] = cur
+                        self.log.info(
+                            "AI%d keeping device sensor_type %d (yaml %d)",
+                            i, cur, st)
+                        break
                     if cur == st:
                         self._ai_types[i] = st
                         break
@@ -1435,15 +1509,16 @@ class MR02mPoller(DevicePoller):
                         continue
                     off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
                     regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
-                    dev_st = regs[0] & 0xFFFF
+                    bus_st = regs[0] & 0xFFFF
                     eff_st = self._ai_effective_sensor_type(i)
-                    if eff_st is not None:
-                        dev_st = int(eff_st) & 0xFFFF
-                    elif dev_st == 0:
+                    dev_st = _resolve_ai_sensor_type(bus_st, eff_st)
+                    if dev_st == 0:
                         parent = self._ai_n_parent_ch(i) if self._mod_type == 6 else None
                         if parent:
                             p_off = (parent - 1) * MR02M_AI_CHANNEL_STRIDE
-                            p_st = block[p_off] & 0xFFFF
+                            p_bus = block[p_off] & 0xFFFF
+                            p_yaml = self._ai_effective_sensor_type(parent)
+                            p_st = _resolve_ai_sensor_type(p_bus, p_yaml)
                             if p_st and self._ai_mirror_type_from_parent(p_st):
                                 dev_st = p_st
                     DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
@@ -1993,7 +2068,9 @@ def load_config() -> dict:
         log.warning("Config not found: %s — bridge idle", CONFIG_PATH)
         return {"mqtt": {}, "devices": []}
     with open(CONFIG_PATH) as f:
-        return yaml.safe_load(f) or {"mqtt": {}, "devices": []}
+        cfg = yaml.safe_load(f) or {"mqtt": {}, "devices": []}
+    _migrate_config_ai_sensor_types(cfg)
+    return cfg
 
 
 def watchdog_thread(interval_s: float) -> None:

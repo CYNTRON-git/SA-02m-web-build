@@ -5,7 +5,95 @@
 
 ---
 
-## [2026-06-19 17:05] branch: main
+## [2026-06-22 11:42] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Виджеты «Дискретный выход», «USB-питание» и «индикация» (DO/Beeper/Alarm LED/USB) оставались «н/д» при `SA02M_STATUS_ENABLE_HARDWARE=0`.
+**Причина:** Backend уже отдаёт TTL-кэш через `part=hardware` (`hw_poll_disabled=1`, `sa02m_hw_metrics_cache_refresh`), но frontend при `hardware=0` в blocks помечал часть загруженной и не вызывал `fetchBackgroundPart('hardware')` — `applyHardwareStatus` не получал JSON. Кэш на устройстве мог содержать устаревшие `-1` до первого запроса part=hardware.
+**Исправление:** `shouldFetchBackgroundPart()`: GPIO-виджеты опрашиваются всегда; при `hardware=0` CGI по-прежнему использует кэш без тяжёлого I2C на каждый main. Cache-bust `app.js?v=1.0.3.32.4`.
+
+---
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `.tmp_deploy_poll_queue.py`, `.tmp_deploy_status_cgi_fix.py`
+**Тип:** Некорректное поведение
+**Описание:** Дашборд «Сведения» — все виджеты «—», данные не обновлялись; nginx access log: HTTP 403 на все `GET /cgi-bin/status.cgi?part=*`.
+**Причина:** `status.cgi` на устройстве имел права `644` (не исполняемый) после деплоя через `.tmp_deploy_poll_queue.py`, который делал `chmod 644` на все загруженные файлы, включая CGI. fcgiwrap возвращал 403 «Cannot get script name… is the script executable?»; JS получал HTTP 403, `noteStatusFailure()` накапливал ошибки.
+**Исправление:** `chmod 755` на устройстве; git index `+x` для `status.cgi`; деплой-скрипт poll_queue — отдельно `chmod 755` для `*.cgi`; `.tmp_deploy_status_cgi_fix.py` с HTTP-проверкой всех part=*; cache-bust `app.js?v=1.0.3.32.3`. Проверка: все part=* → HTTP 200 через nginx.
+
+---
+
+## [2026-06-22 10:50] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Алерт «Обновление основных виджетов приостановлено из-за ошибок ответа status.cgi» появлялся при рабочем CGI; после 5 сбоев отдельных part=* опрос не восстанавливался.
+**Причина:** `noteStatusFailure()` накапливал счётчик `statusFailures.main` от любых background-частей, а `noteStatusSuccess(part)` сбрасывал только `statusFailures[part]` — `main` и алерт не очищались без успешного `fetchStatusMain()`. Отменённые (superseded) AbortError и очередь могли давать ложные таймауты при фиксированном budget.
+**Исправление:** Порог паузы per-part (`statusFailures[part] >= 5`); успех любой background-части сбрасывает `statusFailures.main` и скрывает алерт; `isBenignStatusFetchError()` для stale/superseded abort; timeout += queue wait (cap 2×); cache-bust `app.js?v=1.0.3.32.2`. Диагностика на устройстве: все part=* через CGI OK (2–6 s), fcgiwrap/nginx active.
+
+---
+
+## [2026-06-22 10:43] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Вкладка «Сведения» пустая — CPU, RAM, сеть, службы, RS-485 не заполнялись после введения глобальной очереди опроса status.cgi.
+**Причина:** `fetchStatusBlocksConfig()` при ошибке/таймауте `part=blocks` выставлял `_statusBlocksConfig = { time: 0 }`; `isStatusBlockEnabled()` трактовал отсутствующие ключи как «выключено» → все background-части и rs485 пропускались. Инициализация опроса ждала blocks без таймаута — при зависании blocks polling не стартовал вообще.
+**Исправление:** При сбое blocks config оставлять `null` (дефолт: всё кроме time); таймаут 4 s на fetch blocks; старт polling через 600 ms не дожидаясь blocks; явные 0/false в конфиге; cache-bust `app.js?v=1.0.3.32.1`.
+
+---
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `/etc/sa02m-modbus-mqtt.yaml` (COM4 mr02m-COM4-6)
+**Тип:** Некорректное поведение
+**Описание:** MQTT-вкладка COM4 6AI6AO показывала неверные значения AI (~−14/−200/−55 °C), хотя окно настройки модуля — корректные (~25 °C); типы в YAML были legacy enum (1/2/28/6).
+**Причина:** YAML содержал старые коды `ai_sensor_t` (0x01=NTC10k→новый 3, 0x02=Pt1000→11, 0x1C=Pt100 3w→22, 0x06=ТХА→41). Мост записывал их в holding reg0 и при опросе предпочитал YAML/legacy регистр вместо Modbus selection codes; неверный тип ломал N-leg mirroring (TXA/3-wire).
+**Исправление:** Таблица миграции legacy→0..42 + `ai_sensor_schema: 2`; мост: `_resolve_ai_sensor_type()` (YAML над legacy в reg), перезапись legacy reg0; mqtt.js: миграция при loadConfig и при live legacy; YAML на устройстве: 3/11/22/22/41/41. Проверено: cache sensor_types 3/11/22/41, ai_1≈25.0 °C.
+
+---
+
+## [2026-06-22 10:35] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/sa02m_flasher/device_config.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `opt/sa02m-flasher/tests/test_device_config.py`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В окне настройки модуля RS-485 при смене типа AI (AI3 и др.) периодически «AI3: Окно настройки доступно только для устройств нашей линейки» или «линия занята другим процессом»; запись на устройство при этом часто успешна.
+**Причина:** Параллельные `/device_config/*` (фоновый panel-poll + write holding + лишний full-refresh после apply) давали коллизии Modbus; при сбое live-сигнатуры snapshot после записи не использовал сигнатуру из scan-записи; fd опросчика мог освобождаться с задержкой после ports/release.
+**Исправление:** Очередь device_config в flasher.js + edit-guard селекта AI; убран дублирующий refresh после apply; per-port lock в sa02m-flasher service; `_resolve_kind()` с fallback на scan device; повторная проверка port_occupants после 60 ms.
+
+---
+
+## [2026-06-22 10:35] branch: 1.0.3.32
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/cgi-bin/status.cgi`, `www/network_config/login.html`
+**Тип:** Некорректное поведение
+**Описание:** CPU периодически достигал 100% при открытом дашборде несмотря на rolling scheduler (6 s / 750 ms): 9–16 одновременных `status.cgi`, idle CPU падал до ~9%.
+**Причина:** Независимые таймеры без глобальной сериализации — тяжёлые части (rs485 cold ~4 s, network ~0.7 s, services) перекрывались по времени выполнения; priority (4 s) и rs485 (8 s, phase 3300 ms) периодически совпадали с network/services; `login.html` prefetch — 4 отдельных CGI каждые 5 s; network без server cache; bootstrap каждые 1.2 s мог дублировать rs485.
+**Исправление:** Глобальная очередь `scheduleStatusFetch` (max 1 CGI in-flight, min gap 350 ms, heavy gap 2200 ms); split LIGHT (6 s) vs HEAVY (12 s) с фазами; priority 6 s, rs485 12 s phase 10500 ms; bootstrap отложен 4 s, интервал 2.5 s, одна часть за тик; login — один `part=priority` / 8 s; backend cache: network TTL 8 s, rs485 8 s, services 45 s.
+
+---
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Высокая нагрузка CPU от веб-дашборда: тяжёлый `part=rs485` каждые 4 с с `no_cache=1`, блокирующий `sleep 0.1` в `cpu_usage()`, лишний опрос `part=time` при `SA02M_STATUS_ENABLE_TIME=0`.
+**Причина:** RS-485 без server-side cache; routine fetch всегда bust кэша; `cpu_usage()` ждал 100 ms на каждый priority-запрос; frontend не знал об отключённых status blocks.
+**Исправление:** `cache_print_or_build` для rs485 (TTL 4 s) + `no_cache=1` только при force; `cpu_usage()` — Option C (/tmp sample, delta без sleep при baseline <2 s, иначе sleep 50 ms); `part=blocks` + пропуск disabled частей; RS-485 poll 8 s, phase 3300 ms; routine rs485 без `no_cache=1`.
+
+---
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** При возврате на вкладку дашборда и после обновления списка служб — лишний staggered burst `fetchStatusMain()` (до 8 CGI), накладывающийся на rolling timers и дававший кратковременные пики concurrency.
+**Причина:** `visibilitychange` вызывал `fetchStatus()` → `fetchStatusMain()` + `fetchStatusRs485()`; `loadServicesControl` после refresh — полный `fetchStatus()` вместо точечного обновления services.
+**Исправление:** На `visibilitychange` — только `fetchPriorityPart('priority')`; после refresh служб — `fetchBackgroundPart('services', …)` + priority; cache-bust `app.js?v=1.0.3.31-4`.
+
+---
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Загрузка CPU на дашборде циклически скачет 15%→97% при открытом веб-интерфейсе.
+**Причина:** `fetchStatusMain()` каждые 6 с запускал 8 параллельных `status.cgi?part=*`; плюс priority (4 с) и rs485 (4 с) — до 10 одновременных bash/CGI; `cpu_usage()` в `status.cgi` измеряет CPU в окне 100 ms и фиксирует этот burst как ~97% aggregate.
+**Исправление:** Rolling scheduler — у каждой background-части свой `setInterval` 6 s с фазовым сдвигом 750 ms; priority/rs485 со сдвигами 0/2100 ms; force-refresh через staggered burst; bootstrap опрашивает только незагруженные части по одной; cache-bust `app.js?v=1.0.3.31-3`.
+
+---
 
 **Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
 **Тип:** Некорректное поведение

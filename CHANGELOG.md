@@ -5,6 +5,30 @@
 
 ---
 
+## 1.0.3.32 - CPU load, dashboard polling, MQTT AI types (июн 2026)
+
+> После деплоя исправлений смотрите docs/bugs/BUGLOG.md с кратким описанием багов.
+
+### Dashboard / status.cgi (снижение нагрузки CPU)
+- **Rolling scheduler:** очередь serial fetch (max 1 CGI in-flight), split LIGHT (6 s) / HEAVY (12 s), min gap 350 ms / heavy gap 2200 ms; priority 6 s, rs485 phase 10500 ms; bootstrap/login без burst prefetch.
+- **RS-485 cache:** server-side TTL для part=rs485; routine poll без 
+o_cache=1; интервал опроса 8-12 s.
+- **cpu_usage sample cache:** Option C - delta по /tmp без sleep 100 ms на каждый priority tick.
+- **Исправления UI:** пустые виджеты (progressive part=*), blocks config (
+ull до загрузки), poll alert (per-part failures, benign abort), status.cgi chmod 755 / HTTP 403.
+- **Hardware widgets:** GPIO/HW fetch даже при hardware=0 (TTL cache backend).
+
+### MQTT / Modbus bridge
+- **Миграция legacy AI sensor codes** в YAML и modbus_mqtt_bridge.py (i_sensor_schema: 2, 0..42); mqtt.js нормализует legacy при load/live poll.
+
+### Flasher
+- **AI type race fix:** сериализация device_config vs panel poll, edit-guard, per-port lock, refresh после apply.
+
+### Версия web UI
+- VERSION, cache-bust query strings синхронизированы с веткой **1.0.3.32**.
+
+---
+
 ## 1.0.3.31 — Dashboard, RS-485, MQTT, HW (июнь 2026)
 
 > После каждого исправления бага — запись в `docs/bugs/BUGLOG.md` и краткое описание здесь.

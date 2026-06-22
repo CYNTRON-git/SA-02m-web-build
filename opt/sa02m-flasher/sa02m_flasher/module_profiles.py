@@ -479,6 +479,87 @@ def ai_sensor_label(code: int) -> str:
     return f"код 0x{code:04X}"
 
 
+# Legacy ai_sensor_t enum (0x00..0x26, MR-02m <1.0.9.1) → Modbus selection codes 0..42.
+AI_SENSOR_LEGACY_ENUM_MIGRATION: Dict[int, int] = {
+    0x00: 0,
+    0x01: 3,   # NTC 10k (B3950)
+    0x02: 11,  # Pt1000 (α385), 2-пров.
+    0x03: 9,   # Pt100 (α385), 2-пров.
+    0x04: 34,  # 0–10 V
+    0x05: 40,  # 4–20 mA
+    0x06: 41,  # ТХА
+    0x07: 42,  # dry contact
+    0x08: 8,
+    0x09: 10,
+    0x0A: 7,
+    0x0B: 4,
+    0x0C: 5,
+    0x0D: 6,
+    0x0E: 13,
+    0x0F: 14,
+    0x10: 16,
+    0x11: 17,
+    0x12: 18,
+    0x13: 19,
+    0x14: 20,
+    0x15: 38,
+    0x16: 39,
+    0x17: 36,
+    0x18: 37,
+    0x19: 2,
+    0x1A: 1,
+    0x1B: 21,
+    0x1C: 22,  # Pt100 (α385), 3-пров.
+    0x1D: 23,
+    0x1E: 24,
+    0x1F: 26,
+    0x20: 27,
+    0x21: 29,
+    0x22: 30,
+    0x23: 31,
+    0x24: 32,
+    0x25: 33,
+    0x26: 35,  # 0–30 V
+}
+AI_SENSOR_SCHEMA_MODBUS = 2
+
+
+def migrate_legacy_ai_sensor_code(code: int) -> int:
+    """Map legacy ai_sensor_t enum value to Modbus selection code 0..42."""
+    c = int(code) & 0xFFFF
+    if c in AI_SENSOR_LEGACY_ENUM_MIGRATION:
+        return AI_SENSOR_LEGACY_ENUM_MIGRATION[c]
+    if 0 <= c <= AI_SENSOR_MODBUS_CODE_MAX:
+        return c
+    return 0
+
+
+def migrate_device_ai_sensor_types(dev_cfg: dict) -> bool:
+    """Migrate channels.ai sensor_type from legacy enum when ai_sensor_schema < 2."""
+    if str(dev_cfg.get("type", "")).lower() != "mr02m":
+        return False
+    schema = int(dev_cfg.get("ai_sensor_schema") or 1)
+    if schema >= AI_SENSOR_SCHEMA_MODBUS:
+        return False
+    channels = dev_cfg.get("channels")
+    if not isinstance(channels, dict):
+        return False
+    ai_list = channels.get("ai")
+    if not isinstance(ai_list, list):
+        return False
+    changed = False
+    for entry in ai_list:
+        if not isinstance(entry, dict) or "sensor_type" not in entry:
+            continue
+        old = int(entry["sensor_type"]) & 0xFFFF
+        new = migrate_legacy_ai_sensor_code(old)
+        if new != old:
+            entry["sensor_type"] = new
+            changed = True
+    dev_cfg["ai_sensor_schema"] = AI_SENSOR_SCHEMA_MODBUS
+    return changed or schema < AI_SENSOR_SCHEMA_MODBUS
+
+
 def is_6ao6ai_module(kind: Optional[ModuleKind]) -> bool:
     if kind is None:
         return False

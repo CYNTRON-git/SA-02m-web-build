@@ -7,6 +7,23 @@ from sa02m_flasher import device_config, module_profiles
 
 
 class TestDeviceConfig(unittest.TestCase):
+    def test_resolve_kind_falls_back_to_scan_device_record(self) -> None:
+        identity = {
+            "signature": "",
+            "serial": 0,
+            "app_version": "—",
+            "bootloader_version": "—",
+            "type_code": None,
+        }
+        device = {
+            "signature": "MR-02m 6AI6AO",
+            "module_type": module_profiles.MP02_AO6AI6,
+        }
+        kind, patched = device_config._resolve_kind(identity, device)
+        self.assertEqual(kind, "mr")
+        self.assertEqual(patched["signature"], "MR-02m 6AI6AO")
+        self.assertEqual(patched["type_code"], module_profiles.MP02_AO6AI6)
+
     def test_write_allowed_coil_ignores_relay_mode_timeout_for_mr(self) -> None:
         close_transport = Mock()
         send = object()

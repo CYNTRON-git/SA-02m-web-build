@@ -47,6 +47,12 @@
   // Запрос вкладки ждёт его, прежде чем послать свой запрос — иначе два
   // одновременных Modbus-запроса на одном порту → 409.
   let _bgPollPromise = null;
+  /** Очередь /device_config/* — один Modbus-сеанс на порт. */
+  let _configApiTail = Promise.resolve();
+  /** AI sensor select под сохранением/редактированием — не перерисовывать вкладку. */
+  const _aiSensorEditGuard = new Set();
+  const _aiSensorEditGuardTimers = Object.create(null);
+  const _AI_SENSOR_EDIT_GUARD_MS = 500;
 
   const STATUS_AUTO_CLEAR_MS = 3000;
   const _inlineStatusTimers = Object.create(null);
@@ -1334,8 +1340,56 @@
     }
   }
 
+  async function awaitConfigPortIdle() {
+    stopConfigPolling();
+    if (_bgPollPromise) {
+      try { await _bgPollPromise; } catch (_) {}
+    }
+  }
+
+  function aiSensorEditGuardAdd(channel) {
+    const ch = Number(channel);
+    if (!Number.isFinite(ch) || ch <= 0) return;
+    _aiSensorEditGuard.add(ch);
+    const key = String(ch);
+    if (_aiSensorEditGuardTimers[key]) {
+      clearTimeout(_aiSensorEditGuardTimers[key]);
+      delete _aiSensorEditGuardTimers[key];
+    }
+  }
+
+  function aiSensorEditGuardReleaseLater(channel) {
+    const ch = Number(channel);
+    if (!Number.isFinite(ch) || ch <= 0) return;
+    const key = String(ch);
+    if (_aiSensorEditGuardTimers[key]) clearTimeout(_aiSensorEditGuardTimers[key]);
+    _aiSensorEditGuardTimers[key] = setTimeout(() => {
+      _aiSensorEditGuard.delete(ch);
+      delete _aiSensorEditGuardTimers[key];
+    }, _AI_SENSOR_EDIT_GUARD_MS);
+  }
+
   async function configApi(path, body) {
-    return apiPost(path, body);
+    const isDeviceConfig = String(path || '').startsWith('/device_config/');
+    const run = async () => {
+      if (isDeviceConfig) await awaitConfigPortIdle();
+      const res = await fetch(API + path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify(body || {}),
+      });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const data = await res.json(); if (data && data.error) msg = data.error; } catch (_) {}
+        throw new Error(msg);
+      }
+      return res.json();
+    };
+    if (!isDeviceConfig) return run();
+    const job = _configApiTail.then(run);
+    _configApiTail = job.catch(() => {});
+    return job;
   }
 
   function serialHex(v) {
@@ -1763,6 +1817,7 @@
    * Предотвращает сброс введённых значений при фоновом опросе каждые 4 с.
    */
   function shouldSkipConfigBodyRerender() {
+    if (_aiSensorEditGuard.size > 0) return true;
     if (!state.configOpen || !state.configSnapshot) return false;
     const el = document.activeElement;
     if (!el) return false;
@@ -2870,6 +2925,7 @@
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     if (!sensorEl) return;
     const sensorVal = clampInt(sensorEl.value, 0, 42, 0);
+    aiSensorEditGuardAdd(channel);
     setConfigBusy(true);
     try {
       await writeConfigHolding(base, sensorVal, '');
@@ -2877,13 +2933,11 @@
     } catch (err) {
       setConfigBanner(`AI${channel}: ` + err.message, 'error');
       toast(`AI${channel}: ` + err.message, 'error');
-      return;
     } finally {
       setConfigBusy(false);
+      aiSensorEditGuardReleaseLater(channel);
+      scheduleConfigPolling();
     }
-    // Немедленный full-refresh: обновляет sensor_code, measured_raw, scaled_raw в снимке —
-    // без этого UI показывает старый формат данных до следующего фонового опроса (4 с).
-    refreshConfigSnapshot(true, 'full');
   }
 
   async function applyAiCalibration(channel) {
@@ -3022,6 +3076,8 @@
     // Подтип: пишет сразу при изменении + обновляет пределы
     body.querySelectorAll('select[id^="cfg-mr-ai-sensor-"]').forEach(sel => {
       const channel = parseInt(sel.id.replace('cfg-mr-ai-sensor-', ''), 10);
+      sel.addEventListener('focus', () => aiSensorEditGuardAdd(channel));
+      sel.addEventListener('blur', () => aiSensorEditGuardReleaseLater(channel));
       sel.addEventListener('change', () => {
         refreshAiCalibrationVisibility(channel);
         _aiUpdateLimits(channel);

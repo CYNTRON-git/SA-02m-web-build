@@ -70,6 +70,18 @@ def _unit_display_name(unit: Optional[str]) -> str:
 
 log = logging.getLogger("sa02m_flasher.service")
 
+_config_port_locks: Dict[str, threading.Lock] = {}
+_config_port_locks_guard = threading.Lock()
+
+
+def _device_config_port_lock(port: str) -> threading.Lock:
+    with _config_port_locks_guard:
+        lock = _config_port_locks.get(port)
+        if lock is None:
+            lock = threading.Lock()
+            _config_port_locks[port] = lock
+        return lock
+
 
 # ─── Unix-socket HTTP server ──────────────────────────────────────────────────
 
@@ -491,6 +503,10 @@ class Handler(BaseHTTPRequestHandler):
             raise FileNotFoundError(f"Устройство порта не найдено: {device_path}")
         occupants = port_occupants(device_path)
         if occupants:
+            # После ports/release fd опросчика может освобождаться с задержкой.
+            time.sleep(0.06)
+            occupants = port_occupants(device_path)
+        if occupants:
             raise RuntimeError(
                 "Линия занята другим процессом (PID %s). Остановите опрос и повторите."
                 % ", ".join(str(x) for x in occupants)
@@ -500,43 +516,51 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_device_config_snapshot(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
         detail = str(data.get("snapshot_detail") or "full").strip().lower()
         active_tab = data.get("active_tab")
         if isinstance(active_tab, str):
             active_tab = active_tab.strip() or None
         else:
             active_tab = None
-        snap = device_config.snapshot_for_device(
-            device_path,
-            device,
-            snapshot_detail=detail,
-            active_tab=active_tab,
-        )
+        with _device_config_port_lock(port):
+            snap = device_config.snapshot_for_device(
+                device_path,
+                device,
+                snapshot_detail=detail,
+                active_tab=active_tab,
+            )
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_network(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
         network = data.get("network")
         if not isinstance(network, dict):
             raise ValueError("Поле 'network' обязательно")
-        snap = device_config.apply_network_settings(device_path, device, network)
+        with _device_config_port_lock(port):
+            snap = device_config.apply_network_settings(device_path, device, network)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_holding(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
         reg = int(data.get("reg") or 0)
         value = int(data.get("value") or 0)
-        snap = device_config.write_allowed_holding(device_path, device, reg, value)
+        with _device_config_port_lock(port):
+            snap = device_config.write_allowed_holding(device_path, device, reg, value)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_coil(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
         device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
         coil = int(data.get("coil") or 0)
         on = bool(data.get("value"))
-        snap = device_config.write_allowed_coil(device_path, device, coil, on)
+        with _device_config_port_lock(port):
+            snap = device_config.write_allowed_coil(device_path, device, coil, on)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_cancel(self, ctx: ServiceContext) -> None:

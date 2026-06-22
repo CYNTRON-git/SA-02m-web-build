@@ -22,6 +22,7 @@ case "${QUERY_STRING:-}" in
     *part=priority*) STATUS_PART=priority ;;
     *part=main*)     STATUS_PART=main ;;
     *part=rs485*)    STATUS_PART=rs485 ;;
+    *part=blocks*)   STATUS_PART=blocks ;;
     *part=core*)     STATUS_PART=core ;;
 esac
 
@@ -525,17 +526,44 @@ iface_mode() {
     echo "unknown"
 }
 
-cpu_usage() {
-    local c1 c2
-    read -r c1 < /proc/stat
-    sleep 0.1
-    read -r c2 < /proc/stat
+cpu_usage_from_stat_lines() {
+    local c1=$1 c2=$2
     local a1=($c1) a2=($c2) total1=0 total2=0
     local idle1=${a1[4]:-0} idle2=${a2[4]:-0}
     for v in "${a1[@]:1}"; do (( total1 += v )); done
     for v in "${a2[@]:1}"; do (( total2 += v )); done
     local dt=$(( total2 - total1 )) di=$(( idle2 - idle1 ))
     (( dt > 0 )) && echo $(( (dt - di) * 100 / dt )) || echo 0
+}
+
+# Option C: /tmp sample cache — delta без sleep при свежем baseline (<2 s); иначе короткий sleep 50 ms.
+cpu_usage() {
+    local cache_file="${CACHE_DIR}/cpu_sample.state"
+    local now c1 c2 cached_ts cached_line pct
+    now=$(date +%s 2>/dev/null || echo 0)
+    read -r c2 < /proc/stat
+    cached_ts=0
+    cached_line=""
+    if [ -f "$cache_file" ]; then
+        IFS= read -r cached_ts cached_line < "$cache_file" || true
+        cached_ts=${cached_ts:-0}
+    fi
+    if [ -n "$cached_line" ] && (( now - cached_ts < 2 )); then
+        pct=$(cpu_usage_from_stat_lines "$cached_line" "$c2")
+        printf '%s %s\n' "$now" "$c2" > "$cache_file" 2>/dev/null || true
+        echo "$pct"
+        return 0
+    fi
+    c1=$c2
+    read -r c2 < /proc/stat
+    pct=$(cpu_usage_from_stat_lines "$c1" "$c2")
+    if [ "$pct" = "0" ]; then
+        sleep 0.05
+        read -r c2 < /proc/stat
+        pct=$(cpu_usage_from_stat_lines "$c1" "$c2")
+    fi
+    printf '%s %s\n' "$now" "$c2" > "$cache_file" 2>/dev/null || true
+    echo "$pct"
 }
 
 ram_stats() {
@@ -876,6 +904,19 @@ build_rs485_array() {
 
 build_rs485_json() {
     printf '{"rs485":[%s]}\n' "$(build_rs485_array)"
+}
+
+build_blocks_json() {
+    printf '{"storage":%s,"time":%s,"uptime":%s,"network":%s,"load":%s,"system":%s,"services":%s,"hardware":%s,"rs485":%s}\n' \
+        "$(status_block_enabled storage && echo 1 || echo 0)" \
+        "$(status_block_enabled time && echo 1 || echo 0)" \
+        "$(status_block_enabled uptime && echo 1 || echo 0)" \
+        "$(status_block_enabled network && echo 1 || echo 0)" \
+        "$(status_block_enabled load && echo 1 || echo 0)" \
+        "$(status_block_enabled system && echo 1 || echo 0)" \
+        "$(status_block_enabled services && echo 1 || echo 0)" \
+        "$(status_block_enabled hardware && echo 1 || echo 0)" \
+        "$(status_block_enabled rs485 && echo 1 || echo 0)"
 }
 
 # ── Metric collection ─────────────────────────────────────────────────────────
@@ -1956,7 +1997,7 @@ case "$STATUS_PART" in
         build_uptime_json
         ;;
     network)
-        build_network_json
+        cache_print_or_build "${CACHE_DIR}/network.json" 8 build_network_json
         ;;
     load)
         build_load_json
@@ -1965,7 +2006,7 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/system.json" 30 build_system_json
         ;;
     services)
-        cache_print_or_build "${CACHE_DIR}/services.json" 30 build_services_json
+        cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
         ;;
     hardware)
         cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
@@ -1977,7 +2018,10 @@ case "$STATUS_PART" in
         build_main_json
         ;;
     rs485)
-        build_rs485_json
+        cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json
+        ;;
+    blocks)
+        cache_print_or_build "${CACHE_DIR}/blocks.json" 60 build_blocks_json
         ;;
     core)
         build_core_json

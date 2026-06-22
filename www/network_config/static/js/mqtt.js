@@ -202,6 +202,43 @@ const AI_SENSOR_LABELS = [
   {code:42, label:'42 — Сухой контакт'},
 ];
 
+// Legacy ai_sensor_t enum (0x00..0x26, MR-02m <1.0.9.1) → Modbus selection codes 0..42.
+const AI_SENSOR_LEGACY_ENUM_MIGRATION = {
+  0x00: 0, 0x01: 3, 0x02: 11, 0x03: 9, 0x04: 34, 0x05: 40, 0x06: 41, 0x07: 42,
+  0x08: 8, 0x09: 10, 0x0A: 7, 0x0B: 4, 0x0C: 5, 0x0D: 6, 0x0E: 13, 0x0F: 14,
+  0x10: 16, 0x11: 17, 0x12: 18, 0x13: 19, 0x14: 20, 0x15: 38, 0x16: 39, 0x17: 36,
+  0x18: 37, 0x19: 2, 0x1A: 1, 0x1B: 21, 0x1C: 22, 0x1D: 23, 0x1E: 24, 0x1F: 26,
+  0x20: 27, 0x21: 29, 0x22: 30, 0x23: 31, 0x24: 32, 0x25: 33, 0x26: 35,
+};
+const AI_SENSOR_SCHEMA_MODBUS = 2;
+
+function migrateLegacyAiSensorCode(code) {
+  const c = Number(code) & 0xffff;
+  if (Object.prototype.hasOwnProperty.call(AI_SENSOR_LEGACY_ENUM_MIGRATION, c)) {
+    return AI_SENSOR_LEGACY_ENUM_MIGRATION[c];
+  }
+  return (c >= 0 && c <= 42) ? c : 0;
+}
+
+function isLegacyAiRegisterCode(code) {
+  const c = Number(code) & 0xffff;
+  return Object.prototype.hasOwnProperty.call(AI_SENSOR_LEGACY_ENUM_MIGRATION, c)
+    && AI_SENSOR_LEGACY_ENUM_MIGRATION[c] !== c;
+}
+
+function migrateDeviceLegacyAiSensorTypes(dev) {
+  if (!dev || dev.type !== 'mr02m') return;
+  const schema = Number(dev.ai_sensor_schema || 1);
+  if (schema >= AI_SENSOR_SCHEMA_MODBUS) return;
+  const aiList = dev.channels && dev.channels.ai;
+  if (!Array.isArray(aiList)) return;
+  for (const entry of aiList) {
+    if (!entry || entry.sensor_type == null) continue;
+    entry.sensor_type = migrateLegacyAiSensorCode(entry.sensor_type);
+  }
+  dev.ai_sensor_schema = AI_SENSOR_SCHEMA_MODBUS;
+}
+
 const DTV_SENSOR_UNITS = {
   temp_ds18b20: '°C', temp_mcp9808: '°C', temp_hdc1080: '°C', temp_bme280: '°C',
   temp_bme680: '°C', temp_ext: '°C', humidity_hdc1080: '%', humidity_bme280: '%',
@@ -583,9 +620,14 @@ function mr02mAiEffectiveSensorType(dev, ch, channels) {
   if (_aiTypeEditGuard.has(key) && cfgType != null) return cfgType & 0xffff;
   if (cfgType != null && live != null && live !== '') {
     const liveN = Number(live) & 0xffff;
+    if (isLegacyAiRegisterCode(liveN)) return cfgType & 0xffff;
     if (liveN === 0 && (cfgType & 0xffff) !== 0) return cfgType & 0xffff;
   }
-  if (live != null && live !== '') return Number(live) & 0xffff;
+  if (live != null && live !== '') {
+    const liveN = Number(live) & 0xffff;
+    if (isLegacyAiRegisterCode(liveN) && cfgType != null) return cfgType & 0xffff;
+    return liveN;
+  }
   const mt = getModuleTypeCode(dev);
   const parent = mr02mAiPairParent(ch);
   if (mr02mAiIsNLeg(mt, ch) && parent) {
@@ -1061,6 +1103,7 @@ async function loadConfig() {
   if (data && !data.error) {
     _config = data;
     for (const dev of _config.devices || []) {
+      migrateDeviceLegacyAiSensorTypes(dev);
       normalizeMr02mAiPairsAll(dev);
     }
     renderDeviceList();
