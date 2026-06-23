@@ -1619,6 +1619,9 @@ function fmtWebUpdChecked(raw) {
 function webUpdResolveAvailable(j) {
   if (j.update_available === true) return true;
   if (j.update_available === false) return false;
+  const depVer = j.deployed_version != null ? String(j.deployed_version).trim() : '';
+  const remVer = j.remote_version != null ? String(j.remote_version).trim() : '';
+  if (depVer && remVer) return depVer !== remVer;
   const rem = String(j.remote_commit || '').trim().toLowerCase();
   if (!rem) return null;
   const dep = String(j.deployed_commit || '').trim().toLowerCase();
@@ -1632,9 +1635,25 @@ function webUpdResolveAvailable(j) {
   return null;
 }
 
+function webUpdVersionDisplay(ver, commitOrLabel, fallbackLabel) {
+  const v = ver != null && String(ver).trim() ? String(ver).trim() : '';
+  if (v) return v;
+  if (commitOrLabel != null && typeof commitOrLabel === 'string' && commitOrLabel.trim()) {
+    return shortGitSha(commitOrLabel);
+  }
+  if (fallbackLabel != null && String(fallbackLabel).trim() && String(fallbackLabel).trim() !== '—') {
+    return String(fallbackLabel).trim();
+  }
+  return '—';
+}
+
 function applyWebUpdateCheckUI(j) {
   if (!j || typeof j !== 'object') return;
   if (j.error === 'unauthorized') return;
+  const depVer = webUpdVersionDisplay(j.deployed_version, j.deployed_commit, deployedRefDisplay(j));
+  const remVer = webUpdVersionDisplay(j.remote_version, j.remote_commit, null);
+  setText('web-upd-deployed-ver', depVer);
+  setText('web-upd-remote-ver', remVer);
   setText('web-upd-deployed', deployedRefDisplay(j));
   setText('web-upd-remote', shortGitSha(j.remote_commit));
   setText('web-upd-checked', fmtWebUpdChecked(j.checked_at));
@@ -1645,12 +1664,12 @@ function applyWebUpdateCheckUI(j) {
   const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
   const ua = webUpdResolveAvailable(j);
   if (ua === true) {
-    st.textContent = 'Есть обновление.';
+    st.textContent = 'Есть обновление: доступна ' + remVer + ', текущая ' + depVer + '.';
     st.classList.add('is-warn');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = false;
   } else if (ua === false) {
-    st.textContent = 'Обновлений нет.';
+    st.textContent = 'Обновлений нет (версия ' + depVer + ').';
     st.classList.add('is-ok');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = true;
@@ -2430,6 +2449,7 @@ function svcCtlDisplayLabel(svc) {
   const lab = String((svc && svc.label) || '').trim();
   if (id === 'codesys') return 'CODESYS';
   if (id === 'mqtt-bridge') return 'MQTT';
+  if (id === 'mqtt-telemetry') return 'MQTT мост';
   if (id === 'docker' || lab.toLowerCase() === 'docker') return 'Docker';
   if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';
   if (lab) return lab;
@@ -2439,6 +2459,13 @@ function svcCtlDisplayLabel(svc) {
 function svcCtlRowState(svc) {
   if (svc.masked || svc.user_disabled) return 'inactive';
   return svc.active || 'inactive';
+}
+
+/** Кнопка «Пуск», если службу нужно включить (остановлена или отключена админом). */
+function svcCtlWantsStart(svc) {
+  if (!svc) return true;
+  if (svc.masked || svc.user_disabled) return true;
+  return !svcStateIsActive(svc.active);
 }
 
 let _lastSvcCtlData = null;
@@ -2454,11 +2481,13 @@ function renderServicesControl(data) {
   }
   host.innerHTML = '';
   list.forEach(function (svc, i) {
-    const off = !!(svc.masked || svc.user_disabled);
-    const action = off ? 'start' : 'stop';
-    const btnLabelRu = off ? 'Вкл' : 'Стоп';
+    const wantStart = svcCtlWantsStart(svc);
+    const action = wantStart ? 'start' : 'stop';
+    const btnLabelRu = wantStart ? 'Пуск' : 'Стоп';
     const btnLabel = window.sa02mI18n ? window.sa02mI18n.t(btnLabelRu) : btnLabelRu;
-    const btnClass = off ? 'btn btn-primary btn-sm svc-ctl-btn' : 'btn btn-warn btn-sm svc-ctl-btn';
+    const btnClass = wantStart
+      ? 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-on'
+      : 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-off';
 
     const r = document.createElement('div');
     r.className = 'svc-row svc-ctl-row';

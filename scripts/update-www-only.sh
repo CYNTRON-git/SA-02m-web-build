@@ -47,6 +47,15 @@ if mkdir -p "$STATEDIR" 2>/dev/null; then
     fi
 fi
 
+if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
+    # shellcheck disable=SC1091
+    . /usr/local/lib/sa02m-web-build-lib.sh
+    REPO_ROOT="$SCRIPT_DIR/.."
+    if type sync_web_build_conf_from_deploy >/dev/null 2>&1; then
+        sync_web_build_conf_from_deploy && log OK "sa02m_web_build.conf синхронизирован с веткой/версией"
+    fi
+fi
+
 find "$WEB_ROOT/cgi-bin" -name '*.cgi' -exec chmod 755 {} \;
 find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -exec chmod 644 {} \;
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
@@ -55,6 +64,10 @@ chown -R www-data:www-data "$WEB_ROOT"
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-build-lib.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply

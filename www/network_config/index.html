@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3.34">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.34">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.34.12">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -462,17 +462,17 @@
       <div id="tab-system" class="tab-pane">
 
         <!-- ── HW variant selector ──────────────────────────────────────── -->
-        <div class="form-section" id="hw-variant-section" style="margin-bottom:16px">
+        <div class="form-section" id="hw-variant-section">
           <h3>Аппаратный вариант</h3>
-          <div class="field">
-            <label>Тип устройства</label>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <select id="hw-variant-select">
-                <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
-                <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
-              </select>
+          <div class="field hw-variant-field">
+            <label for="hw-variant-select">Тип устройства</label>
+            <select id="hw-variant-select">
+              <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
+              <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
+            </select>
+            <div class="btn-group hw-variant-actions">
+              <span id="variant-status" class="hw-variant-status"></span>
               <button type="button" class="btn btn-primary" id="apply-variant-btn">Применить</button>
-              <span id="variant-status" style="font-size:.85rem"></span>
             </div>
           </div>
         </div>
@@ -503,8 +503,8 @@
                   <input id="wc-p2" name="new_password_confirm" type="password" minlength="4" maxlength="128" required autocomplete="new-password">
                 </div>
                 <div class="btn-group web-creds-footer">
-                  <button type="submit" class="btn btn-primary">Сохранить</button>
                   <span class="field-hint mono web-creds-env-path">/etc/sa02m_web.env</span>
+                  <button type="submit" class="btn btn-primary">Сохранить</button>
                 </div>
               </form>
             </div>
@@ -539,8 +539,10 @@
                 <h3 class="system-manage-tile-title">Обновление веб</h3>
                 <div id="web-upd-status" class="web-upd-status" role="status" hidden></div>
                 <dl class="web-upd-meta">
-                  <div><dt>Задеплоено</dt><dd id="web-upd-deployed" class="mono">—</dd></div>
-                  <div><dt>На GitHub</dt><dd id="web-upd-remote" class="mono">—</dd></div>
+                  <div><dt>Текущая версия</dt><dd id="web-upd-deployed-ver">—</dd></div>
+                  <div><dt>Доступная версия</dt><dd id="web-upd-remote-ver">—</dd></div>
+                  <div class="web-upd-meta-sub"><dt>Коммит (устройство)</dt><dd id="web-upd-deployed" class="mono">—</dd></div>
+                  <div class="web-upd-meta-sub"><dt>Коммит (GitHub)</dt><dd id="web-upd-remote" class="mono">—</dd></div>
                   <div><dt>Проверка</dt><dd id="web-upd-checked" class="mono">—</dd></div>
                 </dl>
                 <pre id="web-upd-log" class="web-upd-log" hidden></pre>
@@ -561,18 +563,22 @@
                 <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
               </div>
             </div>
-        </div>
 
-        <h3 style="font-size:.9rem;margin-bottom:10px;color:var(--text-sec)">Журнал событий</h3>
-        <div class="btn-group" style="margin-bottom:12px">
-          <button class="btn btn-sm" onclick="loadLog()">
-            <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Обновить
-          </button>
-          <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
-          <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
+            <div class="system-manage-log-panel dash-span-top4">
+              <h3 class="system-manage-log-title">Журнал событий</h3>
+              <div class="btn-group system-manage-log-actions">
+                <button class="btn btn-sm" onclick="loadLog()">
+                  <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                  Обновить
+                </button>
+                <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
+                <button class="btn btn-sm" type="button" onclick="exportInstallLog()">Экспорт журнала</button>
+              </div>
+              <div class="system-manage-log-output">
+                <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала или «SSH-отладка» для диагностики доступа по SSH</div>
+              </div>
+            </div>
         </div>
-        <div class="log-box" id="log-box">Нажмите «Обновить» для загрузки журнала или «SSH-отладка» для диагностики доступа по SSH</div>
       </div><!-- /tab-system -->
 
       <!-- ═══════════════════════════════ FLASHER ═══════════════════════ -->
@@ -755,7 +761,7 @@
             <span id="mqtt-broker-clients" class="widget-sub">Клиентов: —</span>
             <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">Мост —</span>
             <div style="margin-left:auto;display:flex;gap:6px">
-              <button class="btn btn-sm btn-warn" type="button" id="mqtt-bridge-toggle-btn" onclick="mqttToggleBridge()" title="Освободить COM для прошивальщика / сканирования">Остановить</button>
+              <button class="btn btn-sm hw-io-btn hw-io-to-off" type="button" id="mqtt-bridge-toggle-btn" onclick="mqttToggleBridge()" title="Остановить мост Modbus→MQTT">Остановить</button>
               <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">⟳ Перезапустить</button>
               <button class="btn btn-primary" id="mqtt-save-btn" onclick="mqttSaveAndApply()">Сохранить и применить</button>
             </div>
@@ -943,10 +949,10 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.3.34"></script>
-<script src="/static/js/app.js?v=1.0.3.34.1"></script>
+<script src="/static/js/i18n.js?v=1.0.3.34.2"></script>
+<script src="/static/js/app.js?v=1.0.3.34.5"></script>
 <script src="/static/js/flasher.js?v=1.0.3.34"></script>
-<script src="/static/js/mqtt.js?v=1.0.3.34"></script>
-<script src="/static/js/gateway.js?v=1.0.3.34"></script>
+<script src="/static/js/mqtt.js?v=1.0.3.34.3"></script>
+<script src="/static/js/gateway.js?v=1.0.3.34.7"></script>
 </body>
 </html>

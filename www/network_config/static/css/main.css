@@ -930,6 +930,19 @@ svg .gauge-num {
 .form-section { max-width: 560px; }
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
+#hw-variant-section { margin-bottom: 16px; }
+#hw-variant-section .hw-variant-actions {
+  margin-top: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+#hw-variant-section .hw-variant-status {
+  font-size: .85rem;
+  color: var(--text-sec);
+  margin-right: auto;
+  min-width: 0;
+}
 
 /* Вкладка «Сеть»: два виджета Ethernet № 1 / № 2 (~60% ширины вкладки) */
 .network-eth-grid {
@@ -1219,6 +1232,7 @@ svg .gauge-num {
   padding-top: 8px;
 }
 .system-manage-web-creds .web-creds-footer {
+  justify-content: space-between;
   align-items: center;
   flex-wrap: nowrap;
   gap: 10px;
@@ -1232,6 +1246,11 @@ svg .gauge-num {
   text-overflow: ellipsis;
   min-width: 0;
   flex: 1 1 auto;
+  text-align: left;
+}
+.system-manage-web-creds .web-creds-footer .btn {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 .system-manage-actions-card .system-manage-actions-main {
   flex: 1 1 auto;
@@ -1263,6 +1282,31 @@ svg .gauge-num {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+.system-manage-services-card .btn-group {
+  justify-content: flex-end;
+}
+
+/* Журнал событий: вторая строка system-manage-grid; dash-span-top4 = ширина 4 плиток + gap */
+.system-manage-log-panel {
+  min-width: 0;
+  align-self: start;
+}
+.system-manage-log-title {
+  font-size: .9rem;
+  margin: 0 0 10px;
+  color: var(--text-sec);
+}
+.system-manage-log-actions {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.system-manage-log-output .log-box {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: 280px;
 }
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
@@ -2454,6 +2498,11 @@ svg .gauge-num {
   color: var(--text-sec);
 }
 .web-upd-meta > div { display: grid; grid-template-columns: 7.5rem 1fr; gap: 8px; align-items: baseline; }
+.web-upd-meta .web-upd-meta-sub dt,
+.web-upd-meta .web-upd-meta-sub dd {
+  font-size: .78rem;
+  color: var(--text-dim);
+}
 .web-upd-meta dt { margin: 0; font-weight: 500; color: var(--text-sec); }
 .web-upd-meta dd { margin: 0; word-break: break-all; }
 
@@ -3021,11 +3070,14 @@ svg .gauge-num {
 #tab-gateway #gw-content .gw-save-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   margin-top: 16px;
   flex-wrap: wrap;
 }
 #tab-gateway #gw-content .gw-save-status {
+  flex: 1 1 auto;
+  text-align: center;
   font-size: .82rem;
   min-height: 1.4em;
   color: var(--text-sec);

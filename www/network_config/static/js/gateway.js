@@ -129,6 +129,18 @@ function _buildContentArea() {
 }
 
 // ── Device panel ──────────────────────────────────────────────────────────────
+function _gwUiT(s) {
+  return (window.sa02mI18n && window.sa02mI18n.t) ? window.sa02mI18n.t(s) : s;
+}
+
+function _gwToggleBtnHtml(active) {
+  const on = !!active;
+  const label = _gwUiT(on ? 'Остановить' : 'Запустить');
+  const cls = on ? 'btn btn-sm hw-io-btn hw-io-to-off' : 'btn btn-sm hw-io-btn hw-io-to-on';
+  const title = _gwUiT(on ? 'Остановить шлюз RS-485→Ethernet' : 'Запустить шлюз RS-485→Ethernet');
+  return `<button type="button" class="${cls}" id="gw-btn-toggle" title="${title}">${label}</button>`;
+}
+
 function _renderDevicePanel(area) {
   const active = _status.service_active;
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
@@ -149,11 +161,10 @@ function _renderDevicePanel(area) {
           Включено портов: ${activePorts.length} / 5 &nbsp;|&nbsp; Работают: ${runningPorts.length}
         </span>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        <button class="btn btn-sm" id="gw-btn-start">Запустить</button>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        ${_gwToggleBtnHtml(active)}
         <button class="btn btn-sm" id="gw-btn-reload">↺ Перезагрузить конфиг</button>
         <button class="btn btn-sm btn-warn" id="gw-btn-restart">⟳ Перезапустить</button>
-        <button class="btn btn-sm btn-danger" id="gw-btn-stop">Остановить</button>
       </div>
     </div>
 
@@ -197,10 +208,9 @@ function _renderDevicePanel(area) {
       _selectSub(this.dataset.port);
     });
   });
-  area.querySelector('#gw-btn-start').onclick   = () => _svcCtrl('start');
+  area.querySelector('#gw-btn-toggle').onclick = () => _svcCtrl(active ? 'stop' : 'start');
   area.querySelector('#gw-btn-reload').onclick  = () => _svcCtrl('reload');
   area.querySelector('#gw-btn-restart').onclick = () => _svcCtrl('restart');
-  area.querySelector('#gw-btn-stop').onclick    = () => _svcCtrl('stop');
 }
 
 // ── Port panel ────────────────────────────────────────────────────────────────
@@ -302,9 +312,9 @@ function _renderPortPanel(area, port) {
       </div>
 
       <div class="gw-save-row">
-        <button class="btn btn-primary" id="gw-save-btn-${port}">Сохранить</button>
         <button class="btn btn-sm" id="gw-reset-btn-${port}">Сбросить</button>
         <span id="gw-save-status-${port}" class="gw-save-status"></span>
+        <button class="btn btn-primary" id="gw-save-btn-${port}">Сохранить</button>
       </div>
     </div>`;
 

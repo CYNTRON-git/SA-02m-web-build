@@ -5,7 +5,121 @@
 
 ---
 
-## [2026-06-23 13:55] branch: 1.0.3.34
+## [2026-06-23 16:38] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Журнал событий» занимал полную ширину вкладки Управление, а не ширину 4 плиток + промежутки.
+**Причина:** `.system-manage-log-panel` был sibling вне `.system-manage-grid` (100% ширины `#tab-system`); вложенный grid с `grid-column: 1 / -1` растягивал log-box на весь родитель, а не на 4 колонки сетки карточек.
+**Исправление:** Панель перенесена внутрь `.system-manage-grid` с классом `dash-span-top4` (`grid-column: 1 / span 4`, как HW-блок на дашборде); убран лишний nested grid у `.system-manage-log-output`. Cache-bust `main.css?v=1.0.3.34.12`.
+
+---
+
+## [2026-06-23 16:28] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Журнал событий» на вкладке Управление был внутри сетки карточек (`grid-column: -2 / -1`) — занимал только последнюю колонку или ломал ряд; ранее `system-manage-log-wrap` давал полную ширину вкладки.
+**Причина:** Панель журнала была grid-элементом среди 4 плиток вместо блока под сеткой; ширина log-box не совпадала с контейнером 4 колонок + gap.
+**Исправление:** Структура как в 1.0.3.33: заголовок и кнопки под `system-manage-grid`, log-box в `system-manage-log-output` с той же `grid-template-columns`, что у карточек; `grid-column: 1 / -1` только для log-box. Cache-bust `main.css?v=1.0.3.34.11`.
+
+---
+
+## [2026-06-23 16:25] branch: 1.0.3.34
+
+**Файл(ы):** `etc/sa02m-check-service-perms.sh`, `tools/ssh/sa02m-check-perms.py`, устройство 192.168.1.136
+**Тип:** Некорректное поведение
+**Описание:** Аудит прав записи для MPLC4, CODESYS и прочих служб SA-02m (жалобы на потерю проектов после reboot).
+**Причина:** На .136 критических блокировок записи для mplc4/codesys не было (оба runtime — root, ext4 rw). Найдены мелкие несоответствия: `/opt/mplc4/log` 755, `/var/opt/codesys` 750, `/var/lib/mosquitto` group root вместо mosquitto. Проекты хранятся на eMMC (`/opt/mplc4/server/cfg`, `/opt/mplc4/backup.bin`, `/var/opt/codesys/PlcLogic`), не в tmpfs.
+**Исправление:** Скрипт аудита/фикса `sa02m-check-service-perms.sh` + `py -3 tools/ssh/sa02m-check-perms.py [--fix]`. На устройстве: chmod 775 `/opt/mplc4/log`, 755 `/var/opt/codesys`, chown/chmod 770 `mosquitto:mosquitto` `/var/lib/mosquitto`. Повторный аудит — 0 issues.
+
+---
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Журнал событий» после правки db969caf оставался на всю ширину вкладки; отдельная сетка `system-manage-log-wrap` не выравнивала правый край с блоком «Службы».
+**Причина:** Панель журнала была в отдельном grid-контейнере с `grid-column: -1` (один элемент — фактически полная ширина), а не в общей сетке карточек управления.
+**Исправление:** Убран `system-manage-log-wrap`; панель перенесена внутрь `system-manage-grid`; ширина ограничена последней колонкой (`grid-column: -2 / -1`).
+
+---
+
+## [2026-06-23 15:43] branch: 1.0.3.34
+
+**Файл(ы):** `etc/sa02m-web-build-lib.sh`, `etc/sa02m-web-update-check.sh`, `etc/sa02m-web-update-apply.sh`, `scripts/update-www-only.sh`, `scripts/03-webserver.sh`
+**Тип:** Некорректное поведение
+**Описание:** Блок «Обновление веб» показывал текущую и доступную версию 1.0.3.32 при фактически задеплоенном UI 1.0.3.34; GitHub-сравнение шло по ветке `main` (коммит 0f89df3).
+**Причина:** `/var/www/network_config/VERSION` на устройстве остался 1.0.3.32 после частичного деплоя; `SA02M_WEB_BUILD_BRANCH` по умолчанию `main`; скрипт проверки не читал `APP_VERSION` из `app.js`.
+**Исправление:** Общая библиотека `sa02m-web-build-lib.sh`: версия из `app.js` (fallback), авто-ветка из версии/`/etc/sa02m_web_build.conf`; синхронизация conf при деплое; обновлён VERSION на устройстве.
+
+---
+
+## [2026-06-23 15:30] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Журнал событий» занимал всю ширину вкладки Управление; правый край не совпадал с «Службы».
+**Исправление:** `system-manage-log-wrap` с той же grid, что у карточек; панель в последней колонке (`grid-column: -1`).
+
+---
+
+## [2026-06-23 15:25] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** В «Управление → Службы» кнопка «Обновить список» была прижата к левому краю карточки.
+**Причина:** `.btn-group` без `justify-content: flex-end` для `.system-manage-services-card`.
+**Исправление:** Добавлено выравнивание кнопки по правому краю блока; cache-bust `main.css?v=1.0.3.34.8`.
+
+---
+
+## [2026-06-23 15:19] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/static/js/gateway.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** В «Шлюз RS-485» у COM-портов «Сбросить» и «Сохранить» шли подряд без выравнивания по краям блока.
+**Исправление:** Порядок кнопок: Сбросить слева, статус по центру, Сохранить справа; `.gw-save-row { justify-content: space-between }`.
+
+---
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** В блоке «Доступ» путь `/etc/sa02m_web.env` и кнопка «Сохранить» шли в неверном порядке.
+**Причина:** В footer кнопка была первой, без выравнивания text-left / button-right.
+**Исправление:** Путь слева, «Сохранить» справа (`justify-content: space-between`).
+
+---
+
+**Файл(ы):** `etc/sa02m-web-update-check.sh`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** «Обновление веб» показывало только SHA коммитов, без текущей и доступной версии (1.0.3.x).
+**Причина:** check.json не содержал deployed_version/remote_version; UI выводил только shortGitSha.
+**Исправление:** Чтение VERSION на устройстве и с GitHub по remote commit; поля в JSON; строки «Текущая/Доступная версия»; сравнение по версии.
+
+---
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_ctrl.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Пуск» в Управление→Службы не совпадала по стилю с DO «Вкл»; «Остановить» MQTT только делала systemctl stop без disable.
+**Причина:** Использовались btn-primary/btn-warn; mqtt_ctrl.cgi не вызывал sa02m-web-service-ctl (stop+disable+mask).
+**Исправление:** Пуск/Стоп — классы hw-io-to-on/hw-io-to-off как у DO; stop_bridge/start_bridge через sa02m-web-service-ctl.sh mqtt-bridge.
+
+---
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`
+**Тип:** Некорректное поведение
+**Описание:** «Стоп» для CODESYS останавливал процесс, но после перезагрузки runtime мог подняться снова (SysV `S01codesyscontrol` в rc.d).
+**Причина:** `systemctl mask` не применяется к unit-файлу в `/etc/systemd/system/`; автозапуск CODESYS шёл через `update-rc.d`, а stop делал только systemd disable.
+**Исправление:** При stop — `update-rc.d codesyscontrol disable`, pkill при необходимости; при start — `update-rc.d defaults`; проверка `still_running`/`start_failed`. Проверено на .136: stop → disabled, нет S01, нет процесса; start → S01 + wants + процесс.
+
+---
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `etc/sa02m-web-service-ctl.sh`
+**Тип:** Некорректное поведение
+**Описание:** В «Управление → Службы» после «Стоп» badge «Неактивен», но кнопка оставалась «Стоп» вместо «Пуск».
+**Причина:** Кнопка опиралась только на `masked`/`user_disabled`, а не на `active`; для CODESYS процесс мог оставаться в списке как active при отключённом unit.
+**Исправление:** `svcCtlWantsStart()` — «Пуск» при inactive или admin-off; подпись «Пуск»; CODESYS: не показывать active при user_disabled, stop/start через init.d.
+
+---
 
 **Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `etc/sa02m-web-service-ctl.sh`
 **Тип:** Другое

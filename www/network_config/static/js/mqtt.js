@@ -1136,9 +1136,11 @@ function applyBrokerStatusUI(st) {
   if (bridgeToggle) {
     const on = !!st.bridge_active;
     bridgeToggle.textContent = uiT(on ? 'Остановить' : 'Запустить');
-    bridgeToggle.className = on ? 'btn btn-sm btn-warn' : 'btn btn-sm btn-primary';
+    bridgeToggle.className = on
+      ? 'btn btn-sm hw-io-btn hw-io-to-off'
+      : 'btn btn-sm hw-io-btn hw-io-to-on';
     bridgeToggle.title = uiT(on
-      ? 'Остановить мост Modbus→MQTT и освободить COM-порты'
+      ? 'Остановить мост Modbus→MQTT (не запустится после перезагрузки)'
       : 'Запустить мост Modbus→MQTT');
   }
   renderMqttClientInfo(st);
@@ -2115,7 +2117,7 @@ window.mqttToggleBridge = async function mqttToggleBridge() {
   const on = !!(st && st.bridge_active);
   const action = on ? 'stop_bridge' : 'start_bridge';
   const msg = on
-    ? 'Остановить мост Modbus→MQTT? COM-порты освободятся для прошивальщика и сканирования.'
+    ? 'Остановить мост Modbus→MQTT? Служба будет отключена и не запустится после перезагрузки до ручного включения.'
     : 'Запустить мост Modbus→MQTT?';
   if (!confirm(msg)) return;
   const btn = document.getElementById('mqtt-bridge-toggle-btn');

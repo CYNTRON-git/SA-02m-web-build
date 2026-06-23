@@ -36,6 +36,16 @@ codesys_process_active() {
     pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1
 }
 
+codesys_rc_disable() {
+    command -v update-rc.d >/dev/null 2>&1 || return 0
+    update-rc.d codesyscontrol disable >>"$LOG" 2>&1 || true
+}
+
+codesys_rc_enable() {
+    command -v update-rc.d >/dev/null 2>&1 || return 0
+    update-rc.d codesyscontrol defaults >>"$LOG" 2>&1 || true
+}
+
 # id | UI label | candidate units (first existing wins)
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
 docker|Docker|docker.service
@@ -43,7 +53,7 @@ codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CO
 mplc4|MPLC4|mplc4.service
 mosquitto|Mosquitto|mosquitto.service
 mqtt-bridge|Modbus MQTT|sa02m-modbus-mqtt.service
-mqtt-telemetry|MQTT телеметрия|sa02m-telemetry.service
+mqtt-telemetry|MQTT мост|sa02m-telemetry.service
 node-red|Node-RED|node-red.service,nodered.service
 klogic|KLogic|klogicd.service,klogic.service
 SVC_DEFS
@@ -123,7 +133,9 @@ cmd_list() {
         IFS='|' read -r _active _enabled _masked _admin_off <<EOF
 $(unit_props "$_unit")
 EOF
-        if [ "$_id" = "codesys" ] && codesys_process_active; then
+        if [ "$_id" = "codesys" ] && [ "$_admin_off" = 1 ]; then
+            _active=inactive
+        elif [ "$_id" = "codesys" ] && codesys_process_active; then
             _active=active
         fi
         _id_e=$(json_escape "$_id")
@@ -154,10 +166,23 @@ cmd_stop() {
     fi
     _u=$_found_unit
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
+    if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
+        /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
+        codesys_rc_disable
+    fi
     sc_run stop "$_u" >>"$LOG" 2>&1 || true
     sc_run disable "$_u" >>"$LOG" 2>&1 || true
+    # mask не работает, если unit-файл — обычный файл в /etc/systemd/system (не symlink).
     sc_run mask "$_u" >>"$LOG" 2>&1 || true
     sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if [ "$_id" = "codesys" ] && codesys_process_active; then
+        pkill -f '[c]odesyscontrol\.bin' >>"$LOG" 2>&1 || true
+        sleep 1
+    fi
+    if [ "$_id" = "codesys" ] && codesys_process_active; then
+        printf '{"ok":false,"error":"still_running","id":"%s"}\n' "$_id"
+        return 1
+    fi
     printf '{"ok":true,"id":"%s","action":"stop"}\n' "$_id"
 }
 
@@ -172,8 +197,20 @@ cmd_start() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u})" >>"$LOG" 2>&1
     sc_run unmask "$_u" >>"$LOG" 2>&1 || true
     sc_run enable "$_u" >>"$LOG" 2>&1 || true
+    if [ "$_id" = "codesys" ]; then
+        codesys_rc_enable
+    fi
     sc_run start "$_u" >>"$LOG" 2>&1 || true
+    if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
+        if ! codesys_process_active; then
+            /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
+        fi
+    fi
     sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if [ "$_id" = "codesys" ] && ! codesys_process_active; then
+        printf '{"ok":false,"error":"start_failed","id":"%s"}\n' "$_id"
+        return 1
+    fi
     printf '{"ok":true,"id":"%s","action":"start"}\n' "$_id"
 }
 

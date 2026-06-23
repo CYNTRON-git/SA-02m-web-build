@@ -310,11 +310,24 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
 else
     log WARN "Нет etc/sa02m-web-update-check.sh — таймер проверки обновлений веб-UI недоступен"
 fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-web-build-lib.sh
+else
+    log WARN "Нет etc/sa02m-web-build-lib.sh — авто-ветка для проверки обновлений недоступна"
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
 else
     log WARN "Нет etc/sa02m-web-update-apply.sh — применение обновлений веб-UI из GitHub недоступно"
+fi
+if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
+    # shellcheck disable=SC1091
+    . /usr/local/lib/sa02m-web-build-lib.sh
+    if type sync_web_build_conf_from_deploy >/dev/null 2>&1; then
+        sync_web_build_conf_from_deploy && log OK "sa02m_web_build.conf синхронизирован с веткой/версией"
+    fi
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
