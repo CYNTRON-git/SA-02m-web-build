@@ -257,4 +257,16 @@ if [ -f "$LED_LIB" ]; then
   fi
 fi
 
+# ── Kernel desired vs running (diagnostic after reboot) ─────────────────────
+if [ -f /etc/sa02m_kernel.conf ]; then
+  # shellcheck disable=SC1091
+  . /etc/sa02m_kernel.conf 2>/dev/null || true
+  _kr=$(uname -r 2>/dev/null || true)
+  _run=smp
+  case "$_kr" in *-rt*|*rt[0-9]*) _run=rt ;; esac
+  if [ -n "${SA02M_KERNEL_DESIRED:-}" ] && [ "$SA02M_KERNEL_DESIRED" != "$_run" ]; then
+    logp "kernel mismatch: running=$_run desired=$SA02M_KERNEL_DESIRED (reboot pending or switch failed?)"
+  fi
+fi
+
 exit 0

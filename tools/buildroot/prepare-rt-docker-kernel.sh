@@ -105,6 +105,62 @@ verify_sa02m_boot_kconfig() {
     [ "$missing" -eq 0 ]
 }
 
+verify_sa02m_smp_boot_kconfig() {
+    local missing=0 sym val
+    for sym in ARCH_SUNXI MMC_SUNXI STMMAC_ETH DWMAC_SUN8I EXT4_FS; do
+        val=$(grep "^CONFIG_${sym}=" .config 2>/dev/null || true)
+        case "$val" in
+            *=y|*=m) ;;
+            *) log "ERROR: missing boot-critical CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
+        esac
+    done
+    if grep -q '^CONFIG_PREEMPT_RT=y' .config 2>/dev/null; then
+        log "ERROR: CONFIG_PREEMPT_RT must be off for SMP build" >&2
+        missing=1
+    fi
+    [ "$missing" -eq 0 ]
+}
+
+apply_smp_kconfig_snippets() {
+    [ -f "$LINUX_DIR/.config" ] || { log "No .config — run linux-configure first"; return 1; }
+    cd "$LINUX_DIR"
+    log "Applying Kconfig (SMP + Docker + SA-02m, no PREEMPT_RT)..."
+
+    kcfg() {
+        local cmd=$1; shift
+        local sym
+        for sym in "$@"; do
+            ./scripts/config "--$cmd" "$sym"
+        done
+    }
+
+    if ! grep -q '^CONFIG_ARCH_SUNXI=y' .config; then
+        log "WARN: ARCH_SUNXI missing — re-applying sunxi_sk_defconfig base"
+        make ARCH=arm sunxi_sk_defconfig
+    fi
+
+    kcfg disable PREEMPT_RT 2>/dev/null || ./scripts/config --disable PREEMPT_RT || true
+    ./scripts/config --set-str LOCALVERSION ""
+    kcfg disable LOCALVERSION_AUTO
+
+    apply_docker_netfilter_kconfig
+    apply_sa02m_boot_kconfig
+
+    kcfg module USB_USBNET USB_NET_CDCETHER USB_NET_CDC_NCM USB_NET_CDC_MBIM USB_NET_QMI_WWAN
+    kcfg module USB_SERIAL USB_SERIAL_OPTION USB_ACM
+
+    make ARCH=arm olddefconfig
+    apply_sa02m_boot_kconfig
+    apply_docker_netfilter_kconfig
+    make ARCH=arm olddefconfig
+    apply_sa02m_boot_kconfig
+    apply_docker_netfilter_kconfig
+
+    verify_sa02m_smp_boot_kconfig || return 1
+    verify_docker_netfilter_kconfig || return 1
+    log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT, no PREEMPT_RT)."
+}
+
 apply_kconfig_snippets() {
     # После make linux-patch + linux-configure. PREEMPT_RT=y — только если RT-патч уже применён.
     [ -f "$LINUX_DIR/.config" ] || { log "No .config — run linux-configure first"; return 1; }
@@ -197,6 +253,35 @@ cmd_menuconfig() {
     apply_kconfig_snippets || true
 }
 
+cmd_build_kernel_smp_only() {
+    require_root
+    require_br
+    log "SMP kernel-only build (no RT patch, Docker netfilter for SA-02m)..."
+    if [ -f .config ]; then
+        sed -i 's|^BR2_LINUX_KERNEL_PATCH=.*|BR2_LINUX_KERNEL_PATCH=""|' .config
+    fi
+    rm -rf ./output/build/linux-custom
+    log "linux extract + configure (no RT patch)..."
+    make linux-extract
+    make linux-configure
+    if [ -f "$LINUX_DIR/.config" ]; then
+        apply_smp_kconfig_snippets
+    else
+        log "ERROR: no $LINUX_DIR/.config after linux-configure" >&2
+        return 1
+    fi
+    log "linux build + install..."
+    rm -f ./output/build/linux-custom/.stamp_{built,installed,target_installed,images_installed}
+    make linux
+    log "SMP artifacts:"
+    ls -la output/images/zImage output/images/*.dtb 2>/dev/null || true
+    find output/target/lib/modules -maxdepth 1 -type d -name '6.1*' 2>/dev/null || true
+    if [ -f output/images/zImage ]; then
+        cp -f output/images/zImage output/images/zImage.smp
+        log "Saved output/images/zImage.smp — deploy with sa02m-kernel-deploy.sh install-smp"
+    fi
+}
+
 cmd_build_kernel_only() {
     require_root
     require_br
@@ -252,17 +337,21 @@ cmd_build() {
 
 cmd_help() {
     cat <<EOF
-Usage: $0 {check|menuconfig|build|build-kernel|kconfig}
+Usage: $0 {check|menuconfig|build|build-kernel|build-kernel-smp|kconfig}
 
 RT (PREEMPT_RT) — patch-first workflow (Starterkit «Сборка ядра на ВМ.txt»):
   1) linux/patch-6.1-rc6-rt4.patch  →  make linux-patch  (NOT BR2_LINUX_KERNEL_PATCH)
   2) make linux-configure
   3) Expert + PREEMPT_RT=y + Docker kconfig (this script, step build-kernel)
 
+SMP (no RT, Docker netfilter) — for web kernel switch / lower CPU load:
+  build-kernel-smp  — extract → configure → SMP kconfig → linux (no RT patch)
+
   check         — verify Buildroot path, RT patch file, patch-applied markers
   menuconfig    — linux-menuconfig (RT options only after patch; prefer build-kernel)
-  kconfig       — apply snippets only (linux-custom + RT patch must exist)
-  build-kernel  — extract → patch → configure → kconfig → linux (recommended)
+  kconfig       — apply RT snippets only (linux-custom + RT patch must exist)
+  build-kernel  — extract → patch → configure → kconfig → linux (RT)
+  build-kernel-smp — extract → configure → SMP kconfig → linux (no RT)
   build         — full make (slow, sk_qt5 entire image)
 
 Env: BR_DIR, RT_PATCH_URL, DEFCONFIG_OUT
@@ -275,6 +364,7 @@ main() {
         menuconfig) cmd_menuconfig ;;
         kconfig) require_root; require_br; apply_kconfig_snippets ;;
         build-kernel) cmd_build_kernel_only ;;
+        build-kernel-smp) cmd_build_kernel_smp_only ;;
         build) cmd_build ;;
         *) cmd_help ;;
     esac

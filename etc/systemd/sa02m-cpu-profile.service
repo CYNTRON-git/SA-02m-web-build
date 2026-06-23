@@ -1,0 +1,12 @@
+[Unit]
+Description=SA-02m apply CPU frequency profile from /etc/sa02m_cpu.conf
+After=multi-user.target
+After=cpu-governor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-cpu-profile.sh apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

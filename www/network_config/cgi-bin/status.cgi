@@ -1255,6 +1255,15 @@ gather_load_metrics() {
     (( CPU_MAX_KHZ > 0 )) && CPU_THROTTLE=$(( CPU_FREQ_KHZ * 100 / CPU_MAX_KHZ ))
 }
 
+is_rt_kernel_status() {
+    local kr
+    kr=$(uname -r 2>/dev/null || true)
+    case "$kr" in
+        *-rt*|*rt[0-9]*) return 0 ;;
+    esac
+    grep -q 'PREEMPT_RT' /proc/version 2>/dev/null
+}
+
 gather_system_metrics() {
     if ! status_block_enabled system; then
         BOARD=""
@@ -1263,6 +1272,12 @@ gather_system_metrics() {
         ARMBIAN_VER=""
         STORAGE_AUTO_FORMAT_UI=0
         STORAGE_MOUNT_INSTALLED=0
+        KERNEL_IS_RT=0
+        CPU_PROFILE=""
+        CPU_GOVERNOR=""
+        CPU_PROFILE_UI_AVAILABLE=0
+        CPU_MIN_MHZ=0
+        CPU_MAX_MHZ_CAP=0
         return 0
     fi
 
@@ -1294,6 +1309,24 @@ gather_system_metrics() {
         1|yes|true|on|ON|Y) STORAGE_AUTO_FORMAT_UI=1 ;;
         *) STORAGE_AUTO_FORMAT_UI=0 ;;
     esac
+
+    KERNEL_IS_RT=0
+    is_rt_kernel_status && KERNEL_IS_RT=1
+    SA02M_CPU_PROFILE="adaptive"
+    if [ -f /etc/sa02m_cpu.conf ]; then
+        # shellcheck source=/dev/null
+        . /etc/sa02m_cpu.conf 2>/dev/null || true
+    fi
+    CPU_PROFILE=$(json_escape "${SA02M_CPU_PROFILE:-adaptive}")
+    CPU_GOVERNOR=$(json_escape "$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "")")
+    CPU_PROFILE_UI_AVAILABLE=0
+    if [ -f /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ] && [ "$KERNEL_IS_RT" = "0" ]; then
+        CPU_PROFILE_UI_AVAILABLE=1
+    fi
+    _cpu_min_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 2>/dev/null || echo 0)
+    _cpu_max_cap_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo 0)
+    CPU_MIN_MHZ=$(( _cpu_min_khz / 1000 ))
+    CPU_MAX_MHZ_CAP=$(( _cpu_max_cap_khz / 1000 ))
 }
 
 gather_services_metrics() {
@@ -1667,6 +1700,12 @@ print_system_json() {
   "cpu_model": "${CPU_MODEL}",
   "armbian_version": "${ARMBIAN_VER}",
   "kernel": "${KERNEL_VER}",
+  "kernel_is_rt": ${KERNEL_IS_RT:-0},
+  "cpu_profile": "${CPU_PROFILE:-adaptive}",
+  "cpu_governor": "${CPU_GOVERNOR:-}",
+  "cpu_profile_ui_available": ${CPU_PROFILE_UI_AVAILABLE:-0},
+  "cpu_min_mhz": ${CPU_MIN_MHZ:-0},
+  "cpu_max_mhz_cap": ${CPU_MAX_MHZ_CAP:-0},
   "storage_auto_format": ${STORAGE_AUTO_FORMAT_UI},
   "storage_mount_installed": ${STORAGE_MOUNT_INSTALLED}
 }

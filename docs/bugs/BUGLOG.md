@@ -5,6 +5,15 @@
 
 ---
 
+## [2026-06-07] branch: 1.0.3.35
+
+**Файл(ы):** `etc/sa02m-kernel-select.sh`, `etc/sa02m-cpu-profile.sh`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `app.js`
+**Тип:** Новая функция
+**Описание:** Переключение ядра RT/SMP из «Управление» (swap zImage на FAT) и профили частоты CPU (только SMP, persist `/etc/sa02m_cpu.conf`).
+**Примечание:** SMP zImage с Docker netfilter — сборка `build-kernel-smp`, деплой `sa02m-kernel-deploy.sh install-smp` (отложено).
+
+---
+
 ## [2026-06-07] branch: 1.0.3.34
 
 **Файл(ы):** `www/network_config/cgi-bin/services_ctrl.cgi`

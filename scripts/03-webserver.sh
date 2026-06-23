@@ -281,7 +281,13 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-web-service-ctl.sh list, \
     /usr/local/sbin/sa02m-web-service-ctl.sh start *, \
     /usr/local/sbin/sa02m-web-service-ctl.sh stop *, \
-    /usr/local/sbin/sa02m-rs485-stats.sh
+    /usr/local/sbin/sa02m-rs485-stats.sh, \
+    /usr/local/sbin/sa02m-kernel-select.sh status --json, \
+    /usr/local/sbin/sa02m-kernel-select.sh set smp, \
+    /usr/local/sbin/sa02m-kernel-select.sh set rt, \
+    /usr/local/sbin/sa02m-set-cpu-profile, \
+    /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
+    /usr/local/sbin/sa02m-cpu-profile.sh apply
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
@@ -343,6 +349,36 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
 else
     log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" /usr/local/sbin/sa02m-kernel-select.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-kernel-select.sh
+    mkdir -p /usr/local/share/sa02m/kernel
+    if [ -x /usr/local/sbin/sa02m-kernel-select.sh ]; then
+        /usr/local/sbin/sa02m-kernel-select.sh init >> "$LOG_FILE" 2>&1 || \
+            log WARN "sa02m-kernel-select init — выполните после деплоя zImage"
+    fi
+else
+    log WARN "Нет etc/sa02m-kernel-select.sh — переключение ядра из веб недоступно"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-cpu-profile.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-cpu-profile.sh" /usr/local/sbin/sa02m-cpu-profile.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-cpu-profile.sh
+else
+    log WARN "Нет etc/sa02m-cpu-profile.sh — управление частотой CPU из веб недоступно"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-set-cpu-profile" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-set-cpu-profile" /usr/local/sbin/sa02m-set-cpu-profile
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-set-cpu-profile
+fi
+for _cpu_unit in sa02m-cpu-profile.service; do
+    if [ -f "$SYSTEMD_DIR/$_cpu_unit" ]; then
+        install -m 644 "$SYSTEMD_DIR/$_cpu_unit" "/etc/systemd/system/$_cpu_unit"
+        systemctl enable "$_cpu_unit" >> "$LOG_FILE" 2>&1 || true
+    fi
+done
+if [ -x /usr/local/sbin/sa02m-cpu-profile.sh ]; then
+    /usr/local/sbin/sa02m-cpu-profile.sh init >> "$LOG_FILE" 2>&1 || true
 fi
 if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
     install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh

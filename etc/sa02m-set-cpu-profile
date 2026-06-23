@@ -1,0 +1,9 @@
+#!/bin/bash
+# Вызывается от root (sudo). Аргумент: performance | high | medium | low | adaptive
+set -euo pipefail
+SCRIPT=/usr/local/sbin/sa02m-cpu-profile.sh
+case "${1:-}" in
+  performance|high|medium|low|adaptive) ;;
+  *) exit 1 ;;
+esac
+exec "$SCRIPT" set "$1"

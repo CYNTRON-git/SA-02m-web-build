@@ -94,12 +94,23 @@ bash /root/prepare-rt-docker-kernel.sh build-kernel
 ## После сборки на VM
 
 ```bash
-# На VM
+# RT (CODESYS / PREEMPT_RT)
 md5sum output/images/zImage
 tar -czf /tmp/modules-rt4-docker.tgz -C output/target/lib/modules 6.1.0-rc6-rt4
+
+# SMP (без RT, Docker netfilter) — когда нужен переключатель в веб:
+sudo bash prepare-rt-docker-kernel.sh build-kernel-smp
+md5sum output/images/zImage.smp
+tar -czf /tmp/modules-smp-docker.tgz -C output/target/lib/modules 6.1.0-rc6
 ```
 
-С Windows — scp на `192.168.1.136`, деплой на FAT `/dev/mmcblk2p1` (см. [docs/codesys-rt/README.md](../../docs/codesys-rt/README.md) §5).
+На устройстве (после scp):
+
+```bash
+sa02m-kernel-deploy.sh install-rt /path/zImage [/path/modules-rt4.tgz]
+sa02m-kernel-deploy.sh install-smp /path/zImage.smp [/path/modules-smp.tgz]
+sa02m-kernel-select.sh init
+```
 
 ## Откат
 

@@ -5,6 +5,22 @@
 
 ---
 
+## 1.0.3.35 - Kernel switch (RT/SMP) and CPU frequency profiles (июн 2026)
+
+### Переключение ядра RT ↔ SMP (веб)
+- **etc/sa02m-kernel-select.sh:** status/set/init; swap `zImage` на FAT `/dev/mmcblk2p1` из `/usr/local/share/sa02m/kernel/zImage.{smp,rt}`; `/etc/sa02m_kernel.conf`.
+- **tools/buildroot/sa02m-kernel-deploy.sh:** деплой эталонных zImage и modules; `manifest.json`.
+- **tools/buildroot/prepare-rt-docker-kernel.sh:** команда `build-kernel-smp` (SMP + Docker netfilter, без PREEMPT_RT) — сборка SMP-образа отложена на VM.
+- **kernel_ctrl.cgi** + плитка «Ядро Linux» в Управление; reboot через `doReboot()`.
+- **sa02m-pre-start.sh:** log mismatch desired vs running после reboot.
+
+### Частота CPU (только SMP, не RT)
+- **etc/sa02m-cpu-profile.sh:** профили performance/high/medium/low/adaptive; persist `/etc/sa02m_cpu.conf`; **sa02m-cpu-profile.service** на boot.
+- **cpu_profile.cgi** + плитка «Частота CPU» (скрыта на RT-ядре).
+- **status.cgi:** `kernel_is_rt`, `cpu_profile_ui_available`, `cpu_profile`, `cpu_governor`.
+
+> SMP zImage с Docker netfilter: задеплоить позже через `sa02m-kernel-deploy.sh install-smp`.
+
 ## 1.0.3.34 - RT kernel, Docker, web services UI (июн 2026)
 
 ### RT-ядро и Docker на устройстве

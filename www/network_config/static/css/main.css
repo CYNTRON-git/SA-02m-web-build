@@ -1107,6 +1107,15 @@ svg .gauge-num {
   margin: 0;
 }
 
+.system-manage-kernel-card .kernel-meta,
+.system-manage-cpu-profile-card .cpu-profile-meta {
+  margin: 8px 0 12px;
+}
+.system-manage-kernel-card .kernel-profile-field,
+.system-manage-cpu-profile-card .field {
+  margin-top: 8px;
+}
+
 .system-manage-actions-card .system-manage-actions-main {
   gap: 18px;
   align-items: center;

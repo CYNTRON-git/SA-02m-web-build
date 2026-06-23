@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.34';
+const APP_VERSION = '1.0.3.35';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -36,6 +36,7 @@ function switchTab(tab) {
     fetchSystemWidget();
     loadWebUpdateStatus();
     loadServicesControl(false);
+    loadKernelControl(false);
     loadVariant();
   }
   if (tab === 'network') {
@@ -1178,6 +1179,8 @@ function applySystemStatus(d) {
   }
   if (d.kernel)    setText('kernel-info', uiT('Ядро: ' + d.kernel));
   else setText('kernel-info', '\u00a0');
+
+  updateCpuProfileTile(d);
 
   const btn = document.getElementById('storage-format-toggle');
   const lbl = document.getElementById('storage-format-toggle-label');
@@ -2547,6 +2550,194 @@ window.refreshServicesControlI18n = function () {
   if (_lastSvcCtlData) renderServicesControl(_lastSvcCtlData);
 };
 
+function kernelProfileLabel(p) {
+  return p === 'rt' ? uiT('RT (PREEMPT_RT)') : uiT('SMP');
+}
+
+function kernelErrorMessage(code) {
+  const map = {
+    zimage_missing: uiT('Образ ядра не установлен на устройстве'),
+    modules_missing: uiT('Модули ядра не установлены'),
+    fat_mount_failed: uiT('Не удалось смонтировать FAT-раздел загрузки'),
+    busy: uiT('Переключение ядра уже выполняется'),
+    bad_profile: uiT('Неверный профиль ядра'),
+    sudo_failed: uiT('Нет прав sudo'),
+    ctl_missing: uiT('Скрипт переключения ядра не установлен'),
+  };
+  return map[code] || code;
+}
+
+function cpuProfileErrorMessage(code) {
+  const map = {
+    rt_kernel_active: uiT('Управление частотой недоступно на RT-ядре'),
+    cpufreq_unavailable: uiT('Cpufreq не поддерживается'),
+    bad_profile: uiT('Неверный профиль частоты'),
+    apply_failed: uiT('Не удалось применить профиль'),
+    sudo_failed: uiT('Нет прав sudo'),
+    ctl_missing: uiT('Скрипт управления CPU не установлен'),
+  };
+  return map[code] || code;
+}
+
+function cpuProfileLabel(id) {
+  const map = {
+    adaptive: uiT('Авто (адаптивная)'),
+    low: uiT('Минимальная'),
+    medium: uiT('Средняя'),
+    high: uiT('Высокая (адапт.)'),
+    performance: uiT('Максимальная'),
+  };
+  return map[id] || id;
+}
+
+let _lastKernelCtrlData = null;
+
+function renderKernelControl(j) {
+  _lastKernelCtrlData = j;
+  const runEl = document.getElementById('kernel-run-label');
+  const desEl = document.getElementById('kernel-desired-label');
+  const verEl = document.getElementById('kernel-ver-label');
+  const artEl = document.getElementById('kernel-artifacts-label');
+  const hintEl = document.getElementById('kernel-pending-hint');
+  const sel = document.getElementById('kernel-profile-select');
+  const btn = document.getElementById('kernel-apply-btn');
+  if (!runEl || !j) return;
+
+  setText('kernel-run-label', kernelProfileLabel(j.running));
+  setText('kernel-desired-label', kernelProfileLabel(j.desired));
+  setText('kernel-ver-label', j.kernel_version || '—');
+  const smpOk = j.smp_zimage === 1 && j.smp_modules === 1;
+  const rtOk = j.rt_zimage === 1 && j.rt_modules === 1;
+  setText('kernel-artifacts-label',
+    uiT('SMP') + (smpOk ? ' ✓' : ' ✗') + ' / ' + uiT('RT') + (rtOk ? ' ✓' : ' ✗'));
+
+  if (sel && j.desired) sel.value = j.desired;
+  if (hintEl) {
+    if (j.reboot_pending === 1 || j.reboot_pending === true) {
+      hintEl.style.display = '';
+      hintEl.textContent = uiT('Требуется перезагрузка для применения выбранного ядра');
+    } else {
+      hintEl.style.display = 'none';
+      hintEl.textContent = '';
+    }
+  }
+  if (btn && sel) {
+    const target = sel.value;
+    const canSwitch = (target === 'smp' && smpOk) || (target === 'rt' && rtOk);
+    const pending = j.reboot_pending === 1 || j.reboot_pending === true;
+    btn.disabled = !canSwitch || (j.running === target && !pending);
+  }
+}
+
+function loadKernelControl(forceToast) {
+  const sel = document.getElementById('kernel-profile-select');
+  if (sel && !sel.dataset.kernelBound) {
+    sel.dataset.kernelBound = '1';
+    sel.addEventListener('change', function () {
+      if (_lastKernelCtrlData) {
+        renderKernelControl(Object.assign({}, _lastKernelCtrlData, { desired: sel.value }));
+      }
+    });
+  }
+  fetch('/cgi-bin/kernel_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error === 'unauthorized') throw new Error(uiT('нет доступа'));
+      if (j.error === 'ctl_missing') throw new Error(kernelErrorMessage('ctl_missing'));
+      if (j.ok === false && j.error) throw new Error(kernelErrorMessage(j.error));
+      renderKernelControl(j);
+      if (forceToast) toast(uiT('Статус ядра обновлён'), 'success');
+    })
+    .catch((e) => {
+      if (forceToast) toast(uiT('Ядро: ') + (e && e.message ? e.message : String(e)), 'error');
+    });
+}
+
+function applyKernelProfile() {
+  const sel = document.getElementById('kernel-profile-select');
+  const profile = sel ? sel.value : '';
+  if (!profile) return;
+  let msg = uiT('Переключить ядро на ') + kernelProfileLabel(profile) + uiT('? Устройство перезагрузится.');
+  if (profile === 'smp') {
+    msg += ' ' + uiT('CODESYS требует RT-ядро. SMP-образ с Docker будет добавлен позже.');
+  }
+  if (!confirm(msg)) return;
+
+  const btn = document.getElementById('kernel-apply-btn');
+  if (btn) btn.disabled = true;
+  fetch('/cgi-bin/kernel_ctrl.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ profile: profile }),
+  })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(kernelErrorMessage(j.error) || ('HTTP ' + r.status));
+      if (j.warnings && String(j.warnings).indexOf('codesys_requires_rt') >= 0) {
+        toast(uiT('CODESYS работает — на SMP возможны сбои цикла'), 'warn', 8000);
+      }
+      if (j.warnings && String(j.warnings).indexOf('smp_docker_kernel_pending') >= 0) {
+        toast(uiT('SMP-ядро с Docker netfilter ещё не задеплоено'), 'info', 8000);
+      }
+      renderKernelControl(j);
+      if (j.reboot_required) {
+        if (confirm(uiT('Ядро подготовлено. Перезагрузить сейчас?'))) doReboot();
+        else toast(uiT('Перезагрузите устройство для применения ядра'), 'info', 8000);
+      } else if (j.noop) {
+        toast(uiT('Это ядро уже активно'), 'info');
+      } else {
+        toast(uiT('Настройка ядра сохранена'), 'success');
+      }
+    })
+    .catch((e) => {
+      toast(uiT('Ядро: ') + (e && e.message ? e.message : String(e)), 'error');
+    })
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
+function updateCpuProfileTile(d) {
+  const tile = document.getElementById('cpu-profile-tile');
+  if (!tile) return;
+  const uiOk = d.cpu_profile_ui_available === 1;
+  tile.style.display = uiOk ? '' : 'none';
+  if (!uiOk) return;
+
+  const sel = document.getElementById('cpu-profile-select');
+  if (sel && d.cpu_profile) sel.value = d.cpu_profile;
+  const freq = document.getElementById('cpu-profile-freq-label');
+  if (freq) {
+    const mhz = d.cpu_freq_mhz != null ? d.cpu_freq_mhz : '—';
+    freq.textContent = mhz + ' ' + uiT('МГц');
+  }
+  setText('cpu-profile-gov-label', d.cpu_governor || '—');
+}
+
+function applyCpuProfile() {
+  const sel = document.getElementById('cpu-profile-select');
+  const profile = sel ? sel.value : '';
+  if (!profile) return;
+  const btn = document.getElementById('cpu-profile-apply-btn');
+  if (btn) btn.disabled = true;
+  fetch('/cgi-bin/cpu_profile.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ profile: profile }),
+  })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(cpuProfileErrorMessage(j.error) || ('HTTP ' + r.status));
+      toast(uiT('Профиль частоты: ') + cpuProfileLabel(profile), 'success');
+      fetchBackgroundPart('system', applySystemStatus);
+      setTimeout(fetchPriorityPart, 1500, 'priority');
+    })
+    .catch((e) => {
+      toast(uiT('CPU: ') + (e && e.message ? e.message : String(e)), 'error');
+    })
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
 function loadServicesControl(forceToast) {
   const host = document.getElementById('svc-ctl-list');
   const btn = document.getElementById('svc-ctl-refresh-btn');
@@ -3060,6 +3251,9 @@ document.addEventListener('DOMContentLoaded', () => {
   window.doRestart = doRestart;
   window.doReboot  = doReboot;
   window.loadServicesControl = loadServicesControl;
+  window.loadKernelControl = loadKernelControl;
+  window.applyKernelProfile = applyKernelProfile;
+  window.applyCpuProfile = applyCpuProfile;
   window.serviceCtlAction = serviceCtlAction;
   window.doLogout  = doLogout;
   window.loadLog   = loadLog;
