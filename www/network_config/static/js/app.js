@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.32';
+const APP_VERSION = '1.0.3.34';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -2426,6 +2426,7 @@ function svcCtlDisplayLabel(svc) {
   const id = String((svc && svc.id) || '').trim();
   const lab = String((svc && svc.label) || '').trim();
   if (id === 'mqtt-bridge') return 'MQTT';
+  if (id === 'docker' || lab.toLowerCase() === 'docker') return 'Docker';
   if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';
   if (lab) return lab;
   return unitUiLabel(id);

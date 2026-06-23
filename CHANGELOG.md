@@ -5,6 +5,20 @@
 
 ---
 
+## 1.0.3.34 - RT kernel, Docker, web services UI (июн 2026)
+
+### RT-ядро и Docker на устройстве
+- **tools/buildroot/prepare-rt-docker-kernel.sh:** patch-first RT (`patch-6.1-rc6-rt4`), `apply_sa02m_boot_kconfig` (sunxi/eMMC/eth), `apply_docker_netfilter_kconfig` (NAT/conntrack/BPF/raw), verify-хуки; fix `pipefail` на `olddefconfig`.
+- **tools/buildroot/README.md:** сборка на VM, деплой zImage/modules, откат SMP.
+- На SA-02m: ядро `6.1.0-rc6-rt4` PREEMPT_RT, `docker.io`, `hello-world` OK; `iptables-legacy`, `/etc/docker/daemon.json` (ipv6 off).
+
+### Web UI — Docker в «Службы»
+- **status.cgi:** Docker в `optional_services`; `fast_service_state` по `dockerd` (не `docker`).
+- **sa02m-web-service-ctl.sh:** start/stop `docker.service` из «Управление → Службы» (как MPLC4).
+- **app.js:** label Docker в управлении службами.
+
+> Подробности инцидентов: docs/bugs/BUGLOG.md (записи 2026-06-23, ветка 1.0.3.34).
+
 ## 1.0.3.32 - CPU load, dashboard polling, MQTT AI types (июн 2026)
 
 ### Reset reason (MR-02m diag, июн 2026)

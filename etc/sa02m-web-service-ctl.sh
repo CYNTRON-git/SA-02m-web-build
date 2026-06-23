@@ -34,6 +34,7 @@ unit_exists() {
 
 # id | UI label | candidate units (first existing wins)
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
+docker|Docker|docker.service
 mplc4|MPLC4|mplc4.service
 mosquitto|Mosquitto|mosquitto.service
 mqtt-bridge|Modbus MQTT|sa02m-modbus-mqtt.service

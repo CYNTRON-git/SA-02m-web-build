@@ -311,6 +311,13 @@ fast_service_state() {
                 echo inactive
             fi
             ;;
+        docker|docker.service)
+            if proc_is_running dockerd || [ -S /run/docker.sock ]; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
         *)
             svc_is_active "$1"
             ;;
@@ -350,6 +357,7 @@ fast_service_uptime() {
             (( u2 > up )) && up=$u2
             echo "$up"
             ;;
+        docker|docker.service) proc_uptime_seconds_by_name dockerd ;;
         *) unit_uptime_seconds "$1" ;;
     esac
 }
@@ -454,6 +462,20 @@ systemd_unit_file_installed() {
 gather_important_optional_services_json() {
     OPTIONAL_SVCS_JSON="[]"
     local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw
+
+    if systemd_unit_file_installed docker.service; then
+        u="docker.service"
+        st_raw=$(fast_service_state "$u")
+        up_sec=$(fast_service_uptime "$u")
+        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        id_disp=$(unit_display_id "$u")
+        id_esc=$(json_escape "$id_disp")
+        st_esc=$(json_escape "$st_raw")
+        label_raw="Docker"
+        label_esc=$(json_escape "$label_raw")
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        sep=,
+    fi
 
     u=""
     if systemd_unit_file_installed klogicd.service; then

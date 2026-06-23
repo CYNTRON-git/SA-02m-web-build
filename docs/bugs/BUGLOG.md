@@ -5,6 +5,38 @@
 
 ---
 
+## [2026-06-23 13:53] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `etc/sa02m-web-service-ctl.sh`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** В «Сведения → Службы» Docker показывал аптайм (~15 м), но badge «Неактивен»; в «Управление → Службы» не было Docker.
+**Причина:** `fast_service_state` для docker.service вызывал `svc_is_active`, который ищет процесс `pgrep -x docker`; демон — `dockerd`. Управление: unit не был в `SERVICE_DEFS`.
+**Исправление:** В `status.cgi` — ветка `docker|docker.service` (проверка `dockerd`, `/run/docker.sock`); аптайм по `dockerd`. В `sa02m-web-service-ctl.sh` — `docker|Docker|docker.service`; UI label в `app.js`.
+
+## [2026-06-23 12:29] branch: 1.0.3.33
+
+**Файл(ы):** `tools/buildroot/prepare-rt-docker-kernel.sh`, FAT boot `zImage`
+**Тип:** Краш / Логическая ошибка
+**Описание:** RT zImage (6277688 B) не загружался — устройство не поднималось по сети после деплоя 2026-06-23.
+**Причина:** `apply_kconfig_snippets` + `olddefconfig` сбрасывали `CONFIG_ARCH_SUNXI` и `CONFIG_MMC_SUNXI` — ядро собиралось как generic ARM multipatform без sunxi/eMMC/ethernet. В modules.builtin RT не было `sunxi-mmc.ko`, `dwmac-sun8i.ko`.
+**Исправление:** В `prepare-rt-docker-kernel.sh` добавлены `apply_sa02m_boot_kconfig` (sunxi/mmc/ethernet/LED/RTC) и `verify_sa02m_boot_kconfig`; повторное применение после `olddefconfig`. Пересборка: zImage 6704664 B с `PREEMPT_RT`, `ARCH_SUNXI`, `MMC_SUNXI`. Деплой на FAT; откат SMP сохранён в `zImage.bak-smp-*`. Symlink `/lib/modules/6.1.0-rc6-rt4-rt4` → `6.1.0-rc6-rt4` (двойной суффикс из LOCALVERSION, исправлен в скрипте).
+
+## [2026-06-23 13:30] branch: 1.0.3.33
+
+**Файл(ы):** `tools/buildroot/prepare-rt-docker-kernel.sh`, `/etc/docker/daemon.json`
+**Тип:** Некорректное поведение
+**Описание:** Docker не стартовал на RT-ядре: NAT/addrtype/conntrack/BPF/raw table отсутствовали; `olddefconfig` сбрасывал sunxi и netfilter.
+**Причина:** Kconfig snippets применялись до/после `olddefconfig` без повторного merge; `yes | make` + `pipefail` обрывал скрипт; не хватало NF_NAT, xt_conntrack, BPF, IP_NF_RAW.
+**Исправление:** `apply_sa02m_boot_kconfig`, `apply_docker_netfilter_kconfig`, verify-хуки; iptables-legacy + `daemon.json` (ipv6 off); пересборка RT zImage с полным netfilter/BPF. `docker run --rm hello-world` OK.
+
+## [2026-06-23 11:59] branch: 1.0.3.33
+
+**Файл(ы):** FAT boot `/dev/mmcblk2p1` (zImage), `tools/buildroot/prepare-rt-docker-kernel.sh`
+**Тип:** Краш / Некорректное поведение
+**Описание:** После деплоя RT zImage (6.1.0-rc6-rt4, 6277688 B) устройство не поднялось по сети; SSH timeout, ping ~50%.
+**Причина:** RT-образ на FAT не загрузился стабильно (возможны несовместимость defconfig/DTB с SA-02m или сеть end0/end1 до полного boot).
+**Исправление:** Откат через U-Boot USB mass storage (диск F:): `zImage` восстановлен из `zImage.bak-smp-20260623` (6298696 B, MD5 совпадает с `device_boot`). `boot.scr` и `sun8i-a40i-sk.dtb` без изменений.
+
 ## [2026-06-22 11:55] branch: 1.0.3.32
 
 **Файл(ы):** `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/index.html`
