@@ -66,7 +66,8 @@ if [[ "${QUERY_STRING:-}" == *part=rs485* ]] && [[ "${QUERY_STRING:-}" == *no_ca
     rm -f "${CACHE_DIR}/rs485.json" "${CACHE_DIR}/rs485.json.lock" 2>/dev/null || true
 fi
 OPTIONAL_SVCS_JSON="[]"
-SVC_NGINX_UPTIME_S=0
+SVC_CODESYS_UPTIME_S=0
+SVC_CODESYS_UNIT=""
 SVC_FCGIWRAP_UPTIME_S=0
 SVC_MOSQUITTO="unknown"
 SVC_BRIDGE="unknown"
@@ -318,6 +319,16 @@ fast_service_state() {
                 echo inactive
             fi
             ;;
+        codesyscontrol|codesyscontrol.service|codesys.service|codesys3.service|CODESYSControl.service|CODESYSControlRuntime.service)
+            if pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1 \
+                || pgrep -f '[C]ODESYSControl' >/dev/null 2>&1 \
+                || pgrep -f '[c]odesyscontrol' >/dev/null 2>&1 \
+                || { [ -r /var/run/codesyscontrol.pid ] && kill -0 "$(cat /var/run/codesyscontrol.pid 2>/dev/null)" 2>/dev/null; }; then
+                echo active
+            else
+                echo inactive
+            fi
+            ;;
         *)
             svc_is_active "$1"
             ;;
@@ -358,6 +369,18 @@ fast_service_uptime() {
             echo "$up"
             ;;
         docker|docker.service) proc_uptime_seconds_by_name dockerd ;;
+        codesyscontrol|codesyscontrol.service|codesys.service|codesys3.service|CODESYSControl.service|CODESYSControlRuntime.service)
+            local up=0 u2 u3 u4
+            up=$(proc_uptime_seconds_by_pgrep_f '[c]odesyscontrol\.bin')
+            u2=$(proc_uptime_seconds_by_pgrep_f '[C]ODESYSControl')
+            u3=$(proc_uptime_seconds_by_pgrep_f '[c]odesyscontrol')
+            u4=$(proc_uptime_seconds_by_name codesyscontrol)
+            (( u2 > up )) && up=$u2
+            (( u3 > up )) && up=$u3
+            (( u4 > up )) && up=$u4
+            (( up == 0 )) && up=$(uptime_from_cgroup_slice "$1")
+            echo "$up"
+            ;;
         *) unit_uptime_seconds "$1" ;;
     esac
 }
@@ -442,6 +465,27 @@ gather_optional_platform_services() {
         sep=,
     done
     [ -n "$parts" ] && OPTIONAL_SVCS_JSON="[${parts}]" || OPTIONAL_SVCS_JSON="[]"
+}
+
+# Первый unit CODESYS в «Службы» (замена nginx в UI).
+resolve_codesys_unit() {
+    local u
+    for u in \
+        codesyscontrol.service \
+        codesys.service \
+        codesys3.service \
+        CODESYSControl.service \
+        CODESYSControlRuntime.service; do
+        if systemd_unit_file_installed "$u"; then
+            printf '%s' "$u"
+            return 0
+        fi
+    done
+    if [ -x /etc/init.d/codesyscontrol ]; then
+        printf '%s' "codesyscontrol.service"
+        return 0
+    fi
+    return 1
 }
 
 # MPLC4 в UI (mplc_status / mplc_unit). Сюда — только службы,
@@ -1253,9 +1297,9 @@ gather_services_metrics() {
         MPLC_STATUS="unknown"
         MPLC_UPTIME_S=0
         MPLC_UNIT_RAW=""
-        SVC_NGINX="unknown"
+        SVC_CODESYS="unknown"
         SVC_FCGI="unknown"
-        SVC_NGINX_UPTIME_S=0
+        SVC_CODESYS_UPTIME_S=0
         SVC_FCGIWRAP_UPTIME_S=0
         SVC_MOSQUITTO="unknown"
         SVC_BRIDGE="unknown"
@@ -1272,7 +1316,12 @@ gather_services_metrics() {
     local proc_pids active_unit mpl_pid cg_unit mpl_slice try up_try
     OPTIONAL_SVCS_JSON="[]"
     mpl_slice=""
-    SVC_NGINX=$(fast_service_state nginx)
+    SVC_CODESYS_UNIT=$(resolve_codesys_unit 2>/dev/null || true)
+    if [ -n "$SVC_CODESYS_UNIT" ]; then
+        SVC_CODESYS=$(fast_service_state "$SVC_CODESYS_UNIT")
+    else
+        SVC_CODESYS=$(fast_service_state codesyscontrol)
+    fi
     SVC_FCGI=$(fast_service_state fcgiwrap)
     SVC_MOSQUITTO=$(fast_service_state mosquitto)
     SVC_BRIDGE=$(fast_service_state sa02m-modbus-mqtt)
@@ -1280,12 +1329,15 @@ gather_services_metrics() {
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
     MPLC_UNIT_RAW=""
-    SVC_NGINX_UPTIME_S=0
+    SVC_CODESYS_UPTIME_S=0
     SVC_FCGIWRAP_UPTIME_S=0
     gather_uptime_metrics
 
-    SVC_NGINX_UPTIME_S=$(fast_service_uptime nginx.service)
-    (( SVC_NGINX_UPTIME_S == 0 )) && SVC_NGINX_UPTIME_S=$(fast_service_uptime nginx)
+    if [ -n "$SVC_CODESYS_UNIT" ]; then
+        SVC_CODESYS_UPTIME_S=$(fast_service_uptime "$SVC_CODESYS_UNIT")
+    fi
+    (( SVC_CODESYS_UPTIME_S == 0 )) && SVC_CODESYS_UPTIME_S=$(fast_service_uptime codesyscontrol)
+    (( SVC_CODESYS_UPTIME_S == 0 )) && SVC_CODESYS_UPTIME_S=$(fast_service_uptime codesyscontrol.service)
     SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap.service)
     (( SVC_FCGIWRAP_UPTIME_S == 0 )) && SVC_FCGIWRAP_UPTIME_S=$(fast_service_uptime fcgiwrap)
     SVC_MOSQUITTO_UPTIME_S=$(fast_service_uptime mosquitto.service)
@@ -1389,7 +1441,7 @@ gather_services_metrics() {
     # активность — fast_service_state (без systemctl show, чтобы не зависать на dbus).
     gather_important_optional_services_json
 
-    SVC_NGINX=$(json_escape "$SVC_NGINX")
+    SVC_CODESYS=$(json_escape "$SVC_CODESYS")
     SVC_FCGI=$(json_escape "$SVC_FCGI")
     SVC_MOSQUITTO=$(json_escape "$SVC_MOSQUITTO")
     SVC_BRIDGE=$(json_escape "$SVC_BRIDGE")
@@ -1411,7 +1463,7 @@ gather_hardware_metrics() {
 }
 
 gather_main_metrics() {
-    SVC_NGINX="unknown"
+    SVC_CODESYS="unknown"
     SVC_FCGI="unknown"
     SVC_MOSQUITTO="unknown"
     SVC_BRIDGE="unknown"
@@ -1419,7 +1471,7 @@ gather_main_metrics() {
     MPLC_UPTIME_S=0
     MPLC_UNIT=""
     OPTIONAL_SVCS_JSON="[]"
-    SVC_NGINX_UPTIME_S=0
+    SVC_CODESYS_UPTIME_S=0
     SVC_FCGIWRAP_UPTIME_S=0
     SVC_MOSQUITTO_UPTIME_S=0
     SVC_BRIDGE_UPTIME_S=0
@@ -1589,8 +1641,8 @@ JSON
 print_services_json() {
     cat <<JSON
 {
-  "svc_nginx": "${SVC_NGINX}",
-  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
+  "svc_codesys": "${SVC_CODESYS}",
+  "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
@@ -1671,8 +1723,8 @@ print_main_json() {
   "end1_ip": "${ETH1_IP}",
   "end0_mode": "${ETH0_MODE}",
   "end1_mode": "${ETH1_MODE}",
-  "svc_nginx": "${SVC_NGINX}",
-  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
+  "svc_codesys": "${SVC_CODESYS}",
+  "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
@@ -1765,8 +1817,8 @@ print_core_json() {
   "end1_ip": "${ETH1_IP}",
   "end0_mode": "${ETH0_MODE}",
   "end1_mode": "${ETH1_MODE}",
-  "svc_nginx": "${SVC_NGINX}",
-  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
+  "svc_codesys": "${SVC_CODESYS}",
+  "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
@@ -1860,8 +1912,8 @@ print_full_json() {
   "end1_ip": "${ETH1_IP}",
   "end0_mode": "${ETH0_MODE}",
   "end1_mode": "${ETH1_MODE}",
-  "svc_nginx": "${SVC_NGINX}",
-  "svc_nginx_uptime_s": ${SVC_NGINX_UPTIME_S},
+  "svc_codesys": "${SVC_CODESYS}",
+  "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
   "svc_mosquitto": "${SVC_MOSQUITTO}",

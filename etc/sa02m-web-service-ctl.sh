@@ -32,9 +32,14 @@ unit_exists() {
     return 0
 }
 
+codesys_process_active() {
+    pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1
+}
+
 # id | UI label | candidate units (first existing wins)
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
 docker|Docker|docker.service
+codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service
 mosquitto|Mosquitto|mosquitto.service
 mqtt-bridge|Modbus MQTT|sa02m-modbus-mqtt.service
@@ -118,6 +123,9 @@ cmd_list() {
         IFS='|' read -r _active _enabled _masked _admin_off <<EOF
 $(unit_props "$_unit")
 EOF
+        if [ "$_id" = "codesys" ] && codesys_process_active; then
+            _active=active
+        fi
         _id_e=$(json_escape "$_id")
         _label_e=$(json_escape "$_label")
         _unit_e=$(json_escape "$_unit")

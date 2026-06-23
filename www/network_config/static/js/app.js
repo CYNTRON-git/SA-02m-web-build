@@ -274,7 +274,7 @@ function renderServicesSkeleton() {
     r.className = 'svc-row svc-row-skeleton';
     r.setAttribute('aria-hidden', 'true');
     r.innerHTML =
-      '<span class="name mono">nginx</span>' +
+      '<span class="name mono">CODESYS</span>' +
       '<span class="svc-uptime mono">&nbsp;</span>' +
       '<span class="badge badge-unk">&nbsp;</span>';
     host.appendChild(r);
@@ -301,7 +301,7 @@ function initDashboardPlaceholders() {
   });
 }
 
-/** Виджет «Службы»: nginx, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 6). Без пустых строк. */
+/** Виджет «Службы»: CODESYS, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 6). Без пустых строк. */
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
@@ -328,7 +328,10 @@ function renderServicesDynamic(d) {
     return true;
   }
 
-  pushRow('nginx', d.svc_nginx_uptime_s, d.svc_nginx);
+  pushRow('CODESYS', d.svc_codesys_uptime_s, d.svc_codesys, {
+    mono: true,
+    title: 'CODESYS Control runtime'
+  });
   pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
   if (d.svc_mosquitto && d.svc_mosquitto !== 'unknown')
     pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
@@ -2425,6 +2428,7 @@ function submitForm(form, onSuccess) {
 function svcCtlDisplayLabel(svc) {
   const id = String((svc && svc.id) || '').trim();
   const lab = String((svc && svc.label) || '').trim();
+  if (id === 'codesys') return 'CODESYS';
   if (id === 'mqtt-bridge') return 'MQTT';
   if (id === 'docker' || lab.toLowerCase() === 'docker') return 'Docker';
   if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';

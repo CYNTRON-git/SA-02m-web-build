@@ -1,0 +1,16 @@
+[Unit]
+Description=CODESYS Control Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+PIDFile=/var/run/codesyscontrol.pid
+ExecStart=/etc/init.d/codesyscontrol start
+ExecStop=/etc/init.d/codesyscontrol stop
+ExecReload=/etc/init.d/codesyscontrol restart
+RemainAfterExit=yes
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

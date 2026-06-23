@@ -5,7 +5,15 @@
 
 ---
 
-## [2026-06-23 13:53] branch: 1.0.3.34
+## [2026-06-23 13:55] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `etc/sa02m-web-service-ctl.sh`
+**Тип:** Другое
+**Описание:** В виджете «Службы» (Сведения) и «Управление → Службы» отображался nginx вместо CODESYS Control.
+**Причина:** UI и status.cgi были ориентированы на веб-стек (nginx/fcgiwrap); CODESYS не был в списке управляемых служб.
+**Исправление:** Поля `svc_codesys`/`svc_codesys_uptime_s` в status.cgi (опрос unit codesyscontrol и процессов CODESYSControl); первая строка виджета — CODESYS; `codesys|CODESYS|…` в sa02m-web-service-ctl.sh; установка пакета 4.20 armhf и `/etc/3S.dat` на 192.168.1.136.
+
+---
 
 **Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `etc/sa02m-web-service-ctl.sh`, `www/network_config/static/js/app.js`
 **Тип:** Некорректное поведение
