@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-07] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/cgi-bin/services_ctrl.cgi`
+**Тип:** Некорректное поведение
+**Описание:** В «Управление → Службы» кнопки «Стоп»/«Пуск» возвращали toast «Служба missing_id»; start/stop не выполнялись.
+**Причина:** POST JSON парсился через `read -r ACTION SID` + два `print()` Python на разных строках — bash читал только первую строку (`action=stop`), поле `id` оставалось пустым. Дополнительно тело POST читалось через `read -n`, ненадёжно под FCGI (в других CGI используется `dd`).
+**Исправление:** Чтение тела через `dd` + temp-файл; `action` и `id` извлекаются отдельными вызовами Python (как в `mqtt_ctrl.cgi`).
+
+---
+
 ## [2026-06-23 17:05] branch: 1.0.3.34
 
 **Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `etc/sa02m-web-service-ctl.sh`, `www/network_config/static/js/app.js`, `www/network_config/index.html`

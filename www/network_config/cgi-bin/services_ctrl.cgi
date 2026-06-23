@@ -41,24 +41,31 @@ if [[ "$METHOD" != "POST" ]]; then
     exit 0
 fi
 
-BODY=""
-if [[ -n "${CONTENT_LENGTH:-}" ]] && [[ "$CONTENT_LENGTH" =~ ^[0-9]+$ ]] && (( CONTENT_LENGTH > 0 )); then
-    read -r -n "$CONTENT_LENGTH" BODY
+# FCGI: читать ровно CONTENT_LENGTH байт (как mqtt_ctrl.cgi / apply.cgi).
+TMP=$(mktemp /tmp/sa02m-svcctrl.XXXXXX)
+trap 'rm -f "$TMP"' EXIT
+CL=$(printf '%s' "${CONTENT_LENGTH:-}" | tr -cd '0-9')
+if [[ -n "$CL" ]] && [[ "$CL" -gt 0 ]] 2>/dev/null; then
+    dd bs=1 count="$CL" 2>/dev/null >"$TMP" || true
 fi
 
 ACTION=""
 SID=""
-if command -v python3 >/dev/null 2>&1; then
-    read -r ACTION SID <<EOF
-$(printf '%s' "$BODY" | python3 -c "import json,sys
+if [[ -s "$TMP" ]] && command -v python3 >/dev/null 2>&1; then
+    ACTION=$(python3 -c "import json
 try:
- d=json.load(sys.stdin)
+    with open('$TMP') as f:
+        d = json.load(f)
 except Exception:
- d={}
-print(d.get('action',''))
-print(d.get('id',''))
-" 2>/dev/null)
-EOF
+    d = {}
+print(d.get('action', ''))" 2>/dev/null | tr -d '\r\n')
+    SID=$(python3 -c "import json
+try:
+    with open('$TMP') as f:
+        d = json.load(f)
+except Exception:
+    d = {}
+print(d.get('id', ''))" 2>/dev/null | tr -d '\r\n')
 fi
 
 case "$ACTION" in
@@ -71,6 +78,7 @@ case "$ACTION" in
         ;;
 esac
 
+SID=$(printf '%s' "$SID" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 if [[ -z "$SID" ]]; then
     echo "Content-type: application/json; charset=UTF-8"
     echo ""

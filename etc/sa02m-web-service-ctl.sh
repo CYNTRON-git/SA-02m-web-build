@@ -98,6 +98,38 @@ codesys_rc_enable() {
     update-rc.d codesyscontrol defaults >>"$LOG" 2>&1 || true
 }
 
+codesys_rc_autostart() {
+    local d link
+    for d in /etc/rc2.d /etc/rc3.d /etc/rc4.d /etc/rc5.d; do
+        [ -d "$d" ] || continue
+        for link in "$d"/S*codesyscontrol; do
+            [ -e "$link" ] || continue
+            return 0
+        done
+    done
+    return 1
+}
+
+unit_admin_disabled() {
+    _u=$1
+    [ -n "$_u" ] || return 0
+    _en=$(sc_run is-enabled "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+    case "$_en" in
+        disabled|masked) return 0 ;;
+    esac
+    return 1
+}
+
+unit_admin_enabled() {
+    _u=$1
+    [ -n "$_u" ] || return 0
+    _en=$(sc_run is-enabled "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+    case "$_en" in
+        enabled|enabled-runtime) return 0 ;;
+    esac
+    return 1
+}
+
 # id | UI label | candidate units (first existing wins)
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
 docker|Docker|docker.service
@@ -141,6 +173,12 @@ resolve_unit_for_id() {
             fi
         done
         IFS=$_old_ifs
+        if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
+            if [ -z "$_found_unit" ] && unit_file_installed codesyscontrol.service; then
+                _found_unit=codesyscontrol.service
+            fi
+            return 0
+        fi
         return 1
     done <<EOF
 $SERVICE_DEFS
@@ -208,10 +246,26 @@ cmd_list() {
             done
         fi
         IFS=$_old_ifs
+        if [ -z "$_unit" ] && [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
+            _unit="init.d"
+            _active=inactive
+            _enabled=disabled
+            _masked=0
+            _admin_off=1
+            if codesys_process_active; then
+                _active=active
+            fi
+            if codesys_rc_autostart; then
+                _admin_off=0
+                _enabled=enabled
+            fi
+        fi
         [ -z "$_unit" ] && continue
+        if [ "$_unit" != "init.d" ]; then
         IFS='|' read -r _active _enabled _masked _admin_off <<EOF
 $(unit_props "$_unit")
 EOF
+        fi
         if [ "$_id" = "codesys" ] && [ "$_admin_off" = 1 ]; then
             _active=inactive
         elif [ "$_id" = "codesys" ] && codesys_process_active; then
@@ -249,17 +303,27 @@ cmd_stop() {
         /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
         codesys_rc_disable
     fi
-    sc_run stop "$_u" >>"$LOG" 2>&1 || true
-    sc_run disable "$_u" >>"$LOG" 2>&1 || true
-    # mask не работает, если unit-файл — обычный файл в /etc/systemd/system (не symlink).
-    sc_run mask "$_u" >>"$LOG" 2>&1 || true
-    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if [ -n "$_u" ]; then
+        sc_run stop "$_u" >>"$LOG" 2>&1 || true
+        sc_run disable "$_u" >>"$LOG" 2>&1 || true
+        # mask не работает, если unit-файл — обычный файл в /etc/systemd/system (не symlink).
+        sc_run mask "$_u" >>"$LOG" 2>&1 || true
+        sc_run daemon-reload >>"$LOG" 2>&1 || true
+        if ! unit_admin_disabled "$_u"; then
+            printf '{"ok":false,"error":"disable_failed","id":"%s"}\n' "$_id"
+            return 1
+        fi
+    fi
     if [ "$_id" = "codesys" ] && codesys_process_active; then
         pkill -f '[c]odesyscontrol\.bin' >>"$LOG" 2>&1 || true
         sleep 1
     fi
     if [ "$_id" = "codesys" ] && codesys_process_active; then
         printf '{"ok":false,"error":"still_running","id":"%s"}\n' "$_id"
+        return 1
+    fi
+    if [ "$_id" = "codesys" ] && codesys_rc_autostart; then
+        printf '{"ok":false,"error":"disable_failed","id":"%s"}\n' "$_id"
         return 1
     fi
     printf '{"ok":true,"id":"%s","action":"stop"}\n' "$_id"
@@ -273,19 +337,25 @@ cmd_start() {
         return 1
     fi
     _u=$_found_unit
-    echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u})" >>"$LOG" 2>&1
-    sc_run unmask "$_u" >>"$LOG" 2>&1 || true
-    sc_run enable "$_u" >>"$LOG" 2>&1 || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ]; then
         codesys_rc_enable
     fi
-    sc_run start "$_u" >>"$LOG" 2>&1 || true
+    if [ -n "$_u" ]; then
+        sc_run unmask "$_u" >>"$LOG" 2>&1 || true
+        sc_run enable "$_u" >>"$LOG" 2>&1 || true
+        sc_run start "$_u" >>"$LOG" 2>&1 || true
+        sc_run daemon-reload >>"$LOG" 2>&1 || true
+        if ! unit_admin_enabled "$_u"; then
+            printf '{"ok":false,"error":"enable_failed","id":"%s"}\n' "$_id"
+            return 1
+        fi
+    fi
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         if ! codesys_process_active; then
             /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
         fi
     fi
-    sc_run daemon-reload >>"$LOG" 2>&1 || true
     if [ "$_id" = "codesys" ] && ! codesys_process_active; then
         printf '{"ok":false,"error":"start_failed","id":"%s"}\n' "$_id"
         return 1

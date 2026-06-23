@@ -2575,6 +2575,22 @@ function loadServicesControl(forceToast) {
     .finally(() => { if (btn) btn.disabled = false; });
 }
 
+function svcCtlErrorMessage(code) {
+  const c = String(code || '');
+  const map = {
+    missing_id: 'не указана служба',
+    bad_action: 'неверное действие',
+    unknown_service: 'служба не найдена',
+    disable_failed: 'не удалось отключить автозапуск (служба может подняться после перезагрузки)',
+    enable_failed: 'не удалось включить автозапуск',
+    still_running: 'процесс службы всё ещё работает',
+    start_failed: 'не удалось запустить службу',
+    sudo_failed: 'нет прав sudo для управления службами',
+    ctl_missing: 'скрипт управления не установлен',
+  };
+  return map[c] || c;
+}
+
 function serviceCtlAction(btn) {
   const id = btn && btn.dataset ? btn.dataset.svcId : '';
   const action = btn && btn.dataset ? btn.dataset.svcAction : '';
@@ -2591,7 +2607,7 @@ function serviceCtlAction(btn) {
   })
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+      if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
       toast(action === 'stop' ? 'Служба остановлена и отключена' : 'Служба включена', 'success');
       return loadServicesControl(false);
     })
