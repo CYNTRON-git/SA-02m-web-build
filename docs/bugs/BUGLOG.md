@@ -5,6 +5,36 @@
 
 ---
 
+## [2026-06-23 17:05] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `etc/sa02m-web-service-ctl.sh`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В блоках «Службы» (дашборд и Управление) отображались docker, MQTT, mosquitto и др. после удаления пакета.
+**Причина:** Дашборд рендерил ключевые службы без проверки установки; `fast_service_state` даёт `inactive`, а не `unknown`. В «Управление» список строился только по LoadState systemd без проверки unit-файла/бинарника.
+**Исправление:** `status.cgi`: флаги `*_installed` (unit-файл / init.d / socket). `sa02m-web-service-ctl.sh`: `service_present()` (unit-файл, бинарник, dpkg, скрипт opt/) + `"installed":true` в JSON. Фронт: `renderServicesDynamic` и `renderServicesControl` показывают только `installed === 1/true`. Cache-bust `app.js?v=1.0.3.34.8`.
+
+---
+
+## [2026-06-23 16:54] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В виджете «Службы» на дашборде отображались CODESYS, mosquitto, MQTT и MPLC4 даже после удаления пакета (строка «Неактивен»).
+**Причина:** `renderServicesDynamic` всегда рендерил ключевые службы; `fast_service_state` возвращает `inactive`, а не `unknown`, для отсутствующих unit — фильтр `!== 'unknown'` не скрывал строку.
+**Исправление:** В `status.cgi` добавлены флаги `*_installed` (unit-файл / init.d / socket); фронт показывает строку только при `*_installed === 1`. Сортировка A→Z сохранена. Cache-bust `app.js?v=1.0.3.34.7`. Блок «Управление → Службы» уже фильтрует через `sa02m-web-service-ctl.sh list` (LoadState ≠ not-found).
+
+---
+
+## [2026-06-23 16:49] branch: 1.0.3.34
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В блоках «Службы» (дашборд и вкладка Управление) строки служб отображались в фиксированном порядке сборки, а не по имени.
+**Причина:** `renderServicesDynamic` и `renderServicesControl` рендерили массив без сортировки по отображаемому имени.
+**Исправление:** Добавлен `compareSvcDisplayName` (localeCompare, sensitivity base); сортировка перед render в обоих виджетах. Cache-bust `app.js?v=1.0.3.34.6`.
+
+---
+
 ## [2026-06-23 16:38] branch: 1.0.3.34
 
 **Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`

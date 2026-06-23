@@ -32,6 +32,58 @@ unit_exists() {
     return 0
 }
 
+# Unit-файл на диске (пакет установлен), а не только LoadState в systemd.
+unit_file_installed() {
+    local bn=$1
+    case "$bn" in
+        *.service|*.socket) ;;
+        *) bn="${bn}.service" ;;
+    esac
+    local d
+    for d in /lib/systemd/system /usr/lib/systemd/system /etc/systemd/system; do
+        [ -f "$d/$bn" ] && return 0
+    done
+    return 1
+}
+
+# Служба считается установленной: unit-файл, init.d, бинарник или dpkg.
+service_present() {
+    _sid=$1
+    _cands=$2
+    case "$_sid" in
+        codesys)
+            [ -x /etc/init.d/codesyscontrol ] && return 0
+            ;;
+        docker)
+            command -v docker >/dev/null 2>&1 && return 0
+            ;;
+        mplc4)
+            unit_file_installed mplc4.service && return 0
+            unit_file_installed mplc.service && return 0
+            return 1
+            ;;
+        mosquitto)
+            command -v mosquitto >/dev/null 2>&1 && return 0
+            dpkg -s mosquitto >/dev/null 2>&1 && return 0
+            ;;
+        mqtt-bridge)
+            [ -x /opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py ] && return 0
+            ;;
+        mqtt-telemetry)
+            [ -x /opt/sa02m-modbus-mqtt/sa02m_telemetry.py ] && return 0
+            ;;
+    esac
+    _old_ifs=$IFS
+    IFS=,
+    for _u in $_cands; do
+        IFS=$_old_ifs
+        case "$_u" in *.service|*.socket) ;; *) _u="${_u}.service" ;; esac
+        unit_file_installed "$_u" && return 0
+    done
+    IFS=$_old_ifs
+    return 1
+}
+
 codesys_process_active() {
     pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1
 }
@@ -65,12 +117,25 @@ resolve_unit_for_id() {
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
         [ "$_id" != "$_want_id" ] && continue
+        if ! service_present "$_id" "$_cands"; then
+            return 1
+        fi
         _old_ifs=$IFS
         IFS=,
         for _u in $_cands; do
             IFS=$_old_ifs
             case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
             if unit_exists "$_u"; then
+                _found_unit=$_u
+                return 0
+            fi
+        done
+        IFS=$_old_ifs
+        IFS=,
+        for _u in $_cands; do
+            IFS=$_old_ifs
+            case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
+            if unit_file_installed "$_u"; then
                 _found_unit=$_u
                 return 0
             fi
@@ -117,6 +182,9 @@ cmd_list() {
     parts="" sep=""
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
+        if ! service_present "$_id" "$_cands"; then
+            continue
+        fi
         _unit=""
         _old_ifs=$IFS
         IFS=,
@@ -128,6 +196,17 @@ cmd_list() {
                 break
             fi
         done
+        if [ -z "$_unit" ]; then
+            IFS=,
+            for _u in $_cands; do
+                IFS=$_old_ifs
+                case "$_u" in *.service) ;; *) _u="${_u}.service" ;; esac
+                if unit_file_installed "$_u"; then
+                    _unit=$_u
+                    break
+                fi
+            done
+        fi
         IFS=$_old_ifs
         [ -z "$_unit" ] && continue
         IFS='|' read -r _active _enabled _masked _admin_off <<EOF
@@ -142,7 +221,7 @@ EOF
         _label_e=$(json_escape "$_label")
         _unit_e=$(json_escape "$_unit")
         _active_e=$(json_escape "$_active")
-        parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"${_unit_e}\",\"active\":\"${_active_e}\",\"enabled\":$([ "$_enabled" = enabled ] && echo true || echo false),\"masked\":$([ "$_masked" = 1 ] && echo true || echo false),\"user_disabled\":$([ "$_admin_off" = 1 ] && echo true || echo false)}"
+        parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"${_unit_e}\",\"active\":\"${_active_e}\",\"enabled\":$([ "$_enabled" = enabled ] && echo true || echo false),\"masked\":$([ "$_masked" = 1 ] && echo true || echo false),\"user_disabled\":$([ "$_admin_off" = 1 ] && echo true || echo false),\"installed\":true}"
         sep=,
     done <<EOF
 $SERVICE_DEFS

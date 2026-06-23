@@ -260,6 +260,11 @@ function unitUiLabel(name) {
   return String(name || '').replace(/\.(service|socket)$/i, '');
 }
 
+/** Сравнение подписей служб для сортировки A→Z (без учёта регистра). */
+function compareSvcDisplayName(a, b) {
+  return String(a || '').trim().localeCompare(String(b || '').trim(), undefined, { sensitivity: 'base' });
+}
+
 const SVC_WIDGET_MAX_ROWS = 6;
 
 /** Строки-заглушки до part=services — та же высота, что у badge-строк. */
@@ -301,7 +306,12 @@ function initDashboardPlaceholders() {
   });
 }
 
-/** Виджет «Службы»: CODESYS, fcgiwrap, при наличии — MPLC/опрос, затем optional_services (всего ≤ 6). Без пустых строк. */
+/** true, если backend пометил службу как установленную на устройстве. */
+function svcIsInstalledFlag(v) {
+  return v === true || v === 1;
+}
+
+/** Виджет «Службы»: собирает строки из status.cgi, сортировка по имени A→Z (≤ 6). Без пустых строк. */
 function renderServicesDynamic(d) {
   const host = document.getElementById('svc-dynamic-list');
   if (!host) return;
@@ -328,30 +338,31 @@ function renderServicesDynamic(d) {
     return true;
   }
 
-  pushRow('CODESYS', d.svc_codesys_uptime_s, d.svc_codesys, {
-    mono: true,
-    title: 'CODESYS Control runtime'
-  });
-  pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
-  if (d.svc_mosquitto && d.svc_mosquitto !== 'unknown')
+  if (svcIsInstalledFlag(d.svc_codesys_installed)) {
+    pushRow('CODESYS', d.svc_codesys_uptime_s, d.svc_codesys, {
+      mono: true,
+      title: 'CODESYS Control runtime'
+    });
+  }
+  if (svcIsInstalledFlag(d.svc_fcgiwrap_installed)) {
+    pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
+  }
+  if (svcIsInstalledFlag(d.svc_mosquitto_installed)) {
     pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
-  if (d.svc_bridge && d.svc_bridge !== 'unknown')
+  }
+  if (svcIsInstalledFlag(d.svc_bridge_installed)) {
     pushRow('MQTT', d.svc_bridge_uptime_s, d.svc_bridge, {
       title: 'Modbus→MQTT мост (sa02m-modbus-mqtt)',
       mono: true
     });
+  }
 
-  const mu = (d.mplc_unit != null && String(d.mplc_unit).trim())
-    ? unitUiLabel(String(d.mplc_unit).trim())
-    : '';
-  const mplcOn = svcStateIsActive(d.mplc_status);
-  const mplcSt = normSvcState(d.mplc_status);
-  /** Подпись строки: всегда MPLC4 для mplc/mplc4/неизвестного unit; иначе — имя unit (редкие варианты). */
-  const mplcRowLabel =
-    !mu || mu === 'mplc4' || mu === 'mplc' ? 'MPLC4' : mu;
-  /** MPLC4: активна по systemd/pgrep mplc*, или неактивна (не скрывать «Неактивен»). */
-  const showMplcRow = (mplcOn || !!mu || (mplcSt && mplcSt !== 'unknown')) && rows.length < SVC_WIDGET_MAX_ROWS;
-  if (showMplcRow) {
+  if (svcIsInstalledFlag(d.mplc_installed)) {
+    const mu = (d.mplc_unit != null && String(d.mplc_unit).trim())
+      ? unitUiLabel(String(d.mplc_unit).trim())
+      : '';
+    const mplcRowLabel =
+      !mu || mu === 'mplc4' || mu === 'mplc' ? 'MPLC4' : mu;
     pushRow(mplcRowLabel, d.mplc_uptime_s, d.mplc_status, {
       mono: true,
       title: 'MPLC4 — опрос линии RS-485 (systemd)',
@@ -362,12 +373,18 @@ function renderServicesDynamic(d) {
   if (Array.isArray(d.optional_services) && rows.length < SVC_WIDGET_MAX_ROWS) {
     for (const s of d.optional_services) {
       if (rows.length >= SVC_WIDGET_MAX_ROWS) break;
+      if (s && s.installed === false) continue;
+      if (s && s.installed === 0) continue;
       const id = (s && s.id) ? unitUiLabel(String(s.id)) : '';
       if (!id) continue;
       const disp = (s && s.label && String(s.label).trim()) ? String(s.label).trim() : id;
       pushRow(disp, s.uptime_s, s.status, { mono: true });
     }
   }
+
+  rows.sort(function (a, b) {
+    return compareSvcDisplayName(a.label, b.label);
+  });
 
   rows.forEach(function (row, i) {
     const r = document.createElement('div');
@@ -2474,13 +2491,18 @@ function renderServicesControl(data) {
   _lastSvcCtlData = data;
   const host = document.getElementById('svc-ctl-list');
   if (!host) return;
-  const list = (data && data.services) || [];
+  const list = ((data && data.services) || []).filter(function (svc) {
+    return svcIsInstalledFlag(svc.installed);
+  });
   if (!list.length) {
     host.innerHTML = '<p class="field-hint">' + (window.sa02mI18n ? window.sa02mI18n.t('Нет управляемых служб') : 'Нет управляемых служб') + '</p>';
     return;
   }
+  const sorted = list.slice().sort(function (a, b) {
+    return compareSvcDisplayName(svcCtlDisplayLabel(a), svcCtlDisplayLabel(b));
+  });
   host.innerHTML = '';
-  list.forEach(function (svc, i) {
+  sorted.forEach(function (svc, i) {
     const wantStart = svcCtlWantsStart(svc);
     const action = wantStart ? 'start' : 'stop';
     const btnLabelRu = wantStart ? 'Пуск' : 'Стоп';

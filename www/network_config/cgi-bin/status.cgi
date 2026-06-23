@@ -73,6 +73,11 @@ SVC_MOSQUITTO="unknown"
 SVC_BRIDGE="unknown"
 SVC_MOSQUITTO_UPTIME_S=0
 SVC_BRIDGE_UPTIME_S=0
+SVC_CODESYS_INSTALLED=0
+SVC_FCGIWRAP_INSTALLED=0
+SVC_MOSQUITTO_INSTALLED=0
+SVC_BRIDGE_INSTALLED=0
+MPLC_INSTALLED=0
 STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -517,7 +522,7 @@ gather_important_optional_services_json() {
         st_esc=$(json_escape "$st_raw")
         label_raw="Docker"
         label_esc=$(json_escape "$label_raw")
-        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec},\"installed\":true}"
         sep=,
     fi
 
@@ -536,7 +541,7 @@ gather_important_optional_services_json() {
         st_esc=$(json_escape "$st_raw")
         label_raw="KLogic"
         label_esc=$(json_escape "$label_raw")
-        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec},\"installed\":true}"
         sep=,
     fi
 
@@ -555,7 +560,7 @@ gather_important_optional_services_json() {
         st_esc=$(json_escape "$st_raw")
         label_raw="Node-RED"
         label_esc=$(json_escape "$label_raw")
-        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec}}"
+        parts="${parts}${sep}{\"id\":\"${id_esc}\",\"label\":\"${label_esc}\",\"status\":\"${st_esc}\",\"uptime_s\":${up_sec},\"installed\":true}"
         sep=,
     fi
 
@@ -1306,6 +1311,11 @@ gather_services_metrics() {
         SVC_MOSQUITTO_UPTIME_S=0
         SVC_BRIDGE_UPTIME_S=0
         MPLC_UNIT=""
+        SVC_CODESYS_INSTALLED=0
+        SVC_FCGIWRAP_INSTALLED=0
+        SVC_MOSQUITTO_INSTALLED=0
+        SVC_BRIDGE_INSTALLED=0
+        MPLC_INSTALLED=0
         return 0
     fi
 
@@ -1441,6 +1451,26 @@ gather_services_metrics() {
     # активность — fast_service_state (без systemctl show, чтобы не зависать на dbus).
     gather_important_optional_services_json
 
+    SVC_CODESYS_INSTALLED=0
+    if resolve_codesys_unit >/dev/null 2>&1 || [ -x /etc/init.d/codesyscontrol ]; then
+        SVC_CODESYS_INSTALLED=1
+    fi
+    SVC_FCGIWRAP_INSTALLED=0
+    if systemd_unit_file_installed fcgiwrap.service \
+        || systemd_unit_file_installed fcgiwrap.socket \
+        || [ -S /run/fcgiwrap/fcgiwrap.socket ] \
+        || [ -S /run/fcgiwrap.socket ]; then
+        SVC_FCGIWRAP_INSTALLED=1
+    fi
+    SVC_MOSQUITTO_INSTALLED=0
+    systemd_unit_file_installed mosquitto.service && SVC_MOSQUITTO_INSTALLED=1
+    SVC_BRIDGE_INSTALLED=0
+    systemd_unit_file_installed sa02m-modbus-mqtt.service && SVC_BRIDGE_INSTALLED=1
+    MPLC_INSTALLED=0
+    if systemd_unit_file_installed mplc4.service || systemd_unit_file_installed mplc.service; then
+        MPLC_INSTALLED=1
+    fi
+
     SVC_CODESYS=$(json_escape "$SVC_CODESYS")
     SVC_FCGI=$(json_escape "$SVC_FCGI")
     SVC_MOSQUITTO=$(json_escape "$SVC_MOSQUITTO")
@@ -1475,6 +1505,11 @@ gather_main_metrics() {
     SVC_FCGIWRAP_UPTIME_S=0
     SVC_MOSQUITTO_UPTIME_S=0
     SVC_BRIDGE_UPTIME_S=0
+    SVC_CODESYS_INSTALLED=0
+    SVC_FCGIWRAP_INSTALLED=0
+    SVC_MOSQUITTO_INSTALLED=0
+    SVC_BRIDGE_INSTALLED=0
+    MPLC_INSTALLED=0
 
     gather_storage_metrics
     gather_uptime_metrics
@@ -1643,15 +1678,20 @@ print_services_json() {
 {
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
+  "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_fcgiwrap_installed": ${SVC_FCGIWRAP_INSTALLED},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
   "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_mosquitto_installed": ${SVC_MOSQUITTO_INSTALLED},
   "svc_bridge": "${SVC_BRIDGE}",
   "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
+  "svc_bridge_installed": ${SVC_BRIDGE_INSTALLED},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "mplc_installed": ${MPLC_INSTALLED},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]}
 }
 JSON
@@ -1725,15 +1765,20 @@ print_main_json() {
   "end1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
+  "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_fcgiwrap_installed": ${SVC_FCGIWRAP_INSTALLED},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
   "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_mosquitto_installed": ${SVC_MOSQUITTO_INSTALLED},
   "svc_bridge": "${SVC_BRIDGE}",
   "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
+  "svc_bridge_installed": ${SVC_BRIDGE_INSTALLED},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "mplc_installed": ${MPLC_INSTALLED},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "armbian_version": "${ARMBIAN_VER}",
@@ -1819,15 +1864,20 @@ print_core_json() {
   "end1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
+  "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_fcgiwrap_installed": ${SVC_FCGIWRAP_INSTALLED},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
   "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_mosquitto_installed": ${SVC_MOSQUITTO_INSTALLED},
   "svc_bridge": "${SVC_BRIDGE}",
   "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
+  "svc_bridge_installed": ${SVC_BRIDGE_INSTALLED},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "mplc_installed": ${MPLC_INSTALLED},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "armbian_version": "${ARMBIAN_VER}",
@@ -1914,15 +1964,20 @@ print_full_json() {
   "end1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
+  "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
   "svc_fcgiwrap": "${SVC_FCGI}",
   "svc_fcgiwrap_uptime_s": ${SVC_FCGIWRAP_UPTIME_S},
+  "svc_fcgiwrap_installed": ${SVC_FCGIWRAP_INSTALLED},
   "svc_mosquitto": "${SVC_MOSQUITTO}",
   "svc_mosquitto_uptime_s": ${SVC_MOSQUITTO_UPTIME_S},
+  "svc_mosquitto_installed": ${SVC_MOSQUITTO_INSTALLED},
   "svc_bridge": "${SVC_BRIDGE}",
   "svc_bridge_uptime_s": ${SVC_BRIDGE_UPTIME_S},
+  "svc_bridge_installed": ${SVC_BRIDGE_INSTALLED},
   "mplc_status": "${MPLC_STATUS}",
   "mplc_unit": "${MPLC_UNIT}",
   "mplc_uptime_s": ${MPLC_UPTIME_S},
+  "mplc_installed": ${MPLC_INSTALLED},
   "optional_services": ${OPTIONAL_SVCS_JSON:-[]},
   "board": "${BOARD}",
   "armbian_version": "${ARMBIAN_VER}",
