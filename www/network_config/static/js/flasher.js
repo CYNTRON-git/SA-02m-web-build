@@ -56,7 +56,9 @@
   /** AI sensor select под сохранением/редактированием — не перерисовывать вкладку. */
   const _aiSensorEditGuard = new Set();
   const _aiSensorEditGuardTimers = Object.create(null);
-  const _AI_SENSOR_EDIT_GUARD_MS = 500;
+  const _aiSensorPending = Object.create(null);
+  const _aiSensorWriteInflight = new Set();
+  const _AI_SENSOR_EDIT_GUARD_MS = 1500;
 
   const STATUS_AUTO_CLEAR_MS = 3000;
   const _inlineStatusTimers = Object.create(null);
@@ -1449,9 +1451,31 @@
     const portKey = $('flasher-port').value;
     if (!portKey) return;
     try {
-      await apiPost('/ports/release', { port: portKey });
-      state.configPortReleased = true;
-    } catch (_) {}
+      const res = await apiPost('/ports/release', { port: portKey });
+      const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
+      const mqttStopped = res && (
+        (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+        (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+        (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
+      );
+      if (res && res.ok && !busy) {
+        state.configPortReleased = true;
+        return;
+      }
+      if (!busy && mqttStopped) {
+        state.configPortReleased = true;
+        return;
+      }
+      const msg = busy
+        ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
+        : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
+      setConfigBanner(msg, 'error');
+      toast(msg, 'warn');
+    } catch (err) {
+      const msg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
+      setConfigBanner(msg, 'error');
+      toast(msg, 'warn');
+    }
   }
 
   async function _autoRestorePortForConfig() {
@@ -1518,15 +1542,84 @@
     }
   }
 
-  function aiSensorEditGuardReleaseLater(channel) {
+  function aiSensorEditGuardReleaseLater(channel, ms) {
     const ch = Number(channel);
     if (!Number.isFinite(ch) || ch <= 0) return;
+    if (_aiSensorWriteInflight.has(ch)) return;
     const key = String(ch);
+    const delay = ms != null ? ms : _AI_SENSOR_EDIT_GUARD_MS;
     if (_aiSensorEditGuardTimers[key]) clearTimeout(_aiSensorEditGuardTimers[key]);
     _aiSensorEditGuardTimers[key] = setTimeout(() => {
+      if (_aiSensorWriteInflight.has(ch)) return;
       _aiSensorEditGuard.delete(ch);
       delete _aiSensorEditGuardTimers[key];
-    }, _AI_SENSOR_EDIT_GUARD_MS);
+    }, delay);
+  }
+
+  function aiSensorSetPending(channel, code) {
+    const ch = Number(channel);
+    if (!Number.isFinite(ch) || ch <= 0) return;
+    _aiSensorPending[ch] = Number(code) & 0xFFFF;
+  }
+
+  function aiSensorClearPending(channel) {
+    delete _aiSensorPending[Number(channel)];
+  }
+
+  function aiChannelConfigProtected(channel) {
+    const ch = Number(channel);
+    return _aiSensorEditGuard.has(ch) || _aiSensorWriteInflight.has(ch) || _aiSensorPending[ch] != null;
+  }
+
+  function aiSensorLabelFromCode(code) {
+    const c = Number(code) & 0xFFFF;
+    const found = MODULE_AI_SENSOR_CHOICES.find(row => Number(row[0]) === c);
+    return found ? found[1] : String(c);
+  }
+
+  function aiSensorMetaFromCode(code) {
+    const c = Number(code) & 0xFFFF;
+    return {
+      sensor_code: c,
+      sensor_label: aiSensorLabelFromCode(c),
+      sidebar_tag: aiSidebarTagFromCode(c),
+      ui_bucket: aiUiSensorBucket(c),
+      calibration_applicable: aiUiCalibrationApplicable(c),
+    };
+  }
+
+  function mergeAiChannelFromPoll(prevCh, pollCh, channel) {
+    const merged = Object.assign({}, prevCh || {}, pollCh || {});
+    if (!aiChannelConfigProtected(channel)) return merged;
+    const prev = prevCh || {};
+    if (_aiSensorPending[channel] != null) {
+      Object.assign(merged, aiSensorMetaFromCode(_aiSensorPending[channel]));
+    } else if (prev.sensor_code != null) {
+      merged.sensor_code = prev.sensor_code;
+      merged.sensor_label = prev.sensor_label != null ? prev.sensor_label : aiSensorLabelFromCode(prev.sensor_code);
+      merged.sidebar_tag = prev.sidebar_tag != null ? prev.sidebar_tag : aiSidebarTagFromCode(prev.sensor_code);
+      merged.ui_bucket = prev.ui_bucket != null ? prev.ui_bucket : aiUiSensorBucket(prev.sensor_code);
+      merged.calibration_applicable = aiUiCalibrationApplicable(prev.sensor_code);
+    }
+    return merged;
+  }
+
+  function patchAiChannelSnapshot(channel, patch) {
+    const snap = state.configSnapshot;
+    const items = snap && snap.mr && snap.mr.ai && snap.mr.ai.channels;
+    if (!items) return;
+    const ch = items.find(item => Number(item.channel) === Number(channel));
+    if (ch && patch) Object.assign(ch, patch);
+  }
+
+  function clearAiConfigEditState() {
+    _aiSensorEditGuard.clear();
+    Object.keys(_aiSensorEditGuardTimers).forEach(function (key) {
+      clearTimeout(_aiSensorEditGuardTimers[key]);
+      delete _aiSensorEditGuardTimers[key];
+    });
+    Object.keys(_aiSensorPending).forEach(function (key) { delete _aiSensorPending[key]; });
+    _aiSensorWriteInflight.clear();
   }
 
   async function configApi(path, body) {
@@ -1919,7 +2012,20 @@
           c => c && (Object.prototype.hasOwnProperty.call(c, 'measured_raw') || Object.prototype.hasOwnProperty.call(c, 'filters')),
         );
       if (deepAi) {
-        out.ai = { channels: JSON.parse(JSON.stringify(minMr.ai.channels)) };
+        const maxAi = Number((out.module || {}).max_ai || 0);
+        const byCh = {};
+        (out.ai && out.ai.channels ? out.ai.channels : []).forEach(c => {
+          byCh[Number(c.channel)] = Object.assign({}, c);
+        });
+        minMr.ai.channels.forEach(mc => {
+          const ch = Number(mc.channel);
+          byCh[ch] = mergeAiChannelFromPoll(byCh[ch], mc, ch);
+        });
+        const list = [];
+        for (let ch = 1; ch <= maxAi; ch++) {
+          if (byCh[ch]) list.push(byCh[ch]);
+        }
+        out.ai = { channels: list };
       } else {
         const maxAi = Number((out.module || {}).max_ai || 0);
         const byCh = {};
@@ -1929,7 +2035,7 @@
         minMr.ai.channels.forEach(mc => {
           const ch = Number(mc.channel);
           const base = byCh[ch] || {};
-          byCh[ch] = Object.assign({}, base, mc);
+          byCh[ch] = mergeAiChannelFromPoll(base, mc, ch);
         });
         const list = [];
         for (let ch = 1; ch <= maxAi; ch++) {
@@ -1977,7 +2083,7 @@
    * Предотвращает сброс введённых значений при фоновом опросе каждые 4 с.
    */
   function shouldSkipConfigBodyRerender() {
-    if (_aiSensorEditGuard.size > 0) return true;
+    if (_aiSensorEditGuard.size > 0 || _aiSensorWriteInflight.size > 0) return true;
     if (!state.configOpen || !state.configSnapshot) return false;
     const el = document.activeElement;
     if (!el) return false;
@@ -2745,6 +2851,17 @@
     });
   }
 
+  function aiSensorReconcilePending(mr) {
+    if (!mr || !mr.ai || !Array.isArray(mr.ai.channels)) return;
+    mr.ai.channels.forEach(ch => {
+      const n = Number(ch.channel);
+      if (_aiSensorPending[n] == null) return;
+      if ((Number(ch.sensor_code) & 0xFFFF) === _aiSensorPending[n]) {
+        aiSensorClearPending(n);
+      }
+    });
+  }
+
   function applyConfigSnapshot(snap, silent) {
     let merged = snap;
     if (
@@ -2755,6 +2872,7 @@
     ) {
       merged = mergeDeviceConfigSnapshot(state.configSnapshot, snap);
     }
+    if (merged && merged.mr) aiSensorReconcilePending(merged.mr);
     state.configSnapshot = merged;
     configDeviceFromSnapshot(merged);
     renderDevices();
@@ -2828,6 +2946,7 @@
     state.configTab = 'info';
     state.configSnapshot = null;
     state.configNetworkDirty = false;
+    clearAiConfigEditState();
     configModalEl('flasher-config-modal').hidden = false;
     document.body.style.overflow = 'hidden';
     const stub = buildConfigSnapshotStubFromDevice(state.devices[idx]);
@@ -2853,6 +2972,7 @@
     const modal = configModalEl('flasher-config-modal');
     if (modal) modal.hidden = true;
     document.body.style.overflow = '';
+    clearAiConfigEditState();
     _autoRestorePortForConfig();
   }
 
@@ -3078,58 +3198,105 @@
     ], `Настройки AO${channel} сохранены`, `AO${channel}: `);
   }
 
-  async function applyAiSensorCode(channel) {
-    const ai = moduleAiChannel(state.configSnapshot, channel);
+  async function applyAiSensorCode(channel, desiredCode) {
+    const ch = Number(channel);
+    if (!Number.isFinite(ch) || ch <= 0) return;
+    const ai = moduleAiChannel(state.configSnapshot, ch);
     if (!ai) return;
     const base = Number(ai.register_base);
-    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
-    if (!sensorEl) return;
-    const sensorVal = clampInt(sensorEl.value, 0, 42, 0);
-    aiSensorEditGuardAdd(channel);
+    if (!Number.isFinite(base)) return;
+
+    let sensorVal;
+    if (desiredCode != null) {
+      sensorVal = clampInt(desiredCode, 0, 42, 0);
+    } else {
+      const sensorEl = configModalEl(`cfg-mr-ai-sensor-${ch}`);
+      if (!sensorEl) return;
+      sensorVal = clampInt(sensorEl.value, 0, 42, 0);
+    }
+
+    aiSensorSetPending(ch, sensorVal);
+    const currentCode = Number(ai.sensor_code) & 0xFFFF;
+    if (currentCode === sensorVal) {
+      patchAiChannelSnapshot(ch, aiSensorMetaFromCode(sensorVal));
+      return;
+    }
+
+    aiSensorEditGuardAdd(ch);
+    _aiSensorWriteInflight.add(ch);
     setConfigBusy(true);
     try {
       await writeConfigHolding(base, sensorVal, '');
-      toast(`Тип AI${channel} применён`, 'success');
+      patchAiChannelSnapshot(ch, aiSensorMetaFromCode(sensorVal));
+      toast(`Тип AI${ch} применён`, 'success');
     } catch (err) {
-      setConfigBanner(`AI${channel}: ` + err.message, 'error');
-      toast(`AI${channel}: ` + err.message, 'error');
+      aiSensorClearPending(ch);
+      setConfigBanner(`AI${ch}: ` + err.message, 'error');
+      toast(`AI${ch}: ` + err.message, 'error');
     } finally {
+      _aiSensorWriteInflight.delete(ch);
       setConfigBusy(false);
-      aiSensorEditGuardReleaseLater(channel);
+      aiSensorEditGuardReleaseLater(ch);
       scheduleConfigPolling();
     }
   }
 
   async function applyAiCalibration(channel) {
-    const ai = moduleAiChannel(state.configSnapshot, channel);
+    const ch = Number(channel);
+    const ai = moduleAiChannel(state.configSnapshot, ch);
     if (!ai) return;
     const base = Number(ai.register_base);
-    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
-    const calEl = configModalEl(`cfg-mr-ai-cal-${channel}`);
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${ch}`);
+    const calEl = configModalEl(`cfg-mr-ai-cal-${ch}`);
     if (!sensorEl || !calEl) return;
     if (!aiUiCalibrationApplicable(clampInt(sensorEl.value, 0, 42, 0))) return;
-    await writeHoldingBatch(
-      [{ reg: base + 4, value: signedToUint16(calEl.value) }],
-      `Калибровка AI${channel} применена`, `AI${channel}: `
-    );
+    const wantCal = parseInt(calEl.value, 10) || 0;
+    if (Number(ai.calibration) === wantCal) return;
+    aiSensorEditGuardAdd(ch);
+    try {
+      await writeHoldingBatch(
+        [{ reg: base + 4, value: signedToUint16(calEl.value) }],
+        `Калибровка AI${ch} применена`, `AI${ch}: `
+      );
+      patchAiChannelSnapshot(ch, { calibration: wantCal });
+    } finally {
+      aiSensorEditGuardReleaseLater(ch);
+    }
   }
 
   async function applyAiFilters(channel) {
-    const ai = moduleAiChannel(state.configSnapshot, channel);
+    const ch = Number(channel);
+    const ai = moduleAiChannel(state.configSnapshot, ch);
     if (!ai || !ai.filters) return;
     const stor = Number(ai.filters.stor || 0);
-    const rawSps = clampInt(configModalEl(`cfg-mr-ai-sps-${channel}`) && configModalEl(`cfg-mr-ai-sps-${channel}`).value, 20, 1000, 45);
+    const spsEl = configModalEl(`cfg-mr-ai-sps-${ch}`);
+    const rawSps = clampInt(spsEl && spsEl.value, 20, 1000, 45);
     const sps = MODULE_AI_SAMPLE_RATES.reduce((best, item) => Math.abs(item - rawSps) < Math.abs(best - rawSps) ? item : best, MODULE_AI_SAMPLE_RATES[0]);
-    const kalmanEl = configModalEl(`cfg-mr-ai-kalman-${channel}`);
-    const avgEl = configModalEl(`cfg-mr-ai-avg-${channel}`);
-    const tauEl = configModalEl(`cfg-mr-ai-tau-${channel}`);
+    const kalmanEl = configModalEl(`cfg-mr-ai-kalman-${ch}`);
+    const avgEl = configModalEl(`cfg-mr-ai-avg-${ch}`);
+    const tauEl = configModalEl(`cfg-mr-ai-tau-${ch}`);
+    const wantKalman = kalmanEl && kalmanEl.checked ? 1 : 0;
+    const wantAvg = avgEl ? clampInt(avgEl.value, 0, 50, 0) : 0;
+    const wantTau = tauEl ? clampInt(tauEl.value, 0, 65535, 0) : 0;
+    const filters = ai.filters || {};
+    if (
+      Number(filters.kalman || 0) === wantKalman &&
+      Number(filters.sps || 0) === sps &&
+      Number(filters.avg || 0) === wantAvg &&
+      Number(filters.tau || 0) === wantTau
+    ) return;
     const items = [
-      { reg: 491 + stor, value: kalmanEl && kalmanEl.checked ? 1 : 0 },
+      { reg: 491 + stor, value: wantKalman },
       { reg: 533 + 3 * stor, value: sps },
-      { reg: 534 + 3 * stor, value: avgEl ? clampInt(avgEl.value, 0, 50, 0) : 0 },
-      { reg: 535 + 3 * stor, value: tauEl ? clampInt(tauEl.value, 0, 65535, 0) : 0 },
+      { reg: 534 + 3 * stor, value: wantAvg },
+      { reg: 535 + 3 * stor, value: wantTau },
     ];
-    await writeHoldingBatch(items, `Фильтры AI${channel} применены`, `AI${channel}: `);
+    aiSensorEditGuardAdd(ch);
+    try {
+      await writeHoldingBatch(items, `Фильтры AI${ch} применены`, `AI${ch}: `);
+    } finally {
+      aiSensorEditGuardReleaseLater(ch);
+    }
   }
 
   function refreshAiCalibrationVisibility(channel) {
@@ -3199,7 +3366,9 @@
     const choices = aiUiRtdSubchoicesForWire(twoWire);
     _aiRebuildSensorOptions(channel, choices);
     refreshAiCalibrationVisibility(channel);
-    applyAiSensorCode(channel);
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+    const code = sensorEl ? clampInt(sensorEl.value, 0, 42, 0) : 0;
+    applyAiSensorCode(channel, code);
     _aiUpdateLimits(channel);
   }
 
@@ -3239,9 +3408,11 @@
       sel.addEventListener('focus', () => aiSensorEditGuardAdd(channel));
       sel.addEventListener('blur', () => aiSensorEditGuardReleaseLater(channel));
       sel.addEventListener('change', () => {
+        const code = clampInt(sel.value, 0, 42, 0);
+        aiSensorSetPending(channel, code);
         refreshAiCalibrationVisibility(channel);
         _aiUpdateLimits(channel);
-        applyAiSensorCode(channel);
+        applyAiSensorCode(channel, code);
       });
       refreshAiCalibrationVisibility(channel);
       _aiUpdateLimits(channel);

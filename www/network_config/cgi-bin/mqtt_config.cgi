@@ -85,6 +85,10 @@ PYEOF
     echo '{"ok":true}'
 
     if python3 -c "import sys,json; d=json.load(open('$TMP_IN')); sys.exit(0 if d.get('restart') else 1)" 2>/dev/null; then
+        CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
+        if [ -x "$CTL" ]; then
+            sudo -n "$CTL" start mqtt-bridge >> /var/log/sa02m_install.log 2>&1 || true
+        fi
         sudo /usr/bin/systemctl restart sa02m-modbus-mqtt 2>/dev/null || true
     fi
     exit 0

@@ -47,7 +47,7 @@ from .auth import check_internal_token, check_session
 from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
-from .mplc_lease import port_occupants, port_poll_service_labels
+from .mplc_lease import port_lease, port_occupants, port_poll_service_labels
 from . import device_config, runner
 
 
@@ -553,17 +553,19 @@ class Handler(BaseHTTPRequestHandler):
         device_path = ctx.cfg.ports_map[port]
         if not os.path.exists(device_path):
             raise FileNotFoundError(f"Устройство порта не найдено: {device_path}")
-        occupants = port_occupants(device_path)
-        if occupants:
-            # После ports/release fd опросчика может освобождаться с задержкой.
-            time.sleep(0.06)
-            occupants = port_occupants(device_path)
-        if occupants:
-            raise RuntimeError(
-                "Линия занята другим процессом (PID %s). Остановите опрос и повторите."
-                % ", ".join(str(x) for x in occupants)
-            )
         return device_path, device
+
+    def _run_device_config_modbus(
+        self,
+        ctx: ServiceContext,
+        port: str,
+        device_path: str,
+        fn,
+    ):
+        """Modbus-сеанс настройки: освободить MQTT/MPLC на время операции (как scan/flash)."""
+        with _device_config_port_lock(port):
+            with port_lease(device_path, ctx.cfg.mplc_stop_services):
+                return fn()
 
     def _handle_device_config_snapshot(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
@@ -575,13 +577,16 @@ class Handler(BaseHTTPRequestHandler):
             active_tab = active_tab.strip() or None
         else:
             active_tab = None
-        with _device_config_port_lock(port):
-            snap = device_config.snapshot_for_device(
+
+        def _work():
+            return device_config.snapshot_for_device(
                 device_path,
                 device,
                 snapshot_detail=detail,
                 active_tab=active_tab,
             )
+
+        snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_network(self, ctx: ServiceContext) -> None:
@@ -591,8 +596,11 @@ class Handler(BaseHTTPRequestHandler):
         network = data.get("network")
         if not isinstance(network, dict):
             raise ValueError("Поле 'network' обязательно")
-        with _device_config_port_lock(port):
-            snap = device_config.apply_network_settings(device_path, device, network)
+
+        def _work():
+            return device_config.apply_network_settings(device_path, device, network)
+
+        snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_holding(self, ctx: ServiceContext) -> None:
@@ -601,8 +609,11 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         reg = int(data.get("reg") or 0)
         value = int(data.get("value") or 0)
-        with _device_config_port_lock(port):
-            snap = device_config.write_allowed_holding(device_path, device, reg, value)
+
+        def _work():
+            return device_config.write_allowed_holding(device_path, device, reg, value)
+
+        snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_device_config_coil(self, ctx: ServiceContext) -> None:
@@ -611,8 +622,11 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         coil = int(data.get("coil") or 0)
         on = bool(data.get("value"))
-        with _device_config_port_lock(port):
-            snap = device_config.write_allowed_coil(device_path, device, coil, on)
+
+        def _work():
+            return device_config.write_allowed_coil(device_path, device, coil, on)
+
+        snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
 
     def _handle_cancel(self, ctx: ServiceContext) -> None:

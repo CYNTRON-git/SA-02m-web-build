@@ -5,6 +5,26 @@
 
 ---
 
+## [2026-06-24 14:48] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`
+**Тип:** Логическая ошибка
+**Описание:** В окне настройки модуля смена типа AI-датчика не записывалась в Modbus: UI откатывал выбор после фонового panel-опроса (~4 с), даже при пустом MQTT-мосте без опроса устройств.
+**Причина:** `mergeMrMinimalIntoFull` при `deepAi` полностью заменял `ai.channels` данными опроса, затирая `sensor_code` до завершения async-записи. Не было `_aiSensorPending` / compare-before-write (в отличие от `mqtt.js`); guard 500 ms не покрывал in-flight write.
+**Исправление:** Pending + inflight guard, `mergeAiChannelFromPoll` сохраняет редактируемый `sensor_code`, compare-before-write в `applyAiSensorCode`/cal/filters, reconcile pending после snapshot. Cache-bust `flasher.js?v=1.0.3.35.5`. Проверено на .136: API write 7→3→4→7 при активном mqtt-bridge, panel poll не откатывает.
+
+---
+
+## [2026-06-24 14:36] branch: main
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/service.py`, `opt/sa02m-flasher/sa02m_flasher/mplc_lease.py`, `www/network_config/static/js/flasher.js`, `www/network_config/cgi-bin/mqtt_config.cgi`
+**Тип:** Некорректное поведение
+**Описание:** В окне настройки модуля (COM4, адр. 6) смена типа датчика и других holding-параметров не применялась; новые MQTT-данные не появлялись.
+**Причина:** `device_config/*` не использовал `port_lease`: при активном MQTT-мосте процесс держал `/dev/COM4` exclusive, Modbus-запись возвращала «Линия занята (PID …)». `_autoReleasePortForConfig` игнорировал `ok:false` release. `mqtt_config.cgi` делал только `systemctl restart` для отключённого моста.
+**Исправление:** Modbus-операции настройки обёрнуты в `port_lease`; stop MQTT через systemctl+pkill `modbus_mqtt_bridge`; проверка release в `flasher.js`; restart моста через `sa02m-web-service-ctl.sh start mqtt-bridge`. Проверено на .136: запись reg 400 при активном мосте — sensor_code меняется.
+
+---
+
 ## [2026-06-24 13:45] branch: main
 
 **Файл(ы):** `etc/sa02m-web-service-ctl.sh`
@@ -34,6 +54,8 @@
 **Исправление:** mqtt-bridge → «MQTT мост», mqtt-telemetry → «MQTT телеметрия» в app.js, ctl и i18n; виджет «Службы» — строка моста с подписью «MQTT мост».
 
 ---
+
+## [2026-06-24 12:58] branch: 1.0.3.35
 
 **Файл(ы):** `www/network_config/cgi-bin/mqtt_status.cgi`, `www/network_config/static/js/mqtt.js`, `www/network_config/index.html`
 **Тип:** Некорректное поведение

@@ -116,6 +116,30 @@ def _pkill_names(names: List[str]) -> bool:
     return any_match
 
 
+def _pkill_pattern(pattern: str) -> bool:
+    pkill = _pkill()
+    if not pkill:
+        return False
+    try:
+        res = _run([pkill, "-f", pattern], timeout=5.0)
+    except subprocess.TimeoutExpired:
+        return False
+    return res.returncode == 0
+
+
+def _is_mqtt_bridge_service(service: str) -> bool:
+    s = str(service or "").lower()
+    return "modbus-mqtt" in s or "modbus_mqtt" in s
+
+
+def _mqtt_bridge_process_active() -> bool:
+    try:
+        res = _run(["pgrep", "-f", "[m]odbus_mqtt_bridge"], timeout=2.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return res.returncode == 0
+
+
 def _service_candidates(service: str) -> List[str]:
     raw = str(service or "").strip()
     if not raw:
@@ -207,6 +231,8 @@ def active_service_name(service: str) -> Optional[str]:
 
 
 def is_service_active(service: str) -> bool:
+    if _is_mqtt_bridge_service(service) and _mqtt_bridge_process_active():
+        return True
     return active_service_name(service) is not None
 
 
@@ -215,6 +241,35 @@ def stop_service(service: str) -> bool:
     if not actual:
         log.info("Служба %s не найдена, stop пропущен", service)
         return False
+    if _is_mqtt_bridge_service(actual) or _is_mqtt_bridge_service(service):
+        systemctl = _systemctl()
+        sudo = _sudo()
+        ok = False
+        if systemctl:
+            cmd = [sudo, systemctl, "stop", actual] if sudo else [systemctl, "stop", actual]
+            try:
+                res = _run(cmd, timeout=8.0)
+                ok = res.returncode == 0
+                log.info(
+                    "systemctl stop %s (%s) → rc=%d stderr=%r",
+                    service,
+                    actual,
+                    res.returncode,
+                    (res.stderr or "").strip(),
+                )
+            except subprocess.TimeoutExpired:
+                log.warning("systemctl stop %s (%s) завис; пробую pkill modbus_mqtt_bridge", service, actual)
+        if _mqtt_bridge_process_active():
+            killed = _pkill_pattern("modbus_mqtt_bridge")
+            still = _mqtt_bridge_process_active()
+            ok = killed or not still
+            log.info(
+                "pkill modbus_mqtt_bridge (%s) → killed=%s still_active=%s",
+                actual,
+                killed,
+                still,
+            )
+        return ok
     if _is_mplc_family(actual):
         names = _mplc_process_names(actual)
         killed = _pkill_names(names)

@@ -41,6 +41,14 @@
 - **tools/buildroot/output/images/manifest.json:** MD5/size для `zImage.smp` и `zImage.rt` (6.1.0-rc6 SMP / 6.1.0-rc6-rt4), скопированы с устройства `/usr/local/share/sa02m/kernel/`.
 - **prepare-rt-docker-kernel.sh:** fix `build-kernel-smp` (non-interactive Kconfig, без RT-патча, verify по `$LINUX_DIR/.config`).
 
+### Настройка модулей MR-02m — AI sensor / port lease (июн 2026)
+- **sa02m-flasher/service.py:** `device_config/*` через `port_lease` (освобождение COM от MQTT/MPLC на время Modbus-сессии, как scan/flash).
+- **mplc_lease.py:** stop MQTT-моста — `systemctl stop` + `pkill modbus_mqtt_bridge`; детект процесса через `pgrep`.
+- **flasher.js:** pending/inflight guard для типа AI-датчика (`_aiSensorPending`, `mergeAiChannelFromPoll`) — фоновый panel-опрос не откатывает выбор; compare-before-write для sensor/cal/filters; cache-bust `flasher.js?v=1.0.3.35.5`.
+- **mqtt_config.cgi:** restart моста через `sa02m-web-service-ctl.sh start mqtt-bridge` (не только `systemctl restart` disabled unit).
+
+> Подробности: docs/bugs/BUGLOG.md (записи 2026-06-24 14:36, 14:48).
+
 ## 1.0.3.34 - RT kernel, Docker, web services UI (июн 2026)
 
 ### RT-ядро и Docker на устройстве
