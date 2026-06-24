@@ -42,15 +42,19 @@ emit_result() {
     fi
 }
 
-# True, если sa02m-flasher держит flock (scan/flash на RS-485).
+# True, если sa02m-flasher выполняет scan/flash (GET /status → busy).
 flasher_poll_lock_held() {
-    _f
-    for _f in /var/lock/sa02m-flasher-*.lock; do
-        [ -e "$_f" ] || continue
-        if ! ( flock -n 9 ) 9>"$_f" 2>/dev/null; then
-            return 0
-        fi
-    done
+    _sock=/run/sa02m-flasher/flasher.sock
+    [ -S "$_sock" ] || return 1
+    if ! command -v curl >/dev/null 2>&1; then
+        return 1
+    fi
+    _resp=$(curl -sS --max-time 2 --unix-socket "$_sock" \
+        -H 'Cookie: session_token=cyntron_session' \
+        http://localhost/status 2>/dev/null) || return 1
+    case "$_resp" in
+        *'"busy":true'*|*'"busy": true'*) return 0 ;;
+    esac
     return 1
 }
 

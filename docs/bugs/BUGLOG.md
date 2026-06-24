@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-06-24 13:45] branch: main
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`
+**Тип:** Некорректное поведение
+**Описание:** В «Управление → Службы» кнопки «Пуск» у MPLC4 и MQTT мост всегда disabled, хотя прошивка не идёт.
+**Причина:** `flasher_poll_lock_held()` проверял flock на `/var/lock/sa02m-flasher-*.lock` через `9>"$file"` — Permission denied / ложный busy; лишняя строка `_f` в dash давала `_f: not found`.
+**Исправление:** `flasher_busy` через `GET /status` демона sa02m-flasher (поле `busy`). Проверено: `flasher_busy=false`, кнопки Пуск доступны.
+
+---
+
 ## [2026-06-24 13:15] branch: 1.0.3.35
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/sa02m_flasher/jobs.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `www/network_config/static/js/flasher.js`, `etc/sa02m-web-service-ctl.sh`

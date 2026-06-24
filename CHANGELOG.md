@@ -10,7 +10,7 @@
 ### Прошивка MR-02m — защита от прерывания
 - **sa02m-flasher:** `GET /status`, `any_active_job()`, `irreversible` на job; блок `/ports/release|restore` и `/cancel` после необратимой записи; callback `on_irreversible` в `FlashCancelGate`.
 - **flasher.js:** reconnect к активной задаче после F5 (`sessionStorage` + `/status`); `beforeunload`; блок release/конфигурации при busy.
-- **sa02m-web-service-ctl.sh:** `flasher_busy` (flock) — блок Start MPLC4/MQTT мост во время scan/flash; поле в `list` JSON.
+- **sa02m-web-service-ctl.sh:** `flasher_busy` через `GET /status` демона (не flock на lock-файлах) — блок Start MPLC4/MQTT мост только при реальной scan/flash.
 - **app.js:** кнопка «Пуск» MPLC4/MQTT мост disabled при `flasher_busy`.
 
 ### Службы — единый статус и async Stop/Start
