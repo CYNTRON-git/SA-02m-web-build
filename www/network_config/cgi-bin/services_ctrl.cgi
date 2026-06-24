@@ -16,6 +16,7 @@ if ! check_auth; then
 fi
 
 CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
+RESULT_DIR=/var/run/sa02m-svcctl
 if [[ ! -x "$CTL" ]]; then
     echo "Content-type: application/json; charset=UTF-8"
     echo "Cache-Control: no-store"
@@ -25,6 +26,28 @@ if [[ ! -x "$CTL" ]]; then
 fi
 
 METHOD="${REQUEST_METHOD:-GET}"
+
+# GET ?result=1&id=<svc> — результат async start/stop (JSON из /var/run/sa02m-svcctl/<id>.json).
+if [[ "$METHOD" = "GET" ]] && [[ "${QUERY_STRING:-}" =~ result=1 ]]; then
+    RID=""
+    if [[ "${QUERY_STRING:-}" =~ (^|&)id=([a-zA-Z0-9_-]+) ]]; then
+        RID="${BASH_REMATCH[2]}"
+    fi
+    echo "Content-type: application/json; charset=UTF-8"
+    echo "Cache-Control: no-store"
+    echo ""
+    if [[ -z "$RID" ]]; then
+        echo '{"ok":false,"error":"missing_id"}'
+        exit 0
+    fi
+    RF="${RESULT_DIR}/${RID}.json"
+    if [[ -s "$RF" ]]; then
+        cat "$RF"
+    else
+        echo '{"ok":true,"pending":true,"id":"'"$RID"'"}'
+    fi
+    exit 0
+fi
 
 if [[ "$METHOD" = "GET" ]]; then
     echo "Content-type: application/json; charset=UTF-8"
@@ -86,14 +109,25 @@ if [[ -z "$SID" ]]; then
     exit 0
 fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') services_ctrl.cgi: ${ACTION} ${SID} (web)" >> /var/log/sa02m_install.log 2>&1
+case "$SID" in
+    ''|*[!a-zA-Z0-9_-]*)
+        echo "Content-type: application/json; charset=UTF-8"
+        echo ""
+        echo '{"ok":false,"error":"invalid_id"}'
+        exit 0
+        ;;
+esac
 
+echo "$(date '+%Y-%m-%d %H:%M:%S') services_ctrl.cgi: ${ACTION} ${SID} (web, async)" >> /var/log/sa02m_install.log 2>&1
+
+# Ответ сразу (stop/start CODESYS и др. могут занимать >20s → nginx 504).
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
 echo ""
-OUT=$(sudo -n "$CTL" "$ACTION" "$SID" 2>&1) || true
-if [[ -z "$OUT" ]]; then
-    echo '{"ok":false,"error":"sudo_failed"}'
-    exit 0
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json; print(json.dumps({'ok': True, 'pending': True, 'id': '$SID', 'action': '$ACTION'}))"
+else
+    printf '{"ok":true,"pending":true,"id":"%s","action":"%s"}\n' "$SID" "$ACTION"
 fi
-printf '%s\n' "$OUT" | head -n1
+
+nohup sudo -n "$CTL" "$ACTION" "$SID" >> /var/log/sa02m_install.log 2>&1 &

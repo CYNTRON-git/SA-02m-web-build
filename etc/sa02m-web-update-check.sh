@@ -34,6 +34,26 @@ read_version_from_text() {
     tr -d '\r' | grep -E '^[0-9]+(\.[0-9]+){1,3}$' 2>/dev/null | head -1
 }
 
+# Compare M.M.P[.S] strings. Prints: equal | gt ($1>$2) | lt ($1<$2) | invalid
+compare_web_versions() {
+    local a=$1 b=$2 first
+    [ -n "$a" ] && [ -n "$b" ] || { echo "invalid"; return; }
+    if [[ ! "$a" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]] || [[ ! "$b" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+        echo "invalid"
+        return
+    fi
+    if [ "$a" = "$b" ]; then
+        echo "equal"
+        return
+    fi
+    first=$(printf '%s\n' "$a" "$b" | sort -V | head -1)
+    if [ "$first" = "$a" ]; then
+        echo "lt"
+    else
+        echo "gt"
+    fi
+}
+
 if ! type read_local_web_version >/dev/null 2>&1; then
   read_local_web_version() {
     [ -f "$WEB_VERSION_FILE" ] || return 1
@@ -108,23 +128,26 @@ if [ -n "$remote" ] && [[ ! "$remote" =~ ^[a-f0-9]{40}$ ]]; then
   remote=""
 fi
 
-ua="null"
-if [ -n "$deployed" ] && [ -n "$remote" ]; then
-  if [ "$remote" = "$deployed" ]; then
-    ua="false"
-  else
-    ua="true"
-  fi
-fi
-
 deployed_version=""
 remote_version=""
 deployed_version="$(read_local_web_version 2>/dev/null || true)"
 if [ -n "$remote" ]; then
   remote_version="$(get_remote_version_for_commit "$remote" 2>/dev/null || true)"
 fi
-if [ -n "$deployed_version" ] && [ -n "$remote_version" ] && [ "$deployed_version" = "$remote_version" ]; then
-  ua="false"
+
+ua="null"
+if [ -n "$deployed_version" ] && [ -n "$remote_version" ]; then
+  case "$(compare_web_versions "$deployed_version" "$remote_version")" in
+    equal|gt) ua="false" ;;
+    lt) ua="true" ;;
+  esac
+fi
+if [ "$ua" = "null" ] && [ -n "$deployed" ] && [ -n "$remote" ]; then
+  if [ "$remote" = "$deployed" ]; then
+    ua="false"
+  else
+    ua="true"
+  fi
 fi
 
 checked_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

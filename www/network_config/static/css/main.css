@@ -931,16 +931,28 @@ svg .gauge-num {
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
 #hw-variant-section { margin-bottom: 16px; }
-#hw-variant-section .hw-variant-actions {
-  margin-top: 8px;
-  justify-content: flex-end;
+#hw-variant-section .hw-variant-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  flex-wrap: nowrap;
+  gap: 8px;
+}
+#hw-variant-section .hw-variant-row select {
+  width: auto;
+  width: fit-content;
+  max-width: 100%;
+  min-width: min(100%, 16rem);
+  flex: 0 1 auto;
+}
+#hw-variant-section .hw-variant-row .btn {
+  flex: 0 0 auto;
 }
 #hw-variant-section .hw-variant-status {
+  display: block;
   font-size: .85rem;
   color: var(--text-sec);
-  margin-right: auto;
+  margin-top: 8px;
   min-width: 0;
 }
 
@@ -1108,12 +1120,28 @@ svg .gauge-num {
 }
 
 .system-manage-kernel-card .kernel-meta,
-.system-manage-cpu-profile-card .cpu-profile-meta {
+.system-manage-kernel-card .cpu-profile-meta {
   margin: 8px 0 12px;
 }
 .system-manage-kernel-card .kernel-profile-field,
-.system-manage-cpu-profile-card .field {
+.system-manage-kernel-card .cpu-profile-field {
   margin-top: 8px;
+}
+.system-manage-kernel-card .kernel-profile-field,
+.system-manage-kernel-card .cpu-profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.system-manage-kernel-card .kernel-apply-inline,
+.system-manage-kernel-card .cpu-profile-apply-inline {
+  align-self: flex-end;
+}
+.system-manage-kernel-card .cpu-profile-section-title {
+  font-size: .98rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 6px;
 }
 
 .system-manage-actions-card .system-manage-actions-main {
@@ -2496,9 +2524,10 @@ svg .gauge-num {
 
 .web-upd-status { margin-top: 10px; font-size: .82rem; line-height: 1.35; min-height: 1.35em; }
 .web-upd-status[hidden] { display: none !important; margin: 0; min-height: 0; padding: 0; }
-.web-upd-status.is-ok   { color: #248a3d; }
-.web-upd-status.is-warn { color: #f0b429; }
-.web-upd-status.is-err  { color: #ff6b6b; }
+.web-upd-status.is-ok    { color: #248a3d; }
+.web-upd-status.is-warn  { color: #f0b429; }
+.web-upd-status.is-err   { color: #ff6b6b; }
+.web-upd-status.is-muted { color: var(--text-dim); }
 .web-upd-meta {
   margin: 12px 0 0;
   display: grid;

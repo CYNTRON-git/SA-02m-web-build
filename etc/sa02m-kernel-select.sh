@@ -202,18 +202,11 @@ cmd_set() {
     if [ "$target" = "rt" ]; then
         warnings="recommend_start_codesys"
     fi
-    if [ "$target" = "smp" ]; then
-        warnings="${warnings:+$warnings,}smp_docker_kernel_pending"
-    fi
-
     if ! mount_fat; then
         printf '{"ok":false,"error":"fat_mount_failed"}\n'
         return 1
     fi
 
-    if zimage_ok "$FAT_MNT/zImage"; then
-        cp -f "$FAT_MNT/zImage" "$FAT_MNT/zImage.last-active.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
-    fi
     cp -f "$canon" "$FAT_MNT/zImage"
     cp -f "$canon" "$FAT_MNT/zImage.$target"
     sync

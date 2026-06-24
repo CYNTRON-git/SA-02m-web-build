@@ -93,28 +93,28 @@ apply_sa02m_boot_kconfig() {
 }
 
 verify_sa02m_boot_kconfig() {
-    local missing=0 sym val
+    local missing=0 sym val cfg="$LINUX_DIR/.config"
     for sym in ARCH_SUNXI MMC_SUNXI STMMAC_ETH DWMAC_SUN8I EXT4_FS; do
-        val=$(grep "^CONFIG_${sym}=" .config 2>/dev/null || true)
+        val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
         case "$val" in
             *=y|*=m) ;;
             *) log "ERROR: missing boot-critical CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
         esac
     done
-    grep -q '^CONFIG_PREEMPT_RT=y' .config || { log "ERROR: CONFIG_PREEMPT_RT not set" >&2; missing=1; }
+    grep -q '^CONFIG_PREEMPT_RT=y' "$cfg" || { log "ERROR: CONFIG_PREEMPT_RT not set" >&2; missing=1; }
     [ "$missing" -eq 0 ]
 }
 
 verify_sa02m_smp_boot_kconfig() {
-    local missing=0 sym val
+    local missing=0 sym val cfg="$LINUX_DIR/.config"
     for sym in ARCH_SUNXI MMC_SUNXI STMMAC_ETH DWMAC_SUN8I EXT4_FS; do
-        val=$(grep "^CONFIG_${sym}=" .config 2>/dev/null || true)
+        val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
         case "$val" in
             *=y|*=m) ;;
             *) log "ERROR: missing boot-critical CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
         esac
     done
-    if grep -q '^CONFIG_PREEMPT_RT=y' .config 2>/dev/null; then
+    if grep -q '^CONFIG_PREEMPT_RT=y' "$cfg" 2>/dev/null; then
         log "ERROR: CONFIG_PREEMPT_RT must be off for SMP build" >&2
         missing=1
     fi
@@ -156,6 +156,9 @@ apply_smp_kconfig_snippets() {
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
 
+    verify_sa02m_smp_boot_kconfig || return 1
+    verify_docker_netfilter_kconfig || return 1
+    kconfig_finalize_noninteractive smp || return 1
     verify_sa02m_smp_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
     log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT, no PREEMPT_RT)."
@@ -208,6 +211,9 @@ apply_kconfig_snippets() {
 
     verify_sa02m_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
+    kconfig_finalize_noninteractive rt || return 1
+    verify_sa02m_boot_kconfig || return 1
+    verify_docker_netfilter_kconfig || return 1
     log "Kconfig snippets applied (ARCH_SUNXI + PREEMPT_RT + NAT verified)."
 }
 
@@ -230,15 +236,44 @@ apply_docker_netfilter_kconfig() {
 }
 
 verify_docker_netfilter_kconfig() {
-    local missing=0 sym val
+    local missing=0 sym val cfg="$LINUX_DIR/.config"
     for sym in NF_NAT IP_NF_NAT NETFILTER_XTABLES NF_TABLES IP_NF_IPTABLES NETFILTER_XT_MATCH_CONNTRACK NETFILTER_XT_MATCH_ADDRTYPE; do
-        val=$(grep "^CONFIG_${sym}=" .config 2>/dev/null || true)
+        val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
         case "$val" in
             *=y|*=m) ;;
             *) log "ERROR: missing Docker-critical CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
         esac
     done
     [ "$missing" -eq 0 ]
+}
+
+# olddefconfig/syncconfig must not block on NEW symbols when buildroot runs make linux.
+kconfig_finalize_noninteractive() {
+    local profile=${1:-smp}
+    [ -f "$LINUX_DIR/.config" ] || return 1
+    cd "$LINUX_DIR"
+    if ! grep -q '^CONFIG_ARCH_SUNXI=y' .config; then
+        log "WARN: ARCH_SUNXI missing before finalize — sunxi_sk_defconfig"
+        make ARCH=arm sunxi_sk_defconfig
+    fi
+    log "Finalizing Kconfig (non-interactive olddefconfig + syncconfig, profile=$profile)..."
+    yes '' | make ARCH=arm olddefconfig >/dev/null
+    apply_sa02m_boot_kconfig
+    apply_docker_netfilter_kconfig
+    if [ "$profile" = rt ]; then
+        ./scripts/config --set-val PREEMPT_RT y 2>/dev/null || true
+        ./scripts/config --set-str LOCALVERSION "" 2>/dev/null || true
+    else
+        ./scripts/config --disable PREEMPT_RT 2>/dev/null || true
+        ./scripts/config --set-str LOCALVERSION "" 2>/dev/null || true
+    fi
+    yes '' | make ARCH=arm olddefconfig >/dev/null
+    apply_sa02m_boot_kconfig
+    apply_docker_netfilter_kconfig
+    yes '' | make ARCH=arm syncconfig >/dev/null
+    apply_sa02m_boot_kconfig
+    apply_docker_netfilter_kconfig
+    cd "$BR_DIR"
 }
 
 cmd_menuconfig() {
@@ -263,6 +298,8 @@ cmd_build_kernel_smp_only() {
     rm -rf ./output/build/linux-custom
     log "linux extract + configure (no RT patch)..."
     make linux-extract
+    # buildroot linux-configure depends on .stamp_patched — skip PREEMPT_RT patch for SMP
+    touch ./output/build/linux-custom/.stamp_patched
     make linux-configure
     if [ -f "$LINUX_DIR/.config" ]; then
         apply_smp_kconfig_snippets
@@ -270,8 +307,10 @@ cmd_build_kernel_smp_only() {
         log "ERROR: no $LINUX_DIR/.config after linux-configure" >&2
         return 1
     fi
+    kconfig_finalize_noninteractive smp || return 1
     log "linux build + install..."
     rm -f ./output/build/linux-custom/.stamp_{built,installed,target_installed,images_installed}
+    rm -rf ./output/target/lib/modules/6.1.0-rc6
     make linux
     log "SMP artifacts:"
     ls -la output/images/zImage output/images/*.dtb 2>/dev/null || true
@@ -304,6 +343,7 @@ cmd_build_kernel_only() {
         log "ERROR: no $LINUX_DIR/.config after linux-configure" >&2
         return 1
     fi
+    kconfig_finalize_noninteractive rt || return 1
     log "linux build + install..."
     rm -f ./output/build/linux-custom/.stamp_{built,installed,target_installed,images_installed}
     make linux

@@ -1,0 +1,4 @@
+# Бинарные zImage — только manifest.json в git; файлы копируются с устройства или из VM output/images/
+zImage
+zImage.*
+!manifest.json

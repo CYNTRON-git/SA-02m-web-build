@@ -5,7 +5,25 @@
 
 ---
 
-## 1.0.3.35 - Kernel switch (RT/SMP) and CPU frequency profiles (июн 2026)
+## 1.0.3.35 - Kernel switch (RT/SMP), CPU profiles, flasher hardening (июн 2026)
+
+### Прошивка MR-02m — защита от прерывания
+- **sa02m-flasher:** `GET /status`, `any_active_job()`, `irreversible` на job; блок `/ports/release|restore` и `/cancel` после необратимой записи; callback `on_irreversible` в `FlashCancelGate`.
+- **flasher.js:** reconnect к активной задаче после F5 (`sessionStorage` + `/status`); `beforeunload`; блок release/конфигурации при busy.
+- **sa02m-web-service-ctl.sh:** `flasher_busy` (flock) — блок Start MPLC4/MQTT мост во время scan/flash; поле в `list` JSON.
+- **app.js:** кнопка «Пуск» MPLC4/MQTT мост disabled при `flasher_busy`.
+
+### Службы — единый статус и async Stop/Start
+- **services_ctrl.cgi:** POST start/stop — немедленный `pending`, ctl в фоне; GET `?result=1`.
+- **sa02m-web-service-ctl.sh:** `sc_run_slow` (45s) для SysV (mplc4, codesys); init.d/update-rc.d; CODESYS runtime в list; `flasher_busy` guard.
+- **status.cgi:** статусы служб из `sa02m-web-service-ctl.sh list` (dashboard = Управление).
+- **nginx:** `fastcgi_read_timeout 120s` для `services_ctrl.cgi`.
+- **app.js:** poll до смены состояния; исправлен `!== wantStart`; подписи mqtt-bridge → «MQTT мост», mqtt-telemetry → «MQTT телеметрия».
+
+### MQTT / обновления / UI
+- **mqtt_status.cgi:** статус моста с учётом ctl `user_disabled` (как dashboard).
+- **sa02m-web-update-check.sh + app.js:** semver — «Доступно обновление» только если remote > deployed.
+- **index.html / main.css:** блок «Ядро и частота CPU»; тип устройства — select fit-content + Apply в одной строке; Ethernet Static/DHCP.
 
 ### Переключение ядра RT ↔ SMP (веб)
 - **etc/sa02m-kernel-select.sh:** status/set/init; swap `zImage` на FAT `/dev/mmcblk2p1` из `/usr/local/share/sa02m/kernel/zImage.{smp,rt}`; `/etc/sa02m_kernel.conf`.
@@ -19,7 +37,9 @@
 - **cpu_profile.cgi** + плитка «Частота CPU» (скрыта на RT-ядре).
 - **status.cgi:** `kernel_is_rt`, `cpu_profile_ui_available`, `cpu_profile`, `cpu_governor`.
 
-> SMP zImage с Docker netfilter: задеплоить позже через `sa02m-kernel-deploy.sh install-smp`.
+### Эталонные образы ядра (локально)
+- **tools/buildroot/output/images/manifest.json:** MD5/size для `zImage.smp` и `zImage.rt` (6.1.0-rc6 SMP / 6.1.0-rc6-rt4), скопированы с устройства `/usr/local/share/sa02m/kernel/`.
+- **prepare-rt-docker-kernel.sh:** fix `build-kernel-smp` (non-interactive Kconfig, без RT-патча, verify по `$LINUX_DIR/.config`).
 
 ## 1.0.3.34 - RT kernel, Docker, web services UI (июн 2026)
 

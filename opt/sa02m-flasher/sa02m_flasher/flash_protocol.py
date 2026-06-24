@@ -454,16 +454,18 @@ class FlashCancelGate:
     После mark_irreversible() запрос отмены только блокируется.
     """
 
-    __slots__ = ("_cancel_cb", "_on_blocked", "irreversible")
+    __slots__ = ("_cancel_cb", "_on_blocked", "_on_irreversible", "irreversible")
 
     def __init__(
         self,
         cancel_cb: Optional[Callable[[], bool]],
         *,
         on_cancel_blocked: Optional[Callable[[], None]] = None,
+        on_irreversible: Optional[Callable[[], None]] = None,
     ) -> None:
         self._cancel_cb = cancel_cb
         self._on_blocked = on_cancel_blocked
+        self._on_irreversible = on_irreversible
         self.irreversible = False
 
     @classmethod
@@ -471,7 +473,11 @@ class FlashCancelGate:
         return cls(cancel_cb, on_cancel_blocked=None)
 
     def mark_irreversible(self) -> None:
+        if self.irreversible:
+            return
         self.irreversible = True
+        if self._on_irreversible:
+            self._on_irreversible()
 
     def should_abort(self) -> bool:
         if not self._cancel_cb or not self._cancel_cb():

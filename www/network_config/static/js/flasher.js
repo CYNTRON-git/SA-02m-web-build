@@ -7,6 +7,8 @@
   'use strict';
 
   const API = '/api/flasher';
+  const FLASH_JOB_KEY = 'sa02m-flash-job-id';
+  const SCAN_JOB_KEY = 'sa02m-scan-job-id';
   const state = {
     initialised: false,
     ports: [],
@@ -19,6 +21,8 @@
     firmwareDisplayOrder: [], // channel::file, newest first (UI order)
     scanJobId: null,
     flashJobId: null,
+    flashIrreversible: false,
+    flasherGloballyBusy: false,
     scanStream: null,
     flashStream: null,
     scanPending: false,
@@ -204,6 +208,159 @@
     return res.json();
   }
 
+  function persistJobId(kind, jobId) {
+    if (!jobId) return;
+    sessionStorage.setItem(kind === 'flash' ? FLASH_JOB_KEY : SCAN_JOB_KEY, jobId);
+  }
+
+  function clearPersistedJobId(kind) {
+    sessionStorage.removeItem(kind === 'flash' ? FLASH_JOB_KEY : SCAN_JOB_KEY);
+  }
+
+  function anyPortActiveJob() {
+    return (state.ports || []).some(p => p && p.active_job);
+  }
+
+  function isFlasherOperationActive() {
+    return !!(
+      state.scanPending || state.flashPending ||
+      state.scanJobId || state.flashJobId ||
+      state.flasherGloballyBusy || anyPortActiveJob()
+    );
+  }
+
+  function updateGlobalBusyFromPorts() {
+    state.flasherGloballyBusy = anyPortActiveJob();
+  }
+
+  function replayJobEventsToLog(events) {
+    (events || []).forEach(e => {
+      if (!e || typeof e.message !== 'string') return;
+      const lv = e.level || 'info';
+      if (lv === 'debug') return;
+      if (e.kind === 'log' || e.kind === 'status' || e.kind === 'error') {
+        logAppend(e.message, lv);
+      } else if (e.kind === 'progress' && e.message) {
+        logAppend(e.message, lv);
+      }
+    });
+  }
+
+  function jobKindIsFlash(kind) {
+    return kind === 'flash' || kind === 'flash_batch';
+  }
+
+  async function attachToActiveJobs() {
+    if (state.scanPending || state.flashPending || state.scanJobId || state.flashJobId) return;
+
+    let status = null;
+    try {
+      status = await apiGet('/status');
+      state.flasherGloballyBusy = !!(status && status.busy);
+    } catch (_) {
+      updateGlobalBusyFromPorts();
+    }
+
+    const activeJobs = (status && status.active_jobs) || [];
+    const savedFlash = sessionStorage.getItem(FLASH_JOB_KEY);
+    const savedScan = sessionStorage.getItem(SCAN_JOB_KEY);
+
+    const flashJob = activeJobs.find(j => jobKindIsFlash(j.kind));
+    const scanJob = activeJobs.find(j => j.kind === 'scan');
+
+    const candidates = [
+      { kind: 'flash', id: (flashJob && flashJob.id) || savedFlash },
+      { kind: 'scan', id: (scanJob && scanJob.id) || savedScan },
+    ];
+
+    for (const item of candidates) {
+      if (!item.id) continue;
+      try {
+        const snap = await apiGet('/jobs/' + item.id);
+        if (snap.state !== 'pending' && snap.state !== 'running') {
+          clearPersistedJobId(item.kind);
+          continue;
+        }
+        await reconnectToJob(item.kind, item.id, snap);
+        return;
+      } catch (_) {
+        clearPersistedJobId(item.kind);
+      }
+    }
+    syncActionButtons();
+  }
+
+  async function reconnectToJob(kind, jobId, snap) {
+    const portKey = snap.port || '';
+    if (portKey && $('flasher-port')) {
+      $('flasher-port').value = portKey;
+    }
+    await loadPorts();
+    const label = kind === 'flash' ? 'прошивки' : 'сканирования';
+    logReset(`Восстановление ${label} (задача ${jobId.slice(0, 8)}…)`);
+    replayJobEventsToLog(snap.events || []);
+    if (typeof snap.progress === 'number') {
+      setProgress(snap.progress, snap.message || `${snap.progress}%`, progressMetaFromData(snap));
+    }
+
+    if (kind === 'flash') {
+      state.flashJobId = jobId;
+      state.flashIrreversible = !!snap.irreversible;
+      persistJobId('flash', jobId);
+      setFlashButtons();
+      state.flashStream = openStream(jobId, {
+        onEnd: async state2 => {
+          state.flashJobId = null;
+          state.flashIrreversible = false;
+          clearPersistedJobId('flash');
+          setFlashButtons();
+          hideProgress();
+          if (state2 === 'error' || state2 === 'cancelled') {
+            await loadPorts();
+            if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
+            else toast('Прошивка отменена', 'warn');
+          } else {
+            toast('Прошивка завершена', 'success');
+            await refreshScanAfterFlash();
+          }
+        },
+      });
+      toast('Восстановлено отслеживание прошивки', 'info');
+      return;
+    }
+
+    state.scanJobId = jobId;
+    persistJobId('scan', jobId);
+    setScanButtons();
+    state.scanStream = openStream(jobId, {
+      onDeviceFound: dev => {
+        upsertScannedDevice(dev);
+        renderDevices();
+      },
+      onEnd: async state2 => {
+        state.scanJobId = null;
+        clearPersistedJobId('scan');
+        setScanButtons();
+        hideProgress();
+        try {
+          const snap2 = await apiGet('/jobs/' + jobId);
+          replaceScannedDevices((snap2.devices || []).map(d => Object.assign({}, d)));
+          renderDevices();
+        } catch (_) {}
+        const portRec = state.ports.find(p => p.key === portKey);
+        if (state2 === 'done' && portHasCompleteLineState(portRec)) {
+          markPortIdleAfterJob(portKey);
+        } else {
+          await loadPorts();
+        }
+        if (state2 === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
+        else if (state2 === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
+        else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
+      },
+    });
+    toast('Восстановлено отслеживание сканирования', 'info');
+  }
+
   async function apiUpload(path, file) {
     const fd = new FormData();
     fd.append('file', file);
@@ -257,6 +414,7 @@
         const quick = await apiGet('/ports?quick=1');
         if (quick && (quick.ports || []).length) {
           state.ports = quick.ports;
+          updateGlobalBusyFromPorts();
           renderPortSelect();
           updatePortHint();
         }
@@ -265,6 +423,7 @@
       }
       const data = await apiGet('/ports');
       state.ports = data.ports || [];
+      updateGlobalBusyFromPorts();
       renderPortSelect();
       updatePortHint();
     } catch (err) {
@@ -564,7 +723,8 @@
     const port = currentPort();
     const scanRunning = state.scanPending || !!state.scanJobId;
     const flashRunning = state.flashPending || !!state.flashJobId;
-    const jobBusy = !!(port && port.active_job);
+    const globalBusy = isFlasherOperationActive();
+    const jobBusy = !!(port && port.active_job) || globalBusy;
     const releasedServices = port && port.released_services ? port.released_services : [];
     const managedN = port && Array.isArray(port.managed_services) ? port.managed_services.length : 0;
     const selectedDevices = selectedDevicesForFlash();
@@ -582,7 +742,7 @@
     $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
     $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
     $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
-    $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending;
+    $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending || state.flashIrreversible;
 
     const flashBtn = $('flasher-flash-btn');
     if (flashBtn) {
@@ -2658,7 +2818,7 @@
   }
 
   async function openConfigModal(idx) {
-    if (state.scanPending || state.scanJobId || state.flashPending || state.flashJobId) {
+    if (isFlasherOperationActive()) {
       toast('Дождитесь окончания сканирования или прошивки', 'warn');
       return;
     }
@@ -3473,6 +3633,10 @@
         if (typeof snap.progress === 'number') {
           setProgress(snap.progress, snap.message || `${snap.progress}%`, progressMetaFromData(snap));
         }
+        if (state.flashJobId && snap.irreversible) {
+          state.flashIrreversible = true;
+          setFlashButtons();
+        }
         const st = snap.state;
         if (st === 'running' || st === 'pending') return;
         if (snap.error) logAppend('Ошибка: ' + snap.error, 'error');
@@ -3509,14 +3673,18 @@
       const pct = (typeof d.progress === 'number') ? d.progress : 0;
       setProgress(pct, p.message || '', progressMetaFromData(d));
     });
-    es.addEventListener('device_found', ev => {
-      const p = safeParse(ev.data);
-      if (p && handlers && handlers.onDeviceFound) handlers.onDeviceFound(p.data || {});
-    });
     es.addEventListener('status', ev => {
       const p = safeParse(ev.data);
       if (!p || p.level === 'debug') return;
       logAppend(p.message || '', p.level || 'info');
+      if (state.flashJobId && (p.message || '').indexOf('необратим') >= 0) {
+        state.flashIrreversible = true;
+        setFlashButtons();
+      }
+    });
+    es.addEventListener('device_found', ev => {
+      const p = safeParse(ev.data);
+      if (p && handlers && handlers.onDeviceFound) handlers.onDeviceFound(p.data || {});
     });
     es.addEventListener('error', ev => {
       const p = safeParse(ev.data);
@@ -3696,6 +3864,7 @@
       state.lastScanConfigKey = scanConfigKey;
       state.scanPending = false;
       state.scanJobId = res.job_id;
+      persistJobId('scan', res.job_id);
       setScanButtons();
       state.scanStream = openStream(res.job_id, {
         onDeviceFound: dev => {
@@ -3703,7 +3872,9 @@
           renderDevices();
         },
         onEnd: async state2 => {
-          state.scanJobId = null; setScanButtons(); hideProgress();
+          state.scanJobId = null;
+          clearPersistedJobId('scan');
+          setScanButtons(); hideProgress();
           try {
             const snap = await apiGet('/jobs/' + res.job_id);
             replaceScannedDevices((snap.devices || []).map(d => Object.assign({}, d)));
@@ -3854,10 +4025,15 @@
       });
       state.flashPending = false;
       state.flashJobId = res.job_id;
+      state.flashIrreversible = false;
+      persistJobId('flash', res.job_id);
       setFlashButtons();
       state.flashStream = openStream(res.job_id, {
         onEnd: async state2 => {
-          state.flashJobId = null; setFlashButtons(); hideProgress();
+          state.flashJobId = null;
+          state.flashIrreversible = false;
+          clearPersistedJobId('flash');
+          setFlashButtons(); hideProgress();
           if (state2 === 'error' || state2 === 'cancelled') {
             await loadPorts();
             if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
@@ -3877,7 +4053,21 @@
 
   async function cancelFlash() {
     if (!state.flashJobId) return;
-    try { await apiPost('/cancel', { job_id: state.flashJobId }); } catch (_) {}
+    if (state.flashIrreversible) {
+      toast('Прошивка необратима — отмена невозможна', 'warn');
+      return;
+    }
+    try {
+      await apiPost('/cancel', { job_id: state.flashJobId });
+    } catch (err) {
+      if (String(err.message || '').indexOf('flash_irreversible') >= 0) {
+        state.flashIrreversible = true;
+        setFlashButtons();
+        toast('Прошивка необратима — отмена невозможна', 'warn');
+        return;
+      }
+      toast('Отмена: ' + err.message, 'error');
+    }
   }
 
   function setFlashButtons() {
@@ -3964,20 +4154,28 @@
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape' && state.configOpen) closeConfigModal();
     });
+    window.addEventListener('beforeunload', (ev) => {
+      if (state.scanJobId || state.flashJobId) {
+        ev.preventDefault();
+        ev.returnValue = '';
+      }
+    });
   }
 
-  window.flasherInit = function () {
+  window.flasherInit = async function () {
     if (state.initialised) {
-      loadPorts();
+      await loadPorts();
       loadFirmware();
-      loadRecentJobJournal();
+      await attachToActiveJobs();
+      if (!state.scanJobId && !state.flashJobId) loadRecentJobJournal();
       return;
     }
     state.initialised = true;
     wireEvents();
-    loadPorts();
+    await loadPorts();
     loadFirmware();
-    loadRecentJobJournal();
+    await attachToActiveJobs();
+    if (!state.scanJobId && !state.flashJobId) loadRecentJobJournal();
   };
 
   if (document.readyState === 'loading') {

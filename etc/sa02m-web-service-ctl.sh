@@ -7,7 +7,10 @@
 SC=/usr/bin/systemctl
 [ -x "$SC" ] || SC=/bin/systemctl
 LOG=/var/log/sa02m_install.log
+RESULT_DIR=/var/run/sa02m-svcctl
 TIMEOUT_SEC=8
+# SysV-synced units (mplc4, codesyscontrol) need 12–20s for enable/disable.
+TIMEOUT_SLOW_SEC=45
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'
@@ -19,6 +22,51 @@ sc_run() {
     else
         "$SC" "$@" 2>/dev/null
     fi
+}
+
+sc_run_slow() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$TIMEOUT_SLOW_SEC" "$SC" "$@" 2>/dev/null
+    else
+        "$SC" "$@" 2>/dev/null
+    fi
+}
+
+emit_result() {
+    _json=$1
+    printf '%s\n' "$_json"
+    if [ -n "${SVC_RESULT_FILE:-}" ]; then
+        mkdir -p "$RESULT_DIR" 2>/dev/null || true
+        printf '%s\n' "$_json" >"$SVC_RESULT_FILE" 2>/dev/null || true
+        chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    fi
+}
+
+# True, если sa02m-flasher держит flock (scan/flash на RS-485).
+flasher_poll_lock_held() {
+    _f
+    for _f in /var/lock/sa02m-flasher-*.lock; do
+        [ -e "$_f" ] || continue
+        if ! ( flock -n 9 ) 9>"$_f" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+flasher_blocks_com_pollers() {
+    flasher_poll_lock_held
+}
+
+unit_can_mask() {
+    _u=$1
+    _path=$(sc_run show -p FragmentPath --value "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+    case "$_path" in
+        /etc/systemd/system/*)
+            [ -f "$_path" ] && [ ! -L "$_path" ] && return 1
+            ;;
+    esac
+    return 0
 }
 
 unit_load_state() {
@@ -110,6 +158,72 @@ codesys_rc_autostart() {
     return 1
 }
 
+mplc4_rc_disable() {
+    command -v update-rc.d >/dev/null 2>&1 || return 0
+    update-rc.d mplc4 disable >>"$LOG" 2>&1 || true
+}
+
+mplc4_rc_enable() {
+    command -v update-rc.d >/dev/null 2>&1 || return 0
+    update-rc.d mplc4 defaults >>"$LOG" 2>&1 || true
+}
+
+mplc4_process_active() {
+    pgrep -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >/dev/null 2>&1
+}
+
+service_runtime_active() {
+    _sid=$1
+    _u=$2
+    case "$_sid" in
+        codesys) codesys_process_active ;;
+        mplc4)
+            if [ -n "$_u" ]; then
+                _a=$(sc_run is-active "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+                case "$_a" in active|activating) return 0 ;; esac
+            fi
+            mplc4_process_active
+            ;;
+        *)
+            [ -n "$_u" ] || return 1
+            _a=$(sc_run is-active "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+            case "$_a" in active|activating) return 0 ;; esac
+            return 1
+            ;;
+    esac
+}
+
+service_admin_off() {
+    _sid=$1
+    _u=$2
+    if [ -n "$_u" ] && unit_admin_disabled "$_u"; then
+        return 0
+    fi
+    case "$_sid" in
+        codesys) codesys_rc_autostart || return 0; return 1 ;;
+        mplc4)
+            if [ -n "$_u" ] && unit_admin_disabled "$_u"; then
+                return 0
+            fi
+            return 1
+            ;;
+    esac
+    return 1
+}
+
+service_admin_on() {
+    _sid=$1
+    _u=$2
+    if [ -n "$_u" ] && unit_admin_enabled "$_u"; then
+        return 0
+    fi
+    case "$_sid" in
+        codesys) codesys_rc_autostart ;;
+        mplc4) [ -n "$_u" ] && unit_admin_enabled "$_u" ;;
+        *) return 1 ;;
+    esac
+}
+
 unit_admin_disabled() {
     _u=$1
     [ -n "$_u" ] || return 0
@@ -136,8 +250,8 @@ docker|Docker|docker.service
 codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service
 mosquitto|Mosquitto|mosquitto.service
-mqtt-bridge|Modbus MQTT|sa02m-modbus-mqtt.service
-mqtt-telemetry|MQTT мост|sa02m-telemetry.service
+mqtt-bridge|MQTT мост|sa02m-modbus-mqtt.service
+mqtt-telemetry|MQTT телеметрия|sa02m-telemetry.service
 node-red|Node-RED|node-red.service,nodered.service
 klogic|KLogic|klogicd.service,klogic.service
 SVC_DEFS
@@ -266,10 +380,13 @@ cmd_list() {
 $(unit_props "$_unit")
 EOF
         fi
-        if [ "$_id" = "codesys" ] && [ "$_admin_off" = 1 ]; then
-            _active=inactive
-        elif [ "$_id" = "codesys" ] && codesys_process_active; then
-            _active=active
+        if [ "$_id" = "codesys" ]; then
+            if codesys_process_active; then
+                _active=active
+                _admin_off=0
+            elif [ "$_admin_off" = 1 ]; then
+                _active=inactive
+            fi
         fi
         _id_e=$(json_escape "$_id")
         _label_e=$(json_escape "$_label")
@@ -280,7 +397,11 @@ EOF
     done <<EOF
 $SERVICE_DEFS
 EOF
-    printf '{"ok":true,"services":[%s]}\n' "$parts"
+    _flasher_busy=false
+    if flasher_poll_lock_held; then
+        _flasher_busy=true
+    fi
+    printf '{"ok":true,"flasher_busy":%s,"services":[%s]}\n' "$([ "$_flasher_busy" = true ] && echo true || echo false)" "$parts"
 }
 
 validate_id() {
@@ -292,75 +413,126 @@ validate_id() {
 
 cmd_stop() {
     _id=$1
-    validate_id "$_id" || { printf '{"ok":false,"error":"invalid_id"}\n'; return 1; }
+    validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
     if ! resolve_unit_for_id "$_id"; then
-        printf '{"ok":false,"error":"unknown_service"}\n'
+        emit_result '{"ok":false,"error":"unknown_service"}'
         return 1
     fi
     _u=$_found_unit
+    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
+    mkdir -p "$RESULT_DIR" 2>/dev/null || true
+    printf '{"ok":true,"pending":true,"id":"%s","action":"stop"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
+    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: stop ${_id} (${_u})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
         codesys_rc_disable
     fi
+    if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
+        /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
+        mplc4_rc_disable
+    fi
     if [ -n "$_u" ]; then
-        sc_run stop "$_u" >>"$LOG" 2>&1 || true
-        sc_run disable "$_u" >>"$LOG" 2>&1 || true
-        # mask не работает, если unit-файл — обычный файл в /etc/systemd/system (не symlink).
-        sc_run mask "$_u" >>"$LOG" 2>&1 || true
-        sc_run daemon-reload >>"$LOG" 2>&1 || true
-        if ! unit_admin_disabled "$_u"; then
-            printf '{"ok":false,"error":"disable_failed","id":"%s"}\n' "$_id"
-            return 1
+        sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
+        sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
+        if unit_can_mask "$_u"; then
+            sc_run mask "$_u" >>"$LOG" 2>&1 || true
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: skip mask ${_u} (static unit file)" >>"$LOG" 2>&1
         fi
+        sc_run daemon-reload >>"$LOG" 2>&1 || true
     fi
     if [ "$_id" = "codesys" ] && codesys_process_active; then
         pkill -f '[c]odesyscontrol\.bin' >>"$LOG" 2>&1 || true
         sleep 1
     fi
-    if [ "$_id" = "codesys" ] && codesys_process_active; then
-        printf '{"ok":false,"error":"still_running","id":"%s"}\n' "$_id"
+    if service_runtime_active "$_id" "$_u"; then
+        emit_result "$(printf '{"ok":false,"error":"still_running","id":"%s"}' "$_id")"
         return 1
     fi
-    if [ "$_id" = "codesys" ] && codesys_rc_autostart; then
-        printf '{"ok":false,"error":"disable_failed","id":"%s"}\n' "$_id"
+    if ! service_admin_off "$_id" "$_u"; then
+        if [ -n "$_u" ]; then
+            sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
+            sc_run daemon-reload >>"$LOG" 2>&1 || true
+        fi
+        if [ "$_id" = "codesys" ]; then
+            codesys_rc_disable
+        fi
+        if [ "$_id" = "mplc4" ]; then
+            mplc4_rc_disable
+        fi
+    fi
+    if ! service_admin_off "$_id" "$_u"; then
+        emit_result "$(printf '{"ok":false,"error":"disable_failed","id":"%s"}' "$_id")"
         return 1
     fi
-    printf '{"ok":true,"id":"%s","action":"stop"}\n' "$_id"
+    emit_result "$(printf '{"ok":true,"id":"%s","action":"stop"}' "$_id")"
 }
 
 cmd_start() {
     _id=$1
-    validate_id "$_id" || { printf '{"ok":false,"error":"invalid_id"}\n'; return 1; }
+    validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
     if ! resolve_unit_for_id "$_id"; then
-        printf '{"ok":false,"error":"unknown_service"}\n'
+        emit_result '{"ok":false,"error":"unknown_service"}'
         return 1
     fi
+    case "$_id" in
+        mplc4|mqtt-bridge)
+            if flasher_blocks_com_pollers; then
+                emit_result '{"ok":false,"error":"flasher_busy"}'
+                return 1
+            fi
+            ;;
+    esac
     _u=$_found_unit
+    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
+    mkdir -p "$RESULT_DIR" 2>/dev/null || true
+    printf '{"ok":true,"pending":true,"id":"%s","action":"start"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
+    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
     if [ "$_id" = "codesys" ]; then
         codesys_rc_enable
     fi
+    if [ "$_id" = "mplc4" ]; then
+        mplc4_rc_enable
+    fi
     if [ -n "$_u" ]; then
-        sc_run unmask "$_u" >>"$LOG" 2>&1 || true
-        sc_run enable "$_u" >>"$LOG" 2>&1 || true
-        sc_run start "$_u" >>"$LOG" 2>&1 || true
+        sc_run_slow unmask "$_u" >>"$LOG" 2>&1 || true
+        sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
+        sc_run_slow start "$_u" >>"$LOG" 2>&1 || true
         sc_run daemon-reload >>"$LOG" 2>&1 || true
-        if ! unit_admin_enabled "$_u"; then
-            printf '{"ok":false,"error":"enable_failed","id":"%s"}\n' "$_id"
-            return 1
-        fi
     fi
     if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
         if ! codesys_process_active; then
             /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
         fi
     fi
-    if [ "$_id" = "codesys" ] && ! codesys_process_active; then
-        printf '{"ok":false,"error":"start_failed","id":"%s"}\n' "$_id"
+    if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
+        if ! service_runtime_active mplc4 "$_u"; then
+            /etc/init.d/mplc4 start >>"$LOG" 2>&1 || true
+        fi
+    fi
+    if ! service_runtime_active "$_id" "$_u"; then
+        emit_result "$(printf '{"ok":false,"error":"start_failed","id":"%s"}' "$_id")"
         return 1
     fi
-    printf '{"ok":true,"id":"%s","action":"start"}\n' "$_id"
+    if ! service_admin_on "$_id" "$_u"; then
+        if [ -n "$_u" ]; then
+            sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
+            sc_run daemon-reload >>"$LOG" 2>&1 || true
+        fi
+        if [ "$_id" = "codesys" ]; then
+            codesys_rc_enable
+        fi
+        if [ "$_id" = "mplc4" ]; then
+            mplc4_rc_enable
+        fi
+    fi
+    if ! service_admin_on "$_id" "$_u"; then
+        emit_result "$(printf '{"ok":false,"error":"enable_failed","id":"%s"}' "$_id")"
+        return 1
+    fi
+    emit_result "$(printf '{"ok":true,"id":"%s","action":"start"}' "$_id")"
 }
 
 ACTION=${1:-}

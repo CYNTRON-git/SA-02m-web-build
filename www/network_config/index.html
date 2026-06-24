@@ -466,14 +466,14 @@
           <h3>Аппаратный вариант</h3>
           <div class="field hw-variant-field">
             <label for="hw-variant-select">Тип устройства</label>
-            <select id="hw-variant-select">
-              <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
-              <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
-            </select>
-            <div class="btn-group hw-variant-actions">
-              <span id="variant-status" class="hw-variant-status"></span>
+            <div class="hw-variant-row">
+              <select id="hw-variant-select">
+                <option value="sa02m-1eth">SA-02m (1 Ethernet, 5 COM-портов)</option>
+                <option value="sa02m-2eth">SA-02m-2 (2 Ethernet, 4 COM-порта)</option>
+              </select>
               <button type="button" class="btn btn-primary" id="apply-variant-btn">Применить</button>
             </div>
+            <span id="variant-status" class="hw-variant-status"></span>
           </div>
         </div>
 
@@ -541,8 +541,6 @@
                 <dl class="web-upd-meta">
                   <div><dt>Текущая версия</dt><dd id="web-upd-deployed-ver">—</dd></div>
                   <div><dt>Доступная версия</dt><dd id="web-upd-remote-ver">—</dd></div>
-                  <div class="web-upd-meta-sub"><dt>Коммит (устройство)</dt><dd id="web-upd-deployed" class="mono">—</dd></div>
-                  <div class="web-upd-meta-sub"><dt>Коммит (GitHub)</dt><dd id="web-upd-remote" class="mono">—</dd></div>
                   <div><dt>Проверка</dt><dd id="web-upd-checked" class="mono">—</dd></div>
                 </dl>
                 <pre id="web-upd-log" class="web-upd-log" hidden></pre>
@@ -554,47 +552,34 @@
             </div>
             <div class="ctrl-card system-manage-tile system-manage-kernel-card" id="kernel-switch-tile">
               <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title">Ядро Linux</h3>
+                <h3 class="system-manage-tile-title">Ядро и частота CPU</h3>
                 <dl class="web-upd-meta kernel-meta">
                   <div><dt>Загружено</dt><dd id="kernel-run-label">—</dd></div>
-                  <div><dt>Выбрано</dt><dd id="kernel-desired-label">—</dd></div>
-                  <div><dt>Версия</dt><dd id="kernel-ver-label" class="mono">—</dd></div>
-                  <div><dt>SMP / RT</dt><dd id="kernel-artifacts-label">—</dd></div>
                 </dl>
                 <p id="kernel-pending-hint" class="field-hint" style="display:none" role="status"></p>
                 <div class="field kernel-profile-field">
-                  <label for="kernel-profile-select">Профиль после перезагрузки</label>
-                  <select id="kernel-profile-select">
-                    <option value="smp">SMP (без RT, меньше нагрузка)</option>
-                    <option value="rt">RT (PREEMPT_RT, CODESYS)</option>
+                  <select id="kernel-profile-select" aria-label="Профиль ядра">
+                    <option value="smp">SMP (без Real Time)</option>
+                    <option value="rt">RT (Real Time)</option>
                   </select>
+                  <button type="button" class="btn btn-primary kernel-apply-inline" id="kernel-apply-btn" onclick="applyKernelProfile()">Применить и перезагрузить</button>
                 </div>
-              </div>
-              <div class="btn-group">
-                <button type="button" class="btn btn-primary" id="kernel-apply-btn" onclick="applyKernelProfile()">Применить и перезагрузить</button>
-              </div>
-            </div>
-            <div class="ctrl-card system-manage-tile system-manage-cpu-profile-card" id="cpu-profile-tile" style="display:none">
-              <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title">Частота CPU</h3>
-                <p class="field-hint system-action-desc">Только на SMP-ядре. Настройка сохраняется после перезагрузки.</p>
-                <dl class="web-upd-meta cpu-profile-meta">
-                  <div><dt>Частота</dt><dd id="cpu-profile-freq-label">—</dd></div>
-                  <div><dt>Governor</dt><dd id="cpu-profile-gov-label" class="mono">—</dd></div>
-                </dl>
-                <div class="field">
-                  <label for="cpu-profile-select">Профиль</label>
-                  <select id="cpu-profile-select">
-                    <option value="adaptive">Авто (адаптивная)</option>
-                    <option value="low">Минимальная</option>
-                    <option value="medium">Средняя</option>
-                    <option value="high">Высокая (адапт.)</option>
-                    <option value="performance">Максимальная</option>
-                  </select>
-                </div>
-              </div>
-              <div class="btn-group">
-                <button type="button" class="btn btn-primary" id="cpu-profile-apply-btn" onclick="applyCpuProfile()">Применить</button>
+                <section id="cpu-profile-section" class="cpu-profile-section" style="display:none">
+                  <h4 class="cpu-profile-section-title">Частота CPU</h4>
+                  <dl class="web-upd-meta cpu-profile-meta">
+                    <div><dt>Частота</dt><dd id="cpu-profile-freq-label">—</dd></div>
+                  </dl>
+                  <div class="field cpu-profile-field">
+                    <select id="cpu-profile-select" aria-label="Профиль частоты CPU">
+                      <option value="adaptive">Авто (адаптивная)</option>
+                      <option value="low">Минимальная</option>
+                      <option value="medium">Средняя</option>
+                      <option value="high">Высокая (адапт.)</option>
+                      <option value="performance">Максимальная</option>
+                    </select>
+                    <button type="button" class="btn btn-primary cpu-profile-apply-inline" id="cpu-profile-apply-btn" onclick="applyCpuProfile()">Применить</button>
+                  </div>
+                </section>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-services-card widget-svc">
@@ -994,10 +979,10 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.3.35"></script>
-<script src="/static/js/app.js?v=1.0.3.35"></script>
+<script src="/static/js/i18n.js?v=1.0.3.35.2"></script>
+<script src="/static/js/app.js?v=1.0.3.35.4"></script>
 <script src="/static/js/flasher.js?v=1.0.3.35"></script>
-<script src="/static/js/mqtt.js?v=1.0.3.35"></script>
+<script src="/static/js/mqtt.js?v=1.0.3.35.1"></script>
 <script src="/static/js/gateway.js?v=1.0.3.35"></script>
 </body>
 </html>

@@ -508,15 +508,61 @@ systemd_unit_file_installed() {
     return 1
 }
 
+# Единый источник статуса управляемых служб — sa02m-web-service-ctl.sh list
+# (active / inactive / disabled с учётом user_disabled+mask, как «Управление → Службы»).
+declare -A SVC_CTL_STATE=()
+
+load_svc_ctl_states() {
+    SVC_CTL_STATE=()
+    local CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
+    [ -x "$CTL" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local tmp
+    tmp=$(mktemp /tmp/sa02m-svcctl.XXXXXX)
+    if ! sudo -n "$CTL" list >"$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        return 0
+    fi
+    while IFS='|' read -r _sid _st; do
+        [ -n "$_sid" ] && SVC_CTL_STATE[$_sid]=$_st
+    done < <(python3 - "$tmp" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+for s in d.get("services", []):
+    sid = s.get("id") or ""
+    if not sid:
+        continue
+    if s.get("user_disabled") or s.get("masked"):
+        st = "disabled"
+    elif s.get("active") == "active":
+        st = "active"
+    else:
+        st = "inactive"
+    print(f"{sid}|{st}")
+PY
+    )
+    rm -f "$tmp"
+}
+
+svc_ctl_override() {
+    local id=$1
+    local -n _out=$2
+    local st="${SVC_CTL_STATE[$id]:-}"
+    [ -n "$st" ] && _out=$st
+}
+
 gather_important_optional_services_json() {
     OPTIONAL_SVCS_JSON="[]"
-    local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw
+    local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw ctl_id
 
     if systemd_unit_file_installed docker.service; then
         u="docker.service"
         st_raw=$(fast_service_state "$u")
+        svc_ctl_override docker st_raw
         up_sec=$(fast_service_uptime "$u")
-        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        [ "$st_raw" = "disabled" ] && up_sec=0
+        (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
         id_disp=$(unit_display_id "$u")
         id_esc=$(json_escape "$id_disp")
         st_esc=$(json_escape "$st_raw")
@@ -534,8 +580,10 @@ gather_important_optional_services_json() {
     fi
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
+        svc_ctl_override klogic st_raw
         up_sec=$(fast_service_uptime "$u")
-        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        [ "$st_raw" = "disabled" ] && up_sec=0
+        (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
         id_disp=$(unit_display_id "$u")
         id_esc=$(json_escape "$id_disp")
         st_esc=$(json_escape "$st_raw")
@@ -553,8 +601,10 @@ gather_important_optional_services_json() {
     fi
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
+        svc_ctl_override node-red st_raw
         up_sec=$(fast_service_uptime "$u")
-        (( up_sec == 0 )) && up_sec=$(uptime_from_cgroup_slice "$u")
+        [ "$st_raw" = "disabled" ] && up_sec=0
+        (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
         id_disp=$(unit_display_id "$u")
         id_esc=$(json_escape "$id_disp")
         st_esc=$(json_escape "$st_raw")
@@ -1278,6 +1328,7 @@ gather_system_metrics() {
         CPU_PROFILE_UI_AVAILABLE=0
         CPU_MIN_MHZ=0
         CPU_MAX_MHZ_CAP=0
+        CPU_FREQ_MHZ=0
         return 0
     fi
 
@@ -1327,6 +1378,8 @@ gather_system_metrics() {
     _cpu_max_cap_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 2>/dev/null || echo 0)
     CPU_MIN_MHZ=$(( _cpu_min_khz / 1000 ))
     CPU_MAX_MHZ_CAP=$(( _cpu_max_cap_khz / 1000 ))
+    _cpu_freq_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo 0)
+    CPU_FREQ_MHZ=$(( _cpu_freq_khz / 1000 ))
 }
 
 gather_services_metrics() {
@@ -1368,6 +1421,11 @@ gather_services_metrics() {
     SVC_FCGI=$(fast_service_state fcgiwrap)
     SVC_MOSQUITTO=$(fast_service_state mosquitto)
     SVC_BRIDGE=$(fast_service_state sa02m-modbus-mqtt)
+
+    load_svc_ctl_states
+    svc_ctl_override codesys SVC_CODESYS
+    svc_ctl_override mosquitto SVC_MOSQUITTO
+    svc_ctl_override mqtt-bridge SVC_BRIDGE
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
@@ -1478,6 +1536,22 @@ gather_services_metrics() {
             fi
         done
     fi
+
+    if [ "$MPLC_STATUS" = "disabled" ]; then
+        MPLC_UPTIME_S=0
+    fi
+    if [ "$SVC_CODESYS" = "disabled" ]; then
+        SVC_CODESYS_UPTIME_S=0
+    fi
+    if [ "$SVC_MOSQUITTO" = "disabled" ]; then
+        SVC_MOSQUITTO_UPTIME_S=0
+    fi
+    if [ "$SVC_BRIDGE" = "disabled" ]; then
+        SVC_BRIDGE_UPTIME_S=0
+    fi
+
+    svc_ctl_override mplc4 MPLC_STATUS
+    [ "$MPLC_STATUS" = "disabled" ] && MPLC_UPTIME_S=0
 
     MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
     # KLogic / Node-RED в optional_services только при установленном unit-файле;
@@ -1703,6 +1777,7 @@ print_system_json() {
   "kernel_is_rt": ${KERNEL_IS_RT:-0},
   "cpu_profile": "${CPU_PROFILE:-adaptive}",
   "cpu_governor": "${CPU_GOVERNOR:-}",
+  "cpu_freq_mhz": ${CPU_FREQ_MHZ:-0},
   "cpu_profile_ui_available": ${CPU_PROFILE_UI_AVAILABLE:-0},
   "cpu_min_mhz": ${CPU_MIN_MHZ:-0},
   "cpu_max_mhz_cap": ${CPU_MAX_MHZ_CAP:-0},

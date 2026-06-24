@@ -250,6 +250,11 @@ function svcBadge(id, state) {
     el.className = 'badge badge-unk';
     return;
   }
+  if (s === 'disabled') {
+    el.textContent = window.sa02mI18n ? window.sa02mI18n.t('Отключен') : 'Отключен';
+    el.className = 'badge badge-err';
+    return;
+  }
   const ok = svcStateIsActive(state);
   const ru = ok ? 'Активен' : 'Неактивен';
   el.textContent = window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
@@ -352,7 +357,7 @@ function renderServicesDynamic(d) {
     pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
   }
   if (svcIsInstalledFlag(d.svc_bridge_installed)) {
-    pushRow('MQTT', d.svc_bridge_uptime_s, d.svc_bridge, {
+    pushRow('MQTT мост', d.svc_bridge_uptime_s, d.svc_bridge, {
       title: 'Modbus→MQTT мост (sa02m-modbus-mqtt)',
       mono: true
     });
@@ -1124,7 +1129,7 @@ function applyEthIfaceState(spanId, operstate) {
   }
 }
 
-/** Dashboard Ethernet widget: «Статический 1.2.3.4» или «DHCP: 1.2.3.4». */
+/** Dashboard Ethernet widget: «Static: 1.2.3.4» или «DHCP: 1.2.3.4». */
 function formatEthIpWidget(ipRaw, modeRaw) {
   const ip = (ipRaw !== undefined && ipRaw !== null) ? String(ipRaw).trim() : '';
   let mode = (modeRaw !== undefined && modeRaw !== null) ? String(modeRaw).trim().toLowerCase() : '';
@@ -1134,7 +1139,7 @@ function formatEthIpWidget(ipRaw, modeRaw) {
     return ip ? `${prefix} ${ip}` : prefix;
   }
   if (mode === 'static') {
-    const prefix = uiT('Статический');
+    const prefix = uiT('Static:');
     return ip ? `${prefix} ${ip}` : prefix;
   }
   return ip || '—';
@@ -1166,6 +1171,7 @@ function applyLoadStatus(d) {
 }
 
 function applySystemStatus(d) {
+  _lastSystemStatus = d;
   if (d.board)     setText('board-info',  d.board);
   if (d.cpu_model) setText('cpu-model',   d.cpu_model);
   else setText('cpu-model', '\u00a0');
@@ -1636,12 +1642,33 @@ function fmtWebUpdChecked(raw) {
   return s;
 }
 
+/** semver M.M.P[.S]: -1 if a<b, 0 equal, 1 if a>b; null if invalid */
+function compareSemver(a, b) {
+  const re = /^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$/;
+  const ma = re.exec(String(a).trim());
+  const mb = re.exec(String(b).trim());
+  if (!ma || !mb) return null;
+  const pa = [+ma[1], +ma[2], +ma[3], ma[4] != null ? +ma[4] : 0];
+  const pb = [+mb[1], +mb[2], +mb[3], mb[4] != null ? +mb[4] : 0];
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const na = pa[i] || 0;
+    const nb = pb[i] || 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+}
+
 function webUpdResolveAvailable(j) {
-  if (j.update_available === true) return true;
-  if (j.update_available === false) return false;
   const depVer = j.deployed_version != null ? String(j.deployed_version).trim() : '';
   const remVer = j.remote_version != null ? String(j.remote_version).trim() : '';
-  if (depVer && remVer) return depVer !== remVer;
+  if (depVer && remVer) {
+    const cmp = compareSemver(depVer, remVer);
+    if (cmp !== null) return cmp < 0;
+  }
+  if (j.update_available === true) return true;
+  if (j.update_available === false) return false;
   const rem = String(j.remote_commit || '').trim().toLowerCase();
   if (!rem) return null;
   const dep = String(j.deployed_commit || '').trim().toLowerCase();
@@ -1674,23 +1701,21 @@ function applyWebUpdateCheckUI(j) {
   const remVer = webUpdVersionDisplay(j.remote_version, j.remote_commit, null);
   setText('web-upd-deployed-ver', depVer);
   setText('web-upd-remote-ver', remVer);
-  setText('web-upd-deployed', deployedRefDisplay(j));
-  setText('web-upd-remote', shortGitSha(j.remote_commit));
   setText('web-upd-checked', fmtWebUpdChecked(j.checked_at));
   const st = document.getElementById('web-upd-status');
   const applyBtn = document.getElementById('web-upd-apply-btn');
   if (!st) return;
-  st.classList.remove('is-ok', 'is-warn', 'is-err');
+  st.classList.remove('is-ok', 'is-warn', 'is-err', 'is-muted');
   const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
   const ua = webUpdResolveAvailable(j);
   if (ua === true) {
-    st.textContent = 'Есть обновление: доступна ' + remVer + ', текущая ' + depVer + '.';
-    st.classList.add('is-warn');
+    st.textContent = 'Доступно обновление';
+    st.classList.add('is-ok');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = false;
   } else if (ua === false) {
-    st.textContent = 'Обновлений нет (версия ' + depVer + ').';
-    st.classList.add('is-ok');
+    st.textContent = 'Обновлений нет';
+    st.classList.add('is-muted');
     st.hidden = false;
     if (applyBtn) applyBtn.hidden = true;
   } else if (emsg && !j.remote_commit) {
@@ -1732,7 +1757,7 @@ function checkWebUpdatesManual() {
         toast('Проверка не удалась: ' + j.error, 'error');
       } else {
         const ua = webUpdResolveAvailable(j);
-        if (ua === true) toast('Есть обновление', 'info');
+        if (ua === true) toast('Доступно обновление', 'info');
         else if (ua === false) toast('Обновлений нет', 'success');
         else toast('Проверка выполнена', 'info');
       }
@@ -2468,8 +2493,8 @@ function svcCtlDisplayLabel(svc) {
   const id = String((svc && svc.id) || '').trim();
   const lab = String((svc && svc.label) || '').trim();
   if (id === 'codesys') return 'CODESYS';
-  if (id === 'mqtt-bridge') return 'MQTT';
-  if (id === 'mqtt-telemetry') return 'MQTT мост';
+  if (id === 'mqtt-bridge') return 'MQTT мост';
+  if (id === 'mqtt-telemetry') return 'MQTT телеметрия';
   if (id === 'docker' || lab.toLowerCase() === 'docker') return 'Docker';
   if (id === 'mplc4' || lab.toLowerCase() === 'mplc4') return 'MPLC4';
   if (lab) return lab;
@@ -2477,7 +2502,7 @@ function svcCtlDisplayLabel(svc) {
 }
 
 function svcCtlRowState(svc) {
-  if (svc.masked || svc.user_disabled) return 'inactive';
+  if (svc.masked || svc.user_disabled) return 'disabled';
   return svc.active || 'inactive';
 }
 
@@ -2494,6 +2519,7 @@ function renderServicesControl(data) {
   _lastSvcCtlData = data;
   const host = document.getElementById('svc-ctl-list');
   if (!host) return;
+  const flasherBusy = !!(data && data.flasher_busy);
   const list = ((data && data.services) || []).filter(function (svc) {
     return svcIsInstalledFlag(svc.installed);
   });
@@ -2530,6 +2556,13 @@ function renderServicesControl(data) {
     btn.textContent = btnLabel;
     btn.dataset.svcId = svc.id;
     btn.dataset.svcAction = action;
+    const pollBlocked = flasherBusy && wantStart && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge');
+    if (pollBlocked) {
+      btn.disabled = true;
+      btn.title = window.sa02mI18n
+        ? window.sa02mI18n.t('Идёт прошивка или сканирование RS-485')
+        : 'Идёт прошивка или сканирование RS-485';
+    }
     btn.addEventListener('click', function () { serviceCtlAction(btn); });
     mid.appendChild(btn);
 
@@ -2551,7 +2584,7 @@ window.refreshServicesControlI18n = function () {
 };
 
 function kernelProfileLabel(p) {
-  return p === 'rt' ? uiT('RT (PREEMPT_RT)') : uiT('SMP');
+  return p === 'rt' ? uiT('RT (Real Time)') : uiT('SMP (без Real Time)');
 }
 
 function kernelErrorMessage(code) {
@@ -2591,25 +2624,41 @@ function cpuProfileLabel(id) {
 }
 
 let _lastKernelCtrlData = null;
+let _lastSystemStatus = null;
+
+function isRtKernelMode(running, desired) {
+  return running === 'rt' || desired === 'rt';
+}
+
+function syncCpuProfileSectionVisibility(running, desired, uiAvailable) {
+  const section = document.getElementById('cpu-profile-section');
+  if (!section) return false;
+  if (isRtKernelMode(running, desired)) {
+    section.style.display = 'none';
+    return false;
+  }
+  if (uiAvailable === 0 || uiAvailable === false) {
+    section.style.display = 'none';
+    return false;
+  }
+  if (uiAvailable === 1 || uiAvailable === true) {
+    section.style.display = '';
+    return true;
+  }
+  return section.style.display !== 'none';
+}
 
 function renderKernelControl(j) {
   _lastKernelCtrlData = j;
   const runEl = document.getElementById('kernel-run-label');
-  const desEl = document.getElementById('kernel-desired-label');
-  const verEl = document.getElementById('kernel-ver-label');
-  const artEl = document.getElementById('kernel-artifacts-label');
   const hintEl = document.getElementById('kernel-pending-hint');
   const sel = document.getElementById('kernel-profile-select');
   const btn = document.getElementById('kernel-apply-btn');
   if (!runEl || !j) return;
 
   setText('kernel-run-label', kernelProfileLabel(j.running));
-  setText('kernel-desired-label', kernelProfileLabel(j.desired));
-  setText('kernel-ver-label', j.kernel_version || '—');
   const smpOk = j.smp_zimage === 1 && j.smp_modules === 1;
   const rtOk = j.rt_zimage === 1 && j.rt_modules === 1;
-  setText('kernel-artifacts-label',
-    uiT('SMP') + (smpOk ? ' ✓' : ' ✗') + ' / ' + uiT('RT') + (rtOk ? ' ✓' : ' ✗'));
 
   if (sel && j.desired) sel.value = j.desired;
   if (hintEl) {
@@ -2627,6 +2676,8 @@ function renderKernelControl(j) {
     const pending = j.reboot_pending === 1 || j.reboot_pending === true;
     btn.disabled = !canSwitch || (j.running === target && !pending);
   }
+  const uiAvail = _lastSystemStatus ? _lastSystemStatus.cpu_profile_ui_available : null;
+  syncCpuProfileSectionVisibility(j.running, j.desired, uiAvail);
 }
 
 function loadKernelControl(forceToast) {
@@ -2659,7 +2710,7 @@ function applyKernelProfile() {
   if (!profile) return;
   let msg = uiT('Переключить ядро на ') + kernelProfileLabel(profile) + uiT('? Устройство перезагрузится.');
   if (profile === 'smp') {
-    msg += ' ' + uiT('CODESYS требует RT-ядро. SMP-образ с Docker будет добавлен позже.');
+    msg += ' ' + uiT('SMP-ядро с Docker доступно. CODESYS может работать на SMP, но возможны дрожание цикла; для промышленного PLC рекомендуется RT.');
   }
   if (!confirm(msg)) return;
 
@@ -2675,10 +2726,7 @@ function applyKernelProfile() {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) throw new Error(kernelErrorMessage(j.error) || ('HTTP ' + r.status));
       if (j.warnings && String(j.warnings).indexOf('codesys_requires_rt') >= 0) {
-        toast(uiT('CODESYS работает — на SMP возможны сбои цикла'), 'warn', 8000);
-      }
-      if (j.warnings && String(j.warnings).indexOf('smp_docker_kernel_pending') >= 0) {
-        toast(uiT('SMP-ядро с Docker netfilter ещё не задеплоено'), 'info', 8000);
+        toast(uiT('CODESYS запущен — на SMP возможны дрожание цикла; RT рекомендуется для PLC'), 'warn', 8000);
       }
       renderKernelControl(j);
       if (j.reboot_required) {
@@ -2696,21 +2744,31 @@ function applyKernelProfile() {
     .finally(() => { if (btn) btn.disabled = false; });
 }
 
+function applyCpuFrequencyLabels(d) {
+  const freq = document.getElementById('cpu-profile-freq-label');
+  if (!freq || !d) return;
+  const raw = d.cpu_freq_mhz != null ? d.cpu_freq_mhz : d.cur_mhz;
+  const mhz = raw != null && raw !== '' ? raw : '—';
+  freq.textContent = mhz + ' ' + uiT('МГц');
+}
+
 function updateCpuProfileTile(d) {
-  const tile = document.getElementById('cpu-profile-tile');
-  if (!tile) return;
-  const uiOk = d.cpu_profile_ui_available === 1;
-  tile.style.display = uiOk ? '' : 'none';
-  if (!uiOk) return;
+  const section = document.getElementById('cpu-profile-section');
+  if (!section || !d) return;
+
+  let running = _lastKernelCtrlData ? _lastKernelCtrlData.running : null;
+  let desired = _lastKernelCtrlData ? _lastKernelCtrlData.desired : null;
+  const ksel = document.getElementById('kernel-profile-select');
+  if (ksel) desired = ksel.value;
+  if (!running && (d.kernel_is_rt === 1 || d.kernel_is_rt === true)) running = 'rt';
+  else if (!running && (d.kernel_is_rt === 0 || d.kernel_is_rt === false)) running = 'smp';
+
+  const show = syncCpuProfileSectionVisibility(running, desired, d.cpu_profile_ui_available);
+  if (!show) return;
 
   const sel = document.getElementById('cpu-profile-select');
   if (sel && d.cpu_profile) sel.value = d.cpu_profile;
-  const freq = document.getElementById('cpu-profile-freq-label');
-  if (freq) {
-    const mhz = d.cpu_freq_mhz != null ? d.cpu_freq_mhz : '—';
-    freq.textContent = mhz + ' ' + uiT('МГц');
-  }
-  setText('cpu-profile-gov-label', d.cpu_governor || '—');
+  applyCpuFrequencyLabels(d);
 }
 
 function applyCpuProfile() {
@@ -2728,8 +2786,10 @@ function applyCpuProfile() {
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) throw new Error(cpuProfileErrorMessage(j.error) || ('HTTP ' + r.status));
+      applyCpuFrequencyLabels(j);
       toast(uiT('Профиль частоты: ') + cpuProfileLabel(profile), 'success');
       fetchBackgroundPart('system', applySystemStatus);
+      fetchBackgroundPart('load', applyLoadStatus);
       setTimeout(fetchPriorityPart, 1500, 'priority');
     })
     .catch((e) => {
@@ -2776,16 +2836,87 @@ function svcCtlErrorMessage(code) {
     enable_failed: 'не удалось включить автозапуск',
     still_running: 'процесс службы всё ещё работает',
     start_failed: 'не удалось запустить службу',
+    flasher_busy: 'идёт прошивка или сканирование RS-485',
     sudo_failed: 'нет прав sudo для управления службами',
     ctl_missing: 'скрипт управления не установлен',
+    timeout: 'истекло время ожидания смены состояния',
   };
   return map[c] || c;
+}
+
+function pollServiceCtlState(id, action, maxMs, intervalMs) {
+  const wantStart = action === 'start';
+  const deadline = Date.now() + (maxMs || 90000);
+  return new Promise(function (resolve, reject) {
+    function tick() {
+      fetch('/cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
+          const svc = (j.services || []).find(function (s) { return s && s.id === id; });
+          if (!svc) throw new Error('unknown_service');
+          renderServicesControl(j);
+          if (svcCtlWantsStart(svc) !== wantStart) {
+            resolve(svc);
+            return;
+          }
+          if (Date.now() >= deadline) {
+            reject(new Error('timeout'));
+            return;
+          }
+          setTimeout(tick, intervalMs || 2000);
+        })
+        .catch(reject);
+    }
+    setTimeout(tick, 1500);
+  });
+}
+
+function pollServiceCtlResult(id, maxMs, intervalMs) {
+  const deadline = Date.now() + (maxMs || 90000);
+  return new Promise(function (resolve, reject) {
+    function tick() {
+      fetch('/cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id), {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      })
+        .then(async (r) => {
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          if (j.pending) {
+            if (Date.now() >= deadline) {
+              reject(new Error('timeout'));
+              return;
+            }
+            setTimeout(tick, intervalMs || 2000);
+            return;
+          }
+          if (j.ok === false && j.error) {
+            reject(new Error(j.error));
+            return;
+          }
+          resolve(j);
+        })
+        .catch(reject);
+    }
+    setTimeout(tick, 1500);
+  });
+}
+
+function pollServiceCtlDone(id, action, maxMs, intervalMs) {
+  return pollServiceCtlResult(id, maxMs, intervalMs)
+    .then(function () { return pollServiceCtlState(id, action, maxMs, intervalMs); });
 }
 
 function serviceCtlAction(btn) {
   const id = btn && btn.dataset ? btn.dataset.svcId : '';
   const action = btn && btn.dataset ? btn.dataset.svcAction : '';
   if (!id || !action) return;
+  if (action === 'start' && _lastSvcCtlData && _lastSvcCtlData.flasher_busy &&
+      (id === 'mplc4' || id === 'mqtt-bridge')) {
+    toast(svcCtlErrorMessage('flasher_busy'), 'warn');
+    return;
+  }
   const label = btn.closest('.svc-row')?.querySelector('.name')?.textContent || id;
   const verb = action === 'stop' ? 'остановить' : 'включить';
   if (!confirm(verb.charAt(0).toUpperCase() + verb.slice(1) + ' «' + label + '»?')) return;
@@ -2799,11 +2930,21 @@ function serviceCtlAction(btn) {
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
+      if (j.pending) {
+        toast(action === 'stop' ? 'Остановка службы…' : 'Запуск службы…', 'info', 5000);
+        return pollServiceCtlDone(id, action, 90000, 2000);
+      }
+      return j;
+    })
+    .then(function () {
       toast(action === 'stop' ? 'Служба остановлена и отключена' : 'Служба включена', 'success');
-      return loadServicesControl(false);
+      setTimeout(function () {
+        fetchBackgroundPart('services', applyServicesStatus, true);
+        fetchPriorityPart('priority');
+      }, 1500);
     })
     .catch((e) => {
-      toast('Служба: ' + (e && e.message ? e.message : String(e)), 'error');
+      toast('Служба: ' + (e && e.message ? svcCtlErrorMessage(e.message) || e.message : String(e)), 'error');
       loadServicesControl(false);
     })
     .finally(() => { btn.disabled = false; });

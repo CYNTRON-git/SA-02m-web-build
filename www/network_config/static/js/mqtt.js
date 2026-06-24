@@ -1105,6 +1105,12 @@ function bindMqttClientInfoCells() {
 // ── Broker status ─────────────────────────────────────────────────────────────
 let _lastMqttBrokerStatus = null;
 
+function mqttBridgeUiState(st) {
+  if (!st || st.error) return 'unknown';
+  if (st.bridge_disabled) return 'disabled';
+  return st.bridge_active ? 'active' : 'inactive';
+}
+
 function applyBrokerStatusUI(st) {
   const badge = document.getElementById('mqtt-broker-badge');
   const clients = document.getElementById('mqtt-broker-clients');
@@ -1124,17 +1130,31 @@ function applyBrokerStatusUI(st) {
   }
 
   if (badge) {
-    badge.className = `badge ${st.mosquitto_active ? 'badge-ok' : 'badge-err'}`;
-    badge.textContent = st.mosquitto_active ? uiT('Работает') : uiT('Остановлен');
+    if (st.mosquitto_disabled) {
+      badge.className = 'badge badge-err';
+      badge.textContent = uiT('Отключен');
+    } else {
+      badge.className = `badge ${st.mosquitto_active ? 'badge-ok' : 'badge-err'}`;
+      badge.textContent = st.mosquitto_active ? uiT('Работает') : uiT('Остановлен');
+    }
   }
   if (clients) clients.textContent = uiT(`Клиентов: ${st.clients_connected}`);
   if (bridgeBadge) {
-    bridgeBadge.className = `badge ${st.bridge_active ? 'badge-ok' : 'badge-unk'}`;
-    bridgeBadge.textContent = st.bridge_active ? uiT('Мост активен') : uiT('Мост остановлен');
+    const bridgeSt = mqttBridgeUiState(st);
+    if (bridgeSt === 'disabled') {
+      bridgeBadge.className = 'badge badge-err';
+      bridgeBadge.textContent = uiT('Отключен');
+    } else if (bridgeSt === 'active') {
+      bridgeBadge.className = 'badge badge-ok';
+      bridgeBadge.textContent = uiT('Мост активен');
+    } else {
+      bridgeBadge.className = 'badge badge-unk';
+      bridgeBadge.textContent = uiT('Мост остановлен');
+    }
   }
   const bridgeToggle = document.getElementById('mqtt-bridge-toggle-btn');
   if (bridgeToggle) {
-    const on = !!st.bridge_active;
+    const on = mqttBridgeUiState(st) === 'active';
     bridgeToggle.textContent = uiT(on ? 'Остановить' : 'Запустить');
     bridgeToggle.className = on
       ? 'btn btn-sm hw-io-btn hw-io-to-off'
@@ -2114,7 +2134,7 @@ window.mqttCtrl          = async (action) => {
 
 window.mqttToggleBridge = async function mqttToggleBridge() {
   const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
-  const on = !!(st && st.bridge_active);
+  const on = mqttBridgeUiState(st) === 'active';
   const action = on ? 'stop_bridge' : 'start_bridge';
   const msg = on
     ? 'Остановить мост Modbus→MQTT? Служба будет отключена и не запустится после перезагрузки до ручного включения.'

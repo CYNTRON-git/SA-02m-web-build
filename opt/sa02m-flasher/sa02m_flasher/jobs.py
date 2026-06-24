@@ -64,6 +64,7 @@ class Job:
     started_ts: float = 0.0
     finished_ts: float = 0.0
     error: Optional[str] = None
+    irreversible: bool = False
     # Результаты:
     devices: List[Dict[str, Any]] = field(default_factory=list)
     # Журнал (retention = MAX_EVENTS_RETAIN).
@@ -82,6 +83,7 @@ class Job:
             "started_ts": self.started_ts,
             "finished_ts": self.finished_ts,
             "error": self.error,
+            "irreversible": self.irreversible,
             "devices": list(self.devices),
             "events": [asdict(e) for e in list(self.events)[-100:]],
         }
@@ -203,11 +205,36 @@ class JobManager:
 
     def cancel(self, job_id: str) -> bool:
         with self._lock:
+            job = self._jobs.get(job_id)
             evt = self._cancel_events.get(job_id)
-            if not evt:
+            if not job or not evt:
+                return False
+            if job.irreversible:
+                self._emit_id(
+                    job_id,
+                    "status",
+                    "warn",
+                    "Отмена отклонена: прошивка уже необратима",
+                )
                 return False
         evt.set()
         self._emit_id(job_id, "status", "warn", "Получен запрос отмены")
+        return True
+
+    def mark_irreversible(self, job_id: str) -> bool:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return False
+            if job.irreversible:
+                return True
+            job.irreversible = True
+        self._emit_id(
+            job_id,
+            "status",
+            "info",
+            "Прошивка необратима — отмена и освобождение порта заблокированы",
+        )
         return True
 
     # ─── Доступ к данным ──────────────────────────────────────────────────────
@@ -224,6 +251,37 @@ class JobManager:
     def active_job_on_port(self, port: str) -> Optional[str]:
         with self._lock:
             return self._port_jobs.get(port)
+
+    def any_active_job(self) -> bool:
+        with self._lock:
+            for job_id in self._port_jobs.values():
+                job = self._jobs.get(job_id)
+                if job and job.state in (JobState.PENDING, JobState.RUNNING):
+                    return True
+            return False
+
+    def list_active_jobs(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            out: List[Dict[str, Any]] = []
+            seen: set = set()
+            for job_id in self._port_jobs.values():
+                if job_id in seen:
+                    continue
+                seen.add(job_id)
+                job = self._jobs.get(job_id)
+                if not job or job.state not in (JobState.PENDING, JobState.RUNNING):
+                    continue
+                out.append(
+                    {
+                        "id": job.id,
+                        "kind": job.kind.value,
+                        "port": job.port,
+                        "state": job.state.value,
+                        "progress": job.progress,
+                        "irreversible": job.irreversible,
+                    }
+                )
+            return out
 
     # ─── Подписка для SSE ─────────────────────────────────────────────────────
 

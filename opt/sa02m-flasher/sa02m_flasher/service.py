@@ -15,6 +15,7 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
     GET  /jobs                        — список последних задач (snapshot)
     GET  /jobs/<id>                   — снэпшот задачи
     GET  /jobs/<id>/events            — SSE-стрим событий
+    GET  /status                      — активные задачи, poll_locked
     GET  /health                      — {"ok": true, "version": "..."}
 """
 from __future__ import annotations
@@ -217,6 +218,45 @@ def _truthy_query(q: Dict[str, List[str]], key: str) -> bool:
     return False
 
 
+def _poll_lock_held(cfg: FlasherConfig) -> bool:
+    """True, если flock sa02m-flasher-* удерживается (идёт scan/flash)."""
+    lock_dir = cfg.lock_dir
+    if not lock_dir.is_dir():
+        return False
+    for path in lock_dir.glob("sa02m-flasher-*.lock"):
+        try:
+            fd = os.open(str(path), os.O_RDWR)
+        except OSError:
+            continue
+        try:
+            try:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                held = False
+            except (ImportError, OSError):
+                held = True
+        finally:
+            os.close(fd)
+        if held:
+            return True
+    return False
+
+
+def _guard_no_active_flasher_job(ctx: ServiceContext, *, port: str = "") -> None:
+    """Блокировать release/restore/config, пока на любом COM идёт scan/flash."""
+    if ctx.jobs.any_active_job():
+        active = ctx.jobs.list_active_jobs()
+        ports = sorted({str(j.get("port") or "") for j in active if j.get("port")})
+        where = ", ".join(ports) if ports else "?"
+        raise RuntimeError(
+            f"Идёт задача прошивальщика на {where}. Дождитесь завершения или обновите страницу."
+        )
+    if port and ctx.jobs.active_job_on_port(port):
+        raise RuntimeError(f"Порт {port} занят активной задачей")
+
+
 def _compute_mplc_lists(cfg: FlasherConfig) -> Tuple[List[str], List[str]]:
     """Один проход MPLC на весь ответ /ports (не дублировать на каждый порт)."""
     active_services: List[str] = []
@@ -265,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
             if not self._check_auth():
                 return _send_error(self, HTTPStatus.UNAUTHORIZED, "unauthorized")
 
+            if method == "GET" and p == "/status":
+                return self._handle_status(ctx)
             if method == "GET" and p == "/ports":
                 return self._handle_ports(ctx, q)
             if method == "POST" and p == "/ports/release":
@@ -377,6 +419,17 @@ class Handler(BaseHTTPRequestHandler):
             "released_services": [_unit_display_name(a) for a in released_raw],
         }
 
+    def _handle_status(self, ctx: ServiceContext) -> None:
+        active = ctx.jobs.list_active_jobs()
+        _send_json(
+            self,
+            {
+                "busy": bool(active),
+                "active_jobs": active,
+                "poll_locked": _poll_lock_held(ctx.cfg) or bool(active),
+            },
+        )
+
     def _handle_ports(self, ctx: ServiceContext, q: Dict[str, List[str]]) -> None:
         cfg = ctx.cfg
         quick = _truthy_query(q, "quick") or _truthy_query(q, "lite")
@@ -400,8 +453,7 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
-        if ctx.jobs.active_job_on_port(port):
-            raise RuntimeError(f"Порт {port} занят активной задачей")
+        _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.release_pollers(ctx.cfg.mplc_stop_services)
         _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
 
@@ -410,8 +462,7 @@ class Handler(BaseHTTPRequestHandler):
         port = str(data.get("port") or "").strip()
         if not port:
             raise ValueError("Поле 'port' обязательно")
-        if ctx.jobs.active_job_on_port(port):
-            raise RuntimeError(f"Порт {port} занят активной задачей")
+        _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.restore_pollers(ctx.cfg.mplc_stop_services)
         _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
 
@@ -458,6 +509,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Поле 'port' обязательно")
 
         def run_fn(job: Job, rctx: Dict[str, Any]) -> None:
+            rctx["mark_irreversible"] = lambda: ctx.jobs.mark_irreversible(job.id)
             runner.run_flash_job(job, rctx, ctx.cfg, ctx.repo)
 
         job = ctx.jobs.submit(JobKind.FLASH, port, data, run_fn)
@@ -478,6 +530,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(batch_err)
 
         def run_fn(job: Job, rctx: Dict[str, Any]) -> None:
+            rctx["mark_irreversible"] = lambda: ctx.jobs.mark_irreversible(job.id)
             runner.run_flash_batch_job(job, rctx, ctx.cfg, ctx.repo)
 
         job = ctx.jobs.submit(JobKind.FLASH_BATCH, port, data, run_fn)
@@ -496,8 +549,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Поле 'device' обязательно")
         if port not in ctx.cfg.ports_map:
             raise ValueError(f"Неизвестный порт: {port}")
-        if ctx.jobs.active_job_on_port(port):
-            raise RuntimeError(f"Порт {port} занят активной задачей")
+        _guard_no_active_flasher_job(ctx, port=port)
         device_path = ctx.cfg.ports_map[port]
         if not os.path.exists(device_path):
             raise FileNotFoundError(f"Устройство порта не найдено: {device_path}")
@@ -568,6 +620,15 @@ class Handler(BaseHTTPRequestHandler):
         job_id = str(data.get("job_id") or "").strip()
         if not job_id:
             raise ValueError("Поле 'job_id' обязательно")
+        job = ctx.jobs.get(job_id)
+        if job is None:
+            return _send_error(self, HTTPStatus.NOT_FOUND, f"Задача {job_id} не найдена")
+        if job.irreversible:
+            return _send_error(
+                self,
+                HTTPStatus.CONFLICT,
+                "flash_irreversible",
+            )
         ok = ctx.jobs.cancel(job_id)
         _send_json(self, {"ok": ok})
 

@@ -36,6 +36,13 @@ from .serial_port import open_port, send_receive, send_receive_wb_ext_scan
 log = logging.getLogger(__name__)
 
 
+def _flash_cancel_gate(cancel_evt, on_irreversible: Optional[Callable[[], None]] = None) -> fp.FlashCancelGate:
+    return fp.FlashCancelGate(
+        lambda: cancel_evt.is_set(),
+        on_irreversible=on_irreversible,
+    )
+
+
 def _device_to_dict(dev: scn.DeviceInfo) -> Dict[str, Any]:
     d = asdict(dev)
     d["serial_hex"] = f"0x{int(dev.serial) & 0xFFFFFFFF:08X}"
@@ -749,6 +756,7 @@ def _run_bootloader_flash_session(
     recovery: bool,
     image: bytes,
     file_signature: str,
+    on_irreversible: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     """
     Одна сессия: перевод из приложения (при необходимости) → один COM на скорости загрузчика
@@ -900,6 +908,7 @@ def _run_bootloader_flash_session(
             cancel_evt=cancel_evt,
             log_cb=log_cb,
             progress_cb=progress_cb,
+            on_irreversible=on_irreversible,
         )
     finally:
         if ser is not None:
@@ -924,6 +933,7 @@ def _flash_one_device(
     cancel_evt,
     log_cb: Callable[[str, str], None],
     progress_cb: Callable[[int, str], None],
+    on_irreversible: Optional[Callable[[], None]] = None,
 ) -> Optional[str]:
     addr = int(device.get("address") or fp.BOOTLOADER_DEFAULT_ADDR)
     serial = int(device.get("serial") or 0) & 0xFFFFFFFF
@@ -934,7 +944,7 @@ def _flash_one_device(
     boot_addr_for_address_path = fp.BOOTLOADER_DEFAULT_ADDR
 
     info_sig = (dev_sig if dev_sig and dev_sig.upper() != "NONE" else file_signature) or fp.DEFAULT_SIGNATURE
-    flash_cancel_gate = fp.FlashCancelGate(lambda: cancel_evt.is_set())
+    flash_cancel_gate = _flash_cancel_gate(cancel_evt, on_irreversible)
 
     def prog(sent: int, total: int) -> None:
         total = max(1, int(total))
@@ -1122,6 +1132,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
     log_cb = ctx["log"]
     progress_cb = ctx["progress"]
     cancel_evt = ctx["cancel_evt"]
+    on_irreversible = ctx.get("mark_irreversible")
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
@@ -1164,6 +1175,7 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
                 recovery=recovery,
                 image=image,
                 file_signature=file_sig,
+                on_irreversible=on_irreversible,
             )
             if err:
                 raise RuntimeError(err)
@@ -1193,6 +1205,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     log_cb = ctx["log"]
     progress_cb = ctx["progress"]
     cancel_evt = ctx["cancel_evt"]
+    on_irreversible = ctx.get("mark_irreversible")
 
     device_path = resolve_device_path(cfg, port_key)
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
@@ -1251,6 +1264,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     recovery=recovery,
                     image=image,
                     file_signature=file_sig,
+                    on_irreversible=on_irreversible,
                 )
                 if err:
                     errors.append((dev, err))

@@ -118,7 +118,7 @@ sa02m-kernel-select.sh init
 
 ```bash
 mount /dev/mmcblk2p1 /mnt/boot_fat
-cp /mnt/boot_fat/zImage.bak-smp-20260623 /mnt/boot_fat/zImage
+cp /mnt/boot_fat/zImage.smp /mnt/boot_fat/zImage
 sync && reboot
 ```
 

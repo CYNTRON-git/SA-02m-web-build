@@ -223,7 +223,10 @@ cmd_set() {
         printf '{"ok":false,"error":"apply_failed","profile":"%s"}\n' "$prof"
         return 1
     fi
-    printf '{"ok":true,"profile":"%s"}\n' "$prof"
+    cur_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null || echo 0)
+    cur_m=$(( cur_khz / 1000 ))
+    gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "")
+    printf '{"ok":true,"profile":"%s","cur_mhz":%s,"governor":"%s"}\n' "$prof" "$cur_m" "$gov"
 }
 
 main() {

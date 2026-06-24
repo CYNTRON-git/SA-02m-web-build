@@ -5,6 +5,126 @@
 
 ---
 
+## [2026-06-24 13:15] branch: 1.0.3.35
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py`, `opt/sa02m-flasher/sa02m_flasher/runner.py`, `opt/sa02m-flasher/sa02m_flasher/jobs.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `www/network_config/static/js/flasher.js`, `etc/sa02m-web-service-ctl.sh`
+**Тип:** Краш / Некорректное поведение
+**Описание:** Прошивка обрывалась сразу после входа модуля в bootloader; модуль оставался в загрузчике; F5/release/Start служб могли прервать задачу.
+**Причина:** Попытка переопределить `mark_irreversible` у `FlashCancelGate` с `__slots__` → `AttributeError: read-only`; release_pollers не блокировался при активной задаче на другом COM; UI терял job_id после F5.
+**Исправление:** Callback `on_irreversible` в `FlashCancelGate`; `GET /status`, `any_active_job()`, блок release/restore/cancel после irreversible; reconnect в `flasher.js`; `flasher_busy` в service-ctl. Recovery flash COM4 @6/@8 → 1.0.9.1, state=done.
+
+---
+
+## [2026-06-24 12:58] branch: 1.0.3.35
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `etc/sa02m-web-service-ctl.sh`, `www/network_config/static/js/i18n.js`
+**Тип:** Некорректное поведение
+**Описание:** После остановки Modbus→MQTT моста кнопкой на вкладке MQTT в «Управление → Службы» отображалась остановленная служба «MQTT», а не мост; подписи mqtt-bridge и mqtt-telemetry были перепутаны.
+**Причина:** В `svcCtlDisplayLabel()` mqtt-bridge переименовывался в «MQTT», mqtt-telemetry — в «MQTT мост»; в виджете дашборда мост тоже подписывался «MQTT». В `SERVICE_DEFS` ctl-скрипта метки «Modbus MQTT» / «MQTT мост» не соответствовали ролям служб.
+**Исправление:** mqtt-bridge → «MQTT мост», mqtt-telemetry → «MQTT телеметрия» в app.js, ctl и i18n; виджет «Службы» — строка моста с подписью «MQTT мост».
+
+---
+
+**Файл(ы):** `www/network_config/cgi-bin/mqtt_status.cgi`, `www/network_config/static/js/mqtt.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Вкладка MQTT показывала «Мост активен», а «Управление → Службы» (MQTT) — «Отключен» для одной и той же службы mqtt-bridge.
+**Причина:** `mqtt_status.cgi` определял `bridge_active` только по `pgrep modbus_mqtt_bridge` / `systemctl is-active`, без учёта `user_disabled`/`mask` из `sa02m-web-service-ctl.sh list` (stop+disable). После Stop процесс мог ещё работать, либо unit disabled при живом процессе — ctl показывал «Отключен», MQTT-вкладка — «активен».
+**Исправление:** `load_svc_ctl_mqtt_states()` в `mqtt_status.cgi` (как в `status.cgi`): переопределение mosquitto/mqtt-bridge/mqtt-telemetry по ctl list; JSON `*_disabled`; `mqtt.js` — `mqttBridgeUiState()` и badge «Отключен»; cache-bust `mqtt.js?v=1.0.3.35.1`. Проверено на .136: disabled+running proc, stop/start через ctl и services — оба UI совпадают.
+
+---
+
+## [2026-06-24 12:25] branch: 1.0.3.35
+
+**Файл(ы):** `etc/sa02m-web-update-check.sh`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** Блок «Обновление веб» показывал «Доступно обновление», когда текущая версия (1.0.3.35) новее доступной на GitHub (1.0.3.34).
+**Причина:** `update_available` определялся только по различию коммитов; при равных версиях — `false`, но при deployed > remote semver не учитывался. JS fallback (`depVer !== remVer`) тоже считал любое отличие версий признаком обновления.
+**Исправление:** Semver-сравнение через `compare_web_versions` (sort -V) в shell и `compareSemver` в app.js: обновление доступно только если remote_version > deployed_version; равные или более новая локальная версия → «Обновлений нет».
+
+---
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** Блок «Тип устройства» на вкладке «Управление»: select на всю ширину, кнопка «Применить» на отдельной строке ниже.
+**Причина:** `.field select { width: 100% }` и кнопка в отдельном `.btn-group` под select (блочная вёрстка).
+**Исправление:** Обёртка `.hw-variant-row` (flex row, gap 8px): select с `width: fit-content`, кнопка справа в той же строке; статус — отдельной строкой ниже.
+
+## [2026-06-24 12:09] branch: 1.0.3.35
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `www/network_config/cgi-bin/services_ctrl.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Логическая ошибка
+**Описание:** Stop MPLC4 → `disable_failed`; Start CODESYS → `enable_failed` (docker/mosquitto OK). Служба могла остановиться/запуститься, но JSON — ошибка.
+**Причина:** `mplc4.service` и `codesyscontrol.service` — SysV-обёртки (`systemd-sysv-install`): `enable`/`disable` занимают 12–20s, а `sc_run` обрывал их по `timeout 8s`. `systemctl mask` для unit-файлов в `/etc/systemd/system/*.service` (не symlink) всегда падает. `cmd_start` проверял `enable_failed` до init.d start.
+**Исправление:** `sc_run_slow` (45s) для stop/disable/enable/start; пропуск mask для static unit; init.d/update-rc.d для mplc4; проверка runtime до admin-state; результат async в `/var/run/sa02m-svcctl/<id>.json` + GET `?result=1`; poll в `app.js` показывает toast по ошибке ctl.
+
+---
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`
+**Тип:** Логическая ошибка
+**Описание:** CODESYS: после async Start poll не завершался (timeout), хотя `codesyscontrol.bin` уже работал; list показывал inactive/user_disabled.
+**Причина:** `cmd_list` при `user_disabled` (systemd unit disabled) принудительно ставил inactive до проверки процесса; у CODESYS unit часто `disabled`+`active`, автозапуск через init.d/rc.
+**Исправление:** Для codesys: если процесс активен — `active` и `user_disabled=false`; иначе при admin_off — inactive.
+
+---
+
+## [2026-06-24 11:45] branch: 1.0.3.35
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `etc/nginx/network_config.conf`
+**Тип:** Логическая ошибка
+**Описание:** После async POST start/stop UI всегда показывал «истекло время ожидания» (timeout), хотя служба меняла состояние; poll GET иногда давал HTTP 504.
+**Причина:** `pollServiceCtlDone` завершался при `svcCtlWantsStart(svc) === wantStart` (совпадение *до* смены), а нужно `!==` (состояние изменилось). GET `services_ctrl.cgi` (list) при параллельном systemctl stop/start мог занимать >20s → общий fastcgi 20s → 504.
+**Исправление:** Условие poll: `svcCtlWantsStart(svc) !== wantStart`; отдельный nginx location для `services_ctrl.cgi` с `fastcgi_read_timeout 120s`.
+
+---
+
+## [2026-06-24 11:43] branch: 1.0.3.35
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/static/js/i18n.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** CODESYS и другие службы: «Управление → Службы» показывал «Отключен/Неактивен», а виджет «Сведения → Службы» — «Активен» для той же службы.
+**Причина:** Дашборд (`status.cgi` / `fast_service_state`) определял статус только по процессу/порту; «Управление» (`sa02m-web-service-ctl.sh list`) учитывал `user_disabled`/`mask` после Stop (stop+disable+mask). При отключённой службе процесс мог ещё завершаться, либо ctl принудительно ставил inactive/disabled, а дашборд — active по pgrep.
+**Исправление:** `status.cgi` загружает `sudo sa02m-web-service-ctl.sh list` и переопределяет статусы управляемых служб (codesys, mplc4, mosquitto, mqtt-bridge, docker, klogic, node-red) на active/inactive/disabled; `app.js` — badge «Отключен» для disabled в обоих виджетах; cache-bust `app.js?v=1.0.3.35.1`.
+
+---
+
+## [2026-06-24 11:27] branch: 1.0.3.35
+
+**Файл(ы):** `www/network_config/cgi-bin/services_ctrl.cgi`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение
+**Описание:** «Управление → Службы»: Stop CODESYS возвращал toast «Служба: HTTP 504», хотя служба через ~20s становилась «Неактивен».
+**Причина:** `services_ctrl.cgi` синхронно ждал `sa02m-web-service-ctl.sh stop codesys` (~18s) + start codesys (~22s); общий `fastcgi_read_timeout` для `/cgi-bin/` — 20s → nginx 504 до завершения systemctl/init.d.
+**Исправление:** POST start/stop — немедленный JSON `{"ok":true,"pending":true}` и `nohup sudo … sa02m-web-service-ctl.sh` в фоне (как `reboot.cgi`); `app.js` — poll GET до смены состояния (до 90s) с toast «Остановка/Запуск службы…».
+
+---
+
+**Файл(ы):** `/etc/sudoers.d/sa02m-www` (device), `www/network_config/static/js/app.js`, `etc/sa02m-kernel-select.sh`
+**Тип:** Некорректное поведение
+**Описание:** `kernel_ctrl.cgi` возвращал пустой JSON; confirm при SMP устарел («Docker будет добавлен позже»).
+**Причина:** sudoers разрешал только `status`, а CGI вызывает `status --json`; в `sa02m-kernel-select.sh` оставался warning `smp_docker_kernel_pending` после деплоя SMP+Docker.
+**Исправление:** sudoers — добавлен `status --json`; обновлены тексты confirm/toast в app.js/i18n.js; убран `smp_docker_kernel_pending` из скрипта.
+
+---
+
+## [2026-06-24 10:57] branch: 1.0.3.35
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/cgi-bin/status.cgi`, `etc/sa02m-cpu-profile.sh`
+**Тип:** Некорректное поведение
+**Описание:** После смены профиля CPU частота и governor в UI не обновлялись сразу; в блоке «system» не было `cpu_freq_mhz`.
+**Причина:** `applyCpuProfile` ждал только фоновый poll `system`, где не читалась текущая частота из sysfs; `cmd_set` возвращал только `profile` без `cur_mhz`/`governor`.
+**Исправление:** `gather_system_metrics`/`print_system_json` — поле `cpu_freq_mhz`; `cmd_set` возвращает `cur_mhz` и `governor`; `applyCpuFrequencyLabels` обновляет DOM сразу из ответа POST и из status poll.
+
+---
+
+## [2026-06-24 10:33] branch: 1.0.3.35
+
+**Файл(ы):** `tools/buildroot/prepare-rt-docker-kernel.sh`
+**Тип:** Ошибка сборки / Некорректное поведение
+**Описание:** `build-kernel-smp` на VM падал: интерактивный Kconfig «Restart config», verify после finalize с ложным «ARCH_SUNXI missing», скрипт не доходил до `zImage.smp`; SMP-ядро собиралось с RT-патчем (`6.1.0-rc6-rt4`).
+**Причина:** (1) `verify_*` читали `.config` из `$BR_DIR`, а не `$LINUX_DIR/.config` после `kconfig_finalize_noninteractive`. (2) `yes '' | make linux` при `set -o pipefail` давал exit 141. (3) `make linux-configure` тянул RT-патч через `.stamp_patched`; без `touch .stamp_patched` после extract применялся PREEMPT_RT patch.
+**Исправление:** verify по `$LINUX_DIR/.config`; `kconfig_finalize_noninteractive` с повторным apply sunxi/docker после olddefconfig/syncconfig; `touch .stamp_patched` для SMP; `make linux` без pipe; skip RT patch для SMP. Собрано `zImage.smp` (6.1.0-rc6, PREEMPT_NONE), задеплоено на 192.168.1.136, Docker OK.
+
+---
+
 ## [2026-06-07] branch: 1.0.3.35
 
 **Файл(ы):** `etc/sa02m-kernel-select.sh`, `etc/sa02m-cpu-profile.sh`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `app.js`

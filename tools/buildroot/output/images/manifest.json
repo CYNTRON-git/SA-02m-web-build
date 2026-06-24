@@ -1,0 +1,15 @@
+{
+  "updated": "2026-06-24T07:30:34Z",
+  "images": {
+    "smp": {
+      "path": "/usr/local/share/sa02m/kernel/zImage.smp",
+      "size": 6920840,
+      "md5": "dc82b2627c828648dc465e8d35b61e8f"
+    },
+    "rt": {
+      "path": "/usr/local/share/sa02m/kernel/zImage.rt",
+      "size": 7029776,
+      "md5": "2a49c2211d466c3598c956a7c47499e4"
+    }
+  }
+}
