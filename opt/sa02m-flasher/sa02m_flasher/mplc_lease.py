@@ -19,6 +19,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Set
@@ -414,6 +415,16 @@ def is_port_poll_free(device_path: str) -> bool:
     return not port_occupants(device_path)
 
 
+def wait_port_poll_free(device_path: str, timeout_s: float = 4.0) -> bool:
+    """Ждать освобождения /dev/COM* после systemctl stop / pkill (MQTT отпускает порт с задержкой)."""
+    deadline = time.monotonic() + max(0.1, float(timeout_s))
+    while time.monotonic() < deadline:
+        if is_port_poll_free(device_path):
+            return True
+        time.sleep(0.1)
+    return is_port_poll_free(device_path)
+
+
 def released_services() -> List[str]:
     with _LEASE_LOCK:
         return sorted(_STOPPED_SERVICES)
@@ -493,6 +504,7 @@ def port_lease(
     services_to_stop: Iterable[str],
     *,
     require_free: bool = True,
+    preserve_released: bool = False,
 ) -> Iterator[List[str]]:
     """
     Контекст-менеджер: останавливает указанные службы, проверяет освобождение порта,
@@ -505,6 +517,10 @@ def port_lease(
     """
     device = str(device_path)
     stopped_now: List[str] = []
+    preserved: Set[str] = set()
+    if preserve_released:
+        with _LEASE_LOCK:
+            preserved = set(_STOPPED_SERVICES)
     poll_free = False
     with _LEASE_LOCK:
         poll_free = is_port_poll_free(device)
@@ -522,7 +538,7 @@ def port_lease(
                         _STOPPED_SERVICES.add(actual)
                         stopped_now.append(actual)
     try:
-        if require_free and not poll_free:
+        if require_free and not wait_port_poll_free(device):
             pids = port_occupants(device)
             if pids:
                 raise PortBusyError(device, pids)
@@ -530,6 +546,8 @@ def port_lease(
     finally:
         with _LEASE_LOCK:
             for svc in reversed(stopped_now):
+                if preserve_released and svc in preserved:
+                    continue
                 try:
                     start_service(svc)
                 finally:

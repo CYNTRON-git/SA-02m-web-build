@@ -455,7 +455,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Поле 'port' обязательно")
         _guard_no_active_flasher_job(ctx, port=port)
         result = mplc_lease.release_pollers(ctx.cfg.mplc_stop_services)
-        _send_json(self, {"ok": not result["failed"], "port": self._describe_port(ctx, port), **result})
+        port_info = self._describe_port(ctx, port)
+        busy = bool(port_info.get("busy_pids"))
+        released = bool(result.get("stopped_now") or result.get("already_released"))
+        ok = not result["failed"] or (released and not busy)
+        _send_json(self, {"ok": ok, "port": port_info, **result})
 
     def _handle_ports_restore(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)
@@ -564,7 +568,7 @@ class Handler(BaseHTTPRequestHandler):
     ):
         """Modbus-сеанс настройки: освободить MQTT/MPLC на время операции (как scan/flash)."""
         with _device_config_port_lock(port):
-            with port_lease(device_path, ctx.cfg.mplc_stop_services):
+            with port_lease(device_path, ctx.cfg.mplc_stop_services, preserve_released=True):
                 return fn()
 
     def _handle_device_config_snapshot(self, ctx: ServiceContext) -> None:

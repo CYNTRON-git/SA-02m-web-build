@@ -1,7 +1,40 @@
-# Bug Log
+## [2026-06-25 10:30] branch: main
 
-Документация найденных и устранённых ошибок.
-Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
+**Файл(ы):** `www/network_config/static/js/flasher.js`
+**Тип:** Логическая ошибка
+**Описание:** Фоновый panel-опрос в окне настройки модуля выполнялся только при открытии.
+**Причина:** Deadlock: `configPollTick` выставлял `_bgPollPromise` до `configApi`, а `awaitConfigPortIdle` ждал этот же promise; затем `configBackgroundBusy` блокировал сам себя в `awaitConfigPortIdle`.
+**Исправление:** Убран `_bgPollPromise` из tick; `awaitConfigPortIdle` удалён из `configApi` (сериализация через `_configApiTail`); `setInterval` 1 с; cache `v=1.0.3.35.9`.
+
+---
+
+## [2026-06-25 10:05] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/sa02m_flasher/mplc_lease.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`
+**Тип:** Некорректное поведение
+**Описание:** Фоновый опрос в окне настройки модуля выполнялся один раз вместо постоянного обновления раз в секунду.
+**Причина:** Ненадёжная цепочка `setTimeout`/`scheduleConfigPolling`; интервал 4 с. `port_lease` мог перезапускать MQTT после каждого snapshot.
+**Исправление:** `setInterval` 1 с (`startConfigPolling`); `port_lease(preserve_released=True)` для device_config; cache `v=1.0.3.35.8`.
+
+---
+
+## [2026-06-25 09:42] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`
+**Тип:** Некорректное поведение
+**Описание:** При открытом окне настройки MR (6AI6AO COM4) не выполнялся постоянный panel-опрос параметров.
+**Причина:** `awaitConfigPortIdle` при таймауте инвалидировал `_configPollSeq` — ответ отбрасывался без `scheduleConfigPolling`; при stale seq цикл опроса не перезапускался. `stopConfigPolling` в `awaitConfigPortIdle` сбрасывал таймер. При редактировании полей `shouldSkipConfigBodyRerender` блокировал обновление live-значений.
+**Исправление:** Гарантированный `scheduleConfigPolling` в `finally` каждого snapshot; убрана инвалидация seq по таймауту bg-poll; `patchConfigLiveReadouts` для частичного обновления измерений; cache `v=1.0.3.35.7`.
+
+---
+
+## [2026-06-25 09:42] branch: main
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `opt/sa02m-flasher/sa02m_flasher/mplc_lease.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`
+**Тип:** Некорректное поведение
+**Описание:** При открытии окна настройки модуля расширения не обновлялись данные в таблице устройств, фоновый опрос не запускался, кнопка «Закрыть» оставалась неактивной.
+**Причина:** Stub-snapshot при открытии запускал 4-с фоновый panel-опрос до освобождения MQTT; зависший in-flight опрос блокировал `configApi` и `setConfigBusy(true)` отключала «Закрыть». `ports/release` возвращал `ok:false` при частичном успехе (MQTT остановлен, mplc4 неактивен). `port_lease` не ждал отпускания порта после stop MQTT.
+**Исправление:** Не планировать опрос до первого snapshot; таймауты API/bg-poll; «Закрыть» всегда активна; `wait_port_poll_free`; `ok:true` при успешном release MQTT без busy PID.
 
 ---
 

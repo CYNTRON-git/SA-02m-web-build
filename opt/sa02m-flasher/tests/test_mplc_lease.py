@@ -53,6 +53,7 @@ class TestMplcLease(unittest.TestCase):
     def test_port_lease_slow_path_stops_active(self) -> None:
         with (
             patch.object(mplc_lease, "is_port_poll_free", return_value=False),
+            patch.object(mplc_lease, "wait_port_poll_free", return_value=True),
             patch.object(mplc_lease, "port_occupants", return_value=[]),
             patch.object(mplc_lease, "resolve_service_name", return_value="mplc4.service"),
             patch.object(mplc_lease, "is_service_active", return_value=True),

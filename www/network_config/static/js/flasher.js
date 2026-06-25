@@ -47,12 +47,11 @@
   let _configPollSeq = 0;
   // Промис текущей операции restore-порта; release ждёт его завершения.
   let _portOpPromise = null;
-  // Промис текущего фонового опроса (panel) от таймера.
-  // Запрос вкладки ждёт его, прежде чем послать свой запрос — иначе два
-  // одновременных Modbus-запроса на одном порту → 409.
-  let _bgPollPromise = null;
   /** Очередь /device_config/* — один Modbus-сеанс на порт. */
   let _configApiTail = Promise.resolve();
+  const CONFIG_API_TIMEOUT_MS = 120000;
+  const CONFIG_BG_POLL_WAIT_MS = 120000;
+  const CONFIG_POLL_INTERVAL_MS = 1000;
   /** AI sensor select под сохранением/редактированием — не перерисовывать вкладку. */
   const _aiSensorEditGuard = new Set();
   const _aiSensorEditGuardTimers = Object.create(null);
@@ -1421,23 +1420,29 @@
 
   function stopConfigPolling() {
     if (state.configPollTimer) {
-      clearTimeout(state.configPollTimer);
+      clearInterval(state.configPollTimer);
       state.configPollTimer = null;
     }
   }
 
-  function scheduleConfigPolling() {
+  function configPollTick() {
+    if (!state.configOpen) return;
+    if (state.configBusy || state.configBackgroundBusy) return;
+    refreshConfigSnapshot(true, 'panel');
+  }
+
+  function startConfigPolling() {
     stopConfigPolling();
     if (!state.configOpen) return;
-    state.configPollTimer = setTimeout(() => {
-      if (!state.configOpen) return;
-      if (state.configBusy || state.configBackgroundBusy) {
-        scheduleConfigPolling();
-        return;
-      }
-      _bgPollPromise = refreshConfigSnapshot(true, 'panel')
-        .finally(() => { _bgPollPromise = null; });
-    }, 4000);
+    state.configPollTimer = setInterval(configPollTick, CONFIG_POLL_INTERVAL_MS);
+    setTimeout(configPollTick, 250);
+  }
+
+  async function waitConfigBackgroundIdle(timeoutMs) {
+    const deadline = Date.now() + (timeoutMs != null ? timeoutMs : CONFIG_BG_POLL_WAIT_MS);
+    while (state.configBackgroundBusy && Date.now() < deadline) {
+      await new Promise(function (r) { setTimeout(r, 40); });
+    }
   }
 
   async function _autoReleasePortForConfig() {
@@ -1513,22 +1518,13 @@
     scheduleInlineStatusAutoClear(key, () => setConfigBanner(''));
   }
 
-  function setConfigBusy(busy, disableClose = true) {
+  function setConfigBusy(busy) {
     state.configBusy = !!busy;
-    if (disableClose) {
-      const closeBtn = configModalEl('flasher-config-close-btn');
-      if (closeBtn) closeBtn.disabled = !!busy;
-    } else if (!busy) {
-      const closeBtn = configModalEl('flasher-config-close-btn');
-      if (closeBtn) closeBtn.disabled = false;
-    }
   }
 
-  async function awaitConfigPortIdle() {
-    stopConfigPolling();
-    if (_bgPollPromise) {
-      try { await _bgPollPromise; } catch (_) {}
-    }
+  function ensureConfigCloseEnabled() {
+    const closeBtn = configModalEl('flasher-config-close-btn');
+    if (closeBtn) closeBtn.disabled = false;
   }
 
   function aiSensorEditGuardAdd(channel) {
@@ -1625,13 +1621,22 @@
   async function configApi(path, body) {
     const isDeviceConfig = String(path || '').startsWith('/device_config/');
     const run = async () => {
-      if (isDeviceConfig) await awaitConfigPortIdle();
-      const res = await fetch(API + path, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify(body || {}),
-      });
+      const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = ctrl
+        ? setTimeout(function () { try { ctrl.abort(); } catch (_) {} }, CONFIG_API_TIMEOUT_MS)
+        : null;
+      let res;
+      try {
+        res = await fetch(API + path, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json; charset=utf-8' },
+          body: JSON.stringify(body || {}),
+          signal: ctrl ? ctrl.signal : undefined,
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
       if (!res.ok) {
         let msg = `HTTP ${res.status}`;
         try { const data = await res.json(); if (data && data.error) msg = data.error; } catch (_) {}
@@ -2093,6 +2098,56 @@
     return body ? body.contains(el) : false;
   }
 
+  function patchConfigLiveReadouts(snap) {
+    if (!snap || snap.kind !== 'mr') return;
+    const mr = snap.mr || {};
+    const mcu = mr.mcu || {};
+    const setText = function (id, text) {
+      const el = configModalEl(id);
+      if (el) el.textContent = text;
+    };
+    if (mcu.power_v != null) setText('cfg-mr-mcu-power', Number(mcu.power_v).toFixed(2) + ' В');
+    if (mcu.temp_c != null) setText('cfg-mr-mcu-temp', Number(mcu.temp_c).toFixed(1) + ' °C');
+    if (mcu.uptime_str != null) setText('cfg-mr-mcu-uptime', String(mcu.uptime_str));
+
+    const ao = mr.ao || {};
+    (ao.current_volts || []).forEach(function (v, idx) {
+      const ch = idx + 1;
+      setText('cfg-mr-ao-live-' + ch, formatFloat(v, 2) + ' В');
+      if (ao.current_raw) setText('cfg-mr-ao-raw-' + ch, String(ao.current_raw[idx] ?? 0));
+    });
+
+    const bits = ((mr.do || {}).bits || []);
+    bits.forEach(function (on, idx) {
+      const ch = idx + 1;
+      const el = configModalEl('cfg-mr-do-state-' + ch);
+      if (!el) return;
+      el.textContent = on ? 'Вкл' : 'Выкл';
+      el.classList.toggle('do-state-on', !!on);
+    });
+
+    const diVals = ((mr.di || {}).values || []);
+    diVals.forEach(function (v, idx) {
+      const ch = idx + 1;
+      const el = configModalEl('cfg-mr-di-state-' + ch);
+      if (!el) return;
+      const on = Number(v) !== 0;
+      el.textContent = on ? 'Активен' : 'Неактивен';
+      el.classList.toggle('di-state-on', on);
+    });
+
+    if (mr.ai && Array.isArray(mr.ai.channels)) {
+      mr.ai.channels.forEach(function (ch) {
+        const n = Number(ch.channel);
+        if (!n) return;
+        const measuredEl = configModalEl('cfg-mr-ai-measured-' + n);
+        if (measuredEl) measuredEl.textContent = aiFormatMeasuredDisplay(ch.sensor_code, ch.measured_raw);
+        const scaledEl = configModalEl('cfg-mr-ai-scaled-' + n);
+        if (scaledEl) scaledEl.textContent = aiFormatScaledDisplay(ch.sensor_code, ch.scaled_raw);
+      });
+    }
+  }
+
   function aoSafeHoldingRegForChannel(snap, channel) {
     const regs = ((((snap || {}).mr || {}).ao || {}).safe_holding_regs || []);
     const idx = channel - 1;
@@ -2200,15 +2255,15 @@
         <div class="cfg-info-tiles">
           <div class="cfg-info-tile">
             <div class="cfg-info-tile-title">Питание МК</div>
-            <div class="cfg-info-tile-val">${escapeHtml(powerStr)}</div>
+            <div class="cfg-info-tile-val" id="cfg-mr-mcu-power">${escapeHtml(powerStr)}</div>
           </div>
           <div class="cfg-info-tile">
             <div class="cfg-info-tile-title">Температура МК</div>
-            <div class="cfg-info-tile-val">${escapeHtml(tempStr)}</div>
+            <div class="cfg-info-tile-val" id="cfg-mr-mcu-temp">${escapeHtml(tempStr)}</div>
           </div>
           <div class="cfg-info-tile">
             <div class="cfg-info-tile-title">Время с загрузки МК</div>
-            <div class="cfg-info-tile-val" style="font-size:1.05rem">${escapeHtml(uptimeStr)}</div>
+            <div class="cfg-info-tile-val" id="cfg-mr-mcu-uptime" style="font-size:1.05rem">${escapeHtml(uptimeStr)}</div>
           </div>
         </div>
 
@@ -2298,7 +2353,7 @@
         <section class="flasher-config-card">
           <h4>DO${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Состояние</span><strong class="do-state-value${bits[idx] ? ' do-state-on' : ''}">${bits[idx] ? 'Вкл' : 'Выкл'}</strong></div>
+            <div class="flasher-config-row"><span>Состояние</span><strong id="cfg-mr-do-state-${channel}" class="do-state-value${bits[idx] ? ' do-state-on' : ''}">${bits[idx] ? 'Вкл' : 'Выкл'}</strong></div>
             <div class="flasher-config-row"><span>Счетчик включений</span><strong>${escapeHtml(String(counts[idx] ?? 0))}</strong></div>
           </div>
           <div class="flasher-config-actions">
@@ -2341,7 +2396,7 @@
         <section class="flasher-config-card">
           <h4>DI${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Состояние</span><strong>${Number((di.values || [])[idx] || 0) ? 'Активен' : 'Неактивен'}</strong></div>
+            <div class="flasher-config-row"><span>Состояние</span><strong id="cfg-mr-di-state-${channel}" class="${Number((di.values || [])[idx] || 0) ? 'di-state-on' : ''}">${Number((di.values || [])[idx] || 0) ? 'Активен' : 'Неактивен'}</strong></div>
             <div class="flasher-config-row"><span>Счетчик импульсов</span><strong>${escapeHtml(String((di.counts || [])[idx] ?? 0))}</strong></div>
             <div class="flasher-config-row"><span>Коротких / длинных / двойных</span><strong>${escapeHtml(String((di.short_counts || [])[idx] ?? 0))} / ${escapeHtml(String((di.long_counts || [])[idx] ?? 0))} / ${escapeHtml(String((di.double_counts || [])[idx] ?? 0))}</strong></div>
             <div class="flasher-config-row"><span>Частота</span><strong>${escapeHtml(String((di.freq || [])[idx] ?? 0))} Гц</strong></div>
@@ -2382,8 +2437,8 @@
         <section class="flasher-config-card">
           <h4>AO${channel}</h4>
           <div class="flasher-config-list">
-            <div class="flasher-config-row"><span>Текущее значение</span><strong>${formatFloat((ao.current_volts || [])[idx], 2)} В</strong></div>
-            <div class="flasher-config-row"><span>Raw</span><strong>${escapeHtml(String((ao.current_raw || [])[idx] ?? 0))}</strong></div>
+            <div class="flasher-config-row"><span>Текущее значение</span><strong id="cfg-mr-ao-live-${channel}">${formatFloat((ao.current_volts || [])[idx], 2)} В</strong></div>
+            <div class="flasher-config-row"><span>Raw</span><strong id="cfg-mr-ao-raw-${channel}">${escapeHtml(String((ao.current_raw || [])[idx] ?? 0))}</strong></div>
           </div>
         </section>
         <section class="flasher-config-card">
@@ -2483,12 +2538,12 @@
           <div class="ai-measures-grid">
             <div class="ai-measure-row">
               <span>Измеренное значение с АЦП</span>
-              <strong class="ai-raw-fmt">${escapeHtml(measuredStr)}</strong>
+              <strong class="ai-raw-fmt" id="cfg-mr-ai-measured-${channel}">${escapeHtml(measuredStr)}</strong>
             </div>
             <div class="ai-measure-row">
               <span>Пересчитанное значение</span>
               <div class="ai-measure-value-group">
-                <strong>${escapeHtml(scaledStr)}</strong>
+                <strong id="cfg-mr-ai-scaled-${channel}">${escapeHtml(scaledStr)}</strong>
                 <div class="ai-cal-strip" id="cfg-mr-ai-cal-strip-${channel}" ${calOk ? '' : 'hidden'}>
                   <span>Калибровка</span>
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="-1">−</button>
@@ -2837,15 +2892,9 @@
     host.querySelectorAll('[data-config-tab]').forEach(btn => {
       btn.addEventListener('click', async () => {
         state.configTab = btn.dataset.configTab || 'info';
-        // Отменяем таймер фонового опроса, чтобы он не запустился параллельно.
-        stopConfigPolling();
         renderConfigTabs();
         renderConfigBody();
-        // Если фоновый opрос уже в полёте — ждём его завершения. Два
-        // одновременных Modbus-запроса на одном порту дают 409 Conflict.
-        if (_bgPollPromise) {
-          try { await _bgPollPromise; } catch (_) {}
-        }
+        await waitConfigBackgroundIdle();
         await refreshConfigSnapshot(true, 'full');
       });
     });
@@ -2889,9 +2938,9 @@
     const available = configTabsForSnapshot(merged).map(t => t.id);
     if (!available.includes(state.configTab)) state.configTab = available[0] || 'info';
     renderConfigTabs();
-    if (!shouldSkipConfigBodyRerender()) renderConfigBody();
+    if (shouldSkipConfigBodyRerender()) patchConfigLiveReadouts(merged);
+    else renderConfigBody();
     if (!silent) setConfigBanner('', '');
-    scheduleConfigPolling();
   }
 
   async function refreshConfigSnapshot(silent, detail) {
@@ -2913,18 +2962,15 @@
         snapshot_detail: detail || 'full',
         active_tab: state.configTab || '',
       });
-      if (mySeq !== _configPollSeq) return; // более новый запрос уже запущен — игнорируем
+      if (mySeq !== _configPollSeq) return;
       applyConfigSnapshot(snap, !!silent);
     } catch (err) {
-      if (mySeq !== _configPollSeq) return; // устаревшая ошибка — молча отбрасываем
+      if (mySeq !== _configPollSeq) return;
       if (silent) {
-        // Фоновая ошибка: не блокируем UI баннером, просто перепланируем опрос
-        scheduleConfigPolling();
+        // Фоновая ошибка: не блокируем UI баннером
       } else {
         setConfigBanner('Не удалось загрузить настройки: ' + err.message, 'error');
         toast('Настройка устройства: ' + err.message, 'error');
-        // Явный запрос тоже перепланирует, чтобы опрос не остановился
-        scheduleConfigPolling();
       }
     } finally {
       if (silent) {
@@ -2941,14 +2987,19 @@
       return;
     }
     if (!state.devices[idx] || !isDeviceConfigSupported(state.devices[idx])) return;
+    stopConfigPolling();
+    ++_configPollSeq;
     state.configOpen = true;
     state.configDeviceIdx = idx;
     state.configTab = 'info';
     state.configSnapshot = null;
     state.configNetworkDirty = false;
+    state.configBusy = false;
+    state.configBackgroundBusy = false;
     clearAiConfigEditState();
     configModalEl('flasher-config-modal').hidden = false;
     document.body.style.overflow = 'hidden';
+    ensureConfigCloseEnabled();
     const stub = buildConfigSnapshotStubFromDevice(state.devices[idx]);
     if (stub) {
       applyConfigSnapshot(stub, true);
@@ -2957,12 +3008,14 @@
     }
     await _autoReleasePortForConfig();
     await refreshConfigSnapshot(false);
+    startConfigPolling();
+    ensureConfigCloseEnabled();
   }
 
   function closeConfigModal() {
     stopConfigPolling();
     ++_configPollSeq; // инвалидируем все текущие in-flight запросы этой сессии
-    _bgPollPromise = null;
+    ensureConfigCloseEnabled();
     state.configOpen = false;
     state.configBusy = false;
     state.configBackgroundBusy = false;
@@ -3237,7 +3290,6 @@
       _aiSensorWriteInflight.delete(ch);
       setConfigBusy(false);
       aiSensorEditGuardReleaseLater(ch);
-      scheduleConfigPolling();
     }
   }
 

@@ -47,7 +47,14 @@
 - **flasher.js:** pending/inflight guard для типа AI-датчика (`_aiSensorPending`, `mergeAiChannelFromPoll`) — фоновый panel-опрос не откатывает выбор; compare-before-write для sensor/cal/filters; cache-bust `flasher.js?v=1.0.3.35.5`.
 - **mqtt_config.cgi:** restart моста через `sa02m-web-service-ctl.sh start mqtt-bridge` (не только `systemctl restart` disabled unit).
 
-> Подробности: docs/bugs/BUGLOG.md (записи 2026-06-24 14:36, 14:48).
+### Окно настройки модуля — фоновый опрос 1 Гц (июн 2026)
+- **flasher.js:** `setInterval` panel-опрос каждую 1 с (`startConfigPolling`/`configPollTick`); кнопка «Закрыть» всегда активна; `patchConfigLiveReadouts` при редактировании полей; исправлен deadlock (`_bgPollPromise`/`awaitConfigPortIdle` в `configApi`); освобождение MQTT до первого snapshot; cache-bust `flasher.js?v=1.0.3.35.9`.
+- **mplc_lease.py:** `wait_port_poll_free()` после stop опросчиков; `port_lease(preserve_released=True)` — MQTT не перезапускается в сессии настройки.
+- **service.py:** `ports/release` → `ok:true` при успешном release MQTT без busy PID; `device_config` с `preserve_released=True`.
+
+> Подробности: docs/bugs/BUGLOG.md (записи 2026-06-25 09:42–10:30).
+
+> Подробности AI sensor: docs/bugs/BUGLOG.md (записи 2026-06-24 14:36, 14:48).
 
 ## 1.0.3.34 - RT kernel, Docker, web services UI (июн 2026)
 
