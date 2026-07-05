@@ -4,6 +4,24 @@
 **Устройство:** SA-02m (Allwinner A40i / sun8i-r40, Armbian 26.2.1 / Ubuntu 24.04 Noble)  
 **Цель:** Оптимальная работа CODESYS Control for Linux ARM SL 4.20.0.0 (armhf)
 
+> ### 🆕 2026-07: миграция на `wirenboard/linux` 5.10.35 armhf
+>
+> RT-ядро для CODESYS теперь собирается через новый порт на форк
+> Wiren Board (см. [`../../kernel-port/README.md`](../../kernel-port/README.md),
+> [`../../tools/kernel-wb/README.md`](../../tools/kernel-wb/README.md)).
+>
+> Вместо ручного «скопировать zImage из Linux RT/» — стандартный
+> `.deb`-пакет: `apt install linux-image-sa02m-rt`. Postinst-hook
+> [`50-sa02m-fat-sync`](../../etc/kernel-postinst.d/50-sa02m-fat-sync)
+> сам копирует новый zImage/DTB на FAT-раздел `mmcblk2p1`.
+>
+> Новые версии ядер:
+> - `5.10.35-sa02m`     — SMP baseline
+> - `5.10.35-sa02m-rt`  — PREEMPT_RT (36-й rt-патчсет)
+>
+> Legacy-таблица ниже (6.1.0-rc6-rt4) остаётся релевантной до
+> валидации нового ядра на боевом устройстве.
+
 ---
 
 ## Статус готовности к CODESYS RT (на 2026-06-05)
