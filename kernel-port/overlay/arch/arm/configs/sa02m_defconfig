@@ -455,3 +455,11 @@ CONFIG_DEBUG_USER=y
 CONFIG_LOCALVERSION="-sa02m"
 CONFIG_RTC_DRV_DS1307=y
 CONFIG_GPIO_PCA953X=m
+
+# Parent subsystem symbols. wirenboard7_defconfig получает их через
+# каскад `depends on X` от урезаемых нами драйверов (INPUT_MISC / SENSORS_* /
+# SND_SOC / MFD_AC100). Мы удалили эти драйверы, поэтому явно включаем
+# сами subsystems — без них MFD_AXP20X_I2C, RTC_DS1307 и др. не активируются.
+CONFIG_I2C=y
+CONFIG_GPIOLIB=y
+CONFIG_PPS=y

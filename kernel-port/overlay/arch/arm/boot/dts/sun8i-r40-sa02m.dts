@@ -132,12 +132,14 @@
 	status = "okay";
 };
 
-&codec {
-	allwinner,audio-routing =
-		"Headphone", "HP",
-		"LINEIN", "Line In";
-	status = "okay";
-};
+/*
+ * NOTE: mainline / WB r40 tree in kernel 5.10.35 does not yet expose the
+ * A40i built-in audio codec as a &codec label. Starterkit DTS enables it
+ * for headphone output, but SA-02м does not route audio out — codec block
+ * is dropped here. When A40i codec is added upstream (already in
+ * sun4i-a10-codec bindings for 6.1+), we can re-add:
+ *   &codec { status = "okay"; };
+ */
 
 &cpu0 {
 	cpu-supply = <&reg_dcdc2>;
