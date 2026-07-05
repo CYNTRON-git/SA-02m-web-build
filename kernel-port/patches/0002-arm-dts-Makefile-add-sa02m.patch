@@ -1,0 +1,21 @@
+Subject: [PATCH] ARM: dts: sunxi: add sun8i-r40-sa02m.dtb
+
+Register the ЦИНТРОН SA-02m Device Tree Blob for the sun8i-r40 machine.
+
+The DTS itself lives in
+[../overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts](../overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts)
+and is copied into place by [../apply.sh](../apply.sh) before this patch is
+applied.
+
+Signed-off-by: ЦИНТРОН <dev@cyntron.ru>
+
+diff --git a/arch/arm/boot/dts/Makefile b/arch/arm/boot/dts/Makefile
+--- a/arch/arm/boot/dts/Makefile
++++ b/arch/arm/boot/dts/Makefile
+@@ -1225,6 +1225,7 @@ dtb-$(CONFIG_MACH_SUN8I) += \
+ 	sun8i-r40-bananapi-m2-ultra.dtb \
+ 	sun8i-r40-wirenboard-som-test.dtb \
++	sun8i-r40-sa02m.dtb \
+ 	sun8i-r40-wirenboard72x-initram.dtb \
+ 	sun8i-r40-wirenboard72x-factory.dtb \
+ 	sun8i-r40-wirenboard720.dtb \
