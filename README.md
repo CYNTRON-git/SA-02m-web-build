@@ -783,6 +783,18 @@ journalctl -u nodered.service -f
 
 Этот раздел описывает процесс сборки собственного образа Linux для одноплатного компьютера СА-02м на базе **Allwinner A40i** (Starterkit SK-A40i-NANO-2E).
 
+> ### 🆕 Новый способ (с 2026-07): порт ядра на [`wirenboard/linux`](https://github.com/wirenboard/linux)
+>
+> Для СA-02м подготовлен полноценный порт на форк Wiren Board, что даёт:
+> - штатный `apt install linux-image-sa02m` вместо ручного `cp zImage`;
+> - автоматическое наследование WB upstream fixes для A40i;
+> - CI-сборку RT-варианта;
+> - обратную совместимость с текущим MPLC4/веб/CODESYS.
+>
+> Пошаговая инструкция и артефакты: [**`kernel-port/README.md`**](kernel-port/README.md), тулинг: [**`tools/kernel-wb/`**](tools/kernel-wb/README.md), roadmap с обоснованием: [**`docs/WB_LINUX_FUTURE_FEATURES.md`**](docs/WB_LINUX_FUTURE_FEATURES.md).
+>
+> Старый Buildroot-путь (Starterkit VM) описан ниже и сохраняется как fallback до полного тестирования нового ядра на реальном железе.
+
 ---
 
 ### Аппаратная платформа

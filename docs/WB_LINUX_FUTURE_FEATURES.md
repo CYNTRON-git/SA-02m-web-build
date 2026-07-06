@@ -4,7 +4,7 @@
 
 Wiren Board 7 — плата на том же A40i, что и СА-02м, поэтому её defconfig и DTS используются как донор. В базовом порту мы **не тянем** часть WB-компонентов, потому что соответствующего железа/чипов на СА-02м нет. Этот документ фиксирует, **что именно урезано** и **как это включить позже**, если появится нужный вариант СА-02м, WBIO-модуль или сторонняя периферия.
 
-Документ не описывает выбор ядра целиком — это отдельный план в [`docs/WB_LINUX_PORT_PLAN.md`](WB_LINUX_PORT_PLAN.md) (будет создан).
+Практическая реализация порта — в каталоге [`kernel-port/`](../kernel-port/README.md) с оверлеем defconfig и DTS. Инструменты сборки/деплоя — [`tools/kernel-wb/`](../tools/kernel-wb/README.md).
 
 ---
 
@@ -55,38 +55,73 @@ DTS-узлы: `wbec@50` (I²C-адрес 0x50), `pinctrl` для WBEC-GPIO, `cry
 
 ---
 
-## 2. PMIC AXP20x + вторичный MFD AC100
+## 2. AXP20x charger/battery (fuel gauge) и AC100 audio-dock
 
-WB7 SoM использует Allwinner PMIC AXP221/AXP223/AXP2xx для питания SoC-регуляторов, зарядки Li-Ion и подсчёта ёмкости. АС100 — RTC+кодек в PMIC. На СА-02м PMIC отсутствует: питание регуляторами на самой SoM-плате, батареи нет, RTC — внешний PCF8563.
+> ⚠ **ВАЖНАЯ ПОПРАВКА** (2026-07): в исходной редакции документа мы ошибочно
+> считали, что PMIC AXP20x на СА-02м отсутствует полностью и весь MFD надо
+> урезать. Изучение эталонного DTS от Starterkit
+> ([`kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts`](../kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts))
+> показало, что **PMIC AXP221 стоит на I²C-0 @0x34** и управляет всеми
+> регуляторами SoC (dcdc1..5 для CPU/DRAM/VCC-IO, aldo/eldo/dldo для
+> eMMC/PLL/microSD). Без ядра PMIC-драйвера SoC **не запустится**.
+>
+> Поэтому в базовом `sa02m_defconfig` **включены**:
+> - `CONFIG_MFD_AXP20X_I2C=y` — обязательно, иначе регуляторы не активируются
+> - `CONFIG_REGULATOR_AXP20X=y` — вся семья dcdc/aldo/eldo/dldo
+> - `CONFIG_AXP20X_ADC=y` — используется `iio-hwmon-axp*` для мониторинга Vin/Vbus/T
+> - `CONFIG_INPUT_AXP20X_PEK=m` — модуль, если понадобится кнопка Power (на SA-02м не разведена, но не мешает)
+>
+> Эта секция теперь описывает **только те подсистемы AXP20x, которые
+> действительно не нужны** на SA-02м: зарядное устройство, fuel gauge
+> батареи и AC100 audio dock.
 
-### Что урезаем сейчас
+### Что урезаем сейчас (нет батареи и нет audio dock)
 
-| Kconfig | Роль в WB |
-|---------|-----------|
-| `CONFIG_MFD_AXP20X_I2C` / `CONFIG_MFD_AXP20X_RSB` | Основной MFD-драйвер PMIC (I²C и RSB транспорты) |
-| `CONFIG_REGULATOR_AXP20X` | Регуляторы (aldo/dldo/eldo/dcdc) |
-| `CONFIG_AXP20X_ADC` | ADC внутри PMIC (напряжения, ток) |
-| `CONFIG_AXP20X_POWER` | Power supply (Vin/Vbus, статус зарядки) |
-| `CONFIG_CHARGER_AXP20X` | Драйвер зарядного устройства Li-Ion |
-| `CONFIG_BATTERY_AXP20X` | Учёт ёмкости (fuel gauge) |
-| `CONFIG_MFD_AC100` | RTC + аудио-кодек AC100 (в паре с AXP) |
-| `CONFIG_RTC_DRV_AC100` | RTC из AC100 |
-| `CONFIG_INPUT_AXP20X_PEK` | Кнопка Power через PMIC |
+| Kconfig | Роль в WB | Почему не нужно на SA-02м |
+|---------|-----------|---------------------------|
+| `CONFIG_AXP20X_POWER` | Power supply class (Vin/Vbus status, коммутация зарядки) | Питание неотключаемое, поступает напрямую |
+| `CONFIG_CHARGER_AXP20X` | Драйвер CC/CV зарядки Li-Ion | Батареи нет |
+| `CONFIG_BATTERY_AXP20X` | Fuel gauge (учёт %) | Батареи нет |
+| `CONFIG_CHARGER_GPIO` | Простой GPIO-charger detect | Нет CHRG_OK линии |
+| `CONFIG_MFD_AC100` | RTC + audio-кодек AC100 (WB Combo PMIC) | На SA-02м AC100 не установлен |
+| `CONFIG_RTC_DRV_AC100` | RTC из AC100 | Есть DS3231 на I²C-1 @0x68 |
+| `CONFIG_MFD_AXP20X_RSB` | Транспорт RSB (используется на HW у которого нет I²C линии к AXP) | На SA-02м AXP на I²C-0 |
+| `CONFIG_BATTERY_EDLC` | Драйвер супер-конденсатора Wiren Board | Нет буферного капа |
+| `CONFIG_GENERIC_ADC_BATTERY` | Универсальный ADC-based fuel-gauge | Нет батареи |
 
-### Когда может понадобиться
+### Когда это может понадобиться (SA-02м-2 с UPS-mode)
 
-- Появится ревизия СА-02м с батарейным резервом (UPS-mode), где нужен fuel gauge.
-- Портирование на другой A40i-модуль ЦИНТРОНа с PMIC.
-- Захотим использовать «спящий» режим CPU через AXP223 sleep — пока не рассматриваем (нет требования low-power).
+- **Гипотетическая ревизия SA-02м с батарейным резервом.** Тогда нужны `AXP20X_POWER`, `CHARGER_AXP20X`, `BATTERY_AXP20X` + DTS-узлы `battery { ... }` и `power_supply { ... }`.
+- **Портирование Docker-контейнера с audio-заметкой на HDMI-out** — тогда AC100 (в паре с i2s из sun8i-r40) даст аудио-выход. Пока audio-контроллер SoC (`&codec { ... }` в DTS) обходится и без AC100.
+- **Sleep-режим CPU через AXP223.** Пока не рассматриваем: SA-02м всегда online.
 
-### Как включить
+### Как включить (по мере появления железа)
 
-1. Вернуть в `sa02m_defconfig`: `CONFIG_MFD_AXP20X_I2C=y`, `CONFIG_REGULATOR_AXP20X=y`, `CONFIG_AXP20X_ADC=y`, `CONFIG_INPUT_AXP20X_PEK=m`.
-2. В DTS описать I²C-узел `axp223@34` (0x34 — стандартный адрес PMIC AXP2xx на I²C-0) плюс regulators-subnodes (dcdc1..3, aldo1..3, eldo1..3).
-3. `regulators` из `sun8i-r40-wirenboard72x.dtsi` (см. строки 40-95) можно копировать 1-в-1, только менять названия.
-4. Battery/charger — отдельный DTS-фрагмент с `constant-charge-current-max-microamp` и `constant-charge-voltage-max-microvolt`.
+1. **Батарея / зарядка.** Добавить в оверлей:
+   ```
+   CONFIG_AXP20X_POWER=y
+   CONFIG_CHARGER_AXP20X=y
+   CONFIG_BATTERY_AXP20X=y
+   CONFIG_CHARGER_GPIO=y
+   ```
+   В DTS в `&axp22x { ... }` добавить `battery-power-supply`/`ac-power-supply`/`usb-power-supply` subnodes с параметрами Li-Ion (например, `charger-constant-current-microamp = <900000>;`).
 
-**Оценка сложности:** средняя. Требует ревизии платы с PMIC и корректной pinctrl-разводкой I²C.
+2. **AC100.**
+   ```
+   CONFIG_MFD_AC100=y
+   CONFIG_RTC_DRV_AC100=y
+   ```
+   DTS: подключить AC100 на RSB-шине (`rsb@01c25000`) с `reg = <0xe89>` и `ac100_rtc: rtc { ... }`. Для audio-in — добавить `simple-audio-card` вокруг AC100 в паре с `codec@1c22c00` (SoC audio codec).
+
+3. **Fuel gauge через ADC** (fallback если AXP20x не поддерживает).
+   ```
+   CONFIG_GENERIC_ADC_BATTERY=m
+   ```
+   + iio-channel к любому ADC (AXP20X_ADC уже есть).
+
+**Оценка сложности:**
+- Батарея/зарядка — низкая по kernel-side (все драйверы уже в WB tree), средняя по HW (нужен корректный VBUS и Li-Ion pinout).
+- AC100 — низкая (mainline-driver готов), но требует RSB pinctrl.
 
 ---
 
@@ -476,7 +511,7 @@ WB7 использует FIT (Flattened Image Tree) images и отдельный
 | # | Компонент | Приоритет включения | Оценка сложности |
 |---|-----------|--------------------|-----------------|
 | 1 | WBEC | Низкий (нет чипа) | Низкая |
-| 2 | AXP20x PMIC | Низкий (нет чипа) | Средняя |
+| 2 | AXP20x charger/battery + AC100 (только батарея/audio-dock, **сам PMIC AXP221 включен**) | Низкий (нет батареи/дока) | Средняя |
 | 3 | Wi-Fi | **Средний** (USB-донглы) | Низкая (kernel), средняя (UX) |
 | 4 | Bluetooth | Средний (BLE IoT) | Низкая |
 | 5 | Медиа/HDMI/LVDS | Низкий (нет дисплея) | Высокая |

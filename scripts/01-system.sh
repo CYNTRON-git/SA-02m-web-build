@@ -288,6 +288,18 @@ if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
         || log WARN "sa02m-rtc-sync.timer не включился"
 fi
 
+# ── Postinst-hook для linux-image-*.deb (см. tools/kernel-wb/) ─────────────
+# При установке .deb-пакета WB-ядра dpkg вызывает run-parts /etc/kernel/postinst.d/;
+# хук копирует новый zImage в /usr/local/share/sa02m/kernel/zImage.<flavour>
+# и (если flavour совпадает с running) обновляет /mnt/boot_fat/zImage +
+# синхронизирует sun8i-a40i-sk.dtb на FAT-раздел.
+if [ -f "$ETC_REPO/kernel-postinst.d/50-sa02m-fat-sync" ]; then
+    install -d -m 755 /etc/kernel/postinst.d
+    install -m 755 "$ETC_REPO/kernel-postinst.d/50-sa02m-fat-sync" \
+        /etc/kernel/postinst.d/50-sa02m-fat-sync
+    log OK "kernel-postinst hook установлен (WB linux-image-*.deb → FAT auto-sync)"
+fi
+
 # ca_02m.service (After=network.target) заменён ранним sa02m-pre-start — отключаем дубль
 if [ -f "$ETC_REPO/ca_02m.sh" ]; then
     install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/sbin/ca_02m.sh

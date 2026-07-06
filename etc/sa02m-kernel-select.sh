@@ -11,8 +11,13 @@ FAT_MNT=/mnt/fat
 CANON_DIR=/usr/local/share/sa02m/kernel
 ZIMAGE_MIN=5000000
 ZIMAGE_MAX=12000000
-SMP_VER_DEFAULT=6.1.0-rc6
-RT_VER_DEFAULT=6.1.0-rc6-rt4
+# С 2026-07: SA-02м переходит с локально патченного Starterkit-ядра
+# 6.1.0-rc6 на форк wirenboard/linux (5.10.35). Значения ниже — по умолчанию
+# для linux-image-sa02m / linux-image-sa02m-rt из [../kernel-port/](../kernel-port/README.md).
+# На «старом» ядре /etc/sa02m_kernel.conf сохранил свои значения, они
+# перекроют defaults ниже — миграция происходит после первой установки .deb.
+SMP_VER_DEFAULT=5.10.35-sa02m
+RT_VER_DEFAULT=5.10.35-sa02m-rt
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-kernel-select: $*" >>"$LOG" 2>&1 || true; }
 

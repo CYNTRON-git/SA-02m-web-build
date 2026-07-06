@@ -1,0 +1,441 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Device Tree Source for the ЦИНТРОН SA-02м (2Eth) industrial gateway.
+ *
+ *   SoC:      Allwinner A40i (sun8i-r40) — quad-core Cortex-A7 @ 1.2 GHz
+ *   SoM:      Starterkit SK-A40i-NANO SODIMM (Cyntron A40i-2Eth)
+ *   Carrier:  ЦИНТРОН SA-02м
+ *
+ * Basis: `sun8i-a40i-nano2e-none-sk.dts` from Starterkit Buildroot VM
+ * (see [kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts](../../../../reference/sun8i-a40i-nano2e-none-sk.dts) for the untouched original).
+ *
+ * Ported to wirenboard/linux (release/wb-2606/wb7-bullseye, kernel 5.10.35) with:
+ *   - dropped `sun8i-r40-cpu-opp.dtsi` include (OPP table is inline in `sun8i-r40.dtsi` in the WB tree)
+ *   - removed local re-definitions of `uart4_ph_pins` / `uart5_pi_pins` (identical to the in-tree groups)
+ *   - added `cyntron,sa-02m` to the compatible chain so userspace matches SA-02м explicitly while
+ *     still catching Starterkit-oriented probes for `sk,a40i-nano-2e`
+ *
+ * External I2C peripherals NOT declared here (they are controlled via /dev/i2c-* from userspace):
+ *   - PCA9536 GPIO expander on i2c-2 @0x41 — driven by MPLC4 / sa02m-hw-backend
+ *   - PCF8563 RTC on i2c-3 @0x51 (only on some SA-02м-2 revisions) — driven by
+ *     the current userspace tooling; see [kernel-port/README.md](../../../../README.md#i2c-3-pcf8563) for the DTS enable procedure.
+ *
+ * Copyright (c) 2026 ЦИНТРОН
+ * Copyright (c) 2022 Starterkit
+ */
+
+/dts-v1/;
+
+#include "sun8i-r40.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pwm/pwm.h>
+
+#define PIN_PA &pio 0
+#define PIN_PB &pio 1
+#define PIN_PC &pio 2
+#define PIN_PD &pio 3
+#define PIN_PE &pio 4
+#define PIN_PF &pio 5
+#define PIN_PG &pio 6
+#define PIN_PH &pio 7
+#define PIN_PI &pio 8
+
+/ {
+	model = "Cyntron SA-02m";
+	compatible = "cyntron,sa-02m",
+		     "sk,a40i-nano-2e",
+		     "allwinner,sun8i-r40";
+
+	aliases {
+		ethernet0 = &emac;
+		ethernet1 = &gmac;
+		serial0 = &uart0;
+		serial1 = &uart1;
+		serial2 = &uart2;
+		serial3 = &uart3;
+		serial4 = &uart4;
+		serial5 = &uart5;
+		serial6 = &uart6;
+		serial7 = &uart7;
+		mmc0 = &mmc0;
+		mmc1 = &mmc1;
+		mmc2 = &mmc2;
+		mmc3 = &mmc3;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	regulators {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		reg_3p3v: regulator@0 {
+			reg = <0>;
+			compatible = "regulator-fixed";
+			regulator-name = "3P3V";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+		};
+
+		/*
+		 * USB VBUS is hardwired on SA-02м (no external switch).
+		 * We still declare a fixed regulator so `&usbphy` can reference it
+		 * uniformly; the enable-gpio branch of the original SK DTS is
+		 * intentionally omitted.
+		 */
+		reg_usb0_vbus: regulator@1 {
+			reg = <1>;
+			compatible = "regulator-fixed";
+			regulator-name = "usb0-vbus";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		eth0_link {
+			label = "sa02m:green:eth0-link";
+			gpios = <PIN_PB 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+			linux,default-trigger = "1c0b080.mdio-mii:00:link";
+		};
+
+		eth1_link {
+			label = "sa02m:green:eth1-link";
+			gpios = <PIN_PI 13 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+			linux,default-trigger = "stmmac-1:00:link";
+		};
+	};
+
+	iio-hwmon-axp-temp {
+		compatible = "iio-hwmon";
+		io-channels = <&axp_adc 0>;
+	};
+
+	iio-hwmon-axp {
+		compatible = "iio-hwmon";
+		io-channels = <&axp_adc 0>, <&axp_adc 1>, <&axp_adc 2>;
+	};
+};
+
+&can0 {
+	pinctrl-0 = <&can_pa_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/*
+ * NOTE: mainline / WB r40 tree in kernel 5.10.35 does not yet expose the
+ * A40i built-in audio codec as a &codec label. Starterkit DTS enables it
+ * for headphone output, but SA-02м does not route audio out — codec block
+ * is dropped here. When A40i codec is added upstream (already in
+ * sun4i-a10-codec bindings for 6.1+), we can re-add:
+ *   &codec { status = "okay"; };
+ */
+
+&cpu0 {
+	cpu-supply = <&reg_dcdc2>;
+};
+
+&ehci1 { status = "okay"; };
+&ehci2 { status = "okay"; };
+&ohci1 { status = "okay"; };
+&ohci2 { status = "okay"; };
+&usb_otg { status = "okay"; };
+
+&usbphy {
+	usb0_vbus-supply = <&reg_usb0_vbus>;
+	usb1_vbus-supply = <&reg_usb0_vbus>;
+	usb2_vbus-supply = <&reg_usb0_vbus>;
+	status = "okay";
+};
+
+&emac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&emac_ph_pins>;
+	phy-handle = <&phy2>;
+	phy-mode = "mii";
+	phy-supply = <&reg_dcdc1>;
+	status = "okay";
+};
+
+&emac_mdio {
+	status = "okay";
+
+	phy2: ethernet-phy@0 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+
+		reset-gpios = <PIN_PH 12 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <100000>;
+
+		icplus,select-rx-error;
+		status = "okay";
+	};
+};
+
+&gmac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&gmac_mii_pins_reduced>;
+	phy-handle = <&phy1>;
+	phy-mode = "mii";
+	phy-supply = <&reg_dcdc1>;
+	status = "okay";
+};
+
+&gmac_mdio {
+	phy1: ethernet-phy@0 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+
+		reset-gpios = <PIN_PH 13 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <100000>;
+
+		icplus,select-rx-error;
+		status = "okay";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+
+	axp22x: pmic@34 {
+		compatible = "x-powers,axp221";
+		reg = <0x34>;
+		interrupt-parent = <&nmi_intc>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	clock-frequency = <400000>;
+
+	rtc0: rtc@68 {
+		compatible = "maxim,ds3231,d1307";
+		reg = <0x68>;
+	};
+};
+
+/*
+ * i2c-2 hosts the PCA9536 GPIO expander (Alarm LED, DO1, Beeper, spare) on
+ * SA-02м. We DO NOT declare it as a DT node — userspace (MPLC4, sa02m-hw-backend,
+ * mqtt-sa02m-hw) drives it via /dev/i2c-2 raw transactions. Adding the kernel
+ * driver here would race with those daemons and break the current stack.
+ * Keep the controller enabled (default from `sun8i-r40.dtsi`) but no children.
+ *
+ * The known "IRQ storm on boot" caused by PCA9536 holding SDA low is worked
+ * around at userspace startup via `etc/sa02m-i2c2-unbind.sh` + udev rule.
+ */
+
+&i2c3 {
+	status = "okay";
+
+	/*
+	 * Uncomment on SA-02м revisions that ship PCF8563 on I2C-3 @0x51.
+	 * When enabled, also disable/renumber `rtc0: rtc@68` on i2c1 to
+	 * keep /dev/rtc0 pointing to the PCF8563 (Wiren Board convention).
+	 *
+	 * pcf8563: rtc@51 {
+	 *     compatible = "nxp,pcf8563";
+	 *     reg = <0x51>;
+	 * };
+	 */
+};
+
+&mmc2 {
+	vmmc-supply = <&reg_dcdc1>;
+	vqmmc-supply = <&reg_aldo2>;
+	bus-width = <8>;
+	non-removable;
+	cap-mmc-hw-reset;
+	mmc-hs200-1_8v;
+	status = "okay";
+};
+
+&mmc3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc3_pins>;
+	bus-width = <4>;
+	/* cd-gpios = <PIN_PI 13 GPIO_ACTIVE_LOW>; — PI13 занят eth1_link на SA-02м */
+	vmmc-supply = <&reg_dcdc1>;
+	vqmmc-supply = <&reg_dcdc1>;
+	no-1-8-v;
+	status = "okay";
+};
+
+&pio {
+	vcc-pa-supply = <&reg_dcdc1>;
+	vcc-pc-supply = <&reg_aldo2>;	/* eMMC VDDIO, SoM Wi-Fi GPIOs */
+	vcc-pd-supply = <&reg_dcdc1>;
+	vcc-pe-supply = <&reg_eldo3>;
+	vcc-pf-supply = <&reg_dcdc1>;
+	vcc-pg-supply = <&reg_dcdc1>;	/* microSD 3v3 */
+	vcc-ph-supply = <&reg_dcdc1>;	/* VCC-IO */
+	vcc-pi-supply = <&reg_dcdc1>;	/* VCC-IO */
+
+	emac_ph_pins: emac-ph-pins {
+		pins = "PH8", "PH9", "PH10", "PH11",
+		       "PH14", "PH15", "PH16", "PH17",
+		       "PH18", "PH19", "PH20", "PH21",
+		       "PH22", "PH23", "PH24", "PH25",
+		       "PH26", "PH27";
+		drive-strength = <40>;
+		function = "emac";
+	};
+
+	/* GMAC without ECOL/ETXERR — SA-02м/SK-A40i-NANO wiring only routes 16 lines */
+	gmac_mii_pins_reduced: gmac-mii-pins-reduced {
+		pins = "PA0", "PA1", "PA2", "PA3",
+		       "PA4", "PA5", "PA6", "PA7",
+		       "PA8", "PA9", "PA10", "PA11",
+		       "PA12", "PA13", "PA14", "PA15";
+		drive-strength = <40>;
+		function = "gmac";
+	};
+
+	mmc3_pins: mmc3-pins {
+		pins = "PI4", "PI5", "PI6",
+		       "PI7", "PI8", "PI9";
+		function = "mmc3";
+		drive-strength = <30>;
+		bias-pull-up;
+	};
+};
+
+#include "axp22x.dtsi"
+
+&reg_ldo_io0 {
+	regulator-min-microvolt = <2500000>;
+	regulator-max-microvolt = <2500000>;
+	regulator-name = "vdd2v5-sata";
+	status = "okay";
+};
+
+/* ALDO1: 0.7V~3.3V, 300 mA — VCC-TVIN, VCC-TVOUT */
+&reg_aldo1 {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "tvd";
+};
+
+/* ALDO2: 0.7V~3.3V, 300 mA — eMMC VDDQ, VCC-PC */
+&reg_aldo2 {
+	regulator-always-on;
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-name = "aldo2";
+};
+
+/* ALDO3: 0.7V~3.3V, 200 mA — VCC-PLL, AVCC */
+&reg_aldo3 {
+	regulator-always-on;
+	regulator-min-microvolt = <3000000>;
+	regulator-max-microvolt = <3000000>;
+	regulator-init-microvolt = <3000000>;
+	regulator-name = "avcc-pll";
+};
+
+/* DC1SW: DCDC1 switch → GMAC PHY 3v3 */
+&reg_dc1sw {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "vcc-gmac-phy";
+};
+
+/* DCDC1: 3.3V — VCC-IO для процессора, периферии, eMMC, ETH PHY */
+&reg_dcdc1 {
+	regulator-always-on;
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "vcc-3v3";
+};
+
+/* DCDC2: 1.0–1.3V — CPU core */
+&reg_dcdc2 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1300000>;
+	regulator-name = "vdd-cpu";
+};
+
+/* DCDC3: 1.0–1.3V — CPU vdd-sys */
+&reg_dcdc3 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1300000>;
+	regulator-name = "vdd-sys";
+};
+
+/* DCDC5: 1.35V — DDR3 */
+&reg_dcdc5 {
+	regulator-always-on;
+	regulator-min-microvolt = <1350000>;
+	regulator-max-microvolt = <1350000>;
+	regulator-name = "vcc-dram";
+};
+
+/* DLDO1: 1.8V — microSD reference */
+&reg_dldo1 {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-name = "vcc-sd-alt";
+	regulator-always-on;
+};
+
+/* ELDO3: 1.8–3.3V — VCC-PE (default 3.3V) */
+&reg_eldo3 {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-init-microvolt = <3300000>;
+	regulator-always-on;
+	regulator-name = "vcc-pe";
+};
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pb_pins>;
+	status = "okay";
+};
+
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pg_pins>;
+	status = "okay";
+};
+
+&uart4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_ph_pins>;
+	/*
+	 * SA-02м RS-485 transceivers have auto-DE — leave rts-gpios/RS-485 mode
+	 * disabled here so userspace can override via TIOCSRS485 when needed.
+	 */
+	status = "okay";
+};
+
+&uart5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_pi_pins>;
+	status = "okay";
+};
+
+&uart7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart7_pi_pins>;
+	status = "okay";
+};
+
+&rtc {
+	status = "okay";
+};

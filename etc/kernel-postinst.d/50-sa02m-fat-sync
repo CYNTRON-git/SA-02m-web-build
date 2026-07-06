@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# 50-sa02m-fat-sync — вызывается dpkg через `run-parts /etc/kernel/postinst.d/`
+# после установки любого linux-image-*.deb. Синхронизирует zImage/dtb на
+# FAT-раздел /dev/mmcblk2p1 (откуда U-Boot их грузит) и сохраняет каноничную
+# копию в /usr/local/share/sa02m/kernel/ — этой копией пользуется
+# `sa02m-kernel-select.sh` при переключении между SMP и RT.
+#
+# Аргументы от dpkg: $1 = kernel_version, $2 = /boot/vmlinuz-<ver> (может отсутствовать)
+#
+# Идемпотентен: повторный запуск с той же версией — no-op.
+
+set -euo pipefail
+
+VER="${1:-}"
+VMLINUZ="${2:-}"
+
+if [ -z "$VER" ]; then
+	echo "50-sa02m-fat-sync: missing kernel version arg, skipping" >&2
+	exit 0
+fi
+
+FAT_DEV=/dev/mmcblk2p1
+FAT_MNT=/mnt/boot_fat
+CANON_DIR=/usr/local/share/sa02m/kernel
+LOG=/var/log/sa02m_install.log
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') 50-sa02m-fat-sync: $*" | tee -a "$LOG" >&2 || true; }
+
+is_sa02m() {
+	# On non-SA-02м hosts (dev workstations, WB devices) this hook must be a no-op.
+	if [ -r /etc/sa02m_hw.conf ] || \
+	   grep -qE '(cyntron,sa-02m|sk,a40i-nano-2e)' /proc/device-tree/compatible 2>/dev/null; then
+		return 0
+	fi
+	return 1
+}
+
+if ! is_sa02m; then
+	log "not running on SA-02м (compatible mismatch and no /etc/sa02m_hw.conf) — skipping"
+	exit 0
+fi
+
+flavour_of() {
+	case "$1" in
+		*-rt*|*rt[0-9]*) echo rt ;;
+		*)              echo smp ;;
+	esac
+}
+
+FLAVOUR="$(flavour_of "$VER")"
+
+SRC_ZIMAGE=""
+for cand in \
+    "/boot/vmlinuz-$VER" \
+    "/boot/zImage-$VER" \
+    "$VMLINUZ" \
+    "/usr/lib/linux-image-$VER/zImage" \
+    "/usr/lib/linux-image-$VER/vmlinuz"; do
+	if [ -n "$cand" ] && [ -f "$cand" ]; then
+		SRC_ZIMAGE="$cand"
+		break
+	fi
+done
+
+if [ -z "$SRC_ZIMAGE" ]; then
+	log "could not find zImage/vmlinuz for $VER — skipping FAT sync"
+	exit 0
+fi
+
+SRC_DTB=""
+for cand in \
+    "/usr/lib/linux-image-$VER/sun8i-r40-sa02m.dtb" \
+    "/usr/lib/linux-image-$VER/allwinner/sun8i-r40-sa02m.dtb" \
+    "/boot/dtbs/$VER/allwinner/sun8i-r40-sa02m.dtb" \
+    "/boot/dtbs/$VER/sun8i-r40-sa02m.dtb" \
+    "/boot/sun8i-r40-sa02m.dtb"; do
+	if [ -f "$cand" ]; then
+		SRC_DTB="$cand"
+		break
+	fi
+done
+
+mkdir -p "$CANON_DIR"
+cp -f "$SRC_ZIMAGE" "$CANON_DIR/zImage.$FLAVOUR"
+log "canon: $CANON_DIR/zImage.$FLAVOUR ← $SRC_ZIMAGE (ver=$VER)"
+
+if [ -n "$SRC_DTB" ]; then
+	cp -f "$SRC_DTB" "$CANON_DIR/sun8i-a40i-sk.dtb"
+	log "canon: $CANON_DIR/sun8i-a40i-sk.dtb ← $SRC_DTB"
+fi
+
+FAT_MOUNTED=0
+if ! mountpoint -q "$FAT_MNT" 2>/dev/null; then
+	mkdir -p "$FAT_MNT"
+	if mount "$FAT_DEV" "$FAT_MNT" 2>/dev/null; then
+		FAT_MOUNTED=1
+	else
+		log "could not mount $FAT_DEV — canonical copy is written but FAT sync skipped"
+		exit 0
+	fi
+fi
+
+# Copy DTB using the filename baked into boot.scr (sun8i-a40i-sk.dtb).
+# Rename here to keep boot.scr untouched.
+if [ -n "$SRC_DTB" ]; then
+	cp -f "$SRC_DTB" "$FAT_MNT/sun8i-a40i-sk.dtb"
+	log "FAT: $FAT_MNT/sun8i-a40i-sk.dtb ← $SRC_DTB"
+fi
+
+# Save a per-flavour zImage on the FAT partition so
+# `sa02m-kernel-select.sh` can toggle quickly without a rebuild.
+cp -f "$SRC_ZIMAGE" "$FAT_MNT/zImage.$FLAVOUR"
+log "FAT: $FAT_MNT/zImage.$FLAVOUR ← $SRC_ZIMAGE"
+
+# If the currently-active flavour matches the installed one, also update
+# the actively-booted `zImage` file. Otherwise leave it as-is; the operator
+# is expected to trigger a switch via `sa02m-kernel-select.sh set <flav>`.
+CUR_FLAVOUR="smp"
+case "$(uname -r 2>/dev/null || echo)" in
+	*-rt*|*rt[0-9]*) CUR_FLAVOUR=rt ;;
+esac
+if [ "$FLAVOUR" = "$CUR_FLAVOUR" ]; then
+	cp -f "$SRC_ZIMAGE" "$FAT_MNT/zImage"
+	log "FAT: $FAT_MNT/zImage ← $SRC_ZIMAGE (matches running flavour=$CUR_FLAVOUR)"
+fi
+
+sync
+
+if [ "$FAT_MOUNTED" = 1 ]; then
+	umount "$FAT_MNT" 2>/dev/null || true
+fi
+
+log "done: kernel=$VER flavour=$FLAVOUR"
+exit 0
