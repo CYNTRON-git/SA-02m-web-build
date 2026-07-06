@@ -1,6 +1,6 @@
 #!/bin/sh
-IFACE=end1
-log() { logger -t sa02m-end1-coldboot -- "$*"; }
+IFACE=eth1
+log() { logger -t sa02m-eth1-coldboot -- "$*"; }
 [ -d "/sys/class/net/$IFACE" ] || exit 0
 [ -f "/etc/network/interfaces.d/${IFACE}.conf" ] || exit 0
 carrier=$(cat /sys/class/net/$IFACE/carrier 2>/dev/null || echo 0)

@@ -1,0 +1,38 @@
+# SA-02m U-Boot boot script (FAT /dev/mmcblk2p1, mmc dev 1 in U-Boot)
+# Build: mkimage -C none -A arm -T script -d boot.cmd.sa02m -n "SA-02m" boot.scr
+#
+# Layout on eMMC:
+#   sector 16 (8 KiB)     — SPL + U-Boot proper (u-boot-sunxi-with-spl.bin, ~1 MiB)
+#   partition 1 (FAT16)   — /boot/zImage, DTB, boot.scr
+#   partition 2 (ext4)    — Debian bullseye rootfs (mounted as /)
+#
+# In U-Boot on sun8i-r40 (Allwinner A40i / SA-02m):
+#   mmc dev 0 → microSD    (kernel-side /dev/mmcblk0)
+#   mmc dev 1 → eMMC       (kernel-side /dev/mmcblk2 — different numbering, that is normal)
+
+# В production все /dev/ttyS* (S0..S7) назначены как RS-485 / COM для Modbus
+# и MR-02m flasher. Debug console на ttyS0 будет мешать протоколу Modbus RTU
+# (RS-485-0 = ttyS0). Kernel-сообщения направлены на tty1 (виртуальный терминал
+# без физического output) — journalctl -b по-прежнему сохраняет весь лог.
+# Для отладки: SSH через Ethernet. USB gadget console (ttyGS0) требует
+# CONFIG_USB_GADGET/G_SERIAL/CONFIGFS в kernel — открытый TODO по kernel-port.
+setenv bootargs console=tty1 loglevel=3 quiet root=/dev/mmcblk2p2 rootwait rw threadirqs panic=10
+
+mmc dev 1
+
+# zImage on FAT (partition 1); explicit dev:part avoids picking a stale default
+fatload mmc 1:1 ${kernel_addr_r} zImage
+
+# DTB with fallbacks for legacy Armbian naming
+if fatload mmc 1:1 ${fdt_addr_r} sun8i-r40-sa02m.dtb; then
+	echo "SA-02m: loaded sun8i-r40-sa02m.dtb"
+else
+	if fatload mmc 1:1 ${fdt_addr_r} sun8i-a40i-sk.dtb; then
+		echo "SA-02m: loaded sun8i-a40i-sk.dtb (fallback)"
+	else
+		fatload mmc 1:1 ${fdt_addr_r} sun8i-a40i-nano2e-none-sk.dtb
+		echo "SA-02m: loaded sun8i-a40i-nano2e-none-sk.dtb (legacy fallback)"
+	fi
+fi
+
+bootz ${kernel_addr_r} - ${fdt_addr_r}

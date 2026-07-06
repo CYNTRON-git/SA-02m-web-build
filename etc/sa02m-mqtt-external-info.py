@@ -6,7 +6,7 @@ import subprocess
 
 
 def primary_ipv4() -> str:
-    for iface in ("end0", "end1"):
+    for iface in ("eth0", "eth1"):
         try:
             out = subprocess.check_output(
                 ["ip", "-o", "-4", "addr", "show", "dev", iface],

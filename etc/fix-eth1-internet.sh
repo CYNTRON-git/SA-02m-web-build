@@ -1,19 +1,19 @@
 #!/bin/bash
 # =============================================================================
-# fix-end1-internet.sh — SA-02m-2: восстановление end1 (GMAC) + интернет
+# fix-eth1-internet.sh — SA-02m-2: восстановление eth1 (GMAC) + интернет
 #
-# Применяет все накопленные фиксы из BUGLOG для работы второго Ethernet (end1):
+# Применяет все накопленные фиксы из BUGLOG для работы второго Ethernet (eth1):
 #   1. DTB: GMAC okay + dc1sw regulator-always-on + syscon
 #   2. threadirqs в bootargs (boot.scr) — защита от IRQ storm при PCA9536/I2C3
-#   3. end1.conf: allow-hotplug + DHCP + metric 100 + post-up default route
-#   4. end0.conf: metric 200 (end1 DHCP выигрывает дефолтный маршрут)
+#   3. eth1.conf: allow-hotplug + DHCP + metric 100 + post-up default route
+#   4. eth0.conf: metric 200 (eth1 DHCP выигрывает дефолтный маршрут)
 #   5. dhclient exit hook: default route при RFC3442 (option 121)
 #   6. fix-eth.sh: текущая версия — без bounce, с восстановлением route из lease
-#   7. sa02m-end1-coldboot: oneshot-сервис для cold-boot autoneg PHY
+#   7. sa02m-eth1-coldboot: oneshot-сервис для cold-boot autoneg PHY
 #   8. Удаление устаревшего sa02m-phy-coldboot
 #   9. udev: unbind i2c-2 при IRQ storm от PCA9536
 #
-# Запуск: bash /tmp/fix-end1-internet.sh
+# Запуск: bash /tmp/fix-eth1-internet.sh
 # Требует: root, dtc (apt install device-tree-compiler), mkimage (apt install u-boot-tools)
 # =============================================================================
 
@@ -267,59 +267,59 @@ step_bootscr_threadirqs() {
 }
 
 # =============================================================================
-# ШАГ 3: end1.conf — allow-hotplug + DHCP + metric 100 + post-up route
+# ШАГ 3: eth1.conf — allow-hotplug + DHCP + metric 100 + post-up route
 # =============================================================================
-step_end1_conf() {
-    log_step "ШАГ 3: /etc/network/interfaces.d/end1.conf"
+step_eth1_conf() {
+    log_step "ШАГ 3: /etc/network/interfaces.d/eth1.conf"
 
-    local conf="/etc/network/interfaces.d/end1.conf"
+    local conf="/etc/network/interfaces.d/eth1.conf"
     local need_write=0
 
     if [ ! -f "$conf" ]; then
-        log_warn "end1.conf отсутствует — создаём"
+        log_warn "eth1.conf отсутствует — создаём"
         need_write=1
     else
         # Проверяем ключевые признаки корректной конфигурации
-        if grep -q "^auto end1" "$conf" 2>/dev/null; then
-            log_warn "end1.conf: 'auto end1' → заменяем на 'allow-hotplug end1'"
+        if grep -q "^auto eth1" "$conf" 2>/dev/null; then
+            log_warn "eth1.conf: 'auto eth1' → заменяем на 'allow-hotplug eth1'"
             need_write=1
         fi
         if ! grep -q "metric" "$conf" 2>/dev/null; then
-            log_warn "end1.conf: отсутствует metric"
+            log_warn "eth1.conf: отсутствует metric"
             need_write=1
         fi
         if ! grep -q "post-up" "$conf" 2>/dev/null; then
-            log_warn "end1.conf: отсутствует post-up default route"
+            log_warn "eth1.conf: отсутствует post-up default route"
             need_write=1
         fi
         if [ $need_write -eq 0 ]; then
-            log_ok "end1.conf корректен"
+            log_ok "eth1.conf корректен"
             return
         fi
     fi
 
     mkdir -p /etc/network/interfaces.d
-    cat > "$conf" <<'END1CONF'
-allow-hotplug end1
-iface end1 inet dhcp
+    cat > "$conf" <<'eth1CONF'
+allow-hotplug eth1
+iface eth1 inet dhcp
     metric 100
-    post-up ip route replace default via 192.168.1.1 dev end1 metric 100 || true
-END1CONF
+    post-up ip route replace default via 192.168.1.1 dev eth1 metric 100 || true
+eth1CONF
 
-    log_ok "end1.conf обновлён (allow-hotplug + DHCP + metric 100 + post-up)"
+    log_ok "eth1.conf обновлён (allow-hotplug + DHCP + metric 100 + post-up)"
     CHANGED=1
 }
 
 # =============================================================================
-# ШАГ 4: end0.conf — metric 200 (чтобы end1 DHCP был дефолтным маршрутом)
+# ШАГ 4: eth0.conf — metric 200 (чтобы eth1 DHCP был дефолтным маршрутом)
 # =============================================================================
-step_end0_metric() {
-    log_step "ШАГ 4: end0.conf metric 200"
+step_eth0_metric() {
+    log_step "ШАГ 4: eth0.conf metric 200"
 
-    local conf="/etc/network/interfaces.d/end0.conf"
+    local conf="/etc/network/interfaces.d/eth0.conf"
 
     if [ ! -f "$conf" ]; then
-        log_warn "end0.conf не найден — пропуск"
+        log_warn "eth0.conf не найден — пропуск"
         return
     fi
 
@@ -327,26 +327,26 @@ step_end0_metric() {
         local m
         m=$(awk '/^[[:space:]]*metric/{print $2; exit}' "$conf")
         if [ "$m" = "200" ]; then
-            log_ok "end0.conf: metric 200 уже установлен"
+            log_ok "eth0.conf: metric 200 уже установлен"
             return
         fi
         # Заменяем на 200
         sed -i 's/^[[:space:]]*metric.*/    metric 200/' "$conf"
-        log_ok "end0.conf: metric обновлён → 200"
+        log_ok "eth0.conf: metric обновлён → 200"
     else
         # Добавляем metric 200 после последней опции iface
         echo "    metric 200" >> "$conf"
-        log_ok "end0.conf: metric 200 добавлен"
+        log_ok "eth0.conf: metric 200 добавлен"
     fi
     CHANGED=1
 
-    # Обновляем текущий маршрут если end0 уже поднят
-    if ip link show end0 | grep -q "state UP" 2>/dev/null; then
+    # Обновляем текущий маршрут если eth0 уже поднят
+    if ip link show eth0 | grep -q "state UP" 2>/dev/null; then
         local cur_gw
-        cur_gw=$(ip route show default dev end0 2>/dev/null | awk '{print $3; exit}')
+        cur_gw=$(ip route show default dev eth0 2>/dev/null | awk '{print $3; exit}')
         if [ -n "$cur_gw" ]; then
-            ip route replace default via "$cur_gw" dev end0 metric 200 2>/dev/null || true
-            log_info "  end0 default route: metric обновлён в runtime"
+            ip route replace default via "$cur_gw" dev eth0 metric 200 2>/dev/null || true
+            log_info "  eth0 default route: metric обновлён в runtime"
         fi
     fi
 }
@@ -357,7 +357,7 @@ step_end0_metric() {
 step_dhclient_hook() {
     log_step "ШАГ 5: dhclient exit hook (RFC3442 default route)"
 
-    local hook="/etc/dhcp/dhclient-exit-hooks.d/end1-default-route"
+    local hook="/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route"
 
     if [ -f "$hook" ] && grep -q "ip route replace default" "$hook" 2>/dev/null; then
         log_ok "dhclient exit hook уже установлен"
@@ -367,10 +367,10 @@ step_dhclient_hook() {
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
     cat > "$hook" <<'HOOKEOF'
 #!/bin/sh
-if [ "$interface" = "end1" ] && [ -n "$new_routers" ]; then
+if [ "$interface" = "eth1" ] && [ -n "$new_routers" ]; then
     case "$reason" in
         BOUND|RENEW|REBIND|REBOOT)
-            ip route replace default via $new_routers dev end1 metric 100 2>/dev/null || true
+            ip route replace default via $new_routers dev eth1 metric 100 2>/dev/null || true
             ;;
     esac
 fi
@@ -697,14 +697,14 @@ FIXETHEOF
 }
 
 # =============================================================================
-# ШАГ 7: sa02m-end1-coldboot — oneshot-сервис для cold-boot autoneg
+# ШАГ 7: sa02m-eth1-coldboot — oneshot-сервис для cold-boot autoneg
 # =============================================================================
-step_end1_coldboot() {
-    log_step "ШАГ 7: sa02m-end1-coldboot"
+step_eth1_coldboot() {
+    log_step "ШАГ 7: sa02m-eth1-coldboot"
 
     # Скрипт
-    local sh_dst="/usr/local/bin/sa02m-end1-coldboot.sh"
-    local svc_dst="/etc/systemd/system/sa02m-end1-coldboot.service"
+    local sh_dst="/usr/local/bin/sa02m-eth1-coldboot.sh"
+    local svc_dst="/etc/systemd/system/sa02m-eth1-coldboot.service"
 
     local need_sh=0 need_svc=0
 
@@ -718,12 +718,12 @@ step_end1_coldboot() {
     if [ $need_sh -eq 1 ]; then
         cat > "$sh_dst" <<'CBEOF'
 #!/bin/bash
-# SA-02m: end1 cold-boot autoneg recovery (single ethtool -r if no carrier)
-IFACE=end1
+# SA-02m: eth1 cold-boot autoneg recovery (single ethtool -r if no carrier)
+IFACE=eth1
 WAIT_INITIAL=30
 WAIT_AUTONEG=15
 
-log() { echo "[$(date '+%H:%M:%S')] sa02m-end1-coldboot: $*"; }
+log() { echo "[$(date '+%H:%M:%S')] sa02m-eth1-coldboot: $*"; }
 
 sleep "$WAIT_INITIAL"
 
@@ -747,31 +747,31 @@ else
 fi
 CBEOF
         chmod 755 "$sh_dst"
-        log_ok "sa02m-end1-coldboot.sh установлен"
+        log_ok "sa02m-eth1-coldboot.sh установлен"
         CHANGED=1
     else
-        log_ok "sa02m-end1-coldboot.sh уже актуален"
+        log_ok "sa02m-eth1-coldboot.sh уже актуален"
     fi
 
     if [ $need_svc -eq 1 ]; then
         cat > "$svc_dst" <<'SVCEOF'
 [Unit]
-Description=SA-02m: end1 cold-boot autoneg recovery (single ethtool -r if no carrier)
+Description=SA-02m: eth1 cold-boot autoneg recovery (single ethtool -r if no carrier)
 After=network.target networking.service
 Wants=network.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=no
-ExecStart=/usr/local/bin/sa02m-end1-coldboot.sh
+ExecStart=/usr/local/bin/sa02m-eth1-coldboot.sh
 
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-        log_ok "sa02m-end1-coldboot.service установлен"
+        log_ok "sa02m-eth1-coldboot.service установлен"
         CHANGED=1
     else
-        log_ok "sa02m-end1-coldboot.service уже существует"
+        log_ok "sa02m-eth1-coldboot.service уже существует"
     fi
 }
 
@@ -885,42 +885,42 @@ step_reload_apply() {
     systemctl daemon-reload 2>/dev/null || true
 
     # Включаем новые сервисы
-    if [ -f /etc/systemd/system/sa02m-end1-coldboot.service ]; then
-        systemctl enable sa02m-end1-coldboot 2>/dev/null || true
-        log_info "  sa02m-end1-coldboot.service включён"
+    if [ -f /etc/systemd/system/sa02m-eth1-coldboot.service ]; then
+        systemctl enable sa02m-eth1-coldboot 2>/dev/null || true
+        log_info "  sa02m-eth1-coldboot.service включён"
     fi
 
     # Перезагружаем udev правила
     udevadm control --reload-rules 2>/dev/null || true
     log_info "  udev правила перезагружены"
 
-    # Если end1 уже существует — пробуем поднять через allow-hotplug
-    if [ -d /sys/class/net/end1 ]; then
+    # Если eth1 уже существует — пробуем поднять через allow-hotplug
+    if [ -d /sys/class/net/eth1 ]; then
         # Проверяем carrier
         local carrier
-        carrier=$(cat /sys/class/net/end1/carrier 2>/dev/null || echo 0)
+        carrier=$(cat /sys/class/net/eth1/carrier 2>/dev/null || echo 0)
         if [ "$carrier" = "1" ]; then
-            log_info "  end1 carrier UP — поднимаем ifup"
-            ifup end1 2>/dev/null || true
+            log_info "  eth1 carrier UP — поднимаем ifup"
+            ifup eth1 2>/dev/null || true
             sleep 2
         else
-            log_warn "  end1 carrier DOWN — PHY не связан с партнёром"
+            log_warn "  eth1 carrier DOWN — PHY не связан с партнёром"
             log_warn "  Запускаем однократный autoneg restart..."
-            ip link set end1 up 2>/dev/null || true
-            ethtool -r end1 2>/dev/null || mii-tool -r end1 2>/dev/null || true
+            ip link set eth1 up 2>/dev/null || true
+            ethtool -r eth1 2>/dev/null || mii-tool -r eth1 2>/dev/null || true
             log_info "  Ожидание 15 с..."
             sleep 15
-            carrier=$(cat /sys/class/net/end1/carrier 2>/dev/null || echo 0)
+            carrier=$(cat /sys/class/net/eth1/carrier 2>/dev/null || echo 0)
             if [ "$carrier" = "1" ]; then
-                log_info "  end1 carrier UP после autoneg restart"
-                ifup end1 2>/dev/null || true
+                log_info "  eth1 carrier UP после autoneg restart"
+                ifup eth1 2>/dev/null || true
                 sleep 2
             else
-                log_warn "  end1 всё ещё без carrier — может потребоваться power-cycle"
+                log_warn "  eth1 всё ещё без carrier — может потребоваться power-cycle"
             fi
         fi
     else
-        log_warn "  end1 не найден в системе — DTB должен быть пропатчен и применён (reboot)"
+        log_warn "  eth1 не найден в системе — DTB должен быть пропатчен и применён (reboot)"
     fi
 }
 
@@ -928,36 +928,36 @@ step_reload_apply() {
 # ШАГ 11: диагностика и итог
 # =============================================================================
 step_report() {
-    log_step "ШАГ 11: состояние end1"
+    log_step "ШАГ 11: состояние eth1"
 
     local ip gw carrier
-    carrier=$(cat /sys/class/net/end1/carrier 2>/dev/null | tr -d '\0' || echo "?")
-    ip=$(ip -4 addr show dev end1 2>/dev/null | awk '/inet /{print $2}')
-    gw=$(ip route show default dev end1 2>/dev/null | awk '{print $3; exit}')
+    carrier=$(cat /sys/class/net/eth1/carrier 2>/dev/null | tr -d '\0' || echo "?")
+    ip=$(ip -4 addr show dev eth1 2>/dev/null | awk '/inet /{print $2}')
+    gw=$(ip route show default dev eth1 2>/dev/null | awk '{print $3; exit}')
 
     echo ""
-    echo "  end1 carrier   : ${carrier}"
-    echo "  end1 IP        : ${ip:-нет}"
-    echo "  end1 def route : ${gw:-нет}"
+    echo "  eth1 carrier   : ${carrier}"
+    echo "  eth1 IP        : ${ip:-нет}"
+    echo "  eth1 def route : ${gw:-нет}"
     echo "  /proc/cmdline  : $(cat /proc/cmdline 2>/dev/null | grep -o 'threadirqs' || echo 'нет threadirqs')"
     echo ""
 
     if [ -n "$ip" ] && [ -n "$gw" ]; then
-        # Проверяем интернет через end1
-        if ping -c 2 -W 3 -I end1 8.8.8.8 >/dev/null 2>&1; then
-            log_ok "Интернет через end1: ДОСТУПЕН (ping 8.8.8.8 OK)"
+        # Проверяем интернет через eth1
+        if ping -c 2 -W 3 -I eth1 8.8.8.8 >/dev/null 2>&1; then
+            log_ok "Интернет через eth1: ДОСТУПЕН (ping 8.8.8.8 OK)"
         else
-            log_warn "end1 имеет IP и gateway, но ping 8.8.8.8 не прошёл"
+            log_warn "eth1 имеет IP и gateway, но ping 8.8.8.8 не прошёл"
             log_info "  Проверьте default route: ip route show"
         fi
     elif [ "$carrier" = "1" ] && [ -z "$ip" ]; then
-        log_warn "end1 carrier UP, но IP не получен — DHCP не ответил"
-        log_info "  Попробуйте: dhclient -v end1"
+        log_warn "eth1 carrier UP, но IP не получен — DHCP не ответил"
+        log_info "  Попробуйте: dhclient -v eth1"
     elif [ "$carrier" != "1" ]; then
         if grep -q "disabled" /proc/device-tree/soc/ethernet@1c50000/status 2>/dev/null; then
             log_err "GMAC отключён в DTB — требуется перезагрузка после патча DTB"
         else
-            log_warn "end1 нет физического линка — проверьте кабель"
+            log_warn "eth1 нет физического линка — проверьте кабель"
             log_info "  Или нужен power-cycle для PHY холодного старта"
         fi
     fi
@@ -984,17 +984,17 @@ require_root
 
 echo ""
 echo "============================================================"
-echo " SA-02m-2: fix-end1-internet.sh"
+echo " SA-02m-2: fix-eth1-internet.sh"
 echo " $(date '+%Y-%m-%d %H:%M:%S')"
 echo "============================================================"
 
 step_dtb
 step_bootscr_threadirqs
-step_end1_conf
-step_end0_metric
+step_eth1_conf
+step_eth0_metric
 step_dhclient_hook
 step_fix_eth_sh
-step_end1_coldboot
+step_eth1_coldboot
 step_legacy_cleanup
 step_udev_i2c2
 step_reload_apply

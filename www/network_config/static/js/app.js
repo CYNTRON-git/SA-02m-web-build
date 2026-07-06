@@ -299,7 +299,7 @@ function initDashboardPlaceholders() {
   setText('proc-info', uiT('Процессов: 0 / 0'));
   setText('cpu-freq', '0 ' + uiT('МГц'));
   setText('disk-io', uiT('R ' + fmtBytes(0) + ' / W ' + fmtBytes(0)));
-  ['end0-rx', 'end0-tx', 'end1-rx', 'end1-tx'].forEach(function (id) {
+  ['eth0-rx', 'eth0-tx', 'eth1-rx', 'eth1-tx'].forEach(function (id) {
     setText(id, fmtBytes(0));
   });
   ['cpu-model', 'armbian-info', 'kernel-info'].forEach(function (id) {
@@ -1146,14 +1146,14 @@ function formatEthIpWidget(ipRaw, modeRaw) {
 }
 
 function applyNetworkStatus(d) {
-  applyEthIfaceState('end0-state', d.end0_operstate);
-  applyEthIfaceState('end1-state', d.end1_operstate);
-  setText('end0-rx', fmtTrafficBytes(d.net_rx_bytes || 0));
-  setText('end0-tx', fmtTrafficBytes(d.net_tx_bytes || 0));
-  setText('end1-rx', fmtTrafficBytes(d.net1_rx_bytes || 0));
-  setText('end1-tx', fmtTrafficBytes(d.net1_tx_bytes || 0));
-  setText('end0-ip', formatEthIpWidget(d.end0_ip, d.end0_mode));
-  setText('end1-ip', formatEthIpWidget(d.end1_ip, d.end1_mode));
+  applyEthIfaceState('eth0-state', d.eth0_operstate);
+  applyEthIfaceState('eth1-state', d.eth1_operstate);
+  setText('eth0-rx', fmtTrafficBytes(d.net_rx_bytes || 0));
+  setText('eth0-tx', fmtTrafficBytes(d.net_tx_bytes || 0));
+  setText('eth1-rx', fmtTrafficBytes(d.net1_rx_bytes || 0));
+  setText('eth1-tx', fmtTrafficBytes(d.net1_tx_bytes || 0));
+  setText('eth0-ip', formatEthIpWidget(d.eth0_ip, d.eth0_mode));
+  setText('eth1-ip', formatEthIpWidget(d.eth1_ip, d.eth1_mode));
   if (d.ip) setText('tb-ip', d.ip);
 }
 
@@ -2329,21 +2329,21 @@ function loadConfig() {
     .then(d => {
       configLoaded = true;
       invalidateGaugeArcCache();
-      /* end0 */
-      const eth0en = document.getElementById('end0-en');
-      if (eth0en) eth0en.checked = !!(d.end0 && d.end0.enabled);
-      setVal('f-ip',   d.end0?.ip || '');
-      setVal('f-mask', d.end0?.netmask || '');
-      setVal('f-gw',   d.end0?.gateway || '');
-      setVal('f-dns',  d.end0?.dns || '');
+      /* eth0 */
+      const eth0en = document.getElementById('eth0-en');
+      if (eth0en) eth0en.checked = !!(d.eth0 && d.eth0.enabled);
+      setVal('f-ip',   d.eth0?.ip || '');
+      setVal('f-mask', d.eth0?.netmask || '');
+      setVal('f-gw',   d.eth0?.gateway || '');
+      setVal('f-dns',  d.eth0?.dns || '');
       toggleEth0Fields();
-      /* end1 */
-      const eth1en = document.getElementById('end1-en');
-      if (eth1en) eth1en.checked = d.end1?.enabled || false;
-      setVal('f-ip1',   d.end1?.ip || '');
-      setVal('f-mask1', d.end1?.netmask || '');
-      setVal('f-gw1',   d.end1?.gateway || '');
-      setVal('f-dns1',  d.end1?.dns || '');
+      /* eth1 */
+      const eth1en = document.getElementById('eth1-en');
+      if (eth1en) eth1en.checked = d.eth1?.enabled || false;
+      setVal('f-ip1',   d.eth1?.ip || '');
+      setVal('f-mask1', d.eth1?.netmask || '');
+      setVal('f-gw1',   d.eth1?.gateway || '');
+      setVal('f-dns1',  d.eth1?.dns || '');
       toggleEth1Fields();
       /* time */
       timeZoneSelectApplyFromDeviceOrBrowser(document.getElementById('f-tz'), d.timezone);
@@ -2361,8 +2361,8 @@ function loadConfig() {
 function setVal(id, val) { const e = document.getElementById(id); if (e) e.value = val; }
 
 function toggleEth0Fields() {
-  const en = document.getElementById('end0-en');
-  const wrap = document.getElementById('end0-fields');
+  const en = document.getElementById('eth0-en');
+  const wrap = document.getElementById('eth0-fields');
   if (en && wrap) {
     wrap.style.opacity = en.checked ? '1' : '.4';
     wrap.style.pointerEvents = en.checked ? '' : 'none';
@@ -2370,8 +2370,8 @@ function toggleEth0Fields() {
 }
 
 function toggleEth1Fields() {
-  const en = document.getElementById('end1-en');
-  const wrap = document.getElementById('end1-fields');
+  const en = document.getElementById('eth1-en');
+  const wrap = document.getElementById('eth1-fields');
   if (en && wrap) {
     wrap.style.opacity = en.checked ? '1' : '.4';
     wrap.style.pointerEvents = en.checked ? '' : 'none';
@@ -2382,11 +2382,11 @@ function toggleEth1Fields() {
    FORM SUBMISSION — network / time
    ══════════════════════════════════════════════════════════════════════════ */
 function initForms() {
-  /* end0 */
+  /* eth0 */
   const f0 = document.getElementById('net-form');
   if (f0) f0.addEventListener('submit', e => {
     e.preventDefault();
-    const en = document.getElementById('end0-en')?.checked;
+    const en = document.getElementById('eth0-en')?.checked;
     if (en) {
       if (!validateNetForm(f0)) return;
       if (!document.getElementById('f-ip')?.value.trim() || !document.getElementById('f-mask')?.value.trim()) {
@@ -2397,11 +2397,11 @@ function initForms() {
     submitForm(f0, () => { configLoaded = false; toast('Настройки Ethernet № 1 применены. Перезагрузите сеть.', 'success'); });
   });
 
-  /* end1 */
-  const f1 = document.getElementById('net-form-end1');
+  /* eth1 */
+  const f1 = document.getElementById('net-form-eth1');
   if (f1) f1.addEventListener('submit', e => {
     e.preventDefault();
-    const en = document.getElementById('end1-en')?.checked;
+    const en = document.getElementById('eth1-en')?.checked;
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
       toast('Укажите IP для Ethernet № 2', 'error'); return;
     }
@@ -2415,19 +2415,19 @@ function initForms() {
     submitForm(ft, () => toast('Время/таймзона применены', 'success'));
   });
 
-  /* end0 / end1 toggles */
-  const eth0en = document.getElementById('end0-en');
+  /* eth0 / eth1 toggles */
+  const eth0en = document.getElementById('eth0-en');
   if (eth0en) eth0en.addEventListener('change', toggleEth0Fields);
-  const eth1en = document.getElementById('end1-en');
+  const eth1en = document.getElementById('eth1-en');
   if (eth1en) eth1en.addEventListener('change', toggleEth1Fields);
 }
 
 function validateNetForm(form) {
   let ok = true;
   const skipEth0Static =
-    form.id === 'net-form' && !document.getElementById('end0-en')?.checked;
+    form.id === 'net-form' && !document.getElementById('eth0-en')?.checked;
   form.querySelectorAll('input[pattern]').forEach(inp => {
-    if (skipEth0Static && inp.closest('#end0-fields')) return;
+    if (skipEth0Static && inp.closest('#eth0-fields')) return;
     const v = inp.value.trim();
     if (v && !new RegExp('^' + inp.pattern + '$').test(v)) {
       inp.classList.add('invalid'); ok = false;

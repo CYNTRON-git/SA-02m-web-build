@@ -1,0 +1,43 @@
+---
+description: SA-02m — SSH и удалённая диагностика для агентов (Windows, plink, paramiko)
+alwaysApply: true
+---
+
+# SA-02m: SSH для агентов (не тратить время на подключение)
+
+Полный алгоритм: **`docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`**. Скрипты: **`tools/ssh/sa02m_remote.py`**, **`tools/ssh/sa02m-remote.ps1`**.
+
+## Подключение с Windows (batch, без интерактива)
+
+**Не использовать** голый `ssh root@192.168.1.136 "cmd"` без ключа — висит на пароле.
+
+**Предпочтительно:**
+
+```powershell
+py -3 tools/ssh/sa02m_remote.py exec "systemctl is-active sa02m-flasher"
+py -3 tools/ssh/sa02m_remote.py watch-flasher
+```
+
+**Или plink** (обязателен `-hostkey` в batch):
+
+```powershell
+$hk = "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc"
+& "C:\Program Files\PuTTY\plink.exe" -batch -ssh root@192.168.1.136 -pw cyntron -hostkey $hk "hostname"
+```
+
+Host key меняется после прошивки образа eMMC → обновить fingerprint (`ssh-keyscan -t ed25519 192.168.1.136`).
+
+## Доступы
+
+- IP: `192.168.1.136`, SSH `root`/`cyntron`, веб `admin`/`cyntron` :9999
+- Ключ (опционально): `%USERPROFILE%\.ssh\sa02m_sa02`
+
+## PowerShell
+
+Не передавать в ssh/plink команды с `|` и `$p` напрямую — PowerShell ломает строку. Использовать `sa02m_remote.py exec` или heredoc/файл .py на ПК.
+
+## Прошивка модулей MR-02m (веб)
+
+Логи: `/var/log/sa02m-flasher/events.log`. Мониторинг: `py -3 tools/ssh/sa02m_remote.py watch-flasher`.
+
+Если ошибка `<urlopen error [Errno -3] Temporary failure in name resolution>` — файл прошивки не в кеше, DNS на шлюзе не работает. Решение: `upload-fw`, загрузка через веб, или прошить версию уже в `/var/lib/sa02m-flasher/firmware/`.

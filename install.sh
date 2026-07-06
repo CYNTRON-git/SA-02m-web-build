@@ -12,7 +12,7 @@ export LOG_FILE="/var/log/sa02m_install.log"
 # ── Parse arguments ────────────────────────────────────────────────────────
 export NETMASK="255.255.255.0"
 export DNS_SERVERS="77.88.8.8 77.88.8.1"
-export NET_IFACE="end0"
+export NET_IFACE="eth0"
 export PORT="9999"
 export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
@@ -71,6 +71,63 @@ bash "$SCRIPT_DIR/scripts/03-webserver.sh"
 bash "$SCRIPT_DIR/scripts/04-flasher.sh"
 bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
 
+# ── Optional stacks (MQTT / Gateway / Node-RED / Docker) ───────────────────
+# Можно отключить по-отдельности:
+#   SA02M_SKIP_MQTT=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_NODERED=1 SA02M_SKIP_DOCKER=1 ./install.sh
+# По умолчанию — устанавливаем всё, чтобы после первой прошивки был полный стек.
+
+if [ "${SA02M_SKIP_MQTT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/05-mqtt.sh" ]; then
+    log INFO "──── Опциональный стек: MQTT (mosquitto + мосты) ────"
+    bash "$SCRIPT_DIR/scripts/05-mqtt.sh" || log WARN "05-mqtt.sh завершился с ошибкой"
+fi
+
+if [ "${SA02M_SKIP_GATEWAY:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-gateway.sh" ]; then
+    log INFO "──── Опциональный стек: sa02m-serial-gateway ────"
+    bash "$SCRIPT_DIR/scripts/06-gateway.sh" || log WARN "06-gateway.sh завершился с ошибкой"
+fi
+
+if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then
+    log INFO "──── Опциональный стек: Node-RED ────"
+    bash "$SCRIPT_DIR/scripts/07-nodered.sh" || log WARN "07-nodered.sh завершился с ошибкой"
+fi
+
+if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
+    log INFO "──── Опциональный стек: Docker CE (docker.io) ────"
+    if ! command -v docker >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose >> "$LOG_FILE" 2>&1 \
+            && log OK "docker.io + docker-compose установлены" \
+            || log WARN "docker.io не установлен — проверьте apt sources"
+    else
+        log INFO "docker уже установлен: $(docker --version 2>/dev/null | head -1)"
+    fi
+
+    # Kernel Wiren Board 5.10.35-sa02m+ не содержит CONFIG_OVERLAY_FS / CONFIG_BRIDGE /
+    # CONFIG_NF_TABLES → полноценный Docker не работает. Настраиваем minimal-mode:
+    # storage-driver=vfs, iptables=false, bridge=none. Работает только --network host,
+    # без NAT/port mapping. TODO: пересборка ядра с этими опциями (kernel-port/).
+    if command -v docker >/dev/null 2>&1; then
+        # iptables backend: legacy (nftables backend требует CONFIG_NF_TABLES)
+        update-alternatives --set iptables  /usr/sbin/iptables-legacy  >> "$LOG_FILE" 2>&1 || true
+        update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >> "$LOG_FILE" 2>&1 || true
+
+        mkdir -p /etc/docker
+        if [ ! -f /etc/docker/daemon.json ] || ! grep -q '"storage-driver"' /etc/docker/daemon.json; then
+            cat > /etc/docker/daemon.json <<'DOCKER_JSON'
+{
+  "storage-driver": "vfs",
+  "iptables": false,
+  "bridge": "none",
+  "log-driver": "journald"
+}
+DOCKER_JSON
+            log INFO "docker daemon.json: minimal-mode (vfs+без iptables/bridge) — kernel WB без OVERLAY_FS/NF_TABLES"
+        fi
+        systemctl reset-failed docker 2>/dev/null || true
+        systemctl enable --now docker >> "$LOG_FILE" 2>&1 && log OK "docker.service активен (minimal-mode)" \
+            || log WARN "docker.service не стартует — journalctl -u docker -n 30"
+    fi
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 log OK "════════════════════════════════════════"
@@ -81,11 +138,21 @@ log OK "════════════════════════
 echo ""
 
 # ── Check services ─────────────────────────────────────────────────────────
-for svc in nginx fcgiwrap sa02m-flasher sa02m-cloud-agent; do
-    if systemctl is-active "$svc" &>/dev/null; then
-        log OK " ✓ $svc работает"
-    else
-        log WARN " ✗ $svc не запущен!"
-    fi
-done
-echo ""
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    # Базовые сервисы всегда обязательные
+    for svc in nginx fcgiwrap sa02m-flasher sa02m-cloud-agent sa02m-pre-start; do
+        if systemctl is-active "$svc" &>/dev/null || systemctl is-enabled "$svc" &>/dev/null; then
+            log OK " ✓ $svc установлен"
+        else
+            log WARN " ✗ $svc не установлен!"
+        fi
+    done
+    # Опциональные — только если не пропущены
+    for svc in mosquitto sa02m-serial-gateway nodered docker; do
+        if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
+            state=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
+            log INFO "   $svc: $state"
+        fi
+    done
+    echo ""
+fi

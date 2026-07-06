@@ -2,7 +2,7 @@
 """Send gratuitous ARP for a network interface.
 
 Usage: sa02m-grat-arp.py [iface]
-Default iface: end0
+Default iface: eth0
 
 Gratuitous ARP updates ARP caches on all hosts in the LAN so they
 don't have to re-ARP when their cache entry for this device expires.
@@ -55,7 +55,7 @@ def send_gratuitous_arp(iface: str) -> None:
 
 
 if __name__ == '__main__':
-    iface = sys.argv[1] if len(sys.argv) > 1 else 'end0'
+    iface = sys.argv[1] if len(sys.argv) > 1 else 'eth0'
     try:
         send_gratuitous_arp(iface)
     except OSError as e:

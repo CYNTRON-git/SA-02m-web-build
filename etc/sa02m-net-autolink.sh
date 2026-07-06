@@ -2,21 +2,21 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 # sa02m-net-autolink.sh  — УСТАРЕЛО / DEPRECATED
 #
-# Начиная с образа, где используются стабильные предсказуемые имена end0/end1,
+# Начиная с образа, где используются стабильные предсказуемые имена eth0/eth1,
 # этот скрипт не нужен. Ядро само даёт интерфейсам имена по аппаратному пути
-# (end0 = EMAC, end1 = GMAC), не зависящие от MAC. Link-файлы не требуются.
+# (eth0 = EMAC, eth1 = GMAC), не зависящие от MAC. Link-файлы не требуются.
 #
 # Оставлен для совместимости; в новых установках 01-system.sh маскирует
 # sa02m-net-autolink.service и удаляет link-файлы.
 #
 # — — — исходная документация — — —
 # Auto-update systemd-networkd link files when MAC addresses change.
-# Runs before systemd-networkd so renamed interfaces (end0/end1) are available
+# Runs before systemd-networkd so renamed interfaces (eth0/eth1) are available
 # from the first boot on any hardware the image is cloned to.
 #
 # Designed for Cyntron A40i-2Eth:
-#   end0 → MAC prefix 02:53:xx  (first physical interface)
-#   end1 → MAC prefix 12:53:xx  (second physical interface, MSB differs)
+#   eth0 → MAC prefix 02:53:xx  (first physical interface)
+#   eth1 → MAC prefix 12:53:xx  (second physical interface, MSB differs)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 LINK_DIR="/etc/systemd/network"
@@ -25,8 +25,8 @@ LOG_FILE="/var/log/sa02m_net_autolink.log"
 # Link-file definitions: <filename> <link-name> <expected-mac-prefix>
 # Order matters: first match wins for each prefix bucket.
 LINK_FILES=(
-    "10-end0.link end0 02:53:"
-    "11-end1.link end1 12:53:"
+    "10-eth0.link eth0 02:53:"
+    "11-eth1.link eth1 12:53:"
 )
 
 _log() {
@@ -96,7 +96,7 @@ mkdir -p "$(dirname "$LOG_FILE")"
 
 _log INFO "sa02m-net-autolink: start"
 
-# Collect real physical Ethernet interfaces sorted by name (end0 < end1, eth0 < eth1, etc.)
+# Collect real physical Ethernet interfaces sorted by name (eth0 < eth1, eth0 < eth1, etc.)
 mapfile -t REAL_IFACES < <(_list_real_eth)
 
 if [ "${#REAL_IFACES[@]}" -eq 0 ]; then

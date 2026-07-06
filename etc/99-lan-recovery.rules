@@ -9,21 +9,21 @@
 #   интерфейса через instance (%I) и не зависеть от окружения udev/systemd.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# end0 — основной интерфейс
-ACTION=="add", SUBSYSTEM=="net", KERNEL=="end0", RUN+="/usr/bin/systemctl --no-block start fix-eth@end0.service"
-ACTION=="bind", SUBSYSTEM=="net", KERNEL=="end0", RUN+="/usr/bin/systemctl --no-block start fix-eth@end0.service"
+# eth0 — основной интерфейс
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
 # При boot PHY может подняться с задержкой или после краткого link flap.
 # Ловим carrier=1, чтобы восстановление шло сразу при реальном link-up.
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end0.service"
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth0", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth0.service"
 # Link LEDs: platform gpio-led — яркость по carrier (netdev trigger недоступен).
 # ВНИМАНИЕ: ATTR{carrier}=="0" не работает — при link-down ядро возвращает EINVAL
 # вместо "0", поэтому условие никогда не совпадает. Запускаем скрипт на любое
 # change-событие; скрипт сам читает carrier (с fallback 0 при ошибке).
-# sa02m-1eth: eth0_link←end0; sa02m-2eth: eth0_link←end1, eth1_link←end0.
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end0", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
+# sa02m-1eth: eth0_link←eth0; sa02m-2eth: eth0_link←eth1, eth1_link←eth0.
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth0", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
 
-# end1 — второй интерфейс (если сконфигурирован)
-ACTION=="add", SUBSYSTEM=="net", KERNEL=="end1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end1.service"
-ACTION=="bind", SUBSYSTEM=="net", KERNEL=="end1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end1.service"
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end1", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@end1.service"
-ACTION=="change", SUBSYSTEM=="net", KERNEL=="end1", RUN+="/usr/local/bin/sa02m-eth0-led.sh"
+# eth1 — второй интерфейс (если сконфигурирован)
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+ACTION=="bind", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth1", ATTR{carrier}=="1", RUN+="/usr/bin/systemctl --no-block start fix-eth@eth1.service"
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="eth1", RUN+="/usr/local/bin/sa02m-eth0-led.sh"

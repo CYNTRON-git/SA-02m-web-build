@@ -130,7 +130,7 @@ fi
 
 PRIMARY_HOST=""
 if command -v ip >/dev/null 2>&1; then
-    for _iface in end0 end1; do
+    for _iface in eth0 eth1; do
         PRIMARY_HOST=$(ip -o -4 addr show dev "$_iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
         [ -n "$PRIMARY_HOST" ] && break
     done

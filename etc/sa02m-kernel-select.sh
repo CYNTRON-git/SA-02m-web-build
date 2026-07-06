@@ -43,6 +43,25 @@ preempt_rt_active() {
     grep -q 'PREEMPT_RT' /proc/version 2>/dev/null
 }
 
+detect_installed_module_ver() {
+    # $1 = pattern: "smp" (без rt) или "rt"
+    local want=$1 d name
+    for d in /lib/modules/*; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d")
+        case "$name" in
+            *sa02m*)
+                if [ "$want" = "rt" ]; then
+                    case "$name" in *rt*|*-rt*) printf '%s\n' "$name"; return 0 ;; esac
+                else
+                    case "$name" in *rt*|*-rt*) ;; *) printf '%s\n' "$name"; return 0 ;; esac
+                fi
+                ;;
+        esac
+    done
+    return 1
+}
+
 load_conf() {
     SA02M_KERNEL_DESIRED="${SA02M_KERNEL_DESIRED:-}"
     SA02M_KERNEL_SMP_VER="${SA02M_KERNEL_SMP_VER:-$SMP_VER_DEFAULT}"
@@ -52,16 +71,50 @@ load_conf() {
         # shellcheck disable=SC1090
         . "$CONF" 2>/dev/null || true
     fi
+
+    # Автоопределение фактических версий модулей: если в конфиге прописана
+    # версия, для которой нет каталога /lib/modules/, но есть реальный SMP/RT
+    # каталог с суффиксом (например 5.10.35-sa02m+ вместо 5.10.35-sa02m) —
+    # берём реальное имя. Это устраняет ложный smp_modules_missing после
+    # установки пакета linux-image-* с EXTRAVERSION="+".
+    local kr detected
+    kr=$(uname -r 2>/dev/null || echo "")
+    if ! modules_ok "$SA02M_KERNEL_SMP_VER"; then
+        detected=""
+        if [ "$(running_profile)" = "smp" ] && [ -n "$kr" ] && modules_ok "$kr"; then
+            detected="$kr"
+        else
+            detected=$(detect_installed_module_ver smp 2>/dev/null || true)
+        fi
+        if [ -n "$detected" ]; then
+            SA02M_KERNEL_SMP_VER="$detected"
+        fi
+    fi
+    if ! modules_ok "$SA02M_KERNEL_RT_VER"; then
+        detected=""
+        if [ "$(running_profile)" = "rt" ] && [ -n "$kr" ] && modules_ok "$kr"; then
+            detected="$kr"
+        else
+            detected=$(detect_installed_module_ver rt 2>/dev/null || true)
+        fi
+        if [ -n "$detected" ]; then
+            SA02M_KERNEL_RT_VER="$detected"
+        fi
+    fi
 }
 
 write_conf() {
     local desired=$1 init_done=${2:-1}
     umask 022
+    # Пишем актуальные, авто-детектированные значения (после load_conf),
+    # чтобы не терять уточнённую версию модулей при следующей загрузке.
+    local smp_ver=${SA02M_KERNEL_SMP_VER:-$SMP_VER_DEFAULT}
+    local rt_ver=${SA02M_KERNEL_RT_VER:-$RT_VER_DEFAULT}
     cat >"$CONF" <<EOF
 # Управляется веб-панелью СА-02m. Желаемое ядро после reboot.
 SA02M_KERNEL_DESIRED=$desired
-SA02M_KERNEL_SMP_VER=$SMP_VER_DEFAULT
-SA02M_KERNEL_RT_VER=$RT_VER_DEFAULT
+SA02M_KERNEL_SMP_VER=$smp_ver
+SA02M_KERNEL_RT_VER=$rt_ver
 SA02M_KERNEL_INIT_DONE=$init_done
 EOF
     chmod 644 "$CONF"

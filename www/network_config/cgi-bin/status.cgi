@@ -1236,30 +1236,30 @@ gather_network_metrics() {
 
     local net0 net1
     ETH0_ST="absent"
-    if [ -d /sys/class/net/end0 ]; then
-        IFS= read -r ETH0_ST < /sys/class/net/end0/operstate
+    if [ -d /sys/class/net/eth0 ]; then
+        IFS= read -r ETH0_ST < /sys/class/net/eth0/operstate
         ETH0_ST=${ETH0_ST:-unknown}
     fi
 
-    net0=($(net_iface_stats end0))
+    net0=($(net_iface_stats eth0))
     NET0_RX=${net0[0]:-0}
     NET0_TX=${net0[1]:-0}
 
     ETH1_ST="absent"
     NET1_RX=0
     NET1_TX=0
-    if [ -d /sys/class/net/end1 ]; then
-        IFS= read -r ETH1_ST < /sys/class/net/end1/operstate
+    if [ -d /sys/class/net/eth1 ]; then
+        IFS= read -r ETH1_ST < /sys/class/net/eth1/operstate
         ETH1_ST=${ETH1_ST:-absent}
-        net1=($(net_iface_stats end1))
+        net1=($(net_iface_stats eth1))
         NET1_RX=${net1[0]:-0}
         NET1_TX=${net1[1]:-0}
     fi
 
-    ETH0_IP=$(iface_ipv4_addr end0)
-    ETH1_IP=$(iface_ipv4_addr end1)
-    ETH0_MODE=$(iface_mode end0)
-    ETH1_MODE=$(iface_mode end1)
+    ETH0_IP=$(iface_ipv4_addr eth0)
+    ETH1_IP=$(iface_ipv4_addr eth1)
+    ETH0_MODE=$(iface_mode eth0)
+    ETH1_MODE=$(iface_mode eth1)
 
     # Для верхней панели оставляем единый IP (первый доступный).
     IP="${ETH0_IP:-}"
@@ -1332,19 +1332,48 @@ gather_system_metrics() {
         return 0
     fi
 
-    BOARD_RAW=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    BOARD=$(json_escape "${BOARD_RAW:-—}")
-    CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    CPU_MODEL=$(json_escape "$CPU_MODEL")
-    KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
+    # Название устройства — фиксированный кириллический бренд «ЦИНТРОН СА-02м»
+    # с суффиксом «-2» для варианта с двумя Ethernet (выбирается в разделе «Управление»).
+    case "${HW_VARIANT:-}" in
+        sa02m-2eth) BOARD_RAW="ЦИНТРОН СА-02м-2" ;;
+        *)          BOARD_RAW="ЦИНТРОН СА-02м" ;;
+    esac
+    BOARD=$(json_escape "$BOARD_RAW")
+
+    # Процессор: фиксированное SoC-имя (sun8i-r40) + число ядер (nproc)
+    # и HW-максимум частоты из cpuinfo_max_freq (kHz → MHz).
+    _cpu_cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
+    case "$_cpu_cores" in ''|*[!0-9]*) _cpu_cores=4 ;; esac
+    _cpu_hw_max_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null || echo 0)
+    case "$_cpu_hw_max_khz" in ''|*[!0-9]*) _cpu_hw_max_khz=0 ;; esac
+    _cpu_hw_max_mhz=$(( _cpu_hw_max_khz / 1000 ))
+    (( _cpu_hw_max_mhz <= 0 )) && _cpu_hw_max_mhz=1200
+    CPU_MODEL_RAW="Allwinner A40i - ${_cpu_cores}xARM Cortex-A7 ${_cpu_hw_max_mhz}МГц"
+    CPU_MODEL=$(json_escape "$CPU_MODEL_RAW")
+
+    # Ядро: только X.Y.Z, без суффикса -sa02m+ и т.п.
+    _kernel_raw=$(uname -r 2>/dev/null)
+    _kernel_short=$(printf '%s' "$_kernel_raw" | sed -nE 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+    [ -z "$_kernel_short" ] && _kernel_short="$_kernel_raw"
+    KERNEL_VER=$(json_escape "$_kernel_short")
+
+    # ОС: короткое «Debian <point-release>» — из /etc/debian_version (11.11).
     ARMBIAN_VER=""
-    if [ -r /etc/os-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^ARMBIAN_PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
-        [ -z "$ARMBIAN_VER" ] && ARMBIAN_VER=$(awk -F= '/^PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+    if [ -r /etc/debian_version ]; then
+        _debian_ver=$(head -n1 /etc/debian_version 2>/dev/null | tr -d '\r\n[:space:]')
+        [ -n "$_debian_ver" ] && ARMBIAN_VER="Debian ${_debian_ver}"
     fi
-    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/armbian-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^VERSION=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/armbian-release 2>/dev/null)
-        [ -n "$ARMBIAN_VER" ] && ARMBIAN_VER="Armbian ${ARMBIAN_VER}"
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/os-release ]; then
+        _os_id=$(awk -F= '/^ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        _os_ver=$(awk -F= '/^VERSION_ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        if [ -n "$_os_id" ]; then
+            _os_id_cap=$(printf '%s' "$_os_id" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+            if [ -n "$_os_ver" ]; then
+                ARMBIAN_VER="${_os_id_cap} ${_os_ver}"
+            else
+                ARMBIAN_VER="${_os_id_cap}"
+            fi
+        fi
     fi
     ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
     STORAGE_AUTO_FORMAT_UI=1
@@ -1742,12 +1771,12 @@ print_network_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "ip": "${IP}"
 }
 JSON
@@ -1871,12 +1900,12 @@ print_main_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
@@ -1970,12 +1999,12 @@ print_core_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
@@ -2070,12 +2099,12 @@ print_full_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},

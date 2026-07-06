@@ -19,7 +19,7 @@
 | Узел | Что описано |
 |------|-------------|
 | `axp22x@34` на i2c-0 | **AXP221 PMIC** установлен — управляет всеми регуляторами SoC (dcdc1..5, aldo1..3, eldo3, dldo1, dc1sw). Без AXP20x-driver ядро **не поднимется**. |
-| `rtc@68` на i2c-1 | **DS3231** через `"maxim,ds3231,d1307"` compatible → драйвер `rtc-ds1307`. |
+| `rtc@68` на i2c-1 | **DS3231** через `"maxim,ds3231", "dallas,ds1307"` (два null-separated compatible) → драйвер `rtc-ds1307`. Одиночная строка `"maxim,ds3231,d1307"` **не работает** — kernel не находит match в OF-таблице (см. `docs/bugs/BUGLOG.md` от 2026-07-06). |
 | `&i2c3 { status = "okay"; }` (без узлов) | **PCA9536 (i2c-2 @0x41) и PCF8563 (i2c-3 @0x51) — не в DTS**, работают через `/dev/i2c-*` из userspace (MPLC4, sa02m-hw-backend). |
 | `emac_ph_pins` + `phy2@0` c reset PH12 | end0: MII, PHY IP101G, `icplus,select-rx-error`. |
 | `gmac_mii_pins_reduced` + `phy1@0` c reset PH13 | end1: MII на PA0-15 (без ECOL/ETXERR), PHY IP101G. |

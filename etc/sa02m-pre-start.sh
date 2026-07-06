@@ -239,7 +239,7 @@ fi
 # NTP-corrected time 5 min after boot and then every 30 min.
 
 # ── Link LEDs (platform gpio-led) — 3 моргания основного, затем sync по variant ─
-# sa02m-1eth: eth0_link←end0; sa02m-2eth: eth0_link←end1, eth1_link←end0.
+# sa02m-1eth: eth0_link←eth0; sa02m-2eth: eth0_link←eth1, eth1_link←eth0.
 LED_LIB=/usr/local/lib/sa02m-eth-led-lib.sh
 if [ -f "$LED_LIB" ]; then
   # shellcheck disable=SC1090

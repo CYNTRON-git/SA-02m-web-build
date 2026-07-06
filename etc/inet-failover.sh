@@ -3,8 +3,8 @@
 # inet-failover.sh  —  Переключение default-маршрута по наличию интернета
 #
 # Логика приоритетов:
-#   end0  — приоритет 10  (primary ethernet)
-#   end1  — приоритет 20  (secondary ethernet)
+#   eth0  — приоритет 10  (primary ethernet)
+#   eth1  — приоритет 20  (secondary ethernet)
 #   modem — приоритет 100 (enx*/usb*/: USB-модем, резерв)
 #
 # Если интернет через интерфейс недоступен → metric 300 (фактически отключён).
@@ -26,7 +26,7 @@ INET_CHECK_URL2="http://1.1.1.1/"
 # Задаётся в /etc/sa02m_network.conf
 
 # Метрики
-declare -A IFACE_METRIC=( [end0]=10 [end1]=20 )
+declare -A IFACE_METRIC=( [eth0]=10 [eth1]=20 )
 MODEM_METRIC=100
 DEAD_METRIC=300
 
@@ -106,9 +106,9 @@ set_metric() {
     local gw; gw=$(get_iface_gateway "$iface")
     [ -z "$gw" ] && return 0
 
-    # Определяем нужен ли onlink (end0 всегда с onlink из-за особенностей PHY)
+    # Определяем нужен ли onlink (eth0 всегда с onlink из-за особенностей PHY)
     local onlink_flag=""
-    [ "$iface" = "end0" ] && onlink_flag="onlink"
+    [ "$iface" = "eth0" ] && onlink_flag="onlink"
 
     # Удаляем старый default и добавляем с новой метрикой
     ip route del default dev "$iface" 2>/dev/null || true
@@ -139,15 +139,15 @@ run_failover() {
     # is unreachable, which would break outbound routing entirely.
     [ "${INET_FAILOVER_ENABLED:-yes}" = "no" ] && return 0
 
-    local end0_inet=0 end1_inet=0 modem_inet=0
+    local eth0_inet=0 eth1_inet=0 modem_inet=0
     local modem_iface; modem_iface=$(get_modem_iface)
 
     # Проверяем интернет только для существующих интерфейсов
-    if [ -d "/sys/class/net/end0" ]; then
-        check_inet end0 && end0_inet=1
+    if [ -d "/sys/class/net/eth0" ]; then
+        check_inet eth0 && eth0_inet=1
     fi
-    if [ -d "/sys/class/net/end1" ]; then
-        check_inet end1 && end1_inet=1
+    if [ -d "/sys/class/net/eth1" ]; then
+        check_inet eth1 && eth1_inet=1
     fi
     if [ -n "$modem_iface" ]; then
         check_inet "$modem_iface" && modem_inet=1
@@ -155,36 +155,36 @@ run_failover() {
 
     local state_file="${STATE_DIR}/state"
     local prev_state; prev_state=$(cat "$state_file" 2>/dev/null || echo "")
-    local cur_state="end0=${end0_inet} end1=${end1_inet} modem=${modem_inet}(${modem_iface:-none})"
+    local cur_state="eth0=${eth0_inet} eth1=${eth1_inet} modem=${modem_inet}(${modem_iface:-none})"
 
     # Логируем только при изменении состояния
     if [ "$cur_state" != "$prev_state" ]; then
-        log INFO "Состояние интернета: end0=${end0_inet} end1=${end1_inet} modem=${modem_inet}(${modem_iface:-none})"
+        log INFO "Состояние интернета: eth0=${eth0_inet} eth1=${eth1_inet} modem=${modem_inet}(${modem_iface:-none})"
         echo "$cur_state" > "$state_file"
     fi
 
     # ── Устанавливаем метрики ──────────────────────────────────────────────
-    # end0
-    if [ -d "/sys/class/net/end0" ] && ip route show default dev end0 2>/dev/null | grep -q .; then
-        if [ "$end0_inet" -eq 1 ]; then
-            set_metric end0 0
+    # eth0
+    if [ -d "/sys/class/net/eth0" ] && ip route show default dev eth0 2>/dev/null | grep -q .; then
+        if [ "$eth0_inet" -eq 1 ]; then
+            set_metric eth0 0
         else
-            set_metric end0 $DEAD_METRIC
+            set_metric eth0 $DEAD_METRIC
         fi
     fi
 
-    # end1
-    if [ -d "/sys/class/net/end1" ] && ip route show default dev end1 2>/dev/null | grep -q .; then
-        if [ "$end1_inet" -eq 1 ]; then
-            set_metric end1 ${IFACE_METRIC[end1]}
+    # eth1
+    if [ -d "/sys/class/net/eth1" ] && ip route show default dev eth1 2>/dev/null | grep -q .; then
+        if [ "$eth1_inet" -eq 1 ]; then
+            set_metric eth1 ${IFACE_METRIC[eth1]}
         else
-            set_metric end1 $DEAD_METRIC
+            set_metric eth1 $DEAD_METRIC
         fi
     fi
 
     # Модем: всегда оставляем на MODEM_METRIC (100) — не деградируем,
     # так как он единственный резервный канал.
-    # Если интернета на модеме нет, но end0/end1 тоже нет — оставляем как есть.
+    # Если интернета на модеме нет, но eth0/eth1 тоже нет — оставляем как есть.
 }
 
 # Support both variable names for backward compatibility

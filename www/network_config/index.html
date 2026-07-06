@@ -232,30 +232,30 @@
             </div>
           </div>
 
-          <!-- Network end0 -->
+          <!-- Network eth0 -->
           <div class="widget">
             <div class="widget-title eth-hdr-title widget-title-preserve">
               <span>Ethernet № 1</span>
-              <span id="end0-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
+              <span id="eth0-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
             <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end0-rx">0 Б</span></div>
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end0-tx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="eth0-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth0-tx">0 Б</span></div>
             </div>
-            <div class="widget-sub mono eth-ip" id="end0-ip">—</div>
+            <div class="widget-sub mono eth-ip" id="eth0-ip">—</div>
           </div>
 
-          <!-- Network end1 (только СА-02м-2) -->
+          <!-- Network eth1 (только СА-02м-2) -->
           <div class="widget" data-hide-for="sa02m-1eth">
             <div class="widget-title eth-hdr-title widget-title-preserve">
               <span>Ethernet № 2</span>
-              <span id="end1-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
+              <span id="eth1-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
             <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end1-rx">0 Б</span></div>
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end1-tx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="eth1-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth1-tx">0 Б</span></div>
             </div>
-            <div class="widget-sub mono eth-ip" id="end1-ip">—</div>
+            <div class="widget-sub mono eth-ip" id="eth1-ip">—</div>
           </div>
 
           <!-- HW outputs — ширина верхнего ряда (4 колонки) -->
@@ -336,14 +336,14 @@
           <div class="widget network-eth-widget">
             <div class="widget-title widget-title-preserve">Ethernet № 1</div>
             <form id="net-form">
-              <input type="hidden" name="net_iface" value="end0">
+              <input type="hidden" name="net_iface" value="eth0">
               <div class="field toggle-field-row">
                 <span class="toggle-field-label">Статический IP-адрес</span>
                 <label class="toggle-inline" aria-label="Статический адрес Ethernet № 1">
-                  <input type="checkbox" class="toggle toggle-wide" id="end0-en" name="end0_enable" value="1">
+                  <input type="checkbox" class="toggle toggle-wide" id="eth0-en" name="eth0_enable" value="1">
                 </label>
               </div>
-              <div id="end0-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
+              <div id="eth0-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
                 <div class="field">
                   <label>IP-адрес</label>
                   <input id="f-ip" name="ip" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.136">
@@ -369,30 +369,30 @@
 
           <div class="widget network-eth-widget" data-hide-for="sa02m-1eth">
             <div class="widget-title widget-title-preserve">Ethernet № 2</div>
-            <form id="net-form-end1">
-              <input type="hidden" name="net_iface" value="end1">
+            <form id="net-form-eth1">
+              <input type="hidden" name="net_iface" value="eth1">
               <div class="field toggle-field-row">
                 <span class="toggle-field-label">Статический IP-адрес</span>
                 <label class="toggle-inline" aria-label="Статический адрес Ethernet № 2">
-                  <input type="checkbox" class="toggle toggle-wide" id="end1-en" name="end1_enable" value="1">
+                  <input type="checkbox" class="toggle toggle-wide" id="eth1-en" name="eth1_enable" value="1">
                 </label>
               </div>
-              <div id="end1-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
+              <div id="eth1-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
                 <div class="field">
                   <label>IP-адрес</label>
-                  <input id="f-ip1" name="ip_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
+                  <input id="f-ip1" name="ip_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
                 </div>
                 <div class="field">
                   <label>Маска подсети</label>
-                  <input id="f-mask1" name="netmask_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
+                  <input id="f-mask1" name="netmask_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
                 </div>
                 <div class="field">
                   <label>Шлюз</label>
-                  <input id="f-gw1" name="gateway_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
+                  <input id="f-gw1" name="gateway_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
                 </div>
                 <div class="field">
                   <label>DNS-серверы</label>
-                  <input id="f-dns1" name="dns_end1" type="text" placeholder="">
+                  <input id="f-dns1" name="dns_eth1" type="text" placeholder="">
                 </div>
               </div>
               <div class="btn-group">

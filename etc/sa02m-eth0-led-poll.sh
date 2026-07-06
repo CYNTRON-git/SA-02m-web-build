@@ -10,12 +10,12 @@ while true; do
     variant=$(sa02m_hw_variant)
     case "$variant" in
         sa02m-2eth)
-            c0=$(cat /sys/class/net/end1/carrier 2>/dev/null || echo 0)
-            c1=$(cat /sys/class/net/end0/carrier 2>/dev/null || echo 0)
+            c0=$(cat /sys/class/net/eth1/carrier 2>/dev/null || echo 0)
+            c1=$(cat /sys/class/net/eth0/carrier 2>/dev/null || echo 0)
             key="${variant}:${c0}:${c1}"
             ;;
         *)
-            c0=$(cat /sys/class/net/end0/carrier 2>/dev/null || echo 0)
+            c0=$(cat /sys/class/net/eth0/carrier 2>/dev/null || echo 0)
             key="${variant}:${c0}:"
             ;;
     esac

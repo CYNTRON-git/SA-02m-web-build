@@ -201,7 +201,7 @@
     clock-frequency = <400000>;
 
     rtc: rtc@68 {
-        compatible = "maxim,ds3231,d1307";
+        compatible = "maxim,ds3231", "dallas,ds1307";
         reg = <0x68>;
     };
 };

@@ -1,5 +1,5 @@
 [Unit]
-Description=Fast link LED sync (polls end0/end1 carrier by hw variant)
+Description=Fast link LED sync (polls eth0/eth1 carrier by hw variant)
 After=local-fs.target
 
 [Service]

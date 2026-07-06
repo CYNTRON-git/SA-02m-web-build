@@ -28,17 +28,29 @@ mask_watchdogs() {
 
 expand_partition() {
     local capacity lastsector
-    capacity=$(parted -ms "$ROOT_DISK" unit s | awk -F: 'NR==2{gsub(/s$/,"",$2); print $2}')
+    # partprobe + settle ДО чтения — иначе на первом boot таблица разделов
+    # ещё не полностью прочитана и `parted print` возвращает пустой capacity
+    # (лог: "expand /dev/mmcblk2 p2 -> end -2048s (disk s)").
+    partprobe "$ROOT_DISK" 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
+
+    # `parted -ms ... print unit s` — обязателен `print` (без него на некоторых
+    # версиях parted 3.4 stdout остаётся пустым).
+    capacity=$(parted -ms "$ROOT_DISK" unit s print 2>/dev/null \
+        | awk -F: '/^\/dev\//{gsub(/s$/,"",$2); print $2; exit}')
+    if [ -z "$capacity" ] || [ "$capacity" = "0" ]; then
+        log "FAILED: cannot read disk capacity from parted"
+        return 1
+    fi
     lastsector=$((capacity - 2048))
     log "expand $ROOT_DISK p${PART_NUM} -> end ${lastsector}s (disk ${capacity}s)"
 
-    if command -v growpart >/dev/null 2>&1; then
-        growpart "$ROOT_DISK" "$PART_NUM"
-    else
-        parted -s "$ROOT_DISK" unit s resizepart "$PART_NUM" "$lastsector"
-    fi
+    # ВНИМАНИЕ: `growpart` требует `sfdisk` (пакет fdisk), которого нет в
+    # SA-02m minbase rootfs. `parted resizepart` работает автономно — этот
+    # путь надёжнее.
+    parted -s "$ROOT_DISK" unit s resizepart "$PART_NUM" "$lastsector"
     partprobe "$ROOT_DISK" 2>/dev/null || true
-    udevadm settle 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
 }
 
 case "${1:-start}" in

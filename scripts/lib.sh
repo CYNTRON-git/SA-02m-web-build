@@ -136,6 +136,10 @@ check_root() {
 SA02M_SYSTEMCTL_TIMEOUT_SEC="${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}"
 
 sa02m_systemctl() {
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        systemctl --root="${SA02M_ROOTFS_ROOT:-/}" "$@" >> "$LOG_FILE" 2>&1 || true
+        return 0
+    fi
     local sec=${SA02M_SYSTEMCTL_TIMEOUT_SEC:-35}
     if command -v timeout >/dev/null 2>&1; then
         timeout "$sec" systemctl "$@"
@@ -158,7 +162,9 @@ pkg_install() {
 
 svc_enable() {
     sa02m_systemctl enable "$1" >> "$LOG_FILE" 2>&1 || true
-    sa02m_systemctl start  "$1" >> "$LOG_FILE" 2>&1 || true
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        sa02m_systemctl start "$1" >> "$LOG_FILE" 2>&1 || true
+    fi
 }
 
 svc_restart() {
