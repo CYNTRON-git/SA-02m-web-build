@@ -19,6 +19,22 @@ if [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
         || log WARN "Не удалось применить Armbian branding"
 fi
 
+# ── SA-02m MOTD summary (pam_motd → /run/motd.dynamic на SSH-логине) ───────
+if [ -f "$ETC_REPO/update-motd.d/20-sa02m-summary" ]; then
+    install -d -m 755 /etc/update-motd.d
+    install -m 755 "$ETC_REPO/update-motd.d/20-sa02m-summary" \
+        /etc/update-motd.d/20-sa02m-summary
+    sed -i 's/\r$//' /etc/update-motd.d/20-sa02m-summary
+    # Отключаем стандартный Debian `10-uname` (заменяется нашей сводкой).
+    if [ -x /etc/update-motd.d/10-uname ]; then
+        chmod -x /etc/update-motd.d/10-uname 2>/dev/null || true
+    fi
+    # Прегенерация /run/motd.dynamic, чтобы MOTD сразу был доступен без ожидания
+    # первого SSH-логина (pam_motd всё равно перегенерирует его при login).
+    run-parts /etc/update-motd.d > /run/motd.dynamic 2>/dev/null || true
+    log OK "Установлен MOTD /etc/update-motd.d/20-sa02m-summary"
+fi
+
 # ── Locale & timezone ──────────────────────────────────────────────────────
 log INFO "Настройка локали и таймзоны"
 locale-gen ru_RU.UTF-8 en_US.UTF-8 >> "$LOG_FILE" 2>&1 || true
@@ -55,7 +71,9 @@ fi
 # ── Required packages ──────────────────────────────────────────────────────
 log INFO "Установка пакетов"
 apt-get update -qq >> "$LOG_FILE" 2>&1
-pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs
+pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs \
+    i2c-tools gpiod libgpiod2 python3-libgpiod \
+    python3-paho-mqtt python3-yaml python3-serial
 
 # ── User hmi ──────────────────────────────────────────────────────────────
 if ! id hmi &>/dev/null; then
@@ -63,18 +81,32 @@ if ! id hmi &>/dev/null; then
     useradd -m -s /bin/bash hmi >> "$LOG_FILE" 2>&1
 fi
 
-# ── Disable serial console getty ─────────────────────────────────────────
-# ttyS0/ttyS1: standard UARTs.
-# ttyGS0: USB gadget serial — holds flock on /dev/console, which blocks
-#         systemd's event loop and makes all systemctl calls time out.
-for tty in ttyS0 ttyS1 ttyGS0; do
-    systemctl disable "serial-getty@${tty}" 2>/dev/null || true
-    systemctl mask    "serial-getty@${tty}" 2>/dev/null || true
+# ── Serial console policy (production) ─────────────────────────────────────
+# На production-устройстве СА-02м ВСЕ /dev/ttyS* используются как RS-485 / COM
+# для Modbus RTU (RS-485-0..4) и MR-02m flasher (ttyS1). Отладочный getty на
+# любом ttyS ломает протокол — на serial-порту одновременно нельзя иметь
+# login-prompt и Modbus-мастер.
+#
+# ttyGS0 (USB gadget serial через Type-C) — планируется как единственный
+# отладочный serial, но требует CONFIG_USB_GADGET в ядре. Пока mask.
+# Единственный поддерживаемый способ отладки: SSH через Ethernet.
+
+# Mask ВСЕХ serial-getty@ttyS* (S0..S7) — не должно быть login-prompt на COM.
+for n in 0 1 2 3 4 5 6 7; do
+    systemctl disable "serial-getty@ttyS${n}" 2>/dev/null || true
+    systemctl mask    "serial-getty@ttyS${n}" 2>/dev/null || true
+    systemctl disable "getty@ttyS${n}"        2>/dev/null || true
+    systemctl mask    "getty@ttyS${n}"        2>/dev/null || true
 done
-# getty@ttyGS0 (non-serial variant) also uses /dev/console flock
-systemctl disable "getty@ttyGS0" 2>/dev/null || true
-systemctl mask    "getty@ttyGS0" 2>/dev/null || true
-# Remove wants symlinks so they are not re-enabled on daemon-reload
+# Убрать все wants-symlinks от предыдущих Armbian/upgrade поколений
+rm -f /etc/systemd/system/getty.target.wants/getty@ttyS*.service \
+      /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyS*.service 2>/dev/null || true
+
+# ttyGS0: пока kernel без USB_GADGET — mask
+systemctl disable "serial-getty@ttyGS0" 2>/dev/null || true
+systemctl mask    "serial-getty@ttyGS0" 2>/dev/null || true
+systemctl disable "getty@ttyGS0"        2>/dev/null || true
+systemctl mask    "getty@ttyGS0"        2>/dev/null || true
 rm -f /etc/systemd/system/getty.target.wants/getty@ttyGS0.service \
       /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyGS0.service 2>/dev/null || true
 
@@ -183,11 +215,14 @@ fi
 log INFO "Настройка USB-модема"
 
 # Необходимые пакеты.
-# modemmanager — управляет 3G/4G модемами (PPP, QMI, MBIM, signal, PIN).
-# ppp          — PPP-стек для ttyUSB-модемов (AT-команды + соединение).
+# modemmanager   — управляет 3G/4G модемами (PPP, QMI, MBIM, signal, PIN).
+# ppp            — PPP-стек для ttyUSB-модемов (AT-команды + соединение).
 # isc-dhcp-client (dhclient) — DHCP для CDC-ECM/RNDIS/NCM USB-ethernet-модемов.
-# usb-modeswitch + data — уже установлены в образе; добавляем на всякий случай.
-MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data"
+# usb-modeswitch + data — переключение модема из mass-storage в модемный режим.
+# libqmi-utils   — qmicli, qmi-network для Quectel EC25 / Sierra QMI-модемов.
+# libmbim-utils  — mbimcli, mbim-network для Fibocom / Quectel MBIM.
+# usbutils       — lsusb для диагностики.
+MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data libqmi-utils libmbim-utils usbutils"
 for pkg in $MODEM_PKGS; do
     dpkg -s "$pkg" >/dev/null 2>&1 || \
         DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >>"$LOG_FILE" 2>&1 || \

@@ -1,3 +1,79 @@
+## [2026-07-06 21:20] branch: 1.0.3.36 — backport bugfix pack из 1.0.4.0 (пункты 1–8)
+
+**Источник:** cherry-pick/adapt из ветки `1.0.4.0` (без eth0/eth1 rename, kernel-port, Debian 11 migration).
+
+**Перенесено:**
+
+| # | Фикс | Файлы |
+|---|------|-------|
+| 1 | microSD mmcblk3: udev только при `ID_FS_USAGE=filesystem` | `etc/udev/99-storage.rules` |
+| 2 | PCA9536: `SA02M_HW_BACKEND=i2c_expander`, migrate disabled, www-data→i2c | `etc/sa02m_hw.conf`, `scripts/03-webserver.sh` |
+| 3 | paho-mqtt: apt-first + fail-loud import check | `scripts/05-mqtt.sh`, `scripts/01-system.sh` (`python3-paho-mqtt`) |
+| 4 | RTC DS3231: match joined I2C name `ds3231,d1307` | `www/network_config/cgi-bin/lib_rtc.sh` |
+| 5 | Базовые пакеты: i2c-tools, gpiod, serial-getty mask ttyS0–S7, modem utils | `scripts/01-system.sh` |
+| 6 | Блок «Система»: ЦИНТРОН СА-02м, A40i, короткое ядро/ОС | `www/network_config/cgi-bin/status.cgi` |
+| 7 | BUGLOG + regression tests | `docs/bugs/BUGLOG.md`, `tools/test/test_*.py`, `tools/test/*.sh` |
+| 8 | MOTD ЦИНТРОН summary при SSH-логине | `etc/update-motd.d/20-sa02m-summary`, `scripts/01-system.sh` |
+
+**Не переносилось (остаётся в 1.0.4.0):** eth0/eth1 rename, kernel-port/DTS fix для DS3231, Docker overlay2 full-mode, CODESYS/MPLC installer.
+
+---
+
+## [2026-07-06 19:57] branch: 1.0.3.36 — Fix F1: paho-mqtt отсутствовал на устройстве (backport)
+
+**Файлы:** `scripts/05-mqtt.sh`, `scripts/01-system.sh`, `docs/bugs/BUGLOG.md`
+**Тип:** dependency / packaging (регресс установки)
+**Описание:** `sa02m-modbus-mqtt` и `sa02m-telemetry` уходили в restart-loop с `ModuleNotFoundError: No module named 'paho'`.
+**Причина:** `scripts/05-mqtt.sh` полагался только на `pip3 install --break-system-packages --quiet paho-mqtt` без проверки импорта; `scripts/01-system.sh` не включал `python3-paho-mqtt` в `pkg_install`.
+**Исправление:** apt-first (`python3-paho-mqtt`, `python3-yaml`, `python3-serial`), pip fallback, `exit 1` при failed import; пакеты добавлены в `01-system.sh`.
+
+---
+
+## [2026-07-06 17:41] branch: 1.0.3.36 — microSD «НЕ УСТАНОВЛЕН» при вставленной карте (backport)
+
+**Файл(ы):** `etc/udev/99-storage.rules`
+**Тип:** Некорректное поведение (storage-mount timeout на phantom mmcblk3)
+**Описание:** Веб-панель показывала microSD «НЕ УСТАНОВЛЕН» при физически вставленной FAT32-карте в слот SDC3 (mmcblk3).
+**Причина:** udev триггерил `storage-mount@mmcblk3` на любой `ACTION=add`, включая phantom-устройство без card-detect и без ФС.
+**Исправление:** Для `mmcblk3*` добавлен фильтр `ENV{ID_FS_USAGE}=="filesystem"` — unit запускается только когда blkid распознал реальную ФС.
+
+---
+
+## [2026-07-06 17:49] branch: 1.0.3.36 — PCA9536 кнопки disabled в веб-панели (backport)
+
+**Файл(ы):** `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`
+**Тип:** Некорректное поведение (кнопки UI недоступны)
+**Описание:** Раздел «Дискретный выход, USB-питание и индикация» — кнопки beeper/alarm_led/do disabled, статус «н/д».
+**Причина:** `SA02M_HW_BACKEND=disabled` в шаблоне; `www-data` не в группе `i2c`.
+**Исправление:** Дефолт `i2c_expander`, migrate `disabled`→`i2c_expander` при upgrade, `usermod -aG i2c www-data`.
+
+---
+
+## [2026-07-06 17:57] branch: 1.0.3.36 — DS3231 RTC: userspace match `ds3231,d1307` (backport, partial)
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_rtc.sh`
+**Тип:** Логическая ошибка в userspace-фолбеке
+**Описание:** `rtc_datetime` пустой в веб-панели при I2C-чипе с joined name `ds3231,d1307`.
+**Исправление:** `sa02m_rtc_find_i2c_chip()` матчит prefix с разделителем `,._-`. Полный DTS-fix (`compatible` split) — только в `1.0.4.0` / `kernel-port/`.
+
+---
+
+## [2026-07-06 17:46] branch: 1.0.3.36 — Блок «Система»: кириллическое имя, SoC, короткое ядро/ОС (backport)
+
+**Файл(ы):** `www/network_config/cgi-bin/status.cgi`
+**Тип:** Некорректное отображение
+**Исправление:** `BOARD` из `HW_VARIANT`, `CPU_MODEL` = Allwinner A40i + nproc + max MHz, `KERNEL_VER` = X.Y.Z, `ARMBIAN_VER` = Debian из `/etc/debian_version`.
+
+---
+
+## [2026-07-06 18:02] branch: 1.0.3.36 — MOTD-сводка ЦИНТРОН СА-02м (backport)
+
+**Файл(ы):** `etc/update-motd.d/20-sa02m-summary`, `scripts/01-system.sh`
+**Тип:** Новая функциональность (SSH login banner)
+**Исправление:** POSIX MOTD без внешних зависимостей; install в `01-system.sh`, отключение `10-uname`, прегенерация `/run/motd.dynamic`.
+
+---
+
 ## [2026-06-25 10:30] branch: main
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`

@@ -33,10 +33,19 @@ SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION==
 SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="add", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="sd[a-z][0-9]*", ENV{DEVTYPE}=="partition", ACTION=="remove", ENV{ID_PATH}=="*usb*", RUN+="/bin/systemctl stop storage-mount@%k.service"
 
-# microSD: mmcblk1/mmcblk3; eMMC на СА-02м — mmcblk2 (не трогаем).
+# microSD:
+#   • eMMC на СА-02м — mmcblk2 (non-removable, не трогаем).
+#   • mmcblk1 — оставлен как задел для будущих ревизий (SDC1) без card-detect.
+#   • mmcblk3 (SDC3 → mmc@1c12000) — реальный microSD-слот на SA-02m-1eth.
+#     Раньше был исключён из-за phantom-устройства без cd-gpios: kernel мог
+#     показать /dev/mmcblk3 при пустом слоте и storage-mount@ таймаутился.
+#     Теперь триггерим только при ENV{ID_FS_USAGE}=="filesystem" — udev
+#     выставит это свойство только когда blkid реально распознал ФС (карта
+#     физически вставлена и отформатирована). Пустой phantom без ФС
+#     unit не запустит.
 SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
 SUBSYSTEM=="block", KERNEL=="mmcblk1*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
-SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="add", RUN+="/bin/systemctl start storage-mount@%k.service"
-SUBSYSTEM=="block", KERNEL=="mmcblk3*", ACTION=="remove", RUN+="/bin/systemctl stop storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="mmcblk3*", ENV{ID_FS_USAGE}=="filesystem", ACTION=="add",    RUN+="/bin/systemctl start storage-mount@%k.service"
+SUBSYSTEM=="block", KERNEL=="mmcblk3*", ENV{ID_FS_USAGE}=="filesystem", ACTION=="remove", RUN+="/bin/systemctl stop  storage-mount@%k.service"
 
 LABEL="storage_rules_end"

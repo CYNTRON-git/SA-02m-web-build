@@ -1332,19 +1332,48 @@ gather_system_metrics() {
         return 0
     fi
 
-    BOARD_RAW=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    BOARD=$(json_escape "${BOARD_RAW:-—}")
-    CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    CPU_MODEL=$(json_escape "$CPU_MODEL")
-    KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
+    # Название устройства — фиксированный кириллический бренд «ЦИНТРОН СА-02м»
+    # с суффиксом «-2» для варианта с двумя Ethernet (выбирается в разделе «Управление»).
+    case "${HW_VARIANT:-}" in
+        sa02m-2eth) BOARD_RAW="ЦИНТРОН СА-02м-2" ;;
+        *)          BOARD_RAW="ЦИНТРОН СА-02м" ;;
+    esac
+    BOARD=$(json_escape "$BOARD_RAW")
+
+    # Процессор: фиксированное SoC-имя (sun8i-r40) + число ядер (nproc)
+    # и HW-максимум частоты из cpuinfo_max_freq (kHz → MHz).
+    _cpu_cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
+    case "$_cpu_cores" in ''|*[!0-9]*) _cpu_cores=4 ;; esac
+    _cpu_hw_max_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null || echo 0)
+    case "$_cpu_hw_max_khz" in ''|*[!0-9]*) _cpu_hw_max_khz=0 ;; esac
+    _cpu_hw_max_mhz=$(( _cpu_hw_max_khz / 1000 ))
+    (( _cpu_hw_max_mhz <= 0 )) && _cpu_hw_max_mhz=1200
+    CPU_MODEL_RAW="Allwinner A40i - ${_cpu_cores}xARM Cortex-A7 ${_cpu_hw_max_mhz}МГц"
+    CPU_MODEL=$(json_escape "$CPU_MODEL_RAW")
+
+    # Ядро: только X.Y.Z, без суффикса -sa02m+ и т.п.
+    _kernel_raw=$(uname -r 2>/dev/null)
+    _kernel_short=$(printf '%s' "$_kernel_raw" | sed -nE 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+    [ -z "$_kernel_short" ] && _kernel_short="$_kernel_raw"
+    KERNEL_VER=$(json_escape "$_kernel_short")
+
+    # ОС: короткое «Debian <point-release>» — из /etc/debian_version.
     ARMBIAN_VER=""
-    if [ -r /etc/os-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^ARMBIAN_PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
-        [ -z "$ARMBIAN_VER" ] && ARMBIAN_VER=$(awk -F= '/^PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+    if [ -r /etc/debian_version ]; then
+        _debian_ver=$(head -n1 /etc/debian_version 2>/dev/null | tr -d '\r\n[:space:]')
+        [ -n "$_debian_ver" ] && ARMBIAN_VER="Debian ${_debian_ver}"
     fi
-    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/armbian-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^VERSION=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/armbian-release 2>/dev/null)
-        [ -n "$ARMBIAN_VER" ] && ARMBIAN_VER="Armbian ${ARMBIAN_VER}"
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/os-release ]; then
+        _os_id=$(awk -F= '/^ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        _os_ver=$(awk -F= '/^VERSION_ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        if [ -n "$_os_id" ]; then
+            _os_id_cap=$(printf '%s' "$_os_id" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+            if [ -n "$_os_ver" ]; then
+                ARMBIAN_VER="${_os_id_cap} ${_os_ver}"
+            else
+                ARMBIAN_VER="${_os_id_cap}"
+            fi
+        fi
     fi
     ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
     STORAGE_AUTO_FORMAT_UI=1

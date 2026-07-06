@@ -90,13 +90,26 @@ sa02m_rtc_i2c_read_reg() {
 }
 
 sa02m_rtc_find_i2c_chip() {
-    local want=$1 dev entry bus addr name
+    local want=$1 dev entry bus addr name matched
     SA02M_RTC_I2C_BUS=""
     SA02M_RTC_I2C_ADDR=""
     for dev in /sys/bus/i2c/devices/*-*; do
         [ -d "$dev" ] || continue
         name=$(tr -d '\r\n' < "$dev/name" 2>/dev/null) || continue
-        [ "$name" = "$want" ] || continue
+        matched=0
+        if [ "$name" = "$want" ]; then
+            matched=1
+        else
+            # Handle joined OF compat names, e.g. name="ds3231,d1307"
+            # when DTS has compatible = "maxim,ds3231,d1307" (one string).
+            # Match prefix followed by delimiter ',' '_' '-' '.'.
+            case "$name" in
+                "$want"[,._-]*)
+                    matched=1
+                    ;;
+            esac
+        fi
+        [ "$matched" -eq 1 ] || continue
         entry=${dev##*/}
         bus=${entry%-*}
         addr=0x${entry#*-}
