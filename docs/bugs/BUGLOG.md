@@ -1,3 +1,50 @@
+## [2026-07-06 19:57] branch: 1.0.4.0 — Fix F1: paho-mqtt отсутствовал на устройстве
+
+**Файлы:** `scripts/05-mqtt.sh`, `scripts/01-system.sh`, `docs/bugs/BUGLOG.md`
+**Тип:** dependency / packaging (регресс установки)
+**Описание:** После финального аудита ветки 1.0.4.0 (коммит 96232d9) сервисы
+sa02m-modbus-mqtt (516 restarts) и sa02m-telemetry (532 restarts) уходили в
+restart-loop с `ModuleNotFoundError: No module named 'paho'`. При этом на
+устройстве уже стояли `python3-yaml` (5.3.1-5) и `python3-serial` (3.5b0-1),
+но `python3-paho-mqtt` отсутствовал (`dpkg -l` — не найден).
+**Причина:** Установщик MQTT-модуля (`scripts/05-mqtt.sh`, шаг 2) полагался
+только на `pip3 install --break-system-packages --quiet paho-mqtt` и всегда
+рапортовал `log OK` независимо от кода возврата. При отсутствии интернета/DNS
+на момент установки pip тихо падал, зависимости не ставились, но скрипт
+завершался успехом. Проверки импорта не было. Плюс: `pkg_install` из
+`scripts/01-system.sh` (базовый шаг) не включал `python3-paho-mqtt`, поэтому
+если `05-mqtt.sh` не запускался (или падал в тихом режиме) — модуль
+`paho.mqtt` не появлялся в системе вообще. При этом
+`tools/debian-rootfs/create-sa02m-rootfs.sh` уже содержит `python3-paho-mqtt`
+в `BASE_PKGS`, то есть свежесобранные rootfs получают его, но существующие
+устройства и install-flow через `scripts/*` — нет.
+**Исправление:**
+1. **На устройстве** — установлен `python3-paho-mqtt 1.5.1-1` через
+   `apt-get download` + `dpkg -i` (обычный `apt-get install` заблокирован
+   независимой сломанной зависимостью `codesyscontrol → codemeter`);
+   `python3 -c 'import paho.mqtt'` возвращает 1.5.1.
+2. **`scripts/05-mqtt.sh`** — блок установки Python-зависимостей переписан:
+   (a) приоритет `apt-get install python3-paho-mqtt python3-yaml python3-serial`
+   с fallback на `apt-get download` + `dpkg -i`; (b) вторичный fallback на
+   `pip3 install --break-system-packages` только если импорт всё ещё падает;
+   (c) обязательная проверка `python3 -c 'import paho.mqtt / yaml / serial'`
+   в конце с `exit 1`, если какой-то модуль не грузится (fail-loud, чтобы
+   установка не завершалась `OK` при пропущенных зависимостях).
+3. **`scripts/01-system.sh`** — базовый `pkg_install` в `# Required
+   packages` расширен: добавлены `python3-paho-mqtt python3-yaml
+   python3-serial`. Теперь paho ставится ещё до вызова 05-mqtt.sh.
+4. **`tools/debian-rootfs/create-sa02m-rootfs.sh`** — проверено, `BASE_PKGS`
+   уже включает нужные пакеты (изменений не требуется).
+**Известное последующее (F2, вне scope этого коммита):** После установки paho
+сервисы всё ещё падают с `TypeError: unsupported operand type(s) for |: 'type'
+and 'NoneType'` — файлы `/opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`
+(строка 206) и `/opt/sa02m-modbus-mqtt/sa02m_telemetry.py` (строка 67)
+используют PEP 604-синтаксис `int | None` (Python 3.10+), а на устройстве
+Python 3.9.2 (bullseye). Требуется отдельная правка: `from __future__ import
+annotations` или замена на `Optional[int]`. Это отдельный баг, оформляется
+следующей задачей.
+
+---
 ## [2026-07-06 19:35] branch: 1.0.4.0 — Финальный аудит ветки 1.0.4.0 (полный проход по устройству + все параллельные интеграции)
 
 **Файл(ы) (репо):**
@@ -2021,7 +2068,6 @@ opoll при absent); подсказки в 	itle; строки open/closed уб
 
 ---
 
-
 **Файл(ы):** `www/network_config/cgi-bin/status.cgi`, `www/network_config/static/js/app.js`, `www/network_config/index.html`
 **Тип:** Некорректное поведение
 **Описание:** В виджете «Система» не отображалась версия Armbian (только плата, CPU, ядро).
@@ -2049,7 +2095,6 @@ opoll при absent); подсказки в 	itle; строки open/closed уб
 **Исправление:** На устройстве: `sa02m-status-blocks-guard set services 1` + `confirm`. В репозитории: дефолт `SA02M_STATUS_ENABLE_SERVICES=1` в `etc/sa02m_status_blocks.conf` для новых установок.
 
 ---
-
 
 **Файл(ы):** `etc/fix-eth.sh`
 **Тип:** Логическая ошибка

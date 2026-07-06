@@ -72,7 +72,8 @@ fi
 log INFO "Установка пакетов"
 apt-get update -qq >> "$LOG_FILE" 2>&1
 pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs \
-    i2c-tools gpiod libgpiod2 python3-libgpiod
+    i2c-tools gpiod libgpiod2 python3-libgpiod \
+    python3-paho-mqtt python3-yaml python3-serial
 
 # ── User hmi ──────────────────────────────────────────────────────────────
 if ! id hmi &>/dev/null; then
