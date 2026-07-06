@@ -71,10 +71,13 @@ bash "$SCRIPT_DIR/scripts/03-webserver.sh"
 bash "$SCRIPT_DIR/scripts/04-flasher.sh"
 bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
 
-# ── Optional stacks (MQTT / Gateway / Node-RED / Docker) ───────────────────
+# ── Optional stacks (MQTT / Gateway / Node-RED / CODESYS / MPLC / Docker) ─
 # Можно отключить по-отдельности:
-#   SA02M_SKIP_MQTT=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_NODERED=1 SA02M_SKIP_DOCKER=1 ./install.sh
+#   SA02M_SKIP_MQTT=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_NODERED=1 \
+#   SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 SA02M_SKIP_DOCKER=1 ./install.sh
 # По умолчанию — устанавливаем всё, чтобы после первой прошивки был полный стек.
+# CODESYS/MPLC ставятся только если найден vendor-payload (см. docs/vendor-integrations.md);
+# отсутствие payload'а не считается ошибкой — шаг просто пропускается.
 
 if [ "${SA02M_SKIP_MQTT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/05-mqtt.sh" ]; then
     log INFO "──── Опциональный стек: MQTT (mosquitto + мосты) ────"
@@ -91,6 +94,16 @@ if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered
     bash "$SCRIPT_DIR/scripts/07-nodered.sh" || log WARN "07-nodered.sh завершился с ошибкой"
 fi
 
+if [ "${SA02M_SKIP_CODESYS:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/08-codesys.sh" ]; then
+    log INFO "──── Опциональный стек: CODESYS Control (SL, armhf) ────"
+    bash "$SCRIPT_DIR/scripts/08-codesys.sh" || log WARN "08-codesys.sh завершился с ошибкой"
+fi
+
+if [ "${SA02M_SKIP_MPLC:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/09-mplc.sh" ]; then
+    log INFO "──── Опциональный стек: MasterSCADA MPLC 4D Runtime ────"
+    bash "$SCRIPT_DIR/scripts/09-mplc.sh" || log WARN "09-mplc.sh завершился с ошибкой"
+fi
+
 if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
     log INFO "──── Опциональный стек: Docker CE (docker.io) ────"
     if ! command -v docker >/dev/null 2>&1; then
@@ -101,18 +114,49 @@ if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
         log INFO "docker уже установлен: $(docker --version 2>/dev/null | head -1)"
     fi
 
-    # Kernel Wiren Board 5.10.35-sa02m+ не содержит CONFIG_OVERLAY_FS / CONFIG_BRIDGE /
-    # CONFIG_NF_TABLES → полноценный Docker не работает. Настраиваем minimal-mode:
-    # storage-driver=vfs, iptables=false, bridge=none. Работает только --network host,
-    # без NAT/port mapping. TODO: пересборка ядра с этими опциями (kernel-port/).
+    # Настройка Docker зависит от ядра. Начиная с SA-02м kernel 5.10.35 (без
+    # суффикса) собирается с CONFIG_OVERLAY_FS=y + CONFIG_BRIDGE=y + CONFIG_NF_TABLES=y
+    # → доступен полноценный режим: overlay2 storage + iptables-nft + bridge networking.
+    # На старом ядре (5.10.35-sa02m+ / любое ядро без OVERLAY_FS/BRIDGE/NF_TABLES)
+    # автоматически откатываемся на minimal-mode (vfs + iptables=false + bridge=none).
     if command -v docker >/dev/null 2>&1; then
-        # iptables backend: legacy (nftables backend требует CONFIG_NF_TABLES)
-        update-alternatives --set iptables  /usr/sbin/iptables-legacy  >> "$LOG_FILE" 2>&1 || true
-        update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >> "$LOG_FILE" 2>&1 || true
+        DOCKER_MODE=full
+        KERNEL_CFG="/boot/config-$(uname -r)"
+        for req in CONFIG_OVERLAY_FS CONFIG_BRIDGE CONFIG_NF_TABLES; do
+            if [ -f "$KERNEL_CFG" ]; then
+                if ! grep -qE "^${req}=[ym]" "$KERNEL_CFG"; then
+                    DOCKER_MODE=minimal
+                    log WARN "kernel $(uname -r): $req отсутствует → Docker minimal-mode"
+                    break
+                fi
+            fi
+        done
 
         mkdir -p /etc/docker
-        if [ ! -f /etc/docker/daemon.json ] || ! grep -q '"storage-driver"' /etc/docker/daemon.json; then
-            cat > /etc/docker/daemon.json <<'DOCKER_JSON'
+        if [ "$DOCKER_MODE" = "full" ]; then
+            update-alternatives --set iptables  /usr/sbin/iptables-nft  >> "$LOG_FILE" 2>&1 || true
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-nft >> "$LOG_FILE" 2>&1 || true
+
+            if [ ! -f /etc/docker/daemon.json ] || grep -q '"storage-driver": "vfs"' /etc/docker/daemon.json 2>/dev/null; then
+                cat > /etc/docker/daemon.json <<'DOCKER_JSON'
+{
+  "storage-driver": "overlay2",
+  "iptables": true,
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+DOCKER_JSON
+                log INFO "docker daemon.json: full-mode (overlay2 + iptables-nft + bridge)"
+            fi
+        else
+            update-alternatives --set iptables  /usr/sbin/iptables-legacy  >> "$LOG_FILE" 2>&1 || true
+            update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >> "$LOG_FILE" 2>&1 || true
+
+            if [ ! -f /etc/docker/daemon.json ] || ! grep -q '"storage-driver"' /etc/docker/daemon.json; then
+                cat > /etc/docker/daemon.json <<'DOCKER_JSON'
 {
   "storage-driver": "vfs",
   "iptables": false,
@@ -120,10 +164,12 @@ if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
   "log-driver": "journald"
 }
 DOCKER_JSON
-            log INFO "docker daemon.json: minimal-mode (vfs+без iptables/bridge) — kernel WB без OVERLAY_FS/NF_TABLES"
+                log INFO "docker daemon.json: minimal-mode (vfs, без iptables/bridge) — старое ядро"
+            fi
         fi
+
         systemctl reset-failed docker 2>/dev/null || true
-        systemctl enable --now docker >> "$LOG_FILE" 2>&1 && log OK "docker.service активен (minimal-mode)" \
+        systemctl enable --now docker >> "$LOG_FILE" 2>&1 && log OK "docker.service активен ($DOCKER_MODE-mode)" \
             || log WARN "docker.service не стартует — journalctl -u docker -n 30"
     fi
 fi
@@ -148,7 +194,7 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
         fi
     done
     # Опциональные — только если не пропущены
-    for svc in mosquitto sa02m-serial-gateway nodered docker; do
+    for svc in mosquitto sa02m-serial-gateway nodered codesyscontrol mplc4 docker; do
         if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
             state=$(systemctl is-active "$svc" 2>/dev/null || echo "inactive")
             log INFO "   $svc: $state"

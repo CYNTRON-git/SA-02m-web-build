@@ -167,7 +167,7 @@ fi
 rm -f /usr/local/bin/sa02m-phy-coldboot.sh
 
 # ── Заводские имена интерфейсов (eth0/eth1) ───────────────────────────────
-# Kernel Wiren Board 5.10.35-sa02m+ по умолчанию выдаёт `eth0` (sun4i-emac,
+# Kernel SA-02m (5.10.35) по умолчанию выдаёт `eth0` (sun4i-emac,
 # 1c0b000.ethernet) и `eth1` (dwmac-sun8i, 1c50000.ethernet). Мы НЕ используем
 # systemd `.link` файлы для переименования (`end0`/`end1`), потому что после
 # обновления systemd/udev эти правила могут потерять эффект (или конфликтовать
@@ -178,12 +178,18 @@ rm -f /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link \
       /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link 2>/dev/null || true
 log INFO "Используются заводские имена интерфейсов kernel (eth0/eth1)"
 
-# ── nftables: masked, kernel Wiren Board 5.10.35-sa02m+ собран без ────────
-# CONFIG_NF_TABLES. Пакет `nftables` установлен как dependency `iptables-nft`,
-# но сервис фейлит с "Netlink socket: Protocol not supported". Firewall
-# правил у нас нет (пустой /etc/nftables.conf) → mask безопасен.
-systemctl mask nftables.service >>"$LOG_FILE" 2>&1 || true
-log INFO "nftables.service masked (kernel без CONFIG_NF_TABLES)"
+# ── nftables: kernel-aware ────────────────────────────────────────────────
+# С 1.0.4.x kernel SA-02m (5.10.35) собран с CONFIG_NF_TABLES=y — nftables
+# работает штатно. На старом kernel (5.10.35-sa02m+ без NF_TABLES) сервис
+# фейлил с "Netlink socket: Protocol not supported" → маскировали. Проверяем
+# и снимаем/накидываем маску в зависимости от возможностей ядра.
+if grep -qE '^CONFIG_NF_TABLES=[ym]' "/boot/config-$(uname -r)" 2>/dev/null; then
+    systemctl unmask nftables.service >>"$LOG_FILE" 2>&1 || true
+    log INFO "nftables.service unmasked (kernel с CONFIG_NF_TABLES)"
+else
+    systemctl mask nftables.service >>"$LOG_FILE" 2>&1 || true
+    log INFO "nftables.service masked (kernel без CONFIG_NF_TABLES)"
+fi
 
 systemctl daemon-reload
 udevadm control --reload-rules 2>/dev/null || true

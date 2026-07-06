@@ -1147,8 +1147,13 @@ gather_usb_modem_metrics() {
     USB_MODEM_RX=0
     USB_MODEM_TX=0
 
-    # Известные USB ID модемных вендоров (ZTE, Huawei, Quectel, Sierra, Ericsson, Dell/Option)
-    local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7"
+    # Известные USB ID модемных вендоров.
+    # 19d2=ZTE, 12d1=Huawei, 2c7c=Quectel, 1199=Sierra, 0bdb=Ericsson,
+    # 413c=Dell WWAN, 1c9e=Longcheer (ZTE-based), 0af0=Option NV, 2cb7=Fibocom,
+    # 05c6=Qualcomm CDMA (SIM7600 в QMI-режиме), 1e0e=SimCom / некоторые ZTE,
+    # 1546=u-blox, 1782=Longsung / Meig / некоторые SIM7100, 1bbb=Alcatel/T&A,
+    # 2020=Meig / некоторые Fibocom.
+    local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7 05c6 1e0e 1546 1782 1bbb 2020"
     local iface vendor product manufacturer usb_dir d
 
     for iface in $(ls /sys/class/net/ 2>/dev/null); do

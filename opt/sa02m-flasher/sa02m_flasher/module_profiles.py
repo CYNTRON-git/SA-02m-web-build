@@ -316,14 +316,14 @@ def validate_firmware_device_route(
         if firmware_is_wb:
             return (
                 f"Для модуля MR/MP-02m (сигнатура «{dev_sig}») выберите прошивку .fw, "
-                "не .wbfw (Wiren Board)."
+                "не .wbfw."
             )
         return None
 
     if route == "wb":
         if not firmware_is_wb:
             return (
-                f"Для устройства «{dev_sig}» (сторонний Modbus / Wiren Board) выберите прошивку .wbfw, "
+                f"Для стороннего устройства «{dev_sig}» (сторонний Modbus, .wbfw) выберите прошивку .wbfw, "
                 "не .fw MR/MP-02m."
             )
         return None
@@ -358,7 +358,7 @@ def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[s
     has_wb = any(r == "wb" for r in routes)
     if has_mp and has_wb:
         return (
-            "Нельзя прошивать вместе модули MR/MP и Wiren Board. "
+            "Нельзя прошивать вместе модули MR/MP и сторонние (.wbfw). "
             "Выберите устройства одного типа."
         )
     return None

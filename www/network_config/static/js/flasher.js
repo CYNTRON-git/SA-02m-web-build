@@ -694,7 +694,7 @@
     const hasMpMr = routes.some(r => r === 'mp_mr');
     const hasWb = routes.some(r => r === 'wb');
     if (hasMpMr && hasWb) {
-      return 'Нельзя прошивать вместе модули MR/MP и Wiren Board. Выберите устройства одного типа.';
+      return 'Нельзя прошивать вместе модули MR/MP и сторонние (.wbfw). Выберите устройства одного типа.';
     }
     return '';
   }
@@ -1078,7 +1078,7 @@
       return `Для модуля MR/MP-02m («${sig}») выберите прошивку .fw, не .wbfw.`;
     }
     if (route === 'wb' && !fwIsWbfw) {
-      return `Для устройства «${sig}» (Wiren Board) выберите прошивку .wbfw.`;
+      return `Для стороннего устройства «${sig}» выберите прошивку .wbfw.`;
     }
     return '';
   }

@@ -33,7 +33,9 @@ sudo apt install git build-essential bc kmod cpio fakeroot dpkg-dev \
 ./tools/kernel-wb/deploy-sa02m-kernel.sh root@sa02m-01.local
 ```
 
-Выход: `~/build/sa02m-kernel/linux-image-sa02m*_5.10.35-*_armhf.deb` (+ headers, +libc-dev).
+Выход: `~/build/sa02m-kernel/linux-image-5.10.35_5.10.35-sa02m-YYYYMMDDHHmm_armhf.deb` (+ headers, +libc-dev).
+
+С 1.0.4.x пакет называется `linux-image-5.10.35` (`CONFIG_LOCALVERSION=""` — убран `-sa02m` суффикс), а `uname -r` даёт чистый `5.10.35` без бренда. Debian package version остаётся с суффиксом `sa02m` в имени (для отличия от upstream apt).
 
 ## Что происходит внутри `build-sa02m-kernel.sh`
 

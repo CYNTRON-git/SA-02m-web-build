@@ -33,3 +33,13 @@ tools/imaging/flash-media/
 # Temporary working directory
 .tmp/
 tmp/
+
+# Vendor payload (CODESYS Runtime .deb, MPLC install tarballs, лицензионные .wbc/.lic).
+# Проприетарные бинарники не коммитим — они лежат локально на build-host в vendor/
+# и копируются в /opt/vendor-installers/ через tools/debian-rootfs/create-sa02m-rootfs.sh.
+# См. docs/vendor-integrations.md.
+/vendor/
+*.wbc
+*.lic
+*.WibuCmLif
+*.wbb

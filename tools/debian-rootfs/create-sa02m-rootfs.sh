@@ -156,6 +156,28 @@ BASE_PKGS=(
 	python3-yaml
 	python3-paho-mqtt
 	python3-serial
+	# ── USB-модемы (3G/4G/LTE): PPP + ModemManager + QMI/MBIM utils.
+	# Стек ставится сразу в rootfs, чтобы модем поднимался автоматически
+	# без интернета (после первой загрузки apt может быть недоступен).
+	modemmanager
+	ppp
+	usb-modeswitch
+	usb-modeswitch-data
+	libqmi-utils
+	libmbim-utils
+	usbutils
+	# ── Runtime-зависимости для vendor-стека (CODESYS SL, MPLC 4D).
+	# Ставим сразу в rootfs, чтобы vendor install-скрипты (scripts/08-codesys.sh,
+	# scripts/09-mplc.sh) не требовали apt после первой прошивки. Все пакеты —
+	# из штатного Debian bullseye main; codemeter-lite (WIBU) в main отсутствует,
+	# CODESYS ставим с --force-depends и запускаем в demo-режиме до активации.
+	libssl1.1
+	zlib1g
+	libstdc++6
+	libgcc-s1
+	libudev1
+	libpcre3
+	libatomic1
 )
 
 log "output       = $OUTPUT"
@@ -273,6 +295,26 @@ tar -C "$REPO_ROOT" \
 chmod +x "$OUTPUT/opt/sa02m-web-build/install.sh" \
 	"$OUTPUT/opt/sa02m-web-build/scripts/"*.sh \
 	"$OUTPUT/opt/sa02m-web-build/tools/debian-rootfs/"*.sh 2>/dev/null || true
+
+# ── vendor-payload (CODESYS + MPLC) → /opt/vendor-installers/ ──────────────
+# Копируем большие проприетарные бинарники ТОЛЬКО если каталоги существуют
+# на build-host (в репо их нет — см. .gitignore /vendor/). Позволяет получать
+# готовый rootfs с CODESYS + MPLC при первичной прошивке без ручных pscp.
+#
+# Ожидаемая структура на build-host:
+#   $REPO_ROOT/vendor/codesys/codesyscontrol_linuxarm_*.deb
+#   $REPO_ROOT/vendor/mplc4/{install.sh,mplc4.tar.gz,nginx.tar.gz,mplc_cyntron.so}
+if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
+	log "copy vendor-payload (CODESYS/MPLC) → /opt/vendor-installers/"
+	install -d -m 0755 "$OUTPUT/opt/vendor-installers"
+	for sub in codesys mplc4; do
+		if [ -d "$REPO_ROOT/vendor/$sub" ]; then
+			install -d -m 0755 "$OUTPUT/opt/vendor-installers/$sub"
+			cp -a "$REPO_ROOT/vendor/$sub/." "$OUTPUT/opt/vendor-installers/$sub/"
+			log "  vendor/$sub: $(du -sh "$OUTPUT/opt/vendor-installers/$sub" 2>/dev/null | awk '{print $1}')"
+		fi
+	done
+fi
 
 if [ "$SKIP_INSTALL" = 0 ]; then
 	log "run install.sh in chroot (SA02M_ROOTFS_BUILD=1)"

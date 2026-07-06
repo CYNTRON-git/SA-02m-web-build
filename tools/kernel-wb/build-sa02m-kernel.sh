@@ -120,6 +120,13 @@ cd "$WB_TREE"
 echo "[make sa02m_defconfig]"
 make sa02m_defconfig
 
+# Force clean `uname -r` == kernel version (без "+" от setlocalversion).
+# CONFIG_LOCALVERSION="" уже в defconfig; scripts/setlocalversion всё равно
+# добавит "+" если git tree "dirty" (а он всегда dirty после apply.sh —
+# копируем overlay-файлы поверх WB tree). `.scmversion` файл переопределяет
+# setlocalversion и заставляет его вывести именно наше значение (пусто).
+echo -n "" > .scmversion
+
 if [ "$FLAVOUR" = "sa02m-rt" ]; then
 	echo "[merge sa02m_rt.config]"
 	./scripts/kconfig/merge_config.sh -m .config arch/arm/configs/sa02m_rt.config >/dev/null

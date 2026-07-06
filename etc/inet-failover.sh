@@ -122,11 +122,13 @@ set_metric() {
     return 0
 }
 
-# ── Определяем имя модемного интерфейса (enx*/usb* с IP и шлюзом) ────────
+# ── Определяем имя модемного интерфейса (enx*/usb*/wwan* с IP и шлюзом) ──
+# wwan0/wwan1 — интерфейс QMI/MBIM модемов (qmi_wwan / cdc_mbim); IP берётся
+# через qmi-network / mbim-network. enx*/usb* — CDC-ECM/RNDIS/NCM (DHCP).
+# ppp0 — устаревшие ttyUSB-модемы через pppd (metric ставит /etc/ppp/ip-up.d).
 get_modem_iface() {
-    for iface in $(ip -o link show up | awk -F': ' '{print $2}' | grep -E '^(enx|usb[0-9])'); do
+    for iface in $(ip -o link show up | awk -F': ' '{print $2}' | grep -E '^(enx|usb[0-9]|wwan[0-9])'); do
         ip addr show dev "$iface" 2>/dev/null | grep -q 'inet ' || continue
-        # Есть шлюз через этот интерфейс
         ip route show default dev "$iface" 2>/dev/null | grep -q . && echo "$iface" && return
     done
 }

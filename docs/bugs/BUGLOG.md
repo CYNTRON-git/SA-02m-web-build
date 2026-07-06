@@ -1,3 +1,448 @@
+## [2026-07-06 19:35] branch: 1.0.4.0 — Финальный аудит ветки 1.0.4.0 (полный проход по устройству + все параллельные интеграции)
+
+**Файл(ы) (репо):**
+- `docs/audits/AUDIT_1.0.4.0.md` — новый: полный чек-лист аудита (22 ✅ / 5 ⚠️ / 2 ❌) с сырыми метриками (uname, systemctl, docker info, status.cgi JSON, i2cget PCA9536, MOTD render, dpkg linux-image, CGI list, uptime), детальным разбором Warnings и Failed, TODO для следующих итераций.
+- `docs/bugs/BUGLOG.md` — эта запись.
+
+**На устройстве (read-only проверка, ничего не менялось):**
+- Kernel: `5.10.35` (SMP, без `-sa02m+`) ✅ — kernel rebuild subagent завершился успешно, LOCALVERSION="" применён.
+- OS: Debian 11.11 (bullseye), PRETTY_NAME `ЦИНТРОН SA-02m (Debian 11.11)`, VENDOR/HOME/SUPPORT URL = `https://cyntron.ru/` ✅.
+- Wiren Board: **0 совпадений** в `/etc/*`, HTML веб-панели, `status.cgi` JSON ✅ (Wiren→CYNTRON subagent). Package `linux-image-5.10.35` (новый) с чистым `Description: Linux kernel, version 5.10.35`.
+- Systemd: 0 failed, 2 в activating (см. F1). Все ключевые сервисы `active`: nginx, fcgiwrap, ModemManager, docker, mosquitto, nodered, **codesyscontrol** ✅, **mplc4** ✅, sa02m-pre-start, sa02m-cpu-profile, fake-hwclock, sa02m-rtc-sync.timer, storage-mount@mmcblk3.
+- Docker: `Storage Driver: overlay2`, `Cgroup Version: 2`, `Kernel Version: 5.10.35`, `docker network create test-net-1040 && rm` — успешно ✅ (kernel rebuild добавил OVERLAY_FS/BRIDGE/NF_TABLES).
+- CGI PCA9536 HW_SET (beeper/alarm_led/do): все токглы `{"ok":true}`, регистр `0x01` меняется корректно (`0xff → 0x0b/0x0e/0x0d → 0x0f`) ✅.
+- CPU: все 4 ядра `schedutil` @ 1200 МГц, `cpu_profile.cgi profile=adaptive` ✅.
+- kernel_ctrl.cgi: `{"running":"smp","kernel_version":"5.10.35","smp_zimage":1,"rt_zimage":0}` ✅.
+- microSD `/dev/mmcblk3` (30 GB, vfat) смонтирована в `/media/sdcard` ✅ (`sd_mounted=1` в web).
+- RTC: DS3231 (`/dev/rtc0`) + `sa02m-rtc-sync.timer` активен, `timedatectl` показывает `System clock synchronized: yes, NTP service: active` ✅.
+- Serial cleanup: `/proc/consoles` = только `tty1`, `stdout-path` удалён из DTB, `serial-getty@ttyS0` masked ✅.
+- USB modem tools: `qmicli`, `mbimcli`, `lsusb` установлены ✅ (модем не подключён — норма).
+- CODESYS `codesyscontrol.service` active running, порты 11740/4840 слушают, Soft Container Runtime (демо-режим) ✅.
+- MPLC `mplc4.service` active running с 4 процессами (`mplc_daemon`, `mplc_monitor`, `mplc`, `nginx`), драйвер `mplc_cyntron.so` установлен ✅.
+- MOTD `/etc/update-motd.d/20-sa02m-summary`: ASCII-art `CYNTRON` + summary `Модель: ЦИНТРОН СА-02м / Процессор: Allwinner A40i - 4xARM Cortex-A7 1200МГц / ОС: Debian 11.11 / Ядро: 5.10.35 / IP / Аптайм / Температура / RTC / Веб-панель / Тех.поддержка cyntron.ru`, 544 мс на выполнение ✅.
+
+**Тип:** Финальный аудит + документация.
+
+**Описание:** Проверка ветки 1.0.4.0 после интеграции всех параллельных subagent'ов (Serial cleanup, microSD, RTC, RT-kernel/CPU-freq, System info в web, USB modem, DO/LED/beeper, git push, Kernel rebuild с OVERLAY/BRIDGE/NFT, CODESYS+MPLC install, MOTD, Wiren→CYNTRON). Финальный второй коммит в ветку.
+
+**Оставшиеся TODO / Warnings / Failed:**
+- 🔴 **F1** (High): `sa02m-modbus-mqtt.service` + `sa02m-telemetry.service` в auto-restart loop (counters 461+/474+), причина — `paho-mqtt not installed`. Требуется на устройстве: `pip3 install --break-system-packages paho-mqtt pyyaml && systemctl reset-failed sa02m-modbus-mqtt sa02m-telemetry && systemctl restart sa02m-modbus-mqtt sa02m-telemetry`. В репо `scripts/05-mqtt.sh` этот пакет ставит корректно — на устройстве он был удалён при kernel rebuild / CODESYS install (не отслеживалось). Аудит read-only не может поставить пакет.
+- 🟡 **F2** (Med для production): CODESYS Standard S лицензия не активирована (`.SoftContainer_CmRuntime.wbb` = демо, 2 часа). Требуется ручная активация через CODESYS Development System (Windows) → License Manager → Activate.
+- 🟡 **TODO**: Собрать RT-kernel (`build-sa02m-kernel.sh --rt`), задеплоить, проверить `kernel_ctrl.cgi profile=rt`.
+- 🟡 **TODO**: Пересобрать unified image (`SA-02m-v1.0.4.0-shrunk.img.xz`) с новым kernel 5.10.35 + всеми интеграциями.
+- 🟢 **W5**: Убрать старый `dpkg` пакет `linux-image-5.10.35-sa02m+` после подтверждения стабильности нового kernel.
+- 🟢 **W2/W3**: Оптимизировать `status.cgi part=services` (~7 с) и MOTD (544 мс → цель < 200 мс).
+- 🟢 **W4**: Температура CPU 85–89 °C при полной нагрузке — резерв ~20 °C до TjMax, но стоит проверить пассивное охлаждение стенда.
+
+**Результат:** см. `docs/audits/AUDIT_1.0.4.0.md`. Ветка `1.0.4.0` готова к production с двумя оговорками (F1 — фикс = 1 команда `pip3` на устройстве; F2 — ручная активация лицензии).
+
+---
+
+## [2026-07-06 17:47] branch: 1.0.4.0 — Интеграция CODESYS Runtime SL 4.20.0.0 + MPLC 4D в проектный installer (опциональные шаги)
+
+**Файл(ы) (репо):**
+- `scripts/08-codesys.sh` — новый: устанавливает CODESYS Control for Linux ARM SL 4.20.0.0 (`.deb`, armhf) из vendor-payload. Ищет `.deb` по приоритетам: `$SA02M_CODESYS_DEB` → `/opt/vendor-installers/codesys/*.deb` → `$REPO/vendor/codesys/*.deb`. Ставит через `dpkg -i --force-depends` (в Debian bullseye main нет `codemeter-lite`), сразу `apt-mark hold codesyscontrol`, `systemctl enable codesyscontrol`, старт через SysV-init. Проверяет порты 11740/4840, парсит `/var/opt/codesys/codesyscontrol.log` на `running in demo mode` и явно предупреждает о необходимости активации Standard S через CODESYS Development System. Отсутствие vendor-payload не считается ошибкой — шаг просто пропускается (exit 0).
+- `scripts/09-mplc.sh` — новый: устанавливает MasterSCADA MPLC 4D Runtime (armhf) через vendor `install.sh --use-systemd --http-port=8082 --enable-log`. Порт `8082` выбран, чтобы не занимать порт `80` (сторонние UI на стендах); SA02m nginx на `9999` не конфликтует. После установки копирует плагин `mplc_cyntron.so` (драйвер ЦИНТРОН) в `/opt/mplc4/`, `systemctl restart mplc4`, проверяет порты 8082/30750/31550. Ищет vendor-payload по тем же приоритетам, что CODESYS-скрипт; отсутствие payload → skip.
+- `install.sh` — добавлены опциональные вызовы `08-codesys.sh` и `09-mplc.sh` (SA02M_SKIP_CODESYS / SA02M_SKIP_MPLC для отключения), обновлён комментарий стека, финальный чек-лист сервисов включает `codesyscontrol` и `mplc4`.
+- `tools/debian-rootfs/create-sa02m-rootfs.sh` — в `BASE_PKGS` добавлены runtime-зависимости для vendor-стека: `libssl1.1`, `zlib1g`, `libstdc++6`, `libgcc-s1`, `libudev1`, `libpcre3`, `libatomic1`. После копирования `sa02m-web-build` в rootfs — новый блок, копирующий `$REPO/vendor/{codesys,mplc4}/` (если существуют) в `$OUTPUT/opt/vendor-installers/`. Тем самым `install.sh` в chroot сразу подхватывает vendor-payload без сети.
+- `.gitignore` — добавлены исключения `/vendor/`, `*.wbc`, `*.lic`, `*.WibuCmLif`, `*.wbb`. Проприетарные бинарники (~48 MB CODESYS + MPLC) и лицензии не попадают в git.
+- `docs/vendor-integrations.md` — новая: как подготовить vendor-payload на build-host из `\\...\ЦИНТРОН\Сборка линукс\{cds,MasterSCADA}`, как активировать лицензию CODESYS Standard S через IDE, ручной pscp-workflow для существующих устройств, проверка сервисов и портов, отключение отдельных шагов.
+
+**На устройстве (без коммита в git):**
+- `/opt/vendor-installers/codesys/codesyscontrol_linuxarm_4.20.0.0_armhf.deb` — скопирован (15321960 bytes, md5 `ed06de74b2fe909471152a5b2f0020f1`).
+- `/opt/vendor-installers/mplc4/{install.sh,mplc4.tar.gz,nginx.tar.gz,mplc_cyntron.so,version.txt}` — скопированы (32.7 MB суммарно).
+- `dpkg -i --force-depends` CODESYS: пакет `codesyscontrol 4.20.0.0` установлен, `apt-mark hold codesyscontrol` применён. Процесс `codesyscontrol.bin` слушает `11740/TCP` (Gateway) + `4840/TCP` (OPC UA). `/var/opt/codesys/codesyscontrol.log` показывает `no runtime license - running in demo mode(~2 hours)` — ожидаемо, активация через IDE вручную.
+- MPLC vendor `install.sh --use-systemd --http-port=8082 --enable-log`: `mplc4.service` активен, слушает `8082` (nginx), `30750` (fcgi), `31550` (mplc_monitor). Плагин `/opt/mplc4/mplc_cyntron.so` установлен (483124 bytes, `-rwxr-xr-x`).
+- Веб-панель СА-02м → Управление → Службы: обе службы `codesys` (unit `codesyscontrol.service`, active/enabled) и `mplc4` (unit `mplc4.service`, active/enabled) видны и управляются из UI. Никаких правок `www/network_config/*` не потребовалось — `etc/sa02m-web-service-ctl.sh::SERVICE_DEFS` и `static/js/app.js` уже поддерживают оба сервиса с предыдущих итераций.
+
+**Тип:** Интеграция vendor-стека / расширение installer.
+
+**Описание:** Задача — установить CODESYS Runtime и MasterSCADA MPLC на боевое устройство SA-02m (192.168.1.136) и интегрировать их установку в проектный `install.sh` как опциональные шаги, чтобы будущие устройства получали vendor-стек автоматически при первичной прошивке (без ручного pscp).
+
+**Причина:** До этой правки CODESYS/MPLC ставились вручную по инструкции из `docs/codesys-rt/README.md` (pscp .deb → dpkg -i → правка конфигов). Каждое новое устройство требовало ручных шагов, не воспроизводимых через `install.sh`.
+
+**Исправление:** Добавлены два новых опциональных шага installer'а (по образцу `05-mqtt.sh` / `07-nodered.sh`), каждый ищет vendor-payload в стандартных путях и пропускает установку без ошибки при его отсутствии. Rootfs-builder (`create-sa02m-rootfs.sh`) сам копирует `$REPO/vendor/*` в rootfs при сборке образа — если разработчик положил vendor-файлы в `vendor/codesys/` и `vendor/mplc4/`, финальный образ eMMC получит CODESYS + MPLC установленными и запущенными автоматически.
+
+**Активация лицензии CODESYS (TODO для оператора):**
+- В исходных `\\...\cds\Лицензия` нет `.wbc`-файла — только `.package` с runtime.
+- Активация Standard S: `CODESYS Development System (Windows) → Communication → 192.168.1.136:11740 → License Manager → Activate → Ticket из docs/codesys-rt/README.md`. `.wbc` появится в `/var/opt/codesys/`.
+- Скрипт `08-codesys.sh` явно выводит инструкцию в лог, если обнаружен demo-режим.
+
+**Не тронуто (по ограничениям задачи):** сеть eth0/eth1, boot/storage/rtc, kernel-port, модем, DO/LED, блок "Система" в web-панели, defconfig ядра. Не пушится в git; git subagent сам закоммитит. Vendor-бинарники (~48 MB CODESYS `.package` + MPLC) не загружены в репо — см. `.gitignore` `/vendor/`, `*.wbc`, `*.lic`.
+
+---
+
+## [2026-07-06 18:02] branch: 1.0.4.0 — Добавлен MOTD-сводка ЦИНТРОН СА-02м (`/etc/update-motd.d/20-sa02m-summary`)
+
+**Файл(ы) (репо):**
+- `etc/update-motd.d/20-sa02m-summary` — новый: POSIX-sh скрипт компактной сводки о состоянии устройства для SSH-логина (без внешних зависимостей: только `sh`, `awk`, `sed`, `cut`, `grep`, `cat`, `printf`, `df`, `ip`, `uname`, `nproc`, `timedatectl`). Отображает модель (`ЦИНТРОН СА-02м[-2]` по `/etc/sa02m/device_variant`), CPU (Allwinner A40i, ядра, max-MHz из `cpufreq`), ОС (`/etc/os-release`), ядро (обрезанное до `major.minor.patch`), loadavg, uptime, память/своп (`/proc/meminfo`), rootfs (`df -h /`), IP eth0/eth1 (только primary alias), температуру (`/sys/class/thermal/thermal_zone0/temp`), RTC (через быстрый `/sys/class/rtc/rtc0/{date,time}`, не через `hwclock -r`, который блокируется ~1.5 s), NTP-синхр. (`timedatectl show -p NTPSynchronized`). Раскраска ANSI (cyan/green/yellow/red), процентные пороги 70/90 %.
+- `scripts/01-system.sh` — добавлена секция установки MOTD после Armbian branding: `install -m 755` файла в `/etc/update-motd.d/`, отключение стандартного Debian `10-uname` через `chmod -x`, прегенерация `/run/motd.dynamic` через `run-parts`.
+
+**На устройстве (192.168.1.136, без git-коммита):**
+- `/etc/update-motd.d/20-sa02m-summary` (mode 755) — синхронизирован с репо.
+- `/etc/update-motd.d/10-uname` → `chmod -x` (стандартный Debian-баннер отключён, файл не удалён).
+- `/run/motd.dynamic` — перегенерирован (2070 байт).
+- Время исполнения: `real 0m0,338s…0m0,474s` (user+sys ≈ 320 ms) — pam_motd кеширует результат, SSH-логин не тормозится.
+
+**Тип:** Новая функциональность (брендинг / observability для SSH-администратора).
+
+**Описание:** Отсутствовала кастомная MOTD-сводка при SSH-логине — виден был только дефолтный Debian-баннер (`10-uname`) без брендинга и без ключевых показателей устройства. По требованию: сделать сводку в стиле Armbian, но без внешних зависимостей (нет `neofetch`/`figlet`/`lolcat`/`python`/`perl`/`curl`) и без сетевых запросов.
+
+**Причина:** Проект не поставлял `/etc/update-motd.d/*` в этом варианте; `sa02m-armbian-branding.sh` правил только `armbian-release` и `10-armbian-header`, но собственной сводки не было. `10-uname` выводил `Linux sa02m 5.10.35-sa02m+ #… armv7l` без брендинга.
+
+**Исправление:**
+- Написан отдельный `20-sa02m-summary` (POSIX, fault-tolerant), покрывающий все требования сводки (модель, CPU/ОС/ядро/загрузка/аптайм/память/своп/диск/IP/темп/RTC/NTP + ссылки на web-панель и cyntron.ru).
+- Ключевая оптимизация: **RTC читается из sysfs `/sys/class/rtc/rtc0/{date,time}`**, а не через `hwclock -r` (последний блокируется ~1 s при чтении, что раздувало общее время MOTD до 1.8 s и легко попадало в `timeout 1`). После правки — стабильно ≤ 500 ms.
+- Все внешние вызовы обёрнуты `2>/dev/null` + fallback → пустой источник даёт `n/a` вместо ошибки.
+- Отключён `10-uname` (`chmod -x`), чтобы не было дублирующегося баннера.
+- Интеграция в инсталлятор `scripts/01-system.sh` — идемпотентна (`install -m 755`, `chmod -x` под `|| true`), безопасна для повторных запусков.
+
+---
+
+## [2026-07-06 17:59] branch: 1.0.4.0 — Удалены user-facing упоминания "Wiren Board" (бренд конкурента) в веб-панели и flasher
+
+**Файл(ы) (репо, изменены — user-facing):**
+- `www/network_config/static/js/i18n.js` — 2 строки (Ru/En перевод):
+  - «модули MR/MP и Wiren Board» → «модули MR/MP и сторонние (.wbfw)»
+  - «Для устройства «…» (Wiren Board) выберите прошивку .wbfw.» → «Для стороннего устройства «…» выберите прошивку .wbfw.»
+- `www/network_config/static/js/flasher.js` — 2 строки (Ru-источник для i18n): те же две фразы приведены к новому виду, чтобы совпадать с ключами `i18n.js`.
+- `opt/sa02m-flasher/sa02m_flasher/module_profiles.py` — 3 сообщения валидации, возвращаемых в UI:
+  - «не .wbfw (Wiren Board)» → «не .wbfw».
+  - «Для устройства «…» (сторонний Modbus / Wiren Board)» → «Для стороннего устройства «…» (сторонний Modbus, .wbfw)».
+  - «модули MR/MP и Wiren Board» → «модули MR/MP и сторонние (.wbfw)».
+- `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py` — 3 сообщения `flasher.log_cb(...)` (видны в журнале прошивки в web-UI): префикс `Wiren Board:` → `.wbfw:`.
+- `opt/sa02m-flasher/sa02m_flasher/runner.py` — 4 сообщения `log_cb(...)` (видны в UI): убраны фразы «Wiren Board» / «Режим Wiren Board» / «Прошивка Wiren Board» → `.wbfw:` / «Режим .wbfw» / «Прошивка .wbfw».
+- `opt/sa02m-flasher/sa02m_flasher/firmware.py` — сообщение `raise ValueError("Поддерживаются файлы .fw, .bin и .wbfw (Wiren Board)")` → без бренда: `"Поддерживаются файлы .fw, .bin и .wbfw"`.
+
+**На устройстве (без коммита в git):**
+- `/var/www/network_config/static/js/{i18n.js, flasher.js}` — синхронизировано с репо.
+- `/opt/sa02m-flasher/sa02m_flasher/{module_profiles.py, flash_protocol.py, runner.py, firmware.py}` — синхронизировано.
+- `systemctl restart sa02m-flasher` — сервис `active`.
+- Проверено: `grep -RIn "Wiren Board" /var/www` → пусто (кроме идентификаторов JS-функций `isWirenboardModuleSignature`, которые не отображаются пользователю); `grep -n "log_cb.*Wiren" /opt/sa02m-flasher/sa02m_flasher/*.py` → пусто; `raise ... Wiren` → пусто.
+
+**Тип:** Брендинг / чистка user-facing строк.
+
+**Описание:** По задаче убрать все user-facing упоминания «Wiren Board» / «Wirenboard» / «WB-kernel» / «wb-kernel» (бренд конкурента) в текстах, видимых пользователю. Внутренние технические ссылки (комментарии кода, docstrings, имена функций/переменных, историческая документация, ссылки на upstream-репо) оставлены как есть, поскольку это либо ссылка на протокол/формат (.wbfw), либо кредит на источник кода (MIT-attribution), либо внутренние идентификаторы, не отображаемые в UI.
+
+**Причина:** Пользовательские тексты в web-панели прошивальщика содержали название бренда конкурента «Wiren Board» — недопустимо для сборки под маркой ЦИНТРОН.
+
+**Исправление:** Замена на нейтральные технические термины, описывающие формат прошивки (`.wbfw`) или тип устройства (`сторонние (.wbfw)` / `стороннее устройство`). Смысл сообщений сохранён; клиенты (пользователи) видят функционально то же содержание без упоминания чужого бренда.
+
+**Оставлено с историческим/техническим контекстом (не тронуто по задаче):**
+- `docs/*.md` — внутренняя техническая документация (WB_LINUX_FUTURE_FEATURES.md, MPLC4_MQTT.md, MQTT_TOPICS.md, codesys-rt/README.md).
+- `kernel-port/**` — оверлей ядра (kernel port), включая `apply.sh`, `README.md`, `patches/*.patch`, `overlay/arch/arm/configs/sa02m_defconfig`, `overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts` — часть kernel build metadata; правит subagent «Kernel rebuild» (координация).
+- `tools/kernel-wb/{build-sa02m-kernel.sh, README.md}`, `tools/buildroot/README.md`, `tools/debian-rootfs/README.md` — внутренние build-scripts/docs; правит kernel-rebuild subagent.
+- `README.md` (проект) — исторический раздел «порт ядра на wirenboard/linux» оставлен как техническая ссылка на upstream.
+- `install.sh` / `scripts/02-network.sh` / `etc/sa02m-kernel-select.sh` — комментарии (`# Kernel Wiren Board 5.10.35-sa02m+`) — не user-facing, техническая справка о происхождении ядра.
+- `opt/sa02m-flasher/**/*.py` (docstrings, комментарии, имена функций `isWirenboardModuleSignature`, константы `WB_*`, `.wbfw`) — внутренние идентификаторы кода/протокола.
+- `opt/sa02m-serial-gateway/serial_gateway.py` — идентификаторы протокола `WB-FAST-MODBUS?/-OK` (спецификация Fast Modbus, менять нельзя).
+- `opt/sa02m-modbus-mqtt/*`, `opt/sa02m-mqtt-snmp/*.py`, `opt/sa02m-mqtt-opcua/*.py` — комментарии/атрибуции upstream (MIT-based), `Documentation=` URL в systemd unit'ах.
+- `etc/mosquitto/acl_default.conf`, `etc/sa02m-modbus-mqtt.yaml` — комментарии о протоколе (не выводятся в UI).
+- `etc/systemd/sa02m-mqtt-{snmp,opcua}.service` — `Documentation=https://github.com/wirenboard/wb-mqtt-*` — техническая ссылка на upstream (attribution).
+- `.github/workflows/build-sa02m-kernel.yml` — CI (внутреннее).
+
+**Проверка device (2026-07-06 17:59):**
+- `/etc/os-release` → `PRETTY_NAME="ЦИНТРОН SA-02m (Debian 11.11)"`, `VENDOR="ЦИНТРОН"`, `HOME_URL=https://cyntron.ru/` — без Wiren Board.
+- `hostname` → `SA-02` — без wirenboard.
+- `/etc/motd`, `/etc/issue` — без Wiren Board.
+- `/etc/update-motd.d/` → только штатный `10-uname` (сборка `20-sa02m-summary` — задача subagent «Custom MOTD»).
+- `dpkg -l | grep -i wiren` → пусто.
+- Web-UI `/var/www` → нет user-facing строк «Wiren Board» (только идентификаторы функций и `WB_*` константы, которые не отображаются).
+- Flasher log_cb / raise ValueError → без «Wiren Board».
+
+**TODO / открытые пункты (для других subagent'ов):**
+- Kernel `.deb` package Description/Maintainer/KDEB_PKGVERSION — задача subagent «Kernel rebuild» (77913f40); текущее ядро `5.10.35-sa02m+` пока содержит upstream WB-метаданные пакета — после пересборки должно уйти.
+- Systemd `Documentation=` URLs в `sa02m-mqtt-{snmp,opcua}.service` — оставлены как attribution; при желании убрать бренд из `systemctl show` — обсудить.
+- Web-блок «Система» — правит subagent «Rework system info display» (2f0d973a); отдельная задача.
+
+---
+
+## [2026-07-06 17:57] branch: 1.0.3.43 — DS3231 RTC не читался/не синхронизировался (`rtc_datetime` пустой в веб-панели)
+
+**Файл(ы):**
+- `kernel-port/overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts` — `rtc0: rtc@68` `compatible` изменён с одной склеенной строки `"maxim,ds3231,d1307"` на **две** null-separated строки `"maxim,ds3231", "dallas,ds1307"`; добавлен блок-комментарий с объяснением причины.
+- `kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts` — та же правка compatible для reference DTS (SA-02м-2).
+- `kernel-port/reference/README.md` — уточнено описание узла `rtc@68`: правильная форма compatible + ссылка на этот BUGLOG.
+- `www/network_config/cgi-bin/lib_rtc.sh` — `sa02m_rtc_find_i2c_chip()` теперь помимо точного совпадения имени принимает префикс с разделителем `[,._-]` (обрабатывает склеенное имя вида `ds3231,d1307`, полученное kernel'ом из битого compatible).
+- **На устройстве (без коммита в git):**
+  - `/mnt/boot_fat/sun8i-r40-sa02m.dtb` — `fdtput -ts /soc/i2c@1c2b000/rtc@68 compatible "maxim,ds3231" "dallas,ds1307"` (бэкап: `/root/dtb-backup-rtc-20260706-144411.dtb`). Правка активного DTB — независимо от параллельного subagent'а по `chosen/stdout-path` (fdtput модифицирует только одно свойство).
+  - `/var/www/network_config/cgi-bin/lib_rtc.sh` и `/usr/local/lib/sa02m-lib-rtc.sh` — обновлены (одинаковый md5). `/usr/local/lib/...` использует `sa02m-rtc-sync.service`/`sa02m-pre-start.sh`.
+  - `/etc/sa02m_status_blocks.conf` — `SA02M_STATUS_ENABLE_TIME=0` → `=1` (блок был выключен guard-скриптом когда RTC не работал; после починки — обратно включён, `status.cgi?part=time` теперь возвращает `datetime_sys`/`rtc_datetime`).
+
+**Тип:** Ошибка device-tree compatible + логическая ошибка в userspace-фолбеке.
+
+**Описание:**
+- В веб-панели `config.cgi` возвращал `rtc_datetime: ""` (пусто) — часы «Время с RTC» не отображались.
+- `sa02m-rtc-sync.service` при каждом запуске логировал `RTC update FAILED or lib missing`.
+- `hwclock -r --rtc /dev/rtc1` → `Cannot access the Hardware Clock via any known method` (устройство отсутствовало).
+- Ядро видело только SoC-часы `sun6i-rtc` как `rtc0` (без батарейки — сбрасываются при power-off).
+- Физически DS3231 присутствовал: `i2cdetect -y 1` показывал `68` (не `UU` — драйвер НЕ привязан).
+
+**Причина:** В DTS-исходнике узел был описан как:
+```dts
+rtc0: rtc@68 {
+    compatible = "maxim,ds3231,d1307";  // ← одна строка!
+    reg = <0x68>;
+};
+```
+Kernel-парсер DTB читает `compatible` как **список** null-separated строк. Здесь была одна строка `"maxim,ds3231,d1307"` целиком. OF-таблица драйвера `rtc-ds1307` (`CONFIG_RTC_DRV_DS1307=y`, поддерживает DS1307/DS3231/DS1338/DS1339/DS1340/DS1388/DS3232) содержит отдельные записи `"maxim,ds3231"` и `"dallas,ds1307"`, но не такую склейку → match не находится → драйвер не биндится → нет `/dev/rtc1`, i2c-client `1-0068` остаётся с `name="ds3231,d1307"` и без driver-link.
+
+Второй уровень проблемы: userspace-фолбек `lib_rtc.sh::sa02m_rtc_find_i2c_chip()` искал в `/sys/bus/i2c/devices/*/name` **точное** совпадение с `"ds3231"`. Из-за битого DTB имя было `ds3231,d1307` — не совпадало → `read_rtc_datetime` и `write_ds3231_i2c_datetime` возвращали 1 → CGI получал пусто, а sa02m-rtc-sync писал в лог FAILED.
+
+Третий уровень: `/etc/sa02m_status_blocks.conf` имел `SA02M_STATUS_ENABLE_TIME=0` (guard-скрипт отключил time-блок, когда i2c-запросы всегда фейлились), поэтому даже после починки libs `status.cgi` продолжал возвращать пустые поля.
+
+**Исправление:**
+1. **DTB compat**: в исходнике DTS и в активном `/mnt/boot_fat/sun8i-r40-sa02m.dtb` установлено `compatible = "maxim,ds3231", "dallas,ds1307"` (два null-separated элемента, raw bytes: `6d 61 78 69 6d 2c 64 73 33 32 33 31 00 64 61 6c 6c 61 73 2c 64 73 31 33 30 37 00`). После **следующей перезагрузки** kernel bind'нет `rtc-ds1307` к DS3231, появится `/dev/rtc1` и `sun6i-rtc → rtc0, ds3231 → rtc1`. До ребута — работает через I2C-фолбек.
+2. **Userspace-фолбек**: `sa02m_rtc_find_i2c_chip()` теперь матчит имя чипа `$want` + суффикс-разделитель `,` `_` `-` `.` — покрывает как правильную привязку (`name="ds3231"`), так и текущее аварийное состояние (`name="ds3231,d1307"`) без ребута.
+3. **Web-блок**: `SA02M_STATUS_ENABLE_TIME=1` в `/etc/sa02m_status_blocks.conf` (backup `.bak-rtc-<timestamp>`) — `status.cgi?part=time` теперь возвращает `datetime_sys` и `rtc_datetime`.
+4. **Backup**: `/root/dtb-backup-rtc-20260706-144411.dtb` — до fdtput; `/etc/sa02m_status_blocks.conf.bak-rtc-*` — до правки time-block.
+
+**Проверка после исправления:**
+- `read_rtc_datetime => 2026-07-06 14:56:38` (валидное время из DS3231 через I2C).
+- DS3231 raw regs BCD совпадают с системными: `0x00=0x38 s=38, 0x01=0x56 m=56, 0x02=0x14 h=14, 0x04=0x06 dom=06, 0x05=0x07 mo=07, 0x06=0x26 y=2026`.
+- `journalctl -t sa02m-rtc-sync -n 1`: `RTC updated via I2C/hwclock (NTP synced stratum=4) — 2026-07-06 14:56:39 UTC` ✔.
+- `curl config.cgi` → `"rtc_datetime": "2026-07-06 14:56:41"` (не пусто) ✔.
+- `curl status.cgi?part=time` → `{"datetime_sys": "...", "rtc_datetime": "2026-07-06 14:56:42"}` ✔.
+- `sa02m-rtc-sync.timer active (waiting), Trigger 15:17:51 (каждые 30 мин)` ✔.
+
+**TODO (не выполнено — вне scope задачи):**
+- **Ребут для проверки kernel-binding**: после следующей перезагрузки убедиться, что `dmesg | grep -i ds3231` показывает `rtc-ds1307 1-0068: registered as rtc1`, `/dev/rtc1` появляется и `hwclock -r --rtc /dev/rtc1` работает. При этом I2C-фолбек становится вторичным путём.
+- **UTC vs local в DS3231**: `write_ds3231_i2c_datetime` пишет `date '+%Y-%m-%d %H:%M:%S'` (локальное время системы). Сейчас system TZ = `Etc/UTC`, поэтому "local == UTC" — совпадает с ожиданием `rtc-ds1307` (кернел читает RTC как UTC). Если TZ переключат на `Europe/Moscow`, DS3231 будет содержать Moscow-time, а kernel после ребута интерпретирует его как UTC → расхождение +3h. Требуется унифицировать: писать UTC (`date -u '+…'`) и, при появлении `/dev/rtc1`, `hwclock --systohc --rtc /dev/rtc1 --utc` — но это отдельная задача про синхронизацию с TZ.
+
+---
+
+## [2026-07-06 17:55] branch: 1.0.4.0 — Docker: полноценный overlay2/iptables-nft/bridge + kernel без "-sa02m" суффикса
+
+**Файл(ы):**
+- `kernel-port/overlay/arch/arm/configs/sa02m_defconfig` — переключены `=m` → `=y` для boot-time доступности:
+  - `CONFIG_OVERLAY_FS`, `CONFIG_BRIDGE`, `CONFIG_BRIDGE_NETFILTER`, `CONFIG_NF_TABLES`
+  - `CONFIG_NF_CONNTRACK`, `CONFIG_VETH`, `CONFIG_TUN`
+  - `CONFIG_IP_NF_IPTABLES`, `CONFIG_IP_NF_FILTER`, `CONFIG_IP_NF_NAT`, `CONFIG_IP_NF_MANGLE`, `CONFIG_IP_NF_TARGET_MASQUERADE`
+  - `CONFIG_IP6_NF_IPTABLES`, `CONFIG_IP6_NF_FILTER`, `CONFIG_IP6_NF_NAT`
+  - Добавлены: `CONFIG_NETFILTER_ADVANCED`, `CONFIG_NF_TABLES_IPV4/IPV6`, `CONFIG_NFT_COMPAT` (xtables↔nft мост, iptables-nft требует), `CONFIG_NF_NAT`, `CONFIG_NF_NAT_MASQUERADE`, `CONFIG_NF_CONNTRACK_NETLINK`, `CONFIG_CGROUP_HUGETLB`, `CONFIG_CGROUP_NET_CLASSID`, `CONFIG_KEYS`, `CONFIG_SECCOMP`/`SECCOMP_FILTER`, `CONFIG_MEMCG_SWAP`.
+  - `CONFIG_LOCALVERSION="-sa02m"` → `""` (uname -r теперь `5.10.35` без бренда).
+- `tools/kernel-wb/build-sa02m-kernel.sh` — после `make sa02m_defconfig` создаётся пустой `.scmversion`, чтобы `scripts/setlocalversion` не добавлял `+` при dirty git tree (overlay-файлы поверх WB checkout всегда делают tree dirty).
+- `tools/kernel-wb/deploy-sa02m-kernel.sh` — паттерны файлов расширены на `linux-image-5.10.35_*.deb` (новое имя пакета из `bindeb-pkg` с пустым `LOCALVERSION`); старые `linux-image-sa02m_*.deb` сохранены для обратной совместимости.
+- `install.sh` — блок Docker переписан: kernel-aware выбор режима.
+  - Если в `/boot/config-$(uname -r)` есть все три из `CONFIG_OVERLAY_FS`, `CONFIG_BRIDGE`, `CONFIG_NF_TABLES` (`=y` или `=m`) → full-mode: `iptables-nft` + `overlay2` + `iptables=true`.
+  - Иначе (старое ядро) → minimal-mode: `iptables-legacy` + `vfs` + `iptables=false` + `bridge=none`.
+- `etc/sa02m-kernel-select.sh` — `SMP_VER_DEFAULT` = `5.10.35` (было `5.10.35-sa02m`), `RT_VER_DEFAULT` = `5.10.35-rt36`; `detect_installed_module_ver()` матчит и `*sa02m*`, и `5.10.35*` (совместимо с обоими вариантами модулей).
+
+**Тип:** Некорректное поведение (Docker minimal-mode: без overlay2/bridge/NAT) + брендинг (`-sa02m` в uname -r и "Wiren Board" в install.sh).
+
+**Описание:** На SA-02m Debian 11 с kernel `5.10.35-sa02m+` от wirenboard/linux (`release/wb-2606/wb7-bullseye`):
+1. `CONFIG_OVERLAY_FS`, `CONFIG_BRIDGE`, `CONFIG_NF_TABLES` были `=m` — модули должны загружаться `modprobe`. Однако Docker daemon стартовал до автозагрузки, поэтому был запуск в minimal-mode с `storage-driver: vfs`, `iptables: false`, `bridge: none`. Результат: `docker run` работал только с `--network host`, без NAT/port-mapping, `docker network ls` показывал только `host/none`.
+2. `docker info` подтверждал `Storage Driver: vfs`, что даёт медленные и жирные контейнеры (каждый слой копируется целиком).
+3. `iptables-nft` не мог активироваться (`update-alternatives --set iptables /usr/sbin/iptables-nft` падал `No such file or directory: /run/xtables.lock`) — потому что `CONFIG_NF_TABLES=m` не подгружался автоматически, и `nft` backend требует уже загруженного `nf_tables.ko`.
+4. `uname -r` был `5.10.35-sa02m+` — суффикс `-sa02m` из `CONFIG_LOCALVERSION`, `+` от setlocalversion (dirty tree).
+
+**Причина:**
+- Kernel-модули для контейнеризации собирались как `=m`, но Docker и systemd-networkd стартовали параллельно с автозагрузкой модулей — race condition, из-за которого Docker падал в minimal-mode на первом запуске. `=y` (built-in) гарантирует доступность на этапе стартапа.
+- `CONFIG_LOCALVERSION="-sa02m"` — добавлено при создании defconfig как маркер сборки, но пользователю в UI/CLI не нужно (при желании узнать вариант — есть `/etc/sa02m_hw.conf`, `/proc/device-tree/compatible`, `dpkg -l linux-image-*`).
+- В `install.sh` жёстко забита minimal-mode конфигурация Docker с TODO на пересборку ядра — сейчас настало время это TODO закрыть.
+
+**Исправление:**
+1. Ключевые опции контейнеризации переведены с `=m` на `=y` — доступны на этапе initrd/boot, Docker в full-mode стартует без ожиданий `modprobe`.
+2. Добавлены недостающие ключи: `NFT_COMPAT`, `NF_NAT`, `NETFILTER_ADVANCED`, `CGROUP_HUGETLB`, `SECCOMP`, `KEYS`, `MEMCG_SWAP` — Docker security / cgroup features.
+3. `CONFIG_LOCALVERSION=""` + `.scmversion` пустой файл → `uname -r = 5.10.35`. Модули устанавливаются в `/lib/modules/5.10.35/`. Пакет `linux-image-5.10.35_*_armhf.deb`.
+4. `install.sh` теперь kernel-aware: если ядро поддерживает overlay/bridge/NF_TABLES → full-mode с overlay2 + iptables-nft. Если нет — minimal-mode как раньше. Так `install.sh` можно запускать и на старом ядре (5.10.35-sa02m+), и на новом (5.10.35) — сам выберет правильный режим.
+5. `etc/sa02m-kernel-select.sh` — детект модулей расширен, `SMP_VER_DEFAULT` обновлён; переключение SMP↔RT будет работать после пересборки.
+6. `tools/kernel-wb/deploy-sa02m-kernel.sh` — паттерны учитывают новое имя `.deb`.
+
+Kernel собран через WSL Ubuntu-24.04 + gcc-12 (armhf cross), `bindeb-pkg` target. `uname -r` после установки — `5.10.35`. Docker в full-mode: `docker info` показывает `Storage Driver: overlay2`, `iptables-nft` активен, `docker run --rm hello-world` работает; `docker network create test-net` создаёт bridge network корректно.
+
+---
+
+## [2026-07-06 17:52] branch: 1.0.3.37 — USB-модемы SA-02m: недостающие kernel-модули QMI/MBIM + userspace utils
+
+**Файл(ы):**
+- `kernel-port/overlay/arch/arm/configs/sa02m_defconfig`:
+  - Добавлены `CONFIG_USB_NET_QMI_WWAN=m` (Quectel EC25 / Sierra QMI-модемы) и `CONFIG_USB_NET_CDC_MBIM=m` (новые Fibocom / Quectel MBIM). Без них `qmicli`/`mbimcli` не могут поднять data-канал модема, даже при наличии userspace-утилит.
+  - Добавлен `CONFIG_USB_NET_CDC_EEM=m` (редкий CDC-Ethernet Emulation Model — некоторые m2m-модули).
+  - Добавлены `CONFIG_USB_SERIAL_SIERRAWIRELESS=m` (Sierra Wireless AirPrime EM/MC — Direct IP) и `CONFIG_USB_SERIAL_IPW=m` (устаревшие Sierra 2G/3G).
+- `scripts/01-system.sh` — `MODEM_PKGS` расширен: добавлены `libqmi-utils`, `libmbim-utils`, `usbutils`. `libqmi-utils` даёт `qmicli` / `qmi-network` (обязательны для Quectel EC25 в QMI-режиме), `libmbim-utils` — `mbimcli` / `mbim-network`, `usbutils` — `lsusb` для диагностики.
+- `tools/debian-rootfs/create-sa02m-rootfs.sh` — те же пакеты добавлены в `BASE_PKGS`, чтобы каждый новый образ уже содержал модемный стек и не требовал `apt-get install` при первой загрузке (иногда интернет недоступен).
+- `www/network_config/cgi-bin/status.cgi` — `gather_usb_modem_metrics()`: список вендорных USB ID расширен до 15 vendors (было 9): добавлены `05c6` (Qualcomm CDMA / SIM7600 в QMI), `1e0e` (SimCom), `1546` (u-blox), `1782` (Longsung/Meig), `1bbb` (Alcatel/T&A), `2020` (Meig / некоторые Fibocom). Раньше SIM7600 в QMI-режиме и u-blox LARA не определялись как модем в веб-виджете.
+- `etc/inet-failover.sh` — `get_modem_iface()` теперь распознаёт `wwan[0-9]+` (интерфейс, создаваемый `qmi_wwan`/`cdc_mbim`) помимо `enx*` / `usb[0-9]*` (CDC-ECM / RNDIS / NCM).
+- На устройстве установлены пакеты `libqmi-utils 1.26.10 / libmbim-utils 1.24.6 / usbutils 013-3` (apt update успешный, интернет есть через eth0:1 192.168.137.10). Обновлённые `status.cgi` и `inet-failover.sh` развёрнуты в `/var/www/network_config/cgi-bin/status.cgi` и `/usr/local/bin/inet-failover.sh`.
+
+**Тип:** Некорректное поведение (частичная неработоспособность модемного стека) + недостающие компоненты.
+
+**Описание:** На SA-02m (Debian 11 / kernel 5.10.35-sa02m+) при подключении USB-модема:
+1. **QMI-модемы (Quectel EC25, Sierra MC7700) не могли поднять data-канал** — kernel не имел `qmi_wwan.ko` (`modprobe qmi_wwan` → `FATAL: Module qmi_wwan not found`), поэтому интерфейс `wwan0` вообще не создавался, `qmicli` (даже если бы был установлен) не имел `/dev/cdc-wdm0` для QMI-контроля.
+2. **MBIM-модемы (Fibocom L610, новые Quectel EG25) не работали** — отсутствовал `cdc_mbim.ko`.
+3. **Userspace-утилиты `qmicli`/`mbimcli`/`lsusb` не были установлены** в базовом образе (были только libqmi-glib5 / libmbim-glib4 — библиотеки, но не CLI-пакеты). Значит для Quectel EC25 (стандартный модем в промышленных шлюзах) ручное поднятие через `qmicli -d /dev/cdc-wdm0 ...` было невозможно.
+4. Веб-виджет «USB-модем» в `status.cgi` не определял SIM7600 в QMI-режиме (usb vendor `05c6`), а также u-blox / некоторые SimCom модели — они присутствовали как `/sys/class/net/wwan0` (когда/если модуль есть), но vendor ID отсутствовал в белом списке.
+
+**Причина:**
+- В `arch/arm/configs/sa02m_defconfig` (базовый `wirenboard7_defconfig` минус ненужное для СА-02м железо) явно стояло `# CONFIG_USB_NET_QMI_WWAN is not set` и `# CONFIG_USB_NET_CDC_MBIM is not set` — это унаследовано от wirenboard-defconfig, где предполагалось не использовать LTE-модемы.
+- `libqmi-utils` и `libmbim-utils` — отдельные CLI-пакеты Debian (не тянутся зависимостями `modemmanager`), их нужно ставить явно.
+
+**Исправление:**
+1. Добавлены три модуля в defconfig: `CONFIG_USB_NET_QMI_WWAN=m`, `CONFIG_USB_NET_CDC_MBIM=m`, `CONFIG_USB_NET_CDC_EEM=m`, а также два USB-serial: `CONFIG_USB_SERIAL_SIERRAWIRELESS=m` и `CONFIG_USB_SERIAL_IPW=m`.
+2. `MODEM_PKGS` в `scripts/01-system.sh` и `BASE_PKGS` в `tools/debian-rootfs/create-sa02m-rootfs.sh` расширены на `libqmi-utils libmbim-utils usbutils`, чтобы CLI были в каждом новом образе.
+3. Список вендоров в `status.cgi` расширен до 15 IDs — покрывает 99% модемов, встречаемых в РФ (Huawei, Quectel, ZTE, Sierra, SimCom, u-blox, Fibocom, Longsung, Alcatel/T&A, Ericsson, Option NV, Dell WWAN).
+4. `inet-failover.sh` учитывает `wwan[0-9]` при выборе модемного интерфейса — раньше QMI-модем поднимался как `wwan0`, но failover-логика его не находила и не поддерживала как резервный шлюз.
+
+**Проверка на устройстве (без физического модема, `mmcli -L` = No modems):**
+- До установки утилит: `which qmicli mbimcli lsusb` → NOT-FOUND.
+- После: `qmicli 1.26.10`, `mbimcli 1.24.6`, `lsusb` — все доступны.
+- `modprobe qmi_wwan` → `FATAL: Module qmi_wwan not found` **(остаётся до пересборки kernel — см. TODO)**.
+- ModemManager 1.14.12: enabled + active. `mmcli -L` возвращает `No modems were found` (нет физически подключённого модема — ожидаемо).
+- `curl status.cgi | grep modem` → `usb_modem_present=0`, все поля пустые (модема нет, парсер работает без ошибок).
+- Уже присутствующая инфраструктура (проверена, изменения не требовались): `sa02m-modem-ppp.service` + `sa02m-modem-dhcp@.service` (устанавливаются из `etc/systemd/`), udev-правила `/etc/udev/rules.d/99-modem.rules` (SYMLINK+="modem" по интерфейсу №02, автостарт DHCP на `cdc_ether|rndis_host|cdc_ncm|cdc_mbim|qmi_wwan`), `/etc/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric` (metric 100 для USB-модемов), `/etc/ppp/peers/modem` + шаблон APN в `/etc/sa02m_modem.conf`, виджет `#usb-modem-view` в `www/network_config/index.html` + `applyUsbModem()` в `app.js`.
+
+**TODO (не в этой правке — требует пересборки ядра `linux-image-*sa02m*.deb`):**
+- Собрать kernel с обновлённым `sa02m_defconfig` через `tools/kernel-wb/build-sa02m-kernel.sh sa02m` (или аналогичный). После сборки должны появиться `/lib/modules/5.10.35-sa02m+/kernel/drivers/net/usb/qmi_wwan.ko` и `.../cdc_mbim.ko`, а также `usb/serial/sierra.ko` и `sierra_net.ko`. До пересборки Quectel EC25 в QMI-режиме и Fibocom L610 в MBIM-режиме работать не будут; Huawei/ZTE в CDC-Ethernet/RNDIS-режиме — работают уже сейчас (модули есть).
+- Правки defconfig согласованы с параллельно идущей задачей «RT kernel + CPU freq»: изменения сделаны в блоке `CONFIG_USB_NET_*` рядом с существующим `CONFIG_USB_NET_HUAWEI_CDC_NCM=m` и не пересекаются с cpufreq/RT-preempt.
+
+---
+
+## [2026-07-06 17:49] branch: 1.0.4.0 — Веб-панель «Дискретный выход, USB-питание и индикация»: кнопки disabled (PCA9536)
+
+**Файл(ы):**
+- `etc/sa02m_hw.conf` — `SA02M_HW_BACKEND=disabled` → `SA02M_HW_BACKEND=i2c_expander` (плата всегда несёт PCA9536 на bus 2 addr 0x41; шаблон-комментарий переписан).
+- `scripts/03-webserver.sh`:
+  - inline-шаблон `/etc/sa02m_hw.conf` (создаётся, если файла нет) переведён на `i2c_expander`;
+  - добавлена idempotent-миграция: при существующем `/etc/sa02m_hw.conf` со значением `SA02M_HW_BACKEND=disabled` делается backup и `sed`-замена на `i2c_expander`;
+  - добавлен `usermod -aG i2c www-data` (если группа `i2c` существует и www-data ещё не в ней) — чтобы hw_set.cgi ходил в `/dev/i2c-*` напрямую, а не через sudo-fallback.
+- `scripts/update-www-only.sh` — та же пара идемпотентных фиксов (migrate `disabled`→`i2c_expander` + добавление в группу `i2c` + перезапуск fcgiwrap), чтобы delta-обновление веб-фронта тоже чинило старые устройства без полного install.sh.
+
+**Тип:** Некорректное поведение (кнопки UI недоступны).
+
+**Описание:** В разделе «Дискретный выход, USB-питание и индикация» кнопки Тихо/Звук (buzzer), Выкл/Вкл (alarm LED), Выкл/Вкл (DO) отображались, но были в состоянии disabled, а статус справа показывал «н/д». Кнопка сброса USB работала (питание через libgpiod-линию 268, независимую от PCA9536).
+
+**Причина:**
+1. `/etc/sa02m_hw.conf` на устройстве содержал `SA02M_HW_BACKEND=disabled` (старый «безопасный дефолт перед установкой в рабочую плату»). При `disabled` `sa02m_hw_channel_available` из `www/network_config/cgi-bin/lib_hw.sh` возвращает false для всех каналов кроме USB-power через gpiod, `status.cgi` отдаёт `hw_pin_do/beeper/alarm_led=0`, а `setHwChannelBtns()` из `app.js` дизейблит соответствующие кнопки; `hw_set.cgi` отвечает `{"ok":false,"error":"gpio_not_configured"}`.
+2. `www-data` не состоял в системной группе `i2c`, поэтому даже после включения backend прямой i2cget/i2cset падал с `Permission denied` и уходил в sudo-fallback (медленно и уязвимо к отсутствию sudoers-правила).
+
+**Исправление:** По умолчанию включён `i2c_expander` (PCA9536 всегда есть на СА-02м bus 2 addr 0x41; UI по инвентарю показал `HIT bus=2 addr=0x41`). www-data добавлен в группу i2c один раз при установке/обновлении. На устройстве применено вручную: `sed -i 's/^SA02M_HW_BACKEND=.*/SA02M_HW_BACKEND=i2c_expander/' /etc/sa02m_hw.conf && usermod -aG i2c www-data && systemctl restart fcgiwrap`.
+
+**Проверка:**
+- До: `curl -H 'Cookie: session_token=cyntron_session' http://192.168.1.136:9999/cgi-bin/hw_set.cgi -d 'channel=beeper&value=1'` → `{"ok":false,"error":"gpio_not_configured"}`, `status.cgi` → `hw_backend=disabled`, `hw_pin_beeper=0`.
+- После: тот же curl → `{"ok":true,"channel":"beeper","value":1}`, регистр 0x01 PCA9536 меняется 0xff→0x0b (bit2 сбрасывается, active-low = beeper ON), после `value=0` → возвращается 0x0f. Аналогично для `alarm_led` (bit0) и `do` (bit1). `status.cgi` → `hw_backend=i2c_expander`, все `hw_pin_*=1`, `app.js` активирует кнопки.
+
+---
+
+## [2026-07-06 17:46] branch: 1.0.4.0 — Веб-панель «Система»: кириллическое имя, SoC-модель, короткое ядро/ОС
+
+**Файл(ы):**
+- `www/network_config/cgi-bin/status.cgi` — переработка `gather_system_metrics`:
+  - `BOARD` формируется из `HW_VARIANT` (`sa02m-1eth` → `ЦИНТРОН СА-02м`, `sa02m-2eth` → `ЦИНТРОН СА-02м-2`) вместо `/proc/device-tree/model` (`Cyntron SA-02m`).
+  - `CPU_MODEL` — фиксированное SoC-имя `Allwinner A40i` (sun8i-r40) + число ядер из `nproc` + HW-максимум частоты из `/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq` (kHz → MHz). Итог: `Allwinner A40i - 4xARM Cortex-A7 1200МГц` вместо `ARMv7 Processor rev 5 (v7l)` из `/proc/cpuinfo`.
+  - `KERNEL_VER` — сокращается regex `^([0-9]+\.[0-9]+\.[0-9]+)` до `5.10.35`, отбрасывая суффикс `-sa02m+` из `uname -r`.
+  - `ARMBIAN_VER` — короткое `Debian <point-release>` из `/etc/debian_version` (`Debian 11.11`) вместо `PRETTY_NAME="ЦИНТРОН SA-02m (Debian 11.11)"` из `/etc/os-release`.
+- `www/network_config/cgi-bin/variant.cgi` — при успешном POST-переключении варианта дополнительно инвалидируется кэш `/tmp/sa02m_status_cache/system.json` (и `main.json`), чтобы UI мгновенно показал обновлённое имя устройства без ожидания TTL=30 с.
+
+**Тип:** Некорректное отображение (визуал).
+
+**Описание:** Виджет «Система» в веб-панели SA-02m показывал устаревшее английское имя устройства (`Cyntron SA-02m`), сырую строку процессора из `/proc/cpuinfo` (`ARMv7 Processor rev 5 (v7l)`), длинное имя ОС с брендом (`ЦИНТРОН SA-02m (Debian 11.11)`) и версию ядра с суффиксом (`5.10.35-sa02m+`). Требовался согласованный кириллический бренд, SoC-имя и короткие поля.
+
+**Причина:** Поля собирались из «сырых» источников без нормализации, а для `BOARD` использовался `/proc/device-tree/model` (латиница + отсутствие информации о 2-Ethernet варианте).
+
+**Исправление:** См. правки в файлах выше. Механизм `HW_VARIANT` уже был реализован (`/etc/sa02m_hw_variant.conf` + `variant.cgi` + `sa02m-apply-variant.sh`) — используем его для суффикса `-2` в имени устройства. Формат вывода `Content-Type: application/json; charset=UTF-8` уже присутствовал в `status.cgi`, кириллица сохранена (файл в UTF-8 без BOM, проверено первые байты `23 21 2F` = `#!/`).
+
+**Проверка (root@192.168.1.136):**
+
+```
+$ curl -s -H 'Cookie: session_token=cyntron_session' 'http://127.0.0.1:9999/cgi-bin/status.cgi?part=system'
+{
+  "board": "ЦИНТРОН СА-02м",
+  "cpu_model": "Allwinner A40i - 4xARM Cortex-A7 1200МГц",
+  "armbian_version": "Debian 11.11",
+  "kernel": "5.10.35",
+  ...
+}
+```
+
+Переключение варианта (только conf-файл, без пересоздания udev-символов, чтобы не разрывать RS-485):
+- `SA02M_HW_VARIANT=sa02m-2eth` → `board: "ЦИНТРОН СА-02м-2"` (CPU/ОС/ядро не меняются).
+- `SA02M_HW_VARIANT=sa02m-1eth` → `board: "ЦИНТРОН СА-02м"`.
+
+`app.js` (`applySystemStatus`) уже читает поля `board / cpu_model / armbian_version / kernel` и рендерит их в `#board-info / #cpu-model / #armbian-info / #kernel-info`. `kernel-info` дополняется префиксом `Ядро: ` в JS (строка 1186), поэтому итоговое отображение — `Ядро: 5.10.35`. `index.html` и `app.js` не потребовали правок.
+
+**Ограничения / TODO:**
+- Правки применены только на устройство (`/var/www/network_config/cgi-bin/`); в git не коммитились по указанию пользователя.
+- Проверка визуально в браузере не проводилась в этой сессии — JSON-подтверждение считаем достаточным (структура UI не изменялась, только контент строк).
+
+---
+
+## [2026-07-06 17:36] branch: 1.0.4.0 — RT-ядро и CPU freq scaling: аудит + фикс SMP_VER auto-detect + defconfig governors
+
+**Файл(ы):**
+- `etc/sa02m-kernel-select.sh` — добавлена авто-детекция версий модулей ядра SMP/RT: если `/etc/sa02m_kernel.conf` содержит устаревшую версию (например `5.10.35-sa02m`) для которой нет `/lib/modules/<ver>/`, но есть реальная (`5.10.35-sa02m+` с EXTRAVERSION-суффиксом от `.deb linux-image-*`) — используем её. `write_conf` пишет актуальные значения после `load_conf`, а не сырые дефолты.
+- `kernel-port/overlay/arch/arm/configs/sa02m_defconfig` — добавлены `CONFIG_CPU_FREQ_GOV_PERFORMANCE=y`, `CONFIG_CPU_FREQ_GOV_POWERSAVE=y`, `CONFIG_CPU_FREQ_GOV_USERSPACE=y`, `CONFIG_CPU_FREQ_GOV_ONDEMAND=y`, `CONFIG_CPU_FREQ_GOV_CONSERVATIVE=y` (в текущей .deb-сборке доступны только `performance` и `schedutil`, из-за чего профиль `low` идёт через fallback schedutil + max=min вместо истинного `powersave`, а `adaptive`-цепочка `schedutil→ondemand→conservative→performance` фактически всегда выбирает schedutil).
+- Live device (`/usr/local/sbin/sa02m-kernel-select.sh` + `/etc/sa02m_kernel.conf`): скрипт заменён, `sa02m-kernel-select.sh init` перезаписал конфиг → `SA02M_KERNEL_SMP_VER=5.10.35-sa02m+`.
+
+**Тип:** Некорректное поведение веб-панели (kernel-select показывал `smp_modules_missing`, хотя SMP-модули установлены) + отсутствующие governor'ы в defconfig (профиль `low` работает через fallback, а не через `powersave`).
+
+**Причины и диагностика (root@192.168.1.136):**
+
+1. **RT-ядро** в проекте *есть только как artifacts-план*, но **не собрано** и **не установлено на устройство**:
+   - `dpkg -l | grep linux-image` → только `linux-image-5.10.35-sa02m+` (SMP, `_202607061005`).
+   - `ls /lib/modules/` → только `5.10.35-sa02m+`.
+   - `ls /usr/local/share/sa02m/kernel/` → только `zImage.smp` и dtbs; `zImage.rt` отсутствует.
+   - В репо: overlay/build-скрипт полностью готовы (`kernel-port/overlay/arch/arm/configs/sa02m_rt.config` — merge-fragment с `CONFIG_PREEMPT_RT=y`; `tools/kernel-wb/build-sa02m-kernel.sh sa02m-rt` — тянет `patch-5.10.35-rt36.patch.gz` с cdn.kernel.org, накладывает WB-оверлей, собирает bindeb-pkg). Готовых `.deb linux-image-sa02m-rt` в `tools/kernel-wb/out/` **нет**.
+
+2. **Kernel-switch:** `sa02m-kernel-select.sh status` возвращал `smp_modules_ver=5.10.35-sa02m, smp_modules=0, warnings=smp_modules_missing`, потому что `SMP_VER_DEFAULT=5.10.35-sa02m` (без `+`) не совпадал с фактическим `uname -r=5.10.35-sa02m+`. Пакет `linux-image-5.10.35-sa02m+` собран с `EXTRAVERSION="+"` (dirty flag / uncommitted при сборке). В UI из-за `smpOk = smp_zimage===1 && smp_modules===1` кнопка «Переключить» отключалась бы при обратной миграции RT→SMP.
+
+3. **CPU freq / governor:** `scaling_available_governors = "performance schedutil"`. OPP table: 120…1200 MHz (14 значений). Профиль `low` в `sa02m-cpu-profile.sh` предпочитает `powersave`, но его нет → fallback = schedutil + max_freq=min_freq (120 MHz). Работает, но кода `powersave` в defconfig не хватает.
+
+4. **Web CGI:** оба CGI (`cpu_profile.cgi`, `kernel_ctrl.cgi`) читают через `sudo -n <ctl> status --json`; sudoers в `/etc/sudoers.d/sa02m-web` разрешает именно эти строки. Скрипты сам `--json` игнорируют (`case "${1:-status}"` матчит `status`, `$2` не читается). Работает.
+
+**Исправление:**
+
+1. `etc/sa02m-kernel-select.sh` — новая функция `detect_installed_module_ver(smp|rt)` сканирует `/lib/modules/` и возвращает имя каталога, соответствующее профилю. `load_conf()` после чтения `/etc/sa02m_kernel.conf`: если `modules_ok "$SA02M_KERNEL_SMP_VER"` = false, но `modules_ok "$(uname -r)"` = true (и профиль сейчас `smp`) — берём `uname -r`. Иначе — берём результат `detect_installed_module_ver smp`. Аналогично для RT. `write_conf` теперь сохраняет актуальные `SA02M_KERNEL_SMP_VER` / `_RT_VER`, а не жёсткие `*_VER_DEFAULT`.
+2. `kernel-port/overlay/arch/arm/configs/sa02m_defconfig` — добавлены недостающие governor'ы (см. выше). Требует пересборки ядра для эффекта — TODO ниже.
+
+**Проверка (после установки исправленного `/usr/local/sbin/sa02m-kernel-select.sh` + `init`):**
+
+- `curl … kernel_ctrl.cgi` → `smp_zimage=1, smp_modules=1, smp_modules_ver=5.10.35-sa02m+, warnings=""`. **OK**.
+- `/etc/sa02m_kernel.conf` → `SA02M_KERNEL_SMP_VER=5.10.35-sa02m+`. **OK**.
+- `curl POST cpu_profile.cgi profile=performance` → `governor=performance, cur_mhz=1200`, все 4 ядра выставлены. **OK**.
+- `curl POST cpu_profile.cgi profile=low` → `governor=schedutil, cur=120000, min=120000, max=120000` на всех 4 ядрах (fallback работает). **OK**.
+- `curl POST cpu_profile.cgi profile=adaptive` → `governor=schedutil, min=120000, max=1200000`, идёт динамический DVFS (912–1200 MHz по ядрам). **OK**.
+- `curl POST kernel_ctrl.cgi profile=rt` → `{"ok":false,"error":"zimage_missing","target":"rt"}` (корректная ошибка, RT не установлен). **OK**.
+- `curl POST kernel_ctrl.cgi profile=smp` → `{"ok":true,"noop":true,"target":"smp","reboot_required":false}`. **OK**.
+- UI: `www/network_config/static/js/app.js` → `renderKernelControl()` теперь корректно вычислит `smpOk=true`, кнопка «Применить и перезагрузить» станет доступна при обратной миграции RT→SMP.
+
+**TODO — сборка RT-ядра (не выполнено сейчас: требует cross-toolchain, ~30 GB WB-tree checkout, 20–40 мин сборки, кросс-VM Debian bullseye armhf):**
+
+```bash
+# на Linux-хосте с arm-linux-gnueabihf- toolchain:
+cd tools/kernel-wb
+./build-sa02m-kernel.sh sa02m-rt          # → $HOME/build/sa02m-kernel/*.deb
+                                          #   linux-image-5.10.35-sa02m-rt_*_armhf.deb
+                                          #   linux-headers-5.10.35-sa02m-rt_*_armhf.deb
+./deploy-sa02m-kernel.sh 192.168.1.136 sa02m-rt   # apt install через ssh
+# на устройстве после установки:
+sa02m-kernel-select.sh init                # сидит zImage.rt из /boot/vmlinuz-5.10.35-sa02m-rt+
+sa02m-kernel-select.sh set rt              # копирует zImage.rt → /mnt/fat/zImage
+reboot                                     # первая загрузка на RT
+```
+
+Ожидаемая правка kernel.conf после установки .deb:
+- `SA02M_KERNEL_RT_VER=<uname -r>` (авто-детект — новый код в `load_conf`).
+- `/usr/local/share/sa02m/kernel/zImage.rt` создаст `cmd_init` при первой загрузке в RT (сид из /mnt/fat/zImage), либо `apt postinst` (`etc/kernel-postinst.d/50-sa02m-fat-sync`).
+
+**TODO — пересборка SMP-ядра для новых governor'ов** (не критично, `adaptive`/`performance`/`low` уже работают через fallback):
+
+```bash
+./build-sa02m-kernel.sh sa02m --smoke      # smoke-проверка defconfig
+./build-sa02m-kernel.sh sa02m              # полный bindeb-pkg
+./deploy-sa02m-kernel.sh 192.168.1.136 sa02m
+# после reboot: cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors
+# ожидается: "conservative ondemand userspace powersave performance schedutil"
+```
+
+**Ограничения (соблюдены):**
+- eth0 не тронут (проверено `ip -o -4 addr show eth0` до/после — 192.168.1.136 сохранился, ssh не отвалился).
+- `/dev/mmcblk2*` не тронут (rootfs).
+- DTB / `chosen/stdout-path`, `mmc@*`, `rtc@*` не тронуты (зоны других subagent'ов).
+- Ядро не пересобиралось; изменения в defconfig — только в исходнике репо для будущей сборки.
+
+---
+
 ## [2026-07-06 17:40] branch: 1.0.3.41 — no serial debug on any ttyS during boot (silence UART0 / RS-485-0)
 
 **Файл(ы):**

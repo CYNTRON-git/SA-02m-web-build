@@ -46,8 +46,11 @@ if [ ! -d "$BUILD_ROOT" ]; then
 fi
 
 case "$FLAVOUR_FILTER" in
-	sa02m)     pattern='linux-image-sa02m_*.deb linux-headers-sa02m_*.deb linux-libc-dev*.deb' ;;
-	sa02m-rt)  pattern='linux-image-sa02m-rt_*.deb linux-headers-sa02m-rt_*.deb linux-libc-dev*.deb' ;;
+	# С 1.0.4.x kernel package переименован в `linux-image-5.10.35`
+	# (CONFIG_LOCALVERSION="" убрано "-sa02m"). Старые имена остаются в шаблонах
+	# для обратной совместимости — если сборка со старым defconfig.
+	sa02m)     pattern='linux-image-sa02m_*.deb linux-image-5.10.35_*.deb linux-headers-sa02m_*.deb linux-headers-5.10.35_*.deb linux-libc-dev*.deb' ;;
+	sa02m-rt)  pattern='linux-image-sa02m-rt_*.deb linux-image-5.10.35-rt*.deb linux-headers-sa02m-rt_*.deb linux-headers-5.10.35-rt*.deb linux-libc-dev*.deb' ;;
 	both)      pattern='linux-image-*.deb linux-headers-*.deb linux-libc-dev*.deb' ;;
 	*) echo "bad --flavour: $FLAVOUR_FILTER" >&2; exit 2 ;;
 esac
