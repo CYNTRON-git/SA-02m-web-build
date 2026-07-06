@@ -1,3 +1,13 @@
+## [2026-07-06 20:07] branch: 1.0.4.0 - Fix F2: PEP-604 union syntax vs Python 3.9 (Debian bullseye)
+
+**Файлы:** opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py, opt/sa02m-modbus-mqtt/sa02m_telemetry.py
+**Тип:** Синтаксическая несовместимость (runtime TypeError)
+**Описание:** После установки paho-mqtt (F1) сервисы sa02m-modbus-mqtt и sa02m-telemetry продолжали падать с TypeError: unsupported operand type(s) for |: 'type' and 'NoneType' в type-annotation'ах (modbus_mqtt_bridge.py:206 _resolve_ai_sensor_type(... yaml_st: int | None), sa02m_telemetry.py:67 _i2cget(...) -> int | None). NRestarts=78 и 80, restart-loop.
+**Причина:** Исходники используют PEP-604 union syntax (X | Y), доступный только с Python 3.10+; на Debian 11 bullseye — Python 3.9.2. Аннотации оценивались runtime при загрузке модуля и падали до старта event-loop.
+**Исправление:** Добавлен `from __future__ import annotations` в самое начало обоих файлов (после shebang и docstring, перед первым `import`). Все annotations становятся строками (lazy evaluation, PEP 563), обратно совместимо с Python 3.7+. Использование `typing.get_type_hints()` в файлах не найдено, поэтому safe.
+**Проверка:** `python3 -m py_compile` OK на устройстве; после restart оба сервиса `active (running)`, NRestarts=0, `MQTT connected`; `systemctl --failed` пусто.
+
+---
 ## [2026-07-06 19:57] branch: 1.0.4.0 — Fix F1: paho-mqtt отсутствовал на устройстве
 
 **Файлы:** `scripts/05-mqtt.sh`, `scripts/01-system.sh`, `docs/bugs/BUGLOG.md`
