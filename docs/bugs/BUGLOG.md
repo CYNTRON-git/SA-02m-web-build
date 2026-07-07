@@ -1,3 +1,40 @@
+## [2026-07-07 09:12] branch: 1.0.4.0 — Fix web widgets: Ethernet №1 IP / USB modem detection / Система format
+
+**Файлы:**
+- `www/network_config/cgi-bin/status.cgi` — формат `cpu_model` и расширенная детекция USB-модема.
+- `www/network_config/static/js/app.js` — удалён setter `board-info` из `applySystemStatus`; поддержка состояния `init` в `applyUsbModem`.
+- `www/network_config/static/js/i18n.js` — перевод «Инициализация» → «Initializing».
+- `www/network_config/index.html` — убрана строка `board-info` из виджета «Система»; версия JS-ассетов поднята до `v=1.0.4.0` для инвалидации кеша браузера.
+
+**Тип:** UI/CGI логика веб-панели (дашборд «Сведения»)
+
+**Описание:**
+- Bug №1 (Ethernet №1 IP «—»): виджет `Ethernet № 1` показывал прочерк вместо IP `192.168.1.136`. Репозиторий уже содержал корректные ID (`eth0-ip`, `d.eth0_ip`), но на устройстве был задеплоен `app.js` с опечаткой `end0-ip` / `d.end0_ip` / `end0_operstate` / `end0-en` во всём файле — результат ошибочной массовой замены. Из-за этого `setText` писал в несуществующие элементы, а `d.end0_ip` был `undefined`.
+- Bug №2 (USB-модем «нет носителя»): физически модем не виден ядру (`lsusb` показывает только root hubs `1d6b:*`, `usb0-vbus: disabling` в dmesg на 31.8с, `mmcli -L` — «No modems were found»). VBUS-регулятор при чтении показывает `5000mV / 0mA`. `usb_modem_present=0` — корректно для текущего физического состояния. Виджет корректно переключается на «USB-накопитель / НЕ УСТАНОВЛЕН». Дополнительно: если модем есть на USB-шине по VID (mass-storage до usb-modeswitch или AT-only до появления net-iface), старый CGI его не видел, т.к. обходил только `/sys/class/net/*`.
+- Bug №3 (блок «Система» — 4 строки): показывалось «ЦИНТРОН СА-02м», «Allwinner A40i - 4xARM Cortex-A7 1200МГц», «Debian 11.11», «Ядро: 5.10.35» — 4 строки. Требуется 3 строки без бренда и без «xARM».
+
+**Причина:**
+- №1: некорректно задеплоенный `app.js` с массовой заменой `eth` → `end`. Репозиторий был чист.
+- №2: gather_usb_modem_metrics обходил только `/sys/class/net/`, поэтому модем в mass-storage или AT-only режиме (без создания сетевого интерфейса) не детектировался. Плюс: `applyUsbModem` не обрабатывал состояние «модем есть, но сети/данных нет» — показывал «Нет сети», что могло путать пользователя.
+- №3: формат `cpu_model` строился как `Allwinner A40i - ${CORES}xARM Cortex-A7 ${MHZ}МГц`; в HTML виджета `Система` шла отдельная строка `board-info` со значением `ЦИНТРОН СА-02м`. Название устройства уже дублируется в top-bar (`device-title`).
+
+**Исправление:**
+- №1: задеплоен корректный `www/network_config/static/js/app.js` из репозитория (уже содержал `eth0-ip` / `d.eth0_ip`). Проверка после деплоя: `grep -c 'end0\|end1'` = 0. `curl status.cgi?part=network` → `eth0_ip=192.168.1.136`.
+- №2:
+  - Расширен `gather_usb_modem_metrics()` в `status.cgi`: добавлен fallback-обход `/sys/bus/usb/devices/*/idVendor` для случая, когда модем виден по VID (whitelist из 15 вендоров), но ещё не поднял сетевой интерфейс. В этом случае `USB_MODEM_STATE="init"`, `USB_MODEM_PRESENT=1`, `iface`/`ip` пусты.
+  - `applyUsbModem()` в `app.js`: добавлен рендер состояния `init` → «Инициализация» (i18n «Initializing»). Пустое `state` тоже трактуется как `Нет сети`.
+- №3:
+  - `status.cgi` `gather_system_metrics`: убран префикс `${_cpu_cores}xARM` из `CPU_MODEL_RAW`; итоговая строка `Allwinner A40i Cortex-A7 1200МГц`.
+  - `index.html`: удалён `<div id="board-info">` из виджета «Система»; `#cpu-model` теперь первая (и bold) строка. Оставшиеся 3 строки: cpu_model / armbian_version / kernel.
+  - `app.js` `applySystemStatus`: удалён вызов `setText('board-info', d.board)`. Поле `board` продолжает возвращаться CGI для совместимости с другими консюмерами.
+
+**Проверка:**
+- До: `curl /cgi-bin/status.cgi?part=network` → `eth0_ip: "192.168.1.136"` (в JSON было корректно, но JS писал не в тот DOM-элемент).
+- После: HTML-viewer виджета `Ethernet № 1` содержит `id="eth0-ip"` (не `end0-ip`), `setText('eth0-ip', "Static: 192.168.1.136")` попадает в цель.
+- Bug №3 после деплоя: `curl /cgi-bin/status.cgi?part=system` → `"cpu_model": "Allwinner A40i Cortex-A7 1200МГц"`. HTML виджета «Система» больше не содержит `board-info` (3 строки: `cpu-model` / `armbian-info` / `kernel-info`).
+- Bug №2 остаётся хардварной проблемой (VBUS 0mA, `lsusb` пуст). Улучшена детекция для сценария, когда модем всё-таки появится на шине — код теперь его увидит даже до создания net-iface.
+
+---
 ## [2026-07-07 06:10] branch: 1.0.4.0 — codesyscontrol.service uptime <1 min (демо-режим + отсутствие PID-трекинга)
 
 **Файлы (репо):**

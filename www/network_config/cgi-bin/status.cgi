@@ -1137,6 +1137,12 @@ gather_storage_metrics() {
 }
 
 # ── USB-модем (CDC-ECM / RNDIS / NCM интерфейс) ──────────────────────────────
+# Детектится в двух режимах:
+#  1) через /sys/class/net/*   — когда модем уже создал сетевой интерфейс
+#     (rndis0/usb0/wwan0/...), тогда есть IP/traffic/operstate.
+#  2) через /sys/bus/usb/devices/* — когда модем виден по VID:PID, но ещё
+#     не поднял сеть (mass-storage до usb-modeswitch, AT-only, инициализация).
+#     В этом случае set USB_MODEM_PRESENT=1, state="init", iface/ip пустые.
 gather_usb_modem_metrics() {
     USB_MODEM_PRESENT=0
     USB_MODEM_VENDOR=""
@@ -1154,14 +1160,13 @@ gather_usb_modem_metrics() {
     # 1546=u-blox, 1782=Longsung / Meig / некоторые SIM7100, 1bbb=Alcatel/T&A,
     # 2020=Meig / некоторые Fibocom.
     local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7 05c6 1e0e 1546 1782 1bbb 2020"
-    local iface vendor product manufacturer usb_dir d
+    local iface vendor product manufacturer usb_dir d _ip
 
+    # 1) Ищем модем через сетевые интерфейсы (наиболее полная информация)
     for iface in $(ls /sys/class/net/ 2>/dev/null); do
-        # Резолвим sysfs-путь устройства (должен проходить через /usb)
         d=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || continue
         printf '%s' "$d" | grep -q '/usb' || continue
 
-        # Идём вверх по пути до директории USB-устройства с idVendor
         usb_dir="$d"
         vendor=""
         while [ -n "$usb_dir" ] && [ "$usb_dir" != "/" ]; do
@@ -1173,10 +1178,9 @@ gather_usb_modem_metrics() {
         done
         [ -n "$vendor" ] || continue
 
-        # Проверяем что это модемный вендор
         printf ' %s ' "$modem_vendors" | grep -qF " ${vendor} " || continue
 
-        product=$(cat "${usb_dir}/product" 2>/dev/null || cat "${usb_dir}/idProduct" 2>/dev/null || echo "")
+        product=$(cat "${usb_dir}/product" 2>/dev/null || echo "")
         manufacturer=$(cat "${usb_dir}/manufacturer" 2>/dev/null || echo "")
 
         USB_MODEM_PRESENT=1
@@ -1186,10 +1190,32 @@ gather_usb_modem_metrics() {
         USB_MODEM_STATE=$(json_escape "$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")")
         USB_MODEM_RX=$(cat "/sys/class/net/${iface}/statistics/rx_bytes" 2>/dev/null || echo 0)
         USB_MODEM_TX=$(cat "/sys/class/net/${iface}/statistics/tx_bytes" 2>/dev/null || echo 0)
-        local _ip
         _ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{gsub("/.*","",$2); print $2; exit}')
         USB_MODEM_IP=$(json_escape "${_ip}")
-        break
+        return 0
+    done
+
+    # 2) Fallback: модем есть на USB-шине по VID, но сети ещё нет
+    #    (mass-storage до usb-modeswitch, AT-only, инициализация ModemManager).
+    for d in /sys/bus/usb/devices/*/idVendor; do
+        [ -r "$d" ] || continue
+        vendor=$(tr -d '[:space:]' < "$d" 2>/dev/null)
+        [ -n "$vendor" ] || continue
+        printf ' %s ' "$modem_vendors" | grep -qF " ${vendor} " || continue
+
+        usb_dir=$(dirname "$d")
+        product=$(cat "${usb_dir}/product" 2>/dev/null || echo "")
+        manufacturer=$(cat "${usb_dir}/manufacturer" 2>/dev/null || echo "")
+
+        USB_MODEM_PRESENT=1
+        USB_MODEM_VENDOR=$(json_escape "${manufacturer}")
+        USB_MODEM_MODEL=$(json_escape "${product}")
+        USB_MODEM_IFACE=""
+        USB_MODEM_STATE=$(json_escape "init")
+        USB_MODEM_IP=""
+        USB_MODEM_RX=0
+        USB_MODEM_TX=0
+        return 0
     done
 }
 
@@ -1345,15 +1371,14 @@ gather_system_metrics() {
     esac
     BOARD=$(json_escape "$BOARD_RAW")
 
-    # Процессор: фиксированное SoC-имя (sun8i-r40) + число ядер (nproc)
+    # Процессор: фиксированное SoC-имя (Allwinner A40i, Cortex-A7)
     # и HW-максимум частоты из cpuinfo_max_freq (kHz → MHz).
-    _cpu_cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 4)
-    case "$_cpu_cores" in ''|*[!0-9]*) _cpu_cores=4 ;; esac
+    # Формат без префикса числа ядер: «Allwinner A40i Cortex-A7 1200МГц».
     _cpu_hw_max_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null || echo 0)
     case "$_cpu_hw_max_khz" in ''|*[!0-9]*) _cpu_hw_max_khz=0 ;; esac
     _cpu_hw_max_mhz=$(( _cpu_hw_max_khz / 1000 ))
     (( _cpu_hw_max_mhz <= 0 )) && _cpu_hw_max_mhz=1200
-    CPU_MODEL_RAW="Allwinner A40i - ${_cpu_cores}xARM Cortex-A7 ${_cpu_hw_max_mhz}МГц"
+    CPU_MODEL_RAW="Allwinner A40i Cortex-A7 ${_cpu_hw_max_mhz}МГц"
     CPU_MODEL=$(json_escape "$CPU_MODEL_RAW")
 
     # Ядро: только X.Y.Z, без суффикса -sa02m+ и т.п.

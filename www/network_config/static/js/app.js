@@ -1048,7 +1048,10 @@ function applyUsbModem(d) {
     if (st === 'up') {
       stateEl.textContent = uiT('Подключён');
       stateEl.className = 'widget-val on';
-    } else if (st === 'down' || st === 'unknown') {
+    } else if (st === 'init') {
+      stateEl.textContent = uiT('Инициализация');
+      stateEl.className = 'widget-val';
+    } else if (st === 'down' || st === 'unknown' || st === '') {
       stateEl.textContent = uiT('Нет сети');
       stateEl.className = 'widget-val off';
     } else {
@@ -1172,7 +1175,6 @@ function applyLoadStatus(d) {
 
 function applySystemStatus(d) {
   _lastSystemStatus = d;
-  if (d.board)     setText('board-info',  d.board);
   if (d.cpu_model) setText('cpu-model',   d.cpu_model);
   else setText('cpu-model', '\u00a0');
   const armbianEl = document.getElementById('armbian-info');
