@@ -1,16 +1,28 @@
 [Unit]
 Description=CODESYS Control Runtime
+Documentation=https://help.codesys.com/
+Documentation=file:///opt/codesys/README.txt
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=forking
 PIDFile=/var/run/codesyscontrol.pid
+GuessMainPID=yes
+RemainAfterExit=no
 ExecStart=/etc/init.d/codesyscontrol start
 ExecStop=/etc/init.d/codesyscontrol stop
 ExecReload=/etc/init.d/codesyscontrol restart
-RemainAfterExit=yes
-TimeoutStartSec=120
+
+# Не рестартовать при штатном выходе (demo-mode expiry возвращает 0). При
+# аварийном падении подождать 30 минут — избегает restart-loop, пока лицензия
+# не активирована. Подробнее: etc/systemd/system/codesyscontrol.service.d/sa02m.conf.
+Restart=on-failure
+RestartSec=1800
+SuccessExitStatus=0 5 6
+
+TimeoutStartSec=180
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

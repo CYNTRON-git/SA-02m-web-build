@@ -91,10 +91,34 @@ else
 fi
 log INFO "apt-mark hold codesyscontrol — apt-get -f install не снимет пакет"
 
+# Deploy systemd drop-in для codesyscontrol.service (см. подробное описание
+# внутри самого файла sa02m.conf). Обязательный шаг для стабильного
+# отображения статуса CODESYS в веб-панели после истечения demo-режима.
+CODESYS_DROPIN_SRC="$ETC_DIR/systemd/system/codesyscontrol.service.d/sa02m.conf"
+CODESYS_DROPIN_DIR_ROOTED="${SA02M_ROOTFS_ROOT:-/}etc/systemd/system/codesyscontrol.service.d"
+CODESYS_DROPIN_DST="$CODESYS_DROPIN_DIR_ROOTED/sa02m.conf"
+if [ -f "$CODESYS_DROPIN_SRC" ]; then
+    install -d -m 0755 "$CODESYS_DROPIN_DIR_ROOTED"
+    if install -m 0644 "$CODESYS_DROPIN_SRC" "$CODESYS_DROPIN_DST" >>"$LOG_FILE" 2>&1; then
+        log OK  "codesyscontrol systemd drop-in установлен ($CODESYS_DROPIN_DST)"
+    else
+        log WARN "не удалось установить drop-in для codesyscontrol.service"
+    fi
+else
+    log WARN "не найден $CODESYS_DROPIN_SRC (drop-in для codesyscontrol пропущен)"
+fi
+
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     if [ -x /etc/init.d/codesyscontrol ]; then
         systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
         systemctl enable codesyscontrol >>"$LOG_FILE" 2>&1 || true
+        # Удалить залипший pidfile от предыдущего экземпляра, если демон
+        # уже мёртв — иначе do_start увидит валидный PID-файл (без /proc/PID)
+        # и решит, что процесс жив.
+        if [ -f /var/run/codesyscontrol.pid ] \
+           && ! pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1; then
+            rm -f /var/run/codesyscontrol.pid
+        fi
         if ! pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1; then
             /etc/init.d/codesyscontrol start >>"$LOG_FILE" 2>&1 || true
             sleep 2

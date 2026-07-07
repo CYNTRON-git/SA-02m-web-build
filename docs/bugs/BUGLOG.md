@@ -1,3 +1,50 @@
+## [2026-07-07 06:10] branch: 1.0.4.0 — codesyscontrol.service uptime <1 min (демо-режим + отсутствие PID-трекинга)
+
+**Файлы (репо):**
+- `etc/systemd/system/codesyscontrol.service.d/sa02m.conf` (новый) — drop-in.
+- `etc/systemd/codesyscontrol.service` — обновлён под ту же restart-политику.
+- `scripts/08-codesys.sh` — деплой drop-in + очистка залипшего pidfile перед стартом.
+- `docs/bugs/BUGLOG.md` — эта запись.
+
+**Тип:** Runtime падение (штатное завершение demo-режима), некорректное отслеживание жизни демона со стороны systemd.
+
+**Описание:** Веб-панель СА-02м «Управление» показывала для сервиса CODESYS uptime <60 сек. Веб-панель измеряет uptime по PID реального процесса `codesyscontrol.bin` (в `status.cgi`: `proc_uptime_seconds_by_name codesyscontrol`), а не по времени активации systemd-юнита. На устройстве:
+- `systemctl status codesyscontrol` показывал `active (exited)`, `NRestarts=0`, `Restart=no`, ExecStart прошёл 14 часов назад.
+- `pgrep -af codesys` **пусто** — реального процесса нет; порты 11740/4840 не слушают.
+- `/var/run/codesyscontrol.pid = 420` — залипший PID от вчерашнего экземпляра.
+- `/var/opt/codesys/codesyscontrol.log`: `2026-07-06T15:14:30 no runtime license - running in demo mode(~2 hours)` → серия предупреждений «performing shutdown in 1 hour / 5 minutes / 2 minutes / 1 minute» → `17:20:24 **** ERROR: demo mode expired` → `Performing shutdown` → `CODESYS Control shutdown...`.
+
+**Причина:** Двойная:
+1. **Demo-режим.** Пакет `codesyscontrol_linuxarm_4.20.0.0_armhf` установлен через `dpkg -i --force-depends` (пакета `codemeter-lite` нет в Debian 11 main). Без CodeMeter runtime уходит в demo-режим, который штатно завершает работу через ~2 часа с exit code 0.
+2. **Отсутствие PID-трекинга.** systemd-sysv-generator формирует юнит с `RemainAfterExit=yes`, `GuessMainPID=no`, `Restart=no`. LSB-обёртка `/etc/init.d/codesyscontrol start` форкает `codesyscontrol.bin` в фон и возвращается сразу с успехом — systemd больше не следит за реальным демоном, поэтому его смерть через 2 часа проходит незамеченной. Веб-панель при ручном restart из UI видит свежезапущенный процесс с uptime <60 сек, что похоже на restart-loop.
+
+**Исправление:** Развёрнут systemd drop-in `/etc/systemd/system/codesyscontrol.service.d/sa02m.conf`, включающий реальный PID-трекинг и щадящую restart-политику:
+```
+[Service]
+PIDFile=/var/run/codesyscontrol.pid
+GuessMainPID=yes
+RemainAfterExit=no
+Restart=on-failure
+RestartSec=1800
+SuccessExitStatus=0 5 6
+TimeoutStartSec=180
+TimeoutStopSec=60
+```
+Теперь systemd читает PID из файла, который создаёт LSB-скрипт, и корректно следит за смертью демона. При штатном выходе (exit 0, включая demo-mode timeout) — сервис становится `inactive (dead)`, restart НЕ выполняется (это соответствует правде: лицензия не активна, дальнейший demo-цикл не нужен). При аварийном выходе (SIGSEGV/OOM/exit≠0) — restart с задержкой 30 мин, что исключает tight-loop, если корневая причина в конфигурации/окружении. Дополнительно `scripts/08-codesys.sh` перед стартом удаляет залипший `/var/run/codesyscontrol.pid`, если процесса на этом PID нет — иначе `do_status` в LSB-скрипте ошибочно считает демон живым.
+
+**Проверка на устройстве (`root@192.168.1.136`):**
+- `systemctl daemon-reload` → drop-in подхвачен (`systemctl cat codesyscontrol` показывает `Drop-In: /etc/systemd/system/codesyscontrol.service.d/sa02m.conf`).
+- `systemctl stop codesyscontrol; rm -f /var/run/codesyscontrol.pid; systemctl start codesyscontrol` → сервис поднялся.
+- `systemctl show codesyscontrol` (после): `ActiveState=active`, `SubState=running`, `MainPID=13865`, `Result=success`, `NRestarts=0`, `Restart=on-failure`, `RestartUSec=30min`, `SuccessExitStatus=0 5 6`, `GuessMainPID=yes`, `RemainAfterExit=no`, `PIDFile=/run/codesyscontrol.pid`.
+- `ss -tlnp` — порты **11740** (Gateway) и **4840** (OPC UA) слушают под PID 13865.
+- `ps -o pid,etimes,etime,stat,cmd -p 13865` — процесс жив, uptime растёт линейно, `SLl` (multi-threaded, sleeping).
+- `/var/opt/codesys/codesyscontrol.log`: `CODESYS Control ready` → `no runtime license - running in demo mode(~2 hours)` (штатный старт demo-цикла).
+
+**TODO для оператора:**
+- Активировать лицензию Standard S через CODESYS Development System (Windows): Devices → Communication → `192.168.1.136:11740` → License Manager → Activate → ticket `7PWFL-GKTKH-UM6EU-JUZXJ-N5MY5` (см. `docs/codesys-rt/README.md`, п. 6.4). После активации `.wbc`-файл упадёт в `/var/opt/codesys/` и demo-режим больше не будет закрывать runtime.
+- До активации ожидаемое поведение: runtime будет корректно самопроизвольно останавливаться каждые ~2 часа с чистым shutdown. Перезапуск — через веб-панель СА-02м → Управление → CODESYS → Start (либо `systemctl start codesyscontrol`). Restart-loop не будет: drop-in гарантирует, что systemd не рестартует при штатном exit 0.
+
+---
 ## [2026-07-06 20:07] branch: 1.0.4.0 - Fix F2: PEP-604 union syntax vs Python 3.9 (Debian bullseye)
 
 **Файлы:** opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py, opt/sa02m-modbus-mqtt/sa02m_telemetry.py
