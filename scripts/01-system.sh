@@ -315,6 +315,20 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log OK "sa02m-pre-start установлен и включён"
 fi
 
+# ── USB VBUS hold: отдельный Type=simple юнит с `gpioset -m signal 0 268=1` ──
+# См. etc/systemd/sa02m-usb-vbus.service — исторически pre-start (oneshot) держал
+# VBUS сам, но `KillMode=control-group` убивал backgrounded gpioset вместе с
+# завершением скрипта. В результате dmesg показывал `usb0-vbus: disabling` через
+# ~30 с после boot, а USB-модем/накопитель на USB-A порту SA-02m не поднимался
+# без ручного «reset питания» из web-панели.
+if [ -f "$ETC_REPO/systemd/sa02m-usb-vbus.service" ]; then
+    log INFO "Установка sa02m-usb-vbus.service (гарантированное VBUS ON после boot)"
+    install -m 644 "$ETC_REPO/systemd/sa02m-usb-vbus.service" /etc/systemd/system/sa02m-usb-vbus.service
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable sa02m-usb-vbus.service >> "$LOG_FILE" 2>&1 || true
+    log OK "sa02m-usb-vbus установлен и включён"
+fi
+
 # ── DS3231 RTC sync: периодическая запись NTP→DS3231 + сохранение при shutdown ──
 # Алгоритм синхронизации времени:
 #   Boot:     fake-hwclock.service → система; sa02m-pre-start → DS3231→система (если год≥2020)

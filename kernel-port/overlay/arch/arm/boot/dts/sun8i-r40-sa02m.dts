@@ -95,10 +95,16 @@
 		};
 
 		/*
-		 * USB VBUS is hardwired on SA-02м (no external switch).
-		 * We still declare a fixed regulator so `&usbphy` can reference it
-		 * uniformly; the enable-gpio branch of the original SK DTS is
-		 * intentionally omitted.
+		 * USB VBUS на SA-02м подаётся при `gpioset chip=0 line=268=1` (PI12,
+		 * управляется юнитом sa02m-usb-vbus.service, а не DTB — sun4i-usb-phy
+		 * драйвер вызывает regulator_enable() только для usb0/OTG, HCI-фазы
+		 * usb1/usb2 работают в режиме passby, поэтому передать GPIO этому
+		 * regulator-fixed без gpio-property мы не можем без правок ядра).
+		 * Здесь регулятор остаётся программным (без gpio), но с
+		 * `regulator-always-on`, чтобы после исчерпания единственного клиента
+		 * (usb0_vbus-supply у OTG) ядро не выводило вводящее в заблуждение
+		 * `usb0-vbus: disabling` через ~30 с после boot — физически линия
+		 * 268 продолжает удерживаться gpioset из sa02m-usb-vbus.service.
 		 */
 		reg_usb0_vbus: regulator@1 {
 			reg = <1>;
@@ -106,6 +112,8 @@
 			regulator-name = "usb0-vbus";
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
+			regulator-always-on;
+			regulator-boot-on;
 		};
 	};
 

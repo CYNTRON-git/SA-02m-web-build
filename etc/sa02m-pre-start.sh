@@ -1,57 +1,15 @@
 #!/bin/bash
-# Ранний запуск (PRE-START): питание USB, i2c-2/PCA9536 (бипер+LED), RTC, eth0_link.
+# Ранний запуск (PRE-START): i2c-2/PCA9536 (бипер+LED), RTC, eth_link индикация.
+# Питание USB VBUS теперь держится отдельным юнитом sa02m-usb-vbus.service
+# (Type=simple, gpioset -m signal 0 268=1). Так `gpioset` не убивается вместе
+# с oneshot-скриптом (KillMode=control-group), как это было раньше в
+# `sa02m_boot_usb_vbus_on`, и линия 268 удерживается на всём boot pipeline.
 # Не использует set -e: сбой опциональных шагов не должен ломать загрузку.
 set -u
 
 logp() {
   logger -t sa02m-pre-start -- "$*" 2>/dev/null || true
 }
-
-# Держим VBUS как в веб-backend; pid-файл совпадает с lib_hw.sh для последующих hw_set.
-sa02m_boot_usb_vbus_on() {
-  local chip=0 line=268 raw=1 gs help pf sf pid
-  gs=$(command -v gpioset 2>/dev/null) || { logp "gpioset missing"; return; }
-  pf="/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.pid"
-  sf="/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.state"
-  if [ -f "$pf" ]; then
-    pid=$(tr -d ' \r\n\t' <"$pf" 2>/dev/null)
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
-      kill -TERM "$pid" 2>/dev/null || true
-      sleep 0.06
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
-    rm -f "$pf"
-  fi
-  help=$("$gs" -h 2>&1 || true)
-  _save_and_return() {
-    echo $1 >"$pf"
-    chmod 644 "$pf" 2>/dev/null || true
-    printf '%s' "$raw" >"$sf"
-    chmod 644 "$sf" 2>/dev/null || true
-    disown 2>/dev/null || true
-  }
-  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi signal; then
-    if "$gs" -m signal "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-      _save_and_return $!; return
-    fi
-  fi
-  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi time && echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
-    if "$gs" -m time -s 604800 "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-      _save_and_return $!; return
-    fi
-  fi
-  if echo "$help" | grep -q -- '-m' && echo "$help" | grep -qi wait; then
-    if "$gs" -m wait "$chip" "${line}=${raw}" </dev/null >/dev/null 2>&1 & then
-      _save_and_return $!; return
-    fi
-  fi
-  if "$gs" "$chip" "${line}=${raw}" 2>/dev/null; then
-    printf '%s' "$raw" >"$sf" 2>/dev/null || true; return
-  fi
-  logp "gpioset legacy usb power failed"
-}
-
-sa02m_boot_usb_vbus_on
 
 # ── i2c-2 (PCA9536): recovery + boot indication (сразу после USB, до journal/RTC) ──
 # Раньше бипер/LED давал ca_02m.service (After=network.target ≈ 50+ с). Теперь здесь.

@@ -1,3 +1,40 @@
+## [2026-07-07 09:30] branch: 1.0.4.0 — USB VBUS удерживается отдельным Type=simple юнитом sa02m-usb-vbus.service
+
+**Файлы:**
+- `etc/systemd/sa02m-usb-vbus.service` — новый юнит (`Type=simple`, `ExecStart=/usr/bin/gpioset -m signal 0 268=1`) с `ExecStartPre`, который бьёт любой висящий `gpioset` на линии 268 перед стартом.
+- `etc/sa02m-pre-start.sh` — удалена функция `sa02m_boot_usb_vbus_on()` и её вызов; VBUS-логика теперь только в новом юните.
+- `scripts/01-system.sh` — установка и enable `sa02m-usb-vbus.service`.
+- `kernel-port/overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts` — на `reg_usb0_vbus` добавлены `regulator-always-on;` и `regulator-boot-on;` (softreg без GPIO не роняется до 0 клиентов, и в dmesg больше не появляется вводящее в заблуждение `usb0-vbus: disabling`).
+- `/mnt/boot_fat/sun8i-r40-sa02m.dtb` — те же две property добавлены через `fdtput` на живом DTB; сохранены `/chosen` (пусто) и `/soc/i2c@1c2b000/rtc@68/compatible = "maxim,ds3231\0dallas,ds1307"` от других задач.
+
+**Тип:** Boot init / systemd cgroup lifecycle / DTB regulator
+
+**Описание:**
+- До фикса `sa02m-pre-start.service` (Type=oneshot, RemainAfterExit=yes, KillMode=control-group) внутри shell-скрипта запускал `gpioset -m signal 0 268=1 &` в фоне. Как только основной скрипт завершался, systemd видел, что в cgroup остались живые процессы, и — по `KillMode=control-group` — отправлял им SIGTERM. Через несколько секунд линия 268 отпускалась, GPIO становился input, VBUS шёл вниз. `systemctl status sa02m-pre-start` показывал `Tasks: 0`, а веб-панель считала, что «USB Power» выключен.
+- Параллельно в `dmesg` появлялось `usb0-vbus: disabling` через ~30 с после boot — это DTB `reg_usb0_vbus` (fixed regulator без `gpio`, чисто программный) сбрасывал refcount после того, как `sun4i-usb-phy` для usb0/OTG вызывал `regulator_disable()`. Физически линию оно не трогает (нет GPIO в свойствах), но сообщение путало и пользователей, и агентов: казалось, что kernel сам гасит VBUS.
+
+**Причина:**
+1. `KillMode=control-group` на oneshot-юните убивает любой backgrounded child при завершении основного скрипта — идиома `gpioset & disown` из pre-start не выживает.
+2. `sun4i-usb-phy` (kernel 5.10.35) вызывает `regulator_enable(vbus)` только для usb0/OTG-фазы; HCI-фазы usb1/usb2 работают в passby-режиме и refcount на регулятор не поднимают. Как только OTG уходит в idle, refcount падает до 0 и regulator framework пишет `disabling` — но без gpio-property это косметика.
+3. Не было отдельного долгоживущего юнита для держателя VBUS.
+
+**Исправление:**
+1. Создан `sa02m-usb-vbus.service` (`Type=simple`, `WantedBy=sysinit.target`, `KillMode=control-group` по умолчанию — один процесс в cgroup, systemd владеет им целиком). `ExecStart=/usr/bin/gpioset -m signal 0 268=1` — линия 268 удерживается всё время работы устройства. `ExecStartPre` через `pkill -f "^/usr/bin/gpioset .* 268="` гарантирует, что при `systemctl restart` предыдущий держатель (CGI-инициированный или прошлый экземпляр) будет убит, и `gpioset` не получит `EBUSY`.
+2. Из `sa02m-pre-start.sh` удалена вся функция `sa02m_boot_usb_vbus_on()` (~52 строки) и её вызов — VBUS больше не задача pre-start.
+3. В DTS/DTB на `reg_usb0_vbus` добавлены `regulator-always-on` и `regulator-boot-on`: программный регулятор больше не «выключается» после ухода OTG в idle, и `usb0-vbus: disabling` из dmesg уйдёт после следующего boot.
+4. `hw_set.cgi` / `lib_hw.sh` не меняются: они и раньше работали через прямой `sudo gpioset` (kill holder → spawn new). После CGI-записи systemd-юнит переходит в `inactive`, что нормально; вернуть контроль — `systemctl restart sa02m-usb-vbus.service` (ExecStartPre перехватит CGI-держателя).
+5. `scripts/01-system.sh` устанавливает и включает новый юнит для будущих деплоев/образов.
+
+**Проверка на устройстве (192.168.1.136):**
+- `systemctl is-active sa02m-usb-vbus` → `active`, `MainPID` = живой `gpioset`, `PPID=1` (systemd владелец).
+- `gpioinfo 0 | grep "line 268"` → `output active-high [used]` держится юнитом.
+- `fdtget -p /mnt/boot_fat/sun8i-r40-sa02m.dtb /regulators/regulator@1` → в списке появились `regulator-boot-on` и `regulator-always-on`; `/chosen` и `/soc/i2c@1c2b000/rtc@68/compatible` не тронуты.
+- CGI-flow сохраняет совместимость: `sa02m_hw_usb_gpiod_write 0/1` из `lib_hw.sh` бьёт держателя, поднимает свой gpioset, а `systemctl restart sa02m-usb-vbus` возвращает владение systemd (проверено полным циклом write→restart→write).
+
+**Ограничение:** `lsusb` по-прежнему показывает только root-hubs `1d6b:*`. GPIO 268 удерживается на 1, kernel USB-хосты пересобраны через `unbind/bind` — но `khubd` не видит device connect ни на одном порту, значит USB-модем либо физически не присоединён к порту, либо неисправен, либо использует line reset/PWR_KEY, которых нет в DTB и юзерспейсе. Программная часть VBUS исправна; дальнейшая диагностика требует физического доступа к устройству.
+
+---
+
 ## [2026-07-07 09:12] branch: 1.0.4.0 — Fix web widgets: Ethernet №1 IP / USB modem detection / Система format
 
 **Файлы:**
