@@ -33,3 +33,8 @@ tools/imaging/flash-media/
 # Temporary working directory
 .tmp/
 tmp/
+
+# Артефакты curl/сессий — секретоподобные значения не в репо
+cookies.txt
+*.tmp_*cookie*
+*.cookie.txt

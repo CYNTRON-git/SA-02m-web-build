@@ -43,7 +43,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from . import mplc_lease
-from .auth import check_internal_token, check_session
+from .auth import check_internal_token, check_session_store
 from .config import FlasherConfig, load_config
 from .firmware_repo import FirmwareRepo
 from .jobs import Job, JobKind, JobManager, JobState, format_sse
@@ -291,7 +291,7 @@ class Handler(BaseHTTPRequestHandler):
         token = self.headers.get("X-SA02M-Auth")
         if ctx.cfg.internal_token and check_internal_token(token, ctx.cfg.internal_token):
             return True
-        return check_session(cookie, ctx.cfg.session_cookie)
+        return check_session_store(cookie, ctx.cfg.session_dir)
 
     def _dispatch(self, method: str, path: str) -> None:
         ctx: ServiceContext = self.server.context  # type: ignore[attr-defined]

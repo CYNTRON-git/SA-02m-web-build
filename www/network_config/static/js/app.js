@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.35';
+const APP_VERSION = '1.0.3.38';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -3369,6 +3369,16 @@ async function applyVariant() {
 /* ══════════════════════════════════════════════════════════════════════════
    INIT
    ══════════════════════════════════════════════════════════════════════════ */
+/** Нудж на смену дефолтного пароля: login.cgi добавляет ?warn=default_creds. */
+function warnIfDefaultCreds() {
+  if (window.location.search.indexOf('warn=default_creds') < 0) return;
+  toast(uiT('Смените пароль по умолчанию (admin/cyntron) во вкладке «Система».'), 'warn', 12000);
+  // Убрать параметр из URL, чтобы не повторять при перезагрузке.
+  if (window.history && window.history.replaceState) {
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const verEl = document.getElementById('app-version');
   if (verEl) verEl.textContent = 'v' + APP_VERSION;
@@ -3381,6 +3391,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initWebCredsForm();
   initThemeToggle();
   handleUrlStatus();
+  warnIfDefaultCreds();
   hydratePriorityWarmup();
   bindUsbPowerResetButton();
   loadVariant();

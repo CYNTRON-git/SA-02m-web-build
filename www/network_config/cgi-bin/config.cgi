@@ -1,9 +1,10 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-cache"
 echo ""
 
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || { echo '{"error":"unauthorized"}'; exit 0; }
+web_session_check_cookie "${HTTP_COOKIE:-}" || { echo '{"error":"unauthorized"}'; exit 0; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib_rtc.sh

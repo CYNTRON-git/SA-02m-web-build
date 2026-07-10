@@ -44,7 +44,7 @@ DEFAULT_MPLC_STOP_SERVICES: List[str] = ["mplc.service", "sa02m-modbus-mqtt.serv
 
 # Лимиты и тайминги.
 DEFAULT_MAX_JOB_SECONDS = 1800       # страховка на одну задачу (до 30 мин)
-DEFAULT_SESSION_COOKIE = "session_token=cyntron_session"
+DEFAULT_SESSION_DIR = "/run/sa02m-web-sessions"  # серверные веб-сессии (создаёт login.cgi)
 DEFAULT_INTERNAL_TOKEN = ""          # общий секрет между nginx и демоном (если пусто — проверка только по cookie)
 
 
@@ -60,7 +60,7 @@ class FlasherConfig:
     ports_labels: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PORTS_LABELS))
     mplc_stop_services: List[str] = field(default_factory=lambda: list(DEFAULT_MPLC_STOP_SERVICES))
     max_job_seconds: int = DEFAULT_MAX_JOB_SECONDS
-    session_cookie: str = DEFAULT_SESSION_COOKIE
+    session_dir: str = DEFAULT_SESSION_DIR
     internal_token: str = DEFAULT_INTERNAL_TOKEN
 
 
@@ -153,9 +153,9 @@ def load_config(conf_path: Optional[Path] = None) -> FlasherConfig:
                 cfg.max_job_seconds = int(v)
             except ValueError:
                 pass
-        v = g("SESSION_COOKIE")
+        v = g("SESSION_DIR")
         if v:
-            cfg.session_cookie = v
+            cfg.session_dir = v
         v = g("INTERNAL_TOKEN")
         if v is not None:
             cfg.internal_token = v

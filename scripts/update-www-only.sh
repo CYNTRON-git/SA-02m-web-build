@@ -120,6 +120,43 @@ if [ -f "$ETC_REPO/storage-mount.sh" ] && [ -f "$ETC_REPO/sa02m-set-storage-auto
     log OK "storage-mount обновлён (/usr/local/bin/storage-mount.sh)"
 fi
 
+# Runtime-каталоги веб-сессий + rate-limit и синхронизация демона (иначе новая
+# схема авторизации разойдётся с демоном → блокировка входа / 401 на /api/flasher).
+ETC_REPO2="$SCRIPT_DIR/../etc"
+if [ -f "$ETC_REPO2/tmpfiles.d/sa02m-web-sessions.conf" ]; then
+    install -m 644 "$ETC_REPO2/tmpfiles.d/sa02m-web-sessions.conf" /etc/tmpfiles.d/sa02m-web-sessions.conf
+    command -v systemd-tmpfiles >/dev/null 2>&1 && \
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-sessions.conf 2>/dev/null || true
+fi
+for _rt in /run/sa02m-web-sessions /run/sa02m-web-login; do
+    [ -d "$_rt" ] || install -d -m 2750 -o www-data -g www-data "$_rt" 2>/dev/null || true
+done
+ITF=/etc/sa02m-web-internal-token
+if [ ! -s "$ITF" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$ITF"
+    chmod 640 "$ITF"; chown root:www-data "$ITF" 2>/dev/null || true
+fi
+if [ -s "$ITF" ] && [ -f /etc/sa02m_flasher.conf ]; then
+    _it=$(tr -d '[:space:]' < "$ITF")
+    if [ -n "$_it" ]; then
+        if grep -q '^INTERNAL_TOKEN=' /etc/sa02m_flasher.conf; then
+            sed -i "s|^INTERNAL_TOKEN=.*|INTERNAL_TOKEN=${_it}|" /etc/sa02m_flasher.conf
+        else
+            printf 'INTERNAL_TOKEN=%s\n' "$_it" >> /etc/sa02m_flasher.conf
+        fi
+    fi
+fi
+if [ -f "$ETC_REPO2/sa02m-commit-web-env.sh" ]; then
+    install -m 755 "$ETC_REPO2/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-commit-web-env
+fi
+if [ -d "$SCRIPT_DIR/../opt/sa02m-flasher/sa02m_flasher" ] && [ -d /opt/sa02m-flasher ]; then
+    cp -a "$SCRIPT_DIR/../opt/sa02m-flasher/sa02m_flasher/." /opt/sa02m-flasher/sa02m_flasher/ 2>/dev/null || true
+    chown -R sa02m-flasher:sa02m-flasher /opt/sa02m-flasher/sa02m_flasher 2>/dev/null || true
+    systemctl try-restart sa02m-flasher.service 2>/dev/null || true
+    log OK "Демон sa02m-flasher синхронизирован и перезапущен"
+fi
+
 if [ -f /etc/sudoers.d/sa02m-www ]; then
     log INFO "Синхронизация sudoers для restart/reboot CGI"
     if ! grep -q '/usr/bin/systemctl restart fix-eth.service' /etc/sudoers.d/sa02m-www; then

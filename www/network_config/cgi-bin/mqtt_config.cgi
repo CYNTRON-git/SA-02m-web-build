@@ -1,4 +1,5 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # GET  → читает /etc/sa02m-modbus-mqtt.yaml, возвращает JSON-представление
 # POST → принимает JSON, сохраняет YAML, опционально перезапускает мост
 
@@ -9,7 +10,7 @@ echo "Cache-Control: no-store"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
@@ -42,7 +43,10 @@ fi
 
 if [ "$REQUEST_METHOD" = "POST" ]; then
     TMP_IN=$(mktemp /tmp/sa02m-mqcfg-in.XXXXXX)
-    TMP_OUT=$(mktemp /tmp/sa02m-mqcfg-out.XXXXXX)
+    # Фиксированный staging для config-apply (sudoers без wildcard). rm перед записью
+    # снимает возможный чужой symlink.
+    TMP_OUT=/tmp/sa02m-mqtt.yaml.new
+    rm -f "$TMP_OUT"
     trap "rm -f '$TMP_IN' '$TMP_OUT'" EXIT
 
     dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP_IN"
@@ -77,7 +81,7 @@ PYEOF
         exit 0
     fi
 
-    if ! sudo /usr/local/sbin/sa02m-mqtt-config-apply.sh "$TMP_OUT" 2>/dev/null; then
+    if ! sudo /usr/local/sbin/sa02m-mqtt-config-apply.sh 2>/dev/null; then
         echo '{"ok":false,"error":"config_apply_failed"}'
         exit 0
     fi

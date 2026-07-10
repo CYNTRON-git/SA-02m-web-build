@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+. "$(dirname "$0")/lib_web_session.sh"
+web_session_check_cookie "${HTTP_COOKIE:-}" || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
 # FCGI: читать ровно CONTENT_LENGTH байт (read -n останавливается на переводе строки)
@@ -29,6 +30,28 @@ timeout_run() {
     fi
 }
 
+# ── Валидация сетевых параметров на границе (fail-closed) ───────────────────
+# Значения из POST пишутся в root-owned /etc/network/interfaces.d — строгая
+# проверка IPv4 исключает инъекцию строк конфигурации (в т.ч. через %0A).
+valid_ipv4() {
+    local ip="$1" a b c d e o
+    IFS=. read -r a b c d e <<EOF
+$ip
+EOF
+    [ -z "${e:-}" ] || return 1
+    for o in "$a" "$b" "$c" "$d"; do
+        case "$o" in ''|*[!0-9]*) return 1 ;; esac
+        [ "${#o}" -le 3 ] && [ "$((10#$o))" -le 255 ] || return 1
+    done
+    return 0
+}
+valid_dns_list() {  # непустой список IPv4 через пробел
+    local d
+    [ -n "$1" ] || return 1
+    for d in $1; do valid_ipv4 "$d" || return 1; done
+    return 0
+}
+
 NET_IFACE=$(get_f "net_iface")
 IP=$(get_f "ip"); NETMASK=$(get_f "netmask"); GATEWAY=$(get_f "gateway"); DNS=$(get_f "dns")
 IP_ETH1=$(get_f "ip_end1"); NETMASK_ETH1=$(get_f "netmask_end1")
@@ -45,14 +68,21 @@ time_ok=0
 # ── end0 config ────────────────────────────────────────────────────────────
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "end0" ]; then
     if [ "$ETH0_ENABLE" = "1" ] && [ -n "$IP" ] && [ -n "$NETMASK" ]; then
-        CFG="auto end0\niface end0 inet static\n    address $IP\n    netmask $NETMASK"
-        [ -n "$GATEWAY" ] && CFG="$CFG\n    gateway $GATEWAY"
-        [ -n "$DNS" ]     && CFG="$CFG\n    dns-nameservers $DNS"
-        echo -e "$CFG" | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end0.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
+        if valid_ipv4 "$IP" && valid_ipv4 "$NETMASK" \
+            && { [ -z "$GATEWAY" ] || valid_ipv4 "$GATEWAY"; } \
+            && { [ -z "$DNS" ] || valid_dns_list "$DNS"; }; then
+            {
+                printf 'auto end0\niface end0 inet static\n    address %s\n    netmask %s\n' "$IP" "$NETMASK"
+                [ -n "$GATEWAY" ] && printf '    gateway %s\n' "$GATEWAY"
+                [ -n "$DNS" ]     && printf '    dns-nameservers %s\n' "$DNS"
+            } | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
+            echo "$(date '+%Y-%m-%d %H:%M:%S') end0.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
+        else
+            REDIRECT="error_net"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: invalid end0 net params (rejected)" >> /var/log/sa02m_install.log 2>&1
+        fi
     else
-        CFG0="auto end0\niface end0 inet dhcp"
-        echo -e "$CFG0" | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
+        printf 'auto end0\niface end0 inet dhcp\n' | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
         echo "$(date '+%Y-%m-%d %H:%M:%S') end0.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
@@ -60,11 +90,19 @@ fi
 # ── end1 config ────────────────────────────────────────────────────────────
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "end1" ]; then
     if [ "$ETH1_ENABLE" = "1" ] && [ -n "$IP_ETH1" ] && [ -n "$NETMASK_ETH1" ]; then
-        CFG1="allow-hotplug end1\niface end1 inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
-        [ -n "$GATEWAY_ETH1" ] && CFG1="$CFG1\n    gateway $GATEWAY_ETH1"
-        [ -n "$DNS_ETH1" ]     && CFG1="$CFG1\n    dns-nameservers $DNS_ETH1"
-        echo -e "$CFG1" | sudo tee /etc/network/interfaces.d/end1.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end1.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
+        if valid_ipv4 "$IP_ETH1" && valid_ipv4 "$NETMASK_ETH1" \
+            && { [ -z "$GATEWAY_ETH1" ] || valid_ipv4 "$GATEWAY_ETH1"; } \
+            && { [ -z "$DNS_ETH1" ] || valid_dns_list "$DNS_ETH1"; }; then
+            {
+                printf 'allow-hotplug end1\niface end1 inet static\n    address %s\n    netmask %s\n' "$IP_ETH1" "$NETMASK_ETH1"
+                [ -n "$GATEWAY_ETH1" ] && printf '    gateway %s\n' "$GATEWAY_ETH1"
+                [ -n "$DNS_ETH1" ]     && printf '    dns-nameservers %s\n' "$DNS_ETH1"
+            } | sudo tee /etc/network/interfaces.d/end1.conf >/dev/null
+            echo "$(date '+%Y-%m-%d %H:%M:%S') end1.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
+        else
+            REDIRECT="error_net"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: invalid end1 net params (rejected)" >> /var/log/sa02m_install.log 2>&1
+        fi
     else
         sudo rm -f /etc/network/interfaces.d/end1.conf
         echo "$(date '+%Y-%m-%d %H:%M:%S') end1.conf removed" >> /var/log/sa02m_install.log 2>&1

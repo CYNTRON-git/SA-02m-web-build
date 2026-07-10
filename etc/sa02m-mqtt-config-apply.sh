@@ -1,11 +1,15 @@
 #!/bin/bash
-# Install MQTT bridge YAML config from a temp file (root only).
+# Установка YAML-конфига MQTT-моста из фиксированного staging-файла (только root).
+# Путь фиксирован (не аргумент), чтобы sudoers не давал www-data копировать
+# произвольный root-файл в 0660 root:www-data yaml (эскалация чтения). www-data
+# пишет только своё содержимое в SRC; symlink отвергается.
 set -euo pipefail
-SRC=${1:-}
+SRC=/tmp/sa02m-mqtt.yaml.new
 DST=/etc/sa02m-modbus-mqtt.yaml
-if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-    echo "usage: sa02m-mqtt-config-apply <tmp-yaml>" >&2
+if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
+    echo "sa02m-mqtt-config-apply: staging $SRC отсутствует или является симлинком" >&2
     exit 1
 fi
 install -m 0660 -o root -g www-data "$SRC" "$DST"
+rm -f "$SRC"
 sync

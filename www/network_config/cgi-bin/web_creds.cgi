@@ -1,9 +1,10 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
 echo ""
 
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+web_session_check_cookie "${HTTP_COOKIE:-}" || {
   echo '{"error":"unauthorized"}'
   exit 0
 }
@@ -40,13 +41,15 @@ if [ ! -f "$AUTH" ]; then
 fi
 SA02M_WEB_USER=admin
 SA02M_WEB_PASS=cyntron
+SA02M_WEB_PASS_HASH=""
 web_auth_read "$AUTH" || json_err "no_auth_file"
 : "${SA02M_WEB_USER:=admin}"
-: "${SA02M_WEB_PASS:=cyntron}"
 
-[ "$CUR" = "$SA02M_WEB_PASS" ] || json_err "wrong_password"
+web_auth_verify_password "$CUR" || json_err "wrong_password"
 
-web_auth_write "$NEWU" "$NEWP" > /tmp/sa02m_web.env.new
+NEWP_HASH=$(web_auth_hash_password "$NEWP")
+[ -n "$NEWP_HASH" ] || json_err "hash_failed"
+web_auth_write_hashed "$NEWU" "$NEWP_HASH" > /tmp/sa02m_web.env.new
 chmod 600 /tmp/sa02m_web.env.new
 
 if ! sudo /usr/local/sbin/sa02m-commit-web-env 2>/dev/null; then

@@ -32,6 +32,9 @@ if ! id "$FLASHER_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$FLASHER_USER"
 fi
 usermod -aG dialout "$FLASHER_USER" >/dev/null 2>&1 || true
+# Чтение серверных веб-сессий (/run/sa02m-web-sessions, 640 группы www-data) демоном
+# обеспечивает SupplementaryGroups=www-data в sa02m-flasher.service (defense-in-depth
+# за nginx auth_request) — отдельный usermod не нужен.
 
 # ── Каталоги ──────────────────────────────────────────────────────────────
 install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$INSTALL_DIR"
@@ -55,6 +58,25 @@ else
     if grep -q '^SOCKET_PATH=/run/sa02m-flasher\.sock$' /etc/sa02m_flasher.conf; then
         log INFO "Миграция SOCKET_PATH → /run/sa02m-flasher/flasher.sock"
         sed -i 's|^SOCKET_PATH=/run/sa02m-flasher\.sock$|SOCKET_PATH=/run/sa02m-flasher/flasher.sock|' /etc/sa02m_flasher.conf
+    fi
+    if grep -q '^SESSION_COOKIE=' /etc/sa02m_flasher.conf; then
+        log INFO "Миграция SESSION_COOKIE → SESSION_DIR"
+        sed -i 's|^SESSION_COOKIE=.*|SESSION_DIR=/run/sa02m-web-sessions|' /etc/sa02m_flasher.conf
+    fi
+fi
+
+# INTERNAL_TOKEN = внутренний токен веб-API: демон принимает серверные вызовы
+# (sa02m-web-service-ctl.sh) через заголовок X-SA02M-Auth. Синхронизируем со
+# значением /etc/sa02m-web-internal-token (создаёт 03-webserver.sh).
+if [ -s /etc/sa02m-web-internal-token ]; then
+    _it=$(tr -d '[:space:]' < /etc/sa02m-web-internal-token)
+    if [ -n "$_it" ]; then
+        if grep -q '^INTERNAL_TOKEN=' /etc/sa02m_flasher.conf 2>/dev/null; then
+            sed -i "s|^INTERNAL_TOKEN=.*|INTERNAL_TOKEN=${_it}|" /etc/sa02m_flasher.conf
+        else
+            printf 'INTERNAL_TOKEN=%s\n' "$_it" >> /etc/sa02m_flasher.conf
+        fi
+        log OK "INTERNAL_TOKEN синхронизирован с /etc/sa02m-web-internal-token"
     fi
 fi
 

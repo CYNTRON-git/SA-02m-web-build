@@ -2,34 +2,67 @@
 """Unit tests for sa02m_flasher.auth."""
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 
-from sa02m_flasher.auth import check_internal_token, check_session
+from sa02m_flasher.auth import check_internal_token, check_session_store
+
+_TOKEN = "a" * 64  # валидный hex-токен фиксированной длины
 
 
-class TestCheckSession(unittest.TestCase):
+def _write_session(session_dir: Path, token: str, expiry: int, user: str = "admin") -> None:
+    digest = hashlib.sha256(token.encode("ascii")).hexdigest()
+    (session_dir / digest).write_text(f"{expiry} {user}\n", encoding="utf-8")
+
+
+class TestCheckSessionStore(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.session_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _cookie(self, token: str) -> str:
+        return f"a=1; session_token={token}; path=/"
+
     def test_missing_header(self) -> None:
-        self.assertFalse(check_session(None, "session_token=cyntron_session"))
-        self.assertFalse(check_session("", "session_token=cyntron_session"))
+        self.assertFalse(check_session_store(None, str(self.session_dir)))
+        self.assertFalse(check_session_store("", str(self.session_dir)))
 
-    def test_invalid_expected_format(self) -> None:
-        self.assertFalse(check_session("session_token=x", ""))
-        self.assertFalse(check_session("session_token=x", "noequals"))
+    def test_valid_unexpired(self) -> None:
+        _write_session(self.session_dir, _TOKEN, expiry=2000)
+        self.assertTrue(check_session_store(self._cookie(_TOKEN), str(self.session_dir), now=1000))
 
-    def test_match_exact_cookie(self) -> None:
-        self.assertTrue(
-            check_session("session_token=cyntron_session", "session_token=cyntron_session")
+    def test_expired(self) -> None:
+        _write_session(self.session_dir, _TOKEN, expiry=1000)
+        self.assertFalse(check_session_store(self._cookie(_TOKEN), str(self.session_dir), now=1000))
+        self.assertFalse(check_session_store(self._cookie(_TOKEN), str(self.session_dir), now=1500))
+
+    def test_unknown_token(self) -> None:
+        _write_session(self.session_dir, _TOKEN, expiry=2000)
+        other = "b" * 64
+        self.assertFalse(check_session_store(self._cookie(other), str(self.session_dir), now=1000))
+
+    def test_wrong_cookie_key(self) -> None:
+        _write_session(self.session_dir, _TOKEN, expiry=2000)
+        self.assertFalse(
+            check_session_store(f"other={_TOKEN}", str(self.session_dir), now=1000)
         )
 
-    def test_match_among_other_cookies(self) -> None:
-        hdr = "a=1; session_token=cyntron_session; path=/"
-        self.assertTrue(check_session(hdr, "session_token=cyntron_session"))
+    def test_non_hex_token_rejected(self) -> None:
+        # Попытка подстановки пути/мусора вместо hex — отвергается на валидации формата.
+        for bad in ["../etc/passwd", "ZZZ", "a" * 200, "short"]:
+            self.assertFalse(
+                check_session_store(self._cookie(bad), str(self.session_dir), now=1000)
+            )
 
-    def test_wrong_value(self) -> None:
-        self.assertFalse(check_session("session_token=other", "session_token=cyntron_session"))
-
-    def test_wrong_key(self) -> None:
-        self.assertFalse(check_session("other=cyntron_session", "session_token=cyntron_session"))
+    def test_corrupt_session_file(self) -> None:
+        digest = hashlib.sha256(_TOKEN.encode("ascii")).hexdigest()
+        (self.session_dir / digest).write_text("garbage\n", encoding="utf-8")
+        self.assertFalse(check_session_store(self._cookie(_TOKEN), str(self.session_dir), now=1000))
 
 
 class TestCheckInternalToken(unittest.TestCase):

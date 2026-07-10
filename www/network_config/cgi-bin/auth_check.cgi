@@ -1,7 +1,8 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # Служебная проверка авторизации для nginx auth_request.
 # Успех — 204 (без тела), отказ — 401. Никаких побочных действий.
-if [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]]; then
+if web_session_check_cookie "${HTTP_COOKIE:-}"; then
     echo "Status: 204 No Content"
     echo ""
     exit 0

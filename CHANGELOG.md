@@ -5,6 +5,38 @@
 
 ---
 
+## 1.0.3.38 - Аудит безопасности веб-интерфейса (июл 2026)
+
+Устранение находок аудита/кодревью. Схема авторизации изменена согласованно в
+CGI и демоне — разворачивать через `install.sh` (веб-обновление также
+синхронизирует демон). Threat-model: [docs/threat-model.md](docs/threat-model.md).
+
+### Авторизация (критично)
+- **Per-session токены вместо общей константы.** Убран захардкоженный
+  `session_token=cyntron_session`. Логин выдаёт случайный токен; серверное
+  хранилище `/run/sa02m-web-sessions/` (имя = `sha256(token)`, TTL скользящий).
+  Проверяют `lib_web_session.sh` (CGI) и `auth.py::check_session_store` (демон).
+- **Хэш пароля** (`SA02M_WEB_PASS_HASH`, sha512crypt) вместо открытого текста;
+  legacy-plaintext принимается только при чтении старых файлов.
+- **Rate-limit входа** по IP (`/run/sa02m-web-login/`) + задержка на отказ.
+- **Внутренний токен** веб-API (`/etc/sa02m-web-internal-token`, per-device) для
+  серверных вызовов (guard-скрипты, `sa02m-web-service-ctl.sh` → демон).
+- Удалён закоммиченный `cookies.txt`.
+
+### Транспорт и ввод
+- **TLS**: самоподписанный сертификат `/etc/ssl/sa02m/` + `listen 443 ssl` (HSTS),
+  аддитивно к HTTP на порту 9999; cookie `Secure` при HTTPS.
+- **apply.cgi**: строгая валидация IPv4 на границе (`printf` вместо `echo -e`) —
+  исключает инъекцию в `/etc/network/interfaces.d/*`; `error_net` при невалидном.
+
+### Least privilege / прочее
+- **sudoers.d/sa02m-mqtt**: убраны wildcard-аргументы; `sa02m-mqtt-config-apply.sh`
+  и bus-scan читают фиксированные staging-пути (защита от копирования произвольного
+  root-файла и symlink).
+- **cloud-agent `get_log`**: исправлено чтение хвоста лога; `realpath`-проверка
+  пути под `/var/log/`.
+- Нудж на смену дефолтного пароля (admin/cyntron) в UI.
+
 ## 1.0.3.35 - Kernel switch (RT/SMP), CPU profiles, flasher hardening (июн 2026)
 
 ### Прошивка MR-02m — защита от прерывания

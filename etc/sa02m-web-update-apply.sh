@@ -71,7 +71,7 @@ chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT" 2>/dev/null || true
 
 # Обновляем вспомогательные скрипты из репозитория
-for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh; do
+for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh etc/sa02m-commit-web-env.sh; do
     if [ -f "$TMPDIR/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "${src%.sh}")"
         if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
@@ -86,6 +86,53 @@ for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-we
         log "Обновлён $tgt"
     fi
 done
+
+# Runtime-каталоги веб-сессий и rate-limit входа (иначе после in-place обновления
+# login.cgi не сможет создать сессию → блокировка входа). Идемпотентно.
+if [ -f "$TMPDIR/repo/etc/tmpfiles.d/sa02m-web-sessions.conf" ]; then
+    install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/sa02m-web-sessions.conf" \
+        /etc/tmpfiles.d/sa02m-web-sessions.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-sessions.conf >>"$LOGFILE" 2>&1 || true
+    fi
+    log "Установлен tmpfiles.d/sa02m-web-sessions.conf"
+fi
+for _rt in /run/sa02m-web-sessions /run/sa02m-web-login; do
+    [ -d "$_rt" ] || install -d -m 2750 -o www-data -g www-data "$_rt" 2>/dev/null || true
+done
+
+# Внутренний токен веб-API (per-device) + синхронизация INTERNAL_TOKEN демона.
+ITF=/etc/sa02m-web-internal-token
+if [ ! -s "$ITF" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$ITF"
+    chmod 640 "$ITF"; chown root:www-data "$ITF" 2>/dev/null || true
+    log "Создан внутренний токен веб-API $ITF"
+fi
+if [ -s "$ITF" ] && [ -f /etc/sa02m_flasher.conf ]; then
+    _it=$(tr -d '[:space:]' < "$ITF")
+    if [ -n "$_it" ]; then
+        if grep -q '^INTERNAL_TOKEN=' /etc/sa02m_flasher.conf; then
+            sed -i "s|^INTERNAL_TOKEN=.*|INTERNAL_TOKEN=${_it}|" /etc/sa02m_flasher.conf
+        else
+            printf 'INTERNAL_TOKEN=%s\n' "$_it" >> /etc/sa02m_flasher.conf
+        fi
+    fi
+fi
+
+# Демон sa02m-flasher валидирует сессии той же схемой, что и CGI. Схема авторизации
+# в этом релизе изменена (per-session токен вместо константы), поэтому демона нужно
+# синхронизировать с CGI — иначе /api/flasher начнёт отдавать 401. Обновляем код
+# демона из репозитория и перезапускаем службу (SupplementaryGroups=www-data в unit
+# даёт чтение /run/sa02m-web-sessions).
+if [ -d "$TMPDIR/repo/opt/sa02m-flasher/sa02m_flasher" ] && [ -d /opt/sa02m-flasher ]; then
+    if cp -a "$TMPDIR/repo/opt/sa02m-flasher/sa02m_flasher/." /opt/sa02m-flasher/sa02m_flasher/ 2>&1 | tee -a "$LOGFILE"; then
+        chown -R sa02m-flasher:sa02m-flasher /opt/sa02m-flasher/sa02m_flasher 2>/dev/null || true
+        log "Обновлён демон sa02m-flasher (sa02m_flasher/)"
+        systemctl try-restart sa02m-flasher.service >>"$LOGFILE" 2>&1 \
+            && log "sa02m-flasher перезапущен" \
+            || log "WARN: sa02m-flasher не перезапустился — проверьте journalctl -u sa02m-flasher"
+    fi
+fi
 if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
     /usr/local/sbin/sa02m-repair-web-env >>"$LOGFILE" 2>&1 || true
 fi

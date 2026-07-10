@@ -1,5 +1,6 @@
 #!/bin/bash
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+. "$(dirname "$0")/lib_web_session.sh"
+web_session_check_cookie "${HTTP_COOKIE:-}" || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
 echo "Content-type: application/json"

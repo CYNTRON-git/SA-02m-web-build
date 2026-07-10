@@ -1,4 +1,5 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # Returns gateway daemon status (from /run/sa02m-gateway/status.json)
 # plus systemd service state.
 
@@ -7,7 +8,7 @@ echo "Cache-Control: no-store"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi

@@ -49,8 +49,9 @@ flasher_poll_lock_held() {
     if ! command -v curl >/dev/null 2>&1; then
         return 1
     fi
+    _it=$(tr -d '[:space:]' < /etc/sa02m-web-internal-token 2>/dev/null || true)
     _resp=$(curl -sS --max-time 2 --unix-socket "$_sock" \
-        -H 'Cookie: session_token=cyntron_session' \
+        -H "X-SA02M-Auth: ${_it}" \
         http://localhost/status 2>/dev/null) || return 1
     case "$_resp" in
         *'"busy":true'*|*'"busy": true'*) return 0 ;;

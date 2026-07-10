@@ -7,7 +7,7 @@ LOG_FILE="${LOG_FILE:-/var/log/sa02m_status_blocks_guard.log}"
 DEFAULT_TIMEOUT_SEC="${DEFAULT_TIMEOUT_SEC:-120}"
 STATUS_CURL_TIMEOUT_SEC="${STATUS_CURL_TIMEOUT_SEC:-6}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:9999/cgi-bin/status.cgi}"
-COOKIE_HDR="${COOKIE_HDR:-session_token=cyntron_session}"
+COOKIE_HDR="${COOKIE_HDR:-session_token=$(cat /etc/sa02m-web-internal-token 2>/dev/null | tr -d '[:space:]' || true)}"
 ARMED_FILE="${STATE_DIR}/armed"
 PID_FILE="${STATE_DIR}/armed.pid"
 

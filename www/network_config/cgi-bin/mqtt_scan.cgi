@@ -1,17 +1,20 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # mqtt_scan.cgi — Modbus bus scanner for MQTT device discovery
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","devices":[]}'; exit 0; fi
 
 SCAN_PY="/opt/sa02m-modbus-mqtt/mqtt_bus_scan.py"
-TMP=$(mktemp /tmp/sa02m-mqttscan.XXXXXX)
+# Фиксированный staging (sudoers без wildcard). rm перед записью снимает чужой symlink.
+TMP=/tmp/sa02m-mqtt-scan.json
+rm -f "$TMP"
 trap "rm -f '$TMP'" EXIT
 
 if [ "${REQUEST_METHOD:-GET}" = "POST" ]; then
@@ -33,5 +36,5 @@ if [ ! -x "$SCAN_PY" ] && [ ! -f "$SCAN_PY" ]; then
     exit 0
 fi
 
-sudo /usr/bin/python3 "$SCAN_PY" "$TMP" 2>/dev/null \
+sudo /usr/bin/python3 "$SCAN_PY" /tmp/sa02m-mqtt-scan.json 2>/dev/null \
     || /usr/bin/python3 "$SCAN_PY" "$TMP"

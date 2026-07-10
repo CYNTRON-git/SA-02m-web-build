@@ -60,6 +60,7 @@ server {
         include        fastcgi_params;
         fastcgi_param  SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         fastcgi_param  HTTP_COOKIE     \$http_cookie;
+        fastcgi_param  HTTPS           \$https;
         fastcgi_connect_timeout 2s;
         fastcgi_send_timeout    20s;
         fastcgi_read_timeout    20s;
@@ -74,6 +75,31 @@ server {
     error_log  /var/log/nginx/sa02m_error.log warn;
 }
 NGINX
+fi
+
+# ── TLS: самоподписанный сертификат + listen 443 ssl (аддитивно к HTTP) ─────
+# HTTP на порту $PORT остаётся всегда. HTTPS включаем только если сертификат
+# создан — иначе конфиг остаётся HTTP-only (нет риска, что nginx не стартует).
+SSL_DIR=/etc/ssl/sa02m
+SSL_CRT="$SSL_DIR/sa02m.crt"
+SSL_KEY="$SSL_DIR/sa02m.key"
+mkdir -p "$SSL_DIR" && chmod 700 "$SSL_DIR"
+if [ ! -s "$SSL_CRT" ] || [ ! -s "$SSL_KEY" ]; then
+    if openssl req -x509 -newkey rsa:2048 -nodes -keyout "$SSL_KEY" -out "$SSL_CRT" \
+        -days 3650 -subj "/CN=SA-02m" >> "$LOG_FILE" 2>&1; then
+        chmod 600 "$SSL_KEY"; chmod 644 "$SSL_CRT"
+        log OK "TLS: самоподписанный сертификат $SSL_CRT"
+    else
+        log WARN "TLS: не удалось создать сертификат — веб останется только по HTTP"
+    fi
+fi
+NGX_SITE=/etc/nginx/sites-available/network_config
+if [ -s "$SSL_CRT" ] && [ -s "$SSL_KEY" ] && grep -q '# __SA02M_SSL__' "$NGX_SITE" 2>/dev/null; then
+    SSL_BLOCK="    listen 443 ssl default_server;\n    ssl_certificate $SSL_CRT;\n    ssl_certificate_key $SSL_KEY;\n    ssl_protocols TLSv1.2 TLSv1.3;\n    add_header Strict-Transport-Security \"max-age=15552000\" always;"
+    sed -i "s|^[[:space:]]*# __SA02M_SSL__.*|$SSL_BLOCK|" "$NGX_SITE"
+    log OK "TLS: включён listen 443 ssl (HTTP на $PORT сохранён)"
+else
+    sed -i '/# __SA02M_SSL__/d' "$NGX_SITE" 2>/dev/null || true
 fi
 
 # Сокет fcgiwrap всегда /run/fcgiwrap/fcgiwrap.socket — создаётся нашим
@@ -390,11 +416,45 @@ for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
         install -m 644 "$SYSTEMD_DIR/$_wu_unit" "/etc/systemd/system/$_wu_unit"
     fi
 done
+# ── Runtime-каталоги: серверные сессии + rate-limit входа ──────────────────
+if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-sessions.conf" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-sessions.conf" \
+        /etc/tmpfiles.d/sa02m-web-sessions.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-sessions.conf >> "$LOG_FILE" 2>&1 || true
+    fi
+fi
+# Фолбэк, если systemd-tmpfiles недоступен.
+for _rt in /run/sa02m-web-sessions /run/sa02m-web-login; do
+    [ -d "$_rt" ] || install -d -m 2750 -o www-data -g www-data "$_rt" 2>/dev/null || true
+done
+
+# Внутренний токен для серверных вызовов к локальному API (root-хелперы, health-пробы).
+# Per-device случайный секрет, не в репозитории. Читают: lib_web_session.sh (CGI),
+# демон через INTERNAL_TOKEN (см. 04-flasher.sh), guard-скрипты.
+INTERNAL_TOKEN_FILE=/etc/sa02m-web-internal-token
+if [ ! -s "$INTERNAL_TOKEN_FILE" ]; then
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$INTERNAL_TOKEN_FILE"
+    chmod 640 "$INTERNAL_TOKEN_FILE"; chown root:www-data "$INTERNAL_TOKEN_FILE" 2>/dev/null || true
+    log OK "Создан внутренний токен веб-API $INTERNAL_TOKEN_FILE"
+fi
+
 if [ ! -f /etc/sa02m_web.env ]; then
+    _bootstrap_written=0
     if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
         # shellcheck disable=SC1091
         . /usr/local/lib/sa02m-web-auth-lib.sh
-        web_auth_write admin "${ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+        if type web_auth_hash_password >/dev/null 2>&1; then
+            _pw_hash=$(web_auth_hash_password "${ADMIN_PASS}")
+            if [ -n "$_pw_hash" ]; then
+                web_auth_write_hashed admin "$_pw_hash" > /tmp/sa02m_web.env.bootstrap
+                _bootstrap_written=1
+            fi
+        fi
+        if [ "$_bootstrap_written" = "0" ]; then
+            web_auth_write admin "${ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+            _bootstrap_written=1
+        fi
     else
         {
             echo "SA02M_WEB_USER='admin'"
@@ -403,7 +463,7 @@ if [ ! -f /etc/sa02m_web.env ]; then
     fi
     install -m 640 -o root -g www-data /tmp/sa02m_web.env.bootstrap /etc/sa02m_web.env
     rm -f /tmp/sa02m_web.env.bootstrap
-    log INFO "Создан /etc/sa02m_web.env (логин admin)"
+    log INFO "Создан /etc/sa02m_web.env (логин admin, пароль sha512crypt)"
 fi
 if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
     /usr/local/sbin/sa02m-repair-web-env >> "$LOG_FILE" 2>&1 || \

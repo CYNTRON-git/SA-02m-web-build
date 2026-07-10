@@ -1,11 +1,12 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # mqtt_monitor_poll.cgi — JSON-снимок для монитора (короткий запрос, не SSE)
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","events":[]}'; exit 0; fi

@@ -1,9 +1,10 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # GET  — список управляемых прикладных служб
 # POST — {"id":"mosquitto","action":"start"|"stop"}
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 

@@ -358,11 +358,14 @@ def handle_command(cmd: dict) -> str:
         return f"ok: {r.returncode}"
     if action == "get_log":
         logfile = cmd.get("file", "/var/log/sa02m_install.log")
-        if not logfile.startswith("/var/log/"):
+        # Разрешаем только реальные пути под /var/log/ (resolve → защита от ../).
+        resolved = os.path.realpath(logfile)
+        if not (resolved == "/var/log" or resolved.startswith("/var/log/")):
             return "error: path not allowed"
         try:
-            with open(logfile, "rb") as f:
-                f.seek(max(0, f.seek(0, 2) or 0 - 8192))
+            with open(resolved, "rb") as f:
+                size = f.seek(0, 2)          # позиция конца = размер файла
+                f.seek(max(0, size - 8192))  # последние 8 КБ
                 return f.read().decode(errors="replace")
         except Exception as e:
             return f"error: {e}"

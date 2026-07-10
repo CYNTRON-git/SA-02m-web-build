@@ -1,4 +1,5 @@
 #!/bin/bash
+. "$(dirname "$0")/lib_web_session.sh"
 # POST {"action": "start"|"stop"|"restart"|"reload"} → controls sa02m-serial-gateway
 
 echo "Content-type: application/json; charset=UTF-8"
@@ -6,7 +7,7 @@ echo "Cache-Control: no-store"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie "${HTTP_COOKIE:-}" && return 0
     return 1
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized"}'; exit 0; fi
