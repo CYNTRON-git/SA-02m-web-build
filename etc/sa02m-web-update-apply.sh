@@ -160,5 +160,8 @@ rm -f "$STATEDIR/check.json" 2>/dev/null || true
 # Сбрасываем кэш status.cgi (JS/CSS обновились — новая версия в браузере сразу)
 rm -f /tmp/sa02m_status_cache/*.json /tmp/sa02m_status_cache/*.lock 2>/dev/null || true
 
-log "DONE: обновление завершено успешно"
+# Root ext4 смонтирован с commit=600 — форсируем сброс на диск, иначе reboot
+# вскоре после обновления теряет изменения (page cache ещё не на диске).
+sync
+log "DONE: обновление завершено успешно (изменения сброшены на диск)"
 printf 'done' > "$STATUS_FILE"

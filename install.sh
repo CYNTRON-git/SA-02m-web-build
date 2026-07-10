@@ -71,6 +71,10 @@ bash "$SCRIPT_DIR/scripts/03-webserver.sh"
 bash "$SCRIPT_DIR/scripts/04-flasher.sh"
 bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
 
+# Root ext4 с commit=600 — сброс на диск, чтобы перезагрузка сразу после
+# установки не потеряла изменения (page cache ещё не на диске).
+sync
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 log OK "════════════════════════════════════════"
