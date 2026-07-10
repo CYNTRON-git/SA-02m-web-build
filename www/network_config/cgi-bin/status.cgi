@@ -2259,7 +2259,9 @@ case "$STATUS_PART" in
         build_priority_json
         ;;
     main)
-        build_main_json
+        # Кэш как у rs485/services: агрегат gather_main_metrics тяжёлый (~10 с, systemctl/i2c);
+        # без кэша каждый опрос платил полную цену. no_cache=1 инвалидирует (см. выше, после hw_set).
+        cache_print_or_build "${CACHE_DIR}/main.json" 8 build_main_json
         ;;
     rs485)
         cache_print_or_build "${CACHE_DIR}/rs485.json" 8 build_rs485_json
