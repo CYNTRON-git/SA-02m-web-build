@@ -137,6 +137,22 @@ BOOTLOADER_MAX_APP_BYTES = FLASH_APP_END - FLASH_APP_START  # 190464 байт (~
 MAX_FIRMWARE_SIZE_BYTES = BOOTLOADER_MAX_APP_BYTES
 DEFAULT_RETRIES_PER_BLOCK = 5  # для образа бутлоадера; для приложения используется APP_MAX_ERROR_COUNT (3, как WB)
 
+# --- Индексированные окна данных: идемпотентный повтор блока после потерянного ответа ---
+# Портировано из MR-02m-flasher (commits 40e3530/47f74f0/ab49eff).
+# BL >= 0.0.0.11: окно приложения 0x2100+idx (легаси 0x2000 сдвигал образ при повторе → битый CRC).
+DATA_BLOCK_IDX_REG = 0x2100
+BL_INDEXED_BLOCKS_MIN_VERSION = (0, 0, 0, 11)
+# BL >= 0.0.0.21: окно staging бутлоадера 0x2600+idx (легаси 0x2000 двигал flash_offset → exc4 на последнем блоке).
+DATA_BLOCK_IDX_REG_BOOTLOADER = 0x2600
+BL_INDEXED_BL_BLOCKS_MIN_VERSION = (0, 0, 0, 21)
+# Окно приложения 0x2100+idx не должно доставать до 0x2600 (иначе пересечение при большом образе).
+assert (
+    (MAX_FIRMWARE_SIZE_BYTES + DATA_BLOCK_BYTES - 1) // DATA_BLOCK_BYTES
+    <= DATA_BLOCK_IDX_REG_BOOTLOADER - DATA_BLOCK_IDX_REG
+), "окно данных 0x2100+idx пересекается с BL staging 0x2600"
+# Авто-ретрай ВСЕЙ последовательности обновления бутлоадера (staging+commit).
+BL_SEQUENCE_MAX_ATTEMPTS = 3
+
 REG_SERIAL_LO = 270
 REG_SERIAL_HI = 271
 REG_DIAG_STATE = 0xF3
@@ -834,6 +850,9 @@ class FlasherProtocol:
         self.timeout_ms = timeout_ms
         self.log_cb = log_cb
         self.verbose_exchange_log = verbose_exchange_log
+        # Индексированные блоки данных: включаются run_flash_sequence* по версии BL.
+        self.use_indexed_data_blocks = False   # app: 0x2100+idx (BL >= 0.0.0.11)
+        self.use_indexed_bl_blocks = False     # BL staging: 0x2600+idx (BL >= 0.0.0.21)
 
     def _exchange(
         self, request: bytes, log_timeout: bool = True
@@ -1057,8 +1076,13 @@ class FlasherProtocol:
             if app_from_fw
             else payload_block_to_registers(block_data)
         )
+        reg = (
+            DATA_BLOCK_IDX_REG + int(block_index)
+            if self.use_indexed_data_blocks
+            else DATA_BLOCK_REG
+        )
         return self.write_multiple_registers_by_serial(
-            serial, DATA_BLOCK_REG, regs, log_timeout=log_timeout
+            serial, reg, regs, log_timeout=log_timeout
         )
 
     def write_firmware_type_bootloader_by_serial(self, serial: int) -> Optional[str]:
@@ -1087,9 +1111,12 @@ class FlasherProtocol:
         block_data: bytes,
         log_timeout: bool = True,
         app_from_fw: bool = False,
+        block_index: Optional[int] = None,
     ) -> Optional[str]:
-        """Отправка одного блока образа бутлоадера по серийному.
-        app_from_fw=True: payload из .fw (байт-своп) → app_le-кодирование → staging = raw binary."""
+        """Отправка одного staging-блока бутлоадера по серийному.
+        app_from_fw=True: payload из .fw (байт-своп) → app_le-кодирование → staging = raw binary.
+        При use_indexed_bl_blocks (BL >= 0.0.0.21) и заданном block_index — 0x2600+idx
+        (идемпотентно к повтору после потерянного ответа); иначе легаси 0x2000."""
         size = len(block_data)
         if size not in (DATA_BLOCK_BYTES_BOOTLOADER, DATA_BLOCK_LAST_BYTES_BOOTLOADER):
             if size < DATA_BLOCK_LAST_BYTES_BOOTLOADER:
@@ -1107,8 +1134,13 @@ class FlasherProtocol:
             if app_from_fw
             else [(block_data[i] << 8) | block_data[i + 1] for i in range(0, size, 2)]
         )
+        reg = (
+            DATA_BLOCK_IDX_REG_BOOTLOADER + int(block_index)
+            if (self.use_indexed_bl_blocks and block_index is not None)
+            else DATA_BLOCK_REG
+        )
         return self.write_multiple_registers_by_serial(
-            serial, DATA_BLOCK_REG, regs, log_timeout=log_timeout
+            serial, reg, regs, log_timeout=log_timeout
         )
 
     def send_commit_bootloader_by_serial(self, serial: int) -> Optional[str]:
@@ -1333,7 +1365,7 @@ class FlasherProtocol:
         log_timeout: bool = True,
         app_from_fw: bool = True,
     ) -> Optional[str]:
-        """Отправка одного блока данных (0x2000). app_from_fw=True для .fw (слова BE → LE в Flash), False для .bin (сырой LE)."""
+        """Отправка одного блока данных (0x2000 или 0x2100+idx при use_indexed_data_blocks). app_from_fw=True для .fw (слова BE → LE в Flash), False для .bin (сырой LE)."""
         if len(block_data) < DATA_BLOCK_BYTES:
             block_data = block_data + b"\xff" * (
                 DATA_BLOCK_BYTES - len(block_data)
@@ -1343,8 +1375,13 @@ class FlasherProtocol:
             if app_from_fw
             else payload_block_to_registers(block_data)
         )
+        reg = (
+            DATA_BLOCK_IDX_REG + int(block_index)
+            if self.use_indexed_data_blocks
+            else DATA_BLOCK_REG
+        )
         return self.write_multiple_registers(
-            slave, DATA_BLOCK_REG, regs, log_timeout=log_timeout
+            slave, reg, regs, log_timeout=log_timeout
         )
 
     def send_info_block_wb(self, slave: int, info_32_bytes: bytes) -> Optional[str]:
@@ -1538,6 +1575,48 @@ def verify_app_running_after_jump_by_serial(
     return " ".join(parts)
 
 
+# --- Индексированные блоки данных: детект по версии BL (портировано из MR-02m-flasher) ---
+def is_user_cancel_message(msg: Optional[str]) -> bool:
+    """True, если сообщение об ошибке — отмена пользователем (не ретраить последовательность)."""
+    return bool(msg) and "Отменено пользователем" in str(msg)
+
+
+def _parse_bl_version_tuple(ver_str: Optional[str]) -> Optional[Tuple[int, ...]]:
+    try:
+        parts = tuple(int(x) for x in str(ver_str or "").strip().split("."))
+    except ValueError:
+        return None
+    return parts if len(parts) == 4 else None
+
+
+def _apply_indexed_data_blocks(
+    flasher: "FlasherProtocol", ver: Optional[str], err: Optional[str]
+) -> bool:
+    """Выставить flasher.use_indexed_data_blocks по прочитанной версии BL и залогировать."""
+    flasher.use_indexed_data_blocks = False
+    vt = None if err else _parse_bl_version_tuple(ver)
+    if vt is not None and vt >= BL_INDEXED_BLOCKS_MIN_VERSION:
+        flasher.use_indexed_data_blocks = True
+    if flasher.log_cb:
+        flasher.log_cb(
+            "BL %s: индексированные блоки данных %s"
+            % (ver or "?", "ВКЛ (0x2100+idx)" if flasher.use_indexed_data_blocks else "выкл (легаси 0x2000)")
+        )
+    return flasher.use_indexed_data_blocks
+
+
+def detect_indexed_data_blocks_by_serial(flasher: "FlasherProtocol", serial: int) -> bool:
+    """BL >= 0.0.0.11: индексированное окно 0x2100+idx (идемпотентный повтор блока)."""
+    _sig, ver, err = flasher.read_bootloader_info_by_serial(serial)
+    return _apply_indexed_data_blocks(flasher, ver, err)
+
+
+def detect_indexed_data_blocks_by_address(flasher: "FlasherProtocol", slave: int) -> bool:
+    """То же для прошивки по Modbus-адресу. Чужой/нечитаемый BL → легаси 0x2000."""
+    _sig, ver, err = flasher.read_bootloader_info(slave)
+    return _apply_indexed_data_blocks(flasher, ver, err)
+
+
 def run_flash_sequence_by_address(
     flasher: FlasherProtocol,
     slave: int,
@@ -1552,6 +1631,7 @@ def run_flash_sequence_by_address(
     Прошивка приложения по Modbus-адресу. Как у WB: если образ с info-блоком (первые 32 B файла .fw) — отправляем их как 16 рег BE; иначе — сборка из signature + size (для .bin).
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    detect_indexed_data_blocks_by_address(flasher, slave)
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE (как в make_fw.py)
     if _image_has_embedded_fw_header(image):
         size_from_file = struct.unpack_from("<I", image, 12)[0]
@@ -1784,6 +1864,7 @@ def run_flash_sequence(
     if not serial or serial == 0xFFFFFFFF:
         return "Для прошивки по 0x46 нужен серийный номер устройства (выполните сканирование и выберите по серийному №)."
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    detect_indexed_data_blocks_by_serial(flasher, serial)
 
     # Полный файл .fw: первые 32 байта = info, payload в файле — слова BE
     if _image_has_embedded_fw_header(image):
@@ -2219,10 +2300,56 @@ def run_flash_sequence_bootloader(
     cancel_gate: Optional[FlashCancelGate] = None,
 ) -> Optional[str]:
     """
+    Обновление бутлоадера с авто-ретраем ВСЕЙ последовательности (staging+commit).
+    Блочные ретраи ловят потерянные/битые кадры, но принятый кадр с искажением, прошедшим
+    Modbus-CRC16, обнаруживается только финальным CRC-32 образа — тогда падает весь staging.
+    Повторяем всю последовательность до BL_SEQUENCE_MAX_ATTEMPTS раз: staging пишется заново,
+    commit — только при сошедшемся CRC. Не ретраим после точки невозврата (commit) и при отмене.
+    """
+    gate = cancel_gate if cancel_gate is not None else _resolve_flash_cancel_gate(cancel_cb, None)
+    err: Optional[str] = None
+    for attempt in range(BL_SEQUENCE_MAX_ATTEMPTS):
+        err = _run_flash_sequence_bootloader_once(
+            flasher, serial, image, signature,
+            progress_cb=progress_cb, cancel_gate=gate,
+            retries_per_block=retries_per_block,
+        )
+        if err is None or is_user_cancel_message(err) or gate.irreversible:
+            return err
+        if attempt < BL_SEQUENCE_MAX_ATTEMPTS - 1 and flasher.log_cb:
+            flasher.log_cb(
+                "Обновление бутлоадера: попытка %d/%d не удалась (%s), повтор всей последовательности."
+                % (attempt + 1, BL_SEQUENCE_MAX_ATTEMPTS, err)
+            )
+    return err
+
+
+def _run_flash_sequence_bootloader_once(
+    flasher: FlasherProtocol,
+    serial: int,
+    image: bytes,
+    signature: str,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    retries_per_block: int = DEFAULT_RETRIES_PER_BLOCK,
+    cancel_gate: Optional[FlashCancelGate] = None,
+) -> Optional[str]:
+    """
     Прошивка образа бутлоадера (34 КБ) по серийному номеру (0x46): 0x1001=0x424C → info 0x1000 → блоки → commit 0x1006.
     image: ровно BL_IMAGE_TOTAL_BYTES.
     """
     gate = _resolve_flash_cancel_gate(cancel_cb, cancel_gate)
+    # BL >= 0.0.0.21: индексированное окно staging 0x2600+idx (идемпотентно к повтору блока).
+    flasher.use_indexed_bl_blocks = False
+    _sig, _blver, _err = flasher.read_bootloader_info_by_serial(serial)
+    _vt = None if _err else _parse_bl_version_tuple(_blver)
+    if _vt is not None and _vt >= BL_INDEXED_BL_BLOCKS_MIN_VERSION:
+        flasher.use_indexed_bl_blocks = True
+    if flasher.log_cb:
+        flasher.log_cb(
+            "BL %s: индексированные staging-блоки %s"
+            % (_blver or "?", "ВКЛ (0x2600+idx)" if flasher.use_indexed_bl_blocks else "выкл (легаси 0x2000)")
+        )
     fw_info_bytes_s: Optional[bytes] = None
     if len(image) == BL_IMAGE_TOTAL_BYTES + INFO_BLOCK_BYTES:
         fw_info_bytes_s = image[:INFO_BLOCK_BYTES]
@@ -2292,7 +2419,7 @@ def run_flash_sequence_bootloader(
         for attempt in range(retries_per_block):
             log_timeout = attempt == retries_per_block - 1
             err = flasher.send_data_block_bootloader_by_serial(
-                serial, block, log_timeout=log_timeout, app_from_fw=from_fw_s
+                serial, block, log_timeout=log_timeout, app_from_fw=from_fw_s, block_index=idx
             )
             if err is None:
                 last_err = None
