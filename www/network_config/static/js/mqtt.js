@@ -239,11 +239,20 @@ function migrateDeviceLegacyAiSensorTypes(dev) {
   dev.ai_sensor_schema = AI_SENSOR_SCHEMA_MODBUS;
 }
 
+// Каналы и единицы синхронизированы с DTVPoller.DTV_REGS в modbus_mqtt_bridge.py
+// (Input 1–30 + диагностика МК 123/124) и картой DTV-RS-485 (dtv_registers.py флешера).
 const DTV_SENSOR_UNITS = {
   temp_ds18b20: '°C', temp_mcp9808: '°C', temp_hdc1080: '°C', temp_bme280: '°C',
-  temp_bme680: '°C', temp_ext: '°C', humidity_hdc1080: '%', humidity_bme280: '%',
-  humidity_bme680: '%', pressure_bme280_mmhg: 'mmHg', pressure_bme680_mmhg: 'mmHg',
-  pressure_bme280_kpa: 'kPa', iaq_bme680: 'IAQ', presence_ld2412: '',
+  temp_bme680: '°C', temp_ext: '°C',
+  humidity_hdc1080: '%', humidity_bme280: '%', humidity_bme680: '%',
+  pressure_bme280_mmhg: 'mmHg', pressure_bme680_mmhg: 'mmHg',
+  pressure_bme280_kpa: 'kPa', pressure_bme680_kpa: 'kPa',
+  altitude_bme280: 'm', altitude_bme680: 'm',
+  gas_resist_bme680: 'kΩ', iaq_bme680: 'IAQ', eco2_bme680: 'ppm',
+  tvoc_zmod: 'mg/m³', iaq_zmod: 'IAQ', eco2_zmod: 'ppm', etoh_zmod: 'ppm',
+  light_pct: '%', input_pb2: '', presence: '',
+  moving_distance: 'cm', still_distance: 'cm', detect_distance: 'cm',
+  mcu_vdd: 'V', mcu_temp: '°C',
 };
 
 const DTV_SENSORS = [
@@ -256,29 +265,43 @@ const DTV_SENSORS = [
   {key:'humidity_hdc1080',label:'Влажность HDC1080',group:'humidity'},
   {key:'humidity_bme280', label:'Влажность BME280',  group:'humidity'},
   {key:'humidity_bme680', label:'Влажность BME680',  group:'humidity'},
-  {key:'pressure_bme280_kpa',label:'Давление BME280',group:'pressure'},
-  {key:'pressure_bme680_kpa',label:'Давление BME680',group:'pressure'},
+  {key:'pressure_bme280_mmhg',label:'Давление BME280 (мм рт.ст.)',group:'pressure'},
+  {key:'pressure_bme680_mmhg',label:'Давление BME680 (мм рт.ст.)',group:'pressure'},
+  {key:'pressure_bme280_kpa',label:'Давление BME280 (кПа)',group:'pressure'},
+  {key:'pressure_bme680_kpa',label:'Давление BME680 (кПа)',group:'pressure'},
+  {key:'altitude_bme280',label:'Высота BME280',   group:'pressure'},
+  {key:'altitude_bme680',label:'Высота BME680',   group:'pressure'},
+  {key:'gas_resist_bme680',label:'Газ. сопр. BME680',group:'iaq'},
   {key:'iaq_bme680',    label:'IAQ BME680',       group:'iaq'},
   {key:'eco2_bme680',   label:'eCO2 BME680',      group:'iaq'},
-  {key:'gas_resist_bme680',label:'Газ. сопр. BME680',group:'iaq'},
   {key:'tvoc_zmod',     label:'TVOC ZMOD4410',    group:'iaq'},
   {key:'iaq_zmod',      label:'IAQ ZMOD',         group:'iaq'},
   {key:'eco2_zmod',     label:'eCO2 ZMOD',        group:'iaq'},
+  {key:'etoh_zmod',     label:'EtOH ZMOD',        group:'iaq'},
+  {key:'light_pct',     label:'Освещённость',     group:'presence'},
+  {key:'input_pb2',     label:'Вход PB2',         group:'presence'},
   {key:'presence',      label:'Присутствие',      group:'presence'},
   {key:'moving_distance',label:'Дистанция движения',group:'presence'},
-  {key:'light_pct',     label:'Освещённость',     group:'presence'},
+  {key:'still_distance', label:'Дистанция статич.',group:'presence'},
+  {key:'detect_distance',label:'Дистанция обнаруж.',group:'presence'},
+  {key:'mcu_vdd',       label:'Напряжение МК',    group:'diag'},
+  {key:'mcu_temp',      label:'Темп. МК',         group:'diag'},
   {key:'buzzer',        label:'Зуммер',           group:'outputs'},
   {key:'leds',          label:'Светодиоды',       group:'outputs'},
 ];
 
+// Каналы и единицы синхронизированы с CE02M3Poller в modbus_mqtt_bridge.py
+// (Input FC04 500–552 измерения, 580–599 энергия) и CE-02m-3/MODBUS_VARIABLES.txt.
 const CE02M3_UNITS = {
   voltage_a: 'V', voltage_b: 'V', voltage_c: 'V', voltage_ab: 'V', voltage_bc: 'V', voltage_ca: 'V',
   current_a: 'A', current_b: 'A', current_c: 'A', current_n: 'A',
   power_a: 'W', power_b: 'W', power_c: 'W', power_total: 'W',
   reactive_a: 'var', reactive_b: 'var', reactive_c: 'var', reactive_total: 'var',
-  pf_a: '', pf_b: '', pf_c: '', pf_total: '', frequency: 'Hz',
+  apparent_a: 'VA', apparent_b: 'VA', apparent_c: 'VA', apparent_total: 'VA',
+  pf_a: '', pf_b: '', pf_c: '', pf_total: '', frequency: 'Hz', asic_temp: '°C',
   energy_active_import: 'kWh', energy_active_export: 'kWh',
-  energy_reactive_import: 'kvarh', energy_reactive_export: 'kvarh',
+  energy_reactive_import: 'kvarh', energy_reactive_export: 'kvarh', energy_apparent: 'kVAh',
+  mcu_vdd: 'V', mcu_temp: '°C',
 };
 
 const CE02M3_CHANNELS = [
@@ -300,15 +323,23 @@ const CE02M3_CHANNELS = [
   {key:'reactive_b',  label:'Qb', group:'reactive'},
   {key:'reactive_c',  label:'Qc', group:'reactive'},
   {key:'reactive_total',label:'Q сумм.', group:'reactive'},
+  {key:'apparent_a',  label:'Sa', group:'apparent'},
+  {key:'apparent_b',  label:'Sb', group:'apparent'},
+  {key:'apparent_c',  label:'Sc', group:'apparent'},
+  {key:'apparent_total',label:'S сумм.', group:'apparent'},
   {key:'pf_a',        label:'cosφ A', group:'pf'},
   {key:'pf_b',        label:'cosφ B', group:'pf'},
   {key:'pf_c',        label:'cosφ C', group:'pf'},
   {key:'pf_total',    label:'cosφ сумм.', group:'pf'},
   {key:'frequency',   label:'Частота', group:'pf'},
+  {key:'asic_temp',   label:'Темп. АЦП', group:'diag'},
   {key:'energy_active_import',  label:'Энергия акт. импорт', group:'energy'},
   {key:'energy_active_export',  label:'Энергия акт. экспорт',group:'energy'},
   {key:'energy_reactive_import',label:'Энергия реакт. импорт',group:'energy'},
+  {key:'energy_reactive_export',label:'Энергия реакт. экспорт',group:'energy'},
   {key:'energy_apparent',       label:'Полная энергия',      group:'energy'},
+  {key:'mcu_vdd',     label:'Напряжение МК', group:'diag'},
+  {key:'mcu_temp',    label:'Темп. МК',      group:'diag'},
 ];
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1563,7 +1594,7 @@ function buildDTVChannels(dev, container) {
     if (!groups[s.group]) {
       const label = {temperature:'Температура',humidity:'Влажность / Давление',
         pressure:'Давление', iaq:'Качество воздуха',presence:'Присутствие LD2412',
-        outputs:'Выходы'}[s.group] || s.group;
+        diag:'Диагностика МК', outputs:'Выходы'}[s.group] || s.group;
       const pack = buildChannelWidget(label);
       groups[s.group] = pack.body;
       row.appendChild(pack.widget);
@@ -1584,7 +1615,7 @@ function buildDTVChannels(dev, container) {
         h('span', {'class':'mqtt-ch-name'}, s.label)
       ),
       h('span', {'class':'topic-preview', 'title': topic}, topic),
-      liveSpan(dev.id, s.key, s.unit || ''),
+      liveSpan(dev.id, s.key, DTV_SENSOR_UNITS[s.key] || s.unit || ''),
     );
     groups[s.group].appendChild(row);
   }
@@ -1624,8 +1655,10 @@ function buildCE02M3Channels(dev, container) {
     currents: 'Токи (А)',
     power: 'Активная мощность (Вт)',
     reactive: 'Реактивная мощность (вар)',
+    apparent: 'Полная мощность (ВА)',
     pf: 'Cos φ / Частота',
     energy: 'Счётчики энергии',
+    diag: 'Диагностика',
   };
 
   // Poll intervals row
@@ -1656,6 +1689,7 @@ function buildCE02M3Channels(dev, container) {
       : gk === 'currents' ? 'currents'
       : gk === 'power' ? 'power_active'
       : gk === 'reactive' ? 'power_reactive'
+      : gk === 'apparent' ? 'power_apparent'
       : gk === 'pf' && ch.key === 'frequency' ? 'frequency'
       : gk === 'pf' ? 'power_factor'
       : gk === 'energy' ? 'energy' : null;
