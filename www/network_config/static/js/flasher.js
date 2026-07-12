@@ -1375,7 +1375,7 @@
         tr.classList.add('flasher-device-config-row');
       }
       tr.innerHTML = `
-        <td>${d.address ?? '—'}</td>
+        <td>${escapeHtml(String(d.address ?? '—'))}</td>
         <td>${escapeHtml(d.serial_hex || '—')}<div class="flasher-sub">${escapeHtml(d.serial_dec || '')}</div></td>
         <td>${escapeHtml(d.signature || '—')}</td>
         <td>${escapeHtml(d.app_version || '—')}${firmwareAppUpdateHintForDevice(d)}</td>

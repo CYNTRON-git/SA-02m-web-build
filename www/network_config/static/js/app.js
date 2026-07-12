@@ -1442,19 +1442,6 @@ function applyRs485Status(d) {
   if (d.rs485 && d.rs485.length) renderRs485(d.rs485);
 }
 
-function applyStatus(d) {
-  applyPriorityStatus(d);
-  applyStorageStatus(d);
-  applyTimeStatus(d);
-  applyUptimeStatus(d);
-  applyNetworkStatus(d);
-  applyLoadStatus(d);
-  applySystemStatus(d);
-  applyServicesStatus(d);
-  applyHardwareStatus(d);
-  applyRs485Status(d);
-}
-
 function fetchPriorityPart(_part, persist = true) {
   if (widgetBusy.priority) return;
   if (!canFetchStatusPart('priority', false)) return;
@@ -1485,31 +1472,6 @@ function fetchPriorityPart(_part, persist = true) {
         release();
       });
   });
-}
-
-function fetchCpuWidget() {
-  fetchPriorityPart('cpu');
-}
-
-function fetchTempWidget() {
-  fetchPriorityPart('temp');
-}
-
-function fetchRamWidget() {
-  fetchPriorityPart('ram');
-}
-
-function fetchDiskWidget() {
-  fetchPriorityPart('disk');
-}
-
-function applyMainStatusBundle(d) {
-  BACKGROUND_STATUS_PARTS.forEach(function (part) {
-    _lastPartStatus[part] = d;
-    const applyFn = getBackgroundPartApply(part);
-    if (applyFn) applyFn(d);
-  });
-  syncMainLoadedFlag();
 }
 
 /** Поколение опроса HW: увеличивается после hw_set, чтобы отложенный JSON не затирал UI свежими кнопками. */
@@ -1639,26 +1601,6 @@ function fetchStatusMain(force) {
     }
   });
   if (pending === 0) statusMainRoundBusy = false;
-}
-
-function fetchStorageWidget() {
-  fetchBackgroundPart('storage', applyStorageStatus);
-}
-
-function fetchTimeWidget() {
-  fetchBackgroundPart('time', applyTimeStatus);
-}
-
-function fetchUptimeWidget() {
-  fetchBackgroundPart('uptime', applyUptimeStatus);
-}
-
-function fetchNetworkWidget() {
-  fetchBackgroundPart('network', applyNetworkStatus);
-}
-
-function fetchLoadWidget() {
-  fetchBackgroundPart('load', applyLoadStatus);
 }
 
 function fetchSystemWidget() {
@@ -1891,14 +1833,6 @@ function _webUpdFinish(status, log) {
     if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Применить обновление'; }
     toast('Ошибка обновления', 'error');
   }
-}
-
-function fetchServicesWidget() {
-  fetchBackgroundPart('services', applyServicesStatus);
-}
-
-function fetchHardwareWidget() {
-  fetchBackgroundPart('hardware', applyHardwareStatus);
 }
 
 function fetchStatusRs485(force) {
@@ -2975,8 +2909,9 @@ function serviceCtlAction(btn) {
     return;
   }
   const label = btn.closest('.svc-row')?.querySelector('.name')?.textContent || id;
-  const verb = action === 'stop' ? 'остановить' : 'включить';
-  if (!confirm(verb.charAt(0).toUpperCase() + verb.slice(1) + ' «' + label + '»?')) return;
+  const verb = action === 'stop' ? 'Остановить' : 'Включить';
+  const verbT = window.sa02mI18n ? window.sa02mI18n.t(verb) : verb;
+  if (!confirm(verbT + ' «' + label + '»?')) return;
   btn.disabled = true;
   fetch('/cgi-bin/services_ctrl.cgi', {
     method: 'POST',
