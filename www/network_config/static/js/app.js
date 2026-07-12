@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.3.35';
+const APP_VERSION = '1.0.4.1';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -392,6 +392,11 @@ function renderServicesDynamic(d) {
     return compareSvcDisplayName(a.label, b.label);
   });
 
+  kpiSetServices(
+    rows.filter(function (row) { return svcStateIsActive(row.state); }).length,
+    rows.length
+  );
+
   rows.forEach(function (row, i) {
     const r = document.createElement('div');
     r.className = 'svc-row' + (row.tight ? ' svc-row-tight' : '');
@@ -413,6 +418,57 @@ function renderServicesDynamic(d) {
     host.appendChild(r);
     svcBadge(bid, row.state);
   });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   KPI — сводка состояния над дашбордом (службы / Ethernet / RS-485 / предупреждения)
+   ══════════════════════════════════════════════════════════════════════════ */
+function kpiSetVal(id, text, state) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.remove('kpi-ok', 'kpi-warn', 'kpi-err');
+  if (state) el.classList.add(state);
+}
+
+function kpiSetServices(active, total) {
+  if (!total) { kpiSetVal('kpi-svc-val', '—', ''); return; }
+  kpiSetVal('kpi-svc-val', active + ' / ' + total,
+    active === total ? 'kpi-ok' : active === 0 ? 'kpi-err' : 'kpi-warn');
+}
+
+function kpiSetNetwork(up, total) {
+  if (!total) { kpiSetVal('kpi-net-val', '—', ''); return; }
+  kpiSetVal('kpi-net-val', up + ' / ' + total, up > 0 ? 'kpi-ok' : 'kpi-warn');
+}
+
+function kpiSetRs485(active, total) {
+  if (!total) { kpiSetVal('kpi-rs-val', '—', ''); return; }
+  kpiSetVal('kpi-rs-val', active + ' / ' + total, active > 0 ? 'kpi-ok' : '');
+}
+
+function kpiSetWarnings(reasons) {
+  const n = reasons.length;
+  kpiSetVal('kpi-warn-val', String(n), n > 0 ? 'kpi-err' : 'kpi-ok');
+  const tile = document.getElementById('kpi-warn-tile');
+  if (tile) {
+    tile.classList.toggle('kpi-tile-alert', n > 0);
+    tile.title = n > 0 ? reasons.join(' · ') : uiT('Показатели в норме');
+  }
+}
+
+/** Предупреждения из приоритетных метрик: CPU ≥80 %, t° ≥80 °C, ОЗУ ≥90 %, диск ≥90 %. */
+function kpiWarningsFromPriority(d) {
+  const reasons = [];
+  const cpu = parseFloat(d.cpu_usage);
+  if (cpu >= 80) reasons.push('CPU ' + d.cpu_usage + '%');
+  const t = parseFloat(d.temp_c);
+  if (t >= 80) reasons.push(d.temp_c + '°C');
+  const ram = parseFloat(d.ram_pct);
+  if (ram >= 90) reasons.push(uiT('ОЗУ') + ' ' + d.ram_pct + '%');
+  const disk = parseFloat(d.disk_pct);
+  if (disk >= 90) reasons.push(uiT('Диск') + ' ' + d.disk_pct + '%');
+  kpiSetWarnings(reasons);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1014,6 +1070,8 @@ function applyPriorityStatus(d) {
       diskBar.style.background = threshColor(d.disk_pct, 70, 90);
     }
   }
+
+  kpiWarningsFromPriority(d);
 }
 
 function applyStorageStatus(d) {
@@ -1158,6 +1216,15 @@ function applyNetworkStatus(d) {
   setText('eth0-ip', formatEthIpWidget(d.eth0_ip, d.eth0_mode));
   setText('eth1-ip', formatEthIpWidget(d.eth1_ip, d.eth1_mode));
   if (d.ip) setText('tb-ip', d.ip);
+
+  /* KPI: линки — считаем только физически присутствующие интерфейсы */
+  const ethStates = [d.eth0_operstate, d.eth1_operstate]
+    .map(function (s) { return (s === undefined || s === null) ? '' : String(s).trim().toLowerCase(); })
+    .filter(function (s) { return s && s !== 'absent'; });
+  kpiSetNetwork(
+    ethStates.filter(function (s) { return s === 'up'; }).length,
+    ethStates.length
+  );
 }
 
 function applyLoadStatus(d) {
@@ -2207,6 +2274,7 @@ function renderRs485(ports) {
   const grid = document.getElementById('rs485-grid');
   if (!grid) return;
   const seen = new Set();
+  let kpiTotal = 0, kpiActive = 0;
   ports.slice().sort(function (a, b) { return (a.n | 0) - (b.n | 0); }).forEach(function (p) {
     seen.add('rs485c-' + p.n);
     const absent = p.st === 'absent';
@@ -2223,6 +2291,10 @@ function renderRs485(ports) {
     const hasErr = !absent && !disabled && !!(errDelta.fe || errDelta.pe || errDelta.oe);
     const hasTraffic = (p.tx | 0) > 0 || (p.rx | 0) > 0;
     const polling = !absent && !disabled && (!!p.open || hasTraffic);
+    if (!absent && !disabled) {
+      kpiTotal++;
+      if (polling) kpiActive++;
+    }
     let dotClass = 'idle';
     let dotTitle = uiT('Порт свободен, опрос не выполняется');
     if (absent) {
@@ -2266,6 +2338,7 @@ function renderRs485(ports) {
       return na - nb;
     })
     .forEach(function (card) { grid.appendChild(card); });
+  kpiSetRs485(kpiActive, kpiTotal);
 }
 
 window.refreshRs485I18n = function () {

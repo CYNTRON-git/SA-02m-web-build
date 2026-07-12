@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3.35">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.35">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.4.1">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.4.1">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3.35" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.4.1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
       <div class="topbar-branding">
         <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
@@ -105,11 +105,51 @@
 
         <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
 
+        <!-- Сводка состояния: службы · Ethernet · RS-485 · предупреждения -->
+        <div class="kpi-row" role="status" aria-label="Сводка состояния">
+          <div class="kpi-tile" id="kpi-svc-tile">
+            <span class="kpi-ico kpi-ico-green" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+            </span>
+            <div class="kpi-body">
+              <div class="kpi-val" id="kpi-svc-val">—</div>
+              <div class="kpi-lbl" data-i18n="Службы активны">Службы активны</div>
+            </div>
+          </div>
+          <div class="kpi-tile" id="kpi-net-tile">
+            <span class="kpi-ico kpi-ico-cyan" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="2" y="9" width="20" height="8" rx="2"/><path d="M6 13h.01M10 13h.01M12 9V5h8"/></svg>
+            </span>
+            <div class="kpi-body">
+              <div class="kpi-val" id="kpi-net-val">—</div>
+              <div class="kpi-lbl" data-i18n="Ethernet-линки">Ethernet-линки</div>
+            </div>
+          </div>
+          <div class="kpi-tile" id="kpi-rs-tile">
+            <span class="kpi-ico kpi-ico-orange" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M2 8c5 0 5 8 10 8s5-8 10-8"/><path d="M2 16c5 0 5-8 10-8s5 8 10 8"/></svg>
+            </span>
+            <div class="kpi-body">
+              <div class="kpi-val" id="kpi-rs-val">—</div>
+              <div class="kpi-lbl" data-i18n="Линии RS-485 активны">Линии RS-485 активны</div>
+            </div>
+          </div>
+          <div class="kpi-tile" id="kpi-warn-tile">
+            <span class="kpi-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </span>
+            <div class="kpi-body">
+              <div class="kpi-val" id="kpi-warn-val">—</div>
+              <div class="kpi-lbl" data-i18n="Предупреждения">Предупреждения</div>
+            </div>
+          </div>
+        </div>
+
         <div class="dash-grid">
 
           <!-- Система -->
           <div class="widget">
-            <div class="widget-title">Система</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></span><span>Система</span></div>
             <div class="widget-sub widget-sub-reserved" id="cpu-model" style="font-size:14px;font-weight:600;color:var(--text)">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="armbian-info" style="margin-top:4px">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="kernel-info" style="margin-top:4px">&nbsp;</div>
@@ -117,7 +157,7 @@
 
           <!-- Загрузка CPU -->
           <div class="widget">
-            <div class="widget-title">Загрузка CPU</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>Загрузка CPU</span></div>
             <div class="gauge-wrap">
               <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
                 <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
@@ -132,7 +172,7 @@
 
           <!-- Нагрузка (load avg) -->
           <div class="widget">
-            <div class="widget-title">Нагрузка (load avg)</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-6"/></svg></span><span>Нагрузка (load avg)</span></div>
             <div class="load-grid">
               <div class="load-item"><div class="load-num" id="load-1">—</div><div class="load-lbl">1 мин</div></div>
               <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
@@ -144,7 +184,7 @@
 
           <!-- Температура CPU -->
           <div class="widget">
-            <div class="widget-title">Температура CPU</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span><span>Температура CPU</span></div>
             <div class="gauge-wrap">
               <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
                 <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
@@ -159,13 +199,13 @@
 
           <!-- Uptime -->
           <div class="widget">
-            <div class="widget-title">Uptime</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-green" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></span><span>Uptime</span></div>
             <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
           </div>
 
           <!-- ОЗУ -->
           <div class="widget">
-            <div class="widget-title">ОЗУ</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 17v3M12 17v3M17 17v3M7 11h2M11 11h2M15 11h2"/></svg></span><span>ОЗУ</span></div>
             <div class="widget-val" id="ram-val">—</div>
             <div class="widget-sub" id="ram-sub">из —</div>
             <div class="bar-row">
@@ -181,7 +221,7 @@
 
           <!-- Диск eMMC -->
           <div class="widget">
-            <div class="widget-title">Диск eMMC</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-green" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12H3M5 5h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/><path d="M17 16h.01"/></svg></span><span>Диск eMMC</span></div>
             <div class="widget-val" id="disk-val">—</div>
             <div class="widget-sub" id="disk-sub">из —</div>
             <div class="bar-row">
@@ -193,13 +233,13 @@
 
           <!-- Службы -->
           <div class="widget widget-svc">
-            <div class="widget-title">Службы</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-green" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></span><span>Службы</span></div>
             <div class="svc-list" id="svc-dynamic-list"></div>
           </div>
 
           <!-- USB (точка монтирования /media/usb или USB-модем) -->
           <div class="widget">
-            <div class="widget-title" id="usb-widget-title">USB-накопитель</div>
+            <div class="widget-title has-ico" id="usb-widget-title"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="18.5" r="2"/><path d="M12 16.5V4M12 4l-2 2.5M12 4l2 2.5M12 9l4 2v2M12 12 8 14v2"/><circle cx="16" cy="11" r="1.2"/><rect x="6.8" y="12.8" width="2.4" height="2.4"/></svg></span><span>USB-накопитель</span></div>
             <div id="usb-storage-view">
               <div class="widget-val" id="usb-val">—</div>
               <div id="usb-detail">
@@ -220,7 +260,7 @@
 
           <!-- microSD (/media/sdcard, mmcblk1 или mmcblk3) -->
           <div class="widget">
-            <div class="widget-title widget-title-preserve">microSD</div>
+            <div class="widget-title has-ico widget-title-preserve"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3h9a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6z"/><path d="M9 3v4M12 3v4M15 3v4"/></svg></span><span>microSD</span></div>
             <div class="widget-val" id="sd-val">—</div>
             <div id="sd-detail">
               <div class="widget-sub" id="sd-sub">из —</div>
@@ -317,7 +357,7 @@
 
           <!-- RS-485 — та же ширина, что и HW (4 колонки) -->
           <div class="widget widget-rs485 dash-span-top4">
-            <div class="widget-title">Интерфейсы RS-485 — активность</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 8c5 0 5 8 10 8s5-8 10-8"/><path d="M2 16c5 0 5-8 10-8s5 8 10 8"/></svg></span><span>Интерфейсы RS-485 — активность</span></div>
             <div class="rs485-grid" id="rs485-grid"></div>
           </div>
 
@@ -978,10 +1018,10 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.4.0"></script>
-<script src="/static/js/app.js?v=1.0.4.0"></script>
-<script src="/static/js/flasher.js?v=1.0.3.35.9"></script>
-<script src="/static/js/mqtt.js?v=1.0.3.35.1"></script>
-<script src="/static/js/gateway.js?v=1.0.3.35"></script>
+<script src="/static/js/i18n.js?v=1.0.4.1"></script>
+<script src="/static/js/app.js?v=1.0.4.1"></script>
+<script src="/static/js/flasher.js?v=1.0.4.1"></script>
+<script src="/static/js/mqtt.js?v=1.0.4.1"></script>
+<script src="/static/js/gateway.js?v=1.0.4.1"></script>
 </body>
 </html>

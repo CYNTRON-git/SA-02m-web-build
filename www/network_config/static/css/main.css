@@ -18,7 +18,8 @@
   --border-li:   #58585a;
 
   --text:        #f2f2f7;
-  --text-sec:    #8e8e93;
+  /* #a5a5ac: контраст 6.3:1 на карточке (#242426) против 4.7:1 у прежнего #8e8e93 — WCAG AA */
+  --text-sec:    #a5a5ac;
   --text-dim:    #48484a;
 
   --cyan:        #22d3ee;
@@ -69,6 +70,16 @@
   --meter-red:    #ff453a;
   --meter-orange: #ff9f0a;
   --meter-track:  #2c2c2e;
+
+  /* Цветные «чипы» иконок на карточках и KPI-плитках (контраст иконка/фон ≥4.6:1) */
+  --chip-cyan-bg:   #0e3a44;  --chip-cyan-fg:   #22d3ee;
+  --chip-green-bg:  #103a18;  --chip-green-fg:  #32d74b;
+  --chip-orange-bg: #3f2a05;  --chip-orange-fg: #ff9f0a;
+  --chip-red-bg:    #431211;  --chip-red-fg:    #ff453a;
+
+  /* Активный пункт меню: заливка акцентом + тёмный текст (8.9:1 и 5.0:1 на краях градиента) */
+  --nav-active-grad: linear-gradient(135deg, #22d3ee, #0e9db8);
+  --nav-active-fg:   #05252b;
 }
 
 :root,
@@ -121,6 +132,14 @@ html[data-theme="light"] {
   --badge-err-bg:    #fef2f2;
   --badge-err-border:#fecaca;
   --meter-track:     #d1d1d6;
+
+  --chip-cyan-bg:   #dff5fa;  --chip-cyan-fg:   #0e7490;
+  --chip-green-bg:  #e3f6e8;  --chip-green-fg:  #1e7534;
+  --chip-orange-bg: #fdf0e0;  --chip-orange-fg: #a53a09;
+  --chip-red-bg:    #fdeaea;  --chip-red-fg:    #b91c1c;
+
+  --nav-active-grad: linear-gradient(135deg, #22d3ee, #0e9db8);
+  --nav-active-fg:   #05252b;
 }
 
 html[data-theme="light"] .gauge-arc-bg { stroke: var(--meter-track) !important; }
@@ -260,10 +279,13 @@ html:not([data-theme="light"]) .topbar {
   border: 1px solid transparent;
 }
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
+/* Активный пункт — заливка акцентом с тёмным текстом (как в референсе): виден с первого взгляда */
 .nav-item.active {
-  background: var(--bg-panel); color: var(--cyan);
-  border-color: var(--border-md);
-  box-shadow: var(--shadow-sm);
+  background: var(--nav-active-grad);
+  color: var(--nav-active-fg);
+  border-color: transparent;
+  box-shadow: 0 2px 10px rgba(34, 211, 238, .28), var(--shadow-sm);
+  font-weight: 600;
 }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
@@ -312,6 +334,80 @@ html:not([data-theme="light"]) .topbar {
 /* HW-блок: ширина верхнего ряда (4 виджета + промежутки), auto-fill сохраняет размер карточек */
 .dash-span-top4 { grid-column: 1 / span 4; }
 .dash-full { grid-column: 1 / -1; }
+
+/* ── KPI: сводка состояния над дашбордом ─────────────────────────────────── */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.kpi-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.kpi-tile:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
+.kpi-ico {
+  width: 40px; height: 40px;
+  border-radius: var(--radius-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+}
+.kpi-ico svg { width: 19px; height: 19px; }
+.kpi-ico-cyan   { background: var(--chip-cyan-bg);   color: var(--chip-cyan-fg); }
+.kpi-ico-green  { background: var(--chip-green-bg);  color: var(--chip-green-fg); }
+.kpi-ico-orange { background: var(--chip-orange-bg); color: var(--chip-orange-fg); }
+.kpi-ico-red    { background: var(--chip-red-bg);    color: var(--chip-red-fg); }
+.kpi-body { min-width: 0; }
+.kpi-val {
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.kpi-val.kpi-ok   { color: var(--green); }
+.kpi-val.kpi-warn { color: var(--yellow); }
+.kpi-val.kpi-err  { color: var(--red); }
+.kpi-lbl {
+  font-size: 12.5px;
+  color: var(--text-sec);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Плитка «Предупреждения»: чип меняет цвет вместе со значением */
+#kpi-warn-tile .kpi-ico { background: var(--chip-green-bg); color: var(--chip-green-fg); }
+#kpi-warn-tile.kpi-tile-alert .kpi-ico { background: var(--chip-red-bg); color: var(--chip-red-fg); }
+#kpi-warn-tile.kpi-tile-alert { border-color: var(--badge-err-border); }
+
+/* ── Иконки-чипы в заголовках карточек дашборда ──────────────────────────── */
+.widget-title.has-ico {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.w-ico {
+  width: 26px; height: 26px;
+  border-radius: var(--radius-xs);
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+}
+.w-ico svg { width: 14px; height: 14px; }
+.w-ico-cyan   { background: var(--chip-cyan-bg);   color: var(--chip-cyan-fg); }
+.w-ico-green  { background: var(--chip-green-bg);  color: var(--chip-green-fg); }
+.w-ico-orange { background: var(--chip-orange-bg); color: var(--chip-orange-fg); }
+.w-ico-red    { background: var(--chip-red-bg);    color: var(--chip-red-fg); }
 
 /* ── Widget card ─────────────────────────────────────────────────────────── */
 .widget {
@@ -485,6 +581,17 @@ svg .gauge-num {
 .badge-ok  { background: var(--badge-ok-bg); color: var(--green);  border: 1px solid var(--badge-ok-border); }
 .badge-err { background: var(--badge-err-bg); color: var(--red);    border: 1px solid var(--badge-err-border); }
 .badge-unk { background: var(--bg-panel); color: var(--text-sec); border: 1px solid var(--border-md); }
+/* Точка-индикатор состояния перед текстом (как «• En ligne» в референсе) */
+.badge-ok::before,
+.badge-err::before {
+  content: '';
+  display: inline-block;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 5px;
+  flex: 0 0 auto;
+}
 .badge-ok.pulse { animation: badge-pulse 2s infinite; }
 @keyframes badge-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
@@ -919,6 +1026,18 @@ svg .gauge-num {
   color: var(--yellow);
   background: var(--warn-btn-bg);
   border-color: var(--warn-btn-border);
+}
+/* Точка-индикатор в pill состояния линка */
+.eth-state.up::before,
+.eth-state.down::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  margin-right: 6px;
+  vertical-align: middle;
+  margin-top: -2px;
 }
 .eth-state.absent {
   color: var(--text-sec);
