@@ -30,21 +30,22 @@ fail_login() {
 # installer writes one.
 SA02M_WEB_USER=""
 SA02M_WEB_PASS=""
+SA02M_WEB_PASS_HASH=""
 if [ -f "$AUTH_ENV" ]; then
-    web_auth_read_safe "$AUTH_ENV" || web_auth_read "$AUTH_ENV" || true
+    web_auth_read_safe "$AUTH_ENV" || true
 fi
-if [ -z "$SA02M_WEB_USER" ] || [ -z "$SA02M_WEB_PASS" ]; then
+STORED_SECRET=$(web_auth_stored_secret)
+if [ -z "$SA02M_WEB_USER" ] || [ -z "$STORED_SECRET" ]; then
     fail_login
 fi
 
-# Constant-time-ish comparison: compare fixed-length salted hashes, so timing
-# does not leak how many leading characters matched.
+# Username: constant-time-ish salted-hash compare. Password: verified against
+# the stored credential — a $6$ hash (S5) or legacy plaintext (migration).
 SALT=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')
 hash_of() { printf '%s' "${SALT}:$1" | sha256sum | cut -d' ' -f1; }
 u_in=$(hash_of "$USERNAME"); u_ok=$(hash_of "$SA02M_WEB_USER")
-p_in=$(hash_of "$PASSWORD"); p_ok=$(hash_of "$SA02M_WEB_PASS")
 
-if [ "$u_in" = "$u_ok" ] && [ "$p_in" = "$p_ok" ]; then
+if [ "$u_in" = "$u_ok" ] && web_auth_verify "$PASSWORD" "$STORED_SECRET"; then
     TOKEN=$(web_session_create) || fail_login
     echo "Status: 302 Found"
     echo "Content-type: text/html; charset=UTF-8"

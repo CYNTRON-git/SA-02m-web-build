@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 06-gateway.sh  •  Установка sa02m-serial-gateway (RS-485→Ethernet шлюз)
 # ═══════════════════════════════════════════════════════════════════════════

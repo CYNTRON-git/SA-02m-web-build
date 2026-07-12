@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 08-codesys.sh  •  CODESYS Control for Linux ARM SL (v4.20.0.0) на СА-02м
 #

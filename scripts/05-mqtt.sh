@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 05-mqtt.sh  •  Установка MQTT-инфраструктуры на СА-02м
 #   - Mosquitto broker (apt)

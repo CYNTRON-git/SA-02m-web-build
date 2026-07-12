@@ -42,12 +42,17 @@ fi
 # built-in default.
 SA02M_WEB_USER=""
 SA02M_WEB_PASS=""
+SA02M_WEB_PASS_HASH=""
 web_auth_read "$AUTH" || json_err "no_auth_file"
-[ -n "$SA02M_WEB_PASS" ] || json_err "no_auth_file"
+CUR_STORED=$(web_auth_stored_secret)
+[ -n "$CUR_STORED" ] || json_err "no_auth_file"
 
-[ "$CUR" = "$SA02M_WEB_PASS" ] || json_err "wrong_password"
+web_auth_verify "$CUR" "$CUR_STORED" || json_err "wrong_password"
 
-web_auth_write "$NEWU" "$NEWP" > /tmp/sa02m_web.env.new
+# Store the NEW password hashed (S5); fall back to plaintext only if no hasher
+# is available on the device (best-effort, never a lockout).
+NEW_HASH=$(web_auth_hash "$NEWP")
+web_auth_write "$NEWU" "${NEW_HASH:-$NEWP}" > /tmp/sa02m_web.env.new
 chmod 600 /tmp/sa02m_web.env.new
 
 if ! sudo /usr/local/sbin/sa02m-commit-web-env 2>/dev/null; then

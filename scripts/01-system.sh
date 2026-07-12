@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 01-system.sh  •  Base OS, users, packages, serial symlinks
 # ═══════════════════════════════════════════════════════════════════════════

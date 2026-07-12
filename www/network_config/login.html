@@ -43,39 +43,15 @@
 </div>
 
 <script>
-const PRIORITY_WARMUP_KEY = 'sa02m-priority-warmup';
-function readWarmupCache() {
-  try {
-    return JSON.parse(sessionStorage.getItem(PRIORITY_WARMUP_KEY) || '{}');
-  } catch (e) {
-    return {};
-  }
-}
-function writeWarmupPart(part, data) {
-  try {
-    const cache = readWarmupCache();
-    cache[part] = { ts: Date.now(), data };
-    sessionStorage.setItem(PRIORITY_WARMUP_KEY, JSON.stringify(cache));
-  } catch (e) {}
-}
-function prefetchPriorityWidgets() {
-  fetch('/cgi-bin/status.cgi?part=priority', { cache: 'no-store', credentials: 'omit' })
-    .then(r => r.json())
-    .then(d => {
-      if (d.error) return;
-      ['cpu', 'temp', 'ram', 'disk'].forEach(function (part) { writeWarmupPart(part, d); });
-    })
-    .catch(function () {});
-}
-
+// Note: the former unauthenticated priority-widget prefetch was removed with
+// the status.cgi public carve-out (S8) — status.cgi now requires a session, so
+// pre-login polling only produced unauthorized responses every 8 s. The
+// dashboard warms its own widgets after login.
 if (new URLSearchParams(location.search).get('error')) {
   document.getElementById('login-error').style.display = 'block';
 }
 if (document.cookie.split(';').some(c => c.trim().startsWith('session_token='))) {
   window.location.replace('/');
-} else {
-  prefetchPriorityWidgets();
-  setInterval(prefetchPriorityWidgets, 8000);
 }
 </script>
 </body>

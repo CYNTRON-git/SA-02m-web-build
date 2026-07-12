@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 03-webserver.sh  •  nginx + fcgiwrap + sudo + web-app deploy
 # ═══════════════════════════════════════════════════════════════════════════
@@ -424,7 +425,10 @@ if [ ! -f /etc/sa02m_web.env ]; then
     if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
         # shellcheck disable=SC1091
         . /usr/local/lib/sa02m-web-auth-lib.sh
-        web_auth_write admin "${ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+        # Store the initial password hashed (S5); web_auth_write picks PASS_HASH
+        # for a $6$ value. Fall back to plaintext only if hashing is unavailable.
+        _bootstrap_hash=$(web_auth_hash "${ADMIN_PASS}")
+        web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
     else
         {
             echo "SA02M_WEB_USER='admin'"

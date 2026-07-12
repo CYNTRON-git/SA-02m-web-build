@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 07-nodered.sh  •  Node-RED (Node.js LTS + nodered.service) на СА-02м
 #

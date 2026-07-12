@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 02-network.sh  •  Network interface config and fix-eth watchdog
 # ═══════════════════════════════════════════════════════════════════════════
@@ -199,7 +200,7 @@ else
     log INFO "nftables.service masked (kernel без CONFIG_NF_TABLES)"
 fi
 
-systemctl daemon-reload
+systemctl daemon-reload >/dev/null 2>&1 || true
 udevadm control --reload-rules 2>/dev/null || true
 
 # Ключевой сервис для ifupdown: без него /etc/network/interfaces.d/*.conf

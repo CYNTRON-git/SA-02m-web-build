@@ -7,6 +7,7 @@ LOG_FILE="${LOG_FILE:-/var/log/sa02m_failure_monitor.log}"
 SNAPSHOT_FILE="${SNAPSHOT_FILE:-/run/sa02m_failure_monitor_state.txt}"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
+HTTP_PROBE_INTERVAL_SEC="${HTTP_PROBE_INTERVAL_SEC:-30}"
 HEARTBEAT_INTERVAL_SEC="${HEARTBEAT_INTERVAL_SEC:-300}"
 LOG_ROTATE_MAX_BYTES="${LOG_ROTATE_MAX_BYTES:-2097152}"
 LOG_ROTATE_KEEP_BYTES="${LOG_ROTATE_KEEP_BYTES:-1048576}"
@@ -163,8 +164,8 @@ write_snapshot_file() {
         echo "load=$(load_short)"
         echo "mem_available_kb=$(mem_available_kb)"
         echo "port22=$(port_state)"
-        printf 'login_http=%s\n' "$(probe_state "$HTTP_PROBE_URL")"
-        printf 'status_priority=%s\n' "$(probe_state "$STATUS_PROBE_URL")"
+        printf 'login_http=%s\n' "$_probe_login_http"
+        printf 'status_priority=%s\n' "$_probe_status_priority"
         echo "--- units ---"
         for unit in $MONITOR_UNITS; do
             printf '%s=%s\n' "$unit" "$(unit_state "$unit")"
@@ -197,6 +198,15 @@ check_named_probe() {
     shift
     prev=$(read_state "probe:${name}")
     cur=$("$@")
+    check_named_probe_cached "$name" "$cur"
+}
+
+# Same alert logic as check_named_probe but on an already-computed value — lets
+# the caller probe ONCE per cadence and reuse the result (snapshot + alert)
+# instead of forking the CGI probe twice per loop (Y8).
+check_named_probe_cached() {
+    local name=$1 cur=$2 prev
+    prev=$(read_state "probe:${name}")
     [ "$cur" = "$prev" ] && return 0
     write_state "probe:${name}" "$cur"
     log "probe ${name}: ${prev:-unset} -> ${cur}"
@@ -208,6 +218,11 @@ check_named_probe() {
     esac
 }
 
+# Last HTTP-probe results, refreshed on the HTTP_PROBE_INTERVAL_SEC cadence and
+# reused by the snapshot writer so it does not re-fork the CGI probe every loop.
+_probe_login_http="unknown"
+_probe_status_priority="unknown"
+
 heartbeat() {
     local summary unit
     summary=""
@@ -218,19 +233,28 @@ heartbeat() {
 }
 
 main() {
-    local last_heartbeat=0 now unit loop_count=0
+    local last_heartbeat=0 last_http_probe=0 now unit loop_count=0
     log "failure monitor started; units=${MONITOR_UNITS}; interval=${CHECK_INTERVAL}s"
 
     while true; do
+        now=$(date +%s)
+
         for unit in $MONITOR_UNITS; do
             check_unit "$unit"
         done
 
         check_named_probe ssh-port port_state
-        check_named_probe login-http probe_state "$HTTP_PROBE_URL"
-        check_named_probe status-priority probe_state "$STATUS_PROBE_URL"
+        # HTTP probes fork a Bash CGI (+ its sudo/i2c reads) — far heavier than
+        # the systemctl unit-state checks. Run them on a longer cadence
+        # (HTTP_PROBE_INTERVAL_SEC, default 30 s) instead of every 5 s loop.
+        if [ "$last_http_probe" -eq 0 ] || [ $(( now - last_http_probe )) -ge "$HTTP_PROBE_INTERVAL_SEC" ]; then
+            _probe_login_http=$(probe_state "$HTTP_PROBE_URL")
+            _probe_status_priority=$(probe_state "$STATUS_PROBE_URL")
+            check_named_probe_cached login-http "$_probe_login_http"
+            check_named_probe_cached status-priority "$_probe_status_priority"
+            last_http_probe=$now
+        fi
 
-        now=$(date +%s)
         if [ "$last_heartbeat" -eq 0 ] || [ $(( now - last_heartbeat )) -ge "$HEARTBEAT_INTERVAL_SEC" ]; then
             heartbeat
             last_heartbeat=$now

@@ -28,19 +28,17 @@ case "${QUERY_STRING:-}" in
     *part=core*)     STATUS_PART=core ;;
 esac
 
-allow_public_part() {
-    case "$1" in
-        cpu|temp|ram|disk) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 check_auth() {
     web_session_check_cookie && return 0
     return 1
 }
 
-if ! allow_public_part "$STATUS_PART" && ! check_auth; then
+# All status parts require a valid session — no public telemetry carve-out
+# (S8). CPU/temp/RAM/disk are no longer readable by an unauthenticated LAN
+# client. (The former login-page warm-up prefetched part=priority, which was
+# never in the carve-out anyway, so it already returned unauthorized — closing
+# this loses no working behaviour.)
+if ! check_auth; then
     echo '{"error":"unauthorized"}'
     exit 0
 fi
