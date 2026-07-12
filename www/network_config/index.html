@@ -159,12 +159,12 @@
           <div class="widget">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>Загрузка CPU</span></div>
             <div class="gauge-wrap">
-              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
-                <path id="cpu-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
+              <svg class="gauge-svg" width="140" height="78" viewBox="0 0 140 78">
+                <path class="gauge-arc-bg" d="M14 72 A56 56 0 0 1 126 72" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
+                <path id="cpu-arc" class="gauge-arc" d="M14 72 A56 56 0 0 1 126 72"
                       stroke="#22d3ee" stroke-width="8" fill="none" stroke-linecap="butt"
-                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
-                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="cpu-val">—</text>
+                      stroke-dasharray="0 175.93" stroke-dashoffset="0"/>
+                <text x="70" y="66" text-anchor="middle" class="gauge-num" id="cpu-val">—</text>
               </svg>
               <div class="gauge-label">Загрузка ядер процессора</div>
             </div>
@@ -186,12 +186,12 @@
           <div class="widget">
             <div class="widget-title has-ico"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span><span>Температура CPU</span></div>
             <div class="gauge-wrap">
-              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
-                <path id="temp-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
+              <svg class="gauge-svg" width="140" height="78" viewBox="0 0 140 78">
+                <path class="gauge-arc-bg" d="M14 72 A56 56 0 0 1 126 72" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
+                <path id="temp-arc" class="gauge-arc" d="M14 72 A56 56 0 0 1 126 72"
                       stroke="#248a3d" stroke-width="8" fill="none" stroke-linecap="butt"
-                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
-                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="temp-val">—</text>
+                      stroke-dasharray="0 175.93" stroke-dashoffset="0"/>
+                <text x="70" y="66" text-anchor="middle" class="gauge-num" id="temp-val">—</text>
               </svg>
               <div class="gauge-label gauge-label-temp" id="temp-gauge-hint">Температура в норме</div>
             </div>
@@ -239,7 +239,7 @@
 
           <!-- USB (точка монтирования /media/usb или USB-модем) -->
           <div class="widget">
-            <div class="widget-title has-ico" id="usb-widget-title"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="18.5" r="2"/><path d="M12 16.5V4M12 4l-2 2.5M12 4l2 2.5M12 9l4 2v2M12 12 8 14v2"/><circle cx="16" cy="11" r="1.2"/><rect x="6.8" y="12.8" width="2.4" height="2.4"/></svg></span><span>USB-накопитель</span></div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-orange" id="usb-widget-ico" data-kind="storage" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="12" rx="1.5"/><path d="M10 9V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5"/><path d="M11 6h.01M13 6h.01"/></svg></span><span id="usb-widget-title">USB-накопитель</span></div>
             <div id="usb-storage-view">
               <div class="widget-val" id="usb-val">—</div>
               <div id="usb-detail">

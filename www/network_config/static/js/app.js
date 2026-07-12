@@ -198,8 +198,8 @@ function hydratePriorityWarmup() {
 }
 
 /* ── Gauge helper (SVG stroke-dasharray arc) ───────────────────────────────
-   Длина дуги M10 58 A45 45 0 0 1 100 58 ≈ π·45 ≈ 141.37, не 126 — иначе паттерн
-   dash+gap короче пути и повторяется, справа появляется ложный «хвост». */
+   Длина дуги M14 72 A56 56 0 0 1 126 72 ≈ π·56 ≈ 175.93 — если dash+gap короче
+   пути, паттерн повторяется и справа появляется ложный «хвост». */
 let _gaugeArcPathLen = null;
 function gaugeArcPathLength() {
   if (_gaugeArcPathLen != null) return _gaugeArcPathLen;
@@ -211,7 +211,7 @@ function gaugeArcPathLength() {
       return L;
     }
   }
-  _gaugeArcPathLen = Math.PI * 45;
+  _gaugeArcPathLen = Math.PI * 56;
   return _gaugeArcPathLen;
 }
 /** Сброс после смены разметки SVG дуг */
@@ -1087,9 +1087,23 @@ function applyStorageStatus(d) {
     if (sv) sv.style.display = '';
     if (mv) mv.style.display = 'none';
     if (tt) tt.textContent = uiT('USB-накопитель');
+    setUsbWidgetIcon('storage');
     applyRemovableDisk(!!d.usb_mounted, 'usb', d);
   }
   applyRemovableDisk(!!d.sd_mounted, 'sd', d);
+}
+
+/* Иконка-чип USB-виджета: флешка или модем — по фактически подключённому устройству */
+var USB_WIDGET_ICONS = {
+  storage: '<svg viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="12" rx="1.5"/><path d="M10 9V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5"/><path d="M11 6h.01M13 6h.01"/></svg>',
+  modem: '<svg viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M8.53 15.61a6 6 0 0 1 6.95 0"/><path d="M12 19h.01"/></svg>'
+};
+
+function setUsbWidgetIcon(kind) {
+  var ico = document.getElementById('usb-widget-ico');
+  if (!ico || ico.dataset.kind === kind) return;
+  ico.innerHTML = USB_WIDGET_ICONS[kind] || USB_WIDGET_ICONS.storage;
+  ico.dataset.kind = kind;
 }
 
 function applyUsbModem(d) {
@@ -1099,6 +1113,7 @@ function applyUsbModem(d) {
   if (sv) sv.style.display = 'none';
   if (mv) mv.style.display = '';
   if (tt) tt.textContent = uiT('USB-модем');
+  setUsbWidgetIcon('modem');
 
   var stateEl = document.getElementById('usb-modem-state-val');
   if (stateEl) {
