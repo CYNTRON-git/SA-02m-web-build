@@ -1,98 +1,98 @@
 # Backlog — SA-02m web interface
 
-Recorded out-of-scope findings and deferred work (`.ai-dev/procedures/backlog.md`
-owns the format). One item per line block: `- [OPEN|RESOLVED] <date> <one-line item>`.
+Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
+format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Reconciled
+2026-07-12 after the whole-project audit + two remediation batches (all changes
+on branch `1.0.4.1`; RESOLVED = code landed + reviewer-approved, but device-side
+items still need on-device verification before deploy).
 
-## Security (whole-project audit 2026-07-12) — device-side, need Operator decision
+## Open
 
-- [RESOLVED] 2026-07-12 **[HIGH] S1/Y1 static session token.** `session_token=cyntron_session` is a hardcoded constant, identical on every device, committed; every CGI + nginx auth_request authorizes on it → any LAN client sets the cookie and is fully authenticated, password decorative. Fix: per-session random token at login, server-side store with expiry, timing-safe compare. (login.cgi, auth_check.cgi + ~28 CGIs, tools/sa02m_common.py)
-- [RESOLVED] 2026-07-12 **[HIGH] S2 cloud.cgi unauth + sed injection.** No check_auth, nginx /cgi-bin/ has no auth_request; POST `SERVER` interpolated raw into `sed -i` → unauthenticated RCE / cloud-endpoint repoint. Fix: add check_auth; hostname allow-list; value-safe config write.
-- [RESOLVED] 2026-07-12 **[HIGH] S3 apply.cgi ifupdown injection→root.** IP/NETMASK/GATEWAY/DNS from POST via decode() (%0a→newline) written unvalidated into /etc/network/interfaces.d/eth0.conf → pre-up hook runs as root. Fix: allow-list every field (regex) before write.
-- [RESOLVED] 2026-07-12 **[MED] S4 default password `cyntron`** hardcoded across deploy/ssh tooling; login.cgi/web_creds.cgi fail-OPEN to admin/cyntron when /etc/sa02m_web.env missing. Fix: env-only defaults; fail-closed on missing auth file.
-- [OPEN] 2026-07-12 **[MED] S5 plaintext web password** in /etc/sa02m_web.env, cleartext compare. Fix: salted hash + hash compare.
-- [RESOLVED] 2026-07-12 **[MED] S6 mqtt_scan.cgi** QUERY_STRING port/baud/max_addr → sudo python scanner, no allow-list on port path. Fix: validate port `^/dev/…$` + numeric bounds before root invoke.
-- [RESOLVED] 2026-07-12 **[MED] Y4 USB autorun.sh as root.** storage-mount.sh:180-183 auto-runs ${MOUNT}/autorun.sh on insert → untrusted media = root RCE. Fix: opt-in flag, default off.
-- [RESOLVED] 2026-07-12 **[LOW] S7** login.cgi non-constant-time password compare. **[LOW] S8** status.cgi cpu/temp/ram/disk served unauthenticated (telemetry leak — confirm intended). **[LOW] S9** lib_web_auth.sh legacy `. env` sources config (code-exec-on-config). **[LOW] S10** cookie client-side-only expiry (folds into S1).
+- [OPEN] 2026-07-12 **[LOW] F10 — decompose the god-files.** `flasher.js` (4411)
+  and `app.js` (3326) are multi-responsibility. Plan: `.ai-dev/plans/f10-decompose.md`.
+  Behaviour-preserving; needs a characterization net + per-tab on-device
+  verification (ES modules forbidden — split into plain global-scope scripts).
+- [OPEN] 2026-07-12 **[LOW] Y7-b — `set -u` in installer modules.** `set -o pipefail`
+  landed; bare `set -u` deferred — an unset-var abort mid-provision could brick a
+  fresh install. Add only with an on-device install run.
+- [OPEN] 2026-07-12 **[LOW] D8/D9 — vendored ai-dev doc pointers.**
+  `.ai-dev/quality/run.mjs` usage line + `.ai-dev/procedures/backlog.md` cite
+  paths that don't exist in this repo. These are vendored framework files — do
+  NOT edit locally (upstream drift); route as downstream-feedback on the next
+  protocol upgrade.
+- [OPEN] 2026-07-12 **[task] On-device verification (pre-deploy).** All device-
+  side changes tested only locally/logically. Verify on a real SA-02m before
+  deploy: login (hashed + legacy plaintext), password change, network apply +
+  re-run `install.sh` preserves the static IP, cloud activation, storage
+  autoformat off by default. A www-only OTA needs `/etc/sa02m_web.env` present
+  (login now fails closed).
 
-## System / installer (audit 2026-07-12) — device-side
+## Resolved — security (audit + remediation batches)
 
-- [RESOLVED] 2026-07-12 **[HIGH] Y2 installer resets static IP.** scripts/02-network.sh:38-46 rewrites eth0.conf unconditionally, default factory 192.168.1.136 → re-running install.sh (the upgrade path) makes a deployed device unreachable. Fix: guard eth0 write like eth1 (`[ ! -f ]` / explicit --ip).
-- [RESOLVED] 2026-07-12 **[HIGH] Y3 autoformat fail-open.** storage-mount.sh:11,16 internal fallback STORAGE_AUTO_FORMAT=1 (opposite of shipped conf =0) → NTFS partition that fails to mount is reformatted to exFAT (data loss) if conf missing. Fix: fallback 0.
-- [RESOLVED] 2026-07-12 **[MED] Y5 OTA leaves stale files.** sa02m-web-update-apply.sh:61 cp -a without clearing WEB_ROOT → removed CGIs persist. Fix: rsync --delete / purge first (mirror 03-webserver.sh).
-- [RESOLVED] 2026-07-12 **[MED] Y6 storage-mount@.service TimeoutStartSec=8** < mkfs+retry budget → kill mid-mkfs risks corruption. Fix: raise timeout / move format off start path.
-- [RESOLVED] 2026-07-12 **[LOW] Y7** module scripts lack `set -euo pipefail` (set -e doesn't cross the per-module bash). **[LOW] Y8** failure-monitor probes status.cgi every 5s (forks CGI 12×/min). **[LOW] Y9** install.sh banner hardcodes v1.0.3 (stale, separate installer-version literal).
+- [RESOLVED] 2026-07-12 **[HIGH] S1/S10 static/forgeable session token** →
+  per-session random token, server-side store (`/run/sa02m-web-sessions`, TTL),
+  fail-closed. (lib_web_auth.sh, login/logout/auth_check + 27 CGIs)
+- [RESOLVED] 2026-07-12 **[HIGH] S2 cloud.cgi** unauth + sed injection → auth gate
+  + hostname allow-list.
+- [RESOLVED] 2026-07-12 **[HIGH] S3 apply.cgi** ifupdown newline injection→root →
+  IPv4/DNS allow-list before the interfaces.d write. (lib_web_validate.sh)
+- [RESOLVED] 2026-07-12 **[MED] S4 fail-open default creds** → login/web_creds fail
+  closed on missing env; no built-in admin/cyntron fallback.
+- [RESOLVED] 2026-07-12 **[MED] S5 plaintext password** → `$6$` SHA-512 crypt hash
+  (SA02M_WEB_PASS_HASH), backward-compatible with legacy plaintext, best-effort
+  fallback (never locks out). Both auth-lib copies + login/web_creds/commit/
+  installer.
+- [RESOLVED] 2026-07-12 **[MED] S6 mqtt_scan.cgi** → port/baud/max_addr allow-list
+  before the root scanner.
+- [RESOLVED] 2026-07-12 **[LOW] S7** constant-time-ish password compare.
+- [RESOLVED] 2026-07-12 **[LOW] S8 public telemetry** → status.cgi requires a
+  session for every part; dead unauth prefetch removed from login.html.
+- [RESOLVED] 2026-07-12 **[LOW] S9 eval-on-config** → web_auth_read no longer
+  sources the env file; safe literal parser everywhere.
 
-## Frontend (audit 2026-07-12) — this repo, code changes
+## Resolved — system / installer
 
-- [RESOLVED] 2026-07-12 **[MED] F1/F2/F3 i18n gaps** — kernel-control, CPU-frequency, and service-control strings are uiT()-wrapped but absent from i18n.js DICT (render Russian in EN mode); svcCtlErrorMessage map is RU-only. Fix: add DICT/REGEX entries. (app.js ~2648-2991)
-- [RESOLVED] 2026-07-12 **[MED] F4 dead code** — 13 unused fetch*Widget / applyStatus / applyMainStatusBundle wrappers in app.js (~1445-1906); scheduler fetches parts directly. Fix: delete (decompose-adjacent, run through the loop — not fixup).
-- [RESOLVED] 2026-07-12 **[MED] F5 flasher i18n** — AI-channel config modal labels RU in innerHTML, no DICT (~556 Cyrillic lines in flasher.js, broad gap).
-- [RESOLVED] 2026-07-12 **[MED] F6 cloud.html badge()** interpolates server-originated d.service_active into innerHTML unescaped (91,109). Fix: escape/textContent.
-- [RESOLVED] 2026-07-12 **[LOW] F7** flasher.js:1378 d.address unescaped (siblings escaped). **[LOW] F8** 'Ethernet № 1/2' standalone titles no DICT key. **[LOW] F9** misc untranslated (USB-reset title, storage-mount toast, 'Применяю…').
-- [OPEN] 2026-07-12 **[LOW] F10 decompose** — flasher.js 4411 / app.js 3464 god-files; split by responsibility (`.ai-dev/procedures/decompose.md`).
-- [RESOLVED] 2026-07-12 **[LOW] F11** mqtt.js raw getElementById().innerHTML chains (~1725-1922), safe only because modals static.
+- [RESOLVED] 2026-07-12 **[HIGH] Y2 installer IP reset** → eth0.conf rewritten only
+  on first install or explicit `--ip` (IP_EXPLICIT guard).
+- [RESOLVED] 2026-07-12 **[HIGH] Y3 autoformat fail-open** → internal fallback 0
+  (matches shipped conf); no reformat on a missing config.
+- [RESOLVED] 2026-07-12 **[MED] Y4 USB autorun as root** → gated behind
+  STORAGE_ALLOW_AUTORUN, default off.
+- [RESOLVED] 2026-07-12 **[MED] Y5 OTA stale files** → rsync --delete (purge+cp
+  fallback).
+- [RESOLVED] 2026-07-12 **[MED] Y6 storage-mount@ timeout** → 8 s → 120 s.
+- [RESOLVED] 2026-07-12 **[LOW] Y7-a** `set -o pipefail` in modules 01-09 +
+  daemon-reload wrapped. (Y7-b `set -u` still Open above.)
+- [RESOLVED] 2026-07-12 **[LOW] Y8 probe cadence** → HTTP/CGI probes on a 30 s
+  cadence, cached for the snapshot (~6x fewer forks).
+- [RESOLVED] 2026-07-12 **[LOW] Y9 installer banner** → version derived from VERSION.
 
-## Docs / hygiene (audit 2026-07-12) — mostly fixed inline; remainder
+## Resolved — frontend
 
-- [OPEN] 2026-07-12 **[LOW] D8/D9 vendored-doc pointers** — `.ai-dev/quality/run.mjs:11` usage says `src/quality/run.mjs`; `.ai-dev/procedures/backlog.md` cites non-existent `docs/decisions/multi-user-mode.md` + `src/adapter/forge-map.json`. These are vendored ai-dev files — do NOT edit locally (upstream drift); route as a downstream-feedback note on the next protocol upgrade.
-- [RESOLVED] 2026-07-12 KPI summary row hidden — documented in CHANGELOG 1.0.4.1; ui-style skill + this backlog record it. Re-enable/remove is a future product decision (kept OPEN as a product question below).
-- [OPEN] 2026-07-12 **[product]** KPI-ряд on the dashboard is hidden (`index.html` `.kpi-row` display:none) — decide: rework content to be informative, or delete the markup/JS/CSS.
+- [RESOLVED] 2026-07-12 **[MED] F1/F2/F3 i18n gaps** (kernel/CPU/services) → DICT/
+  REGEX entries; svcCtl map translates via toast's uiT.
+- [RESOLVED] 2026-07-12 **[MED] F4 dead code** → 13 unused wrappers removed from
+  app.js.
+- [RESOLVED] 2026-07-12 **[MED] F5 flasher i18n** → +183 DICT / +63 REGEX; 0
+  uncovered visible strings (documented data/diagnostic residuals only).
+- [RESOLVED] 2026-07-12 **[MED] F6 cloud.html** badge() escapes server value.
+- [RESOLVED] 2026-07-12 **[LOW] F7** flasher address cell escaped.
+- [RESOLVED] 2026-07-12 **[LOW] F8** 'Ethernet № 1/2' DICT keys added.
+- [RESOLVED] 2026-07-12 **[LOW] F9** misc untranslated strings added.
+- [RESOLVED] 2026-07-12 **[LOW] F11** mqtt.js modal DOM access null-guarded.
+- [RESOLVED] 2026-07-12 **[product] KPI row** → removed (Operator decision;
+  markup/JS/CSS/i18n deleted).
 
-## Fixed inline during the audit (2026-07-12)
-- cookies.txt (committed session_token) removed + gitignored.
-- README version badge 1.0.3.20 → 1.0.4.1; CHANGELOG header 1.0.3/Апрель → 1.0.4/Июль.
-- CHANGELOG: added missing 1.0.4.0 section; KPI-row honesty note in 1.0.4.1.
-- Doc corrections: `main` part + swap added to scheduler docs (skill + domain); MR-02m slug/path note; tools.json _row_shape `covers` field.
+## Resolved — docs / hygiene (fixed inline during the audit)
 
-## Applied 2026-07-12 (audit remediation batch) — deferred remainder
+- [RESOLVED] 2026-07-12 cookies.txt (committed session_token) removed + gitignored.
+- [RESOLVED] 2026-07-12 README badge → 1.0.4.1; CHANGELOG header → 1.0.4/Июль;
+  added missing 1.0.4.0 section; KPI honesty note.
+- [RESOLVED] 2026-07-12 doc corrections: `main` part + swap in scheduler docs;
+  MR-02m slug/path note; tools.json `covers` field documented.
 
-Applied this batch (device-side changes land on the branch, NOT deployed — need
-on-device verification): S1,S2,S3,S4,S6,S7,S10,Y2,Y3,Y4,Y5,Y6,Y9 + F1,F2,F3,F4,
-F6,F7,F8,F9. See commits on branch 1.0.4.1.
+## Protocol adoption (2026-07-12)
 
-Deliberately DEFERRED (with reason):
-- [RESOLVED] 2026-07-12 **[MED] S5 password hashing** — storing a salted hash needs a
-  coordinated change to web_creds.cgi + the device-side sa02m-commit-web-env
-  pipeline + migration of existing /etc/sa02m_web.env on deployed devices; can't
-  be verified without the device. login.cgi now compares with a constant-time-ish
-  salted hash and fails closed, but the stored secret is still plaintext. Do as a
-  focused change with on-device test.
-- [RESOLVED] 2026-07-12 **[LOW] S8** status.cgi cpu/temp/ram/disk public carve-out — a
-  product decision (is telemetry intentionally public?), not applied.
-- [OPEN] 2026-07-12 **[LOW] S9** lib_web_auth legacy `. env` source path — the safe
-  reader is now preferred in login/web_creds; the legacy eval path in
-  web_auth_read remains for the repair flow. Remove once no device carries a
-  metachar-bearing env.
-- [RESOLVED] 2026-07-12 **[LOW] Y7** `set -euo pipefail` retrofit across installer
-  modules — risky to change installer error-handling untested (could break
-  provisioning); do with device access.
-- [OPEN] 2026-07-12 **[LOW] Y8** failure-monitor 5s probe cadence — tuning, no device.
-- [OPEN] 2026-07-12 **[MED] F5** flasher.js exhaustive i18n (556 Cyrillic lines in
-  config-tab templates) — the AI-channel sample and the shared strings are covered
-  via DICT/observer; a full sweep of every flasher config tab is a separate pass.
-- [OPEN] 2026-07-12 **[LOW] F10** decompose flasher.js/app.js god-files — behaviour-
-  preserving refactor, needs characterization tests first (own loop).
-- [RESOLVED] 2026-07-12 **[LOW] F11** mqtt.js null-guard hardening — safe today (static modals).
-
-## Second remediation batch complete (2026-07-12) — status
-
-RESOLVED this batch: S5 (password hashing, backward-compatible + best-effort),
-S8 (telemetry auth), S9 (no eval-on-config), Y7 (pipefail + daemon-reload wrap;
-set -u deferred — see below), Y8 (probe cadence), F5 (flasher i18n: +183 DICT /
-+63 REGEX), F7 (address escape — earlier batch), F11 (mqtt null-safety), and the
-KPI product decision (row removed).
-
-STILL DEFERRED — with reasons:
-- [OPEN] 2026-07-12 **[LOW] Y7-partial** `set -u` retrofit across installer
-  modules — pipefail added, but bare `set -u` on the provisioning installer is
-  NOT safe to add without an on-device install run (an unset-var abort mid-
-  provision could brick a fresh install). Do with device access.
-- [OPEN] 2026-07-12 **[LOW] F10 decompose** flasher.js (4411) / app.js (3326) —
-  DELIBERATELY not done in-batch. The JS loads as plain global-scope <script>
-  tags (ES modules forbidden by project rules), and the decompose procedure
-  requires a behaviour-test net first. A blind big-bang split risks bricking the
-  served UI (no bundler isolation — one syntax error blanks the page) for LOW
-  benefit. Recommend a dedicated effort with characterization tests + per-tab
-  on-device verification.
-- [OPEN] 2026-07-12 **[LOW] D8/D9** vendored ai-dev doc pointers — do NOT edit
-  locally (upstream drift); route on the next protocol upgrade.
+- ai-dev protocol v5.67.1 ported from MR-02m; project rulesets in
+  `docs/agent-rules/`, skills in `.claude/skills/`, quality registry in
+  `.ai-dev/quality/tools.json`. Details: `.ai-dev/notes/protocol-adoption.md`.
