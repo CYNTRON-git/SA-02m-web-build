@@ -37,7 +37,7 @@
     'Система': 'System',
     'Загрузка CPU': 'CPU Load',
     'Загрузка ядер': 'Core load',
-    'Нагрузка (load avg)': 'Load Average',
+    'Нагрузка': 'Load',
     '1 мин': '1 min',
     '5 мин': '5 min',
     '15 мин': '15 min',
