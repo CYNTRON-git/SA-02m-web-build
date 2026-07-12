@@ -6,5 +6,7 @@ Type=oneshot
 RemainAfterExit=true
 ExecStart=/usr/local/bin/storage-mount.sh add %i
 ExecStop=/usr/local/bin/storage-mount.sh remove %i
-TimeoutStartSec=8
-TimeoutStopSec=8
+# Worst case = mkfs.exfat + sync + up to 3 mount attempts (each with fsck +
+# sleep 2); 8 s could kill the unit mid-format and corrupt the filesystem.
+TimeoutStartSec=120
+TimeoutStopSec=15

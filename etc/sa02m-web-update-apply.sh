@@ -58,10 +58,22 @@ if ! git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
 fi
 
 log "Деплой веб-файлов в $WEB_ROOT..."
-if ! cp -a "$TMPDIR/repo/www/network_config/." "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
-    log "ERROR: копирование не удалось"
-    printf 'error' > "$STATUS_FILE"
-    exit 1
+# rsync --delete so files removed in a newer release do NOT linger on the
+# device (a stale/vulnerable CGI would keep serving). Fall back to a purge+cp
+# where rsync is unavailable. Mirrors the installer's find -delete + copy.
+if command -v rsync >/dev/null 2>&1; then
+    if ! rsync -a --delete "$TMPDIR/repo/www/network_config/" "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
+        log "ERROR: rsync не удался"
+        printf 'error' > "$STATUS_FILE"
+        exit 1
+    fi
+else
+    find "$WEB_ROOT" -mindepth 1 -delete 2>/dev/null || true
+    if ! cp -a "$TMPDIR/repo/www/network_config/." "$WEB_ROOT/" 2>&1 | tee -a "$LOGFILE"; then
+        log "ERROR: копирование не удалось"
+        printf 'error' > "$STATUS_FILE"
+        exit 1
+    fi
 fi
 
 # Права доступа

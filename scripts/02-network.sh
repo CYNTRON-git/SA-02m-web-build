@@ -35,6 +35,11 @@ if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
     END0_METRIC_LINE="    metric 200"
 fi
 
+# Idempotency: only (re)write eth0.conf on first install (file absent) or when
+# --ip was passed explicitly. A plain re-run of the installer (the upgrade path)
+# must NOT clobber a static IP the operator set later via the web UI — doing so
+# resets the device to the factory address and makes it unreachable.
+if [ ! -f /etc/network/interfaces.d/eth0.conf ] || [ "${IP_EXPLICIT:-0}" = "1" ]; then
 cat > /etc/network/interfaces.d/eth0.conf <<END0
 auto eth0
 iface eth0 inet static
@@ -44,6 +49,9 @@ iface eth0 inet static
     dns-nameservers $DNS_SERVERS
 ${END0_METRIC_LINE}
 END0
+else
+    echo "eth0.conf exists and --ip not given — preserving operator IP" >&2
+fi
 
 # ── eth1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/eth1.conf ]; then

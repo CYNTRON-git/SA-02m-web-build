@@ -8,12 +8,16 @@ MOUNT_POINT=""
 DEV_PATH=""
 TYPE=""
 
-STORAGE_AUTO_FORMAT=1
+# Fail SAFE: default OFF when the config is missing/unreadable — matches the
+# shipped /etc/sa02m_storage.conf (=0) and never lets a lost config turn a
+# recoverable mount failure (dirty NTFS, missing ntfs-3g) into a destructive
+# reformat.
+STORAGE_AUTO_FORMAT=0
 if [ -f /etc/sa02m_storage.conf ]; then
   # shellcheck source=/dev/null
   . /etc/sa02m_storage.conf 2>/dev/null || true
 fi
-case "${STORAGE_AUTO_FORMAT:-1}" in
+case "${STORAGE_AUTO_FORMAT:-0}" in
   1|yes|true|on|ON|Y) STORAGE_AUTO_FORMAT=1 ;;
   *) STORAGE_AUTO_FORMAT=0 ;;
 esac
@@ -176,10 +180,14 @@ do_mount() {
   for attempt in {1..3}; do
     if mount -o "${OPTS}" -t "${FSTYPE}" "${DEV_PATH}" "${MOUNT_POINT}"; then
       log "Успешно смонтировано ${DEV_PATH}"
-      # Автозапуск autorun.sh если есть на USB (прошивка приёмника через flash-receiver.sh)
-      if [ "${TYPE}" = "usb" ] && [ -f "${MOUNT_POINT}/autorun.sh" ]; then
-        log "autorun.sh обнаружен на ${MOUNT_POINT} — запуск в фоне"
+      # Автозапуск autorun.sh с USB выполняет код как root с недоверенного
+      # носителя — по умолчанию ВЫКЛ. Включается только явно:
+      # STORAGE_ALLOW_AUTORUN=1 в /etc/sa02m_storage.conf.
+      if [ "${TYPE}" = "usb" ] && [ "${STORAGE_ALLOW_AUTORUN:-0}" = "1" ] && [ -f "${MOUNT_POINT}/autorun.sh" ]; then
+        log "autorun.sh обнаружен на ${MOUNT_POINT} — запуск в фоне (STORAGE_ALLOW_AUTORUN=1)"
         (bash "${MOUNT_POINT}/autorun.sh" >> /var/log/flash-receiver.log 2>&1) &
+      elif [ "${TYPE}" = "usb" ] && [ -f "${MOUNT_POINT}/autorun.sh" ]; then
+        log "autorun.sh обнаружен, но STORAGE_ALLOW_AUTORUN не включён — пропуск"
       fi
       return 0
     fi

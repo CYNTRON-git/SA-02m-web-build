@@ -50,11 +50,19 @@ if [ -n "$SA02M_HW_VARIANT" ]; then
 fi
 export IP_ADDRESS="${_ARG_IP:-$(sa02m_default_ip)}"
 export GATEWAY="${_ARG_GW:-$(sa02m_default_gw)}"
+# Whether the operator passed --ip explicitly. 02-network.sh only rewrites an
+# EXISTING eth0.conf when this is set — otherwise a re-run (the upgrade path)
+# would reset a device the operator gave a static IP via the web UI back to the
+# factory default and make it unreachable.
+export IP_EXPLICIT=$([ -n "$_ARG_IP" ] && echo 1 || echo 0)
 HW_VARIANT=$(sa02m_hw_variant)
 
 echo ""
+# Derive the banner version from the shipped web VERSION file (single source),
+# so it never drifts stale like the former hardcoded v1.0.3.
+_WEB_VER=$(grep -vE '^\s*#' "$SCRIPT_DIR/www/network_config/VERSION" 2>/dev/null | grep -m1 -oE '[0-9]+(\.[0-9]+){2,3}')
 echo "  ╔══════════════════════════════════════╗"
-echo "  ║   СА-02м  Installer  v1.0.3          ║"
+printf "  ║   СА-02м  Installer  v%-16s ║\n" "${_WEB_VER:-?}"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 echo "  Вариант: $HW_VARIANT"
