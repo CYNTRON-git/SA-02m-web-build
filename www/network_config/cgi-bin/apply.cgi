@@ -1,5 +1,7 @@
 #!/bin/bash
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
+web_session_check_cookie || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
 # FCGI: читать ровно CONTENT_LENGTH байт (read -n останавливается на переводе строки)
@@ -17,6 +19,19 @@ get_f() {
     line=$(printf '%s' "$POST_DATA" | tr '&' '\n' | grep "^${1}=" | head -1)
     val="${line#*=}"
     decode "$val"
+}
+
+# shellcheck source=lib_web_validate.sh
+. "$(dirname "$0")/lib_web_validate.sh"
+
+# Reject the whole request with a JSON error (network fields are attacker-
+# controlled and are written into /etc/network/interfaces.d as root — an
+# unvalidated newline injects an ifupdown pre-up hook, RCE). Never proceed to
+# the sudo tee below on a bad value.
+reject_bad_input() {
+    echo "Content-type: application/json"; echo ""
+    printf '{"error":"invalid input: %s"}\n' "$1"
+    exit 0
 }
 
 timeout_run() {
@@ -41,6 +56,20 @@ DATETIME=$(printf '%s' "${DATETIME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$/
 REDIRECT="applied"
 timezone_failed=0
 time_ok=0
+
+# ── Validate all network fields BEFORE any config write (allow-list) ────────
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ] && [ "$ETH0_ENABLE" = "1" ]; then
+    valid_ipv4 "$IP"       || reject_bad_input "ip"
+    valid_ipv4 "$NETMASK"  || reject_bad_input "netmask"
+    [ -z "$GATEWAY" ] || valid_ipv4 "$GATEWAY" || reject_bad_input "gateway"
+    [ -z "$DNS" ]     || valid_ipv4_list "$DNS" || reject_bad_input "dns"
+fi
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ] && [ "$ETH1_ENABLE" = "1" ]; then
+    valid_ipv4 "$IP_ETH1"       || reject_bad_input "ip_eth1"
+    valid_ipv4 "$NETMASK_ETH1"  || reject_bad_input "netmask_eth1"
+    [ -z "$GATEWAY_ETH1" ] || valid_ipv4 "$GATEWAY_ETH1" || reject_bad_input "gateway_eth1"
+    [ -z "$DNS_ETH1" ]     || valid_ipv4_list "$DNS_ETH1" || reject_bad_input "dns_eth1"
+fi
 
 # ── eth0 config ────────────────────────────────────────────────────────────
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then

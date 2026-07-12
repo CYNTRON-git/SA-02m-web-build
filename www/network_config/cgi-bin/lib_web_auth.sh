@@ -2,6 +2,85 @@
 # Безопасное чтение/запись /etc/sa02m_web.env (без command substitution при source).
 # Используется CGI и sa02m-commit-web-env / sa02m-repair-web-env.
 
+# ── Server-side sessions ────────────────────────────────────────────────────
+# Replaces the former fixed token `cyntron_session` (identical on every device,
+# committed → any LAN client could forge the cookie). A login now mints a random
+# token stored server-side with an expiry; every endpoint validates the cookie
+# against that store; logout / password change revoke it. Fail CLOSED: if the
+# store is unreadable or the token is absent/expired, access is denied.
+SA02M_SESSION_DIR="${SA02M_SESSION_DIR:-/run/sa02m-web-sessions}"
+SA02M_SESSION_TTL="${SA02M_SESSION_TTL:-864000}"   # 10 days, matches the cookie Max-Age
+
+web_session__ensure_dir() {
+    [ -d "$SA02M_SESSION_DIR" ] && return 0
+    mkdir -p "$SA02M_SESSION_DIR" 2>/dev/null || return 1
+    chmod 700 "$SA02M_SESSION_DIR" 2>/dev/null || true
+    return 0
+}
+
+# Print a fresh 32-byte hex token to stdout (nothing else).
+web_session__gen_token() {
+    if [ -r /dev/urandom ]; then
+        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+    else
+        # Fallback — still unpredictable enough for a LAN device, but urandom is
+        # expected to exist on the target.
+        printf '%s%s%s' "$$" "$(date +%s%N 2>/dev/null)" "$RANDOM" | sha256sum | cut -d' ' -f1
+    fi
+}
+
+# Extract the session_token value from the Cookie header (hex only).
+web_session__cookie_token() {
+    local c="${HTTP_COOKIE:-}"
+    [[ "$c" =~ session_token=([a-f0-9]{32,128}) ]] || return 1
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+
+# Create a session, print its token. Returns 1 if the store cannot be written.
+web_session_create() {
+    web_session__ensure_dir || return 1
+    local tok f
+    tok=$(web_session__gen_token)
+    [ -n "$tok" ] || return 1
+    f="$SA02M_SESSION_DIR/$tok"
+    : > "$f" 2>/dev/null || return 1
+    chmod 600 "$f" 2>/dev/null || true
+    printf '%s' "$tok"
+}
+
+# Validate the cookie's token against the store, pruning it if expired.
+# Returns 0 (valid) / 1 (missing, unknown, or expired) — fail closed.
+web_session_check_cookie() {
+    local tok f age now mtime
+    tok=$(web_session__cookie_token) || return 1
+    f="$SA02M_SESSION_DIR/$tok"
+    [ -f "$f" ] || return 1
+    now=$(date +%s 2>/dev/null) || return 1
+    mtime=$(stat -c %Y "$f" 2>/dev/null) || return 1
+    age=$(( now - mtime ))
+    if [ "$age" -lt 0 ] || [ "$age" -gt "$SA02M_SESSION_TTL" ]; then
+        rm -f "$f" 2>/dev/null
+        return 1
+    fi
+    return 0
+}
+
+# Revoke the session named by the current cookie (logout).
+web_session_destroy_cookie() {
+    local tok
+    tok=$(web_session__cookie_token) || return 0
+    rm -f "$SA02M_SESSION_DIR/$tok" 2>/dev/null
+    return 0
+}
+
+# Revoke ALL sessions (called on password/username change).
+web_session_destroy_all() {
+    [ -d "$SA02M_SESSION_DIR" ] || return 0
+    rm -f "$SA02M_SESSION_DIR"/* 2>/dev/null
+    return 0
+}
+
+
 web_auth__strip_quotes() {
     local v="$1"
     case "$v" in

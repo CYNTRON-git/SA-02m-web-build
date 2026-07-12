@@ -1,9 +1,11 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-store"
 echo ""
 
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+web_session_check_cookie || {
   echo '{"error":"unauthorized"}'
   exit 0
 }
@@ -31,18 +33,17 @@ case "$NEWP" in
   *"'"*|*'$'*|*'`'*|*';'*|*'|'*|*'&'*|*'<'*|*'>'*|*'('*|*')'*) json_err "bad_password_char" ;;
 esac
 
-# shellcheck disable=SC1091
-. "$(dirname "$0")/lib_web_auth.sh"
-
 AUTH=/etc/sa02m_web.env
 if [ ! -f "$AUTH" ]; then
   json_err "no_auth_file"
 fi
-SA02M_WEB_USER=admin
-SA02M_WEB_PASS=cyntron
+# Fail closed — never default to admin/cyntron. A missing/empty credential file
+# means "no valid password to check against", so reject rather than accept a
+# built-in default.
+SA02M_WEB_USER=""
+SA02M_WEB_PASS=""
 web_auth_read "$AUTH" || json_err "no_auth_file"
-: "${SA02M_WEB_USER:=admin}"
-: "${SA02M_WEB_PASS:=cyntron}"
+[ -n "$SA02M_WEB_PASS" ] || json_err "no_auth_file"
 
 [ "$CUR" = "$SA02M_WEB_PASS" ] || json_err "wrong_password"
 
@@ -53,5 +54,9 @@ if ! sudo /usr/local/sbin/sa02m-commit-web-env 2>/dev/null; then
   rm -f /tmp/sa02m_web.env.new
   json_err "save_failed"
 fi
+
+# Credentials changed → revoke every existing session so an old cookie cannot
+# outlive the password it was issued under.
+web_session_destroy_all
 
 echo '{"ok":true}'

@@ -264,10 +264,14 @@ if ! command -v hwclock >/dev/null 2>&1; then
         || log WARN "util-linux-extra не установлен — rtc_datetime будет недоступен"
 fi
 
-# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) ─────────
+# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) + the web
+#    session store (www-data owned; holds per-login session tokens, recreated
+#    on boot since /run is tmpfs). Without this dir the CGI cannot mint or
+#    validate sessions and login fails — provision it here, not lazily. ──────
 cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
 f /run/lock/sa02m-pca9536.lock 0660 www-data www-data -
 d /var/lib/sa02m-web-build 0755 root root -
+d /run/sa02m-web-sessions 0700 www-data www-data -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # GET  → читает /etc/sa02m-modbus-mqtt.yaml, возвращает JSON-представление
 # POST → принимает JSON, сохраняет YAML, опционально перезапускает мост
 
@@ -9,7 +11,7 @@ echo "Cache-Control: no-store"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi

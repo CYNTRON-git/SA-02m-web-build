@@ -1,10 +1,12 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # SA-02m: hardware variant selector CGI
 # GET  → {"variant":"sa02m-1eth","serial_map":"<base64>"}
 # POST → variant=sa02m-1eth|sa02m-2eth → {"ok":true,"variant":"...","serial_count":N}
 
 check_auth() {
-    [[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 

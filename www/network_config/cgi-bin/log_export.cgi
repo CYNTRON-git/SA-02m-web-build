@@ -1,10 +1,12 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 echo "Content-type: text/plain; charset=UTF-8"
 echo "Content-Disposition: attachment; filename=\"sa02m_journal.txt\""
 echo "Cache-Control: no-store"
 echo ""
 
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+web_session_check_cookie || {
   echo "Нет доступа"
   exit 0
 }
