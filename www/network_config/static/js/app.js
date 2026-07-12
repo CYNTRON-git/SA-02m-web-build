@@ -1022,9 +1022,7 @@ function applyPriorityStatus(d) {
       tempBar.style.background = tc >= 80 ? cssVar('--meter-red') : tc >= 70 ? cssVar('--meter-yellow') : cssVar('--meter-green');
     }
     if (tempHint) {
-      tempHint.textContent = uiT(tc >= 80
-        ? 'Температура выше нормы'
-        : 'Температура в норме');
+      tempHint.textContent = uiT(tc >= 80 ? 'Выше нормы' : 'В норме');
     }
   }
 

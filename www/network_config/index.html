@@ -105,8 +105,8 @@
 
         <div id="dashboard-poll-alert" class="dashboard-poll-alert" style="display:none" role="status" aria-live="polite"></div>
 
-        <!-- Сводка состояния: службы · Ethernet · RS-485 · предупреждения -->
-        <div class="kpi-row" role="status" aria-label="Сводка состояния">
+        <!-- Сводка состояния: скрыта по требованию (малоинформативна); вернуть — убрать display:none -->
+        <div class="kpi-row" role="status" aria-label="Сводка состояния" style="display:none" aria-hidden="true">
           <div class="kpi-tile" id="kpi-svc-tile">
             <span class="kpi-ico kpi-ico-green" aria-hidden="true">
               <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -159,7 +159,7 @@
           <div class="widget">
             <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>Загрузка CPU</span></div>
             <div class="widget-val" id="cpu-val">—</div>
-            <div class="widget-sub">Загрузка ядер процессора</div>
+            <div class="widget-sub">Загрузка ядер</div>
             <div class="bar-row">
               <div class="bar-track"><div class="bar-fill" id="cpu-bar" style="width:0%"></div></div>
               <div class="bar-meta"><span>0%</span><span>100%</span></div>
@@ -182,7 +182,7 @@
           <div class="widget">
             <div class="widget-title has-ico"><span class="w-ico w-ico-orange" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span><span>Температура CPU</span></div>
             <div class="widget-val" id="temp-val">—</div>
-            <div class="widget-sub" id="temp-gauge-hint">Температура в норме</div>
+            <div class="widget-sub" id="temp-gauge-hint">В норме</div>
             <div class="bar-row">
               <div class="bar-track"><div class="bar-fill" id="temp-bar" style="width:0%;background:var(--meter-green)"></div></div>
               <div class="bar-meta"><span>30°C</span><span>100°C</span></div>
