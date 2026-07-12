@@ -770,6 +770,9 @@ svg .gauge-num {
   border-radius: var(--radius-lg); padding: 16px;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--transition), border-color var(--transition);
+  /* Кнопки всех под-карточек на одном горизонтальном уровне (низ карточки) */
+  display: flex;
+  flex-direction: column;
 }
 .hw-block:hover .hw-item {
   border-color: var(--border-md);
@@ -784,6 +787,7 @@ svg .gauge-num {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px 12px;
+  margin-top: auto;
 }
 .hw-btns { display: flex; gap: 6px; flex-shrink: 0; min-width: 0; }
 .hw-status-line {
