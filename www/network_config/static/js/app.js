@@ -1054,7 +1054,7 @@ function applyStorageStatus(d) {
     var tt = document.getElementById('usb-widget-title');
     if (sv) sv.style.display = '';
     if (mv) mv.style.display = 'none';
-    if (tt) tt.textContent = uiT('USB-накопитель');
+    if (tt) tt.textContent = uiT('USB-flash');
     setUsbWidgetIcon('storage');
     applyRemovableDisk(!!d.usb_mounted, 'usb', d);
   }

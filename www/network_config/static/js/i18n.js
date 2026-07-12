@@ -70,7 +70,7 @@
     'На устройстве нет i2c-tools': 'i2c-tools is not installed on the device',
     'Диск eMMC': 'eMMC Disk',
     'Службы': 'Services',
-    'USB-накопитель': 'USB Storage',
+    'USB-flash': 'USB flash',
     'USB-модем': 'USB Modem',
     'Дискретный выход, USB-питание и индикация': 'Discrete Output, USB Power, and Indication',
     'Дискретный выход': 'Discrete output',
