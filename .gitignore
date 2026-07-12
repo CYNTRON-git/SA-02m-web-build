@@ -48,6 +48,7 @@ tmp/
 .ai-dev/state/
 .ai-dev/plans/
 .ai-dev/reviews/
+.ai-dev/audit/
 .ai-dev/feedback/
 .ai-dev/worktrees/
 .ai-dev/UPGRADING.md
