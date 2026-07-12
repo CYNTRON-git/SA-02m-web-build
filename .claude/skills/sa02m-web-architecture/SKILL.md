@@ -25,10 +25,11 @@ browser ── static ──▶ nginx ──▶ /var/www/network_config (index.h
 
 ## app.js status scheduler (the heart)
 
-- Parts: `priority` (CPU/temp/RAM/swap/disk — 6 s), `rs485` (12 s), and
-  BACKGROUND_STATUS_PARTS = storage,time,uptime,network,load,system,services,
-  hardware — rolling with phase shift, gated by `sa02m_status_blocks.conf`
-  (`isStatusBlockEnabled`).
+- Parts: `priority` (CPU/temp/RAM/swap/disk — 6 s), `main` (6 s), `rs485`
+  (12 s), and BACKGROUND_STATUS_PARTS = storage,time,uptime,network,load,
+  system,services,hardware — rolling with phase shift, gated by
+  `sa02m_status_blocks.conf` (`isStatusBlockEnabled`). `part=main` is real on
+  both ends (`status.cgi` build_main_json / app.js fetchStatusMain).
 - Single queue: `scheduleStatusFetch(part, delay, runner)` + `pumpStatusFetchQueue`
   — heavy parts serialize; NEVER add a bare `setInterval(fetch)` beside it.
 - Failure handling: `noteStatusFailure` pauses a failing part

@@ -6,6 +6,7 @@
     "config": "path to its native config beside this file, or null if none",
     "run": "the command to run it (from the project root — the runner's cwd)",
     "beat": "build | review | ship",
+    "covers": "optional array of path prefixes/globs; run.mjs --touched runs a row only when the diff touches a covered path (rows without covers always run)",
     "init": "one line: how to install/enable it"
   },
   "tools": [

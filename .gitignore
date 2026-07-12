@@ -54,3 +54,4 @@ tmp/
 .ai-dev/UPGRADING.md
 .ai-dev/config.local.json
 .ai-dev/model-routes.local.json
+cookies.txt

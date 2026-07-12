@@ -44,7 +44,7 @@ English (`PROTOCOL.md` invariant 5); the Operator conversation is Russian per
 ## Dashboard status polling — the architecture to respect
 
 `app.js` polls `status.cgi?part=<name>` on a rolling scheduler — parts:
-`priority` (CPU/temp/RAM/disk, 6 s), `main`, `rs485` (12 s), and the
+`priority` (CPU/temp/RAM/swap/disk, 6 s), `main` (6 s), `rs485` (12 s), and the
 background set `storage,time,uptime,network,load,system,services,hardware`
 (phase-shifted). Facts that bite:
 
@@ -103,7 +103,8 @@ protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
 
 - **MR-02m** (`CYNTRON-git/MR-02m`) — the RS-485 I/O module firmware this web
   UI flashes and configures; its Modbus contract and flasher `.fw` format are
-  owned THERE (`docs/agent-rules/mp02m-domain.md` in that repo), never here.
+  owned THERE (`docs/agent-rules/mp02m-domain.md` in the `CYNTRON-git/MR-02m`
+  repo — note the file keeps the firmware family's `mp02m` slug), never here.
   Web-side rendering of MR-02m channels must follow the module's register map,
   not invent one.
 - The ai-dev protocol and this ruleset's structure are shared with MR-02m —
