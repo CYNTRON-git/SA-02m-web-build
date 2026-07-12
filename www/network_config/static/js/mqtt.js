@@ -1722,8 +1722,10 @@ function showScanModal() {
   const m = document.getElementById('mqtt-scan-modal');
   if (!m) return;
   m.removeAttribute('hidden');
-  document.getElementById('mqtt-scan-results').innerHTML = '';
-  document.getElementById('mqtt-scan-status').textContent = '';
+  const resultsEl = document.getElementById('mqtt-scan-results');
+  if (resultsEl) resultsEl.innerHTML = '';
+  const statusEl = document.getElementById('mqtt-scan-status');
+  if (statusEl) statusEl.textContent = '';
   const btn = document.getElementById('mqtt-scan-btn');
   if (btn) { btn.disabled = false; btn.textContent = 'Сканировать'; }
 }
@@ -1734,12 +1736,16 @@ function hideScanModal() {
 }
 
 async function runScan() {
-  const port  = document.getElementById('mqtt-scan-port').value;
-  const baud  = Number(document.getElementById('mqtt-scan-baud').value);
-  const range = Number(document.getElementById('mqtt-scan-range').value);
+  const portEl  = document.getElementById('mqtt-scan-port');
+  const baudEl  = document.getElementById('mqtt-scan-baud');
+  const rangeEl = document.getElementById('mqtt-scan-range');
   const btn   = document.getElementById('mqtt-scan-btn');
   const statusEl  = document.getElementById('mqtt-scan-status');
   const resultsEl = document.getElementById('mqtt-scan-results');
+  if (!portEl || !baudEl || !rangeEl || !btn || !statusEl || !resultsEl) return;
+  const port  = portEl.value;
+  const baud  = Number(baudEl.value);
+  const range = Number(rangeEl.value);
 
   btn.disabled = true;
   btn.textContent = 'Сканирование…';
@@ -1894,32 +1900,45 @@ function removeDevice(id) {
 }
 
 function showAddModal() {
-  document.getElementById('mqtt-add-modal').removeAttribute('hidden');
-  document.getElementById('mqtt-add-type').value = 'mr02m';
-  document.getElementById('mqtt-add-port').value = '/dev/COM1';
-  document.getElementById('mqtt-add-addr').value = '1';
-  document.getElementById('mqtt-add-name').value = '';
+  const modal = document.getElementById('mqtt-add-modal');
+  if (modal) modal.removeAttribute('hidden');
+  const typeEl = document.getElementById('mqtt-add-type');
+  if (typeEl) typeEl.value = 'mr02m';
+  const portEl = document.getElementById('mqtt-add-port');
+  if (portEl) portEl.value = '/dev/COM1';
+  const addrEl = document.getElementById('mqtt-add-addr');
+  if (addrEl) addrEl.value = '1';
+  const nameEl = document.getElementById('mqtt-add-name');
+  if (nameEl) nameEl.value = '';
   updateAddModalId();
 }
 
 function hideAddModal() {
-  document.getElementById('mqtt-add-modal').setAttribute('hidden', '');
+  const modal = document.getElementById('mqtt-add-modal');
+  if (modal) modal.setAttribute('hidden', '');
 }
 
 function updateAddModalId() {
-  const type = document.getElementById('mqtt-add-type').value;
-  const port = document.getElementById('mqtt-add-port').value;
-  const addr = document.getElementById('mqtt-add-addr').value;
+  const typeEl = document.getElementById('mqtt-add-type');
+  const portEl = document.getElementById('mqtt-add-port');
+  const addrEl = document.getElementById('mqtt-add-addr');
   const idEl = document.getElementById('mqtt-add-id');
-  if (idEl) idEl.value = makeDeviceId(type, port, addr);
+  if (!typeEl || !portEl || !addrEl || !idEl) return;
+  idEl.value = makeDeviceId(typeEl.value, portEl.value, addrEl.value);
 }
 
 function confirmAddDevice() {
-  const type = document.getElementById('mqtt-add-type').value;
-  const port = document.getElementById('mqtt-add-port').value;
-  const addr = parseInt(document.getElementById('mqtt-add-addr').value, 10);
-  const name = document.getElementById('mqtt-add-name').value.trim();
-  const id = document.getElementById('mqtt-add-id').value.trim() || makeDeviceId(type, port, addr);
+  const typeEl = document.getElementById('mqtt-add-type');
+  const portEl = document.getElementById('mqtt-add-port');
+  const addrEl = document.getElementById('mqtt-add-addr');
+  const nameEl = document.getElementById('mqtt-add-name');
+  const idEl   = document.getElementById('mqtt-add-id');
+  if (!typeEl || !portEl || !addrEl || !nameEl || !idEl) return;
+  const type = typeEl.value;
+  const port = portEl.value;
+  const addr = parseInt(addrEl.value, 10);
+  const name = nameEl.value.trim();
+  const id = idEl.value.trim() || makeDeviceId(type, port, addr);
   const baudrate = type === 'dtv' ? 19200 : 115200;
 
   if (_config.devices.find(d => d.id === id)) {

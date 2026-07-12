@@ -957,7 +957,7 @@
   }
 
   async function clearFirmwareCache() {
-    if (!confirm('Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.')) return;
+    if (!confirm(t('Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.'))) return;
     try {
       const res = await apiPost('/firmware/clear', {});
       const n = (res.cleared && res.cleared.length) || 0;
@@ -3567,7 +3567,7 @@
   }
 
   async function rebootModuleDevice() {
-    if (!confirm('Перезагрузить модуль?\nЛиния может быть временно недоступна.')) return;
+    if (!confirm(t('Перезагрузить модуль?\nЛиния может быть временно недоступна.'))) return;
     const dev = currentConfigDevice();
     const port = $('flasher-port').value;
     if (!dev || !port) return;
