@@ -197,35 +197,7 @@ function hydratePriorityWarmup() {
   });
 }
 
-/* ── Gauge helper (SVG stroke-dasharray arc) ───────────────────────────────
-   Длина дуги M14 72 A56 56 0 0 1 126 72 ≈ π·56 ≈ 175.93 — если dash+gap короче
-   пути, паттерн повторяется и справа появляется ложный «хвост». */
-let _gaugeArcPathLen = null;
-function gaugeArcPathLength() {
-  if (_gaugeArcPathLen != null) return _gaugeArcPathLen;
-  const el = document.getElementById('cpu-arc');
-  if (el && typeof el.getTotalLength === 'function') {
-    const L = el.getTotalLength();
-    if (L > 1) {
-      _gaugeArcPathLen = L;
-      return L;
-    }
-  }
-  _gaugeArcPathLen = Math.PI * 56;
-  return _gaugeArcPathLen;
-}
-/** Сброс после смены разметки SVG дуг */
-function invalidateGaugeArcCache() {
-  _gaugeArcPathLen = null;
-}
-
-function arcDash(pct, pathLen) {
-  const L = pathLen > 0 ? pathLen : gaugeArcPathLength();
-  const fill = Math.min(1, Math.max(0, pct / 100)) * L;
-  return fill + ' ' + (L - fill);
-}
-
-/** Дуга температуры: 30 °C = 0&nbsp;%, 100 °C = 100&nbsp;% */
+/** Шкала температуры: 30 °C = 0&nbsp;%, 100 °C = 100&nbsp;% */
 function tempToGaugePct(celsius) {
   const t = parseFloat(celsius);
   if (Number.isNaN(t)) return 0;
@@ -992,15 +964,14 @@ let _lastPriorityStatus = null;
 
 function applyPriorityStatus(d) {
   _lastPriorityStatus = d;
-  const arcLen = gaugeArcPathLength();
 
   /* CPU */
   if (d.cpu_usage !== undefined) {
     setText('cpu-val', d.cpu_usage + '%');
-    const cpuArc = document.getElementById('cpu-arc');
-    if (cpuArc) {
-      cpuArc.style.strokeDasharray = arcDash(d.cpu_usage, arcLen);
-      cpuArc.style.stroke = threshColor(d.cpu_usage, 60, 80);
+    const cpuBar = document.getElementById('cpu-bar');
+    if (cpuBar) {
+      cpuBar.style.width = Math.min(100, Math.max(0, parseFloat(d.cpu_usage) || 0)) + '%';
+      cpuBar.style.background = threshColor(d.cpu_usage, 60, 80);
     }
   }
 
@@ -1040,21 +1011,20 @@ function applyPriorityStatus(d) {
     sb.style.display = 'none';
   }
 
-  /* Температура: дуга 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
+  /* Температура: шкала 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
   if (d.temp_c !== undefined) {
     setText('temp-val', d.temp_c + '°');
-    const tempArc = document.getElementById('temp-arc');
+    const tempBar = document.getElementById('temp-bar');
     const tempHint = document.getElementById('temp-gauge-hint');
-    if (tempArc) {
-      tempArc.style.strokeDasharray = arcDash(tempToGaugePct(d.temp_c), arcLen);
-      const tc = parseFloat(d.temp_c) || 0;
-      const tempStroke = tc >= 80 ? cssVar('--meter-red') : tc >= 70 ? cssVar('--meter-yellow') : cssVar('--meter-green');
-      tempArc.style.stroke = tempStroke;
-      if (tempHint) {
-        tempHint.textContent = uiT(tc >= 80
-          ? 'Температура выше нормы'
-          : 'Температура в норме');
-      }
+    const tc = parseFloat(d.temp_c) || 0;
+    if (tempBar) {
+      tempBar.style.width = tempToGaugePct(d.temp_c) + '%';
+      tempBar.style.background = tc >= 80 ? cssVar('--meter-red') : tc >= 70 ? cssVar('--meter-yellow') : cssVar('--meter-green');
+    }
+    if (tempHint) {
+      tempHint.textContent = uiT(tc >= 80
+        ? 'Температура выше нормы'
+        : 'Температура в норме');
     }
   }
 
@@ -2418,7 +2388,6 @@ function loadConfig() {
     .then(r => r.json())
     .then(d => {
       configLoaded = true;
-      invalidateGaugeArcCache();
       /* eth0 */
       const eth0en = document.getElementById('eth0-en');
       if (eth0en) eth0en.checked = !!(d.eth0 && d.eth0.enabled);

@@ -142,7 +142,6 @@ html[data-theme="light"] {
   --nav-active-fg:   #05252b;
 }
 
-html[data-theme="light"] .gauge-arc-bg { stroke: var(--meter-track) !important; }
 html[data-theme="light"] .log-box {
   background: #fafafa;
   border-color: var(--border);
@@ -461,29 +460,6 @@ html:not([data-theme="light"]) .topbar {
   margin-bottom: 0;
   line-height: 1.35;
   min-height: calc(1.08rem * 1.35);
-}
-
-/* ── Gauge (SVG half-circle) ─────────────────────────────────────────────── */
-.gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.gauge-svg  { display: block; }
-.gauge-label { font-size: 13px; color: var(--text-sec); }
-.gauge-label-temp {
-  font-size: 13px;
-  max-width: 220px;
-  text-align: center;
-  line-height: 1.35;
-}
-.gauge-arc-bg { stroke: var(--meter-track); stroke-linecap: butt; }
-/* butt: иначе round + неверная длина dash давали «кляксу» на конце дуги */
-.gauge-arc    { stroke-linecap: butt; transition: stroke-dasharray .4s ease, stroke .3s ease; }
-/* Числа на дугах CPU/температура — стандартный кегль 30px (ближайший к «крупнее ~19.5») */
-svg .gauge-num {
-  fill: var(--text);
-  font-size: 30px;
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  paint-order: stroke fill;
-  stroke: none;
 }
 
 /* ── Progress bar ────────────────────────────────────────────────────────── */
