@@ -47,7 +47,7 @@
     'Каналы не заданы — отредактируйте /etc/sa02m_hw.conf': 'Channels are not configured — edit /etc/sa02m_hw.conf',
     'Нет storage-mount — выполните установку системы (install.sh)': 'storage-mount is not installed — run the system installer (install.sh)',
     'Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется': 'Click to toggle: when off, partitions without a filesystem or NTFS are not formatted',
-    'Температура CPU': 'CPU Temperature',
+    'Температура': 'Temperature',
     'В норме': 'Normal',
     'Выше нормы': 'Above normal',
     'Службы активны': 'Services active',
