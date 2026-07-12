@@ -407,6 +407,10 @@ html:not([data-theme="light"]) .topbar {
 .w-ico-green  { background: var(--chip-green-bg);  color: var(--chip-green-fg); }
 .w-ico-orange { background: var(--chip-orange-bg); color: var(--chip-orange-fg); }
 .w-ico-red    { background: var(--chip-red-bg);    color: var(--chip-red-fg); }
+/* Ethernet: иконка + заголовок одной строкой; pill «Линк/Нет линка» при нехватке
+   места переносится ниже целиком, не разрывая текст заголовка */
+.eth-hdr-title.has-ico { flex-wrap: wrap; row-gap: 4px; }
+.eth-hdr-title.has-ico > .w-ico + span { white-space: nowrap; }
 
 /* ── Widget card ─────────────────────────────────────────────────────────── */
 .widget {
