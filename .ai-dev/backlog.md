@@ -20,17 +20,17 @@ owns the format). One item per line block: `- [OPEN|RESOLVED] <date> <one-line i
 - [RESOLVED] 2026-07-12 **[HIGH] Y3 autoformat fail-open.** storage-mount.sh:11,16 internal fallback STORAGE_AUTO_FORMAT=1 (opposite of shipped conf =0) → NTFS partition that fails to mount is reformatted to exFAT (data loss) if conf missing. Fix: fallback 0.
 - [RESOLVED] 2026-07-12 **[MED] Y5 OTA leaves stale files.** sa02m-web-update-apply.sh:61 cp -a without clearing WEB_ROOT → removed CGIs persist. Fix: rsync --delete / purge first (mirror 03-webserver.sh).
 - [RESOLVED] 2026-07-12 **[MED] Y6 storage-mount@.service TimeoutStartSec=8** < mkfs+retry budget → kill mid-mkfs risks corruption. Fix: raise timeout / move format off start path.
-- [OPEN] 2026-07-12 **[LOW] Y7** module scripts lack `set -euo pipefail` (set -e doesn't cross the per-module bash). **[LOW] Y8** failure-monitor probes status.cgi every 5s (forks CGI 12×/min). **[LOW] Y9** install.sh banner hardcodes v1.0.3 (stale, separate installer-version literal).
+- [RESOLVED] 2026-07-12 **[LOW] Y7** module scripts lack `set -euo pipefail` (set -e doesn't cross the per-module bash). **[LOW] Y8** failure-monitor probes status.cgi every 5s (forks CGI 12×/min). **[LOW] Y9** install.sh banner hardcodes v1.0.3 (stale, separate installer-version literal).
 
 ## Frontend (audit 2026-07-12) — this repo, code changes
 
 - [RESOLVED] 2026-07-12 **[MED] F1/F2/F3 i18n gaps** — kernel-control, CPU-frequency, and service-control strings are uiT()-wrapped but absent from i18n.js DICT (render Russian in EN mode); svcCtlErrorMessage map is RU-only. Fix: add DICT/REGEX entries. (app.js ~2648-2991)
 - [RESOLVED] 2026-07-12 **[MED] F4 dead code** — 13 unused fetch*Widget / applyStatus / applyMainStatusBundle wrappers in app.js (~1445-1906); scheduler fetches parts directly. Fix: delete (decompose-adjacent, run through the loop — not fixup).
-- [OPEN] 2026-07-12 **[MED] F5 flasher i18n** — AI-channel config modal labels RU in innerHTML, no DICT (~556 Cyrillic lines in flasher.js, broad gap).
+- [RESOLVED] 2026-07-12 **[MED] F5 flasher i18n** — AI-channel config modal labels RU in innerHTML, no DICT (~556 Cyrillic lines in flasher.js, broad gap).
 - [RESOLVED] 2026-07-12 **[MED] F6 cloud.html badge()** interpolates server-originated d.service_active into innerHTML unescaped (91,109). Fix: escape/textContent.
-- [OPEN] 2026-07-12 **[LOW] F7** flasher.js:1378 d.address unescaped (siblings escaped). **[LOW] F8** 'Ethernet № 1/2' standalone titles no DICT key. **[LOW] F9** misc untranslated (USB-reset title, storage-mount toast, 'Применяю…').
+- [RESOLVED] 2026-07-12 **[LOW] F7** flasher.js:1378 d.address unescaped (siblings escaped). **[LOW] F8** 'Ethernet № 1/2' standalone titles no DICT key. **[LOW] F9** misc untranslated (USB-reset title, storage-mount toast, 'Применяю…').
 - [OPEN] 2026-07-12 **[LOW] F10 decompose** — flasher.js 4411 / app.js 3464 god-files; split by responsibility (`.ai-dev/procedures/decompose.md`).
-- [OPEN] 2026-07-12 **[LOW] F11** mqtt.js raw getElementById().innerHTML chains (~1725-1922), safe only because modals static.
+- [RESOLVED] 2026-07-12 **[LOW] F11** mqtt.js raw getElementById().innerHTML chains (~1725-1922), safe only because modals static.
 
 ## Docs / hygiene (audit 2026-07-12) — mostly fixed inline; remainder
 
@@ -51,19 +51,19 @@ on-device verification): S1,S2,S3,S4,S6,S7,S10,Y2,Y3,Y4,Y5,Y6,Y9 + F1,F2,F3,F4,
 F6,F7,F8,F9. See commits on branch 1.0.4.1.
 
 Deliberately DEFERRED (with reason):
-- [OPEN] 2026-07-12 **[MED] S5 password hashing** — storing a salted hash needs a
+- [RESOLVED] 2026-07-12 **[MED] S5 password hashing** — storing a salted hash needs a
   coordinated change to web_creds.cgi + the device-side sa02m-commit-web-env
   pipeline + migration of existing /etc/sa02m_web.env on deployed devices; can't
   be verified without the device. login.cgi now compares with a constant-time-ish
   salted hash and fails closed, but the stored secret is still plaintext. Do as a
   focused change with on-device test.
-- [OPEN] 2026-07-12 **[LOW] S8** status.cgi cpu/temp/ram/disk public carve-out — a
+- [RESOLVED] 2026-07-12 **[LOW] S8** status.cgi cpu/temp/ram/disk public carve-out — a
   product decision (is telemetry intentionally public?), not applied.
 - [OPEN] 2026-07-12 **[LOW] S9** lib_web_auth legacy `. env` source path — the safe
   reader is now preferred in login/web_creds; the legacy eval path in
   web_auth_read remains for the repair flow. Remove once no device carries a
   metachar-bearing env.
-- [OPEN] 2026-07-12 **[LOW] Y7** `set -euo pipefail` retrofit across installer
+- [RESOLVED] 2026-07-12 **[LOW] Y7** `set -euo pipefail` retrofit across installer
   modules — risky to change installer error-handling untested (could break
   provisioning); do with device access.
 - [OPEN] 2026-07-12 **[LOW] Y8** failure-monitor 5s probe cadence — tuning, no device.
@@ -72,4 +72,27 @@ Deliberately DEFERRED (with reason):
   via DICT/observer; a full sweep of every flasher config tab is a separate pass.
 - [OPEN] 2026-07-12 **[LOW] F10** decompose flasher.js/app.js god-files — behaviour-
   preserving refactor, needs characterization tests first (own loop).
-- [OPEN] 2026-07-12 **[LOW] F11** mqtt.js null-guard hardening — safe today (static modals).
+- [RESOLVED] 2026-07-12 **[LOW] F11** mqtt.js null-guard hardening — safe today (static modals).
+
+## Second remediation batch complete (2026-07-12) — status
+
+RESOLVED this batch: S5 (password hashing, backward-compatible + best-effort),
+S8 (telemetry auth), S9 (no eval-on-config), Y7 (pipefail + daemon-reload wrap;
+set -u deferred — see below), Y8 (probe cadence), F5 (flasher i18n: +183 DICT /
++63 REGEX), F7 (address escape — earlier batch), F11 (mqtt null-safety), and the
+KPI product decision (row removed).
+
+STILL DEFERRED — with reasons:
+- [OPEN] 2026-07-12 **[LOW] Y7-partial** `set -u` retrofit across installer
+  modules — pipefail added, but bare `set -u` on the provisioning installer is
+  NOT safe to add without an on-device install run (an unset-var abort mid-
+  provision could brick a fresh install). Do with device access.
+- [OPEN] 2026-07-12 **[LOW] F10 decompose** flasher.js (4411) / app.js (3326) —
+  DELIBERATELY not done in-batch. The JS loads as plain global-scope <script>
+  tags (ES modules forbidden by project rules), and the decompose procedure
+  requires a behaviour-test net first. A blind big-bang split risks bricking the
+  served UI (no bundler isolation — one syntax error blanks the page) for LOW
+  benefit. Recommend a dedicated effort with characterization tests + per-tab
+  on-device verification.
+- [OPEN] 2026-07-12 **[LOW] D8/D9** vendored ai-dev doc pointers — do NOT edit
+  locally (upstream drift); route on the next protocol upgrade.
