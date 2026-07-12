@@ -71,7 +71,7 @@
   --meter-orange: #ff9f0a;
   --meter-track:  #2c2c2e;
 
-  /* Цветные «чипы» иконок на карточках и KPI-плитках (контраст иконка/фон ≥4.6:1) */
+  /* Цветные «чипы» иконок на карточках (контраст иконка/фон ≥4.6:1) */
   --chip-cyan-bg:   #0e3a44;  --chip-cyan-fg:   #22d3ee;
   --chip-green-bg:  #103a18;  --chip-green-fg:  #32d74b;
   --chip-orange-bg: #3f2a05;  --chip-orange-fg: #ff9f0a;
@@ -326,62 +326,6 @@ html:not([data-theme="light"]) .topbar {
 /* HW-блок: ширина верхнего ряда (4 виджета + промежутки), auto-fill сохраняет размер карточек */
 .dash-span-top4 { grid-column: 1 / span 4; }
 .dash-full { grid-column: 1 / -1; }
-
-/* ── KPI: сводка состояния над дашбордом ─────────────────────────────────── */
-.kpi-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 14px;
-  margin-bottom: 14px;
-}
-.kpi-tile {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
-  box-shadow: var(--shadow-sm);
-  transition: box-shadow var(--transition), border-color var(--transition);
-}
-.kpi-tile:hover { box-shadow: var(--shadow); border-color: var(--border-md); }
-.kpi-ico {
-  width: 40px; height: 40px;
-  border-radius: var(--radius-sm);
-  display: inline-flex; align-items: center; justify-content: center;
-  flex: 0 0 auto;
-}
-.kpi-ico svg { width: 19px; height: 19px; }
-.kpi-ico-cyan   { background: var(--chip-cyan-bg);   color: var(--chip-cyan-fg); }
-.kpi-ico-green  { background: var(--chip-green-bg);  color: var(--chip-green-fg); }
-.kpi-ico-orange { background: var(--chip-orange-bg); color: var(--chip-orange-fg); }
-.kpi-ico-red    { background: var(--chip-red-bg);    color: var(--chip-red-fg); }
-.kpi-body { min-width: 0; }
-.kpi-val {
-  font-size: 1.35rem;
-  font-weight: 800;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.kpi-val.kpi-ok   { color: var(--green); }
-.kpi-val.kpi-warn { color: var(--yellow); }
-.kpi-val.kpi-err  { color: var(--red); }
-.kpi-lbl {
-  font-size: 12.5px;
-  color: var(--text-sec);
-  margin-top: 1px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Плитка «Предупреждения»: чип меняет цвет вместе со значением */
-#kpi-warn-tile .kpi-ico { background: var(--chip-green-bg); color: var(--chip-green-fg); }
-#kpi-warn-tile.kpi-tile-alert .kpi-ico { background: var(--chip-red-bg); color: var(--chip-red-fg); }
-#kpi-warn-tile.kpi-tile-alert { border-color: var(--badge-err-border); }
 
 /* ── Иконки-чипы в заголовках карточек дашборда ──────────────────────────── */
 .widget-title.has-ico {
