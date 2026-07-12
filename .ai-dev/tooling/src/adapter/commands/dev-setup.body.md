@@ -1,0 +1,1 @@
+Run the orchestrator's `## Setup` procedure now to (re)configure this project — discover the environment's models, ask the Operator the configuration questions, and write `.ai-dev/config.json`. This is a thin pointer: the procedure and its single home are in `src/agents/orchestrator.md` `## Setup`; do not restate the dialog here, run it there.

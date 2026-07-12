@@ -1,0 +1,281 @@
+{
+  "_doc": "The capability-module registry — the one home for the kit `setup` offers and the assemblers compose. A capability module is a TOGGLEABLE bundle whose parts live in their existing single homes (a config toggle · per-role prompt FRAGMENTS · optionally a deny rule or quality check); this file catalogs them. A module's FLOOR (the part that is never off) is NOT here — it stays in the role's floor body (src/agents/<role>.md); this registry carries only the DEEPENING (toggle · per-kind defaults · targets · fragment pointers). The assembler (src/adapter/modules.mjs, shared by both install-agents shims) replaces each role's `<!-- ai-dev:modules -->` marker with the ENABLED modules' fragments, in REGISTRY ORDER. HONESTY: a module is `[persona]` prompt content — it sharpens what a role THINKS about; it blocks nothing mechanically unless it also carries a deny rule. Fail-safe enabled-resolution: the `toggle` and `defaults` notes in _row_shape. Adding a module = a row here + its src/modules/<id>/ fragments; the assemblers compose it for free — NO core edit (docs/architecture.md `## Capability modules`).",
+  "_row_shape": {
+    "id": "short stable name — matches the src/modules/<id>/ dir and the .ai-dev/config.json modules.<id> toggle key",
+    "for": "one plain line: what this module gives the project",
+    "toggle": "the SHAPE of the config value under modules.<id> — e.g. { depth: 'rich | light', nonSecurity: bool }. A literal `false` is the only config-side OFF; any other NAMED value (true, object, malformed) ⇒ ON (fail-safe to more rigor — the config is untrusted input); an ABSENT key falls to `defaults`",
+    "defaults": "per project kind, the default toggle this module runs with — a literal `false` defaults the module OFF for that kind (registry-authored, our data: the one default-OFF path; any named config value overrides it); unknown/absent kind ⇒ the strict side (docs/architecture.md)",
+    "targets": "[{ role, beat }] — which role agent the module deepens, at which loop beat (plan | review)",
+    "fragments": "{ <role>: 'src/modules/<id>/<role>.md' } — registry-relative pointers (absolute or `..`-bearing is REJECTED at assembly); the per-role prompt the module composes in"
+  },
+  "modules": [
+    {
+      "id": "threat-model",
+      "for": "Explicit threat enumeration for a security-relevant change — attack surface, data/secret exposure, trust boundaries — deepening the always-on Reviewer security item and adding a plan-time threat pass to the Builder.",
+      "toggle": { "depth": "rich | light", "nonSecurity": true },
+      "defaults": {
+        "code": { "depth": "rich", "nonSecurity": true },
+        "docs": { "depth": "light", "nonSecurity": false },
+        "mixed": { "depth": "rich", "nonSecurity": true }
+      },
+      "targets": [
+        { "role": "reviewer", "beat": "review" },
+        { "role": "planner", "beat": "plan" }
+      ],
+      "fragments": {
+        "reviewer": "src/modules/threat-model/reviewer.md",
+        "planner": "src/modules/threat-model/planner.md"
+      }
+    },
+    {
+      "id": "product-advocate",
+      "for": "Plan-time product discovery for a user-facing change — who it is for, the user pain, whether it is the right bet, the cheapest test, what breaks if it is NOT built — deepening the always-on Builder plan product-question item and the Reviewer's check that the shipped change serves its plan's user claim.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": { "depth": "light" },
+        "mixed": { "depth": "rich" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/product-advocate/planner.md",
+        "reviewer": "src/modules/product-advocate/reviewer.md"
+      }
+    },
+    {
+      "id": "test-methodology",
+      "for": "Plan-time test coverage for the layers a unit test cannot reach — integration glue, wiring, a user-visible surface — plus the test-first ratchet on a gate-caught bug; adding a coverage item to the Builder's plan and deepening the Reviewer's Tests item.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/test-methodology/planner.md",
+        "reviewer": "src/modules/test-methodology/reviewer.md"
+      }
+    },
+    {
+      "id": "semantic-correctness",
+      "for": "Behaviour-truth gates for a non-trivial subsystem — does it do what its name claims, is no failure silently swallowed, does a path parallel to an existing one inherit all its guards — deepening the Reviewer's Hygiene/Correctness/Honesty items and adding a plan-time real-or-marked claim discipline to the Builder.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/semantic-correctness/planner.md",
+        "reviewer": "src/modules/semantic-correctness/reviewer.md"
+      }
+    },
+    {
+      "id": "ui-ux",
+      "for": "Usability enumeration for a user-facing surface — adaptivity, accessibility, responsiveness, clarity, adverse states — deepening the Builder's plan-time product questions and the Reviewer's correctness check on the user's actual path.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "light" },
+        "docs": false,
+        "mixed": { "depth": "rich" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/ui-ux/planner.md",
+        "reviewer": "src/modules/ui-ux/reviewer.md"
+      }
+    },
+    {
+      "id": "research-methodology",
+      "for": "Source discipline for answering an unknown — the source ladder, recency against the real dependency versions, triangulation, confidence marks — deepening the Builder's unfamiliar-interface (stack-researcher) item and the Reviewer's honesty check on researched claims.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "light" },
+        "docs": { "depth": "rich" },
+        "mixed": { "depth": "rich" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/research-methodology/planner.md",
+        "reviewer": "src/modules/research-methodology/reviewer.md"
+      }
+    },
+    {
+      "id": "debug-methodology",
+      "for": "Cause-first fix discipline for a bug — reproduce before fix, discriminating experiments, the cause not the symptom, debuggable-by-design — adding a fix-method item to the Builder's work and deepening the Reviewer's honesty check on 'fixed' claims.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/debug-methodology/planner.md",
+        "reviewer": "src/modules/debug-methodology/reviewer.md"
+      }
+    },
+    {
+      "id": "performance",
+      "for": "Scale awareness where the change touches a loop, query, or payload over user-scale data — name the scale, bound every path, measure before optimizing — adding the quantity dimension to the Builder's plan and the Reviewer's correctness check.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/performance/planner.md",
+        "reviewer": "src/modules/performance/reviewer.md"
+      }
+    },
+    {
+      "id": "database",
+      "for": "Data-layer discipline where the change touches a schema or persistent store — migrations, reversibility, rollout compatibility, integrity at the DB — adding the schema dimension to the Builder's plan and the Reviewer's check.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/database/planner.md",
+        "reviewer": "src/modules/database/reviewer.md"
+      }
+    },
+    {
+      "id": "i18n",
+      "for": "Locale discipline where the project serves (or plans) more than one locale — externalized strings, locale-aware formatting, plural rules, expansion-tolerant layouts — adding the locale dimension to the Builder's plan and the Reviewer's check; inert on a single-locale project.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "light" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/i18n/planner.md",
+        "reviewer": "src/modules/i18n/reviewer.md"
+      }
+    },
+    {
+      "id": "concurrency",
+      "for": "Interleaving awareness where the change touches shared state, async flows, or parallel execution — name what is shared, atomic check-then-act windows, idempotent retries, ordering — adding to the Builder's plan and the Reviewer's check the dimension a single sequential read-through misses.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "light" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/concurrency/planner.md",
+        "reviewer": "src/modules/concurrency/reviewer.md"
+      }
+    },
+    {
+      "id": "modularity",
+      "for": "Boundary discipline where the change touches a module interface or introduces a new inter-module dependency — name the boundary, check the dependency direction against `docs/architecture.md`, flag missing linter — adding the boundary dimension to the Builder's plan and the Reviewer's correctness check.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": false,
+        "mixed": { "depth": "light" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/modularity/planner.md",
+        "reviewer": "src/modules/modularity/reviewer.md"
+      }
+    },
+    {
+      "id": "elicitation",
+      "for": "Angle-changing inquiry at decision points — a draft brief section, a feature plan, a captured idea — via a compact technique catalog (pre-mortem, inversion, user role-play, persona panel…); entry always offers a depth choice (light default / deeper / skip), one technique per round, never a block. The catalog and the Builder's plan-beat round live here; the interactive offer is `src/agents/procedures/elicitation.md`.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "light" },
+        "docs": { "depth": "light" },
+        "mixed": { "depth": "rich" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" }
+      ],
+      "fragments": {
+        "planner": "src/modules/elicitation/planner.md"
+      }
+    },
+    {
+      "id": "plan-adversary",
+      "for": "Adversarial self-probe of the plan draft before build — name the most plausible failure, surface missing scenarios, replace fuzzy criteria, expose hidden structural forks — so the plan's weaknesses are found before the build, not during review.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": { "depth": "rich" },
+        "docs": { "depth": "light" },
+        "mixed": { "depth": "rich" }
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/plan-adversary/planner.md",
+        "reviewer": "src/modules/plan-adversary/reviewer.md"
+      }
+    },
+    {
+      "id": "team-collaboration",
+      "for": "Concurrent multi-author conflict-avoidance for a collaboration.team:true project — small atomic disjoint-surface PRs, sync-from-main before push, never a blind conflict auto-resolve (re-cut from main / escalate) — deepening the Builder's plan and the Reviewer's review; default OFF everywhere, inert on a single-user project.",
+      "toggle": { "depth": "rich | light" },
+      "defaults": {
+        "code": false,
+        "docs": false,
+        "mixed": false
+      },
+      "targets": [
+        { "role": "planner", "beat": "plan" },
+        { "role": "reviewer", "beat": "review" }
+      ],
+      "fragments": {
+        "planner": "src/modules/team-collaboration/planner.md",
+        "reviewer": "src/modules/team-collaboration/reviewer.md"
+      }
+    }
+  ]
+}

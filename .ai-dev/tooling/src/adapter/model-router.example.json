@@ -1,0 +1,26 @@
+{
+  "_doc": "Worked example route-table for the per-seat cross-endpoint model router (src/adapter/model-router.mjs; rationale: docs/decisions/per-seat-model-routing.md). Copy it, set the env vars it names, then point Claude Code at the router: export ANTHROPIC_BASE_URL=http://127.0.0.1:8787. The router keys on each request body's `model` and forwards to the first route whose `match` glob matches. Keys are referenced by env-var NAME only — NEVER put a key value in this file (it is committed). Verified 2026-06-30 against the official DeepSeek docs (api-docs.deepseek.com/guides/anthropic_api): DeepSeek's Anthropic-compatible endpoint is https://api.deepseek.com/anthropic and authenticates with `x-api-key` (the same scheme Anthropic uses), so both routes below carry `x-api-key` and differ only in `keyEnv`.",
+  "_route_shape": {
+    "match": "glob over the model id; only `*` is a wildcard (e.g. claude-* / deepseek-*)",
+    "base_url": "the backend origin (optionally with a base path, e.g. /anthropic); the client's request path is appended",
+    "auth": {
+      "header": "the header name to send the backend key under (e.g. x-api-key, or Authorization)",
+      "keyEnv": "the NAME of the env var holding the backend key — read at request time, never logged",
+      "scheme": "OPTIONAL prefix prepended to the key for the header value — e.g. \"Bearer\" yields `Authorization: Bearer <key>`; omit for a raw value like `x-api-key: <key>`"
+    }
+  },
+  "_proxyUrl": "OPTIONAL top-level string — ONLY belongs in the gitignored personal override .ai-dev/model-routes.local.json, NEVER in this shared file (docs/decisions/personal-multi-model-setup.md). When set to a non-empty http(s) URL, the LAUNCHER (router-launch.mjs) does NOT spawn its own router — it points claude straight at this already-running proxy (a self-hosted/shared modelpipe, or one under a debugger) via ANTHROPIC_BASE_URL. Auth/keys then live in THAT proxy's own env, so the launcher's fail-closed key check does not apply. Absent/empty/whitespace ⇒ the launcher decides direct-vs-spawn itself (the default). A present-but-malformed value is a hard error (fail-closed), never a silent local spawn. Write it ONLY to .ai-dev/model-routes.local.json, never here.",
+  "listen": { "host": "127.0.0.1", "port": 8787 },
+  "routes": [
+    {
+      "match": "claude-*",
+      "base_url": "https://api.anthropic.com",
+      "auth": { "header": "x-api-key", "keyEnv": "ANTHROPIC_API_KEY" }
+    },
+    {
+      "match": "deepseek-*",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "auth": { "header": "x-api-key", "keyEnv": "DEEPSEEK_API_KEY" }
+    }
+  ]
+}

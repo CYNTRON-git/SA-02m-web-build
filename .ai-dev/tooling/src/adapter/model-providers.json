@@ -1,0 +1,41 @@
+{
+  "_doc": "Built-in provider catalog for the per-seat cross-endpoint model router (src/adapter/model-router.mjs) and its launcher (src/adapter/router-launch.mjs). DATA ONLY — no code reads this at deny-engine time; the launcher resolves a route's base_url + auth from a provider `id` here, so a routes config can say { provider: \"deepseek\" } instead of restating the endpoint. GOVERNING CONSTRAINT: every provider here speaks the Anthropic Messages API natively — Anthropic-format ONLY, no translator EVER (OpenAI-shaped providers are out of scope forever; rationale: docs/decisions/per-seat-model-routing.md). Keys are referenced by env-var NAME only — NEVER a key value in this file (it is committed). Verified 2026-06-30 against each provider's official Anthropic-compatible docs.",
+  "_provider_shape": {
+    "id": "short stable provider name a routes config references via { provider: <id> }",
+    "base_url": "the backend ORIGIN plus the path prefix that precedes /v1/messages. The router appends the client's request path (/v1/messages) to this base path — so the prefix here, plus /v1/messages, must equal the provider's real Anthropic endpoint. OVERRIDABLE per route (regional hosts, a dashboard-specific URL).",
+    "models": "glob patterns over the model id that select this provider (only `*` is a wildcard); used by the launcher to map a seat's model to its endpoint",
+    "auth": "{ header, scheme?, keyEnv } — the header to send the backend key under, an optional scheme prefix (e.g. \"Bearer\" → `Authorization: Bearer <key>`), and the env-var NAME holding the key (read at request time, never logged). A route may OVERRIDE this with the string \"passthrough\" to forward the client's incoming auth header unchanged (no backend key) — allowed only for a provider whose `supports_passthrough` is true.",
+    "supports_passthrough": "true when the provider can run keyless via auth:\"passthrough\" (a subscription/OAuth Claude Code session needs no API key for it); absent ⇒ false"
+  },
+  "providers": [
+    {
+      "id": "anthropic",
+      "base_url": "https://api.anthropic.com",
+      "models": ["claude-*"],
+      "auth": { "header": "x-api-key", "keyEnv": "ANTHROPIC_API_KEY" },
+      "supports_passthrough": true,
+      "_note": "base path \"/\" → router sends /v1/messages. supports_passthrough: a route may set auth:\"passthrough\" so a subscription/OAuth session reaches Anthropic with NO API key (the honest gap the decision doc flagged); the keyed auth above is the API-key alternative."
+    },
+    {
+      "id": "deepseek",
+      "base_url": "https://api.deepseek.com/anthropic",
+      "models": ["deepseek-*"],
+      "auth": { "header": "x-api-key", "keyEnv": "DEEPSEEK_API_KEY" },
+      "_note": "base path /anthropic → /anthropic/v1/messages. Authenticates with x-api-key, same scheme as Anthropic (verified 2026-06-30, api-docs.deepseek.com/guides/anthropic_api)."
+    },
+    {
+      "id": "glm",
+      "base_url": "https://api.z.ai/api/anthropic",
+      "models": ["GLM-*", "glm-*"],
+      "auth": { "header": "Authorization", "scheme": "Bearer", "keyEnv": "ZAI_API_KEY" },
+      "_note": "z.ai GLM Coding Plan SPECIFICALLY (verified 2026-06-30): base path /api/anthropic → /api/anthropic/v1/messages, Authorization: Bearer with the Coding-Plan token (ZAI_API_KEY). base_url is overridable per route for a regional host (open.bigmodel.cn) or a dashboard-specific Coding-Plan URL. The coding/paas/v4 URL is GLM's NON-Anthropic native endpoint, NOT this one."
+    },
+    {
+      "id": "openrouter",
+      "base_url": "https://openrouter.ai/api",
+      "models": ["*/*"],
+      "auth": { "header": "Authorization", "scheme": "Bearer", "keyEnv": "OPENROUTER_API_KEY" },
+      "_note": "Anthropic-skin endpoint (verified 2026-06-30): the real path is /api/v1/messages, so base path here is /api and the router appends /v1/messages. Authorization: Bearer. OpenRouter model ids are vendor/model (e.g. anthropic/claude-sonnet-4.6), hence the */* pattern — order this route LAST in a routes config so a slash-bearing id reaches it. PATH-PREFIX behaviour pending a real-call live-verify (G in docs/decisions/per-seat-model-routing.md)."
+    }
+  ]
+}

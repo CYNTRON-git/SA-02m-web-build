@@ -1,0 +1,31 @@
+{
+  "_doc": "Project config for the SA-02m web interface (Armbian ARM device: nginx + fcgiwrap + Bash CGI + vanilla JS frontend, no build step). Value-home for mode/profile/kind/docLanguage/collaboration. Fields absent or unrecognised fall back to the safe defaults documented in PROTOCOL.md `## Project config`. Re-run /dev-setup any time to reconfigure via dialog; the file itself is authoritative.",
+
+  "_project_rules": "Our project-specific rulesets (web-code-rigor, web-workflow, sa02m-domain, git-commits, web-diagnostic-tools, agent-tooling-map) are NOT capability modules — the ai-dev module registry lives inside .ai-dev/tooling/ (invariant 2, unconditional off-limits). The rulesets live in docs/agent-rules/*.md as project canon and are @-imported by CLAUDE.md; every orchestrator session loads them. Adapted from the MR-02m firmware project's ruleset (same protocol, web domain).",
+
+  "mode": "interactive",
+  "profile": "lite",
+  "platform": "claude",
+  "kind": "code",
+  "docLanguage": "ru",
+
+  "collaboration": { "team": false, "backlog": "file", "forge": "github" },
+
+  "modules": {
+    "test-methodology": { "depth": "rich" },
+    "semantic-correctness": { "depth": "rich" },
+    "debug-methodology": { "depth": "rich" },
+    "plan-adversary": { "depth": "rich" },
+    "performance": { "depth": "rich" },
+    "modularity": { "depth": "rich" }
+  },
+
+  "roles": {
+    "orchestrator": { "agent": "ai-dev" },
+    "planner": { "agent": "dev-planner" },
+    "builder": { "agent": "dev-builder" },
+    "reviewer": { "agent": "dev-reviewer", "model": "auto" }
+  },
+
+  "launch": { "sessionModel": "", "guardModel": "", "aliases": {} }
+}

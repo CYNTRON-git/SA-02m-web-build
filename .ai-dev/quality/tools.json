@@ -1,0 +1,49 @@
+{
+  "_doc": "The SA-02m-web-build quality-tools registry (PROTOCOL.md `## Quality tools`). The one home for 'what does GREEN mean for this web project'. Each row is a self-contained check the runner (`.ai-dev/quality/run.mjs <beat>`) executes wholesale for its beat. The Builder runs every `build`-beat tool on completion and hands back only when they pass; the Reviewer confirms the `review`-beat tools ran and reads their output; `ship`-beat tools run before the merge stamp. Adding or changing a tool = a row here + (optionally) its native config beside this file — never a runner edit.",
+  "_row_shape": {
+    "id": "short stable name",
+    "checks": "one plain line: what this tool catches",
+    "config": "path to its native config beside this file, or null if none",
+    "run": "the command to run it (from the project root — the runner's cwd)",
+    "beat": "build | review | ship",
+    "init": "one line: how to install/enable it"
+  },
+  "tools": [
+    {
+      "id": "js-syntax",
+      "checks": "Syntax errors in the hand-written frontend bundles (app.js, i18n.js, flasher.js, mqtt.js, gateway.js) — a broken bundle bricks the whole UI since there is no build step.",
+      "config": null,
+      "run": "node --check www/network_config/static/js/app.js && node --check www/network_config/static/js/i18n.js && node --check www/network_config/static/js/flasher.js && node --check www/network_config/static/js/mqtt.js && node --check www/network_config/static/js/gateway.js",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/"],
+      "init": "Node 18+"
+    },
+    {
+      "id": "bash-cgi-syntax",
+      "checks": "Bash syntax errors in every CGI endpoint and shared lib — a broken CGI returns 500 with no client-side trace.",
+      "config": null,
+      "run": "bash -c 'set -e; for f in www/network_config/cgi-bin/*.cgi www/network_config/cgi-bin/lib_*.sh; do bash -n \"$f\"; done'",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/"],
+      "init": "bash (present everywhere the project builds)"
+    },
+    {
+      "id": "version-consistency",
+      "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
+      "config": null,
+      "run": "python3 scripts/sync-app-version.py --check",
+      "beat": "build",
+      "covers": ["www/network_config/"],
+      "init": "Python 3.10+"
+    },
+    {
+      "id": "install-sh-syntax",
+      "checks": "Bash syntax of the on-device installer.",
+      "config": null,
+      "run": "bash -n install.sh",
+      "beat": "review",
+      "covers": ["install.sh"],
+      "init": "bash"
+    }
+  ]
+}
