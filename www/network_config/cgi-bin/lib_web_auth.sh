@@ -80,10 +80,21 @@ web_session_check_cookie() {
         rm -f "$f" 2>/dev/null
         return 1
     fi
-    # Sliding renewal — the CGI layer owns the files; the daemon only reads.
-    user="${line#* }"
-    [ "$user" = "$line" ] && user="${SA02M_WEB_USER:-admin}"
-    ( umask 027; printf '%s %s\n' "$(( now + SA02M_SESSION_TTL ))" "$user" > "$f" ) 2>/dev/null || true
+    # Sliding renewal — throttled + atomic. Skip the rewrite unless the session
+    # is meaningfully old (>1h since its last write): a page refresh fires a burst
+    # of concurrent authed requests, and rewriting the file on every one of them
+    # races (a reader can catch a half-written file → parses as expired → a
+    # spurious 401, e.g. nginx auth_request on /api/flasher/*). When we do renew,
+    # write a temp file and rename() it in so a concurrent reader only ever sees a
+    # complete file.
+    if [ "$(( SA02M_SESSION_TTL - (exp - now) ))" -gt 3600 ]; then
+        user="${line#* }"
+        [ "$user" = "$line" ] && user="${SA02M_WEB_USER:-admin}"
+        local tmp="$f.$$.$RANDOM"
+        if ( umask 027; printf '%s %s\n' "$(( now + SA02M_SESSION_TTL ))" "$user" > "$tmp" ) 2>/dev/null; then
+            mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+        fi
+    fi
     return 0
 }
 
