@@ -32,10 +32,10 @@
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
-      "run": "python3 scripts/sync-app-version.py --check",
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" scripts/sync-app-version.py --check; fi; done; echo version-consistency: no working python interpreter; exit 1'",
       "beat": "build",
       "covers": ["www/network_config/"],
-      "init": "Python 3.10+"
+      "init": "Python 3.10+ as python3, python, or py — the runner picks the first that actually executes (Windows ships a non-functional python3 Store stub; Linux/CI resolves python3 first)"
     },
     {
       "id": "install-sh-syntax",
