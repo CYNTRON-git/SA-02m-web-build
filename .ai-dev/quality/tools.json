@@ -12,9 +12,9 @@
   "tools": [
     {
       "id": "js-syntax",
-      "checks": "Syntax errors in the hand-written frontend bundles (app.js, i18n.js, flasher.js, mqtt.js, gateway.js) — a broken bundle bricks the whole UI since there is no build step.",
+      "checks": "Syntax errors in every hand-written frontend script — the top-level bundles (app.js, i18n.js, flasher.js, mqtt.js, gateway.js) and the app/*.js modules app.js was decomposed into (F10) — a broken script bricks the whole UI since there is no build step.",
       "config": null,
-      "run": "node --check www/network_config/static/js/app.js && node --check www/network_config/static/js/i18n.js && node --check www/network_config/static/js/flasher.js && node --check www/network_config/static/js/mqtt.js && node --check www/network_config/static/js/gateway.js",
+      "run": "bash -c 'set -e; for f in www/network_config/static/js/*.js www/network_config/static/js/app/*.js; do node --check \"$f\"; done'",
       "beat": "build",
       "covers": ["www/network_config/static/js/"],
       "init": "Node 18+"
