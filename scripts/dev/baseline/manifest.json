@@ -1,6 +1,6 @@
 {
   "label": "baseline",
-  "at": "2026-07-13T09:26:40.820Z",
+  "at": "2026-07-13T10:01:21.302Z",
   "device": "http://192.168.1.136:9999",
   "tabs": [
     "dashboard",
@@ -249,7 +249,7 @@
         "sidebar": "4025832fbebe7ca3",
         "pane": "5490707a1043eb1f"
       },
-      "shot": "0c9bab38ee7779c5"
+      "shot": "b1f2b2deda6621df"
     },
     "dark/dashboard/sa02m-2eth": {
       "dom": {
@@ -257,7 +257,7 @@
         "sidebar": "4025832fbebe7ca3",
         "pane": "775e5bd9a4ce65dd"
       },
-      "shot": "b9067f1e135e72c0"
+      "shot": "0eca8b1b4af321f8"
     },
     "dark/network/sa02m-1eth": {
       "dom": {
@@ -281,23 +281,23 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "69cc162a431b85c0"
+      "shot": "96e27dd345a03068"
     },
     "dark/system/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "c26cd6798a66eb00"
+        "pane": "1c85ba1519b91668"
       },
-      "shot": "2a8a51d19b383994"
+      "shot": "bc321e1338ea9bf1"
     },
     "dark/system/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "c26cd6798a66eb00"
+        "pane": "1c85ba1519b91668"
       },
-      "shot": "df893ad7260a1d39"
+      "shot": "94a65a36689c4d2f"
     },
     "dark/flasher/default": {
       "dom": {
@@ -305,23 +305,23 @@
         "sidebar": "c251ccd16d394097",
         "pane": "06353420a92d89d6"
       },
-      "shot": "0233f6140ad20de1"
+      "shot": "7c0e238e10d8e01d"
     },
     "dark/mqtt/default": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "ba1a84f5ede6674c",
-        "pane": "c3ae6e2a59a7283d"
+        "pane": "772dddce5e7b93b3"
       },
-      "shot": "bf907875457079f2"
+      "shot": "460126d4e711b908"
     },
     "dark/gateway/default": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "f3e4297400c385f2",
-        "pane": "0a1ef55de9035459"
+        "pane": "1ecb9d7dc6d0e950"
       },
-      "shot": "404a2a9fd0a0da37"
+      "shot": "b1baa1c5b881252f"
     },
     "light/dashboard/sa02m-1eth": {
       "dom": {
@@ -329,7 +329,7 @@
         "sidebar": "4025832fbebe7ca3",
         "pane": "5490707a1043eb1f"
       },
-      "shot": "f0517589d7e7564f"
+      "shot": "f2892151fcf4a5a1"
     },
     "light/dashboard/sa02m-2eth": {
       "dom": {
@@ -337,7 +337,7 @@
         "sidebar": "4025832fbebe7ca3",
         "pane": "775e5bd9a4ce65dd"
       },
-      "shot": "5c83dbd93c9a7ada"
+      "shot": "4100b3c715b6218b"
     },
     "light/network/sa02m-1eth": {
       "dom": {
@@ -361,7 +361,7 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "c3ab7355ea7e3e1b"
+      "shot": "b10f0aae85ce9e2e"
     },
     "light/system/sa02m-1eth": {
       "dom": {
@@ -369,7 +369,7 @@
         "sidebar": "6b64f08377f754fa",
         "pane": "1c85ba1519b91668"
       },
-      "shot": "8afa364b9adcd87c"
+      "shot": "8bfcc83b79f1fbfb"
     },
     "light/system/sa02m-2eth": {
       "dom": {
@@ -377,7 +377,7 @@
         "sidebar": "6b64f08377f754fa",
         "pane": "1c85ba1519b91668"
       },
-      "shot": "b34c735303e3bbf1"
+      "shot": "d9e95a22db91bec7"
     },
     "light/flasher/default": {
       "dom": {
@@ -385,15 +385,15 @@
         "sidebar": "c251ccd16d394097",
         "pane": "06353420a92d89d6"
       },
-      "shot": "46908834cdabe9d9"
+      "shot": "91828ed7142cb391"
     },
     "light/mqtt/default": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "ba1a84f5ede6674c",
-        "pane": "772dddce5e7b93b3"
+        "pane": "3701244f0e4eb0a4"
       },
-      "shot": "d62ed58ef33896e9"
+      "shot": "994b3c888e6ea95e"
     },
     "light/gateway/default": {
       "dom": {
@@ -401,11 +401,16 @@
         "sidebar": "f3e4297400c385f2",
         "pane": "1ecb9d7dc6d0e950"
       },
-      "shot": "8a51f72a6eb56326"
+      "shot": "bc90de7a9fa4eea2"
     }
   },
   "errors": {
     "login": [
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
@@ -417,9 +422,19 @@
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
     ],
     "light/system/sa02m-2eth": [
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
       "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
