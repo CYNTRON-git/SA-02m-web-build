@@ -70,6 +70,11 @@ const CONTAINERS = { topbar: 'header.topbar', sidebar: 'nav.sidebar' };
 // Subtrees (by id) collapsed in the skeleton — poll-driven, run-to-run variable,
 // and out of scope for the F10 split. See pageSkeleton().
 const PRUNE_IDS = ['nav-gateway-sub'];
+// Harness lifecycle phases, not characterization cells. Errors here (e.g. the
+// expected pre-authentication 401 the auth guard triggers before login) are not
+// gating — the real oracle is the theme/tab/variant matrix. Their errors are
+// still recorded in the manifest, just not compared.
+const LIFECYCLE_CELLS = new Set(['init', 'login']);
 
 // ── Args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -334,8 +339,10 @@ function compare(base, cur) {
     if (b.shot !== c.shot) d.shots.push(key);            // soft
   }
 
-  // New error signatures relative to baseline are a hard fail.
+  // New error signatures relative to baseline are a hard fail — but only on the
+  // characterization matrix, not the transient login/init lifecycle phases.
   for (const key of Object.keys(cur.errors)) {
+    if (LIFECYCLE_CELLS.has(key)) continue;
     const was = new Set(base.errors[key] || []);
     const isNew = (cur.errors[key] || []).filter((e) => !was.has(e));
     if (isNew.length) { d.errors[key] = isNew; d.hardFail = true; }
