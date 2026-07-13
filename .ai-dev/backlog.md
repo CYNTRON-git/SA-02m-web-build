@@ -17,6 +17,14 @@ items still need on-device verification before deploy).
   Route each through the same `first_existing_iface` detection. Surfaced by the
   installer-end0 fix reviewer (A2). No SSH-safety regression; a real gap for
   end-name boards.
+- [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
+  `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
+  legacy static `session_token=cyntron_session` cookie instead of the
+  per-session sha256 model. Benign today — it is a liveness check and
+  `status.cgi` returns HTTP 200 (with an error body) so `curl -fsS` still
+  succeeds; unchanged from `main`, NOT introduced by the 1.0.5.0 flasher-auth
+  work. Align it to a dedicated internal probe (or the per-session model) so no
+  static-token assumption lingers. Surfaced by the 1.0.5.0 ship reviewer.
 - [OPEN] 2026-07-13 **[LOW] F10 — decompose the god-files.** `app.js` DONE:
   a UI characterization harness (`scripts/dev/`, headless Chromium over every
   tab×theme×variant; globals + new-errors + DOM-skeleton gate) captured a
