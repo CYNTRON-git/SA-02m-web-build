@@ -85,51 +85,58 @@ function hwLogicalFromPayload(v) {
   return -1;
 }
 
-function syncHwButtonStyles(channel, v) {
-  if (channel === 'usb_power') {
-    return;
-  }
-  const nv = hwLogicalFromPayload(v);
-  const wrap = document.querySelector('.hw-btns[data-hw-ch="' + channel + '"]');
-  if (!wrap) return;
-  const b0 = wrap.querySelector('.hw-io-btn[data-hw-val="0"]');
-  const b1 = wrap.querySelector('.hw-io-btn[data-hw-val="1"]');
-  [b0, b1].forEach(function (b) {
-    if (b) {
-      b.classList.remove('hw-io-current', 'hw-io-to-on', 'hw-io-to-off');
-    }
-  });
+// Channels rendered as a single toggle button (blue when ON, like the active
+// sidebar item). usb_power keeps its power-state status line + Сброс button.
+const HW_TOGGLE_CHANNELS = new Set(['do', 'beeper', 'alarm_led']);
+
+function hwToggleBtn(channel) {
+  return document.querySelector('.hw-btns[data-hw-ch="' + channel + '"] .hw-toggle-btn');
+}
+
+/** Reflect a toggle channel's logical state on its single button:
+ *  ON → blue (hw-active-blue), OFF → default, unknown/-1 → «н/д». */
+function updateHwToggleBtn(channel, nv) {
+  const btn = hwToggleBtn(channel);
+  if (!btn) return;
+  const words = HW_STATE_WORDS[channel] || ['ВЫКЛ', 'ВКЛ'];
+  btn.classList.remove('hw-active-blue', 'na');
+  btn.dataset.cur = String(nv);
   if (nv === -1) {
-    if (b0) b0.classList.add('hw-io-current');
-    if (b1) b1.classList.add('hw-io-current');
+    btn.textContent = uiT('н/д');
+    btn.classList.add('na');
     return;
   }
-  if (nv) {
-    if (b0) b0.classList.add('hw-io-to-off');
-    if (b1) b1.classList.add('hw-io-current');
-  } else {
-    if (b0) b0.classList.add('hw-io-current');
-    if (b1) b1.classList.add('hw-io-to-on');
-  }
+  btn.textContent = uiT(nv ? words[1] : words[0]);
+  if (nv) btn.classList.add('hw-active-blue');
 }
 
 function applyHwChannel(stId, channel, v) {
   const nv = hwLogicalFromPayload(v);
-  const el = document.getElementById(stId);
-  const words = HW_STATE_WORDS[channel] || ['ВЫКЛ', 'ВКЛ'];
-  if (!el) {
-    syncHwButtonStyles(channel, nv);
+  if (HW_TOGGLE_CHANNELS.has(channel)) {
+    updateHwToggleBtn(channel, nv);
     return;
   }
+  // usb_power (and any non-toggle channel): status-line rendering as before.
+  const el = document.getElementById(stId);
+  const words = HW_STATE_WORDS[channel] || ['ВЫКЛ', 'ВКЛ'];
+  if (!el) return;
   if (nv === -1) {
     el.textContent = uiT('н/д');
     el.className = 'hw-status-val na';
-    syncHwButtonStyles(channel, -1);
     return;
   }
   el.textContent = uiT(nv ? words[1] : words[0]);
   el.className = 'hw-status-val ' + (nv ? 'on' : 'off');
-  syncHwButtonStyles(channel, nv);
+}
+
+/** Toggle a channel: flip its current logical state and push it to the backend.
+ *  «н/д» (unknown) is treated as OFF → a click turns it ON. Disabled buttons
+ *  (pin not configured) are inert. */
+function toggleHw(channel) {
+  const btn = hwToggleBtn(channel);
+  if (!btn || btn.disabled) return;
+  const cur = parseInt(btn.dataset.cur, 10);
+  setHw(channel, cur === 1 ? 0 : 1);
 }
 
 function setHwChannelBtns(channel, enabled) {
@@ -159,6 +166,9 @@ function usbPowerReset() {
           ? j.reset_sec
           : USB_POWER_RESET_SEC_DEFAULT;
         setHwBlockStatus('Сброс питания на ' + sec + ' сек', 'success', (sec + 2) * 1000);
+        // Кнопка «Сброс» горит голубым (как активный пункт меню) пока идёт сброс
+        // — гаснет, когда питание USB снова появилось (по истечении sec).
+        if (btn) btn.classList.add('hw-active-blue');
         applyHwChannel('hw-usb-st', 'usb_power', 0);
         pendingUsbPowerVal = 0;
         pendingUsbPowerUntil = Date.now() + (sec + 2) * 1000;
@@ -167,7 +177,7 @@ function usbPowerReset() {
         window.setTimeout(function () {
           pendingUsbPowerVal = null;
           pendingUsbPowerUntil = 0;
-          if (btn) btn.disabled = false;
+          if (btn) { btn.disabled = false; btn.classList.remove('hw-active-blue'); }
           bumpMainStatusEpoch();
           fetchStatusMain(true);
         }, sec * 1000 + 500);

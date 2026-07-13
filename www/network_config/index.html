@@ -261,37 +261,25 @@
             <div class="hw-grid">
               <div class="hw-item" data-hide-for="sa02m-2eth">
                 <div class="hw-item-title" title="Дискретный выход">DO</div>
-                <div class="hw-item-body">
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="do">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('do',0)">Выкл</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('do',1)">Вкл</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-do-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-do-btn" data-cur="-1" onclick="toggleHw('do')">н/д</button>
                   </div>
                 </div>
               </div>
               <div class="hw-item">
                 <div class="hw-item-title">Пищалка</div>
-                <div class="hw-item-body">
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="beeper">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('beeper',0)">Тихо</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('beeper',1)">Звук</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-beep-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-beeper-btn" data-cur="-1" onclick="toggleHw('beeper')">н/д</button>
                   </div>
                 </div>
               </div>
               <div class="hw-item">
                 <div class="hw-item-title" title="Аварийный LED">LED (красный)</div>
-                <div class="hw-item-body">
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="alarm_led">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('alarm_led',0)">Выкл</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('alarm_led',1)">Вкл</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-led-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-alarm_led-btn" data-cur="-1" onclick="toggleHw('alarm_led')">н/д</button>
                   </div>
                 </div>
               </div>

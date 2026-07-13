@@ -740,6 +740,18 @@ html:not([data-theme="light"]) .topbar {
   opacity: 0.45;
   filter: grayscale(0.35);
 }
+/* Одиночная toggle-кнопка HW-канала: занимает всю ширину под-карточки; в «вкл»
+   заливается голубым — той же акцентной подсветкой, что и активный пункт меню
+   слева (.nav-item.active). «н/д» — приглушённая. */
+.hw-item-body-toggle { grid-template-columns: 1fr; }
+.hw-toggle-btn { width: 100%; justify-content: center; font-weight: 600; }
+.hw-toggle-btn.na { color: var(--text-dim); }
+.btn.hw-active-blue {
+  background: var(--cyan-dim, rgba(34, 211, 238, .12)) !important;
+  color: var(--cyan) !important;
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent) !important;
+  font-weight: 600;
+}
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
 /* Предупреждение о таймаутах опроса дашборда (не путать с hw-hint) */

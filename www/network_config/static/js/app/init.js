@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* Expose globals for inline onclick */
   window.setHw    = setHw;
+  window.toggleHw = toggleHw;
   window.doRestart = doRestart;
   window.doReboot  = doReboot;
   window.loadServicesControl = loadServicesControl;
