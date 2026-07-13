@@ -1,6 +1,6 @@
 {
   "label": "baseline",
-  "at": "2026-07-13T09:15:19.414Z",
+  "at": "2026-07-13T09:26:40.820Z",
   "device": "http://192.168.1.136:9999",
   "tabs": [
     "dashboard",
@@ -247,17 +247,17 @@
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "fa99e0f8dd37e355"
+        "pane": "5490707a1043eb1f"
       },
-      "shot": "db4563228579353e"
+      "shot": "0c9bab38ee7779c5"
     },
     "dark/dashboard/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "12242dd2f632d17a"
+        "pane": "775e5bd9a4ce65dd"
       },
-      "shot": "2bf4a0a34e799283"
+      "shot": "b9067f1e135e72c0"
     },
     "dark/network/sa02m-1eth": {
       "dom": {
@@ -281,23 +281,23 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "10cbe37e2388db06"
+      "shot": "69cc162a431b85c0"
     },
     "dark/system/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "8dc6ce331d3bd00c"
+        "pane": "c26cd6798a66eb00"
       },
-      "shot": "5292fffb91f379e9"
+      "shot": "2a8a51d19b383994"
     },
     "dark/system/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "8dc6ce331d3bd00c"
+        "pane": "c26cd6798a66eb00"
       },
-      "shot": "7f401c196cf8bfb6"
+      "shot": "df893ad7260a1d39"
     },
     "dark/flasher/default": {
       "dom": {
@@ -305,7 +305,7 @@
         "sidebar": "c251ccd16d394097",
         "pane": "06353420a92d89d6"
       },
-      "shot": "94b7a21b639fe366"
+      "shot": "0233f6140ad20de1"
     },
     "dark/mqtt/default": {
       "dom": {
@@ -327,17 +327,17 @@
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "fa99e0f8dd37e355"
+        "pane": "5490707a1043eb1f"
       },
-      "shot": "73b2324c35e74c38"
+      "shot": "f0517589d7e7564f"
     },
     "light/dashboard/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "12242dd2f632d17a"
+        "pane": "775e5bd9a4ce65dd"
       },
-      "shot": "bf333c751297d190"
+      "shot": "5c83dbd93c9a7ada"
     },
     "light/network/sa02m-1eth": {
       "dom": {
@@ -361,13 +361,13 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "dee47f233163485d"
+      "shot": "c3ab7355ea7e3e1b"
     },
     "light/system/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "da5c30336458785b"
+        "pane": "1c85ba1519b91668"
       },
       "shot": "8afa364b9adcd87c"
     },
@@ -375,7 +375,7 @@
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "da5c30336458785b"
+        "pane": "1c85ba1519b91668"
       },
       "shot": "b34c735303e3bbf1"
     },
