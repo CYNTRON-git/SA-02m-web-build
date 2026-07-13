@@ -23,6 +23,51 @@ let _boardVariant = 'sa02m-1eth';
   }
 })();
 
+/* ── 401 → login ──────────────────────────────────────────────────────────
+   A request that comes back 401 usually means the server-side session is gone
+   (expired/revoked) — send the user to the login page instead of surfacing
+   "HTTP 401: unauthorized" toasts from individual widgets. Wrap fetch once,
+   centrally, so every caller (status polling, flasher, services…) is covered.
+
+   But the board also emits the occasional *transient* 401 while the session is
+   perfectly alive (a brief race in the session store). We must NOT log the user
+   out over one of those. So on a 401 we re-check with one lightweight authed
+   call: only a confirmed 401 clears the cookie and redirects; a transient one
+   is swallowed by silently retrying the original GET (POSTs are left to their
+   caller, to avoid re-applying a non-idempotent action). */
+(function () {
+  if (window.location.pathname.includes('login')) return;
+  const _fetch = window.fetch;
+  let redirecting = false;
+  window.fetch = function () {
+    const self = this, args = arguments;
+    let method = 'GET';
+    try {
+      const a0 = args[0];
+      if (a0 && typeof a0 === 'object' && a0.method) method = a0.method;     // Request
+      if (args[1] && args[1].method) method = args[1].method;                // init
+    } catch (e) { /* keep GET */ }
+    method = String(method).toUpperCase();
+
+    return _fetch.apply(self, args).then(function (res) {
+      if (!res || res.status !== 401 || redirecting) return res;
+      return _fetch('/cgi-bin/status.cgi?part=uptime', { credentials: 'same-origin' })
+        .then(function (chk) {
+          if (chk && chk.status === 401) {
+            redirecting = true;
+            // Cookie can linger (10-day Max-Age) after the server session dies;
+            // clear it so login.html doesn't bounce us back to the dashboard.
+            document.cookie = 'session_token=; Path=/; Max-Age=0; SameSite=Lax';
+            window.location.replace('/login.html');
+            return res;
+          }
+          return method === 'GET' ? _fetch.apply(self, args) : res;
+        })
+        .catch(function () { return res; });
+    });
+  };
+})();
+
 /* ── Navigation ──────────────────────────────────────────────────────────── */
 function switchTab(tab) {
   const navEl = document.querySelector('.nav-item[data-tab="' + tab + '"]');
