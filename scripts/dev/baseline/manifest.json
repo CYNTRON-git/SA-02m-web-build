@@ -1,6 +1,6 @@
 {
   "label": "baseline",
-  "at": "2026-07-13T08:21:13.029Z",
+  "at": "2026-07-13T09:15:19.414Z",
   "device": "http://192.168.1.136:9999",
   "tabs": [
     "dashboard",
@@ -113,6 +113,7 @@
     "hwLogicalFromPayload:function",
     "hwMetricsPayloadValid:function",
     "hwRerenderBlockStatus:function",
+    "hwToggleBtn:function",
     "hydratePriorityWarmup:function",
     "initDashboardPlaceholders:function",
     "initForms:function",
@@ -217,7 +218,6 @@
     "svcStateIsActive:function",
     "switchTab:function",
     "syncCpuProfileSectionVisibility:function",
-    "syncHwButtonStyles:function",
     "syncMainLoadedFlag:function",
     "syncTimeFromPC:function",
     "teardownStatusPolling:function",
@@ -228,10 +228,12 @@
     "toast:function",
     "toggleEth0Fields:function",
     "toggleEth1Fields:function",
+    "toggleHw:function",
     "toggleStorageAutoFormat:function",
     "uiT:function",
     "unitUiLabel:function",
     "updateCpuProfileTile:function",
+    "updateHwToggleBtn:function",
     "updateThemeBtn:function",
     "usbPowerReset:function",
     "validateNetForm:function",
@@ -245,17 +247,17 @@
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "bd2de8b7d6cfcf65"
+        "pane": "fa99e0f8dd37e355"
       },
-      "shot": "359ded9b83e6a624"
+      "shot": "db4563228579353e"
     },
     "dark/dashboard/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "4b91cdafb8080fe0"
+        "pane": "12242dd2f632d17a"
       },
-      "shot": "6df8e005b723d773"
+      "shot": "2bf4a0a34e799283"
     },
     "dark/network/sa02m-1eth": {
       "dom": {
@@ -279,31 +281,31 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "c52b704df00dc6d0"
+      "shot": "10cbe37e2388db06"
     },
     "dark/system/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "866d3efe1fd072c7"
+        "pane": "8dc6ce331d3bd00c"
       },
-      "shot": "ec0f5c4e5156be92"
+      "shot": "5292fffb91f379e9"
     },
     "dark/system/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "866d3efe1fd072c7"
+        "pane": "8dc6ce331d3bd00c"
       },
-      "shot": "bfc6d39cc2e7d13f"
+      "shot": "7f401c196cf8bfb6"
     },
     "dark/flasher/default": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "c251ccd16d394097",
-        "pane": "a462ec135e10f821"
+        "pane": "06353420a92d89d6"
       },
-      "shot": "b7dbbe24d89e3cb0"
+      "shot": "94b7a21b639fe366"
     },
     "dark/mqtt/default": {
       "dom": {
@@ -311,7 +313,7 @@
         "sidebar": "ba1a84f5ede6674c",
         "pane": "c3ae6e2a59a7283d"
       },
-      "shot": "9cedbbd6e8f43a9f"
+      "shot": "bf907875457079f2"
     },
     "dark/gateway/default": {
       "dom": {
@@ -319,23 +321,23 @@
         "sidebar": "f3e4297400c385f2",
         "pane": "0a1ef55de9035459"
       },
-      "shot": "4838fa2ce48876ca"
+      "shot": "404a2a9fd0a0da37"
     },
     "light/dashboard/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "bd2de8b7d6cfcf65"
+        "pane": "fa99e0f8dd37e355"
       },
-      "shot": "b40ce21ab6cf885a"
+      "shot": "73b2324c35e74c38"
     },
     "light/dashboard/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "4025832fbebe7ca3",
-        "pane": "4b91cdafb8080fe0"
+        "pane": "12242dd2f632d17a"
       },
-      "shot": "6cada0b185443080"
+      "shot": "bf333c751297d190"
     },
     "light/network/sa02m-1eth": {
       "dom": {
@@ -359,31 +361,31 @@
         "sidebar": "b85f4698fc743f83",
         "pane": "d0d25a3977d51f70"
       },
-      "shot": "cf25ac0287461e07"
+      "shot": "dee47f233163485d"
     },
     "light/system/sa02m-1eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "7c7029e767055e1b"
+        "pane": "da5c30336458785b"
       },
-      "shot": "bbff8826746f092a"
+      "shot": "8afa364b9adcd87c"
     },
     "light/system/sa02m-2eth": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "6b64f08377f754fa",
-        "pane": "7c7029e767055e1b"
+        "pane": "da5c30336458785b"
       },
-      "shot": "bbff8826746f092a"
+      "shot": "b34c735303e3bbf1"
     },
     "light/flasher/default": {
       "dom": {
         "topbar": "c6425b3eb8d3cbbb",
         "sidebar": "c251ccd16d394097",
-        "pane": "a462ec135e10f821"
+        "pane": "06353420a92d89d6"
       },
-      "shot": "4ce6d72b9181ebf7"
+      "shot": "46908834cdabe9d9"
     },
     "light/mqtt/default": {
       "dom": {
@@ -391,7 +393,7 @@
         "sidebar": "ba1a84f5ede6674c",
         "pane": "772dddce5e7b93b3"
       },
-      "shot": "20149aa6a0676dff"
+      "shot": "d62ed58ef33896e9"
     },
     "light/gateway/default": {
       "dom": {
@@ -399,8 +401,30 @@
         "sidebar": "f3e4297400c385f2",
         "pane": "1ecb9d7dc6d0e950"
       },
-      "shot": "fc2a042f7854bee8"
+      "shot": "8a51f72a6eb56326"
     }
   },
-  "errors": {}
+  "errors": {
+    "login": [
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "dark/system/sa02m-2eth": [
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ],
+    "light/system/sa02m-2eth": [
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    ]
+  }
 }
