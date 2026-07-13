@@ -51,7 +51,9 @@ let _boardVariant = 'sa02m-1eth';
 
     return _fetch.apply(self, args).then(function (res) {
       if (!res || res.status !== 401 || redirecting) return res;
-      return _fetch('/cgi-bin/status.cgi?part=uptime', { credentials: 'same-origin' })
+      // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
+      // cached 200 that outlives the session) — and never from cache.
+      return _fetch('/cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
         .then(function (chk) {
           if (chk && chk.status === 401) {
             redirecting = true;
