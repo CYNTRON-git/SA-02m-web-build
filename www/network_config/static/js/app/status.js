@@ -23,22 +23,26 @@ const backgroundBusy = {
 /** Части дашборда, раньше собиравшиеся в одном part=main — rolling scheduler с фазовым сдвигом. */
 const BACKGROUND_STATUS_PARTS = ['storage', 'time', 'uptime', 'network', 'load', 'system', 'services', 'hardware'];
 /** Лёгкие части (кеш / быстрый CGI) vs тяжёлые (network, services, rs485 cold ~4 s). */
-const LIGHT_STATUS_PARTS = ['storage', 'uptime', 'load', 'system'];
-const HEAVY_STATUS_PARTS = ['network', 'services', 'hardware'];
+const LIGHT_STATUS_PARTS = ['storage', 'hardware', 'uptime', 'load', 'system'];
+const HEAVY_STATUS_PARTS = ['network', 'services'];
 const HEAVY_STATUS_PARTS_ALL = HEAVY_STATUS_PARTS.concat(['priority', 'rs485', 'main']);
 /** Период light/heavy и фазы (мс): heavy реже и с большим зазором. */
 const LIGHT_PART_PERIOD_MS = 6000;
 const HEAVY_PART_PERIOD_MS = 12000;
 const LIGHT_PART_PHASE_MS = {
   storage: 0,
+  // hardware reads a TTL-cached status.cgi part (~0.4 s, no live I2C hit), so it
+  // is a LIGHT part, not heavy: it must not sit behind the 2.2 s heavy-queue gap
+  // (network/services/priority/rs485/main) that pushed the HW block to ~18 s
+  // after load. Early phase → it populates in the first wave.
+  hardware: 500,
   uptime: 750,
   load: 1500,
   system: 2250
 };
 const HEAVY_PART_PHASE_MS = {
   network: 3500,
-  services: 6500,
-  hardware: 9500
+  services: 6500
 };
 /** @deprecated — для fetchStatusMain stagger burst */
 const BACKGROUND_PART_PERIOD_MS = LIGHT_PART_PERIOD_MS;
