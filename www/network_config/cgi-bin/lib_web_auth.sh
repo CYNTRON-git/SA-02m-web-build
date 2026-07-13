@@ -14,8 +14,18 @@ SA02M_SESSION_TTL="${SA02M_SESSION_TTL:-864000}"   # 10 days, matches the cookie
 web_session__ensure_dir() {
     [ -d "$SA02M_SESSION_DIR" ] && return 0
     mkdir -p "$SA02M_SESSION_DIR" 2>/dev/null || return 1
-    chmod 700 "$SA02M_SESSION_DIR" 2>/dev/null || true
+    # setgid + group-accessible: the sa02m-flasher daemon runs in the www-data
+    # group and reads the session files by group, so the dir must be traversable
+    # by the group (2750) and files group-readable (640, see web_session_create).
+    chmod 2750 "$SA02M_SESSION_DIR" 2>/dev/null || true
     return 0
+}
+
+# sha256 of the token. The session file is named by this hash — never the raw
+# token — so listing the store never reveals a live token, and it MUST match the
+# flasher daemon (opt/sa02m-flasher/sa02m_flasher/auth.py) and the login layer.
+web_session__hash() {
+    printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1
 }
 
 # Print a fresh 32-byte hex token to stdout (nothing else).
@@ -37,39 +47,52 @@ web_session__cookie_token() {
 }
 
 # Create a session, print its token. Returns 1 if the store cannot be written.
+# File name = sha256(token); content = "<expiry_epoch> <user>" — the daemon reads
+# the expiry from the content, and the file is group-readable (640) so it can.
 web_session_create() {
     web_session__ensure_dir || return 1
-    local tok f
+    local tok hash f exp user
     tok=$(web_session__gen_token)
     [ -n "$tok" ] || return 1
-    f="$SA02M_SESSION_DIR/$tok"
-    : > "$f" 2>/dev/null || return 1
-    chmod 600 "$f" 2>/dev/null || true
+    hash=$(web_session__hash "$tok")
+    [ -n "$hash" ] || return 1
+    exp=$(( $(date +%s 2>/dev/null) + SA02M_SESSION_TTL ))
+    user="${1:-${SA02M_WEB_USER:-admin}}"
+    f="$SA02M_SESSION_DIR/$hash"
+    ( umask 027; printf '%s %s\n' "$exp" "$user" > "$f" ) 2>/dev/null || return 1
     printf '%s' "$tok"
 }
 
 # Validate the cookie's token against the store, pruning it if expired.
-# Returns 0 (valid) / 1 (missing, unknown, or expired) — fail closed.
+# Returns 0 (valid) / 1 (missing, unknown, or expired) — fail closed. Expiry
+# lives in the file content (first field), matching the daemon's read-only check.
 web_session_check_cookie() {
-    local tok f age now mtime
+    local tok hash f line exp now user
     tok=$(web_session__cookie_token) || return 1
-    f="$SA02M_SESSION_DIR/$tok"
+    hash=$(web_session__hash "$tok") || return 1
+    f="$SA02M_SESSION_DIR/$hash"
     [ -f "$f" ] || return 1
+    IFS= read -r line < "$f" 2>/dev/null || return 1
+    exp="${line%% *}"
+    case "$exp" in ''|*[!0-9]*) return 1 ;; esac
     now=$(date +%s 2>/dev/null) || return 1
-    mtime=$(stat -c %Y "$f" 2>/dev/null) || return 1
-    age=$(( now - mtime ))
-    if [ "$age" -lt 0 ] || [ "$age" -gt "$SA02M_SESSION_TTL" ]; then
+    if [ "$now" -ge "$exp" ]; then
         rm -f "$f" 2>/dev/null
         return 1
     fi
+    # Sliding renewal — the CGI layer owns the files; the daemon only reads.
+    user="${line#* }"
+    [ "$user" = "$line" ] && user="${SA02M_WEB_USER:-admin}"
+    ( umask 027; printf '%s %s\n' "$(( now + SA02M_SESSION_TTL ))" "$user" > "$f" ) 2>/dev/null || true
     return 0
 }
 
 # Revoke the session named by the current cookie (logout).
 web_session_destroy_cookie() {
-    local tok
+    local tok hash
     tok=$(web_session__cookie_token) || return 0
-    rm -f "$SA02M_SESSION_DIR/$tok" 2>/dev/null
+    hash=$(web_session__hash "$tok") || return 0
+    rm -f "$SA02M_SESSION_DIR/$hash" 2>/dev/null
     return 0
 }
 
