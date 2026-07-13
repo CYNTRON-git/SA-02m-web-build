@@ -1,0 +1,29 @@
+name: web-quality
+
+# Runs the project quality registry (.ai-dev/quality/tools.json) in CI so a PR
+# to main is gated on the same checks the Builder/Reviewer run locally:
+# js-syntax (node --check), bash-cgi-syntax (bash -n), version-consistency
+# (scripts/sync-app-version.py), and install-sh-syntax (review beat).
+# ubuntu-latest already provides bash + python3; only Node needs setting up.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Build-beat gate (js-syntax, bash-cgi-syntax, version-consistency)
+        run: node .ai-dev/quality/run.mjs build
+      - name: Review-beat gate (install-sh-syntax)
+        run: node .ai-dev/quality/run.mjs review
