@@ -8,10 +8,21 @@ items still need on-device verification before deploy).
 
 ## Open
 
-- [OPEN] 2026-07-12 **[LOW] F10 — decompose the god-files.** `flasher.js` (4411)
-  and `app.js` (3326) are multi-responsibility. Plan: `.ai-dev/plans/f10-decompose.md`.
-  Behaviour-preserving; needs a characterization net + per-tab on-device
-  verification (ES modules forbidden — split into plain global-scope scripts).
+- [OPEN] 2026-07-13 **[LOW] F10 — decompose the god-files.** `app.js` DONE:
+  a UI characterization harness (`scripts/dev/`, headless Chromium over every
+  tab×theme×variant; globals + new-errors + DOM-skeleton gate) captured a
+  baseline, then app.js was peeled section-by-section into 7 plain global-scope
+  scripts `static/js/app/*.js` (app.js is now the ~389-line core) — one file per
+  commit, oracle PASS after each. `flasher.js` DEFERRED (follow-up): it is a
+  single cohesive IIFE — 230 closure-private functions threaded through one
+  shared mutable `state` (260 refs), only 5 `window.*` exports. Splitting it into
+  plain global scripts (ES modules forbidden) would mean promoting `state` + the
+  fn set to global scope and rewriting hundreds of internal references — a
+  semantic rewrite, not a behaviour-preserving move, and it would recreate the
+  god-object in global scope. Not worth the risk vs the [LOW] payoff; revisit
+  only if the no-modules constraint is lifted. Still OPEN for app.js:
+  on-device click-through before deploy (headless is necessary, not sufficient
+  for a global-scope reorg).
 - [OPEN] 2026-07-12 **[LOW] Y7-b — `set -u` in installer modules.** `set -o pipefail`
   landed; bare `set -u` deferred — an unset-var abort mid-provision could brick a
   fresh install. Add only with an on-device install run.
