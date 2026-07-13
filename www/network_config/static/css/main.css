@@ -498,17 +498,6 @@ html:not([data-theme="light"]) .topbar {
 .badge-ok  { background: var(--badge-ok-bg); color: var(--green);  border: 1px solid var(--badge-ok-border); }
 .badge-err { background: var(--badge-err-bg); color: var(--red);    border: 1px solid var(--badge-err-border); }
 .badge-unk { background: var(--bg-panel); color: var(--text-sec); border: 1px solid var(--border-md); }
-/* Точка-индикатор состояния перед текстом (как «• En ligne» в референсе) */
-.badge-ok::before,
-.badge-err::before {
-  content: '';
-  display: inline-block;
-  width: 5px; height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  margin-right: 5px;
-  flex: 0 0 auto;
-}
 .badge-ok.pulse { animation: badge-pulse 2s infinite; }
 @keyframes badge-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
 
@@ -959,18 +948,6 @@ html:not([data-theme="light"]) .topbar {
   color: var(--yellow);
   background: var(--warn-btn-bg);
   border-color: var(--warn-btn-border);
-}
-/* Точка-индикатор в pill состояния линка */
-.eth-state.up::before,
-.eth-state.down::before {
-  content: '';
-  display: inline-block;
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  margin-right: 6px;
-  vertical-align: middle;
-  margin-top: -2px;
 }
 .eth-state.absent {
   color: var(--text-sec);
@@ -2745,7 +2722,7 @@ html:not([data-theme="light"]) .topbar {
   font-size: .85rem;
 }
 .mqtt-device-table th {
-  text-align: center;
+  text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
