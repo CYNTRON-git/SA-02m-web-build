@@ -647,6 +647,17 @@ iface_mode() {
     echo "unknown"
 }
 
+# Return the first of the candidate interface names that actually exists in
+# /sys/class/net, else the first candidate (so "absent" semantics still hold).
+# Bridges the eth0/eth1 (1.0.4.x predictable names) vs end0/end1 (legacy) gap.
+first_existing_iface() {
+    local c
+    for c in "$@"; do
+        [ -d "/sys/class/net/$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    printf '%s' "$1"
+}
+
 cpu_usage_from_stat_lines() {
     local c1=$1 c2=$2
     local a1=($c1) a2=($c2) total1=0 total2=0
@@ -1265,32 +1276,38 @@ gather_network_metrics() {
         return 0
     fi
 
-    local net0 net1
+    local net0 net1 ETH0_IF ETH1_IF
+    # 1.0.4.x images use predictable names eth0/eth1; legacy / un-reimaged boards
+    # still expose end0/end1. Resolve to whichever actually exists so the
+    # dashboard shows the real IP on both (JSON keys stay eth0_*/eth1_*).
+    ETH0_IF=$(first_existing_iface eth0 end0)
+    ETH1_IF=$(first_existing_iface eth1 end1)
+
     ETH0_ST="absent"
-    if [ -d /sys/class/net/eth0 ]; then
-        IFS= read -r ETH0_ST < /sys/class/net/eth0/operstate
+    if [ -d "/sys/class/net/$ETH0_IF" ]; then
+        IFS= read -r ETH0_ST < "/sys/class/net/$ETH0_IF/operstate"
         ETH0_ST=${ETH0_ST:-unknown}
     fi
 
-    net0=($(net_iface_stats eth0))
+    net0=($(net_iface_stats "$ETH0_IF"))
     NET0_RX=${net0[0]:-0}
     NET0_TX=${net0[1]:-0}
 
     ETH1_ST="absent"
     NET1_RX=0
     NET1_TX=0
-    if [ -d /sys/class/net/eth1 ]; then
-        IFS= read -r ETH1_ST < /sys/class/net/eth1/operstate
+    if [ -d "/sys/class/net/$ETH1_IF" ]; then
+        IFS= read -r ETH1_ST < "/sys/class/net/$ETH1_IF/operstate"
         ETH1_ST=${ETH1_ST:-absent}
-        net1=($(net_iface_stats eth1))
+        net1=($(net_iface_stats "$ETH1_IF"))
         NET1_RX=${net1[0]:-0}
         NET1_TX=${net1[1]:-0}
     fi
 
-    ETH0_IP=$(iface_ipv4_addr eth0)
-    ETH1_IP=$(iface_ipv4_addr eth1)
-    ETH0_MODE=$(iface_mode eth0)
-    ETH1_MODE=$(iface_mode eth1)
+    ETH0_IP=$(iface_ipv4_addr "$ETH0_IF")
+    ETH1_IP=$(iface_ipv4_addr "$ETH1_IF")
+    ETH0_MODE=$(iface_mode "$ETH0_IF")
+    ETH1_MODE=$(iface_mode "$ETH1_IF")
 
     # Для верхней панели оставляем единый IP (первый доступный).
     IP="${ETH0_IP:-}"
