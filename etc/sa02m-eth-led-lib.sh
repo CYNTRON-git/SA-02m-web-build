@@ -1,7 +1,7 @@
 #!/bin/sh
 # sa02m-eth-led-lib.sh — carrier → LED mapping by hardware variant.
-# sa02m-1eth: eth0_link ← end0
-# sa02m-2eth: eth0_link ← end1, eth1_link ← end0
+# sa02m-1eth: eth0_link ← eth0
+# sa02m-2eth: eth0_link ← eth1, eth1_link ← eth0
 #
 # Netdev trigger on platform gpio-led is unavailable; brightness is set manually.
 
@@ -47,11 +47,11 @@ sa02m_led_sync_all() {
     variant=$(sa02m_hw_variant)
     case "$variant" in
         sa02m-2eth)
-            sa02m_led_sync_pair /sys/class/leds/eth0_link end1
-            sa02m_led_sync_pair /sys/class/leds/eth1_link end0
+            sa02m_led_sync_pair /sys/class/leds/eth0_link eth1
+            sa02m_led_sync_pair /sys/class/leds/eth1_link eth0
             ;;
         *)
-            sa02m_led_sync_pair /sys/class/leds/eth0_link end0
+            sa02m_led_sync_pair /sys/class/leds/eth0_link eth0
             sa02m_led_off /sys/class/leds/eth1_link
             ;;
     esac

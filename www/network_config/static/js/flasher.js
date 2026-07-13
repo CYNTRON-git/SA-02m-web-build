@@ -694,7 +694,7 @@
     const hasMpMr = routes.some(r => r === 'mp_mr');
     const hasWb = routes.some(r => r === 'wb');
     if (hasMpMr && hasWb) {
-      return 'Нельзя прошивать вместе модули MR/MP и Wiren Board. Выберите устройства одного типа.';
+      return 'Нельзя прошивать вместе модули MR/MP и сторонние (.wbfw). Выберите устройства одного типа.';
     }
     return '';
   }
@@ -957,7 +957,7 @@
   }
 
   async function clearFirmwareCache() {
-    if (!confirm('Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.')) return;
+    if (!confirm(t('Удалить все скачанные прошивки из кеша шлюза?\nСписок в манифесте сохранится; файлы нужно будет скачать или загрузить заново.'))) return;
     try {
       const res = await apiPost('/firmware/clear', {});
       const n = (res.cleared && res.cleared.length) || 0;
@@ -1078,7 +1078,7 @@
       return `Для модуля MR/MP-02m («${sig}») выберите прошивку .fw, не .wbfw.`;
     }
     if (route === 'wb' && !fwIsWbfw) {
-      return `Для устройства «${sig}» (Wiren Board) выберите прошивку .wbfw.`;
+      return `Для стороннего устройства «${sig}» выберите прошивку .wbfw.`;
     }
     return '';
   }
@@ -1375,7 +1375,7 @@
         tr.classList.add('flasher-device-config-row');
       }
       tr.innerHTML = `
-        <td>${d.address ?? '—'}</td>
+        <td>${escapeHtml(String(d.address ?? '—'))}</td>
         <td>${escapeHtml(d.serial_hex || '—')}<div class="flasher-sub">${escapeHtml(d.serial_dec || '')}</div></td>
         <td>${escapeHtml(d.signature || '—')}</td>
         <td>${escapeHtml(d.app_version || '—')}${firmwareAppUpdateHintForDevice(d)}</td>
@@ -3567,7 +3567,7 @@
   }
 
   async function rebootModuleDevice() {
-    if (!confirm('Перезагрузить модуль?\nЛиния может быть временно недоступна.')) return;
+    if (!confirm(t('Перезагрузить модуль?\nЛиния может быть временно недоступна.'))) return;
     const dev = currentConfigDevice();
     const port = $('flasher-port').value;
     if (!dev || !port) return;

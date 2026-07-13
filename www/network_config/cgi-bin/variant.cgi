@@ -1,10 +1,12 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # SA-02m: hardware variant selector CGI
 # GET  → {"variant":"sa02m-1eth","serial_map":"<base64>"}
 # POST → variant=sa02m-1eth|sa02m-2eth → {"ok":true,"variant":"...","serial_count":N}
 
 check_auth() {
-    [[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 
@@ -37,6 +39,13 @@ case "${REQUEST_METHOD:-GET}" in
         case "$VARIANT" in
             sa02m-1eth|sa02m-2eth)
                 RESULT=$(sudo /usr/local/sbin/sa02m-apply-variant.sh "$VARIANT" 2>&1)
+                # Инвалидируем кэш status.cgi, чтобы «Система» немедленно
+                # показала обновлённое имя устройства (ЦИНТРОН СА-02м / -2).
+                rm -f /tmp/sa02m_status_cache/system.json \
+                      /tmp/sa02m_status_cache/system.json.lock \
+                      /tmp/sa02m_status_cache/main.json \
+                      /tmp/sa02m_status_cache/main.json.lock \
+                      2>/dev/null || true
                 printf 'Content-Type: application/json\r\n\r\n'
                 printf '%s\n' "$RESULT"
                 ;;

@@ -4,8 +4,8 @@
 set -euo pipefail
 
 BOARD_ID="${SA02M_ARMBIAN_BOARD:-SA-02m}"
-BOARD_LABEL="${SA02M_ARMBIAN_BOARD_NAME:-CYNTRON SA-02m}"
-VENDOR_NAME="${SA02M_ARMBIAN_VENDOR:-CYNTRON}"
+BOARD_LABEL="${SA02M_ARMBIAN_BOARD_NAME:-ЦИНТРОН SA-02m}"
+VENDOR_NAME="${SA02M_ARMBIAN_VENDOR:-ЦИНТРОН}"
 VENDOR_SUPPORT="${SA02M_ARMBIAN_SUPPORT:-https://cyntron.ru}"
 MOTD_HEADER="/etc/update-motd.d/10-armbian-header"
 
@@ -58,7 +58,7 @@ patch_motd_support_line() {
     awk '
         /"csc"\|"tvb"\) HARDWARE_STATUS=\$'"'"'\\e\[0;91mDIY \(community maintained\)\\x1B\[0m'"'"' ;;/ {
             print "\t\t\"csc\"|\"tvb\")"
-            print "\t\t\tif [[ \"${BOARD:-}\" == \"SA-02m\" || \"${VENDOR:-}\" == \"CYNTRON\" ]]; then"
+            print "\t\t\tif [[ \"${BOARD:-}\" == \"SA-02m\" || \"${VENDOR:-}\" == \"ЦИНТРОН\" || \"${VENDOR:-}\" == \"CYNTRON\" ]]; then"
             print "\t\t\t\tHARDWARE_STATUS=$'"'"'\\e[0;92mcyntron.ru\\x1B[0m'"'"'"
             print "\t\t\telse"
             print "\t\t\t\tHARDWARE_STATUS=$'"'"'\\e[0;91mDIY (community maintained)\\x1B[0m'"'"'"

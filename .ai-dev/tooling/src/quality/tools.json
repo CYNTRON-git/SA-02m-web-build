@@ -1,0 +1,363 @@
+{
+  "_doc": "The quality-tools registry — the one home for 'what does GREEN mean in this project'. The template ships only this SHAPE plus the example rows below; a real project REPLACES the examples with its own stack's tools and drops each tool's native config beside this file (.eslintrc, ruff.toml, semgrep.yml, …). The Builder runs every `build`-beat tool and hands back only when they pass; the Reviewer confirms the `review`-beat tools ran and reads their output. No core edit is ever needed to add or change a tool — only a row here.",
+  "_row_shape": {
+    "id": "short stable name",
+    "checks": "one plain line: what this tool catches",
+    "config": "path to its native config beside this file, or null if none",
+    "run": "the command to run it (from the project root)",
+    "beat": "build | review | ship — which loop beat it runs in",
+    "init": "one line: how to install/enable it (the minimal init instruction)",
+    "covers": "optional array of project-root-relative path globs this tool validates. In scope mode (--touched) the row runs only if a touched file matches at least one glob; absent or empty ⇒ always runs (fail-safe to MORE rigor). Backward-compatible — no-covers rows are the current full-run behaviour."
+  },
+  "tools": [
+    {
+      "id": "parity",
+      "checks": "adapter integrity — parity across both shims, single-engine (no rule logic leaked into a shim), the Claude node-spike",
+      "config": null,
+      "run": "node src/adapter/parity.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/**"]
+    },
+    {
+      "id": "install-model",
+      "checks": "per-platform install model bake — OpenCode bakes NO model line for any input (runtime ignores subagent model:); Claude bakes the resolved per-seat model into the assembled reviewer frontmatter (auto → the allow-listed model opposite the session else sonnet; a concrete allow-listed pin → that model; session/absent and off-allowlist → no line); auto degrades to session (no line) when the runtime env carries a proxy (ANTHROPIC_BASE_URL) or a foreign tier alias (ANTHROPIC_DEFAULT_*_MODEL) — the baked concrete id would be routeless on a foreign-only proxy (#356)",
+      "config": null,
+      "run": "node src/adapter/install-model.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-model.mjs", "src/adapter/install-model.test.mjs"]
+    },
+    {
+      "id": "install-plugin",
+      "checks": "OpenCode plugin generation — the committed deployed plugin (.opencode/plugins/ai-dev.mjs) is byte-identical to the generator's output, so source and deployed cannot drift; the adapter-path rewrite is correct per layout",
+      "config": null,
+      "run": "node src/adapter/install-plugin.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-plugin.mjs", "src/adapter/install-plugin.test.mjs"]
+    },
+    {
+      "id": "install-drift",
+      "checks": "assembled-artifact anti-drift — every committed generated markdown artifact (both platforms' agents + commands) is byte-identical to a fresh assembly under the tracked .ai-dev/config.json, AND every committed deployed on-demand procedure (.ai-dev/procedures/) is byte-identical to its src/agents/procedures/ source; no orphan file in a generated/deployed dir",
+      "config": null,
+      "run": "node src/adapter/install-drift.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-drift.mjs", "src/adapter/install-drift.test.mjs", "src/agents/**", ".ai-dev/config.json"]
+    },
+    {
+      "id": "install-modules",
+      "checks": "capability-module assembly — the shared assembler composes an enabled module's fragment into the role agent, omits it when off, never drops the floor body, fails safe to ON (malformed/unknown toggle ⇒ on), throws on a missing fragment for an enabled module, and rejects a root-escaping fragment pointer",
+      "config": null,
+      "run": "node src/adapter/install-modules.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-modules.mjs", "src/adapter/install-modules.test.mjs"]
+    },
+    {
+      "id": "install-fixup-agents",
+      "checks": "fixup-agent assembly — dev-reviewer-fixup.md (floor-only body for fixup-grade review) is produced alongside dev-reviewer.md on both platforms (Claude + OpenCode); the fixup body contains §Invariants verbatim + full floor prose; it contains NO module fragment markers ('module is on'); the raw <!-- ai-dev:modules --> and <!-- ai-dev:invariants --> markers are consumed (not left in body); the fixup body is strictly smaller than the full by >10,000 chars; the naming convention is {reviewerAgentId}-fixup; and the Claude model pin in the fixup frontmatter matches the full reviewer",
+      "config": null,
+      "run": "node src/adapter/install-fixup-agents.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-fixup-agents.mjs", "src/adapter/install-fixup-agents.test.mjs"]
+    },
+    {
+      "id": "invariants-parity",
+      "checks": "invariants-composition one-home guard — each committed assembled Claude role agent (.claude/agents/dev-{builder,planner,reviewer,reviewer-fixup}.md) contains the PROTOCOL.md §Invariants block verbatim; a PROTOCOL.md edit without re-baking fails here, preventing the composed block from drifting from its single source",
+      "config": null,
+      "run": "node src/adapter/invariants-parity.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/invariants-parity.test.mjs", "PROTOCOL.md", "src/adapter/install-modules.mjs"]
+    },
+    {
+      "id": "pack-completeness",
+      "checks": "publish-completeness guard — every ROOT-level file the installer copies from SOURCE (PROTOCOL.md, protocol-reference.md) is in the package.json `files` whitelist, i.e. present in `npm pack --dry-run`; catches the 5.60.0 class where install-drift's dogfood mode (SOURCE===target) passed but the packed npm/git tarball omitted the file and downstream install ENOENT'd",
+      "config": null,
+      "run": "node src/adapter/pack-completeness.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/pack-completeness.test.mjs", "package.json"]
+    },
+    {
+      "id": "rigor-profile",
+      "checks": "configurable rigor — the engine resolves the profile to solo by default (absent/unknown/malformed/unconfigured) and relaxes the orchestrator-content deny under lite/solo, denying only under an explicit full; the floor (tooling, boundary, truncation, merge-gate, stamp-write) never relaxes under any profile",
+      "config": null,
+      "run": "node src/adapter/rigor-profile.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/rigor-profile.test.mjs"]
+    },
+    {
+      "id": "safeguards",
+      "checks": "configurable safeguards — the engine's general evaluate-level skip honours .ai-dev/config.json `safeguards`: a toggleable ask/inject guard listed \"off\" is skipped, while a rule without `toggleable:true` (every deny + the merge-gate) is never skippable however config reads; only an exact-string \"off\" disables (unknown value / non-object / malformed ⇒ all guards on); disabledSafeguards returns the well-formed off-ids and safeguardRegistry lists exactly the seven toggleable guards",
+      "config": null,
+      "run": "node --test src/adapter/safeguards.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/safeguards.test.mjs"]
+    },
+    {
+      "id": "hook-mode",
+      "checks": "hookMode strict|light — the engine resolves hookMode from .ai-dev/config.json (overridable via config.local.json): strict (default, fail-safe) returns ask for ask-class rules; light returns deny with an informative reason (the model sees what's denied + the safe path); absent/unrecognised/malformed ⇒ strict; deny-class and inject-class rules are unaffected; the config.local personal override wins over shared",
+      "config": null,
+      "run": "node --test src/adapter/hook-mode.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/hook-mode.test.mjs"]
+    },
+    {
+      "id": "components",
+      "checks": "multi-repo components — the fail-CLOSED manifest loader/validator (engine.mjs componentRoots) collapses to the single session root on absent/malformed/wrong-shape/non-existent/overbroad/partial-honour, canonicalises declared roots through realpath (defeats symlink escapes), and returns the validated multi-root set on a valid manifest. This is the validator unit-tested in isolation; the boundary wiring (the set consulted by the read/find/write project-boundary denies, with the per-root `.ai-dev/tooling/` carve-out) is covered by parity.test.mjs.",
+      "config": null,
+      "run": "node src/adapter/components.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/components.test.mjs", "src/adapter/components.mjs", "src/adapter/engine.mjs"]
+    },
+    {
+      "id": "sanctioned-scratch",
+      "checks": "the agent's OWN out-of-root scratch read-allow — deriveSanctionedScratch (claude/sanctioned-scratch.mjs) derives the tool-result overflow store (<CLAUDE_CONFIG_DIR>/projects/<slug>/tool-results/) + the per-session harness temp root (<TMPDIR|/tmp>/claude-<uid>/<slug>/<CLAUDE_CODE_SESSION_ID>/) from the Claude env, fail-CLOSED (mirrors componentRoots: absent/blank env, a non-existent dir, a file-not-dir, or an overbroad/ancestor path ⇒ that entry dropped; the two paths derive independently); the temp root is session-id-narrow (a sibling session's <slug>/<other-sid>/ transcripts stay denied); the read-family boundary predicates (pathOutsideRoot / findTargetOutsideRoot / bashReadTargetOutsideRoot) consult input.sanctionedScratch ALONGSIDE the component set — a sanctioned read is allowed, a non-sanctioned out-of-root read still denies, a bash `~/…` read reaches the carve-out via input.home, and a WRITE to a sanctioned path still denies (read-only widening; writeTargetOutsideRoot unchanged). The claude adapter derives; the engine stays platform-neutral.",
+      "config": null,
+      "run": "node src/adapter/claude/sanctioned-scratch.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/claude/sanctioned-scratch.mjs", "src/adapter/claude/sanctioned-scratch.test.mjs", "src/adapter/engine.mjs"]
+    },
+    {
+      "id": "multirepo-e2e",
+      "checks": "multi-repo boundary END-TO-END through the REAL entry — a real `node shim.mjs` subprocess resolves the session root from a real on-disk git-init'd multi-repo fixture (the resolveRoot seam parity.test.mjs bypasses) and enforces the widened boundary: declared-sibling allow, non-declared deny, the D6 seam-contract-as-transport allow, the per-root `.ai-dev/tooling/` carve-out deny, and the no-manifest single-root regression tripwire. Validates the MECHANISM the orchestrator's `[persona]` coordination relies on, not the coordination itself. OpenCode asymmetry recorded honestly (no subprocess entry; plugin-entry not source-loadable) — its real decide() driven against the same fixture.",
+      "config": null,
+      "run": "node src/adapter/multirepo-e2e.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18 + git, no install",
+      "covers": ["src/adapter/multirepo-e2e.test.mjs", "src/adapter/engine.mjs", "src/adapter/claude/shim.mjs"]
+    },
+    {
+      "id": "nested-repo-scope",
+      "checks": "the nested separate-repo deny scoping (SECURITY FLOOR) against REAL git fixtures — resolveSessionRoot anchors to the nearest .ai-dev/config.json marker so a nested .git no longer flips the root (normal case byte-identical; deepest marker wins; unconfigured falls back to git-toplevel then cwd); targetsSessionRepo is fail-CLOSED (true at the session repo, true on a git-unresolvable cwd, false ONLY for a positively-different nested repo); the git-targeting denies (f4 add -A + commit-on-main, the merge-gate push-main) fire on undefined/true and exempt on false, identically through both shims; and END-TO-END through the real node shim.mjs subprocess a nested-cwd write to the session's .ai-dev/state / add -A / push main ALLOW while the same from the session cwd DENY and the session's tooling/out-of-root writes STILL DENY (the boundary stays session-anchored)",
+      "config": null,
+      "run": "node src/adapter/nested-repo-scope.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18 + git, no install",
+      "covers": ["src/adapter/nested-repo-scope.test.mjs", "src/adapter/engine.mjs", "src/adapter/claude/shim.mjs"]
+    },
+    {
+      "id": "merge-gate-stamp-resolution",
+      "checks": "merge-gate topic resolution + stamp forms — any branch prefix strips (feature/, fix/, bare), split-line/heading-level stamp variants accepted, unresolvable topic asks (never passes), stamp labels exactly Code review/Doc review (Validation dropped)",
+      "config": null,
+      "run": "node src/adapter/merge-gate-stamp-resolution.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/merge-gate-stamp-resolution.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+    },
+    {
+      "id": "merge-gate-ref-parsing",
+      "checks": "merge-gate reference parsing — pushed ref outranks HEAD (cross-branch push reads the right stamp), non-shell heredoc bodies are data (shell/malformed kept), path-traversal topic validation keeps stamp path inside reviews/, merge-* plumbing subcommands not treated as merges",
+      "config": null,
+      "run": "node src/adapter/merge-gate-ref-parsing.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/merge-gate-ref-parsing.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+    },
+    {
+      "id": "merge-gate-trunk-and-worktree",
+      "checks": "merge-gate trunk push, worktree checkouts, and git global flags — explicit trunk push denies not asks (F1), no-slash HEAD branch resolves via HEAD, worktree .git-file pointer followed, git -C/-c/--git-dir global flags normalised, trunk --ff-only sync carve-out, force-push-with-lease to non-trunk allowed",
+      "config": null,
+      "run": "node src/adapter/merge-gate-trunk-and-worktree.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/merge-gate-trunk-and-worktree.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+    },
+    {
+      "id": "f4-floor",
+      "checks": "F4 mechanical floor — a blind bulk-stage (git add -A/./--all/*) denies while a named-path / .gitignore / -p add allows; a git commit on a main/master checkout of a configured project WITH commit history and no satisfied trunk stamp denies, while the carve-outs allow (a reviewed main-named change, the day-zero bootstrap of an unconfigured or fresh-init repo, yolo). DENY-class on both platforms.",
+      "config": null,
+      "run": "node src/adapter/f4-floor.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/f4-floor.test.mjs", "src/adapter/engine.mjs", "src/adapter/deny-rules.json"]
+    },
+    {
+      "id": "forge-map",
+      "checks": "forge-map.json shape — the persona-read forge-issue verb map parses as JSON, carries the three supported forges (github/gitlab/gitea), and each forge declares all five backlog operations (create/list/view/close/comment) with a runnable command string. Guards the reference (no engine loads it) from rotting silently; does not assert flag accuracy.",
+      "config": null,
+      "run": "node src/adapter/forge-map.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/forge-map.test.mjs", "src/adapter/forge-map.json"]
+    },
+    {
+      "id": "ssh-content-edit",
+      "checks": "the remote-edit DENY floor (ssh-content-edit) distinguishes a remote WRITE from a redirect-using remote READ: a stream redirect (2>/dev/null, > /dev/null, 2>&1) ALLOWS while a `>`/`>>` redirect to a real file, sed -i, tee, and vi/vim/nano still DENY (floor unchanged); fail-closed — a stream-lookalike (/dev/null2, /dev/null/../etc/passwd) is treated as a write and denies; the predicate stays inert on a non-ssh local redirect.",
+      "config": null,
+      "run": "node src/adapter/ssh-content-edit.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/ssh-content-edit.test.mjs", "src/adapter/deny-rules.json"]
+    },
+    {
+      "id": "error-handling",
+      "checks": "adapter fail-direction under malformed input — a broken deny-rules.json makes the Claude shim subprocess fail OPEN (exit 0, allow, log to stderr, no crash); a bad regex in a config pattern makes the inject predicates return allow (no nudge), never throw; a valid config + pattern still injects (the happy path is unbroken)",
+      "config": null,
+      "run": "node src/adapter/error-handling.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/error-handling.test.mjs", "src/adapter/engine.mjs", "src/adapter/claude/shim.mjs"]
+    },
+    {
+      "id": "install-commands",
+      "checks": "command assembly — the /dev-setup command is generated into each platform's commands dir from the one source, identical in substance across platforms (invariant 6 one-home), with the platform's own front-matter",
+      "config": null,
+      "run": "node src/adapter/install-commands.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-commands.mjs", "src/adapter/install-commands.test.mjs"]
+    },
+    {
+      "id": "opencode-inject",
+      "checks": "the OpenCode inject realisation — the plugin registers only the tool.execute.before deny hook and NOT the crashing chat.message hook (opencode 1.17.8 EventV2 crash), so inject-class rules fall back to persona on OpenCode; the canonical enforcement-realisation pattern reviewer.md points at",
+      "config": null,
+      "run": "node src/adapter/opencode-inject.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/opencode-inject.test.mjs", "src/adapter/install-plugin.mjs"]
+    },
+    {
+      "id": "install-core",
+      "checks": "the unified installer — platform-agnostic behaviour: installs into a temp target inside the root, vendors the adapter self-sufficiently (the vendored installer can re-run), wires both platforms (hooks/agents/commands/plugin), stamps .ai-dev/VERSION + writes the UPGRADING marker on a version change, lays the migration notes + the inactive-platform breadcrumb, deploys the on-demand procedure bodies, replaces stale ai-dev hook groups, resolves the platform (flag/config/error), the opencode plugin-load self-verify ratchet, the F3 pre-push hook (installs/never-clobbers/idempotent), the loud version banner, never clobbers a real doc or file, and a second run is byte-identical (idempotent). One of the two halves the former install.test.mjs split into (LOW-2); shares helpers via install-shared.mjs",
+      "config": null,
+      "run": "node src/adapter/install-core.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-core.mjs", "src/adapter/install-core.test.mjs", "src/adapter/install-shared.mjs"]
+    },
+    {
+      "id": "install-claude-wiring",
+      "checks": "the unified installer — Claude-wiring half (LOW-2 split): the Claude hook self-verify FAILS the install loudly on a broken/missing deny shim, malformed/missing settings.json entry, or a PreToolUse matcher that dropped a floor tool (Bash/Task/Read/Write/Edit) while a reordered superset still passes; the hasGitRepo no-repo predicate; ensureConfig honest write-vs-kept + no orchestrator model pin; and the launch-time models → settings.json env auto-apply (mergeLaunchEnv unit + end-to-end, our two keys only, never clobbering a user key). Shares helpers via install-shared.mjs",
+      "config": null,
+      "run": "node src/adapter/install-claude-wiring.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/install-claude-wiring.mjs", "src/adapter/install-claude-wiring.test.mjs"]
+    },
+    {
+      "id": "model-router-test",
+      "checks": "the per-seat cross-endpoint model router (src/adapter/model-router.mjs) through its REAL http path against STUB upstreams (no network, no real keys): a request routes to the backend its model matches and reaches no other; the per-backend auth header is swapped to the right scheme AND value (x-api-key vs Authorization: Bearer, the backend key not the client front-key, the incoming client auth stripped); a passthrough route (auth:\"passthrough\") forwards the client's auth VERBATIM with no swap while a key-swap route still strips+swaps; the request body + a chunked/streamed response pass through intact; the error paths fail cleanly — an oversize body ⇒ 413, an unreachable upstream ⇒ 502, a mid-stream upstream socket-drop after headers does not crash the router and the partial reaches the client; an unknown model, a missing model, an unparseable body, and a route whose key env is unset all FAIL CLOSED (4xx/5xx, never a silent default backend); the reactive vision fallback (V1-V6) reroutes a specific image-unsupported 400 to the forImages target, caches the model as non-vision, relays an ambiguous 400 verbatim, fails loud when no forImages route is configured, and loop-guards a 400 from the vision target itself; and the opt-in routing log leaks no key, no body, no header (only model -> host)",
+      "config": null,
+      "run": "node src/adapter/model-router.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/model-router.mjs", "src/adapter/model-router.test.mjs"]
+    },
+    {
+      "id": "router-launch-test",
+      "checks": "the model-router launcher's PURE decision functions (src/adapter/router-launch.mjs), no network / no `claude` exec: a routes config's { provider: <id> } entry resolves base_url + auth from the built-in catalog (src/adapter/model-providers.json) with inline match/base_url/auth overrides and provider-pattern fan-out; an unknown provider and an unsupported passthrough both throw; distinct-endpoint counting drives the launch mode — all-Anthropic seats run claude DIRECT (proxy off by default), cross-endpoint seats start the router; the key-env presence check fails closed (an unset backend key for a route in play is surfaced BEFORE launch, passthrough routes skipped); seatModels keeps concrete role pins and drops auto/session; buildChildEnv sets ANTHROPIC_BASE_URL and UNSETS CLAUDE_CODE_SUBAGENT_MODEL; and the REAL shipped catalog pins the four verified providers (anthropic passthrough + x-api-key, deepseek x-api-key, glm z.ai Coding-Plan Bearer + GLM-*, openrouter Bearer)",
+      "config": null,
+      "run": "node src/adapter/router-launch.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install",
+      "covers": ["src/adapter/router-launch.mjs", "src/adapter/router-launch.test.mjs", "src/adapter/model-providers.json"]
+    },
+    {
+      "id": "registry-coverage",
+      "checks": "inverse orphan-guard — every committed src/**/*.test.mjs is referenced by a tools.json row, so a test file cannot be added then silently never run (the gap the 2026-06-20 audit found)",
+      "config": null,
+      "run": "node src/quality/registry-coverage.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "version-skew",
+      "checks": "installed VERSION stamp matches vendored tooling VERSION — a skew means npx updated the stamp without re-vendoring the tooling; no-op on a source checkout where .ai-dev/VERSION is absent",
+      "config": null,
+      "run": "node src/quality/version-skew.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "transient-hygiene",
+      "checks": "ADVISORY (never red, always exit 0) — surfaces stale loop transients: a .ai-dev/plans|reviews|audit file whose topic matches no open local branch (already shipped, the ship-beat delete skipped). Silent when clean; emits a GitHub Actions ::warning:: per stale file under CI so the nudge reaches the Operator on the PR. Fail-safe no-op on no-git/absent-dir",
+      "config": null,
+      "run": "node src/quality/transient-hygiene.mjs",
+      "beat": "build",
+      "init": "Node >= 18 + git, no install"
+    },
+    {
+      "id": "transient-hygiene-test",
+      "checks": "the transient-hygiene advisory's own logic against a real git fixture — a live-branch topic is kept, an orphaned plan / _review stamp / audit run flags, a main-only checkout flags all, and absent-dir/non-git fail-safe to no finding; the script stays exit-0 (advisory) in every case",
+      "config": null,
+      "run": "node src/quality/transient-hygiene.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18 + git, no install"
+    },
+    {
+      "id": "run-quality",
+      "checks": "the whole-set quality runner itself — filters by beat, fails closed on a malformed registry, no-op-safe when empty/absent",
+      "config": null,
+      "run": "node src/quality/run.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "pointer-size",
+      "checks": "resume pointer thin-pointer cap — .ai-dev/state/current.md stays under 120 lines and 8192 chars. The pointer is a thin checkpoint (queue + cadence + conventions); durable project knowledge belongs in .ai-dev/notes/ (committed). Fires RED when the pointer bloats beyond the cap; an ABSENT pointer (fresh clone) is skipped, not a failure. Pairs with the notes home: the cap forces durable content to .ai-dev/notes/ before the audit catches it (#316 P2d)",
+      "config": null,
+      "run": "node src/adapter/pointer-size.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "agent-size",
+      "checks": "assembled orchestrator load-surface size guard (audit H1) — each per-platform memory file (.claude/ai-dev.md, .opencode/agents/ai-dev.md) stays under 39000 chars, a 1000-char margin below Claude Code's ~40000 memory-file cap past which the file's tail silently fails to load. FAILS the build on an over-limit surface (the remedy is decompose — move a heavy section body to .ai-dev/procedures/ behind a trigger→pointer stub); an absent surface is skipped, never a failure",
+      "config": null,
+      "run": "node src/quality/agent-size.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "agent-size-test",
+      "checks": "the size-guard's own threshold logic against crafted size lists (at-limit green, one-over red, mixed returns only the offender, custom-limit honoured) so a future edit cannot invert the comparison silently, PLUS the end-to-end half — the live committed assembled surfaces are present and under the limit",
+      "config": null,
+      "run": "node src/quality/agent-size.test.mjs",
+      "beat": "build",
+      "init": "Node >= 18, no install"
+    },
+    {
+      "id": "neutral-prose",
+      "checks": "the core (PROTOCOL.md, agents, docs/architecture.md) names no bare platform primitive",
+      "config": null,
+      "run": "node src/quality/neutral-prose.test.mjs",
+      "beat": "review",
+      "init": "Node >= 18, no install",
+      "covers": ["PROTOCOL.md", "protocol-reference.md", "src/agents/**", "docs/architecture.md"]
+    },
+    {
+      "id": "eslint",
+      "checks": "JS lint (the engine, shims, install scripts, the runner, the tests) — unused bindings, accidental globals, loose equality, var. Standard recommended ruleset, made STRICTER not looser; code is brought to the standard, never the standard to the code. Plus a SOFT file-size surface (`max-lines` WARN at ~800; never an error — surfaces an oversized file to `decompose`, stays green since the run carries no `--max-warnings 0`).",
+      "config": "eslint.config.mjs",
+      "run": "npx eslint .",
+      "beat": "build",
+      "init": "npm install"
+    },
+    {
+      "id": "markdownlint",
+      "checks": "Markdown format for the docs — list/heading spacing, table column style, fenced-code language, emphasis-as-heading. Standard ruleset; the only relaxations (MD013 line-length, MD024 siblings-only, MD041 partials) are recorded Operator decisions in the config.",
+      "config": ".markdownlint-cli2.jsonc",
+      "run": "npx markdownlint-cli2",
+      "beat": "build",
+      "init": "npm install"
+    },
+    {
+      "id": "semgrep",
+      "checks": "security static analysis (SAST) over the JS — command injection, path traversal, unsafe patterns. Standard published rulesets (p/javascript + p/security-audit), no custom loosening.",
+      "config": null,
+      "run": "semgrep --config p/javascript --config p/security-audit --error --metrics off --exclude node_modules src/",
+      "beat": "review",
+      "init": "pip install semgrep (Python); the rulesets fetch from the public Semgrep registry on first run"
+    }
+  ]
+}

@@ -1,0 +1,221 @@
+#!/bin/sh
+# ─────────────────────────────────────────────────────────────────────────────
+# /etc/update-motd.d/20-sa02m-summary
+# Компактная сводка о состоянии устройства для SSH-логина (ЦИНТРОН СА-02м).
+# Вызывается pam_motd при интерактивном входе и сохраняется в /run/motd.dynamic.
+#
+# Требования:
+#   * POSIX-sh + coreutils/procps/iproute2. НИКАКИХ neofetch/figlet/lolcat.
+#   * Исполнение < 200 мс, только чтение (никаких сетевых запросов и записи).
+#   * Graceful degradation: недоступный источник → "n/a".
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Не используем `set -e`: недоступность отдельного датчика не должна ронять MOTD.
+umask 022
+
+# ── ANSI-цвета (эмитируем всегда: motd кешируется в файл и затем показывается
+#    в терминале, где escape-последовательности рендерятся корректно). ────────
+ESC=$(printf '\033')
+R="${ESC}[0m"
+B="${ESC}[1m"
+C="${ESC}[36m"
+BC="${ESC}[1;36m"
+Y="${ESC}[33m"
+G="${ESC}[32m"
+DIM="${ESC}[2m"
+
+# ── Модель / вариант ────────────────────────────────────────────────────────
+MODEL="ЦИНТРОН СА-02м"
+if [ -r /etc/sa02m/device_variant ]; then
+    if grep -q '2eth' /etc/sa02m/device_variant 2>/dev/null; then
+        MODEL="ЦИНТРОН СА-02м-2"
+    fi
+fi
+
+# ── Процессор: ядра и max-частота ───────────────────────────────────────────
+CPU_COUNT=$(nproc 2>/dev/null)
+[ -z "$CPU_COUNT" ] && CPU_COUNT=4
+if [ -r /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq ]; then
+    CPU_MAX_KHZ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null)
+    CPU_MHZ=$(( ${CPU_MAX_KHZ:-1200000} / 1000 ))
+else
+    CPU_MHZ=1200
+fi
+CPU_STR="Allwinner A40i - ${CPU_COUNT}xARM Cortex-A7 ${CPU_MHZ}МГц"
+
+# ── ОС ──────────────────────────────────────────────────────────────────────
+OS_STR="Debian GNU/Linux 11"
+if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    OS_PRETTY=$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}")
+    case "$OS_PRETTY" in
+        *Debian*|*debian*) OS_STR="$OS_PRETTY" ;;
+        "") : ;;
+        *) OS_STR="$OS_PRETTY" ;;
+    esac
+    # Отрежем возможный локальный бренд из PRETTY_NAME, оставив только Debian.
+    case "$OS_STR" in
+        *"(Debian "*")"*)
+            OS_STR=$(printf '%s' "$OS_STR" | sed -n 's/.*(\(Debian [^)]*\)).*/Debian GNU\/Linux \1/p' | sed 's/Debian GNU\/Linux Debian /Debian GNU\/Linux /')
+            ;;
+    esac
+fi
+[ -z "$OS_STR" ] && OS_STR="Debian GNU/Linux 11"
+
+# ── Ядро (major.minor.patch, без -sa02m+) ───────────────────────────────────
+KERNEL_FULL=$(uname -r 2>/dev/null)
+KERNEL_SHORT=$(printf '%s' "$KERNEL_FULL" | sed -n 's/^\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\).*/\1/p')
+[ -z "$KERNEL_SHORT" ] && KERNEL_SHORT="${KERNEL_FULL:-n/a}"
+
+# ── Loadavg / uptime ────────────────────────────────────────────────────────
+if [ -r /proc/loadavg ]; then
+    LOAD=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+else
+    LOAD="n/a"
+fi
+
+if [ -r /proc/uptime ]; then
+    UP=$(awk '{
+        u=int($1); d=int(u/86400);
+        h=int((u%86400)/3600);
+        m=int((u%3600)/60);
+        s=u%60;
+        if (d>0)      printf "%d дн %02d:%02d", d,h,m;
+        else if (h>0) printf "%02d:%02d:%02d",  h,m,s;
+        else          printf "%02d:%02d",       m,s;
+    }' /proc/uptime)
+else
+    UP="n/a"
+fi
+
+# ── Память / своп (MiB) — единый awk-проход по /proc/meminfo ───────────────
+MEM_TOTAL=0; MEM_AVAIL=0; SWAP_TOTAL=0; SWAP_FREE=0
+if [ -r /proc/meminfo ]; then
+    eval "$(awk '
+        /^MemTotal:/     {printf "MEM_TOTAL=%d\n",  $2/1024}
+        /^MemAvailable:/ {printf "MEM_AVAIL=%d\n",  $2/1024}
+        /^SwapTotal:/    {printf "SWAP_TOTAL=%d\n", $2/1024}
+        /^SwapFree:/     {printf "SWAP_FREE=%d\n",  $2/1024}
+    ' /proc/meminfo)"
+fi
+: "${MEM_TOTAL:=0}" "${MEM_AVAIL:=0}" "${SWAP_TOTAL:=0}" "${SWAP_FREE:=0}"
+if [ "$MEM_TOTAL" -gt 0 ]; then
+    MEM_USED=$(( MEM_TOTAL - MEM_AVAIL ))
+    MEM_PCT=$(( MEM_USED * 100 / MEM_TOTAL ))
+else
+    MEM_USED=0; MEM_PCT=0
+fi
+SWAP_USED=$(( SWAP_TOTAL - SWAP_FREE ))
+
+# ── Rootfs ──────────────────────────────────────────────────────────────────
+DISK_LINE=$(df -h --output=used,size,pcent / 2>/dev/null | tail -1 | tr -s ' ')
+if [ -n "$DISK_LINE" ]; then
+    DISK_USED=$(printf '%s' "$DISK_LINE" | awk '{print $1}' | sed 's/G/ ГБ/;s/M/ МБ/;s/K/ КБ/;s/T/ ТБ/')
+    DISK_SIZE=$(printf '%s' "$DISK_LINE" | awk '{print $2}' | sed 's/G/ ГБ/;s/M/ МБ/;s/K/ КБ/;s/T/ ТБ/')
+    DISK_PCT=$( printf '%s' "$DISK_LINE" | awk '{print $3}')
+else
+    DISK_USED="n/a"; DISK_SIZE="n/a"; DISK_PCT="n/a"
+fi
+
+# ── Сеть: первый IPv4 на eth0 (без alias), опционально eth1 ─────────────────
+_get_primary_ip() {
+    iface=$1
+    ip -4 -o addr show dev "$iface" 2>/dev/null \
+        | awk -v i="$iface" '$2==i {print $4; exit}' \
+        | cut -d/ -f1
+}
+IP_ETH0=$(_get_primary_ip eth0)
+IP_ETH1=$(_get_primary_ip eth1)
+[ -z "$IP_ETH0" ] && IP_ETH0="не подключён"
+
+# ── Температура CPU ─────────────────────────────────────────────────────────
+TEMP_STR="n/a"
+if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+    TEMP_MC=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)
+    if [ -n "$TEMP_MC" ] && [ "$TEMP_MC" -gt 0 ] 2>/dev/null; then
+        TEMP_C=$(( TEMP_MC / 1000 ))
+        TEMP_STR="${TEMP_C} °C"
+    fi
+fi
+
+# ── RTC (через sysfs — быстро, без вызова hwclock, который блокируется ~1s) ─
+RTC="n/a"
+if [ -r /sys/class/rtc/rtc0/date ] && [ -r /sys/class/rtc/rtc0/time ]; then
+    RTC_DATE=$(cat /sys/class/rtc/rtc0/date 2>/dev/null)
+    RTC_TIME=$(cat /sys/class/rtc/rtc0/time 2>/dev/null)
+    if [ -n "$RTC_DATE" ] && [ -n "$RTC_TIME" ]; then
+        RTC="${RTC_DATE} ${RTC_TIME}"
+    fi
+fi
+
+# ── UTC-синхронизация системного времени (timedatectl / без интерактива) ────
+UTC_SYNC="n/a"
+if command -v timedatectl >/dev/null 2>&1; then
+    TD=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)
+    case "$TD" in
+        yes) UTC_SYNC="да"  ;;
+        no)  UTC_SYNC="нет" ;;
+    esac
+fi
+
+# ── Раскраска процентов (green<70, yellow<90, red>=90) ──────────────────────
+_pct_color() {
+    v=${1%\%}
+    v=${v%.*}
+    case "$v" in
+        ''|*[!0-9]*) printf '%s' "$Y"; return ;;
+    esac
+    if   [ "$v" -ge 90 ]; then printf '%s' "${ESC}[31m"
+    elif [ "$v" -ge 70 ]; then printf '%s' "$Y"
+    else                       printf '%s' "$G"
+    fi
+}
+MEM_COL=$(_pct_color "$MEM_PCT")
+DISK_COL=$(_pct_color "$DISK_PCT")
+if [ "$TEMP_STR" != "n/a" ]; then
+    TEMP_COL=$(_pct_color "$(( TEMP_C * 100 / 85 ))")   # >75 °C — жёлтый, >77 — красный
+else
+    TEMP_COL="$Y"
+fi
+
+# ── Вывод ───────────────────────────────────────────────────────────────────
+printf '\n'
+printf '%s   ██████╗██╗   ██╗███╗   ██╗████████╗██████╗  ██████╗ ███╗   ██╗%s\n' "$BC" "$R"
+printf '%s  ██╔════╝╚██╗ ██╔╝████╗  ██║╚══██╔══╝██╔══██╗██╔═══██╗████╗  ██║%s\n' "$BC" "$R"
+printf '%s  ██║      ╚████╔╝ ██╔██╗ ██║   ██║   ██████╔╝██║   ██║██╔██╗ ██║%s\n' "$BC" "$R"
+printf '%s  ██║       ╚██╔╝  ██║╚██╗██║   ██║   ██╔══██╗██║   ██║██║╚██╗██║%s\n' "$BC" "$R"
+printf '%s  ╚██████╗   ██║   ██║ ╚████║   ██║   ██║  ██║╚██████╔╝██║ ╚████║%s\n' "$BC" "$R"
+printf '%s   ╚═════╝   ╚═╝   ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝%s\n' "$BC" "$R"
+printf '%s          ─── %sЦИНТРОН СА-02м%s%s · Industrial Controller ───%s\n' "$DIM" "$BC" "$R" "$DIM" "$R"
+printf '\n'
+# Короткая форма для приветствия: "Debian 11.11" вместо "Debian GNU/Linux 11.11".
+DEBIAN_SHORT=$(printf '%s' "$OS_STR" | sed -n 's|Debian GNU/Linux \([0-9.]*\).*|Debian \1|p')
+[ -z "$DEBIAN_SHORT" ] && DEBIAN_SHORT="$OS_STR"
+printf '  %sДобро пожаловать на%s %s%s%s (%s, ядро %s)\n' \
+    "$B" "$R" "$BC" "$MODEL" "$R" "$DEBIAN_SHORT" "$KERNEL_SHORT"
+printf '\n'
+printf '  %sМодель:%s        %s%s%s\n'                 "$B" "$R" "$G" "$MODEL" "$R"
+printf '  %sПроцессор:%s     %s\n'                     "$B" "$R" "$CPU_STR"
+printf '  %sОС:%s            %s\n'                     "$B" "$R" "$OS_STR"
+printf '  %sЯдро:%s          %s\n'                     "$B" "$R" "$KERNEL_SHORT"
+printf '  %sЗагрузка:%s      %-24s %sАптайм:%s       %s\n' \
+    "$B" "$R" "$LOAD" "$B" "$R" "$UP"
+printf '  %sПамять:%s        %s%d/%d МБ (%d%%)%s%s   %sОбмен:%s        %d/%d МБ\n' \
+    "$B" "$R" "$MEM_COL" "$MEM_USED" "$MEM_TOTAL" "$MEM_PCT" "$R" \
+    "$(printf '%*s' $((11 - ${#MEM_USED} - ${#MEM_TOTAL})) '')" \
+    "$B" "$R" "$SWAP_USED" "$SWAP_TOTAL"
+printf '  %sКорень:%s        %s%s/%s (%s)%s\n' \
+    "$B" "$R" "$DISK_COL" "$DISK_USED" "$DISK_SIZE" "$DISK_PCT" "$R"
+printf '  %sIP eth0:%s       %s%-22s%s %sТемпература:%s  %s%s%s\n' \
+    "$B" "$R" "$G" "$IP_ETH0" "$R" "$B" "$R" "$TEMP_COL" "$TEMP_STR" "$R"
+if [ -n "$IP_ETH1" ]; then
+    printf '  %sIP eth1:%s       %s%s%s\n' "$B" "$R" "$G" "$IP_ETH1" "$R"
+fi
+printf '  %sRTC:%s           %-24s %sUTC синхр.:%s   %s\n' \
+    "$B" "$R" "$RTC" "$B" "$R" "$UTC_SYNC"
+printf '\n'
+printf '  %sВеб-панель:%s    %shttp://%s:9999%s\n' "$B" "$R" "$C" "$IP_ETH0" "$R"
+printf '  %sТех.поддержка:%s %shttps://cyntron.ru%s\n' "$B" "$R" "$C" "$R"
+printf '\n'
+
+exit 0

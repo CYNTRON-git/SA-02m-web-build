@@ -8,6 +8,8 @@ and controls the PCA9536 I2C expander via i2cset (or hw_set.cgi).
 Device ID: sa02m-<hostname>
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys

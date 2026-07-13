@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.3.20-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.4.1-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -21,10 +21,10 @@
 
 | Параметр | SA-02m (1-eth) | SA-02m-2 (2-eth) |
 |---|---|---|
-| Ethernet | 1 порт (end0) | 2 порта (end0 + end1) |
-| IP end0 по умолчанию | `192.168.1.136` | `192.168.0.136` |
+| Ethernet | 1 порт (eth0) | 2 порта (eth0 + eth1) |
+| IP eth0 по умолчанию | `192.168.1.136` | `192.168.0.136` |
 | Шлюз по умолчанию | `192.168.1.1` | `192.168.0.1` |
-| end1 | — | DHCP (metric 100) |
+| eth1 | — | DHCP (metric 100) |
 | COM-портов | 5 (ttyS0+S3+S4+S5+S7) | 4 (ttyS3+S4+S5+S7) |
 | Serial профиль | `sa02m-1eth` | `sa02m-2eth` |
 | Конфиг варианта | `/etc/sa02m_hw_variant.conf` | то же |
@@ -100,7 +100,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Температура** — по всем thermal-зонам (zone0, zone1...)
 - **Диск** — объём, использование, I/O (read/write байт с загрузки)
 - **Uptime** — время работы системы
-- **Сеть** — состояние end0/end1, RX/TX байт
+- **Сеть** — состояние eth0/eth1, RX/TX байт
 - **Модель платы** — из `/proc/device-tree/model` (Armbian/Orange Pi)
 - **Ядро** — версия Linux
 - **Службы** — nginx, fcgiwrap, mplc (со временем работы)
@@ -110,7 +110,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Аварийный LED** — управление красным светодиодом
 
 ### Настройки
-- Два Ethernet-интерфейса (end0, end1) — статические IP, маска, шлюз, DNS
+- Два Ethernet-интерфейса (eth0, eth1) — статические IP, маска, шлюз, DNS
 - Часовой пояс и дата/время
 - Перезапуск служб / перезагрузка устройства
 
@@ -147,7 +147,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ### Сетевой watchdog
 - Двухуровневая защита: udev (реакция на события) + постоянный демон (каждые 30 с)
-- Корректная работа без шлюза (end1 как изолированный LAN)
+- Корректная работа без шлюза (eth1 как изолированный LAN)
 - Настраиваемые цели пинга и cooldown через `/etc/sa02m_network.conf`
 
 ---
@@ -248,7 +248,7 @@ sudo bash scripts/07-nodered.sh
 | Шаг | Что происходит |
 |-----|----------------|
 | `01-system.sh` | Установка пакетов, настройка locale, udev-симлинки RS-485 |
-| `02-network.sh` | Конфигурация end0, деплой сетевого watchdog |
+| `02-network.sh` | Конфигурация eth0, деплой сетевого watchdog |
 | `03-webserver.sh` | Настройка nginx + fcgiwrap, деплой веб-файлов, sudoers |
 | `04-flasher.sh` | Демон `sa02m-flasher` (Python + systemd), перенос библиотек Modbus/flasher, sudoers, logrotate |
 | `05-cloud-agent.sh` | Агент облачного подключения (если используется) |
@@ -361,7 +361,7 @@ sudo ./install.sh [ПАРАМЕТРЫ]
 
   --variant <v>    Аппаратный вариант: sa02m-1eth | sa02m-2eth
                    (по умолчанию: автодетект по числу физических Ethernet)
-  --ip   <addr>    IP-адрес end0              (по умолчанию: зависит от --variant)
+  --ip   <addr>    IP-адрес eth0              (по умолчанию: зависит от --variant)
   --mask <mask>    Маска подсети               (по умолчанию: 255.255.255.0)
   --gw   <gw>      Шлюз по умолчанию          (по умолчанию: зависит от --variant)
   --port <port>    Порт nginx                  (по умолчанию: 9999)
@@ -393,7 +393,7 @@ web/
 ├── scripts/
 │   ├── lib.sh                    ← общие функции (log, pkg_install, svc_enable)
 │   ├── 01-system.sh              ← система: пакеты, locale, udev, RS-485 симлинки
-│   ├── 02-network.sh             ← сеть: end0/1, watchdog, udev правила
+│   ├── 02-network.sh             ← сеть: eth0/1, watchdog, udev правила
 │   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
 │   ├── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
 │   ├── 05-mqtt.sh                ← Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI
@@ -406,11 +406,11 @@ web/
 │   ├── mosquitto/                ← listeners (1883/1884), ACL
 │   ├── sa02m-device-templates/   ← JSON-шаблоны MR-02м, ДТВ, CE-02m-3
 │   ├── sa02m-gateway.yaml        ← конфиг RS-485→Ethernet шлюза
-│   ├── fix-eth.sh                ← восстановление интерфейса, grat-ARP, LED end0
+│   ├── fix-eth.sh                ← восстановление интерфейса, grat-ARP, LED eth0
 │   ├── fix-eth.service           ← systemd unit (oneshot, запуск udev)
 │   ├── net-watchdog.sh           ← демон мониторинга сети
 │   ├── net-watchdog.service      ← systemd unit (Restart=always)
-│   ├── 99-lan-recovery.rules     ← udev правила (end0/end1, add/bind)
+│   ├── 99-lan-recovery.rules     ← udev правила (eth0/eth1, add/bind)
 │   ├── sa02m_hw.conf             ← шаблон GPIO-пинов
 │   ├── sa02m_network.conf        ← шаблон настроек watchdog
 │   ├── sa02m_flasher.conf        ← конфиг демона flasher (URL манифеста, ports, services)
@@ -519,15 +519,15 @@ web/
 
 ### Настройки сети
 
-Форма для **end0** и **end1**:
+Форма для **eth0** и **eth1**:
 - Включить/отключить интерфейс
 - IP-адрес, маска подсети, шлюз, DNS
 - Валидация IP прямо в браузере
 - После сохранения: автоматический `ifdown` / `ifup`
 
 Настройки записываются в:
-- `/etc/network/interfaces.d/end0.conf`
-- `/etc/network/interfaces.d/end1.conf`
+- `/etc/network/interfaces.d/eth0.conf`
+- `/etc/network/interfaces.d/eth1.conf`
 
 ---
 
@@ -783,6 +783,18 @@ journalctl -u nodered.service -f
 
 Этот раздел описывает процесс сборки собственного образа Linux для одноплатного компьютера СА-02м на базе **Allwinner A40i** (Starterkit SK-A40i-NANO-2E).
 
+> ### 🆕 Новый способ (с 2026-07): порт ядра на [`wirenboard/linux`](https://github.com/wirenboard/linux)
+>
+> Для СA-02м подготовлен полноценный порт на форк Wiren Board, что даёт:
+> - штатный `apt install linux-image-sa02m` вместо ручного `cp zImage`;
+> - автоматическое наследование WB upstream fixes для A40i;
+> - CI-сборку RT-варианта;
+> - обратную совместимость с текущим MPLC4/веб/CODESYS.
+>
+> Пошаговая инструкция и артефакты: [**`kernel-port/README.md`**](kernel-port/README.md), тулинг: [**`tools/kernel-wb/`**](tools/kernel-wb/README.md), roadmap с обоснованием: [**`docs/WB_LINUX_FUTURE_FEATURES.md`**](docs/WB_LINUX_FUTURE_FEATURES.md).
+>
+> Старый Buildroot-путь (Starterkit VM) описан ниже и сохраняется как fallback до полного тестирования нового ядра на реальном железе.
+
 ---
 
 ### Аппаратная платформа
@@ -795,7 +807,7 @@ journalctl -u nodered.service -f
 | Плата | [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) / [SK-A40i-NANO-2E](http://starterkit.ru/html/index.php?name=shop&op=view&id=178), 30×51×4 мм | ← то же |
 | ОЗУ | 512 МБ DDR3-1200 | ← то же |
 | Хранилище | eMMC 8 ГБ (`/dev/mmcblk2`) | ← то же |
-| Ethernet | 1× 100/10M (EMAC, end0) | **2×** 100/10M (EMAC end0 + GMAC end1) |
+| Ethernet | 1× 100/10M (EMAC, eth0) | **2×** 100/10M (EMAC eth0 + GMAC eth1) |
 | USB | 2× USB-host | ← то же |
 | RS-485 / COM | **5** портов (ttyS0, ttyS3, ttyS4, ttyS5, ttyS7) | **4** порта (ttyS3, ttyS4, ttyS5, ttyS7) |
 | Интерфейсы | CAN, UART, SPI, I2C, PWM, GPIO | ← то же |
@@ -989,7 +1001,7 @@ ssh root@192.168.1.136 reboot
 
 - На доноре скрипт cleanup **удалит gcc/dkms** и кэш apt — после снятия образа собирать драйверы на этом же доноре нельзя без переустановки пакетов.
 - Cleanup **сбрасывает** SSH host keys и `machine-id` — на клонах они создадутся заново при первой загрузке.
-- Для изделия **1eth** явно задайте профиль: `echo 'SA02M_SERIAL_PROFILE=sa02m-1eth' > /etc/sa02m_serial_profile.conf` (не полагайтесь на автоопределение по `end1` на стенде).
+- Для изделия **1eth** явно задайте профиль: `echo 'SA02M_SERIAL_PROFILE=sa02m-1eth' > /etc/sa02m_serial_profile.conf` (не полагайтесь на автоопределение по `eth1` на стенде).
 
 ##### Способ 4: снятие образа с эталонного устройства
 
@@ -1145,19 +1157,19 @@ apt-get update && apt-get -y upgrade
 apt-get install -y mc net-tools psmisc i2c-tools
 ```
 
-#### Настроить статический IP (end0)
+#### Настроить статический IP (eth0)
 
 ```bash
-cat > /etc/network/interfaces.d/end0.conf << 'EOF'
-auto end0
-iface end0 inet static
+cat > /etc/network/interfaces.d/eth0.conf << 'EOF'
+auto eth0
+iface eth0 inet static
     address 192.168.1.136
     netmask 255.255.255.0
     gateway 192.168.1.1
     dns-nameservers 77.88.8.8 77.88.8.1
 EOF
 
-ifdown end0 && ifup end0
+ifdown eth0 && ifup eth0
 ```
 
 #### Настройка MAC-адреса (если нужен фиксированный)
@@ -1166,7 +1178,7 @@ ifdown end0 && ifup end0
 # Через nmcli
 nmcli connection modify "Wired connection 1" ethernet.cloned-mac-address 02:53:8B:00:D4:30
 
-# Или в /etc/network/interfaces.d/end0.conf добавить:
+# Или в /etc/network/interfaces.d/eth0.conf добавить:
 # hwaddress ether 02:53:8B:00:D4:30
 ```
 
@@ -1472,11 +1484,11 @@ hwclock -r   # прочитать время из PCF8563
   "disk_used_kb": 5400000,
   "disk_pct": 18,
   "uptime_s": 86400,
-  "end0_up": true,
-  "end0_ip": "192.168.1.136",
-  "end0_rx_b": 12400000,
-  "end0_tx_b": 2100000,
-  "end1_up": false,
+  "eth0_up": true,
+  "eth0_ip": "192.168.1.136",
+  "eth0_rx_b": 12400000,
+  "eth0_tx_b": 2100000,
+  "eth1_up": false,
   "load_1": 0.14,
   "load_5": 0.08,
   "load_15": 0.05,
@@ -1535,8 +1547,8 @@ GET /cgi-bin/status.cgi?part=ram
 
 ```json
 {
-  "end0":     { "enabled": true,  "ip": "192.168.1.136", "netmask": "255.255.255.0", "gateway": "192.168.1.1", "dns": "77.88.8.8" },
-  "end1":     { "enabled": false, "ip": "", "netmask": "", "gateway": "", "dns": "" },
+  "eth0":     { "enabled": true,  "ip": "192.168.1.136", "netmask": "255.255.255.0", "gateway": "192.168.1.1", "dns": "77.88.8.8" },
+  "eth1":     { "enabled": false, "ip": "", "netmask": "", "gateway": "", "dns": "" },
   "timezone": "Europe/Moscow",
   "datetime": "2025-04-16 12:00:00"
 }
@@ -1545,7 +1557,7 @@ GET /cgi-bin/status.cgi?part=ram
 ### `POST /cgi-bin/apply.cgi`
 
 ```
-end0_ip=192.168.1.136&end0_mask=255.255.255.0&end0_gw=192.168.1.1&...
+eth0_ip=192.168.1.136&eth0_mask=255.255.255.0&eth0_gw=192.168.1.1&...
 ```
 
 Ответ: HTTP `302 Location: /?status=applied` или `/?status=error_...`
@@ -1716,14 +1728,14 @@ net-watchdog.service ──→ net-watchdog.sh  ─ активная защит�
 недоступен.
 
 ```bash
-# Сеть с реальным маршрутизатором: пинговать конкретный хост для end0
-WATCHDOG_PING_END0=192.168.1.1
+# Сеть с реальным маршрутизатором: пинговать конкретный хост для eth0
+WATCHDOG_PING_eth0=192.168.1.1
 
 # Изолированная сеть / прямое подключение: не проверять reachability по ping
-WATCHDOG_PING_END0=skip
+WATCHDOG_PING_eth0=skip
 
-# end1 без шлюза — отключить пинг, считать здоровым при наличии carrier + IP
-WATCHDOG_PING_END1=skip
+# eth1 без шлюза — отключить пинг, считать здоровым при наличии carrier + IP
+WATCHDOG_PING_eth1=skip
 
 # Интервал обхода watchdog (секунды, по умолчанию 30)
 WATCHDOG_INTERVAL=30
@@ -1794,7 +1806,7 @@ tail -f /var/log/fix-eth.log
 
 ### Через веб-интерфейс (рекомендуется)
 
-1. Подключите устройство к сети с доступом в интернет (end0, end1 или USB-модем).
+1. Подключите устройство к сети с доступом в интернет (eth0, eth1 или USB-модем).
 2. Откройте **Управление → Обновление веб**.
 3. Нажмите **«Проверить обновления»** — сравнение с веткой `main` на GitHub.
 4. При наличии новой версии — **«Применить обновление»**.

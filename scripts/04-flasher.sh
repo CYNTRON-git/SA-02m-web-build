@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 04-flasher.sh  •  Установка демона sa02m-flasher (RS-485/MR-02m)
 # ═══════════════════════════════════════════════════════════════════════════

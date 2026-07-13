@@ -1,9 +1,11 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # GET  — status JSON
 # POST — {"profile":"performance"|"high"|"medium"|"low"|"adaptive"}
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 

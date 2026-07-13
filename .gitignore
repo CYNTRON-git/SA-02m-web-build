@@ -33,3 +33,25 @@ tools/imaging/flash-media/
 # Temporary working directory
 .tmp/
 tmp/
+
+# Vendor payload (CODESYS Runtime .deb, MPLC install tarballs, лицензионные .wbc/.lic).
+# Проприетарные бинарники не коммитим — они лежат локально на build-host в vendor/
+# и копируются в /opt/vendor-installers/ через tools/debian-rootfs/create-sa02m-rootfs.sh.
+# См. docs/vendor-integrations.md.
+/vendor/
+*.wbc
+*.lic
+*.WibuCmLif
+*.wbb
+
+# ai-dev protocol — volatile session state (never committed; .ai-dev/ framework itself IS committed)
+.ai-dev/state/
+.ai-dev/plans/
+.ai-dev/reviews/
+.ai-dev/audit/
+.ai-dev/feedback/
+.ai-dev/worktrees/
+.ai-dev/UPGRADING.md
+.ai-dev/config.local.json
+.ai-dev/model-routes.local.json
+cookies.txt

@@ -87,8 +87,12 @@
 <script>
 const $ = id => document.getElementById(id);
 
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
 function badge(text, color) {
-  return `<span class="badge ${color}">${text}</span>`;
+  return `<span class="badge ${color}">${escHtml(text)}</span>`;
 }
 
 function relativeTime(ts) {

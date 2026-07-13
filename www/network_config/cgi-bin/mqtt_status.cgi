@@ -1,8 +1,10 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # MQTT broker / bridge status + параметры внешнего подключения (mqttuser).
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 if ! check_auth; then
@@ -130,7 +132,7 @@ fi
 
 PRIMARY_HOST=""
 if command -v ip >/dev/null 2>&1; then
-    for _iface in end0 end1; do
+    for _iface in eth0 eth1; do
         PRIMARY_HOST=$(ip -o -4 addr show dev "$_iface" 2>/dev/null | awk '{print $4}' | head -n1 | cut -d/ -f1 | tr -d '\r')
         [ -n "$PRIMARY_HOST" ] && break
     done

@@ -1,0 +1,14 @@
+{
+  "name": "sa02m-dev-harness",
+  "private": true,
+  "type": "module",
+  "description": "Dev-only tooling for the SA-02m web interface (not shipped to the device). Currently: the UI characterization harness used as the behaviour-preserving oracle for refactors (see backlog F10).",
+  "scripts": {
+    "characterize": "node characterize-ui.mjs",
+    "baseline": "node characterize-ui.mjs --label baseline --save-baseline",
+    "check": "node characterize-ui.mjs --compare baseline"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

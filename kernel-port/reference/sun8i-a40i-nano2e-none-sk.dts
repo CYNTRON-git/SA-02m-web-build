@@ -1,0 +1,451 @@
+/dts-v1/;
+
+#include "sun8i-r40.dtsi"
+#include "sun8i-r40-cpu-opp.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/pwm/pwm.h>
+
+#define PIN_PA &pio 0
+#define PIN_PB &pio 1
+#define PIN_PC &pio 2
+#define PIN_PD &pio 3
+#define PIN_PE &pio 4
+#define PIN_PF &pio 5
+#define PIN_PG &pio 6
+#define PIN_PH &pio 7
+#define PIN_PI &pio 8
+
+/ {
+	model = "Cyntron A40i-2Eth";
+	compatible = "sk,a40i-nano-2e", "allwinner,sun8i-r40";
+
+	aliases {
+		ethernet0 = &emac;
+		ethernet1 = &gmac;
+		serial0 = &uart0;
+		serial1 = &uart1;
+		serial2 = &uart2;
+		serial3 = &uart3;
+		serial4 = &uart4;
+		serial5 = &uart5;
+		serial6 = &uart6;
+		serial7 = &uart7;
+		mmc0 = &mmc0;
+		mmc1 = &mmc1;		
+		mmc2 = &mmc2;
+		mmc3 = &mmc3;		
+	};
+
+	regulators {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+        reg_3p3v: regulator@0 {
+            compatible = "regulator-fixed";
+            regulator-name = "3P3V";
+            regulator-min-microvolt = <3300000>;
+            regulator-max-microvolt = <3300000>;
+            regulator-always-on;
+        };
+
+		reg_usb0_vbus: regulator@1 {
+			reg = <1>;
+			compatible = "regulator-fixed";
+			regulator-name = "usb0_vbus";
+			regulator-min-microvolt = <5000000>;
+			regulator-max-microvolt = <5000000>;
+/*
+			gpio = <PIN_PE 0 GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+*/
+		};
+	};
+	leds {
+		compatible = "gpio-leds";
+		eth0_link {
+			gpios = <&pio 1 2 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+			linux,default-trigger = "1c0b080.mdio-mii:00:link";
+		};
+		eth1_link {
+			gpios = <&pio 8 13 GPIO_ACTIVE_LOW>;
+			default-state = "off";
+			linux,default-trigger = "stmmac-1:00:link";
+		};
+	};
+	iio-hwmon-axp-temp {
+		compatible = "iio-hwmon";
+		io-channels = <&axp_adc 0>;
+	};
+
+	iio-hwmon-axp {
+		compatible = "iio-hwmon";
+		io-channels = <&axp_adc 0>, <&axp_adc 1>, <&axp_adc 2>;
+	};
+};
+
+&can0 {
+	pinctrl-0 = <&can_pa_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&codec {
+	allwinner,audio-routing =
+		"Headphone", "HP",
+		"LINEIN", "Line In";
+	status = "okay";
+};
+
+&cpu0 {
+	cpu-supply = <&reg_dcdc2>;
+};
+
+&ehci1 {
+	status = "okay";
+};
+
+&ehci2 {
+	status = "okay";
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+&ohci2 {
+	status = "okay";
+};
+
+&usb_otg {
+	status = "okay";
+};
+
+&usbphy {
+    usb0_vbus-supply = <&reg_usb0_vbus>;
+	usb1_vbus-supply = <&reg_usb0_vbus>;
+	usb2_vbus-supply = <&reg_usb0_vbus>;
+	status = "okay";
+};
+
+&emac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&emac_ph_pins>;
+	phy-handle = <&phy2>;
+	phy-mode = "mii";
+	phy-supply = <&reg_dcdc1>;
+/*
+	nvmem-cells = <&eth1_mac_address>;
+	nvmem-cell-names = "mac-address";
+*/
+	status = "okay";
+};
+
+&emac_mdio {
+	status = "okay";
+	phy2: ethernet-phy@0 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+
+		reset-gpios = <PIN_PH 12 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <100000>;
+
+		icplus,select-rx-error;
+		status = "okay";
+	};
+};
+
+&gmac {
+	pinctrl-names = "default";
+	pinctrl-0 = <&gmac_mii_pins_reduced>;
+	phy-handle = <&phy1>;
+	phy-mode = "mii";
+	phy-supply = <&reg_dcdc1>;
+/*
+	To make it work make sure local-mac-address property is not set by U-Boot
+	nvmem-cells = <&eth0_mac_address>;
+	nvmem-cell-names = "mac-address";
+*/
+	status = "okay";
+};
+
+&gmac_mdio {
+	phy1: ethernet-phy@0 {
+		compatible = "ethernet-phy-ieee802.3-c22";
+		reg = <0>;
+
+		reset-gpios = <PIN_PH 13 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <100000>;
+
+		icplus,select-rx-error;
+		status = "okay";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+
+	axp22x: pmic@34 {
+		compatible = "x-powers,axp221";
+		reg = <0x34>;
+		interrupt-parent = <&nmi_intc>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+	};
+};
+
+&i2c1 {
+    status = "okay";
+    clock-frequency = <400000>;
+
+    rtc: rtc@68 {
+        compatible = "maxim,ds3231", "dallas,ds1307";
+        reg = <0x68>;
+    };
+};
+
+&i2c3 {
+	status = "okay";
+};
+
+&mmc2 {
+	vmmc-supply = <&reg_dcdc1>;
+	vqmmc-supply = <&reg_aldo2>;
+	bus-width = <8>;
+	non-removable;
+	cap-mmc-hw-reset;
+	mmc-hs200-1_8v;
+	status = "okay";
+};
+
+&mmc3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&mmc3_pins>;
+	bus-width = <4>;
+	//cd-gpios = <PIN_PI 13 GPIO_ACTIVE_LOW>;
+	status = "okay";
+	vmmc-supply = <&reg_dcdc1>;
+	vqmmc-supply = <&reg_dcdc1>;
+	no-1-8-v;
+};
+
+&pio {
+	vcc-pa-supply = <&reg_dcdc1>; //ok
+//	vcc-pb-supply = <&reg_dcdc1>; /* VCC-IO */
+	vcc-pc-supply = <&reg_aldo2>; /* eMMC, SoM wi-fi gpios*/
+	vcc-pd-supply = <&reg_dcdc1>; //ok
+	vcc-pe-supply = <&reg_eldo3>; //ok
+	vcc-pf-supply = <&reg_dcdc1>; //ok
+	vcc-pg-supply = <&reg_dcdc1>; // microSD 3v3!!
+	vcc-ph-supply = <&reg_dcdc1>; // VCC-IO
+	vcc-pi-supply = <&reg_dcdc1>;// VCC-IO
+
+	emac_ph_pins: emac-ph-pins {
+		pins = "PH8", "PH9", "PH10", "PH11",
+		       "PH14", "PH15", "PH16", "PH17",
+		       "PH18","PH19", "PH20", "PH21",
+		       "PH22", "PH23", "PH24", "PH25",
+			   "PH26", "PH27";
+		drive-strength = <40>;
+		function = "emac";
+	};
+
+    /* w/o ECOL and ETXERR */
+    gmac_mii_pins_reduced: gmac-mii-pins-reduced {
+		pins = "PA0", "PA1", "PA2", "PA3",
+			"PA4", "PA5", "PA6", "PA7",
+			"PA8", "PA9", "PA10", "PA11", "PA12",
+			"PA13", "PA14", "PA15";
+		drive-strength = <40>;
+		function = "gmac";
+	};
+
+	mmc3_pins: mmc3-pins {
+		pins = "PI4", "PI5", "PI6",
+		       "PI7", "PI8", "PI9";
+		function = "mmc3";
+		drive-strength = <30>;
+		bias-pull-up;
+	};
+/*
+	pwm_ch0_pb_pins: pwm-ch0-pb-pins {
+		pins = "PB2";
+		function = "pwm";
+	};
+*/
+	uart4_ph_pins: uart4-ph-pins {
+		pins = "PH4", "PH5";
+		function = "uart4";
+	};
+
+	uart5_pi_pins: uart5-pi-pins {
+		pins = "PI10", "PI11";
+		function = "uart5";
+	};
+};
+
+#include "axp22x.dtsi"
+
+&reg_ldo_io0 {
+  regulator-min-microvolt = <2500000>;
+  regulator-max-microvolt = <2500000>;
+  regulator-name = "vdd2v5-sata";
+  status = "okay";
+};
+
+/* ALDO1: 0.7V~3.3V, 300 mA, default: OFF */
+/* CPU: VCC-TVIN, VCC-TVOUT */
+&reg_aldo1 {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "tvd";
+};
+
+/* ALDO2: 0.7V~3.3V, 300mA, default: 1.8V */
+/* eMMC VDDQ (optional), VCC-PC*/
+&reg_aldo2 {
+	regulator-always-on;
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-name = "aldo2";
+};
+
+/* ALDO3: 0.7V~3.3V, 200 mA, default: 3.0 V */
+/* VCC-PLL и AVCC */
+&reg_aldo3 {
+	regulator-always-on;
+	regulator-min-microvolt = <3000000>;
+	regulator-max-microvolt = <3000000>;
+	regulator-init-microvolt = <3000000>;
+	regulator-name = "avcc-pll";
+};
+
+/* DC1SW Switch, 400 mA, 100mOhm, default: OFF */
+&reg_dc1sw {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "vcc-gmac-phy";
+};
+
+/* DCDC1: 1.6V~3.4V, 1400 mA, default: 3.3V
+   VCC-IO процессора
+   ref: eFUSE, microSD, PD, PA, DSI, HDMI, HP
+   eMMC, eth phy
+   3.3V для периферии на основной плате WB
+*/
+&reg_dcdc1 {
+	regulator-always-on;
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-name = "vcc-3v3";
+};
+
+/* DCDC2: 0.6V~1.54V, 2500 mA, default: 1.1 V */
+/* CPU core vdd-cpu */
+&reg_dcdc2 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1300000>;
+	regulator-name = "vdd-cpu";
+};
+
+/* CPU vdd-sys */
+/* DCDC3: 0.6V~1.86V, 2500 mA, default: 1.1 V */
+&reg_dcdc3 {
+	regulator-always-on;
+	regulator-min-microvolt = <1000000>;
+	regulator-max-microvolt = <1300000>;
+	regulator-name = "vdd-sys";
+};
+
+/* DCDC4: 0.6V~1.54V, 600mA, default: 1.1 V */
+/* unused */
+
+/* DCDC5: 1.0V~2.55V, 2000 mA, default: 1.5/DC5SET V */
+/* DRAM */
+&reg_dcdc5 {
+	regulator-always-on;
+	regulator-min-microvolt = <1350000>;
+	regulator-max-microvolt = <1350000>;
+	regulator-name = "vcc-dram";
+};
+
+/* DLDO1: 0.7V~3.3V, 400 mA, default: OFF */
+/* in: 5V/4V (PS).
+   microSD reference voltage (internal)
+*/
+&reg_dldo1 {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <1800000>;
+	regulator-name = "vcc-sd-alt";
+	regulator-always-on;
+};
+
+/* ELDO3: 0.7V~3.3V, 200 mA, default: OFF */
+/* ref. VCC-PE */
+&reg_eldo3 {
+	regulator-min-microvolt = <1800000>;
+	regulator-max-microvolt = <3300000>;
+	regulator-init-microvolt = <3300000>;
+	regulator-always-on;
+	regulator-name = "vcc-pe";
+};
+
+/* Unused: */
+	/* DLDO2: 0.7V~3.3V, 200 mA, default: OFF */
+	/* DLDO3: 0.7V~3.3V, 200 mA, default: OFF */
+	/* DLDO4: 0.7V~3.3V, 100 mA, default: OFF */
+	/* ELDO1: 0.7V~3.3V, 400 mA, default: OFF */
+	/* ELDO2: 0.7V~3.3V, 200 mA, default: OFF */
+
+/* DC5LDO: 0.7V~1.4V, 200 mA, default: 1.1V */
+
+&uart0 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart0_pb_pins>;
+	status = "okay";
+};
+
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart3_pg_pins>;
+	status = "okay";
+};
+
+&uart4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart4_ph_pins>;
+	//rts-gpios = <PIN_PI 12 GPIO_ACTIVE_HIGH>;
+	//linux,rs485-enabled-at-boot-time;
+	status = "okay";
+};
+
+&uart5 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart5_pi_pins>;
+	status = "okay";
+};
+
+&uart7 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&uart7_pi_pins>;
+	status = "okay";
+};
+
+&rtc {
+	status = "okay";
+};
+/*
+&pwm {
+	pinctrl-0 = <&pwm_ch0_pb_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+*/
+/*
+&gpadc {
+	status = "okay";
+};
+*/

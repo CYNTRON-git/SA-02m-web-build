@@ -9,6 +9,8 @@ Config:   /etc/sa02m-modbus-mqtt.yaml  (env SA02M_MQTT_CONFIG to override)
 Systemd:  sd_notify READY=1 / WATCHDOG=1
 """
 
+from __future__ import annotations
+
 import json as _json
 import os
 import sys

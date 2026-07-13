@@ -38,7 +38,7 @@ while true; do
         "$FIX_SCRIPT" "$iface"
     done
 
-    # 2. Переключение маршрутов по наличию интернета (end0/end1 > модем)
+    # 2. Переключение маршрутов по наличию интернета (eth0/eth1 > модем)
     if [ -x "$FAILOVER_SCRIPT" ]; then
         "$FAILOVER_SCRIPT"
     fi

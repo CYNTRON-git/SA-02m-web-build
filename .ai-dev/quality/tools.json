@@ -1,0 +1,50 @@
+{
+  "_doc": "The SA-02m-web-build quality-tools registry (PROTOCOL.md `## Quality tools`). The one home for 'what does GREEN mean for this web project'. Each row is a self-contained check the runner (`.ai-dev/quality/run.mjs <beat>`) executes wholesale for its beat. The Builder runs every `build`-beat tool on completion and hands back only when they pass; the Reviewer confirms the `review`-beat tools ran and reads their output; `ship`-beat tools run before the merge stamp. Adding or changing a tool = a row here + (optionally) its native config beside this file — never a runner edit.",
+  "_row_shape": {
+    "id": "short stable name",
+    "checks": "one plain line: what this tool catches",
+    "config": "path to its native config beside this file, or null if none",
+    "run": "the command to run it (from the project root — the runner's cwd)",
+    "beat": "build | review | ship",
+    "covers": "optional array of path prefixes/globs; run.mjs --touched runs a row only when the diff touches a covered path (rows without covers always run)",
+    "init": "one line: how to install/enable it"
+  },
+  "tools": [
+    {
+      "id": "js-syntax",
+      "checks": "Syntax errors in every hand-written frontend script — the top-level bundles (app.js, i18n.js, flasher.js, mqtt.js, gateway.js) and the app/*.js modules app.js was decomposed into (F10) — a broken script bricks the whole UI since there is no build step.",
+      "config": null,
+      "run": "bash -c 'set -e; for f in www/network_config/static/js/*.js www/network_config/static/js/app/*.js; do node --check \"$f\"; done'",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/"],
+      "init": "Node 18+"
+    },
+    {
+      "id": "bash-cgi-syntax",
+      "checks": "Bash syntax errors in every CGI endpoint and shared lib — a broken CGI returns 500 with no client-side trace.",
+      "config": null,
+      "run": "bash -c 'set -e; for f in www/network_config/cgi-bin/*.cgi www/network_config/cgi-bin/lib_*.sh; do bash -n \"$f\"; done'",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/"],
+      "init": "bash (present everywhere the project builds)"
+    },
+    {
+      "id": "version-consistency",
+      "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" scripts/sync-app-version.py --check; fi; done; echo version-consistency: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["www/network_config/"],
+      "init": "Python 3.10+ as python3, python, or py — the runner picks the first that actually executes (Windows ships a non-functional python3 Store stub; Linux/CI resolves python3 first)"
+    },
+    {
+      "id": "install-sh-syntax",
+      "checks": "Bash syntax of the on-device installer.",
+      "config": null,
+      "run": "bash -n install.sh",
+      "beat": "review",
+      "covers": ["install.sh"],
+      "init": "bash"
+    }
+  ]
+}

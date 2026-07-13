@@ -1,9 +1,11 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-cache"
 echo ""
 
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || { echo '{"error":"unauthorized"}'; exit 0; }
+web_session_check_cookie || { echo '{"error":"unauthorized"}'; exit 0; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib_rtc.sh
@@ -58,8 +60,8 @@ read_iface_conf() {
         "$enabled" "${ip:-}" "${netmask:-}" "${gateway:-}" "${dns:-}"
 }
 
-ETH0=$(read_iface_conf /etc/network/interfaces.d/end0.conf)
-ETH1=$(read_iface_conf /etc/network/interfaces.d/end1.conf)
+ETH0=$(read_iface_conf /etc/network/interfaces.d/eth0.conf)
+ETH1=$(read_iface_conf /etc/network/interfaces.d/eth1.conf)
 TZ=$(read_timezone)
 DT=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
 
@@ -73,8 +75,8 @@ TZ_JSON=$(printf '%s' "$TZ" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
 cat <<JSON
 {
-  "end0": ${ETH0},
-  "end1": ${ETH1},
+  "eth0": ${ETH0},
+  "eth1": ${ETH1},
   "timezone": "${TZ_JSON}",
   "datetime": "${DT_JSON}",
   "rtc_datetime": "${RTC_JSON}"

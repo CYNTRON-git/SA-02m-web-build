@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 05-mqtt.sh  •  Установка MQTT-инфраструктуры на СА-02м
 #   - Mosquitto broker (apt)
@@ -73,9 +74,47 @@ for pkg in python3 python3-pip; do
     dpkg -l "$pkg" >/dev/null 2>&1 || apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1
 done
 
-pip3 install --break-system-packages --quiet paho-mqtt pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
-pip3 install --break-system-packages --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -2
-log OK "Python-зависимости установлены (paho-mqtt, pyyaml, pyserial)"
+# 2.1. Приоритет: apt-пакеты (стабильнее pip на embedded)
+#       python3-paho-mqtt, python3-yaml, python3-serial есть в bullseye main.
+_MQTT_APT_MISSING=""
+for _pkg in python3-paho-mqtt python3-yaml python3-serial; do
+    if ! dpkg -l "$_pkg" 2>/dev/null | grep -q "^ii  $_pkg"; then
+        _MQTT_APT_MISSING="$_MQTT_APT_MISSING $_pkg"
+    fi
+done
+if [ -n "$_MQTT_APT_MISSING" ]; then
+    log INFO "apt install:$_MQTT_APT_MISSING"
+    if ! apt-get install -y --no-install-recommends $_MQTT_APT_MISSING >> "$LOG_FILE" 2>&1; then
+        log WARN "apt install не удался — fallback: apt-get download + dpkg -i"
+        _TMPDIR="$(mktemp -d)"
+        (cd "$_TMPDIR" && apt-get download $_MQTT_APT_MISSING >> "$LOG_FILE" 2>&1             && dpkg -i "$_TMPDIR"/*.deb >> "$LOG_FILE" 2>&1) || true
+        rm -rf "$_TMPDIR"
+    fi
+fi
+
+# 2.2. Fallback через pip, если apt-версии всё ещё нет
+if ! python3 -c "import paho.mqtt" >/dev/null 2>&1; then
+    log WARN "python3-paho-mqtt из apt недоступен — fallback pip3"
+    pip3 install --break-system-packages --quiet paho-mqtt 2>&1 | tee -a "$LOG_FILE" | tail -3
+fi
+if ! python3 -c "import yaml" >/dev/null 2>&1; then
+    pip3 install --break-system-packages --quiet pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
+fi
+if ! python3 -c "import serial" >/dev/null 2>&1; then
+    pip3 install --break-system-packages --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -3
+fi
+
+# 2.3. Обязательная проверка импорта (fail-loud, если не установилось)
+_MQTT_MISSING_MODULES=""
+python3 -c "import paho.mqtt" 2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES paho.mqtt"
+python3 -c "import yaml"      2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES yaml"
+python3 -c "import serial"    2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES serial"
+if [ -n "$_MQTT_MISSING_MODULES" ]; then
+    log ERR "Python-зависимости НЕ установлены:$_MQTT_MISSING_MODULES"
+    log ERR "sa02m-modbus-mqtt/sa02m-telemetry уйдут в restart-loop!"
+    exit 1
+fi
+log OK "Python-зависимости установлены и импортируются (paho.mqtt, yaml, serial)"
 
 # ── 3. Modbus→MQTT мост ───────────────────────────────────────────────────────
 log INFO "Деплой Modbus→MQTT моста..."

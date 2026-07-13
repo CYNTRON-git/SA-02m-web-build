@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.3.35">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.3.35">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.5.0">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.5.0">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -15,7 +15,7 @@
   <!-- ── Top bar ─────────────────────────────────────────────────────────── -->
   <header class="topbar">
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.3.35" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.5.0" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
       <div class="topbar-branding">
         <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
@@ -109,31 +109,26 @@
 
           <!-- Система -->
           <div class="widget">
-            <div class="widget-title">Система</div>
-            <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px" id="board-info">—</div>
-            <div class="widget-sub widget-sub-reserved" id="cpu-model">&nbsp;</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/><path d="M9 3v4M15 3v4M9 17v4M15 17v4M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></span><span>Система</span></div>
+            <div class="widget-sub widget-sub-reserved" id="cpu-model" style="font-size:14px;font-weight:600;color:var(--text)">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="armbian-info" style="margin-top:4px">&nbsp;</div>
             <div class="widget-sub widget-sub-reserved" id="kernel-info" style="margin-top:4px">&nbsp;</div>
           </div>
 
           <!-- Загрузка CPU -->
           <div class="widget">
-            <div class="widget-title">Загрузка CPU</div>
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
-                <path id="cpu-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
-                      stroke="#22d3ee" stroke-width="8" fill="none" stroke-linecap="butt"
-                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
-                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="cpu-val">—</text>
-              </svg>
-              <div class="gauge-label">Загрузка ядер процессора</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span><span>Загрузка CPU</span></div>
+            <div class="widget-val widget-val-centered" id="cpu-val">—</div>
+            <div class="widget-sub">Загрузка ядер</div>
+            <div class="bar-row">
+              <div class="bar-track"><div class="bar-fill" id="cpu-bar" style="width:0%"></div></div>
+              <div class="bar-meta"><span>0%</span><span>100%</span></div>
             </div>
           </div>
 
           <!-- Нагрузка (load avg) -->
           <div class="widget">
-            <div class="widget-title">Нагрузка (load avg)</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-6"/></svg></span><span title="Load average">Нагрузка</span></div>
             <div class="load-grid">
               <div class="load-item"><div class="load-num" id="load-1">—</div><div class="load-lbl">1 мин</div></div>
               <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
@@ -145,28 +140,24 @@
 
           <!-- Температура CPU -->
           <div class="widget">
-            <div class="widget-title">Температура CPU</div>
-            <div class="gauge-wrap">
-              <svg class="gauge-svg" width="110" height="64" viewBox="0 0 110 64">
-                <path class="gauge-arc-bg" d="M10 58 A45 45 0 0 1 100 58" stroke="#2a2a2a" stroke-width="8" fill="none" stroke-linecap="butt"/>
-                <path id="temp-arc" class="gauge-arc" d="M10 58 A45 45 0 0 1 100 58"
-                      stroke="#248a3d" stroke-width="8" fill="none" stroke-linecap="butt"
-                      stroke-dasharray="0 141.37" stroke-dashoffset="0"/>
-                <text x="55" y="55" text-anchor="middle" class="gauge-num" id="temp-val">—</text>
-              </svg>
-              <div class="gauge-label gauge-label-temp" id="temp-gauge-hint">Температура в норме</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 14.76V5a2 2 0 0 0-4 0v9.76a4 4 0 1 0 4 0z"/></svg></span><span>Температура</span></div>
+            <div class="widget-val widget-val-centered" id="temp-val">—</div>
+            <div class="widget-sub" id="temp-gauge-hint">В норме</div>
+            <div class="bar-row">
+              <div class="bar-track"><div class="bar-fill" id="temp-bar" style="width:0%;background:var(--meter-green)"></div></div>
+              <div class="bar-meta"><span>30°C</span><span>100°C</span></div>
             </div>
           </div>
 
           <!-- Uptime -->
           <div class="widget">
-            <div class="widget-title">Uptime</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg></span><span>Uptime</span></div>
             <div class="widget-val widget-val-centered uptime-readout" id="uptime-val">—</div>
           </div>
 
           <!-- ОЗУ -->
           <div class="widget">
-            <div class="widget-title">ОЗУ</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 17v3M12 17v3M17 17v3M7 11h2M11 11h2M15 11h2"/></svg></span><span>ОЗУ</span></div>
             <div class="widget-val" id="ram-val">—</div>
             <div class="widget-sub" id="ram-sub">из —</div>
             <div class="bar-row">
@@ -182,7 +173,7 @@
 
           <!-- Диск eMMC -->
           <div class="widget">
-            <div class="widget-title">Диск eMMC</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M21 12H3M5 5h14l2 7v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-5z"/><path d="M17 16h.01"/></svg></span><span>Диск eMMC</span></div>
             <div class="widget-val" id="disk-val">—</div>
             <div class="widget-sub" id="disk-sub">из —</div>
             <div class="bar-row">
@@ -194,13 +185,13 @@
 
           <!-- Службы -->
           <div class="widget widget-svc">
-            <div class="widget-title">Службы</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.01a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55h.01a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.01a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg></span><span>Службы</span></div>
             <div class="svc-list" id="svc-dynamic-list"></div>
           </div>
 
           <!-- USB (точка монтирования /media/usb или USB-модем) -->
           <div class="widget">
-            <div class="widget-title" id="usb-widget-title">USB-накопитель</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" id="usb-widget-ico" data-kind="storage" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="8" y="9" width="8" height="12" rx="1.5"/><path d="M10 9V4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5"/><path d="M11 6h.01M13 6h.01"/></svg></span><span id="usb-widget-title">USB-flash</span></div>
             <div id="usb-storage-view">
               <div class="widget-val" id="usb-val">—</div>
               <div id="usb-detail">
@@ -221,7 +212,7 @@
 
           <!-- microSD (/media/sdcard, mmcblk1 или mmcblk3) -->
           <div class="widget">
-            <div class="widget-title widget-title-preserve">microSD</div>
+            <div class="widget-title has-ico widget-title-preserve"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 3h9a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6z"/><path d="M9 3v4M12 3v4M15 3v4"/></svg></span><span>microSD</span></div>
             <div class="widget-val" id="sd-val">—</div>
             <div id="sd-detail">
               <div class="widget-sub" id="sd-sub">из —</div>
@@ -232,30 +223,32 @@
             </div>
           </div>
 
-          <!-- Network end0 -->
+          <!-- Network eth0 -->
           <div class="widget">
-            <div class="widget-title eth-hdr-title widget-title-preserve">
+            <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
+              <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 1</span>
-              <span id="end0-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
+              <span id="eth0-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
             <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end0-rx">0 Б</span></div>
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end0-tx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="eth0-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth0-tx">0 Б</span></div>
             </div>
-            <div class="widget-sub mono eth-ip" id="end0-ip">—</div>
+            <div class="widget-sub mono eth-ip" id="eth0-ip">—</div>
           </div>
 
-          <!-- Network end1 (только СА-02м-2) -->
+          <!-- Network eth1 (только СА-02м-2) -->
           <div class="widget" data-hide-for="sa02m-1eth">
-            <div class="widget-title eth-hdr-title widget-title-preserve">
+            <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
+              <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 2</span>
-              <span id="end1-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
+              <span id="eth1-state" class="eth-state eth-state-prominent eth-state-hidden" aria-live="polite" aria-hidden="true">Нет линка</span>
             </div>
             <div class="eth-traffic-stack">
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="end1-rx">0 Б</span></div>
-              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="end1-tx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">RX</span><span class="eth-traffic-val" id="eth1-rx">0 Б</span></div>
+              <div class="mono eth-traffic-row"><span class="eth-traffic-label">TX</span><span class="eth-traffic-val" id="eth1-tx">0 Б</span></div>
             </div>
-            <div class="widget-sub mono eth-ip" id="end1-ip">—</div>
+            <div class="widget-sub mono eth-ip" id="eth1-ip">—</div>
           </div>
 
           <!-- HW outputs — ширина верхнего ряда (4 колонки) -->
@@ -267,38 +260,26 @@
             <div class="hw-hint" id="hw-hint" style="display:none"></div>
             <div class="hw-grid">
               <div class="hw-item" data-hide-for="sa02m-2eth">
-                <div class="hw-item-title">DO (дискретный выход)</div>
-                <div class="hw-item-body">
+                <div class="hw-item-title" title="Дискретный выход">DO</div>
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="do">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('do',0)">Выкл</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('do',1)">Вкл</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-do-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-do-btn" data-cur="-1" onclick="toggleHw('do')">н/д</button>
                   </div>
                 </div>
               </div>
               <div class="hw-item">
                 <div class="hw-item-title">Пищалка</div>
-                <div class="hw-item-body">
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="beeper">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('beeper',0)">Тихо</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('beeper',1)">Звук</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-beep-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-beeper-btn" data-cur="-1" onclick="toggleHw('beeper')">н/д</button>
                   </div>
                 </div>
               </div>
               <div class="hw-item">
-                <div class="hw-item-title">Аварийный LED (красный)</div>
-                <div class="hw-item-body">
+                <div class="hw-item-title" title="Аварийный LED">LED (красный)</div>
+                <div class="hw-item-body hw-item-body-toggle">
                   <div class="hw-btns" data-hw-ch="alarm_led">
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="0" onclick="setHw('alarm_led',0)">Выкл</button>
-                    <button type="button" class="btn btn-sm hw-io-btn" data-hw-val="1" onclick="setHw('alarm_led',1)">Вкл</button>
-                  </div>
-                  <div class="hw-status-line">
-                    <span class="hw-status-val na" id="hw-led-st">н/д</span>
+                    <button type="button" class="btn btn-sm hw-toggle-btn na" id="hw-alarm_led-btn" data-cur="-1" onclick="toggleHw('alarm_led')">н/д</button>
                   </div>
                 </div>
               </div>
@@ -318,7 +299,7 @@
 
           <!-- RS-485 — та же ширина, что и HW (4 колонки) -->
           <div class="widget widget-rs485 dash-span-top4">
-            <div class="widget-title">Интерфейсы RS-485 — активность</div>
+            <div class="widget-title has-ico"><span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M2 8c5 0 5 8 10 8s5-8 10-8"/><path d="M2 16c5 0 5-8 10-8s5 8 10 8"/></svg></span><span>Интерфейсы RS-485 — активность</span></div>
             <div class="rs485-grid" id="rs485-grid"></div>
           </div>
 
@@ -336,14 +317,14 @@
           <div class="widget network-eth-widget">
             <div class="widget-title widget-title-preserve">Ethernet № 1</div>
             <form id="net-form">
-              <input type="hidden" name="net_iface" value="end0">
+              <input type="hidden" name="net_iface" value="eth0">
               <div class="field toggle-field-row">
                 <span class="toggle-field-label">Статический IP-адрес</span>
                 <label class="toggle-inline" aria-label="Статический адрес Ethernet № 1">
-                  <input type="checkbox" class="toggle toggle-wide" id="end0-en" name="end0_enable" value="1">
+                  <input type="checkbox" class="toggle toggle-wide" id="eth0-en" name="eth0_enable" value="1">
                 </label>
               </div>
-              <div id="end0-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
+              <div id="eth0-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
                 <div class="field">
                   <label>IP-адрес</label>
                   <input id="f-ip" name="ip" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.1.136">
@@ -369,30 +350,30 @@
 
           <div class="widget network-eth-widget" data-hide-for="sa02m-1eth">
             <div class="widget-title widget-title-preserve">Ethernet № 2</div>
-            <form id="net-form-end1">
-              <input type="hidden" name="net_iface" value="end1">
+            <form id="net-form-eth1">
+              <input type="hidden" name="net_iface" value="eth1">
               <div class="field toggle-field-row">
                 <span class="toggle-field-label">Статический IP-адрес</span>
                 <label class="toggle-inline" aria-label="Статический адрес Ethernet № 2">
-                  <input type="checkbox" class="toggle toggle-wide" id="end1-en" name="end1_enable" value="1">
+                  <input type="checkbox" class="toggle toggle-wide" id="eth1-en" name="eth1_enable" value="1">
                 </label>
               </div>
-              <div id="end1-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
+              <div id="eth1-fields" class="network-eth-fields" style="opacity:.4;transition:opacity .3s">
                 <div class="field">
                   <label>IP-адрес</label>
-                  <input id="f-ip1" name="ip_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
+                  <input id="f-ip1" name="ip_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="192.168.2.1">
                 </div>
                 <div class="field">
                   <label>Маска подсети</label>
-                  <input id="f-mask1" name="netmask_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
+                  <input id="f-mask1" name="netmask_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="255.255.255.0">
                 </div>
                 <div class="field">
                   <label>Шлюз</label>
-                  <input id="f-gw1" name="gateway_end1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
+                  <input id="f-gw1" name="gateway_eth1" type="text" pattern="(\d{1,3}\.){3}\d{1,3}" placeholder="">
                 </div>
                 <div class="field">
                   <label>DNS-серверы</label>
-                  <input id="f-dns1" name="dns_end1" type="text" placeholder="">
+                  <input id="f-dns1" name="dns_eth1" type="text" placeholder="">
                 </div>
               </div>
               <div class="btn-group">
@@ -979,10 +960,17 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.3.35.2"></script>
-<script src="/static/js/app.js?v=1.0.3.35.4"></script>
-<script src="/static/js/flasher.js?v=1.0.3.35.9"></script>
-<script src="/static/js/mqtt.js?v=1.0.3.35.1"></script>
-<script src="/static/js/gateway.js?v=1.0.3.35"></script>
+<script src="/static/js/i18n.js?v=1.0.5.0"></script>
+<script src="/static/js/app.js?v=1.0.5.0"></script>
+<script src="/static/js/app/status.js?v=1.0.5.0"></script>
+<script src="/static/js/app/hw.js?v=1.0.5.0"></script>
+<script src="/static/js/app/rs485.js?v=1.0.5.0"></script>
+<script src="/static/js/app/forms.js?v=1.0.5.0"></script>
+<script src="/static/js/app/services.js?v=1.0.5.0"></script>
+<script src="/static/js/app/misc.js?v=1.0.5.0"></script>
+<script src="/static/js/app/init.js?v=1.0.5.0"></script>
+<script src="/static/js/flasher.js?v=1.0.5.0"></script>
+<script src="/static/js/mqtt.js?v=1.0.5.0"></script>
+<script src="/static/js/gateway.js?v=1.0.5.0"></script>
 </body>
 </html>

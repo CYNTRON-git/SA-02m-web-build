@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 02-network.sh  •  Network interface config and fix-eth watchdog
 # ═══════════════════════════════════════════════════════════════════════════
@@ -12,7 +13,7 @@ log INFO "=== [02] Настройка сети ==="
 : "${NETMASK:=255.255.255.0}"
 : "${GATEWAY:=$(sa02m_default_gw)}"
 : "${DNS_SERVERS:=77.88.8.8 77.88.8.1}"
-: "${NET_IFACE:=end0}"
+: "${NET_IFACE:=eth0}"
 
 # ── /etc/network/interfaces ────────────────────────────────────────────────
 log INFO "Создание /etc/network/interfaces"
@@ -24,56 +25,64 @@ auto lo
 iface lo inet loopback
 NET
 
-# ── end0 static config ────────────────────────────────────────────────────
+# ── eth0 static config ────────────────────────────────────────────────────
 mkdir -p /etc/network/interfaces.d
-log INFO "end0 → $IP_ADDRESS / $NETMASK"
+log INFO "eth0 → $IP_ADDRESS / $NETMASK"
 
-# На SA-02m-2 end0 получает metric 200, чтобы end1 DHCP (metric 100) был
-# дефолтным маршрутом когда end0 без кабеля (NO-CARRIER).
+# На SA-02m-2 eth0 получает metric 200, чтобы eth1 DHCP (metric 100) был
+# дефолтным маршрутом когда eth0 без кабеля (NO-CARRIER).
 END0_METRIC_LINE=""
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
     END0_METRIC_LINE="    metric 200"
 fi
 
-cat > /etc/network/interfaces.d/end0.conf <<END0
-auto end0
-iface end0 inet static
+# Idempotency: only (re)write eth0.conf on first install (file absent) or when
+# --ip was passed explicitly. A plain re-run of the installer (the upgrade path)
+# must NOT clobber a static IP the operator set later via the web UI — doing so
+# resets the device to the factory address and makes it unreachable.
+if [ ! -f /etc/network/interfaces.d/eth0.conf ] || [ "${IP_EXPLICIT:-0}" = "1" ]; then
+cat > /etc/network/interfaces.d/eth0.conf <<END0
+auto eth0
+iface eth0 inet static
     address $IP_ADDRESS
     netmask $NETMASK
     gateway $GATEWAY
     dns-nameservers $DNS_SERVERS
 ${END0_METRIC_LINE}
 END0
-
-# ── end1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
-if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/end1.conf ]; then
-    cat > /etc/network/interfaces.d/end1.conf <<'END1'
-allow-hotplug end1
-iface end1 inet dhcp
-    metric 100
-    post-up ip route replace default via 192.168.1.1 dev end1 metric 100 || true
-END1
-    log OK "end1 DHCP конфиг создан"
+else
+    echo "eth0.conf exists and --ip not given — preserving operator IP" >&2
 fi
 
-# ── end1 DHCP: принудительный default route при RFC3442 (option 121) ─────────
+# ── eth1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
+if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/eth1.conf ]; then
+    cat > /etc/network/interfaces.d/eth1.conf <<'END1'
+allow-hotplug eth1
+iface eth1 inet dhcp
+    metric 100
+    post-up ip route replace default via 192.168.1.1 dev eth1 metric 100 || true
+END1
+    log OK "eth1 DHCP конфиг создан"
+fi
+
+# ── eth1 DHCP: принудительный default route при RFC3442 (option 121) ─────────
 # Некоторые DHCP-серверы шлют option 121 (classless static routes), что заставляет
 # dhclient-script игнорировать option 3 (routers) согласно RFC3442.
 # Хук гарантирует, что default route через DHCP-шлюз будет применён всегда.
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
-    cat > /etc/dhcp/dhclient-exit-hooks.d/end1-default-route <<'HOOK'
+    cat > /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route <<'HOOK'
 #!/bin/sh
-if [ "$interface" = "end1" ] && [ -n "$new_routers" ]; then
+if [ "$interface" = "eth1" ] && [ -n "$new_routers" ]; then
     case "$reason" in
         BOUND|RENEW|REBIND|REBOOT)
-            ip route replace default via $new_routers dev end1 metric 100 2>/dev/null || true
+            ip route replace default via $new_routers dev eth1 metric 100 2>/dev/null || true
             ;;
     esac
 fi
 HOOK
-    chmod 755 /etc/dhcp/dhclient-exit-hooks.d/end1-default-route
-    log OK "dhclient exit hook для end1 default route установлен"
+    chmod 755 /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+    log OK "dhclient exit hook для eth1 default route установлен"
 fi
 
 # ── Network watchdog deployment ────────────────────────────────────────────
@@ -141,20 +150,20 @@ if [ -f "$ETC_DIR/sa02m_network.conf" ] && [ ! -f /etc/sa02m_network.conf ]; the
     install -m 644 "$ETC_DIR/sa02m_network.conf" /etc/sa02m_network.conf
 fi
 
-if [ -f "$ETC_DIR/sa02m-end1-coldboot.sh" ]; then
-    log INFO "Установка sa02m-end1-coldboot.sh"
-    install -m 755 "$ETC_DIR/sa02m-end1-coldboot.sh" /usr/local/bin/sa02m-end1-coldboot.sh
+if [ -f "$ETC_DIR/sa02m-eth1-coldboot.sh" ]; then
+    log INFO "Установка sa02m-eth1-coldboot.sh"
+    install -m 755 "$ETC_DIR/sa02m-eth1-coldboot.sh" /usr/local/bin/sa02m-eth1-coldboot.sh
 fi
 
-if [ -f "$ETC_DIR/systemd/sa02m-end1-coldboot.service" ]; then
-    log INFO "Установка sa02m-end1-coldboot.service"
-    install -m 644 "$ETC_DIR/systemd/sa02m-end1-coldboot.service" \
-        /etc/systemd/system/sa02m-end1-coldboot.service
+if [ -f "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" ]; then
+    log INFO "Установка sa02m-eth1-coldboot.service"
+    install -m 644 "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" \
+        /etc/systemd/system/sa02m-eth1-coldboot.service
 fi
 
-if [ -f "$ETC_DIR/fix-end1-internet.sh" ]; then
-    log INFO "Установка fix-end1-internet.sh"
-    install -m 755 "$ETC_DIR/fix-end1-internet.sh" /usr/local/sbin/fix-end1-internet.sh
+if [ -f "$ETC_DIR/fix-eth1-internet.sh" ]; then
+    log INFO "Установка fix-eth1-internet.sh"
+    install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
 fi
 
 # Remove legacy phy-coldboot service if still present on this system
@@ -166,17 +175,50 @@ if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
 fi
 rm -f /usr/local/bin/sa02m-phy-coldboot.sh
 
-systemctl daemon-reload
+# ── Заводские имена интерфейсов (eth0/eth1) ───────────────────────────────
+# Kernel SA-02m (5.10.35) по умолчанию выдаёт `eth0` (sun4i-emac,
+# 1c0b000.ethernet) и `eth1` (dwmac-sun8i, 1c50000.ethernet). Мы НЕ используем
+# systemd `.link` файлы для переименования (`end0`/`end1`), потому что после
+# обновления systemd/udev эти правила могут потерять эффект (или конфликтовать
+# со встроенными Debian generators) → сеть слетает. Все сервисы, LED-polling,
+# DHCP hooks и `/etc/network/interfaces.d/*.conf` работают с kernel-именами.
+# На всякий случай удаляем legacy `.link` файлы от предыдущих версий образа.
+rm -f /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link \
+      /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link 2>/dev/null || true
+log INFO "Используются заводские имена интерфейсов kernel (eth0/eth1)"
+
+# ── nftables: kernel-aware ────────────────────────────────────────────────
+# С 1.0.4.x kernel SA-02m (5.10.35) собран с CONFIG_NF_TABLES=y — nftables
+# работает штатно. На старом kernel (5.10.35-sa02m+ без NF_TABLES) сервис
+# фейлил с "Netlink socket: Protocol not supported" → маскировали. Проверяем
+# и снимаем/накидываем маску в зависимости от возможностей ядра.
+if grep -qE '^CONFIG_NF_TABLES=[ym]' "/boot/config-$(uname -r)" 2>/dev/null; then
+    systemctl unmask nftables.service >>"$LOG_FILE" 2>&1 || true
+    log INFO "nftables.service unmasked (kernel с CONFIG_NF_TABLES)"
+else
+    systemctl mask nftables.service >>"$LOG_FILE" 2>&1 || true
+    log INFO "nftables.service masked (kernel без CONFIG_NF_TABLES)"
+fi
+
+systemctl daemon-reload >/dev/null 2>&1 || true
 udevadm control --reload-rules 2>/dev/null || true
+
+# Ключевой сервис для ifupdown: без него /etc/network/interfaces.d/*.conf
+# не применяется при boot. На чистом Debian bullseye после debootstrap
+# --variant=minbase preset не всегда включён — включаем явно.
+svc_enable networking
+
 svc_enable net-watchdog
-svc_enable sa02m-end1-coldboot
+svc_enable sa02m-eth1-coldboot
 svc_enable sa02m-eth0-led-poll
 log OK "Network watchdog активирован"
 
 # ── Apply now ─────────────────────────────────────────────────────────────
-log INFO "Поднимаем $NET_IFACE"
-ip link set "$NET_IFACE" up 2>/dev/null || true
-ip addr flush dev "$NET_IFACE" 2>/dev/null || true
-ifup "$NET_IFACE" >> "$LOG_FILE" 2>&1 || true
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    log INFO "Поднимаем $NET_IFACE"
+    ip link set "$NET_IFACE" up 2>/dev/null || true
+    ip addr flush dev "$NET_IFACE" 2>/dev/null || true
+    ifup "$NET_IFACE" >> "$LOG_FILE" 2>&1 || true
+fi
 
 log OK "=== [02] Сеть настроена: $IP_ADDRESS ==="

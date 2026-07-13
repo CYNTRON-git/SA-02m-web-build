@@ -412,7 +412,7 @@ def load_firmware(path: Path) -> Tuple[bytes, int, str, Optional[str]]:
         return image, size, version, signature
     if suf == ".wbfw":
         return load_firmware_wbfw(path)
-    raise ValueError("Поддерживаются файлы .fw, .bin и .wbfw (Wiren Board)")
+    raise ValueError("Поддерживаются файлы .fw, .bin и .wbfw")
 
 
 # В полном дампе Flash (objcopy -O binary без -j) код бутлоадера 0x08038000 идёт по смещению 0x38000.

@@ -1,5 +1,23 @@
 # Buildroot VM — RT + Docker kernel для SA-02m
 
+> ### ⚠ Устаревающий путь сборки (Legacy, ~2024-2026)
+>
+> Этот каталог описывает **старую** цепочку сборки ядра `6.1.0-rc6-rt4` через
+> Starterkit VM + Buildroot 2022.08.4-sk-a40i. С 2026-07 SA-02м мигрирует на
+> ядро **`wirenboard/linux` 5.10.35 armhf** (см. [`../../kernel-port/README.md`](../../kernel-port/README.md)
+> и [`../kernel-wb/README.md`](../kernel-wb/README.md)) — стандартные `.deb`-пакеты,
+> CI-сборка, upstream fixes от Wiren Board.
+>
+> Legacy-путь сохраняется как **fallback** до валидации нового ядра на реальных
+> устройствах SA-02м и SA-02м-2. После 100% миграции всех эталонных устройств
+> этот каталог будет удалён (см. [`../../docs/WB_LINUX_FUTURE_FEATURES.md`](../../docs/WB_LINUX_FUTURE_FEATURES.md)).
+>
+> **Не используйте этот путь для новых развёртываний.** Для новых устройств:
+> ```
+> ./tools/kernel-wb/build-sa02m-kernel.sh sa02m
+> ./tools/kernel-wb/deploy-sa02m-kernel.sh root@<ip>
+> ```
+
 Подготовка виртуальной машины и пересборка ядра `6.1.0-rc6-rt4` с Docker и драйверами SA-02m.
 
 ## Результаты аудита устройства (192.168.1.136, 2026-06-23)

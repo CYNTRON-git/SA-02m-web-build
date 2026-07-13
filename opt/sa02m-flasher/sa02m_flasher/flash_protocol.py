@@ -2004,14 +2004,14 @@ def run_flash_sequence_wb(
     if flasher.log_cb:
         free_space, err_fs = flasher.read_wb_free_space(slave)
         if err_fs is None and free_space is not None:
-            flasher.log_cb(f"Wiren Board: свободное место FlashFS (рег. 1003): {free_space} байт")
+            flasher.log_cb(f".wbfw: свободное место FlashFS (рег. 1003): {free_space} байт")
             if size > free_space and free_space >= 0:
                 flasher.log_cb(f"Внимание: размер прошивки ({size} байт) больше заявленного свободного места ({free_space} байт). Прошивка продолжится.")
         elif err_fs:
-            flasher.log_cb(f"Wiren Board: рег. 1003 недоступен: {err_fs} — пропускаем.")
+            flasher.log_cb(f".wbfw: рег. 1003 недоступен: {err_fs} — пропускаем.")
     info_block = image[:INFO_BLOCK_BYTES]
     if flasher.log_cb:
-        flasher.log_cb(f"Wiren Board: отправка info-блока (32 B, 16 рег BE) на адрес {slave}...")
+        flasher.log_cb(f".wbfw: отправка info-блока (32 B, 16 рег BE) на адрес {slave}...")
     if gate.should_abort():
         return "Отменено пользователем"
     err = flasher.send_info_block_wb(slave, info_block)

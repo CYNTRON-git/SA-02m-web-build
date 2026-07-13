@@ -144,7 +144,7 @@ function _gwToggleBtnHtml(active) {
 function _renderDevicePanel(area) {
   const active = _status.service_active;
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
-  const svcText  = active ? '● Сервис активен' : '● Сервис остановлен';
+  const svcText  = active ? 'Сервис активен' : 'Сервис остановлен';
 
   const activePorts = PORTS.filter(p => (_config[p] || {}).enabled);
   const runningPorts = PORTS.filter(p => {
@@ -492,12 +492,12 @@ function _statusBadgeHtml(st, cfg) {
   }
   if (st && st.running) {
     const modeLabel = MODES.find(m => m.value === cfg.mode)?.label || cfg.mode;
-    return `<span class="badge badge-ok">● Работает</span>
+    return `<span class="badge badge-ok">Работает</span>
             <span class="badge" style="background:var(--bg-panel);color:var(--text-sec);border:1px solid var(--border)">
               ${modeLabel}&nbsp;:${cfg.tcp_port || '?'}</span>`;
   }
   const err = st && st.last_error ? ` — ${st.last_error}` : '';
-  return `<span class="badge badge-err">● Остановлен${err}</span>`;
+  return `<span class="badge badge-err">Остановлен${err}</span>`;
 }
 
 function _countersHtml(st) {

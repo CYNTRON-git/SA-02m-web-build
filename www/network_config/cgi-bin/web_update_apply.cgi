@@ -1,5 +1,7 @@
 #!/bin/bash
-[[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] || {
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
+web_session_check_cookie || {
   printf 'Content-type: application/json; charset=UTF-8\r\n\r\n'
   printf '{"error":"unauthorized"}\n'
   exit 0

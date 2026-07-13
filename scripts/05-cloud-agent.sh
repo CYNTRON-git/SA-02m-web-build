@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # СА-02м  •  05-cloud-agent.sh  —  Cloud Agent & WireGuard install
 # Устанавливает sa02m-cloud-agent и wireguard-tools.

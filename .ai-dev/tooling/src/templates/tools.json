@@ -1,0 +1,21 @@
+{
+  "_doc": "The quality-tools registry — the one home for 'what does GREEN mean in this project' (PROTOCOL.md `## Quality tools`). This is the TEMPLATE: it ships only the SHAPE plus one example row. A real project REPLACES the example with its own stack's tools (chosen at `/dev-setup`) and drops each tool's native config beside this file (eslint.config.mjs, ruff.toml, semgrep.yml, …). The Builder runs every `build`-beat tool and hands back only when they pass; the Reviewer confirms the `review`-beat tools ran and reads their output. The runner is `node .ai-dev/quality/run.mjs <beat>`. No core edit is ever needed to add or change a tool — only a row here.",
+  "_row_shape": {
+    "id": "short stable name",
+    "checks": "one plain line: what this tool catches",
+    "config": "path to its native config beside this file, or null if none",
+    "run": "the command to run it (from the project root)",
+    "beat": "build | review | ship — which loop beat it runs in",
+    "init": "one line: how to install/enable it (the minimal init instruction)"
+  },
+  "tools": [
+    {
+      "id": "example-lint",
+      "checks": "EXAMPLE ROW — replace with your stack's linter (eslint / ruff / …). A red tool is not green.",
+      "config": null,
+      "run": "echo 'replace this example row with a real quality tool for your stack'",
+      "beat": "build",
+      "init": "see PROTOCOL.md `## Quality tools` — add a row per tool, drop its config beside this file"
+    }
+  ]
+}

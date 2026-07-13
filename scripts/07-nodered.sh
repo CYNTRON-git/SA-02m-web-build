@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 07-nodered.sh  •  Node-RED (Node.js LTS + nodered.service) на СА-02м
 #
@@ -80,6 +81,26 @@ else
         log WARN "  $line"
     done
     exit 1
+fi
+
+# ── armhf: NodeSource не выпускает Node.js 22+ для armhf → Node-RED v5 (require: Node ≥22.9)
+#     не стартует, unit крашится "Unsupported version of Node.js: v20.x".
+#     Downgrade на Node-RED v3.1.x — LTS-совместимый с Node 20 (v3 держит его до апреля 2026).
+ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+if [ "$ARCH" = "armhf" ] || [ "$ARCH" = "armv7l" ]; then
+    NODE_MAJOR=$(node --version 2>/dev/null | awk -F. '{print substr($1,2)+0}')
+    if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -lt 22 ]; then
+        # Проверка: если официальный installer поставил Node-RED v4/v5 — откатываем на v3.
+        NR_VER=$(npm ls -g node-red --parseable=false 2>/dev/null | awk -F@ '/node-red@/{print $NF; exit}')
+        NR_MAJOR="${NR_VER%%.*}"
+        if [ -n "$NR_MAJOR" ] && [ "$NR_MAJOR" -ge 4 ] 2>/dev/null; then
+            log WARN "armhf + Node ${NODE_MAJOR} несовместим с Node-RED ${NR_VER} (нужен Node ≥22.9)."
+            log INFO "Downgrade Node-RED → v3 (совместимость с Node 20 LTS на armhf)"
+            npm install -g --no-audit --no-fund --unsafe-perm node-red@3 >> "$LOG_FILE" 2>&1 \
+                && log OK "Node-RED v3 установлен (armhf-совместимый)" \
+                || log ERR "Не удалось откатить Node-RED на v3"
+        fi
+    fi
 fi
 
 # ── settings.js: доступ по IP шлюза (0.0.0.0) ─────────────────────────────

@@ -1,0 +1,4 @@
+# Dev-harness runtime — never committed.
+node_modules/
+# Per-run artifacts (screenshots + manifests). The committed oracle lives in baseline/.
+artifacts/

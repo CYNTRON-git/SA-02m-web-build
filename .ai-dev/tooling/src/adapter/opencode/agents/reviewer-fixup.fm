@@ -1,0 +1,10 @@
+description: Floor-only body for fixup-grade review — keeps every floor gate, drops only module depth. §Invariants + the full security / correctness / honesty checklist. Finds, does not fix; its only write is its verdict file.
+mode: subagent
+tools:
+  read: true
+  grep: true
+  glob: true
+  bash: true
+  write: true
+permission:
+  question: deny

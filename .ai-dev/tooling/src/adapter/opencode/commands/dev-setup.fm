@@ -1,0 +1,2 @@
+description: (Re)configure this project — run the orchestrator's Setup procedure (discover models, ask the Operator, write .ai-dev/config.json).
+agent: ai-dev

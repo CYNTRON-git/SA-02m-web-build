@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 01-system.sh  •  Base OS, users, packages, serial symlinks
 # ═══════════════════════════════════════════════════════════════════════════
@@ -11,12 +12,28 @@ ETC_REPO="$SCRIPT_DIR/../etc"
 log INFO "=== [01] Системная настройка ==="
 
 # ── Armbian board branding (MOTD / release metadata) ───────────────────────
-if [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ] && [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
     install -m 755 "$ETC_REPO/sa02m-armbian-branding.sh" /usr/local/sbin/sa02m-armbian-branding
     sed -i 's/\r$//' /usr/local/sbin/sa02m-armbian-branding
     /usr/local/sbin/sa02m-armbian-branding >> "$LOG_FILE" 2>&1 \
         && log OK "Armbian branding: CYNTRON SA-02m" \
         || log WARN "Не удалось применить Armbian branding"
+fi
+
+# ── SA-02m MOTD summary (pam_motd → /run/motd.dynamic на SSH-логине) ───────
+if [ -f "$ETC_REPO/update-motd.d/20-sa02m-summary" ]; then
+    install -d -m 755 /etc/update-motd.d
+    install -m 755 "$ETC_REPO/update-motd.d/20-sa02m-summary" \
+        /etc/update-motd.d/20-sa02m-summary
+    sed -i 's/\r$//' /etc/update-motd.d/20-sa02m-summary
+    # Отключаем стандартный Debian `10-uname` (заменяется нашей сводкой).
+    if [ -x /etc/update-motd.d/10-uname ]; then
+        chmod -x /etc/update-motd.d/10-uname 2>/dev/null || true
+    fi
+    # Прегенерация /run/motd.dynamic, чтобы MOTD сразу был доступен без ожидания
+    # первого SSH-логина (pam_motd всё равно перегенерирует его при login).
+    run-parts /etc/update-motd.d > /run/motd.dynamic 2>/dev/null || true
+    log OK "Установлен MOTD /etc/update-motd.d/20-sa02m-summary"
 fi
 
 # ── Locale & timezone ──────────────────────────────────────────────────────
@@ -55,7 +72,9 @@ fi
 # ── Required packages ──────────────────────────────────────────────────────
 log INFO "Установка пакетов"
 apt-get update -qq >> "$LOG_FILE" 2>&1
-pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs
+pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs \
+    i2c-tools gpiod libgpiod2 python3-libgpiod \
+    python3-paho-mqtt python3-yaml python3-serial
 
 # ── User hmi ──────────────────────────────────────────────────────────────
 if ! id hmi &>/dev/null; then
@@ -63,18 +82,46 @@ if ! id hmi &>/dev/null; then
     useradd -m -s /bin/bash hmi >> "$LOG_FILE" 2>&1
 fi
 
-# ── Disable serial console getty ─────────────────────────────────────────
-# ttyS0/ttyS1: standard UARTs.
-# ttyGS0: USB gadget serial — holds flock on /dev/console, which blocks
-#         systemd's event loop and makes all systemctl calls time out.
-for tty in ttyS0 ttyS1 ttyGS0; do
-    systemctl disable "serial-getty@${tty}" 2>/dev/null || true
-    systemctl mask    "serial-getty@${tty}" 2>/dev/null || true
+# ── Serial console policy (production) ─────────────────────────────────────
+# На production-устройстве СА-02м ВСЕ /dev/ttyS* используются как RS-485 / COM
+# для Modbus RTU (RS-485-0..4) и MR-02m flasher (ttyS1). Отладочный getty на
+# любом ttyS ломает протокол — на serial-порту одновременно нельзя иметь
+# login-prompt и Modbus-мастер.
+#
+# ttyGS0 (USB gadget serial через Type-C) — планируется как единственный
+# отладочный serial, но требует CONFIG_USB_GADGET / CONFIG_USB_G_SERIAL /
+# CONFIG_USB_CONFIGFS_ACM в ядре. Текущее WB 5.10.35-sa02m+ собрано без них
+# (`# CONFIG_USB_GADGET is not set`) → /dev/ttyGS0 физически не создаётся.
+# Пока (Фаза 1) — оставляем getty@ttyGS0/serial-getty@ttyGS0 masked; после
+# пересборки ядра (Фаза 2) — enable serial-getty@ttyGS0.
+#
+# Единственный поддерживаемый способ отладки: SSH через Ethernet.
+
+# Mask ВСЕХ serial-getty@ttyS* (S0..S7) — не должно быть login-prompt на COM.
+for n in 0 1 2 3 4 5 6 7; do
+    systemctl disable "serial-getty@ttyS${n}" 2>/dev/null || true
+    systemctl mask    "serial-getty@ttyS${n}" 2>/dev/null || true
+    systemctl disable "getty@ttyS${n}"        2>/dev/null || true
+    systemctl mask    "getty@ttyS${n}"        2>/dev/null || true
 done
-# getty@ttyGS0 (non-serial variant) also uses /dev/console flock
-systemctl disable "getty@ttyGS0" 2>/dev/null || true
-systemctl mask    "getty@ttyGS0" 2>/dev/null || true
-# Remove wants symlinks so they are not re-enabled on daemon-reload
+# Убрать все wants-symlinks от предыдущих Armbian/upgrade поколений
+rm -f /etc/systemd/system/getty.target.wants/getty@ttyS*.service \
+      /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyS*.service 2>/dev/null || true
+# systemd-getty-generator тоже создаёт serial-getty@ttyS0.service при
+# console=ttyS0 в cmdline. После смены bootargs на console=tty1 (см.
+# etc/boot.cmd.sa02m) generator не будет запускать serial-getty на ttyS0 —
+# но mask-состояние остаётся страховкой на случай отката bootargs.
+
+# ttyGS0: пока kernel без USB_GADGET — mask, чтобы systemd не пытался запускать
+# getty на несуществующем устройстве. При пересборке ядра — раскомментировать
+# два systemctl unmask/enable ниже.
+systemctl disable "serial-getty@ttyGS0" 2>/dev/null || true
+systemctl mask    "serial-getty@ttyGS0" 2>/dev/null || true
+systemctl disable "getty@ttyGS0"        2>/dev/null || true
+systemctl mask    "getty@ttyGS0"        2>/dev/null || true
+# TODO(Phase 2, после kernel rebuild с CONFIG_USB_GADGET):
+#   systemctl unmask serial-getty@ttyGS0.service
+#   systemctl enable serial-getty@ttyGS0.service
 rm -f /etc/systemd/system/getty.target.wants/getty@ttyGS0.service \
       /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyGS0.service 2>/dev/null || true
 
@@ -183,11 +230,15 @@ fi
 log INFO "Настройка USB-модема"
 
 # Необходимые пакеты.
-# modemmanager — управляет 3G/4G модемами (PPP, QMI, MBIM, signal, PIN).
-# ppp          — PPP-стек для ttyUSB-модемов (AT-команды + соединение).
+# modemmanager   — управляет 3G/4G модемами (PPP, QMI, MBIM, signal, PIN).
+# ppp            — PPP-стек для ttyUSB-модемов (AT-команды + соединение).
 # isc-dhcp-client (dhclient) — DHCP для CDC-ECM/RNDIS/NCM USB-ethernet-модемов.
-# usb-modeswitch + data — уже установлены в образе; добавляем на всякий случай.
-MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data"
+# usb-modeswitch + data — переключение модема из mass-storage в модемный режим
+#                (Huawei/ZTE 4G-донглы после первого подключения).
+# libqmi-utils   — qmicli, qmi-network для Quectel EC25 / Sierra QMI-модемов.
+# libmbim-utils  — mbimcli, mbim-network для новых Fibocom / Quectel MBIM.
+# usbutils       — lsusb для диагностики.
+MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data libqmi-utils libmbim-utils usbutils"
 for pkg in $MODEM_PKGS; do
     dpkg -s "$pkg" >/dev/null 2>&1 || \
         DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >>"$LOG_FILE" 2>&1 || \
@@ -223,8 +274,8 @@ if [ -f "$ETC_REPO/ppp/ip-down.d/sa02m-modem" ]; then
     install -m 755 "$ETC_REPO/ppp/ip-down.d/sa02m-modem" /etc/ppp/ip-down.d/sa02m-modem
 fi
 
-# dhclient exit-hook: metric 100 для USB-модемных интерфейсов (enx*/usb*/end1+).
-# Предотвращает замену end0-default маршрута (onlink) модемным маршрутом.
+# dhclient exit-hook: metric 100 для USB-модемных интерфейсов (enx*/usb*/eth1+).
+# Предотвращает замену eth0-default маршрута (onlink) модемным маршрутом.
 if [ -f "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" ]; then
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
     install -m 755 "$ETC_REPO/dhcp/dhclient-exit-hooks.d/sa02m-modem-metric" \
@@ -265,6 +316,20 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log OK "sa02m-pre-start установлен и включён"
 fi
 
+# ── USB VBUS hold: отдельный Type=simple юнит с `gpioset -m signal 0 268=1` ──
+# См. etc/systemd/sa02m-usb-vbus.service — исторически pre-start (oneshot) держал
+# VBUS сам, но `KillMode=control-group` убивал backgrounded gpioset вместе с
+# завершением скрипта. В результате dmesg показывал `usb0-vbus: disabling` через
+# ~30 с после boot, а USB-модем/накопитель на USB-A порту SA-02m не поднимался
+# без ручного «reset питания» из web-панели.
+if [ -f "$ETC_REPO/systemd/sa02m-usb-vbus.service" ]; then
+    log INFO "Установка sa02m-usb-vbus.service (гарантированное VBUS ON после boot)"
+    install -m 644 "$ETC_REPO/systemd/sa02m-usb-vbus.service" /etc/systemd/system/sa02m-usb-vbus.service
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable sa02m-usb-vbus.service >> "$LOG_FILE" 2>&1 || true
+    log OK "sa02m-usb-vbus установлен и включён"
+fi
+
 # ── DS3231 RTC sync: периодическая запись NTP→DS3231 + сохранение при shutdown ──
 # Алгоритм синхронизации времени:
 #   Boot:     fake-hwclock.service → система; sa02m-pre-start → DS3231→система (если год≥2020)
@@ -286,6 +351,18 @@ if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
     sa02m_systemctl enable sa02m-rtc-sync.timer >> "$LOG_FILE" 2>&1 \
         && log OK "sa02m-rtc-sync.timer включён" \
         || log WARN "sa02m-rtc-sync.timer не включился"
+fi
+
+# ── Postinst-hook для linux-image-*.deb (см. tools/kernel-wb/) ─────────────
+# При установке .deb-пакета WB-ядра dpkg вызывает run-parts /etc/kernel/postinst.d/;
+# хук копирует новый zImage в /usr/local/share/sa02m/kernel/zImage.<flavour>
+# и (если flavour совпадает с running) обновляет /mnt/boot_fat/zImage +
+# синхронизирует sun8i-a40i-sk.dtb на FAT-раздел.
+if [ -f "$ETC_REPO/kernel-postinst.d/50-sa02m-fat-sync" ]; then
+    install -d -m 755 /etc/kernel/postinst.d
+    install -m 755 "$ETC_REPO/kernel-postinst.d/50-sa02m-fat-sync" \
+        /etc/kernel/postinst.d/50-sa02m-fat-sync
+    log OK "kernel-postinst hook установлен (WB linux-image-*.deb → FAT auto-sync)"
 fi
 
 # ca_02m.service (After=network.target) заменён ранним sa02m-pre-start — отключаем дубль
@@ -363,16 +440,16 @@ fi
 
 # sa02m-net-autolink — УСТАРЕЛО: ранее обновлял link-файлы 10-eth0.link/11-eth1.link
 # при смене MAC при переносе образа. Начиная с этой версии используются стабильные
-# предсказуемые имена end0/end1 без MAC-based переименования — link-файлы не нужны.
+# предсказуемые имена eth0/eth1 без MAC-based переименования — link-файлы не нужны.
 # Если сервис был установлен ранее — маскируем его.
 for _u in sa02m-net-autolink.service; do
     systemctl stop    "$_u" 2>/dev/null || true
     systemctl disable "$_u" 2>/dev/null || true
     systemctl mask    "$_u" 2>/dev/null || true
 done
-# Удаляем link-файлы, чтобы ядро использовало предсказуемые имена end0/end1.
+# Удаляем link-файлы, чтобы ядро использовало предсказуемые имена eth0/eth1.
 rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/11-eth1.link 2>/dev/null || true
-log OK "sa02m-net-autolink отключён; link-файлы удалены — используются end0/end1"
+log OK "sa02m-net-autolink отключён; link-файлы удалены — используются eth0/eth1"
 
 # Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
 # (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
@@ -382,9 +459,9 @@ for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watc
     sa02m_systemctl mask "$u" 2>/dev/null || true
 done
 
-# ── Маскировка NetworkManager: не управляет ни end0 (ifupdown), ни can0,    ──
-# ── ни end1 (нет cable). Только тормозил boot на 6 секунд.                  ──
-log INFO "Маскируем NetworkManager (end0/can0/end1 — unmanaged)"
+# ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
+# ── ни eth1 (нет cable). Только тормозил boot на 6 секунд.                  ──
+log INFO "Маскируем NetworkManager (eth0/can0/eth1 — unmanaged)"
 for u in NetworkManager.service NetworkManager-wait-online.service NetworkManager-dispatcher.service; do
     sa02m_systemctl stop "$u" 2>/dev/null || true
     sa02m_systemctl disable "$u" 2>/dev/null || true
@@ -411,7 +488,20 @@ fi
 # /lib/systemd/system → /dev/null. Стандартный `systemctl unmask` НЕ снимает
 # vendor-маску. Создаём собственный unit в /etc/systemd/system/ — он имеет
 # приоритет над /lib/systemd/system/ и над /usr/lib/systemd/system/.
-cat > /etc/systemd/system/fake-hwclock.service <<'FHS'
+# fake-hwclock устанавливается по разным путям на Armbian и Debian:
+#   Armbian (Ubuntu Noble) → /usr/sbin/fake-hwclock
+#   Debian bullseye        → /sbin/fake-hwclock
+# Определяем реальный путь и подставляем в unit, иначе systemd падает
+# "Failed to start ... (No such file or directory)".
+FHC_BIN=""
+for cand in /usr/sbin/fake-hwclock /sbin/fake-hwclock /usr/bin/fake-hwclock; do
+    if [ -x "$cand" ]; then FHC_BIN="$cand"; break; fi
+done
+if [ -z "$FHC_BIN" ]; then
+    log WARN "fake-hwclock не найден — пропускаем создание unit"
+else
+    log INFO "fake-hwclock: $FHC_BIN"
+    cat > /etc/systemd/system/fake-hwclock.service <<FHS
 [Unit]
 Description=Restore / save the current clock (SA-02m unmasked)
 DefaultDependencies=no
@@ -422,20 +512,21 @@ ConditionPathExists=!/run/systemd/fake-hwclock-loaded
 
 [Service]
 Type=oneshot
-ExecStart=/usr/sbin/fake-hwclock load
+ExecStart=${FHC_BIN} load
 ExecStart=/bin/touch /run/systemd/fake-hwclock-loaded
-ExecStop=/usr/sbin/fake-hwclock save
+ExecStop=${FHC_BIN} save
 RemainAfterExit=yes
 
 [Install]
 WantedBy=sysinit.target
 FHS
-install -d -m 755 /etc/systemd/system/fake-hwclock.service.d
-cat > /etc/systemd/system/fake-hwclock.service.d/sa02m-save-onstop.conf <<'FHC'
+    install -d -m 755 /etc/systemd/system/fake-hwclock.service.d
+    cat > /etc/systemd/system/fake-hwclock.service.d/sa02m-save-onstop.conf <<FHC
 [Service]
-ExecStop=/usr/sbin/fake-hwclock save
+ExecStop=${FHC_BIN} save
 RemainAfterExit=yes
 FHC
+fi
 sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
 sa02m_systemctl enable fake-hwclock.service >>"$LOG_FILE" 2>&1 || true
 # Запишем текущее время как fallback (если оно валидное).
@@ -476,7 +567,7 @@ if [ -n "$ROOT_LAST" ] && [ "$ROOT_LAST" -gt "$CUR_DAYS" ]; then
 fi
 
 # ── DNS fallback через resolvconf ───────────────────────────────────────────
-# ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии end0.
+# ifupdown обновляет /etc/resolv.conf через resolvconf при поднятии eth0.
 # При раздаче интернета с ПК (ICS) внешние DNS (8.8.8.8) часто недоступны —
 # первым nameserver должен быть IP шлюза (ПК). Затем публичные DNS как запасной вариант.
 if command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ]; then

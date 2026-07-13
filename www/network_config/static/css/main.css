@@ -18,7 +18,8 @@
   --border-li:   #58585a;
 
   --text:        #f2f2f7;
-  --text-sec:    #8e8e93;
+  /* #a5a5ac: контраст 6.3:1 на карточке (#242426) против 4.7:1 у прежнего #8e8e93 — WCAG AA */
+  --text-sec:    #a5a5ac;
   --text-dim:    #48484a;
 
   --cyan:        #22d3ee;
@@ -69,6 +70,12 @@
   --meter-red:    #ff453a;
   --meter-orange: #ff9f0a;
   --meter-track:  #2c2c2e;
+
+  /* Цветные «чипы» иконок на карточках (контраст иконка/фон ≥4.6:1) */
+  --chip-cyan-bg:   #0e3a44;  --chip-cyan-fg:   #22d3ee;
+  --chip-green-bg:  #103a18;  --chip-green-fg:  #32d74b;
+  --chip-orange-bg: #3f2a05;  --chip-orange-fg: #ff9f0a;
+  --chip-red-bg:    #431211;  --chip-red-fg:    #ff453a;
 }
 
 :root,
@@ -121,9 +128,13 @@ html[data-theme="light"] {
   --badge-err-bg:    #fef2f2;
   --badge-err-border:#fecaca;
   --meter-track:     #d1d1d6;
+
+  --chip-cyan-bg:   #dff5fa;  --chip-cyan-fg:   #0e7490;
+  --chip-green-bg:  #e3f6e8;  --chip-green-fg:  #1e7534;
+  --chip-orange-bg: #fdf0e0;  --chip-orange-fg: #a53a09;
+  --chip-red-bg:    #fdeaea;  --chip-red-fg:    #b91c1c;
 }
 
-html[data-theme="light"] .gauge-arc-bg { stroke: var(--meter-track) !important; }
 html[data-theme="light"] .log-box {
   background: #fafafa;
   border-color: var(--border);
@@ -260,10 +271,13 @@ html:not([data-theme="light"]) .topbar {
   border: 1px solid transparent;
 }
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
+/* Активный пункт — полупрозрачная акцентная заливка (как у nav-sub-item.active) */
 .nav-item.active {
-  background: var(--bg-panel); color: var(--cyan);
-  border-color: var(--border-md);
-  box-shadow: var(--shadow-sm);
+  background: var(--cyan-dim, rgba(34, 211, 238, .12));
+  color: var(--cyan);
+  border-color: transparent;
+  box-shadow: none;
+  font-weight: 600;
 }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
@@ -312,6 +326,28 @@ html:not([data-theme="light"]) .topbar {
 /* HW-блок: ширина верхнего ряда (4 виджета + промежутки), auto-fill сохраняет размер карточек */
 .dash-span-top4 { grid-column: 1 / span 4; }
 .dash-full { grid-column: 1 / -1; }
+
+/* ── Иконки-чипы в заголовках карточек дашборда ──────────────────────────── */
+.widget-title.has-ico {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.w-ico {
+  width: 26px; height: 26px;
+  border-radius: var(--radius-xs);
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: 0 0 auto;
+}
+.w-ico svg { width: 14px; height: 14px; }
+.w-ico-cyan   { background: var(--chip-cyan-bg);   color: var(--chip-cyan-fg); }
+.w-ico-green  { background: var(--chip-green-bg);  color: var(--chip-green-fg); }
+.w-ico-orange { background: var(--chip-orange-bg); color: var(--chip-orange-fg); }
+.w-ico-red    { background: var(--chip-red-bg);    color: var(--chip-red-fg); }
+/* Ethernet: иконка + заголовок одной строкой; pill «Линк/Нет линка» при нехватке
+   места переносится ниже целиком, не разрывая текст заголовка */
+.eth-hdr-title.has-ico { flex-wrap: wrap; row-gap: 4px; }
+.eth-hdr-title.has-ico > .w-ico + span { white-space: nowrap; }
 
 /* ── Widget card ─────────────────────────────────────────────────────────── */
 .widget {
@@ -365,29 +401,6 @@ html:not([data-theme="light"]) .topbar {
   margin-bottom: 0;
   line-height: 1.35;
   min-height: calc(1.08rem * 1.35);
-}
-
-/* ── Gauge (SVG half-circle) ─────────────────────────────────────────────── */
-.gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.gauge-svg  { display: block; }
-.gauge-label { font-size: 13px; color: var(--text-sec); }
-.gauge-label-temp {
-  font-size: 13px;
-  max-width: 220px;
-  text-align: center;
-  line-height: 1.35;
-}
-.gauge-arc-bg { stroke: var(--meter-track); stroke-linecap: butt; }
-/* butt: иначе round + неверная длина dash давали «кляксу» на конце дуги */
-.gauge-arc    { stroke-linecap: butt; transition: stroke-dasharray .4s ease, stroke .3s ease; }
-/* Числа на дугах CPU/температура — стандартный кегль 30px (ближайший к «крупнее ~19.5») */
-svg .gauge-num {
-  fill: var(--text);
-  font-size: 30px;
-  font-weight: 500;
-  letter-spacing: -0.03em;
-  paint-order: stroke fill;
-  stroke: none;
 }
 
 /* ── Progress bar ────────────────────────────────────────────────────────── */
@@ -663,6 +676,9 @@ svg .gauge-num {
   border-radius: var(--radius-lg); padding: 16px;
   box-shadow: var(--shadow-sm);
   transition: box-shadow var(--transition), border-color var(--transition);
+  /* Кнопки всех под-карточек на одном горизонтальном уровне (низ карточки) */
+  display: flex;
+  flex-direction: column;
 }
 .hw-block:hover .hw-item {
   border-color: var(--border-md);
@@ -677,6 +693,7 @@ svg .gauge-num {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px 12px;
+  margin-top: auto;
 }
 .hw-btns { display: flex; gap: 6px; flex-shrink: 0; min-width: 0; }
 .hw-status-line {
@@ -711,6 +728,18 @@ svg .gauge-num {
 .hw-io-btn:disabled {
   opacity: 0.45;
   filter: grayscale(0.35);
+}
+/* Одиночная toggle-кнопка HW-канала: занимает всю ширину под-карточки; в «вкл»
+   заливается голубым — той же акцентной подсветкой, что и активный пункт меню
+   слева (.nav-item.active). «н/д» — приглушённая. */
+.hw-item-body-toggle { grid-template-columns: 1fr; }
+.hw-toggle-btn { width: 100%; justify-content: center; font-weight: 600; }
+.hw-toggle-btn.na { color: var(--text-dim); }
+.btn.hw-active-blue {
+  background: var(--cyan-dim, rgba(34, 211, 238, .12)) !important;
+  color: var(--cyan) !important;
+  border-color: color-mix(in srgb, var(--cyan) 45%, transparent) !important;
+  font-weight: 600;
 }
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
@@ -2693,7 +2722,7 @@ svg .gauge-num {
   font-size: .85rem;
 }
 .mqtt-device-table th {
-  text-align: center;
+  text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);

@@ -1,0 +1,58 @@
+[Unit]
+# SA-02m: держит USB VBUS (GPIO chip=0 line=268 = PI12, active-high=1) во включённом
+# состоянии на всё время работы устройства через libgpiod (`gpioset -m signal`).
+#
+# Почему отдельный unit, а не блок в sa02m-pre-start.service:
+#   sa02m-pre-start — Type=oneshot + KillMode=control-group. Любой backgrounded
+#   `gpioset & disown` из pre-start попадает в его cgroup и получает SIGTERM,
+#   как только основной shell-скрипт завершается. В результате линия 268 после
+#   ~10 с загрузки отпускается — GPIO уходит в input, VBUS уходит вниз (или
+#   удерживается только внешним pull-up, если он есть). В dmesg это выглядит как
+#   `usb0-vbus: disabling` спустя ~30 с после boot, а физически модем/накопитель
+#   в USB-порту SA-02m не поднимается.
+#
+# Здесь мы держим `gpioset` как основной процесс Type=simple: systemd управляет
+# жизненным циклом одного долгоживущего процесса, KillMode по умолчанию убивает
+# только его же (control-group, но он один в этом cgroup), а sa02m-pre-start
+# больше не занимается VBUS.
+#
+# hw_set.cgi / lib_hw.sh продолжают работать с той же линией через `sudo gpioset`
+# (kill holder → spawn new). Когда CGI шлёт SIGTERM нашему gpioset, systemd
+# видит exit 0 → unit становится inactive, а CGI поднимает новый gpioset. При
+# необходимости вернуть исходное состояние — `systemctl restart sa02m-usb-vbus`.
+
+Description=SA-02m USB VBUS hold (gpioset chip=0 line=268=1)
+Documentation=file:/etc/sa02m_hw.conf
+
+# Как можно раньше, до usb-modeswitch/networking.
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udevd.service
+Before=sysinit.target basic.target
+Wants=systemd-udevd.service
+
+# Не блокировать shutdown: gpioset аккуратно завершается по SIGTERM.
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=simple
+# Сначала прибиваем любой уже висящий gpioset на линии 268 (CGI-инициированный,
+# либо предыдущий инстанс из sa02m-pre-start до фикса) — иначе новый gpioset
+# получит EBUSY. `|| true` не роняет unit, а pkill -f pattern гарантирует, что
+# бьём только процессы, реально удерживающие линию 268.
+ExecStartPre=/bin/sh -c 'pkill -TERM -f "^/usr/bin/gpioset .* 268=" 2>/dev/null; sleep 0.15; pkill -KILL -f "^/usr/bin/gpioset .* 268=" 2>/dev/null; exit 0'
+ExecStart=/usr/bin/gpioset -m signal 0 268=1
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+# CGI/lib_hw.sh может убивать этот gpioset и поднимать свой (10-секундный reset
+# питания USB и обычная запись usb_power=0/1). При SIGTERM gpioset выходит с 0 —
+# не переоживляем, иначе будет гонка с CGI-инициированным `gpioset -m signal 268=0`.
+Restart=no
+
+# Не откладывать shutdown: gpioset реагирует на SIGTERM моментально.
+TimeoutStopSec=3
+
+[Install]
+WantedBy=sysinit.target

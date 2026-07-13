@@ -1,10 +1,12 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 echo "Content-type: text/html; charset=UTF-8"
 echo "Cache-Control: no-store"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 
@@ -125,18 +127,18 @@ echo '<h3 class="sec-group">&#9654; Сеть</h3>'
     echo "=== ROUTES (ip route) ==="
     timeout_run 3 ip route 2>&1 || echo "ERROR: ip route failed"
     echo ""
-    echo "=== /etc/network/interfaces.d/end0.conf ==="
-    cat /etc/network/interfaces.d/end0.conf 2>/dev/null || echo "end0.conf unavailable"
+    echo "=== /etc/network/interfaces.d/eth0.conf ==="
+    cat /etc/network/interfaces.d/eth0.conf 2>/dev/null || echo "eth0.conf unavailable"
     echo ""
-    echo "=== /etc/network/interfaces.d/end1.conf ==="
-    cat /etc/network/interfaces.d/end1.conf 2>/dev/null || echo "end1.conf unavailable"
+    echo "=== /etc/network/interfaces.d/eth1.conf ==="
+    cat /etc/network/interfaces.d/eth1.conf 2>/dev/null || echo "eth1.conf unavailable"
     echo ""
-    echo "=== END0 LINK STATUS ==="
-    printf "operstate: "; cat /sys/class/net/end0/operstate 2>/dev/null || echo "n/a"
-    printf "carrier:   "; cat /sys/class/net/end0/carrier   2>/dev/null || echo "n/a"
+    echo "=== eth0 LINK STATUS ==="
+    printf "operstate: "; cat /sys/class/net/eth0/operstate 2>/dev/null || echo "n/a"
+    printf "carrier:   "; cat /sys/class/net/eth0/carrier   2>/dev/null || echo "n/a"
     echo ""
-    echo "=== END1 LINK STATUS ==="
-    printf "operstate: "; cat /sys/class/net/end1/operstate 2>/dev/null || echo "n/a"
+    echo "=== eth1 LINK STATUS ==="
+    printf "operstate: "; cat /sys/class/net/eth1/operstate 2>/dev/null || echo "n/a"
 } | wrap_section "&#127760; Сетевая диагностика (ip addr / routes / eth.conf)"
 
 echo '<h3 class="sec-group">&#9654; SSH / PAM</h3>'

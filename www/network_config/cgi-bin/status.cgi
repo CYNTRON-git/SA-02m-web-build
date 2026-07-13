@@ -1,4 +1,6 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 echo "Content-type: application/json; charset=UTF-8"
 echo "Cache-Control: no-cache"
 echo ""
@@ -26,19 +28,17 @@ case "${QUERY_STRING:-}" in
     *part=core*)     STATUS_PART=core ;;
 esac
 
-allow_public_part() {
-    case "$1" in
-        cpu|temp|ram|disk) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 
-if ! allow_public_part "$STATUS_PART" && ! check_auth; then
+# All status parts require a valid session — no public telemetry carve-out
+# (S8). CPU/temp/RAM/disk are no longer readable by an unauthenticated LAN
+# client. (The former login-page warm-up prefetched part=priority, which was
+# never in the carve-out anyway, so it already returned unauthorized — closing
+# this loses no working behaviour.)
+if ! check_auth; then
     echo '{"error":"unauthorized"}'
     exit 0
 fi
@@ -647,6 +647,17 @@ iface_mode() {
     echo "unknown"
 }
 
+# Return the first of the candidate interface names that actually exists in
+# /sys/class/net, else the first candidate (so "absent" semantics still hold).
+# Bridges the eth0/eth1 (1.0.4.x predictable names) vs end0/end1 (legacy) gap.
+first_existing_iface() {
+    local c
+    for c in "$@"; do
+        [ -d "/sys/class/net/$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    printf '%s' "$1"
+}
+
 cpu_usage_from_stat_lines() {
     local c1=$1 c2=$2
     local a1=($c1) a2=($c2) total1=0 total2=0
@@ -1137,6 +1148,12 @@ gather_storage_metrics() {
 }
 
 # ── USB-модем (CDC-ECM / RNDIS / NCM интерфейс) ──────────────────────────────
+# Детектится в двух режимах:
+#  1) через /sys/class/net/*   — когда модем уже создал сетевой интерфейс
+#     (rndis0/usb0/wwan0/...), тогда есть IP/traffic/operstate.
+#  2) через /sys/bus/usb/devices/* — когда модем виден по VID:PID, но ещё
+#     не поднял сеть (mass-storage до usb-modeswitch, AT-only, инициализация).
+#     В этом случае set USB_MODEM_PRESENT=1, state="init", iface/ip пустые.
 gather_usb_modem_metrics() {
     USB_MODEM_PRESENT=0
     USB_MODEM_VENDOR=""
@@ -1147,16 +1164,20 @@ gather_usb_modem_metrics() {
     USB_MODEM_RX=0
     USB_MODEM_TX=0
 
-    # Известные USB ID модемных вендоров (ZTE, Huawei, Quectel, Sierra, Ericsson, Dell/Option)
-    local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7"
-    local iface vendor product manufacturer usb_dir d
+    # Известные USB ID модемных вендоров.
+    # 19d2=ZTE, 12d1=Huawei, 2c7c=Quectel, 1199=Sierra, 0bdb=Ericsson,
+    # 413c=Dell WWAN, 1c9e=Longcheer (ZTE-based), 0af0=Option NV, 2cb7=Fibocom,
+    # 05c6=Qualcomm CDMA (SIM7600 в QMI-режиме), 1e0e=SimCom / некоторые ZTE,
+    # 1546=u-blox, 1782=Longsung / Meig / некоторые SIM7100, 1bbb=Alcatel/T&A,
+    # 2020=Meig / некоторые Fibocom.
+    local modem_vendors="19d2 12d1 2c7c 1199 0bdb 413c 1c9e 0af0 2cb7 05c6 1e0e 1546 1782 1bbb 2020"
+    local iface vendor product manufacturer usb_dir d _ip
 
+    # 1) Ищем модем через сетевые интерфейсы (наиболее полная информация)
     for iface in $(ls /sys/class/net/ 2>/dev/null); do
-        # Резолвим sysfs-путь устройства (должен проходить через /usb)
         d=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || continue
         printf '%s' "$d" | grep -q '/usb' || continue
 
-        # Идём вверх по пути до директории USB-устройства с idVendor
         usb_dir="$d"
         vendor=""
         while [ -n "$usb_dir" ] && [ "$usb_dir" != "/" ]; do
@@ -1168,10 +1189,9 @@ gather_usb_modem_metrics() {
         done
         [ -n "$vendor" ] || continue
 
-        # Проверяем что это модемный вендор
         printf ' %s ' "$modem_vendors" | grep -qF " ${vendor} " || continue
 
-        product=$(cat "${usb_dir}/product" 2>/dev/null || cat "${usb_dir}/idProduct" 2>/dev/null || echo "")
+        product=$(cat "${usb_dir}/product" 2>/dev/null || echo "")
         manufacturer=$(cat "${usb_dir}/manufacturer" 2>/dev/null || echo "")
 
         USB_MODEM_PRESENT=1
@@ -1181,10 +1201,32 @@ gather_usb_modem_metrics() {
         USB_MODEM_STATE=$(json_escape "$(cat "/sys/class/net/${iface}/operstate" 2>/dev/null || echo "unknown")")
         USB_MODEM_RX=$(cat "/sys/class/net/${iface}/statistics/rx_bytes" 2>/dev/null || echo 0)
         USB_MODEM_TX=$(cat "/sys/class/net/${iface}/statistics/tx_bytes" 2>/dev/null || echo 0)
-        local _ip
         _ip=$(ip -4 addr show "$iface" 2>/dev/null | awk '/inet /{gsub("/.*","",$2); print $2; exit}')
         USB_MODEM_IP=$(json_escape "${_ip}")
-        break
+        return 0
+    done
+
+    # 2) Fallback: модем есть на USB-шине по VID, но сети ещё нет
+    #    (mass-storage до usb-modeswitch, AT-only, инициализация ModemManager).
+    for d in /sys/bus/usb/devices/*/idVendor; do
+        [ -r "$d" ] || continue
+        vendor=$(tr -d '[:space:]' < "$d" 2>/dev/null)
+        [ -n "$vendor" ] || continue
+        printf ' %s ' "$modem_vendors" | grep -qF " ${vendor} " || continue
+
+        usb_dir=$(dirname "$d")
+        product=$(cat "${usb_dir}/product" 2>/dev/null || echo "")
+        manufacturer=$(cat "${usb_dir}/manufacturer" 2>/dev/null || echo "")
+
+        USB_MODEM_PRESENT=1
+        USB_MODEM_VENDOR=$(json_escape "${manufacturer}")
+        USB_MODEM_MODEL=$(json_escape "${product}")
+        USB_MODEM_IFACE=""
+        USB_MODEM_STATE=$(json_escape "init")
+        USB_MODEM_IP=""
+        USB_MODEM_RX=0
+        USB_MODEM_TX=0
+        return 0
     done
 }
 
@@ -1234,32 +1276,38 @@ gather_network_metrics() {
         return 0
     fi
 
-    local net0 net1
+    local net0 net1 ETH0_IF ETH1_IF
+    # 1.0.4.x images use predictable names eth0/eth1; legacy / un-reimaged boards
+    # still expose end0/end1. Resolve to whichever actually exists so the
+    # dashboard shows the real IP on both (JSON keys stay eth0_*/eth1_*).
+    ETH0_IF=$(first_existing_iface eth0 end0)
+    ETH1_IF=$(first_existing_iface eth1 end1)
+
     ETH0_ST="absent"
-    if [ -d /sys/class/net/end0 ]; then
-        IFS= read -r ETH0_ST < /sys/class/net/end0/operstate
+    if [ -d "/sys/class/net/$ETH0_IF" ]; then
+        IFS= read -r ETH0_ST < "/sys/class/net/$ETH0_IF/operstate"
         ETH0_ST=${ETH0_ST:-unknown}
     fi
 
-    net0=($(net_iface_stats end0))
+    net0=($(net_iface_stats "$ETH0_IF"))
     NET0_RX=${net0[0]:-0}
     NET0_TX=${net0[1]:-0}
 
     ETH1_ST="absent"
     NET1_RX=0
     NET1_TX=0
-    if [ -d /sys/class/net/end1 ]; then
-        IFS= read -r ETH1_ST < /sys/class/net/end1/operstate
+    if [ -d "/sys/class/net/$ETH1_IF" ]; then
+        IFS= read -r ETH1_ST < "/sys/class/net/$ETH1_IF/operstate"
         ETH1_ST=${ETH1_ST:-absent}
-        net1=($(net_iface_stats end1))
+        net1=($(net_iface_stats "$ETH1_IF"))
         NET1_RX=${net1[0]:-0}
         NET1_TX=${net1[1]:-0}
     fi
 
-    ETH0_IP=$(iface_ipv4_addr end0)
-    ETH1_IP=$(iface_ipv4_addr end1)
-    ETH0_MODE=$(iface_mode end0)
-    ETH1_MODE=$(iface_mode end1)
+    ETH0_IP=$(iface_ipv4_addr "$ETH0_IF")
+    ETH1_IP=$(iface_ipv4_addr "$ETH1_IF")
+    ETH0_MODE=$(iface_mode "$ETH0_IF")
+    ETH1_MODE=$(iface_mode "$ETH1_IF")
 
     # Для верхней панели оставляем единый IP (первый доступный).
     IP="${ETH0_IP:-}"
@@ -1332,19 +1380,47 @@ gather_system_metrics() {
         return 0
     fi
 
-    BOARD_RAW=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    BOARD=$(json_escape "${BOARD_RAW:-—}")
-    CPU_MODEL=$(awk -F: '/^model name|^Processor/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null)
-    CPU_MODEL=$(json_escape "$CPU_MODEL")
-    KERNEL_VER=$(json_escape "$(uname -r 2>/dev/null)")
+    # Название устройства — фиксированный кириллический бренд «ЦИНТРОН СА-02м»
+    # с суффиксом «-2» для варианта с двумя Ethernet (выбирается в разделе «Управление»).
+    case "${HW_VARIANT:-}" in
+        sa02m-2eth) BOARD_RAW="ЦИНТРОН СА-02м-2" ;;
+        *)          BOARD_RAW="ЦИНТРОН СА-02м" ;;
+    esac
+    BOARD=$(json_escape "$BOARD_RAW")
+
+    # Процессор: фиксированное SoC-имя (Allwinner A40i, Cortex-A7)
+    # и HW-максимум частоты из cpuinfo_max_freq (kHz → MHz).
+    # Формат без префикса числа ядер: «Allwinner A40i Cortex-A7 1200МГц».
+    _cpu_hw_max_khz=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null || echo 0)
+    case "$_cpu_hw_max_khz" in ''|*[!0-9]*) _cpu_hw_max_khz=0 ;; esac
+    _cpu_hw_max_mhz=$(( _cpu_hw_max_khz / 1000 ))
+    (( _cpu_hw_max_mhz <= 0 )) && _cpu_hw_max_mhz=1200
+    CPU_MODEL_RAW="Allwinner A40i Cortex-A7 ${_cpu_hw_max_mhz}МГц"
+    CPU_MODEL=$(json_escape "$CPU_MODEL_RAW")
+
+    # Ядро: только X.Y.Z, без суффикса -sa02m+ и т.п.
+    _kernel_raw=$(uname -r 2>/dev/null)
+    _kernel_short=$(printf '%s' "$_kernel_raw" | sed -nE 's/^([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+    [ -z "$_kernel_short" ] && _kernel_short="$_kernel_raw"
+    KERNEL_VER=$(json_escape "$_kernel_short")
+
+    # ОС: короткое «Debian <point-release>» — из /etc/debian_version (11.11).
     ARMBIAN_VER=""
-    if [ -r /etc/os-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^ARMBIAN_PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
-        [ -z "$ARMBIAN_VER" ] && ARMBIAN_VER=$(awk -F= '/^PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+    if [ -r /etc/debian_version ]; then
+        _debian_ver=$(head -n1 /etc/debian_version 2>/dev/null | tr -d '\r\n[:space:]')
+        [ -n "$_debian_ver" ] && ARMBIAN_VER="Debian ${_debian_ver}"
     fi
-    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/armbian-release ]; then
-        ARMBIAN_VER=$(awk -F= '/^VERSION=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/armbian-release 2>/dev/null)
-        [ -n "$ARMBIAN_VER" ] && ARMBIAN_VER="Armbian ${ARMBIAN_VER}"
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/os-release ]; then
+        _os_id=$(awk -F= '/^ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        _os_ver=$(awk -F= '/^VERSION_ID=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)
+        if [ -n "$_os_id" ]; then
+            _os_id_cap=$(printf '%s' "$_os_id" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')
+            if [ -n "$_os_ver" ]; then
+                ARMBIAN_VER="${_os_id_cap} ${_os_ver}"
+            else
+                ARMBIAN_VER="${_os_id_cap}"
+            fi
+        fi
     fi
     ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
     STORAGE_AUTO_FORMAT_UI=1
@@ -1742,12 +1818,12 @@ print_network_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "ip": "${IP}"
 }
 JSON
@@ -1871,12 +1947,12 @@ print_main_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
@@ -1970,12 +2046,12 @@ print_core_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},
@@ -2070,12 +2146,12 @@ print_full_json() {
   "net_tx_bytes": ${NET0_TX},
   "net1_rx_bytes": ${NET1_RX},
   "net1_tx_bytes": ${NET1_TX},
-  "end0_operstate": "${ETH0_ST}",
-  "end1_operstate": "${ETH1_ST}",
-  "end0_ip": "${ETH0_IP}",
-  "end1_ip": "${ETH1_IP}",
-  "end0_mode": "${ETH0_MODE}",
-  "end1_mode": "${ETH1_MODE}",
+  "eth0_operstate": "${ETH0_ST}",
+  "eth1_operstate": "${ETH1_ST}",
+  "eth0_ip": "${ETH0_IP}",
+  "eth1_ip": "${ETH1_IP}",
+  "eth0_mode": "${ETH0_MODE}",
+  "eth1_mode": "${ETH1_MODE}",
   "svc_codesys": "${SVC_CODESYS}",
   "svc_codesys_uptime_s": ${SVC_CODESYS_UPTIME_S},
   "svc_codesys_installed": ${SVC_CODESYS_INSTALLED},

@@ -1,0 +1,41 @@
+{
+  "_doc": "The forge-issue verb map — the ONE home for 'how do I talk to each forge's issues'. PERSONA-READ REFERENCE: unlike deny-rules.json and tool-map.json (loaded at runtime by the deny engine), NO code loads this file. The orchestrator READS it (its `## Backlog` procedure) when a project sets `collaboration.backlog: forge`, to find the right CLI verb for the resolved `collaboration.forge`. It is data so it stays one structured home (no verb copied into prose), and so a shape test (src/adapter/forge-map.test.mjs) can guard it from rotting — but it carries no predicate and changes nothing mechanically. The neutral act is 'record / read a backlog item'; `backlog: file` realises it as an edit of .ai-dev/backlog.md, `backlog: forge` realises it as one of the issue operations below. Forge auth (gh/glab/tea tokens) is the Operator's environment — this map names CLI verbs only, never a credential.",
+  "_operations": "The five issue operations the backlog adapter needs: create · list · view · close · comment. Common flag vocabulary (one abstraction across all three forges): title, body/description, label, assignee, milestone. Each forge row maps that vocabulary to its own CLI. Where a forge's exact flag was not verified against its docs, the operation + canonical subcommand are given and the uncertain flag is marked `[unverified]` — never fabricated; confirm with `<cli> issue <op> --help`.",
+  "_auto_detect": "Resolving `collaboration.forge: auto` ⇒ inspect the `origin` remote host: host github.com ⇒ github; gitlab.com ⇒ gitlab; a self-hosted host has no canonical signature (a private GitLab or Gitea looks like any host) ⇒ NOT auto-resolvable — the orchestrator confirms the forge with the Operator (or probes the remote's API banner). Unresolved ⇒ fail safe to `backlog: file` (orchestrator's `## Backlog`), never guess a forge.",
+  "_issue_pr_link": "On all three forges, `closes #N` / `fixes #N` in the PR body auto-closes the linked issue on merge — the same close-on-ship convention regardless of forge.",
+  "forges": {
+    "github": {
+      "cli": "gh",
+      "auto_host": "github.com",
+      "operations": {
+        "create":  { "command": "gh issue create",            "flags": { "title": "-t/--title", "body": "-b/--body (or -F/--body-file - for stdin — the agent's non-interactive path)", "label": "-l/--label", "assignee": "-a/--assignee", "milestone": "-m/--milestone" } },
+        "list":    { "command": "gh issue list",              "flags": { "label": "-l/--label", "assignee": "-a/--assignee", "state": "-s/--state (open|closed|all)", "search": "-S/--search" } },
+        "view":    { "command": "gh issue view <number>",     "flags": { "json": "--json <fields> (machine-readable output)" } },
+        "close":   { "command": "gh issue close <number>",    "flags": { "comment": "-c/--comment", "reason": "-r/--reason (completed|not planned)" } },
+        "comment": { "command": "gh issue comment <number>",  "flags": { "body": "-b/--body (or -F/--body-file -)" } }
+      }
+    },
+    "gitlab": {
+      "cli": "glab",
+      "auto_host": "gitlab.com",
+      "operations": {
+        "create":  { "command": "glab issue create",         "flags": { "title": "-t/--title", "body": "-d/--description", "label": "-l/--label", "assignee": "-a/--assignee", "milestone": "-m/--milestone" } },
+        "list":    { "command": "glab issue list",            "flags": { "label": "-l/--label", "assignee": "-a/--assignee", "milestone": "-m/--milestone", "state": "no single --state flag — open is the default; --all gets all, -c/--closed gets only closed" } },
+        "view":    { "command": "glab issue view <id>",       "flags": {} },
+        "close":   { "command": "glab issue close <id>",      "flags": {} },
+        "comment": { "command": "glab issue note <id>",       "flags": { "body": "-m/--message (GitLab calls an issue comment a 'note')" } }
+      }
+    },
+    "gitea": {
+      "cli": "tea",
+      "auto_host": "self-hosted (no canonical public host — confirm with the Operator)",
+      "operations": {
+        "create":  { "command": "tea issue create",          "flags": { "title": "--title [short -t unverified]", "body": "--body [short -b unverified]", "label": "--labels", "assignee": "--assignees", "milestone": "--milestone" } },
+        "list":    { "command": "tea issue list",             "flags": { "label": "--labels", "state": "--state (open|closed|all) [unverified — confirm with --help]" } },
+        "view":    { "command": "tea issue <index>",          "flags": { "note": "no `view` subcommand — a bare index shows the issue (`tea issues` lists, `tea issue <index>` shows one)" } },
+        "close":   { "command": "tea issue close <index>",    "flags": {} },
+        "comment": { "command": "tea comment <index> <body>", "flags": { "note": "comment is a SEPARATE top-level command (`tea comment` / `tea c`), NOT `tea issue comment`" } }
+      }
+    }
+  }
+}

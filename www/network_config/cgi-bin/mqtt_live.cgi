@@ -1,11 +1,13 @@
 #!/bin/bash
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
 # mqtt_live.cgi — снимок каналов: кэш моста (мс) или python/paho (резерв)
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache"
 echo ""
 
 check_auth() {
-    [[ -n "${HTTP_COOKIE:-}" && "$HTTP_COOKIE" =~ session_token=cyntron_session ]] && return 0
+    web_session_check_cookie && return 0
     return 1
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","controls":{}}'; exit 0; fi

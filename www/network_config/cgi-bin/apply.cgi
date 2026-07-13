@@ -1,5 +1,7 @@
 #!/bin/bash
-[[ -n "$HTTP_COOKIE" && "$HTTP_COOKIE" =~ "session_token=cyntron_session" ]] || {
+# shellcheck disable=SC1091
+. "$(dirname "$0")/lib_web_auth.sh"
+web_session_check_cookie || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
 # FCGI: читать ровно CONTENT_LENGTH байт (read -n останавливается на переводе строки)
@@ -19,6 +21,19 @@ get_f() {
     decode "$val"
 }
 
+# shellcheck source=lib_web_validate.sh
+. "$(dirname "$0")/lib_web_validate.sh"
+
+# Reject the whole request with a JSON error (network fields are attacker-
+# controlled and are written into /etc/network/interfaces.d as root — an
+# unvalidated newline injects an ifupdown pre-up hook, RCE). Never proceed to
+# the sudo tee below on a bad value.
+reject_bad_input() {
+    echo "Content-type: application/json"; echo ""
+    printf '{"error":"invalid input: %s"}\n' "$1"
+    exit 0
+}
+
 timeout_run() {
     local sec=${1:-5}
     shift || true
@@ -31,9 +46,9 @@ timeout_run() {
 
 NET_IFACE=$(get_f "net_iface")
 IP=$(get_f "ip"); NETMASK=$(get_f "netmask"); GATEWAY=$(get_f "gateway"); DNS=$(get_f "dns")
-IP_ETH1=$(get_f "ip_end1"); NETMASK_ETH1=$(get_f "netmask_end1")
-GATEWAY_ETH1=$(get_f "gateway_end1"); DNS_ETH1=$(get_f "dns_end1")
-ETH0_ENABLE=$(get_f "end0_enable"); ETH1_ENABLE=$(get_f "end1_enable"); SKIP_NETWORK=$(get_f "skip_network")
+IP_ETH1=$(get_f "ip_eth1"); NETMASK_ETH1=$(get_f "netmask_eth1")
+GATEWAY_ETH1=$(get_f "gateway_eth1"); DNS_ETH1=$(get_f "dns_eth1")
+ETH0_ENABLE=$(get_f "eth0_enable"); ETH1_ENABLE=$(get_f "eth1_enable"); SKIP_NETWORK=$(get_f "skip_network")
 TIMEZONE=$(get_f "timezone")
 DATETIME=$(get_f "datetime")
 DATETIME=$(printf '%s' "${DATETIME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -42,32 +57,46 @@ REDIRECT="applied"
 timezone_failed=0
 time_ok=0
 
-# ── end0 config ────────────────────────────────────────────────────────────
-if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "end0" ]; then
+# ── Validate all network fields BEFORE any config write (allow-list) ────────
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ] && [ "$ETH0_ENABLE" = "1" ]; then
+    valid_ipv4 "$IP"       || reject_bad_input "ip"
+    valid_ipv4 "$NETMASK"  || reject_bad_input "netmask"
+    [ -z "$GATEWAY" ] || valid_ipv4 "$GATEWAY" || reject_bad_input "gateway"
+    [ -z "$DNS" ]     || valid_ipv4_list "$DNS" || reject_bad_input "dns"
+fi
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ] && [ "$ETH1_ENABLE" = "1" ]; then
+    valid_ipv4 "$IP_ETH1"       || reject_bad_input "ip_eth1"
+    valid_ipv4 "$NETMASK_ETH1"  || reject_bad_input "netmask_eth1"
+    [ -z "$GATEWAY_ETH1" ] || valid_ipv4 "$GATEWAY_ETH1" || reject_bad_input "gateway_eth1"
+    [ -z "$DNS_ETH1" ]     || valid_ipv4_list "$DNS_ETH1" || reject_bad_input "dns_eth1"
+fi
+
+# ── eth0 config ────────────────────────────────────────────────────────────
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
     if [ "$ETH0_ENABLE" = "1" ] && [ -n "$IP" ] && [ -n "$NETMASK" ]; then
-        CFG="auto end0\niface end0 inet static\n    address $IP\n    netmask $NETMASK"
+        CFG="auto eth0\niface eth0 inet static\n    address $IP\n    netmask $NETMASK"
         [ -n "$GATEWAY" ] && CFG="$CFG\n    gateway $GATEWAY"
         [ -n "$DNS" ]     && CFG="$CFG\n    dns-nameservers $DNS"
-        echo -e "$CFG" | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end0.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
+        echo -e "$CFG" | sudo tee /etc/network/interfaces.d/eth0.conf >/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
     else
-        CFG0="auto end0\niface end0 inet dhcp"
-        echo -e "$CFG0" | sudo tee /etc/network/interfaces.d/end0.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end0.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
+        CFG0="auto eth0\niface eth0 inet dhcp"
+        echo -e "$CFG0" | sudo tee /etc/network/interfaces.d/eth0.conf >/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
 
-# ── end1 config ────────────────────────────────────────────────────────────
-if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "end1" ]; then
+# ── eth1 config ────────────────────────────────────────────────────────────
+if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
     if [ "$ETH1_ENABLE" = "1" ] && [ -n "$IP_ETH1" ] && [ -n "$NETMASK_ETH1" ]; then
-        CFG1="allow-hotplug end1\niface end1 inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
+        CFG1="allow-hotplug eth1\niface eth1 inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
         [ -n "$GATEWAY_ETH1" ] && CFG1="$CFG1\n    gateway $GATEWAY_ETH1"
         [ -n "$DNS_ETH1" ]     && CFG1="$CFG1\n    dns-nameservers $DNS_ETH1"
-        echo -e "$CFG1" | sudo tee /etc/network/interfaces.d/end1.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end1.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
+        echo -e "$CFG1" | sudo tee /etc/network/interfaces.d/eth1.conf >/dev/null
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
     else
-        sudo rm -f /etc/network/interfaces.d/end1.conf
-        echo "$(date '+%Y-%m-%d %H:%M:%S') end1.conf removed" >> /var/log/sa02m_install.log 2>&1
+        sudo rm -f /etc/network/interfaces.d/eth1.conf
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf removed" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
 

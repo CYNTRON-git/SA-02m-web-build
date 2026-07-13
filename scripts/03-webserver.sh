@@ -1,4 +1,5 @@
 #!/bin/bash
+set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
 # 03-webserver.sh  •  nginx + fcgiwrap + sudo + web-app deploy
 # ═══════════════════════════════════════════════════════════════════════════
@@ -185,10 +186,12 @@ if [ ! -f /etc/sa02m_hw.conf ]; then
     log INFO "Создание /etc/sa02m_hw.conf (шаблон)"
     cat > /etc/sa02m_hw.conf <<'HWCONF'
 # Backend: auto | i2c_expander | gpio_sysfs | disabled
-# disabled: безопасный дефолт перед установкой в рабочую плату — web/CGI
-# не трогают PCA9536/I2C до явного пошагового включения.
-# auto: если GPIO-пины заданы явно, используется sysfs GPIO; иначе PCA9536 по I2C.
-SA02M_HW_BACKEND=disabled
+# По умолчанию — i2c_expander: плата СА-02м всегда несёт PCA9536 на bus 2
+# addr 0x41, и раздел UI "Дискретный выход, USB-питание и индикация" завязан
+# на его каналы (do / beeper / alarm_led). `disabled` оставляет кнопки в UI
+# «Н/Д» + disabled — использовать только для отладки без доступа к I2C.
+# auto: если GPIO-пины заданы явно, используется sysfs GPIO; иначе PCA9536.
+SA02M_HW_BACKEND=i2c_expander
 
 # PCA9536 (I2C bus 2, addr 0x41). Для занятых шин используется flock + timeout.
 SA02M_I2C_EXP_BUS=2
@@ -218,6 +221,18 @@ SA02M_GPIO_USB_GPIOD_CHIP=0
 SA02M_GPIO_USB_GPIOD_LINE=268
 HWCONF
     chmod 644 /etc/sa02m_hw.conf
+else
+    # Upgrade: старый шаблон ставил SA02M_HW_BACKEND=disabled как "безопасный
+    # дефолт" — из-за этого CGI hw_set отвечал gpio_not_configured, а UI
+    # дизейблил все кнопки раздела "Дискретный выход, USB-питание и индикация".
+    # Плата всегда несёт PCA9536, поэтому автоматически включаем i2c_expander,
+    # если пользователь ранее явно не выбрал gpio_sysfs / auto.
+    if grep -qE '^[[:space:]]*SA02M_HW_BACKEND=disabled([[:space:]]|$)' /etc/sa02m_hw.conf; then
+        cp -a /etc/sa02m_hw.conf "/etc/sa02m_hw.conf.bak.$(date +%s)" 2>/dev/null || true
+        sed -i 's/^\([[:space:]]*SA02M_HW_BACKEND=\)disabled\([[:space:]]*\)$/\1i2c_expander\2/' \
+            /etc/sa02m_hw.conf
+        log OK "sa02m_hw.conf: SA02M_HW_BACKEND disabled → i2c_expander (PCA9536)"
+    fi
 fi
 
 if [ ! -f /etc/sa02m_status_blocks.conf ] && [ -f "$ETC_DIR/sa02m_status_blocks.conf" ]; then
@@ -250,12 +265,28 @@ if ! command -v hwclock >/dev/null 2>&1; then
         || log WARN "util-linux-extra не установлен — rtc_datetime будет недоступен"
 fi
 
-# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) ─────────
+# ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) + the web
+#    session store (www-data owned; holds per-login session tokens, recreated
+#    on boot since /run is tmpfs). Without this dir the CGI cannot mint or
+#    validate sessions and login fails — provision it here, not lazily. ──────
 cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
 f /run/lock/sa02m-pca9536.lock 0660 www-data www-data -
 d /var/lib/sa02m-web-build 0755 root root -
+d /run/sa02m-web-sessions 0700 www-data www-data -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
+
+# ── /dev/i2c-* доступ для www-data (PCA9536 / hw_set.cgi без sudo) ───────
+# /dev/i2c-N создаётся ядром как root:i2c 0660. Без членства www-data в
+# группе i2c CGI hw_set / status уходит по sudo-fallback (медленнее и
+# ломается при отсутствии sudoers). Идемпотентно: usermod -aG не
+# дублирует запись, если пользователь уже в группе.
+if getent group i2c >/dev/null 2>&1; then
+    if ! id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx i2c; then
+        usermod -aG i2c www-data >> "$LOG_FILE" 2>&1 \
+            && log OK "www-data добавлен в группу i2c (PCA9536 hw_set.cgi)"
+    fi
+fi
 
 # ── sudoers for www-data ──────────────────────────────────────────────────
 log INFO "Настройка sudoers"
@@ -394,7 +425,10 @@ if [ ! -f /etc/sa02m_web.env ]; then
     if [ -f /usr/local/lib/sa02m-web-auth-lib.sh ]; then
         # shellcheck disable=SC1091
         . /usr/local/lib/sa02m-web-auth-lib.sh
-        web_auth_write admin "${ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
+        # Store the initial password hashed (S5); web_auth_write picks PASS_HASH
+        # for a $6$ value. Fall back to plaintext only if hashing is unavailable.
+        _bootstrap_hash=$(web_auth_hash "${ADMIN_PASS}")
+        web_auth_write admin "${_bootstrap_hash:-$ADMIN_PASS}" > /tmp/sa02m_web.env.bootstrap
     else
         {
             echo "SA02M_WEB_USER='admin'"

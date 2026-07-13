@@ -592,7 +592,7 @@ def _post_reset_delays_before_bootloader_open(
     time.sleep(1.0)
     if is_wb_firmware:
         log_cb(
-            "Wiren Board: ещё 1.5 с до 9600 8N2 (загрузчик готов).",
+            ".wbfw: ещё 1.5 с до 9600 8N2 (загрузчик готов).",
             "info",
         )
         time.sleep(1.5)
@@ -786,11 +786,11 @@ def _run_bootloader_flash_session(
             baud = fp.BOOTLOADER_BAUDRATE_WB
             stop = int(fp.BOOTLOADER_STOPBITS_WB)
             log_cb(
-                "Режим Wiren Board (.wbfw): загрузчик %d 8%c%d."
+                "Режим .wbfw: загрузчик %d 8%c%d."
                 % (baud, fp.BOOTLOADER_PARITY, stop),
                 "info",
             )
-            log_cb("Wiren Board: пауза 1.5 с после открытия порта загрузчика.", "debug")
+            log_cb(".wbfw: пауза 1.5 с после открытия порта загрузчика.", "debug")
             time.sleep(1.5)
 
         sn_pf = int(device.get("serial") or 0) & 0xFFFFFFFF
@@ -953,7 +953,7 @@ def _flash_one_device(
         progress_cb(pct, f"Блок {sent}/{total}")
 
     if is_wb_firmware:
-        log_cb(f"Прошивка Wiren Board (.wbfw) по адресу {addr}", "info")
+        log_cb(f"Прошивка .wbfw по адресу {addr}", "info")
         err = fp.run_flash_sequence_wb(
             flasher,
             addr,

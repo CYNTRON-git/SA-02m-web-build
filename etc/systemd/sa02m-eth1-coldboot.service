@@ -1,0 +1,17 @@
+[Unit]
+Description=SA-02m eth1 cold-boot PHY recovery
+After=networking.service
+Before=net-watchdog.service
+DefaultDependencies=no
+ConditionPathExists=/etc/network/interfaces.d/eth1.conf
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 3
+ExecStart=/usr/local/sbin/sa02m-eth1-coldboot.sh
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

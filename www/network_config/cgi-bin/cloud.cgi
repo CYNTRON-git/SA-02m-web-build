@@ -6,9 +6,22 @@
 STATUS_FILE="/run/sa02m-cloud-status.json"
 ACTIVATION_TOKEN_FILE="/etc/sa02m-cloud/activation_token"
 
+# shellcheck source=lib_web_auth.sh
+. "$(dirname "$0")/lib_web_auth.sh"
+# shellcheck source=lib_web_validate.sh
+. "$(dirname "$0")/lib_web_validate.sh"
+
 echo "Content-Type: application/json"
 echo "Cache-Control: no-cache"
 echo ""
+
+# Auth gate — this endpoint writes an activation token and rewrites the cloud
+# agent config as root; it is NOT in the nginx auth_request set, so it must
+# guard itself. Fail closed.
+if ! web_session_check_cookie; then
+    echo '{"ok":false,"error":"unauthorized"}'
+    exit 0
+fi
 
 read_status() {
     if [ -f "$STATUS_FILE" ]; then
@@ -38,8 +51,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    # Write server to config if provided
+    # Write server to config if provided — validate as a hostname FIRST; the
+    # value is interpolated into sed replacement text, where an unescaped '|'
+    # (or GNU sed 'e') would break out. A hostname allow-list has no metachars.
     if [ -n "$SERVER" ] && [ "$SERVER" != "cloud.cyntron.ru" ]; then
+        if ! valid_hostname "$SERVER"; then
+            echo '{"ok":false,"error":"invalid server hostname"}'
+            exit 0
+        fi
         mkdir -p /etc/sa02m-cloud
         CFG="/etc/sa02m-cloud/agent.conf"
         if [ -f "$CFG" ]; then

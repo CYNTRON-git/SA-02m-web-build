@@ -61,6 +61,27 @@ find "$WEB_ROOT/static" \( -name '*.css' -o -name '*.js' -o -name '*.svg' \) -ex
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT"
 
+# Раздел "Дискретный выход, USB-питание и индикация": hw_set.cgi должен ходить
+# в /dev/i2c-* (PCA9536). Без членства www-data в группе i2c CGI уходит на
+# медленный sudo-fallback, а на устройствах со старым sa02m_hw.conf backend
+# ещё и захардкожен в disabled → все кнопки в UI навсегда «Н/Д» + disabled.
+if getent group i2c >/dev/null 2>&1; then
+    if ! id -nG www-data 2>/dev/null | tr ' ' '\n' | grep -qx i2c; then
+        usermod -aG i2c www-data 2>/dev/null \
+            && log OK "www-data добавлен в группу i2c (PCA9536 hw_set.cgi)"
+    fi
+fi
+if [ -f /etc/sa02m_hw.conf ] && \
+   grep -qE '^[[:space:]]*SA02M_HW_BACKEND=disabled([[:space:]]|$)' /etc/sa02m_hw.conf; then
+    cp -a /etc/sa02m_hw.conf "/etc/sa02m_hw.conf.bak.$(date +%s)" 2>/dev/null || true
+    sed -i 's/^\([[:space:]]*SA02M_HW_BACKEND=\)disabled\([[:space:]]*\)$/\1i2c_expander\2/' \
+        /etc/sa02m_hw.conf
+    log OK "sa02m_hw.conf: SA02M_HW_BACKEND disabled → i2c_expander (PCA9536)"
+fi
+if systemctl is-active --quiet fcgiwrap 2>/dev/null; then
+    systemctl restart fcgiwrap 2>/dev/null || true
+fi
+
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check

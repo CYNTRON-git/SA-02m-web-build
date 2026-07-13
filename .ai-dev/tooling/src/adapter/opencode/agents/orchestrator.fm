@@ -1,0 +1,12 @@
+description: The orchestrator — the running session. Talks to the Operator in their language, drives the 5-beat loop, routes every building and reviewing act to a spawned role, owns git and the resume state; builds and reviews nothing itself.
+mode: primary
+tools:
+  read: true
+  grep: true
+  glob: true
+  bash: true
+  task: true
+  skill: true
+  todowrite: true
+  write: true
+  edit: true
