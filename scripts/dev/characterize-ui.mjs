@@ -54,7 +54,6 @@ const DEVICE = (process.env.DEVICE_URL || 'http://192.168.1.136:9999').replace(/
 const PORT = Number(process.env.PORT || 8099);
 const USER = process.env.SA02M_WEB_USER || 'admin';
 const PASS = process.env.SA02M_WEB_PASS || '';
-const BASE = `http://127.0.0.1:${PORT}`;
 
 // The characterization matrix.
 const TABS = ['dashboard', 'network', 'time', 'system', 'flasher', 'mqtt', 'gateway'];
@@ -85,6 +84,12 @@ function argVal(name, def = null) {
 const LABEL = argVal('--label', new Date().toISOString().replace(/[:.]/g, '-'));
 const SAVE_BASELINE = args.includes('--save-baseline');
 const COMPARE = argVal('--compare', null);
+// --target device drives the deployed board directly (no local serve/proxy):
+// the on-device end-to-end check the F10 ship beat requires. Default 'local'
+// serves the repo files and proxies CGI to the board.
+const TARGET = argVal('--target', 'local');
+// What the browser navigates: the local serve+proxy, or the board directly.
+const BASE = TARGET === 'device' ? DEVICE : `http://127.0.0.1:${PORT}`;
 
 const ARTIFACTS = join(__dirname, 'artifacts', LABEL);
 const BASELINE_DIR = join(__dirname, 'baseline');
@@ -189,8 +194,10 @@ async function run() {
   catch { console.error('playwright not installed — run: npm --prefix scripts/dev install'); process.exit(2); }
 
   mkdirSync(ARTIFACTS, { recursive: true });
-  const srv = await startServer();
-  console.error(`serving ${WWW_ROOT} on ${BASE}, /cgi-bin/* -> ${DEVICE}`);
+  const srv = TARGET === 'device' ? null : await startServer();
+  console.error(TARGET === 'device'
+    ? `driving deployed board directly at ${BASE}`
+    : `serving ${WWW_ROOT} on ${BASE}, /cgi-bin/* -> ${DEVICE}`);
 
   const browser = await chromium.launch();
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -228,6 +235,11 @@ async function run() {
   // Login through the real login.cgi (proxied to the board).
   cell = 'login';
   await page.goto(`${BASE}/login.html`, { waitUntil: 'domcontentloaded' });
+  // Environment reference: globals on login.html, which loads no app scripts.
+  // Subtracting this from the dashboard set yields exactly the globals OUR
+  // scripts define — origin-independent, so a localhost baseline and a plain-HTTP
+  // device run compare cleanly (secure-context-only Web APIs cancel out).
+  const envGlobals = await page.evaluate(pageGlobals);
   await page.fill('#username', USER);
   await page.fill('#password', PASS);
   await Promise.all([
@@ -238,13 +250,16 @@ async function run() {
   if (/login/.test(new URL(page.url()).pathname)) {
     const why = (errors.login || []).join(' | ');
     console.error('LOGIN FAILED — check SA02M_WEB_PASS / device reachability. ' + why);
-    await browser.close(); srv.close(); process.exit(3);
+    await browser.close(); srv?.close(); process.exit(3);
   }
   console.error('logged in as ' + USER);
 
   // Global inventory is defined at script-load time and is tab/theme independent
-  // — capture it once, on the loaded dashboard.
-  const globals = await page.evaluate(pageGlobals);
+  // — capture it once, on the loaded dashboard, then keep only what our scripts
+  // added on top of the environment reference.
+  const fullGlobals = await page.evaluate(pageGlobals);
+  const envNames = new Set(envGlobals.map((s) => s.split(':')[0]));
+  const globals = fullGlobals.filter((s) => !envNames.has(s.split(':')[0]));
 
   const cells = {};
   for (const theme of THEMES) {
@@ -278,7 +293,7 @@ async function run() {
   }
 
   await browser.close();
-  srv.close();
+  srv?.close();
 
   const manifest = {
     label: LABEL, at: new Date().toISOString(), device: DEVICE,

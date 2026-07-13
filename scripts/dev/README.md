@@ -42,7 +42,16 @@ npm run baseline            # writes baseline/manifest.json (committed)
 
 # 2) after each split step, re-run and diff:
 npm run check               # exit 0 = PASS, exit 1 = FAIL (revert the step)
+
+# 3) on-device end-to-end check (drives the DEPLOYED board directly, no local
+#    serve/proxy) — the ship-beat verification headless-local can't stand in for:
+node characterize-ui.mjs --target device --compare baseline
 ```
+
+The `globals` oracle compares only the names OUR scripts add (dashboard globals
+minus the login-page environment reference), so a localhost baseline (a secure
+context) and a plain-HTTP device run (not a secure context, so ~250 Web-API
+constructors are absent) still compare cleanly.
 
 `baseline/manifest.json` is committed (small, structural). Per-run screenshots
 and manifests land in `artifacts/` (git-ignored).
