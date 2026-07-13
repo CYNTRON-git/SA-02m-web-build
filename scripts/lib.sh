@@ -49,6 +49,21 @@ sa02m_default_gw() {
     esac
 }
 
+# Return the first of the candidate interface names that actually exists in
+# /sys/class/net, else the first candidate (so "absent" semantics still hold).
+# Bridges the two interface-naming schemes a SA-02m board may present: the
+# classic eth0/eth1 (SA-02m 5.10.35 kernel default) and the systemd-predictable
+# end0/end1 (stock Armbian). Prefer whichever actually exists.
+# Installer-side one home; the web copy (status.cgi:first_existing_iface) stays
+# — different deploy context.
+first_existing_iface() {
+    local c
+    for c in "$@"; do
+        [ -d "/sys/class/net/$c" ] && { printf '%s' "$c"; return 0; }
+    done
+    printf '%s' "$1"
+}
+
 sa02m_board_model() {
     tr -d '\0' < /proc/device-tree/model 2>/dev/null \
         || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null \

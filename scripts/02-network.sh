@@ -9,11 +9,18 @@ check_root
 
 log INFO "=== [02] Настройка сети ==="
 
+# Detect the real interface names on this board. Field devices split between the
+# kernel scheme (eth0/eth1) and the predictable-names scheme (end0/end1); the
+# installer must act on whatever actually exists in /sys/class/net rather than
+# hardcode eth0 (which is inert on an end0 board — see status.cgi bridge).
+LAN0=$(first_existing_iface eth0 end0)
+LAN1=$(first_existing_iface eth1 end1)
+
 : "${IP_ADDRESS:=$(sa02m_default_ip)}"
 : "${NETMASK:=255.255.255.0}"
 : "${GATEWAY:=$(sa02m_default_gw)}"
 : "${DNS_SERVERS:=77.88.8.8 77.88.8.1}"
-: "${NET_IFACE:=eth0}"
+: "${NET_IFACE:=$LAN0}"
 
 # ── /etc/network/interfaces ────────────────────────────────────────────────
 log INFO "Создание /etc/network/interfaces"
@@ -25,44 +32,48 @@ auto lo
 iface lo inet loopback
 NET
 
-# ── eth0 static config ────────────────────────────────────────────────────
+# ── LAN0 static config ────────────────────────────────────────────────────
 mkdir -p /etc/network/interfaces.d
-log INFO "eth0 → $IP_ADDRESS / $NETMASK"
+log INFO "$LAN0 → $IP_ADDRESS / $NETMASK"
 
-# На SA-02m-2 eth0 получает metric 200, чтобы eth1 DHCP (metric 100) был
-# дефолтным маршрутом когда eth0 без кабеля (NO-CARRIER).
+# На SA-02m-2 LAN0 получает metric 200, чтобы LAN1 DHCP (metric 100) был
+# дефолтным маршрутом когда LAN0 без кабеля (NO-CARRIER).
 END0_METRIC_LINE=""
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
     END0_METRIC_LINE="    metric 200"
 fi
 
-# Idempotency: only (re)write eth0.conf on first install (file absent) or when
+# Idempotency: only (re)write $LAN0.conf on first install (file absent) or when
 # --ip was passed explicitly. A plain re-run of the installer (the upgrade path)
 # must NOT clobber a static IP the operator set later via the web UI — doing so
 # resets the device to the factory address and makes it unreachable.
-if [ ! -f /etc/network/interfaces.d/eth0.conf ] || [ "${IP_EXPLICIT:-0}" = "1" ]; then
-cat > /etc/network/interfaces.d/eth0.conf <<END0
-auto eth0
-iface eth0 inet static
+# LAN0_CONF_WRITTEN gates the "Apply now" flush below: we disturb the live
+# interface ONLY when this run actually (re)wrote the config.
+LAN0_CONF_WRITTEN=0
+if [ ! -f "/etc/network/interfaces.d/$LAN0.conf" ] || [ "${IP_EXPLICIT:-0}" = "1" ]; then
+cat > "/etc/network/interfaces.d/$LAN0.conf" <<END0
+auto $LAN0
+iface $LAN0 inet static
     address $IP_ADDRESS
     netmask $NETMASK
     gateway $GATEWAY
     dns-nameservers $DNS_SERVERS
 ${END0_METRIC_LINE}
 END0
+    LAN0_CONF_WRITTEN=1
 else
-    echo "eth0.conf exists and --ip not given — preserving operator IP" >&2
+    echo "$LAN0.conf exists and --ip not given — preserving operator IP" >&2
 fi
 
-# ── eth1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
-if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f /etc/network/interfaces.d/eth1.conf ]; then
-    cat > /etc/network/interfaces.d/eth1.conf <<'END1'
-allow-hotplug eth1
-iface eth1 inet dhcp
+# ── LAN1 DHCP config for SA-02m-2 (2-eth) ────────────────────────────────
+if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ] && [ ! -f "/etc/network/interfaces.d/$LAN1.conf" ]; then
+    cat > "/etc/network/interfaces.d/$LAN1.conf" <<END1
+allow-hotplug $LAN1
+iface $LAN1 inet dhcp
     metric 100
-    post-up ip route replace default via 192.168.1.1 dev eth1 metric 100 || true
+    post-up ip route replace default via 192.168.1.1 dev $LAN1 metric 100 || true
 END1
-    log OK "eth1 DHCP конфиг создан"
+    log OK "$LAN1 DHCP конфиг создан"
 fi
 
 # ── eth1 DHCP: принудительный default route при RFC3442 (option 121) ─────────
@@ -71,18 +82,20 @@ fi
 # Хук гарантирует, что default route через DHCP-шлюз будет применён всегда.
 if [ "$(sa02m_hw_variant)" = "sa02m-2eth" ]; then
     mkdir -p /etc/dhcp/dhclient-exit-hooks.d
-    cat > /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route <<'HOOK'
+    # Unquoted heredoc so $LAN1 expands to the real interface name; the runtime
+    # dhclient vars ($interface/$new_routers/$reason) are escaped to stay literal.
+    cat > /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route <<HOOK
 #!/bin/sh
-if [ "$interface" = "eth1" ] && [ -n "$new_routers" ]; then
-    case "$reason" in
+if [ "\$interface" = "$LAN1" ] && [ -n "\$new_routers" ]; then
+    case "\$reason" in
         BOUND|RENEW|REBIND|REBOOT)
-            ip route replace default via $new_routers dev eth1 metric 100 2>/dev/null || true
+            ip route replace default via \$new_routers dev $LAN1 metric 100 2>/dev/null || true
             ;;
     esac
 fi
 HOOK
     chmod 755 /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
-    log OK "dhclient exit hook для eth1 default route установлен"
+    log OK "dhclient exit hook для $LAN1 default route установлен"
 fi
 
 # ── Network watchdog deployment ────────────────────────────────────────────
@@ -175,17 +188,22 @@ if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
 fi
 rm -f /usr/local/bin/sa02m-phy-coldboot.sh
 
-# ── Заводские имена интерфейсов (eth0/eth1) ───────────────────────────────
-# Kernel SA-02m (5.10.35) по умолчанию выдаёт `eth0` (sun4i-emac,
-# 1c0b000.ethernet) и `eth1` (dwmac-sun8i, 1c50000.ethernet). Мы НЕ используем
-# systemd `.link` файлы для переименования (`end0`/`end1`), потому что после
-# обновления systemd/udev эти правила могут потерять эффект (или конфликтовать
-# со встроенными Debian generators) → сеть слетает. Все сервисы, LED-polling,
-# DHCP hooks и `/etc/network/interfaces.d/*.conf` работают с kernel-именами.
-# На всякий случай удаляем legacy `.link` файлы от предыдущих версий образа.
-rm -f /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link \
-      /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link 2>/dev/null || true
-log INFO "Используются заводские имена интерфейсов kernel (eth0/eth1)"
+# ── Имена интерфейсов — не переименовывать работающий линк ─────────────────
+# Board split: часть устройств на kernel-именах (`eth0`/`eth1`, sun4i-emac +
+# dwmac-sun8i), часть — на predictable-names (`end0`/`end1`). Мы НЕ используем
+# systemd `.link` файлы для форсирования имён, потому что после обновления
+# systemd/udev эти правила могут потерять эффект → сеть слетает.
+# ПРАВИЛО БЕЗОПАСНОСТИ: никогда не переименовываем интерфейс, который сейчас в
+# работе. Legacy `end*.link` файлы удаляем ТОЛЬКО на eth-плате (где рабочее имя
+# — eth0, а `end*.link` — мусор от старого образа). На end-плате `end*.link`
+# может как раз и давать рабочее имя `end0` — трогать нельзя.
+rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link 2>/dev/null || true
+if [ "$LAN0" = "eth0" ]; then
+    rm -f /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link 2>/dev/null || true
+    log INFO "Используются заводские имена интерфейсов kernel ($LAN0/$LAN1)"
+else
+    log INFO "Обнаружена схема predictable-names ($LAN0/$LAN1) — .link файлы не трогаем"
+fi
 
 # ── nftables: kernel-aware ────────────────────────────────────────────────
 # С 1.0.4.x kernel SA-02m (5.10.35) собран с CONFIG_NF_TABLES=y — nftables
@@ -214,11 +232,17 @@ svc_enable sa02m-eth0-led-poll
 log OK "Network watchdog активирован"
 
 # ── Apply now ─────────────────────────────────────────────────────────────
-if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+# Flush + ifup ONLY when this run actually (re)wrote $LAN0.conf. On a plain
+# re-run that preserved an existing config the interface is already up with the
+# operator's IP — flushing it would drop the live management link (SSH). Skip in
+# rootfs build (no live interface to apply).
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ] && [ "$LAN0_CONF_WRITTEN" = "1" ]; then
     log INFO "Поднимаем $NET_IFACE"
     ip link set "$NET_IFACE" up 2>/dev/null || true
     ip addr flush dev "$NET_IFACE" 2>/dev/null || true
     ifup "$NET_IFACE" >> "$LOG_FILE" 2>&1 || true
+elif [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    log INFO "$NET_IFACE: конфиг сохранён без изменений — не трогаем живой интерфейс"
 fi
 
 log OK "=== [02] Сеть настроена: $IP_ADDRESS ==="
