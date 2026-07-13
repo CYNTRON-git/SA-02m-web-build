@@ -8,6 +8,15 @@ items still need on-device verification before deploy).
 
 ## Open
 
+- [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
+  After the installer's `02-network.sh` was made interface-name-aware, other
+  consumers still hardcode `eth0.conf`/`eth1.conf` and won't work on an
+  `end0`/`end1` board: `www/network_config/cgi-bin/config.cgi:63-64`,
+  `apply.cgi:80-98` (web "network apply" writes `interfaces.d/eth0.conf`),
+  `etc/fix-eth1-internet.sh:319`, `etc/systemd/sa02m-eth1-coldboot.service:6`.
+  Route each through the same `first_existing_iface` detection. Surfaced by the
+  installer-end0 fix reviewer (A2). No SSH-safety regression; a real gap for
+  end-name boards.
 - [OPEN] 2026-07-13 **[LOW] F10 — decompose the god-files.** `app.js` DONE:
   a UI characterization harness (`scripts/dev/`, headless Chromium over every
   tab×theme×variant; globals + new-errors + DOM-skeleton gate) captured a
