@@ -16,7 +16,8 @@ check_auth() {
 }
 if ! check_auth; then echo '{"error":"unauthorized"}'; exit 0; fi
 
-json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'; }
+# json_escape: shared escaper (web-code-rigor.md ## Bash CGI floors).
+. "$(dirname "$0")/lib_web_json.sh"
 
 if [ "$REQUEST_METHOD" = "GET" ]; then
     # Читаем YAML и конвертируем в JSON через Python

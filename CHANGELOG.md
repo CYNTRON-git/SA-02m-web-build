@@ -1,9 +1,43 @@
 # СА-02м Web Interface — Журнал изменений
 
-**Версия 1.0.4** | Июль 2026  
-Платформа: Armbian Linux (ARM) · nginx + fcgiwrap · Bash CGI + Python-демон `sa02m-flasher`
+Платформа: Armbian Linux (ARM) · nginx + fcgiwrap · Bash CGI + Python-демон `sa02m-flasher`  
+Актуальная версия — в первом разделе ниже.
 
 ---
+
+## 1.0.5.2 - Ускорение CTL-list, аудит-правки, защита main, shellcheck/headless в реестре (июл 2026)
+
+### Производительность
+- **`sa02m-web-service-ctl.sh list` — батч `systemctl` вместо по-юнитных вызовов.**
+  `cmd_list` опрашивал каждую службу несколькими вызовами `systemctl`
+  (`ActiveState`/`LoadState` через `show`, отдельный `is-enabled`) — для 7 служб
+  ~28 форков `systemctl`. Теперь после резолва юнитов состояние собирается двумя
+  батч-вызовами (`systemctl show -p Id,ActiveState,LoadState <все юниты>` и
+  `systemctl is-enabled <все юниты>`) — ~9 форков. На стенде: **~3.9 → ~3.0 с**,
+  вывод JSON **побайтово идентичен** прежнему (проверено на устройстве по всем
+  состояниям: enabled/disabled/masked/static/enabled-runtime/codesys-init.d).
+  При пустом ответе батча — откат на прежний по-юнитный путь. Это удешевляет
+  ПОЛНЫЙ путь блока «Службы» (быстрый `fast=1` этот вызов и так пропускает).
+
+### Инструменты и качество (dev-only, на устройство не влияет)
+- **Ветка `main` защищена** — обязательный status-check на CI-job `quality`
+  плюс `enforce_admins`: PR с красным CI или без прогона больше нельзя влить,
+  независимо от модели/ревьюера (устранён разрыв «рецепт есть, но не применён»).
+- **`shellcheck` (severity=error) в quality-реестре** — над всеми Bash CGI,
+  общими библиотеками, device-скриптами и установщиком (quoting/инъекции —
+  топ-класс дефектов). Стиль/предупреждения намеренно не гейтятся. Если
+  `shellcheck` не установлен (Windows-разработка) — строка пропускается; в
+  Linux/CI выполняется. Логика вынесена в `.ai-dev/quality/checks/shellcheck.sh`.
+- **`headless-smoke` в реестре** — заведён существующий характеризационный
+  харнесс (`scripts/dev/characterize-ui.mjs --compare baseline`) как строка
+  реестра; без playwright/пароля пропускается (on-demand real-layer проверка).
+- **Общий `json_escape`** — вынесен в `www/network_config/cgi-bin/lib_web_json.sh`
+  и подключён в `status.cgi` и `mqtt_config.cgi` (устранён дубль; копия в
+  `etc/sa02m-web-service-ctl.sh` помечена как обязанная синхронизироваться —
+  она деплоится в другой каталог).
+- **Защита от рассинхрона версии в README** — бейдж версии теперь синкается и
+  проверяется `scripts/sync-app-version.py`; шапка CHANGELOG сделана
+  версия-независимой (версия живёт только в заголовках разделов — один дом).
 
 ## 1.0.5.1 - Быстрая загрузка блоков «Службы» и «RS-485», корректная ОС Armbian (июл 2026)
 

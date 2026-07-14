@@ -92,9 +92,8 @@ MPLC_INSTALLED=0
 STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'
-}
+# json_escape lives in the shared lib (web-code-rigor.md ## Bash CGI floors).
+. "$SCRIPT_DIR/lib_web_json.sh"
 
 cache_is_fresh() {
     local file=$1 ttl=$2 now mtime

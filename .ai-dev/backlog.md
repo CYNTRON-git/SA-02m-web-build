@@ -8,17 +8,19 @@ items still need on-device verification before deploy).
 
 ## Open
 
-- [RESOLVED] 2026-07-14 **[MED] status.cgi services build — pgrep storm (~7 s cold).**
-  Fixed in 1.0.5.1: replaced the ~32 per-request `pgrep` forks with ONE `ps`
-  snapshot primed in the parent shell (so the `$()` fast_service_state/uptime
-  subshells inherit it), patterns matched in-shell; `ps`-unavailable falls back
-  to live `pgrep`. Bench: **32 `pgrep` forks → 0** (one `ps`), cold build
-  **fast ~7→~3.4 s, full ~12→~7.9 s**; all service statuses/uptimes identical to
-  the pre-refactor baseline. NOTE: `_snap_pids_comm` matches ps `comm` (truncated
-  to 15 chars) — safe for the current service names (all ≤15) but a longer future
-  service name would need `-f`/args matching. Residual (smaller, optional): the
-  `sudo sa02m-web-service-ctl.sh list` ~3.5 s still dominates the FULL services
-  path (skipped on `fast=1`) — could be made cheaper later.
+- [OPEN] 2026-07-14 **[LOW] no `docs/threat-model.md` (audit F-F).** LAN-exposed,
+  root-capable CGI surface (~30 endpoints) has no durable threat model — the
+  S1–S10 posture lives only in git history / prior audit notes. Offer
+  `threat-discovery` to seed a one-home `docs/threat-model.md`. Not a block.
+- [OPEN] 2026-07-14 **[LOW] no `docs/product.md` (audit F-G).** Product identity
+  lives in `sa02m-domain.md` + `README.md`; for an internal device UI this is a
+  minor gap. A short product-discovery pass would seed it. Optional.
+- [OPEN] 2026-07-14 **[LOW] CTL-list resolution phase still per-unit (perf, optional).**
+  1.0.5.2 batched the `systemctl show`/`is-enabled` calls in `cmd_list` (~28→9
+  forks, 3.9→3.0 s, byte-identical). The residual ~3 s is the unit-RESOLUTION phase
+  (per-candidate `service_present`/`unit_exists` systemctl) — batchable too but the
+  resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
+  Defer unless the full services path needs to be faster still.
 - [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
   After the installer's `02-network.sh` was made interface-name-aware, other
   consumers still hardcode `eth0.conf`/`eth1.conf` and won't work on an
