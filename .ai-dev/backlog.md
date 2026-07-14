@@ -8,6 +8,17 @@ items still need on-device verification before deploy).
 
 ## Open
 
+- [RESOLVED] 2026-07-14 **[MED] status.cgi services build — pgrep storm (~7 s cold).**
+  Fixed in 1.0.5.1: replaced the ~32 per-request `pgrep` forks with ONE `ps`
+  snapshot primed in the parent shell (so the `$()` fast_service_state/uptime
+  subshells inherit it), patterns matched in-shell; `ps`-unavailable falls back
+  to live `pgrep`. Bench: **32 `pgrep` forks → 0** (one `ps`), cold build
+  **fast ~7→~3.4 s, full ~12→~7.9 s**; all service statuses/uptimes identical to
+  the pre-refactor baseline. NOTE: `_snap_pids_comm` matches ps `comm` (truncated
+  to 15 chars) — safe for the current service names (all ≤15) but a longer future
+  service name would need `-f`/args matching. Residual (smaller, optional): the
+  `sudo sa02m-web-service-ctl.sh list` ~3.5 s still dominates the FULL services
+  path (skipped on `fast=1`) — could be made cheaper later.
 - [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
   After the installer's `02-network.sh` was made interface-name-aware, other
   consumers still hardcode `eth0.conf`/`eth1.conf` and won't work on an

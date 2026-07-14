@@ -28,6 +28,17 @@ case "${QUERY_STRING:-}" in
     *part=core*)     STATUS_PART=core ;;
 esac
 
+# Opt-in fast services list: skip the ~3.5 s `sudo CTL list` disabled/masked
+# refinement so «Службы» paints its real rows instantly; the full poll refines
+# a moment later. Strict allow-list — only the literal fast=1 flag on part=services
+# enables it; the flag merely gates one internal function, never interpolated.
+STATUS_SERVICES_FAST=0
+if [ "$STATUS_PART" = "services" ]; then
+    case "${QUERY_STRING:-}" in
+        *fast=1*) STATUS_SERVICES_FAST=1 ;;
+    esac
+fi
+
 check_auth() {
     web_session_check_cookie && return 0
     return 1
@@ -209,20 +220,86 @@ gpio_state() {
     fi
 }
 
-svc_is_active() {
-    local svc=${1%.service}
-    svc=${svc%.socket}
-    if pgrep -x "$svc" >/dev/null 2>&1; then
-        echo active
-    else
-        echo inactive
-    fi
+# ── Process detection: one ps snapshot instead of a pgrep storm ─────────────
+# The services build probed the same processes 30+ times via pgrep (state +
+# uptime × several patterns) → ~32 forks, ~7 s on a loaded ARM. Take ONE `ps`
+# snapshot and match patterns in-shell. The snapshot MUST be primed in the
+# parent shell (gather_services_metrics calls _proc_snapshot_init) BEFORE the
+# fast_service_state/uptime `$()` calls — a command-substitution subshell cannot
+# populate it for the parent. Empty snapshot ⇒ helpers fall back to live pgrep
+# (other call sites, or `ps` unavailable) — behaviour identical to before.
+_PROC_SNAPSHOT=""
+_PROC_CLK_TCK=100
+_proc_snapshot_init() {
+    [ -n "$_PROC_SNAPSHOT" ] && return 0
+    command -v ps >/dev/null 2>&1 || return 0
+    # pid, comm (exact short name, for -x), full args (command line, for -f).
+    _PROC_SNAPSHOT=$(ps -eo pid=,comm=,args= 2>/dev/null)
+    _PROC_CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    [ "$_PROC_CLK_TCK" -gt 0 ] 2>/dev/null || _PROC_CLK_TCK=100
+}
+
+# PIDs whose comm (exact) == $1, from the snapshot (one per line).
+_snap_pids_comm() {
+    local name=$1 pid comm rest
+    while read -r pid comm rest; do
+        [ "$comm" = "$name" ] && printf '%s\n' "$pid"
+    done <<< "$_PROC_SNAPSHOT"
+}
+
+# PIDs whose full command line matches ERE $1, from the snapshot (one per line).
+_snap_pids_cmd() {
+    local pat=$1 pid comm args
+    while read -r pid comm args; do
+        [[ "$args" =~ $pat ]] && printf '%s\n' "$pid"
+    done <<< "$_PROC_SNAPSHOT"
+}
+
+# Max uptime (s) among a whitespace-separated PID list; 0 if none.
+_proc_uptime_from_pidlist() {
+    local pids=$1 pid best=0 boot_j proc_start up
+    for pid in $pids; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -r "/proc/${pid}/stat" ] || continue
+        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        proc_start=$(( boot_j / _PROC_CLK_TCK ))
+        up=$(( UPTIME_SEC - proc_start ))
+        (( up < 0 )) && up=0
+        (( up > best )) && best=$up
+    done
+    echo "$best"
 }
 
 proc_is_running() {
-    local name=$1
+    local name=$1 pid comm rest
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        while read -r pid comm rest; do
+            [ "$comm" = "$name" ] && return 0
+        done <<< "$_PROC_SNAPSHOT"
+        return 1
+    fi
     command -v pgrep >/dev/null 2>&1 || return 1
     pgrep -x "$name" >/dev/null 2>&1
+}
+
+# 0 if any process's command line matches ERE $1 (snapshot, else live pgrep -f).
+_proc_cmd_matches() {
+    local pat=$1 pid comm args
+    case "$pat" in *\'*|*\"*) return 1 ;; esac
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        while read -r pid comm args; do
+            [[ "$args" =~ $pat ]] && return 0
+        done <<< "$_PROC_SNAPSHOT"
+        return 1
+    fi
+    command -v pgrep >/dev/null 2>&1 || return 1
+    pgrep -f "$pat" >/dev/null 2>&1
+}
+
+svc_is_active() {
+    local svc=${1%.service}
+    svc=${svc%.socket}
+    if proc_is_running "$svc"; then echo active; else echo inactive; fi
 }
 
 port_is_listening() {
@@ -231,38 +308,28 @@ port_is_listening() {
     ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR==1{found=1} END{exit(found?0:1)}'
 }
 
-# Аптайн по процессам, подобранным pgrep -f (для Node-RED и др.).
+# Аптайн по процессам, подобранным по командной строке (для Node-RED и др.).
 proc_uptime_seconds_by_pgrep_f() {
-    local pattern=$1 pid best=0 boot_j clock_hz proc_start up
-    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+    local pattern=$1 pids
     case "$pattern" in *\'*|*\"*) echo 0; return ;; esac
-    while IFS= read -r pid; do
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ -r "/proc/${pid}/stat" ] || continue
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        proc_start=$(( boot_j / clock_hz ))
-        up=$(( UPTIME_SEC - proc_start ))
-        (( up < 0 )) && up=0
-        (( up > best )) && best=$up
-    done < <(pgrep -f "$pattern" 2>/dev/null || true)
-    echo "$best"
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        pids=$(_snap_pids_cmd "$pattern")
+    else
+        command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+        pids=$(pgrep -f "$pattern" 2>/dev/null || true)
+    fi
+    _proc_uptime_from_pidlist "$pids"
 }
 
 proc_uptime_seconds_by_name() {
-    local name=$1 pid best=0 boot_j clock_hz proc_start up
-    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
-    while IFS= read -r pid; do
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ -r "/proc/${pid}/stat" ] || continue
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        proc_start=$(( boot_j / clock_hz ))
-        up=$(( UPTIME_SEC - proc_start ))
-        (( up < 0 )) && up=0
-        (( up > best )) && best=$up
-    done < <(pgrep -x "$name" 2>/dev/null || true)
-    echo "$best"
+    local name=$1 pids
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        pids=$(_snap_pids_comm "$name")
+    else
+        command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+        pids=$(pgrep -x "$name" 2>/dev/null || true)
+    fi
+    _proc_uptime_from_pidlist "$pids"
 }
 
 fast_service_state() {
@@ -303,15 +370,15 @@ fast_service_state() {
             fi
             ;;
         node-red|node-red.service|nodered|nodered.service)
-            if port_is_listening 1880 || pgrep -f '[n]ode-red' >/dev/null 2>&1 || pgrep -f 'node_red' >/dev/null 2>&1; then
+            if port_is_listening 1880 || _proc_cmd_matches '[n]ode-red' || _proc_cmd_matches 'node_red'; then
                 echo active
             else
                 echo inactive
             fi
             ;;
         sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
-            if pgrep -f '[m]odbus_mqtt_bridge' >/dev/null 2>&1 \
-                || pgrep -f '[s]a02m-modbus-mqtt' >/dev/null 2>&1; then
+            if _proc_cmd_matches '[m]odbus_mqtt_bridge' \
+                || _proc_cmd_matches '[s]a02m-modbus-mqtt'; then
                 echo active
             else
                 echo inactive
@@ -325,9 +392,9 @@ fast_service_state() {
             fi
             ;;
         codesyscontrol|codesyscontrol.service|codesys.service|codesys3.service|CODESYSControl.service|CODESYSControlRuntime.service)
-            if pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1 \
-                || pgrep -f '[C]ODESYSControl' >/dev/null 2>&1 \
-                || pgrep -f '[c]odesyscontrol' >/dev/null 2>&1 \
+            if _proc_cmd_matches '[c]odesyscontrol\.bin' \
+                || _proc_cmd_matches '[C]ODESYSControl' \
+                || _proc_cmd_matches '[c]odesyscontrol' \
                 || { [ -r /var/run/codesyscontrol.pid ] && kill -0 "$(cat /var/run/codesyscontrol.pid 2>/dev/null)" 2>/dev/null; }; then
                 echo active
             else
@@ -552,6 +619,18 @@ svc_ctl_override() {
     [ -n "$st" ] && _out=$st
 }
 
+# Fast path (fast=1): the authoritative CTL list is skipped, so any status it
+# would refine is not trustworthy from the cheap fast_service_state probe alone
+# (e.g. CODESYS runs as codesyscontrol.bin, which `pgrep -x` misses; disabled/
+# masked is invisible without CTL). Mark such a status "unknown" → the UI paints
+# a loading badge (…) rather than a possibly-wrong Active/Inactive; the full
+# services poll fills the real state a moment later. No-op unless fast mode.
+svc_fast_unknown() {
+    [ "${STATUS_SERVICES_FAST:-0}" = "1" ] || return 0
+    local -n _v=$1
+    _v="unknown"
+}
+
 gather_important_optional_services_json() {
     OPTIONAL_SVCS_JSON="[]"
     local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw ctl_id
@@ -560,6 +639,7 @@ gather_important_optional_services_json() {
         u="docker.service"
         st_raw=$(fast_service_state "$u")
         svc_ctl_override docker st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -581,6 +661,7 @@ gather_important_optional_services_json() {
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
         svc_ctl_override klogic st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -602,6 +683,7 @@ gather_important_optional_services_json() {
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
         svc_ctl_override node-red st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -1404,9 +1486,17 @@ gather_system_metrics() {
     [ -z "$_kernel_short" ] && _kernel_short="$_kernel_raw"
     KERNEL_VER=$(json_escape "$_kernel_short")
 
-    # ОС: короткое «Debian <point-release>» — из /etc/debian_version (11.11).
+    # ОС: prefer the true Armbian identity from /etc/armbian-release (VERSION).
+    # The board is an Armbian build; /etc/debian_version holds a misleading base
+    # marker ("trixie/sid") that used to leak into the UI as "Debian trixie/sid".
+    # Parse, never `source` (an odd line in a sourced file executes) — floors:
+    # web-code-rigor.md ## Bash CGI floors. Output is json_escape'd below.
     ARMBIAN_VER=""
-    if [ -r /etc/debian_version ]; then
+    if [ -r /etc/armbian-release ]; then
+        _arm_ver=$(sed -nE 's/^VERSION=(.*)$/\1/p' /etc/armbian-release 2>/dev/null | head -n1 | tr -d '"\r')
+        [ -n "$_arm_ver" ] && ARMBIAN_VER="Armbian ${_arm_ver}"
+    fi
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/debian_version ]; then
         _debian_ver=$(head -n1 /etc/debian_version 2>/dev/null | tr -d '\r\n[:space:]')
         [ -n "$_debian_ver" ] && ARMBIAN_VER="Debian ${_debian_ver}"
     fi
@@ -1488,6 +1578,9 @@ gather_services_metrics() {
     local proc_pids active_unit mpl_pid cg_unit mpl_slice try up_try
     OPTIONAL_SVCS_JSON="[]"
     mpl_slice=""
+    # Prime the process snapshot in THIS (parent) shell so the fast_service_state
+    # /uptime `$()` subshells below inherit it and skip the pgrep storm.
+    _proc_snapshot_init
     SVC_CODESYS_UNIT=$(resolve_codesys_unit 2>/dev/null || true)
     if [ -n "$SVC_CODESYS_UNIT" ]; then
         SVC_CODESYS=$(fast_service_state "$SVC_CODESYS_UNIT")
@@ -1498,10 +1591,15 @@ gather_services_metrics() {
     SVC_MOSQUITTO=$(fast_service_state mosquitto)
     SVC_BRIDGE=$(fast_service_state sa02m-modbus-mqtt)
 
-    load_svc_ctl_states
+    # Fast path (fast=1): skip the ~3.5 s `sudo CTL list`; mark the services it
+    # would refine as "unknown" so the UI shows a loading badge, never a wrong one.
+    [ "${STATUS_SERVICES_FAST:-0}" = "1" ] || load_svc_ctl_states
     svc_ctl_override codesys SVC_CODESYS
     svc_ctl_override mosquitto SVC_MOSQUITTO
     svc_ctl_override mqtt-bridge SVC_BRIDGE
+    svc_fast_unknown SVC_CODESYS
+    svc_fast_unknown SVC_MOSQUITTO
+    svc_fast_unknown SVC_BRIDGE
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
@@ -1538,9 +1636,15 @@ gather_services_metrics() {
     fi
 
     if [ -z "$mpl_pid" ]; then
-        proc_pids=$(pgrep -x mplc 2>/dev/null || true)
-        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
-        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc_monitor 2>/dev/null || true)
+        if [ -n "$_PROC_SNAPSHOT" ]; then
+            proc_pids=$(_snap_pids_comm mplc)
+            [ -z "$proc_pids" ] && proc_pids=$(_snap_pids_comm mplc4)
+            [ -z "$proc_pids" ] && proc_pids=$(_snap_pids_comm mplc_monitor)
+        else
+            proc_pids=$(pgrep -x mplc 2>/dev/null || true)
+            [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
+            [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc_monitor 2>/dev/null || true)
+        fi
         if [ -n "$proc_pids" ]; then
             MPLC_STATUS="active"
             mpl_pid=${proc_pids%%$'\n'*}
@@ -1627,6 +1731,7 @@ gather_services_metrics() {
     fi
 
     svc_ctl_override mplc4 MPLC_STATUS
+    svc_fast_unknown MPLC_STATUS
     [ "$MPLC_STATUS" = "disabled" ] && MPLC_UPTIME_S=0
 
     MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
@@ -2325,7 +2430,12 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/system.json" 30 build_system_json
         ;;
     services)
-        cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
+        if [ "${STATUS_SERVICES_FAST:-0}" = "1" ]; then
+            # Own short-TTL cache key so the fast variant never poisons the 45 s full cache.
+            cache_print_or_build "${CACHE_DIR}/services_fast.json" 10 build_services_json
+        else
+            cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
+        fi
         ;;
     hardware)
         cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
