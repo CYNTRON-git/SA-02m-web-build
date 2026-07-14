@@ -8,13 +8,17 @@ items still need on-device verification before deploy).
 
 ## Open
 
-- [OPEN] 2026-07-14 **[LOW] no `docs/threat-model.md` (audit F-F).** LAN-exposed,
-  root-capable CGI surface (~30 endpoints) has no durable threat model — the
-  S1–S10 posture lives only in git history / prior audit notes. Offer
-  `threat-discovery` to seed a one-home `docs/threat-model.md`. Not a block.
-- [OPEN] 2026-07-14 **[LOW] no `docs/product.md` (audit F-G).** Product identity
-  lives in `sa02m-domain.md` + `README.md`; for an internal device UI this is a
-  minor gap. A short product-discovery pass would seed it. Optional.
+- [OPEN] 2026-07-14 **[MED→product decision] TLS + single-credential exposure gap
+  (from threat-discovery §5).** `docs/threat-model.md` names the strongest
+  unmitigated threat: HTTP-without-TLS + one shared password + internet/VPN &
+  shared-LAN exposure + root-capable CGI/flasher behind that single door.
+  Measures that hold (allow-list input, auth-before-mutation, sudo pinning) don't
+  close it. Candidate product features (Operator decision, NOT started): TLS out
+  of the box, forced default-password change on first login, per-user accounts +
+  access audit log, an explicit "VPN-only" policy in `docs/deployment.md`.
+- [OPEN] 2026-07-14 **[LOW] MR-02m firmware trust chain unknown (threat §6).** Is
+  the `.fw` cryptographically signed/validated, or format-only? Owner: the MR-02m
+  repo. Confirm before treating flasher supply-chain (S3) as mitigated.
 - [OPEN] 2026-07-14 **[LOW] CTL-list resolution phase still per-unit (perf, optional).**
   1.0.5.2 batched the `systemctl show`/`is-enabled` calls in `cmd_list` (~28→9
   forks, 3.9→3.0 s, byte-identical). The residual ~3 s is the unit-RESOLUTION phase
