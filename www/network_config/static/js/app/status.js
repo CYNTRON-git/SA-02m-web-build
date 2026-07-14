@@ -48,8 +48,14 @@ const HEAVY_PART_PHASE_MS = {
 const BACKGROUND_PART_PERIOD_MS = LIGHT_PART_PERIOD_MS;
 const BACKGROUND_PART_PHASE_MS = Object.assign({}, LIGHT_PART_PHASE_MS, HEAVY_PART_PHASE_MS, { time: 3000 });
 const PRIORITY_POLL_PHASE_MS = 500;
-/** RS-485 изолирован от light/heavy: 12 s, фаза ближе к концу цикла. */
-const RS485_POLL_PHASE_MS = 10500;
+/** RS-485 first-polls early (before the services list) so its activity data
+ *  appears ahead of «Службы»; steady-state interval stays 12 s. The 2.2 s
+ *  heavy-queue gap still serializes it against network/services (shared ARM CPU). */
+const RS485_POLL_PHASE_MS = 3000;
+/** part=services&fast=1 — instant service list (skips the ~3.5 s `sudo CTL list`);
+ *  one-shot on init, just after RS-485, treated as a LIGHT fetch. The full
+ *  services heavy poll (phase 6500) still lands second and refines disabled/masked. */
+const SERVICES_FAST_PHASE_MS = 4000;
 /** Глобальная очередь status.cgi: не более одного запроса одновременно. */
 const STATUS_GLOBAL_MIN_GAP_MS = 350;
 const STATUS_HEAVY_MIN_GAP_MS = 2200;
@@ -261,7 +267,7 @@ function abortStatusPart(part) {
 }
 
 function abortAllStatusFetches() {
-  ['priority', 'main', 'rs485'].concat(BACKGROUND_STATUS_PARTS).forEach(abortStatusPart);
+  ['priority', 'main', 'rs485', 'services_fast'].concat(BACKGROUND_STATUS_PARTS).forEach(abortStatusPart);
 }
 
 function clearStatusPollTimers() {
@@ -434,6 +440,12 @@ function initStatusPolling() {
     startPriorityPollTimer(gen);
     startAllBackgroundPartPollTimers(gen);
     startRs485PollTimer(gen);
+    if (isStatusBlockEnabled('services')) {
+      _statusInitTimeouts.push(setTimeout(function () {
+        if (gen !== _statusPollGeneration) return;
+        fetchServicesFast(gen);
+      }, SERVICES_FAST_PHASE_MS));
+    }
     bootstrapBackgroundWidgets(gen);
   };
 
@@ -1117,6 +1129,38 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
         reportDone(false);
         release();
       });
+  });
+}
+
+/**
+ * One-shot instant paint of the services list on init: hits
+ * status.cgi?part=services&fast=1 (skips the heavy `sudo CTL list`, ~3.5 s) so
+ * the widget shows its real rows within ~1 s. The recurring full `services`
+ * heavy poll (phase 6500) then refines disabled/masked states. Queued through
+ * scheduleStatusFetch under a distinct 'services_fast' key so it is NOT deduped
+ * against the full 'services' poll and is treated as a LIGHT fetch (no 2.2 s
+ * heavy gap), while still respecting the 350 ms global gap. Best-effort: on any
+ * failure the full poll paints the list as before. backgroundLoaded.services is
+ * left for the full poll to set, so its refinement is never skipped.
+ */
+function fetchServicesFast(gen) {
+  if (!isStatusBlockEnabled('services')) return;
+  if (backgroundLoaded.services) return;
+  scheduleStatusFetch('services_fast', 0, function (release, meta) {
+    if (gen !== _statusPollGeneration || backgroundLoaded.services) {
+      release();
+      return;
+    }
+    const url = '/cgi-bin/status.cgi?part=services&fast=1';
+    const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
+    statusFetchJson('services_fast', url, statusRequestTimeout('services', queueWaitMs), gen, function () {})
+      .then(function (d) {
+        if (gen !== _statusPollGeneration || !d || d.error || backgroundLoaded.services) return;
+        _lastPartStatus.services = d;
+        applyServicesStatus(d);
+      })
+      .catch(function () { /* best-effort — the full services poll is the real one */ })
+      .finally(function () { release(); });
   });
 }
 

@@ -8,6 +8,20 @@ items still need on-device verification before deploy).
 
 ## Open
 
+- [OPEN] 2026-07-14 **[MED] status.cgi services build — pgrep storm (~7 s cold).**
+  Measured on the 1.0.5.1 bench: `part=services` cold-build fires **32 `pgrep`
+  forks ≈ 7 s** on the loaded ARM (CODESYS running: 15 of them probe codesys
+  alone). `fast_service_state` + `fast_service_uptime` each independently pgrep
+  the same processes across 2–4 patterns. A per-request pgrep memo was tried in
+  1.0.5.1 and reverted — ineffective because both helpers are invoked via `$(…)`
+  command substitution and a subshell's cache never reaches the parent. The real
+  fix: refactor the service helpers to return via a global (avoid the `$()`
+  subshell) so ONE pgrep per process feeds both state and uptime; then a memo (or
+  a single `ps`-snapshot parse) collapses the 32→~14. Also consider making
+  `sudo sa02m-web-service-ctl.sh list` (~3.5 s, skipped on `fast=1` but still on
+  the full path) cheaper. Needs the full state-matrix re-verify (both variants,
+  services present/absent). Surfaced while shipping 1.0.5.1 (fast=1 mitigates the
+  first paint but not the underlying cost).
 - [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
   After the installer's `02-network.sh` was made interface-name-aware, other
   consumers still hardcode `eth0.conf`/`eth1.conf` and won't work on an

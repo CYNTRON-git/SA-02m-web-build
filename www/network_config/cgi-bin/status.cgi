@@ -28,6 +28,17 @@ case "${QUERY_STRING:-}" in
     *part=core*)     STATUS_PART=core ;;
 esac
 
+# Opt-in fast services list: skip the ~3.5 s `sudo CTL list` disabled/masked
+# refinement so «Службы» paints its real rows instantly; the full poll refines
+# a moment later. Strict allow-list — only the literal fast=1 flag on part=services
+# enables it; the flag merely gates one internal function, never interpolated.
+STATUS_SERVICES_FAST=0
+if [ "$STATUS_PART" = "services" ]; then
+    case "${QUERY_STRING:-}" in
+        *fast=1*) STATUS_SERVICES_FAST=1 ;;
+    esac
+fi
+
 check_auth() {
     web_session_check_cookie && return 0
     return 1
@@ -552,6 +563,18 @@ svc_ctl_override() {
     [ -n "$st" ] && _out=$st
 }
 
+# Fast path (fast=1): the authoritative CTL list is skipped, so any status it
+# would refine is not trustworthy from the cheap fast_service_state probe alone
+# (e.g. CODESYS runs as codesyscontrol.bin, which `pgrep -x` misses; disabled/
+# masked is invisible without CTL). Mark such a status "unknown" → the UI paints
+# a loading badge (…) rather than a possibly-wrong Active/Inactive; the full
+# services poll fills the real state a moment later. No-op unless fast mode.
+svc_fast_unknown() {
+    [ "${STATUS_SERVICES_FAST:-0}" = "1" ] || return 0
+    local -n _v=$1
+    _v="unknown"
+}
+
 gather_important_optional_services_json() {
     OPTIONAL_SVCS_JSON="[]"
     local parts="" sep="" u st_raw up_sec id_disp id_esc st_esc label_esc label_raw ctl_id
@@ -560,6 +583,7 @@ gather_important_optional_services_json() {
         u="docker.service"
         st_raw=$(fast_service_state "$u")
         svc_ctl_override docker st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -581,6 +605,7 @@ gather_important_optional_services_json() {
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
         svc_ctl_override klogic st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -602,6 +627,7 @@ gather_important_optional_services_json() {
     if [ -n "$u" ]; then
         st_raw=$(fast_service_state "$u")
         svc_ctl_override node-red st_raw
+        svc_fast_unknown st_raw
         up_sec=$(fast_service_uptime "$u")
         [ "$st_raw" = "disabled" ] && up_sec=0
         (( up_sec == 0 )) && [ "$st_raw" = "active" ] && up_sec=$(uptime_from_cgroup_slice "$u")
@@ -1404,9 +1430,17 @@ gather_system_metrics() {
     [ -z "$_kernel_short" ] && _kernel_short="$_kernel_raw"
     KERNEL_VER=$(json_escape "$_kernel_short")
 
-    # ОС: короткое «Debian <point-release>» — из /etc/debian_version (11.11).
+    # ОС: prefer the true Armbian identity from /etc/armbian-release (VERSION).
+    # The board is an Armbian build; /etc/debian_version holds a misleading base
+    # marker ("trixie/sid") that used to leak into the UI as "Debian trixie/sid".
+    # Parse, never `source` (an odd line in a sourced file executes) — floors:
+    # web-code-rigor.md ## Bash CGI floors. Output is json_escape'd below.
     ARMBIAN_VER=""
-    if [ -r /etc/debian_version ]; then
+    if [ -r /etc/armbian-release ]; then
+        _arm_ver=$(sed -nE 's/^VERSION=(.*)$/\1/p' /etc/armbian-release 2>/dev/null | head -n1 | tr -d '"\r')
+        [ -n "$_arm_ver" ] && ARMBIAN_VER="Armbian ${_arm_ver}"
+    fi
+    if [ -z "$ARMBIAN_VER" ] && [ -r /etc/debian_version ]; then
         _debian_ver=$(head -n1 /etc/debian_version 2>/dev/null | tr -d '\r\n[:space:]')
         [ -n "$_debian_ver" ] && ARMBIAN_VER="Debian ${_debian_ver}"
     fi
@@ -1498,10 +1532,15 @@ gather_services_metrics() {
     SVC_MOSQUITTO=$(fast_service_state mosquitto)
     SVC_BRIDGE=$(fast_service_state sa02m-modbus-mqtt)
 
-    load_svc_ctl_states
+    # Fast path (fast=1): skip the ~3.5 s `sudo CTL list`; mark the services it
+    # would refine as "unknown" so the UI shows a loading badge, never a wrong one.
+    [ "${STATUS_SERVICES_FAST:-0}" = "1" ] || load_svc_ctl_states
     svc_ctl_override codesys SVC_CODESYS
     svc_ctl_override mosquitto SVC_MOSQUITTO
     svc_ctl_override mqtt-bridge SVC_BRIDGE
+    svc_fast_unknown SVC_CODESYS
+    svc_fast_unknown SVC_MOSQUITTO
+    svc_fast_unknown SVC_BRIDGE
 
     MPLC_STATUS="inactive"
     MPLC_UPTIME_S=0
@@ -1627,6 +1666,7 @@ gather_services_metrics() {
     fi
 
     svc_ctl_override mplc4 MPLC_STATUS
+    svc_fast_unknown MPLC_STATUS
     [ "$MPLC_STATUS" = "disabled" ] && MPLC_UPTIME_S=0
 
     MPLC_UNIT_RAW=$(unit_display_id "${MPLC_UNIT_RAW:-}")
@@ -2325,7 +2365,12 @@ case "$STATUS_PART" in
         cache_print_or_build "${CACHE_DIR}/system.json" 30 build_system_json
         ;;
     services)
-        cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
+        if [ "${STATUS_SERVICES_FAST:-0}" = "1" ]; then
+            # Own short-TTL cache key so the fast variant never poisons the 45 s full cache.
+            cache_print_or_build "${CACHE_DIR}/services_fast.json" 10 build_services_json
+        else
+            cache_print_or_build "${CACHE_DIR}/services.json" 45 build_services_json
+        fi
         ;;
     hardware)
         cache_print_or_build "${CACHE_DIR}/hardware.json" 10 build_hardware_json
