@@ -12,6 +12,10 @@ TIMEOUT_SEC=8
 # SysV-synced units (mplc4, codesyscontrol) need 12–20s for enable/disable.
 TIMEOUT_SLOW_SEC=45
 
+# Canonical home: www/network_config/cgi-bin/lib_web_json.sh. This script
+# deploys to /etc (a different directory from the cgi-bin libs) so it keeps a
+# byte-identical local copy rather than a cross-dir source; the two MUST stay
+# in sync (web-code-rigor.md ## Bash CGI floors).
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'
 }
@@ -314,11 +318,14 @@ EOF
     return 1
 }
 
-unit_props() {
-    _u=$1
-    _active=$(sc_run show -p ActiveState --value "$_u" | head -n1 | tr -d '\r')
-    _en_raw=$(sc_run is-enabled "$_u" 2>/dev/null | head -n1 | tr -d '\r')
-    _load=$(unit_load_state "$_u")
+# Derive the emitted status tuple from three raw systemd values. Split out of
+# unit_props so cmd_list can feed values from ONE batched `systemctl show`
+# (instead of forking `show` per unit) while keeping byte-identical output.
+# $1=ActiveState, $2=is-enabled state, $3=LoadState → active|enabled|masked|admin_off
+derive_props() {
+    _active=$1
+    _en_raw=$2
+    _load=$3
     _is_masked=0
     case "$_en_raw" in masked) _is_masked=1 ;; esac
     case "$_load" in masked) _is_masked=1 ;; esac
@@ -334,8 +341,29 @@ unit_props() {
     printf '%s|%s|%s|%s' "$_active" "$_enabled" "$_is_masked" "$_admin_off"
 }
 
+unit_props() {
+    _u=$1
+    _active=$(sc_run show -p ActiveState --value "$_u" | head -n1 | tr -d '\r')
+    _en_raw=$(sc_run is-enabled "$_u" 2>/dev/null | head -n1 | tr -d '\r')
+    _load=$(unit_load_state "$_u")
+    derive_props "$_active" "$_en_raw" "$_load"
+}
+
+# Fetch every resolved unit's status in TWO batched systemctl calls instead of
+# ~3 forks per service (was ~4 s on the ARM target). Pass 1 resolves units with
+# the exact prior logic (unchanged — same unit selected). Then, over the full
+# resolved-unit list: ONE `systemctl show` for ActiveState+LoadState (keyed by
+# unit Id) and ONE `systemctl is-enabled` for every unit (it accepts many units
+# and prints one status line per unit IN INPUT ORDER — this IS is-enabled, exact
+# enabled/masked/static/… semantics, just batched, unlike swapping in
+# UnitFileState). Pass 2 derives each service's status from the two lookups. Any
+# unit missing from either batch (older systemd, short/garbled output, a batch
+# error) falls back to the original per-unit path for that unit — so the emitted
+# JSON stays byte-identical to the per-unit implementation for every state.
 cmd_list() {
-    parts="" sep=""
+    # ── Pass 1: resolve the unit for every present service (prior logic) ──
+    _rows=""
+    _batch_units=""
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
         if ! service_present "$_id" "$_cands"; then
@@ -366,6 +394,52 @@ cmd_list() {
         IFS=$_old_ifs
         if [ -z "$_unit" ] && [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
             _unit="init.d"
+        fi
+        [ -z "$_unit" ] && continue
+        _rows="${_rows}${_id}|${_label}|${_unit}
+"
+        [ "$_unit" != "init.d" ] && _batch_units="${_batch_units} ${_unit}"
+    done <<EOF
+$SERVICE_DEFS
+EOF
+
+    # ── Batch: one `systemctl show` for every resolved real unit ──
+    # Records are blank-line-separated, one per unit; awk (no paragraph-mode
+    # RS, so busybox/mawk/gawk-safe) flattens each to `Id|ActiveState|LoadState`.
+    _batch_props=""
+    if [ -n "$_batch_units" ]; then
+        _batch_props=$(sc_run show --property=Id,ActiveState,LoadState $_batch_units 2>/dev/null | awk '
+            { sub(/\r$/, "") }
+            /^$/ { if (id != "") print id "|" act "|" load; id=""; act=""; load=""; next }
+            /^Id=/ { id = substr($0, 4) }
+            /^ActiveState=/ { act = substr($0, 13) }
+            /^LoadState=/ { load = substr($0, 11) }
+            END { if (id != "") print id "|" act "|" load }
+        ')
+    fi
+
+    # ── Batch: one `systemctl is-enabled` for every resolved real unit ──
+    # is-enabled accepts multiple units and prints one status line per unit in
+    # the order given; awk pairs those lines positionally with $_batch_units
+    # into a unit→state lookup. is-enabled's exit code is non-zero for
+    # disabled/static units even on success, so stdout is captured regardless
+    # (2>/dev/null, no exit-code check — mirroring the per-unit call). If the
+    # line count does not match the unit count (short/garbled batch), the map is
+    # left empty and pass 2 falls back to per-unit is-enabled for every unit.
+    _enabled_map=""
+    if [ -n "$_batch_units" ]; then
+        _enabled_map=$(sc_run is-enabled $_batch_units 2>/dev/null | awk -v units="$_batch_units" '
+            BEGIN { n = split(units, u, " ") }
+            { gsub(/\r/, ""); line[NR] = $0 }
+            END { if (NR == n) for (i = 1; i <= n; i++) print u[i] "|" line[i] }
+        ')
+    fi
+
+    # ── Pass 2: emit JSON, reading batched props (per-unit fallback) ──
+    parts="" sep=""
+    while IFS='|' read -r _id _label _unit; do
+        [ -z "$_id" ] && continue
+        if [ "$_unit" = "init.d" ]; then
             _active=inactive
             _enabled=disabled
             _masked=0
@@ -377,12 +451,21 @@ cmd_list() {
                 _admin_off=0
                 _enabled=enabled
             fi
-        fi
-        [ -z "$_unit" ] && continue
-        if [ "$_unit" != "init.d" ]; then
-        IFS='|' read -r _active _enabled _masked _admin_off <<EOF
+        else
+            _al=$(printf '%s\n' "$_batch_props" | awk -F'|' -v u="$_unit" '$1==u{print $2"|"$3; exit}')
+            if [ -n "$_al" ]; then
+                _en_raw=$(printf '%s\n' "$_enabled_map" | awk -F'|' -v u="$_unit" '$1==u{print $2; exit}')
+                if [ -z "$_en_raw" ]; then
+                    _en_raw=$(sc_run is-enabled "$_unit" 2>/dev/null | head -n1 | tr -d '\r')
+                fi
+                IFS='|' read -r _active _enabled _masked _admin_off <<EOF2
+$(derive_props "${_al%%|*}" "$_en_raw" "${_al#*|}")
+EOF2
+            else
+                IFS='|' read -r _active _enabled _masked _admin_off <<EOF2
 $(unit_props "$_unit")
-EOF
+EOF2
+            fi
         fi
         if [ "$_id" = "codesys" ]; then
             if codesys_process_active; then
@@ -399,7 +482,7 @@ EOF
         parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"${_unit_e}\",\"active\":\"${_active_e}\",\"enabled\":$([ "$_enabled" = enabled ] && echo true || echo false),\"masked\":$([ "$_masked" = 1 ] && echo true || echo false),\"user_disabled\":$([ "$_admin_off" = 1 ] && echo true || echo false),\"installed\":true}"
         sep=,
     done <<EOF
-$SERVICE_DEFS
+$_rows
 EOF
     _flasher_busy=false
     if flasher_poll_lock_held; then

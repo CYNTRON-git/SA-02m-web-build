@@ -92,9 +92,8 @@ MPLC_INSTALLED=0
 STATUS_CACHE_LOCK_WAIT_SEC="${STATUS_CACHE_LOCK_WAIT_SEC:-0.25}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-json_escape() {
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r//g; :a;N;$!ba;s/\n/ /g'
-}
+# json_escape lives in the shared lib (web-code-rigor.md ## Bash CGI floors).
+. "$SCRIPT_DIR/lib_web_json.sh"
 
 cache_is_fresh() {
     local file=$1 ttl=$2 now mtime
@@ -1256,7 +1255,9 @@ gather_usb_modem_metrics() {
     local iface vendor product manufacturer usb_dir d _ip
 
     # 1) Ищем модем через сетевые интерфейсы (наиболее полная информация)
-    for iface in $(ls /sys/class/net/ 2>/dev/null); do
+    for iface_path in /sys/class/net/*; do
+        [ -e "$iface_path" ] || continue
+        iface=${iface_path##*/}
         d=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || continue
         printf '%s' "$d" | grep -q '/usb' || continue
 

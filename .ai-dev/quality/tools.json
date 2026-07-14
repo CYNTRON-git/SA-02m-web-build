@@ -45,6 +45,24 @@
       "beat": "review",
       "covers": ["install.sh"],
       "init": "bash"
+    },
+    {
+      "id": "shellcheck",
+      "checks": "Real bugs (severity=error) in every Bash CGI, shared lib, device script, and the installer — quoting/word-splitting/unset-var defects are the stated top defect class for this stack (web-code-rigor.md). Style/info/warning are intentionally NOT gated (severity=error only) so the row stays a bug gate, not a lint nag.",
+      "config": ".ai-dev/quality/checks/shellcheck.sh",
+      "run": "bash .ai-dev/quality/checks/shellcheck.sh",
+      "beat": "review",
+      "covers": null,
+      "init": "shellcheck (preinstalled on GitHub ubuntu runners; `apt install shellcheck` / `brew install shellcheck` locally). Absent -> the row skips (exit 0), so Windows/dev boxes without it stay green; the Linux CI is the enforcing run."
+    },
+    {
+      "id": "headless-smoke",
+      "checks": "Frontend regression smoke via the committed characterization harness (scripts/dev/characterize-ui.mjs --compare baseline): loads the dashboard headless over every tab/theme/variant and diffs globals + new console errors + DOM skeleton against the saved baseline (scripts/dev/baseline/). Catches a JS bundle break or a widget-id/skeleton regression no syntax check sees.",
+      "config": ".ai-dev/quality/checks/headless-smoke.sh",
+      "run": "bash .ai-dev/quality/checks/headless-smoke.sh",
+      "beat": "review",
+      "covers": ["www/network_config/static/", "www/network_config/index.html"],
+      "init": "cd scripts/dev && npm install && npx playwright install chromium; set SA02M_WEB_PASS and serve/point the harness (scripts/dev/README.md). Absent deps/password -> the row skips (exit 0); it is the on-demand real-layer UI check, not a headless-less CI gate."
     }
   ]
 }

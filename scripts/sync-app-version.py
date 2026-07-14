@@ -11,6 +11,7 @@
   - www/network_config/VERSION
   - www/network_config/static/js/app.js  (APP_VERSION)
   - www/network_config/index.html, login.html  (all ?v= cache-bust query strings)
+  - README.md  (shields.io version badge)
 """
 from __future__ import annotations
 
@@ -26,9 +27,12 @@ VERSION_FILE = WWW / "VERSION"
 APP_JS = WWW / "static" / "js" / "app.js"
 INDEX_HTML = WWW / "index.html"
 LOGIN_HTML = WWW / "login.html"
+README_MD = REPO_ROOT / "README.md"
 
 VERSION_RE = re.compile(r"^\d+(\.\d+){2,3}$")
 CACHE_BUST_RE = re.compile(r"(\?v=)(\d+(?:\.\d+){2,3}(?:[-.]\d+)?)")
+# shields.io badge: .../badge/version-<X.Y.Z[.W]>-cyan?...
+README_BADGE_RE = re.compile(r"(badge/version-)(\d+(?:\.\d+){2,3})(-cyan)")
 
 
 def read_version_file() -> str | None:
@@ -123,6 +127,28 @@ def html_cache_bust_mismatches(path: Path, version: str) -> list[str]:
     return bad
 
 
+def patch_readme_badge(version: str) -> bool:
+    if not README_MD.is_file():
+        return False
+    text = README_MD.read_text(encoding="utf-8")
+    new = README_BADGE_RE.sub(rf"\g<1>{version}\g<3>", text)
+    if new == text:
+        return False
+    README_MD.write_text(new, encoding="utf-8")
+    return True
+
+
+def readme_badge_mismatches(version: str) -> list[str]:
+    if not README_MD.is_file():
+        return []
+    text = README_MD.read_text(encoding="utf-8")
+    bad: list[str] = []
+    for m in README_BADGE_RE.finditer(text):
+        if m.group(2) != version:
+            bad.append(f"README.md: version badge {m.group(2)!r} (expected {version!r})")
+    return bad
+
+
 def current_app_version() -> str | None:
     if not APP_JS.is_file():
         return None
@@ -144,6 +170,7 @@ def main() -> int:
             mismatches.append(f"app.js APP_VERSION={cur!r}, expected {version!r}")
         for html in (INDEX_HTML, LOGIN_HTML):
             mismatches.extend(html_cache_bust_mismatches(html, version))
+        mismatches.extend(readme_badge_mismatches(version))
         vf = read_version_file()
         if vf != version:
             mismatches.append(f"VERSION file={vf!r}, expected {version!r}")
@@ -158,6 +185,7 @@ def main() -> int:
     changed = patch_app_js(version)
     for html in (INDEX_HTML, LOGIN_HTML):
         changed |= patch_html_cache_bust(html, version)
+    changed |= patch_readme_badge(version)
     if changed:
         print(f"Synced web version to {version}")
     else:
