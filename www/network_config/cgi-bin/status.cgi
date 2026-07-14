@@ -1255,7 +1255,9 @@ gather_usb_modem_metrics() {
     local iface vendor product manufacturer usb_dir d _ip
 
     # 1) Ищем модем через сетевые интерфейсы (наиболее полная информация)
-    for iface in $(ls /sys/class/net/ 2>/dev/null); do
+    for iface_path in /sys/class/net/*; do
+        [ -e "$iface_path" ] || continue
+        iface=${iface_path##*/}
         d=$(readlink -f "/sys/class/net/${iface}/device" 2>/dev/null) || continue
         printf '%s' "$d" | grep -q '/usb' || continue
 

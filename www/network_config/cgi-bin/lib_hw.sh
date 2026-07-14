@@ -354,7 +354,7 @@ sa02m_hw_i2c_channel_mask() {
 
 sa02m_hw_i2c_output_mask_dec() {
     local out=0 mask
-    for _ch in do beeper alarm_led usb_power; do
+    for _ch in "do" beeper alarm_led usb_power; do
         mask=$(sa02m_hw_i2c_channel_mask "$_ch" 2>/dev/null) || continue
         out=$(( out | mask ))
     done
