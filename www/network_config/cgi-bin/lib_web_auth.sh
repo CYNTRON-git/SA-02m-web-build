@@ -12,11 +12,18 @@ SA02M_SESSION_DIR="${SA02M_SESSION_DIR:-/run/sa02m-web-sessions}"
 SA02M_SESSION_TTL="${SA02M_SESSION_TTL:-864000}"   # 10 days, matches the cookie Max-Age
 
 web_session__ensure_dir() {
-    [ -d "$SA02M_SESSION_DIR" ] && return 0
+    # Idempotent + SELF-HEALING: enforce the intended ownership/perms on EVERY
+    # call, not only on first creation. setgid + group-accessible — the
+    # sa02m-flasher daemon runs in the www-data group and reads the session files
+    # by group, so the dir must be traversable by the group (2750) and files
+    # group-readable (640, see web_session_create). If any other path created it
+    # weaker (a stale tmpfiles spec once created it 0700 → daemon 401), a dir the
+    # daemon cannot traverse is not correctable by a first-creation-only check;
+    # so this is the single source of truth for the perms and re-applies them
+    # each call. Best-effort: a chgrp/chmod failure must NEVER break login, so
+    # each is guarded — only an unwritable mkdir (no dir at all) fails closed.
     mkdir -p "$SA02M_SESSION_DIR" 2>/dev/null || return 1
-    # setgid + group-accessible: the sa02m-flasher daemon runs in the www-data
-    # group and reads the session files by group, so the dir must be traversable
-    # by the group (2750) and files group-readable (640, see web_session_create).
+    chgrp www-data "$SA02M_SESSION_DIR" 2>/dev/null || true
     chmod 2750 "$SA02M_SESSION_DIR" 2>/dev/null || true
     return 0
 }
