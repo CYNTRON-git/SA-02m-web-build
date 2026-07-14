@@ -49,9 +49,11 @@ const BACKGROUND_PART_PERIOD_MS = LIGHT_PART_PERIOD_MS;
 const BACKGROUND_PART_PHASE_MS = Object.assign({}, LIGHT_PART_PHASE_MS, HEAVY_PART_PHASE_MS, { time: 3000 });
 const PRIORITY_POLL_PHASE_MS = 500;
 /** RS-485 first-polls early (before the services list) so its activity data
- *  appears ahead of «Службы»; steady-state interval stays 12 s. The 2.2 s
- *  heavy-queue gap still serializes it against network/services (shared ARM CPU). */
-const RS485_POLL_PHASE_MS = 3000;
+ *  appears ahead of «Службы»; steady-state interval stays 12 s. Phase kept
+ *  >= network (3500) so «Сеть» still paints first, and < services-fast (4000)
+ *  so RS-485 lands before the services list. The 2.2 s heavy-queue gap still
+ *  serializes it against network/services (shared ARM CPU). */
+const RS485_POLL_PHASE_MS = 3600;
 /** part=services&fast=1 — instant service list (skips the ~3.5 s `sudo CTL list`);
  *  one-shot on init, just after RS-485, treated as a LIGHT fetch. The full
  *  services heavy poll (phase 6500) still lands second and refines disabled/masked. */

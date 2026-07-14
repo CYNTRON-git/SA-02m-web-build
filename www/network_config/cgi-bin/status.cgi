@@ -220,20 +220,86 @@ gpio_state() {
     fi
 }
 
-svc_is_active() {
-    local svc=${1%.service}
-    svc=${svc%.socket}
-    if pgrep -x "$svc" >/dev/null 2>&1; then
-        echo active
-    else
-        echo inactive
-    fi
+# ── Process detection: one ps snapshot instead of a pgrep storm ─────────────
+# The services build probed the same processes 30+ times via pgrep (state +
+# uptime × several patterns) → ~32 forks, ~7 s on a loaded ARM. Take ONE `ps`
+# snapshot and match patterns in-shell. The snapshot MUST be primed in the
+# parent shell (gather_services_metrics calls _proc_snapshot_init) BEFORE the
+# fast_service_state/uptime `$()` calls — a command-substitution subshell cannot
+# populate it for the parent. Empty snapshot ⇒ helpers fall back to live pgrep
+# (other call sites, or `ps` unavailable) — behaviour identical to before.
+_PROC_SNAPSHOT=""
+_PROC_CLK_TCK=100
+_proc_snapshot_init() {
+    [ -n "$_PROC_SNAPSHOT" ] && return 0
+    command -v ps >/dev/null 2>&1 || return 0
+    # pid, comm (exact short name, for -x), full args (command line, for -f).
+    _PROC_SNAPSHOT=$(ps -eo pid=,comm=,args= 2>/dev/null)
+    _PROC_CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo 100)
+    [ "$_PROC_CLK_TCK" -gt 0 ] 2>/dev/null || _PROC_CLK_TCK=100
+}
+
+# PIDs whose comm (exact) == $1, from the snapshot (one per line).
+_snap_pids_comm() {
+    local name=$1 pid comm rest
+    while read -r pid comm rest; do
+        [ "$comm" = "$name" ] && printf '%s\n' "$pid"
+    done <<< "$_PROC_SNAPSHOT"
+}
+
+# PIDs whose full command line matches ERE $1, from the snapshot (one per line).
+_snap_pids_cmd() {
+    local pat=$1 pid comm args
+    while read -r pid comm args; do
+        [[ "$args" =~ $pat ]] && printf '%s\n' "$pid"
+    done <<< "$_PROC_SNAPSHOT"
+}
+
+# Max uptime (s) among a whitespace-separated PID list; 0 if none.
+_proc_uptime_from_pidlist() {
+    local pids=$1 pid best=0 boot_j proc_start up
+    for pid in $pids; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        [ -r "/proc/${pid}/stat" ] || continue
+        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+        proc_start=$(( boot_j / _PROC_CLK_TCK ))
+        up=$(( UPTIME_SEC - proc_start ))
+        (( up < 0 )) && up=0
+        (( up > best )) && best=$up
+    done
+    echo "$best"
 }
 
 proc_is_running() {
-    local name=$1
+    local name=$1 pid comm rest
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        while read -r pid comm rest; do
+            [ "$comm" = "$name" ] && return 0
+        done <<< "$_PROC_SNAPSHOT"
+        return 1
+    fi
     command -v pgrep >/dev/null 2>&1 || return 1
     pgrep -x "$name" >/dev/null 2>&1
+}
+
+# 0 if any process's command line matches ERE $1 (snapshot, else live pgrep -f).
+_proc_cmd_matches() {
+    local pat=$1 pid comm args
+    case "$pat" in *\'*|*\"*) return 1 ;; esac
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        while read -r pid comm args; do
+            [[ "$args" =~ $pat ]] && return 0
+        done <<< "$_PROC_SNAPSHOT"
+        return 1
+    fi
+    command -v pgrep >/dev/null 2>&1 || return 1
+    pgrep -f "$pat" >/dev/null 2>&1
+}
+
+svc_is_active() {
+    local svc=${1%.service}
+    svc=${svc%.socket}
+    if proc_is_running "$svc"; then echo active; else echo inactive; fi
 }
 
 port_is_listening() {
@@ -242,38 +308,28 @@ port_is_listening() {
     ss -H -ltn "sport = :${port}" 2>/dev/null | awk 'NR==1{found=1} END{exit(found?0:1)}'
 }
 
-# Аптайн по процессам, подобранным pgrep -f (для Node-RED и др.).
+# Аптайн по процессам, подобранным по командной строке (для Node-RED и др.).
 proc_uptime_seconds_by_pgrep_f() {
-    local pattern=$1 pid best=0 boot_j clock_hz proc_start up
-    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+    local pattern=$1 pids
     case "$pattern" in *\'*|*\"*) echo 0; return ;; esac
-    while IFS= read -r pid; do
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ -r "/proc/${pid}/stat" ] || continue
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        proc_start=$(( boot_j / clock_hz ))
-        up=$(( UPTIME_SEC - proc_start ))
-        (( up < 0 )) && up=0
-        (( up > best )) && best=$up
-    done < <(pgrep -f "$pattern" 2>/dev/null || true)
-    echo "$best"
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        pids=$(_snap_pids_cmd "$pattern")
+    else
+        command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+        pids=$(pgrep -f "$pattern" 2>/dev/null || true)
+    fi
+    _proc_uptime_from_pidlist "$pids"
 }
 
 proc_uptime_seconds_by_name() {
-    local name=$1 pid best=0 boot_j clock_hz proc_start up
-    command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
-    while IFS= read -r pid; do
-        case "$pid" in ''|*[!0-9]*) continue ;; esac
-        [ -r "/proc/${pid}/stat" ] || continue
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        proc_start=$(( boot_j / clock_hz ))
-        up=$(( UPTIME_SEC - proc_start ))
-        (( up < 0 )) && up=0
-        (( up > best )) && best=$up
-    done < <(pgrep -x "$name" 2>/dev/null || true)
-    echo "$best"
+    local name=$1 pids
+    if [ -n "$_PROC_SNAPSHOT" ]; then
+        pids=$(_snap_pids_comm "$name")
+    else
+        command -v pgrep >/dev/null 2>&1 || { echo 0; return; }
+        pids=$(pgrep -x "$name" 2>/dev/null || true)
+    fi
+    _proc_uptime_from_pidlist "$pids"
 }
 
 fast_service_state() {
@@ -314,15 +370,15 @@ fast_service_state() {
             fi
             ;;
         node-red|node-red.service|nodered|nodered.service)
-            if port_is_listening 1880 || pgrep -f '[n]ode-red' >/dev/null 2>&1 || pgrep -f 'node_red' >/dev/null 2>&1; then
+            if port_is_listening 1880 || _proc_cmd_matches '[n]ode-red' || _proc_cmd_matches 'node_red'; then
                 echo active
             else
                 echo inactive
             fi
             ;;
         sa02m-modbus-mqtt|sa02m-modbus-mqtt.service)
-            if pgrep -f '[m]odbus_mqtt_bridge' >/dev/null 2>&1 \
-                || pgrep -f '[s]a02m-modbus-mqtt' >/dev/null 2>&1; then
+            if _proc_cmd_matches '[m]odbus_mqtt_bridge' \
+                || _proc_cmd_matches '[s]a02m-modbus-mqtt'; then
                 echo active
             else
                 echo inactive
@@ -336,9 +392,9 @@ fast_service_state() {
             fi
             ;;
         codesyscontrol|codesyscontrol.service|codesys.service|codesys3.service|CODESYSControl.service|CODESYSControlRuntime.service)
-            if pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1 \
-                || pgrep -f '[C]ODESYSControl' >/dev/null 2>&1 \
-                || pgrep -f '[c]odesyscontrol' >/dev/null 2>&1 \
+            if _proc_cmd_matches '[c]odesyscontrol\.bin' \
+                || _proc_cmd_matches '[C]ODESYSControl' \
+                || _proc_cmd_matches '[c]odesyscontrol' \
                 || { [ -r /var/run/codesyscontrol.pid ] && kill -0 "$(cat /var/run/codesyscontrol.pid 2>/dev/null)" 2>/dev/null; }; then
                 echo active
             else
@@ -1522,6 +1578,9 @@ gather_services_metrics() {
     local proc_pids active_unit mpl_pid cg_unit mpl_slice try up_try
     OPTIONAL_SVCS_JSON="[]"
     mpl_slice=""
+    # Prime the process snapshot in THIS (parent) shell so the fast_service_state
+    # /uptime `$()` subshells below inherit it and skip the pgrep storm.
+    _proc_snapshot_init
     SVC_CODESYS_UNIT=$(resolve_codesys_unit 2>/dev/null || true)
     if [ -n "$SVC_CODESYS_UNIT" ]; then
         SVC_CODESYS=$(fast_service_state "$SVC_CODESYS_UNIT")
@@ -1577,9 +1636,15 @@ gather_services_metrics() {
     fi
 
     if [ -z "$mpl_pid" ]; then
-        proc_pids=$(pgrep -x mplc 2>/dev/null || true)
-        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
-        [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc_monitor 2>/dev/null || true)
+        if [ -n "$_PROC_SNAPSHOT" ]; then
+            proc_pids=$(_snap_pids_comm mplc)
+            [ -z "$proc_pids" ] && proc_pids=$(_snap_pids_comm mplc4)
+            [ -z "$proc_pids" ] && proc_pids=$(_snap_pids_comm mplc_monitor)
+        else
+            proc_pids=$(pgrep -x mplc 2>/dev/null || true)
+            [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc4 2>/dev/null || true)
+            [ -z "$proc_pids" ] && proc_pids=$(pgrep -x mplc_monitor 2>/dev/null || true)
+        fi
         if [ -n "$proc_pids" ]; then
             MPLC_STATUS="active"
             mpl_pid=${proc_pids%%$'\n'*}
