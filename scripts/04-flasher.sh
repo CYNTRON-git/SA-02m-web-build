@@ -15,6 +15,7 @@ OPT_DIR="$BASE_DIR/opt/sa02m-flasher"
 
 INSTALL_DIR="/opt/sa02m-flasher"
 CACHE_DIR="/var/lib/sa02m-flasher/firmware"
+SCAN_CACHE_DIR="/var/lib/sa02m-flasher/last_scan"
 LOG_DIR="/var/log/sa02m-flasher"
 FLASHER_USER="sa02m-flasher"
 
@@ -37,6 +38,9 @@ usermod -aG dialout "$FLASHER_USER" >/dev/null 2>&1 || true
 # ── Каталоги ──────────────────────────────────────────────────────────────
 install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$INSTALL_DIR"
 install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$CACHE_DIR"
+# Persistent last-scan roster cache — written by the flasher, read (0755) by the
+# bus-free sa02m-rs485-roster aggregator. install -d is idempotent (re-run safe).
+install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$SCAN_CACHE_DIR"
 install -d -m 0750 -o "$FLASHER_USER" -g "$FLASHER_USER" "$LOG_DIR"
 
 # ── Код демона ────────────────────────────────────────────────────────────

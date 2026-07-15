@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh the SA-02m RS-485 roster cache every 8 s
+Requires=sa02m-rs485-roster.service
+
+[Timer]
+# First run shortly after boot, then every 8 s — at or below the status.cgi rs485
+# part cache (8 s) so the UI never shows data older than one CGI cycle beyond a tick.
+OnBootSec=20s
+OnUnitActiveSec=8s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

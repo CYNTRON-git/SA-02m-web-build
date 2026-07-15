@@ -78,6 +78,8 @@ bash "$SCRIPT_DIR/scripts/02-network.sh"
 bash "$SCRIPT_DIR/scripts/03-webserver.sh"
 bash "$SCRIPT_DIR/scripts/04-flasher.sh"
 bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
+# Bus-free RS-485 module-roster aggregator (reads flasher scan cache + MQTT bridge).
+bash "$SCRIPT_DIR/scripts/10-rs485-roster.sh"
 
 # ── Optional stacks (MQTT / Gateway / Node-RED / CODESYS / MPLC / Docker) ─
 # Можно отключить по-отдельности:

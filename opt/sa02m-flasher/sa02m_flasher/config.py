@@ -16,6 +16,10 @@ DEFAULT_SERIAL_MAP_PATH = Path("/etc/sa02m_serial_map.conf")
 
 DEFAULT_SOCKET_PATH = "/run/sa02m-flasher/flasher.sock"
 DEFAULT_CACHE_DIR = "/var/lib/sa02m-flasher/firmware"
+# Persistent per-port commissioning-scan roster cache (Provider B for the RS-485
+# roster aggregator). Written by run_scan_job after a scan; read by the bus-free
+# aggregator. Under /var/lib/sa02m-flasher so the service unit already grants write.
+DEFAULT_SCAN_CACHE_DIR = "/var/lib/sa02m-flasher/last_scan"
 DEFAULT_LOG_DIR = "/var/log/sa02m-flasher"
 DEFAULT_LOCK_DIR = "/var/lock"
 
@@ -52,6 +56,7 @@ DEFAULT_INTERNAL_TOKEN = ""          # общий секрет между nginx 
 class FlasherConfig:
     socket_path: str = DEFAULT_SOCKET_PATH
     cache_dir: Path = field(default_factory=lambda: Path(DEFAULT_CACHE_DIR))
+    scan_cache_dir: Path = field(default_factory=lambda: Path(DEFAULT_SCAN_CACHE_DIR))
     log_dir: Path = field(default_factory=lambda: Path(DEFAULT_LOG_DIR))
     lock_dir: Path = field(default_factory=lambda: Path(DEFAULT_LOCK_DIR))
     manifest_url: str = DEFAULT_MANIFEST_URL
@@ -132,6 +137,9 @@ def load_config(conf_path: Optional[Path] = None) -> FlasherConfig:
         v = g("CACHE_DIR")
         if v:
             cfg.cache_dir = Path(v)
+        v = g("SCAN_CACHE_DIR")
+        if v:
+            cfg.scan_cache_dir = Path(v)
         v = g("LOG_DIR")
         if v:
             cfg.log_dir = Path(v)

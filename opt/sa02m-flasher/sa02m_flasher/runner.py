@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import logging
 import os
 import time
@@ -18,6 +19,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import flash_protocol as fp
 from . import modbus_rtu
+from . import module_profiles as mp
 from . import scanner as scn
 from .config import FlasherConfig
 from .firmware_repo import FirmwareEntry, FirmwareRepo
@@ -109,6 +111,58 @@ def _build_speed_configs(
         pr = "N"
     sb = 2 if int(stopbits or 1) == 2 else 1
     return [(int(b), pr, sb) for b in baudrates if int(b) > 0]
+
+
+def _model_name_from_signature(signature: str) -> str:
+    """Display model name for a scanned signature, reusing module_profiles only
+    (no new register map — the MR-02m map is owned in the firmware repo).
+    Falls back to the cleaned signature string when the type is not resolvable."""
+    sig = signature or ""
+    code = mp.code_from_signature(sig)
+    if code is not None:
+        name = mp.MP02_TYPE_NAMES.get(code)
+        if name:
+            return name
+    stripped = mp.strip_bootloader_signature_suffix(sig).strip()
+    return stripped
+
+
+def _classify_scanned_device(dev: scn.DeviceInfo) -> Dict[str, Any]:
+    """One scan roster row: addr, signature, model, ours(bool). Classification
+    reuses module_profiles (is_mp_module_signature_for_batch_flash / code_from_signature)."""
+    sig = dev.signature or ""
+    ours = mp.is_mp_module_signature_for_batch_flash(sig)
+    return {
+        "addr": int(dev.address),
+        "signature": mp.strip_bootloader_signature_suffix(sig).strip(),
+        "model": _model_name_from_signature(sig) if ours else "",
+        "ours": bool(ours),
+    }
+
+
+def persist_scan_result(cfg: FlasherConfig, port_key: str, devices: Iterable[scn.DeviceInfo]) -> None:
+    """Write the classified scan roster to <scan_cache_dir>/<port_key>.json (atomic).
+
+    Provider B source for the bus-free RS-485 roster aggregator. Last scan wins
+    per port (overwrite). No request value reaches the path (port_key is a fixed
+    COM key from config); the file is written with the stdlib JSON writer."""
+    # port_key is already validated against ports_map (resolve_device_path); sanitise
+    # anyway so no separator can ever reach the path (allow-list, defence in depth).
+    safe_key = "".join(ch for ch in str(port_key) if ch.isalnum() or ch in ("-", "_"))
+    if not safe_key:
+        return
+    scan_dir = Path(cfg.scan_cache_dir)
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    rows = [_classify_scanned_device(d) for d in devices]
+    payload = {
+        "port": str(port_key),
+        "ts": int(time.time()),
+        "devices": rows,
+    }
+    path = scan_dir / f"{safe_key}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
 
 
 def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
@@ -237,6 +291,12 @@ def run_scan_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
 
     # Финальный снэпшот: перезаписать список устройств из результата scan_all (упорядочено).
     job.devices = [_device_to_dict(d) for d in devices]
+    # Persist the classified roster for the bus-free RS-485 aggregator (Provider B).
+    # Pure file write — no port access — so it is safe after the lease/flock released.
+    try:
+        persist_scan_result(cfg, port_key, devices)
+    except Exception as exc:  # noqa: BLE001 — persistence must never fail a scan
+        log.debug("persist_scan_result %s: %s", port_key, exc)
     progress_cb(100, f"Сканирование завершено. Найдено {len(devices)} устройств.")
     log_cb(f"Найдено устройств: {len(devices)}", "info")
 

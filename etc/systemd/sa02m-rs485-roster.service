@@ -1,0 +1,23 @@
+[Unit]
+Description=SA-02m RS-485 roster aggregator (bus-free: MQTT bridge + flasher scan cache)
+Documentation=https://github.com/CYNTRON-git/SA-02m-web-build
+# Soft ordering only — the aggregator degrades gracefully if either source is
+# absent (each provider reports available()=False), so neither is a hard Requires.
+After=sa02m-modbus-mqtt.service sa02m-flasher.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/sa02m-rs485-roster/aggregate.py
+# Never opens a serial port; only reads local files + writes one JSON in /run.
+ProtectSystem=strict
+ReadWritePaths=/run
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes

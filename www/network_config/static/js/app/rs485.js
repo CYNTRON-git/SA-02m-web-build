@@ -44,13 +44,80 @@ function rs485ErrDelta(p) {
   return { fe: p.fe | 0, pe: p.pe | 0, oe: p.oe | 0 };
 }
 
+/** TX and RX on ONE row (was two). Each side is a label+value pair spread apart. */
+function rs485TxRxRowHtml(txVal, rxVal) {
+  return (
+    '<div class="rs485-row rs485-txrx">' +
+      '<span class="rs485-txrx-item"><span class="rl">TX</span><span class="rv">' + txVal + '</span></span>' +
+      '<span class="rs485-txrx-item"><span class="rl">RX</span><span class="rv">' + rxVal + '</span></span>' +
+    '</div>'
+  );
+}
+
+/** One module chip, coloured from its OWN tri-state (never the port-level flag):
+    online===true → cyan live-online; online===false → red live-offline;
+    online==null (source "scan") → grey last-scan chip, NEVER red/green (honesty, R2).
+    A scan-only module mixed onto a bridge-owned port thus stays grey, not a false red. */
+function rs485ModuleChipHtml(m) {
+  const online = m ? m.online : null;
+  const isScan = (online == null) || (m && m.source === 'scan');
+  let state;
+  let titleAttr = '';
+  if (!isScan && online === true) {
+    state = 'is-on';
+  } else if (!isScan && online === false) {
+    state = 'is-off';
+  } else {
+    state = 'is-scan';
+    titleAttr = ' title="' + escHtml(uiT('по последнему сканированию')) + '"';
+  }
+  const addr = (m && m.addr != null) ? (m.addr + '\u00b7') : '';
+  const label = addr + ((m && m.model) ? m.model : uiT('модуль'));
+  return '<span class="rs485-chip ' + state + '"' + titleAttr + '>' + escHtml(label) + '</span>';
+}
+
+/** Date-only string for a scan timestamp (epoch seconds); '' when unknown. */
+function rs485ScanDateStr(ts) {
+  const n = Number(ts);
+  if (!isFinite(n) || n <= 0) return '';
+  const d = new Date(n * 1000);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+/** Module sub-block below TX/RX: our-model chips + third-party summary + scan badge. */
+function rs485ModulesHtml(mods) {
+  if (!mods) return '';
+  const ours = mods.ours || [];
+  const tp = mods.third_party || {};
+  const live = !!mods.live;
+  const total = tp.total | 0;
+  if (!ours.length && total <= 0) return '';
+  let html = '';
+  if (ours.length) {
+    let chips = '';
+    for (let i = 0; i < ours.length; i += 1) chips += rs485ModuleChipHtml(ours[i]);
+    html += '<div class="rs485-chips">' + chips + '</div>';
+  }
+  if (!live) {
+    const dateStr = rs485ScanDateStr(mods.ts);
+    const titleAttr = dateStr ? (' title="' + escHtml(uiT('ростер по сканированию от') + ' ' + dateStr) + '"') : '';
+    html += '<div class="rs485-mods-note"' + titleAttr + '>' + escHtml(uiT('по последнему сканированию')) + '</div>';
+  }
+  if (total > 0) {
+    let line = escHtml(uiT('сторонних')) + ': ' + total;
+    if (tp.online != null) line += ', ' + escHtml(uiT('онлайн')) + ' ' + (tp.online | 0);
+    html += '<div class="rs485-mods-tp">' + line + '</div>';
+  }
+  return '<div class="rs485-mods">' + html + '</div>';
+}
+
 function rs485SkeletonCardHtml(n) {
   return (
     '<div class="rs485-hdr"><span class="rs485-name">' + escHtml(uiT(rs485PortLabel(n))) + '</span><span class="rs485-dot idle" aria-hidden="true"></span></div>' +
     '<div class="rs485-dev rs485-dev-reserved" aria-hidden="true">\u00a0</div>' +
-    '<div class="rs485-row"><span class="rl">TX</span><span class="rv">0</span></div>' +
-    '<div class="rs485-row"><span class="rl">RX</span><span class="rv">0</span></div>' +
-    rs485ErrSlotHtml(0, 0, 0)
+    rs485TxRxRowHtml('0', '0') +
+    rs485ErrSlotHtml(0, 0, 0) +
+    '<div class="rs485-mods rs485-mods-reserved" aria-hidden="true"> </div>'
   );
 }
 
@@ -127,17 +194,16 @@ function renderRs485(ports) {
       dotTitle = uiT('Опрос активен, нет ответов устройств');
     }
 
-    const tx   = '<span class="rv">' + fmtNum(p.tx) + '</span>';
-    const rx   = '<span class="rv">' + fmtNum(p.rx) + '</span>';
     const err  = rs485ErrSlotHtml(errDelta.fe, errDelta.pe, errDelta.oe);
     const devLabel = absent ? uiT('нет опроса') : (disabled ? uiT('статистика отключена') : p.dev);
+    const mods = (!absent && !disabled) ? rs485ModulesHtml(p.modules) : '';
 
     card.innerHTML =
       '<div class="rs485-hdr"><span class="rs485-name">' + escHtml(uiT(rs485PortLabel(p.n))) + '</span><span class="rs485-dot ' + dotClass + '" title="' + escHtml(dotTitle) + '"></span></div>' +
       '<div class="rs485-dev">' + escHtml(devLabel) + '</div>' +
-      '<div class="rs485-row"><span class="rl">TX</span>' + tx + '</div>' +
-      '<div class="rs485-row"><span class="rl">RX</span>' + rx + '</div>' +
-      err;
+      rs485TxRxRowHtml(fmtNum(p.tx), fmtNum(p.rx)) +
+      err +
+      mods;
   });
   Array.from(grid.children).forEach(function (card) {
     if (card.id && !seen.has(card.id)) card.remove();

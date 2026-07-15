@@ -918,6 +918,30 @@ rs485_driver_serial_text() {
 RS485_DRIVER_TEXT=""
 declare -A RS485_INUSE
 
+# ── RS-485 module roster (bus-free, from the aggregator's normalized cache) ─────
+# Keyed by UI port index n (RS-485-N). Value = the pre-serialized `modules` JSON.
+declare -A RS485_MODULES=()
+RS485_ROSTER_CACHE="/run/sa02m-rs485-roster.json"
+RS485_ROSTER_HELPER="/opt/sa02m-rs485-roster/rs485_roster_cgi.py"
+
+# Load the aggregator's per-port `modules` blocks once per build. Absent cache or
+# helper ⇒ leave RS485_MODULES empty ⇒ rs485_port_json omits `modules` (today's
+# contract, so an old cached bundle is unaffected). Reads a tmpfs file only — no bus.
+rs485_load_roster() {
+    RS485_MODULES=()
+    [ -r "$RS485_ROSTER_CACHE" ] || return 0
+    [ -r "$RS485_ROSTER_HELPER" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local n mods out
+    out=$(python3 "$RS485_ROSTER_HELPER" "$RS485_ROSTER_CACHE" 2>/dev/null) || return 0
+    [ -n "$out" ] || return 0
+    while IFS=$'\t' read -r n mods; do
+        [ -n "$n" ] || continue
+        [ -n "$mods" ] || continue
+        RS485_MODULES[$n]="$mods"
+    done <<< "$out"
+}
+
 rs485_load_driver_text() {
     local _f text=""
     [ -n "$RS485_DRIVER_TEXT" ] && return 0
@@ -1076,8 +1100,15 @@ rs485_port_json() {
         oe_d=$(printf '%s' "$deltas" | awk '{print $3}')
     fi
 
-    printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s,"fe_d":%s,"pe_d":%s,"oe_d":%s}' \
-        "$num" "$(json_escape "$ttyname")" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe" "$fe_d" "$pe_d" "$oe_d"
+    # Additive `modules` block from the bus-free roster cache (valid JSON already,
+    # ASCII-escaped by the helper). Absent ⇒ omitted, preserving the old contract.
+    local modules_frag=""
+    if [ -n "${RS485_MODULES[$num]+x}" ]; then
+        modules_frag=',"modules":'"${RS485_MODULES[$num]}"
+    fi
+
+    printf '{"n":%d,"dev":"%s","st":"present","open":%d,"tx":%s,"rx":%s,"fe":%s,"pe":%s,"oe":%s,"fe_d":%s,"pe_d":%s,"oe_d":%s%s}' \
+        "$num" "$(json_escape "$ttyname")" "$inuse" "$tx" "$rx" "$fe" "$pe" "$oe" "$fe_d" "$pe_d" "$oe_d" "$modules_frag"
 }
 
 build_rs485_array() {
@@ -1097,6 +1128,7 @@ build_rs485_array() {
     RS485_DRIVER_TEXT=""
     RS485_INUSE=()
     rs485_load_driver_text
+    rs485_load_roster
     local -a rs485_devs=()
     local i real dev
     for (( i=0; i<port_count; i++ )); do
