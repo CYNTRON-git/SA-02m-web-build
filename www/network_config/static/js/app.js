@@ -101,6 +101,23 @@ function switchTab(tab) {
   if (tab !== 'gateway' && window.gatewayDestroy) window.gatewayDestroy();
 }
 
+/* Deep-link a tab from the URL on load: `#system`/`#network` hash OR `?tab=system`
+   query. Used by the cloud fleet "settings" button (/devcfg/<id>/#system). Tiny
+   and defensive: validates the name and only switches to an existing tab, else
+   leaves the default (dashboard). A fragment is never sent to the server, so it
+   survives the cloud reverse proxy. */
+function applyDeepLinkTab() {
+  var tab = (location.hash || '').replace(/^#/, '');
+  if (!tab) {
+    var m = (location.search || '').match(/[?&]tab=([^&]+)/);
+    if (m) { try { tab = decodeURIComponent(m[1]); } catch (e) { tab = m[1]; } }
+  }
+  if (tab && /^[a-z0-9_-]+$/i.test(tab) &&
+      document.querySelector('.nav-item[data-tab="' + tab + '"]')) {
+    switchTab(tab);
+  }
+}
+
 function initNav() {
   document.querySelectorAll('.nav-item[data-tab]').forEach(el => {
     el.addEventListener('click', () => {

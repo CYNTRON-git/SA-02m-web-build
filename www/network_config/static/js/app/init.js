@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (verEl) verEl.textContent = 'v' + APP_VERSION;
 
   initNav();
+  applyDeepLinkTab();  // open a tab from #hash/?tab= (cloud settings deep-link)
   applyVariantVisibility('sa02m-1eth');
   initDashboardPlaceholders();
   initForms();
