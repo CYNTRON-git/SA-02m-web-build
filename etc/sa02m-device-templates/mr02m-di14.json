@@ -1,6 +1,6 @@
 {
   "device_type": "mr02m-di14",
-  "title": {"ru": "MR-02м DI14", "en": "MR-02m DI14"},
+  "title": {"ru": "MR-02м 14DI", "en": "MR-02m 14DI"},
   "device_type_id": 5,
   "protocol": "modbus_rtu",
   "baudrate": 115200,

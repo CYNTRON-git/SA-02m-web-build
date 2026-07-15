@@ -32,19 +32,22 @@ MP02_TO4DI6 = 15
 MP02_CE02M3  = 100   # CE-02m-3: автономный анализатор сети ATM90E32 (Input reg 0 = 100)
 DTV          = 17    # CYNTRON DTV-RS-45: RTU_SENSOR (Input reg 0 = 17), идентификация по type_code или сигнатуре "Sens."
 
+# Canonical module signatures — count-first display form (authoritative source:
+# MR-02m firmware Core/Inc/main.h enum + its error strings 6DO8DI/16DO/12AI/
+# 6AI6AO/4DO6DI/4TO6DI). Keep in sync with sa02m-modbus-mqtt MR02M_TYPE_NAMES.
 MP02_TYPE_NAMES: Dict[int, str] = {
-    MP02_DO6DI8:  "DO6DI8",
-    MP02_DO16:    "DO16",
-    MP02_AO12:    "AO12",
-    MP02_DO6:     "DO6",
-    MP02_DI14:    "DI14",
+    MP02_DO6DI8:  "6DO8DI",
+    MP02_DO16:    "16DO",
+    MP02_AO12:    "12AO",
+    MP02_DO6:     "6DO",
+    MP02_DI14:    "14DI",
     MP02_DI10CON: "10DIcon",
     MP02_DO5DI2AO:"6DO5DI2AO",
-    MP02_AO6AI6:  "6AO6AI",
+    MP02_AO6AI6:  "6AI6AO",
     MP02_AI12:    "12AI",
-    MP02_DO4DI6:  "DO4DI6",
+    MP02_DO4DI6:  "4DO6DI",
     MP02_EN_METER:"EN_METER",
-    MP02_TO4DI6:  "TO4DI6",
+    MP02_TO4DI6:  "4TO6DI",
     MP02_CE02M3:  "CE-02m-3",
     DTV:          "DTV-RS-45",
 }

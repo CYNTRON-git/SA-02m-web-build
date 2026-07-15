@@ -139,10 +139,15 @@ MR02M_AI_CHANNEL_STRIDE = 7
 MODBUS_INTER_FRAME_DELAY_S = 0.05
 # Доп. пауза перед AO после крупного FC03 AI (6AO6AI6: 42 рег.) — время обработки slave.
 MODBUS_POST_AI_BLOCK_GAP_S = 0.05
+# Canonical module signatures — count-first display form, authoritative source:
+# the MR-02m firmware itself (Core/Inc/main.h enum + its error-message strings
+# e.g. mp02_ERROR_INIT_6DO8DI / _16DO / _12AI / _6AI6AO / _4DO6DI). The C enum is
+# letter-first (AO6AI6), but the device/product signature shown to users is
+# count-first (6AI6AO). Keep in sync with the flasher module_profiles.MP02_TYPE_NAMES.
 MR02M_TYPE_NAMES: dict[int, str] = {
-    1: "DO6DI8", 2: "DO16", 3: "AO12", 4: "DO6", 5: "DI14",
-    6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2",
-    10: "10DIcon", 11: "6DO5DI2AO", 12: "AI6AO2", 15: "4TO6DI",
+    1: "6DO8DI", 2: "16DO", 3: "12AO", 4: "6DO", 5: "14DI",
+    6: "6AI6AO", 7: "12AI", 8: "4DO6DI", 9: "TENZO2",
+    10: "10DIcon", 11: "6DO5DI2AO", 12: "6AI2AO", 15: "4TO6DI",
 }
 # MR/MP-02m MCU diagnostics (как sa02m_flasher device_config / module_config_window)
 MR_MCU_HOLD_OP_DAYS = 114

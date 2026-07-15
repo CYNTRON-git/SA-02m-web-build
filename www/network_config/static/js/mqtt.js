@@ -10,18 +10,18 @@ function uiT(s) {
 // ── Module types map ──────────────────────────────────────────────────────────
 // Must match MR02M_MODULE_TYPES in modbus_mqtt_bridge.py exactly
 const MR02M_TYPES = {
-  1:  {name:'DO6DI8',    do:6,  di:8,  ao:0,  ai:0},
-  2:  {name:'DO16',      do:16, di:0,  ao:0,  ai:0},
-  3:  {name:'AO12',      do:0,  di:0,  ao:12, ai:0},
-  4:  {name:'DO6',       do:6,  di:0,  ao:0,  ai:0},
-  5:  {name:'DI14',      do:0,  di:14, ao:0,  ai:0},
-  6:  {name:'AO6AI6',    do:0,  di:0,  ao:6,  ai:6},
-  7:  {name:'AI12',      do:0,  di:0,  ao:0,  ai:12},
-  8:  {name:'DO4DI6',    do:4,  di:6,  ao:0,  ai:0},
+  1:  {name:'6DO8DI',    do:6,  di:8,  ao:0,  ai:0},
+  2:  {name:'16DO',      do:16, di:0,  ao:0,  ai:0},
+  3:  {name:'12AO',      do:0,  di:0,  ao:12, ai:0},
+  4:  {name:'6DO',       do:6,  di:0,  ao:0,  ai:0},
+  5:  {name:'14DI',      do:0,  di:14, ao:0,  ai:0},
+  6:  {name:'6AI6AO',    do:0,  di:0,  ao:6,  ai:6},
+  7:  {name:'12AI',      do:0,  di:0,  ao:0,  ai:12},
+  8:  {name:'4DO6DI',    do:4,  di:6,  ao:0,  ai:0},
   9:  {name:'TENZO2',    do:0,  di:0,  ao:0,  ai:0},
   10: {name:'10DIcon',   do:0,  di:10, ao:0,  ai:0},
   11: {name:'6DO5DI2AO', do:6,  di:5,  ao:2,  ai:0},
-  12: {name:'AI6AO2',    do:0,  di:0,  ao:2,  ai:6},
+  12: {name:'6AI2AO',    do:0,  di:0,  ao:2,  ai:6},
   15: {name:'4TO6DI',    do:4,  di:6,  ao:4,  ai:0},
 };
 

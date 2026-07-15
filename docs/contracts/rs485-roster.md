@@ -21,14 +21,14 @@
       "source": "bridge",
       "live": true,
       "ts": 1737000000.0,
-      "ours": [ { "addr": 6, "model": "AO6AI6", "online": true, "source": "bridge" } ],
+      "ours": [ { "addr": 6, "model": "6AI6AO", "online": true, "source": "bridge" } ],
       "third_party": { "total": 3, "online": 2 }
     },
     "COM5": {
       "source": "scan",
       "live": false,
       "ts": 1736900000.0,
-      "ours": [ { "addr": 3, "model": "DO4DI6", "online": null, "source": "scan" } ],
+      "ours": [ { "addr": 3, "model": "4DO6DI", "online": null, "source": "scan" } ],
       "third_party": { "total": 0, "online": null }
     }
   }
@@ -55,7 +55,7 @@
   "n": 3, "dev": "ttyS4", "st": "present", "tx": 1234, "rx": 1200,
   "modules": {
     "source": "bridge", "live": true, "ts": 1737000000.0,
-    "ours": [ { "addr": 6, "model": "AO6AI6", "online": true } ],
+    "ours": [ { "addr": 6, "model": "6AI6AO", "online": true } ],
     "third_party": { "total": 3, "online": 2 }
   }
 }
