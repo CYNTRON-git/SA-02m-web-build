@@ -1,6 +1,6 @@
 {
   "device_type": "mr02m-ao12",
-  "title": {"ru": "MR-02м AO12", "en": "MR-02m AO12"},
+  "title": {"ru": "MR-02м 12AO", "en": "MR-02m 12AO"},
   "device_type_id": 3,
   "protocol": "modbus_rtu",
   "baudrate": 115200,

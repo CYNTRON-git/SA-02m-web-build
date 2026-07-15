@@ -1,6 +1,6 @@
 {
   "device_type": "mr02m-ao6ai6",
-  "title": {"ru": "MR-02м AO6AI6 (6×AI унив. + 6×AO 0-10В)", "en": "MR-02m AO6AI6 (6×AI universal + 6×AO 0-10V)"},
+  "title": {"ru": "MR-02м 6AI6AO (6×AI унив. + 6×AO 0-10В)", "en": "MR-02m 6AI6AO (6×AI universal + 6×AO 0-10V)"},
   "device_type_id": 6,
   "protocol": "modbus_rtu",
   "baudrate": 115200,

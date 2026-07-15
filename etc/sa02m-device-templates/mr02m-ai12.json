@@ -1,6 +1,6 @@
 {
   "device_type": "mr02m-ai12",
-  "title": {"ru": "MR-02м AI12 (12×AI универсальных)", "en": "MR-02m AI12 (12×AI universal)"},
+  "title": {"ru": "MR-02м 12AI (12×AI универсальных)", "en": "MR-02m 12AI (12×AI universal)"},
   "device_type_id": 7,
   "protocol": "modbus_rtu",
   "baudrate": 115200,

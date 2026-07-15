@@ -100,15 +100,15 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 
 | Код | Имя | DO | DI | AO | AI |
 |-----|-----|----|----|----|----|
-| 1 | DO6DI8 | 6 | 8 | 0 | 0 |
-| 2 | DO16 | 16 | 0 | 0 | 0 |
-| 3 | DI14 | 0 | 14 | 0 | 0 |
-| 4 | DO6 | 6 | 0 | 0 | 0 |
-| 5 | DO4DI6 | 4 | 6 | 0 | 0 |
-| 6 | AO12 | 0 | 0 | 12 | 0 |
-| 7 | AI12 | 0 | 0 | 0 | 12 |
-| 8 | AO6AI6 | 0 | 0 | 6 | 6 |
-| 9 | AI6AO2 | 0 | 0 | 2 | 6 |
+| 1 | 6DO8DI | 6 | 8 | 0 | 0 |
+| 2 | 16DO | 16 | 0 | 0 | 0 |
+| 3 | 14DI | 0 | 14 | 0 | 0 |
+| 4 | 6DO | 6 | 0 | 0 | 0 |
+| 5 | 4DO6DI | 4 | 6 | 0 | 0 |
+| 6 | 12AO | 0 | 0 | 12 | 0 |
+| 7 | 12AI | 0 | 0 | 0 | 12 |
+| 8 | 6AI6AO | 0 | 0 | 6 | 6 |
+| 9 | 6AI2AO | 0 | 0 | 2 | 6 |
 | 11 | DO4DI4AO2AI4 | 4 | 4 | 2 | 4 |
 | 12 | DI8AI4 | 0 | 8 | 0 | 4 |
 | 13 | DO2DI4AI2 | 2 | 4 | 0 | 2 |
@@ -117,7 +117,7 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 
 ### Мета-информация
 ```
-/devices/mr02m-COM1-5/meta/name         "MR-02м DO6DI8 (COM1 addr=5)"
+/devices/mr02m-COM1-5/meta/name         "MR-02м 6DO8DI (COM1 addr=5)"
 /devices/mr02m-COM1-5/meta/driver       "modbus-rtu"
 /devices/mr02m-COM1-5/controls/module_type   type=text
 /devices/mr02m-COM1-5/controls/uptime_s     type=value  (д/ч/м, без ед.)

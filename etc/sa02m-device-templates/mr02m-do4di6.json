@@ -1,6 +1,6 @@
 {
   "device_type": "mr02m-do4di6",
-  "title": {"ru": "MR-02м DO4DI6", "en": "MR-02m DO4DI6"},
+  "title": {"ru": "MR-02м 4DO6DI", "en": "MR-02m 4DO6DI"},
   "device_type_id": 8,
   "protocol": "modbus_rtu",
   "baudrate": 115200,
