@@ -816,6 +816,30 @@ html:not([data-theme="light"]) .topbar {
 .rs485-port-skeleton .rv {
   color: var(--text-dim);
 }
+/* TX and RX on one line: each label+value pair spread to the card edges. */
+.rs485-row.rs485-txrx { justify-content: space-between; }
+.rs485-txrx-item { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* Module sub-block: our-model chips + third-party summary + last-scan note.
+   min-height + a reserved skeleton slot keep the card height stable so the first
+   roster snapshot does not reflow the grid (no-layout-jumps floor). */
+.rs485-mods { margin-top: 7px; min-height: 20px; }
+.rs485-mods-reserved { visibility: hidden; }
+.rs485-chips { display: flex; flex-wrap: wrap; gap: 3px 4px; }
+.rs485-chip {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  font-family: 'Courier New', monospace; white-space: nowrap;
+}
+/* Reused, pre-verified token pairs (as .w-ico-*): cyan=live-online, red=live-offline. */
+.rs485-chip.is-on   { background: var(--chip-cyan-bg); color: var(--chip-cyan-fg); }
+.rs485-chip.is-off  { background: var(--chip-red-bg);  color: var(--chip-red-fg); }
+/* Last-known scan roster: muted (grey border) but AA-legible text, never a live
+   green/red claim (honesty). text-sec (not text-dim): WCAG AA — scan chip
+   5.69:1 dark / 5.37:1 light on --bg-panel; note 6.33:1 dark / 5.99:1 light on
+   --bg-card. --text-dim (1.70:1 / 1.98:1) failed the 4.5:1 floor. */
+.rs485-chip.is-scan { background: var(--bg-panel); color: var(--text-sec); border: 1px solid var(--border); }
+.rs485-mods-note { font-size: 11px; color: var(--text-sec); margin-top: 4px; font-style: italic; }
+.rs485-mods-tp   { font-size: 12px; color: var(--text-sec); margin-top: 4px; }
 
 /* ── Load-avg mini grid ──────────────────────────────────────────────────── */
 .load-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }

@@ -1015,6 +1015,11 @@ class MQTTPublisher:
             self.pub_device_error(device_id, "" if online else "r")
             self._publish_bridge_status(online=True)
 
+    def device_online_snapshot(self) -> dict:
+        """Copy of the per-device online map (device_id → bool) for the roster writer."""
+        with self._lock:
+            return dict(self._device_online)
+
     def _publish_bridge_status(self, online: bool) -> None:
         if not self._availability:
             return
@@ -2127,6 +2132,57 @@ def signal_handler(sig, frame) -> None:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+# ── RS-485 roster export (Provider A source for the bus-free aggregator) ────────
+ROSTER_PATH = LIVE_CACHE_DIR / "_roster.json"
+_OUR_DEVICE_TYPES = ("mr02m", "dtv", "ce02m3")
+
+
+def _roster_model_name(dev_type: str, module_type: int) -> str:
+    """Display model for a configured bridge device, reusing the bridge's own tables."""
+    if dev_type == "mr02m":
+        return MR02M_TYPE_NAMES.get(int(module_type), "")
+    if dev_type == "dtv":
+        return "DTV-RS-45"
+    if dev_type == "ce02m3":
+        return "CE-02m-3"
+    return ""
+
+
+def _com_key_from_port(port_path: str) -> str:
+    """/dev/COM4 → COM4 (the aggregator keys ports by COM label)."""
+    base = os.path.basename(str(port_path or "").rstrip("/"))
+    return base or str(port_path)
+
+
+def write_bridge_roster(devices_cfg: list, pub: MQTTPublisher,
+                        path: Path = ROSTER_PATH) -> None:
+    """Emit /run/sa02m-modbus-mqtt/_roster.json — a normalized per-device roster with
+    a REAL per-device online derived from the bridge's availability state machine
+    (not the hardcoded controls "ok":true). Atomic tmp+replace, no bus access."""
+    online = pub.device_online_snapshot()
+    rows = []
+    for dev_cfg in devices_cfg or []:
+        dev_type = str(dev_cfg.get("type", "")).lower()
+        module_type = int(dev_cfg.get("module_type", 0) or 0)
+        rows.append({
+            "port": _com_key_from_port(dev_cfg.get("port", "")),
+            "addr": int(dev_cfg.get("address", 0) or 0),
+            "type": dev_type,
+            "module_type": module_type,
+            "model": _roster_model_name(dev_type, module_type),
+            "ours": dev_type in _OUR_DEVICE_TYPES,
+            "online": bool(online.get(dev_cfg.get("id"), False)),
+        })
+    payload = {"ts": time.time(), "devices": rows}
+    try:
+        LIVE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(_json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        log.debug("bridge roster write: %s", e)
+
+
 def main() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT,  signal_handler)
@@ -2213,8 +2269,17 @@ def main() -> None:
     # Announce bridge availability now that the device registry is populated.
     pub.announce_bridge()
 
+    # Export the RS-485 roster (Provider A) once now, then on a periodic tick so
+    # the bus-free aggregator sees a fresh real per-device online. Cheap file write.
+    write_bridge_roster(devices_cfg, pub)
+    _roster_interval_s = 5
+    _next_roster = time.monotonic() + _roster_interval_s
     while not _stop_ev.is_set():
         time.sleep(1)
+        now = time.monotonic()
+        if now >= _next_roster:
+            write_bridge_roster(devices_cfg, pub)
+            _next_roster = now + _roster_interval_s
 
     # Graceful offline: tell consumers the bridge and its devices went down
     # cleanly (instead of leaving stale retained "online" data behind).
