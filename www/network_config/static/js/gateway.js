@@ -155,13 +155,14 @@ function _renderDevicePanel(area) {
   area.innerHTML = `
     <div class="gw-device-stack">
     <div class="widget">
-      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px">
+      <div class="widget-title">Шлюз</div>
+      <div class="gw-svc-summary">
         <span id="gw-svc-badge" class="${svcClass}">${svcText}</span>
-        <span style="color:var(--text-sec);font-size:.82rem">
+        <span class="gw-svc-summary-meta">
           Включено портов: ${activePorts.length} / 5 &nbsp;|&nbsp; Работают: ${runningPorts.length}
         </span>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+      <div class="btn-group gw-svc-actions">
         ${_gwToggleBtnHtml(active)}
         <button class="btn btn-sm" id="gw-btn-reload">↺ Перезагрузить конфиг</button>
         <button class="btn btn-sm btn-warn" id="gw-btn-restart">⟳ Перезапустить</button>
@@ -169,7 +170,7 @@ function _renderDevicePanel(area) {
     </div>
 
     <div class="widget">
-      <h3 style="font-size:.95rem;margin:0 0 12px">Порты</h3>
+      <div class="widget-title">Порты</div>
       <table id="gw-ports-table" class="gw-ports-table">
         <thead>
           <tr>
@@ -221,8 +222,8 @@ function _renderPortPanel(area, port) {
 
   area.innerHTML = `
     <div class="widget gw-port-panel">
+      <div class="widget-title">${port}</div>
       <div class="gw-port-form-head">
-        <h3 class="gw-port-title">${port}</h3>
         ${_statusBadgeHtml(st, cfg)}
         <div id="gw-counters-${port}" class="gw-counters">${_countersHtml(st)}</div>
       </div>

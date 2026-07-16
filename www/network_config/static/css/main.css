@@ -988,7 +988,44 @@ html:not([data-theme="light"]) .topbar {
 .form-section { max-width: 560px; }
 .form-section + .form-section { margin-top: 32px; padding-top: 28px; border-top: 1px solid var(--border); }
 .form-section h3 { font-size: .92rem; font-weight: 700; margin-bottom: 16px; color: var(--text); }
-#hw-variant-section { margin-bottom: 16px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Non-dashboard card unity (all tabs except Сведения)
+   Same chrome/title as .widget / system-manage tiles. Do not target #tab-dashboard.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.tab-pane:not(#tab-dashboard) .widget {
+  padding: 16px 18px;
+}
+.tab-pane:not(#tab-dashboard) .widget > .widget-title:not(.has-ico):not(.flasher-log-title):not(.mqtt-devices-title):not(.mqtt-monitor-title) {
+  text-align: center;
+}
+.tab-pane:not(#tab-dashboard) .widget > .widget-title.flasher-log-title,
+.tab-pane:not(#tab-dashboard) .widget > .widget-title.mqtt-devices-title,
+.tab-pane:not(#tab-dashboard) .widget > .widget-title.mqtt-monitor-title {
+  text-align: left;
+}
+.mqtt-monitor-title-actions {
+  float: right;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.time-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+}
+.time-cards .btn-group {
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+#hw-variant-section {
+  margin-bottom: 16px;
+  max-width: 560px;
+}
 #hw-variant-section .hw-variant-row {
   display: flex;
   flex-direction: row;
@@ -1170,104 +1207,220 @@ html:not([data-theme="light"]) .topbar {
   margin-top: 6px;
 }
 .ctrl-card .mono.text-sm { font-size: .9rem; }
-.storage-fmt-hint {
-  font-size: .9rem;
-  color: var(--text-sec);
-  line-height: 1.45;
+/* ═══════════════════════════════════════════════════════════════════════════
+   Управление — единый скелет плиток
+   title (center uppercase) → body → foot (кнопки снизу, на всю ширину)
+   ═══════════════════════════════════════════════════════════════════════════ */
+.dash-grid.system-manage-grid {
+  margin-bottom: 28px;
+  align-items: stretch;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+.system-manage-grid > .system-manage-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  align-self: stretch;
+  box-sizing: border-box;
+  padding: 16px 18px;
+  gap: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+.system-manage-grid > .system-manage-tile:hover {
+  box-shadow: var(--shadow);
+  border-color: var(--border-md);
+}
+.system-manage-grid > .ctrl-card.system-manage-tile {
   margin: 0;
+  padding: 16px 18px;
+  gap: 0;
 }
 
-.system-manage-kernel-card .kernel-meta,
-.system-manage-kernel-card .cpu-profile-meta {
-  margin: 8px 0 12px;
+/* Заголовок плитки — один стиль (как widget-title) */
+.system-manage-tile-title,
+.system-manage-grid .ctrl-card h3.system-manage-tile-title,
+.system-manage-grid h3.system-manage-tile-title {
+  font-size: 13px !important;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-sec) !important;
+  margin: 0 0 12px;
+  text-align: center;
+  flex-shrink: 0;
+  line-height: 1.3;
 }
-.system-manage-kernel-card .kernel-profile-field,
-.system-manage-kernel-card .cpu-profile-field {
-  margin-top: 8px;
+
+/* Тело карточки */
+.system-manage-grid .ctrl-card-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-.system-manage-kernel-card .kernel-profile-field,
-.system-manage-kernel-card .cpu-profile-field {
+
+/* Подвал с кнопками — всегда внизу, кнопки на всю ширину */
+.system-manage-grid .system-manage-tile-foot,
+.system-manage-grid > .ctrl-card > .btn-group {
+  margin-top: auto;
+  flex-shrink: 0;
+  padding-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
 }
-.system-manage-kernel-card .kernel-apply-inline,
-.system-manage-kernel-card .cpu-profile-apply-inline {
-  align-self: flex-end;
-}
-.system-manage-kernel-card .cpu-profile-section-title {
-  font-size: .98rem;
-  font-weight: 700;
-  color: var(--text);
-  margin: 0 0 6px;
+.system-manage-grid .system-manage-tile-foot .btn,
+.system-manage-grid > .ctrl-card > .btn-group .btn {
+  width: 100%;
+  justify-content: center;
+  align-self: stretch;
+  font-size: .82rem;
+  padding: 8px 12px;
+  box-sizing: border-box;
 }
 
-.system-manage-actions-card .system-manage-actions-main {
-  gap: 18px;
+/* Meta-строки (Облако / Обновление / Ядро) */
+.system-manage-grid .web-upd-meta {
+  margin: 0;
+  gap: 5px 8px;
+  font-size: .8rem;
+  color: var(--text-sec);
+}
+.system-manage-grid .web-upd-meta > div {
+  display: grid;
+  grid-template-columns: 5.75rem minmax(0, 1fr);
+  gap: 6px;
   align-items: center;
+  line-height: 1.25;
+}
+.system-manage-grid .web-upd-meta dt,
+.system-manage-grid .web-upd-meta dd {
+  margin: 0;
+  font-size: .8rem;
+  font-weight: 500;
+}
+.system-manage-grid .web-upd-meta dt { color: var(--text-sec); }
+.system-manage-grid .web-upd-meta dd {
+  color: var(--text);
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Поля внутри плиток */
+.system-manage-grid .field {
+  margin-bottom: 8px;
+}
+.system-manage-grid .field:last-child {
+  margin-bottom: 0;
+}
+.system-manage-grid .field label:not(.toggle-inline) {
+  font-size: .78rem;
+  color: var(--text-sec);
+  font-weight: 600;
+}
+.system-manage-grid .field input:not(.toggle),
+.system-manage-grid .field select {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: .85rem;
+  padding: 8px 10px;
+}
+.system-manage-grid .field-hint {
+  font-size: .78rem;
+  color: var(--text-sec);
+  line-height: 1.4;
+}
+
+/* ── Доступ ─────────────────────────────────────────────────────────────── */
+.system-manage-grid .system-manage-web-creds form {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.system-manage-web-creds .web-creds-footer {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.system-manage-web-creds .web-creds-footer .btn {
+  width: auto;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.system-manage-web-creds .web-creds-env-path {
+  margin: 0;
+  font-size: .78rem;
+  line-height: 1.2;
+  color: var(--text-sec);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+/* ── Действия ───────────────────────────────────────────────────────────── */
+.system-manage-actions-card .system-manage-actions-main {
+  gap: 14px;
+  align-items: stretch;
   text-align: center;
+  justify-content: flex-start;
 }
 .system-action-block {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
 }
 .system-action-label {
-  font-size: 1.05rem;
-  font-weight: 700;
-  color: var(--text);
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--text-sec);
+  text-transform: uppercase;
+  letter-spacing: .04em;
 }
 .system-action-desc {
   margin: 0 !important;
+  font-size: .78rem !important;
+  color: var(--text-sec);
+  line-height: 1.35;
 }
 .system-manage-actions-card .system-action-btn {
   margin-top: 0 !important;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
+  width: 100%;
+  font-size: .82rem;
+  padding: 8px 12px;
+}
+.storage-fmt-hint {
+  font-size: .78rem;
+  color: var(--text-sec);
+  line-height: 1.35;
+  margin: 0;
 }
 
-/* Управление службами: те же строки, что виджет «Службы» на дашборде */
-.system-manage-services-card.widget-svc .svc-list {
-  gap: 3px;
-}
-.system-manage-services-card.widget-svc .svc-row.svc-ctl-row .svc-ctl-mid {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: right;
-}
-.system-manage-services-card.widget-svc .svc-ctl-btn {
-  font-size: 9px;
-  line-height: 1.2;
-  padding: 3px 7px;
-  min-height: 18px;
-}
-.system-manage-web-update-card .ctrl-card-main {
-  gap: 8px;
-}
-.system-manage-web-update-card .web-upd-meta {
-  margin: 4px 0 0;
-}
-
-/* Облако — карточка на вкладке «Управление» */
-.system-manage-cloud-card .cloud-meta {
-  margin: 4px 0 10px;
-  gap: 4px 10px;
-}
-.system-manage-cloud-card .cloud-meta > div {
-  align-items: center;
-  min-height: 0;
-  line-height: 1.2;
-  /* Уже подпись — шире значение (серийный № в одну строку) */
-  grid-template-columns: 5.75rem minmax(0, 1fr);
-  gap: 6px;
-}
-.system-manage-cloud-card .cloud-meta dd {
-  word-break: normal;
-  overflow-wrap: anywhere;
-}
+/* ── Облако ─────────────────────────────────────────────────────────────── */
 .system-manage-cloud-card .cloud-meta #cloud-dev-serial {
   white-space: nowrap;
   overflow-wrap: normal;
@@ -1282,22 +1435,16 @@ html:not([data-theme="light"]) .topbar {
   box-shadow: none;
   vertical-align: middle;
 }
-.system-manage-cloud-card .cloud-agent-ctrl {
-  margin: 0 0 12px;
-}
-.system-manage-cloud-card .cloud-agent-ctrl .btn {
-  width: 100%;
-}
 .system-manage-cloud-card .cloud-pair-hint {
-  margin: 0 0 10px;
-  line-height: 1.45;
+  margin: 0;
+  line-height: 1.4;
 }
 .system-manage-cloud-card .cloud-pair-code {
-  font: 700 1.75rem/1.2 ui-monospace, "Cascadia Mono", monospace;
+  font: 700 1.6rem/1.2 ui-monospace, "Cascadia Mono", monospace;
   letter-spacing: .1em;
   text-align: center;
   color: var(--text);
-  padding: 12px 0 6px;
+  padding: 10px 0 4px;
   user-select: all;
   cursor: pointer;
   position: relative;
@@ -1323,25 +1470,25 @@ html:not([data-theme="light"]) .topbar {
 .system-manage-cloud-card .cloud-copy-toast.show { opacity: 1; }
 .system-manage-cloud-card .cloud-pair-timer-line {
   text-align: center;
-  margin: 0 0 10px;
+  margin: 0;
 }
 .system-manage-cloud-card .cloud-token-fallback {
-  margin-top: 10px;
+  margin-top: 2px;
 }
 .system-manage-cloud-card .cloud-token-fallback summary {
   cursor: pointer;
   color: var(--text-sec);
-  font-size: .88rem;
+  font-size: .78rem;
   padding: 4px 0;
 }
 .system-manage-cloud-card .cloud-token-fallback[open] summary {
   margin-bottom: 8px;
 }
 .system-manage-cloud-card .cloud-msg {
-  margin-top: 10px;
+  margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-md);
-  font-size: .88rem;
+  font-size: .8rem;
   line-height: 1.4;
 }
 .system-manage-cloud-card .cloud-msg.is-ok {
@@ -1358,153 +1505,93 @@ html:not([data-theme="light"]) .topbar {
 .system-manage-cloud-card #cloud-btn-cancel,
 .system-manage-cloud-card #cloud-btn-activate {
   width: 100%;
+  font-size: .82rem;
+  padding: 8px 12px;
+}
+.system-manage-cloud-card .cloud-agent-ctrl .btn {
+  width: 100%;
 }
 
-/* Вкладка «Управление»: 4 колонки как виджеты «Общая информация» */
-.dash-grid.system-manage-grid {
-  margin-bottom: 28px;
+/* ── Обновление веб ─────────────────────────────────────────────────────── */
+.system-manage-web-update-card .web-upd-status {
+  font-size: .8rem;
+}
+.system-manage-grid > .ctrl-card > .btn-group.system-manage-tile-foot-row,
+.system-manage-grid .system-manage-tile-foot.system-manage-tile-foot-row {
+  flex-direction: row;
+  flex-wrap: nowrap;
   align-items: stretch;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 14px;
+  gap: 8px;
 }
-.system-manage-grid > .system-manage-tile {
-  display: flex;
-  flex-direction: column;
+.system-manage-grid > .ctrl-card > .btn-group.system-manage-tile-foot-row .btn,
+.system-manage-grid .system-manage-tile-foot.system-manage-tile-foot-row .btn {
+  flex: 1 1 0;
+  width: auto;
   min-width: 0;
-  min-height: 0;
-  width: 100%;
-  height: 100%;
   align-self: stretch;
-  box-sizing: border-box;
-  padding: 18px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
 }
-.system-manage-grid > .system-manage-tile:hover {
-  box-shadow: var(--shadow);
-  border-color: var(--border-md);
-}
-.system-manage-tile-title {
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  color: var(--text-sec);
-  margin: 0 0 12px;
-}
-.system-manage-grid > .ctrl-card.system-manage-tile {
-  margin: 0;
-  padding: 18px;
-}
-.system-manage-grid .system-manage-web-creds .field {
-  margin-bottom: 10px;
-}
-.system-manage-grid .system-manage-web-creds .field label {
-  font-size: .78rem;
-}
-.system-manage-grid .system-manage-web-creds .field input:not(.toggle),
-.system-manage-grid .system-manage-web-creds .field select {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  font-size: .85rem;
-  padding: 7px 10px;
-}
-.system-manage-grid .ctrl-card .ctrl-card-main {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
+
+/* ── Ядро ───────────────────────────────────────────────────────────────── */
+.system-manage-kernel-card .kernel-profile-field,
+.system-manage-kernel-card .cpu-profile-field {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.system-manage-grid .ctrl-card > .btn-group {
-  margin-top: auto;
-  flex-shrink: 0;
-  padding-top: 8px;
-}
-.system-manage-grid .system-manage-web-creds form {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.system-manage-grid .system-manage-web-creds .btn-group {
-  margin-top: auto;
-  padding-top: 8px;
-}
-.system-manage-web-creds .web-creds-footer {
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 10px;
-}
-.system-manage-web-creds .web-creds-env-path {
   margin: 0;
-  font-size: .72rem;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-  flex: 1 1 auto;
-  text-align: left;
 }
-.system-manage-web-creds .web-creds-footer .btn {
-  flex: 0 0 auto;
-  margin-left: auto;
-}
-.system-manage-actions-card .system-manage-actions-main {
-  flex: 1 1 auto;
-  justify-content: space-evenly;
-  gap: 12px;
-}
-.system-manage-actions-card .system-action-label {
-  font-size: .88rem;
-}
-.system-manage-actions-card .system-action-btn {
+.system-manage-kernel-card .kernel-apply-inline,
+.system-manage-kernel-card .cpu-profile-apply-inline {
+  align-self: stretch;
   width: 100%;
-  justify-content: center;
   font-size: .82rem;
-  padding: 8px 10px;
+  padding: 8px 12px;
 }
-.system-manage-web-update-card .ctrl-card p,
-.system-manage-web-update-card .web-upd-meta {
-  font-size: .8rem;
-}
-.system-manage-web-update-card .web-upd-meta dt,
-.system-manage-web-update-card .web-upd-meta dd {
+.system-manage-kernel-card .cpu-profile-section-title {
   font-size: .78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-sec);
+  margin: 4px 0 0;
+  text-align: center;
 }
-.system-manage-web-update-card .btn-group .btn {
-  width: 100%;
-  font-size: .8rem;
-}
+
+/* ── Службы ─────────────────────────────────────────────────────────────── */
 .system-manage-services-card.widget-svc .svc-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  gap: 3px;
 }
-.system-manage-services-card .btn-group {
-  justify-content: flex-end;
+.system-manage-services-card.widget-svc .svc-row.svc-ctl-row .svc-ctl-mid {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: right;
+}
+.system-manage-services-card.widget-svc .svc-ctl-btn {
+  font-size: 9px;
+  line-height: 1.2;
+  padding: 3px 7px;
+  min-height: 18px;
 }
 
-/* Журнал событий: вторая строка system-manage-grid; dash-span-top4 = ширина 4 плиток + gap */
+/* ── Журнал событий ─────────────────────────────────────────────────────── */
 .system-manage-log-panel {
   min-width: 0;
-  align-self: start;
-}
-.system-manage-log-title {
-  font-size: .9rem;
-  margin: 0 0 10px;
-  color: var(--text-sec);
+  align-self: stretch;
 }
 .system-manage-log-actions {
-  margin-bottom: 12px;
+  margin: 0 0 12px;
   flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-start;
+}
+.system-manage-log-actions .btn {
+  width: auto;
+}
+.system-manage-log-output {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .system-manage-log-output .log-box {
   width: 100%;
@@ -3253,9 +3340,30 @@ html:not([data-theme="light"]) .topbar {
   width: 100%;
   margin-top: 4px;
 }
+#tab-gateway #gw-content .gw-svc-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+#tab-gateway #gw-content .gw-svc-summary-meta {
+  color: var(--text-sec);
+  font-size: .82rem;
+}
+#tab-gateway #gw-content .gw-svc-actions {
+  margin-top: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 #tab-gateway #gw-content .gw-port-title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-sec);
+  text-align: center;
 }
 #tab-gateway #gw-content .gw-block-tcp {
   min-height: 58px;
@@ -3324,7 +3432,7 @@ html:not([data-theme="light"]) .topbar {
 .gw-badge-err { color: var(--red); }
 
 .gw-port-panel {
-  padding: 18px 20px 20px;
+  padding: 16px 18px;
 }
 .gw-port-form-head {
   display: flex;

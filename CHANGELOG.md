@@ -5,6 +5,25 @@
 
 ---
 
+## 1.0.5.6 - Единый стиль карточек + Сеть читает end0/end1 (июл 2026)
+
+### Исправления
+- **Вкладка «Сеть»: пустые поля Ethernet на платах с `end0`/`end1`.**
+  `config.cgi`/`apply.cgi` смотрели только `eth0.conf`/`eth1.conf`, а на
+  стенде конфиг лежит в `end0.conf`/`end1.conf` — форма не заполнялась.
+  Добавлен `lib_net_iface.sh` (резолвер как в `status.cgi`); apply пишет
+  в реальный conf и убирает sibling.
+  - **файлы:** `cgi-bin/lib_net_iface.sh`, `cgi-bin/config.cgi`,
+    `cgi-bin/apply.cgi`
+
+### Интерфейс
+- **Единый стиль блоков вне «Сведения».** Карточки: padding `16px 18px`,
+  заголовок 13px uppercase по центру; вкладки Время / hw-variant → `.widget`;
+  шлюз без inline-стилей; плитки «Управление» — кнопки снизу, «Проверить» /
+  «Применить» в одну строку.
+  - **файлы:** `index.html`, `static/css/main.css`, `static/js/gateway.js`,
+    `static/js/i18n.js`, `static/js/app/status.js`
+
 ## 1.0.5.5 - Облачный агент: frpc и код сопряжения, без root-канала (июл 2026)
 
 ### Новое
