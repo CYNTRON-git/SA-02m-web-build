@@ -135,6 +135,12 @@ MR02M_MODULE_TYPES: dict[int, tuple[int, int, int, int]] = {
 # Holding 400+7*(ch-1): reg0 = ai_sensor_t (MODBUS_VARIABLES / module_profiles)
 MR02M_AI_HOLDING_BASE = 400
 MR02M_AI_CHANNEL_STRIDE = 7
+# Max regs per FC03 AI chunk (6 channels × 7). Full 12AI (84 regs / 173 B) often
+# truncates on half-duplex RS-485 @19200 with several slaves on the same COM.
+MR02M_AI_READ_CHUNK_REGS = 42
+MR02M_AI_READ_RETRIES = 3
+# Modules with P/N AI pairs (TC-K / 3-wire RTD): 6AI6AO, 12AI, 6AI2AO.
+MR02M_AI_PAIR_TYPES = frozenset({6, 7, 12})
 # Пауза на RS-485 между кадрами (Modbus T3.5 + время обработки slave), как в flasher send_receive.
 MODBUS_INTER_FRAME_DELAY_S = 0.05
 # Доп. пауза перед AO после крупного FC03 AI (6AO6AI6: 42 рег.) — время обработки slave.
@@ -179,7 +185,7 @@ MR02M_SYS_CONTROLS: tuple[tuple[str, str, str, str], ...] = (
     ("reset_reason", "text", "", "Причина перезагрузки"),
     ("fw_updates", "value", "", "Счётчик обновлений FW"),
 )
-# 6AO6AI6: N-нога берёт тип с P только для ТХА и 3-проводного RTD (как прошивальщик).
+# P/N AI pairs: N takes type from P only for TC-K and 3-wire RTD (flasher parity).
 AI_RTD_CODES_3_WIRE = frozenset(range(21, 34))
 AI_TC_K_CODE = 41
 
@@ -1253,8 +1259,12 @@ class MR02mPoller(DevicePoller):
 
     @staticmethod
     def _ai_n_parent_ch(ch: int) -> int | None:
-        """6AO6AI6: N-нога (AI2, AI4, AI6) → номер P-канала (AI1, AI3, AI5)."""
-        return {2: 1, 4: 3, 6: 5}.get(ch)
+        """Even AI (N leg) → parent P channel (AI1/3/5/…); None if not an N leg."""
+        c = int(ch)
+        return (c - 1) if c >= 2 and c % 2 == 0 else None
+
+    def _ai_uses_pairs(self) -> bool:
+        return self._mod_type in MR02M_AI_PAIR_TYPES
 
     @staticmethod
     def _ai_mirror_type_from_parent(sensor_code: int) -> bool:
@@ -1262,8 +1272,8 @@ class MR02mPoller(DevicePoller):
         return c == AI_TC_K_CODE or c in AI_RTD_CODES_3_WIRE
 
     def _ai_effective_sensor_type(self, ch: int) -> int | None:
-        """6AO6AI6: N наследует тип P только для ТХА и 3-проводного RTD."""
-        parent = self._ai_n_parent_ch(ch) if self._mod_type == 6 else None
+        """N inherits type from P only for TC-K and 3-wire RTD (pair modules)."""
+        parent = self._ai_n_parent_ch(ch) if self._ai_uses_pairs() else None
         if parent:
             p_st = self._ch_cfg("ai", parent).get("sensor_type")
             if p_st is not None and self._ai_mirror_type_from_parent(int(p_st)):
@@ -1272,6 +1282,38 @@ class MR02mPoller(DevicePoller):
         if st is not None:
             return int(st) & 0xFFFF
         return None
+
+    def _read_ai_holding_block(self) -> list[int | None]:
+        """Read all AI holdings in channel-aligned chunks; None marks unread regs."""
+        total = self._ai * MR02M_AI_CHANNEL_STRIDE
+        block: list[int | None] = [None] * total
+        off = 0
+        while off < total:
+            n = min(MR02M_AI_READ_CHUNK_REGS, total - off)
+            n = (n // MR02M_AI_CHANNEL_STRIDE) * MR02M_AI_CHANNEL_STRIDE
+            if n < MR02M_AI_CHANNEL_STRIDE:
+                n = min(MR02M_AI_CHANNEL_STRIDE, total - off)
+            last_err: Exception | None = None
+            for attempt in range(MR02M_AI_READ_RETRIES):
+                try:
+                    regs = self.read_holding_registers(
+                        self.address, MR02M_AI_HOLDING_BASE + off, n)
+                    for i, v in enumerate(regs):
+                        block[off + i] = int(v) & 0xFFFF
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < MR02M_AI_READ_RETRIES - 1:
+                        time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+            if last_err is not None:
+                self.log.warning(
+                    "AI block read @%d+%d: %s",
+                    MR02M_AI_HOLDING_BASE + off, n, last_err)
+            off += n
+            if off < total:
+                time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+        return block
 
     def _ch_enabled(self, kind: str, ch: int) -> bool:
         return self._ch_cfg(kind, ch).get("enabled", True)
@@ -1505,59 +1547,59 @@ class MR02mPoller(DevicePoller):
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "r")
 
     def _poll_ai_ao(self) -> None:
-        # Сначала AI (крупный FC03), затем AO — на 6AO6AI6 первый кадр AO часто срывался без паузы.
+        # AI first (chunked FC03), then AO — on 6AI6AO the first AO frame often
+        # failed without a gap after a large AI read.
         if self._ai > 0:
-            try:
-                # Один FC03 на все AI (меньше гонок на half-duplex RS-485 с несколькими addr).
-                total = self._ai * MR02M_AI_CHANNEL_STRIDE
-                block = self.read_holding_registers(
-                    self.address, MR02M_AI_HOLDING_BASE, total)
-            except Exception as e:
-                self.log.warning("AI block read: %s", e)
-                for i in range(1, self._ai + 1):
-                    if self._ch_enabled("ai", i):
-                        self.pub.pub_error(self.device_id, f"ai_{i}", "r")
-            else:
-                for i in range(1, self._ai + 1):
-                    if not self._ch_enabled("ai", i):
-                        continue
-                    off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
-                    regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
-                    bus_st = regs[0] & 0xFFFF
-                    eff_st = self._ai_effective_sensor_type(i)
-                    dev_st = _resolve_ai_sensor_type(bus_st, eff_st)
-                    if dev_st == 0:
-                        parent = self._ai_n_parent_ch(i) if self._mod_type == 6 else None
-                        if parent:
-                            p_off = (parent - 1) * MR02M_AI_CHANNEL_STRIDE
-                            p_bus = block[p_off] & 0xFFFF
+            block = self._read_ai_holding_block()
+            for i in range(1, self._ai + 1):
+                if not self._ch_enabled("ai", i):
+                    continue
+                off = (i - 1) * MR02M_AI_CHANNEL_STRIDE
+                regs = block[off:off + MR02M_AI_CHANNEL_STRIDE]
+                if any(r is None for r in regs):
+                    self.pub.pub_error(self.device_id, f"ai_{i}", "r")
+                    continue
+                bus_st = int(regs[0]) & 0xFFFF
+                eff_st = self._ai_effective_sensor_type(i)
+                dev_st = _resolve_ai_sensor_type(bus_st, eff_st)
+                if dev_st == 0:
+                    parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
+                    if parent:
+                        p_off = (parent - 1) * MR02M_AI_CHANNEL_STRIDE
+                        p_bus_raw = block[p_off]
+                        if p_bus_raw is not None:
+                            p_bus = int(p_bus_raw) & 0xFFFF
                             p_yaml = self._ai_effective_sensor_type(parent)
                             p_st = _resolve_ai_sensor_type(p_bus, p_yaml)
                             if p_st and self._ai_mirror_type_from_parent(p_st):
                                 dev_st = p_st
-                    DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
-                    prev_st = self._ai_types.get(i, -1)
-                    if dev_st != prev_st:
-                        self._ai_types[i] = dev_st
-                        mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
-                        self.pub.pub_control_meta(
-                            self.device_id, f"ai_{i}", "type", mqtt_type)
-                        if units:
-                            self.pub.pub_control_units(
-                                self.device_id, f"ai_{i}", units)
-                    value_ch = i
-                    parent = self._ai_n_parent_ch(i) if self._mod_type == 6 else None
-                    if parent and self._ai_mirror_type_from_parent(dev_st):
-                        value_ch = parent
-                    v_off = (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE
-                    raw = block[v_off + 3]
-                    if raw >= 0x8000:
-                        raw -= 0x10000
-                    _, _, scale = AI_SENSOR_TYPES.get(
-                        self._ai_types.get(i, dev_st), _TEMP)
-                    self.pub.pub_control(
-                        self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
-                    self.pub.pub_error(self.device_id, f"ai_{i}", "")
+                DeviceLiveCache.set_sensor_type(self.device_id, i, dev_st)
+                prev_st = self._ai_types.get(i, -1)
+                if dev_st != prev_st:
+                    self._ai_types[i] = dev_st
+                    mqtt_type, units, _ = AI_SENSOR_TYPES.get(dev_st, _TEMP)
+                    self.pub.pub_control_meta(
+                        self.device_id, f"ai_{i}", "type", mqtt_type)
+                    if units:
+                        self.pub.pub_control_units(
+                            self.device_id, f"ai_{i}", units)
+                value_ch = i
+                parent = self._ai_n_parent_ch(i) if self._ai_uses_pairs() else None
+                if parent and self._ai_mirror_type_from_parent(dev_st):
+                    value_ch = parent
+                v_off = (value_ch - 1) * MR02M_AI_CHANNEL_STRIDE
+                raw_reg = block[v_off + 3]
+                if raw_reg is None:
+                    self.pub.pub_error(self.device_id, f"ai_{i}", "r")
+                    continue
+                raw = int(raw_reg) & 0xFFFF
+                if raw >= 0x8000:
+                    raw -= 0x10000
+                _, _, scale = AI_SENSOR_TYPES.get(
+                    self._ai_types.get(i, dev_st), _TEMP)
+                self.pub.pub_control(
+                    self.device_id, f"ai_{i}", str(round(raw * scale, 3)))
+                self.pub.pub_error(self.device_id, f"ai_{i}", "")
 
         if self._ao > 0:
             if self._ai > 0 and MODBUS_POST_AI_BLOCK_GAP_S > 0:

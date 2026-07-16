@@ -414,15 +414,24 @@ function getModuleTypeCode(dev) {
   return 1;
 }
 
-/** 6AO6AI6: чётный AI — N-нога пары (P = ch − 1), как в прошивке MR-02m. */
-const MR02M_AI_N_PARENT = { 2: 1, 4: 3, 6: 5 };
+/** Модули с P/N-парами AI (ТХА / 3-проводный RTD): 6AI6AO, 12AI, 6AI2AO. */
+const MR02M_AI_PAIR_TYPES = new Set([6, 7, 12]);
 
-function mr02mAiIsNLeg(mt, ch) {
-  return Number(mt) === 6 && ch % 2 === 0 && MR02M_AI_N_PARENT[ch] != null;
+function mr02mAiSupportsPairs(mt) {
+  return MR02M_AI_PAIR_TYPES.has(Number(mt));
 }
 
+/** Чётный AI — N-нога пары (P = ch − 1), как в прошивке MR-02m. */
 function mr02mAiPairParent(ch) {
-  return MR02M_AI_N_PARENT[ch] || null;
+  const c = Number(ch);
+  return (c >= 2 && c % 2 === 0) ? c - 1 : null;
+}
+
+function mr02mAiIsNLeg(mt, ch) {
+  if (!mr02mAiSupportsPairs(mt)) return false;
+  const aiCount = (MR02M_TYPES[Number(mt)] || {}).ai || 0;
+  const c = Number(ch);
+  return c >= 2 && c % 2 === 0 && c <= aiCount && mr02mAiPairParent(c) != null;
 }
 
 const _AI_NTC_CODES = new Set([1, 2, 3, 4, 5, 6, 7]);
@@ -461,10 +470,11 @@ function syncMr02mPairAfterParentChange(dev, parentCh) {
   if (!dev.channels) dev.channels = {};
   const pCfg = getOrCreateChannel(dev.channels, 'ai', parentCh);
   const st = pCfg.sensor_type != null ? Number(pCfg.sensor_type) : 0;
-  if (!mr02mAiMirrorTypeToN(st)) return;
+  if (!mr02mAiMirrorTypeToN(st)) return false;
   const nCfg = getOrCreateChannel(dev.channels, 'ai', nCh);
   nCfg.sensor_type = st;
   aiTypeSetPending(dev.id, nCh, st);
+  return true;
 }
 
 function aiTypeControlKey(devId, ch) {
@@ -532,9 +542,12 @@ function aiTypeIsEditBlocked(devId, ch, sel) {
 }
 
 function normalizeMr02mAiPairsAll(dev) {
-  if (dev.type !== 'mr02m' || getModuleTypeCode(dev) !== 6) return;
+  if (dev.type !== 'mr02m') return;
+  const mt = getModuleTypeCode(dev);
+  if (!mr02mAiSupportsPairs(mt)) return;
   if (!dev.channels) dev.channels = {};
-  for (const nCh of [2, 4, 6]) {
+  const aiCount = (MR02M_TYPES[mt] || {}).ai || 0;
+  for (let nCh = 2; nCh <= aiCount; nCh += 2) {
     const pCh = mr02mAiPairParent(nCh);
     if (!pCh) continue;
     const pCfg = getOrCreateChannel(dev.channels, 'ai', pCh);
@@ -758,6 +771,14 @@ function refreshAllLiveCells() {
   for (const devId of _accordionBuilt) refreshLiveCellsForDevice(devId);
 }
 
+function mr02mAiNMirrorActive(dev, ch, channels, mtCode) {
+  if (!mr02mAiIsNLeg(mtCode, ch)) return false;
+  const parent = mr02mAiPairParent(ch);
+  if (!parent) return false;
+  const pEff = mr02mAiEffectiveSensorType(dev, parent, channels);
+  return mr02mAiMirrorTypeToN(pEff);
+}
+
 function refreshAiTypeSelects(dev) {
   if (!dev || dev.type !== 'mr02m') return;
   const body = document.getElementById(`acc-body-${dev.id}`);
@@ -773,8 +794,11 @@ function refreshAiTypeSelects(dev) {
     if (!sel) continue;
     if (aiTypeIsEditBlocked(dev.id, i, sel)) continue;
     sel.value = String(effType);
-    const nMirror = mr02mAiIsNLeg(mtCode, i) && mr02mAiMirrorTypeToN(effType);
+    const nMirror = mr02mAiNMirrorActive(dev, i, channels, mtCode);
     sel.disabled = !!nMirror;
+    sel.title = nMirror
+      ? 'Тип наследуется с P-канала (ТХА / 3-проводный RTD)'
+      : '';
     const ctrl = `ai_${i}`;
     const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
     if (unitEl) {
@@ -1386,7 +1410,7 @@ function buildDeviceSection(dev) {
     'data-device-id': dev.id,
   });
   const header = h('div', {'class':'mqtt-accordion-header', 'onclick': () => toggleAccordion(dev.id)},
-    h('span', {'class':'mqtt-accordion-arrow', 'id': `acc-arrow-${dev.id}`}, '▶'),
+    h('span', {'class':'mqtt-accordion-arrow', 'id': `acc-arrow-${dev.id}`}, '+'),
     h('span', {}, title)
   );
   return h('div', {'class':'mqtt-accordion-section'}, header, body);
@@ -1402,16 +1426,16 @@ function toggleAccordion(id) {
       if (el.id !== `acc-body-${id}`) el.setAttribute('hidden', '');
     });
     document.querySelectorAll('.mqtt-accordion-arrow').forEach(el => {
-      if (el.id !== `acc-arrow-${id}`) el.textContent = '▶';
+      if (el.id !== `acc-arrow-${id}`) el.textContent = '+';
     });
     body.removeAttribute('hidden');
-    if (arrow) arrow.textContent = '▼';
+    if (arrow) arrow.textContent = '-';
     const dev = (_config.devices || []).find(d => d.id === id);
     if (dev) void openDeviceChannels(dev);
     return;
   }
   body.setAttribute('hidden', '');
-  if (arrow) arrow.textContent = '▶';
+  if (arrow) arrow.textContent = '+';
   if (_channelPollDevId === id) stopChannelPoll();
 }
 
@@ -1481,7 +1505,31 @@ function appendMr02mAoGroup(dev, channels, count) {
   return pack.widget;
 }
 
+/** Static AI row sizes (type "Выключен" one-line). Survives stale main.css cache. */
+function ensureAiRowLayoutStyles() {
+  if (document.getElementById('mqtt-ai-row-layout-css')) return;
+  const style = document.createElement('style');
+  style.id = 'mqtt-ai-row-layout-css';
+  style.textContent = [
+    '.mqtt-ch-row[data-ai-ch],.mqtt-ch-row-ai{flex-wrap:nowrap!important;min-width:0}',
+    '.mqtt-ch-row[data-ai-ch] .mqtt-ch-label-input,.mqtt-ch-row-ai .mqtt-ch-label-input{',
+    'flex:0 0 7.5rem!important;width:7.5rem!important;min-width:7.5rem!important;max-width:7.5rem!important;box-sizing:border-box}',
+    '.mqtt-ch-row[data-ai-ch] .topic-preview,.mqtt-ch-row-ai .topic-preview{',
+    'flex:0 0 auto;max-width:2.75rem;overflow:hidden;text-overflow:ellipsis}',
+    '.mqtt-ch-row[data-ai-ch] .mqtt-select-small,.mqtt-ch-row[data-ai-ch] .mqtt-ai-type-select,',
+    '.mqtt-ch-row-ai .mqtt-select-small,.mqtt-ch-row-ai .mqtt-ai-type-select{',
+    'flex:0 0 14.5rem!important;width:14.5rem!important;min-width:14.5rem!important;max-width:14.5rem!important;',
+    'box-sizing:border-box;field-sizing:fixed;overflow:hidden;text-overflow:ellipsis}',
+    '.mqtt-ch-row[data-ai-ch] .mqtt-ch-live,.mqtt-ch-row-ai .mqtt-ch-live{',
+    'width:3.5rem!important;min-width:3.5rem!important;max-width:3.5rem!important}',
+    '.mqtt-ch-row[data-ai-ch] .mqtt-ch-live-wrap,.mqtt-ch-row-ai .mqtt-ch-live-wrap{',
+    'margin-left:auto;flex:0 0 auto;flex-shrink:0}',
+  ].join('');
+  document.head.appendChild(style);
+}
+
 function appendMr02mAiGroup(dev, channels, mtCode, count) {
+  ensureAiRowLayoutStyles();
   const pack = buildChannelWidget('AI — аналоговые входы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'ai', i);
@@ -1489,8 +1537,9 @@ function appendMr02mAiGroup(dev, channels, mtCode, count) {
     const effType = mr02mAiEffectiveSensorType(dev, i, channels);
     const row = buildChannelRow(
       chCfg, topicPath(dev.id, ctrl), 'ai', i, dev, ctrl, '', {skipLive: true});
+    row.classList.add('mqtt-ch-row-ai');
     row.setAttribute('data-ai-ch', String(i));
-    const sel = h('select', {'class': 'mqtt-select-small',
+    const sel = h('select', {'class': 'mqtt-select-small mqtt-ai-type-select',
       'onfocus': () => aiTypeEditGuardAdd(dev.id, i),
       'onblur': () => aiTypeEditGuardReleaseLater(dev.id, i),
       'onchange': e => {
@@ -1498,16 +1547,10 @@ function appendMr02mAiGroup(dev, channels, mtCode, count) {
         chCfg.sensor_type = code;
         aiTypeSetPending(dev.id, i, code);
         if (!mr02mAiIsNLeg(mtCode, i)) syncMr02mPairAfterParentChange(dev, i);
-        const u = aiUnitsForCode(code);
-        const unitEl = row.querySelector(`[data-unit="${dev.id}:${ctrl}"]`);
-        if (unitEl) {
-          unitEl.setAttribute('data-unit-default', u);
-          unitEl.textContent = liveUnitFor(dev.id, ctrl, u);
-          unitEl.hidden = !u ? '' : undefined;
-        }
+        refreshAiTypeSelects(dev);
         markUnsaved();
       }});
-    const nMirror = mr02mAiIsNLeg(mtCode, i) && mr02mAiMirrorTypeToN(effType);
+    const nMirror = mr02mAiNMirrorActive(dev, i, channels, mtCode);
     if (nMirror) {
       chCfg.sensor_type = effType;
       sel.disabled = true;
