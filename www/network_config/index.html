@@ -460,7 +460,7 @@
 
         <div class="page-header">
           <h2>Управление системой</h2>
-          <p>Службы, перезагрузка и журнал событий</p>
+          <p>Службы, облако, перезагрузка и журнал событий</p>
         </div>
 
         <div class="dash-grid system-manage-grid">
@@ -513,6 +513,55 @@
                     Перезагрузить
                   </button>
                 </div>
+              </div>
+            </div>
+            <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Облако">Облако</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Агент">Агент</dt><dd id="cloud-svc-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Соединение">Соединение</dt><dd id="cloud-conn-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div id="cloud-row-tunnel" hidden><dt data-i18n="Туннель">Туннель</dt><dd id="cloud-tunnel-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div id="cloud-row-serial" hidden><dt data-i18n="Серийный №">Серийный №</dt><dd id="cloud-dev-serial" class="mono text-sm">—</dd></div>
+                  <div id="cloud-row-ts" hidden><dt data-i18n="Последний отчёт">Последний отчёт</dt><dd id="cloud-last-ts" class="text-sm">—</dd></div>
+                </dl>
+                <div class="cloud-agent-ctrl">
+                  <button type="button" class="btn btn-sm btn-danger" id="cloud-btn-agent" onclick="cloudToggleAgent()" disabled>…</button>
+                </div>
+                <div id="cloud-pair-idle">
+                  <p class="field-hint cloud-pair-hint" data-i18n="Нажмите кнопку — устройство получит код сопряжения. Затем войдите в личный кабинет на cloud.cyntron.ru и введите этот код.">
+                    Нажмите кнопку — устройство получит код сопряжения. Затем войдите в
+                    личный кабинет на <b>cloud.cyntron.ru</b> и введите этот код.
+                  </p>
+                  <button type="button" class="btn btn-primary" id="cloud-btn-pair" onclick="cloudStartPairing()">Подключить к облаку</button>
+                </div>
+                <div id="cloud-pair-active" hidden>
+                  <p class="field-hint cloud-pair-hint" data-i18n="Введите этот код в личном кабинете на cloud.cyntron.ru:">
+                    Введите этот код в личном кабинете на <b>cloud.cyntron.ru</b>:
+                  </p>
+                  <div class="cloud-pair-code" id="cloud-pair-code" title="Нажмите, чтобы скопировать" onclick="cloudCopyPairCode()">
+                    <span class="cloud-copy-toast" id="cloud-copy-toast" data-i18n="Скопирован">Скопирован</span>
+                    <span id="cloud-pair-code-text">····-····</span>
+                  </div>
+                  <p class="field-hint cloud-pair-timer-line">
+                    <span data-i18n="Код действует ещё">Код действует ещё</span>
+                    <span id="cloud-pair-timer">—</span>
+                  </p>
+                  <button type="button" class="btn btn-sm" id="cloud-btn-cancel" onclick="cloudCancelPairing()">Отменить</button>
+                </div>
+                <details class="cloud-token-fallback" id="cloud-token-fallback">
+                  <summary data-i18n="Подключение по токену (для наладчиков)">Подключение по токену (для наладчиков)</summary>
+                  <div class="field">
+                    <label for="cloud-token" data-i18n="Токен активации">Токен активации</label>
+                    <input type="password" id="cloud-token" placeholder="Вставьте токен…" autocomplete="off">
+                  </div>
+                  <div class="field">
+                    <label for="cloud-server" data-i18n="Облачный сервер">Облачный сервер</label>
+                    <input type="text" id="cloud-server" value="cloud.cyntron.ru">
+                  </div>
+                  <button type="button" class="btn btn-sm" id="cloud-btn-activate" onclick="cloudActivate()">Подключить по токену</button>
+                </details>
+                <div id="cloud-msg" class="cloud-msg" role="status" hidden></div>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-web-update-card">
@@ -972,5 +1021,6 @@
 <script src="/static/js/flasher.js?v=1.0.5.5"></script>
 <script src="/static/js/mqtt.js?v=1.0.5.5"></script>
 <script src="/static/js/gateway.js?v=1.0.5.5"></script>
+<script src="/static/js/cloud.js?v=1.0.5.5"></script>
 </body>
 </html>

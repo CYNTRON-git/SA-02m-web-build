@@ -8,6 +8,11 @@
 ## 1.0.5.5 - Облачный агент: frpc и код сопряжения, без root-канала (июл 2026)
 
 ### Новое
+- **Блок «Облако» на вкладке «Управление».** Сопряжение по коду, статус агента
+  и туннеля, токен для наладчиков — в едином SPA (раньше только отдельная
+  `cloud.html`). Старая страница перенаправляет на `/#cloud`.
+  - **файлы:** `www/network_config/index.html`, `static/js/cloud.js`,
+    `static/css/main.css`, `cloud.html`
 - **Подключение к облаку по коду сопряжения.** Вкладка «Облако»: одна кнопка
   «Подключить к облаку» — устройство само запрашивает код у cloud.cyntron.ru,
   показывает его крупно (клик — копирование с подтверждением «Скопирован»),
@@ -34,6 +39,20 @@
     `opt/sa02m-cloud-agent/tests/test_agent.py` (18 тестов)
 
 ### Исправления
+- **cloud.cgi: pair/token через sudo-helper.** Каталог `/etc/sa02m-cloud`
+  (`750 root:root`) недоступен для записи `www-data` — CGI возвращал
+  `ok:true`, но `pair_request` не создавался. Добавлены
+  `sa02m-cloud-web-trigger.sh` + `sudoers.d/sa02m-cloud`; GET status
+  стабильно отдаёт `service_active`.
+  - **файлы:** `cgi-bin/cloud.cgi`, `usr/local/sbin/sa02m-cloud-web-trigger.sh`,
+    `etc/sudoers.d/sa02m-cloud`, `scripts/05-cloud-agent.sh`,
+    `scripts/update-www-only.sh`
+- **Блок «Облако»: короткие подписи + вкл/выкл агента.** Соединение при
+  pairing — «Ожидание»; «Серийный №» вместо длинного; ID устройства убран;
+  кнопки «Отключить/Включить агент» останавливают frpc+agent и
+  `disable` юнит (без запросов в интернет).
+  - **файлы:** `index.html`, `static/js/cloud.js`, `cgi-bin/cloud.cgi`,
+    `usr/local/sbin/sa02m-cloud-web-trigger.sh`
 - **SPA deep-link для кнопки «настройки» из облака** — `#system`/`#network`
   (или `?tab=`) выбирают вкладку при загрузке; фрагмент не уходит на сервер
   и переживает облачный прокси.

@@ -1,13 +1,15 @@
 #!/bin/bash
 # SA-02m Cloud Agent CGI — status & activation via web UI
 # GET  → JSON status
-# POST {"action":"pair"}   → request a cloud pairing code (primary flow)
-# POST {"action":"cancel"} → cancel a pending pairing
-# POST {"token":"..."}     → enroll-token fallback (installers)
+# POST {"action":"pair"}    → request a cloud pairing code (primary flow)
+# POST {"action":"cancel"}  → cancel a pending pairing
+# POST {"action":"enable"}  → enable+start cloud agent
+# POST {"action":"disable"} → stop tunnel+agent, disable unit (no internet)
+# POST {"token":"..."}      → enroll-token fallback (installers)
 
 STATUS_FILE="/run/sa02m-cloud-status.json"
 ACTIVATION_TOKEN_FILE="/etc/sa02m-cloud/activation_token"
-PAIR_REQUEST_FILE="/etc/sa02m-cloud/pair_request"
+CLOUD_TRIGGER="/usr/local/sbin/sa02m-cloud-web-trigger.sh"
 
 # shellcheck source=lib_web_auth.sh
 . "$(dirname "$0")/lib_web_auth.sh"
@@ -43,19 +45,30 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     SERVER=$(echo "$POST_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('server','cloud.cyntron.ru'))" 2>/dev/null)
 
     if [ "$ACTION" = "pair" ]; then
-        # Claim-code flow: the trigger file tells the agent to request a
-        # pairing code; the code appears in the status JSON (state=pairing).
-        mkdir -p /etc/sa02m-cloud
-        : > "$PAIR_REQUEST_FILE"
-        chmod 600 "$PAIR_REQUEST_FILE"
-        systemctl start sa02m-cloud-agent 2>/dev/null || true
-        echo '{"ok":true,"message":"pairing requested"}'
+        # Writes under /etc/sa02m-cloud require root (dir is 750 root:root).
+        if ! OUT=$(sudo -n "$CLOUD_TRIGGER" pair 2>/dev/null); then
+            echo '{"ok":false,"error":"cloud trigger unavailable"}'
+            exit 0
+        fi
+        echo "$OUT"
         exit 0
     fi
 
     if [ "$ACTION" = "cancel" ]; then
-        rm -f "$PAIR_REQUEST_FILE"
-        echo '{"ok":true,"message":"pairing cancelled"}'
+        if ! OUT=$(sudo -n "$CLOUD_TRIGGER" cancel 2>/dev/null); then
+            echo '{"ok":false,"error":"cloud trigger unavailable"}'
+            exit 0
+        fi
+        echo "$OUT"
+        exit 0
+    fi
+
+    if [ "$ACTION" = "enable" ] || [ "$ACTION" = "disable" ]; then
+        if ! OUT=$(sudo -n "$CLOUD_TRIGGER" "$ACTION" 2>/dev/null); then
+            echo '{"ok":false,"error":"cloud trigger unavailable"}'
+            exit 0
+        fi
+        echo "$OUT"
         exit 0
     fi
 
@@ -71,48 +84,47 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    # Write server to config if provided — validate as a hostname FIRST; the
-    # value is interpolated into sed replacement text, where an unescaped '|'
-    # (or GNU sed 'e') would break out. A hostname allow-list has no metachars.
+    # Validate hostname BEFORE handing it to the privileged helper (sed).
     if [ -n "$SERVER" ] && [ "$SERVER" != "cloud.cyntron.ru" ]; then
         if ! valid_hostname "$SERVER"; then
             echo '{"ok":false,"error":"invalid server hostname"}'
             exit 0
         fi
-        mkdir -p /etc/sa02m-cloud
-        CFG="/etc/sa02m-cloud/agent.conf"
-        if [ -f "$CFG" ]; then
-            sed -i "s|^server_host.*|server_host = $SERVER|" "$CFG" || true
-            sed -i "s|^api_url.*|api_url = https://$SERVER/api/v1|" "$CFG" || true
-        fi
     fi
 
-    # Write activation token — agent will detect and activate
-    mkdir -p /etc/sa02m-cloud
-    echo "$TOKEN" > "$ACTIVATION_TOKEN_FILE"
-    chmod 600 "$ACTIVATION_TOKEN_FILE"
-
-    # Ensure agent service is running (it will pick up the token file)
-    systemctl start sa02m-cloud-agent 2>/dev/null || true
-
-    echo '{"ok":true,"message":"Activation started. Status will update in ~10 seconds."}'
+    if ! OUT=$(sudo -n "$CLOUD_TRIGGER" token "$TOKEN" "$SERVER" 2>/dev/null); then
+        echo '{"ok":false,"error":"cloud trigger unavailable"}'
+        exit 0
+    fi
+    echo "$OUT"
 
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     STATUS=$(read_status)
 
-    # Append service state
-    SVC_STATE=$(systemctl is-active sa02m-cloud-agent 2>/dev/null || echo "unknown")
-    SVC_ENABLED=$(systemctl is-enabled sa02m-cloud-agent 2>/dev/null || echo "unknown")
+    # Append service state (is-active/is-enabled exit ≠0 when inactive/disabled —
+    # must not append "unknown" via ||, or we get "inactive\nunknown").
+    SVC_STATE=$(systemctl is-active sa02m-cloud-agent 2>/dev/null || true)
+    [ -n "$SVC_STATE" ] || SVC_STATE=unknown
+    SVC_ENABLED=$(systemctl is-enabled sa02m-cloud-agent 2>/dev/null || true)
+    [ -n "$SVC_ENABLED" ] || SVC_ENABLED=unknown
+    # www-data cannot look inside /etc/sa02m-cloud (750 root:root).
+    HAS_TOKEN=false
+    if [ -r "$ACTIVATION_TOKEN_FILE" ]; then
+        HAS_TOKEN=true
+    fi
 
-    # Merge extra fields into status JSON
-    echo "$STATUS" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-d['service_active']  = '$SVC_STATE'
-d['service_enabled'] = '$SVC_ENABLED'
-d['has_token_file']  = $([ -f '$ACTIVATION_TOKEN_FILE' ] && echo 'true' || echo 'false')
+    # Merge extra fields into status JSON (env avoids shell-quote traps under fcgiwrap)
+    STATUS="$STATUS" SVC_STATE="$SVC_STATE" SVC_ENABLED="$SVC_ENABLED" HAS_TOKEN="$HAS_TOKEN" python3 -c '
+import os, json, sys
+try:
+    d = json.loads(os.environ.get("STATUS") or "{}")
+except Exception:
+    d = {"state": "unknown"}
+d["service_active"] = os.environ.get("SVC_STATE", "unknown")
+d["service_enabled"] = os.environ.get("SVC_ENABLED", "unknown")
+d["has_token_file"] = os.environ.get("HAS_TOKEN", "false").lower() == "true"
 print(json.dumps(d))
-" 2>/dev/null || echo "$STATUS"
+' 2>/dev/null || echo "$STATUS"
 
 else
     echo '{"ok":false,"error":"method not allowed"}'

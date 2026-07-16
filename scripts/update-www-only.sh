@@ -190,4 +190,20 @@ SUDO
     visudo -cf /etc/sudoers.d/sa02m-www >/dev/null
 fi
 
+# Cloud agent web trigger (pair/token) — needed for Management → Облако
+REPO_ETC="$SCRIPT_DIR/../etc"
+REPO_SBIN="$SCRIPT_DIR/../usr/local/sbin"
+if [ -f "$REPO_SBIN/sa02m-cloud-web-trigger.sh" ]; then
+    install -m 755 "$REPO_SBIN/sa02m-cloud-web-trigger.sh" /usr/local/sbin/sa02m-cloud-web-trigger.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
+    log OK "sa02m-cloud-web-trigger.sh обновлён"
+fi
+if [ -f "$REPO_ETC/sudoers.d/sa02m-cloud" ]; then
+    install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
+    sed -i 's/\r$//' /etc/sudoers.d/sa02m-cloud
+    visudo -cf /etc/sudoers.d/sa02m-cloud >/dev/null 2>&1 \
+        && log OK "sudoers sa02m-cloud OK" \
+        || log WARN "visudo отклонил sudoers.d/sa02m-cloud"
+fi
+
 log OK "Веб-интерфейс обновлён: $WEB_ROOT (nginx перезапускать не требуется)"
