@@ -45,8 +45,17 @@
   #pair-code {
     font: 700 44px/1.2 ui-monospace, "Cascadia Mono", monospace;
     letter-spacing: .12em; text-align: center; color: #fff;
-    padding: 18px 0 6px; user-select: all;
+    padding: 18px 0 6px; user-select: all; cursor: pointer;
+    position: relative; transition: opacity .15s;
   }
+  #pair-code:hover { opacity: .85; }
+  #copy-toast {
+    position: absolute; left: 50%; top: -6px; transform: translateX(-50%);
+    background: #14532d; color: var(--green); font: 600 13px/1 system-ui, sans-serif;
+    letter-spacing: normal; padding: 6px 14px; border-radius: 99px;
+    opacity: 0; pointer-events: none; transition: opacity .3s;
+  }
+  #copy-toast.show { opacity: 1; }
   #pair-hint { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
   #pair-timer { color: var(--yellow); }
   details { margin-top: 8px; }
@@ -101,7 +110,9 @@
     <p style="color:var(--muted);font-size:13px">
       Введите этот код в личном кабинете на <b>cloud.cyntron.ru</b>:
     </p>
-    <div id="pair-code">····-····</div>
+    <div id="pair-code" title="Нажмите, чтобы скопировать"
+         onclick="copyPairCode()"><span id="copy-toast">Скопирован</span><span
+         id="pair-code-text">····-····</span></div>
     <div id="pair-hint">Код действует ещё <span id="pair-timer">—</span></div>
     <button class="secondary" id="btn-cancel" onclick="cancelPairing()">Отменить</button>
   </div>
@@ -200,7 +211,7 @@ async function refreshStatus() {
     if (d.state === 'pairing' && d.claim_code) {
       $('pair-idle').style.display = 'none';
       $('pair-active').style.display = '';
-      $('pair-code').textContent = d.claim_code;
+      $('pair-code-text').textContent = d.claim_code;
       $('pair-timer').textContent = d.expires_at ? fmtRemaining(d.expires_at) : '—';
     } else {
       $('pair-idle').style.display = '';
@@ -212,6 +223,32 @@ async function refreshStatus() {
   } catch(e) {
     $('cloud-state').innerHTML = badge('Ошибка', 'red');
   }
+}
+
+let copyToastTimer = null;
+
+function copyPairCode() {
+  const code = $('pair-code-text').textContent.trim();
+  if (!code || code.startsWith('·')) return;
+  // The device UI is served over plain HTTP, where navigator.clipboard is
+  // unavailable (secure-context only) — fall back to a selection copy.
+  const done = () => {
+    const t = $('copy-toast');
+    t.classList.add('show');
+    clearTimeout(copyToastTimer);
+    copyToastTimer = setTimeout(() => t.classList.remove('show'), 1500);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(code).then(done).catch(() => {});
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = code;
+  ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { if (document.execCommand('copy')) done(); } catch (e) {}
+  document.body.removeChild(ta);
 }
 
 async function postAction(body) {
