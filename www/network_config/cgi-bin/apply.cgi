@@ -58,6 +58,59 @@ DATETIME=$(printf '%s' "${DATETIME:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$/
 REDIRECT="applied"
 timezone_failed=0
 time_ok=0
+# Interfaces to bounce after HTTP response (space-separated).
+# Suffix ":down" = ifdown only (conf removed). Bare name = ifdown+ifup.
+# Background via nohup — bare (...)& dies with fcgiwrap when CGI exits.
+APPLY_IFACES=""
+
+schedule_iface_apply() {
+    local iface="$1" mode="${2:-up}"
+    [ -n "$iface" ] || return 0
+    case " $APPLY_IFACES " in
+        *" $iface "*|*" $iface:down "*) ;;
+        *)
+            if [ "$mode" = "down" ]; then
+                APPLY_IFACES="${APPLY_IFACES:+$APPLY_IFACES }$iface:down"
+            else
+                APPLY_IFACES="${APPLY_IFACES:+$APPLY_IFACES }$iface"
+            fi
+            ;;
+    esac
+}
+
+# Apply interfaces.d conf live. Use /sbin/ifdown|/sbin/ifup only (sudoers).
+apply_ifaces_live() {
+    local spec iface mode
+    [ -n "$APPLY_IFACES" ] || return 0
+    for spec in $APPLY_IFACES; do
+        iface="${spec%:down}"
+        mode="up"
+        case "$spec" in
+            *:down) mode="down" ;;
+        esac
+        # shellcheck disable=SC2016
+        nohup sh -c '
+iface="$1"
+mode="$2"
+log=/var/log/sa02m_install.log
+run_to() { t="$1"; shift; if command -v timeout >/dev/null 2>&1; then timeout "$t" "$@"; else "$@"; fi; }
+sleep 1
+echo "$(date "+%Y-%m-%d %H:%M:%S") apply.cgi: live-apply $iface mode=$mode" >> "$log" 2>&1
+run_to 20 sudo -n /sbin/ifdown "$iface" >> "$log" 2>&1 || true
+if [ "$mode" = "down" ]; then
+    echo "$(date "+%Y-%m-%d %H:%M:%S") apply.cgi: $iface ifdown done (conf removed)" >> "$log" 2>&1
+    exit 0
+fi
+if run_to 25 sudo -n /sbin/ifup "$iface" >> "$log" 2>&1; then
+    echo "$(date "+%Y-%m-%d %H:%M:%S") apply.cgi: $iface ifup OK" >> "$log" 2>&1
+else
+    echo "$(date "+%Y-%m-%d %H:%M:%S") apply.cgi: $iface ifup failed — restart networking" >> "$log" 2>&1
+    run_to 40 sudo -n /usr/bin/systemctl restart networking.service >> "$log" 2>&1 || true
+fi
+[ -x /usr/local/bin/sa02m-eth0-led.sh ] && /usr/local/bin/sa02m-eth0-led.sh >> "$log" 2>&1 || true
+' _ "$iface" "$mode" >>/var/log/sa02m_install.log 2>&1 &
+    done
+}
 
 # ── Validate all network fields BEFORE any config write (allow-list) ────────
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ] && [ "$ETH0_ENABLE" = "1" ]; then
@@ -85,11 +138,13 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
         echo -e "$CFG" | sudo tee "$CONF0" >/dev/null
         [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
         echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
+        schedule_iface_apply "$IF0"
     else
         CFG0="auto ${IF0}\niface ${IF0} inet dhcp"
         echo -e "$CFG0" | sudo tee "$CONF0" >/dev/null
         [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
         echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
+        schedule_iface_apply "$IF0"
     fi
 fi
 
@@ -105,10 +160,12 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
         echo -e "$CFG1" | sudo tee "$CONF1" >/dev/null
         [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
         echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
+        schedule_iface_apply "$IF1"
     else
         sudo rm -f "$CONF1"
         [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
         echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf removed" >> /var/log/sa02m_install.log 2>&1
+        schedule_iface_apply "$IF1" down
     fi
 fi
 
@@ -166,6 +223,11 @@ if [ "$REDIRECT" = "applied" ]; then
     fi
 fi
 
+# Schedule background bounce before headers — response must reach the browser
+# first; ifdown drops the TCP session when the IP changes.
+apply_ifaces_live
+
+echo "Status: 302 Found"
 echo "Content-type: text/html"
 echo "Location: /?status=${REDIRECT}"
 echo ""
