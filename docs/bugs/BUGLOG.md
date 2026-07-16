@@ -5,6 +5,32 @@
 
 ---
 
+## [2026-07-16 18:00] branch: 1.0.5.8 — Flasher: Порты HTTP 401 после refresh
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/auth.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `/etc/sa02m_flasher.conf` (на стенде `192.168.10.136`)
+**Тип:** Некорректное поведение
+**Описание:** После обновления страницы Web UI `:9999` блок «Порты» / «Устройства 485» показывал `HTTP 401 unauthorized` / «Нет доступа», хотя логин `admin`/`cyntron` был успешен.
+**Причина:** На стенде оставался старый flasher-auth: `SESSION_COOKIE=session_token=cyntron_session` и упрощённый `auth.py` (~53 строки). UI выдаёт реальный `session_token=…` в `/run/sa02m-web-sessions`; nginx `auth_check.cgi` пропускал, демон flasher отклонял cookie.
+**Исправление:** Задеплоены актуальные `auth.py`/`config.py`/`service.py`/`jobs.py` (+ связанные модули); в conf — `SESSION_DIR=/run/sa02m-web-sessions`, без `SESSION_COOKIE`. Проверка: без cookie → 401; после login и повторный запрос (refresh) → `/api/flasher/{ports,status,firmware,jobs}` = 200.
+
+## [2026-07-16 17:56] branch: 1.0.5.8 — MQTT AI: эталон размеров «Выключен», одна строка
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/static/js/mqtt.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение / UX
+**Описание:** В блоке «AI — аналоговые входы» поля label и select меняли ширину (в т.ч. по самому длинному option), строка переносилась.
+**Причина:** flex на label; native `<select>` тянулся под длинные подписи; ранее зафиксировали ширину под max-label (20.5rem) — это ломало эталон «Выключен».
+**Исправление:** статичные размеры как у «0 — Выключен» (label 7.5rem, select 7.25rem, nowrap); inject CSS из mqtt.js; cache-bust `&r=ai1` для main.css/mqtt.js.
+
+## [2026-07-16 17:41] branch: 1.0.5.8 — MQTT 12АИ: пары типов датчиков, ширина select, Short response
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/static/css/main.css`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`
+**Тип:** Некорректное поведение
+**Описание:** На модуле 12АИ выбор Pt100 3-провода не дублировал тип на чётный (N) канал; выпадающие списки типов «прыгали» по ширине из‑за значений температур; периодически все AI показывали ⚠.
+**Причина:** (1) P/N-пары были завязаны только на `module_type==6` (6АИ6АО), не на 12АИ/6АИ2АО. (2) Select в flex сжимался под live-значение. (3) Один FC03 на 84 регистра (173 B) на COM4 @19200 часто обрывался (`Short response`), мост помечал все AI ошибкой.
+**Исправление:** пары AI для типов 6/7/12; N disabled только когда у P зеркальный тип; немедленный `refreshAiTypeSelects` после смены; фиксированная ширина select/live; чанкованное чтение AI (≤42 рег.) с ретраями, ошибка только по непрочитанным каналам.
+
+---
+
 ## [2026-07-16 16:50] branch: 1.0.5.7 — Сеть: IP не применялся + ложная «Ошибка сервера: 0»
 
 **Файл(ы):** `www/network_config/cgi-bin/apply.cgi`, `www/network_config/static/js/app/forms.js`
