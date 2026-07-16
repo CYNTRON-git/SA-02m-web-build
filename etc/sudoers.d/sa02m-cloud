@@ -1,0 +1,4 @@
+# SA-02m cloud agent — allow web UI (www-data) to request pairing / write activation token.
+Cmnd_Alias SA02M_CLOUD_WEB = /usr/local/sbin/sa02m-cloud-web-trigger.sh
+www-data ALL=(root) NOPASSWD: SA02M_CLOUD_WEB
+Defaults:www-data !requiretty

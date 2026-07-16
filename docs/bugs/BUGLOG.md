@@ -1,3 +1,26 @@
+# Bug Log
+
+Документация найденных и устранённых ошибок.
+Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
+
+---
+
+## [2026-07-16 13:11] branch: 1.0.5.5 — Облако: короткие подписи + вкл/выкл агента
+
+**Файл(ы):** `www/network_config/index.html`, `static/js/cloud.js`, `static/js/i18n.js`, `cgi-bin/cloud.cgi`, `usr/local/sbin/sa02m-cloud-web-trigger.sh`
+**Тип:** Некорректное поведение / UX
+**Описание:** Подписи «Ожидание кода в облаке» / «Серийный номер» / ID не помещались в карточку; нельзя было остановить агент без SSH.
+**Причина:** длинные строки в stateMap; нет UI/API для disable агента; `systemctl is-active … || echo unknown` склеивал `inactive\nunknown`.
+**Исправление:** «Ожидание», «Серийный №», ID убран; `enable`/`disable` в helper (stop frpc+agent, disable unit); исправлен разбор status CGI. Проверено на 192.168.1.136.
+
+## [2026-07-16 13:01] branch: 1.0.5.5 — cloud.cgi не мог создать pair_request (www-data → /etc/sa02m-cloud 750)
+
+**Файл(ы):** `www/network_config/cgi-bin/cloud.cgi`, `usr/local/sbin/sa02m-cloud-web-trigger.sh`, `etc/sudoers.d/sa02m-cloud`, `scripts/05-cloud-agent.sh`, `scripts/update-www-only.sh`
+**Тип:** Некорректное поведение
+**Описание:** POST `{"action":"pair"}` возвращал `ok:true`, но файл `/etc/sa02m-cloud/pair_request` не создавался; код сопряжения в UI не появлялся. GET `cloud.cgi` не добавлял `service_active` (python-merge падал, отдавался сырой status JSON).
+**Причина:** `/etc/sa02m-cloud` — `750 root:root`, CGI под `www-data` не может писать туда; CGI всё равно отвечал успехом. Merge status через inline `python -c` с подстановкой shell ломался под fcgiwrap.
+**Исправление:** привилегированный helper `sa02m-cloud-web-trigger.sh` + sudoers; CGI вызывает `sudo -n` для pair/cancel/token; merge status через env + python без shell-quote ловушек.
+
 ## [2026-07-15 18:22] branch: main — SPA deep-link вкладки (#hash/?tab=) для кнопки «Настройки» из облака
 
 **Файлы:**

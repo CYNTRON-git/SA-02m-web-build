@@ -85,7 +85,9 @@ function switchTab(tab) {
     loadServicesControl(false);
     loadKernelControl(false);
     loadVariant();
+    if (window.cloudTabInit) window.cloudTabInit();
   }
+  if (tab !== 'system' && window.cloudTabDestroy) window.cloudTabDestroy();
   if (tab === 'network') {
     applyVariantVisibility(_boardVariant);
     loadConfig();
@@ -111,6 +113,13 @@ function applyDeepLinkTab() {
   if (!tab) {
     var m = (location.search || '').match(/[?&]tab=([^&]+)/);
     if (m) { try { tab = decodeURIComponent(m[1]); } catch (e) { tab = m[1]; } }
+  }
+  if (tab === 'cloud') {
+    switchTab('system');
+    if (window.cloudScrollIntoView) {
+      setTimeout(window.cloudScrollIntoView, 120);
+    }
+    return;
   }
   if (tab && /^[a-z0-9_-]+$/i.test(tab) &&
       document.querySelector('.nav-item[data-tab="' + tab + '"]')) {

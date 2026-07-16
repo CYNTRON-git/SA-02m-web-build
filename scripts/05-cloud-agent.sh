@@ -56,9 +56,26 @@ if [ -f /etc/wireguard/wg-cloud.conf ]; then
     log OK "wg-cloud удалён"
 fi
 
-# ── 5. Конфиг-директория ─────────────────────────────────────────────────────
+# ── 5. Конфиг-директория + web trigger (CGI пишет через sudo) ───────────────
 mkdir -p /etc/sa02m-cloud
 chmod 750 /etc/sa02m-cloud
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -f "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" ]; then
+    install -m 755 "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" \
+        /usr/local/sbin/sa02m-cloud-web-trigger.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
+    log OK "sa02m-cloud-web-trigger.sh установлен"
+fi
+if [ -f "$REPO_ROOT/etc/sudoers.d/sa02m-cloud" ]; then
+    install -m 0440 -o root -g root "$REPO_ROOT/etc/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
+    sed -i 's/\r$//' /etc/sudoers.d/sa02m-cloud
+    if visudo -cf /etc/sudoers.d/sa02m-cloud >/dev/null 2>&1; then
+        log OK "sudoers sa02m-cloud OK"
+    else
+        log WARN "visudo не принял sudoers.d/sa02m-cloud — проверьте вручную"
+    fi
+fi
 
 # ── 6. frpc binary ───────────────────────────────────────────────────────────
 if [ -x "$FRPC_BIN" ]; then
