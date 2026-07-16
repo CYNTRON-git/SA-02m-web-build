@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-16 15:37] branch: 1.0.5.6 — вкладка Сеть: пустые поля Ethernet
+
+**Файл(ы):** `www/network_config/cgi-bin/config.cgi`, `www/network_config/cgi-bin/apply.cgi`, `www/network_config/cgi-bin/lib_net_iface.sh`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке «Сеть» не подтягивались IP/маска/шлюз/DNS — форма оставалась пустой при рабочей сети `192.168.1.136`.
+**Причина:** `config.cgi`/`apply.cgi` читали и писали только `/etc/network/interfaces.d/eth0.conf` (`eth1.conf`). На стенде интерфейсы — `end0`/`end1` и файлы `end0.conf`/`end1.conf` (как в `status.cgi` через `first_existing_iface`).
+**Исправление:** общий `lib_net_iface.sh` (`resolve_lan_iface eth0 end0` / `eth1 end1`); config читает реальный conf; apply пишет в него же и удаляет sibling-conf, чтобы не плодить оба имени. JSON/UI-ключи остаются `eth0`/`eth1`.
+
 ## [2026-07-16 13:11] branch: 1.0.5.5 — Облако: короткие подписи + вкл/выкл агента
 
 **Файл(ы):** `www/network_config/index.html`, `static/js/cloud.js`, `static/js/i18n.js`, `cgi-bin/cloud.cgi`, `usr/local/sbin/sa02m-cloud-web-trigger.sh`

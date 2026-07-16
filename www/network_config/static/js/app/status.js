@@ -1430,7 +1430,7 @@ function _webUpdFinish(status, log) {
     setTimeout(function () { location.reload(); }, 5000);
   } else {
     if (st) { st.textContent = 'Ошибка обновления. Проверьте лог ниже.'; st.className = 'web-upd-status is-err'; st.hidden = false; }
-    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Применить обновление'; }
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Применить'; }
     toast('Ошибка обновления', 'error');
   }
 }

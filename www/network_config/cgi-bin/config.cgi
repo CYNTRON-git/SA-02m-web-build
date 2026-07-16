@@ -10,6 +10,8 @@ web_session_check_cookie || { echo '{"error":"unauthorized"}'; exit 0; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib_rtc.sh
 . "$SCRIPT_DIR/lib_rtc.sh"
+# shellcheck source=lib_net_iface.sh
+. "$SCRIPT_DIR/lib_net_iface.sh"
 
 timeout_run() {
     local sec=${1:-2}
@@ -60,8 +62,11 @@ read_iface_conf() {
         "$enabled" "${ip:-}" "${netmask:-}" "${gateway:-}" "${dns:-}"
 }
 
-ETH0=$(read_iface_conf /etc/network/interfaces.d/eth0.conf)
-ETH1=$(read_iface_conf /etc/network/interfaces.d/eth1.conf)
+# Board may use eth0/eth1 or legacy end0/end1 — JSON keys stay eth0/eth1 for the UI.
+IF0=$(resolve_lan_iface eth0 end0)
+IF1=$(resolve_lan_iface eth1 end1)
+ETH0=$(read_iface_conf "$(lan_iface_conf "$IF0")")
+ETH1=$(read_iface_conf "$(lan_iface_conf "$IF1")")
 TZ=$(read_timezone)
 DT=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
 

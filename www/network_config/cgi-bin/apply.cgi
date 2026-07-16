@@ -23,6 +23,8 @@ get_f() {
 
 # shellcheck source=lib_web_validate.sh
 . "$(dirname "$0")/lib_web_validate.sh"
+# shellcheck source=lib_net_iface.sh
+. "$(dirname "$0")/lib_net_iface.sh"
 
 # Reject the whole request with a JSON error (network fields are attacker-
 # controlled and are written into /etc/network/interfaces.d as root — an
@@ -71,32 +73,42 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ] && [ "$ETH1_ENABLE" =
     [ -z "$DNS_ETH1" ]     || valid_ipv4_list "$DNS_ETH1" || reject_bad_input "dns_eth1"
 fi
 
-# ── eth0 config ────────────────────────────────────────────────────────────
+# ── Ethernet № 1 (form net_iface=eth0; on-disk name may be eth0 or end0) ───
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
+    IF0=$(resolve_lan_iface eth0 end0)
+    CONF0=$(lan_iface_conf "$IF0")
+    SIB0=$(lan_iface_sibling "$IF0")
     if [ "$ETH0_ENABLE" = "1" ] && [ -n "$IP" ] && [ -n "$NETMASK" ]; then
-        CFG="auto eth0\niface eth0 inet static\n    address $IP\n    netmask $NETMASK"
+        CFG="auto ${IF0}\niface ${IF0} inet static\n    address $IP\n    netmask $NETMASK"
         [ -n "$GATEWAY" ] && CFG="$CFG\n    gateway $GATEWAY"
         [ -n "$DNS" ]     && CFG="$CFG\n    dns-nameservers $DNS"
-        echo -e "$CFG" | sudo tee /etc/network/interfaces.d/eth0.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
+        echo -e "$CFG" | sudo tee "$CONF0" >/dev/null
+        [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
     else
-        CFG0="auto eth0\niface eth0 inet dhcp"
-        echo -e "$CFG0" | sudo tee /etc/network/interfaces.d/eth0.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
+        CFG0="auto ${IF0}\niface ${IF0} inet dhcp"
+        echo -e "$CFG0" | sudo tee "$CONF0" >/dev/null
+        [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
 
-# ── eth1 config ────────────────────────────────────────────────────────────
+# ── Ethernet № 2 (form net_iface=eth1; on-disk name may be eth1 or end1) ───
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
+    IF1=$(resolve_lan_iface eth1 end1)
+    CONF1=$(lan_iface_conf "$IF1")
+    SIB1=$(lan_iface_sibling "$IF1")
     if [ "$ETH1_ENABLE" = "1" ] && [ -n "$IP_ETH1" ] && [ -n "$NETMASK_ETH1" ]; then
-        CFG1="allow-hotplug eth1\niface eth1 inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
+        CFG1="allow-hotplug ${IF1}\niface ${IF1} inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
         [ -n "$GATEWAY_ETH1" ] && CFG1="$CFG1\n    gateway $GATEWAY_ETH1"
         [ -n "$DNS_ETH1" ]     && CFG1="$CFG1\n    dns-nameservers $DNS_ETH1"
-        echo -e "$CFG1" | sudo tee /etc/network/interfaces.d/eth1.conf >/dev/null
-        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
+        echo -e "$CFG1" | sudo tee "$CONF1" >/dev/null
+        [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
     else
-        sudo rm -f /etc/network/interfaces.d/eth1.conf
-        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf removed" >> /var/log/sa02m_install.log 2>&1
+        sudo rm -f "$CONF1"
+        [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf removed" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
 
