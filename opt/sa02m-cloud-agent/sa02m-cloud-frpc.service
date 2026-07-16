@@ -1,0 +1,25 @@
+[Unit]
+Description=SA-02m Cloud reverse tunnel (frpc)
+Documentation=https://cloud.cyntron.ru
+After=network-online.target
+Wants=network-online.target
+# The agent writes this config at enrollment; without it there is no tunnel.
+ConditionPathExists=/etc/sa02m-cloud/frpc.toml
+ConditionPathExists=/usr/local/bin/frpc
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frpc -c /etc/sa02m-cloud/frpc.toml
+Restart=on-failure
+RestartSec=15s
+User=root
+
+# Hardening: frpc only reads its config and dials out.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

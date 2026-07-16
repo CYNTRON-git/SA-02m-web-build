@@ -1,12 +1,22 @@
 #!/usr/bin/env python3
 """
-SA-02m Cloud Agent
-Collects device metrics, maintains WireGuard tunnel, handles cloud commands.
+SA-02m Cloud Agent — frpc reverse-tunnel edition.
+
+Pairs the device with the cloud (cloud.cyntron.ru), maintains the frpc
+reverse tunnel, and POSTs send-only telemetry heartbeats.
+
+Contract: cloud repo docs/contracts/cloud-enrollment.md (frozen).
+SECURITY: there is deliberately NO command channel — the cloud can never
+make this device execute anything. Heartbeat responses are ignored except
+for the "ok" field. (The former handle_command() root channel — threat
+model F1 — was removed in Phase B together with WireGuard.)
 
 Activation modes (no SSH needed):
-  1. Factory: write token to /etc/sa02m-cloud/activation_token → auto-activates
-  2. Web UI:  POST to /cgi-bin/cloud.cgi on device web UI → writes token → auto-activates
-  3. Manual:  sa02m-cloud-activate --token XXX (fallback for technicians)
+  1. Claim code (primary): web UI Cloud tab → "connect" → the agent requests
+     a pairing code, shows it via /run/sa02m-cloud-status.json, and polls
+     until the user attaches the code in the cloud UI.
+  2. Enroll token (fallback for installers): write the token to
+     /etc/sa02m-cloud/activation_token (web UI POST or sa02m-cloud-activate).
 """
 import argparse
 import configparser
@@ -17,24 +27,34 @@ import platform
 import subprocess
 import sys
 import time
-import threading
 import urllib.request
 import urllib.error
 
+_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _handlers.append(logging.FileHandler("/var/log/sa02m-cloud-agent.log", mode="a"))
+except OSError:
+    pass  # read-only rootfs / test host — stdout (journal) still has it
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/var/log/sa02m-cloud-agent.log", mode="a"),
-    ],
+    handlers=_handlers,
 )
 log = logging.getLogger("sa02m-cloud")
 
-DEFAULT_CONFIG       = "/etc/sa02m-cloud/agent.conf"
-ACTIVATION_TOKEN_FILE = "/etc/sa02m-cloud/activation_token"  # one-time token
-DEFAULT_WG_CONF      = "/etc/wireguard/wg-cloud.conf"
-STATUS_FILE          = "/run/sa02m-cloud-status.json"        # for web UI CGI
+DEFAULT_CONFIG        = "/etc/sa02m-cloud/agent.conf"
+ACTIVATION_TOKEN_FILE = "/etc/sa02m-cloud/activation_token"   # enroll-token fallback
+PAIR_REQUEST_FILE     = "/etc/sa02m-cloud/pair_request"       # claim-code trigger
+FRPC_CONFIG           = "/etc/sa02m-cloud/frpc.toml"
+FRPC_BINARY           = "/usr/local/bin/frpc"
+FRPC_UNIT             = "sa02m-cloud-frpc"
+STATUS_FILE           = "/run/sa02m-cloud-status.json"        # for web UI CGI
+ROSTER_FILE           = "/run/sa02m-rs485-roster.json"        # bus-free module cache
+HW_VARIANT            = "sa02m-1eth"
+VERSION_FILE          = "/var/www/network_config/VERSION"
+
+STANDBY_POLL_S  = 5
+WATCHDOG_S      = 60
 
 
 def _write_status(state: str, **kw):
@@ -53,15 +73,10 @@ def load_config(path: str) -> configparser.ConfigParser:
     cfg.read_dict({
         "cloud": {
             "api_url":            "https://cloud.cyntron.ru/api/v1",
-            "device_token":       "",
             "server_host":        "cloud.cyntron.ru",
-            "metrics_interval":   "30",
-            "heartbeat_interval": "10",
-        },
-        "wireguard": {
-            "enabled":   "true",
-            "interface": "wg-cloud",
-            "config":    DEFAULT_WG_CONF,
+            "enrolled":           "false",
+            "device_id":          "",
+            "heartbeat_interval": "30",
         },
         "device": {
             "serial":   "",
@@ -70,6 +85,10 @@ def load_config(path: str) -> configparser.ConfigParser:
     })
     if os.path.exists(path):
         cfg.read(path)
+    # WireGuard-era leftovers must not survive a migrated config file
+    cfg.remove_section("wireguard")
+    cfg.remove_option("cloud", "device_token")
+    cfg.remove_option("cloud", "metrics_interval")
     return cfg
 
 
@@ -80,7 +99,7 @@ def save_config(path: str, cfg: configparser.ConfigParser):
     os.chmod(path, 0o640)
 
 
-# ── Bootstrap / auto-activation ──────────────────────────────────────────────
+# ── Identity ──────────────────────────────────────────────────────────────────
 def get_serial() -> str:
     try:
         with open("/proc/cpuinfo") as f:
@@ -97,128 +116,125 @@ def get_serial() -> str:
     return platform.node()
 
 
-def gen_wg_keypair() -> tuple[str, str]:
-    priv = subprocess.check_output(["wg", "genkey"], timeout=5).decode().strip()
-    pub  = subprocess.check_output(["wg", "pubkey"], input=priv.encode(), timeout=5).decode().strip()
-    return priv, pub
+def get_device_id(cfg: configparser.ConfigParser) -> str:
+    """Stable device id, bench convention: sa02m-<serial> (contract charset
+    ^[A-Za-z0-9._-]{1,64}$; the serial sources satisfy it)."""
+    did = cfg["cloud"].get("device_id", "")
+    if did:
+        return did
+    return "sa02m-" + get_serial().lower()
 
 
-def write_wg_config(path: str, priv_key: str, vpn_ip: str,
-                    server_pubkey: str, server_endpoint: str,
-                    server_vpn_ip: str = "10.100.0.1"):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write(
-            f"[Interface]\n"
-            f"PrivateKey = {priv_key}\n"
-            f"Address = {vpn_ip}/24\n\n"
-            f"[Peer]\n"
-            f"PublicKey = {server_pubkey}\n"
-            f"Endpoint = {server_endpoint}:51820\n"
-            f"AllowedIPs = {server_vpn_ip}/32\n"
-            f"PersistentKeepalive = 25\n"
-        )
-    os.chmod(path, 0o600)
-
-
-def api_post(url: str, token: str, payload: dict, timeout: int = 15) -> dict | None:
-    data = json.dumps(payload).encode()
-    headers = {"Content-Type": "application/json", "User-Agent": "sa02m-cloud-agent/1.0"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+def get_fw_version() -> str:
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        log.warning("POST %s → HTTP %d: %s", url, e.code, e.read()[:200])
-    except Exception as e:
-        log.debug("POST %s error: %s", url, e)
-    return None
+        with open(VERSION_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line
+    except Exception:
+        pass
+    return "unknown"
 
 
-def api_get(url: str, token: str, timeout: int = 10) -> dict | None:
+# ── HTTP (stdlib only) ────────────────────────────────────────────────────────
+def api_post(url: str, payload: dict, timeout: int = 15):
+    """POST JSON; returns (http_status, parsed_body|None). Network failure
+    returns (0, None)."""
+    data = json.dumps(payload).encode()
     req = urllib.request.Request(
-        url,
-        headers={"Authorization": f"Bearer {token}", "User-Agent": "sa02m-cloud-agent/1.0"},
+        url, data=data,
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "sa02m-cloud-agent/2.0"},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read()[:300]
+        log.warning("POST %s -> HTTP %d: %s", url, e.code, body)
+        try:
+            return e.code, json.loads(body)
+        except Exception:
+            return e.code, None
     except Exception as e:
-        log.debug("GET %s error: %s", url, e)
-    return None
+        log.debug("POST %s error: %s", url, e)
+        return 0, None
 
 
-def try_activate(activation_token: str, cfg: configparser.ConfigParser,
-                 config_path: str) -> bool:
-    """
-    Use activation_token to register device with cloud.
-    Returns True and updates cfg on success.
-    """
-    server_host = cfg["cloud"]["server_host"]
-    api_url     = cfg["cloud"]["api_url"].rstrip("/")
-    serial      = get_serial()
+# ── frpc profile → config ─────────────────────────────────────────────────────
+def render_frpc_toml(frpc: dict) -> str:
+    """Render frpc.toml from the contract's frpc profile. Emits EVERY proxy the
+    cloud handed out (two: <sub> → :80 web SCADA, <sub>-cfg → :9999 settings),
+    type http — the only shape the frps NewProxy authz accepts."""
+    server_addr = frpc["server_addr"]
+    server_port = int(frpc["server_port"])
+    token       = frpc["token"]
+    proxies     = frpc.get("proxies") or []
+    if not proxies:
+        # Legacy single-proxy fallback fields (pre-Phase-B contract)
+        proxies = [{
+            "name":       frpc["proxy_name"],
+            "subdomain":  frpc["subdomain"],
+            "local_port": frpc["local_port"],
+        }]
+    lines = [
+        'serverAddr = "%s"' % server_addr,
+        "serverPort = %d" % server_port,
+        'auth.token = "%s"' % token,
+        "",
+    ]
+    for p in proxies:
+        lines += [
+            "[[proxies]]",
+            'name = "%s"' % p["name"],
+            'type = "http"',
+            'subdomain = "%s"' % p["subdomain"],
+            "localIP = \"127.0.0.1\"",
+            "localPort = %d" % int(p["local_port"]),
+            "",
+        ]
+    return "\n".join(lines)
 
-    log.info("Activating device %s with cloud %s...", serial, server_host)
-    _write_status("activating", serial=serial, server=server_host)
 
+def write_frpc_config(frpc: dict, path: str = FRPC_CONFIG):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    content = render_frpc_toml(frpc)
+    with open(path, "w") as f:
+        f.write(content)
+    os.chmod(path, 0o600)  # carries the frp token
+    log.info("frpc config written: %s (%d proxies)", path, content.count("[[proxies]]"))
+
+
+def _systemctl(*args, timeout: int = 15) -> int:
     try:
-        priv_key, pub_key = gen_wg_keypair()
+        r = subprocess.run(["systemctl", *args],
+                           capture_output=True, text=True, timeout=timeout)
+        return r.returncode
     except Exception as e:
-        log.error("WireGuard keygen failed: %s", e)
-        return False
-
-    resp = api_post(f"{api_url}/devices/activate", "", {
-        "activation_token": activation_token,
-        "serial":           serial,
-        "wg_pubkey":        pub_key,
-        "hostname":         platform.node(),
-    })
-
-    if not resp:
-        log.warning("Activation failed (no response from cloud)")
-        return False
-
-    device_token    = resp.get("device_token", "")
-    vpn_ip          = resp.get("vpn_ip", "")
-    server_pubkey   = resp.get("server_pubkey", "")
-    server_endpoint = resp.get("server_endpoint", server_host)
-    server_vpn_ip   = resp.get("server_vpn_ip", "10.100.0.1")
-
-    if not device_token or not vpn_ip or not server_pubkey:
-        log.error("Activation response missing required fields: %s", resp)
-        return False
-
-    # Write WireGuard config
-    wg_config = cfg["wireguard"]["config"]
-    write_wg_config(wg_config, priv_key, vpn_ip, server_pubkey,
-                    server_endpoint, server_vpn_ip)
-
-    # Update and save agent config
-    cfg["cloud"]["device_token"] = device_token
-    cfg["device"]["serial"]      = serial
-    save_config(config_path, cfg)
-
-    # Remove one-time activation token
-    try:
-        os.remove(ACTIVATION_TOKEN_FILE)
-    except Exception:
-        pass
-
-    # Bring up WireGuard
-    try:
-        subprocess.run(["wg-quick", "up", cfg["wireguard"]["interface"]],
-                       timeout=15, check=False)
-    except Exception as e:
-        log.warning("wg-quick up failed: %s", e)
-
-    log.info("Activation successful! VPN IP: %s", vpn_ip)
-    _write_status("active", vpn_ip=vpn_ip, serial=serial)
-    return True
+        log.warning("systemctl %s failed: %s", " ".join(args), e)
+        return 1
 
 
-# ── System metrics ────────────────────────────────────────────────────────────
+def ensure_frpc_running() -> str:
+    """frpc watchdog (replaces the WireGuard one): make sure the tunnel unit
+    runs whenever a config exists. Returns a state string for the status file."""
+    if not os.path.exists(FRPC_CONFIG):
+        return "no_config"
+    if not os.path.exists(FRPC_BINARY):
+        return "frpc_missing"
+    if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0:
+        return "running"
+    log.info("frpc unit not active — (re)starting %s", FRPC_UNIT)
+    _systemctl("enable", FRPC_UNIT)
+    _systemctl("restart", FRPC_UNIT)
+    if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0:
+        return "running"
+    return "failed"
+
+
+# ── Telemetry (heartbeat filler) ──────────────────────────────────────────────
 def _read_first(path: str, default: str = "0") -> str:
     try:
         with open(path) as f:
@@ -227,246 +243,321 @@ def _read_first(path: str, default: str = "0") -> str:
         return default
 
 
-def collect_metrics() -> dict:
-    m: dict = {}
+def _fs_stats(path: str):
+    v = os.statvfs(path)
+    tot = v.f_blocks * v.f_frsize
+    free = v.f_bavail * v.f_frsize
+    if not tot:
+        return None
+    return {"total_gb": round(tot / 1e9, 1),
+            "used_pct": round(100.0 * (1 - free / tot), 1)}
 
-    # CPU
+
+def collect_storage() -> dict:
+    """eMMC (root fs) + removable drives, per the contract: emmc = the mmcblk
+    with boot0/boot1 siblings (reported as the root fs), other mmcblk = sd,
+    a /sys device path containing /usb = usb. Unmounted → dev only."""
+    st = {}
     try:
-        load = os.getloadavg()
-        m["load_1"], m["load_5"], m["load_15"] = (round(x, 2) for x in load)
+        s = _fs_stats("/")
+        if s:
+            st["emmc"] = s
+    except Exception:
+        pass
+    mounts = {}
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                p = line.split()
+                if p[0].startswith("/dev/"):
+                    mounts[p[0][5:]] = p[1]
+    except Exception:
+        pass
+    usb, sd = [], []
+    try:
+        blocks = os.listdir("/sys/block")
+    except Exception:
+        blocks = []
+    for b in blocks:
+        if b.startswith(("loop", "ram", "zram")) or "boot" in b:
+            continue
+        try:
+            link = os.readlink("/sys/block/" + b)
+        except OSError:
+            link = ""
+        is_usb = "/usb" in link
+        is_mmc = b.startswith("mmcblk")
+        if not is_usb and not is_mmc:
+            continue
+        if is_mmc and os.path.exists("/sys/block/%sboot0" % b):
+            continue  # eMMC — reported as the root fs above
+        entry = {"dev": b}
+        for d, mp in mounts.items():
+            if d == b or (d.startswith(b) and d[len(b):].lstrip("p").isdigit()):
+                entry["dev"] = d
+                try:
+                    s = _fs_stats(mp)
+                    if s:
+                        entry.update(s)
+                except Exception:
+                    pass
+                break
+        (usb if is_usb else sd).append(entry)
+    if usb:
+        st["usb"] = usb
+    if sd:
+        st["sd"] = sd
+    return st
+
+
+def read_roster_modules(path: str = ROSTER_FILE):
+    """The modules block, passed VERBATIM from the bus-free roster cache —
+    the agent NEVER opens the RS-485 port. Absent/invalid cache → None."""
+    try:
+        with open(path) as f:
+            roster = json.load(f)
+        ports = roster.get("ports") or {}
+        if ports:
+            return {"ports": ports}
+    except Exception:
+        pass
+    return None
+
+
+def collect_telemetry(prev_cpu=None) -> tuple:
+    """Contract telemetry object. CPU% is computed between successive calls
+    (heartbeat cadence) via /proc/stat deltas — no sleep on the loop.
+    Returns (telemetry, cpu_snapshot)."""
+    t = {}
+    t["uptime_s"] = int(float(_read_first("/proc/uptime")))
+    try:
         with open("/proc/stat") as f:
             fields = list(map(int, f.readline().split()[1:]))
-        idle = fields[3]; total = sum(fields)
-        m["cpu_pct"] = round(100.0 * (1 - idle / total), 1)
+        idle, total = fields[3] + fields[4], sum(fields)
+        if prev_cpu:
+            didle, dtotal = idle - prev_cpu[0], total - prev_cpu[1]
+            t["cpu"] = round(100.0 * (1 - didle / max(dtotal, 1)), 1)
+        cpu_snap = (idle, total)
     except Exception:
-        m.update({"load_1": 0, "load_5": 0, "load_15": 0, "cpu_pct": 0})
-
-    # RAM
+        cpu_snap = prev_cpu
     try:
         with open("/proc/meminfo") as f:
-            mem = {k.strip(): int(v.strip().split()[0])
-                   for line in f for k, v in [line.split(":", 1)]}
-        total_kb = mem.get("MemTotal", 1)
-        avail_kb = mem.get("MemAvailable", 0)
-        used_kb  = total_kb - avail_kb
-        m["ram_total_mb"] = total_kb // 1024
-        m["ram_used_mb"]  = used_kb  // 1024
-        m["ram_pct"]      = round(100.0 * used_kb / max(total_kb, 1), 1)
-    except Exception:
-        m.update({"ram_total_mb": 0, "ram_used_mb": 0, "ram_pct": 0})
-
-    # Disk
-    try:
-        st = os.statvfs("/")
-        total = st.f_blocks * st.f_frsize; free = st.f_bfree * st.f_frsize
-        used  = total - free
-        m["disk_total_mb"] = total // (1024 * 1024)
-        m["disk_used_mb"]  = used  // (1024 * 1024)
-        m["disk_pct"]      = round(100.0 * used / max(total, 1), 1)
-    except Exception:
-        m.update({"disk_total_mb": 0, "disk_used_mb": 0, "disk_pct": 0})
-
-    # Uptime & temp
-    m["uptime_s"] = int(float(_read_first("/proc/uptime")))
-    for tp in ["/sys/class/thermal/thermal_zone0/temp",
-               "/sys/devices/virtual/thermal/thermal_zone0/temp"]:
-        if os.path.exists(tp):
-            m["temp_c"] = round(int(_read_first(tp)) / 1000.0, 1)
-            break
-    else:
-        m["temp_c"] = 0.0
-
-    # Network
-    try:
-        with open("/proc/net/dev") as f:
+            mem = {}
             for line in f:
-                if "eth0:" in line:
-                    p = line.split()
-                    m["eth0_rx_b"] = int(p[1]); m["eth0_tx_b"] = int(p[9])
-                    break
+                k, v = line.split(":", 1)
+                mem[k.strip()] = int(v.strip().split()[0])
+        t["ram_pct"] = round(
+            100.0 * (mem["MemTotal"] - mem["MemAvailable"]) / mem["MemTotal"], 1)
     except Exception:
-        m.update({"eth0_rx_b": 0, "eth0_tx_b": 0})
-
+        pass
     try:
-        out = subprocess.check_output(
-            ["ip", "-4", "addr", "show", "eth0"], stderr=subprocess.DEVNULL, timeout=3
-        ).decode()
-        m["eth0_ip"] = next((p.split("/")[0] for p in out.split() if "." in p and "/" in p), "")
+        t["temp_c"] = round(
+            int(_read_first("/sys/class/thermal/thermal_zone0/temp")) / 1000.0, 1)
     except Exception:
-        m["eth0_ip"] = ""
-
-    # VPN IP
+        pass
     try:
-        out = subprocess.check_output(
-            ["ip", "-4", "addr", "show", "wg-cloud"],
-            stderr=subprocess.DEVNULL, timeout=3
-        ).decode()
-        m["vpn_ip"] = next((p.split("/")[0] for p in out.split() if "." in p and "/" in p), "")
+        t["storage"] = collect_storage()
     except Exception:
-        m["vpn_ip"] = ""
+        pass
+    t["services_ok"] = _systemctl("is-active", "--quiet", "nginx") == 0
+    modules = read_roster_modules()
+    if modules:
+        t["modules"] = modules
+    return t, cpu_snap
 
-    # Services
+
+# ── Enrollment finalisation (shared by claim + token flows) ───────────────────
+def finalize_enrollment(resp: dict, cfg: configparser.ConfigParser,
+                        config_path: str, device_id: str) -> bool:
+    """Write frpc config + agent config from a claim/enroll response."""
+    frpc = resp.get("frpc") or {}
+    if not frpc.get("server_addr") or not frpc.get("token"):
+        log.error("enrollment response missing frpc profile: %s",
+                  {k: v for k, v in resp.items() if k != "frpc"})
+        return False
     try:
-        r = subprocess.run(["systemctl", "is-active", "mplc4"],
-                           capture_output=True, text=True, timeout=3)
-        m["mplc_status"] = r.stdout.strip()
-    except Exception:
-        m["mplc_status"] = "unknown"
-
-    m["timestamp"] = int(time.time())
-    m["hostname"]  = platform.node()
-    return m
-
-
-# ── WireGuard watchdog ────────────────────────────────────────────────────────
-def wg_watchdog(iface: str, config: str):
-    try:
-        out = subprocess.check_output(
-            ["wg", "show", iface, "latest-handshakes"],
-            stderr=subprocess.DEVNULL, timeout=5
-        ).decode().strip()
-        if out:
-            _, ts_str = out.split()
-            age = int(time.time()) - int(ts_str)
-            if age > 180:
-                log.warning("WireGuard handshake stale (%ds), restarting", age)
-                subprocess.run(["wg-quick", "down", config], timeout=10, check=False)
-                time.sleep(1)
-                subprocess.run(["wg-quick", "up", config], timeout=10, check=False)
-        else:
-            subprocess.run(["wg-quick", "up", config], timeout=10, check=False)
-    except subprocess.CalledProcessError:
-        subprocess.run(["wg-quick", "up", config], timeout=10, check=False)
+        write_frpc_config(frpc)
     except Exception as e:
-        log.debug("WireGuard watchdog: %s", e)
-
-
-# ── Command handler ───────────────────────────────────────────────────────────
-def handle_command(cmd: dict) -> str:
-    action = cmd.get("action", "")
-    log.info("Command: %s", action)
-    if action == "reboot":
-        threading.Timer(2.0, lambda: subprocess.run(["reboot"])).start()
-        return "ok: rebooting"
-    if action == "restart_mplc":
-        r = subprocess.run(["systemctl", "restart", "mplc4"],
-                           capture_output=True, text=True, timeout=10)
-        return f"ok: {r.returncode}"
-    if action == "restart_nginx":
-        r = subprocess.run(["systemctl", "restart", "nginx"],
-                           capture_output=True, text=True, timeout=10)
-        return f"ok: {r.returncode}"
-    if action == "get_log":
-        logfile = cmd.get("file", "/var/log/sa02m_install.log")
-        if not logfile.startswith("/var/log/"):
-            return "error: path not allowed"
+        log.error("cannot write frpc config: %s", e)
+        return False
+    cfg["cloud"]["enrolled"]  = "true"
+    cfg["cloud"]["device_id"] = device_id
+    hb = resp.get("heartbeat_interval_s")
+    if hb:
+        cfg["cloud"]["heartbeat_interval"] = str(int(hb))
+    cfg["device"]["serial"] = get_serial()
+    save_config(config_path, cfg)
+    for p in (ACTIVATION_TOKEN_FILE, PAIR_REQUEST_FILE):
         try:
-            with open(logfile, "rb") as f:
-                f.seek(max(0, f.seek(0, 2) or 0 - 8192))
-                return f.read().decode(errors="replace")
-        except Exception as e:
-            return f"error: {e}"
-    if action == "ping":
-        return "pong"
-    return f"error: unknown action {action!r}"
+            os.remove(p)
+        except OSError:
+            pass
+    tunnel = ensure_frpc_running()
+    log.info("Enrolled as %s; tunnel: %s", device_id, tunnel)
+    _write_status("active", device_id=device_id, tunnel=tunnel,
+                  serial=cfg["device"]["serial"])
+    return True
 
 
-# ── Bootstrap loop (standby until activated) ─────────────────────────────────
+# ── Claim-code flow (primary) ─────────────────────────────────────────────────
+def run_claim_flow(cfg: configparser.ConfigParser, config_path: str) -> bool:
+    """POST /claim → show the code via the status file → poll /claim/status
+    until claimed/expired. Returns True once enrolled."""
+    api_url   = cfg["cloud"]["api_url"].rstrip("/")
+    device_id = get_device_id(cfg)
+    serial    = get_serial()
+
+    status, resp = api_post(f"{api_url}/claim", {
+        "device_id":  device_id,
+        "hw_variant": HW_VARIANT,
+        "fw_version": get_fw_version(),
+    })
+    if status == 409:
+        log.warning("device already claimed in the cloud — detach it first")
+        _write_status("already_claimed", device_id=device_id, serial=serial)
+        return False
+    if status != 200 or not resp or not resp.get("claim_code"):
+        log.warning("claim request failed (HTTP %s)", status)
+        _write_status("claim_failed", device_id=device_id, serial=serial)
+        return False
+
+    code     = resp["claim_code"]
+    ttl      = int(resp.get("expires_in_s", 900))
+    poll_s   = max(int(resp.get("poll_interval_s", 5)), 2)
+    deadline = time.time() + ttl
+    log.info("Pairing code %s (valid %ds) — enter it at %s",
+             code, ttl, cfg["cloud"]["server_host"])
+
+    while time.time() < deadline:
+        _write_status("pairing", claim_code=code, device_id=device_id,
+                      serial=serial, expires_at=int(deadline))
+        status, st = api_post(f"{api_url}/claim/status",
+                              {"device_id": device_id, "claim_code": code})
+        if status == 200 and st:
+            state = st.get("state", "")
+            if state == "claimed":
+                return finalize_enrollment(st, cfg, config_path, device_id)
+            if state == "expired":
+                break
+        # user may cancel pairing from the web UI (trigger file removed)
+        if not os.path.exists(PAIR_REQUEST_FILE):
+            log.info("pairing cancelled from the web UI")
+            _write_status("standby", serial=serial)
+            return False
+        time.sleep(poll_s)
+
+    log.info("pairing code expired")
+    _write_status("pair_expired", device_id=device_id, serial=serial)
+    try:
+        os.remove(PAIR_REQUEST_FILE)
+    except OSError:
+        pass
+    return False
+
+
+# ── Enroll-token flow (installer fallback) ────────────────────────────────────
+def run_token_flow(token: str, cfg: configparser.ConfigParser,
+                   config_path: str) -> bool:
+    api_url   = cfg["cloud"]["api_url"].rstrip("/")
+    device_id = get_device_id(cfg)
+    _write_status("enrolling", device_id=device_id, serial=get_serial())
+    status, resp = api_post(f"{api_url}/enroll", {
+        "enroll_token": token,
+        "device_id":    device_id,
+        "hw_variant":   HW_VARIANT,
+        "fw_version":   get_fw_version(),
+    })
+    if status != 200 or not resp or not resp.get("ok"):
+        log.warning("enroll failed (HTTP %s): %s", status, resp)
+        _write_status("enroll_failed", device_id=device_id)
+        return False
+    return finalize_enrollment(resp, cfg, config_path, device_id)
+
+
+# ── Standby loop (wait for an activation trigger) ─────────────────────────────
 def bootstrap_loop(cfg: configparser.ConfigParser, config_path: str) -> bool:
-    """
-    Wait for activation. Checks every 15s:
-      1. /etc/sa02m-cloud/activation_token file (factory or web UI wrote it)
-    Returns True when activated successfully.
-    """
-    log.info("Standby: waiting for activation token at %s", ACTIVATION_TOKEN_FILE)
-    log.info("Activate via web UI: http://device-ip:9999  → Cloud tab")
-    log.info("Or factory: write token to %s", ACTIVATION_TOKEN_FILE)
-    _write_status("standby")
-
+    log.info("Standby: waiting for pairing (web UI Cloud tab) or an enroll "
+             "token at %s", ACTIVATION_TOKEN_FILE)
+    _write_status("standby", serial=get_serial())
     while True:
-        # Check token file
+        if os.path.exists(PAIR_REQUEST_FILE):
+            if run_claim_flow(cfg, config_path):
+                return True
+            # Pairing failed with the trigger still present (already_claimed /
+            # cloud unreachable): keep retrying so a detach in the cloud
+            # auto-resumes pairing without another button press — but slowly,
+            # the claim endpoint is rate-limited per IP (10 / 5 min).
+            if os.path.exists(PAIR_REQUEST_FILE):
+                time.sleep(60)
+            continue
         if os.path.exists(ACTIVATION_TOKEN_FILE):
             try:
                 with open(ACTIVATION_TOKEN_FILE) as f:
                     token = f.read().strip()
-                if token:
-                    success = try_activate(token, cfg, config_path)
-                    if success:
-                        return True
-                    else:
-                        log.warning("Activation failed, will retry in 60s")
-                        _write_status("activation_failed")
-                        time.sleep(60)
-                        continue
             except Exception as e:
-                log.error("Error reading activation token: %s", e)
+                log.error("cannot read activation token: %s", e)
+                token = ""
+            if token:
+                if run_token_flow(token, cfg, config_path):
+                    return True
+                log.warning("enroll failed, retrying in 60s")
+                time.sleep(60)
+                continue
+        time.sleep(STANDBY_POLL_S)
 
-        time.sleep(15)
+
+# ── Active loop — frpc watchdog + send-only heartbeat ─────────────────────────
+def active_loop(cfg: configparser.ConfigParser):
+    api_url    = cfg["cloud"]["api_url"].rstrip("/")
+    device_id  = get_device_id(cfg)
+    h_interval = int(cfg["cloud"]["heartbeat_interval"])
+
+    log.info("SA-02m Cloud Agent active (device %s, heartbeat %ds). "
+             "Send-only: no command channel.", device_id, h_interval)
+
+    last_heartbeat = 0.0
+    last_watchdog  = 0.0
+    tunnel         = ensure_frpc_running()
+    cpu_snap       = None
+
+    while True:
+        now = time.time()
+
+        if now - last_watchdog > WATCHDOG_S:
+            tunnel = ensure_frpc_running()
+            last_watchdog = now
+
+        if now - last_heartbeat > h_interval:
+            telemetry, cpu_snap = collect_telemetry(cpu_snap)
+            # Send-only by design: the response carries no commands (F1
+            # removed cloud-side too); nothing here interprets it.
+            api_post(f"{api_url}/heartbeat", {
+                "device_id": device_id,
+                "uptime_s":  telemetry.get("uptime_s", 0),
+                "telemetry": telemetry,
+            })
+            _write_status("active", device_id=device_id, tunnel=tunnel,
+                          serial=cfg["device"]["serial"],
+                          last_heartbeat=int(now))
+            last_heartbeat = now
+
+        time.sleep(2)
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="SA-02m Cloud Agent")
+    parser = argparse.ArgumentParser(description="SA-02m Cloud Agent (frpc)")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
     args = parser.parse_args()
 
     os.makedirs("/etc/sa02m-cloud", exist_ok=True)
 
     cfg = load_config(args.config)
-    token = cfg["cloud"]["device_token"]
 
-    # ── Not activated yet → bootstrap mode ───────────────────────────────────
-    if not token:
-        activated = bootstrap_loop(cfg, args.config)
-        if not activated:
-            sys.exit(1)
-        # Reload config after activation
-        cfg   = load_config(args.config)
-        token = cfg["cloud"]["device_token"]
+    if not cfg["cloud"].getboolean("enrolled"):
+        bootstrap_loop(cfg, args.config)
+        cfg = load_config(args.config)
 
-    # ── Active mode ───────────────────────────────────────────────────────────
-    api_url    = cfg["cloud"]["api_url"].rstrip("/")
-    m_interval = int(cfg["cloud"]["metrics_interval"])
-    h_interval = int(cfg["cloud"]["heartbeat_interval"])
-    wg_enabled = cfg["wireguard"].getboolean("enabled")
-    wg_iface   = cfg["wireguard"]["interface"]
-    wg_config  = cfg["wireguard"]["config"]
-
-    log.info("SA-02m Cloud Agent active. API: %s", api_url)
-    _write_status("active", vpn_ip=collect_metrics().get("vpn_ip", ""))
-
-    last_metrics   = 0.0
-    last_heartbeat = 0.0
-    last_wg_check  = 0.0
-
-    while True:
-        now = time.time()
-
-        if wg_enabled and os.path.exists(wg_config) and now - last_wg_check > 60:
-            wg_watchdog(wg_iface, wg_config)
-            last_wg_check = now
-
-        if now - last_heartbeat > h_interval:
-            api_post(f"{api_url}/devices/heartbeat", token, {"ts": int(now)})
-            last_heartbeat = now
-
-        if now - last_metrics > m_interval:
-            metrics = collect_metrics()
-            api_post(f"{api_url}/devices/metrics", token, metrics)
-            _write_status("active", vpn_ip=metrics.get("vpn_ip", ""),
-                          eth0_ip=metrics.get("eth0_ip", ""),
-                          last_metrics=int(now))
-            last_metrics = now
-
-        cmds = api_get(f"{api_url}/devices/commands/pending", token, timeout=8)
-        if cmds and isinstance(cmds, list):
-            for cmd in cmds:
-                cmd_id = cmd.get("id")
-                result = handle_command(cmd)
-                api_post(f"{api_url}/devices/commands/{cmd_id}/result", token,
-                         {"result": result})
-
-        time.sleep(5)
+    active_loop(cfg)
 
 
 if __name__ == "__main__":

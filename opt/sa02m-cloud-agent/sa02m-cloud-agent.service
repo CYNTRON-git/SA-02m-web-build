@@ -1,6 +1,6 @@
 [Unit]
-Description=SA-02m Cloud Agent
-Documentation=https://cloud.cyntron.ru/docs
+Description=SA-02m Cloud Agent (pairing + telemetry; tunnel via sa02m-cloud-frpc)
+Documentation=https://cloud.cyntron.ru
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=60
