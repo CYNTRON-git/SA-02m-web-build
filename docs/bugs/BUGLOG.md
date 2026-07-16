@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-07-16 16:50] branch: 1.0.5.7 — Сеть: IP не применялся + ложная «Ошибка сервера: 0»
+
+**Файл(ы):** `www/network_config/cgi-bin/apply.cgi`, `www/network_config/static/js/app/forms.js`
+**Тип:** Некорректное поведение
+**Описание:** После «Применить» на вкладке «Сеть» новый IP писался в `interfaces.d`, но на интерфейсе не появлялся до `systemctl restart networking` / reboot; UI показывал «Ошибка сервера: 0».
+**Причина:** (1) `apply.cgi` только писал conf, без live `ifdown`/`ifup`. (2) При обрыве TCP после смены IP `fetch` даёт `status === 0` / reject — `submitForm` трактовал это как ошибку сервера.
+**Исправление:** фоновый `nohup` `ifdown`/`ifup` (sudoers `/sbin/...`, fallback `systemctl restart networking.service`); CGI отдаёт `Status: 302`; для форм с `net_iface` status 0 / network error → success toast («откройте новый адрес через 2–3 с»).
+
+---
+
 ## [2026-07-16 15:37] branch: 1.0.5.6 — вкладка Сеть: пустые поля Ethernet
 
 **Файл(ы):** `www/network_config/cgi-bin/config.cgi`, `www/network_config/cgi-bin/apply.cgi`, `www/network_config/cgi-bin/lib_net_iface.sh`

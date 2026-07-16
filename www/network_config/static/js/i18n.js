@@ -818,6 +818,8 @@
     [/^✗ Ошибка: (.+)$/u, '✗ Error: $1'],
     [/^Настройки Ethernet № 1 применены\. Перезагрузите сеть\.$/u, 'Ethernet #1 settings applied. Restart networking.'],
     [/^Настройки Ethernet № 2 применены\.$/u, 'Ethernet #2 settings applied.'],
+    [/^Ethernet № 1: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с\.$/u, 'Ethernet #1: config saved, address applying… After an IP change open the new address in 2–3 s.'],
+    [/^Ethernet № 2: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с\.$/u, 'Ethernet #2: config saved, address applying… After an IP change open the new address in 2–3 s.'],
     [/^Укажите IP и маску для Ethernet № 1$/u, 'Enter IP and subnet mask for Ethernet #1'],
     [/^Укажите IP для Ethernet № 2$/u, 'Enter IP for Ethernet #2'],
     [/^Время\/таймзона применены$/u, 'Time/time zone applied'],

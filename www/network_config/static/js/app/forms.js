@@ -127,7 +127,10 @@ function initForms() {
         return;
       }
     }
-    submitForm(f0, () => { configLoaded = false; toast('Настройки Ethernet № 1 применены. Перезагрузите сеть.', 'success'); });
+    submitForm(f0, () => {
+      configLoaded = false;
+      toast('Ethernet № 1: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с.', 'success', 8000);
+    });
   });
 
   /* eth1 */
@@ -138,7 +141,10 @@ function initForms() {
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
       toast('Укажите IP для Ethernet № 2', 'error'); return;
     }
-    submitForm(f1, () => { configLoaded = false; toast('Настройки Ethernet № 2 применены.', 'success'); });
+    submitForm(f1, () => {
+      configLoaded = false;
+      toast('Ethernet № 2: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с.', 'success', 8000);
+    });
   });
 
   /* time */
@@ -179,9 +185,19 @@ function parseApplyRedirect(response) {
   return { kind: 'ok' };
 }
 
+/** Network apply may drop TCP (status 0 / fetch reject) when IP changes — not an error. */
+function isNetApplyForm(form) {
+  return !!(form && form.querySelector('input[name="net_iface"]'));
+}
+
 function submitForm(form, onSuccess) {
   const data = new URLSearchParams(new FormData(form));
   const btn = form.querySelector('button[type=submit]');
+  const netApply = isNetApplyForm(form);
+  const finishOk = () => {
+    configLoaded = false;
+    onSuccess && onSuccess();
+  };
   if (btn) btn.disabled = true;
   fetch('/cgi-bin/apply.cgi', {
     method: 'POST',
@@ -190,6 +206,11 @@ function submitForm(form, onSuccess) {
     credentials: 'same-origin'
   })
     .then((r) => {
+      // status 0 / opaqueredirect: connection gone after IP bounce — treat as applied
+      if (netApply && (r.status === 0 || r.type === 'opaqueredirect')) {
+        finishOk();
+        return;
+      }
       if (!r.ok && r.status !== 302 && r.status !== 301) {
         toast('Ошибка сервера: ' + r.status, 'error');
         return;
@@ -207,15 +228,19 @@ function submitForm(form, onSuccess) {
         return;
       }
       if (pr.kind === 'applied_tz_failed') {
-        configLoaded = false;
         toast('Настройки применены; таймзона не изменилась.', 'warn', 6000);
-        onSuccess && onSuccess();
+        finishOk();
         return;
       }
-      configLoaded = false;
-      onSuccess && onSuccess();
+      finishOk();
     })
-    .catch(() => toast('Ошибка отправки', 'error'))
+    .catch(() => {
+      if (netApply) {
+        finishOk();
+        return;
+      }
+      toast('Ошибка отправки', 'error');
+    })
     .finally(() => { if (btn) btn.disabled = false; });
 }
 
