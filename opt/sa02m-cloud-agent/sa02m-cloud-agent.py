@@ -483,7 +483,12 @@ def bootstrap_loop(cfg: configparser.ConfigParser, config_path: str) -> bool:
         if os.path.exists(PAIR_REQUEST_FILE):
             if run_claim_flow(cfg, config_path):
                 return True
-            time.sleep(STANDBY_POLL_S)
+            # Pairing failed with the trigger still present (already_claimed /
+            # cloud unreachable): keep retrying so a detach in the cloud
+            # auto-resumes pairing without another button press — but slowly,
+            # the claim endpoint is rate-limited per IP (10 / 5 min).
+            if os.path.exists(PAIR_REQUEST_FILE):
+                time.sleep(60)
             continue
         if os.path.exists(ACTIVATION_TOKEN_FILE):
             try:
