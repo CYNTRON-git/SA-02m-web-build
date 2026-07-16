@@ -36,10 +36,22 @@
   }
   button:hover { opacity: .85; }
   button:disabled { opacity: .4; cursor: not-allowed; }
+  button.secondary { background: #1e293b; color: var(--muted); }
   .msg { margin-top: 10px; padding: 10px 14px; border-radius: 8px; font-size: 13px; display: none; }
   .msg.ok  { background: #14532d; color: var(--green); display: block; }
   .msg.err { background: #450a0a; color: var(--red);   display: block; }
   label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+  /* Pairing code — the one thing the user carries to the cloud UI */
+  #pair-code {
+    font: 700 44px/1.2 ui-monospace, "Cascadia Mono", monospace;
+    letter-spacing: .12em; text-align: center; color: #fff;
+    padding: 18px 0 6px; user-select: all;
+  }
+  #pair-hint { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  #pair-timer { color: var(--yellow); }
+  details { margin-top: 8px; }
+  summary { color: var(--muted); font-size: 13px; cursor: pointer; padding: 6px 0; }
+  details[open] summary { margin-bottom: 10px; }
 </style>
 </head>
 <body>
@@ -56,9 +68,13 @@
     <span class="label">Соединение</span>
     <span id="cloud-state"><span class="badge gray">…</span></span>
   </div>
-  <div class="row" id="row-vpn" style="display:none">
-    <span class="label">VPN IP</span>
-    <span id="vpn-ip" style="font-family:monospace"></span>
+  <div class="row" id="row-tunnel" style="display:none">
+    <span class="label">Туннель</span>
+    <span id="tunnel-state"><span class="badge gray">…</span></span>
+  </div>
+  <div class="row" id="row-devid" style="display:none">
+    <span class="label">ID устройства</span>
+    <span id="dev-id" style="font-family:monospace;font-size:12px"></span>
   </div>
   <div class="row" id="row-serial" style="display:none">
     <span class="label">Серийный номер</span>
@@ -70,18 +86,36 @@
   </div>
 </div>
 
-<div class="card" id="activate-card">
-  <h2>Активация</h2>
-  <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
-    Получите токен активации в личном кабинете на <b>cloud.cyntron.ru</b>
-    и вставьте его ниже. Устройство автоматически подключится к облаку.
-  </p>
-  <label>Токен активации</label>
-  <input type="password" id="token" placeholder="Вставьте токен…" autocomplete="off">
-  <label>Облачный сервер</label>
-  <input type="text" id="server" value="cloud.cyntron.ru">
-  <button id="btn-activate" onclick="activate()">Подключить к облаку</button>
+<div class="card" id="pair-card">
+  <h2>Подключение к облаку</h2>
+
+  <div id="pair-idle">
+    <p style="color:var(--muted);font-size:13px;margin-bottom:16px">
+      Нажмите кнопку — устройство получит код сопряжения. Затем войдите в
+      личный кабинет на <b>cloud.cyntron.ru</b> и введите этот код.
+    </p>
+    <button id="btn-pair" onclick="startPairing()">Подключить к облаку</button>
+  </div>
+
+  <div id="pair-active" style="display:none">
+    <p style="color:var(--muted);font-size:13px">
+      Введите этот код в личном кабинете на <b>cloud.cyntron.ru</b>:
+    </p>
+    <div id="pair-code">····-····</div>
+    <div id="pair-hint">Код действует ещё <span id="pair-timer">—</span></div>
+    <button class="secondary" id="btn-cancel" onclick="cancelPairing()">Отменить</button>
+  </div>
+
   <div class="msg" id="msg"></div>
+
+  <details id="token-fallback">
+    <summary>Подключение по токену (для наладчиков)</summary>
+    <label>Токен активации</label>
+    <input type="password" id="token" placeholder="Вставьте токен…" autocomplete="off">
+    <label>Облачный сервер</label>
+    <input type="text" id="server" value="cloud.cyntron.ru">
+    <button id="btn-activate" onclick="activate()">Подключить по токену</button>
+  </details>
 </div>
 
 <script>
@@ -102,68 +136,134 @@ function relativeTime(ts) {
   return `${Math.floor(diff/3600)}ч назад`;
 }
 
+function fmtRemaining(expiresAt) {
+  const left = expiresAt - Math.floor(Date.now()/1000);
+  if (left <= 0) return 'истёк';
+  const m = Math.floor(left/60), s = left % 60;
+  return m > 0 ? `${m} мин ${s} с` : `${s} с`;
+}
+
+const stateMap = {
+  active:          ['Подключено',            'green'],
+  standby:         ['Не подключено',         'gray'],
+  pairing:         ['Ожидание кода в облаке','yellow'],
+  pair_expired:    ['Код истёк',             'yellow'],
+  already_claimed: ['Уже привязано в облаке','red'],
+  claim_failed:    ['Облако недоступно',     'red'],
+  enrolling:       ['Активация…',            'yellow'],
+  enroll_failed:   ['Ошибка активации',      'red'],
+  activating:      ['Активация…',            'yellow'],
+  activation_failed:['Ошибка активации',     'red'],
+  unknown:         ['Нет данных',            'gray'],
+};
+
+const tunnelMap = {
+  running:      ['Работает',        'green'],
+  failed:       ['Ошибка запуска',  'red'],
+  frpc_missing: ['frpc не установлен', 'red'],
+  no_config:    ['Нет конфигурации','gray'],
+};
+
 async function refreshStatus() {
   try {
     const r = await fetch('/cgi-bin/cloud.cgi', {cache:'no-store'});
     const d = await r.json();
 
-    // Service badge
     const svcActive = d.service_active === 'active';
     $('svc-state').innerHTML = svcActive
       ? badge('Работает', 'green') : badge(d.service_active || 'не запущен', 'gray');
 
-    // Cloud state badge
-    const stateMap = {
-      active:            ['Подключено',      'green'],
-      standby:           ['Ожидание токена',  'yellow'],
-      activating:        ['Активация…',       'yellow'],
-      activation_failed: ['Ошибка активации', 'red'],
-      unknown:           ['Нет данных',       'gray'],
-    };
     const [stateText, stateColor] = stateMap[d.state] || ['Неизвестно', 'gray'];
     $('cloud-state').innerHTML = badge(stateText, stateColor);
 
-    if (d.vpn_ip) {
-      $('row-vpn').style.display = '';
-      $('vpn-ip').textContent = d.vpn_ip;
+    if (d.tunnel) {
+      $('row-tunnel').style.display = '';
+      const [tText, tColor] = tunnelMap[d.tunnel] || [d.tunnel, 'gray'];
+      $('tunnel-state').innerHTML = badge(tText, tColor);
+    } else {
+      $('row-tunnel').style.display = 'none';
+    }
+    if (d.device_id) {
+      $('row-devid').style.display = '';
+      $('dev-id').textContent = d.device_id;
     }
     if (d.serial) {
       $('row-serial').style.display = '';
       $('dev-serial').textContent = d.serial;
     }
-    if (d.last_metrics) {
+    if (d.last_heartbeat) {
       $('row-ts').style.display = '';
-      $('last-ts').textContent = relativeTime(d.last_metrics);
+      $('last-ts').textContent = relativeTime(d.last_heartbeat);
     }
 
-    // Hide activation form if already active
-    if (d.state === 'active') {
-      $('activate-card').style.display = 'none';
+    // Pairing view: show the code LARGE while the agent waits for the cloud
+    if (d.state === 'pairing' && d.claim_code) {
+      $('pair-idle').style.display = 'none';
+      $('pair-active').style.display = '';
+      $('pair-code').textContent = d.claim_code;
+      $('pair-timer').textContent = d.expires_at ? fmtRemaining(d.expires_at) : '—';
+    } else {
+      $('pair-idle').style.display = '';
+      $('pair-active').style.display = 'none';
     }
+
+    // Connected: hide the pairing controls entirely
+    $('pair-card').style.display = (d.state === 'active') ? 'none' : '';
   } catch(e) {
     $('cloud-state').innerHTML = badge('Ошибка', 'red');
   }
+}
+
+async function postAction(body) {
+  const r = await fetch('/cgi-bin/cloud.cgi', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+async function startPairing() {
+  const btn = $('btn-pair');
+  btn.disabled = true;
+  btn.textContent = 'Запрос кода…';
+  try {
+    const d = await postAction({action:'pair'});
+    if (d.ok) {
+      showMsg('Запрошен код сопряжения — появится здесь через несколько секунд', true);
+      setTimeout(refreshStatus, 2000);
+      setTimeout(refreshStatus, 5000);
+    } else {
+      showMsg(d.error || 'Ошибка', false);
+    }
+  } catch(e) {
+    showMsg('Ошибка соединения с устройством', false);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Подключить к облаку';
+  }
+}
+
+async function cancelPairing() {
+  try {
+    await postAction({action:'cancel'});
+    showMsg('Сопряжение отменено', true);
+  } catch(e) {}
+  setTimeout(refreshStatus, 1500);
 }
 
 async function activate() {
   const token  = $('token').value.trim();
   const server = $('server').value.trim();
   const btn    = $('btn-activate');
-  const msg    = $('msg');
 
   if (!token) { showMsg('Введите токен активации', false); return; }
 
   btn.disabled = true;
   btn.textContent = 'Подключение…';
-  msg.className = 'msg'; msg.style.display = 'none';
 
   try {
-    const r = await fetch('/cgi-bin/cloud.cgi', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({token, server}),
-    });
-    const d = await r.json();
+    const d = await postAction({token, server});
     if (d.ok) {
       showMsg(d.message || 'Активация запущена', true);
       $('token').value = '';
@@ -177,7 +277,7 @@ async function activate() {
     showMsg('Ошибка соединения с устройством', false);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Подключить к облаку';
+    btn.textContent = 'Подключить по токену';
   }
 }
 
@@ -188,7 +288,7 @@ function showMsg(text, ok) {
 }
 
 refreshStatus();
-setInterval(refreshStatus, 10000);
+setInterval(refreshStatus, 5000);
 </script>
 </body>
 </html>

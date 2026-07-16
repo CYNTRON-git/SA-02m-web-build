@@ -1,10 +1,13 @@
 #!/bin/bash
 # SA-02m Cloud Agent CGI — status & activation via web UI
 # GET  → JSON status
-# POST → write activation token and trigger activation
+# POST {"action":"pair"}   → request a cloud pairing code (primary flow)
+# POST {"action":"cancel"} → cancel a pending pairing
+# POST {"token":"..."}     → enroll-token fallback (installers)
 
 STATUS_FILE="/run/sa02m-cloud-status.json"
 ACTIVATION_TOKEN_FILE="/etc/sa02m-cloud/activation_token"
+PAIR_REQUEST_FILE="/etc/sa02m-cloud/pair_request"
 
 # shellcheck source=lib_web_auth.sh
 . "$(dirname "$0")/lib_web_auth.sh"
@@ -35,9 +38,26 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     # Read POST body
     read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
 
-    # Extract token from JSON: {"token":"..."}
+    ACTION=$(echo "$POST_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('action',''))" 2>/dev/null)
     TOKEN=$(echo "$POST_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null)
     SERVER=$(echo "$POST_DATA" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('server','cloud.cyntron.ru'))" 2>/dev/null)
+
+    if [ "$ACTION" = "pair" ]; then
+        # Claim-code flow: the trigger file tells the agent to request a
+        # pairing code; the code appears in the status JSON (state=pairing).
+        mkdir -p /etc/sa02m-cloud
+        : > "$PAIR_REQUEST_FILE"
+        chmod 600 "$PAIR_REQUEST_FILE"
+        systemctl start sa02m-cloud-agent 2>/dev/null || true
+        echo '{"ok":true,"message":"pairing requested"}'
+        exit 0
+    fi
+
+    if [ "$ACTION" = "cancel" ]; then
+        rm -f "$PAIR_REQUEST_FILE"
+        echo '{"ok":true,"message":"pairing cancelled"}'
+        exit 0
+    fi
 
     if [ -z "$TOKEN" ]; then
         echo '{"ok":false,"error":"token is required"}'

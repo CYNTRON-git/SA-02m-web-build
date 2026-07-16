@@ -1,9 +1,9 @@
 #!/bin/bash
-set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending on-device install test
 # ═══════════════════════════════════════════════════════════════════════════
-# СА-02м  •  05-cloud-agent.sh  —  Cloud Agent & WireGuard install
-# Устанавливает sa02m-cloud-agent и wireguard-tools.
-# Активация выполняется отдельно: sa02m-cloud-activate --token <TOKEN>
+# СА-02м  •  05-cloud-agent.sh  —  Cloud Agent install (frpc edition)
+# Устанавливает sa02m-cloud-agent (pairing + telemetry) и юнит туннеля
+# sa02m-cloud-frpc. Активация: веб-UI устройства (вкладка «Облако», код
+# сопряжения) или sa02m-cloud-activate --token <TOKEN> (fallback).
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -11,19 +11,11 @@ source "$(dirname "$0")/lib.sh"
 AGENT_SRC="$(cd "$(dirname "$0")/.." && pwd)/opt/sa02m-cloud-agent"
 AGENT_DST="/opt/sa02m-cloud-agent"
 SYSTEMD_DIR="/etc/systemd/system"
+FRPC_BIN="/usr/local/bin/frpc"
 
 log INFO "── Cloud Agent: установка ──────────────────────────────────────────"
 
-# ── 1. wireguard-tools ───────────────────────────────────────────────────────
-if ! command -v wg &>/dev/null; then
-    log INFO "Устанавливаю wireguard-tools..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools
-    log OK "wireguard-tools установлен"
-else
-    log OK "wireguard-tools уже установлен ($(wg --version | head -1))"
-fi
-
-# ── 2. Копируем агент ────────────────────────────────────────────────────────
+# ── 1. Копируем агент ────────────────────────────────────────────────────────
 log INFO "Копирую агент в $AGENT_DST..."
 mkdir -p "$AGENT_DST"
 cp "$AGENT_SRC/sa02m-cloud-agent.py"    "$AGENT_DST/"
@@ -35,22 +27,47 @@ chmod +x "$AGENT_DST/sa02m-cloud-activate.py"
 ln -sf "$AGENT_DST/sa02m-cloud-activate.py" /usr/local/bin/sa02m-cloud-activate
 log OK "Агент скопирован"
 
-# ── 3. Systemd unit ──────────────────────────────────────────────────────────
-log INFO "Устанавливаю systemd unit..."
+# ── 2. Systemd units ─────────────────────────────────────────────────────────
+log INFO "Устанавливаю systemd units..."
 cp "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"
+cp "$AGENT_SRC/sa02m-cloud-frpc.service"  "$SYSTEMD_DIR/"
 systemctl daemon-reload
-# Включаем сразу — агент сам уйдёт в standby и дождётся токена
+# Агент включаем сразу — до активации он в standby и ждёт код/токен.
+# Туннель включает сам агент после enrollment (юнит гейтится frpc.toml).
 systemctl enable sa02m-cloud-agent
-log OK "Unit установлен и включён (ждёт токен активации)"
+log OK "Units установлены (агент ждёт активации)"
 
-# ── 4. Конфиг-директория ─────────────────────────────────────────────────────
+# ── 3. Замена ручных стендовых юнитов (прототип Фазы B) ─────────────────────
+# На стенде туннель и heartbeat были подняты вручную (sa02m-frpc +
+# sa02m-cloud-heartbeat); переработанный агент их полностью заменяет.
+for unit in sa02m-frpc sa02m-cloud-heartbeat; do
+    if systemctl list-unit-files "${unit}.service" &>/dev/null \
+       && systemctl list-unit-files "${unit}.service" | grep -q "${unit}.service"; then
+        log INFO "Отключаю ручной юнит ${unit} (заменён агентом)..."
+        systemctl disable --now "${unit}" 2>/dev/null || true
+    fi
+done
+
+# ── 4. Очистка WireGuard-эры (агент больше не использует WG) ────────────────
+if [ -f /etc/wireguard/wg-cloud.conf ]; then
+    log INFO "Убираю WireGuard-конфиг облака (wg-cloud)..."
+    wg-quick down wg-cloud 2>/dev/null || true
+    rm -f /etc/wireguard/wg-cloud.conf
+    log OK "wg-cloud удалён"
+fi
+
+# ── 5. Конфиг-директория ─────────────────────────────────────────────────────
 mkdir -p /etc/sa02m-cloud
 chmod 750 /etc/sa02m-cloud
 
-# ── 5. WireGuard директория ──────────────────────────────────────────────────
-mkdir -p /etc/wireguard
-chmod 700 /etc/wireguard
+# ── 6. frpc binary ───────────────────────────────────────────────────────────
+if [ -x "$FRPC_BIN" ]; then
+    log OK "frpc найден: $("$FRPC_BIN" --version 2>/dev/null || echo "$FRPC_BIN")"
+else
+    log WARN "frpc не найден ($FRPC_BIN) — облачный туннель не поднимется."
+    log WARN "Установите frpc (static binary, linux_arm) и перезапустите агент."
+fi
 
 log OK "── Cloud Agent: готов ──────────────────────────────────────────────"
-log INFO "Для активации устройства выполните:"
-log INFO "  sa02m-cloud-activate --token <TOKEN> --server cloud.cyntron.ru"
+log INFO "Активация: веб-интерфейс → вкладка «Облако» → «Подключить к облаку»"
+log INFO "  (или sa02m-cloud-activate --token <TOKEN> для наладчиков)"
