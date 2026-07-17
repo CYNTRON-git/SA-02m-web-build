@@ -108,15 +108,25 @@ def read_resp(ser, timeout=0.08, max_len=64):
     return buf
 
 
-def read_fixed(ser, nbytes, timeout=0.5):
-    ser.timeout = timeout
+def read_fmb_frame(ser, timeout=0.2):
+    """10-byte answer_scan frame, tolerating leading 0xFF arbitration
+    padding (Wiren FMB devices, incl. DTV, prefix answers with 0xFF)."""
     buf = b""
+    ser.timeout = 0.05
     deadline = time.monotonic() + timeout
-    while len(buf) < nbytes and time.monotonic() < deadline:
-        chunk = ser.read(nbytes - len(buf))
+    while time.monotonic() < deadline:
+        chunk = ser.read(32)
         if chunk:
             buf += chunk
-    return buf
+            frame = buf.lstrip(b"\xff")
+            if len(frame) >= 10:
+                return frame[:10]
+        elif buf.lstrip(b"\xff"):
+            break
+        else:
+            time.sleep(0.002)
+    frame = buf.lstrip(b"\xff")
+    return frame[:10] if len(frame) >= 10 else b""
 
 
 def fast_scan_fmb(ser):
@@ -127,7 +137,7 @@ def fast_scan_fmb(ser):
         ser.write(make_fmb5(0x01))
         time.sleep(0.02)
         for _ in range(32):
-            resp = read_fixed(ser, 10, timeout=0.15)
+            resp = read_fmb_frame(ser, timeout=0.25)
             if len(resp) < 10:
                 break
             if resp[0] != FMB_ADDR or resp[1] != 0x46 or resp[2] != 0x03:
@@ -213,7 +223,9 @@ def decode_signature(regs):
 
 
 def detect_type(ser, addr, *, read_signature: bool = False):
-    """Тип устройства для скана. EEPROM-сигнатура (reg 290) — только при read_signature=True."""
+    """Тип устройства для скана. reg-фингерпринты, затем фолбэк по
+    EEPROM-сигнатуре (reg 290); read_signature=True добавляет чтение
+    сигнатуры и для опознанных МР-02м."""
     r1 = read_holding(ser, addr, 1, timeout=0.05)
     if r1 is not None and len(r1) >= 1:
         if r1[0] == 0xCE02:
@@ -231,11 +243,18 @@ def detect_type(ser, addr, *, read_signature: bool = False):
                 signature = decode_signature(sig_regs)
         return "mr02m", mt, MR02M_MODULE_TYPES[mt], signature
 
+    # Reg-based fingerprints failed — fall back to the EEPROM signature
+    # (reg 290), like hardpy resolve_product: DTV firmwares with Input0=0
+    # identify only by "Sens." (holding 1 mirrors sensor data there).
     signature = ""
-    if read_signature:
-        sig_regs = read_holding(ser, addr, 290, 12, timeout=0.07)
-        if sig_regs:
-            signature = decode_signature(sig_regs)
+    sig_regs = read_holding(ser, addr, 290, 12, timeout=0.1)
+    if sig_regs:
+        signature = decode_signature(sig_regs)
+    sk = _latinize_sig(signature).rstrip(".")
+    if sk.startswith("SENS") or "DTV" in sk or "RTU" in sk:
+        return "dtv", 0, "ДТВ-RS-485", signature
+    if sk.startswith("CE02") or sk.startswith("SE02"):
+        return "ce02m3", 0, "СЭ-02м-3", signature
     return "unknown", 0, "unknown", signature
 
 

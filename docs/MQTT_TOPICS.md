@@ -248,7 +248,7 @@ Baudrate: 19200 (по умолчанию). Адрес: 1 (по умолчани�
 
 # MCU диагностика
 # reg=123 mcu_vdd   V  ×0.01
-# reg=124 mcu_temp  °C ×1.0
+# reg=124 mcu_temp  °C ×0.1
 /devices/dtv-COM3-1/controls/mcu_vdd      type=voltage     units=V
 /devices/dtv-COM3-1/controls/mcu_temp     type=temperature units=°C
 ```

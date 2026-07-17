@@ -2114,7 +2114,8 @@ class DTVPoller(DevicePoller):
         29:  ("still_distance",      1.0,   "value",        "cm"),
         30:  ("detect_distance",     1.0,   "value",        "cm"),
         123: ("mcu_vdd",             0.01,  "voltage",      "V"),
-        124: ("mcu_temp",            1.0,   "temperature",  "°C"),
+        # Reg 124 — int16 in tenths of °C (373 → 37.3), same as MR-02m/hardpy.
+        124: ("mcu_temp",            0.1,   "temperature",  "°C"),
     }
     DTV_COILS = {1: ("buzzer", True), 2: ("leds", True)}
 
