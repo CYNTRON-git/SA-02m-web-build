@@ -56,8 +56,13 @@ deployment.md`). Изменения репозитория попадают на
    ```
    ssh root@<dev> 'tar czf /root/www-backup-$(date +%Y%m%d-%H%M%S).tgz -C /var/www network_config'
    ```
-2. **Доставка** `www/` и `scripts/` в staging на устройстве (например
-   `pscp -r www scripts root@<dev>:/root/sa02m-deploy-<ver>/`).
+2. **Доставка** `www/` и `scripts/` в staging на устройстве. Два
+   равнозначных транспорта:
+   - `pscp -r www scripts root@<dev>:/root/sa02m-deploy-<ver>/`;
+   - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута):
+     `git archive --format=tar.gz -o deploy.tar.gz HEAD www/network_config scripts`,
+     загрузка по SFTP (paramiko / WinSCP), на устройстве
+     `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
    `etc/` намеренно не несём для www-only — тогда скрипт пропускает
    helper/sudoers/systemd-инсталлы (они уже provisioned), и деплой ограничен
    синхронизацией www — минимальный риск на работающем сервере.
@@ -93,6 +98,16 @@ deployment.md`). Изменения репозитория попадают на
   адрес 8 (`4DO6DI`).
 
 ---
+
+## Доставка только моста MQTT (`opt/sa02m-modbus-mqtt`)
+
+Когда релиз менял только мост (без нового systemd/tmpfiles): бэкап
+(`cp -a /opt/sa02m-modbus-mqtt /root/opt-bridge-backup-<date>`), копия
+файлов из staging (`cp -a <staging>/opt/sa02m-modbus-mqtt/. /opt/sa02m-modbus-mqtt/`),
+проверка (`python3 -m py_compile /opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`),
+рестарт (`systemctl restart sa02m-modbus-mqtt`), контроль
+(`systemctl is-active` + журнал без ERROR). Каталог `tests/` инсталлер и эта
+процедура на устройство не несут. Практика деплоев 1.0.5.10–12.
 
 ## Полный деплой (`install.sh`)
 

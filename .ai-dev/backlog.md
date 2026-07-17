@@ -24,10 +24,13 @@ audit).
   existing pytest tests (`opt/sa02m-cloud-agent/tests/test_agent.py`) are
   never run by any gate. Add `py-syntax` + `pytest` rows. Audit 2026-07-17 (F3).
 - [OPEN] 2026-07-17 **[LOW] Decompose worklist (module-size sweep).**
-  `main.css` 3558 · `status.cgi` 2494 · `flash_protocol.py` 2347 ·
-  `modbus_mqtt_bridge.py` 2338 · `mqtt.js` 2222 · `app/status.js` 1481.
-  Start with `mqtt.js` (still gaining weight — touched again in 1.0.5.8).
-  `flasher.js` deliberately excluded (see F10 below). Audit 2026-07-17 (F6).
+  `main.css` 3578 · `modbus_mqtt_bridge.py` **2774** (fastest grower:
+  +436 in the 1.0.5.9–12 window; its new unit tests seed the behaviour
+  net; clean up legacy `except Exception: pass` clusters during the
+  split — lines ~358, 525, 1243, 1977–2009) · `status.cgi` 2494 ·
+  `flash_protocol.py` 2347 · `mqtt.js` **2397** · `app/status.js` 1481.
+  Start with the bridge or `mqtt.js`. `flasher.js` deliberately excluded
+  (see F10 below). Audits 2026-07-17 (F6, evening F3).
 - [OPEN] 2026-07-14 **[MED→product decision] TLS + single-credential exposure gap
   (from threat-discovery §5).** `docs/threat-model.md` names the strongest
   unmitigated threat: HTTP-without-TLS + one shared password + internet/VPN &
