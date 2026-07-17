@@ -56,6 +56,15 @@ VERSION_FILE          = "/var/www/network_config/VERSION"
 STANDBY_POLL_S  = 5
 WATCHDOG_S      = 60
 
+# Порты, которые устройство СОГЛАСНО туннелировать наружу (defense-in-depth,
+# threat-model актор A5 — зловредное/скомпрометированное облако). Облако диктует
+# local_port в claim/enroll-ответе, но устройство пиннит СВОЙ набор ролей —
+# web (:80) и cfg (:9999) — и отбрасывает любой другой прокси (напр. :22 SSH,
+# :1883 MQTT). Дополняет облачную frps NewProxy-authz, которая защищает ФЛОТ от
+# зловредного устройства, но не УСТРОЙСТВО от зловредного облака. Один дом,
+# greppable. Контракт: docs/contracts/cloud-enrollment.md.
+ALLOWED_LOCAL_PORTS = frozenset({80, 9999})
+
 
 def _write_status(state: str, **kw):
     """Write machine-readable status for CGI/web UI."""
@@ -165,9 +174,20 @@ def api_post(url: str, payload: dict, timeout: int = 15):
 
 # ── frpc profile → config ─────────────────────────────────────────────────────
 def render_frpc_toml(frpc: dict) -> str:
-    """Render frpc.toml from the contract's frpc profile. Emits EVERY proxy the
-    cloud handed out (two: <sub> → :80 web SCADA, <sub>-cfg → :9999 settings),
-    type http — the only shape the frps NewProxy authz accepts."""
+    """Render frpc.toml from the contract's frpc profile. Emits the proxies the
+    cloud handed out (normally two: <sub> → :80 web SCADA, <sub>-cfg → :9999
+    settings), type http — the only shape the frps NewProxy authz accepts.
+
+    Устройство-сторонний allow-list (ALLOWED_LOCAL_PORTS): любой прокси с
+    local_port вне набора {80, 9999} ОТБРАСЫВАЕТСЯ с log.warning — защита от
+    зловредного облака (A5), которое иначе продиктовало бы напр. :22 (SSH) или
+    :1883 (MQTT). Легаси одиночный fallback проходит ту же проверку. Если
+    отброшены ВСЕ прокси — рендерим конфиг без [[proxies]] и логируем error
+    (fail closed: лучше без туннеля, чем зловредный туннель).
+
+    transport.tls.enable пиннится явно (O3): frpc 0.61 включает TLS
+    control-соединения по умолчанию, пин fail-safe если будущий frpc сменит
+    дефолт."""
     server_addr = frpc["server_addr"]
     server_port = int(frpc["server_port"])
     token       = frpc["token"]
@@ -183,18 +203,34 @@ def render_frpc_toml(frpc: dict) -> str:
         'serverAddr = "%s"' % server_addr,
         "serverPort = %d" % server_port,
         'auth.token = "%s"' % token,
+        # Пиним TLS транспортного (control) соединения frpc→frps явно.
+        "transport.tls.enable = true",
         "",
     ]
+    emitted = 0
     for p in proxies:
+        local_port = int(p["local_port"])
+        if local_port not in ALLOWED_LOCAL_PORTS:
+            log.warning("dropping cloud proxy %s: local_port %d not in device "
+                        "allow-list %s (A5 defense-in-depth)",
+                        p.get("name", "?"), local_port,
+                        sorted(ALLOWED_LOCAL_PORTS))
+            continue
         lines += [
             "[[proxies]]",
             'name = "%s"' % p["name"],
             'type = "http"',
             'subdomain = "%s"' % p["subdomain"],
             "localIP = \"127.0.0.1\"",
-            "localPort = %d" % int(p["local_port"]),
+            "localPort = %d" % local_port,
             "",
         ]
+        emitted += 1
+    if emitted == 0:
+        log.error("all cloud proxies dropped by the local-port allow-list %s — "
+                  "rendering a tunnel config with zero proxies (fail closed: no "
+                  "tunnel rather than a malicious one)",
+                  sorted(ALLOWED_LOCAL_PORTS))
     return "\n".join(lines)
 
 

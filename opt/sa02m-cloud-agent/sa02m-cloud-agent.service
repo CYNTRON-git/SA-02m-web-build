@@ -11,11 +11,17 @@ Type=simple
 ExecStart=/usr/bin/python3 /opt/sa02m-cloud-agent/sa02m-cloud-agent.py
 Restart=on-failure
 RestartSec=10s
+# root required: the agent controls the sa02m-cloud-frpc unit via `systemctl`
+# and writes the token-bearing /etc/sa02m-cloud/frpc.toml (0600). It never needs
+# to *gain* privileges, so NoNewPrivileges hardens it without breaking it.
 User=root
 Environment=PYTHONUNBUFFERED=1
 
-# Security hardening
-NoNewPrivileges=false
+# Security hardening (O4). ProtectSystem is deliberately left unset: /etc must
+# stay writable for /etc/sa02m-cloud/frpc.toml, so ProtectSystem=full/strict
+# would break enrollment. ProtectHome is safe — the agent never touches /home.
+NoNewPrivileges=true
+ProtectHome=true
 PrivateTmp=true
 
 [Install]
