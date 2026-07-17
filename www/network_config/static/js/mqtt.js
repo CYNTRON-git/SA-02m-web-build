@@ -596,8 +596,12 @@ const _liveByDevice = Object.create(null);
 const _liveUnits = Object.create(null);
 const _liveUptimeAnchor = Object.create(null);
 let _uptimeTickTimer = null;
-/** Output-write confirmation wait: devId:ctrl → {target, deadline}.
-    Only the bus echo (via the poll) confirms — never the CGI response. */
+/** Output-write reconciliation: devId:ctrl → {target, prev, deadline}.
+    The button renders the target OPTIMISTICALLY on click (Operator rule:
+    the relay clicks instantly — the button must not sit gray); the bus echo
+    only reconciles: match → silently confirmed, deadline/error → revert to
+    the live state. `prev` = pre-click live value, so a stale pre-write poll
+    reading (== prev) is not mistaken for a contradicting echo. */
 const _doPending = Object.create(null);
 const _DO_CONFIRM_DEADLINE_MS = 5000;
 
@@ -812,9 +816,13 @@ function updateDoToggleBtn(devId, ctrl, btnOpt) {
     return;
   }
   if (pending) {
-    btn.disabled = true;
+    // Optimistic: full target-state visual right away; the pending hint is the
+    // tooltip + wait cursor only. Re-clicks are ignored by the _doPending
+    // guard in setDoOutput, not by a gray disabled state.
+    btn.disabled = false;
     btn.classList.add('is-pending');
     btn.textContent = uiT(pending.target ? 'ВКЛ' : 'ВЫКЛ');
+    if (pending.target) btn.classList.add('hw-active-blue');
     btn.title = uiT('Ожидание подтверждения с шины');
     return;
   }
@@ -840,7 +848,12 @@ function refreshDoTogglesForDevice(devId) {
   });
 }
 
-/** Reconcile pending with the bus: target matched — confirm; deadline passed — clear + toast. */
+/** Reconcile pending with the bus. The button already shows the target
+    (optimistic), so: echo matches — silently confirmed (no visible change);
+    a known value differing from BOTH target and the pre-click value — a
+    genuine contradicting echo, snap to it (a reading equal to `prev` is
+    likely a stale pre-write poll and is left to the deadline); deadline
+    passed — revert to the live state + timeout toast. */
 function sweepDoPending(devId) {
   const prefix = `${devId}:`;
   const now = Date.now();
@@ -848,8 +861,12 @@ function sweepDoPending(devId) {
     if (!key.startsWith(prefix)) continue;
     const ctrl = key.slice(prefix.length);
     const p = _doPending[key];
-    if (doLiveLogical(devId, ctrl) === p.target) {
-      delete _doPending[key];
+    const live = doLiveLogical(devId, ctrl);
+    if (live === p.target) {
+      delete _doPending[key]; // confirmed — already rendered
+      updateDoToggleBtn(devId, ctrl);
+    } else if (live !== -1 && live !== p.prev) {
+      delete _doPending[key]; // contradicting echo — show the bus truth
       updateDoToggleBtn(devId, ctrl);
     } else if (now > p.deadline) {
       delete _doPending[key];
@@ -866,9 +883,10 @@ function setDoOutput(dev, ctrl) {
   if (_doPending[key]) return; // double-click guard
   const btn = doToggleBtnEl(devId, ctrl);
   if (!btn || btn.disabled) return;
-  const target = doLiveLogical(devId, ctrl) === 1 ? 0 : 1;
-  _doPending[key] = {target, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
-  updateDoToggleBtn(devId, ctrl);
+  const prev = doLiveLogical(devId, ctrl);
+  const target = prev === 1 ? 0 : 1;
+  _doPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
+  updateDoToggleBtn(devId, ctrl); // optimistic: target state rendered right away
   fetch('/cgi-bin/mqtt_set.cgi', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},

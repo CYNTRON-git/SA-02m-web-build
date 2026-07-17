@@ -3084,7 +3084,10 @@ html:not([data-theme="light"]) .topbar {
   padding: 3px 6px;
 }
 .mqtt-do-toggle.na { color: var(--text-dim); }
-.mqtt-do-toggle.is-pending { opacity: .55; cursor: wait; }
+/* Pending is a hint only (wait cursor + tooltip): the button optimistically
+   shows the target state at full strength — never grayed while the relay
+   has already clicked. */
+.mqtt-do-toggle.is-pending { cursor: wait; }
 .mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
 /* AI rows: static sizes matching type "0 — Выключен" one-line layout. */
 .mqtt-ch-row[data-ai-ch],
