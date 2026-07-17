@@ -7,17 +7,32 @@ audit).
 
 ## Open
 
-- [OPEN] 2026-07-17 **[MED] Threat model blind to the cloud surface.**
-  `docs/threat-model.md` (2026-07-14) predates 1.0.5.5's frpc tunnel
-  (`cloud.cyntron.ru` proxying `:80` and `:9999`) and never mentions
-  cloud/frpc — exactly the "strongest unmitigated gap" (§5: shared password +
-  HTTP) the model itself names, now reachable from outside the LAN. Add a
-  cloud-boundary section + abuse cases through the normal loop. Surfaced by
-  the 2026-07-17 audit (F1).
-- [OPEN] 2026-07-17 **[MED] Cloud surfaces have no contract entries.**
-  `docs/contracts/` holds only `rs485-roster.md`; shipped `cloud.cgi`, the
-  cloud pairing/heartbeat protocol, and the `frpc.toml` format are
-  uncontracted. Close with the next cloud batch. Audit 2026-07-17 (F2).
+- [OPEN] 2026-07-17 **[LOW] `test_agent.py` gated by no quality row.**
+  `opt/sa02m-cloud-agent/tests/test_agent.py` (the send-only / no-command-channel
+  / no-wireguard guards — the F1-removal net) is pytest-style, so the new
+  `py-unit-cloud` row (`-p test_render*.py`, stdlib unittest) deliberately
+  excludes it and pytest is not a device/CI dep. It never runs in CI. Convert it
+  to `unittest`-style (or add a pytest CI dep) so the F1-removal guard is
+  enforced, not just present. Surfaced by the 1.0.5.15 build + reviewer.
+- [OPEN] 2026-07-17 **[MED→Phase-4, cross-repo] Cloud identity: fleet-shared FRP
+  token → per-device mTLS.** v1 uses one shared `FRP_TOKEN` across the fleet
+  (`CYNTRON-git/cloud` `config/frps.toml.template`); extract it from one device's
+  `0600 /etc/sa02m-cloud/frpc.toml` → present as any device (subdomain authz
+  limits squatting, but the transport secret is shared). Fix = per-device mTLS
+  client certs issued at enrollment (cloud issues + device stores 0600, no
+  hardware root of trust on the A40i). Co-owned with the cloud repo — not
+  buildable device-side alone. Plan §STATUS O2 / `threat-model.md §6` identity.
+- [OPEN] 2026-07-17 **[LOW→`[?]`] Cloud tunnel transport-TLS not enforced
+  server-side (verify).** 1.0.5.15 pinned `transport.tls.enable = true` on the
+  device (frpc); confirm the cloud frps side enforces/accepts TLS on the control
+  leg (`CYNTRON-git/cloud` `config/frps.toml.template` has no explicit
+  `transport.tls.force`). Cloud-repo verification item.
+- [OPEN] 2026-07-17 **[LOW] Cloud contracts — residual.** 1.0.5.15 landed
+  `docs/contracts/cloud-enrollment.md` (device mirror of the claim/enroll/
+  heartbeat + frpc-profile seam). Residual: the `cloud.cgi` status JSON shape
+  (frontend `#cloud-card` consumer) is still uncontracted — freeze its field
+  names in a small contract entry on the next cloud UI touch. (Threat-model
+  cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
 - [OPEN] 2026-07-17 **[LOW-MED] Quality registry blind to Python.**
   ~10k+ lines of Python daemons (`opt/sa02m-flasher/`, the MQTT bridge,
   `opt/sa02m-cloud-agent/`) have no row in `.ai-dev/quality/tools.json`;

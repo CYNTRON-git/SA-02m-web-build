@@ -47,6 +47,15 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-syntax"
     },
     {
+      "id": "py-unit-cloud",
+      "checks": "Cloud-agent render_frpc_toml unit tests (opt/sa02m-cloud-agent/tests, unittest-style test_render*.py) — the device-side local-port allow-list (drops :22/:1883, keeps :80/:9999) and the pinned transport TLS, guarding the A5 defense-in-depth against regression. The test_render*.py pattern deliberately excludes the pytest-style test_agent.py (pytest is not a device/CI dep).",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-cloud-agent/tests -p \"test_render*.py\" -q; fi; done; echo py-unit-cloud: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-cloud-agent/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,

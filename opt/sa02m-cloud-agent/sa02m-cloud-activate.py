@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-SA-02m Cloud Activation (installer fallback).
+SA-02m Cloud Activation — intentional technician-CLI fallback (one-home: O7).
 
-Hands an enroll token to the cloud agent: writes it to
-/etc/sa02m-cloud/activation_token, makes sure the agent service runs, and
-tails the agent's status until enrollment finishes. The agent does the
-actual /api/v1/enroll call and writes the frpc config — this script holds
-no protocol logic of its own.
-
-End users should prefer the pairing-code flow in the device web UI
-(Cloud tab): no token to copy at all.
+This is NOT a second implementation of the enrollment path. The canonical
+enrollment logic lives ONLY in sa02m-cloud-agent.py (run_token_flow /
+finalize_enrollment / render_frpc_toml, incl. the device-side local-port
+allow-list). This CLI is a thin trigger: it writes the enroll token to
+/etc/sa02m-cloud/activation_token, makes sure the agent service runs, and tails
+the agent's /run status until enrollment finishes. It holds no protocol logic
+of its own by design — so there is nothing to duplicate and nothing to keep in
+sync. Kept as the SSH-less technician path for installers; end users should
+prefer the pairing-code flow in the device web UI (Cloud tab) — no token to
+copy at all.
 
 Usage: sa02m-cloud-activate --token <ENROLL_TOKEN> [--server cloud.cyntron.ru]
 """
