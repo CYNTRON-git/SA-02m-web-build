@@ -946,6 +946,7 @@ class FastModbusEventPortManager:
         if not dev:
             return
         did = dev["id"]
+        self._log.debug("event %s type=%02X reg=%d val=%d", did, evt_type, reg, val)
 
         if evt_type == FMB_EVT_COIL and 1 <= reg <= dev["do"]:
             self._pub.pub_control(did, f"do_{reg}", str(val))
