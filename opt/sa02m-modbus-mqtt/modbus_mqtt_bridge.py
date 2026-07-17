@@ -19,6 +19,7 @@ import signal
 import struct
 import logging
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
 try:
@@ -141,8 +142,12 @@ MR02M_AI_READ_CHUNK_REGS = 42
 MR02M_AI_READ_RETRIES = 3
 # Modules with P/N AI pairs (TC-K / 3-wire RTD): 6AI6AO, 12AI, 6AI2AO.
 MR02M_AI_PAIR_TYPES = frozenset({6, 7, 12})
-# Пауза на RS-485 между кадрами (Modbus T3.5 + время обработки slave), как в flasher send_receive.
-MODBUS_INTER_FRAME_DELAY_S = 0.05
+# Пауза на RS-485 между кадрами. Modbus T3.5 @115200 ≈ 0.4 мс; wb-mqtt-serial
+# работает вообще без guard-паузы (guard_interval_us=0), кадрирование — по
+# таймаутам и ожидаемой длине ответа. 8 мс — консервативный запас на обработку
+# slave; исторические 50 мс съедали ~100 мс на транзакцию (D1 аудита).
+# Откат: SA02M_MODBUS_GAP_S=0.05.
+MODBUS_INTER_FRAME_DELAY_S = float(os.environ.get("SA02M_MODBUS_GAP_S", "0.008"))
 # Доп. пауза перед AO после крупного FC03 AI (6AO6AI6: 42 рег.) — время обработки slave.
 MODBUS_POST_AI_BLOCK_GAP_S = 0.05
 # Canonical module signatures — count-first display form, authoritative source:
@@ -366,13 +371,22 @@ def build_request(addr: int, fc: int, reg: int, count: int) -> bytes:
 
 
 def _modbus_read_frame_len(data: bytes) -> int:
-    """Длина RTU-ответа FC01–04: [addr, func, byte_count, data…, crc]."""
+    """Длина RTU-ответа: FC01–04 по byte_count, FC05/06 и exception — фиксированные.
+
+    Без распознавания FC05/06 каждая запись ждала полный таймаут (~0.3 с)
+    вместо ~10 мс после прихода ответа — главный вклад в медленный echo DO
+    (план DO16). Exception-кадр [addr, func|0x80, code, crc] = 5 байт.
+    """
     if len(data) < 3:
         return 0
     func = data[1]
-    if func not in (0x01, 0x02, 0x03, 0x04):
-        return 0
-    return 3 + int(data[2]) + 2
+    if func & 0x80:
+        return 5
+    if func in (0x01, 0x02, 0x03, 0x04):
+        return 3 + int(data[2]) + 2
+    if func in (0x05, 0x06):
+        return 8
+    return 0
 
 
 def _rtu_char_time_s(baudrate: int) -> float:
@@ -425,6 +439,18 @@ class ModbusSerial:
         self._inter_frame_delay_s = max(0.0, float(inter_frame_delay_s))
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
+        # Приоритет записей над поллом: threading.Lock не fair, и поток
+        # непрерывного полла перехватывает лок обратно раньше ожидающего
+        # writeback-worker'а (+2-3 транзакции ≈ +0.3-0.5 с к echo DO).
+        # Полл перед чтением уступает, пока есть ожидающие записи.
+        self._write_waiting = 0
+        self._prio_lock = threading.Lock()
+
+    def _yield_to_writer(self, max_wait_s: float = 0.5) -> None:
+        """Пропустить ожидающую запись вперёд текущего цикла полла."""
+        deadline = time.monotonic() + max_wait_s
+        while self._write_waiting > 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
 
     def _bus_gap(self) -> None:
         if self._inter_frame_delay_s > 0:
@@ -458,6 +484,10 @@ class ModbusSerial:
                 flen = _modbus_read_frame_len(buf)
                 if flen and len(buf) >= flen:
                     return buf[:flen]
+                # Кадр «замолчал», а длина не распознана — битый ответ;
+                # не жечь остаток таймаута (как frame_timeout wb-mqtt-serial).
+                if (time.monotonic() - last_recv) >= max(0.06, silence * 3):
+                    return buf
             time.sleep(0.001)
         if (len(request) > 0 and len(buf) > len(request)
                 and buf[:len(request)] == request):
@@ -505,6 +535,11 @@ class ModbusSerial:
             recv_crc = resp[-2] | (resp[-1] << 8)
             if crc16(resp[:-2]) != recv_crc:
                 raise IOError(f"CRC mismatch on FC{request[1]:02X}")
+            # Как wb-mqtt-serial (TUnexpectedResponseError): при коллизии на
+            # шине чужой валидный кадр не должен сойти за ответ (D5 аудита).
+            if resp[0] != request[0]:
+                raise IOError(
+                    f"Slave id mismatch: sent {request[0]}, got {resp[0]}")
             if resp[1] & 0x80:
                 raise IOError(
                     f"Modbus exception {resp[2]} on FC{request[1] & 0x7F:02X}")
@@ -515,36 +550,57 @@ class ModbusSerial:
     # --- Standard Modbus reads ------------------------------------------------
 
     def read_coils(self, addr: int, start: int, count: int) -> list[int]:
+        self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x01, start, count),
                                   5 + (count + 7) // 8)
             return [(resp[3 + i // 8] >> (i % 8)) & 1 for i in range(count)]
 
     def read_discrete_inputs(self, addr: int, start: int, count: int) -> list[int]:
+        self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x02, start, count),
                                   5 + (count + 7) // 8)
             return [(resp[3 + i // 8] >> (i % 8)) & 1 for i in range(count)]
 
     def read_holding_registers(self, addr: int, start: int, count: int) -> list[int]:
+        self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x03, start, count),
                                   5 + count * 2)
             return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
 
     def read_input_registers(self, addr: int, start: int, count: int) -> list[int]:
+        self._yield_to_writer()
         with self._lock:
             resp = self._transact(build_request(addr, 0x04, start, count),
                                   5 + count * 2)
             return [(resp[3 + i * 2] << 8) | resp[4 + i * 2] for i in range(count)]
 
     def write_coil(self, addr: int, coil: int, value: bool) -> None:
-        with self._lock:
-            self._transact(build_write_coil(addr, coil, value), 8)
+        with self._prio_lock:
+            self._write_waiting += 1
+        try:
+            t0 = time.monotonic()
+            with self._lock:
+                t1 = time.monotonic()
+                self._transact(build_write_coil(addr, coil, value), 8)
+                t2 = time.monotonic()
+            log.debug("write_coil a%d c%d: lock %.0f ms, io %.0f ms",
+                      addr, coil, (t1 - t0) * 1000, (t2 - t1) * 1000)
+        finally:
+            with self._prio_lock:
+                self._write_waiting -= 1
 
     def write_register(self, addr: int, reg: int, value: int) -> None:
-        with self._lock:
-            self._transact(build_write_register(addr, reg, value), 8)
+        with self._prio_lock:
+            self._write_waiting += 1
+        try:
+            with self._lock:
+                self._transact(build_write_register(addr, reg, value), 8)
+        finally:
+            with self._prio_lock:
+                self._write_waiting -= 1
 
     # --- Fast Modbus ----------------------------------------------------------
 
@@ -554,20 +610,28 @@ class ModbusSerial:
         Send a Fast Modbus frame and read variable-length response.
         Temporarily overrides serial timeout for faster event polling.
         """
+        # Событийный цикл не должен оттеснять MQTT-записи (та же
+        # приоритезация, что у поллерских чтений).
+        self._yield_to_writer()
         with self._lock:
             ser = self._ensure_open()
             old_t = ser.timeout
             try:
-                ser.timeout = timeout
+                # Короткие чтения + выход по тишине: ser.read(max) с полным
+                # timeout держал лок все 250 мс на каждый poll_events.
+                ser.timeout = 0.005
                 ser.reset_input_buffer()
                 ser.write(frame)
                 buf = b""
                 deadline = time.monotonic() + timeout
+                last_recv = time.monotonic()
                 while len(buf) < max_resp and time.monotonic() < deadline:
                     chunk = ser.read(max_resp - len(buf))
-                    if not chunk:
-                        break
-                    buf += chunk
+                    if chunk:
+                        buf += chunk
+                        last_recv = time.monotonic()
+                    elif buf and time.monotonic() - last_recv >= 0.02:
+                        break   # тишина после данных — кадр завершён
                 return buf if len(buf) >= min_resp else b""
             finally:
                 ser.timeout = old_t
@@ -585,6 +649,59 @@ def get_port(port_path: str, baudrate: int) -> ModbusSerial:
         if key not in _port_pool:
             _port_pool[key] = ModbusSerial(port_path, baudrate)
         return _port_pool[key]
+
+
+# ── Writeback queue + worker ───────────────────────────────────────────────────
+# Снимок полла, начатый до записи, не должен затирать её echo (план DO16 A2):
+# в течение этого времени расходящееся значение из полла не публикуется.
+WRITEBACK_POLL_GRACE_S = 1.0
+
+
+class WritebackWorker:
+    """Асинхронные Modbus-записи из MQTT (A1 плана AGENT_MQTT_DO16_POWER_PLAN).
+
+    Callback paho кладёт задание в очередь и сразу возвращается — сетевой
+    цикл MQTT не блокируется на write_coil, пока RS-485 занят поллом или
+    slave не отвечает. Один worker на порт: залипший slave одной линии не
+    задерживает записи на другой. Очередь коалесцирует по (device, control):
+    при шторме публикаций на канал выполняется только последнее значение.
+    """
+
+    _workers: dict[str, "WritebackWorker"] = {}
+    _workers_lock = threading.Lock()
+
+    @classmethod
+    def for_port(cls, port_key: str) -> "WritebackWorker":
+        with cls._workers_lock:
+            w = cls._workers.get(port_key)
+            if w is None:
+                w = cls._workers[port_key] = WritebackWorker(port_key)
+            return w
+
+    def __init__(self, port_key: str):
+        self._cond = threading.Condition()
+        self._jobs: OrderedDict[tuple, object] = OrderedDict()
+        self._log = logging.getLogger(
+            f"wb.{port_key.replace('/dev/', '').replace(':', '-')}")
+        threading.Thread(target=self._run, daemon=True,
+                         name=f"writeback-{port_key}").start()
+
+    def submit(self, key: tuple, job) -> None:
+        with self._cond:
+            self._jobs.pop(key, None)   # последняя запись канала выигрывает
+            self._jobs[key] = job
+            self._cond.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._jobs:
+                    self._cond.wait()
+                _, job = self._jobs.popitem(last=False)
+            try:
+                job()
+            except Exception as e:
+                self._log.warning("writeback job: %s", e)
 
 
 # ── FastModbusScanner ──────────────────────────────────────────────────────────
@@ -675,6 +792,7 @@ class FastModbusEventPortManager:
         self._devices: dict[int, dict] = {}   # addr → info
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
+        self._last_poll_answered = False
         self._stop = threading.Event()
         self._log = logging.getLogger(f"fmb.{port_path.replace('/dev/', '')}")
 
@@ -722,9 +840,19 @@ class FastModbusEventPortManager:
         """
         One poll_events cycle.  Returns (had_events, [(slave, type, reg, val)]).
         """
+        self._last_poll_answered = False
         frame = build_fmb_poll_events(1, self.MAX_DATA_LEN,
                                       self._ack_slave, self._ack_flag)
         buf = ser.fmb_send_recv(frame, 4, 256, self.POLL_TIMEOUT)
+        # Перед кадром ответа мастер видит байты арбитража (рецессивные 0xFF
+        # и обрезки слов) — ищем реальное начало кадра, как wb-mqtt-serial
+        # (IsModbusExtRTUPacket в modbus_ext_common.cpp).
+        for i in range(len(buf) - 2):
+            if (buf[i] != 0xFF and buf[i + 1] == 0x46
+                    and buf[i + 2] in (0x11, 0x12)):
+                if i:
+                    buf = buf[i:]
+                break
         if len(buf) < 4 or buf[1] != 0x46:
             return False, []
 
@@ -740,6 +868,7 @@ class FastModbusEventPortManager:
                 if calc == recv:
                     self._ack_slave = slave_id
                     self._ack_flag  = flag
+                    self._last_poll_answered = True
             return False, []
 
         if subcode != 0x11:
@@ -790,6 +919,7 @@ class FastModbusEventPortManager:
 
         self._ack_slave = slave_id
         self._ack_flag  = flag
+        self._last_poll_answered = True
         return True, events
 
     # --- MQTT dispatch -------------------------------------------------------
@@ -839,14 +969,29 @@ class FastModbusEventPortManager:
             if not dev["configured"]:
                 self._log.warning("FMB events config failed addr=%d — polling only", addr)
 
+        if not any(d["configured"] for d in self._devices.values()):
+            # Без единого настроенного устройства каждый poll_events жёг бы
+            # POLL_TIMEOUT (250 мс) под портовым локом впустую.
+            self._log.warning("FMB events: no devices configured — manager stopped")
+            return
+
+        # Молчание в ответ на poll_events (не 0x12!) = устройства перестали
+        # отвечать на FMB — не держать лок по 250 мс каждые 50 мс.
+        silent_polls = 0
         while not self._stop.is_set():
             try:
                 had_events, events = self._poll_once(ser)
                 for (slave_id, evt_type, reg, val) in events:
                     self._dispatch(slave_id, evt_type, reg, val)
-                # If had events, poll again immediately; otherwise rest 50ms
+                if self._last_poll_answered:
+                    silent_polls = 0
+                else:
+                    silent_polls += 1
+                    if silent_polls == 10:
+                        self._log.warning(
+                            "FMB events: no responses — degraded to 2s polling")
                 if not had_events:
-                    time.sleep(0.05)
+                    time.sleep(2.0 if silent_polls >= 10 else 0.05)
             except Exception as e:
                 self._log.debug("event loop error: %s", e)
                 time.sleep(0.1)
@@ -882,6 +1027,13 @@ class MQTTPublisher:
         self._username = cfg.get("username") or None
         self._password = cfg.get("password") or None
         self._lock   = threading.Lock()
+        # D2 аудита (PublishSomeUnchanged wb-mqtt-serial): control публикуется
+        # при изменении значения или раз в max_unchanged_interval; в live-кэш
+        # значение пишется всегда. 0 — публиковать каждый полл (как раньше).
+        self._unchanged_republish_s = float(
+            cfg.get("max_unchanged_interval",
+                    os.environ.get("SA02M_MQTT_UNCHANGED_REPUBLISH_S", "60")))
+        self._last_pub: dict[tuple[str, str], tuple[str, float]] = {}
 
         # Availability bookkeeping
         self._device_online: dict[str, bool] = {}
@@ -972,9 +1124,22 @@ class MQTTPublisher:
     def pub_meta(self, device_id: str, key: str, value: str) -> None:
         self.pub(f"{DEVICE_BASE}/{device_id}/meta/{key}", value, retain=True)
 
-    def pub_control(self, device_id: str, name: str, value: str) -> None:
-        self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}", value)
+    def pub_control(self, device_id: str, name: str, value: str,
+                    force: bool = False) -> None:
         DeviceLiveCache.set_control(device_id, name, value)
+        if self._unchanged_republish_s > 0 and not force:
+            key = (device_id, name)
+            now = time.monotonic()
+            with self._lock:
+                prev = self._last_pub.get(key)
+                if (prev is not None and prev[0] == value
+                        and now - prev[1] < self._unchanged_republish_s):
+                    return
+                self._last_pub[key] = (value, now)
+        elif force:
+            with self._lock:
+                self._last_pub[(device_id, name)] = (value, time.monotonic())
+        self.pub(f"{DEVICE_BASE}/{device_id}/controls/{name}", value)
 
     def pub_control_meta(self, device_id: str, name: str,
                          key: str, value: str) -> None:
@@ -1101,9 +1266,69 @@ class DevicePoller:
         self._fail_count     = 0
         self._online         = True
         self._backoff_until  = 0.0
+        # Последняя MQTT-запись по каналу: name → (value, monotonic ts).
+        # Защищает свежий writeback от затирания устаревшим поллом (A2).
+        self._wb_recent: dict[str, tuple[str, float]] = {}
+        self._wb_offline_log_t = 0.0
 
     def get_port(self) -> ModbusSerial:
         return get_port(self.port_path, self.baudrate)
+
+    # --- Writeback (очередь + worker, вне MQTT callback) ----------------------
+
+    def _wb_submit(self, name: str, job) -> None:
+        key = f"{self.port_path}:{self.baudrate}"
+        WritebackWorker.for_port(key).submit((self.device_id, name), job)
+
+    def _wb_offline_skip(self, name: str) -> bool:
+        """A3: устройство offline (meta/error=r) — не долбить шину записями."""
+        if self._online:
+            return False
+        now = time.monotonic()
+        if now - self._wb_offline_log_t >= 10.0:
+            self._wb_offline_log_t = now
+            self.log.warning("writeback %s skipped: device offline", name)
+        self.pub.pub_error(self.device_id, name, "w")
+        return True
+
+    def _wb_write_retry(self, write_fn) -> None:
+        """D4 аудита: одна повторная попытка записи после короткой паузы
+        сглаживает единичную коллизию шины (wb-mqtt-serial ретраит transient
+        ошибки записи в фоне до MaxWriteFailTime)."""
+        try:
+            write_fn()
+        except Exception:
+            time.sleep(0.1)
+            write_fn()
+
+    def _wb_done(self, name: str, value: str) -> None:
+        """A2: echo сразу после успешной записи + мгновенный flush кэша.
+
+        force: echo обязан уйти в MQTT даже при неизменном значении —
+        HardPy подтверждает запись именно по нему.
+        """
+        self._wb_recent[name] = (value, time.monotonic())
+        self.pub.pub_control(self.device_id, name, value, force=True)
+        self.pub.pub_error(self.device_id, name, "")
+        DeviceLiveCache.flush_file(self.device_id)
+
+    def _wb_publish_poll(self, name: str, value: str, t_read: float) -> None:
+        """Публикация из полла, не затирающая свежий writeback (A2).
+
+        Если по каналу была запись, снимок полла начат до неё (или запись
+        моложе WRITEBACK_POLL_GRACE_S) и значения расходятся — снимок для
+        этого канала пропускается: это гонка read→write→publish, а не
+        реальное состояние. Совпавшее значение снимает защиту.
+        """
+        wb = self._wb_recent.get(name)
+        if wb is not None:
+            wb_val, wb_ts = wb
+            if value != wb_val and (
+                    wb_ts >= t_read
+                    or time.monotonic() - wb_ts < WRITEBACK_POLL_GRACE_S):
+                return
+            self._wb_recent.pop(name, None)
+        self.pub.pub_control(self.device_id, name, value)
 
     def publish_device_meta(self, name: str, driver: str = "modbus-rtu") -> None:
         if self._meta_ok:
@@ -1214,6 +1439,10 @@ class PortPollScheduler:
         self._log.info("continuous poll on %s, %d device(s)",
                         self._port_path, len(self._pollers))
 
+        cyc_n = 0
+        cyc_busy_max = 0.0
+        cyc_busy_sum = 0.0
+        stats_t = time.monotonic()
         while not self._stop.is_set():
             t0 = time.monotonic()
             polled = False
@@ -1231,9 +1460,24 @@ class PortPollScheduler:
                 except Exception as e:
                     self._log.debug("poll_slow %s: %s", p.device_id, e)
 
-            if not polled:
-                # Все устройства в backoff — не крутить CPU впустую.
-                if self._stop.wait(0.1):
+            cyc = time.monotonic() - t0
+            # Статистика только по циклам с реальным IO (>5 мс), раз в минуту.
+            if cyc >= 0.005:
+                cyc_n += 1
+                cyc_busy_sum += cyc
+                cyc_busy_max = max(cyc_busy_max, cyc)
+            if time.monotonic() - stats_t >= 60 and cyc_n:
+                self._log.info("poll cycles: n=%d avg=%.0f ms max=%.0f ms",
+                               cyc_n, cyc_busy_sum / cyc_n * 1000,
+                               cyc_busy_max * 1000)
+                cyc_n = 0
+                cyc_busy_max = cyc_busy_sum = 0.0
+                stats_t = time.monotonic()
+
+            if not polled or cyc < 0.005:
+                # Backoff у всех либо интервалы полла не подошли (D6) —
+                # не крутить CPU впустую.
+                if self._stop.wait(0.05):
                     break
 
 
@@ -1246,6 +1490,13 @@ class MR02mPoller(DevicePoller):
         self._do = self._di = self._ao = self._ai = 0
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  60))
         self._poll_uptime_s = float(cfg.get("poll_uptime_s", 5))
+        # D6 аудита: минимальные интервалы основного полла из yaml (раньше
+        # игнорировались — всё опрашивалось на каждой итерации порта).
+        # 0 = каждый цикл. AI/AO обычно достаточно 1 раз/с, DO/DI — быстрее.
+        self._poll_do_di_s = float(cfg.get("poll_do_di_s", 0))
+        self._poll_ai_ao_s = float(cfg.get("poll_ai_ao_s", 0))
+        self._t_do_di = 0.0
+        self._t_ai_ao = 0.0
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
         self._t_diag        = 0.0
@@ -1498,10 +1749,11 @@ class MR02mPoller(DevicePoller):
     def _poll_do_di(self) -> None:
         if self._do > 0:
             try:
+                t_read = time.monotonic()
                 coils = self.read_coils(self.address, 1, self._do)
                 for i, v in enumerate(coils, 1):
                     if self._ch_enabled("do", i):
-                        self.pub.pub_control(self.device_id, f"do_{i}", str(v))
+                        self._wb_publish_poll(f"do_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"do_{i}", "")
             except Exception as e:
                 self.log.warning("DO read: %s", e)
@@ -1606,6 +1858,7 @@ class MR02mPoller(DevicePoller):
                 time.sleep(MODBUS_POST_AI_BLOCK_GAP_S)
             regs = None
             last_err: Exception | None = None
+            t_read = time.monotonic()
             for attempt in range(3):
                 try:
                     regs = self.read_holding_registers(self.address, 33, self._ao)
@@ -1618,7 +1871,7 @@ class MR02mPoller(DevicePoller):
             if regs is not None:
                 for i, v in enumerate(regs, 1):
                     if self._ch_enabled("ao", i):
-                        self.pub.pub_control(self.device_id, f"ao_{i}", str(v))
+                        self._wb_publish_poll(f"ao_{i}", str(v), t_read)
                         self.pub.pub_error(self.device_id, f"ao_{i}", "")
             else:
                 self.log.warning("AO read: %s", last_err)
@@ -1696,19 +1949,50 @@ class MR02mPoller(DevicePoller):
             except Exception:
                 pass
 
+    def _writeback_do(self, ch: int, on: bool, t_enq: float | None = None) -> None:
+        name = f"do_{ch}"
+        if self._wb_offline_skip(name):
+            return
+        try:
+            t1 = time.monotonic()
+            self._wb_write_retry(
+                lambda: self.get_port().write_coil(self.address, ch, on))
+            t2 = time.monotonic()
+            self._wb_done(name, "1" if on else "0")
+            self.log.info(
+                "writeback DO%d=%d (queue %.0f ms, write %.0f ms)",
+                ch, on, (t1 - t_enq) * 1000 if t_enq else -1, (t2 - t1) * 1000)
+        except Exception as e:
+            self.log.warning("writeback DO%d: %s", ch, e)
+            self.pub.pub_error(self.device_id, name, "w")
+
+    def _writeback_ao(self, ch: int, v: int) -> None:
+        name = f"ao_{ch}"
+        if self._wb_offline_skip(name):
+            return
+        try:
+            self._wb_write_retry(
+                lambda: self.get_port().write_register(self.address, 32 + ch, v))
+            self._wb_done(name, str(v))
+            self.log.info("writeback AO%d=%d", ch, v)
+        except Exception as e:
+            self.log.warning("writeback AO%d: %s", ch, e)
+            self.pub.pub_error(self.device_id, name, "w")
+
     def _setup_writeback(self) -> None:
+        # Callback paho лишь парсит и ставит запись в очередь (A1):
+        # Modbus write выполняет WritebackWorker, не сетевой цикл MQTT.
         for i in range(1, self._do + 1):
             def make_cb(ch: int):
                 def cb(client, userdata, msg):
                     try:
                         v = msg.payload.decode().strip()
-                        on = v not in ("0", "false", "False", "")
-                        self.get_port().write_coil(self.address, ch, on)
-                        self.pub.pub_control(self.device_id, f"do_{ch}", "1" if on else "0")
-                        self.log.info("writeback DO%d=%d", ch, on)
-                    except Exception as e:
-                        self.log.warning("writeback DO%d: %s", ch, e)
-                        self.pub.pub_error(self.device_id, f"do_{ch}", "w")
+                    except UnicodeDecodeError:
+                        return
+                    on = v not in ("0", "false", "False", "")
+                    t_enq = time.monotonic()
+                    self._wb_submit(
+                        f"do_{ch}", lambda: self._writeback_do(ch, on, t_enq))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"do_{i}", make_cb(i))
 
@@ -1717,13 +2001,11 @@ class MR02mPoller(DevicePoller):
                 def cb(client, userdata, msg):
                     try:
                         v = int(float(msg.payload.decode().strip()))
-                        v = max(0, min(1000, v))
-                        self.get_port().write_register(self.address, 32 + ch, v)
-                        self.pub.pub_control(self.device_id, f"ao_{ch}", str(v))
-                        self.log.info("writeback AO%d=%d", ch, v)
-                    except Exception as e:
-                        self.log.warning("writeback AO%d: %s", ch, e)
-                        self.pub.pub_error(self.device_id, f"ao_{ch}", "w")
+                    except (UnicodeDecodeError, ValueError):
+                        return
+                    v = max(0, min(1000, v))
+                    self._wb_submit(
+                        f"ao_{ch}", lambda: self._writeback_ao(ch, v))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
 
@@ -1737,9 +2019,18 @@ class MR02mPoller(DevicePoller):
         self._setup_writeback()
 
     def poll_io(self) -> None:
-        self._poll_do_di()
-        self._poll_ai_ao()
-        DeviceLiveCache.flush_file(self.device_id)
+        now = time.monotonic()
+        polled = False
+        if now - self._t_do_di >= self._poll_do_di_s:
+            self._t_do_di = now
+            self._poll_do_di()
+            polled = True
+        if now - self._t_ai_ao >= self._poll_ai_ao_s:
+            self._t_ai_ao = now
+            self._poll_ai_ao()
+            polled = True
+        if polled:
+            DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
         flushed = False
@@ -1864,9 +2155,11 @@ class DTVPoller(DevicePoller):
 
     def _poll_coils(self) -> None:
         try:
+            t_read = time.monotonic()
             coils = self.read_coils(self.address, 1, 2)
             for coil_num, (ch_name, _) in self.DTV_COILS.items():
-                self.pub.pub_control(self.device_id, ch_name, str(coils[coil_num - 1]))
+                self._wb_publish_poll(
+                    ch_name, str(coils[coil_num - 1]), t_read)
         except Exception:
             pass
 
@@ -1889,18 +2182,31 @@ class DTVPoller(DevicePoller):
             except Exception:
                 pass
 
+    def _writeback_coil(self, coil: int, name: str, on: bool) -> None:
+        if self._wb_offline_skip(name):
+            return
+        try:
+            self._wb_write_retry(
+                lambda: self.get_port().write_coil(self.address, coil, on))
+            self._wb_done(name, "1" if on else "0")
+        except Exception as e:
+            self.log.warning("writeback %s: %s", name, e)
+            self.pub.pub_error(self.device_id, name, "w")
+
     def _setup_writeback(self) -> None:
+        # Как в MR02mPoller: callback только ставит запись в очередь (A1).
         for coil_num, (ch_name, writable) in self.DTV_COILS.items():
             if not writable:
                 continue
             def make_cb(coil: int, name: str):
                 def cb(client, userdata, msg):
                     try:
-                        on = msg.payload.decode().strip() not in ("0", "false", "False", "")
-                        self.get_port().write_coil(self.address, coil, on)
-                        self.pub.pub_control(self.device_id, name, "1" if on else "0")
-                    except Exception as e:
-                        self.log.warning("writeback %s: %s", name, e)
+                        on = msg.payload.decode().strip() not in (
+                            "0", "false", "False", "")
+                    except UnicodeDecodeError:
+                        return
+                    self._wb_submit(
+                        name, lambda: self._writeback_coil(coil, name, on))
                 return cb
             self.pub.subscribe_writeback(self.device_id, ch_name, make_cb(coil_num, ch_name))
 
