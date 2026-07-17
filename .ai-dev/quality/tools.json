@@ -38,6 +38,15 @@
       "init": "Python 3.10+ as python3, python, or py — same interpreter picker as version-consistency (Windows ships a non-functional python3 Store stub)"
     },
     {
+      "id": "py-unit",
+      "checks": "Bridge unit tests (opt/sa02m-modbus-mqtt/tests — FMB event manager generalization, MR-02m dispatch golden values, DTV event ranges/scaling) — a regression in the event path passes py-syntax but fails here.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-modbus-mqtt/tests -q; fi; done; echo py-unit: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-modbus-mqtt/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-syntax"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,

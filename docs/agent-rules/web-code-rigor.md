@@ -41,7 +41,9 @@ a review; cite it.
   interpolating a request value into a command line unvalidated is a
   **security finding**, not a style nit.
 - **Auth first**: every state-mutating endpoint sources the auth lib and
-  exits non-200 for an invalid session BEFORE doing work.
+  answers an invalid session with an error JSON (`ok:false`,
+  `unauthorized`) and exits BEFORE doing work (transport stays HTTP 200 —
+  the project idiom; see `docs/contracts/mqtt-set-endpoint.md`).
 - **Timeouts everywhere**: any call that can hang (curl to the flasher daemon,
   `systemctl` on a wedged unit, an i2c read) carries `timeout N` or the tool's
   own timeout flag. fcgiwrap/nginx read timeouts are finite — a hung endpoint
