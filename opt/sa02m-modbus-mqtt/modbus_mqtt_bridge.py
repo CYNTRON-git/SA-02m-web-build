@@ -2013,6 +2013,10 @@ class MR02mPoller(DevicePoller):
         for i in range(1, self._do + 1):
             def make_cb(ch: int):
                 def cb(client, userdata, msg):
+                    # Retained /on при рестарте моста не переигрывается (A4):
+                    # запись реле выполняем только по свежей публикации.
+                    if msg.retain:
+                        return
                     try:
                         v = msg.payload.decode().strip()
                     except UnicodeDecodeError:
@@ -2027,6 +2031,9 @@ class MR02mPoller(DevicePoller):
         for i in range(1, self._ao + 1):
             def make_ao_cb(ch: int):
                 def cb(client, userdata, msg):
+                    # Retained /on не переигрывается при рестарте (A4).
+                    if msg.retain:
+                        return
                     try:
                         v = int(float(msg.payload.decode().strip()))
                     except (UnicodeDecodeError, ValueError):
@@ -2228,6 +2235,9 @@ class DTVPoller(DevicePoller):
                 continue
             def make_cb(coil: int, name: str):
                 def cb(client, userdata, msg):
+                    # Retained /on не переигрывается при рестарте (A4).
+                    if msg.retain:
+                        return
                     try:
                         on = msg.payload.decode().strip() not in (
                             "0", "false", "False", "")

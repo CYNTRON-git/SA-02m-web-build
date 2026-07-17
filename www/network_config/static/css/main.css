@@ -3068,6 +3068,23 @@ html:not([data-theme="light"]) .topbar {
   flex-shrink: 0;
 }
 .mqtt-ch-live-err { color: var(--err, #e55); }
+/* Output toggle in a DO / DTV-coil channel row — the dashboard HW-block idiom
+   (.btn.hw-active-blue when ON); only a size variant for the channel row here,
+   colors are existing tokens. */
+.mqtt-do-toggle {
+  flex: 0 0 auto;
+  /* Fixed width sized to the widest label in both locales (RU «ВЫКЛ», EN "OFF",
+     unknown «н/д»/"N/A") so toggling a state never resizes the button or
+     reflows the row. */
+  width: 4.4rem;
+  min-width: 4.4rem;
+  max-width: 4.4rem;
+  justify-content: center;
+  font-weight: 600;
+  padding: 3px 6px;
+}
+.mqtt-do-toggle.na { color: var(--text-dim); }
+.mqtt-do-toggle.is-pending { opacity: .55; cursor: wait; }
 .mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
 /* AI rows: static sizes matching type "0 — Выключен" one-line layout. */
 .mqtt-ch-row[data-ai-ch],

@@ -596,6 +596,10 @@ const _liveByDevice = Object.create(null);
 const _liveUnits = Object.create(null);
 const _liveUptimeAnchor = Object.create(null);
 let _uptimeTickTimer = null;
+/** Output-write confirmation wait: devId:ctrl → {target, deadline}.
+    Only the bus echo (via the poll) confirms — never the CGI response. */
+const _doPending = Object.create(null);
+const _DO_CONFIRM_DEADLINE_MS = 5000;
 
 function aiUnitsForCode(code) {
   const c = Number(code) & 0xffff;
@@ -765,10 +769,147 @@ function refreshLiveCellsForDevice(devId) {
     if (!key || key.indexOf(':') < 1) return;
     updateLiveCell(devId, key.slice(prefix.length));
   });
+  refreshDoTogglesForDevice(devId);
 }
 
 function refreshAllLiveCells() {
   for (const devId of _accordionBuilt) refreshLiveCellsForDevice(devId);
+}
+
+// ── DO / coil write controls (toggle per output row) ─────────────────────────
+// Dashboard HW-block idiom (hw.js updateHwToggleBtn/toggleHw): one button,
+// blue when ON, "н/д" when the live value is unknown. Write path: POST
+// mqtt_set.cgi → mosquitto → bridge → Modbus → echo; only the echo confirms.
+
+function doToggleKey(devId, ctrl) {
+  return `${devId}:${ctrl}`;
+}
+
+function doToggleBtnEl(devId, ctrl) {
+  return document.querySelector(`[data-do-toggle="${devId}:${ctrl}"]`);
+}
+
+/** Logical output value from the bus: 1 / 0; error or unknown → -1. */
+function doLiveLogical(devId, ctrl) {
+  const rec = _liveByDevice[devId] && _liveByDevice[devId][ctrl];
+  if (!rec || rec.isError) return -1;
+  if (rec.value === '1') return 1;
+  if (rec.value === '0') return 0;
+  return -1;
+}
+
+/** Reflect the output state on its button (like updateHwToggleBtn in hw.js). */
+function updateDoToggleBtn(devId, ctrl, btnOpt) {
+  const btn = btnOpt || doToggleBtnEl(devId, ctrl);
+  if (!btn) return;
+  const pending = _doPending[doToggleKey(devId, ctrl)];
+  btn.classList.remove('hw-active-blue', 'na', 'is-pending');
+  if (btn.dataset.chDisabled === '1') {
+    btn.disabled = true;
+    btn.textContent = uiT('н/д');
+    btn.classList.add('na');
+    btn.title = uiT('Канал отключён');
+    return;
+  }
+  if (pending) {
+    btn.disabled = true;
+    btn.classList.add('is-pending');
+    btn.textContent = uiT(pending.target ? 'ВКЛ' : 'ВЫКЛ');
+    btn.title = uiT('Ожидание подтверждения с шины');
+    return;
+  }
+  btn.disabled = false;
+  const nv = doLiveLogical(devId, ctrl);
+  if (nv === -1) {
+    btn.textContent = uiT('н/д');
+    btn.classList.add('na');
+    btn.title = uiT('Включить выход');
+    return;
+  }
+  btn.textContent = uiT(nv ? 'ВКЛ' : 'ВЫКЛ');
+  if (nv) btn.classList.add('hw-active-blue');
+  btn.title = uiT(nv ? 'Выключить выход' : 'Включить выход');
+}
+
+function refreshDoTogglesForDevice(devId) {
+  const prefix = `${devId}:`;
+  document.querySelectorAll(`[data-do-toggle^="${prefix}"]`).forEach(btn => {
+    const key = btn.getAttribute('data-do-toggle');
+    if (!key || key.indexOf(':') < 1) return;
+    updateDoToggleBtn(devId, key.slice(prefix.length), btn);
+  });
+}
+
+/** Reconcile pending with the bus: target matched — confirm; deadline passed — clear + toast. */
+function sweepDoPending(devId) {
+  const prefix = `${devId}:`;
+  const now = Date.now();
+  for (const key of Object.keys(_doPending)) {
+    if (!key.startsWith(prefix)) continue;
+    const ctrl = key.slice(prefix.length);
+    const p = _doPending[key];
+    if (doLiveLogical(devId, ctrl) === p.target) {
+      delete _doPending[key];
+      updateDoToggleBtn(devId, ctrl);
+    } else if (now > p.deadline) {
+      delete _doPending[key];
+      updateDoToggleBtn(devId, ctrl);
+      showToast('Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
+    }
+  }
+}
+
+/** Toggle click: unknown value counts as OFF → a click turns it ON (toggleHw idiom). */
+function setDoOutput(dev, ctrl) {
+  const devId = dev.id;
+  const key = doToggleKey(devId, ctrl);
+  if (_doPending[key]) return; // double-click guard
+  const btn = doToggleBtnEl(devId, ctrl);
+  if (!btn || btn.disabled) return;
+  const target = doLiveLogical(devId, ctrl) === 1 ? 0 : 1;
+  _doPending[key] = {target, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
+  updateDoToggleBtn(devId, ctrl);
+  fetch('/cgi-bin/mqtt_set.cgi', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,
+    credentials: 'same-origin',
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (j && j.ok) return; // "ok" = published; only the bus echo confirms (sweepDoPending)
+      delete _doPending[key];
+      updateDoToggleBtn(devId, ctrl);
+      if (j && j.error === 'unauthorized') showToast('Нет доступа', 'err');
+      else if (j && j.error === 'publish_failed') showToast('Брокер MQTT недоступен', 'err');
+      else showToast('Ошибка: ' + ((j && j.error) || 'unknown'), 'err');
+    })
+    .catch(() => {
+      delete _doPending[key];
+      updateDoToggleBtn(devId, ctrl);
+      showToast('Нет связи с сервером', 'err');
+    });
+}
+
+/** Toggle button for a DO / DTV-coil channel row. */
+function buildDoToggleBtn(dev, ctrl, enabled) {
+  const btn = h('button', {
+    'type': 'button',
+    'class': 'btn btn-sm mqtt-do-toggle',
+    'data-do-toggle': `${dev.id}:${ctrl}`,
+    'onclick': () => setDoOutput(dev, ctrl),
+  });
+  btn.dataset.chDisabled = enabled ? '0' : '1';
+  updateDoToggleBtn(dev.id, ctrl, btn);
+  return btn;
+}
+
+/** A disabled channel is excluded from polling — no echo can come, so the button goes inert. */
+function setDoToggleChannelEnabled(devId, ctrl, enabled) {
+  const btn = doToggleBtnEl(devId, ctrl);
+  if (!btn) return;
+  btn.dataset.chDisabled = enabled ? '0' : '1';
+  updateDoToggleBtn(devId, ctrl, btn);
 }
 
 function mr02mAiNMirrorActive(dev, ch, channels, mtCode) {
@@ -832,6 +973,7 @@ async function prefetchDeviceLive(devId) {
   const dev = (_config.devices || []).find(d => d.id === devId);
   if (dev) refreshAiTypeSelects(dev);
   refreshLiveCellsForDevice(devId);
+  sweepDoPending(devId);
   return data;
 }
 
@@ -848,6 +990,8 @@ function startUptimeTick() {
     const devId = _channelPollDevId;
     if (!devId || !isAccordionOpen(devId)) return;
     updateLiveCell(devId, 'uptime_s');
+    // Pending expiry must not depend on a successful poll (mqtt_live may be failing).
+    sweepDoPending(devId);
   }, 1000);
 }
 
@@ -1453,7 +1597,12 @@ function appendMr02mDoGroup(dev, channels, count) {
   const pack = buildChannelWidget('DO — дискретные выходы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'do', i);
-    pack.body.appendChild(buildChannelRow(chCfg, topicPath(dev.id, `do_${i}`), 'do', i, dev, `do_${i}`, ''));
+    const ctrl = `do_${i}`;
+    const row = buildChannelRow(chCfg, topicPath(dev.id, ctrl), 'do', i, dev, ctrl, '');
+    row.appendChild(buildDoToggleBtn(dev, ctrl, chCfg.enabled !== false));
+    const cb = row.querySelector('.mqtt-ch-toggle input[type=checkbox]');
+    if (cb) cb.addEventListener('change', e => setDoToggleChannelEnabled(dev.id, ctrl, e.target.checked));
+    pack.body.appendChild(row);
   }
   return pack.widget;
 }
@@ -1613,7 +1762,9 @@ function buildDTVChannels(dev, container) {
     }
     const enabled = dev.sensors_present.includes(s.key);
     const topic = topicPath(dev.id, s.key);
-    const row = h('div', {'class':'mqtt-ch-row'},
+    // chRow, not row: an inner `const row` shadowed the outer widgets-row used
+    // earlier in this block (TDZ) and broke the whole DTV card body build.
+    const chRow = h('div', {'class':'mqtt-ch-row'},
       h('label', {'class':'mqtt-ch-toggle'},
         h('input', {'type':'checkbox', checked: enabled ? '' : undefined,
           'onchange': e => {
@@ -1629,7 +1780,13 @@ function buildDTVChannels(dev, container) {
       h('span', {'class':'topic-preview', 'title': topic}, topic),
       liveSpan(dev.id, s.key, s.unit || ''),
     );
-    groups[s.group].appendChild(row);
+    // DTV writable coils (bridge: DTV_COILS) get the same toggle as DO rows.
+    if (s.key === 'buzzer' || s.key === 'leds') {
+      chRow.appendChild(buildDoToggleBtn(dev, s.key, enabled));
+      const cb = chRow.querySelector('.mqtt-ch-toggle input[type=checkbox]');
+      if (cb) cb.addEventListener('change', e => setDoToggleChannelEnabled(dev.id, s.key, e.target.checked));
+    }
+    groups[s.group].appendChild(chRow);
   }
   // Polling intervals
   const intervals = h('div', {'class':'mqtt-form-row'},
