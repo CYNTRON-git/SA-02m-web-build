@@ -784,7 +784,11 @@ class FastModbusScanner:
 # ── FastModbusEventPortManager ─────────────────────────────────────────────────
 class FastModbusEventPortManager:
     """
-    Per-port Fast Modbus event polling for real-time DO/DI/AO/AI notifications.
+    Per-port Fast Modbus event polling for real-time channel notifications.
+
+    Device-agnostic: each registered device brings its own event-range list
+    and a dispatch callback (the poller owns the register layout — one home
+    per device type; the manager owns only the FMB wire protocol).
 
     Poll cycle:
       1. Send poll_events (0x10) broadcast.
@@ -795,10 +799,9 @@ class FastModbusEventPortManager:
     POLL_TIMEOUT = 0.25   # 250ms covers 12-bit event arbitration at any baud
     MAX_DATA_LEN = 128
 
-    def __init__(self, port_path: str, baudrate: int, pub: "MQTTPublisher"):
+    def __init__(self, port_path: str, baudrate: int):
         self._port_path = port_path
         self._baudrate = baudrate
-        self._pub = pub
         self._devices: dict[int, dict] = {}   # addr → info
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
@@ -806,50 +809,46 @@ class FastModbusEventPortManager:
         self._stop = threading.Event()
         self._log = logging.getLogger(f"fmb.{port_path.replace('/dev/', '')}")
 
-    def register_device(self, addr: int, device_id: str, device_type: str,
-                        do_count: int, di_count: int,
-                        ao_count: int, ai_count: int) -> None:
+    def register_device(self, addr: int, device_id: str,
+                        ranges: list[tuple[int, int, int]],
+                        dispatch) -> None:
+        """ranges: [(evt_type, start_reg, count)] from the poller's
+        fmb_event_ranges(); dispatch: poller.fmb_dispatch(evt_type, reg, val)."""
         self._devices[addr] = {
-            "id": device_id, "type": device_type,
-            "do": do_count, "di": di_count,
-            "ao": ao_count, "ai": ai_count,
-            "configured": False,
+            "id": device_id,
+            "ranges": list(ranges),
+            "pending": list(ranges),   # not-yet-acked; retried in run()
+            "dispatch": dispatch,
+            "configured": False,       # ≥1 range acked
         }
 
     # --- configure_events (0x18) for one device ------------------------------
 
     def _configure_device(self, ser: ModbusSerial, addr: int, dev: dict) -> bool:
-        configs: list[tuple[int, int, int]] = []  # (evt_type, start_reg, count)
-        if dev["do"] > 0:
-            configs.append((FMB_EVT_COIL,    1,  dev["do"]))   # DO: COIL type=0x00, addr 1+
-        if dev["di"] > 0:
-            configs.append((FMB_EVT_INPUT,   18, dev["di"]))   # DI: INPUT type=0x03, addr 18+
-            # NOTE: MR-02m DI events arrive as FMB_EVT_INPUT (0x03) at Input Reg address 18+
-            # NOT as FMB_EVT_DISCRETE (0x01) — per MODBUS_VARIABLES.txt line 21 + configure_events type 03
-        if dev["ao"] > 0:
-            configs.append((FMB_EVT_HOLDING, 33, dev["ao"]))   # AO: HOLDING type=0x02, addr 33+
-        if dev["ai"] > 0:
-            # AI: события INPUT по «пересчитанному значению» канала — регистры
-            # 403 + 7*(ch-1) (MODBUS_VARIABLES.txt: события AI 403, 410, ... 480).
-            # Диапазон покрывает весь блок значений; fw сжимает в одну запись
-            # таблицы приоритетов.
-            span = (dev["ai"] - 1) * MR02M_AI_CHANNEL_STRIDE + 1
-            configs.append((FMB_EVT_INPUT,
-                            MR02M_AI_HOLDING_BASE + 3, span))
-
-        for (evt_type, start_reg, count) in configs:
+        """One configure pass over the still-unacked ranges. Per-range
+        graceful: a rejected range stays on classic polling while the rest
+        get events. Returns True when no range is left pending."""
+        still_pending: list[tuple[int, int, int]] = []
+        for (evt_type, start_reg, count) in dev["pending"]:
             frame = build_fmb_configure_events(addr, evt_type, start_reg, count, 1)
+            ok = False
+            err = ""
             try:
                 # ACK: [addr][0x46][0x18][1][0x00][CRC_L][CRC_H] = 7 bytes
                 resp = ser.fmb_send_recv(frame, 7, 7, 0.3)
-                if len(resp) < 7 or resp[0] != addr or resp[2] != 0x18:
-                    self._log.warning("configure_events addr=%d type=%d failed", addr, evt_type)
-                    return False
+                ok = len(resp) >= 7 and resp[0] == addr and resp[2] == 0x18
             except Exception as e:
-                self._log.warning("configure_events addr=%d: %s", addr, e)
-                return False
-
-        return True
+                err = f" ({e})"
+            if ok:
+                dev["configured"] = True
+            else:
+                still_pending.append((evt_type, start_reg, count))
+                self._log.warning(
+                    "configure_events addr=%d type=0x%02X start=%d count=%d "
+                    "rejected%s — classic polling covers this range",
+                    addr, evt_type, start_reg, count, err)
+        dev["pending"] = still_pending
+        return not still_pending
 
     # --- poll_events (0x10) loop ---------------------------------------------
 
@@ -945,40 +944,13 @@ class FastModbusEventPortManager:
         dev = self._devices.get(slave_id)
         if not dev:
             return
-        did = dev["id"]
-        self._log.debug("event %s type=%02X reg=%d val=%d", did, evt_type, reg, val)
-
-        if evt_type == FMB_EVT_COIL and 1 <= reg <= dev["do"]:
-            self._pub.pub_control(did, f"do_{reg}", str(val))
-            self._pub.pub_error(did, f"do_{reg}", "")
-
-        elif evt_type == FMB_EVT_INPUT:
-            # DI states: Input Reg 18..(17+di_count) — arrive as FMB_EVT_INPUT per MODBUS_VARIABLES
-            # (NOT as FMB_EVT_DISCRETE; configure_events type 0x03=INPUT, same address as FC04 reg 18+)
-            if dev["di"] > 0 and 18 <= reg < 18 + dev["di"]:
-                di_n = reg - 17
-                self._pub.pub_control(did, f"di_{di_n}", str(val & 1))
-                self._pub.pub_error(did, f"di_{di_n}", "")
-            elif (dev["ai"] > 0 and reg >= MR02M_AI_HOLDING_BASE + 3
-                    and (reg - MR02M_AI_HOLDING_BASE - 3) % MR02M_AI_CHANNEL_STRIDE == 0):
-                # AI: «пересчитанное значение» канала (403 + 7*(ch-1)),
-                # масштаб по типу датчика — как в _poll_ai_ao.
-                ai_n = (reg - MR02M_AI_HOLDING_BASE - 3) // MR02M_AI_CHANNEL_STRIDE + 1
-                if 1 <= ai_n <= dev["ai"]:
-                    signed = val - 0x10000 if val >= 0x8000 else val
-                    code = DeviceLiveCache.get_sensor_type(did, ai_n)
-                    _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
-                    self._pub.pub_control(
-                        did, f"ai_{ai_n}", str(round(signed * scale, 3)))
-                    self._pub.pub_error(did, f"ai_{ai_n}", "")
-
-        elif evt_type == FMB_EVT_HOLDING and 33 <= reg < 33 + dev["ao"]:
-            ao_n = reg - 32
-            self._pub.pub_control(did, f"ao_{ao_n}", str(val))
-            self._pub.pub_error(did, f"ao_{ao_n}", "")
-
-        elif evt_type == FMB_EVT_REBOOT:
+        self._log.debug("event %s type=%02X reg=%d val=%d",
+                        dev["id"], evt_type, reg, val)
+        if evt_type == FMB_EVT_REBOOT:
+            # Device-agnostic; register layouts are the pollers' business.
             self._log.info("Device addr=%d rebooted (event 0x0F)", slave_id)
+            return
+        dev["dispatch"](evt_type, reg, val)
 
     # --- Run loop ------------------------------------------------------------
 
@@ -986,15 +958,22 @@ class FastModbusEventPortManager:
         ser = get_port(self._port_path, self._baudrate)
         time.sleep(2)
 
-        # Configure events for all registered devices
+        # Configure events for all registered devices; retries touch only the
+        # still-unacked ranges (per-range graceful degradation).
         for addr, dev in self._devices.items():
             for attempt in range(3):
                 if self._configure_device(ser, addr, dev):
-                    dev["configured"] = True
-                    self._log.info("FMB events configured addr=%d (%s)", addr, dev["id"])
                     break
                 time.sleep(0.5)
-            if not dev["configured"]:
+            if dev["configured"]:
+                acked = [r for r in dev["ranges"] if r not in dev["pending"]]
+                self._log.info(
+                    "FMB events configured addr=%d (%s) ranges=%s%s",
+                    addr, dev["id"],
+                    ["type=0x%02X start=%d count=%d" % r for r in acked],
+                    " — %d range(s) rejected, classic polling covers them"
+                    % len(dev["pending"]) if dev["pending"] else "")
+            else:
                 self._log.warning("FMB events config failed addr=%d — polling only", addr)
 
         if not any(d["configured"] for d in self._devices.values()):
@@ -1430,6 +1409,18 @@ class DevicePoller:
     def poll_slow_if_due(self, now: float) -> None:
         """Редкий опрос (диагностика, счётчики энергии) по своим интервалам."""
 
+    # --- Fast Modbus events (optional per device type) ------------------------
+
+    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        """Event ranges [(evt_type, start_reg, count)] for configure_events.
+        [] (the default) = the device type has no Fast Modbus event support."""
+        return []
+
+    def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        """Publish one Fast Modbus event (called from the FMB manager thread).
+        Must validate (evt_type, reg) against the device's own map and never
+        raise — an unknown event is ignored, not an error."""
+
     def run(self) -> None:
         raise NotImplementedError
 
@@ -1529,6 +1520,71 @@ class MR02mPoller(DevicePoller):
         self._ai_types: dict[int, int] = {}
         self._t_diag        = 0.0
         self._t_uptime      = 0.0
+        # FMB event counts, cached by fmb_event_ranges() from yaml module_type.
+        # NOT self._do etc. (0 until _init_module succeeds) — events must work
+        # before/without a successful init, as before the manager generalization.
+        self._fmb_do = self._fmb_di = self._fmb_ao = self._fmb_ai = 0
+
+    # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
+
+    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        # Counts from yaml module_type: registration runs before _init_module
+        # can read the device (same source main() used pre-generalization).
+        mt = self.cfg.get("module_type", 1)
+        do, di, ao, ai = MR02M_MODULE_TYPES.get(mt, (6, 8, 0, 0))
+        self._fmb_do, self._fmb_di, self._fmb_ao, self._fmb_ai = do, di, ao, ai
+        ranges: list[tuple[int, int, int]] = []
+        if do > 0:
+            ranges.append((FMB_EVT_COIL,    1,  do))   # DO: COIL type=0x00, addr 1+
+        if di > 0:
+            ranges.append((FMB_EVT_INPUT,   18, di))   # DI: INPUT type=0x03, addr 18+
+            # NOTE: MR-02m DI events arrive as FMB_EVT_INPUT (0x03) at Input Reg address 18+
+            # NOT as FMB_EVT_DISCRETE (0x01) — per MODBUS_VARIABLES.txt line 21 + configure_events type 03
+        if ao > 0:
+            ranges.append((FMB_EVT_HOLDING, 33, ao))   # AO: HOLDING type=0x02, addr 33+
+        if ai > 0:
+            # AI: события INPUT по «пересчитанному значению» канала — регистры
+            # 403 + 7*(ch-1) (MODBUS_VARIABLES.txt: события AI 403, 410, ... 480).
+            # Диапазон покрывает весь блок значений; fw сжимает в одну запись
+            # таблицы приоритетов.
+            span = (ai - 1) * MR02M_AI_CHANNEL_STRIDE + 1
+            ranges.append((FMB_EVT_INPUT, MR02M_AI_HOLDING_BASE + 3, span))
+        return ranges
+
+    def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        did = self.device_id
+
+        if evt_type == FMB_EVT_COIL and 1 <= reg <= self._fmb_do:
+            self.pub.pub_control(did, f"do_{reg}", str(val))
+            self.pub.pub_error(did, f"do_{reg}", "")
+
+        elif evt_type == FMB_EVT_INPUT:
+            # DI states: Input Reg 18..(17+di_count) — arrive as FMB_EVT_INPUT per MODBUS_VARIABLES
+            # (NOT as FMB_EVT_DISCRETE; configure_events type 0x03=INPUT, same address as FC04 reg 18+)
+            if self._fmb_di > 0 and 18 <= reg < 18 + self._fmb_di:
+                di_n = reg - 17
+                self.pub.pub_control(did, f"di_{di_n}", str(val & 1))
+                self.pub.pub_error(did, f"di_{di_n}", "")
+            elif (self._fmb_ai > 0 and reg >= MR02M_AI_HOLDING_BASE + 3
+                    and (reg - MR02M_AI_HOLDING_BASE - 3) % MR02M_AI_CHANNEL_STRIDE == 0):
+                # AI: «пересчитанное значение» канала (403 + 7*(ch-1)),
+                # масштаб по типу датчика — как в _poll_ai_ao.
+                ai_n = (reg - MR02M_AI_HOLDING_BASE - 3) // MR02M_AI_CHANNEL_STRIDE + 1
+                if 1 <= ai_n <= self._fmb_ai:
+                    signed = val - 0x10000 if val >= 0x8000 else val
+                    code = DeviceLiveCache.get_sensor_type(did, ai_n)
+                    _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
+                    self.pub.pub_control(
+                        did, f"ai_{ai_n}", str(round(signed * scale, 3)))
+                    self.pub.pub_error(did, f"ai_{ai_n}", "")
+
+        elif evt_type == FMB_EVT_HOLDING and 33 <= reg < 33 + self._fmb_ao:
+            ao_n = reg - 32
+            self.pub.pub_control(did, f"ao_{ao_n}", str(val))
+            self.pub.pub_error(did, f"ao_{ao_n}", "")
+
+        else:
+            self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
 
     def _ch_cfg(self, kind: str, ch: int) -> dict:
         for e in self._channels.get(kind, []):
@@ -2199,6 +2255,50 @@ class DTVPoller(DevicePoller):
         except Exception:
             pass
 
+    # --- Fast Modbus events ---------------------------------------------------
+    # Fast channels only: coils (buzzer/leds echo) + Input 25..30 (light, PB2,
+    # presence, radar distances). Slow sensors 1-24 and diag 123/124 stay
+    # classic-poll-only (analog churn would flood the bus for no value).
+    # Prerequisite: DTV firmware FMB mode = Holding 122 == 1; a rejected range
+    # degrades per-range to classic polling (manager logs it).
+    DTV_FMB_INPUT_START = 25
+    DTV_FMB_INPUT_COUNT = 6
+
+    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        return [
+            (FMB_EVT_COIL, 1, len(self.DTV_COILS)),
+            (FMB_EVT_INPUT, self.DTV_FMB_INPUT_START, self.DTV_FMB_INPUT_COUNT),
+        ]
+
+    def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        if evt_type == FMB_EVT_COIL and reg in self.DTV_COILS:
+            ch_name = self.DTV_COILS[reg][0]
+            # Через _wb_publish_poll (не pub_control): событие-эхо не должно
+            # затирать свежий writeback с другим значением (A2), как и полл.
+            self._wb_publish_poll(ch_name, str(val & 1), time.monotonic())
+            self.pub.pub_error(self.device_id, ch_name, "")
+            return
+
+        if (evt_type == FMB_EVT_INPUT
+                and self.DTV_FMB_INPUT_START <= reg
+                < self.DTV_FMB_INPUT_START + self.DTV_FMB_INPUT_COUNT
+                and reg in self.DTV_REGS):
+            # Семантика — зеркально _poll_sensors (форматы публикаций
+            # байт-в-байт с классическим поллом).
+            ch_name, scale, _, _ = self.DTV_REGS[reg]
+            if self._sensors_present and ch_name not in self._sensors_present:
+                return   # sensor known-absent; empty set = setup not run yet
+            if val == 0x8000:   # sensor absent / error
+                self.pub.pub_error(self.device_id, ch_name, "r")
+                return
+            raw = val - 0x10000 if val > 0x8000 else val
+            self.pub.pub_control(self.device_id, ch_name,
+                                 str(round(raw * scale, 3)))
+            self.pub.pub_error(self.device_id, ch_name, "")
+            return
+
+        self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+
     def _poll_uptime(self) -> None:
         try:
             r = self.read_input_registers(self.address, 105, 2)
@@ -2595,19 +2695,9 @@ def main() -> None:
                              args=((wdg_usec / 1_000_000) / 2,), daemon=True)
         t.start()
 
-    # Build per-port Fast Modbus managers for devices with fast_modbus=true
+    # Per-port Fast Modbus event managers, created lazily on the first
+    # registered device with fast_modbus: true and a non-empty event map.
     fmb_ports: dict[str, FastModbusEventPortManager] = {}
-    for dev_cfg in devices_cfg:
-        if not dev_cfg.get("fast_modbus", False):
-            continue
-        dev_type = dev_cfg.get("type", "").lower()
-        if dev_type != "mr02m":
-            continue   # Fast Modbus events only implemented for MR-02m
-        port_key = f"{dev_cfg.get('port','')}:{dev_cfg.get('baudrate', 115200)}"
-        if port_key not in fmb_ports:
-            fmb_ports[port_key] = FastModbusEventPortManager(
-                dev_cfg["port"], int(dev_cfg.get("baudrate", 115200)), pub
-            )
 
     # Build device pollers and group by RS-485 port (one scheduler thread per line)
     by_port: dict[str, list[DevicePoller]] = {}
@@ -2625,15 +2715,16 @@ def main() -> None:
         by_port.setdefault(port_key, []).append(poller)
         log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
 
-        if dev_cfg.get("fast_modbus", False) and dev_type == "mr02m":
-            mgr = fmb_ports.get(port_key)
-            if mgr:
-                mt = dev_cfg.get("module_type", 1)
-                do, di, ao, ai = MR02M_MODULE_TYPES.get(mt, (6, 8, 0, 0))
-                mgr.register_device(
-                    int(dev_cfg.get("address", 1)), dev_cfg["id"],
-                    dev_type, do, di, ao, ai
-                )
+        if dev_cfg.get("fast_modbus", False):
+            ranges = poller.fmb_event_ranges()
+            if ranges:   # [] = the device type has no FMB event support
+                mgr = fmb_ports.get(port_key)
+                if mgr is None:
+                    mgr = FastModbusEventPortManager(
+                        poller.port_path, poller.baudrate)
+                    fmb_ports[port_key] = mgr
+                mgr.register_device(poller.address, poller.device_id,
+                                    ranges, poller.fmb_dispatch)
 
     for port_key, pollers in by_port.items():
         port_path, baud_s = port_key.rsplit(":", 1)

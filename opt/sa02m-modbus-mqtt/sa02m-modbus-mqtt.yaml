@@ -64,6 +64,10 @@ devices:
   #   baudrate: 19200
   #   address: 1
   #   name: "DTV-RS-485 (COM3 addr=1)"
+  #   # fast_modbus: true   # Fast Modbus события (мгновенные coils 1-2 + рег. 25-30:
+  #   #                     # presence/кнопка/освещённость/дистанции); требуется режим FMB
+  #   #                     # в прошивке ДТВ (Holding 122 = 1); отклонённый диапазон
+  #   #                     # остаётся на классическом опросе (см. журнал моста)
   #   poll_sensors_s: 10
   #   poll_presence_s: 2
   #   poll_diag_s: 60
