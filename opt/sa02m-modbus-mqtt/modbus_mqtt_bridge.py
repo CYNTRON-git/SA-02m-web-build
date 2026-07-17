@@ -88,6 +88,16 @@ class DeviceLiveCache:
             cls._sensor_types.setdefault(device_id, {})[f"ai_{ai_index}"] = str(code)
 
     @classmethod
+    def get_sensor_type(cls, device_id: str, ai_index: int) -> int:
+        """Код типа датчика AI-канала (для масштабирования событий FMB)."""
+        with cls._lock:
+            raw = cls._sensor_types.get(device_id, {}).get(f"ai_{ai_index}", 0)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
     def flush_file(cls, device_id: str) -> None:
         with cls._lock:
             controls = dict(cls._controls.get(device_id, {}))
@@ -818,7 +828,14 @@ class FastModbusEventPortManager:
             # NOT as FMB_EVT_DISCRETE (0x01) — per MODBUS_VARIABLES.txt line 21 + configure_events type 03
         if dev["ao"] > 0:
             configs.append((FMB_EVT_HOLDING, 33, dev["ao"]))   # AO: HOLDING type=0x02, addr 33+
-        # AI events also arrive as FMB_EVT_INPUT at 403,410,... — handled in _dispatch if needed.
+        if dev["ai"] > 0:
+            # AI: события INPUT по «пересчитанному значению» канала — регистры
+            # 403 + 7*(ch-1) (MODBUS_VARIABLES.txt: события AI 403, 410, ... 480).
+            # Диапазон покрывает весь блок значений; fw сжимает в одну запись
+            # таблицы приоритетов.
+            span = (dev["ai"] - 1) * MR02M_AI_CHANNEL_STRIDE + 1
+            configs.append((FMB_EVT_INPUT,
+                            MR02M_AI_HOLDING_BASE + 3, span))
 
         for (evt_type, start_reg, count) in configs:
             frame = build_fmb_configure_events(addr, evt_type, start_reg, count, 1)
@@ -941,8 +958,18 @@ class FastModbusEventPortManager:
                 di_n = reg - 17
                 self._pub.pub_control(did, f"di_{di_n}", str(val & 1))
                 self._pub.pub_error(did, f"di_{di_n}", "")
-            # AI events (403,410,...) are not configured via configure_events, so they don't
-            # arrive at HIGH priority. AI values are published by periodic polling every 5s.
+            elif (dev["ai"] > 0 and reg >= MR02M_AI_HOLDING_BASE + 3
+                    and (reg - MR02M_AI_HOLDING_BASE - 3) % MR02M_AI_CHANNEL_STRIDE == 0):
+                # AI: «пересчитанное значение» канала (403 + 7*(ch-1)),
+                # масштаб по типу датчика — как в _poll_ai_ao.
+                ai_n = (reg - MR02M_AI_HOLDING_BASE - 3) // MR02M_AI_CHANNEL_STRIDE + 1
+                if 1 <= ai_n <= dev["ai"]:
+                    signed = val - 0x10000 if val >= 0x8000 else val
+                    code = DeviceLiveCache.get_sensor_type(did, ai_n)
+                    _, _, scale = AI_SENSOR_TYPES.get(code, _TEMP)
+                    self._pub.pub_control(
+                        did, f"ai_{ai_n}", str(round(signed * scale, 3)))
+                    self._pub.pub_error(did, f"ai_{ai_n}", "")
 
         elif evt_type == FMB_EVT_HOLDING and 33 <= reg < 33 + dev["ao"]:
             ao_n = reg - 32
