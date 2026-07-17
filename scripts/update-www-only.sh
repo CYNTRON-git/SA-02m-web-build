@@ -78,6 +78,30 @@ if [ -f /etc/sa02m_hw.conf ] && \
         /etc/sa02m_hw.conf
     log OK "sa02m_hw.conf: SA02M_HW_BACKEND disabled → i2c_expander (PCA9536)"
 fi
+# Session store (login.cgi / auth_check.cgi / flasher): www-data cannot mkdir
+# under /run. Full install creates it via 03-webserver.sh tmpfiles (2750
+# setgid); update-www-only skips that script — ensure the dir on older images.
+SA02M_TMPFILES=/etc/tmpfiles.d/sa02m.conf
+if [ -f "$SA02M_TMPFILES" ]; then
+    if ! grep -q 'sa02m-web-sessions' "$SA02M_TMPFILES" 2>/dev/null; then
+        printf '%s\n' 'd /run/sa02m-web-sessions 2750 www-data www-data -' >>"$SA02M_TMPFILES"
+        log OK "tmpfiles: добавлена /run/sa02m-web-sessions"
+    else
+        sed -i 's|^d /run/sa02m-web-sessions .*|d /run/sa02m-web-sessions 2750 www-data www-data -|' \
+            "$SA02M_TMPFILES"
+    fi
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create "$SA02M_TMPFILES" 2>/dev/null || true
+    fi
+elif [ ! -d /run/sa02m-web-sessions ]; then
+    install -d -m 2750 -o www-data -g www-data /run/sa02m-web-sessions 2>/dev/null \
+        && log OK "создан /run/sa02m-web-sessions"
+fi
+if [ -d /run/sa02m-web-sessions ]; then
+    chmod 2750 /run/sa02m-web-sessions 2>/dev/null || true
+    chown www-data:www-data /run/sa02m-web-sessions 2>/dev/null || true
+fi
+
 if systemctl is-active --quiet fcgiwrap 2>/dev/null; then
     systemctl restart fcgiwrap 2>/dev/null || true
 fi
