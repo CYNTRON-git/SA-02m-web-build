@@ -29,6 +29,15 @@
       "init": "bash (present everywhere the project builds)"
     },
     {
+      "id": "py-syntax",
+      "checks": "Syntax errors in every on-device Python service under opt/ (the Modbus-MQTT bridge, snapshot/scan/monitor helpers, the flasher) — a broken script fails only at systemd start on the device, with no build step to catch it.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m compileall -q opt/; fi; done; echo py-syntax: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/"],
+      "init": "Python 3.10+ as python3, python, or py — same interpreter picker as version-consistency (Windows ships a non-functional python3 Store stub)"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
