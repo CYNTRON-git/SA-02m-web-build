@@ -1,0 +1,15 @@
+{
+  "_doc": "Multi-component manifest: declares sibling repo roots the ai-dev enforcer may widen the boundary to (PROTOCOL.md invariant 2 · docs/architecture.md ## Components). Operator-authorized read+write to the CYNTRON/cloud sibling for the cross-repo Phase-C mTLS work (2026-07-18).",
+  "components": [
+    {
+      "name": "cloud",
+      "root": "../cloud",
+      "path": "C:/Users/admin/Downloads/cloud",
+      "repo": "CYNTRON-git/cloud",
+      "description": "SA-02m cloud backend (frps + stdlib API + fleet UI). Device-side seam: docs/contracts/cloud-enrollment.md."
+    }
+  ],
+  "siblings": [
+    { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" }
+  ]
+}
