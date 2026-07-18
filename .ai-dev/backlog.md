@@ -7,6 +7,14 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-07-18 **[LOW] App-wide `.btn-danger` sub-AA contrast (dark).** The
+  shared danger token renders **4.37:1** on dark (< 4.5:1 AA for normal text;
+  light = 4.99:1, passes). Pre-existing and app-wide — used by reboot, cloud
+  agent, storage-format, flasher, and now the services «Удалить» button (1.0.5.16
+  reused it as directed, did not fork a second token). Fix is an app-wide
+  `--red`/`--red-dim` token tighten affecting every danger button — do it once,
+  verify contrast in both themes (`web-diagnostic-tools.md ## Contrast`).
+  Surfaced by the 1.0.5.16 reviewer.
 - [OPEN] 2026-07-17 **[LOW] `test_agent.py` gated by no quality row.**
   `opt/sa02m-cloud-agent/tests/test_agent.py` (the send-only / no-command-channel
   / no-wireguard guards — the F1-removal net) is pytest-style, so the new

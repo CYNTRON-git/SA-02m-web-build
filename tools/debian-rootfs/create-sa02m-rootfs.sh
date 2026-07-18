@@ -314,6 +314,22 @@ if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
 			log "  vendor/$sub: $(du -sh "$OUTPUT/opt/vendor-installers/$sub" 2>/dev/null | awk '{print $1}')"
 		fi
 	done
+	# Repo-owned runtime assets the on-device install/uninstall entry-point
+	# (etc/sa02m-web-service-ctl.sh) reads from the vendor dirs: the CODESYS
+	# systemd drop-in and the ЦИНТРОН MPLC plugin. Staged here so a freshly
+	# imaged device can (re)install CODESYS/MPLC from the panel without a pscp.
+	if [ -d "$OUTPUT/opt/vendor-installers/codesys" ] \
+	   && [ -f "$REPO_ROOT/etc/systemd/system/codesyscontrol.service.d/sa02m.conf" ]; then
+		install -m 0644 "$REPO_ROOT/etc/systemd/system/codesyscontrol.service.d/sa02m.conf" \
+			"$OUTPUT/opt/vendor-installers/codesys/sa02m.conf"
+		log "  vendor/codesys: staged systemd drop-in sa02m.conf"
+	fi
+	if [ -d "$OUTPUT/opt/vendor-installers/mplc4" ] \
+	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" ]; then
+		install -m 0755 "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" \
+			"$OUTPUT/opt/vendor-installers/mplc4/mplc_cyntron.so"
+		log "  vendor/mplc4: staged mplc_cyntron.so"
+	fi
 fi
 
 if [ "$SKIP_INSTALL" = 0 ]; then
