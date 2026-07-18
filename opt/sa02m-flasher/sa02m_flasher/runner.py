@@ -708,6 +708,55 @@ def _preflight_read_bootloader_info_by_serial_mr(
     return cleaned, None
 
 
+def _preflight_read_bootloader_info_by_address_mr(
+    flasher: fp.FlasherProtocol,
+    *,
+    bootloader_addr: int,
+    log_cb: Callable[[str, str], None],
+) -> Optional[str]:
+    """
+    Bootloader-.bin по Modbus-адресу: читаем сигнатуру платы (рег. 290) на адресе
+    загрузчика (247), симметрично ветке по серийному
+    (_preflight_read_bootloader_info_by_serial_mr). Тот же helper, что и app-.bin путь
+    по адресу (flash_protocol._read_board_signature_bootloader_warmup).
+
+    Fail-safe: возвращаем сигнатуру ТОЛЬКО если чтение прошло и сигнатура валидна и
+    поддерживается (та же проверка, что у app/.bin-пути,
+    _validate_bootloader_board_signature_for_bin_flash); иначе None — вызывающий
+    сохраняет прежний info_sig, прошивка не ломается и NONE в info-блок не попадает.
+    """
+    log_cb(
+        "Запрос информации загрузчика (рег. 290) по адресу %d." % bootloader_addr,
+        "info",
+    )
+    board_sig, read_err = fp._read_board_signature_bootloader_warmup(
+        flasher, slave=bootloader_addr, serial=None
+    )
+    if read_err:
+        log_cb(
+            "Не удалось прочитать сигнатуру платы (рег. 290) по адресу %d: %s "
+            "Сохраняю прежнюю сигнатуру для info-блока." % (bootloader_addr, read_err),
+            "warn",
+        )
+        return None
+    reject = fp._validate_bootloader_board_signature_for_bin_flash(board_sig)
+    if reject:
+        log_cb(
+            "Сигнатура платы (рег. 290) по адресу %d непригодна («%s»); "
+            "сохраняю прежнюю сигнатуру для info-блока."
+            % (bootloader_addr, board_sig or "—"),
+            "warn",
+        )
+        return None
+    cleaned = (board_sig or "").strip()[:12]
+    log_cb(
+        "Данные загрузчика с устройства (адрес %d): сигнатура %s."
+        % (bootloader_addr, cleaned),
+        "info",
+    )
+    return cleaned
+
+
 def _resolve_bootloader_serial_mr_style(
     flasher: fp.FlasherProtocol,
     ser: Any,
@@ -1040,6 +1089,17 @@ def _flash_one_device(
             "info",
         )
         if is_bootloader_firmware:
+            # Симметрия с веткой по серийному (1093–1104): перед прошивкой .bin читаем
+            # реальную сигнатуру платы из рег. 290 на адресе загрузчика и переопределяем
+            # info_sig ею. Fail-safe: только валидную сигнатуру; иначе info_sig не меняем
+            # (не регрессируем к NONE, не ломаем прошивку). .fw шлёт свой info-блок raw.
+            sig_from_bl = _preflight_read_bootloader_info_by_address_mr(
+                flasher,
+                bootloader_addr=boot_addr_for_address_path,
+                log_cb=log_cb,
+            )
+            if sig_from_bl:
+                info_sig = sig_from_bl
             err = fp.run_flash_bootloader_sequence_by_address(
                 flasher,
                 boot_addr_for_address_path,
