@@ -46,6 +46,7 @@ DEFAULT_CONFIG        = "/etc/sa02m-cloud/agent.conf"
 ACTIVATION_TOKEN_FILE = "/etc/sa02m-cloud/activation_token"   # enroll-token fallback
 PAIR_REQUEST_FILE     = "/etc/sa02m-cloud/pair_request"       # claim-code trigger
 FRPC_CONFIG           = "/etc/sa02m-cloud/frpc.toml"
+DEVICE_SECRET_FILE    = "/etc/sa02m-cloud/device_secret"      # per-device identity
 FRPC_BINARY           = "/usr/local/bin/frpc"
 FRPC_UNIT             = "sa02m-cloud-frpc"
 STATUS_FILE           = "/run/sa02m-cloud-status.json"        # for web UI CGI
@@ -106,6 +107,34 @@ def save_config(path: str, cfg: configparser.ConfigParser):
     with open(path, "w") as f:
         cfg.write(f)
     os.chmod(path, 0o640)
+
+
+# ── Per-device identity (Phase C) ─────────────────────────────────────────────
+# Облако выдаёт секрет ТОЛЬКО в момент зачисления (claim/enroll), где устройство
+# доказало право на него; лениво по одному device_id он не выдаётся никогда.
+# Отдельный файл, а не agent.conf: agent.conf лежит 0640 (его читает веб-UI), а
+# секрет должен быть 0600 — как frpc.toml, который тоже несёт учётные данные.
+def save_device_secret(secret: str, path: str = DEVICE_SECRET_FILE):
+    # os.open с режимом сразу: write-then-chmod оставлял окно, в котором
+    # долгоживущий секрет лежал с правами по umask (обычно 0644).
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # os.fdopen забирает владение fd: закрывать его самим в except нельзя —
+    # `with` уже закрыл его при раскрутке, и повторный close бросал EBADF ПОВЕРХ
+    # настоящей ошибки. Вызывающий логирует то, что реально случилось, а эта
+    # строка лога — единственный сигнал оператору, что устройство вот-вот уйдёт
+    # в Offline при живом туннеле (режим strict).
+    with os.fdopen(fd, "w") as f:
+        f.write(secret)
+    os.chmod(path, 0o600)   # существующий файл мог быть создан ранее с другими правами
+
+
+def load_device_secret(path: str = DEVICE_SECRET_FILE) -> str:
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
 
 # ── Identity ──────────────────────────────────────────────────────────────────
@@ -187,10 +216,16 @@ def render_frpc_toml(frpc: dict) -> str:
 
     transport.tls.enable пиннится явно (O3): frpc 0.61 включает TLS
     control-соединения по умолчанию, пин fail-safe если будущий frpc сменит
-    дефолт."""
+    дефолт.
+
+    metadatas.device_id + metadatas.device_secret (Phase C) эмитятся ТОЛЬКО когда
+    облако выдало секрет; без него рендер байт-в-байт прежний (legacy-путь окна
+    grace)."""
     server_addr = frpc["server_addr"]
     server_port = int(frpc["server_port"])
     token       = frpc["token"]
+    device_id     = frpc.get("device_id") or ""
+    device_secret = frpc.get("device_secret") or ""
     proxies     = frpc.get("proxies") or []
     if not proxies:
         # Legacy single-proxy fallback fields (pre-Phase-B contract)
@@ -205,8 +240,19 @@ def render_frpc_toml(frpc: dict) -> str:
         'auth.token = "%s"' % token,
         # Пиним TLS транспортного (control) соединения frpc→frps явно.
         "transport.tls.enable = true",
-        "",
     ]
+    # Per-device identity (Phase C). frps передаёт metadatas в Login-хук облака,
+    # тот проверяет пару id+secret и ОТКЛОНЯЕТ соединение целиком при несовпадении;
+    # дальше NewProxy-хук берёт личность из СЕРВЕРНОЙ сессии логина, а не из
+    # клиентского сообщения — поэтому привязка «личность → субдомён» надёжна.
+    # Легаси-профиль (облако не выдало секрет) рендерится БЕЗ metadatas, байт-в-байт
+    # как раньше — это и есть окно grace на стороне облака.
+    if device_secret:
+        lines += [
+            'metadatas.device_id = "%s"' % device_id,
+            'metadatas.device_secret = "%s"' % device_secret,
+        ]
+    lines.append("")
     emitted = 0
     for p in proxies:
         local_port = int(p["local_port"])
@@ -268,6 +314,110 @@ def ensure_frpc_running() -> str:
     if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0:
         return "running"
     return "failed"
+
+
+# Маркеры серверного отказа в логине в журнале frpc. Облако отклоняет Login с
+# конкретной причиной (см. cloud docs/contracts/cloud-enrollment.md §4), frpc
+# печатает её в свой журнал. Это ЕДИНСТВЕННЫЙ доступный агенту сигнал: ответ
+# heartbeat агент принципиально не читает (send-only, threat-model F1).
+FRPC_REJECT_MARKERS = ("device revoked", "device identity required",
+                       "credential mismatch", "device not enrolled",
+                       "no credential issued", "invalid credential")
+FRPC_FAIL_CYCLES = 3          # подряд неудачных циклов watchdog до диагностики
+REVOKED_RETRY_S  = 600        # как часто пере-проверять отказ, стоя в standby
+RECOVERY_SETTLE_S = 30        # дать frpc реально попытаться залогиниться перед вердиктом
+JOURNAL_FALLBACK_SINCE = "-10 min"   # если точное время старта юнита недоступно
+
+
+def _unit_active_since(unit: str) -> str:
+    """Момент последнего запуска юнита в формате, понятном journalctl --since.
+
+    Возвращает "" если значение недоступно или неправдоподобно — вызывающий
+    обязан подставить своё ограничение окна, но НИКОГДА не читать журнал целиком."""
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "ActiveEnterTimestamp",
+                            "--value", unit],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    v = (r.stdout or "").strip()
+    # systemctl отдаёт "n/a" для незапущенного юнита. Грубая проверка на дату:
+    # нужны цифра, дефис и двоеточие — иначе это не timestamp.
+    if (not v or v == "n/a" or not any(ch.isdigit() for ch in v)
+            or "-" not in v or ":" not in v):
+        return ""
+    return v
+
+
+def frpc_reject_reason(unit: str = FRPC_UNIT) -> str:
+    """Причина серверного отказа из журнала frpc, или "" если её там нет.
+
+    Окно чтения ОГРАНИЧЕНО текущим запуском frpc (--since). Без этого маркер от
+    прошлого отказа переживал перепривязку: после честного revoke → re-pair три
+    неудачных цикла watchdog по любой причине (сеть, рестарт frps) вычитывали
+    старое "device revoked" и глушили исправное устройство.
+
+    Честность важнее удобства: «отозвано» показываем ТОЛЬКО когда сервер прямо
+    это сказал в ЭТОМ запуске. Недоступное облако, севшая сеть или упавший
+    frpc — это не отзыв, и выдавать их за отзыв нельзя."""
+    since = _unit_active_since(unit) or JOURNAL_FALLBACK_SINCE
+    try:
+        r = subprocess.run(["journalctl", "-u", unit, "--since", since,
+                            "-n", "80", "--no-pager"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception as e:
+        log.debug("journalctl unavailable: %s", e)
+        return ""
+    if r.returncode != 0:
+        return ""
+    text = (r.stdout or "").lower()
+    for marker in FRPC_REJECT_MARKERS:
+        if marker in text:
+            return marker
+    return ""
+
+
+def revoked_standby(cfg, device_id: str, reason: str) -> str:
+    """Отказ сервера подтверждён: гасим туннель и встаём в standby.
+
+    НЕ выходим из процесса. `Restart=on-failure` в юните не перезапускает чистый
+    exit(0), поэтому прежний `return` из main() означал: устройство заглушено
+    навсегда, пока человек не приедет и не зайдёт по SSH. Вместо этого:
+      - раз в REVOKED_RETRY_S пере-проверяем, не сняли ли отзыв в облаке;
+      - в любой момент реагируем на запрос привязки из веб-UI устройства.
+    Оба пути восстанавливают связь без выезда на объект."""
+    log.error("cloud refused this device (%s) — tunnel stopped, standing by", reason)
+    _systemctl("stop", FRPC_UNIT)
+    _systemctl("disable", FRPC_UNIT)
+    while True:
+        _write_status("revoked", device_id=device_id, reason=reason,
+                      serial=cfg["device"]["serial"])
+        waited = 0
+        while waited < REVOKED_RETRY_S:
+            # Пользователь нажал «подключить» в веб-UI — сразу в привязку.
+            if os.path.exists(PAIR_REQUEST_FILE):
+                log.info("pairing requested from the web UI — leaving stand-down")
+                return "repair"
+            time.sleep(STANDBY_POLL_S)
+            waited += STANDBY_POLL_S
+        log.info("re-testing the tunnel after stand-down (%s)", reason)
+        if ensure_frpc_running() != "running":
+            _systemctl("stop", FRPC_UNIT)
+            continue
+        # frpc — Type=simple: is-active отвечает 0 сразу после спавна, ДО первой
+        # попытки логина, и журнал в этот момент пуст. Объявлять восстановление
+        # здесь значило бы мигать active/revoked каждые REVOKED_RETRY_S на
+        # устройстве, которое облако по-прежнему отвергает. Даём frpc время
+        # реально сходить на сервер и перечитываем — юнит должен ВЫЖИТЬ и журнал
+        # остаться чистым.
+        time.sleep(RECOVERY_SETTLE_S)
+        if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0 and not frpc_reject_reason():
+            log.info("cloud accepts this device again — resuming normal operation")
+            return "recovered"
+        log.info("still refused after settle — staying in stand-down")
+        _systemctl("stop", FRPC_UNIT)
 
 
 # ── Telemetry (heartbeat filler) ──────────────────────────────────────────────
@@ -416,6 +566,19 @@ def finalize_enrollment(resp: dict, cfg: configparser.ConfigParser,
     except Exception as e:
         log.error("cannot write frpc config: %s", e)
         return False
+    # Секрет получен вместе с профилем — сохраняем ДО записи конфига агента,
+    # чтобы heartbeat мог им аутентифицироваться сразу после зачисления.
+    secret = frpc.get("device_secret") or ""
+    if secret:
+        try:
+            save_device_secret(secret)
+            log.info("per-device identity stored for %s", device_id)
+        except Exception as e:
+            # Не фатально, но последствие зависит от режима облака: в `grace`
+            # heartbeat пойдёт по legacy-пути и устройство останется на связи; в
+            # `strict` heartbeat получит 403, и устройство будет числиться
+            # Offline во флоте ПРИ ЖИВОМ туннеле. Ошибку видно в журнале.
+            log.error("cannot store device secret: %s", e)
     cfg["cloud"]["enrolled"]  = "true"
     cfg["cloud"]["device_id"] = device_id
     hb = resp.get("heartbeat_interval_s")
@@ -543,7 +706,9 @@ def bootstrap_loop(cfg: configparser.ConfigParser, config_path: str) -> bool:
 
 
 # ── Active loop — frpc watchdog + send-only heartbeat ─────────────────────────
-def active_loop(cfg: configparser.ConfigParser):
+def active_loop(cfg: configparser.ConfigParser) -> str:
+    """Основной цикл. Возвращает "repair" (нужна повторная привязка) или
+    "recovered" (отказ снят) — оба через revoked_standby; иначе не возвращается."""
     api_url    = cfg["cloud"]["api_url"].rstrip("/")
     device_id  = get_device_id(cfg)
     h_interval = int(cfg["cloud"]["heartbeat_interval"])
@@ -555,6 +720,10 @@ def active_loop(cfg: configparser.ConfigParser):
     last_watchdog  = 0.0
     tunnel         = ensure_frpc_running()
     cpu_snap       = None
+    fail_cycles    = 0
+    device_secret  = load_device_secret()
+    log.info("per-device identity: %s",
+             "present" if device_secret else "absent (legacy grace path)")
 
     while True:
         now = time.time()
@@ -562,18 +731,37 @@ def active_loop(cfg: configparser.ConfigParser):
         if now - last_watchdog > WATCHDOG_S:
             tunnel = ensure_frpc_running()
             last_watchdog = now
+            if tunnel == "running":
+                fail_cycles = 0
+            else:
+                fail_cycles += 1
+                # Туннель не поднимается подряд — выясняем, отказ ли это сервера.
+                if fail_cycles >= FRPC_FAIL_CYCLES:
+                    reason = frpc_reject_reason()
+                    if reason:
+                        # Контракт §4: повторный отказ в логине == снятие с учёта.
+                        # Перестаём звонить (иначе бесконечный цикл рестартов), но
+                        # процесс НЕ завершаем — standby умеет восстановиться сам.
+                        return revoked_standby(cfg, device_id, reason)
 
         if now - last_heartbeat > h_interval:
             telemetry, cpu_snap = collect_telemetry(cpu_snap)
-            # Send-only by design: the response carries no commands (F1
-            # removed cloud-side too); nothing here interprets it.
-            api_post(f"{api_url}/heartbeat", {
+            payload = {
                 "device_id": device_id,
                 "uptime_s":  telemetry.get("uptime_s", 0),
                 "telemetry": telemetry,
-            })
+            }
+            # Аутентификация heartbeat (Phase C): секрет уходит ВВЕРХ, если он есть.
+            # Без него облако в режиме grace всё ещё принимает биение, в strict —
+            # отклоняет. Направление одностороннее: ответ по-прежнему не читается.
+            if device_secret:
+                payload["device_secret"] = device_secret
+            # Send-only by design: the response carries no commands (F1
+            # removed cloud-side too); nothing here interprets it.
+            api_post(f"{api_url}/heartbeat", payload)
             _write_status("active", device_id=device_id, tunnel=tunnel,
                           serial=cfg["device"]["serial"],
+                          identity="present" if device_secret else "absent",
                           last_heartbeat=int(now))
             last_heartbeat = now
 
@@ -589,11 +777,16 @@ def main():
 
     cfg = load_config(args.config)
 
-    if not cfg["cloud"].getboolean("enrolled"):
-        bootstrap_loop(cfg, args.config)
-        cfg = load_config(args.config)
-
-    active_loop(cfg)
+    # Один цикл на весь жизненный путь: привязка -> работа -> (при отказе облака)
+    # standby -> восстановление или повторная привязка. Процесс не завершается
+    # сам: юнит имеет Restart=on-failure, который чистый выход НЕ перезапускает,
+    # поэтому любой выход отсюда означал бы «устройство молчит до приезда людей».
+    while True:
+        if not cfg["cloud"].getboolean("enrolled"):
+            bootstrap_loop(cfg, args.config)
+            cfg = load_config(args.config)
+        if active_loop(cfg) == "repair":
+            cfg["cloud"]["enrolled"] = "false"   # обратно в привязку
 
 
 if __name__ == "__main__":
