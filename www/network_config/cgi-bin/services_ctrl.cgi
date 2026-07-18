@@ -94,7 +94,7 @@ print(d.get('id', ''))" 2>/dev/null | tr -d '\r\n')
 fi
 
 case "$ACTION" in
-    stop|start) ;;
+    stop|start|install|uninstall) ;;
     *)
         echo "Content-type: application/json; charset=UTF-8"
         echo ""

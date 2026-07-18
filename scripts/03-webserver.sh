@@ -316,6 +316,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-web-service-ctl.sh list, \
     /usr/local/sbin/sa02m-web-service-ctl.sh start *, \
     /usr/local/sbin/sa02m-web-service-ctl.sh stop *, \
+    /usr/local/sbin/sa02m-web-service-ctl.sh install *, \
+    /usr/local/sbin/sa02m-web-service-ctl.sh uninstall *, \
     /usr/local/sbin/sa02m-rs485-stats.sh, \
     /usr/local/sbin/sa02m-kernel-select.sh status --json, \
     /usr/local/sbin/sa02m-kernel-select.sh set smp, \

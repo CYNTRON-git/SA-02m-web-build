@@ -33,14 +33,42 @@ function svcCtlWantsStart(svc) {
 
 let _lastSvcCtlData = null;
 
+/** RU label + CSS class per control action (install/start/stop/uninstall). */
+function svcCtlBtnMeta(action) {
+  switch (action) {
+    case 'install':   return { ru: 'Установить', cls: 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-on' };
+    case 'start':     return { ru: 'Пуск',       cls: 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-on' };
+    case 'stop':      return { ru: 'Стоп',       cls: 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-off' };
+    case 'uninstall': return { ru: 'Удалить',    cls: 'btn btn-sm svc-ctl-btn btn-danger' };
+    default:          return { ru: action,       cls: 'btn btn-sm svc-ctl-btn' };
+  }
+}
+
+/** Build one control button (created inside the renderer → re-render survival). */
+function makeSvcCtlButton(svc, action, flasherBusy) {
+  const meta = svcCtlBtnMeta(action);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = meta.cls;
+  btn.textContent = window.sa02mI18n ? window.sa02mI18n.t(meta.ru) : meta.ru;
+  btn.dataset.svcId = svc.id;
+  btn.dataset.svcAction = action;
+  if (action === 'start' && flasherBusy && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge')) {
+    btn.disabled = true;
+    btn.title = window.sa02mI18n
+      ? window.sa02mI18n.t('Идёт прошивка или сканирование RS-485')
+      : 'Идёт прошивка или сканирование RS-485';
+  }
+  btn.addEventListener('click', function () { serviceCtlAction(btn); });
+  return btn;
+}
+
 function renderServicesControl(data) {
   _lastSvcCtlData = data;
   const host = document.getElementById('svc-ctl-list');
   if (!host) return;
   const flasherBusy = !!(data && data.flasher_busy);
-  const list = ((data && data.services) || []).filter(function (svc) {
-    return svcIsInstalledFlag(svc.installed);
-  });
+  const list = ((data && data.services) || []).slice();
   if (!list.length) {
     host.innerHTML = '<p class="field-hint">' + (window.sa02mI18n ? window.sa02mI18n.t('Нет управляемых служб') : 'Нет управляемых служб') + '</p>';
     return;
@@ -50,13 +78,7 @@ function renderServicesControl(data) {
   });
   host.innerHTML = '';
   sorted.forEach(function (svc, i) {
-    const wantStart = svcCtlWantsStart(svc);
-    const action = wantStart ? 'start' : 'stop';
-    const btnLabelRu = wantStart ? 'Пуск' : 'Стоп';
-    const btnLabel = window.sa02mI18n ? window.sa02mI18n.t(btnLabelRu) : btnLabelRu;
-    const btnClass = wantStart
-      ? 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-on'
-      : 'btn btn-sm hw-io-btn svc-ctl-btn hw-io-to-off';
+    const installed = svcIsInstalledFlag(svc.installed);
 
     const r = document.createElement('div');
     r.className = 'svc-row svc-ctl-row';
@@ -66,23 +88,21 @@ function renderServicesControl(data) {
     name.className = 'name mono';
     name.textContent = svcCtlDisplayLabel(svc);
 
-    const mid = document.createElement('span');
-    mid.className = 'svc-ctl-mid';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = btnClass;
-    btn.textContent = btnLabel;
-    btn.dataset.svcId = svc.id;
-    btn.dataset.svcAction = action;
-    const pollBlocked = flasherBusy && wantStart && (svc.id === 'mplc4' || svc.id === 'mqtt-bridge');
-    if (pollBlocked) {
-      btn.disabled = true;
-      btn.title = window.sa02mI18n
-        ? window.sa02mI18n.t('Идёт прошивка или сканирование RS-485')
-        : 'Идёт прошивка или сканирование RS-485';
+    // Fixed columns (grid): [name] [toggle slot] [manage slot] [badge]. The
+    // toggle cell is ALWAYS present (empty-but-reserved for a not-installed
+    // service) so [Установить] column-aligns with [Удалить] and no row drifts.
+    const toggle = document.createElement('span');
+    toggle.className = 'svc-ctl-cell svc-ctl-toggle';
+    const manage = document.createElement('span');
+    manage.className = 'svc-ctl-cell svc-ctl-manage';
+    // Matrix: not installed → toggle empty, manage=[Установить];
+    // installed+running → [Стоп][Удалить]; installed+stopped → [Пуск][Удалить].
+    if (!installed) {
+      manage.appendChild(makeSvcCtlButton(svc, 'install', flasherBusy));
+    } else {
+      toggle.appendChild(makeSvcCtlButton(svc, svcCtlWantsStart(svc) ? 'start' : 'stop', flasherBusy));
+      manage.appendChild(makeSvcCtlButton(svc, 'uninstall', flasherBusy));
     }
-    btn.addEventListener('click', function () { serviceCtlAction(btn); });
-    mid.appendChild(btn);
 
     const badge = document.createElement('span');
     badge.className = 'badge badge-unk';
@@ -90,10 +110,16 @@ function renderServicesControl(data) {
     badge.id = bid;
 
     r.appendChild(name);
-    r.appendChild(mid);
+    r.appendChild(toggle);
+    r.appendChild(manage);
     r.appendChild(badge);
     host.appendChild(r);
-    svcBadge(bid, svcCtlRowState(svc));
+    if (installed) {
+      svcBadge(bid, svcCtlRowState(svc));
+    } else {
+      badge.textContent = window.sa02mI18n ? window.sa02mI18n.t('Не установлен') : 'Не установлен';
+      badge.className = 'badge badge-unk';
+    }
   });
 }
 
@@ -358,8 +384,38 @@ function svcCtlErrorMessage(code) {
     sudo_failed: 'нет прав sudo для управления службами',
     ctl_missing: 'скрипт управления не установлен',
     timeout: 'истекло время ожидания смены состояния',
+    staging_missing: 'установочные файлы не найдены на устройстве',
+    no_internet: 'нет доступа в интернет для установки Node-RED',
+    not_installable: 'служба не поддерживает установку/удаление',
+    install_failed: 'не удалось установить службу',
+    uninstall_failed: 'не удалось удалить службу',
+    purge_blocked: 'не удалось полностью удалить пакет',
   };
   return map[c] || c;
+}
+
+/** Toast text while an async control action is pending. */
+function svcCtlActionPendingMsg(action) {
+  const m = {
+    install: 'Устанавливается…',
+    uninstall: 'Удаляется…',
+    stop: 'Остановка службы…',
+    start: 'Запуск службы…',
+  };
+  const ru = m[action] || '…';
+  return window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
+}
+
+/** Toast text on successful completion of an async control action. */
+function svcCtlActionDoneMsg(action) {
+  const m = {
+    install: 'Служба установлена и запущена',
+    uninstall: 'Служба удалена',
+    stop: 'Служба остановлена и отключена',
+    start: 'Служба включена',
+  };
+  const ru = m[action] || 'Готово';
+  return window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
 }
 
 function pollServiceCtlState(id, action, maxMs, intervalMs) {
@@ -372,9 +428,19 @@ function pollServiceCtlState(id, action, maxMs, intervalMs) {
           const j = await r.json().catch(() => ({}));
           if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
           const svc = (j.services || []).find(function (s) { return s && s.id === id; });
-          if (!svc) throw new Error('unknown_service');
           renderServicesControl(j);
-          if (svcCtlWantsStart(svc) !== wantStart) {
+          // Action-aware completion: install waits installed=true, uninstall
+          // waits installed=false (or the row gone), start/stop keep the flip.
+          let done = false;
+          if (action === 'install') {
+            done = !!(svc && svcIsInstalledFlag(svc.installed));
+          } else if (action === 'uninstall') {
+            done = !svc || !svcIsInstalledFlag(svc.installed);
+          } else {
+            if (!svc) throw new Error('unknown_service');
+            done = svcCtlWantsStart(svc) !== wantStart;
+          }
+          if (done) {
             resolve(svc);
             return;
           }
@@ -436,10 +502,24 @@ function serviceCtlAction(btn) {
     return;
   }
   const label = btn.closest('.svc-row')?.querySelector('.name')?.textContent || id;
-  const verb = action === 'stop' ? 'Остановить' : 'Включить';
-  const verbT = window.sa02mI18n ? window.sa02mI18n.t(verb) : verb;
-  if (!confirm(verbT + ' «' + label + '»?')) return;
+  let confirmMsg;
+  if (action === 'uninstall') {
+    const tpl = window.sa02mI18n
+      ? window.sa02mI18n.t('Удалить «X» полностью (со всеми данными)?')
+      : 'Удалить «X» полностью (со всеми данными)?';
+    confirmMsg = tpl.replace('X', label);
+  } else {
+    const verbMap = { stop: 'Остановить', start: 'Включить', install: 'Установить' };
+    const verb = verbMap[action] || action;
+    const verbT = window.sa02mI18n ? window.sa02mI18n.t(verb) : verb;
+    confirmMsg = verbT + ' «' + label + '»?';
+  }
+  if (!confirm(confirmMsg)) return;
   btn.disabled = true;
+  // Install/uninstall can run several minutes (dpkg + start/verify) → 10-min
+  // poll deadline; start/stop keep 90 s.
+  const longOp = action === 'install' || action === 'uninstall';
+  const pollMax = longOp ? 600000 : 90000;
   fetch('/cgi-bin/services_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
@@ -450,13 +530,13 @@ function serviceCtlAction(btn) {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
       if (j.pending) {
-        toast(action === 'stop' ? 'Остановка службы…' : 'Запуск службы…', 'info', 5000);
-        return pollServiceCtlDone(id, action, 90000, 2000);
+        toast(svcCtlActionPendingMsg(action), 'info', longOp ? 8000 : 5000);
+        return pollServiceCtlDone(id, action, pollMax, 2000);
       }
       return j;
     })
     .then(function () {
-      toast(action === 'stop' ? 'Служба остановлена и отключена' : 'Служба включена', 'success');
+      toast(svcCtlActionDoneMsg(action), 'success');
       setTimeout(function () {
         fetchBackgroundPart('services', applyServicesStatus, true);
         fetchPriorityPart('priority');
