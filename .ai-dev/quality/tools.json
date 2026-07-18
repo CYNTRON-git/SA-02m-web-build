@@ -56,6 +56,15 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
+      "id": "py-unit-flasher",
+      "checks": "Flasher unit tests (opt/sa02m-flasher/tests, stdlib unittest) — firmware formats/repo, scan persist, MPLC port lease, application-line profiles, and the by-address bootloader reg-290 signature preflight (1.0.5.17). A regression in the flash routing/signature path passes py-syntax but fails here. Uses -t opt/sa02m-flasher so the sa02m_flasher package imports from any cwd.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-flasher/tests -t opt/sa02m-flasher -q; fi; done; echo py-unit-flasher: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-flasher/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
