@@ -448,6 +448,61 @@ def _read_board_signature_bootloader_warmup(
     return None, "Не задан адрес загрузчика или серийный номер для чтения рег. 290."
 
 
+def _fw_info_with_reg290_signature(
+    flasher: "FlasherProtocol",
+    info32: bytes,
+    *,
+    slave: Optional[int] = None,
+    serial: Optional[int] = None,
+) -> bytes:
+    """
+    Fail-safe override of the 12-byte signature field in a .fw info-block.
+
+    CYNTRON .fw files often carry a NONE/empty signature in the raw 32-byte
+    info-block; the module bootloader validates that field against reg 290, so a
+    NONE sig makes .fw flashing unreliable (BUGLOG 2005). Symmetric to the .bin
+    path (commit #28 / reg 290): when the embedded signature is empty or "NONE",
+    read the board's own signature from reg 290, validate it with the SAME gate
+    as the .bin flash, and patch ONLY the 12 signature bytes — size + b"CRC2" +
+    crc32(payload) + pad are untouched (the CRC is over the payload, NOT the
+    info-block, so the block stays valid).
+
+    Fail-safe contract: a real embedded signature is respected (returned
+    unchanged — WB-compat); a failed / empty / unsupported reg-290 read keeps
+    info32 unchanged (never regress to NONE, never abort a flash that would
+    otherwise proceed).
+    """
+    if len(info32) < INFO_BLOCK_BYTES:
+        return info32
+    embedded = info32[:12].decode("ascii", "replace").split("\x00", 1)[0].strip()
+    if embedded and embedded.upper() != "NONE":
+        # Real file signature — respect it, do not touch (WB-compat).
+        if flasher.log_cb:
+            flasher.log_cb(
+                "info-блок .fw: сигнатура из файла «%s» — оставляем как есть." % embedded
+            )
+        return info32
+    # Empty / NONE embedded signature → override from reg 290 (same gate as #28).
+    board_sig, read_err = _read_board_signature_bootloader_warmup(
+        flasher, slave=slave, serial=serial
+    )
+    if read_err or _validate_bootloader_board_signature_for_bin_flash(board_sig):
+        # Read failed / empty / unsupported — fail-safe: keep the raw block.
+        if flasher.log_cb:
+            flasher.log_cb(
+                "info-блок .fw: сигнатура в файле NONE/пустая, рег. 290 недоступен (%s) — "
+                "отправляем исходный блок." % (read_err or "не поддерживается")
+            )
+        return info32
+    sig12 = board_sig.encode("ascii", "replace")[:12].ljust(12, b"\x00")
+    if flasher.log_cb:
+        flasher.log_cb(
+            "info-блок .fw: сигнатура в файле NONE/пустая → берём из рег. 290 «%s» "
+            "(размер/CRC без изменений)." % board_sig
+        )
+    return sig12 + info32[12:]
+
+
 class FlashCancelGate:
     """
     Отмена до mark_irreversible() — прерывание прошивки.
@@ -1565,11 +1620,14 @@ def run_flash_sequence_by_address(
         size = size_from_file
         if flasher.log_cb:
             flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) на адрес {slave}.")
+        info_block = _fw_info_with_reg290_signature(
+            flasher, image[:INFO_BLOCK_BYTES], slave=slave
+        )
         err = None
         for info_try in range(INFO_MAX_ATTEMPTS):
             if gate.should_abort():
                 return "Отменено пользователем"
-            err = flasher.send_info_block_wb(slave, image[:INFO_BLOCK_BYTES])
+            err = flasher.send_info_block_wb(slave, info_block)
             if err is None:
                 break
             if info_try < INFO_MAX_ATTEMPTS - 1:
@@ -1798,11 +1856,14 @@ def run_flash_sequence(
         payload_start = INFO_BLOCK_BYTES
         if flasher.log_cb:
             flasher.log_cb(f"Отправка info-блока (первые 32 B файла .fw, 16 рег BE) по серийному 0x{serial:08X}.")
+        info_block = _fw_info_with_reg290_signature(
+            flasher, image[:INFO_BLOCK_BYTES], serial=serial
+        )
         err = None
         for info_try in range(INFO_MAX_ATTEMPTS):
             if gate.should_abort():
                 return "Отменено пользователем"
-            err = flasher.send_info_block_bytes_by_serial(serial, image[:INFO_BLOCK_BYTES])
+            err = flasher.send_info_block_bytes_by_serial(serial, info_block)
             if err is None:
                 break
             if info_try < INFO_MAX_ATTEMPTS - 1:
@@ -2098,6 +2159,11 @@ def run_flash_bootloader_sequence_by_address(
             "Используйте .fw или .bin 34 КБ бутлоадера."
         )
     from_fw = fw_info_bytes is not None
+    if fw_info_bytes is not None:
+        # .fw info-block: override a NONE/empty signature from reg 290 (fail-safe).
+        fw_info_bytes = _fw_info_with_reg290_signature(
+            flasher, fw_info_bytes, slave=slave
+        )
 
     if flasher.log_cb:
         flasher.log_cb("Режим обновления бутлоадера: запись 0x424C в 0x1001 на адрес %d..." % slave)
@@ -2235,6 +2301,11 @@ def run_flash_sequence_bootloader(
     from_fw_s = fw_info_bytes_s is not None
     if not serial or serial == 0xFFFFFFFF:
         return "Для прошивки по 0x46 нужен серийный номер устройства."
+    if fw_info_bytes_s is not None:
+        # .fw info-block: override a NONE/empty signature from reg 290 (fail-safe).
+        fw_info_bytes_s = _fw_info_with_reg290_signature(
+            flasher, fw_info_bytes_s, serial=serial
+        )
 
     if flasher.log_cb:
         flasher.log_cb("Режим обновления бутлоадера: запись 0x424C в 0x1001 по серийному...")

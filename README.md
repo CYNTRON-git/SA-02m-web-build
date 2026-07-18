@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.5.17-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.5.18-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
