@@ -2,7 +2,10 @@
 # Управление прикладными службами SA-02m из веб-интерфейса (www-data → sudo).
 # stop: stop + disable + mask — не стартует после перезагрузки до ручного включения.
 # start: unmask + enable + start
+# install/uninstall (codesys|mplc4|node-red only): full runtime install / full
+#   clean removal (purge package + wipe data), preserving /opt/vendor-installers.
 # Usage: sa02m-web-service-ctl.sh list | stop <id> | start <id>
+#        | install <id> | uninstall <id>
 
 SC=/usr/bin/systemctl
 [ -x "$SC" ] || SC=/bin/systemctl
@@ -367,6 +370,15 @@ cmd_list() {
     while IFS='|' read -r _id _label _cands; do
         [ -z "$_id" ] && continue
         if ! service_present "$_id" "$_cands"; then
+            # Absent but installable (codesys|mplc4|node-red) → emit a ghost row
+            # with the __absent__ sentinel unit. It is NOT added to the batched
+            # systemctl probes (there is nothing to probe); Pass 2 emits a fixed
+            # installed:false tuple for it. Non-installable absent services keep
+            # the original `continue` (never shown).
+            if svc_is_installable "$_id"; then
+                _rows="${_rows}${_id}|${_label}|__absent__
+"
+            fi
             continue
         fi
         _unit=""
@@ -439,6 +451,16 @@ EOF
     parts="" sep=""
     while IFS='|' read -r _id _label _unit; do
         [ -z "$_id" ] && continue
+        if [ "$_unit" = "__absent__" ]; then
+            # Ghost row for an installable-but-absent service. No systemctl
+            # probe (the unit does not exist); fixed installed:false tuple so
+            # the frontend renders the [Установить] button.
+            _id_e=$(json_escape "$_id")
+            _label_e=$(json_escape "$_label")
+            parts="${parts}${sep}{\"id\":\"${_id_e}\",\"label\":\"${_label_e}\",\"unit\":\"\",\"active\":\"inactive\",\"enabled\":false,\"masked\":false,\"user_disabled\":false,\"installed\":false}"
+            sep=,
+            continue
+        fi
         if [ "$_unit" = "init.d" ]; then
             _active=inactive
             _enabled=disabled
@@ -496,6 +518,21 @@ validate_id() {
         ''|*[!a-zA-Z0-9_-]*) return 1 ;;
     esac
     return 0
+}
+
+# Only these three runtimes carry install/uninstall (local .deb / vendor
+# payload / online installer). Everything else is install-time-only.
+svc_is_installable() {
+    case "$1" in
+        codesys|mplc4|node-red) return 0 ;;
+    esac
+    return 1
+}
+
+# True if a TCP port is in LISTEN state (post-install / post-uninstall verify).
+port_listening() {
+    command -v ss >/dev/null 2>&1 || return 1
+    ss -H -ltn "sport = :$1" 2>/dev/null | grep -q ":$1"
 }
 
 cmd_stop() {
@@ -622,6 +659,401 @@ cmd_start() {
     emit_result "$(printf '{"ok":true,"id":"%s","action":"start"}' "$_id")"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# INSTALL / UNINSTALL
+#
+# Runtime distillations of scripts/08-codesys.sh, 09-mplc.sh, 07-nodered.sh —
+# NOT a shell-out to those scripts (absent on the device, and they source
+# scripts/lib.sh + REPO paths). Keep 08/09/07 as the canonical install-time
+# path; any shared step edited here is mirrored there (see plan §Architecture).
+# All three PRESERVE their /opt/vendor-installers/<c>/ staging.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── CODESYS install (local .deb only) ──────────────────────────────────────
+codesys_install() {
+    _deb=""
+    for _c in /opt/vendor-installers/codesys/codesyscontrol_linuxarm_*_armhf.deb \
+              /opt/vendor-installers/codesys/codesyscontrol_*_armhf.deb; do
+        for _f in $_c; do
+            [ -f "$_f" ] && _deb="$_f" && break 2
+        done
+    done
+    if [ -z "$_deb" ] || [ ! -f "$_deb" ]; then
+        emit_result '{"ok":false,"error":"staging_missing","id":"codesys"}'
+        return 1
+    fi
+    # codemeter-lite is absent in Debian main → --force-depends; demo mode until
+    # the license .wbc lands. Hold so `apt-get -f install` never removes it.
+    DEBIAN_FRONTEND=noninteractive dpkg -i --force-depends "$_deb" >>"$LOG" 2>&1 || true
+    apt-mark hold codesyscontrol >>"$LOG" 2>&1 || true
+    _dropin_src=/opt/vendor-installers/codesys/sa02m.conf
+    _dropin_dir=/etc/systemd/system/codesyscontrol.service.d
+    if [ -f "$_dropin_src" ]; then
+        mkdir -p "$_dropin_dir" 2>/dev/null || true
+        cp "$_dropin_src" "$_dropin_dir/sa02m.conf" >>"$LOG" 2>&1 || true
+        chmod 644 "$_dropin_dir/sa02m.conf" 2>/dev/null || true
+    fi
+    # A stale pidfile from a previous instance makes init.d think it is alive.
+    if [ -f /var/run/codesyscontrol.pid ] && ! codesys_process_active; then
+        rm -f /var/run/codesyscontrol.pid
+    fi
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    codesys_rc_enable
+    if [ -x /etc/init.d/codesyscontrol ] && ! codesys_process_active; then
+        /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
+        sleep 2
+    fi
+    if codesys_process_active || port_listening 11740; then
+        emit_result '{"ok":true,"id":"codesys","action":"install"}'
+        return 0
+    fi
+    emit_result '{"ok":false,"error":"install_failed","id":"codesys"}'
+    return 1
+}
+
+# ── MPLC4 install (vendor payload only) ─────────────────────────────────────
+mplc4_install() {
+    _src=/opt/vendor-installers/mplc4
+    if [ ! -d "$_src" ] || [ ! -f "$_src/install.sh" ] \
+       || [ ! -f "$_src/mplc4.tar.gz" ] || [ ! -f "$_src/nginx.tar.gz" ]; then
+        emit_result '{"ok":false,"error":"staging_missing","id":"mplc4"}'
+        return 1
+    fi
+    (
+        cd "$_src" || exit 1
+        chmod +x ./install.sh 2>/dev/null || true
+        bash ./install.sh --use-systemd --http-port=8082 --enable-log
+    ) >>"$LOG" 2>&1 || true
+    if [ -f "$_src/mplc_cyntron.so" ] && [ -d /opt/mplc4 ]; then
+        install -m 0755 "$_src/mplc_cyntron.so" /opt/mplc4/mplc_cyntron.so >>"$LOG" 2>&1 || true
+    fi
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    sc_run_slow enable mplc4 >>"$LOG" 2>&1 || true
+    sc_run_slow restart mplc4 >>"$LOG" 2>&1 || true
+    sleep 3
+    if port_listening 8082 || service_runtime_active mplc4 mplc4.service; then
+        emit_result '{"ok":true,"id":"mplc4","action":"install"}'
+        return 0
+    fi
+    emit_result '{"ok":false,"error":"install_failed","id":"mplc4"}'
+    return 1
+}
+
+# ── Node-RED: online (preferred) or offline from staged payload ─────────────
+nodered_internet_reachable() {
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -fsS --max-time 15 -I https://registry.npmjs.org/node-red >/dev/null 2>&1
+}
+
+# uiHost 0.0.0.0 so the panel is reachable by device IP (mirrors 07:114-124).
+nodered_fix_settings() {
+    _h=$1
+    _s="$_h/.node-red/settings.js"
+    _def=/usr/lib/node_modules/node-red/settings.js
+    if [ ! -f "$_s" ] && [ -f "$_def" ]; then
+        cp "$_def" "$_s" 2>>"$LOG" || true
+    fi
+    [ -f "$_s" ] || return 0
+    if grep -qE '^[[:space:]]*uiHost:' "$_s" 2>/dev/null; then
+        sed -i 's/^\([[:space:]]*uiHost:\)[[:space:]]*.*/\1 "0.0.0.0",/' "$_s" 2>>"$LOG" || true
+    elif grep -qE '^[[:space:]]*//[[:space:]]*uiHost:' "$_s" 2>/dev/null; then
+        sed -i 's/^\([[:space:]]*\)\/\/[[:space:]]*uiHost:.*/\1uiHost: "0.0.0.0",/' "$_s" 2>>"$LOG" || true
+    else
+        sed -i '/uiPort:/a\    uiHost: "0.0.0.0",' "$_s" 2>>"$LOG" || true
+    fi
+}
+
+nodered_enable_start() {
+    _unit=""
+    for _u in nodered.service node-red.service; do
+        if unit_exists "$_u" || unit_file_installed "$_u"; then
+            _unit=$_u
+            break
+        fi
+    done
+    if [ -z "$_unit" ]; then
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    sc_run_slow enable "$_unit" >>"$LOG" 2>&1 || true
+    sc_run_slow restart "$_unit" >>"$LOG" 2>&1 || true
+    sleep 2
+    if port_listening 1880 || service_runtime_active node-red "$_unit"; then
+        emit_result '{"ok":true,"id":"node-red","action":"install"}'
+        return 0
+    fi
+    emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+    return 1
+}
+
+nodered_ensure_user() {
+    if ! id nodered >/dev/null 2>&1; then
+        useradd -r -m -d /home/nodered -s /usr/sbin/nologin nodered >>"$LOG" 2>&1 || true
+    fi
+    _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
+    [ -n "$_nr_home" ] || _nr_home=/home/nodered
+    mkdir -p "$_nr_home/.node-red" 2>/dev/null || true
+}
+
+nodered_install_online() {
+    _url="${NODERED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
+    if ! curl -fsS --max-time 15 -I "$_url" >/dev/null 2>&1; then
+        emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
+        return 1
+    fi
+    nodered_ensure_user
+    # Download then run with bash — no process substitution (this script is
+    # POSIX sh / dash on the device; `bash <(curl…)` is not portable).
+    _tmp=/tmp/sa02m-nodered-install.$$
+    if ! curl -fsSL "$_url" -o "$_tmp" 2>>"$LOG"; then
+        emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
+        return 1
+    fi
+    bash "$_tmp" --confirm-root --confirm-install --skip-pi --no-init --node20 \
+        --restart --nodered-user=nodered >>"$LOG" 2>&1 || true
+    rm -f "$_tmp"
+    # armhf/armv7l on Node < 22 cannot run Node-RED v4/v5 (they require Node
+    # v22.9+). The official installer pulls the latest node-red (v5 today), so
+    # on this arch ALWAYS pin node-red@3 — do NOT gate on parsing the installed
+    # version: that parse mis-fired on-stand and left a crash-looping v5 (the
+    # `|| true` swallowed the failed downgrade). Uninstall, re-pin @3, verify.
+    _arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+    if [ "$_arch" = "armhf" ] || [ "$_arch" = "armv7l" ]; then
+        _nodemajor=$(node --version 2>/dev/null | awk -F. '{print substr($1,2)+0}')
+        if [ -n "$_nodemajor" ] && [ "$_nodemajor" -lt 22 ] 2>/dev/null; then
+            npm uninstall -g node-red >>"$LOG" 2>&1 || true
+            if ! npm install -g --no-audit --no-fund --unsafe-perm node-red@3 >>"$LOG" 2>&1; then
+                # --force overrides a leftover v5 engines/peer refusal.
+                npm install -g --no-audit --no-fund --unsafe-perm --force node-red@3 >>"$LOG" 2>&1 || true
+            fi
+            # Verify the pin took by reading the installed package.json (do NOT
+            # boot node-red — a stray v5 crashes on Node 20). CLI is a fallback.
+            _nr_pkg="$(npm root -g 2>/dev/null)/node-red/package.json"
+            _nrmajor=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9]*\).*/\1/p' "$_nr_pkg" 2>/dev/null | head -n1)
+            [ -n "$_nrmajor" ] || _nrmajor=$(node-red --version 2>/dev/null | awk -F. '{print $1+0}')
+            if [ -z "$_nrmajor" ] || [ "$_nrmajor" -ge 4 ] 2>/dev/null; then
+                printf 'nodered: v3 pin failed, installed major=%s\n' "${_nrmajor:-?}" >>"$LOG" 2>&1
+                emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+                return 1
+            fi
+        fi
+    fi
+    _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
+    [ -n "$_nr_home" ] || _nr_home=/home/nodered
+    nodered_fix_settings "$_nr_home"
+    chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
+    nodered_enable_start
+}
+
+# Offline install from a pre-built payload (staged separately — code defensively
+# against its absence). Extracts a staged Node tarball (only if Node.js is
+# absent — shared Node is kept) + a pre-built node-red global tree, recreates
+# the /usr/bin/node-red symlink, drops the unit, enables + starts. No npm registry.
+nodered_install_offline() {
+    _src=/opt/vendor-installers/nodered
+    if [ ! -d "$_src" ]; then
+        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+        return 1
+    fi
+    _node_tar=""
+    for _c in "$_src"/node-*-linux-armv7l.tar.* "$_src"/node-*-linux-arm*.tar.* "$_src"/node-*.tar.*; do
+        for _f in $_c; do [ -f "$_f" ] && _node_tar="$_f" && break 2; done
+    done
+    _nr_tar=""
+    for _c in "$_src"/node-red-*.tar.* "$_src"/node_modules*.tar.*; do
+        for _f in $_c; do [ -f "$_f" ] && _nr_tar="$_f" && break 2; done
+    done
+    _unit_src=""
+    for _c in "$_src/nodered.service" "$_src/node-red.service"; do
+        [ -f "$_c" ] && _unit_src="$_c" && break
+    done
+    if [ -z "$_nr_tar" ] || [ -z "$_unit_src" ]; then
+        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+        return 1
+    fi
+    nodered_ensure_user
+    if ! command -v node >/dev/null 2>&1; then
+        if [ -z "$_node_tar" ]; then
+            emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+            return 1
+        fi
+        if ! tar -C /usr/local --strip-components=1 -xf "$_node_tar" >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+            return 1
+        fi
+    fi
+    mkdir -p /usr/lib/node_modules 2>/dev/null || true
+    if ! tar -C /usr/lib/node_modules -xf "$_nr_tar" >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    if [ -f /usr/lib/node_modules/node-red/red.js ]; then
+        ln -sf ../lib/node_modules/node-red/red.js /usr/bin/node-red 2>>"$LOG" || true
+        chmod +x /usr/bin/node-red 2>/dev/null || true
+    fi
+    _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
+    [ -n "$_nr_home" ] || _nr_home=/home/nodered
+    if [ -f "$_src/settings.js" ] && [ ! -f "$_nr_home/.node-red/settings.js" ]; then
+        cp "$_src/settings.js" "$_nr_home/.node-red/settings.js" 2>>"$LOG" || true
+    fi
+    nodered_fix_settings "$_nr_home"
+    chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
+    cp "$_unit_src" /etc/systemd/system/nodered.service 2>>"$LOG" || true
+    nodered_enable_start
+}
+
+nodered_install() {
+    if nodered_internet_reachable; then
+        nodered_install_online
+        return $?
+    fi
+    if [ -d /opt/vendor-installers/nodered ]; then
+        nodered_install_offline
+        return $?
+    fi
+    emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
+    return 1
+}
+
+# ── CODESYS uninstall (ordering load-bearing; heals the apt poison) ─────────
+codesys_uninstall() {
+    apt-mark unhold codesyscontrol >>"$LOG" 2>&1 || true
+    if [ -x /etc/init.d/codesyscontrol ]; then
+        /etc/init.d/codesyscontrol stop >>"$LOG" 2>&1 || true
+    fi
+    if command -v update-rc.d >/dev/null 2>&1; then
+        update-rc.d codesyscontrol disable >>"$LOG" 2>&1 || true
+        update-rc.d codesyscontrol remove >>"$LOG" 2>&1 || true
+    fi
+    if unit_exists codesyscontrol.service; then
+        sc_run_slow stop codesyscontrol.service >>"$LOG" 2>&1 || true
+        sc_run_slow disable codesyscontrol.service >>"$LOG" 2>&1 || true
+    fi
+    if codesys_process_active; then
+        pkill -f '[c]odesyscontrol\.bin' >>"$LOG" 2>&1 || true
+        sleep 1
+    fi
+    # dpkg NOT apt: apt would try to satisfy the missing codemeter dep and can
+    # wedge. NEVER run apt-get -f install / autoremove here.
+    if dpkg -s codesyscontrol >/dev/null 2>&1; then
+        if ! dpkg --purge --force-depends codesyscontrol >>"$LOG" 2>&1; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: codesys --purge refused, fallback dpkg --remove --force-all" >>"$LOG" 2>&1
+            dpkg --remove --force-all codesyscontrol >>"$LOG" 2>&1 || true
+        fi
+    fi
+    rm -rf /etc/systemd/system/codesyscontrol.service.d 2>>"$LOG" || true
+    rm -f /var/run/codesyscontrol.pid 2>>"$LOG" || true
+    rm -f /etc/3S.dat 2>>"$LOG" || true
+    rm -rf /var/opt/codesys 2>>"$LOG" || true
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if codesys_process_active || port_listening 11740 || port_listening 4840; then
+        emit_result '{"ok":false,"error":"uninstall_failed","id":"codesys"}'
+        return 1
+    fi
+    if dpkg -s codesyscontrol >/dev/null 2>&1; then
+        emit_result '{"ok":false,"error":"purge_blocked","id":"codesys"}'
+        return 1
+    fi
+    emit_result '{"ok":true,"id":"codesys","action":"uninstall"}'
+}
+
+# ── MPLC4 uninstall (full clean; preserve staging) ──────────────────────────
+mplc4_uninstall() {
+    if unit_exists mplc4.service; then
+        sc_run_slow stop mplc4.service >>"$LOG" 2>&1 || true
+        sc_run_slow disable mplc4.service >>"$LOG" 2>&1 || true
+    fi
+    if [ -x /etc/init.d/mplc4 ]; then
+        /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
+    fi
+    if command -v update-rc.d >/dev/null 2>&1; then
+        update-rc.d mplc4 remove >>"$LOG" 2>&1 || true
+    fi
+    if mplc4_process_active; then
+        pkill -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >>"$LOG" 2>&1 || true
+        sleep 1
+    fi
+    if dpkg -s mplc4 >/dev/null 2>&1; then
+        dpkg --purge mplc4 >>"$LOG" 2>&1 || dpkg --remove --force-all mplc4 >>"$LOG" 2>&1 || true
+    fi
+    rm -f /etc/systemd/system/mplc4.service /lib/systemd/system/mplc4.service \
+          /usr/lib/systemd/system/mplc4.service 2>>"$LOG" || true
+    rm -rf /opt/mplc4 2>>"$LOG" || true
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if port_listening 8082 || mplc4_process_active; then
+        emit_result '{"ok":false,"error":"uninstall_failed","id":"mplc4"}'
+        return 1
+    fi
+    emit_result '{"ok":true,"id":"mplc4","action":"uninstall"}'
+}
+
+# ── Node-RED uninstall (full clean incl. user+home; KEEP Node.js) ───────────
+nodered_uninstall() {
+    for _u in nodered.service node-red.service; do
+        if unit_exists "$_u"; then
+            sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
+            sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
+        fi
+    done
+    if command -v npm >/dev/null 2>&1; then
+        npm uninstall -g node-red >>"$LOG" 2>&1 || true
+    fi
+    rm -rf /usr/lib/node_modules/node-red 2>>"$LOG" || true
+    rm -f /usr/bin/node-red 2>>"$LOG" || true
+    rm -f /etc/systemd/system/nodered.service /etc/systemd/system/node-red.service \
+          /lib/systemd/system/nodered.service /lib/systemd/system/node-red.service \
+          /usr/lib/systemd/system/nodered.service /usr/lib/systemd/system/node-red.service 2>>"$LOG" || true
+    rm -rf /home/nodered/.node-red 2>>"$LOG" || true
+    if id nodered >/dev/null 2>&1; then
+        userdel -r nodered >>"$LOG" 2>&1 || true
+    fi
+    sc_run daemon-reload >>"$LOG" 2>&1 || true
+    if port_listening 1880; then
+        emit_result '{"ok":false,"error":"uninstall_failed","id":"node-red"}'
+        return 1
+    fi
+    emit_result '{"ok":true,"id":"node-red","action":"uninstall"}'
+}
+
+cmd_install() {
+    _id=$1
+    validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
+    if ! svc_is_installable "$_id"; then
+        emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
+        return 1
+    fi
+    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
+    mkdir -p "$RESULT_DIR" 2>/dev/null || true
+    printf '{"ok":true,"pending":true,"id":"%s","action":"install"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
+    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: install ${_id}" >>"$LOG" 2>&1
+    case "$_id" in
+        codesys) codesys_install ;;
+        mplc4) mplc4_install ;;
+        node-red) nodered_install ;;
+    esac
+}
+
+cmd_uninstall() {
+    _id=$1
+    validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
+    if ! svc_is_installable "$_id"; then
+        emit_result '{"ok":false,"error":"not_installable","id":"'"$_id"'"}'
+        return 1
+    fi
+    SVC_RESULT_FILE="${RESULT_DIR}/${_id}.json"
+    mkdir -p "$RESULT_DIR" 2>/dev/null || true
+    printf '{"ok":true,"pending":true,"id":"%s","action":"uninstall"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
+    chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: uninstall ${_id}" >>"$LOG" 2>&1
+    case "$_id" in
+        codesys) codesys_uninstall ;;
+        mplc4) mplc4_uninstall ;;
+        node-red) nodered_uninstall ;;
+    esac
+}
+
 ACTION=${1:-}
 ID=${2:-}
 
@@ -636,6 +1068,14 @@ case "$ACTION" in
     start)
         [ -n "$ID" ] || { printf '{"ok":false,"error":"missing_id"}\n'; exit 1; }
         cmd_start "$ID"
+        ;;
+    install)
+        [ -n "$ID" ] || { printf '{"ok":false,"error":"missing_id"}\n'; exit 1; }
+        cmd_install "$ID"
+        ;;
+    uninstall)
+        [ -n "$ID" ] || { printf '{"ok":false,"error":"missing_id"}\n'; exit 1; }
+        cmd_uninstall "$ID"
         ;;
     *)
         printf '{"ok":false,"error":"bad_action"}\n'

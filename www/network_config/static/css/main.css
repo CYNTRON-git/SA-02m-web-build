@@ -1557,16 +1557,52 @@ html:not([data-theme="light"]) .topbar {
 }
 
 /* ── Службы ─────────────────────────────────────────────────────────────── */
+/* The services control card needs room for the strict 4-column control row
+   (name + reserved toggle slot + manage slot + status badge); a single ~230px
+   auto-fill track clips the name/badge. Span two tracks where the grid has
+   them — auto-fill clamps the span to 1 on a viewport with a single column, so
+   it degrades safely. */
+.system-manage-grid > .system-manage-services-card {
+  grid-column: span 2;
+}
 .system-manage-services-card.widget-svc .svc-list {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   gap: 3px;
 }
-.system-manage-services-card.widget-svc .svc-row.svc-ctl-row .svc-ctl-mid {
-  flex: 1 1 auto;
+/* Fixed-column grid so controls never shift row-to-row:
+   [name] [toggle slot] [manage slot] [badge]. The toggle cell is ALWAYS present
+   (empty-but-reserved when a service is not installed) so [Установить] column-
+   aligns under [Удалить] and no row drifts. Column widths measured from the
+   widest label incl. EN (+small margin): toggle «Стоп»/Start ≤38px → 42px,
+   manage «Установить» ≤68px → 74px, badge «Не установлен» ≤109px → 112px; name
+   takes the flexible remainder (the span-2 tile above gives it ≥190px). Scoped
+   to .svc-ctl-row — the dashboard `.widget-svc .svc-row` (flex, dynamic
+   name/uptime/badge widget) is deliberately NOT touched. */
+.system-manage-services-card.widget-svc .svc-row.svc-ctl-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px 74px 112px;
+  align-items: center;
+  column-gap: 6px;
+}
+.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-cell {
+  display: block;
   min-width: 0;
-  text-align: right;
+}
+.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-cell .svc-ctl-btn {
+  width: 100%;
+  box-sizing: border-box;
+}
+/* Badge fills its fixed 112px column — overrides the dashboard 38% cap / rem
+   min-width so «Не установлен» (widest, ~109px) shows in full and every badge
+   left edge aligns row-to-row. */
+.system-manage-services-card.widget-svc .svc-ctl-row .badge {
+  max-width: none;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: center;
 }
 .system-manage-services-card.widget-svc .svc-ctl-btn {
   font-size: 9px;
