@@ -48,7 +48,7 @@
     },
     {
       "id": "py-unit-cloud",
-      "checks": "Cloud-agent render_frpc_toml unit tests (opt/sa02m-cloud-agent/tests, unittest-style test_render*.py) — the device-side local-port allow-list (drops :22/:1883, keeps :80/:9999) and the pinned transport TLS, guarding the A5 defense-in-depth against regression. The test_render*.py pattern deliberately excludes the pytest-style test_agent.py (pytest is not a device/CI dep).",
+      "checks": "Cloud-agent stdlib unit tests (opt/sa02m-cloud-agent/tests, unittest-style test_render*.py). Despite the pattern name this row now covers the whole agent seam: frpc.toml rendering + the device-side local-port allow-list (drops :22/:1883, keeps :80/:9999) + pinned transport TLS (A5 defense-in-depth), per-device identity metadatas emission and 0600 credential storage, the heartbeat send-only guarantee (threat-model F1), and revocation stand-down/recovery. The test_render*.py pattern deliberately excludes the pytest-style test_agent.py (pytest is not a device/CI dep) — widening it to test_*.py would fail the gate on the missing import.",
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-cloud-agent/tests -p \"test_render*.py\" -q; fi; done; echo py-unit-cloud: no working python interpreter; exit 1'",
       "beat": "build",
