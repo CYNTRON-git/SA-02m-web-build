@@ -909,6 +909,10 @@ html:not([data-theme="light"]) .topbar {
 }
 .btn.hw-off {
   color: var(--text-sec) !important;
+  /* Distinct fill + border so an OFF toggle still reads as a button (Operator
+     2026-07-19: the flat OFF state blended into the card). --bg-card contrasts
+     with the hw-item's --bg-panel in both themes. */
+  background: var(--bg-card) !important;
   border-color: var(--border-md) !important;
   font-weight: 600;
 }
@@ -3916,6 +3920,9 @@ html:not([data-theme="light"]) .topbar {
   .rs485-txrx-item { justify-content: space-between; }
   .rs485-err-reserved, .rs485-mods-reserved, .rs485-dev-reserved { display: none; }
   .hw-grid    { grid-template-columns: repeat(2, 1fr); }  /* 2 HW items per row on mobile (Operator) */
+  /* No transient status messages in the HW block on mobile (Operator 2026-07-19:
+     don't flash the appear/disappear message on button press). */
+  .hw-block-status { display: none !important; }
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
   .flasher-control-grid { grid-template-columns: 1fr; }
@@ -3948,49 +3955,42 @@ html:not([data-theme="light"]) .topbar {
   .dash-wide:not(.widget-svc) { order: -1; }
   .widget-svc.dash-wide { order: 5; }
 
-  /* KPI tiles (every dash-grid widget that is NOT full-width): square, no bar,
-     content HORIZONTALLY centred, titles TOP-aligned so every tile's title sits
-     at the same level (Operator 2026-07-19). */
+  /* KPI tiles: square, no bar. A 3-row GRID — title (top, same level across all
+     tiles) / value (centred in the tall 1fr middle row → the SAME central position
+     in EVERY tile, with or without a sub) / a reserved sub row (so no-sub tiles —
+     USB «НЕТ», uptime — centre the value identically). Operator 2026-07-19. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;           /* horizontal centre */
+    display: grid;
+    /* FIXED title-row height (fits a 2-line title + icon) so a longer title
+       («ЗАГРУЗКА CPU», «ДИСК eMMC») can't shift the middle row — the value stays
+       at the SAME level as 1-line-title tiles (UPTIME, USB «НЕТ»). Operator. */
+    grid-template-rows: 40px 1fr 1.4em;
+    justify-items: center;
+    align-items: center;
     text-align: center;
     overflow: hidden;
     padding: 14px 10px;
   }
-  /* Title pinned at the top (same level across all tiles). */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title { margin-bottom: 8px; flex: 0 0 auto; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title { align-self: start; margin-bottom: 0; }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title.has-ico { justify-content: center; }
-  /* The value block GROWS to fill and centres its content — so the main value sits
-     at the SAME central position in every tile (Operator 2026-07-19). USB nests its
-     value in usb-storage-view/usb-modem-view, so those grow too. */
-  /* The value block grows to fill the tile and centres its content (value at the
-     SAME central position in every tile). The plain .widget-val is a horizontal
-     flex row so the number and unit stay on ONE line, full tile width (Operator:
-     units inline, block wide enough not to wrap). USB nests value+detail, so its
-     containers stay a centred column. */
+  /* Value in the middle row, centred; number + unit inline (baseline). USB nests
+     value+detail, so its container is a centred column in the middle row. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val {
-    flex: 1 1 auto;
     display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
+    flex-flow: row wrap;
     align-items: baseline;
     align-content: center;
     justify-content: center;
     width: 100%;
-    min-height: 0;
   }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-storage-view,
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-modem-view {
-    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     width: 100%;
-    min-height: 0;
   }
   /* Larger value (Operator: "значения крупнее"). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val {
