@@ -20,6 +20,8 @@
     'Версия веб-интерфейса': 'Web interface version',
     'Сервер автоматизации СА-02м': 'Automation Server SA-02m',
     'Сервер автоматизации СА-02м-2': 'Automation Server SA-02m-2',
+    'СА-02м': 'SA-02m',
+    'СА-02м-2': 'SA-02m-2',
     'Переключение темы: тёмная или светлая': 'Theme switch: dark or light',
     'Переключатель темы: тёмная или светлая': 'Theme switch: dark or light',
     'Светлая': 'Light',

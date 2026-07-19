@@ -361,12 +361,19 @@ html:not([data-theme="light"]) .topbar {
   color: var(--text-sec);
   margin-left: 0.4em;
 }
+/* Short model name (СА-02м / СА-02м-2) — hidden on desktop (full title shows);
+   the mobile topbar (≤700) swaps to it so the controls fit the logo's row. */
+.topbar-brand-short { display: none; font-size: 0.9rem; font-weight: inherit; color: inherit; }
 .topbar-sep   { flex: 1; }
 /* Right-side controls group (lang/theme/ip/user) wrapped so the WHOLE set can
    drop to a full-width 2nd row on mobile (cloud `.navr` model — RESPONSIVE §),
    freeing row 1 for the brand + restored full wordmark. Desktop: an inline flex
    row pushed right by .topbar-sep; the 12px gap preserves the old .topbar gap. */
 .topbar-controls { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-width: 0; }
+/* Right group wrapper (controls + user). Desktop: an inline row (unchanged look).
+   Mobile (≤700): a right-aligned COLUMN mirroring the brand column — toggles on
+   top (logo line), «Выход» beneath (СА-02м line). */
+.topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 .topbar-user #logout-btn { margin-left: 4px; }
@@ -3801,41 +3808,49 @@ html:not([data-theme="light"]) .topbar {
   .app.nav-open .sidebar { transform: translateX(0); }
   .app.nav-open .nav-backdrop { display: block; }
 
-  /* ── A2 topbar collapse (Phase 5 restructure, 1.0.5.26) ──────────────────────
-     The header WRAPS (cloud `.nav`/`.navr` model): the compact ghost controls
-     drop to a full-width 2nd row (.topbar-controls, below), which frees row 1
-     for the burger + the RESTORED full wordmark logo (Phase-4 chip swap dropped
-     — measured to fit at 360/390/414 with the controls on row 2, no h-overflow).
-     The topbar height goes auto (min-height keeps the desktop floor) so the 2nd
-     row is never clipped; .app keeps it flex-shrink:0 so it takes what it needs.
-     The device title ellipsises beneath the wordmark (full text in its title
-     attr, set by applyDeviceTitle); the IP + username drop; lang/theme stay
-     icon-only; the version fragment is hidden (the stray «0.5» tail). */
-  .topbar-burger { display: flex; }
-  .topbar { gap: 8px; padding: 0 12px; flex-wrap: wrap; height: auto; min-height: var(--topbar-h); }
-  .topbar-controls { flex-basis: 100%; width: 100%; justify-content: flex-end; gap: 8px; }
-  .topbar-branding { white-space: nowrap; overflow: hidden; }
-  #device-title {
-    font-size: 17px;
-    display: inline-block;
-    max-width: 46vw;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    vertical-align: bottom;
-  }
+  /* Mobile topbar — the cloud fleet header (`.nav`/`.navtg`/`.navr`) applied
+     verbatim, Operator-directed 2026-07-19: ROW 1 = burger (left, our addition)
+     + FULL wordmark logo (short model name СА-02м/СА-02м-2 beneath it) + the
+     language/theme pills (cloud `.navtg`, pushed right); ROW 2 = «Выход» as a
+     cyan TEXT LINK (cloud `.navr`, full-width, right-aligned) — a DIFFERENT
+     style than the pills. The header wraps: .topbar-user (holding logout) is
+     flex-basis:100% so it drops to row 2; the topbar height goes auto (min-height
+     keeps the desktop floor). .topbar-logo{height:auto} stops the base
+     height:100% from stretching row 1 and pushing row 2 outside the box. */
+  .topbar-burger { display: flex; align-self: flex-start; }
+  .topbar { gap: 8px; padding: 8px 12px; flex-wrap: wrap; height: auto; min-height: var(--topbar-h); align-items: flex-start; }
+  .topbar-logo { height: auto; align-self: flex-start; }   /* full wordmark restored (Operator) */
+  .topbar-branding  { white-space: nowrap; overflow: hidden; }
+  #device-title { display: none; }        /* long title off — short name below shows */
+  .topbar-brand-short { display: inline; font-size: 15px; }
   #app-version { display: none; }
   #tb-ip { display: none; }
+  /* Language/theme — compact cloud `.tbtn` pills (icon + label); drop the 44px
+     force on these header toggles (Operator: cloud sizes). */
+  .topbar-lang-btn { padding: 5px 10px; min-height: 0; min-width: 0; }
+  .topbar-sep { display: none; }
+  /* Right group = a 2-row column mirroring the brand: toggles on top (aligned to
+     the LOGO line), «Выход» beneath (aligned to the СА-02м line). margin-left:auto
+     pushes it right; align-self:flex-start tops it against the brand column. */
+  .topbar-right { flex-direction: column; align-items: flex-end; gap: 4px; margin-left: auto; align-self: flex-start; }
+  .topbar-controls { gap: 8px; min-width: 0; justify-content: flex-end; }
+  .topbar-user { display: flex; gap: 0; justify-content: flex-end; }
+  .topbar-user > svg { display: none; }   /* user icon + name drop; logout stays */
   #topbar-user-name { display: none; }
-  #lang-toggle-label,
-  #theme-toggle-label { display: none; }
+  /* «Выход» — plain cyan text link, no border/bg/shadow (cloud style). --cyan-hover
+     meets WCAG AA in BOTH themes (light #0e7490 ≈5.4:1, dark #06b6d4 high). */
+  #logout-btn {
+    border: none; background: none; box-shadow: none;
+    color: var(--cyan-hover); padding: 4px 2px; margin-left: 0;
+    min-height: 0; min-width: 0; font-weight: 600; font-size: 12px;
+  }
+  #logout-btn:hover { background: none; border: none; box-shadow: none; color: var(--text); }
 
   /* ── A5 touch targets ≥44px (pad, don't grow font) — this breakpoint only ──── */
   .btn,
   .btn-sm,
   .nav-item,
   .nav-sub-item { min-height: 44px; }
-  .topbar-lang-btn,
   .topbar-burger { min-height: 44px; min-width: 44px; }
 
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
