@@ -34,6 +34,13 @@
   --red:         #ff453a;
   --red-dim:     #3a0f0f;  /* btn-danger bg (sole consumer): #ff453a text = 4.91:1 AA (was #4a1515 → 4.37:1) */
   --orange:      #ff9f0a;
+  /* Action-button label colours, tokenised so each theme can meet WCAG AA on its
+     own tinted fill (B3, 1.0.5.39). Dark theme: the green label already clears the
+     floor on its fill (5.62:1); only the red «Стоп» label was short (3.81:1) and is
+     lightened. Light theme darkens both (see the light block). */
+  --hw-io-on-fg:   #32d74b;  /* = --green; on the dark fill #27442d = 5.62:1 (already AA) */
+  --hw-io-off-fg:  #ff7a71;  /* on the red fill #472929 = 5.12:1 (was --red #ff453a → 3.81:1) */
+  --badge-ok-fg:   #32d74b;  /* dark badge (#0f2a0f) already AA; token lets light darken */
 
   /* Apple-style radius scale */
   --radius-xs:   8px;
@@ -172,6 +179,11 @@ html[data-theme="light"] {
   --red:         #c41e3a;
   --red-dim:     #fde8ec;
   --orange:      #c2410c;
+  /* Action-button labels — WCAG AA (B3, 1.0.5.39): darken the saturated green/red
+     labels in light theme where they fell short on their pale tints. */
+  --hw-io-on-fg:   #15682c;  /* on #d8eadc fill = 5.49:1 (was --green #248a3d → 3.50:1) */
+  --hw-io-off-fg:  #b01a34;  /* on #f6dbdf fill = 5.30:1 (was --red #c41e3a → 4.48:1) */
+  --badge-ok-fg:   #177a33;  /* on #ecfdf5 badge = 5.15:1 (was --green #248a3d → 4.17:1) */
 
   --shadow-sm:   0 1px 3px #00000012, 0 1px 2px #00000008;
   --shadow:      0 4px 16px #00000014, 0 1px 4px #0000000a;
@@ -655,7 +667,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   padding: 3px 9px; border-radius: var(--radius-pill);
   box-shadow: var(--shadow-sm);
 }
-.badge-ok  { background: var(--badge-ok-bg); color: var(--green);  border: 1px solid var(--badge-ok-border); }
+.badge-ok  { background: var(--badge-ok-bg); color: var(--badge-ok-fg);  border: 1px solid var(--badge-ok-border); }
 .badge-err { background: var(--badge-err-bg); color: var(--red);    border: 1px solid var(--badge-err-border); }
 .badge-warn { background: var(--badge-warn-bg); color: var(--yellow); border: 1px solid var(--badge-warn-border); }
 .badge-unk { background: var(--bg-panel); color: var(--text-sec); border: 1px solid var(--border-md); }
@@ -883,12 +895,12 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .hw-io-btn.hw-io-to-on {
   background: color-mix(in srgb, var(--green) 18%, var(--bg-card)) !important;
-  color: var(--green) !important;
+  color: var(--hw-io-on-fg) !important;
   border-color: var(--green) !important;
 }
 .hw-io-btn.hw-io-to-off {
   background: color-mix(in srgb, var(--red) 16%, var(--bg-card)) !important;
-  color: var(--red) !important;
+  color: var(--hw-io-off-fg) !important;
   border-color: var(--red) !important;
 }
 .hw-io-btn:disabled {

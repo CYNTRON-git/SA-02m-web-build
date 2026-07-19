@@ -57,19 +57,30 @@ targets vs a printed deviation ledger · no card overlap · VERTICAL clipping (a
 whose `overflow-y:hidden` hides content taller than itself — the missed class:
 a mobile drawer/tile swallowing its controls) · mobile KPI value CENTRING (at
 ≤560px each direct-child `.widget-val` sits at the true vertical centre of its
-tile, measured on the text box). Every collection check is NON-VACUOUS: a selector
-that stops matching FAILS, it does not pass on zero elements.
+tile, measured on the text box) · WCAG AA contrast (≥4.5:1, both themes, backdrop
+SAMPLED from rendered pixels) — GATED since 1.0.5.39: a measured pair below the
+floor that is NOT in `CONTRAST_WHITELIST` FAILS the run, named with element +
+ratio. `CONTRAST_WHITELIST` is the accepted-debt ledger — deliberately muted or
+disabled states (WCAG 1.4.3 inactive-component exemption), each with a `floor`
+ratchet + reason. Every collection check is NON-VACUOUS: a selector that stops
+matching FAILS, it does not pass on zero elements; and the contrast ledger is
+non-vacuous both ways (a stale entry that excuses nothing sub-AA, or a whitelisted
+pair that has deepened below its `floor`, FAILS — mirroring the touch ledger).
 
-REPORT-ONLY passes (measured and PRINTED with numbers every run, not gated — the
+Contrast blanks each glyph INLINE with `!important` before sampling the backdrop,
+not via a `body *` stylesheet: an app rule setting `color` with `!important` at a
+higher specificity (e.g. the `.hw-io-btn` action-button labels) would otherwise
+survive the blank and pollute its own sampled backdrop — understating the ratio
+(the tiny green buttons read ~3.8:1 that way while really at ~7:1 on their fill).
+
+REPORT-ONLY pass (measured and PRINTED with numbers every run, not gated — the
 findings are pre-existing debt whose fix-vs-accept is an Operator decision):
 the 11px HIG font floor (SA-02m's compact desktop/tablet-first admin scale sits
-just under it by design) and WCAG AA contrast (≥4.5:1, backdrop SAMPLED from
-rendered pixels, both themes). Promoting either to a gate is a one-line change
-plus a seeded whitelist (`FONT_WHITELIST` / `CONTRAST_WHITELIST`), mirroring the
-touch ledger discipline. Screenshots land in the gitignored
-`.ai-dev/quality/screenshots/`. Chromium-only, fixed viewports, geometry +
-type/contrast but no visual-regression baseline — limits and the full port
-rationale (adapted from the sibling cloud driver) are in the driver's file header.
+just under it by design). Gating it is a one-line change plus its seeded
+`FONT_WHITELIST`, mirroring the touch/contrast ledger discipline. Screenshots land
+in the gitignored `.ai-dev/quality/screenshots/`. Chromium-only, fixed viewports,
+geometry + type/contrast but no visual-regression baseline — limits and the full
+port rationale (adapted from the sibling cloud driver) are in the driver's header.
 
 ## Contrast (color work)
 
