@@ -1065,7 +1065,7 @@ html:not([data-theme="light"]) .topbar {
    Both themes via tokens; applies desktop + mobile. */
 .eth-hdr-title.eth-link-up,
 .eth-hdr-title.eth-link-down {
-  padding: 5px 10px;
+  padding: 2px 10px;   /* shorter title-bg (Operator 2026-07-19) */
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
 }
@@ -3926,16 +3926,23 @@ html:not([data-theme="light"]) .topbar {
   /* No transient status messages in the HW block on mobile (Operator 2026-07-19:
      don't flash the appear/disappear message on button press). */
   .hw-block-status { display: none !important; }
-  /* No sticky blue :hover highlight on the HW block / items when tapping a button
-     (touch has no real hover, so a tap leaves the cyan border + glow stuck).
-     Operator 2026-07-19: remove the blue block highlight on mobile. */
+  /* No sticky blue :hover highlight on ANY block when tapping on touch (touch has
+     no real hover, so a tap leaves the cyan border + glow stuck). Operator
+     2026-07-19: remove the blue outline on every block on mobile. */
+  #tab-dashboard .widget:hover,
+  .widget:hover,
   .hw-block:hover,
   .hw-block:hover .hw-item,
-  .hw-block:hover .hw-item:hover {
+  .hw-block:hover .hw-item:hover,
+  #tab-dashboard .widget-rs485:hover,
+  .widget-rs485:hover,
+  .widget-rs485:hover .rs485-port,
+  .widget-rs485:hover .rs485-port:hover,
+  .ctrl-card:hover {
     border-color: var(--border);
     box-shadow: var(--shadow-sm);
   }
-  .hw-item, .hw-toggle-btn, .hw-btns .btn { -webkit-tap-highlight-color: transparent; }
+  .widget, .hw-item, .hw-toggle-btn, .btn, .ctrl-card, .rs485-port { -webkit-tap-highlight-color: transparent; }
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
   .flasher-control-grid { grid-template-columns: 1fr; }
@@ -4012,10 +4019,15 @@ html:not([data-theme="light"]) .topbar {
     line-height: 1.1;
     white-space: nowrap;
   }
-  /* Uptime: drop the legacy padding-top/min-height that pushed the text DOWN
-     inside its box — on the KPI grid it made uptime sit lower than the others
-     (Operator 2026-07-19). Now it centres identically. */
+  /* Uptime + USB «НЕТ»: drop the legacy padding-top/min-height that pushed the
+     TEXT down inside the box — on the KPI grid it made them sit lower than the
+     others (Operator 2026-07-19). Now they centre identically, at 32px. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .uptime-readout { padding-top: 0; min-height: 0; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val-removable-empty {
+    padding-top: 0;
+    font-size: 32px;
+    line-height: 1.1;
+  }
   /* Unit smaller than the number, on the same line (Operator). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-num { font-size: 32px; }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-unit {
