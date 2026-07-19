@@ -138,7 +138,14 @@ function initNav() {
   });
   const logo = document.querySelector('.topbar-logo');
   if (logo) {
-    logo.addEventListener('click', () => switchTab('dashboard'));
+    logo.addEventListener('click', () => {
+      switchTab('dashboard');
+      // Scroll back to the very top (Operator 2026-07-19): the main scroll
+      // container on mobile, and the window as a fallback.
+      const main = document.querySelector('.main');
+      if (main) { if (main.scrollTo) main.scrollTo(0, 0); else main.scrollTop = 0; }
+      if (window.scrollTo) window.scrollTo(0, 0);
+    });
   }
 }
 
@@ -191,6 +198,16 @@ function fmtUptime(s) {
   s = parseInt(s) || 0;
   const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   if (d) return d + ' ' + uiT('д') + ' ' + h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
+  if (h) return h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
+  return m + ' ' + uiT('м') + ' ' + (s % 60) + ' ' + uiT('с');
+}
+
+/** Uptime with only the TWO most significant units (mobile KPI tile, Operator
+    2026-07-19): days+hours, else hours+minutes, else minutes+seconds. */
+function fmtUptime2(s) {
+  s = parseInt(s) || 0;
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  if (d) return d + ' ' + uiT('д') + ' ' + h + ' ' + uiT('ч');
   if (h) return h + ' ' + uiT('ч') + ' ' + m + ' ' + uiT('м');
   return m + ' ' + uiT('м') + ' ' + (s % 60) + ' ' + uiT('с');
 }

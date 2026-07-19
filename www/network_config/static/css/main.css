@@ -3967,12 +3967,19 @@ html:not([data-theme="light"]) .topbar {
   /* Larger value (Operator: "значения крупнее"); wraps so long values
      («216 МБ», «Не установлен») fit centred instead of clipping. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val {
-    font-size: 28px;
-    line-height: 1.15;
+    font-size: 32px;               /* value bigger (Operator) */
+    line-height: 1.1;
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .uptime-readout { font-size: 18px; }
+  /* Unit smaller than the number (Operator: «размерности меньше»). */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-unit {
+    font-size: 0.55em;
+    font-weight: 600;
+    margin-left: 2px;
+  }
+  /* Uptime uses the same big value size as the others (Operator); its 2 units
+     wrap centred if needed. */
   /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
      temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
   /* Themed fg tokens (chip-orange/red-fg) — readable on the card background in
