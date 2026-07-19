@@ -70,6 +70,7 @@
     'USB-flash': 'USB flash',
     'USB-модем': 'USB Modem',
     'Дискретный выход, USB-питание и индикация': 'Discrete Output, USB Power, and Indication',
+    'DO, USB-питание и индикация': 'DO, USB Power, and Indication',
     'Дискретный выход': 'Discrete output',
     'Пищалка': 'Buzzer',
     'LED (красный)': 'LED (red)',

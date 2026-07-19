@@ -796,6 +796,9 @@ html:not([data-theme="light"]) .topbar {
   flex-wrap: wrap;
 }
 .hw-block-title > span { flex: 0 0 auto; }
+/* HW-block title: full text on desktop; the short «DO, …» form on mobile (≤700)
+   where «Дискретный выход, …» does not fit the block (Operator 2026-07-19). */
+.hw-title-short { display: none; }
 .hw-block-status {
   flex: 1 1 auto;
   text-align: right;
@@ -3852,6 +3855,11 @@ html:not([data-theme="light"]) .topbar {
   .nav-item,
   .nav-sub-item { min-height: 44px; }
   .topbar-burger { min-height: 44px; min-width: 44px; }
+
+  /* HW-block title: swap the long «Дискретный выход, …» for the short «DO, …»
+     so it fits the block on mobile (Operator). */
+  .hw-title-full  { display: none; }
+  .hw-title-short { display: inline; }
 
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
   .hw-grid    { grid-template-columns: 1fr; }
