@@ -497,6 +497,11 @@ html:not([data-theme="light"]) .topbar {
 .eth-hdr-title.has-ico { flex-wrap: wrap; row-gap: 4px; }
 .eth-hdr-title.has-ico > .w-ico + span { white-space: nowrap; }
 
+/* Number/unit split (setValUnit): keep a small gap between the number and unit
+   in EVERY context — fmtKB's "500 МБ" space is dropped by the split, so restore
+   it here (desktop had no gap otherwise). Mobile KPI tiles add their own sizing. */
+.v-unit { margin-left: 0.25em; }
+
 /* ── Widget card ─────────────────────────────────────────────────────────── */
 .widget {
   background: var(--bg-card); border: 1px solid var(--border);
@@ -3974,7 +3979,6 @@ html:not([data-theme="light"]) .topbar {
     align-items: baseline;
     align-content: center;
     justify-content: center;
-    gap: 0 3px;
     width: 100%;
     min-height: 0;
   }
