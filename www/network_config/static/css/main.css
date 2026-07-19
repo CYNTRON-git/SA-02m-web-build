@@ -3953,7 +3953,23 @@ html:not([data-theme="light"]) .topbar {
   /* The value block GROWS to fill and centres its content — so the main value sits
      at the SAME central position in every tile (Operator 2026-07-19). USB nests its
      value in usb-storage-view/usb-modem-view, so those grow too. */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val,
+  /* The value block grows to fill the tile and centres its content (value at the
+     SAME central position in every tile). The plain .widget-val is a horizontal
+     flex row so the number and unit stay on ONE line, full tile width (Operator:
+     units inline, block wide enough not to wrap). USB nests value+detail, so its
+     containers stay a centred column. */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    align-content: center;
+    justify-content: center;
+    gap: 0 3px;
+    width: 100%;
+    min-height: 0;
+  }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-storage-view,
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-modem-view {
     flex: 1 1 auto;
@@ -3964,19 +3980,17 @@ html:not([data-theme="light"]) .topbar {
     width: 100%;
     min-height: 0;
   }
-  /* Larger value (Operator: "значения крупнее"); wraps so long values
-     («216 МБ», «Не установлен») fit centred instead of clipping. */
+  /* Larger value (Operator: "значения крупнее"). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val {
     font-size: 32px;               /* value bigger (Operator) */
     line-height: 1.1;
-    white-space: normal;
-    overflow-wrap: anywhere;
+    white-space: nowrap;
   }
-  /* Unit smaller than the number (Operator: «размерности меньше»). */
+  /* Unit smaller than the number, on the same line (Operator). */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-num { font-size: 32px; }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-unit {
-    font-size: 0.55em;
+    font-size: 17px;
     font-weight: 600;
-    margin-left: 2px;
   }
   /* Uptime uses the same big value size as the others (Operator); its 2 units
      wrap centred if needed. */
