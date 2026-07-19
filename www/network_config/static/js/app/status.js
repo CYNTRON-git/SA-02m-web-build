@@ -928,6 +928,12 @@ function deviceTitleRu(variant) {
     : 'Сервер автоматизации СА-02м';
 }
 
+// Short model name for the mobile topbar (main.css ≤700 shows this instead of
+// the full title so the compact cloud-style controls fit on the logo's row).
+function deviceTitleShort(variant) {
+  return variant === 'sa02m-2eth' ? 'СА-02м-2' : 'СА-02м';
+}
+
 function applyDeviceTitle() {
   const title = document.getElementById('device-title');
   if (!title) return;
@@ -936,6 +942,13 @@ function applyDeviceTitle() {
   // Full-text tooltip so the ellipsis (mobile topbar, main.css ≤700) never
   // truncates without a title; mirrors the current variant + language.
   title.setAttribute('title', title.textContent);
+  // Short model name — the mobile topbar shows this (СА-02м / СА-02м-2);
+  // translated so EN mode shows the Latin SA-02m like the full title. Guarded.
+  var shortEl = document.getElementById('device-title-short');
+  if (shortEl) {
+    var shortRu = deviceTitleShort(_boardVariant);
+    shortEl.textContent = window.sa02mI18n ? window.sa02mI18n.t(shortRu) : shortRu;
+  }
 }
 
 window.applyDeviceTitle = applyDeviceTitle;
