@@ -3792,7 +3792,7 @@ html:not([data-theme="light"]) .topbar {
   }
   /* was @media ≤700 — sidebar / grids / padding (width unchanged).
      NOTE: this block MUST follow the ≤900 block above — at ≤700 both match and these
-     narrower rules (.rs485-grid 2-col, .hw-grid 1-col) intentionally win over ≤900. */
+     narrower rules (.rs485-grid 2-col, .hw-grid 2-col) intentionally win over ≤900. */
 
   /* ── A1 drawer nav (Phase 3, 1.0.5.24) ──────────────────────────────────────
      The sidebar was `display:none` here (phone user trapped on one tab). Now it
@@ -3862,7 +3862,7 @@ html:not([data-theme="light"]) .topbar {
   .hw-title-short { display: inline; }
 
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
-  .hw-grid    { grid-template-columns: 1fr; }
+  .hw-grid    { grid-template-columns: repeat(2, 1fr); }  /* 2 HW items per row on mobile (Operator) */
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
   .flasher-control-grid { grid-template-columns: 1fr; }
@@ -3878,4 +3878,31 @@ html:not([data-theme="light"]) .topbar {
   /* A2 (Phase 3, 1.0.5.24) — phone-portrait: title even shorter, burger + logo
      stay usable. Full text remains in the #device-title title attr. */
   #device-title { font-size: 15px; max-width: 38vw; }
+
+  /* Dashboard — 2 compact SQUARE cards per row on phone-portrait (Operator
+     2026-07-19): the KPI-style widgets become square tiles like the cloud device
+     widgets; content-rich blocks (Система, Нагрузка, Службы = .dash-wide) and the
+     HW-outputs block stay full-width. Overflowing description lines are hidden. */
+  .dash-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .dash-span-top4 { grid-column: 1 / -1; }
+  .dash-wide { grid-column: 1 / -1; }
+  #tab-dashboard .widget { padding: 14px; }
+
+  /* KPI tiles (every dash-grid widget that is NOT full-width): square, centred,
+     clipped — the big value is the focus (cloud KPI style). */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-span-top4) {
+    aspect-ratio: 1 / 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+    padding: 12px;
+  }
+  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 6px; }
+  .dash-grid > .widget:not(.dash-wide) .widget-val { font-size: 30px; }
+  /* Drop the non-essential extras that would overflow a square tile: the bar
+     min/max scale endpoints, swap sub-block, disk R/W I/O line. */
+  .dash-grid > .widget:not(.dash-wide) .bar-meta,
+  .dash-grid > .widget:not(.dash-wide) .swap-block,
+  .dash-grid > .widget:not(.dash-wide) .disk-io-line { display: none; }
 }
