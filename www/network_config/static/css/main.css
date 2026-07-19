@@ -3862,6 +3862,12 @@ html:not([data-theme="light"]) .topbar {
   .hw-title-short { display: inline; }
 
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
+  /* RS-485 cards are narrow at 2-col — stack TX and RX on separate lines
+     (each label left / value right) instead of side-by-side, and drop the empty
+     reserved spacer rows (Operator 2026-07-19). */
+  .rs485-row.rs485-txrx { flex-direction: column; align-items: stretch; gap: 2px; }
+  .rs485-txrx-item { justify-content: space-between; }
+  .rs485-err-reserved, .rs485-mods-reserved, .rs485-dev-reserved { display: none; }
   .hw-grid    { grid-template-columns: repeat(2, 1fr); }  /* 2 HW items per row on mobile (Operator) */
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
