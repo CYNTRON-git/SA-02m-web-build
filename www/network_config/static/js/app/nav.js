@@ -74,3 +74,34 @@ function initNavDrawer() {
 }
 
 window.initNavDrawer = initNavDrawer;
+
+/* Auto-hide the topbar on scroll-down in a SHORT landscape viewport (phone in
+   landscape, Operator 2026-07-19: it wastes the little vertical height there).
+   Scroll up (or any non-landscape/tall viewport) shows it. CSS collapses the
+   topbar (max-height) at `(orientation:landscape) and (max-height:500px)`. */
+function initTopbarAutoHide() {
+  var app = document.querySelector('.app');
+  var main = document.querySelector('.main');
+  if (!app || !main) return;
+  var lastY = 0;
+  var shortLandscape = function () {
+    return window.matchMedia
+      && window.matchMedia('(orientation: landscape) and (max-height: 500px)').matches;
+  };
+  main.addEventListener('scroll', function () {
+    var y = main.scrollTop;
+    if (!shortLandscape()) {
+      if (app.classList.contains('topbar-hidden')) app.classList.remove('topbar-hidden');
+      lastY = y;
+      return;
+    }
+    if (y > lastY + 4 && y > 48) {
+      app.classList.add('topbar-hidden');       // scrolling down, past the top
+    } else if (y < lastY - 4) {
+      app.classList.remove('topbar-hidden');     // scrolling up
+    }
+    lastY = y;
+  }, { passive: true });
+}
+
+window.initTopbarAutoHide = initTopbarAutoHide;

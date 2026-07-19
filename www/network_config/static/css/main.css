@@ -4128,3 +4128,20 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
     -webkit-tap-highlight-color: transparent;
   }
 }
+
+/* ── Short landscape (phone in landscape) — auto-hide the topbar on scroll-down
+   to reclaim the scarce vertical height (app/nav.js toggles .app.topbar-hidden);
+   scroll up shows it. Operator 2026-07-19. ─────────────────────────────────── */
+@media (orientation: landscape) and (max-height: 500px) {
+  .topbar {
+    transition: max-height .25s ease, padding .25s ease, border-bottom-width .25s ease;
+    overflow: hidden;
+  }
+  .app.topbar-hidden .topbar {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    padding-top: 0;
+    padding-bottom: 0;
+    border-bottom-width: 0;
+  }
+}

@@ -12,6 +12,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   initNav();
   if (typeof initNavDrawer === 'function') initNavDrawer();  // mobile drawer (app/nav.js)
+  if (typeof initTopbarAutoHide === 'function') initTopbarAutoHide();  // hide topbar on scroll (short landscape)
   applyDeepLinkTab();  // open a tab from #hash/?tab= (cloud settings deep-link)
   applyVariantVisibility('sa02m-1eth');
   initDashboardPlaceholders();
