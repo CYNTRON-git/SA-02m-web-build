@@ -1012,6 +1012,9 @@ html:not([data-theme="light"]) .topbar {
 .load-item { text-align: center; background: var(--bg-panel); border-radius: var(--radius-sm); padding: 9px 4px; box-shadow: var(--shadow-sm); }
 .load-num  { font-size: 15px; font-weight: 700; color: var(--text); }
 .load-lbl  { font-size: 12px; color: var(--text-sec); margin-top: 2px; }
+/* Нагрузка meta: «Процессов …» left, «… МГц (%)» right on ONE line (saves a
+   row vs the old stacked pair). */
+.load-meta-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 
 /* ── Swap mini-bar ───────────────────────────────────────────────────────── */
 .swap-block { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -1047,6 +1050,23 @@ html:not([data-theme="light"]) .topbar {
   flex: 0 0 auto;
   margin-left: auto;
   text-align: right;
+}
+/* Link state as a coloured title background (Operator 2026-07-19): the «Линк /
+   Нет линка» pill is gone; UP → green translucent + outline, otherwise grey.
+   Both themes via tokens; applies desktop + mobile. */
+.eth-hdr-title.eth-link-up,
+.eth-hdr-title.eth-link-down {
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+}
+.eth-hdr-title.eth-link-up {
+  background: var(--badge-ok-bg);
+  border-color: var(--badge-ok-border);
+}
+.eth-hdr-title.eth-link-down {
+  background: var(--bg-panel);
+  border-color: var(--border-md);
 }
 .eth-row    { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
 .eth-state {
@@ -3918,38 +3938,50 @@ html:not([data-theme="light"]) .topbar {
   /* KPI tiles (every dash-grid widget that is NOT full-width): square, no bar,
      content HORIZONTALLY centred, titles TOP-aligned so every tile's title sits
      at the same level (Operator 2026-07-19). */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-span-top4) {
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
     display: flex;
     flex-direction: column;
-    justify-content: flex-start;   /* titles at the same top level */
     align-items: center;           /* horizontal centre */
     text-align: center;
     overflow: hidden;
     padding: 14px 10px;
   }
-  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 10px; }
-  .dash-grid > .widget:not(.dash-wide) .widget-title.has-ico { justify-content: center; }
-  /* Value: centred in the space beneath the title; wraps + shrinks so long values
-     («2 д 21 ч 12 м», «Не установлен») fit the square instead of clipping. */
-  .dash-grid > .widget:not(.dash-wide) .widget-val {
-    font-size: 24px;
+  /* Title pinned at the top (same level across all tiles). */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title { margin-bottom: 8px; flex: 0 0 auto; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title.has-ico { justify-content: center; }
+  /* The value block GROWS to fill and centres its content — so the main value sits
+     at the SAME central position in every tile (Operator 2026-07-19). USB nests its
+     value in usb-storage-view/usb-modem-view, so those grow too. */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-storage-view,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-modem-view {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 0;
+  }
+  /* Larger value (Operator: "значения крупнее"); wraps so long values
+     («216 МБ», «Не установлен») fit centred instead of clipping. */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val {
+    font-size: 28px;
     line-height: 1.15;
     white-space: normal;
     overflow-wrap: anywhere;
-    margin-top: 6px;
   }
-  .dash-grid > .widget:not(.dash-wide) .uptime-readout { font-size: 17px; }
-  #usb-storage-view .widget-val, #usb-modem-view .widget-val { font-size: 17px; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .uptime-readout { font-size: 18px; }
   /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
      temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
   /* Themed fg tokens (chip-orange/red-fg) — readable on the card background in
      BOTH themes; --meter-yellow is dark-only (yellow-on-white fails AA). */
-  .dash-grid > .widget:not(.dash-wide) .widget-val.val-warn { color: var(--chip-orange-fg); }
-  .dash-grid > .widget:not(.dash-wide) .widget-val.val-crit { color: var(--chip-red-fg); }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-warn { color: var(--chip-orange-fg); }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-crit { color: var(--chip-red-fg); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
      bar row; also drop the swap sub-block and the disk R/W I/O line. */
-  .dash-grid > .widget:not(.dash-wide) .bar-row,
-  .dash-grid > .widget:not(.dash-wide) .swap-block,
-  .dash-grid > .widget:not(.dash-wide) .disk-io-line { display: none; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .bar-row,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .swap-block,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .disk-io-line { display: none; }
 }

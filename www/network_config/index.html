@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.5.31">
-  <link rel="stylesheet" href="/static/css/main.css?v=1.0.5.31&r=ai2">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon_cyntron.svg?v=1.0.5.32">
+  <link rel="stylesheet" href="/static/css/main.css?v=1.0.5.32&r=ai2">
   <script>try{if(localStorage.getItem('sa02m-theme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}</script>
 </head>
 <body>
@@ -18,8 +18,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.5.31" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="/static/logo-chip_cyntron.svg?v=1.0.5.31" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="/static/logo-vector_cyntron.svg?v=1.0.5.32" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="/static/logo-chip_cyntron.svg?v=1.0.5.32" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
       <div class="topbar-branding">
         <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
@@ -145,8 +145,10 @@
               <div class="load-item"><div class="load-num" id="load-5">—</div><div class="load-lbl">5 мин</div></div>
               <div class="load-item"><div class="load-num" id="load-15">—</div><div class="load-lbl">15 мин</div></div>
             </div>
-            <div class="widget-sub widget-sub-reserved" id="proc-info">Процессов: 0 / 0</div>
-            <div class="widget-sub widget-sub-reserved" id="cpu-freq" style="margin-top:3px">0 МГц</div>
+            <div class="widget-sub widget-sub-reserved load-meta-row">
+              <span id="proc-info">Процессов: 0 / 0</span>
+              <span id="cpu-freq">0 МГц</span>
+            </div>
           </div>
 
           <!-- Температура CPU -->
@@ -235,7 +237,7 @@
           </div>
 
           <!-- Network eth0 -->
-          <div class="widget">
+          <div class="widget dash-eth">
             <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
               <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 1</span>
@@ -249,7 +251,7 @@
           </div>
 
           <!-- Network eth1 (только СА-02м-2) -->
-          <div class="widget" data-hide-for="sa02m-1eth">
+          <div class="widget dash-eth" data-hide-for="sa02m-1eth">
             <div class="widget-title eth-hdr-title widget-title-preserve has-ico">
               <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24" stroke-width="1.8"><rect x="9.5" y="2.5" width="5" height="5"/><rect x="2.5" y="16.5" width="5" height="5"/><rect x="16.5" y="16.5" width="5" height="5"/><path d="M12 7.5V12M5 16.5V12h14v4.5"/></svg></span>
               <span>Ethernet № 2</span>
@@ -1026,19 +1028,19 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="/static/js/i18n.js?v=1.0.5.31"></script>
-<script src="/static/js/app.js?v=1.0.5.31"></script>
-<script src="/static/js/app/status.js?v=1.0.5.31"></script>
-<script src="/static/js/app/hw.js?v=1.0.5.31"></script>
-<script src="/static/js/app/rs485.js?v=1.0.5.31"></script>
-<script src="/static/js/app/forms.js?v=1.0.5.31"></script>
-<script src="/static/js/app/services.js?v=1.0.5.31"></script>
-<script src="/static/js/app/misc.js?v=1.0.5.31"></script>
-<script src="/static/js/app/init.js?v=1.0.5.31"></script>
-<script src="/static/js/app/nav.js?v=1.0.5.31"></script>
-<script src="/static/js/flasher.js?v=1.0.5.31"></script>
-<script src="/static/js/mqtt.js?v=1.0.5.31&r=ai3"></script>
-<script src="/static/js/gateway.js?v=1.0.5.31"></script>
-<script src="/static/js/cloud.js?v=1.0.5.31"></script>
+<script src="/static/js/i18n.js?v=1.0.5.32"></script>
+<script src="/static/js/app.js?v=1.0.5.32"></script>
+<script src="/static/js/app/status.js?v=1.0.5.32"></script>
+<script src="/static/js/app/hw.js?v=1.0.5.32"></script>
+<script src="/static/js/app/rs485.js?v=1.0.5.32"></script>
+<script src="/static/js/app/forms.js?v=1.0.5.32"></script>
+<script src="/static/js/app/services.js?v=1.0.5.32"></script>
+<script src="/static/js/app/misc.js?v=1.0.5.32"></script>
+<script src="/static/js/app/init.js?v=1.0.5.32"></script>
+<script src="/static/js/app/nav.js?v=1.0.5.32"></script>
+<script src="/static/js/flasher.js?v=1.0.5.32"></script>
+<script src="/static/js/mqtt.js?v=1.0.5.32&r=ai3"></script>
+<script src="/static/js/gateway.js?v=1.0.5.32"></script>
+<script src="/static/js/cloud.js?v=1.0.5.32"></script>
 </body>
 </html>

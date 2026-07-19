@@ -740,30 +740,18 @@ function ethPillPlaceholderText() {
 function applyEthIfaceState(spanId, operstate) {
   const el = document.getElementById(spanId);
   if (!el) return;
-  const hide = () => {
-    el.textContent = ethPillPlaceholderText();
-    el.setAttribute('aria-hidden', 'true');
-    el.removeAttribute('hidden');
-    el.className = 'eth-state eth-state-prominent eth-state-hidden';
-  };
-  if (operstate === undefined || operstate === null || operstate === '') {
-    hide();
-    return;
-  }
-  const s = String(operstate).trim().toLowerCase();
-  if (s === 'absent' || s === 'unknown') {
-    hide();
-    return;
-  }
-  el.removeAttribute('hidden');
-  el.removeAttribute('aria-hidden');
-  if (s === 'up') {
-    el.textContent = uiT('Линк');
-    el.className = 'eth-state eth-state-prominent up';
-  } else {
-    el.textContent = uiT('Нет линка');
-    el.className = 'eth-state eth-state-prominent down';
-  }
+  // The «Линк / Нет линка» pill is replaced by a coloured block-title background
+  // (Operator 2026-07-19): green (translucent + outline) when the link is up,
+  // grey otherwise. The pill span itself is kept hidden for a11y compatibility.
+  el.textContent = '';
+  el.setAttribute('hidden', 'hidden');
+  el.setAttribute('aria-hidden', 'true');
+  el.className = 'eth-state eth-state-hidden';
+  const title = el.closest ? el.closest('.eth-hdr-title') : null;
+  if (!title) return;
+  const s = (operstate === undefined || operstate === null) ? '' : String(operstate).trim().toLowerCase();
+  title.classList.remove('eth-link-up', 'eth-link-down');
+  title.classList.add(s === 'up' ? 'eth-link-up' : 'eth-link-down');
 }
 
 /** Dashboard Ethernet widget: «Static: 1.2.3.4» или «DHCP: 1.2.3.4». */
