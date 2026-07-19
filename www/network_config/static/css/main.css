@@ -30,7 +30,7 @@
   --green:       #32d74b;
   --yellow:      #ffd60a;
   --red:         #ff453a;
-  --red-dim:     #4a1515;
+  --red-dim:     #3a0f0f;  /* btn-danger bg (sole consumer): #ff453a text = 4.91:1 AA (was #4a1515 → 4.37:1) */
   --orange:      #ff9f0a;
 
   /* Apple-style radius scale */
@@ -78,6 +78,58 @@
   --chip-green-bg:  #103a18;  --chip-green-fg:  #32d74b;
   --chip-orange-bg: #3f2a05;  --chip-orange-fg: #ff9f0a;
   --chip-red-bg:    #431211;  --chip-red-fg:    #ff453a;
+
+  /* ═══ HIG DESIGN-TOKEN SYSTEM (Phase 1, 1.0.5.22) ═══════════════════════════
+     The Apple-HIG token layer both layers of the responsive+HIG rework build on.
+     The --radius-* and --shadow-* scales above ALREADY satisfy the HIG
+     rounded-control and low-spread-elevation roles, so Phase 1 DOCUMENTS them
+     here rather than duplicating (one-home). Radius roles: xs/sm 8–10px = small
+     controls, base 14px = cards/buttons, lg/xl 18–22px = sheets/dialogs. Shadow
+     roles: sm = resting card, base = raised, lg = modal/sheet, glow = focus ring.
+     Later phases (plan B4) refine shadow subtlety; Phase 1 keeps values 1:1.
+     Component wiring of the tokens below is later phases (plan B1–B6) — Phase 1
+     only introduces the system and fixes the pre-existing btn-danger sub-AA. */
+
+  /* HIG type scale — rem tokens → HIG text styles (root font-size:14px ⇒ 1rem=14px).
+     Dynamic-type-friendly (rem, no fixed px on text). Line-heights per HIG ~1.2–1.45. */
+  --fs-large-title: 1.85rem;  /* ≈26px — gauge/hero values (widget-val) */
+  --fs-title-1:     1.45rem;  /* ≈20px — section hero (cfg-info-tile-val) */
+  --fs-title-2:     1.25rem;  /* ≈17.5px */
+  --fs-title-3:     1.12rem;  /* ≈15.7px */
+  --fs-headline:    1rem;     /* 14px, semibold role */
+  --fs-body:        1rem;     /* 14px — base body */
+  --fs-callout:     0.93rem;  /* ≈13px — uppercase widget-title (HIG Caption/Headline role) */
+  --fs-subhead:     0.86rem;  /* ≈12px */
+  --fs-footnote:    0.78rem;  /* ≈11px */
+  --fs-caption:     0.72rem;  /* ≈10px — small uppercase labels */
+  --lh-tight: 1.2;    /* titles */
+  --lh-snug:  1.3;    /* headline/subhead */
+  --lh-body:  1.45;   /* body copy */
+
+  /* HIG 8-pt spacing scale (theme-invariant) */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 40px; --sp-8: 48px;
+
+  /* HIG SEMANTIC COLOUR layer (dark) — maps the existing palette onto HIG roles.
+     Aliases are 1:1 (zero visual change); the only NEW value is --status-blue. */
+  --label:            var(--text);      /* #f2f2f7 */
+  --label-secondary:  var(--text-sec);  /* #a5a5ac — 6.3:1 on card (existing) */
+  --label-tertiary:   var(--text-dim);  /* #48484a — dim/placeholder role, not body text */
+  --bg-system:        var(--bg);        /* #161618 */
+  --bg-secondary:     var(--bg-card);   /* #242426 */
+  --bg-tertiary:      var(--bg-panel);  /* #2c2c2e */
+  --separator:        var(--border);    /* #38383a */
+  --tint:             var(--cyan);      /* #22d3ee */
+  --status-red:       var(--red);       /* #ff453a */
+  --status-green:     var(--green);     /* #32d74b */
+  --status-orange:    var(--orange);    /* #ff9f0a */
+  --status-blue:      #4da2ff;          /* NEW — HIG systemBlue, brightened for AA on dark */
+  /* NEW/changed colour-pair AA ratios (WCAG 2.1, web-diagnostic-tools ## Contrast):
+       --status-blue #4da2ff  on --bg #161618       6.82:1  PASS (normal ≥4.5)
+                              on --bg-card #242426   5.85:1  PASS
+                              on --bg-panel #2c2c2e  5.26:1  PASS
+       --red-dim (dark) is the btn-danger bg AA fix (see :root --red-dim):
+         btn-danger text #ff453a on #3a0f0f  4.91:1  PASS  (was #4a1515 → 4.37:1 FAIL). */
 }
 
 :root,
@@ -137,6 +189,26 @@ html[data-theme="light"] {
   --chip-green-bg:  #e3f6e8;  --chip-green-fg:  #1e7534;
   --chip-orange-bg: #fdf0e0;  --chip-orange-fg: #a53a09;
   --chip-red-bg:    #fdeaea;  --chip-red-fg:    #b91c1c;
+
+  /* HIG SEMANTIC COLOUR layer (light) — 1:1 aliases + NEW --status-blue.
+     (Type/spacing/radius/shadow scales are theme-invariant — defined once in :root.)
+     NEW-pair AA ratios (WCAG 2.1):
+       --status-blue #0064e0  on --bg #ececf3        4.58:1  PASS (normal ≥4.5)
+                              on --bg-card #ffffff    5.39:1  PASS
+                              on --bg-panel #f2f2f7   4.83:1  PASS
+     --red-dim (light, #fde8ec unchanged): btn-danger #c41e3a on #fde8ec 4.99:1 PASS. */
+  --label:            var(--text);
+  --label-secondary:  var(--text-sec);
+  --label-tertiary:   var(--text-dim);
+  --bg-system:        var(--bg);
+  --bg-secondary:     var(--bg-card);
+  --bg-tertiary:      var(--bg-panel);
+  --separator:        var(--border);
+  --tint:             var(--cyan);
+  --status-red:       var(--red);
+  --status-green:     var(--green);
+  --status-orange:    var(--orange);
+  --status-blue:      #0064e0;   /* NEW */
 }
 
 html[data-theme="light"] .log-box {
@@ -1079,15 +1151,6 @@ html:not([data-theme="light"]) .topbar {
   margin-top: 4px;
   justify-content: flex-end;
 }
-@media (max-width: 960px) {
-  .network-eth-grid,
-  .network-eth-grid.network-eth-grid-single {
-    grid-template-columns: 1fr;
-    width: 100%;
-    max-width: none;
-  }
-}
-
 .time-readout {
   background: var(--bg-panel);
   border: 1px solid var(--border-md);
@@ -2322,9 +2385,6 @@ html:not([data-theme="light"]) .topbar {
   gap: 12px;
   margin-bottom: 16px;
 }
-@media (max-width: 680px) {
-  .cfg-info-tiles { grid-template-columns: 1fr; }
-}
 .cfg-info-tile {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -2363,11 +2423,6 @@ html:not([data-theme="light"]) .topbar {
   grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
 }
 
-@media (max-width: 760px) {
-  .flasher-config-di-split {
-    grid-template-columns: 1fr;
-  }
-}
 .flasher-config-card {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -2600,13 +2655,6 @@ html:not([data-theme="light"]) .topbar {
   gap: 0 24px;
   align-items: start;
 }
-@media (max-width: 760px) {
-  .ai-settings-3col {
-    grid-template-columns: 1fr;
-    gap: 16px 0;
-  }
-}
-
 /* Mode column */
 .ai-col-subtitle {
   font-size: .72rem;
@@ -2835,33 +2883,6 @@ html:not([data-theme="light"]) .topbar {
 .web-upd-meta dd { margin: 0; word-break: break-all; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
-@media (max-width: 900px) {
-  .dash-span-top4 { grid-column: 1 / -1; }
-  .rs485-grid { grid-template-columns: repeat(3, 1fr); }
-  .hw-grid    { grid-template-columns: 1fr 1fr; }
-  .flasher-layout { grid-template-columns: 1fr; }
-  .flasher-grid { grid-template-columns: 1fr; }
-  .flasher-settings-row { grid-template-columns: 1fr; }
-  .flasher-config-dialog { width: calc(100vw - 20px); margin: 10px auto; max-height: calc(100vh - 20px); }
-  .flasher-config-main { grid-template-columns: 1fr; }
-  .flasher-config-tabs {
-    border-right: 0;
-    border-bottom: 1px solid var(--border);
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-  .flasher-config-form { grid-template-columns: 1fr; }
-}
-@media (max-width: 700px) {
-  .sidebar    { display: none; }
-  .rs485-grid { grid-template-columns: repeat(2, 1fr); }
-  .hw-grid    { grid-template-columns: 1fr; }
-  .main       { padding: 14px; }
-  .flasher-actions { margin-left: 0; }
-  .flasher-control-grid { grid-template-columns: 1fr; }
-  .flasher-settings-row { grid-template-columns: 1fr; }
-}
-
 /* ═══════════════════════════════ MQTT TAB STYLES ══════════════════════════ */
 
 /* Broker status bar */
@@ -2932,15 +2953,6 @@ html:not([data-theme="light"]) .topbar {
   flex: 1 1 auto;
   min-height: 0;
   overflow-x: auto;
-}
-@media (max-width: 900px) {
-  .mqtt-top-row {
-    flex-direction: column;
-  }
-  .mqtt-client-compact {
-    flex: 1 1 auto;
-    max-width: none;
-  }
 }
 .mqtt-copy-cell,
 .mqtt-secret-cell {
@@ -3608,7 +3620,95 @@ html:not([data-theme="light"]) .topbar {
   background: var(--bg-hover);
 }
 
-@media (max-width: 600px) {
+/* ═══════════════════════════════════ RESPONSIVE ═══════════════════════════════════
+   BREAKPOINTS — ONE HOME. Every @media query in this stylesheet lives in THIS section,
+   at EXACTLY four widths, descending: L ≤1024, M ≤900, S ≤700, XS ≤560. Rules:
+     • No component declares its own @media outside this section.
+     • A new breakpoint width needs a plan decision — not an ad-hoc addition here.
+     • CSS custom properties CANNOT be used in an @media condition (media features are
+       resolved before custom-prop substitution), and container queries are unsafe on the
+       target's older WebKit — so the four widths are literals by necessity; the "one home"
+       is this consolidated section + this convention, NOT a variable.
+   Phase 1 (1.0.5.22) absorbed the prior 8 ad-hoc queries at 6 widths (960/900/760/760/700/
+   680/600) into these four with ≤60px behaviour shift. The four intended width shifts, each
+   ≤60px (verify with the ui-layout driver):
+     • .network-eth-grid       collapses at ≤900 (was ≤960)  — Δ60px  [named in plan]
+     • .flasher-config-di-split collapses at ≤700 (was ≤760)  — Δ60px  [named in plan]
+     • .ai-settings-3col        collapses at ≤700 (was ≤760)  — Δ60px  [named in plan]
+     • .cfg-info-tiles          collapses at ≤700 (was ≤680)  — Δ20px
+     • .gw-port-tabs/-tab       compact at   ≤560 (was ≤600)  — Δ40px
+   Later phases add the L icon-rail, the S drawer nav and per-table policies INSIDE here.
+   ════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ── L ≤1024 — tablet-landscape / small-laptop.
+      Reserved for the sidebar icon-rail (later phase); no rules yet. ────────────────── */
+@media (max-width: 1024px) {
+  /* (intentionally empty in Phase 1) */
+}
+
+/* ── M ≤900 — tablet-portrait: multi-column grids collapse toward 2/1 column. ───────── */
+@media (max-width: 900px) {
+  /* was @media ≤960 — network eth grid (shift: collapses at 900 not 960, Δ60px) */
+  .network-eth-grid,
+  .network-eth-grid.network-eth-grid-single {
+    grid-template-columns: 1fr;
+    width: 100%;
+    max-width: none;
+  }
+  /* was @media ≤900 — dashboard + flasher grids (width unchanged) */
+  .dash-span-top4 { grid-column: 1 / -1; }
+  .rs485-grid { grid-template-columns: repeat(3, 1fr); }
+  .hw-grid    { grid-template-columns: 1fr 1fr; }
+  .flasher-layout { grid-template-columns: 1fr; }
+  .flasher-grid { grid-template-columns: 1fr; }
+  .flasher-settings-row { grid-template-columns: 1fr; }
+  .flasher-config-dialog { width: calc(100vw - 20px); margin: 10px auto; max-height: calc(100vh - 20px); }
+  .flasher-config-main { grid-template-columns: 1fr; }
+  .flasher-config-tabs {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .flasher-config-form { grid-template-columns: 1fr; }
+  /* was @media ≤900 — MQTT top row (width unchanged) */
+  .mqtt-top-row {
+    flex-direction: column;
+  }
+  .mqtt-client-compact {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+
+/* ── S ≤700 — phone-landscape: single column, sidebar hidden (→ drawer, later phase). ── */
+@media (max-width: 700px) {
+  /* was @media ≤680 — config info tiles (shift: collapses at 700 not 680, Δ20px) */
+  .cfg-info-tiles { grid-template-columns: 1fr; }
+  /* was @media ≤760 — flasher DI split (shift: collapses at 700 not 760, Δ60px) */
+  .flasher-config-di-split {
+    grid-template-columns: 1fr;
+  }
+  /* was @media ≤760 — AI settings 3-col (shift: collapses at 700 not 760, Δ60px) */
+  .ai-settings-3col {
+    grid-template-columns: 1fr;
+    gap: 16px 0;
+  }
+  /* was @media ≤700 — sidebar / grids / padding (width unchanged).
+     NOTE: this block MUST follow the ≤900 block above — at ≤700 both match and these
+     narrower rules (.rs485-grid 2-col, .hw-grid 1-col) intentionally win over ≤900. */
+  .sidebar    { display: none; }
+  .rs485-grid { grid-template-columns: repeat(2, 1fr); }
+  .hw-grid    { grid-template-columns: 1fr; }
+  .main       { padding: 14px; }
+  .flasher-actions { margin-left: 0; }
+  .flasher-control-grid { grid-template-columns: 1fr; }
+  .flasher-settings-row { grid-template-columns: 1fr; }
+}
+
+/* ── XS ≤560 — phone-portrait. ──────────────────────────────────────────────────────── */
+@media (max-width: 560px) {
+  /* was @media ≤600 — gateway port tabs (shift: compact at 560 not 600, Δ40px) */
   .gw-port-tabs { gap: 4px; }
   .gw-port-tab  { padding: 7px 12px; font-size: .8rem; }
 }
