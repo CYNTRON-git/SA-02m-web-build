@@ -107,12 +107,12 @@ const BASE = `http://127.0.0.1:${PORT}`;
 // ── Geometry constants ──────────────────────────────────────────────────────
 const TOUCH_MIN = 44;   // WCAG 2.5.5 / platform minimum target, CSS px.
 const EPS = 0.5;        // sub-pixel tolerance for alignment / overflow / size.
-const CENTRE_EPS = 2.0; // sub-pixel slack for a value-centring claim, CSS px.
+const CENTRE_EPS = 1.5; // sub-pixel slack for a value-centring claim, CSS px (cloud parity).
                         // The 1.0.5.34 fix measured the value text centre at
-                        // fraction 0.499 of the tile; 2px catches "sitting lower"
+                        // fraction 0.499 of the tile; 1.5px catches "sitting lower"
                         // (the bug shifted it ~0.9em ≈ 29px) without flaking on
                         // line-height/Range sub-pixel rounding.
-const CLIP_EPS = 2;     // px a box may under-run its own content before it counts
+const CLIP_EPS = 1;     // px a box may under-run its own content before it counts (cloud parity)
                         // as clipping (absorbs sub-pixel scrollHeight rounding).
 const FONT_MIN = 11;    // HIG minimum readable text size, CSS px. 11 is a FLOOR,
                         // not a target — text AT 11px passes (< FONT_MIN fails).
