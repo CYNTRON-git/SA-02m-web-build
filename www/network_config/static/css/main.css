@@ -3876,8 +3876,11 @@ html:not([data-theme="light"]) .topbar {
   .topbar-logo { height: auto; align-self: flex-start; }   /* full wordmark restored (Operator) */
   .topbar-branding  { white-space: nowrap; overflow: hidden; }
   #device-title { display: none; }        /* long title off — short name below shows */
+  /* Show the web version to the RIGHT of the short model name (Operator
+     2026-07-19): «СА-02м  v1.0.5.34». */
+  .topbar-branding { display: flex; align-items: baseline; gap: 5px; }
   .topbar-brand-short { display: inline; font-size: 15px; }
-  #app-version { display: none; }
+  #app-version { display: inline; margin-left: 0; font-size: 11px; }
   #tb-ip { display: none; }
   /* Language/theme — compact cloud `.tbtn` pills (icon + label); drop the 44px
      force on these header toggles (Operator: cloud sizes). */
@@ -3923,6 +3926,16 @@ html:not([data-theme="light"]) .topbar {
   /* No transient status messages in the HW block on mobile (Operator 2026-07-19:
      don't flash the appear/disappear message on button press). */
   .hw-block-status { display: none !important; }
+  /* No sticky blue :hover highlight on the HW block / items when tapping a button
+     (touch has no real hover, so a tap leaves the cyan border + glow stuck).
+     Operator 2026-07-19: remove the blue block highlight on mobile. */
+  .hw-block:hover,
+  .hw-block:hover .hw-item,
+  .hw-block:hover .hw-item:hover {
+    border-color: var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+  .hw-item, .hw-toggle-btn, .hw-btns .btn { -webkit-tap-highlight-color: transparent; }
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
   .flasher-control-grid { grid-template-columns: 1fr; }
@@ -3962,10 +3975,11 @@ html:not([data-theme="light"]) .topbar {
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
     display: grid;
-    /* FIXED title-row height (fits a 2-line title + icon) so a longer title
-       («ЗАГРУЗКА CPU», «ДИСК eMMC») can't shift the middle row — the value stays
-       at the SAME level as 1-line-title tiles (UPTIME, USB «НЕТ»). Operator. */
-    grid-template-rows: 40px 1fr 1.4em;
+    /* SYMMETRIC fixed top/bottom rows (title / value / sub), so the value in the
+       1fr middle row sits at the TRUE vertical centre (50%) of every tile, the
+       SAME in all — with or without a sub, whatever the title length (Operator
+       2026-07-19: values must be exactly in the middle). */
+    grid-template-rows: 40px 1fr 40px;
     justify-items: center;
     align-items: center;
     text-align: center;
@@ -3998,6 +4012,10 @@ html:not([data-theme="light"]) .topbar {
     line-height: 1.1;
     white-space: nowrap;
   }
+  /* Uptime: drop the legacy padding-top/min-height that pushed the text DOWN
+     inside its box — on the KPI grid it made uptime sit lower than the others
+     (Operator 2026-07-19). Now it centres identically. */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .uptime-readout { padding-top: 0; min-height: 0; }
   /* Unit smaller than the number, on the same line (Operator). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-num { font-size: 32px; }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-unit {
