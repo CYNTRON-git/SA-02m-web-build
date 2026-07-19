@@ -52,17 +52,20 @@
        themes — the background SAMPLED FROM RENDERED PIXELS (blank the text,
        screenshot, median pixel under each run's own box), never derived from
        tokens, so a card tint / gradient / theme override is measured as painted.
-       REPORT-ONLY: the pairs below the floor are REAL pre-existing findings (the
-       cyan --primary button's white label ≈ 3.68:1, dim indicators) whose
-       fix-vs-accept is an Operator decision out of the driver-port's scope. Fully
-       wired and printed with numbers; promoting to a gate is a one-line change.
+       GATED (B3, 1.0.5.39 "закрепить контраст"): a measured pair below the floor
+       that is NOT in CONTRAST_WHITELIST FAILS the run, named with element +
+       ratio. CONTRAST_WHITELIST is the accepted-debt ledger — deliberately muted
+       or disabled states (WCAG 1.4.3 inactive-component exemption), each with a
+       `floor` ratchet and a reason; it is non-vacuous (a stale entry, or a pair
+       deeper than its floor, FAILS), mirroring the touch-target ledger.
 
    NON-VACUOUS. No collection assertion passes on an empty collection: a selector
    that stops matching turns the run RED, not quietly to zero checks (ported from
    the cloud driver's assertNonEmpty rule) — this holds for the GATED checks
-   (overflow, touch, columns, cards, KPI centring, vertical clipping) AND for the
-   report-only passes (a text selector matching nothing is a real regression and
-   FAILS even there). Every gated check names the failing element and its
+   (overflow, touch, columns, cards, KPI centring, vertical clipping, contrast)
+   AND for the report-only font pass (a text selector matching nothing is a real
+   regression and FAILS even there). Every gated check names the failing element
+   and its
    measured-vs-expected numbers; a real violation exits non-zero.
 
    WHAT IT DOES NOT COVER (honest limits — mirror the cloud driver)
@@ -180,11 +183,28 @@ const FONT_WHITELIST = [
 ];
 
 // CONTRAST_WHITELIST — text/background pairs recorded as accepted AA debt. The
-// contrast pass is currently REPORT-ONLY (see the report section), so this is
-// empty and unused for gating; it is the seed for when the Operator promotes
-// contrast to a gate, at which point each entry carries a `match` selector, a
-// `floor` ratchet and a `reason`, mirroring the touch/font ledger discipline.
-const CONTRAST_WHITELIST = [];
+// contrast pass GATES (see the report section): a measured pair below
+// CONTRAST_MIN that is NOT matched here FAILS the run. Each entry carries a
+// `match` selector, a `floor` ratchet and a `reason`, mirroring the touch/font
+// ledger discipline. `floor` is a RATCHET, not a description: a matching pair
+// measuring below `floor` FAILS even though it is whitelisted, so a token change
+// cannot deepen recorded debt behind an entry written for a milder version; and
+// an entry that no longer excuses anything sub-AA is stale and FAILS, so paying
+// the debt forces the entry's removal. Every pair here is a DELIBERATELY muted or
+// disabled state (WCAG 1.4.3 exempts inactive components) — never a fixable label
+// buried to force green. Seeded from the 1.0.5.39 "закрепить контраст" run.
+const CONTRAST_WHITELIST = [
+  { match: '.hw-toggle-btn.na', floor: 1.5,
+    reason: 'Unavailable HW-channel toggle «н/д»: --text-dim label by design (main.css .hw-toggle-btn.na) — a muted inactive state, WCAG 1.4.3 inactive-component exemption.' },
+  { match: '.hw-status-val.na', floor: 1.5,
+    reason: 'Unavailable HW-channel status value «н/д»: --text-dim readout by design (main.css .hw-status-val.na) — muted inactive state.' },
+  { match: '.rs485-port-skeleton .rv', floor: 1.65,
+    reason: 'RS-485 skeleton placeholder value «0» shown before the first real poll: --text-dim by design (main.css .rs485-port-skeleton .rv) — inactive/loading channel.' },
+  { match: '#storage-format-toggle-label', floor: 1.8,
+    reason: 'Storage auto-format toggle in its «НЕ УСТАНОВЛЕНО» (no storage-mount) state: the button is btn.disabled=true (app/status.js) — WCAG 1.4.3 disabled-control exemption.' },
+  { match: '.kernel-apply-inline', floor: 1.25,
+    reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
+];
 
 // ── Playwright resolution — reuse the existing scripts/dev install ───────────
 // The dev harness already carries playwright + a downloaded chromium under
@@ -504,12 +524,40 @@ function probeContrastRuns(wlContrast) {
 // with the text blanked (`color:transparent` changes no geometry). The median
 // pixel inside a run's own box is exactly what is painted BEHIND its glyphs —
 // card tint, gradient, theme override and all. Mirrors the cloud driver.
+//
+// Blanking is done INLINE per element, not via a `body *{color:transparent
+// !important}` stylesheet: an app rule that sets `color` with `!important` at a
+// higher specificity (e.g. `.hw-io-btn.hw-io-to-on{color:…!important}`) BEATS a
+// `body *` stylesheet rule, so those glyphs would survive the blank and pollute
+// their own sampled backdrop — understating the pair's contrast (the tiny green
+// action buttons measured ~3.8:1 this way while really sitting at ~7:1 on their
+// dark fill). An important INLINE declaration sits at the top of the author
+// cascade and beats any stylesheet `!important`, so it blanks every glyph. The
+// originals are saved and restored so the page is left as measured.
 async function sampleBackdrops(page, runs, dsf) {
   if (!runs.length) return [];
-  const blank = await page.addStyleTag({ content: 'body *{color:transparent!important;text-shadow:none!important}' });
+  await page.evaluate(() => {
+    const props = ['color', '-webkit-text-fill-color', 'text-shadow'];
+    const vals = { color: 'transparent', '-webkit-text-fill-color': 'transparent', 'text-shadow': 'none' };
+    const saved = [];
+    for (const el of document.querySelectorAll('body *')) {
+      const rec = [el];
+      for (const p of props) rec.push(el.style.getPropertyValue(p), el.style.getPropertyPriority(p));
+      saved.push(rec);
+      for (const p of props) el.style.setProperty(p, vals[p], 'important');
+    }
+    window.__blankRestore = saved;
+  });
   await page.waitForTimeout(80);
   const shot = await page.screenshot({ fullPage: true });
-  await blank.evaluate((n) => n.remove());
+  await page.evaluate(() => {
+    const props = ['color', '-webkit-text-fill-color', 'text-shadow'];
+    for (const rec of (window.__blankRestore || [])) {
+      const el = rec[0];
+      props.forEach((p, i) => el.style.setProperty(p, rec[1 + i * 2], rec[2 + i * 2]));
+    }
+    delete window.__blankRestore;
+  });
   return page.evaluate(async ({ b64, pts, dsf }) => {
     const img = new Image();
     img.src = 'data:image/png;base64,' + b64;
@@ -780,12 +828,46 @@ async function run() {
       }
     }
   }
-  // Contrast is REPORT-ONLY on this project (see the ledger note in the report
-  // section): the sub-floor pairs it finds are real pre-existing AA findings that
-  // need an Operator remediation-vs-accept decision, out of scope for the driver
-  // port. The measurement is fully wired and printed with numbers; promoting it
-  // to a gate is a one-line change once the debt is triaged. The no-runs case is
-  // still GATED above (a rotted text selector is a real regression).
+  // Contrast GATES on this project (B3, 1.0.5.39 "закрепить контраст"). A measured
+  // pair below CONTRAST_MIN that is NOT matched by CONTRAST_WHITELIST FAILS the
+  // run; whitelisted pairs are the accepted-debt ledger (deliberately muted or
+  // disabled states, WCAG 1.4.3). The ledger is non-vacuous: an entry that excuses
+  // nothing sub-AA is stale and FAILS, and a whitelisted pair deeper than its
+  // recorded `floor` FAILS (the ratchet). Both passes run against allContrast,
+  // built from BOTH themes above. The no-runs case is GATED inside the loop.
+  {
+    // (1) the gate: every sub-AA pair must be excused by a whitelist entry.
+    const cUnder = allContrast.filter((m) => m.ratio < CONTRAST_MIN - CONTRAST_EPS);
+    const unexcused = cUnder.filter((m) => !m.whitelist);
+    const uSeen = new Set();
+    for (const m of unexcused.sort((a, b) => a.ratio - b.ratio)) {
+      const key = m.sel + '|' + m.text + '|' + m.theme;
+      if (uSeen.has(key)) continue;
+      uSeen.add(key);
+      failures.push(`contrast below AA: ${m.ratio.toFixed(2)}:1 ${m.fontPx}px/${m.weight} ` +
+        `${_hex(parseColor(m.color))} on ${_hex(m.bg)}  ${m.sel} «${m.text}» (${m.theme}) — ` +
+        `fix the colour to ≥${CONTRAST_MIN}:1 or, if the state is deliberately muted/disabled, add it to CONTRAST_WHITELIST with a reason`);
+    }
+    // (2) the ledger: staleness AND the ratchet, mirroring the touch ledger.
+    for (const w of CONTRAST_WHITELIST) {
+      const mine = allContrast.filter((m) => m.whitelist === w.match);
+      const under = mine.filter((m) => m.ratio < CONTRAST_MIN - CONTRAST_EPS);
+      if (!under.length) {
+        failures.push(`CONTRAST_WHITELIST entry excuses nothing sub-AA this run (stale): ${w.match} — ` +
+          (mine.length
+            ? `every matching pair now meets ${CONTRAST_MIN}:1, delete the entry (debt paid)`
+            : `matched no measured text run on ANY surface, remove it or fix the selector`));
+        continue;
+      }
+      const worst = under.reduce((a, b) => (a.ratio < b.ratio ? a : b));
+      if (worst.ratio < w.floor - CONTRAST_EPS) {
+        failures.push(`CONTRAST_WHITELIST entry '${w.match}' records floor ${w.floor.toFixed(2)}:1 ` +
+          `but a matching pair now measures ${worst.ratio.toFixed(2)}:1 ` +
+          `(${_hex(parseColor(worst.color))} on ${_hex(worst.bg)} «${worst.text}», ${worst.theme}) — ` +
+          `debt has deepened; fix the regression or move the floor deliberately and say why`);
+      }
+    }
+  }
 
   await browser.close();
   srv.close();
@@ -846,26 +928,31 @@ async function run() {
     FONT_WHITELIST.forEach((w, i) => console.log(`    [${wlFontHits[i]} hits] ${w.match} — ${w.reason}`));
   }
 
-  // ── Contrast — REPORT-ONLY ────────────────────────────────────────────────
-  // The pixel-sampled AA measurement is fully wired; the pairs below 4.5:1 are
-  // REAL findings on current code (e.g. the cyan --primary button's white label
-  // ≈ 3.68:1, dim inactive-channel indicators), not measurement noise. Whether
-  // each is fixed (darken the token) or accepted (recorded in CONTRAST_WHITELIST
-  // with its number, mirroring the touch ledger) is an Operator product decision,
-  // out of scope for the driver port — so this prints every pair with its numbers
-  // and does NOT gate. Promoting to a gate is a one-line change once triaged.
+  // ── Contrast — GATED (B3, 1.0.5.39) ───────────────────────────────────────
+  // The pixel-sampled AA measurement gates: an unexcused sub-AA pair is a FAILURE
+  // above; a whitelisted pair is accepted debt (a deliberately muted/disabled
+  // state). This block prints every sub-AA pair with its numbers and whether it
+  // is [excused] by CONTRAST_WHITELIST or [FAIL] (unexcused) for the human eye —
+  // the gate itself already fired above.
   const cUnder = allContrast.filter((m) => m.ratio < CONTRAST_MIN - CONTRAST_EPS)
     .sort((a, b) => a.ratio - b.ratio);
-  console.log('\ncontrast AA (CONTRAST_MIN=' + CONTRAST_MIN + ':1, backdrop SAMPLED from rendered pixels) — report-only:');
+  console.log('\ncontrast AA (CONTRAST_MIN=' + CONTRAST_MIN + ':1, backdrop SAMPLED from rendered pixels) — GATED:');
   console.log('  ' + allContrast.length + ' text/background pairs measured across ' + SURFACES.length +
-    ' surfaces × ' + THEMES.length + ' themes; ' + cUnder.length + ' below the AA floor:');
+    ' surfaces × ' + THEMES.length + ' themes; ' + cUnder.length + ' below the AA floor ' +
+    '(each must be fixed or whitelisted):');
   const cSeen = new Set();
   for (const m of cUnder) {
     const key = m.sel + '|' + m.text + '|' + m.theme;
     if (cSeen.has(key)) continue;
     cSeen.add(key);
-    console.log(`  ${m.ratio.toFixed(2)}:1  ${m.fontPx}px/${m.weight}  ${_hex(parseColor(m.color))} on ${_hex(m.bg)}  ${m.sel} «${m.text}» (${m.theme})`);
+    const tag = m.whitelist ? '[excused]' : '[ FAIL  ]';
+    console.log(`  ${tag} ${m.ratio.toFixed(2)}:1  ${m.fontPx}px/${m.weight}  ${_hex(parseColor(m.color))} on ${_hex(m.bg)}  ${m.sel} «${m.text}» (${m.theme})`);
   }
+  console.log('  CONTRAST_WHITELIST accepted-debt ledger:');
+  CONTRAST_WHITELIST.forEach((w) => {
+    const n = allContrast.filter((m) => m.whitelist === w.match && m.ratio < CONTRAST_MIN - CONTRAST_EPS).length;
+    console.log(`    [${n} excused, floor ${w.floor.toFixed(2)}:1] ${w.match} — ${w.reason}`);
+  });
 
   // ── Verdict ───────────────────────────────────────────────────────────────
   console.log(`\nscreenshots: ${shots.length} written to ${SHOTS_DIR}`);
