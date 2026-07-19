@@ -933,6 +933,9 @@ function applyDeviceTitle() {
   if (!title) return;
   const ru = deviceTitleRu(_boardVariant);
   title.textContent = window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;
+  // Full-text tooltip so the ellipsis (mobile topbar, main.css ≤700) never
+  // truncates without a title; mirrors the current variant + language.
+  title.setAttribute('title', title.textContent);
 }
 
 window.applyDeviceTitle = applyDeviceTitle;

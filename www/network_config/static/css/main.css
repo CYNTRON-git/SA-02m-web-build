@@ -330,6 +330,30 @@ html:not([data-theme="light"]) .topbar {
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 .topbar-user #logout-btn { margin-left: 4px; }
 
+/* ── Mobile nav (Phase 3, 1.0.5.24) — inert on desktop ──────────────────────
+   Hamburger + drawer backdrop are display:none here; the RESPONSIVE section
+   (S ≤700) shows them and turns .sidebar into a slide-in drawer. */
+.topbar-burger {
+  display: none;
+  align-items: center; justify-content: center;
+  flex-shrink: 0;
+  width: 40px; height: 40px; padding: 0;
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-sec);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.topbar-burger:hover { background: var(--bg-hover); color: var(--text); border-color: var(--cyan-btn); }
+.nav-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, .5);
+  z-index: 90;
+}
+
 .body { display: flex; flex: 1; overflow: hidden; }
 
 .sidebar {
@@ -3718,7 +3742,54 @@ html:not([data-theme="light"]) .topbar {
   /* was @media ≤700 — sidebar / grids / padding (width unchanged).
      NOTE: this block MUST follow the ≤900 block above — at ≤700 both match and these
      narrower rules (.rs485-grid 2-col, .hw-grid 1-col) intentionally win over ≤900. */
-  .sidebar    { display: none; }
+
+  /* ── A1 drawer nav (Phase 3, 1.0.5.24) ──────────────────────────────────────
+     The sidebar was `display:none` here (phone user trapped on one tab). Now it
+     slides in from the left as a drawer, opened by #nav-burger, closed by
+     backdrop tap / Esc / item-select (app/nav.js toggles .app.nav-open). z-index
+     sits above the topbar (50) and the backdrop (90). */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 240px; max-width: 82vw;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform .26s ease;
+    box-shadow: var(--shadow-lg);
+  }
+  .app.nav-open .sidebar { transform: translateX(0); }
+  .app.nav-open .nav-backdrop { display: block; }
+
+  /* ── A2 topbar collapse ─────────────────────────────────────────────────────
+     Reduce the ~607px desktop topbar width floor: burger appears; the 120px
+     wordmark image drops; the device title ellipsises (full text kept in its
+     title attr, set by applyDeviceTitle); the IP leaves the bar (already on
+     Сведения); the username drops (logout control kept, labelled + usable).
+     lang/theme buttons are left as-is per plan A2. */
+  .topbar-burger { display: flex; }
+  .topbar { gap: 8px; padding: 0 12px; }
+  .topbar-logo-img { display: none; }
+  .topbar-branding { white-space: nowrap; overflow: hidden; }
+  #device-title {
+    font-size: 17px;
+    display: inline-block;
+    max-width: 46vw;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+  }
+  #tb-ip { display: none; }
+  #topbar-user-name { display: none; }
+
+  /* ── A5 touch targets ≥44px (pad, don't grow font) — this breakpoint only ──── */
+  .btn,
+  .btn-sm,
+  .nav-item,
+  .nav-sub-item { min-height: 44px; }
+  .topbar-lang-btn,
+  .topbar-burger { min-height: 44px; min-width: 44px; }
+
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
   .hw-grid    { grid-template-columns: 1fr; }
   .main       { padding: 14px; }
@@ -3732,4 +3803,8 @@ html:not([data-theme="light"]) .topbar {
   /* was @media ≤600 — gateway port tabs (shift: compact at 560 not 600, Δ40px) */
   .gw-port-tabs { gap: 4px; }
   .gw-port-tab  { padding: 7px 12px; font-size: .8rem; }
+
+  /* A2 (Phase 3, 1.0.5.24) — phone-portrait: title even shorter, burger + logo
+     stay usable. Full text remains in the #device-title title attr. */
+  #device-title { font-size: 15px; max-width: 38vw; }
 }
