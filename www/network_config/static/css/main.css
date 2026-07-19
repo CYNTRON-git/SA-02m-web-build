@@ -3835,14 +3835,22 @@ html:not([data-theme="light"]) .topbar {
      sits above the topbar (50) and the backdrop (90). */
   .sidebar {
     position: fixed;
-    top: 0; left: 0; bottom: 0;
+    /* Drawer sits UNDER the topbar (Operator 2026-07-19), height fits its content
+       (not full screen), scrolls if taller than the viewport, with a rounded
+       bottom-right corner like the other cards. */
+    top: var(--topbar-h); left: 0; bottom: auto;
     width: 240px; max-width: 82vw;
+    max-height: calc(100dvh - var(--topbar-h));
+    overflow-y: auto;
     z-index: 100;
     transform: translateX(-100%);
     transition: transform .26s ease;
     box-shadow: var(--shadow-lg);
+    border-bottom-right-radius: var(--radius-lg);
   }
   .app.nav-open .sidebar { transform: translateX(0); }
+  /* Backdrop starts below the topbar so the hamburger stays tappable to toggle. */
+  .nav-backdrop { top: var(--topbar-h); }
   .app.nav-open .nav-backdrop { display: block; }
 
   /* Mobile topbar — the cloud fleet header (`.nav`/`.navtg`/`.navr`) applied
