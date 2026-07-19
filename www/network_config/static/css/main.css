@@ -3895,18 +3895,36 @@ html:not([data-theme="light"]) .topbar {
   .dash-wide:not(.widget-svc) { order: -1; }
   .widget-svc.dash-wide { order: 5; }
 
-  /* KPI tiles (every dash-grid widget that is NOT full-width): square, centred,
-     clipped — just the big value, no progress bar (cloud KPI style). */
+  /* KPI tiles (every dash-grid widget that is NOT full-width): square, no bar,
+     content HORIZONTALLY centred, titles TOP-aligned so every tile's title sits
+     at the same level (Operator 2026-07-19). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;   /* titles at the same top level */
+    align-items: center;           /* horizontal centre */
+    text-align: center;
     overflow: hidden;
-    padding: 12px;
+    padding: 14px 10px;
   }
-  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 6px; }
-  .dash-grid > .widget:not(.dash-wide) .widget-val { font-size: 30px; }
+  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 10px; }
+  .dash-grid > .widget:not(.dash-wide) .widget-title.has-ico { justify-content: center; }
+  /* Value: centred in the space beneath the title; wraps + shrinks so long values
+     («2 д 21 ч 12 м», «Не установлен») fit the square instead of clipping. */
+  .dash-grid > .widget:not(.dash-wide) .widget-val {
+    font-size: 24px;
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    margin-top: 6px;
+  }
+  .dash-grid > .widget:not(.dash-wide) .uptime-readout { font-size: 17px; }
+  #usb-storage-view .widget-val, #usb-modem-view .widget-val { font-size: 17px; }
+  /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
+     temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-warn { color: var(--meter-yellow); }
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-crit { color: var(--meter-red); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
      bar row; also drop the swap sub-block and the disk R/W I/O line. */
   .dash-grid > .widget:not(.dash-wide) .bar-row,

@@ -510,6 +510,18 @@ function cssVar(name) {
 function threshColor(val, warnAt, critAt) {
   return val >= critAt ? cssVar('--meter-red') : val >= warnAt ? cssVar('--meter-yellow') : cssVar('--meter-cyan');
 }
+// Tag a dashboard value with a threshold class so the mobile KPI tiles (where the
+// progress bar is hidden, main.css ≤560) still carry the warn/crit colour cue.
+// Desktop keeps the bars; the CSS only colours the value at ≤560. Guarded.
+function setValThresh(id, val, warnAt, critAt) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('val-warn', 'val-crit');
+  var v = parseFloat(val);
+  if (isNaN(v)) return;
+  if (v >= critAt) el.classList.add('val-crit');
+  else if (v >= warnAt) el.classList.add('val-warn');
+}
 
 /** USB / microSD: префикс полей в JSON — usb_* или sd_* */
 function applyRemovableDisk(mounted, base, d) {
@@ -547,6 +559,7 @@ function applyPriorityStatus(d) {
   /* CPU */
   if (d.cpu_usage !== undefined) {
     setText('cpu-val', d.cpu_usage + '%');
+    setValThresh('cpu-val', d.cpu_usage, 60, 80);
     const cpuBar = document.getElementById('cpu-bar');
     if (cpuBar) {
       cpuBar.style.width = Math.min(100, Math.max(0, parseFloat(d.cpu_usage) || 0)) + '%';
@@ -557,6 +570,7 @@ function applyPriorityStatus(d) {
   /* RAM */
   if (d.ram_used_kb !== undefined) {
     setText('ram-val', fmtKB(d.ram_used_kb));
+    setValThresh('ram-val', d.ram_pct, 70, 90);
     setText('ram-sub', uiT('из') + ' ' + fmtKB(d.ram_total_kb));
     setText('ram-pct', d.ram_pct + '%');
     setText('ram-free', uiT('свободно') + ' ' + fmtKB(d.ram_free_kb));
@@ -593,6 +607,7 @@ function applyPriorityStatus(d) {
   /* Температура: шкала 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
   if (d.temp_c !== undefined) {
     setText('temp-val', d.temp_c + '°');
+    setValThresh('temp-val', d.temp_c, 70, 80);
     const tempBar = document.getElementById('temp-bar');
     const tempHint = document.getElementById('temp-gauge-hint');
     const tc = parseFloat(d.temp_c) || 0;
@@ -608,6 +623,7 @@ function applyPriorityStatus(d) {
   /* Disk */
   if (d.disk_used_kb !== undefined) {
     setText('disk-val', fmtKB(d.disk_used_kb));
+    setValThresh('disk-val', d.disk_pct, 70, 90);
     setText('disk-sub', uiT('из') + ' ' + fmtKB(d.disk_total_kb));
     setText('disk-pct', d.disk_pct + '%');
     setText('disk-free', uiT('свободно') + ' ' + fmtKB(d.disk_free_kb));
