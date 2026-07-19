@@ -893,6 +893,20 @@ html:not([data-theme="light"]) .topbar {
   border-color: color-mix(in srgb, var(--cyan) 45%, transparent) !important;
   font-weight: 600;
 }
+/* HW discrete-output toggle state colour (Operator 2026-07-19): ON → green,
+   OFF → neutral grey, «н/д» stays dim. Tokened chip colours work in both themes;
+   no color-mix (older embedded WebKit lacks it). */
+.btn.hw-on {
+  background: var(--chip-green-bg) !important;
+  color: var(--chip-green-fg) !important;
+  border-color: var(--chip-green-fg) !important;
+  font-weight: 600;
+}
+.btn.hw-off {
+  color: var(--text-sec) !important;
+  border-color: var(--border-md) !important;
+  font-weight: 600;
+}
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
 /* Предупреждение о таймаутах опроса дашборда (не путать с hw-hint) */
@@ -3862,6 +3876,12 @@ html:not([data-theme="light"]) .topbar {
   .hw-title-short { display: inline; }
 
   .rs485-grid { grid-template-columns: repeat(2, 1fr); }
+  /* RS-485 cards are narrow at 2-col — stack TX and RX on separate lines
+     (each label left / value right) instead of side-by-side, and drop the empty
+     reserved spacer rows (Operator 2026-07-19). */
+  .rs485-row.rs485-txrx { flex-direction: column; align-items: stretch; gap: 2px; }
+  .rs485-txrx-item { justify-content: space-between; }
+  .rs485-err-reserved, .rs485-mods-reserved, .rs485-dev-reserved { display: none; }
   .hw-grid    { grid-template-columns: repeat(2, 1fr); }  /* 2 HW items per row on mobile (Operator) */
   .main       { padding: 14px; }
   .flasher-actions { margin-left: 0; }
@@ -3895,18 +3915,38 @@ html:not([data-theme="light"]) .topbar {
   .dash-wide:not(.widget-svc) { order: -1; }
   .widget-svc.dash-wide { order: 5; }
 
-  /* KPI tiles (every dash-grid widget that is NOT full-width): square, centred,
-     clipped — just the big value, no progress bar (cloud KPI style). */
+  /* KPI tiles (every dash-grid widget that is NOT full-width): square, no bar,
+     content HORIZONTALLY centred, titles TOP-aligned so every tile's title sits
+     at the same level (Operator 2026-07-19). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;   /* titles at the same top level */
+    align-items: center;           /* horizontal centre */
+    text-align: center;
     overflow: hidden;
-    padding: 12px;
+    padding: 14px 10px;
   }
-  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 6px; }
-  .dash-grid > .widget:not(.dash-wide) .widget-val { font-size: 30px; }
+  .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 10px; }
+  .dash-grid > .widget:not(.dash-wide) .widget-title.has-ico { justify-content: center; }
+  /* Value: centred in the space beneath the title; wraps + shrinks so long values
+     («2 д 21 ч 12 м», «Не установлен») fit the square instead of clipping. */
+  .dash-grid > .widget:not(.dash-wide) .widget-val {
+    font-size: 24px;
+    line-height: 1.15;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    margin-top: 6px;
+  }
+  .dash-grid > .widget:not(.dash-wide) .uptime-readout { font-size: 17px; }
+  #usb-storage-view .widget-val, #usb-modem-view .widget-val { font-size: 17px; }
+  /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
+     temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
+  /* Themed fg tokens (chip-orange/red-fg) — readable on the card background in
+     BOTH themes; --meter-yellow is dark-only (yellow-on-white fails AA). */
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-warn { color: var(--chip-orange-fg); }
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-crit { color: var(--chip-red-fg); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
      bar row; also drop the swap sub-block and the disk R/W I/O line. */
   .dash-grid > .widget:not(.dash-wide) .bar-row,

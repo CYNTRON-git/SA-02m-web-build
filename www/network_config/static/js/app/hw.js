@@ -85,21 +85,21 @@ function hwLogicalFromPayload(v) {
   return -1;
 }
 
-// Channels rendered as a single toggle button (blue when ON, like the active
-// sidebar item). usb_power keeps its power-state status line + Сброс button.
+// Channels rendered as a single toggle button (green when ON, grey when OFF).
+// usb_power keeps its power-state status line + Сброс button.
 const HW_TOGGLE_CHANNELS = new Set(['do', 'beeper', 'alarm_led']);
 
 function hwToggleBtn(channel) {
   return document.querySelector('.hw-btns[data-hw-ch="' + channel + '"] .hw-toggle-btn');
 }
 
-/** Reflect a toggle channel's logical state on its single button:
- *  ON → blue (hw-active-blue), OFF → default, unknown/-1 → «н/д». */
+/** Reflect a toggle channel's logical state on its single button.
+ *  ON → green (hw-on), OFF → grey (hw-off), unknown/-1 → «н/д» (na). */
 function updateHwToggleBtn(channel, nv) {
   const btn = hwToggleBtn(channel);
   if (!btn) return;
   const words = HW_STATE_WORDS[channel] || ['ВЫКЛ', 'ВКЛ'];
-  btn.classList.remove('hw-active-blue', 'na');
+  btn.classList.remove('hw-active-blue', 'hw-on', 'hw-off', 'na');
   btn.dataset.cur = String(nv);
   if (nv === -1) {
     btn.textContent = uiT('н/д');
@@ -107,7 +107,7 @@ function updateHwToggleBtn(channel, nv) {
     return;
   }
   btn.textContent = uiT(nv ? words[1] : words[0]);
-  if (nv) btn.classList.add('hw-active-blue');
+  btn.classList.add(nv ? 'hw-on' : 'hw-off');
 }
 
 function applyHwChannel(stId, channel, v) {
