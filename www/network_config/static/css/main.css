@@ -3888,8 +3888,15 @@ html:not([data-theme="light"]) .topbar {
   .dash-wide { grid-column: 1 / -1; }
   #tab-dashboard .widget { padding: 14px; }
 
+  /* Mobile order (Operator 2026-07-19): Система → Нагрузка → small KPI tiles →
+     Службы last. `order` reorders grid items on mobile only; desktop DOM order
+     is unchanged. Система/Нагрузка = .dash-wide but NOT .widget-svc → front;
+     Службы = .widget-svc → after the small tiles. */
+  .dash-wide:not(.widget-svc) { order: -1; }
+  .widget-svc.dash-wide { order: 5; }
+
   /* KPI tiles (every dash-grid widget that is NOT full-width): square, centred,
-     clipped — the big value is the focus (cloud KPI style). */
+     clipped — just the big value, no progress bar (cloud KPI style). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-span-top4) {
     aspect-ratio: 1 / 1;
     display: flex;
@@ -3900,9 +3907,9 @@ html:not([data-theme="light"]) .topbar {
   }
   .dash-grid > .widget:not(.dash-wide) .widget-title { margin-bottom: 6px; }
   .dash-grid > .widget:not(.dash-wide) .widget-val { font-size: 30px; }
-  /* Drop the non-essential extras that would overflow a square tile: the bar
-     min/max scale endpoints, swap sub-block, disk R/W I/O line. */
-  .dash-grid > .widget:not(.dash-wide) .bar-meta,
+  /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
+     bar row; also drop the swap sub-block and the disk R/W I/O line. */
+  .dash-grid > .widget:not(.dash-wide) .bar-row,
   .dash-grid > .widget:not(.dash-wide) .swap-block,
   .dash-grid > .widget:not(.dash-wide) .disk-io-line { display: none; }
 }
