@@ -277,8 +277,10 @@ html:not([data-theme="light"]) .topbar {
   display: block;
   cursor: pointer;
 }
-/* Chip-only mark (microchip element, no «ЦИНТРОН» wordmark) — shown ≤700 in
-   the RESPONSIVE section so the hamburger fits on the left; hidden on desktop. */
+/* Chip-only mark (microchip element, no «ЦИНТРОН» wordmark). Kept in-tree but
+   currently unused: Phase 5 measured the full wordmark to fit on mobile with the
+   compact controls wrapping to row 2, so the wordmark shows at every width. This
+   asset is the fallback if a narrower layout ever needs a compact left mark. */
 .topbar-logo-chip {
   display: none;
   height: 28px;
@@ -291,28 +293,32 @@ html:not([data-theme="light"]) .topbar {
 .topbar-logo > div:last-child {
   min-width: 0;
 }
+/* Compact ghost topbar control (cloud fleet-UI `.tbtn` look, Phase 5, 1.0.5.26)
+   — shared by #lang-toggle, #theme-toggle, #logout-btn. Cloud tokens mapped to
+   ours: glass2→--bg-panel, glassbd→--border, ts→--text-sec, tx→--text,
+   rctl→--radius-sm. No box-shadow (ghost), 12px normal-weight label, hover only
+   lifts the border + label colour. */
 .topbar-lang-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-shrink: 0;
-  padding: 6px 10px;
-  border: 1px solid var(--border-md);
+  padding: 4px 11px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
   color: var(--text-sec);
-  font-size: .78rem;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   line-height: 1;
   cursor: pointer;
-  box-shadow: var(--shadow-sm);
-  transition: background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
+  white-space: nowrap;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
 .topbar-lang-btn:hover {
   background: var(--bg-hover);
   color: var(--text);
-  border-color: var(--cyan-btn);
-  box-shadow: var(--shadow);
+  border-color: var(--text-sec);
 }
 .topbar-lang-btn svg {
   width: 15px;
@@ -356,6 +362,11 @@ html:not([data-theme="light"]) .topbar {
   margin-left: 0.4em;
 }
 .topbar-sep   { flex: 1; }
+/* Right-side controls group (lang/theme/ip/user) wrapped so the WHOLE set can
+   drop to a full-width 2nd row on mobile (cloud `.navr` model — RESPONSIVE §),
+   freeing row 1 for the brand + restored full wordmark. Desktop: an inline flex
+   row pushed right by .topbar-sep; the 12px gap preserves the old .topbar gap. */
+.topbar-controls { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-width: 0; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 .topbar-user #logout-btn { margin-left: 4px; }
@@ -3790,18 +3801,19 @@ html:not([data-theme="light"]) .topbar {
   .app.nav-open .sidebar { transform: translateX(0); }
   .app.nav-open .nav-backdrop { display: block; }
 
-  /* ── A2 topbar collapse (restructured 1.0.5.25) ─────────────────────────────
-     Left = burger + chip-only mark (the 120px wordmark drops, the microchip
-     mark shows so the burger fits); the device title ellipsises beneath it
-     (full text in its title attr, set by applyDeviceTitle); the IP leaves the
-     bar (already on Сведения); the username drops. lang/theme go ICON-ONLY
-     here (labels hidden — closes the Phase-3 A2 advisory); their SVG icons +
-     aria-labels + titles stay. Logout keeps its label (it carries no icon —
-     hiding its text would leave an invisible control). */
+  /* ── A2 topbar collapse (Phase 5 restructure, 1.0.5.26) ──────────────────────
+     The header WRAPS (cloud `.nav`/`.navr` model): the compact ghost controls
+     drop to a full-width 2nd row (.topbar-controls, below), which frees row 1
+     for the burger + the RESTORED full wordmark logo (Phase-4 chip swap dropped
+     — measured to fit at 360/390/414 with the controls on row 2, no h-overflow).
+     The topbar height goes auto (min-height keeps the desktop floor) so the 2nd
+     row is never clipped; .app keeps it flex-shrink:0 so it takes what it needs.
+     The device title ellipsises beneath the wordmark (full text in its title
+     attr, set by applyDeviceTitle); the IP + username drop; lang/theme stay
+     icon-only; the version fragment is hidden (the stray «0.5» tail). */
   .topbar-burger { display: flex; }
-  .topbar { gap: 8px; padding: 0 12px; }
-  .topbar-logo-img { display: none; }
-  .topbar-logo-chip { display: block; }
+  .topbar { gap: 8px; padding: 0 12px; flex-wrap: wrap; height: auto; min-height: var(--topbar-h); }
+  .topbar-controls { flex-basis: 100%; width: 100%; justify-content: flex-end; gap: 8px; }
   .topbar-branding { white-space: nowrap; overflow: hidden; }
   #device-title {
     font-size: 17px;
@@ -3812,6 +3824,7 @@ html:not([data-theme="light"]) .topbar {
     text-overflow: ellipsis;
     vertical-align: bottom;
   }
+  #app-version { display: none; }
   #tb-ip { display: none; }
   #topbar-user-name { display: none; }
   #lang-toggle-label,
