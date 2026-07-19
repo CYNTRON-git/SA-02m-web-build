@@ -513,6 +513,30 @@ function threshColor(val, warnAt, critAt) {
 // Tag a dashboard value with a threshold class so the mobile KPI tiles (where the
 // progress bar is hidden, main.css ≤560) still carry the warn/crit colour cue.
 // Desktop keeps the bars; the CSS only colours the value at ≤560. Guarded.
+// Render a KPI value as a large number + a smaller unit (Operator 2026-07-19:
+// «значения крупнее, размерности меньше»). Splits the leading numeric part from
+// the unit suffix; the .v-unit is shrunk by CSS on the mobile KPI tiles only.
+// Uses createElement/textContent (no HTML injection).
+function setValUnit(id, str) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  var s = String(str);
+  var m = s.match(/^([\d., \s-]+)(.*)$/);
+  el.textContent = '';
+  if (!m) { el.textContent = s; return; }
+  var num = m[1].replace(/\s+$/, '');
+  var unit = m[2];
+  var nEl = document.createElement('span');
+  nEl.className = 'v-num';
+  nEl.textContent = num;
+  el.appendChild(nEl);
+  if (unit) {
+    var uEl = document.createElement('span');
+    uEl.className = 'v-unit';
+    uEl.textContent = unit;
+    el.appendChild(uEl);
+  }
+}
 function setValThresh(id, val, warnAt, critAt) {
   var el = document.getElementById(id);
   if (!el) return;
@@ -529,7 +553,7 @@ function applyRemovableDisk(mounted, base, d) {
   const detail = document.getElementById(base + '-detail');
   if (!val || !detail) return;
   if (!mounted) {
-    val.textContent = uiT('НЕ УСТАНОВЛЕН');
+    val.textContent = uiT('НЕТ');
     val.classList.add('widget-val-removable-empty');
     detail.style.display = 'none';
     return;
@@ -558,7 +582,7 @@ function applyPriorityStatus(d) {
 
   /* CPU */
   if (d.cpu_usage !== undefined) {
-    setText('cpu-val', d.cpu_usage + '%');
+    setValUnit('cpu-val', d.cpu_usage + '%');
     setValThresh('cpu-val', d.cpu_usage, 60, 80);
     const cpuBar = document.getElementById('cpu-bar');
     if (cpuBar) {
@@ -569,7 +593,7 @@ function applyPriorityStatus(d) {
 
   /* RAM */
   if (d.ram_used_kb !== undefined) {
-    setText('ram-val', fmtKB(d.ram_used_kb));
+    setValUnit('ram-val', fmtKB(d.ram_used_kb));
     setValThresh('ram-val', d.ram_pct, 70, 90);
     setText('ram-sub', uiT('из') + ' ' + fmtKB(d.ram_total_kb));
     setText('ram-pct', d.ram_pct + '%');
@@ -606,7 +630,7 @@ function applyPriorityStatus(d) {
 
   /* Температура: шкала 30–100 °C; цвет <70 зелёный, 70–80 жёлтый, ≥80 красный */
   if (d.temp_c !== undefined) {
-    setText('temp-val', d.temp_c + '°');
+    setValUnit('temp-val', d.temp_c + '°C');
     setValThresh('temp-val', d.temp_c, 70, 80);
     const tempBar = document.getElementById('temp-bar');
     const tempHint = document.getElementById('temp-gauge-hint');
@@ -622,7 +646,7 @@ function applyPriorityStatus(d) {
 
   /* Disk */
   if (d.disk_used_kb !== undefined) {
-    setText('disk-val', fmtKB(d.disk_used_kb));
+    setValUnit('disk-val', fmtKB(d.disk_used_kb));
     setValThresh('disk-val', d.disk_pct, 70, 90);
     setText('disk-sub', uiT('из') + ' ' + fmtKB(d.disk_total_kb));
     setText('disk-pct', d.disk_pct + '%');
@@ -728,7 +752,11 @@ function refreshTimeReadouts() {
 window.refreshTimeReadouts = refreshTimeReadouts;
 
 function applyUptimeStatus(d) {
-  setText('uptime-val', fmtUptime(d.uptime_sec ?? d.uptime_s));
+  var sec = d.uptime_sec ?? d.uptime_s;
+  // Mobile KPI tile shows only the two most significant units (Operator);
+  // desktop keeps the full string. Re-evaluated each poll (uptime re-polls).
+  var mobile = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
+  setText('uptime-val', (mobile ? fmtUptime2 : fmtUptime)(sec));
 }
 
 /** Плейсхолдер pill (ширина «Нет линка») — резерв места до ответа status.cgi. */
@@ -740,30 +768,18 @@ function ethPillPlaceholderText() {
 function applyEthIfaceState(spanId, operstate) {
   const el = document.getElementById(spanId);
   if (!el) return;
-  const hide = () => {
-    el.textContent = ethPillPlaceholderText();
-    el.setAttribute('aria-hidden', 'true');
-    el.removeAttribute('hidden');
-    el.className = 'eth-state eth-state-prominent eth-state-hidden';
-  };
-  if (operstate === undefined || operstate === null || operstate === '') {
-    hide();
-    return;
-  }
-  const s = String(operstate).trim().toLowerCase();
-  if (s === 'absent' || s === 'unknown') {
-    hide();
-    return;
-  }
-  el.removeAttribute('hidden');
-  el.removeAttribute('aria-hidden');
-  if (s === 'up') {
-    el.textContent = uiT('Линк');
-    el.className = 'eth-state eth-state-prominent up';
-  } else {
-    el.textContent = uiT('Нет линка');
-    el.className = 'eth-state eth-state-prominent down';
-  }
+  // The «Линк / Нет линка» pill is replaced by a coloured block-title background
+  // (Operator 2026-07-19): green (translucent + outline) when the link is up,
+  // grey otherwise. The pill span itself is kept hidden for a11y compatibility.
+  el.textContent = '';
+  el.setAttribute('hidden', 'hidden');
+  el.setAttribute('aria-hidden', 'true');
+  el.className = 'eth-state eth-state-hidden';
+  const title = el.closest ? el.closest('.eth-hdr-title') : null;
+  if (!title) return;
+  const s = (operstate === undefined || operstate === null) ? '' : String(operstate).trim().toLowerCase();
+  title.classList.remove('eth-link-up', 'eth-link-down');
+  title.classList.add(s === 'up' ? 'eth-link-up' : 'eth-link-down');
 }
 
 /** Dashboard Ethernet widget: «Static: 1.2.3.4» или «DHCP: 1.2.3.4». */

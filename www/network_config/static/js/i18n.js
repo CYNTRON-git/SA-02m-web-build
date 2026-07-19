@@ -101,6 +101,7 @@
     'не удалось полностью удалить пакет': 'failed to fully remove the package',
     'н/д': 'N/A',
     'НЕ УСТАНОВЛЕН': 'NOT MOUNTED',
+    'НЕТ': 'NONE',
     'Интерфейсы RS-485 — активность': 'RS-485 Interfaces — Activity',
     'Настройки сети': 'Network Settings',
     'Конфигурация Ethernet № 1': 'Ethernet #1 Configuration',

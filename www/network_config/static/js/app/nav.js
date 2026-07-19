@@ -22,7 +22,18 @@ function initNavDrawer() {
   if (!app || !burger) return;
 
   function isOpen() { return app.classList.contains('nav-open'); }
-  function openDrawer() { app.classList.add('nav-open'); }
+  function openDrawer() {
+    // Pin the drawer (and backdrop) to the ACTUAL bottom of the topbar so the
+    // menu opens UNDER it (the mobile topbar height is dynamic, so --topbar-h is
+    // only a CSS fallback). Inline top is inert on desktop (sidebar is static).
+    var tb = document.querySelector('.topbar');
+    if (tb) {
+      var h = tb.offsetHeight + 'px';
+      if (sidebar) { sidebar.style.top = h; }
+      if (backdrop) { backdrop.style.top = h; }
+    }
+    app.classList.add('nav-open');
+  }
   function closeDrawer() { app.classList.remove('nav-open'); }
   function toggleDrawer() { if (isOpen()) { closeDrawer(); } else { openDrawer(); } }
 

@@ -257,6 +257,10 @@ function applyTheme(theme) {
     document.documentElement.removeAttribute('data-theme');
     theme = 'dark';
   }
+  // Keep the browser status-bar / safe-area tint in sync with the page
+  // background (Operator 2026-07-19: iPhone top/bottom must match the theme).
+  var tc = document.getElementById('theme-color-meta');
+  if (tc) tc.setAttribute('content', theme === 'light' ? '#ececf3' : '#161618');
   try { localStorage.setItem('sa02m-theme', theme); } catch (_) {}
   updateThemeBtn();
 }
