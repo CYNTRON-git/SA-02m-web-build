@@ -529,7 +529,7 @@ function applyRemovableDisk(mounted, base, d) {
   const detail = document.getElementById(base + '-detail');
   if (!val || !detail) return;
   if (!mounted) {
-    val.textContent = uiT('НЕ УСТАНОВЛЕН');
+    val.textContent = uiT('НЕТ');
     val.classList.add('widget-val-removable-empty');
     detail.style.display = 'none';
     return;
