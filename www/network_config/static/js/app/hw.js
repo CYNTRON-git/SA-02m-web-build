@@ -85,15 +85,15 @@ function hwLogicalFromPayload(v) {
   return -1;
 }
 
-// Channels rendered as a single toggle button (blue when ON, like the active
-// sidebar item). usb_power keeps its power-state status line + Сброс button.
+// Channels rendered as a single toggle button (green when ON, grey when OFF).
+// usb_power keeps its power-state status line + Сброс button.
 const HW_TOGGLE_CHANNELS = new Set(['do', 'beeper', 'alarm_led']);
 
 function hwToggleBtn(channel) {
   return document.querySelector('.hw-btns[data-hw-ch="' + channel + '"] .hw-toggle-btn');
 }
 
-/** Reflect a toggle channel's logical state on its single button:
+/** Reflect a toggle channel's logical state on its single button.
  *  ON → green (hw-on), OFF → grey (hw-off), unknown/-1 → «н/д» (na). */
 function updateHwToggleBtn(channel, nv) {
   const btn = hwToggleBtn(channel);

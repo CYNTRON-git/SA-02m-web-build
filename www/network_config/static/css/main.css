@@ -3943,8 +3943,10 @@ html:not([data-theme="light"]) .topbar {
   #usb-storage-view .widget-val, #usb-modem-view .widget-val { font-size: 17px; }
   /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
      temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
-  .dash-grid > .widget:not(.dash-wide) .widget-val.val-warn { color: var(--meter-yellow); }
-  .dash-grid > .widget:not(.dash-wide) .widget-val.val-crit { color: var(--meter-red); }
+  /* Themed fg tokens (chip-orange/red-fg) — readable on the card background in
+     BOTH themes; --meter-yellow is dark-only (yellow-on-white fails AA). */
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-warn { color: var(--chip-orange-fg); }
+  .dash-grid > .widget:not(.dash-wide) .widget-val.val-crit { color: var(--chip-red-fg); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
      bar row; also drop the swap sub-block and the disk R/W I/O line. */
   .dash-grid > .widget:not(.dash-wide) .bar-row,
