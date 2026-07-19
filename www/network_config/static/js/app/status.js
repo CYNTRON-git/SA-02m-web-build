@@ -537,6 +537,21 @@ function setValUnit(id, str) {
     el.appendChild(uEl);
   }
 }
+// Storage KPI (RAM / disk): on the mobile KPI tile the big value is the PERCENT
+// and the sub is «used из total» on one line (Operator 2026-07-19); desktop keeps
+// «used» as the value and «из total» as the sub. Re-evaluated each poll.
+function setStorageKpi(base, usedKb, totalKb, pct) {
+  var mobile = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
+  if (mobile) {
+    // Big value = percent; sub = «used из total» on ONE line (Operator 2026-07-19:
+    // «свободно free» made it wrap to 2 lines — dropped so it stays one line).
+    setValUnit(base + '-val', pct + '%');
+    setText(base + '-sub', fmtKB(usedKb) + ' ' + uiT('из') + ' ' + fmtKB(totalKb));
+  } else {
+    setValUnit(base + '-val', fmtKB(usedKb));
+    setText(base + '-sub', uiT('из') + ' ' + fmtKB(totalKb));
+  }
+}
 function setValThresh(id, val, warnAt, critAt) {
   var el = document.getElementById(id);
   if (!el) return;
@@ -593,9 +608,8 @@ function applyPriorityStatus(d) {
 
   /* RAM */
   if (d.ram_used_kb !== undefined) {
-    setValUnit('ram-val', fmtKB(d.ram_used_kb));
+    setStorageKpi('ram', d.ram_used_kb, d.ram_total_kb, d.ram_pct);
     setValThresh('ram-val', d.ram_pct, 70, 90);
-    setText('ram-sub', uiT('из') + ' ' + fmtKB(d.ram_total_kb));
     setText('ram-pct', d.ram_pct + '%');
     setText('ram-free', uiT('свободно') + ' ' + fmtKB(d.ram_free_kb));
     const ramBar = document.getElementById('ram-bar');
@@ -646,9 +660,8 @@ function applyPriorityStatus(d) {
 
   /* Disk */
   if (d.disk_used_kb !== undefined) {
-    setValUnit('disk-val', fmtKB(d.disk_used_kb));
+    setStorageKpi('disk', d.disk_used_kb, d.disk_total_kb, d.disk_pct);
     setValThresh('disk-val', d.disk_pct, 70, 90);
-    setText('disk-sub', uiT('из') + ' ' + fmtKB(d.disk_total_kb));
     setText('disk-pct', d.disk_pct + '%');
     setText('disk-free', uiT('свободно') + ' ' + fmtKB(d.disk_free_kb));
     const diskBar = document.getElementById('disk-bar');
