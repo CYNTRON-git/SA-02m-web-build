@@ -893,6 +893,20 @@ html:not([data-theme="light"]) .topbar {
   border-color: color-mix(in srgb, var(--cyan) 45%, transparent) !important;
   font-weight: 600;
 }
+/* HW discrete-output toggle state colour (Operator 2026-07-19): ON → green,
+   OFF → neutral grey, «н/д» stays dim. Tokened chip colours work in both themes;
+   no color-mix (older embedded WebKit lacks it). */
+.btn.hw-on {
+  background: var(--chip-green-bg) !important;
+  color: var(--chip-green-fg) !important;
+  border-color: var(--chip-green-fg) !important;
+  font-weight: 600;
+}
+.btn.hw-off {
+  color: var(--text-sec) !important;
+  border-color: var(--border-md) !important;
+  font-weight: 600;
+}
 .hw-hint       { font-size: 13px; color: var(--text-sec); line-height: 1.45; }
 
 /* Предупреждение о таймаутах опроса дашборда (не путать с hw-hint) */
