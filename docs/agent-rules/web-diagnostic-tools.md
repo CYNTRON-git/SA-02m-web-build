@@ -48,11 +48,28 @@ viewport for a human to review the вёрстка, use the geometry driver
 `.ai-dev/quality/checks/ui-layout.mjs` (quality row `ui-layout`, review beat):
 `npm run ui-layout:install` once, then `npm run ui-layout`. It renders the
 dashboard + Управление services block across phone/tablet/desktop × both themes
-× both HW variants and measures real `getBoundingClientRect` geometry — services
-column alignment, no horizontal overflow (gated at supported widths), touch-target
-sizes vs a printed deviation ledger, no card overlap. Screenshots land in the
-gitignored `.ai-dev/quality/screenshots/`. Chromium-only, fixed viewports,
-geometry-not-visual-regression — limits documented in the driver's file header.
+× both HW variants and measures real `getBoundingClientRect` / Range geometry.
+
+GATED checks (a real violation exits non-zero, gated at the supported widths):
+services column alignment · horizontal overflow, BOTH the page scrolling sideways
+AND an element clipped past the edge while an ancestor clamps scrollWidth · touch
+targets vs a printed deviation ledger · no card overlap · VERTICAL clipping (a box
+whose `overflow-y:hidden` hides content taller than itself — the missed class:
+a mobile drawer/tile swallowing its controls) · mobile KPI value CENTRING (at
+≤560px each direct-child `.widget-val` sits at the true vertical centre of its
+tile, measured on the text box). Every collection check is NON-VACUOUS: a selector
+that stops matching FAILS, it does not pass on zero elements.
+
+REPORT-ONLY passes (measured and PRINTED with numbers every run, not gated — the
+findings are pre-existing debt whose fix-vs-accept is an Operator decision):
+the 11px HIG font floor (SA-02m's compact desktop/tablet-first admin scale sits
+just under it by design) and WCAG AA contrast (≥4.5:1, backdrop SAMPLED from
+rendered pixels, both themes). Promoting either to a gate is a one-line change
+plus a seeded whitelist (`FONT_WHITELIST` / `CONTRAST_WHITELIST`), mirroring the
+touch ledger discipline. Screenshots land in the gitignored
+`.ai-dev/quality/screenshots/`. Chromium-only, fixed viewports, geometry +
+type/contrast but no visual-regression baseline — limits and the full port
+rationale (adapted from the sibling cloud driver) are in the driver's file header.
 
 ## Contrast (color work)
 

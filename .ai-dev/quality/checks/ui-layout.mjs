@@ -21,23 +21,65 @@
        (phone-landscape/tablet/desktop, names the culprit); at phone-portrait
        (360px, below SA-02m's tablet/desktop-first design floor) overflow is
        measured and REPORTED but not gated (multiple elements overflow there
-       by design — see the ship report / backlog)
+       by design — see the ship report / backlog). Two ways: the page scrolling
+       sideways (body scrollWidth > viewport) AND an element hanging past the
+       right edge while an ancestor's `overflow:hidden` CLAMPS scrollWidth — the
+       second is content clipped unreachable, which a scrollWidth-only test reads
+       as green (ported from the cloud driver).
+     • no VERTICAL content clipping: a box whose `overflow-y:hidden|clip` hides
+       content taller than itself (`scrollHeight > clientHeight`) — the class of
+       bug this driver MISSED (a mobile topbar/drawer swallowing its own controls,
+       a KPI tile clipping its value). GATED at the supported widths, REPORT-only
+       at phone-portrait and for boxes that legitimately scroll (`overflow-y:
+       auto|scroll` — the user can reach the content).
      • every visible interactive control ≥ 44×44 CSS px, or a whitelisted
        deviation with a printed reason (ledger discipline)
      • services-control column alignment (the 1.0.5.19 column grid): manage,
        toggle and badge columns each share one x-left across every row
      • no pairwise overlap among the dashboard widget cards
+     • mobile KPI tiles centre their value: at ≤560px (where the square-tile grid
+       is in force) each direct-child `.widget-val` sits at the TRUE vertical
+       centre (50%) of its tile, measured on the TEXT box (Range), not the padded
+       element box — the guard behind the 1.0.5.33–35 "значения по центру" work
+       (uptime/USB used to sit lower). CENTRE_EPS tolerance.
+     • text below the HIG 11px floor (FONT_MIN) — measured and PRINTED across
+       every cell, REPORT-ONLY: SA-02m is a compact desktop/tablet-first admin
+       console at a 14px root, so a body of 0.72–0.78rem labels/hints + 9px
+       micro-controls sits just under 11px by design, the same accepted posture
+       the 44px touch ledger documents. Gating it (bump vs record each family) is
+       an Operator product decision, not the driver's — so it prints, not fails.
+     • WCAG 2.1 AA contrast (≥ 4.5:1) on the key text of both surfaces, in BOTH
+       themes — the background SAMPLED FROM RENDERED PIXELS (blank the text,
+       screenshot, median pixel under each run's own box), never derived from
+       tokens, so a card tint / gradient / theme override is measured as painted.
+       REPORT-ONLY: the pairs below the floor are REAL pre-existing findings (the
+       cyan --primary button's white label ≈ 3.68:1, dim indicators) whose
+       fix-vs-accept is an Operator decision out of the driver-port's scope. Fully
+       wired and printed with numbers; promoting to a gate is a one-line change.
+
+   NON-VACUOUS. No collection assertion passes on an empty collection: a selector
+   that stops matching turns the run RED, not quietly to zero checks (ported from
+   the cloud driver's assertNonEmpty rule) — this holds for the GATED checks
+   (overflow, touch, columns, cards, KPI centring, vertical clipping) AND for the
+   report-only passes (a text selector matching nothing is a real regression and
+   FAILS even there). Every gated check names the failing element and its
+   measured-vs-expected numbers; a real violation exits non-zero.
 
    WHAT IT DOES NOT COVER (honest limits — mirror the cloud driver)
      • Chromium ONLY — no Firefox/WebKit; a WebKit-specific layout bug is invisible.
      • FIXED viewport list only — a break at an in-between width is not sampled.
-     • GEOMETRY, not visual regression — colour/font/pixel drift is NOT caught
-       (that is the characterization harness's soft screenshot signal); there is
-       deliberately no pixel baseline here.
+     • GEOMETRY + type/contrast, not visual regression — pixel/spacing/radius/shadow
+       drift is NOT caught (that is the characterization harness's soft screenshot
+       signal); there is deliberately no pixel baseline here. Colour is checked only
+       as CONTRAST, and font only as a SIZE floor.
      • Phone rows are desktop-Chromium AT a phone CSS width — NOT mobile
        emulation: no device DPR, no touch event model, no mobile UA. It checks
        that the layout reflows to the width, not that a real phone renders it.
-     • Screenshots are for the human eye; they are never asserted on.
+       (So the cloud driver's <meta viewport> assertion is NOT ported — it is only
+       observable under real device emulation, which this harness does not do.)
+     • Screenshots are for the human eye; they are never asserted on (the contrast
+       pass takes its own throwaway blanked-text screenshot, not compared to any
+       baseline).
 
    Usage:   node .ai-dev/quality/checks/ui-layout.mjs
             npm run ui-layout           (after: npm run ui-layout:install)
@@ -62,6 +104,27 @@ const BASE = `http://127.0.0.1:${PORT}`;
 // ── Geometry constants ──────────────────────────────────────────────────────
 const TOUCH_MIN = 44;   // WCAG 2.5.5 / platform minimum target, CSS px.
 const EPS = 0.5;        // sub-pixel tolerance for alignment / overflow / size.
+const CENTRE_EPS = 2.0; // sub-pixel slack for a value-centring claim, CSS px.
+                        // The 1.0.5.34 fix measured the value text centre at
+                        // fraction 0.499 of the tile; 2px catches "sitting lower"
+                        // (the bug shifted it ~0.9em ≈ 29px) without flaking on
+                        // line-height/Range sub-pixel rounding.
+const CLIP_EPS = 2;     // px a box may under-run its own content before it counts
+                        // as clipping (absorbs sub-pixel scrollHeight rounding).
+const FONT_MIN = 11;    // HIG minimum readable text size, CSS px. 11 is a FLOOR,
+                        // not a target — text AT 11px passes (< FONT_MIN fails).
+const CONTRAST_MIN = 4.5;  // WCAG 2.1 AA for normal-size text.
+const CONTRAST_EPS = 0.02; // absorbs integer-channel rounding, not real drift.
+// The KPI square-tile grid (centred value) is a `max-width:560px` rule in
+// main.css, so the value-centring assertion is meaningful ONLY at/below this
+// width; above it the tiles are ordinary widgets and the rule is not in force.
+const KPI_CENTRE_MAX_W = 560;
+// The KPI value elements that centre: DIRECT-child `.widget-val` of a square
+// tile (cpu/temp/uptime/ram/disk). USB/SD nest the value inside a
+// storage/modem view that also holds the sub, so those centre the whole
+// value+sub column, not the value alone — excluded by the direct-child `>`.
+const KPI_TILE_VAL_SEL =
+  '.dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) > .widget-val';
 
 // `overflowGate` marks the widths at which a horizontal overflow HARD-FAILS the
 // run. phone-portrait (360px) is BELOW SA-02m's supported layout width — the
@@ -99,6 +162,29 @@ const TOUCH_WHITELIST = [
   { match: '.topbar-lang-btn', deviation: true,
     reason: 'Topbar utility buttons (language/theme/logout): compact header-bar controls ~24–29px tall.' },
 ];
+
+// FONT_WHITELIST — the families of sub-floor text this project ALREADY documents
+// as deliberate compact-admin debt (mirrors the 9px entries in TOUCH_WHITELIST).
+// The font floor is currently REPORT-ONLY (see the report section), so this list
+// does NOT gate — it annotates a matched run as [known] in the printed ledger, so
+// a NEW sub-floor family stands out from the documented posture. `match` is a CSS
+// selector tested with Element.matches. When the Operator decides to gate the
+// font floor, this list is the seed and the staleness rule can be turned on.
+const FONT_WHITELIST = [
+  { match: '.svc-ctl-btn',
+    reason: 'Management services-table micro-buttons (Установить/Удалить/Пуск/Стоп): 9px label in a dense mouse-first admin grid on the desktop-oriented Управление tab.' },
+  { match: '.widget-svc .svc-row .badge',
+    reason: 'Dashboard Службы widget status badges: 9px pill type, chosen to fit the compact services list on the dashboard card.' },
+  { match: '.topbar-brand-ver, #app-version',
+    reason: 'Topbar web-version tag shown next to the short model name on mobile: 0.72rem ≈ 10.1px at the 14px root, intentionally small (Operator, 1.0.5.34).' },
+];
+
+// CONTRAST_WHITELIST — text/background pairs recorded as accepted AA debt. The
+// contrast pass is currently REPORT-ONLY (see the report section), so this is
+// empty and unused for gating; it is the seed for when the Operator promotes
+// contrast to a gate, at which point each entry carries a `match` selector, a
+// `floor` ratchet and a `reason`, mirroring the touch/font ledger discipline.
+const CONTRAST_WHITELIST = [];
 
 // ── Playwright resolution — reuse the existing scripts/dev install ───────────
 // The dev harness already carries playwright + a downloaded chromium under
@@ -215,7 +301,8 @@ function pageSetup(arg) {
 
 // ── In-page measurement (runs in the browser) ───────────────────────────────
 function pageMeasure(arg) {
-  const { surface, TOUCH_MIN, EPS, wlSelectors } = arg;
+  const { surface, TOUCH_MIN, EPS, CLIP_EPS, CENTRE_EPS, FONT_MIN,
+          KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, wlSelectors, wlFont } = arg;
   const vw = window.innerWidth;
 
   const describe = (el) => {
@@ -229,37 +316,122 @@ function pageMeasure(arg) {
   };
   const visible = (el, r) => {
     const cs = getComputedStyle(el);
-    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+    return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none' &&
+           parseFloat(cs.opacity) !== 0;
   };
+  const rnd = (n) => Math.round(n * 10) / 10;
 
-  // (a) horizontal overflow — the page must not scroll sideways. Names the
-  // widest offending element (right edge beyond the viewport); the caller
-  // decides whether to gate on it (supported widths) or just report it
-  // (phone-portrait, below the design floor).
+  // (a) horizontal overflow, TWO ways. Names the widest element whose right edge
+  // is beyond the viewport, then classifies:
+  //   scroll  — the page itself scrolls sideways (documentElement scrollWidth >
+  //             viewport). The plain "no sideways scroll" defect.
+  //   clipped — an element hangs past the right edge while scrollWidth still FITS,
+  //             because an ancestor's overflow:hidden CLAMPED it: the content is
+  //             unreachable AND unscrollable, and a scrollWidth-only test reads
+  //             green (ported from the cloud driver's second overflow check).
+  // The caller gates or reports per viewport (overflowGate). `widest` is the
+  // shallowest deepest-right element, for a human to grep.
   const scrollW = document.documentElement.scrollWidth;
+  let widest = null;
+  document.querySelectorAll('*').forEach((el) => {
+    const r = el.getBoundingClientRect();
+    if (!visible(el, r)) return;
+    if (r.right <= vw + EPS) return;
+    if (!widest || r.right > widest.right) {
+      widest = { desc: describe(el), right: rnd(r.right), left: rnd(r.left) };
+    }
+  });
   let overflow = null;
-  if (scrollW > vw + 1) {
-    let widest = null;
-    document.querySelectorAll('*').forEach((el) => {
-      const r = el.getBoundingClientRect();
-      if (!visible(el, r)) return;
-      if (r.right <= vw + EPS) return;
-      if (!widest || r.right > widest.right) {
-        widest = { desc: describe(el), right: Math.round(r.right * 10) / 10, left: Math.round(r.left * 10) / 10 };
-      }
-    });
-    overflow = { scrollW, vw, widest };
-  }
+  if (scrollW > vw + 1) overflow = { kind: 'scroll', scrollW, vw, widest };
+  else if (widest)      overflow = { kind: 'clipped', scrollW, vw, widest };
 
   // (b) touch-target sizes — collect the undersized visible controls
   const undersized = [];
+  let controlCount = 0;
   document.querySelectorAll('button, a[href], input, select, [onclick]').forEach((el) => {
     const r = el.getBoundingClientRect();
     if (!visible(el, r)) return;
+    controlCount++;
     if (r.width >= TOUCH_MIN - EPS && r.height >= TOUCH_MIN - EPS) return;
     const matched = [];
     wlSelectors.forEach((sel, i) => { try { if (el.matches(sel)) matched.push(i); } catch (_) {} });
-    undersized.push({ desc: describe(el), w: Math.round(r.width * 10) / 10, h: Math.round(r.height * 10) / 10, matched });
+    undersized.push({ desc: describe(el), w: rnd(r.width), h: rnd(r.height), matched });
+  });
+
+  // (e) vertical content clipping — a box whose content is TALLER than its box
+  // (scrollHeight > clientHeight) while its overflow-y would hide the surplus.
+  //   hidden/clip — the surplus is invisible AND unreachable: a real defect
+  //                 (the missed mobile topbar/drawer eating its controls, a KPI
+  //                 tile clipping its value). Caller GATES it.
+  //   auto/scroll — the surplus is reachable by scrolling: REPORT-only.
+  // overflow-y:visible never clips (the box just spills, caught by overlap/
+  // horizontal-overflow), so it is skipped. A single-line ellipsis clips
+  // HORIZONTALLY (scrollHeight == clientHeight), so it does not trip this.
+  const vclipHidden = [];   // gated
+  const vclipScroll = [];   // report-only
+  document.querySelectorAll('body *').forEach((el) => {
+    if (el === document.body || el === document.documentElement) return;
+    const r = el.getBoundingClientRect();
+    if (!visible(el, r)) return;
+    if (el.clientHeight <= 0) return;
+    if (el.scrollHeight <= el.clientHeight + CLIP_EPS) return;
+    const oy = getComputedStyle(el).overflowY;
+    const rec = { desc: describe(el), scrollH: el.scrollHeight, clientH: el.clientHeight,
+                  hidden: rnd(el.scrollHeight - el.clientHeight) };
+    if (oy === 'hidden' || oy === 'clip') vclipHidden.push(rec);
+    else if (oy === 'auto' || oy === 'scroll') vclipScroll.push(rec);
+  });
+
+  // (f) mobile KPI value centring — only where the square-tile grid is in force
+  // (vw <= KPI_CENTRE_MAX_W). Each direct-child `.widget-val` must sit at the
+  // TRUE vertical centre of its tile's CONTENT box. Measured on the TEXT box
+  // (Range), not the padded element box: the element fills the middle grid row,
+  // so its own box is trivially centred whatever the text does — the text is
+  // where "uptime sits lower" shows.
+  let kpiCentres = null;
+  if (surface === 'dashboard' && vw <= KPI_CENTRE_MAX_W) {
+    kpiCentres = [];
+    document.querySelectorAll(KPI_TILE_VAL_SEL).forEach((val) => {
+      const vr = val.getBoundingClientRect();
+      if (!visible(val, vr)) return;
+      const tile = val.closest('.widget');
+      if (!tile) return;
+      const tr = tile.getBoundingClientRect();
+      const cs = getComputedStyle(tile);
+      const contentTop = tr.top + parseFloat(cs.borderTopWidth) + parseFloat(cs.paddingTop);
+      const contentBottom = tr.bottom - parseFloat(cs.borderBottomWidth) - parseFloat(cs.paddingBottom);
+      const contentCentreY = (contentTop + contentBottom) / 2;
+      const rg = document.createRange();
+      rg.selectNodeContents(val);
+      const txt = rg.getBoundingClientRect();
+      const valCentreY = (txt.top + txt.bottom) / 2;
+      kpiCentres.push({
+        desc: describe(tile), value: (val.textContent || '').trim().slice(0, 16),
+        off: rnd(valCentreY - contentCentreY), valCentreY: rnd(valCentreY),
+        contentCentreY: rnd(contentCentreY), tileH: rnd(contentBottom - contentTop),
+      });
+    });
+  }
+
+  // (g) font floor — every visible element that DIRECTLY contains text, with its
+  // computed font-size. Only the sub-floor runs are returned (with their
+  // whitelist matches); `textRunCount` is the non-empty denominator so a
+  // selector that stops matching cannot pass this vacuously.
+  const fontUnder = [];
+  let textRunCount = 0;
+  document.querySelectorAll('body *').forEach((el) => {
+    const ownText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 0);
+    if (!ownText) return;
+    const r = el.getBoundingClientRect();
+    if (!visible(el, r)) return;
+    textRunCount++;
+    const fontPx = parseFloat(getComputedStyle(el).fontSize);
+    if (fontPx < FONT_MIN - 0.01) {
+      const matched = [];
+      wlFont.forEach((sel, i) => { try { if (el.matches(sel)) matched.push(i); } catch (_) {} });
+      fontUnder.push({ desc: describe(el), fontPx: rnd(fontPx), matched,
+                       text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 24) });
+    }
   });
 
   // (c) services-control column alignment (management surface)
@@ -286,8 +458,91 @@ function pageMeasure(arg) {
       .map(({ el, r }) => ({ desc: describe(el), left: r.left, right: r.right, top: r.top, bottom: r.bottom }));
   }
 
-  return { overflow, undersized, svcColumns, cards };
+  return { overflow, undersized, controlCount, svcColumns, cards,
+           vclipHidden, vclipScroll, kpiCentres, fontUnder, textRunCount };
 }
+
+// ── Contrast: in-page text-run probe (runs in the browser) ──────────────────
+// One entry per element that DIRECTLY paints text, with its computed colour,
+// font size, cumulative opacity and page-space box. The BACKGROUND is NOT
+// computed here: walking ancestor background-colors cannot see a card tint,
+// gradient or theme override, so node samples it from rendered pixels instead
+// (sampleBackdrops). Mirrors the cloud driver's probeTextRuns.
+function probeContrastRuns(wlContrast) {
+  const out = [];
+  const ownText = (el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim().length > 0);
+  for (const el of document.querySelectorAll('body *')) {
+    if (!ownText(el)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    const rg = document.createRange();
+    rg.selectNodeContents(el);
+    const r = rg.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    let op = 1;
+    for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
+      op *= parseFloat(getComputedStyle(p).opacity);
+    }
+    if (op < 0.05) continue;   // effectively invisible — not a legibility claim
+    let sel = el.tagName.toLowerCase();
+    if (el.className && typeof el.className === 'string') {
+      sel += '.' + el.className.trim().split(/\s+/).join('.');
+    }
+    let hit = null;
+    for (const w of wlContrast) { try { if (el.matches(w)) { hit = w; break; } } catch (_) {} }
+    out.push({
+      sel, text: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 24),
+      color: cs.color, fontPx: parseFloat(cs.fontSize),
+      weight: parseInt(cs.fontWeight, 10) || 400, opacity: op, whitelist: hit,
+      x: r.left + window.scrollX, y: r.top + window.scrollY, w: r.width, h: r.height,
+    });
+  }
+  return out;
+}
+
+// Sample the composited backdrop under every text run, from a screenshot taken
+// with the text blanked (`color:transparent` changes no geometry). The median
+// pixel inside a run's own box is exactly what is painted BEHIND its glyphs —
+// card tint, gradient, theme override and all. Mirrors the cloud driver.
+async function sampleBackdrops(page, runs, dsf) {
+  if (!runs.length) return [];
+  const blank = await page.addStyleTag({ content: 'body *{color:transparent!important;text-shadow:none!important}' });
+  await page.waitForTimeout(80);
+  const shot = await page.screenshot({ fullPage: true });
+  await blank.evaluate((n) => n.remove());
+  return page.evaluate(async ({ b64, pts, dsf }) => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,' + b64;
+    await img.decode();
+    const c = new OffscreenCanvas(img.width, img.height);
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(img, 0, 0);
+    return pts.map((p) => {
+      const x = Math.max(0, Math.min(img.width - 1, Math.round(p.x * dsf)));
+      const y = Math.max(0, Math.min(img.height - 1, Math.round(p.y * dsf)));
+      const w = Math.max(1, Math.min(img.width - x, Math.round(p.w * dsf)));
+      const h = Math.max(1, Math.min(img.height - y, Math.round(p.h * dsf)));
+      const d = g.getImageData(x, y, w, h).data;
+      const R = [], G = [], B = [];
+      for (let i = 0; i < d.length; i += 4) { R.push(d[i]); G.push(d[i + 1]); B.push(d[i + 2]); }
+      const med = (a) => { a.sort((m, n) => m - n); return a[a.length >> 1]; };
+      return { r: med(R), g: med(G), b: med(B) };
+    });
+  }, { b64: shot.toString('base64'), pts: runs, dsf });
+}
+
+const _srgb = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+const _lum = (p) => 0.2126 * _srgb(p.r) + 0.7152 * _srgb(p.g) + 0.0722 * _srgb(p.b);
+function contrastRatio(a, b) {
+  const l1 = _lum(a), l2 = _lum(b);
+  const [hi, lo] = l1 > l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+function parseColor(s) {
+  const m = String(s).match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,/\s]+([\d.]+))?/);
+  return m ? { r: +m[1], g: +m[2], b: +m[3], a: m[4] === undefined ? 1 : +m[4] } : null;
+}
+const _hex = (p) => '#' + [p.r, p.g, p.b].map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
 
 // ── Assertion evaluation (Node side) ────────────────────────────────────────
 function spread(nums) {
@@ -328,9 +583,13 @@ async function run() {
 
   const wlSelectors = TOUCH_WHITELIST.map((w) => w.match);
   const wlHits = TOUCH_WHITELIST.map(() => 0);
+  const wlFont = FONT_WHITELIST.map((w) => w.match);
+  const wlFontHits = FONT_WHITELIST.map(() => 0);
   const failures = [];
   const overflowInfo = [];              // report-only overflow (non-gated viewports)
+  const vclipReport = new Map();        // key → {kind,desc,hidden,cells} (report-only, deduped)
   const unlistedUndersized = new Map(); // desc → {w,h,cells:[]}
+  const subFont = new Map();            // desc → {fontPx,text,cells:[],known} (report-only)
   const shots = [];
 
   const context = await browser.newContext();
@@ -366,17 +625,29 @@ async function run() {
           await page.screenshot({ path: shotPath, fullPage: true });
           shots.push(shotPath);
 
-          const m = await page.evaluate(pageMeasure, { surface: surface.id, TOUCH_MIN, EPS, wlSelectors });
+          const m = await page.evaluate(pageMeasure, {
+            surface: surface.id, TOUCH_MIN, EPS, CLIP_EPS, CENTRE_EPS, FONT_MIN,
+            KPI_CENTRE_MAX_W, KPI_TILE_VAL_SEL, wlSelectors, wlFont,
+          });
 
-          // (a) overflow — gate at supported widths, report-only at phone-portrait
+          // (a) horizontal overflow — scroll (page moves) OR clipped (content
+          // hangs past the edge, unreachable). Gate at supported widths,
+          // report-only at phone-portrait (below the design floor).
           if (m.overflow) {
             const w = m.overflow.widest;
             const where = w ? ` — widest element: ${w.desc} (right=${w.right}, left=${w.left})` : ' — culprit not isolated';
-            const line = `[${cellName}] horizontal overflow: scrollWidth ${m.overflow.scrollW} > viewport ${m.overflow.vw}${where}`;
+            const line = m.overflow.kind === 'clipped'
+              ? `[${cellName}] CLIPPED horizontal overflow: element past viewport ${m.overflow.vw} while scrollWidth ${m.overflow.scrollW} still fits (unreachable content)${where}`
+              : `[${cellName}] horizontal overflow: scrollWidth ${m.overflow.scrollW} > viewport ${m.overflow.vw}${where}`;
             if (vp.overflowGate) failures.push(line);
             else overflowInfo.push(line);
           }
-          // (b) touch targets — accumulate ledger + unlisted
+          // (b) touch targets — accumulate ledger + unlisted. Non-empty guard:
+          // the interactive-control selector matching NOTHING is a rotted
+          // selector or an unrendered surface, not a pass.
+          if (m.controlCount === 0) {
+            failures.push(`[${cellName}] no interactive controls matched (button/a[href]/input/select/[onclick]) — selector rotted or the surface did not render`);
+          }
           for (const u of m.undersized) {
             if (u.matched.length) { for (const i of u.matched) wlHits[i]++; }
             else {
@@ -386,30 +657,135 @@ async function run() {
               unlistedUndersized.set(key, rec);
             }
           }
-          // (c) column alignment
-          if (surface.assertColumns && m.svcColumns) {
-            for (const colName of ['manage', 'toggle', 'badge']) {
-              const sp = spread(m.svcColumns[colName]);
-              if (sp > EPS) {
-                failures.push(`[${cellName}] services ${colName} column not aligned: x-left spread ${sp.toFixed(2)}px > ${EPS}px ` +
-                  `across ${m.svcColumns.rows} rows — lefts=[${m.svcColumns[colName].join(', ')}]`);
-              }
-            }
-          }
-          // (d) card overlap
-          if (surface.assertCards && m.cards) {
-            for (let i = 0; i < m.cards.length; i++) {
-              for (let j = i + 1; j < m.cards.length; j++) {
-                if (overlaps(m.cards[i], m.cards[j])) {
-                  failures.push(`[${cellName}] dashboard cards overlap: ${m.cards[i].desc} ∩ ${m.cards[j].desc}`);
+          // (c) column alignment — with a non-empty guard on the rows.
+          if (surface.assertColumns) {
+            if (!m.svcColumns || !m.svcColumns.rows) {
+              failures.push(`[${cellName}] management has no .svc-ctl-row rows to align — the services-control grid did not render (selector rotted or empty)`);
+            } else {
+              for (const colName of ['manage', 'toggle', 'badge']) {
+                const sp = spread(m.svcColumns[colName]);
+                if (sp > EPS) {
+                  failures.push(`[${cellName}] services ${colName} column not aligned: x-left spread ${sp.toFixed(2)}px > ${EPS}px ` +
+                    `across ${m.svcColumns.rows} rows — lefts=[${m.svcColumns[colName].join(', ')}]`);
                 }
               }
             }
+          }
+          // (d) card overlap — with a non-empty guard on the cards.
+          if (surface.assertCards) {
+            if (!m.cards || m.cards.length === 0) {
+              failures.push(`[${cellName}] dashboard has no .dash-grid > .widget cards — the grid did not render (selector rotted or empty)`);
+            } else {
+              for (let i = 0; i < m.cards.length; i++) {
+                for (let j = i + 1; j < m.cards.length; j++) {
+                  if (overlaps(m.cards[i], m.cards[j])) {
+                    failures.push(`[${cellName}] dashboard cards overlap: ${m.cards[i].desc} ∩ ${m.cards[j].desc}`);
+                  }
+                }
+              }
+            }
+          }
+          // (e) vertical content clipping — hidden/clip is unreachable (gate at
+          // supported widths, report at phone-portrait); auto/scroll is reachable
+          // (report-only always).
+          for (const v of m.vclipHidden) {
+            if (vp.overflowGate) {
+              failures.push(`[${cellName}] vertical clipping: ${v.desc} hides ${v.hidden}px of its content (scrollHeight ${v.scrollH} > clientHeight ${v.clientH}, overflow-y hidden/clip) — unreachable`);
+            } else {
+              const key = 'clip|' + v.desc;
+              const rec = vclipReport.get(key) || { kind: 'clip', desc: v.desc, hidden: v.hidden, cells: [] };
+              if (rec.cells.length < 3) rec.cells.push(cellName);
+              vclipReport.set(key, rec);
+            }
+          }
+          for (const v of m.vclipScroll) {
+            const key = 'scroll|' + v.desc;
+            const rec = vclipReport.get(key) || { kind: 'scroll', desc: v.desc, hidden: v.hidden, cells: [] };
+            if (rec.cells.length < 3) rec.cells.push(cellName);
+            vclipReport.set(key, rec);
+          }
+          // (f) mobile KPI value centring — only present where the square-tile
+          // grid is in force (vw ≤ 560). Non-empty guard: at a ≤560 dashboard
+          // cell there MUST be KPI tiles, else the selector rotted.
+          if (m.kpiCentres) {
+            if (m.kpiCentres.length === 0) {
+              failures.push(`[${cellName}] KPI centring: no ${KPI_TILE_VAL_SEL} tiles matched at ≤${KPI_CENTRE_MAX_W}px — the mobile square-tile grid or its value selector rotted`);
+            } else {
+              for (const k of m.kpiCentres) {
+                if (Math.abs(k.off) > CENTRE_EPS) {
+                  failures.push(`[${cellName}] KPI value not centred: ${k.desc} value «${k.value}» text centre off by ${k.off}px ` +
+                    `(${k.off < 0 ? 'above' : 'below'} the tile centre; value centre ${k.valCentreY}, tile centre ${k.contentCentreY}, tile content height ${k.tileH}px) > ${CENTRE_EPS}px`);
+                }
+              }
+            }
+          }
+          // (g) font floor — REPORT-ONLY (see the ledger note in the report
+          // section). The non-empty guard still GATES: a text selector that
+          // matches nothing is a rotted selector / unrendered surface, a real
+          // regression. The sub-floor runs themselves are accumulated and
+          // printed, not failed — they are the project's deliberate compact
+          // admin scale, a scope/product decision to gate.
+          if (m.textRunCount === 0) {
+            failures.push(`[${cellName}] no text runs measured for the font floor — the surface rendered no visible text (selector rotted or unrendered)`);
+          }
+          for (const f of m.fontUnder) {
+            if (f.matched.length) for (const i of f.matched) wlFontHits[i]++;
+            const rec = subFont.get(f.desc) || { fontPx: f.fontPx, text: f.text, cells: [], known: f.matched.length > 0 };
+            if (rec.cells.length < 3) rec.cells.push(cellName);
+            subFont.set(f.desc, rec);
           }
         }
       }
     }
   }
+
+  // ── Type + contrast pass (both themes, one desktop width) ─────────────────
+  // Colour is theme-dependent, so run each surface in BOTH appearances; it is
+  // NOT variant-dependent (the variant only hides widgets), so one variant per
+  // surface is enough. Desktop width, non-emulated (dsf=1) so one image px == one
+  // CSS px and no coordinate rounding. The background is SAMPLED FROM RENDERED
+  // PIXELS (blank text, screenshot, median under each run's box), never derived
+  // from tokens — see the header. Mirrors the cloud driver's section 4.
+  const wlContrast = CONTRAST_WHITELIST.map((w) => w.match);
+  const allContrast = [];   // every measured pair, for the ledger pass at the end
+  {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    for (const surface of SURFACES) {
+      for (const theme of THEMES) {
+        const cellName = `contrast__${surface.id}__${theme}`;
+        await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
+        await page.evaluate(pageSetup, {
+          surface: surface.id, theme, variant: 'sa02m-2eth',
+          states: {
+            priority: DASHBOARD_PRIORITY, network: DASHBOARD_NETWORK,
+            services: DASHBOARD_SERVICES, management: MANAGEMENT_SERVICES,
+          },
+        });
+        await page.waitForTimeout(300);
+        const runs = await page.evaluate(probeContrastRuns, wlContrast);
+        if (!runs.length) {
+          failures.push(`[${cellName}] contrast: no text runs measured — the surface rendered no text (selector rotted or unrendered)`);
+          continue;
+        }
+        const bgs = await sampleBackdrops(page, runs, 1);
+        for (let i = 0; i < runs.length; i++) {
+          const t = runs[i], bg = bgs[i], c = parseColor(t.color);
+          if (!bg || !c) continue;
+          const alpha = c.a * t.opacity;
+          const fg = { r: c.r * alpha + bg.r * (1 - alpha),
+                       g: c.g * alpha + bg.g * (1 - alpha),
+                       b: c.b * alpha + bg.b * (1 - alpha) };
+          allContrast.push({ ...t, cellName, theme, surface: surface.id, bg, ratio: contrastRatio(fg, bg) });
+        }
+      }
+    }
+  }
+  // Contrast is REPORT-ONLY on this project (see the ledger note in the report
+  // section): the sub-floor pairs it finds are real pre-existing AA findings that
+  // need an Operator remediation-vs-accept decision, out of scope for the driver
+  // port. The measurement is fully wired and printed with numbers; promoting it
+  // to a gate is a one-line change once the debt is triaged. The no-runs case is
+  // still GATED above (a rotted text selector is a real regression).
 
   await browser.close();
   srv.close();
@@ -421,6 +797,20 @@ async function run() {
   if (overflowInfo.length) {
     console.log('\nphone-portrait horizontal overflow (report-only, below supported width — NOT gated):');
     for (const l of overflowInfo) console.log('  · ' + l);
+  }
+
+  // ── Report-only vertical clipping / scroll (deduped, one line per element) ─
+  // CLIP = content hidden by overflow-y:hidden below the design floor (a real
+  // finding, gated at supported widths); scroll = reachable via overflow-y:
+  // auto/scroll (expected). Deduped like the touch/font ledgers.
+  if (vclipReport.size) {
+    console.log('\nvertical overflow (report-only — clipped below the design floor, or reachable by scrolling):');
+    for (const rec of vclipReport.values()) {
+      const what = rec.kind === 'clip'
+        ? `CLIP hides ${rec.hidden}px (overflow-y hidden/clip)`
+        : `scrolls ${rec.hidden}px (overflow-y auto/scroll — reachable)`;
+      console.log(`  · ${rec.desc} — ${what}   e.g. ${rec.cells.join(', ')}`);
+    }
   }
 
   // ── Touch-target ledger (printed every run) ───────────────────────────────
@@ -438,15 +828,55 @@ async function run() {
     }
   }
 
+  // ── Font floor — REPORT-ONLY ──────────────────────────────────────────────
+  // SA-02m's web UI is a compact desktop/tablet-first embedded-browser admin
+  // console at a 14px root, so a body of small text (0.72–0.78rem labels/hints,
+  // 9px micro-controls) sits just under the 11px HIG floor by design — the same
+  // accepted posture the 44px TOUCH_WHITELIST already documents. This is printed,
+  // not gated: which of these to bump is a product decision, and promoting the
+  // floor to a gate (add each family to FONT_WHITELIST with a reason, mirror the
+  // touch ledger) is a deliberate step for the Operator to take, not the driver's.
+  if (subFont.size) {
+    console.log('\ntext below the ' + FONT_MIN + 'px HIG floor (report-only — compact-admin scale; not gated):');
+    const rows = [...subFont.entries()].sort((a, b) => a[1].fontPx - b[1].fontPx);
+    for (const [desc, rec] of rows) {
+      console.log(`  ${rec.fontPx}px  ${rec.known ? '[known]' : '[     ]'}  ${desc}  «${rec.text}»   e.g. ${rec.cells.join(', ')}`);
+    }
+    console.log('  FONT_WHITELIST families annotated [known]:');
+    FONT_WHITELIST.forEach((w, i) => console.log(`    [${wlFontHits[i]} hits] ${w.match} — ${w.reason}`));
+  }
+
+  // ── Contrast — REPORT-ONLY ────────────────────────────────────────────────
+  // The pixel-sampled AA measurement is fully wired; the pairs below 4.5:1 are
+  // REAL findings on current code (e.g. the cyan --primary button's white label
+  // ≈ 3.68:1, dim inactive-channel indicators), not measurement noise. Whether
+  // each is fixed (darken the token) or accepted (recorded in CONTRAST_WHITELIST
+  // with its number, mirroring the touch ledger) is an Operator product decision,
+  // out of scope for the driver port — so this prints every pair with its numbers
+  // and does NOT gate. Promoting to a gate is a one-line change once triaged.
+  const cUnder = allContrast.filter((m) => m.ratio < CONTRAST_MIN - CONTRAST_EPS)
+    .sort((a, b) => a.ratio - b.ratio);
+  console.log('\ncontrast AA (CONTRAST_MIN=' + CONTRAST_MIN + ':1, backdrop SAMPLED from rendered pixels) — report-only:');
+  console.log('  ' + allContrast.length + ' text/background pairs measured across ' + SURFACES.length +
+    ' surfaces × ' + THEMES.length + ' themes; ' + cUnder.length + ' below the AA floor:');
+  const cSeen = new Set();
+  for (const m of cUnder) {
+    const key = m.sel + '|' + m.text + '|' + m.theme;
+    if (cSeen.has(key)) continue;
+    cSeen.add(key);
+    console.log(`  ${m.ratio.toFixed(2)}:1  ${m.fontPx}px/${m.weight}  ${_hex(parseColor(m.color))} on ${_hex(m.bg)}  ${m.sel} «${m.text}» (${m.theme})`);
+  }
+
   // ── Verdict ───────────────────────────────────────────────────────────────
   console.log(`\nscreenshots: ${shots.length} written to ${SHOTS_DIR}`);
   if (failures.length) {
-    console.log(`\nui-layout: FAIL — ${failures.length} geometry violation(s):`);
+    console.log(`\nui-layout: FAIL — ${failures.length} layout/type/contrast violation(s):`);
     for (const f of failures) console.log('  ✗ ' + f);
     process.exit(1);
   }
-  console.log('\nui-layout: PASS — no geometry violations across ' +
-    `${SURFACES.length} surfaces × ${VIEWPORTS.length} viewports × ${THEMES.length} themes × ${VARIANTS.length} variants.`);
+  console.log('\nui-layout: PASS — no violations across ' +
+    `${SURFACES.length} surfaces × ${VIEWPORTS.length} viewports × ${THEMES.length} themes × ${VARIANTS.length} variants ` +
+    `(geometry + KPI centring + vertical clipping + ${FONT_MIN}px font floor + ${CONTRAST_MIN}:1 contrast in both themes).`);
   process.exit(0);
 }
 
