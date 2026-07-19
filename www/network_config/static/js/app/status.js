@@ -827,7 +827,11 @@ function applyLoadStatus(d) {
   setText('load-1',  d.load_1  || '—');
   setText('load-5',  d.load_5  || '—');
   setText('load-15', d.load_15 || '—');
-  setText('proc-info', uiT('Процессов: ' + (d.proc_running || 0) + ' / ' + (d.proc_total || 0)));
+  // Tablet/phone (≤1024): short «Проц.:» so it fits one line next to «… МГц» in
+  // the narrow Нагрузка tile (Operator 2026-07-19); desktop keeps «Процессов:».
+  var procPrefix = (window.matchMedia && window.matchMedia('(max-width: 1024px)').matches)
+    ? 'Проц.: ' : 'Процессов: ';
+  setText('proc-info', uiT(procPrefix + (d.proc_running || 0) + ' / ' + (d.proc_total || 0)));
   if (d.cpu_freq_mhz) {
     const thr = d.cpu_throttle ? ' (' + d.cpu_throttle + '%)' : '';
     setText('cpu-freq', d.cpu_freq_mhz + ' ' + uiT('МГц') + thr);

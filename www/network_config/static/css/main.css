@@ -24,6 +24,8 @@
 
   --cyan:        #22d3ee;
   --cyan-btn:    #0891b2;
+  --btn-primary-bg:    #0e7490;  /* darker cyan: #fff text = 5.36:1 AA (was #0891b2 3.68:1) */
+  --btn-primary-hover: #0b5f76;
   --cyan-hover:  #06b6d4;
   --cyan-dim:    #0891b233;
 
@@ -160,6 +162,8 @@ html[data-theme="light"] {
 
   --cyan:        #0891b2;
   --cyan-btn:    #0891b2;
+  --btn-primary-bg:    #0e7490;  /* darker cyan: #fff text = 5.36:1 AA (was #0891b2 3.68:1) */
+  --btn-primary-hover: #0b5f76;
   --cyan-hover:  #0e7490;
   --cyan-dim:    #0891b233;
 
@@ -427,6 +431,9 @@ html:not([data-theme="light"]) .topbar {
   box-shadow: none;
   font-weight: 600;
 }
+/* Light theme: --cyan (#0891b2) on the light cyan-tint fill is only 2.90:1 —
+   darken the active label to meet AA (B3 contrast pass). */
+html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
 .nav-parent { justify-content: flex-start; }
@@ -757,9 +764,11 @@ html:not([data-theme="light"]) .topbar {
 .btn:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
 .btn svg { width: 14px; height: 14px; }
 
-.btn-primary  { background: var(--cyan-btn); border-color: var(--cyan-btn); color: #fff; }
+/* Primary action button: darker cyan so white text meets WCAG AA (5.36:1;
+   was --cyan-btn #0891b2 = 3.68:1). B3 contrast pass, both themes. */
+.btn-primary  { background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); color: #fff; }
 .btn-primary:hover:not(:disabled) {
-  background: var(--cyan-hover); border-color: var(--cyan-hover);
+  background: var(--btn-primary-hover); border-color: var(--btn-primary-hover);
   box-shadow: 0 4px 16px #0891b244;
 }
 
