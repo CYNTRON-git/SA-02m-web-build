@@ -1065,10 +1065,18 @@ html:not([data-theme="light"]) .topbar {
    Both themes via tokens; applies desktop + mobile. */
 .eth-hdr-title.eth-link-up,
 .eth-hdr-title.eth-link-down {
-  padding: 2px 10px;   /* shorter title-bg (Operator 2026-07-19) */
+  padding: 4px 10px;   /* symmetric, short coloured title-bg (Operator 2026-07-19) */
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
+  /* Drop the pill-era min-height + wrap (the «Линк» pill is gone) so the coloured
+     bg hugs the icon+text symmetrically — it was taller at the bottom because the
+     hidden (visibility:hidden, still display:inline-block) pill wrapped to a 2nd
+     flex row. */
+  min-height: 0;
+  flex-wrap: nowrap;
 }
+.eth-hdr-title.eth-link-up .eth-state,
+.eth-hdr-title.eth-link-down .eth-state { display: none !important; }
 .eth-hdr-title.eth-link-up {
   background: var(--badge-ok-bg);
   border-color: var(--badge-ok-border);
@@ -4018,6 +4026,10 @@ html:not([data-theme="light"]) .topbar {
     font-size: 32px;               /* value bigger (Operator) */
     line-height: 1.1;
     white-space: nowrap;
+    /* KPI value text is CYAN by default (cloud KPI style, Operator 2026-07-19);
+       CPU/temp/RAM/disk shift to yellow/red by threshold (val-warn/-crit below).
+       Uptime / USB / SD stay cyan. Large 32px text → 3:1 contrast floor. */
+    color: var(--cyan);
   }
   /* Uptime + USB «НЕТ»: drop the legacy padding-top/min-height that pushed the
      TEXT down inside the box — on the KPI grid it made them sit lower than the
@@ -4027,6 +4039,7 @@ html:not([data-theme="light"]) .topbar {
     padding-top: 0;
     font-size: 32px;
     line-height: 1.1;
+    color: var(--cyan);   /* «НЕТ» cyan like the other values (Operator) */
   }
   /* Unit smaller than the number, on the same line (Operator). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .v-num { font-size: 32px; }
@@ -4036,12 +4049,11 @@ html:not([data-theme="light"]) .topbar {
   }
   /* Uptime uses the same big value size as the others (Operator); its 2 units
      wrap centred if needed. */
-  /* Threshold colour cue on the VALUE (the bars are hidden here) — returns the
-     temp/CPU/RAM/disk warn/crit indication the bars used to carry. Mobile only. */
-  /* Themed fg tokens (chip-orange/red-fg) — readable on the card background in
-     BOTH themes; --meter-yellow is dark-only (yellow-on-white fails AA). */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-warn { color: var(--chip-orange-fg); }
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-crit { color: var(--chip-red-fg); }
+  /* Threshold colour on the VALUE (cloud KPI parity): cyan (normal, base above) →
+     yellow (warn) → red (crit) for CPU/temp/RAM/disk. --yellow/--red are themed
+     (readable both themes; the light --yellow is a dark amber, not #ffd60a). */
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-warn { color: var(--yellow); }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-crit { color: var(--red); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
      bar row; also drop the swap sub-block and the disk R/W I/O line. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .bar-row,
