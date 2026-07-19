@@ -134,7 +134,10 @@
 
 :root,
 html {
-  --topbar-h: 52px;
+  /* Topbar height: two-line brand stack (logo on top, title beneath) needs more
+     than the old single-row 52px. Everything keyed to the bar height reads this
+     var (.toast-area / .mqtt-toast top offsets), so raising it here is enough. */
+  --topbar-h: 60px;
 }
 
 /* ── Светлая тема ───────────────────────────────────────────────────────── */
@@ -219,13 +222,17 @@ html[data-theme="light"] .log-box {
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+/* overflow-x:hidden — global horizontal-overflow floor: stops the iOS rubber-band
+   sideways swipe on phones if any future child briefly exceeds the viewport
+   width. The structural culprits (the ~28px topbar title width-floor, the
+   text-labelled topbar buttons) are removed too — this is the belt, not a mask. */
+html, body { height: 100%; overflow-x: hidden; font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
 a { color: var(--cyan); text-decoration: none; }
 a:hover { color: var(--cyan-hover); }
 svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ── Layout ──────────────────────────────────────────────────────────────── */
-.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow-x: hidden; }
 
 .topbar {
   display: flex; align-items: center; gap: 12px;
@@ -250,13 +257,17 @@ html[data-theme="light"] .topbar {
 html:not([data-theme="light"]) .topbar {
   background-color: #1c1c1e;
 }
+/* Brand block = a VERTICAL stack (Operator spec, 1.0.5.25, cloud-header model):
+   logo image on top, «Сервер автоматизации СА-02м» title directly beneath it,
+   left-aligned. Controls stay on the right via .topbar-sep{flex:1}. */
 .topbar-logo {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+  gap: 2px;
   height: 100%;
   min-width: 0;
 }
 .topbar-logo svg { width: 28px; height: 28px; }
-/* Лого в шапке: «28 на 120» — высота 28 px, ширина 120 px (в CSS: width, height) */
+/* Лого в шапке: высота 28 px, ширина 120 px (в CSS: width, height) */
 .topbar-logo-img {
   width: 120px;
   height: 28px;
@@ -264,6 +275,17 @@ html:not([data-theme="light"]) .topbar {
   object-position: left center;
   flex-shrink: 0;
   display: block;
+  cursor: pointer;
+}
+/* Chip-only mark (microchip element, no «ЦИНТРОН» wordmark) — shown ≤700 in
+   the RESPONSIVE section so the hamburger fits on the left; hidden on desktop. */
+.topbar-logo-chip {
+  display: none;
+  height: 28px;
+  width: auto;
+  object-fit: contain;
+  object-position: left center;
+  flex-shrink: 0;
   cursor: pointer;
 }
 .topbar-logo > div:last-child {
@@ -304,26 +326,34 @@ html:not([data-theme="light"]) .topbar {
   line-height: 0;
   flex-shrink: 0;
 }
+/* Title sits UNDER the logo now (vertical brand stack), sized down to fit the
+   bar. white-space:nowrap (was `pre` — which only kept it single-line; the text
+   has no significant runs of spaces) + ellipsis is the one-line-with-tooltip
+   floor; #device-title keeps its full-text `title` attr (set by
+   applyDeviceTitle in app/status.js). */
 .topbar-branding {
   min-width: 0;
+  max-width: 360px;
   font-weight: 700;
   color: var(--text);
   line-height: 1.15;
-  white-space: pre;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   letter-spacing: 0.01em;
 }
 .topbar-brand-text,
 #device-title {
-  font-size: calc(.95rem * 2 - 2pt);
+  font-size: 0.9rem;
   font-weight: inherit;
   color: inherit;
 }
 .topbar-brand-ver,
 #app-version {
-  font-size: calc((.95rem * 2 - 2pt) / 2);
+  font-size: 0.72rem;
   font-weight: inherit;
   color: var(--text-sec);
-  margin-left: 0.45em;
+  margin-left: 0.4em;
 }
 .topbar-sep   { flex: 1; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
@@ -3760,15 +3790,18 @@ html:not([data-theme="light"]) .topbar {
   .app.nav-open .sidebar { transform: translateX(0); }
   .app.nav-open .nav-backdrop { display: block; }
 
-  /* ── A2 topbar collapse ─────────────────────────────────────────────────────
-     Reduce the ~607px desktop topbar width floor: burger appears; the 120px
-     wordmark image drops; the device title ellipsises (full text kept in its
-     title attr, set by applyDeviceTitle); the IP leaves the bar (already on
-     Сведения); the username drops (logout control kept, labelled + usable).
-     lang/theme buttons are left as-is per plan A2. */
+  /* ── A2 topbar collapse (restructured 1.0.5.25) ─────────────────────────────
+     Left = burger + chip-only mark (the 120px wordmark drops, the microchip
+     mark shows so the burger fits); the device title ellipsises beneath it
+     (full text in its title attr, set by applyDeviceTitle); the IP leaves the
+     bar (already on Сведения); the username drops. lang/theme go ICON-ONLY
+     here (labels hidden — closes the Phase-3 A2 advisory); their SVG icons +
+     aria-labels + titles stay. Logout keeps its label (it carries no icon —
+     hiding its text would leave an invisible control). */
   .topbar-burger { display: flex; }
   .topbar { gap: 8px; padding: 0 12px; }
   .topbar-logo-img { display: none; }
+  .topbar-logo-chip { display: block; }
   .topbar-branding { white-space: nowrap; overflow: hidden; }
   #device-title {
     font-size: 17px;
@@ -3781,6 +3814,8 @@ html:not([data-theme="light"]) .topbar {
   }
   #tb-ip { display: none; }
   #topbar-user-name { display: none; }
+  #lang-toggle-label,
+  #theme-toggle-label { display: none; }
 
   /* ── A5 touch targets ≥44px (pad, don't grow font) — this breakpoint only ──── */
   .btn,
