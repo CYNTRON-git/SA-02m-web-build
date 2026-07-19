@@ -41,6 +41,19 @@ No backend is needed — stub CGI and drive the `apply*` functions directly:
 Red 404 toasts in these screenshots are the stubbed backend, not a UI bug —
 say so when relaying screenshots to the Operator.
 
+### Geometry / layout driver (просмотр вёрстки)
+
+To ASSERT layout (not just eyeball it) and to get full-page screenshots per
+viewport for a human to review the вёрстка, use the geometry driver
+`.ai-dev/quality/checks/ui-layout.mjs` (quality row `ui-layout`, review beat):
+`npm run ui-layout:install` once, then `npm run ui-layout`. It renders the
+dashboard + Управление services block across phone/tablet/desktop × both themes
+× both HW variants and measures real `getBoundingClientRect` geometry — services
+column alignment, no horizontal overflow (gated at supported widths), touch-target
+sizes vs a printed deviation ledger, no card overlap. Screenshots land in the
+gitignored `.ai-dev/quality/screenshots/`. Chromium-only, fixed viewports,
+geometry-not-visual-regression — limits documented in the driver's file header.
+
 ## Contrast (color work)
 
 WCAG 2.1 relative-luminance math (what gradients.app / convertico compute):

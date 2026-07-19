@@ -55,3 +55,11 @@ tmp/
 .ai-dev/config.local.json
 .ai-dev/model-routes.local.json
 cookies.txt
+
+# Dev-only UI-layout driver — per-run full-page screenshots (просмотр вёрстки),
+# never committed. The driver lives in .ai-dev/quality/checks/ui-layout.mjs.
+.ai-dev/quality/screenshots/
+
+# Node dev-tooling deps at the repo root (the UI-layout driver reuses scripts/dev's
+# playwright; a root `npm install` would still create an empty node_modules).
+/node_modules/

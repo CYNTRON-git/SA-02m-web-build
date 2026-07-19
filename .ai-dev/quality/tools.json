@@ -99,6 +99,15 @@
       "beat": "review",
       "covers": ["www/network_config/static/", "www/network_config/index.html"],
       "init": "cd scripts/dev && npm install && npx playwright install chromium; set SA02M_WEB_PASS and serve/point the harness (scripts/dev/README.md). Absent deps/password -> the row skips (exit 0); it is the on-demand real-layer UI check, not a headless-less CI gate."
+    },
+    {
+      "id": "ui-layout",
+      "checks": "Geometry/layout regressions the syntax and characterization rows can't see: renders the dashboard + Управление services-control block across 4 viewports x 2 themes x 2 HW variants and ASSERTS real getBoundingClientRect geometry (never CSS strings) — services column alignment (the 1.0.5.19 grid: manage/toggle/badge each one x-left per row), no horizontal overflow at the supported widths, touch-target sizes vs a printed deviation ledger, no dashboard card overlap. Also writes full-page screenshots per cell to the gitignored .ai-dev/quality/screenshots/ (просмотр вёрстки). Dev-only; never shipped to the device.",
+      "config": null,
+      "run": "node .ai-dev/quality/checks/ui-layout.mjs",
+      "beat": "review",
+      "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs"],
+      "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). Absent chromium/playwright -> the row skips (exit 0), so CI (no browser) stays green; it is an on-demand real-layer layout check, not a headless-less CI gate. Run on demand: npm run ui-layout."
     }
   ]
 }
