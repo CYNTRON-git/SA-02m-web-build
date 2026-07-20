@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-07-20 14:20] branch: (device 192.168.10.136)
+
+**Файл(ы):** `/etc/sa02m_hw.conf`, `www/network_config/cgi-bin/lib_hw.sh`, `scripts/03-webserver.sh` (tmpfiles), `/etc/tmpfiles.d/sa02m.conf`
+**Тип:** Некорректное поведение
+**Описание:** `source /etc/sa02m_hw.conf` падал на OWNER_*; `sa02m_hw_i2c_write_channel` от root возвращал RC=77 (Permission denied на lock).
+**Причина:** (1) `SA02M_I2C_OWNER_UNITS/PROCS` без кавычек — bash воспринимал `mplc4.service` как команду; (2) sticky `/run/lock` + `exec 9>"$lock"` (O_CREAT|O_TRUNC) на файле владельца www-data → EACCES даже для root; tmpfiles создавал lock `0660 www-data:www-data`.
+**Исправление:** кавычки в OWNER_*; flock через `exec 9<>` после создания файла; tmpfiles `0666 root www-data`. Проверено: source OK, DO 0↔1, beeper, dut power.
+
+---
+
 ## [2026-07-20 13:30] branch: 1.0.5.43 — CODESYS/MPLC4 ложный Active и «&lt;1м»
 
 **Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `www/network_config/cgi-bin/status.cgi`

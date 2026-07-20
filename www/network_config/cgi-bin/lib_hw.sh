@@ -467,7 +467,14 @@ sa02m_hw_i2c_with_lock() {
         return $?
     fi
 
-    exec 9>"$lock_file" || return "$SA02M_HW_RC_IO"
+    # /run/lock is sticky tmpfs: bash `exec 9>"$file"` uses O_CREAT|O_TRUNC and
+    # gets EACCES on a lock owned by another uid (e.g. www-data vs root).
+    # Create the file if missing, then open RDWR without O_CREAT.
+    if [ ! -e "$lock_file" ]; then
+        ( umask 000; : >"$lock_file" ) 2>/dev/null || touch "$lock_file" 2>/dev/null || true
+        chmod 666 "$lock_file" 2>/dev/null || true
+    fi
+    exec 9<>"$lock_file" || return "$SA02M_HW_RC_IO"
     flock -w "${SA02M_I2C_LOCK_WAIT_SEC:-0.4}" 9 >/dev/null 2>&1 || {
         exec 9>&-
         return "$SA02M_HW_RC_BUSY"
