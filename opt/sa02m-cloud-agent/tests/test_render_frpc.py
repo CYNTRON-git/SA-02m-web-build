@@ -116,6 +116,47 @@ class AllowListTest(unittest.TestCase):
         self.assertTrue(all(t == 'type = "http"' for t in types))
 
 
+class PoolCountTest(unittest.TestCase):
+    """transport.poolCount comes from the cloud profile (enroll/claim frpc
+    object) and is validated as HOSTILE input (A5), the same posture the
+    ALLOWED_LOCAL_PORTS allow-list applies to local_port: only a plain int in
+    0..16 is emitted; anything else warns and emits NO line (fall back to frpc's
+    own default, never an attacker-chosen count of held-open sockets). Absent
+    key => no line at all (keeps the legacy render byte-identical)."""
+
+    def _with_pool(self, value):
+        p = _profile(80)
+        p["pool_count"] = value
+        return p
+
+    def test_valid_pool_count_rendered_above_proxies(self):
+        toml = agent.render_frpc_toml(self._with_pool(4))
+        self.assertIn("transport.poolCount = 4", toml)
+        # Top-level transport table: after the pinned TLS line, before [[proxies]].
+        self.assertLess(toml.index("transport.tls.enable"),
+                        toml.index("transport.poolCount"))
+        self.assertLess(toml.index("transport.poolCount"),
+                        toml.index("[[proxies]]"))
+
+    def test_absent_key_renders_no_pool_count(self):
+        self.assertNotIn("poolCount", agent.render_frpc_toml(_profile(80)))
+
+    def test_boundary_values_accepted(self):
+        for v in (0, 16):
+            toml = agent.render_frpc_toml(self._with_pool(v))
+            self.assertIn("transport.poolCount = %d" % v, toml)
+
+    def test_hostile_values_dropped_with_warning(self):
+        # A malicious cloud dictates a resource — reject like a bad port.
+        for bad in ("abc", -1, 9999, 4.5, True):
+            with self.assertLogs(agent.log, level="WARNING") as cm:
+                toml = agent.render_frpc_toml(self._with_pool(bad))
+            self.assertNotIn("poolCount", toml,
+                             "hostile pool_count %r leaked a line" % (bad,))
+            self.assertTrue(any("pool_count" in m for m in cm.output),
+                            "no warning for hostile pool_count %r" % (bad,))
+
+
 class IdentityMetadataTest(unittest.TestCase):
     """Phase C: the credential reaches frps as frpc `metadatas`, which the cloud
     Login hook verifies. Without a credential the render must be unchanged — that
