@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.40';
+const APP_VERSION = '1.0.5.41';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -22,6 +22,25 @@ let _boardVariant = 'sa02m-1eth';
     window.location.replace('/login.html');
   }
 })();
+
+/* ── Session cookie eviction ───────────────────────────────────────────────
+   The session cookie's Path is '/' on the LAN and '/devcfg/<id>' through the
+   cloud proxy, which re-scopes every Set-Cookie into the device's own route.
+   The device cannot know its cloud <id>, so a fixed 'Path=/' delete misses the
+   real cookie behind the cloud and the 401 auto-logout loops (the cloud already
+   evicted the broad cookie, the scoped one survives, login.html bounces back).
+   Clear at every prefix of the current path — one of them is the real one, and
+   clearing a path that holds no cookie is a harmless no-op. */
+function clearSessionCookie() {
+  const segs = window.location.pathname.split('/');
+  let path = '';
+  document.cookie = 'session_token=; Path=/; Max-Age=0; SameSite=Lax';
+  for (let i = 1; i < segs.length; i++) {
+    if (!segs[i]) continue;
+    path += '/' + segs[i];
+    document.cookie = 'session_token=; Path=' + path + '; Max-Age=0; SameSite=Lax';
+  }
+}
 
 /* ── 401 → login ──────────────────────────────────────────────────────────
    A request that comes back 401 usually means the server-side session is gone
@@ -59,7 +78,8 @@ let _boardVariant = 'sa02m-1eth';
             redirecting = true;
             // Cookie can linger (10-day Max-Age) after the server session dies;
             // clear it so login.html doesn't bounce us back to the dashboard.
-            document.cookie = 'session_token=; Path=/; Max-Age=0; SameSite=Lax';
+            // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
+            clearSessionCookie();
             window.location.replace('/login.html');
             return res;
           }
