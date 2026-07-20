@@ -6,7 +6,7 @@
 (function () {
   'use strict';
 
-  const API = '/api/flasher';
+  const API = 'api/flasher';
   const FLASH_JOB_KEY = 'sa02m-flash-job-id';
   const SCAN_JOB_KEY = 'sa02m-scan-job-id';
   const state = {

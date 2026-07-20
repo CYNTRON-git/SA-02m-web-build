@@ -153,7 +153,7 @@ function usbPowerReset() {
   if (btn && btn.disabled) return;
   if (btn) btn.disabled = true;
 
-  fetch('/cgi-bin/hw_set.cgi', {
+  fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: 'channel=' + encodeURIComponent('usb_power') + '&value=' + encodeURIComponent('reset'),
@@ -209,7 +209,7 @@ function bindUsbPowerResetButton() {
 function setHw(channel, value, opts) {
   const quiet = !!(opts && opts.quiet);
   const body = 'channel=' + encodeURIComponent(channel) + '&value=' + encodeURIComponent(value);
-  fetch('/cgi-bin/hw_set.cgi', {
+  fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body, credentials: 'same-origin'

@@ -180,7 +180,14 @@ mplc4_rc_enable() {
 }
 
 mplc4_process_active() {
-    pgrep -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >/dev/null 2>&1
+    # Align with status.cgi fast_service_state: comm names first, then vendor
+    # binary patterns. Never trust systemctl ActiveState alone — mplc4.service
+    # is Type=oneshot RemainAfterExit=yes and stays "active (exited)" with no
+    # runtime process (dashboard then shows «<1м»).
+    pgrep -x mplc >/dev/null 2>&1 \
+        || pgrep -x mplc4 >/dev/null 2>&1 \
+        || pgrep -x mplc_monitor >/dev/null 2>&1 \
+        || pgrep -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >/dev/null 2>&1
 }
 
 service_runtime_active() {
@@ -188,13 +195,7 @@ service_runtime_active() {
     _u=$2
     case "$_sid" in
         codesys) codesys_process_active ;;
-        mplc4)
-            if [ -n "$_u" ]; then
-                _a=$(sc_run is-active "$_u" 2>/dev/null | head -n1 | tr -d '\r')
-                case "$_a" in active|activating) return 0 ;; esac
-            fi
-            mplc4_process_active
-            ;;
+        mplc4) mplc4_process_active ;;
         *)
             [ -n "$_u" ] || return 1
             _a=$(sc_run is-active "$_u" 2>/dev/null | head -n1 | tr -d '\r')
@@ -489,11 +490,22 @@ $(unit_props "$_unit")
 EOF2
             fi
         fi
+        # SysV/oneshot wrappers (codesyscontrol RemainAfterExit, mplc4 oneshot)
+        # keep ActiveState=active after the start script exits. Emit runtime
+        # truth from the process probe so list/dashboard never show a false
+        # Active + «<1м» with uptime_s=0.
         if [ "$_id" = "codesys" ]; then
             if codesys_process_active; then
                 _active=active
                 _admin_off=0
-            elif [ "$_admin_off" = 1 ]; then
+            else
+                _active=inactive
+            fi
+        fi
+        if [ "$_id" = "mplc4" ]; then
+            if mplc4_process_active; then
+                _active=active
+            else
                 _active=inactive
             fi
         fi

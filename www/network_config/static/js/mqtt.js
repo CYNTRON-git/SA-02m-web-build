@@ -887,7 +887,7 @@ function setDoOutput(dev, ctrl) {
   const target = prev === 1 ? 0 : 1;
   _doPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
   updateDoToggleBtn(devId, ctrl); // optimistic: target state rendered right away
-  fetch('/cgi-bin/mqtt_set.cgi', {
+  fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,
@@ -971,7 +971,7 @@ function refreshAiTypeSelects(dev) {
 
 async function prefetchDeviceLive(devId) {
   const data = await apiGet(
-    `/cgi-bin/mqtt_live.cgi?device=${encodeURIComponent(devId)}`).catch(() => null);
+    `cgi-bin/mqtt_live.cgi?device=${encodeURIComponent(devId)}`).catch(() => null);
   if (!data || !data.ok) return null;
   if (data.sensor_types && typeof data.sensor_types === 'object') {
     _liveSensorTypes[devId] = Object.assign(Object.create(null), data.sensor_types);
@@ -1220,7 +1220,7 @@ function renderMqttClientInfo(st) {
 }
 
 async function fetchMqttExternalCredentials() {
-  const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
+  const st = await apiGet('cgi-bin/mqtt_status.cgi').catch(() => null);
   if (!st || st.error) return null;
   return st;
 }
@@ -1354,7 +1354,7 @@ function applyBrokerStatusUI(st) {
 }
 
 async function refreshBrokerStatus() {
-  const st = await apiGet('/cgi-bin/mqtt_status.cgi');
+  const st = await apiGet('cgi-bin/mqtt_status.cgi');
   _lastMqttBrokerStatus = st;
   applyBrokerStatusUI(st);
 }
@@ -1365,7 +1365,7 @@ window.mqttRefreshI18n = function () {
 
 // ── Load config ───────────────────────────────────────────────────────────────
 async function loadConfig() {
-  const data = await apiGet('/cgi-bin/mqtt_config.cgi').catch(() => null);
+  const data = await apiGet('cgi-bin/mqtt_config.cgi').catch(() => null);
   if (data && !data.error) {
     _config = data;
     for (const dev of _config.devices || []) {
@@ -1970,7 +1970,7 @@ async function runScan() {
   statusEl.innerHTML = '<span class="mqtt-scan-spinner"></span>Поиск устройств на ' + port + ' (' + baud + ' бод)…';
   resultsEl.innerHTML = '';
 
-  const data = await apiPost('/cgi-bin/mqtt_scan.cgi', {port, baudrate: baud, max_addr: range})
+  const data = await apiPost('cgi-bin/mqtt_scan.cgi', {port, baudrate: baud, max_addr: range})
     .catch(e => ({ok: false, error: String(e), devices: []}));
 
   btn.disabled = false;
@@ -2206,7 +2206,7 @@ async function saveAndApply() {
     normalizeMr02mAiPairsAll(dev);
   }
   const payload = Object.assign({}, _config, {restart: true});
-  const res = await apiPost('/cgi-bin/mqtt_config.cgi', payload).catch(() => ({ ok: false, error: 'network' }));
+  const res = await apiPost('cgi-bin/mqtt_config.cgi', payload).catch(() => ({ ok: false, error: 'network' }));
 
   if (btn) { btn.disabled = false; btn.textContent = 'Сохранить и применить'; }
 
@@ -2238,7 +2238,7 @@ function markUnsaved() {
 async function pollMonitorDevice(deviceId) {
   if (_monitorPaused || !deviceId) return;
   const data = await apiGet(
-    `/cgi-bin/mqtt_monitor_poll.cgi?device=${encodeURIComponent(deviceId)}`).catch(() => null);
+    `cgi-bin/mqtt_monitor_poll.cgi?device=${encodeURIComponent(deviceId)}`).catch(() => null);
   const logEl = document.getElementById('mqtt-monitor-log');
   if (!data || !data.ok) return;
   const hint = logEl?.querySelector('.mqtt-monitor-hint');
@@ -2364,13 +2364,13 @@ window.mqttStopMonitor   = stopMonitor;
 window.mqttClearMonitor  = clearMonitor;
 window.mqttTogglePause   = () => { _monitorPaused = !_monitorPaused; };
 window.mqttCtrl          = async (action) => {
-  const res = await apiPost('/cgi-bin/mqtt_ctrl.cgi', {action}).catch(() => null);
+  const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action}).catch(() => null);
   if (res?.ok) { showToast(`Выполнено: ${action}`); setTimeout(refreshBrokerStatus, 1500); }
   else showToast('Ошибка: ' + (res?.error || '?'), 'err');
 };
 
 window.mqttToggleBridge = async function mqttToggleBridge() {
-  const st = await apiGet('/cgi-bin/mqtt_status.cgi').catch(() => null);
+  const st = await apiGet('cgi-bin/mqtt_status.cgi').catch(() => null);
   const on = mqttBridgeUiState(st) === 'active';
   const action = on ? 'stop_bridge' : 'start_bridge';
   const msg = on
@@ -2380,7 +2380,7 @@ window.mqttToggleBridge = async function mqttToggleBridge() {
   const btn = document.getElementById('mqtt-bridge-toggle-btn');
   if (btn) btn.disabled = true;
   try {
-    const res = await apiPost('/cgi-bin/mqtt_ctrl.cgi', {action});
+    const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action});
     if (res?.ok) {
       showToast(on ? 'Мост остановлен' : 'Мост запущен', 'success');
       setTimeout(refreshBrokerStatus, 1200);

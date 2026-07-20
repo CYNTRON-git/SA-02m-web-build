@@ -234,7 +234,7 @@ function loadKernelControl(forceToast) {
       }
     });
   }
-  fetch('/cgi-bin/kernel_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+  fetch('cgi-bin/kernel_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.error === 'unauthorized') throw new Error(uiT('нет доступа'));
@@ -260,7 +260,7 @@ function applyKernelProfile() {
 
   const btn = document.getElementById('kernel-apply-btn');
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/kernel_ctrl.cgi', {
+  fetch('cgi-bin/kernel_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -321,7 +321,7 @@ function applyCpuProfile() {
   if (!profile) return;
   const btn = document.getElementById('cpu-profile-apply-btn');
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/cpu_profile.cgi', {
+  fetch('cgi-bin/cpu_profile.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -350,7 +350,7 @@ function loadServicesControl(forceToast) {
   if (!host.querySelector('.svc-row')) {
     host.innerHTML = '<p class="field-hint">Загрузка…</p>';
   }
-  fetch('/cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+  fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
     .then(async (r) => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.error === 'unauthorized') throw new Error('нет доступа');
@@ -423,7 +423,7 @@ function pollServiceCtlState(id, action, maxMs, intervalMs) {
   const deadline = Date.now() + (maxMs || 90000);
   return new Promise(function (resolve, reject) {
     function tick() {
-      fetch('/cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
+      fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
         .then(async (r) => {
           const j = await r.json().catch(() => ({}));
           if (!r.ok || j.ok === false) throw new Error(svcCtlErrorMessage(j.error) || ('HTTP ' + r.status));
@@ -460,7 +460,7 @@ function pollServiceCtlResult(id, maxMs, intervalMs) {
   const deadline = Date.now() + (maxMs || 90000);
   return new Promise(function (resolve, reject) {
     function tick() {
-      fetch('/cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id), {
+      fetch('cgi-bin/services_ctrl.cgi?result=1&id=' + encodeURIComponent(id), {
         credentials: 'same-origin',
         cache: 'no-store',
       })
@@ -520,7 +520,7 @@ function serviceCtlAction(btn) {
   // poll deadline; start/stop keep 90 s.
   const longOp = action === 'install' || action === 'uninstall';
   const pollMax = longOp ? 600000 : 90000;
-  fetch('/cgi-bin/services_ctrl.cgi', {
+  fetch('cgi-bin/services_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
@@ -554,7 +554,7 @@ function serviceCtlAction(btn) {
    ══════════════════════════════════════════════════════════════════════════ */
 function doRestart() {
   if (!confirm('Перезапустить службы nginx и fcgiwrap?')) return;
-  fetch('/cgi-bin/restart.cgi', {
+  fetch('cgi-bin/restart.cgi', {
     method: 'POST',
     redirect: 'manual',
     credentials: 'same-origin',
@@ -581,7 +581,7 @@ function doRestart() {
 
 function doReboot() {
   if (!confirm('Перезагрузить контроллер?')) return;
-  fetch('/cgi-bin/reboot.cgi', {
+  fetch('cgi-bin/reboot.cgi', {
     method: 'POST',
     redirect: 'manual',
     credentials: 'same-origin',
@@ -607,6 +607,6 @@ function doReboot() {
 }
 
 function doLogout() {
-  window.location.href = '/cgi-bin/logout.cgi';
+  window.location.href = 'cgi-bin/logout.cgi';
 }
 

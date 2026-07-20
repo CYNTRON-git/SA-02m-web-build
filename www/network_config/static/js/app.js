@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.42';
+const APP_VERSION = '1.0.5.43';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -19,7 +19,7 @@ let _boardVariant = 'sa02m-1eth';
 (function () {
   const hasCookie = document.cookie.split(';').some(c => c.trim().startsWith('session_token='));
   if (!hasCookie && !window.location.pathname.includes('login')) {
-    window.location.replace('/login.html');
+    window.location.replace('login.html');
   }
 })();
 
@@ -72,7 +72,7 @@ function clearSessionCookie() {
       if (!res || res.status !== 401 || redirecting) return res;
       // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
       // cached 200 that outlives the session) — and never from cache.
-      return _fetch('/cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
+      return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
         .then(function (chk) {
           if (chk && chk.status === 401) {
             redirecting = true;
@@ -80,7 +80,7 @@ function clearSessionCookie() {
             // clear it so login.html doesn't bounce us back to the dashboard.
             // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
             clearSessionCookie();
-            window.location.replace('/login.html');
+            window.location.replace('login.html');
             return res;
           }
           return method === 'GET' ? _fetch.apply(self, args) : res;

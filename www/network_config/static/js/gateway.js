@@ -357,7 +357,7 @@ async function _savePort(port) {
   if (statusEl) { statusEl.textContent = 'Сохранение…'; statusEl.style.color = 'var(--text-sec)'; }
 
   try {
-    const resp = await fetch('/cgi-bin/gateway_config.cgi', {
+    const resp = await fetch('cgi-bin/gateway_config.cgi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ports: _config }),
@@ -396,7 +396,7 @@ function _readFormCfg(port) {
 // ── Service control ────────────────────────────────────────────────────────────
 async function _svcCtrl(action) {
   try {
-    const resp = await fetch('/cgi-bin/gateway_ctrl.cgi', {
+    const resp = await fetch('cgi-bin/gateway_ctrl.cgi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
@@ -420,7 +420,7 @@ async function _loadAll() {
 
 async function _loadConfig() {
   try {
-    const resp = await fetch('/cgi-bin/gateway_config.cgi');
+    const resp = await fetch('cgi-bin/gateway_config.cgi');
     const data = await resp.json();
     if (data.ports) {
       _config = data.ports;
@@ -435,7 +435,7 @@ async function _loadConfig() {
 
 async function _loadStatus() {
   try {
-    const resp = await fetch('/cgi-bin/gateway_status.cgi');
+    const resp = await fetch('cgi-bin/gateway_status.cgi');
     _status = await resp.json();
     _updateSubNavDots();
     _refreshActivePanel();

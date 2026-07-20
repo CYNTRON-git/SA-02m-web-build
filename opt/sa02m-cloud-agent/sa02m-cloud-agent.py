@@ -766,9 +766,11 @@ def active_loop(cfg: configparser.ConfigParser) -> str:
         if now - last_heartbeat > h_interval:
             telemetry, cpu_snap = collect_telemetry(cpu_snap)
             payload = {
-                "device_id": device_id,
-                "uptime_s":  telemetry.get("uptime_s", 0),
-                "telemetry": telemetry,
+                "device_id":  device_id,
+                "uptime_s":   telemetry.get("uptime_s", 0),
+                "telemetry":  telemetry,
+                "fw_version": get_fw_version(),
+                "hw_variant": HW_VARIANT,
             }
             # Аутентификация heartbeat (Phase C): секрет уходит ВВЕРХ, если он есть.
             # Без него облако в режиме grace всё ещё принимает биение, в strict —

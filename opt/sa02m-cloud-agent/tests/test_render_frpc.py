@@ -307,6 +307,16 @@ class HeartbeatIdentityTest(unittest.TestCase):
         self.assertEqual(sent.get("device_secret"), "s3cr3t")
         self.assertIn("telemetry", sent)
 
+    def test_fw_version_and_hw_variant_travel_with_the_heartbeat(self):
+        # Live identity for the fleet card — same fields as claim/enroll.
+        # Absent VERSION file ⇒ get_fw_version() returns "unknown" (guarded);
+        # HW_VARIANT is the module constant. Both must be present every beat.
+        sent = self._run_one_heartbeat(secret="s3cr3t")
+        self.assertEqual(sent.get("hw_variant"), agent.HW_VARIANT)
+        self.assertEqual(sent.get("fw_version"), agent.get_fw_version())
+        self.assertIsInstance(sent.get("fw_version"), str)
+        self.assertTrue(sent["fw_version"])
+
     def test_no_secret_field_when_the_device_has_none(self):
         # The legacy/grace path must not send an empty credential — absent means
         # absent, or the cloud would verify "" against a stored secret and 403.

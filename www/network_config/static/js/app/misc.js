@@ -27,7 +27,7 @@ function loadLog() {
   const box = document.getElementById('log-box');
   if (!box) return;
   box.classList.remove('log-box-ssh-debug');
-  fetch('/cgi-bin/log.cgi', { cache: 'no-store', credentials: 'same-origin' })
+  fetch('cgi-bin/log.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.text())
     .then(t => renderLogText(box, t))
     .catch(() => { if (box) box.textContent = 'Не удалось загрузить журнал'; });
@@ -38,7 +38,7 @@ function loadSshDebug() {
   if (!box) return;
   box.classList.remove('log-box-ssh-debug');
   box.textContent = 'Загрузка SSH-диагностики… (до ~2 мин)';
-  fetch('/cgi-bin/ssh_debug.cgi', { cache: 'no-store', credentials: 'same-origin' })
+  fetch('cgi-bin/ssh_debug.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
@@ -138,7 +138,7 @@ function syncTimeFromPC(applyNow) {
   const data = new URLSearchParams(new FormData(ft));
   const btn = ft.querySelector('button[type="submit"]');
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/apply.cgi', {
+  fetch('cgi-bin/apply.cgi', {
     method: 'POST',
     body: data,
     redirect: 'manual',
@@ -173,7 +173,7 @@ function syncTimeFromPC(applyNow) {
 }
 
 function exportInstallLog() {
-  window.location.href = '/cgi-bin/log_export.cgi';
+  window.location.href = 'cgi-bin/log_export.cgi';
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -187,7 +187,7 @@ function initWebCredsForm() {
     const body = new URLSearchParams(new FormData(form));
     const btn = form.querySelector('button[type="submit"]');
     if (btn) btn.disabled = true;
-    fetch('/cgi-bin/web_creds.cgi', {
+    fetch('cgi-bin/web_creds.cgi', {
       method: 'POST',
       body,
       credentials: 'same-origin',
@@ -324,7 +324,7 @@ function formatComPortCount(n) {
 
 async function loadVariant() {
   try {
-    const r = await fetch('/cgi-bin/variant.cgi');
+    const r = await fetch('cgi-bin/variant.cgi');
     if (!r.ok) return;
     const d = await r.json();
     const sel = document.getElementById('hw-variant-select');
@@ -342,7 +342,7 @@ async function applyVariant() {
   status.textContent = 'Применяю…';
   status.style.color = 'var(--text-sec)';
   try {
-    const r = await fetch('/cgi-bin/variant.cgi', {
+    const r = await fetch('cgi-bin/variant.cgi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'variant=' + encodeURIComponent(variant)

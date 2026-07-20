@@ -142,7 +142,7 @@ function fetchStatusBlocksConfig(onReady) {
   const timer = setTimeout(function () {
     try { ctrl.abort(); } catch (_) {}
   }, STATUS_BLOCKS_FETCH_TIMEOUT_MS);
-  fetch('/cgi-bin/status.cgi?part=blocks', {
+  fetch('cgi-bin/status.cgi?part=blocks', {
     cache: 'no-store',
     credentials: 'same-origin',
     signal: ctrl.signal
@@ -754,7 +754,7 @@ function applyTimeStatus(d) {
 }
 
 function refreshTimeReadouts() {
-  fetch('/cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
+  fetch('cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => {
       applyTimeStatus({ datetime: d.datetime, rtc_datetime: d.rtc_datetime ?? '' });
@@ -895,7 +895,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
 
 function setStorageAutoFormat(enabled) {
   const body = 'enabled=' + encodeURIComponent(enabled ? '1' : '0');
-  fetchWithTimeout('/cgi-bin/storage_format_set.cgi', {
+  fetchWithTimeout('cgi-bin/storage_format_set.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
@@ -1086,7 +1086,7 @@ function fetchPriorityPart(_part, persist = true) {
     _statusLastFetchMs.priority = Date.now();
     let timedOut = false;
     const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
-    statusFetchJson('priority', '/cgi-bin/status.cgi?part=priority', statusRequestTimeout('priority', queueWaitMs), gen, function () {
+    statusFetchJson('priority', 'cgi-bin/status.cgi?part=priority', statusRequestTimeout('priority', queueWaitMs), gen, function () {
       timedOut = true;
     })
       .then(d => {
@@ -1155,7 +1155,7 @@ function fetchBackgroundPart(part, applyFn, force, onDone) {
       reported = true;
       if (onDone) onDone(!!failed);
     };
-    let url = '/cgi-bin/status.cgi?part=' + encodeURIComponent(part);
+    let url = 'cgi-bin/status.cgi?part=' + encodeURIComponent(part);
     if (force) url += '&no_cache=1';
     const epochAtStart = part === 'hardware' ? mainStatusEpoch : null;
     const apply = applyFn || applyRs485Status;
@@ -1218,7 +1218,7 @@ function fetchServicesFast(gen) {
       release();
       return;
     }
-    const url = '/cgi-bin/status.cgi?part=services&fast=1';
+    const url = 'cgi-bin/status.cgi?part=services&fast=1';
     const queueWaitMs = meta && meta.queueWaitMs ? meta.queueWaitMs : 0;
     statusFetchJson('services_fast', url, statusRequestTimeout('services', queueWaitMs), gen, function () {})
       .then(function (d) {
@@ -1390,7 +1390,7 @@ function applyWebUpdateCheckUI(j) {
 }
 
 function loadWebUpdateStatus() {
-  fetchWithTimeout('/cgi-bin/web_update_check.cgi', {
+  fetchWithTimeout('cgi-bin/web_update_check.cgi', {
     credentials: 'same-origin',
     cache: 'no-store'
   }, 8000)
@@ -1402,7 +1402,7 @@ function loadWebUpdateStatus() {
 function checkWebUpdatesManual() {
   const btn = document.getElementById('web-upd-check-btn');
   if (btn) btn.disabled = true;
-  fetchWithTimeout('/cgi-bin/web_update_check.cgi?force=1', {
+  fetchWithTimeout('cgi-bin/web_update_check.cgi?force=1', {
     method: 'POST',
     credentials: 'same-origin',
     cache: 'no-store'
@@ -1443,7 +1443,7 @@ function applyWebUpdate() {
   if (logEl) { logEl.textContent = ''; logEl.hidden = false; }
   if (st) { st.textContent = 'Загрузка и установка обновления…'; st.className = 'web-upd-status is-warn'; st.hidden = false; }
 
-  fetchWithTimeout('/cgi-bin/web_update_apply.cgi', {
+  fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
     method: 'POST',
     credentials: 'same-origin',
     cache: 'no-store'
@@ -1464,7 +1464,7 @@ function applyWebUpdate() {
 function _webUpdStartPolling() {
   if (_webUpdPollTimer) clearInterval(_webUpdPollTimer);
   _webUpdPollTimer = setInterval(function () {
-    fetchWithTimeout('/cgi-bin/web_update_apply.cgi', {
+    fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
       credentials: 'same-origin', cache: 'no-store'
     }, 8000)
       .then(function (r) { return r.json(); })
