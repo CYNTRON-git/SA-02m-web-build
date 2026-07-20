@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-20 13:30] branch: 1.0.5.43 — CODESYS/MPLC4 ложный Active и «&lt;1м»
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `www/network_config/cgi-bin/status.cgi`
+**Тип:** Некорректное поведение
+**Описание:** В виджете «Службы» CODESYS и MPLC4 показывали Active и аптайм «&lt;1м», хотя рантайм-процессов не было.
+**Причина:** `RemainAfterExit=yes` (oneshot/forking) → systemd `active (exited)`; CTL `list` и `svc_ctl_override` поднимали статус до active; аптайм по процессу = 0 → UI «&lt;1м».
+**Исправление:** активность CODESYS/MPLC4 только по процессу; CTL не доверяет `is-active` для mplc4; в status.cgi override для codesys/mplc4 только `disabled`, без promote inactive→active.
+
 ## [2026-07-20 11:47] branch: 1.0.5.43 — Неполные относительные пути под cloud prefix
 
 **Файл(ы):** `www/network_config/static/js/app/status.js`, `mqtt.js`, `flasher.js`, `cloud.html`

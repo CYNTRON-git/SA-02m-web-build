@@ -615,7 +615,20 @@ svc_ctl_override() {
     local id=$1
     local -n _out=$2
     local st="${SVC_CTL_STATE[$id]:-}"
-    [ -n "$st" ] && _out=$st
+    [ -z "$st" ] && return 0
+    case "$id" in
+        # Process-probed runtimes: CTL may only force disabled/mask. Never
+        # promote inactive→active from systemd ActiveState (RemainAfterExit
+        # oneshot/forking wrappers lie as active(exited) with no process).
+        codesys|mplc4)
+            if [ "$st" = "disabled" ]; then
+                _out=disabled
+            fi
+            ;;
+        *)
+            _out=$st
+            ;;
+    esac
 }
 
 # Fast path (fast=1): the authoritative CTL list is skipped, so any status it
