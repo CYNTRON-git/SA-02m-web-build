@@ -324,6 +324,9 @@ Baudrate: 115200. Адрес: 14 (по умолчанию).
 # Частота, температура
 /devices/ce02m3-COM2-14/controls/frequency       type=value  units=Hz
 /devices/ce02m3-COM2-14/controls/asic_temp       type=temperature units=°C
+# Диагностика МК (Input 123–124, как у MR/ДТВ): VDD ×0.01 В, temp ×0.1 °C
+/devices/ce02m3-COM2-14/controls/mcu_vdd         type=voltage      units=V
+/devices/ce02m3-COM2-14/controls/mcu_temp        type=temperature  units=°C
 
 # Счётчики энергии (Вт·ч)
 /devices/ce02m3-COM2-14/controls/energy_active_import    type=value  units=Wh

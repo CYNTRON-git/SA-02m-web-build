@@ -277,8 +277,10 @@ const CE02M3_UNITS = {
   power_a: 'W', power_b: 'W', power_c: 'W', power_total: 'W',
   reactive_a: 'var', reactive_b: 'var', reactive_c: 'var', reactive_total: 'var',
   pf_a: '', pf_b: '', pf_c: '', pf_total: '', frequency: 'Hz',
-  energy_active_import: 'kWh', energy_active_export: 'kWh',
-  energy_reactive_import: 'kvarh', energy_reactive_export: 'kvarh',
+  // Bridge publishes raw Wh / varh / VAh (docs/MQTT_TOPICS.md §CE-02m-3).
+  energy_active_import: 'Wh', energy_active_export: 'Wh',
+  energy_reactive_import: 'varh', energy_reactive_export: 'varh',
+  energy_apparent: 'VAh',
 };
 
 const CE02M3_CHANNELS = [
@@ -1829,12 +1831,14 @@ function buildCE02M3Channels(dev, container) {
   row.appendChild(buildSysChannelGroup(dev, 'Системные', CE02M3_SYS_VARS));
 
   const ctPack = buildChannelWidget('Параметры CT');
-  ctPack.body.appendChild(h('div', {'class': 'mqtt-form-row'},
+  // Keep label + value on one row (widget .mqtt-form-row defaults to column).
+  ctPack.body.appendChild(h('div', {'class': 'mqtt-form-row mqtt-ct-ratio-row'},
     h('label', {}, 'Коэффициент CT (K×1000):'),
     h('input', {'type': 'number', 'class': 'mqtt-input-small', 'value': dev.ct_ratio || 4000,
       'oninput': e => { dev.ct_ratio = Number(e.target.value); markUnsaved(); }}),
-    h('span', {}, '(4000 = CT 4А, 1000 = 1А)'),
   ));
+  ctPack.body.appendChild(h('div', {'class': 'mqtt-ct-hint'},
+    '(4000 = CT 4А, 1000 = 1А)'));
   row.appendChild(ctPack.widget);
 
   const groupMeta = {

@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-20 19:40] branch: 1.0.5.44 — СЭ-02м-3: mcu_temp без ×0.1, VAh, CT layout
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение / UX
+**Описание:** На СЭ-02м-3 (COM2) температура МК 349 вместо 34.9; у «Полная энергия» не было единицы; блок CT показывал подпись/поле/подсказку в три строки.
+**Причина:** `_poll_diag` публиковал сырой int16 без ×0.1; в `CE02M3_UNITS` не было `energy_apparent`; CSS `.mqtt-ch-widget .mqtt-form-row { flex-direction: column }` ломал строку CT.
+**Исправление:** ×0.1 для mcu_temp + meta units; VAh/Wh/varh в UI и meta моста; класс `mqtt-ct-ratio-row` — label и значение в одну строку.
+
 ## [2026-07-20 15:37] branch: 1.0.5.44
 
 **Файл(ы):** `scripts/update-www-only.sh`, устройство `sa02m-16554153d32a50ed`

@@ -2442,6 +2442,16 @@ class CE02M3Poller(DevicePoller):
             self.pub.pub_control_units(self.device_id, sfx, unit)
         self.pub.pub_control_units(self.device_id, "frequency", "Hz")
         self.pub.pub_control_units(self.device_id, "asic_temp", "°C")
+        self.pub.pub_control_units(self.device_id, "mcu_temp", "°C")
+        self.pub.pub_control_units(self.device_id, "mcu_vdd", "V")
+        for ename, eunit in (
+            ("energy_active_import", "Wh"),
+            ("energy_active_export", "Wh"),
+            ("energy_reactive_import", "varh"),
+            ("energy_reactive_export", "varh"),
+            ("energy_apparent", "VAh"),
+        ):
+            self.pub.pub_control_units(self.device_id, ename, eunit)
 
     def _poll_power(self) -> None:
         # Regs 500-547: 48 registers
@@ -2551,9 +2561,13 @@ class CE02M3Poller(DevicePoller):
 
     def _poll_diag(self) -> None:
         try:
+            # Same scale as MR-02m / DTV: reg 123 ×0.01 V, reg 124 ×0.1 °C.
             r = self.read_input_registers(self.address, 123, 2)
             self.pub.pub_control(self.device_id, "mcu_vdd", str(round(r[0] * 0.01, 2)))
-            self.pub.pub_control(self.device_id, "mcu_temp", str(self._s16(r[1])))
+            self.pub.pub_control(
+                self.device_id, "mcu_temp",
+                str(round(self._s16(r[1]) * 0.1, 1)),
+            )
         except Exception:
             pass
 
