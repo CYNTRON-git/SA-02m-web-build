@@ -241,6 +241,25 @@ def render_frpc_toml(frpc: dict) -> str:
         # Пиним TLS транспортного (control) соединения frpc→frps явно.
         "transport.tls.enable = true",
     ]
+    # transport.poolCount — сколько work-соединений frpc держит открытыми в пуле,
+    # чтобы проксируемый запрос не платил свежий handshake через ~555ms облачный
+    # линк (замер стенда: медиана 1.38s → 0.431s при poolCount=4). Значение
+    # приходит ИЗ ОБЛАЧНОГО профиля, поэтому валидируется как враждебный вход —
+    # тем же приёмом, что ALLOWED_LOCAL_PORTS для local_port (A5): принимаем
+    # ТОЛЬКО целое в 0..16 (облако клампит у себя — перепроверяем здесь), на
+    # чём угодно ином (не-int, bool, вне диапазона) log.warning и НЕ эмитим
+    # строку (fallback на собственный дефолт frpc, не на аварию и не на
+    # диктуемое облаком число удерживаемых сокетов). Ключ отсутствует → строки
+    # нет → legacy-рендер байт-в-байт (test_legacy_render_is_byte_identical).
+    pool_count = frpc.get("pool_count")
+    if pool_count is not None:
+        if (isinstance(pool_count, int) and not isinstance(pool_count, bool)
+                and 0 <= pool_count <= 16):
+            lines.append("transport.poolCount = %d" % pool_count)
+        else:
+            log.warning("ignoring cloud pool_count %r: not an integer in 0..16 "
+                        "(A5 defense-in-depth) — falling back to frpc default",
+                        pool_count)
     # Per-device identity (Phase C). frps передаёт metadatas в Login-хук облака,
     # тот проверяет пару id+secret и ОТКЛОНЯЕТ соединение целиком при несовпадении;
     # дальше NewProxy-хук берёт личность из СЕРВЕРНОЙ сессии логина, а не из
