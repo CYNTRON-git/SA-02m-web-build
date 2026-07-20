@@ -887,7 +887,7 @@ function setDoOutput(dev, ctrl) {
   const target = prev === 1 ? 0 : 1;
   _doPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
   updateDoToggleBtn(devId, ctrl); // optimistic: target state rendered right away
-  fetch('/cgi-bin/mqtt_set.cgi', {
+  fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,

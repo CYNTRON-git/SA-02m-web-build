@@ -58,7 +58,7 @@ function timeZoneSelectApplyFromDeviceOrBrowser(tzSel, deviceTzRaw) {
 
 function loadConfig() {
   if (configLoaded) return;
-  fetch('/cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
+  fetch('cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => {
       configLoaded = true;
@@ -199,7 +199,7 @@ function submitForm(form, onSuccess) {
     onSuccess && onSuccess();
   };
   if (btn) btn.disabled = true;
-  fetch('/cgi-bin/apply.cgi', {
+  fetch('cgi-bin/apply.cgi', {
     method: 'POST',
     body: data,
     redirect: 'manual',

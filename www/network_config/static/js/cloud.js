@@ -78,7 +78,7 @@ function cloudShowRow(id, show) {
 }
 
 async function cloudPostAction(body) {
-  const r = await fetch('/cgi-bin/cloud.cgi', {
+  const r = await fetch('cgi-bin/cloud.cgi', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     credentials: 'same-origin',
@@ -191,7 +191,7 @@ function cloudRenderStatus(d) {
 async function cloudRefreshStatus() {
   if (!$('cloud-card')) return;
   try {
-    const r = await fetch('/cgi-bin/cloud.cgi', { cache: 'no-store', credentials: 'same-origin' });
+    const r = await fetch('cgi-bin/cloud.cgi', { cache: 'no-store', credentials: 'same-origin' });
     const d = await r.json();
     cloudRenderStatus(d);
   } catch (e) {

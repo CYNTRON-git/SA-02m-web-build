@@ -142,7 +142,7 @@ function fetchStatusBlocksConfig(onReady) {
   const timer = setTimeout(function () {
     try { ctrl.abort(); } catch (_) {}
   }, STATUS_BLOCKS_FETCH_TIMEOUT_MS);
-  fetch('/cgi-bin/status.cgi?part=blocks', {
+  fetch('cgi-bin/status.cgi?part=blocks', {
     cache: 'no-store',
     credentials: 'same-origin',
     signal: ctrl.signal
@@ -754,7 +754,7 @@ function applyTimeStatus(d) {
 }
 
 function refreshTimeReadouts() {
-  fetch('/cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
+  fetch('cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => {
       applyTimeStatus({ datetime: d.datetime, rtc_datetime: d.rtc_datetime ?? '' });

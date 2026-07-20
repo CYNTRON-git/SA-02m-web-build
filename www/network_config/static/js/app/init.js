@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // server at runtime (single source of truth = the VERSION file), so the
     // header self-corrects even against a stale cached APP_VERSION constant.
     // no-store keeps it live; any failure silently keeps the baked fallback.
-    fetch('/VERSION', { cache: 'no-store' })
+    fetch('VERSION', { cache: 'no-store' })
       .then(r => (r.ok ? r.text() : Promise.reject()))
       .then(t => {
         const line = t.split('\n')
