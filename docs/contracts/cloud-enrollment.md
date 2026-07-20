@@ -26,7 +26,7 @@
 | `POST /claim` | вкладка «Облако» → «Подключить» (основной путь) | `device_id`, `hw_variant`, `fw_version` | `claim_code` (8 симв., TTL ~15 мин, идемпотентно), `expires_in_s`, `poll_interval_s` |
 | `POST /claim/status` | опрос пока пользователь привязывает код в кабинете | `device_id`, `claim_code` | `state` (`claimed`/`expired`); при `claimed` — frpc-профиль + `heartbeat_interval_s` |
 | `POST /enroll` | fallback для наладчиков (enroll-токен) | `enroll_token`, `device_id`, `hw_variant`, `fw_version` | `ok`, тот же frpc-профиль + `heartbeat_interval_s` |
-| `POST /heartbeat` | периодически после enrollment | `device_id`, `uptime_s`, `telemetry` (в т.ч. `modules` из `/run/sa02m-rs485-roster.json`) | **игнорируется** (кроме факта доставки) — send-only |
+| `POST /heartbeat` | периодически после enrollment | `device_id`, `uptime_s`, `telemetry` (в т.ч. `modules` из `/run/sa02m-rs485-roster.json`), опционально `fw_version` + `hw_variant` (те же строки, что в claim/enroll — live refresh карточки флота) | **игнорируется** (кроме факта доставки) — send-only |
 
 `device_id` — `sa02m-<serial>` (charset `^[A-Za-z0-9._-]{1,64}$`).
 Идентичность v1: **общий по флоту `FRP_TOKEN`** + `device_id` + `enroll_token`;

@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-20 11:47] branch: 1.0.5.43 — Неполные относительные пути под cloud prefix
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `mqtt.js`, `flasher.js`, `cloud.html`
+**Тип:** Некорректное поведение
+**Описание:** После первого прохода relative-paths shell грузился через `/devcfg/<id>/`, но MQTT, status poll, web-update и flasher API оставались корне-абсолютными (`/cgi-bin/…`, `/api/flasher`) — 404 без Referer-307.
+**Причина:** Конвертация охватила HTML и часть `app/*`, но не `status.js` / `mqtt.js` / базу `flasher.js` / meta refresh в `cloud.html`.
+**Исправление:** Убран ведущий `/` у оставшихся клиентских URL; meta `url=index.html#cloud`; contract + unit pin для `fw_version`/`hw_variant` в heartbeat.
+
 ## [2026-07-16 18:00] branch: 1.0.5.8 — Flasher: Порты HTTP 401 после refresh
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/auth.py`, `opt/sa02m-flasher/sa02m_flasher/service.py`, `/etc/sa02m_flasher.conf` (на стенде `192.168.10.136`)
