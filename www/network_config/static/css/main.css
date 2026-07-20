@@ -3233,6 +3233,25 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   align-items: stretch;
   gap: 6px;
 }
+/* CE-02m-3 CT ratio: label + value on one line (override column form-row). */
+.mqtt-ch-widget .mqtt-form-row.mqtt-ct-ratio-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mqtt-ch-widget .mqtt-ct-ratio-row label {
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+.mqtt-ch-widget .mqtt-ct-ratio-row .mqtt-input-small {
+  margin-left: auto;
+}
+.mqtt-ch-widget .mqtt-ct-hint {
+  font-size: 0.82rem;
+  opacity: 0.75;
+  padding: 0 0 4px;
+}
 .mqtt-ch-row {
   display: flex;
   align-items: center;

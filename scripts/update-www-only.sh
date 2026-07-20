@@ -230,4 +230,15 @@ if [ -f "$REPO_ETC/sudoers.d/sa02m-cloud" ]; then
         || log WARN "visudo отклонил sudoers.d/sa02m-cloud"
 fi
 
+# Bus-free RS-485 roster aggregator — fleet card «Опрос модулей RS-485» and the
+# cloud heartbeat both read /run/sa02m-rs485-roster.json. Full install.sh runs
+# scripts/10-rs485-roster.sh; www-only updates used to skip it, so an older
+# image can have a live MQTT bridge roster under /run/sa02m-modbus-mqtt/ while
+# the cloud card shows no modules at all.
+if [ -f "$SCRIPT_DIR/10-rs485-roster.sh" ]; then
+    bash "$SCRIPT_DIR/10-rs485-roster.sh" \
+        && log OK "sa02m-rs485-roster установлен/обновлён" \
+        || log WARN "10-rs485-roster.sh завершился с ошибкой"
+fi
+
 log OK "Веб-интерфейс обновлён: $WEB_ROOT (nginx перезапускать не требуется)"

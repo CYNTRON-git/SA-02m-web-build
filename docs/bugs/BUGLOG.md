@@ -5,6 +5,38 @@
 
 ---
 
+## [2026-07-20 19:40] branch: 1.0.5.44 — СЭ-02м-3: mcu_temp без ×0.1, VAh, CT layout
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение / UX
+**Описание:** На СЭ-02м-3 (COM2) температура МК 349 вместо 34.9; у «Полная энергия» не было единицы; блок CT показывал подпись/поле/подсказку в три строки.
+**Причина:** `_poll_diag` публиковал сырой int16 без ×0.1; в `CE02M3_UNITS` не было `energy_apparent`; CSS `.mqtt-ch-widget .mqtt-form-row { flex-direction: column }` ломал строку CT.
+**Исправление:** ×0.1 для mcu_temp + meta units; VAh/Wh/varh в UI и meta моста; класс `mqtt-ct-ratio-row` — label и значение в одну строку.
+
+## [2026-07-20 15:37] branch: 1.0.5.44
+
+**Файл(ы):** `scripts/update-www-only.sh`, устройство `sa02m-16554153d32a50ed`
+  (`/opt/sa02m-rs485-roster`, `sa02m-rs485-roster.timer`)
+**Тип:** Некорректное поведение
+**Описание:** На карточке флота облака не было блока «Опрос модулей RS-485», хотя
+MQTT-мост на COM4 опрашивал модули (live `/run/sa02m-modbus-mqtt/_roster.json`).
+**Причина:** Не установлен агрегатор `sa02m-rs485-roster` — нет
+`/run/sa02m-rs485-roster.json`; cloud-agent кладёт `telemetry.modules` только из
+этого файла. `install.sh` ставит шаг 10, а `update-www-only.sh` его пропускал.
+**Исправление:** На устройстве установлены код + timer; в `update-www-only.sh`
+добавлен вызов `10-rs485-roster.sh`. После heartbeat в облаке: COM4 5/5
+(14DI@10, 16DO@11, 12AI@12, 12AO@13, 16DO@14).
+
+## [2026-07-20 14:20] branch: (device 192.168.10.136)
+
+**Файл(ы):** `/etc/sa02m_hw.conf`, `www/network_config/cgi-bin/lib_hw.sh`, `scripts/03-webserver.sh` (tmpfiles), `/etc/tmpfiles.d/sa02m.conf`
+**Тип:** Некорректное поведение
+**Описание:** `source /etc/sa02m_hw.conf` падал на OWNER_*; `sa02m_hw_i2c_write_channel` от root возвращал RC=77 (Permission denied на lock).
+**Причина:** (1) `SA02M_I2C_OWNER_UNITS/PROCS` без кавычек — bash воспринимал `mplc4.service` как команду; (2) sticky `/run/lock` + `exec 9>"$lock"` (O_CREAT|O_TRUNC) на файле владельца www-data → EACCES даже для root; tmpfiles создавал lock `0660 www-data:www-data`.
+**Исправление:** кавычки в OWNER_*; flock через `exec 9<>` после создания файла; tmpfiles `0666 root www-data`. Проверено: source OK, DO 0↔1, beeper, dut power.
+
+---
+
 ## [2026-07-20 13:30] branch: 1.0.5.43 — CODESYS/MPLC4 ложный Active и «&lt;1м»
 
 **Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `www/network_config/cgi-bin/status.cgi`

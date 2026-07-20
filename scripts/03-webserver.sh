@@ -274,7 +274,9 @@ fi
 #    the dir has to be group-traversable. A weaker 0700 here makes the daemon
 #    return 401 for otherwise-valid sessions (it cannot traverse the dir). ─────
 cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
-f /run/lock/sa02m-pca9536.lock 0660 www-data www-data -
+# 0666: root (stand/beeper) and www-data (CGI) must both flock; sticky /run/lock
+# rejects bash `exec 9>`(O_CREAT) on foreign-owned files — lib_hw opens RDWR.
+f /run/lock/sa02m-pca9536.lock 0666 root www-data -
 d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
 EOF
