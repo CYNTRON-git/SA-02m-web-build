@@ -8,7 +8,22 @@
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
   const verEl = document.getElementById('app-version');
-  if (verEl) verEl.textContent = 'v' + APP_VERSION;
+  if (verEl) {
+    verEl.textContent = 'v' + APP_VERSION;  // immediate baked fallback
+    // Auto version: overwrite with the ACTUALLY deployed version read from the
+    // server at runtime (single source of truth = the VERSION file), so the
+    // header self-corrects even against a stale cached APP_VERSION constant.
+    // no-store keeps it live; any failure silently keeps the baked fallback.
+    fetch('/VERSION', { cache: 'no-store' })
+      .then(r => (r.ok ? r.text() : Promise.reject()))
+      .then(t => {
+        const line = t.split('\n')
+          .map(s => s.trim())
+          .filter(s => s && s.charAt(0) !== '#')[0];
+        if (line && /^\d+\.\d+/.test(line)) verEl.textContent = 'v' + line;
+      })
+      .catch(() => {});
+  }
 
   initNav();
   if (typeof initNavDrawer === 'function') initNavDrawer();  // mobile drawer (app/nav.js)
