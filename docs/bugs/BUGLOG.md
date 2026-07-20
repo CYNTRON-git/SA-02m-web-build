@@ -5,6 +5,20 @@
 
 ---
 
+## [2026-07-20 15:37] branch: 1.0.5.44
+
+**Файл(ы):** `scripts/update-www-only.sh`, устройство `sa02m-16554153d32a50ed`
+  (`/opt/sa02m-rs485-roster`, `sa02m-rs485-roster.timer`)
+**Тип:** Некорректное поведение
+**Описание:** На карточке флота облака не было блока «Опрос модулей RS-485», хотя
+MQTT-мост на COM4 опрашивал модули (live `/run/sa02m-modbus-mqtt/_roster.json`).
+**Причина:** Не установлен агрегатор `sa02m-rs485-roster` — нет
+`/run/sa02m-rs485-roster.json`; cloud-agent кладёт `telemetry.modules` только из
+этого файла. `install.sh` ставит шаг 10, а `update-www-only.sh` его пропускал.
+**Исправление:** На устройстве установлены код + timer; в `update-www-only.sh`
+добавлен вызов `10-rs485-roster.sh`. После heartbeat в облаке: COM4 5/5
+(14DI@10, 16DO@11, 12AI@12, 12AO@13, 16DO@14).
+
 ## [2026-07-20 14:20] branch: (device 192.168.10.136)
 
 **Файл(ы):** `/etc/sa02m_hw.conf`, `www/network_config/cgi-bin/lib_hw.sh`, `scripts/03-webserver.sh` (tmpfiles), `/etc/tmpfiles.d/sa02m.conf`
