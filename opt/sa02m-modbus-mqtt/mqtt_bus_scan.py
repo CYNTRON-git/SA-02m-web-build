@@ -14,10 +14,12 @@ except ImportError:
 
 FMB_ADDR = 0xFD
 
+# Count-first display names — keep in sync with modbus_mqtt_bridge.MR02M_TYPE_NAMES
+# and MR-02m Core/Inc/main.h product signatures (not letter-first C enum tags).
 MR02M_MODULE_TYPES = {
-    1: "DO6DI8", 2: "DO16", 3: "AO12", 4: "DO6", 5: "DI14",
-    6: "AO6AI6", 7: "AI12", 8: "DO4DI6", 9: "TENZO2", 10: "10DIcon",
-    11: "6DO5DI2AO", 12: "AI6AO2", 15: "4TO6DI",
+    1: "6DO8DI", 2: "16DO", 3: "12AO", 4: "6DO", 5: "14DI",
+    6: "6AI6AO", 7: "12AI", 8: "4DO6DI", 9: "TENZO2", 10: "10DIcon",
+    11: "6DO5DI2AO", 12: "6AI2AO", 15: "4TO6DI",
 }
 
 # Подписи как MR02M_TYPE_LABELS_RU в mqtt.js

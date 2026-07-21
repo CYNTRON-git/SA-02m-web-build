@@ -170,6 +170,25 @@ MR02M_TYPE_NAMES: dict[int, str] = {
     6: "6AI6AO", 7: "12AI", 8: "4DO6DI", 9: "TENZO2",
     10: "10DIcon", 11: "6DO5DI2AO", 12: "6AI2AO", 15: "4TO6DI",
 }
+# Legacy letter-first tokens still found in old YAML / MQTT retained meta.
+_MR02M_LEGACY_NAME_TOKENS = (
+    "AO6AI6", "6AO6AI", "AI6AO6", "DO4DI6", "6DI4DO",
+    "DO6DI8", "8DI6DO", "DO16", "AO12", "DI14", "AI12", "AI6AO2", "TO4DI6",
+)
+
+
+def _canonical_mr02m_device_name(cfg: dict, type_name: str) -> str:
+    """Rewrite letter-first YAML names (AO6AI6…); leave RU/custom names intact."""
+    port = str(cfg.get("port", "")).replace("/dev/", "")
+    addr = cfg.get("address", 0)
+    default = f"MR-02m {type_name} ({port} addr={addr})"
+    name = str(cfg.get("name") or "").strip()
+    if not name:
+        return default
+    upper = name.upper().replace(" ", "").replace("-", "").replace("_", "")
+    if any(tok in upper for tok in _MR02M_LEGACY_NAME_TOKENS):
+        return default
+    return name
 # MR/MP-02m MCU diagnostics (как sa02m_flasher device_config / module_config_window)
 MR_MCU_HOLD_OP_DAYS = 114
 MR_MCU_HOLD_POWER_TEMP = 123
@@ -1692,10 +1711,7 @@ class MR02mPoller(DevicePoller):
             self._mod_type = mt
             self._do, self._di, self._ao, self._ai = MR02M_MODULE_TYPES[mt]
             type_name = MR02M_TYPE_NAMES.get(mt, str(mt))
-            name = self.cfg.get(
-                "name",
-                f"MR-02m {type_name} ({self.port_path.replace('/dev/','')} addr={self.address})"
-            )
+            name = _canonical_mr02m_device_name(self.cfg, type_name)
             self.publish_device_meta(name)
             self.pub.pub_control(self.device_id, "module_type", type_name)
             self.pub.pub_control_meta(self.device_id, "module_type", "type", "text")
@@ -2394,6 +2410,7 @@ class CE02M3Poller(DevicePoller):
         self._poll_energy_s = float(cfg.get("poll_energy_s", 60))
         self._poll_diag_s   = float(cfg.get("poll_diag_s",  120))
         self._poll_uptime_s = float(cfg.get("poll_uptime_s", 5))
+        self._t_power        = 0.0
         self._t_energy       = 0.0
         self._t_diag         = 0.0
         self._t_uptime       = 0.0
@@ -2453,10 +2470,45 @@ class CE02M3Poller(DevicePoller):
         ):
             self.pub.pub_control_units(self.device_id, ename, eunit)
 
+    def _read_power_input_block(self) -> list[int]:
+        """Regs 500-547 (48). One FC04 of 101 B often truncates on COM2 (OE/short).
+
+        Read in 24-reg chunks with retries; availability is updated once per block.
+        """
+        chunk = 24
+        out: list[int] = []
+        start = 500
+        remaining = 48
+        port = self.get_port()
+        last_err: Exception | None = None
+        while remaining:
+            n = min(chunk, remaining)
+            part: list[int] | None = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    part = port.read_input_registers(self.address, start, n)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+            if last_err is not None or part is None:
+                self.mark_fail()
+                raise last_err if last_err else IOError("power block read failed")
+            out.extend(part)
+            start += n
+            remaining -= n
+            if remaining:
+                time.sleep(MODBUS_INTER_FRAME_DELAY_S)
+        self.mark_ok()
+        return out
+
     def _poll_power(self) -> None:
-        # Regs 500-547: 48 registers
+        # Regs 500-547: 48 registers (chunked — see _read_power_input_block)
         try:
-            regs = self.read_input_registers(self.address, 500, 48)
+            regs = self._read_power_input_block()
         except Exception as e:
             self.log.warning("power poll: %s", e)
             return
@@ -2573,8 +2625,16 @@ class CE02M3Poller(DevicePoller):
 
     def setup(self) -> None:
         self._publish_meta()
+        # Clear sticky retained meta/error="r" from a previous offline storm.
+        self.pub.pub_device_error(self.device_id, "")
 
     def poll_io(self) -> None:
+        # Honor poll_power_s — continuous scheduler used to hammer FC04×48
+        # (~17 Hz), flooding COM2 and flipping meta/error offline/online.
+        now = time.monotonic()
+        if now - self._t_power < self._poll_power_s:
+            return
+        self._t_power = now
         self._poll_power()
         DeviceLiveCache.flush_file(self.device_id)
 

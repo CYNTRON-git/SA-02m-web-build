@@ -5,6 +5,36 @@
 
 ---
 
+## 1.0.5.45 - СЭ-02м-3: offline на COM2; имена МР 6AI6AO/4DO6DI (июл 2026)
+
+### MQTT / СЭ-02м-3
+
+- **СЭ-02м-3 больше не уходит в offline из‑за лавины FC04.** `CE02M3Poller.poll_io()`
+  игнорировал `poll_power_s` и в непрерывном планировщике порта долбил чтение
+  48 input-регистров (~101 B) ~17 Гц → переполнение RX UART, Short response /
+  CRC → `meta/error=r`. Теперь учитывается `poll_power_s`; блок 500–547 читается
+  двумя чанками по 24 с ретраями; sticky retained `meta/error` сбрасывается в
+  `setup()`.
+  **файлы:** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`,
+  `opt/sa02m-modbus-mqtt/tests/test_ce_power_poll.py`
+
+### MQTT / МР-02м
+
+- **Имена модулей — count-first, как в прошивке MR-02m** (`6AI6AO`, `4DO6DI`,
+  не letter-first `AO6AI6` / `DO4DI6`). UI переписывает legacy YAML; bus_scan и
+  meta моста канонизируют; roster/тесты приведены к тем же токенам.
+  **файлы:** `www/network_config/static/js/mqtt.js`,
+  `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`,
+  `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`,
+  `opt/sa02m-rs485-roster/*`
+
+### Установка / обновление
+
+- **`update-www-only.sh` обновляет код MQTT-моста** (`modbus_mqtt_bridge.py`,
+  `mqtt_bus_scan.py`) и перезапускает сервис — фикс CE больше не остаётся только
+  на ручном деплое.
+  **файлы:** `scripts/update-www-only.sh`
+
 ## 1.0.5.44 - СЭ-02м-3: температура МК ×0.1, единица полной энергии, CT (июл 2026)
 
 ### MQTT / СЭ-02м-3

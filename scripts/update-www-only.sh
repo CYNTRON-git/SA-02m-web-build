@@ -241,4 +241,26 @@ if [ -f "$SCRIPT_DIR/10-rs485-roster.sh" ]; then
         || log WARN "10-rs485-roster.sh завершился с ошибкой"
 fi
 
+# Modbus→MQTT bridge — full install.sh runs 05-mqtt.sh; www-only used to skip
+# it, so CE poll_power_s / name fixes never reached field devices on web update.
+MQTT_OPT="$REPO_ROOT/opt/sa02m-modbus-mqtt"
+BRIDGE_DIR=/opt/sa02m-modbus-mqtt
+if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
+    install -m 0755 -o root -g root \
+        "$MQTT_OPT/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
+    sed -i 's/\r$//' "$BRIDGE_DIR/modbus_mqtt_bridge.py" 2>/dev/null || true
+    if [ -f "$MQTT_OPT/mqtt_bus_scan.py" ]; then
+        install -m 0755 -o root -g root \
+            "$MQTT_OPT/mqtt_bus_scan.py" "$BRIDGE_DIR/mqtt_bus_scan.py"
+        sed -i 's/\r$//' "$BRIDGE_DIR/mqtt_bus_scan.py" 2>/dev/null || true
+    fi
+    if systemctl is-active --quiet sa02m-modbus-mqtt.service 2>/dev/null; then
+        systemctl restart sa02m-modbus-mqtt.service \
+            && log OK "sa02m-modbus-mqtt: код обновлён, сервис перезапущен" \
+            || log WARN "sa02m-modbus-mqtt: код обновлён, restart не удался"
+    else
+        log OK "sa02m-modbus-mqtt: код обновлён (сервис не активен — без restart)"
+    fi
+fi
+
 log OK "Веб-интерфейс обновлён: $WEB_ROOT (nginx перезапускать не требуется)"

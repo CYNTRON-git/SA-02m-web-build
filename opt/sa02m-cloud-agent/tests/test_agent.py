@@ -81,7 +81,7 @@ def test_frpc_toml_local_ip_loopback():
 def test_roster_modules_verbatim(tmp_path):
     ports = {
         "COM4": {"source": "bridge", "live": True,
-                 "ours": [{"addr": 6, "model": "AO6AI6", "online": True}],
+                 "ours": [{"addr": 6, "model": "6AI6AO", "online": True}],
                  "third_party": {"total": 3, "online": 2}},
         "COM5": {"source": "scan", "live": False,
                  "ours": [{"addr": 3, "model": "DI8", "online": None}],
