@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-07-21 15:10] branch: 1.0.5.45 — MQTT: letter-first имена МР (AO6AI6/DO4DI6)
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `scripts/update-www-only.sh`
+**Тип:** Некорректное поведение / UX
+**Описание:** В «Устройства на шине» отображались `MR-02m AO6AI6` / `MR-02m DO4DI6` вместо count-first `6AI6AO` / `4DO6DI` (как в MR-02m `main.h` / сигнатурах платы).
+**Причина:** старый YAML `name:` с letter-first токенами; UI `formatDeviceDisplayName` отдавал stored name as-is при наличии `(…addr=N)`; `mqtt_bus_scan.MR02M_MODULE_TYPES` тоже был letter-first; `update-www-only.sh` не обновлял код моста.
+**Исправление:** канонизация отображения/meta по `module_type`; count-first в bus_scan; rewrite legacy имён в мосте; sync моста в `update-www-only.sh`; YAML на `192.168.1.136` приведён к `6AI6AO`/`4DO6DI`.
+
+## [2026-07-21 14:33] branch: 1.0.5.45 — СЭ-02м-3 COM2: периодический offline
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py` (деплой на `192.168.10.136`; путь обновления — `scripts/05-mqtt.sh` + `scripts/update-www-only.sh`)
+**Тип:** Некорректное поведение
+**Описание:** СЭ-02м-3 на COM2 (addr=14) периодически уходил в `meta/error=r` / «offline» каждые несколько секунд; в журнале лавина `power poll: Short response: XX/101 bytes` и `CRC mismatch on FC04`.
+**Причина:** `CE02M3Poller.poll_io()` игнорировал `poll_power_s` и в непрерывном `PortPollScheduler` долбил FC04 на 48 регистров (~101 B) с частотой цикла порта (~17 Гц). Переполнение RX UART (OE на ttyS3), обрезанные кадры → 3 fail → offline → backoff → online.
+**Исправление:** учёт `poll_power_s` в `poll_io`; чтение 500–547 двумя чанками по 24 регистра с ретраями и одним `mark_ok`/`mark_fail` на блок; сброс sticky `meta/error` в `setup()`.
+
 ## [2026-07-20 19:40] branch: 1.0.5.44 — СЭ-02м-3: mcu_temp без ×0.1, VAh, CT layout
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `www/network_config/static/css/main.css`

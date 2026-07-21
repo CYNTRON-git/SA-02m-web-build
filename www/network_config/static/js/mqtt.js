@@ -53,17 +53,25 @@ function formatDeviceDisplayName(dev) {
   const comName = (dev.port || '').replace('/dev/', '');
   const addr = dev.address != null ? dev.address : (dev.addr != null ? dev.addr : '—');
   const stored = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : '';
-  if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
   if (dev.type === 'mr02m') {
-    const typePart = mr02mTypeLabelRu(getModuleTypeCode(dev));
-    return `МР-02м ${typePart} (${comName} addr=${addr})`;
+    // Count-first product names (6AI6AO / 4DO6DI), matching MR-02m main.h /
+    // MR02M_TYPE_NAMES. Rewrite legacy letter-first YAML (AO6AI6, DO4DI6, …).
+    const mt = getModuleTypeCode(dev);
+    const auto = `МР-02м ${mr02mTypeLabelRu(mt)} (${comName} addr=${addr})`;
+    if (!stored) return auto;
+    if (/MR-?02m|МР-?02м/i.test(stored) || inferModuleTypeFromName(stored) != null) {
+      return auto;
+    }
+    if (/\([^)]*addr=\d+/i.test(stored)) return stored;
+    return `${stored} (${comName} addr=${addr})`;
   }
+  if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
   if (dev.type === 'dtv') {
-    const base = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : 'ДТВ-RS-485';
+    const base = stored || 'ДТВ-RS-485';
     return `${base} (${comName} addr=${addr})`;
   }
   if (dev.type === 'ce02m3') {
-    const base = (dev.name && String(dev.name).trim()) ? String(dev.name).trim() : 'СЭ-02м-3';
+    const base = stored || 'СЭ-02м-3';
     return `${base} (${comName} addr=${addr})`;
   }
   return `${dev.name || dev.id} (${comName} addr=${addr})`;

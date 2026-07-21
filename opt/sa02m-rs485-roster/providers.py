@@ -5,7 +5,7 @@ A provider reads ONLY files already written by a bus-owning service (the MQTT
 bridge) or by a past leased scan (the flasher). No provider ever opens a serial
 port. Each provider yields normalized roster entries (plain dicts, python3.6-safe):
 
-    { "port": "COM4", "addr": 6, "model": "AO6AI6", "ours": True,
+    { "port": "COM4", "addr": 6, "model": "6AI6AO", "ours": True,
       "online": True|False|None,   # None ⇒ liveness unknown (last-known scan)
       "source": "bridge"|"scan", "ts": <float epoch> }
 

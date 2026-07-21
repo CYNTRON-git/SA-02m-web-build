@@ -13,7 +13,7 @@ small file reads + a dict merge + one atomic write.
 Output shape (consumed by status.cgi and the cloud heartbeat filler):
     { "ts": <epoch>,
       "ports": { "COM4": { "source": "bridge", "live": true, "ts": <epoch>,
-                           "ours": [ {"addr": 6, "model": "AO6AI6",
+                           "ours": [ {"addr": 6, "model": "6AI6AO",
                                       "online": true, "source": "bridge"} ],
                            "third_party": { "total": 3, "online": 2 } } } }
 """

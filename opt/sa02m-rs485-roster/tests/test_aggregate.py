@@ -27,8 +27,8 @@ def _entry(port, addr, model, ours, online, source, ts=0.0):
 class TestMerge(unittest.TestCase):
     def test_bridge_outranks_scan_for_same_port_addr(self):
         entries = [
-            _entry("COM4", 6, "AO6AI6", True, None, "scan", ts=1),
-            _entry("COM4", 6, "AO6AI6", True, True, "bridge", ts=2),
+            _entry("COM4", 6, "6AI6AO", True, None, "scan", ts=1),
+            _entry("COM4", 6, "6AI6AO", True, True, "bridge", ts=2),
         ]
         merged = aggregate.merge_entries(entries)
         self.assertEqual(len(merged), 1)
@@ -37,8 +37,8 @@ class TestMerge(unittest.TestCase):
 
     def test_disjoint_addrs_both_kept(self):
         entries = [
-            _entry("COM4", 6, "AO6AI6", True, True, "bridge"),
-            _entry("COM4", 7, "DO16", True, None, "scan"),
+            _entry("COM4", 6, "6AI6AO", True, True, "bridge"),
+            _entry("COM4", 7, "16DO", True, None, "scan"),
         ]
         self.assertEqual(len(aggregate.merge_entries(entries)), 2)
 
@@ -46,8 +46,8 @@ class TestMerge(unittest.TestCase):
 class TestBuildPorts(unittest.TestCase):
     def test_live_port_reports_bridge_and_chip_online(self):
         ports = aggregate.build_ports([
-            _entry("COM4", 6, "AO6AI6", True, True, "bridge"),
-            _entry("COM4", 8, "DO4DI6", True, False, "bridge"),
+            _entry("COM4", 6, "6AI6AO", True, True, "bridge"),
+            _entry("COM4", 8, "4DO6DI", True, False, "bridge"),
         ])
         blk = ports["COM4"]
         self.assertEqual(blk["source"], "bridge")
@@ -56,7 +56,7 @@ class TestBuildPorts(unittest.TestCase):
 
     def test_scan_only_port_is_not_live_and_third_party_online_is_null(self):
         ports = aggregate.build_ports([
-            _entry("COM5", 3, "DO4DI6", True, None, "scan"),
+            _entry("COM5", 3, "4DO6DI", True, None, "scan"),
             _entry("COM5", 20, "", False, None, "scan"),  # third-party responder
         ])
         blk = ports["COM5"]
@@ -67,7 +67,7 @@ class TestBuildPorts(unittest.TestCase):
 
     def test_our_scan_chip_keeps_online_none(self):
         ports = aggregate.build_ports([
-            _entry("COM5", 3, "DO4DI6", True, None, "scan"),
+            _entry("COM5", 3, "4DO6DI", True, None, "scan"),
         ])
         self.assertIsNone(ports["COM5"]["ours"][0]["online"])
 
@@ -76,8 +76,8 @@ class TestBuildPorts(unittest.TestCase):
         # scan-only module (never polled by the bridge). The scan chip must keep
         # online=None + source="scan" so the UI paints it grey, never a false red.
         ports = aggregate.build_ports([
-            _entry("COM4", 6, "AO6AI6", True, True, "bridge"),   # live
-            _entry("COM4", 9, "DO16", True, None, "scan"),       # scan-only, addr disjoint
+            _entry("COM4", 6, "6AI6AO", True, True, "bridge"),   # live
+            _entry("COM4", 9, "16DO", True, None, "scan"),       # scan-only, addr disjoint
         ])
         blk = ports["COM4"]
         self.assertTrue(blk["live"])          # port is bridge-owned
@@ -102,7 +102,7 @@ class TestProviderFallback(unittest.TestCase):
             path = os.path.join(td, "_roster.json")
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump({"ts": time.time(), "devices": [
-                    {"port": "COM4", "addr": 6, "model": "AO6AI6",
+                    {"port": "COM4", "addr": 6, "model": "6AI6AO",
                      "ours": True, "online": True}]}, fh)
             p = providers.MqttBridgeProvider(path=path, stale_s=60)
             self.assertTrue(p.available())
@@ -115,7 +115,7 @@ class TestProviderFallback(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             with open(os.path.join(td, "COM5.json"), "w", encoding="utf-8") as fh:
                 json.dump({"port": "COM5", "ts": 1, "devices": [
-                    {"addr": 3, "model": "DO4DI6", "ours": True}]}, fh)
+                    {"addr": 3, "model": "4DO6DI", "ours": True}]}, fh)
             p = providers.FlasherScanProvider(cache_dir=td)
             self.assertTrue(p.available())
             entries = p.entries()
@@ -131,8 +131,8 @@ class TestCgiHelper(unittest.TestCase):
         block = {
             "source": "bridge", "live": True, "ts": 123.0,
             "ours": [
-                {"addr": 6, "model": "AO6AI6", "online": True, "source": "bridge"},
-                {"addr": 9, "model": "DO16", "online": None, "source": "scan"},
+                {"addr": 6, "model": "6AI6AO", "online": True, "source": "bridge"},
+                {"addr": 9, "model": "16DO", "online": None, "source": "scan"},
             ],
             "third_party": {"total": 0, "online": None},
         }
@@ -152,11 +152,11 @@ class TestEndToEnd(unittest.TestCase):
             os.makedirs(scan_dir)
             with open(bridge, "w", encoding="utf-8") as fh:
                 json.dump({"ts": time.time(), "devices": [
-                    {"port": "COM4", "addr": 6, "model": "AO6AI6",
+                    {"port": "COM4", "addr": 6, "model": "6AI6AO",
                      "ours": True, "online": True}]}, fh)
             with open(os.path.join(scan_dir, "COM4.json"), "w", encoding="utf-8") as fh:
                 json.dump({"port": "COM4", "ts": 1, "devices": [
-                    {"addr": 6, "model": "AO6AI6", "ours": True}]}, fh)
+                    {"addr": 6, "model": "6AI6AO", "ours": True}]}, fh)
             provs = [providers.MqttBridgeProvider(path=bridge, stale_s=60),
                      providers.FlasherScanProvider(cache_dir=scan_dir)]
             result = aggregate.aggregate(provs)
