@@ -60,6 +60,12 @@ class DeviceLiveCache:
     _units: dict[str, dict[str, str]] = {}
     _errors: dict[str, dict[str, str]] = {}
     _sensor_types: dict[str, dict[str, str]] = {}
+    _online: dict[str, bool] = {}
+
+    @classmethod
+    def set_online(cls, device_id: str, online: bool) -> None:
+        with cls._lock:
+            cls._online[device_id] = bool(online)
 
     @classmethod
     def set_control(cls, device_id: str, name: str, value: str) -> None:
@@ -104,6 +110,7 @@ class DeviceLiveCache:
             units = dict(cls._units.get(device_id, {}))
             errors = dict(cls._errors.get(device_id, {}))
             sensor_types = dict(cls._sensor_types.get(device_id, {}))
+            online = bool(cls._online.get(device_id, True))
         if not controls and not units and not sensor_types:
             return
         try:
@@ -111,7 +118,7 @@ class DeviceLiveCache:
             path = LIVE_CACHE_DIR / f"{device_id}.json"
             tmp = path.with_suffix(".json.tmp")
             payload = {
-                "ok": True,
+                "ok": online,
                 "device": device_id,
                 "source": "cache",
                 "controls": controls,
@@ -800,45 +807,67 @@ class FastModbusScanner:
         return devices
 
 
-# ── FastModbusEventPortManager ─────────────────────────────────────────────────
+# ── Fast Modbus (wb-mqtt-serial serial_client*.cpp / modbus_ext_common.cpp) ───
+# ReadEventsPeriod @≥115200 → 50 ms; event burst ≤ MAX_POLL_TIME 100 ms;
+# 0x12 ends burst only; classic = separate TimeBalancer POLLING task;
+# sporadic-only insurance ≥500 ms; BALANCING_THRESHOLD 500 ms → Force poll.
+FMB_EVENT_PERIOD_S = 0.05
+FMB_EVENT_BURST_S = 0.10          # MAX_POLL_TIME
+FMB_INSURANCE_POLL_S = 0.5        # DEFAULT_SPORADIC_ONLY_READ_RATE_LIMIT
+FMB_BALANCING_THRESHOLD_S = 0.5   # BALANCING_THRESHOLD
+FMB_MAX_POLL_TIME_S = 0.10        # MAX_POLL_TIME (events + classic slice)
+FMB_RECONFIGURE_BACKOFF_S = 15.0  # rebooted-then-silent device retry window
+                                  # (same order as the initial-offline
+                                  # next_fmb_retry throttle in the run loop)
+
+
 class FastModbusEventPortManager:
-    """
-    Per-port Fast Modbus event polling for real-time channel notifications.
+    """Wire-protocol helper for one RS-485 port (no own thread).
 
-    Device-agnostic: each registered device brings its own event-range list
-    and a dispatch callback (the poller owns the register layout — one home
-    per device type; the manager owns only the FMB wire protocol).
-
-    Poll cycle:
-      1. Send poll_events (0x10) broadcast.
-      2. One device wins arbitration and responds 0x11 (events) or 0x12 (no events).
-      3. Publish changed values to MQTT immediately.
-      4. Repeat; on 0x12 wait 50ms, on 0x11 poll again immediately.
+    Owned by PortCycleScheduler — same role as TSerialClientEventsReader
+    inside TSerialClientRegisterAndEventsReader.
     """
-    POLL_TIMEOUT = 0.25   # 250ms covers 12-bit event arbitration at any baud
+    POLL_TIMEOUT = 0.25
     MAX_DATA_LEN = 128
 
     def __init__(self, port_path: str, baudrate: int):
         self._port_path = port_path
         self._baudrate = baudrate
-        self._devices: dict[int, dict] = {}   # addr → info
+        self._devices: dict[int, dict] = {}
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
         self._last_poll_answered = False
         self._stop = threading.Event()
         self._log = logging.getLogger(f"fmb.{port_path.replace('/dev/', '')}")
+        if baudrate >= 115200:
+            self._event_period_s = 0.05
+        elif baudrate >= 38400:
+            self._event_period_s = 0.10
+        else:
+            self._event_period_s = 0.20
+
+    @property
+    def event_period_s(self) -> float:
+        return self._event_period_s
+
+    def has_devices(self) -> bool:
+        return bool(self._devices)
+
+    def has_configured(self) -> bool:
+        return any(d.get("configured") for d in self._devices.values())
 
     def register_device(self, addr: int, device_id: str,
                         ranges: list[tuple[int, int, int]],
-                        dispatch) -> None:
-        """ranges: [(evt_type, start_reg, count)] from the poller's
-        fmb_event_ranges(); dispatch: poller.fmb_dispatch(evt_type, reg, val)."""
+                        dispatch, poller=None) -> None:
+        """ranges from poller.fmb_event_ranges(); dispatch = fmb_dispatch."""
         self._devices[addr] = {
             "id": device_id,
             "ranges": list(ranges),
-            "pending": list(ranges),   # not-yet-acked; retried in run()
+            "pending": list(ranges),
             "dispatch": dispatch,
-            "configured": False,       # ≥1 range acked
+            "poller": poller,
+            "configured": False,
+            "retry_at": 0.0,
         }
 
     # --- configure_events (0x18) for one device ------------------------------
@@ -853,9 +882,14 @@ class FastModbusEventPortManager:
             ok = False
             err = ""
             try:
-                # ACK: [addr][0x46][0x18][1][0x00][CRC_L][CRC_H] = 7 bytes
-                resp = ser.fmb_send_recv(frame, 7, 7, 0.3)
-                ok = len(resp) >= 7 and resp[0] == addr and resp[2] == 0x18
+                # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
+                # depends on count; leading 0xFF arbitration noise possible.
+                resp = ser.fmb_send_recv(frame, 5, 48, 0.4)
+                for i in range(max(0, len(resp) - 4)):
+                    if (resp[i] == addr and resp[i + 1] == 0x46
+                            and resp[i + 2] == 0x18):
+                        ok = True
+                        break
             except Exception as e:
                 err = f" ({e})"
             if ok:
@@ -966,21 +1000,36 @@ class FastModbusEventPortManager:
         self._log.debug("event %s type=%02X reg=%d val=%d",
                         dev["id"], evt_type, reg, val)
         if evt_type == FMB_EVT_REBOOT:
-            # Device-agnostic; register layouts are the pollers' business.
+            # wb-mqtt-serial: reboot → SetDisconnected + re-EnableEvents.
             self._log.info("Device addr=%d rebooted (event 0x0F)", slave_id)
+            dev["pending"] = list(dev["ranges"])
+            dev["configured"] = False
+            # The reboot event proves the device is talking — reconfigure
+            # immediately, regardless of a backoff from an earlier silence.
+            dev["retry_at"] = 0.0
+            poller = dev.get("poller")
+            if poller is not None:
+                poller.set_fmb_io_covered(False)
             return
         dev["dispatch"](evt_type, reg, val)
 
-    # --- Run loop ------------------------------------------------------------
+    def configure_all(self, *, only_ready: bool = False) -> None:
+        """EnableEvents for registered devices.
 
-    def run(self) -> None:
+        only_ready: skip devices that have not completed classic reads yet
+        (CE wedged after 0x18 while silent — arm FMB only after mark_ok).
+        """
+        if not self._devices:
+            return
         ser = get_port(self._port_path, self._baudrate)
-        time.sleep(2)
-
-        # Configure events for all registered devices; retries touch only the
-        # still-unacked ranges (per-range graceful degradation).
         for addr, dev in self._devices.items():
-            for attempt in range(3):
+            if dev.get("configured") and not dev.get("pending"):
+                continue
+            poller = dev.get("poller")
+            if only_ready and poller is not None:
+                if not poller.classic_ready_for_fmb():
+                    continue
+            for _attempt in range(3):
                 if self._configure_device(ser, addr, dev):
                     break
                 time.sleep(0.5)
@@ -992,35 +1041,84 @@ class FastModbusEventPortManager:
                     ["type=0x%02X start=%d count=%d" % r for r in acked],
                     " — %d range(s) rejected, classic polling covers them"
                     % len(dev["pending"]) if dev["pending"] else "")
+                if poller is not None:
+                    poller.set_fmb_io_covered(True)
+                    try:
+                        poller.poll_io()
+                    except Exception as e:
+                        self._log.debug("post-configure poll %s: %s",
+                                        poller.device_id, e)
             else:
-                self._log.warning("FMB events config failed addr=%d — polling only", addr)
+                self._log.warning(
+                    "FMB events config failed addr=%d — polling only", addr)
+                if poller is not None:
+                    poller.set_fmb_io_covered(False)
+        if not self.has_configured() and not only_ready:
+            self._log.warning(
+                "FMB events: no devices configured — classic polling only")
 
-        if not any(d["configured"] for d in self._devices.values()):
-            # Без единого настроенного устройства каждый poll_events жёг бы
-            # POLL_TIMEOUT (250 мс) под портовым локом впустую.
-            self._log.warning("FMB events: no devices configured — manager stopped")
-            return
+    def reconfigure_pending(self) -> None:
+        """After reboot events — wb RescheduleDisconnectedDevices / EnableEvents."""
+        now = time.monotonic()
+        ser = None
+        for addr, dev in self._devices.items():
+            if dev["configured"] or not dev.get("pending"):
+                continue
+            # A rebooted-then-silent device must not burn the 0.4 s configure
+            # timeout per range under the port lock on every ~50 ms event
+            # cycle — back off like the run loop's next_fmb_retry throttle.
+            if now < dev.get("retry_at", 0.0):
+                continue
+            if ser is None:
+                ser = get_port(self._port_path, self._baudrate)
+            if self._configure_device(ser, addr, dev) and dev["configured"]:
+                poller = dev.get("poller")
+                if poller is not None:
+                    poller.set_fmb_io_covered(True)
+                self._log.info(
+                    "FMB events re-configured addr=%d (%s) after reboot",
+                    addr, dev["id"])
+            if not dev["configured"]:
+                dev["retry_at"] = now + FMB_RECONFIGURE_BACKOFF_S
 
-        # Молчание в ответ на poll_events (не 0x12!) = устройства перестали
-        # отвечать на FMB — не держать лок по 250 мс каждые 50 мс.
-        silent_polls = 0
+    def retry_unconfigured(self) -> bool:
+        """Quiet retry when first configure_all failed (device was offline)."""
+        if not self._devices:
+            return self.has_configured()
+        # Prefer the shared configure path with classic-ready gate.
+        self.configure_all(only_ready=True)
+        return self.has_configured()
+
+    def event_burst(self) -> int:
+        """ModbusExt::ReadEvents loop: 0x11 continue, 0x12 / timeout stop.
+
+        Returns count of unanswered polls in this burst (0 = OK).
+        """
+        ser = get_port(self._port_path, self._baudrate)
+        t0 = time.monotonic()
+        silent = 0
         while not self._stop.is_set():
-            try:
-                had_events, events = self._poll_once(ser)
-                for (slave_id, evt_type, reg, val) in events:
-                    self._dispatch(slave_id, evt_type, reg, val)
-                if self._last_poll_answered:
-                    silent_polls = 0
-                else:
-                    silent_polls += 1
-                    if silent_polls == 10:
-                        self._log.warning(
-                            "FMB events: no responses — degraded to 2s polling")
-                if not had_events:
-                    time.sleep(2.0 if silent_polls >= 10 else 0.05)
-            except Exception as e:
-                self._log.debug("event loop error: %s", e)
-                time.sleep(0.1)
+            if time.monotonic() - t0 >= FMB_EVENT_BURST_S:
+                break
+            had_events, events = self._poll_once(ser)
+            for (slave_id, evt_type, reg, val) in events:
+                self._dispatch(slave_id, evt_type, reg, val)
+            if not self._last_poll_answered:
+                silent += 1
+                break
+            if not had_events:
+                break
+        return silent
+
+    def set_insurance(self, armed: bool) -> None:
+        for dev in self._devices.values():
+            poller = dev.get("poller")
+            if poller is None:
+                continue
+            if armed and dev.get("configured"):
+                poller.set_fmb_io_covered(True)
+            else:
+                poller.set_fmb_io_covered(False)
 
     def stop(self) -> None:
         self._stop.set()
@@ -1290,12 +1388,40 @@ class DevicePoller:
         self._backoff_base_s = float(cfg.get("backoff_base_s", 2.0))
         self._backoff_max_s  = float(cfg.get("backoff_max_s", 30.0))
         self._fail_count     = 0
+        self._classic_ok_count = 0
         self._online         = True
         self._backoff_until  = 0.0
         # Последняя MQTT-запись по каналу: name → (value, monotonic ts).
         # Защищает свежий writeback от затирания устаревшим поллом (A2).
         self._wb_recent: dict[str, tuple[str, float]] = {}
         self._wb_offline_log_t = 0.0
+        # When True, hot-path classic intervals are floored to FMB_INSURANCE_POLL_S
+        # (wb-mqtt-serial DEFAULT_SPORADIC_ONLY_READ_RATE_LIMIT) while events
+        # deliver changes; PortCycleScheduler POLLING task still calls poll_io.
+        self._fmb_io_covered = False
+
+    def set_fmb_io_covered(self, covered: bool) -> None:
+        """Arm/disarm ≥500 ms classic insurance while Fast Modbus events are live."""
+        covered = bool(covered)
+        if covered == self._fmb_io_covered:
+            return
+        self._fmb_io_covered = covered
+        # MR / DTV expose interval attrs; CE has none — no-op.
+        for attr in ("_poll_do_di_s", "_poll_ai_ao_s",
+                     "_poll_sensors_s", "_poll_presence_s"):
+            if not hasattr(self, attr):
+                continue
+            saved = f"{attr}_pre_fmb"
+            if covered:
+                if not hasattr(self, saved):
+                    setattr(self, saved, float(getattr(self, attr)))
+                setattr(self, attr, max(float(getattr(self, attr)), FMB_INSURANCE_POLL_S))
+            elif hasattr(self, saved):
+                setattr(self, attr, float(getattr(self, saved)))
+                delattr(self, saved)
+
+    def fmb_covers_io(self) -> bool:
+        return self._fmb_io_covered
 
     def get_port(self) -> ModbusSerial:
         return get_port(self.port_path, self.baudrate)
@@ -1369,6 +1495,8 @@ class DevicePoller:
         """A read succeeded — device is alive again."""
         self._fail_count = 0
         self._backoff_until = 0.0
+        self._classic_ok_count = getattr(self, "_classic_ok_count", 0) + 1
+        DeviceLiveCache.set_online(self.device_id, True)
         if not self._online:
             self._online = True
             self.log.info("device back online")
@@ -1381,11 +1509,16 @@ class DevicePoller:
             over = self._fail_count - self._fail_threshold
             delay = min(self._backoff_base_s * (2 ** over), self._backoff_max_s)
             self._backoff_until = time.monotonic() + delay
+            DeviceLiveCache.set_online(self.device_id, False)
             if self._online:
                 self._online = False
                 self.log.warning("device offline after %d failed reads — "
                                   "backing off polling", self._fail_count)
                 self.pub.device_online(self.device_id, False)
+
+    def classic_ready_for_fmb(self, min_ok: int = 2) -> bool:
+        """True after a few successful classic reads (safe to send 0x18)."""
+        return self._online and getattr(self, "_classic_ok_count", 0) >= min_ok
 
     def in_backoff(self) -> bool:
         return time.monotonic() < self._backoff_until
@@ -1444,25 +1577,67 @@ class DevicePoller:
         raise NotImplementedError
 
 
-# ── Port poll scheduler (one RS-485 line → continuous round-robin) ───────────
-class PortPollScheduler:
-    """
-    Один поток на port:baud: без пауз между циклами — после обхода всех addr
-    сразу следующий круг (скорость ограничена только Modbus/RS-485).
+# ── Port cycle (wb-mqtt-serial TSerialClientRegisterAndEventsReader) ─────────
+class PortCycleScheduler:
+    """One thread per port:baud — interleaved EVENTS + POLLING (TimeBalancer).
+
+    Mirrors OpenPortCycle:
+      * EVENTS (High): event_burst ≤100 ms, reschedule @ ReadEventsPeriod
+      * POLLING (Low): classic poll_io / poll_slow within ≤100 ms slice
+      * Wait until next deadline, capped at MAX_POLL_TIME (MQTT writeback)
+      * BALANCING_THRESHOLD: if event time accumulates ≥500 ms → Force poll
     """
 
-    def __init__(self, port_path: str, baudrate: int, pollers: list[DevicePoller]):
+    def __init__(self, port_path: str, baudrate: int,
+                 pollers: list[DevicePoller],
+                 fmb: FastModbusEventPortManager | None = None):
         self._port_path = port_path
         self._baudrate = baudrate
         self._pollers = pollers
+        self._fmb = fmb
         self._stop = threading.Event()
+        self._poll_idx = 0
         tag = port_path.replace("/dev/", "")
         self._log = logging.getLogger(f"port.{tag}")
 
     def stop(self) -> None:
         self._stop.set()
+        if self._fmb is not None:
+            self._fmb.stop()
         for p in self._pollers:
             p.stop()
+
+    def _classic_slice(self, budget_s: float, read_at_least_one: bool) -> bool:
+        """RegisterPoller.OpenPortCycle — one time-boxed classic pass."""
+        t0 = time.monotonic()
+        n = len(self._pollers)
+        if n == 0:
+            return False
+        did_bus = False
+        for i in range(n):
+            if self._stop.is_set():
+                break
+            elapsed = time.monotonic() - t0
+            if elapsed >= budget_s and (did_bus or not read_at_least_one):
+                break
+            p = self._pollers[(self._poll_idx + i) % n]
+            if p.in_backoff():
+                continue
+            try:
+                before = time.monotonic()
+                p.poll_io()
+                if time.monotonic() - before >= 0.005:
+                    did_bus = True
+            except Exception as e:
+                self._log.debug("poll_io %s: %s", p.device_id, e)
+        self._poll_idx = (self._poll_idx + 1) % n
+        # Slow channels every slice (diag/uptime) — cheap when not due.
+        for p in self._pollers:
+            try:
+                p.poll_slow_if_due(t0)
+            except Exception as e:
+                self._log.debug("poll_slow %s: %s", p.device_id, e)
+        return did_bus
 
     def run(self) -> None:
         time.sleep(0.5)
@@ -1474,49 +1649,133 @@ class PortPollScheduler:
             except Exception as e:
                 self._log.error("setup %s: %s", p.device_id, e)
 
-        self._log.info("continuous poll on %s, %d device(s)",
-                        self._port_path, len(self._pollers))
-
-        cyc_n = 0
-        cyc_busy_max = 0.0
-        cyc_busy_sum = 0.0
-        stats_t = time.monotonic()
-        while not self._stop.is_set():
-            t0 = time.monotonic()
-            polled = False
+        # Classic warmup before any FC46 0x18 — a silent/hung slave must not
+        # get configure_events (observed CE COM2 wedge after early 0x18).
+        if not self._stop.is_set():
             for p in self._pollers:
                 if self._stop.is_set():
                     break
-                if not p.in_backoff():
-                    polled = True
-                    try:
-                        p.poll_io()
-                    except Exception as e:
-                        self._log.debug("poll_io %s: %s", p.device_id, e)
                 try:
-                    p.poll_slow_if_due(t0)
+                    if not p.in_backoff():
+                        p.poll_io()
                 except Exception as e:
-                    self._log.debug("poll_slow %s: %s", p.device_id, e)
+                    self._log.debug("warmup poll %s: %s", p.device_id, e)
+            time.sleep(0.3)
 
-            cyc = time.monotonic() - t0
-            # Статистика только по циклам с реальным IO (>5 мс), раз в минуту.
-            if cyc >= 0.005:
-                cyc_n += 1
-                cyc_busy_sum += cyc
-                cyc_busy_max = max(cyc_busy_max, cyc)
+        if self._fmb is not None and self._fmb.has_devices():
+            if not self._stop.is_set():
+                # Ready devices now; others via retry_unconfigured / only_ready.
+                self._fmb.configure_all(only_ready=True)
+
+        has_fmb = self._fmb is not None and self._fmb.has_configured()
+        self._log.info(
+            "wb-style port cycle on %s, %d device(s), fmb=%s",
+            self._port_path, len(self._pollers),
+            "on" if has_fmb else "off")
+
+        now = time.monotonic()
+        next_events = now
+        next_poll = now
+        next_fmb_retry = now + 10.0
+        high_time_accum = 0.0
+        last_too_small = False
+        silent_polls = 0
+        cyc_n = 0
+        cyc_busy_max = 0.0
+        cyc_busy_sum = 0.0
+        stats_t = now
+
+        while not self._stop.is_set():
+            now = time.monotonic()
+            has_fmb = self._fmb is not None and self._fmb.has_configured()
+            # Offline at first configure_all → quiet retry until device answers.
+            if (self._fmb is not None and self._fmb.has_devices()
+                    and not has_fmb and now >= next_fmb_retry):
+                try:
+                    has_fmb = self._fmb.retry_unconfigured()
+                except Exception as e:
+                    self._log.debug("FMB configure retry: %s", e)
+                next_fmb_retry = now + (5.0 if has_fmb else 15.0)
+                if has_fmb:
+                    self._log.info(
+                        "wb-style port cycle on %s: fmb became on",
+                        self._port_path)
+
+            # GetDeadline + cap at MAX_POLL_TIME (responsive MQTT writeback).
+            if has_fmb:
+                deadline = min(next_events, next_poll)
+            else:
+                deadline = next_poll
+            wait = min(max(0.0, deadline - now), FMB_MAX_POLL_TIME_S)
+            if last_too_small:
+                # WB: idle counted as High so balancing can Force a poll.
+                high_time_accum += wait
+            if self._stop.wait(wait):
+                break
+
+            now = time.monotonic()
+            force_poll = high_time_accum >= FMB_BALANCING_THRESHOLD_S
+            do_events = (has_fmb and now >= next_events and not force_poll)
+
+            if do_events:
+                assert self._fmb is not None
+                t0 = time.monotonic()
+                try:
+                    self._fmb.reconfigure_pending()
+                    burst_silent = self._fmb.event_burst()
+                except Exception as e:
+                    self._log.debug("events: %s", e)
+                    burst_silent = 1
+                spent = time.monotonic() - t0
+                high_time_accum += spent
+                next_events = t0 + self._fmb.event_period_s
+                last_too_small = False
+                if burst_silent:
+                    silent_polls += burst_silent
+                    if silent_polls >= 10:
+                        self._log.warning(
+                            "FMB events: no responses — classic at full rate")
+                        self._fmb.set_insurance(False)
+                        # Treat as no FMB until answers return.
+                        next_events = time.monotonic() + 2.0
+                else:
+                    if silent_polls >= 10:
+                        self._fmb.set_insurance(True)
+                    silent_polls = 0
+            else:
+                # POLLING task (Low) — Force if balancing threshold hit or no FMB.
+                read_at_least_one = force_poll or not has_fmb
+                t0 = time.monotonic()
+                did = self._classic_slice(FMB_MAX_POLL_TIME_S, read_at_least_one)
+                spent = time.monotonic() - t0
+                if force_poll:
+                    high_time_accum = 0.0
+                if spent >= 0.005:
+                    cyc_n += 1
+                    cyc_busy_sum += spent
+                    cyc_busy_max = max(cyc_busy_max, spent)
+                if not did or spent < 0.005:
+                    last_too_small = True
+                    next_poll = now + 0.05
+                else:
+                    last_too_small = False
+                    next_poll = now
+                # Keep EVENTS scheduled when FMB live (WB Contains check).
+                if has_fmb and next_events < now:
+                    next_events = now
+
             if time.monotonic() - stats_t >= 60 and cyc_n:
-                self._log.info("poll cycles: n=%d avg=%.0f ms max=%.0f ms",
-                               cyc_n, cyc_busy_sum / cyc_n * 1000,
-                               cyc_busy_max * 1000)
+                self._log.info(
+                    "poll cycles: n=%d avg=%.0f ms max=%.0f ms fmb=%s",
+                    cyc_n, cyc_busy_sum / cyc_n * 1000, cyc_busy_max * 1000,
+                    "on" if has_fmb else "off")
                 cyc_n = 0
                 cyc_busy_max = cyc_busy_sum = 0.0
                 stats_t = time.monotonic()
 
-            if not polled or cyc < 0.005:
-                # Backoff у всех либо интервалы полла не подошли (D6) —
-                # не крутить CPU впустую.
-                if self._stop.wait(0.05):
-                    break
+
+# Backward-compatible alias (tests / imports).
+PortPollScheduler = PortCycleScheduler
 
 
 # ── MR-02m poller ─────────────────────────────────────────────────────────────
@@ -2198,6 +2457,14 @@ class DTVPoller(DevicePoller):
         self._poll_presence_s = float(cfg.get("poll_presence_s", 2))
         self._poll_diag_s     = float(cfg.get("poll_diag_s",     60))
         self._poll_uptime_s   = float(cfg.get("poll_uptime_s",   5))
+        # Low-rate classic insurance for the event-covered fast channels
+        # (regs 25-30 + coils) while FMB is armed — NOT the 500 ms floor:
+        # hot rereads of 25-30 alongside events caused the COM1 CRC storm
+        # (BUGLOG 2026-07-21 16:40).
+        # Clamped to >=0.5 s: a sub-0.5 value recreates the COM1 CRC storm
+        self._poll_insurance_s = max(0.5, float(cfg.get("poll_insurance_s", 30)))
+        self._t_sensors       = 0.0
+        self._t_insurance     = 0.0
         self._t_diag          = 0.0
         self._t_uptime        = 0.0
         # Optional explicit list of sensor names to poll
@@ -2239,12 +2506,16 @@ class DTVPoller(DevicePoller):
         for coil, (ch_name, _) in self.DTV_COILS.items():
             self.pub.pub_control_meta(self.device_id, ch_name, "type", "switch")
 
-    def _poll_sensors(self) -> None:
-        # Bulk read regs 1-30
+    def _poll_sensors(self, *, from_reg: int = 1, upto_reg: int = 30) -> None:
+        # Bulk read regs from_reg..upto_reg (hot path truncates to 1..24 when
+        # FMB owns 25..30; insurance rereads 25..30 alone). Publishing is the
+        # same code path either way — payload formats stay byte-identical.
+        start = max(1, min(30, int(from_reg)))
+        count = max(1, min(30, int(upto_reg)) - start + 1)
         try:
-            regs = self.read_input_registers(self.address, 1, 30)
-            for idx in range(30):
-                reg = idx + 1
+            regs = self.read_input_registers(self.address, start, count)
+            for idx in range(count):
+                reg = start + idx
                 if reg not in self.DTV_REGS:
                     continue
                 ch_name, scale, _, _ = self.DTV_REGS[reg]
@@ -2380,9 +2651,35 @@ class DTVPoller(DevicePoller):
         self._setup_writeback()
 
     def poll_io(self) -> None:
-        self._poll_sensors()
-        self._poll_coils()
-        DeviceLiveCache.flush_file(self.device_id)
+        # Honor poll_sensors_s — with FMB insurance the port cycle would
+        # otherwise hammer FC04×30 every ≥500 ms and collide with events.
+        now = time.monotonic()
+        interval = self._poll_sensors_s
+        if self.fmb_covers_io():
+            interval = max(interval, FMB_INSURANCE_POLL_S)
+        did = False
+        if now - self._t_sensors >= interval:
+            self._t_sensors = now
+            # Fast channels 25..30 + coils: events when FMB armed; else classic.
+            if self.fmb_covers_io():
+                self._poll_sensors(upto_reg=24)
+            else:
+                self._poll_sensors(upto_reg=30)
+                self._poll_coils()
+            did = True
+        # Insurance for the event-covered channels: a lost event (CRC error,
+        # burst overflow) must not leave regs 25-30 / coils stale forever —
+        # low-rate classic reread, mirroring the MR/CE insurance pattern.
+        if (self.fmb_covers_io()
+                and now - self._t_insurance >= self._poll_insurance_s):
+            self._t_insurance = now
+            self._poll_sensors(from_reg=self.DTV_FMB_INPUT_START,
+                               upto_reg=self.DTV_FMB_INPUT_START
+                               + self.DTV_FMB_INPUT_COUNT - 1)
+            self._poll_coils()
+            did = True
+        if did:
+            DeviceLiveCache.flush_file(self.device_id)
 
     def poll_slow_if_due(self, now: float) -> None:
         flushed = False
@@ -2579,6 +2876,48 @@ class CE02M3Poller(DevicePoller):
             self.pub.pub_control(self.device_id, "asic_temp",
                                  str(self._s16(regs[47])))
 
+    # Fast Modbus events (CE-02m-3 firmware EN_METER set, 2026-07-18):
+    # U phases Input 500-502 (V×10), I phases+N Input 510-513 (A×1000).
+    # Priority via configure_events (0x18); without it push_input_reg is no-op.
+    CE_FMB_U_START = 500
+    CE_FMB_U_COUNT = 3
+    CE_FMB_I_START = 510
+    CE_FMB_I_COUNT = 4
+
+    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        return [
+            (FMB_EVT_INPUT, self.CE_FMB_U_START, self.CE_FMB_U_COUNT),
+            (FMB_EVT_INPUT, self.CE_FMB_I_START, self.CE_FMB_I_COUNT),
+        ]
+
+    def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
+        if evt_type != FMB_EVT_INPUT:
+            self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+            return
+        ph3 = ["a", "b", "c"]
+        if self.CE_FMB_U_START <= reg < self.CE_FMB_U_START + self.CE_FMB_U_COUNT:
+            if not self._en_volt:
+                return
+            ph = ph3[reg - self.CE_FMB_U_START]
+            if ph.upper() not in self._phases:
+                return
+            self.pub.pub_control(self.device_id, f"voltage_{ph}",
+                                 str(round(val * 0.1, 1)))
+            return
+        if self.CE_FMB_I_START <= reg < self.CE_FMB_I_START + self.CE_FMB_I_COUNT:
+            if not self._en_curr:
+                return
+            raw = self._s16(val)
+            amps = round(raw * 0.001 * self._ct_ratio, 3)
+            idx = reg - self.CE_FMB_I_START
+            if idx < 3:
+                self.pub.pub_control(self.device_id, f"current_{ph3[idx]}",
+                                     str(amps))
+            else:
+                self.pub.pub_control(self.device_id, "current_n", str(amps))
+            return
+        self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
+
     def _poll_energy(self) -> None:
         if not self._en_ener:
             return
@@ -2663,8 +3002,7 @@ POLLER_CLASSES: dict[str, type] = {
     "ce02m3": CE02M3Poller,
 }
 _pollers:  list[DevicePoller] = []
-_port_schedulers: list[PortPollScheduler] = []
-_fmb_mgrs: list[FastModbusEventPortManager] = []
+_port_schedulers: list[PortCycleScheduler] = []
 _threads:  list[threading.Thread] = []
 _stop_ev   = threading.Event()
 
@@ -2693,8 +3031,6 @@ def signal_handler(sig, frame) -> None:
         s.stop()
     for p in _pollers:
         p.stop()
-    for m in _fmb_mgrs:
-        m.stop()
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -2769,11 +3105,8 @@ def main() -> None:
                              args=((wdg_usec / 1_000_000) / 2,), daemon=True)
         t.start()
 
-    # Per-port Fast Modbus event managers, created lazily on the first
-    # registered device with fast_modbus: true and a non-empty event map.
+    # Per-port FMB helpers (no own thread) + pollers grouped by port:baud.
     fmb_ports: dict[str, FastModbusEventPortManager] = {}
-
-    # Build device pollers and group by RS-485 port (one scheduler thread per line)
     by_port: dict[str, list[DevicePoller]] = {}
     for dev_cfg in devices_cfg:
         dev_type = dev_cfg.get("type", "").lower()
@@ -2789,36 +3122,35 @@ def main() -> None:
         by_port.setdefault(port_key, []).append(poller)
         log.info("Registered %s poller %s on %s", dev_type, dev_cfg["id"], port_key)
 
-        if dev_cfg.get("fast_modbus", False):
+        # Default ON for MR/DTV. CE: explicit fast_modbus:true only — early
+        # configure_events while silent wedged CE on COM2 (RX frozen).
+        want_fmb = bool(dev_cfg["fast_modbus"]) if "fast_modbus" in dev_cfg \
+            else dev_type in ("mr02m", "dtv")
+        if want_fmb:
             ranges = poller.fmb_event_ranges()
-            if ranges:   # [] = the device type has no FMB event support
+            if ranges:
                 mgr = fmb_ports.get(port_key)
                 if mgr is None:
                     mgr = FastModbusEventPortManager(
                         poller.port_path, poller.baudrate)
                     fmb_ports[port_key] = mgr
                 mgr.register_device(poller.address, poller.device_id,
-                                    ranges, poller.fmb_dispatch)
+                                    ranges, poller.fmb_dispatch, poller=poller)
 
+    # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
         port_path, baud_s = port_key.rsplit(":", 1)
-        sched = PortPollScheduler(port_path, int(baud_s), pollers)
+        sched = PortCycleScheduler(
+            port_path, int(baud_s), pollers, fmb=fmb_ports.get(port_key))
         _port_schedulers.append(sched)
         t = threading.Thread(target=sched.run, name=f"port-{port_path}",
                              daemon=True)
         _threads.append(t)
         t.start()
         addrs = ", ".join(str(p.address) for p in pollers)
-        log.info("Started continuous port poll %s — addr [%s]", port_key, addrs)
-
-    # Start Fast Modbus event managers
-    for mgr in fmb_ports.values():
-        _fmb_mgrs.append(mgr)
-        t = threading.Thread(target=mgr.run, name=f"fmb-{mgr._port_path}",
-                             daemon=True)
-        _threads.append(t)
-        t.start()
-        log.info("Started Fast Modbus event manager for %s", mgr._port_path)
+        fmb_on = "fmb" if port_key in fmb_ports else "classic"
+        log.info("Started wb-style port cycle %s [%s] — addr [%s]",
+                 port_key, fmb_on, addrs)
 
     if not _pollers:
         log.warning("No devices configured — bridge idle")

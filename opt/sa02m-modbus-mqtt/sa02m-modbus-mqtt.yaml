@@ -33,9 +33,10 @@ devices:
   #   baudrate: 115200
   #   address: 5
   #   name: "MR-02m DO6DI8 (COM1 addr=5)"
-  #   # fast_modbus: true   # включить Wiren Board Fast Modbus events (мгновенный DO/DI)
+  #   # fast_modbus: true   # по умолчанию ON для mr02m/dtv (false — только classic)
   #   poll_s: 1              # полный опрос DO/DI + AO/AI (с); poll_do_di_s/poll_ai_ao_s — устар., синхронизируются с poll_s
   #   poll_diag_s: 60
+  #   poll_insurance_s: 30   # страхующий classic-опрос каналов под FMB-событиями (dtv; ≥0.5 c)
   #   offline_after_fails: 3    # доступность: после N неответов → offline + backoff
   #   backoff_base_s: 2.0
   #   backoff_max_s: 30.0

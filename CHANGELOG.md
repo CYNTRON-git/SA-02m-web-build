@@ -5,6 +5,47 @@
 
 ---
 
+## 1.0.5.46 - MQTT: планировщик FMB-событий как в wb-mqtt-serial; быстрая вкладка MQTT (июл 2026)
+
+### MQTT / мост (Fast Modbus события)
+
+- **Один поток на порт по образцу wb-mqtt-serial** (`TSerialClientRegisterAndEventsReader`
+  / TimeBalancer): `PortCycleScheduler` — EVENTS (burst `poll_events` до 0x12 или
+  100 мс; период 50 мс @115200) + POLLING (classic срезами ≤100 мс), страхующий
+  classic-опрос ≥500 мс для каналов под событиями, Force classic при накоплении
+  событий ≥500 мс.
+  **файлы:** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `docs/MQTT_TOPICS.md`
+- **FMB-события для СЭ-02м-3** (Input 500–502 Uph, 510–513 Iph+N — как в прошивке
+  CE EN_METER), но только по явному `fast_modbus: true` и после classic-прогрева
+  (`classic_ready_for_fmb`) — ранний 0x18 на COM2 клинил СЭ (восстановление —
+  только power-cycle). Для `mr02m`/`dtv` FMB по умолчанию включён.
+- **Защита от шторма переконфигурации** (аудит A1): повторный `configure_events`
+  молчащего устройства — не чаще раза в 15 с (событие «перезагрузка» сбрасывает
+  паузу); порт не занимается на время паузы. Закреплено юнит-тестами.
+- **Страхующий опрос ДТВ под событиями** (аудит A2): рег. 25–30 + coils
+  перечитываются classic-опросом раз в `poll_insurance_s` (30 с по умолчанию,
+  кламп ≥0.5 с — защита от CRC-шторма COM1); горячий путь читает только 1–24.
+  Payload/топики байт-в-байт как при classic. Закреплено юнит-тестами.
+  **файлы:** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`,
+  `opt/sa02m-modbus-mqtt/sa02m-modbus-mqtt.yaml`,
+  `opt/sa02m-modbus-mqtt/tests/test_ce_power_poll.py`
+
+### MQTT / вкладка (веб)
+
+- **Быстрая реакция вкладки MQTT:** confirm «Запустить/Остановить» — мгновенно
+  (из кэша статуса, не ждёт полного `mqtt_status.cgi`); «Сохранить и применить»
+  и start/stop возвращают ответ сразу, перезапуск моста уходит в фон (`pending`).
+  `mqtt_status.cgi` отвечает через `pgrep`/`systemctl is-active|is-enabled`
+  (с `timeout 2`) без полного svcctl-list.
+- Статус юнита: `disabled` (не только `masked`) снова считается «отключено
+  пользователем» — паритет со вкладкой «Управление» (аудит A6); confirm-метки
+  распознаются и в английской локали (A4); новые тосты переведены (A3).
+  **файлы:** `www/network_config/static/js/mqtt.js`,
+  `www/network_config/static/js/i18n.js`,
+  `www/network_config/cgi-bin/mqtt_status.cgi`,
+  `www/network_config/cgi-bin/mqtt_ctrl.cgi`,
+  `www/network_config/cgi-bin/mqtt_config.cgi`
+
 ## 1.0.5.45 - СЭ-02м-3: offline на COM2; имена МР 6AI6AO/4DO6DI (июл 2026)
 
 ### MQTT / СЭ-02м-3

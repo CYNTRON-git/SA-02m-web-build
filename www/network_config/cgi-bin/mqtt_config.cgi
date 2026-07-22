@@ -85,14 +85,26 @@ PYEOF
         exit 0
     fi
 
-    echo '{"ok":true}'
-
+    # Reply first — bridge restart can take 10–20 s with a full fleet; do not
+    # block the CGI/UI on systemctl (was: button stuck ~15 s on Save & Apply).
+    WANT_RESTART=0
     if python3 -c "import sys,json; d=json.load(open('$TMP_IN')); sys.exit(0 if d.get('restart') else 1)" 2>/dev/null; then
-        CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
-        if [ -x "$CTL" ]; then
-            sudo -n "$CTL" start mqtt-bridge >> /var/log/sa02m_install.log 2>&1 || true
-        fi
-        sudo /usr/bin/systemctl restart sa02m-modbus-mqtt 2>/dev/null || true
+        WANT_RESTART=1
+    fi
+    if [ "$WANT_RESTART" = 1 ]; then
+        echo '{"ok":true,"restart":"pending"}'
+        # setsid: survive CGI process-group teardown by lighttpd/busybox httpd
+        setsid /bin/bash -c '
+            LOG=/var/log/sa02m_install.log
+            CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
+            echo "$(date "+%Y-%m-%d %H:%M:%S") mqtt_config.cgi: async bridge restart after save" >>"$LOG" 2>&1
+            if [ -x "$CTL" ]; then
+                sudo -n "$CTL" start mqtt-bridge >>"$LOG" 2>&1 || true
+            fi
+            sudo /usr/bin/systemctl restart sa02m-modbus-mqtt >>"$LOG" 2>&1 || true
+        ' </dev/null >/dev/null 2>&1 &
+    else
+        echo '{"ok":true}'
     fi
     exit 0
 fi
