@@ -452,9 +452,33 @@ def build_fmb_poll_events(min_slave: int, max_data: int,
 
 def build_fmb_configure_events(addr: int, evt_type: int,
                                 start_reg: int, count: int, priority: int) -> bytes:
-    """configure_events (0x18) unicast frame."""
+    """configure_events (0x18), legacy single-range (прошивки ≤ 1.0.10.4x).
+
+    Legacy-контракт (старый modbus_rtu_fc46_events.c, data_len==5): при count>1
+    байт типа — ВНУТРЕННИЙ код 0..3 (= FMB_EVT_*), один priority на весь
+    диапазон. Новые прошивки (ветка feat/wb-event-wire) этот кадр отвергают —
+    используется как fallback после build_fmb_configure_events_wb.
+    """
     data = bytes([addr, 0x46, 0x18, 5,
                   evt_type, start_reg >> 8, start_reg & 0xFF, count, priority])
+    return _append_crc(data)
+
+
+def build_fmb_configure_events_wb(addr: int, evt_type: int,
+                                   start_reg: int, count: int, priority: int) -> bytes:
+    """configure_events (0x18), WB-стандарт (эталон wb-mqtt-serial).
+
+    record = [type wire 1..4|0x0F][reg u16 BE][count][setting u8 × count]
+    (отдельный байт настройки на КАЖДЫЙ регистр). Тип — wire-код: внутренние
+    0..3 кодируются +1. Новые прошивки (feat/wb-event-wire) принимают только
+    этот формат; старые (≤1.0.10.4x) понимают его через свою multi-record
+    ветку — но самые старые (~1.0.10.38 и раньше) могут не отвечать, тогда
+    мост откатывается на legacy-кадр (build_fmb_configure_events).
+    """
+    wire = evt_type + 1 if 0 <= evt_type <= 3 else evt_type
+    record = bytes([wire, start_reg >> 8, start_reg & 0xFF, count]) \
+        + bytes([priority] * count)
+    data = bytes([addr, 0x46, 0x18, len(record)]) + record
     return _append_crc(data)
 
 
@@ -837,6 +861,10 @@ class FastModbusEventPortManager:
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
         self._last_poll_answered = False
+        # Поколение формата событий per-slave: True = WB ([LEN][TYPE wire]...),
+        # False = legacy ([TYPE int]...). Только порядок попыток разбора —
+        # корректность обеспечивает валидирующий парсер (_parse_event_records).
+        self._wb_frame_slaves: dict[int, bool] = {}
         self._stop = threading.Event()
         self._log = logging.getLogger(f"fmb.{port_path.replace('/dev/', '')}")
         if baudrate >= 115200:
@@ -877,10 +905,8 @@ class FastModbusEventPortManager:
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
         still_pending: list[tuple[int, int, int]] = []
-        for (evt_type, start_reg, count) in dev["pending"]:
-            frame = build_fmb_configure_events(addr, evt_type, start_reg, count, 1)
-            ok = False
-            err = ""
+
+        def _try(frame: bytes) -> tuple[bool, str]:
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
@@ -888,12 +914,28 @@ class FastModbusEventPortManager:
                 for i in range(max(0, len(resp) - 4)):
                     if (resp[i] == addr and resp[i + 1] == 0x46
                             and resp[i + 2] == 0x18):
-                        ok = True
-                        break
-            except Exception as e:
-                err = f" ({e})"
+                        return True, ""
+                return False, ""
+            except Exception as e:  # noqa: BLE001
+                return False, f" ({e})"
+
+        for (evt_type, start_reg, count) in dev["pending"]:
+            # WB-формат (wire-типы, setting на каждый регистр) — единственный,
+            # который принимают новые прошивки (feat/wb-event-wire); старые
+            # ≥~1.0.10.4x понимают его через multi-record ветку.
+            ok, err = _try(build_fmb_configure_events_wb(addr, evt_type, start_reg, count, 1))
+            contract = "wb"
+            if not ok:
+                # Fallback: legacy single-range с внутренними кодами (самые
+                # старые прошивки, например матрица 16DO на 1.0.10.38).
+                ok, err2 = _try(build_fmb_configure_events(addr, evt_type, start_reg, count, 1))
+                contract = "legacy"
+                err = err or err2
             if ok:
                 dev["configured"] = True
+                self._log.info(
+                    "configure_events addr=%d type=0x%02X start=%d count=%d — %s contract",
+                    addr, evt_type, start_reg, count, contract)
             else:
                 still_pending.append((evt_type, start_reg, count))
                 self._log.warning(
@@ -962,34 +1004,93 @@ class FastModbusEventPortManager:
             self._log.warning("poll_events: CRC error (slave=%d)", slave_id)
             return False, []
 
-        # Parse events from buf[6 .. 6+data_len-1]
-        events: list[tuple] = []
-        pos = 6
-        end = 6 + data_len
-        for _ in range(n_events):
-            if pos + 3 > end:
-                break
-            evt_type = buf[pos]
-            reg      = (buf[pos + 1] << 8) | buf[pos + 2]
-            pos += 3
-            if evt_type in (FMB_EVT_COIL, FMB_EVT_DISCRETE):
-                if pos >= end:
-                    break
-                val = buf[pos]; pos += 1
-            elif evt_type in (FMB_EVT_HOLDING, FMB_EVT_INPUT):
-                if pos + 1 >= end:
-                    break
-                val = (buf[pos] << 8) | buf[pos + 1]; pos += 2
-            elif evt_type == FMB_EVT_REBOOT:
-                val = -1
-            else:
-                break
-            events.append((slave_id, evt_type, reg, val))
+        # Parse events from buf[6 .. 6+data_len-1].
+        # Два поколения формата записей (типы событий приводятся к внутренним
+        # FMB_EVT_* = 0..3/0x0F, диспетчеризация ниже не меняется):
+        #   WB (прошивка ≥ ветки feat/wb-event-wire):
+        #     [LEN][TYPE wire 1..4|15][ID_H][ID_L][payload×LEN]
+        #   legacy (релизы ≤ 1.0.10.4x):
+        #     [TYPE int 0..3|15][REG_H][REG_L][payload, длина по типу]
+        # Формат определяется валидирующим разбором целого кадра (число записей
+        # и потреблённая длина должны сойтись точно); поколение кэшируется
+        # per-slave только как порядок попыток.
+        events = self._parse_event_records(slave_id, buf, 6, 6 + data_len, n_events)
+        if events is None:
+            self._log.warning("poll_events: unparsable event frame (slave=%d, %d ev, %d B)",
+                              slave_id, n_events, data_len)
+            events = []
 
         self._ack_slave = slave_id
         self._ack_flag  = flag
         self._last_poll_answered = True
         return True, events
+
+    def _parse_event_records(self, slave_id: int, buf: bytes, start: int, end: int,
+                             n_events: int):
+        """Разбор записей 0x11 с автоопределением поколения формата."""
+        prefer_wb = self._wb_frame_slaves.get(slave_id, True)
+        order = ("wb", "legacy") if prefer_wb else ("legacy", "wb")
+        for fmt in order:
+            parser = self._parse_events_wb if fmt == "wb" else self._parse_events_legacy
+            events = parser(slave_id, buf, start, end, n_events)
+            if events is not None:
+                self._wb_frame_slaves[slave_id] = (fmt == "wb")
+                return events
+        return None
+
+    @staticmethod
+    def _parse_events_wb(slave_id: int, buf: bytes, start: int, end: int, n_events: int):
+        """WB-грамматика: [LEN][TYPE wire][ID_H][ID_L][payload×LEN]."""
+        wire_plen = {1: 1, 2: 1, 3: 2, 4: 2, 0x0F: 0}
+        events: list[tuple] = []
+        pos = start
+        for _ in range(n_events):
+            if pos + 4 > end:
+                return None
+            plen, wire = buf[pos], buf[pos + 1]
+            if wire not in wire_plen or plen != wire_plen[wire]:
+                return None
+            reg = (buf[pos + 2] << 8) | buf[pos + 3]
+            pos += 4
+            if pos + plen > end:
+                return None
+            if plen == 0:
+                val = -1
+            elif plen == 1:
+                val = buf[pos]
+            else:
+                # WB-стандарт: VALUE little-endian (в legacy-кадрах — BE)
+                val = buf[pos] | (buf[pos + 1] << 8)
+            pos += plen
+            internal = FMB_EVT_REBOOT if wire == 0x0F else wire - 1
+            events.append((slave_id, internal, reg, val))
+        return events if pos == end else None
+
+    @staticmethod
+    def _parse_events_legacy(slave_id: int, buf: bytes, start: int, end: int, n_events: int):
+        """Legacy-грамматика: [TYPE int][REG_H][REG_L][payload по типу]."""
+        events: list[tuple] = []
+        pos = start
+        for _ in range(n_events):
+            if pos + 3 > end:
+                return None
+            evt_type = buf[pos]
+            reg = (buf[pos + 1] << 8) | buf[pos + 2]
+            pos += 3
+            if evt_type in (FMB_EVT_COIL, FMB_EVT_DISCRETE):
+                if pos >= end:
+                    return None
+                val = buf[pos]; pos += 1
+            elif evt_type in (FMB_EVT_HOLDING, FMB_EVT_INPUT):
+                if pos + 1 >= end:
+                    return None
+                val = (buf[pos] << 8) | buf[pos + 1]; pos += 2
+            elif evt_type == FMB_EVT_REBOOT:
+                val = -1
+            else:
+                return None
+            events.append((slave_id, evt_type, reg, val))
+        return events if pos == end else None
 
     # --- MQTT dispatch -------------------------------------------------------
 
