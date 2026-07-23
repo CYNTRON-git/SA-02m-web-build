@@ -345,18 +345,25 @@ Baudrate: 115200. Адрес: 14 (по умолчанию).
 
 ## Fast Modbus события
 
-`fast_modbus: true` у устройства в `/etc/sa02m-modbus-mqtt.yaml` включает
-событийную доставку быстрых каналов (Wiren Board Fast Modbus, FC 0x46):
-изменение публикуется в MQTT в течение одного цикла poll_events (~50–300 мс),
-не дожидаясь классического опроса. Поддерживаемые типы: `mr02m` (DO/DI/AO/AI)
-и `dtv` (coils 1–2: buzzer/leds; Input 25–30: light_pct, input_pb2, presence,
-дистанции радара). Медленные датчики ДТВ (рег. 1–24) и диагностика — только
-классический опрос.
+`fast_modbus` у устройства в `/etc/sa02m-modbus-mqtt.yaml` включает событийную
+доставку быстрых каналов (Wiren Board Fast Modbus, FC 0x46). По умолчанию
+**включено** для `mr02m` и `dtv`; для `ce02m3` — только явный
+`fast_modbus: true` (после стабильного classic; ранний 0x18 на COM2 клинил СЭ).
+Configure_events шлётся после classic warmup (`classic_ready_for_fmb`).
+Поддерживаемые типы: `mr02m` (DO/DI/AO/AI), `dtv` (coils 1–2; Input 25–30),
+`ce02m3` (Input 500–502 Uph, 510–513 Iph+N — как в прошивке CE EN_METER).
+Медленные датчики ДТВ (рег. 1–24), энергия/мощность/диагностика СЭ — classic
+insurance-опрос.
 
 - **Топики и форматы не меняются** — событийная публикация байт-в-байт
-  совпадает с полловой (те же округления, знаковость, retain); внешний
-  потребитель (SCADA) не отличит её от опроса. События — только ускорение:
-  классический опрос продолжает работать и остаётся страховкой.
+  совпадает с полловой. Один поток на порт — как
+  [wb-mqtt-serial](https://github.com/wirenboard/wb-mqtt-serial)
+  `TSerialClientRegisterAndEventsReader` / TimeBalancer:
+  - **EVENTS** (High): burst `poll_events` до 0x12 или 100 мс; период 50 мс
+    @115200 (100 мс @≥38400, 200 мс ниже);
+  - **POLLING** (Low): classic `poll_io` / diag в срезе ≤100 мс;
+  - insurance ≥500 мс для каналов под событиями; при накоплении времени
+    событий ≥500 мс — Force classic poll (`BALANCING_THRESHOLD`).
 - **ДТВ, предусловие:** режим FMB в прошивке — Holding 122 = 1. При 0
   configure_events не подтверждается — мост логирует отказ и остаётся на
   классическом опросе.

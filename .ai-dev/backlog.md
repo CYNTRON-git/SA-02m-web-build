@@ -33,19 +33,34 @@ audit).
   (frontend `#cloud-card` consumer) is still uncontracted — freeze its field
   names in a small contract entry on the next cloud UI touch. (Threat-model
   cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
-- [OPEN] 2026-07-17 **[LOW-MED] Quality registry blind to Python.**
-  ~10k+ lines of Python daemons (`opt/sa02m-flasher/`, the MQTT bridge,
-  `opt/sa02m-cloud-agent/`) have no row in `.ai-dev/quality/tools.json`;
-  existing pytest tests (`opt/sa02m-cloud-agent/tests/test_agent.py`) are
-  never run by any gate. Add `py-syntax` + `pytest` rows. Audit 2026-07-17 (F3).
 - [OPEN] 2026-07-17 **[LOW] Decompose worklist (module-size sweep).**
-  `main.css` 3578 · `modbus_mqtt_bridge.py` **2774** (fastest grower:
-  +436 in the 1.0.5.9–12 window; its new unit tests seed the behaviour
-  net; clean up legacy `except Exception: pass` clusters during the
-  split — lines ~358, 525, 1243, 1977–2009) · `status.cgi` 2494 ·
-  `flash_protocol.py` 2347 · `mqtt.js` **2397** · `app/status.js` 1481.
-  Start with the bridge or `mqtt.js`. `flasher.js` deliberately excluded
-  (see F10 below). Audits 2026-07-17 (F6, evening F3).
+  `main.css` 4166 · `modbus_mqtt_bridge.py` **3179** (fastest grower again:
+  +405 in the 1.0.5.46 window on top of +436 in 1.0.5.9–12; **first
+  priority** — audit 2026-07-22 B7; the FMB event/insurance unit tests
+  seed the behaviour net; clean up legacy `except Exception: pass`
+  clusters during the split) · `status.cgi` 2507 · `mqtt.js` **2441** ·
+  `flash_protocol.py` 2418 · `app/status.js` 1546. Start with the bridge.
+  `flasher.js` deliberately excluded (see F10 below). Audits 2026-07-17
+  (F6, evening F3), refreshed 2026-07-22.
+- [OPEN] 2026-07-22 **[LOW] Bridge `PortCycleScheduler` loop untested.**
+  The per-port scheduling loop (classic/event balancing, warmup gate, the
+  A1 reconfigure-backoff *path selection*) has no direct unit coverage —
+  the 1.0.5.46 tests pin backoff/insurance behaviour but not the loop
+  itself. Seed for the bridge decompose above. Audit 2026-07-22 (A9).
+- [OPEN] 2026-07-22 **[LOW, vendored→downstream-feedback] `run.mjs
+  --touched` vacuous on this repo.** Registry `covers` are bare path
+  prefixes but `coversToRegex` (`.ai-dev/quality/run.mjs:48`) anchors
+  `^…$` with no prefix semantics — no touched file ever matches, every
+  scoped row silently skips (false green); plus the `git status --short`
+  fallback (:147) trims the whole output before `slice(3)`, mangling the
+  first filename. Vendored framework file — do NOT patch locally (D8/D9
+  precedent); route as downstream-feedback on the next protocol upgrade.
+  Until then run the FULL beat, never `--touched`. Builder 1.0.5.46.
+- [OPEN] 2026-07-22 **[LOW] HIG font-floor gate residual.** The ui-layout
+  driver measures the 11px HIG font floor report-only; gating it is a
+  one-line change + a seeded `FONT_WHITELIST` (mirrors the touch/contrast
+  ledger discipline). Salvaged from the pruned `responsive-hig-rework`
+  plan (shipped through 1.0.5.39).
 - [OPEN] 2026-07-14 **[MED→product decision] TLS + single-credential exposure gap
   (from threat-discovery §5).** `docs/threat-model.md` names the strongest
   unmitigated threat: HTTP-without-TLS + one shared password + internet/VPN &

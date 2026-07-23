@@ -21,36 +21,42 @@ ACTION=$(python3 -c "import sys,json; print(json.load(open('$TMP')).get('action'
 CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
 LOG=/var/log/sa02m_install.log
 
-run_svc() { sudo /usr/bin/systemctl "$1" "$2" >/dev/null 2>&1; echo $?; }
-
-bridge_ctl() {
+# Bridge start/stop via CTL does unmask/enable/mask and can take many seconds.
+# Return JSON immediately and finish in background so the UI confirm/save path
+# is not blocked (toggle confirm must stay instant).
+bridge_ctl_async() {
     _act=$1
     case "$_act" in stop|start) ;; *) echo 1; return ;; esac
+    echo "$(date '+%Y-%m-%d %H:%M:%S') mqtt_ctrl.cgi: bridge ${_act} async (web)" >>"$LOG" 2>&1
     if [ -x "$CTL" ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') mqtt_ctrl.cgi: bridge ${_act} (web)" >>"$LOG" 2>&1
-        OUT=$(sudo -n "$CTL" "$_act" mqtt-bridge 2>&1) || true
-        printf '%s\n' "$OUT" >>"$LOG" 2>&1
-        case "$OUT" in *'"ok":true'*) echo 0 ;; *) echo 1 ;; esac
+        setsid /bin/bash -c "sudo -n '$CTL' '$_act' mqtt-bridge >>'$LOG' 2>&1" </dev/null >/dev/null 2>&1 &
+        echo 0
         return
     fi
-    run_svc "$_act" sa02m-modbus-mqtt
+    setsid /bin/bash -c "sudo /usr/bin/systemctl '$_act' sa02m-modbus-mqtt >>'$LOG' 2>&1" </dev/null >/dev/null 2>&1 &
+    echo 0
+}
+
+run_svc_async() {
+    setsid /bin/bash -c "sudo /usr/bin/systemctl '$1' '$2' >>'$LOG' 2>&1" </dev/null >/dev/null 2>&1 &
+    echo 0
 }
 
 case "$ACTION" in
-    restart_mosquitto)  rc=$(run_svc restart mosquitto) ;;
-    start_mosquitto)    rc=$(run_svc start   mosquitto) ;;
-    stop_mosquitto)     rc=$(run_svc stop    mosquitto) ;;
-    restart_bridge)     rc=$(run_svc restart sa02m-modbus-mqtt) ;;
-    stop_bridge)        rc=$(bridge_ctl stop) ;;
-    start_bridge)       rc=$(bridge_ctl start) ;;
-    restart_telemetry)  rc=$(run_svc restart sa02m-telemetry) ;;
-    start_telemetry)    rc=$(run_svc start   sa02m-telemetry) ;;
-    stop_telemetry)     rc=$(run_svc stop    sa02m-telemetry) ;;
+    restart_mosquitto)  rc=$(run_svc_async restart mosquitto) ;;
+    start_mosquitto)    rc=$(run_svc_async start   mosquitto) ;;
+    stop_mosquitto)     rc=$(run_svc_async stop    mosquitto) ;;
+    restart_bridge)     rc=$(run_svc_async restart sa02m-modbus-mqtt) ;;
+    stop_bridge)        rc=$(bridge_ctl_async stop) ;;
+    start_bridge)       rc=$(bridge_ctl_async start) ;;
+    restart_telemetry)  rc=$(run_svc_async restart sa02m-telemetry) ;;
+    start_telemetry)    rc=$(run_svc_async start   sa02m-telemetry) ;;
+    stop_telemetry)     rc=$(run_svc_async stop    sa02m-telemetry) ;;
     *)  echo '{"ok":false,"error":"unknown_action"}'; exit 0 ;;
 esac
 
 if [ "${rc:-1}" = "0" ]; then
-    echo "{\"ok\":true,\"action\":\"${ACTION}\"}"
+    echo "{\"ok\":true,\"action\":\"${ACTION}\",\"pending\":true}"
 else
     echo "{\"ok\":false,\"action\":\"${ACTION}\",\"error\":\"systemctl_rc_${rc}\"}"
 fi

@@ -5,6 +5,54 @@
 
 ---
 
+## [2026-07-21 19:38] branch: main — MQTT вкладка: долгий confirm / Save&Apply
+
+**Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `www/network_config/cgi-bin/mqtt_ctrl.cgi`, `www/network_config/cgi-bin/mqtt_config.cgi`, `www/network_config/index.html`
+**Тип:** Некорректное поведение / UX latency
+**Описание:** На вкладке MQTT confirm «Запустить/Остановить» появлялся ~10 с; «Сохранить и применить» держал кнопку ~15 с.
+**Причина:** (1) `mqttToggleBridge` ждал полный `mqtt_status.cgi` (svcctl list + mosquitto_sub) до `confirm()`; (2) POST `mqtt_config.cgi` синхронно ждал `systemctl restart sa02m-modbus-mqtt`; (3) `mqtt_ctrl` блокировал CGI на CTL start/stop.
+**Исправление:** confirm из кэша/`_lastMqttBrokerStatus`/лейбла кнопки; status CGI — pgrep/`systemctl is-active|is-enabled` без полного list; config/ctrl возвращают JSON сразу, restart/start/stop моста — в фоне (`pending`).
+
+## [2026-07-21 17:05] branch: main — СЭ COM2: тишина после FMB configure
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение / зависание слейва
+**Описание:** СЭ-02м-3 на COM2 addr=14 перестал отвечать (0 байт RX) сразу после включения FMB/`configure_events` (~16:41). Мост слал TX (счётчик ttyS3 +8/кадр), RX не рос; DTV/MR на других COM живы. До 16:40 classic-опрос СЭ был штатным.
+**Причина:** ранний FC46 0x18 на ещё не прогретом/уже нагруженном COM2; плюс live-cache всегда писал `"ok": true`.
+**Исправление:** classic warmup → FMB configure только после `classic_ready_for_fmb()`; CE default/UI `fast_modbus: false` (явный opt-in); YAML CE на 10.136 → false; `DeviceLiveCache.ok` = реальный online. **Восстановление слейва — power-cycle СЭ** (шина молчит при остановленном мосте).
+
+## [2026-07-21 16:40] branch: main — MQTT FMB: СЭ-02м-3 + ДТВ COM1
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `docs/MQTT_TOPICS.md`
+**Тип:** Некорректное поведение / недочёт конфигурации
+**Описание:** СЭ-02м-3 оставался classic (`fast_modbus: false`); в мосте не было `fmb_event_ranges` для CE; ДТВ на COM1 не был в YAML.
+**Причина:** ошибочно считали, что у CE нет FMB-событий (пустой `fmb_event_ranges` → skip). В прошивке CE EN_METER события Input 500–502 / 510–513 есть; без `configure_events` приоритет DISABLED и очередь пуста. UI при add CE не ставил `fast_modbus: true`; manual add DTV брал baud 19200.
+**Исправление:** `CE02M3Poller.fmb_event_ranges/fmb_dispatch`; default FMB для ce02m3; UI `fast_modbus: true` + DTV/CE/MR baud 115200; ACK 0x18 с поиском кадра; retry configure если устройство было offline; на 10.136 — CE `fast_modbus: true`, добавлен `dtv-COM1-15` (H122=1, FMB configured). `DTVPoller.poll_io` начал учитывать `poll_sensors_s` и при FMB читает только рег. 1–24 (25–30/coils — события), иначе CRC storm на COM1.
+
+## [2026-07-21 16:35] branch: main — MQTT FMB: полный паритет с wb-mqtt-serial
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `docs/MQTT_TOPICS.md`
+**Тип:** Логическая ошибка
+**Описание:** FMB и classic шли в двух потоках; поведение 0x12/insurance расходилось с эталоном.
+**Причина:** отдельный FMB-thread + непрерывный PortPollScheduler вместо TimeBalancer.
+**Исправление:** `PortCycleScheduler` — один поток на порт (EVENTS High / POLLING Low), burst ≤100 мс, период 50 мс @115200, insurance ≥500 мс, Force при BALANCING_THRESHOLD 500 мс; `FastModbusEventPortManager` без своего `run()`.
+
+## [2026-07-21 16:30] branch: main — MQTT FMB: выравнивание с wb-mqtt-serial
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `docs/MQTT_TOPICS.md`
+**Тип:** Логическая ошибка
+**Описание:** После включения FMB мост делал full `poll_io` на каждый 0x12 — это не эталон WB.
+**Причина:** неверная интерпретация «нет событий → полный опрос». В wb-mqtt-serial `ReadEvents` на 0x12 только завершает burst; classic — отдельная задача TimeBalancer с insurance ≥500 мс.
+**Исправление:** burst до 0x12/100 мс, период 50 мс @115200; classic insurance ≥500 мс при armed FMB; default `fast_modbus` для mr02m/dtv сохранён.
+
+## [2026-07-21 16:24] branch: main — MQTT: FMB events по умолчанию
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `docs/MQTT_TOPICS.md`
+**Тип:** Некорректное поведение / UX
+**Описание:** На 1.136 MR работали только classic poll без Fast Modbus events.
+**Причина:** `fast_modbus` по умолчанию `false`.
+**Исправление:** default ON для mr02m/dtv; YAML на 1.136/10.136 обновлён. Прошивки 1.136 уже 1.0.10.38 + Holding 122=1 — flash не требовался.
+
 ## [2026-07-21 15:10] branch: 1.0.5.45 — MQTT: letter-first имена МР (AO6AI6/DO4DI6)
 
 **Файл(ы):** `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`, `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `scripts/update-www-only.sh`

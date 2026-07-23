@@ -2,6 +2,7 @@
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 # MQTT broker / bridge status + параметры внешнего подключения (mqttuser).
+# Fast path: pgrep + systemctl is-active/is-enabled (no full svcctl list).
 
 check_auth() {
     web_session_check_cookie && return 0
@@ -15,119 +16,80 @@ if ! check_auth; then
     exit 0
 fi
 
+# Emit headers immediately so the client is not waiting on a blank socket
+# while we probe services (was: headers only after slow work → 5–10 s).
+echo "Content-type: application/json; charset=UTF-8"
+echo "Cache-Control: no-store"
+echo ""
+
+unit_enabled_state() {
+    # enabled | disabled | masked | static | … — timeout: a wedged systemd
+    # must not stall this polled endpoint (web-code-rigor "Timeouts everywhere").
+    timeout 2 /usr/bin/systemctl is-enabled "$1" 2>/dev/null | head -n1 | tr -d '\r' || true
+}
+
+unit_is_active() {
+    timeout 2 /usr/bin/systemctl is-active --quiet "$1" 2>/dev/null
+}
+
 mosq_active=0
 mosq_uptime_s=0
-if pgrep -x mosquitto >/dev/null 2>&1; then
-    mosq_active=1
-    pid=$(pgrep -x mosquitto | head -1)
-    if [ -n "$pid" ] && [ -r "/proc/${pid}/stat" ]; then
-        boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
-        clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        uptime_sys=$(awk '{printf "%d",$1}' /proc/uptime 2>/dev/null || echo 0)
-        mosq_uptime_s=$(( uptime_sys - boot_j / clock_hz ))
-        (( mosq_uptime_s < 0 )) && mosq_uptime_s=0
+mosq_disabled=0
+# masked|disabled — same user_disabled-or-masked semantics as the Управление
+# tab (status.cgi svc-ctl mapping); disable-without-mask must render the same.
+en=$(unit_enabled_state mosquitto.service)
+case "$en" in
+    masked|disabled) mosq_disabled=1 ;;
+esac
+if (( mosq_disabled == 0 )); then
+    if pgrep -x mosquitto >/dev/null 2>&1; then
+        mosq_active=1
+        pid=$(pgrep -x mosquitto | head -1)
+        if [ -n "$pid" ] && [ -r "/proc/${pid}/stat" ]; then
+            boot_j=$(awk '{print $22}' "/proc/${pid}/stat" 2>/dev/null || echo 0)
+            clock_hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+            uptime_sys=$(awk '{printf "%d",$1}' /proc/uptime 2>/dev/null || echo 0)
+            mosq_uptime_s=$(( uptime_sys - boot_j / clock_hz ))
+            (( mosq_uptime_s < 0 )) && mosq_uptime_s=0
+        fi
+    elif unit_is_active mosquitto.service; then
+        mosq_active=1
     fi
-elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet mosquitto.service 2>/dev/null; then
-    mosq_active=1
 fi
 
 bridge_active=0
 bridge_disabled=0
-if pgrep -f "modbus_mqtt_bridge" >/dev/null 2>&1; then
-    bridge_active=1
-elif command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet sa02m-modbus-mqtt.service 2>/dev/null; then
-    bridge_active=1
+en=$(unit_enabled_state sa02m-modbus-mqtt.service)
+case "$en" in
+    masked|disabled) bridge_disabled=1 ;;
+esac
+if (( bridge_disabled == 0 )); then
+    if pgrep -f "modbus_mqtt_bridge" >/dev/null 2>&1; then
+        bridge_active=1
+    elif unit_is_active sa02m-modbus-mqtt.service; then
+        bridge_active=1
+    fi
 fi
 
 telemetry_active=0
 telemetry_disabled=0
-if pgrep -f "sa02m_telemetry" >/dev/null 2>&1; then
-    telemetry_active=1
+en=$(unit_enabled_state sa02m-telemetry.service)
+case "$en" in
+    masked|disabled) telemetry_disabled=1 ;;
+esac
+if (( telemetry_disabled == 0 )); then
+    if pgrep -f "sa02m_telemetry" >/dev/null 2>&1; then
+        telemetry_active=1
+    elif unit_is_active sa02m-telemetry.service; then
+        telemetry_active=1
+    fi
 fi
 
-mosq_disabled=0
-
-# Единый источник для управляемых служб — sa02m-web-service-ctl.sh list
-# (как «Управление → Службы» и status.cgi): user_disabled/mask важнее pgrep.
-load_svc_ctl_mqtt_states() {
-    local CTL=/usr/local/sbin/sa02m-web-service-ctl.sh
-    [ -x "$CTL" ] || return 0
-    command -v python3 >/dev/null 2>&1 || return 0
-    local tmp
-    tmp=$(mktemp /tmp/sa02m-mqttsvc.XXXXXX)
-    if ! sudo -n "$CTL" list >"$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        return 0
-    fi
-    while IFS='|' read -r _sid _active _disabled; do
-        case "$_sid" in
-            mosquitto)
-                if [ "$_disabled" = 1 ]; then
-                    mosq_disabled=1
-                    mosq_active=0
-                elif [ "$_active" = 1 ]; then
-                    mosq_active=1
-                    mosq_disabled=0
-                else
-                    mosq_active=0
-                    mosq_disabled=0
-                fi
-                ;;
-            mqtt-bridge)
-                if [ "$_disabled" = 1 ]; then
-                    bridge_disabled=1
-                    bridge_active=0
-                elif [ "$_active" = 1 ]; then
-                    bridge_active=1
-                    bridge_disabled=0
-                else
-                    bridge_active=0
-                    bridge_disabled=0
-                fi
-                ;;
-            mqtt-telemetry)
-                if [ "$_disabled" = 1 ]; then
-                    telemetry_disabled=1
-                    telemetry_active=0
-                elif [ "$_active" = 1 ]; then
-                    telemetry_active=1
-                    telemetry_disabled=0
-                else
-                    telemetry_active=0
-                    telemetry_disabled=0
-                fi
-                ;;
-        esac
-    done < <(python3 - "$tmp" <<'PY'
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as f:
-    d = json.load(f)
-for s in d.get("services", []):
-    sid = s.get("id") or ""
-    if not sid:
-        continue
-    if s.get("user_disabled") or s.get("masked"):
-        active = 0
-        disabled = 1
-    elif s.get("active") == "active":
-        active = 1
-        disabled = 0
-    else:
-        active = 0
-        disabled = 0
-    print(f"{sid}|{active}|{disabled}")
-PY
-    )
-    rm -f "$tmp"
-}
-
-load_svc_ctl_mqtt_states
-
+# Clients count: short timeout only (must not dominate status latency).
 clients_connected=0
-if command -v mosquitto_sub >/dev/null 2>&1 && (( mosq_active == 1 )); then
-    c=$(timeout 0.5 mosquitto_sub -h 127.0.0.1 -t '$SYS/broker/clients/connected' \
-        -C 1 -W 1 2>/dev/null | tr -d '[:space:]') || c=""
-    [[ "$c" =~ ^[0-9]+$ ]] && clients_connected=$c
+if (( mosq_active == 1 )) && command -v mosquitto_sub >/dev/null 2>&1; then
+    _cli=$(timeout 0.35 mosquitto_sub -h 127.0.0.1 -p 1883 -t '$SYS/broker/clients/connected' -C 1 -W 1 2>/dev/null | tr -dc '0-9' || true)
+    [ -n "$_cli" ] && clients_connected=$_cli
 fi
 
 PRIMARY_HOST=""
@@ -168,36 +130,34 @@ def _parse_mqtt_env_text(text: str) -> dict:
 
 
 ext = {"host": "", "mqtt_user": "mqttuser", "mqtt_password": ""}
+# Prefer direct env file (fast); external-info.py is optional fallback.
 try:
     r = subprocess.run(
-        ["sudo", "-n", "/usr/local/sbin/sa02m-mqtt-external-info.py"],
+        ["sudo", "-n", "cat", "/etc/sa02m_mqtt.env"],
         capture_output=True,
         text=True,
-        timeout=3,
+        timeout=1,
     )
     if r.returncode == 0 and r.stdout.strip():
-        ext.update(json.loads(r.stdout))
+        parsed = _parse_mqtt_env_text(r.stdout)
+        ext["mqtt_user"] = parsed.get("mqtt_user") or ext.get("mqtt_user")
+        ext["mqtt_password"] = parsed.get("mqtt_password") or ""
 except Exception:
     pass
 
 if not (ext.get("mqtt_password") or "").strip():
     try:
         r = subprocess.run(
-            ["sudo", "-n", "cat", "/etc/sa02m_mqtt.env"],
+            ["sudo", "-n", "/usr/local/sbin/sa02m-mqtt-external-info.py"],
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=1.5,
         )
         if r.returncode == 0 and r.stdout.strip():
-            parsed = _parse_mqtt_env_text(r.stdout)
-            ext["mqtt_user"] = parsed.get("mqtt_user") or ext.get("mqtt_user")
-            ext["mqtt_password"] = parsed.get("mqtt_password") or ""
+            ext.update(json.loads(r.stdout))
     except Exception:
         pass
 
-print("Content-type: application/json; charset=UTF-8")
-print("Cache-Control: no-store")
-print()
 print(
     json.dumps(
         {

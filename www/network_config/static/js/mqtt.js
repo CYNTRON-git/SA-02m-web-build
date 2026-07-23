@@ -2102,12 +2102,16 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
   if (type === 'mr02m') {
     const mt = Number(scanDev.module_type);
     dev.module_type = (mt && MR02M_TYPES[mt]) ? mt : 1;
+    dev.fast_modbus = true;
     dev.poll_s = 1; dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 1; dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
+    dev.fast_modbus = true;
     dev.poll_sensors_s = 1; dev.poll_presence_s = 1; dev.poll_diag_s = 60;
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
+    // CE: classic first; FMB only with explicit fast_modbus:true after stable poll.
+    dev.fast_modbus = false;
     dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
   }
@@ -2169,7 +2173,8 @@ function confirmAddDevice() {
   const addr = parseInt(addrEl.value, 10);
   const name = nameEl.value.trim();
   const id = idEl.value.trim() || makeDeviceId(type, port, addr);
-  const baudrate = type === 'dtv' ? 19200 : 115200;
+  // Cyntron DTV/MR/CE factory line: 115200 8N1 (not WB 19200).
+  const baudrate = 115200;
 
   if (_config.devices.find(d => d.id === id)) {
     showToast(`Устройство ${id} уже добавлено`, 'warn');
@@ -2179,17 +2184,20 @@ function confirmAddDevice() {
   const dev = {id, type, port, baudrate, address: addr, name: name || id};
   if (type === 'mr02m') {
     dev.module_type = 1;
+    dev.fast_modbus = true;
     dev.poll_s = 1;
     dev.poll_do_di_s = 1;
     dev.poll_ai_ao_s = 1;
     dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
+    dev.fast_modbus = true;
     dev.poll_sensors_s = 1;
     dev.poll_presence_s = 1;
     dev.poll_diag_s = 60;
     dev.sensors_present = DTV_SENSORS.map(s => s.key);
   } else if (type === 'ce02m3') {
+    dev.fast_modbus = false;
     dev.poll_power_s = 1;
     dev.poll_energy_s = 60;
     dev.poll_diag_s = 120;
@@ -2218,6 +2226,7 @@ async function saveAndApply() {
     normalizeMr02mAiPairsAll(dev);
   }
   const payload = Object.assign({}, _config, {restart: true});
+  // CGI writes YAML and returns immediately; bridge restart is async.
   const res = await apiPost('cgi-bin/mqtt_config.cgi', payload).catch(() => ({ ok: false, error: 'network' }));
 
   if (btn) { btn.disabled = false; btn.textContent = 'Сохранить и применить'; }
@@ -2228,13 +2237,16 @@ async function saveAndApply() {
       aiTypeApplyPendingFromDeviceConfig(dev);
       if (isAccordionOpen(dev.id)) refreshAiTypeSelects(dev);
     }
-    showToast('Настройки сохранены. Мост MQTT перезапущен.');
-    setTimeout(refreshBrokerStatus, 2000);
+    showToast(res.restart === 'pending'
+      ? 'Настройки сохранены. Мост MQTT перезапускается…'
+      : 'Настройки сохранены.');
+    setTimeout(refreshBrokerStatus, 1500);
+    setTimeout(refreshBrokerStatus, 5000);
     setTimeout(() => {
       for (const dev of _config.devices || []) {
         if (isAccordionOpen(dev.id)) void prefetchDeviceLive(dev.id);
       }
-    }, 2500);
+    }, 4000);
   } else {
     showToast('Ошибка сохранения: ' + (res?.error || 'неизвестная'), 'err');
   }
@@ -2382,22 +2394,42 @@ window.mqttCtrl          = async (action) => {
 };
 
 window.mqttToggleBridge = async function mqttToggleBridge() {
-  const st = await apiGet('cgi-bin/mqtt_status.cgi').catch(() => null);
-  const on = mqttBridgeUiState(st) === 'active';
+  // Confirm IMMEDIATELY from cached UI state — never await mqtt_status.cgi
+  // before confirm (that CGI used to take several seconds → 10 s blank wait).
+  const btn = document.getElementById('mqtt-bridge-toggle-btn');
+  const stCached = _lastMqttBrokerStatus;
+  let on = mqttBridgeUiState(stCached) === 'active';
+  if (mqttBridgeUiState(stCached) === 'unknown' && btn) {
+    // Fallback: button label already reflects last paint — RU "Остановить"/
+    // "Запустить" or the EN paint uiT() produced ("Stop"/"Start").
+    const label = (btn.textContent || '').trim().toLowerCase();
+    if (label.includes('останов') || label.includes('stop')) on = true;
+    else if (label.includes('запуст') || label.includes('start')) on = false;
+  }
   const action = on ? 'stop_bridge' : 'start_bridge';
   const msg = on
     ? 'Остановить мост Modbus→MQTT? Служба будет отключена и не запустится после перезагрузки до ручного включения.'
     : 'Запустить мост Modbus→MQTT?';
   if (!confirm(msg)) return;
-  const btn = document.getElementById('mqtt-bridge-toggle-btn');
   if (btn) btn.disabled = true;
   try {
+    // CGI returns immediately (pending); service finishes in background.
     const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action});
     if (res?.ok) {
-      showToast(on ? 'Мост остановлен' : 'Мост запущен', 'success');
-      setTimeout(refreshBrokerStatus, 1200);
+      showToast(on ? 'Остановка моста…' : 'Запуск моста…', 'success');
+      // Optimistic badge until status poll catches up.
+      if (_lastMqttBrokerStatus && typeof _lastMqttBrokerStatus === 'object') {
+        _lastMqttBrokerStatus = Object.assign({}, _lastMqttBrokerStatus, {
+          bridge_active: on ? 0 : 1,
+          bridge_disabled: on ? 1 : 0,
+        });
+        applyBrokerStatusUI(_lastMqttBrokerStatus);
+      }
+      setTimeout(refreshBrokerStatus, 800);
+      setTimeout(refreshBrokerStatus, 3000);
     } else {
       showToast('Ошибка: ' + (res?.error || '?'), 'err');
+      void refreshBrokerStatus();
     }
   } catch (_) {
     showToast('Ошибка управления мостом', 'err');
