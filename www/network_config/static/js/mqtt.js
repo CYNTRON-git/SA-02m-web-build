@@ -2103,7 +2103,12 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
     const mt = Number(scanDev.module_type);
     dev.module_type = (mt && MR02M_TYPES[mt]) ? mt : 1;
     dev.fast_modbus = true;
-    dev.poll_s = 1; dev.poll_do_di_s = 1; dev.poll_ai_ao_s = 1; dev.poll_diag_s = 60;
+    // 12AI (type 7): AI FC03 block is large — poll slower to avoid Short response on loaded RS-485.
+    const aiHeavy = (dev.module_type === 7);
+    dev.poll_s = aiHeavy ? 2 : 1;
+    dev.poll_do_di_s = 1;
+    dev.poll_ai_ao_s = aiHeavy ? 2 : 1;
+    dev.poll_diag_s = 60;
     dev.channels = {};
   } else if (type === 'dtv') {
     dev.fast_modbus = true;

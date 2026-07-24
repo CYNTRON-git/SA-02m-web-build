@@ -153,9 +153,11 @@ MR02M_MODULE_TYPES: dict[int, tuple[int, int, int, int]] = {
 # Holding 400+7*(ch-1): reg0 = ai_sensor_t (MODBUS_VARIABLES / module_profiles)
 MR02M_AI_HOLDING_BASE = 400
 MR02M_AI_CHANNEL_STRIDE = 7
-# Max regs per FC03 AI chunk (6 channels × 7). Full 12AI (84 regs / 173 B) often
-# truncates on half-duplex RS-485 @19200 with several slaves on the same COM.
-MR02M_AI_READ_CHUNK_REGS = 42
+# Max regs per FC03 AI chunk (channel-aligned to 7). Full 12AI (84 regs / ~173 B
+# response) and even a 42-reg half-block (~89 B) often truncate on a loaded
+# half-duplex bus @115200 8N1 with several slaves (Short response → offline).
+# 21 regs = 3 channels → ~47 B payload; 4 chunks cover 12AI.
+MR02M_AI_READ_CHUNK_REGS = 21
 MR02M_AI_READ_RETRIES = 3
 # Modules with P/N AI pairs (TC-K / 3-wire RTD): 6AI6AO, 12AI, 6AI2AO.
 MR02M_AI_PAIR_TYPES = frozenset({6, 7, 12})

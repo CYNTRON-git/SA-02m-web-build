@@ -125,3 +125,17 @@ devices:
   #       - {ch: 4, sensor_type: 22, enabled: false}
   #       - {ch: 5, sensor_type: 41, enabled: true}  # ТХА
   #       - {ch: 6, sensor_type: 41, enabled: true}
+
+  # ── Пример: MR-02m 12AI COM4 addr=12 ────────────────────────────────────
+  # На загруженной шине 115200 8N1 большой FC03 AI-блок (чанки) даёт Short response
+  # при poll_ai_ao_s: 1. Рекомендуется poll_ai_ao_s: 2 (и poll_s: 2).
+  # Чанк FC03 в мосте: MR02M_AI_READ_CHUNK_REGS=21 (3 канала).
+  # - id: mr02m-COM4-12
+  #   type: mr02m
+  #   module_type: 7
+  #   port: /dev/COM4
+  #   baudrate: 115200
+  #   address: 12
+  #   poll_s: 2
+  #   poll_ai_ao_s: 2
+  #   poll_diag_s: 60

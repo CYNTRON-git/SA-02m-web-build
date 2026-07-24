@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-24] branch: cursor/fix-12ai-com4-chunk-6284 — 12AI COM4: Short response → offline
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/modbus_mqtt_bridge.py`, `www/network_config/static/js/mqtt.js`, `opt/sa02m-modbus-mqtt/sa02m-modbus-mqtt.yaml` (пример), `tools/dev/fix_12ai_com4_*.{sh,py}`; стенд `192.168.10.136` `/etc/sa02m-modbus-mqtt.yaml` (mr02m-COM4-12)
+**Тип:** Некорректное поведение / RS-485 truncation
+**Описание:** Модуль MR-02м 12AI (тип 7, addr 12, MQTT `mr02m-COM4-12`, FW 1.0.10.38) на COM4 периодически уходил offline. Соседи (14DI/16DO/12AO/DTV) на той же шине не сыпались.
+**Причина:** на загруженной шине 115200 8N1 (6 слейвов) FC03 AI-чанк 42 регистра (~89 B ответа) обрезался (`Short response` 65–88 из 89) → 3 fails → offline → сразу online. Прошивка модуля не виновата.
+**Исправление:** `MR02M_AI_READ_CHUNK_REGS` 42→21 (3 канала / ~47 B); для `mr02m-COM4-12` `poll_ai_ao_s` 1→2; UI default для type=7 — `poll_ai_ao_s/poll_s=2`. Деплой на стенд: `SA02M_HOST=192.168.10.136 ./tools/dev/fix_12ai_com4_chunk.sh`.
+
 ## [2026-07-21 19:38] branch: main — MQTT вкладка: долгий confirm / Save&Apply
 
 **Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `www/network_config/cgi-bin/mqtt_ctrl.cgi`, `www/network_config/cgi-bin/mqtt_config.cgi`, `www/network_config/index.html`
