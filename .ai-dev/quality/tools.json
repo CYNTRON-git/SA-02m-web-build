@@ -83,6 +83,15 @@
       "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-clear-session-cookie.mjs"
     },
     {
+      "id": "quality-runner-self-test",
+      "checks": "The quality runner's own touched-file detection (computeTouchedFiles() in run.mjs, incl. the last-resort unstaged-git-status fallback used right after branching with no new commits) — a regression there silently degrades --touched scoping to a false-green 0/0 pass instead of running the real subset.",
+      "config": null,
+      "run": "node .ai-dev/quality/run.test.mjs",
+      "beat": "review",
+      "covers": [".ai-dev/quality/run.mjs", ".ai-dev/quality/run.test.mjs"],
+      "init": "Node 18+ (stdlib only, spins up a temp git repo)"
+    },
+    {
       "id": "install-sh-syntax",
       "checks": "Bash syntax of the on-device installer.",
       "config": null,
