@@ -156,7 +156,9 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     return False
 
 
-# Подсказка по строке сигнатуры (если рег. 0 недоступен)
+# Подсказка по строке сигнатуры (если рег. 0 недоступен).
+# «6AO6AI» / «6AI6AO» / «AO6AI6» — одна плата (MP02_AO6AI6); BL bl_sig_match
+# принимает все три (см. MR-02m-flasher module_profiles._SIGNATURE_HINTS).
 _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6DO8DI":    (6, 8, 0, 0),
     "16DO":      (16, 0, 0, 0),
@@ -166,6 +168,8 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "10DICON":   (0, 10, 0, 0),
     "6DO5DI2AO": (6, 5, 2, 0),
     "6AO6AI":    (0, 0, 6, 6),
+    "6AI6AO":    (0, 0, 6, 6),
+    "AO6AI6":    (0, 0, 6, 6),
     "12AI":      (0, 0, 0, 12),
     "4DO6DI":    (4, 6, 0, 0),
     "4TO6DI":    (4, 6, 4, 0),
@@ -206,7 +210,7 @@ PROFILE_WB_APP = Rs485LineProfile(19200, "N", 2)
 # bl_module_sig.c (MR-02m) + module_profiles hints + serial_ranges
 MP_MR_SIGNATURE_TOKENS: Tuple[str, ...] = (
     "6DO8DI", "16DO", "12AO", "6DO", "14DI", "10DICON", "6DO5DI2AO",
-    "6AO6AI", "6AI6AO", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
+    "6AO6AI", "6AI6AO", "AO6AI6", "12AI", "4DO6DI", "4TO6DI", "TO4DI6",
     "DO6DI8", "DO4DI6", "TENZO2", "CE02M3", "ENMETER", "EN_METER",
     "MP02M", "MR02M", "SENSOR", "SENS.",
 )
@@ -420,9 +424,11 @@ def code_from_signature(signature: str) -> Optional[int]:
 
 def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
     n = normalize_signature(signature)
-    for key, caps in _SIGNATURE_HINTS.items():
-        if key in n or n.startswith(key[:4]):
-            return caps
+    # Длинные токены сначала: иначе короткий ключ («6DO») совпадает внутри
+    # более длинного («6DO5DI2AO») раньше самого длинного ключа.
+    for key in sorted(_SIGNATURE_HINTS.keys(), key=len, reverse=True):
+        if key in n:
+            return _SIGNATURE_HINTS[key]
     return None
 
 

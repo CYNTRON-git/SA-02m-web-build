@@ -8,6 +8,7 @@ from sa02m_flasher.module_profiles import (
     ai_stor_for_12ai_channel,
     ai_stor_for_6ao6ai_p,
     ai_wb_filter_holding_regs,
+    caps_from_signature,
     device_allowed_for_mr_firmware_flash,
 )
 
@@ -21,6 +22,26 @@ class TestDeviceAllowed(unittest.TestCase):
 
     def test_wb_signature_not_mr_allowed(self) -> None:
         self.assertFalse(device_allowed_for_mr_firmware_flash("mr6c_v2", allow_unlisted=False))
+
+    def test_mr_signature_allowed_canonical_ai6ao(self) -> None:
+        self.assertTrue(device_allowed_for_mr_firmware_flash("6AI6AO", allow_unlisted=False))
+
+    def test_mr_signature_allowed_legacy_letterfirst_ao6ai6(self) -> None:
+        self.assertTrue(device_allowed_for_mr_firmware_flash("AO6AI6", allow_unlisted=False))
+
+
+class TestCapsFromSignature(unittest.TestCase):
+    def test_canonical_ai6ao(self) -> None:
+        self.assertEqual(caps_from_signature("6AI6AO"), (0, 0, 6, 6))
+
+    def test_legacy_letterfirst_ao6ai6(self) -> None:
+        self.assertEqual(caps_from_signature("AO6AI6"), (0, 0, 6, 6))
+
+    def test_legacy_ao6ai(self) -> None:
+        self.assertEqual(caps_from_signature("6AO6AI"), (0, 0, 6, 6))
+
+    def test_longest_match_wins_over_shorter_prefix(self) -> None:
+        self.assertEqual(caps_from_signature("6DO5DI2AO"), (6, 5, 2, 0))
 
 
 class TestAiStorMappingMr02m(unittest.TestCase):

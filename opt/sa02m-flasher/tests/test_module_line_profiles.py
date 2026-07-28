@@ -14,7 +14,7 @@ from sa02m_flasher.module_profiles import (
 class TestModuleLineProfiles(unittest.TestCase):
     def test_mp_mr_signatures_fixed_115200_n1(self) -> None:
         scan = {"baudrate": 19200, "parity": "N", "stopbits": 2}
-        for sig in ("12AI", "6DO8DI", "MR-02m 16DO", "CE02M3", "Sens.", "EN_METER"):
+        for sig in ("12AI", "6DO8DI", "MR-02m 16DO", "CE02M3", "Sens.", "EN_METER", "6AI6AO", "AO6AI6"):
             p = application_line_profile(sig, device=scan, is_wb_firmware=False)
             self.assertEqual(p.as_tuple(), PROFILE_MP_MR.as_tuple(), sig)
 
