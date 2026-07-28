@@ -1228,6 +1228,7 @@
     '6DO': [6, 0, 0, 0],
     '14DI': [0, 14, 0, 0],
     '10DICON': [0, 10, 0, 0],
+    '10DI': [0, 10, 0, 0], // short-form alias for '10DICON' (mqtt.js inferModuleTypeFromName alias list)
     '6DO5DI2AO': [6, 5, 2, 0],
     '6AO6AI': [0, 0, 6, 6],
     '6AI6AO': [0, 0, 6, 6],
@@ -1246,8 +1247,14 @@
   function capsFromSignature(sig) {
     const n = normalizeModuleSignature(sig);
     if (!n) return null;
-    for (const [key, caps] of Object.entries(SIGNATURE_IO_HINTS)) {
-      if (n.includes(key) || n.startsWith(key.slice(0, 4))) return caps.slice();
+    // Longest key first: a short key (e.g. "6DO") is itself a substring of a
+    // longer, more specific key's signature (e.g. "6DO5DI2AO"), so scanning in
+    // object insertion order can match the short key first and silently drop
+    // the extra DI/AO channels. Sorting by length descending makes the most
+    // specific match win regardless of key order.
+    const keys = Object.keys(SIGNATURE_IO_HINTS).sort((a, b) => b.length - a.length);
+    for (const key of keys) {
+      if (n.includes(key)) return SIGNATURE_IO_HINTS[key].slice();
     }
     return null;
   }

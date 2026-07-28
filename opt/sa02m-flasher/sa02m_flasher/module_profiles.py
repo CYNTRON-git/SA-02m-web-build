@@ -164,6 +164,7 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6DO":       (6, 0, 0, 0),
     "14DI":      (0, 14, 0, 0),
     "10DICON":   (0, 10, 0, 0),
+    "10DI":      (0, 10, 0, 0),  # short-form alias for "10DICON" (mqtt_bus_scan.py alias table)
     "6DO5DI2AO": (6, 5, 2, 0),
     "6AO6AI":    (0, 0, 6, 6),
     "12AI":      (0, 0, 0, 12),
@@ -420,9 +421,14 @@ def code_from_signature(signature: str) -> Optional[int]:
 
 def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
     n = normalize_signature(signature)
-    for key, caps in _SIGNATURE_HINTS.items():
-        if key in n or n.startswith(key[:4]):
-            return caps
+    # Longest key first: a short key (e.g. "6DO") is itself a substring of a
+    # longer, more specific key's signature (e.g. "6DO5DI2AO"), so scanning in
+    # dict insertion order can match the short key first and silently drop the
+    # extra DI/AO channels. Sorting by length descending makes the most
+    # specific match win regardless of dict order.
+    for key in sorted(_SIGNATURE_HINTS, key=len, reverse=True):
+        if key in n:
+            return _SIGNATURE_HINTS[key]
     return None
 
 

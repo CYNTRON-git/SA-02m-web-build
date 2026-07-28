@@ -83,6 +83,15 @@
       "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-clear-session-cookie.mjs"
     },
     {
+      "id": "js-unit-flasher-hints",
+      "checks": "capsFromSignature() in flasher.js (SIGNATURE_IO_HINTS lookup) must use a longest-key-first scan, not insertion order — a short key (e.g. \"6DO\") is a substring of a longer, more specific key's signature (e.g. \"6DO5DI2AO\") and can shadow it, silently dropping DI/AO channel counts. Regression case plus a self-consistency loop over every SIGNATURE_IO_HINTS key. Stdlib-only Node (no framework), mirrors the js-unit row's dep-free posture.",
+      "config": null,
+      "run": "node scripts/dev/test-flasher-signature-hints.mjs",
+      "beat": "review",
+      "covers": ["www/network_config/static/js/flasher.js", "scripts/dev/test-flasher-signature-hints.mjs"],
+      "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-flasher-signature-hints.mjs"
+    },
+    {
       "id": "quality-runner-self-test",
       "checks": "The quality runner's own touched-file detection (computeTouchedFiles() in run.mjs, incl. the last-resort unstaged-git-status fallback used right after branching with no new commits) — a regression there silently degrades --touched scoping to a false-green 0/0 pass instead of running the real subset.",
       "config": null,
