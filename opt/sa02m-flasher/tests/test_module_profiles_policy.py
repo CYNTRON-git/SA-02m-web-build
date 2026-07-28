@@ -40,6 +40,14 @@ class TestCapsFromSignature(unittest.TestCase):
     def test_legacy_ao6ai(self) -> None:
         self.assertEqual(caps_from_signature("6AO6AI"), (0, 0, 6, 6))
 
+    # Both letter-first forms are carried by the JS twin SIGNATURE_IO_HINTS
+    # (flasher.js) — Python was the lagging side of that parity.
+    def test_legacy_letter_first_do6di8(self) -> None:
+        self.assertEqual(caps_from_signature("DO6DI8"), (6, 8, 0, 0))
+
+    def test_legacy_letter_first_do4di6(self) -> None:
+        self.assertEqual(caps_from_signature("DO4DI6"), (4, 6, 0, 0))
+
     def test_longest_match_wins_over_shorter_prefix(self) -> None:
         self.assertEqual(caps_from_signature("6DO5DI2AO"), (6, 5, 2, 0))
 

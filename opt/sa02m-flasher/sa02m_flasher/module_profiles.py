@@ -161,6 +161,7 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
 # принимает все три (см. MR-02m-flasher module_profiles._SIGNATURE_HINTS).
 _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6DO8DI":    (6, 8, 0, 0),
+    "DO6DI8":    (6, 8, 0, 0),
     "16DO":      (16, 0, 0, 0),
     "12AO":      (0, 0, 12, 0),
     "6DO":       (6, 0, 0, 0),
@@ -173,6 +174,7 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "AO6AI6":    (0, 0, 6, 6),
     "12AI":      (0, 0, 0, 12),
     "4DO6DI":    (4, 6, 0, 0),
+    "DO4DI6":    (4, 6, 0, 0),
     "4TO6DI":    (4, 6, 4, 0),
     "TO4DI6":    (4, 6, 4, 0),
     "CE02M3":    (0, 0, 0, 0),
