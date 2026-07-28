@@ -120,6 +120,13 @@ check(arraysEqual(capsFromSignature('6AO6AI'), [0, 0, 6, 6]),
 check(arraysEqual(capsFromSignature('6DO5DI2AO'), [6, 5, 2, 0]),
   "capsFromSignature('6DO5DI2AO') deep-equals [6, 5, 2, 0] (longest match, not the shorter '6DO' shadow)");
 
+// --- capsFromSignature: "10DI" short alias (mqtt.js's own alias list uses
+// it) must resolve on its own, and must not shadow the longer "10DICON". ---
+check(arraysEqual(capsFromSignature('10DI'), [0, 10, 0, 0]),
+  "capsFromSignature('10DI') deep-equals [0, 10, 0, 0] (short alias for '10DICON')");
+check(arraysEqual(capsFromSignature('10DICON'), [0, 10, 0, 0]),
+  "capsFromSignature('10DICON') deep-equals [0, 10, 0, 0] (longer key still wins)");
+
 if (failures) {
   console.error('js-unit-flasher-signatures: ' + failures + ' assertion(s) failed');
   process.exit(1);

@@ -43,6 +43,19 @@ class TestCapsFromSignature(unittest.TestCase):
     def test_longest_match_wins_over_shorter_prefix(self) -> None:
         self.assertEqual(caps_from_signature("6DO5DI2AO"), (6, 5, 2, 0))
 
+    def test_10di_short_alias_resolves(self) -> None:
+        # "10DI" is a real alternate signature for the 10-DI module, recorded
+        # independently in opt/sa02m-modbus-mqtt/mqtt_bus_scan.py's alias
+        # table and www/network_config/static/js/mqtt.js's legacy-name list.
+        # Only reachable via the startswith(key[:4]) fallback that the
+        # longest-key-first rewrite (#63) dropped; restored as an explicit key.
+        self.assertEqual(caps_from_signature("10DI"), (0, 10, 0, 0))
+
+    def test_10dicon_full_signature_unaffected_by_10di_alias(self) -> None:
+        # The longer "10DICON" key must still win over the shorter "10DI"
+        # alias for a full "10DICON..." signature (longest-key-first).
+        self.assertEqual(caps_from_signature("10DICON"), (0, 10, 0, 0))
+
 
 class TestAiStorMappingMr02m(unittest.TestCase):
     """Согласование с MR-02m: Kalman 491+stor, WB 533+3*stor (shared/modbus/src/modbus_rtu_hw.c)."""
