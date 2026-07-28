@@ -166,6 +166,7 @@ _SIGNATURE_HINTS: Dict[str, Tuple[int, int, int, int]] = {
     "6DO":       (6, 0, 0, 0),
     "14DI":      (0, 14, 0, 0),
     "10DICON":   (0, 10, 0, 0),
+    "10DI":      (0, 10, 0, 0),  # short-form alias for "10DICON" (mqtt_bus_scan.py alias table)
     "6DO5DI2AO": (6, 5, 2, 0),
     "6AO6AI":    (0, 0, 6, 6),
     "6AI6AO":    (0, 0, 6, 6),
