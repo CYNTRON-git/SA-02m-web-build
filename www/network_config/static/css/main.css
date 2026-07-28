@@ -1065,7 +1065,13 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .eth-hdr-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  /* flex-start, не space-between: .eth-state скрыт (display:none) в состояниях
+     eth-link-up/eth-link-down, а до этого может перенестись на 2-ю строку
+     (.eth-hdr-title.has-ico flex-wrap:wrap) — с 2 оставшимися элементами в
+     строке space-between растягивал разрыв между иконкой и названием на всю
+     ширину. Пилюля справа по-прежнему держится margin-left:auto (ниже),
+     работает независимо от justify-content. */
+  justify-content: flex-start;
   gap: 12px;
   flex-wrap: nowrap;
   width: 100%;

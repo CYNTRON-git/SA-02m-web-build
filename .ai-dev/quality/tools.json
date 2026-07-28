@@ -74,6 +74,15 @@
       "init": "Python 3.10+ as python3, python, or py — the runner picks the first that actually executes (Windows ships a non-functional python3 Store stub; Linux/CI resolves python3 first)"
     },
     {
+      "id": "js-unit-flasher-signatures",
+      "checks": "flasher.js module-signature recognition/caps/route functions (isMpModuleSignatureForFirmwareHint, capsFromSignature, resolveDeviceFlashRoute) against every recognized MR-02m spelling incl. count-first 6AI6AO/AO6AI6 — a regression here silently misroutes bootloader-mode flashing or the RS-485 line profile with no server-side signal.",
+      "config": null,
+      "run": "node scripts/dev/test-flasher-signature-hints.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/flasher.js", "scripts/dev/test-flasher-signature-hints.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
+    },
+    {
       "id": "js-unit",
       "checks": "Frontend logic unit tests the js-syntax `node --check` cannot reach. Currently: clearSessionCookie() in app.js clears session_token at EVERY path prefix (the 401 auto-logout must evict the cloud-scoped Path=/devcfg/<id> cookie, not only Path=/). Stdlib-only Node (no framework), so no extra dep — mirrors the ui-layout row's dep-free/graceful posture.",
       "config": null,

@@ -12,7 +12,7 @@ from sa02m_flasher.module_profiles import (
 
 class TestDeviceFlashRoute(unittest.TestCase):
     def test_mr_signatures_mp_mr(self) -> None:
-        for sig in ("12AI", "MR-02m-DI16", "Sens.", "CE02M3", "6DO8DI"):
+        for sig in ("12AI", "MR-02m-DI16", "Sens.", "CE02M3", "6DO8DI", "6AI6AO", "AO6AI6"):
             self.assertEqual(device_flash_route(sig), "mp_mr", sig)
 
     def test_wb_signatures(self) -> None:

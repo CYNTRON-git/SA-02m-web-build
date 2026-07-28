@@ -40,6 +40,11 @@ class TestScanPersist(unittest.TestCase):
         self.assertEqual(row["addr"], 6)
         self.assertTrue(row["model"])  # a non-empty model for our line
 
+    def test_count_first_ai6ao_classified_and_named(self) -> None:
+        row = runner._classify_scanned_device(_dev(6, "6AI6AO"))
+        self.assertTrue(row["ours"] is True)
+        self.assertEqual(row["model"], "6AI6AO")
+
     def test_third_party_not_ours_no_model(self) -> None:
         row = runner._classify_scanned_device(_dev(9, "MR2M12"))
         self.assertFalse(row["ours"])

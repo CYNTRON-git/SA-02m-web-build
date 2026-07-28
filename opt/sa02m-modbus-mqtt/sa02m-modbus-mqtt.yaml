@@ -23,16 +23,16 @@ mqtt:
 #   backoff_max_s: 30.0       # максимальная пауза (чтобы не нагружать half-duplex шину)
 
 devices:
-  # ── Пример: MR-02м DO6DI8, COM1, addr=5 ─────────────────────────────────
+  # ── Пример: MR-02м 6DO8DI, COM1, addr=5 ─────────────────────────────────
   # - id: mr02m-COM1-5
   #   type: mr02m
-  #   module_type: 1        # ОБЯЗАТЕЛЬНО: тип модуля (1=DO6DI8, 6=AO6AI6, 8=DO4DI6 и т.д.)
+  #   module_type: 1        # ОБЯЗАТЕЛЬНО: тип модуля (1=6DO8DI, 6=6AI6AO, 8=DO4DI6 и т.д.)
   #                         # Используется веб-UI для отображения каналов; мост авто-определяет
   #                         # тип через FC04 при старте, но module_type нужен для корректного UI
   #   port: /dev/COM1
   #   baudrate: 115200
   #   address: 5
-  #   name: "MR-02m DO6DI8 (COM1 addr=5)"
+  #   name: "MR-02m 6DO8DI (COM1 addr=5)"
   #   # fast_modbus: true   # по умолчанию ON для mr02m/dtv (false — только classic)
   #   poll_s: 1              # полный опрос DO/DI + AO/AI (с); poll_do_di_s/poll_ai_ao_s — устар., синхронизируются с poll_s
   #   poll_diag_s: 60
@@ -110,7 +110,7 @@ devices:
   # ── Пример: MR-02m 6AI6AO COM4 addr=6 ───────────────────────────────────
   # ai_sensor_schema: 2 — Modbus selection codes 0..42 (MR-02m ≥1.0.9.1).
   # Без schema или schema: 1 — legacy ai_sensor_t enum 0x00..0x26 (авто-миграция).
-  # 6AO6AI6: AI2/4/6 — N-нога пары; тип датчика как у AI1/3/5 (в веб-UI синхронизируется).
+  # 6AI6AO: AI2/4/6 — N-нога пары; тип датчика как у AI1/3/5 (в веб-UI синхронизируется).
   # RTD/NTC: N в MQTT обычно enabled: false; ТХА (код 41): AI5 и AI6 оба enabled.
   # - id: mr02m-COM4-6
   #   module_type: 6

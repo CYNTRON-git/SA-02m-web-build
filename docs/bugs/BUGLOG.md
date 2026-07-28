@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-07-28 14:00] branch: 1.0.5.47 — Флэшер: не распознаёт канонический/legacy 6AI6AO/AO6AI6
+
+**Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `www/network_config/static/js/flasher.js`
+**Тип:** Логическая ошибка / некорректное поведение
+**Описание:** Модуль MR-02m/MP-02m AI+AO, сообщающий сигнатуру Holding 290 в каноническом виде `6AI6AO` (прошивка ≥1.0.10.29, текущая продакшн 1.0.12.4) или legacy letter-first `AO6AI6`, распознавался флэшером (бэкенд и фронтенд) как стороннее устройство Wiren Board — это (a) блокировало bootloader-прошивку `.fw` ошибкой "не тот вендор" и (b) могло выбрать неверный профиль линии RS-485 (19200 8N2 WB вместо 115200 8N1 родного). Отдельно, `caps_from_signature`/`capsFromSignature` возвращали неверный caps-tuple для составной сигнатуры вроде `6DO5DI2AO` — короткий ключ `6DO` совпадал раньше более длинного `6DO5DI2AO` при переборе словаря в порядке вставки.
+**Причина:** `_SIGNATURE_HINTS` (Python) и `hintKeys`/`SIGNATURE_IO_HINTS` (JS) содержали только `6AO6AI` — ключи `6AI6AO`/`AO6AI6` отсутствовали, хотя bootloader-протокол MR-02m (`bl_sig_match`) принимает все три написания одной платы (`MP02_AO6AI6`). Второй, независимый баг: `caps_from_signature`/`capsFromSignature` перебирали ключи в порядке вставки словаря без сортировки по длине, поэтому короткий ключ мог «затенить» более длинный составной. Это осталось незакрытым пробелом канонизации отображения 1.0.5.4 (`51cb8c8`) — та правка канонизировала только display-слои (`mqtt.js`, `mqtt_bus_scan.py`, `modbus_mqtt_bridge.py`), не таблицы распознавания самого флэшера.
+**Исправление:** добавлены ключи `6AI6AO`/`AO6AI6` в `_SIGNATURE_HINTS` (Python) и `hintKeys`/`SIGNATURE_IO_HINTS` (JS), плюс `AO6AI6` в `MP_MR_SIGNATURE_TOKENS`; `caps_from_signature`/`capsFromSignature` переписаны на перебор ключей по убыванию длины (длинные — первыми), без прежнего недокументированного fallback `startswith(key[:4])`. Регрессионные тесты в обоих языках (`test_module_profiles_policy.py::TestCapsFromSignature`, `test_scan_persist.py`, `test_flash_route.py`, `test_module_line_profiles.py`, новый `scripts/dev/test-flasher-signature-hints.mjs`) закрывают все три написания (`6AO6AI`/`6AI6AO`/`AO6AI6`) и составную сигнатуру `6DO5DI2AO`.
+
 ## [2026-07-21 19:38] branch: main — MQTT вкладка: долгий confirm / Save&Apply
 
 **Файл(ы):** `www/network_config/static/js/mqtt.js`, `www/network_config/cgi-bin/mqtt_status.cgi`, `www/network_config/cgi-bin/mqtt_ctrl.cgi`, `www/network_config/cgi-bin/mqtt_config.cgi`, `www/network_config/index.html`

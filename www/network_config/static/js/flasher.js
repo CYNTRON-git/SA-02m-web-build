@@ -1008,7 +1008,7 @@
     const n = s.toUpperCase().replace(/\s/g, '');
     if (!n || n === 'NONE' || n === '—' || n === '?') return false;
     const hintKeys = [
-      '6DO8DI', '16DO', '12AO', '6DO', '14DI', '10DICON', '6DO5DI2AO', '6AO6AI', '12AI',
+      '6DO8DI', '16DO', '12AO', '6DO', '14DI', '10DICON', '6DO5DI2AO', '6AO6AI', '6AI6AO', 'AO6AI6', '12AI',
       '4DO6DI', '4TO6DI', 'TO4DI6', 'CE02M3', 'CE-02M-3', 'ENMETER', 'EN_METER',
       'SENSOR', 'SENS.',
     ];
@@ -1219,7 +1219,9 @@
     return String(sig || '').trim() || 'Модуль MR/MP-02м';
   }
 
-  /* Синхронизировать с sa02m_flasher.module_profiles._SIGNATURE_HINTS */
+  /* Синхронизировать с sa02m_flasher.module_profiles._SIGNATURE_HINTS.
+     «6AO6AI» / «6AI6AO» / «AO6AI6» — одна плата (MP02_AO6AI6); BL bl_sig_match
+     принимает все три. */
   const SIGNATURE_IO_HINTS = {
     '6DO8DI': [6, 8, 0, 0],
     'DO6DI8': [6, 8, 0, 0],
@@ -1231,6 +1233,7 @@
     '6DO5DI2AO': [6, 5, 2, 0],
     '6AO6AI': [0, 0, 6, 6],
     '6AI6AO': [0, 0, 6, 6],
+    'AO6AI6': [0, 0, 6, 6],
     '12AI': [0, 0, 0, 12],
     '4DO6DI': [4, 6, 0, 0],
     'DO4DI6': [4, 6, 0, 0],
@@ -1246,8 +1249,11 @@
   function capsFromSignature(sig) {
     const n = normalizeModuleSignature(sig);
     if (!n) return null;
-    for (const [key, caps] of Object.entries(SIGNATURE_IO_HINTS)) {
-      if (n.includes(key) || n.startsWith(key.slice(0, 4))) return caps.slice();
+    // Длинные токены сначала: иначе короткий ключ («6DO») совпадает внутри
+    // более длинного («6DO5DI2AO») раньше самого длинного ключа.
+    const keys = Object.keys(SIGNATURE_IO_HINTS).sort((a, b) => b.length - a.length);
+    for (const key of keys) {
+      if (n.includes(key)) return SIGNATURE_IO_HINTS[key].slice();
     }
     return null;
   }
