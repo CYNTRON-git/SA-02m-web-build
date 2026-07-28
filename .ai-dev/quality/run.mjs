@@ -142,13 +142,15 @@ export function computeTouchedFiles(root, base) {
     // fall through to unstaged fallback
   }
 
-  // Last resort: unstaged changes.
+  // Last resort: unstaged changes. Each line is "XY path" — a 2-char status
+  // code + a space. Split BEFORE trimming: trimming the whole multi-line blob
+  // first eats the leading space of the FIRST line only, desyncing its
+  // slice(3) by one character (over-trims the path).
   try {
-    const out = execSync("git status --short", { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-    if (out) {
-      return out.split("\n")
-        .map((line) => line.slice(3).trim())
-        .filter(Boolean);
+    const out = execSync("git status --short", { cwd: root, stdio: "pipe", encoding: "utf8" });
+    const lines = out.split("\n").filter((line) => line.length > 0);
+    if (lines.length > 0) {
+      return lines.map((line) => line.slice(3).trim()).filter(Boolean);
     }
   } catch {
     // nothing
