@@ -7,9 +7,17 @@
       "path": "C:/Users/admin/Downloads/cloud",
       "repo": "CYNTRON-git/cloud",
       "description": "SA-02m cloud backend (frps + stdlib API + fleet UI). Device-side seam: docs/contracts/cloud-enrollment.md."
+    },
+    {
+      "name": "hardpy_tests",
+      "root": "../hardpy_tests",
+      "path": "C:/Users/admin/Downloads/hardpy_tests",
+      "repo": "CYNTRON-git/hardpy_tests",
+      "description": "HardPy production/bench test-stand harness sharing physical devices with SA-02m-web-build (192.168.10.136 = stand SA02M-136). Deploys its own analytics/test-runner web app (/var/www/hardpy_stand, separate from network_config) and reads the RS-485 verifier modules on COM4 through THIS project's sa02m-modbus-mqtt bridge (verifier_via_mqtt=true, hardpy.toml.sa02m) — so a stale/broken bridge on a shared stand breaks hardpy_tests too. DUT flashing during test runs uses its OWN standalone flasher (/opt/MR-02m-flasher, flasher_path in hardpy.toml.sa02m), NOT this project's opt/sa02m-flasher web-integrated one. Version pin for the expected SA-02m-web-build deploy on each shared stand: docs/SA02M_WEB_BUILD_PIN.md in that repo. Added 2026-07-28 (flasher-signature feature) after discovering 192.168.10.136 was manually SSH-patched with no tracked version expectation."
     }
   ],
   "siblings": [
-    { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" }
+    { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" },
+    { "name": "hardpy_tests", "root": "../hardpy_tests", "path": "C:/Users/admin/Downloads/hardpy_tests" }
   ]
 }
