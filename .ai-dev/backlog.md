@@ -62,19 +62,26 @@ audit).
   names in a small contract entry on the next cloud UI touch. (Threat-model
   cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
 - [OPEN] 2026-07-17 **[LOW] Decompose worklist (module-size sweep).**
-  `main.css` 4166 · `modbus_mqtt_bridge.py` **3179** (fastest grower again:
-  +405 in the 1.0.5.46 window on top of +436 in 1.0.5.9–12; **first
-  priority** — audit 2026-07-22 B7; the FMB event/insurance unit tests
-  seed the behaviour net; clean up legacy `except Exception: pass`
-  clusters during the split) · `status.cgi` 2507 · `mqtt.js` **2441** ·
-  `flash_protocol.py` 2418 · `app/status.js` 1546. Start with the bridge.
-  `flasher.js` deliberately excluded (see F10 below). Audits 2026-07-17
-  (F6, evening F3), refreshed 2026-07-22.
+  `main.css` 4166 · `modbus_mqtt_bridge.py` **bridge slice DONE 1.0.5.55**:
+  the 3413-line monolith split into 7 `bridge_*` modules + a ~300-line
+  facade entry (mr02m 664 · dtv_ce 602 · fmb 531 · serial 486 · device 433 ·
+  mqtt 382 · mr02m_map 226) under the 95-test net, existing tests
+  byte-unchanged; the legacy `except Exception: pass` cleanup stays OPEN
+  (behaviour-changing — explicitly out of the split's scope) ·
+  `status.cgi` 2507 · `mqtt.js` **2441** (next priority) ·
+  `flash_protocol.py` 2418 · `app/status.js` 1546. `flasher.js`
+  deliberately excluded (see F10 below). Audits 2026-07-17 (F6, evening
+  F3), refreshed 2026-07-22; bridge slice done 2026-07-29 (1.0.5.55).
 - [OPEN] 2026-07-22 **[LOW] Bridge `PortCycleScheduler` loop untested.**
   The per-port scheduling loop (classic/event balancing, warmup gate, the
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
   the 1.0.5.46 tests pin backoff/insurance behaviour but not the loop
   itself. Seed for the bridge decompose above. Audit 2026-07-22 (A9).
+  Partial pin landed 1.0.5.55: `tests/test_port_cycle.py` characterizes
+  the call-order / slice discipline (`_classic_slice` + `run()`
+  choreography: warmup→configure gate, reconfigure-before-burst,
+  silent-poll insurance disarm, balancing force-poll); the deep
+  deadline/wait timing simulation of the 20 Hz loop is still open.
 - [OPEN] 2026-07-22 **[LOW, vendored→downstream-feedback] `run.mjs
   --touched` vacuous on this repo.** Registry `covers` are bare path
   prefixes but `coversToRegex` (`.ai-dev/quality/run.mjs:48`) anchors
