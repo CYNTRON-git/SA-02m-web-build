@@ -246,6 +246,18 @@ fi
 MQTT_OPT="$REPO_ROOT/opt/sa02m-modbus-mqtt"
 BRIDGE_DIR=/opt/sa02m-modbus-mqtt
 if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
+    # Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the old entry
+    # is self-contained, so a crash/restart mid-copy still boots the previous
+    # bridge — only the final copy switches the composition. CRLF strip per
+    # file (sources may transit with CRLF). Keep the list in sync with
+    # tests/test_entry_surface.py EXPECTED_MODULES and scripts/05-mqtt.sh.
+    for f in bridge_serial.py bridge_fmb.py bridge_mqtt.py bridge_mr02m_map.py \
+             bridge_device.py bridge_mr02m.py bridge_dtv_ce.py; do
+        if [ -f "$MQTT_OPT/$f" ]; then
+            install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f"
+            sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true
+        fi
+    done
     install -m 0755 -o root -g root \
         "$MQTT_OPT/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
     sed -i 's/\r$//' "$BRIDGE_DIR/modbus_mqtt_bridge.py" 2>/dev/null || true
