@@ -124,15 +124,3 @@ audit).
   re-run `install.sh` preserves the static IP, cloud activation, storage
   autoformat off by default. A www-only OTA needs `/etc/sa02m_web.env` present
   (login now fails closed).
-- [OPEN] 2026-07-29 **[LOW] F9 — over-broad "covers all record counts" wording
-  (fmb event wire).** `test_no_configured_record_can_satisfy_the_wb_gate` builds
-  its `(type, reg_high)` corpus from `all_event_ranges()` (types 0, 2, 3), so a
-  legacy `FMB_EVT_REBOOT` (0x0F) record standing FIRST in a frame is outside it —
-  while the surrounding sentence claims the general all-n case. Same wording at
-  `docs/contracts/fmb-event-wire.md` (~:111, ~:133) and the test module docstring.
-  The property itself was verified to HOLD (no wire code carries a 15-byte
-  payload; 65 536 reboot-first legacy frames rejected by `_parse_events_wb`) — so
-  this is a claim-precision fix, not a defect: narrow the sentence, or extend the
-  corpus with the reboot type and keep the broad claim. Third instance of the same
-  over-claim pattern in this feature; found by the round-3 reviewer, shipped
-  knowingly in 1.0.5.50 on the Operator's "push" word.

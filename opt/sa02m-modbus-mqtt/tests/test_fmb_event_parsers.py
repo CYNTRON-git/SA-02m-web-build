@@ -7,9 +7,10 @@ Pure-unit: no serial port, no MQTT broker. Pins:
   * the reboot collision rule — a WB reboot record must never be read as a
     legacy COIL event, even for a slave cached as legacy;
   * the latent invariant the auto-detection rests on, stated at the WB gate so
-    it covers a frame of any length: no (type, register high byte) pair the
-    bridge can emit satisfies that gate, so a legacy frame from a configured
-    range map never satisfies the WB grammar;
+    it covers a frame of any length: no (type, register high byte) pair a
+    genuine legacy frame can START with — the configured ranges plus a reboot
+    at any register — satisfies that gate, so such a frame fails WB on its
+    first record and therefore never satisfies the WB grammar;
   * bus-garbage robustness (no exception, never more events than announced).
 
 Contract home: docs/contracts/fmb-event-wire.md.
@@ -296,7 +297,8 @@ class TestCollisionPins(unittest.TestCase):
         # frames only, so on its own it says nothing about multi-record frames
         # (a two-record frame can be accepted where each record alone is not).
         # The general statement — for every n — is
-        # test_no_configured_record_can_satisfy_the_wb_gate below.
+        # test_no_first_record_a_legacy_frame_can_carry_satisfies_the_wb_gate
+        # below.
         vals = (0, 1, 0x7F, 0x80, 0xFF, 0x0100, 0x0F0F, 0xFFFF)
         checked = 0
         for (evt_type, start, count) in all_event_ranges():
@@ -311,27 +313,51 @@ class TestCollisionPins(unittest.TestCase):
                     checked += 1
         self.assertGreater(checked, 500, "corpus went vacuous")
 
-    def test_no_configured_record_can_satisfy_the_wb_gate(self):
+    def test_no_first_record_a_legacy_frame_can_carry_satisfies_the_wb_gate(self):
         # THE invariant the auto-detection rests on, stated at the gate so it
         # holds for a frame of ANY length: the WB parser accepts a record only
         # when buf[pos+1] is a wire code and buf[pos] equals that wire's payload
         # length. In a legacy record those two bytes are the type and the
-        # register HIGH byte. Today's derivable (type, reg_high) pairs are
-        # [(0,0), (2,0), (3,0), (3,1), (3,2)] — none passes the gate, so a
-        # legacy frame from any configured map fails WB on its FIRST record and
-        # therefore as a whole, for every n. A failure here means auto-detection
-        # is no longer safe — see docs/contracts/fmb-event-wire.md — NOT that
-        # the test needs relaxing.
-        pairs = {(evt_type, (reg >> 8) & 0xFF)
-                 for (evt_type, start, count) in all_event_ranges()
-                 for reg in range(start, start + count)}
-        self.assertGreaterEqual(len(pairs), 5, "pair corpus went vacuous")
-        for (evt_type, reg_high) in sorted(pairs):
+        # register HIGH byte. The corpus below is every (type, reg_high) pair a
+        # genuine legacy frame of this device set can START with — the
+        # configured ranges (today [(0,0), (2,0), (3,0), (3,1), (3,2)]) PLUS a
+        # reboot, which is not a configured range yet can stand first and whose
+        # register is unconstrained, hence all 256 high bytes. None passes the
+        # gate, so such a frame fails WB on its FIRST record and therefore as a
+        # whole, for every n. A failure here means auto-detection is no longer
+        # safe — see docs/contracts/fmb-event-wire.md — NOT that the test needs
+        # relaxing.
+        configured = {(evt_type, (reg >> 8) & 0xFF)
+                      for (evt_type, start, count) in all_event_ranges()
+                      for reg in range(start, start + count)}
+        self.assertGreaterEqual(len(configured), 5, "pair corpus went vacuous")
+        reboot = {(bridge.FMB_EVT_REBOOT, rh) for rh in range(256)}
+        for (evt_type, reg_high) in sorted(configured | reboot):
             self.assertFalse(
                 reg_high in WIRE_PLEN and WIRE_PLEN[reg_high] == evt_type,
                 f"a legacy record type={evt_type} reg_high={reg_high:#04x} "
                 f"now satisfies the WB gate — the two grammars became "
-                f"ambiguous on a configured range")
+                f"ambiguous on a record a legacy frame can start with")
+
+    def test_legacy_reboot_standing_first_is_not_hijacked(self):
+        # The frame-level companion to the gate pin: a genuine legacy frame
+        # whose FIRST record is a reboot must still read as legacy, at every
+        # register high byte, even for a slave cached as legacy. (The other
+        # no-hijack pin puts the reboot second.)
+        mgr = self._mgr()
+        mgr._wb_frame_slaves[9] = False
+        for reg_high in range(256):
+            reg = (reg_high << 8) | 0x05
+            records = (legacy_record(bridge.FMB_EVT_REBOOT, reg, 0)
+                       + legacy_record(bridge.FMB_EVT_COIL, 1, 1))
+            buf = frame(records, 2)
+            self.assertIsNone(parse_wb(buf, 2),
+                              f"legacy reboot at reg_high={reg_high:#04x} "
+                              f"parsed as WB")
+            self.assertEqual(
+                mgr._parse_event_records(9, buf, 6, len(buf), 2),
+                [(9, bridge.FMB_EVT_REBOOT, reg, -1),
+                 (9, bridge.FMB_EVT_COIL, 1, 1)])
 
     def test_configured_ranges_stay_below_their_collision_limit(self):
         # The readable corollary of the gate property: how far each type's

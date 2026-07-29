@@ -1119,9 +1119,10 @@ class FastModbusEventPortManager:
             # slave: the WB grammar accepts a record only when its second byte
             # is a wire code and its first byte equals that wire's payload
             # length, while in a legacy record those are the type and the
-            # register high byte — and no (type, reg_high) pair any configured
-            # range map can emit satisfies that gate, so a legacy frame fails
-            # WB on its FIRST record whatever its length (pinned by
+            # register high byte — and no (type, reg_high) pair a genuine
+            # legacy frame can START with (the configured ranges plus a reboot
+            # at any register) satisfies that gate, so such a frame fails WB on
+            # its FIRST record whatever its length (pinned by
             # tests/test_fmb_event_parsers.py; the per-type register limits are
             # COIL 0x0F00, DISCRETE 0x0100, HOLDING 0x0300, INPUT unbounded).
             # Losing a reboot is the one unrecoverable outcome: dev["configured"]
