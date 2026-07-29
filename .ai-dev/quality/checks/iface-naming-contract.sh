@@ -144,5 +144,18 @@ else
     fail "etc/sa02m-iface-canonical.sh lost the udev_initialized gate in canonicalize_pair — the boot-0 'already canonical' no-op against a kernel-native name returns silently"
 fi
 
+# ── 5. interfaces.d source filter — backups must stay inert ────────────────
+# 02-network.sh writes /etc/network/interfaces; a bare `*` source glob makes
+# the <conf>.sa02m-bak backups (contract §3/§5.4) LIVE config — a backed-up
+# duplicate `auto eth0` stanza gets ifup'd twice -> the second `ip addr add`
+# -> "RTNETLINK: File exists" -> networking FAILED (bench 2026-07-29,
+# reboot #1 — contract §1.0 mechanism 3).
+if grep -q '^source /etc/network/interfaces\.d/\*\.conf$' scripts/02-network.sh \
+   && ! grep -qE '^source /etc/network/interfaces\.d/\*[[:space:]]*$' scripts/02-network.sh; then
+    pass "02-network.sh sources interfaces.d with the .conf filter (backups stay inert)"
+else
+    fail "scripts/02-network.sh must write 'source /etc/network/interfaces.d/*.conf' (and no unfiltered '*' line) — a wider glob sources <conf>.sa02m-bak backups as live config: duplicate stanza -> 'File exists' -> networking FAILED"
+fi
+
 [ "$fails" = 0 ] || printf 'iface-naming-contract: %s check(s) failed — see docs/contracts/ethernet-iface-naming.md\n' "$fails"
 exit "$fails"
