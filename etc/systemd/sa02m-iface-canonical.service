@@ -1,13 +1,14 @@
 [Unit]
 Description=SA-02m: canonical Ethernet interface names (end0/end1 -> eth0/eth1)
 Documentation=file:/usr/local/sbin/sa02m-iface-canonical.sh
-# udev must have finished its own naming pass, else it renames after us and
-# undoes the work. systemd-udev-settle is deprecated upstream but present and
-# functional on bullseye / the 5.10.35 SA-02m kernel; the script's bounded
-# device-wait is the belt to this braces — do not rely on settle alone.
+# Ordering vs udev: After= (no Wants=) — on the 6.1 bench board a pulled-in
+# systemd-udev-settle times out at 120 s EVERY boot (busy queue, cause in the
+# backlog), costing ~2 min of boot and a failed unit for zero benefit: the
+# script's own bounded device-wait (10 s, per pair) is the primary mechanism,
+# exactly as the plan designed it. If something else pulls settle in, we still
+# order after it; if nothing does, we don't pay for it.
 DefaultDependencies=no
 After=systemd-udev-settle.service
-Wants=systemd-udev-settle.service
 # The hard requirement: ifup must not run against a stale name (the 1.0.3.38
 # "Cannot find device" symptom). network-pre.target is the idiomatic anchor,
 # kept as a second ordering path should a future ifupdown drop the direct edge.

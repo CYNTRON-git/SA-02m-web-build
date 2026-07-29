@@ -1,7 +1,12 @@
 [Unit]
 Description=SA-02m network recovery for %I
 Documentation=file:/usr/local/bin/fix-eth.sh
-After=network.target sys-subsystem-net-devices-%i.device
+# After=networking.service: the canonical rename (sa02m-iface-canonical) emits
+# a udev add event carrying the NEW name mid-boot, so 99-lan-recovery.rules
+# starts this instance exactly while networking's own `ifup -a` is configuring
+# the same interface — the two race and one loses with "RTNETLINK: File exists",
+# failing networking.service. Recovery must never precede initial bring-up.
+After=network.target networking.service sys-subsystem-net-devices-%i.device
 BindsTo=sys-subsystem-net-devices-%i.device
 Conflicts=shutdown.target reboot.target halt.target
 StartLimitIntervalSec=60

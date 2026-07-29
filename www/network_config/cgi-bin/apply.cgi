@@ -180,18 +180,25 @@ conf_assemble() {
     return 0
 }
 
-# Retire a legacy sibling conf whose device no longer exists.
-# The panel CANNOT delete it: the pinned sudoers for www-data grants
-# /usr/bin/tee but no `rm`, so `sudo rm` is refused — which is why the former
-# sibling deletes here were silent no-ops. Leaving an `auto end0` stanza for a
-# device that is gone would fail networking.service at the next boot with
-# "Cannot find device", so the file is backed up and neutralised to comments:
-# stanza-free, therefore ignored by `ifup -a`. The installer, which runs as
-# root, deletes the file outright on its next run.
+# Remove a legacy sibling conf whose device no longer exists. Primary path:
+# the pinned sa02m-conf-rm.sh helper (the only rm capability sudoers grants
+# www-data — allow-listed to the four LAN conf names, backs up first).
+# Fallback where the helper/sudoers line is absent (pre-1.0.5.54 deploys):
+# back up and neutralise to comments — stanza-free, ignored by `ifup -a`;
+# the root-run installer deletes it on its next pass. Leaving an `auto end0`
+# stanza for a gone device would fail networking.service at the next boot.
 lan_conf_retire() {
     local conf="$1" canon="$2"
     [ -f "$conf" ] || return 0
     grep -qE '^[[:space:]]*(auto|allow-[a-z]+|iface|mapping)[[:space:]]' "$conf" 2>/dev/null || return 0
+    # Primary path: the pinned rm helper (allow-listed, backs up itself) —
+    # present on boards installed/updated since 1.0.5.54. Falls back to
+    # retire-to-comments where the helper (or its sudoers line) is absent.
+    if sudo -n /usr/local/sbin/sa02m-conf-rm.sh "$conf" 2>/dev/null; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: $conf deleted via sa02m-conf-rm (superseded by ${canon})" \
+            >> /var/log/sa02m_install.log 2>&1
+        return 0
+    fi
     conf_backup "$conf"
     write_iface_conf "$conf" \
         "# Retired by the SA-02m web panel: this interface is now ${canon}." \

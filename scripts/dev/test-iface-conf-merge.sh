@@ -119,7 +119,7 @@ echo "── bounds ──"
 { printf 'auto eth0\niface eth0 inet static\n    address 1.1.1.1\n'
   i=1; while [ "$i" -le 200 ]; do printf '    post-up /bin/true # %s\n' "$i"; i=$((i + 1)); done; } > "$C"
 write_lan_pair eth0 end0 eth0 "$C" auto static "    address 10.0.0.3" "    netmask 255.255.255.0"
-n=$(grep -c 'bin/true' "$C")
+n=$(grep -c 'post-up /bin/true' "$C")
 [ "$n" -le 64 ] && ok "line-count bound honoured ($n of 200 kept, cap 64)" || bad "line-count bound broken ($n)"
 LONG=$(printf 'x%.0s' $(seq 1 600))
 printf 'auto eth0\niface eth0 inet static\n    address 1.1.1.1\n    post-up %s\n' "$LONG" > "$C"
@@ -151,6 +151,26 @@ cp "$CD/end0.conf.sa02m-bak" "$T/bak1"
 write_lan_pair eth0 end0 eth0 "$CD/eth0.conf" auto static "    address 192.168.1.51" "    netmask 255.255.255.0"
 if diff -q "$T/bak1" "$CD/end0.conf.sa02m-bak" >/dev/null; then ok "retirement is idempotent (backup not churned)"; else bad "re-save churned the retirement backup"; fi
 
+echo "── sa02m-conf-rm helper (plan §5: refusal surface, portably) ──"
+# The helper's write/delete good-path and the symlink refusal need a root-owned
+# /etc/network/interfaces.d and were exercised on the bench (2026-07-29);
+# portably we pin the REFUSAL surface (no side effects — validation precedes
+# any write) plus the structural invariants of the sudoers capability.
+HLP="etc/sa02m-conf-rm.sh"   # cwd = repo root (cd at the top of this harness)
+bash "$HLP" /etc/passwd                                   >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses non-allow-listed path" || bad "accepted /etc/passwd"
+bash "$HLP" '/etc/network/interfaces.d/../../passwd'      >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses traversal" || bad "accepted traversal"
+bash "$HLP" /etc/network/interfaces.d/eth2.conf           >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses eth2.conf (not in the 4-name list)" || bad "accepted eth2.conf"
+bash "$HLP" ''                                            >/dev/null 2>&1; [ $? -eq 2 ] && ok "refuses empty argument" || bad "accepted empty argument"
+if [ ! -e /etc/network/interfaces.d/eth1.conf ]; then
+    bash "$HLP" /etc/network/interfaces.d/eth1.conf       >/dev/null 2>&1; [ $? -eq 0 ] && ok "absent allow-listed conf: idempotent exit 0" || bad "absent conf not idempotent"
+else
+    ok "absent-conf case skipped (real conf present on this host)"
+fi
+grep -q 'case "\$conf" in' "$HLP" && ok "validation is a literal case (no regex/glob)" || bad "case validation missing"
+grep -q -- '-L "\$conf"' "$HLP" && ok "symlink refusal present before rm" || bad "symlink refusal missing"
+awk '/cp -f "\$conf"/{seen=1} /rm -f "\$conf"/{if(!seen){exit 1}}' "$HLP" && ok "backup precedes rm" || bad "rm without preceding backup"
+
 echo "---"
 if [ "$fails" = 0 ]; then echo "iface-conf-merge: all checks passed"; else echo "iface-conf-merge: $fails check(s) FAILED"; fi
 exit "$fails"
+

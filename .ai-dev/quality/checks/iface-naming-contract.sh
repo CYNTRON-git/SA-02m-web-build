@@ -20,7 +20,8 @@ pass() { printf 'iface-naming-contract: ok    %s\n' "$*"; }
 # (cf. the ui-layout touch/contrast whitelists): non-vacuous BOTH ways — a new
 # file entering the set fails, and a stale entry that no longer matches fails
 # too. Widening it is a deliberate one-line change, reviewed as such.
-LEDGER="etc/sa02m-iface-canonical.sh
+LEDGER="etc/sa02m-conf-rm.sh
+etc/sa02m-iface-canonical.sh
 etc/sa02m_network.conf
 install.sh
 scripts/02-network.sh
@@ -68,6 +69,23 @@ if printf '%s\n' "$apply_code" | grep -q 'echo -e'; then
     fail "apply.cgi reintroduced 'echo -e' — it interprets backslash escapes and mangles preserved foreign lines (F6)"
 else
     pass "apply.cgi carries no 'echo -e'"
+fi
+
+# Raw `sudo rm` in apply.cgi was ALWAYS a silent no-op (www-data sudoers has no
+# rm) and its return would bypass the pinned helper — contract §5.4.
+if printf '%s\n' "$apply_code" | grep -q 'sudo rm'; then
+    fail "apply.cgi reintroduced raw 'sudo rm' — deletion goes only through sa02m-conf-rm.sh (contract §5.4)"
+else
+    pass "apply.cgi carries no raw 'sudo rm'"
+fi
+# The sudoers GRANT line sits alone on its continuation line (leading spaces,
+# bare path, EOL) — the installer's `install -m 755 … sa02m-conf-rm.sh` line
+# does NOT match this shape, so removing only the grant fails the gate
+# (mutation-verified in the 1.0.5.54 round-2 review).
+if grep -q '^[[:space:]]*/usr/local/sbin/sa02m-conf-rm\.sh$' scripts/03-webserver.sh; then
+    pass "sudoers grant line for the pinned conf-rm helper present"
+else
+    fail "sudoers grant line for sa02m-conf-rm.sh missing from scripts/03-webserver.sh"
 fi
 tee_lines=$(printf '%s\n' "$apply_code" | grep -c 'sudo tee')
 if [ "$tee_lines" = "2" ]; then

@@ -7,18 +7,21 @@ audit).
 
 ## Open
 
-- [OPEN] 2026-07-28 **[HIGH, escalated] `www-data` cannot delete an
-  `interfaces.d` conf — the panel has no `rm` capability.** The pinned sudoers
-  (`scripts/03-webserver.sh:300`) grants `/usr/bin/tee` but no `rm`, so every
-  `sudo rm -f` in `apply.cgi` (the sibling-conf deletes, and the Ethernet № 2
-  disable path) has always been a **silent no-op** on the device. 1.0.5.49 works
-  around it by backing the file up and neutralising it to comments (stanza-free
-  ⇒ ignored by `ifup -a`; `docs/contracts/ethernet-iface-naming.md §5.4`), which
-  is safe but leaves the file present. Decision needed: (a) keep neutralise-only,
-  (b) grant a narrow pinned capability (a purpose-built
-  `/usr/local/sbin/sa02m-web-iface-conf-rm`-style helper, the
-  `sa02m-commit-web-env` idiom) so the panel can really remove it. Security
-  surface ⇒ Operator's call.
+- [RESOLVED 2026-07-29, 1.0.5.54] **[HIGH] `www-data` cannot delete an
+  `interfaces.d` conf.** Operator chose option (b): pinned
+  `/usr/local/sbin/sa02m-conf-rm.sh` (case-allow-list of the four LAN conf
+  names, symlink refusal, backup-first, idempotent) is now the panel's only rm
+  capability; `lan_conf_retire` tries it first and falls back to
+  retire-to-comments on pre-1.0.5.54 deploys. `docs/contracts/
+  ethernet-iface-naming.md §5.4` is the home.
+- [OPEN] 2026-07-29 **[MED] udev queue busy ~120 s at every boot on the 6.1
+  bench board** — `udevadm settle` (and Debian's `ifupdown-pre`) time out at
+  the 120 s ceiling each boot (journal: `Timed out for waiting the udev queue
+  being empty`), delaying `networking.service` ~2 min; runtime queue is empty
+  (`settle_rc=0`). Root cause undiagnosed (suspects: docker/codemeter/CAN
+  device churn). Our `sa02m-iface-canonical.service` no longer pulls settle in
+  (`Wants=` dropped 1.0.5.54) — the residual delay comes from `ifupdown-pre`
+  when it runs. Diagnose with `udevadm monitor` during boot on the bench.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
@@ -103,14 +106,13 @@ audit).
   (per-candidate `service_present`/`unit_exists` systemctl) — batchable too but the
   resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
   Defer unless the full services path needs to be faster still.
-- [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
-  Narrowed 2026-07-28: **closed by construction by the `eth0`/`eth1`
-  canonicalization guarantee** (`docs/contracts/ethernet-iface-naming.md`) — the
-  residual hardcoders (`etc/fix-eth1-internet.sh:319`,
-  `etc/systemd/sa02m-eth1-coldboot.service:6`) are correct once every board is
-  canonically named, so they are deliberately left unedited. **Resolve only
-  after the on-device procedure (§8 of the naming plan) has passed on a real
-  board** — the `end0`→`eth0` rename itself ships unexercised on hardware.
+- [RESOLVED 2026-07-29] **[MED] eth0-hardcoding in web/net consumers (end-board
+  gap).** Closed by the `eth0`/`eth1` canonicalization guarantee
+  (`docs/contracts/ethernet-iface-naming.md`); the resolve-condition — the
+  on-device pass on a real board — was met on 2026-07-29: bench `192.168.1.136`
+  turned out legacy-named and the `end0`→`eth0` rename + migration ran live
+  (journal `renamed` ×2). Residual hardcoders are correct by construction and
+  stay unedited.
 - [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
   `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
   legacy static `session_token=cyntron_session` cookie instead of the
