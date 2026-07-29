@@ -241,6 +241,8 @@
     'RT (Real Time)': 'RT (Real Time)',
     'SMP': 'SMP',
     'Требуется перезагрузка для применения выбранного ядра': 'Reboot required to apply selected kernel',
+    'IP-адрес этого интерфейса также задаёт KLogic': 'This interface IP is also set by KLogic',
+    'KLogic установлен, но не управляет этим интерфейсом': 'KLogic is installed but does not manage this interface',
     'Образ ядра не установлен на устройстве': 'Kernel image is not installed on the device',
     'Модули ядра не установлены': 'Kernel modules are not installed',
     'Не удалось смонтировать FAT-раздел загрузки': 'Failed to mount the FAT boot partition',

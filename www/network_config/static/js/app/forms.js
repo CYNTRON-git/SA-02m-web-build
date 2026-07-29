@@ -78,6 +78,9 @@ function loadConfig() {
       setVal('f-gw1',   d.eth1?.gateway || '');
       setVal('f-dns1',  d.eth1?.dns || '');
       toggleEth1Fields();
+      /* KLogic coexistence notice (config.cgi "klogic" key) */
+      setKlogicHint('eth0-klogic-hint', d.klogic, d.klogic && d.klogic.eth0_hook);
+      setKlogicHint('eth1-klogic-hint', d.klogic, d.klogic && d.klogic.eth1_hook);
       /* time */
       timeZoneSelectApplyFromDeviceOrBrowser(document.getElementById('f-tz'), d.timezone);
       if (d.datetime) setVal('f-datetime', d.datetime);
@@ -92,6 +95,36 @@ function loadConfig() {
 }
 
 function setVal(id, val) { const e = document.getElementById(id); if (e) e.value = val; }
+
+/**
+ * Подпись на карточке Ethernet: интерфейсом также управляет KLogic.
+ * Hidden by default and hidden again whenever the backend does not claim
+ * KLogic — an old cached bundle against a new backend, a backend with no
+ * `klogic` key, a timeout/500/auth loss (loadConfig ends in .catch(() => {}),
+ * so nothing runs and the element stays at its markup default). It therefore
+ * can never show a stale or wrong claim.
+ * Text goes through textContent, never innerHTML — no escaping question.
+ */
+function setKlogicHint(id, klogic, hasHook) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!klogic || !klogic.present) {
+    el.style.display = 'none';
+    el.textContent = '';
+    el.classList.remove('warn');
+    return;
+  }
+  if (hasHook) {
+    el.classList.remove('warn');
+    el.textContent = uiT('IP-адрес этого интерфейса также задаёт KLogic');
+  } else {
+    /* The actionable state: KLogic is installed but this interface carries no
+       hook — typically a board whose hook an older panel save stripped. */
+    el.classList.add('warn');
+    el.textContent = uiT('KLogic установлен, но не управляет этим интерфейсом');
+  }
+  el.style.display = '';
+}
 
 function toggleEth0Fields() {
   const en = document.getElementById('eth0-en');
