@@ -217,12 +217,19 @@ except Exception as e:
     sys.stderr.write("opcua conf parse failed: %s\n" % e)
     sys.exit(1)
 opcua = cfg.get("opcua")
-if isinstance(opcua, dict) and opcua.get("port") == 4840:
+# Also match a hand-edited string "4840" — the driver would still int() it.
+if isinstance(opcua, dict) and opcua.get("port") in (4840, "4840"):
     opcua["port"] = 4841
     tmp = path + ".sa02m-mig.tmp"
+    st = os.stat(path)
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    # The conf carries mqtt.password: preserve the original mode/owner across
+    # the atomic replace (a tightened 0600 must not widen to umask 0644).
+    os.chmod(tmp, st.st_mode & 0o7777)
+    if hasattr(os, "chown"):
+        os.chown(tmp, st.st_uid, st.st_gid)
     os.replace(tmp, path)
     print("changed")
 else:

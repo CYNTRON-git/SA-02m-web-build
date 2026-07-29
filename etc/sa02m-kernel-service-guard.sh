@@ -45,6 +45,19 @@ preempt_rt_active() {
     grep -q 'PREEMPT_RT' /proc/version 2>/dev/null
 }
 
+# Bounded runner for hangable external calls (vendor init.d stops, systemctl
+# on a wedged D-Bus) — web-code-rigor floor: timeouts everywhere; precedent
+# sa02m_systemctl in scripts/lib.sh. The guard unit is Before=multi-user, so
+# an unbounded hang here would block the whole boot. Falls back to the raw
+# call where coreutils timeout is absent (never on the device).
+run_bounded() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 20 "$@"
+    else
+        "$@"
+    fi
+}
+
 # A REAL unit file (systemctl disable works on it) — NOT a SysV-generated
 # runtime unit under /run/systemd/generator.late/, which systemctl disable
 # refuses (prior art: codesys_rc_disable in etc/sa02m-web-service-ctl.sh).
@@ -67,7 +80,7 @@ apply_policy() {
             log "apply-policy: $svc SysV autostart disabled"
         fi
         if real_unit_file_exists "$svc"; then
-            systemctl disable "$svc" >/dev/null 2>&1 \
+            run_bounded systemctl disable "$svc" >/dev/null 2>&1 \
                 || log "apply-policy: systemctl disable $svc failed"
         fi
         # Absent service: skipped silently — idempotent on every device.
@@ -98,8 +111,11 @@ boot_guard() {
     local svc
     for svc in $POLICY_SERVICES; do
         if [ -x "/etc/init.d/$svc" ]; then
-            "/etc/init.d/$svc" stop >/dev/null 2>&1 \
-                || log "boot-guard: /etc/init.d/$svc stop failed (pkill fallback follows)"
+            # Vendor .deb init scripts — unbounded by us; a wedged runtime's
+            # stop must not hang the boot (run_bounded + the unit's
+            # TimeoutStartSec belt).
+            run_bounded "/etc/init.d/$svc" stop >/dev/null 2>&1 \
+                || log "boot-guard: /etc/init.d/$svc stop failed or timed out (pkill fallback follows)"
         fi
     done
     # pkill fallback per the service-ctl idiom: init.d stop can miss a
