@@ -36,6 +36,225 @@ reject_bad_input() {
     exit 0
 }
 
+# ── Foreign-stanza preservation ────────────────────────────────────────────
+# The panel regenerates an interfaces.d conf from the form on every save, and
+# until now that DELETED every line it did not itself write — including the
+# `post-up /home/klogic/adjust-eth0` hook that is a KLogic board's ONLY path for
+# applying its IP. One save silently disabled KLogic's IP control.
+#
+# Rule: we own an allow-list of stanza headers and option keys; every other line
+# is foreign and is copied through VERBATIM in its original order. Security
+# boundary (unchanged, not widened): preserved content comes ONLY from the
+# existing root-owned file — no request value can create, extend or influence a
+# preserved line, and form values still reach only the managed keys, which still
+# pass the allow-list validation below before any write.
+PRESERVE_MAX_LINES=64
+PRESERVE_MAX_BYTES=8192
+PRESERVE_MAX_LINE=512
+PRESERVE_PRE=()
+PRESERVE_IN=()
+PRESERVE_DROPPED=0
+
+# The only option keys we write, and therefore the only ones we replace.
+conf_key_is_managed() {
+    case "$1" in
+        address|netmask|gateway|dns-nameservers|metric) return 0 ;;
+    esac
+    return 1
+}
+
+# First token at column 0 that opens a new stanza (ifupdown grammar).
+conf_token_starts_stanza() {
+    case "$1" in
+        auto|allow-*|iface|source|source-directory|mapping) return 0 ;;
+    esac
+    return 1
+}
+
+# Single-generation backup before any destructive write. `sudo tee` is the only
+# root-write primitive the panel holds (pinned in sudoers), so the backup goes
+# through it too. One home, no accumulating history.
+conf_backup() {
+    [ -f "$1" ] && [ -r "$1" ] || return 0
+    sudo tee "${1}.sa02m-bak" < "$1" >/dev/null 2>&1 || true
+}
+
+# conf_scan_foreign <conf> <iface>
+# Fills PRESERVE_PRE / PRESERVE_IN. Returns 1 when the file is unusable for a
+# merge — unreadable, no `iface <iface> inet …` line, or more than one stanza
+# for the same interface. A wrong merge into a network config is worse than a
+# clean regeneration, so the caller then backs the file up and regenerates.
+conf_scan_foreign() {
+    local conf="$1" iface="$2"
+    local line first second third stanzas=0 count=0 bytes=0 seen_iface=0 in_our_stanza=0
+
+    PRESERVE_PRE=(); PRESERVE_IN=(); PRESERVE_DROPPED=0
+    [ -f "$conf" ] && [ -r "$conf" ] || return 1
+
+    stanzas=$(grep -cE "^[[:space:]]*iface[[:space:]]+${iface}[[:space:]]+inet6?([[:space:]]|\$)" "$conf" 2>/dev/null)
+    [ "$stanzas" = "1" ] || return 1
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"
+        # Drop any line carrying a control character other than tab.
+        case "$line" in
+            *[$'\001'-$'\010'$'\013'-$'\037'$'\177']*)
+                PRESERVE_DROPPED=$((PRESERVE_DROPPED + 1)); continue ;;
+        esac
+        if [ "${#line}" -gt "$PRESERVE_MAX_LINE" ]; then
+            PRESERVE_DROPPED=$((PRESERVE_DROPPED + 1)); continue
+        fi
+
+        # Token-split rather than match the whole line: a hand-edited
+        # `auto  eth0` (double space) or an indented header must still be
+        # recognised as OURS and regenerated, never preserved as foreign — else
+        # the file would end up with two `auto` lines for one interface.
+        read -r first second third _ <<< "$line"
+
+        # Our own stanza headers are regenerated, never preserved.
+        case "$first" in
+            auto|allow-*) [ "$second" = "$iface" ] && continue ;;
+        esac
+        if [ "$seen_iface" = "0" ] && [ "$first" = "iface" ] \
+           && [ "$second" = "$iface" ] && [ "$third" = "inet" ]; then
+            seen_iface=1; in_our_stanza=1; continue
+        fi
+        # A new stanza (first token at column 0) closes ours: from there on
+        # `address`/`netmask`/… belong to somebody else and must be preserved,
+        # not swallowed as managed.
+        if [ "$in_our_stanza" = "1" ] && [ "${line:0:1}" != " " ] && [ "${line:0:1}" != "	" ] \
+           && conf_token_starts_stanza "$first"; then
+            in_our_stanza=0
+        fi
+        if [ "$in_our_stanza" = "1" ] && conf_key_is_managed "$first"; then
+            continue
+        fi
+
+        if [ "$count" -ge "$PRESERVE_MAX_LINES" ] \
+           || [ $(( bytes + ${#line} + 1 )) -gt "$PRESERVE_MAX_BYTES" ]; then
+            PRESERVE_DROPPED=$((PRESERVE_DROPPED + 1)); continue
+        fi
+        count=$((count + 1)); bytes=$(( bytes + ${#line} + 1 ))
+
+        if [ "$seen_iface" = "0" ]; then
+            PRESERVE_PRE+=("$line")
+        else
+            PRESERVE_IN+=("$line")
+        fi
+    done < "$conf"
+
+    return 0
+}
+
+# conf_scan_source <conf> <iface> — scan ONCE per request; the buckets are then
+# reused for every file this request writes, so the canonical conf and its
+# legacy mirror are guaranteed to carry identical foreign content.
+conf_scan_source() {
+    if conf_scan_foreign "$1" "$2"; then
+        if [ "$(( ${#PRESERVE_PRE[@]} + ${#PRESERVE_IN[@]} + PRESERVE_DROPPED ))" -gt 0 ]; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: $1 preserved $(( ${#PRESERVE_PRE[@]} + ${#PRESERVE_IN[@]} )) foreign line(s), dropped $PRESERVE_DROPPED" \
+                >> /var/log/sa02m_install.log 2>&1
+        fi
+        return 0
+    fi
+    # Not mergeable. An absent file is the normal first-write case and needs no
+    # backup; a present-but-malformed one is backed up before the clean
+    # regeneration — a wrong merge into a network config is worse than a
+    # recoverable regeneration (fail-safe toward "the interface still comes up").
+    if [ -f "$1" ]; then
+        conf_backup "$1"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: $1 not mergeable (missing/duplicate iface $2 stanza) — backed up to ${1}.sa02m-bak and regenerated" \
+            >> /var/log/sa02m_install.log 2>&1
+    fi
+    PRESERVE_PRE=(); PRESERVE_IN=()
+    return 0
+}
+
+# conf_assemble <header line> <iface line> <managed option line…>
+# pre-stanza foreign → managed block → in-stanza foreign, into CONF_LINES.
+conf_assemble() {
+    CONF_LINES=()
+    [ "${#PRESERVE_PRE[@]}" -gt 0 ] && CONF_LINES+=("${PRESERVE_PRE[@]}")
+    CONF_LINES+=("$@")
+    [ "${#PRESERVE_IN[@]}" -gt 0 ] && CONF_LINES+=("${PRESERVE_IN[@]}")
+    return 0
+}
+
+# Retire a legacy sibling conf whose device no longer exists.
+# The panel CANNOT delete it: the pinned sudoers for www-data grants
+# /usr/bin/tee but no `rm`, so `sudo rm` is refused — which is why the former
+# sibling deletes here were silent no-ops. Leaving an `auto end0` stanza for a
+# device that is gone would fail networking.service at the next boot with
+# "Cannot find device", so the file is backed up and neutralised to comments:
+# stanza-free, therefore ignored by `ifup -a`. The installer, which runs as
+# root, deletes the file outright on its next run.
+lan_conf_retire() {
+    local conf="$1" canon="$2"
+    [ -f "$conf" ] || return 0
+    grep -qE '^[[:space:]]*(auto|allow-[a-z]+|iface|mapping)[[:space:]]' "$conf" 2>/dev/null || return 0
+    conf_backup "$conf"
+    write_iface_conf "$conf" \
+        "# Retired by the SA-02m web panel: this interface is now ${canon}." \
+        "# Previous content: ${conf}.sa02m-bak" \
+        "# See docs/contracts/ethernet-iface-naming.md"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: $conf retired (device absent, superseded by ${canon})" \
+        >> /var/log/sa02m_install.log 2>&1
+}
+
+# write_lan_pair <canon> <legacy> <src-iface> <src-conf> <header-kw> <inet-type> <option line…>
+#
+# SUPERSEDES the former "write $CONF0 then rm the sibling" rule, which was
+# actively wrong during the migration window: on a migrated-but-not-yet-rebooted
+# board resolve_lan_iface prefers the LIVE name, so the save wrote end0.conf and
+# DELETED eth0.conf — undoing the migration, and at the next boot the renamed
+# eth0 would find no conf and come up with no address.
+#
+# The rule instead: always write the canonical conf; mirror it under the legacy
+# name as `allow-hotplug` only while the legacy device is still live; bounce
+# whichever interface is actually up.
+write_lan_pair() {
+    local canon="$1" legacy="$2" src_if="$3" src_conf="$4" hdr="$5" inet="$6"
+    shift 6
+    local canon_conf legacy_conf
+
+    canon_conf=$(lan_iface_conf "$canon")
+    legacy_conf=$(lan_iface_conf "$legacy")
+
+    conf_scan_source "$src_conf" "$src_if"
+
+    # Canonical conf — always, whatever the board is called today. This is what
+    # survives the boot-time rename.
+    conf_backup "$canon_conf"
+    conf_assemble "$hdr $canon" "iface $canon inet $inet" "$@"
+    write_iface_conf "$canon_conf" "${CONF_LINES[@]}"
+
+    if [ -d "/sys/class/net/$legacy" ]; then
+        # DUAL-CONF window: the rename happens at the next boot, so the legacy
+        # device is what is actually carrying traffic right now. Mirror the same
+        # content under `allow-hotplug` (NOT `auto`) so that once the rename
+        # succeeds `ifup -a` ignores this stanza and networking.service stays
+        # clean, and bounce the interface that is really up.
+        conf_backup "$legacy_conf"
+        conf_assemble "allow-hotplug $legacy" "iface $legacy inet $inet" "$@"
+        write_iface_conf "$legacy_conf" "${CONF_LINES[@]}"
+        schedule_iface_apply "$legacy"
+    else
+        lan_conf_retire "$legacy_conf" "$canon"
+        schedule_iface_apply "$canon"
+    fi
+}
+
+# Write an interfaces.d conf from a list of complete lines.
+# The former `echo -e "$CFG" | sudo tee` interpreted backslash escapes in the
+# assembled string. Harmless while every value was a validated IPv4, fatal once
+# arbitrary preserved lines pass through it — a `\t` or `\n` inside a foreign
+# post-up would be rewritten. printf '%s\n' interprets nothing, and the output
+# is byte-identical to the old form for the managed lines.
+write_iface_conf() {
+    local conf="$1"; shift
+    printf '%s\n' "$@" | sudo tee "$conf" >/dev/null
+}
+
 timeout_run() {
     local sec=${1:-5}
     shift || true
@@ -130,21 +349,15 @@ fi
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
     IF0=$(resolve_lan_iface eth0 end0)
     CONF0=$(lan_iface_conf "$IF0")
-    SIB0=$(lan_iface_sibling "$IF0")
     if [ "$ETH0_ENABLE" = "1" ] && [ -n "$IP" ] && [ -n "$NETMASK" ]; then
-        CFG="auto ${IF0}\niface ${IF0} inet static\n    address $IP\n    netmask $NETMASK"
-        [ -n "$GATEWAY" ] && CFG="$CFG\n    gateway $GATEWAY"
-        [ -n "$DNS" ]     && CFG="$CFG\n    dns-nameservers $DNS"
-        echo -e "$CFG" | sudo tee "$CONF0" >/dev/null
-        [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf updated IP=$IP" >> /var/log/sa02m_install.log 2>&1
-        schedule_iface_apply "$IF0"
+        MANAGED0=("    address $IP" "    netmask $NETMASK")
+        [ -n "$GATEWAY" ] && MANAGED0+=("    gateway $GATEWAY")
+        [ -n "$DNS" ]     && MANAGED0+=("    dns-nameservers $DNS")
+        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto static "${MANAGED0[@]}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf updated IP=$IP (merged from ${CONF0})" >> /var/log/sa02m_install.log 2>&1
     else
-        CFG0="auto ${IF0}\niface ${IF0} inet dhcp"
-        echo -e "$CFG0" | sudo tee "$CONF0" >/dev/null
-        [ -n "$SIB0" ] && sudo rm -f "$(lan_iface_conf "$SIB0")"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF0}.conf set to dhcp" >> /var/log/sa02m_install.log 2>&1
-        schedule_iface_apply "$IF0"
+        write_lan_pair eth0 end0 "$IF0" "$CONF0" auto dhcp
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth0.conf set to dhcp (merged from ${CONF0})" >> /var/log/sa02m_install.log 2>&1
     fi
 fi
 
@@ -152,19 +365,18 @@ fi
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
     IF1=$(resolve_lan_iface eth1 end1)
     CONF1=$(lan_iface_conf "$IF1")
-    SIB1=$(lan_iface_sibling "$IF1")
     if [ "$ETH1_ENABLE" = "1" ] && [ -n "$IP_ETH1" ] && [ -n "$NETMASK_ETH1" ]; then
-        CFG1="allow-hotplug ${IF1}\niface ${IF1} inet static\n    address $IP_ETH1\n    netmask $NETMASK_ETH1"
-        [ -n "$GATEWAY_ETH1" ] && CFG1="$CFG1\n    gateway $GATEWAY_ETH1"
-        [ -n "$DNS_ETH1" ]     && CFG1="$CFG1\n    dns-nameservers $DNS_ETH1"
-        echo -e "$CFG1" | sudo tee "$CONF1" >/dev/null
-        [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf updated IP=$IP_ETH1" >> /var/log/sa02m_install.log 2>&1
-        schedule_iface_apply "$IF1"
+        MANAGED1=("    address $IP_ETH1" "    netmask $NETMASK_ETH1")
+        [ -n "$GATEWAY_ETH1" ] && MANAGED1+=("    gateway $GATEWAY_ETH1")
+        [ -n "$DNS_ETH1" ]     && MANAGED1+=("    dns-nameservers $DNS_ETH1")
+        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug static "${MANAGED1[@]}"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf updated IP=$IP_ETH1 (merged from ${CONF1})" >> /var/log/sa02m_install.log 2>&1
     else
-        sudo rm -f "$CONF1"
-        [ -n "$SIB1" ] && sudo rm -f "$(lan_iface_conf "$SIB1")"
-        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf removed" >> /var/log/sa02m_install.log 2>&1
+        # Disabling Ethernet № 2 drops any operator/vendor stanza in this conf.
+        # It is recoverable only from <conf>.sa02m-bak — see the contract entry.
+        lan_conf_retire "$CONF1" eth1
+        lan_conf_retire "$(lan_iface_conf "$(lan_iface_sibling "$IF1")")" eth1
+        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf retired (Ethernet 2 disabled)" >> /var/log/sa02m_install.log 2>&1
         schedule_iface_apply "$IF1" down
     fi
 fi
