@@ -8,7 +8,7 @@
 
 | | Значение |
 |--|----------|
-| IP | `192.168.1.136` (LAN, `end0`) |
+| IP | `192.168.1.136` (LAN, `eth0`) |
 | SSH | `root` / `cyntron`, порт `22` |
 | Веб | `http://192.168.1.136:9999`, `admin` / `cyntron` |
 | Ключ (опционально) | `%USERPROFILE%\.ssh\sa02m_sa02` или `private/.ssh/sa02m_sa02` (не в git) |
