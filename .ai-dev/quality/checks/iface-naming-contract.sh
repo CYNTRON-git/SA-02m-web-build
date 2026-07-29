@@ -20,7 +20,8 @@ pass() { printf 'iface-naming-contract: ok    %s\n' "$*"; }
 # (cf. the ui-layout touch/contrast whitelists): non-vacuous BOTH ways — a new
 # file entering the set fails, and a stale entry that no longer matches fails
 # too. Widening it is a deliberate one-line change, reviewed as such.
-LEDGER="etc/sa02m-iface-canonical.sh
+LEDGER="etc/sa02m-conf-rm.sh
+etc/sa02m-iface-canonical.sh
 etc/sa02m_network.conf
 install.sh
 scripts/02-network.sh
