@@ -193,9 +193,14 @@ if [ -f "$ETC_DIR/sa02m_network.conf" ] && [ ! -f /etc/sa02m_network.conf ]; the
     install -m 644 "$ETC_DIR/sa02m_network.conf" /etc/sa02m_network.conf
 fi
 
-if [ -f "$ETC_DIR/sa02m-eth1-coldboot.sh" ]; then
+# Script home is usr/local/sbin/ in the repo (NOT etc/), and the unit's
+# ExecStart is /usr/local/sbin/ — the old etc/-sourced, /usr/local/bin/-targeted
+# block was a dead guard (never fired), so the unit hit 203/EXEC the moment
+# eth1.conf first existed (exposed by the canonical-naming bench run).
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-eth1-coldboot.sh" ]; then
     log INFO "Установка sa02m-eth1-coldboot.sh"
-    install -m 755 "$ETC_DIR/sa02m-eth1-coldboot.sh" /usr/local/bin/sa02m-eth1-coldboot.sh
+    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth1-coldboot.sh" \
+        /usr/local/sbin/sa02m-eth1-coldboot.sh
 fi
 
 if [ -f "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" ]; then
@@ -281,7 +286,7 @@ log OK "Network watchdog активирован"
 # an allow-hotplug stanza, i.e. the board would boot with no address.
 canonical_conf_from_legacy() {
     local legacy=$1 canonical=$2 hdr=$3
-    sed -e "s/^[[:space:]]*\(auto\|allow-hotplug\|allow-auto\)[[:space:]]\+$legacy[[:space:]]*$/$hdr $canonical/" \
+    sed -e "s/^[[:space:]]*\(auto\|allow-hotplug\|allow-auto\)[[:space:]]\+${legacy}[[:space:]]*$/$hdr $canonical/" \
         -e "s/\b$legacy\b/$canonical/g" \
         "/etc/network/interfaces.d/$legacy.conf"
 }
@@ -339,7 +344,7 @@ migrate_iface_conf() {
         canonical_conf_from_legacy "$legacy" "$canonical" "$hdr" > "$cconf"
     fi
     tmp=$(mktemp) || return 0
-    if sed "s/^[[:space:]]*auto[[:space:]]\+$legacy[[:space:]]*$/allow-hotplug $legacy/" \
+    if sed "s/^[[:space:]]*auto[[:space:]]\+${legacy}[[:space:]]*$/allow-hotplug $legacy/" \
         "$lconf" > "$tmp"; then
         cat "$tmp" > "$lconf"
     fi
