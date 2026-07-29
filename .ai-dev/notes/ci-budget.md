@@ -24,7 +24,7 @@ on BOTH `pull_request` → main AND `push` → main, so **each shipped feature
 costs two runs**: one on the PR, one re-validating the identical tree after
 the squash-merge.
 
-- **Saving applied in 1.0.5.49: the `push: branches: [main]` trigger dropped**
+- **Saving applied in 1.0.5.52: the `push: branches: [main]` trigger dropped**
   — halves the run count with no gate loss. Branch protection requires the
   `quality` context, which is evaluated on the PR; direct pushes to `main` are
   blocked (`enforce_admins: true`), so nothing reaches `main` unvalidated.
