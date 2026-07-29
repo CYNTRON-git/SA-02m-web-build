@@ -1,14 +1,22 @@
 [Unit]
 Description=SA-02m: canonical Ethernet interface names (end0/end1 -> eth0/eth1)
 Documentation=file:/usr/local/sbin/sa02m-iface-canonical.sh
-# Ordering vs udev: After= (no Wants=) — on the 6.1 bench board a pulled-in
-# systemd-udev-settle times out at 120 s EVERY boot (busy queue, cause in the
-# backlog), costing ~2 min of boot and a failed unit for zero benefit: the
-# script's own bounded device-wait (10 s, per pair) is the primary mechanism,
-# exactly as the plan designed it. If something else pulls settle in, we still
-# order after it; if nothing does, we don't pay for it.
+# The script acts only on udev-INITIALIZED devices (/run/udev/data/n<ifindex>
+# — udev's naming policy has fired for that device), because a bare
+# name-existence check cannot tell a settled canonical name from a
+# kernel-native one udev is about to rename: 6.1-class kernels register ethN
+# natively and udev renames to endN asynchronously. With
+# DefaultDependencies=no NOTHING else guarantees udevd here, so order after
+# udevd and after the coldplug trigger — the naming pass has been REQUESTED
+# before the script's per-device wait starts, and the wait converges in ~1 s
+# on a healthy boot instead of racing the request itself.
+# Wants=systemd-udev-settle is deliberately GONE: whole-queue settle is
+# deprecated upstream and stalls up to 120 s on unrelated queue churn while
+# the per-device gate needs seconds; its After= stays as free ordering (costs
+# nothing when nothing pulls settle in, keeps us ordered if something does).
 DefaultDependencies=no
-After=systemd-udev-settle.service
+After=systemd-udevd.service systemd-udev-trigger.service systemd-udev-settle.service
+Wants=systemd-udevd.service systemd-udev-trigger.service
 # The hard requirement: ifup must not run against a stale name (the 1.0.3.38
 # "Cannot find device" symptom). network-pre.target is the idiomatic anchor,
 # kept as a second ordering path should a future ifupdown drop the direct edge.

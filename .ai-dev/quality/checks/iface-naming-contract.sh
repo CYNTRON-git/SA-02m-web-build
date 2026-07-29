@@ -94,11 +94,54 @@ else
     fail "apply.cgi has $tee_lines 'sudo tee' sites, expected 2 (write_iface_conf + conf_backup). A third writer bypasses the preservation merge — route it through write_iface_conf or update this ledger."
 fi
 
-# ── 4. The unit still orders itself ahead of ifupdown ─────────────────────
-if grep -qE '^Before=.*networking\.service' etc/systemd/sa02m-iface-canonical.service; then
+# ── 4. systemd ordering + the per-device initialized gate (contract §1.0/§7) ──
+UNIT=etc/systemd/sa02m-iface-canonical.service
+if grep -qE '^Before=.*networking\.service' "$UNIT"; then
     pass "unit orders itself Before=networking.service"
 else
     fail "sa02m-iface-canonical.service lost Before=networking.service — ifup would run against a stale name (the 1.0.3.38 symptom)"
+fi
+
+# With DefaultDependencies=no nothing else guarantees udevd or the coldplug
+# trigger; losing either brings back the boot-0 pre-udevd no-op ("Cannot find
+# device" against an unconfigured end0 — board unreachable on an unattended boot).
+if grep -qE '^After=.*systemd-udevd\.service' "$UNIT" \
+   && grep -qE '^After=.*systemd-udev-trigger\.service' "$UNIT"; then
+    pass "unit is ordered After= systemd-udevd + systemd-udev-trigger"
+else
+    fail "sa02m-iface-canonical.service lost After= on systemd-udevd/systemd-udev-trigger — with DefaultDependencies=no it can run before udevd, see a kernel-native ethN and no-op (the boot-0 class)"
+fi
+if grep -qE '^Wants=.*systemd-udevd\.service' "$UNIT" \
+   && grep -qE '^Wants=.*systemd-udev-trigger\.service' "$UNIT"; then
+    pass "unit Wants= systemd-udevd + systemd-udev-trigger"
+else
+    fail "sa02m-iface-canonical.service lost Wants= on systemd-udevd/systemd-udev-trigger — with DefaultDependencies=no nothing else pulls them in (the boot-0 class)"
+fi
+
+# Whole-queue settle must stay dropped: it burned 120 s on unrelated queue
+# churn and its timeout still released networking into the rename race (boot -1).
+if grep -qE '^Wants=.*systemd-udev-settle' "$UNIT"; then
+    fail "sa02m-iface-canonical.service re-grew Wants=systemd-udev-settle — whole-queue settle stalls up to 120 s on queue churn; the per-device initialized gate replaces it"
+else
+    pass "unit does not Want systemd-udev-settle"
+fi
+
+# The mid-boot rename's udev add event starts fix-eth@eth0 exactly while
+# networking's `ifup -a` configures eth0 -> duplicate `ip addr add` ->
+# "RTNETLINK answers: File exists" -> networking FAILED (8D boot -1).
+if grep -qE '^After=.*networking\.service' etc/fix-eth@.service; then
+    pass "fix-eth@.service is ordered After=networking.service"
+else
+    fail "fix-eth@.service lost After=networking.service — the double-ifup 'File exists' race against networking's ifup -a returns"
+fi
+
+# The rename script's per-device gate: a bare name-existence check cannot tell
+# a settled canonical name from a kernel-native one udev is about to rename.
+if grep -q '^udev_initialized() {' etc/sa02m-iface-canonical.sh \
+   && sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh | grep -q 'udev_initialized '; then
+    pass "rename script gates canonicalize_pair on udev_initialized"
+else
+    fail "etc/sa02m-iface-canonical.sh lost the udev_initialized gate in canonicalize_pair — the boot-0 'already canonical' no-op against a kernel-native name returns silently"
 fi
 
 [ "$fails" = 0 ] || printf 'iface-naming-contract: %s check(s) failed — see docs/contracts/ethernet-iface-naming.md\n' "$fails"
