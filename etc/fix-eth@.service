@@ -6,6 +6,8 @@ Documentation=file:/usr/local/bin/fix-eth.sh
 # starts this instance exactly while networking's own `ifup -a` is configuring
 # the same interface — the two race and one loses with "RTNETLINK: File exists",
 # failing networking.service. Recovery must never precede initial bring-up.
+# Ordering ONLY (deliberately no Wants=): post-boot, networking has no active
+# job, so cable-replug recovery latency is unchanged.
 After=network.target networking.service sys-subsystem-net-devices-%i.device
 BindsTo=sys-subsystem-net-devices-%i.device
 Conflicts=shutdown.target reboot.target halt.target

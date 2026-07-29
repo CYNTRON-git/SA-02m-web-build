@@ -14,13 +14,17 @@ audit).
   capability; `lan_conf_retire` tries it first and falls back to
   retire-to-comments on pre-1.0.5.54 deploys. `docs/contracts/
   ethernet-iface-naming.md §5.4` is the home.
-- [OPEN] 2026-07-29 **[MED] udev queue busy ~120 s at every boot on the 6.1
-  bench board** — `udevadm settle` (and Debian's `ifupdown-pre`) time out at
-  the 120 s ceiling each boot (journal: `Timed out for waiting the udev queue
-  being empty`), delaying `networking.service` ~2 min; runtime queue is empty
-  (`settle_rc=0`). Root cause undiagnosed (suspects: docker/codemeter/CAN
-  device churn). Our `sa02m-iface-canonical.service` no longer pulls settle in
-  (`Wants=` dropped 1.0.5.54) — the residual delay comes from `ifupdown-pre`
+- [OPEN] 2026-07-29 **[MED] udev queue busy at boot on the 6.1 bench board —
+  root cause undiagnosed.** Variable per boot (bench 192.168.1.136, kernel
+  6.1.0-rc6, udev 255): boot -1 both `systemd-udev-settle` and Debian's
+  `ifupdown-pre` (`udevadm settle`) timed out at the 120 s ceiling (journal:
+  `Timed out for waiting the udev queue being empty`), delaying
+  `networking.service` ~2 min; boot 0 of the same day the queue was done at
+  14.4 s. Runtime queue is empty (`settle_rc=0`). Suspects: docker/codemeter/
+  CAN device churn. Consequence today is boot *delay* only, no longer a
+  correctness failure: the unit no longer pulls settle in (`Wants=` dropped
+  1.0.5.54) and the per-device udev-initialized gate (1.0.5.56) is immune to
+  whole-queue churn by design — the residual delay comes from `ifupdown-pre`
   when it runs. Diagnose with `udevadm monitor` during boot on the bench.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a

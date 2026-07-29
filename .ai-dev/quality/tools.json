@@ -66,7 +66,7 @@
     },
     {
       "id": "iface-naming-contract",
-      "checks": "Static gate for docs/contracts/ethernet-iface-naming.md: the legacy-name ledger (only the compat layer, the rename script and the installer migration may name end0/end1 — non-vacuous both ways), the installer still installing AND enabling sa02m-iface-canonical.service, the F6 guard (no `echo -e` in apply.cgi and conf writes only through the two known writers), and the unit still ordered Before=networking.service.",
+      "checks": "Static gate for docs/contracts/ethernet-iface-naming.md: the legacy-name ledger (only the compat layer, the rename script and the installer migration may name end0/end1 — non-vacuous both ways), the installer still installing AND enabling sa02m-iface-canonical.service, the F6 guard (no `echo -e` in apply.cgi and conf writes only through the two known writers), the §5.4 rm-helper pins (no raw `sudo rm` in apply.cgi; the pinned sa02m-conf-rm.sh sudoers grant present), and the contract §1.0/§7 ordering pins: the unit ordered Before=networking.service, After=+Wants= systemd-udevd + systemd-udev-trigger (else the boot-0 pre-udevd no-op returns), NO Wants=systemd-udev-settle (else the 120 s whole-queue stall returns), fix-eth@.service After=networking.service (else the double-ifup 'File exists' race returns), the rename script still gating canonicalize_pair on udev_initialized (else the boot-0 class returns silently), and 02-network.sh writing `source /etc/network/interfaces.d/*.conf` with no unfiltered `*` line (else <conf>.sa02m-bak backups go live: duplicate stanza -> 'File exists' -> networking FAILED, §1.0 mechanism 3).",
       "config": null,
       "run": "bash .ai-dev/quality/checks/iface-naming-contract.sh",
       "beat": "build",
@@ -81,6 +81,15 @@
       "beat": "build",
       "covers": ["www/network_config/cgi-bin/apply.cgi", "scripts/dev/test-iface-conf-merge.sh"],
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-iface-conf-merge.sh"
+    },
+    {
+      "id": "iface-canonical-gate",
+      "checks": "Functional regression for the rename script's per-device udev-initialized gate (etc/sa02m-iface-canonical.sh canonicalize_pair, contract §1.0): settled-canonical immediate no-op, initialized-legacy rename, the boot-0 sequence (kernel-named eth0 that udev renames to end0 mid-wait — the 6.1-class 'board unreachable on an unattended boot' regression), absent-pair budget, both degraded-fallback branches (udev db never appears), and the failed-rename exit/admin-state discipline. Runs the SHIPPED functions against a sandboxed SYS_NET/UDEV_DB pair with an `ip` PATH shim — the systemd/udev timing it enumerates is unreachable from any other row and cannot be forced on a healthy bench board.",
+      "config": null,
+      "run": "bash scripts/dev/test-iface-canonical-gate.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-iface-canonical.sh", "scripts/dev/test-iface-canonical-gate.sh"],
+      "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-iface-canonical-gate.sh"
     },
     {
       "id": "iface-migration",
