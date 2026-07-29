@@ -106,14 +106,13 @@ audit).
   (per-candidate `service_present`/`unit_exists` systemctl) — batchable too but the
   resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
   Defer unless the full services path needs to be faster still.
-- [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
-  Narrowed 2026-07-28: **closed by construction by the `eth0`/`eth1`
-  canonicalization guarantee** (`docs/contracts/ethernet-iface-naming.md`) — the
-  residual hardcoders (`etc/fix-eth1-internet.sh:319`,
-  `etc/systemd/sa02m-eth1-coldboot.service:6`) are correct once every board is
-  canonically named, so they are deliberately left unedited. **Resolve only
-  after the on-device procedure (§8 of the naming plan) has passed on a real
-  board** — the `end0`→`eth0` rename itself ships unexercised on hardware.
+- [RESOLVED 2026-07-29] **[MED] eth0-hardcoding in web/net consumers (end-board
+  gap).** Closed by the `eth0`/`eth1` canonicalization guarantee
+  (`docs/contracts/ethernet-iface-naming.md`); the resolve-condition — the
+  on-device pass on a real board — was met on 2026-07-29: bench `192.168.1.136`
+  turned out legacy-named and the `end0`→`eth0` rename + migration ran live
+  (journal `renamed` ×2). Residual hardcoders are correct by construction and
+  stay unedited.
 - [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
   `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
   legacy static `session_token=cyntron_session` cookie instead of the
