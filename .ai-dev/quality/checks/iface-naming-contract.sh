@@ -70,6 +70,20 @@ if printf '%s\n' "$apply_code" | grep -q 'echo -e'; then
 else
     pass "apply.cgi carries no 'echo -e'"
 fi
+
+# Raw `sudo rm` in apply.cgi was ALWAYS a silent no-op (www-data sudoers has no
+# rm) and its return would bypass the pinned helper — contract §5.4.
+if printf '%s\n' "$apply_code" | grep -q 'sudo rm'; then
+    fail "apply.cgi reintroduced raw 'sudo rm' — deletion goes only through sa02m-conf-rm.sh (contract §5.4)"
+else
+    pass "apply.cgi carries no raw 'sudo rm'"
+fi
+if grep -q '^www-data.*sa02m-conf-rm\.sh$' scripts/03-webserver.sh \
+   || grep -q '/usr/local/sbin/sa02m-conf-rm\.sh$' scripts/03-webserver.sh; then
+    pass "sudoers grants exactly the pinned conf-rm helper path"
+else
+    fail "sudoers line for sa02m-conf-rm.sh missing from scripts/03-webserver.sh"
+fi
 tee_lines=$(printf '%s\n' "$apply_code" | grep -c 'sudo tee')
 if [ "$tee_lines" = "2" ]; then
     pass "apply.cgi writes confs through exactly the two known writers (write_iface_conf, conf_backup)"
