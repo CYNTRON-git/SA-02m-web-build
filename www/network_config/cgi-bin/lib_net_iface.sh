@@ -22,6 +22,19 @@ lan_iface_conf() {
     printf '/etc/network/interfaces.d/%s.conf' "$1"
 }
 
+# True when this interface's conf carries an up/post-up hook into /home/klogic/.
+# That hook is KLogic's ONLY path for applying its IP: its binary rewrites
+# /home/klogic/set-ip0 and the conf's `post-up /home/klogic/adjust-eth0` runs it
+# at every ifup. So the hook — not the binary's presence — is what decides
+# whether KLogic can actually drive this interface.
+# Contract: docs/contracts/ethernet-iface-naming.md
+lan_iface_has_klogic_hook() {
+    local conf
+    conf=$(lan_iface_conf "$1")
+    [ -f "$conf" ] && [ -r "$conf" ] || return 1
+    grep -qE '^[[:space:]]*(post-up|up)[[:space:]].*/home/klogic/' "$conf" 2>/dev/null
+}
+
 # Sibling name of the ethN/endN pair (for stale-conf cleanup after write).
 lan_iface_sibling() {
     case "$1" in

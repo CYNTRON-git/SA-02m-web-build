@@ -67,6 +67,29 @@ IF0=$(resolve_lan_iface eth0 end0)
 IF1=$(resolve_lan_iface eth1 end1)
 ETH0=$(read_iface_conf "$(lan_iface_conf "$IF0")")
 ETH1=$(read_iface_conf "$(lan_iface_conf "$IF1")")
+
+# ── KLogic coexistence detection ──────────────────────────────────────────
+# Produced HERE and deliberately not in status.cgi: config.cgi is fetched once
+# per page load, while every status.cgi part is on the 6-12 s rolling poll and
+# must stay O(1) forks with no per-request filesystem scan (web-code-rigor.md
+# resource model). Cost added here: two builtin tests plus one grep fork per
+# interface. Every path is a literal — no request value reaches a path or a
+# shell word. Absent/unreadable both yield false: fail closed toward "do not
+# claim KLogic manages this interface".
+# NOTE: klogic-install leaves /home/klogic at mode 0740 root, so the [ -x ]
+# probe is inert under fcgiwrap's www-data uid — the world-readable unit file is
+# the load-bearing half of this OR. Both are laid down regardless of whether an
+# IP was ever applied; /home/klogic/set-ip0 only appears after the first apply,
+# so keying on it would be a false negative on a fresh install.
+KLOGIC_PRESENT=false
+if [ -x /home/klogic/klogic-sa02 ] || [ -f /etc/systemd/system/klogic.service ]; then
+    KLOGIC_PRESENT=true
+fi
+KLOGIC_HOOK0=false
+KLOGIC_HOOK1=false
+lan_iface_has_klogic_hook "$IF0" && KLOGIC_HOOK0=true
+lan_iface_has_klogic_hook "$IF1" && KLOGIC_HOOK1=true
+
 TZ=$(read_timezone)
 DT=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
 
@@ -82,6 +105,7 @@ cat <<JSON
 {
   "eth0": ${ETH0},
   "eth1": ${ETH1},
+  "klogic": {"present":${KLOGIC_PRESENT},"eth0_hook":${KLOGIC_HOOK0},"eth1_hook":${KLOGIC_HOOK1}},
   "timezone": "${TZ_JSON}",
   "datetime": "${DT_JSON}",
   "rtc_datetime": "${RTC_JSON}"
