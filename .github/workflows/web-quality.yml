@@ -6,10 +6,11 @@ name: web-quality
 # runner wholesale (both beats) and never re-lists individual tools.
 # ubuntu-latest already provides bash + python3; only Node needs setting up.
 
+# push->main deliberately absent: each shipped feature otherwise costs two
+# identical runs (PR + post-squash re-validation of the same tree) against a
+# tight Actions budget — rationale and measurements: .ai-dev/notes/ci-budget.md.
 on:
   pull_request:
-    branches: [main]
-  push:
     branches: [main]
 
 permissions:
