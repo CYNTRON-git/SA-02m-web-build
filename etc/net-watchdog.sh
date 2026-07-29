@@ -32,7 +32,10 @@ sleep "$STARTUP_DELAY"
 
 while true; do
     # 1. Восстановление интерфейсов (только при потере IP)
-    for conf in /etc/network/interfaces.d/end*.conf; do
+    # Оба именования: eth*.conf (канонические имена, все платы с 1.0.3.39) и
+    # end*.conf (legacy до переименования). Только end* означало, что на текущих
+    # платах этот проход не находил ничего и 30-секундная страховка не работала.
+    for conf in /etc/network/interfaces.d/eth*.conf /etc/network/interfaces.d/end*.conf; do
         [ -f "$conf" ] || continue
         iface=$(basename "$conf" .conf)
         "$FIX_SCRIPT" "$iface"
