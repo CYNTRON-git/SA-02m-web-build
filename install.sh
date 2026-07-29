@@ -3,6 +3,7 @@
 # СА-02м  •  Installer  v1.0.3
 # Дата: 2026
 # Использование: sudo ./install.sh [--ip X.X.X.X] [--port 9999] [--pass cyntron]
+#                                  [--canonical-iface-now]
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -18,6 +19,10 @@ export WEB_ROOT="/var/www/network_config"
 export ADMIN_PASS="cyntron"
 export SA02M_SERIAL_PROFILE=""
 export SA02M_HW_VARIANT=""
+# Opt-in: rename end0/end1 -> eth0/eth1 during THIS run instead of at the next
+# boot. Renaming a live interface drops the management link (SSH), so a board
+# without console access must always use the deferred default.
+export SA02M_CANONICAL_IFACE_NOW="${SA02M_CANONICAL_IFACE_NOW:-0}"
 # IP_ADDRESS and GATEWAY are resolved after lib.sh is sourced (variant-aware defaults)
 _ARG_IP=""
 _ARG_GW=""
@@ -31,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --pass)    ADMIN_PASS="$2";          shift 2 ;;
         --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
         --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
+        --canonical-iface-now) SA02M_CANONICAL_IFACE_NOW="1"; shift ;;
         *)         shift ;;
     esac
 done
