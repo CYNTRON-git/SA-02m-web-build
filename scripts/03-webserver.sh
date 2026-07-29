@@ -251,6 +251,11 @@ fi
 if [ -f "$ETC_DIR/sa02m-failure-monitor.sh" ]; then
     install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
 fi
+# Keeps the extension: the sudoers below grants this exact path, and apply.cgi
+# falls back to retire-to-comments while the helper is absent (older deploys).
+if [ -f "$ETC_DIR/sa02m-conf-rm.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-conf-rm.sh" /usr/local/sbin/sa02m-conf-rm.sh
+fi
 if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
     install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
 fi
@@ -326,7 +331,8 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-kernel-select.sh set rt, \
     /usr/local/sbin/sa02m-set-cpu-profile, \
     /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
-    /usr/local/sbin/sa02m-cpu-profile.sh apply
+    /usr/local/sbin/sa02m-cpu-profile.sh apply, \
+    /usr/local/sbin/sa02m-conf-rm.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
 visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"

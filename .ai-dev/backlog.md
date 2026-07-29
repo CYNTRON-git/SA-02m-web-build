@@ -7,18 +7,21 @@ audit).
 
 ## Open
 
-- [OPEN] 2026-07-28 **[HIGH, escalated] `www-data` cannot delete an
-  `interfaces.d` conf — the panel has no `rm` capability.** The pinned sudoers
-  (`scripts/03-webserver.sh:300`) grants `/usr/bin/tee` but no `rm`, so every
-  `sudo rm -f` in `apply.cgi` (the sibling-conf deletes, and the Ethernet № 2
-  disable path) has always been a **silent no-op** on the device. 1.0.5.49 works
-  around it by backing the file up and neutralising it to comments (stanza-free
-  ⇒ ignored by `ifup -a`; `docs/contracts/ethernet-iface-naming.md §5.4`), which
-  is safe but leaves the file present. Decision needed: (a) keep neutralise-only,
-  (b) grant a narrow pinned capability (a purpose-built
-  `/usr/local/sbin/sa02m-web-iface-conf-rm`-style helper, the
-  `sa02m-commit-web-env` idiom) so the panel can really remove it. Security
-  surface ⇒ Operator's call.
+- [RESOLVED 2026-07-29, 1.0.5.54] **[HIGH] `www-data` cannot delete an
+  `interfaces.d` conf.** Operator chose option (b): pinned
+  `/usr/local/sbin/sa02m-conf-rm.sh` (case-allow-list of the four LAN conf
+  names, symlink refusal, backup-first, idempotent) is now the panel's only rm
+  capability; `lan_conf_retire` tries it first and falls back to
+  retire-to-comments on pre-1.0.5.54 deploys. `docs/contracts/
+  ethernet-iface-naming.md §5.4` is the home.
+- [OPEN] 2026-07-29 **[MED] udev queue busy ~120 s at every boot on the 6.1
+  bench board** — `udevadm settle` (and Debian's `ifupdown-pre`) time out at
+  the 120 s ceiling each boot (journal: `Timed out for waiting the udev queue
+  being empty`), delaying `networking.service` ~2 min; runtime queue is empty
+  (`settle_rc=0`). Root cause undiagnosed (suspects: docker/codemeter/CAN
+  device churn). Our `sa02m-iface-canonical.service` no longer pulls settle in
+  (`Wants=` dropped 1.0.5.54) — the residual delay comes from `ifupdown-pre`
+  when it runs. Diagnose with `udevadm monitor` during boot on the bench.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
