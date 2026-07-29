@@ -222,6 +222,15 @@ if [ -f "$ETC_DIR/fix-eth1-internet.sh" ]; then
     install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
 fi
 
+# Grat-ARP burst unit: content refresh only, deliberately NO enable —
+# per-instance enablement (sa02m-grat-arp@ethN) stays whatever the device
+# has; a fresh device is unaffected. daemon-reload runs below with the rest.
+if [ -f "$ETC_DIR/systemd/system/sa02m-grat-arp@.service" ]; then
+    log INFO "Установка sa02m-grat-arp@.service (обновление содержимого)"
+    install -m 644 "$ETC_DIR/systemd/system/sa02m-grat-arp@.service" \
+        /etc/systemd/system/sa02m-grat-arp@.service
+fi
+
 # Remove legacy phy-coldboot service if still present on this system
 if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
     systemctl stop sa02m-phy-coldboot 2>/dev/null || true

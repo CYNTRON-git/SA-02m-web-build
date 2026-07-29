@@ -5,6 +5,71 @@
 
 ---
 
+## 1.0.5.57 - Бесконфликтная загрузка: OPC UA-шлюз на 4841, kernel-политика CODESYS/CodeMeter/docker (июл 2026)
+
+### ⚠ OPC UA — изменение контракта: порт шлюза 4840 → 4841
+
+- **SCADA/OPC UA-клиенты, подключавшиеся к шлюзу `sa02m-mqtt-opcua`, должны
+  перенастроиться на порт `4841/TCP`.** Порт `4840` (IANA-порт OPC UA) занимает
+  собственный OPC UA-сервер CODESYS (vendor-фиксировано — переносить его не в
+  нашей власти), из-за чего шлюз на 4840 при работающем CODESYS падал в
+  постоянный crash-loop (EADDRINUSE). Дефолт порта синхронно изменён в конфиге
+  и обоих дефолтах кода; миграция существующего `/etc/sa02m-mqtt-opcua.conf`
+  выполняется установщиком **безусловно** (4840 → 4841, остальные ключи —
+  включая пользовательские `groups` — сохраняются): конфиг, сознательно
+  оставленный на 4840, — ровно тот класс конфликта, который выпуск устраняет.
+  Новый контракт: `docs/contracts/kernel-conditional-services.md`; статический
+  гейт `kernel-policy-contract` закрепляет lock-step порта.
+  **файлы:** `etc/sa02m-mqtt-opcua.conf`,
+  `opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py`, `install.sh`.
+
+### Системные скрипты
+
+- **Новая kernel-политика служб** (`sa02m-kernel-service-guard.sh` →
+  `/usr/local/sbin/`, контракт `docs/contracts/kernel-conditional-services.md`):
+  CODESYS + CodeMeter **не автозапускаются ни на каком ядре** (`apply-policy`
+  снимает SysV rc-links; идемпотентно, повторный запуск установщика безопасен);
+  на non-RT ядре boot-guard (`sa02m-kernel-service-guard.service`) дополнительно
+  **останавливает** их на загрузке, если остатки SysV всё же запустили. Ручной
+  запуск (веб-панель / systemctl) разрешён на любом ядре — guard работает только
+  на загрузке и никогда не борется с ручным запуском. Политика ставится
+  установщиком **fleet-wide**: полевому устройству, которому нужен автозапуск
+  CODESYS, потребуется включить его вручную один раз.
+  **файлы:** `etc/sa02m-kernel-service-guard.sh`,
+  `etc/systemd/system/sa02m-kernel-service-guard.service`, `scripts/01-system.sh`.
+- **Запуск CODESYS из веб-панели больше не включает автозапуск** (start =
+  только runtime; прежде кнопка «Запустить» побочным эффектом возвращала
+  SysV-автозапуск и сводила политику на нет). Вместе с CODESYS автоматически
+  поднимается демон CodeMeter (runtime-only, без enable) — иначе runtime молча
+  уходил бы в demo-режим. «Остановить» по-прежнему снимает автозапуск.
+  **файлы:** `etc/sa02m-web-service-ctl.sh`.
+- **`08-codesys.sh` — только установка** (deb + apt-hold + drop-in): не включает
+  и не запускает runtime (проверка — по статусу dpkg); rootfs-ветка тоже
+  disabled-by-default. **файлы:** `scripts/08-codesys.sh`.
+- **`sa02m-grat-arp@.service` больше не задерживает загрузку (~29 с):**
+  `Type=oneshot` → `Type=simple` — start-job завершается сразу, ARP-burst
+  продолжается в фоне и штатно завершается (~15 с, без Restart=,
+  `systemctl --failed` чист). Юнит теперь ставится установщиком (обновление
+  содержимого; включение инстансов не меняется). Ежеминутный
+  `cron.d/sa02m-arp` сохранён. **файлы:**
+  `etc/systemd/system/sa02m-grat-arp@.service`, `scripts/02-network.sh`.
+
+### Docker
+
+- **`docker.service` стартует только на ядре, чей netfilter-набор его
+  поддерживает** — drop-in `ExecCondition` с пробой возможностей
+  (`modprobe -qn nft_compat`; модуль или builtin), а не сопоставление имени
+  ядра: будущее docker-capable SMP-ядро пройдёт без изменения кода. На
+  непригодном ядре юнит **чисто пропускается** (inactive, не `failed`, без
+  3× restart-burst). На текущем non-RT ядре `6.1.0-rc6` docker штатно не
+  запускается до пересборки SMP-ядра с docker-набором netfilter (отдельный
+  пункт backlog). RT-ядро `6.1.0-rc6-rt4` собрано с нужным набором — проба
+  *ожидаемо* проходит и docker стартует, но **это не проверено на стенде до
+  загрузки RT-ядра** (проверка отложена сознательно). Предикат в `install.sh`
+  оставлен для старых 5.10-ядер с поясняющим комментарием — runtime-гейт
+  теперь drop-in. **файлы:**
+  `etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf`, `install.sh`.
+
 ## 1.0.5.56 - Сеть: устранён отказ networking.service на загрузке при канонизации имён (июл 2026)
 
 ### Сеть / системные скрипты

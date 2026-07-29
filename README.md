@@ -129,7 +129,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Доступность в стиле wb-mqtt-serial** — Last Will, device-level `/meta/error`, экспоненциальный back-off «мёртвых» устройств, статус-устройство `sa02m-bridge`, graceful offline при `systemctl stop`.
 - **Системная телеметрия** (`sa02m-telemetry.service`) — CPU, RAM, температура, uptime, DO/Beeper/Alarm LED контроллера в MQTT.
 - **Fast Modbus** — мгновенные события DO/DI через extended scan (`0xFD 0x46`).
-- **Northbound-драйверы** (опционально): `sa02m-mqtt-snmp` (SNMP→MQTT), `sa02m-mqtt-opcua` (OPC UA→MQTT) — конфиги в `/etc/sa02m-mqtt-snmp.conf`, `/etc/sa02m-mqtt-opcua.conf`.
+- **Northbound-драйверы** (опционально): `sa02m-mqtt-snmp` (SNMP→MQTT), `sa02m-mqtt-opcua` (OPC UA→MQTT) — конфиги в `/etc/sa02m-mqtt-snmp.conf`, `/etc/sa02m-mqtt-opcua.conf`. OPC UA-шлюз слушает `4841/TCP` (порт `4840` зарезервирован за собственным OPC UA-сервером CODESYS — `docs/contracts/kernel-conditional-services.md`).
 - **Координация с flasher** — кнопка «Остановить мост» освобождает COM-порт для прошивки/сканирования MR-02м.
 
 ### Шлюз RS-485 → Ethernet

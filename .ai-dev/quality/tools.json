@@ -74,6 +74,15 @@
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
+      "id": "kernel-policy-contract",
+      "checks": "Static gate for docs/contracts/kernel-conditional-services.md: the opcua gateway port default agrees between etc/sa02m-mqtt-opcua.conf and BOTH py defaults and is not 4840 (CODESYS's own OPC UA server owns 4840 — a regression re-creates the EADDRINUSE crash-loop), sa02m-grat-arp@.service stays Type=simple (a oneshot regression re-blocks multi-user.target ~29 s), the kernel-service guard script + unit + docker ExecCondition drop-in exist and 01-system.sh installs/enables them and runs apply-policy, 08-codesys.sh carries no unconditional enable/start of codesyscontrol (install-only policy), and service-ctl cmd_start/codesys_install carry no codesys_rc_enable (start = runtime only). Non-vacuous: a missing file or an empty extraction FAILS.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/kernel-policy-contract.sh",
+      "beat": "build",
+      "covers": ["etc/", "scripts/", "install.sh", "opt/sa02m-mqtt-opcua/", ".ai-dev/quality/checks/kernel-policy-contract.sh"],
+      "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
       "id": "iface-conf-merge",
       "checks": "Functional regression for apply.cgi's /etc/network/interfaces.d foreign-stanza merge: vendor post-up/comment/hwaddress lines preserved verbatim and in order, byte-identical second save (idempotency), unchanged output for a conf with no foreign lines, malformed/duplicate-stanza fallback to backup+regeneration, the 64-line/512-byte/control-char bounds, and the sibling rule (canonical always written, legacy mirrored as allow-hotplug only while live, retired once the device is gone). The merge is Bash inside a CGI, so no other row reaches it — a silent re-break of vendor-hook preservation would otherwise pass every syntax/static gate.",
       "config": null,

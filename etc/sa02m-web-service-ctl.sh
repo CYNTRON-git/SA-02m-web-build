@@ -152,9 +152,24 @@ codesys_rc_disable() {
     update-rc.d codesyscontrol disable >>"$LOG" 2>&1 || true
 }
 
+# Kernel-conditional service policy (docs/contracts/kernel-conditional-
+# services.md): start = runtime only — codesys_rc_enable is deliberately NOT
+# called from the start/install paths any more (it re-armed the SysV autostart
+# the policy disables). Kept for a future explicit autostart toggle; the
+# kernel-policy-contract quality gate pins the call sites.
 codesys_rc_enable() {
     command -v update-rc.d >/dev/null 2>&1 || return 0
     update-rc.d codesyscontrol defaults >>"$LOG" 2>&1 || true
+}
+
+# Licensing companion for a manual CODESYS start: the policy keeps CodeMeter
+# autostart off, and without the daemon CODESYS silently falls back to demo
+# mode. Runtime-only start, no enable.
+codemeter_runtime_start() {
+    [ -x /etc/init.d/codemeter ] || return 0
+    if ! pgrep -f '[C]odeMeter' >/dev/null 2>&1; then
+        /etc/init.d/codemeter start >>"$LOG" 2>&1 || true
+    fi
 }
 
 codesys_rc_autostart() {
@@ -626,15 +641,20 @@ cmd_start() {
     printf '{"ok":true,"pending":true,"id":"%s","action":"start"}\n' "$_id" >"$SVC_RESULT_FILE" 2>/dev/null || true
     chmod 644 "$SVC_RESULT_FILE" 2>/dev/null || true
     echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: start ${_id} (${_u:-init.d})" >>"$LOG" 2>&1
+    # codesys: start = RUNTIME ONLY (kernel-conditional service policy) — no
+    # codesys_rc_enable, and no `systemctl enable` on the SysV-generated unit
+    # (it shims to `update-rc.d enable`, re-arming the disabled autostart).
     if [ "$_id" = "codesys" ]; then
-        codesys_rc_enable
+        codemeter_runtime_start
     fi
     if [ "$_id" = "mplc4" ]; then
         mplc4_rc_enable
     fi
     if [ -n "$_u" ]; then
         sc_run_slow unmask "$_u" >>"$LOG" 2>&1 || true
-        sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
+        if [ "$_id" != "codesys" ]; then
+            sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
+        fi
         sc_run_slow start "$_u" >>"$LOG" 2>&1 || true
         sc_run daemon-reload >>"$LOG" 2>&1 || true
     fi
@@ -652,19 +672,19 @@ cmd_start() {
         emit_result "$(printf '{"ok":false,"error":"start_failed","id":"%s"}' "$_id")"
         return 1
     fi
-    if ! service_admin_on "$_id" "$_u"; then
+    # codesys is exempt from the autostart (admin_on) enforcement below:
+    # start = runtime only, autostart stays as the policy left it — with the
+    # rc links disabled the check could never pass and would re-enable them.
+    if [ "$_id" != "codesys" ] && ! service_admin_on "$_id" "$_u"; then
         if [ -n "$_u" ]; then
             sc_run_slow enable "$_u" >>"$LOG" 2>&1 || true
             sc_run daemon-reload >>"$LOG" 2>&1 || true
-        fi
-        if [ "$_id" = "codesys" ]; then
-            codesys_rc_enable
         fi
         if [ "$_id" = "mplc4" ]; then
             mplc4_rc_enable
         fi
     fi
-    if ! service_admin_on "$_id" "$_u"; then
+    if [ "$_id" != "codesys" ] && ! service_admin_on "$_id" "$_u"; then
         emit_result "$(printf '{"ok":false,"error":"enable_failed","id":"%s"}' "$_id")"
         return 1
     fi
@@ -709,8 +729,16 @@ codesys_install() {
     if [ -f /var/run/codesyscontrol.pid ] && ! codesys_process_active; then
         rm -f /var/run/codesyscontrol.pid
     fi
+    # Mirror of 08-codesys.sh (see the section header note): the .deb postinst
+    # re-arms the SysV rc links — apply-policy disables them again.
+    if [ -x /usr/local/sbin/sa02m-kernel-service-guard.sh ]; then
+        /usr/local/sbin/sa02m-kernel-service-guard.sh apply-policy >>"$LOG" 2>&1 || true
+    fi
     sc_run daemon-reload >>"$LOG" 2>&1 || true
-    codesys_rc_enable
+    # Install = runtime only too (kernel-conditional service policy): no
+    # codesys_rc_enable — the verification below needs a running process, so
+    # start it (a manual act the policy allows), with CodeMeter for licensing.
+    codemeter_runtime_start
     if [ -x /etc/init.d/codesyscontrol ] && ! codesys_process_active; then
         /etc/init.d/codesyscontrol start >>"$LOG" 2>&1 || true
         sleep 2

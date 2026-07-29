@@ -7,8 +7,14 @@ After=ifup@%i.service network.target
 Wants=ifup@%i.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=no
+# Type=simple: the start job completes at fork, so multi-user.target no longer
+# waits ~29 s for the burst (Type=oneshot held the boot transaction open for
+# the whole 15 s loop; TimeoutStartSec/RemainAfterExit were oneshot-only
+# knobs, dropped). The burst continues in the background; when the loop exits
+# (~15 s, rc 0) the unit goes inactive(dead)/success — no Restart= set, no
+# loop, `systemctl --failed` stays clean. The every-minute cron.d/sa02m-arp
+# belt is unchanged.
+Type=simple
 # 15 grat-ARP пакетов каждую секунду — перекрывает окно когда Windows
 # выходит из ARP FAILED состояния (~15-20с после device offline).
 ExecStart=/bin/bash -c '\
@@ -17,7 +23,6 @@ ExecStart=/bin/bash -c '\
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do \
     $cmd 2>/dev/null || true; sleep 1; \
   done'
-TimeoutStartSec=30s
 
 [Install]
 WantedBy=multi-user.target

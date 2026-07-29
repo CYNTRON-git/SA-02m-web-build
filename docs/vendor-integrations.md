@@ -54,7 +54,10 @@ Copy-Item "$env:TEMP\codesys-pkg\Delivery\linuxarm\*_armhf.deb" $out
 Пакет ставим через `dpkg -i --force-depends`; сразу после этого — `apt-mark hold
 codesyscontrol`, чтобы `apt-get -f install` его не снял. См. `etc/sa02m-apt-hold-codesys.sh`.
 
-**Порты:** `11740/TCP` (Gateway), `1217/UDP` (Discovery), `4840/TCP` (OPC UA).
+**Порты:** `11740/TCP` (Gateway), `1217/UDP` (Discovery), `4840/TCP` —
+**собственный** OPC UA-сервер CODESYS (владеет портом 4840). Наш northbound-шлюз
+`sa02m-mqtt-opcua` работает на `4841/TCP` — распределение портов закреплено в
+`docs/contracts/kernel-conditional-services.md`.
 
 ### MasterSCADA MPLC 4D Runtime (armhf)
 
