@@ -7,6 +7,31 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-07-28 **[HIGH, escalated] `www-data` cannot delete an
+  `interfaces.d` conf — the panel has no `rm` capability.** The pinned sudoers
+  (`scripts/03-webserver.sh:300`) grants `/usr/bin/tee` but no `rm`, so every
+  `sudo rm -f` in `apply.cgi` (the sibling-conf deletes, and the Ethernet № 2
+  disable path) has always been a **silent no-op** on the device. 1.0.5.49 works
+  around it by backing the file up and neutralising it to comments (stanza-free
+  ⇒ ignored by `ifup -a`; `docs/contracts/ethernet-iface-naming.md §5.4`), which
+  is safe but leaves the file present. Decision needed: (a) keep neutralise-only,
+  (b) grant a narrow pinned capability (a purpose-built
+  `/usr/local/sbin/sa02m-web-iface-conf-rm`-style helper, the
+  `sa02m-commit-web-env` idiom) so the panel can really remove it. Security
+  surface ⇒ Operator's call.
+- [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
+  interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
+  DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
+  unrelated to the 1.0.5.49 naming work (F8) — recorded so it is not attributed
+  to that diff.
+- [OPEN] 2026-07-28 **[LOW] KLogic coexistence — deliberately deferred pieces.**
+  From `docs/contracts/ethernet-iface-naming.md §5.5`: the panel does not
+  *repair* a stripped vendor hook (writing vendor code into a root-executed conf
+  from a web form is a refused capability — manual procedure is in the contract);
+  KLogic's `set-route` does `route del default` and can fight the panel's
+  `gateway` and `inet-failover.sh` metrics; the live panel↔KLogic write race is
+  inherent to two writers and is not closed from our side; VLAN sub-interfaces
+  (`eth0.1`/`eth0.2` in KLogic's table) are neither created nor migrated.
 - [OPEN] 2026-07-17 **[LOW] `test_agent.py` gated by no quality row.**
   `opt/sa02m-cloud-agent/tests/test_agent.py` (the send-only / no-command-channel
   / no-wireguard guards — the F1-removal net) is pytest-style, so the new
@@ -79,14 +104,13 @@ audit).
   resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
   Defer unless the full services path needs to be faster still.
 - [OPEN] 2026-07-13 **[MED] eth0-hardcoding in web/net consumers (end-board gap).**
-  After the installer's `02-network.sh` was made interface-name-aware, other
-  consumers still hardcode `eth0.conf`/`eth1.conf` and won't work on an
-  `end0`/`end1` board: `www/network_config/cgi-bin/config.cgi:63-64`,
-  `apply.cgi:80-98` (web "network apply" writes `interfaces.d/eth0.conf`),
-  `etc/fix-eth1-internet.sh:319`, `etc/systemd/sa02m-eth1-coldboot.service:6`.
-  Route each through the same `first_existing_iface` detection. Surfaced by the
-  installer-end0 fix reviewer (A2). No SSH-safety regression; a real gap for
-  end-name boards.
+  Narrowed 2026-07-28: **closed by construction by the `eth0`/`eth1`
+  canonicalization guarantee** (`docs/contracts/ethernet-iface-naming.md`) — the
+  residual hardcoders (`etc/fix-eth1-internet.sh:319`,
+  `etc/systemd/sa02m-eth1-coldboot.service:6`) are correct once every board is
+  canonically named, so they are deliberately left unedited. **Resolve only
+  after the on-device procedure (§8 of the naming plan) has passed on a real
+  board** — the `end0`→`eth0` rename itself ships unexercised on hardware.
 - [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
   `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
   legacy static `session_token=cyntron_session` cookie instead of the

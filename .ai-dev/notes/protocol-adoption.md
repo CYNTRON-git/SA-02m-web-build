@@ -19,3 +19,16 @@
 - Not yet done: `/dev-setup` dialog with the Operator (config.json was seeded
   with MR-02m-matching defaults: interactive / lite / claude / ru); GitHub
   branch protection on the quality gate (setup step 5).
+- **Merge-gate review-stamp resolution is by BRANCH NAME, not plan topic**
+  (discovered 2026-07-28, feature `1.0.5.47`): the merge-gate denies
+  `git push` when it can't find a satisfied review stamp, and it resolves
+  the stamp file by the current branch name — `.ai-dev/reviews/<branch>_review.md`
+  — not by the plan's topic slug (`.ai-dev/plans/<topic>.md` /
+  `.ai-dev/reviews/<topic>_review.md`, the natural name a Reviewer spawned
+  from the plan file produces). A topic-named stamp from the review beat
+  does NOT satisfy the gate on its own; it took a second fresh-Reviewer
+  spawn just to re-confirm and write under the branch-matched filename.
+  **Going forward:** when spawning the review-beat Reviewer, tell it to
+  write its verdict to `.ai-dev/reviews/<branch-name>_review.md` directly
+  (the branch is already known/checked-out by that point in the loop) —
+  saves the extra spawn at push time.

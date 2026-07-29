@@ -380,7 +380,8 @@ mkdir -p "$STATE_DIR"
 if [ -n "$1" ]; then
     recover_iface "$1"
 else
-    for conf in /etc/network/interfaces.d/end*.conf; do
+    # Оба именования: eth*.conf (канонические имена) и end*.conf (legacy).
+    for conf in /etc/network/interfaces.d/eth*.conf /etc/network/interfaces.d/end*.conf; do
         [ -f "$conf" ] || continue
         iface=$(basename "$conf" .conf)
         recover_iface "$iface"
