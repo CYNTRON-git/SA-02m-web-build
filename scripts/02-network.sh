@@ -6,8 +6,40 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 check_root
+ETC_DIR="$SCRIPT_DIR/../etc"
 
 log INFO "=== [02] Настройка сети ==="
+
+# ── Канонические имена интерфейсов (eth0/eth1) ────────────────────────────
+# Installed BEFORE the detection below: an opt-in live rename must already be
+# reflected in LAN0/LAN1, otherwise those names are stale for the whole run.
+# Contract: docs/contracts/ethernet-iface-naming.md
+if [ -f "$ETC_DIR/sa02m-iface-canonical.sh" ]; then
+    log INFO "Установка sa02m-iface-canonical.sh"
+    install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh" /usr/local/sbin/sa02m-iface-canonical.sh
+fi
+
+if [ -f "$ETC_DIR/systemd/sa02m-iface-canonical.service" ]; then
+    log INFO "Установка sa02m-iface-canonical.service"
+    install -m 644 "$ETC_DIR/systemd/sa02m-iface-canonical.service" \
+        /etc/systemd/system/sa02m-iface-canonical.service
+fi
+
+# Renaming a LIVE interface drops the management link (SSH), and the idempotency
+# note further down already encodes "a plain re-run must never disturb the live
+# interface". So the rename is DEFERRED to the next boot by default;
+# SA02M_CANONICAL_IFACE_NOW=1 (install.sh --canonical-iface-now) opts in.
+CANONICAL_RENAME_OK=0
+if [ "${SA02M_CANONICAL_IFACE_NOW:-0}" = "1" ] && [ -z "${SA02M_ROOTFS_BUILD:-}" ] \
+   && [ -x /usr/local/sbin/sa02m-iface-canonical.sh ]; then
+    log INFO "SA02M_CANONICAL_IFACE_NOW=1 — переименовываем интерфейсы сейчас"
+    if /usr/local/sbin/sa02m-iface-canonical.sh --live >> "$LOG_FILE" 2>&1; then
+        CANONICAL_RENAME_OK=1
+        log OK "Имена интерфейсов канонизированы"
+    else
+        log WARN "Переименование не выполнено — см. /var/log/sa02m-iface-canonical.log"
+    fi
+fi
 
 # Detect the real interface names on this board. Field devices split between the
 # kernel scheme (eth0/eth1) and the predictable-names scheme (end0/end1); the
@@ -99,8 +131,6 @@ HOOK
 fi
 
 # ── Network watchdog deployment ────────────────────────────────────────────
-ETC_DIR="$SCRIPT_DIR/../etc"
-
 if [ -f "$ETC_DIR/sa02m-eth-led-lib.sh" ]; then
     log INFO "Установка sa02m-eth-led-lib.sh"
     mkdir -p /usr/local/lib
@@ -188,22 +218,23 @@ if [ -f /etc/systemd/system/sa02m-phy-coldboot.service ]; then
 fi
 rm -f /usr/local/bin/sa02m-phy-coldboot.sh
 
-# ── Имена интерфейсов — не переименовывать работающий линк ─────────────────
-# Board split: часть устройств на kernel-именах (`eth0`/`eth1`, sun4i-emac +
-# dwmac-sun8i), часть — на predictable-names (`end0`/`end1`). Мы НЕ используем
-# systemd `.link` файлы для форсирования имён, потому что после обновления
-# systemd/udev эти правила могут потерять эффект → сеть слетает.
-# ПРАВИЛО БЕЗОПАСНОСТИ: никогда не переименовываем интерфейс, который сейчас в
-# работе. Legacy `end*.link` файлы удаляем ТОЛЬКО на eth-плате (где рабочее имя
-# — eth0, а `end*.link` — мусор от старого образа). На end-плате `end*.link`
-# может как раз и давать рабочее имя `end0` — трогать нельзя.
-rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link 2>/dev/null || true
-if [ "$LAN0" = "eth0" ]; then
-    rm -f /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link 2>/dev/null || true
-    log INFO "Используются заводские имена интерфейсов kernel ($LAN0/$LAN1)"
-else
-    log INFO "Обнаружена схема predictable-names ($LAN0/$LAN1) — .link файлы не трогаем"
-fi
+# ── Имена интерфейсов — канонические eth0/eth1 ────────────────────────────
+# systemd `.link` файлы по-прежнему НЕ используются (откат 1.0.3.39 в силе):
+# `.link` — это вход политики именования udev, и после обновления systemd/udev
+# правило может потерять эффект → сеть слетает.
+# Каноническое имя теперь обеспечивает sa02m-iface-canonical.service: он зовёт
+# `ip link set ... name` (стабильный netlink ABI, от политики udev не зависит)
+# перед networking.service и делает это КАЖДУЮ загрузку — то есть само чинится
+# после apt upgrade, чего откату 1.0.3.39 как раз не хватало.
+# Следствие: любой `.link` файл теперь — либо мусор, либо конкурирующий
+# именователь, поэтому удаляем их безусловно, на любой плате.
+# ПРАВИЛО БЕЗОПАСНОСТИ не изменилось: работающий интерфейс не переименовывается
+# без явного opt-in (SA02M_CANONICAL_IFACE_NOW=1), см. блок в начале файла.
+rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/10-eth1.link \
+      /etc/systemd/network/11-eth0.link /etc/systemd/network/11-eth1.link \
+      /etc/systemd/network/10-end0.link /etc/systemd/network/10-end1.link \
+      /etc/systemd/network/11-end0.link /etc/systemd/network/11-end1.link 2>/dev/null || true
+log INFO "Каноническое именование интерфейсов: sa02m-iface-canonical (.link файлы удалены)"
 
 # ── nftables: kernel-aware ────────────────────────────────────────────────
 # С 1.0.4.x kernel SA-02m (5.10.35) собран с CONFIG_NF_TABLES=y — nftables
@@ -229,7 +260,139 @@ svc_enable networking
 svc_enable net-watchdog
 svc_enable sa02m-eth1-coldboot
 svc_enable sa02m-eth0-led-poll
+# ENABLE only, deliberately not svc_enable: svc_enable also STARTS the unit on a
+# live board, and starting this one performs the rename — exactly what the
+# deferred-by-default rule above forbids without SA02M_CANONICAL_IFACE_NOW=1.
+sa02m_systemctl enable sa02m-iface-canonical >> "$LOG_FILE" 2>&1 || true
 log OK "Network watchdog активирован"
+
+# ── Миграция состояния на канонические имена (end0/end1 → eth0/eth1) ──────
+# Idempotency floor (web-code-rigor.md): every step below is guarded on the
+# legacy artefact still existing, so a second installer run is a pure no-op.
+# Placed before "Apply now" so the LAN0_CONF_WRITTEN semantics there are
+# unchanged. Full rationale: docs/contracts/ethernet-iface-naming.md.
+
+# Copy a legacy interfaces.d conf onto its canonical name, substituting the
+# interface name INSIDE the file (auto / iface / post-up lines all carry it).
+# The stanza header is NORMALISED to $3 rather than carried over: in the
+# DUAL-CONF window the legacy file has already been downgraded to
+# `allow-hotplug`, so copying its header verbatim on a second installer run
+# would silently demote the CANONICAL conf too — and `ifup -a` does not bring up
+# an allow-hotplug stanza, i.e. the board would boot with no address.
+canonical_conf_from_legacy() {
+    local legacy=$1 canonical=$2 hdr=$3
+    sed -e "s/^[[:space:]]*\(auto\|allow-hotplug\|allow-auto\)[[:space:]]\+$legacy[[:space:]]*$/$hdr $canonical/" \
+        -e "s/\b$legacy\b/$canonical/g" \
+        "/etc/network/interfaces.d/$legacy.conf"
+}
+
+# migrate_iface_conf <legacy> <canonical> <canonical-header-kw> [protect]
+# The header keyword mirrors what this installer writes itself: `auto` for LAN0
+# (it must come up at boot) and `allow-hotplug` for LAN1.
+migrate_iface_conf() {
+    local legacy=$1 canonical=$2 hdr=$3 protect=${4:-0}
+    local lconf="/etc/network/interfaces.d/$legacy.conf"
+    local cconf="/etc/network/interfaces.d/$canonical.conf"
+    local tmp
+    [ -f "$lconf" ] || return 0
+
+    # A legacy conf with no stanza carries nothing to migrate — it is either
+    # hand-emptied or one the web panel retired to comments (it cannot delete a
+    # file; see docs/contracts/ethernet-iface-naming.md §5.4). Copying it over
+    # the canonical conf would wipe the real config, so just drop it — the
+    # installer runs as root and a stanza-free file configures nothing.
+    if ! grep -qE "^[[:space:]]*(auto|allow-[a-z]+|iface)[[:space:]]+$legacy([[:space:]]|\$)" "$lconf"; then
+        rm -f "$lconf"
+        log INFO "$legacy.conf без стансы — удалён (переносить нечего)"
+        return 0
+    fi
+
+    # The gate. Migrating the conf on a board that then FAILS to rename is the
+    # 1.0.3.38 "Cannot find device" disaster through a different door, so the
+    # legacy conf is removed only when the rename is already a fact: the
+    # canonical device is live, this is an image build, or the opt-in live
+    # rename just succeeded.
+    if [ -d "/sys/class/net/$canonical" ] || [ -n "${SA02M_ROOTFS_BUILD:-}" ] \
+       || [ "$CANONICAL_RENAME_OK" = "1" ]; then
+        if [ "$protect" = "1" ] && [ -f "$cconf" ]; then
+            # This run wrote $cconf from an explicit --ip — that address is what
+            # the operator asked for and the old one must not overwrite it.
+            log INFO "$canonical.conf задан явно (--ip) — содержимое $legacy.conf не переносим"
+        else
+            canonical_conf_from_legacy "$legacy" "$canonical" "$hdr" > "$cconf"
+        fi
+        rm -f "$lconf"
+        log OK "Миграция $legacy.conf → $canonical.conf"
+        return 0
+    fi
+
+    # DUAL-CONF: the rename is deferred to the next boot, so write the canonical
+    # conf now AND keep the legacy one at the same address as `allow-hotplug`.
+    #   rename succeeds → `ifup -a` brings up `auto $canonical`; the legacy
+    #     stanza is ignored (ifup -a does not touch allow-hotplug) and its device
+    #     is gone, so networking.service stays clean — no failed unit.
+    #   rename fails    → the legacy device is still there and udev's hotplug
+    #     path brings it up on the same address, so the board stays reachable.
+    # The next installer run sees the canonical device and drops the legacy
+    # conf — the duplication window is exactly one boot.
+    if [ "$protect" != "1" ] || [ ! -f "$cconf" ]; then
+        canonical_conf_from_legacy "$legacy" "$canonical" "$hdr" > "$cconf"
+    fi
+    tmp=$(mktemp) || return 0
+    if sed "s/^[[:space:]]*auto[[:space:]]\+$legacy[[:space:]]*$/allow-hotplug $legacy/" \
+        "$lconf" > "$tmp"; then
+        cat "$tmp" > "$lconf"
+    fi
+    rm -f "$tmp"
+    log WARN "$canonical.conf создан; $legacy.conf оставлен как allow-hotplug до перезагрузки"
+}
+
+MIGRATE_PROTECT0=0
+if [ "${IP_EXPLICIT:-0}" = "1" ] && [ "$LAN0_CONF_WRITTEN" = "1" ]; then
+    MIGRATE_PROTECT0=1
+fi
+migrate_iface_conf end0 eth0 auto "$MIGRATE_PROTECT0"
+migrate_iface_conf end1 eth1 allow-hotplug
+
+# WATCHDOG_PING_<IFACE>: fix-eth.sh derives the variable name from the LIVE
+# interface name uppercased, so a documented WATCHDOG_PING_END0 silently stops
+# being read once the interface is eth0. Add the ETH* counterpart with the same
+# value; the operator's legacy line is never deleted.
+migrate_watchdog_ping() {
+    local lname=$1 cname=$2 f=/etc/sa02m_network.conf val
+    [ -f "$f" ] || return 0
+    grep -qE "^[[:space:]]*WATCHDOG_PING_${cname}=" "$f" && return 0
+    val=$(sed -n "s/^[[:space:]]*WATCHDOG_PING_${lname}=[[:space:]]*\(.*\)$/\1/p" "$f" | head -1)
+    [ -n "$val" ] || return 0
+    printf '\n# Добавлено установщиком при переходе на канонические имена (%s → %s);\n# старая строка оставлена без изменений.\nWATCHDOG_PING_%s=%s\n' \
+        "$lname" "$cname" "$cname" "$val" >> "$f"
+    log OK "sa02m_network.conf: добавлен WATCHDOG_PING_${cname}"
+}
+migrate_watchdog_ping END0 ETH0
+migrate_watchdog_ping END1 ETH1
+
+# The dhclient default-route hook is generated with the interface name
+# interpolated, so it goes stale when that interface is renamed. Regenerate it
+# only when it still names a legacy interface, and only when the content really
+# changes — a re-run rewrites nothing.
+DHCP_HOOK_F=/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+if [ -f "$DHCP_HOOK_F" ] && grep -qE '(^|[^a-z0-9])end[01]([^a-z0-9]|$)' "$DHCP_HOOK_F"; then
+    DHCP_HOOK_TMP=$(mktemp) || DHCP_HOOK_TMP=""
+    if [ -n "$DHCP_HOOK_TMP" ]; then
+        sed 's/\bend0\b/eth0/g; s/\bend1\b/eth1/g' "$DHCP_HOOK_F" > "$DHCP_HOOK_TMP"
+        if ! cmp -s "$DHCP_HOOK_TMP" "$DHCP_HOOK_F"; then
+            cat "$DHCP_HOOK_TMP" > "$DHCP_HOOK_F"
+            chmod 755 "$DHCP_HOOK_F"
+            log OK "dhclient exit hook переведён на канонические имена"
+        fi
+        rm -f "$DHCP_HOOK_TMP"
+    fi
+fi
+
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ] \
+   && { [ -d /sys/class/net/end0 ] || [ -d /sys/class/net/end1 ]; }; then
+    log WARN "Обнаружены legacy-имена (end0/end1) — требуется перезагрузка для применения канонических имён eth0/eth1"
+fi
 
 # ── Apply now ─────────────────────────────────────────────────────────────
 # Flush + ifup ONLY when this run actually (re)wrote $LAN0.conf. On a plain
