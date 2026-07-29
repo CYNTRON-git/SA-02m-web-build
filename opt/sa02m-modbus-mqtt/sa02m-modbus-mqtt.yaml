@@ -34,6 +34,10 @@ devices:
   #   address: 5
   #   name: "MR-02m 6DO8DI (COM1 addr=5)"
   #   # fast_modbus: true   # по умолчанию ON для mr02m/dtv (false — только classic)
+  #   # fmb_event_wire: auto  # форма кадра configure_events: auto|wb|legacy.
+  #                         # auto (умолч.): WB-кадр пробуется только для mr02m,
+  #                         # при отсутствии ответа — откат на legacy-кадр.
+  #                         # Грамматики: docs/contracts/fmb-event-wire.md
   #   poll_s: 1              # полный опрос DO/DI + AO/AI (с); poll_do_di_s/poll_ai_ao_s — устар., синхронизируются с poll_s
   #   poll_diag_s: 60
   #   poll_insurance_s: 30   # страхующий classic-опрос каналов под FMB-событиями (dtv; ≥0.5 c)
@@ -117,6 +121,11 @@ devices:
   #   ai_sensor_schema: 2
   #   port: /dev/COM4
   #   address: 6
+  #   # ai_read_chunk_regs: 21  # размер чанка FC03 при чтении AI (рег.), кратен 7
+  #                         # (1 канал = 7 рег.). Умолчание 42 = 6 каналов; меньшее
+  #                         # значение лечит обрыв длинного ответа на загруженной
+  #                         # линии ценой лишних транзакций. Глобально —
+  #                         # переменная окружения SA02M_MR02M_AI_CHUNK_REGS.
   #   channels:
   #     ai:
   #       - {ch: 1, sensor_type: 3, enabled: true}   # NTC 10k (B3950)

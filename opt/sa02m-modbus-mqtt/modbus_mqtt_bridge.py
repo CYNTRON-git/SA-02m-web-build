@@ -155,7 +155,13 @@ MR02M_AI_HOLDING_BASE = 400
 MR02M_AI_CHANNEL_STRIDE = 7
 # Max regs per FC03 AI chunk (6 channels × 7). Full 12AI (84 regs / 173 B) often
 # truncates on half-duplex RS-485 @19200 with several slaves on the same COM.
+# Per-device override: yaml key `ai_read_chunk_regs` > env
+# SA02M_MR02M_AI_CHUNK_REGS > this default (resolve_ai_read_chunk_regs()).
+# A busy COM at 115200 with 6 slaves can truncate even 42 regs (bench SA02M-136,
+# 2026-07-24), but halving the chunk doubles the transactions and costs 26–73 %
+# more time per AI block — a per-device knob, not a global default change.
 MR02M_AI_READ_CHUNK_REGS = 42
+MR02M_AI_CHUNK_ENV = "SA02M_MR02M_AI_CHUNK_REGS"
 MR02M_AI_READ_RETRIES = 3
 # Modules with P/N AI pairs (TC-K / 3-wire RTD): 6AI6AO, 12AI, 6AI2AO.
 MR02M_AI_PAIR_TYPES = frozenset({6, 7, 12})
@@ -196,6 +202,27 @@ def _canonical_mr02m_device_name(cfg: dict, type_name: str) -> str:
     if any(tok in upper for tok in _MR02M_LEGACY_NAME_TOKENS):
         return default
     return name
+
+
+def resolve_ai_read_chunk_regs(cfg: dict) -> int:
+    """FC03 AI chunk size for one device: yaml key > env > default.
+
+    Always channel-aligned (a partial channel in a chunk would split the
+    7-register block a channel's values live in) and never below one channel.
+    """
+    raw = cfg.get("ai_read_chunk_regs")
+    if raw is None:
+        raw = os.environ.get(MR02M_AI_CHUNK_ENV)
+    try:
+        n = MR02M_AI_READ_CHUNK_REGS if raw is None else int(raw)
+    except (TypeError, ValueError):
+        log.warning("ai_read_chunk_regs=%r is not an integer — using %d",
+                    raw, MR02M_AI_READ_CHUNK_REGS)
+        n = MR02M_AI_READ_CHUNK_REGS
+    n = (n // MR02M_AI_CHANNEL_STRIDE) * MR02M_AI_CHANNEL_STRIDE
+    return max(MR02M_AI_CHANNEL_STRIDE, n)
+
+
 # MR/MP-02m MCU diagnostics (как sa02m_flasher device_config / module_config_window)
 MR_MCU_HOLD_OP_DAYS = 114
 MR_MCU_HOLD_POWER_TEMP = 123
@@ -452,9 +479,33 @@ def build_fmb_poll_events(min_slave: int, max_data: int,
 
 def build_fmb_configure_events(addr: int, evt_type: int,
                                 start_reg: int, count: int, priority: int) -> bytes:
-    """configure_events (0x18) unicast frame."""
+    """configure_events (0x18), legacy single-range form.
+
+    Type byte is the INTERNAL code (FMB_EVT_* 0..3 / 0x0F) and one priority
+    covers the whole range. Understood by MR-02m releases <= 1.0.10.4x and by
+    DTV / CE-02m-3; newer MR-02m firmware rejects it, so the bridge falls back
+    to this form only after the WB one goes unanswered.
+    Grammar home: docs/contracts/fmb-event-wire.md.
+    """
     data = bytes([addr, 0x46, 0x18, 5,
                   evt_type, start_reg >> 8, start_reg & 0xFF, count, priority])
+    return _append_crc(data)
+
+
+def build_fmb_configure_events_wb(addr: int, evt_type: int,
+                                   start_reg: int, count: int,
+                                   priority: int) -> bytes:
+    """configure_events (0x18), WB standard form (wb-mqtt-serial reference).
+
+    record = [TYPE wire 1..4|0x0F][REG_H][REG_L][COUNT][SETTING x COUNT] — one
+    setting byte per register, and the type is the WIRE code (internal 0..3
+    encoded +1). The only form current MR-02m firmware accepts.
+    Grammar home: docs/contracts/fmb-event-wire.md.
+    """
+    wire = evt_type + 1 if 0 <= evt_type <= 3 else evt_type
+    record = bytes([wire, start_reg >> 8, start_reg & 0xFF, count]) \
+        + bytes([priority] * count)
+    data = bytes([addr, 0x46, 0x18, len(record)]) + record
     return _append_crc(data)
 
 
@@ -819,6 +870,9 @@ FMB_MAX_POLL_TIME_S = 0.10        # MAX_POLL_TIME (events + classic slice)
 FMB_RECONFIGURE_BACKOFF_S = 15.0  # rebooted-then-silent device retry window
                                   # (same order as the initial-offline
                                   # next_fmb_retry throttle in the run loop)
+FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
+                                  # loop runs at 20 Hz, so an unthrottled line
+                                  # would write ~20 journal records/s per port
 
 
 class FastModbusEventPortManager:
@@ -837,6 +891,13 @@ class FastModbusEventPortManager:
         self._ack_slave: int = 0
         self._ack_flag:  int = 0
         self._last_poll_answered = False
+        # Event-record generation per slave: True = WB grammar, False = legacy.
+        # Authoritative source is the configure_events handshake; the parser
+        # only fills it in for a slave nothing is known about yet
+        # (docs/contracts/fmb-event-wire.md).
+        self._wb_frame_slaves: dict[int, bool] = {}
+        # slave → (last log monotonic, suppressed count) for unparsable frames.
+        self._unparsed_log: dict[int, tuple[float, int]] = {}
         self._stop = threading.Event()
         self._log = logging.getLogger(f"fmb.{port_path.replace('/dev/', '')}")
         if baudrate >= 115200:
@@ -858,29 +919,68 @@ class FastModbusEventPortManager:
 
     def register_device(self, addr: int, device_id: str,
                         ranges: list[tuple[int, int, int]],
-                        dispatch, poller=None) -> None:
-        """ranges from poller.fmb_event_ranges(); dispatch = fmb_dispatch."""
+                        dispatch, poller=None, dev_type: str = "",
+                        wire_mode: str = "auto") -> None:
+        """ranges from poller.fmb_event_ranges(); dispatch = fmb_dispatch.
+
+        dev_type + wire_mode (yaml `fmb_event_wire`: auto|wb|legacy) pick the
+        configure_events form — see _configure_contracts().
+        """
+        mode = str(wire_mode or "auto").strip().lower()
+        if mode not in ("auto", "wb", "legacy"):
+            self._log.warning(
+                "fmb_event_wire=%r addr=%d not recognized — using auto",
+                wire_mode, addr)
+            mode = "auto"
         self._devices[addr] = {
             "id": device_id,
             "ranges": list(ranges),
             "pending": list(ranges),
             "dispatch": dispatch,
             "poller": poller,
+            "type": str(dev_type or "").strip().lower(),
+            "wire_mode": mode,
             "configured": False,
             "retry_at": 0.0,
         }
+        # A module reflashed since the last registration may have swapped
+        # generations — start from "nothing known", let the handshake decide.
+        self._wb_frame_slaves.pop(addr, None)
 
     # --- configure_events (0x18) for one device ------------------------------
+
+    def _configure_contracts(self, addr: int, dev: dict) -> tuple[str, ...]:
+        """Which configure_events forms to try for this device, in order.
+
+        WB is probed only where it can pay off: MR-02m (the only family whose
+        firmware branch speaks it) or an explicit yaml opt-in. An unexpected
+        0x18 form once wedged a CE-02m-3 on COM2, recoverable only by a power
+        cycle (CHANGELOG 1.0.5.46), and neither CE nor DTV ever receives MR-02m
+        firmware — so probing them carries the documented risk for no gain.
+        A handshake-confirmed contract goes first, so the extra probe is paid
+        at most once per slave rather than on every reconfigure.
+        """
+        mode = dev.get("wire_mode", "auto")
+        if mode == "legacy":
+            contracts = ["legacy"]
+        elif mode == "wb" or dev.get("type") == "mr02m":
+            contracts = ["wb", "legacy"]
+        else:
+            contracts = ["legacy"]
+        known = self._wb_frame_slaves.get(addr)
+        if known is not None:
+            preferred = "wb" if known else "legacy"
+            if preferred in contracts:
+                contracts = [preferred] + [c for c in contracts
+                                           if c != preferred]
+        return tuple(contracts)
 
     def _configure_device(self, ser: ModbusSerial, addr: int, dev: dict) -> bool:
         """One configure pass over the still-unacked ranges. Per-range
         graceful: a rejected range stays on classic polling while the rest
         get events. Returns True when no range is left pending."""
-        still_pending: list[tuple[int, int, int]] = []
-        for (evt_type, start_reg, count) in dev["pending"]:
-            frame = build_fmb_configure_events(addr, evt_type, start_reg, count, 1)
-            ok = False
-            err = ""
+
+        def _try(frame: bytes) -> tuple[bool, str]:
             try:
                 # ACK: [addr][0x46][0x18][mask_len][mask…][CRC] — mask_len
                 # depends on count; leading 0xFF arbitration noise possible.
@@ -888,12 +988,34 @@ class FastModbusEventPortManager:
                 for i in range(max(0, len(resp) - 4)):
                     if (resp[i] == addr and resp[i + 1] == 0x46
                             and resp[i + 2] == 0x18):
-                        ok = True
-                        break
+                        return True, ""
+                return False, ""
             except Exception as e:
-                err = f" ({e})"
+                return False, f" ({e})"
+
+        contracts = self._configure_contracts(addr, dev)
+        still_pending: list[tuple[int, int, int]] = []
+        for (evt_type, start_reg, count) in dev["pending"]:
+            ok = False
+            err = ""
+            used = ""
+            for contract in contracts:
+                build = (build_fmb_configure_events_wb if contract == "wb"
+                         else build_fmb_configure_events)
+                ok, attempt_err = _try(
+                    build(addr, evt_type, start_reg, count, 1))
+                err = err or attempt_err
+                if ok:
+                    used = contract
+                    break
             if ok:
                 dev["configured"] = True
+                # The handshake is the authoritative generation signal: from
+                # here the parser no longer has to guess for this slave.
+                self._wb_frame_slaves[addr] = (used == "wb")
+                self._log.info(
+                    "configure_events addr=%d type=0x%02X start=%d count=%d "
+                    "— %s contract", addr, evt_type, start_reg, count, used)
             else:
                 still_pending.append((evt_type, start_reg, count))
                 self._log.warning(
@@ -962,34 +1084,139 @@ class FastModbusEventPortManager:
             self._log.warning("poll_events: CRC error (slave=%d)", slave_id)
             return False, []
 
-        # Parse events from buf[6 .. 6+data_len-1]
-        events: list[tuple] = []
-        pos = 6
-        end = 6 + data_len
-        for _ in range(n_events):
-            if pos + 3 > end:
-                break
-            evt_type = buf[pos]
-            reg      = (buf[pos + 1] << 8) | buf[pos + 2]
-            pos += 3
-            if evt_type in (FMB_EVT_COIL, FMB_EVT_DISCRETE):
-                if pos >= end:
-                    break
-                val = buf[pos]; pos += 1
-            elif evt_type in (FMB_EVT_HOLDING, FMB_EVT_INPUT):
-                if pos + 1 >= end:
-                    break
-                val = (buf[pos] << 8) | buf[pos + 1]; pos += 2
-            elif evt_type == FMB_EVT_REBOOT:
-                val = -1
-            else:
-                break
-            events.append((slave_id, evt_type, reg, val))
+        # Parse events from buf[6 .. 6+data_len-1] — two record grammars,
+        # one home: docs/contracts/fmb-event-wire.md.
+        events = self._parse_event_records(slave_id, buf, 6, 6 + data_len,
+                                           n_events)
+        if events is None:
+            self._log_unparsable(slave_id, n_events, data_len)
+            events = []
 
         self._ack_slave = slave_id
         self._ack_flag  = flag
         self._last_poll_answered = True
         return True, events
+
+    # --- event-record grammars (0x11) ----------------------------------------
+
+    def _parse_event_records(self, slave_id: int, buf: bytes, start: int,
+                             end: int, n_events: int) -> list[tuple] | None:
+        """Decode one frame's records; None when neither grammar fits exactly.
+
+        Length validation rejects most mismatches but is NOT a decider: a WB
+        reboot record is byte-identical to a legacy COIL record at reg
+        >= 0x0F00, and several two-record shapes collide as well. The
+        deciding signal is the contract confirmed by configure_events
+        (docs/contracts/fmb-event-wire.md); everything below is that cached
+        contract as attempt order, plus the one rule that overrides it.
+        """
+        wb_events = self._parse_events_wb(slave_id, buf, start, end, n_events)
+        if wb_events is not None and any(
+                evt[1] == FMB_EVT_REBOOT for evt in wb_events):
+            # THE reboot rule — decisive, and independent of both the record's
+            # position in the frame and the cached generation. A frame that
+            # decodes as WB *and carries a reboot* cannot come from a legacy
+            # slave: the WB grammar accepts a record only when its second byte
+            # is a wire code and its first byte equals that wire's payload
+            # length, while in a legacy record those are the type and the
+            # register high byte — and no (type, reg_high) pair a genuine
+            # legacy frame can START with (the configured ranges plus a reboot
+            # at any register) satisfies that gate, so such a frame fails WB on
+            # its FIRST record whatever its length (pinned by
+            # tests/test_fmb_event_parsers.py; the per-type register limits are
+            # COIL 0x0F00, DISCRETE 0x0100, HOLDING 0x0300, INPUT unbounded).
+            # Losing a reboot is the one unrecoverable outcome: dev["configured"]
+            # would stay True, the reflashed module would keep its wiped event
+            # table, and not a line would be logged.
+            self._wb_frame_slaves.setdefault(slave_id, True)
+            return wb_events
+
+        prefer_wb = self._wb_frame_slaves.get(slave_id, True)
+        order = ("wb", "legacy") if prefer_wb else ("legacy", "wb")
+        for fmt in order:
+            events = (wb_events if fmt == "wb"
+                      else self._parse_events_legacy(slave_id, buf, start, end,
+                                                     n_events))
+            if events is not None:
+                # Guess only for an unknown slave — never overwrite the
+                # handshake-confirmed contract.
+                self._wb_frame_slaves.setdefault(slave_id, fmt == "wb")
+                return events
+        return None
+
+    @staticmethod
+    def _parse_events_wb(slave_id: int, buf: bytes, start: int, end: int,
+                         n_events: int) -> list[tuple] | None:
+        """WB grammar: [LEN][TYPE wire][ID_H][ID_L][payload x LEN]."""
+        wire_plen = {1: 1, 2: 1, 3: 2, 4: 2, 0x0F: 0}
+        events: list[tuple] = []
+        pos = start
+        for _ in range(n_events):
+            if pos + 4 > end:
+                return None
+            plen, wire = buf[pos], buf[pos + 1]
+            if wire not in wire_plen or plen != wire_plen[wire]:
+                return None
+            reg = (buf[pos + 2] << 8) | buf[pos + 3]
+            pos += 4
+            if pos + plen > end:
+                return None
+            if plen == 0:
+                val = -1
+            elif plen == 1:
+                val = buf[pos]
+            else:
+                # WB standard: VALUE little-endian (legacy frames carry it BE).
+                val = buf[pos] | (buf[pos + 1] << 8)
+            pos += plen
+            internal = FMB_EVT_REBOOT if wire == 0x0F else wire - 1
+            events.append((slave_id, internal, reg, val))
+        return events if pos == end else None
+
+    @staticmethod
+    def _parse_events_legacy(slave_id: int, buf: bytes, start: int, end: int,
+                             n_events: int) -> list[tuple] | None:
+        """Legacy grammar: [TYPE int][REG_H][REG_L][payload sized by type]."""
+        events: list[tuple] = []
+        pos = start
+        for _ in range(n_events):
+            if pos + 3 > end:
+                return None
+            evt_type = buf[pos]
+            reg      = (buf[pos + 1] << 8) | buf[pos + 2]
+            pos += 3
+            if evt_type in (FMB_EVT_COIL, FMB_EVT_DISCRETE):
+                if pos >= end:
+                    return None
+                val = buf[pos]; pos += 1
+            elif evt_type in (FMB_EVT_HOLDING, FMB_EVT_INPUT):
+                if pos + 1 >= end:
+                    return None
+                val = (buf[pos] << 8) | buf[pos + 1]; pos += 2
+            elif evt_type == FMB_EVT_REBOOT:
+                val = -1
+            else:
+                return None
+            events.append((slave_id, evt_type, reg, val))
+        return events if pos == end else None
+
+    def _log_unparsable(self, slave_id: int, n_events: int,
+                        data_len: int) -> None:
+        """One line per slave per FMB_UNPARSED_LOG_PERIOD_S, suppressed count
+        included — a permanently mismatched slave must not fill the device's
+        small journal from the 20 Hz burst loop."""
+        now = time.monotonic()
+        prev = self._unparsed_log.get(slave_id)
+        if prev is not None and now - prev[0] < FMB_UNPARSED_LOG_PERIOD_S:
+            self._unparsed_log[slave_id] = (prev[0], prev[1] + 1)
+            return
+        suppressed = prev[1] if prev is not None else 0
+        self._unparsed_log[slave_id] = (now, 0)
+        self._log.warning(
+            "poll_events: unparsable event frame (slave=%d, %d ev, %d B)%s",
+            slave_id, n_events, data_len,
+            " — %d more suppressed in the last %.0fs"
+            % (suppressed, FMB_UNPARSED_LOG_PERIOD_S) if suppressed else "")
 
     # --- MQTT dispatch -------------------------------------------------------
 
@@ -1004,6 +1231,9 @@ class FastModbusEventPortManager:
             self._log.info("Device addr=%d rebooted (event 0x0F)", slave_id)
             dev["pending"] = list(dev["ranges"])
             dev["configured"] = False
+            # A reboot is also what a just-reflashed module sends: the cached
+            # generation may now be wrong, so the next handshake re-decides.
+            self._wb_frame_slaves.pop(slave_id, None)
             # The reboot event proves the device is talking — reconfigure
             # immediately, regardless of a backoff from an earlier silence.
             dev["retry_at"] = 0.0
@@ -1794,6 +2024,7 @@ class MR02mPoller(DevicePoller):
         self._poll_ai_ao_s = float(cfg.get("poll_ai_ao_s", 0))
         self._t_do_di = 0.0
         self._t_ai_ao = 0.0
+        self._ai_chunk_regs = resolve_ai_read_chunk_regs(cfg)
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
         self._t_diag        = 0.0
@@ -1902,7 +2133,7 @@ class MR02mPoller(DevicePoller):
         block: list[int | None] = [None] * total
         off = 0
         while off < total:
-            n = min(MR02M_AI_READ_CHUNK_REGS, total - off)
+            n = min(self._ai_chunk_regs, total - off)
             n = (n // MR02M_AI_CHANNEL_STRIDE) * MR02M_AI_CHANNEL_STRIDE
             if n < MR02M_AI_CHANNEL_STRIDE:
                 n = min(MR02M_AI_CHANNEL_STRIDE, total - off)
@@ -3134,8 +3365,10 @@ def main() -> None:
                     mgr = FastModbusEventPortManager(
                         poller.port_path, poller.baudrate)
                     fmb_ports[port_key] = mgr
-                mgr.register_device(poller.address, poller.device_id,
-                                    ranges, poller.fmb_dispatch, poller=poller)
+                mgr.register_device(
+                    poller.address, poller.device_id, ranges,
+                    poller.fmb_dispatch, poller=poller, dev_type=dev_type,
+                    wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():
