@@ -78,11 +78,14 @@ if printf '%s\n' "$apply_code" | grep -q 'sudo rm'; then
 else
     pass "apply.cgi carries no raw 'sudo rm'"
 fi
-if grep -q '^www-data.*sa02m-conf-rm\.sh$' scripts/03-webserver.sh \
-   || grep -q '/usr/local/sbin/sa02m-conf-rm\.sh$' scripts/03-webserver.sh; then
-    pass "sudoers grants exactly the pinned conf-rm helper path"
+# The sudoers GRANT line sits alone on its continuation line (leading spaces,
+# bare path, EOL) — the installer's `install -m 755 … sa02m-conf-rm.sh` line
+# does NOT match this shape, so removing only the grant fails the gate
+# (mutation-verified in the 1.0.5.54 round-2 review).
+if grep -q '^[[:space:]]*/usr/local/sbin/sa02m-conf-rm\.sh$' scripts/03-webserver.sh; then
+    pass "sudoers grant line for the pinned conf-rm helper present"
 else
-    fail "sudoers line for sa02m-conf-rm.sh missing from scripts/03-webserver.sh"
+    fail "sudoers grant line for sa02m-conf-rm.sh missing from scripts/03-webserver.sh"
 fi
 tee_lines=$(printf '%s\n' "$apply_code" | grep -c 'sudo tee')
 if [ "$tee_lines" = "2" ]; then
