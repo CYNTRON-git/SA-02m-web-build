@@ -24,11 +24,10 @@ on BOTH `pull_request` → main AND `push` → main, so **each shipped feature
 costs two runs**: one on the PR, one re-validating the identical tree after
 the squash-merge.
 
-- **Available saving: drop the `push: branches: [main]` trigger** — halves the
-  run count with no gate loss. Branch protection requires the `quality`
-  context, which is evaluated on the PR; direct pushes to `main` are blocked
-  (`enforce_admins: true`), so nothing reaches `main` unvalidated. NOT yet
-  applied — it needs a push to land, so it rides the next feature branch.
+- **Saving applied in 1.0.5.49: the `push: branches: [main]` trigger dropped**
+  — halves the run count with no gate loss. Branch protection requires the
+  `quality` context, which is evaluated on the PR; direct pushes to `main` are
+  blocked (`enforce_admins: true`), so nothing reaches `main` unvalidated.
 - **Do NOT add `paths-ignore` to that workflow** while `quality` is a required
   status check: a filtered-out run leaves the check permanently "expected but
   not run" and the PR can never merge.
