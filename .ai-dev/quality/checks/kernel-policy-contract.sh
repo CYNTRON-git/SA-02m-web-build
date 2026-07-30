@@ -16,6 +16,10 @@
 #      enabled device-bound instance holds multi-user for the 90 s device
 #      JobTimeout when the modem is absent); 99-modem.rules carries the
 #      start line; 01-system.sh carries the stale-symlink cleanup.
+#   7. sa02m-mqtt-opcua.py sends exactly one sd_notify("READY=1") and it
+#      appears BEFORE self._server.start() (early READY decouples the ~17 s
+#      OPC UA address-space build from multi-user.target; moving it back
+#      reintroduces the ~20 s boot hold — contract §5.1).
 #
 # Run: bash .ai-dev/quality/checks/kernel-policy-contract.sh
 set -uo pipefail
@@ -146,6 +150,26 @@ if grep -q 'rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@\
     pass "01-system.sh removes stale modem-dhcp enable symlinks (migration)"
 else
     fail "scripts/01-system.sh lost the stale sa02m-modem-dhcp@ wants-symlink cleanup — a previously-enabled device keeps the 90 s boot hold (contract §5)"
+fi
+
+# ── 7. mqtt-opcua sends READY=1 before server.start() (contract §5.1) ──────
+# Early READY decouples the ~17 s OPC UA address-space build from multi-user;
+# moving READY back after server.start() reintroduces the ~20 s boot hold.
+if [ ! -f "$PY" ]; then
+    fail "$PY missing — cannot check early-READY (contract §5.1)"
+else
+    ready_count=$(grep -c 'sd_notify("READY=1")' "$PY")
+    ready_line=$(grep -n 'sd_notify("READY=1")' "$PY" | head -1 | cut -d: -f1)
+    start_line=$(grep -n 'self\._server\.start()' "$PY" | head -1 | cut -d: -f1)
+    if [ -z "${ready_line:-}" ] || [ -z "${start_line:-}" ]; then
+        fail "opcua daemon READY=1 / server.start() extraction empty (ready='${ready_line:-}' start='${start_line:-}') — file moved or pattern drifted; update this gate"
+    elif [ "$ready_count" != "1" ]; then
+        fail "opcua daemon has $ready_count sd_notify(\"READY=1\") calls — expect exactly ONE, sent early before server.start() (contract §5.1)"
+    elif [ "$ready_line" -ge "$start_line" ]; then
+        fail "opcua daemon sends READY=1 (line $ready_line) at/after server.start() (line $start_line) — READY must precede the ~17 s OPC UA address-space build or multi-user.target waits on it again (contract §5.1)"
+    else
+        pass "opcua daemon sends the single READY=1 (line $ready_line) before server.start() (line $start_line)"
+    fi
 fi
 
 [ "$fails" = 0 ] || printf 'kernel-policy-contract: %s check(s) failed — see docs/contracts/kernel-conditional-services.md\n' "$fails"

@@ -337,6 +337,23 @@ class OpcuaGateway:
 
     # ── Main lifecycle ─────────────────────────────────────────────────────────
     def start(self) -> None:
+        # Signal systemd-ready BEFORE the slow OPC UA address-space build so it
+        # does NOT gate multi-user.target. python-opcua takes ~17 s to build its
+        # address space on the A40i; with Type=notify that ~17 s was blocking
+        # boot (systemd stayed in "activating" until READY). Sending READY at
+        # t≈0 marks the unit active immediately and runs the init in RUNNING
+        # state instead. The watchdog window (WatchdogSec=60) comfortably covers
+        # the ~17 s init: one explicit WATCHDOG=1 ping here, then the loop below
+        # pings every ~30 s (WATCHDOG_USEC/2). A real init failure still raises
+        # out of start() → main() → the process exits non-zero → Restart=on-
+        # failure catches it (crash-loop stays visible). Do NOT move READY back
+        # after server.start()/populate — it reintroduces the ~20 s boot hold
+        # (contract §5, kernel-policy-contract gate pin 7).
+        sd_notify("READY=1")
+        sd_notify("WATCHDOG=1")
+        log.info("SA-02m MQTT→OPC UA gateway initializing "
+                 "(READY sent early, OPC UA server starting)")
+
         # Register namespace
         uri_idx = self._server.register_namespace(OPCUA_NS)
         self._ns_idx = uri_idx
@@ -359,7 +376,6 @@ class OpcuaGateway:
         for key in keys:
             self._add_node(key)
 
-        sd_notify("READY=1")
         log.info("SA-02m MQTT→OPC UA gateway ready (%d initial nodes)",
                  len(self._nodes))
 

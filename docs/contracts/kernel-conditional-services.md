@@ -126,3 +126,31 @@ Subcommand-контракты guard-скрипта:
 `list-jobs`); `systemd-analyze` «Startup finished» — **46,1 с** (до фикса
 ~1:40); failed-юнитов ноль; docker/networking/opcua активны; enx-device-job
 в `list-jobs` отсутствует.
+
+### 5.1. `sa02m-mqtt-opcua` — ранний `READY=1` (декуплинг от загрузки, 1.0.5.60)
+
+Правило: `Type=notify`-юнит с медленной инициализацией шлёт `sd_notify("READY=1")`
+**до** этой инициализации, а не после — иначе `multi-user.target` ждёт всю
+инициализацию. Для `sa02m-mqtt-opcua.service` построение адресного пространства
+OPC UA силами vendored python-opcua на A40i занимает ~17 с; при `Type=notify`
+эти ~17 с держали загрузку (systemd оставался в `activating` до READY).
+
+Исправление (1.0.5.60): в `opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py`
+`OpcuaGateway.start()` вызов `sd_notify("READY=1")` перенесён в самое начало
+метода — **до** `register_namespace()` / `self._server.start()` — плюс один
+явный `sd_notify("WATCHDOG=1")` сразу за ним. Юнит
+(`etc/systemd/sa02m-mqtt-opcua.service`) не изменён: `Type=notify`,
+`WatchdogSec=60`, `TimeoutStartSec=60` сохранены. READY в t≈0 помечает юнит
+`active` сразу, а сборка адресного пространства идёт в состоянии RUNNING, не
+затягивая загрузку. Watchdog-окно (60 с) c запасом покрывает ~17 с инициализации
+(один ping в t≈0, далее цикл шлёт каждые ~30 с = `WATCHDOG_USEC/2`); реальный
+сбой инициализации по-прежнему выбрасывает исключение из `start()`, процесс
+выходит с ненулевым кодом → `Restart=on-failure`. Пин — гейт §7.
+
+**Честная граница:** после раннего READY есть окно ~20 с, в котором systemd
+показывает юнит `active (running)`, хотя порт `4841` ещё не привязан
+(`server.start()` продолжает работать). Для фонового телеметрийного моста это
+принято: окно самоустраняется за ~20 с, а SCADA/OPC UA-клиент, подключившийся в
+этот промежуток, получает connection-refused и повторяет попытку (штатное
+поведение клиента). Ничто локальное не потребляет endpoint шлюза на загрузке
+(проверено: ни один юнит не упорядочен `After=`/`Wants=` относительно шлюза).
