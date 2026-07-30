@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.5.60-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.5.61-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -142,6 +142,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Управление системой
 - **Вкладка «Управление»** — смена логина/пароля веб-интерфейса (`/etc/sa02m_web.env`), перезапуск служб, перезагрузка устройства.
 - **Управление прикладными службами** — start/stop/mask для Mosquitto, Modbus MQTT, телеметрии, MPLC4, Node-RED, KLogic через `services_ctrl.cgi`.
+- **Профиль ядра (SMP / RT)** — переключение штатного SMP-ядра ↔ реального времени `PREEMPT_RT` (`sa02m-kernel-select.sh set smp|rt`, применяется к загрузочному zImage, требуется перезагрузка) и кнопка **«Обновить загрузочное ядро»** — активирует свежесобранный zImage того же профиля на загрузочный раздел, если он изменился.
 - **Обновление веб-интерфейса** — проверка и применение с GitHub через вкладку **Управление** (требуется интернет на устройстве, ~20 мин).
 - **Журнал событий** — установочный лог, SSH-отладка, экспорт.
 
@@ -529,6 +530,8 @@ web/
 - `/etc/network/interfaces.d/eth0.conf`
 - `/etc/network/interfaces.d/eth1.conf`
 
+> Плата гарантирует канонические имена `eth0`/`eth1` при **каждой** загрузке независимо от политики именования udev/systemd (`end0`/`end1` переименовываются в `eth0`/`eth1` до старта сети). Сохранение из панели переносит сторонние строки конфига (`post-up` и т.п.) дословно, не стирая их. Подробности и честные границы — [`docs/contracts/ethernet-iface-naming.md`](docs/contracts/ethernet-iface-naming.md).
+
 ---
 
 ### Управление железом (GPIO / I2C expander)
@@ -761,9 +764,14 @@ journalctl -u nodered.service -f
 
 - **Доступ** — смена логина и пароля веб-интерфейса (запись в `/etc/sa02m_web.env`, htpasswd).
 - **Службы** — список прикладных сервисов с кнопками start/stop (Mosquitto, Modbus MQTT, телеметрия, MPLC4, Node-RED, KLogic). Stop выполняет `disable + mask`, чтобы служба не стартовала после перезагрузки.
+- **Ядро и частота CPU** — переключение профиля ядра **SMP ↔ RT** (`PREEMPT_RT`; `sa02m-kernel-select.sh set smp|rt`, применяется к zImage на загрузочном FAT-разделе, требуется перезагрузка) и кнопка **«Обновить загрузочное ядро»** (действие `refresh`, с 1.0.5.59) — переносит свежесобранный zImage **того же** профиля на загрузочный раздел атомарно и только если он отличается от активного; после успеха предлагает перезагрузку либо сообщает «уже актуально» (перезагрузка не нужна). Использовать после пересборки ядра текущего профиля, чтобы новый образ дошёл до загрузчика без манёвра `rt→smp→rt`.
 - **Обновление веб** — сравнение `/var/lib/sa02m-web-build/deployed_commit` с GitHub, кнопки «Проверить» / «Применить». **Требуется интернет** на устройстве; процесс занимает порядка **20 минут** (зависит от скорости канала).
 - **USB/microSD** — переключатель автоформатирования подключённых носителей в exFAT.
 - **Журнал** — установочный лог, SSH-отладка, экспорт.
+
+#### Политика служб по ядру (с 1.0.5.57)
+
+CODESYS и CodeMeter (`codesyscontrol`, `codemeter*`) **не запускаются автоматически ни на каком ядре**. На **non-RT (SMP)** ядре загрузочный guard дополнительно **останавливает** их на старте, если остатки автозапуска SysV всё же поднялись. **Запустить их вручную можно на любом ядре** — из вкладки **Службы** или через `systemctl` (на SMP-ядре это осознанный компромисс по джиттеру, до следующей перезагрузки). `docker.service` стартует только на ядре, чей набор netfilter это поддерживает; на непригодном ядре он чисто пропускается (не `failed`). Политику ставит установщик fleet-wide — полевому устройству, которому нужен автозапуск CODESYS, его включают вручную один раз. Дом правила и честные границы — [`docs/contracts/kernel-conditional-services.md`](docs/contracts/kernel-conditional-services.md).
 
 ---
 
@@ -794,6 +802,10 @@ journalctl -u nodered.service -f
 > Пошаговая инструкция и артефакты: [**`kernel-port/README.md`**](kernel-port/README.md), тулинг: [**`tools/kernel-wb/`**](tools/kernel-wb/README.md), roadmap с обоснованием: [**`docs/WB_LINUX_FUTURE_FEATURES.md`**](docs/WB_LINUX_FUTURE_FEATURES.md).
 >
 > Старый Buildroot-путь (Starterkit VM) описан ниже и сохраняется как fallback до полного тестирования нового ядра на реальном железе.
+
+> ### Ядра RT/SMP с docker и USB-модемами (с 1.0.5.58)
+>
+> Скрипт `tools/buildroot/prepare-rt-docker-kernel.sh` собирает ядра **обоих** профилей — штатного **SMP** и реального времени **RT** (`PREEMPT_RT`) — с набором netfilter для docker (включая `NFT_COMPAT`) и полным семейством драйверов USB-модемов (`qmi_wwan`, `cdc_*`, `option`). Оба стендовых ядра пересобраны и проверены на железе в этом цикле (docker запускается на обоих профилях, модемные модули на месте). Это **тулинг сборки** — штатная установка и обновление устройства по-прежнему идут документированным путём деплоя, а не сборкой ядра.
 
 ---
 
