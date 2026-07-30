@@ -23,6 +23,16 @@
 # used: it is deprecated and stalls on unrelated queue churn (120 s observed
 # on the bench) while the per-device gate converges in ~1 s.
 #
+# Mechanism 4 (1.0.5.57): the db entry can appear a few MILLISECONDS BEFORE
+# udev applies its rename — so the initialized-gate is necessary but NOT
+# sufficient (bench 2026-07-29 20:52: settled-eth0 verdict at 10.1008 s, udev
+# renamed eth0 -> end0 at 10.1155 s, 15 ms later). The closure lives OUTSIDE
+# this script: etc/98-sa02m-iface-canonical.rules retriggers it (via
+# sa02m-iface-canonical-retry.service) on every end* add/move event; the
+# convergent + idempotent design below is what makes each re-run safe, and
+# the failed-rename path treats "legacy vanished, canonical present" as a
+# concurrent run having won — success, not an error.
+#
 # Degraded fallback: if the udev db never appears within the budget (udevd
 # dead/wedged, or a future udev moves the db path), act on the device's
 # CURRENT name with an honest WARN — i.e. degrade to the pre-gate behaviour,
@@ -209,8 +219,22 @@ canonicalize_pair() {
         return 0
     fi
 
-    # Rename failed: restore the previous admin state so a live board keeps its
-    # working link on the legacy name, and report the failure upward.
+    # Rename failed. Concurrent-run convergence (the mechanism-4 retry unit
+    # can run alongside the boot unit): if the legacy name vanished because
+    # another instance already renamed it — canonical present — the pair IS
+    # canonical: report success, not a misleading FAILED. A fully vanished
+    # device (both names gone) is the standing "absent pair" no-op.
+    if [ ! -d "$SYS_NET/$legacy" ]; then
+        if [ -d "$SYS_NET/$canonical" ]; then
+            log INFO "$legacy -> $canonical: legacy vanished mid-flight, canonical present — converged by a concurrent run (${err:-})"
+        else
+            log INFO "$legacy: vanished mid-flight — nothing to do"
+        fi
+        return 0
+    fi
+
+    # Restore the previous admin state so a live board keeps its working link
+    # on the legacy name, and report the failure upward.
     log ERROR "$legacy -> $canonical: rename FAILED: ${err:-unknown error}"
     if [ "$was_up" = "1" ]; then
         ip link set dev "$legacy" up 2>/dev/null || true

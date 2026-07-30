@@ -69,7 +69,7 @@ def load_config(path: Path) -> dict:
     if not path.exists():
         default = {
             "debug": False,
-            "opcua": {"host": "0.0.0.0", "port": 4840},
+            "opcua": {"host": "0.0.0.0", "port": 4841},
             "mqtt": {"host": "localhost", "port": 1883, "keepalive": 60,
                      "auth": False, "username": "", "password": ""},
             "groups": []
@@ -155,7 +155,12 @@ class OpcuaGateway:
         mcfg = cfg.get("mqtt", {})
 
         self._opcua_host = ocfg.get("host", "0.0.0.0") or "0.0.0.0"
-        self._opcua_port = int(ocfg.get("port", 4840))
+        # 4841, never 4840: CODESYS's own OPC UA server owns the IANA port
+        # 4840 (docs/contracts/kernel-conditional-services.md) — binding it
+        # crash-loops on EADDRINUSE while CODESYS runs. Kept in lock-step with
+        # /etc/sa02m-mqtt-opcua.conf and the load_config() default by the
+        # kernel-policy-contract quality gate.
+        self._opcua_port = int(ocfg.get("port", 4841))
         self._mqtt_host = mcfg.get("host", "localhost")
         self._mqtt_port = int(mcfg.get("port", 1883))
         self._mqtt_keepalive = int(mcfg.get("keepalive", 60))

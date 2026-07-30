@@ -1,0 +1,28 @@
+[Unit]
+Description=SA-02m kernel-conditional service boot guard (stops CODESYS/CodeMeter on a non-RT kernel)
+# Policy home: /usr/local/sbin/sa02m-kernel-service-guard.sh (boot-guard).
+# Contract: docs/contracts/kernel-conditional-services.md
+# Ordering-only After= (deliberately NO Wants=): the guard runs after these
+# units IF something (SysV rc leftovers) scheduled them — so a leftover
+# autostart is stopped, not raced. On an RT kernel boot-guard is a no-op.
+# WantedBy=multi-user.target gives the default Before=multi-user.target; do
+# NOT add After=multi-user.target — that is an ordering cycle.
+After=codesyscontrol.service codemeter.service codemeter-logger.service codemeter-webadmin.service
+# A partial manual deploy (unit without the script) must skip cleanly, not
+# fail at boot; 01-system.sh installs both together.
+ConditionPathExists=/usr/local/sbin/sa02m-kernel-service-guard.sh
+
+[Service]
+Type=oneshot
+# Keep the unit's status visible after boot for verification
+# (systemctl status sa02m-kernel-service-guard → active (exited) + verdict).
+RemainAfterExit=yes
+# Belt over the script's own per-call timeouts (run_bounded): the oneshot
+# default TimeoutStartSec is INFINITY and this unit is Before=multi-user —
+# a hung vendor stop must fail this unit visibly, never block the boot.
+# Fail direction preserved: leftovers stay running and logged.
+TimeoutStartSec=60
+ExecStart=/usr/local/sbin/sa02m-kernel-service-guard.sh boot-guard
+
+[Install]
+WantedBy=multi-user.target

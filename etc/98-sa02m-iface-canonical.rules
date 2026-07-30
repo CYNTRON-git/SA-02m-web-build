@@ -1,0 +1,19 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 98-sa02m-iface-canonical.rules — udev: event-driven canonical-name retry.
+#
+# Closes MECHANISM 4 of docs/contracts/ethernet-iface-naming.md §1.0: udev
+# writes its db entry /run/udev/data/n<ifindex> a few MILLISECONDS BEFORE
+# applying its rename (bench 2026-07-29 20:52, boot 55c9ae67d1b94d01b1338e4e
+# bee15d7f: the boot unit's gate saw "eth0 already canonical (settled)" at
+# 10.1008 s, udev renamed eth0 -> end0 at 10.1155 s — 15 ms later; networking
+# failed at 19.86 s, the board spent the night on an unconfigured end0). The
+# initialized-gate is therefore necessary but NOT sufficient — so every end*
+# device APPEARING (add) or being RENAMED-INTO (move) retriggers the
+# convergent, idempotent rename script, event-driven.
+#
+# MUST stay a SEPARATE file, NOT part of 99-lan-recovery.rules: the naming
+# contract forbids end* lines there — they would start fix-eth@end0 against a
+# legacy name. --no-block is mandatory per the 99-lan-recovery deadlock note
+# (udev otherwise waits on systemctl while systemd waits on udev).
+# ═══════════════════════════════════════════════════════════════════════════
+ACTION=="add|move", SUBSYSTEM=="net", KERNEL=="end*", RUN+="/usr/bin/systemctl --no-block start sa02m-iface-canonical-retry.service"

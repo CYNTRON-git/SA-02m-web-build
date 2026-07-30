@@ -3,11 +3,14 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 # ═══════════════════════════════════════════════════════════════════════════
 # 08-codesys.sh  •  CODESYS Control for Linux ARM SL (v4.20.0.0) на СА-02м
 #
-# Устанавливает CODESYS Control runtime из .deb (armhf), полученного из
-# .package-файла IDE (см. docs/vendor-integrations.md). Активация лицензии
-# выполняется вручную через CODESYS Development System — оставляем демо-режим,
-# runtime сам активирует Standard-S при поступлении .wbc файла в
-# /var/opt/codesys/.
+# INSTALL-ONLY: ставит CODESYS Control runtime из .deb (armhf), полученного из
+# .package-файла IDE (см. docs/vendor-integrations.md), но НЕ включает
+# автозапуск и НЕ запускает runtime — политика kernel-conditional служб
+# (docs/contracts/kernel-conditional-services.md): CODESYS/CodeMeter стартуют
+# только вручную (веб-панель / systemctl); apply-policy снимает автозапуск.
+# Активация лицензии выполняется вручную через CODESYS Development System —
+# оставляем демо-режим, runtime сам активирует Standard-S при поступлении
+# .wbc файла в /var/opt/codesys/.
 #
 # Источник .deb:
 #   1. $SA02M_CODESYS_DEB      — явный путь к armhf .deb (для CI/rootfs build).
@@ -110,35 +113,24 @@ else
 fi
 
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
-    if [ -x /etc/init.d/codesyscontrol ]; then
-        systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
-        systemctl enable codesyscontrol >>"$LOG_FILE" 2>&1 || true
-        # Удалить залипший pidfile от предыдущего экземпляра, если демон
-        # уже мёртв — иначе do_start увидит валидный PID-файл (без /proc/PID)
-        # и решит, что процесс жив.
-        if [ -f /var/run/codesyscontrol.pid ] \
-           && ! pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1; then
-            rm -f /var/run/codesyscontrol.pid
-        fi
-        if ! pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1; then
-            /etc/init.d/codesyscontrol start >>"$LOG_FILE" 2>&1 || true
-            sleep 2
-        fi
+    systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+    # Autostart policy (docs/contracts/kernel-conditional-services.md):
+    # install-only — no enable, no start here. apply-policy disables the SysV
+    # rc links the .deb postinst just created; start is a manual act.
+    if [ -x /usr/local/sbin/sa02m-kernel-service-guard.sh ]; then
+        /usr/local/sbin/sa02m-kernel-service-guard.sh apply-policy >>"$LOG_FILE" 2>&1 || true
+    elif [ -f "$ETC_DIR/sa02m-kernel-service-guard.sh" ]; then
+        # Standalone run (08 before/without 01-system.sh) — use the repo copy.
+        bash "$ETC_DIR/sa02m-kernel-service-guard.sh" apply-policy >>"$LOG_FILE" 2>&1 || true
     fi
+    log INFO "Автозапуск CODESYS/CodeMeter отключён политикой; запуск — вручную из веб-панели"
 
-    if pgrep -f '[c]odesyscontrol\.bin' >/dev/null 2>&1; then
-        log OK "codesyscontrol.bin запущен (PID $(pgrep -f '[c]odesyscontrol\.bin' | head -1))"
+    # No start ⇒ a port/process check would be vacuous: verify by dpkg status.
+    if dpkg -s codesyscontrol >/dev/null 2>&1; then
+        log OK "codesyscontrol установлен (dpkg: $(dpkg -s codesyscontrol 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}'))"
     else
-        log WARN "codesyscontrol.bin не найден в процессах — см. /var/opt/codesys/codesyscontrol.log"
+        log WARN "codesyscontrol отсутствует в dpkg — установка не удалась, см. $LOG_FILE"
     fi
-
-    for port in 11740 4840; do
-        if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
-            log OK "CODESYS слушает порт ${port}/TCP"
-        else
-            log INFO "Порт ${port}/TCP не занят (нормально, если runtime ещё не полностью запустился)"
-        fi
-    done
 
     if [ -r /var/opt/codesys/codesyscontrol.log ]; then
         if grep -q 'running in demo mode' /var/opt/codesys/codesyscontrol.log; then
@@ -152,7 +144,8 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     fi
 else
     log INFO "SA02M_ROOTFS_BUILD=1 — codesyscontrol не запускаем в chroot"
-    systemctl --root="${SA02M_ROOTFS_ROOT:-/}" enable codesyscontrol >>"$LOG_FILE" 2>&1 || true
+    # Disabled-by-default in the baked rootfs too (same autostart policy).
+    systemctl --root="${SA02M_ROOTFS_ROOT:-/}" disable codesyscontrol >>"$LOG_FILE" 2>&1 || true
 fi
 
 log OK "=== [08] CODESYS Runtime установлен ==="

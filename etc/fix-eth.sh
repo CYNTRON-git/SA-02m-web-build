@@ -260,6 +260,13 @@ recover_iface() {
         return 0
     fi
 
+    # Carrier есть — перевзводим бюджет link cycle. Счётчик ограничивает только
+    # ПОДРЯД идущие неудачные попытки; без сброса исчерпанный бюджет блокировал
+    # восстановление до перезагрузки: стенд 2026-07-29/30, eth1 часами писал
+    # «cycles=5, пропуск», и recovery больше не запускался. Живой линк = новый
+    # отказ в будущем получает свежие MAX_LINK_CYCLES попыток.
+    rm -f "${LOCK_DIR}/${iface}.link_cycle_count" 2>/dev/null || true
+
     # 2. Если networking.service ещё назначает IP — не мешаем.
     if iface_bootstrap_in_progress "$iface"; then
         log INFO "$iface: ifupdown в процессе, IP-recovery пропущен"

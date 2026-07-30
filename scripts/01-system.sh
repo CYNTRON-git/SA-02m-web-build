@@ -330,6 +330,30 @@ if [ -f "$ETC_REPO/systemd/sa02m-usb-vbus.service" ]; then
     log OK "sa02m-usb-vbus установлен и включён"
 fi
 
+# ── Kernel-conditional service policy (CODESYS/CodeMeter/docker) ───────────
+# One policy home: /usr/local/sbin/sa02m-kernel-service-guard.sh
+# (contract: docs/contracts/kernel-conditional-services.md). apply-policy is
+# idempotent — safe on installer re-runs and on codesys-less devices.
+if [ -f "$ETC_REPO/sa02m-kernel-service-guard.sh" ]; then
+    log INFO "Установка sa02m-kernel-service-guard (kernel-политика служб)"
+    install -m 755 "$ETC_REPO/sa02m-kernel-service-guard.sh" \
+        /usr/local/sbin/sa02m-kernel-service-guard.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-kernel-service-guard.sh
+    if [ -f "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service" ]; then
+        install -m 644 "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service" \
+            /etc/systemd/system/sa02m-kernel-service-guard.service
+    fi
+    if [ -f "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf" ]; then
+        install -d -m 755 /etc/systemd/system/docker.service.d
+        install -m 644 "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf" \
+            /etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
+    fi
+    sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    sa02m_systemctl enable sa02m-kernel-service-guard.service >> "$LOG_FILE" 2>&1 || true
+    /usr/local/sbin/sa02m-kernel-service-guard.sh apply-policy >> "$LOG_FILE" 2>&1 || true
+    log OK "sa02m-kernel-service-guard установлен и включён (apply-policy применён)"
+fi
+
 # ── DS3231 RTC sync: периодическая запись NTP→DS3231 + сохранение при shutdown ──
 # Алгоритм синхронизации времени:
 #   Boot:     fake-hwclock.service → система; sa02m-pre-start → DS3231→система (если год≥2020)

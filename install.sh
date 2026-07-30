@@ -135,6 +135,12 @@ if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
     # → доступен полноценный режим: overlay2 storage + iptables-nft + bridge networking.
     # На старом ядре (5.10.35-sa02m+ / любое ядро без OVERLAY_FS/BRIDGE/NF_TABLES)
     # автоматически откатываемся на minimal-mode (vfs + iptables=false + bridge=none).
+    # NOTE: this config-grep predicate stays for legacy 5.10 kernels ONLY; the
+    # RUNTIME gate is the ExecCondition capability probe installed by
+    # 01-system.sh (/etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
+    # → sa02m-kernel-service-guard.sh docker-capable). The grep misses
+    # NFT_COMPAT and mis-detected the 6.1.0-rc6 bench kernel as full-mode
+    # (docs/contracts/kernel-conditional-services.md).
     if command -v docker >/dev/null 2>&1; then
         DOCKER_MODE=full
         KERNEL_CFG="/boot/config-$(uname -r)"
@@ -188,6 +194,59 @@ DOCKER_JSON
         systemctl enable --now docker >> "$LOG_FILE" 2>&1 && log OK "docker.service активен ($DOCKER_MODE-mode)" \
             || log WARN "docker.service не стартует — journalctl -u docker -n 30"
     fi
+fi
+
+# ── Migration: sa02m-mqtt-opcua northbound gateway port 4840 → 4841 ────────
+# CODESYS's own OPC UA server owns the IANA port 4840 (vendor-fixed); our
+# gateway moves to 4841 (docs/contracts/kernel-conditional-services.md).
+# Deliberately UNCONDITIONAL for port==4840: a conf still on 4840 is exactly
+# the EADDRINUSE conflict class this release removes (CHANGELOG 1.0.5.57).
+# Idempotent (port != 4840 → untouched); every other key (user `groups`
+# config) is preserved via a json round-trip + atomic replace; a failed
+# migration leaves the conf as-is and is logged — the gateway then keeps
+# crash-looping on 4840, visible in the services UI, never silent.
+OPCUA_CONF=/etc/sa02m-mqtt-opcua.conf
+if [ -f "$OPCUA_CONF" ] && command -v python3 >/dev/null 2>&1; then
+    _mig=$(python3 - "$OPCUA_CONF" 2>>"$LOG_FILE" <<'PYMIG'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as f:
+        cfg = json.load(f)
+except Exception as e:
+    sys.stderr.write("opcua conf parse failed: %s\n" % e)
+    sys.exit(1)
+opcua = cfg.get("opcua")
+# Also match a hand-edited string "4840" — the driver would still int() it.
+if isinstance(opcua, dict) and opcua.get("port") in (4840, "4840"):
+    opcua["port"] = 4841
+    tmp = path + ".sa02m-mig.tmp"
+    st = os.stat(path)
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    # The conf carries mqtt.password: preserve the original mode/owner across
+    # the atomic replace (a tightened 0600 must not widen to umask 0644).
+    os.chmod(tmp, st.st_mode & 0o7777)
+    if hasattr(os, "chown"):
+        os.chown(tmp, st.st_uid, st.st_gid)
+    os.replace(tmp, path)
+    print("changed")
+else:
+    print("unchanged")
+PYMIG
+) || _mig="error"
+    case "$_mig" in
+        changed)
+            log OK "sa02m-mqtt-opcua: порт 4840 → 4841 в $OPCUA_CONF (4840 занят OPC UA-сервером CODESYS)"
+            systemctl try-restart sa02m-mqtt-opcua >> "$LOG_FILE" 2>&1 || true
+            ;;
+        unchanged)
+            : ;;
+        *)
+            log WARN "sa02m-mqtt-opcua: не удалось мигрировать порт в $OPCUA_CONF — конфиг не изменён, см. $LOG_FILE"
+            ;;
+    esac
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
