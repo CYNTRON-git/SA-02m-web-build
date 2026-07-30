@@ -26,6 +26,12 @@ audit).
   1.0.5.54) and the per-device udev-initialized gate (1.0.5.56) is immune to
   whole-queue churn by design — the residual delay comes from `ifupdown-pre`
   when it runs. Diagnose with `udevadm monitor` during boot on the bench.
+- [OPEN] 2026-07-30 **[LOW] `sa02m-kernel-select.sh set <profile>` noops on a
+  same-profile kernel UPGRADE.** `set` returns early when target == running
+  profile, so a rebuilt zImage of the SAME profile never reaches the FAT
+  partition (bench: the fresh SMP kernel had to be deployed via an rt→smp
+  two-step). Needs a `refresh` subcommand or a force flag before the web
+  «Обновление ядра» flow can ship same-profile kernel updates.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,

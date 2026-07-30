@@ -98,3 +98,31 @@ Subcommand-контракты guard-скрипта:
 - `sa02m-grat-arp@.service` (смежное boot-исправление 1.0.5.57): `Type=simple`
   — burst в фоне, multi-user не ждёт ~29 с; гейт закрепляет отсутствие
   регрессии в `Type=oneshot`.
+
+## 5. Задержки загрузки (boot-time holds) — event-юниты не включаются статически
+
+Правило: юнит, привязанный к устройству (`BindsTo=sys-subsystem-net-devices-…`)
+и запускаемый udev-событием, **никогда не включается статически**
+(`systemctl enable` / `WantedBy=multi-user.target`): статическое включение
+затягивает device-job юнита в загрузочную транзакцию, и при отсутствующем
+устройстве `multi-user.target` ждёт полный 90-секундный JobTimeout.
+
+Доказательство (стенд, 2026-07-30, два живых захвата `systemctl list-jobs`
+во время загрузки): `multi-user.target` держал ~90 с job
+`sys-subsystem-net-devices-enx344b50000000.device`, притянутый статически
+включённым инстансом `sa02m-modem-dhcp@enx344b50000000.service` (разовое
+ручное включение на стенде; установщик инстансы не включает). Событийный
+путь уже существовал: `etc/udev/99-modem.rules` стартует/останавливает
+`sa02m-modem-dhcp@%k` на add/remove интерфейса. Подозрение на
+`sa02m-rs485-roster` как держателя загрузки **опровергнуто** тем же захватом.
+
+Исправление (1.0.5.58): у `sa02m-modem-dhcp@.service` удалена секция
+`[Install]` (тот же идиом, что `sa02m-iface-canonical-retry.service`);
+`01-system.sh` идемпотентно удаляет устаревшие enable-симлинки
+`multi-user.target.wants/sa02m-modem-dhcp@*`. Пины — гейт §6.
+
+Измерено после деплоя фикса (стенд, 2026-07-30, перезагрузка): multi-user
+достигнут на **45,3 с** monotonic (до фикса — 98,3 с по live-захвату
+`list-jobs`); `systemd-analyze` «Startup finished» — **46,1 с** (до фикса
+~1:40); failed-юнитов ноль; docker/networking/opcua активны; enx-device-job
+в `list-jobs` отсутствует.
