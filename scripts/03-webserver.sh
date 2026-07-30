@@ -329,6 +329,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-kernel-select.sh status --json, \
     /usr/local/sbin/sa02m-kernel-select.sh set smp, \
     /usr/local/sbin/sa02m-kernel-select.sh set rt, \
+    /usr/local/sbin/sa02m-kernel-select.sh refresh, \
     /usr/local/sbin/sa02m-set-cpu-profile, \
     /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
     /usr/local/sbin/sa02m-cpu-profile.sh apply, \

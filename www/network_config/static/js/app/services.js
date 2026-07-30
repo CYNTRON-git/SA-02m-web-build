@@ -138,6 +138,8 @@ function kernelErrorMessage(code) {
     fat_mount_failed: uiT('Не удалось смонтировать FAT-раздел загрузки'),
     busy: uiT('Переключение ядра уже выполняется'),
     bad_profile: uiT('Неверный профиль ядра'),
+    bad_action: uiT('Неверное действие'),
+    fat_write_failed: uiT('Не удалось записать ядро на загрузочный раздел'),
     sudo_failed: uiT('Нет прав sudo'),
     ctl_missing: uiT('Скрипт переключения ядра не установлен'),
   };
@@ -220,6 +222,13 @@ function renderKernelControl(j) {
     const pending = j.reboot_pending === 1 || j.reboot_pending === true;
     btn.disabled = !canSwitch || (j.running === target && !pending);
   }
+  // Refresh reinstalls the RUNNING profile's canonical image → enabled when that
+  // profile's artifact is valid (running=smp → smpOk, running=rt → rtOk).
+  const refreshBtn = document.getElementById('kernel-refresh-btn');
+  if (refreshBtn) {
+    const runOk = (j.running === 'smp' && smpOk) || (j.running === 'rt' && rtOk);
+    refreshBtn.disabled = !runOk;
+  }
   const uiAvail = _lastSystemStatus ? _lastSystemStatus.cpu_profile_ui_available : null;
   syncCpuProfileSectionVisibility(j.running, j.desired, uiAvail);
 }
@@ -280,6 +289,36 @@ function applyKernelProfile() {
         toast(uiT('Это ядро уже активно'), 'info');
       } else {
         toast(uiT('Настройка ядра сохранена'), 'success');
+      }
+    })
+    .catch((e) => {
+      toast(uiT('Ядро: ') + (e && e.message ? e.message : String(e)), 'error');
+    })
+    .finally(() => { if (btn) btn.disabled = false; });
+}
+
+/** Reinstall the running profile's canonical zImage onto the boot FAT slot
+    (same-profile refresh). The device decides identical-vs-changed via cmp:
+    refreshed===1 → bytes changed, offer a reboot; refreshed===0 → already
+    up to date, info toast. No profile change, so no CODESYS/RT warning path. */
+function refreshKernelBoot() {
+  const btn = document.getElementById('kernel-refresh-btn');
+  if (btn) btn.disabled = true;
+  fetch('cgi-bin/kernel_ctrl.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ action: 'refresh' }),
+  })
+    .then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) throw new Error(kernelErrorMessage(j.error) || ('HTTP ' + r.status));
+      if (j.refreshed === 1 || j.reboot_required === 1 || j.reboot_required === true) {
+        toast(uiT('Загрузочное ядро обновлено'), 'success');
+        if (confirm(uiT('Ядро подготовлено. Перезагрузить сейчас?'))) doReboot();
+        else toast(uiT('Перезагрузите устройство для применения ядра'), 'info', 8000);
+      } else {
+        toast(uiT('Загрузочное ядро уже актуально'), 'info');
       }
     })
     .catch((e) => {

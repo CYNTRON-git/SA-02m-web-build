@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
   window.loadServicesControl = loadServicesControl;
   window.loadKernelControl = loadKernelControl;
   window.applyKernelProfile = applyKernelProfile;
+  window.refreshKernelBoot = refreshKernelBoot;
   window.applyCpuProfile = applyCpuProfile;
   window.serviceCtlAction = serviceCtlAction;
   window.doLogout  = doLogout;

@@ -2,7 +2,10 @@
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 # GET  — status JSON
-# POST — {"profile":"smp"|"rt"}
+# POST — {"profile":"smp"|"rt"}          switch running profile (reboot to apply)
+# POST — {"action":"refresh"}            reinstall the running profile's canonical
+#                                        zImage onto the boot FAT slot (additive;
+#                                        the old {"profile":...} shape is unchanged)
 
 check_auth() {
     web_session_check_cookie && return 0
@@ -50,18 +53,50 @@ if [[ -n "$CL" ]] && [[ "$CL" -gt 0 ]] 2>/dev/null; then
     dd bs=1 count="$CL" 2>/dev/null >"$TMP" || true
 fi
 
+ACTION=""
 PROFILE=""
 if [[ -s "$TMP" ]] && command -v python3 >/dev/null 2>&1; then
-    PROFILE=$(python3 -c "import json
+    PARSED=$(python3 -c "import json
 try:
     with open('$TMP') as f:
         d = json.load(f)
 except Exception:
     d = {}
-print(d.get('profile', ''))" 2>/dev/null | tr -d '\r\n')
+print(d.get('action', ''))
+print(d.get('profile', ''))" 2>/dev/null)
+    ACTION=$(printf '%s' "$PARSED" | sed -n '1p' | tr -d '\r\n')
+    PROFILE=$(printf '%s' "$PARSED" | sed -n '2p' | tr -d '\r\n')
 fi
 
+ACTION=$(printf '%s' "$ACTION" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 PROFILE=$(printf '%s' "$PROFILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# Refresh: reinstall the running profile's canonical zImage onto the boot slot.
+# Allow-list — "refresh" is the ONLY accepted action; it takes no request value
+# (no profile/path interpolated into the command). Any other non-empty action is
+# rejected fail-closed BEFORE the set path.
+if [[ "$ACTION" = "refresh" ]]; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') kernel_ctrl.cgi: refresh (web)" >> /var/log/sa02m_install.log 2>&1
+    echo "Content-type: application/json; charset=UTF-8"
+    echo "Cache-Control: no-store"
+    echo ""
+    OUT=$(sudo -n "$CTL" refresh 2>&1) || true
+    if [[ -z "$OUT" ]]; then
+        echo '{"ok":false,"error":"sudo_failed"}'
+        exit 0
+    fi
+    printf '%s\n' "$OUT" | head -n1
+    exit 0
+fi
+
+if [[ -n "$ACTION" ]]; then
+    echo "Content-type: application/json; charset=UTF-8"
+    echo ""
+    echo '{"ok":false,"error":"bad_action"}'
+    exit 0
+fi
+
+# Empty action → existing profile-switch path, unchanged.
 case "$PROFILE" in
     smp|rt) ;;
     *)
