@@ -16,6 +16,11 @@
 #      enabled device-bound instance holds multi-user for the 90 s device
 #      JobTimeout when the modem is absent); 99-modem.rules carries the
 #      start line; 01-system.sh carries the stale-symlink cleanup.
+#   7. sa02m-mqtt-opcua.py sends exactly one sd_notify("READY=1") and it
+#      appears at the top of main() BEFORE `gw = OpcuaGateway(cfg)` (early
+#      READY decouples the OPC UA address-space build — ~9 s in OpcuaServer()
+#      construction inside __init__, ~17 s total — from multi-user.target;
+#      moving it into/after construction reintroduces the boot hold — §5.1).
 #
 # Run: bash .ai-dev/quality/checks/kernel-policy-contract.sh
 set -uo pipefail
@@ -146,6 +151,28 @@ if grep -q 'rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@\
     pass "01-system.sh removes stale modem-dhcp enable symlinks (migration)"
 else
     fail "scripts/01-system.sh lost the stale sa02m-modem-dhcp@ wants-symlink cleanup — a previously-enabled device keeps the 90 s boot hold (contract §5)"
+fi
+
+# ── 7. mqtt-opcua sends READY=1 before OpcuaGateway() construction (§5.1) ───
+# Early READY decouples the OPC UA address-space build (~9 s in OpcuaServer()
+# construction inside __init__, ~17 s total) from multi-user.target. READY
+# lives at the top of main(), BEFORE `gw = OpcuaGateway(cfg)`; moving it into
+# or after construction reintroduces the boot hold.
+if [ ! -f "$PY" ]; then
+    fail "$PY missing — cannot check early-READY (contract §5.1)"
+else
+    ready_count=$(grep -c 'sd_notify("READY=1")' "$PY")
+    ready_line=$(grep -n 'sd_notify("READY=1")' "$PY" | head -1 | cut -d: -f1)
+    ctor_line=$(grep -n 'gw = OpcuaGateway(' "$PY" | head -1 | cut -d: -f1)
+    if [ -z "${ready_line:-}" ] || [ -z "${ctor_line:-}" ]; then
+        fail "opcua daemon READY=1 / OpcuaGateway() extraction empty (ready='${ready_line:-}' ctor='${ctor_line:-}') — file moved or pattern drifted; update this gate"
+    elif [ "$ready_count" != "1" ]; then
+        fail "opcua daemon has $ready_count sd_notify(\"READY=1\") calls — expect exactly ONE, sent early in main() before OpcuaGateway() construction (contract §5.1)"
+    elif [ "$ready_line" -ge "$ctor_line" ]; then
+        fail "opcua daemon sends READY=1 (line $ready_line) at/after OpcuaGateway() construction (line $ctor_line) — the ~9 s OpcuaServer() build runs in __init__, so READY must precede it or multi-user.target waits on it again (contract §5.1)"
+    else
+        pass "opcua daemon sends the single READY=1 (line $ready_line) before OpcuaGateway() construction (line $ctor_line)"
+    fi
 fi
 
 [ "$fails" = 0 ] || printf 'kernel-policy-contract: %s check(s) failed — see docs/contracts/kernel-conditional-services.md\n' "$fails"

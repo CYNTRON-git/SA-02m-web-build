@@ -14,18 +14,21 @@ audit).
   capability; `lan_conf_retire` tries it first and falls back to
   retire-to-comments on pre-1.0.5.54 deploys. `docs/contracts/
   ethernet-iface-naming.md §5.4` is the home.
-- [OPEN] 2026-07-29 **[MED] udev queue busy at boot on the 6.1 bench board —
-  root cause undiagnosed.** Variable per boot (bench 192.168.1.136, kernel
-  6.1.0-rc6, udev 255): boot -1 both `systemd-udev-settle` and Debian's
-  `ifupdown-pre` (`udevadm settle`) timed out at the 120 s ceiling (journal:
-  `Timed out for waiting the udev queue being empty`), delaying
+- [RESOLVED 2026-07-30, 1.0.5.60] **[MED] udev queue busy at boot on the 6.1
+  bench board — root cause undiagnosed.** Variable per boot (bench
+  192.168.1.136, kernel 6.1.0-rc6, udev 255): boot -1 both `systemd-udev-settle`
+  and Debian's `ifupdown-pre` (`udevadm settle`) timed out at the 120 s ceiling
+  (journal: `Timed out for waiting the udev queue being empty`), delaying
   `networking.service` ~2 min; boot 0 of the same day the queue was done at
   14.4 s. Runtime queue is empty (`settle_rc=0`). Suspects: docker/codemeter/
-  CAN device churn. Consequence today is boot *delay* only, no longer a
-  correctness failure: the unit no longer pulls settle in (`Wants=` dropped
-  1.0.5.54) and the per-device udev-initialized gate (1.0.5.56) is immune to
-  whole-queue churn by design — the residual delay comes from `ifupdown-pre`
-  when it runs. Diagnose with `udevadm monitor` during boot on the bench.
+  CAN device churn. Consequence was boot *delay* only, no longer a correctness
+  failure: the unit no longer pulls settle in (`Wants=` dropped 1.0.5.54) and
+  the per-device udev-initialized gate (1.0.5.56) is immune to whole-queue churn
+  by design — the residual delay came from `ifupdown-pre` when it runs.
+  **Resolution:** no longer reproduces after the 1.0.5.58 kernel rebuild — 5
+  clean boots on bench 192.168.1.136, `ifupdown-pre` now 5.2 s, no "Timed out
+  for waiting the udev queue being empty" on boots 0/-1/-2/-3. The residual boot
+  cost is now the mqtt-opcua boot gate that 1.0.5.60 removes.
 - [RESOLVED] 2026-07-30 **[LOW] `sa02m-kernel-select.sh set <profile>` noops on a
   same-profile kernel UPGRADE.** Fixed in 1.0.5.59: new `refresh` verb copies the
   running profile's canonical zImage onto the active FAT boot file via an atomic

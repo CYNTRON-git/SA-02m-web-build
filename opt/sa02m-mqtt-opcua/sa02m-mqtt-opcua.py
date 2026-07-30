@@ -359,7 +359,6 @@ class OpcuaGateway:
         for key in keys:
             self._add_node(key)
 
-        sd_notify("READY=1")
         log.info("SA-02m MQTT→OPC UA gateway ready (%d initial nodes)",
                  len(self._nodes))
 
@@ -410,6 +409,26 @@ def main() -> None:
     parser.add_argument("-d", "--debug", action="store_true",
                         help="Enable debug logging")
     args = parser.parse_args()
+
+    # Signal systemd-ready IMMEDIATELY, before ANY slow init, so this
+    # Type=notify unit does NOT gate multi-user.target. The heavy cost is the
+    # OPC UA address-space build: ~9 s in OpcuaServer() construction (inside
+    # OpcuaGateway.__init__, below) + more in server.start()/populate — ~17 s
+    # total on the A40i. With Type=notify all of that was blocking boot
+    # (systemd stayed "activating" until READY). Sending READY here — before
+    # load_config()/OpcuaGateway(cfg) — marks the unit active at t≈0 and runs
+    # the whole build in RUNNING state instead. One explicit WATCHDOG=1 ping
+    # here; the watchdog loop in start() then pings every ~30 s
+    # (WATCHDOG_USEC/2), well inside WatchdogSec=60. A real init failure still
+    # raises out of load_config()/__init__/start() → the process exits
+    # non-zero → Restart=on-failure catches it (crash-loop stays visible).
+    # Do NOT move READY into/after OpcuaGateway() construction — the ~9 s
+    # Server() build runs in __init__, so a later READY reintroduces the boot
+    # hold (contract §5.1, kernel-policy-contract gate pin 7).
+    # (The module-level `from opcua import Server` ~2.9 s import stays above
+    # main() — an accepted residual, not restructured.)
+    sd_notify("READY=1")
+    sd_notify("WATCHDOG=1")
 
     cfg = load_config(Path(args.config))
     if args.debug:
