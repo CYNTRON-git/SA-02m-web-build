@@ -147,6 +147,35 @@ function toggleEth1Fields() {
 /* ══════════════════════════════════════════════════════════════════════════
    FORM SUBMISSION — network / time
    ══════════════════════════════════════════════════════════════════════════ */
+
+/** Dotted-quad → 32-bit int (base-10), or NaN. Mirrors the server ipv4_to_int. */
+function ipv4ToInt(str) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(str).trim());
+  if (!m) return NaN;
+  let n = 0;
+  for (let i = 1; i <= 4; i++) {
+    const o = parseInt(m[i], 10);
+    if (o > 255) return NaN;
+    n = n * 256 + o;
+  }
+  return n;
+}
+
+/**
+ * True iff gw shares ip's subnet under mask. Fail-closed: any NaN or a
+ * non-contiguous/zero mask returns false so the submit is blocked, matching
+ * the server. `>>> 0` normalises each masked value out of the int32 sign trap
+ * (a mask with the top bit set, e.g. 128.x, otherwise compares as negative).
+ */
+function sameSubnet(ip, mask, gw) {
+  const ipI = ipv4ToInt(ip), mI = ipv4ToInt(mask), gwI = ipv4ToInt(gw);
+  if (isNaN(ipI) || isNaN(mI) || isNaN(gwI)) return false;
+  if (mI === 0) return false;
+  const inv = (~mI) >>> 0;
+  if (((inv & (inv + 1)) >>> 0) !== 0) return false; /* non-contiguous mask */
+  return ((ipI & mI) >>> 0) === ((gwI & mI) >>> 0);
+}
+
 function initForms() {
   /* eth0 */
   const f0 = document.getElementById('net-form');
@@ -159,6 +188,15 @@ function initForms() {
         toast('Укажите IP и маску для Ethernet № 1', 'error');
         return;
       }
+      const gw0 = document.getElementById('f-gw')?.value.trim();
+      if (gw0 && !sameSubnet(
+        document.getElementById('f-ip')?.value.trim(),
+        document.getElementById('f-mask')?.value.trim(), gw0)) {
+        document.getElementById('f-gw')?.classList.add('invalid');
+        toast('Шлюз вне подсети адреса — устройство станет недоступно', 'error');
+        return;
+      }
+      document.getElementById('f-gw')?.classList.remove('invalid');
     }
     submitForm(f0, () => {
       configLoaded = false;
@@ -173,6 +211,17 @@ function initForms() {
     const en = document.getElementById('eth1-en')?.checked;
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
       toast('Укажите IP для Ethernet № 2', 'error'); return;
+    }
+    if (en) {
+      const gw1 = document.getElementById('f-gw1')?.value.trim();
+      const mask1 = document.getElementById('f-mask1')?.value.trim();
+      if (gw1 && mask1 && !sameSubnet(
+        document.getElementById('f-ip1')?.value.trim(), mask1, gw1)) {
+        document.getElementById('f-gw1')?.classList.add('invalid');
+        toast('Шлюз вне подсети адреса — устройство станет недоступно', 'error');
+        return;
+      }
+      document.getElementById('f-gw1')?.classList.remove('invalid');
     }
     submitForm(f1, () => {
       configLoaded = false;

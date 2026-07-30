@@ -110,6 +110,15 @@
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-iface-migration.sh"
     },
     {
+      "id": "subnet-validate",
+      "checks": "Functional regression for the gateway-in-subnet validators in cgi-bin/lib_web_validate.sh (ipv4_to_int/netmask_is_contiguous/same_ipv4_subnet) and the apply.cgi empty-gateway guard: the customer bug (192.168.1.135/24 + gw 192.168.10.1 rejected), in-subnet /24 //16 //25 accepted, out-of-subnet rejected, non-contiguous/zero netmask rejected, leading-zero octet forced base-10 (010 read decimal, not octal), and both interfaces' `[ -n \"$GATEWAY\" ]` guards present so an empty gateway stays allowed. Pure-Bash math inside a CGI lib no other row reaches — a silent re-open of the dead-route footgun would otherwise pass every syntax/static gate.",
+      "config": null,
+      "run": "bash scripts/dev/test-subnet-validate.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/lib_web_validate.sh", "www/network_config/cgi-bin/apply.cgi", "scripts/dev/test-subnet-validate.sh"],
+      "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-subnet-validate.sh"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
