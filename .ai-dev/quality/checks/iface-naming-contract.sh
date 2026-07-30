@@ -157,5 +157,52 @@ else
     fail "scripts/02-network.sh must write 'source /etc/network/interfaces.d/*.conf' (and no unfiltered '*' line) — a wider glob sources <conf>.sa02m-bak backups as live config: duplicate stanza -> 'File exists' -> networking FAILED"
 fi
 
+# ── 6. Mechanism 4: event-driven canonicalization retry (contract §1.0/§7.5) ──
+RULE=etc/98-sa02m-iface-canonical.rules
+RETRY_UNIT=etc/systemd/system/sa02m-iface-canonical-retry.service
+if [ -f "$RULE" ] \
+   && grep -qE 'ACTION=="add\|move".*KERNEL=="end\*".*--no-block start sa02m-iface-canonical-retry\.service' "$RULE"; then
+    pass "98-sa02m-iface-canonical.rules retriggers the retry unit on end* add|move with --no-block"
+else
+    fail "etc/98-sa02m-iface-canonical.rules missing or lost the end* add|move --no-block retry line — the §1.0 mechanism-4 ms race (db entry before rename) reopens"
+fi
+if [ -f "$RETRY_UNIT" ]; then
+    if grep -qE '^Before=.*networking\.service' "$RETRY_UNIT"; then
+        pass "retry unit orders Before=networking.service"
+    else
+        fail "sa02m-iface-canonical-retry.service lost Before=networking.service — the free pre-networking ordering insurance is gone"
+    fi
+    if grep -qE '^\[Install\]|^WantedBy=' "$RETRY_UNIT"; then
+        fail "sa02m-iface-canonical-retry.service grew an [Install]/WantedBy — it is event-driven only, never boot-scheduled"
+    else
+        pass "retry unit has no [Install]/WantedBy (event-driven only)"
+    fi
+else
+    fail "$RETRY_UNIT missing (mechanism-4 retry unit)"
+fi
+# 99-lan-recovery must stay end*-free: an end* line there would start
+# fix-eth@end0 against a legacy name — the reason the retry rule is a
+# separate file.
+if grep -qE 'KERNEL=="end' etc/99-lan-recovery.rules; then
+    fail "99-lan-recovery.rules grew an end* line — it would start fix-eth@end0 against a legacy name; end* handling lives only in 98-sa02m-iface-canonical.rules"
+else
+    pass "99-lan-recovery.rules carries no end* lines"
+fi
+# fix-eth.sh: an exhausted per-boot link-cycle budget must re-arm on
+# carrier-up (bench 2026-07-29/30 night: eth1 logged "cycles=5, пропуск" for
+# hours and recovery never resumed until reboot).
+if grep -q 'link_cycle_count' etc/fix-eth.sh \
+   && grep -qE 'rm -f "\$\{LOCK_DIR\}/\$\{iface\}\.link_cycle_count"' etc/fix-eth.sh; then
+    pass "fix-eth.sh re-arms the link-cycle budget on carrier-up (counter reset present)"
+else
+    fail "etc/fix-eth.sh lost the link_cycle_count reset — an exhausted budget then blocks link recovery until reboot"
+fi
+if grep -q 'install -m 644 "\$ETC_DIR/98-sa02m-iface-canonical.rules"' scripts/02-network.sh \
+   && grep -q 'install -m 644 "\$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service"' scripts/02-network.sh; then
+    pass "02-network.sh installs the mechanism-4 rule + retry unit"
+else
+    fail "scripts/02-network.sh no longer installs 98-sa02m-iface-canonical.rules / sa02m-iface-canonical-retry.service"
+fi
+
 [ "$fails" = 0 ] || printf 'iface-naming-contract: %s check(s) failed — see docs/contracts/ethernet-iface-naming.md\n' "$fails"
 exit "$fails"

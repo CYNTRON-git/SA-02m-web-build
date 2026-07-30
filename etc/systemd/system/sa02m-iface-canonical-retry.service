@@ -1,0 +1,32 @@
+[Unit]
+Description=SA-02m: canonical iface name retry (udev event-driven, mechanism 4)
+Documentation=file:/usr/local/sbin/sa02m-iface-canonical.sh
+# Started ONLY by udev (etc/98-sa02m-iface-canonical.rules) when an end*
+# device appears or is renamed-into AFTER the boot unit already delivered its
+# verdict — the db-write-before-rename ms race, contract §1.0 mechanism 4.
+# Deliberately NO [Install] section: never enabled, never boot-scheduled —
+# event-driven only. The script is convergent + idempotent (legacy->canonical
+# only, no-op when canonical is settled), so a re-run per event is safe.
+DefaultDependencies=no
+# Free ordering insurance: when networking.service has not started yet the
+# retry completes first; once networking is past, Before= has no effect.
+Before=network-pre.target networking.service
+# Never race the boot unit's own run.
+After=sa02m-iface-canonical.service
+# A partial deploy (unit without the script) must skip cleanly, not fail.
+ConditionPathExists=/usr/local/sbin/sa02m-iface-canonical.sh
+# DefaultDependencies=no drops these; re-add them (mirror the main unit).
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+# NO RemainAfterExit: the unit returns to inactive after each run so the next
+# udev event can start it again (restartable per event).
+ExecStart=/usr/local/sbin/sa02m-iface-canonical.sh
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+# Same identifier as the boot unit — one journal stream tells the whole
+# naming story.
+SyslogIdentifier=sa02m-iface-canonical
