@@ -19,5 +19,10 @@ ExecStop=/sbin/dhclient -r -pf /run/dhclient.%i.pid %i
 Restart=on-failure
 RestartSec=10
 
-[Install]
-WantedBy=multi-user.target
+# Deliberately NO [Install] section — event-driven only (same idiom as
+# sa02m-iface-canonical-retry.service): udev 99-modem.rules starts/stops the
+# instance on interface add/remove. Statically enabling an instance pins its
+# BindsTo device job into the boot transaction — with the modem absent,
+# multi-user.target waits the full 90 s device JobTimeout (bench evidence
+# 2026-07-30: sys-subsystem-net-devices-enx344b50000000.device held boot
+# ~90 s on two live systemctl list-jobs captures).

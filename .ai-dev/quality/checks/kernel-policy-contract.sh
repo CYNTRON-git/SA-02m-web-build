@@ -12,6 +12,10 @@
 #      (install-only policy).
 #   5. service-ctl start/install paths carry no codesys_rc_enable (start =
 #      runtime only; allowed only in an explicit autostart-toggle path).
+#   6. sa02m-modem-dhcp@.service has no [Install]/WantedBy (a statically
+#      enabled device-bound instance holds multi-user for the 90 s device
+#      JobTimeout when the modem is absent); 99-modem.rules carries the
+#      start line; 01-system.sh carries the stale-symlink cleanup.
 #
 # Run: bash .ai-dev/quality/checks/kernel-policy-contract.sh
 set -uo pipefail
@@ -118,6 +122,30 @@ else
     else
         pass "codesys_install() carries no codesys_rc_enable"
     fi
+fi
+
+# ── 6. Boot-time holds: modem-dhcp is event-driven only (contract §5) ──────
+# A statically enabled instance pins its BindsTo modem device job into the
+# boot transaction: absent modem ⇒ multi-user waits the 90 s device
+# JobTimeout (bench 2026-07-30, live list-jobs captures). Same failure family
+# as the grat-arp oneshot pin above.
+MODEM_UNIT=etc/systemd/sa02m-modem-dhcp@.service
+if [ ! -f "$MODEM_UNIT" ]; then
+    fail "$MODEM_UNIT missing"
+elif grep -qE '^\[Install\]|^WantedBy=' "$MODEM_UNIT"; then
+    fail "sa02m-modem-dhcp@.service grew an [Install]/WantedBy — a statically enabled instance holds multi-user ~90 s when the modem is absent (contract §5)"
+else
+    pass "sa02m-modem-dhcp@.service has no [Install]/WantedBy (event-driven only)"
+fi
+if grep -q 'systemctl start sa02m-modem-dhcp@%k.service' etc/udev/99-modem.rules; then
+    pass "99-modem.rules still starts sa02m-modem-dhcp@%k on interface add"
+else
+    fail "etc/udev/99-modem.rules lost the sa02m-modem-dhcp@%k start line — with no [Install] the unit would never run at all (contract §5)"
+fi
+if grep -q 'rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@\*.service' scripts/01-system.sh; then
+    pass "01-system.sh removes stale modem-dhcp enable symlinks (migration)"
+else
+    fail "scripts/01-system.sh lost the stale sa02m-modem-dhcp@ wants-symlink cleanup — a previously-enabled device keeps the 90 s boot hold (contract §5)"
 fi
 
 [ "$fails" = 0 ] || printf 'kernel-policy-contract: %s check(s) failed — see docs/contracts/kernel-conditional-services.md\n' "$fails"

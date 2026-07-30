@@ -145,23 +145,25 @@ apply_smp_kconfig_snippets() {
 
     apply_docker_netfilter_kconfig
     apply_sa02m_boot_kconfig
-
-    kcfg module USB_USBNET USB_NET_CDCETHER USB_NET_CDC_NCM USB_NET_CDC_MBIM USB_NET_QMI_WWAN
-    kcfg module USB_SERIAL USB_SERIAL_OPTION USB_ACM
+    apply_usb_modem_kconfig
 
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
 
     verify_sa02m_smp_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
+    verify_usb_modem_kconfig || return 1
     kconfig_finalize_noninteractive smp || return 1
     verify_sa02m_smp_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
-    log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT, no PREEMPT_RT)."
+    verify_usb_modem_kconfig || return 1
+    log "SMP Kconfig snippets applied (ARCH_SUNXI + Docker NAT + USB modem, no PREEMPT_RT)."
 }
 
 apply_kconfig_snippets() {
@@ -197,27 +199,36 @@ apply_kconfig_snippets() {
 
     apply_sa02m_boot_kconfig
 
-    # USB modem (Первая сборка.docx + scripts/01-system.sh)
-    kcfg module USB_USBNET USB_NET_CDCETHER USB_NET_CDC_NCM USB_NET_CDC_MBIM USB_NET_QMI_WWAN
-    kcfg module USB_SERIAL USB_SERIAL_OPTION USB_ACM
+    # USB modem — one home: apply_usb_modem_kconfig (re-applied per pass).
+    apply_usb_modem_kconfig
 
     make ARCH=arm olddefconfig
-    # olddefconfig may drop sunxi/netfilter — force again and reconcile.
+    # olddefconfig may drop sunxi/netfilter/usb-modem — force again and reconcile.
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
     make ARCH=arm olddefconfig
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
 
     verify_sa02m_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
+    verify_usb_modem_kconfig || return 1
     kconfig_finalize_noninteractive rt || return 1
     verify_sa02m_boot_kconfig || return 1
     verify_docker_netfilter_kconfig || return 1
-    log "Kconfig snippets applied (ARCH_SUNXI + PREEMPT_RT + NAT verified)."
+    verify_usb_modem_kconfig || return 1
+    log "Kconfig snippets applied (ARCH_SUNXI + PREEMPT_RT + NAT + USB modem verified)."
 }
 
 apply_docker_netfilter_kconfig() {
+    # NFT_COMPAT is the load-bearing shim: iptables-nft (v1.8.10, nf_tables
+    # backend) cannot use ANY xt_* extension — addrtype included — without
+    # nft_compat. The June rt4 build passed the old verify (no NFT_COMPAT in
+    # either list) yet docker failed on the bench exactly here (8D-confirmed;
+    # docs/contracts/kernel-conditional-services.md — the guard's
+    # docker-capable probe tests this very bit at runtime).
     local sym
     for sym in \
         OVERLAY_FS NAMESPACES UTS_NS IPC_NS PID_NS NET_NS USER_NS POSIX_MQUEUE \
@@ -225,7 +236,7 @@ apply_docker_netfilter_kconfig() {
         VETH BRIDGE BRIDGE_NETFILTER NETFILTER NETFILTER_ADVANCED NETFILTER_INGRESS \
         NF_TABLES NF_TABLES_INET NF_TABLES_IPV4 NF_TABLES_IPV6 \
         NF_NAT NF_NAT_IPV4 NF_NAT_MASQUERADE NFT_NAT NFT_MASQ NFT_CHAIN_NAT \
-        NETFILTER_XTABLES NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE \
+        NETFILTER_XTABLES NFT_COMPAT NETFILTER_XT_NAT NETFILTER_XT_MATCH_ADDRTYPE \
         NETFILTER_XT_MATCH_CONNTRACK NETFILTER_XT_CONNTRACK \
         IP_NF_IPTABLES IP_NF_FILTER IP_NF_NAT IP_NF_RAW IP_NF_TARGET_MASQUERADE IP_NF_TARGET_REDIRECT \
         NF_DEFRAG_IPV4 NF_CONNTRACK NF_CONNTRACK_IPV4 INET_DIAG \
@@ -237,11 +248,54 @@ apply_docker_netfilter_kconfig() {
 
 verify_docker_netfilter_kconfig() {
     local missing=0 sym val cfg="$LINUX_DIR/.config"
-    for sym in NF_NAT IP_NF_NAT NETFILTER_XTABLES NF_TABLES IP_NF_IPTABLES NETFILTER_XT_MATCH_CONNTRACK NETFILTER_XT_MATCH_ADDRTYPE; do
+    # NFT_COMPAT required here too: a verify without it is exactly the June
+    # rt4 false-green (build "passed", docker dead on the bench).
+    for sym in NF_NAT IP_NF_NAT NETFILTER_XTABLES NFT_COMPAT NF_TABLES IP_NF_IPTABLES NETFILTER_XT_MATCH_CONNTRACK NETFILTER_XT_MATCH_ADDRTYPE; do
         val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
         case "$val" in
             *=y|*=m) ;;
             *) log "ERROR: missing Docker-critical CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
+        esac
+    done
+    [ "$missing" -eq 0 ]
+}
+
+# USB modem set (Первая сборка.docx + scripts/01-system.sh). One home for the
+# set — it must be RE-applied after EVERY olddefconfig/syncconfig pass, same
+# as the docker set: applied once before the first olddefconfig only, the
+# real SMP build ended with USB_NET_QMI_WWAN silently UNSET (its dependency
+# dropped). Order matters: USB_NET_QMI_WWAN depends on USB_USBNET — keep
+# USB_USBNET first.
+#
+# Deliberate NON-change (recorded 2026-07-30): no DS3231 kernel RTC driver.
+# The running fleet kernel carries none either (config sweep) — the
+# RTC_DRV_DS3231 token in apply_sa02m_boot_kconfig never lands in .config —
+# and userspace owns the chip: sa02m-pre-start.service reads it via i2cget;
+# a kernel driver would claim the I2C address and fight that path over the
+# bus. Do NOT "fix" this by adding a DS3231 driver symbol here.
+apply_usb_modem_kconfig() {
+    # USB_NET_DRIVERS + MII first: they are the PARENT menu gates of the
+    # usbnet family — without them `scripts/config --module USB_NET_QMI_WWAN`
+    # writes an orphan =m line that the next olddefconfig/syncconfig silently
+    # drops (verified on the rebuilt kernel artifacts: option.ko present, NO
+    # usbnet.ko/qmi_wwan.ko/cdc_*.ko in the modules tgz).
+    local sym
+    for sym in \
+        USB_NET_DRIVERS MII \
+        USB_USBNET USB_NET_CDCETHER USB_NET_CDC_NCM USB_NET_CDC_MBIM USB_NET_QMI_WWAN \
+        USB_SERIAL USB_SERIAL_OPTION USB_ACM
+    do
+        ./scripts/config --module "$sym" || log "WARN: could not set CONFIG_${sym}=m"
+    done
+}
+
+verify_usb_modem_kconfig() {
+    local missing=0 sym val cfg="$LINUX_DIR/.config"
+    for sym in USB_NET_DRIVERS MII USB_USBNET USB_NET_CDCETHER USB_NET_CDC_NCM USB_NET_CDC_MBIM USB_NET_QMI_WWAN USB_SERIAL USB_SERIAL_OPTION USB_ACM; do
+        val=$(grep "^CONFIG_${sym}=" "$cfg" 2>/dev/null || true)
+        case "$val" in
+            *=y|*=m) ;;
+            *) log "ERROR: missing USB-modem CONFIG_${sym} (got: ${val:-unset})" >&2; missing=1 ;;
         esac
     done
     [ "$missing" -eq 0 ]
@@ -260,6 +314,7 @@ kconfig_finalize_noninteractive() {
     yes '' | make ARCH=arm olddefconfig >/dev/null
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
     if [ "$profile" = rt ]; then
         ./scripts/config --set-val PREEMPT_RT y 2>/dev/null || true
         ./scripts/config --set-str LOCALVERSION "" 2>/dev/null || true
@@ -270,9 +325,19 @@ kconfig_finalize_noninteractive() {
     yes '' | make ARCH=arm olddefconfig >/dev/null
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
     yes '' | make ARCH=arm syncconfig >/dev/null
     apply_sa02m_boot_kconfig
     apply_docker_netfilter_kconfig
+    apply_usb_modem_kconfig
+    # The trio above wrote raw =y/=m lines into an already-synced .config —
+    # UNSYNCED truth. One final olddefconfig resolves dependencies so this
+    # function RETURNS a dependency-resolved config: the profile verifies
+    # that run after finalize then check SYNCED truth, and buildroot's
+    # `make linux` has nothing left to silently drop. Without this, the
+    # verifies passed on just-written =m lines the build then discarded
+    # (the QMI_WWAN-unset / missing-usbnet.ko artifact class).
+    yes '' | make ARCH=arm olddefconfig >/dev/null
     cd "$BR_DIR"
 }
 

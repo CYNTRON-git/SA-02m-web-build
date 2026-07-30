@@ -254,6 +254,13 @@ fi
 if [ -f "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" ]; then
     install -m 644 "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" \
         /etc/systemd/system/sa02m-modem-dhcp@.service
+    # Migration: the unit is event-driven only (udev 99-modem.rules); a
+    # statically ENABLED instance (a one-off manual `systemctl enable` on a
+    # device) pins its BindsTo modem device job into the boot transaction and
+    # holds multi-user.target for the 90 s JobTimeout when the modem is
+    # absent (bench 2026-07-30). Idempotent: rm -f on the wants glob; the
+    # daemon-reload below (end of the modem section) picks it up.
+    rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@*.service 2>/dev/null || true
 fi
 
 # Сервис PPP для ttyUSB-модемов (не запускаем автоматически — только по udev).
