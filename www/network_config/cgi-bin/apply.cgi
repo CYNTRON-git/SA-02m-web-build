@@ -344,12 +344,22 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ] && [ "$ETH0_ENABLE" =
     valid_ipv4 "$NETMASK"  || reject_bad_input "netmask"
     [ -z "$GATEWAY" ] || valid_ipv4 "$GATEWAY" || reject_bad_input "gateway"
     [ -z "$DNS" ]     || valid_ipv4_list "$DNS" || reject_bad_input "dns"
+    # A default gateway outside the address subnet writes an unroutable
+    # `default via <foreign-gw>` route that dead-routes the board. Reject it.
+    if [ -n "$GATEWAY" ]; then
+        netmask_is_contiguous "$NETMASK"             || reject_bad_input "netmask"
+        same_ipv4_subnet "$IP" "$GATEWAY" "$NETMASK" || reject_bad_input "gateway"
+    fi
 fi
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ] && [ "$ETH1_ENABLE" = "1" ]; then
     valid_ipv4 "$IP_ETH1"       || reject_bad_input "ip_eth1"
     valid_ipv4 "$NETMASK_ETH1"  || reject_bad_input "netmask_eth1"
     [ -z "$GATEWAY_ETH1" ] || valid_ipv4 "$GATEWAY_ETH1" || reject_bad_input "gateway_eth1"
     [ -z "$DNS_ETH1" ]     || valid_ipv4_list "$DNS_ETH1" || reject_bad_input "dns_eth1"
+    if [ -n "$GATEWAY_ETH1" ]; then
+        netmask_is_contiguous "$NETMASK_ETH1"                          || reject_bad_input "netmask_eth1"
+        same_ipv4_subnet "$IP_ETH1" "$GATEWAY_ETH1" "$NETMASK_ETH1"    || reject_bad_input "gateway_eth1"
+    fi
 fi
 
 # ── Ethernet № 1 (form net_iface=eth0; on-disk name may be eth0 or end0) ───

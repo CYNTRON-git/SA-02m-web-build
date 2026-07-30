@@ -860,6 +860,7 @@
     [/^Ethernet № 2: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с\.$/u, 'Ethernet #2: config saved, address applying… After an IP change open the new address in 2–3 s.'],
     [/^Укажите IP и маску для Ethernet № 1$/u, 'Enter IP and subnet mask for Ethernet #1'],
     [/^Укажите IP для Ethernet № 2$/u, 'Enter IP for Ethernet #2'],
+    [/^Шлюз вне подсети адреса — устройство станет недоступно$/u, 'Gateway is outside the address subnet — the device would become unreachable'],
     [/^Время\/таймзона применены$/u, 'Time/time zone applied'],
     [/^Ошибка сервера: (.+)$/u, 'Server error: $1'],
     [/^Не удалось установить время\. Проверьте формат и \/var\/log\/sa02m_install\.log на устройстве\.$/u, 'Failed to set time. Check the format and /var/log/sa02m_install.log on the device.'],

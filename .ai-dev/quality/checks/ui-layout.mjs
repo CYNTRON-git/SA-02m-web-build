@@ -204,6 +204,8 @@ const CONTRAST_WHITELIST = [
     reason: 'Storage auto-format toggle in its «НЕ УСТАНОВЛЕНО» (no storage-mount) state: the button is btn.disabled=true (app/status.js) — WCAG 1.4.3 disabled-control exemption.' },
   { match: '.kernel-apply-inline', floor: 1.25,
     reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
+  { match: '.kernel-refresh-inline', floor: 2.0,
+    reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
 ];
 
 // ── Playwright resolution — reuse the existing scripts/dev install ───────────
