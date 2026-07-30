@@ -1,6 +1,6 @@
 #!/bin/bash
 # SA-02m: переключение zImage SMP <-> RT на FAT /dev/mmcblk2p1
-# /usr/local/sbin/sa02m-kernel-select.sh {init|status|set smp|rt}
+# /usr/local/sbin/sa02m-kernel-select.sh {init|status|set smp|rt|refresh}
 set -euo pipefail
 
 CONF=/etc/sa02m_kernel.conf
@@ -154,6 +154,22 @@ umount_fat_if_needed() {
     [ "${FAT_MOUNTED:-0}" = "1" ] && umount "$FAT_MNT" 2>/dev/null || true
 }
 
+# Atomically replace a boot-critical zImage on the FAT partition.
+# Copy to a temp on the SAME FAT dir, sync, verify size BEFORE swapping, then
+# rename over the target (vfat rename() replaces the dir-entry atomically — the
+# active zImage is never left truncated; the risk window is only the temp copy,
+# during which the old dst is untouched). Returns 1 without touching dst on any
+# failure (disk full, short copy).
+write_fat_zimage() {
+    local src=$1 dst=$2 tmp
+    tmp="$(dirname "$dst")/.$(basename "$dst").new"
+    cp -f "$src" "$tmp" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+    sync
+    zimage_ok "$tmp" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+    mv -f "$tmp" "$dst" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+    sync
+}
+
 codesys_active() {
     pgrep -f '[c]odesyscontrol' >/dev/null 2>&1 || \
         pgrep -f '[C]ODESYSControl' >/dev/null 2>&1
@@ -269,9 +285,14 @@ cmd_set() {
         return 1
     fi
 
-    cp -f "$canon" "$FAT_MNT/zImage"
-    cp -f "$canon" "$FAT_MNT/zImage.$target"
-    sync
+    if ! write_fat_zimage "$canon" "$FAT_MNT/zImage"; then
+        umount_fat_if_needed
+        printf '{"ok":false,"error":"fat_write_failed"}\n'
+        return 1
+    fi
+    # Suffix mirror is non-critical (active boot slot already written): a failure
+    # here must NOT abort under set -e and leak the mount / mask the success.
+    write_fat_zimage "$canon" "$FAT_MNT/zImage.$target" || log "set $target: warn: suffix mirror zImage.$target failed (active already written)"
     umount_fat_if_needed
 
     write_conf "$target" 1
@@ -280,14 +301,80 @@ cmd_set() {
     printf '{"ok":true,"target":"%s","reboot_required":true,"warnings":"%s"}\n' "$target" "$(json_str "$warnings")"
 }
 
+cmd_refresh() {
+    exec 200>"$LOCK"
+    if ! flock -n 200; then
+        printf '{"ok":false,"error":"busy"}\n'
+        return 1
+    fi
+
+    load_conf
+    local run canon mod_ver
+    run=$(running_profile)
+    canon="$CANON_DIR/zImage.$run"
+    if [ "$run" = "rt" ]; then
+        mod_ver="${SA02M_KERNEL_RT_VER:-$RT_VER_DEFAULT}"
+    else
+        mod_ver="${SA02M_KERNEL_SMP_VER:-$SMP_VER_DEFAULT}"
+    fi
+
+    if ! zimage_ok "$canon"; then
+        log "refresh $run: missing canonical $canon"
+        printf '{"ok":false,"error":"zimage_missing","target":"%s"}\n' "$run"
+        return 1
+    fi
+    if ! modules_ok "$mod_ver"; then
+        log "refresh $run: missing modules /lib/modules/$mod_ver"
+        printf '{"ok":false,"error":"modules_missing","target":"%s","modules_ver":"%s"}\n' "$run" "$(json_str "$mod_ver")"
+        return 1
+    fi
+
+    if ! mount_fat; then
+        printf '{"ok":false,"error":"fat_mount_failed"}\n'
+        return 1
+    fi
+
+    # Local why: reinstall the RUNNING profile's canonical zImage onto the boot
+    # FAT slot (same-profile update flow) — no profile change, so no codesys/RT
+    # warnings apply. Skip the write when the active slot already byte-matches
+    # the canonical image (cmp -s → set -e safe inside the if); a missing/corrupt
+    # active slot counts as needs-refresh (recovery). All writes go through the
+    # atomic temp→rename helper — the boot-critical active zImage is never left
+    # truncated. Single umount path: result computed into vars, then umount,
+    # then print.
+    local refreshed=0 err=""
+    if zimage_ok "$FAT_MNT/zImage" && cmp -s "$canon" "$FAT_MNT/zImage"; then
+        refreshed=0
+    elif write_fat_zimage "$canon" "$FAT_MNT/zImage"; then
+        # Suffix mirror is non-critical (active boot slot already written): a
+        # failure here must NOT abort under set -e and leak the mount / mask the
+        # success — degrade to a logged warning.
+        write_fat_zimage "$canon" "$FAT_MNT/zImage.$run" || log "refresh $run: warn: suffix mirror zImage.$run failed (active already written)"
+        refreshed=1
+    else
+        err="fat_write_failed"
+    fi
+    umount_fat_if_needed
+
+    if [ -n "$err" ]; then
+        printf '{"ok":false,"error":"%s"}\n' "$err"
+        return 1
+    fi
+
+    write_conf "$run" 1
+    log "refresh $run: refreshed=$refreshed (active zImage on FAT)"
+    printf '{"ok":true,"refreshed":%s,"target":"%s","reboot_required":%s,"warnings":""}\n' "$refreshed" "$run" "$refreshed"
+}
+
 main() {
     mkdir -p "$CANON_DIR"
     case "${1:-status}" in
         init) cmd_init ;;
         status) cmd_status_json ;;
         set) cmd_set "${2:-}" ;;
+        refresh) cmd_refresh ;;
         *)
-            printf '{"ok":false,"error":"usage","hint":"init|status|set smp|rt"}\n'
+            printf '{"ok":false,"error":"usage","hint":"init|status|set smp|rt|refresh"}\n'
             return 1
             ;;
     esac

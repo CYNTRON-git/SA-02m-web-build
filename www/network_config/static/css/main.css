@@ -1756,6 +1756,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin: 0;
 }
 .system-manage-kernel-card .kernel-apply-inline,
+.system-manage-kernel-card .kernel-refresh-inline,
 .system-manage-kernel-card .cpu-profile-apply-inline {
   align-self: stretch;
   width: 100%;
