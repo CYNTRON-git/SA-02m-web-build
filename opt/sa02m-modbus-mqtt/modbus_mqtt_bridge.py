@@ -1532,6 +1532,17 @@ class MQTTPublisher:
     def register_device(self, device_id: str) -> None:
         with self._lock:
             self._device_online.setdefault(device_id, True)
+        # Clear any stale retained device-level meta/error="r" left by a prior
+        # process's shutdown()/LWT. Devices default online=True at startup, so a
+        # device that stays healthy across a restart never transitions and would
+        # never clear the stale "r" — the retained tree would keep lying offline
+        # while the bridge reports devices_online==total, flooding the cloud
+        # watchdog with false incidents (bench-confirmed). Published once per
+        # device at registration (no dedup in pub_device_error, but this fires
+        # exactly once per process); a genuinely-offline device re-asserts "r"
+        # via the back-off machine after offline_after_fails polls.
+        if self._availability:
+            self.pub_device_error(device_id, "")
 
     def device_online(self, device_id: str, online: bool) -> None:
         """Update one device's online state; refresh bridge counters on change."""
@@ -3195,8 +3206,6 @@ class CE02M3Poller(DevicePoller):
 
     def setup(self) -> None:
         self._publish_meta()
-        # Clear sticky retained meta/error="r" from a previous offline storm.
-        self.pub.pub_device_error(self.device_id, "")
 
     def poll_io(self) -> None:
         # Honor poll_power_s — continuous scheduler used to hammer FC04×48
