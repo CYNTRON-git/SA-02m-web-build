@@ -1,0 +1,21 @@
+[Unit]
+Description=SA-02m eth0/eth1 cold-boot PHY recovery
+Documentation=file:/usr/local/sbin/sa02m-eth-coldboot.sh
+After=networking.service sa02m-iface-canonical.service
+Before=net-watchdog.service
+DefaultDependencies=no
+# Run when at least LAN0 is configured (typical SA-02m).
+ConditionPathExists=/etc/network/interfaces.d/eth0.conf
+
+[Service]
+Type=oneshot
+# Delay past ifup + early PHY settle (IP101/EMAC cold-boot window).
+ExecStartPre=/bin/sleep 8
+ExecStart=/usr/local/sbin/sa02m-eth-coldboot.sh
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-eth-coldboot
+
+[Install]
+WantedBy=multi-user.target

@@ -5,6 +5,56 @@
 
 ---
 
+## feature/klogic - First-boot образ, сеть после прошивки, cloud wipe, KLogic в виджете (июл 2026)
+
+### Imaging / first-boot
+
+- **Expand rootfs больше не держит Ethernet на минуты.** Unit
+  `sa02m-rootfs-expand` не ставит `Before=networking` / `ifupdown-pre` /
+  `basic.target` — только userspace-watchdogs; `WantedBy=multi-user.target`.
+  Раньше `resize2fs` блокировал линк/SSH на 2–6 мин (выглядело как «плата не
+  загрузилась»).
+- **Убран deadlock expand ↔ net-watchdog.** В `finish_firstboot` больше нет
+  `systemctl start/restart` единиц, от которых expand стоит `Before=`; disable
+  — через `--no-block`.
+- **Нет dual-resize.** При снятии/патче образа включается только
+  `sa02m-rootfs-expand`, `armbian-resize-filesystem` маскируется (иначе шторм
+  udev и срыв `ifupdown-pre`).
+- **Watchdogs не маскируются навсегда** в expand / installer — только `stop`
+  на время resize; `systemctl mask` больше не уничтожает unit-файлы под `/etc`.
+- **Cold-boot PHY:** `sa02m-eth-coldboot` для eth0/eth1; `fix-eth.sh` делает
+  link-cycle при `operstate=down|dormant|unknown` (не только `down`).
+- **Инструменты:** `tools/imaging/patch-firstboot-image.sh`, `autorun-fel.sh` /
+  `autorun.sh`, `firstboot-overlay/`, `capture-image.*`, обновлены
+  `stream-after-cleanup.sh`, `make-image.sh`, `wait-donor.sh`, README.
+
+### Cloud agent
+
+- **Клон образа не уносит enrollment донора.** Wipe
+  `/etc/sa02m-cloud` (`device_secret`, `frpc.toml`, `enrolled=false`) в
+  `stream-after-cleanup`, offline-патче и autorun; скрипт
+  `tools/imaging/reset-cloud-enrollment.sh`.
+
+### Интерфейс
+
+- **Виджет служб:** установленный KLogic показывается отдельной строкой
+  (`optional_services`), а не подменяется строкой fcgiwrap.
+
+### Документация / агенты
+
+- BUGLOG: first-boot сеть, expand deadlock, Before=networking, cloud clone.
+- `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`, `tools/ssh/sa02m_remote.py` —
+  уточнения batch-доступа к плате.
+
+**файлы:** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`,
+`etc/fix-eth.sh`, `etc/systemd/sa02m-eth-coldboot.service`,
+`usr/local/sbin/sa02m-eth-coldboot.sh`, `scripts/01-system.sh`,
+`scripts/02-network.sh`, `tools/imaging/*`, `www/network_config/static/js/app.js`,
+`docs/bugs/BUGLOG.md`, `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`,
+`tools/ssh/sa02m_remote.py`.
+
+---
+
 ## 1.0.5.63 - Сброс «залипшей» retained-ошибки устройства при старте моста (июл 2026)
 
 ### MQTT

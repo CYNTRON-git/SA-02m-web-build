@@ -1,0 +1,19 @@
+[Unit]
+Description=SA-02m SSH and service failure monitor
+Documentation=file:/usr/local/sbin/sa02m-failure-monitor
+After=network.target network-online.target nginx.service fcgiwrap.service ssh.service
+Wants=network-online.target
+Conflicts=shutdown.target reboot.target halt.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/sa02m-failure-monitor
+Restart=always
+RestartSec=5
+TimeoutStopSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-failure-monitor
+
+[Install]
+WantedBy=multi-user.target

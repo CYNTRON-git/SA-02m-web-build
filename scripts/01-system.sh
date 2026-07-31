@@ -461,10 +461,15 @@ for u in sa02m-watchdog-feed.service watchdog.service software-watchdog.service;
 done
 
 # Расширение rootfs после PiShrink-клона (до userspace-watchdog).
+# Не включать параллельно armbian-resize-filesystem — dual resize ломает
+# first-boot сеть (udev settle / ifupdown-pre / PHY).
 if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
     log INFO "Установка sa02m-rootfs-expand (first-boot eMMC resize)"
     install -m 755 "$ETC_REPO/sa02m-rootfs-expand.sh" /usr/local/sbin/sa02m-rootfs-expand.sh
     install -m 644 "$ETC_REPO/systemd/sa02m-rootfs-expand.service" /etc/systemd/system/sa02m-rootfs-expand.service
+    sa02m_systemctl stop armbian-resize-filesystem.service 2>/dev/null || true
+    sa02m_systemctl disable armbian-resize-filesystem.service 2>/dev/null || true
+    sa02m_systemctl mask armbian-resize-filesystem.service 2>/dev/null || true
     sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
     sa02m_systemctl enable sa02m-rootfs-expand.service >>"$LOG_FILE" 2>&1 || true
 fi
@@ -482,12 +487,20 @@ done
 rm -f /etc/systemd/network/10-eth0.link /etc/systemd/network/11-eth1.link 2>/dev/null || true
 log OK "sa02m-net-autolink отключён; link-файлы удалены — используются eth0/eth1"
 
-# Userspace-watchdog сервисы вызывают reboot loop на первой загрузке нового образа
-# (конкурируют с resize2fs/pishrink). Маскируем — аппаратный watchdog обслуживает systemd PID1.
-log INFO "Маскируем userspace-watchdog сервисы"
+# Userspace reboot-watchdogs конкурируют с resize2fs на FIRST boot — временный
+# mask делает sa02m-rootfs-expand.sh и снимает его в finish_firstboot.
+# net-watchdog НЕ маскируем навсегда: он чинит cold-boot PHY / grat-ARP
+# (иначе после прошивки образа пинг появляется только после re-plug кабеля).
+# RuntimeWatchdogSec (systemd PID1) — отдельно, в system.conf.d.
+log INFO "Не маскируем watchdogs навсегда; first-boot mask — только в sa02m-rootfs-expand"
 for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watchdog.service; do
-    sa02m_systemctl stop "$u" 2>/dev/null || true
-    sa02m_systemctl mask "$u" 2>/dev/null || true
+    # Снять stale mask от старых инсталляторов / FEL autorun.
+    if [ -L "/etc/systemd/system/$u" ] \
+       && [ "$(readlink -f "/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
+        rm -f "/etc/systemd/system/$u"
+    fi
+    sa02m_systemctl unmask "$u" 2>/dev/null || true
+    sa02m_systemctl enable "$u" 2>/dev/null || true
 done
 
 # ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
