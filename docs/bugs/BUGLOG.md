@@ -5,6 +5,72 @@
 
 ---
 
+## [2026-07-31 20:38] branch: feature/klogic — expand Before=networking/basic → нет линка на first-boot
+
+**Файл(ы):** `etc/systemd/sa02m-rootfs-expand.service`, `etc/sa02m-rootfs-expand.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/firstboot-overlay/`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки «исправленным» образом плата снова долго без сети (~минуты / до timeout); линк не поднимался, выглядело как «не загрузилось». `.136` недоступен по ping/SSH.
+**Причина:** Предыдущий фикс убрал только `systemctl restart net-watchdog`, но unit оставался с `Before=networking.service ifupdown-pre.service basic.target` и `WantedBy=basic.target` — `resize2fs` (1–3+ мин) держал всю сеть и `basic.target`. В `usb-flash/sdcard.img` оставался этот unit.
+**Исправление:** Expand больше не гейтит networking/basic — `Before=` только watchdogs; `WantedBy=multi-user.target`; wiring в patch/autorun с `basic.target.wants` снят; `systemctl --no-block disable`; убран PHY kick из finish (холодный PHY — coldboot/net-watchdog после ifup). Образ перепатчить и перепрошить.
+
+## [2026-07-31 20:23] branch: feature/klogic — клон образа уносит cloud enrollment донора
+
+**Файл(ы):** `/etc/sa02m-cloud/*`, `tools/imaging/reset-cloud-enrollment.sh`, `tools/imaging/stream-after-cleanup.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`
+**Тип:** Некорректное поведение
+**Описание:** После снятия/заливки образа все новые платы считались уже в облаке (тот же `device_secret` / `frpc.toml` / `enrolled=true` донора).
+**Причина:** Imaging не очищал `/etc/sa02m-cloud` при clone; `disable` агента в UI не сбрасывает enrollment.
+**Исправление:** Сброс на `.136`; wipe в `stream-after-cleanup` / `patch-firstboot-image` / autorun wiring; скрипт `reset-cloud-enrollment.sh`.
+
+## [2026-07-31 19:36] branch: feature/klogic — sa02m-rootfs-expand deadlock → boot 6+ мин, сеть поздно
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки образ поднялся (Armbian, rootfs 7.1G), но userspace ~6 мин; сеть/SSH только после timeout expand; `sa02m-rootfs-expand` failed; watchdogs inactive. Серийный COM7 «как buildroot» — USB gadget, не ОС.
+**Причина:** `finish_firstboot` вызывал `systemctl restart net-watchdog` внутри oneshot с `Before=net-watchdog.service` / `networking.service` → взаимная блокировка до `TimeoutStartSec=6min`.
+**Исправление:** В expand только `unmask`/`enable`, без `start`/`restart`; SuccessExitStatus допускает TERM после успешного resize. На `.136` watchdogs перезапущены, failed сброшен.
+
+## [2026-07-31 19:07] branch: feature/klogic — first-boot после прошивки: нет пинга до re-plug, watchdogs masked
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`, `tools/imaging/stream-after-cleanup.sh`, `scripts/01-system.sh`, `scripts/02-network.sh`, `tools/imaging/autorun-fel.sh`, `etc/fix-eth.sh`, `usr/local/sbin/sa02m-eth-coldboot.sh`, `etc/systemd/sa02m-eth-coldboot.service`
+**Тип:** Некорректное поведение
+**Описание:** После заливки образа плата расширяла rootfs (~7.1G OK), но пинг на `192.168.1.136` появлялся только после выдёргивания/вставки Ethernet; `sa02m-userspace-watchdog` / `sa02m-failure-monitor` / `net-watchdog` оставались `masked`; `ifupdown-pre` failed (`udevadm settle` timeout ~2 мин).
+**Причина:** (1) `stream-after-cleanup` включал **оба** `armbian-resize-filesystem` и `sa02m-rootfs-expand` → параллельный resize ~3 мин, шторм udev, срыв `ifupdown-pre`, поздний/хрупкий networking и flap PHY. (2) Expand/FEL/`01-system` **навсегда** маскировали userspace watchdogs (в т.ч. `net-watchdog`) и `systemctl mask` уничтожал unit-файлы в `/etc`. (3) `fix-eth.sh` крутил PHY cycle только при `operstate=down`, пропуская stuck PHY с `dormant`/`unknown`; cold-boot oneshot был только для eth1.
+**Исправление:** Только `sa02m-rootfs-expand` (armbian-resize mask); stop (не mask) watchdogs + restore; `sa02m-eth-coldboot` для eth0/eth1; `fix-eth` cycle при admin UP + down|dormant|unknown. На `.136` юниты восстановлены и сервисы запущены. *(Первоначально unit ставили `Before=networking` — это снова ломало линк на first-boot; снято в записи 20:38.)*
+
+---
+
+## [2026-07-31 16:49] branch: feature/klogic — адрес KLogic не отображается в веб-интерфейсе
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\adjust-eth0`, `home\klogic\adjust-eth0`, `tmp\install\sa02m-klogic-net-sync.service`, `tmp\install\sa02m-klogic-net-sync.path`, `tmp\install\klogic-install`, `tmp\install\klogic-install_`, `/etc/network/interfaces.d/eth0.conf`
+**Тип:** Некорректное поведение
+**Описание:** После смены LAN0 в KLogic на `192.168.1.137` runtime-адрес менялся, но веб продолжал показывать `192.168.1.136`.
+**Причина:** KLogic напрямую создавал и исполнял `set-ip0`/`set-route`, не вызывал `adjust-eth0` и не обновлял конфиги, которые читает веб.
+**Исправление:** Добавлен systemd path-unit с debounce, вызывающий принудительную безопасную синхронизацию при изменении команд KLogic. `adjust-eth0` валидирует и переносит IP/маску/шлюз в оба конфигурационных файла; удаление устаревших команд вебом является успешным no-op. Оба направления проверены на `192.168.1.137`.
+
+## [2026-07-31 16:31] branch: feature/klogic — веб и KLogic отменяют настройки LAN0 друг друга
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\adjust-eth0`, `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\home\klogic\adjust-eth0`, `/home/klogic/adjust-eth0`, `/etc/network/interfaces.d/eth0.conf`, `/home/klogic/eth0.conf`
+**Тип:** Некорректное поведение
+**Описание:** Более старый KLogic `set-ip0` мог отменить свежий адрес из веб-интерфейса при `ifup` или перезагрузке; свежая настройка KLogic не отражалась в системном конфиге, который читает веб.
+**Причина:** Системный и KLogic-конфиги были независимыми, а `adjust-eth0` безусловно исполнял сохранённые `set-ip0`/`set-route`.
+**Исправление:** `adjust-eth0` выбирает последний источник по времени изменения: свежий веб-конфиг синхронизируется в KLogic и удаляет устаревшие команды, свежая настройка KLogic применяется и атомарно переносится в системный `eth0.conf` с единственным `post-up` hook. Оба направления проверены без изменения рабочего адреса.
+
+## [2026-07-31 16:23] branch: feature/klogic — KLogic перезаписывает сеть SA-02m
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\install\interfaces`, `eth0.static`, `eth1.static`, `tmp\sa02\eth0.conf`, `tmp\sa02\eth1.conf`, `/etc/network/interfaces*`, `/home/klogic/eth*.conf`
+**Тип:** Некорректное поведение
+**Описание:** После установки KLogic первый Ethernet получал `192.168.0.136`, а установщик без запроса добавлял конфигурацию второго Ethernet.
+**Причина:** Установщик безусловно заменял системные конфиги шаблонами `eth0=192.168.0.136` и `eth1=192.168.1.136` и возвращал wildcard `source .../*`.
+**Исправление:** LAN0 согласован на `192.168.1.136` без шлюза, DNS, адреса `192.168.137.10` и маршрута через `192.168.137.1`; KLogic `post-up` hook и фильтр `*.conf` сохранены. Установщик больше не разворачивает системный `eth1.conf`; на устройстве LAN1 выключен и не имеет адреса.
+
+## [2026-07-31 16:23] branch: feature/klogic — ложная ошибка RTC при старте KLogic
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\pre-start`, `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\home\klogic\pre-start`, `/home/klogic/pre-start`
+**Тип:** Некорректное поведение
+**Описание:** Каждый старт `klogic.service` писал `echo: I/O error` и делал бесполезное ожидание RTC.
+**Причина:** Скрипт повторно создавал I2C-клиент DS3231 по адресу `i2c-1/0x68`, хотя `/sys/bus/i2c/devices/1-0068` уже существовал; `/dev/rtc1` при этом отсутствовал.
+**Исправление:** Добавлена проверка существующего I2C-клиента и ожидание внешнего RTC только при наличии `/dev/rtc1`. `sh -n`, restart сервиса и чистый journal проверены на устройстве.
+
 ## [2026-07-28 14:00] branch: 1.0.5.47 — Флэшер: не распознаёт канонический/legacy 6AI6AO/AO6AI6
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `www/network_config/static/js/flasher.js`

@@ -231,6 +231,18 @@ if [ -f "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" ]; then
         /etc/systemd/system/sa02m-eth1-coldboot.service
 fi
 
+# eth0+eth1 soft PHY cold-boot (replaces eth1-only path for LAN0 first-boot link).
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-eth-coldboot.sh" ]; then
+    log INFO "Установка sa02m-eth-coldboot.sh"
+    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth-coldboot.sh" \
+        /usr/local/sbin/sa02m-eth-coldboot.sh
+fi
+if [ -f "$ETC_DIR/systemd/sa02m-eth-coldboot.service" ]; then
+    log INFO "Установка sa02m-eth-coldboot.service"
+    install -m 644 "$ETC_DIR/systemd/sa02m-eth-coldboot.service" \
+        /etc/systemd/system/sa02m-eth-coldboot.service
+fi
+
 if [ -f "$ETC_DIR/fix-eth1-internet.sh" ]; then
     log INFO "Установка fix-eth1-internet.sh"
     install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
@@ -294,8 +306,13 @@ udevadm control --reload-rules 2>/dev/null || true
 svc_enable networking
 
 svc_enable net-watchdog
-svc_enable sa02m-eth1-coldboot
+# Prefer unified eth0/eth1 coldboot; keep eth1 unit installed but disabled to
+# avoid double ethtool -r on LAN1.
+svc_enable sa02m-eth-coldboot
+sa02m_systemctl disable sa02m-eth1-coldboot 2>/dev/null || true
 svc_enable sa02m-eth0-led-poll
+# Explicit unmask: imaging / old 01-system may have left /dev/null mask.
+sa02m_systemctl unmask net-watchdog.service 2>/dev/null || true
 # ENABLE only, deliberately not svc_enable: svc_enable also STARTS the unit on a
 # live board, and starting this one performs the rename — exactly what the
 # deferred-by-default rule above forbids without SA02M_CANONICAL_IFACE_NOW=1.

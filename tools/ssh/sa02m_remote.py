@@ -30,12 +30,32 @@ except ImportError as exc:
     print("paramiko не установлен: pip install paramiko", file=sys.stderr)
     raise SystemExit(2) from exc
 
-DEFAULT_HOST = os.environ.get("SA02M_HOST", "192.168.1.136")
-DEFAULT_USER = os.environ.get("SA02M_USER", "root")
-DEFAULT_PASS = os.environ.get("SA02M_PASS", "cyntron")
+def _load_device_env() -> dict[str, str]:
+    """Load tools/sa02m-device.env (committed factory credentials)."""
+    env_path = Path(__file__).resolve().parents[1] / "sa02m-device.env"
+    override = os.environ.get("SA02M_DEVICE_ENV")
+    if override:
+        env_path = Path(override)
+    data: dict[str, str] = {}
+    if not env_path.is_file():
+        return data
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        data[key.strip()] = val.strip()
+    return data
+
+
+_DEVICE_ENV = _load_device_env()
+
+DEFAULT_HOST = os.environ.get("SA02M_HOST", _DEVICE_ENV.get("SA02M_HOST", "192.168.1.136"))
+DEFAULT_USER = os.environ.get("SA02M_USER", _DEVICE_ENV.get("SA02M_USER", "root"))
+DEFAULT_PASS = os.environ.get("SA02M_PASS", _DEVICE_ENV.get("SA02M_PASS", "cyntron"))
 DEFAULT_HOSTKEY = os.environ.get(
     "SA02M_HOSTKEY",
-    "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc",
+    _DEVICE_ENV.get("SA02M_HOSTKEY", "SHA256:TMkrSFsuRUe0F1caCEcTNUli9gb7KaQYsPC7FELohKc"),
 )
 FW_CACHE = "/var/lib/sa02m-flasher/firmware"
 EVENTS_LOG = "/var/log/sa02m-flasher/events.log"

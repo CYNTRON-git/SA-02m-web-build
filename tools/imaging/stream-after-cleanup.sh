@@ -56,10 +56,45 @@ EOF
 }
 
 prepare_firstboot_resize() {
-    log "firstrun resize: enable services (донор уже отключил armbian-resize после своего первого boot)"
+    # Only sa02m-rootfs-expand — dual-enable with armbian-resize floods udev for
+    # ~3 min (partprobe settle timeout), breaks ifupdown-pre, delays networking,
+    # and leaves PHY/ARP needing a cable re-plug on first boot after flash.
+    log "firstrun resize: enable sa02m-rootfs-expand; disable armbian-resize (no dual resize)"
     rm -f /var/lib/sa02m-rootfs-expand.done
-    systemctl enable armbian-resize-filesystem.service 2>/dev/null || true
+    systemctl stop armbian-resize-filesystem.service 2>/dev/null || true
+    systemctl disable armbian-resize-filesystem.service 2>/dev/null || true
+    systemctl mask armbian-resize-filesystem.service 2>/dev/null || true
     systemctl enable sa02m-rootfs-expand.service 2>/dev/null || true
+}
+
+wipe_cloud_enrollment() {
+    # Cloned images must not ship donor cloud identity (device_secret / frpc /
+    # enrolled=true) — otherwise every new board pretends to be the donor in
+    # cloud.cyntron.ru. Offline wipe only; cloud-side detach is operator task.
+    log "сброс cloud enrollment (agent.conf / device_secret / frpc)"
+    systemctl stop sa02m-cloud-frpc.service 2>/dev/null || true
+    systemctl stop sa02m-cloud-agent.service 2>/dev/null || true
+    rm -f /etc/sa02m-cloud/device_secret \
+          /etc/sa02m-cloud/frpc.toml \
+          /etc/sa02m-cloud/frpc.toml.bak* \
+          /etc/sa02m-cloud/pair_request \
+          /etc/sa02m-cloud/activation_token \
+          /run/sa02m-cloud-status.json
+    mkdir -p /etc/sa02m-cloud
+    chmod 750 /etc/sa02m-cloud
+    cat > /etc/sa02m-cloud/agent.conf <<'EOF'
+[cloud]
+api_url = https://cloud.cyntron.ru/api/v1
+server_host = cloud.cyntron.ru
+enrolled = false
+device_id =
+heartbeat_interval = 30
+
+[device]
+serial =
+web_port = 9999
+EOF
+    chmod 640 /etc/sa02m-cloud/agent.conf
 }
 
 prepare_clone_ids() {
@@ -68,6 +103,7 @@ prepare_clone_ids() {
     rm -f /var/lib/dbus/machine-id
     ln -sf /etc/machine-id /var/lib/dbus/machine-id
     install_regen_ssh_service
+    wipe_cloud_enrollment
     prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync
