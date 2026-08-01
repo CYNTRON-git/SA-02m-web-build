@@ -77,7 +77,7 @@ if [ "$MODE" = "root" ]; then
     printf '%s\n' "$ROOT_PASSWORD" >"$TMP_PASS"
     printf '%s\n' "$CMD" >"$TMP_CMD"
     chmod 600 "$TMP_PASS" "$TMP_CMD" 2>/dev/null || true
-    sudo -n "$HELPER" "$TMP_PASS" "$TMP_CMD" >"$TMP_OUT" 2>&1
+    sudo -n -u root "$HELPER" "$TMP_PASS" "$TMP_CMD" >"$TMP_OUT" 2>&1
 else
     timeout "$TIMEOUT_SEC" /bin/bash -lc "$CMD" >"$TMP_OUT" 2>&1
 fi

@@ -1658,16 +1658,23 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .system-command-actions {
-  margin: 8px 0;
+  margin: 12px 0;
   display: flex !important;
   flex-direction: row !important;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
+  width: 100%;
 }
 .system-manage-grid .system-command-actions .btn {
   width: auto;
   min-width: 120px;
+}
+.system-command-actions .btn:first-child {
+  margin-right: auto;
+}
+.system-command-actions .btn:last-child {
+  margin-left: auto;
 }
 .system-command-output {
   min-height: 180px;

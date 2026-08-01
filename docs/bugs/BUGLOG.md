@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-08-01 12:48] branch: feature/klogic — root-команда уходила как web/sudo и требовала TTY
+
+**Файл(ы):** `www/network_config/cgi-bin/cmd_exec.cgi`, `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** При попытке запуска root-команды пользователь видел `[mode web, exit 1]` и ошибку `sudo: a terminal is required to read the password`.
+**Причина:** Команда с префиксом `sudo ...` могла выполняться как обычная web-команда, а браузер мог держать старый `misc.js` из-за неизменённого URL. CGI также вызывал helper без явного `-u root`.
+**Исправление:** `sudo ...` в UI теперь маршрутизируется через root-helper и требует пароль root, CGI вызывает `sudo -n -u root /usr/local/sbin/sa02m-web-root-cmd.sh`, подсказочный текст и стартовый `web$` удалены, для `misc.js`/`main.css` добавлен cache-bust. На `.136` проверено: прямой helper от `www-data` возвращает `root`, CGI `mode=root` возвращает `root`, подсказка удалена.
+
 ## [2026-08-01 12:39] branch: feature/klogic — root-команда зависала на first-login prompt
 
 **Файл(ы):** `etc/sa02m-web-root-cmd.sh`, `www/network_config/cgi-bin/cmd_exec.cgi`

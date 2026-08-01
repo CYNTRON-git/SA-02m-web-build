@@ -219,9 +219,19 @@ function setCommandMode(mode) {
   const wrap = document.getElementById('cmd-root-pass-wrap');
   const prompt = document.getElementById('cmd-prompt');
   const passInput = document.getElementById('cmd-root-password');
-  if (wrap) wrap.hidden = cmdMode !== 'root';
   if (prompt) prompt.textContent = currentCommandPrompt().trim();
   if (cmdMode !== 'root' && passInput) passInput.value = '';
+  updateCommandPasswordVisibility();
+}
+
+function commandWantsRoot(cmd) {
+  return cmdMode === 'root' || /^\s*sudo\s+\S+/i.test(cmd || '');
+}
+
+function updateCommandPasswordVisibility() {
+  const wrap = document.getElementById('cmd-root-pass-wrap');
+  const input = document.getElementById('cmd-input');
+  if (wrap) wrap.hidden = !commandWantsRoot(input ? input.value : '');
 }
 
 function handleCommandBuiltin(cmd) {
@@ -253,19 +263,22 @@ function runCommandLine() {
     return;
   }
   if (handleCommandBuiltin(cmd)) return;
-  const mode = cmdMode;
+  const sudoPrefix = /^\s*sudo\s+/i.test(cmd);
+  const mode = sudoPrefix ? 'root' : cmdMode;
+  const execCmd = sudoPrefix ? cmd.replace(/^\s*sudo\s+/i, '') : cmd;
   const passInput = document.getElementById('cmd-root-password');
   const rootPassword = mode === 'root' && passInput ? passInput.value : '';
   if (mode === 'root' && !rootPassword) {
+    updateCommandPasswordVisibility();
     setCommandOutput('Введите пароль root.');
     return;
   }
-  const prompt = currentCommandPrompt();
+  const prompt = mode === 'root' ? 'root# ' : currentCommandPrompt();
   const started = new Date().toLocaleTimeString();
   setCommandOutput(prompt + cmd + '\n[' + started + '] выполнение…');
   fetch('cgi-bin/cmd_exec.cgi', {
     method: 'POST',
-    body: new URLSearchParams({ cmd, mode, root_password: rootPassword }),
+    body: new URLSearchParams({ cmd: execCmd, mode, root_password: rootPassword }),
     credentials: 'same-origin',
     cache: 'no-store'
   })
@@ -287,7 +300,8 @@ function clearCommandLine() {
   const passInput = document.getElementById('cmd-root-password');
   if (input) input.value = '';
   if (passInput) passInput.value = '';
-  setCommandOutput(currentCommandPrompt() + 'Введите команду и нажмите Enter.');
+  updateCommandPasswordVisibility();
+  setCommandOutput('');
 }
 
 function initCommandLine() {
@@ -305,13 +319,16 @@ function initCommandLine() {
       ev.preventDefault();
       cmdHistoryPos = Math.max(0, cmdHistoryPos - 1);
       input.value = cmdHistory[cmdHistoryPos] || '';
+      updateCommandPasswordVisibility();
     }
     if (ev.key === 'ArrowDown' && cmdHistory.length) {
       ev.preventDefault();
       cmdHistoryPos = Math.min(cmdHistory.length, cmdHistoryPos + 1);
       input.value = cmdHistory[cmdHistoryPos] || '';
+      updateCommandPasswordVisibility();
     }
   });
+  input.addEventListener('input', updateCommandPasswordVisibility);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
