@@ -5,6 +5,62 @@
 
 ---
 
+## [2026-08-01 11:54] branch: feature/klogic — web override пищалки не должен останавливать KLogic
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/cgi-bin/hw_set.cgi`, `etc/sa02m-beeper-override.sh`, `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `README.md`, `PCA9536-driver-for-MasterPLC/examples/common/ca02m_hw.h`, `PCA9536-driver-for-MasterPLC/examples/mplc_fb_ca02m/test_fb.cpp`, `PCA9536-driver-for-MasterPLC/examples/mplc_protocol_ca02m/simple_test_protocol.cpp`, `От разработчиков 4D/*CA_02m.cpp`, `New/API/examples/*/*.cpp`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** Временный stop/start `klogic.service` для управления пищалкой из web оказался недопустим: внутри KLogic непрерывно выполняются алгоритмы управления.
+**Причина:** Предыдущая реализация handoff снимала конфликт I2C, но делала это остановкой всей службы, а не временным приоритетом только bit2 PCA9536.
+**Исправление:** Stop/start из активного web-пути убран. `hw_set.cgi` для `beeper` пишет override-файл `/run/sa02m-hw-override/beeper.env` с TTL 7 секунд. KLogic-side драйверы PCA9536 читают override и применяют bit2 с приоритетом перед сравнением `last_mask`; для текущего live-бинаря без пересборки установлен worker `/usr/local/sbin/sa02m-beeper-override.sh`, который удерживает bit2 до истечения TTL, не останавливая KLogic. На `.136` проверено: `beeper=1` → `ok,override_sec=7`, KLogic всё время `active`, output `0xf3/0xfb`; `beeper=0` → `0xf7/0xff`; blue LED продолжает мигать, failed units = 0.
+
+## [2026-08-01 11:19] branch: feature/klogic — web prepare переводил bit3 PCA9536 в input, пропадал blue LED KLogic
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `README.md`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** После включения пищалки из web пропало мигание синего LED от KLogic.
+**Причина:** Web-драйвер PCA9536 считал выходами только каналы UI (`alarm_led`, `do`, `beeper`) и при `prepare` записал config `0x08`: bit3 (Blue LED KLogic) стал input. Также helper обнулял верхний nibble при расчёте config/output вместо штатного `0xF0/0xFF`.
+**Исправление:** На `.136` восстановлен config PCA9536 `0xF0`; добавлен `SA02M_I2C_EXTRA_OUTPUT_MASK=0x08`, bit3 теперь reserved output для KLogic. `lib_hw.sh` рассчитывает config как `0xF0 | mask` и сохраняет полный output byte при записи канала. Проверка: `cfg=240`, `def_out=255`, CGI beeper возвращает `i2c_busy`, samples output снова меняются `0xff/0xf7`, службы active, failed units = 0.
+
+## [2026-08-01 11:16] branch: feature/klogic — hw_set.cgi терял код `i2c_busy`
+
+**Файл(ы):** `www/network_config/cgi-bin/hw_set.cgi`
+**Тип:** Некорректное поведение
+**Описание:** После блокировки записи PCA9536 при активном KLogic web POST на пищалку возвращал общий `write_failed` вместо `i2c_busy`.
+**Причина:** `hw_set.cgi` разбирал `$?` не через сохранённый `rc`, из-за чего код возврата `sa02m_hw_i2c_write_channel` терялся перед `case`.
+**Исправление:** Код возврата сохраняется сразу после `sa02m_hw_i2c_write_channel`; `75/76` корректно мапятся в JSON `{"error":"i2c_busy"}`. На `.136` реальный POST `channel=beeper&value=1` вернул `i2c_busy`, регистр PCA9536 не изменился.
+
+## [2026-08-01 11:16] branch: feature/klogic — web не считал `klogic-sa02` владельцем PCA9536
+
+**Файл(ы):** `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `README.md`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** На боевой плате при включении пищалки через web KLogic терял управление PCA9536.
+**Причина:** На устройстве был `SA02M_I2C_RESPECT_OWNER=0`, а шаблон owner-процессов не включал фактическое имя процесса `/home/klogic/klogic-sa02`; web мог писать I2C-регистр расширителя поверх KLogic.
+**Исправление:** На `.136` включён `SA02M_I2C_RESPECT_OWNER=1`, в `SA02M_I2C_OWNER_PROCS` добавлен `klogic-sa02`; шаблон, installer-migration и README обновлены. Проверка: `OWNER_ACTIVE`, попытка записи beeper возвращает `75/i2c_busy`, службы active, `systemctl --failed` = 0.
+
+## [2026-07-31 23:47] branch: feature/klogic — тестовая плата без I2C: status/pre-start лезли в PCA9536
+
+**Файл(ы):** `etc/sa02m-pre-start.sh`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** На `.136` после возврата к исходному образу службы поднялись, cloud/resize исправлены, но `sa02m-pre-start` логировал `PCA9536 boot indication failed`, `i2c-2` показывал `mv64xxx: I2C bus locked`, пищалки нет. Пользователь уточнил, что сейчас это тестовая плата без I2C/PCA9536, но затем она будет установлена в рабочее устройство.
+**Причина:** Временное отключение `SA02M_HW_BACKEND=disabled` допустимо только для стендовой диагностики без I2C; оставлять его на плате перед установкой в боевую плату нельзя — это отключит DO/beeper/alarm LED в серийном продукте.
+**Исправление:** В `sa02m-pre-start.sh` добавлен безопасный skip I2C/PCA9536 **только если явно задан** `SA02M_HW_BACKEND=disabled`; для `.136` финально восстановлен продуктовый `SA02M_HW_BACKEND=i2c_expander`. Все ключевые службы active, `systemctl --failed` = 0. Дополнительно удалены мусорные `/etc/logrotate.d/sed*`, из-за которых `logrotate.service` был failed.
+
+## [2026-07-31 21:27] branch: feature/klogic — image patch не сохранял `threadirqs` в FAT boot.scr
+
+**Файл(ы):** `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/autorun.sh`, `D:\SA02m-images\usb-flash\boot.scr`
+**Тип:** Некорректное поведение / регрессия
+**Описание:** После прошивки и установки платы в рабочее устройство плата не доходила до нормального старта: службы не поднимались, стартовая пищалка не срабатывала.
+**Причина:** Текущий `sdcard.img` имел FAT `boot.scr` без `threadirqs`. Для рабочей платы с PCA9536 это возвращает старый I2C IRQ storm на `i2c-2` до `sa02m-pre-start`: udev/pre-start не получают CPU для unbind/recovery, поэтому нет boot indication и userspace не стартует штатно. Предыдущие first-boot патчи меняли только rootfs (p2) и не проверяли/восстанавливали FAT boot-раздел (p1).
+**Исправление:** `patch-firstboot-image.sh` теперь монтирует p1+p2, при необходимости чинит FAT через `fsck.vfat`, генерирует U-Boot legacy `boot.scr` из `etc/boot.cmd.sa02m` (fallback без `mkimage` через Python), проверяет наличие `threadirqs`, пишет его в FAT и `/usr/local/share/sa02m/boot.scr`. USB autorun после `dd` копирует `boot.scr` с флешки на FAT p1. `D:\SA02m-images\usb-flash\sdcard.img` и `boot.scr` перепатчены и проверены: `threadirqs=True`, expand без `systemctl stop` в исполняемом коде.
+
+## [2026-07-31 20:53] branch: feature/klogic — expand `systemctl stop` watchdogs отменяет их start на всю загрузку
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`
+**Тип:** Некорректное поведение / регрессия
+**Описание:** После прошивки «noblock-net» образа пользователь видел «нет линка / не загрузилось». На `.136` линк/IP фактически поднялись (~+10…35 с), boot ~61 с, но `net-watchdog` / userspace-watchdog / failure-monitor остались `inactive` на всю сессию — без авто-recovery при flap PHY.
+**Причина:** При `Before=net-watchdog…` expand вызывал `systemctl stop` этих юнитов → systemd **отменял** уже поставленный в очередь start на multi-user. Затем `enable` без `start` + долгий `systemctl mask/enable` в finish (~29 с после resize2fs).
+**Исправление:** Не вызывать `systemctl stop/enable/mask` в hot path; `Before=` достаточно, чтобы watchdogs не стартовали во время resize; mask armbian и снятие wants — файловыми symlink/rm; после выхода expand systemd сам стартует watchdogs. На `.136` watchdogs запущены вручную; скрипт задеплоен; образ перепатчить.
+
 ## [2026-07-31 20:38] branch: feature/klogic — expand Before=networking/basic → нет линка на first-boot
 
 **Файл(ы):** `etc/systemd/sa02m-rootfs-expand.service`, `etc/sa02m-rootfs-expand.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/firstboot-overlay/`

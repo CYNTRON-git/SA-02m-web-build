@@ -200,9 +200,14 @@ SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=1
 SA02M_I2C_TIMEOUT_SEC=1
 SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd klogic-sa02"
 SA02M_I2C_RESPECT_OWNER=1
+SA02M_BEEPER_WEB_OVERRIDE_SEC=7
+SA02M_BEEPER_OVERRIDE_FILE=/run/sa02m-hw-override/beeper.env
+SA02M_BEEPER_OVERRIDE_WORKER=/usr/local/sbin/sa02m-beeper-override.sh
 SA02M_I2C_ACTIVE_LOW_MASK=auto
+# bit3 = Blue LED for KLogic; web does not expose it but must keep it as output.
+SA02M_I2C_EXTRA_OUTPUT_MASK=0x08
 SA02M_I2C_BIT_DO=1
 SA02M_I2C_BIT_BEEPER=2
 SA02M_I2C_BIT_ALARM_LED=0
@@ -232,6 +237,22 @@ else
         sed -i 's/^\([[:space:]]*SA02M_HW_BACKEND=\)disabled\([[:space:]]*\)$/\1i2c_expander\2/' \
             /etc/sa02m_hw.conf
         log OK "sa02m_hw.conf: SA02M_HW_BACKEND disabled → i2c_expander (PCA9536)"
+    fi
+    if grep -qE '^SA02M_I2C_OWNER_PROCS=' /etc/sa02m_hw.conf \
+       && ! grep -qE '^SA02M_I2C_OWNER_PROCS=.*klogic-sa02' /etc/sa02m_hw.conf; then
+        cp -a /etc/sa02m_hw.conf "/etc/sa02m_hw.conf.bak.owner-procs.$(date +%s)" 2>/dev/null || true
+        sed -i 's/^\(SA02M_I2C_OWNER_PROCS="[^"]*\)"/\1 klogic-sa02"/' /etc/sa02m_hw.conf
+        log OK "sa02m_hw.conf: добавлен I2C owner process klogic-sa02"
+    fi
+    if ! grep -qE '^SA02M_I2C_EXTRA_OUTPUT_MASK=' /etc/sa02m_hw.conf; then
+        cp -a /etc/sa02m_hw.conf "/etc/sa02m_hw.conf.bak.extra-output.$(date +%s)" 2>/dev/null || true
+        sed -i '/^SA02M_I2C_ACTIVE_LOW_MASK=/a SA02M_I2C_EXTRA_OUTPUT_MASK=0x08' /etc/sa02m_hw.conf
+        log OK "sa02m_hw.conf: bit3 PCA9536 оставлен output для KLogic blue LED"
+    fi
+    if ! grep -qE '^SA02M_BEEPER_WEB_OVERRIDE_SEC=' /etc/sa02m_hw.conf; then
+        cp -a /etc/sa02m_hw.conf "/etc/sa02m_hw.conf.bak.beeper-override.$(date +%s)" 2>/dev/null || true
+        sed -i '/^SA02M_I2C_RESPECT_OWNER=/a SA02M_BEEPER_WEB_OVERRIDE_SEC=7\nSA02M_BEEPER_OVERRIDE_FILE=/run/sa02m-hw-override/beeper.env\nSA02M_BEEPER_OVERRIDE_WORKER=/usr/local/sbin/sa02m-beeper-override.sh' /etc/sa02m_hw.conf
+        log OK "sa02m_hw.conf: beeper web override TTL = 7s"
     fi
 fi
 
@@ -284,8 +305,13 @@ cat > /etc/tmpfiles.d/sa02m.conf <<'EOF'
 f /run/lock/sa02m-pca9536.lock 0666 root www-data -
 d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
+d /run/sa02m-hw-override 0775 www-data www-data -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
+
+if [ -f "$ETC_DIR/sa02m-beeper-override.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
+fi
 
 # ── /dev/i2c-* доступ для www-data (PCA9536 / hw_set.cgi без sudo) ───────
 # /dev/i2c-N создаётся ядром как root:i2c 0660. Без членства www-data в

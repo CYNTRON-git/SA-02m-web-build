@@ -97,17 +97,20 @@ chmod +x *.sh
 
 **Вариант C — buildroot / USB-host + `sdcard.img` (ручной autorun):**
 
-На флешке: `sdcard.img` (PiShrink `.img`, не `.xz`) + [`autorun.sh`](autorun.sh) (= [`autorun-fel.sh`](autorun-fel.sh)).
+На флешке: `sdcard.img` (PiShrink `.img`, не `.xz`) + `boot.scr` + [`autorun.sh`](autorun.sh) (= [`autorun-fel.sh`](autorun-fel.sh)).
 
 - BusyBox: **без** `status=progress`
 - сам монтирует `/dev/sda1` → `/mnt`, пишет `dd` в `/dev/mmcblk2`
-- до reboot маскирует watchdog’и на новом rootfs + `RuntimeWatchdogSec=8s`
+- после `dd` дополнительно пишет `boot.scr` на FAT p1 (с `threadirqs` для защиты
+  от I2C/PCA9536 IRQ storm на рабочей плате)
+- на новом rootfs включает только first-boot wiring: single resize, cloud wipe,
+  watchdog units без permanent mask
 
 С ПК (флешка вставлена в ПК):
 
 ```powershell
 Copy-Item tools\imaging\autorun.sh E:\autorun.sh   # буква флешки
-# рядом должен быть sdcard.img
+# рядом должны быть sdcard.img и boot.scr
 ```
 
 На плате (buildroot, COM, root/root) — autorun **не** стартует сам:
@@ -117,7 +120,10 @@ mount /dev/sda1 /mnt
 sh /mnt/autorun.sh
 ```
 
-> ⚠ **Не** заливать только `.img` без fix first-boot resize в образе. При снятии образа `stream-after-cleanup.sh` включает **только** `sa02m-rootfs-expand` и **маскирует** `armbian-resize-filesystem` (dual resize ломает first-boot сеть). Старые образы (до fix) после ImageUSB дают rootfs ~1.8G — нужен пересбор или ручной resize.
+> ⚠ **Не** заливать только `.img` без first-boot patch. Патч обязан проверить
+> rootfs resize wiring **и FAT `boot.scr` с `threadirqs`**. Без `threadirqs`
+> рабочая плата с PCA9536 может зависнуть на I2C IRQ storm до `sa02m-pre-start`
+> (нет пищалки, службы не стартуют).
 
 ### 4. Залить на новую плату
 

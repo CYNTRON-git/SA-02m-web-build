@@ -15,13 +15,23 @@
   Раньше `resize2fs` блокировал линк/SSH на 2–6 мин (выглядело как «плата не
   загрузилась»).
 - **Убран deadlock expand ↔ net-watchdog.** В `finish_firstboot` больше нет
-  `systemctl start/restart` единиц, от которых expand стоит `Before=`; disable
-  — через `--no-block`.
+  `systemctl start/restart` единиц, от которых expand стоит `Before=`.
+- **Нельзя `systemctl stop` watchdogs из expand.** При `Before=net-watchdog…`
+  stop отменяет уже поставленный в очередь start на всю загрузку — после
+  first-boot `net-watchdog` оставался мёртвым (нет recovery линка). Hot path
+  только resize + файловый mask armbian / DONE; watchdogs стартуют сами по
+  ordering.
+- **`boot.scr` снова фиксируется в образе.** Offline patch пересобирает FAT
+  `boot.scr` из `etc/boot.cmd.sa02m` и кладёт canonical copy в
+  `/usr/local/share/sa02m/boot.scr`; USB autorun дополнительно копирует
+  `boot.scr` с флешки после `dd`. Это сохраняет `threadirqs`, без которого на
+  рабочей плате с PCA9536 возможен I2C IRQ storm до `sa02m-pre-start`: нет
+  пищалки, службы не доходят до запуска.
 - **Нет dual-resize.** При снятии/патче образа включается только
   `sa02m-rootfs-expand`, `armbian-resize-filesystem` маскируется (иначе шторм
   udev и срыв `ifupdown-pre`).
-- **Watchdogs не маскируются навсегда** в expand / installer — только `stop`
-  на время resize; `systemctl mask` больше не уничтожает unit-файлы под `/etc`.
+- **Watchdogs не маскируются и не останавливаются** в expand / installer;
+  `systemctl mask` больше не уничтожает unit-файлы под `/etc`.
 - **Cold-boot PHY:** `sa02m-eth-coldboot` для eth0/eth1; `fix-eth.sh` делает
   link-cycle при `operstate=down|dormant|unknown` (не только `down`).
 - **Инструменты:** `tools/imaging/patch-firstboot-image.sh`, `autorun-fel.sh` /
@@ -35,6 +45,28 @@
   `stream-after-cleanup`, offline-патче и autorun; скрипт
   `tools/imaging/reset-cloud-enrollment.sh`.
 
+### Hardware
+
+- **Диагностический режим без I2C/PCA9536:** только при явно заданном
+  `SA02M_HW_BACKEND=disabled` `sa02m-pre-start` не пытается recovery/boot
+  indication через `i2c-2`. Для серийной платы и платы перед установкой в
+  рабочее устройство остаётся продуктовый backend `i2c_expander`.
+- **Web override пищалки без остановки KLogic.** При web-записи `beeper`
+  создаётся `/run/sa02m-hw-override/beeper.env` с TTL
+  `SA02M_BEEPER_WEB_OVERRIDE_SEC=7`. KLogic-side драйвер PCA9536 читает этот
+  override и применяет bit2 с приоритетом, не меняя остальные биты. Для текущего
+  live-бинаря без пересборки установлен worker
+  `/usr/local/sbin/sa02m-beeper-override.sh`: он не останавливает KLogic и
+  удерживает bit2 до истечения TTL.
+- **Stop/start KLogic для web-пищалки убран.** Алгоритмы KLogic продолжают
+  выполняться: на `.136` при `beeper=1` KLogic остаётся `active`, output
+  `0xf3/0xfb`; при `beeper=0` output `0xf7/0xff`; failed units = 0.
+- **Синий LED KLogic сохранён как reserved output.** Bit3 PCA9536 не управляется
+  web UI, но остаётся output через `SA02M_I2C_EXTRA_OUTPUT_MASK=0x08`; helper
+  больше не пишет config `0x08` и не обнуляет верхний nibble output/config.
+  На `.136` восстановлен config `0xF0`, мигание bit3 снова видно по samples
+  `0xff/0xf7`.
+
 ### Интерфейс
 
 - **Виджет служб:** установленный KLogic показывается отдельной строкой
@@ -42,7 +74,8 @@
 
 ### Документация / агенты
 
-- BUGLOG: first-boot сеть, expand deadlock, Before=networking, cloud clone.
+- BUGLOG: first-boot сеть, expand deadlock, Before=networking, cloud clone,
+  потерянный `threadirqs`.
 - `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`, `tools/ssh/sa02m_remote.py` —
   уточнения batch-доступа к плате.
 

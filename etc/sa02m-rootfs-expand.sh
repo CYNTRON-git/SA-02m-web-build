@@ -1,7 +1,8 @@
 #!/bin/bash
 # SA-02m: expand root partition/filesystem after PiShrink clone (first boot).
-# Runs early after local-fs; must NOT block networking (see unit Before=).
-# Watchdogs that reboot on load are ordered After this unit.
+# Runs after local-fs; must NOT block networking (see unit Before=).
+# Watchdogs ordered After this unit — do NOT systemctl stop them (that cancels
+# their queued start for the whole boot).
 set -euo pipefail
 
 LOG=/var/log/sa02m-rootfs-expand.log
@@ -21,42 +22,33 @@ need_expand() {
     [ "$part_bytes" -lt $((disk_bytes * 85 / 100)) ]
 }
 
-# Prefer stop-only: `systemctl mask` replaces /etc unit files with /dev/null and
-# permanently destroys units that live only under /etc/systemd/system/.
-stop_watchdogs() {
-    for svc in $WATCHDOGS; do
-        systemctl stop "$svc" 2>/dev/null || true
-    done
-}
-
-restore_watchdogs() {
-    # Enable only — never systemctl start/restart here (deadlock if Before= those units).
+# File-level only — avoid slow/racy `systemctl mask|enable|stop` during boot.
+unmask_watchdogs_files() {
+    local svc
     for svc in $WATCHDOGS; do
         if [ -L "/etc/systemd/system/${svc}.service" ] \
            && [ "$(readlink "/etc/systemd/system/${svc}.service" 2>/dev/null)" = "/dev/null" ]; then
             rm -f "/etc/systemd/system/${svc}.service"
+            log "removed stale mask: ${svc}.service"
         fi
-        systemctl unmask "$svc" 2>/dev/null || true
-        systemctl enable "$svc" 2>/dev/null || true
     done
 }
 
-# Avoid dual-resize udev storms (armbian-resize || sa02m-rootfs-expand in parallel).
-disable_armbian_resize() {
-    systemctl stop armbian-resize-filesystem.service 2>/dev/null || true
-    systemctl disable armbian-resize-filesystem.service 2>/dev/null || true
-    systemctl mask armbian-resize-filesystem.service 2>/dev/null || true
+# Mask armbian dual-resize without calling systemctl (seconds of D-Bus).
+mask_armbian_resize_files() {
+    mkdir -p /etc/systemd/system
+    ln -sfn /dev/null /etc/systemd/system/armbian-resize-filesystem.service
+    rm -f /etc/systemd/system/basic.target.wants/armbian-resize-filesystem.service \
+          /etc/systemd/system/multi-user.target.wants/armbian-resize-filesystem.service \
+          /lib/systemd/system/basic.target.wants/armbian-resize-filesystem.service \
+          2>/dev/null || true
 }
 
 expand_partition() {
     local capacity lastsector
-    # partprobe + settle ДО чтения — иначе на первом boot таблица разделов
-    # ещё не полностью прочитана и `parted print` возвращает пустой capacity
-    # (лог: "expand /dev/mmcblk2 p2 -> end -2048s (disk s)").
     partprobe "$ROOT_DISK" 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
 
-    # `parted -ms ... print unit s` — обязателен `print`.
     capacity=$(parted -ms "$ROOT_DISK" unit s print 2>/dev/null \
         | awk -F: '/^\/dev\//{gsub(/s$/,"",$2); print $2; exit}')
     if [ -z "$capacity" ] || [ "$capacity" = "0" ]; then
@@ -66,7 +58,6 @@ expand_partition() {
     lastsector=$((capacity - 2048))
     log "expand $ROOT_DISK p${PART_NUM} -> end ${lastsector}s (disk ${capacity}s)"
 
-    # growpart needs sfdisk (not in minbase); parted resizepart is autonomous.
     parted -s "$ROOT_DISK" unit s resizepart "$PART_NUM" "$lastsector"
     partprobe "$ROOT_DISK" 2>/dev/null || true
     udevadm settle --timeout=5 2>/dev/null || true
@@ -74,15 +65,18 @@ expand_partition() {
 
 finish_firstboot() {
     touch "$DONE"
-    disable_armbian_resize
-    restore_watchdogs
-    # ConditionPathExists=!DONE skips next boots; disable must not block oneshot.
-    systemctl --no-block disable sa02m-rootfs-expand.service 2>/dev/null || true
+    mask_armbian_resize_files
+    unmask_watchdogs_files
+    # DONE ConditionPathExists skips next boot; drop wants symlink (no systemctl).
+    rm -f /etc/systemd/system/multi-user.target.wants/sa02m-rootfs-expand.service \
+          /etc/systemd/system/basic.target.wants/sa02m-rootfs-expand.service \
+          2>/dev/null || true
+    log "firstboot finish: DONE set; watchdogs will start via Before= ordering"
 }
 
 case "${1:-start}" in
     start)
-        mkdir -p "$(dirname "$LOG")"
+        mkdir -p "$(dirname "$LOG")" "$(dirname "$DONE")"
         [ -f "$DONE" ] && exit 0
         [ -b "$ROOT_PART" ] && [ -b "$ROOT_DISK" ] || exit 0
         if ! need_expand; then
@@ -92,8 +86,9 @@ case "${1:-start}" in
         fi
 
         log "start: root partition smaller than eMMC (networking not blocked)"
-        disable_armbian_resize
-        stop_watchdogs
+        mask_armbian_resize_files
+        # Do NOT systemctl stop watchdogs — with Before= that cancels their
+        # queued start for the entire boot (net-watchdog stays dead).
         expand_partition
         log "resize2fs $ROOT_PART"
         resize2fs "$ROOT_PART" | tee -a "$LOG"

@@ -123,6 +123,18 @@ apply_firstboot_wiring() {
     chmod 640 "$root/etc/sa02m-cloud/agent.conf"
 }
 
+apply_boot_wiring() {
+    local boot_root=$1
+    local src="${MEDIA}/boot.scr"
+    if [ ! -f "$src" ]; then
+        log "no boot.scr on media (leaving image FAT boot as-is)"
+        return 0
+    fi
+    cp -f "$src" "$boot_root/boot.scr"
+    chmod 644 "$boot_root/boot.scr" 2>/dev/null || true
+    log "boot.scr updated from media"
+}
+
 log "=== SA-02m autorun flash start ==="
 rmmod -f g_mass_storage 2>/dev/null || true
 
@@ -144,6 +156,15 @@ mkdir -p "$MNT"
 partx -u "$TARGET" 2>/dev/null || true
 blockdev --rereadpt "$TARGET" 2>/dev/null || true
 sleep 1
+
+BOOTPART="${TARGET}p1"
+if mount "$BOOTPART" "$MNT" 2>/dev/null; then
+    apply_boot_wiring "$MNT"
+    sync
+    umount "$MNT" 2>/dev/null || true
+else
+    log "WARN: could not mount $BOOTPART for boot.scr wiring"
+fi
 
 ROOTPART="${TARGET}p2"
 if mount "$ROOTPART" "$MNT" 2>/dev/null; then

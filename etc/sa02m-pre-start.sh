@@ -20,6 +20,16 @@ I2C2_SCL_LINE=256
 I2C2_SDA_LINE=257
 PCA9536_OFF=0x0f
 
+sa02m_hw_backend_disabled() {
+  local backend=""
+  if [ -f /etc/sa02m_hw.conf ]; then
+    # shellcheck source=/dev/null
+    . /etc/sa02m_hw.conf 2>/dev/null || true
+    backend="${SA02M_HW_BACKEND:-}"
+  fi
+  [ "$backend" = "disabled" ]
+}
+
 sa02m_pca9536_boot_indication() {
   local i
   [ -c /dev/i2c-2 ] || return 1
@@ -83,7 +93,9 @@ sa02m_i2c2_recover_and_init() {
   sa02m_pca9536_boot_indication || logp "i2c-2: PCA9536 boot indication failed"
 }
 
-if [ -e "/sys/bus/platform/devices/${I2C2_PDEV}" ]; then
+if sa02m_hw_backend_disabled; then
+  logp "i2c-2: skipped (SA02M_HW_BACKEND=disabled)"
+elif [ -e "/sys/bus/platform/devices/${I2C2_PDEV}" ]; then
   sa02m_i2c2_recover_and_init || true
 fi
 
