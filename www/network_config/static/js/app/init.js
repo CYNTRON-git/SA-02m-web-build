@@ -59,7 +59,6 @@ document.addEventListener('DOMContentLoaded', () => {
   window.loadSshDebug = loadSshDebug;
   window.runCommandLine = runCommandLine;
   window.clearCommandLine = clearCommandLine;
-  window.updateCommandAuthMode = updateCommandAuthMode;
   window.syncTimeFromPC = syncTimeFromPC;
   window.exportInstallLog = exportInstallLog;
   window.toggleStorageAutoFormat = toggleStorageAutoFormat;

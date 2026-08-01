@@ -310,6 +310,7 @@
     'Командная строка': 'Command Line',
     'Команды выполняются от пользователя web-интерфейса. Для root-действий используйте доступные sudo-команды.': 'Commands run as the web interface user. For root actions, use available sudo commands.',
     'По умолчанию команды выполняются от пользователя web-интерфейса. Для полного доступа выберите root и введите пароль.': 'By default, commands run as the web interface user. For full access, select root and enter the password.',
+    'По умолчанию команды выполняются от пользователя web-интерфейса. Для root-доступа введите su root, для возврата — exit.': 'By default, commands run as the web interface user. Type su root for root access, and exit to return.',
     'Пользователь': 'User',
     'Например: systemctl is-active mplc4': 'Example: systemctl is-active mplc4',
     'Пароль root': 'Root password',
