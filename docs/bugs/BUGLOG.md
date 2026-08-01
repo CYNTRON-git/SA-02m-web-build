@@ -5,6 +5,24 @@
 
 ---
 
+## [2026-08-01 20:01] branch: feature/klogic — кнопка сканирования RS-485 оставалась disabled
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `/var/www/network_config/static/js/flasher.js`, `/var/www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** После завершения сканирования RS-485 с найденными устройствами web UI показывал итог, но кнопка «Сканировать» оставалась неактивной; «Отмена» не помогала, потому что активной scan-задачи уже не было.
+**Причина:** Быстрый путь завершения `markPortIdleAfterJob()` снимал `port.active_job`, но не пересчитывал `state.flasherGloballyBusy`; `syncActionButtons()` продолжал считать flasher занятым.
+**Исправление:** После локального освобождения порта вызывается `updateGlobalBusyFromPorts()`, затем штатный `updatePortHint()`/`syncActionButtons()` возвращает кнопки в idle-состояние; для `flasher.js` обновлён cache-bust в `index.html`.
+
+---
+
+## [2026-08-01 20:07] branch: feature/klogic — после скана «Сканировать» оставалась disabled
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** После завершения скана RS-485 кнопка «Сканировать» оставалась disabled (тот же класс бага, что в hardpi: `flasherGloballyBusy` / busy UI не сбрасывался).
+**Причина:** В `onEnd` скана `setScanButtons()` вызывался до `markPortIdleAfterJob`/`loadPorts`, а после очистки `active_job` / `flasherGloballyBusy` кнопки больше не пересчитывались. Также `attachToActiveJobs` мог оставить sticky `status.busy`.
+**Исправление:** Добавлен `finalizeScanEnd`: сначала сброс job/busy, затем `updateGlobalBusyFromPorts()` + `setScanButtons()`. То же для flash `onEnd` и fallback в `attachToActiveJobs`. Cache-bust `flasher.js?v=1.0.5.63-scanfix2`.
+
 ## [2026-08-01 13:04] branch: feature/klogic — пароль root и sudo login в web CLI
 
 **Файл(ы):** `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
