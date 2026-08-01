@@ -1600,26 +1600,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin: 0 0 8px;
 }
 .system-command-auth {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 8px;
-}
-.system-command-prompt {
-  min-width: 72px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  padding: 0 10px;
-  color: var(--green);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  font-weight: 700;
+  margin: 0 0 8px;
 }
 .system-command-auth .field {
   margin: 0;
@@ -1657,23 +1638,26 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
-.system-command-actions {
-  margin: 12px 0;
+.system-manage-command-panel .system-command-actions {
+  margin: 12px 0 !important;
+  padding-top: 0;
   display: flex !important;
   flex-direction: row !important;
+  flex-wrap: nowrap;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
   width: 100%;
 }
-.system-manage-grid .system-command-actions .btn {
+.system-manage-grid .system-manage-command-panel .system-command-actions .btn {
   width: auto;
   min-width: 120px;
+  flex: 0 0 auto;
 }
-.system-command-actions .btn:first-child {
+.system-manage-command-panel .system-command-actions .btn:first-child {
   margin-right: auto;
 }
-.system-command-actions .btn:last-child {
+.system-manage-command-panel .system-command-actions .btn:last-child {
   margin-left: auto;
 }
 .system-command-output {
@@ -1684,13 +1668,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
 }
 @media (max-width: 700px) {
-  .system-command-auth {
-    grid-template-columns: 1fr;
-  }
-  .system-command-prompt {
-    justify-content: flex-start;
-  }
-  .system-manage-grid .system-command-actions .btn {
+  .system-manage-grid .system-manage-command-panel .system-command-actions .btn {
     flex: 1 1 0;
     min-width: 0;
   }

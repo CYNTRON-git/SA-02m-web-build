@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.63">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.63&r=cmdfix1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.63&r=cmdfix5">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -651,15 +651,14 @@
 
             <div class="system-manage-tile system-manage-command-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
-              <div class="system-command-auth">
-                <div class="system-command-prompt" id="cmd-prompt">web$</div>
-                <label class="field system-command-root-pass" id="cmd-root-pass-wrap" hidden>
+              <div class="system-command-auth" id="cmd-root-pass-wrap" hidden>
+                <label class="field system-command-root-pass">
                   <span>Пароль root</span>
                   <input id="cmd-root-password" type="password" autocomplete="current-password" placeholder="Пароль root">
                 </label>
               </div>
               <textarea id="cmd-input" class="system-command-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Например: systemctl is-active mplc4"></textarea>
-              <div class="btn-group system-manage-log-actions system-command-actions">
+              <div class="btn-group system-command-actions">
                 <button class="btn btn-sm" type="button" onclick="clearCommandLine()">
                   Очистить
                 </button>
@@ -1064,7 +1063,7 @@
 <script src="static/js/app/rs485.js?v=1.0.5.63"></script>
 <script src="static/js/app/forms.js?v=1.0.5.63"></script>
 <script src="static/js/app/services.js?v=1.0.5.63"></script>
-<script src="static/js/app/misc.js?v=1.0.5.63&r=cmdfix1"></script>
+<script src="static/js/app/misc.js?v=1.0.5.63&r=cmdfix5"></script>
 <script src="static/js/app/init.js?v=1.0.5.63"></script>
 <script src="static/js/app/nav.js?v=1.0.5.63"></script>
 <script src="static/js/flasher.js?v=1.0.5.63"></script>

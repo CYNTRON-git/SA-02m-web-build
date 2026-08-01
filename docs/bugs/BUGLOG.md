@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-08-01 13:04] branch: feature/klogic — пароль root и sudo login в web CLI
+
+**Файл(ы):** `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** После `su root` введённый пароль выполнялся как команда; `sudo -i` давал `bash -c: option requires an argument`; `sudo root` давал `root: command not found`. Также оставался бейдж `web$`, а верхний отступ кнопок сбивался чужим CSS.
+**Причина:** Не было состояния ожидания пароля; префикс `sudo` срезался до bare `-i` / `root`; `.system-manage-log-actions { margin: 0 0 12px }` перебивал отступ кнопок.
+**Исправление:** Добавлен `cmdAwaitPassword` (пароль из поля пароля или из поля команды), пароль сессии root до `exit`, автоочистка поля команды после запуска. `sudo root` / `sudo -i` / `sudo -s` обрабатываются как вход в root. Бейдж `web$` удалён; отступ кнопок `margin: 12px 0 !important`.
+
 ## [2026-08-01 12:48] branch: feature/klogic — root-команда уходила как web/sudo и требовала TTY
 
 **Файл(ы):** `www/network_config/cgi-bin/cmd_exec.cgi`, `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
