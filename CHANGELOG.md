@@ -61,6 +61,10 @@
 - **Stop/start KLogic для web-пищалки убран.** Алгоритмы KLogic продолжают
   выполняться: на `.136` при `beeper=1` KLogic остаётся `active`, output
   `0xf3/0xfb`; при `beeper=0` output `0xf7/0xff`; failed units = 0.
+- **MPLC4 корректно считается владельцем PCA9536.** Owner detection теперь
+  учитывает active units из `SA02M_I2C_OWNER_UNITS`, а не только имена процессов:
+  на `.136` после `klogic=inactive` / `mplc4=active` web beeper идёт через
+  override и не пишет PCA9536 напрямую.
 - **Синий LED KLogic сохранён как reserved output.** Bit3 PCA9536 не управляется
   web UI, но остаётся output через `SA02M_I2C_EXTRA_OUTPUT_MASK=0x08`; helper
   больше не пишет config `0x08` и не обнуляет верхний nibble output/config.
