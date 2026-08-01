@@ -548,9 +548,13 @@ SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=0.4
 SA02M_I2C_TIMEOUT_SEC=1
 SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd klogic-sa02"
 SA02M_I2C_RESPECT_OWNER=1
+SA02M_BEEPER_WEB_OVERRIDE_SEC=7
+SA02M_BEEPER_OVERRIDE_FILE=/run/sa02m-hw-override/beeper.env
+SA02M_BEEPER_OVERRIDE_WORKER=/usr/local/sbin/sa02m-beeper-override.sh
 SA02M_I2C_ACTIVE_LOW_MASK=auto
+SA02M_I2C_EXTRA_OUTPUT_MASK=0x08
 SA02M_I2C_BIT_DO=1
 SA02M_I2C_BIT_BEEPER=2
 SA02M_I2C_BIT_ALARM_LED=0
@@ -580,7 +584,11 @@ channel=do&value=1
 
 Ответ: `{"ok": true, "channel": "do", "value": 1}`
 
-Если шина занята другой службой, API возвращает `{"ok":false,"error":"i2c_busy"}` вместо зависания CGI.
+Если KLogic/MPLC владеет PCA9536, `beeper` управляется через временный web override
+на 7 секунд: web пишет `/run/sa02m-hw-override/beeper.env`, а KLogic-side драйвер
+применяет bit2 с приоритетом до истечения TTL. Для текущих бинарей без поддержки
+override установлен worker `/usr/local/sbin/sa02m-beeper-override.sh`; он не
+останавливает KLogic и сохраняет остальные биты PCA9536.
 
 ---
 
@@ -1678,9 +1686,13 @@ SA02M_I2C_LOCK_FILE=/run/lock/sa02m-pca9536.lock
 SA02M_I2C_LOCK_WAIT_SEC=0.4
 SA02M_I2C_TIMEOUT_SEC=1
 SA02M_I2C_OWNER_UNITS="mplc.service mplc4.service klogic.service klogicd.service"
-SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd"
+SA02M_I2C_OWNER_PROCS="mplc mplc4 klogic klogicd klogic-sa02"
 SA02M_I2C_RESPECT_OWNER=1
+SA02M_BEEPER_WEB_OVERRIDE_SEC=7
+SA02M_BEEPER_OVERRIDE_FILE=/run/sa02m-hw-override/beeper.env
+SA02M_BEEPER_OVERRIDE_WORKER=/usr/local/sbin/sa02m-beeper-override.sh
 SA02M_I2C_ACTIVE_LOW_MASK=auto
+SA02M_I2C_EXTRA_OUTPUT_MASK=0x08
 SA02M_I2C_BIT_DO=1
 SA02M_I2C_BIT_BEEPER=2
 SA02M_I2C_BIT_ALARM_LED=0
