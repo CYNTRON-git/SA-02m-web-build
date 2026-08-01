@@ -649,6 +649,23 @@
               </div>
             </div>
 
+            <div class="system-manage-tile system-manage-command-panel dash-span-top4">
+              <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
+              <p class="field-hint system-command-hint">Команды выполняются от пользователя web-интерфейса. Для root-действий используйте доступные sudo-команды.</p>
+              <textarea id="cmd-input" class="system-command-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Например: systemctl is-active mplc4"></textarea>
+              <div class="btn-group system-manage-log-actions system-command-actions">
+                <button class="btn btn-sm btn-primary" type="button" onclick="runCommandLine()">
+                  Выполнить
+                </button>
+                <button class="btn btn-sm" type="button" onclick="clearCommandLine()">
+                  Очистить
+                </button>
+              </div>
+              <div class="system-manage-log-output">
+                <pre class="log-box system-command-output" id="cmd-output">Введите команду и нажмите «Выполнить» или Ctrl+Enter.</pre>
+              </div>
+            </div>
+
             <div class="system-manage-tile system-manage-log-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
               <div class="btn-group system-manage-log-actions">
