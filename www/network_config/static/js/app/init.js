@@ -35,6 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initValidation();
   initWebCredsForm();
   initThemeToggle();
+  initCommandLine();
   handleUrlStatus();
   hydratePriorityWarmup();
   bindUsbPowerResetButton();
@@ -56,6 +57,8 @@ document.addEventListener('DOMContentLoaded', () => {
   window.doLogout  = doLogout;
   window.loadLog   = loadLog;
   window.loadSshDebug = loadSshDebug;
+  window.runCommandLine = runCommandLine;
+  window.clearCommandLine = clearCommandLine;
   window.syncTimeFromPC = syncTimeFromPC;
   window.exportInstallLog = exportInstallLog;
   window.toggleStorageAutoFormat = toggleStorageAutoFormat;

@@ -1592,6 +1592,43 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   text-align: left;
 }
 
+/* ── Командная строка ──────────────────────────────────────────────────── */
+.system-manage-command-panel {
+  gap: 10px;
+}
+.system-command-hint {
+  margin: 0 0 8px;
+}
+.system-command-input {
+  width: 100%;
+  min-height: 76px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: .84rem;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.system-command-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.system-command-actions {
+  margin: 8px 0;
+}
+.system-command-output {
+  min-height: 180px;
+  max-height: 360px;
+  white-space: pre-wrap;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
 /* ── Действия ───────────────────────────────────────────────────────────── */
 .system-manage-actions-card .system-manage-actions-main {
   gap: 14px;

@@ -177,6 +177,97 @@ function exportInstallLog() {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   COMMAND LINE
+   ══════════════════════════════════════════════════════════════════════════ */
+const CMD_HISTORY_KEY = 'sa02m_cmd_history';
+let cmdHistory = [];
+let cmdHistoryPos = -1;
+
+function loadCommandHistory() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(CMD_HISTORY_KEY) || '[]');
+    cmdHistory = Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string').slice(-30) : [];
+  } catch (e) {
+    cmdHistory = [];
+  }
+  cmdHistoryPos = cmdHistory.length;
+}
+
+function saveCommandHistory(cmd) {
+  if (!cmd) return;
+  cmdHistory = cmdHistory.filter(x => x !== cmd);
+  cmdHistory.push(cmd);
+  cmdHistory = cmdHistory.slice(-30);
+  cmdHistoryPos = cmdHistory.length;
+  try { sessionStorage.setItem(CMD_HISTORY_KEY, JSON.stringify(cmdHistory)); } catch (e) {}
+}
+
+function setCommandOutput(text) {
+  const out = document.getElementById('cmd-output');
+  if (!out) return;
+  out.textContent = text;
+  out.scrollTop = out.scrollHeight;
+}
+
+function runCommandLine() {
+  const input = document.getElementById('cmd-input');
+  if (!input) return;
+  const cmd = input.value.trim();
+  if (!cmd) {
+    setCommandOutput('Введите команду.');
+    return;
+  }
+  const started = new Date().toLocaleTimeString();
+  setCommandOutput('$ ' + cmd + '\n[' + started + '] выполнение…');
+  fetch('cgi-bin/cmd_exec.cgi', {
+    method: 'POST',
+    body: new URLSearchParams({ cmd }),
+    credentials: 'same-origin',
+    cache: 'no-store'
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (!j || !j.ok) {
+        setCommandOutput('$ ' + cmd + '\nОшибка: ' + ((j && j.error) || 'server_error'));
+        return;
+      }
+      saveCommandHistory(cmd);
+      const tail = j.truncated ? '\n[output truncated to last 32768 bytes]' : '';
+      setCommandOutput('$ ' + cmd + '\n[exit ' + j.rc + ']\n' + (j.output || '') + tail);
+    })
+    .catch(err => setCommandOutput('$ ' + cmd + '\nОшибка запроса: ' + err.message));
+}
+
+function clearCommandLine() {
+  const input = document.getElementById('cmd-input');
+  if (input) input.value = '';
+  setCommandOutput('Введите команду и нажмите «Выполнить» или Ctrl+Enter.');
+}
+
+function initCommandLine() {
+  loadCommandHistory();
+  const input = document.getElementById('cmd-input');
+  if (!input) return;
+  input.addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+      ev.preventDefault();
+      runCommandLine();
+      return;
+    }
+    if (ev.key === 'ArrowUp' && cmdHistory.length) {
+      ev.preventDefault();
+      cmdHistoryPos = Math.max(0, cmdHistoryPos - 1);
+      input.value = cmdHistory[cmdHistoryPos] || '';
+    }
+    if (ev.key === 'ArrowDown' && cmdHistory.length) {
+      ev.preventDefault();
+      cmdHistoryPos = Math.min(cmdHistory.length, cmdHistoryPos + 1);
+      input.value = cmdHistory[cmdHistoryPos] || '';
+    }
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
    WEB CREDENTIALS
    ══════════════════════════════════════════════════════════════════════════ */
 function initWebCredsForm() {
