@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.63">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.63&r=ai2">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.63&r=cmdfix1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -651,7 +651,6 @@
 
             <div class="system-manage-tile system-manage-command-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
-              <p class="field-hint system-command-hint">По умолчанию команды выполняются от пользователя web-интерфейса. Для root-доступа введите <code>su root</code>, для возврата — <code>exit</code>.</p>
               <div class="system-command-auth">
                 <div class="system-command-prompt" id="cmd-prompt">web$</div>
                 <label class="field system-command-root-pass" id="cmd-root-pass-wrap" hidden>
@@ -669,7 +668,7 @@
                 </button>
               </div>
               <div class="system-manage-log-output">
-                <pre class="log-box system-command-output" id="cmd-output">web$ Введите команду и нажмите Enter.</pre>
+                <pre class="log-box system-command-output" id="cmd-output"></pre>
               </div>
             </div>
 
@@ -1065,7 +1064,7 @@
 <script src="static/js/app/rs485.js?v=1.0.5.63"></script>
 <script src="static/js/app/forms.js?v=1.0.5.63"></script>
 <script src="static/js/app/services.js?v=1.0.5.63"></script>
-<script src="static/js/app/misc.js?v=1.0.5.63"></script>
+<script src="static/js/app/misc.js?v=1.0.5.63&r=cmdfix1"></script>
 <script src="static/js/app/init.js?v=1.0.5.63"></script>
 <script src="static/js/app/nav.js?v=1.0.5.63"></script>
 <script src="static/js/flasher.js?v=1.0.5.63"></script>
