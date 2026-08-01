@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-08-01 12:28] branch: feature/klogic — owner-detection не видела активный MPLC4
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** После отключения KLogic и запуска `mplc4.service` web мог не считать PCA9536 занятым, потому что реальные процессы MPLC называются `mplc_daemon`, `mplc_monitor`, `Main`, а не `mplc`/`mplc4`.
+**Причина:** `sa02m_hw_i2c_owner_active()` проверяла только `pgrep -x` по `SA02M_I2C_OWNER_PROCS`; список unit-ов `SA02M_I2C_OWNER_UNITS` использовался в старом stop/start handoff, но не в read-only owner detection.
+**Исправление:** Owner detection теперь сначала проверяет `systemctl is-active --quiet` для `SA02M_I2C_OWNER_UNITS`, затем fallback по процессам. На `.136` проверено: `klogic=inactive`, `mplc4=active`, `OWNER_ACTIVE`, web `beeper=1/0` работает через override, failed units = 0.
+
 ## [2026-08-01 11:54] branch: feature/klogic — web override пищалки не должен останавливать KLogic
 
 **Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/cgi-bin/hw_set.cgi`, `etc/sa02m-beeper-override.sh`, `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `README.md`, `PCA9536-driver-for-MasterPLC/examples/common/ca02m_hw.h`, `PCA9536-driver-for-MasterPLC/examples/mplc_fb_ca02m/test_fb.cpp`, `PCA9536-driver-for-MasterPLC/examples/mplc_protocol_ca02m/simple_test_protocol.cpp`, `От разработчиков 4D/*CA_02m.cpp`, `New/API/examples/*/*.cpp`, `/etc/sa02m_hw.conf`

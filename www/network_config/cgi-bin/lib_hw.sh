@@ -429,10 +429,20 @@ sa02m_hw_timeout_run() {
 }
 
 sa02m_hw_i2c_owner_active() {
-    local proc
+    local proc unit
     case "${SA02M_I2C_RESPECT_OWNER:-1}" in
         0|no|false|off|OFF|N) return 1 ;;
     esac
+
+    if command -v systemctl >/dev/null 2>&1; then
+        for unit in ${SA02M_I2C_OWNER_UNITS:-}; do
+            [ -n "$unit" ] || continue
+            case "$unit" in *.service) ;; *) continue ;; esac
+            if systemctl is-active --quiet "$unit" 2>/dev/null; then
+                return 0
+            fi
+        done
+    fi
 
     if command -v pgrep >/dev/null 2>&1; then
         for proc in ${SA02M_I2C_OWNER_PROCS:-}; do
