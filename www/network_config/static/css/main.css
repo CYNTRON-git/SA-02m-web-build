@@ -1601,10 +1601,25 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .system-command-auth {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: end;
   margin-bottom: 8px;
+}
+.system-command-prompt {
+  min-width: 72px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 10px;
+  color: var(--green);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-weight: 700;
 }
 .system-command-auth .field {
   margin: 0;
@@ -1616,7 +1631,6 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   color: var(--text-sec);
   font-weight: 600;
 }
-.system-command-auth select,
 .system-command-auth input {
   width: 100%;
   min-width: 0;
@@ -1645,6 +1659,15 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .system-command-actions {
   margin: 8px 0;
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+.system-manage-grid .system-command-actions .btn {
+  width: auto;
+  min-width: 120px;
 }
 .system-command-output {
   min-height: 180px;
@@ -1656,6 +1679,13 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 @media (max-width: 700px) {
   .system-command-auth {
     grid-template-columns: 1fr;
+  }
+  .system-command-prompt {
+    justify-content: flex-start;
+  }
+  .system-manage-grid .system-command-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 

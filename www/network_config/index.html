@@ -651,15 +651,9 @@
 
             <div class="system-manage-tile system-manage-command-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>
-              <p class="field-hint system-command-hint">По умолчанию команды выполняются от пользователя web-интерфейса. Для полного доступа выберите root и введите пароль.</p>
+              <p class="field-hint system-command-hint">По умолчанию команды выполняются от пользователя web-интерфейса. Для root-доступа введите <code>su root</code>, для возврата — <code>exit</code>.</p>
               <div class="system-command-auth">
-                <label class="field">
-                  <span>Пользователь</span>
-                  <select id="cmd-mode" onchange="updateCommandAuthMode()">
-                    <option value="web">web (www-data)</option>
-                    <option value="root">root</option>
-                  </select>
-                </label>
+                <div class="system-command-prompt" id="cmd-prompt">web$</div>
                 <label class="field system-command-root-pass" id="cmd-root-pass-wrap" hidden>
                   <span>Пароль root</span>
                   <input id="cmd-root-password" type="password" autocomplete="current-password" placeholder="Пароль root">
@@ -667,15 +661,15 @@
               </div>
               <textarea id="cmd-input" class="system-command-input" rows="3" spellcheck="false" autocomplete="off" placeholder="Например: systemctl is-active mplc4"></textarea>
               <div class="btn-group system-manage-log-actions system-command-actions">
-                <button class="btn btn-sm btn-primary" type="button" onclick="runCommandLine()">
-                  Выполнить
-                </button>
                 <button class="btn btn-sm" type="button" onclick="clearCommandLine()">
                   Очистить
                 </button>
+                <button class="btn btn-sm btn-primary" type="button" onclick="runCommandLine()">
+                  Выполнить
+                </button>
               </div>
               <div class="system-manage-log-output">
-                <pre class="log-box system-command-output" id="cmd-output">Введите команду и нажмите «Выполнить» или Ctrl+Enter.</pre>
+                <pre class="log-box system-command-output" id="cmd-output">web$ Введите команду и нажмите Enter.</pre>
               </div>
             </div>
 

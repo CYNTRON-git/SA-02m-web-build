@@ -182,6 +182,7 @@ function exportInstallLog() {
 const CMD_HISTORY_KEY = 'sa02m_cmd_history';
 let cmdHistory = [];
 let cmdHistoryPos = -1;
+let cmdMode = 'web';
 
 function loadCommandHistory() {
   try {
@@ -209,10 +210,38 @@ function setCommandOutput(text) {
   out.scrollTop = out.scrollHeight;
 }
 
-function updateCommandAuthMode() {
-  const mode = document.getElementById('cmd-mode')?.value || 'web';
+function currentCommandPrompt() {
+  return cmdMode === 'root' ? 'root# ' : 'web$ ';
+}
+
+function setCommandMode(mode) {
+  cmdMode = mode === 'root' ? 'root' : 'web';
   const wrap = document.getElementById('cmd-root-pass-wrap');
-  if (wrap) wrap.hidden = mode !== 'root';
+  const prompt = document.getElementById('cmd-prompt');
+  const passInput = document.getElementById('cmd-root-password');
+  if (wrap) wrap.hidden = cmdMode !== 'root';
+  if (prompt) prompt.textContent = currentCommandPrompt().trim();
+  if (cmdMode !== 'root' && passInput) passInput.value = '';
+}
+
+function handleCommandBuiltin(cmd) {
+  if (/^(su|login)\s+root$/i.test(cmd)) {
+    setCommandMode('root');
+    saveCommandHistory(cmd);
+    const input = document.getElementById('cmd-input');
+    if (input) input.value = '';
+    setCommandOutput('root# Режим root включён. Введите пароль root и команду.');
+    return true;
+  }
+  if (/^(exit|logout|su\s+web)$/i.test(cmd)) {
+    setCommandMode('web');
+    saveCommandHistory(cmd);
+    const input = document.getElementById('cmd-input');
+    if (input) input.value = '';
+    setCommandOutput('web$ Режим web включён.');
+    return true;
+  }
+  return false;
 }
 
 function runCommandLine() {
@@ -223,14 +252,15 @@ function runCommandLine() {
     setCommandOutput('Введите команду.');
     return;
   }
-  const mode = document.getElementById('cmd-mode')?.value === 'root' ? 'root' : 'web';
+  if (handleCommandBuiltin(cmd)) return;
+  const mode = cmdMode;
   const passInput = document.getElementById('cmd-root-password');
   const rootPassword = mode === 'root' && passInput ? passInput.value : '';
   if (mode === 'root' && !rootPassword) {
     setCommandOutput('Введите пароль root.');
     return;
   }
-  const prompt = mode === 'root' ? 'root# ' : 'web$ ';
+  const prompt = currentCommandPrompt();
   const started = new Date().toLocaleTimeString();
   setCommandOutput(prompt + cmd + '\n[' + started + '] выполнение…');
   fetch('cgi-bin/cmd_exec.cgi', {
@@ -249,8 +279,7 @@ function runCommandLine() {
       const tail = j.truncated ? '\n[output truncated to last 32768 bytes]' : '';
       setCommandOutput(prompt + cmd + '\n[mode ' + (j.mode || mode) + ', exit ' + j.rc + ']\n' + (j.output || '') + tail);
     })
-    .catch(err => setCommandOutput(prompt + cmd + '\nОшибка запроса: ' + err.message))
-    .finally(() => { if (passInput) passInput.value = ''; });
+    .catch(err => setCommandOutput(prompt + cmd + '\nОшибка запроса: ' + err.message));
 }
 
 function clearCommandLine() {
@@ -258,16 +287,16 @@ function clearCommandLine() {
   const passInput = document.getElementById('cmd-root-password');
   if (input) input.value = '';
   if (passInput) passInput.value = '';
-  setCommandOutput('Введите команду и нажмите «Выполнить» или Ctrl+Enter.');
+  setCommandOutput(currentCommandPrompt() + 'Введите команду и нажмите Enter.');
 }
 
 function initCommandLine() {
   loadCommandHistory();
-  updateCommandAuthMode();
+  setCommandMode('web');
   const input = document.getElementById('cmd-input');
   if (!input) return;
   input.addEventListener('keydown', (ev) => {
-    if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
+    if (ev.key === 'Enter' && !ev.shiftKey) {
       ev.preventDefault();
       runCommandLine();
       return;
