@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-08-01 12:39] branch: feature/klogic — root-команда зависала на first-login prompt
+
+**Файл(ы):** `etc/sa02m-web-root-cmd.sh`, `www/network_config/cgi-bin/cmd_exec.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Первичная реализация root-режима командной строки через login shell зависала на Armbian prompt выбора default shell и CGI не возвращал JSON.
+**Причина:** Root-helper запускал команду через `bash -lc`; login shell выполнял first-login сценарий Armbian и ожидал интерактивный выбор `bash/zsh`.
+**Исправление:** Root-helper запускает команду через non-login `bash -c`; root-аутентификация выполняется отдельным sudo-helper `sa02m-web-root-cmd.sh`, который проверяет пароль root по `/etc/shadow` и не сохраняет пароль. На `.136` проверено: `web` режим возвращает `www-data`, `root` режим с паролем возвращает `root`, неверный пароль возвращает `root authentication failed`.
+
 ## [2026-08-01 12:28] branch: feature/klogic — owner-detection не видела активный MPLC4
 
 **Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `/etc/sa02m_hw.conf`

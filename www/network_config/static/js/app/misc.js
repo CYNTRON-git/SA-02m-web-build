@@ -209,6 +209,12 @@ function setCommandOutput(text) {
   out.scrollTop = out.scrollHeight;
 }
 
+function updateCommandAuthMode() {
+  const mode = document.getElementById('cmd-mode')?.value || 'web';
+  const wrap = document.getElementById('cmd-root-pass-wrap');
+  if (wrap) wrap.hidden = mode !== 'root';
+}
+
 function runCommandLine() {
   const input = document.getElementById('cmd-input');
   if (!input) return;
@@ -217,35 +223,47 @@ function runCommandLine() {
     setCommandOutput('Введите команду.');
     return;
   }
+  const mode = document.getElementById('cmd-mode')?.value === 'root' ? 'root' : 'web';
+  const passInput = document.getElementById('cmd-root-password');
+  const rootPassword = mode === 'root' && passInput ? passInput.value : '';
+  if (mode === 'root' && !rootPassword) {
+    setCommandOutput('Введите пароль root.');
+    return;
+  }
+  const prompt = mode === 'root' ? 'root# ' : 'web$ ';
   const started = new Date().toLocaleTimeString();
-  setCommandOutput('$ ' + cmd + '\n[' + started + '] выполнение…');
+  setCommandOutput(prompt + cmd + '\n[' + started + '] выполнение…');
   fetch('cgi-bin/cmd_exec.cgi', {
     method: 'POST',
-    body: new URLSearchParams({ cmd }),
+    body: new URLSearchParams({ cmd, mode, root_password: rootPassword }),
     credentials: 'same-origin',
     cache: 'no-store'
   })
     .then(r => r.json())
     .then(j => {
       if (!j || !j.ok) {
-        setCommandOutput('$ ' + cmd + '\nОшибка: ' + ((j && j.error) || 'server_error'));
+        setCommandOutput(prompt + cmd + '\nОшибка: ' + ((j && j.error) || 'server_error'));
         return;
       }
       saveCommandHistory(cmd);
       const tail = j.truncated ? '\n[output truncated to last 32768 bytes]' : '';
-      setCommandOutput('$ ' + cmd + '\n[exit ' + j.rc + ']\n' + (j.output || '') + tail);
+      setCommandOutput(prompt + cmd + '\n[mode ' + (j.mode || mode) + ', exit ' + j.rc + ']\n' + (j.output || '') + tail);
     })
-    .catch(err => setCommandOutput('$ ' + cmd + '\nОшибка запроса: ' + err.message));
+    .catch(err => setCommandOutput(prompt + cmd + '\nОшибка запроса: ' + err.message))
+    .finally(() => { if (passInput) passInput.value = ''; });
 }
 
 function clearCommandLine() {
   const input = document.getElementById('cmd-input');
+  const passInput = document.getElementById('cmd-root-password');
   if (input) input.value = '';
+  if (passInput) passInput.value = '';
   setCommandOutput('Введите команду и нажмите «Выполнить» или Ctrl+Enter.');
 }
 
 function initCommandLine() {
   loadCommandHistory();
+  updateCommandAuthMode();
   const input = document.getElementById('cmd-input');
   if (!input) return;
   input.addEventListener('keydown', (ev) => {
