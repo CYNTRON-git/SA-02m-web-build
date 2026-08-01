@@ -83,7 +83,7 @@ chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html" 2>/dev/null || true
 chown -R www-data:www-data "$WEB_ROOT" 2>/dev/null || true
 
 # Обновляем вспомогательные скрипты из репозитория
-for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh; do
+for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-web-update-apply.sh etc/sa02m-web-auth-lib.sh etc/sa02m-repair-web-env.sh etc/sa02m-web-root-cmd.sh; do
     if [ -f "$TMPDIR/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "${src%.sh}")"
         if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
@@ -92,12 +92,22 @@ for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-we
         elif [ "$src" = "etc/sa02m-web-build-lib.sh" ]; then
             tgt="/usr/local/lib/sa02m-web-build-lib.sh"
             install -m 644 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        elif [ "$src" = "etc/sa02m-web-root-cmd.sh" ]; then
+            tgt="/usr/local/sbin/sa02m-web-root-cmd.sh"
+            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
         else
             install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
         fi
         log "Обновлён $tgt"
     fi
 done
+if [ -x /usr/local/sbin/sa02m-web-root-cmd.sh ] && [ -f /etc/sudoers.d/sa02m-www ]; then
+    if ! grep -q 'sa02m-web-root-cmd.sh' /etc/sudoers.d/sa02m-www; then
+        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-root-cmd.sh *\n' >> /etc/sudoers.d/sa02m-www
+        chmod 440 /etc/sudoers.d/sa02m-www 2>/dev/null || true
+        visudo -cf /etc/sudoers.d/sa02m-www >>"$LOGFILE" 2>&1 || true
+    fi
+fi
 if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
     /usr/local/sbin/sa02m-repair-web-env >>"$LOGFILE" 2>&1 || true
 fi

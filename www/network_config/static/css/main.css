@@ -1599,6 +1599,31 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .system-command-hint {
   margin: 0 0 8px;
 }
+.system-command-auth {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 8px;
+}
+.system-command-auth .field {
+  margin: 0;
+}
+.system-command-auth .field span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: .78rem;
+  color: var(--text-sec);
+  font-weight: 600;
+}
+.system-command-auth select,
+.system-command-auth input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: .85rem;
+  padding: 8px 10px;
+}
 .system-command-input {
   width: 100%;
   min-height: 76px;
@@ -1627,6 +1652,11 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   white-space: pre-wrap;
   overflow: auto;
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+@media (max-width: 700px) {
+  .system-command-auth {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Действия ───────────────────────────────────────────────────────────── */

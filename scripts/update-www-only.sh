@@ -214,8 +214,15 @@ SUDO
     if ! grep -q 'sa02m-rs485-stats.sh' /etc/sudoers.d/sa02m-www; then
         printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-rs485-stats.sh\n' >> /etc/sudoers.d/sa02m-www
     fi
+    if ! grep -q 'sa02m-web-root-cmd.sh' /etc/sudoers.d/sa02m-www; then
+        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-root-cmd.sh *\n' >> /etc/sudoers.d/sa02m-www
+    fi
     if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
         install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
+    fi
+    if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
+        install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
+        sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
     fi
     chmod 440 /etc/sudoers.d/sa02m-www
     visudo -cf /etc/sudoers.d/sa02m-www >/dev/null

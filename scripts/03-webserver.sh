@@ -181,6 +181,13 @@ find "$WEB_ROOT/static"  \( -name "*.css" -o -name "*.js" -o -name "*.svg" \) -e
 chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html"
 chown -R www-data:www-data "$WEB_ROOT"
 
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
+else
+    log WARN "Нет etc/sa02m-web-root-cmd.sh — root-режим командной строки недоступен"
+fi
+
 # ── GPIO hw.conf ──────────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m_hw.conf ]; then
     log INFO "Создание /etc/sa02m_hw.conf (шаблон)"
@@ -359,6 +366,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-set-cpu-profile, \
     /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
     /usr/local/sbin/sa02m-cpu-profile.sh apply, \
+    /usr/local/sbin/sa02m-web-root-cmd.sh *, \
     /usr/local/sbin/sa02m-conf-rm.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
