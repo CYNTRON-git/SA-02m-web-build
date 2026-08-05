@@ -80,15 +80,24 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 collect_donor_metadata() {
     "${SSH[@]}" 'bash -s' <<'REMOTE'
 set -euo pipefail
-hostname -s 2>/dev/null || echo SA-02
-tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo unknown
-uname -r
-grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || echo unknown
-cat /var/lib/sa02m-web-build/deployed_commit 2>/dev/null || echo unknown
-awk -F= '/^SA02M_SERIAL_PROFILE=/{print $2; exit}' /etc/sa02m_serial_profile.conf 2>/dev/null || echo unknown
-blkid -s UUID -o value /dev/mmcblk2p1 2>/dev/null || echo unknown
-blkid -s UUID -o value /dev/mmcblk2p2 2>/dev/null || echo unknown
-dpkg-query -W -f='${Version}\n' armbian-bsp-cli-bananapim2ultra-current 2>/dev/null | head -1 || echo unknown
+# key=value, exactly one line per field. Each value is captured in its OWN
+# command substitution: a newline-less source (/proc/device-tree/model is
+# NUL-terminated) can no longer merge with the next field's line.
+emit() {
+    local key=$1 val=$2
+    val=${val%%$'\n'*}
+    val=${val//$'\r'/}
+    printf '%s=%s\n' "$key" "${val:-unknown}"
+}
+emit hostname       "$(hostname -s 2>/dev/null || true)"
+emit board          "$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || true)"
+emit kernel         "$(uname -r 2>/dev/null || true)"
+emit os             "$(grep '^PRETTY_NAME=' /etc/os-release 2>/dev/null | cut -d= -f2- | tr -d '"' || true)"
+emit git_commit     "$(cat /var/lib/sa02m-web-build/deployed_commit 2>/dev/null || true)"
+emit serial_profile "$(awk -F= '/^SA02M_SERIAL_PROFILE=/{print $2; exit}' /etc/sa02m_serial_profile.conf 2>/dev/null || true)"
+emit boot_uuid      "$(blkid -s UUID -o value /dev/mmcblk2p1 2>/dev/null || true)"
+emit root_uuid      "$(blkid -s UUID -o value /dev/mmcblk2p2 2>/dev/null || true)"
+emit bsp            "$(dpkg-query -W -f='${Version}' armbian-bsp-cli-bananapim2ultra-current 2>/dev/null || true)"
 REMOTE
 }
 
@@ -101,11 +110,16 @@ import json, sys, datetime, os
 img, sha_file, out = sys.argv[1:4]
 with open(sha_file, encoding="utf-8") as f:
     sha = f.read().split()[0]
-meta = os.environ.get("DONOR_META", "").split("\n")
-def m(i, default="unknown"):
-    return meta[i].strip() if len(meta) > i and meta[i].strip() else default
+meta = {}
+for line in os.environ.get("DONOR_META", "").splitlines():
+    key, sep, value = line.partition("=")
+    if sep:
+        meta[key.strip()] = value.strip()
+def m(key, default="unknown"):
+    return meta.get(key, "").strip() or default
 hostname, board, kernel, os_name, git_commit, serial_profile, boot_uuid, root_uuid, bsp = (
-    m(0), m(1), m(2), m(3), m(4), m(5), m(6), m(7), m(8)
+    m("hostname"), m("board"), m("kernel"), m("os"), m("git_commit"),
+    m("serial_profile"), m("boot_uuid"), m("root_uuid"), m("bsp"),
 )
 if os.environ.get("RELEASE_PROFILE"):
     serial_profile = os.environ["RELEASE_PROFILE"]
