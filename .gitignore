@@ -63,3 +63,7 @@ cookies.txt
 # Node dev-tooling deps at the repo root (the UI-layout driver reuses scripts/dev's
 # playwright; a root `npm install` would still create an empty node_modules).
 /node_modules/
+
+# Lab/factory device credentials (plaintext) — single home for scripts, never
+# committed. Documented in docs/AGENTS_SSH_AND_DEVICE_ACCESS.md.
+tools/sa02m-device.env

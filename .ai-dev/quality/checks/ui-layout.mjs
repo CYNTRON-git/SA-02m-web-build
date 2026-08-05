@@ -122,12 +122,15 @@ const CONTRAST_EPS = 0.02; // absorbs integer-channel rounding, not real drift.
 // main.css, so the value-centring assertion is meaningful ONLY at/below this
 // width; above it the tiles are ordinary widgets and the rule is not in force.
 const KPI_CENTRE_MAX_W = 560;
-// The KPI value elements that centre: DIRECT-child `.widget-val` of a square
-// tile (cpu/temp/uptime/ram/disk). USB/SD nest the value inside a
-// storage/modem view that also holds the sub, so those centre the whole
+// The KPI value elements that centre. Since the 1.0.5.64 KPI redesign the
+// value nests inside `.widget-body` (dissolved on mobile via display:contents,
+// so it is still a grid item of the symmetric 40px/1fr/40px tile); the legacy
+// direct-child form is kept for any non-.dash-kpi tile. USB nests the value
+// inside a storage/modem view that also holds the sub, so it centres the whole
 // value+sub column, not the value alone — excluded by the direct-child `>`.
 const KPI_TILE_VAL_SEL =
-  '.dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) > .widget-val';
+  '.dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) > .widget-val, ' +
+  '.dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) > .widget-body > .widget-val';
 
 // `overflowGate` marks the widths at which a horizontal overflow HARD-FAILS the
 // run. phone-portrait (360px) is BELOW SA-02m's supported layout width — the
@@ -501,6 +504,23 @@ function probeContrastRuns(wlContrast) {
     rg.selectNodeContents(el);
     const r = rg.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
+    // Skip runs an overflow ancestor clips ENTIRELY out of paint: they keep
+    // layout geometry but no pixel of them is rendered, so the sampled median
+    // would be whatever happens to lie at those coordinates (page background —
+    // phantom white-on-white pairs in light). A partially visible run still
+    // measures. Clipping ancestors include auto/scroll: content scrolled out
+    // of an inner scrollport is equally absent from the screenshot.
+    let clippedAway = false;
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const pcs = getComputedStyle(p);
+      if (/(hidden|clip|auto|scroll)/.test(pcs.overflowX + ' ' + pcs.overflowY)) {
+        const pr = p.getBoundingClientRect();
+        const ix = Math.min(r.right, pr.right) - Math.max(r.left, pr.left);
+        const iy = Math.min(r.bottom, pr.bottom) - Math.max(r.top, pr.top);
+        if (ix < 2 || iy < 2) { clippedAway = true; break; }
+      }
+    }
+    if (clippedAway) continue;
     let op = 1;
     for (let p = el; p && p !== document.documentElement; p = p.parentElement) {
       op *= parseFloat(getComputedStyle(p).opacity);
@@ -645,10 +665,28 @@ async function run() {
   const context = await browser.newContext();
   await context.addCookies([{ name: 'session_token', value: 'ui-layout-dev', url: BASE }]);
   // Kill transitions/animations so geometry is measured at rest, not mid-tween.
+  // Also neutralise the app's INTERNAL scroller (.app is 100dvh with .main
+  // overflow-y:auto): with it in force a fullPage screenshot is one viewport
+  // tall, so every element below the fold is absent from the blanked shot and
+  // sampleBackdrops clamps its coordinates to the image edge — sampling the
+  // page background instead of the element's real fill (white-on-white
+  // phantoms in light, and accidental passes both ways). Letting the document
+  // itself grow makes fullPage capture the whole surface: backdrops sample
+  // true pixels and the human screenshots really show the whole вёрстка.
+  // Element-level geometry (rects, centring, touch, overflow-x) is unaffected.
   await context.addInitScript(() => {
-    const s = document.createElement('style');
-    s.textContent = '*,*::before,*::after{transition:none!important;animation:none!important;}';
-    (document.head || document.documentElement).appendChild(s);
+    // At init-script time the document may not be parsed yet (no <head>), so
+    // append on DOMContentLoaded — a direct appendChild here lands nowhere and
+    // the whole override silently no-ops.
+    const add = () => {
+      const s = document.createElement('style');
+      s.textContent = '*,*::before,*::after{transition:none!important;animation:none!important;}' +
+        '.app{height:auto!important;min-height:100vh;}' +
+        '.main{overflow-y:visible!important;}';
+      (document.head || document.documentElement).appendChild(s);
+    };
+    if (document.head) add();
+    else document.addEventListener('DOMContentLoaded', add);
   });
   const page = await context.newPage();
 
@@ -658,6 +696,10 @@ async function run() {
       for (const theme of THEMES) {
         for (const variant of VARIANTS) {
           const cellName = `${surface.id}__${vp.name}__${theme}__${variant}`;
+          // Re-assert the cell's nominal viewport: the post-load doc-height
+          // growth below persists across cells, and vh-dependent layout must
+          // start from the same base every time.
+          await page.setViewportSize({ width: vp.width, height: vp.height });
           await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
           await page.evaluate(pageSetup, {
             surface: surface.id, theme, variant,
@@ -670,6 +712,15 @@ async function run() {
           // (fed the mix by the stub) before we screenshot/measure, so the
           // captured state is the stable one, not a mid-flight frame.
           await page.waitForTimeout(300);
+
+          // Grow the viewport to the full document height (capped) before the
+          // shot: this Chromium's fullPage capture does not PAINT content below
+          // the original viewport (the canvas grows, the pixels stay page-bg),
+          // so a 100vh-app cell otherwise screenshots as one viewport of UI
+          // over a blank tail. Width (the media-query axis) is untouched.
+          const docH = await page.evaluate(() => Math.min(5000,
+            Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)));
+          if (docH > vp.height) await page.setViewportSize({ width: vp.width, height: docH });
 
           const shotPath = join(SHOTS_DIR, cellName + '.png');
           await page.screenshot({ path: shotPath, fullPage: true });
@@ -803,6 +854,7 @@ async function run() {
     for (const surface of SURFACES) {
       for (const theme of THEMES) {
         const cellName = `contrast__${surface.id}__${theme}`;
+        await page.setViewportSize({ width: 1440, height: 900 });
         await page.goto(`${BASE}/index.html`, { waitUntil: 'domcontentloaded' });
         await page.evaluate(pageSetup, {
           surface: surface.id, theme, variant: 'sa02m-2eth',
@@ -812,6 +864,12 @@ async function run() {
           },
         });
         await page.waitForTimeout(300);
+        // Same paint-below-the-fold workaround as the geometry pass: grow the
+        // viewport to the document height so every text run's real backdrop is
+        // actually rendered in the blanked screenshot.
+        const docH = await page.evaluate(() => Math.min(5000,
+          Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)));
+        if (docH > 900) { await page.setViewportSize({ width: 1440, height: docH }); await page.waitForTimeout(100); }
         const runs = await page.evaluate(probeContrastRuns, wlContrast);
         if (!runs.length) {
           failures.push(`[${cellName}] contrast: no text runs measured — the surface rendered no text (selector rotted or unrendered)`);

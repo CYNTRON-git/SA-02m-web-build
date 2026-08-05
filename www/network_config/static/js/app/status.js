@@ -566,15 +566,22 @@ function setValThresh(id, val, warnAt, critAt) {
 function applyRemovableDisk(mounted, base, d) {
   const val = document.getElementById(base + '-val');
   const detail = document.getElementById(base + '-detail');
+  const sub = document.getElementById(base + '-sub');
   if (!val || !detail) return;
   if (!mounted) {
     val.textContent = uiT('НЕТ');
     val.classList.add('widget-val-removable-empty');
-    detail.style.display = 'none';
+    detail.classList.add('dash-kpi-bar-spacer');
+    detail.setAttribute('aria-hidden', 'true');
+    detail.style.display = '';
+    if (sub) sub.style.display = 'none';
     return;
   }
   val.classList.remove('widget-val-removable-empty');
+  detail.classList.remove('dash-kpi-bar-spacer');
+  detail.removeAttribute('aria-hidden');
   detail.style.display = '';
+  if (sub) sub.style.display = '';
   const used = d[base + '_used_kb'];
   const total = d[base + '_total_kb'];
   const free = d[base + '_free_kb'];
@@ -673,9 +680,6 @@ function applyPriorityStatus(d) {
 }
 
 function applyStorageStatus(d) {
-  if (d.disk_io_read_b !== undefined) {
-    setText('disk-io', uiT('R ' + fmtTrafficBytes(d.disk_io_read_b) + ' / W ' + fmtTrafficBytes(d.disk_io_write_b)));
-  }
   if (d.usb_modem_present) {
     applyUsbModem(d);
   } else {
@@ -708,8 +712,10 @@ function applyUsbModem(d) {
   var sv = document.getElementById('usb-storage-view');
   var mv = document.getElementById('usb-modem-view');
   var tt = document.getElementById('usb-widget-title');
+  var detail = document.getElementById('usb-detail');
   if (sv) sv.style.display = 'none';
   if (mv) mv.style.display = '';
+  if (detail) detail.style.display = 'none';
   if (tt) tt.textContent = uiT('USB-модем');
   setUsbWidgetIcon('modem');
 
@@ -827,11 +833,8 @@ function applyLoadStatus(d) {
   setText('load-1',  d.load_1  || '—');
   setText('load-5',  d.load_5  || '—');
   setText('load-15', d.load_15 || '—');
-  // Tablet/phone (≤1024): short «Проц.:» so it fits one line next to «… МГц» in
-  // the narrow Нагрузка tile (Operator 2026-07-19); desktop keeps «Процессов:».
-  var procPrefix = (window.matchMedia && window.matchMedia('(max-width: 1024px)').matches)
-    ? 'Проц.: ' : 'Процессов: ';
-  setText('proc-info', uiT(procPrefix + (d.proc_running || 0) + ' / ' + (d.proc_total || 0)));
+  // Always short «Проц.:» so it fits one line next to «… МГц» in Нагрузка.
+  setText('proc-info', uiT('Проц.: ' + (d.proc_running || 0) + ' / ' + (d.proc_total || 0)));
   if (d.cpu_freq_mhz) {
     const thr = d.cpu_throttle ? ' (' + d.cpu_throttle + '%)' : '';
     setText('cpu-freq', d.cpu_freq_mhz + ' ' + uiT('МГц') + thr);
@@ -852,8 +855,12 @@ function applySystemStatus(d) {
     armbianEl.textContent = '\u00a0';
     armbianEl.classList.add('widget-sub-inert');
   }
-  if (d.kernel)    setText('kernel-info', uiT('Ядро: ' + d.kernel));
-  else setText('kernel-info', '\u00a0');
+  if (d.kernel) {
+    var kernelKind = (d.kernel_is_rt === 1 || d.kernel_is_rt === true) ? uiT('RT') : uiT('без RT');
+    setText('kernel-info', uiT('Ядро:') + ' ' + d.kernel + ' · ' + kernelKind);
+  } else {
+    setText('kernel-info', '\u00a0');
+  }
 
   updateCpuProfileTile(d);
 

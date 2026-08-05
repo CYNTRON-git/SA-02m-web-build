@@ -90,6 +90,10 @@ if [ -f "$SA02M_TMPFILES" ]; then
         sed -i 's|^d /run/sa02m-web-sessions .*|d /run/sa02m-web-sessions 2750 www-data www-data -|' \
             "$SA02M_TMPFILES"
     fi
+    if ! grep -q 'sa02m-hw-override' "$SA02M_TMPFILES" 2>/dev/null; then
+        printf '%s\n' 'd /run/sa02m-hw-override 0775 www-data www-data -' >>"$SA02M_TMPFILES"
+        log OK "tmpfiles: добавлена /run/sa02m-hw-override"
+    fi
     if command -v systemd-tmpfiles >/dev/null 2>&1; then
         systemd-tmpfiles --create "$SA02M_TMPFILES" 2>/dev/null || true
     fi
@@ -135,6 +139,9 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi
 
 # USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
@@ -207,8 +214,15 @@ SUDO
     if ! grep -q 'sa02m-rs485-stats.sh' /etc/sudoers.d/sa02m-www; then
         printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-rs485-stats.sh\n' >> /etc/sudoers.d/sa02m-www
     fi
+    if ! grep -q 'sa02m-web-root-cmd.sh' /etc/sudoers.d/sa02m-www; then
+        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-root-cmd.sh *\n' >> /etc/sudoers.d/sa02m-www
+    fi
     if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
         install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
+    fi
+    if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
+        install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
+        sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
     fi
     chmod 440 /etc/sudoers.d/sa02m-www
     visudo -cf /etc/sudoers.d/sa02m-www >/dev/null

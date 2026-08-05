@@ -288,6 +288,11 @@
         clearPersistedJobId(item.kind);
       }
     }
+    // status.busy may stick after a finished job when nothing was reattached —
+    // fall back to live port active_job so Scan is not left permanently disabled.
+    if (!state.scanJobId && !state.flashJobId) {
+      updateGlobalBusyFromPorts();
+    }
     syncActionButtons();
   }
 
@@ -314,13 +319,16 @@
           state.flashJobId = null;
           state.flashIrreversible = false;
           clearPersistedJobId('flash');
-          setFlashButtons();
           hideProgress();
           if (state2 === 'error' || state2 === 'cancelled') {
             await loadPorts();
+            updateGlobalBusyFromPorts();
+            setFlashButtons();
             if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
             else toast('Прошивка отменена', 'warn');
           } else {
+            updateGlobalBusyFromPorts();
+            setFlashButtons();
             toast('Прошивка завершена', 'success');
             await refreshScanAfterFlash();
           }
@@ -339,24 +347,7 @@
         renderDevices();
       },
       onEnd: async state2 => {
-        state.scanJobId = null;
-        clearPersistedJobId('scan');
-        setScanButtons();
-        hideProgress();
-        try {
-          const snap2 = await apiGet('/jobs/' + jobId);
-          replaceScannedDevices((snap2.devices || []).map(d => Object.assign({}, d)));
-          renderDevices();
-        } catch (_) {}
-        const portRec = state.ports.find(p => p.key === portKey);
-        if (state2 === 'done' && portHasCompleteLineState(portRec)) {
-          markPortIdleAfterJob(portKey);
-        } else {
-          await loadPorts();
-        }
-        if (state2 === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
-        else if (state2 === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
-        else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
+        await finalizeScanEnd(jobId, portKey, state2);
       },
     });
     toast('Восстановлено отслеживание сканирования', 'info');
@@ -438,8 +429,36 @@
     if (!p) return false;
     p.active_job = null;
     if (Array.isArray(p.busy_pids)) p.busy_pids = [];
+    updateGlobalBusyFromPorts();
     updatePortHint();
     return true;
+  }
+
+  /** End of scan: clear job/busy first, then re-enable Scan (hardpi scanfix). */
+  async function finalizeScanEnd(jobId, portKey, endState) {
+    state.scanJobId = null;
+    state.scanPending = false;
+    state.scanArbitrationActive = false;
+    clearPersistedJobId('scan');
+    hideProgress();
+    try {
+      if (jobId) {
+        const snap = await apiGet('/jobs/' + jobId);
+        replaceScannedDevices((snap.devices || []).map(d => Object.assign({}, d)));
+        renderDevices();
+      }
+    } catch (_) {}
+    const portRec = portKey ? state.ports.find(p => p.key === portKey) : null;
+    if (endState === 'done' && portHasCompleteLineState(portRec)) {
+      markPortIdleAfterJob(portKey);
+    } else {
+      await loadPorts();
+    }
+    updateGlobalBusyFromPorts();
+    setScanButtons();
+    if (endState === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
+    else if (endState === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
+    else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
   }
 
   function portHasCompleteLineState(port) {
@@ -4102,28 +4121,14 @@
           renderDevices();
         },
         onEnd: async state2 => {
-          state.scanJobId = null;
-          clearPersistedJobId('scan');
-          setScanButtons(); hideProgress();
-          try {
-            const snap = await apiGet('/jobs/' + res.job_id);
-            replaceScannedDevices((snap.devices || []).map(d => Object.assign({}, d)));
-            renderDevices();
-          } catch (_) {}
-          const portRec = state.ports.find(p => p.key === body.port);
-          if (state2 === 'done' && portHasCompleteLineState(portRec)) {
-            markPortIdleAfterJob(body.port);
-          } else {
-            await loadPorts();
-          }
-          if (state2 === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
-          else if (state2 === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
-          else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
+          await finalizeScanEnd(res.job_id, body.port, state2);
         },
       });
       return true;
     } catch (err) {
       state.scanPending = false;
+      state.scanArbitrationActive = false;
+      updateGlobalBusyFromPorts();
       setScanButtons(); hideProgress();
       setScanStatus('Сканирование: ' + err.message, 'error');
       return false;
@@ -4263,12 +4268,16 @@
           state.flashJobId = null;
           state.flashIrreversible = false;
           clearPersistedJobId('flash');
-          setFlashButtons(); hideProgress();
+          hideProgress();
           if (state2 === 'error' || state2 === 'cancelled') {
             await loadPorts();
+            updateGlobalBusyFromPorts();
+            setFlashButtons();
             if (state2 === 'error') toast('Прошивка прервана или завершилась с ошибкой. Выполните сканирование.', 'error');
             else toast('Прошивка отменена', 'warn');
           } else {
+            updateGlobalBusyFromPorts();
+            setFlashButtons();
             toast('Прошивка завершена', 'success');
             await refreshScanAfterFlash();
           }
@@ -4276,6 +4285,7 @@
       });
     } catch (err) {
       state.flashPending = false;
+      updateGlobalBusyFromPorts();
       setFlashButtons(); hideProgress();
       toast('Прошивка: ' + err.message, 'error');
     }

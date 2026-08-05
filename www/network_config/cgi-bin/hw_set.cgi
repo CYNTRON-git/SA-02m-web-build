@@ -64,14 +64,21 @@ if [ "$VAL" != "0" ] && [ "$VAL" != "1" ]; then
 fi
 
 if sa02m_hw_use_i2c; then
-    if sa02m_hw_i2c_write_channel "$CH" "$VAL"; then
+    sa02m_hw_i2c_write_channel_web "$CH" "$VAL"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
         sa02m_hw_metrics_cache_patch_channel "$CH" "$VAL" 2>/dev/null || true
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] hw_set.cgi: backend=i2c_expander channel=$CH value=$VAL bus=${SA02M_I2C_EXP_BUS} addr=${SA02M_I2C_EXP_ADDR}" >> /var/log/sa02m_install.log 2>&1
-        echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":${VAL}}"
+        if [ -n "${SA02M_HW_OVERRIDE_SEC:-}" ]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] hw_set.cgi: beeper override value=$VAL ttl_sec=${SA02M_HW_OVERRIDE_SEC}" >> /var/log/sa02m_install.log 2>&1
+            echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":${VAL},\"override_sec\":${SA02M_HW_OVERRIDE_SEC}}"
+        else
+            echo "{\"ok\":true,\"channel\":\"${CH}\",\"value\":${VAL}}"
+        fi
         exit 0
     fi
 
-    case "$?" in
+    case "$rc" in
         "$SA02M_HW_RC_BUSY"|"$SA02M_HW_RC_TIMEOUT") echo '{"ok":false,"error":"i2c_busy"}' ;;
         "$SA02M_HW_RC_TOOL") echo '{"ok":false,"error":"i2c_tools_missing"}' ;;
         *) echo '{"ok":false,"error":"write_failed"}' ;;

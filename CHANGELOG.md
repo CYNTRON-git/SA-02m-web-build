@@ -5,6 +5,131 @@
 
 ---
 
+## 1.0.5.64 - First-boot образ, KLogic-совместимость, командная строка, KPI-дашборд (август 2026)
+
+### Web UI
+
+- **Командная строка в «Управление».** Перед «Журнал событий» добавлен
+  терминальный блок для выполнения команд на устройстве через авторизованный
+  `cmd_exec.cgi`: POST-only, session auth, timeout 20 секунд, лимит команды
+  1000 символов и вывода 32 KiB. По умолчанию команды запускаются от
+  пользователя web-интерфейса (`www-data`); режим `root` включается командой
+  `su root` в самой командной строке и выключается через `exit` / `su web`.
+  Команды с префиксом `sudo ...` также маршрутизируются через root-режим, чтобы
+  не вызывать интерактивный `sudo` из `www-data`. Root-команды требуют пароль
+  root и выполняются через sudo-helper
+  `sa02m-web-root-cmd.sh`, который проверяет пароль root по `/etc/shadow`.
+
+### Imaging / first-boot
+
+- **Expand rootfs больше не держит Ethernet на минуты.** Unit
+  `sa02m-rootfs-expand` не ставит `Before=networking` / `ifupdown-pre` /
+  `basic.target` — только userspace-watchdogs; `WantedBy=multi-user.target`.
+  Раньше `resize2fs` блокировал линк/SSH на 2–6 мин (выглядело как «плата не
+  загрузилась»).
+- **Убран deadlock expand ↔ net-watchdog.** В `finish_firstboot` больше нет
+  `systemctl start/restart` единиц, от которых expand стоит `Before=`.
+- **Нельзя `systemctl stop` watchdogs из expand.** При `Before=net-watchdog…`
+  stop отменяет уже поставленный в очередь start на всю загрузку — после
+  first-boot `net-watchdog` оставался мёртвым (нет recovery линка). Hot path
+  только resize + файловый mask armbian / DONE; watchdogs стартуют сами по
+  ordering.
+- **`boot.scr` снова фиксируется в образе.** Offline patch пересобирает FAT
+  `boot.scr` из `etc/boot.cmd.sa02m` и кладёт canonical copy в
+  `/usr/local/share/sa02m/boot.scr`; USB autorun дополнительно копирует
+  `boot.scr` с флешки после `dd`. Это сохраняет `threadirqs`, без которого на
+  рабочей плате с PCA9536 возможен I2C IRQ storm до `sa02m-pre-start`: нет
+  пищалки, службы не доходят до запуска.
+- **Нет dual-resize.** При снятии/патче образа включается только
+  `sa02m-rootfs-expand`, `armbian-resize-filesystem` маскируется (иначе шторм
+  udev и срыв `ifupdown-pre`).
+- **Watchdogs не маскируются и не останавливаются** в expand / installer;
+  `systemctl mask` больше не уничтожает unit-файлы под `/etc`.
+- **Cold-boot PHY:** `sa02m-eth-coldboot` для eth0/eth1; `fix-eth.sh` делает
+  link-cycle при `operstate=down|dormant|unknown` (не только `down`).
+- **Инструменты:** `tools/imaging/patch-firstboot-image.sh`, `autorun-fel.sh` /
+  `autorun.sh`, `firstboot-overlay/`, `capture-image.*`, обновлены
+  `stream-after-cleanup.sh`, `make-image.sh`, `wait-donor.sh`, README.
+
+### Cloud agent
+
+- **Клон образа не уносит enrollment донора.** Wipe
+  `/etc/sa02m-cloud` (`device_secret`, `frpc.toml`, `enrolled=false`) в
+  `stream-after-cleanup`, offline-патче и autorun; скрипт
+  `tools/imaging/reset-cloud-enrollment.sh`.
+
+### Hardware
+
+- **Диагностический режим без I2C/PCA9536:** только при явно заданном
+  `SA02M_HW_BACKEND=disabled` `sa02m-pre-start` не пытается recovery/boot
+  indication через `i2c-2`. Для серийной платы и платы перед установкой в
+  рабочее устройство остаётся продуктовый backend `i2c_expander`.
+- **Web override пищалки без остановки KLogic.** При web-записи `beeper`
+  создаётся `/run/sa02m-hw-override/beeper.env` с TTL
+  `SA02M_BEEPER_WEB_OVERRIDE_SEC=7`. KLogic-side драйвер PCA9536 читает этот
+  override и применяет bit2 с приоритетом, не меняя остальные биты. Для текущего
+  live-бинаря без пересборки установлен worker
+  `/usr/local/sbin/sa02m-beeper-override.sh`: он не останавливает KLogic и
+  удерживает bit2 до истечения TTL.
+- **Stop/start KLogic для web-пищалки убран.** Алгоритмы KLogic продолжают
+  выполняться: на `.136` при `beeper=1` KLogic остаётся `active`, output
+  `0xf3/0xfb`; при `beeper=0` output `0xf7/0xff`; failed units = 0.
+- **MPLC4 корректно считается владельцем PCA9536.** Owner detection теперь
+  учитывает active units из `SA02M_I2C_OWNER_UNITS`, а не только имена процессов:
+  на `.136` после `klogic=inactive` / `mplc4=active` web beeper идёт через
+  override и не пишет PCA9536 напрямую.
+- **Синий LED KLogic сохранён как reserved output.** Bit3 PCA9536 не управляется
+  web UI, но остаётся output через `SA02M_I2C_EXTRA_OUTPUT_MASK=0x08`; helper
+  больше не пишет config `0x08` и не обнуляет верхний nibble output/config.
+  На `.136` восстановлен config `0xF0`, мигание bit3 снова видно по samples
+  `0xff/0xf7`.
+
+### Интерфейс
+
+- **Виджет служб:** установленный KLogic показывается отдельной строкой
+  (`optional_services`), а не подменяется строкой fcgiwrap.
+- **Равные KPI-плитки «Сведений».** Малые виджеты (CPU, температура, ОЗУ,
+  eMMC, Uptime, USB, microSD, Нагрузка) приведены к единой сетке 200 px:
+  заголовок / значение по центру / полоса или футер у низа (паритет с
+  board-portal RK3588). Убраны подпись «Загрузка ядер» и строка R/W eMMC;
+  «Нагрузка» перенесена первой; счётчик процессов всегда в короткой форме
+  «Проц.:». На мобильном (≤700 px) сохранены квадратные плитки без полос.
+- **RT-подпись у версии ядра.** «Сведения → Система» показывает
+  «Ядро: <версия> · RT / без RT» по флагу `kernel_is_rt` из `status.cgi`;
+  обе строки добавлены в i18n DICT.
+- **Кнопка «Сканировать» RS-485 снова активна после завершения задания
+  прошивки** — флаг занятости флешера сбрасывается по окончании job.
+- **Точка активности RS-485 горит только при открытом порте** (`open=1`),
+  а не при любом сконфигурированном канале.
+
+### Деплой / система
+
+- **Самопочинка NUL-повреждённых конфигов logrotate после клонирования
+  образа.** В репо добавлен эталон `etc/logrotate.d/wtmp`; `scripts/01-system.sh`
+  при деплое удаляет осиротевшие sed-темпфайлы в `/etc/logrotate.d/`,
+  восстанавливает обнулённые конфиги из эталона (или уносит в `/var/backups`)
+  и прогоняет контрольный `logrotate -d`.
+
+### Документация / агенты
+
+- BUGLOG: first-boot сеть, expand deadlock, Before=networking, cloud clone,
+  потерянный `threadirqs`.
+- `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`, `tools/ssh/sa02m_remote.py` —
+  уточнения batch-доступа к плате.
+
+**файлы:** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`,
+`etc/fix-eth.sh`, `etc/systemd/sa02m-eth-coldboot.service`,
+`usr/local/sbin/sa02m-eth-coldboot.sh`, `etc/logrotate.d/wtmp`,
+`scripts/01-system.sh`, `scripts/02-network.sh`, `tools/imaging/*`,
+`www/network_config/index.html`, `www/network_config/static/css/main.css`,
+`www/network_config/static/js/{app,i18n,flasher}.js`,
+`www/network_config/static/js/app/{status,rs485}.js`,
+`www/network_config/cgi-bin/cmd_exec.cgi`, `etc/sa02m-web-root-cmd.sh`,
+`docs/bugs/BUGLOG.md`, `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`,
+`tools/ssh/sa02m_remote.py`.
+
+---
+
 ## 1.0.5.63 - Сброс «залипшей» retained-ошибки устройства при старте моста (июл 2026)
 
 ### MQTT

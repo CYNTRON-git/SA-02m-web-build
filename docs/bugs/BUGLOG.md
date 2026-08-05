@@ -5,6 +5,290 @@
 
 ---
 
+## [2026-08-05 11:00] branch: feature/klogic — logrotate.service падал: NUL-обнулённый /etc/logrotate.d/wtmp после клона
+
+**Файл(ы):** `etc/logrotate.d/wtmp` (новый), `scripts/01-system.sh`, на DUT `.136`: `/etc/logrotate.d/wtmp`, `/etc/logrotate.d/sedofiGHt`
+**Тип:** Некорректное поведение / повреждение ФС после клонирования образа
+**Описание:** На DUT 192.168.1.136 ежесуточный `logrotate.service` (logrotate.timer) завершался exit 1: `error: wtmp:1 lines must begin with a keyword or a filename`. Из-за failed unit приёмка hardpy (`test_66_sa02m_services.py`, `systemctl --failed`) корректно падала.
+**Причина:** `/etc/logrotate.d/wtmp` содержал 154 NUL-байта вместо текста (ровно размер эталонного конфига), рядом лежал осиротевший sed-темпфайл `sedofiGHt` (0 байт). Все файлы `/etc/logrotate.d/*`, `/etc/logrotate.conf`, ssh host keys и machine-id имели mtime первых секунд первого бута после клона (2026-08-04 18:23:44–45) — классический ext4 zero-fill: rename/метаданные доехали, данные — нет. Ни деплой-скрипты, ни imaging-скрипты wtmp не трогают — повреждение разовое, приехало через клонирование.
+**Исправление:** (1) На DUT: восстановлен эталонный `/etc/logrotate.d/wtmp` (154 байта, стиль соседнего `btmp`), удалён `sedofiGHt`; `logrotate -d` без ошибок, `systemctl reset-failed logrotate && systemctl start logrotate` — exit 0, `systemctl --failed` пуст. (2) В репо: добавлен эталон `etc/logrotate.d/wtmp`; в `scripts/01-system.sh` — самопочинка при деплое: удаление `sed??????`-огрызков в `/etc/logrotate.d/`, восстановление NUL-обнулённых конфигов из репо (или перенос в /var/backups, если эталона нет), контрольный `logrotate -d`.
+
+## [2026-08-03 17:32] branch: feature/klogic — MPLC4 watchdogs re-enabled and verified
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, systemd watchdog units
+**Тип:** Некорректное поведение
+**Описание:** Watchdog-сервисы были временно отключены для диагностики post-flash boot loop и не должны оставаться отключёнными в рабочем образе.
+**Причина:** После устранения реальных причин нестабильности (`boot.scr`, `fstab`, cron CRLF, FAT dirty bit) отключённые watchdog-и снижали эксплуатационную надёжность.
+**Исправление:** `sa02m-userspace-watchdog`, `sa02m-failure-monitor`, `net-watchdog` снова включены на `.136` и в `sdcard.img`; устройство проверено после reboot и после выхода за grace-period 180s: boot_id не сменился, failed units нет, watchdog-и active/enabled, ssh/nginx/fcgiwrap/mplc4/cron active.
+
+## [2026-08-03 17:17] branch: feature/klogic — MPLC4 post-flash reboot loop fixed
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, `/etc/fstab`, `/etc/cron.d/sa02m-arp`, systemd watchdog units
+**Тип:** Некорректное поведение
+**Описание:** После прошивки устройство поднималось по сети, но после переноса/перезагрузки могло не стартовать стабильно.
+**Причина:** После первого boot были активны userspace watchdog-и, способные ребутить систему при проблемах сервисов; boot FAT был помечен dirty; removable mounts `/media/usb` и `/media/sdcard` блокировали/шумели при отсутствии носителей; `/etc/cron.d/sa02m-arp` был с CRLF и игнорировался cron как `bad username`.
+**Исправление:** На устройстве и в `sdcard.img` отключён автозапуск `sa02m-userspace-watchdog`, `sa02m-failure-monitor`, `net-watchdog`; выставлен `RuntimeWatchdogSec=8s`; исправлен FAT dirty bit; removable mounts переведены в `nofail,noauto`; cron-файл переведён в LF. Устройство проверено после нескольких reboot: failed units нет, ssh/nginx/fcgiwrap/mplc4/cron активны, watchdog-и inactive/disabled.
+
+## [2026-08-03 16:25] branch: feature/klogic — MPLC4 autorun fixed-target verification added
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Другое
+**Описание:** После подтверждения, что причина незагрузки была в образе, скрипт прошивки улучшен без изменения рабочей схемы записи.
+**Причина:** Минимальный скрипт не проверял наличие `/mnt/sdcard.img`, наличие `/dev/mmcblk2` и результат записи на носитель.
+**Исправление:** Сохранена проверенная запись `/mnt/sdcard.img` → `/dev/mmcblk2` с `bs=1M`; добавлены сообщения, проверки входов, `sync` до/после `dd` и сравнение первых 16 MiB через `cmp`, если утилита доступна.
+
+## [2026-08-03 16:24] branch: feature/klogic — MPLC4 image boot.scr restored from donor
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки MPLC4 образа устройство перезагружалось и не стартовало.
+**Причина:** В FAT-разделе локального `sdcard.img` файл `boot.scr` отличался от рабочего донора и имел размер 1960 bytes вместо валидного U-Boot legacy script 261 bytes; `zImage` и `sun8i-a40i-sk.dtb` при этом совпадали с донором.
+**Исправление:** `boot.scr` восстановлен напрямую с рабочей eMMC `.136` в FAT-разделе образа и в `/usr/local/share/sa02m/boot.scr` внутри rootfs; bootargs возвращены к проверенному варианту `root=/dev/mmcblk2p2 rootwait threadirqs`.
+
+## [2026-08-03 16:14] branch: feature/klogic — MPLC4 autorun restored to minimal known-good flow
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** Усложнённый `autorun.sh` не соответствовал ранее проверенному рабочему сценарию прошивки.
+**Причина:** Autodetect, fallback-логика и дополнительные проверки добавляли точки отказа в ограниченной autorun-среде, тогда как на этом стенде eMMC стабильно доступна как `/dev/mmcblk2`.
+**Исправление:** Скрипт сведён к минимальному рабочему варианту: `rmmod -f g_mass_storage`, `dd if=/mnt/sdcard.img of=/dev/mmcblk2 bs=1M && sync`, `reboot`.
+
+## [2026-08-03 16:14] branch: feature/klogic — MPLC4 autorun BusyBox math fixed
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** `autorun.sh` мог завершаться до начала записи образа при autodetect eMMC.
+**Причина:** Скрипт умножал количество 512-byte sectors на 512 и сравнивал байты; в 32-bit BusyBox `ash` это может переполняться на eMMC ~8 GB. Дополнительно использовались менее переносимые параметры (`bs=1M`, `rmmod -f`).
+**Исправление:** Autodetect переведён на прямое сравнение количества секторов без 64-bit arithmetic, добавлен fallback через `/proc/partitions`, `dd` переведён на `bs=1048576`, `rmmod -f` заменён на BusyBox-safe `rmmod`.
+
+## [2026-08-03 16:12] branch: feature/klogic — MPLC4 autorun moved to USB root
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** При копировании комплекта на флешку autorun-среда не запускала прошивку MPLC4.
+**Причина:** Исполняемый `autorun.sh` был подготовлен внутри папки `MPLC4`, а штатная среда запускает `autorun.sh` из корня USB-носителя; при структуре с папкой `MPLC4` образ не находился и прошивка не начиналась.
+**Исправление:** Добавлен корневой `D:/SA02m-images/autorun.sh`, который ищет `MPLC4/sdcard.img`; скрипт внутри `MPLC4` обновлён тем же BusyBox-safe вариантом, чтобы работали оба способа копирования на флешку.
+
+## [2026-08-03 15:59] branch: feature/klogic — MPLC4 image boot fixed: root PARTUUID and target autodetect
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки MPLC4 плата не доходила до userland (нет LED/пищалки).
+**Причина:** Watchdog не мог быть первопричиной до старта kernel/systemd. В образе `boot.scr` жёстко задавал `root=/dev/mmcblk2p2`, что ломает загрузку при другой нумерации eMMC в kernel. Дополнительно старый autorun жёстко писал `/dev/mmcblk2`, что могло молча выбрать не тот `mmcblkN` в FEL/buildroot окружении.
+**Исправление:** `boot.scr` внутри `sdcard.img` и `/usr/local/share/sa02m/boot.scr` переведены на `root=PARTUUID=51f8705c-02`; `autorun.sh` теперь autodetect единственного `/dev/mmcblkN` размером 7–9 GB, пишет образ, делает `sync` и проверяет первые 16 MiB через `cmp` перед reboot.
+
+## [2026-08-03 15:43] branch: feature/klogic — autorun MPLC4 упрощён до BusyBox-safe dd
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** После предыдущего упрощения плата всё ещё не стартовала при прошивке MPLC4-комплекта.
+**Причина:** Даже минимальный вариант оставлял лишнюю shell-обвязку (`set -e`, функции, `tee`, `conv=fsync`, логирование), что усложняло диагностику на buildroot/FEL окружении.
+**Исправление:** `autorun.sh` переписан в максимально простой BusyBox-safe сценарий: mount USB при необходимости, проверить `/mnt/sdcard.img` и `/dev/mmcblk2`, выполнить `dd if=/mnt/sdcard.img of=/dev/mmcblk2 bs=1M`, два `sync`, reboot. В папке MPLC4 только `autorun.sh` и `sdcard.img`; `sh -n`, LF/no CRLF, ASCII проверены.
+
+## [2026-08-03 14:49] branch: feature/klogic — MPLC4 USB-комплект не стартовал после прошивки
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/autorun.sh`, `D:/SA02m-images/MPLC4/sdcard.img`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки подготовленного MPLC4-комплекта плата не поднималась ожидаемо.
+**Причина:** `sdcard.img` оказался корректным (U-Boot/SPL, p1 FAT, p2 ext4 clean, `boot.scr`, firstboot resize/watchdog внутри образа), но внешний комплект содержал лишние `firstboot-overlay`/`boot.scr`, а `autorun.sh` после `dd` повторно перечитывал и монтировал новые разделы eMMC для наложения overlay. Это лишняя и рискованная стадия для buildroot/FEL-прошивки.
+**Исправление:** Комплект `D:/SA02m-images/MPLC4` упрощён до `autorun.sh` + `sdcard.img`; новый autorun только пишет образ на `/dev/mmcblk2`, делает `sync` и reboot. Проверено: `sh -n`, LF/no CRLF, ASCII, SHA образа `aeb68cee...`.
+
+## [2026-08-01 20:01] branch: feature/klogic — кнопка сканирования RS-485 оставалась disabled
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `/var/www/network_config/static/js/flasher.js`, `/var/www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** После завершения сканирования RS-485 с найденными устройствами web UI показывал итог, но кнопка «Сканировать» оставалась неактивной; «Отмена» не помогала, потому что активной scan-задачи уже не было.
+**Причина:** Быстрый путь завершения `markPortIdleAfterJob()` снимал `port.active_job`, но не пересчитывал `state.flasherGloballyBusy`; `syncActionButtons()` продолжал считать flasher занятым.
+**Исправление:** После локального освобождения порта вызывается `updateGlobalBusyFromPorts()`, затем штатный `updatePortHint()`/`syncActionButtons()` возвращает кнопки в idle-состояние; для `flasher.js` обновлён cache-bust в `index.html`.
+
+---
+
+## [2026-08-03 12:39] branch: feature/klogic — виджет Система: RT / без RT у версии ядра
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/static/js/i18n.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В «Сведения → Система» строка «Ядро: 6.1.0» не показывала, RT это ядро или обычное (без RT).
+**Причина:** `status.cgi` уже отдавал `kernel_is_rt`, но `applySystemStatus` выводил только `kernel`.
+**Исправление:** Подпись `Ядро: <ver> · RT` / `Ядро: <ver> · без RT` по флагу `kernel_is_rt`.
+
+## [2026-08-03 12:30] branch: feature/klogic — KPI Сведения: равный размер, полосы снизу
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/static/js/app/status.js`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение / UI
+**Описание:** Маленькие виджеты «Сведения» разной высоты; «Загрузка ядер» и R/W eMMC лишние; «Процессов:» не влезало; полосы не у низа, значения не на одной линии (как на RK3588).
+**Причина:** Карточки без общей KPI-сетки `title | 1fr value | bar`; статус опроса/высота шли от контента.
+**Исправление:** Класс `.dash-kpi` + `.widget-body` (как board-portal): `min-height:200px`, значение по центру, `.bar-row`/footer снизу; убраны «Загрузка ядер» и `#disk-io`; всегда «Проц.:».
+
+## [2026-08-03 11:27] branch: feature/klogic — зелёный «опрос» на RS-485 при open=0
+
+**Файл(ы):** `www/network_config/static/js/app/rs485.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В «Сведения → Интерфейсы RS-485» у RS-485-3 (COM4/ttyS5) был зелёный кружок «опрос активен» при уже остановленном опросе; модули при этом честно помечались «по последнему сканированию».
+**Причина:** `renderRs485` считал опрос активным как `open || (tx>0 || rx>0)`. TX/RX — накопительные счётчики ядра с загрузки, поэтому после скана/бывшего опроса оставались ненулевыми при `open=0`.
+**Исправление:** Статус точки только по актуальному `open` (tty in-use). TX/RX и ростер scan остаются как факты, но не красят точку в «опрос активен». На `.136` проверено: COM4 `open=0`, `tx=155`, `rx=243`, `modules.live=false`.
+
+## [2026-08-01 20:07] branch: feature/klogic — после скана «Сканировать» оставалась disabled
+
+**Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** После завершения скана RS-485 кнопка «Сканировать» оставалась disabled (тот же класс бага, что в hardpi: `flasherGloballyBusy` / busy UI не сбрасывался).
+**Причина:** В `onEnd` скана `setScanButtons()` вызывался до `markPortIdleAfterJob`/`loadPorts`, а после очистки `active_job` / `flasherGloballyBusy` кнопки больше не пересчитывались. Также `attachToActiveJobs` мог оставить sticky `status.busy`.
+**Исправление:** Добавлен `finalizeScanEnd`: сначала сброс job/busy, затем `updateGlobalBusyFromPorts()` + `setScanButtons()`. То же для flash `onEnd` и fallback в `attachToActiveJobs`. Cache-bust `flasher.js?v=1.0.5.63-scanfix2`.
+
+## [2026-08-01 13:04] branch: feature/klogic — пароль root и sudo login в web CLI
+
+**Файл(ы):** `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** После `su root` введённый пароль выполнялся как команда; `sudo -i` давал `bash -c: option requires an argument`; `sudo root` давал `root: command not found`. Также оставался бейдж `web$`, а верхний отступ кнопок сбивался чужим CSS.
+**Причина:** Не было состояния ожидания пароля; префикс `sudo` срезался до bare `-i` / `root`; `.system-manage-log-actions { margin: 0 0 12px }` перебивал отступ кнопок.
+**Исправление:** Добавлен `cmdAwaitPassword` (пароль из поля пароля или из поля команды), пароль сессии root до `exit`, автоочистка поля команды после запуска. `sudo root` / `sudo -i` / `sudo -s` обрабатываются как вход в root. Бейдж `web$` удалён; отступ кнопок `margin: 12px 0 !important`.
+
+## [2026-08-01 12:48] branch: feature/klogic — root-команда уходила как web/sudo и требовала TTY
+
+**Файл(ы):** `www/network_config/cgi-bin/cmd_exec.cgi`, `www/network_config/static/js/app/misc.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** При попытке запуска root-команды пользователь видел `[mode web, exit 1]` и ошибку `sudo: a terminal is required to read the password`.
+**Причина:** Команда с префиксом `sudo ...` могла выполняться как обычная web-команда, а браузер мог держать старый `misc.js` из-за неизменённого URL. CGI также вызывал helper без явного `-u root`.
+**Исправление:** `sudo ...` в UI теперь маршрутизируется через root-helper и требует пароль root, CGI вызывает `sudo -n -u root /usr/local/sbin/sa02m-web-root-cmd.sh`, подсказочный текст и стартовый `web$` удалены, для `misc.js`/`main.css` добавлен cache-bust. На `.136` проверено: прямой helper от `www-data` возвращает `root`, CGI `mode=root` возвращает `root`, подсказка удалена.
+
+## [2026-08-01 12:39] branch: feature/klogic — root-команда зависала на first-login prompt
+
+**Файл(ы):** `etc/sa02m-web-root-cmd.sh`, `www/network_config/cgi-bin/cmd_exec.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Первичная реализация root-режима командной строки через login shell зависала на Armbian prompt выбора default shell и CGI не возвращал JSON.
+**Причина:** Root-helper запускал команду через `bash -lc`; login shell выполнял first-login сценарий Armbian и ожидал интерактивный выбор `bash/zsh`.
+**Исправление:** Root-helper запускает команду через non-login `bash -c`; root-аутентификация выполняется отдельным sudo-helper `sa02m-web-root-cmd.sh`, который проверяет пароль root по `/etc/shadow` и не сохраняет пароль. На `.136` проверено: `web` режим возвращает `www-data`, `root` режим с паролем возвращает `root`, неверный пароль возвращает `root authentication failed`.
+
+## [2026-08-01 12:28] branch: feature/klogic — owner-detection не видела активный MPLC4
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** После отключения KLogic и запуска `mplc4.service` web мог не считать PCA9536 занятым, потому что реальные процессы MPLC называются `mplc_daemon`, `mplc_monitor`, `Main`, а не `mplc`/`mplc4`.
+**Причина:** `sa02m_hw_i2c_owner_active()` проверяла только `pgrep -x` по `SA02M_I2C_OWNER_PROCS`; список unit-ов `SA02M_I2C_OWNER_UNITS` использовался в старом stop/start handoff, но не в read-only owner detection.
+**Исправление:** Owner detection теперь сначала проверяет `systemctl is-active --quiet` для `SA02M_I2C_OWNER_UNITS`, затем fallback по процессам. На `.136` проверено: `klogic=inactive`, `mplc4=active`, `OWNER_ACTIVE`, web `beeper=1/0` работает через override, failed units = 0.
+
+## [2026-08-01 11:54] branch: feature/klogic — web override пищалки не должен останавливать KLogic
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `www/network_config/cgi-bin/hw_set.cgi`, `etc/sa02m-beeper-override.sh`, `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `README.md`, `PCA9536-driver-for-MasterPLC/examples/common/ca02m_hw.h`, `PCA9536-driver-for-MasterPLC/examples/mplc_fb_ca02m/test_fb.cpp`, `PCA9536-driver-for-MasterPLC/examples/mplc_protocol_ca02m/simple_test_protocol.cpp`, `От разработчиков 4D/*CA_02m.cpp`, `New/API/examples/*/*.cpp`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** Временный stop/start `klogic.service` для управления пищалкой из web оказался недопустим: внутри KLogic непрерывно выполняются алгоритмы управления.
+**Причина:** Предыдущая реализация handoff снимала конфликт I2C, но делала это остановкой всей службы, а не временным приоритетом только bit2 PCA9536.
+**Исправление:** Stop/start из активного web-пути убран. `hw_set.cgi` для `beeper` пишет override-файл `/run/sa02m-hw-override/beeper.env` с TTL 7 секунд. KLogic-side драйверы PCA9536 читают override и применяют bit2 с приоритетом перед сравнением `last_mask`; для текущего live-бинаря без пересборки установлен worker `/usr/local/sbin/sa02m-beeper-override.sh`, который удерживает bit2 до истечения TTL, не останавливая KLogic. На `.136` проверено: `beeper=1` → `ok,override_sec=7`, KLogic всё время `active`, output `0xf3/0xfb`; `beeper=0` → `0xf7/0xff`; blue LED продолжает мигать, failed units = 0.
+
+## [2026-08-01 11:19] branch: feature/klogic — web prepare переводил bit3 PCA9536 в input, пропадал blue LED KLogic
+
+**Файл(ы):** `www/network_config/cgi-bin/lib_hw.sh`, `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `README.md`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** После включения пищалки из web пропало мигание синего LED от KLogic.
+**Причина:** Web-драйвер PCA9536 считал выходами только каналы UI (`alarm_led`, `do`, `beeper`) и при `prepare` записал config `0x08`: bit3 (Blue LED KLogic) стал input. Также helper обнулял верхний nibble при расчёте config/output вместо штатного `0xF0/0xFF`.
+**Исправление:** На `.136` восстановлен config PCA9536 `0xF0`; добавлен `SA02M_I2C_EXTRA_OUTPUT_MASK=0x08`, bit3 теперь reserved output для KLogic. `lib_hw.sh` рассчитывает config как `0xF0 | mask` и сохраняет полный output byte при записи канала. Проверка: `cfg=240`, `def_out=255`, CGI beeper возвращает `i2c_busy`, samples output снова меняются `0xff/0xf7`, службы active, failed units = 0.
+
+## [2026-08-01 11:16] branch: feature/klogic — hw_set.cgi терял код `i2c_busy`
+
+**Файл(ы):** `www/network_config/cgi-bin/hw_set.cgi`
+**Тип:** Некорректное поведение
+**Описание:** После блокировки записи PCA9536 при активном KLogic web POST на пищалку возвращал общий `write_failed` вместо `i2c_busy`.
+**Причина:** `hw_set.cgi` разбирал `$?` не через сохранённый `rc`, из-за чего код возврата `sa02m_hw_i2c_write_channel` терялся перед `case`.
+**Исправление:** Код возврата сохраняется сразу после `sa02m_hw_i2c_write_channel`; `75/76` корректно мапятся в JSON `{"error":"i2c_busy"}`. На `.136` реальный POST `channel=beeper&value=1` вернул `i2c_busy`, регистр PCA9536 не изменился.
+
+## [2026-08-01 11:16] branch: feature/klogic — web не считал `klogic-sa02` владельцем PCA9536
+
+**Файл(ы):** `etc/sa02m_hw.conf`, `scripts/03-webserver.sh`, `README.md`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** На боевой плате при включении пищалки через web KLogic терял управление PCA9536.
+**Причина:** На устройстве был `SA02M_I2C_RESPECT_OWNER=0`, а шаблон owner-процессов не включал фактическое имя процесса `/home/klogic/klogic-sa02`; web мог писать I2C-регистр расширителя поверх KLogic.
+**Исправление:** На `.136` включён `SA02M_I2C_RESPECT_OWNER=1`, в `SA02M_I2C_OWNER_PROCS` добавлен `klogic-sa02`; шаблон, installer-migration и README обновлены. Проверка: `OWNER_ACTIVE`, попытка записи beeper возвращает `75/i2c_busy`, службы active, `systemctl --failed` = 0.
+
+## [2026-07-31 23:47] branch: feature/klogic — тестовая плата без I2C: status/pre-start лезли в PCA9536
+
+**Файл(ы):** `etc/sa02m-pre-start.sh`, `/etc/sa02m_hw.conf`
+**Тип:** Некорректное поведение
+**Описание:** На `.136` после возврата к исходному образу службы поднялись, cloud/resize исправлены, но `sa02m-pre-start` логировал `PCA9536 boot indication failed`, `i2c-2` показывал `mv64xxx: I2C bus locked`, пищалки нет. Пользователь уточнил, что сейчас это тестовая плата без I2C/PCA9536, но затем она будет установлена в рабочее устройство.
+**Причина:** Временное отключение `SA02M_HW_BACKEND=disabled` допустимо только для стендовой диагностики без I2C; оставлять его на плате перед установкой в боевую плату нельзя — это отключит DO/beeper/alarm LED в серийном продукте.
+**Исправление:** В `sa02m-pre-start.sh` добавлен безопасный skip I2C/PCA9536 **только если явно задан** `SA02M_HW_BACKEND=disabled`; для `.136` финально восстановлен продуктовый `SA02M_HW_BACKEND=i2c_expander`. Все ключевые службы active, `systemctl --failed` = 0. Дополнительно удалены мусорные `/etc/logrotate.d/sed*`, из-за которых `logrotate.service` был failed.
+
+## [2026-07-31 21:27] branch: feature/klogic — image patch не сохранял `threadirqs` в FAT boot.scr
+
+**Файл(ы):** `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/autorun.sh`, `D:\SA02m-images\usb-flash\boot.scr`
+**Тип:** Некорректное поведение / регрессия
+**Описание:** После прошивки и установки платы в рабочее устройство плата не доходила до нормального старта: службы не поднимались, стартовая пищалка не срабатывала.
+**Причина:** Текущий `sdcard.img` имел FAT `boot.scr` без `threadirqs`. Для рабочей платы с PCA9536 это возвращает старый I2C IRQ storm на `i2c-2` до `sa02m-pre-start`: udev/pre-start не получают CPU для unbind/recovery, поэтому нет boot indication и userspace не стартует штатно. Предыдущие first-boot патчи меняли только rootfs (p2) и не проверяли/восстанавливали FAT boot-раздел (p1).
+**Исправление:** `patch-firstboot-image.sh` теперь монтирует p1+p2, при необходимости чинит FAT через `fsck.vfat`, генерирует U-Boot legacy `boot.scr` из `etc/boot.cmd.sa02m` (fallback без `mkimage` через Python), проверяет наличие `threadirqs`, пишет его в FAT и `/usr/local/share/sa02m/boot.scr`. USB autorun после `dd` копирует `boot.scr` с флешки на FAT p1. `D:\SA02m-images\usb-flash\sdcard.img` и `boot.scr` перепатчены и проверены: `threadirqs=True`, expand без `systemctl stop` в исполняемом коде.
+
+## [2026-07-31 20:53] branch: feature/klogic — expand `systemctl stop` watchdogs отменяет их start на всю загрузку
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`
+**Тип:** Некорректное поведение / регрессия
+**Описание:** После прошивки «noblock-net» образа пользователь видел «нет линка / не загрузилось». На `.136` линк/IP фактически поднялись (~+10…35 с), boot ~61 с, но `net-watchdog` / userspace-watchdog / failure-monitor остались `inactive` на всю сессию — без авто-recovery при flap PHY.
+**Причина:** При `Before=net-watchdog…` expand вызывал `systemctl stop` этих юнитов → systemd **отменял** уже поставленный в очередь start на multi-user. Затем `enable` без `start` + долгий `systemctl mask/enable` в finish (~29 с после resize2fs).
+**Исправление:** Не вызывать `systemctl stop/enable/mask` в hot path; `Before=` достаточно, чтобы watchdogs не стартовали во время resize; mask armbian и снятие wants — файловыми symlink/rm; после выхода expand systemd сам стартует watchdogs. На `.136` watchdogs запущены вручную; скрипт задеплоен; образ перепатчить.
+
+## [2026-07-31 20:38] branch: feature/klogic — expand Before=networking/basic → нет линка на first-boot
+
+**Файл(ы):** `etc/systemd/sa02m-rootfs-expand.service`, `etc/sa02m-rootfs-expand.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/firstboot-overlay/`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки «исправленным» образом плата снова долго без сети (~минуты / до timeout); линк не поднимался, выглядело как «не загрузилось». `.136` недоступен по ping/SSH.
+**Причина:** Предыдущий фикс убрал только `systemctl restart net-watchdog`, но unit оставался с `Before=networking.service ifupdown-pre.service basic.target` и `WantedBy=basic.target` — `resize2fs` (1–3+ мин) держал всю сеть и `basic.target`. В `usb-flash/sdcard.img` оставался этот unit.
+**Исправление:** Expand больше не гейтит networking/basic — `Before=` только watchdogs; `WantedBy=multi-user.target`; wiring в patch/autorun с `basic.target.wants` снят; `systemctl --no-block disable`; убран PHY kick из finish (холодный PHY — coldboot/net-watchdog после ifup). Образ перепатчить и перепрошить.
+
+## [2026-07-31 20:23] branch: feature/klogic — клон образа уносит cloud enrollment донора
+
+**Файл(ы):** `/etc/sa02m-cloud/*`, `tools/imaging/reset-cloud-enrollment.sh`, `tools/imaging/stream-after-cleanup.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun-fel.sh`
+**Тип:** Некорректное поведение
+**Описание:** После снятия/заливки образа все новые платы считались уже в облаке (тот же `device_secret` / `frpc.toml` / `enrolled=true` донора).
+**Причина:** Imaging не очищал `/etc/sa02m-cloud` при clone; `disable` агента в UI не сбрасывает enrollment.
+**Исправление:** Сброс на `.136`; wipe в `stream-after-cleanup` / `patch-firstboot-image` / autorun wiring; скрипт `reset-cloud-enrollment.sh`.
+
+## [2026-07-31 19:36] branch: feature/klogic — sa02m-rootfs-expand deadlock → boot 6+ мин, сеть поздно
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки образ поднялся (Armbian, rootfs 7.1G), но userspace ~6 мин; сеть/SSH только после timeout expand; `sa02m-rootfs-expand` failed; watchdogs inactive. Серийный COM7 «как buildroot» — USB gadget, не ОС.
+**Причина:** `finish_firstboot` вызывал `systemctl restart net-watchdog` внутри oneshot с `Before=net-watchdog.service` / `networking.service` → взаимная блокировка до `TimeoutStartSec=6min`.
+**Исправление:** В expand только `unmask`/`enable`, без `start`/`restart`; SuccessExitStatus допускает TERM после успешного resize. На `.136` watchdogs перезапущены, failed сброшен.
+
+## [2026-07-31 19:07] branch: feature/klogic — first-boot после прошивки: нет пинга до re-plug, watchdogs masked
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`, `tools/imaging/stream-after-cleanup.sh`, `scripts/01-system.sh`, `scripts/02-network.sh`, `tools/imaging/autorun-fel.sh`, `etc/fix-eth.sh`, `usr/local/sbin/sa02m-eth-coldboot.sh`, `etc/systemd/sa02m-eth-coldboot.service`
+**Тип:** Некорректное поведение
+**Описание:** После заливки образа плата расширяла rootfs (~7.1G OK), но пинг на `192.168.1.136` появлялся только после выдёргивания/вставки Ethernet; `sa02m-userspace-watchdog` / `sa02m-failure-monitor` / `net-watchdog` оставались `masked`; `ifupdown-pre` failed (`udevadm settle` timeout ~2 мин).
+**Причина:** (1) `stream-after-cleanup` включал **оба** `armbian-resize-filesystem` и `sa02m-rootfs-expand` → параллельный resize ~3 мин, шторм udev, срыв `ifupdown-pre`, поздний/хрупкий networking и flap PHY. (2) Expand/FEL/`01-system` **навсегда** маскировали userspace watchdogs (в т.ч. `net-watchdog`) и `systemctl mask` уничтожал unit-файлы в `/etc`. (3) `fix-eth.sh` крутил PHY cycle только при `operstate=down`, пропуская stuck PHY с `dormant`/`unknown`; cold-boot oneshot был только для eth1.
+**Исправление:** Только `sa02m-rootfs-expand` (armbian-resize mask); stop (не mask) watchdogs + restore; `sa02m-eth-coldboot` для eth0/eth1; `fix-eth` cycle при admin UP + down|dormant|unknown. На `.136` юниты восстановлены и сервисы запущены. *(Первоначально unit ставили `Before=networking` — это снова ломало линк на first-boot; снято в записи 20:38.)*
+
+---
+
+## [2026-07-31 16:49] branch: feature/klogic — адрес KLogic не отображается в веб-интерфейсе
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\adjust-eth0`, `home\klogic\adjust-eth0`, `tmp\install\sa02m-klogic-net-sync.service`, `tmp\install\sa02m-klogic-net-sync.path`, `tmp\install\klogic-install`, `tmp\install\klogic-install_`, `/etc/network/interfaces.d/eth0.conf`
+**Тип:** Некорректное поведение
+**Описание:** После смены LAN0 в KLogic на `192.168.1.137` runtime-адрес менялся, но веб продолжал показывать `192.168.1.136`.
+**Причина:** KLogic напрямую создавал и исполнял `set-ip0`/`set-route`, не вызывал `adjust-eth0` и не обновлял конфиги, которые читает веб.
+**Исправление:** Добавлен systemd path-unit с debounce, вызывающий принудительную безопасную синхронизацию при изменении команд KLogic. `adjust-eth0` валидирует и переносит IP/маску/шлюз в оба конфигурационных файла; удаление устаревших команд вебом является успешным no-op. Оба направления проверены на `192.168.1.137`.
+
+## [2026-07-31 16:31] branch: feature/klogic — веб и KLogic отменяют настройки LAN0 друг друга
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\adjust-eth0`, `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\home\klogic\adjust-eth0`, `/home/klogic/adjust-eth0`, `/etc/network/interfaces.d/eth0.conf`, `/home/klogic/eth0.conf`
+**Тип:** Некорректное поведение
+**Описание:** Более старый KLogic `set-ip0` мог отменить свежий адрес из веб-интерфейса при `ifup` или перезагрузке; свежая настройка KLogic не отражалась в системном конфиге, который читает веб.
+**Причина:** Системный и KLogic-конфиги были независимыми, а `adjust-eth0` безусловно исполнял сохранённые `set-ip0`/`set-route`.
+**Исправление:** `adjust-eth0` выбирает последний источник по времени изменения: свежий веб-конфиг синхронизируется в KLogic и удаляет устаревшие команды, свежая настройка KLogic применяется и атомарно переносится в системный `eth0.conf` с единственным `post-up` hook. Оба направления проверены без изменения рабочего адреса.
+
+## [2026-07-31 16:23] branch: feature/klogic — KLogic перезаписывает сеть SA-02m
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\install\interfaces`, `eth0.static`, `eth1.static`, `tmp\sa02\eth0.conf`, `tmp\sa02\eth1.conf`, `/etc/network/interfaces*`, `/home/klogic/eth*.conf`
+**Тип:** Некорректное поведение
+**Описание:** После установки KLogic первый Ethernet получал `192.168.0.136`, а установщик без запроса добавлял конфигурацию второго Ethernet.
+**Причина:** Установщик безусловно заменял системные конфиги шаблонами `eth0=192.168.0.136` и `eth1=192.168.1.136` и возвращал wildcard `source .../*`.
+**Исправление:** LAN0 согласован на `192.168.1.136` без шлюза, DNS, адреса `192.168.137.10` и маршрута через `192.168.137.1`; KLogic `post-up` hook и фильтр `*.conf` сохранены. Установщик больше не разворачивает системный `eth1.conf`; на устройстве LAN1 выключен и не имеет адреса.
+
+## [2026-07-31 16:23] branch: feature/klogic — ложная ошибка RTC при старте KLogic
+
+**Файл(ы):** `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\tmp\sa02\pre-start`, `C:\Users\admin\YandexDisk\ЦИНТРОН\Сборка линукс\KLogic\home\klogic\pre-start`, `/home/klogic/pre-start`
+**Тип:** Некорректное поведение
+**Описание:** Каждый старт `klogic.service` писал `echo: I/O error` и делал бесполезное ожидание RTC.
+**Причина:** Скрипт повторно создавал I2C-клиент DS3231 по адресу `i2c-1/0x68`, хотя `/sys/bus/i2c/devices/1-0068` уже существовал; `/dev/rtc1` при этом отсутствовал.
+**Исправление:** Добавлена проверка существующего I2C-клиента и ожидание внешнего RTC только при наличии `/dev/rtc1`. `sh -n`, restart сервиса и чистый journal проверены на устройстве.
+
 ## [2026-07-28 14:00] branch: 1.0.5.47 — Флэшер: не распознаёт канонический/legacy 6AI6AO/AO6AI6
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/module_profiles.py`, `www/network_config/static/js/flasher.js`

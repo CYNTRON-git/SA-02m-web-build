@@ -6,12 +6,16 @@
 
 ## Доступы по умолчанию
 
+Единый файл в репозитории: **[`tools/sa02m-device.env`](../tools/sa02m-device.env)** (читают `sa02m_remote.py`, `capture-image.*`, `make-image.sh`).
+
 | | Значение |
 |--|----------|
 | IP | `192.168.1.136` (LAN, `eth0`) |
 | SSH | `root` / `cyntron`, порт `22` |
 | Веб | `http://192.168.1.136:9999`, `admin` / `cyntron` |
 | Ключ (опционально) | `%USERPROFILE%\.ssh\sa02m_sa02` или `private/.ssh/sa02m_sa02` (не в git) |
+
+Снятие образа eMMC → `.img`: `.\tools\imaging\capture-image.ps1` (см. [`tools/imaging/README.md`](../tools/imaging/README.md)).
 
 После прошивки нового образа eMMC **host key SSH меняется** — см. раздел «Host key» ниже.
 

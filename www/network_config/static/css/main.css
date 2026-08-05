@@ -489,10 +489,161 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 14px;
+  align-items: stretch;
 }
 /* HW-блок: ширина верхнего ряда (4 виджета + промежутки), auto-fill сохраняет размер карточек */
 .dash-span-top4 { grid-column: 1 / span 4; }
 .dash-full { grid-column: 1 / -1; }
+
+/* Equal-size KPI tiles (Сведения): title · centered value · bar/footer at bottom
+   (parity with RK3588 board-portal). */
+.dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) {
+  height: 200px;
+  min-height: 200px;
+  max-height: 200px;
+  align-self: start;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: stretch;
+  box-sizing: border-box;
+}
+.dash-grid > .widget.dash-kpi.dash-wide {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-items: stretch;
+  min-height: 200px;
+  box-sizing: border-box;
+}
+.dash-grid > .widget.dash-kpi > .widget-title {
+  margin-bottom: 0;
+  justify-self: stretch;
+}
+.dash-grid > .widget.dash-kpi > .widget-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 0;
+  width: 100%;
+  padding: 8px 0;
+  box-sizing: border-box;
+}
+.dash-grid > .widget.dash-kpi > .widget-body > .widget-val,
+.dash-grid > .widget.dash-kpi > .widget-body .widget-val {
+  text-align: center;
+  width: 100%;
+  white-space: nowrap;
+  line-height: 1.1;
+  font-size: 36px;
+}
+.dash-grid > .widget.dash-kpi > .widget-body > .widget-sub,
+.dash-grid > .widget.dash-kpi > .widget-body .widget-sub {
+  text-align: center;
+  width: 100%;
+  margin-top: 4px;
+}
+/* Desktop: only the big value in the middle row so all tiles share one baseline
+   (subs like «из …» / «В норме» remain for mobile KPI tiles). */
+.dash-grid > .widget.dash-kpi .dash-kpi-sub-mobile { display: none; }
+.dash-grid > .widget.dash-kpi > .bar-row,
+.dash-grid > .widget.dash-kpi > .widget-footer,
+.dash-grid > .widget.dash-kpi > #usb-detail,
+.dash-grid > .widget.dash-kpi > #sd-detail {
+  margin-top: 0;
+  align-self: stretch;
+  min-height: 2.6em;
+  box-sizing: border-box;
+}
+.dash-grid > .widget.dash-kpi > .widget-footer .bar-row { margin-top: 0; }
+.dash-grid > .widget.dash-kpi > .widget-footer .load-meta-row {
+  margin-top: 0;
+  width: 100%;
+}
+.dash-grid > .widget.dash-kpi .dash-kpi-bar-spacer {
+  visibility: hidden;
+  pointer-events: none;
+}
+.dash-grid > .widget.dash-kpi .dash-kpi-bar-spacer .bar-track,
+.dash-grid > .widget.dash-kpi .dash-kpi-bar-spacer .bar-meta { display: none; }
+.dash-grid > .widget.dash-kpi .uptime-readout {
+  padding-top: 0;
+  min-height: 0;
+}
+/* Long «N д N ч N м» at 36px overflows the tile (~191px inner); beat the
+   generic .widget-body .widget-val { font-size:36px } rule. */
+.dash-grid > .widget.dash-kpi > .widget-body > .widget-val.uptime-readout {
+  font-size: 28px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.dash-grid > .widget.dash-kpi .widget-val.widget-val-removable-empty {
+  padding-top: 0;
+  font-size: 36px;
+  line-height: 1.1;
+}
+.dash-grid > .widget.dash-kpi > .widget-body > .load-grid {
+  width: 100%;
+  margin-bottom: 0;
+}
+.dash-grid > .widget.dash-kpi > .widget-body > #usb-storage-view,
+.dash-grid > .widget.dash-kpi > .widget-body > #usb-modem-view {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+.dash-grid > .widget.dash-kpi .widget-val.val-warn { color: var(--yellow); }
+.dash-grid > .widget.dash-kpi .widget-val.val-crit { color: var(--red); }
+
+/* Службы / Ethernet: same 200px tile height as KPI (no reserved empty footer). */
+.dash-grid > .widget.widget-svc,
+.dash-grid > .widget.dash-eth {
+  height: 200px;
+  min-height: 200px;
+  max-height: 200px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.dash-grid > .widget.widget-svc > .widget-title {
+  margin-bottom: 6px;
+  flex: 0 0 auto;
+}
+.dash-grid > .widget.widget-svc > .svc-list {
+  /* Drop the 6-row min-height reserve — it left empty space under fewer services
+     and made the card taller than neighbouring 200px KPI tiles. */
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  gap: 2px;
+}
+.dash-grid > .widget.widget-svc .svc-row {
+  padding: 0;
+  min-height: 0;
+}
+.dash-grid > .widget.dash-eth > .widget-title {
+  margin-bottom: 6px;
+  flex: 0 0 auto;
+}
+.dash-grid > .widget.dash-eth > .eth-traffic-stack {
+  margin-top: 2px;
+  flex: 1 1 auto;
+}
+.dash-grid > .widget.dash-eth > .eth-ip {
+  margin-top: 4px;
+  margin-bottom: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+}
 
 /* ── Иконки-чипы в заголовках карточек дашборда ──────────────────────────── */
 .widget-title.has-ico {
@@ -543,7 +694,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   width: 100%;
   box-sizing: border-box;
 }
-/* Uptime: пустая строка перед значением */
+/* Uptime: пустая строка перед значением — только вне KPI-сетки (legacy) */
 .widget-val.uptime-readout {
   padding-top: 0.9em;
   min-height: calc(0.9em + 26px);
@@ -563,7 +714,6 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .widget-sub  { font-size: 13px; color: var(--text-sec); margin-top: 3px; }
 .widget-sub.widget-sub-reserved { min-height: 1.35em; }
 .widget-sub.widget-sub-inert { visibility: hidden; }
-.widget-sub.disk-io-line { font-size: 13px; }
 /* Ethernet widget: IP — акцент; цвет через --text (светлый в dark, тёмный в light) */
 .widget-sub.eth-ip {
   font-size: 1.08rem;
@@ -1590,6 +1740,88 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   min-width: 0;
   flex: 1 1 auto;
   text-align: left;
+}
+
+/* ── Командная строка ──────────────────────────────────────────────────── */
+.system-manage-command-panel {
+  gap: 10px;
+}
+.system-command-hint {
+  margin: 0 0 8px;
+}
+.system-command-auth {
+  margin: 0 0 8px;
+}
+.system-command-auth .field {
+  margin: 0;
+}
+.system-command-auth .field span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: .78rem;
+  color: var(--text-sec);
+  font-weight: 600;
+}
+.system-command-auth input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  font-size: .85rem;
+  padding: 8px 10px;
+}
+.system-command-input {
+  width: 100%;
+  min-height: 76px;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: .84rem;
+  line-height: 1.35;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.system-command-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.system-manage-command-panel .system-command-actions {
+  margin: 12px 0 !important;
+  padding-top: 0;
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.system-manage-grid .system-manage-command-panel .system-command-actions .btn {
+  width: auto;
+  min-width: 120px;
+  flex: 0 0 auto;
+}
+.system-manage-command-panel .system-command-actions .btn:first-child {
+  margin-right: auto;
+}
+.system-manage-command-panel .system-command-actions .btn:last-child {
+  margin-left: auto;
+}
+.system-command-output {
+  min-height: 180px;
+  max-height: 360px;
+  white-space: pre-wrap;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+@media (max-width: 700px) {
+  .system-manage-grid .system-manage-command-panel .system-command-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+  }
 }
 
 /* ── Действия ───────────────────────────────────────────────────────────── */
@@ -4021,6 +4253,12 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   .dash-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .dash-span-top4 { grid-column: 1 / -1; }
   .dash-wide { grid-column: 1 / -1; }
+  .dash-grid > .widget.widget-svc,
+  .dash-grid > .widget.dash-eth {
+    height: auto;
+    max-height: none;
+    min-height: 0;
+  }
   #tab-dashboard .widget { padding: 14px; }
 
   /* Mobile order (Operator 2026-07-19): Система → Нагрузка → small KPI tiles →
@@ -4030,29 +4268,43 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   .dash-wide:not(.widget-svc) { order: -1; }
   .widget-svc.dash-wide { order: 5; }
 
-  /* KPI tiles: square, no bar. A 3-row GRID — title (top, same level across all
-     tiles) / value (centred in the tall 1fr middle row → the SAME central position
-     in EVERY tile, with or without a sub) / a reserved sub row (so no-sub tiles —
-     USB «НЕТ», uptime — centre the value identically). Operator 2026-07-19. */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4) {
+  /* KPI tiles: square, no bar. SYMMETRIC fixed top/bottom rows (title / value /
+     sub) so the value in the 1fr middle row sits at the TRUE vertical centre of
+     every tile, with or without a sub (Operator 2026-07-19; the ui-layout gate
+     asserts this within 1.5px). .widget-body dissolves via display:contents so
+     the value and the mobile sub land in their own grid rows; desktop bars are
+     restored via .dash-kpi (RK3588 parity). */
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth):not(.dash-span-top4),
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-span-top4):not(.dash-kpi) {
     aspect-ratio: 1 / 1;
+    height: auto;
+    max-height: none;
     display: grid;
-    /* SYMMETRIC fixed top/bottom rows (title / value / sub), so the value in the
-       1fr middle row sits at the TRUE vertical centre (50%) of every tile, the
-       SAME in all — with or without a sub, whatever the title length (Operator
-       2026-07-19: values must be exactly in the middle). */
     grid-template-rows: 40px 1fr 40px;
     justify-items: center;
     align-items: center;
     text-align: center;
     overflow: hidden;
     padding: 14px 10px;
+    min-height: 0;
   }
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title { align-self: start; margin-bottom: 0; }
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-title.has-ico { justify-content: center; }
-  /* Value in the middle row, centred; number + unit inline (baseline). USB nests
-     value+detail, so its container is a centred column in the middle row. */
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val {
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) > .widget-title,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-kpi) .widget-title {
+    align-self: start;
+    margin-bottom: 0;
+  }
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) > .widget-title.has-ico,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth):not(.dash-kpi) .widget-title.has-ico {
+    justify-content: center;
+  }
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) > .widget-body {
+    display: contents;
+  }
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) .dash-kpi-sub-mobile {
+    display: block;
+  }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > .widget-val,
+  .dash-grid > .widget.dash-kpi:not(.dash-wide):not(.dash-eth) > .widget-body > .widget-val {
     display: flex;
     flex-flow: row wrap;
     align-items: baseline;
@@ -4060,8 +4312,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
     justify-content: center;
     width: 100%;
   }
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-storage-view,
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) > #usb-modem-view {
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) #usb-storage-view,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) #usb-modem-view {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -4094,18 +4346,17 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
     font-size: 17px;
     font-weight: 600;
   }
-  /* Uptime uses the same big value size as the others (Operator); its 2 units
-     wrap centred if needed. */
   /* Threshold colour on the VALUE (cloud KPI parity): cyan (normal, base above) →
      yellow (warn) → red (crit) for CPU/temp/RAM/disk. --yellow/--red are themed
      (readable both themes; the light --yellow is a dark amber, not #ffd60a). */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-warn { color: var(--yellow); }
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-val.val-crit { color: var(--red); }
   /* No progress bar on mobile KPI tiles (Operator: "как в cloud") — hide the whole
-     bar row; also drop the swap sub-block and the disk R/W I/O line. */
+     bar row; also drop the swap sub-block. */
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .bar-row,
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .widget-footer.widget-meter-foot,
   .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .swap-block,
-  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .disk-io-line { display: none; }
+  .dash-grid > .widget:not(.dash-wide):not(.dash-eth) .dash-kpi-bar-spacer { display: none !important; }
 }
 
 /* ── Tablet PORTRAIT (701–1024px, book mode) — hide the sidebar into a drawer +

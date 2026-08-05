@@ -22,12 +22,16 @@ SA02M_I2C_LOCK_WAIT_SEC="${SA02M_I2C_LOCK_WAIT_SEC:-1}"
 SA02M_I2C_TIMEOUT_SEC="${SA02M_I2C_TIMEOUT_SEC:-1}"
 SA02M_I2C_ACTIVE_LOW_MASK="${SA02M_I2C_ACTIVE_LOW_MASK:-auto}"
 SA02M_I2C_OWNER_UNITS="${SA02M_I2C_OWNER_UNITS:-mplc.service mplc4.service klogic.service klogicd.service}"
-SA02M_I2C_OWNER_PROCS="${SA02M_I2C_OWNER_PROCS:-mplc mplc4 klogic klogicd}"
+SA02M_I2C_OWNER_PROCS="${SA02M_I2C_OWNER_PROCS:-mplc mplc4 klogic klogicd klogic-sa02}"
 SA02M_I2C_RESPECT_OWNER="${SA02M_I2C_RESPECT_OWNER:-1}"
+SA02M_BEEPER_WEB_OVERRIDE_SEC="${SA02M_BEEPER_WEB_OVERRIDE_SEC:-7}"
+SA02M_BEEPER_OVERRIDE_FILE="${SA02M_BEEPER_OVERRIDE_FILE:-/run/sa02m-hw-override/beeper.env}"
+SA02M_BEEPER_OVERRIDE_WORKER="${SA02M_BEEPER_OVERRIDE_WORKER:-/usr/local/sbin/sa02m-beeper-override.sh}"
 SA02M_I2C_BIT_DO="${SA02M_I2C_BIT_DO:-1}"
 SA02M_I2C_BIT_BEEPER="${SA02M_I2C_BIT_BEEPER:-2}"
 SA02M_I2C_BIT_ALARM_LED="${SA02M_I2C_BIT_ALARM_LED:-0}"
 SA02M_I2C_BIT_USB_POWER="${SA02M_I2C_BIT_USB_POWER:-}"
+SA02M_I2C_EXTRA_OUTPUT_MASK="${SA02M_I2C_EXTRA_OUTPUT_MASK:-0x08}"
 
 [ -f "$HW_CONF" ] && . "$HW_CONF" 2>/dev/null || true
 
@@ -352,8 +356,21 @@ sa02m_hw_i2c_channel_mask() {
     printf '%d' $(( 1 << bit ))
 }
 
+sa02m_hw_i2c_extra_output_mask_dec() {
+    local raw=${SA02M_I2C_EXTRA_OUTPUT_MASK:-0}
+    case "$raw" in
+        0x[0-9a-fA-F]|0x[0-9a-fA-F][0-9a-fA-F]|[0-9]|[0-9][0-9]|1[0-5])
+            printf '%d' $(( raw & 0x0F ))
+            ;;
+        *)
+            printf '0'
+            ;;
+    esac
+}
+
 sa02m_hw_i2c_output_mask_dec() {
     local out=0 mask
+    out=$(sa02m_hw_i2c_extra_output_mask_dec)
     for _ch in "do" beeper alarm_led usb_power; do
         mask=$(sa02m_hw_i2c_channel_mask "$_ch" 2>/dev/null) || continue
         out=$(( out | mask ))
@@ -373,14 +390,14 @@ sa02m_hw_i2c_active_low_mask_dec() {
 sa02m_hw_i2c_config_mask_dec() {
     local outputs
     outputs=$(sa02m_hw_i2c_output_mask_dec)
-    printf '%d' $(( (~outputs) & 0x0F ))
+    printf '%d' $(( 0xF0 | ((~outputs) & 0x0F) ))
 }
 
 sa02m_hw_i2c_default_output_dec() {
     local outputs active_low
     outputs=$(sa02m_hw_i2c_output_mask_dec)
     active_low=$(sa02m_hw_i2c_active_low_mask_dec)
-    printf '%d' $(( 0x0F & ~(outputs & ~active_low) ))
+    printf '%d' $(( 0xF0 | (0x0F & ~(outputs & ~active_low)) ))
 }
 
 sa02m_hw_channel_available() {
@@ -412,10 +429,20 @@ sa02m_hw_timeout_run() {
 }
 
 sa02m_hw_i2c_owner_active() {
-    local proc
+    local proc unit
     case "${SA02M_I2C_RESPECT_OWNER:-1}" in
         0|no|false|off|OFF|N) return 1 ;;
     esac
+
+    if command -v systemctl >/dev/null 2>&1; then
+        for unit in ${SA02M_I2C_OWNER_UNITS:-}; do
+            [ -n "$unit" ] || continue
+            case "$unit" in *.service) ;; *) continue ;; esac
+            if systemctl is-active --quiet "$unit" 2>/dev/null; then
+                return 0
+            fi
+        done
+    fi
 
     if command -v pgrep >/dev/null 2>&1; then
         for proc in ${SA02M_I2C_OWNER_PROCS:-}; do
@@ -427,6 +454,55 @@ sa02m_hw_i2c_owner_active() {
     fi
 
     return 1
+}
+
+sa02m_hw_beeper_override_write() {
+    local logical=$1 ttl=${SA02M_BEEPER_WEB_OVERRIDE_SEC:-7}
+    local file=${SA02M_BEEPER_OVERRIDE_FILE:-/run/sa02m-hw-override/beeper.env}
+    local dir tmp now exp
+    [ "$logical" = "0" ] || [ "$logical" = "1" ] || return 1
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=7
+    dir=$(dirname "$file")
+    mkdir -p "$dir" 2>/dev/null || return 1
+    chmod 775 "$dir" 2>/dev/null || true
+    now=$(date +%s 2>/dev/null) || return 1
+    exp=$(( now + ttl ))
+    tmp="${file}.$$"
+    {
+        printf 'value=%s\n' "$logical"
+        printf 'expires_at=%s\n' "$exp"
+    } >"$tmp" || return 1
+    mv -f "$tmp" "$file" || return 1
+    chmod 664 "$file" 2>/dev/null || true
+    SA02M_HW_OVERRIDE_SEC="$ttl"
+    return 0
+}
+
+sa02m_hw_beeper_override_start_worker() {
+    local worker=${SA02M_BEEPER_OVERRIDE_WORKER:-/usr/local/sbin/sa02m-beeper-override.sh}
+    [ -x "$worker" ] || return 0
+    nohup "$worker" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+    return 0
+}
+
+sa02m_hw_i2c_write_channel_web() {
+    local channel=$1 logical=$2
+
+    SA02M_HW_OVERRIDE_SEC=""
+
+    if ! sa02m_hw_i2c_owner_active; then
+        sa02m_hw_i2c_write_channel "$channel" "$logical"
+        return $?
+    fi
+
+    if [ "$channel" = "beeper" ]; then
+        sa02m_hw_beeper_override_write "$logical" || return "$SA02M_HW_RC_IO"
+        sa02m_hw_beeper_override_start_worker
+        return 0
+    fi
+
+    return "$SA02M_HW_RC_BUSY"
 }
 
 sa02m_hw_i2c_run_tool() {
@@ -555,7 +631,7 @@ sa02m_hw_i2c_write_channel_locked() {
 
     sa02m_hw_i2c_prepare_unlocked || return $?
     reg=$(sa02m_hw_i2c_read_reg_unlocked 0x01) || return $?
-    new_reg=$(( reg & 0x0F ))
+    new_reg=$(( reg & 0xFF ))
 
     if (( active_low & channel_mask )); then
         if [ "$logical" = "1" ]; then

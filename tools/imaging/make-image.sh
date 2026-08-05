@@ -4,7 +4,20 @@
 set -euo pipefail
 LC_ALL=C
 
-DEVICE_IP="192.168.1.136"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ENV_FILE="${SA02M_DEVICE_ENV:-$REPO_ROOT/tools/sa02m-device.env}"
+if [ -r "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    set -a
+    # shellcheck source=/dev/null
+    . "$ENV_FILE"
+    set +a
+fi
+
+DEVICE_IP="${SA02M_HOST:-192.168.1.136}"
+SSH_USER="${SA02M_USER:-root}"
+SSH_PASS="${SA02M_PASS:-cyntron}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/sa02m_sa02}"
 OUT_DIR="$(pwd)/out"
 DO_CLEANUP=1
@@ -27,6 +40,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --ip)              DEVICE_IP="$2";        shift 2 ;;
         --key)             SSH_KEY="$2";          shift 2 ;;
+        --password)        SSH_PASS="$2";         shift 2 ;;
+        --user)            SSH_USER="$2";         shift 2 ;;
         --out-dir)         OUT_DIR="$2";          shift 2 ;;
         --profile)         RELEASE_PROFILE="$2";  shift 2 ;;
         --version)         RELEASE_VERSION="$2";  shift 2 ;;
@@ -45,15 +60,33 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
 STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
 FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
 WATCHDOG_SCRIPT="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
 WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
-SSH=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "root@$DEVICE_IP")
-SCP=(scp -i "$SSH_KEY" "${SSH_OPTS[@]}")
+
+# Prefer SSH key; fall back to password from tools/sa02m-device.env (sshpass).
+if [ ! -r "$SSH_KEY" ] && [ -r "$REPO_ROOT/private/.ssh/sa02m_sa02" ]; then
+    mkdir -p "$(dirname "$SSH_KEY")"
+    cp -f "$REPO_ROOT/private/.ssh/sa02m_sa02" "$SSH_KEY"
+    chmod 600 "$SSH_KEY"
+fi
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+
+SSH_AUTH="key"
+if [ -r "$SSH_KEY" ]; then
+    SSH=(ssh -i "$SSH_KEY" "${SSH_OPTS[@]}" "${SSH_USER}@${DEVICE_IP}")
+    SCP=(scp -i "$SSH_KEY" "${SSH_OPTS[@]}")
+else
+    command -v sshpass >/dev/null || die "нет ssh-ключа ($SSH_KEY) и нет sshpass — установите sshpass или положите ключ"
+    export SSHPASS="$SSH_PASS"
+    SSH=(sshpass -e ssh "${SSH_OPTS[@]}" -o PreferredAuthentications=password -o PubkeyAuthentication=no "${SSH_USER}@${DEVICE_IP}")
+    SCP=(sshpass -e scp "${SSH_OPTS[@]}" -o PreferredAuthentications=password -o PubkeyAuthentication=no)
+    SSH_AUTH="password"
+fi
 
 STAMP="$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT_DIR" "$WORK"
@@ -73,9 +106,6 @@ fi
 
 cleanup_work() { rm -rf "$WORK"; }
 trap cleanup_work EXIT
-
-log() { printf '\n[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 collect_donor_metadata() {
     "${SSH[@]}" 'bash -s' <<'REMOTE'
@@ -147,14 +177,14 @@ for bin in ssh xz e2fsck resize2fs parted truncate sha256sum dd python3; do
     command -v "$bin" >/dev/null || die "не найден '$bin'"
 done
 command -v pishrink.sh >/dev/null || die "не найден pishrink.sh"
-[ -r "$SSH_KEY" ] || die "ssh-ключ не найден: $SSH_KEY"
 [ -r "$CLEANUP_SCRIPT" ] || die "не найден $CLEANUP_SCRIPT"
 [ -r "$STREAM_SCRIPT" ] || die "не найден $STREAM_SCRIPT"
+log "    auth: $SSH_AUTH → ${SSH_USER}@${DEVICE_IP}"
 
 log "    ssh → $DEVICE_IP (ожидание до 5 мин после reboot)"
 WAIT_SCRIPT="$SCRIPT_DIR/wait-donor.sh"
 if [ -x "$WAIT_SCRIPT" ] || [ -f "$WAIT_SCRIPT" ]; then
-    IP="$DEVICE_IP" bash "$WAIT_SCRIPT" || die "донор недоступен по ssh"
+    IP="$DEVICE_IP" SA02M_PASS="$SSH_PASS" SA02M_USER="$SSH_USER" SSH_KEY="$SSH_KEY" bash "$WAIT_SCRIPT" || die "донор недоступен по ssh"
 else
     "${SSH[@]}" "uname -nrm" || die "ssh до $DEVICE_IP не работает"
 fi
@@ -234,9 +264,12 @@ xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$XZ_TMP"
 cp -f "$XZ_TMP" "$RAW_XZ"
 sudo pishrink.sh -a -v "$RAW_IMG"
 
-# Патч образа: восстанавливаем нормальные watchdog unit-файлы,
-# которые stream-after-cleanup мог оставить как noop (/bin/true) от предыдущего фикса.
-# Делаем через loop mount сразу после PiShrink, до финального xz.
+# Патч образа: first-boot resize/network/watchdog (см. patch-firstboot-image.sh).
+if [ -x "$SCRIPT_DIR/patch-firstboot-image.sh" ]; then
+    log "    [patch] patch-firstboot-image.sh"
+    sudo "$SCRIPT_DIR/patch-firstboot-image.sh" "$RAW_IMG" || \
+        log "    [patch] WARN: patch-firstboot-image failed (не критично)"
+else
 patch_image() {
     local img="$1"
     local loop mnt rootpart
@@ -280,6 +313,7 @@ patch_image() {
     rm -rf "$mnt"
 }
 patch_image "$RAW_IMG"
+fi
 
 log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
 rm -f "$SHRUNK_XZ" "$FINAL_IMG"

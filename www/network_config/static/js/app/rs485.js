@@ -171,8 +171,10 @@ function renderRs485(ports) {
 
     const errDelta = rs485ErrDelta(p);
     const hasErr = !absent && !disabled && !!(errDelta.fe || errDelta.pe || errDelta.oe);
-    const hasTraffic = (p.tx | 0) > 0 || (p.rx | 0) > 0;
-    const polling = !absent && !disabled && (!!p.open || hasTraffic);
+    // open=1 ⇒ tty currently held (live poll/gateway). TX/RX are cumulative since
+    // boot and must NOT imply active polling — otherwise a finished scan leaves
+    // a green "опрос активен" dot forever (COM4/ttyS5 case: open=0, tx/rx>0).
+    const polling = !absent && !disabled && !!p.open;
     let dotClass = 'idle';
     let dotTitle = uiT('Порт свободен, опрос не выполняется');
     if (absent) {

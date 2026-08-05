@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.63';
+const APP_VERSION = '1.0.5.64';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -378,9 +378,8 @@ function renderServicesSkeleton() {
 function initDashboardPlaceholders() {
   renderServicesSkeleton();
   renderRs485Skeleton();
-  setText('proc-info', uiT('Процессов: 0 / 0'));
+  setText('proc-info', uiT('Проц.: 0 / 0'));
   setText('cpu-freq', '0 ' + uiT('МГц'));
-  setText('disk-io', uiT('R ' + fmtBytes(0) + ' / W ' + fmtBytes(0)));
   ['eth0-rx', 'eth0-tx', 'eth1-rx', 'eth1-tx'].forEach(function (id) {
     setText(id, fmtBytes(0));
   });
@@ -432,8 +431,18 @@ function renderServicesDynamic(d) {
       title: 'CODESYS Control runtime'
     });
   }
-  if (svcIsInstalledFlag(d.svc_fcgiwrap_installed)) {
-    pushRow('fcgiwrap', d.svc_fcgiwrap_uptime_s, d.svc_fcgiwrap);
+  const optionalServices = Array.isArray(d.optional_services) ? d.optional_services : [];
+  const klogicService = optionalServices.find(function (s) {
+    if (!s || s.installed === false || s.installed === 0) return false;
+    const id = s.id ? unitUiLabel(String(s.id)).toLowerCase() : '';
+    const label = s.label ? String(s.label).trim().toLowerCase() : '';
+    return id === 'klogic' || id === 'klogicd' || label === 'klogic';
+  });
+  if (klogicService) {
+    pushRow('KLogic', klogicService.uptime_s, klogicService.status, {
+      mono: true,
+      title: 'KLogic runtime'
+    });
   }
   if (svcIsInstalledFlag(d.svc_mosquitto_installed)) {
     pushRow('mosquitto', d.svc_mosquitto_uptime_s, d.svc_mosquitto);
@@ -458,8 +467,8 @@ function renderServicesDynamic(d) {
     });
   }
 
-  if (Array.isArray(d.optional_services) && rows.length < SVC_WIDGET_MAX_ROWS) {
-    for (const s of d.optional_services) {
+  if (rows.length < SVC_WIDGET_MAX_ROWS) {
+    for (const s of optionalServices) {
       if (rows.length >= SVC_WIDGET_MAX_ROWS) break;
       if (s && s.installed === false) continue;
       if (s && s.installed === 0) continue;

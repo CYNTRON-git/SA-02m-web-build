@@ -32,20 +32,46 @@ cp /mnt/c/Users/admin/Downloads/SA-02m-web-build/private/.ssh/sa02m_sa02 ~/.ssh/
 chmod 600 ~/.ssh/sa02m_sa02
 ```
 
-### 2. Снять образ (полный цикл)
+### Учётки устройства (в репозитории)
+
+Файл **[`tools/sa02m-device.env`](../sa02m-device.env)** — единый источник:
+
+| | |
+|---|---|
+| SSH | `root` / `cyntron` @ `192.168.1.136` |
+| Веб | `admin` / `cyntron` @ `:9999` |
+
+Скрипты `capture-image.*`, `make-image.sh`, `sa02m_remote.py` читают этот файл (переопределение — переменные окружения `SA02M_*`).
+
+### 2. Снять образ (полный цикл) → `.img`
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\Users\admin\Downloads\SA-02m-web-build
+.\tools\imaging\capture-image.ps1
+# или: .\tools\imaging\capture-image.ps1 -Name SA-02m-lab -Ip 192.168.1.136
+```
+
+**WSL2 / Linux:**
 
 ```bash
 cd /mnt/c/Users/admin/Downloads/SA-02m-web-build/tools/imaging
 chmod +x *.sh
-./make-image.sh --ip 192.168.1.136 --key ~/.ssh/sa02m_sa02 --out-dir ./out \
-    --profile sa02m-1eth --version 1.0.0
+./capture-image.sh --ip 192.168.1.136 --name SA-02m-20260730
 ```
 
 **Выход в `out/`:**
 
-- `sa02m-1eth-v1.0.0-shrunk.img.xz`
-- `sa02m-1eth-v1.0.0-shrunk.img.xz.sha256`
-- `sa02m-1eth-v1.0.0-shrunk.manifest.json`
+- `SA-02m-YYYYMMDD.img` ← для ImageUSB / переноса
+- `SA-02m-YYYYMMDD.img.xz` + `.sha256` + `.manifest.json`
+
+Релизный вариант (только xz, без сырого имени):
+
+```bash
+./make-image.sh --ip 192.168.1.136 --key ~/.ssh/sa02m_sa02 --out-dir ./out \
+    --profile sa02m-1eth --version 1.0.0 --keep-raw-img
+```
 
 ### 3. Подготовить носитель / образ для приёмника
 
@@ -69,7 +95,35 @@ chmod +x *.sh
 
 На ПК: распакованный `.img` + `.sha256` + `IMAGEUSB.txt`. **xz распаковывается на хосте**, ImageUSB пишет `.img` напрямую.
 
-> ⚠ **Не** заливать только `.img` без fix first-boot resize в образе. При снятии образа `stream-after-cleanup.sh` включает `sa02m-rootfs-expand` и `armbian-resize-filesystem`. Старые образы (до fix) после ImageUSB дают rootfs ~1.8G — нужен пересбор или ручной resize.
+**Вариант C — buildroot / USB-host + `sdcard.img` (ручной autorun):**
+
+На флешке: `sdcard.img` (PiShrink `.img`, не `.xz`) + `boot.scr` + [`autorun.sh`](autorun.sh) (= [`autorun-fel.sh`](autorun-fel.sh)).
+
+- BusyBox: **без** `status=progress`
+- сам монтирует `/dev/sda1` → `/mnt`, пишет `dd` в `/dev/mmcblk2`
+- после `dd` дополнительно пишет `boot.scr` на FAT p1 (с `threadirqs` для защиты
+  от I2C/PCA9536 IRQ storm на рабочей плате)
+- на новом rootfs включает только first-boot wiring: single resize, cloud wipe,
+  watchdog units без permanent mask
+
+С ПК (флешка вставлена в ПК):
+
+```powershell
+Copy-Item tools\imaging\autorun.sh E:\autorun.sh   # буква флешки
+# рядом должны быть sdcard.img и boot.scr
+```
+
+На плате (buildroot, COM, root/root) — autorun **не** стартует сам:
+
+```sh
+mount /dev/sda1 /mnt
+sh /mnt/autorun.sh
+```
+
+> ⚠ **Не** заливать только `.img` без first-boot patch. Патч обязан проверить
+> rootfs resize wiring **и FAT `boot.scr` с `threadirqs`**. Без `threadirqs`
+> рабочая плата с PCA9536 может зависнуть на I2C IRQ storm до `sa02m-pre-start`
+> (нет пищалки, службы не стартуют).
 
 ### 4. Залить на новую плату
 
@@ -95,6 +149,7 @@ chmod +x *.sh
 | [`prepare-flash-media.sh`](prepare-flash-media.sh) | хост | упаковка USB для flash-receiver |
 | [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
+| [`autorun-fel.sh`](autorun-fel.sh) / [`autorun.sh`](autorun.sh) | USB + buildroot | `sdcard.img` → `dd` eMMC + watchdog mask до reboot |
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
 
 ---
