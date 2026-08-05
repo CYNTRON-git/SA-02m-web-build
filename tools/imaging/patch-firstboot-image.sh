@@ -5,9 +5,16 @@
 # Applies first-boot network/watchdog/resize fixes so the next flash works
 # without Ethernet cable re-plug and with watchdogs restored after expand.
 #
-# Usage (WSL/Linux):
-#   sudo ./tools/imaging/patch-firstboot-image.sh \
-#       /path/to/SA-02m-….img
+# Usage (WSL/Linux) — through `bash`, since this file is tracked mode 644:
+#   sudo bash tools/imaging/patch-firstboot-image.sh \
+#       [--bootcmd /path/to/boot.cmd] /path/to/SA-02m-….img
+#
+# Payload selector: --bootcmd <path> overrides the hardware-verified default.
+# It is an ARGUMENT, not an environment variable, because that is the only form
+# that survives `sudo` on every host (sudoers `setenv` is off by default, so
+# `sudo VAR=value cmd` is refused). SA02M_BOOTCMD still works for a DIRECT,
+# non-sudo call and is a convenience only — see
+# docs/contracts/uboot-boot-script.md §3.
 #
 # Idempotent. Does NOT recompress xz (caller may xz afterwards).
 # ═══════════════════════════════════════════════════════════════════════════
@@ -15,77 +22,75 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-IMG="${1:-}"
 
 die() { echo "FATAL: $*" >&2; exit 1; }
 log() { echo "[patch-firstboot] $*"; }
 
-[ -n "$IMG" ] || die "usage: $0 /path/to/image.img"
+IMG=""
+BOOTCMD_ARG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --bootcmd)
+            [ $# -ge 2 ] || die "--bootcmd needs a path"
+            BOOTCMD_ARG="$2"; shift 2 ;;
+        --bootcmd=*)
+            BOOTCMD_ARG="${1#*=}"; shift ;;
+        --) shift ;;
+        -*) die "unknown option: $1" ;;
+        *)
+            if [ -n "$IMG" ]; then die "unexpected argument: $1"; fi
+            IMG="$1"; shift ;;
+    esac
+done
+
+[ -n "$IMG" ] || die "usage: $0 [--bootcmd PATH] /path/to/image.img"
 [ -f "$IMG" ] || die "image not found: $IMG"
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
 
 ETC="$REPO_ROOT/etc"
 SBIN_SRC="$REPO_ROOT/usr/local/sbin"
 
+# The boot.scr byte format has ONE home — tools/imaging/uboot-script.py; both
+# the mkimage-free writer and the validator live there, so this script and
+# tools/debian-rootfs/pack-sa02m-image.sh cannot drift apart.
+UBOOT_PY="$SCRIPT_DIR/uboot-script.py"
+
 build_bootscr() {
     local out=$1
-    local cmd_src="$ETC/boot.cmd.sa02m"
+    local cmd_src default_src norm
 
-    [ -f "$cmd_src" ] || die "missing $cmd_src"
-    if command -v mkimage >/dev/null 2>&1; then
-        mkimage -C none -A arm -T script -d "$cmd_src" -n "SA-02m" "$out" >/dev/null
+    [ -r "$UBOOT_PY" ] || die "missing $UBOOT_PY"
+    cmd_src="$(python3 "$UBOOT_PY" resolve --repo-root "$REPO_ROOT" --payload "${BOOTCMD_ARG:-}")" \
+        || die "cannot resolve the boot.cmd payload"
+    [ -f "$cmd_src" ] || die "missing boot.cmd payload: $cmd_src"
+    default_src="$(python3 "$UBOOT_PY" default --repo-root "$REPO_ROOT")" \
+        || die "cannot resolve the default boot.cmd payload"
+    # Always name the payload actually used — the one line that answers
+    # "which script is in this image?" without unpacking it.
+    if [ "$cmd_src" = "$default_src" ]; then
+        log "boot.cmd payload: $cmd_src (default, hardware-verified)"
     else
-        python3 - "$cmd_src" "$out" <<'PY'
-import binascii
-import struct
-import sys
-import time
-from pathlib import Path
-
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-data = src.read_bytes()
-name = b"SA-02m"
-name = name + b"\0" * (32 - len(name))
-
-# U-Boot legacy image header (include/image.h): magic, hcrc, time, size,
-# load, entry, dcrc, os=Linux, arch=ARM, type=script, comp=none, name[32].
-dcrc = binascii.crc32(data) & 0xFFFFFFFF
-header = struct.pack(
-    ">7I4B32s",
-    0x27051956,
-    0,
-    int(time.time()),
-    len(data),
-    0,
-    0,
-    dcrc,
-    5,
-    2,
-    6,
-    0,
-    name,
-)
-hcrc = binascii.crc32(header) & 0xFFFFFFFF
-header = struct.pack(
-    ">7I4B32s",
-    0x27051956,
-    hcrc,
-    int(time.time()),
-    len(data),
-    0,
-    0,
-    dcrc,
-    5,
-    2,
-    6,
-    0,
-    name,
-)
-dst.write_bytes(header + data)
-PY
+        log "WARN: NON-DEFAULT boot.cmd payload in use: $cmd_src"
     fi
-    grep -aq 'threadirqs' "$out" || die "generated boot.scr has no threadirqs"
+
+    if command -v mkimage >/dev/null 2>&1; then
+        norm="$(mktemp /tmp/sa02m-boot.cmd.XXXXXX)"
+        python3 "$UBOOT_PY" normalize "$cmd_src" "$norm" \
+            || { rm -f "$norm"; die "boot.cmd normalization failed: $cmd_src"; }
+        mkimage -C none -A arm -T script -d "$norm" -n "SA-02m" "$out" >/dev/null \
+            || { rm -f "$norm"; die "mkimage failed on $norm"; }
+        rm -f "$norm"
+    else
+        log "mkimage absent — using the in-tree reference writer (uboot-script.py)"
+        python3 "$UBOOT_PY" build "$cmd_src" "$out" --name "SA-02m" \
+            || die "boot.scr build failed from $cmd_src"
+    fi
+
+    # Format-level, so it covers mkimage output too: a wrong flag or a future
+    # mkimage change is caught exactly like a writer bug. The string grep this
+    # replaces is what let two malformed boot.scr artifacts ship.
+    python3 "$UBOOT_PY" validate "$out" \
+        || die "generated boot.scr failed format validation: $out"
 }
 
 mnt=""
@@ -162,6 +167,12 @@ install -m 644 "$ETC/systemd/sa02m-eth-coldboot.service" \
     "$mnt/etc/systemd/system/sa02m-eth-coldboot.service"
 
 # ── FAT boot script: working boards require threadirqs for i2c-2/PCA9536 ────
+# The default payload has no DTB fallback chain — it loads exactly zImage +
+# sun8i-a40i-sk.dtb. Writing it onto a FAT that lacks either name produces a
+# board that reaches U-Boot and stops there (docs/contracts/uboot-boot-script.md).
+for _f in zImage sun8i-a40i-sk.dtb; do
+    [ -f "$boot_mnt/$_f" ] || die "FAT p1 has no $_f — the boot script requires it by exact name"
+done
 tmp_bootscr=$(mktemp /tmp/sa02m-boot.scr.XXXXXX)
 build_bootscr "$tmp_bootscr"
 install -m 644 "$tmp_bootscr" "$boot_mnt/boot.scr"
