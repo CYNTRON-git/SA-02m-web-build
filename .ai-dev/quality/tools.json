@@ -119,6 +119,15 @@
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-subnet-validate.sh"
     },
     {
+      "id": "image-manifest",
+      "checks": "Regression for the donor-metadata handoff in tools/imaging/make-image.sh step 6 (collect_donor_metadata -> write_manifest): every field lands in its own manifest slot on a healthy donor whose /proc/device-tree/model is NUL-terminated with NO trailing newline (the field-shift class: a merged or absent line shifts every later field into the wrong slot), on a degraded donor (absent model file, conf without the profile key, failing dpkg-query), plus the donor-supplied serial_profile without the --profile override, a value containing '=', and a malformed DONOR_META. Extracts the SHIPPED collect_donor_metadata remote body and the SHIPPED write_manifest python (extraction anchored to their owning functions — the file carries other heredocs with the same tags) and runs them against a sandboxed fake donor: no ssh, no device, nothing touches the real system. Non-vacuous both ways: an empty or over-captured extraction FAILS, and MAKE_IMAGE_SRC pointed at a pre-fix script fails loudly (see the test header for the recipe).",
+      "config": null,
+      "run": "bash scripts/dev/test-image-manifest.sh",
+      "beat": "build",
+      "covers": ["tools/imaging/make-image.sh", "scripts/dev/test-image-manifest.sh"],
+      "init": "bash + Python 3 as python3/python/py (stdlib only, no deps) — run on demand: bash scripts/dev/test-image-manifest.sh"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
@@ -165,7 +174,7 @@
     },
     {
       "id": "shellcheck",
-      "checks": "Real bugs (severity=error) in every Bash CGI, shared lib, device script, and the installer — quoting/word-splitting/unset-var defects are the stated top defect class for this stack (web-code-rigor.md). Style/info/warning are intentionally NOT gated (severity=error only) so the row stays a bug gate, not a lint nag.",
+      "checks": "Real bugs (severity=error) in every Bash surface of the repo — CGI endpoints and shared libs, device scripts, the installer, build/imaging tools (tools/*/), dev harnesses (scripts/dev/), on-device sbin helpers and the quality checks themselves; the exact file set has its one home in the check script. Quoting/word-splitting/unset-var defects are the stated top defect class for this stack (web-code-rigor.md). Style/info/warning are intentionally NOT gated (severity=error only) so the row stays a bug gate, not a lint nag.",
       "config": ".ai-dev/quality/checks/shellcheck.sh",
       "run": "bash .ai-dev/quality/checks/shellcheck.sh",
       "beat": "review",
