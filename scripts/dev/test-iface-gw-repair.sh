@@ -51,6 +51,48 @@
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 
+# ── Fault injection ────────────────────────────────────────────────────────
+# The write path can only be exercised by making a command fail, and a real
+# failure is not portably injectable: some filesystems ignore the read-only
+# directory bit, and rename(2) over a read-only FILE legitimately succeeds. So
+# the commands are stubbed.
+#
+# Every stub is defined HERE — once, above every call site — and is INERT
+# unless BREAK names it. Defining them inside the case that needed them made
+# the file's behaviour depend on textual position: a `cp` written above the
+# definition got the real command, one below got the stub (shellcheck SC2218,
+# caught by CI, not by the local shellcheck version). Nothing was actually
+# resolving wrong, but the hazard is removed rather than documented.
+#
+# Belt as well as braces: the harness's own bookkeeping calls `command cp`
+# explicitly, so injection can only ever reach the code under test — a future
+# case cannot break its own fixtures by leaving BREAK set.
+BREAK=""
+cp_calls=0
+breaking() { case " $BREAK " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+mktemp() { if breaking mktemp; then return 1; fi; command mktemp "$@"; }
+wc()     { if breaking wc; then echo 1; return 0; fi; command wc "$@"; }
+cp() {
+    if breaking cp; then return 1; fi
+    # cp-2nd: the backup succeeds, the later ROLLBACK fails (the double fault).
+    if breaking cp-2nd; then
+        cp_calls=$((cp_calls + 1))
+        if [ "$cp_calls" -ge 2 ]; then return 1; fi
+    fi
+    command cp "$@"
+}
+mv() {
+    if breaking mv; then return 1; fi
+    # mv-empty: the replace "succeeds" but lands the wrong content, so only
+    # reading the file back can catch it.
+    if breaking mv-empty; then : > "$3"; command rm -f "$2"; return 0; fi
+    command mv "$@"
+}
+# Presence stub: sa02m_write_resolvconf_head guards on `command -v resolvconf`,
+# which a dev box does not have. Never called, only detected.
+resolvconf() { :; }
+
 SRC=${GW_REPAIR_SRC:-scripts/02-network.sh}
 LIB=${GW_REPAIR_LIB:-scripts/lib.sh}
 T=$(mktemp -d) || exit 1
@@ -105,7 +147,7 @@ warned_re(){ printf '%s' "$LOGGED" | grep -qE "^WARN .*$1"; }
 repair()   { LOGGED=""; GW_REPAIR_ADDED_GW=0; ensure_gw_dns eth0 "$GW" "$DNS"; }
 count()    { grep -cE "$1" "$C"; }
 unchanged(){ cmp -s "$C" "$T/before"; }
-snapshot() { cp "$C" "$T/before"; rm -f "$C.sa02m-gwbak"; }
+snapshot() { command cp "$C" "$T/before"; rm -f "$C.sa02m-gwbak"; }
 
 # A real board conf: KLogic shapes (comment + no-auto-down before the stanza,
 # hwaddress/post-up inside it) are the fixtures this repair must survive.
@@ -144,7 +186,7 @@ awk 'BEGIN{p=0;e=0}
 [ "$GW_REPAIR_ADDED_GW" = 1 ] && ok "GW_REPAIR_ADDED_GW=1 signals the live-route caller" || bad "GW_REPAIR_ADDED_GW not set"
 
 echo "── 2. re-run is byte-identical and takes no backup ──"
-cp "$C" "$T/after1"; rm -f "$C.sa02m-gwbak"
+command cp "$C" "$T/after1"; rm -f "$C.sa02m-gwbak"
 repair
 if cmp -s "$T/after1" "$C"; then ok "second run byte-identical"; else bad "second run churned the conf"; diff "$T/after1" "$C"; fi
 [ -f "$C.sa02m-gwbak" ] && bad "no-op run still took a backup (mtime churn)" || ok "no-op run takes no backup"
@@ -157,7 +199,7 @@ printf 'auto eth0\niface eth0 inet static\naddress 192.168.1.136\nnetmask 255.25
 snapshot; repair
 [ "$(count '^gateway 192\.168\.1\.1$')" = 1 ] && ok "gateway inserted at column 0, like its address line" || bad "indent not derived from the address line"
 [ "$(count '^dns-nameservers ')" = 1 ] && ok "dns-nameservers inserted at column 0" || bad "dns indent wrong"
-cp "$C" "$T/after1"; repair
+command cp "$C" "$T/after1"; repair
 cmp -s "$T/after1" "$C" && ok "unindented layout is idempotent too" || bad "unindented re-run churned"
 
 echo "── 4. no-auto-down before the stanza -> preserved, insertion still inside ──"
@@ -337,7 +379,7 @@ unchanged && bad "control: the same fixture was not repaired without the opt-out
 echo "── 13. a second interface's conf is never touched ──"
 plain_conf
 printf 'allow-hotplug eth1\niface eth1 inet dhcp\n    metric 100\n' > "$CD/eth1.conf"
-cp "$CD/eth1.conf" "$T/eth1.before"
+command cp "$CD/eth1.conf" "$T/eth1.before"
 repair
 cmp -s "$T/eth1.before" "$CD/eth1.conf" && ok "eth1.conf untouched while repairing eth0" || bad "repair reached into another interface's conf"
 rm -f "$CD/eth1.conf"
@@ -378,9 +420,7 @@ echo "── 13b. a failed write never reports success ──"
 logged_ok() { printf '%s' "$LOGGED" | grep -q '^OK '; }
 
 plain_conf; snapshot
-mktemp() { return 1; }
-repair
-unset -f mktemp
+BREAK=mktemp; repair; BREAK=""
 unchanged && ok "mktemp failure: conf untouched" || bad "mktemp failure: conf changed"
 logged_ok && bad "mktemp failure: logged OK anyway" || ok "mktemp failure: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "mktemp failure: no live-route flag" || bad "mktemp failure: set the live-route flag"
@@ -391,27 +431,21 @@ warned && ok "mktemp failure: WARN logged" || bad "mktemp failure: silent"
 # injectable here, so the line count it is detected by is: under-report it and
 # the repair must refuse.
 plain_conf; snapshot
-wc() { echo 1; }
-repair
-unset -f wc
+BREAK=wc; repair; BREAK=""
 unchanged && ok "short render: conf untouched" || bad "short render: replaced the conf with an incomplete file"
 logged_ok && bad "short render: logged OK anyway" || ok "short render: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "short render: no live-route flag" || bad "short render: set the live-route flag"
 [ -z "$(find "$CD" -name '*.sa02m-gwtmp.*' 2>/dev/null)" ] && ok "short render: temp file cleaned up" || bad "short render: left a temp file behind"
 
 plain_conf; snapshot
-cp() { return 1; }
-repair
-unset -f cp
+BREAK=cp; repair; BREAK=""
 unchanged && ok "backup failure: conf untouched (no replacement without a rollback point)" || bad "backup failure: replaced the conf anyway"
 logged_ok && bad "backup failure: logged OK anyway" || ok "backup failure: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "backup failure: no live-route flag" || bad "backup failure: set the live-route flag"
 warned && ok "backup failure: WARN logged" || bad "backup failure: silent"
 
 plain_conf; snapshot
-mv() { return 1; }
-repair
-unset -f mv
+BREAK=mv; repair; BREAK=""
 unchanged && ok "replace failure: conf untouched" || bad "replace failure: conf changed"
 logged_ok && bad "replace failure: logged OK anyway" || ok "replace failure: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "replace failure: no live-route flag" || bad "replace failure: set the live-route flag"
@@ -421,9 +455,7 @@ warned && ok "replace failure: WARN logged" || bad "replace failure: silent"
 # The write "succeeds" but lands the wrong content: only reading the file back
 # can catch it, and the conf must be restored from the backup.
 plain_conf; snapshot
-mv() { : > "$3"; command rm -f "$2"; }
-repair
-unset -f mv
+BREAK=mv-empty; repair; BREAK=""
 unchanged && ok "silently wrong write: conf restored from .sa02m-gwbak" || { bad "silently wrong write: conf left corrupted"; diff "$T/before" "$C"; }
 logged_ok && bad "silently wrong write: logged OK on an unverified write" || ok "silently wrong write: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "silently wrong write: no live-route flag (no head naming an absent gateway)" || bad "silently wrong write: set the live-route flag"
@@ -434,18 +466,14 @@ warned && ok "silently wrong write: WARN logged" || bad "silently wrong write: s
 # is individually pinned. These two fixtures write exactly one key each.
 printf 'auto eth0\niface eth0 inet static\n    address 192.168.1.136\n    netmask 255.255.255.0\n    dns-nameservers 8.8.8.8\n' > "$C"
 snapshot
-mv() { : > "$3"; command rm -f "$2"; }
-repair
-unset -f mv
+BREAK=mv-empty; repair; BREAK=""
 unchanged && ok "wrong write, gateway-only repair: conf restored" || bad "wrong write, gateway-only repair: conf left corrupted"
 logged_ok && bad "wrong write, gateway-only repair: logged OK" || ok "wrong write, gateway-only repair: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "wrong write, gateway-only repair: no live-route flag" || bad "wrong write, gateway-only repair: set the flag"
 
 printf 'auto eth0\niface eth0 inet static\n    address 192.168.1.136\n    netmask 255.255.255.0\n    gateway 192.168.1.1\n' > "$C"
 snapshot
-mv() { : > "$3"; command rm -f "$2"; }
-repair
-unset -f mv
+BREAK=mv-empty; repair; BREAK=""
 unchanged && ok "wrong write, dns-only repair: conf restored" || bad "wrong write, dns-only repair: conf left corrupted"
 logged_ok && bad "wrong write, dns-only repair: logged OK" || ok "wrong write, dns-only repair: no success log"
 
@@ -453,11 +481,7 @@ logged_ok && bad "wrong write, dns-only repair: logged OK" || ok "wrong write, d
 # claim the conf was restored — at this point its state is genuinely unknown, and
 # the message is the only thing a human has to finish the job by hand.
 plain_conf; snapshot
-cp_calls=0
-cp() { cp_calls=$((cp_calls + 1)); [ "$cp_calls" -ge 2 ] && return 1; command cp "$@"; }
-mv() { : > "$3"; command rm -f "$2"; }
-repair
-unset -f cp mv
+cp_calls=0; BREAK="cp-2nd mv-empty"; repair; BREAK=""
 logged_ok && bad "failed rollback: logged OK" || ok "failed rollback: no success log"
 [ "$GW_REPAIR_ADDED_GW" = 0 ] && ok "failed rollback: no live-route flag" || bad "failed rollback: set the live-route flag"
 printf '%s' "$LOGGED" | grep -q 'восстановлен из' && bad "failed rollback: claims the conf was restored when it was not" || ok "failed rollback: does not claim a restore that did not happen"
@@ -490,7 +514,6 @@ echo "── 14. sa02m_write_resolvconf_head (scripts/lib.sh) ──"
 # FIRST nameserver, so every lookup then pays its timeout.
 # Retarget the head onto the scratch tree and stub `resolvconf` so the function's
 # own presence guard passes on a dev box that has none.
-resolvconf() { :; }
 SA02M_RESOLVCONF_HEAD="$T/resolvconf/head"
 H="$SA02M_RESOLVCONF_HEAD"
 
@@ -505,7 +528,7 @@ warned && ok "stale-head removal is logged, not silent" || bad "stale head remov
 
 mkdir -p "$(dirname "$H")"
 printf '# hand-written by the operator\nnameserver 10.0.0.53\n' > "$H"
-cp "$H" "$T/foreign.head"
+command cp "$H" "$T/foreign.head"
 LOGGED=""; sa02m_write_resolvconf_head ""
 cmp -s "$T/foreign.head" "$H" && ok "a head we did not write is never touched" || bad "removed a foreign resolvconf head"
 warned && bad "WARNed about a foreign head it correctly left alone" || ok "foreign head produces no diagnosis"
