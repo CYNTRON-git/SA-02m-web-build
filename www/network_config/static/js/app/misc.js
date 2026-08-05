@@ -403,7 +403,7 @@ function runCommandLine() {
 
   const cmd = input.value.trim();
   if (!cmd) {
-    setCommandOutput('Введите команду.');
+    setCommandOutput(uiT('Введите команду.'));
     return;
   }
   if (handleCommandBuiltin(cmd)) return;

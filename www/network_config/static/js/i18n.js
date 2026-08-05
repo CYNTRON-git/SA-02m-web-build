@@ -326,6 +326,7 @@
     'Ошибка: неверный пароль root. Введите пароль снова.': 'Error: wrong root password. Enter the password again.',
     'Ошибка запроса:': 'Request error:',
     'Введите пароль root.': 'Enter the root password.',
+    'Введите команду.': 'Enter a command.',
     '[output truncated to last 32768 bytes]': '[output truncated to last 32768 bytes]',
     'Журнал событий': 'Event Log',
     'Обновить': 'Refresh',
