@@ -1,3 +1,17 @@
+# UNVERIFIED-ON-HARDWARE (2026-08-05) — OPT-IN VARIANT, NOT THE DEFAULT.
+# No board has been observed booting from this file. Its bootargs differ from
+# the proven ones (console=tty1, loglevel=3, quiet, rw, panic=10) and it relies
+# on a 3-way DTB fallback chain; whether that combination boots is untested.
+# Note the pre-2026-08-05 generator's Python fallback also emitted a malformed
+# boot.scr (no size table) for ANY payload — that bug is fixed and is a
+# separate matter from this file's own unverified status. The shipped default
+# is etc/boot.cmd.sa02m.min — the 189-byte script a board is observed to boot.
+# Select this variant with: --bootcmd etc/boot.cmd.sa02m
+# Promotion out of UNVERIFIED requires the procedure in
+# docs/contracts/uboot-boot-script.md (a board observed booting from a boot.scr
+# built from THIS file, recorded in docs/bugs/BUGLOG.md with date and board).
+# The marker above is machine-checked by scripts/dev/test-uboot-bootscr.sh.
+
 # SA-02m U-Boot boot script (FAT /dev/mmcblk2p1, mmc dev 1 in U-Boot)
 # Build: mkimage -C none -A arm -T script -d boot.cmd.sa02m -n "SA-02m" boot.scr
 #
