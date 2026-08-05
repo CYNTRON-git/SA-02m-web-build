@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from . import bus_mode
 from . import dtv_registers
 from .flash_protocol import FlasherProtocol
 from .modbus_io import (
@@ -44,8 +45,18 @@ REG_BOOTLOADER_VER_COUNT = 8
 REG_NET_BAUD = 110
 REG_NET_PARITY = 111
 REG_NET_STOP = 112
-REG_FAST_MODBUS = 122
+REG_FAST_MODBUS = 122  # family-common bus-mode selector: 0 classic / 1 Fast / 2 BACnet
 REG_NET_ADDR = 128
+
+
+def family_from_kind(kind: Optional[str]) -> Optional[str]:
+    """Семейство bus_mode из kind снимка: mr → FAMILY_MR, dtv → FAMILY_DTV,
+    иначе None (CE-02m-3 / WB / bootloader — селектор шины не поддерживают)."""
+    if kind == "mr":
+        return bus_mode.FAMILY_MR
+    if kind == "dtv":
+        return bus_mode.FAMILY_DTV
+    return None
 
 CE_INPUT_START = 500
 CE_INPUT_COUNT = 48
@@ -713,7 +724,12 @@ def _read_network(send, slave: int, fallback_device: Dict[str, Any]) -> Dict[str
         "parity": parity,
         "stopbits": stop,
         "address": int(addr_u16 or fallback_device.get("address") or 1) & 0xFFFF,
+        # Legacy 2-state view kept byte-identical for a cached old bundle
+        # (deployed-cache compatibility): Fast enabled ⇔ reg122 == 1.
         "fast_modbus": bool(fast_u16) if fast_u16 is not None else False,
+        # 3-state field-bus selector (§5.1): raw read + fail-closed sanitized value.
+        "bus_mode_raw": (int(fast_u16) & 0xFFFF) if fast_u16 is not None else None,
+        "bus_mode": bus_mode.sanitize(fast_u16),
     }
 
 
@@ -889,8 +905,11 @@ def snapshot_for_device(
         kind, identity = _resolve_kind(identity, device)
 
         network = _read_network(send, slave, device)
+        family = family_from_kind(kind)
         payload: Dict[str, Any] = {
             "kind": kind,
+            "family": family,
+            "bus_mode_supported": bus_mode.selector_supported(family),
             "info": {
                 "address": network["address"],
                 "serial": int(identity["serial"]) & 0xFFFFFFFF,
@@ -1031,6 +1050,69 @@ def write_allowed_holding(
     finally:
         close_transport()
     return snapshot_for_device(device_path, device, snapshot_detail="full")
+
+
+def write_bus_mode(
+    device_path: str,
+    device: Dict[str, Any],
+    mode: int,
+) -> Dict[str, Any]:
+    """Записать 3-state поле полевой шины (рег.122) для MR/DTV (§5.1).
+
+    Значение валидируется в {0,1,2}; семейство должно поддерживать селектор
+    (CE/WB/bootloader — отказ). Возврат: результат с целевым режимом и, для
+    live-переходов 0/1, свежий снимок. Для BACnet(2) устройство уходит в
+    deferred-reboot — свежий снимок не читается (§5.3-проверку делает верхний
+    слой после окна применения через /bacnet/verify)."""
+    if not bus_mode.bus_mode_valid(mode):
+        raise ValueError("Режим шины: только 0 (классический), 1 (Fast) или 2 (BACnet)")
+    target = int(mode) & 0xFFFF
+    send, close_transport = _open_transport(device_path, device)
+    try:
+        slave = _device_slave(device)
+        identity = _read_live_identity(send, slave, device)
+        kind, identity = _resolve_kind(identity, device)
+        family = family_from_kind(kind)
+        if not bus_mode.selector_supported(family):
+            raise ValueError("Полевая шина недоступна для этого семейства устройств")
+        prior_raw = _read_u16(send, slave, REG_FAST_MODBUS, 800)
+        err = write_single(send, slave, REG_FAST_MODBUS, target, 800)
+        if err:
+            raise RuntimeError(f"Запись рег. 122: {err}")
+    finally:
+        close_transport()
+    result: Dict[str, Any] = {
+        "kind": kind,
+        "family": family,
+        "requested_mode": target,
+        "prior_mode": bus_mode.sanitize(prior_raw),
+        "reboot_pending": target == bus_mode.BUS_BACNET,
+    }
+    if target != bus_mode.BUS_BACNET:
+        # Live switch (classic ↔ Fast) — no reboot; a fresh snapshot is safe.
+        result["snapshot"] = snapshot_for_device(device_path, device, snapshot_detail="full")
+    return result
+
+
+def probe_bus_mode(device_path: str, device: Dict[str, Any]) -> Dict[str, Any]:
+    """Прочитать рег.122 и сказать, отвечает ли устройство по Modbus (§5.3).
+
+    Используется верхним слоем после окна применения BACnet: если устройство ещё
+    отвечает по Modbus и рег.122 == 2 — прошивка без поддержки BACnet или
+    переключение не применилось (inert-honesty). Тишина ⇒ answered=False."""
+    send, close_transport = _open_transport(device_path, device)
+    try:
+        slave = _device_slave(device)
+        raw = _read_u16(send, slave, REG_FAST_MODBUS, 800)
+    finally:
+        close_transport()
+    answered = raw is not None
+    return {
+        "answered": answered,
+        "bus_mode_raw": (int(raw) & 0xFFFF) if answered else None,
+        "bus_mode": bus_mode.sanitize(raw) if answered else None,
+        "verdict": bus_mode.bacnet_switch_verdict(answered, raw),
+    }
 
 
 def write_allowed_coil(
