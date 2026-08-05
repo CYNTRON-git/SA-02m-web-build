@@ -13,6 +13,86 @@
 **Причина:** `/etc/logrotate.d/wtmp` содержал 154 NUL-байта вместо текста (ровно размер эталонного конфига), рядом лежал осиротевший sed-темпфайл `sedofiGHt` (0 байт). Все файлы `/etc/logrotate.d/*`, `/etc/logrotate.conf`, ssh host keys и machine-id имели mtime первых секунд первого бута после клона (2026-08-04 18:23:44–45) — классический ext4 zero-fill: rename/метаданные доехали, данные — нет. Ни деплой-скрипты, ни imaging-скрипты wtmp не трогают — повреждение разовое, приехало через клонирование.
 **Исправление:** (1) На DUT: восстановлен эталонный `/etc/logrotate.d/wtmp` (154 байта, стиль соседнего `btmp`), удалён `sedofiGHt`; `logrotate -d` без ошибок, `systemctl reset-failed logrotate && systemctl start logrotate` — exit 0, `systemctl --failed` пуст. (2) В репо: добавлен эталон `etc/logrotate.d/wtmp`; в `scripts/01-system.sh` — самопочинка при деплое: удаление `sed??????`-огрызков в `/etc/logrotate.d/`, восстановление NUL-обнулённых конфигов из репо (или перенос в /var/backups, если эталона нет), контрольный `logrotate -d`.
 
+## [2026-08-03 17:32] branch: feature/klogic — MPLC4 watchdogs re-enabled and verified
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, systemd watchdog units
+**Тип:** Некорректное поведение
+**Описание:** Watchdog-сервисы были временно отключены для диагностики post-flash boot loop и не должны оставаться отключёнными в рабочем образе.
+**Причина:** После устранения реальных причин нестабильности (`boot.scr`, `fstab`, cron CRLF, FAT dirty bit) отключённые watchdog-и снижали эксплуатационную надёжность.
+**Исправление:** `sa02m-userspace-watchdog`, `sa02m-failure-monitor`, `net-watchdog` снова включены на `.136` и в `sdcard.img`; устройство проверено после reboot и после выхода за grace-period 180s: boot_id не сменился, failed units нет, watchdog-и active/enabled, ssh/nginx/fcgiwrap/mplc4/cron active.
+
+## [2026-08-03 17:17] branch: feature/klogic — MPLC4 post-flash reboot loop fixed
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, `/etc/fstab`, `/etc/cron.d/sa02m-arp`, systemd watchdog units
+**Тип:** Некорректное поведение
+**Описание:** После прошивки устройство поднималось по сети, но после переноса/перезагрузки могло не стартовать стабильно.
+**Причина:** После первого boot были активны userspace watchdog-и, способные ребутить систему при проблемах сервисов; boot FAT был помечен dirty; removable mounts `/media/usb` и `/media/sdcard` блокировали/шумели при отсутствии носителей; `/etc/cron.d/sa02m-arp` был с CRLF и игнорировался cron как `bad username`.
+**Исправление:** На устройстве и в `sdcard.img` отключён автозапуск `sa02m-userspace-watchdog`, `sa02m-failure-monitor`, `net-watchdog`; выставлен `RuntimeWatchdogSec=8s`; исправлен FAT dirty bit; removable mounts переведены в `nofail,noauto`; cron-файл переведён в LF. Устройство проверено после нескольких reboot: failed units нет, ssh/nginx/fcgiwrap/mplc4/cron активны, watchdog-и inactive/disabled.
+
+## [2026-08-03 16:25] branch: feature/klogic — MPLC4 autorun fixed-target verification added
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Другое
+**Описание:** После подтверждения, что причина незагрузки была в образе, скрипт прошивки улучшен без изменения рабочей схемы записи.
+**Причина:** Минимальный скрипт не проверял наличие `/mnt/sdcard.img`, наличие `/dev/mmcblk2` и результат записи на носитель.
+**Исправление:** Сохранена проверенная запись `/mnt/sdcard.img` → `/dev/mmcblk2` с `bs=1M`; добавлены сообщения, проверки входов, `sync` до/после `dd` и сравнение первых 16 MiB через `cmp`, если утилита доступна.
+
+## [2026-08-03 16:24] branch: feature/klogic — MPLC4 image boot.scr restored from donor
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки MPLC4 образа устройство перезагружалось и не стартовало.
+**Причина:** В FAT-разделе локального `sdcard.img` файл `boot.scr` отличался от рабочего донора и имел размер 1960 bytes вместо валидного U-Boot legacy script 261 bytes; `zImage` и `sun8i-a40i-sk.dtb` при этом совпадали с донором.
+**Исправление:** `boot.scr` восстановлен напрямую с рабочей eMMC `.136` в FAT-разделе образа и в `/usr/local/share/sa02m/boot.scr` внутри rootfs; bootargs возвращены к проверенному варианту `root=/dev/mmcblk2p2 rootwait threadirqs`.
+
+## [2026-08-03 16:14] branch: feature/klogic — MPLC4 autorun restored to minimal known-good flow
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** Усложнённый `autorun.sh` не соответствовал ранее проверенному рабочему сценарию прошивки.
+**Причина:** Autodetect, fallback-логика и дополнительные проверки добавляли точки отказа в ограниченной autorun-среде, тогда как на этом стенде eMMC стабильно доступна как `/dev/mmcblk2`.
+**Исправление:** Скрипт сведён к минимальному рабочему варианту: `rmmod -f g_mass_storage`, `dd if=/mnt/sdcard.img of=/dev/mmcblk2 bs=1M && sync`, `reboot`.
+
+## [2026-08-03 16:14] branch: feature/klogic — MPLC4 autorun BusyBox math fixed
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** `autorun.sh` мог завершаться до начала записи образа при autodetect eMMC.
+**Причина:** Скрипт умножал количество 512-byte sectors на 512 и сравнивал байты; в 32-bit BusyBox `ash` это может переполняться на eMMC ~8 GB. Дополнительно использовались менее переносимые параметры (`bs=1M`, `rmmod -f`).
+**Исправление:** Autodetect переведён на прямое сравнение количества секторов без 64-bit arithmetic, добавлен fallback через `/proc/partitions`, `dd` переведён на `bs=1048576`, `rmmod -f` заменён на BusyBox-safe `rmmod`.
+
+## [2026-08-03 16:12] branch: feature/klogic — MPLC4 autorun moved to USB root
+
+**Файл(ы):** `D:/SA02m-images/autorun.sh`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** При копировании комплекта на флешку autorun-среда не запускала прошивку MPLC4.
+**Причина:** Исполняемый `autorun.sh` был подготовлен внутри папки `MPLC4`, а штатная среда запускает `autorun.sh` из корня USB-носителя; при структуре с папкой `MPLC4` образ не находился и прошивка не начиналась.
+**Исправление:** Добавлен корневой `D:/SA02m-images/autorun.sh`, который ищет `MPLC4/sdcard.img`; скрипт внутри `MPLC4` обновлён тем же BusyBox-safe вариантом, чтобы работали оба способа копирования на флешку.
+
+## [2026-08-03 15:59] branch: feature/klogic — MPLC4 image boot fixed: root PARTUUID and target autodetect
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/sdcard.img`, `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки MPLC4 плата не доходила до userland (нет LED/пищалки).
+**Причина:** Watchdog не мог быть первопричиной до старта kernel/systemd. В образе `boot.scr` жёстко задавал `root=/dev/mmcblk2p2`, что ломает загрузку при другой нумерации eMMC в kernel. Дополнительно старый autorun жёстко писал `/dev/mmcblk2`, что могло молча выбрать не тот `mmcblkN` в FEL/buildroot окружении.
+**Исправление:** `boot.scr` внутри `sdcard.img` и `/usr/local/share/sa02m/boot.scr` переведены на `root=PARTUUID=51f8705c-02`; `autorun.sh` теперь autodetect единственного `/dev/mmcblkN` размером 7–9 GB, пишет образ, делает `sync` и проверяет первые 16 MiB через `cmp` перед reboot.
+
+## [2026-08-03 15:43] branch: feature/klogic — autorun MPLC4 упрощён до BusyBox-safe dd
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/autorun.sh`
+**Тип:** Некорректное поведение
+**Описание:** После предыдущего упрощения плата всё ещё не стартовала при прошивке MPLC4-комплекта.
+**Причина:** Даже минимальный вариант оставлял лишнюю shell-обвязку (`set -e`, функции, `tee`, `conv=fsync`, логирование), что усложняло диагностику на buildroot/FEL окружении.
+**Исправление:** `autorun.sh` переписан в максимально простой BusyBox-safe сценарий: mount USB при необходимости, проверить `/mnt/sdcard.img` и `/dev/mmcblk2`, выполнить `dd if=/mnt/sdcard.img of=/dev/mmcblk2 bs=1M`, два `sync`, reboot. В папке MPLC4 только `autorun.sh` и `sdcard.img`; `sh -n`, LF/no CRLF, ASCII проверены.
+
+## [2026-08-03 14:49] branch: feature/klogic — MPLC4 USB-комплект не стартовал после прошивки
+
+**Файл(ы):** `D:/SA02m-images/MPLC4/autorun.sh`, `D:/SA02m-images/MPLC4/sdcard.img`
+**Тип:** Некорректное поведение
+**Описание:** После прошивки подготовленного MPLC4-комплекта плата не поднималась ожидаемо.
+**Причина:** `sdcard.img` оказался корректным (U-Boot/SPL, p1 FAT, p2 ext4 clean, `boot.scr`, firstboot resize/watchdog внутри образа), но внешний комплект содержал лишние `firstboot-overlay`/`boot.scr`, а `autorun.sh` после `dd` повторно перечитывал и монтировал новые разделы eMMC для наложения overlay. Это лишняя и рискованная стадия для buildroot/FEL-прошивки.
+**Исправление:** Комплект `D:/SA02m-images/MPLC4` упрощён до `autorun.sh` + `sdcard.img`; новый autorun только пишет образ на `/dev/mmcblk2`, делает `sync` и reboot. Проверено: `sh -n`, LF/no CRLF, ASCII, SHA образа `aeb68cee...`.
+
 ## [2026-08-01 20:01] branch: feature/klogic — кнопка сканирования RS-485 оставалась disabled
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `/var/www/network_config/static/js/flasher.js`, `/var/www/network_config/index.html`
@@ -22,6 +102,22 @@
 **Исправление:** После локального освобождения порта вызывается `updateGlobalBusyFromPorts()`, затем штатный `updatePortHint()`/`syncActionButtons()` возвращает кнопки в idle-состояние; для `flasher.js` обновлён cache-bust в `index.html`.
 
 ---
+
+## [2026-08-03 12:39] branch: feature/klogic — виджет Система: RT / без RT у версии ядра
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/static/js/i18n.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В «Сведения → Система» строка «Ядро: 6.1.0» не показывала, RT это ядро или обычное (без RT).
+**Причина:** `status.cgi` уже отдавал `kernel_is_rt`, но `applySystemStatus` выводил только `kernel`.
+**Исправление:** Подпись `Ядро: <ver> · RT` / `Ядро: <ver> · без RT` по флагу `kernel_is_rt`.
+
+## [2026-08-03 12:30] branch: feature/klogic — KPI Сведения: равный размер, полосы снизу
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/static/js/app/status.js`, `www/network_config/static/js/app.js`
+**Тип:** Некорректное поведение / UI
+**Описание:** Маленькие виджеты «Сведения» разной высоты; «Загрузка ядер» и R/W eMMC лишние; «Процессов:» не влезало; полосы не у низа, значения не на одной линии (как на RK3588).
+**Причина:** Карточки без общей KPI-сетки `title | 1fr value | bar`; статус опроса/высота шли от контента.
+**Исправление:** Класс `.dash-kpi` + `.widget-body` (как board-portal): `min-height:200px`, значение по центру, `.bar-row`/footer снизу; убраны «Загрузка ядер» и `#disk-io`; всегда «Проц.:».
 
 ## [2026-08-03 11:27] branch: feature/klogic — зелёный «опрос» на RS-485 при open=0
 
