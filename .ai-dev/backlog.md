@@ -2,38 +2,11 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-07-17 (whole-project
+entries are pruned (history lives in git); last prune 2026-08-05 (whole-project
 audit).
 
 ## Open
 
-- [RESOLVED 2026-07-29, 1.0.5.54] **[HIGH] `www-data` cannot delete an
-  `interfaces.d` conf.** Operator chose option (b): pinned
-  `/usr/local/sbin/sa02m-conf-rm.sh` (case-allow-list of the four LAN conf
-  names, symlink refusal, backup-first, idempotent) is now the panel's only rm
-  capability; `lan_conf_retire` tries it first and falls back to
-  retire-to-comments on pre-1.0.5.54 deploys. `docs/contracts/
-  ethernet-iface-naming.md §5.4` is the home.
-- [RESOLVED 2026-07-30, 1.0.5.60] **[MED] udev queue busy at boot on the 6.1
-  bench board — root cause undiagnosed.** Variable per boot (bench
-  192.168.1.136, kernel 6.1.0-rc6, udev 255): boot -1 both `systemd-udev-settle`
-  and Debian's `ifupdown-pre` (`udevadm settle`) timed out at the 120 s ceiling
-  (journal: `Timed out for waiting the udev queue being empty`), delaying
-  `networking.service` ~2 min; boot 0 of the same day the queue was done at
-  14.4 s. Runtime queue is empty (`settle_rc=0`). Suspects: docker/codemeter/
-  CAN device churn. Consequence was boot *delay* only, no longer a correctness
-  failure: the unit no longer pulls settle in (`Wants=` dropped 1.0.5.54) and
-  the per-device udev-initialized gate (1.0.5.56) is immune to whole-queue churn
-  by design — the residual delay came from `ifupdown-pre` when it runs.
-  **Resolution:** no longer reproduces after the 1.0.5.58 kernel rebuild — 5
-  clean boots on bench 192.168.1.136, `ifupdown-pre` now 5.2 s, no "Timed out
-  for waiting the udev queue being empty" on boots 0/-1/-2/-3. The residual boot
-  cost is now the mqtt-opcua boot gate that 1.0.5.60 removes.
-- [RESOLVED] 2026-07-30 **[LOW] `sa02m-kernel-select.sh set <profile>` noops on a
-  same-profile kernel UPGRADE.** Fixed in 1.0.5.59: new `refresh` verb copies the
-  running profile's canonical zImage onto the active FAT boot file via an atomic
-  temp→verify→rename write (only if it differs), with CGI `POST {action:"refresh"}`
-  + a web button. `set`'s active-slot write hardened to the same atomic helper.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
@@ -74,14 +47,15 @@ audit).
   names in a small contract entry on the next cloud UI touch. (Threat-model
   cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
 - [OPEN] 2026-07-17 **[LOW] Decompose worklist (module-size sweep).**
-  `main.css` 4166 · `modbus_mqtt_bridge.py` **3179** (fastest grower again:
-  +405 in the 1.0.5.46 window on top of +436 in 1.0.5.9–12; **first
-  priority** — audit 2026-07-22 B7; the FMB event/insurance unit tests
-  seed the behaviour net; clean up legacy `except Exception: pass`
-  clusters during the split) · `status.cgi` 2507 · `mqtt.js` **2441** ·
-  `flash_protocol.py` 2418 · `app/status.js` 1546. Start with the bridge.
-  `flasher.js` deliberately excluded (see F10 below). Audits 2026-07-17
-  (F6, evening F3), refreshed 2026-07-22.
+  Refreshed by audit 2026-08-05: `flasher.js` **4428** (see F10 below —
+  deferred, cohesive IIFE) · `main.css` **4424** · `modbus_mqtt_bridge.py`
+  **3422** (fastest grower; **first priority** — an Operator-started decompose
+  session is already running on it, coordinate; the FMB event/insurance unit
+  tests seed the behaviour net; clean up legacy `except Exception: pass`
+  clusters during the split) · `status.cgi` **2507** · `mqtt.js` **2441** ·
+  `flash_protocol.py` **2418** · `app/status.js` **1553**. Start with the
+  bridge. Audits 2026-07-17 (F6, evening F3), refreshed 2026-07-22 and
+  2026-08-05.
 - [OPEN] 2026-07-22 **[LOW] Bridge `PortCycleScheduler` loop untested.**
   The per-port scheduling loop (classic/event balancing, warmup gate, the
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
@@ -118,13 +92,13 @@ audit).
   (per-candidate `service_present`/`unit_exists` systemctl) — batchable too but the
   resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
   Defer unless the full services path needs to be faster still.
-- [RESOLVED 2026-07-29] **[MED] eth0-hardcoding in web/net consumers (end-board
-  gap).** Closed by the `eth0`/`eth1` canonicalization guarantee
-  (`docs/contracts/ethernet-iface-naming.md`); the resolve-condition — the
-  on-device pass on a real board — was met on 2026-07-29: bench `192.168.1.136`
-  turned out legacy-named and the `end0`→`eth0` rename + migration ran live
-  (journal `renamed` ×2). Residual hardcoders are correct by construction and
-  stay unedited.
+- [OPEN] 2026-08-05 **[LOW] `cmd_exec.cgi` uncontracted.** The 1.0.5.64 command
+  line (`www/network_config/cgi-bin/cmd_exec.cgi`) is a request/response CGI
+  surface with no `docs/contracts/` entry; today it is UI-only (no external
+  client) and its security posture is homed in `docs/threat-model.md §S2/§4`,
+  so this is optional — freeze its POST fields (`cmd`/`mode`/`root_password`)
+  and JSON shape (`ok`/`rc`/`output`/`mode`/`truncated`) in a small contract
+  entry on the next command-line touch. Audit 2026-08-05 (LOW-7).
 - [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
   `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
   legacy static `session_token=cyntron_session` cookie instead of the
