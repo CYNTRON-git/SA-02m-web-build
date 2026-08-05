@@ -83,6 +83,15 @@
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
+      "id": "watchdog-cap",
+      "checks": "Static gate for the hardware watchdog policy homed in etc/systemd/sa02m-watchdog.conf. Cap pin (open-world): it SWEEPS etc/ scripts/ tools/ opt/ www/ install.sh, so a brand-new writer is judged too, not just the enumerated copies — every RuntimeWatchdogSec/RebootWatchdogSec/ShutdownWatchdogSec value parses to <=16s (the sun4i-wdt cap on the A40i) or is an explicit disable, with durations NORMALISED first: a naive compare reads the original defect's `2min` as 2, and the spaced form `2 min` (valid per systemd.time(7)) must reach the parser intact rather than truncating to `2`. docs/ and .ai-dev/ are deliberately NOT swept — BUGLOG quotes the historical bad values as the defects it records. Plus: RuntimeWatchdogSec=15s and RebootWatchdogSec=0 in every copy that carries the values literally; no active ShutdownWatchdogSec= (deprecated pre-v243 alias); the firstboot-overlay copy byte-identical to the policy home; and 01-system.sh installing the drop-in from $ETC_REPO with no inline heredoc (it used to ship its own competing 10s/4min values to the same path). A FAIL means a device would get a timeout systemd rejects with EINVAL on every shutdown, or a copy silently diverged from the policy home. Non-vacuous both ways: a missing enumerated file, a dead sweep, or an empty extraction FAILS. Deliberate non-flags: `=0` disables and commented-out lines (the imaging comment-out sed idiom).",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/watchdog-cap.sh",
+      "beat": "build",
+      "covers": ["etc/systemd/sa02m-watchdog.conf", "scripts/01-system.sh", "tools/imaging/", "tools/system-hardening/", ".ai-dev/quality/checks/watchdog-cap.sh"],
+      "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
       "id": "iface-conf-merge",
       "checks": "Functional regression for apply.cgi's /etc/network/interfaces.d foreign-stanza merge: vendor post-up/comment/hwaddress lines preserved verbatim and in order, byte-identical second save (idempotency), unchanged output for a conf with no foreign lines, malformed/duplicate-stanza fallback to backup+regeneration, the 64-line/512-byte/control-char bounds, and the sibling rule (canonical always written, legacy mirrored as allow-hotplug only while live, retired once the device is gone). The merge is Bash inside a CGI, so no other row reaches it — a silent re-break of vendor-hook preservation would otherwise pass every syntax/static gate.",
       "config": null,

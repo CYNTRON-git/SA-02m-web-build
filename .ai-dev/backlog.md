@@ -29,6 +29,57 @@ audit).
   `scripts/01-system.sh:112` both describe bootargs as carrying `console=tty1`
   "generated from etc/boot.cmd.sa02m" — no longer true of the default payload
   (now `etc/boot.cmd.sa02m.min`). Outside the format fix's scope.
+- [OPEN] 2026-08-05 **[MED] Direct sysfs writes of a watchdog timeout above the
+  16s cap — same defect class, different mechanism.**
+  `etc/sa02m-watchdog-feed.sh:45-46` and `tools/imaging/ssh-flash-safe.sh:150` do
+  `echo 30 > /sys/class/watchdog/watchdog0/timeout` — 30s against a 16s-capped
+  sun4i-wdt, swallowed by `|| true`, and the feeder's own comment acknowledges
+  the 16s Allwinner default. Not a systemd directive, so the `watchdog-cap` gate
+  does not see it — a named limit of that guard, not an oversight. Mitigating
+  context: the feeder is the very unit the `sa02m-watchdog.conf` policy masks and
+  disables, so this is likely dead on a correctly-installed device — verify that
+  before deciding fix-vs-delete. Surfaced by the builder during the watchdog-cap
+  change; deliberately left out of that diff (plan §14 scope).
+- [OPEN] 2026-08-05 **[LOW] `watchdog-cap` gate has no meta-test and a loose
+  non-vacuity floor.** Its sweep non-vacuity check is a fixed `>=10` against a
+  live count of 15, so dropping one sweep root still passes. Also the widened
+  value regex can absorb a following English word on a prose line (fail-closed
+  cry-wolf, reachable via the swept `tools/system-hardening/README.md`), and the
+  gate has no meta-test — matching its two sibling gates
+  (`iface-naming-contract`, `kernel-policy-contract`), so this is a shared shape,
+  not a regression. Reviewer advisories A5–A7 on the watchdog-cap change.
+- [OPEN] 2026-08-05 **[MED] `covers` directory-prefix entries match nothing under
+  `--touched`.** `.ai-dev/quality/run.mjs` `coversToRegex("etc/")` compiles to
+  `/^etc\/$/`, so a bare directory prefix matches the directory string itself and
+  never a file inside it — `fileMatchesCovers(["etc/systemd/x.conf"], ["etc/"])`
+  is `false`. Repo-wide: `etc/`, `scripts/`, `tools/imaging/`,
+  `www/network_config/static/js/`, `opt/sa02m-flasher/` all behave this way, so
+  the Builder's `--touched` subset silently under-runs (observed: 2 rows instead
+  of the 4 the touched set implied). `"tools/imaging/**"` matches correctly. Ship
+  is unaffected — the full `build`/`review` beats run everything. Fix needs a
+  `run.test.mjs` case pinning both the prefix and `**` forms. Found by the
+  builder + reviewer during the watchdog-cap work.
+- [OPEN] 2026-08-05 **[LOW] `autorun.sh` / `autorun-fel.sh` twin drift is
+  unpinned.** The two files are byte-identical today and every change so far has
+  carried the same hunk to both, but nothing enforces it — unlike the
+  overlay↔policy-home `cmp` in `watchdog-cap.sh` pin 5. A non-watchdog divergence
+  between the USB and FEL flashing paths would pass silently. Pre-existing shape;
+  fix = one `cmp` pin, or a shared sourced fragment if the two must legitimately
+  diverge. Surfaced by the watchdog-cap reviewer (A2).
+- [OPEN] 2026-08-05 **[LOW] `tools/imaging/ssh-flash-safe.sh` writes
+  `system.conf` directly instead of the drop-in.** It is the only watchdog writer
+  patching `/etc/systemd/system.conf` itself; every other path *comments out*
+  that file's `RuntimeWatchdogSec` precisely so `system.conf.d/` wins. So its
+  value can be silently overridden by any drop-in, or override nothing.
+  Deliberately left alone in the watchdog-cap change (value unified to 15s + an
+  explanatory comment); restructuring it to the drop-in convention is the real
+  fix. Plan `watchdog-cap.md` §6.4.
+- [OPEN] 2026-08-05 **[LOW] `firstboot-overlay` watchdog conf has no packer
+  step.** `tools/imaging/firstboot-overlay/etc/systemd/system.conf.d/sa02m-watchdog.conf`
+  is a shipped media artifact kept byte-identical to `etc/systemd/sa02m-watchdog.conf`
+  by a `cmp` pin, not generated from it. True dedup = a packer step copying from
+  `etc/` at image-build time; deferred because it changes the imaging flow. Plan
+  `watchdog-cap.md` §11.3 option B.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,

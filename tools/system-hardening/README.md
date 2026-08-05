@@ -8,7 +8,7 @@
 
 | Слой | Файл | Назначение |
 |---|---|---|
-| **HW WDT (PID1)** | `etc/systemd/sa02m-watchdog.conf` | drop-in для `system.conf` — `RuntimeWatchdogSec=15s`, `RebootWatchdogSec=2min`. PID1 systemd сам владеет `/dev/watchdog0`. |
+| **HW WDT (PID1)** | `etc/systemd/sa02m-watchdog.conf` | drop-in для `system.conf` — `RuntimeWatchdogSec=15s`, `RebootWatchdogSec=0` (watchdog на время выключения отключён намеренно; обоснование — в шапке самого файла). PID1 systemd сам владеет `/dev/watchdog0`. |
 | **Userspace WDT** | `etc/sa02m-userspace-watchdog.sh` + `etc/systemd/sa02m-userspace-watchdog.service` | health-checks (procs/ports/http/iface/load/mem); при стойком сбое делает forced reboot (graceful → reboot -f → kernel WDT). |
 | **Failure monitor** | `etc/sa02m-failure-monitor.sh` + `etc/sa02m-failure-monitor.service` | логирование переходов состояний и snapshot при сбоях, без reboot. |
 | **COM-fallback** | `serial-getty@ttyS0` (115200) | если сеть зависла — root login через USB-serial COM7. |
@@ -44,7 +44,11 @@ REPO_ROOT=/tmp/sa02m_repo bash /tmp/sa02m_repo/tools/system-hardening/install.sh
 ```bash
 ssh root@192.168.1.136 'systemctl show -p RuntimeWatchdogUSec -p RebootWatchdogUSec'
 # RuntimeWatchdogUSec=15s
-# RebootWatchdogUSec=2min
+# RebootWatchdogUSec=0
+
+ssh root@192.168.1.136 'cat /sys/class/watchdog/watchdog0/max_timeout'
+# 16 — потолок драйвера sun4i-wdt; RuntimeWatchdogSec обязан быть ≤ него.
+# Не путать с соседним `timeout` — там ТЕКУЩИЙ таймаут (с этой политикой 15).
 
 ssh root@192.168.1.136 'tail -5 /var/log/sa02m_userspace_watchdog.log'
 # heartbeat uptime=...s load=.../100 memavail=...KB

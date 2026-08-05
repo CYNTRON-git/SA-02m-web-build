@@ -453,17 +453,18 @@ fi
 # Старая ad-hoc реализация (printf 1 > /dev/watchdog в цикле) каждые 10 c
 # открывала и закрывала устройство, и ядро спамило "watchdog did not stop!".
 # systemd сам держит fd открытым и корректно закрывает на shutdown.
-log INFO "Активация systemd PID1 watchdog (RuntimeWatchdogSec=10s)"
+# Ставим ровно тот файл, что лежит в репо: политика (значения + обоснование,
+# в т.ч. hardware cap 16s у sun4i-wdt) живёт ТОЛЬКО в
+# etc/systemd/sa02m-watchdog.conf. Инлайн-копии здесь больше нет — она годами
+# молча перекрывала эталон своими 10s/4min.
+log INFO "Активация systemd PID1 watchdog (drop-in из $ETC_REPO/systemd/sa02m-watchdog.conf)"
+if [ ! -f "$ETC_REPO/systemd/sa02m-watchdog.conf" ]; then
+    log ERR "Не найден $ETC_REPO/systemd/sa02m-watchdog.conf — неполный checkout; fallback-копии политики нет и не будет"
+    exit 1
+fi
 install -d -m 755 /etc/systemd/system.conf.d
-cat > /etc/systemd/system.conf.d/sa02m-watchdog.conf <<'WDG'
-[Manager]
-# Раз в треть таймаута драйвера sunxi-wdt (~30s) кормим /dev/watchdog.
-RuntimeWatchdogSec=10s
-# Грейс-период во время shutdown: если что-то зависло — sunxi-wdt
-# сделает hardware reset.
-ShutdownWatchdogSec=4min
-RebootWatchdogSec=4min
-WDG
+install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
+    /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
 # Уменьшаем умолчательный stop-timeout сервисов: иначе при reboot, если
 # какой-нибудь сервис «застрял», systemd ждёт 90 секунд прежде чем

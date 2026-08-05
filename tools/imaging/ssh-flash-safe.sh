@@ -123,11 +123,15 @@ PART=$(partx -g -o NR,TYPE '"$TARGET_DEV"' 2>/dev/null | awk '"'"'$2=="Linux"{pr
 MNT=$(mktemp -d /tmp/new-root-XXXXXX)
 mount '"$TARGET_DEV"'p${PART} "$MNT" 2>/dev/null || mount '"$TARGET_DEV"'2 "$MNT"
 
-# RuntimeWatchdogSec
+# RuntimeWatchdogSec — 15s из эталона etc/systemd/sa02m-watchdog.conf (cap
+# sun4i-wdt = 16s). ВНИМАНИЕ: правим system.conf НАПРЯМУЮ, а не drop-in, — это
+# свежезаписанный dd-образ, каталога system.conf.d в нём может ещё не быть.
+# Остальные пути наоборот комментируют эту строку, чтобы выигрывал drop-in;
+# перевод скрипта на drop-in — отдельная задача (backlog).
 [ -f "$MNT/etc/systemd/system.conf" ] && \
-    sed -i "s/^#*RuntimeWatchdogSec=.*/RuntimeWatchdogSec=8s/" "$MNT/etc/systemd/system.conf" || true
+    sed -i "s/^#*RuntimeWatchdogSec=.*/RuntimeWatchdogSec=15s/" "$MNT/etc/systemd/system.conf" || true
 grep -q "^RuntimeWatchdogSec=" "$MNT/etc/systemd/system.conf" 2>/dev/null || \
-    sed -i "/^\[Manager\]/a RuntimeWatchdogSec=8s" "$MNT/etc/systemd/system.conf" 2>/dev/null || true
+    sed -i "/^\[Manager\]/a RuntimeWatchdogSec=15s" "$MNT/etc/systemd/system.conf" 2>/dev/null || true
 
 # Watchdog-feed script — graceful exit when /dev/watchdog busy
 mkdir -p "$MNT/usr/local/sbin"
