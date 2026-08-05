@@ -67,3 +67,8 @@ cookies.txt
 # Lab/factory device credentials (plaintext) — single home for scripts, never
 # committed. Documented in docs/AGENTS_SSH_AND_DEVICE_ACCESS.md.
 tools/sa02m-device.env
+
+# Underscore-prefixed imaging scratch probes — session-local diagnostics
+# (bench/COM probing), never committed; a recipe worth keeping graduates into a
+# named tools/imaging script + README row (web-diagnostic-tools.md rule 4).
+tools/imaging/_*.py
