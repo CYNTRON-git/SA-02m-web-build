@@ -64,6 +64,102 @@ first_existing_iface() {
     printf '%s' "$1"
 }
 
+# ── Подсеть: проверка «шлюз внутри подсети интерфейса» ─────────────────────
+# Порт валидаторов из www/network_config/cgi-bin/lib_web_validate.sh.
+# Установщик-сторонний дом; веб-копия остаётся — другой контекст развёртывания
+# (тот же приём, что и first_existing_iface выше). Обе стороны закрыты тестами:
+# subnet-validate (веб) и iface-gw-repair (установщик).
+# Чистая целочисленная арифметика bash (без bc); значения уходят только в
+# $(( )) — никогда в shell-слово, путь или запись конфига.
+
+# Print the 32-bit integer for a dotted-quad; non-zero exit on a malformed value
+# (that exit is what makes the caller fail CLOSED). 10# forces base 10 so a
+# leading-zero octet (010) is read decimally, matching the literal string in the
+# config rather than as octal.
+# Одно намеренное отличие от веб-копии: здесь октеты проверяются на 0-255 прямо
+# внутри. В CGI это делает valid_ipv4 до вызова; у установщика такого вызывающего
+# нет — значения приходят из конфига на диске, поэтому проверка встроена.
+ipv4_to_int() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    local o
+    for o in "${BASH_REMATCH[@]:1:4}"; do
+        [ "$((10#$o))" -le 255 ] || return 1
+    done
+    printf '%s' "$(( (10#${BASH_REMATCH[1]})*16777216 + (10#${BASH_REMATCH[2]})*65536 + (10#${BASH_REMATCH[3]})*256 + 10#${BASH_REMATCH[4]} ))"
+}
+
+# Return 0 iff <mask> is a non-zero contiguous netmask (a run of 1-bits then
+# 0-bits). Rejects 0.0.0.0 and non-contiguous masks (e.g. 255.255.0.255).
+netmask_is_contiguous() {
+    local m inv
+    m=$(ipv4_to_int "$1") || return 1
+    [ "$m" -ne 0 ] || return 1
+    inv=$(( (~m) & 0xFFFFFFFF ))
+    (( (inv & (inv + 1)) == 0 ))
+}
+
+# Print the dotted-quad netmask for a CIDR prefix length; non-zero exit on an
+# out-of-range or malformed prefix. Нужна установщику: современная станса
+# ifupdown пишет `address 192.168.1.136/24` вообще без строки netmask, и без
+# этого разбора совершенно исправный конфиг выглядел бы «непонятным».
+# /0 намеренно даёт 0.0.0.0 — netmask_is_contiguous его отвергает, и станса
+# уходит в fail-closed: нулевая маска на интерфейсе смысла не имеет.
+sa02m_prefix_to_netmask() {
+    local p=$1 m
+    [[ "$p" =~ ^[0-9]{1,2}$ ]] || return 1
+    p=$((10#$p))
+    [ "$p" -le 32 ] || return 1
+    if [ "$p" -eq 0 ]; then
+        m=0
+    else
+        m=$(( (0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF ))
+    fi
+    printf '%d.%d.%d.%d' "$(( (m >> 24) & 255 ))" "$(( (m >> 16) & 255 ))" \
+                         "$(( (m >> 8) & 255 ))"  "$(( m & 255 ))"
+}
+
+# Return 0 iff <ip> and <gw> share the subnet defined by <mask>. Any malformed
+# operand returns non-zero — the caller treats that as "do not write".
+same_ipv4_subnet() {
+    local ip gw m
+    ip=$(ipv4_to_int "$1") || return 1
+    gw=$(ipv4_to_int "$2") || return 1
+    m=$(ipv4_to_int "$3")  || return 1
+    (( (ip & m) == (gw & m) ))
+}
+
+# ── resolvconf head (DNS через шлюз) ───────────────────────────────────────
+# Единственный дом head-файла: и 01-system.sh (по маршруту, найденному в
+# системе), и 02-network.sh (после восстановления маршрута в этом же запуске)
+# зовут одну эту функцию.
+SA02M_RESOLVCONF_HEAD=/etc/resolvconf/resolv.conf.d/head
+SA02M_RESOLVCONF_HEAD_MARK='# SA-02m: DNS через шлюз'
+
+# sa02m_write_resolvconf_head <gateway|empty>
+# Непустой аргумент — пишем head с этим шлюзом первым nameserver'ом.
+# Пустой — снимаем ТОЛЬКО свой head: запись, называющая несуществующий шлюз,
+# хуже отсутствия head'а (это первый nameserver, и каждый запрос платит его
+# таймаут). Чужой head не трогаем никогда.
+sa02m_write_resolvconf_head() {
+    local gw=${1:-}
+    command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ] || return 0
+    mkdir -p "$(dirname "$SA02M_RESOLVCONF_HEAD")" 2>/dev/null || return 0
+    if [ -n "$gw" ]; then
+        cat > "$SA02M_RESOLVCONF_HEAD" <<EOF
+$SA02M_RESOLVCONF_HEAD_MARK (ICS / раздача интернета с ПК)
+nameserver ${gw}
+EOF
+        log OK "DNS через шлюз ${gw} (resolvconf head)"
+        return 0
+    fi
+    if [ -f "$SA02M_RESOLVCONF_HEAD" ] \
+       && grep -qF "$SA02M_RESOLVCONF_HEAD_MARK" "$SA02M_RESOLVCONF_HEAD"; then
+        rm -f "$SA02M_RESOLVCONF_HEAD"
+        log WARN "resolvconf head: маршрута по умолчанию нет — устаревший head со шлюзом удалён (иначе первый nameserver недоступен и каждый DNS-запрос ждёт таймаут)"
+    fi
+}
+
 sa02m_board_model() {
     tr -d '\0' < /proc/device-tree/model 2>/dev/null \
         || awk -F: '/^Hardware/{gsub(/^[ \t]+/,"",$2);print $2;exit}' /proc/cpuinfo 2>/dev/null \

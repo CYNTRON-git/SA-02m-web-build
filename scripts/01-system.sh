@@ -412,6 +412,65 @@ for unit in apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask "$unit" 2>/dev/null || true
 done
 
+# ── journald: предел размера журнала ───────────────────────────────────────
+# До этой версии предел журнала репозиторием не владелся: на плате он держался
+# только потому, что его задал базовый образ. Ставим свой drop-in (не правку
+# journald.conf — тот же приём, что и sa02m-watchdog.conf).
+# Значения и их обоснование живут ТОЛЬКО в etc/systemd/sa02m-journald.conf.
+if [ -f "$ETC_REPO/systemd/sa02m-journald.conf" ]; then
+    install -d -m 755 /etc/systemd/journald.conf.d
+    install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf" \
+        /etc/systemd/journald.conf.d/sa02m-journald.conf
+    # journald перечитывает конфиг только при рестарте (SIGUSR2 — это ротация,
+    # не перечитывание). Рестарт безопасен: сокет /run/systemd/journal/* держит
+    # systemd, клиенты пишут в него всё это время — записи не теряются.
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        sa02m_systemctl restart systemd-journald >> "$LOG_FILE" 2>&1 \
+            && log OK "journald: политика размера применена (drop-in sa02m-journald.conf)" \
+            || log WARN "journald: рестарт не удался — политика применится после перезагрузки"
+    else
+        log OK "journald: drop-in sa02m-journald.conf установлен (rootfs build — без рестарта)"
+    fi
+fi
+
+# ── logrotate для /var/log/mplc4 ───────────────────────────────────────────
+# Каталог MPLC4 не ротировался никем: на стендовой плате это 45 МБ из 51 МБ
+# всего /var/log.
+# Ставится ДО самопочинки и `logrotate -d` ниже по двум причинам: (a) 09-mplc.sh
+# выходит рано, когда vendor-payload отсутствует, и плата с MPLC из базового
+# образа правила бы не получила; (b) установка перед валидацией заставляет этот
+# же запуск доказать, что новый конфиг парсится.
+# Страховка от двойной ротации (несущая, не декоративная): ротирует ли вендор
+# свои логи сам, из репозитория не видно. logrotate считает один и тот же путь в
+# двух конфигах фатальной ошибкой и валит ВЕСЬ прогон — тот же класс «один битый
+# конфиг роняет logrotate.service», что и в блоке ниже. Поэтому при чужом
+# правиле на /var/log/mplc4 своё не ставим.
+if [ -f "$ETC_REPO/logrotate.d/sa02m-mplc4" ]; then
+    LR_MPLC_DUP=""
+    for lr_other in /etc/logrotate.d/*; do
+        [ -f "$lr_other" ] || continue
+        case "$lr_other" in */sa02m-mplc4) continue ;; esac
+        if grep -qE '^[^#]*/var/log/mplc4/' "$lr_other" 2>/dev/null; then
+            LR_MPLC_DUP="$lr_other"
+            break
+        fi
+    done
+    if [ -n "$LR_MPLC_DUP" ]; then
+        # Снимаем и своё правило, если его поставил прошлый запуск: вендор мог
+        # добавить своё позже, и тогда конфликт разрешается в его пользу —
+        # главное, чтобы logrotate продолжал работать.
+        rm -f /etc/logrotate.d/sa02m-mplc4
+        log WARN "logrotate: /var/log/mplc4 уже описан в $LR_MPLC_DUP — своё правило не ставим/снимаем (дублирующий путь валит весь прогон logrotate)"
+    else
+        install -m 0644 -o root -g root "$ETC_REPO/logrotate.d/sa02m-mplc4" /etc/logrotate.d/sa02m-mplc4
+        # CRLF в конфиге logrotate роняет его на каждой загрузке — это уже
+        # происходило с sa02m-flasher (BUGLOG [2026-06-03 09:40]). В репозитории
+        # закрыто .gitattributes, здесь — на случай checkout'а без него.
+        sed -i 's/\r$//' /etc/logrotate.d/sa02m-mplc4
+        log OK "logrotate: правило sa02m-mplc4 установлено (/var/log/mplc4/*.log + nginx)"
+    fi
+fi
+
 # ── logrotate: самопочинка конфигов после клонирования образа ───────────────
 # После PiShrink-клона на .136 встречался NUL-обнулённый /etc/logrotate.d/wtmp
 # (ext4 zero-fill: метаданные записаны, данные не доехали) и осиротевший
@@ -645,13 +704,13 @@ fi
 if command -v resolvconf >/dev/null 2>&1 || [ -d /etc/resolvconf/resolv.conf.d ]; then
     mkdir -p /etc/resolvconf/resolv.conf.d
     GW_DNS="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="via") {print $(i+1); exit}}')"
-    if [ -n "$GW_DNS" ]; then
-        cat > /etc/resolvconf/resolv.conf.d/head <<EOF
-# SA-02m: DNS через шлюз (ICS / раздача интернета с ПК)
-nameserver ${GW_DNS}
-EOF
-        log OK "DNS через шлюз ${GW_DNS} (resolvconf head)"
-    fi
+    # Единственный дом head-файла — sa02m_write_resolvconf_head в scripts/lib.sh
+    # (её же зовёт 02-network.sh после восстановления маршрута, чтобы этот же
+    # запуск установщика закончился с рабочим DNS).
+    # Пустой GW_DNS раньше просто пропускал ветку, и УСТАРЕВШИЙ head со старым
+    # шлюзом выживал молча; теперь он снимается — это первый nameserver, и без
+    # маршрута каждый DNS-запрос платит его таймаут.
+    sa02m_write_resolvconf_head "$GW_DNS"
     cat > /etc/resolvconf/resolv.conf.d/base <<'DNS'
 # SA-02m fallback DNS (если шлюз не отвечает как DNS)
 nameserver 8.8.8.8

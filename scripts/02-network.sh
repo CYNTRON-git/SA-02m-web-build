@@ -447,6 +447,344 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ] \
     log WARN "Обнаружены legacy-имена (end0/end1) — требуется перезагрузка для применения канонических имён eth0/eth1"
 fi
 
+# ── Ремонт gateway / dns-nameservers в СУЩЕСТВУЮЩЕМ конфиге ───────────────
+# Блок выше намеренно НЕ перезаписывает уже существующий $LAN0.conf (это сбросило
+# бы статический IP, заданный оператором). Следствие: если сторонний писатель
+# (наблюдалось: внешний инструмент привязки MAC) вырезал из стансы `gateway` и
+# `dns-nameservers`, чинить это некому — плата остаётся без маршрута и DNS, и ни
+# один запуск установщика этого не исправляет.
+#
+# Правила ремонта и их обоснование (только добавляем отсутствующее; проверка
+# подсети обязательна; всё остальное fail-closed) — единственный дом:
+# docs/contracts/ethernet-iface-naming.md §3.1. Здесь не пересказываем.
+#
+# Локальное «почему именно тут»: ставится ПОСЛЕ migrate_iface_conf (работаем по
+# каноническому конфигу, а не по legacy) и ДО «Apply now» (ремонт не должен
+# зависеть от того, тронул ли этот запуск живой интерфейс).
+# Тест: scripts/dev/test-iface-gw-repair.sh (строка реестра iface-gw-repair).
+
+# ensure_gw_dns <iface> <gateway> <dns-servers>
+# Устанавливает GW_REPAIR_ADDED_GW=1, если строка gateway была реально добавлена
+# (вызывающий по этому решает, нужно ли поднимать маршрут вживую).
+ensure_gw_dns() {
+    local iface=$1 gw=$2 dns=$3
+    local conf="/etc/network/interfaces.d/$iface.conf"
+    local i n start end anchor indent addr mask cidr_mask tmp line
+    local n_addr n_mask exp_lines got_lines verify_missing
+    local nstart nend ngw ndns
+    local have_gw=0 have_dns=0 write_gw=0 write_dns=0
+    local -a lines=() nlines=()
+    GW_REPAIR_ADDED_GW=0
+
+    if [ "${SA02M_SKIP_GW_REPAIR:-0}" = "1" ]; then
+        log INFO "SA02M_SKIP_GW_REPAIR=1 — ремонт gateway/dns для $iface пропущен"
+        return 0
+    fi
+    # Имя интерфейса уходит в регулярное выражение — берём только безопасную форму.
+    case "$iface" in
+        ''|*[!a-zA-Z0-9._-]*) log WARN "ремонт gateway/dns: недопустимое имя интерфейса '$iface'"; return 0 ;;
+    esac
+    # Файла нет — создание это работа блока записи выше, не ремонта.
+    [ -f "$conf" ] || return 0
+
+    # Ровно одна станса: в файл, который мы не смогли однозначно разобрать, не
+    # вмешиваемся (то же правило, что и у панели при дубле стансы).
+    n=$(grep -cE "^[[:space:]]*iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]" "$conf")
+    if [ "$n" != "1" ]; then
+        log WARN "$conf: найдено стансов 'iface $iface inet' — $n (ожидалась 1); ремонт gateway/dns пропущен"
+        return 0
+    fi
+    if ! grep -qE "^[[:space:]]*iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]]+static([[:space:]]|\$)" "$conf"; then
+        log INFO "$conf: станса не 'inet static' — ремонт gateway/dns не применяется (маршрут DHCP владеет сам)"
+        return 0
+    fi
+
+    while IFS= read -r line || [ -n "$line" ]; do lines+=("$line"); done < "$conf"
+
+    start=-1
+    for ((i = 0; i < ${#lines[@]}; i++)); do
+        if [[ ${lines[i]} =~ ^[[:space:]]*iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]] ]]; then
+            start=$i
+            break
+        fi
+    done
+    [ "$start" -ge 0 ] || return 0
+
+    # Тело стансы — до следующей строки верхнего уровня (или до конца файла).
+    end=${#lines[@]}
+    for ((i = start + 1; i < ${#lines[@]}; i++)); do
+        if [[ ${lines[i]} =~ ^[[:space:]]*(auto|allow-[a-z]+|iface|source|mapping)([[:space:]]|$) ]]; then
+            end=$i
+            break
+        fi
+    done
+
+    # Разбор тела. Закомментированный ключ СЧИТАЕТСЯ присутствующим: `#gateway …`
+    # — осознанное действие человека (такая форма есть и в вендорских конфигах),
+    # а правило ремонта — добавлять только ОТСУТСТВУЮЩЕЕ. Ошибаемся в сторону
+    # «никогда не спорить с оператором».
+    anchor=-1
+    # Отступ по умолчанию — четыре пробела; ниже его перебивает отступ реальной
+    # строки address (конфиги на платах разные: где-то четыре пробела, где-то
+    # нулевой отступ, где-то TAB).
+    indent="    "
+    addr=""
+    mask=""
+    cidr_mask=""
+    n_addr=0
+    n_mask=0
+    for ((i = start + 1; i < end; i++)); do
+        if [[ ${lines[i]} =~ ^[[:space:]]*#?[[:space:]]*gateway[[:space:]] ]]; then
+            have_gw=1
+        fi
+        if [[ ${lines[i]} =~ ^[[:space:]]*#?[[:space:]]*dns-nameservers[[:space:]] ]]; then
+            have_dns=1
+        fi
+        if [[ ${lines[i]} =~ ^([[:space:]]*)address[[:space:]]+([^[:space:]]+) ]]; then
+            indent=${BASH_REMATCH[1]}
+            addr=${BASH_REMATCH[2]}
+            n_addr=$((n_addr + 1))
+        fi
+        if [[ ${lines[i]} =~ ^[[:space:]]*netmask[[:space:]]+([^[:space:]]+) ]]; then
+            mask=${BASH_REMATCH[1]}
+            n_mask=$((n_mask + 1))
+        fi
+        # Точка вставки — после ПОСЛЕДНЕЙ адресной строки тела; всё остальное
+        # (hwaddress, post-up, комментарии, metric) остаётся на своих местах.
+        if [[ ${lines[i]} =~ ^[[:space:]]*(address|netmask|broadcast|network)([[:space:]]|$) ]]; then
+            anchor=$i
+        fi
+    done
+    [ "$anchor" -ge 0 ] || anchor=$start
+
+    # Оба ключа на месте — выходим, не трогая даже mtime и не ругаясь на форму
+    # файла, которую нам всё равно не нужно понимать.
+    if [ "$have_gw" = "1" ] && [ "$have_dns" = "1" ]; then
+        return 0
+    fi
+
+    # ── Разбор адреса и маски; всё, что не разобралось — fail closed ────────
+    # «Не разобралось» ⇒ не пишем НИЧЕГО (ни gateway, ни dns): файл, который мы
+    # не понимаем, не наш, чтобы его править — то же правило, что и для дубля
+    # стансы выше. Каждая ветка обязана сказать в логе, что именно она увидела:
+    # журнал установки — единственная поверхность отказа у этого кода.
+    if ! declare -F same_ipv4_subnet >/dev/null 2>&1 \
+       || ! declare -F netmask_is_contiguous >/dev/null 2>&1 \
+       || ! declare -F sa02m_prefix_to_netmask >/dev/null 2>&1; then
+        log WARN "$conf: математика подсетей недоступна — ремонт gateway/dns пропущен (fail closed)"
+        return 0
+    fi
+    # Дубль ключа внутри одной стансы: ifupdown такой конфиг сам считает
+    # ошибочным, а для нас он опасен конкретно — две строки netmask позволяли
+    # проверке подсети «выбрать» ту, что пропустит чужой шлюз. Единственная
+    # найденная дыра в гарантии; закрываем тем же fail-closed.
+    if [ "$n_addr" -gt 1 ] || [ "$n_mask" -gt 1 ]; then
+        log WARN "$conf: в стансе повторяется ключ (address×$n_addr, netmask×$n_mask) — ремонт gateway/dns пропущен (fail closed)"
+        return 0
+    fi
+    if [ "$n_addr" = "0" ]; then
+        log WARN "$conf: в стансе нет строки address — ремонт gateway/dns пропущен (fail closed)"
+        return 0
+    fi
+    # Современная форма `address 192.168.1.136/24` — валидная станса ifupdown
+    # вообще без строки netmask. Разбираем префикс, иначе исправный конфиг
+    # молча не чинился бы.
+    if [[ "$addr" =~ ^([^/]+)/([^/]+)$ ]]; then
+        if ! cidr_mask=$(sa02m_prefix_to_netmask "${BASH_REMATCH[2]}"); then
+            log WARN "$conf: префикс '/${BASH_REMATCH[2]}' в строке address не разбирается — ремонт gateway/dns пропущен (fail closed)"
+            return 0
+        fi
+        addr=${BASH_REMATCH[1]}
+        if [ "$n_mask" = "1" ] && [ "$mask" != "$cidr_mask" ]; then
+            log WARN "$conf: префикс address (=$cidr_mask) и строка netmask ($mask) противоречат друг другу — ремонт gateway/dns пропущен (fail closed)"
+            return 0
+        fi
+        mask=$cidr_mask
+    fi
+    if [ -z "$mask" ]; then
+        log WARN "$conf: у address $addr нет маски (ни строки netmask, ни /префикса) — ремонт gateway/dns пропущен (fail closed)"
+        return 0
+    fi
+    if ! ipv4_to_int "$addr" >/dev/null || ! netmask_is_contiguous "$mask"; then
+        log WARN "$conf: address '$addr' / маска '$mask' не разбираются — ремонт gateway/dns пропущен (fail closed)"
+        return 0
+    fi
+
+    # Станса прочитана, но КАНДИДАТ в шлюзы оказался вне её подсети: gateway не
+    # пишем, а вот dns-nameservers добавить безопасно — строка DNS не может
+    # сделать плату недоступной.
+    if [ "$have_gw" = "0" ]; then
+        if [ -z "$gw" ]; then
+            log WARN "$conf: gateway отсутствует, но кандидат не задан — не пишем"
+        elif ! same_ipv4_subnet "$addr" "$gw" "$mask"; then
+            log WARN "$conf: шлюз $gw вне подсети $addr/$mask — gateway НЕ добавлен (иначе ifup упадёт и плата станет недоступна)"
+        else
+            write_gw=1
+        fi
+    fi
+    if [ "$have_dns" = "0" ] && [ -n "$dns" ]; then
+        write_dns=1
+    fi
+
+    if [ "$write_gw" = "0" ] && [ "$write_dns" = "0" ]; then
+        return 0
+    fi
+
+    # ── Запись. Каждый шаг проверяется, и ни один не «почти получился» ──────
+    # Временный файл создаётся В ТОМ ЖЕ каталоге: замена делается через mv, а mv
+    # через границу файловых систем — это copy+unlink, то есть снова неатомарно.
+    # Имя `<conf>.sa02m-gwtmp.*` инертно по тому же фильтру `.conf`, что и бэкапы.
+    tmp=$(mktemp "$conf.sa02m-gwtmp.XXXXXX") || {
+        log WARN "$conf: не удалось создать временный файл — конфиг НЕ изменён"
+        return 0
+    }
+    {
+        for ((i = 0; i < ${#lines[@]}; i++)); do
+            printf '%s\n' "${lines[i]}"
+            if [ "$i" = "$anchor" ]; then
+                if [ "$write_gw" = "1" ]; then
+                    printf '%s%s\n' "$indent" "gateway $gw"
+                fi
+                if [ "$write_dns" = "1" ]; then
+                    printf '%s%s\n' "$indent" "dns-nameservers $dns"
+                fi
+            fi
+        done
+    } > "$tmp"
+
+    # Сборка удалась целиком? Оборванная запись (ENOSPC — на плате, где поводом
+    # для этой правки как раз был переполненный /var/log, это не гипотеза) даёт
+    # короткий файл. Считаем строки, а не верим коду возврата redirect'а.
+    exp_lines=$(( ${#lines[@]} + write_gw + write_dns ))
+    got_lines=$(wc -l < "$tmp" 2>/dev/null | tr -d '[:space:]')
+    if [ "$got_lines" != "$exp_lines" ]; then
+        log WARN "$conf: временный файл собран не полностью ($got_lines строк вместо $exp_lines) — конфиг НЕ изменён"
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Второй предохранитель идемпотентности. Основной — ранний выход выше (нечего
+    # добавлять ⇒ файла не касаемся вовсе); эта проверка ловит случай «решили
+    # писать, а вышло байт в байт то же». Поведения она сегодня не меняет —
+    # оставлена как страховка на будущие ветки записи (см. заметку в
+    # scripts/dev/test-iface-gw-repair.sh).
+    if cmp -s "$tmp" "$conf"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Суффикс .sa02m-gwbak, а НЕ .sa02m-bak: последнее — точка восстановления
+    # панели (контракт §5.4), запуск установщика не вправе её затирать.
+    # Не удалось снять копию — не пишем вовсе: замена без точки отката это
+    # ровно тот риск, ради которого копия и делается.
+    if ! cp -f "$conf" "$conf.sa02m-gwbak"; then
+        log WARN "$conf: не удалось снять резервную копию .sa02m-gwbak — конфиг НЕ изменён"
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Права и владельца берём с оригинала: mktemp создаёт файл 600, а конфиг
+    # интерфейса на плате — 644 root:root.
+    chmod --reference="$conf" "$tmp" 2>/dev/null || chmod 644 "$tmp" 2>/dev/null || true
+    chown --reference="$conf" "$tmp" 2>/dev/null || true
+
+    # Атомарная замена: rename(2) в пределах каталога — либо старый файл целиком,
+    # либо новый целиком. Прежний `cat > "$conf"` сохранял inode, но при обрыве
+    # записи оставлял ОБРЕЗАННЫЙ eth0.conf — плата без адреса, ровно тот исход,
+    # от которого защищает весь остальной дизайн. Inode при mv меняется; это
+    # безопасно: fd на конфиг интерфейса никто не держит, ifup читает его заново.
+    if ! mv -f "$tmp" "$conf"; then
+        log WARN "$conf: не удалось заменить конфиг (mv) — файл остался прежним"
+        rm -f "$tmp"
+        return 0
+    fi
+
+    # Пост-условие проверяем ЧТЕНИЕМ файла, а не доверием к записи. Дальше по
+    # флагу GW_REPAIR_ADDED_GW поднимается живой маршрут и пишется resolvconf
+    # head; ложное «OK» создало бы head со шлюзом, которого в конфиге нет — ту
+    # самую патологию, которую снимает sa02m_write_resolvconf_head.
+    # Считаем В ТЕХ ЖЕ границах стансы, в которых принималось решение: строка с
+    # тем же текстом в СОСЕДНЕЙ стансе не должна ни подтверждать нашу запись, ни
+    # (что хуже) откатывать верную.
+    verify_missing=""
+    nstart=-1
+    ngw=0
+    ndns=0
+    while IFS= read -r line || [ -n "$line" ]; do nlines+=("$line"); done < "$conf"
+    for ((i = 0; i < ${#nlines[@]}; i++)); do
+        if [[ ${nlines[i]} =~ ^[[:space:]]*iface[[:space:]]+${iface}[[:space:]]+inet[[:space:]] ]]; then
+            nstart=$i
+            break
+        fi
+    done
+    if [ "$nstart" -ge 0 ]; then
+        nend=${#nlines[@]}
+        for ((i = nstart + 1; i < ${#nlines[@]}; i++)); do
+            if [[ ${nlines[i]} =~ ^[[:space:]]*(auto|allow-[a-z]+|iface|source|mapping)([[:space:]]|$) ]]; then
+                nend=$i
+                break
+            fi
+        done
+        for ((i = nstart + 1; i < nend; i++)); do
+            if [ "${nlines[i]}" = "${indent}gateway $gw" ]; then
+                ngw=$((ngw + 1))
+            fi
+            if [ "${nlines[i]}" = "${indent}dns-nameservers $dns" ]; then
+                ndns=$((ndns + 1))
+            fi
+        done
+    fi
+    if [ "$write_gw" = "1" ] && [ "$ngw" != "1" ]; then
+        verify_missing="gateway"
+    fi
+    if [ "$write_dns" = "1" ] && [ "$ndns" != "1" ]; then
+        verify_missing="${verify_missing:+$verify_missing, }dns-nameservers"
+    fi
+    if [ -n "$verify_missing" ]; then
+        # Откат тоже проверяем: не проверив его, мы бы написали в лог «конфиг
+        # восстановлен» о файле, который восстановить не удалось, — та же ложь в
+        # логе, только на один отказ глубже.
+        if cp -f "$conf.sa02m-gwbak" "$conf"; then
+            log WARN "$conf: после записи не подтвердились строки ($verify_missing) — конфиг восстановлен из $conf.sa02m-gwbak"
+        else
+            log ERR "$conf: после записи не подтвердились строки ($verify_missing), И ОТКАТ НЕ УДАЛСЯ — состояние конфига НЕОПРЕДЕЛЁННОЕ. Проверьте вручную: $conf и резервная копия $conf.sa02m-gwbak"
+        fi
+        return 0
+    fi
+
+    if [ "$write_gw" = "1" ] && [ "$write_dns" = "1" ]; then
+        log OK "$conf: добавлены gateway $gw и dns-nameservers $dns"
+    elif [ "$write_gw" = "1" ]; then
+        log OK "$conf: добавлен gateway $gw"
+    else
+        log OK "$conf: добавлены dns-nameservers $dns"
+    fi
+    GW_REPAIR_ADDED_GW=$write_gw
+    return 0
+}
+# ── end ensure_gw_dns (маркер конца извлечения для test-iface-gw-repair.sh) ──
+
+GW_REPAIR_ADDED_GW=0
+ensure_gw_dns "$LAN0" "$GATEWAY" "$DNS_SERVERS"   # LAN1 не передаём: маршрутом владеет DHCP
+
+# Живое применение — только НЕНАРУШАЮЩЕЕ. `ip route replace` не трогает адрес,
+# поэтому SSH-сессия установщика переживает его; `ifup`/`ifdown` здесь запрещены
+# (перезапуск интерфейса рвёт управляющий линк посреди установки — ровно то, от
+# чего защищает LAN0_CONF_WRITTEN в блоке «Apply now» ниже).
+# Зачем вообще чинить вживую: install.sh запускает 01-system.sh ДО этого файла,
+# так что правки только в конфиге оставили бы текущий запуск без DNS, и
+# 07-nodered.sh дальше опять не достучится до registry.npmjs.org.
+if [ "$GW_REPAIR_ADDED_GW" = "1" ] && [ -z "${SA02M_ROOTFS_BUILD:-}" ] \
+   && [ -z "$(ip route show default 2>/dev/null)" ]; then
+    if ip route replace default via "$GATEWAY" dev "$LAN0" >> "$LOG_FILE" 2>&1; then
+        log OK "Маршрут по умолчанию восстановлен: default via $GATEWAY dev $LAN0"
+        sa02m_write_resolvconf_head "$GATEWAY"
+        resolvconf -u 2>/dev/null || true
+    else
+        log WARN "ip route replace default via $GATEWAY dev $LAN0 не удался — маршрут появится после перезагрузки (ifup применит новую строку)"
+    fi
+fi
+
 # ── Apply now ─────────────────────────────────────────────────────────────
 # Flush + ifup ONLY when this run actually (re)wrote $LAN0.conf. On a plain
 # re-run that preserved an existing config the interface is already up with the
