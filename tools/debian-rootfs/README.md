@@ -51,7 +51,7 @@ sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh \
 
 ```bash
 # raw .img → PiShrink → .img.xz (+ sha256 + manifest)
-sudo ./tools/debian-rootfs/pack-sa02m-image.sh \
+sudo bash tools/debian-rootfs/pack-sa02m-image.sh \
   --rootfs ~/build/sa02m-bullseye-rootfs \
   --out-dir ./tools/imaging/out \
   --name sa02m-1eth-bullseye-v1.0.3.37 \
