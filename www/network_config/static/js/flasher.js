@@ -3289,9 +3289,9 @@
       onResult: result => {
         if (!result) { setConfigBanner('Проверка BACnet завершена.', 'info'); return; }
         if (result.open_error) {
-          setConfigBanner('Проверка BACnet: ошибка порта — ' + result.open_error, 'error');
+          setConfigBanner(t('Проверка BACnet: ошибка порта') + ' — ' + result.open_error, 'error');
         } else if (result.alive) {
-          setConfigBanner('MS/TP активен: получено кадров — ' + (result.frames_seen || 0) + '.', 'success');
+          setConfigBanner(t('MS/TP активен — модуль в режиме BACnet. Кадров: ') + (result.frames_seen || 0), 'success');
           toast('MS/TP активен', 'success');
         } else {
           setConfigBanner('Нет кадров MS/TP — модуль не активен на шине BACnet.', 'warn');
