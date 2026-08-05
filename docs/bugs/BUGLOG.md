@@ -15,7 +15,7 @@
 
 ## [2026-08-05 18:01] branch: fix/watchdog-cap — RebootWatchdogSec=2min выше hardware cap sun4i-wdt (16 c): EINVAL при каждом выключении
 
-**Файл(ы):** `etc/systemd/sa02m-watchdog.conf`, `scripts/01-system.sh`, `tools/imaging/firstboot-overlay/etc/systemd/system.conf.d/sa02m-watchdog.conf`, `tools/system-hardening/install.sh`, `tools/system-hardening/README.md`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/ssh-flash-safe.sh`, `tools/imaging/make-image.sh`, `.ai-dev/quality/checks/watchdog-cap.sh` (новый), `.ai-dev/quality/tools.json`
+**Файл(ы):** `etc/systemd/sa02m-watchdog.conf`, `scripts/01-system.sh`, `tools/imaging/firstboot-overlay/etc/systemd/system.conf.d/sa02m-watchdog.conf`, `tools/system-hardening/install.sh`, `tools/system-hardening/README.md`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun.sh`, `tools/imaging/autorun-fel.sh`, `tools/imaging/ssh-flash-safe.sh`, `etc/sa02m-watchdog-feed.sh`, `.ai-dev/quality/checks/watchdog-cap.sh` (новый), `.ai-dev/quality/tools.json`
 **Тип:** Некорректное поведение (systemd EINVAL при каждом выключении)
 **Описание (ПОДТВЕРЖДЕНО):** На каждом выключении платы systemd не мог применить таймаут watchdog-а. В журнале — снято дважды, от обоих участников shutdown:
 ```

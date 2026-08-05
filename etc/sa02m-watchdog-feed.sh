@@ -39,11 +39,21 @@ graceful_stop() {
 }
 trap graceful_stop TERM INT QUIT HUP
 
-# Установим таймаут watchdog побольше, если драйвер поддерживает
-# (некоторые драйверы Allwinner имеют дефолт 16с — нам хватит, но
-# на случай других платформ задаём 30с).
-if [ -w /sys/class/watchdog/watchdog0/timeout ]; then
-    echo 30 > /sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
+# Таймаут watchdog. Аппаратный ПРЕДЕЛ sun4i-wdt на A40i — 16с (max_timeout),
+# и запрос выше предела драйвер отвергает целиком: значение не применяется
+# вовсе, а ошибка тут глушится `|| true`. Поэтому просим не фиксированные 30с,
+# а min(30, max_timeout) — исходный смысл (таймаут заведомо больше INTERVAL на
+# платформе с маленьким дефолтом) сохранён, предел соблюдён. Если max_timeout
+# недоступен — не трогаем таймаут и оставляем дефолт драйвера: это безопаснее,
+# чем просить число, которое драйвер может отклонить.
+WDT_MAX=$(cat /sys/class/watchdog/watchdog0/max_timeout 2>/dev/null || true)
+case "$WDT_MAX" in
+    ''|*[!0-9]*|0) WDT_MAX='' ;;
+esac
+if [ -n "$WDT_MAX" ] && [ -w /sys/class/watchdog/watchdog0/timeout ]; then
+    WDT_WANT=30
+    [ "$WDT_MAX" -lt "$WDT_WANT" ] && WDT_WANT="$WDT_MAX"
+    echo "$WDT_WANT" > /sys/class/watchdog/watchdog0/timeout 2>/dev/null || true
 fi
 
 # Любая запись (один байт) сбрасывает watchdog. Используем '.' просто

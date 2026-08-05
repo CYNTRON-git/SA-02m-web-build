@@ -26,6 +26,18 @@
 #      no inline watchdog heredoc (pins the dedup against regression).
 #   7. Every enumerated path exists (a rename fails loudly instead of passing
 #      on zero matches; pin 1's sweep covers the addition case).
+#   8. Direct sysfs writes to /sys/class/watchdog/*/timeout are CLAMPED, never
+#      a constant over the cap. Second mechanism of the same defect class:
+#      pins 1-4 read systemd directives and were blind to `echo 30 >
+#      .../watchdog0/timeout` in the feeder (etc/sa02m-watchdog-feed.sh and its
+#      heredoc twin in tools/imaging/ssh-flash-safe.sh) — 30s asked of a 16s
+#      driver, the rejection swallowed by `|| true`. Two halves: no numeric
+#      literal above the cap is written, AND every file that writes the path
+#      also reads max_timeout (the clamp itself). Non-vacuous: fewer than the
+#      expected number of write sites FAILS.
+#      Known limit: a static text pin, so it sees the path spelled literally;
+#      a writer that builds the path in a variable escapes it (both shipped
+#      writers spell it out, deliberately, so this pin can see them).
 #
 # Deliberate NON-flags (a gate that cries wolf here gets switched off):
 #   - `=0` / `off` disables, including the imaging `systemctl set-property
@@ -35,6 +47,13 @@
 #     rationale prose in the policy header.
 #   - Per-service `WatchdogSec=` in unit files: a different knob (service
 #     liveness), not the hardware cap.
+#   - READS of the sysfs timeout (`cat …/max_timeout`, `[ -w …/timeout ]`,
+#     the hardening installer's diagnostic print): pin 8 judges writes only —
+#     a redirect INTO the path. `max_timeout` is the clamp's input, never a
+#     violation.
+#   - A write whose value is a variable or expression (`echo "$WDT_WANT" >`):
+#     that IS the clamped form. Pin 8's other half — the file must also read
+#     max_timeout — is what keeps that from being a free pass.
 #
 # Run: bash .ai-dev/quality/checks/watchdog-cap.sh
 set -uo pipefail
@@ -253,6 +272,59 @@ else
     else
         pass "$INST carries no inline watchdog heredoc"
     fi
+fi
+
+# ── 8. Direct sysfs timeout writes are clamped, not a constant over the cap ─
+# The token immediately before the redirect is the value written:
+#   `echo 30 > /sys/class/watchdog/watchdog0/timeout`   -> 30        (literal)
+#   `echo "$WDT_WANT" >/sys/class/watchdog/watchdog0/timeout` -> $WDT_WANT
+# A read (`cat …/max_timeout`, `[ -w …/timeout ]`) has no redirect INTO the
+# path and never matches; `max_timeout` cannot match either — the path segment
+# after the device dir must be exactly `timeout`.
+WD_SYSFS_WRITE_RE='[^[:space:]>|;&]+[[:space:]]*>>?[[:space:]]*/sys/class/watchdog/[^/[:space:]]+/timeout'
+WD_SYSFS_MAX_RE='/sys/class/watchdog/[^/[:space:]]+/max_timeout'
+WD_SYSFS_MIN_SITES=2   # etc/sa02m-watchdog-feed.sh + the ssh-flash-safe.sh twin
+
+wd_sysfs_files=()
+while IFS= read -r p; do
+    [ -n "$p" ] && wd_sysfs_files+=("$p")
+done < <(grep -rlIE "$WD_SYSFS_WRITE_RE" "${SWEEP_ROOTS[@]}" 2>/dev/null | sort -u)
+
+wd_writes=0
+fails_before_pin8=$fails
+for f in "${wd_sysfs_files[@]:-}"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    file_writes=0
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        # Value = everything left of the first redirect, minus spaces/quotes.
+        val=$(printf '%s' "${hit%%>*}" | tr -d "[:space:]\"'")
+        wd_writes=$((wd_writes + 1))
+        file_writes=$((file_writes + 1))
+        case "$val" in
+            ''|*[!0-9]*) continue ;;   # variable/expression — the clamped form
+        esac
+        if [ "$val" -gt "$HW_CAP_SEC" ]; then
+            fail "$f: writes '$val' to /sys/class/watchdog/*/timeout — a constant above the ${HW_CAP_SEC}s sun4i-wdt cap; the driver rejects the request outright (and the error is swallowed by \`|| true\`). Clamp it: read max_timeout and write min(30, max_timeout)"
+        fi
+    done < <(uncommented "$f" | grep -oE "$WD_SYSFS_WRITE_RE")
+    # The clamp itself. Deliberately an UNCOMMENTED read of the sysfs path, not
+    # a bare `max_timeout` substring: the fix's own comment names max_timeout in
+    # prose, so a substring test would let a file satisfy this half by talking
+    # about the clamp while writing a constant.
+    if [ "$file_writes" -gt 0 ] && ! uncommented "$f" | grep -qE "$WD_SYSFS_MAX_RE"; then
+        fail "$f: writes /sys/class/watchdog/*/timeout without reading max_timeout — the requested timeout must be clamped to the driver cap, never asked for blind"
+    fi
+done
+
+if [ "$wd_writes" -lt "$WD_SYSFS_MIN_SITES" ]; then
+    fail "only $wd_writes direct sysfs watchdog-timeout write(s) found across ${SWEEP_ROOTS[*]} — expected >=${WD_SYSFS_MIN_SITES} (the feeder and its ssh-flash-safe.sh twin); the writers moved or the extraction pattern drifted, update this gate"
+elif [ "$fails" -ne "$fails_before_pin8" ]; then
+    # Do not claim the writes are clamped when the loop above just said otherwise.
+    printf 'watchdog-cap: ---   %s direct sysfs timeout write(s) across %s file(s) checked; %s unclamped/over cap (above)\n' \
+        "$wd_writes" "${#wd_sysfs_files[@]}" "$((fails - fails_before_pin8))"
+else
+    pass "$wd_writes direct sysfs timeout write(s) across ${#wd_sysfs_files[@]} file(s) are clamped to max_timeout (no constant above ${HW_CAP_SEC}s)"
 fi
 
 [ "$fails" = 0 ] || printf 'watchdog-cap: %s check(s) failed — policy home: %s\n' "$fails" "$POLICY_HOME"
