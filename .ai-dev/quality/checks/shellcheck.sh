@@ -13,9 +13,20 @@ if ! command -v shellcheck >/dev/null 2>&1; then
   exit 0
 fi
 
+# Scope = every Bash surface in the repo: CGI endpoints and libs, device
+# scripts, the installer, the build/imaging tools, the dev harnesses, the
+# on-device sbin helpers, and the quality checks themselves. Rationale for the
+# wide net: the manifest donor-field shift shipped into a release artifact
+# through the one surface (tools/) no row linted — an unlinted Bash file is a
+# proven escape path, not a hypothetical one.
 exec shellcheck --severity=error --shell=bash \
   www/network_config/cgi-bin/*.cgi \
   www/network_config/cgi-bin/lib_*.sh \
   etc/*.sh \
   scripts/*.sh \
+  scripts/dev/*.sh \
+  tools/*/*.sh \
+  usr/local/sbin/*.sh \
+  kernel-port/apply.sh \
+  .ai-dev/quality/checks/*.sh \
   install.sh
