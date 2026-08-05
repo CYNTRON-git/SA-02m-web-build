@@ -378,9 +378,8 @@ function renderServicesSkeleton() {
 function initDashboardPlaceholders() {
   renderServicesSkeleton();
   renderRs485Skeleton();
-  setText('proc-info', uiT('Процессов: 0 / 0'));
+  setText('proc-info', uiT('Проц.: 0 / 0'));
   setText('cpu-freq', '0 ' + uiT('МГц'));
-  setText('disk-io', uiT('R ' + fmtBytes(0) + ' / W ' + fmtBytes(0)));
   ['eth0-rx', 'eth0-tx', 'eth1-rx', 'eth1-tx'].forEach(function (id) {
     setText(id, fmtBytes(0));
   });

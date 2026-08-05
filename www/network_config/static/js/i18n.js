@@ -257,6 +257,8 @@
     'Скрипт управления CPU не установлен': 'CPU control script is not installed',
     'Статус ядра обновлён': 'Kernel status updated',
     'Ядро:': 'Kernel:',
+    'без RT': 'non-RT',
+    'RT': 'RT',
     'Профиль частоты:': 'CPU frequency:',
     'Переключить ядро на': 'Switch kernel to',
     '? Устройство перезагрузится.': '? The device will reboot.',
