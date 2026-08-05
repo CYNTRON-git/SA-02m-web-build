@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-08-05 11:00] branch: feature/klogic — logrotate.service падал: NUL-обнулённый /etc/logrotate.d/wtmp после клона
+
+**Файл(ы):** `etc/logrotate.d/wtmp` (новый), `scripts/01-system.sh`, на DUT `.136`: `/etc/logrotate.d/wtmp`, `/etc/logrotate.d/sedofiGHt`
+**Тип:** Некорректное поведение / повреждение ФС после клонирования образа
+**Описание:** На DUT 192.168.1.136 ежесуточный `logrotate.service` (logrotate.timer) завершался exit 1: `error: wtmp:1 lines must begin with a keyword or a filename`. Из-за failed unit приёмка hardpy (`test_66_sa02m_services.py`, `systemctl --failed`) корректно падала.
+**Причина:** `/etc/logrotate.d/wtmp` содержал 154 NUL-байта вместо текста (ровно размер эталонного конфига), рядом лежал осиротевший sed-темпфайл `sedofiGHt` (0 байт). Все файлы `/etc/logrotate.d/*`, `/etc/logrotate.conf`, ssh host keys и machine-id имели mtime первых секунд первого бута после клона (2026-08-04 18:23:44–45) — классический ext4 zero-fill: rename/метаданные доехали, данные — нет. Ни деплой-скрипты, ни imaging-скрипты wtmp не трогают — повреждение разовое, приехало через клонирование.
+**Исправление:** (1) На DUT: восстановлен эталонный `/etc/logrotate.d/wtmp` (154 байта, стиль соседнего `btmp`), удалён `sedofiGHt`; `logrotate -d` без ошибок, `systemctl reset-failed logrotate && systemctl start logrotate` — exit 0, `systemctl --failed` пуст. (2) В репо: добавлен эталон `etc/logrotate.d/wtmp`; в `scripts/01-system.sh` — самопочинка при деплое: удаление `sed??????`-огрызков в `/etc/logrotate.d/`, восстановление NUL-обнулённых конфигов из репо (или перенос в /var/backups, если эталона нет), контрольный `logrotate -d`.
+
 ## [2026-08-01 20:01] branch: feature/klogic — кнопка сканирования RS-485 оставалась disabled
 
 **Файл(ы):** `www/network_config/static/js/flasher.js`, `www/network_config/index.html`, `/var/www/network_config/static/js/flasher.js`, `/var/www/network_config/index.html`

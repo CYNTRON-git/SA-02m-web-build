@@ -412,6 +412,33 @@ for unit in apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask "$unit" 2>/dev/null || true
 done
 
+# ── logrotate: самопочинка конфигов после клонирования образа ───────────────
+# После PiShrink-клона на .136 встречался NUL-обнулённый /etc/logrotate.d/wtmp
+# (ext4 zero-fill: метаданные записаны, данные не доехали) и осиротевший
+# sed-темпфайл. Один битый конфиг валит logrotate.service целиком (exit 1),
+# и приёмка hardpy (test_66, systemctl --failed) корректно падает.
+rm -f /etc/logrotate.d/sed?????? 2>/dev/null || true
+for lr_cfg in /etc/logrotate.d/*; do
+    [ -f "$lr_cfg" ] || continue
+    # непустой файл без единой печатной строки = NUL-мусор
+    if [ -s "$lr_cfg" ] && ! grep -q . "$lr_cfg"; then
+        lr_base=$(basename "$lr_cfg")
+        if [ -f "$ETC_REPO/logrotate.d/$lr_base" ]; then
+            install -m 644 -o root -g root "$ETC_REPO/logrotate.d/$lr_base" "$lr_cfg"
+            sed -i 's/\r$//' "$lr_cfg"
+            log OK "logrotate: восстановлен битый $lr_cfg из репо"
+        else
+            mv -f "$lr_cfg" "/var/backups/$lr_base.logrotate.corrupt"
+            log WARN "logrotate: $lr_cfg был NUL-мусором, убран в /var/backups (эталона в репо нет)"
+        fi
+    fi
+done
+if logrotate -d /etc/logrotate.conf >/dev/null 2>&1; then
+    log OK "logrotate: конфигурация валидна (logrotate -d)"
+else
+    log WARN "logrotate -d нашёл ошибки — проверьте /etc/logrotate.d вручную"
+fi
+
 # ── SSH hardening: ClientAlive + UseDNS=no (без зависаний при потере линка) ──
 if [ -f "$ETC_REPO/ssh/sshd_config.d/10-sa02m.conf" ]; then
     log INFO "Установка /etc/ssh/sshd_config.d/10-sa02m.conf"
