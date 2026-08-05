@@ -9,6 +9,34 @@
       "description": "SA-02m cloud backend (frps + stdlib API + fleet UI). Device-side seam: docs/contracts/cloud-enrollment.md."
     },
     {
+      "name": "mr02m",
+      "root": "../MR-02m",
+      "path": "C:/Users/admin/Downloads/MR-02m",
+      "repo": "CYNTRON-git/MR-02m",
+      "description": "MR-02m RS-485 I/O module firmware (STM32). READ-REFERENCE for the BACnet MS/TP web-integration planning (Operator 2026-08-05): owns the module's Modbus register map, .fw format, and its BACnet implementation/scripts. Its docs/agent-rules/mp02m-domain.md is the domain home — web-side rendering follows the module's map, never invents one."
+    },
+    {
+      "name": "dtv",
+      "root": "../cyntron-dtv",
+      "path": "C:/Users/admin/Downloads/cyntron-dtv",
+      "repo": "CYNTRON-git/cyntron-dtv",
+      "description": "DTV temperature/humidity sensor firmware. READ-REFERENCE for BACnet MS/TP planning (Operator 2026-08-05): carries BACNET_VARIABLES.txt and the device's BACnet object model/scripts."
+    },
+    {
+      "name": "ce02m3",
+      "root": "../CE-02m-3",
+      "path": "C:/Users/admin/Downloads/CE-02m-3",
+      "repo": "CYNTRON-git/CE-02m-3",
+      "description": "CE-02m-3 network analyzer (power meter) firmware. READ-REFERENCE for BACnet MS/TP planning (Operator 2026-08-05): its BACnet object model and register map."
+    },
+    {
+      "name": "mr02m-flasher",
+      "root": "../MR-02m-flasher",
+      "path": "C:/Users/admin/Downloads/MR-02m-flasher",
+      "repo": "CYNTRON-git/MR-02m-flasher",
+      "description": "Standalone MR-02m module flasher (Python). READ-REFERENCE for BACnet MS/TP planning (Operator 2026-08-05): carries BACnet work scripts alongside the flash protocol."
+    },
+    {
       "name": "hardpy_tests",
       "root": "../hardpy_tests",
       "path": "C:/Users/admin/Downloads/hardpy_tests",
@@ -18,6 +46,10 @@
   ],
   "siblings": [
     { "name": "cloud", "root": "../cloud", "path": "C:/Users/admin/Downloads/cloud" },
+    { "name": "mr02m", "root": "../MR-02m", "path": "C:/Users/admin/Downloads/MR-02m" },
+    { "name": "dtv", "root": "../cyntron-dtv", "path": "C:/Users/admin/Downloads/cyntron-dtv" },
+    { "name": "ce02m3", "root": "../CE-02m-3", "path": "C:/Users/admin/Downloads/CE-02m-3" },
+    { "name": "mr02m-flasher", "root": "../MR-02m-flasher", "path": "C:/Users/admin/Downloads/MR-02m-flasher" },
     { "name": "hardpy_tests", "root": "../hardpy_tests", "path": "C:/Users/admin/Downloads/hardpy_tests" }
   ]
 }
