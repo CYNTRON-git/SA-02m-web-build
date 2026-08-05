@@ -459,6 +459,70 @@
     if (endState === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
     else if (endState === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
     else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
+    // §5.5 Roster honesty: a scan that finds nothing may be a BACnet-latched
+    // module (silent on Modbus). Offer a one-click passive MS/TP sniff to
+    // diagnose it instead of leaving it lost.
+    maybeOfferBacnetSniff(endState, portKey);
+  }
+
+  function bacnetSniffOfferEl() { return $('flasher-bacnet-sniff-offer'); }
+
+  function hideBacnetSniffOffer() {
+    const el = bacnetSniffOfferEl();
+    if (el) { el.hidden = true; el.innerHTML = ''; }
+  }
+
+  function maybeOfferBacnetSniff(endState, portKey) {
+    const el = bacnetSniffOfferEl();
+    if (!el) return;
+    if (endState !== 'done' || state.devices.length > 0 || !portKey) { hideBacnetSniffOffer(); return; }
+    el.hidden = false;
+    el.innerHTML = '<span>' + escapeHtml(t('Ничего не найдено. Модуль мог быть переключён в BACnet — проверить активность MS/TP?')) +
+      '</span> <button type="button" class="btn btn-sm" id="flasher-bacnet-sniff-btn">' +
+      escapeHtml(t('Проверить BACnet-активность')) + '</button>';
+    const btn = $('flasher-bacnet-sniff-btn');
+    if (btn) btn.addEventListener('click', () => verifyBacnetOnPort(portKey));
+  }
+
+  /* Passive MS/TP sniff on a port from the roster offer (no config modal open).
+     Family is unknown after an empty scan → MR default (38400 8N1), which also
+     catches a DTV master running at 38400; a diagnostic "is anything alive". */
+  async function verifyBacnetOnPort(portKey) {
+    if (!portKey) return;
+    if (state.scanJobId || state.flashJobId) { setScanStatus('Дождитесь завершения текущей задачи', 'warn'); return; }
+    const btn = $('flasher-bacnet-sniff-btn');
+    if (btn) btn.disabled = true;
+    let res;
+    try {
+      res = await apiPost('/bacnet/verify', { port: portKey, family: 'mr' });
+    } catch (err) {
+      setScanStatus('Проверка BACnet: ' + err.message, 'error');
+      if (btn) btn.disabled = false;
+      return;
+    }
+    const jobId = res && res.job_id;
+    if (!jobId) { if (btn) btn.disabled = false; return; }
+    logReset('Проверка BACnet-активности на порту ' + portKey);
+    openStream(jobId, {
+      onEnd: async () => {
+        let result = null;
+        try { const snap = await apiGet('/jobs/' + jobId); result = snap && snap.result; } catch (_) {}
+        const el = bacnetSniffOfferEl();
+        if (el && result) {
+          if (result.open_error) {
+            el.innerHTML = '<span>' + escapeHtml(t('Проверка BACnet: ошибка порта') + ' — ' + result.open_error) + '</span>';
+          } else if (result.alive) {
+            el.innerHTML = '<span>' + escapeHtml(t('MS/TP активен — модуль в режиме BACnet. Кадров: ') + (result.frames_seen || 0)) + '</span>';
+          } else {
+            el.innerHTML = '<span>' + escapeHtml(t('Кадры MS/TP не обнаружены — модуля нет на этой линии.')) + '</span>';
+          }
+        }
+        if (btn) btn.disabled = false;
+        await loadPorts();
+        updateGlobalBusyFromPorts();
+        setScanButtons();
+      },
+    });
   }
 
   function portHasCompleteLineState(port) {
@@ -1645,7 +1709,7 @@
   }
 
   async function configApi(path, body) {
-    const isDeviceConfig = String(path || '').startsWith('/device_config/');
+    const isDeviceConfig = String(path || '').startsWith('/device_config/') || path === '/bus_mode';
     const run = async () => {
       const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = ctrl
@@ -2673,8 +2737,52 @@
           </div>
           <div class="flasher-config-note">Сохранение выполняется в безопасном порядке, как в desktop-flasher: сначала адрес, затем Fast Modbus, затем линия 110–112.</div>
         </section>
+        ${renderBusModeCard(snap)}
       </div>
     `;
+  }
+
+  /* Полевая шина (рег. 122, 3-state) — селектор + проверка/возврат BACnet (§5.1/5.2/5.4).
+     Показывается ТОЛЬКО для семейств с реальным регистром (MR/DTV); для CE/WB/
+     bootloader daemon отдаёт bus_mode_supported=false и карта скрыта. */
+  function renderBusModeCard(snap) {
+    if (!snap || !snap.bus_mode_supported) return '';
+    const mode = Number((snap.network || {}).bus_mode);
+    const cur = [0, 1, 2].indexOf(mode) >= 0 ? mode : 1;
+    const opt = (v, label) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${label}</option>`;
+    return `
+      <section class="flasher-config-card" id="cfg-busmode-card">
+        <h4>Полевая шина</h4>
+        <div class="flasher-config-form">
+          <label for="cfg-busmode-select">Протокол шины (рег. 122)</label>
+          <select id="cfg-busmode-select">
+            ${opt(0, 'Классический Modbus')}
+            ${opt(1, 'Fast Modbus')}
+            ${opt(2, 'BACnet MS/TP')}
+          </select>
+        </div>
+        <div class="flasher-config-actions">
+          <button class="btn btn-primary" type="button" id="cfg-busmode-apply-btn">Применить протокол</button>
+          <button class="btn btn-sm" type="button" id="cfg-busmode-verify-btn">Проверка BACnet</button>
+          <button class="btn btn-sm" type="button" id="cfg-busmode-recover-btn">Вернуть в Modbus</button>
+        </div>
+        <div class="flasher-config-note">BACnet MS/TP переключает модуль в режим MS/TP-сервера для сторонней BMS. Переключение перезагружает модуль и убирает его из Modbus-опроса. Возврат — «Вернуть в Modbus» или физическая кнопка сброса на устройстве. Переключайте по одному модулю за раз.</div>
+      </section>
+    `;
+  }
+
+  /* Семейство bus_mode из снимка (для текста диалога восстановления). */
+  function busModeFamily(snap) {
+    return (snap && snap.family) || (snap && snap.kind === 'dtv' ? 'dtv' : 'mr');
+  }
+
+  /* Текст пути восстановления per-family для диалога-подтверждения (flasher-контракт:
+     назвать путь возврата ДО записи). */
+  function busModeRecoveryText(family) {
+    if (family === 'dtv') {
+      return t('Возврат в Modbus: «Вернуть в Modbus» (по проводу, WriteProperty AV:122=0), физическая кнопка сброса на устройстве или BACnet-мастер.');
+    }
+    return t('Возврат в Modbus: «Вернуть в Modbus» (по проводу, WriteProperty MSV:1), физическая кнопка сброса на устройстве или перепрошивка через SWD.');
   }
 
   function renderCeMeasuresTab(snap) {
@@ -3078,6 +3186,153 @@
     } finally {
       setConfigBusy(false);
     }
+  }
+
+  /* ── Полевая шина: применить протокол (§5.1 / §5.3) ─────────────────────── */
+  async function applyBusMode() {
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    const sel = configModalEl('cfg-busmode-select');
+    if (!dev || !port || !sel) return;
+    const snap = state.configSnapshot || {};
+    const family = busModeFamily(snap);
+    const mode = parseInt(sel.value, 10);
+    if ([0, 1, 2].indexOf(mode) < 0) return;
+    if (mode === 2) {
+      // flasher-контракт: диалог подтверждения, называющий путь восстановления ДО записи.
+      const ok = confirm(
+        t('Переключить модуль в BACnet MS/TP?') + '\n\n' +
+        t('Модуль перезагрузится, перестанет отвечать по Modbus и пропадёт из опроса.') + '\n' +
+        busModeRecoveryText(family) + '\n\n' +
+        t('Переключайте модули по одному.'),
+      );
+      if (!ok) return;
+    }
+    setConfigBusy(true);
+    try {
+      const res = await configApi('/bus_mode', { port, device: dev, mode });
+      if (mode !== 2) {
+        // Live switch (classic ↔ Fast): no reboot — apply the fresh snapshot.
+        if (res && res.snapshot) applyConfigSnapshot(res.snapshot, false);
+        toast('Протокол шины применён', 'success');
+        return;
+      }
+      // BACnet: reboot is deferred (§5.3). Treat the post-write window as
+      // "applying" ≥6 s, then re-probe: silence ⇒ went to BACnet; still Modbus
+      // with reg122==2 ⇒ inert firmware / not applied (never a false success).
+      toast('BACnet выбран — применяется, ждите перезагрузку модуля', 'info');
+      setConfigBanner('Применяется BACnet MS/TP — проверяю состояние модуля…', 'info');
+      await new Promise(r => setTimeout(r, 6500));
+      let probe = null;
+      try {
+        probe = await configApi('/device_config/snapshot', { port, device: dev });
+      } catch (_) {
+        probe = null; // timeout ⇒ модуль ушёл на MS/TP
+      }
+      if (!probe) {
+        setConfigBanner('Модуль переключён в BACnet MS/TP (Modbus не отвечает — это ожидаемо).', 'success');
+        toast('Модуль переключён в BACnet MS/TP', 'success');
+      } else if (Number((probe.network || {}).bus_mode) === 2) {
+        setConfigBanner('Прошивка без поддержки BACnet или переключение не применилось (модуль по-прежнему на Modbus).', 'warn');
+        toast('BACnet не активирован: прошивка без поддержки BACnet', 'warn');
+        applyConfigSnapshot(probe, false);
+      } else {
+        setConfigBanner('Переключение не применилось — модуль остался на Modbus.', 'warn');
+        applyConfigSnapshot(probe, false);
+      }
+    } catch (err) {
+      setConfigBanner('Протокол шины: ' + err.message, 'error');
+      toast('Полевая шина: ' + err.message, 'error');
+    } finally {
+      setConfigBusy(false);
+    }
+  }
+
+  /* ── Полевая шина: проверка BACnet (§5.2) / возврат в Modbus (§5.4) ──────── */
+  async function runBacnetJob(path, body, opts) {
+    stopConfigPolling();
+    setConfigBusy(true);
+    let res;
+    try {
+      res = await apiPost(path, body);
+    } catch (err) {
+      setConfigBusy(false);
+      setConfigBanner((opts.label || 'BACnet') + ': ' + err.message, 'error');
+      toast((opts.label || 'BACnet') + ': ' + err.message, 'error');
+      return;
+    }
+    const jobId = res && res.job_id;
+    if (!jobId) { setConfigBusy(false); return; }
+    openStream(jobId, {
+      onEnd: async endState => {
+        let result = null;
+        try {
+          const snap = await apiGet('/jobs/' + jobId);
+          result = snap && snap.result;
+        } catch (_) {}
+        try { if (opts.onResult) opts.onResult(result, endState); } catch (_) {}
+        setConfigBusy(false);
+        if (opts.refreshAfter) { try { await refreshConfigSnapshot(false, 'full'); } catch (_) {} }
+      },
+    });
+  }
+
+  async function verifyBacnet() {
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    if (!dev || !port) return;
+    const snap = state.configSnapshot || {};
+    const family = busModeFamily(snap);
+    setConfigBanner('Пассивный сниф MS/TP (только чтение)…', 'info');
+    await runBacnetJob('/bacnet/verify', { port, device: dev, family }, {
+      label: 'Проверка BACnet',
+      onResult: result => {
+        if (!result) { setConfigBanner('Проверка BACnet завершена.', 'info'); return; }
+        if (result.open_error) {
+          setConfigBanner(t('Проверка BACnet: ошибка порта') + ' — ' + result.open_error, 'error');
+        } else if (result.alive) {
+          setConfigBanner(t('MS/TP активен — модуль в режиме BACnet. Кадров: ') + (result.frames_seen || 0), 'success');
+          toast('MS/TP активен', 'success');
+        } else {
+          setConfigBanner('Нет кадров MS/TP — модуль не активен на шине BACnet.', 'warn');
+          toast('Кадры MS/TP не обнаружены', 'warn');
+        }
+      },
+    });
+  }
+
+  async function recoverBacnet() {
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    if (!dev || !port) return;
+    const snap = state.configSnapshot || {};
+    const family = busModeFamily(snap);
+    // Advanced op — second explicit confirmation (§5.4): TX on the wire, reboots the module.
+    const ok = confirm(
+      t('Вернуть модуль в Modbus по проводу?') + '\n\n' +
+      t('Это передаёт кадры MS/TP на линию и перезагружает модуль. Выполняйте только когда СА-02м владеет сегментом (порт занят флешером), по одному модулю за раз.'),
+    );
+    if (!ok) return;
+    setConfigBanner('Возврат в Modbus по проводу…', 'info');
+    await runBacnetJob('/bacnet/recover', {
+      port,
+      device: dev,
+      family,
+      address: dev.address,
+      prior_mode: Number((snap.network || {}).bus_mode),
+    }, {
+      label: 'Вернуть в Modbus',
+      refreshAfter: true,
+      onResult: result => {
+        if (result && result.recovered) {
+          setConfigBanner('Модуль возвращён в Modbus.', 'success');
+          toast('Модуль возвращён в Modbus', 'success');
+        } else {
+          setConfigBanner('Модуль не вернулся — используйте физическую кнопку сброса на устройстве.', 'warn');
+          toast('Возврат не удался — нужна кнопка сброса', 'warn');
+        }
+      },
+    });
   }
 
   async function writeConfigHolding(reg, value, successText) {
@@ -3621,6 +3876,12 @@
     if (saveNet) saveNet.addEventListener('click', saveConfigNetwork);
     const refreshNet = body.querySelector('#cfg-net-refresh-btn');
     if (refreshNet) refreshNet.addEventListener('click', () => refreshConfigSnapshot(false, 'full'));
+    const busApply = body.querySelector('#cfg-busmode-apply-btn');
+    if (busApply) busApply.addEventListener('click', applyBusMode);
+    const busVerify = body.querySelector('#cfg-busmode-verify-btn');
+    if (busVerify) busVerify.addEventListener('click', verifyBacnet);
+    const busRecover = body.querySelector('#cfg-busmode-recover-btn');
+    if (busRecover) busRecover.addEventListener('click', recoverBacnet);
     const ceSave = body.querySelector('#cfg-ce-save-btn');
     if (ceSave) ceSave.addEventListener('click', saveCeSettings);
     const dtvMain = body.querySelector('#cfg-dtv-main-save-btn');
@@ -4085,6 +4346,7 @@
     state.selectedDeviceIndices.clear();
     renderDevices();
     clearScanStatus();
+    hideBacnetSniffOffer();
     state.scanPending = true;
     state.scanArbitrationActive = body.mode === 'fast';
     logReset(logIntro + ' на ' + body.port);

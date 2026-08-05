@@ -40,6 +40,8 @@ class JobKind(str, Enum):
     SCAN = "scan"
     FLASH = "flash"
     FLASH_BATCH = "flash_batch"
+    BACNET_VERIFY = "bacnet_verify"    # пассивный сниф MS/TP (§5.2)
+    BACNET_RECOVER = "bacnet_recover"  # in-band возврат в Modbus (§5.4)
 
 
 @dataclass
@@ -67,6 +69,9 @@ class Job:
     irreversible: bool = False
     # Результаты:
     devices: List[Dict[str, Any]] = field(default_factory=list)
+    # Произвольный итог задачи (BACnet verify/recover: сниф/восстановление) —
+    # переживает переподключение SSE, читается из финального снимка.
+    result: Dict[str, Any] = field(default_factory=dict)
     # Журнал (retention = MAX_EVENTS_RETAIN).
     events: Deque[JobEvent] = field(default_factory=lambda: deque(maxlen=MAX_EVENTS_RETAIN))
 
@@ -85,6 +90,7 @@ class Job:
             "error": self.error,
             "irreversible": self.irreversible,
             "devices": list(self.devices),
+            "result": dict(self.result),
             "events": [asdict(e) for e in list(self.events)[-100:]],
         }
 

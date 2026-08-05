@@ -17,6 +17,9 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+from . import bacnet_mstp
+from . import bus_mode
+from . import device_config
 from . import flash_protocol as fp
 from . import modbus_rtu
 from . import module_profiles as mp
@@ -1399,3 +1402,225 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                     for d, e in errors
                 ]
     progress_cb(100, "Пакетная прошивка завершена")
+
+
+# ─── BACnet MS/TP verify / recover (§5.2 / §5.4) ────────────────────────────
+#
+# The daemon-route<->serial-wire glue below is the ONE non-host-testable layer
+# (plan §11): the pure MS/TP codec (bacnet_mstp) and bus-mode semantics
+# (bus_mode) are unit-tested; opening the leased COM at the MS/TP baud and the
+# on-the-wire behaviour are covered by the bench HIL scenario (plan §7).
+
+
+def _bounded_int(value: Any, lo: int, hi: int, default: int) -> int:
+    try:
+        iv = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, iv))
+
+
+def _verify_family(params: Dict[str, Any]) -> str:
+    fam = str(params.get("family") or bus_mode.FAMILY_MR).strip().lower()
+    return fam if fam in (bus_mode.FAMILY_MR, bus_mode.FAMILY_DTV) else bus_mode.FAMILY_MR
+
+
+def run_bacnet_verify_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
+    """Passive MS/TP sniff on the leased port (§5.2) — read-only, RX-only.
+
+    MR sniffs at fixed 38400 8N1; DTV at its configured MS/TP baud. Silence and
+    port-open errors are reported, never swallowed as a false 'alive'."""
+    params = job.params
+    port_key = str(params.get("port") or job.port)
+    family = _verify_family(params)
+    duration = _bounded_int(params.get("duration_s"), 2, 30, 5)
+    baud = bacnet_mstp.resolve_mstp_baud(family, params.get("baud"))
+    device_path = resolve_device_path(cfg, port_key)
+
+    log_cb = ctx["log"]
+    progress_cb = ctx["progress"]
+    log_cb("Пассивный сниф MS/TP на %s @ %d 8N1, %d с (только чтение)" % (port_key, baud, duration), "info")
+    progress_cb(5, "Подготовка порта для снифа")
+
+    res = bacnet_mstp.SniffResult()
+    with port_lease(device_path, cfg.mplc_stop_services):
+        with _port_flock(cfg, port_key):
+            ser = None
+            try:
+                ser = open_port(device_path, baudrate=baud, parity="N", stopbits=1)
+                progress_cb(20, "Слушаю MS/TP %d с" % duration)
+                res = bacnet_mstp.sniff_serial(ser, baud, duration)
+            except Exception as exc:  # noqa: BLE001 — surface the open/read error, never a false pass
+                res = bacnet_mstp.SniffResult(open_error="%s: %s" % (type(exc).__name__, exc))
+            finally:
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+
+    summary = res.to_dict()
+    summary.update({"family": family, "baud": baud, "duration_s": duration, "kind": "bacnet_verify"})
+    job.result = summary
+    if res.open_error:
+        log_cb("Ошибка порта: %s" % res.open_error, "error")
+        progress_cb(100, "Сниф не выполнен: ошибка порта")
+    elif res.alive:
+        types = ", ".join("%s×%d" % (n, c) for n, c in res.type_counts_named())
+        log_cb("MS/TP жив: кадров %d (%s)" % (res.frames_seen, types), "info")
+        progress_cb(100, "MS/TP активен — кадров: %d" % res.frames_seen)
+    else:
+        log_cb(
+            "Нет кадров MS/TP (прочитано %d байт, битых заголовков %d)" % (res.bytes_read, res.bad_header_crc),
+            "warn",
+        )
+        progress_cb(100, "Тишина: кадры MS/TP не обнаружены")
+
+
+def run_bacnet_recover_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig) -> None:
+    """In-band return to Modbus (§5.4). Two paths, chosen by whether the module
+    still answers Modbus:
+
+      pending window (still answers) -> direct Modbus write reg122 = target
+      latched in BACnet (silent)     -> ring-join WriteProperty over MS/TP
+        MR:  MSV:1 present-value = target_mode + 1
+        DTV: AV:122 present-value = target_mode (0 = classic)
+      then wait the deferred-reset window and confirm Modbus is back.
+
+    Runs under the same COM lease + flock as scan/flash (the SA-02m owns the
+    segment). The fake-station ring-join only transmits on a leased port."""
+    params = job.params
+    port_key = str(params.get("port") or job.port)
+    family = _verify_family(params)
+    device = params.get("device") if isinstance(params.get("device"), dict) else {}
+    prior_mode = params.get("prior_mode")
+    modbus_addr = _bounded_int(params.get("address") or device.get("address"), 1, 247, 1)
+    dut_mac = max(1, min(127, modbus_addr))
+    src_mac = _bounded_int(params.get("src_mac"), 1, 127, (dut_mac % 127) + 1)
+    if src_mac == dut_mac:
+        src_mac = (dut_mac % 127) + 1
+    ring_secs = _bounded_int(params.get("duration_s"), 5, 60, 20)
+    reset_wait = _bounded_int(params.get("reset_wait_s"), 4, 15, 10)
+    mstp_baud = bacnet_mstp.resolve_mstp_baud(family, params.get("baud"))
+    device_path = resolve_device_path(cfg, port_key)
+
+    target_mode = bus_mode.force_modbus_return_value(family, prior_mode)
+    log_cb = ctx["log"]
+    progress_cb = ctx["progress"]
+
+    result: Dict[str, Any] = {
+        "kind": "bacnet_recover",
+        "family": family,
+        "target_mode": target_mode,
+        "path": None,
+        "recovered": False,
+    }
+    job.result = result
+
+    with port_lease(device_path, cfg.mplc_stop_services):
+        with _port_flock(cfg, port_key):
+            # 1) Pending window? — a Modbus read of reg122 that answers means the
+            #    module has not yet rebooted/latched: a direct write returns it.
+            progress_cb(10, "Проверяю, отвечает ли модуль по Modbus")
+            probe = device_config.probe_bus_mode(device_path, device)
+            plan = bus_mode.force_modbus_recovery_plan(family, probe["answered"], prior_mode)
+
+            if plan.action == bus_mode.RECOVERY_WRITE:
+                log_cb("Модуль ещё отвечает по Modbus — прямая запись возврата рег.122", "info")
+                progress_cb(40, "Прямая запись возврата в Modbus")
+                err = _direct_modbus_bus_write(device_path, device, target_mode)
+                if err:
+                    result["path"] = "modbus_write"
+                    log_cb("Ошибка записи возврата: %s" % err, "error")
+                    progress_cb(100, "Не удалось записать возврат в Modbus")
+                    return
+                result["path"] = "modbus_write"
+                result["recovered"] = True
+                log_cb("Возврат записан напрямую (рег.122 = %d)" % target_mode, "info")
+                progress_cb(100, "Модуль возвращён в Modbus")
+                return
+
+            # 2) Latched — ring-join WriteProperty over MS/TP.
+            pv = bus_mode.mr_msv_pv_for_mode(target_mode)
+            if family == bus_mode.FAMILY_DTV:
+                payload = bacnet_mstp.dtv_recovery_wp_payload(7, target_mode)
+                obj_desc = "AV:122 PV=%d" % target_mode
+            else:
+                payload = bacnet_mstp.mr_recovery_wp_payload(7, pv)
+                obj_desc = "MSV:1 PV=%d" % pv
+            log_cb(
+                "Модуль не отвечает по Modbus (залатчен). Ring-join WP %s @ %d 8N1, MAC %d->%d"
+                % (obj_desc, mstp_baud, src_mac, dut_mac),
+                "info",
+            )
+            progress_cb(30, "Вхожу в кольцо MS/TP и шлю WriteProperty")
+            fsm = bacnet_mstp.RingJoinFSM(my_mac=src_mac, dut_mac=dut_mac, der_payload=payload)
+            rj = bacnet_mstp.RingJoinResult(open_error="serial not open")
+            ser = None
+            try:
+                ser = open_port(device_path, baudrate=mstp_baud, parity="N", stopbits=1)
+                rj = bacnet_mstp.ring_join_serial(ser, mstp_baud, fsm, ring_secs)
+            except Exception as exc:  # noqa: BLE001
+                rj = bacnet_mstp.RingJoinResult(open_error="%s: %s" % (type(exc).__name__, exc))
+            finally:
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
+
+            result["path"] = "mstp_wp"
+            result["ring_join"] = {
+                "state": rj.state,
+                "frames_rx": rj.frames_rx,
+                "frames_tx": rj.frames_tx,
+                "answered": rj.answered,
+                "acked": rj.acked,
+                "open_error": rj.open_error,
+            }
+            if rj.open_error:
+                log_cb("Ошибка порта: %s" % rj.open_error, "error")
+                progress_cb(100, "Восстановление не выполнено: ошибка порта")
+                return
+            if not rj.answered:
+                log_cb(
+                    "Не удалось войти в кольцо / модуль не ответил на WriteProperty. "
+                    "Верните модуль физической кнопкой сброса на устройстве.",
+                    "warn",
+                )
+                progress_cb(100, "Модуль не вернулся — нужна физическая кнопка сброса")
+                return
+
+            log_cb("WriteProperty подтверждён, жду отложенный сброс модуля", "info")
+            progress_cb(75, "Жду перезагрузку модуля (%d с)" % reset_wait)
+            time.sleep(reset_wait)
+
+            progress_cb(90, "Проверяю возврат на Modbus")
+            post = device_config.probe_bus_mode(device_path, device)
+            result["post_probe"] = post
+            if post["answered"]:
+                result["recovered"] = True
+                log_cb("Модуль вернулся на Modbus (рег.122 = %s)" % post.get("bus_mode"), "info")
+                progress_cb(100, "Модуль возвращён в Modbus")
+            else:
+                log_cb(
+                    "Модуль не ответил по Modbus после восстановления — "
+                    "нужна физическая кнопка сброса на устройстве.",
+                    "warn",
+                )
+                progress_cb(100, "Модуль не вернулся — нужна физическая кнопка сброса")
+
+
+def _direct_modbus_bus_write(device_path: str, device: Dict[str, Any], target_mode: int) -> Optional[str]:
+    """Direct Modbus FC06 write of reg122 = target_mode (pending-window recovery).
+
+    Returns None on success or an error string. Kept thin here (HIL glue) —
+    reuses the device_config transport."""
+    from .modbus_io import write_single as _write_single
+
+    send, close_transport = device_config._open_transport(device_path, device)
+    try:
+        slave = device_config._device_slave(device)
+        return _write_single(send, slave, device_config.REG_FAST_MODBUS, int(target_mode) & 0xFFFF, 800)
+    finally:
+        close_transport()

@@ -335,6 +335,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_device_config_holding(ctx)
             if method == "POST" and p == "/device_config/coil":
                 return self._handle_device_config_coil(ctx)
+            if method == "POST" and p == "/bus_mode":
+                return self._handle_bus_mode(ctx)
+            if method == "POST" and p == "/bacnet/verify":
+                return self._handle_bacnet_verify(ctx)
+            if method == "POST" and p == "/bacnet/recover":
+                return self._handle_bacnet_recover(ctx)
             if method == "POST" and p == "/cancel":
                 return self._handle_cancel(ctx)
             if method == "GET" and p == "/jobs":
@@ -632,6 +638,53 @@ class Handler(BaseHTTPRequestHandler):
 
         snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
+
+    def _handle_bus_mode(self, ctx: ServiceContext) -> None:
+        """POST /bus_mode — 3-state field-bus selector write (§5.1).
+
+        Synchronous, under the same leased device-config session as holding
+        writes. Auth checked in _dispatch before this handler; family/value
+        validation and gating are in device_config.write_bus_mode."""
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
+        mode = int(data.get("mode") if data.get("mode") is not None else data.get("value") or 0)
+
+        def _work():
+            return device_config.write_bus_mode(device_path, device, mode)
+
+        result = self._run_device_config_modbus(ctx, port, device_path, _work)
+        _send_json(self, {"ok": True, **result})
+
+    def _handle_bacnet_verify(self, ctx: ServiceContext) -> None:
+        """POST /bacnet/verify — passive MS/TP sniff as a daemon job (§5.2)."""
+        data = _read_json_body(self)
+        port = str(data.get("port") or "").strip()
+        if not port:
+            raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
+
+        def run_fn(job: Job, rctx: Dict[str, Any]) -> None:
+            runner.run_bacnet_verify_job(job, rctx, ctx.cfg)
+
+        job = ctx.jobs.submit(JobKind.BACNET_VERIFY, port, data, run_fn)
+        _send_json(self, {"job_id": job.id})
+
+    def _handle_bacnet_recover(self, ctx: ServiceContext) -> None:
+        """POST /bacnet/recover — in-band return to Modbus as a daemon job (§5.4)."""
+        data = _read_json_body(self)
+        port = str(data.get("port") or "").strip()
+        if not port:
+            raise ValueError("Поле 'port' обязательно")
+        if port not in ctx.cfg.ports_map:
+            raise ValueError(f"Неизвестный порт: {port}")
+
+        def run_fn(job: Job, rctx: Dict[str, Any]) -> None:
+            runner.run_bacnet_recover_job(job, rctx, ctx.cfg)
+
+        job = ctx.jobs.submit(JobKind.BACNET_RECOVER, port, data, run_fn)
+        _send_json(self, {"job_id": job.id})
 
     def _handle_cancel(self, ctx: ServiceContext) -> None:
         data = _read_json_body(self)

@@ -2481,6 +2481,14 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .flasher-scan-status.success { color: var(--green); }
 .flasher-scan-status.warn { color: var(--yellow, #facc15); }
 .flasher-scan-status.error { color: var(--red); }
+/* §5.5 BACnet sniff offer: inline hint + one-click button, wraps on narrow cards. */
+.flasher-bacnet-offer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.flasher-bacnet-offer[hidden] { display: none !important; }
 
 .flasher-table-wrap { overflow-x: auto; }
 .flasher-table {
