@@ -181,12 +181,15 @@ install -m 644 "$tmp_bootscr" "$mnt/usr/local/share/sa02m/boot.scr"
 rm -f "$tmp_bootscr"
 log "boot.scr: installed canonical bootargs with threadirqs"
 
-# ── RuntimeWatchdog drop-in (sun4i ≤16s → 8s) ─────────────────────────────
+# ── RuntimeWatchdog drop-in (sun4i hardware cap 16s → 15s) ────────────────
+# Значения fallback-ветки обязаны совпадать с эталоном
+# etc/systemd/sa02m-watchdog.conf (там обоснование); стережёт
+# .ai-dev/quality/checks/watchdog-cap.sh.
 if [ -f "$ETC/systemd/sa02m-watchdog.conf" ]; then
     install -m 644 "$ETC/systemd/sa02m-watchdog.conf" \
         "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf"
 else
-    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=8s' 'RebootWatchdogSec=2min' \
+    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
         > "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf"
 fi
 sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \

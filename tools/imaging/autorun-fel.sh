@@ -92,7 +92,10 @@ apply_firstboot_wiring() {
     done
     rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-eth1-coldboot.service" 2>/dev/null || true
 
-    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=8s' 'RebootWatchdogSec=2min' \
+    # Значения обязаны совпадать с эталоном etc/systemd/sa02m-watchdog.conf
+    # (репо на носителе нет — отсюда копия); стережёт
+    # .ai-dev/quality/checks/watchdog-cap.sh.
+    printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
         > "$root/etc/systemd/system.conf.d/sa02m-watchdog.conf"
     if [ -f "$root/etc/systemd/system.conf" ]; then
         sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \

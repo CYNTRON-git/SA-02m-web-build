@@ -15,7 +15,7 @@
 # Что делает:
 #   1. Останавливает и маскирует старый sa02m-watchdog-feed (bash-петля).
 #   2. Кладёт drop-in /etc/systemd/system.conf.d/sa02m-watchdog.conf
-#      (RuntimeWatchdogSec=15s, RebootWatchdogSec=2min) → PID1 владеет HW WDT.
+#      (RuntimeWatchdogSec=15s, RebootWatchdogSec=0) → PID1 владеет HW WDT.
 #   3. Ставит /usr/local/sbin/sa02m-userspace-watchdog (health-checks).
 #   4. Активирует sa02m-userspace-watchdog.service (forces reboot при сбоях).
 #   5. Активирует sa02m-failure-monitor.service (логирование, без reboot).
@@ -62,15 +62,20 @@ if [ -f /etc/systemd/system/sa02m-watchdog-feed.service ]; then
 fi
 systemctl mask sa02m-watchdog-feed.service 2>/dev/null || true
 
-log "[2/7] Drop-in system.conf.d/sa02m-watchdog.conf (15s/2min)"
+log "[2/7] Drop-in system.conf.d/sa02m-watchdog.conf (15s / reboot-watchdog off)"
 mkdir -p /etc/systemd/system.conf.d
 if [ "$LOCAL_FILES" = 1 ] && [ -r "$SRC_WDT_CONF" ]; then
     install -m 644 "$SRC_WDT_CONF" /etc/systemd/system.conf.d/sa02m-watchdog.conf
 else
+    # Fallback только для stdin-режима (`ssh … "bash -s" < install.sh`), когда
+    # репо на устройстве нет. Значения обязаны совпадать с эталоном
+    # etc/systemd/sa02m-watchdog.conf (там же обоснование: cap 16s у sun4i-wdt,
+    # RebootWatchdogSec=0 против hardware reset медленного выключения);
+    # совпадение стережёт .ai-dev/quality/checks/watchdog-cap.sh.
     cat > /etc/systemd/system.conf.d/sa02m-watchdog.conf <<'EOF'
 [Manager]
 RuntimeWatchdogSec=15s
-RebootWatchdogSec=2min
+RebootWatchdogSec=0
 EOF
 fi
 
@@ -125,9 +130,15 @@ done
 echo
 echo "Watchdog config (running):"
 systemctl show -p RuntimeWatchdogUSec -p RebootWatchdogUSec -p WatchdogDevice 2>&1 | sed 's/^/    /'
+# Потолок драйвера рядом с настроенным значением: на A40i (sun4i-wdt) это 16 c,
+# и запрос выше кэпа systemd отвергает с EINVAL. Именно max_timeout, а не
+# timeout: timeout — это ТЕКУЩИЙ запрограммированный таймаут (после этой
+# политики там будет 15), максимум показывает max_timeout.
+echo "Watchdog hardware cap (driver, /sys/class/watchdog/watchdog0/max_timeout):"
+printf '    %s\n' "$(cat /sys/class/watchdog/watchdog0/max_timeout 2>/dev/null || echo 'n/a')"
 echo "Watchdog config (file):"
 sed 's/^/    /' /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
 echo
-echo "Готово. RuntimeWatchdogSec=15s/RebootWatchdogSec=2min применятся"
+echo "Готово. RuntimeWatchdogSec=15s/RebootWatchdogSec=0 применятся"
 echo "полностью после следующего reboot (PID1 уже владеет /dev/watchdog)."

@@ -123,13 +123,20 @@ PART=$(partx -g -o NR,TYPE '"$TARGET_DEV"' 2>/dev/null | awk '"'"'$2=="Linux"{pr
 MNT=$(mktemp -d /tmp/new-root-XXXXXX)
 mount '"$TARGET_DEV"'p${PART} "$MNT" 2>/dev/null || mount '"$TARGET_DEV"'2 "$MNT"
 
-# RuntimeWatchdogSec
+# RuntimeWatchdogSec — 15s из эталона etc/systemd/sa02m-watchdog.conf (cap
+# sun4i-wdt = 16s). ВНИМАНИЕ: правим system.conf НАПРЯМУЮ, а не drop-in, — это
+# свежезаписанный dd-образ, каталога system.conf.d в нём может ещё не быть.
+# Остальные пути наоборот комментируют эту строку, чтобы выигрывал drop-in;
+# перевод скрипта на drop-in — отдельная задача (backlog).
 [ -f "$MNT/etc/systemd/system.conf" ] && \
-    sed -i "s/^#*RuntimeWatchdogSec=.*/RuntimeWatchdogSec=8s/" "$MNT/etc/systemd/system.conf" || true
+    sed -i "s/^#*RuntimeWatchdogSec=.*/RuntimeWatchdogSec=15s/" "$MNT/etc/systemd/system.conf" || true
 grep -q "^RuntimeWatchdogSec=" "$MNT/etc/systemd/system.conf" 2>/dev/null || \
-    sed -i "/^\[Manager\]/a RuntimeWatchdogSec=8s" "$MNT/etc/systemd/system.conf" 2>/dev/null || true
+    sed -i "/^\[Manager\]/a RuntimeWatchdogSec=15s" "$MNT/etc/systemd/system.conf" 2>/dev/null || true
 
-# Watchdog-feed script — graceful exit when /dev/watchdog busy
+# Watchdog-feed script — graceful exit when /dev/watchdog busy. Запрашиваемый
+# таймаут зажат в min(30, max_timeout): аппаратный предел sun4i-wdt на A40i —
+# 16с, и запрос выше предела драйвер отвергает целиком. Краткая копия
+# etc/sa02m-watchdog-feed.sh — семантика та же.
 mkdir -p "$MNT/usr/local/sbin"
 cat > "$MNT/usr/local/sbin/sa02m-watchdog-feed.sh" << '"'"'WDEOF'"'"'
 #!/bin/bash
@@ -143,7 +150,12 @@ if ! exec 3>"$DEV" 2>/dev/null; then
 fi
 graceful_stop() { printf "V" >&3 2>/dev/null||true; exec 3>&- 2>/dev/null||true; exit 0; }
 trap graceful_stop TERM INT QUIT HUP
-[ -w /sys/class/watchdog/watchdog0/timeout ] && echo 30 >/sys/class/watchdog/watchdog0/timeout 2>/dev/null||true
+WDMAX=$(cat /sys/class/watchdog/watchdog0/max_timeout 2>/dev/null||true)
+case "$WDMAX" in ""|*[!0-9]*|0) WDMAX="" ;; esac
+if [ -n "$WDMAX" ] && [ -w /sys/class/watchdog/watchdog0/timeout ]; then
+    WDWANT=30; [ "$WDMAX" -lt 30 ] && WDWANT="$WDMAX"
+    echo "$WDWANT" >/sys/class/watchdog/watchdog0/timeout 2>/dev/null||true
+fi
 while :; do printf "." >&3 2>/dev/null || break; sleep "$INTERVAL"; done
 graceful_stop
 WDEOF
