@@ -7,6 +7,28 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-08-05 **[LOW] Default device password hard-coded in the imaging
+  fallback.** `tools/imaging/make-image.sh:20` defaults `SSH_PASS` to `cyntron`
+  when `SA02M_PASS` is unset, so a build host without the key silently
+  authenticates with a well-known credential. Untouched by the boot.scr format
+  fix (surfaced by its review, out of that diff's scope); decide whether to drop
+  the default and require an explicit `SA02M_PASS`.
+- [OPEN] 2026-08-05 **[LOW] x-bit-dependent invocation documented for the rootfs
+  builder.** `tools/debian-rootfs/README.md:31` documents
+  `sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh`, which fails on a fresh
+  clone because tracked `*.sh` are `100644` (110 of 115). Same class as the
+  blocking finding fixed in the boot.scr format work, on a script that change
+  does not touch — invoke via `bash` there too.
+- [OPEN] 2026-08-05 **[LOW] `compress-bin.sh` patch step swallows failures.**
+  `tools/imaging/compress-bin.sh:177-210` defines a watchdog-only `patch_image()`
+  that returns 0 on failure. Verified during the boot.scr review NOT to carry the
+  boot.scr fail-open class (it never generated `boot.scr`), but the same
+  swallow-the-error style remains.
+- [OPEN] 2026-08-05 **[LOW] Stale bootargs comments after the payload default
+  change.** `kernel-port/overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts:77` and
+  `scripts/01-system.sh:112` both describe bootargs as carrying `console=tty1`
+  "generated from etc/boot.cmd.sa02m" — no longer true of the default payload
+  (now `etc/boot.cmd.sa02m.min`). Outside the format fix's scope.
 - [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
   interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
   DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
