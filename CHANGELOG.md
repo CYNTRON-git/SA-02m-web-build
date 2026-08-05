@@ -5,7 +5,7 @@
 
 ---
 
-## feature/klogic - First-boot образ, сеть после прошивки, cloud wipe, KLogic в виджете (июл 2026)
+## 1.0.5.64 - First-boot образ, KLogic-совместимость, командная строка, KPI-дашборд (август 2026)
 
 ### Web UI
 
@@ -88,6 +88,27 @@
 
 - **Виджет служб:** установленный KLogic показывается отдельной строкой
   (`optional_services`), а не подменяется строкой fcgiwrap.
+- **Равные KPI-плитки «Сведений».** Малые виджеты (CPU, температура, ОЗУ,
+  eMMC, Uptime, USB, microSD, Нагрузка) приведены к единой сетке 200 px:
+  заголовок / значение по центру / полоса или футер у низа (паритет с
+  board-portal RK3588). Убраны подпись «Загрузка ядер» и строка R/W eMMC;
+  «Нагрузка» перенесена первой; счётчик процессов всегда в короткой форме
+  «Проц.:». На мобильном (≤700 px) сохранены квадратные плитки без полос.
+- **RT-подпись у версии ядра.** «Сведения → Система» показывает
+  «Ядро: <версия> · RT / без RT» по флагу `kernel_is_rt` из `status.cgi`;
+  обе строки добавлены в i18n DICT.
+- **Кнопка «Сканировать» RS-485 снова активна после завершения задания
+  прошивки** — флаг занятости флешера сбрасывается по окончании job.
+- **Точка активности RS-485 горит только при открытом порте** (`open=1`),
+  а не при любом сконфигурированном канале.
+
+### Деплой / система
+
+- **Самопочинка NUL-повреждённых конфигов logrotate после клонирования
+  образа.** В репо добавлен эталон `etc/logrotate.d/wtmp`; `scripts/01-system.sh`
+  при деплое удаляет осиротевшие sed-темпфайлы в `/etc/logrotate.d/`,
+  восстанавливает обнулённые конфиги из эталона (или уносит в `/var/backups`)
+  и прогоняет контрольный `logrotate -d`.
 
 ### Документация / агенты
 
@@ -98,8 +119,12 @@
 
 **файлы:** `etc/sa02m-rootfs-expand.sh`, `etc/systemd/sa02m-rootfs-expand.service`,
 `etc/fix-eth.sh`, `etc/systemd/sa02m-eth-coldboot.service`,
-`usr/local/sbin/sa02m-eth-coldboot.sh`, `scripts/01-system.sh`,
-`scripts/02-network.sh`, `tools/imaging/*`, `www/network_config/static/js/app.js`,
+`usr/local/sbin/sa02m-eth-coldboot.sh`, `etc/logrotate.d/wtmp`,
+`scripts/01-system.sh`, `scripts/02-network.sh`, `tools/imaging/*`,
+`www/network_config/index.html`, `www/network_config/static/css/main.css`,
+`www/network_config/static/js/{app,i18n,flasher}.js`,
+`www/network_config/static/js/app/{status,rs485}.js`,
+`www/network_config/cgi-bin/cmd_exec.cgi`, `etc/sa02m-web-root-cmd.sh`,
 `docs/bugs/BUGLOG.md`, `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`,
 `tools/ssh/sa02m_remote.py`.
 
