@@ -253,9 +253,9 @@ function beginRootPasswordPrompt(pendingCmd) {
   } else {
     document.getElementById('cmd-input')?.focus();
   }
-  setCommandOutput(pendingCmd
+  setCommandOutput(uiT(pendingCmd
     ? 'Для команды нужен пароль root. Введите пароль и нажмите Enter.'
-    : 'Введите пароль root и нажмите Enter.');
+    : 'Введите пароль root и нажмите Enter.'));
 }
 
 function isRootLoginCommand(cmd) {
@@ -270,7 +270,7 @@ function handleCommandBuiltin(cmd) {
     clearCommandInput();
     if (cmdRootPassword) {
       setCommandMode('root');
-      setCommandOutput('Режим root уже активен. Вводите команды напрямую, например: id -u -n');
+      setCommandOutput(uiT('Режим root уже активен. Вводите команды напрямую, например: id -u -n'));
       return true;
     }
     beginRootPasswordPrompt('');
@@ -280,7 +280,7 @@ function handleCommandBuiltin(cmd) {
     saveCommandHistory(cmd);
     setCommandMode('web');
     clearCommandInput();
-    setCommandOutput('Режим web включён.');
+    setCommandOutput(uiT('Режим web включён.'));
     return true;
   }
   return false;
@@ -297,7 +297,7 @@ function resolveExecCommand(cmd, mode) {
     return {
       mode: 'root',
       cmd: null,
-      error: 'Используйте su root для входа, затем обычные команды.\nПример: id -u -n'
+      error: uiT('Используйте su root для входа, затем обычные команды.\nПример: id -u -n')
     };
   }
   const sudoMatch = cmd.match(/^\s*sudo(?:\s+(.*))?$/i);
@@ -314,7 +314,7 @@ function resolveExecCommand(cmd, mode) {
     return {
       mode: 'root',
       cmd: null,
-      error: 'Используйте su root для входа, затем обычные команды.\nПример: id -u -n'
+      error: uiT('Используйте su root для входа, затем обычные команды.\nПример: id -u -n')
     };
   }
   // e.g. sudo systemctl status x — run the command directly as root
@@ -333,7 +333,7 @@ function executeCommandLine(cmd, mode, rootPassword) {
   const execMode = resolved.mode;
   const execCmd = resolved.cmd;
   const started = new Date().toLocaleTimeString();
-  setCommandOutput(prompt + cmd + '\n[' + started + '] выполнение…');
+  setCommandOutput(prompt + cmd + '\n[' + started + '] ' + uiT('выполнение…'));
   fetch('cgi-bin/cmd_exec.cgi', {
     method: 'POST',
     body: new URLSearchParams({
@@ -347,27 +347,27 @@ function executeCommandLine(cmd, mode, rootPassword) {
     .then(r => r.json())
     .then(j => {
       if (!j || !j.ok) {
-        setCommandOutput(prompt + cmd + '\nОшибка: ' + ((j && j.error) || 'server_error'));
+        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + ((j && j.error) || 'server_error'));
         return;
       }
       if (execMode === 'root' && /root authentication failed/i.test(j.output || '')) {
         cmdRootPassword = '';
         cmdAwaitPassword = true;
         updateCommandPasswordVisibility();
-        setCommandOutput(prompt + cmd + '\nОшибка: неверный пароль root. Введите пароль снова.');
+        setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка: неверный пароль root. Введите пароль снова.'));
         document.getElementById('cmd-root-password')?.focus();
         return;
       }
       saveCommandHistory(cmd);
-      const tail = j.truncated ? '\n[output truncated to last 32768 bytes]' : '';
+      const tail = j.truncated ? '\n' + uiT('[output truncated to last 32768 bytes]') : '';
       setCommandOutput(prompt + cmd + '\n[mode ' + (j.mode || execMode) + ', exit ' + j.rc + ']\n' + (j.output || '') + tail);
     })
-    .catch(err => setCommandOutput(prompt + cmd + '\nОшибка запроса: ' + err.message));
+    .catch(err => setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка запроса:') + ' ' + err.message));
 }
 
 function acceptRootPassword(password) {
   if (!password) {
-    setCommandOutput('Введите пароль root.');
+    setCommandOutput(uiT('Введите пароль root.'));
     return;
   }
   cmdRootPassword = password;
