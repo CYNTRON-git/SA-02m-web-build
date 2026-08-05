@@ -2,8 +2,8 @@
 #
 # pack-sa02m-image.sh — rootfs Debian bullseye → raw eMMC .img → PiShrink → .img.xz
 #
-# Usage:
-#   sudo ./tools/debian-rootfs/pack-sa02m-image.sh \
+# Usage — through `bash`, since this file is tracked mode 644:
+#   sudo bash tools/debian-rootfs/pack-sa02m-image.sh \
 #       --rootfs ~/build/sa02m-bullseye-rootfs \
 #       --out-dir ./out --name sa02m-bullseye-v1.0.3.37 --profile sa02m-1eth
 #
@@ -25,6 +25,9 @@ EMMC_BYTES=7818182656
 BOOT_MIB=64
 UBOOT_BIN="${UBOOT_BIN:-$REPO_ROOT/tools/imaging/boot/u-boot-sunxi-with-spl.bin}"
 UBOOT_SEEK_KB="${UBOOT_SEEK_KB:-8}"
+# Селектор boot.cmd payload — только аргументом: этот скрипт запускают ЧЕРЕЗ
+# sudo, поэтому переменную окружения он не увидит в принципе (env_reset).
+BOOTCMD_ARG=""
 
 usage() {
 	sed -n '2,12p' "$0" | sed 's/^# \?//'
@@ -46,6 +49,7 @@ while [ "$#" -gt 0 ]; do
 		--no-patch-watchdog) DO_PATCH_WATCHDOG=0; shift ;;
 		--uboot) UBOOT_BIN="$2"; shift 2 ;;
 		--no-uboot) UBOOT_BIN=""; shift ;;
+		--bootcmd) BOOTCMD_ARG="$2"; shift 2 ;;
 		-h|--help) usage ;;
 		*) die "unknown arg: $1" ;;
 	esac
@@ -180,7 +184,11 @@ else
 fi
 DTB="$DTB_PATCHED"
 
-# DTB под primary именем + fallback именами (boot.cmd.sa02m перебирает их)
+# DTB под тремя именами. ВНИМАНИЕ: payload по умолчанию
+# (etc/boot.cmd.sa02m.min) перебора имён НЕ делает — он грузит ровно
+# sun8i-a40i-sk.dtb. Два других имени нужны opt-in варианту
+# etc/boot.cmd.sa02m и старым boot.scr на уже прошитых платах; удаление любого
+# из них ломает загрузку (docs/contracts/uboot-boot-script.md §3).
 cp -f "$DTB" "$WORK/boot/sun8i-r40-sa02m.dtb"
 cp -f "$DTB" "$WORK/boot/sun8i-a40i-sk.dtb"
 cp -f "$DTB" "$WORK/boot/sun8i-a40i-nano2e-none-sk.dtb"
@@ -189,10 +197,32 @@ cp -f "$VMLINUZ" "$WORK/root/usr/local/share/sa02m/kernel/zImage.smp"
 cp -f "$DTB" "$WORK/root/usr/local/share/sa02m/kernel/sun8i-r40-sa02m.dtb"
 cp -f "$DTB" "$WORK/root/usr/local/share/sa02m/kernel/sun8i-a40i-sk.dtb"
 
-BOOT_CMD="$REPO_ROOT/etc/boot.cmd.sa02m"
-[ -f "$BOOT_CMD" ] || die "missing $BOOT_CMD"
-sed 's/\r$//' "$BOOT_CMD" > "$WORK/boot.cmd"
-mkimage -C none -A arm -T script -d "$WORK/boot.cmd" "$WORK/boot/boot.scr" >/dev/null
+# Тот же payload-селектор и тот же валидатор, что и в tools/imaging — иначе два
+# производителя boot.scr расходятся по умолчанию (docs/contracts/uboot-boot-script.md).
+UBOOT_PY="$REPO_ROOT/tools/imaging/uboot-script.py"
+[ -r "$UBOOT_PY" ] || die "missing $UBOOT_PY"
+
+# Функция, а не линейный блок: так её выполняет регрессионный тест
+# (scripts/dev/test-uboot-bootscr.sh, секция D3) и доказывает, что validate
+# действительно фатален здесь, а не просто присутствует в тексте.
+build_boot_scr() {
+	local out="$1" work="$2" src default_src
+	src="$(python3 "$UBOOT_PY" resolve --repo-root "$REPO_ROOT" --payload "${BOOTCMD_ARG:-}")" \
+		|| die "cannot resolve boot.cmd payload"
+	[ -f "$src" ] || die "missing $src"
+	default_src="$(python3 "$UBOOT_PY" default --repo-root "$REPO_ROOT")" \
+		|| die "cannot resolve default boot.cmd payload"
+	if [ "$src" = "$default_src" ]; then
+		log "boot.cmd payload: $src (default, hardware-verified)"
+	else
+		log "WARN: NON-DEFAULT boot.cmd payload in use: $src"
+	fi
+	python3 "$UBOOT_PY" normalize "$src" "$work/boot.cmd" || die "boot.cmd normalization failed: $src"
+	mkimage -C none -A arm -T script -d "$work/boot.cmd" "$out" >/dev/null || die "mkimage failed"
+	python3 "$UBOOT_PY" validate "$out" || die "generated boot.scr failed format validation"
+}
+
+build_boot_scr "$WORK/boot/boot.scr" "$WORK"
 cp -f "$WORK/boot/boot.scr" "$WORK/root/usr/local/share/sa02m/boot.scr" 2>/dev/null || \
 	install -d -m 755 "$WORK/root/usr/local/share/sa02m" && \
 	cp -f "$WORK/boot/boot.scr" "$WORK/root/usr/local/share/sa02m/boot.scr"

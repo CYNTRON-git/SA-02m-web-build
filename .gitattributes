@@ -1,5 +1,8 @@
 # Shell scripts and CGI must use LF (Linux target)
 *.sh    text eol=lf
+# U-Boot boot script payloads: a CR reaches the kernel command line verbatim
+# (docs/contracts/uboot-boot-script.md) and shifts the byte-exact size table.
+boot.cmd.* text eol=lf
 *.cgi   text eol=lf
 *.conf  text eol=lf
 *.rules text eol=lf

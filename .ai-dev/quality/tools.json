@@ -128,6 +128,15 @@
       "init": "bash + Python 3 as python3/python/py (stdlib only, no deps) — run on demand: bash scripts/dev/test-image-manifest.sh"
     },
     {
+      "id": "uboot-bootscr-format",
+      "checks": "Byte-level regression for the U-Boot boot.scr generator (tools/imaging/uboot-script.py and its two producers). TWICE a malformed boot.scr shipped and the board stopped in U-Boot, because the only assertion was `grep -aq threadirqs`, which a malformed file passes. The byte layout it pins has ONE home — docs/contracts/uboot-boot-script.md; the golden is anchored to the donor facts recorded there, not to the writer's logic. Covers: the golden artifact, five malformed shapes rejected, the payload pins (size + LF + sha256, and the UNVERIFIED-ON-HARDWARE marker that stops a silent promotion), and the caller chain — it RUNS make-image.sh's shipped patch invocation against a sudo shim, so a step skipped because of a mode bit or a selector stripped by env_reset FAILS here rather than shipping a bad image. No mkimage, no device, no network — mkimage is a pipeline prereq but absent in CI. Non-vacuous both ways: an unresolvable writer or a missing guard/function FAILS, and BOOTSCR_SRC pointed at a pre-fix generator fails loudly (recipe in the test header).",
+      "config": null,
+      "run": "bash scripts/dev/test-uboot-bootscr.sh",
+      "beat": "build",
+      "covers": ["tools/imaging/uboot-script.py", "tools/imaging/patch-firstboot-image.sh", "tools/imaging/make-image.sh", "tools/debian-rootfs/pack-sa02m-image.sh", "etc/boot.cmd.sa02m", "etc/boot.cmd.sa02m.min", "scripts/dev/test-uboot-bootscr.sh"],
+      "init": "bash + Python 3 as python3/python/py (stdlib only, no deps) — run on demand: bash scripts/dev/test-uboot-bootscr.sh"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,

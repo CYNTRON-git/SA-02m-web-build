@@ -62,6 +62,7 @@ done
 
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-donor.sh"
 STREAM_SCRIPT="$SCRIPT_DIR/stream-after-cleanup.sh"
+PATCH_SCRIPT="$SCRIPT_DIR/patch-firstboot-image.sh"
 FIX_DONOR_SCRIPT="$SCRIPT_DIR/fix-donor-after-abort.sh"
 WATCHDOG_SCRIPT="$REPO_ROOT/etc/sa02m-userspace-watchdog.sh"
 WATCHDOG_CONF="$REPO_ROOT/etc/sa02m_userspace_watchdog.conf"
@@ -191,8 +192,15 @@ for bin in ssh xz e2fsck resize2fs parted truncate sha256sum dd python3; do
     command -v "$bin" >/dev/null || die "не найден '$bin'"
 done
 command -v pishrink.sh >/dev/null || die "не найден pishrink.sh"
+# mkimage — жёсткое требование: без него boot.scr собирает запасной writer, а
+# образ без валидного boot.scr не грузится (docs/contracts/uboot-boot-script.md).
+command -v mkimage >/dev/null || die "не найден 'mkimage' (apt install u-boot-tools)"
 [ -r "$CLEANUP_SCRIPT" ] || die "не найден $CLEANUP_SCRIPT"
 [ -r "$STREAM_SCRIPT" ] || die "не найден $STREAM_SCRIPT"
+# -r, НЕ -x: файл лежит в git с режимом 100644 (как 110 из 115 *.sh репозитория),
+# поэтому проверка по x-биту на свежем клоне была ЛОЖНОЙ и патч-шаг молча
+# пропускался вместе со сборкой boot.scr.
+[ -r "$PATCH_SCRIPT" ] || die "не найден $PATCH_SCRIPT — образ не получит валидный boot.scr"
 log "    auth: $SSH_AUTH → ${SSH_USER}@${DEVICE_IP}"
 
 log "    ssh → $DEVICE_IP (ожидание до 5 мин после reboot)"
@@ -279,55 +287,31 @@ cp -f "$XZ_TMP" "$RAW_XZ"
 sudo pishrink.sh -a -v "$RAW_IMG"
 
 # Патч образа: first-boot resize/network/watchdog (см. patch-firstboot-image.sh).
-if [ -x "$SCRIPT_DIR/patch-firstboot-image.sh" ]; then
-    log "    [patch] patch-firstboot-image.sh"
-    sudo "$SCRIPT_DIR/patch-firstboot-image.sh" "$RAW_IMG" || \
-        log "    [patch] WARN: patch-firstboot-image failed (не критично)"
-else
-patch_image() {
+# Шаг БЕЗУСЛОВНЫЙ: наличие скрипта проверено на шаге 0. Прежняя обёртка
+# `if [ -x … ]` на свежем клоне (режим 100644) уходила в ветку-заглушку, которая
+# boot.scr вообще не собирала и глушила свои ошибки через `return 0` — образ
+# уезжал с непроверенным boot.scr донора. Тот же fail-open, ради которого
+# и затевалась эта правка.
+run_firstboot_patch() {
     local img="$1"
-    local loop mnt rootpart
-    log "    [patch] loop-mount образа для патча watchdog unit-файлов"
-    loop=$(sudo losetup --partscan -f --show "$img" 2>/dev/null) || {
-        log "    [patch] WARN: losetup не удался — патч пропущен (не критично)"
-        return 0
-    }
-    mnt=$(mktemp -d /tmp/sa02m-img-patch-XXXXXX)
-    rootpart="${loop}p2"
-    local i
-    for i in 1 2 3 4 5; do [ -b "$rootpart" ] && break; sleep 1; done
-    if ! sudo mount "$rootpart" "$mnt" 2>/dev/null; then
-        log "    [patch] WARN: mount образа не удался — патч пропущен"
-        sudo losetup -d "$loop" 2>/dev/null || true
-        rm -rf "$mnt"; return 0
+    # Селектор payload передаётся АРГУМЕНТОМ, а не переменной окружения: sudo с
+    # env_reset её срезает, а вернуть её через `sudo VAR=value cmd` нельзя —
+    # sudoers `setenv` по умолчанию ВЫКЛЮЧЕН, и такая команда просто
+    # отклоняется. Аргумент переживает sudo на любом хосте.
+    # Через `bash`, а не по x-биту: режим файла в git не должен решать,
+    # применён ли патч.
+    if [ -n "${SA02M_BOOTCMD:-}" ]; then
+        sudo bash "$PATCH_SCRIPT" --bootcmd "$SA02M_BOOTCMD" "$img"
+    else
+        sudo bash "$PATCH_SCRIPT" "$img"
     fi
-
-    # 1. Нормальные watchdog unit-файлы из репозитория
-    sudo cp -f "$REPO_ROOT/etc/systemd/sa02m-userspace-watchdog.service" \
-        "$mnt/etc/systemd/system/sa02m-userspace-watchdog.service" 2>/dev/null || true
-    sudo cp -f "$REPO_ROOT/etc/net-watchdog.service" \
-        "$mnt/etc/systemd/system/net-watchdog.service" 2>/dev/null || true
-    sudo cp -f "$REPO_ROOT/etc/sa02m-failure-monitor.service" \
-        "$mnt/etc/systemd/system/sa02m-failure-monitor.service" 2>/dev/null || true
-
-    # 2. Watchdog drop-in (RuntimeWatchdogSec=10s из репо)
-    sudo install -d "$mnt/etc/systemd/system.conf.d"
-    sudo cp -f "$REPO_ROOT/etc/systemd/sa02m-watchdog.conf" \
-        "$mnt/etc/systemd/system.conf.d/sa02m-watchdog.conf" 2>/dev/null || true
-    # Убрать прямую правку RuntimeWatchdogSec в system.conf (управляется drop-in'ом)
-    sudo sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' \
-        "$mnt/etc/systemd/system.conf" 2>/dev/null || true
-
-    # 3. Убрать DONE-флаг expand (на случай если stream не удалил)
-    sudo rm -f "$mnt/var/lib/sa02m-rootfs-expand.done"
-
-    log "    [patch] watchdog unit-файлы восстановлены, DONE-флаг удалён"
-    sudo umount "$mnt"
-    sudo losetup -d "$loop" 2>/dev/null || true
-    rm -rf "$mnt"
 }
-patch_image "$RAW_IMG"
-fi
+
+log "    [patch] patch-firstboot-image.sh"
+# НЕ "не критично": патч ставит boot.scr. Проглоченная ошибка здесь дважды
+# выпускала образ с невалидным boot.scr (плата не грузится, нужен FEL).
+run_firstboot_patch "$RAW_IMG" || \
+    die "patch-firstboot-image.sh failed — образ непригоден (boot.scr/first-boot патч не применён)"
 
 log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
 rm -f "$SHRUNK_XZ" "$FINAL_IMG"

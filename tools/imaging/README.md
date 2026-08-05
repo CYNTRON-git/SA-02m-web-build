@@ -23,7 +23,7 @@ powershell -ExecutionPolicy Bypass -File tools\imaging\setup-wsl-network.ps1
 (зеркальная сеть WSL2 — см. [§7.4 в SA02M_IMAGING_GUIDE.md](../../docs/SA02M_IMAGING_GUIDE.md#74-доступ-wsl2-к-локальной-сети-обязательно-для-ssh-на-донор))
 
 ```bash
-sudo apt update && sudo apt install -y kpartx parted util-linux e2fsprogs xz-utils wget openssh-client python3
+sudo apt update && sudo apt install -y kpartx parted util-linux e2fsprogs xz-utils wget openssh-client python3 u-boot-tools
 sudo wget -O /usr/local/bin/pishrink.sh https://raw.githubusercontent.com/Drewsif/PiShrink/master/pishrink.sh
 sudo chmod +x /usr/local/bin/pishrink.sh
 
@@ -124,6 +124,11 @@ sh /mnt/autorun.sh
 > rootfs resize wiring **и FAT `boot.scr` с `threadirqs`**. Без `threadirqs`
 > рабочая плата с PCA9536 может зависнуть на I2C IRQ storm до `sa02m-pre-start`
 > (нет пищалки, службы не стартуют).
+
+> ⚠ Формат `boot.scr` (64 header + 8 size table + N скрипта, без padding),
+> выбор payload (`--bootcmd <path>`) и процедура промоушена opt-in варианта —
+> единственный дом: [`docs/contracts/uboot-boot-script.md`](../../docs/contracts/uboot-boot-script.md).
+> `mkimage` (`u-boot-tools`) — жёсткое требование шага 0 `make-image.sh`.
 
 ### 4. Залить на новую плату
 
