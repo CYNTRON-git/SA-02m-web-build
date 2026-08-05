@@ -71,4 +71,7 @@ tools/sa02m-device.env
 # Underscore-prefixed imaging scratch probes — session-local diagnostics
 # (bench/COM probing), never committed; a recipe worth keeping graduates into a
 # named tools/imaging script + README row (web-diagnostic-tools.md rule 4).
+# _run_reset_cloud.py predates the rule and shipped tracked in 1.0.5.64 — keep
+# it visible until its keep-or-retire is decided (audit LOW-5 residual).
 tools/imaging/_*.py
+!tools/imaging/_run_reset_cloud.py
