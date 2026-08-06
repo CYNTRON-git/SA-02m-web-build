@@ -49,20 +49,72 @@ emit_result() {
     fi
 }
 
-# True, если sa02m-flasher выполняет scan/flash (GET /status → busy).
+# ── RS-485 port-lease probe (флашер держит линию?) ─────────────────────────
+# Читает poll_locked с НЕавторизованного GET /health демона sa02m-flasher —
+# союз «flock на диске ∪ активные задачи», который демон и так вычисляет.
+# Контракт ответа: docs/contracts/flasher-health.md.
+#
+# История, чтобы это не повторилось: до 2026-07-12 проба ходила на /status со
+# статическим токеном `session_token=cyntron_session`. Токен вывели из
+# обращения, демон стал отвечать 401 — а `curl` БЕЗ `-f` выходит с кодом 0 на
+# 401, поэтому `|| return 1` не срабатывал, подстроки `"busy":true` в
+# `{"error":"unauthorized"}` не было, и гейт три недели молча отвечал «не
+# занято». Отсюда два правила ниже.
+#
+# ПРАВИЛО 1 — слой решает форму проверки. В репозитории два HTTP-слоя с
+# ПРОТИВОПОЛОЖНЫМИ идиомами ошибок: демон отдаёт настоящие коды (здесь `-f`
+# необходим и достаточен), а Bash-CGI отвечает HTTP 200 с `{"error":...}` в
+# теле (там `-f` бесполезен, спасает только проверка ТЕЛА). Общий дом правила:
+# docs/agent-rules/web-code-rigor.md ## Bash CGI floors.
+#
+# ПРАВИЛО 2 — FAIL CLOSED. Это предохранительный гейт: пока демон запущен
+# (сокет на месте), но ответ непригоден — нет curl, таймаут, ошибка
+# транспорта, мусор в теле, нет поля poll_locked — проба отвечает «занято».
+# Молчаливый отказ и есть то, что скрывало поломку; шумный отказ («Пуск не
+# нажимается») позовёт человека. Причина пишется в $LOG.
+#
+# Отсутствие сокета — НЕ «неизвестно»: демона нет ⇒ аренды порта нет ⇒ не
+# занято (единственное состояние, читаемое без запроса).
+FLASHER_SOCK="${FLASHER_SOCK:-/run/sa02m-flasher/flasher.sock}"
+# `cmd_list` — горячий путь опроса вкладки «Службы», поэтому причина отказа
+# пишется не чаще раза в FLASHER_PROBE_LOG_EVERY секунд: залипший демон иначе
+# растит /var/log/sa02m_install.log на каждом поллинге.
+FLASHER_PROBE_LOG_EVERY="${FLASHER_PROBE_LOG_EVERY:-300}"
+FLASHER_PROBE_STAMP="${FLASHER_PROBE_STAMP:-${RESULT_DIR}/flasher-probe-warn.stamp}"
+
+flasher_probe_unknown() {
+    _now=$(date +%s 2>/dev/null || echo 0)
+    _last=$(cat "$FLASHER_PROBE_STAMP" 2>/dev/null || echo 0)
+    case "$_last" in ''|*[!0-9]*) _last=0 ;; esac
+    if [ "$_now" -eq 0 ] || [ $((_now - _last)) -ge "$FLASHER_PROBE_LOG_EVERY" ]; then
+        mkdir -p "$(dirname "$FLASHER_PROBE_STAMP")" 2>/dev/null || true
+        printf '%s\n' "$_now" >"$FLASHER_PROBE_STAMP" 2>/dev/null || true
+        echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: port-lease probe: $1 — считаю флашер занятым (fail closed)" >>"$LOG" 2>&1
+    fi
+    return 0
+}
+
 flasher_poll_lock_held() {
-    _sock=/run/sa02m-flasher/flasher.sock
+    _sock=$FLASHER_SOCK
     [ -S "$_sock" ] || return 1
     if ! command -v curl >/dev/null 2>&1; then
-        return 1
+        flasher_probe_unknown "демон запущен, но curl недоступен"
+        return 0
     fi
-    _resp=$(curl -sS --max-time 2 --unix-socket "$_sock" \
-        -H 'Cookie: session_token=cyntron_session' \
-        http://localhost/status 2>/dev/null) || return 1
+    # -f обязателен: без него 401/500 приходят с кодом выхода 0 (см. историю).
+    if ! _resp=$(curl -fsS --max-time 2 --unix-socket "$_sock" \
+        http://localhost/health 2>/dev/null); then
+        flasher_probe_unknown "GET /health не ответил (таймаут/HTTP-ошибка)"
+        return 0
+    fi
+    # Сравнение с ЛИТЕРАЛЬНОЙ подстрокой: ничего из ответа не попадает в
+    # shell-слово, путь или имя unit'а (web-code-rigor.md).
     case "$_resp" in
-        *'"busy":true'*|*'"busy": true'*) return 0 ;;
+        *'"poll_locked":true'*|*'"poll_locked": true'*) return 0 ;;
+        *'"poll_locked":false'*|*'"poll_locked": false'*) return 1 ;;
     esac
-    return 1
+    flasher_probe_unknown "в ответе /health нет поля poll_locked"
+    return 0
 }
 
 flasher_blocks_com_pollers() {

@@ -397,14 +397,41 @@ audit).
   so this is optional — freeze its POST fields (`cmd`/`mode`/`root_password`)
   and JSON shape (`ok`/`rc`/`output`/`mode`/`truncated`) in a small contract
   entry on the next command-line touch. Audit 2026-08-05 (LOW-7).
-- [OPEN] 2026-07-13 **[LOW] hw-backend-guard static session cookie.**
-  `etc/sa02m-hw-backend-guard.sh:11,68-69` still probes `status.cgi` with the
-  legacy static `session_token=cyntron_session` cookie instead of the
-  per-session sha256 model. Benign today — it is a liveness check and
-  `status.cgi` returns HTTP 200 (with an error body) so `curl -fsS` still
-  succeeds; unchanged from `main`, NOT introduced by the 1.0.5.0 flasher-auth
-  work. Align it to a dedicated internal probe (or the per-session model) so no
-  static-token assumption lingers. Surfaced by the 1.0.5.0 ship reviewer.
+- [RESOLVED 2026-08-06] 2026-07-13 **[LOW] hw-backend-guard static session
+  cookie.** Both rollback guards (`sa02m-hw-backend-guard.sh`,
+  `sa02m-status-blocks-guard.sh`) now default their cookie to EMPTY and assert
+  the response BODY is a JSON object instead — a rollback guard needs no
+  credential, and on the HTTP-200-error-body CGI layer only a body assertion
+  can fail. This entry's own 2026-07-13 reading («`curl -fsS` still succeeds»)
+  was the correct one and is what identified the real defect: the probes did
+  not fail spuriously, they could not fail AT ALL. **Correcting the record:**
+  the 2026-08-06 audit's finding F3 claimed the opposite — that a 401 made
+  `curl -fsS` exit 22 so the tools "always roll back and blame the device", and
+  graded it MED. That inference is wrong: `status.cgi` answers HTTP **200**
+  with `{"error":"unauthorized"}` (no `Status:` line, and `location /cgi-bin/`
+  carries no `auth_request`), so the probes always passed. Severity is LOW and
+  the defect was a different one. Recorded here because the audit file itself
+  is a transient, gitignored artifact. Fixed with the port-lease work; the
+  class is now gated repo-wide by `no-retired-session-token`.
+- [OPEN] 2026-08-06 **[LOW] `sa02m-failure-monitor.sh` probe cannot fail.**
+  `etc/sa02m-failure-monitor.sh:18,127` probes `status.cgi?part=priority` with
+  `curl -fsS` and no cookie. Same class as the guards above, but this one feeds
+  a **monitoring/alerting verdict**, so fixing it changes a signal rather than
+  a gate: it needs a decision about intent first — "is the CGI stack alive?"
+  (for which an `unauthorized` body IS legitimate evidence, and today's
+  behaviour is correct) versus "is the dashboard producing data?" (which needs
+  a body assertion on real fields). Deliberately NOT folded into the port-lease
+  change. Surfaced by the 2026-08-06 port-lease work.
+- [OPEN] 2026-08-06 **[LOW] distinct `flasher_unknown` refusal code.** The
+  port-lease probe now fails CLOSED when the daemon is running but unreadable,
+  reusing the existing `flasher_busy` error code — so a wedged
+  `sa02m-flasher.service` greys out the MPLC4 / MQTT-мост «Пуск» buttons under
+  the message «идёт прошивка или сканирование RS-485», which is then
+  inaccurate. The accurate fix needs a distinct code plus its `i18n.js` DICT
+  entry, i.e. a `www/` touch and the `?v=`/`APP_VERSION` flow — fenced out of
+  the port-lease change by scope. Land it with the next `www/` touch. Operator
+  workaround meanwhile: stopping `sa02m-flasher.service` removes the socket,
+  which reads as "not busy". Reason is logged to `/var/log/sa02m_install.log`.
 - [OPEN] 2026-07-13 **[LOW] F10 — decompose the god-files.** `app.js` DONE:
   a UI characterization harness (`scripts/dev/`, headless Chromium over every
   tab×theme×variant; globals + new-errors + DOM-skeleton gate) captured a

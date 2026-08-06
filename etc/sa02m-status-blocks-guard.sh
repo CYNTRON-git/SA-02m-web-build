@@ -7,7 +7,12 @@ LOG_FILE="${LOG_FILE:-/var/log/sa02m_status_blocks_guard.log}"
 DEFAULT_TIMEOUT_SEC="${DEFAULT_TIMEOUT_SEC:-120}"
 STATUS_CURL_TIMEOUT_SEC="${STATUS_CURL_TIMEOUT_SEC:-6}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:9999/cgi-bin/status.cgi}"
-COOKIE_HDR="${COOKIE_HDR:-session_token=cyntron_session}"
+# Пусто по умолчанию — и это осознанно. Раньше здесь стоял статический токен
+# `session_token=cyntron_session`, выведенный из обращения 2026-07-12: он давно
+# ничего не открывал, а откатному сторожу учётные данные и не нужны — он
+# проверяет «отвечает ли стек», а не «пускают ли меня внутрь». Кто хочет более
+# глубокой проверки под сессией — экспортирует живой токен в COOKIE_HDR.
+COOKIE_HDR="${COOKIE_HDR:-}"
 ARMED_FILE="${STATE_DIR}/armed"
 PID_FILE="${STATE_DIR}/armed.pid"
 
@@ -30,12 +35,34 @@ clear_status_cache() {
     rm -f /tmp/sa02m_status_cache/*.json /tmp/sa02m_status_cache/*.lock 2>/dev/null || true
 }
 
+# В репозитории два HTTP-слоя с противоположными идиомами ошибок. Bash-CGI
+# отвечает HTTP 200 даже на отказ (`{"error":"unauthorized"}`), поэтому здесь
+# `curl -f` не поймает НИЧЕГО — единственное, что может дать сбой, это
+# проверка ТЕЛА. Общий дом правила: docs/agent-rules/web-code-rigor.md
+# ## Bash CGI floors. До этой правки проба не умела падать вовсе.
+probe_status_part() {
+    local url=$1 body
+    if [ -n "$COOKIE_HDR" ]; then
+        body=$(curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" -H "Cookie: ${COOKIE_HDR}" "$url") || return 1
+    else
+        body=$(curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" "$url") || return 1
+    fi
+    # Ответ обязан быть JSON-объектом. `{"error":"unauthorized"}` засчитывается:
+    # сторож проверяет живость стека, а не свои права. Пустой ответ, HTML-страница
+    # ошибки nginx или обрезанный вывод — не засчитываются.
+    case "$body" in
+        '{'*'}') return 0 ;;
+    esac
+    return 1
+}
+
 probe_dashboard() {
+    # /login.html — статика, здесь слой отдаёт настоящие коды и `-f` уместен.
     curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" http://127.0.0.1:9999/login.html >/dev/null
-    curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" "${BASE_URL}?part=priority" >/dev/null
-    curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" -H "Cookie: ${COOKIE_HDR}" "${BASE_URL}?part=main" >/dev/null
-    curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" -H "Cookie: ${COOKIE_HDR}" "${BASE_URL}?part=services" >/dev/null
-    curl -fsS --max-time "$STATUS_CURL_TIMEOUT_SEC" -H "Cookie: ${COOKIE_HDR}" "${BASE_URL}?part=hardware" >/dev/null
+    probe_status_part "${BASE_URL}?part=priority"
+    probe_status_part "${BASE_URL}?part=main"
+    probe_status_part "${BASE_URL}?part=services"
+    probe_status_part "${BASE_URL}?part=hardware"
 }
 
 probe_with_retries() {
