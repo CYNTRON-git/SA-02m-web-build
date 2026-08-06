@@ -1,0 +1,10 @@
+{
+  "name": "sa02m-nodered-payload",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dependency manifest for the SA-02m offline Node-RED payload. npm ci from this lockfile is the ONLY supported way to build the payload tree (scripts/dev/build-nodered-payload.sh).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "node-red": "4.1.13"
+  }
+}

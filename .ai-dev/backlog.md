@@ -7,6 +7,56 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-08-06 **[MED] `lib_rtc.sh` write path still uses local time — the
+  device is ahead of the repo.** `www/network_config/cgi-bin/lib_rtc.sh` writes
+  the RTC with `date '+…'` (`:169`, `:251`) and `hwclock --systohc --rtc`
+  (`:369`, `:371`) with no `--utc`, while `/etc/adjtime` says UTC — a 3-hour
+  skew every time the I2C fallback fires (whenever `/dev/rtc1` is absent).
+  1.0.5.66 fixed the READ path in `etc/sa02m-pre-start.sh` but not this WRITE
+  path. The Operator fixed it **on the bench board only**: that copy has
+  `date -u` and `--utc` at all six sites (device md5 `8301a8b6…` vs repo
+  `26b9973318…`). **Urgency:** the file lives under `www/network_config/`, which
+  `scripts/update-www-only.sh` syncs — so a routine web deploy, not just a full
+  install, silently reverts the fix and restores the skew. Verified 2026-08-06:
+  exactly one device file diverges (all other `cgi-bin` entries date from the
+  2026-08-05 install). Bring the six sites into the repo and add a check that
+  the write path cannot diverge from `/etc/adjtime` again.
+- [OPEN] 2026-08-06 **[LOW] `nodered-pin-consistency` can print `ok` for a
+  removed marker.** `.ai-dev/quality/checks/nodered-pin-consistency.sh:157`
+  greps the whole file, and `etc/sa02m-web-service-ctl.sh:936` mentions
+  «Запущены потоки» in a *comment* — so deleting the marker from the matcher at
+  `:955` still satisfies the gate, which then prints `…matches the started-flows
+  marker in both en and ru` at exit 0. The same mutation on `scripts/07-nodered.sh`
+  IS caught, because its ru literal is code-only; that asymmetry is the proof.
+  Not a coverage hole — `nodered-ctl-install` catches the behaviour with two
+  named assertions — but the gate's own message is not true. Scope the grep to
+  uncommented lines. Reviewer M-A on the nodered-offline change.
+- [OPEN] 2026-08-06 **[LOW] `docs/threat-model.md` has no entry for port 1880.**
+  The offline Node-RED work moves a Node-RED footprint onto air-gapped and
+  imaged boards, and it composes with the model's existing "no device-side port
+  allow-list" note for the cloud tunnel. Plan `nodered-offline.md` §11 S5
+  committed to filing this. Reviewer M-B.
+- [OPEN] 2026-08-06 **[LOW] Three nits in the nodered-offline change.**
+  (a) `etc/sa02m-web-service-ctl.sh:942` says a non-en/ru board is "NOT judged
+  wrongly" while its own next clause says it is — judged wrongly but safely;
+  reword. (b) `scripts/07-nodered.sh:177,294` still hardcode
+  `/usr/lib/node_modules` where the ctl now weighs all global roots — fail-closed
+  and install-time only, so narrowing rather than a defect. (c) No de/ja journal
+  fixture pins the honest limit that a non-en/ru locale degrades to failure.
+  Reviewer L-A/L-B/L-C.
+- [OPEN] 2026-08-06 **[LOW] `etc/sa02m-web-service-ctl.sh` is now 1414 lines.**
+  +174 in the nodered work. The reviewer names a decompose seam at `:782-1247`
+  (the Node-RED block). Candidate for the `decompose` side-tool on the next
+  module-size sweep.
+- [OPEN] 2026-08-06 **[LOW] Panel shows a raw error code for a refused
+  cross-major Node-RED upgrade.** `svcCtlErrorMessage` in
+  `www/network_config/static/js/app/services.js` falls back to `map[c] || c`, so
+  an operator sees the literal `major_upgrade_refused` instead of a sentence.
+  The human explanation exists only in the install log and the runbook. One line
+  to fix; `www/` was outside the nodered-offline fence. Note the OTA path
+  (`etc/sa02m-web-update-apply.sh:84`) does not ship the ctl script, so the gap
+  is narrower than it looks.
+
 - [OPEN] 2026-08-06 **[LOW] `netmask 24` (bare prefix in the netmask field) is
   refused as unparseable by `ensure_gw_dns`.** ifupdown accepts a bare prefix
   there; `scripts/02-network.sh` parses only dotted-quad in `netmask` and CIDR

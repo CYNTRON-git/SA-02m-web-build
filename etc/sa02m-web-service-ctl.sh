@@ -779,10 +779,124 @@ mplc4_install() {
     return 1
 }
 
-# ── Node-RED: online (preferred) or offline from staged payload ─────────────
+# ── Node-RED: staged payload (preferred) or online ─────────────────────────
+# Pinned release. This is ONE of the pin's homes; the others are
+# scripts/07-nodered.sh, scripts/dev/build-nodered-payload.sh,
+# vendor-src/nodered/package.json and docs/vendor-integrations.md. The quality
+# row `nodered-pin-consistency` fails the build when they disagree.
+NODERED_PIN_VERSION=4.1.13
+NODERED_PIN_MAJOR=4
+# The Node floor. These two constants MIRROR engines.node of the pinned
+# node-red in vendor-src/nodered/package-lock.json (">=18.5" today) and are
+# pinned to it mechanically by the `nodered-pin-consistency` quality row — a
+# lockfile bump that raises the floor (node-red 5 wants >=22.9) fails the build
+# instead of silently leaving a board installing a runtime that cannot boot.
+# They are duplicated here rather than parsed at run time because the lockfile
+# is a build-host artifact: it is never delivered to the device, and this
+# script is POSIX sh with no JSON parser. Minor is carried too — ">=18.5"
+# truncated to major 18 would admit Node 18.0-18.4, which the engine rejects.
+# Below the floor the runtime refuses to boot, so it is a hard stop, not a
+# warning. Node 22 is what the payload ships, not the floor.
+NODERED_NODE_MIN_MAJOR=18
+NODERED_NODE_MIN_MINOR=5
+
 nodered_internet_reachable() {
     command -v curl >/dev/null 2>&1 || return 1
     curl -fsS --max-time 15 -I https://registry.npmjs.org/node-red >/dev/null 2>&1
+}
+
+# Staging home. $SA02M_NODERED_DIR is an install-time override for
+# scripts/07-nodered.sh, which resolves the payload from the repo tree
+# ($REPO/vendor/nodered) before /opt/vendor-installers exists. It is NOT
+# reachable from the web: sudoers runs this script under the default
+# env_reset, so no request can set it (threat-model §3 / plan S1).
+nodered_staging_dir() {
+    case "${SA02M_NODERED_DIR:-}" in
+        /*) if [ -d "$SA02M_NODERED_DIR" ]; then printf '%s' "$SA02M_NODERED_DIR"; return 0; fi ;;
+    esac
+    printf '%s' /opt/vendor-installers/nodered
+}
+
+# Every global module root that could hold an installed node-red. The board can
+# carry two: apt's Node owns /usr/lib/node_modules, and a staged Node 22 in
+# /usr/local (the coexistence the device runbook creates) makes `npm root -g`
+# answer /usr/local/lib/node_modules. Checking only one of them is how a
+# cross-major install hides from the guard.
+nodered_global_roots() {
+    _r=$(npm root -g 2>/dev/null)
+    case "$_r" in /*) printf '%s\n' "$_r" ;; esac
+    printf '%s\n' /usr/lib/node_modules /usr/local/lib/node_modules
+}
+
+# Every installed global node-red version, one per line. Exit status is the
+# point here:
+#   0 + version(s) on stdout — installed and readable
+#   1                        — not installed anywhere (clean board)
+#   2                        — a package.json is present but unreadable
+# 2 must never be folded into 1: "I cannot tell what is installed" is not
+# "nothing is installed", and the difference decides whether an irreversible
+# cross-major overwrite proceeds. A pre-release ("5.0.0-beta.1") or a truncated
+# file lands in 2 by construction. Reads package.json and never boots node-red —
+# a runtime whose Node is too old crashes on start, so `node-red --version` is
+# not a safe probe (that parse mis-fire is what left a crash-looping v5 on the
+# bench).
+nodered_installed_version() {
+    _any=1
+    for _root in $(nodered_global_roots); do
+        _pkg="$_root/node-red/package.json"
+        [ -f "$_pkg" ] || continue
+        _v=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$_pkg" 2>/dev/null | head -n1)
+        if [ -z "$_v" ]; then
+            printf 'nodered: %s exists but no version could be read from it\n' "$_pkg" >>"$LOG" 2>&1
+            return 2
+        fi
+        printf '%s\n' "$_v"
+        _any=0
+    done
+    return "$_any"
+}
+
+# First readable installed version, for reporting. Callers that must DECIDE use
+# nodered_guard_major_upgrade, which weighs every root.
+nodered_installed_version_first() {
+    nodered_installed_version 2>/dev/null | head -n1
+}
+
+# The install REFUSES to overwrite an installed Node-RED across a major.
+# A cross-major upgrade migrates flows and re-encrypts credentials in place and
+# is irreversible without a backup — that is a documented device procedure
+# (docs/deployment.md, "Доставка vendor-payload Node-RED и обновление
+# стека"), not an unattended button.
+# Nothing installed => clean install, exactly as before. Unreadable => REFUSE:
+# this guard protects a field board with no backup, so it fails CLOSED.
+nodered_guard_major_upgrade() {
+    _all=$(nodered_installed_version)
+    case "$?" in
+        1) return 0 ;;   # nothing installed anywhere — clean install, as before
+        2)
+            printf 'nodered: REFUSING to install — a node-red is present but its version cannot be read, so a cross-major overwrite cannot be ruled out. Inspect package.json under %s, or remove the install deliberately ("Удалить" WIPES the flows) before retrying.\n' \
+                "$(nodered_global_roots | tr '\n' ' ')" >>"$LOG" 2>&1
+            emit_result '{"ok":false,"error":"major_upgrade_refused","id":"node-red","installed":"unreadable","target":"'"$NODERED_PIN_VERSION"'"}'
+            return 1
+            ;;
+    esac
+    # EVERY root is weighed, not just the first: a board can carry two global
+    # module roots (apt's /usr/lib and a staged Node's /usr/local/lib), and a
+    # 3.x hiding in the one we did not look at is exactly the install this
+    # guard exists to refuse.
+    _cur=""
+    for _v in $_all; do
+        if [ "${_v%%.*}" != "$NODERED_PIN_MAJOR" ]; then
+            _cur=$_v
+            break
+        fi
+    done
+    [ -n "$_cur" ] || return 0
+    printf 'nodered: REFUSING in-place upgrade %s -> %s (crosses a major).\n' \
+        "$_cur" "$NODERED_PIN_VERSION" >>"$LOG" 2>&1
+    printf 'nodered: what to do instead — back up /home/nodered/.node-red (flows, credentials AND the .config.* dotfiles) off the device, then either re-image the board or run the staged upgrade in docs/deployment.md. "Удалить" in the panel also clears the way, but it WIPES the flows.\n' >>"$LOG" 2>&1
+    emit_result '{"ok":false,"error":"major_upgrade_refused","id":"node-red","installed":"'"$_cur"'","target":"'"$NODERED_PIN_VERSION"'"}'
+    return 1
 }
 
 # uiHost 0.0.0.0 so the panel is reachable by device IP (mirrors 07:114-124).
@@ -803,7 +917,56 @@ nodered_fix_settings() {
     fi
 }
 
+# Flow-level health since $2 (a journalctl --since stamp taken before the
+# restart). Port 1880 being open is a FALSE GREEN: a runtime that came up with
+# every flow stopped for missing node types listens exactly the same, and the
+# panel would show green while the operator's automation is dead.
+#
+# The verdict rests on ONE positive marker, and that is deliberate. In
+# node-red 4.1.13 (@node-red/runtime/lib/flows/index.js) the start path has
+# four early returns — missing node types, unloadable external modules, safe
+# mode, and a saved runtimeFlowState of "stop" — and every one of them returns
+# BEFORE the "started flows" message is logged. So that message is emitted if
+# and only if the flows really started, which makes its ABSENCE the general
+# failure signal and saves us a marker per failure mode.
+#
+# LANGUAGE. The runtime localises this log. Our own unit pins the locale
+# (etc/systemd/system/nodered.service) so a board we installed logs English,
+# but the ONLINE path leaves the official installer's unit in place and a
+# ru-locale board then logs «Запущены потоки» — observed on the bench. Both
+# spellings are therefore matched, taken verbatim from the shipped catalogues
+# (@node-red/runtime/locales/{en-US,ru}/runtime.json, keys
+# nodes.flows.started-flows and nodes.flows.missing-types). HONEST LIMIT: en
+# and ru are the two catalogues this fleet runs; node-red ships eight more
+# (de, es-ES, fr, ja, ko, pt-BR, zh-CN, zh-TW). A board in one of those is NOT
+# judged wrongly — it lands in the "logging but never said started" branch and
+# is reported as a FAILURE, which is the safe direction.
+#
+#   0 = flows started        1 = a named stop condition was logged
+#   2 = no evidence at all (no journalctl, or the unit logged nothing)
+#   3 = the unit is logging but has not said it started — keep polling; at the
+#       end of the poll window this is a FAILURE, not "no evidence"
+nodered_flows_healthy() {
+    _fu=$1
+    _fsince=$2
+    command -v journalctl >/dev/null 2>&1 || return 2
+    _jl=$(journalctl -u "$_fu" --since "$_fsince" --no-pager -n 500 2>/dev/null)
+    [ -n "$_jl" ] || return 2
+    if printf '%s\n' "$_jl" | grep -q 'Started flows\|Запущены потоки'; then
+        return 0
+    fi
+    # Named stop conditions — a precise log line beats waiting out the poll.
+    if printf '%s\n' "$_jl" | grep -q \
+        'Waiting for missing types to be registered\|Ожидание регистрации отсутствующих типов\|Failed to load external modules\|Flows stopped in safe mode\|Потоки остановлены в безопасном режиме\|Stopped flows\|Остановлены потоки\|Error loading credentials\|Ошибка при загрузке учетных данных\|Unsupported version of\|Неподдерживаемая версия'; then
+        return 1
+    fi
+    return 3
+}
+
+# $1 (optional) — extra JSON fields for the success result, each starting with
+# a comma (e.g. ',"node":"v22.23.0"').
 nodered_enable_start() {
+    _extra=${1:-}
     _unit=""
     for _u in nodered.service node-red.service; do
         if unit_exists "$_u" || unit_file_installed "$_u"; then
@@ -815,12 +978,48 @@ nodered_enable_start() {
         emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
         return 1
     fi
+    _since=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     sc_run daemon-reload >>"$LOG" 2>&1 || true
     sc_run_slow enable "$_unit" >>"$LOG" 2>&1 || true
     sc_run_slow restart "$_unit" >>"$LOG" 2>&1 || true
-    sleep 2
+    # Node-RED cold start on this SoC is seconds, not milliseconds — poll for
+    # the verdict instead of guessing with a fixed sleep. Bounded at ~45 s; the
+    # panel's poll deadline for install/uninstall is 600 s (app/services.js
+    # `pollMax`; 90 s is the start/stop one), so this sits well inside it.
+    _i=0
+    _verdict=2
+    while [ "$_i" -lt 15 ]; do
+        _i=$((_i + 1))
+        sleep 3
+        nodered_flows_healthy "$_unit" "$_since"
+        _verdict=$?
+        # 0 = started, 1 = a named stop condition: both are final.
+        [ "$_verdict" -le 1 ] && break
+        # 2 = nothing in the journal at all. If there is no journalctl on this
+        # system nothing will ever arrive, so stop waiting once the runtime is
+        # up; otherwise keep polling — the unit may not have logged yet.
+        if [ "$_verdict" -eq 2 ] \
+           && ! command -v journalctl >/dev/null 2>&1 \
+           && port_listening 1880; then
+            break
+        fi
+    done
+    if [ "$_verdict" -eq 0 ]; then
+        emit_result '{"ok":true,"id":"node-red","action":"install","verified":"flows"'"$_extra"'}'
+        return 0
+    fi
+    if [ "$_verdict" -eq 1 ] || [ "$_verdict" -eq 3 ]; then
+        # Verdict 3 = the unit logged for the whole poll window and never said
+        # it started. That is a failure, NOT missing evidence: we could read
+        # the journal, and it did not say the thing that only a real start
+        # says. Reporting it as success is the false green this exists to kill.
+        printf 'nodered: the runtime did not report started flows within the poll window (missing node types / unloadable modules / safe mode / credential error / unsupported Node) — journalctl -u %s\n' "$_unit" >>"$LOG" 2>&1
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
     if port_listening 1880 || service_runtime_active node-red "$_unit"; then
-        emit_result '{"ok":true,"id":"node-red","action":"install"}'
+        printf 'nodered: no journal for %s — reporting the runtime state only, NOT that the flows run\n' "$_unit" >>"$LOG" 2>&1
+        emit_result '{"ok":true,"id":"node-red","action":"install","verified":"runtime_only"'"$_extra"'}'
         return 0
     fi
     emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
@@ -837,6 +1036,7 @@ nodered_ensure_user() {
 }
 
 nodered_install_online() {
+    nodered_guard_major_upgrade || return 1
     _url="${NODERED_INSTALLER_URL:-https://raw.githubusercontent.com/node-red/linux-installers/master/deb/update-nodejs-and-nodered}"
     if ! curl -fsS --max-time 15 -I "$_url" >/dev/null 2>&1; then
         emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
@@ -850,107 +1050,197 @@ nodered_install_online() {
         emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
         return 1
     fi
-    bash "$_tmp" --confirm-root --confirm-install --skip-pi --no-init --node20 \
+    # The official installer parses --node22 and --nodered-version=<x> (both
+    # verified in the canonical script), so the pin is requested directly and
+    # the old install-latest-then-downgrade dance is gone. Honesty: that URL is
+    # an UNPINNED `master` script executed as root, and --node22 on armhf goes
+    # through NodeSource, whose armhf index may serve a different 22.x than the
+    # offline payload — the online path is best-effort, the payload is the
+    # deterministic one (docs/vendor-integrations.md).
+    bash "$_tmp" --confirm-root --confirm-install --skip-pi --no-init --node22 \
+        "--nodered-version=$NODERED_PIN_VERSION" \
         --restart --nodered-user=nodered >>"$LOG" 2>&1 || true
     rm -f "$_tmp"
-    # armhf/armv7l on Node < 22 cannot run Node-RED v4/v5 (they require Node
-    # v22.9+). The official installer pulls the latest node-red (v5 today), so
-    # on this arch ALWAYS pin node-red@3 — do NOT gate on parsing the installed
-    # version: that parse mis-fired on-stand and left a crash-looping v5 (the
-    # `|| true` swallowed the failed downgrade). Uninstall, re-pin @3, verify.
-    _arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
-    if [ "$_arch" = "armhf" ] || [ "$_arch" = "armv7l" ]; then
-        _nodemajor=$(node --version 2>/dev/null | awk -F. '{print substr($1,2)+0}')
-        if [ -n "$_nodemajor" ] && [ "$_nodemajor" -lt 22 ] 2>/dev/null; then
-            npm uninstall -g node-red >>"$LOG" 2>&1 || true
-            if ! npm install -g --no-audit --no-fund --unsafe-perm node-red@3 >>"$LOG" 2>&1; then
-                # --force overrides a leftover v5 engines/peer refusal.
-                npm install -g --no-audit --no-fund --unsafe-perm --force node-red@3 >>"$LOG" 2>&1 || true
-            fi
-            # Verify the pin took by reading the installed package.json (do NOT
-            # boot node-red — a stray v5 crashes on Node 20). CLI is a fallback.
-            _nr_pkg="$(npm root -g 2>/dev/null)/node-red/package.json"
-            _nrmajor=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9]*\).*/\1/p' "$_nr_pkg" 2>/dev/null | head -n1)
-            [ -n "$_nrmajor" ] || _nrmajor=$(node-red --version 2>/dev/null | awk -F. '{print $1+0}')
-            if [ -z "$_nrmajor" ] || [ "$_nrmajor" -ge 4 ] 2>/dev/null; then
-                printf 'nodered: v3 pin failed, installed major=%s\n' "${_nrmajor:-?}" >>"$LOG" 2>&1
-                emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
-                return 1
-            fi
-        fi
-    fi
-    _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
-    [ -n "$_nr_home" ] || _nr_home=/home/nodered
-    nodered_fix_settings "$_nr_home"
-    chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
-    nodered_enable_start
-}
-
-# Offline install from a pre-built payload (staged separately — code defensively
-# against its absence). Extracts a staged Node tarball (only if Node.js is
-# absent — shared Node is kept) + a pre-built node-red global tree, recreates
-# the /usr/bin/node-red symlink, drops the unit, enables + starts. No npm registry.
-nodered_install_offline() {
-    _src=/opt/vendor-installers/nodered
-    if [ ! -d "$_src" ]; then
-        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
-        return 1
-    fi
-    _node_tar=""
-    for _c in "$_src"/node-*-linux-armv7l.tar.* "$_src"/node-*-linux-arm*.tar.* "$_src"/node-*.tar.*; do
-        for _f in $_c; do [ -f "$_f" ] && _node_tar="$_f" && break 2; done
-    done
-    _nr_tar=""
-    for _c in "$_src"/node-red-*.tar.* "$_src"/node_modules*.tar.*; do
-        for _f in $_c; do [ -f "$_f" ] && _nr_tar="$_f" && break 2; done
-    done
-    _unit_src=""
-    for _c in "$_src/nodered.service" "$_src/node-red.service"; do
-        [ -f "$_c" ] && _unit_src="$_c" && break
-    done
-    if [ -z "$_nr_tar" ] || [ -z "$_unit_src" ]; then
-        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
-        return 1
-    fi
-    nodered_ensure_user
-    if ! command -v node >/dev/null 2>&1; then
-        if [ -z "$_node_tar" ]; then
-            emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
-            return 1
-        fi
-        if ! tar -C /usr/local --strip-components=1 -xf "$_node_tar" >>"$LOG" 2>&1; then
-            emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
-            return 1
-        fi
-    fi
-    mkdir -p /usr/lib/node_modules 2>/dev/null || true
-    if ! tar -C /usr/lib/node_modules -xf "$_nr_tar" >>"$LOG" 2>&1; then
+    # Defensive: the installer swallows its own failures behind `|| true`, and a
+    # flag that silently stops being parsed would otherwise leave whatever npm
+    # served. Read the installed package.json — never boot node-red to ask.
+    _got=$(nodered_installed_version_first)
+    if [ -z "$_got" ] || [ "${_got%%.*}" != "$NODERED_PIN_MAJOR" ]; then
+        printf 'nodered: online install did not land the %s pin (installed=%s)\n' \
+            "$NODERED_PIN_VERSION" "${_got:-none}" >>"$LOG" 2>&1
         emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
         return 1
     fi
-    if [ -f /usr/lib/node_modules/node-red/red.js ]; then
-        ln -sf ../lib/node_modules/node-red/red.js /usr/bin/node-red 2>>"$LOG" || true
-        chmod +x /usr/bin/node-red 2>/dev/null || true
-    fi
     _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
     [ -n "$_nr_home" ] || _nr_home=/home/nodered
-    if [ -f "$_src/settings.js" ] && [ ! -f "$_nr_home/.node-red/settings.js" ]; then
-        cp "$_src/settings.js" "$_nr_home/.node-red/settings.js" 2>>"$LOG" || true
+    nodered_fix_settings "$_nr_home"
+    chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
+    nodered_enable_start ',"version":"'"$_got"'","source":"online"'
+}
+
+# Resolves the staged payload into _nr_src / _nr_tar / _nr_node_tar / _nr_unit.
+# Returns 0 only when BOTH mandatory pieces are present (the node-red tree and
+# the unit) — a half-staged directory is not a payload, and treating it as one
+# is what lets an install "succeed" having done nothing.
+# The payload shape has one home: docs/vendor-integrations.md.
+nodered_payload_resolve() {
+    _nr_src=$(nodered_staging_dir)
+    _nr_tar=""
+    _nr_node_tar=""
+    _nr_unit=""
+    [ -d "$_nr_src" ] || return 1
+    # The Node.js tarball. `node-*.tar.*` ALSO matches node-red-4.1.13.tar.gz —
+    # with only the Node-RED tarball staged on a Node-less board that glob used
+    # to extract the Node-RED tree into /usr/local (--strip-components=1) and
+    # then still fail, having polluted the filesystem. Skip node-red-* here.
+    for _f in "$_nr_src"/node-*-linux-armv7l.tar.* "$_nr_src"/node-*-linux-arm*.tar.* "$_nr_src"/node-*.tar.*; do
+        [ -f "$_f" ] || continue
+        case "${_f##*/}" in node-red-*) continue ;; esac
+        _nr_node_tar=$_f
+        break
+    done
+    # Exactly one supported shape: a single top-level `node-red/` directory with
+    # its dependencies NESTED inside it (node-red/node_modules/…), so nothing is
+    # splattered across the global module dir. The extraction asserts it below.
+    for _f in "$_nr_src"/node-red-*.tar.*; do
+        [ -f "$_f" ] || continue
+        _nr_tar=$_f
+        break
+    done
+    for _f in "$_nr_src/nodered.service" "$_nr_src/node-red.service"; do
+        [ -f "$_f" ] || continue
+        _nr_unit=$_f
+        break
+    done
+    [ -n "$_nr_tar" ] && [ -n "$_nr_unit" ]
+}
+
+# True when the archive holds exactly one top-level entry, `node-red/`.
+# This runs BEFORE a root `tar -x` into /usr/lib, so it is a security check,
+# not a tidiness one: it rejects `../` traversal, absolute-path members, and a
+# mis-built archive that would scatter sibling packages across the global
+# module dir (S4). Because `tar -t` reads the whole index first, a malformed
+# payload costs the board nothing — not even a half-extracted /usr/local.
+# The empty-string mapping is load-bearing: an absolute member (`/etc/passwd`)
+# reduces to the EMPTY first component, and simply dropping empties is how such
+# a member would ride along unnoticed beside a valid `node-red/`.
+nodered_payload_top_level_ok() {
+    _tar=$1
+    _tops=$(tar -tf "$_tar" 2>/dev/null | sed 's#^\./##; s#/.*##; s#^$#<absolute-or-empty>#' | sort -u)
+    [ "$_tops" = "node-red" ] && return 0
+    printf 'nodered: payload %s must hold exactly one top-level entry `node-red/` (found: %s)\n' \
+        "${_tar##*/}" "$(printf '%s' "$_tops" | tr '\n' ' ')" >>"$LOG" 2>&1
+    return 1
+}
+
+# Offline install from the pre-built payload. No npm registry, no compilation.
+nodered_install_offline() {
+    if ! nodered_payload_resolve; then
+        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+        return 1
+    fi
+    nodered_guard_major_upgrade || return 1
+    if ! nodered_payload_top_level_ok "$_nr_tar"; then
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    nodered_ensure_user
+    # Node.js. The staged tarball is extracted when the board has NO node, or
+    # one below node-red's engines floor — otherwise Node-RED would install and
+    # then refuse to boot. A usable-but-older Node (apt's 20 beside the staged
+    # 22) is KEPT and coexists, and the skip is LOGGED and reported: the old
+    # `command -v node` gate reported plain success while installing nothing,
+    # which would make a Node-upgrade step a no-op that looked done.
+    _node_ver=$(node --version 2>/dev/null | sed 's/^v//')
+    _node_major=${_node_ver%%.*}
+    case "$_node_major" in ''|*[!0-9]*) _node_major=0 ;; esac
+    _node_minor=${_node_ver#*.}
+    _node_minor=${_node_minor%%.*}
+    case "$_node_minor" in ''|*[!0-9]*) _node_minor=0 ;; esac
+    # Below the floor = older major, OR the same major with a smaller minor
+    # (the engines range is ">=18.5", so 18.0-18.4 is below it too).
+    _node_too_old=0
+    if [ "$_node_major" -lt "$NODERED_NODE_MIN_MAJOR" ]; then
+        _node_too_old=1
+    elif [ "$_node_major" -eq "$NODERED_NODE_MIN_MAJOR" ] && [ "$_node_minor" -lt "$NODERED_NODE_MIN_MINOR" ]; then
+        _node_too_old=1
+    fi
+    _node_src=kept
+    if [ "$_node_too_old" -eq 1 ]; then
+        if [ -z "$_nr_node_tar" ]; then
+            printf 'nodered: node %s is below the node-red %s floor (engines: >=%s.%s) and no Node tarball is staged in %s\n' \
+                "${_node_ver:-absent}" "$NODERED_PIN_VERSION" "$NODERED_NODE_MIN_MAJOR" "$NODERED_NODE_MIN_MINOR" "$_nr_src" >>"$LOG" 2>&1
+            emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+            return 1
+        fi
+        # --no-same-owner: the archive's uids are the build host's, and this
+        # runs as root — file ownership comes from us, not from the tarball.
+        if ! tar -C /usr/local --strip-components=1 --no-same-owner -xf "$_nr_node_tar" >>"$LOG" 2>&1; then
+            emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+            return 1
+        fi
+        _node_src=extracted
+        _node_ver=$(/usr/local/bin/node --version 2>/dev/null | sed 's/^v//')
+    elif [ -n "$_nr_node_tar" ]; then
+        printf 'nodered: keeping node v%s (at or above the node-red %s floor); staged %s NOT extracted — a Node major upgrade is a separate documented device step (docs/deployment.md)\n' \
+            "$_node_ver" "$NODERED_PIN_VERSION" "${_nr_node_tar##*/}" >>"$LOG" 2>&1
+    fi
+    # tar MERGES into an existing directory — it never deletes what the new
+    # tree dropped. An in-place extraction over a live install therefore left a
+    # franken-tree behind (3.x leftovers under a 4.x install) that failed later
+    # as an unattributable runtime error. Stop the unit, then replace wholesale.
+    for _u in nodered.service node-red.service; do
+        if unit_exists "$_u"; then
+            sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
+        fi
+    done
+    mkdir -p /usr/lib/node_modules 2>/dev/null || true
+    rm -rf /usr/lib/node_modules/node-red 2>>"$LOG" || true
+    if ! tar -C /usr/lib/node_modules --no-same-owner -xf "$_nr_tar" >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    if [ ! -f /usr/lib/node_modules/node-red/red.js ]; then
+        printf 'nodered: payload %s extracted without node-red/red.js\n' "${_nr_tar##*/}" >>"$LOG" 2>&1
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    ln -sf ../lib/node_modules/node-red/red.js /usr/bin/node-red 2>>"$LOG" || true
+    chmod +x /usr/bin/node-red 2>/dev/null || true
+    _nr_home=$(getent passwd nodered 2>/dev/null | cut -d: -f6)
+    [ -n "$_nr_home" ] || _nr_home=/home/nodered
+    if [ -f "$_nr_src/settings.js" ] && [ ! -f "$_nr_home/.node-red/settings.js" ]; then
+        cp "$_nr_src/settings.js" "$_nr_home/.node-red/settings.js" 2>>"$LOG" || true
     fi
     nodered_fix_settings "$_nr_home"
     chown -R nodered:nodered "$_nr_home" 2>/dev/null || true
-    cp "$_unit_src" /etc/systemd/system/nodered.service 2>>"$LOG" || true
-    nodered_enable_start
+    # The unit is mandatory (nodered_payload_resolve already proved it exists),
+    # so a failed copy is a failed install, not something to swallow.
+    if ! install -m 0644 "$_nr_unit" /etc/systemd/system/nodered.service >>"$LOG" 2>&1; then
+        emit_result '{"ok":false,"error":"install_failed","id":"node-red"}'
+        return 1
+    fi
+    _got=$(nodered_installed_version_first)
+    nodered_enable_start ',"version":"'"${_got:-unknown}"'","source":"offline","node":"'"${_node_ver:-unknown}"'","node_action":"'"$_node_src"'"'
 }
 
+# Payload FIRST: a staged, pre-built payload is a pin, and a pin that loses to
+# whatever the registry serves that day is not a pin. With no payload staged
+# this is byte-for-byte the previous behaviour — online, then the errors below.
 nodered_install() {
+    if nodered_payload_resolve; then
+        nodered_install_offline
+        return $?
+    fi
     if nodered_internet_reachable; then
         nodered_install_online
         return $?
     fi
-    if [ -d /opt/vendor-installers/nodered ]; then
-        nodered_install_offline
-        return $?
+    if [ -d "$(nodered_staging_dir)" ]; then
+        # The directory exists but is not a usable payload — say so precisely
+        # rather than blaming the network.
+        emit_result '{"ok":false,"error":"staging_missing","id":"node-red"}'
+        return 1
     fi
     emit_result '{"ok":false,"error":"no_internet","id":"node-red"}'
     return 1
