@@ -1,0 +1,56 @@
+[Unit]
+Description=Node-RED (SA-02m)
+Documentation=https://nodered.org/docs/
+# network.target only — Node-RED binds 0.0.0.0 and needs no address to be up.
+# Deliberately NOT network-online.target: that target waits for a carrier and
+# would hold multi-user.target on a board with an unplugged port.
+After=network.target
+# A partial delivery (unit without the module tree) skips cleanly instead of
+# crash-looping — same idiom as sa02m-kernel-service-guard.service.
+ConditionPathExists=/usr/lib/node_modules/node-red/red.js
+
+[Service]
+Type=simple
+User=nodered
+Group=nodered
+WorkingDirectory=/home/nodered/.node-red
+# NODE_OPTIONS=--max-old-space-size=256 and PORT live here (written by
+# scripts/07-nodered.sh). `-` = an absent file is not a failure. NODE_OPTIONS
+# is read by node itself from the environment, so it is NOT repeated on the
+# command line — passing it twice is how the limit silently doubles.
+EnvironmentFile=-/home/nodered/.node-red/environment
+# The runtime's LOG LANGUAGE is pinned, because the install verdict is read
+# back out of this unit's journal. Node-RED localises its runtime log: with a
+# ru locale inherited from the system it writes «Запущены потоки» instead of
+# "Started flows", and a verdict matching English literals would then never
+# fire — a broken install would report success. Mechanism, verified against
+# node-red 4.1.13's own @node-red/util/lib/i18n.js: getCurrentLocale() takes
+# the FIRST TWO CHARACTERS of the first of LC_ALL, LC_MESSAGES, LANG present
+# in the environment, and that two-letter code selects the message catalogue;
+# no catalogue matches "C", so it falls back to the built-in en-US. C.UTF-8 is
+# used rather than en_US.UTF-8 because Debian always has it without locale
+# generation. Verified by execution, not by reading: under LC_ALL=ru_RU.UTF-8
+# the runtime yields «Запущены потоки», under each of these three values it
+# yields "Started flows".
+Environment=LC_ALL=C.UTF-8
+Environment=LC_MESSAGES=C.UTF-8
+Environment=LANG=C.UTF-8
+# The interpreter is pinned EXPLICITLY, never resolved through $PATH: a board
+# can carry two Node installs at once (apt's /usr/bin/node beside a staged
+# tarball in /usr/local/bin) and `env node` would make "which one runs" depend
+# on systemd's default PATH. Preference order = the coexistence policy: the
+# staged /usr/local Node wins when present, apt's Node is the fallback.
+# `exec` replaces the shell, so /proc/<pid>/exe names the real interpreter.
+ExecStart=/bin/sh -c 'if [ -x /usr/local/bin/node ]; then exec /usr/local/bin/node /usr/lib/node_modules/node-red/red.js --userDir /home/nodered/.node-red; fi; exec /usr/bin/node /usr/lib/node_modules/node-red/red.js --userDir /home/nodered/.node-red'
+# SIGINT is Node-RED's documented clean-stop signal (flows are closed before
+# exit); SIGTERM leaves flow nodes without their close handler.
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=20
+SyslogIdentifier=node-red
+# The board is a 512 MB SoC shared with CODESYS/MPLC4 and the RS-485 stack —
+# Node-RED is the lowest-priority tenant of the three.
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

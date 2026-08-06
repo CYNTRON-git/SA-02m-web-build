@@ -296,18 +296,40 @@ chmod +x "$OUTPUT/opt/sa02m-web-build/install.sh" \
 	"$OUTPUT/opt/sa02m-web-build/scripts/"*.sh \
 	"$OUTPUT/opt/sa02m-web-build/tools/debian-rootfs/"*.sh 2>/dev/null || true
 
-# ── vendor-payload (CODESYS + MPLC) → /opt/vendor-installers/ ──────────────
-# Копируем большие проприетарные бинарники ТОЛЬКО если каталоги существуют
-# на build-host (в репо их нет — см. .gitignore /vendor/). Позволяет получать
-# готовый rootfs с CODESYS + MPLC при первичной прошивке без ручных pscp.
+# ── vendor-payload (CODESYS + MPLC + Node-RED) → /opt/vendor-installers/ ───
+# Копируем большие проприетарные/собранные пакеты ТОЛЬКО если каталоги
+# существуют на build-host (в репо их нет — см. .gitignore /vendor/). Позволяет
+# получать готовый rootfs, с которого устройство ставит стек без сети и pscp.
 #
 # Ожидаемая структура на build-host:
 #   $REPO_ROOT/vendor/codesys/codesyscontrol_linuxarm_*.deb
 #   $REPO_ROOT/vendor/mplc4/{install.sh,mplc4.tar.gz,nginx.tar.gz,mplc_cyntron.so}
-if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
-	log "copy vendor-payload (CODESYS/MPLC) → /opt/vendor-installers/"
+#   $REPO_ROOT/vendor/nodered/{node-red-*.tar.gz,node-v*-linux-armv7l.tar.xz,
+#                              nodered.service,BUILD-INFO.txt}
+#
+# Список ЯВНЫЙ, а не vendor/* : glob молча унёс бы в образ всё, что кто-то
+# оставил в vendor/. Но и молча терять каталог нельзя — раньше vendor/nodered
+# исчезал без единой строки в логе, и свежепрошитая плата отвечала
+# staging_missing. Незнакомый каталог теперь виден как WARN (ниже).
+VENDOR_SUBS="codesys mplc4 nodered"
+vendor_any=0
+for sub in $VENDOR_SUBS; do
+	[ -d "$REPO_ROOT/vendor/$sub" ] && vendor_any=1
+done
+if [ -d "$REPO_ROOT/vendor" ]; then
+	for d in "$REPO_ROOT"/vendor/*/; do
+		[ -d "$d" ] || continue
+		name=$(basename "$d")
+		case " $VENDOR_SUBS " in
+			*" $name "*) ;;
+			*) log "WARN: vendor/$name не в списке известных ($VENDOR_SUBS) — в образ НЕ копируется" ;;
+		esac
+	done
+fi
+if [ "$vendor_any" = 1 ]; then
+	log "copy vendor-payload ($VENDOR_SUBS) → /opt/vendor-installers/"
 	install -d -m 0755 "$OUTPUT/opt/vendor-installers"
-	for sub in codesys mplc4; do
+	for sub in $VENDOR_SUBS; do
 		if [ -d "$REPO_ROOT/vendor/$sub" ]; then
 			install -d -m 0755 "$OUTPUT/opt/vendor-installers/$sub"
 			cp -a "$REPO_ROOT/vendor/$sub/." "$OUTPUT/opt/vendor-installers/$sub/"
@@ -323,6 +345,14 @@ if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
 		install -m 0644 "$REPO_ROOT/etc/systemd/system/codesyscontrol.service.d/sa02m.conf" \
 			"$OUTPUT/opt/vendor-installers/codesys/sa02m.conf"
 		log "  vendor/codesys: staged systemd drop-in sa02m.conf"
+	fi
+	if [ -d "$OUTPUT/opt/vendor-installers/nodered" ] \
+	   && [ -f "$REPO_ROOT/etc/systemd/system/nodered.service" ]; then
+		# Unit — репозиторный артефакт: кладём копию из репо поверх той, что
+		# положил сборщик payload'а. Дом один, и он здесь, а не в payload'е.
+		install -m 0644 "$REPO_ROOT/etc/systemd/system/nodered.service" \
+			"$OUTPUT/opt/vendor-installers/nodered/nodered.service"
+		log "  vendor/nodered: staged nodered.service"
 	fi
 	if [ -d "$OUTPUT/opt/vendor-installers/mplc4" ] \
 	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" ]; then

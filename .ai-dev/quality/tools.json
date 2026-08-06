@@ -155,6 +155,24 @@
       "init": "bash + Python 3 as python3/python/py (stdlib only, no deps) — run on demand: bash scripts/dev/test-uboot-bootscr.sh"
     },
     {
+      "id": "nodered-ctl-install",
+      "checks": "Functional regression for the Node-RED install logic in etc/sa02m-web-service-ctl.sh — the code behind Управление → Службы → Node-RED, whose whole defect class is SILENT on the device. Runs the SHIPPED functions against a sandbox (payload resolution through the SA02M_NODERED_DIR seam, journalctl/sleep PATH shims, mutating helpers stubbed — nothing extracts a tarball, writes /usr/lib or talks to systemd): a half-staged directory is not a payload; the Node-tarball glob never selects node-red-*.tar.gz (that mis-selection extracted the Node-RED tree into /usr/local on a Node-less board and still failed); a cross-major overwrite is refused with both versions named and a next step in the log, while a clean install and a same-major update still proceed; the flow-level verdict, IN BOTH LOG LANGUAGES (node-red localises its runtime log: the bench board writes «Запущены потоки», so an English-only check silently stops firing there) — port 1880 open with the flows stopped is install_failed, NOT success; a unit that logged for the whole poll window without ever reporting started flows is a FAILURE rather than 'no evidence'; only a total absence of journal degrades to the honest runtime_only label; and the dispatch order (staged payload beats a reachable registry, no payload behaves exactly as before). Plus static wiring pins the behavioural cases cannot see: both install paths still CALL the major guard, and the offline path still stops the unit, removes the old tree before extracting (tar merges — it never deletes), and asserts a single node-red/ top level before a root extraction. Non-vacuous: a failed or short extraction FAILS rather than passing on zero matches.",
+      "config": null,
+      "run": "bash scripts/dev/test-nodered-ctl.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-web-service-ctl.sh", "scripts/dev/test-nodered-ctl.sh"],
+      "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-nodered-ctl.sh"
+    },
+    {
+      "id": "nodered-pin-consistency",
+      "checks": "Static gate for the Node-RED pin across its five homes — the runtime install (etc/sa02m-web-service-ctl.sh), the install-time path (scripts/07-nodered.sh), the payload build recipe (scripts/dev/build-nodered-payload.sh), the committed dependency manifest (vendor-src/nodered/package{,-lock}.json) and the documented payload shape (docs/vendor-integrations.md). Pins: one and only one node-red version string across all five (the lockfile is the ground truth — a constant that disagrees with the tree npm ci installs IS the drift); --node22 present in both install homes; NO surviving `node-red@3` / `--node20` anywhere under etc/ scripts/ tools/ (the EOL pin this row exists to keep out); --omit=optional and npm ci in the build recipe (dropping either reintroduces the native @node-rs/bcrypt dep and re-binds the payload to one Node ABI, or re-resolves ranges and ends reproducibility); the ctl's Node floor (major AND minor) mirroring engines.node of the pinned node-red in the lockfile, so a lockfile bump that raises the floor fails the build instead of leaving a board installing a runtime it cannot boot; the flow verdict surviving a non-English board (our unit pins LC_ALL, and BOTH readers match the en and ru spellings of the started-flows marker — plus neither may depend on 'Flows stopped due to missing node types', which is an editor-UI notification the runtime never logs, i.e. a check that cannot fire in any locale); and the repo-owned etc/systemd/system/nodered.service existing, running as User=nodered, and resolving node by ABSOLUTE path rather than env/PATH (a board can carry apt's Node beside a staged tarball Node — PATH order would otherwise decide which one runs). Non-vacuous: a missing file, an empty extraction, or a sweep that stops seeing files FAILS rather than passing on zero matches.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/nodered-pin-consistency.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-web-service-ctl.sh", "etc/systemd/system/nodered.service", "scripts/07-nodered.sh", "scripts/dev/build-nodered-payload.sh", "vendor-src/nodered/", "docs/vendor-integrations.md", ".ai-dev/quality/checks/nodered-pin-consistency.sh"],
+      "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,

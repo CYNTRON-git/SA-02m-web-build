@@ -14,11 +14,15 @@
 |---|---|---|---|
 | CODESYS Runtime | `SA02M_CODESYS_DEB=/path/.deb` | `/opt/vendor-installers/codesys/*.deb` | `$REPO/vendor/codesys/*.deb` |
 | MPLC 4D | `SA02M_MPLC_DIR=/path/dir` | `/opt/vendor-installers/mplc4/` | `$REPO/vendor/mplc4/` |
+| Node-RED | `SA02M_NODERED_DIR=/path/dir` | `/opt/vendor-installers/nodered/` | `$REPO/vendor/nodered/` |
 
 Приоритет 3 используется автоматически в `tools/debian-rootfs/create-sa02m-rootfs.sh`:
-если каталог `$REPO/vendor/{codesys,mplc4}/` есть на build-host, его содержимое
-копируется в rootfs → `/opt/vendor-installers/{codesys,mplc4}/`. После первой
-прошивки `install.sh` (шаги `08` и `09`) их подхватывает.
+если каталог `$REPO/vendor/{codesys,mplc4,nodered}/` есть на build-host, его
+содержимое копируется в rootfs → `/opt/vendor-installers/<служба>/`. После первой
+прошивки `install.sh` (шаги `07`, `08` и `09`) их подхватывает.
+
+Node-RED — единственный из трёх, чей payload мы **собираем сами**, а не получаем
+от вендора: рецепт и форма — в разделе «Node-RED (оффлайн payload)» ниже.
 
 ## Подготовка vendor payload
 
@@ -91,6 +95,87 @@ Copy-Item "$src\version.txt"       $dst
 (NetKey поддерживается, но по умолчанию выключен). Дополнительные ключи —
 через MasterSCADA IDE (Windows) → `Настройки` → `Ключи защиты`.
 
+### Node-RED (оффлайн payload)
+
+Node-RED — единственный стек, который раньше требовал интернет на устройстве:
+промышленный сегмент без выхода в сеть — норма, и шаг `07-nodered.sh` там
+просто падал. Оффлайн-payload закрывает это: ставится **node-red 4.1.13**
+(поддерживаемая линия; 3.x без обновлений безопасности с 2025-06-30).
+
+**Состав payload'а** (`vendor/nodered/` на build-host →
+`/opt/vendor-installers/nodered/` на устройстве):
+
+| Файл | Что это | Обязателен |
+|---|---|---|
+| `node-red-4.1.13.tar.gz` | дерево node-red с **вложенными** зависимостями | да |
+| `node-v22.*-linux-armv7l.tar.xz` | официальный tarball Node.js, sha256 сверен | нет¹ |
+| `nodered.service` | копия `etc/systemd/system/nodered.service` | да |
+| `settings.js` | копируется, только если у пользователя его ещё нет | нет |
+| `BUILD-INFO.txt` | провенанс сборки (см. ниже) | нет² |
+
+¹ распаковывается **только** если на плате нет Node.js или он ниже
+`engines` порога node-red 4.1.13 (`>=18.5`). Плата с Node 20 сохраняет свой
+Node, а пропуск распаковки пишется в лог — «тихого успеха, при котором ничего
+не поставилось» больше нет. Смена мажора Node — отдельный шаг по
+`docs/deployment.md`, а не побочный эффект кнопки.
+² не читается установщиком, но это единственный дом измеренных цифр
+(размер дерева, время сборки, суммы).
+
+**Сборка — одна команда, на плате, от root:**
+
+```bash
+sudo bash scripts/dev/build-nodered-payload.sh --out /root/nodered-payload
+```
+
+Скрипт — единственный дом команд сборки. Он не трогает работающую установку
+(сборка в отдельном каталоге, `npm ci` без `-g`), проверяет свободное место,
+сверяет sha256 tarball'а Node с опубликованным `SHASUMS256.txt` и пишет
+`BUILD-INFO.txt`.
+
+**Почему `npm ci` из закоммиченного lock-файла.** Дерево описано в
+`vendor-src/nodered/package.json` + `package-lock.json` (~190 KB текста в
+репозитории, 274 пакета). `npm ci` ставит ровно то, что в lock-файле, —
+пересборка через месяц даёт то же дерево, а не «что решит npm сегодня».
+Честная граница: воспроизводится **дерево файлов**, но не байты архива
+(mtime/gzip) и не доступность реестра — провенанс закрывается суммами в
+`BUILD-INFO.txt`.
+
+**Почему `--omit=optional`.** Единственная нативная зависимость node-red
+4.1.13 — `@node-rs/bcrypt` (napi). Без неё дерево — **чистый JavaScript**, а
+значит: не нужен компилятор и `build-essential`/`python3` на плате, и — главное
+— **нет привязки к ABI мажора Node**, один и тот же payload работает и на
+Node 20, и на Node 22. Плата за это: хеширование паролей `adminAuth` уходит на
+чистый JS `bcryptjs` (медленнее на логине, функционально то же). Node-RED
+разворачивается **без** `adminAuth`, поэтому сегодня цена нулевая. Это
+рассуждение, а не измерение.
+
+**Почему дерево вложенное, а не плоское.** `npm ci` поднимает зависимости
+плоско; если запаковать как есть, в `/usr/lib/node_modules` прилетят ~235
+соседних каталогов. Сборщик перекладывает их в `node-red/node_modules/` —
+резолвер Node ищет вверх по дереву и находит их первыми, поведение то же, а
+каталог верхнего уровня ровно один. Установщик это **проверяет**: архив с
+другим числом верхнеуровневых записей не распаковывается (защита от обхода
+путей и от «размазывания» чужих пакетов по глобальному каталогу модулей).
+
+**Ориентир по размеру** (замер на dev-машине x86, не на плате): распакованное
+дерево ~107 MB, 274 пакета. Авторитетные цифры — из `BUILD-INFO.txt` после
+сборки на плате.
+
+**Оффлайн имеет приоритет над сетью.** И `scripts/07-nodered.sh`, и кнопка
+«Установить» сначала ищут payload и только потом идут в сеть: пин, который
+проигрывает тому, что сегодня отдаёт реестр, — не пин. Онлайн-путь запрашивает
+тот же пин (`--node22 --nodered-version=4.1.13`), но остаётся best-effort:
+NodeSource для armhf отдаёт свой 22.x, не обязательно тот же, что в payload'е.
+Детерминированный путь — payload.
+
+**Установка НЕ перезаписывает установленный Node-RED через мажор.** Если на
+плате уже стоит 3.x, кнопка «Установить» вернёт `major_upgrade_refused` и
+ничего не тронет: переход 3→4 мигрирует потоки и перешифровывает учётные
+данные необратимо, поэтому он идёт по процедуре с бэкапом
+(`docs/deployment.md` → «Доставка vendor-payload Node-RED и обновление
+стека»), а не одной кнопкой.
+Причина и что делать — в `/var/log/sa02m_install.log`.
+
 ## Ручная загрузка на боевое устройство
 
 Если vendor-payload не запечён в rootfs, но нужно поставить CODESYS/MPLC
@@ -110,6 +195,12 @@ $hk = "SHA256:STw9vh3ohLieuJLXlsa/feL2UEHi/o4juXymYFKyuuA"
 & "C:\Program Files\PuTTY\plink.exe" -batch -ssh root@192.168.1.136 -pw cyntron -hostkey $hk `
     "cd /opt/sa02m-web-build && bash scripts/08-codesys.sh && bash scripts/09-mplc.sh"
 ```
+
+**Node-RED — по отдельной процедуре.** Payload крупный (десятки MB), а на
+плате с уже установленным Node-RED смена мажора необратимо мигрирует потоки,
+поэтому доставка и установка идут по runbook'у с бэкапом и проверенным
+откатом: `docs/deployment.md` → «Доставка vendor-payload Node-RED и обновление
+стека». Импровизировать здесь нельзя (PROTOCOL.md инвариант 4).
 
 ## Проверка
 
@@ -134,7 +225,11 @@ CODESYS, MPLC4 и Node-RED устанавливаются и удаляются 
 `etc/sa02m-web-service-ctl.sh` (verb'ы `install`/`uninstall`), а НЕ вызовом
 `scripts/07/08/09` (их нет на устройстве, они зависят от `scripts/lib.sh`).
 Скрипты 07/08/09 остаются каноничным install-time путём; при правке общего
-шага синхронизируйте оба места.
+шага синхронизируйте оба места. Для Node-RED это расхождение теперь ловится
+механически — quality-строка `nodered-pin-consistency` валит сборку, если
+версия/флаг Node разъехались между 07, ctl-скриптом, рецептом сборки,
+lock-файлом и этим документом. Оффлайн-путь 07 не дублирует логику распаковки,
+а вызывает тот же ctl-скрипт (дом один).
 
 **Источники (должны присутствовать на устройстве):**
 
@@ -142,13 +237,17 @@ CODESYS, MPLC4 и Node-RED устанавливаются и удаляются 
 |---|---|
 | CODESYS | `codesyscontrol_*_armhf.deb` + `sa02m.conf` (systemd drop-in) |
 | MPLC4 | `install.sh`, `mplc4.tar.gz`, `nginx.tar.gz`, `mplc_cyntron.so` |
-| Node-RED (оффлайн) | Node armhf tarball + собранное дерево `node-red@3` + `nodered.service` (+`settings.js`) |
+| Node-RED (оффлайн) | `node-red-4.1.13.tar.gz` + `nodered.service` (обязательны) + Node armhf tarball, `settings.js`, `BUILD-INFO.txt` — см. раздел выше |
 
-Сборка rootfs (`create-sa02m-rootfs.sh`) раскладывает `sa02m.conf` и
-`mplc_cyntron.so` в эти каталоги автоматически, если запечён `vendor/*`.
-Оффлайн-пакет Node-RED готовится отдельно (собирается на armhf, ядро без
-самообновления). При отсутствии файлов кнопка «Установить» возвращает
-`staging_missing` (для Node-RED без интернета и без пакета — `no_internet`).
+Сборка rootfs (`create-sa02m-rootfs.sh`) раскладывает `sa02m.conf`,
+`mplc_cyntron.so` и `nodered.service` в эти каталоги автоматически, если
+запечён соответствующий `vendor/*`. Известные подкаталоги перечислены явно
+(`codesys mplc4 nodered`); любой другой каталог в `vendor/` в образ не попадает
+и о нём пишется `WARN` — раньше он исчезал молча.
+
+При отсутствии файлов кнопка «Установить» возвращает `staging_missing`; без
+пакета и без интернета — `no_internet`; при попытке перезаписать установленный
+Node-RED через мажор — `major_upgrade_refused`.
 
 **«Удалить» = полная очистка:** остановка, `dpkg --purge` (для CODESYS —
 `dpkg`, НЕ `apt`, чтобы не тянуть отсутствующий `codemeter`), удаление
@@ -165,6 +264,7 @@ Node-RED дополнительно удаляет пользователя `nod
 ```bash
 SA02M_SKIP_CODESYS=1 ./install.sh   # без CODESYS
 SA02M_SKIP_MPLC=1    ./install.sh   # без MPLC
+SA02M_SKIP_NODERED=1 ./install.sh   # без Node-RED
 SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 ./install.sh  # без обоих
 ```
 
@@ -175,8 +275,12 @@ SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 ./install.sh  # без обоих
 | `scripts/08-codesys.sh` | Установка CODESYS Control (.deb + hold + enable). |
 | `scripts/09-mplc.sh` | Установка MPLC 4D + плагин mplc_cyntron.so. |
 | `install.sh` | Опциональные вызовы `08-codesys.sh` / `09-mplc.sh`. |
-| `scripts/07-nodered.sh` | Установка Node-RED (Node.js + nodered.service). |
-| `tools/debian-rootfs/create-sa02m-rootfs.sh` | Копирует `vendor/*` в rootfs + drop-in CODESYS и `mplc_cyntron.so` в `/opt/vendor-installers/`. |
+| `scripts/07-nodered.sh` | Установка Node-RED: payload → иначе онлайн → иначе WARN + выход 0. |
+| `scripts/dev/build-nodered-payload.sh` | Сборка оффлайн-payload Node-RED на плате (единственный дом команд сборки). |
+| `vendor-src/nodered/package{,-lock}.json` | Манифест дерева node-red; `npm ci` ставит ровно его. |
+| `etc/systemd/system/nodered.service` | Unit Node-RED (репозиторный артефакт; payload несёт его копию). |
+| `.ai-dev/quality/checks/nodered-pin-consistency.sh` | Гейт: пин версии и флаг Node не разъезжаются между домами. |
+| `tools/debian-rootfs/create-sa02m-rootfs.sh` | Копирует `vendor/{codesys,mplc4,nodered}` в rootfs + drop-in CODESYS, `mplc_cyntron.so` и `nodered.service` в `/opt/vendor-installers/`. |
 | `etc/sa02m-apt-hold-codesys.sh` | Существующий hold-скрипт для CODESYS. |
 | `etc/sa02m-web-service-ctl.sh` | Управление CODESYS/MPLC/Node-RED из веб-панели: start/stop/install/uninstall. |
 | `www/network_config/cgi-bin/services_ctrl.cgi` | CGI-эндпоинт служб (action: start/stop/install/uninstall). |
