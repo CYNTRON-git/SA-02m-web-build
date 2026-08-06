@@ -7,6 +7,25 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-08-06 **[LOW] `netmask 24` (bare prefix in the netmask field) is
+  refused as unparseable by `ensure_gw_dns`.** ifupdown accepts a bare prefix
+  there; `scripts/02-network.sh` parses only dotted-quad in `netmask` and CIDR
+  in `address`. Fails CLOSED with an accurate WARN, so a board is never
+  endangered — the repair simply does not happen on such a conf. The mirror of
+  the CIDR-in-`address` gap already closed. Reviewer N4 on the net-and-log
+  hygiene change.
+- [OPEN] 2026-08-06 **[LOW] `extract_guard`'s comment over-claims what it
+  pins.** `scripts/dev/test-iface-gw-repair.sh` says the guard pins "the temp
+  file beside the conf"; it pins only the string. Moving the temp to `$TMPDIR`
+  still passes the suite — which would silently break `mv`'s same-filesystem
+  atomicity, the property the write path depends on. Either assert the location
+  or correct the comment. Reviewer N5, same change.
+- [OPEN] 2026-08-06 **[LOW] Broken inline code span in `docs/deployment.md:4-5`.**
+  The span wraps mid-path with no trailing space, so markdown renders
+  `.ai-dev/procedures/ deployment.md` — a broken pointer in the file that
+  forbids improvising a deploy. Pre-existing; deliberately left out of the
+  full-install runbook diff (PR #90) to keep that change scoped. Found by two
+  independent reviewers.
 - [OPEN] 2026-08-05 **[LOW] Default device password hard-coded in the imaging
   fallback.** `tools/imaging/make-image.sh:20` defaults `SSH_PASS` to `cyntron`
   when `SA02M_PASS` is unset, so a build host without the key silently

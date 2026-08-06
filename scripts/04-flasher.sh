@@ -72,6 +72,10 @@ visudo -cf /etc/sudoers.d/sa02m-flasher >> "$LOG_FILE" 2>&1 && log OK "sudoers f
 
 # logrotate
 install -m 0644 -o root -g root "$ETC_DIR/logrotate.d/sa02m-flasher" /etc/logrotate.d/sa02m-flasher
+# CRLF валит logrotate на каждой загрузке — это уже происходило именно с этим
+# файлом (BUGLOG [2026-06-03 09:40]). В репозитории закрыто .gitattributes,
+# здесь — страховка на случай checkout'а без него.
+sed -i 's/\r$//' /etc/logrotate.d/sa02m-flasher
 
 # ── systemd unit ──────────────────────────────────────────────────────────
 log INFO "Устанавливаю systemd unit sa02m-flasher.service"

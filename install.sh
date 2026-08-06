@@ -3,7 +3,10 @@
 # СА-02м  •  Installer  v1.0.3
 # Дата: 2026
 # Использование: sudo ./install.sh [--ip X.X.X.X] [--port 9999] [--pass cyntron]
-#                                  [--canonical-iface-now]
+#                                  [--canonical-iface-now] [--no-gw-repair]
+#   --no-gw-repair (или SA02M_SKIP_GW_REPAIR=1) — не дописывать отсутствующие
+#   gateway/dns-nameservers в существующий /etc/network/interfaces.d/ethN.conf.
+#   Для сети, где шлюза нет намеренно (изолированный сегмент).
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -23,6 +26,11 @@ export SA02M_HW_VARIANT=""
 # boot. Renaming a live interface drops the management link (SSH), so a board
 # without console access must always use the deferred default.
 export SA02M_CANONICAL_IFACE_NOW="${SA02M_CANONICAL_IFACE_NOW:-0}"
+# Opt-out: 02-network.sh дописывает ОТСУТСТВУЮЩИЕ gateway/dns-nameservers в уже
+# существующий конфиг интерфейса. Оператору изолированного сегмента, где шлюза
+# нет намеренно, нужен документированный выключатель, а не спор с установщиком
+# на каждом обновлении.
+export SA02M_SKIP_GW_REPAIR="${SA02M_SKIP_GW_REPAIR:-0}"
 # IP_ADDRESS and GATEWAY are resolved after lib.sh is sourced (variant-aware defaults)
 _ARG_IP=""
 _ARG_GW=""
@@ -37,6 +45,7 @@ while [[ $# -gt 0 ]]; do
         --serial-profile) SA02M_SERIAL_PROFILE="$2"; shift 2 ;;
         --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
         --canonical-iface-now) SA02M_CANONICAL_IFACE_NOW="1"; shift ;;
+        --no-gw-repair) SA02M_SKIP_GW_REPAIR="1"; shift ;;
         *)         shift ;;
     esac
 done
