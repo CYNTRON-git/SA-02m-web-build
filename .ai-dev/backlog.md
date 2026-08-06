@@ -291,6 +291,64 @@ audit).
   paths that don't exist in this repo. These are vendored framework files — do
   NOT edit locally (upstream drift); route as downstream-feedback on the next
   protocol upgrade.
+- [OPEN] 2026-08-06 **[MED] `etc/sa02m-kernel-select.sh:23` still defaults RT to
+  `5.10.35-rt36`.** That kernel/RT pair never existed upstream (rt36 belongs to
+  5.10.27); the RT flavour now builds `5.10.35-rt39`. Not a live fault —
+  `load_conf()` falls through to `detect_installed_module_ver rt`, which matches
+  the real `5.10.35-rt39` module dir and writes it back to
+  `/etc/sa02m_kernel.conf` — but the default names a kernel that cannot exist.
+  Deliberately NOT fixed with the CI work: `etc/` is device code and was fenced
+  out of that change's scope. One-line edit + a device check.
+- [OPEN] 2026-08-06 **[LOW] `kernel-port/README.md:35` documents a patch file
+  that never existed.** Names `patch-5.10.35-rt36.patch.gz` as the PREEMPT_RT
+  patchset. Same root cause as above; left alone because `kernel-port/` was
+  outside the CI fix's scope. Should read rt39 and point at
+  `docs/decisions/rt-patch-pinning.md`.
+- [OPEN] 2026-08-06 **[MED] The `.deb` job of `build-sa02m-kernel` has never
+  completed once.** July runs died at `dpkg-checkbuilddeps: Unmet build
+  dependencies: build-essential:native`; that one missing package is now in the
+  workflow's apt list, but nothing past that point has ever executed, so the
+  job's remaining steps (bindeb-pkg, artefact collection, upload) are unproven.
+  The job is push-only, so it blocks no PR. Needs one deliberate
+  `workflow_dispatch` run on a kernel-touching branch to find out.
+- [OPEN] 2026-08-06 **[MED] The RT patch fallback leaves a half-patched kernel
+  tree.** `tools/kernel-wb/build-sa02m-kernel.sh:147-155` (and the same shape in
+  `kernel-port/apply.sh:47-59`): when the forward dry-run fails it retries with
+  `patch --merge=diff3`. Measured on GNU patch 2.7.6: that exits 1 whenever it
+  writes conflict markers, so the `|| exit 1` guard does fire and CI fails
+  loudly — but the tree keeps the hunks that already applied, the diff3 markers,
+  and `.orig` siblings. CI is safe (`actions/cache` is `post-if: success()`, so
+  a failed job never saves the poisoned tree); a local build root is not — the
+  script skips the re-clone whenever `wb-linux/.git` exists, so the next local
+  run compounds the damage until someone passes `--rebuild`. Options: fail fast
+  without the merge attempt, or `git checkout`/re-clone on merge failure.
+- [OPEN] 2026-08-06 **[MED] The kernel build's WB base is a moving branch ref,
+  so the build is not reproducible.** `tools/kernel-wb/build-sa02m-kernel.sh:84`
+  clones `-b release/wb-2606/wb7-bullseye` — a branch, not a tag or a SHA — so
+  what the build compiles depends on the day it runs, for BOTH flavours. The
+  rt39 work pinned the RT patch (version + sha256) but deliberately left this
+  half alone: changing the base changes the kernel that ships. Two consequences
+  worth acting on: builds cannot be reproduced across dates, and the measured
+  "rt39 applies cleanly" result (0 rejects, 27 offsets, 1 fuzz in
+  `drivers/tty/serial/8250/8250_port.c`) is only valid against WB HEAD
+  `048d31b` of 2026-03-30 — a WB commit touching that file can turn the fuzz
+  into a conflict. Fix = pin `WB_BRANCH` to a tag/SHA (keeping the env override)
+  and re-measure on each deliberate bump. Recorded in
+  `docs/decisions/rt-patch-pinning.md`.
+- [OPEN] 2026-08-06 **[LOW] `build-sa02m-kernel.sh` .deb collection is a no-op
+  and the package version hides the RT level.** `mv "$BUILD_ROOT"/wb-linux/../*.deb
+  "$BUILD_ROOT/"` resolves source and destination to the same directory (the
+  error is swallowed by `2>/dev/null || true`); `bindeb-pkg` already writes
+  there. Separately, `KDEB_PKGVERSION="5.10.35-${FLAVOUR}-<date>"` records the
+  flavour but not the RT patch level, so an `-rt` package does not say whether
+  it is rt39 or something else. Both are cosmetic until someone debugs a
+  device's kernel provenance.
+- [OPEN] 2026-08-06 **[LOW] `build-sa02m-kernel` only fires on kernel paths, so
+  a red workflow goes unnoticed for months.** Its triggers are `kernel-port/**`
+  and `tools/kernel-wb/**`; between kernel changes nothing runs and nobody sees
+  the failure — which is how it stayed broken from its first run. A weekly
+  `schedule:` smoke run (or the same on push to main regardless of path) would
+  surface breakage while someone still remembers the context.
 - [OPEN] 2026-07-12 **[task] On-device verification (pre-deploy).** All device-
   side changes tested only locally/logically. Verify on a real SA-02m before
   deploy: login (hashed + legacy plaintext), password change, network apply +

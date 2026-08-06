@@ -64,13 +64,18 @@ jobs:
             gcc-arm-linux-gnueabihf bc kmod cpio fakeroot dpkg-dev \
             flex bison libssl-dev libelf-dev quilt rsync
 
+      # The flavour is part of the cache key: build-sa02m-kernel.sh patches the
+      # checkout in place for sa02m-rt, so a cache shared across the matrix can
+      # hand the SMP build RT-patched sources. The `--` separators stop `sa02m`
+      # prefix-matching `sa02m-rt` through restore-keys. The build script is in
+      # hashFiles because it carries the RT patch pin.
       - name: Cache wirenboard/linux checkout
         uses: actions/cache@v4
         with:
           path: ~/build/sa02m-kernel/wb-linux
-          key: wb-linux-2606-wb7-bullseye-${{ hashFiles('kernel-port/patches/*.patch') }}
+          key: wb-linux-2606-wb7-bullseye--${{ matrix.flavour }}--${{ hashFiles('kernel-port/patches/*.patch', 'tools/kernel-wb/build-sa02m-kernel.sh') }}
           restore-keys: |
-            wb-linux-2606-wb7-bullseye-
+            wb-linux-2606-wb7-bullseye--${{ matrix.flavour }}--
 
       - name: Smoke build ${{ matrix.flavour }}
         run: |
@@ -98,20 +103,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # build-essential is a Build-Depends of the generated debian/control, so
+      # bindeb-pkg's dpkg-checkbuilddeps rejects the build without the package
+      # installed by name, even though the runner image already ships gcc/make.
       - name: Install cross-toolchain and build deps
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             gcc-arm-linux-gnueabihf bc kmod cpio fakeroot dpkg-dev \
+            build-essential \
             flex bison libssl-dev libelf-dev quilt rsync
 
+      # Flavour-scoped for the same reason as the smoke job above.
       - name: Cache wirenboard/linux checkout
         uses: actions/cache@v4
         with:
           path: ~/build/sa02m-kernel/wb-linux
-          key: wb-linux-2606-wb7-bullseye-${{ hashFiles('kernel-port/patches/*.patch') }}
+          key: wb-linux-2606-wb7-bullseye--${{ matrix.flavour }}--${{ hashFiles('kernel-port/patches/*.patch', 'tools/kernel-wb/build-sa02m-kernel.sh') }}
           restore-keys: |
-            wb-linux-2606-wb7-bullseye-
+            wb-linux-2606-wb7-bullseye--${{ matrix.flavour }}--
 
       - name: Build ${{ matrix.flavour }} .deb
         run: |

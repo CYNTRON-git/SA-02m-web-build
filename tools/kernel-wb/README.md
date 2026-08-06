@@ -42,10 +42,30 @@ sudo apt install git build-essential bc kmod cpio fakeroot dpkg-dev \
 1. `git clone --depth 1 -b release/wb-2606/wb7-bullseye https://github.com/wirenboard/linux ~/build/sa02m-kernel/wb-linux` (при отсутствии).
 2. Копирует [`../../kernel-port/overlay/`](../../kernel-port/) в `wb-linux/`.
 3. Накладывает патчи из [`../../kernel-port/patches/`](../../kernel-port/patches/).
-4. Для `sa02m-rt` — скачивает `patch-5.10.35-rtNN.patch.gz` с kernel.org и применяет.
+4. Для `sa02m-rt` — скачивает `patch-5.10.35-rt39.patch.gz` с kernel.org, сверяет sha256 и применяет (см. «RT-патч» ниже).
 5. `make sa02m_defconfig`.
 6. Для RT дополнительно: `./scripts/kconfig/merge_config.sh .config arch/arm/configs/sa02m_rt.config`.
 7. `make -j$(nproc) bindeb-pkg` (штатный target из kernel/Makefile).
+
+## RT-патч: закреплённая версия
+
+Для flavour `sa02m-rt` берётся **`patch-5.10.35-rt39.patch.gz`** — единственный
+и последний RT-релиз upstream для ядра 5.10.35. Версия и sha256 закреплены в
+скрипте; почему именно пин, а не «взять самый свежий», и что делать, если файл
+исчезнет с зеркала — [`docs/decisions/rt-patch-pinning.md`](../../docs/decisions/rt-patch-pinning.md).
+
+Переопределение (обе переменные вместе — сумма относится к конкретному файлу):
+
+```bash
+SA02M_RT_PATCH_VER=rtNN SA02M_RT_PATCH_SHA256=<sha256> \
+  ./tools/kernel-wb/build-sa02m-kernel.sh sa02m-rt
+```
+
+`SA02M_RT_PATCH_SHA256=skip` отключает проверку целостности — только для
+локальных экспериментов, не для сборки, которая поедет на устройство.
+
+RT-ядро получает `uname -r` = `5.10.35-rt39` (из `localversion-rt` в патче), а
+модули — `/lib/modules/5.10.35-rt39/`.
 
 ## Что делает `deploy-sa02m-kernel.sh`
 

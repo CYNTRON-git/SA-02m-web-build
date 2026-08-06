@@ -43,8 +43,18 @@ WB_BRANCH="${SA02M_WB_BRANCH:-release/wb-2606/wb7-bullseye}"
 WB_REMOTE="${SA02M_WB_REMOTE:-https://github.com/wirenboard/linux}"
 
 RT_KVER="5.10.35"
-RT_PATCH_VER="${SA02M_RT_PATCH_VER:-rt36}"
+# PREEMPT_RT pin. rt39 is the only — and final — RT release upstream ever
+# published for 5.10.35; rt36 belongs to 5.10.27, so the previous default named
+# a file that has never existed. The pin is deliberate: the RT patch level
+# changes scheduler and locking behaviour, so a device kernel must be
+# reproducible rather than self-updating. Rationale and the escape hatch:
+# docs/decisions/rt-patch-pinning.md.
+RT_PATCH_VER="${SA02M_RT_PATCH_VER:-rt39}"
 RT_PATCH_URL="${SA02M_RT_PATCH_URL:-https://cdn.kernel.org/pub/linux/kernel/projects/rt/5.10/older/patch-${RT_KVER}-${RT_PATCH_VER}.patch.gz}"
+# sha256 of the .gz as published in upstream's signed sha256sums.asc, so the pin
+# holds the bytes and not merely the filename. Override the version => override
+# this too, or set it to "skip" to build without the integrity check.
+RT_PATCH_SHA256="${SA02M_RT_PATCH_SHA256:-de1457a7bf65efdcfcca60e02974b0c43fec8d40c20476c1c6c3fcac777d3871}"
 
 JOBS="${JOBS:-$(nproc)}"
 export ARCH=arm
@@ -96,11 +106,44 @@ echo "[apply overlay + patches]"
 
 if [ "$FLAVOUR" = "sa02m-rt" ]; then
 	RT_PATCH_FILE="$BUILD_ROOT/patch-${RT_KVER}-${RT_PATCH_VER}.patch"
-	if [ ! -f "$RT_PATCH_FILE" ]; then
+	RT_PATCH_GZ="$RT_PATCH_FILE.gz"
+	if [ ! -f "$RT_PATCH_GZ" ]; then
 		echo "[rt-patch] downloading $RT_PATCH_URL"
-		curl -fSL "$RT_PATCH_URL" -o "$RT_PATCH_FILE.gz"
-		gunzip -f "$RT_PATCH_FILE.gz"
+		if ! curl -fSL "$RT_PATCH_URL" -o "$RT_PATCH_GZ"; then
+			rm -f "$RT_PATCH_GZ"
+			echo "[rt-patch] ERROR: could not fetch $RT_PATCH_URL" >&2
+			echo "[rt-patch] The RT version is pinned deliberately, so this does not self-heal." >&2
+			echo "[rt-patch] Check what upstream still publishes for ${RT_KVER}:" >&2
+			echo "[rt-patch]   https://cdn.kernel.org/pub/linux/kernel/projects/rt/5.10/older/" >&2
+			echo "[rt-patch] then re-run with a matching version+checksum pair:" >&2
+			echo "[rt-patch]   SA02M_RT_PATCH_VER=rtNN SA02M_RT_PATCH_SHA256=<sha256> $0 $FLAVOUR" >&2
+			echo "[rt-patch] Rationale and fallbacks: docs/decisions/rt-patch-pinning.md" >&2
+			exit 1
+		fi
 	fi
+	# Checked on every run, not only after a download: BUILD_ROOT survives between
+	# local builds, so a file left over from an earlier run clears the same bar.
+	if [ "$RT_PATCH_SHA256" = "skip" ]; then
+		echo "[rt-patch] WARNING: integrity check disabled (SA02M_RT_PATCH_SHA256=skip)"
+	elif ! echo "$RT_PATCH_SHA256  $RT_PATCH_GZ" | sha256sum -c --status -; then
+		echo "[rt-patch] ERROR: sha256 mismatch on $RT_PATCH_GZ" >&2
+		echo "[rt-patch]   expected: $RT_PATCH_SHA256" >&2
+		echo "[rt-patch]   actual:   $(sha256sum "$RT_PATCH_GZ" | cut -d' ' -f1)" >&2
+		echo "[rt-patch] Refusing to patch the kernel with unverified bytes." >&2
+		# Discard it, exactly as the download path does: keeping the bad archive
+		# would skip the re-download branch above and wedge this build root into
+		# failing identically for ever.
+		rm -f "$RT_PATCH_GZ"
+		echo "[rt-patch] Removed the rejected archive, so a re-run fetches it again." >&2
+		echo "[rt-patch] If it keeps mismatching, the checksum and the version disagree —" >&2
+		echo "[rt-patch] take the pair from upstream's signed sums and pass both:" >&2
+		echo "[rt-patch]   https://cdn.kernel.org/pub/linux/kernel/projects/rt/5.10/older/sha256sums.asc" >&2
+		echo "[rt-patch]   SA02M_RT_PATCH_VER=rtNN SA02M_RT_PATCH_SHA256=<sha256> $0 $FLAVOUR" >&2
+		echo "[rt-patch] Rationale and fallbacks: docs/decisions/rt-patch-pinning.md" >&2
+		exit 1
+	fi
+	# Re-expand from the verified archive so the .patch cannot drift away from it.
+	gunzip -kf "$RT_PATCH_GZ"
 	if ! (cd "$WB_TREE" && patch -p1 --dry-run --reverse --silent < "$RT_PATCH_FILE" >/dev/null 2>&1); then
 		if (cd "$WB_TREE" && patch -p1 --dry-run --silent < "$RT_PATCH_FILE" >/dev/null 2>&1); then
 			echo "[rt-patch] applying $(basename "$RT_PATCH_FILE")"
