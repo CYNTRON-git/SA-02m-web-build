@@ -27,6 +27,5 @@ exec shellcheck --severity=error --shell=bash \
   scripts/dev/*.sh \
   tools/*/*.sh \
   usr/local/sbin/*.sh \
-  kernel-port/apply.sh \
   .ai-dev/quality/checks/*.sh \
   install.sh

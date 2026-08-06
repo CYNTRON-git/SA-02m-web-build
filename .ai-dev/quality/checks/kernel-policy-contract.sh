@@ -21,6 +21,11 @@
 #      READY decouples the OPC UA address-space build — ~9 s in OpcuaServer()
 #      construction inside __init__, ~17 s total — from multi-user.target;
 #      moving it into/after construction reintroduces the boot hold — §5.1).
+#   8. sa02m-kernel-select.sh's SMP/RT version defaults name the fleet's
+#      kernel pair (§6) AND detect_installed_module_ver()'s whitelist matches
+#      BOTH of them — a default the detector cannot find is not inert:
+#      write_conf() persists it and the panel then refuses a profile the
+#      board actually has.
 #
 # Run: bash .ai-dev/quality/checks/kernel-policy-contract.sh
 set -uo pipefail
@@ -172,6 +177,51 @@ else
         fail "opcua daemon sends READY=1 (line $ready_line) at/after OpcuaGateway() construction (line $ctor_line) — the ~9 s OpcuaServer() build runs in __init__, so READY must precede it or multi-user.target waits on it again (contract §5.1)"
     else
         pass "opcua daemon sends the single READY=1 (line $ready_line) before OpcuaGateway() construction (line $ctor_line)"
+    fi
+fi
+
+# ── 8. kernel-select defaults == the fleet's kernel pair (contract §6) ─────
+# The pair is declared ONCE here, mirroring the contract table. Non-vacuous:
+# an empty extraction FAILS. The whitelist check uses `case` so the extracted
+# pattern is matched as the shell itself would match it — not re-implemented.
+KSEL=etc/sa02m-kernel-select.sh
+FLEET_SMP=6.1.0-rc6
+FLEET_RT=6.1.0-rc6-rt4
+if [ ! -f "$KSEL" ]; then
+    fail "$KSEL missing — cannot check the SMP/RT defaults (contract §6)"
+else
+    smp_def=$(sed -n 's/^SMP_VER_DEFAULT=\(.*\)$/\1/p' "$KSEL" | head -1)
+    rt_def=$(sed -n 's/^RT_VER_DEFAULT=\(.*\)$/\1/p' "$KSEL" | head -1)
+    # The detector's whitelist arm: the `case` label line inside
+    # detect_installed_module_ver(), e.g. `*sa02m*|5.10.35*|6.1.0-rc6*)`.
+    ksel_arm=$(sed -n '/^detect_installed_module_ver() {/,/^}/p' "$KSEL" \
+        | sed -n 's/^[[:space:]]*\(\**[^ )]*|[^ )]*\))$/\1/p' | head -1)
+    if [ -z "${smp_def:-}" ] || [ -z "${rt_def:-}" ] || [ -z "${ksel_arm:-}" ]; then
+        fail "kernel-select extraction came up empty (smp='${smp_def:-}' rt='${rt_def:-}' arm='${ksel_arm:-}') — file moved or pattern drifted; update this gate"
+    elif ! printf '%s' "$ksel_arm" | grep -qE '^[A-Za-z0-9._*?|+-]+$'; then
+        # The arm is fed to `eval` below (a case label cannot be matched without
+        # the shell's own globber). Refuse anything outside glob+version
+        # characters so the eval can never see a substitution or a command
+        # separator, whatever lands in the script.
+        fail "detect_installed_module_ver case label '$ksel_arm' contains characters this gate refuses to eval — keep it to plain glob patterns (contract §6)"
+    else
+        if [ "$smp_def" = "$FLEET_SMP" ] && [ "$rt_def" = "$FLEET_RT" ]; then
+            pass "kernel-select defaults name the fleet pair ($FLEET_SMP / $FLEET_RT)"
+        else
+            fail "kernel-select defaults are '$smp_def' / '$rt_def' but the fleet runs '$FLEET_SMP' / '$FLEET_RT' — write_conf() persists an unfindable default and the panel then refuses a profile the board has (contract §6)"
+        fi
+        # Match each default against the extracted arm exactly as the script does.
+        arm_covers() {
+            eval "case \"\$1\" in $ksel_arm) return 0 ;; esac"
+            return 1
+        }
+        for v in "$smp_def" "$rt_def"; do
+            if arm_covers "$v"; then
+                pass "detect_installed_module_ver whitelist matches '$v'"
+            else
+                fail "detect_installed_module_ver whitelist ($ksel_arm) does NOT match the default '$v' — the self-heal path cannot rescue it (contract §6)"
+            fi
+        done
     fi
 fi
 

@@ -799,17 +799,11 @@ CODESYS и CodeMeter (`codesyscontrol`, `codemeter*`) **не запускают�
 
 Этот раздел описывает процесс сборки собственного образа Linux для одноплатного компьютера СА-02м на базе **Allwinner A40i** (Starterkit SK-A40i-NANO-2E).
 
-> ### 🆕 Новый способ (с 2026-07): порт ядра на [`wirenboard/linux`](https://github.com/wirenboard/linux)
+> ### Ядро СА-02м собирается через Buildroot (Starterkit VM)
 >
-> Для СA-02м подготовлен полноценный порт на форк Wiren Board, что даёт:
-> - штатный `apt install linux-image-sa02m` вместо ручного `cp zImage`;
-> - автоматическое наследование WB upstream fixes для A40i;
-> - CI-сборку RT-варианта;
-> - обратную совместимость с текущим MPLC4/веб/CODESYS.
+> Флот несёт пару ядер **`6.1.0-rc6`** (SMP) и **`6.1.0-rc6-rt4`** (PREEMPT_RT), собранных `tools/buildroot/prepare-rt-docker-kernel.sh`. Это единственный путь сборки ядра в репозитории — процесс описан ниже.
 >
-> Пошаговая инструкция и артефакты: [**`kernel-port/README.md`**](kernel-port/README.md), тулинг: [**`tools/kernel-wb/`**](tools/kernel-wb/README.md), roadmap с обоснованием: [**`docs/WB_LINUX_FUTURE_FEATURES.md`**](docs/WB_LINUX_FUTURE_FEATURES.md).
->
-> Старый Buildroot-путь (Starterkit VM) описан ниже и сохраняется как fallback до полного тестирования нового ядра на реальном железе.
+> Задуманный в 2026-07 альтернативный порт на форк [`wirenboard/linux`](https://github.com/wirenboard/linux) (ядро 5.10.35, `.deb`-пакеты, CI-сборка) **до устройств не дошёл и удалён** — он собирал линию ядра, которой нет ни на одной плате. Каталоги `kernel-port/` и `tools/kernel-wb/` и их CI-workflow сняты с репозитория; история — в git. Что именно было урезано в том порте и почему — [`docs/WB_LINUX_FUTURE_FEATURES.md`](docs/WB_LINUX_FUTURE_FEATURES.md) (документ несостоявшегося порта, оставлен как справка).
 
 > ### Ядра RT/SMP с docker и USB-модемами (с 1.0.5.58)
 >

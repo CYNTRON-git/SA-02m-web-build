@@ -187,7 +187,7 @@ canonicalize_pair() {
 
     # 3. Altname collision guard. The kernel resolves altnames in the SAME name
     #    namespace as primary names (netdev_name_in_use -> netdev_name_node_lookup,
-    #    altname support since 5.5; this board runs 5.10.35), so renaming onto a
+    #    altname support since 5.5; every kernel this fleet runs is newer), so renaming onto a
     #    name somebody holds as an altname returns EEXIST. Conditional and
     #    observable: inert (one read-only `ip -d link show`) on a board that has
     #    no altnames, and its failure never aborts the rename that follows.

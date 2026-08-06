@@ -29,7 +29,8 @@
 # (RS-485-0 = ttyS0). Kernel-сообщения направлены на tty1 (виртуальный терминал
 # без физического output) — journalctl -b по-прежнему сохраняет весь лог.
 # Для отладки: SSH через Ethernet. USB gadget console (ttyGS0) требует
-# CONFIG_USB_GADGET/G_SERIAL/CONFIGFS в kernel — открытый TODO по kernel-port.
+# CONFIG_USB_GADGET/G_SERIAL/CONFIGFS в kernel — открытый TODO для сборки ядра
+# (tools/buildroot/prepare-rt-docker-kernel.sh).
 setenv bootargs console=tty1 loglevel=3 quiet root=/dev/mmcblk2p2 rootwait rw threadirqs panic=10
 
 mmc dev 1

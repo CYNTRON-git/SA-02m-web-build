@@ -102,7 +102,10 @@ done < <(find_kernel_debs "$KERNEL_DEB_DIR")
 
 if [ "${#KERNEL_DEBS[@]}" -eq 0 ]; then
 	echo "error: no linux-image-sa02m *.deb in $KERNEL_DEB_DIR" >&2
-	echo "  run: tools/kernel-wb/build-sa02m-kernel.sh sa02m" >&2
+	echo "  no in-tree producer: the .deb kernel pipeline (kernel-port/ +" >&2
+	echo "  tools/kernel-wb/) was removed — it built a 5.10.35 line no device" >&2
+	echo "  runs. See .ai-dev/notes/kernel-line.md. Supply the .deb yourself, or" >&2
+	echo "  use the zImage+modules path (tools/buildroot/)." >&2
 	exit 2
 fi
 
