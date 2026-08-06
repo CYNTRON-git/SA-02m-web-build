@@ -232,12 +232,14 @@ fi
 # Load DS3231 → system clock only if the year is plausible (2020–2035).
 # fake-hwclock.service already loaded fake-hwclock.data earlier; DS3231
 # overrides it when its time is valid and ≥ the fake-hwclock timestamp.
+# --utc is spelled on both calls: with no frame flag hwclock takes the format
+# from /etc/adjtime, a file this repo never writes (UTC rationale below).
 if [ -n "$HWC" ] && [ -c /dev/rtc1 ]; then
-  DS3231_STR=$("$HWC" --show --rtc /dev/rtc1 2>/dev/null | head -1)
+  DS3231_STR=$("$HWC" --show --utc --rtc /dev/rtc1 2>/dev/null | head -1)
   DS3231_YEAR=$(echo "$DS3231_STR" | awk '{print substr($1,1,4); exit}')
   if [ -n "$DS3231_YEAR" ] && [ "$DS3231_YEAR" -ge 2020 ] && \
      [ "$DS3231_YEAR" -le 2035 ] 2>/dev/null; then
-    if "$HWC" -s -f /dev/rtc1 >/dev/null 2>&1; then
+    if "$HWC" -s --utc -f /dev/rtc1 >/dev/null 2>&1; then
       HCTOSYS_DEVICE=rtc1
       logp "RTC: DS3231 loaded — $(date '+%Y-%m-%d %H:%M:%S') (year=${DS3231_YEAR})"
     fi
