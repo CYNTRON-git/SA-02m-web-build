@@ -938,9 +938,12 @@ nodered_fix_settings() {
 # (@node-red/runtime/locales/{en-US,ru}/runtime.json, keys
 # nodes.flows.started-flows and nodes.flows.missing-types). HONEST LIMIT: en
 # and ru are the two catalogues this fleet runs; node-red ships eight more
-# (de, es-ES, fr, ja, ko, pt-BR, zh-CN, zh-TW). A board in one of those is NOT
-# judged wrongly — it lands in the "logging but never said started" branch and
-# is reported as a FAILURE, which is the safe direction.
+# (de, es-ES, fr, ja, ko, pt-BR, zh-CN, zh-TW). A HEALTHY board in one of those
+# IS judged wrongly — its start marker matches nothing, so it lands in the
+# "logging but never said started" branch and is reported as a FAILURE. The
+# error is one-directional: never a false success, only a false failure. That
+# is the safe direction, not an absence of error. Pinned by the de/ja fixture
+# in scripts/dev/test-nodered-ctl.sh.
 #
 #   0 = flows started        1 = a named stop condition was logged
 #   2 = no evidence at all (no journalctl, or the unit logged nothing)

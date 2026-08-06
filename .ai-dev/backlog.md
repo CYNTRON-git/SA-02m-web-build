@@ -7,6 +7,16 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-08-06 **[LOW] `run.test.mjs` does not pin the regex-escaping in
+  `coversToRegex`.** Dropping the escape at `.ai-dev/quality/run.mjs:64` leaves
+  all 15 table assertions passing while behaviour really changes — `install.sh`
+  would then also match `installXsh`, because the `.` stops being literal.
+  Fail-safe in both directions (an unescaped metachar only widens the match, and
+  widening only makes MORE rows run), so it is low severity — but it is a hole
+  in a suite whose whole job is to pin this function. One table row closes it.
+  Found by the reviewer as a fourth mutation during the backlog sweep, after the
+  builder's own three were confirmed.
+
 - [RESOLVED] 2026-08-06 **[was MED, FILED IN ERROR] `lib_rtc.sh` write path
   still uses local time.** **Wrong — the fix was already on `main` as `fbeac21`
   (PR #96) when this was filed.** The Orchestrator grepped `lib_rtc.sh` while
@@ -40,28 +50,38 @@ audit).
   midnight. Only reachable when `date -d` is unavailable (busybox), and the
   DS3231 day-of-week register is never read back by our read path or the kernel
   driver. Cosmetic.
-- [OPEN] 2026-08-06 **[LOW] `nodered-pin-consistency` can print `ok` for a
-  removed marker.** `.ai-dev/quality/checks/nodered-pin-consistency.sh:157`
-  greps the whole file, and `etc/sa02m-web-service-ctl.sh:936` mentions
-  «Запущены потоки» in a *comment* — so deleting the marker from the matcher at
-  `:955` still satisfies the gate, which then prints `…matches the started-flows
-  marker in both en and ru` at exit 0. The same mutation on `scripts/07-nodered.sh`
-  IS caught, because its ru literal is code-only; that asymmetry is the proof.
-  Not a coverage hole — `nodered-ctl-install` catches the behaviour with two
-  named assertions — but the gate's own message is not true. Scope the grep to
-  uncommented lines. Reviewer M-A on the nodered-offline change.
+- [RESOLVED] 2026-08-06 **[LOW] `nodered-pin-consistency` can print `ok` for a
+  removed marker.** Fixed: check 7 now greps UNCOMMENTED lines only (and fails
+  on a file with no executable lines). Driven to failure — with the ru spelling
+  deleted from the ctl matcher the old gate exits 0 with `ok`, the new one
+  exits 1. Was: `nodered-pin-consistency.sh:157` grepped the whole file while
+  `etc/sa02m-web-service-ctl.sh:936` mentions «Запущены потоки» in a *comment*,
+  so deleting the marker from the matcher still satisfied the gate, which then
+  printed `…matches the started-flows marker in both en and ru` at exit 0. The
+  same mutation on `scripts/07-nodered.sh` WAS caught, its ru literal being
+  code-only — that asymmetry was the proof. Never a coverage hole
+  (`nodered-ctl-install` pins the behaviour with two named assertions); the
+  gate's own message was what lied. Reviewer M-A on the nodered-offline change.
 - [OPEN] 2026-08-06 **[LOW] `docs/threat-model.md` has no entry for port 1880.**
   The offline Node-RED work moves a Node-RED footprint onto air-gapped and
   imaged boards, and it composes with the model's existing "no device-side port
   allow-list" note for the cloud tunnel. Plan `nodered-offline.md` §11 S5
-  committed to filing this. Reviewer M-B.
+  committed to filing this. Reviewer M-B. **Deferred by the 2026-08-06 backlog
+  sweep, deliberately:** a 1880 row is threat *reasoning*, not a mechanical edit
+  — Node-RED ships without `adminAuth` and it composes with the already-partial
+  cloud-tunnel allow-list gap — so it belongs to the `threat-discovery`
+  side-tool, not a text sweep.
 - [OPEN] 2026-08-06 **[LOW] Three nits in the nodered-offline change.**
-  (a) `etc/sa02m-web-service-ctl.sh:942` says a non-en/ru board is "NOT judged
-  wrongly" while its own next clause says it is — judged wrongly but safely;
-  reword. (b) `scripts/07-nodered.sh:177,294` still hardcode
+  **(a) and (c) fixed 2026-08-06; (b) is the only residual.**
+  (a) DONE — `etc/sa02m-web-service-ctl.sh:942` now says a healthy non-en/ru
+  board IS judged wrongly, one-directionally (false failure, never false
+  success). (c) DONE — `scripts/dev/test-nodered-ctl.sh` gained a de/ja fixture
+  pinning exactly that (strings verbatim from node-red 4.1.13
+  `@node-red/runtime/locales/{de,ja}/runtime.json`); it is non-vacuous — adding
+  the de spelling to the ctl matcher makes the suite exit 1.
+  (b) OPEN — `scripts/07-nodered.sh:177,294` still hardcode
   `/usr/lib/node_modules` where the ctl now weighs all global roots — fail-closed
-  and install-time only, so narrowing rather than a defect. (c) No de/ja journal
-  fixture pins the honest limit that a non-en/ru locale degrades to failure.
+  and install-time only, so narrowing rather than a defect.
   Reviewer L-A/L-B/L-C.
 - [OPEN] 2026-08-06 **[LOW] `etc/sa02m-web-service-ctl.sh` is now 1414 lines.**
   +174 in the nodered work. The reviewer names a decompose seam at `:782-1247`
@@ -83,70 +103,131 @@ audit).
   endangered — the repair simply does not happen on such a conf. The mirror of
   the CIDR-in-`address` gap already closed. Reviewer N4 on the net-and-log
   hygiene change.
-- [OPEN] 2026-08-06 **[LOW] `extract_guard`'s comment over-claims what it
-  pins.** `scripts/dev/test-iface-gw-repair.sh` says the guard pins "the temp
-  file beside the conf"; it pins only the string. Moving the temp to `$TMPDIR`
-  still passes the suite — which would silently break `mv`'s same-filesystem
-  atomicity, the property the write path depends on. Either assert the location
-  or correct the comment. Reviewer N5, same change.
-- [OPEN] 2026-08-06 **[LOW] Broken inline code span in `docs/deployment.md:4-5`.**
-  The span wraps mid-path with no trailing space, so markdown renders
-  `.ai-dev/procedures/ deployment.md` — a broken pointer in the file that
-  forbids improvising a deploy. Pre-existing; deliberately left out of the
-  full-install runbook diff (PR #90) to keep that change scoped. Found by two
-  independent reviewers.
-- [OPEN] 2026-08-05 **[LOW] Default device password hard-coded in the imaging
-  fallback.** `tools/imaging/make-image.sh:20` defaults `SSH_PASS` to `cyntron`
-  when `SA02M_PASS` is unset, so a build host without the key silently
-  authenticates with a well-known credential. Untouched by the boot.scr format
-  fix (surfaced by its review, out of that diff's scope); decide whether to drop
-  the default and require an explicit `SA02M_PASS`.
-- [OPEN] 2026-08-05 **[LOW] x-bit-dependent invocation documented for the rootfs
-  builder.** `tools/debian-rootfs/README.md:31` documents
-  `sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh`, which fails on a fresh
-  clone because tracked `*.sh` are `100644` (110 of 115). Same class as the
-  blocking finding fixed in the boot.scr format work, on a script that change
-  does not touch — invoke via `bash` there too.
+- [RESOLVED] 2026-08-06 **[LOW] `extract_guard`'s comment over-claims what it
+  pins.** Fixed by asserting the LOCATION, not by softening the claim: the
+  comment now says it pins the suffix, and a named check below `extract_guard`
+  pins the `mktemp "$conf.sa02m-gwtmp.XXXXXX"` template. Driven to failure —
+  with the template moved to `$TMPDIR` the old suite passes, the new one exits 1
+  with the cross-filesystem explanation; the braced `${conf}` spelling still
+  passes (no cry-wolf). `scripts/dev/test-iface-gw-repair.sh`, reviewer N5.
+- [RESOLVED] 2026-08-06 **[LOW] Broken inline code span in `docs/deployment.md:4-5`.**
+  Fixed by rewrapping the paragraph so the path sits on one line. Scanned all
+  146 tracked `*.md` for the same shape (fenced blocks stripped, then split on
+  backticks so odd segments are spans): **23 spans wrap across a line**, and
+  after this fix **none** breaks mid-token — every one joins where a space
+  belongs. So this was the only genuine instance in the tree. Was: renders
+  `.ai-dev/procedures/ deployment.md`, a broken pointer in the file that forbids
+  improvising a deploy. Found by two independent reviewers.
+- [OPEN] 2026-08-05 **[MED — NEEDS AN OPERATOR DECISION] Default device password
+  hard-coded in the imaging fallback.** `tools/imaging/make-image.sh:20` defaults
+  `SSH_PASS` to `cyntron` when `SA02M_PASS` is unset, so a build host without the
+  key silently authenticates with a well-known credential. Untouched by the
+  boot.scr format fix (surfaced by its review, out of that diff's scope).
+  **Re-rated [LOW] → [MED] on 2026-08-06** (sweep reviewer, advisory A6): it is
+  a literal default credential in a committed artifact — the one swept item
+  carrying a hard security floor. The proposed remedy is one line (drop the
+  default, require an explicit `SA02M_PASS`) but it breaks any build host
+  relying on the fallback, so it is an **Operator call, not a sweep call**. Code
+  deliberately unchanged.
+- [RESOLVED] 2026-08-05 **[LOW] x-bit-dependent invocation documented for the rootfs
+  builder.** Fixed in both homes: `tools/debian-rootfs/README.md:31` and the
+  script's own `Usage:` header now say `sudo bash tools/…`, matching
+  `docs/contracts/uboot-boot-script.md` and the sibling `pack-sa02m-image.sh`
+  line. Was: `sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh`, which fails on
+  a fresh clone because tracked `*.sh` are `100644` (all but five).
+  **Residual filed separately below** — nine other 644 scripts are still
+  documented with `./`.
+
+- [OPEN] 2026-08-06 **[LOW] Bulk Russian code comments in shell scripts, against
+  invariant 5.** `PROTOCOL.md` invariant 5 puts code comments on the
+  machine-facing axis — always English; `docLanguage: ru` reaches only `docs/`
+  and `README.md`. Measured over tracked non-`www/` `*.sh` (116 files, whole-line
+  comments, shebangs excluded): **1273 Cyrillic comment lines of 3464**. Worst:
+  `scripts/01-system.sh` 159/198, `scripts/02-network.sh` 115/221,
+  `etc/fix-eth.sh` and its `firstboot-overlay` twin 71/81 each,
+  `scripts/07-nodered.sh` 62/70. Pre-existing debt, not introduced by any recent
+  change. Surfaced during the 2026-08-06 backlog sweep, whose own two new blocks
+  were written in English after the reviewer's ruling — the rest is untouched
+  because translating it is a different change. Same shape as the nine-`./…`
+  entry below: mechanically checkable, so a gate could pin it (new/changed
+  comment lines must be Latin) without a boil-the-ocean translation.
+
+- [OPEN] 2026-08-06 **[LOW] Nine more scripts documented with an x-bit-dependent
+  `./` invocation.** Same class as the rootfs-builder entry above, quantified
+  while fixing it: `etc/storage-mount.sh`, `scripts/03-webserver.sh`,
+  `scripts/update-www-only.sh`, `tools/debian-rootfs/prepare-sa02m-flash-usb.sh`,
+  and under `tools/imaging/`: `cleanup-donor.sh`, `flash-receiver.sh`,
+  `make-image.sh`, `prepare-flash-media.sh`, `restore-donor-ssh.sh` — all
+  `100644` in git yet documented as `./…` in markdown. Only `tools/kernel-wb/*` (100755) are legitimately invoked that way.
+  Left out of the backlog sweep deliberately: it is a ten-file doc edit across
+  unrelated runbooks, better done as one scoped change with a gate pinning it
+  (mode-vs-invocation is mechanically checkable).
 - [OPEN] 2026-08-05 **[LOW] `compress-bin.sh` patch step swallows failures.**
   `tools/imaging/compress-bin.sh:177-210` defines a watchdog-only `patch_image()`
   that returns 0 on failure. Verified during the boot.scr review NOT to carry the
   boot.scr fail-open class (it never generated `boot.scr`), but the same
   swallow-the-error style remains.
-- [OPEN] 2026-08-05 **[LOW] Stale bootargs comments after the payload default
-  change.** `kernel-port/overlay/arch/arm/boot/dts/sun8i-r40-sa02m.dts:77` and
-  `scripts/01-system.sh:112` both describe bootargs as carrying `console=tty1`
-  "generated from etc/boot.cmd.sa02m" — no longer true of the default payload
-  (now `etc/boot.cmd.sa02m.min`). Outside the format fix's scope.
-- [OPEN] 2026-08-05 **[MED] Direct sysfs writes of a watchdog timeout above the
-  16s cap — same defect class, different mechanism.**
-  `etc/sa02m-watchdog-feed.sh:45-46` and `tools/imaging/ssh-flash-safe.sh:150` do
-  `echo 30 > /sys/class/watchdog/watchdog0/timeout` — 30s against a 16s-capped
-  sun4i-wdt, swallowed by `|| true`, and the feeder's own comment acknowledges
-  the 16s Allwinner default. Not a systemd directive, so the `watchdog-cap` gate
-  does not see it — a named limit of that guard, not an oversight. Mitigating
-  context: the feeder is the very unit the `sa02m-watchdog.conf` policy masks and
-  disables, so this is likely dead on a correctly-installed device — verify that
-  before deciding fix-vs-delete. Surfaced by the builder during the watchdog-cap
-  change; deliberately left out of that diff (plan §14 scope).
+- [RESOLVED] 2026-08-06 **[LOW] Stale bootargs comments after the payload default
+  change.** Both rewritten to the current truth: the default payload
+  `etc/boot.cmd.sa02m.min` sets no `console=` at all (so default images boot with
+  no kernel console anywhere), the opt-in `etc/boot.cmd.sa02m` sets
+  `console=tty1`, and neither ever names a ttyS — which is the property the
+  empty `chosen{}` node and the getty masking both exist to hold. Comment-only,
+  no behaviour change; `bash -n` green on `scripts/01-system.sh`, no `dtc` on
+  this box for the `.dts`. Was: both claimed `console=tty1` "generated from
+  etc/boot.cmd.sa02m".
+- [RESOLVED] 2026-08-06 **[was MED, ALREADY FIXED WHEN RE-READ] Direct sysfs
+  writes of a watchdog timeout above the 16s cap.** **Not fixed by this sweep —
+  fixed by `66212b3` (PR #87) and verified against `origin/main` today.** Both
+  writers now ask for `min(30, max_timeout)` and skip the write when
+  `max_timeout` is unreadable (`etc/sa02m-watchdog-feed.sh:49-57`,
+  `tools/imaging/ssh-flash-safe.sh:153-158`), and `watchdog-cap` pin 8 gates
+  exactly this: no numeric literal above the cap, and every file writing the
+  path must also read `max_timeout`. The entry was filed mid-change against the
+  pre-fix text and never re-read. The one live residue is a cleanup question,
+  not a defect: the feeder is the unit `sa02m-watchdog.conf` masks and disables,
+  so it may be dead code on a correctly-installed device — re-file if that
+  matters, and note `watchdog-cap`'s `WD_SYSFS_MIN_SITES=2` would need lowering
+  with it.
 - [OPEN] 2026-08-05 **[LOW] `watchdog-cap` gate has no meta-test and a loose
-  non-vacuity floor.** Its sweep non-vacuity check is a fixed `>=10` against a
-  live count of 15, so dropping one sweep root still passes. Also the widened
+  non-vacuity floor.** **Floor half fixed 2026-08-06; the meta-test half is the
+  residual, and the original premise needed correcting.** The sweep floor is now
+  DERIVED as well as counted: every enumerated writer that actually sets one of
+  the keys must also be REACHED by the sweep, so a dropped/renamed root fails by
+  name. Correction to the premise: "dropping one sweep root still passes" is
+  **not** reproducible on today's tree — only `etc` and `tools` contribute swept
+  files, and pin 8's `WD_SYSFS_MIN_SITES=2` incidentally covers both, so a drop
+  today fails with pin 8's *misleading* message ("the writers moved") rather
+  than silently. What was really wrong is that coupling: lower
+  `WD_SYSFS_MIN_SITES` (the feeder is a delete candidate — see the RESOLVED
+  sysfs entry above) and the hole becomes real. Demonstrated: with `etc` dropped
+  AND `WD_SYSFS_MIN_SITES=1` the old gate exits 0, the new one exits 1 naming
+  `etc/systemd/sa02m-watchdog.conf`. Still OPEN: the widened
   value regex can absorb a following English word on a prose line (fail-closed
   cry-wolf, reachable via the swept `tools/system-hardening/README.md`), and the
   gate has no meta-test — matching its two sibling gates
   (`iface-naming-contract`, `kernel-policy-contract`), so this is a shared shape,
   not a regression. Reviewer advisories A5–A7 on the watchdog-cap change.
-- [OPEN] 2026-08-05 **[MED] `covers` directory-prefix entries match nothing under
-  `--touched`.** `.ai-dev/quality/run.mjs` `coversToRegex("etc/")` compiles to
-  `/^etc\/$/`, so a bare directory prefix matches the directory string itself and
-  never a file inside it — `fileMatchesCovers(["etc/systemd/x.conf"], ["etc/"])`
-  is `false`. Repo-wide: `etc/`, `scripts/`, `tools/imaging/`,
-  `www/network_config/static/js/`, `opt/sa02m-flasher/` all behave this way, so
-  the Builder's `--touched` subset silently under-runs (observed: 2 rows instead
-  of the 4 the touched set implied). `"tools/imaging/**"` matches correctly. Ship
-  is unaffected — the full `build`/`review` beats run everything. Fix needs a
-  `run.test.mjs` case pinning both the prefix and `**` forms. Found by the
-  builder + reviewer during the watchdog-cap work.
+- [RESOLVED] 2026-08-06 **[MED] `covers` directory-prefix entries match nothing under
+  `--touched`.** Fixed in `.ai-dev/quality/run.mjs` `coversToRegex()`: a pattern
+  with no glob metacharacter now compiles as a PREFIX with a `/` boundary
+  (`"etc/"` → `/^etc(\/.*)?$/`) instead of literally (`/^etc\/$/`), which is the
+  semantics `tools.json:9` documents. The boundary keeps `"install.sh"` from
+  matching `install.sh.bak` and an exact file path from matching its own
+  `.orig`; the glob branch is untouched. Pinned by a 15-case table in
+  `.ai-dev/quality/run.test.mjs` (row `quality-runner-self-test`) covering the
+  prefix form, the `/` boundary, exact paths, `**` and single-`*`. Driven to
+  failure three ways: the pre-fix `coversToRegex` → 5 assertions fail; the
+  prefix without its `/` boundary → 3 fail; `*` allowed to cross `/` → 1 fails.
+  Effect measured on the fixing branch itself: `iface-naming-contract` and
+  `kernel-policy-contract` went from SKIP (a false green — a skipped row prints
+  PASS) to RUN. **The "vendored, do NOT patch locally" premise was wrong** and
+  is withdrawn: `git log -- .ai-dev/quality/run.mjs` shows `7882252` (#62), a
+  merged local patch to this exact file that also added `run.test.mjs` and its
+  registry row. The file is ours; the practice is patch-and-pin. Was: found by
+  the builder + reviewer during the watchdog-cap work, filed twice (see the
+  2026-07-22 entry) and mis-triaged as NOT A BUG in the 2026-08-06 sweep before
+  the reviewer refuted the premise.
 - [OPEN] 2026-08-05 **[LOW] `autorun.sh` / `autorun-fel.sh` twin drift is
   unpinned.** The two files are byte-identical today and every change so far has
   carried the same hunk to both, but nothing enforces it — unlike the
@@ -222,15 +303,19 @@ audit).
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
   the 1.0.5.46 tests pin backoff/insurance behaviour but not the loop
   itself. Seed for the bridge decompose above. Audit 2026-07-22 (A9).
-- [OPEN] 2026-07-22 **[LOW, vendored→downstream-feedback] `run.mjs
-  --touched` vacuous on this repo.** Registry `covers` are bare path
-  prefixes but `coversToRegex` (`.ai-dev/quality/run.mjs:48`) anchors
-  `^…$` with no prefix semantics — no touched file ever matches, every
-  scoped row silently skips (false green); plus the `git status --short`
-  fallback (:147) trims the whole output before `slice(3)`, mangling the
-  first filename. Vendored framework file — do NOT patch locally (D8/D9
-  precedent); route as downstream-feedback on the next protocol upgrade.
-  Until then run the FULL beat, never `--touched`. Builder 1.0.5.46.
+- [RESOLVED] 2026-07-22 **[LOW] `run.mjs --touched` vacuous on this repo.**
+  **Both named halves are now fixed, by different changes.** (1) The
+  `git status --short` fallback trimming the whole output before `slice(3)` and
+  mangling the first filename — fixed by **`7882252` (#62)**, not by this sweep;
+  the entry had carried it as live ever since. (2) `coversToRegex` anchoring
+  `^…$` with no prefix semantics, so every scoped row silently skipped — fixed
+  2026-08-06, see the RESOLVED `covers` entry above. The two entries were **not**
+  duplicates: this one named two defects, one of which the other never mentioned.
+  The "vendored framework file — do NOT patch locally" line was wrong (#62 is a
+  merged local patch to that exact file, with a local self-test) and is withdrawn;
+  the sibling D8/D9 entry is about vendored **doc pointers** and stands unchanged.
+  `--touched` is now trustworthy; the full beat remains the ship gate by design.
+  Builder 1.0.5.46.
 - [OPEN] 2026-07-22 **[LOW] HIG font-floor gate residual.** The ui-layout
   driver measures the 11px HIG font floor report-only; gating it is a
   one-line change + a seeded `FONT_WHITELIST` (mirrors the touch/contrast

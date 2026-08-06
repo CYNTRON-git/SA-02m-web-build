@@ -107,10 +107,12 @@ done
 # Убрать все wants-symlinks от предыдущих Armbian/upgrade поколений
 rm -f /etc/systemd/system/getty.target.wants/getty@ttyS*.service \
       /etc/systemd/system/serial-getty.target.wants/serial-getty@ttyS*.service 2>/dev/null || true
-# systemd-getty-generator тоже создаёт serial-getty@ttyS0.service при
-# console=ttyS0 в cmdline. После смены bootargs на console=tty1 (см.
-# etc/boot.cmd.sa02m) generator не будет запускать serial-getty на ttyS0 —
-# но mask-состояние остаётся страховкой на случай отката bootargs.
+# systemd-getty-generator also creates serial-getty@ttyS0.service when the
+# cmdline carries console=ttyS0. No payload of ours puts it there: the default
+# (etc/boot.cmd.sa02m.min) sets no console= at all, the opt-in
+# (etc/boot.cmd.sa02m) sets console=tty1 — see
+# docs/contracts/uboot-boot-script.md. So the generator raises no serial-getty
+# on ttyS0; the mask stays as insurance against a bootargs rollback.
 
 # ttyGS0: пока kernel без USB_GADGET — mask, чтобы systemd не пытался запускать
 # getty на несуществующем устройстве. При пересборке ядра — раскомментировать

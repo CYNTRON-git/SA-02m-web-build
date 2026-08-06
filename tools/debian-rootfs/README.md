@@ -28,7 +28,7 @@ sudo apt install debootstrap qemu-user-static binfmt-support \
 ## Быстрый старт
 
 ```bash
-sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh \
+sudo bash tools/debian-rootfs/create-sa02m-rootfs.sh \
   --variant sa02m-1eth \
   --ip 192.168.1.136 \
   --pass cyntron \
