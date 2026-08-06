@@ -154,10 +154,20 @@ if [ -f "$UNIT" ]; then
 fi
 for reader in "$CTL" "$S07"; do
     [ -f "$reader" ] || continue
-    if grep -q 'Started flows' "$reader" && grep -q 'Запущены потоки' "$reader"; then
-        pass "$reader matches the started-flows marker in both en and ru"
+    # EXECUTABLE lines only. The ctl's own LANGUAGE note names «Запущены потоки»
+    # in prose (the comment block above nodered_flows_healthy), so a whole-file
+    # grep kept printing `ok` after the spelling had been deleted from the
+    # matcher — the check passed on a comment while the verdict was English-only
+    # again. scripts/07-nodered.sh spells its ru literal in code only, which is
+    # why the same mutation was caught there and not here.
+    code=$(grep -vE '^[[:space:]]*#' "$reader")
+    if [ -z "$code" ]; then
+        fail "$reader has no uncommented lines — emptied or unreadable; this gate cannot judge it"
+    elif printf '%s\n' "$code" | grep -q 'Started flows' \
+      && printf '%s\n' "$code" | grep -q 'Запущены потоки'; then
+        pass "$reader matches the started-flows marker in both en and ru (uncommented lines only)"
     else
-        fail "$reader lost one of the started-flows spellings (en 'Started flows' / ru 'Запущены потоки') — on a ru board the verdict silently stops firing"
+        fail "$reader lost one of the started-flows spellings (en 'Started flows' / ru 'Запущены потоки') from its executable code — on a ru board the verdict silently stops firing"
     fi
 done
 # The marker that never existed: 'Flows stopped due to missing node types' is an

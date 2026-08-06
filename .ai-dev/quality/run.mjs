@@ -42,11 +42,28 @@ export function resolveRegistry(root, registryPath) {
   return fs.existsSync(projectTools) ? projectTools : beside;
 }
 
-// Convert a project-root-relative glob pattern to a regex for matching.
-// Supports ** (any depth), * (within one path segment). A malformed pattern
-// returns null — the caller fails safe to always-run.
+// Convert a project-root-relative `covers` pattern to a regex for matching.
+// tools.json documents the field as "path prefixes/globs", so both forms are
+// supported: globs with ** (any depth) and * (within one path segment), and
+// bare path prefixes. A malformed pattern returns null — the caller fails safe
+// to always-run.
+//
+// A pattern carrying no glob metacharacter is a PREFIX, not an exact path. It
+// used to compile literally, so `"etc/"` became /^etc\/$/ — a regex matching
+// the directory string itself and no file under it. Every bare-prefix row (18
+// entries across the registry, e.g. iface-naming-contract and
+// kernel-policy-contract on `"etc/"`) therefore skipped under `--touched` no
+// matter what the diff touched: a false green, since a skipped row still
+// prints PASS. The boundary is a `/`, so `"install.sh"` still matches only
+// itself and never `install.sh.bak`, and an exact file path keeps working.
+// Direction of the change is fail-safe: it can only make MORE rows run.
 export function coversToRegex(pattern) {
   try {
+    if (!pattern.includes("*") && !pattern.includes("?")) {
+      const trimmed = pattern.replace(/\/+$/, "");
+      const literal = trimmed.replace(/[\\.[\]{}()+^$|]/g, "\\$&");
+      return new RegExp("^" + literal + "(/.*)?$");
+    }
     let escaped = "";
     let i = 0;
     while (i < pattern.length) {

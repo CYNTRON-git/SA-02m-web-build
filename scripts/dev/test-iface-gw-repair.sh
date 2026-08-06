@@ -124,7 +124,7 @@ extract_guard() {
     grep -q 'same_ipv4_subnet' "$T/fn.sh" || return 1
     grep -q 'cmp -s' "$T/fn.sh" || return 1
     grep -q 'sa02m-gwbak' "$T/fn.sh" || return 1
-    grep -q 'sa02m-gwtmp' "$T/fn.sh" || return 1   # temp file beside the conf (same-fs rename)
+    grep -q 'sa02m-gwtmp' "$T/fn.sh" || return 1   # the temp-file SUFFIX (its location is pinned separately, below)
     grep -q 'mv -f' "$T/fn.sh" || return 1         # atomic replace, not an in-place truncate
     grep -q 'nlines' "$T/fn.sh" || return 1        # the read-back post-condition (re-reads the written file)
     # and the sandbox retarget must have taken, or this test would edit /etc
@@ -133,6 +133,18 @@ extract_guard() {
 }
 if ! extract_guard; then
     echo "FAIL  could not extract a complete, sandboxed ensure_gw_dns from $SRC (did the function or its markers move?)"
+    exit 1
+fi
+
+# The temp file must be created BESIDE the conf, and only the mktemp TEMPLATE
+# says so. `grep sa02m-gwtmp` above pins the name; moving the template to
+# $TMPDIR keeps that name and silently loses the property the whole write path
+# rests on — mv across a filesystem boundary is copy+unlink, not rename(2), so
+# an interrupted replace can leave a truncated eth0.conf. Nothing else in this
+# suite can see that change: every case runs in one $TMPDIR-backed sandbox, so
+# same-filesystem holds by accident there and the atomicity loss is invisible.
+if ! grep -qE 'mktemp "\$\{?conf\}?\.sa02m-gwtmp' "$T/fn.sh"; then
+    echo "FAIL  ensure_gw_dns no longer builds its temp file from \$conf (expected mktemp \"\$conf.sa02m-gwtmp.XXXXXX\") — a template rooted anywhere else makes the mv a cross-filesystem copy+unlink, and the atomic replace is gone"
     exit 1
 fi
 

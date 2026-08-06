@@ -201,7 +201,29 @@ done
 # Non-vacuous both ways: the SWEEP itself must resolve the shipped writers. A
 # dead sweep (missing grep -I, renamed roots) would otherwise fall back to the
 # enumerated union and pass silently — the closed-world behaviour this replaced.
-if [ "${#swept_files[@]}" -lt 10 ]; then
+#
+# The count floor alone is LOOSE: it is a fixed number well under the live
+# count, so a whole dropped sweep root slides under it. Today a drop is caught
+# anyway, but only by ACCIDENT: just two roots contribute swept files (etc and
+# tools), and pin 8's WD_SYSFS_MIN_SITES=2 happens to have one sysfs write site
+# in each, so it fires first — naming the wrong cause ("the writers moved").
+# Lower that floor legitimately (the feeder is a delete candidate) and the drop
+# goes silent. So the floor here is DERIVED as well as counted: every ENUMERATED
+# writer that actually sets one of the keys must also be REACHED by the sweep.
+# Dropping `etc` from SWEEP_ROOTS then fails by name, independently of pin 8.
+unswept=""
+for f in "${FILES[@]}"; do
+    [ -f "$f" ] || continue
+    grep -qIE '(Runtime|Reboot|Shutdown)WatchdogSec=' "$f" 2>/dev/null || continue
+    case " ${swept_files[*]:-} " in
+        *" $f "*) ;;
+        *) unswept="$unswept $f" ;;
+    esac
+done
+
+if [ -n "$unswept" ]; then
+    fail "the sweep over ${SWEEP_ROOTS[*]} does not reach enumerated watchdog writer(s):$unswept — a sweep root was dropped or renamed, so a NEW writer beside them would go unjudged"
+elif [ "${#swept_files[@]}" -lt 10 ]; then
     fail "the repo sweep over ${SWEEP_ROOTS[*]} resolved only ${#swept_files[@]} file(s) — expected >=10; the sweep roots or the grep drifted, update this gate"
 elif [ "$checked" -lt 10 ]; then
     fail "only $checked watchdog value(s) extracted across ${#scan_files[@]} files — expected >=10; the extraction pattern drifted, update this gate"

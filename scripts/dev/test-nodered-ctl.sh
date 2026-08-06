@@ -359,6 +359,27 @@ printf '%s\n' 'Node-RED[7596]: [info] Потоки остановлены в б�
 nodered_flows_healthy nodered.service '-5 min'; rc=$?
 [ "$rc" -eq 1 ] && ok "ru safe-mode ⇒ unhealthy (1)" || bad "ru safe mode returned $rc"
 
+echo
+echo "── nodered_flows_healthy — the OTHER eight catalogues (the honest limit) ──"
+# The ctl matches en and ru only. node-red ships eight more runtime catalogues,
+# and a board running one of them is judged WRONGLY — but one-directionally:
+# a HEALTHY de/ja board reports FAILURE (3 at the end of the poll window), never
+# a false success. This pins that claim instead of leaving it as prose in the
+# ctl's LANGUAGE note. Strings are verbatim from node-red 4.1.13
+# @node-red/runtime/locales/{de,ja}/runtime.json, key nodes.flows.started-flows.
+printf '%s\n' \
+  'Node-RED[7596]: 6 Aug 07:37:32 - [info] Flows sind gestartet' >"$T/journal.txt"
+nodered_flows_healthy nodered.service '-5 min'; rc=$?
+[ "$rc" -eq 3 ] && ok "de «Flows sind gestartet» ⇒ 3 — a healthy de board reads as FAILURE, never as success" \
+                || bad "a HEALTHY de-locale board returned $rc; only 3 (false FAILURE) is the accepted degradation — 0 would mean an unpinned marker slipped in, 1 a wrong verdict"
+
+printf '%s\n' \
+  'Node-RED[7596]: 6 Aug 07:37:32 - [info] フローを開始しました' >"$T/journal.txt"
+nodered_flows_healthy nodered.service '-5 min'; rc=$?
+[ "$rc" -eq 3 ] && ok "ja 「フローを開始しました」 ⇒ 3 — same one-directional degradation" \
+                || bad "a HEALTHY ja-locale board returned $rc, want 3"
+
+echo
 # The locale pin is the other half of B1: our unit must fix the runtime's log
 # language, or a board we installed inherits the system locale.
 if grep -qE '^Environment=LC_ALL=' etc/systemd/system/nodered.service; then

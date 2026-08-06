@@ -4,7 +4,11 @@
 # (аналог WB create_rootfs.sh, но с linux-image-sa02m + install.sh).
 #
 # Usage:
-#   sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh [options]
+#   sudo bash tools/debian-rootfs/create-sa02m-rootfs.sh [options]
+#
+# Through the interpreter, not by path: nearly every *.sh in this repo is
+# tracked with mode 644, this one included, so `./…` fails with Permission
+# denied on a fresh clone. Rule: docs/contracts/uboot-boot-script.md.
 #
 # Options:
 #   --output DIR           каталог rootfs (default: ~/build/sa02m-bullseye-rootfs)
