@@ -152,6 +152,66 @@ SA02M_CLEAN_MARKER=/var/lib/sa02m-clean-shutdown
   fi
 ) &
 
+# ── MAC: постоянные адреса из SID (eFUSE) ──────────────────────────────────
+# У платы нет аппаратного MAC: DT-ячейки nvmem у &emac/&gmac закомментированы,
+# а u-boot подставляет в local-mac-address СЛУЧАЙНЫЙ адрес при каждой загрузке
+# (видно в /proc/device-tree/soc/ethernet@*/local-mac-address). Следствия:
+#   • MPLC Protect выводит SystemKey из MAC → Request key «плавает», и выданная
+#     лицензия становится недействительной после первой же перезагрузки;
+#   • стенд/учёт не могут опознать плату между прогонами.
+# SID (sunxi-sid0) — eFUSE процессора: уникален для каждого кристалла и не
+# меняется, поэтому MAC считаем из него. Адрес постоянен для платы и уникален
+# в партии. eth0 — чётный последний байт, eth1 = eth0 + 1 (пары плат не
+# пересекаются). Явный override — SA02M_MAC_ETH0/ETH1 в /etc/sa02m-mac.conf.
+SA02M_SID_NVMEM=/sys/bus/nvmem/devices/sunxi-sid0/nvmem
+
+sa02m_mac_from_sid() {
+  local sid_hex b2 b3 b4 b5
+  [ -r "$SA02M_SID_NVMEM" ] || return 1
+  sid_hex=$(od -An -tx1 -N16 "$SA02M_SID_NVMEM" 2>/dev/null | tr -d ' \n')
+  [ ${#sid_hex} -eq 32 ] || return 1
+  # последние 4 байта SID (word3) уникальны для кристалла
+  b2=${sid_hex:24:2}; b3=${sid_hex:26:2}; b4=${sid_hex:28:2}; b5=${sid_hex:30:2}
+  case "$b2$b3$b4$b5" in 00000000|ffffffff) return 1 ;; esac
+  b5=$(printf '%02x' $(( 0x$b5 & 0xfe )))   # чётный: eth1 = +1 без пересечений
+  printf '02:53:%s:%s:%s:%s\n' "$b2" "$b3" "$b4" "$b5"
+}
+
+sa02m_mac_next() {   # 02:53:aa:bb:cc:dd → 02:53:aa:bb:cc:(dd+1)
+  local mac=$1 last
+  last=$(printf '%02x' $(( 0x${mac##*:} + 1 )))
+  printf '%s:%s\n' "${mac%:*}" "$last"
+}
+
+sa02m_mac_apply() {
+  local eth0_mac="" eth1_mac="" iface want cur
+  if [ -f /etc/sa02m-mac.conf ]; then
+    # shellcheck source=/dev/null
+    . /etc/sa02m-mac.conf 2>/dev/null || true
+  fi
+  eth0_mac=${SA02M_MAC_ETH0:-$(sa02m_mac_from_sid || true)}
+  if [ -z "${eth0_mac:-}" ]; then
+    logp "MAC: SID недоступен и override не задан — адреса не трогаем"
+    return 1
+  fi
+  eth1_mac=${SA02M_MAC_ETH1:-$(sa02m_mac_next "$eth0_mac")}
+  for iface in eth0 eth1; do
+    [ -e "/sys/class/net/$iface/address" ] || continue
+    if [ "$iface" = eth0 ]; then want=$eth0_mac; else want=$eth1_mac; fi
+    cur=$(cat "/sys/class/net/$iface/address" 2>/dev/null)
+    [ "$cur" = "$want" ] && continue
+    ip link set dev "$iface" down 2>/dev/null || true
+    if ip link set dev "$iface" address "$want" 2>/dev/null; then
+      logp "MAC: $iface $cur → $want (из SID)"
+    else
+      logp "MAC: не удалось задать $want на $iface"
+    fi
+    ip link set dev "$iface" up 2>/dev/null || true
+  done
+}
+
+sa02m_mac_apply || true
+
 # ── RTC: DS3231 на i2c-1 ───────────────────────────────────────────────────
 HCTOSYS_DEVICE=rtc0
 HWC=/sbin/hwclock
@@ -191,8 +251,12 @@ elif [ -f /usr/local/lib/sa02m-lib-rtc.sh ]; then
     DS3231_YEAR=${DS3231_STR%%-*}
     if [ -n "$DS3231_YEAR" ] && [ "$DS3231_YEAR" -ge 2020 ] && \
        [ "$DS3231_YEAR" -le 2035 ] 2>/dev/null; then
-      if date -s "$DS3231_STR" >/dev/null 2>&1; then
-        logp "RTC: DS3231 loaded via I2C — $(date '+%Y-%m-%d %H:%M:%S') (year=${DS3231_YEAR})"
+      # Чип держит UTC (как и /etc/adjtime): раньше здесь был `date -s`,
+      # то есть значение трактовалось как местное время — при TZ=MSK это
+      # давало расхождение в 3 часа между путём hwclock (/dev/rtc1) и
+      # запасным путём i2cget. Единый формат — UTC.
+      if date -u -s "$DS3231_STR" >/dev/null 2>&1; then
+        logp "RTC: DS3231 loaded via I2C (UTC) — $(date '+%Y-%m-%d %H:%M:%S %Z') (year=${DS3231_YEAR})"
       fi
     else
       logp "RTC: DS3231 I2C year=${DS3231_YEAR:-?} invalid — keeping fake-hwclock time"
