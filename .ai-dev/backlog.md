@@ -7,6 +7,52 @@ audit).
 
 ## Open
 
+- [OPEN] 2026-08-06 **[MED] `kernel-port/` + `tools/kernel-wb/` + the kernel CI
+  workflow build a kernel the bench board does not run.** Bench board
+  2026-08-06 (Orchestrator, device-side — not repo-checkable): `uname -r` =
+  **6.1.0-rc6**; `/lib/modules/` holds `6.1.0-rc6` and `6.1.0-rc6-rt4`;
+  `/etc/sa02m_kernel.conf` names those two as the SMP/RT pair the panel switches
+  between. The pipeline targets **5.10.35** from the Wiren Board `bullseye`
+  branch. **Operator's ruling (2026-08-06): a leftover artifact from the Debian
+  branch.** That also explains the workflow sitting red for a month — nothing
+  consumes its output.
+
+  **Do NOT delete on this entry alone — the repo contradicts the premise.**
+  Several live sites still assert the 5.10 line — enumerated in the
+  stale-assumptions entry below, which owns that question. Whether they are
+  stale text left over from the 6.1 migration or describe a fleet still on 5.10
+  is **not resolved** and needs the Operator. Verified only that the bench board
+  is 6.1.
+
+  **Full referrer list (deleting the tree touches all of these):**
+  `etc/sa02m-kernel-select.sh` · `scripts/01-system.sh` ·
+  **`.ai-dev/quality/checks/shellcheck.sh:30` — lints `kernel-port/apply.sh` by
+  name, so deleting the tree turns a currently-green quality row red** ·
+  `README.md:810` (two Operator-facing links) ·
+  `tools/debian-rootfs/create-sa02m-rootfs.sh:105` (live script printing the
+  build command) · `tools/debian-rootfs/README.md:25` · `tools/buildroot/README.md` ·
+  `docs/codesys-rt/README.md` · `docs/WB_LINUX_FUTURE_FEATURES.md` ·
+  `docs/decisions/rt-patch-pinning.md` · `.ai-dev/notes/ci-budget.md:22` ·
+  `etc/boot.cmd.sa02m:32` (live TODO) · `docs/bugs/BUGLOG.md` (25 refs, and
+  `:849` is a LIVE ownership rule for `kernel-port/**`, not history) ·
+  `docs/audits/AUDIT_1.0.4.0.md:325` (open action item).
+  Closed at file granularity by two independent sweeps (main tokens plus
+  `linux-image-sa02m`, `deploy-sa02m-kernel`, `sa02m_rt.config`,
+  `sun8i-r40-sa02m.dts`) — no further referrer found.
+
+  **A safety condition this supersedes, stated openly rather than buried:** the
+  Orchestrator raised that the first `5.10.35-rt39` kernel must get a bench
+  RS-485 test on COM1-COM5 under load before reaching any device. It is moot
+  only while nothing ships that kernel. **It applies again the moment anyone
+  installs a build from this pipeline — including shipping the current
+  `5.10.35-rt39` artifact as-is, not merely reviving the pipeline for 6.1.**
+- [OPEN] 2026-08-06 **[MED] Stale 5.10.35 assumptions survive in live code after
+  the 6.1 migration.** `etc/sa02m-iface-canonical.sh:190` states "this board runs
+  5.10.35" as the premise for an altname-collision guard, and `install.sh:142-145`
+  frames its Docker storage/network mode selection around 5.10.35 (the selection
+  itself probes kernel features, so the text is likelier stale than the logic).
+  Found while recording the entry above; the two are the same root question —
+  what the fleet actually runs. Resolve together.
 - [OPEN] 2026-08-06 **[LOW] `run.test.mjs` does not pin the regex-escaping in
   `coversToRegex`.** Dropping the escape at `.ai-dev/quality/run.mjs:64` leaves
   all 15 table assertions passing while behaviour really changes — `install.sh`
@@ -118,16 +164,22 @@ audit).
   belongs. So this was the only genuine instance in the tree. Was: renders
   `.ai-dev/procedures/ deployment.md`, a broken pointer in the file that forbids
   improvising a deploy. Found by two independent reviewers.
-- [OPEN] 2026-08-05 **[MED — NEEDS AN OPERATOR DECISION] Default device password
+- [OPEN] 2026-08-05 **[MED — accepted 2026-08-06: KEEP, not to be pruned] Default device password
   hard-coded in the imaging fallback.** `tools/imaging/make-image.sh:20` defaults
   `SSH_PASS` to `cyntron` when `SA02M_PASS` is unset, so a build host without the
   key silently authenticates with a well-known credential. Untouched by the
   boot.scr format fix (surfaced by its review, out of that diff's scope).
   **Re-rated [LOW] → [MED] on 2026-08-06** (sweep reviewer, advisory A6): it is
   a literal default credential in a committed artifact — the one swept item
-  carrying a hard security floor. The proposed remedy is one line (drop the
+  carrying a hard security floor. **Operator decided KEEP on 2026-08-06**: the build-host
+  fallback is relied upon, and dropping it would break any host without
+  `SA02M_PASS` set. Kept OPEN deliberately — the code still ships the default,
+  so a RESOLVED status would let the next prune erase a live accepted risk.
+  Revisit if imaging ever runs where the build host is not trusted. The remedy
+  then is one line (drop the
   default, require an explicit `SA02M_PASS`) but it breaks any build host
-  relying on the fallback, so it is an **Operator call, not a sweep call**. Code
+  relying on the fallback — which is why it was escalated rather than swept, and
+  it has now been decided (above). Code
   deliberately unchanged.
 - [RESOLVED] 2026-08-05 **[LOW] x-bit-dependent invocation documented for the rootfs
   builder.** Fixed in both homes: `tools/debian-rootfs/README.md:31` and the
@@ -378,12 +430,15 @@ audit).
   protocol upgrade.
 - [OPEN] 2026-08-06 **[MED] `etc/sa02m-kernel-select.sh:23` still defaults RT to
   `5.10.35-rt36`.** That kernel/RT pair never existed upstream (rt36 belongs to
-  5.10.27); the RT flavour now builds `5.10.35-rt39`. Not a live fault —
-  `load_conf()` falls through to `detect_installed_module_ver rt`, which matches
-  the real `5.10.35-rt39` module dir and writes it back to
-  `/etc/sa02m_kernel.conf` — but the default names a kernel that cannot exist.
-  Deliberately NOT fixed with the CI work: `etc/` is device code and was fenced
-  out of that change's scope. One-line edit + a device check.
+  5.10.27), and the bench board runs the 6.1 line entirely. **Correction to an
+  earlier version of this entry:** it credited `detect_installed_module_ver rt`
+  with self-healing to the real module dir. That reasoning is wrong — the
+  detector's case arm at `:57` is `*sa02m*|5.10.35*)`, which cannot match
+  `6.1.0-rc6-rt4` either. The default is inert on the bench board because
+  `/etc/sa02m_kernel.conf` already carries the right values and overrides it.
+  **One live-fault case survives:** a 6.1 board booted SMP with no conf keeps
+  `5.10.35-rt36` and `write_conf()` persists it. One-line edit plus a device
+  check; `etc/` was fenced out of the CI change's scope.
 - [OPEN] 2026-08-06 **[LOW] `kernel-port/README.md:35` documents a patch file
   that never existed.** Names `patch-5.10.35-rt36.patch.gz` as the PREEMPT_RT
   patchset. Same root cause as above; left alone because `kernel-port/` was
