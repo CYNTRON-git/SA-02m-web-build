@@ -123,6 +123,15 @@ BRIDGE_DIR="/opt/sa02m-modbus-mqtt"
 install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 
 # Копируем Python-скрипты
+# Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the old entry is
+# self-contained, so a device that crashes/restarts mid-copy still boots the
+# previous bridge until the final file lands — only the last copy switches the
+# composition. Keep this ordered list in sync with tests/test_entry_surface.py
+# EXPECTED_MODULES and scripts/update-www-only.sh.
+for f in bridge_serial.py bridge_fmb.py bridge_mqtt.py bridge_mr02m_map.py \
+         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py; do
+    install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
+done
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
 install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
 install -m 0755 -o root -g root "$OPT_DIR/mqtt_bus_scan.py"     "$BRIDGE_DIR/mqtt_bus_scan.py"

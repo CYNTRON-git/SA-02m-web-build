@@ -14,7 +14,7 @@ except ImportError:
 
 FMB_ADDR = 0xFD
 
-# Count-first display names — keep in sync with modbus_mqtt_bridge.MR02M_TYPE_NAMES
+# Count-first display names — keep in sync with bridge_mr02m_map.MR02M_TYPE_NAMES
 # and MR-02m Core/Inc/main.h product signatures (not letter-first C enum tags).
 MR02M_MODULE_TYPES = {
     1: "6DO8DI", 2: "16DO", 3: "12AO", 4: "6DO", 5: "14DI",
