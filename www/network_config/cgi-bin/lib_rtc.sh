@@ -166,7 +166,9 @@ write_ds3231_i2c_datetime() {
     local dt=${1:-} y mo d h mi s dow bus addr wday yr
     local sec_hex min_hex hr_hex dom_hex mo_hex yr_hex
     if [ -z "$dt" ]; then
-        dt=$(date '+%Y-%m-%d %H:%M:%S') || return 1
+        # Чип держит UTC (как /etc/adjtime): раньше сюда шло местное
+        # время, и после каждой записи по I2C часы уезжали на часовой пояс.
+        dt=$(date -u '+%Y-%m-%d %H:%M:%S') || return 1
     fi
     case "$dt" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
@@ -248,7 +250,9 @@ write_pcf8563_i2c_datetime() {
     local dt=${1:-} y mo d h mi s bus addr ctrl wday yr
     local sec_hex min_hex hr_hex dom_hex mo_hex yr_hex
     if [ -z "$dt" ]; then
-        dt=$(date '+%Y-%m-%d %H:%M:%S') || return 1
+        # Чип держит UTC (как /etc/adjtime): раньше сюда шло местное
+        # время, и после каждой записи по I2C часы уезжали на часовой пояс.
+        dt=$(date -u '+%Y-%m-%d %H:%M:%S') || return 1
     fi
     case "$dt" in
         [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\ [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) ;;
@@ -323,8 +327,8 @@ read_rtc_from_hwclock() {
     hc=$(command -v hwclock 2>/dev/null)
     [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
     [ -n "$hc" ] || return 1
-    raw=$(sa02m_rtc_timeout_run 2 "$hc" --show --rtc="$dev" 2>/dev/null \
-          || sa02m_rtc_timeout_run 2 sudo -n "$hc" --show --rtc="$dev" 2>/dev/null) || return 1
+    raw=$(sa02m_rtc_timeout_run 2 "$hc" --show --utc --rtc="$dev" 2>/dev/null \
+          || sa02m_rtc_timeout_run 2 sudo -n "$hc" --show --utc --rtc="$dev" 2>/dev/null) || return 1
     [ -n "$raw" ] || return 1
     cleaned=$(printf '%s' "${raw%%.*}" | sed 's/+[0-9:]*$//' | tr -d '\n')
     [ -n "$cleaned" ] || return 1
@@ -366,9 +370,9 @@ sync_rtc_from_system() {
     hc=$(command -v hwclock 2>/dev/null)
     [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
     if [ -c "$dev" ] && [ -n "$hc" ]; then
-        sa02m_rtc_timeout_run 12 "$hc" --systohc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
+        sa02m_rtc_timeout_run 12 "$hc" --systohc --utc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
         sleep 1
-        sa02m_rtc_timeout_run 12 "$hc" --systohc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
+        sa02m_rtc_timeout_run 12 "$hc" --systohc --utc --rtc "$dev" --verbose >/dev/null 2>&1 && return 0
         return 1
     fi
     write_ds3231_i2c_datetime && return 0
