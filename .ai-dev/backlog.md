@@ -7,20 +7,39 @@ audit).
 
 ## Open
 
-- [OPEN] 2026-08-06 **[MED] `lib_rtc.sh` write path still uses local time — the
-  device is ahead of the repo.** `www/network_config/cgi-bin/lib_rtc.sh` writes
-  the RTC with `date '+…'` (`:169`, `:251`) and `hwclock --systohc --rtc`
-  (`:369`, `:371`) with no `--utc`, while `/etc/adjtime` says UTC — a 3-hour
-  skew every time the I2C fallback fires (whenever `/dev/rtc1` is absent).
-  1.0.5.66 fixed the READ path in `etc/sa02m-pre-start.sh` but not this WRITE
-  path. The Operator fixed it **on the bench board only**: that copy has
-  `date -u` and `--utc` at all six sites (device md5 `8301a8b6…` vs repo
-  `26b9973318…`). **Urgency:** the file lives under `www/network_config/`, which
-  `scripts/update-www-only.sh` syncs — so a routine web deploy, not just a full
-  install, silently reverts the fix and restores the skew. Verified 2026-08-06:
-  exactly one device file diverges (all other `cgi-bin` entries date from the
-  2026-08-05 install). Bring the six sites into the repo and add a check that
-  the write path cannot diverge from `/etc/adjtime` again.
+- [RESOLVED] 2026-08-06 **[was MED, FILED IN ERROR] `lib_rtc.sh` write path
+  still uses local time.** **Wrong — the fix was already on `main` as `fbeac21`
+  (PR #96) when this was filed.** The Orchestrator grepped `lib_rtc.sh` while
+  sitting on a feature branch cut from `main` BEFORE that merge, so the
+  comparison was device-vs-stale-worktree, not device-vs-`main`, and produced a
+  false "the repo is missing the fix" plus a false "do not deploy www" warning
+  to the Operator. **Lesson, worth keeping:** when comparing a device against
+  the repo, read the blob from `origin/main` (`git show origin/main:<path>`),
+  never from the working tree — a feature branch is by definition behind. The
+  real residue of this investigation is the item below.
+- [OPEN] 2026-08-06 **[LOW] «Время с RTC» in the panel now reads 3 hours behind
+  «Текущее время», and both are unlabelled.** `index.html:429-438` shows system
+  time (local) directly above chip time (UTC, since `fbeac21`). On MSK the RTC
+  row is correct but looks like a defect and will generate support reports —
+  this may well be what the original 3-hour report was actually seeing. Fixing
+  it is a label or a conversion in `status.js`/`forms.js` plus an i18n DICT
+  entry plus `index.html`: a `www/` change with its own `?v=`/`APP_VERSION`
+  bump flow, so it is a separate decision, not a slip-in. Surfaced by the
+  builder during the rtc-utc-convention work.
+- [OPEN] 2026-08-06 **[LOW] `/etc/adjtime` is an inherited default this repo
+  never writes.** A repo-wide sweep of `etc/ scripts/ tools/ opt/ www/
+  install.sh` finds zero writes to `/etc/adjtime` and no
+  `timedatectl set-local-rtc`. The UTC convention every RTC path now hard-codes
+  therefore rests on a base-image default we neither create nor control — one
+  `timedatectl set-local-rtc 1`, a different Armbian build, or a restored
+  backup flips it. The new `rtc-utc-convention` gate pins our side; owning the
+  file (writing it at install time) would close the other half.
+- [OPEN] 2026-08-06 **[LOW] `lib_rtc.sh:198,282` weekday fallback mixes
+  frames.** `wday=$(date -d "$dt" +%w) || wday=$(date +%w)` — the fallback
+  computes a LOCAL weekday from a UTC timestamp, so it can be off by one near
+  midnight. Only reachable when `date -d` is unavailable (busybox), and the
+  DS3231 day-of-week register is never read back by our read path or the kernel
+  driver. Cosmetic.
 - [OPEN] 2026-08-06 **[LOW] `nodered-pin-consistency` can print `ok` for a
   removed marker.** `.ai-dev/quality/checks/nodered-pin-consistency.sh:157`
   greps the whole file, and `etc/sa02m-web-service-ctl.sh:936` mentions
