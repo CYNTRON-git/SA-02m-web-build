@@ -40,6 +40,14 @@ from .serial_port import open_port, send_receive, send_receive_wb_ext_scan
 
 log = logging.getLogger(__name__)
 
+# Inter-device settle in the batch-flash path: a just-flashed MR module reboots
+# into its new app (~2 s per the MR-02m bus-protocol contract) and is transiently
+# at the bootloader's fixed addr 247. Wait for it to vacate the shared line before
+# the NEXT device's enter_bootloader + info-block frames, or the two collide
+# (bench .135: mid-batch cascade). Overridable per-job via inter_device_settle_s.
+BATCH_INTER_DEVICE_SETTLE_S = 2.5
+BATCH_INTER_DEVICE_SETTLE_MAX_S = 30.0
+
 
 def _flash_cancel_gate(cancel_evt, on_irreversible: Optional[Callable[[], None]] = None) -> fp.FlashCancelGate:
     return fp.FlashCancelGate(
@@ -1305,6 +1313,50 @@ def run_flash_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: Firmw
     progress_cb(100, "Готово")
 
 
+def _resolve_batch_settle_s(params: Dict[str, Any]) -> float:
+    """Inter-device settle seconds for the batch loop.
+
+    Default BATCH_INTER_DEVICE_SETTLE_S unless the job carries an
+    ``inter_device_settle_s`` override, which is clamped to [0, MAX] (invalid →
+    default). Same clamp idiom as ``_bounded_int``, kept float so a fractional
+    default survives.
+    """
+    raw = params.get("inter_device_settle_s")
+    if raw is None:
+        return BATCH_INTER_DEVICE_SETTLE_S
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return BATCH_INTER_DEVICE_SETTLE_S
+    return max(0.0, min(BATCH_INTER_DEVICE_SETTLE_MAX_S, val))
+
+
+def _settle_between_batch_devices(
+    settle_s: float,
+    cancel_evt: Any,
+    log_cb: Callable[[str, str], None],
+) -> None:
+    """Bounded, cancellable pause between two batch devices on the shared line.
+
+    Waits up to ``settle_s`` so the just-flashed module finishes rebooting and
+    vacates the bootloader's fixed addr 247 before the next enter_bootloader.
+    A cancel cuts the wait short — it never sleeps the full settle once cancelled.
+    """
+    if settle_s <= 0 or cancel_evt.is_set():
+        return
+    log_cb(
+        f"Пауза {settle_s:g} с перед следующим устройством "
+        f"(осадка после перезагрузки модуля)…",
+        "info",
+    )
+    deadline = time.monotonic() + settle_s
+    while not cancel_evt.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.1, remaining))
+
+
 def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo: FirmwareRepo) -> None:
     """
     Пакетная прошивка нескольких устройств на одном COM.
@@ -1334,6 +1386,7 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
     image, file_sig, file_ver, entry = _load_firmware_for_flash(repo, params)
     log_sig = _firmware_signature_for_log(file_sig, entry, targets[0] if targets else None)
     log_cb(f"Пакет: {len(targets)} устройств, файл {entry.file} sig={log_sig} ver={file_ver}", "info")
+    settle_s = _resolve_batch_settle_s(params)
 
     with port_lease(device_path, cfg.mplc_stop_services):
         with _port_flock(cfg, port_key):
@@ -1344,6 +1397,13 @@ def run_flash_batch_job(job: Job, ctx: Dict[str, Any], cfg: FlasherConfig, repo:
                 if cancel_evt.is_set():
                     log_cb("Отмена пакетной прошивки", "warn")
                     break
+                # Settle after the previous device (flashed OR skipped-on-error)
+                # before touching the shared line again — never after the last.
+                if i > 0:
+                    _settle_between_batch_devices(settle_s, cancel_evt, log_cb)
+                    if cancel_evt.is_set():
+                        log_cb("Отмена пакетной прошивки", "warn")
+                        break
                 is_wb, route_err = _resolve_flash_route_for_device(dev, entry)
                 if route_err:
                     errors.append((dev, route_err))
