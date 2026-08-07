@@ -105,6 +105,11 @@ if [ "${SA02M_SKIP_GATEWAY:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-gateway
     bash "$SCRIPT_DIR/scripts/06-gateway.sh" || log WARN "06-gateway.sh завершился с ошибкой"
 fi
 
+if [ "${SA02M_SKIP_ALICE:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-alice.sh" ]; then
+    log INFO "──── Опциональный стек: Яндекс Алиса (sa02m-alice) ────"
+    bash "$SCRIPT_DIR/scripts/06-alice.sh" || log WARN "06-alice.sh завершился с ошибкой"
+fi
+
 if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then
     log INFO "──── Опциональный стек: Node-RED ────"
     bash "$SCRIPT_DIR/scripts/07-nodered.sh" || log WARN "07-nodered.sh завершился с ошибкой"

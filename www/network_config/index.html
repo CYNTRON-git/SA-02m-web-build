@@ -7,8 +7,8 @@
        iPhone top/bottom areas must match the page background, not a default). -->
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.65">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.65&r=kpi6">
+  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.67">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.67&r=offupd1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -21,8 +21,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.5.65" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.5.65" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.5.67" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.5.67" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
       <div class="topbar-branding">
         <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
       </div>
@@ -554,6 +554,41 @@
                 </div>
               </div>
             </div>
+            <div class="ctrl-card system-manage-tile system-manage-alice-card" id="alice-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Яндекс Алиса">Яндекс Алиса</h3>
+                <dl class="cloud-meta web-upd-meta">
+                  <div><dt data-i18n="Клиент">Клиент</dt><dd id="alice-svc-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Шлюз">Шлюз</dt><dd id="alice-gw-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Соединение">Соединение</dt><dd id="alice-conn-state"><span class="badge badge-unk">…</span></dd></div>
+                  <div><dt data-i18n="Сертификат">Сертификат</dt><dd id="alice-cert-state"><span class="badge badge-unk">…</span></dd></div>
+                </dl>
+                <p class="field-hint" data-i18n="Интеграция через alice.cyntron.ru. Пока шлюз Phase 0 не развёрнут, привязка вернёт ошибку — без ложного «успеха».">
+                  Интеграция через <b>alice.cyntron.ru</b>. Пока шлюз Phase 0 не развёрнут,
+                  привязка вернёт ошибку — без ложного «успеха».
+                </p>
+                <p class="field-hint text-sm" id="alice-counts">—</p>
+                <div id="alice-device-list" class="alice-device-list"></div>
+                <div class="field">
+                  <label for="alice-dev-name" data-i18n="Имя устройства">Имя устройства</label>
+                  <input type="text" id="alice-dev-name" maxlength="64" autocomplete="off" placeholder="Реле 1">
+                </div>
+                <div class="field">
+                  <label for="alice-topic-select" data-i18n="MQTT-топик">MQTT-топик</label>
+                  <select id="alice-topic-select"></select>
+                </div>
+                <div class="btn-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                  <button type="button" class="btn btn-sm" onclick="aliceAddDevice()" data-i18n="Добавить">Добавить</button>
+                  <button type="button" class="btn btn-sm btn-primary" id="alice-btn-link" onclick="aliceStartLink()" data-i18n="Привязать">Привязать</button>
+                  <button type="button" class="btn btn-sm" id="alice-btn-complete" onclick="aliceCompleteLink()" data-i18n="Завершить привязку">Завершить привязку</button>
+                  <button type="button" class="btn btn-sm" onclick="aliceUnlink()" data-i18n="Отвязать">Отвязать</button>
+                </div>
+                <div id="alice-msg" class="cloud-msg" role="status" hidden></div>
+              </div>
+              <div class="cloud-agent-ctrl system-manage-tile-foot">
+                <button type="button" class="btn btn-sm btn-primary" id="alice-btn-enable" onclick="aliceToggleClient()" disabled>…</button>
+              </div>
+            </div>
             <div class="ctrl-card system-manage-tile system-manage-cloud-card" id="cloud-card">
               <div class="ctrl-card-main">
                 <h3 class="system-manage-tile-title" data-i18n="Облако">Облако</h3>
@@ -603,20 +638,77 @@
                 <button type="button" class="btn btn-sm btn-danger" id="cloud-btn-agent" onclick="cloudToggleAgent()" disabled>…</button>
               </div>
             </div>
-            <div class="ctrl-card system-manage-tile system-manage-web-update-card">
+            <div class="ctrl-card system-manage-tile system-manage-web-update-card" id="web-upd-card">
               <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title">Обновление веб</h3>
+                <h3 class="system-manage-tile-title" data-i18n="Обновление">Обновление</h3>
                 <div id="web-upd-status" class="web-upd-status" role="status" hidden></div>
-                <dl class="web-upd-meta">
-                  <div><dt>Текущая версия</dt><dd id="web-upd-deployed-ver">—</dd></div>
-                  <div><dt>Доступная версия</dt><dd id="web-upd-remote-ver">—</dd></div>
-                  <div><dt>Проверка</dt><dd id="web-upd-checked" class="mono">—</dd></div>
-                </dl>
+                <div id="web-upd-progress" class="web-upd-progress" hidden>
+                  <div class="bar-row web-upd-progress-bar">
+                    <div class="bar-track"><div id="web-upd-progress-fill" class="bar-fill" style="width:0%"></div></div>
+                  </div>
+                  <div id="web-upd-progress-label" class="web-upd-progress-label"></div>
+                </div>
+
+                <section id="web-upd-online-section" class="web-upd-section" aria-labelledby="web-upd-online-title">
+                  <h4 id="web-upd-online-title" class="web-upd-section-title" data-i18n="Из интернета">Из интернета</h4>
+                  <dl class="web-upd-meta">
+                    <div><dt data-i18n="Текущая версия">Текущая версия</dt><dd id="web-upd-deployed-ver">—</dd></div>
+                    <div><dt data-i18n="Доступная версия">Доступная версия</dt><dd id="web-upd-remote-ver">—</dd></div>
+                    <div><dt data-i18n="Проверка">Проверка</dt><dd id="web-upd-checked" class="mono">—</dd></div>
+                  </dl>
+                  <div class="btn-group system-manage-tile-foot-row web-upd-section-actions">
+                    <button type="button" class="btn" id="web-upd-check-btn" onclick="checkWebUpdatesManual()" data-i18n="Проверить">Проверить</button>
+                    <button type="button" class="btn btn-warn" id="web-upd-apply-btn" hidden onclick="applyWebUpdate()" data-i18n="Применить">Применить</button>
+                  </div>
+                </section>
+
+                <section id="web-upd-file-section" class="web-upd-section" aria-labelledby="web-upd-file-title">
+                  <h4 id="web-upd-file-title" class="web-upd-section-title" data-i18n="Из файла">Из файла</h4>
+                  <p id="web-upd-file-disabled-hint" class="field-hint" hidden data-i18n="Доступно после обновления до версии с поддержкой загрузки из файла">Доступно после обновления до версии с поддержкой загрузки из файла</p>
+                  <input type="file" id="web-upd-file-input" accept=".sa02m,application/octet-stream" hidden>
+                  <div class="btn-group web-upd-section-actions">
+                    <button type="button" class="btn" id="web-upd-file-pick-btn" onclick="pickOfflineUpdateFile()" disabled data-i18n="Выбрать файл…">Выбрать файл…</button>
+                  </div>
+                  <div id="web-upd-inspect" class="web-upd-inspect" hidden>
+                    <dl class="web-upd-meta">
+                      <div><dt data-i18n="Пакет">Пакет</dt><dd id="web-upd-pkg-ver">—</dd></div>
+                      <div><dt data-i18n="Коммит">Коммит</dt><dd id="web-upd-pkg-commit" class="mono">—</dd></div>
+                      <div><dt data-i18n="Подпись">Подпись</dt><dd id="web-upd-pkg-sig">—</dd></div>
+                      <div><dt data-i18n="Совместимость">Совместимость</dt><dd id="web-upd-pkg-compat">—</dd></div>
+                    </dl>
+                    <p id="web-upd-pkg-warnings" class="field-hint web-upd-pkg-warnings" hidden></p>
+                    <div class="btn-group web-upd-section-actions">
+                      <button type="button" class="btn btn-warn" id="web-upd-file-apply-btn" onclick="applyOfflineUpdate()" data-i18n="Создать резервную копию и установить">Создать резервную копию и установить</button>
+                      <button type="button" class="btn btn-sm" id="web-upd-file-cancel-btn" onclick="cancelOfflineUpdate()" hidden data-i18n="Отменить">Отменить</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section id="web-upd-backup-section" class="web-upd-section" aria-labelledby="web-upd-backup-title">
+                  <h4 id="web-upd-backup-title" class="web-upd-section-title" data-i18n="Резервная копия">Резервная копия</h4>
+                  <p class="field-hint" data-i18n="Архив содержит пароли и ключи. Храните offline. Проверьте SHA-256 manifest после скачивания.">Архив содержит пароли и ключи. Храните offline. Проверьте SHA-256 manifest после скачивания.</p>
+                  <div class="btn-group web-upd-section-actions">
+                    <button type="button" class="btn" id="web-upd-backup-btn" onclick="downloadWebBackup()" data-i18n="Скачать резервную копию">Скачать резервную копию</button>
+                  </div>
+                </section>
+
                 <pre id="web-upd-log" class="web-upd-log" hidden></pre>
               </div>
-              <div class="btn-group system-manage-tile-foot system-manage-tile-foot-row">
-                <button type="button" class="btn" id="web-upd-check-btn" onclick="checkWebUpdatesManual()" data-i18n="Проверить">Проверить</button>
-                <button type="button" class="btn btn-warning" id="web-upd-apply-btn" hidden onclick="applyWebUpdate()" data-i18n="Применить">Применить</button>
+            </div>
+            <div class="ctrl-card system-manage-tile system-manage-factory-reset-card" id="factory-reset-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Сброс настроек">Сброс настроек</h3>
+                <p class="field-hint" data-i18n="Сброс конфигурации к заводским значениям. Идентификаторы устройства, ключи SSH, облако и калибровка сохраняются.">Сброс конфигурации к заводским значениям. Идентификаторы устройства, ключи SSH, облако и калибровка сохраняются.</p>
+                <div id="factory-reset-status" class="web-upd-status" role="status" hidden></div>
+                <div id="factory-reset-progress" class="web-upd-progress" hidden>
+                  <div class="bar-row web-upd-progress-bar">
+                    <div class="bar-track"><div id="factory-reset-progress-fill" class="bar-fill" style="width:0%"></div></div>
+                  </div>
+                  <div id="factory-reset-progress-label" class="web-upd-progress-label"></div>
+                </div>
+              </div>
+              <div class="btn-group system-manage-tile-foot">
+                <button type="button" class="btn btn-danger" id="factory-reset-open-btn" onclick="openFactoryResetModal()" data-i18n="Сбросить настройки…">Сбросить настройки…</button>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-kernel-card" id="kernel-switch-tile">
@@ -1072,19 +1164,49 @@
   </div><!-- /body -->
 </div><!-- /app -->
 
-<script src="static/js/i18n.js?v=1.0.5.65&r=cmdi18n2"></script>
-<script src="static/js/app.js?v=1.0.5.65&r=kpi1"></script>
-<script src="static/js/app/status.js?v=1.0.5.65&r=kernrt1"></script>
-<script src="static/js/app/hw.js?v=1.0.5.65"></script>
-<script src="static/js/app/rs485.js?v=1.0.5.65&r=rs485open1"></script>
-<script src="static/js/app/forms.js?v=1.0.5.65"></script>
-<script src="static/js/app/services.js?v=1.0.5.65"></script>
-<script src="static/js/app/misc.js?v=1.0.5.65&r=cmdi18n2"></script>
-<script src="static/js/app/init.js?v=1.0.5.65"></script>
-<script src="static/js/app/nav.js?v=1.0.5.65"></script>
-<script src="static/js/flasher.js?v=1.0.5.65-bacnet-i18n"></script>
-<script src="static/js/mqtt.js?v=1.0.5.65&r=mqtt-ui-fast1"></script>
-<script src="static/js/gateway.js?v=1.0.5.65"></script>
-<script src="static/js/cloud.js?v=1.0.5.65"></script>
+<div id="factory-reset-modal" class="mqtt-modal-overlay" hidden>
+  <div class="mqtt-modal-dialog mqtt-modal-wide" role="dialog" aria-modal="true" aria-labelledby="factory-reset-modal-title">
+    <div class="mqtt-modal-head">
+      <h3 id="factory-reset-modal-title" data-i18n="Сброс настроек">Сброс настроек</h3>
+      <button type="button" class="btn btn-sm" onclick="closeFactoryResetModal()" aria-label="Закрыть" data-i18n="Закрыть">Закрыть</button>
+    </div>
+    <div class="mqtt-modal-body">
+      <ul class="factory-reset-warnings">
+        <li data-i18n="Сеть будет сброшена к заводским настройкам — возможна потеря доступа по текущему IP.">Сеть будет сброшена к заводским настройкам — возможна потеря доступа по текущему IP.</li>
+        <li data-i18n="Пароль веб-доступа станет admin / cyntron.">Пароль веб-доступа станет admin / cyntron.</li>
+        <li data-i18n="Сопоставления MQTT/шлюза будут сброшены.">Сопоставления MQTT/шлюза будут сброшены.</li>
+      </ul>
+      <p class="field-hint" data-i18n="Перед продолжением обязательно скачайте резервную копию.">Перед продолжением обязательно скачайте резервную копию.</p>
+      <div class="btn-group web-upd-section-actions">
+        <button type="button" class="btn" id="factory-reset-backup-btn" onclick="downloadWebBackup(true)" data-i18n="Скачать резервную копию">Скачать резервную копию</button>
+      </div>
+      <p id="factory-reset-backup-ok" class="field-hint is-ok" hidden data-i18n="Резервная копия скачана. Можно продолжить.">Резервная копия скачана. Можно продолжить.</p>
+      <div class="field">
+        <label for="factory-reset-confirm-input" data-i18n="Введите SA02M-RESET для подтверждения">Введите SA02M-RESET для подтверждения</label>
+        <input type="text" id="factory-reset-confirm-input" class="mono" autocomplete="off" spellcheck="false" placeholder="SA02M-RESET" oninput="onFactoryResetConfirmInput()">
+      </div>
+      <div id="factory-reset-modal-msg" class="web-upd-status is-err" role="status" hidden></div>
+    </div>
+    <div class="mqtt-modal-foot">
+      <button type="button" class="btn btn-danger" id="factory-reset-confirm-btn" onclick="confirmFactoryReset()" disabled data-i18n="Сбросить">Сбросить</button>
+      <button type="button" class="btn btn-sm" onclick="closeFactoryResetModal()" data-i18n="Отмена">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<script src="static/js/i18n.js?v=1.0.5.67&r=offupd1"></script>
+<script src="static/js/app.js?v=1.0.5.67&r=offupd1"></script>
+<script src="static/js/app/status.js?v=1.0.5.67&r=offupd1"></script>
+<script src="static/js/app/hw.js?v=1.0.5.67"></script>
+<script src="static/js/app/rs485.js?v=1.0.5.67&r=rs485open1"></script>
+<script src="static/js/app/forms.js?v=1.0.5.67"></script>
+<script src="static/js/app/services.js?v=1.0.5.67"></script>
+<script src="static/js/app/misc.js?v=1.0.5.67&r=cmdi18n2"></script>
+<script src="static/js/app/init.js?v=1.0.5.67"></script>
+<script src="static/js/app/nav.js?v=1.0.5.67"></script>
+<script src="static/js/flasher.js?v=1.0.5.67-bacnet-i18n"></script>
+<script src="static/js/mqtt.js?v=1.0.5.67&r=mqtt-ui-fast1"></script>
+<script src="static/js/gateway.js?v=1.0.5.67"></script>
+<script src="static/js/cloud.js?v=1.0.5.67"></script>
 </body>
 </html>

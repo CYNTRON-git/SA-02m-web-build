@@ -4,6 +4,15 @@
 Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
 
 ---
+## [2026-08-07 23:58] branch: feature/alice-client-prod
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `client/main.py`, `config/api.py`
+**Тип:** Некорректное поведение
+**Описание:** Prod WSS к alice.cyntron.ru: неверный path, SN=unknown при пустом serial=, ssl_context/LE verify fail; не было complete_link.
+**Причина:** socketio path join; пустой serial=; Alice CA как trust store; issue после OAuth не вызывался.
+**Исправление:** engine path controller/socket.io; SN fallback machine-id; sslopt cert/key + system CA; complete_link + controller unlink; кнопка «Завершить привязку».
+
+---
 
 ## [2026-08-05 11:00] branch: feature/klogic — logrotate.service падал: NUL-обнулённый /etc/logrotate.d/wtmp после клона
 

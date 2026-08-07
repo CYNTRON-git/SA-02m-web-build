@@ -1,0 +1,5 @@
+# Optional runtime deps for sa02m-alice-client (installed by scripts/06-alice.sh).
+# Config CGI/API and unit tests run on stdlib only.
+python-socketio[client]>=5.11.0
+paho-mqtt>=1.6.1
+PyYAML>=5.4
