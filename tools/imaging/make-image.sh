@@ -233,8 +233,9 @@ export DONOR_META DEVICE_IP RELEASE_PROFILE RELEASE_VERSION
 export PIPE_CLEANUP="$DO_CLEANUP" PIPE_ZEROFILL="$DO_ZEROFILL" PIPE_ID_RESET="$DO_ID_RESET" PIPE_XZ_LEVEL="$FINAL_XZ_LEVEL"
 
 if [ "$DO_CLEANUP" -eq 1 ]; then
-    log "[1/6] Cleanup на доноре (фазы 1–4, ssh остаётся рабочим)"
-    "${SSH[@]}" 'bash -s' < "$CLEANUP_SCRIPT"
+    log "[1/6] Cleanup на доноре (фазы 1–4, --apply, ssh остаётся рабочим)"
+    # --apply required: cleanup-donor.sh is fail-safe (default dry-run without flag)
+    "${SSH[@]}" 'bash -s -- --apply --report' < "$CLEANUP_SCRIPT"
 else
     log "[1/6] Cleanup пропущен (--no-cleanup)"
 fi
