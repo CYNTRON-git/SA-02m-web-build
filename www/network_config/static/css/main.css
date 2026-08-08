@@ -4988,6 +4988,15 @@ body.dev-modal-open { overflow: hidden; }
 }
 .dev-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dev-modal-head h3 { font-size: 1.05rem; font-weight: 700; color: var(--text); margin: 0; }
+/* Modal header close: ✕ icon (not text «Закрыть») */
+.modal-close-x {
+  flex-shrink: 0;
+  width: 2rem; min-width: 2rem; height: 2rem; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 1.05rem; line-height: 1; font-weight: 600;
+  color: var(--text-sec);
+}
+.modal-close-x:hover { color: var(--text); }
 .dev-modal-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .dev-mode-tabs {
   display: inline-flex; gap: 4px; padding: 2px; border-radius: 999px;
@@ -5022,6 +5031,9 @@ body.dev-modal-open { overflow: hidden; }
   color: var(--text); font-size: 0.75rem; line-height: 1.35;
   box-sizing: border-box;
 }
+html[data-theme="light"] .dev-chart-tip {
+  background: rgba(255, 255, 255, 0.94);
+}
 .dev-chart-tip-time { color: var(--text-sec); margin-bottom: 4px; font-weight: 600; }
 .dev-chart-tip-row { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 .dev-chart-tip-row i { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
@@ -5030,6 +5042,26 @@ body.dev-modal-open { overflow: hidden; }
   white-space: nowrap; color: var(--text-sec);
 }
 .dev-chart-tip-row b { font-weight: 650; font-variant-numeric: tabular-nums; }
+.dev-chart-delta {
+  position: absolute; z-index: 6; pointer-events: none;
+  min-width: 110px; max-width: min(260px, 60%);
+  padding: 8px 10px; border-radius: 8px;
+  background: rgba(10, 132, 255, 0.18);
+  border: 1px solid color-mix(in srgb, var(--cyan, #0a84ff) 55%, var(--border));
+  color: var(--text); font-size: 0.75rem; line-height: 1.35;
+  box-sizing: border-box; text-align: center;
+  backdrop-filter: blur(4px);
+}
+.dev-chart-delta-time {
+  font-weight: 700; color: var(--text);
+  margin-bottom: 4px; font-variant-numeric: tabular-nums;
+}
+.dev-chart-delta-row {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  margin-top: 2px; font-variant-numeric: tabular-nums;
+}
+.dev-chart-delta-row i { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.dev-chart-delta-row b { font-weight: 650; }
 .dev-chart-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 0.78rem; }
 .dev-chart-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; }
 .dev-legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-sec); }

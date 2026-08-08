@@ -502,13 +502,54 @@
     return t;
   }
 
-  /** Значение в тултипе — без округления до целых (до 6 знаков, без хвостовых нулей). */
-  function fmtTipValue(v) {
+  /**
+   * Chart tip/legend decimals = Modbus/stand publish precision.
+   * Metric first (disambiguate «%»: RH 1 vs light 0).
+   */
+  function tipDecimalsFor(unit, metric) {
+    const m = String(metric || "").trim();
+    const byMetric = {
+      room_temp: 1,
+      humidity: 1,
+      eco2_ppm: 0,
+      tvoc_mg_m3: 2,
+      pressure_mmhg: 1,
+      light_pct: 0,
+      presence: 0,
+      voltage: 1,
+      current: 3,
+      power: 0,
+      frequency_hz: 2,
+      energy_kwh_import: 3,
+    };
+    if (Object.prototype.hasOwnProperty.call(byMetric, m)) return byMetric[m];
+    const u = String(unit || "").trim();
+    if (u === "V" || u === "В") return 1;
+    if (u === "A" || u === "А") return 3;
+    if (u === "W" || u === "Вт") return 0;
+    if (u === "Hz" || u === "Гц") return 2;
+    if (u === "kWh" || u === "кВт·ч") return 3;
+    if (u === "°C") return 1;
+    if (u === "ppm") return 0;
+    if (u === "mg/m³") return 2;
+    if (u === "mmHg" || u === "мм рт.ст.") return 1;
+    if (u === "%") return 1; // RH default; light uses metric light_pct
+    return null;
+  }
+
+  /**
+   * Chart tip/legend value. Prefer metric/unit decimals (V×10 → 1 знак);
+   * else trim up to 6 (bucket AVG float noise).
+   */
+  function fmtTipValue(v, digits) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
     const n = Number(v);
     if (!Number.isFinite(n)) return "—";
-    let s = n.toFixed(6);
-    s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    const d = Number.isInteger(digits) ? digits : 6;
+    let s = n.toFixed(d);
+    if (!Number.isInteger(digits)) {
+      s = s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    }
     if (s === "-0") s = "0";
     return s;
   }
@@ -640,10 +681,10 @@
       const el = $(id);
       if (el) el.textContent = fmt(v, digits);
     };
-    set("dev-ce-pa", p.a, 1);
-    set("dev-ce-pb", p.b, 1);
-    set("dev-ce-pc", p.c, 1);
-    set("dev-ce-pt", p.total, 1);
+    set("dev-ce-pa", p.a, 0);
+    set("dev-ce-pb", p.b, 0);
+    set("dev-ce-pc", p.c, 0);
+    set("dev-ce-pt", p.total, 0);
     set("dev-ce-de", e.delta, 3);
     const costEl = $("dev-ce-cost");
     if (costEl) {
@@ -821,16 +862,36 @@
     return s;
   }
 
-  function ensureChartTip(wrap) {
-    if (!wrap) return null;
-    let tip = wrap.querySelector(".dev-chart-tip");
-    if (!tip) {
-      tip = document.createElement("div");
-      tip.className = "dev-chart-tip";
-      tip.hidden = true;
-      wrap.appendChild(tip);
+  function ensureChartOverlay(wrap) {
+    if (!wrap) return { tipA: null, tipB: null, delta: null };
+    let tipA = wrap.querySelector(".dev-chart-tip[data-tip='a']");
+    if (!tipA) {
+      tipA = document.createElement("div");
+      tipA.className = "dev-chart-tip";
+      tipA.dataset.tip = "a";
+      tipA.hidden = true;
+      wrap.appendChild(tipA);
     }
-    return tip;
+    let tipB = wrap.querySelector(".dev-chart-tip[data-tip='b']");
+    if (!tipB) {
+      tipB = document.createElement("div");
+      tipB.className = "dev-chart-tip";
+      tipB.dataset.tip = "b";
+      tipB.hidden = true;
+      wrap.appendChild(tipB);
+    }
+    // Legacy single tip without data-tip — hide if present
+    wrap.querySelectorAll(".dev-chart-tip:not([data-tip])").forEach((el) => {
+      el.hidden = true;
+    });
+    let delta = wrap.querySelector(".dev-chart-delta");
+    if (!delta) {
+      delta = document.createElement("div");
+      delta.className = "dev-chart-delta";
+      delta.hidden = true;
+      wrap.appendChild(delta);
+    }
+    return { tipA, tipB, delta };
   }
 
   function nearestPoint(pts, xMs) {
@@ -864,9 +925,63 @@
         y: rawHit[1],
         plotY: plotHit[1],
         unit,
+        metric: ser.metric || "",
       });
     });
     return rows;
+  }
+
+  function fmtDurationMs(ms) {
+    const abs = Math.abs(Number(ms) || 0);
+    const totalSec = Math.round(abs / 1000);
+    if (totalSec < 60) return totalSec + " с";
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    if (m < 60) return s ? m + " мин " + s + " с" : m + " мин";
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    if (h < 48) return rm ? h + " ч " + rm + " мин" : h + " ч";
+    const d = Math.floor(h / 24);
+    const rh = h % 24;
+    return rh ? d + " д " + rh + " ч" : d + " д";
+  }
+
+  function fmtSignedTipValue(v, digits) {
+    if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+    const n = Number(v);
+    if (!Number.isFinite(n)) return "—";
+    const body = fmtTipValue(Math.abs(n), digits);
+    if (n > 0) return "+" + body;
+    if (n < 0) return "−" + body;
+    return body;
+  }
+
+  function xFromPointer(st, clientX, clientY, rect) {
+    const mx = ((clientX - rect.left) / rect.width) * st.w;
+    const my = ((clientY - rect.top) / rect.height) * st.h;
+    if (
+      mx < st.pad.l ||
+      mx > st.w - st.pad.r ||
+      my < st.pad.t ||
+      my > st.pad.t + st.plotH
+    ) {
+      return null;
+    }
+    return {
+      xMs: st.minX + ((mx - st.pad.l) / st.plotW) * (st.maxX - st.minX),
+      css: { x: clientX - rect.left, y: clientY - rect.top },
+    };
+  }
+
+  function snapMarkX(st, xMs) {
+    const rows = hitSeriesAtX(
+      st.srcSeries || [],
+      xMs,
+      (st.opts && st.opts.unitNote) || "",
+      !!(st.opts && st.opts.normalize)
+    );
+    if (rows.length && Number.isFinite(rows[0].t)) return rows[0].t;
+    return xMs;
   }
 
   function bindChartPointer(canvas) {
@@ -876,32 +991,28 @@
     const onMove = (e) => {
       const st = canvas.__chart;
       if (!st || !st.ok) return;
+      const marks = Array.isArray(st.marks) ? st.marks : [];
+      if (marks.length >= 2) return;
       const rect = canvas.getBoundingClientRect();
-      const mx = ((e.clientX - rect.left) / rect.width) * st.w;
-      const my = ((e.clientY - rect.top) / rect.height) * st.h;
-      if (
-        mx < st.pad.l ||
-        mx > st.w - st.pad.r ||
-        my < st.pad.t ||
-        my > st.pad.t + st.plotH
-      ) {
+      const hit = xFromPointer(st, e.clientX, e.clientY, rect);
+      if (!hit) {
         if (st.hoverX != null) {
           st.hoverX = null;
-          st.pin = false;
+          st.pointerCss = null;
           drawOntoCanvas(canvas, st.srcSeries, st.opts);
         }
         return;
       }
-      st.hoverX = st.minX + ((mx - st.pad.l) / st.plotW) * (st.maxX - st.minX);
-      st.pointerCss = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      st.hoverX = hit.xMs;
+      st.pointerCss = hit.css;
       drawOntoCanvas(canvas, st.srcSeries, st.opts);
     };
     const onLeave = () => {
       const st = canvas.__chart;
       if (!st) return;
-      if (st.pin) return;
       if (st.hoverX != null) {
         st.hoverX = null;
+        st.pointerCss = null;
         drawOntoCanvas(canvas, st.srcSeries, st.opts);
       }
     };
@@ -909,11 +1020,19 @@
       const st = canvas.__chart;
       if (!st || !st.ok) return;
       const rect = canvas.getBoundingClientRect();
-      const mx = ((e.clientX - rect.left) / rect.width) * st.w;
-      if (mx < st.pad.l || mx > st.w - st.pad.r) return;
-      st.hoverX = st.minX + ((mx - st.pad.l) / st.plotW) * (st.maxX - st.minX);
-      st.pointerCss = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      st.pin = true;
+      const hit = xFromPointer(st, e.clientX, e.clientY, rect);
+      if (!hit) return;
+      const marks = Array.isArray(st.marks) ? st.marks.slice() : [];
+      if (marks.length >= 2) {
+        st.marks = [];
+        st.hoverX = null;
+        st.pointerCss = null;
+      } else {
+        marks.push(snapMarkX(st, hit.xMs));
+        st.marks = marks;
+        st.hoverX = marks.length >= 2 ? null : hit.xMs;
+        st.pointerCss = hit.css;
+      }
       drawOntoCanvas(canvas, st.srcSeries, st.opts);
     };
     canvas.addEventListener("mousemove", onMove);
@@ -925,16 +1044,108 @@
    * Draw multi-series line chart onto canvas.
    * opts: { range, normalize, padBottom, legendEl, emptyText, unitNote }
    * normalize=true («Общее»): shared absolute Y 0…max_all, real values, numeric ticks.
-   * Hover/click: crosshair + tooltip (time + series + value + unit).
+   * Click measure: 1st/2nd click place vertical marks; area + Δt/Δvalue between;
+   * 3rd click clears. Hover preview while fewer than 2 marks.
    */
   /** Фиксированная высота графика — не брать clientHeight wrap (петля роста с tip/flex). */
   const CHART_CSS_H = 400;
+
+  function tipHtmlFromRows(rows, rangeKey, metric) {
+    if (!rows || !rows.length) return "";
+    const t0 = rows[0].t;
+    const lines = [
+      `<div class="dev-chart-tip-time">${escapeAttr(fmtTipTimeLabel(t0, rangeKey))}</div>`,
+    ];
+    rows.forEach((row) => {
+      const color = COLORS[row.idx % COLORS.length];
+      const unit = row.unit ? ` ${row.unit}` : "";
+      const dec = tipDecimalsFor(row.unit, row.metric || metric);
+      lines.push(
+        `<div class="dev-chart-tip-row"><i style="background:${color}"></i>` +
+          `<span>${escapeAttr(row.label)}</span>` +
+          `<b>${escapeAttr(fmtTipValue(row.y, dec) + unit)}</b></div>`
+      );
+    });
+    return lines.join("");
+  }
+
+  function placeTipNearX(tip, html, xPix, w, h, pad, preferLeft) {
+    if (!tip || !html) {
+      if (tip) tip.hidden = true;
+      return;
+    }
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const tipW = tip.offsetWidth || 160;
+    const tipH = tip.offsetHeight || 48;
+    let left = preferLeft ? xPix - tipW - 8 : xPix + 8;
+    let top = pad.t + 8;
+    if (left + tipW > w - 4) left = xPix - tipW - 8;
+    if (left < 4) left = 4;
+    if (top + tipH > h - 4) top = h - tipH - 4;
+    if (top < 4) top = 4;
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+
+  function placeTipAtPointer(tip, html, xPix, pointerCss, w, h, pad) {
+    if (!tip || !html) {
+      if (tip) tip.hidden = true;
+      return;
+    }
+    tip.innerHTML = html;
+    tip.hidden = false;
+    const cssX = pointerCss ? pointerCss.x : xPix;
+    const cssY = pointerCss ? pointerCss.y : pad.t + 8;
+    const tipW = tip.offsetWidth || 160;
+    const tipH = tip.offsetHeight || 48;
+    let left = cssX + 12;
+    let top = cssY - 12;
+    if (left + tipW > w - 4) left = cssX - tipW - 12;
+    if (left < 4) left = 4;
+    if (top + tipH > h - 4) top = h - tipH - 4;
+    if (top < 4) top = 4;
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
+  }
+
+  function drawCrosshairLine(ctx, xPix, pad, plotH, solid, hoverStroke) {
+    ctx.save();
+    ctx.strokeStyle = solid
+      ? "rgba(10,132,255,0.95)"
+      : hoverStroke || "rgba(160,160,170,0.75)";
+    ctx.lineWidth = solid ? 1.5 : 1;
+    if (!solid) ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(xPix, pad.t);
+    ctx.lineTo(xPix, pad.t + plotH);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawHitMarkers(ctx, tipRows, xScale, yScale) {
+    (tipRows || []).forEach((row) => {
+      const color = COLORS[row.idx % COLORS.length];
+      const px = xScale(row.t);
+      const py = yScale(row.plotY);
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+  }
 
   function drawOntoCanvas(canvas, series, opts) {
     opts = opts || {};
     if (!canvas) return;
     const wrap = canvas.parentElement;
-    const tip = ensureChartTip(wrap);
+    const ov = ensureChartOverlay(wrap);
+    const tipA = ov.tipA;
+    const tipB = ov.tipB;
+    const deltaEl = ov.delta;
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(280, Math.floor((wrap && wrap.clientWidth) || 600));
     const h = CHART_CSS_H;
@@ -952,7 +1163,7 @@
     const rangeKey = opts.range || "1h";
     const prev = canvas.__chart || {};
     const hoverX = prev.hoverX;
-    const pin = !!prev.pin;
+    const marks = Array.isArray(prev.marks) ? prev.marks.slice(0, 2) : [];
     const pointerCss = prev.pointerCss || null;
 
     ctx.fillStyle = th.bg;
@@ -966,13 +1177,16 @@
       ctx.font = "13px ui-sans-serif, system-ui, sans-serif";
       ctx.fillText(opts.emptyText || "Нет данных", pad.l, h / 2);
       if (opts.legendEl) renderLegendInto(opts.legendEl, [], "");
-      if (tip) tip.hidden = true;
+      if (tipA) tipA.hidden = true;
+      if (tipB) tipB.hidden = true;
+      if (deltaEl) deltaEl.hidden = true;
       canvas.__chart = {
         ok: false,
         srcSeries: series || [],
         opts,
         hoverX: null,
-        pin: false,
+        marks: [],
+        pointerCss: null,
       };
       bindChartPointer(canvas);
       return;
@@ -1098,73 +1312,162 @@
       ctx.stroke();
     });
 
-    // Crosshair + point markers at hover/click X
-    let tipRows = [];
-    if (hoverX != null && Number.isFinite(hoverX)) {
-      tipRows = hitSeriesAtX(drawSeries, hoverX, opts.unitNote || "", !!opts.normalize);
-      const xPix = xScale(hoverX);
+    // Measure marks (0→1→2) + hover preview while < 2 marks
+    const unitNote = opts.unitNote || "";
+    const normalize = !!opts.normalize;
+    const metricId = opts.metric || "";
+    const markRows = marks.map((mx) =>
+      hitSeriesAtX(drawSeries, mx, unitNote, normalize)
+    );
+
+    if (marks.length === 2) {
+      const xA = xScale(marks[0]);
+      const xB = xScale(marks[1]);
+      const x0 = Math.min(xA, xB);
+      const x1 = Math.max(xA, xB);
       ctx.save();
-      ctx.strokeStyle = "rgba(255,255,255,0.55)";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.moveTo(xPix, pad.t);
-      ctx.lineTo(xPix, pad.t + plotH);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      tipRows.forEach((row) => {
-        const color = COLORS[row.idx % COLORS.length];
-        const px = xScale(row.t);
-        const py = yScale(row.plotY);
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(px, py, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#fff";
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-      });
+      ctx.fillStyle = "rgba(10, 132, 255, 0.14)";
+      ctx.fillRect(x0, pad.t, Math.max(1, x1 - x0), plotH);
       ctx.restore();
     }
 
-    if (tip) {
-      if (tipRows.length) {
-        const t0 = tipRows[0].t;
-        const lines = [
-          `<div class="dev-chart-tip-time">${escapeAttr(fmtTipTimeLabel(t0, rangeKey))}${
-            pin ? " · закреплено" : ""
-          }</div>`,
-        ];
-        tipRows.forEach((row) => {
-          const color = COLORS[row.idx % COLORS.length];
-          const unit = row.unit ? ` ${row.unit}` : "";
-          lines.push(
-            `<div class="dev-chart-tip-row"><i style="background:${color}"></i>` +
-              `<span>${escapeAttr(row.label)}</span>` +
-              `<b>${escapeAttr(fmtTipValue(row.y) + unit)}</b></div>`
-          );
+    marks.forEach((mx, i) => {
+      if (!Number.isFinite(mx)) return;
+      drawCrosshairLine(ctx, xScale(mx), pad, plotH, true);
+      drawHitMarkers(ctx, markRows[i], xScale, yScale);
+    });
+
+    let hoverRows = [];
+    if (marks.length < 2 && hoverX != null && Number.isFinite(hoverX)) {
+      hoverRows = hitSeriesAtX(drawSeries, hoverX, unitNote, normalize);
+      drawCrosshairLine(ctx, xScale(hoverX), pad, plotH, false, th.text);
+      drawHitMarkers(ctx, hoverRows, xScale, yScale);
+    }
+
+    if (tipA) tipA.hidden = true;
+    if (tipB) tipB.hidden = true;
+    if (deltaEl) deltaEl.hidden = true;
+
+    if (marks.length === 0) {
+      if (hoverRows.length) {
+        placeTipAtPointer(
+          tipA,
+          tipHtmlFromRows(hoverRows, rangeKey, metricId),
+          xScale(hoverX),
+          pointerCss,
+          w,
+          h,
+          pad
+        );
+      }
+    } else if (marks.length === 1) {
+      const rows0 = markRows[0] || [];
+      if (rows0.length) {
+        placeTipNearX(
+          tipA,
+          tipHtmlFromRows(rows0, rangeKey, metricId),
+          xScale(marks[0]),
+          w,
+          h,
+          pad,
+          false
+        );
+      }
+      if (hoverRows.length) {
+        placeTipAtPointer(
+          tipB,
+          tipHtmlFromRows(hoverRows, rangeKey, metricId),
+          xScale(hoverX),
+          pointerCss,
+          w,
+          h,
+          pad
+        );
+      }
+    } else if (marks.length === 2) {
+      const rows0 = markRows[0] || [];
+      const rows1 = markRows[1] || [];
+      const xA = xScale(marks[0]);
+      const xB = xScale(marks[1]);
+      if (rows0.length) {
+        placeTipNearX(
+          tipA,
+          tipHtmlFromRows(rows0, rangeKey, metricId),
+          xA,
+          w,
+          h,
+          pad,
+          xA > xB
+        );
+      }
+      if (rows1.length) {
+        placeTipNearX(
+          tipB,
+          tipHtmlFromRows(rows1, rangeKey, metricId),
+          xB,
+          w,
+          h,
+          pad,
+          xB > xA
+        );
+      }
+      if (deltaEl && (rows0.length || rows1.length)) {
+        const dt = Math.abs((marks[1] || 0) - (marks[0] || 0));
+        const byIdx = {};
+        rows0.forEach((r) => {
+          byIdx[r.idx] = { a: r, b: null };
         });
-        tip.innerHTML = lines.join("");
-        tip.hidden = false;
-        const cssX = pointerCss ? pointerCss.x : xScale(hoverX);
-        const cssY = pointerCss ? pointerCss.y : pad.t + 8;
-        const tipW = tip.offsetWidth || 160;
-        const tipH = tip.offsetHeight || 48;
-        let left = cssX + 12;
-        let top = cssY - 12;
-        if (left + tipW > w - 4) left = cssX - tipW - 12;
-        if (left < 4) left = 4;
-        if (top + tipH > h - 4) top = h - tipH - 4;
-        if (top < 4) top = 4;
-        tip.style.left = left + "px";
-        tip.style.top = top + "px";
-      } else {
-        tip.hidden = true;
+        rows1.forEach((r) => {
+          if (!byIdx[r.idx]) byIdx[r.idx] = { a: null, b: r };
+          else byIdx[r.idx].b = r;
+        });
+        const dLines = [
+          `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(dt))}</div>`,
+        ];
+        Object.keys(byIdx)
+          .map((k) => Number(k))
+          .sort((a, b) => a - b)
+          .forEach((idx) => {
+            const pair = byIdx[idx];
+            const a = pair.a;
+            const b = pair.b;
+            if (!a || !b) return;
+            const color = COLORS[idx % COLORS.length];
+            const unit = a.unit || b.unit || "";
+            const unitS = unit ? ` ${unit}` : "";
+            const dy = Number(b.y) - Number(a.y);
+            const dec = tipDecimalsFor(unit, a.metric || b.metric || metricId);
+            dLines.push(
+              `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
+                `<b>Δ ${escapeAttr(a.label || "")} ${escapeAttr(
+                  fmtSignedTipValue(dy, dec) + unitS
+                )}</b></div>`
+            );
+          });
+        deltaEl.innerHTML = dLines.join("");
+        deltaEl.hidden = false;
+        const midX = (Math.min(xA, xB) + Math.max(xA, xB)) / 2;
+        const tipW = deltaEl.offsetWidth || 140;
+        const tipH = deltaEl.offsetHeight || 48;
+        let left = midX - tipW / 2;
+        let top = pad.t + plotH / 2 - tipH / 2;
+        if (left < pad.l + 4) left = pad.l + 4;
+        if (left + tipW > w - pad.r - 4) left = w - pad.r - tipW - 4;
+        if (top < pad.t + 4) top = pad.t + 4;
+        if (top + tipH > pad.t + plotH - 4) top = pad.t + plotH - tipH - 4;
+        deltaEl.style.left = left + "px";
+        deltaEl.style.top = top + "px";
       }
     }
 
     if (opts.legendEl) {
-      renderLegendInto(opts.legendEl, drawSeries, opts.unitNote || "", opts.normalize);
+      renderLegendInto(
+        opts.legendEl,
+        drawSeries,
+        opts.unitNote || "",
+        opts.normalize,
+        opts.metric || ""
+      );
     }
 
     canvas.__chart = {
@@ -1181,13 +1484,13 @@
       srcSeries: series || [],
       opts,
       hoverX: hoverX != null ? hoverX : null,
-      pin,
+      marks,
       pointerCss,
     };
     bindChartPointer(canvas);
   }
 
-  function renderLegendInto(el, series, unitNote, normalized) {
+  function renderLegendInto(el, series, unitNote, normalized, metric) {
     if (!el) return;
     if (!series.length) {
       el.innerHTML = "";
@@ -1197,8 +1500,12 @@
       .map((s, i) => {
         const raw = s._rawPoints || s.points || [];
         const last = raw[raw.length - 1];
-        const unit = s.unit ? ` ${s.unit}` : unitNote ? ` ${unitNote}` : "";
-        const val = last ? fmt(last[1], 2) + unit : "—";
+        const u = s.unit || unitNote || "";
+        const unit = u ? ` ${u}` : "";
+        const dec = tipDecimalsFor(u, metric || s.metric || "");
+        const val = last
+          ? (Number.isInteger(dec) ? fmt(last[1], dec) : fmtTipValue(last[1])) + unit
+          : "—";
         const name = s.label || s.field || s.metric || "";
         return `<span class="dev-legend-item"><i style="background:${
           COLORS[i % COLORS.length]
@@ -1208,7 +1515,13 @@
   }
 
   function renderLegend(series) {
-    renderLegendInto($("dev-chart-legend"), series, chartMeta.unit || "", false);
+    renderLegendInto(
+      $("dev-chart-legend"),
+      series,
+      chartMeta.unit || "",
+      false,
+      activeMetric
+    );
   }
 
   function flattenMetricSeries(metricsPayload) {
@@ -1312,7 +1625,8 @@
     const canvas = $("dev-chart");
     if (canvas && canvas.__chart) {
       canvas.__chart.hoverX = null;
-      canvas.__chart.pin = false;
+      canvas.__chart.marks = [];
+      canvas.__chart.pointerCss = null;
     }
   }
 
@@ -1416,6 +1730,7 @@
         chartMeta = {
           label: data.label || "",
           unit: data.unit || "",
+          metric: activeMetric,
           range: data.range || activeRange,
           normalize: false,
           windowMin: data.t0_ms,
@@ -1446,6 +1761,7 @@
       normalize: normalize,
       legendEl: $("dev-chart-legend"),
       unitNote: chartMeta.unit || "",
+      metric: chartMeta.metric || (normalize ? "" : activeMetric),
       windowMin: chartMeta.windowMin,
       windowMax: chartMeta.windowMax,
     });

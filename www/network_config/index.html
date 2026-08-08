@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.68&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.99&r=svcbtn1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.99&r=closex1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -935,7 +935,7 @@
                 <h3 id="flasher-config-title">—</h3>
                 <div class="flasher-config-sub mono" id="flasher-config-sub">—</div>
               </div>
-              <button class="btn btn-sm flasher-config-close" id="flasher-config-close-btn" type="button" aria-label="Закрыть окно настройки">Закрыть</button>
+              <button class="btn btn-sm modal-close-x flasher-config-close" id="flasher-config-close-btn" type="button" aria-label="Закрыть окно настройки" title="Закрыть">✕</button>
             </div>
             <div class="flasher-config-banner" id="flasher-config-banner" hidden></div>
             <div class="flasher-config-main">
@@ -987,7 +987,7 @@
           <div class="dev-add-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-add-modal-title">
             <div class="dev-modal-head">
               <h3 id="dev-add-modal-title" data-i18n="Добавить виджет">Добавить виджет</h3>
-              <button type="button" class="btn btn-sm" id="dev-add-modal-close" aria-label="Закрыть">Закрыть</button>
+              <button type="button" class="btn btn-sm modal-close-x" id="dev-add-modal-close" aria-label="Закрыть" title="Закрыть">✕</button>
             </div>
             <p class="muted" style="margin:0 0 10px" data-i18n="Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).">Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).</p>
             <div id="dev-add-list" class="dev-add-list"></div>
@@ -1098,7 +1098,7 @@
           <div class="mqtt-modal-dialog mqtt-modal-wide">
             <div class="mqtt-modal-head">
               <h3>Поиск устройств на шине</h3>
-              <button class="btn btn-sm" onclick="mqttHideScanModal()">Закрыть</button>
+              <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideScanModal()" aria-label="Закрыть" title="Закрыть">✕</button>
             </div>
             <div class="mqtt-modal-body">
               <div class="mqtt-scan-params">
@@ -1149,7 +1149,7 @@
           <div class="mqtt-modal-dialog">
             <div class="mqtt-modal-head">
               <h3>Добавить устройство</h3>
-              <button class="btn btn-sm" onclick="mqttHideAddModal()">Закрыть</button>
+              <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideAddModal()" aria-label="Закрыть" title="Закрыть">✕</button>
             </div>
             <div class="mqtt-modal-body">
               <div class="form-row">
@@ -1205,7 +1205,7 @@
   <div class="mqtt-modal-dialog mqtt-modal-wide" role="dialog" aria-modal="true" aria-labelledby="factory-reset-modal-title">
     <div class="mqtt-modal-head">
       <h3 id="factory-reset-modal-title" data-i18n="Сброс настроек">Сброс настроек</h3>
-      <button type="button" class="btn btn-sm" onclick="closeFactoryResetModal()" aria-label="Закрыть" data-i18n="Закрыть">Закрыть</button>
+      <button type="button" class="btn btn-sm modal-close-x" onclick="closeFactoryResetModal()" aria-label="Закрыть" title="Закрыть">✕</button>
     </div>
     <div class="mqtt-modal-body">
       <ul class="factory-reset-warnings">
@@ -1244,7 +1244,7 @@
 <script src="static/js/flasher.js?v=1.0.5.68&r=noell1"></script>
 <script src="static/js/mqtt.js?v=1.0.5.69&r=noell1"></script>
 <script src="static/js/gateway.js?v=1.0.5.68&r=noell1"></script>
-<script src="static/js/devices.js?v=1.0.5.99&r=noell1"></script>
+<script src="static/js/devices.js?v=1.0.5.99&r=prec1"></script>
 <script src="static/js/cloud.js?v=1.0.5.68&r=noell1"></script>
 <script src="static/js/app/alice.js?v=1.0.5.68&r=noell1"></script>
 
@@ -1253,7 +1253,7 @@
   <div class="dev-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-modal-title">
     <div class="dev-modal-head">
       <h3 id="dev-modal-title" data-i18n="История">История</h3>
-      <button type="button" class="btn btn-sm" id="dev-modal-close" aria-label="Закрыть">Закрыть</button>
+      <button type="button" class="btn btn-sm modal-close-x" id="dev-modal-close" aria-label="Закрыть" title="Закрыть">✕</button>
     </div>
     <div class="dev-modal-toolbar">
       <div class="dev-mode-tabs" id="dev-mode-tabs" role="tablist" aria-label="Режим графика">

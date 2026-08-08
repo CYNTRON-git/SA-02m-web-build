@@ -13,14 +13,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sa02m_devices.stand_storage_path import (
-    ACTIVE_NAME,
-    free_bytes,
-    journaling_for_fstype,
-    list_history_dbs,
-    mount_fstype,
-    resolve_storage_target,
-)
+try:
+    from sa02m_devices.stand_storage_path import (
+        ACTIVE_NAME,
+        free_bytes,
+        journaling_for_fstype,
+        list_history_dbs,
+        mount_fstype,
+        resolve_storage_target,
+    )
+except ImportError:  # hardpy_tests layout: /opt/hardpy_tests/lib/
+    from lib.stand_storage_path import (  # type: ignore[no-redef]
+        ACTIVE_NAME,
+        free_bytes,
+        journaling_for_fstype,
+        list_history_dbs,
+        mount_fstype,
+        resolve_storage_target,
+    )
 
 try:
     from zoneinfo import ZoneInfo
@@ -37,6 +47,8 @@ ROTATE_HEADROOM = int(
     os.environ.get("STAND_DEVICES_HISTORY_ROTATE_HEADROOM", str(256 * 1024**2))
 )
 
+# decimals = publish/display precision (Modbus scale / stand_devices round).
+# Chart AVG buckets are rounded to this before JSON so tip/axis stay clean.
 METRICS: dict[str, dict[str, Any]] = {
     "room_temp": {
         "table": "dtv_samples",
@@ -45,6 +57,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Температура",
         "unit": "°C",
         "device": "dtv",
+        "decimals": 1,  # ×0.1 °C
     },
     "humidity": {
         "table": "dtv_samples",
@@ -53,6 +66,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Влажность",
         "unit": "%",
         "device": "dtv",
+        "decimals": 1,  # ×0.1 %
     },
     "eco2_ppm": {
         "table": "dtv_samples",
@@ -61,6 +75,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "eCO₂",
         "unit": "ppm",
         "device": "dtv",
+        "decimals": 0,  # ×1 ppm
     },
     "tvoc_mg_m3": {
         "table": "dtv_samples",
@@ -69,6 +84,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "TVOC",
         "unit": "mg/m³",
         "device": "dtv",
+        "decimals": 2,  # ×0.01 mg/m³
     },
     "pressure_mmhg": {
         "table": "dtv_samples",
@@ -77,6 +93,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Давление",
         "unit": "мм рт.ст.",
         "device": "dtv",
+        "decimals": 1,  # kPa→mmHg round(..., 1)
     },
     "light_pct": {
         "table": "dtv_samples",
@@ -85,6 +102,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Освещённость, %",
         "unit": "%",
         "device": "dtv",
+        "decimals": 0,  # ×1 %
     },
     "presence": {
         "table": "dtv_samples",
@@ -93,6 +111,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Присутствие",
         "unit": "",
         "device": "dtv",
+        "decimals": 0,
     },
     "voltage": {
         "table": "ce_samples",
@@ -101,6 +120,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Напряжение Ua/Ub/Uc",
         "unit": "V",
         "device": "ce",
+        "decimals": 1,  # U×10 → V
     },
     "current": {
         "table": "ce_samples",
@@ -109,6 +129,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Ток Ia/Ib/Ic",
         "unit": "A",
         "device": "ce",
+        "decimals": 3,  # A×1000
     },
     "power": {
         "table": "ce_samples",
@@ -122,6 +143,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Мощность",
         "unit": "W",
         "device": "ce",
+        "decimals": 0,  # int32 W
     },
     "frequency_hz": {
         "table": "ce_samples",
@@ -130,6 +152,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Частота",
         "unit": "Hz",
         "device": "ce",
+        "decimals": 2,  # ×0.01 Hz
     },
     "energy_kwh_import": {
         "table": "ce_samples",
@@ -138,6 +161,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Энергия (импорт)",
         "unit": "kWh",
         "device": "ce",
+        "decimals": 3,  # Wh/1000
     },
 }
 
@@ -579,6 +603,29 @@ def _query_series(
     ]
 
 
+def _round_series_values(
+    series: list[dict[str, Any]], decimals: int | None
+) -> list[dict[str, Any]]:
+    """Round Y values to metric publish precision (suppress AVG float noise)."""
+    if decimals is None or not isinstance(decimals, int) or decimals < 0:
+        return series
+    out: list[dict[str, Any]] = []
+    for ser in series:
+        pts_in = ser.get("points") or []
+        pts: list[list[Any]] = []
+        for pair in pts_in:
+            if not pair or len(pair) < 2:
+                continue
+            try:
+                y = round(float(pair[1]), decimals)
+            except (TypeError, ValueError):
+                continue
+            pts.append([pair[0], y])
+        if pts:
+            out.append({**ser, "points": pts})
+    return out
+
+
 def _merge_series_lists(
     parts: list[list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -674,12 +721,16 @@ def history(
         finally:
             conn.close()
     series = _merge_series_lists(parts)
+    dec = meta.get("decimals")
+    if isinstance(dec, int):
+        series = _round_series_values(series, dec)
     status = storage_status() if path is None else {}
     return {
         "ok": True,
         "metric": metric_id,
         "label": meta["label"],
         "unit": meta["unit"],
+        "decimals": dec if isinstance(dec, int) else None,
         "device": meta["device"],
         "device_id": did or "",
         "range": range_key,
@@ -721,6 +772,7 @@ def history_batch(
                 "metric": mid,
                 "label": METRICS[mid]["label"],
                 "unit": METRICS[mid]["unit"],
+                "decimals": METRICS[mid].get("decimals"),
                 "device": METRICS[mid]["device"],
                 "device_id": device_id or "",
                 "series": [],
@@ -731,6 +783,7 @@ def history_batch(
             "metric": mid,
             "label": one["label"],
             "unit": one["unit"],
+            "decimals": one.get("decimals"),
             "device": one["device"],
             "device_id": one.get("device_id") or "",
             "series": one.get("series") or [],

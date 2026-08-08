@@ -166,7 +166,6 @@
     'Применить вручную': 'Apply Manually',
     'Аппаратный вариант': 'Hardware Variant',
     'Тип устройства': 'Device Type',
-    'SA-02m-2 (2 Ethernet, 4 COM-порта)': 'SA-02m-2 (2 Ethernet, 4 COM ports)',
     'Управление системой': 'System Management',
     'Службы, облако, перезагрузка и журнал событий': 'Services, cloud, reboot, and event log',
     'Службы, перезагрузка и журнал событий': 'Services, reboot, and event log',
