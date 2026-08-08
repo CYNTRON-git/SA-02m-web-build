@@ -140,7 +140,8 @@ sh /mnt/autorun.sh
 
 | Файл | Где | Назначение |
 |---|---|---|
-| [`cleanup-donor.sh`](cleanup-donor.sh) | донор (ssh) | фазы 1–4: мусор, тулчейн, apt/logs (**без** сброса ssh keys) |
+| [`cleanup-donor.sh`](cleanup-donor.sh) | донор (ssh) | фазы 1–4: мусор (`sa02m-deploy-*`, `.npm`, `*.deb`…), тулчейн, apt/logs; `--dry-run` / `--apply` (**без** сброса ssh keys). ТЗ: [`docs/TZ_PRE_PRODUCTION_DONOR_CLEANUP.md`](../../docs/TZ_PRE_PRODUCTION_DONOR_CLEANUP.md) |
+| [`run-cleanup-donor.py`](run-cleanup-donor.py) | хост Windows/Linux | SSH-обёртка: `py -3 tools/imaging/run-cleanup-donor.py --dry-run|--apply --report` |
 | [`stream-after-cleanup.sh`](stream-after-cleanup.sh) | донор (одна ssh-сессия) | zerofill → id reset → dd по **Ethernet/SSH** |
 | [`serial-restore-ssh.py`](serial-restore-ssh.py) | хост (COM7 115200) | **только** восстановление sshd; образ по serial **не** передаётся |
 | [`fix-donor-after-abort.sh`](fix-donor-after-abort.sh) | донор (ssh/serial) | после прерванного снятия: kill dd, machine-id, ssh keys, сервисы |
@@ -153,6 +154,21 @@ sh /mnt/autorun.sh
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
 
 ---
+
+## Очистка мусора донора (перед образом)
+
+По умолчанию `cleanup-donor.sh` — **dry-run** (ничего не удаляет). Перед production-образом или из `make-image.sh` нужен `--apply`.
+
+```powershell
+py -3 tools/imaging/run-cleanup-donor.py --dry-run --report
+py -3 tools/imaging/run-cleanup-donor.py --apply --report
+```
+
+```bash
+# на доноре
+bash tools/imaging/cleanup-donor.sh --dry-run --report
+bash tools/imaging/cleanup-donor.sh --apply --report
+```
 
 ## Параметры make-image.sh
 

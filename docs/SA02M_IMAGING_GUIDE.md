@@ -139,6 +139,8 @@ Device         Boot  Start      End  Sectors  Size   Id  Type
 
 **Прогноз после cleanup:** ~**1.0–1.3 GiB** занято → финальный `.img.xz` ~**350–500 MiB**.
 
+Актуально (2026-08-07, `.136` после `tools/imaging/cleanup-donor.sh --apply`): rootfs **used ~2.2 GiB** (было ~3.1), `/root` **~640 KiB** (было ~786 MiB стендового `sa02m-deploy-*` / `.npm` / `*.deb`). Скрипт: `--dry-run` / `--apply`; ТЗ — [`TZ_PRE_PRODUCTION_DONOR_CLEANUP.md`](TZ_PRE_PRODUCTION_DONOR_CLEANUP.md). `make-image.sh` вызывает cleanup с `--apply --purge-update-staging`.
+
 ### Снимок аудита эталона (192.168.1.136, май 2026)
 
 Проверка по SSH (`private/.ssh/sa02m_sa02`). Используйте как эталонные значения при сравнении после cleanup/заливки.
@@ -372,14 +374,17 @@ ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 uname -nrm
 
 #### Шаг 1 — мусор в `/root` и `/home`
 
-| Путь | Причина удаления |
+Явные glob-списки (не `rm -rf /root/*`). В т.ч. **`/root/sa02m-deploy-*`** (раньше чистилось только точное имя `sa02m-deploy`). Deny-лист защищает `/var/www/network_config`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, Alice certs, flasher firmware, сеть/nginx/MQTT.
+
+| Путь / паттерн | Причина удаления |
 |---|---|
-| `/root/backup` | резервные копии |
-| `/root/mplc_cyntron_build` | дерево сборки драйвера |
-| `/root/sa02m-deploy`, `sa02m-deploy.tar.gz` | деплой-артефакты |
-| `/root/cursor_build.swap` | временный swap-файл |
-| `/root/u-boot-sunxi-with-spl.bin` | копия U-Boot (уже в eMMC) |
-| `/root/.cache`, `.bash_history`, Trash | персональные/временные данные |
+| `/root/sa02m-deploy`, `sa02m-deploy-*`, `sa02m-install-*` | staging веб-деплоев |
+| `/root/deploy-*.tar*` , `deploy.tar.gz` | архивы деплоя |
+| `/root/.npm`, `.cache`, history, Trash | кеши разработчика |
+| `/root/mplc_backup*`, `*-backup-*.tgz`, `zImage*.bak*` | стендовые бэкапы / эксперименты |
+
+**Не удаляются** (нужны для работы/установки): `/opt/vendor-installers/**`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, веб, nginx/MQTT/SSH, flasher firmware, Node-RED (`/root/.node-red`), `/tmp/sa02m-gpioset-*` (USB power). `/root/*.deb` / `mplc_update` — только с `--purge-installers`. `/tmp` целиком не сносится.
+| `/var/lib/sa02m-update/{staging,incoming,runner}/*`, `/tmp/sa02m-*` | эфемерный update staging |
 
 #### Шаг 2 — тулчейн (apt purge)
 
@@ -437,19 +442,29 @@ touch /root/.not_logged_in_yet
 
 ### 8.3. Запуск cleanup
 
+Без `--apply` скрипт **ничего не удаляет** (dry-run). `make-image.sh` / `capture-image-win.py` передают `--apply` явно.
+
 **Вручную на доноре:**
 
 ```bash
-bash cleanup-donor.sh
+bash tools/imaging/cleanup-donor.sh --dry-run --report
+bash tools/imaging/cleanup-donor.sh --apply --report
 ```
 
-**С хоста (рекомендуется):**
+**С Windows-хоста (предпочтительно):**
 
 ```bash
-ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 'bash -s' < tools/imaging/cleanup-donor.sh
+py -3 tools/imaging/run-cleanup-donor.py --dry-run --report
+py -3 tools/imaging/run-cleanup-donor.py --apply --report
 ```
 
-**Через make-image.sh** — cleanup выполняется автоматически (флаг `--no-cleanup` отключает).
+**С хоста через SSH stdin:**
+
+```bash
+ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 'bash -s -- --dry-run --report' < tools/imaging/cleanup-donor.sh
+```
+
+**Через make-image.sh** — cleanup с `--apply` выполняется автоматически (флаг `--no-cleanup` отключает).
 
 ### 8.4. Zero-fill (заполнение нулями)
 

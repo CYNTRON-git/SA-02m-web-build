@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.5.65-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.5.67-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -1826,28 +1826,30 @@ tail -f /var/log/fix-eth.log
 
 ## Обновление
 
-Обновление веб-интерфейса выполняется **только при наличии доступа в интернет** на СА-02м (исходящий HTTPS к GitHub). Без интернета обновление недоступно — перенос отдельных файлов с ПК (scp/WinSCP) не поддерживается.
+Два штатных пути из **Управление → Обновление**:
 
-### Через веб-интерфейс (рекомендуется)
+1. **GitHub OTA** — нужен исходящий HTTPS к GitHub. Кнопка «Проверить / Применить»;
+   `sa02m-web-update-apply` клонирует allowlisted репозиторий и при наличии
+   `/usr/local/libexec/sa02m-update-runner` передаёт apply в shared runner
+   (иначе — legacy rsync в `/var/www/network_config`).
+2. **Офлайн-пакет `.sa02m`** (с релиза N+1) — загрузка файла с ПК в браузере,
+   без интернета на плате. Сборка на ПК: `python scripts/pack-offline-update.py`.
 
-1. Подключите устройство к сети с доступом в интернет (eth0, eth1 или USB-модем).
-2. Откройте **Управление → Обновление веб**.
-3. Нажмите **«Проверить обновления»** — сравнение с веткой `main` на GitHub.
-4. При наличии новой версии — **«Применить обновление»**.
+Произвольный scp/WinSCP отдельных файлов по-прежнему не поддерживается как
+процедура обновления — только пути выше или деплой по `docs/deployment.md`.
 
-Скрипт `sa02m-web-update-apply.sh` клонирует репозиторий с GitHub и разворачивает файлы в `/var/www/network_config`. Прогресс и журнал отображаются в том же блоке интерфейса.
+**Время GitHub OTA:** порядка **20 минут** (зависит от канала).
 
-**Время:** порядка **20 минут** — зависит от скорости интернет-подключения (загрузка репозитория, копирование файлов, обновление прав).
+Автопроверка новых версий — раз в час (`sa02m-web-update-check.timer`).
 
-Автоматическая проверка новых версий — раз в час (`sa02m-web-update-check.timer`); ручная проверка доступна в любой момент.
-
-### Через SSH (при наличии интернета)
+### Через SSH (GitHub OTA)
 
 ```bash
 sudo /usr/local/sbin/sa02m-web-update-apply
 ```
 
-Журнал: `/var/lib/sa02m-web-build/update.log`.
+Журнал legacy: `/var/lib/sa02m-web-build/update.log`; shared runner:
+`/var/lib/sa02m-update/update.log`.
 
 ---
 
