@@ -594,8 +594,8 @@ function scheduleVariantStatusAutoClear(el) {
 
 function variantDisplayLabel(variant) {
   const map = {
-    'sa02m-1eth': 'СА-02м-1eth',
-    'sa02m-2eth': 'СА-02м-2-2eth',
+    'sa02m-1eth': 'СА-02м',
+    'sa02m-2eth': 'СА-02м-2',
   };
   return map[variant] || String(variant || '').replace(/^sa02m-/i, 'СА-02м-');
 }

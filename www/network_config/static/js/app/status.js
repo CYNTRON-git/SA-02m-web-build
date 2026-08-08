@@ -873,13 +873,13 @@ function applySystemStatus(d) {
     if (!installed) {
       btn.disabled = true;
       if (lbl) lbl.textContent = uiT('НЕ УСТАНОВЛЕНО');
-      btn.className = 'btn btn-danger';
+      btn.className = 'btn btn-danger system-action-btn';
       btn.title = uiT('Нет storage-mount — выполните установку системы (install.sh)');
     } else {
       btn.disabled = false;
       btn.title = uiT('Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется');
       if (lbl) lbl.textContent = uiT(on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО');
-      btn.className = 'btn btn-danger';
+      btn.className = 'btn btn-danger system-action-btn';
     }
   }
 }
