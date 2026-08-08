@@ -34,6 +34,9 @@ tools/imaging/flash-media/
 .tmp/
 tmp/
 
+# Offline update packer output (scripts/pack-offline-update.py)
+/out/
+
 # Vendor payload (CODESYS Runtime .deb, MPLC install tarballs, лицензионные .wbc/.lic).
 # Проприетарные бинарники не коммитим — они лежат локально на build-host в vendor/
 # и копируются в /opt/vendor-installers/ через tools/debian-rootfs/create-sa02m-rootfs.sh.
