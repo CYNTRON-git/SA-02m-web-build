@@ -100,6 +100,12 @@ if [ "${SA02M_SKIP_MQTT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/05-mqtt.sh" ]
     bash "$SCRIPT_DIR/scripts/05-mqtt.sh" || log WARN "05-mqtt.sh завершился с ошибкой"
 fi
 
+# Devices tab (DTV / CE-02m-3 widgets + history) — after MQTT so cache path exists
+if [ "${SA02M_SKIP_DEVICES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/11-devices.sh" ]; then
+    log INFO "──── Устройства ДТВ/СЭ: API + logger ────"
+    bash "$SCRIPT_DIR/scripts/11-devices.sh" || log WARN "11-devices.sh завершился с ошибкой"
+fi
+
 if [ "${SA02M_SKIP_GATEWAY:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-gateway.sh" ]; then
     log INFO "──── Опциональный стек: sa02m-serial-gateway ────"
     bash "$SCRIPT_DIR/scripts/06-gateway.sh" || log WARN "06-gateway.sh завершился с ошибкой"

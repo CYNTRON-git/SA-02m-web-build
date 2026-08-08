@@ -1,4 +1,4 @@
-/* Devices tab — live ДТВ / СЭ-02м-3 widgets + Influx history modal + Общий overview */
+/* Devices tab — live ДТВ / СЭ-02м-3 widgets + history modal / Excel / events */
 (function () {
   "use strict";
 
@@ -6,7 +6,6 @@
   /** Border turns red when last sample older than this (seconds). */
   const STALE_BORDER_S = 30;
   let timer = null;
-  let overviewTimer = null;
   let chartSeries = [];
   let chartMeta = { label: "", unit: "", range: "1h" };
   /** kind: "dtv" | "ce" */
@@ -18,9 +17,6 @@
   let activeRange = "1h";
   /** Modal chart mode: "metric" (single) | "overview" (all series for device). */
   let modalMode = "metric";
-  let overviewRange = "1h";
-  let overviewClimate = [];
-  let overviewEnergy = [];
   /** Signature of last rendered card set (device ids). */
   let cardsSig = "";
   /** Устройства, доступные для повторного добавления (из API). */
@@ -1456,81 +1452,6 @@
     if (!normalize) renderLegend(chartSeries);
   }
 
-  /* ── Overview «Общий» ────────────────────────────────────────────────── */
-
-  function loadOverview() {
-    const stC = $("ov-climate-status");
-    const stE = $("ov-energy-status");
-    if (stC) stC.textContent = "Загрузка…";
-    if (stE) stE.textContent = "Загрузка…";
-    const rng = encodeURIComponent(overviewRange);
-    Promise.all([
-      fetchJson("/api/devices/history?group=climate&range=" + rng),
-      fetchJson("/api/devices/history?group=energy&range=" + rng),
-    ])
-      .then(([clim, ener]) => {
-        overviewClimate = flattenMetricSeries(clim && clim.ok ? clim.metrics : []);
-        overviewEnergy = flattenMetricSeries(ener && ener.ok ? ener.metrics : []);
-        const nC = overviewClimate.reduce((s, x) => s + (x.points || []).length, 0);
-        const nE = overviewEnergy.reduce((s, x) => s + (x.points || []).length, 0);
-        function seriesDataMax(series) {
-          let m = -Infinity;
-          (series || []).forEach((ser) =>
-            (ser.points || []).forEach(([, y]) => {
-              const v = Number(y);
-              if (Number.isFinite(v) && v > m) m = v;
-            })
-          );
-          return m;
-        }
-        const maxC = seriesDataMax(overviewClimate);
-        const maxE = seriesDataMax(overviewEnergy);
-        const domC = Number.isFinite(maxC) ? computeSharedAbsYDomain(maxC) : { minY: 0, maxY: 1 };
-        const domE = Number.isFinite(maxE) ? computeSharedAbsYDomain(maxE) : { minY: 0, maxY: 1 };
-        if (stC) {
-          stC.textContent = clim && clim.ok
-            ? `Климат · ${overviewRange} · ${overviewClimate.length} рядов · Y: 0…${fmtYTick(
-                domC.maxY,
-                yTickDecimals(0, domC.maxY, 4)
-              )}`
-            : (clim && clim.error) || "Нет данных";
-        }
-        if (stE) {
-          stE.textContent = ener && ener.ok
-            ? `Энергия · ${overviewRange} · ${overviewEnergy.length} рядов · Y: 0…${fmtYTick(
-                domE.maxY,
-                yTickDecimals(0, domE.maxY, 4)
-              )}`
-            : (ener && ener.error) || "Нет данных";
-        }
-        if (!nC && stC && clim && clim.ok) stC.textContent += " · нет точек";
-        if (!nE && stE && ener && ener.ok) stE.textContent += " · нет точек";
-        drawOverview();
-      })
-      .catch(() => {
-        if (stC) stC.textContent = "Ошибка загрузки";
-        if (stE) stE.textContent = "Ошибка загрузки";
-        overviewClimate = [];
-        overviewEnergy = [];
-        drawOverview();
-      });
-  }
-
-  function drawOverview() {
-    drawOntoCanvas($("ov-chart-climate"), overviewClimate, {
-      range: overviewRange,
-      normalize: true,
-      legendEl: $("ov-climate-legend"),
-      padBottom: 40,
-    });
-    drawOntoCanvas($("ov-chart-energy"), overviewEnergy, {
-      range: overviewRange,
-      normalize: true,
-      legendEl: $("ov-energy-legend"),
-      padBottom: 40,
-    });
-  }
-
   /* ── Tab lifecycle ───────────────────────────────────────────────────── */
 
   function bindOnce() {
@@ -1597,17 +1518,8 @@
       addBack.__bound = true;
       addBack.addEventListener("click", closeAddModal);
     }
-    document.querySelectorAll(".ov-range-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".ov-range-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        overviewRange = btn.dataset.range;
-        loadOverview();
-      });
-    });
     window.addEventListener("resize", () => {
       if ($("dev-modal") && !$("dev-modal").hidden) drawChart();
-      if ($("tab-overview") && $("tab-overview").classList.contains("active")) drawOverview();
     });
   }
 
@@ -1625,20 +1537,5 @@
     }
     closeModal();
     closeAddModal();
-  };
-
-  window.overviewTabInit = function () {
-    if (!$("tab-overview") || !$("ov-chart-climate")) return;
-    bindOnce();
-    loadOverview();
-    if (overviewTimer) clearInterval(overviewTimer);
-    overviewTimer = setInterval(loadOverview, 60000);
-  };
-
-  window.overviewTabDestroy = function () {
-    if (overviewTimer) {
-      clearInterval(overviewTimer);
-      overviewTimer = null;
-    }
   };
 })();

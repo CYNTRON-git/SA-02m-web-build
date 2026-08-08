@@ -4,6 +4,34 @@
 Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
 
 ---
+## [2026-08-08 17:40] branch: 1.0.5.68
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`, `scripts/offline-update-deploy-map.json`, `www/network_config/static/js/{devices,i18n}.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** После аудита вкладки «Устройства»: offline OTA не включал/не рестартил `sa02m-devices-*`; неполный allowlist/tmpfiles; мёртвый overview-код; пробелы i18n/CSS badge.
+**Причина:** Первый порт закрыл только www+API на стенде; манифест апдейтера и i18n не синхронизировали.
+**Исправление:** `services.enable/restart` + `systemctl enable` в runner; allowlist `sa02m-devices` tmpfiles/default; deploy-map `/etc/default/`; i18n/CSS; удалён dead `loadOverview`. HW-тест на `.136` с seed MQTT-кэша ДТВ+СЭ.
+
+---
+## [2026-08-08 17:25] branch: 1.0.5.68
+
+**Файл(ы):** `opt/sa02m-devices/*`, `scripts/11-devices.sh`, `etc/systemd/sa02m-devices-*.service`, `etc/nginx/network_config.conf`, `www/network_config/static/js/devices.js`
+**Тип:** Некорректное поведение / отсутствующая подсистема
+**Описание:** Вкладка «Устройства» (виджеты ДТВ / СЭ-02м-3, графики, Excel, журнал пиков) была в UI репозитория, но на изделии не работала: нет бэкенда `/api/devices*`, сервисы не установлены.
+**Причина:** Реализация жила в hardpy_tests (`stand_web_api` + `sa02m-devices-logger`), в SA-02m-web-build перенесён только фронт и nginx-proxy; Flask/gunicorn на плате нет, units не деплоились.
+**Исправление:** Портирован пакет `opt/sa02m-devices` (stdlib API `:8765`, logger, SQLite USB→SD→eMMC, widgets/events/export); units `sa02m-devices-api` / `sa02m-devices-logger`; `scripts/11-devices.sh` из `update-www-only` / `install.sh`. На `.136`: API active, `/api/devices` через nginx :9999.
+
+---
+## [2026-08-08 00:18] branch: 1.0.5.68
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`
+**Тип:** Некорректное поведение
+**Описание:** Socket.IO к alice.cyntron.ru постоянно reconnect (connect/disconnect flapping), `controllers_online` мигал.
+**Причина:** Одновременно работали auto-reconnect python-socketio (`reconnection=True`) и outer tear-down/reconnect loop в `main.py` — при кратком disconnect создавались дублирующие сессии.
+**Исправление:** `reconnection=False` в `AliceSocketIO`; backoff `SIO_RECONNECT_MIN_S` перед повторным connect во внешнем цикле. На `.136`: units `sa02m-alice-client`/`sa02m-alice-config` enabled+active; 75s без повторных disconnect; healthz `controllers_online:1`.
+
+---
+
 ## [2026-08-07 23:58] branch: feature/alice-client-prod
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `client/main.py`, `config/api.py`

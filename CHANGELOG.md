@@ -5,6 +5,26 @@
 
 ---
 
+## Unreleased
+
+### Устройства (ДТВ / СЭ-02м-3)
+
+- **Вкладка «Устройства»** на `:9999`: виджеты ДТВ-RS-485 и СЭ-02м-3 из MQTT-кэша
+  (автосоздание при появлении `dtv-COM*-*` / `ce02m3-COM*-*`), клик → графики
+  (1ч…30д / Общее), сводка СЭ (Pср, ΔE, тариф ₽/кВт·ч), Excel-экспорт, журнал
+  пиковых нагрузок, add/remove виджетов. Порт из hardpy_tests (архив + API).
+- **Бэкенд в изделии:** `opt/sa02m-devices` — `sa02m-devices-api` (`127.0.0.1:8765`,
+  stdlib HTTP), `sa02m-devices-logger` (SQLite USB→SD→eMMC, 30 суток).
+  nginx `/api/devices*` → API; установка: `scripts/11-devices.sh`
+  (`update-www-only` / `install.sh`).
+- **OTA:** манифест включает `enable`/`restart` для `sa02m-devices-api` и
+  `sa02m-devices-logger`; runner делает `systemctl enable` перед restart.
+  В allowlist — `etc/tmpfiles.d/sa02m-devices.conf`, `etc/default/sa02m-devices`.
+- **i18n** строк вкладки; CSS badge пиков / кнопки Excel; убран мёртвый код
+  overview-вкладки (`ov-*`), не используемой в UI.
+
+---
+
 ## 1.0.5.65 - BACnet MS/TP: выбор шины, проверка и возврат в Modbus (Фаза 1) (август 2026)
 
 ### Устройства RS-485 (флешер)

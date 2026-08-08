@@ -1,0 +1,21 @@
+[Unit]
+Description=SA-02m DTV/CE telemetry logger (1 Hz → SQLite, 30-day window)
+After=network.target sa02m-modbus-mqtt.service
+Wants=sa02m-modbus-mqtt.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-devices
+Environment=PYTHONPATH=/opt/sa02m-devices
+Environment=STAND_DEVICES_LOG_INTERVAL_S=1
+Environment=STAND_DEVICES_LOG_INTERVAL_EMMC_S=5
+Environment=STAND_DEVICES_PURGE_EVERY_S=3600
+# Путь БД: USB(/media/usb) → SD(/media/sdcard) → eMMC(/var/lib/sa02m-stand).
+# Override: /etc/default/sa02m-devices → STAND_DEVICES_HISTORY_DB=…
+EnvironmentFile=-/etc/default/sa02m-devices
+ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_logger.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

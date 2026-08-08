@@ -1,0 +1,18 @@
+[Unit]
+Description=SA-02m Devices API (DTV / CE-02m-3 widgets, history, export)
+After=network.target sa02m-modbus-mqtt.service
+Wants=sa02m-modbus-mqtt.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-devices
+Environment=PYTHONPATH=/opt/sa02m-devices
+Environment=STAND_API_HOST=127.0.0.1
+Environment=STAND_API_PORT=8765
+EnvironmentFile=-/etc/default/sa02m-devices
+ExecStart=/usr/bin/python3 /opt/sa02m-devices/sa02m_devices_api.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

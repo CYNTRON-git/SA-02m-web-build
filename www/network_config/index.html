@@ -971,31 +971,31 @@
         <div class="page-header page-header--devices">
           <div class="dev-page-title-row">
             <h2 data-i18n="Устройства">Устройства</h2>
-            <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет">+ Добавить виджет</button>
+            <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет" data-i18n="+ Добавить виджет">+ Добавить виджет</button>
           </div>
           <p class="page-desc muted" id="dev-history-backend">Архив: …</p>
         </div>
         <div class="dev-grid" id="dev-grid">
-          <p class="dev-empty muted" id="dev-empty">Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.</p>
+          <p class="dev-empty muted" id="dev-empty" data-i18n="Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.">Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.</p>
         </div>
         <section class="dev-events widget" id="dev-events" aria-labelledby="dev-events-title">
           <div class="dev-events-head">
-            <h3 id="dev-events-title">Журнал событий</h3>
-            <span class="muted" id="dev-events-meta">Пиковые нагрузки СЭ · U/I</span>
+            <h3 id="dev-events-title" data-i18n="Журнал событий">Журнал событий</h3>
+            <span class="muted" id="dev-events-meta" data-i18n="Пиковые нагрузки СЭ · U/I">Пиковые нагрузки СЭ · U/I</span>
           </div>
           <div class="dev-events-table-wrap">
             <table class="dev-events-table" id="dev-events-table">
               <thead>
                 <tr>
-                  <th>Время</th>
-                  <th>Адрес</th>
-                  <th>Порт</th>
-                  <th>Фаза</th>
-                  <th>Событие</th>
+                  <th data-i18n="Время">Время</th>
+                  <th data-i18n="Адрес">Адрес</th>
+                  <th data-i18n="Порт">Порт</th>
+                  <th data-i18n="Фаза">Фаза</th>
+                  <th data-i18n="Событие">Событие</th>
                 </tr>
               </thead>
               <tbody id="dev-events-body">
-                <tr class="dev-events-empty"><td colspan="5">Пока нет событий пиковых нагрузок</td></tr>
+                <tr class="dev-events-empty"><td colspan="5" data-i18n="Пока нет событий пиковых нагрузок">Пока нет событий пиковых нагрузок</td></tr>
               </tbody>
             </table>
           </div>
@@ -1004,12 +1004,12 @@
           <div class="dev-add-modal-backdrop" id="dev-add-modal-backdrop"></div>
           <div class="dev-add-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-add-modal-title">
             <div class="dev-modal-head">
-              <h3 id="dev-add-modal-title">Добавить виджет</h3>
+              <h3 id="dev-add-modal-title" data-i18n="Добавить виджет">Добавить виджет</h3>
               <button type="button" class="btn btn-sm" id="dev-add-modal-close" aria-label="Закрыть">✕</button>
             </div>
-            <p class="muted" style="margin:0 0 10px">Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).</p>
+            <p class="muted" style="margin:0 0 10px" data-i18n="Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).">Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).</p>
             <div id="dev-add-list" class="dev-add-list"></div>
-            <p class="muted" id="dev-add-empty" hidden>Нет устройств для добавления.</p>
+            <p class="muted" id="dev-add-empty" hidden data-i18n="Нет устройств для добавления.">Нет устройств для добавления.</p>
           </div>
         </div>
       </div>
@@ -1262,20 +1262,20 @@
 <script src="static/js/flasher.js?v=1.0.5.68-bacnet-i18n-bacnet-i18n"></script>
 <script src="static/js/mqtt.js?v=1.0.5.69&r=multidev1"></script>
 <script src="static/js/gateway.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/devices.js?v=1.0.5.99&r=pill4"></script>
+<script src="static/js/devices.js?v=1.0.5.99&r=devtab2"></script>
 <script src="static/js/cloud.js?v=1.0.5.68&r=devhist1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>
   <div class="dev-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-modal-title">
     <div class="dev-modal-head">
-      <h3 id="dev-modal-title">История</h3>
+      <h3 id="dev-modal-title" data-i18n="История">История</h3>
       <button type="button" class="btn btn-sm" id="dev-modal-close" aria-label="Закрыть">✕</button>
     </div>
     <div class="dev-modal-toolbar">
       <div class="dev-mode-tabs" id="dev-mode-tabs" role="tablist" aria-label="Режим графика">
-        <button type="button" class="dev-mode-tab active" data-mode="metric" role="tab" aria-selected="true">Метрика</button>
-        <button type="button" class="dev-mode-tab" data-mode="overview" role="tab" aria-selected="false">Общее</button>
+        <button type="button" class="dev-mode-tab active" data-mode="metric" role="tab" aria-selected="true" data-i18n="Метрика">Метрика</button>
+        <button type="button" class="dev-mode-tab" data-mode="overview" role="tab" aria-selected="false" data-i18n="Общее">Общее</button>
       </div>
       <div class="dev-range-group" id="dev-range-group">
         <button type="button" class="dev-range-btn active" data-range="1h">1 ч</button>
@@ -1286,7 +1286,7 @@
         <button type="button" class="dev-range-btn dev-range-ce" data-range="mtd" hidden>с нач. мес.</button>
         <button type="button" class="dev-range-btn dev-range-ce" data-range="month" hidden>за месяц</button>
       </div>
-      <button type="button" class="btn btn-sm dev-export-btn" id="dev-export-btn" hidden title="Скачать Excel (.xlsx) за выбранный период">Экспорт Excel</button>
+      <button type="button" class="btn btn-sm dev-export-btn" id="dev-export-btn" hidden title="Скачать Excel (.xlsx) за выбранный период" data-i18n="Экспорт Excel">Экспорт Excel</button>
     </div>
     <div class="dev-metric-chips" id="dev-metric-chips"></div>
     <div class="dev-chart-body" id="dev-chart-body">
@@ -1294,7 +1294,7 @@
         <canvas id="dev-chart"></canvas>
       </div>
       <aside class="dev-ce-side" id="dev-ce-side" hidden>
-        <h4 class="dev-ce-side-title">За период</h4>
+        <h4 class="dev-ce-side-title" data-i18n="За период">За период</h4>
         <div class="dev-ce-phase-grid">
           <div class="dev-ce-phase"><span class="lbl">Pa ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pa">—</span><span class="unit">W</span></span></div>
           <div class="dev-ce-phase"><span class="lbl">Pb ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pb">—</span><span class="unit">W</span></span></div>

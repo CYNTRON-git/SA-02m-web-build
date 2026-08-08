@@ -65,15 +65,16 @@ function formatDeviceDisplayName(dev) {
     if (/\([^)]*addr=\d+/i.test(stored)) return stored;
     return `${stored} (${comName} addr=${addr})`;
   }
+  if (dev.type === 'dtv' || dev.type === 'ce02m3') {
+    const portNum = String(comName || '').replace(/^COM/i, '') || '—';
+    const sku = dev.type === 'dtv' ? 'ДТВ-RS-485' : 'СЭ-02м-3';
+    const auto = `${sku} № ${addr} порт ${portNum}`;
+    if (!stored || /№\s*\d+\s+порт\s+\d+/i.test(stored) || /\([^)]*addr=\d+/i.test(stored)) {
+      return auto;
+    }
+    return `${stored} · ${auto}`;
+  }
   if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
-  if (dev.type === 'dtv') {
-    const base = stored || 'ДТВ-RS-485';
-    return `${base} (${comName} addr=${addr})`;
-  }
-  if (dev.type === 'ce02m3') {
-    const base = stored || 'СЭ-02м-3';
-    return `${base} (${comName} addr=${addr})`;
-  }
   return `${dev.name || dev.id} (${comName} addr=${addr})`;
 }
 
@@ -139,7 +140,12 @@ function findListedDevice(port, addr) {
 
 function buildDeviceConfigName(shortName, port, addr) {
   const comName = (port || '').replace('/dev/', '');
-  const base = (shortName || '').trim() || `Устройство ${addr}`;
+  const portNum = String(comName || '').replace(/^COM/i, '') || '—';
+  const base = (shortName || '').trim();
+  if (base === 'ДТВ-RS-485' || base === 'СЭ-02м-3') {
+    return `${base} № ${addr} порт ${portNum}`;
+  }
+  if (!base) return `Устройство № ${addr} порт ${portNum}`;
   return `${base} (${comName} addr=${addr})`;
 }
 
@@ -2181,7 +2187,13 @@ function confirmAddDevice() {
     return;
   }
 
-  const dev = {id, type, port, baudrate, address: addr, name: name || id};
+  const shortName = name || (type === 'dtv' ? 'ДТВ-RS-485' : type === 'ce02m3' ? 'СЭ-02м-3' : id);
+  const dev = {
+    id, type, port, baudrate, address: addr,
+    name: (type === 'dtv' || type === 'ce02m3')
+      ? buildDeviceConfigName(shortName === id ? (type === 'dtv' ? 'ДТВ-RS-485' : 'СЭ-02м-3') : shortName, port, addr)
+      : (name || id),
+  };
   if (type === 'mr02m') {
     dev.module_type = 1;
     dev.fast_modbus = true;
