@@ -105,8 +105,34 @@ class TestCE02FmbEvents(unittest.TestCase):
         }, pub)
         p.fmb_dispatch(bridge.FMB_EVT_INPUT, 500, 2205)  # 220.5 V
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "voltage_a", "220.5")
-        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 510, 1234)  # 1.234 A * 4.0 CT
-        pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_a", "4.936")
+        # CE FW already primary: 1234 → 1.234 A (ct_ratio not reapplied)
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 510, 1234)
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_a", "1.234")
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 512, 200)  # stand sample Ic
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_c", "0.2")
+
+    def test_poll_power_current_no_double_ct(self):
+        pub = mock.Mock()
+        p = bridge.CE02M3Poller({
+            "id": "ce02m3-COM2-14", "type": "ce02m3",
+            "port": "/dev/COM2", "address": 14,
+            "ct_ratio": 4000, "phases": ["A", "B", "C"],
+            "channels_enabled": {
+                "voltages": False, "line_voltages": False, "currents": True,
+                "power_active": True, "power_reactive": False,
+                "power_apparent": False, "power_factor": False,
+                "frequency": False, "energy": False,
+            },
+        }, pub)
+        regs = [0] * 48
+        regs[10], regs[11], regs[12], regs[13] = 4, 4, 200, 200  # A×1000 primary
+        regs[22], regs[23] = 29, 0  # Pc = 29 W int32 LSW/MSW (518+4)
+        regs[24], regs[25] = 29, 0  # Pt
+        with mock.patch.object(p, "_read_power_input_block", return_value=regs):
+            p._poll_power()
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_c", "0.2")
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_c", "29")
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_total", "29")
 
 
 class TestFmbWbStyleInsurance(unittest.TestCase):

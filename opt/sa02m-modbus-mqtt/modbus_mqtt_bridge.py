@@ -2942,7 +2942,10 @@ class CE02M3Poller(DevicePoller):
 
     def __init__(self, cfg: dict, pub: MQTTPublisher):
         super().__init__(cfg, pub)
-        self._ct_ratio      = float(cfg.get("ct_ratio", 4000)) / 1000.0  # K/1000 → multiplier
+        # Device holding 557..559 (K×1000). CE FW already scales I/P/Q/S to primary
+        # (I_pri = I_ASIC × K/1000); bridge must NOT apply CT again — MQTT current =
+        # Modbus raw × 0.001 A. Keep cfg value for UI/meta only.
+        self._ct_ratio_x1000 = int(cfg.get("ct_ratio", 4000))
         self._phases        = cfg.get("phases", ["A", "B", "C"])
         self._per_phase_energy = bool(cfg.get("publish_per_phase_energy", False))
         self._poll_power_s  = float(cfg.get("poll_power_s",   5))
@@ -3000,6 +3003,9 @@ class CE02M3Poller(DevicePoller):
         self.pub.pub_control_units(self.device_id, "asic_temp", "°C")
         self.pub.pub_control_units(self.device_id, "mcu_temp", "°C")
         self.pub.pub_control_units(self.device_id, "mcu_vdd", "V")
+        # Device CT K×1000 (holding 557..559); not applied to MQTT currents
+        self.pub.pub_control_meta(self.device_id, "ct_ratio_x1000", "readonly", "1")
+        self.pub.pub_control(self.device_id, "ct_ratio_x1000", str(self._ct_ratio_x1000))
         for ename, eunit in (
             ("energy_active_import", "Wh"),
             ("energy_active_export", "Wh"),
@@ -3067,15 +3073,15 @@ class CE02M3Poller(DevicePoller):
                                      str(round(regs[6 + i] * 0.1, 1)))
 
         if self._en_curr:
-            # 510-512: I A,B,C ×0.001 A, apply CT ratio
+            # 510-512: I A,B,C already primary (A×1000); no bridge CT multiply
             for i, ph in enumerate(ph3):
                 raw = self._s16(regs[10 + i])
                 self.pub.pub_control(self.device_id, f"current_{ph}",
-                                     str(round(raw * 0.001 * self._ct_ratio, 3)))
-            # 513: I neutral ×0.001 A
+                                     str(round(raw * 0.001, 3)))
+            # 513: I neutral ×0.001 A (primary)
             raw_n = self._s16(regs[13])
             self.pub.pub_control(self.device_id, "current_n",
-                                 str(round(raw_n * 0.001 * self._ct_ratio, 3)))
+                                 str(round(raw_n * 0.001, 3)))
 
         if self._en_pact:
             # 518-525: P A,B,C,total — int32 (LSW,MSW), W
@@ -3149,8 +3155,8 @@ class CE02M3Poller(DevicePoller):
         if self.CE_FMB_I_START <= reg < self.CE_FMB_I_START + self.CE_FMB_I_COUNT:
             if not self._en_curr:
                 return
-            raw = self._s16(val)
-            amps = round(raw * 0.001 * self._ct_ratio, 3)
+            # Primary A×1000 from CE FW — do not apply ct_ratio again
+            amps = round(self._s16(val) * 0.001, 3)
             idx = reg - self.CE_FMB_I_START
             if idx < 3:
                 self.pub.pub_control(self.device_id, f"current_{ph3[idx]}",
