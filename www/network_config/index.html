@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.68&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.68&r=devhist3">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.99&r=pill4">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -968,51 +968,49 @@
 
       <!-- ═══════════════════════════════ DEVICES (ДТВ / СЭ) ══════════════ -->
       <div id="tab-devices" class="tab-pane">
-        <div class="page-header">
-          <h2 data-i18n="Устройства">Устройства</h2>
-          <p class="page-desc">ДТВ-RS-485 и СЭ-02м-3 · клик по виджету — график истории</p>
+        <div class="page-header page-header--devices">
+          <div class="dev-page-title-row">
+            <h2 data-i18n="Устройства">Устройства</h2>
+            <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет">+ Добавить виджет</button>
+          </div>
+          <p class="page-desc muted" id="dev-history-backend">Архив: …</p>
         </div>
-        <div class="dev-grid">
-          <article class="widget dev-card dev-card--dtv" id="dev-card-dtv" role="button" tabindex="0" title="Открыть историю">
-            <div class="widget-title has-ico">
-              <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M8 14a4 4 0 1 0 8 0c0-2.5-2-4-4-6-2 2-4 3.5-4 6z"/></svg></span>
-              <span>ДТВ-RS-485</span>
-              <span class="dev-pill ok" id="dev-dtv-status">…</span>
-              <span id="dev-dtv-alerts"></span>
+        <div class="dev-grid" id="dev-grid">
+          <p class="dev-empty muted" id="dev-empty">Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.</p>
+        </div>
+        <section class="dev-events widget" id="dev-events" aria-labelledby="dev-events-title">
+          <div class="dev-events-head">
+            <h3 id="dev-events-title">Журнал событий</h3>
+            <span class="muted" id="dev-events-meta">Пиковые нагрузки СЭ · U/I</span>
+          </div>
+          <div class="dev-events-table-wrap">
+            <table class="dev-events-table" id="dev-events-table">
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Адрес</th>
+                  <th>Порт</th>
+                  <th>Фаза</th>
+                  <th>Событие</th>
+                </tr>
+              </thead>
+              <tbody id="dev-events-body">
+                <tr class="dev-events-empty"><td colspan="5">Пока нет событий пиковых нагрузок</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        <div id="dev-add-modal" class="dev-add-modal" hidden>
+          <div class="dev-add-modal-backdrop" id="dev-add-modal-backdrop"></div>
+          <div class="dev-add-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-add-modal-title">
+            <div class="dev-modal-head">
+              <h3 id="dev-add-modal-title">Добавить виджет</h3>
+              <button type="button" class="btn btn-sm" id="dev-add-modal-close" aria-label="Закрыть">✕</button>
             </div>
-            <div class="widget-body dev-body">
-              <div class="dev-metrics">
-                <div class="dev-kpi" data-metric="room_temp"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-temp">—</span><span class="dev-kpi-unit">°C</span></span><span class="dev-kpi-lbl">Температура</span></div>
-                <div class="dev-kpi" data-metric="humidity"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-rh">—</span><span class="dev-kpi-unit">%</span></span><span class="dev-kpi-lbl">Влажность</span></div>
-                <div class="dev-kpi" data-metric="eco2_ppm"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-eco2">—</span><span class="dev-kpi-unit">ppm</span></span><span class="dev-kpi-lbl">eCO₂</span></div>
-                <div class="dev-kpi" data-metric="tvoc_mg_m3"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-tvoc">—</span><span class="dev-kpi-unit">mg/m³</span></span><span class="dev-kpi-lbl">TVOC</span></div>
-                <div class="dev-kpi" data-metric="pressure_mmhg"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-pressure">—</span><span class="dev-kpi-unit">mmHg</span></span><span class="dev-kpi-lbl">Давление</span></div>
-                <div class="dev-kpi" data-metric="light_pct" title="LD2412 light proxy (0–100 %), не lux"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-dtv-light">—</span><span class="dev-kpi-unit">%</span></span><span class="dev-kpi-lbl">Освещённость, %</span></div>
-              </div>
-            </div>
-          </article>
-
-          <article class="widget dev-card" id="dev-card-ce" role="button" tabindex="0" title="Открыть историю">
-            <div class="widget-title has-ico">
-              <span class="w-ico w-ico-cyan" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 10-14h-7l0-6z"/></svg></span>
-              <span>СЭ-02м-3</span>
-              <span class="dev-pill ok" id="dev-ce-status">…</span>
-              <span id="dev-ce-alerts"></span>
-            </div>
-            <div class="widget-body dev-body">
-              <div class="dev-metrics">
-                <div class="dev-kpi" data-metric="voltage"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-ua">—</span><span class="dev-kpi-unit">V</span></span><span class="dev-kpi-lbl">U A</span></div>
-                <div class="dev-kpi" data-metric="voltage"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-ub">—</span><span class="dev-kpi-unit">V</span></span><span class="dev-kpi-lbl">U B</span></div>
-                <div class="dev-kpi" data-metric="voltage"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-uc">—</span><span class="dev-kpi-unit">V</span></span><span class="dev-kpi-lbl">U C</span></div>
-                <div class="dev-kpi" data-metric="current"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-ia">—</span><span class="dev-kpi-unit">A</span></span><span class="dev-kpi-lbl">I A</span></div>
-                <div class="dev-kpi" data-metric="current"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-ib">—</span><span class="dev-kpi-unit">A</span></span><span class="dev-kpi-lbl">I B</span></div>
-                <div class="dev-kpi" data-metric="current"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-ic">—</span><span class="dev-kpi-unit">A</span></span><span class="dev-kpi-lbl">I C</span></div>
-                <div class="dev-kpi" data-metric="power"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-p">—</span><span class="dev-kpi-unit">W</span></span><span class="dev-kpi-lbl">Мощность</span></div>
-                <div class="dev-kpi" data-metric="frequency_hz"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-f">—</span><span class="dev-kpi-unit">Hz</span></span><span class="dev-kpi-lbl">Частота</span></div>
-                <div class="dev-kpi" data-metric="energy_kwh_import"><span class="dev-kpi-row"><span class="dev-kpi-val" id="dev-ce-e">—</span><span class="dev-kpi-unit">кВт·ч</span></span><span class="dev-kpi-lbl">Энергия</span></div>
-              </div>
-            </div>
-          </article>
+            <p class="muted" style="margin:0 0 10px">Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).</p>
+            <div id="dev-add-list" class="dev-add-list"></div>
+            <p class="muted" id="dev-add-empty" hidden>Нет устройств для добавления.</p>
+          </div>
         </div>
       </div>
 
@@ -1262,9 +1260,9 @@
 <script src="static/js/app/init.js?v=1.0.5.68&r=devhist1"></script>
 <script src="static/js/app/nav.js?v=1.0.5.68&r=devhist1"></script>
 <script src="static/js/flasher.js?v=1.0.5.68-bacnet-i18n-bacnet-i18n"></script>
-<script src="static/js/mqtt.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/mqtt.js?v=1.0.5.69&r=multidev1"></script>
 <script src="static/js/gateway.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/devices.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/devices.js?v=1.0.5.99&r=pill4"></script>
 <script src="static/js/cloud.js?v=1.0.5.68&r=devhist1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
@@ -1279,15 +1277,41 @@
         <button type="button" class="dev-mode-tab active" data-mode="metric" role="tab" aria-selected="true">Метрика</button>
         <button type="button" class="dev-mode-tab" data-mode="overview" role="tab" aria-selected="false">Общее</button>
       </div>
-      <div class="dev-range-group">
+      <div class="dev-range-group" id="dev-range-group">
         <button type="button" class="dev-range-btn active" data-range="1h">1 ч</button>
         <button type="button" class="dev-range-btn" data-range="6h">6 ч</button>
         <button type="button" class="dev-range-btn" data-range="24h">24 ч</button>
+        <button type="button" class="dev-range-btn" data-range="7d">7 д</button>
+        <button type="button" class="dev-range-btn" data-range="30d">30 д</button>
+        <button type="button" class="dev-range-btn dev-range-ce" data-range="mtd" hidden>с нач. мес.</button>
+        <button type="button" class="dev-range-btn dev-range-ce" data-range="month" hidden>за месяц</button>
       </div>
+      <button type="button" class="btn btn-sm dev-export-btn" id="dev-export-btn" hidden title="Скачать Excel (.xlsx) за выбранный период">Экспорт Excel</button>
     </div>
     <div class="dev-metric-chips" id="dev-metric-chips"></div>
-    <div class="dev-chart-wrap">
-      <canvas id="dev-chart"></canvas>
+    <div class="dev-chart-body" id="dev-chart-body">
+      <div class="dev-chart-wrap">
+        <canvas id="dev-chart"></canvas>
+      </div>
+      <aside class="dev-ce-side" id="dev-ce-side" hidden>
+        <h4 class="dev-ce-side-title">За период</h4>
+        <div class="dev-ce-phase-grid">
+          <div class="dev-ce-phase"><span class="lbl">Pa ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pa">—</span><span class="unit">W</span></span></div>
+          <div class="dev-ce-phase"><span class="lbl">Pb ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pb">—</span><span class="unit">W</span></span></div>
+          <div class="dev-ce-phase"><span class="lbl">Pc ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pc">—</span><span class="unit">W</span></span></div>
+          <div class="dev-ce-phase"><span class="lbl">P∑ ср.</span><span class="dev-ce-valrow"><span class="val" id="dev-ce-pt">—</span><span class="unit">W</span></span></div>
+        </div>
+        <div class="dev-ce-energy">
+          <div class="dev-ce-energy-row"><span class="lbl">Энергия ΔE</span><span class="dev-ce-valrow"><strong id="dev-ce-de">—</strong><span class="unit">кВт·ч</span></span></div>
+          <label class="dev-ce-tariff" for="dev-ce-kwh-rub">
+            <span>Тариф</span>
+            <input type="number" id="dev-ce-kwh-rub" min="0" step="0.01" inputmode="decimal" title="₽ за 1 кВт·ч">
+            <span class="unit">₽/кВт·ч</span>
+          </label>
+          <div class="dev-ce-cost" title="ΔE (кВт·ч) × тариф (₽/кВт·ч)"><span class="lbl">Стоимость</span><span class="dev-ce-valrow"><strong id="dev-ce-cost">—</strong><span class="unit">₽</span></span></div>
+          <div class="dev-ce-cost-note muted">ΔE × ₽/кВт·ч</div>
+        </div>
+      </aside>
     </div>
     <div class="dev-chart-meta">
       <span id="dev-chart-status" class="muted">—</span>
