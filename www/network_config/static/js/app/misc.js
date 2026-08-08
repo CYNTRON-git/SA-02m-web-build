@@ -37,7 +37,7 @@ function loadSshDebug() {
   const box = document.getElementById('log-box');
   if (!box) return;
   box.classList.remove('log-box-ssh-debug');
-  box.textContent = 'Загрузка SSH-диагностики… (до ~2 мин)';
+  box.textContent = 'Загрузка SSH-диагностики (до ~2 мин)';
   fetch('cgi-bin/ssh_debug.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -626,7 +626,7 @@ async function applyVariant() {
   if (!sel || !status) return;
   const variant = sel.value;
   cancelVariantStatusAutoClear();
-  status.textContent = 'Применяю…';
+  status.textContent = 'Применяю';
   status.style.color = 'var(--text-sec)';
   try {
     const r = await fetch('cgi-bin/variant.cgi', {

@@ -820,17 +820,42 @@
     const fwMismatch = firmwareSelectionMismatch(selectedDevices, fwEntry);
     const flashBlocked = !!(selectionErr || fwMismatch);
 
-    $('flasher-scan-btn').disabled = !port || !port.exists || scanRunning || flashRunning || jobBusy || state.portActionBusy;
-    $('flasher-scan-cancel-btn').disabled = !state.scanJobId || state.scanPending;
+    const scanBtn = $('flasher-scan-btn');
+    if (scanBtn) {
+      const canCancel = !!(state.scanJobId && !state.scanPending);
+      scanBtn.classList.add('btn-primary');
+      if (scanRunning) {
+        scanBtn.textContent = 'Отмена';
+        scanBtn.classList.add('is-cancel');
+        scanBtn.disabled = !canCancel || flashRunning || state.portActionBusy;
+        scanBtn.title = canCancel ? 'Отменить сканирование' : 'Запуск сканирования';
+      } else {
+        scanBtn.textContent = 'Сканировать';
+        scanBtn.classList.remove('is-cancel');
+        scanBtn.disabled = !port || !port.exists || flashRunning || jobBusy || state.portActionBusy;
+        scanBtn.title = 'Сканировать шину RS-485';
+      }
+    }
     const canStopPollers = !!(port && port.exists && managedN);
     $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
     $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
-    $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
-    $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending || state.flashIrreversible;
-
     const flashBtn = $('flasher-flash-btn');
     if (flashBtn) {
-      updateFlashButtonLabel(selectedDevices.length);
+      const canCancelFlash = !!(state.flashJobId && !state.flashPending && !state.flashIrreversible);
+      flashBtn.classList.add('btn-primary');
+      if (flashRunning) {
+        updateFlashButtonLabel(0, 'Отмена');
+        flashBtn.classList.add('is-cancel');
+        flashBtn.disabled = !canCancelFlash || scanRunning || state.portActionBusy;
+        flashBtn.title = state.flashIrreversible
+          ? 'Прошивка необратима — отмена невозможна'
+          : (canCancelFlash ? 'Отменить прошивку' : 'Запуск прошивки');
+      } else {
+        flashBtn.classList.remove('is-cancel');
+        updateFlashButtonLabel(selectedDevices.length);
+        flashBtn.disabled = !port || !port.exists || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
+        flashBtn.title = 'Прошить выбранные устройства';
+      }
     }
 
     const mismatchEl = $('flasher-fw-mismatch');
@@ -2988,7 +3013,7 @@
     if (!host) return;
     const snap = state.configSnapshot;
     if (!snap) {
-      host.innerHTML = '<div class="flasher-empty">Загрузка настроек…</div>';
+      host.innerHTML = '<div class="flasher-empty">Загрузка настроек</div>';
       return;
     }
     let html = '';
@@ -4434,15 +4459,16 @@
 
   /* ── Прошивка ─────────────────────────────────────────────────────────── */
 
-  function updateFlashButtonLabel(count) {
+  function updateFlashButtonLabel(count, forcedLabel) {
     const flashBtn = $('flasher-flash-btn');
     if (!flashBtn) return;
     const n = Number(count) || 0;
-    const label = n > 1 ? `Прошить (${n})` : 'Прошить';
+    const label = forcedLabel || (n > 1 ? `Прошить (${n})` : 'Прошить');
     let textEl = flashBtn.querySelector('.flasher-flash-btn-label');
     if (!textEl) {
       textEl = document.createElement('span');
       textEl.className = 'flasher-flash-btn-label';
+      flashBtn.textContent = '';
       flashBtn.appendChild(textEl);
     }
     textEl.textContent = label;
@@ -4638,8 +4664,10 @@
     $('flasher-refresh-ports-btn').addEventListener('click', loadPorts);
     $('flasher-release-port-btn').addEventListener('click', releasePortPollers);
     $('flasher-restore-port-btn').addEventListener('click', restorePortPollers);
-    $('flasher-scan-btn').addEventListener('click', startScan);
-    $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
+    $('flasher-scan-btn').addEventListener('click', () => {
+      if (state.scanJobId || state.scanPending) cancelScan();
+      else startScan();
+    });
     $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(true));
     $('flasher-fw-clear-btn').addEventListener('click', clearFirmwareCache);
     $('flasher-fw-upload').addEventListener('change', (ev) => {
@@ -4647,8 +4675,10 @@
       if (f) uploadFirmware(f);
       ev.target.value = '';
     });
-    $('flasher-flash-btn').addEventListener('click', startFlash);
-    $('flasher-flash-cancel-btn').addEventListener('click', cancelFlash);
+    $('flasher-flash-btn').addEventListener('click', () => {
+      if (state.flashJobId || state.flashPending) cancelFlash();
+      else startFlash();
+    });
     configModalEl('flasher-config-close-btn').addEventListener('click', closeConfigModal);
     configModalEl('flasher-config-modal').addEventListener('click', (ev) => {
       if (ev.target && ev.target.dataset && ev.target.dataset.closeConfigModal === '1') closeConfigModal();

@@ -57,7 +57,7 @@ async function aliceTopics() {
 const ALICE_STATE_MAP = {
   disabled: ['Отключено', 'unk'],
   offline: ['Шлюз недоступен', 'err'],
-  connecting: ['Подключение…', 'warn'],
+  connecting: ['Подключение', 'warn'],
   connected: ['Подключено', 'ok'],
   error: ['Ошибка', 'err'],
   missing_deps: ['Нет зависимостей', 'err'],
@@ -138,7 +138,7 @@ async function aliceRefresh() {
 async function aliceToggleClient() {
   const btn = $('alice-btn-enable');
   const action = btn && btn.dataset.action === 'disable' ? 'disable' : 'enable';
-  aliceSetMsg(uiT('Сохранение…'), true);
+  aliceSetMsg(uiT('Сохранение'), true);
   try {
     const d = await aliceApi({ action: action });
     if (!d.ok) {
@@ -153,7 +153,7 @@ async function aliceToggleClient() {
 }
 
 async function aliceStartLink() {
-  aliceSetMsg(uiT('Запрос привязки…'), true);
+  aliceSetMsg(uiT('Запрос привязки'), true);
   try {
     const d = await aliceApi({ action: 'link' });
     if (!d.ok) {
@@ -172,7 +172,7 @@ async function aliceStartLink() {
 }
 
 async function aliceCompleteLink() {
-  aliceSetMsg(uiT('Выпуск сертификата…'), true);
+  aliceSetMsg(uiT('Выпуск сертификата'), true);
   try {
     const d = await aliceApi({ action: 'complete_link' });
     if (!d.ok) {
@@ -187,7 +187,7 @@ async function aliceCompleteLink() {
 }
 
 async function aliceUnlink() {
-  aliceSetMsg(uiT('Отвязка…'), true);
+  aliceSetMsg(uiT('Отвязка'), true);
   try {
     const d = await aliceApi({ action: 'unlink' });
     if (!d.ok) {

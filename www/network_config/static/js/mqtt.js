@@ -1438,7 +1438,7 @@ function renderDeviceList() {
         }, topic)
       ),
       h('td', {},
-        h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, '✕ Удалить')
+        h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, 'Удалить')
       )
     );
     tr.addEventListener('click', (ev) => {
@@ -1984,7 +1984,7 @@ async function runScan() {
   const range = Number(rangeEl.value);
 
   btn.disabled = true;
-  btn.textContent = 'Сканирование…';
+  btn.textContent = 'Сканирование';
   statusEl.innerHTML = '<span class="mqtt-scan-spinner"></span>Поиск устройств на ' + port + ' (' + baud + ' бод)…';
   resultsEl.innerHTML = '';
 
@@ -2228,7 +2228,7 @@ function confirmAddDevice() {
 // ── Save & Apply ──────────────────────────────────────────────────────────────
 async function saveAndApply() {
   const btn = document.getElementById('mqtt-save-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение'; }
 
   for (const dev of _config.devices || []) {
     if (dev.type === 'mr02m') {
@@ -2314,7 +2314,7 @@ function startMonitor() {
   if (logEl) {
     const hint = logEl.querySelector('.mqtt-monitor-hint');
     if (hint) hint.remove();
-    logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'}, 'Загрузка…'));
+    logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'}, 'Загрузка'));
   }
   void pollMonitorDevice(filter);
   _monitorPollTimer = setInterval(() => pollMonitorDevice(filter), 1000);
@@ -2428,7 +2428,7 @@ window.mqttToggleBridge = async function mqttToggleBridge() {
     // CGI returns immediately (pending); service finishes in background.
     const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action});
     if (res?.ok) {
-      showToast(on ? 'Остановка моста…' : 'Запуск моста…', 'success');
+      showToast(on ? 'Остановка моста' : 'Запуск моста', 'success');
       // Optimistic badge until status poll catches up.
       if (_lastMqttBrokerStatus && typeof _lastMqttBrokerStatus === 'object') {
         _lastMqttBrokerStatus = Object.assign({}, _lastMqttBrokerStatus, {

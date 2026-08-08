@@ -36,9 +36,9 @@ const CLOUD_STATE_MAP = {
   pair_expired:    ['Код истёк', 'warn'],
   already_claimed: ['Уже привязано', 'err'],
   claim_failed:    ['Облако недоступно', 'err'],
-  enrolling:       ['Активация…', 'warn'],
+  enrolling:       ['Активация', 'warn'],
   enroll_failed:   ['Ошибка активации', 'err'],
-  activating:      ['Активация…', 'warn'],
+  activating:      ['Активация', 'warn'],
   activation_failed: ['Ошибка активации', 'err'],
   unknown:         ['Нет данных', 'unk'],
 };
@@ -231,7 +231,7 @@ window.cloudStartPairing = async function cloudStartPairing() {
   const btn = $('cloud-btn-pair');
   if (btn) {
     btn.disabled = true;
-    btn.textContent = uiT('Запрос кода…');
+    btn.textContent = uiT('Запрос кода');
   }
   try {
     const d = await cloudPostAction({ action: 'pair' });
@@ -304,7 +304,7 @@ window.cloudActivate = async function cloudActivate() {
 
   if (btn) {
     btn.disabled = true;
-    btn.textContent = uiT('Подключение…');
+    btn.textContent = uiT('Подключаю');
   }
 
   try {

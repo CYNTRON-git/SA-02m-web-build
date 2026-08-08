@@ -185,7 +185,7 @@
       `<span class="dev-card-title">${escapeHtml(title)}</span>` +
       `<span class="dev-pill ok" data-role="status">…</span>` +
       `<span data-role="alerts"></span>` +
-      `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">✕</button>` +
+      `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>` +
       `</div>` +
       `<div class="widget-body dev-body"><div class="dev-metrics">` +
       (kind === "dtv" ? buildDtvMetricsHtml() : buildCeMetricsHtml()) +
@@ -589,7 +589,7 @@
     }
     const url = "/api/devices/history/export?" + historyQs(params);
     const status = $("dev-chart-status");
-    if (status) status.textContent = "Экспорт Excel…";
+    if (status) status.textContent = "Экспорт Excel";
     const fallback =
       (activeDevice === "dtv" ? "dtv" : "ce") + "_export.xlsx";
     fetch(url, { credentials: "same-origin", cache: "no-store" })
@@ -1318,7 +1318,7 @@
 
   function loadHistory() {
     const status = $("dev-chart-status");
-    if (status) status.textContent = "Загрузка…";
+    if (status) status.textContent = "Загрузка";
     if (activeDevice === "ce") loadCeSummary();
     else setCeSideVisible(false);
     const rangeAtStart = activeRange;
