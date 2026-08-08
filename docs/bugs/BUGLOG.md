@@ -4,6 +4,42 @@
 Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
 
 ---
+## [2026-08-08 18:18] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В «Аппаратный вариант» select+«Применить» не занимали ширину блока — справа пусто.
+**Причина:** `#hw-variant-section` был `max-width: 560px`, select — `fit-content` / `flex: 0`.
+**Исправление:** Select `flex: 1` на всю ширину ряда, кнопка справа (`margin-left: auto`); ограничение ширины плитки снято.
+
+---
+## [2026-08-08 18:17] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/js/i18n.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Сбросить настройки…» была отдельной плиткой; лишнее многоточие в подписи кнопки.
+**Причина:** Factory reset вынесен в собственный `system-manage-factory-reset-card`; подпись с ellipsis.
+**Исправление:** Секция сброса перенесена в низ блока «Обновление»; подпись «Сбросить настройки» без точек; отдельная плитка удалена.
+
+---
+## [2026-08-08 17:57] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `.ai-dev/quality/checks/ui-layout.mjs`
+**Тип:** Некорректное поведение
+**Описание:** Заголовок MQTT был серым/uppercase 12px (не как «Устройства»); ui-layout FAIL по контрасту disabled `#alice-btn-enable` («…»).
+**Причина:** Локальный override `#tab-mqtt .page-header h2` на `--text-sec`; disabled primary с opacity .4 не был в CONTRAST_WHITELIST.
+**Исправление:** Единый `.page-header` (`h2` = `--text`, desc 13px); MQTT таблицы/формы 13px; whitelist `#alice-btn-enable`. `npm run ui-layout` → PASS.
+
+---
+## [2026-08-08 17:50] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке MQTT статус-бар («Работает» / порты / «Клиентов» / «Мост активен») с разным кеглем и без общей горизонтальной базовой линии; зелёные `.badge` были слишком скруглены (`--radius-pill`).
+**Причина:** `.badge` — 12px/700 + pill; порты — `.82rem` mono; клиенты — `.widget-sub` 13px с `margin-top`.
+**Исправление:** Статус-бейджи → `--radius-xs`, 11px/600; единый ряд `.mqtt-broker-row` (11px/1.25); шкала MQTT titles 12 / body 11; RS-485 chips тоже `--radius-xs`.
+
+---
 ## [2026-08-08 17:40] branch: 1.0.5.68
 
 **Файл(ы):** `scripts/pack-offline-update.py`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`, `scripts/offline-update-deploy-map.json`, `www/network_config/static/js/{devices,i18n}.js`, `www/network_config/static/css/main.css`
