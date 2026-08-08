@@ -8,7 +8,7 @@
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
   <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.5.68&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.99&r=pill4">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.5.99&r=svcbtn1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -23,11 +23,10 @@
     <div class="topbar-logo">
       <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.5.68&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
       <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.5.68&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
-      <div class="topbar-branding">
-        <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
-      </div>
     </div>
-    <div class="topbar-sep"></div>
+    <div class="topbar-branding">
+      <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
+    </div>
     <div class="topbar-right">
     <div class="topbar-controls">
       <button class="topbar-lang-btn" id="lang-toggle" type="button" title="Switch language / Сменить язык" aria-label="Switch language">
@@ -540,21 +539,18 @@
                   <div class="system-action-label">USB / microSD</div>
                   <p class="storage-fmt-hint system-action-desc">Автоформат в exFAT</p>
                   <button type="button" class="btn btn-danger system-action-btn" id="storage-format-toggle" title="Переключить автоформат при подключении носителя" onclick="toggleStorageAutoFormat()">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                     <span id="storage-format-toggle-label">ВКЛЮЧЕНО</span>
                   </button>
                 </div>
                 <div class="system-action-block">
                   <div class="system-action-label">Службы</div>
                   <button type="button" class="btn btn-warn system-action-btn" onclick="doRestart()">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                     Перезапустить
                   </button>
                 </div>
                 <div class="system-action-block">
                   <div class="system-action-label">Перезагрузка устройства</div>
                   <button type="button" class="btn btn-danger system-action-btn" onclick="doReboot()">
-                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                     Перезагрузить
                   </button>
                 </div>
@@ -569,10 +565,6 @@
                   <div><dt data-i18n="Соединение">Соединение</dt><dd id="alice-conn-state"><span class="badge badge-unk">…</span></dd></div>
                   <div><dt data-i18n="Сертификат">Сертификат</dt><dd id="alice-cert-state"><span class="badge badge-unk">…</span></dd></div>
                 </dl>
-                <p class="field-hint" data-i18n="Интеграция через alice.cyntron.ru. Пока шлюз Phase 0 не развёрнут, привязка вернёт ошибку — без ложного «успеха».">
-                  Интеграция через <b>alice.cyntron.ru</b>. Пока шлюз Phase 0 не развёрнут,
-                  привязка вернёт ошибку — без ложного «успеха».
-                </p>
                 <p class="field-hint text-sm" id="alice-counts">—</p>
                 <div id="alice-device-list" class="alice-device-list"></div>
                 <div class="field">
@@ -583,7 +575,7 @@
                   <label for="alice-topic-select" data-i18n="MQTT-топик">MQTT-топик</label>
                   <select id="alice-topic-select"></select>
                 </div>
-                <div class="btn-row" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                <div class="btn-row">
                   <button type="button" class="btn btn-sm" onclick="aliceAddDevice()" data-i18n="Добавить">Добавить</button>
                   <button type="button" class="btn btn-sm btn-primary" id="alice-btn-link" onclick="aliceStartLink()" data-i18n="Привязать">Привязать</button>
                   <button type="button" class="btn btn-sm" id="alice-btn-complete" onclick="aliceCompleteLink()" data-i18n="Завершить привязку">Завершить привязку</button>
@@ -630,7 +622,7 @@
                   <summary data-i18n="Подключение по токену (для наладчиков)">Подключение по токену (для наладчиков)</summary>
                   <div class="field">
                     <label for="cloud-token" data-i18n="Токен активации">Токен активации</label>
-                    <input type="password" id="cloud-token" placeholder="Вставьте токен…" autocomplete="off">
+                    <input type="password" id="cloud-token" placeholder="Вставьте токен" autocomplete="off">
                   </div>
                   <div class="field">
                     <label for="cloud-server" data-i18n="Облачный сервер">Облачный сервер</label>
@@ -673,7 +665,7 @@
                   <p id="web-upd-file-disabled-hint" class="field-hint" hidden data-i18n="Доступно после обновления до версии с поддержкой загрузки из файла">Доступно после обновления до версии с поддержкой загрузки из файла</p>
                   <input type="file" id="web-upd-file-input" accept=".sa02m,application/octet-stream" hidden>
                   <div class="btn-group web-upd-section-actions">
-                    <button type="button" class="btn" id="web-upd-file-pick-btn" onclick="pickOfflineUpdateFile()" disabled data-i18n="Выбрать файл…">Выбрать файл…</button>
+                    <button type="button" class="btn" id="web-upd-file-pick-btn" onclick="pickOfflineUpdateFile()" disabled data-i18n="Выбрать файл">Выбрать файл</button>
                   </div>
                   <div id="web-upd-inspect" class="web-upd-inspect" hidden>
                     <dl class="web-upd-meta">
@@ -692,29 +684,26 @@
 
                 <section id="web-upd-backup-section" class="web-upd-section" aria-labelledby="web-upd-backup-title">
                   <h4 id="web-upd-backup-title" class="web-upd-section-title" data-i18n="Резервная копия">Резервная копия</h4>
-                  <p class="field-hint" data-i18n="Архив содержит пароли и ключи. Храните offline. Проверьте SHA-256 manifest после скачивания.">Архив содержит пароли и ключи. Храните offline. Проверьте SHA-256 manifest после скачивания.</p>
                   <div class="btn-group web-upd-section-actions">
                     <button type="button" class="btn" id="web-upd-backup-btn" onclick="downloadWebBackup()" data-i18n="Скачать резервную копию">Скачать резервную копию</button>
                   </div>
                 </section>
 
                 <pre id="web-upd-log" class="web-upd-log" hidden></pre>
-              </div>
-            </div>
-            <div class="ctrl-card system-manage-tile system-manage-factory-reset-card" id="factory-reset-card">
-              <div class="ctrl-card-main">
-                <h3 class="system-manage-tile-title" data-i18n="Сброс настроек">Сброс настроек</h3>
-                <p class="field-hint" data-i18n="Сброс конфигурации к заводским значениям. Идентификаторы устройства, ключи SSH, облако и калибровка сохраняются.">Сброс конфигурации к заводским значениям. Идентификаторы устройства, ключи SSH, облако и калибровка сохраняются.</p>
-                <div id="factory-reset-status" class="web-upd-status" role="status" hidden></div>
-                <div id="factory-reset-progress" class="web-upd-progress" hidden>
-                  <div class="bar-row web-upd-progress-bar">
-                    <div class="bar-track"><div id="factory-reset-progress-fill" class="bar-fill" style="width:0%"></div></div>
+
+                <section id="web-upd-factory-reset-section" class="web-upd-section" aria-labelledby="web-upd-factory-reset-title">
+                  <h4 id="web-upd-factory-reset-title" class="web-upd-section-title" data-i18n="Сброс настроек">Сброс настроек</h4>
+                  <div id="factory-reset-status" class="web-upd-status" role="status" hidden></div>
+                  <div id="factory-reset-progress" class="web-upd-progress" hidden>
+                    <div class="bar-row web-upd-progress-bar">
+                      <div class="bar-track"><div id="factory-reset-progress-fill" class="bar-fill" style="width:0%"></div></div>
+                    </div>
+                    <div id="factory-reset-progress-label" class="web-upd-progress-label"></div>
                   </div>
-                  <div id="factory-reset-progress-label" class="web-upd-progress-label"></div>
-                </div>
-              </div>
-              <div class="btn-group system-manage-tile-foot">
-                <button type="button" class="btn btn-danger" id="factory-reset-open-btn" onclick="openFactoryResetModal()" data-i18n="Сбросить настройки…">Сбросить настройки…</button>
+                  <div class="btn-group web-upd-section-actions">
+                    <button type="button" class="btn btn-danger" id="factory-reset-open-btn" onclick="openFactoryResetModal()" data-i18n="Сбросить настройки">Сбросить настройки</button>
+                  </div>
+                </section>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-kernel-card" id="kernel-switch-tile">
@@ -754,7 +743,7 @@
               <div class="ctrl-card-main">
                 <h3 class="system-manage-tile-title">Службы</h3>
                 <div id="svc-ctl-list" class="svc-list" role="list" aria-live="polite">
-                  <p class="field-hint">Загрузка…</p>
+                  <p class="field-hint">Загрузка</p>
                 </div>
               </div>
               <div class="btn-group system-manage-tile-foot">
@@ -788,7 +777,6 @@
               <h3 class="system-manage-tile-title system-manage-log-title">Журнал событий</h3>
               <div class="btn-group system-manage-log-actions">
                 <button class="btn btn-sm" onclick="loadLog()">
-                  <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                   Обновить
                 </button>
                 <button class="btn btn-sm" type="button" onclick="loadSshDebug()">SSH-отладка</button>
@@ -847,7 +835,7 @@
                   </div>
                 </div>
               </div>
-              <div class="log-box flasher-log-box" id="flasher-log">Ожидание операции…</div>
+              <div class="log-box flasher-log-box" id="flasher-log">Ожидание операции</div>
             </div>
           </div>
 
@@ -860,8 +848,8 @@
                   <span>Выберите линию</span>
                   <div class="flasher-port-select-row">
                     <select id="flasher-port"></select>
-                    <button class="btn btn-sm flasher-icon-btn" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
-                      <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <button class="btn btn-sm" id="flasher-refresh-ports-btn" type="button" title="Обновить список портов">
+                      Обновить
                     </button>
                   </div>
                 </label>
@@ -892,12 +880,8 @@
                   </span>
                 </label>
                 <div class="flasher-actions flasher-actions-widget flasher-scan-pair">
-                  <button class="btn btn-primary flasher-scan-pair-btn" id="flasher-scan-btn" type="button">
-                    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+                  <button class="btn btn-primary flasher-scan-action-btn" id="flasher-scan-btn" type="button">
                     Сканировать
-                  </button>
-                  <button class="btn flasher-scan-cancel-btn flasher-scan-pair-btn" id="flasher-scan-cancel-btn" type="button" disabled>
-                    Отмена
                   </button>
                 </div>
               </div>
@@ -932,11 +916,9 @@
                 <div class="flasher-fw-mismatch" id="flasher-fw-mismatch" hidden aria-live="polite">Выберите корректную прошивку</div>
                 <div class="flasher-sub" id="flasher-fw-hint"></div>
                 <div class="flasher-flash-actions">
-                  <button class="btn btn-primary btn-sm" id="flasher-flash-btn" type="button" disabled>
-                    <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  <button class="btn btn-primary btn-sm flasher-flash-action-btn" id="flasher-flash-btn" type="button" disabled>
                     <span class="flasher-flash-btn-label">Прошить</span>
                   </button>
-                  <button class="btn btn-sm" id="flasher-flash-cancel-btn" type="button" disabled>Отменить</button>
                 </div>
               </div>
               </div>
@@ -971,7 +953,7 @@
         <div class="page-header page-header--devices">
           <div class="dev-page-title-row">
             <h2 data-i18n="Устройства">Устройства</h2>
-            <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет" data-i18n="+ Добавить виджет">+ Добавить виджет</button>
+            <button type="button" class="btn btn-primary dev-widget-add-btn" id="dev-widget-add-btn" title="Добавить ранее удалённый виджет" data-i18n="Добавить виджет">Добавить виджет</button>
           </div>
           <p class="page-desc muted" id="dev-history-backend">Архив: …</p>
         </div>
@@ -1005,7 +987,7 @@
           <div class="dev-add-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-add-modal-title">
             <div class="dev-modal-head">
               <h3 id="dev-add-modal-title" data-i18n="Добавить виджет">Добавить виджет</h3>
-              <button type="button" class="btn btn-sm" id="dev-add-modal-close" aria-label="Закрыть">✕</button>
+              <button type="button" class="btn btn-sm" id="dev-add-modal-close" aria-label="Закрыть">Закрыть</button>
             </div>
             <p class="muted" style="margin:0 0 10px" data-i18n="Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).">Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).</p>
             <div id="dev-add-list" class="dev-add-list"></div>
@@ -1017,7 +999,7 @@
       <div id="tab-mqtt" class="tab-pane">
         <div class="page-header">
           <h2>MQTT</h2>
-          <p>Конфигурация Modbus→MQTT моста и мониторинг топиков</p>
+          <p class="page-desc">Конфигурация Modbus→MQTT моста и мониторинг топиков</p>
         </div>
 
         <!-- Toast -->
@@ -1028,11 +1010,11 @@
           <div class="mqtt-broker-row">
             <span id="mqtt-broker-badge" class="badge badge-unk">Нет данных</span>
             <span class="mqtt-broker-ports">1883 (локал.) · 1884 (внешний)</span>
-            <span id="mqtt-broker-clients" class="widget-sub">Клиентов: —</span>
-            <span id="mqtt-bridge-badge" class="badge badge-unk" style="margin-left:8px">Мост —</span>
-            <div style="margin-left:auto;display:flex;gap:6px">
+            <span id="mqtt-broker-clients" class="mqtt-broker-meta">Клиентов: —</span>
+            <span id="mqtt-bridge-badge" class="badge badge-unk">Мост —</span>
+            <div class="mqtt-broker-actions">
               <button class="btn btn-sm hw-io-btn hw-io-to-off" type="button" id="mqtt-bridge-toggle-btn" onclick="mqttToggleBridge()" title="Остановить мост Modbus→MQTT">Остановить</button>
-              <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">⟳ Перезапустить</button>
+              <button class="btn btn-sm" onclick="mqttCtrl('restart_mosquitto')">Перезапустить</button>
               <button class="btn btn-primary" id="mqtt-save-btn" onclick="mqttSaveAndApply()">Сохранить и применить</button>
             </div>
           </div>
@@ -1074,8 +1056,8 @@
             <div class="widget-title mqtt-devices-title">
               <span>Устройства на шине</span>
               <div class="mqtt-devices-actions">
-                <button class="btn btn-primary" onclick="mqttShowScanModal()">🔍 Поиск</button>
-                <button class="btn btn-sm" onclick="mqttShowAddModal()">+ Вручную</button>
+                <button class="btn btn-primary" onclick="mqttShowScanModal()">Поиск</button>
+                <button class="btn btn-sm" onclick="mqttShowAddModal()">Вручную</button>
               </div>
             </div>
             <div class="mqtt-devices-table-wrap">
@@ -1103,9 +1085,9 @@
               <select id="mqtt-monitor-filter" class="mqtt-select-small" onchange="mqttStartMonitor()">
                 <option value="">— выберите устройство —</option>
               </select>
-              <button class="btn btn-sm" onclick="mqttTogglePause()">⏸ Пауза</button>
-              <button class="btn btn-sm" onclick="mqttClearMonitor()">✕ Очистить</button>
-              <button class="btn btn-sm" onclick="mqttStartMonitor()">⟳</button>
+              <button class="btn btn-sm" onclick="mqttTogglePause()">Пауза</button>
+              <button class="btn btn-sm" onclick="mqttClearMonitor()">Очистить</button>
+              <button class="btn btn-sm" onclick="mqttStartMonitor()">Обновить</button>
             </div>
           </div>
           <div id="mqtt-monitor-log" class="mqtt-monitor-log"></div>
@@ -1115,8 +1097,8 @@
         <div id="mqtt-scan-modal" class="mqtt-modal-overlay" hidden>
           <div class="mqtt-modal-dialog mqtt-modal-wide">
             <div class="mqtt-modal-head">
-              <h3>🔍 Поиск устройств на шине</h3>
-              <button class="btn btn-sm" onclick="mqttHideScanModal()">✕</button>
+              <h3>Поиск устройств на шине</h3>
+              <button class="btn btn-sm" onclick="mqttHideScanModal()">Закрыть</button>
             </div>
             <div class="mqtt-modal-body">
               <div class="mqtt-scan-params">
@@ -1249,28 +1231,29 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/i18n.js?v=1.0.5.68&r=noell1"></script>
 <script src="static/js/app.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/app/status.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/app/status.js?v=1.0.5.68&r=noell1"></script>
 <script src="static/js/app/hw.js?v=1.0.5.68&r=devhist1"></script>
 <script src="static/js/app/rs485.js?v=1.0.5.68&r=devhist1"></script>
 <script src="static/js/app/forms.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/app/services.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/app/misc.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/app/services.js?v=1.0.5.68&r=noell1"></script>
+<script src="static/js/app/misc.js?v=1.0.5.68&r=noell1"></script>
 <script src="static/js/app/init.js?v=1.0.5.68&r=devhist1"></script>
 <script src="static/js/app/nav.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/flasher.js?v=1.0.5.68-bacnet-i18n-bacnet-i18n"></script>
-<script src="static/js/mqtt.js?v=1.0.5.69&r=multidev1"></script>
-<script src="static/js/gateway.js?v=1.0.5.68&r=devhist1"></script>
-<script src="static/js/devices.js?v=1.0.5.99&r=devtab2"></script>
-<script src="static/js/cloud.js?v=1.0.5.68&r=devhist1"></script>
+<script src="static/js/flasher.js?v=1.0.5.68&r=noell1"></script>
+<script src="static/js/mqtt.js?v=1.0.5.69&r=noell1"></script>
+<script src="static/js/gateway.js?v=1.0.5.68&r=noell1"></script>
+<script src="static/js/devices.js?v=1.0.5.99&r=noell1"></script>
+<script src="static/js/cloud.js?v=1.0.5.68&r=noell1"></script>
+<script src="static/js/app/alice.js?v=1.0.5.68&r=noell1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>
   <div class="dev-modal-panel" role="dialog" aria-modal="true" aria-labelledby="dev-modal-title">
     <div class="dev-modal-head">
       <h3 id="dev-modal-title" data-i18n="История">История</h3>
-      <button type="button" class="btn btn-sm" id="dev-modal-close" aria-label="Закрыть">✕</button>
+      <button type="button" class="btn btn-sm" id="dev-modal-close" aria-label="Закрыть">Закрыть</button>
     </div>
     <div class="dev-modal-toolbar">
       <div class="dev-mode-tabs" id="dev-mode-tabs" role="tablist" aria-label="Режим графика">

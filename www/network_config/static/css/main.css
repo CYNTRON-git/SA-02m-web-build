@@ -143,9 +143,8 @@
 
 :root,
 html {
-  /* Topbar height: two-line brand stack (logo on top, title beneath) needs more
-     than the old single-row 52px. Everything keyed to the bar height reads this
-     var (.toast-area / .mqtt-toast top offsets), so raising it here is enough. */
+  /* Topbar height: single-row desktop (logo | title | controls). Everything keyed
+     to the bar height reads this var (.toast-area / .mqtt-toast top offsets). */
   --topbar-h: 60px;
 }
 
@@ -273,12 +272,11 @@ html[data-theme="light"] .topbar {
 html:not([data-theme="light"]) .topbar {
   background-color: #1c1c1e;
 }
-/* Brand block = a VERTICAL stack (Operator spec, 1.0.5.25, cloud-header model):
-   logo image on top, «Сервер автоматизации СА-02м» title directly beneath it,
-   left-aligned. Controls stay on the right via .topbar-sep{flex:1}. */
+/* Desktop brand row: logo | title (centred in free space) | controls.
+   Mobile (≤700) stacks short title under the logo via grid. */
 .topbar-logo {
-  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
-  gap: 2px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
   height: 100%;
   min-width: 0;
 }
@@ -305,9 +303,6 @@ html:not([data-theme="light"]) .topbar {
   object-position: left center;
   flex-shrink: 0;
   cursor: pointer;
-}
-.topbar-logo > div:last-child {
-  min-width: 0;
 }
 /* Compact ghost topbar control (cloud fleet-UI `.tbtn` look, Phase 5, 1.0.5.26)
    — shared by #lang-toggle, #theme-toggle, #logout-btn. Cloud tokens mapped to
@@ -348,39 +343,43 @@ html:not([data-theme="light"]) .topbar {
   line-height: 0;
   flex-shrink: 0;
 }
-/* Title sits UNDER the logo now (vertical brand stack), sized down to fit the
-   bar. white-space:nowrap (was `pre` — which only kept it single-line; the text
-   has no significant runs of spaces) + ellipsis is the one-line-with-tooltip
-   floor; #device-title keeps its full-text `title` attr (set by
-   applyDeviceTitle in app/status.js). */
+/* Desktop: title sits in the free space between logo and language control,
+   horizontally centred. Ellipsis + #device-title `title` attr (applyDeviceTitle). */
 .topbar-branding {
+  flex: 1 1 auto;
   min-width: 0;
-  max-width: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-weight: 700;
   color: var(--text);
-  line-height: 1.15;
+  line-height: 1.2;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   letter-spacing: 0.01em;
+  padding: 0 12px;
 }
 .topbar-brand-text,
 #device-title {
-  font-size: 0.9rem;
+  font-size: 1.35rem;
   font-weight: inherit;
   color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .topbar-brand-ver,
 #app-version {
-  font-size: 0.72rem;
+  flex-shrink: 0;
+  font-size: 0.9rem;
   font-weight: inherit;
   color: var(--text-sec);
-  margin-left: 0.4em;
+  margin-left: 0.9em;
 }
 /* Short model name (СА-02м / СА-02м-2) — hidden on desktop (full title shows);
    the mobile topbar (≤700) swaps to it so the controls fit the logo's row. */
-.topbar-brand-short { display: none; font-size: 0.9rem; font-weight: inherit; color: inherit; }
-.topbar-sep   { flex: 1; }
+.topbar-brand-short { display: none; font-size: 1.35rem; font-weight: inherit; color: inherit; }
+.topbar-sep { display: none; }
 /* Right-side controls group (lang/theme/ip/user) wrapped so the WHOLE set can
    drop to a full-width 2nd row on mobile (cloud `.navr` model — RESPONSIVE §),
    freeing row 1 for the brand + restored full wordmark. Desktop: an inline flex
@@ -428,9 +427,9 @@ html:not([data-theme="light"]) .topbar {
 }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
-  padding: 9px 14px; margin: 2px 8px;
+  padding: 10px 14px; margin: 2px 8px;
   border-radius: var(--radius-sm); cursor: pointer;
-  color: var(--text-sec); font-size: .87rem; font-weight: 500;
+  color: var(--text-sec); font-size: .95rem; font-weight: 500;
   transition: background var(--transition), color var(--transition), box-shadow var(--transition);
   border: 1px solid transparent;
 }
@@ -446,7 +445,7 @@ html:not([data-theme="light"]) .topbar {
 /* Light theme: --cyan (#0891b2) on the light cyan-tint fill is only 2.90:1 —
    darken the active label to meet AA (B3 contrast pass). */
 html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
-.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .7; }
+.nav-item svg { width: 17px; height: 17px; flex-shrink: 0; opacity: .7; }
 .nav-item.active svg { opacity: 1; }
 .nav-parent { justify-content: flex-start; }
 .nav-parent > span { flex: 1; }
@@ -456,8 +455,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .nav-sub-list.open { max-height: 280px; }
 .nav-sub-item {
   display: flex; align-items: center; gap: 6px;
-  padding: 6px 10px; border-radius: var(--radius-sm);
-  color: var(--text-sec); font-size: .82rem; cursor: pointer;
+  padding: 7px 10px; border-radius: var(--radius-sm);
+  color: var(--text-sec); font-size: .9rem; cursor: pointer;
   transition: background var(--transition), color var(--transition);
 }
 .nav-sub-item:hover { background: var(--bg-hover); color: var(--text); }
@@ -474,8 +473,15 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
 .page-header { margin-bottom: 20px; }
-.page-header h2 { font-size: 1.1rem; font-weight: 700; color: var(--text); }
-.page-header p  { font-size: .8rem; color: var(--text-sec); margin-top: 3px; }
+.page-header h2 {
+  font-size: 1.1rem; font-weight: 700; line-height: var(--lh-tight);
+  color: var(--text); /* primary label — white in dark / near-black in light */
+}
+.page-header p,
+.page-header .page-desc {
+  font-size: 13px; line-height: var(--lh-body);
+  color: var(--text-sec); margin-top: 4px;
+}
 /* Дашборд «Общая информация» — крупнее заголовок и подзаголовок */
 #tab-dashboard .page-header h2 { font-size: 1.38rem; letter-spacing: -0.02em; }
 #tab-dashboard .page-header p  { font-size: .95rem; margin-top: 6px; line-height: 1.45; }
@@ -811,11 +817,16 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   text-align: center;
 }
 .badge {
-  font-size: 12px; font-weight: 700;
+  font-size: 11px; font-weight: 600;
   text-transform: none;
   letter-spacing: .02em;
-  padding: 3px 9px; border-radius: var(--radius-pill);
-  box-shadow: var(--shadow-sm);
+  line-height: 1.25;
+  padding: 3px 8px; border-radius: var(--radius-xs);
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
 }
 .badge-ok  { background: var(--badge-ok-bg); color: var(--badge-ok-fg);  border: 1px solid var(--badge-ok-border); }
 .badge-err { background: var(--badge-err-bg); color: var(--red);    border: 1px solid var(--badge-err-border); }
@@ -907,10 +918,16 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
+/* Single control size: same height + radius for .btn / .btn-sm everywhere.
+   Vertical rhythm comes from parent gaps/margins, not from uneven padding. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  padding: 9px 18px; border-radius: var(--radius-sm);
-  font-size: .85rem; font-weight: 600; line-height: 1;
+  box-sizing: border-box;
+  min-height: 38px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+  font-size: .85rem; font-weight: 600; line-height: 1.2;
   cursor: pointer; border: 1px solid var(--border-li);
   background: var(--bg-panel); color: var(--text);
   transition: background var(--transition), transform .1s ease,
@@ -957,11 +974,42 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   color: var(--yellow);
 }
 
-.btn-sm { padding: 6px 13px; font-size: .78rem; border-radius: var(--radius-xs); }
-.widget .btn-sm { font-size: 13px; padding: 7px 14px; }
-.btn-lg { padding: 13px 26px; font-size: .92rem; border-radius: var(--radius); }
+.btn-sm {
+  min-height: 38px;
+  height: 38px;
+  padding: 0 14px;
+  font-size: .82rem;
+  border-radius: var(--radius-sm);
+}
+.widget .btn-sm {
+  font-size: 13px;
+  padding: 0 14px;
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+}
+.btn-lg {
+  min-height: 46px;
+  height: 46px;
+  padding: 0 26px;
+  font-size: .92rem;
+  border-radius: var(--radius-sm);
+}
 
 .btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  align-items: center;
+}
+.btn-row > .btn {
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+}
 
 /* ── HW control cards ────────────────────────────────────────────────────── */
 .hw-block-title {
@@ -1173,7 +1221,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .rs485-chips { display: flex; flex-wrap: wrap; gap: 3px 4px; }
 .rs485-chip {
   display: inline-block; font-size: 11px; font-weight: 600;
-  line-height: 1.5; padding: 0 6px; border-radius: 999px;
+  line-height: 1.5; padding: 0 6px; border-radius: var(--radius-xs);
   font-family: 'Courier New', monospace; white-space: nowrap;
 }
 /* Reused, pre-verified token pairs (as .w-ico-*): cyan=live-online, red=live-offline. */
@@ -1371,13 +1419,32 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .tab-pane:not(#tab-dashboard) .widget {
   padding: 16px 18px;
 }
-.tab-pane:not(#tab-dashboard) .widget > .widget-title:not(.has-ico):not(.flasher-log-title):not(.mqtt-devices-title):not(.mqtt-monitor-title) {
+.tab-pane:not(#tab-dashboard) .widget > .widget-title:not(.has-ico):not(.flasher-log-title):not(.mqtt-devices-title):not(.mqtt-monitor-title):not(.gw-svc-title) {
   text-align: center;
 }
 .tab-pane:not(#tab-dashboard) .widget > .widget-title.flasher-log-title,
 .tab-pane:not(#tab-dashboard) .widget > .widget-title.mqtt-devices-title,
 .tab-pane:not(#tab-dashboard) .widget > .widget-title.mqtt-monitor-title {
   text-align: left;
+}
+/* Gateway «Шлюз»: status badge pinned top-right (title stays centred). */
+.widget-title.gw-svc-title {
+  position: relative;
+  text-align: center;
+  padding-right: 6.5rem;
+  min-height: 1.5em;
+}
+.widget-title.gw-svc-title .gw-svc-title-label {
+  display: block;
+}
+.widget-title.gw-svc-title > .badge {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  margin: 0;
+  text-transform: none;
+  letter-spacing: .02em;
 }
 .mqtt-monitor-title-actions {
   float: right;
@@ -1404,19 +1471,20 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #hw-variant-section .hw-variant-row {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+  width: 100%;
 }
 #hw-variant-section .hw-variant-row select {
-  width: auto;
-  width: fit-content;
-  max-width: 100%;
-  min-width: min(100%, 16rem);
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  max-width: none;
 }
 #hw-variant-section .hw-variant-row .btn {
   flex: 0 0 auto;
+  margin-left: auto;
 }
 #hw-variant-section .hw-variant-status {
   display: block;
@@ -1641,10 +1709,18 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin-top: auto;
   flex-shrink: 0;
   padding-top: 12px;
+  padding-bottom: 2px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  box-sizing: border-box;
+}
+.system-manage-grid .btn,
+.system-manage-grid .btn-sm {
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
   box-sizing: border-box;
 }
 .system-manage-grid .system-manage-tile-foot .btn,
@@ -1653,7 +1729,10 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   justify-content: center;
   align-self: stretch;
   font-size: .82rem;
-  padding: 8px 12px;
+  padding: 0 12px;
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
   box-sizing: border-box;
 }
 
@@ -1826,7 +1905,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 
 /* ── Действия ───────────────────────────────────────────────────────────── */
 .system-manage-actions-card .system-manage-actions-main {
-  gap: 14px;
+  gap: 16px;
   align-items: stretch;
   text-align: center;
   justify-content: flex-start;
@@ -1835,8 +1914,9 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   width: 100%;
+  padding: 2px 0 4px;
 }
 .system-action-label {
   font-size: .8rem;
@@ -1852,14 +1932,18 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   line-height: 1.35;
 }
 .system-manage-actions-card .system-action-btn {
-  margin-top: 0 !important;
+  margin: 4px 0 0 !important;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   width: 100%;
+  min-height: 38px;
+  height: 38px;
   font-size: .82rem;
-  padding: 8px 12px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
 }
 .storage-fmt-hint {
   font-size: .78rem;
@@ -1935,7 +2019,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .system-manage-cloud-card .cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   font-size: .8rem;
   line-height: 1.4;
 }
@@ -1954,15 +2038,21 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .system-manage-cloud-card #cloud-btn-activate {
   width: 100%;
   font-size: .82rem;
-  padding: 8px 12px;
+  padding: 0 12px;
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  margin-top: 10px;
 }
 .system-manage-cloud-card .cloud-agent-ctrl .btn {
   width: 100%;
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
 }
 
 /* ── Обновление / backup / factory reset ───────────────────────────────── */
-.system-manage-web-update-card .web-upd-status,
-.system-manage-factory-reset-card .web-upd-status {
+.system-manage-web-update-card .web-upd-status {
   font-size: .8rem;
 }
 .web-upd-section {
@@ -1989,6 +2079,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  margin-top: 8px;
+  margin-bottom: 4px;
 }
 .web-upd-section-actions.system-manage-tile-foot-row,
 .web-upd-section-actions.btn-group.system-manage-tile-foot-row {
@@ -1998,6 +2090,11 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .web-upd-section-actions .btn {
   width: 100%;
   justify-content: center;
+  min-height: 38px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
 }
 .web-upd-section-actions.system-manage-tile-foot-row .btn {
   flex: 1 1 0;
@@ -2056,13 +2153,21 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   gap: 8px;
   margin: 0;
 }
+.system-manage-kernel-card .cpu-profile-meta {
+  margin: 0 0 10px;
+}
 .system-manage-kernel-card .kernel-apply-inline,
 .system-manage-kernel-card .kernel-refresh-inline,
 .system-manage-kernel-card .cpu-profile-apply-inline {
   align-self: stretch;
   width: 100%;
   font-size: .82rem;
-  padding: 8px 12px;
+  padding: 0 12px;
+  min-height: 38px;
+  height: 38px;
+  border-radius: var(--radius-sm);
+  box-sizing: border-box;
+  margin-top: 4px;
 }
 .system-manage-kernel-card .cpu-profile-section-title {
   font-size: .78rem;
@@ -2070,7 +2175,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   text-transform: uppercase;
   letter-spacing: .04em;
   color: var(--text-sec);
-  margin: 4px 0 0;
+  margin: 4px 0 10px;
   text-align: center;
 }
 
@@ -2100,7 +2205,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    name/uptime/badge widget) is deliberately NOT touched. */
 .system-manage-services-card.widget-svc .svc-row.svc-ctl-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px 74px 112px;
+  /* [name] [Пуск/Стоп] [Удалить/Установить] [статус] — equal control height */
+  grid-template-columns: minmax(0, 1fr) 56px 80px 118px;
   align-items: center;
   column-gap: 6px;
 }
@@ -2108,25 +2214,31 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   display: block;
   min-width: 0;
 }
-.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-cell .svc-ctl-btn {
-  width: 100%;
+/* Buttons + status badges: same height, radius, type — override global .btn 38px */
+.system-manage-services-card.widget-svc .svc-ctl-row .svc-ctl-btn,
+.system-manage-services-card.widget-svc .svc-ctl-row .badge {
   box-sizing: border-box;
+  width: 100%;
+  min-height: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: .02em;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  white-space: nowrap;
 }
-/* Badge fills its fixed 112px column — overrides the dashboard 38% cap / rem
-   min-width so «Не установлен» (widest, ~109px) shows in full and every badge
-   left edge aligns row-to-row. */
 .system-manage-services-card.widget-svc .svc-ctl-row .badge {
   max-width: none;
   min-width: 0;
-  width: 100%;
-  box-sizing: border-box;
-  text-align: center;
-}
-.system-manage-services-card.widget-svc .svc-ctl-btn {
-  font-size: 9px;
-  line-height: 1.2;
-  padding: 3px 7px;
-  min-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Журнал событий ─────────────────────────────────────────────────────── */
@@ -2397,33 +2509,25 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .flasher-actions-widget.flasher-scan-pair {
   display: flex;
   flex-direction: row;
+  justify-content: flex-end;
   width: 100%;
   gap: 8px;
   margin-top: 8px;
-  align-items: stretch;
+  align-items: center;
   flex-wrap: nowrap;
 }
-.flasher-scan-pair-btn {
-  flex: 1 1 0;
-  min-width: 0;
+.flasher-scan-action-btn {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
 }
-.flasher-scan-cancel-btn.btn:disabled {
+/* Combined scan/cancel: cancel mode keeps primary affordance while running. */
+.flasher-scan-action-btn.is-cancel.btn:disabled {
   opacity: 1;
   cursor: not-allowed;
   box-shadow: var(--shadow-sm);
   background: var(--bg-panel);
   border-color: var(--border-md);
   color: var(--text-sec);
-}
-.flasher-scan-cancel-btn.btn:not(:disabled) {
-  background: var(--cyan-btn);
-  border-color: var(--cyan-btn);
-  color: #fff;
-}
-.flasher-scan-cancel-btn.btn:not(:disabled):hover {
-  background: var(--cyan-hover);
-  border-color: var(--cyan-hover);
-  box-shadow: 0 4px 16px #0891b244;
 }
 .flasher-port-actions {
   margin-top: 10px;
@@ -2667,15 +2771,23 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .flasher-flash-actions {
   display: flex;
   flex-direction: row;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   width: 100%;
   gap: 8px;
   margin-top: 8px;
 }
-.flasher-flash-actions > .btn {
-  flex: none;
-  width: auto;
+.flasher-flash-action-btn {
+  flex: 0 0 auto;
+  min-width: 8.5rem;
+}
+.flasher-flash-action-btn.is-cancel.btn:disabled {
+  opacity: 1;
+  cursor: not-allowed;
+  box-shadow: var(--shadow-sm);
+  background: var(--bg-panel);
+  border-color: var(--border-md);
+  color: var(--text-sec);
 }
 .flasher-upload-label { cursor: pointer; display: inline-flex; align-items: center; }
 
@@ -3352,6 +3464,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 
 /* Broker status bar */
 .mqtt-broker-bar { margin-bottom: 16px; }
+/* Каналы → Монитор топиков (и любые соседние .widget в корне вкладки) */
+#tab-mqtt > .widget + .widget { margin-top: 16px; }
 
 .mqtt-top-row {
   display: flex;
@@ -3365,25 +3479,27 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin-bottom: 0;
   padding: 12px 14px;
 }
+/* MQTT: page-header / .widget-title inherit the global scale (h2 = --text,
+   widget-title = 13px uppercase). Compact status row stays 11px; tables/forms 13px. */
 .mqtt-client-compact .widget-title {
-  font-size: .92rem;
   margin-bottom: 4px;
 }
 .mqtt-client-hint {
   margin: 0 0 8px;
-  font-size: .72rem;
-  color: var(--text-muted);
-  line-height: 1.35;
+  font-size: 13px;
+  color: var(--text-sec);
+  line-height: var(--lh-body);
 }
 .mqtt-client-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .8rem;
+  font-size: 13px;
+  line-height: var(--lh-body);
 }
 .mqtt-client-table th {
   text-align: left;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--text-sec);
   padding: 3px 8px 3px 0;
   width: 52px;
   white-space: nowrap;
@@ -3441,30 +3557,58 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   letter-spacing: normal;
   user-select: text;
 }
+/* MQTT status bar type scale: badges + meta text = 11px / 1.25 lh, one baseline. */
 .mqtt-broker-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px 12px;
+  font-size: 11px;
+  line-height: 1.25;
+  color: var(--text-sec);
 }
-.mqtt-broker-ports {
-  font-size: .82rem;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
+.mqtt-broker-row > .badge {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding: 3px 8px;
+  margin: 0;
+  border-radius: var(--radius-xs);
+  box-shadow: none;
+}
+.mqtt-broker-ports,
+.mqtt-broker-meta {
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--text-sec);
+  font-family: inherit;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.mqtt-broker-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 /* Device table */
 .mqtt-device-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: .85rem;
+  font-size: 13px;
+  line-height: var(--lh-body);
 }
 .mqtt-device-table th {
   text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
-  color: var(--text-muted);
-  font-weight: 500;
+  color: var(--text-sec);
+  font-weight: 600;
+  font-size: 12px;
 }
 .mqtt-device-table td {
   padding: 6px 8px;
@@ -3499,8 +3643,9 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   gap: 8px;
   padding: 10px 14px;
   cursor: pointer;
-  font-size: .88rem;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
   background: var(--bg-card);
   user-select: none;
 }
@@ -3564,7 +3709,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin-left: auto;
 }
 .mqtt-ch-widget .mqtt-ct-hint {
-  font-size: 0.82rem;
+  font-size: 13px;
   opacity: 0.75;
   padding: 0 0 4px;
 }
@@ -3584,7 +3729,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .mqtt-ch-live {
   font-family: var(--font-mono);
-  font-size: .82rem;
+  font-size: 13px;
   font-weight: 600;
   min-width: 4.5rem;
   width: 4.5rem;
@@ -3702,16 +3847,16 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: .8rem;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--text-sec);
   cursor: pointer;
 }
 
 /* Topic preview */
 .topic-preview {
   font-family: var(--font-mono);
-  font-size: .72rem;
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--text-sec);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3726,7 +3871,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 10px;
-  font-size: .85rem;
+  font-size: 13px;
+  line-height: var(--lh-body);
 }
 .mqtt-input-small {
   width: 64px;
@@ -3735,7 +3881,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   border-radius: 4px;
   background: var(--bg-input, var(--bg-card));
   color: var(--text);
-  font-size: .85rem;
+  font-size: 13px;
   text-align: right;
 }
 .mqtt-select-small {
@@ -3744,7 +3890,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   border-radius: 4px;
   background: var(--bg-input, var(--bg-card));
   color: var(--text);
-  font-size: .82rem;
+  font-size: 13px;
 }
 
 /* Topic monitor */
@@ -3756,7 +3902,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   border-radius: 6px;
   padding: 8px 10px;
   font-family: var(--font-mono);
-  font-size: .78rem;
+  font-size: 13px;
+  line-height: var(--lh-body);
 }
 .mqtt-monitor-line {
   display: grid;
@@ -3769,7 +3916,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 .mqtt-monitor-topic { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mqtt-monitor-val { color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; }
 .mqtt-monitor-err { color: var(--red, #f87171); padding: 4px 0; }
-.mqtt-monitor-hint { color: var(--text-muted); padding: 8px 4px; font-size: 0.9em; }
+.mqtt-monitor-hint { color: var(--text-sec); padding: 8px 4px; font-size: 13px; }
 
 /* Modal */
 .mqtt-modal-overlay {
@@ -3947,7 +4094,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 #tab-gateway #gw-content .gw-svc-summary-meta {
   color: var(--text-sec);
-  font-size: .82rem;
+  font-size: 13px;
+  line-height: var(--lh-body);
 }
 #tab-gateway #gw-content .gw-svc-actions {
   margin-top: 0;
@@ -4226,19 +4374,31 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   .nav-backdrop { top: var(--topbar-h); }
   .app.nav-open .nav-backdrop { display: block; }
 
-  /* Mobile topbar — the cloud fleet header (`.nav`/`.navtg`/`.navr`) applied
-     verbatim, Operator-directed 2026-07-19: ROW 1 = burger (left, our addition)
-     + FULL wordmark logo (short model name СА-02м/СА-02м-2 beneath it) + the
-     language/theme pills (cloud `.navtg`, pushed right); ROW 2 = «Выход» as a
-     cyan TEXT LINK (cloud `.navr`, full-width, right-aligned) — a DIFFERENT
-     style than the pills. The header wraps: .topbar-user (holding logout) is
-     flex-basis:100% so it drops to row 2; the topbar height goes auto (min-height
-     keeps the desktop floor). .topbar-logo{height:auto} stops the base
-     height:100% from stretching row 1 and pushing row 2 outside the box. */
-  .topbar-burger { display: flex; align-self: flex-start; }
-  .topbar { gap: 8px; padding: 8px 12px; flex-wrap: wrap; height: auto; min-height: var(--topbar-h); align-items: flex-start; }
-  .topbar-logo { height: auto; align-self: flex-start; }   /* full wordmark restored (Operator) */
-  .topbar-branding  { white-space: nowrap; overflow: hidden; }
+  /* Mobile topbar — ROW 1 = burger | logo | lang/theme; short title under logo
+     (grid), «Выход» in the right column under the pills. */
+  .topbar-burger { display: flex; align-self: flex-start; grid-area: burger; }
+  .topbar {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "burger logo right"
+      ". brand right";
+    column-gap: 8px;
+    row-gap: 2px;
+    padding: 8px 12px;
+    height: auto;
+    min-height: var(--topbar-h);
+    align-items: center;
+  }
+  .topbar-logo { grid-area: logo; height: auto; align-self: center; justify-self: start; }
+  .topbar-branding {
+    grid-area: brand;
+    justify-content: flex-start;
+    text-align: left;
+    padding: 0;
+    white-space: nowrap;
+    overflow: hidden;
+  }
   #device-title { display: none; }        /* long title off — short name below shows */
   /* Show the web version to the RIGHT of the short model name (Operator
      2026-07-19): «СА-02м  v1.0.5.34». */
@@ -4250,10 +4410,12 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
      force on these header toggles (Operator: cloud sizes). */
   .topbar-lang-btn { padding: 5px 10px; min-height: 0; min-width: 0; }
   .topbar-sep { display: none; }
-  /* Right group = a 2-row column mirroring the brand: toggles on top (aligned to
-     the LOGO line), «Выход» beneath (aligned to the СА-02м line). margin-left:auto
-     pushes it right; align-self:flex-start tops it against the brand column. */
-  .topbar-right { flex-direction: column; align-items: flex-end; gap: 4px; margin-left: auto; align-self: flex-start; }
+  /* Right group spans both rows: toggles on logo line, «Выход» on brand line. */
+  .topbar-right {
+    grid-area: right;
+    flex-direction: column; align-items: flex-end; gap: 4px;
+    align-self: stretch; justify-content: space-between;
+  }
   .topbar-controls { gap: 8px; min-width: 0; justify-content: flex-end; }
   .topbar-user { display: flex; gap: 0; justify-content: flex-end; }
   .topbar-user > svg { display: none; }   /* user icon + name drop; logout stays */
