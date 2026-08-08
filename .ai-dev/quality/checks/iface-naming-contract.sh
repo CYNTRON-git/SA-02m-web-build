@@ -137,8 +137,11 @@ fi
 
 # The rename script's per-device gate: a bare name-existence check cannot tell
 # a settled canonical name from a kernel-native one udev is about to rename.
+# Use grep (not grep -q) on the sed pipe: under `set -o pipefail`, grep -q
+# exits early on the first hit and SIGPIPEs sed (exit 141) — false FAIL.
 if grep -q '^udev_initialized() {' etc/sa02m-iface-canonical.sh \
-   && sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh | grep -q 'udev_initialized '; then
+   && sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh \
+        | grep 'udev_initialized ' >/dev/null; then
     pass "rename script gates canonicalize_pair on udev_initialized"
 else
     fail "etc/sa02m-iface-canonical.sh lost the udev_initialized gate in canonicalize_pair — the boot-0 'already canonical' no-op against a kernel-native name returns silently"

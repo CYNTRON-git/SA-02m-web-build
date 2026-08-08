@@ -65,6 +65,15 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
+      "id": "py-unit-alice",
+      "checks": "Alice controller unit tests (opt/sa02m-alice/tests, stdlib unittest) — converters, device registry, state-sender rate limits, and honest offline/gateway-down API (no fake pairing success).",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-alice/tests -t opt/sa02m-alice -q; fi; done; echo py-unit-alice: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-alice/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
       "id": "iface-naming-contract",
       "checks": "Static gate for docs/contracts/ethernet-iface-naming.md: the legacy-name ledger (only the compat layer, the rename script and the installer migration may name end0/end1 — non-vacuous both ways), the installer still installing AND enabling sa02m-iface-canonical.service, the F6 guard (no `echo -e` in apply.cgi and conf writes only through the two known writers), the §5.4 rm-helper pins (no raw `sudo rm` in apply.cgi; the pinned sa02m-conf-rm.sh sudoers grant present), and the contract §1.0/§7 ordering pins: the unit ordered Before=networking.service, After=+Wants= systemd-udevd + systemd-udev-trigger (else the boot-0 pre-udevd no-op returns), NO Wants=systemd-udev-settle (else the 120 s whole-queue stall returns), fix-eth@.service After=networking.service (else the double-ifup 'File exists' race returns), the rename script still gating canonicalize_pair on udev_initialized (else the boot-0 class returns silently), and 02-network.sh writing `source /etc/network/interfaces.d/*.conf` with no unfiltered `*` line (else <conf>.sa02m-bak backups go live: duplicate stanza -> 'File exists' -> networking FAILED, §1.0 mechanism 3).",
       "config": null,
