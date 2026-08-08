@@ -86,14 +86,13 @@ class AliceSocketIO:
                     "cert_reqs": ssl.CERT_REQUIRED,
                 }
             }
-        # reconnection delays: 2s → 60s (python-socketio supports list or backoff)
+        # Reconnect is owned by client/main.py outer loop. Enabling both
+        # python-socketio auto-reconnect and the outer tear-down/reconnect
+        # loop caused connect/disconnect flapping (duplicate sessions).
         self._sio = socketio.Client(
             ssl_verify=bool(use_tls),
             websocket_extra_options=ws_extra,
-            reconnection=True,
-            reconnection_attempts=0,  # infinite
-            reconnection_delay=int(C.SIO_RECONNECT_MIN_S),
-            reconnection_delay_max=int(C.SIO_RECONNECT_MAX_S),
+            reconnection=False,
             logger=False,
             engineio_logger=False,
         )

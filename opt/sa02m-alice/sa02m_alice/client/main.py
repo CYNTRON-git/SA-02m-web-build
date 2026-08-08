@@ -256,6 +256,8 @@ def run() -> int:
                 gateway_wss=wss,
                 client_enabled=True,
             )
+            # Backoff before outer-loop reconnect (SIO auto-reconnect is off).
+            _stop.wait(C.SIO_RECONNECT_MIN_S)
         except SocketIOUnavailable as exc:
             _write_status(C.STATE_MISSING_DEPS, error="missing_deps", message=str(exc))
             return 1
