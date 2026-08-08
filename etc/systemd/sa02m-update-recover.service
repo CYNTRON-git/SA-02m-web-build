@@ -1,0 +1,18 @@
+[Unit]
+Description=SA-02m update power-loss recovery
+Documentation=file:///usr/local/libexec/sa02m-update-runner
+DefaultDependencies=no
+After=local-fs.target
+Before=nginx.service fcgiwrap.service multi-user.target
+Conflicts=sa02m-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/sa02m-update-runner recover
+# Plan §2.5: recover timeout 300s.
+TimeoutStartSec=300
+RemainAfterExit=yes
+Nice=0
+
+[Install]
+WantedBy=multi-user.target

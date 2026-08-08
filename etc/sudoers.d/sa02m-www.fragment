@@ -1,0 +1,8 @@
+# SA-02m offline/file update — merge into /etc/sudoers.d/sa02m-www
+# (scripts/03-webserver.sh). Pinned paths only; no wildcards on systemctl unit
+# names beyond the fixed unit below (plan §2.11).
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start sa02m-update.service
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl stop sa02m-update.service
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl reset-failed sa02m-update.service
+www-data ALL=(root) NOPASSWD: /usr/local/libexec/sa02m-update-inspect
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-backup.sh

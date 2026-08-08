@@ -1,0 +1,19 @@
+[Unit]
+Description=SA-02m offline/file update apply
+Documentation=file:///usr/local/libexec/sa02m-update-runner
+After=local-fs.target
+Conflicts=sa02m-update-recover.service
+
+[Service]
+Type=oneshot
+# CGI writes transaction.json then starts this unit with no args (plan §2.10).
+ExecStart=/usr/local/libexec/sa02m-update-runner apply
+# Long packages on armv7l; 0 = no TimeoutStartUSec limit (systemd).
+TimeoutStartSec=0
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+# Do not kill mid-apply on stop request until TimeoutStopSec.
+KillMode=process
+SendSIGKILL=no
+TimeoutStopSec=30
