@@ -1,0 +1,158 @@
+#!/bin/sh
+# ═══════════════════════════════════════════════════════════════════════════
+#  SA-02m  •  netinstall init (initramfs)  v1.0
+#
+#  Zero-touch: link-wait → DHCP → HTTP current.img.xz (+sha256) →
+#  xz|dd eMMC → status callback → reboot.
+#
+#  BusyBox ash. NEVER run on a live eMMC root that is the dd target.
+# ═══════════════════════════════════════════════════════════════════════════
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+TARGET_DEV="${TARGET_DEV:-/dev/mmcblk2}"
+STATUS_PORT="${STATUS_PORT:-8765}"
+LOG=/tmp/netinstall.log
+
+ts() { date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 0; }
+log() { echo "[$(ts)] $*" | tee -a "$LOG" 2>/dev/null || echo "[$(ts)] $*"; }
+die() {
+    log "FATAL: $*"
+    report_status "FAIL" "0" "$*"
+    sleep 5
+    # Leave board powered for serial diagnosis; operator re-enters FEL.
+    exec setsid /bin/sh
+}
+
+report_status() {
+    # $1=state $2=progress $3=message
+    st="$1"; pr="$2"; msg="$3"
+    [ -n "${STATUS_URL:-}" ] || return 0
+    wget -q -O /dev/null \
+        --post-data="state=${st}&progress=${pr}&message=$(echo "$msg" | sed 's/ /+/g')" \
+        "${STATUS_URL}" 2>/dev/null || \
+    wget -q -O /dev/null \
+        "${STATUS_URL}?state=${st}&progress=${pr}&message=$(echo "$msg" | tr ' ' '_')" \
+        2>/dev/null || true
+}
+
+cmdline_get() {
+    # cmdline_get KEY → value of KEY= from /proc/cmdline
+    tr ' ' '\n' < /proc/cmdline 2>/dev/null | sed -n "s/^${1}=//p" | head -n1
+}
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || mount -t tmpfs tmpfs /dev
+mkdir -p /dev/pts /tmp /run
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+
+log "─── SA-02m netinstall init start ───"
+
+IMAGE_URL="$(cmdline_get sa02m.image)"
+STATUS_BASE="$(cmdline_get sa02m.status)"
+SERVERIP="$(cmdline_get sa02m.server)"
+IFACE="$(cmdline_get sa02m.iface)"
+IFACE="${IFACE:-eth0}"
+
+# ── network ──────────────────────────────────────────────────────────────
+log "[1/6] bring up $IFACE"
+ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null || true
+ip link set "$IFACE" up 2>/dev/null || ifconfig "$IFACE" up 2>/dev/null || true
+
+# Wait for carrier (max ~30s)
+i=0
+while [ "$i" -lt 30 ]; do
+    CARRIER="$(cat /sys/class/net/$IFACE/carrier 2>/dev/null || echo 0)"
+    OPER="$(cat /sys/class/net/$IFACE/operstate 2>/dev/null || echo down)"
+    if [ "$CARRIER" = "1" ] || [ "$OPER" = "up" ]; then
+        log "    link OK ($IFACE carrier=$CARRIER oper=$OPER)"
+        break
+    fi
+    i=$((i + 1))
+    sleep 1
+done
+
+log "[2/6] DHCP on $IFACE"
+DHCP_OK=0
+if command -v udhcpc >/dev/null 2>&1; then
+    if udhcpc -i "$IFACE" -n -q -t 8 -T 3 2>&1 | tee -a "$LOG"; then DHCP_OK=1; fi
+fi
+if [ "$DHCP_OK" = "0" ] && command -v dhclient >/dev/null 2>&1; then
+    if dhclient -1 -v "$IFACE" 2>&1 | tee -a "$LOG"; then DHCP_OK=1; fi
+fi
+if [ "$DHCP_OK" = "0" ]; then
+    die "DHCP failed (need udhcpc or dhclient)"
+fi
+
+# Resolve server IP: cmdline → DHCP serverid → gw
+if [ -z "$SERVERIP" ]; then
+    SERVERIP="$(cmdline_get sa02m.server)"
+fi
+if [ -z "$SERVERIP" ] && [ -f /var/run/udhcpc.${IFACE}.lease ]; then
+    # busybox udhcpc scripts often export siaddr; try common paths
+    SERVERIP="$(sed -n 's/^serverid=//p' /tmp/udhcpc.* 2>/dev/null | head -n1)"
+fi
+if [ -z "$SERVERIP" ]; then
+    SERVERIP="$(ip route 2>/dev/null | awk '/default/ {print $3; exit}')"
+fi
+if [ -z "$SERVERIP" ]; then
+    SERVERIP="$(route -n 2>/dev/null | awk '/^0.0.0.0/ {print $2; exit}')"
+fi
+
+if [ -z "$IMAGE_URL" ]; then
+    if [ -n "$SERVERIP" ]; then
+        IMAGE_URL="http://${SERVERIP}:8080/current.img.xz"
+    else
+        die "no sa02m.image= and cannot derive server IP"
+    fi
+fi
+
+if [ -z "$STATUS_BASE" ] && [ -n "$SERVERIP" ]; then
+    STATUS_BASE="http://${SERVERIP}:${STATUS_PORT}"
+fi
+STATUS_URL="${STATUS_BASE%/}/api/status"
+
+log "    IMAGE_URL=$IMAGE_URL"
+log "    STATUS_URL=$STATUS_URL"
+report_status "FLASHING" "5" "network_ready"
+
+# ── download ─────────────────────────────────────────────────────────────
+IMG=/tmp/current.img.xz
+SHA=/tmp/current.img.xz.sha256
+log "[3/6] wget image"
+report_status "FLASHING" "10" "download_start"
+if ! wget -O "$IMG" "$IMAGE_URL" 2>&1 | tee -a "$LOG"; then
+    die "wget image failed: $IMAGE_URL"
+fi
+report_status "FLASHING" "40" "download_done"
+
+log "[4/6] sha256 verify"
+if wget -O "$SHA" "${IMAGE_URL}.sha256" 2>/dev/null; then
+    EXP="$(awk '{print $1}' "$SHA")"
+    GOT="$(sha256sum "$IMG" | awk '{print $1}')"
+    [ -n "$EXP" ] && [ "$EXP" = "$GOT" ] || die "sha256 mismatch exp=$EXP got=$GOT"
+    log "    OK: $GOT"
+else
+    log "    WARN: no .sha256 — skip verify"
+fi
+report_status "FLASHING" "50" "sha_ok"
+
+# ── write eMMC ───────────────────────────────────────────────────────────
+[ -b "$TARGET_DEV" ] || die "$TARGET_DEV not a block device"
+log "[5/6] xz -dc | dd of=$TARGET_DEV bs=4M"
+report_status "FLASHING" "55" "dd_start"
+# BusyBox dd often lacks status=progress
+if ! xz -dc "$IMG" | dd of="$TARGET_DEV" bs=4M conv=fsync 2>>"$LOG"; then
+    die "dd failed"
+fi
+sync; sync
+log "    write complete"
+report_status "FLASHING" "95" "dd_done"
+
+# ── reboot ───────────────────────────────────────────────────────────────
+log "[6/6] reboot"
+report_status "REBOOT_WAIT" "100" "rebooting"
+sleep 2
+reboot -f 2>/dev/null || reboot || echo b > /proc/sysrq-trigger
+sleep 30
+die "reboot did not happen"
