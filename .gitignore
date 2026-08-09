@@ -30,6 +30,14 @@ private/
 # Артефакты снятия образа eMMC (make-image.sh)
 tools/imaging/out/
 tools/imaging/flash-media/
+# Flash stand runtime (images, tftp payloads, PIDs, logs) — not in git
+tools/imaging/stand-data/
+# Large donor kernel for netboot (re-fetch via boot/fetch-boot-artifacts.py)
+tools/imaging/boot/zImage
+tools/imaging/boot/*.device
+# Local stand env (may contain site-specific IPs)
+tools/imaging/stand/stand.env
+
 # Temporary working directory
 .tmp/
 tmp/
