@@ -720,16 +720,54 @@ ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.XXX \
    xz -dc sa02m-*-shrunk.img.xz | dd of=/dev/mmcblk2 bs=4M conv=fsync && sync && reboot'
 ```
 
-### 11.4. Вариант D — сетевой провижионер (серийное производство)
+### 11.4. Вариант D — стенд FEL → Ethernet netinstall (серийное производство)
 
-По аналогии с [CM Provisioner / AntexGate](https://habr.com/ru/articles/1024312/):
+Zero-touch заливка голых плат (Allwinner FEL `1f3a:efe8` → U-Boot → TFTP netinstall → HTTP `current.img.xz` → `xz|dd` eMMC). Полный образ **не** идёт по USB DFU и **не** лежит на FEL-флешке.
 
-- **Сервер:** DHCP + TFTP + HTTP, хранит `sa02m-shrunk.img.xz` + sha256.
-- **Приёмник:** скрипт при boot скачивает образ, проверяет sha256, пишет в `/dev/mmcblk2`, reboot.
+Инструменты: [`tools/imaging/stand/`](../tools/imaging/stand/), [`tools/imaging/netinstall/`](../tools/imaging/netinstall/), [`tools/imaging/net-provisioner/`](../tools/imaging/net-provisioner/).
 
-Подходит для партий 20+ плат; требует отдельной инфраструктуры (не входит в текущие скрипты).
+#### Хост стенда (один раз)
+
+- Windows 10/11 + **WSL2 Ubuntu** + **usbipd-win** (проброс FEL OTG в WSL)
+- В WSL: `sunxi-tools` (`sunxi-fel`), `dnsmasq`, `u-boot-tools` (`mkimage`), `xz-utils`, `python3`, `openssh-client`
+- Зеркальная сеть WSL: [`setup-wsl-network.ps1`](../tools/imaging/setup-wsl-network.ps1)
+- Скопировать `tools/imaging/stand/stand.env.example` → `stand.env`, выставить `STAND_IP` = LAN-адрес ПК стенда
+
+#### Подготовка артефактов
+
+```bash
+# boot: zImage + DTB (+ u-boot уже в git)
+py -3 tools/imaging/boot/fetch-boot-artifacts.py
+
+# initramfs + boot.scr (сборка на доноре по SSH)
+cd tools/imaging/netinstall
+./build-netinstall.sh --ip 192.168.1.136 --server-ip "$STAND_IP"
+
+# образ смены
+./../publish-image.sh --image ./../out/sa02m-*-shrunk.img.xz
+```
+
+Опционально, если OTG→ПК недоступен: минимальная USB-флешка (без полного образа) — `./prepare-fel-usb.sh --dest /mnt/… --server-ip "$STAND_IP"`.
+
+#### Оператор (каждая плата)
+
+```text
+Раз за смену:  .\tools\imaging\stand\start-stand.ps1
+На каждую плату:
+  1) Ethernet + USB-OTG к стенду + питание
+  2) Войти в FEL  (если нужно — вставить FEL-USB)
+  3) Ждать статус DONE на http://localhost:8765
+Никаких команд, ImageUSB и ручного dd.
+```
+
+Статусы UI: `IDLE → FEL_SEEN → NETBOOT → FLASHING → REBOOT_WAIT → DONE|FAIL`.
+
+Целевое время на shrunk.xz (~350–800 MiB, eth0 100 Mb/s): **~3–6 мин**. Аварийные пути вне стенда: §11.1 flash-receiver, §11.2 ImageUSB, §11.3 `ssh-flash-safe`.
+
+> E2E на второй (голой) плате: подключить к стенду и пройти цикл до DONE; без второй платы достаточно синтаксической проверки скриптов и публикации образа.
 
 ---
+
 
 ## 12. Первая загрузка клона
 

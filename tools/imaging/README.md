@@ -129,10 +129,24 @@ sh /mnt/autorun.sh
 
 | Режим | Действие | Первая загрузка |
 |---|---|---|
+| **Стенд FEL+Ethernet** (§11.4) | `start-stand.ps1` → FEL → auto netinstall | rootfs expand + QA DONE |
 | flash-receiver | USB → `flash-receiver.sh` → reboot | rootfs ~7G (sa02m-rootfs-expand) |
 | ImageUSB | ImageUSB → Write `.img` на eMMC | то же |
 
 Проверка: `df -h /` → **Size ≈ 7.0G**, не 1.8G.
+
+### Стенд zero-touch (серийное производство)
+
+```text
+Раз за смену:  .\tools\imaging\stand\start-stand.ps1
+На каждую плату:
+  1) Ethernet + USB-OTG к стенду + питание
+  2) Войти в FEL  (если нужно — вставить FEL-USB)
+  3) Ждать статус DONE на http://localhost:8765
+```
+
+Перед сменой (WSL): `fetch-boot-artifacts.py` → `netinstall/build-netinstall.sh` → `publish-image.sh`.  
+Подробности: [SA02M_IMAGING_GUIDE.md §11.4](../../docs/SA02M_IMAGING_GUIDE.md#114-вариант-d--стенд-fel--ethernet-netinstall-серийное-производство).
 
 ---
 
@@ -151,6 +165,15 @@ sh /mnt/autorun.sh
 | [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
 | [`autorun-fel.sh`](autorun-fel.sh) / [`autorun.sh`](autorun.sh) | USB + buildroot | `sdcard.img` → `dd` eMMC + watchdog mask до reboot |
+| [`stand/start-stand.ps1`](stand/start-stand.ps1) | хост Windows | запуск стенда (usbipd + WSL provisioner/FEL/QA) |
+| [`stand/fel-agent.py`](stand/fel-agent.py) | WSL | детект FEL → `sunxi-fel uboot` |
+| [`stand/postflash-monitor.py`](stand/postflash-monitor.py) | WSL | SSH/web QA → DONE/FAIL |
+| [`stand/status-server.py`](stand/status-server.py) | WSL | UI/JSON `:8765` |
+| [`netinstall/`](netinstall/) | сборка | initramfs + `boot.cmd` / `boot.scr` |
+| [`net-provisioner/start-provisioner.sh`](net-provisioner/start-provisioner.sh) | WSL | dnsmasq DHCP/TFTP + HTTP образа |
+| [`publish-image.sh`](publish-image.sh) | хост | `*.img.xz` → `stand-data/images/current.img.xz` |
+| [`prepare-fel-usb.sh`](prepare-fel-usb.sh) | хост | опциональная USB без полного образа |
+| [`boot/fetch-boot-artifacts.py`](boot/fetch-boot-artifacts.py) | хост | zImage/DTB с донора |
 | [`manifest.example.json`](manifest.example.json) | — | справочный шаблон (make-image пишет `.manifest.json`) |
 
 ---
