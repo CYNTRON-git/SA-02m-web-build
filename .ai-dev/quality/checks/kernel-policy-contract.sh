@@ -96,12 +96,16 @@ codesys08=$(grep -vE '^[[:space:]]*#' scripts/08-codesys.sh)
 if [ -z "$codesys08" ]; then
     fail "scripts/08-codesys.sh unreadable/empty — gate cannot check it"
 else
-    if printf '%s\n' "$codesys08" | grep -qE 'systemctl[^#]*[^-]enable[^#]*codesyscontrol'; then
+    # Here-strings, not `printf … | grep -q`: grep -q's early exit SIGPIPEs the
+    # producer and pipefail turns a FOUND match into a 141 "not found" — a
+    # fail-if-present pin would then silently miss the re-grown call. A
+    # here-string has no producer process. (.ai-dev/notes/quality-gate-environment.md)
+    if grep -qE 'systemctl[^#]*[^-]enable[^#]*codesyscontrol' <<<"$codesys08"; then
         fail "08-codesys.sh re-grew 'systemctl enable codesyscontrol' — install-only policy (contract §3)"
     else
         pass "08-codesys.sh has no systemctl enable codesyscontrol"
     fi
-    if printf '%s\n' "$codesys08" | grep -q 'init\.d/codesyscontrol start'; then
+    if grep -q 'init\.d/codesyscontrol start' <<<"$codesys08"; then
         fail "08-codesys.sh re-grew '/etc/init.d/codesyscontrol start' — install-only policy (contract §3)"
     else
         pass "08-codesys.sh has no init.d codesyscontrol start"
@@ -117,12 +121,12 @@ codesys_install_body=$(sed -n '/^codesys_install() {/,/^}/p' "$SVCCTL" 2>/dev/nu
 if [ -z "$cmd_start_body" ] || [ -z "$codesys_install_body" ]; then
     fail "cmd_start()/codesys_install() not found in $SVCCTL — function renamed? update this gate"
 else
-    if printf '%s\n' "$cmd_start_body" | grep -q 'codesys_rc_enable'; then
+    if grep -q 'codesys_rc_enable' <<<"$cmd_start_body"; then
         fail "cmd_start() calls codesys_rc_enable — start must be runtime-only (contract §3)"
     else
         pass "cmd_start() carries no codesys_rc_enable"
     fi
-    if printf '%s\n' "$codesys_install_body" | grep -q 'codesys_rc_enable'; then
+    if grep -q 'codesys_rc_enable' <<<"$codesys_install_body"; then
         fail "codesys_install() calls codesys_rc_enable — install must not re-arm autostart (contract §3)"
     else
         pass "codesys_install() carries no codesys_rc_enable"

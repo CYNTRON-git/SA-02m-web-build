@@ -219,7 +219,10 @@ while IFS= read -r hit; do
     while IFS= read -r inv; do
         [ -n "$inv" ] || continue
         stamps=$((stamps + 1))
-        if ! printf '%s' "$inv" | grep -qE "$UTC_FLAG_RE"; then
+        # Here-string, not `printf … | grep -qE` — no producer to SIGPIPE under
+        # pipefail. $inv is a single short line (borderline-immune), converted
+        # for uniformity with the rest of the sweep. (.ai-dev/notes/quality-gate-environment.md)
+        if ! grep -qE "$UTC_FLAG_RE" <<<"$inv"; then
             fail "$file: $fn() builds the chip timestamp in local time (\`${inv}…\`) while the chip holds UTC — every write then moves the clock by the timezone offset; use \`date -u\` (convention home: $CONVENTION_HOME)"
         fi
     done < <(fn_body "$file" "$fn" | grep -vE '^[[:space:]]*#' | grep -oE 'date[^)]*[+]%Y-%m-%d')

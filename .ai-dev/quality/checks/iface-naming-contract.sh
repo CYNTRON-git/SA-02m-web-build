@@ -65,7 +65,12 @@ fi
 # Comment lines are excluded: the contract's own rationale names both `echo -e`
 # and `sudo tee` in prose, and a doc mention must not trip a code gate.
 apply_code=$(grep -vE '^[[:space:]]*#' www/network_config/cgi-bin/apply.cgi)
-if printf '%s\n' "$apply_code" | grep -q 'echo -e'; then
+# Here-string, not `printf … | grep -q`: grep -q exits on the first match and
+# SIGPIPEs the producer, which under `set -o pipefail` poisons the pipeline
+# status (141) — a `fail-if-present` check then MISSES the defect it exists for.
+# A here-string has no producer process (single-command pipeline). See
+# no-retired-session-token.sh and .ai-dev/notes/quality-gate-environment.md.
+if grep -q 'echo -e' <<<"$apply_code"; then
     fail "apply.cgi reintroduced 'echo -e' — it interprets backslash escapes and mangles preserved foreign lines (F6)"
 else
     pass "apply.cgi carries no 'echo -e'"
@@ -73,7 +78,7 @@ fi
 
 # Raw `sudo rm` in apply.cgi was ALWAYS a silent no-op (www-data sudoers has no
 # rm) and its return would bypass the pinned helper — contract §5.4.
-if printf '%s\n' "$apply_code" | grep -q 'sudo rm'; then
+if grep -q 'sudo rm' <<<"$apply_code"; then
     fail "apply.cgi reintroduced raw 'sudo rm' — deletion goes only through sa02m-conf-rm.sh (contract §5.4)"
 else
     pass "apply.cgi carries no raw 'sudo rm'"
@@ -137,8 +142,12 @@ fi
 
 # The rename script's per-device gate: a bare name-existence check cannot tell
 # a settled canonical name from a kernel-native one udev is about to rename.
+# canon_body captured first so the grep -q below is a single-command pipeline —
+# `sed … | grep -q` would SIGPIPE sed on the (healthy) match and pipefail would
+# read the FOUND gate as absent, failing a correct file (same class as above).
+canon_body=$(sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh)
 if grep -q '^udev_initialized() {' etc/sa02m-iface-canonical.sh \
-   && sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh | grep -q 'udev_initialized '; then
+   && grep -q 'udev_initialized ' <<<"$canon_body"; then
     pass "rename script gates canonicalize_pair on udev_initialized"
 else
     fail "etc/sa02m-iface-canonical.sh lost the udev_initialized gate in canonicalize_pair — the boot-0 'already canonical' no-op against a kernel-native name returns silently"
