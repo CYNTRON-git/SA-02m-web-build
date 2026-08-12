@@ -16,7 +16,7 @@ HTTP-сервис демона (stdlib http.server поверх unix-socket).
     GET  /jobs/<id>                   — снэпшот задачи
     GET  /jobs/<id>/events            — SSE-стрим событий
     GET  /status                      — активные задачи, poll_locked
-    GET  /health                      — {"ok": true, "version": "..."}
+    GET  /health                      — {"ok": true, "version": "...", "poll_locked": bool} (БЕЗ авторизации)
 """
 from __future__ import annotations
 
@@ -244,6 +244,30 @@ def _poll_lock_held(cfg: FlasherConfig) -> bool:
     return False
 
 
+def health_payload(ctx: ServiceContext) -> Dict[str, Any]:
+    """Body of GET /health — the one route served BEFORE _check_auth().
+
+    `poll_locked` is the same union the authenticated /status reports: the
+    on-disk flock sweep OR any active job. It is published here because a root
+    script (etc/sa02m-web-service-ctl.sh) must learn "is an RS-485 line held?"
+    without holding a web session. It used to ask /status with a static cookie;
+    that token was retired on 2026-07-12 and the probe has answered "not busy"
+    ever since. The daemon is the single owner of this fact — this MOVES the
+    value, it does not re-derive one (a shell-side flock sweep would drift
+    against LOCK_DIR and miss the accepted-but-not-yet-flocked window).
+
+    Exceptions are deliberately NOT swallowed into a fabricated `false`: an
+    unreadable answer must reach the caller as a failure, because the caller's
+    contract is to treat anything it cannot parse as BUSY (fail closed).
+    Contract: docs/contracts/flasher-health.md.
+    """
+    return {
+        "ok": True,
+        "version": __version__,
+        "poll_locked": _poll_lock_held(ctx.cfg) or bool(ctx.jobs.list_active_jobs()),
+    }
+
+
 def _guard_no_active_flasher_job(ctx: ServiceContext, *, port: str = "") -> None:
     """Блокировать release/restore/config, пока на любом COM идёт scan/flash."""
     if ctx.jobs.any_active_job():
@@ -300,8 +324,12 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(parsed.query)
 
         try:
+            # /health is answered BEFORE _check_auth() by design — the root-side
+            # port-lease probe has no session. Moving this below the auth line
+            # re-kills that gate silently; docs/contracts/flasher-health.md and
+            # test_health_lease.py pin the ordering.
             if method == "GET" and p == "/health":
-                return _send_json(self, {"ok": True, "version": __version__})
+                return _send_json(self, health_payload(ctx))
             if not self._check_auth():
                 return _send_error(self, HTTPStatus.UNAUTHORIZED, "unauthorized")
 

@@ -1613,7 +1613,7 @@ channel=ALARM_LED&value=1 → {"ok": true}
 | `GET`  | `/api/flasher/jobs/<id>` | Статус задачи |
 | `GET`  | `/api/flasher/jobs/<id>/events` | SSE-поток (логи, прогресс, найденные устройства) |
 | `POST` | `/api/flasher/cancel` | Отменить задачу (`{job_id}`) |
-| `GET`  | `/api/flasher/health` | Health-check (без авторизации) |
+| `GET`  | `/api/flasher/health` | Health-check (без авторизации): `{"ok":true,"version":"…","poll_locked":<bool>}`. `poll_locked` — занята ли RS-485-линия (flock ∪ активные задачи); это источник для гейта `flasher_busy` в панели. Контракт: `docs/contracts/flasher-health.md` |
 
 Формат `index.json` на cyntron.ru (схема демона — `channels`; один образ на всю линейку — поле `signatures` можно оставить пустым `[]`):
 

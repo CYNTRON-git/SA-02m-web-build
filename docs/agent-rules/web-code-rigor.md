@@ -44,6 +44,15 @@ a review; cite it.
   answers an invalid session with an error JSON (`ok:false`,
   `unauthorized`) and exits BEFORE doing work (transport stays HTTP 200 —
   the project idiom; see `docs/contracts/mqtt-set-endpoint.md`).
+- **Match the probe to the layer — this repo has TWO HTTP layers with opposite
+  error idioms.** The Bash CGI layer answers **HTTP 200** with `ok:false` /
+  `{"error":…}` in the body, so `curl -f` catches nothing there and only a
+  **body assertion** can fail. The flasher daemon answers **real status codes**,
+  so `-f` is necessary *and* sufficient — and omitting it means a 401/500 exits
+  0 and reads as success. Both halves have already shipped as defects: the
+  port-lease probe hit the daemon without `-f` and was dead for 3.5 weeks, and
+  the two rollback guards hit the CGI layer with `-f` and could not fail at all.
+  A probe whose exit code is load-bearing states which layer it talks to.
 - **Timeouts everywhere**: any call that can hang (curl to the flasher daemon,
   `systemctl` on a wedged unit, an i2c read) carries `timeout N` or the tool's
   own timeout flag. fcgiwrap/nginx read timeouts are finite — a hung endpoint

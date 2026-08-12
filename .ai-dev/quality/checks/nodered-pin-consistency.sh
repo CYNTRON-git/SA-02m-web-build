@@ -161,10 +161,16 @@ for reader in "$CTL" "$S07"; do
     # again. scripts/07-nodered.sh spells its ru literal in code only, which is
     # why the same mutation was caught there and not here.
     code=$(grep -vE '^[[:space:]]*#' "$reader")
+    # Here-strings, not `printf … | grep -q`: grep -q exits on the first match
+    # and SIGPIPEs the producer; under `set -o pipefail` a FOUND marker then
+    # reads back as absent (141). #103 grew $CTL and pushed the marker past the
+    # pipe buffer, flaking THIS pass-if-present check RED on CI while it passed
+    # under WSL — a race, not an env split. A here-string has no producer process.
+    # (.ai-dev/notes/quality-gate-environment.md)
     if [ -z "$code" ]; then
         fail "$reader has no uncommented lines — emptied or unreadable; this gate cannot judge it"
-    elif printf '%s\n' "$code" | grep -q 'Started flows' \
-      && printf '%s\n' "$code" | grep -q 'Запущены потоки'; then
+    elif grep -q 'Started flows' <<<"$code" \
+      && grep -q 'Запущены потоки' <<<"$code"; then
         pass "$reader matches the started-flows marker in both en and ru (uncommented lines only)"
     else
         fail "$reader lost one of the started-flows spellings (en 'Started flows' / ru 'Запущены потоки') from its executable code — on a ru board the verdict silently stops firing"

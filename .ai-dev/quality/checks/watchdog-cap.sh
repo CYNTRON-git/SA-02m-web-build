@@ -289,7 +289,12 @@ else
     else
         fail "$INST no longer installs \$ETC_REPO/systemd/sa02m-watchdog.conf — the main install path would silently ship a different policy again (the 2026-08-05 finding)"
     fi
-    if uncommented "$INST" | grep -qE 'cat[[:space:]]*>[^>]*system\.conf\.d/sa02m-watchdog\.conf'; then
+    # Capture then here-string, not `uncommented … | grep -qE`: grep -q's early
+    # exit SIGPIPEs the `uncommented` producer and pipefail turns a FOUND heredoc
+    # into a 141 "not found" — this fail-if-present pin would then silently miss
+    # the re-grown heredoc. (.ai-dev/notes/quality-gate-environment.md)
+    inst_nc=$(uncommented "$INST")
+    if grep -qE 'cat[[:space:]]*>[^>]*system\.conf\.d/sa02m-watchdog\.conf' <<<"$inst_nc"; then
         fail "$INST re-grew an inline watchdog heredoc — it competes with the policy home for the same target path"
     else
         pass "$INST carries no inline watchdog heredoc"
@@ -334,7 +339,11 @@ for f in "${wd_sysfs_files[@]:-}"; do
     # a bare `max_timeout` substring: the fix's own comment names max_timeout in
     # prose, so a substring test would let a file satisfy this half by talking
     # about the clamp while writing a constant.
-    if [ "$file_writes" -gt 0 ] && ! uncommented "$f" | grep -qE "$WD_SYSFS_MAX_RE"; then
+    # Capture then here-string (see pin 6): `uncommented … | grep -qE` under
+    # pipefail reads the (healthy) FOUND max_timeout read as absent when grep -q
+    # SIGPIPEs the producer, failing a correct file. A here-string has no producer.
+    f_nc=$(uncommented "$f")
+    if [ "$file_writes" -gt 0 ] && ! grep -qE "$WD_SYSFS_MAX_RE" <<<"$f_nc"; then
         fail "$f: writes /sys/class/watchdog/*/timeout without reading max_timeout — the requested timeout must be clamped to the driver cap, never asked for blind"
     fi
 done

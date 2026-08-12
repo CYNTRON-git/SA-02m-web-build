@@ -182,6 +182,24 @@
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
+      "id": "port-lease-gate",
+      "checks": "Functional regression for the RS-485 port-lease gate in etc/sa02m-web-service-ctl.sh (flasher_poll_lock_held -> cmd_list's `flasher_busy` field and cmd_start's mplc4/mqtt-bridge refusal). The gate was DEAD from 2026-07-12 to 2026-08-06 and no gate saw it: the probe sent a retired static session token and `curl -sS` WITHOUT `-f` exits 0 on the resulting 401, so the function answered 'not busy' forever while a flash held the line. Every symptom is silent — no syntax error, no failed unit, just Пуск buttons that stay enabled mid-flash. Runs the SHIPPED functions against a `curl` PATH shim that MODELS THE DAEMON'S AUTH RULE (hex session_token 32..128 authorized, anything else a real 401 with the body on stdout and exit 0; /health served regardless of cookie, as the daemon dispatches it above _check_auth) — a shim returning a fixed answer would pass before AND after the fix, so §0 asserts the shim's own rule first. Cases: a HELD lease reads BUSY (the assertion the original work never had — BUGLOG.md:1562 recorded only the IDLE observation, which is bit-identical to the broken state), idle reads not-busy, socket absent reads not-busy, and the whole fail-closed quadrant (timeout / HTTP 500 / non-JSON / valid JSON with no poll_locked i.e. an older daemon / empty body / curl absent) reads BUSY with the reason logged. Plus the JSON surface the panel actually consumes (cmd_list, cmd_start, and a control that docker is NOT gated) and static pins on the shipped file (-f present, no Cookie, /health, poll_locked, -S socket test, both call sites still wired, and /health still dispatched ABOVE the daemon's auth check). Non-vacuous: a failed extraction or a missed sandbox retarget FAILS rather than passing on zero matches; PORT_LEASE_SRC re-runs it against any older revision (recipe in the test header).",
+      "config": null,
+      "run": "bash scripts/dev/test-port-lease-gate.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-web-service-ctl.sh", "opt/sa02m-flasher/sa02m_flasher/service.py", "scripts/dev/test-port-lease-gate.sh"],
+      "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-port-lease-gate.sh"
+    },
+    {
+      "id": "no-retired-session-token",
+      "checks": "Static gate closing the dead-credential class repo-wide, so a sixth call site cannot appear. The fixed cookie `cyntron_session` was retired 2026-07-12 for a server-side session store (www/network_config/cgi-bin/lib_web_auth.sh — the one home of the auth rule) and five callers kept sending it for 3.5 weeks; a dead token is syntactically perfect, so no syntax/type/unit check can see it. Pins: (A) the CLASS — a `session_token=` whose value is a hard-coded word rather than an expansion, an empty logout value, a regex or a live-shaped hex token; (B) the retired string itself anywhere in etc/ www/ opt/ tools/ scripts/ install.sh; (C) non-vacuity BOTH ways — the roots exist and >=50 files are really swept, AND both allow-listed negative assertions are still present AND still negative. The allow-list is exactly two files that name the token in order to prove it is REFUSED: opt/sa02m-flasher/tests/test_auth.py (the rejected-token list inside test_non_hex_token_rejected, which must keep asserting False) and scripts/dev/test-port-lease-gate.sh (its shim's 401/-f control). Deleting either turns this gate RED, not green — and the pin-C check strips comments first, because the rejection test carries a COMMENT naming the token right above the assertion and accepting that as proof would stay green after the assertion was deleted. Deliberate non-flags: whole comment lines (the three scripts that used to send the token explain the defect in prose), empty values, expansions, regexes and prefix tests, and docs/ + CHANGELOG.md + .ai-dev/ which legitimately quote the token as history. Known limit, stated: only #- and //-comment lines are masked, so prose in a Python docstring must point at lib_web_auth.sh rather than spell the token.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/no-retired-session-token.sh",
+      "beat": "build",
+      "covers": ["etc/", "www/", "opt/", "tools/", "scripts/", "install.sh", ".ai-dev/quality/checks/no-retired-session-token.sh"],
+      "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,

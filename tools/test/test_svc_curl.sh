@@ -1,7 +1,17 @@
 #!/bin/bash
 # Test service control via curl on device (localhost:9999)
+#
+# Живой токен панели передаётся окружением — статического токена в
+# репозитории больше нет (заменён серверной сессионной моделью 2026-07-12):
+#   SA02M_WEB_TOKEN=<hex> bash tools/test/test_svc_curl.sh
+#
+# Проверки ниже смотрят в ТЕЛО ответа (`"ok":true`), и это правильная форма
+# для Bash-CGI: слой отвечает HTTP 200 даже на отказ, поэтому `curl -f` здесь
+# ничего бы не поймал. Общий дом правила:
+# docs/agent-rules/web-code-rigor.md ## Bash CGI floors.
 set -e
-CK='session_token=cyntron_session'
+: "${SA02M_WEB_TOKEN:?не задан: экспортируйте живой session_token панели (DevTools → Application → Cookies → session_token)}"
+CK="session_token=${SA02M_WEB_TOKEN}"
 BASE='http://127.0.0.1:9999/cgi-bin/services_ctrl.cgi'
 
 post() {
