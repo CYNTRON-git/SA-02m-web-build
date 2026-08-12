@@ -76,6 +76,33 @@ convenience, not a repo artifact.
 That converts an honest skip into a false green on the one check CI is the
 authority for.
 
+## A row that RUNS everywhere but gives the wrong answer per shell — `sed | grep -q` under pipefail
+
+The skip class above is not the only way a local green lies. A row can run on
+BOTH machines and still disagree, when its implementation is environment-fragile.
+
+On 2026-08-12 `no-retired-session-token` was RED on CI/WSL (GNU sed) and GREEN on
+Windows Git Bash (MSYS sed) — same bytes, same flags, opposite verdict. Root
+cause: the gate matched a comment-stripped file with
+
+```sh
+strip_comments < "$f" | grep -qF "$needle"      # DO NOT
+```
+
+`grep -q` exits on the first match; the still-writing `sed` then takes a SIGPIPE
+and exits 141; and under `set -o pipefail` that 141 becomes the pipeline status —
+so a token that WAS found reads back as "not found" (`PIPESTATUS=141 0`). GNU sed
+dies on the SIGPIPE; MSYS sed did not (buffering/exit-order), so Windows was
+falsely green. The race only fires when sed is mid-write as grep quits — a match
+past the pipe buffer — which is why the small-`$body` sibling check passed while
+the ~200-line file failed, and why it produced BOTH a false positive (pin C) and
+a latent false negative (pin B would MISS a real violation).
+
+**Rule:** never pipe a producer straight into `grep -q` (or any early-exit
+consumer: `-q`, `-l`, `-m N`, `head`) under `set -o pipefail`. Capture first,
+then match in-shell (a `case "$text" in *"$needle"*)` substring test needs no
+subprocess at all). The gate's `stripped_has` helper is the fixed form.
+
 ## The general rule
 
 A local substitute for a skipping row is **evidence, not proof**. Say which

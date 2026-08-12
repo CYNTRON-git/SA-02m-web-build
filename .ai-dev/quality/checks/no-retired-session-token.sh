@@ -96,6 +96,25 @@ strip_comments() {
     sed -e 's#^[[:space:]]*//.*$##' -e 's#^[[:space:]]*\*.*$##' -e 's/^[[:space:]]*#.*$//'
 }
 
+# True when the comment-stripped file contains the literal needle.
+#
+# Do NOT collapse this back into `strip_comments < f | grep -qF needle`.
+# `grep -q` exits on the FIRST match; the still-writing `sed` then takes a
+# SIGPIPE and exits 141, and under `set -o pipefail` that 141 becomes the
+# pipeline's status — so a token that WAS found reads back as "not found".
+# The race is real only when sed is mid-write as grep quits, i.e. on a larger
+# file whose match sits past the pipe buffer: GNU sed (CI/WSL) dies on the
+# SIGPIPE, MSYS sed on Windows Git Bash did not, so the gate ran RED on CI and
+# falsely GREEN locally. Capturing first and matching in-shell removes the pipe
+# (no upstream process, no SIGPIPE, no exit code to poison). Same fixed-string
+# semantics as `grep -F`; the needle never spans a line.
+# See .ai-dev/notes/quality-gate-environment.md ("A row that RUNS everywhere").
+stripped_has() {  # $1=path  $2=literal needle
+    local text
+    text=$(strip_comments < "$1")
+    case "$text" in *"$2"*) return 0 ;; *) return 1 ;; esac
+}
+
 # ── Pin A: a hard-coded, non-hex session_token= value ──────────────────────
 hits_a=0
 for f in $FILES; do
@@ -120,7 +139,7 @@ done
 hits_b=0
 for f in $FILES; do
     allowed "$f" && continue
-    if strip_comments < "$f" | grep -qF "$RETIRED"; then
+    if stripped_has "$f" "$RETIRED"; then
         bad "$f: names the retired token '$RETIRED' in code — it was withdrawn 2026-07-12 and authorises nothing"
         hits_b=$((hits_b + 1))
     fi
@@ -130,7 +149,7 @@ done
 # ── Pin C: the allow-listed negative assertions are still negative ─────────
 for a in $ALLOW; do
     [ -r "$a" ] || { bad "allow-listed file $a is gone — either restore it or drop the entry"; continue; }
-    strip_comments < "$a" | grep -qF "$RETIRED" \
+    stripped_has "$a" "$RETIRED" \
         || bad "$a no longer names '$RETIRED' — the proof that the retired token is REJECTED has been deleted; this entry now excuses nothing"
 done
 
@@ -141,11 +160,20 @@ if [ -r opt/sa02m-flasher/tests/test_auth.py ]; then
     # below fail on a perfectly healthy file.
     body=$(awk '/def test_non_hex_token_rejected/{p=1;next} p && (/^    def /||/^class /){exit} p' \
         opt/sa02m-flasher/tests/test_auth.py)
-    printf '%s\n' "$body" | strip_comments | grep -qF "$RETIRED" \
-        && ok "pin C: test_auth.py still asserts '$RETIRED' is REJECTED (inside test_non_hex_token_rejected)" \
-        || bad "test_auth.py names '$RETIRED' but no longer inside test_non_hex_token_rejected — the assertion moved or turned positive"
-    printf '%s\n' "$body" | grep -q 'assertFalse' \
-        || bad "test_non_hex_token_rejected no longer asserts FALSE — a rejection test that stopped rejecting"
+    # Capture-then-match, not `strip_comments | grep -qF` — same pipefail/SIGPIPE
+    # trap as stripped_has (this passed only because $body is tiny; do not rely
+    # on that). stripped_has reads a path, so match the already-extracted body here.
+    body_stripped=$(printf '%s\n' "$body" | strip_comments)
+    case "$body_stripped" in
+        *"$RETIRED"*) ok  "pin C: test_auth.py still asserts '$RETIRED' is REJECTED (inside test_non_hex_token_rejected)" ;;
+        *)            bad "test_auth.py names '$RETIRED' but no longer inside test_non_hex_token_rejected — the assertion moved or turned positive" ;;
+    esac
+    # Capture-then-match, not `printf | grep -q` — same pipefail/SIGPIPE trap as
+    # stripped_has; $body is already in hand, so substring-test it directly.
+    case "$body" in
+        *assertFalse*) : ;;
+        *)             bad "test_non_hex_token_rejected no longer asserts FALSE — a rejection test that stopped rejecting" ;;
+    esac
 fi
 
 # the harness's occurrence must still be its auth-rule control
