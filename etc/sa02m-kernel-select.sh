@@ -11,16 +11,21 @@ FAT_MNT=/mnt/fat
 CANON_DIR=/usr/local/share/sa02m/kernel
 ZIMAGE_MIN=5000000
 ZIMAGE_MAX=12000000
-# С 2026-07: SA-02м переходит с локально патченного Starterkit-ядра
-# 6.1.0-rc6 на форк wirenboard/linux (5.10.35). Значения ниже — по умолчанию
-# для linux-image-sa02m / linux-image-sa02m-rt из [../kernel-port/](../kernel-port/README.md).
-# На «старом» ядре /etc/sa02m_kernel.conf сохранил свои значения, они
-# перекроют defaults ниже — миграция происходит после первой установки .deb.
-# С 1.0.4.x kernel собирается с CONFIG_LOCALVERSION="" → `uname -r`=`5.10.35`
-# (без "-sa02m"). Старые имена (`5.10.35-sa02m` / `5.10.35-sa02m-rt`) поддерживаются
-# для совместимости — детект в detect_installed_module_ver() матчит и то, и то.
-SMP_VER_DEFAULT=5.10.35
-RT_VER_DEFAULT=5.10.35-rt36
+# Пара ядер, которую реально несёт флот, — `6.1.0-rc6` (SMP) и `6.1.0-rc6-rt4`
+# (PREEMPT_RT), сборка `tools/buildroot/prepare-rt-docker-kernel.sh`; дом факта —
+# docs/contracts/kernel-conditional-services.md §6, гейт
+# .ai-dev/quality/checks/kernel-policy-contract.sh (пин 8).
+# Значения ниже — ТОЛЬКО дефолты: если /etc/sa02m_kernel.conf существует, он их
+# перекрывает, а load_conf() дополнительно чинит их по факту (`uname -r` для
+# работающего профиля, detect_installed_module_ver() для второго).
+# Почему это важно: дефолт, который не совпадает ни с одним каталогом
+# /lib/modules/ и который детектор не умеет найти, попадает в conf через
+# write_conf() и остаётся там — панель после этого отказывается переключаться на
+# профиль, который на плате есть ("modules_missing"). Ровно так вело себя
+# прежнее значение 5.10.35 / 5.10.35-rt36 (ядро того семейства на устройствах
+# не стоит) на 6.1-плате без conf.
+SMP_VER_DEFAULT=6.1.0-rc6
+RT_VER_DEFAULT=6.1.0-rc6-rt4
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-kernel-select: $*" >>"$LOG" 2>&1 || true; }
 
@@ -48,13 +53,20 @@ preempt_rt_active() {
 
 detect_installed_module_ver() {
     # $1 = pattern: "smp" (без rt) или "rt"
-    # Матчим и старые имена (`*sa02m*`), и новые (`5.10.35*` без localversion).
+    # Белый список имён каталогов /lib/modules/, которые считаем НАШИМИ ядрами:
+    # текущая линия флота (`6.1.0-rc6`, `6.1.0-rc6-rt4`) плюс исторические имена
+    # (`*sa02m*`, `5.10.35*`) — их оставляем ради плат, которые могли остаться на
+    # старом ядре. Список НАМЕРЕННО узкий: без него детектор подхватил бы
+    # стоковое ядро дистрибутива и панель предложила бы переключиться на ядро,
+    # которое собирали не мы. Цена узости — этот список надо расширять при
+    # каждой смене линии ядра; гейт `kernel-policy-contract` (пин 8) следит,
+    # чтобы он как минимум покрывал оба дефолта.
     local want=$1 d name
     for d in /lib/modules/*; do
         [ -d "$d" ] || continue
         name=$(basename "$d")
         case "$name" in
-            *sa02m*|5.10.35*)
+            *sa02m*|5.10.35*|6.1.0-rc6*)
                 if [ "$want" = "rt" ]; then
                     case "$name" in *rt*|*-rt*) printf '%s\n' "$name"; return 0 ;; esac
                 else
@@ -78,9 +90,9 @@ load_conf() {
 
     # Автоопределение фактических версий модулей: если в конфиге прописана
     # версия, для которой нет каталога /lib/modules/, но есть реальный SMP/RT
-    # каталог с суффиксом (например 5.10.35-sa02m+ вместо 5.10.35-sa02m) —
-    # берём реальное имя. Это устраняет ложный smp_modules_missing после
-    # установки пакета linux-image-* с EXTRAVERSION="+".
+    # каталог с другим суффиксом (`<ver>+` вместо `<ver>` после установки
+    # linux-image-* с EXTRAVERSION="+") — берём реальное имя. Это устраняет
+    # ложный smp_modules_missing.
     local kr detected
     kr=$(uname -r 2>/dev/null || echo "")
     if ! modules_ok "$SA02M_KERNEL_SMP_VER"; then

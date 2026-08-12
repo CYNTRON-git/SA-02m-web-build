@@ -7,52 +7,94 @@ audit).
 
 ## Open
 
-- [OPEN] 2026-08-06 **[MED] `kernel-port/` + `tools/kernel-wb/` + the kernel CI
-  workflow build a kernel the bench board does not run.** Bench board
-  2026-08-06 (Orchestrator, device-side — not repo-checkable): `uname -r` =
-  **6.1.0-rc6**; `/lib/modules/` holds `6.1.0-rc6` and `6.1.0-rc6-rt4`;
-  `/etc/sa02m_kernel.conf` names those two as the SMP/RT pair the panel switches
-  between. The pipeline targets **5.10.35** from the Wiren Board `bullseye`
-  branch. **Operator's ruling (2026-08-06): a leftover artifact from the Debian
-  branch.** That also explains the workflow sitting red for a month — nothing
-  consumes its output.
+- [OPEN] 2026-08-06 **[MED] Nothing cross-checks that a canonical `zImage` and
+  the module tree it is paired with are the same build — and the panel writes
+  that `zImage` to the boot partition.** `zimage_ok()`
+  (`etc/sa02m-kernel-select.sh:139-145`) validates **existence and size only**
+  (`ZIMAGE_MIN`..`ZIMAGE_MAX` = 5–12 MB); it never reads the image's identity or
+  version. `cmd_set` gates the switch on `zimage_ok "$CANON_DIR/zImage.$target"`
+  **and** `modules_ok "$mod_ver"`, but those two checks are independent: any
+  5–12 MB file named `zImage.rt` satisfies the first, whatever kernel it is, and
+  `/lib/modules/6.1.0-rc6-rt4` satisfies the second regardless of what
+  `zImage.rt` contains. The FAT write itself is careful (atomic temp→rename, the
+  active slot never left truncated) — the gap is **identity, not atomicity**.
 
-  **Do NOT delete on this entry alone — the repo contradicts the premise.**
-  Several live sites still assert the 5.10 line — enumerated in the
-  stale-assumptions entry below, which owns that question. Whether they are
-  stale text left over from the 6.1 migration or describe a fleet still on 5.10
-  is **not resolved** and needs the Operator. Verified only that the bench board
-  is 6.1.
+  **Blast radius:** a mismatched pair boots a kernel whose modules are absent →
+  no network, no panel. Recovery is an SD card or a serial console, **not the
+  web UI** — the same recovery path `tools/buildroot/README.md` already
+  documents for the failed RT deploy of 2026-06-23.
 
-  **Full referrer list (deleting the tree touches all of these):**
-  `etc/sa02m-kernel-select.sh` · `scripts/01-system.sh` ·
-  **`.ai-dev/quality/checks/shellcheck.sh:30` — lints `kernel-port/apply.sh` by
-  name, so deleting the tree turns a currently-green quality row red** ·
-  `README.md:810` (two Operator-facing links) ·
-  `tools/debian-rootfs/create-sa02m-rootfs.sh:105` (live script printing the
-  build command) · `tools/debian-rootfs/README.md:25` · `tools/buildroot/README.md` ·
-  `docs/codesys-rt/README.md` · `docs/WB_LINUX_FUTURE_FEATURES.md` ·
-  `docs/decisions/rt-patch-pinning.md` · `.ai-dev/notes/ci-budget.md:22` ·
-  `etc/boot.cmd.sa02m:32` (live TODO) · `docs/bugs/BUGLOG.md` (25 refs, and
-  `:849` is a LIVE ownership rule for `kernel-port/**`, not history) ·
-  `docs/audits/AUDIT_1.0.4.0.md:325` (open action item).
-  Closed at file granularity by two independent sweeps (main tokens plus
-  `linux-image-sa02m`, `deploy-sa02m-kernel`, `sa02m_rt.config`,
-  `sun8i-r40-sa02m.dts`) — no further referrer found.
+  **Bounded, not theoretical:** a board that has never run RT has no
+  `zImage.rt` and still gets a clean `zimage_missing` refusal, so this needs a
+  seeded-or-deployed artifact to bite. The seeding paths are `cmd_init` (copies
+  the *running* FAT zImage into the canonical slot for the running profile) and
+  `tools/buildroot/sa02m-kernel-deploy.sh install-rt|install-smp`, which takes
+  the zImage and the modules tarball as two **independent** arguments — nothing
+  checks they came from the same build.
 
-  **A safety condition this supersedes, stated openly rather than buried:** the
-  Orchestrator raised that the first `5.10.35-rt39` kernel must get a bench
-  RS-485 test on COM1-COM5 under load before reaching any device. It is moot
-  only while nothing ships that kernel. **It applies again the moment anyone
-  installs a build from this pipeline — including shipping the current
-  `5.10.35-rt39` artifact as-is, not merely reviving the pipeline for 6.1.**
+  **Predates the 2026-08-06 kernel-line change** and is not caused by it; that
+  change is what makes the RT switch reachable on a conf-less 6.1 board, which
+  is why it surfaced here. Fix direction (not chosen): record the built version
+  alongside each canonical zImage at deploy/seed time and compare it against
+  `mod_ver` in `cmd_set`/`cmd_refresh` before the FAT write. Found by the
+  Reviewer of the kernel-port deletion.
+- [OPEN] 2026-08-06 **[MED] No executable test covers `sa02m-kernel-select.sh`'s
+  self-heal, which is exactly where the kernel-version bug lived.** The
+  2026-08-06 fix is pinned only by `kernel-policy-contract` pin 8, which is a
+  **static** consistency check: the defaults must name the contract's kernel
+  pair and the detector's `case` arm must match both. It does not execute
+  `load_conf()`, so the actual failing behaviour — an unmatched default surviving
+  into `/etc/sa02m_kernel.conf` via `write_conf()`, after which the panel refuses
+  a profile the board has — has no regression test. The Reviewer exercised the
+  state machine against nine synthetic `/lib/modules` fixtures by hand; that
+  evidence is not in the repo and does not re-run.
+
+  **The mould already exists:** `scripts/dev/test-iface-canonical-gate.sh` and
+  its siblings (`test-iface-migration.sh`, `test-iface-gw-repair.sh`,
+  `test-nodered-ctl.sh`) — each a `scripts/dev/test-*.sh` harness with a
+  `build`-beat row in `.ai-dev/quality/tools.json` and a `covers` entry naming
+  the script it guards. Cost note for whoever picks this up: the script hardcodes
+  `/lib/modules` and `/etc/sa02m_kernel.conf` as absolute paths, so it needs a
+  small injectable seam (e.g. `${SA02M_MODULES_DIR:-/lib/modules}`) before a
+  harness can drive it — that is a device-code change, which is why this is its
+  own change and not a one-liner. Deliberately **not** built into the deletion
+  change.
+- [RESOLVED] 2026-08-06 **[MED] `kernel-port/` + `tools/kernel-wb/` + the kernel
+  CI workflow built a kernel no device runs — deleted.** The Operator confirmed
+  the whole fleet runs the 6.1 line, which settled the premise this entry was
+  blocked on. 12 tracked files + the `build-sa02m-kernel` workflow removed;
+  history stays in git. The fact now has a committed home
+  (`.ai-dev/notes/kernel-line.md`) and a machine-checked half
+  (`docs/contracts/kernel-conditional-services.md` §6 + gate pin 8).
+  Every referrer in the recorded list was re-verified and updated in the same
+  change. Two corrections to that list, both evidenced:
+  (a) `docs/bugs/BUGLOG.md:849` is **not** a live ownership rule — it sits under
+  «Оставлено … (не тронуто по задаче)» inside the dated 2026-07-06 de-branding
+  entry, i.e. that task's scope statement in an append-only bug record. It stays
+  unedited; rewriting it would falsify history.
+  (b) The sweep found referrers the list missed — `tools/buildroot/README.md:17-18`,
+  `tools/debian-rootfs/README.md:3,44`, `docs/WB_LINUX_FUTURE_FEATURES.md:63`,
+  `docs/codesys-rt/README.md:14` — all fixed here.
+
+  **The safety condition this carried is now moot and stays moot:** the bench
+  RS-485 load test demanded before any `5.10.35-rt39` kernel reaches a device
+  cannot be triggered — nothing in the repo can produce that artifact any more.
+  It would apply again only to a deliberately revived pipeline.
 - [OPEN] 2026-08-06 **[MED] Stale 5.10.35 assumptions survive in live code after
-  the 6.1 migration.** `etc/sa02m-iface-canonical.sh:190` states "this board runs
-  5.10.35" as the premise for an altname-collision guard, and `install.sh:142-145`
-  frames its Docker storage/network mode selection around 5.10.35 (the selection
-  itself probes kernel features, so the text is likelier stale than the logic).
-  Found while recording the entry above; the two are the same root question —
-  what the fleet actually runs. Resolve together.
+  the 6.1 migration.** Narrowed 2026-08-06: the two sites this entry named —
+  `etc/sa02m-iface-canonical.sh:190` and `install.sh:142-145` — are **fixed**;
+  both were stale *text*, and in both the *logic* was already version-independent
+  (the altname guard reads `ip -d link show`; the Docker mode greps
+  `/boot/config-$(uname -r)` for capabilities). Neither predicate was touched.
+  **Still open — sites found by the wider sweep, not yet traced:**
+  `scripts/01-system.sh:93` (USB gadget configfs), `scripts/02-network.sh:288-289`
+  (nftables availability), `scripts/lib.sh:55` (eth naming default),
+  `tools/debian-rootfs/create-sa02m-rootfs.sh:146` (nftables masking), and
+  `docs/contracts/ethernet-iface-naming.md:210-222` (udev-247 evidence, likely
+  genuine history rather than a stale premise). Each asserts a 5.10 kernel
+  capability as a premise; each needs its logic traced before the comment is
+  rewritten, which is why they were left out of the deletion change. Root fact:
+  `.ai-dev/notes/kernel-line.md`.
 - [OPEN] 2026-08-06 **[LOW] `run.test.mjs` does not pin the regex-escaping in
   `coversToRegex`.** Dropping the escape at `.ai-dev/quality/run.mjs:64` leaves
   all 15 table assertions passing while behaviour really changes — `install.sh`
@@ -210,7 +252,12 @@ audit).
   `scripts/update-www-only.sh`, `tools/debian-rootfs/prepare-sa02m-flash-usb.sh`,
   and under `tools/imaging/`: `cleanup-donor.sh`, `flash-receiver.sh`,
   `make-image.sh`, `prepare-flash-media.sh`, `restore-donor-ssh.sh` — all
-  `100644` in git yet documented as `./…` in markdown. Only `tools/kernel-wb/*` (100755) are legitimately invoked that way.
+  `100644` in git yet documented as `./…` in markdown. (The counter-example this
+  entry cited, `tools/kernel-wb/*` at 100755, was deleted 2026-08-06 with the
+  dead kernel pipeline. The only `100755` files left under `.sh` are
+  `etc/sa02m-web-root-cmd.sh` and `etc/sa02m-web-update-check.sh`, neither of
+  which is documented with a `./` invocation — so the gate below no longer needs
+  a whitelist.)
   Left out of the backlog sweep deliberately: it is a ten-file doc edit across
   unrelated runbooks, better done as one scoped change with a gate pinning it
   (mode-vs-invocation is mechanically checkable).
@@ -428,67 +475,54 @@ audit).
   paths that don't exist in this repo. These are vendored framework files — do
   NOT edit locally (upstream drift); route as downstream-feedback on the next
   protocol upgrade.
-- [OPEN] 2026-08-06 **[MED] `etc/sa02m-kernel-select.sh:23` still defaults RT to
-  `5.10.35-rt36`.** That kernel/RT pair never existed upstream (rt36 belongs to
-  5.10.27), and the bench board runs the 6.1 line entirely. **Correction to an
-  earlier version of this entry:** it credited `detect_installed_module_ver rt`
-  with self-healing to the real module dir. That reasoning is wrong — the
-  detector's case arm at `:57` is `*sa02m*|5.10.35*)`, which cannot match
-  `6.1.0-rc6-rt4` either. The default is inert on the bench board because
-  `/etc/sa02m_kernel.conf` already carries the right values and overrides it.
-  **One live-fault case survives:** a 6.1 board booted SMP with no conf keeps
-  `5.10.35-rt36` and `write_conf()` persists it. One-line edit plus a device
-  check; `etc/` was fenced out of the CI change's scope.
-- [OPEN] 2026-08-06 **[LOW] `kernel-port/README.md:35` documents a patch file
-  that never existed.** Names `patch-5.10.35-rt36.patch.gz` as the PREEMPT_RT
-  patchset. Same root cause as above; left alone because `kernel-port/` was
-  outside the CI fix's scope. Should read rt39 and point at
-  `docs/decisions/rt-patch-pinning.md`.
-- [OPEN] 2026-08-06 **[MED] The `.deb` job of `build-sa02m-kernel` has never
-  completed once.** July runs died at `dpkg-checkbuilddeps: Unmet build
-  dependencies: build-essential:native`; that one missing package is now in the
-  workflow's apt list, but nothing past that point has ever executed, so the
-  job's remaining steps (bindeb-pkg, artefact collection, upload) are unproven.
-  The job is push-only, so it blocks no PR. Needs one deliberate
-  `workflow_dispatch` run on a kernel-touching branch to find out.
-- [OPEN] 2026-08-06 **[MED] The RT patch fallback leaves a half-patched kernel
-  tree.** `tools/kernel-wb/build-sa02m-kernel.sh:147-155` (and the same shape in
-  `kernel-port/apply.sh:47-59`): when the forward dry-run fails it retries with
-  `patch --merge=diff3`. Measured on GNU patch 2.7.6: that exits 1 whenever it
-  writes conflict markers, so the `|| exit 1` guard does fire and CI fails
-  loudly — but the tree keeps the hunks that already applied, the diff3 markers,
-  and `.orig` siblings. CI is safe (`actions/cache` is `post-if: success()`, so
-  a failed job never saves the poisoned tree); a local build root is not — the
-  script skips the re-clone whenever `wb-linux/.git` exists, so the next local
-  run compounds the damage until someone passes `--rebuild`. Options: fail fast
-  without the merge attempt, or `git checkout`/re-clone on merge failure.
-- [OPEN] 2026-08-06 **[MED] The kernel build's WB base is a moving branch ref,
-  so the build is not reproducible.** `tools/kernel-wb/build-sa02m-kernel.sh:84`
-  clones `-b release/wb-2606/wb7-bullseye` — a branch, not a tag or a SHA — so
-  what the build compiles depends on the day it runs, for BOTH flavours. The
-  rt39 work pinned the RT patch (version + sha256) but deliberately left this
-  half alone: changing the base changes the kernel that ships. Two consequences
-  worth acting on: builds cannot be reproduced across dates, and the measured
-  "rt39 applies cleanly" result (0 rejects, 27 offsets, 1 fuzz in
-  `drivers/tty/serial/8250/8250_port.c`) is only valid against WB HEAD
-  `048d31b` of 2026-03-30 — a WB commit touching that file can turn the fuzz
-  into a conflict. Fix = pin `WB_BRANCH` to a tag/SHA (keeping the env override)
-  and re-measure on each deliberate bump. Recorded in
-  `docs/decisions/rt-patch-pinning.md`.
-- [OPEN] 2026-08-06 **[LOW] `build-sa02m-kernel.sh` .deb collection is a no-op
-  and the package version hides the RT level.** `mv "$BUILD_ROOT"/wb-linux/../*.deb
-  "$BUILD_ROOT/"` resolves source and destination to the same directory (the
-  error is swallowed by `2>/dev/null || true`); `bindeb-pkg` already writes
-  there. Separately, `KDEB_PKGVERSION="5.10.35-${FLAVOUR}-<date>"` records the
-  flavour but not the RT patch level, so an `-rt` package does not say whether
-  it is rt39 or something else. Both are cosmetic until someone debugs a
-  device's kernel provenance.
-- [OPEN] 2026-08-06 **[LOW] `build-sa02m-kernel` only fires on kernel paths, so
-  a red workflow goes unnoticed for months.** Its triggers are `kernel-port/**`
-  and `tools/kernel-wb/**`; between kernel changes nothing runs and nobody sees
-  the failure — which is how it stayed broken from its first run. A weekly
-  `schedule:` smoke run (or the same on push to main regardless of path) would
-  surface breakage while someone still remembers the context.
+- [RESOLVED] 2026-08-06 **[MED] `etc/sa02m-kernel-select.sh` defaulted to a
+  kernel pair no device carries.** Both defaults were wrong, not just the RT one:
+  `SMP_VER_DEFAULT=5.10.35` and `RT_VER_DEFAULT=5.10.35-rt36`. Now `6.1.0-rc6` /
+  `6.1.0-rc6-rt4`, and the detector's case arm was widened to match them
+  (`*sa02m*|5.10.35*|6.1.0-rc6*`) — without that the new defaults would have had
+  the same unrescuable shape as the old ones. The live-fault case this entry
+  named (a 6.1 board booted SMP with no conf persisting a bogus RT version via
+  `write_conf()`) is closed, and its mirror (booted RT, bogus SMP version) with
+  it. Pinned by `kernel-policy-contract` pin 8 against
+  `docs/contracts/kernel-conditional-services.md` §6 — verified RED against the
+  pre-fix file, GREEN after.
+
+  **Disposition — merge, then bench** (Reviewer's judgement 2026-08-06, accepted
+  by the Orchestrator and relayed to the Operator). Blocking a strict improvement
+  would leave the *worse* behaviour deployed: the old defaults made the panel
+  refuse a profile the board physically has. The Reviewer ran the state machine
+  against nine synthetic `/lib/modules` fixtures — no scenario where the new code
+  is worse, unmigrated 5.10 boards byte-identical, and a board the old script had
+  already poisoned is repaired by the widened arm.
+
+  **Outstanding condition, not optional:** the device half must **not reach the
+  fleet** before a bench check of `sa02m-kernel-select.sh status` on a board with
+  `/etc/sa02m_kernel.conf` removed, **on both profiles** (booted SMP and booted
+  RT — the fault was mirrored across the two). Merging the repo change does not
+  discharge this; deploying to devices does.
+- [RESOLVED] 2026-08-06 **[LOW] `kernel-port/README.md:35` documented a patch
+  file that never existed.** Moot — the file is deleted with the tree. The
+  underlying fact (rt36 belongs to 5.10.27; 5.10.35 only ever had rt39) survives
+  in `docs/decisions/rt-patch-pinning.md`, which is kept precisely for it.
+- [RESOLVED] 2026-08-06 **[MED] The `.deb` job of `build-sa02m-kernel` had never
+  completed once.** Moot — workflow deleted. It was never going to be worth the
+  deliberate `workflow_dispatch` run: the artefact it would have proven is a
+  kernel line no device runs.
+- [RESOLVED] 2026-08-06 **[MED] The RT patch fallback left a half-patched kernel
+  tree.** Moot — `tools/kernel-wb/build-sa02m-kernel.sh` and `kernel-port/apply.sh`,
+  the two sites carrying the `patch --merge=diff3` shape, are both deleted.
+- [RESOLVED] 2026-08-06 **[MED] The kernel build's WB base was a moving branch
+  ref.** Moot — the build script is deleted. The warning itself is preserved in
+  `docs/decisions/rt-patch-pinning.md`, which now carries an OBSOLETE banner
+  explaining that its measurements were only ever valid against WB HEAD
+  `048d31b`: anyone reviving the port inherits the unpinned-base problem intact.
+- [RESOLVED] 2026-08-06 **[LOW] `build-sa02m-kernel.sh` .deb collection was a
+  no-op and the package version hid the RT level.** Moot — script deleted.
+- [RESOLVED] 2026-08-06 **[LOW] `build-sa02m-kernel` only fired on kernel paths,
+  so a red workflow went unnoticed for months.** Moot — workflow deleted;
+  `web-quality` is now the only workflow in the repo, and it runs on every PR.
+  The general lesson (a path-filtered workflow can rot unseen) is recorded in
+  `.ai-dev/notes/ci-budget.md`.
 - [OPEN] 2026-07-12 **[task] On-device verification (pre-deploy).** All device-
   side changes tested only locally/logically. Verify on a real SA-02m before
   deploy: login (hashed + legacy plaintext), password change, network apply +

@@ -1,10 +1,18 @@
 # WB Linux — компоненты «на будущее» для СА-02м
 
-**Контекст:** мы планируем перейти на ядро [wirenboard/linux](https://github.com/wirenboard/linux), ветка [`release/wb-2606/wb7-bullseye`](https://github.com/wirenboard/linux/tree/release/wb-2606/wb7-bullseye) (Linux `5.10.35-wb182`, armhf, sun8i-r40 = A40i, полностью совпадает с процессором СА-02м).
+> **Статус: порт не состоялся, документ — справочный.** Задуманный в 2026-07
+> переход на форк `wirenboard/linux` (5.10.35) до устройств не дошёл: флот
+> несёт `6.1.0-rc6` / `6.1.0-rc6-rt4` из `tools/buildroot/`
+> ([`.ai-dev/notes/kernel-line.md`](../.ai-dev/notes/kernel-line.md)). Каталоги
+> `kernel-port/` и `tools/kernel-wb/`, на которые ссылался этот текст, удалены
+> вместе с их CI-workflow; история — в git. Всё ниже описано в терминах WB-порта
+> и **не описывает то, что работает на плате сегодня**; ценность документа — в
+> разборе периферии A40i и в списке того, что пришлось бы включать при любом
+> будущем переносе.
+
+**Контекст (на момент написания):** переход на ядро [wirenboard/linux](https://github.com/wirenboard/linux), ветка [`release/wb-2606/wb7-bullseye`](https://github.com/wirenboard/linux/tree/release/wb-2606/wb7-bullseye) (Linux `5.10.35-wb182`, armhf, sun8i-r40 = A40i, полностью совпадает с процессором СА-02м).
 
 Wiren Board 7 — плата на том же A40i, что и СА-02м, поэтому её defconfig и DTS используются как донор. В базовом порту мы **не тянем** часть WB-компонентов, потому что соответствующего железа/чипов на СА-02м нет. Этот документ фиксирует, **что именно урезано** и **как это включить позже**, если появится нужный вариант СА-02м, WBIO-модуль или сторонняя периферия.
-
-Практическая реализация порта — в каталоге [`kernel-port/`](../kernel-port/README.md) с оверлеем defconfig и DTS. Инструменты сборки/деплоя — [`tools/kernel-wb/`](../tools/kernel-wb/README.md).
 
 ---
 
@@ -60,7 +68,8 @@ DTS-узлы: `wbec@50` (I²C-адрес 0x50), `pinctrl` для WBEC-GPIO, `cry
 > ⚠ **ВАЖНАЯ ПОПРАВКА** (2026-07): в исходной редакции документа мы ошибочно
 > считали, что PMIC AXP20x на СА-02м отсутствует полностью и весь MFD надо
 > урезать. Изучение эталонного DTS от Starterkit
-> ([`kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts`](../kernel-port/reference/sun8i-a40i-nano2e-none-sk.dts))
+> (эталонный DTS `sun8i-a40i-nano2e-none-sk.dts` — лежал в удалённом
+> `kernel-port/reference/`, доступен в истории git)
 > показало, что **PMIC AXP221 стоит на I²C-0 @0x34** и управляет всеми
 > регуляторами SoC (dcdc1..5 для CPU/DRAM/VCC-IO, aldo/eldo/dldo для
 > eMMC/PLL/microSD). Без ядра PMIC-драйвера SoC **не запустится**.

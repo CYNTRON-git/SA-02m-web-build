@@ -18,8 +18,10 @@ the monthly ceiling in July (308 runs). **Every push is a spend decision.**
 
 ## Where the runs actually go (measured 2026-07-23)
 
-`web-quality` is the only workflow that fires in practice (the kernel
-workflow is path-filtered to `kernel-port/**` and stays dormant). It triggers
+`web-quality` is now the only workflow in the repo at all. (Until 2026-08-06
+there was a second one, `build-sa02m-kernel`; it was path-filtered to
+`kernel-port/**` and stayed dormant, and it went away with the dead kernel
+pipeline — `.ai-dev/notes/kernel-line.md`.) It triggers
 on BOTH `pull_request` → main AND `push` → main, so **each shipped feature
 costs two runs**: one on the PR, one re-validating the identical tree after
 the squash-merge.

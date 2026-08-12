@@ -139,12 +139,12 @@ if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
         log INFO "docker уже установлен: $(docker --version 2>/dev/null | head -1)"
     fi
 
-    # Настройка Docker зависит от ядра. Начиная с SA-02м kernel 5.10.35 (без
-    # суффикса) собирается с CONFIG_OVERLAY_FS=y + CONFIG_BRIDGE=y + CONFIG_NF_TABLES=y
-    # → доступен полноценный режим: overlay2 storage + iptables-nft + bridge networking.
-    # На старом ядре (5.10.35-sa02m+ / любое ядро без OVERLAY_FS/BRIDGE/NF_TABLES)
-    # автоматически откатываемся на minimal-mode (vfs + iptables=false + bridge=none).
-    # NOTE: this config-grep predicate stays for legacy 5.10 kernels ONLY; the
+    # Настройка Docker зависит от возможностей ядра, а не от его версии: ядро
+    # с CONFIG_OVERLAY_FS + CONFIG_BRIDGE + CONFIG_NF_TABLES получает полноценный
+    # режим (overlay2 storage + iptables-nft + bridge networking), любое другое —
+    # minimal-mode (vfs + iptables=false + bridge=none). Штатные ядра флота
+    # (6.1.0-rc6 / 6.1.0-rc6-rt4) собраны с этим набором — 1.0.5.58.
+    # NOTE: this config-grep predicate is the legacy half of the check; the
     # RUNTIME gate is the ExecCondition capability probe installed by
     # 01-system.sh (/etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
     # → sa02m-kernel-service-guard.sh docker-capable). The grep misses

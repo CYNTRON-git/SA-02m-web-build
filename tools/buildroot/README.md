@@ -1,22 +1,19 @@
 # Buildroot VM — RT + Docker kernel для SA-02m
 
-> ### ⚠ Устаревающий путь сборки (Legacy, ~2024-2026)
+> ### Это действующий путь сборки ядра — единственный в репозитории
 >
-> Этот каталог описывает **старую** цепочку сборки ядра `6.1.0-rc6-rt4` через
-> Starterkit VM + Buildroot 2022.08.4-sk-a40i. С 2026-07 SA-02м мигрирует на
-> ядро **`wirenboard/linux` 5.10.35 armhf** (см. [`../../kernel-port/README.md`](../../kernel-port/README.md)
-> и [`../kernel-wb/README.md`](../kernel-wb/README.md)) — стандартные `.deb`-пакеты,
-> CI-сборка, upstream fixes от Wiren Board.
+> Именно эта цепочка (Starterkit VM + Buildroot 2022.08.x-sk-a40i) собирает пару
+> ядер, которую несёт флот: **`6.1.0-rc6`** (SMP) и **`6.1.0-rc6-rt4`**
+> (PREEMPT_RT). Оба профиля пересобраны с docker-набором netfilter и модемными
+> драйверами и подтверждены на железе в 1.0.5.58
+> ([`../../docs/contracts/kernel-conditional-services.md`](../../docs/contracts/kernel-conditional-services.md) §4).
 >
-> Legacy-путь сохраняется как **fallback** до валидации нового ядра на реальных
-> устройствах SA-02м и SA-02м-2. После 100% миграции всех эталонных устройств
-> этот каталог будет удалён (см. [`../../docs/WB_LINUX_FUTURE_FEATURES.md`](../../docs/WB_LINUX_FUTURE_FEATURES.md)).
+> Прежняя редакция этого файла называла каталог устаревающим в пользу порта на
+> форк `wirenboard/linux` (5.10.35, `.deb` + CI). Тот порт до устройств не дошёл
+> и удалён — см. [`../../.ai-dev/notes/kernel-line.md`](../../.ai-dev/notes/kernel-line.md).
 >
-> **Не используйте этот путь для новых развёртываний.** Для новых устройств:
-> ```
-> ./tools/kernel-wb/build-sa02m-kernel.sh sa02m
-> ./tools/kernel-wb/deploy-sa02m-kernel.sh root@<ip>
-> ```
+> Штатная установка и обновление устройства идут документированным путём деплоя,
+> а не сборкой ядра: сборка нужна только когда меняется сам kernel.
 
 Подготовка виртуальной машины и пересборка ядра `6.1.0-rc6-rt4` с Docker и драйверами SA-02m.
 

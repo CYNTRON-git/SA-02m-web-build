@@ -386,8 +386,8 @@ if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
         || log WARN "sa02m-rtc-sync.timer не включился"
 fi
 
-# ── Postinst-hook для linux-image-*.deb (см. tools/kernel-wb/) ─────────────
-# При установке .deb-пакета WB-ядра dpkg вызывает run-parts /etc/kernel/postinst.d/;
+# ── Postinst-hook для linux-image-*.deb ────────────────────────────────────
+# При установке любого .deb-пакета ядра dpkg вызывает run-parts /etc/kernel/postinst.d/;
 # хук копирует новый zImage в /usr/local/share/sa02m/kernel/zImage.<flavour>
 # и (если flavour совпадает с running) обновляет /mnt/boot_fat/zImage +
 # синхронизирует sun8i-a40i-sk.dtb на FAT-раздел.

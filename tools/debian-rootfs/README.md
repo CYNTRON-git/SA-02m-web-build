@@ -1,6 +1,14 @@
 # tools/debian-rootfs — Debian bullseye rootfs для SA-02m
 
-Сборка **userspace Debian 11 armhf** (как у Wiren Board), с ядром `linux-image-sa02m` 5.10 и нашим `install.sh`.
+Сборка **userspace Debian 11 armhf**, с ядром из `.deb`-пакета `linux-image-sa02m` и нашим `install.sh`.
+
+> ⚠ **Производителя этих `.deb` в репозитории больше нет.** Пакеты собирал порт
+> ядра на форк `wirenboard/linux` (`kernel-port/` + `tools/kernel-wb/`) — он до
+> устройств не дошёл и удалён; флот несёт `6.1.0-rc6` / `6.1.0-rc6-rt4` из
+> [`../buildroot/`](../buildroot/README.md), а тот отдаёт `zImage` + tarball
+> модулей, а не `.deb` ([`../../.ai-dev/notes/kernel-line.md`](../../.ai-dev/notes/kernel-line.md)).
+> Чтобы воспользоваться этим rootfs-путём, `.deb` придётся принести своими
+> руками. Судьба самого каталога — отдельное решение, не это.
 
 ## Отличие от Armbian/Noble
 
@@ -19,11 +27,9 @@ sudo apt install debootstrap qemu-user-static binfmt-support \
 
 На Ubuntu 18.04 VM (наш VMware) — пакеты доступны.
 
-Перед сборкой rootfs нужны **собранные kernel .deb**:
-
-```bash
-./tools/kernel-wb/build-sa02m-kernel.sh sa02m
-```
+Перед сборкой rootfs нужны **собранные kernel .deb** — положите их в
+`KERNEL_DEB_DIR` (см. `create-sa02m-rootfs.sh`). Скрипта-производителя в
+репозитории нет: см. предупреждение в начале файла.
 
 ## Быстрый старт
 
