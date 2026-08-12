@@ -161,7 +161,9 @@ read_ds3231_i2c_datetime() {
     return 0
 }
 
-# Write local system time to DS3231 (regs 0x00..0x06). Chip has no TZ — store local time.
+# Write system time to DS3231 (regs 0x00..0x06) in UTC — the chip has no TZ and
+# /etc/adjtime is UTC, so storing local time made the clock drift by the zone
+# offset on every I2C write (see the inline note and PR #96/#98).
 write_ds3231_i2c_datetime() {
     local dt=${1:-} y mo d h mi s dow bus addr wday yr
     local sec_hex min_hex hr_hex dom_hex mo_hex yr_hex
