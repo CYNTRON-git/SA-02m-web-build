@@ -3862,6 +3862,27 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    shows the target state at full strength — never grayed while the relay
    has already clicked. */
 .mqtt-do-toggle.is-pending { cursor: wait; }
+/* AO setpoint input in an AO channel row — numeric 0..1000 (= 0..10.00 V),
+   written on Enter/blur. Same fixed footprint as the DO toggle so a value
+   change never reflows the row; tokens only, both themes inherit. */
+.mqtt-ao-input {
+  flex: 0 0 auto;
+  width: 4.4rem;
+  min-width: 4.4rem;
+  max-width: 4.4rem;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input, var(--bg-card));
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: right;
+  box-sizing: border-box;
+}
+.mqtt-ao-input.is-pending { cursor: wait; }
+.mqtt-ao-input:disabled { opacity: .55; cursor: not-allowed; }
 .mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
 /* AI rows: static sizes matching type "0 — Выключен" one-line layout. */
 .mqtt-ch-row[data-ai-ch],
