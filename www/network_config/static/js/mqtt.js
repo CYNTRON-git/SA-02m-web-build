@@ -1113,14 +1113,26 @@ function setAoOutput(dev, ctrl) {
     });
 }
 
-/** Nudge an AO setpoint by ±step (clamped 0..1000) from the field value, then write. */
+const _aoStepTimers = {};
+const _AO_STEP_DELAY_MS = 2000;
+/** Nudge an AO setpoint by ±step (clamped 0..1000). Rapid presses only move the
+ *  DISPLAYED value + hold the edit-guard (poll can't read/clobber); the actual
+ *  write fires ONCE, 2 s after the last press — avoids the per-press write race
+ *  where several quick clicks landed the wrong value on the bus. */
 function stepAo(dev, ctrl, delta) {
   const inp = aoInputEl(dev.id, ctrl);
   if (!inp || inp.disabled) return;
   const base = aoClampSetpoint(inp.value);
   const cur = base < 0 ? (aoLiveRaw(dev.id, ctrl) || 0) : base;
   inp.value = String(aoClampSetpoint(String(cur + delta)));
-  setAoOutput(dev, ctrl);
+  const key = aoInputKey(dev.id, ctrl);
+  aoEditGuardAdd(dev.id, ctrl);                 // block the live poll while stepping
+  if (_aoStepTimers[key]) clearTimeout(_aoStepTimers[key]);
+  _aoStepTimers[key] = setTimeout(() => {
+    delete _aoStepTimers[key];
+    setAoOutput(dev, ctrl);                     // one write of the settled value
+    aoEditGuardReleaseLater(dev.id, ctrl);
+  }, _AO_STEP_DELAY_MS);
 }
 
 /** AO setpoint: −50 button · numeric field (write on Enter/blur) · +50 button.
@@ -1148,10 +1160,12 @@ function buildAoSetpointInput(dev, ctrl, enabled) {
   inp.dataset.chDisabled = enabled ? '0' : '1';
   updateAoInput(dev.id, ctrl, inp);
   const dec = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '−50',
+    'onmousedown': e => e.preventDefault(),   // don't steal focus → no premature onblur write
     'onclick': () => stepAo(dev, ctrl, -50) });
   dec.textContent = '−';
   dec.disabled = !enabled;
   const inc = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '+50',
+    'onmousedown': e => e.preventDefault(),
     'onclick': () => stepAo(dev, ctrl, 50) });
   inc.textContent = '+';
   inc.disabled = !enabled;
