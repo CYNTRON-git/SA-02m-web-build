@@ -1,23 +1,71 @@
-# Shell scripts and CGI must use LF (Linux target)
-*.sh    text eol=lf
-*.cgi   text eol=lf
-*.conf  text eol=lf
-*.rules text eol=lf
+# This repo IS the device filesystem overlay — everything deployed to the Linux
+# device (SA-02m, Armbian ARM) must use LF. Default EVERY text file to LF so a
+# Windows checkout (core.autocrlf) never produces CRLF working copies that a
+# direct copy (FileZilla) or an imaging bake — both of which bypass the
+# installers' `sed 's/\r$//'` — would ship to the device. A CRLF file breaks on
+# Linux: visudo syntax error (sudoers → sudo dead → cloud enrollment/flasher/
+# mqtt fail), cron "bad username" (cron.d), a broken `#!` shebang, etc.
+# git auto-detects binary vs text; the explicit `binary` overrides below are
+# belt-and-suspenders for known binary types.
+* text=auto eol=lf
+
+# ── Explicit LF for the critical text classes (redundant with the default, but
+#    documents intent and survives a default change) ──
+*.sh      text eol=lf
+*.cgi     text eol=lf
+*.conf    text eol=lf
+*.rules   text eol=lf
 *.service text eol=lf
+*.timer   text eol=lf
+*.socket  text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.py      text eol=lf
+*.mjs     text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.svg     text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
 
-# Web files
-*.html  text eol=lf
-*.css   text eol=lf
-*.js    text eol=lf
-*.svg   text eol=lf
-*.json  text eol=lf
+# Extensionless / uncovered system files that MUST be LF on the device (a CRLF
+# here has repeatedly broken the device — sudoers, cron.d, ppp, dhclient hooks,
+# kernel-postinst, logrotate.d, update-motd.d, apt). The `* eol=lf` default
+# already covers these; kept explicit as the one-home reminder of the class.
+etc/sudoers.d/*             text eol=lf
+etc/cron.d/*                text eol=lf
+etc/ppp/**                  text eol=lf
+etc/dhcp/**                 text eol=lf
+etc/dhclient-exit-hooks.d/* text eol=lf
+etc/kernel-postinst.d/*     text eol=lf
+etc/logrotate.d/*           text eol=lf
+etc/update-motd.d/*         text eol=lf
+etc/apt/*                   text eol=lf
 
-# Docs
-*.md    text eol=lf
-
-# Extensionless system files that MUST be LF on the device — a Windows working
-# tree (core.autocrlf) otherwise checks them out CRLF, and a direct copy
-# (FileZilla / imaging) that bypasses the installers' `sed 's/\r$//'` ships CRLF.
-# A CRLF sudoers file is a visudo syntax error → sudo breaks (cloud enrollment,
-# flasher, mqtt all fail). Pin them to LF at the source.
-etc/sudoers.d/* text eol=lf
+# ── True binaries — never touch line endings ──
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.so    binary
+*.bin   binary
+*.img   binary
+*.dtb   binary
+*.dtbo  binary
+*.zImage binary
+*.fw    binary
+*.gz    binary
+*.tgz   binary
+*.xz    binary
+*.zst   binary
+*.zip   binary
+*.deb   binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary
+*.otf   binary
