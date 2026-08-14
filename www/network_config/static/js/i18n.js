@@ -408,6 +408,7 @@
     'Введите пароль root.': 'Enter the root password.',
     'Введите команду.': 'Enter a command.',
     '[output truncated to last 32768 bytes]': '[output truncated to last 32768 bytes]',
+    'сервер вернул не-JSON (таймаут?); для непрерывных команд задайте предел, напр. ping -c 4': 'server returned non-JSON (timeout?); for continuous commands set a limit, e.g. ping -c 4',
     'Журнал событий': 'Event Log',
     'Обновить': 'Refresh',
     'SSH-отладка': 'SSH Debug',

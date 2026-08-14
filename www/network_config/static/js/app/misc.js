@@ -344,7 +344,12 @@ function executeCommandLine(cmd, mode, rootPassword) {
     credentials: 'same-origin',
     cache: 'no-store'
   })
-    .then(r => r.json())
+    .then(r => r.text().then(t => {
+      // A never-terminating command times nginx out (504) → HTML, not JSON.
+      // Surface a clean hint instead of a raw "Unexpected token '<'".
+      try { return JSON.parse(t); }
+      catch (e) { throw new Error(uiT('сервер вернул не-JSON (таймаут?); для непрерывных команд задайте предел, напр. ping -c 4')); }
+    }))
     .then(j => {
       if (!j || !j.ok) {
         setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + ((j && j.error) || 'server_error'));
