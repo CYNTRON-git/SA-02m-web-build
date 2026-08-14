@@ -289,7 +289,7 @@ def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str,
         },
         "frequency_hz": _f(controls.get("frequency")),
         "energy_kwh_import": (
-            None if e_wh is None else round(e_wh / 1000.0, 3)
+            None if e_wh is None else round(e_wh / 1000.0, 1)
         ),
         "alerts": [],
     }

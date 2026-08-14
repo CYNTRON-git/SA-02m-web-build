@@ -335,7 +335,7 @@
       setField(card, "ic", fmt(i.c, 3));
       setField(card, "p", fmt(p.total, 0));
       setField(card, "f", fmt(d.frequency_hz, 2));
-      setField(card, "e", fmt(d.energy_kwh_import, 3));
+      setField(card, "e", fmt(d.energy_kwh_import, 1));
     } else {
       setField(card, "temp", fmt(d.room_temp, 1));
       setField(card, "rh", fmt(d.humidity, 1));
@@ -520,7 +520,7 @@
       current: 3,
       power: 0,
       frequency_hz: 2,
-      energy_kwh_import: 3,
+      energy_kwh_import: 1,
     };
     if (Object.prototype.hasOwnProperty.call(byMetric, m)) return byMetric[m];
     const u = String(unit || "").trim();
@@ -528,7 +528,7 @@
     if (u === "A" || u === "А") return 3;
     if (u === "W" || u === "Вт") return 0;
     if (u === "Hz" || u === "Гц") return 2;
-    if (u === "kWh" || u === "кВт·ч") return 3;
+    if (u === "kWh" || u === "кВт·ч") return 1;
     if (u === "°C") return 1;
     if (u === "ppm") return 0;
     if (u === "mg/m³") return 2;
@@ -685,7 +685,7 @@
     set("dev-ce-pb", p.b, 0);
     set("dev-ce-pc", p.c, 0);
     set("dev-ce-pt", p.total, 0);
-    set("dev-ce-de", e.delta, 3);
+    set("dev-ce-de", e.delta, 1);
     const costEl = $("dev-ce-cost");
     if (costEl) {
       const cost = data && data.cost_rub;

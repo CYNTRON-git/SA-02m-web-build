@@ -161,7 +161,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "label": "Энергия (импорт)",
         "unit": "kWh",
         "device": "ce",
-        "decimals": 3,  # Wh/1000
+        "decimals": 1,  # Wh/1000 → кВт·ч, UI 1 знак
     },
 }
 
