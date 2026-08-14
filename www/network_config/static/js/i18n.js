@@ -184,6 +184,10 @@
     'Устройства ещё не добавлены': 'No devices added yet',
     'Комнат': 'Rooms',
     'Устройств': 'Devices',
+    'нет интернета': 'no internet',
+    'нет доступа к серверу': 'server unreachable',
+    'Проверить снова': 'Check again',
+    'Проверка соединения': 'Checking connection',
     'Шлюз недоступен': 'Gateway unavailable',
     'Шлюз alice.cyntron.ru недоступен (Phase 0). Привязка невозможна.':
       'alice.cyntron.ru gateway unavailable (Phase 0). Linking is not possible.',

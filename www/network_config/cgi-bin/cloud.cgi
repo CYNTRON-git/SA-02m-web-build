@@ -36,6 +36,61 @@ read_status() {
     fi
 }
 
+# ── Cloud reachability probe (cached) ───────────────────────────────────────
+# The «Облако»/«Алиса» UI gates its online connect actions on whether the
+# device can actually reach the cloud. A bare curl per 5 s status poll would
+# fork a network call on every poll on the shared ARM target, so cache the
+# verdict ~60 s behind a flock (mirrors status.cgi cache_print_or_build), and
+# bound the probe hard (--max-time 4) so a poll never hangs on a wedged WAN.
+CLOUD_REACH_HOST="cloud.cyntron.ru"
+CLOUD_CACHE_DIR="/tmp/sa02m_cloud_cache"
+CLOUD_REACH_CACHE="$CLOUD_CACHE_DIR/reachable"
+CLOUD_REACH_TTL="${CLOUD_REACH_TTL:-60}"
+CLOUD_REACH_LOCK_WAIT="${CLOUD_REACH_LOCK_WAIT:-0.25}"
+
+cloud_cache_is_fresh() {
+    # $1 file, $2 ttl-seconds. Fresh = exists and mtime within ttl (and not in
+    # the future — a clock skew must not pin a stale verdict forever).
+    local file=$1 ttl=$2 now mtime
+    [ -f "$file" ] || return 1
+    now=$(date +%s 2>/dev/null || echo 0)
+    mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
+    [ "$mtime" -gt "$now" ] && return 1
+    [ $((now - mtime)) -lt "$ttl" ]
+}
+
+cloud_probe_reachable() {
+    # Emits "true"/"false". A response of ANY HTTP status proves the server is
+    # reachable, so we do NOT use curl -f (the api base answers only POST — a
+    # HEAD to it 404/405s but that still means the WAN + DNS + TLS all worked).
+    # Only a network-layer failure (DNS/connect/timeout/TLS) is "unreachable".
+    local out lock="${CLOUD_REACH_CACHE}.lock"
+    mkdir -p "$CLOUD_CACHE_DIR" 2>/dev/null || true
+    if cloud_cache_is_fresh "$CLOUD_REACH_CACHE" "$CLOUD_REACH_TTL"; then
+        cat "$CLOUD_REACH_CACHE"
+        return 0
+    fi
+    # Serialise the refresh so concurrent polls don't stampede curl; a poll
+    # that can't grab the lock re-probes itself rather than serve stale.
+    exec 9>"$lock" 2>/dev/null || true
+    if command -v flock >/dev/null 2>&1 && flock -w "$CLOUD_REACH_LOCK_WAIT" 9 >/dev/null 2>&1; then
+        if cloud_cache_is_fresh "$CLOUD_REACH_CACHE" "$CLOUD_REACH_TTL"; then
+            cat "$CLOUD_REACH_CACHE"
+            exec 9>&- 2>/dev/null || true
+            return 0
+        fi
+    fi
+    if command -v curl >/dev/null 2>&1 && \
+       curl -s -o /dev/null -I --max-time 4 "https://${CLOUD_REACH_HOST}" >/dev/null 2>&1; then
+        out=true
+    else
+        out=false
+    fi
+    printf '%s' "$out" > "$CLOUD_REACH_CACHE" 2>/dev/null || true
+    exec 9>&- 2>/dev/null || true
+    printf '%s' "$out"
+}
+
 if [ "$REQUEST_METHOD" = "POST" ]; then
     # Read POST body
     read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
@@ -101,6 +156,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 elif [ "$REQUEST_METHOD" = "GET" ]; then
     STATUS=$(read_status)
 
+    # «Проверить снова» forces a fresh probe by busting the 60 s cache.
+    if [[ "${QUERY_STRING:-}" == *recheck=1* ]]; then
+        rm -f "$CLOUD_REACH_CACHE" "${CLOUD_REACH_CACHE}.lock" 2>/dev/null || true
+    fi
+    SERVER_REACHABLE=$(cloud_probe_reachable)
+    [ "$SERVER_REACHABLE" = "true" ] || SERVER_REACHABLE=false
+
     # Append service state (is-active/is-enabled exit ≠0 when inactive/disabled —
     # must not append "unknown" via ||, or we get "inactive\nunknown").
     SVC_STATE=$(systemctl is-active sa02m-cloud-agent 2>/dev/null || true)
@@ -114,7 +176,7 @@ elif [ "$REQUEST_METHOD" = "GET" ]; then
     fi
 
     # Merge extra fields into status JSON (env avoids shell-quote traps under fcgiwrap)
-    STATUS="$STATUS" SVC_STATE="$SVC_STATE" SVC_ENABLED="$SVC_ENABLED" HAS_TOKEN="$HAS_TOKEN" python3 -c '
+    STATUS="$STATUS" SVC_STATE="$SVC_STATE" SVC_ENABLED="$SVC_ENABLED" HAS_TOKEN="$HAS_TOKEN" SERVER_REACHABLE="$SERVER_REACHABLE" python3 -c '
 import os, json, sys
 try:
     d = json.loads(os.environ.get("STATUS") or "{}")
@@ -123,6 +185,7 @@ except Exception:
 d["service_active"] = os.environ.get("SVC_STATE", "unknown")
 d["service_enabled"] = os.environ.get("SVC_ENABLED", "unknown")
 d["has_token_file"] = os.environ.get("HAS_TOKEN", "false").lower() == "true"
+d["server_reachable"] = os.environ.get("SERVER_REACHABLE", "false").lower() == "true"
 print(json.dumps(d))
 ' 2>/dev/null || echo "$STATUS"
 

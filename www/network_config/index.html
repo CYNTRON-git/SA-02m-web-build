@@ -581,6 +581,9 @@
                   <button type="button" class="btn btn-sm" id="alice-btn-complete" onclick="aliceCompleteLink()" data-i18n="Завершить привязку">Завершить привязку</button>
                   <button type="button" class="btn btn-sm" onclick="aliceUnlink()" data-i18n="Отвязать">Отвязать</button>
                 </div>
+                <div id="alice-offline" class="conn-offline-note" role="status" hidden>
+                  <span data-i18n="нет интернета">нет интернета</span>
+                </div>
                 <div id="alice-msg" class="cloud-msg" role="status" hidden></div>
               </div>
               <div class="cloud-agent-ctrl system-manage-tile-foot">
@@ -603,6 +606,10 @@
                     личный кабинет на <b>cloud.cyntron.ru</b> и введите этот код.
                   </p>
                   <button type="button" class="btn btn-primary" id="cloud-btn-pair" onclick="cloudStartPairing()">Подключить к облаку</button>
+                  <div id="cloud-offline" class="conn-offline-note" role="status" hidden>
+                    <span data-i18n="нет интернета">нет интернета</span>
+                    <button type="button" class="btn btn-sm conn-recheck-btn" id="cloud-recheck" onclick="cloudRecheck()" data-i18n="Проверить снова">Проверить снова</button>
+                  </div>
                 </div>
                 <div id="cloud-pair-active" hidden>
                   <p class="field-hint cloud-pair-hint" data-i18n="Введите этот код в личном кабинете на cloud.cyntron.ru:">
@@ -629,6 +636,7 @@
                     <input type="text" id="cloud-server" value="cloud.cyntron.ru">
                   </div>
                   <button type="button" class="btn btn-sm" id="cloud-btn-activate" onclick="cloudActivate()">Подключить по токену</button>
+                  <p id="cloud-token-offline" class="field-hint conn-offline-hint" data-i18n="нет интернета" hidden>нет интернета</p>
                 </details>
                 <div id="cloud-msg" class="cloud-msg" role="status" hidden></div>
               </div>

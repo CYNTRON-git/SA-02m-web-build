@@ -2039,6 +2039,32 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   color: var(--red);
   border: 1px solid var(--badge-err-border);
 }
+/* Offline «нет интернета» slot for Cloud/Alice connect actions. Reuses the
+   error-badge tokens (both themes, no new color) so it drops into the pair-
+   button slot without a layout jump; the pair button is hidden while shown. */
+.conn-offline-note {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: .8rem;
+  line-height: 1.4;
+  background: var(--badge-err-bg);
+  color: var(--red);
+  border: 1px solid var(--badge-err-border);
+}
+/* display:flex above would defeat the `hidden` attribute (UA [hidden] rule has
+   lower specificity) — restore it, matching the codebase's per-container idiom. */
+.conn-offline-note[hidden] { display: none !important; }
+.conn-offline-note .conn-recheck-btn {
+  width: 100%;
+}
+.conn-offline-hint {
+  margin-top: 6px;
+  color: var(--red);
+}
 .system-manage-cloud-card #cloud-btn-pair,
 .system-manage-cloud-card #cloud-btn-cancel,
 .system-manage-cloud-card #cloud-btn-activate {
@@ -2050,6 +2076,9 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   border-radius: var(--radius-sm);
   margin-top: 10px;
 }
+/* .btn sets display:inline-flex, which outranks the UA [hidden] rule — restore
+   it so the offline gate can hide the pair button (JS sets its `hidden`). */
+.system-manage-cloud-card #cloud-btn-pair[hidden] { display: none !important; }
 .system-manage-cloud-card .cloud-agent-ctrl .btn {
   width: 100%;
   min-height: 38px;

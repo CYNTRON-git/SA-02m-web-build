@@ -89,9 +89,21 @@ function aliceRender(d) {
     btn.textContent = uiT(enabled ? 'Выключить клиент' : 'Включить клиент');
   }
 
+  // Gate the online link actions on gateway reachability: both «Привязать» and
+  // «Завершить привязку» hit the network and fail when the gateway is down, so
+  // disable them and surface the reserved «нет интернета» note when !avail.
+  // The local client on/off button and status lines stay untouched.
   const linkBtn = $('alice-btn-link');
   if (linkBtn) {
-    linkBtn.disabled = !enabled;
+    linkBtn.disabled = !enabled || !avail;
+  }
+  const completeBtn = $('alice-btn-complete');
+  if (completeBtn) {
+    completeBtn.disabled = !avail;
+  }
+  const offline = $('alice-offline');
+  if (offline) {
+    offline.hidden = avail;
   }
 
   const devices = (d.devices && d.devices.devices) || [];
