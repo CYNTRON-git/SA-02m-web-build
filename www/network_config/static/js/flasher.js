@@ -1654,31 +1654,41 @@
     }
     const portKey = $('flasher-port').value;
     if (!portKey) return;
-    try {
-      const res = await apiPost('/ports/release', { port: portKey });
-      const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
-      const mqttStopped = res && (
-        (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-        (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-        (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
-      );
-      if (res && res.ok && !busy) {
-        state.configPortReleased = true;
-        return;
+    // Освобождение MPLC4/MQTT-моста асинхронно (systemctl stop): первый ответ
+    // /ports/release ещё может застать порт занятым, хотя опросчик остановится
+    // через долю секунды. Пробуем несколько раз с паузой и показываем ошибку
+    // ТОЛЬКО если порт остаётся занятым после того, как аренда «устоялась» — не
+    // мигаем самоустраняющимся сообщением «не удалось освободить» (Operator 1.0.5.69).
+    const RELEASE_ATTEMPTS = 4;
+    const RELEASE_RETRY_MS = 500;
+    let lastMsg = '';
+    for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt++) {
+      try {
+        const res = await apiPost('/ports/release', { port: portKey });
+        const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
+        const mqttStopped = res && (
+          (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+          (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+          (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
+        );
+        if ((res && res.ok && !busy) || (!busy && mqttStopped)) {
+          state.configPortReleased = true;
+          return;
+        }
+        lastMsg = busy
+          ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
+          : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
+      } catch (err) {
+        lastMsg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
       }
-      if (!busy && mqttStopped) {
-        state.configPortReleased = true;
-        return;
+      if (attempt < RELEASE_ATTEMPTS - 1) {
+        await new Promise(function (r) { setTimeout(r, RELEASE_RETRY_MS); });
       }
-      const msg = busy
-        ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
-        : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
-      setConfigBanner(msg, 'error');
-      toast(msg, 'warn');
-    } catch (err) {
-      const msg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
-      setConfigBanner(msg, 'error');
-      toast(msg, 'warn');
+    }
+    // Порт всё ещё занят после нескольких попыток — только теперь это реальная ошибка.
+    if (lastMsg) {
+      setConfigBanner(lastMsg, 'error');
+      toast(lastMsg, 'warn');
     }
   }
 
@@ -2021,11 +2031,25 @@
     return parts.map(p => `<span>${escapeHtml(p)}</span>`).join(' / ');
   }
 
+  // Короткий тег режима для пункта сайдбара «Аналоговый вход AI…»: точный тег по
+  // Modbus-коду типа, как в эталоне ai_sidebar_nav_mode_tag (module_profiles.py):
+  // ВЫКЛ / NTC / RTD / 0-10 / 0-30 / 4-20 / 0-5мА / 0-20мА / ±50мВ / ±2В / DIN / ТХА.
   function aiSidebarTagFromCode(code) {
-    const b = aiUiSensorBucket(code);
-    if (b === 'off') return 'Выкл';
-    const map = { ntc: 'NTC', rtd: 'RTD', volt: 'U', curr: 'I', tc_k: 'TC-K', dry: 'Сух' };
-    return map[b] || 'AI';
+    const c = Number(code) & 0xFFFF;
+    if (c === 0) return 'ВЫКЛ';
+    const b = aiUiSensorBucket(c);
+    if (b === 'ntc') return 'NTC';
+    if (b === 'rtd') return 'RTD';
+    if (c === 34) return '0-10';
+    if (c === 35) return '0-30';
+    if (c === 40) return '4-20';
+    if (c === 38) return '0-5мА';
+    if (c === 39) return '0-20мА';
+    if (c === 36) return '±50мВ';
+    if (c === 37) return '±2В';
+    if (b === 'dry')  return 'DIN';
+    if (b === 'tc_k') return 'ТХА';
+    return 'AI';
   }
 
   // Справочные пределы температуры (десятые °C) по Modbus-коду типа — из таблиц прошивки MR-02m
@@ -2200,8 +2224,13 @@
     const v = Number(scaledInt);
     if (!Number.isFinite(v) || v === _AI_ENG_S32_MAX) return '—';
     if (k === 'temp')        return (v / 10).toFixed(1) + ' °C';
-    if (k === 'current')     return (v / 10).toFixed(1) + ' мА';
-    if (k === 'voltage_010') return (v / 100).toFixed(2) + ' В';
+    // S16_MIN (-32768) — прошивочный сентинел «значение недействительно» для
+    // 16-битного пересчитанного (reg+3). Эталон format_ai_scaled_display.
+    if (v === -32768) return '—';
+    // Ток (0-5/0-20/4-20 мА) и напряжение (0-10/0-30 В): пересчитанное — сырое
+    // целое из регистра, без единицы и без масштаба. Эталон: str(v).
+    if (k === 'current')     return String(v);
+    if (k === 'voltage_010') return String(v);
     if (k === 'diff_mv')     return (v / 10).toFixed(1) + ' мВ';
     if (k === 'diff_v')      return (v / 100).toFixed(2) + ' В';
     return String(v);
@@ -2246,6 +2275,93 @@
   function moduleAiChannel(snap, channel) {
     const items = (((snap || {}).mr || {}).ai || {}).channels || [];
     return items.find(item => Number(item.channel) === Number(channel)) || null;
+  }
+
+  // ---- Схемы подключения (порт эталонных SVG из каталога «Подключения») -------
+  // (тип модуля × вкладка × канал × код датчика) → файл(ы) схемы. MONO — одна
+  // схема; PAIR — две колонки (DI/DO). Точное соответствие эталону
+  // module_config_window.py (_embed_podklyucheniya_mono_svg /
+  // _embed_podklyucheniya_pair_svgs). Типы без схемы в эталоне (10DI, 6DO5DI2AO,
+  // 4TO6DI, CE) диаграммы не имеют — как и в эталоне. SVG-исходники — Inkscape с
+  // чёрными штрихами, поэтому рендерятся на светлой «подложке» (--wiring-plate),
+  // читаемой в обеих темах; эталон перекрашивает штрих в цвет темы (моно) —
+  // светлая подложка сохраняет и информативную синюю подсветку активной клеммы.
+  const WIRING_ASSET_BASE = 'static/wiring/';
+
+  function wiringAssetVersion() {
+    return (typeof APP_VERSION !== 'undefined' && APP_VERSION) ? String(APP_VERSION) : '';
+  }
+
+  function moduleWiringKey(meta) {
+    if (!meta) return null;
+    const d = Number(meta.max_do || 0), i = Number(meta.max_di || 0);
+    const o = Number(meta.max_ao || 0), a = Number(meta.max_ai || 0);
+    if (o === 6 && a === 6) return '6ai6ao';
+    if (a === 12 && o === 0) return '12ai';
+    if (o === 12 && a === 0 && d === 0 && i === 0) return '12ao';
+    if (d === 6 && i === 8) return '6do8di';
+    if (d === 4 && i === 6 && o === 0) return '4do6di';
+    if (i === 14 && d === 0) return '14di';
+    if (d === 16 && i === 0) return '16do';
+    if (d === 6 && i === 0 && o === 0) return '6do';
+    return null;
+  }
+
+  // Вариант AI-схемы по коду датчика (эталон _refresh_ai66_wiring /
+  // _refresh_ai12_wiring): ТХА → «2», 3-проводное RTD → «3», иначе базовый.
+  function aiWiringVariantSuffix(code) {
+    const b = aiUiSensorBucket(code);
+    if (b === 'tc_k') return '2';
+    if (b === 'rtd' && !aiRtdTwoWireFromCode(code)) return '3';
+    return '';
+  }
+
+  // Файлы схемы для (тип, вкладка, канал, код датчика): [] — нет схемы,
+  // 1 элемент — mono, 2 — пара колонок.
+  function moduleWiringFiles(mkey, tab, channel, sensorCode) {
+    if (!mkey) return [];
+    const ch = Number(channel) || 0;
+    if (tab === 'ai') {
+      if (aiUiSensorBucket(sensorCode) === 'off') return [];  // «Выключен» — схема скрыта (эталон)
+      if (mkey === '6ai6ao') return ['mp-02m_6ai6ao_up' + aiWiringVariantSuffix(sensorCode) + '.svg'];
+      if (mkey === '12ai')   return ['mp-02m_12ai_' + (ch <= 6 ? 'down' : 'up') + aiWiringVariantSuffix(sensorCode) + '.svg'];
+      return [];
+    }
+    if (tab === 'ao') {
+      if (mkey === '6ai6ao') return ['mp-02m_6ai6ao_down.svg'];
+      if (mkey === '12ao')   return ['mp-02m_12ao_' + (ch <= 6 ? 'down' : 'up') + '.svg'];
+      return [];
+    }
+    if (tab === 'di') {
+      if (mkey === '6do8di') return ['mp-02m_6do8di_down.svg', 'mp-02m_6do8di_down2.svg'];
+      if (mkey === '4do6di') return ['mp-02m_4do6di_down.svg', 'mp-02m_4do6di_down2.svg'];
+      if (mkey === '14di')   return ch <= 7
+        ? ['mp-02m_14di_down.svg', 'mp-02m_14di_down2.svg']
+        : ['mp-02m_14di_up.svg', 'mp-02m_14di_up2.svg'];
+      return [];
+    }
+    if (tab === 'do') {
+      if (mkey === '6do8di') return ['mp-02m_6do8di_up.svg', 'mp-02m_6do8di_up2.svg'];
+      if (mkey === '4do6di') return ['mp-02m_4do6di_up.svg', 'mp-02m_4do6di_up2.svg'];
+      if (mkey === '6do')    return ['mp-02m_6do_' + (ch <= 3 ? 'down' : 'up') + '.svg'];
+      if (mkey === '16do')   return ['mp-02m_16do_' + (ch <= 8 ? 'down' : 'up') + '.svg'];
+      return [];
+    }
+    return [];
+  }
+
+  function moduleWiringDiagramHtml(snap, tab, channel, sensorCode) {
+    const files = moduleWiringFiles(moduleWiringKey(moduleMeta(snap)), tab, channel, sensorCode);
+    if (!files.length) return '';
+    const ver = wiringAssetVersion();
+    const q = ver ? ('?v=' + encodeURIComponent(ver)) : '';
+    const cols = files.map(f =>
+      `<div class="wiring-diagram-col"><img class="wiring-diagram-img" alt="Схема подключения" loading="lazy" src="${escapeHtml(WIRING_ASSET_BASE + f + q)}" /></div>`
+    ).join('');
+    return `<section class="flasher-config-card wiring-diagram-card">
+        <h4>СХЕМА ПОДКЛЮЧЕНИЯ</h4>
+        <div class="wiring-diagram-plate${files.length === 2 ? ' wiring-diagram-pair' : ''}">${cols}</div>
+      </section>`;
   }
 
   function mergeMrMinimalIntoFull(prevMr, minMr) {
@@ -2710,6 +2826,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'do', channel, 0)}
     `;
   }
 
@@ -2751,6 +2868,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'di', channel, 0)}
     `;
   }
 
@@ -2782,6 +2900,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'ao', channel, 0)}
     `;
   }
 
@@ -2859,9 +2978,10 @@
 
     return `
       <div class="ai-channel-panel">
-        <h3 class="ai-channel-title">Аналоговый вход AI${channel}</h3>
+        <h3 class="ai-channel-title">Аналоговые входы (AI) AI${channel}</h3>
 
         <section class="flasher-config-card ai-section-measures">
+          <span class="badge badge-err ai-fault-chip" id="cfg-mr-ai-fault-${channel}" ${faultParts.length ? '' : 'hidden'}>${aiFaultChipHtml(faultParts)}</span>
           <h4>ИЗМЕРЕНИЯ</h4>
           <div class="ai-measures-grid">
             <div class="ai-measure-row">
@@ -2881,9 +3001,6 @@
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="1">+</button>
                 </div>
               </div>
-            </div>
-            <div class="ai-fault-row" id="cfg-mr-ai-fault-row-${channel}">
-              <span class="badge badge-err ai-fault-chip" id="cfg-mr-ai-fault-${channel}" ${faultParts.length ? '' : 'hidden'}>${aiFaultChipHtml(faultParts)}</span>
             </div>
           </div>
         </section>
@@ -2908,6 +3025,8 @@
             </div>
           </div>
         </section>
+
+        <div class="wiring-diagram-slot" id="cfg-mr-ai-wiring-${channel}">${moduleWiringDiagramHtml(snap, 'ai', channel, sensorCode)}</div>
       </div>
     `;
   }
@@ -4010,6 +4129,15 @@
     const ai = moduleAiChannel(state.configSnapshot, channel);
     limBox.innerHTML = aiLimitsBoxHtml(channel, code, ai);
     _bindAiLimitInputs(limBox);
+    _aiUpdateWiringDiagram(channel, code);
+  }
+
+  // Схема подключения AI зависит от режима (ТХА / 3-пров. RTD / «Выключен») —
+  // обновляем при смене режима/подтипа, как эталон (_refresh_ai66_wiring).
+  function _aiUpdateWiringDiagram(channel, code) {
+    const slot = configModalEl(`cfg-mr-ai-wiring-${channel}`);
+    if (!slot) return;
+    slot.innerHTML = moduleWiringDiagramHtml(state.configSnapshot, 'ai', channel, code);
   }
 
   function setupAiBucketHandlers(body) {

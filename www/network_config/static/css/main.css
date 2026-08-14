@@ -146,6 +146,11 @@ html {
   /* Topbar height: single-row desktop (logo | title | controls). Everything keyed
      to the bar height reads this var (.toast-area / .mqtt-toast top offsets). */
   --topbar-h: 60px;
+
+  /* Подложка схем подключения: эталонные SVG нарисованы чёрным штрихом, поэтому
+     диаграмма всегда на светлой «бумаге» (обе темы) — читаема и сохраняет
+     информативную синюю подсветку активной клеммы. */
+  --wiring-plate: #ffffff;
 }
 
 /* ── Светлая тема ───────────────────────────────────────────────────────── */
@@ -153,6 +158,7 @@ html[data-theme="light"] {
   --bg:          #ececf3;
   --bg-nav:      #ffffff;
   --bg-card:     #ffffff;
+  --wiring-plate: #ffffff;
   --bg-panel:    #f2f2f7;
   --bg-input:    #ffffff;
   --bg-toolbar:  #f2f2f7;
@@ -3181,11 +3187,18 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   color: var(--text);
   font-weight: 600;
 }
+/* «Пересчитанное» row: value stays next to the label on the left, the
+   calibration group is pushed flush-right (reference: слева подпись+значение,
+   справа только калибровка). */
 .ai-measure-value-group {
   display: flex;
   align-items: center;
   gap: 20px;
   flex-wrap: wrap;
+  flex: 1;
+}
+.ai-measure-value-group .ai-cal-strip {
+  margin-left: auto;
 }
 
 /* Calibration strip (inline in measurements) */
@@ -3194,15 +3207,55 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   align-items: center;
   gap: 6px;
 }
-/* AI range/open/short alarm chip (Input 107/108). Reserve height so the panel
-   does not jump when the chip appears; color comes from .badge-err (both themes). */
-.ai-fault-row {
-  display: flex;
-  align-items: center;
-  min-height: 24px;
-  margin-top: 2px;
+/* AI range/open/short alarm chip (Input 107/108) — top-right of the ИЗМЕРЕНИЯ
+   card (reference alarm_col: grid row 0, column 2, sticky NE). Color from
+   .badge-err (both themes). */
+.ai-section-measures {
+  position: relative;
+}
+.ai-fault-chip {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  z-index: 1;
 }
 .ai-fault-chip[hidden] { display: none; }
+
+/* Wiring diagrams (schematic SVGs ported from the reference «Подключения»).
+   MONO = one column; PAIR (DI/DO) = two columns. The SVGs use black strokes,
+   so they render on a light plate readable in both themes. Images are graphics
+   (not text) — the WCAG text-contrast floor does not apply to the strokes. */
+.wiring-diagram-slot:empty { display: none; }
+.wiring-diagram-card h4 {
+  margin: 0 0 12px;
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-sec);
+}
+.wiring-diagram-plate {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 24px;
+  flex-wrap: wrap;
+  background: var(--wiring-plate);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+}
+.wiring-diagram-col {
+  display: flex;
+  justify-content: center;
+  flex: 0 1 auto;
+}
+.wiring-diagram-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  max-height: 340px;
+}
 /* Relay «ОПИСАНИЕ АЛГОРИТМОВ» help block — static vendor text, per-line nodes
    (each line is a DICT key). Structural only; color from .flasher-config-note. */
 .relay-algo-hdr { margin-top: 14px; }

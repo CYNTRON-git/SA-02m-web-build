@@ -744,6 +744,7 @@
     'Обрыв датчика': 'Sensor break',
     'Короткое замыкание на линии': 'Short circuit on line',
     'НАСТРОЙКА ВХОДА': 'INPUT SETUP',
+    'СХЕМА ПОДКЛЮЧЕНИЯ': 'WIRING DIAGRAM',
     'РЕЖИМ РАБОТЫ': 'OPERATING MODE',
     // AI sensor-type dropdown (Modbus type codes)
     'Pt50 (α385), 2-пров.': 'Pt50 (α385), 2-wire',
@@ -1137,7 +1138,17 @@
     [/^Дискретный выход DO(\d+)$/u, 'Discrete output DO$1'],
     [/^Аналоговый выход АО(\d+)$/u, 'Analog output AO$1'],
     [/^Аналоговый вход AI(\d+)$/u, 'Analog input AI$1'],
+    [/^Аналоговые входы \(AI\) AI(\d+)$/u, 'Analog inputs (AI) AI$1'],
     [/^AI(\d+): ФИЛЬТР И ОПРОС АЦП$/u, 'AI$1: FILTER & ADC POLLING'],
+    // Module-nav mode suffixes with a Cyrillic tag (« - ВЫКЛ», « - ТХА»…);
+    // digit tags («- 4-20», «- 0-10», «- NTC») need no translation. Reference
+    // ai_sidebar_nav_mode_tag / _i18n_ai_sensors.py.
+    [/^- ВЫКЛ$/u, '- OFF'],
+    [/^- ТХА$/u, '- ChA'],
+    [/^- 0-5мА$/u, '- 0-5mA'],
+    [/^- 0-20мА$/u, '- 0-20mA'],
+    [/^- ±50мВ$/u, '- ±50mV'],
+    [/^- ±2В$/u, '- ±2V'],
     [/^Сохранить DO(\d+)$/u, 'Save DO$1'],
     [/^Сохранить DI(\d+)$/u, 'Save DI$1'],
     [/^Сохранить AO(\d+)$/u, 'Save AO$1'],
