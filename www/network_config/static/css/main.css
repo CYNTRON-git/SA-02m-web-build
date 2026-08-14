@@ -3890,12 +3890,17 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 /* AO setpoint input in an AO channel row — numeric 0..1000 (= 0..10.00 V),
    written on Enter/blur. Same fixed footprint as the DO toggle so a value
    change never reflows the row; tokens only, both themes inherit. */
-.mqtt-ao-input {
+.mqtt-ao-set {
   flex: 0 0 auto;
-  width: 4.4rem;
-  min-width: 4.4rem;
-  max-width: 4.4rem;
-  padding: 3px 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.mqtt-ao-input {
+  width: 3.6rem;
+  min-width: 3.6rem;
+  max-width: 3.6rem;
+  padding: 3px 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg-input, var(--bg-card));
@@ -3903,11 +3908,34 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   font-family: var(--font-mono);
   font-size: 13px;
   font-weight: 600;
-  text-align: right;
+  text-align: center;
   box-sizing: border-box;
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
+/* Hide the native number spinner — it overlapped the value. Step via the ± buttons. */
+.mqtt-ao-input::-webkit-outer-spin-button,
+.mqtt-ao-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .mqtt-ao-input.is-pending { cursor: wait; }
 .mqtt-ao-input:disabled { opacity: .55; cursor: not-allowed; }
+.mqtt-ao-step {
+  flex: 0 0 auto;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.mqtt-ao-step:hover:not(:disabled) { border-color: var(--accent, #3a9bdc); background: var(--bg-input, var(--bg-card)); }
+.mqtt-ao-step:disabled { opacity: .45; cursor: not-allowed; }
 .mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
 /* AI rows: static sizes matching type "0 — Выключен" one-line layout. */
 .mqtt-ch-row[data-ai-ch],

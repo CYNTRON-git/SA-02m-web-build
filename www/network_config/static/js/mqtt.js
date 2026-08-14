@@ -1113,14 +1113,26 @@ function setAoOutput(dev, ctrl) {
     });
 }
 
-/** Numeric setpoint input for an AO channel row (write on Enter / blur). */
+/** Nudge an AO setpoint by ±step (clamped 0..1000) from the field value, then write. */
+function stepAo(dev, ctrl, delta) {
+  const inp = aoInputEl(dev.id, ctrl);
+  if (!inp || inp.disabled) return;
+  const base = aoClampSetpoint(inp.value);
+  const cur = base < 0 ? (aoLiveRaw(dev.id, ctrl) || 0) : base;
+  inp.value = String(aoClampSetpoint(String(cur + delta)));
+  setAoOutput(dev, ctrl);
+}
+
+/** AO setpoint: −50 button · numeric field (write on Enter/blur) · +50 button.
+ *  Native spinners are hidden in CSS (they overlapped the value); the ± buttons
+ *  step by 50. The field keeps data-ao-input so aoInputEl/updateAoInput find it. */
 function buildAoSetpointInput(dev, ctrl, enabled) {
   const inp = h('input', {
     'type': 'number',
     'class': 'mqtt-ao-input',
     'min': '0',
     'max': '1000',
-    'step': '1',
+    'step': '50',
     'inputmode': 'numeric',
     'data-ao-input': `${dev.id}:${ctrl}`,
     'onfocus': () => aoEditGuardAdd(dev.id, ctrl),
@@ -1135,7 +1147,19 @@ function buildAoSetpointInput(dev, ctrl, enabled) {
   });
   inp.dataset.chDisabled = enabled ? '0' : '1';
   updateAoInput(dev.id, ctrl, inp);
-  return inp;
+  const dec = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '−50',
+    'onclick': () => stepAo(dev, ctrl, -50) });
+  dec.textContent = '−';
+  dec.disabled = !enabled;
+  const inc = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '+50',
+    'onclick': () => stepAo(dev, ctrl, 50) });
+  inc.textContent = '+';
+  inc.disabled = !enabled;
+  const wrap = h('div', { 'class': 'mqtt-ao-set' });
+  wrap.appendChild(dec);
+  wrap.appendChild(inp);
+  wrap.appendChild(inc);
+  return wrap;
 }
 
 /** A disabled channel is excluded from polling — no echo can come, so the input goes inert. */
@@ -1144,6 +1168,9 @@ function setAoInputChannelEnabled(devId, ctrl, enabled) {
   if (!inp) return;
   inp.dataset.chDisabled = enabled ? '0' : '1';
   updateAoInput(devId, ctrl, inp);
+  if (inp.parentElement) {
+    inp.parentElement.querySelectorAll('.mqtt-ao-step').forEach(b => { b.disabled = !enabled; });
+  }
 }
 
 function mr02mAiNMirrorActive(dev, ch, channels, mtCode) {
