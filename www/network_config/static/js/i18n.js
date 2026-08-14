@@ -684,7 +684,18 @@
     'Бит 2 - восстановление состояния': 'Bit 2 - state restore',
     'Бит 3 - шторы по DI': 'Bit 3 - blinds by DI',
     'Бит 4 - поочередное включение при питании': 'Bit 4 - staggered power-on',
-    'Задержка включения при питании, с': 'Power-on staggering delay, s',
+    // Relay parity (reference i18n.py relay_*): intro, options/delay labels, algo help
+    'Общие параметры реле для всех выходов DO: режим работы, битовая маска опций и задержка первого включения при появлении питания (секунды; 0 — отключена). Кнопка внизу сохраняет опции и задержку.': 'Global relay settings for all DO outputs: mode, option bitmask, and power-up stagger delay (seconds; 0 = off). Save button writes options and delay.',
+    'Опции, битовая маска, рег. 131:': 'Options, bitmask, reg. 131:',
+    'Задержка вкл., с, 0 = выкл.:': 'On delay, s, 0 = off:',
+    'ОПИСАНИЕ АЛГОРИТМОВ': 'Algorithm help',
+    'Опции (Holding 131) — маска uint16; набор включённых битов задаёт опции ниже.': 'Options (Holding 131) — uint16 bitmask; enabled bits select options below.',
+    '• бит 0 — на 6DO8DI и 4DO6DI при режимах DI→DO (рег. 130 = 1 или 2) не задаётся отдельно: прошивка синхронизирует бит с выбором «фиксация»/«тоггл» в рег. 130 (зеркало DI→DO).': '• bit 0 — on 6DO8DI / 4DO6DI in DI→DO modes (reg. 130 = 1 or 2) firmware syncs with latch/toggle in reg. 130.',
+    '• бит 1 — планировщик: при режимах «Вентиляторы ×2/×4» (рег. 130 = 3 или 4) логика вентиляторов действует только внутри окон расписания (рег. 138–172, по дням недели). Если бит снят, окно считается всегда открытым (при прочих разрешениях по DI).': '• bit 1 — scheduler: for «Fans ×2/×4» (reg. 130 = 3 or 4) fan logic applies only inside schedule windows (reg. 138–172). If cleared, window is always open (with other DI permissions).',
+    '• бит 2 — «восстановление при питании»: если установлен и рег. 130 = 2 (DI→DO тоггл), не 4TO6DI — после старта подставляются запомненные в EEPROM состояния тогглов по каналам; иначе при установленном бите используется то же безопасное состояние рег. 600–615, что и при снятом бите. Если бит 2 снят — всегда только безопасное состояние 600–615 (с учётом поочерёдного включения по биту 4 и рег. 622).': '• bit 2 — power-up restore: if set and reg. 130 = 2 (DI→DO toggle), EEPROM toggle states are restored; else safe state regs 600–615 apply per firmware rules.',
+    '• бит 3 — в режиме «Приводы штор» (рег. 130 = 5) учитывать команды открыть/закрыть с дискретных входов (пары DI на привод) наряду с Modbus.': '• bit 3 — curtain drives (reg. 130 = 5): open/close from DI pairs plus Modbus.',
+    '• бит 4 — поочерёдное включение выходов при подаче питания; имеет смысл только вместе с ненулевым значением рег. 622 (см. ниже).': '• bit 4 — staggered DO on power-up; requires reg. 622 > 0.',
+    'Задержка вкл. (Holding 622) — целое число секунд 0…60 (в прошивке значения больше 60 ограничиваются до 60). При включённом бите 4 маски 131 и 622 > 0 после появления питания выходы DO, которые должны перейти в «1» (по безопасным 600–615 или по восстановлению состояния), включаются не одновременно: для канала с номером i (от 0) задержка i×N секунд от начала отсчёта, где N — значение 622. Это снижает одновременный пусковой ток. При 622 = 0 поочерёдность не используется, даже если бит 4 маски установлен.': 'On delay (Holding 622) — 0…60 s. With bit 4 and 622 > 0, DO channels turn on with delay i×N seconds (N = 622) to limit inrush current. 622 = 0 disables stagger.',
     // DO tab
     'Счетчик включений': 'Activation counter',
     'Выключить': 'Turn off',
@@ -708,8 +719,8 @@
     // AO tab
     'Текущее значение': 'Current value',
     'Уставки AO': 'AO setpoints',
-    'Задание, 0..1000': 'Setpoint, 0..1000',
-    'Безопасное состояние, 0..1000': 'Safe state, 0..1000',
+    'Задание, 0–1000 (1000 = 10.00 В)': 'Setpoint, 0–1000 (1000 = 10.00 V)',
+    'Безопасное состояние, 0–1000 (1000 = 10.00 В)': 'Safe state, 0–1000 (1000 = 10.00 V)',
     'Время без опроса, с': 'Time without polling, s',
     // AI tab
     'Канал AI не найден.': 'AI channel not found.',

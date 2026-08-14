@@ -432,7 +432,9 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
             "sensor_label": module_profiles.ai_sensor_label(sensor_code),
             "sidebar_tag": module_profiles.ai_sidebar_nav_mode_tag(sensor_code),
             "ui_bucket": module_profiles.ai_ui_sensor_bucket(sensor_code),
-            "calibration_applicable": module_profiles.ai_ui_temperature_calibration_applicable(sensor_code),
+            # calibration applicability is derived client-side from sensor_code
+            # (ai_ui_uses_value_calibration: temp ∪ volt ∪ curr) — not a snapshot
+            # field; see docs/contracts/module-config-ai.md.
             "measured_raw": measured_raw,
             "scaled_raw": scaled_raw,
             "calibration": _s16_from_reg(hold[4]) if len(hold) > 4 else 0,

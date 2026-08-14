@@ -1695,7 +1695,6 @@
       sensor_label: aiSensorLabelFromCode(c),
       sidebar_tag: aiSidebarTagFromCode(c),
       ui_bucket: aiUiSensorBucket(c),
-      calibration_applicable: aiUiCalibrationApplicable(c),
     };
   }
 
@@ -1710,7 +1709,6 @@
       merged.sensor_label = prev.sensor_label != null ? prev.sensor_label : aiSensorLabelFromCode(prev.sensor_code);
       merged.sidebar_tag = prev.sidebar_tag != null ? prev.sidebar_tag : aiSidebarTagFromCode(prev.sensor_code);
       merged.ui_bucket = prev.ui_bucket != null ? prev.ui_bucket : aiUiSensorBucket(prev.sensor_code);
-      merged.calibration_applicable = aiUiCalibrationApplicable(prev.sensor_code);
     }
     return merged;
   }
@@ -2533,27 +2531,49 @@
     `;
   }
 
+  // «ОПИСАНИЕ АЛГОРИТМОВ» — дословно из эталона (MR-02m-flasher i18n.py
+  // relay_options_help, RU). Номера регистров (130/131/138–172/600–615/622)
+  // несут смысл прошивки — не перефразировать. Каждая строка — отдельный ключ
+  // DICT (перевод берёт наблюдатель i18n); '' — визуальный разрыв абзаца.
+  const RELAY_ALGO_HELP_LINES = [
+    'Опции (Holding 131) — маска uint16; набор включённых битов задаёт опции ниже.',
+    '• бит 0 — на 6DO8DI и 4DO6DI при режимах DI→DO (рег. 130 = 1 или 2) не задаётся отдельно: прошивка синхронизирует бит с выбором «фиксация»/«тоггл» в рег. 130 (зеркало DI→DO).',
+    '• бит 1 — планировщик: при режимах «Вентиляторы ×2/×4» (рег. 130 = 3 или 4) логика вентиляторов действует только внутри окон расписания (рег. 138–172, по дням недели). Если бит снят, окно считается всегда открытым (при прочих разрешениях по DI).',
+    '• бит 2 — «восстановление при питании»: если установлен и рег. 130 = 2 (DI→DO тоггл), не 4TO6DI — после старта подставляются запомненные в EEPROM состояния тогглов по каналам; иначе при установленном бите используется то же безопасное состояние рег. 600–615, что и при снятом бите. Если бит 2 снят — всегда только безопасное состояние 600–615 (с учётом поочерёдного включения по биту 4 и рег. 622).',
+    '• бит 3 — в режиме «Приводы штор» (рег. 130 = 5) учитывать команды открыть/закрыть с дискретных входов (пары DI на привод) наряду с Modbus.',
+    '• бит 4 — поочерёдное включение выходов при подаче питания; имеет смысл только вместе с ненулевым значением рег. 622 (см. ниже).',
+    '',
+    'Задержка вкл. (Holding 622) — целое число секунд 0…60 (в прошивке значения больше 60 ограничиваются до 60). При включённом бите 4 маски 131 и 622 > 0 после появления питания выходы DO, которые должны перейти в «1» (по безопасным 600–615 или по восстановлению состояния), включаются не одновременно: для канала с номером i (от 0) задержка i×N секунд от начала отсчёта, где N — значение 622. Это снижает одновременный пусковой ток. При 622 = 0 поочерёдность не используется, даже если бит 4 маски установлен.',
+  ];
+
   function renderModuleRelayTab(snap) {
     const relay = ((snap.mr || {}).relay || {});
     const options = Number(relay.options || 0);
+    const helpHtml = RELAY_ALGO_HELP_LINES.map(line =>
+      line ? `<p class="flasher-config-note relay-help-line">${escapeHtml(line)}</p>` : '<div class="relay-help-gap"></div>'
+    ).join('');
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
           <h4>Реле и задержки</h4>
+          <p class="flasher-config-note">Общие параметры реле для всех выходов DO: режим работы, битовая маска опций и задержка первого включения при появлении питания (секунды; 0 — отключена). Кнопка внизу сохраняет опции и задержку.</p>
           <div class="flasher-config-form">
             <label for="cfg-mr-relay-mode">Режим работы</label>
             <select id="cfg-mr-relay-mode">
               ${MODULE_RELAY_MODES.map(item => `<option value="${item.value}" ${Number(item.value) === Number(relay.mode || 0) ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}
             </select>
+            <label>Опции, битовая маска, рег. 131:</label>
             ${MODULE_RELAY_OPTION_BITS.map(item => `
               <label class="checkbox-line"><input type="checkbox" id="cfg-mr-relay-opt-${item.bit}" ${(options & (1 << item.bit)) ? 'checked' : ''} /> ${escapeHtml(item.label)}</label>
             `).join('')}
-            <label for="cfg-mr-relay-stagger">Задержка включения при питании, с</label>
+            <label for="cfg-mr-relay-stagger">Задержка вкл., с, 0 = выкл.:</label>
             <input id="cfg-mr-relay-stagger" type="number" min="0" max="65535" value="${escapeHtml(String(relay.power_stagger ?? 0))}" />
           </div>
           <div class="flasher-config-actions">
             <button class="btn btn-primary" type="button" id="cfg-mr-relay-save-btn">Сохранить</button>
           </div>
+          <h4 class="relay-algo-hdr">ОПИСАНИЕ АЛГОРИТМОВ</h4>
+          <div class="relay-help-block">${helpHtml}</div>
         </section>
       </div>
     `;
@@ -2666,9 +2686,9 @@
         <section class="flasher-config-card">
           <h4>Уставки AO</h4>
           <div class="flasher-config-form">
-            <label for="cfg-mr-ao-set-${channel}">Задание, 0..1000</label>
+            <label for="cfg-mr-ao-set-${channel}">Задание, 0–1000 (1000 = 10.00 В)</label>
             <input id="cfg-mr-ao-set-${channel}" type="number" min="0" max="1000" value="${escapeHtml(String((ao.setpoint || [])[idx] ?? 0))}" />
-            <label for="cfg-mr-ao-safe-${channel}">Безопасное состояние, 0..1000</label>
+            <label for="cfg-mr-ao-safe-${channel}">Безопасное состояние, 0–1000 (1000 = 10.00 В)</label>
             <input id="cfg-mr-ao-safe-${channel}" type="number" min="0" max="1000" value="${escapeHtml(String((ao.safe || [])[idx] ?? 0))}" />
             <label for="cfg-mr-ao-inactivity-${channel}">Время без опроса, с</label>
             <input id="cfg-mr-ao-inactivity-${channel}" type="number" min="0" max="255" value="${escapeHtml(String(mr.inactivity_s ?? 0))}" />
@@ -2687,10 +2707,10 @@
     const filters = ai.filters || null;
     const sensorCode = Number(ai.sensor_code || 0);
     const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
-    // Видимость/диапазон калибровки выводим на клиенте по типу датчика (эталонный
+    // Видимость/диапазон калибровки выводим на клиенте из sensor_code (эталонный
     // предикат ai_ui_uses_value_calibration): активные volt/curr тоже калибруются.
-    // Бэкенд-поле calibration_applicable (только температура) больше не читаем —
-    // так же корректно против старого кешированного бэкенда (§11 cache-compat).
+    // Единственный источник — sensor_code; снимок поля applicability не несёт
+    // (см. docs/contracts/module-config-ai.md).
     const calOk = aiUiCalibrationApplicable(sensorCode);
     const calInt = aiCalibrationIsInteger(sensorCode);
     const calLabel = calInt ? 'Калибровка (смещение)' : 'Калибровка';

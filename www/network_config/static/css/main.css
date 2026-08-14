@@ -3203,6 +3203,12 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin-top: 2px;
 }
 .ai-fault-chip[hidden] { display: none; }
+/* Relay «ОПИСАНИЕ АЛГОРИТМОВ» help block — static vendor text, per-line nodes
+   (each line is a DICT key). Structural only; color from .flasher-config-note. */
+.relay-algo-hdr { margin-top: 14px; }
+.relay-help-block { display: flex; flex-direction: column; }
+.relay-help-line { margin: 2px 0; line-height: 1.4; }
+.relay-help-gap { height: 8px; }
 .ai-cal-strip > span {
   font-size: .78rem;
   color: var(--text-sec);
