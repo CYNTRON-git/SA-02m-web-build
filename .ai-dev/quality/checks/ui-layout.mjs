@@ -209,10 +209,6 @@ const CONTRAST_WHITELIST = [
     reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
   { match: '.kernel-refresh-inline', floor: 2.0,
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
-  { match: '#alice-btn-enable', floor: 1.25,
-    reason: 'Alice client enable/disable while status unknown (placeholder «…»): btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption; same measured wash as kernel-apply-inline (white on faded primary).' },
-  { match: '#alice-btn-complete', floor: 2.0,
-    reason: 'Alice «Завершить привязку» disabled when the gateway is unreachable (1.0.5.69 offline gate): aliceRender sets btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption. Same secondary-btn wash as .kernel-refresh-inline (2.46 light / 3.40 dark); the ENABLED button passes ≈12:1.' },
   { match: '#cloud-btn-activate', floor: 2.0,
     reason: 'Cloud «Подключить по токену» disabled when the server is unreachable (1.0.5.69 offline gate, F1): cloudApplyReachability sets btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption. Same secondary-btn wash as .kernel-refresh-inline (2.49 light / 3.44 dark); the ENABLED button passes ≈12:1.' },
 ];

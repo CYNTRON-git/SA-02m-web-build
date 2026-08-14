@@ -2058,6 +2058,9 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 /* display:flex above would defeat the `hidden` attribute (UA [hidden] rule has
    lower specificity) — restore it, matching the codebase's per-container idiom. */
 .conn-offline-note[hidden] { display: none !important; }
+/* .btn-row sets display:flex, which overrides the [hidden] UA rule — the Alice
+   link/unlink row is toggled by hidden, so restore the hide explicitly. */
+#alice-link-row[hidden] { display: none !important; }
 .conn-offline-note .conn-recheck-btn {
   width: 100%;
 }
