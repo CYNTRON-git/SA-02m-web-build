@@ -449,7 +449,11 @@
       }
     } catch (_) {}
     const portRec = portKey ? state.ports.find(p => p.key === portKey) : null;
-    if (endState === 'done' && portHasCompleteLineState(portRec)) {
+    const emptyResult = state.devices.length === 0;
+    // On an empty or failed scan, reload port state so a poller-busy warning
+    // names the *current* holder; the fast idle-path clears busy_pids locally
+    // and would hide a still-running occupant.
+    if (endState === 'done' && !emptyResult && portHasCompleteLineState(portRec)) {
       markPortIdleAfterJob(portKey);
     } else {
       await loadPorts();
@@ -459,10 +463,18 @@
     if (endState === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
     else if (endState === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
     else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
-    // §5.5 Roster honesty: a scan that finds nothing may be a BACnet-latched
-    // module (silent on Modbus). Offer a one-click passive MS/TP sniff to
-    // diagnose it instead of leaving it lost.
-    maybeOfferBacnetSniff(endState, portKey);
+    // A nothing-found (or port-busy error) scan where a poller still holds the
+    // line: name the holder and offer a one-click stop-and-rescan. This is the
+    // more likely cause than a BACnet latch, so it takes precedence over the
+    // BACnet-sniff offer below.
+    if (maybeOfferPollerBusy(endState, portKey)) {
+      hideBacnetSniffOffer();
+    } else {
+      // §5.5 Roster honesty: a scan that finds nothing may be a BACnet-latched
+      // module (silent on Modbus). Offer a one-click passive MS/TP sniff to
+      // diagnose it instead of leaving it lost.
+      maybeOfferBacnetSniff(endState, portKey);
+    }
   }
 
   function bacnetSniffOfferEl() { return $('flasher-bacnet-sniff-offer'); }
@@ -482,6 +494,78 @@
       escapeHtml(t('Проверить BACnet-активность')) + '</button>';
     const btn = $('flasher-bacnet-sniff-btn');
     if (btn) btn.addEventListener('click', () => verifyBacnetOnPort(portKey));
+  }
+
+  function pollerBusyOfferEl() { return $('flasher-poller-busy-offer'); }
+
+  function hidePollerBusyOffer() {
+    const el = pollerBusyOfferEl();
+    if (el) { el.hidden = true; el.innerHTML = ''; }
+  }
+
+  /** UI labels of the poller units holding this port (MPLC4 / MQTT / …). */
+  function portHolderLabels(port) {
+    const svc = port && Array.isArray(port.active_services) ? port.active_services : [];
+    return svc.map(unitUiLabel).filter(Boolean);
+  }
+
+  /* Empty (or port-busy) scan while a poller/occupant still holds the line:
+     render a named warning + a one-click stop-and-rescan that reuses the
+     existing release path. Returns true when the warning is shown. */
+  function maybeOfferPollerBusy(endState, portKey) {
+    const el = pollerBusyOfferEl();
+    if (!el) return false;
+    const emptyDone = endState === 'done' && state.devices.length === 0;
+    if ((!emptyDone && endState !== 'error') || !portKey) { hidePollerBusyOffer(); return false; }
+    const port = state.ports.find(p => p.key === portKey) || null;
+    const labels = portHolderLabels(port);
+    const pids = port && Array.isArray(port.busy_pids) ? port.busy_pids : [];
+    // Only warn when the line is actually held by a poller unit or an occupant.
+    if (!labels.length && !pids.length) { hidePollerBusyOffer(); return false; }
+    let msg;
+    // Offer the stop-and-rescan button ONLY when a named poller unit holds the
+    // line (active_services): the release path stops the configured pollers, so
+    // offering it for an unattributable external PID would stop something that
+    // is NOT the holder. That case gets an honest warning without the action.
+    const withButton = labels.length > 0;
+    if (labels.length) {
+      msg = t('Ничего не найдено, но линию опрашивает: ') + labels.join(', ') + '. ' +
+        t('Порт может быть занят — остановите опрос и повторите поиск.');
+    } else {
+      msg = t('Ничего не найдено, но порт удерживает сторонний процесс (PID ') + pids.join(', ') + '). ' +
+        t('systemd не сообщает об активном unit опроса — освободите процесс на устройстве вручную.');
+    }
+    el.hidden = false;
+    el.innerHTML = '<span>' + escapeHtml(msg) + '</span>' +
+      (withButton
+        ? ' <button type="button" class="btn btn-sm" id="flasher-poller-busy-btn">' +
+          escapeHtml(t('Остановить опрос и повторить поиск')) + '</button>'
+        : '');
+    if (withButton) {
+      const btn = $('flasher-poller-busy-btn');
+      if (btn) btn.addEventListener('click', () => stopPollersAndRescan(portKey));
+    }
+    return true;
+  }
+
+  /* Stop the pollers (existing authenticated release path) and, only on a
+     successful stop, re-run the existing scan. Guards re-entry like the other
+     port actions. */
+  async function stopPollersAndRescan(portKey) {
+    if (state.scanJobId || state.flashJobId || state.scanPending || state.flashPending) {
+      setScanStatus('Дождитесь завершения текущей задачи', 'warn');
+      return;
+    }
+    if (state.portActionBusy) return;
+    const btn = $('flasher-poller-busy-btn');
+    if (btn) btn.disabled = true;
+    // releasePortPollers() goes through POST /ports/release (auth before
+    // mutation) and reloads port state in its finally.
+    const stopped = await releasePortPollers();
+    if (btn) btn.disabled = false;
+    if (!stopped) return; // release failed or nothing to stop → keep the warning (it already toasted).
+    hidePollerBusyOffer();
+    await startScan();
   }
 
   /* Passive MS/TP sniff on a port from the roster offer (no config modal open).
@@ -4564,6 +4648,7 @@
     renderDevices();
     clearScanStatus();
     hideBacnetSniffOffer();
+    hidePollerBusyOffer();
     state.scanPending = true;
     state.scanArbitrationActive = body.mode === 'fast';
     logReset(logIntro + ' на ' + body.port);
@@ -4794,11 +4879,14 @@
     syncActionButtons();
   }
 
+  /** @returns {Promise<boolean>} true when a poller was actually stopped (or was
+      already stopped in the daemon session) — the signal to chain a re-scan. */
   async function releasePortPollers() {
     const port = currentPort();
-    if (!port) return;
+    if (!port) return false;
     state.portActionBusy = true;
     syncActionButtons();
+    let didStop = false;
     try {
       const res = await apiPost('/ports/release', { port: port.key });
       const lab = (a) => (a || []).map(unitUiLabel).join(', ');
@@ -4808,6 +4896,7 @@
       const stopped = res.stopped_now || [];
       const already = res.already_released || [];
       const inactive = res.inactive || [];
+      didStop = stopped.length > 0 || already.length > 0;
       if (stopped.length) {
         toast('Службы опроса остановлены: ' + lab(stopped), 'success');
       } else if (already.length) {
@@ -4823,6 +4912,7 @@
       state.portActionBusy = false;
       await loadPorts();
     }
+    return didStop;
   }
 
   async function restorePortPollers() {

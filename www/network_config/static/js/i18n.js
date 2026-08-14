@@ -912,6 +912,11 @@
     'Проверка BACnet: ошибка порта': 'BACnet verification: port error',
     'MS/TP активен — модуль в режиме BACnet. Кадров: ': 'MS/TP active — the module is in BACnet mode. Frames: ',
     'Кадры MS/TP не обнаружены — модуля нет на этой линии.': 'No MS/TP frames detected — no module on this line.',
+    'Ничего не найдено, но линию опрашивает: ': 'Nothing found, but the line is polled by: ',
+    'Порт может быть занят — остановите опрос и повторите поиск.': 'The port may be busy — stop polling and re-scan.',
+    'Ничего не найдено, но порт удерживает сторонний процесс (PID ': 'Nothing found, but the port is held by an external process (PID ',
+    'systemd не сообщает об активном unit опроса — освободите процесс на устройстве вручную.': 'systemd reports no active polling unit — free the process on the device manually.',
+    'Остановить опрос и повторить поиск': 'Stop polling and re-scan',
   };
 
   const REGEX = [
