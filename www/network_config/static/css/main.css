@@ -2267,7 +2267,7 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 
 /* ── Toast ───────────────────────────────────────────────────────────────── */
-.toast-area { position: fixed; top: calc(var(--topbar-h, 52px) + 12px); right: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 40px)); }
+.toast-area { position: fixed; top: calc(var(--topbar-h, 52px) + 12px); right: 20px; z-index: 240; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 40px)); }
 .toast {
   padding: 13px 20px; border-radius: var(--radius);
   font-size: .84rem; font-weight: 500; color: #fff;
