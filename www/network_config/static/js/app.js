@@ -137,6 +137,7 @@ function switchTab(tab) {
     loadWebUpdateStatus();
     probeOfflineUpdateCapability();
     loadServicesControl(false);
+    loadMplcProjectMeta();
     loadKernelControl(false);
     loadVariant();
     if (window.cloudTabInit) window.cloudTabInit();

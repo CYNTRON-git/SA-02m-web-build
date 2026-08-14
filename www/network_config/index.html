@@ -758,6 +758,37 @@
                 <button type="button" class="btn btn-sm" id="svc-ctl-refresh-btn" onclick="loadServicesControl(true)">Обновить список</button>
               </div>
             </div>
+            <div class="ctrl-card system-manage-tile system-manage-mplc-proj-card" id="mplc-proj-card">
+              <div class="ctrl-card-main">
+                <h3 class="system-manage-tile-title" data-i18n="Обновление проекта MPLC">Обновление проекта MPLC</h3>
+                <p class="field-hint" data-i18n="Загрузка экспорта проекта MasterSCADA (.zip) и развёртывание на MPLC4">Загрузка экспорта проекта MasterSCADA (.zip) и развёртывание на MPLC4</p>
+                <dl class="web-upd-meta">
+                  <div><dt data-i18n="Текущий проект">Текущий проект</dt><dd id="mplc-proj-current">—</dd></div>
+                </dl>
+                <div id="mplc-proj-status" class="web-upd-status" role="status" hidden></div>
+                <div id="mplc-proj-progress" class="web-upd-progress" hidden>
+                  <div class="bar-row web-upd-progress-bar">
+                    <div class="bar-track"><div id="mplc-proj-progress-fill" class="bar-fill" style="width:0%"></div></div>
+                  </div>
+                  <div id="mplc-proj-progress-label" class="web-upd-progress-label"></div>
+                </div>
+                <input type="file" id="mplc-proj-file-input" accept=".zip,application/zip" hidden>
+                <div class="btn-group web-upd-section-actions">
+                  <button type="button" class="btn" id="mplc-proj-pick-btn" onclick="pickMplcProjectFile()" data-i18n="Выбрать файл">Выбрать файл</button>
+                </div>
+                <div id="mplc-proj-picked" class="mplc-proj-picked" hidden>
+                  <p class="mplc-proj-file-row"><span data-i18n="Файл">Файл</span>: <span id="mplc-proj-file-name" class="mono">—</span></p>
+                  <label class="mplc-proj-confirm">
+                    <input type="checkbox" id="mplc-proj-confirm-chk" onchange="onMplcProjectConfirmToggle()">
+                    <span data-i18n="Это остановит MPLC и заменит текущий проект">Это остановит MPLC и заменит текущий проект</span>
+                  </label>
+                  <div class="btn-group web-upd-section-actions">
+                    <button type="button" class="btn btn-warn" id="mplc-proj-deploy-btn" onclick="deployMplcProject()" disabled data-i18n="Загрузить и развернуть">Загрузить и развернуть</button>
+                    <button type="button" class="btn btn-sm" id="mplc-proj-cancel-btn" onclick="cancelMplcProjectPick()" data-i18n="Отменить">Отменить</button>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <div class="system-manage-tile system-manage-command-panel dash-span-top4">
               <h3 class="system-manage-tile-title system-manage-log-title">Командная строка</h3>

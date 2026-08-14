@@ -74,6 +74,24 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
+      "id": "py-unit-mplc",
+      "checks": "MPLC4 project-deploy zip validator/extractor tests (opt/sa02m-mplc/tests, stdlib unittest) — the security net for the «Обновление проекта MPLC» upload surface: zip-slip/traversal rejection, symlink-member rejection, the closed 4-member cfg/ allow-list, per-entry/total size caps (anti zip-bomb), ProjInfo.json sanity, fixed-basename extraction a hostile entry name cannot redirect, and binary-safe multipart parsing. A regression that reopens a code-escape path passes py-syntax but fails here.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-mplc/tests -t opt/sa02m-mplc -q; fi; done; echo py-unit-mplc: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-mplc/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "mplc-project-deploy-contract",
+      "checks": "Static gate for docs/contracts/mplc-project-deploy.md: the CGI checks auth AND requires CSRF before the sudo helper launch (mutation), the deploy target is the hard-coded MPLC_CFG_DIR=/opt/mplc4/server/cfg (never request-derived — zip-slip floor) with a literal SVC_ID=mplc4, the zip is handled in Python zipfile with the closed 4-member cfg/ allow-list + traversal/symlink rejection, the sudoers grant is exactly one pinned helper path, and the reversible-deploy floors survive: backup precedes the rm of the live project, restore() runs on failure, success is gated on the RT 'load successful' signal (LoadConfig() error -> E_VERIFY, no false green), a backup retention cap, timeouts on stop/start/verify, and the flasher port-lease refusal.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/mplc-project-deploy-contract.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/mplc_project_deploy.cgi", "etc/sa02m-mplc-project-deploy.sh", "opt/sa02m-mplc/", "scripts/03-webserver.sh", ".ai-dev/quality/checks/mplc-project-deploy-contract.sh"],
+      "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
       "id": "iface-naming-contract",
       "checks": "Static gate for docs/contracts/ethernet-iface-naming.md: the legacy-name ledger (only the compat layer, the rename script and the installer migration may name end0/end1 — non-vacuous both ways), the installer still installing AND enabling sa02m-iface-canonical.service, the F6 guard (no `echo -e` in apply.cgi and conf writes only through the two known writers), the §5.4 rm-helper pins (no raw `sudo rm` in apply.cgi; the pinned sa02m-conf-rm.sh sudoers grant present), and the contract §1.0/§7 ordering pins: the unit ordered Before=networking.service, After=+Wants= systemd-udevd + systemd-udev-trigger (else the boot-0 pre-udevd no-op returns), NO Wants=systemd-udev-settle (else the 120 s whole-queue stall returns), fix-eth@.service After=networking.service (else the double-ifup 'File exists' race returns), the rename script still gating canonicalize_pair on udev_initialized (else the boot-0 class returns silently), and 02-network.sh writing `source /etc/network/interfaces.d/*.conf` with no unfiltered `*` line (else <conf>.sa02m-bak backups go live: duplicate stanza -> 'File exists' -> networking FAILED, §1.0 mechanism 3).",
       "config": null,

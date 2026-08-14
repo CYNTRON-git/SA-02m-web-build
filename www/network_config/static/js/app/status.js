@@ -1967,6 +1967,270 @@ function _webUpdFinish(status, log) {
   }
 }
 
+/* ── «Обновление проекта MPLC» — upload + deploy a MasterSCADA project ──────
+   Own poll loop, active only during a deploy (never on the status-poll hot
+   path). The block lives outside any renderer-owned container. Endpoint +
+   contract: cgi-bin/mplc_project_deploy.cgi, docs/contracts/mplc-project-deploy.md. */
+var _mplcProjFile = null;
+var _mplcProjActive = false;
+var _mplcProjPollTimer = null;
+var _mplcProjPollInFlight = false;
+
+var MPLC_PROJ_STAGE_UI = {
+  validate: 'Проверка файла…',
+  stopping: 'Остановка MPLC…',
+  backup: 'Резервная копия…',
+  replace: 'Замена проекта…',
+  starting: 'Запуск MPLC…',
+  verify: 'Проверка загрузки…',
+  done: 'Проект развёрнут'
+};
+
+var MPLC_PROJ_ERR_UI = {
+  E_UPLOAD: 'битый файл загрузки',
+  E_SIZE: 'файл слишком большой',
+  E_ZIP: 'это не архив ZIP',
+  E_TRAVERSAL: 'подозрительный архив',
+  E_MEMBERS: 'это не экспорт проекта MasterSCADA',
+  E_PROJINFO: 'повреждён ProjInfo.json',
+  E_HASH: 'контрольная сумма не совпала',
+  E_BUSY: 'идёт прошивка или сканирование RS-485',
+  E_LOCK: 'развёртывание уже выполняется',
+  E_STOP: 'не удалось остановить MPLC',
+  E_BACKUP: 'не удалось создать резервную копию',
+  E_EXTRACT: 'не удалось записать проект',
+  E_START: 'не удалось запустить MPLC',
+  E_VERIFY: 'MPLC не загрузил проект',
+  E_CMD: 'служба развёртывания недоступна',
+  E_CSRF: 'ошибка защиты сессии',
+  E_INTERNAL: 'внутренняя ошибка'
+};
+
+function _mplcProjSetStatus(text, kind) {
+  var st = document.getElementById('mplc-proj-status');
+  if (!st) return;
+  st.className = 'web-upd-status' + (kind ? ' ' + kind : '');
+  st.textContent = text ? uiT(text) : '';
+  st.hidden = !text;
+}
+
+function _mplcProjSetProgress(pct, label) {
+  var wrap = document.getElementById('mplc-proj-progress');
+  var fill = document.getElementById('mplc-proj-progress-fill');
+  var lab = document.getElementById('mplc-proj-progress-label');
+  if (!wrap) return;
+  wrap.hidden = !(pct != null || !!label);
+  if (fill && pct != null && Number.isFinite(Number(pct))) {
+    fill.style.width = Math.max(0, Math.min(100, Number(pct))) + '%';
+  }
+  if (lab) lab.textContent = label ? uiT(label) : '';
+}
+
+// Stage → coarse progress %, so the bar advances through the deploy machine.
+function _mplcProjStagePct(stage) {
+  var order = ['validate', 'stopping', 'backup', 'replace', 'starting', 'verify', 'done'];
+  var i = order.indexOf(String(stage || ''));
+  return i < 0 ? null : Math.round((i / (order.length - 1)) * 100);
+}
+
+function _mplcProjErrText(j) {
+  var code = j && j.error_code ? String(j.error_code) : '';
+  if (MPLC_PROJ_ERR_UI[code]) return MPLC_PROJ_ERR_UI[code];
+  return (j && j.error_message) ? String(j.error_message) : 'ошибка развёртывания';
+}
+
+function _mplcProjFlasherBusy() {
+  try {
+    return !!(_lastSvcCtlData && _lastSvcCtlData.flasher_busy);
+  } catch (e) {
+    return false;
+  }
+}
+
+function loadMplcProjectMeta() {
+  var cur = document.getElementById('mplc-proj-current');
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (!j || typeof j !== 'object') return;
+      if (cur) {
+        if (j.deployed && j.project && j.project.name) {
+          cur.textContent = j.project.name +
+            (j.project.ide_version ? ' (IDE ' + j.project.ide_version + ')' : '');
+        } else {
+          cur.textContent = uiT('проект не развёрнут');
+        }
+      }
+    })
+    .catch(function () { /* ignore — leave dash */ });
+
+  // Resume the poll if a deploy is already running (F5 mid-deploy).
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi?result=1', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.pending) {
+        _mplcProjActive = true;
+        _mplcProjStartPolling();
+      }
+    })
+    .catch(function () { /* ignore */ });
+}
+
+function pickMplcProjectFile() {
+  var input = document.getElementById('mplc-proj-file-input');
+  if (!input || _mplcProjActive) return;
+  input.value = '';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) {
+      toast('Выберите файл .zip', 'error');
+      return;
+    }
+    _mplcProjFile = file;
+    var nameEl = document.getElementById('mplc-proj-file-name');
+    if (nameEl) nameEl.textContent = file.name;
+    var chk = document.getElementById('mplc-proj-confirm-chk');
+    if (chk) chk.checked = false;
+    var picked = document.getElementById('mplc-proj-picked');
+    if (picked) picked.hidden = false;
+    onMplcProjectConfirmToggle();
+  };
+  input.click();
+}
+
+function onMplcProjectConfirmToggle() {
+  var chk = document.getElementById('mplc-proj-confirm-chk');
+  var btn = document.getElementById('mplc-proj-deploy-btn');
+  if (btn) btn.disabled = !(chk && chk.checked && _mplcProjFile) || _mplcProjActive;
+}
+
+function cancelMplcProjectPick() {
+  _mplcProjFile = null;
+  var picked = document.getElementById('mplc-proj-picked');
+  if (picked) picked.hidden = true;
+  var input = document.getElementById('mplc-proj-file-input');
+  if (input) input.value = '';
+}
+
+function deployMplcProject() {
+  var chk = document.getElementById('mplc-proj-confirm-chk');
+  if (!_mplcProjFile) { toast('Сначала выберите файл проекта', 'error'); return; }
+  if (!chk || !chk.checked) { toast('Подтвердите замену проекта', 'error'); return; }
+  if (_mplcProjFlasherBusy()) {
+    toast('идёт прошивка или сканирование RS-485', 'warn');
+    return;
+  }
+  var pick = document.getElementById('mplc-proj-pick-btn');
+  var deployBtn = document.getElementById('mplc-proj-deploy-btn');
+  if (pick) pick.disabled = true;
+  if (deployBtn) deployBtn.disabled = true;
+  _mplcProjActive = true;
+  _mplcProjSetStatus('Загрузка файла…', 'is-warn');
+  _mplcProjSetProgress(0, 'Загрузка файла…');
+
+  var fd = new FormData();
+  fd.append('file', _mplcProjFile, _mplcProjFile.name);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'cgi-bin/mplc_project_deploy.cgi', true);
+  xhr.withCredentials = true;
+  xhr.timeout = 120000;
+  var csrf = getSa02mCsrfToken();
+  if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
+  xhr.upload.onprogress = function (ev) {
+    if (!ev.lengthComputable) return;
+    var pct = Math.round((ev.loaded / ev.total) * 100);
+    _mplcProjSetProgress(pct, 'Загрузка файла…');
+  };
+  xhr.onerror = function () { _mplcProjFinish('error', { error_message: 'нет связи с сервером' }); };
+  xhr.ontimeout = function () { _mplcProjFinish('error', { error_message: 'таймаут загрузки' }); };
+  xhr.onload = function () {
+    var j = null;
+    try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
+    if (!j || xhr.status < 200 || xhr.status >= 300 || j.ok === false) {
+      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status });
+      return;
+    }
+    // Accepted — the deploy runs in the background; poll for its stages.
+    _mplcProjSetStatus('Проверка файла…', 'is-warn');
+    _mplcProjSetProgress(_mplcProjStagePct('validate'), 'Проверка файла…');
+    _mplcProjStartPolling();
+  };
+  xhr.send(fd);
+}
+
+function _mplcProjApplyStatusUI(j) {
+  var stage = String(j.stage || '');
+  var txt = MPLC_PROJ_STAGE_UI[stage] || '';
+  var kind = 'is-warn';
+  if (j.result === 'success') kind = 'is-ok';
+  else if (j.result === 'error') kind = 'is-err';
+  if (j.result === 'error') {
+    _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j)), 'is-err');
+  } else if (txt) {
+    _mplcProjSetStatus(txt, kind);
+  }
+  var pct = _mplcProjStagePct(stage);
+  if (j.result === 'error') pct = null;
+  _mplcProjSetProgress(pct, j.result === 'error' ? '' : txt);
+}
+
+function _mplcProjPollOnce() {
+  if (_mplcProjPollInFlight) return;
+  _mplcProjPollInFlight = true;
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi?result=1', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (j) {
+      _mplcProjApplyStatusUI(j);
+      if (j.pending === false && (j.result === 'success' || j.result === 'error')) {
+        _mplcProjPollInFlight = false;
+        _mplcProjFinish(j.result, j);
+        return;
+      }
+      _mplcProjPollInFlight = false;
+      _mplcProjPollTimer = setTimeout(_mplcProjPollOnce, 2000);
+    })
+    .catch(function () {
+      _mplcProjPollInFlight = false;
+      if (_mplcProjActive) {
+        _mplcProjSetStatus('Ожидание ответа…', 'is-warn');
+        _mplcProjPollTimer = setTimeout(_mplcProjPollOnce, 3000);
+      }
+    });
+}
+
+function _mplcProjStartPolling() {
+  if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
+  _mplcProjPollOnce();
+}
+
+function _mplcProjFinish(result, j) {
+  _mplcProjActive = false;
+  if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
+  _mplcProjPollInFlight = false;
+  var pick = document.getElementById('mplc-proj-pick-btn');
+  if (pick) pick.disabled = false;
+  if (result === 'success') {
+    _mplcProjSetStatus('Проект развёрнут', 'is-ok');
+    _mplcProjSetProgress(100, 'Проект развёрнут');
+    toast('Проект MPLC развёрнут', 'success');
+    _mplcProjFile = null;
+    cancelMplcProjectPick();
+    loadMplcProjectMeta();
+  } else {
+    _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j || {})), 'is-err');
+    _mplcProjSetProgress(null, '');
+    toast('Ошибка развёртывания проекта', 'error');
+    onMplcProjectConfirmToggle();
+  }
+}
+
 function openFactoryResetModal() {
   _factoryResetBackupDone = false;
   var modal = document.getElementById('factory-reset-modal');

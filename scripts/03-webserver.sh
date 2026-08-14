@@ -321,6 +321,9 @@ d /var/lib/sa02m-update/state 0750 root root -
 d /var/lib/sa02m-update/runner 0750 root root -
 d /var/lib/sa02m-update/backup-export 0750 root root -
 d /etc/sa02m-update/trusted-keys 0755 root root -
+d /var/lib/sa02m-mplc 0755 root root -
+d /var/lib/sa02m-mplc/incoming 0770 root www-data -
+d /var/lib/sa02m-mplc/backups 0700 root root -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 
@@ -381,6 +384,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
     /usr/local/sbin/sa02m-cpu-profile.sh apply, \
     /usr/local/sbin/sa02m-web-root-cmd.sh *, \
+    /usr/local/sbin/sa02m-mplc-project-deploy.sh *, \
     /usr/local/sbin/sa02m-conf-rm.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
@@ -614,6 +618,26 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
 else
     log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
+fi
+# ── MPLC4 project deploy («Обновление проекта MPLC»): helper + Python module ──
+if [ -f "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" /usr/local/sbin/sa02m-mplc-project-deploy.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-mplc-project-deploy.sh
+    log OK "sa02m-mplc-project-deploy.sh → /usr/local/sbin"
+else
+    log WARN "Нет etc/sa02m-mplc-project-deploy.sh — развёртывание проекта MPLC из веб недоступно"
+fi
+if [ -d "$SCRIPT_DIR/../opt/sa02m-mplc/lib" ]; then
+    install -d -m 0755 /opt/sa02m-mplc
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+            "$SCRIPT_DIR/../opt/sa02m-mplc/" /opt/sa02m-mplc/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-mplc установлен" || log WARN "rsync /opt/sa02m-mplc не удался"
+    else
+        cp -a "$SCRIPT_DIR/../opt/sa02m-mplc/." /opt/sa02m-mplc/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-mplc скопирован" || log WARN "cp /opt/sa02m-mplc не удался"
+    fi
+    find /opt/sa02m-mplc -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" /usr/local/sbin/sa02m-kernel-select.sh
