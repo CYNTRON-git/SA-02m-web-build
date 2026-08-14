@@ -14,3 +14,10 @@
 
 # Docs
 *.md    text eol=lf
+
+# Extensionless system files that MUST be LF on the device — a Windows working
+# tree (core.autocrlf) otherwise checks them out CRLF, and a direct copy
+# (FileZilla / imaging) that bypasses the installers' `sed 's/\r$//'` ships CRLF.
+# A CRLF sudoers file is a visudo syntax error → sudo breaks (cloud enrollment,
+# flasher, mqtt all fail). Pin them to LF at the source.
+etc/sudoers.d/* text eol=lf
