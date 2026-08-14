@@ -426,6 +426,8 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
             "measured_raw": measured_raw,
             "scaled_raw": scaled_raw,
             "calibration": _s16_from_reg(hold[4]) if len(hold) > 4 else 0,
+            "limit_low": _s16_from_reg(hold[5]) if len(hold) > 5 else 0,
+            "limit_high": _s16_from_reg(hold[6]) if len(hold) > 6 else 0,
         }
         if module_profiles.kind_has_mp_ai_adc_filters(kind):
             stor = (
@@ -692,6 +694,10 @@ def _allowed_mr_holding_registers(kind: module_profiles.ModuleKind) -> set[int]:
             base = module_profiles.ai_channel_base_register(ch, kind.code, kind)
             allowed.add(base)
             allowed.add(module_profiles.ai_calibration_holding_register(ch, kind.code, kind))
+            # AI measurement-range limits (int16): Нижний/Верхний предел, base+5/base+6.
+            # Editable for active volt/curr modes; rescales the module scale in-place.
+            allowed.add(base + 5)
+            allowed.add(base + 6)
             if module_profiles.kind_has_mp_ai_adc_filters(kind):
                 stor = (
                     module_profiles.ai_stor_for_6ao6ai_p(ch)

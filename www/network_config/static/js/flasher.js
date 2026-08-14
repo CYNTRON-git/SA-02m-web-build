@@ -1918,6 +1918,54 @@
     return { lo: (lim[0] / 10).toFixed(1) + ' °C', hi: (lim[1] / 10).toFixed(1) + ' °C' };
   }
 
+  // Дифф-режимы 36 (±50 мВ) и 37 (±2 В) задают шкалу пределами измерения —
+  // числовая подсказка соответствия raw = физ. значение. Числовая, без i18n.
+  function aiActiveLimitHint(code) {
+    const c = Number(code) & 0xFFFF;
+    if (c === 36) return '-100 = ' + (-100 / 10).toFixed(1);   // ±50 мВ, шкала 10, .1f
+    if (c === 37) return '100 = ' + (100 / 100).toFixed(2);    // ±2 В, шкала 100, .2f
+    return '';
+  }
+
+  // Содержимое блока пределов #cfg-mr-ai-limits-*. Для активных аналоговых
+  // режимов (volt/curr) — два редактируемых поля (Holding base+5/base+6, int16),
+  // засеянных из снапшота; для температурных — справочный (read-only) блок.
+  function aiLimitsBoxHtml(channel, code, ai) {
+    const bucket = aiUiSensorBucket(code);
+    if (bucket === 'volt' || bucket === 'curr') {
+      const lo = ai && ai.limit_low != null ? ai.limit_low : 0;
+      const hi = ai && ai.limit_high != null ? ai.limit_high : 0;
+      const hint = aiActiveLimitHint(code);
+      const hintHtml = hint
+        ? `<div class="flasher-config-note" id="cfg-mr-ai-limit-hint-${channel}">${escapeHtml(hint)}</div>`
+        : '';
+      return `
+      <div class="ai-limits-row">
+        <span>Нижний предел:</span>
+        <input id="cfg-mr-ai-limit-lo-${channel}" type="number" min="-32768" max="32767"
+          value="${escapeHtml(String(lo))}" data-mr-ai-limit="${channel}" data-mr-ai-limit-which="lo" class="ai-cal-input-sm" />
+      </div>
+      <div class="ai-limits-row">
+        <span>Верхний предел:</span>
+        <input id="cfg-mr-ai-limit-hi-${channel}" type="number" min="-32768" max="32767"
+          value="${escapeHtml(String(hi))}" data-mr-ai-limit="${channel}" data-mr-ai-limit-which="hi" class="ai-cal-input-sm" />
+      </div>${hintHtml}`;
+    }
+    const lim = aiSensorRefLimits(code);
+    return lim ? `
+      <div class="ai-limits-row"><span>Нижний предел:</span><strong>${escapeHtml(lim.lo)}</strong></div>
+      <div class="ai-limits-row"><span>Верхний предел:</span><strong>${escapeHtml(lim.hi)}</strong></div>` : '';
+  }
+
+  function _bindAiLimitInputs(container) {
+    if (!container) return;
+    container.querySelectorAll('[data-mr-ai-limit]').forEach(el => {
+      el.addEventListener('blur', () => {
+        applyAiLimit(parseInt(el.dataset.mrAiLimit, 10), el.dataset.mrAiLimitWhich);
+      });
+    });
+  }
+
   function aiUiQuantityLabels(bucket) {
     const b = String(bucket || 'off');
     if (b === 'off')  return ['—', '—'];
@@ -2593,7 +2641,6 @@
     const measuredStr = aiFormatMeasuredDisplay(sensorCode, ai.measured_raw);
     const scaledStr   = aiFormatScaledDisplay(sensorCode, ai.scaled_raw);
     const [magnitude, unit] = aiUiQuantityLabels(bucket);
-    const refLimits = aiSensorRefLimits(sensorCode);
 
     const modeRadios = MODULE_AI_UI_BUCKETS.map(b => `
       <label class="ai-mode-radio-label">
@@ -2602,13 +2649,7 @@
         <span>${escapeHtml(b.label)}</span>
       </label>`).join('');
 
-    const limitsHtml = refLimits ? `
-      <div class="ai-limits-row">
-        <span>Нижний предел:</span><strong>${escapeHtml(refLimits.lo)}</strong>
-      </div>
-      <div class="ai-limits-row">
-        <span>Верхний предел:</span><strong>${escapeHtml(refLimits.hi)}</strong>
-      </div>` : '';
+    const limitsHtml = aiLimitsBoxHtml(channel, sensorCode, ai);
 
     const rtdWireHtml = isRtd ? `
       <div class="ai-wire-row">
@@ -3459,9 +3500,11 @@
         await writeConfigHolding(item.reg, item.value, '');
       }
       if (successText) toast(successText, 'success');
+      return true;
     } catch (err) {
       setConfigBanner(errorPrefix + err.message, 'error');
       toast(errorPrefix + err.message, 'error');
+      return false;
     } finally {
       setConfigBusy(false);
     }
@@ -3622,6 +3665,48 @@
     }
   }
 
+  // Редактируемый предел измерения (активные режимы volt/curr): Holding
+  // base+5 (нижний) / base+6 (верхний), int16. Зеркалит applyAiCalibration:
+  // edit-guard на время записи, оптимистичный патч снапшота при успехе,
+  // откат поля к снапшоту при отказе.
+  async function applyAiLimit(channel, which) {
+    const ch = Number(channel);
+    const ai = moduleAiChannel(state.configSnapshot, ch);
+    if (!ai) return;
+    const base = Number(ai.register_base);
+    if (!Number.isFinite(base)) return;
+    const isHi = String(which) === 'hi';
+    const el = configModalEl(`cfg-mr-ai-limit-${isHi ? 'hi' : 'lo'}-${ch}`);
+    if (!el) return;
+    // Пределы редактируются только для активных аналоговых режимов.
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${ch}`);
+    const code = sensorEl ? clampInt(sensorEl.value, 0, 42, 0) : (Number(ai.sensor_code) & 0xFFFF);
+    const bucket = aiUiSensorBucket(code);
+    if (bucket !== 'volt' && bucket !== 'curr') return;
+    const snapKey = isHi ? 'limit_high' : 'limit_low';
+    const current = clampInt(ai[snapKey] != null ? ai[snapKey] : 0, -32768, 32767, 0);
+    const want = clampInt(el.value, -32768, 32767, 0);
+    if (current === want) { el.value = String(current); return; }
+    const reg = base + (isHi ? 6 : 5);
+    aiSensorEditGuardAdd(ch);
+    try {
+      const ok = await writeHoldingBatch(
+        [{ reg: reg, value: signedToUint16(want) }],
+        `Предел AI${ch} применён`, `AI${ch}: `
+      );
+      if (ok) {
+        const patch = {};
+        patch[snapKey] = want;
+        patchAiChannelSnapshot(ch, patch);
+        el.value = String(want);
+      } else {
+        el.value = String(current);
+      }
+    } finally {
+      aiSensorEditGuardReleaseLater(ch);
+    }
+  }
+
   async function applyAiFilters(channel) {
     const ch = Number(channel);
     const ai = moduleAiChannel(state.configSnapshot, ch);
@@ -3735,10 +3820,10 @@
     const limBox   = configModalEl(`cfg-mr-ai-limits-${channel}`);
     if (!limBox) return;
     const code = sensorEl ? (parseInt(sensorEl.value, 10) || 0) : 0;
-    const lim = aiSensorRefLimits(code);
-    limBox.innerHTML = lim ? `
-      <div class="ai-limits-row"><span>Нижний предел:</span><strong>${escapeHtml(lim.lo)}</strong></div>
-      <div class="ai-limits-row"><span>Верхний предел:</span><strong>${escapeHtml(lim.hi)}</strong></div>` : '';
+    // Пересеиваем из снапшота, а не из устаревшего DOM (bucket/subtype switch).
+    const ai = moduleAiChannel(state.configSnapshot, channel);
+    limBox.innerHTML = aiLimitsBoxHtml(channel, code, ai);
+    _bindAiLimitInputs(limBox);
   }
 
   function setupAiBucketHandlers(body) {
@@ -3791,6 +3876,9 @@
         applyAiCalibration(channel);
       });
     });
+
+    // Пределы измерения (активные режимы volt/curr): blur — запись base+5/base+6
+    _bindAiLimitInputs(body);
 
     // Фильтры АЦП: change для select/checkbox, blur для числовых полей
     body.querySelectorAll('[data-mr-ai-filter]').forEach(el => {
