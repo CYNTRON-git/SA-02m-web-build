@@ -338,13 +338,21 @@ if [ -f "$REPO_SBIN/sa02m-cloud-web-trigger.sh" ]; then
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
     log OK "sa02m-cloud-web-trigger.sh обновлён"
 fi
-if [ -f "$REPO_ETC/sudoers.d/sa02m-cloud" ]; then
-    install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
-    sed -i 's/\r$//' /etc/sudoers.d/sa02m-cloud
-    visudo -cf /etc/sudoers.d/sa02m-cloud >/dev/null 2>&1 \
-        && log OK "sudoers sa02m-cloud OK" \
-        || log WARN "visudo отклонил sudoers.d/sa02m-cloud"
-fi
+# Reinstall + CRLF-strip + visudo-validate ALL sa02m-* sudoers we ship, not just
+# cloud: a CRLF in ANY sudoers.d file is a visudo syntax error that breaks sudo
+# globally (cloud enrollment, flasher, mqtt all fail). A www-only deploy that
+# fixed only sa02m-cloud left a broken sa02m-mqtt/-flasher and sudo stayed dead.
+for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt; do
+    if [ -f "$REPO_ETC/sudoers.d/$_sud" ]; then
+        install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/$_sud" "/etc/sudoers.d/$_sud"
+        sed -i 's/\r$//' "/etc/sudoers.d/$_sud"
+        visudo -cf "/etc/sudoers.d/$_sud" >/dev/null 2>&1 \
+            && log OK "sudoers $_sud OK" \
+            || log WARN "visudo отклонил sudoers.d/$_sud"
+    fi
+done
+# Final aggregate check so a broken sudoers set is surfaced by the deploy.
+visudo -c >/dev/null 2>&1 || log WARN "visudo -c: sudoers set has an error — проверьте /etc/sudoers.d"
 
 # Bus-free RS-485 roster aggregator — fleet card «Опрос модулей RS-485» and the
 # cloud heartbeat both read /run/sa02m-rs485-roster.json. Full install.sh runs

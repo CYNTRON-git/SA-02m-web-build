@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-14 14:00] branch: 1.0.5.69
+
+**Файл(ы):** `.gitattributes`, `etc/sudoers.d/{sa02m-cloud,sa02m-flasher,sa02m-mqtt}`, `scripts/update-www-only.sh`
+**Тип:** Некорректное поведение / инфраструктура (CRLF)
+**Описание:** Код сопряжения с облаком не генерировался: веб-блок «Облако» показывал «Запрошен код… появится через несколько секунд», но кода не было; агент облака висел в Standby.
+**Причина:** `/etc/sudoers.d/*` попадали на устройство с Windows-CRLF → `visudo` считает CRLF синтаксической ошибкой → sudo ломается глобально → CGI облака не может запросить код. Корень — `.gitattributes` НЕ покрывал файлы без расширения (sudoers.d, cron.d, ppp, kernel-postinst и т.д.): на Windows-чекауте (`core.autocrlf`) они выгружались CRLF, а прямой деплой (FileZilla/имидж) обходит `sed 's/\r$//'` установщиков. Рецидивный класс (ранее: cron.d «bad username», ps1, autorun). Установщики (`04-flasher.sh`, `05-mqtt.sh`, `05-cloud-agent.sh`) снимали CRLF, но `update-www-only.sh` чинил только `sa02m-cloud`.
+**Исправление:** `.gitattributes` — `* text=auto eol=lf` + явный LF для критичных классов (`etc/sudoers.d/*`, `etc/cron.d/*`, `etc/ppp/**`, `*.timer`, `*.yaml`, `*.py` …) + `binary`-исключения (png/so/gz/dtb…); индекс уже LF, будущие чекауты/деплои несут LF. `update-www-only.sh` — цикл, чинящий все `sa02m-*` sudoers + финальный `visudo -c`. На железе 1.136 CRLF снят (`sed 's/\r$//'` по трём файлам, `visudo -c` = parsed OK) → sudo восстановлен.
+
+---
+
 ## [2026-08-10 19:59] branch: 1.0.5.68
 
 **Файл(ы):** `tools/imaging/make-image.sh`, `tools/imaging/out/*-raw.img.xz`
