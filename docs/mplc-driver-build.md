@@ -236,3 +236,28 @@ SDK `API/API/`) ПЛЮС перенесённые проектные правк�
 (TTL истёк). Сток-бэкап на устройстве `.stockbak*` (`b9e9c618`, 141804 B).
 **При замене драйвера пересобирай ОБА слоя (правильный SDK + проектные правки);
 голый вендорный исходник теряет функционал.**
+
+### `firmware/mplc4/mplc_protocol_fast_modbus.so` (2026-08-15)
+
+Драйвер протокола Fast Modbus для MasterSCADA4D (опрос RS-485 устройств из RT).
+Собран из `fast_modbus_MasterSCADA4D_driver/mplc_protocol_fast_modbus/` против
+нового SDK (`API/API/`) вендорным тулчейном (sha `fdba2e8b`, 226276 B). Стейджится
+теми же путями, что и cyntron (`create-sa02m-rootfs.sh` → `vendor-installers/mplc4`
+→ кнопка «Установить MPLC» / `09-mplc.sh` → `/opt/mplc4`). Портирован со старого
+поколения API на новое (см. §1b): `mod->BaseInit(module, LuaProvider())` →
+`BaseInit(module, this)` (2-й арг — `ScadaProtocol*`); `ch->BaseInit(channel,
+provider)` → 1-арг; запись `Write<T>(provider,v)` → `InVar.Update(v)`, чтение
+выхода `ReadVariant`/`IsNeedWrite` → `OutVar.Changed()` + `OutVar.Get<T>()` +
+`AcknowledgeAllChanges()` в конце `Execute`. Исправлены 2 бага исходника (передать
+4D): (1) `channel.cpp` `Get<float>(fv)` **теряет** возвращаемое значение —
+Scale/Offset/Deadband из конфига MS4 игнорировались (аргумент = default, не
+out-param); (2) `protocol.h` `INT BaudRate` (int16) переполняется на скоростях
+≥38400 → сменено на `DINT`.
+
+> **ВНИМАНИЕ — НЕ проверено на железе.** Ни один проект MasterSCADA на устройстве
+> не объявляет FastModbus (config.bin авторится в IDE на Windows), поэтому MPLC4
+> его НЕ грузит и опрос/запись НЕ протестированы. Драйвер разложен корректно
+> (ABI-чист, баги устранены) и инертен, пока проект его не задействует
+> (протокол-`.so` грузится по требованию). Полный тест опроса — при появлении
+> FastModbus-проекта: путь записи (`OutVar.Changed()` + `AcknowledgeAllChanges()`)
+> зависит от того, выставляет ли RT флаги изменения выхода — проверить тогда.

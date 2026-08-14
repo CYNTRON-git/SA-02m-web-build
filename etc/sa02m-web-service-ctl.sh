@@ -802,6 +802,9 @@ mplc4_install() {
     if [ -f "$_src/mplc_cyntron.so" ] && [ -d /opt/mplc4 ]; then
         install -m 0755 "$_src/mplc_cyntron.so" /opt/mplc4/mplc_cyntron.so >>"$LOG" 2>&1 || true
     fi
+    if [ -f "$_src/mplc_protocol_fast_modbus.so" ] && [ -d /opt/mplc4 ]; then
+        install -m 0755 "$_src/mplc_protocol_fast_modbus.so" /opt/mplc4/mplc_protocol_fast_modbus.so >>"$LOG" 2>&1 || true
+    fi
     sc_run daemon-reload >>"$LOG" 2>&1 || true
     sc_run_slow enable mplc4 >>"$LOG" 2>&1 || true
     sc_run_slow restart mplc4 >>"$LOG" 2>&1 || true

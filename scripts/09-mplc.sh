@@ -93,6 +93,13 @@ else
     log WARN "mplc_cyntron.so не найден в $MPLC_SRC — плагин ЦИНТРОН не установлен"
 fi
 
+if [ -f "$MPLC_SRC/mplc_protocol_fast_modbus.so" ]; then
+    install -m 0755 "$MPLC_SRC/mplc_protocol_fast_modbus.so" /opt/mplc4/mplc_protocol_fast_modbus.so
+    log OK "Плагин mplc_protocol_fast_modbus.so установлен в /opt/mplc4/"
+else
+    log WARN "mplc_protocol_fast_modbus.so не найден в $MPLC_SRC — драйвер fast_modbus не установлен"
+fi
+
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
     systemctl enable mplc4 >>"$LOG_FILE" 2>&1 || true

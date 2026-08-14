@@ -337,6 +337,12 @@ if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/MPLC4/cyntron" ]; then
 			"$OUTPUT/opt/vendor-installers/mplc4/mplc_cyntron.so"
 		log "  mplc4: staged mplc_cyntron.so"
 	fi
+	if [ -d "$OUTPUT/opt/vendor-installers/mplc4" ] \
+	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_protocol_fast_modbus.so" ]; then
+		install -m 0755 "$REPO_ROOT/firmware/mplc4/mplc_protocol_fast_modbus.so" \
+			"$OUTPUT/opt/vendor-installers/mplc4/mplc_protocol_fast_modbus.so"
+		log "  mplc4: staged mplc_protocol_fast_modbus.so"
+	fi
 fi
 
 if [ "$SKIP_INSTALL" = 0 ]; then
