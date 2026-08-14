@@ -298,22 +298,29 @@ chmod +x "$OUTPUT/opt/sa02m-web-build/install.sh" \
 
 # ── vendor-payload (CODESYS + MPLC) → /opt/vendor-installers/ ──────────────
 # Копируем большие проприетарные бинарники ТОЛЬКО если каталоги существуют
-# на build-host (в репо их нет — см. .gitignore /vendor/). Позволяет получать
-# готовый rootfs с CODESYS + MPLC при первичной прошивке без ручных pscp.
+# на build-host (в репо их нет — см. .gitignore /vendor/ и /MPLC4/). Позволяет
+# получать готовый rootfs с CODESYS + MPLC при первичной прошивке без ручных pscp.
 #
 # Ожидаемая структура на build-host:
 #   $REPO_ROOT/vendor/codesys/codesyscontrol_linuxarm_*.deb
-#   $REPO_ROOT/vendor/mplc4/{install.sh,mplc4.tar.gz,nginx.tar.gz,mplc_cyntron.so}
-if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
+#   $REPO_ROOT/MPLC4/cyntron/{install.sh,mplc4.tar.gz,nginx.tar.gz,admin.tar.gz,version.txt}
+#     (единый источник MPLC — retired vendor/mplc4; mplc_cyntron.so
+#      подставляется отдельно из firmware/mplc4/ — см. ниже)
+if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/MPLC4/cyntron" ]; then
 	log "copy vendor-payload (CODESYS/MPLC) → /opt/vendor-installers/"
 	install -d -m 0755 "$OUTPUT/opt/vendor-installers"
-	for sub in codesys mplc4; do
-		if [ -d "$REPO_ROOT/vendor/$sub" ]; then
-			install -d -m 0755 "$OUTPUT/opt/vendor-installers/$sub"
-			cp -a "$REPO_ROOT/vendor/$sub/." "$OUTPUT/opt/vendor-installers/$sub/"
-			log "  vendor/$sub: $(du -sh "$OUTPUT/opt/vendor-installers/$sub" 2>/dev/null | awk '{print $1}')"
-		fi
-	done
+	# CODESYS payload stays under vendor/codesys; MPLC payload moved to
+	# MPLC4/cyntron (D1 — the single staging source, retiring vendor/mplc4).
+	if [ -d "$REPO_ROOT/vendor/codesys" ]; then
+		install -d -m 0755 "$OUTPUT/opt/vendor-installers/codesys"
+		cp -a "$REPO_ROOT/vendor/codesys/." "$OUTPUT/opt/vendor-installers/codesys/"
+		log "  vendor/codesys: $(du -sh "$OUTPUT/opt/vendor-installers/codesys" 2>/dev/null | awk '{print $1}')"
+	fi
+	if [ -d "$REPO_ROOT/MPLC4/cyntron" ]; then
+		install -d -m 0755 "$OUTPUT/opt/vendor-installers/mplc4"
+		cp -a "$REPO_ROOT/MPLC4/cyntron/." "$OUTPUT/opt/vendor-installers/mplc4/"
+		log "  MPLC4/cyntron → mplc4: $(du -sh "$OUTPUT/opt/vendor-installers/mplc4" 2>/dev/null | awk '{print $1}')"
+	fi
 	# Repo-owned runtime assets the on-device install/uninstall entry-point
 	# (etc/sa02m-web-service-ctl.sh) reads from the vendor dirs: the CODESYS
 	# systemd drop-in and the ЦИНТРОН MPLC plugin. Staged here so a freshly
@@ -328,7 +335,7 @@ if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/vendor/mplc4" ]; then
 	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" ]; then
 		install -m 0755 "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" \
 			"$OUTPUT/opt/vendor-installers/mplc4/mplc_cyntron.so"
-		log "  vendor/mplc4: staged mplc_cyntron.so"
+		log "  mplc4: staged mplc_cyntron.so"
 	fi
 fi
 

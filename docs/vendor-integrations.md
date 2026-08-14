@@ -13,11 +13,15 @@
 | Компонент | Приоритет 1 (переменная) | Приоритет 2 (target) | Приоритет 3 (build-host) |
 |---|---|---|---|
 | CODESYS Runtime | `SA02M_CODESYS_DEB=/path/.deb` | `/opt/vendor-installers/codesys/*.deb` | `$REPO/vendor/codesys/*.deb` |
-| MPLC 4D | `SA02M_MPLC_DIR=/path/dir` | `/opt/vendor-installers/mplc4/` | `$REPO/vendor/mplc4/` |
+| MPLC 4D | `SA02M_MPLC_DIR=/path/dir` | `/opt/vendor-installers/mplc4/` | `$REPO/MPLC4/cyntron/` |
 
 Приоритет 3 используется автоматически в `tools/debian-rootfs/create-sa02m-rootfs.sh`:
-если каталог `$REPO/vendor/{codesys,mplc4}/` есть на build-host, его содержимое
-копируется в rootfs → `/opt/vendor-installers/{codesys,mplc4}/`. После первой
+если каталог `$REPO/vendor/codesys/` или `$REPO/MPLC4/cyntron/` есть на build-host,
+его содержимое копируется в rootfs → `/opt/vendor-installers/{codesys,mplc4}/`.
+MPLC переехал с `vendor/mplc4/` на `MPLC4/cyntron/` — единый источник staging
+(см. `MPLC4/README.md`). Плагин `mplc_cyntron.so` **не** входит в vendor-дроп: он
+отслеживается в git по пути `firmware/mplc4/mplc_cyntron.so` и подставляется в
+`/opt/vendor-installers/mplc4/` отдельным шагом сборки rootfs. После первой
 прошивки `install.sh` (шаги `08` и `09`) их подхватывает.
 
 ## Подготовка vendor payload
@@ -61,19 +65,24 @@ codesyscontrol`, чтобы `apt-get -f install` его не снял. См. `et
 
 ### MasterSCADA MPLC 4D Runtime (armhf)
 
-Исходник: `\\build-host\...\MasterSCADA\MPLC\linux-armv7hf\` (5 файлов).
-Копируем каталог целиком в `vendor/mplc4/`:
+Исходник: `\\build-host\...\MasterSCADA\MPLC\linux-armv7hf\` (vendor-дроп, 5 файлов).
+Копируем каталог целиком в `MPLC4/cyntron/` (единый источник staging, был
+`vendor/mplc4/`; версия payload — `MPLC4/README.md` / `version.txt`):
 
 ```powershell
 $src = "C:\...\MasterSCADA\MPLC\linux-armv7hf"
-$dst = "C:\Users\admin\Downloads\SA-02m-web-build\vendor\mplc4"
+$dst = "C:\Users\admin\Downloads\SA-02m-web-build\MPLC4\cyntron"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 Copy-Item "$src\install.sh"        $dst
 Copy-Item "$src\mplc4.tar.gz"      $dst
 Copy-Item "$src\nginx.tar.gz"      $dst
-Copy-Item "$src\mplc_cyntron.so"   $dst  # плагин ЦИНТРОН
+Copy-Item "$src\admin.tar.gz"      $dst
 Copy-Item "$src\version.txt"       $dst
 ```
+
+Плагин `mplc_cyntron.so` **не** входит в vendor-дроп `MPLC4/cyntron/` — он
+отслеживается в git по пути `firmware/mplc4/mplc_cyntron.so` и подставляется в
+`/opt/vendor-installers/mplc4/` автоматически при сборке rootfs (см. E12).
 
 **Что делает `scripts/09-mplc.sh`:**
 
