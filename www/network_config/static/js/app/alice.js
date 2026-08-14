@@ -54,6 +54,26 @@ async function aliceTopics() {
   return r.json();
 }
 
+// Session-local bridge for the 2-step link flow (link → open URL →
+// complete_link). Set when the registration URL is opened, cleared once the
+// certificate is present (linked) or on unlink.
+function aliceGetPending() {
+  try {
+    return sessionStorage.getItem('alice_link_pending') === '1';
+  } catch (e) {
+    return false;
+  }
+}
+
+function aliceSetPending(on) {
+  try {
+    if (on) sessionStorage.setItem('alice_link_pending', '1');
+    else sessionStorage.removeItem('alice_link_pending');
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 const ALICE_STATE_MAP = {
   disabled: ['Отключено', 'unk'],
   offline: ['Шлюз недоступен', 'err'],
@@ -89,17 +109,43 @@ function aliceRender(d) {
     btn.textContent = uiT(enabled ? 'Выключить клиент' : 'Включить клиент');
   }
 
-  // Gate the online link actions on gateway reachability: both «Привязать» and
-  // «Завершить привязку» hit the network and fail when the gateway is down, so
-  // disable them and surface the reserved «нет интернета» note when !avail.
-  // The local client on/off button and status lines stay untouched.
+  // Single contextual link/unlink action (WB parity): one button whose label +
+  // action follow the link state — not linked → «Привязать», link opened but
+  // cert not yet issued → «Завершить привязку», linked → «Отвязать». The
+  // session-local `link_pending` flag bridges our 2-step flow; it is cleared
+  // once the certificate appears (linked) or on unlink. All three actions hit
+  // the gateway, so the button is gated on reachability and the reserved
+  // «нет интернета» note is surfaced when !avail (unchanged gate).
+  const linked = certOk;
+  if (linked) aliceSetPending(false);
+  const pending = aliceGetPending();
   const linkBtn = $('alice-btn-link');
-  if (linkBtn) {
-    linkBtn.disabled = !enabled || !avail;
+  const linkRow = $('alice-link-row');
+  const statusVal = $('alice-link-status-val');
+  let statusText, statusAction, statusLabel, statusDanger;
+  if (!enabled) {
+    statusText = 'клиент выключен';
+  } else if (linked) {
+    statusText = 'привязан';
+    statusAction = 'unlink';
+    statusLabel = 'Отвязать';
+    statusDanger = true;
+  } else if (pending) {
+    statusText = 'ожидание завершения';
+    statusAction = 'complete_link';
+    statusLabel = 'Завершить привязку';
+  } else {
+    statusText = 'не привязан';
+    statusAction = 'link';
+    statusLabel = 'Привязать';
   }
-  const completeBtn = $('alice-btn-complete');
-  if (completeBtn) {
-    completeBtn.disabled = !avail;
+  if (statusVal) statusVal.textContent = uiT(statusText);
+  if (linkRow) linkRow.hidden = !enabled;
+  if (linkBtn) {
+    linkBtn.dataset.action = statusAction || '';
+    linkBtn.className = 'btn btn-sm ' + (statusDanger ? 'btn-danger' : 'btn-primary');
+    linkBtn.textContent = uiT(statusLabel || 'Привязать');
+    linkBtn.disabled = !avail;
   }
   const offline = $('alice-offline');
   if (offline) {
@@ -172,6 +218,7 @@ async function aliceStartLink() {
       // Honest failure — never show fake success
       aliceSetMsg(d.message || d.error || uiT('Шлюз недоступен'), false);
     } else if (d.enrollment && d.enrollment.registration_url) {
+      aliceSetPending(true);
       aliceSetMsg(uiT('Откройте ссылку привязки, затем «Завершить привязку»'), true);
       window.open(d.enrollment.registration_url, '_blank', 'noopener');
     } else {
@@ -205,12 +252,23 @@ async function aliceUnlink() {
     if (!d.ok) {
       aliceSetMsg(d.message || d.error || uiT('Отвязка не выполнена'), false);
     } else {
+      aliceSetPending(false);
       aliceSetMsg(d.message || uiT('Отвязано'), true);
     }
     await aliceRefresh();
   } catch (e) {
     aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
   }
+}
+
+// Single entry point for the contextual link button: dispatch by the action
+// the current state stamped onto the button (see aliceRender).
+async function aliceLinkAction() {
+  const btn = $('alice-btn-link');
+  const action = btn && btn.dataset.action;
+  if (action === 'unlink') return aliceUnlink();
+  if (action === 'complete_link') return aliceCompleteLink();
+  return aliceStartLink();
 }
 
 async function aliceLoadTopics() {
@@ -274,6 +332,7 @@ window.aliceToggleClient = aliceToggleClient;
 window.aliceStartLink = aliceStartLink;
 window.aliceCompleteLink = aliceCompleteLink;
 window.aliceUnlink = aliceUnlink;
+window.aliceLinkAction = aliceLinkAction;
 window.aliceAddDevice = aliceAddDevice;
 window.aliceRefresh = aliceRefresh;
 
