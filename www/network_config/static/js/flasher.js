@@ -1884,8 +1884,59 @@
   }
 
   function aiUiCalibrationApplicable(sensorCode) {
+    // Смещение калибровки (Holding base+4) применимо к температуре ∪ напряжению
+    // ∪ току (вкл. дифф.); скрыто только для «Выключен» и «сухого контакта».
+    // Эталон: MR-02m-flasher module_profiles.ai_ui_uses_value_calibration.
     const b = aiUiSensorBucket(sensorCode);
-    return b === 'ntc' || b === 'rtd' || b === 'tc_k';
+    return b === 'ntc' || b === 'rtd' || b === 'tc_k' || b === 'volt' || b === 'curr';
+  }
+
+  // Калибровка активных входов (ток/напряжение) — целое, весь int16;
+  // температурные — десятые доли °C, клип ±100. Эталон:
+  // ai_calibration_is_integer / ai_calibration_clamp.
+  function aiCalibrationIsInteger(sensorCode) {
+    const b = aiUiSensorBucket(sensorCode);
+    return b === 'volt' || b === 'curr';
+  }
+
+  function aiCalibrationClampByCode(sensorCode, value) {
+    return aiCalibrationIsInteger(sensorCode)
+      ? clampInt(value, -32768, 32767, 0)
+      : clampInt(value, -100, 100, 0);
+  }
+
+  // Типы датчиков, для которых MR-02m заполняет Input 107/108 (авария диапазона /
+  // обрыв / КЗ): ток/напряжение/дифф ∪ NTC/RTD/ТХА. Эталон:
+  // ai_sensor_uses_input_range_limit_registers.
+  function aiSensorUsesLimitRegisters(sensorCode) {
+    const b = aiUiSensorBucket(sensorCode);
+    return b === 'volt' || b === 'curr' || b === 'ntc' || b === 'rtd' || b === 'tc_k';
+  }
+
+  // Расшифровка аварии AI по битам Input 107 (ниже предела) / 108 (выше).
+  // NTC/RTD/ТХА: below→«Обрыв датчика», above(NTC/RTD)→«Короткое замыкание на
+  // линии»; активные: «Ниже/Выше диапазона измерения». Эталон:
+  // ai_input_limit_range_message. Возвращает массив RU-строк — каждая ключ DICT,
+  // перевод берёт наблюдатель i18n (потому части рендерятся отдельными <span>).
+  function aiFaultParts(below, above, sensorCode) {
+    if (!aiSensorUsesLimitRegisters(sensorCode)) return [];
+    const b = aiUiSensorBucket(sensorCode);
+    const isWiring = (b === 'ntc' || b === 'rtd' || b === 'tc_k');
+    const isResistance = (b === 'ntc' || b === 'rtd');
+    const parts = [];
+    if (isWiring) {
+      if (below) parts.push('Обрыв датчика');
+      if (above && isResistance) parts.push('Короткое замыкание на линии');
+      return parts;
+    }
+    if (below) parts.push('Ниже диапазона измерения');
+    if (above) parts.push('Выше диапазона измерения');
+    return parts;
+  }
+
+  function aiFaultChipHtml(parts) {
+    if (!parts || !parts.length) return '';
+    return parts.map(p => `<span>${escapeHtml(p)}</span>`).join(' / ');
   }
 
   function aiSidebarTagFromCode(code) {
@@ -2307,6 +2358,14 @@
         if (measuredEl) measuredEl.textContent = aiFormatMeasuredDisplay(ch.sensor_code, ch.measured_raw);
         const scaledEl = configModalEl('cfg-mr-ai-scaled-' + n);
         if (scaledEl) scaledEl.textContent = aiFormatScaledDisplay(ch.sensor_code, ch.scaled_raw);
+        // Авария диапазона/обрыв/КЗ (Input 107/108) — обновляем в реальном времени,
+        // как measured/scaled, даже когда полный ре-рендер пропущен (фокус/edit-guard).
+        const faultEl = configModalEl('cfg-mr-ai-fault-' + n);
+        if (faultEl) {
+          const parts = aiFaultParts(ch.fault_low, ch.fault_high, ch.sensor_code);
+          faultEl.innerHTML = aiFaultChipHtml(parts);
+          faultEl.hidden = !parts.length;
+        }
       });
     }
   }
@@ -2628,7 +2687,16 @@
     const filters = ai.filters || null;
     const sensorCode = Number(ai.sensor_code || 0);
     const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
-    const calOk = ai.calibration_applicable != null ? !!ai.calibration_applicable : aiUiCalibrationApplicable(sensorCode);
+    // Видимость/диапазон калибровки выводим на клиенте по типу датчика (эталонный
+    // предикат ai_ui_uses_value_calibration): активные volt/curr тоже калибруются.
+    // Бэкенд-поле calibration_applicable (только температура) больше не читаем —
+    // так же корректно против старого кешированного бэкенда (§11 cache-compat).
+    const calOk = aiUiCalibrationApplicable(sensorCode);
+    const calInt = aiCalibrationIsInteger(sensorCode);
+    const calLabel = calInt ? 'Калибровка (смещение)' : 'Калибровка';
+    const calMin = calInt ? -32768 : -100;
+    const calMax = calInt ? 32767 : 100;
+    const faultParts = aiFaultParts(ai.fault_low, ai.fault_high, sensorCode);
 
     const isRtd = bucket === 'rtd';
     const rtdTwoWire = isRtd ? aiRtdTwoWireFromCode(sensorCode) : true;
@@ -2701,14 +2769,17 @@
               <div class="ai-measure-value-group">
                 <strong id="cfg-mr-ai-scaled-${channel}">${escapeHtml(scaledStr)}</strong>
                 <div class="ai-cal-strip" id="cfg-mr-ai-cal-strip-${channel}" ${calOk ? '' : 'hidden'}>
-                  <span>Калибровка</span>
+                  <span id="cfg-mr-ai-cal-label-${channel}">${escapeHtml(calLabel)}</span>
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="-1">−</button>
-                  <input id="cfg-mr-ai-cal-${channel}" type="number" min="-100" max="100"
+                  <input id="cfg-mr-ai-cal-${channel}" type="number" min="${calMin}" max="${calMax}"
                     value="${escapeHtml(String(ai.calibration ?? 0))}"
                     data-mr-ai-cal="${channel}" class="ai-cal-input-sm" />
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="1">+</button>
                 </div>
               </div>
+            </div>
+            <div class="ai-fault-row" id="cfg-mr-ai-fault-row-${channel}">
+              <span class="badge badge-err ai-fault-chip" id="cfg-mr-ai-fault-${channel}" ${faultParts.length ? '' : 'hidden'}>${aiFaultChipHtml(faultParts)}</span>
             </div>
           </div>
         </section>
@@ -3746,8 +3817,19 @@
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     const strip = configModalEl(`cfg-mr-ai-cal-strip-${channel}`);
     if (!sensorEl) return;
-    const ok = aiUiCalibrationApplicable(parseInt(sensorEl.value, 10) || 0);
+    const code = parseInt(sensorEl.value, 10) || 0;
+    const ok = aiUiCalibrationApplicable(code);
     if (strip) strip.hidden = !ok;
+    // Диапазон/подпись калибровки зависят от режима: активные — целый int16
+    // «Калибровка (смещение)»; температурные — ±100 «Калибровка».
+    const intMode = aiCalibrationIsInteger(code);
+    const inp = configModalEl(`cfg-mr-ai-cal-${channel}`);
+    if (inp) {
+      inp.min = String(intMode ? -32768 : -100);
+      inp.max = String(intMode ? 32767 : 100);
+    }
+    const lbl = configModalEl(`cfg-mr-ai-cal-label-${channel}`);
+    if (lbl) lbl.textContent = intMode ? 'Калибровка (смещение)' : 'Калибровка';
   }
 
   function _aiRebuildSensorOptions(channel, choices) {
@@ -3871,8 +3953,10 @@
         const step = parseInt(btn.dataset.step, 10) || 0;
         const inp = configModalEl(`cfg-mr-ai-cal-${channel}`);
         if (!inp) return;
+        const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+        const code = sensorEl ? clampInt(sensorEl.value, 0, 42, 0) : 0;
         const cur = parseInt(inp.value, 10) || 0;
-        inp.value = Math.max(-100, Math.min(100, cur + step));
+        inp.value = String(aiCalibrationClampByCode(code, cur + step));
         applyAiCalibration(channel);
       });
     });

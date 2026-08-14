@@ -726,6 +726,12 @@
     'Измеренное значение с АЦП': 'Measured ADC value',
     'Пересчитанное значение': 'Scaled value',
     'Калибровка': 'Calibration',
+    'Калибровка (смещение)': 'Calibration (offset)',
+    // AI range/open/short alarm (Input 107/108) — reference i18n.py:623-626
+    'Ниже диапазона измерения': 'Below measurement range',
+    'Выше диапазона измерения': 'Above measurement range',
+    'Обрыв датчика': 'Sensor break',
+    'Короткое замыкание на линии': 'Short circuit on line',
     'НАСТРОЙКА ВХОДА': 'INPUT SETUP',
     'РЕЖИМ РАБОТЫ': 'OPERATING MODE',
     // AI sensor-type dropdown (Modbus type codes)
@@ -1128,6 +1134,7 @@
     [/^Настройки AO(\d+) сохранены$/u, 'AO$1 settings saved'],
     [/^Тип AI(\d+) применён$/u, 'AI$1 type applied'],
     [/^Калибровка AI(\d+) применена$/u, 'AI$1 calibration applied'],
+    [/^Предел AI(\d+) применён$/u, 'AI$1 limit applied'],
     [/^Фильтры AI(\d+) применены$/u, 'AI$1 filters applied'],
     // Job / scan / flash status and error toasts
     [/^Восстановление прошивки \(задача (.+)…\)$/u, 'Resuming flash (job $1…)'],

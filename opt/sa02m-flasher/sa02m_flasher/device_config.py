@@ -402,6 +402,16 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
     total = int(kind.max_ai) * int(stride)
     input_regs = _read_regs(send, slave, start, total, input_regs=True, timeout_ms=1200)
     holding_regs = _read_regs(send, slave, start, total, input_regs=False, timeout_ms=1200)
+    # Fault flags: Input 107 = below-limit, Input 108 = above-limit, one bit per
+    # logical channel (bit ch-1). One paired read per snapshot (O(1), not per
+    # channel) on the modal-scoped poll. Ref: MR-02m MODBUS_VARIABLES.txt:261-262;
+    # decode ai_input_limit_flags_for_channel. Sensor-type gating is client-side.
+    fault_low_word = 0
+    fault_high_word = 0
+    fault_regs = _read_regs(send, slave, 107, 2, input_regs=True, timeout_ms=900)
+    if len(fault_regs) >= 2:
+        fault_low_word = int(fault_regs[0]) & 0xFFFF
+        fault_high_word = int(fault_regs[1]) & 0xFFFF
     for ch in range(1, int(kind.max_ai) + 1):
         offset = (ch - 1) * stride
         live = input_regs[offset : offset + stride]
@@ -428,6 +438,8 @@ def _read_ai_channels(send, slave: int, kind: module_profiles.ModuleKind) -> Lis
             "calibration": _s16_from_reg(hold[4]) if len(hold) > 4 else 0,
             "limit_low": _s16_from_reg(hold[5]) if len(hold) > 5 else 0,
             "limit_high": _s16_from_reg(hold[6]) if len(hold) > 6 else 0,
+            "fault_low": bool((fault_low_word >> (ch - 1)) & 1) if ch <= 16 else False,
+            "fault_high": bool((fault_high_word >> (ch - 1)) & 1) if ch <= 16 else False,
         }
         if module_profiles.kind_has_mp_ai_adc_filters(kind):
             stor = (

@@ -3194,6 +3194,15 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   align-items: center;
   gap: 6px;
 }
+/* AI range/open/short alarm chip (Input 107/108). Reserve height so the panel
+   does not jump when the chip appears; color comes from .badge-err (both themes). */
+.ai-fault-row {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  margin-top: 2px;
+}
+.ai-fault-chip[hidden] { display: none; }
 .ai-cal-strip > span {
   font-size: .78rem;
   color: var(--text-sec);
