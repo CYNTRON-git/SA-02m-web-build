@@ -4,6 +4,35 @@
 Формат: дата/время, ветка, файл, тип, описание, причина, исправление.
 
 ---
+
+## [2026-08-10 19:59] branch: 1.0.5.68
+
+**Файл(ы):** `tools/imaging/make-image.sh`, `tools/imaging/out/*-raw.img.xz`
+**Тип:** Некорректное поведение
+**Описание:** После успешного stream eMMC (~7.3GB raw) пайплайн падал на `cp` промежуточного `*-raw.img.xz` в `OUT_DIR` на `/mnt/c` (диск C: 100% full, 0 avail), trap `cleanup_work` удалял raw из `/tmp`, захват приходилось повторять; donor SSH ломался после id-reset (host keys удалены).
+**Причина:** `RAW_XZ` указывал на `OUT_DIR`; обязательный `cp` multi-GB xz на drvfs при заполненном C:; intermediate raw не изолирован на native WSL disk.
+**Исправление:** `make-image.sh` v1.4 — `RAW_XZ` только под `WORK`; в `OUT_DIR` публикуются final shrunk `.img.xz` (+sha256/manifest) через `safe_publish_to_out` / проверку места; при `KEEP_RAW_IMG` несжатый `.img` остаётся в WORK если OUT_DIR=drvfs или мало места. Для захвата использовать `--out-dir` на native FS (`/home/admin/sa02m-imaging-out`).
+
+---
+
+## [2026-08-10 19:59] branch: 1.0.5.68
+
+**Файл(ы):** `tools/imaging/capture-image.ps1`
+**Тип:** Другое
+**Описание:** Обёртка PowerShell ломалась/некорректно исполнялась из‑за окончания строк (CRLF/LF) при запуске с Windows.
+**Причина:** Смешанные или неожиданные line endings для `.ps1` в среде агента/WSL/PowerShell.
+**Исправление:** Файл приведён к CRLF (подтверждено: чистый CRLF). Для длинных захватов предпочтителен `capture-image.sh` из WSL с `--out-dir` на native disk.
+
+---
+## [2026-08-08 22:33] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/js/devices.js`, `opt/sa02m-devices/sa02m_devices/{stand_devices,device_history_db}.py`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Энергия на виджете/графике выводилась с 3 знаками (1007.032 кВт·ч).
+**Причина:** `fmt(..., 3)` / `decimals: 3` / `round(..., 3)` после Wh÷1000.
+**Исправление:** Везде 1 знак после запятой (карточка, tip/legend/Δ, live, history API).
+
+---
 ## [2026-08-08 22:23] branch: 1.0.5.68
 
 **Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
