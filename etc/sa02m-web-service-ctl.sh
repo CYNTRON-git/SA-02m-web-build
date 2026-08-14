@@ -117,6 +117,7 @@ service_present() {
             command -v docker >/dev/null 2>&1 && return 0
             ;;
         mplc4)
+            [ -x /etc/init.d/mplc4 ] && return 0
             unit_file_installed mplc4.service && return 0
             unit_file_installed mplc.service && return 0
             return 1
@@ -194,6 +195,18 @@ mplc4_rc_enable() {
     update-rc.d mplc4 defaults >>"$LOG" 2>&1 || true
 }
 
+mplc4_rc_autostart() {
+    local d link
+    for d in /etc/rc2.d /etc/rc3.d /etc/rc4.d /etc/rc5.d; do
+        [ -d "$d" ] || continue
+        for link in "$d"/S*mplc4; do
+            [ -e "$link" ] || continue
+            return 0
+        done
+    done
+    return 1
+}
+
 mplc4_process_active() {
     # Align with status.cgi fast_service_state: comm names first, then vendor
     # binary patterns. Never trust systemctl ActiveState alone — mplc4.service
@@ -232,6 +245,7 @@ service_admin_off() {
             if [ -n "$_u" ] && unit_admin_disabled "$_u"; then
                 return 0
             fi
+            [ -z "$_u" ] && { mplc4_rc_autostart || return 0; return 1; }
             return 1
             ;;
     esac
@@ -246,7 +260,9 @@ service_admin_on() {
     fi
     case "$_sid" in
         codesys) codesys_rc_autostart ;;
-        mplc4) [ -n "$_u" ] && unit_admin_enabled "$_u" ;;
+        mplc4)
+            if [ -n "$_u" ]; then unit_admin_enabled "$_u"; else mplc4_rc_autostart; fi
+            ;;
         *) return 1 ;;
     esac
 }
@@ -317,6 +333,12 @@ resolve_unit_for_id() {
         if [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
             if [ -z "$_found_unit" ] && unit_file_installed codesyscontrol.service; then
                 _found_unit=codesyscontrol.service
+            fi
+            return 0
+        fi
+        if [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
+            if [ -z "$_found_unit" ] && unit_file_installed mplc4.service; then
+                _found_unit=mplc4.service
             fi
             return 0
         fi
@@ -423,6 +445,9 @@ cmd_list() {
         if [ -z "$_unit" ] && [ "$_id" = "codesys" ] && [ -x /etc/init.d/codesyscontrol ]; then
             _unit="init.d"
         fi
+        if [ -z "$_unit" ] && [ "$_id" = "mplc4" ] && [ -x /etc/init.d/mplc4 ]; then
+            _unit="init.d"
+        fi
         [ -z "$_unit" ] && continue
         _rows="${_rows}${_id}|${_label}|${_unit}
 "
@@ -482,12 +507,22 @@ EOF
             _enabled=disabled
             _masked=0
             _admin_off=1
-            if codesys_process_active; then
-                _active=active
-            fi
-            if codesys_rc_autostart; then
-                _admin_off=0
-                _enabled=enabled
+            if [ "$_id" = "mplc4" ]; then
+                if mplc4_process_active; then
+                    _active=active
+                fi
+                if mplc4_rc_autostart; then
+                    _admin_off=0
+                    _enabled=enabled
+                fi
+            else
+                if codesys_process_active; then
+                    _active=active
+                fi
+                if codesys_rc_autostart; then
+                    _admin_off=0
+                    _enabled=enabled
+                fi
             fi
         else
             _al=$(printf '%s\n' "$_batch_props" | awk -F'|' -v u="$_unit" '$1==u{print $2"|"$3; exit}')
@@ -1010,6 +1045,13 @@ mplc4_uninstall() {
     if command -v update-rc.d >/dev/null 2>&1; then
         update-rc.d mplc4 remove >>"$LOG" 2>&1 || true
     fi
+    # Tarball install (not dpkg): update-rc.d only drops the rc symlinks, not the
+    # SysV script itself. Remove it (and its late generator unit) so a leftover
+    # executable /etc/init.d/mplc4 does not keep installed:true after uninstall
+    # (service_present now recognises it). All rm -f — idempotent on a clean
+    # device; the generator is regenerated on daemon-reload below.
+    rm -f /etc/init.d/mplc4 2>>"$LOG" || true
+    rm -f /run/systemd/generator.late/mplc4.service 2>>"$LOG" || true
     if mplc4_process_active; then
         pkill -f '[m]plc.*\.bin\|[M]asterPLC\|[m]asterplc' >>"$LOG" 2>&1 || true
         sleep 1
