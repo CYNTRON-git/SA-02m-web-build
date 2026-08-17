@@ -101,7 +101,7 @@ function cloudApplyReachability(d) {
 async function cloudPostAction(body) {
   const r = await fetch('cgi-bin/cloud.cgi', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
     credentials: 'same-origin',
     body: JSON.stringify(body),
   });

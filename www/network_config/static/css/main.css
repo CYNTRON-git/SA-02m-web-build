@@ -394,7 +394,14 @@ html:not([data-theme="light"]) .topbar {
 /* Right group wrapper (controls + user). Desktop: an inline row (unchanged look).
    Mobile (≤700): a right-aligned COLUMN mirroring the brand column — toggles on
    top (logo line), «Выход» beneath (СА-02м line). */
-.topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* flex-shrink:0 — the right controls (lang/theme/ip/user+«Выход») keep their
+   width; the branding (flex 1 1 auto, ellipsis) absorbs all the shrink instead.
+   Without this the row starves topbar-right below its content between the 700px
+   mobile breakpoint and full desktop (~768–800px), pushing .topbar-user past the
+   viewport edge (clipped-overflow gate, 1.0.5.69). Desktop has ample slack, so
+   the single-row look is unchanged; only a narrow tablet/landscape ellipsizes
+   the title, which the mobile layout does anyway below 700px. */
+.topbar-right { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 0; }
 .topbar-ip    { font-size: calc(.78rem * 1.5); color: var(--text-sec); font-family: 'Courier New', monospace; }
 .topbar-user  { display: flex; align-items: center; gap: 8px; font-size: calc(.82rem * 1.5); color: var(--text-sec); }
 .topbar-user #logout-btn { margin-left: 4px; }
