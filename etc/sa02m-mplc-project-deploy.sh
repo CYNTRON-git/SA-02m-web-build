@@ -85,11 +85,21 @@ fail() {  # $1 stage  $2 error_code  $3 error_message
 
 flasher_busy() {
   [ -S "$FLASHER_SOCK" ] || return 1
-  command -v curl >/dev/null 2>&1 || return 1
-  _r=$(curl -sS --max-time 2 --unix-socket "$FLASHER_SOCK" \
-       -H 'Cookie: session_token=cyntron_session' http://localhost/status 2>/dev/null) || return 1
-  case "$_r" in *'"busy":true'*|*'"busy": true'*) return 0 ;; esac
-  return 1
+  # curl недоступен → определить нельзя → fail closed (считаем занятым).
+  command -v curl >/dev/null 2>&1 || return 0
+  # Миррор flasher_poll_lock_held (sa02m-web-service-ctl.sh, contract
+  # docs/contracts/flasher-health.md): НЕаутентифицированный GET /health,
+  # читаем poll_locked (аренда COM-порта), БЕЗ токена. `-f` обязателен — без
+  # него 401/500 приходят с кодом выхода 0 (fail-open port-lease регрессия).
+  if ! _r=$(curl -fsS --max-time 2 --unix-socket "$FLASHER_SOCK" \
+       http://localhost/health 2>/dev/null); then
+    return 0   # /health не ответил (таймаут/HTTP-ошибка) → fail closed
+  fi
+  case "$_r" in
+    *'"poll_locked":true'*|*'"poll_locked": true'*) return 0 ;;
+    *'"poll_locked":false'*|*'"poll_locked": false'*) return 1 ;;
+  esac
+  return 0   # нет поля poll_locked → fail closed
 }
 
 start_mplc4() { timeout "$START_TIMEOUT" "$SVC_CTL" start "$SVC_ID" >>"$LOG" 2>&1; }

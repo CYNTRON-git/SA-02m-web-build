@@ -131,7 +131,7 @@ def apply_watchdog_fix(host: str, user: str, password: str, key: str | None) -> 
     """Soft firstboot watchdog hygiene (mask→unmask safe RuntimeWatchdogSec)."""
     script = r"""
 mkdir -p /etc/systemd/system.conf.d
-printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=8s' 'RebootWatchdogSec=2min' \
+printf '%s\n' '[Manager]' 'RuntimeWatchdogSec=15s' 'RebootWatchdogSec=0' \
   > /etc/systemd/system.conf.d/sa02m-watchdog.conf
 sed -i 's/^RuntimeWatchdogSec=/#RuntimeWatchdogSec=/' /etc/systemd/system.conf 2>/dev/null || true
 systemctl daemon-reload 2>/dev/null || true
