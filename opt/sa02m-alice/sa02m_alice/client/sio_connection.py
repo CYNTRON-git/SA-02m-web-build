@@ -53,12 +53,34 @@ class AliceSocketIO:
         on_event: Optional[Callable[[str, Any], None]] = None,
         controller_sn: str = "",
         client_version: str = "1.0.0",
+        fw_version: str = "",
+        hw_variant: str = "",
     ) -> None:
         self._on_event = on_event
         self._controller_sn = controller_sn
         self._client_version = client_version
+        self._fw_version = fw_version
+        self._hw_variant = hw_variant
         self._sio = None
         self._connected = False
+
+    def _build_headers(self) -> Dict[str, str]:
+        """Handshake headers for the mTLS connect.
+
+        X-FW-Version / X-HW-Variant are a fixed seam-contract with the gateway
+        (repo `cloud`, branch feature/alice-gateway-standard) — never rename.
+        Each is sent ONLY when non-empty so an old gateway that ignores them
+        and a client with no value both still connect (backward-compat).
+        """
+        headers = {
+            "X-Controller-SN": self._controller_sn or "unknown",
+            "X-Client-Version": self._client_version,
+        }
+        if self._fw_version:
+            headers["X-FW-Version"] = self._fw_version
+        if self._hw_variant:
+            headers["X-HW-Variant"] = self._hw_variant
+        return headers
 
     @property
     def connected(self) -> bool:
@@ -115,10 +137,7 @@ class AliceSocketIO:
         ):
             self._register(name)
 
-        headers = {
-            "X-Controller-SN": self._controller_sn or "unknown",
-            "X-Client-Version": self._client_version,
-        }
+        headers = self._build_headers()
         # Normalize to host root + engine path "controller/socket.io".
         # python-socketio joins socketio_path from the host root, not from a
         # path prefix left in the URL — leaving "/controller" in the URL made
