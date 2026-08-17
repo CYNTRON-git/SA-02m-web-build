@@ -209,8 +209,12 @@ const CONTRAST_WHITELIST = [
     reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
   { match: '.kernel-refresh-inline', floor: 2.0,
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
-  { match: '#cloud-btn-activate', floor: 2.0,
-    reason: 'Cloud «Подключить по токену» disabled when the server is unreachable (1.0.5.69 offline gate, F1): cloudApplyReachability sets btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption. Same secondary-btn wash as .kernel-refresh-inline (2.49 light / 3.44 dark); the ENABLED button passes ≈12:1.' },
+  // NOTE: no #cloud-btn-activate entry — it lives inside a collapsed
+  // <details id="cloud-token-fallback"> (installer-only token fallback) that
+  // the harness never opens, so its disabled low-contrast run is never
+  // measured. An exemption for an unmeasured element is vacuous; the non-vacuity
+  // check correctly flagged it. Re-add ONLY if the harness is extended to open
+  // that <details> and drive the button to its server-unreachable disabled state.
 ];
 
 // ── Playwright resolution — reuse the existing scripts/dev install ───────────
