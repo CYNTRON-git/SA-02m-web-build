@@ -25,6 +25,7 @@ from ..common.config_store import (
     default_client_cfg,
     gateway_urls,
 )
+from ..common.fw_version import HW_VARIANT, get_fw_version
 from .device_registry import DeviceRegistry
 from .sio_connection import AliceSocketIO, SocketIOUnavailable
 from .sio_handlers import SioHandlers
@@ -228,6 +229,8 @@ def run() -> int:
                 on_event=on_sio_event,
                 controller_sn=_controller_sn(),
                 client_version=__version__,
+                fw_version=get_fw_version(),
+                hw_variant=HW_VARIANT,
             )
             sio.connect()
             for topic in registry.mqtt_topics():
