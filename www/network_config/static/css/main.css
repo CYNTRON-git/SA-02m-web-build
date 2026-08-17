@@ -2068,12 +2068,39 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 /* .btn-row sets display:flex, which overrides the [hidden] UA rule — the Alice
    link/unlink row is toggled by hidden, so restore the hide explicitly. */
 #alice-link-row[hidden] { display: none !important; }
+/* Alice card action buttons (Привязать / Управление привязками) span the full
+   card width, matching the foot enable button (.system-manage-tile-foot .btn). */
+#alice-card .btn-row > .btn { width: 100%; justify-content: center; }
 .conn-offline-note .conn-recheck-btn {
   width: 100%;
 }
 .conn-offline-hint {
   margin-top: 6px;
   color: var(--red);
+}
+/* Яндекс Алиса — the card message (#alice-msg, status/link/enable feedback) and
+   the bindings-modal message (#alice-bind-msg, add-device feedback). Neither was
+   styled by the cloud-card-scoped rule — give them the same both-theme error/ok
+   tokens so a friendly status reads clearly (never a raw exception, 1.0.5.73). */
+#alice-msg.cloud-msg,
+#alice-bind-msg.cloud-msg {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: .8rem;
+  line-height: 1.4;
+}
+#alice-msg.cloud-msg.is-ok,
+#alice-bind-msg.cloud-msg.is-ok {
+  background: var(--badge-ok-bg);
+  color: var(--green);
+  border: 1px solid var(--badge-ok-border);
+}
+#alice-msg.cloud-msg.is-err,
+#alice-bind-msg.cloud-msg.is-err {
+  background: var(--badge-err-bg);
+  color: var(--red);
+  border: 1px solid var(--badge-err-border);
 }
 .system-manage-cloud-card #cloud-btn-pair,
 .system-manage-cloud-card #cloud-btn-cancel,

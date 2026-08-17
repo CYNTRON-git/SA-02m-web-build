@@ -14,8 +14,8 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
-function aliceSetMsg(text, ok) {
-  const msg = $('alice-msg');
+function aliceSetMsgOn(id, text, ok) {
+  const msg = $(id);
   if (!msg) return;
   if (!text) {
     msg.hidden = true;
@@ -27,6 +27,11 @@ function aliceSetMsg(text, ok) {
   msg.textContent = text;
   msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
 }
+
+// Card-level status/link/enable feedback.
+function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
+// Binding-modal feedback (add-device), so it shows inside the open dialog.
+function aliceSetBindMsg(text, ok) { aliceSetMsgOn('alice-bind-msg', text, ok); }
 
 function aliceSetBadge(el, text, kind) {
   if (!el) return;
@@ -85,6 +90,52 @@ const ALICE_STATE_MAP = {
   unknown: ['Нет данных', 'unk'],
 };
 
+// Yandex device-type ids (`devices.types.switch`, …) are machine keys, never a
+// user label — map to a human RU string (translated by uiT / DICT), falling
+// back to the last dotted segment so a new type never renders its raw key.
+const ALICE_DEV_TYPES = {
+  'devices.types.switch': 'Выключатель',
+  'devices.types.socket': 'Розетка',
+  'devices.types.light': 'Освещение',
+  'devices.types.sensor': 'Датчик',
+  'devices.types.thermostat': 'Термостат',
+  'devices.types.other': 'Устройство',
+};
+
+function aliceDeviceTypeLabel(type) {
+  if (!type) return '';
+  const ru = ALICE_DEV_TYPES[type];
+  if (ru) return uiT(ru);
+  const seg = String(type).split('.').pop();
+  return seg ? seg.charAt(0).toUpperCase() + seg.slice(1) : '';
+}
+
+// A raw gateway exception (str(URLError): "<urlopen error [SSL:
+// CERTIFICATE_VERIFY_FAILED] … self-signed certificate …>") is a TLS-trust
+// failure, not a plain reachability failure — surface it as its own friendly
+// status, never the raw string.
+function aliceCertUntrusted(raw) {
+  return /CERTIFICATE|CERT_|\bSSL\b|self[\s-]?signed/i.test(String(raw || ''));
+}
+
+// Map any gateway/client condition to a friendly {text, kind} pill — NEVER the
+// raw urlopen/SSL exception text (Operator rule, 1.0.5.73). Both the compact
+// card pill and the modal message share this mapping.
+function aliceFriendlyStatus(d) {
+  const enabled = !!d.client_enabled;
+  const avail = !!(d.gateway && d.gateway.available);
+  const st = (d.status && d.status.state) || (enabled ? 'unknown' : 'disabled');
+  if (!enabled) return { text: 'Отключено', kind: 'unk' };
+  if (!avail) {
+    const probe = d.gateway && d.gateway.probe;
+    const raw = (probe && probe.message) || '';
+    if (aliceCertUntrusted(raw)) return { text: 'сертификат шлюза не доверенный', kind: 'err' };
+    return { text: 'Шлюз недоступен', kind: 'err' };
+  }
+  const entry = ALICE_STATE_MAP[st] || ALICE_STATE_MAP.unknown;
+  return { text: entry[0], kind: entry[1] };
+}
+
 function aliceRender(d) {
   const card = $('alice-card');
   if (!card || !d) return;
@@ -93,6 +144,9 @@ function aliceRender(d) {
   const avail = !!(d.gateway && d.gateway.available);
   const st = (d.status && d.status.state) || (enabled ? 'unknown' : 'disabled');
   const entry = ALICE_STATE_MAP[st] || ALICE_STATE_MAP.unknown;
+
+  // Friendly overall status (never raw exception text) — surfaced in #alice-msg
+  const friendly = aliceFriendlyStatus(d);
 
   aliceSetBadge($('alice-svc-state'), enabled ? 'Включен' : 'Выключен', enabled ? 'ok' : 'unk');
   aliceSetBadge($('alice-gw-state'), avail ? 'Доступен' : 'Недоступен', avail ? 'ok' : 'err');
@@ -139,17 +193,14 @@ function aliceRender(d) {
     statusAction = 'link';
     statusLabel = 'Привязать';
   }
-  if (statusVal) statusVal.textContent = uiT(statusText);
+  // Offline surfaces in the Status line itself (no separate «нет интернета» row).
+  if (statusVal) statusVal.textContent = avail ? uiT(statusText) : uiT('нет интернета');
   if (linkRow) linkRow.hidden = !enabled;
   if (linkBtn) {
     linkBtn.dataset.action = statusAction || '';
     linkBtn.className = 'btn btn-sm ' + (statusDanger ? 'btn-danger' : 'btn-primary');
     linkBtn.textContent = uiT(statusLabel || 'Привязать');
     linkBtn.disabled = !avail;
-  }
-  const offline = $('alice-offline');
-  if (offline) {
-    offline.hidden = avail;
   }
 
   const devices = (d.devices && d.devices.devices) || [];
@@ -162,7 +213,7 @@ function aliceRender(d) {
       list.innerHTML = devices.map(function (dev) {
         return '<div class="alice-dev-row"><span class="mono text-sm">' +
           escHtml(dev.name || dev.id) + '</span> <span class="text-sm text-sec">' +
-          escHtml(dev.type || '') + '</span></div>';
+          escHtml(aliceDeviceTypeLabel(dev.type)) + '</span></div>';
       }).join('');
     }
   }
@@ -171,13 +222,12 @@ function aliceRender(d) {
     meta.textContent = uiT('Комнат') + ': ' + rooms.length + ' · ' + uiT('Устройств') + ': ' + devices.length;
   }
 
-  // Surface gateway-down errors from status without claiming link success
-  if (enabled && !avail) {
-    const probeMsg = (d.gateway && d.gateway.probe && d.gateway.probe.message) ||
-      uiT('Шлюз alice.cyntron.ru недоступен (Phase 0). Привязка невозможна.');
-    aliceSetMsg(probeMsg, false);
-  } else if (d.status && d.status.message && (st === 'error' || st === 'missing_cert' || st === 'missing_deps')) {
-    aliceSetMsg(d.status.message, false);
+  // Surface a gateway/client problem in the modal as the FRIENDLY label only —
+  // never the raw urlopen/SSL exception string (Operator rule, 1.0.5.73). The
+  // mapping lives in aliceFriendlyStatus; a healthy state leaves any action
+  // feedback message («Сохранено» etc.) in place.
+  if (friendly.kind === 'err') {
+    aliceSetMsg(uiT(friendly.text), false);
   } else if (!enabled) {
     aliceSetMsg('', true);
   }
@@ -289,7 +339,7 @@ async function aliceAddDevice() {
   const name = ($('alice-dev-name') && $('alice-dev-name').value || '').trim();
   const topic = $('alice-topic-select') && $('alice-topic-select').value;
   if (!name || !topic) {
-    aliceSetMsg(uiT('Укажите имя и MQTT-топик'), false);
+    aliceSetBindMsg(uiT('Укажите имя и MQTT-топик'), false);
     return;
   }
   const device = {
@@ -307,15 +357,43 @@ async function aliceAddDevice() {
   try {
     const d = await aliceApi({ action: 'upsert_device', device: device });
     if (!d.ok) {
-      aliceSetMsg(d.message || d.error || uiT('Ошибка'), false);
+      aliceSetBindMsg(d.message || d.error || uiT('Ошибка'), false);
     } else {
-      aliceSetMsg(uiT('Устройство сохранено'), true);
+      aliceSetBindMsg(uiT('Устройство сохранено'), true);
       if ($('alice-dev-name')) $('alice-dev-name').value = '';
     }
     await aliceRefresh();
   } catch (e) {
-    aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
+    aliceSetBindMsg(uiT('Ошибка запроса API Алисы'), false);
   }
+}
+
+// ── Bindings modal («Управление привязками») — holds ONLY the device/command
+// binding UI (counts + list + add-device); status/link/enable stay on the card.
+// Reuses the shared mqtt-modal markup/behaviour, not a new one.
+function aliceModalEsc(e) {
+  if (e.key === 'Escape') aliceCloseModal();
+}
+
+function aliceOpenModal() {
+  const m = $('alice-modal');
+  if (!m) return;
+  aliceSetBindMsg('', true);
+  m.removeAttribute('hidden');
+  document.addEventListener('keydown', aliceModalEsc);
+  aliceRefresh();
+  aliceLoadTopics();
+}
+
+function aliceCloseModal() {
+  const m = $('alice-modal');
+  if (m) m.setAttribute('hidden', '');
+  document.removeEventListener('keydown', aliceModalEsc);
+}
+
+// Close only on a click on the overlay backdrop itself, not its dialog contents.
+function aliceModalBackdrop(e) {
+  if (e.target && e.target.id === 'alice-modal') aliceCloseModal();
 }
 
 let _alicePoll = null;
@@ -335,6 +413,9 @@ window.aliceUnlink = aliceUnlink;
 window.aliceLinkAction = aliceLinkAction;
 window.aliceAddDevice = aliceAddDevice;
 window.aliceRefresh = aliceRefresh;
+window.aliceOpenModal = aliceOpenModal;
+window.aliceCloseModal = aliceCloseModal;
+window.aliceModalBackdrop = aliceModalBackdrop;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', aliceInit);
