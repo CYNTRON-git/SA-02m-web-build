@@ -138,3 +138,18 @@ devices:
   #       - {ch: 4, sensor_type: 22, enabled: false}
   #       - {ch: 5, sensor_type: 41, enabled: true}  # ТХА
   #       - {ch: 6, sensor_type: 41, enabled: true}
+
+  # ── Пример: устройство по шаблону (type: template), COM5, addr=30 ────────
+  # Data-driven: мост читает JSON-шаблон в WB-формате из каталога
+  # /opt/sa02m-modbus-mqtt/templates/ (config-<name>.json) и публикует каналы
+  # по конвенциям WB-MQTT без ручной карты регистров. Шаблоны реальных устройств
+  # поставляет интегратор (лицензия WB ограничивает их файлы оборудованием WB —
+  # см. templates/README.md). Контракт: docs/contracts/template-device.md.
+  # - id: example-COM5-30
+  #   type: template
+  #   template: example       # bare name → templates/config-example.json
+  #   port: /dev/COM5
+  #   baudrate: 9600          # линия WB по умолчанию 9600; на устройство
+  #   address: 30
+  #   name: "Example (COM5 addr=30)"
+  #   poll_s: 2

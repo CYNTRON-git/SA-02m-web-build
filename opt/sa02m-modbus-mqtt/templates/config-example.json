@@ -1,0 +1,20 @@
+{
+  "_comment": "Self-authored SA-02m example device template. NOT a Wiren Board file. It documents the v1 supported schema of the bridge's `type: template` poller (docs/contracts/template-device.md) and backs the runtime tests and the web picker. A fictional demo meter — replace with your own real device templates in this drop-in dir.",
+  "device": {
+    "name": "SA-02m Example Meter",
+    "device_type": "sa02m-example",
+    "setup": [
+      {"title": "Set measurement mode = RMS", "address": 200, "value": 1}
+    ],
+    "channels": [
+      {"name": "voltage", "reg_type": "input", "address": 0, "type": "voltage", "format": "u16", "scale": 0.1, "units": "V"},
+      {"name": "temperature", "reg_type": "input", "address": 1, "type": "temperature", "format": "s16", "scale": 0.1, "units": "°C"},
+      {"name": "energy_total", "reg_type": "input", "address": 2, "type": "value", "format": "u32", "word_order": "big_endian", "scale": 1, "units": "Wh"},
+      {"name": "power_active", "reg_type": "input", "address": 4, "type": "power", "format": "s32", "word_order": "little_endian", "scale": 1, "units": "W"},
+      {"name": "frequency", "reg_type": "input", "address": 6, "type": "value", "format": "float", "word_order": "big_endian", "units": "Hz"},
+      {"name": "alarm", "reg_type": "discrete", "address": 0, "type": "switch"},
+      {"name": "relay", "reg_type": "coil", "address": 0, "type": "switch", "readonly": false},
+      {"name": "voltage_setpoint", "reg_type": "holding", "address": 10, "type": "value", "format": "u16", "scale": 1, "units": "V", "readonly": false}
+    ]
+  }
+}

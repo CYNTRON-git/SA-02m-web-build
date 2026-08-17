@@ -89,6 +89,7 @@ from bridge_device import (  # noqa: F401
 )
 from bridge_mr02m import MR02mPoller  # noqa: F401
 from bridge_dtv_ce import DTVPoller, CE02M3Poller  # noqa: F401
+from bridge_template import TemplatePoller  # noqa: F401
 
 
 # ── Systemd watchdog ───────────────────────────────────────────────────────────
@@ -111,9 +112,10 @@ def sd_notify(msg: str) -> None:
 
 # ── Global state ───────────────────────────────────────────────────────────────
 POLLER_CLASSES: dict[str, type] = {
-    "mr02m":  MR02mPoller,
-    "dtv":    DTVPoller,
-    "ce02m3": CE02M3Poller,
+    "mr02m":    MR02mPoller,
+    "dtv":      DTVPoller,
+    "ce02m3":   CE02M3Poller,
+    "template": TemplatePoller,
 }
 _pollers:  list[DevicePoller] = []
 _port_schedulers: list[PortCycleScheduler] = []

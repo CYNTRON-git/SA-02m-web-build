@@ -389,7 +389,15 @@ function showToast(msg, type = 'ok') {
 
 function makeDeviceId(type, port, addr) {
   const comName = port.replace('/dev/', '');
-  const prefix = type === 'dtv' ? 'dtv' : type === 'ce02m3' ? 'ce02m3' : 'mr02m';
+  let prefix;
+  if (type === 'dtv') prefix = 'dtv';
+  else if (type === 'ce02m3') prefix = 'ce02m3';
+  else if (type === 'template') {
+    // Prefix by the picked template name so the id reads like the device family.
+    const tEl = document.getElementById('mqtt-add-template');
+    const tName = (tEl && tEl.value) ? String(tEl.value) : '';
+    prefix = tName.replace(/[^A-Za-z0-9._-]/g, '') || 'tmpl';
+  } else prefix = 'mr02m';
   return `${prefix}-${comName}-${addr}`;
 }
 
@@ -1710,7 +1718,7 @@ function onPollConfigChanged(devId) {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', template:'Шаблон'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -2386,11 +2394,50 @@ function removeDevice(id) {
   renderAccordion();
 }
 
+// ── Device-template picker (type: template) ──────────────────────────────────
+let _templateCatalog = null;
+
+function fillTemplateSelect(sel, list) {
+  sel.innerHTML = '';
+  if (!list.length) {
+    sel.appendChild(h('option', {value: ''}, uiT('нет доступных шаблонов')));
+    return;
+  }
+  for (const t of list) {
+    const label = (t.title || t.name || '').trim() || t.name;
+    // Honesty: register maps are unverified against hardware until bench-checked.
+    const suffix = t.verified ? '' : ' — ' + uiT('не проверено на оборудовании');
+    sel.appendChild(h('option', {value: t.name}, label + suffix));
+  }
+}
+
+async function loadTemplateCatalog(force) {
+  const sel = document.getElementById('mqtt-add-template');
+  if (!sel) return;
+  if (!force && _templateCatalog) { fillTemplateSelect(sel, _templateCatalog); updateAddModalId(); return; }
+  const data = await apiGet('cgi-bin/mqtt_templates.cgi').catch(() => null);
+  const list = (data && data.ok && Array.isArray(data.templates)) ? data.templates : [];
+  _templateCatalog = list;
+  fillTemplateSelect(sel, list);
+  updateAddModalId();
+}
+
+function onAddTypeChange() {
+  const typeEl = document.getElementById('mqtt-add-type');
+  const row = document.getElementById('mqtt-add-template-row');
+  const isTemplate = !!typeEl && typeEl.value === 'template';
+  if (row) { if (isTemplate) row.removeAttribute('hidden'); else row.setAttribute('hidden', ''); }
+  if (isTemplate) void loadTemplateCatalog(false);
+  updateAddModalId();
+}
+
 function showAddModal() {
   const modal = document.getElementById('mqtt-add-modal');
   if (modal) modal.removeAttribute('hidden');
   const typeEl = document.getElementById('mqtt-add-type');
   if (typeEl) typeEl.value = 'mr02m';
+  const tRow = document.getElementById('mqtt-add-template-row');
+  if (tRow) tRow.setAttribute('hidden', '');
   const portEl = document.getElementById('mqtt-add-port');
   if (portEl) portEl.value = '/dev/COM1';
   const addrEl = document.getElementById('mqtt-add-addr');
@@ -2425,9 +2472,21 @@ function confirmAddDevice() {
   const port = portEl.value;
   const addr = parseInt(addrEl.value, 10);
   const name = nameEl.value.trim();
+
+  // Template device: a picked template is required; WB default line is 9600 8N2.
+  let templateName = '';
+  if (type === 'template') {
+    const tEl = document.getElementById('mqtt-add-template');
+    templateName = tEl ? String(tEl.value || '').trim() : '';
+    if (!templateName) {
+      showToast('Выберите шаблон устройства', 'warn');
+      return;
+    }
+  }
+
   const id = idEl.value.trim() || makeDeviceId(type, port, addr);
-  // Cyntron DTV/MR/CE factory line: 115200 8N1 (not WB 19200).
-  const baudrate = 115200;
+  // Cyntron DTV/MR/CE factory line: 115200 8N1; WB-style templates: 9600.
+  const baudrate = (type === 'template') ? 9600 : 115200;
 
   if (_config.devices.find(d => d.id === id)) {
     showToast(`Устройство ${id} уже добавлено`, 'warn');
@@ -2441,6 +2500,10 @@ function confirmAddDevice() {
       ? buildDeviceConfigName(shortName === id ? (type === 'dtv' ? 'ДТВ-RS-485' : 'СЭ-02м-3') : shortName, port, addr)
       : (name || id),
   };
+  if (type === 'template') {
+    dev.template = templateName;
+    dev.poll_s = 2;
+  }
   if (type === 'mr02m') {
     dev.module_type = 1;
     dev.fast_modbus = true;
@@ -2639,6 +2702,7 @@ window.mqttShowAddModal  = showAddModal;
 window.mqttHideAddModal  = hideAddModal;
 window.mqttConfirmAdd    = confirmAddDevice;
 window.mqttUpdateId      = updateAddModalId;
+window.mqttOnAddTypeChange = onAddTypeChange;
 window.mqttShowScanModal = showScanModal;
 window.mqttHideScanModal = hideScanModal;
 window.mqttRunScan       = runScan;

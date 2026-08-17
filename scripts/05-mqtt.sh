@@ -135,10 +135,17 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 # composition. Keep this ordered list in sync with tests/test_entry_surface.py
 # EXPECTED_MODULES and scripts/update-www-only.sh.
 for f in bridge_serial.py bridge_fmb.py bridge_mqtt.py bridge_mr02m_map.py \
-         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py; do
+         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
 done
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
+
+# Device-template drop-in dir (type: template devices). Ship the self-authored
+# example + README; the integrator drops their own WB-format JSON here.
+install -d -m 0755 -o root -g root "$BRIDGE_DIR/templates"
+for f in "$OPT_DIR/templates/"*.json "$OPT_DIR/templates/README.md"; do
+    [ -f "$f" ] && install -m 0644 -o root -g root "$f" "$BRIDGE_DIR/templates/$(basename "$f")"
+done
 install -m 0755 -o root -g root "$OPT_DIR/sa02m_telemetry.py"    "$BRIDGE_DIR/sa02m_telemetry.py"
 install -m 0755 -o root -g root "$OPT_DIR/mqtt_bus_scan.py"     "$BRIDGE_DIR/mqtt_bus_scan.py"
 install -m 0755 -o root -g root "$OPT_DIR/mqtt_live_snapshot.py" "$BRIDGE_DIR/mqtt_live_snapshot.py"
