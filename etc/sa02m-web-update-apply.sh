@@ -326,10 +326,15 @@ if [ -n "$NEW_COMMIT" ]; then
 fi
 
 if type write_web_build_conf_branch >/dev/null 2>&1; then
+    # Persist the branch we actually targeted — NEVER the deployed VERSION.
+    # Releases live on main and version-named branches are deleted post-merge,
+    # so writing a version here re-poisons the conf that resolve_web_build_branch
+    # reads on the next check (1.0.5.75: false network_or_git_failed). A bare
+    # version (or empty/main/HEAD) collapses to main; a real dev branch stays.
     conf_branch="$BRANCH"
-    if type read_local_web_version >/dev/null 2>&1; then
-        v=$(read_local_web_version 2>/dev/null || true)
-        [ -n "$v" ] && conf_branch="$v"
+    if [ -z "$conf_branch" ] || [ "$conf_branch" = "HEAD" ] \
+       || printf '%s' "$conf_branch" | grep -qE '^[0-9]+(\.[0-9]+){1,3}$'; then
+        conf_branch=main
     fi
     write_web_build_conf_branch "$conf_branch" && log "Записан /etc/sa02m_web_build.conf branch=$conf_branch"
 fi

@@ -31,8 +31,32 @@ cfg/config.bin      cfg/ProjInfo.json      cfg/VMInfo.json      cfg/_files.xml
   мутации). Тело ограничено 5 МБ (реальный экспорт ~14 КБ).
 - `GET` (без query) — метаданные текущего развёрнутого проекта (читается
   `cfg/ProjInfo.json`): `{"ok":true,"deployed":true|false,"project":{name,id,ide_version}}`.
+  Дополнительно возвращает `license` — лицензию рантайма MPLC4 (см. ниже).
 - `GET ?result=1` — статус асинхронного развёртывания (JSON статус-файла;
   `pending` пока помощник не запишет терминальный результат).
+
+## Лицензия рантайма MPLC4 (поле `license` в GET-метаданных)
+
+Рантайм MPLC4 при каждом старте пишет свою лицензию в новейший
+`/var/log/mplc4/0/<YYYY_MM_DD>.txt` — блок `<Protect>`. GET-эндпоинт разбирает
+**последний** такой блок (последний старт) новейшего лога и возвращает:
+
+```json
+"license":{"activated":true,"points":<N>,"clients":<M>}   // активирована
+"license":{"activated":false}                             // демо (не активирована)
+"license":{"activated":false,"unknown":true}              // лог недоступен/не разобран
+```
+
+- `InstancesLimit=<N>` → **points** (точки); `SessionsLimit=<M>` → **clients**
+  (клиенты) — English-грамматика полей JSON; UI показывает «Точки»/«Клиенты».
+- Строка `Not activated` в последнем блоке ⇒ `activated:false`: числовые лимиты
+  тогда демо-умолчания, они НЕ возвращаются (UI: «не активирована»).
+- **Привилегии / fail-safe** — CGI работает как `www-data`; лог-каталог
+  world-readable (`drwxrwxrwx`, файлы `-rw-rw-rw-`), читается напрямую без sudo.
+  Чтение — потоковый проход ВПЕРЁД (блок `<Protect>` пишется при старте и тонет
+  под тысячами heartbeat-строк, поэтому read хвоста его бы пропустил), ограничено
+  64 МиБ (poll-path hygiene). ЛЮБАЯ ошибка чтения/
+  разбора → `license:{activated:false,unknown:true}`; GET никогда не падает.
 
 ## Валидация загрузки (attack surface — недоверенный multipart на LAN)
 

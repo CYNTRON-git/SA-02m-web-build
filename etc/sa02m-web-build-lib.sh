@@ -54,28 +54,37 @@ EOF
     chmod 644 "$WEB_BUILD_CONF" 2>/dev/null || true
 }
 
+# Which GitHub branch the update check/apply targets. Releases live on **main**:
+# a version-named branch (e.g. 1.0.5.73) is DELETED from origin after its PR
+# squash-merges, so every remote call against it 404s and the check falsely
+# reports network_or_git_failed even with working internet (1.0.5.75 fix).
+# Therefore: default to main, honour ONLY an explicit non-main, non-version pin
+# (the real dev-branch escape hatch), and IGNORE a bare version-string pin — the
+# pre-1.0.5.75 auto-written value that also lingers in stale confs on already-
+# deployed devices.
 resolve_web_build_branch() {
     load_web_build_conf
-    if [ -n "${SA02M_WEB_BUILD_BRANCH:-}" ] && [ "$SA02M_WEB_BUILD_BRANCH" != "main" ]; then
-        printf '%s' "$SA02M_WEB_BUILD_BRANCH"
+    local pin="${SA02M_WEB_BUILD_BRANCH:-}"
+    if [ -n "$pin" ] && [ "$pin" != "main" ] \
+       && ! printf '%s' "$pin" | grep -qE '^[0-9]+(\.[0-9]+){1,3}$'; then
+        printf '%s' "$pin"
         return 0
     fi
-    local v
-    v=$(read_local_web_version 2>/dev/null || true)
-    if [ -n "$v" ]; then
-        printf '%s' "$v"
-        return 0
-    fi
-    printf '%s' "${SA02M_WEB_BUILD_BRANCH:-main}"
+    printf '%s' "main"
 }
 
+# Persist the check/apply branch. The production/device path resolves to main
+# (empty / main / HEAD / a bare version → main); a real non-main dev branch is
+# still written verbatim (it exists during dev). Never persists the deployed
+# VERSION as a branch — see resolve_web_build_branch above.
 sync_web_build_conf_from_deploy() {
     local branch=""
     if [ -n "${REPO_ROOT:-}" ] && [ -d "${REPO_ROOT}/.git" ] && command -v git >/dev/null 2>&1; then
         branch=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || true)
     fi
-    if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "HEAD" ]; then
-        branch=$(read_local_web_version 2>/dev/null || true)
+    if [ -z "$branch" ] || [ "$branch" = "main" ] || [ "$branch" = "HEAD" ] \
+       || printf '%s' "$branch" | grep -qE '^[0-9]+(\.[0-9]+){1,3}$'; then
+        branch=main
     fi
-    [ -n "$branch" ] && write_web_build_conf_branch "$branch"
+    write_web_build_conf_branch "$branch"
 }
