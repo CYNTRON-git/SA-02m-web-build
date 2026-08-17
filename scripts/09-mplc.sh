@@ -12,9 +12,9 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 # сторонним UI на промышленных стендах.
 #
 # Источник vendor-payload:
-#   1. $SA02M_MPLC_DIR              — явный путь к каталогу с install.sh.
-#   2. /opt/vendor-installers/mplc4 — на устройстве (после pscp с ПК).
-#   3. $SCRIPT_DIR/../vendor/mplc4  — рядом с репо.
+#   1. $SA02M_MPLC_DIR                — явный путь к каталогу с install.sh.
+#   2. /opt/vendor-installers/mplc4   — на устройстве (после pscp с ПК).
+#   3. $SCRIPT_DIR/../MPLC4/cyntron   — рядом с репо (единый источник, был vendor/mplc4).
 #
 # Отключить: SA02M_SKIP_MPLC=1 ./install.sh
 # ═══════════════════════════════════════════════════════════════════════════
@@ -30,7 +30,7 @@ BASE_DIR="$SCRIPT_DIR/.."
 
 MPLC_SRC="${SA02M_MPLC_DIR:-}"
 if [ -z "$MPLC_SRC" ]; then
-    for cand in /opt/vendor-installers/mplc4 "$BASE_DIR/vendor/mplc4"; do
+    for cand in /opt/vendor-installers/mplc4 "$BASE_DIR/MPLC4/cyntron"; do
         if [ -d "$cand" ] && [ -f "$cand/install.sh" ] && [ -f "$cand/mplc4.tar.gz" ]; then
             MPLC_SRC="$cand"
             break
@@ -39,7 +39,7 @@ if [ -z "$MPLC_SRC" ]; then
 fi
 
 if [ -z "$MPLC_SRC" ] || [ ! -d "$MPLC_SRC" ]; then
-    log WARN "MPLC vendor-payload не найден (искали /opt/vendor-installers/mplc4/, vendor/mplc4/)."
+    log WARN "MPLC vendor-payload не найден (искали /opt/vendor-installers/mplc4/, MPLC4/cyntron/)."
     log INFO "Как подготовить дистрибутив: см. docs/vendor-integrations.md → MasterSCADA MPLC."
     log INFO "Пропускаю установку MPLC (это не ошибка)."
     exit 0
@@ -91,6 +91,13 @@ if [ -f "$MPLC_SRC/mplc_cyntron.so" ]; then
     log OK "Плагин mplc_cyntron.so установлен в /opt/mplc4/"
 else
     log WARN "mplc_cyntron.so не найден в $MPLC_SRC — плагин ЦИНТРОН не установлен"
+fi
+
+if [ -f "$MPLC_SRC/mplc_protocol_fast_modbus.so" ]; then
+    install -m 0755 "$MPLC_SRC/mplc_protocol_fast_modbus.so" /opt/mplc4/mplc_protocol_fast_modbus.so
+    log OK "Плагин mplc_protocol_fast_modbus.so установлен в /opt/mplc4/"
+else
+    log WARN "mplc_protocol_fast_modbus.so не найден в $MPLC_SRC — драйвер fast_modbus не установлен"
 fi
 
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then

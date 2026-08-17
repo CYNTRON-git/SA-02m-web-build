@@ -1,0 +1,22 @@
+[Unit]
+Description=SA-02m Alice client (Yandex Smart Home via Cyntron gateway)
+Documentation=file:///opt/sa02m-alice/THIRD_PARTY.md
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-alice
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/sa02m-alice
+ExecStart=/usr/bin/python3 -m sa02m_alice.client.main
+# client_enabled=false → exit 0; do not restart storm on intentional standby
+Restart=on-failure
+RestartSec=10s
+User=root
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

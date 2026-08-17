@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "purpose": "CI/review and pack-offline-update.py only. Never read on the device. Runtime allowlist is manifest.deploy[].",
+  "dst_prefix_allowlist": [
+    "/var/www/network_config/",
+    "/usr/local/sbin/",
+    "/usr/local/lib/",
+    "/usr/local/libexec/",
+    "/opt/sa02m-",
+    "/etc/systemd/system/sa02m-",
+    "/etc/nginx/",
+    "/etc/tmpfiles.d/",
+    "/etc/sudoers.d/",
+    "/etc/default/",
+    "/etc/sa02m-update/trusted-keys/"
+  ],
+  "prefix_rules": [
+    {
+      "src_prefix": "www/network_config/",
+      "dst_prefix": "/var/www/network_config/",
+      "mode": "0644",
+      "owner": "www-data:www-data",
+      "exec_globs": ["cgi-bin/**", "**/*.cgi", "**/*.sh"]
+    },
+    {
+      "src_prefix": "opt/sa02m-",
+      "dst_prefix": "/opt/sa02m-",
+      "mode": "0644",
+      "owner": "root:root",
+      "exec_globs": ["**/bin/**", "**/*.sh"]
+    },
+    {
+      "src_prefix": "usr/local/sbin/",
+      "dst_prefix": "/usr/local/sbin/",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "usr/local/lib/",
+      "dst_prefix": "/usr/local/lib/",
+      "mode": "0644",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "usr/local/libexec/",
+      "dst_prefix": "/usr/local/libexec/",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "etc/systemd/system/",
+      "dst_prefix": "/etc/systemd/system/",
+      "mode": "0644",
+      "owner": "root:root",
+      "require_dst_prefix": "/etc/systemd/system/sa02m-"
+    },
+    {
+      "src_prefix": "etc/tmpfiles.d/",
+      "dst_prefix": "/etc/tmpfiles.d/",
+      "mode": "0644",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "etc/sudoers.d/",
+      "dst_prefix": "/etc/sudoers.d/",
+      "mode": "0440",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "etc/sa02m-update/trusted-keys/",
+      "dst_prefix": "/etc/sa02m-update/trusted-keys/",
+      "mode": "0644",
+      "owner": "root:root"
+    },
+    {
+      "src_prefix": "migrations/",
+      "dst_prefix": "/usr/local/libexec/sa02m-update-migrations/",
+      "mode": "0644",
+      "owner": "root:root"
+    }
+  ],
+  "exact_rules": {
+    "etc/nginx/network_config.conf": {
+      "dst": "/etc/nginx/sites-available/network_config",
+      "mode": "0644",
+      "owner": "root:root",
+      "note": "Packer renders __PORT__=9999 and __WEB_ROOT__=/var/www/network_config before sealing."
+    },
+    "etc/default/sa02m-devices": {
+      "dst": "/etc/default/sa02m-devices",
+      "mode": "0644",
+      "owner": "root:root",
+      "note": "Optional env for Devices API/logger (history path, intervals)."
+    },
+    "scripts/sa02m-rs485-stats.sh": {
+      "dst": "/usr/local/sbin/sa02m-rs485-stats.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-update-runner.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-runner",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-update-inspect.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-inspect",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-factory-reset-runner.sh": {
+      "dst": "/usr/local/libexec/sa02m-factory-reset-runner",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-backup.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-backup.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-restore-backup.sh": {
+      "dst": "/usr/local/sbin/sa02m-restore-backup.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    }
+  },
+  "etc_helper_renames": {
+    "etc/sa02m-web-update-check.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-update-check",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-update-apply.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-update-apply",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-auth-lib.sh": {
+      "dst": "/usr/local/lib/sa02m-web-auth-lib.sh",
+      "mode": "0644",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-build-lib.sh": {
+      "dst": "/usr/local/lib/sa02m-web-build-lib.sh",
+      "mode": "0644",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-reboot.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-reboot.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-restart-services.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-restart-services.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-service-ctl.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-service-ctl.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-root-cmd.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-root-cmd.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-repair-web-env.sh": {
+      "dst": "/usr/local/sbin/sa02m-repair-web-env",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-commit-web-env.sh": {
+      "dst": "/usr/local/sbin/sa02m-commit-web-env",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-pre-start.sh": {
+      "dst": "/usr/local/sbin/sa02m-pre-start.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-beeper-override.sh": {
+      "dst": "/usr/local/sbin/sa02m-beeper-override.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-conf-rm.sh": {
+      "dst": "/usr/local/sbin/sa02m-conf-rm.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-kernel-select.sh": {
+      "dst": "/usr/local/sbin/sa02m-kernel-select.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-cpu-profile.sh": {
+      "dst": "/usr/local/sbin/sa02m-cpu-profile.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-set-cpu-profile": {
+      "dst": "/usr/local/sbin/sa02m-set-cpu-profile",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-set-storage-auto-format": {
+      "dst": "/usr/local/sbin/sa02m-set-storage-auto-format",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-hw-backend-guard.sh": {
+      "dst": "/usr/local/sbin/sa02m-hw-backend-guard",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-status-blocks-guard.sh": {
+      "dst": "/usr/local/sbin/sa02m-status-blocks-guard",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-prepare-working-board.sh": {
+      "dst": "/usr/local/sbin/sa02m-prepare-working-board",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-failure-monitor.sh": {
+      "dst": "/usr/local/sbin/sa02m-failure-monitor",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-web-backup.sh": {
+      "dst": "/usr/local/sbin/sa02m-web-backup.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-update-runner.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-runner",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-update-inspect.sh": {
+      "dst": "/usr/local/libexec/sa02m-update-inspect",
+      "mode": "0755",
+      "owner": "root:root"
+    }
+  },
+  "systemd_flat_map": {
+    "note": "Repo keeps many units under etc/systemd/ (not etc/systemd/system/). Packer maps sa02m-* unit/timer/conf files to /etc/systemd/system/<basename>.",
+    "src_dir": "etc/systemd/",
+    "dst_dir": "/etc/systemd/system/",
+    "name_glob": "sa02m-*",
+    "mode": "0644",
+    "owner": "root:root"
+  },
+  "never_deploy": [
+    "/etc/sa02m_web.env",
+    "/etc/sa02m_*.conf",
+    "/etc/network/interfaces.d/",
+    "/etc/nginx/.htpasswd",
+    "/etc/nginx/sites-enabled/000-sa02m-network_config",
+    "/etc/sa02m-device-templates/",
+    "/etc/sa02m-cloud/",
+    "/var/lib/sa02m-flasher/",
+    "/var/lib/sa02m-update/",
+    "/etc/sa02m-alice-client.conf",
+    "/etc/sa02m-alice-devices.conf",
+    "/var/lib/sa02m-alice/"
+  ]
+}

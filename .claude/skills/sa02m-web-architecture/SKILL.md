@@ -58,6 +58,7 @@ the inner text span, icon as a sibling (the 1.0.4.1 USB-icon lesson).
 | dashboard | app.js | status.cgi | parts above |
 | network/time | app.js | config.cgi, apply.cgi | static IP toggles per iface |
 | mqtt | mqtt.js | mqtt_*.cgi | broker 1883 local / 1884 ext; bridge sa02m-modbus-mqtt |
+| devices (ДТВ/СЭ) | devices.js | nginx `/api/devices*` → `sa02m-devices-api` :8765 | live MQTT cache + SQLite history (`sa02m-devices-logger`); charts / Excel / CE peak journal |
 | flasher | flasher.js | flasher daemon + CGI | port lease (MPLC_STOP_SERVICES), reconnect via sessionStorage, irreversible-flash guard |
 | gateway | gateway.js (builds its own DOM) | gateway_*.cgi | COM1..COM5 sub-nav dots |
 | system | app.js | services_ctrl, kernel_ctrl, cpu_profile, web_update_*, web_creds | kernel RT/SMP swap → reboot; CPU profiles SMP-only |

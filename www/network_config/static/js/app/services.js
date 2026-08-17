@@ -387,7 +387,7 @@ function loadServicesControl(forceToast) {
   if (!host) return;
   if (btn) btn.disabled = true;
   if (!host.querySelector('.svc-row')) {
-    host.innerHTML = '<p class="field-hint">Загрузка…</p>';
+    host.innerHTML = '<p class="field-hint">Загрузка</p>';
   }
   fetch('cgi-bin/services_ctrl.cgi', { credentials: 'same-origin', cache: 'no-store' })
     .then(async (r) => {
@@ -436,10 +436,10 @@ function svcCtlErrorMessage(code) {
 /** Toast text while an async control action is pending. */
 function svcCtlActionPendingMsg(action) {
   const m = {
-    install: 'Устанавливается…',
-    uninstall: 'Удаляется…',
-    stop: 'Остановка службы…',
-    start: 'Запуск службы…',
+    install: 'Устанавливается',
+    uninstall: 'Удаляется',
+    stop: 'Остановка службы',
+    start: 'Запуск службы',
   };
   const ru = m[action] || '…';
   return window.sa02mI18n ? window.sa02mI18n.t(ru) : ru;

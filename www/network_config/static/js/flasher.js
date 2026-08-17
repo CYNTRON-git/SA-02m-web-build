@@ -449,7 +449,11 @@
       }
     } catch (_) {}
     const portRec = portKey ? state.ports.find(p => p.key === portKey) : null;
-    if (endState === 'done' && portHasCompleteLineState(portRec)) {
+    const emptyResult = state.devices.length === 0;
+    // On an empty or failed scan, reload port state so a poller-busy warning
+    // names the *current* holder; the fast idle-path clears busy_pids locally
+    // and would hide a still-running occupant.
+    if (endState === 'done' && !emptyResult && portHasCompleteLineState(portRec)) {
       markPortIdleAfterJob(portKey);
     } else {
       await loadPorts();
@@ -459,10 +463,18 @@
     if (endState === 'error') setScanStatus('Сканирование завершилось с ошибкой', 'error');
     else if (endState === 'cancelled') setScanStatus('Сканирование отменено', 'warn');
     else setScanStatus('Сканирование завершено. Найдено ' + state.devices.length + ' устройств.', 'success');
-    // §5.5 Roster honesty: a scan that finds nothing may be a BACnet-latched
-    // module (silent on Modbus). Offer a one-click passive MS/TP sniff to
-    // diagnose it instead of leaving it lost.
-    maybeOfferBacnetSniff(endState, portKey);
+    // A nothing-found (or port-busy error) scan where a poller still holds the
+    // line: name the holder and offer a one-click stop-and-rescan. This is the
+    // more likely cause than a BACnet latch, so it takes precedence over the
+    // BACnet-sniff offer below.
+    if (maybeOfferPollerBusy(endState, portKey)) {
+      hideBacnetSniffOffer();
+    } else {
+      // §5.5 Roster honesty: a scan that finds nothing may be a BACnet-latched
+      // module (silent on Modbus). Offer a one-click passive MS/TP sniff to
+      // diagnose it instead of leaving it lost.
+      maybeOfferBacnetSniff(endState, portKey);
+    }
   }
 
   function bacnetSniffOfferEl() { return $('flasher-bacnet-sniff-offer'); }
@@ -482,6 +494,78 @@
       escapeHtml(t('Проверить BACnet-активность')) + '</button>';
     const btn = $('flasher-bacnet-sniff-btn');
     if (btn) btn.addEventListener('click', () => verifyBacnetOnPort(portKey));
+  }
+
+  function pollerBusyOfferEl() { return $('flasher-poller-busy-offer'); }
+
+  function hidePollerBusyOffer() {
+    const el = pollerBusyOfferEl();
+    if (el) { el.hidden = true; el.innerHTML = ''; }
+  }
+
+  /** UI labels of the poller units holding this port (MPLC4 / MQTT / …). */
+  function portHolderLabels(port) {
+    const svc = port && Array.isArray(port.active_services) ? port.active_services : [];
+    return svc.map(unitUiLabel).filter(Boolean);
+  }
+
+  /* Empty (or port-busy) scan while a poller/occupant still holds the line:
+     render a named warning + a one-click stop-and-rescan that reuses the
+     existing release path. Returns true when the warning is shown. */
+  function maybeOfferPollerBusy(endState, portKey) {
+    const el = pollerBusyOfferEl();
+    if (!el) return false;
+    const emptyDone = endState === 'done' && state.devices.length === 0;
+    if ((!emptyDone && endState !== 'error') || !portKey) { hidePollerBusyOffer(); return false; }
+    const port = state.ports.find(p => p.key === portKey) || null;
+    const labels = portHolderLabels(port);
+    const pids = port && Array.isArray(port.busy_pids) ? port.busy_pids : [];
+    // Only warn when the line is actually held by a poller unit or an occupant.
+    if (!labels.length && !pids.length) { hidePollerBusyOffer(); return false; }
+    let msg;
+    // Offer the stop-and-rescan button ONLY when a named poller unit holds the
+    // line (active_services): the release path stops the configured pollers, so
+    // offering it for an unattributable external PID would stop something that
+    // is NOT the holder. That case gets an honest warning without the action.
+    const withButton = labels.length > 0;
+    if (labels.length) {
+      msg = t('Ничего не найдено, но линию опрашивает: ') + labels.join(', ') + '. ' +
+        t('Порт может быть занят — остановите опрос и повторите поиск.');
+    } else {
+      msg = t('Ничего не найдено, но порт удерживает сторонний процесс (PID ') + pids.join(', ') + '). ' +
+        t('systemd не сообщает об активном unit опроса — освободите процесс на устройстве вручную.');
+    }
+    el.hidden = false;
+    el.innerHTML = '<span>' + escapeHtml(msg) + '</span>' +
+      (withButton
+        ? ' <button type="button" class="btn btn-sm" id="flasher-poller-busy-btn">' +
+          escapeHtml(t('Остановить опрос и повторить поиск')) + '</button>'
+        : '');
+    if (withButton) {
+      const btn = $('flasher-poller-busy-btn');
+      if (btn) btn.addEventListener('click', () => stopPollersAndRescan(portKey));
+    }
+    return true;
+  }
+
+  /* Stop the pollers (existing authenticated release path) and, only on a
+     successful stop, re-run the existing scan. Guards re-entry like the other
+     port actions. */
+  async function stopPollersAndRescan(portKey) {
+    if (state.scanJobId || state.flashJobId || state.scanPending || state.flashPending) {
+      setScanStatus('Дождитесь завершения текущей задачи', 'warn');
+      return;
+    }
+    if (state.portActionBusy) return;
+    const btn = $('flasher-poller-busy-btn');
+    if (btn) btn.disabled = true;
+    // releasePortPollers() goes through POST /ports/release (auth before
+    // mutation) and reloads port state in its finally.
+    const stopped = await releasePortPollers();
+    if (btn) btn.disabled = false;
+    if (!stopped) return; // release failed or nothing to stop → keep the warning (it already toasted).
+    hidePollerBusyOffer();
+    await startScan();
   }
 
   /* Passive MS/TP sniff on a port from the roster offer (no config modal open).
@@ -820,17 +904,42 @@
     const fwMismatch = firmwareSelectionMismatch(selectedDevices, fwEntry);
     const flashBlocked = !!(selectionErr || fwMismatch);
 
-    $('flasher-scan-btn').disabled = !port || !port.exists || scanRunning || flashRunning || jobBusy || state.portActionBusy;
-    $('flasher-scan-cancel-btn').disabled = !state.scanJobId || state.scanPending;
+    const scanBtn = $('flasher-scan-btn');
+    if (scanBtn) {
+      const canCancel = !!(state.scanJobId && !state.scanPending);
+      scanBtn.classList.add('btn-primary');
+      if (scanRunning) {
+        scanBtn.textContent = 'Отмена';
+        scanBtn.classList.add('is-cancel');
+        scanBtn.disabled = !canCancel || flashRunning || state.portActionBusy;
+        scanBtn.title = canCancel ? 'Отменить сканирование' : 'Запуск сканирования';
+      } else {
+        scanBtn.textContent = 'Сканировать';
+        scanBtn.classList.remove('is-cancel');
+        scanBtn.disabled = !port || !port.exists || flashRunning || jobBusy || state.portActionBusy;
+        scanBtn.title = 'Сканировать шину RS-485';
+      }
+    }
     const canStopPollers = !!(port && port.exists && managedN);
     $('flasher-release-port-btn').disabled = !canStopPollers || scanRunning || flashRunning || jobBusy || state.portActionBusy;
     $('flasher-restore-port-btn').disabled = !port || scanRunning || flashRunning || jobBusy || state.portActionBusy || !releasedServices.length;
-    $('flasher-flash-btn').disabled = !port || !port.exists || flashRunning || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
-    $('flasher-flash-cancel-btn').disabled = !state.flashJobId || state.flashPending || state.flashIrreversible;
-
     const flashBtn = $('flasher-flash-btn');
     if (flashBtn) {
-      updateFlashButtonLabel(selectedDevices.length);
+      const canCancelFlash = !!(state.flashJobId && !state.flashPending && !state.flashIrreversible);
+      flashBtn.classList.add('btn-primary');
+      if (flashRunning) {
+        updateFlashButtonLabel(0, 'Отмена');
+        flashBtn.classList.add('is-cancel');
+        flashBtn.disabled = !canCancelFlash || scanRunning || state.portActionBusy;
+        flashBtn.title = state.flashIrreversible
+          ? 'Прошивка необратима — отмена невозможна'
+          : (canCancelFlash ? 'Отменить прошивку' : 'Запуск прошивки');
+      } else {
+        flashBtn.classList.remove('is-cancel');
+        updateFlashButtonLabel(selectedDevices.length);
+        flashBtn.disabled = !port || !port.exists || scanRunning || jobBusy || !(anyChecked && fwReady) || flashBlocked;
+        flashBtn.title = 'Прошить выбранные устройства';
+      }
     }
 
     const mismatchEl = $('flasher-fw-mismatch');
@@ -1545,31 +1654,41 @@
     }
     const portKey = $('flasher-port').value;
     if (!portKey) return;
-    try {
-      const res = await apiPost('/ports/release', { port: portKey });
-      const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
-      const mqttStopped = res && (
-        (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-        (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
-        (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
-      );
-      if (res && res.ok && !busy) {
-        state.configPortReleased = true;
-        return;
+    // Освобождение MPLC4/MQTT-моста асинхронно (systemctl stop): первый ответ
+    // /ports/release ещё может застать порт занятым, хотя опросчик остановится
+    // через долю секунды. Пробуем несколько раз с паузой и показываем ошибку
+    // ТОЛЬКО если порт остаётся занятым после того, как аренда «устоялась» — не
+    // мигаем самоустраняющимся сообщением «не удалось освободить» (Operator 1.0.5.69).
+    const RELEASE_ATTEMPTS = 4;
+    const RELEASE_RETRY_MS = 500;
+    let lastMsg = '';
+    for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt++) {
+      try {
+        const res = await apiPost('/ports/release', { port: portKey });
+        const busy = res && res.port && Array.isArray(res.port.busy_pids) && res.port.busy_pids.length > 0;
+        const mqttStopped = res && (
+          (Array.isArray(res.stopped_now) && res.stopped_now.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+          (Array.isArray(res.already_released) && res.already_released.some(s => /modbus-mqtt|mqtt/i.test(String(s)))) ||
+          (Array.isArray(res.inactive) && res.inactive.some(s => /modbus-mqtt|mqtt/i.test(String(s))))
+        );
+        if ((res && res.ok && !busy) || (!busy && mqttStopped)) {
+          state.configPortReleased = true;
+          return;
+        }
+        lastMsg = busy
+          ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
+          : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
+      } catch (err) {
+        lastMsg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
       }
-      if (!busy && mqttStopped) {
-        state.configPortReleased = true;
-        return;
+      if (attempt < RELEASE_ATTEMPTS - 1) {
+        await new Promise(function (r) { setTimeout(r, RELEASE_RETRY_MS); });
       }
-      const msg = busy
-        ? `Порт ${portKey} занят (PID ${res.port.busy_pids.join(', ')}). Остановите MQTT/MPLC4 и повторите.`
-        : `Не удалось освободить ${portKey} для настройки (MQTT/MPLC4).`;
-      setConfigBanner(msg, 'error');
-      toast(msg, 'warn');
-    } catch (err) {
-      const msg = 'Освобождение порта для настройки: ' + (err && err.message ? err.message : String(err));
-      setConfigBanner(msg, 'error');
-      toast(msg, 'warn');
+    }
+    // Порт всё ещё занят после нескольких попыток — только теперь это реальная ошибка.
+    if (lastMsg) {
+      setConfigBanner(lastMsg, 'error');
+      toast(lastMsg, 'warn');
     }
   }
 
@@ -1670,7 +1789,6 @@
       sensor_label: aiSensorLabelFromCode(c),
       sidebar_tag: aiSidebarTagFromCode(c),
       ui_bucket: aiUiSensorBucket(c),
-      calibration_applicable: aiUiCalibrationApplicable(c),
     };
   }
 
@@ -1685,7 +1803,6 @@
       merged.sensor_label = prev.sensor_label != null ? prev.sensor_label : aiSensorLabelFromCode(prev.sensor_code);
       merged.sidebar_tag = prev.sidebar_tag != null ? prev.sidebar_tag : aiSidebarTagFromCode(prev.sensor_code);
       merged.ui_bucket = prev.ui_bucket != null ? prev.ui_bucket : aiUiSensorBucket(prev.sensor_code);
-      merged.calibration_applicable = aiUiCalibrationApplicable(prev.sensor_code);
     }
     return merged;
   }
@@ -1859,15 +1976,80 @@
   }
 
   function aiUiCalibrationApplicable(sensorCode) {
+    // Смещение калибровки (Holding base+4) применимо к температуре ∪ напряжению
+    // ∪ току (вкл. дифф.); скрыто только для «Выключен» и «сухого контакта».
+    // Эталон: MR-02m-flasher module_profiles.ai_ui_uses_value_calibration.
     const b = aiUiSensorBucket(sensorCode);
-    return b === 'ntc' || b === 'rtd' || b === 'tc_k';
+    return b === 'ntc' || b === 'rtd' || b === 'tc_k' || b === 'volt' || b === 'curr';
   }
 
+  // Калибровка активных входов (ток/напряжение) — целое, весь int16;
+  // температурные — десятые доли °C, клип ±100. Эталон:
+  // ai_calibration_is_integer / ai_calibration_clamp.
+  function aiCalibrationIsInteger(sensorCode) {
+    const b = aiUiSensorBucket(sensorCode);
+    return b === 'volt' || b === 'curr';
+  }
+
+  function aiCalibrationClampByCode(sensorCode, value) {
+    return aiCalibrationIsInteger(sensorCode)
+      ? clampInt(value, -32768, 32767, 0)
+      : clampInt(value, -100, 100, 0);
+  }
+
+  // Типы датчиков, для которых MR-02m заполняет Input 107/108 (авария диапазона /
+  // обрыв / КЗ): ток/напряжение/дифф ∪ NTC/RTD/ТХА. Эталон:
+  // ai_sensor_uses_input_range_limit_registers.
+  function aiSensorUsesLimitRegisters(sensorCode) {
+    const b = aiUiSensorBucket(sensorCode);
+    return b === 'volt' || b === 'curr' || b === 'ntc' || b === 'rtd' || b === 'tc_k';
+  }
+
+  // Расшифровка аварии AI по битам Input 107 (ниже предела) / 108 (выше).
+  // NTC/RTD/ТХА: below→«Обрыв датчика», above(NTC/RTD)→«Короткое замыкание на
+  // линии»; активные: «Ниже/Выше диапазона измерения». Эталон:
+  // ai_input_limit_range_message. Возвращает массив RU-строк — каждая ключ DICT,
+  // перевод берёт наблюдатель i18n (потому части рендерятся отдельными <span>).
+  function aiFaultParts(below, above, sensorCode) {
+    if (!aiSensorUsesLimitRegisters(sensorCode)) return [];
+    const b = aiUiSensorBucket(sensorCode);
+    const isWiring = (b === 'ntc' || b === 'rtd' || b === 'tc_k');
+    const isResistance = (b === 'ntc' || b === 'rtd');
+    const parts = [];
+    if (isWiring) {
+      if (below) parts.push('Обрыв датчика');
+      if (above && isResistance) parts.push('Короткое замыкание на линии');
+      return parts;
+    }
+    if (below) parts.push('Ниже диапазона измерения');
+    if (above) parts.push('Выше диапазона измерения');
+    return parts;
+  }
+
+  function aiFaultChipHtml(parts) {
+    if (!parts || !parts.length) return '';
+    return parts.map(p => `<span>${escapeHtml(p)}</span>`).join(' / ');
+  }
+
+  // Короткий тег режима для пункта сайдбара «Аналоговый вход AI…»: точный тег по
+  // Modbus-коду типа, как в эталоне ai_sidebar_nav_mode_tag (module_profiles.py):
+  // ВЫКЛ / NTC / RTD / 0-10 / 0-30 / 4-20 / 0-5мА / 0-20мА / ±50мВ / ±2В / DIN / ТХА.
   function aiSidebarTagFromCode(code) {
-    const b = aiUiSensorBucket(code);
-    if (b === 'off') return 'Выкл';
-    const map = { ntc: 'NTC', rtd: 'RTD', volt: 'U', curr: 'I', tc_k: 'TC-K', dry: 'Сух' };
-    return map[b] || 'AI';
+    const c = Number(code) & 0xFFFF;
+    if (c === 0) return 'ВЫКЛ';
+    const b = aiUiSensorBucket(c);
+    if (b === 'ntc') return 'NTC';
+    if (b === 'rtd') return 'RTD';
+    if (c === 34) return '0-10';
+    if (c === 35) return '0-30';
+    if (c === 40) return '4-20';
+    if (c === 38) return '0-5мА';
+    if (c === 39) return '0-20мА';
+    if (c === 36) return '±50мВ';
+    if (c === 37) return '±2В';
+    if (b === 'dry')  return 'DIN';
+    if (b === 'tc_k') return 'ТХА';
+    return 'AI';
   }
 
   // Справочные пределы температуры (десятые °C) по Modbus-коду типа — из таблиц прошивки MR-02m
@@ -1891,6 +2073,54 @@
     const lim = _AI_SENSOR_LIMITS_TENTHS[c];
     if (!lim) return null;
     return { lo: (lim[0] / 10).toFixed(1) + ' °C', hi: (lim[1] / 10).toFixed(1) + ' °C' };
+  }
+
+  // Дифф-режимы 36 (±50 мВ) и 37 (±2 В) задают шкалу пределами измерения —
+  // числовая подсказка соответствия raw = физ. значение. Числовая, без i18n.
+  function aiActiveLimitHint(code) {
+    const c = Number(code) & 0xFFFF;
+    if (c === 36) return '-100 = ' + (-100 / 10).toFixed(1);   // ±50 мВ, шкала 10, .1f
+    if (c === 37) return '100 = ' + (100 / 100).toFixed(2);    // ±2 В, шкала 100, .2f
+    return '';
+  }
+
+  // Содержимое блока пределов #cfg-mr-ai-limits-*. Для активных аналоговых
+  // режимов (volt/curr) — два редактируемых поля (Holding base+5/base+6, int16),
+  // засеянных из снапшота; для температурных — справочный (read-only) блок.
+  function aiLimitsBoxHtml(channel, code, ai) {
+    const bucket = aiUiSensorBucket(code);
+    if (bucket === 'volt' || bucket === 'curr') {
+      const lo = ai && ai.limit_low != null ? ai.limit_low : 0;
+      const hi = ai && ai.limit_high != null ? ai.limit_high : 0;
+      const hint = aiActiveLimitHint(code);
+      const hintHtml = hint
+        ? `<div class="flasher-config-note" id="cfg-mr-ai-limit-hint-${channel}">${escapeHtml(hint)}</div>`
+        : '';
+      return `
+      <div class="ai-limits-row">
+        <span>Нижний предел:</span>
+        <input id="cfg-mr-ai-limit-lo-${channel}" type="number" min="-32768" max="32767"
+          value="${escapeHtml(String(lo))}" data-mr-ai-limit="${channel}" data-mr-ai-limit-which="lo" class="ai-cal-input-sm" />
+      </div>
+      <div class="ai-limits-row">
+        <span>Верхний предел:</span>
+        <input id="cfg-mr-ai-limit-hi-${channel}" type="number" min="-32768" max="32767"
+          value="${escapeHtml(String(hi))}" data-mr-ai-limit="${channel}" data-mr-ai-limit-which="hi" class="ai-cal-input-sm" />
+      </div>${hintHtml}`;
+    }
+    const lim = aiSensorRefLimits(code);
+    return lim ? `
+      <div class="ai-limits-row"><span>Нижний предел:</span><strong>${escapeHtml(lim.lo)}</strong></div>
+      <div class="ai-limits-row"><span>Верхний предел:</span><strong>${escapeHtml(lim.hi)}</strong></div>` : '';
+  }
+
+  function _bindAiLimitInputs(container) {
+    if (!container) return;
+    container.querySelectorAll('[data-mr-ai-limit]').forEach(el => {
+      el.addEventListener('blur', () => {
+        applyAiLimit(parseInt(el.dataset.mrAiLimit, 10), el.dataset.mrAiLimitWhich);
+      });
+    });
   }
 
   function aiUiQuantityLabels(bucket) {
@@ -1994,8 +2224,13 @@
     const v = Number(scaledInt);
     if (!Number.isFinite(v) || v === _AI_ENG_S32_MAX) return '—';
     if (k === 'temp')        return (v / 10).toFixed(1) + ' °C';
-    if (k === 'current')     return (v / 10).toFixed(1) + ' мА';
-    if (k === 'voltage_010') return (v / 100).toFixed(2) + ' В';
+    // S16_MIN (-32768) — прошивочный сентинел «значение недействительно» для
+    // 16-битного пересчитанного (reg+3). Эталон format_ai_scaled_display.
+    if (v === -32768) return '—';
+    // Ток (0-5/0-20/4-20 мА) и напряжение (0-10/0-30 В): пересчитанное — сырое
+    // целое из регистра, без единицы и без масштаба. Эталон: str(v).
+    if (k === 'current')     return String(v);
+    if (k === 'voltage_010') return String(v);
     if (k === 'diff_mv')     return (v / 10).toFixed(1) + ' мВ';
     if (k === 'diff_v')      return (v / 100).toFixed(2) + ' В';
     return String(v);
@@ -2040,6 +2275,93 @@
   function moduleAiChannel(snap, channel) {
     const items = (((snap || {}).mr || {}).ai || {}).channels || [];
     return items.find(item => Number(item.channel) === Number(channel)) || null;
+  }
+
+  // ---- Схемы подключения (порт эталонных SVG из каталога «Подключения») -------
+  // (тип модуля × вкладка × канал × код датчика) → файл(ы) схемы. MONO — одна
+  // схема; PAIR — две колонки (DI/DO). Точное соответствие эталону
+  // module_config_window.py (_embed_podklyucheniya_mono_svg /
+  // _embed_podklyucheniya_pair_svgs). Типы без схемы в эталоне (10DI, 6DO5DI2AO,
+  // 4TO6DI, CE) диаграммы не имеют — как и в эталоне. SVG-исходники — Inkscape с
+  // чёрными штрихами, поэтому рендерятся на светлой «подложке» (--wiring-plate),
+  // читаемой в обеих темах; эталон перекрашивает штрих в цвет темы (моно) —
+  // светлая подложка сохраняет и информативную синюю подсветку активной клеммы.
+  const WIRING_ASSET_BASE = 'static/wiring/';
+
+  function wiringAssetVersion() {
+    return (typeof APP_VERSION !== 'undefined' && APP_VERSION) ? String(APP_VERSION) : '';
+  }
+
+  function moduleWiringKey(meta) {
+    if (!meta) return null;
+    const d = Number(meta.max_do || 0), i = Number(meta.max_di || 0);
+    const o = Number(meta.max_ao || 0), a = Number(meta.max_ai || 0);
+    if (o === 6 && a === 6) return '6ai6ao';
+    if (a === 12 && o === 0) return '12ai';
+    if (o === 12 && a === 0 && d === 0 && i === 0) return '12ao';
+    if (d === 6 && i === 8) return '6do8di';
+    if (d === 4 && i === 6 && o === 0) return '4do6di';
+    if (i === 14 && d === 0) return '14di';
+    if (d === 16 && i === 0) return '16do';
+    if (d === 6 && i === 0 && o === 0) return '6do';
+    return null;
+  }
+
+  // Вариант AI-схемы по коду датчика (эталон _refresh_ai66_wiring /
+  // _refresh_ai12_wiring): ТХА → «2», 3-проводное RTD → «3», иначе базовый.
+  function aiWiringVariantSuffix(code) {
+    const b = aiUiSensorBucket(code);
+    if (b === 'tc_k') return '2';
+    if (b === 'rtd' && !aiRtdTwoWireFromCode(code)) return '3';
+    return '';
+  }
+
+  // Файлы схемы для (тип, вкладка, канал, код датчика): [] — нет схемы,
+  // 1 элемент — mono, 2 — пара колонок.
+  function moduleWiringFiles(mkey, tab, channel, sensorCode) {
+    if (!mkey) return [];
+    const ch = Number(channel) || 0;
+    if (tab === 'ai') {
+      if (aiUiSensorBucket(sensorCode) === 'off') return [];  // «Выключен» — схема скрыта (эталон)
+      if (mkey === '6ai6ao') return ['mp-02m_6ai6ao_up' + aiWiringVariantSuffix(sensorCode) + '.svg'];
+      if (mkey === '12ai')   return ['mp-02m_12ai_' + (ch <= 6 ? 'down' : 'up') + aiWiringVariantSuffix(sensorCode) + '.svg'];
+      return [];
+    }
+    if (tab === 'ao') {
+      if (mkey === '6ai6ao') return ['mp-02m_6ai6ao_down.svg'];
+      if (mkey === '12ao')   return ['mp-02m_12ao_' + (ch <= 6 ? 'down' : 'up') + '.svg'];
+      return [];
+    }
+    if (tab === 'di') {
+      if (mkey === '6do8di') return ['mp-02m_6do8di_down.svg', 'mp-02m_6do8di_down2.svg'];
+      if (mkey === '4do6di') return ['mp-02m_4do6di_down.svg', 'mp-02m_4do6di_down2.svg'];
+      if (mkey === '14di')   return ch <= 7
+        ? ['mp-02m_14di_down.svg', 'mp-02m_14di_down2.svg']
+        : ['mp-02m_14di_up.svg', 'mp-02m_14di_up2.svg'];
+      return [];
+    }
+    if (tab === 'do') {
+      if (mkey === '6do8di') return ['mp-02m_6do8di_up.svg', 'mp-02m_6do8di_up2.svg'];
+      if (mkey === '4do6di') return ['mp-02m_4do6di_up.svg', 'mp-02m_4do6di_up2.svg'];
+      if (mkey === '6do')    return ['mp-02m_6do_' + (ch <= 3 ? 'down' : 'up') + '.svg'];
+      if (mkey === '16do')   return ['mp-02m_16do_' + (ch <= 8 ? 'down' : 'up') + '.svg'];
+      return [];
+    }
+    return [];
+  }
+
+  function moduleWiringDiagramHtml(snap, tab, channel, sensorCode) {
+    const files = moduleWiringFiles(moduleWiringKey(moduleMeta(snap)), tab, channel, sensorCode);
+    if (!files.length) return '';
+    const ver = wiringAssetVersion();
+    const q = ver ? ('?v=' + encodeURIComponent(ver)) : '';
+    const cols = files.map(f =>
+      `<div class="wiring-diagram-col"><img class="wiring-diagram-img" alt="Схема подключения" loading="lazy" src="${escapeHtml(WIRING_ASSET_BASE + f + q)}" /></div>`
+    ).join('');
+    return `<section class="flasher-config-card wiring-diagram-card">
+        <h4>СХЕМА ПОДКЛЮЧЕНИЯ</h4>
+        <div class="wiring-diagram-plate${files.length === 2 ? ' wiring-diagram-pair' : ''}">${cols}</div>
+      </section>`;
   }
 
   function mergeMrMinimalIntoFull(prevMr, minMr) {
@@ -2234,6 +2556,14 @@
         if (measuredEl) measuredEl.textContent = aiFormatMeasuredDisplay(ch.sensor_code, ch.measured_raw);
         const scaledEl = configModalEl('cfg-mr-ai-scaled-' + n);
         if (scaledEl) scaledEl.textContent = aiFormatScaledDisplay(ch.sensor_code, ch.scaled_raw);
+        // Авария диапазона/обрыв/КЗ (Input 107/108) — обновляем в реальном времени,
+        // как measured/scaled, даже когда полный ре-рендер пропущен (фокус/edit-guard).
+        const faultEl = configModalEl('cfg-mr-ai-fault-' + n);
+        if (faultEl) {
+          const parts = aiFaultParts(ch.fault_low, ch.fault_high, ch.sensor_code);
+          faultEl.innerHTML = aiFaultChipHtml(parts);
+          faultEl.hidden = !parts.length;
+        }
       });
     }
   }
@@ -2401,27 +2731,49 @@
     `;
   }
 
+  // «ОПИСАНИЕ АЛГОРИТМОВ» — дословно из эталона (MR-02m-flasher i18n.py
+  // relay_options_help, RU). Номера регистров (130/131/138–172/600–615/622)
+  // несут смысл прошивки — не перефразировать. Каждая строка — отдельный ключ
+  // DICT (перевод берёт наблюдатель i18n); '' — визуальный разрыв абзаца.
+  const RELAY_ALGO_HELP_LINES = [
+    'Опции (Holding 131) — маска uint16; набор включённых битов задаёт опции ниже.',
+    '• бит 0 — на 6DO8DI и 4DO6DI при режимах DI→DO (рег. 130 = 1 или 2) не задаётся отдельно: прошивка синхронизирует бит с выбором «фиксация»/«тоггл» в рег. 130 (зеркало DI→DO).',
+    '• бит 1 — планировщик: при режимах «Вентиляторы ×2/×4» (рег. 130 = 3 или 4) логика вентиляторов действует только внутри окон расписания (рег. 138–172, по дням недели). Если бит снят, окно считается всегда открытым (при прочих разрешениях по DI).',
+    '• бит 2 — «восстановление при питании»: если установлен и рег. 130 = 2 (DI→DO тоггл), не 4TO6DI — после старта подставляются запомненные в EEPROM состояния тогглов по каналам; иначе при установленном бите используется то же безопасное состояние рег. 600–615, что и при снятом бите. Если бит 2 снят — всегда только безопасное состояние 600–615 (с учётом поочерёдного включения по биту 4 и рег. 622).',
+    '• бит 3 — в режиме «Приводы штор» (рег. 130 = 5) учитывать команды открыть/закрыть с дискретных входов (пары DI на привод) наряду с Modbus.',
+    '• бит 4 — поочерёдное включение выходов при подаче питания; имеет смысл только вместе с ненулевым значением рег. 622 (см. ниже).',
+    '',
+    'Задержка вкл. (Holding 622) — целое число секунд 0…60 (в прошивке значения больше 60 ограничиваются до 60). При включённом бите 4 маски 131 и 622 > 0 после появления питания выходы DO, которые должны перейти в «1» (по безопасным 600–615 или по восстановлению состояния), включаются не одновременно: для канала с номером i (от 0) задержка i×N секунд от начала отсчёта, где N — значение 622. Это снижает одновременный пусковой ток. При 622 = 0 поочерёдность не используется, даже если бит 4 маски установлен.',
+  ];
+
   function renderModuleRelayTab(snap) {
     const relay = ((snap.mr || {}).relay || {});
     const options = Number(relay.options || 0);
+    const helpHtml = RELAY_ALGO_HELP_LINES.map(line =>
+      line ? `<p class="flasher-config-note relay-help-line">${escapeHtml(line)}</p>` : '<div class="relay-help-gap"></div>'
+    ).join('');
     return `
       <div class="flasher-config-grid">
         <section class="flasher-config-card">
           <h4>Реле и задержки</h4>
+          <p class="flasher-config-note">Общие параметры реле для всех выходов DO: режим работы, битовая маска опций и задержка первого включения при появлении питания (секунды; 0 — отключена). Кнопка внизу сохраняет опции и задержку.</p>
           <div class="flasher-config-form">
             <label for="cfg-mr-relay-mode">Режим работы</label>
             <select id="cfg-mr-relay-mode">
               ${MODULE_RELAY_MODES.map(item => `<option value="${item.value}" ${Number(item.value) === Number(relay.mode || 0) ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}
             </select>
+            <label>Опции, битовая маска, рег. 131:</label>
             ${MODULE_RELAY_OPTION_BITS.map(item => `
               <label class="checkbox-line"><input type="checkbox" id="cfg-mr-relay-opt-${item.bit}" ${(options & (1 << item.bit)) ? 'checked' : ''} /> ${escapeHtml(item.label)}</label>
             `).join('')}
-            <label for="cfg-mr-relay-stagger">Задержка включения при питании, с</label>
+            <label for="cfg-mr-relay-stagger">Задержка вкл., с, 0 = выкл.:</label>
             <input id="cfg-mr-relay-stagger" type="number" min="0" max="65535" value="${escapeHtml(String(relay.power_stagger ?? 0))}" />
           </div>
           <div class="flasher-config-actions">
             <button class="btn btn-primary" type="button" id="cfg-mr-relay-save-btn">Сохранить</button>
           </div>
+          <h4 class="relay-algo-hdr">ОПИСАНИЕ АЛГОРИТМОВ</h4>
+          <div class="relay-help-block">${helpHtml}</div>
         </section>
       </div>
     `;
@@ -2474,6 +2826,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'do', channel, 0)}
     `;
   }
 
@@ -2515,6 +2868,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'di', channel, 0)}
     `;
   }
 
@@ -2534,9 +2888,9 @@
         <section class="flasher-config-card">
           <h4>Уставки AO</h4>
           <div class="flasher-config-form">
-            <label for="cfg-mr-ao-set-${channel}">Задание, 0..1000</label>
+            <label for="cfg-mr-ao-set-${channel}">Задание, 0–1000 (1000 = 10.00 В)</label>
             <input id="cfg-mr-ao-set-${channel}" type="number" min="0" max="1000" value="${escapeHtml(String((ao.setpoint || [])[idx] ?? 0))}" />
-            <label for="cfg-mr-ao-safe-${channel}">Безопасное состояние, 0..1000</label>
+            <label for="cfg-mr-ao-safe-${channel}">Безопасное состояние, 0–1000 (1000 = 10.00 В)</label>
             <input id="cfg-mr-ao-safe-${channel}" type="number" min="0" max="1000" value="${escapeHtml(String((ao.safe || [])[idx] ?? 0))}" />
             <label for="cfg-mr-ao-inactivity-${channel}">Время без опроса, с</label>
             <input id="cfg-mr-ao-inactivity-${channel}" type="number" min="0" max="255" value="${escapeHtml(String(mr.inactivity_s ?? 0))}" />
@@ -2546,6 +2900,7 @@
           </div>
         </section>
       </div>
+      ${moduleWiringDiagramHtml(snap, 'ao', channel, 0)}
     `;
   }
 
@@ -2555,7 +2910,16 @@
     const filters = ai.filters || null;
     const sensorCode = Number(ai.sensor_code || 0);
     const bucket = ai.ui_bucket || aiUiSensorBucket(sensorCode);
-    const calOk = ai.calibration_applicable != null ? !!ai.calibration_applicable : aiUiCalibrationApplicable(sensorCode);
+    // Видимость/диапазон калибровки выводим на клиенте из sensor_code (эталонный
+    // предикат ai_ui_uses_value_calibration): активные volt/curr тоже калибруются.
+    // Единственный источник — sensor_code; снимок поля applicability не несёт
+    // (см. docs/contracts/module-config-ai.md).
+    const calOk = aiUiCalibrationApplicable(sensorCode);
+    const calInt = aiCalibrationIsInteger(sensorCode);
+    const calLabel = calInt ? 'Калибровка (смещение)' : 'Калибровка';
+    const calMin = calInt ? -32768 : -100;
+    const calMax = calInt ? 32767 : 100;
+    const faultParts = aiFaultParts(ai.fault_low, ai.fault_high, sensorCode);
 
     const isRtd = bucket === 'rtd';
     const rtdTwoWire = isRtd ? aiRtdTwoWireFromCode(sensorCode) : true;
@@ -2568,7 +2932,6 @@
     const measuredStr = aiFormatMeasuredDisplay(sensorCode, ai.measured_raw);
     const scaledStr   = aiFormatScaledDisplay(sensorCode, ai.scaled_raw);
     const [magnitude, unit] = aiUiQuantityLabels(bucket);
-    const refLimits = aiSensorRefLimits(sensorCode);
 
     const modeRadios = MODULE_AI_UI_BUCKETS.map(b => `
       <label class="ai-mode-radio-label">
@@ -2577,13 +2940,7 @@
         <span>${escapeHtml(b.label)}</span>
       </label>`).join('');
 
-    const limitsHtml = refLimits ? `
-      <div class="ai-limits-row">
-        <span>Нижний предел:</span><strong>${escapeHtml(refLimits.lo)}</strong>
-      </div>
-      <div class="ai-limits-row">
-        <span>Верхний предел:</span><strong>${escapeHtml(refLimits.hi)}</strong>
-      </div>` : '';
+    const limitsHtml = aiLimitsBoxHtml(channel, sensorCode, ai);
 
     const rtdWireHtml = isRtd ? `
       <div class="ai-wire-row">
@@ -2621,9 +2978,10 @@
 
     return `
       <div class="ai-channel-panel">
-        <h3 class="ai-channel-title">Аналоговый вход AI${channel}</h3>
+        <h3 class="ai-channel-title">Аналоговые входы (AI) AI${channel}</h3>
 
         <section class="flasher-config-card ai-section-measures">
+          <span class="badge badge-err ai-fault-chip" id="cfg-mr-ai-fault-${channel}" ${faultParts.length ? '' : 'hidden'}>${aiFaultChipHtml(faultParts)}</span>
           <h4>ИЗМЕРЕНИЯ</h4>
           <div class="ai-measures-grid">
             <div class="ai-measure-row">
@@ -2635,9 +2993,9 @@
               <div class="ai-measure-value-group">
                 <strong id="cfg-mr-ai-scaled-${channel}">${escapeHtml(scaledStr)}</strong>
                 <div class="ai-cal-strip" id="cfg-mr-ai-cal-strip-${channel}" ${calOk ? '' : 'hidden'}>
-                  <span>Калибровка</span>
+                  <span id="cfg-mr-ai-cal-label-${channel}">${escapeHtml(calLabel)}</span>
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="-1">−</button>
-                  <input id="cfg-mr-ai-cal-${channel}" type="number" min="-100" max="100"
+                  <input id="cfg-mr-ai-cal-${channel}" type="number" min="${calMin}" max="${calMax}"
                     value="${escapeHtml(String(ai.calibration ?? 0))}"
                     data-mr-ai-cal="${channel}" class="ai-cal-input-sm" />
                   <button class="ai-cal-btn" data-mr-ai-cal-step="${channel}" data-step="1">+</button>
@@ -2667,6 +3025,8 @@
             </div>
           </div>
         </section>
+
+        <div class="wiring-diagram-slot" id="cfg-mr-ai-wiring-${channel}">${moduleWiringDiagramHtml(snap, 'ai', channel, sensorCode)}</div>
       </div>
     `;
   }
@@ -2988,7 +3348,7 @@
     if (!host) return;
     const snap = state.configSnapshot;
     if (!snap) {
-      host.innerHTML = '<div class="flasher-empty">Загрузка настроек…</div>';
+      host.innerHTML = '<div class="flasher-empty">Загрузка настроек</div>';
       return;
     }
     let html = '';
@@ -3434,9 +3794,11 @@
         await writeConfigHolding(item.reg, item.value, '');
       }
       if (successText) toast(successText, 'success');
+      return true;
     } catch (err) {
       setConfigBanner(errorPrefix + err.message, 'error');
       toast(errorPrefix + err.message, 'error');
+      return false;
     } finally {
       setConfigBusy(false);
     }
@@ -3597,6 +3959,48 @@
     }
   }
 
+  // Редактируемый предел измерения (активные режимы volt/curr): Holding
+  // base+5 (нижний) / base+6 (верхний), int16. Зеркалит applyAiCalibration:
+  // edit-guard на время записи, оптимистичный патч снапшота при успехе,
+  // откат поля к снапшоту при отказе.
+  async function applyAiLimit(channel, which) {
+    const ch = Number(channel);
+    const ai = moduleAiChannel(state.configSnapshot, ch);
+    if (!ai) return;
+    const base = Number(ai.register_base);
+    if (!Number.isFinite(base)) return;
+    const isHi = String(which) === 'hi';
+    const el = configModalEl(`cfg-mr-ai-limit-${isHi ? 'hi' : 'lo'}-${ch}`);
+    if (!el) return;
+    // Пределы редактируются только для активных аналоговых режимов.
+    const sensorEl = configModalEl(`cfg-mr-ai-sensor-${ch}`);
+    const code = sensorEl ? clampInt(sensorEl.value, 0, 42, 0) : (Number(ai.sensor_code) & 0xFFFF);
+    const bucket = aiUiSensorBucket(code);
+    if (bucket !== 'volt' && bucket !== 'curr') return;
+    const snapKey = isHi ? 'limit_high' : 'limit_low';
+    const current = clampInt(ai[snapKey] != null ? ai[snapKey] : 0, -32768, 32767, 0);
+    const want = clampInt(el.value, -32768, 32767, 0);
+    if (current === want) { el.value = String(current); return; }
+    const reg = base + (isHi ? 6 : 5);
+    aiSensorEditGuardAdd(ch);
+    try {
+      const ok = await writeHoldingBatch(
+        [{ reg: reg, value: signedToUint16(want) }],
+        `Предел AI${ch} применён`, `AI${ch}: `
+      );
+      if (ok) {
+        const patch = {};
+        patch[snapKey] = want;
+        patchAiChannelSnapshot(ch, patch);
+        el.value = String(want);
+      } else {
+        el.value = String(current);
+      }
+    } finally {
+      aiSensorEditGuardReleaseLater(ch);
+    }
+  }
+
   async function applyAiFilters(channel) {
     const ch = Number(channel);
     const ai = moduleAiChannel(state.configSnapshot, ch);
@@ -3636,8 +4040,19 @@
     const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
     const strip = configModalEl(`cfg-mr-ai-cal-strip-${channel}`);
     if (!sensorEl) return;
-    const ok = aiUiCalibrationApplicable(parseInt(sensorEl.value, 10) || 0);
+    const code = parseInt(sensorEl.value, 10) || 0;
+    const ok = aiUiCalibrationApplicable(code);
     if (strip) strip.hidden = !ok;
+    // Диапазон/подпись калибровки зависят от режима: активные — целый int16
+    // «Калибровка (смещение)»; температурные — ±100 «Калибровка».
+    const intMode = aiCalibrationIsInteger(code);
+    const inp = configModalEl(`cfg-mr-ai-cal-${channel}`);
+    if (inp) {
+      inp.min = String(intMode ? -32768 : -100);
+      inp.max = String(intMode ? 32767 : 100);
+    }
+    const lbl = configModalEl(`cfg-mr-ai-cal-label-${channel}`);
+    if (lbl) lbl.textContent = intMode ? 'Калибровка (смещение)' : 'Калибровка';
   }
 
   function _aiRebuildSensorOptions(channel, choices) {
@@ -3710,10 +4125,19 @@
     const limBox   = configModalEl(`cfg-mr-ai-limits-${channel}`);
     if (!limBox) return;
     const code = sensorEl ? (parseInt(sensorEl.value, 10) || 0) : 0;
-    const lim = aiSensorRefLimits(code);
-    limBox.innerHTML = lim ? `
-      <div class="ai-limits-row"><span>Нижний предел:</span><strong>${escapeHtml(lim.lo)}</strong></div>
-      <div class="ai-limits-row"><span>Верхний предел:</span><strong>${escapeHtml(lim.hi)}</strong></div>` : '';
+    // Пересеиваем из снапшота, а не из устаревшего DOM (bucket/subtype switch).
+    const ai = moduleAiChannel(state.configSnapshot, channel);
+    limBox.innerHTML = aiLimitsBoxHtml(channel, code, ai);
+    _bindAiLimitInputs(limBox);
+    _aiUpdateWiringDiagram(channel, code);
+  }
+
+  // Схема подключения AI зависит от режима (ТХА / 3-пров. RTD / «Выключен») —
+  // обновляем при смене режима/подтипа, как эталон (_refresh_ai66_wiring).
+  function _aiUpdateWiringDiagram(channel, code) {
+    const slot = configModalEl(`cfg-mr-ai-wiring-${channel}`);
+    if (!slot) return;
+    slot.innerHTML = moduleWiringDiagramHtml(state.configSnapshot, 'ai', channel, code);
   }
 
   function setupAiBucketHandlers(body) {
@@ -3761,11 +4185,16 @@
         const step = parseInt(btn.dataset.step, 10) || 0;
         const inp = configModalEl(`cfg-mr-ai-cal-${channel}`);
         if (!inp) return;
+        const sensorEl = configModalEl(`cfg-mr-ai-sensor-${channel}`);
+        const code = sensorEl ? clampInt(sensorEl.value, 0, 42, 0) : 0;
         const cur = parseInt(inp.value, 10) || 0;
-        inp.value = Math.max(-100, Math.min(100, cur + step));
+        inp.value = String(aiCalibrationClampByCode(code, cur + step));
         applyAiCalibration(channel);
       });
     });
+
+    // Пределы измерения (активные режимы volt/curr): blur — запись base+5/base+6
+    _bindAiLimitInputs(body);
 
     // Фильтры АЦП: change для select/checkbox, blur для числовых полей
     body.querySelectorAll('[data-mr-ai-filter]').forEach(el => {
@@ -4347,6 +4776,7 @@
     renderDevices();
     clearScanStatus();
     hideBacnetSniffOffer();
+    hidePollerBusyOffer();
     state.scanPending = true;
     state.scanArbitrationActive = body.mode === 'fast';
     logReset(logIntro + ' на ' + body.port);
@@ -4434,15 +4864,16 @@
 
   /* ── Прошивка ─────────────────────────────────────────────────────────── */
 
-  function updateFlashButtonLabel(count) {
+  function updateFlashButtonLabel(count, forcedLabel) {
     const flashBtn = $('flasher-flash-btn');
     if (!flashBtn) return;
     const n = Number(count) || 0;
-    const label = n > 1 ? `Прошить (${n})` : 'Прошить';
+    const label = forcedLabel || (n > 1 ? `Прошить (${n})` : 'Прошить');
     let textEl = flashBtn.querySelector('.flasher-flash-btn-label');
     if (!textEl) {
       textEl = document.createElement('span');
       textEl.className = 'flasher-flash-btn-label';
+      flashBtn.textContent = '';
       flashBtn.appendChild(textEl);
     }
     textEl.textContent = label;
@@ -4576,11 +5007,14 @@
     syncActionButtons();
   }
 
+  /** @returns {Promise<boolean>} true when a poller was actually stopped (or was
+      already stopped in the daemon session) — the signal to chain a re-scan. */
   async function releasePortPollers() {
     const port = currentPort();
-    if (!port) return;
+    if (!port) return false;
     state.portActionBusy = true;
     syncActionButtons();
+    let didStop = false;
     try {
       const res = await apiPost('/ports/release', { port: port.key });
       const lab = (a) => (a || []).map(unitUiLabel).join(', ');
@@ -4590,6 +5024,7 @@
       const stopped = res.stopped_now || [];
       const already = res.already_released || [];
       const inactive = res.inactive || [];
+      didStop = stopped.length > 0 || already.length > 0;
       if (stopped.length) {
         toast('Службы опроса остановлены: ' + lab(stopped), 'success');
       } else if (already.length) {
@@ -4605,6 +5040,7 @@
       state.portActionBusy = false;
       await loadPorts();
     }
+    return didStop;
   }
 
   async function restorePortPollers() {
@@ -4638,8 +5074,10 @@
     $('flasher-refresh-ports-btn').addEventListener('click', loadPorts);
     $('flasher-release-port-btn').addEventListener('click', releasePortPollers);
     $('flasher-restore-port-btn').addEventListener('click', restorePortPollers);
-    $('flasher-scan-btn').addEventListener('click', startScan);
-    $('flasher-scan-cancel-btn').addEventListener('click', cancelScan);
+    $('flasher-scan-btn').addEventListener('click', () => {
+      if (state.scanJobId || state.scanPending) cancelScan();
+      else startScan();
+    });
     $('flasher-fw-refresh-btn').addEventListener('click', () => refreshManifest(true));
     $('flasher-fw-clear-btn').addEventListener('click', clearFirmwareCache);
     $('flasher-fw-upload').addEventListener('change', (ev) => {
@@ -4647,8 +5085,10 @@
       if (f) uploadFirmware(f);
       ev.target.value = '';
     });
-    $('flasher-flash-btn').addEventListener('click', startFlash);
-    $('flasher-flash-cancel-btn').addEventListener('click', cancelFlash);
+    $('flasher-flash-btn').addEventListener('click', () => {
+      if (state.flashJobId || state.flashPending) cancelFlash();
+      else startFlash();
+    });
     configModalEl('flasher-config-close-btn').addEventListener('click', closeConfigModal);
     configModalEl('flasher-config-modal').addEventListener('click', (ev) => {
       if (ev.target && ev.target.dataset && ev.target.dataset.closeConfigModal === '1') closeConfigModal();

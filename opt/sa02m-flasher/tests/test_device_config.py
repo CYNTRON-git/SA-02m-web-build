@@ -24,6 +24,53 @@ class TestDeviceConfig(unittest.TestCase):
         self.assertEqual(patched["signature"], "MR-02m 6AI6AO")
         self.assertEqual(patched["type_code"], module_profiles.MP02_AO6AI6)
 
+    def test_allowed_holding_regs_grant_ai_channel_offsets(self) -> None:
+        # Contract: docs/contracts/module-config-ai.md — per AI channel the write
+        # allow-list grants EXACTLY base, base+4, base+5, base+6; the Input
+        # measured/scaled registers (base+1/+2/+3) are never writable.
+        kind = module_profiles.kind_from_type_code(module_profiles.MP02_AO6AI6)
+        self.assertGreater(int(kind.max_ai), 0)
+        allowed = device_config._allowed_mr_holding_registers(kind)
+        for ch in range(1, int(kind.max_ai) + 1):
+            base = module_profiles.ai_channel_base_register(ch, kind.code, kind)
+            cal = module_profiles.ai_calibration_holding_register(ch, kind.code, kind)
+            self.assertEqual(cal, base + 4)
+            self.assertIn(base, allowed)
+            self.assertIn(base + 4, allowed)
+            self.assertIn(base + 5, allowed)
+            self.assertIn(base + 6, allowed)
+            self.assertNotIn(base + 1, allowed)
+            self.assertNotIn(base + 2, allowed)
+            self.assertNotIn(base + 3, allowed)
+
+    def test_ai_snapshot_exposes_limit_and_fault_fields(self) -> None:
+        # Contract: docs/contracts/module-config-ai.md — the AI snapshot carries
+        # limit_low/limit_high/calibration and decodes Input 107/108 fault bits
+        # (bit ch-1); calibration_applicable is NOT a snapshot field.
+        kind = module_profiles.kind_from_type_code(module_profiles.MP02_AO6AI6)
+
+        def fake_read_regs(send, slave, start, total, input_regs=False, timeout_ms=0):
+            if start == 107:
+                # Input 107 = below word (ch1 bit0 set), 108 = above word (ch2 bit1 set)
+                return [0b000001, 0b000010]
+            return [0] * total
+
+        with (
+            patch.object(device_config, "_read_regs", side_effect=fake_read_regs),
+            patch.object(device_config, "_read_u16", return_value=0),
+        ):
+            channels = device_config._read_ai_channels(object(), 1, kind)
+
+        self.assertEqual(len(channels), int(kind.max_ai))
+        ch1, ch2 = channels[0], channels[1]
+        for key in ("limit_low", "limit_high", "calibration", "fault_low", "fault_high"):
+            self.assertIn(key, ch1)
+        self.assertNotIn("calibration_applicable", ch1)
+        self.assertTrue(ch1["fault_low"])
+        self.assertFalse(ch1["fault_high"])
+        self.assertFalse(ch2["fault_low"])
+        self.assertTrue(ch2["fault_high"])
+
     def test_write_allowed_coil_ignores_relay_mode_timeout_for_mr(self) -> None:
         close_transport = Mock()
         send = object()

@@ -47,10 +47,15 @@ u_in=$(hash_of "$USERNAME"); u_ok=$(hash_of "$SA02M_WEB_USER")
 
 if [ "$u_in" = "$u_ok" ] && web_auth_verify "$PASSWORD" "$STORED_SECRET"; then
     TOKEN=$(web_session_create) || fail_login
+    CSRF=$(web_csrf_token_for_session "$TOKEN" 2>/dev/null || true)
     echo "Status: 302 Found"
     echo "Content-type: text/html; charset=UTF-8"
     # Без HttpOnly: guard в app.js/login.html читает document.cookie (HttpOnly в JS не виден → вечный редирект на логин)
     echo "Set-Cookie: session_token=${TOKEN}; Path=/; SameSite=Lax; Max-Age=864000"
+    # CSRF mirror cookie (JS-readable) — value matches /run/sa02m-web-sessions/<hash>.csrf
+    if [ -n "$CSRF" ]; then
+        echo "Set-Cookie: sa02m_csrf=${CSRF}; Path=/; SameSite=Lax; Max-Age=864000"
+    fi
     echo "Location: /"
     echo ""
 else

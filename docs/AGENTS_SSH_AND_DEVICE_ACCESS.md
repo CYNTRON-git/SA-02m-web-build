@@ -42,6 +42,9 @@ cd C:\Users\admin\Downloads\SA-02m-web-build
 py -3 tools/ssh/sa02m_remote.py exec "systemctl is-active sa02m-flasher nginx"
 py -3 tools/ssh/sa02m_remote.py tail-flasher
 py -3 tools/ssh/sa02m_remote.py watch-flasher    # во время прошивки модулей через веб
+# очистка стендового мусора донора перед образом (не трогает SSH host keys):
+py -3 tools/imaging/run-cleanup-donor.py --dry-run --report
+py -3 tools/imaging/run-cleanup-donor.py --apply --report
 ```
 
 Загрузить `.fw` в кеш на устройстве (если нет DNS / нет интернета):

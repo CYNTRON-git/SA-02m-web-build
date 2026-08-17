@@ -1,0 +1,63 @@
+# SA-02m offline update payload allowlist (git pathspecs / fnmatch).
+# Used only by scripts/pack-offline-update.py on the release machine.
+# Device runner never reads this file — runtime allowlist is manifest.deploy[].
+#
+# Include overlay paths that map to the §2.2 dst prefixes:
+#   /var/www/network_config/
+#   /usr/local/{sbin,lib,libexec}/
+#   /opt/sa02m-*/
+#   /etc/systemd/system/sa02m-
+#   /etc/nginx/
+#   /etc/tmpfiles.d/
+#   /etc/sudoers.d/
+#   /etc/sa02m-update/trusted-keys/
+#
+# Explicitly excluded from packaging (do not add):
+#   .git, tools/, docs/, .ai-dev/, install.sh, scripts/0*.sh,
+#   private/, vendor/, mutable /etc/sa02m_*.conf, htpasswd, network iface configs
+
+www/network_config/
+opt/sa02m-*/
+usr/local/
+migrations/
+
+# Web/update helpers (etc/ → /usr/local/sbin or /usr/local/lib via deploy-map)
+etc/sa02m-web-*.sh
+etc/sa02m-repair-web-env.sh
+etc/sa02m-commit-web-env.sh
+etc/sa02m-pre-start.sh
+etc/sa02m-beeper-override.sh
+etc/sa02m-conf-rm.sh
+etc/sa02m-kernel-select.sh
+etc/sa02m-cpu-profile.sh
+etc/sa02m-set-cpu-profile
+etc/sa02m-set-storage-auto-format
+etc/sa02m-hw-backend-guard.sh
+etc/sa02m-status-blocks-guard.sh
+etc/sa02m-prepare-working-board.sh
+etc/sa02m-failure-monitor.sh
+etc/sa02m-web-backup.sh
+
+# Site config template (packer renders __PORT__/__WEB_ROOT__ before sealing)
+etc/nginx/network_config.conf
+
+# Updater runner/inspect sources (→ /usr/local/libexec/) + public keys + tmpfiles
+etc/sa02m-update-runner.sh
+etc/sa02m-update-inspect.sh
+etc/sa02m-update/
+etc/tmpfiles.d/sa02m.conf
+etc/tmpfiles.d/sa02m-update.conf
+etc/tmpfiles.d/sa02m-devices.conf
+
+# Devices tab (DTV / CE) optional env overrides
+etc/default/sa02m-devices
+
+# systemd units / drop-ins owned by SA-02m (not third-party unit names)
+etc/systemd/sa02m-*
+etc/systemd/system/sa02m-*
+
+# sudoers fragments (mode 0440 on device)
+etc/sudoers.d/sa02m-*
+
+# Helper shipped from scripts/ (not scripts/0*.sh installer stages)
+scripts/sa02m-rs485-stats.sh

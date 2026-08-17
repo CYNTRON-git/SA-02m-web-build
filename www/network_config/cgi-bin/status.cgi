@@ -1801,7 +1801,8 @@ gather_services_metrics() {
     SVC_BRIDGE_INSTALLED=0
     systemd_unit_file_installed sa02m-modbus-mqtt.service && SVC_BRIDGE_INSTALLED=1
     MPLC_INSTALLED=0
-    if systemd_unit_file_installed mplc4.service || systemd_unit_file_installed mplc.service; then
+    if systemd_unit_file_installed mplc4.service || systemd_unit_file_installed mplc.service \
+        || [ -x /etc/init.d/mplc4 ]; then
         MPLC_INSTALLED=1
     fi
 

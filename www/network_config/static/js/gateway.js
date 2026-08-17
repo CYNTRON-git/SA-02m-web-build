@@ -144,7 +144,7 @@ function _gwToggleBtnHtml(active) {
 function _renderDevicePanel(area) {
   const active = _status.service_active;
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
-  const svcText  = active ? 'Сервис активен' : 'Сервис остановлен';
+  const svcText  = _gwUiT(active ? 'Активен' : 'Остановлен');
 
   const activePorts = PORTS.filter(p => (_config[p] || {}).enabled);
   const runningPorts = PORTS.filter(p => {
@@ -155,17 +155,18 @@ function _renderDevicePanel(area) {
   area.innerHTML = `
     <div class="gw-device-stack">
     <div class="widget">
-      <div class="widget-title">Шлюз</div>
-      <div class="gw-svc-summary">
+      <div class="widget-title gw-svc-title">
+        <span class="gw-svc-title-label">Шлюз</span>
         <span id="gw-svc-badge" class="${svcClass}">${svcText}</span>
+      </div>
+      <div class="gw-svc-summary">
         <span class="gw-svc-summary-meta">
           Включено портов: ${activePorts.length} / 5 &nbsp;|&nbsp; Работают: ${runningPorts.length}
         </span>
       </div>
       <div class="btn-group gw-svc-actions">
         ${_gwToggleBtnHtml(active)}
-        <button class="btn btn-sm" id="gw-btn-reload">↺ Перезагрузить конфиг</button>
-        <button class="btn btn-sm btn-warn" id="gw-btn-restart">⟳ Перезапустить</button>
+        <button class="btn btn-sm btn-warn" id="gw-btn-restart">Перезапустить</button>
       </div>
     </div>
 
@@ -210,7 +211,6 @@ function _renderDevicePanel(area) {
     });
   });
   area.querySelector('#gw-btn-toggle').onclick = () => _svcCtrl(active ? 'stop' : 'start');
-  area.querySelector('#gw-btn-reload').onclick  = () => _svcCtrl('reload');
   area.querySelector('#gw-btn-restart').onclick = () => _svcCtrl('restart');
 }
 
@@ -354,7 +354,7 @@ async function _savePort(port) {
 
   _config[port] = cfg;
   const statusEl = document.getElementById(`gw-save-status-${port}`);
-  if (statusEl) { statusEl.textContent = 'Сохранение…'; statusEl.style.color = 'var(--text-sec)'; }
+  if (statusEl) { statusEl.textContent = 'Сохранение'; statusEl.style.color = 'var(--text-sec)'; }
 
   try {
     const resp = await fetch('cgi-bin/gateway_config.cgi', {

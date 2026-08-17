@@ -36,9 +36,9 @@ const CLOUD_STATE_MAP = {
   pair_expired:    ['Код истёк', 'warn'],
   already_claimed: ['Уже привязано', 'err'],
   claim_failed:    ['Облако недоступно', 'err'],
-  enrolling:       ['Активация…', 'warn'],
+  enrolling:       ['Активация', 'warn'],
   enroll_failed:   ['Ошибка активации', 'err'],
-  activating:      ['Активация…', 'warn'],
+  activating:      ['Активация', 'warn'],
   activation_failed: ['Ошибка активации', 'err'],
   unknown:         ['Нет данных', 'unk'],
 };
@@ -52,6 +52,9 @@ const CLOUD_TUNNEL_MAP = {
 
 let _cloudPollTimer = null;
 let _cloudCopyToastTimer = null;
+// Last known cloud reachability (from status `server_reachable`); null until the
+// first poll. Gates the online connect actions — see cloudApplyReachability.
+let _cloudReachable = null;
 
 function cloudSetMsg(text, ok) {
   const msg = $('cloud-msg');
@@ -75,6 +78,24 @@ function cloudSetBadgeEl(el, text, kind) {
 function cloudShowRow(id, show) {
   const row = $(id);
   if (row) row.hidden = !show;
+}
+
+// Gate the online connect actions on server reachability. When the cloud is
+// unreachable, hide the pair button and disable the enroll-token button (both
+// paths need the WAN and fail identically offline), and surface the reserved
+// «нет интернета» notes in their slot — no layout jump. Fail closed: anything
+// other than an explicit `true` (undefined/probe error) counts as offline.
+function cloudApplyReachability(d) {
+  const reachable = d && d.server_reachable === true;
+  _cloudReachable = reachable;
+  const pairBtn = $('cloud-btn-pair');
+  const offline = $('cloud-offline');
+  const actBtn = $('cloud-btn-activate');
+  const tokOffline = $('cloud-token-offline');
+  if (pairBtn) pairBtn.hidden = !reachable;
+  if (offline) offline.hidden = reachable;
+  if (actBtn) actBtn.disabled = !reachable;
+  if (tokOffline) tokOffline.hidden = reachable;
 }
 
 async function cloudPostAction(body) {
@@ -186,6 +207,8 @@ function cloudRenderStatus(d) {
 
   if (fallback) fallback.hidden = isConnected;
   if (idle && isConnected) idle.hidden = true;
+
+  cloudApplyReachability(d);
 }
 
 async function cloudRefreshStatus() {
@@ -227,11 +250,30 @@ window.cloudCopyPairCode = function cloudCopyPairCode() {
   document.body.removeChild(ta);
 };
 
+window.cloudRecheck = async function cloudRecheck() {
+  // Force a fresh reachability probe (busts the 60 s CGI cache).
+  cloudSetMsg(uiT('Проверка соединения'), true);
+  try {
+    const r = await fetch('cgi-bin/cloud.cgi?recheck=1', { cache: 'no-store', credentials: 'same-origin' });
+    const d = await r.json();
+    cloudRenderStatus(d);
+    cloudSetMsg('', true);
+  } catch (e) {
+    cloudSetBadgeEl($('cloud-conn-state'), 'Ошибка', 'err');
+  }
+};
+
 window.cloudStartPairing = async function cloudStartPairing() {
+  // Defensive: the pair button is hidden offline, but never fire a pairing
+  // request (and its "code arrives shortly" message) when we know the WAN is down.
+  if (_cloudReachable === false) {
+    cloudSetMsg(uiT('нет интернета'), false);
+    return;
+  }
   const btn = $('cloud-btn-pair');
   if (btn) {
     btn.disabled = true;
-    btn.textContent = uiT('Запрос кода…');
+    btn.textContent = uiT('Запрос кода');
   }
   try {
     const d = await cloudPostAction({ action: 'pair' });
@@ -302,9 +344,15 @@ window.cloudActivate = async function cloudActivate() {
     return;
   }
 
+  // The enroll-token path needs the WAN too — fail the same way offline.
+  if (_cloudReachable === false) {
+    cloudSetMsg(uiT('нет доступа к серверу'), false);
+    return;
+  }
+
   if (btn) {
     btn.disabled = true;
-    btn.textContent = uiT('Подключение…');
+    btn.textContent = uiT('Подключаю');
   }
 
   try {

@@ -1,0 +1,17 @@
+{
+  "capabilities": {
+    "on_off": {"time_rate_s": 0.75, "rule": "last_value"},
+    "range": {"time_rate_s": 0.75, "rule": "last_value"},
+    "color_setting": {"time_rate_s": 0.75, "rule": "last_value"},
+    "toggle": {"time_rate_s": 0.75, "rule": "last_value"},
+    "mode": {"time_rate_s": 0.75, "rule": "last_value"}
+  },
+  "properties": {
+    "float": {"time_rate_s": 300.0, "rule": "last_value"},
+    "event": {"time_rate_s": 0.01, "rule": "last_value", "fast_batch_s": 0.1}
+  },
+  "batch": {
+    "flush_normal_s": 1.0,
+    "flush_fast_s": 0.1
+  }
+}

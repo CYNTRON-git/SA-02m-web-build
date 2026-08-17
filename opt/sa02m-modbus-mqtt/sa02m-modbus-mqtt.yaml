@@ -100,7 +100,8 @@ devices:
   #   poll_power_s: 5
   #   poll_energy_s: 60
   #   poll_diag_s: 120
-  #   ct_ratio: 4000
+  #   ct_ratio: 4000   # device K×1000 (holding 557..559); NOT applied again in bridge
+  #                     # (CE FW already publishes primary I/P/Q/S)
   #   phases: [A, B, C]
   #   publish_per_phase_energy: false
   #   channels_enabled:

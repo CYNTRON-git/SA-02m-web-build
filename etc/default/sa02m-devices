@@ -1,0 +1,7 @@
+# SA-02m Devices tab (DTV / CE-02m-3)
+# STAND_API_HOST=127.0.0.1
+# STAND_API_PORT=8765
+# STAND_DEVICES_HISTORY_DB=/var/lib/sa02m-stand/devices_history.db
+# STAND_DEVICES_WIDGETS_PATH=/var/lib/sa02m-stand/devices_widgets.json
+# STAND_DEVICES_LOG_INTERVAL_S=1
+# STAND_DEVICES_LOG_INTERVAL_EMMC_S=5

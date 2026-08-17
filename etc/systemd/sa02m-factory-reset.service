@@ -1,0 +1,18 @@
+[Unit]
+Description=SA-02m config-only factory reset
+Documentation=file:///usr/local/libexec/sa02m-factory-reset-runner
+After=local-fs.target
+Conflicts=sa02m-update.service sa02m-update-recover.service
+
+[Service]
+Type=oneshot
+# CGI writes transaction.json (operation=factory_reset, confirm+backup_ok) then
+# starts this unit with no args (plan §4.6).
+ExecStart=/usr/local/libexec/sa02m-factory-reset-runner run
+TimeoutStartSec=0
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+KillMode=process
+SendSIGKILL=no
+TimeoutStopSec=30

@@ -1,9 +1,9 @@
 # Контракт: `POST /cgi-bin/mqtt_set.cgi` — запись выхода устройства MQTT
 
 Домашний адрес контракта единственного веб-эндпоинта записи выходов
-(DO МР-02м и coil-выходы ДТВ) через локальный брокер MQTT. Машинная
-грамматика (поля, JSON, топики) — на английском (`PROTOCOL.md` invariant 5);
-пояснения — на русском.
+(DO МР-02м, AO-уставки МР-02м и coil-выходы ДТВ) через локальный брокер MQTT.
+Машинная грамматика (поля, JSON, топики) — на английском (`PROTOCOL.md`
+invariant 5); пояснения — на русском.
 
 ## Запрос
 
@@ -13,8 +13,13 @@
 | Поле | Allow-list (закрытый) | Отказ |
 |---|---|---|
 | `device` | `^[a-zA-Z0-9._-]+$`, длина ≤ 64 | `bad_device` |
-| `control` | `^(do_([1-9]|1[0-6])|buzzer|leds)$` — `ao_*` сознательно отсутствует | `bad_control` |
-| `value` | ровно `0` или `1` | `bad_value` |
+| `control` | `^(do_([1-9]|1[0-6])|ao_([1-9]|1[0-2])|buzzer|leds)$` | `bad_control` |
+| `value` | для `do_*`/`buzzer`/`leds` — ровно `0` или `1`; для `ao_*` — целое `0..1000` | `bad_value` |
+
+`ao_N` — живая уставка аналогового выхода: целое `0..1000` = `0..10.00 В`,
+пишется мостом в Holding-регистр `33 + N − 1` (тот же регистр, что «Задание»
+флэшера). Грамматика `do_*`/`buzzer`/`leds` не изменилась — обратная
+совместимость для развёрнутых клиентов сохранена.
 
 ## Действие
 
@@ -41,6 +46,7 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
 
 ```json
 {"ok":true,"device":"mr02m-COM1-5","control":"do_3","value":1}
+{"ok":true,"device":"mr02m-COM4-6","control":"ao_1","value":500}
 {"ok":false,"error":"unauthorized"}
 {"ok":false,"error":"post_required"}
 {"ok":false,"error":"bad_device"}   // также bad_control, bad_value
@@ -58,8 +64,11 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
 авторизация — стаб `lib_web_auth.sh` либо валидная сессия). Assert:
 
 1. без сессии → `unauthorized`, публикации нет;
-2. `device=a;rm`, `control=ao_1`, `control=do_17`, `control=do_1;x`,
-   `value=2` → соответствующий отказ, публикации нет;
-3. валидный запрос → ровно одна публикация, топик
+2. отказы (публикации нет): `device=a;rm` → `bad_device`; `control=do_17`,
+   `control=ao_13`, `control=do_1;x` → `bad_control`; `value=2` (для `do_1`),
+   `value=1001` / `value=x` (для `ao_1`) → `bad_value`;
+3. валидные запросы → ровно одна публикация, топик
    `/devices/<device>/controls/<control>/on`, payload = `value`,
-   **в argv нет `-r`**, есть `timeout 5`.
+   **в argv нет `-r`**, есть `timeout 5`. Проверить и DO (`control=do_3`
+   `value=1`), и AO (`control=ao_1` `value=500` → payload `500`; границы
+   `value=0` и `value=1000` приняты).

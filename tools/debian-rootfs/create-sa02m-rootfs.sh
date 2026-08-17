@@ -305,44 +305,57 @@ chmod +x "$OUTPUT/opt/sa02m-web-build/install.sh" \
 
 # ── vendor-payload (CODESYS + MPLC + Node-RED) → /opt/vendor-installers/ ───
 # Копируем большие проприетарные/собранные пакеты ТОЛЬКО если каталоги
-# существуют на build-host (в репо их нет — см. .gitignore /vendor/). Позволяет
-# получать готовый rootfs, с которого устройство ставит стек без сети и pscp.
+# существуют на build-host (в репо их нет — см. .gitignore /vendor/ и /MPLC4/).
+# Позволяет получать готовый rootfs, с которого устройство ставит стек без сети
+# и pscp.
 #
 # Ожидаемая структура на build-host:
 #   $REPO_ROOT/vendor/codesys/codesyscontrol_linuxarm_*.deb
-#   $REPO_ROOT/vendor/mplc4/{install.sh,mplc4.tar.gz,nginx.tar.gz,mplc_cyntron.so}
+#   $REPO_ROOT/MPLC4/cyntron/{install.sh,mplc4.tar.gz,nginx.tar.gz,admin.tar.gz,version.txt}
+#     (единый источник MPLC — retired vendor/mplc4; mplc_cyntron.so и
+#      mplc_protocol_fast_modbus.so подставляются отдельно из firmware/mplc4/ — см. ниже)
 #   $REPO_ROOT/vendor/nodered/{node-red-*.tar.gz,node-v*-linux-armv7l.tar.xz,
 #                              nodered.service,BUILD-INFO.txt}
 #
-# Список ЯВНЫЙ, а не vendor/* : glob молча унёс бы в образ всё, что кто-то
-# оставил в vendor/. Но и молча терять каталог нельзя — раньше vendor/nodered
-# исчезал без единой строки в логе, и свежепрошитая плата отвечала
-# staging_missing. Незнакомый каталог теперь виден как WARN (ниже).
-VENDOR_SUBS="codesys mplc4 nodered"
-vendor_any=0
-for sub in $VENDOR_SUBS; do
-	[ -d "$REPO_ROOT/vendor/$sub" ] && vendor_any=1
-done
+# CODESYS и Node-RED берутся из vendor/<name> ЯВНО, а не vendor/* glob'ом:
+# glob молча унёс бы в образ всё, что кто-то оставил в vendor/. Но и молча
+# терять каталог нельзя — раньше vendor/nodered исчезал без единой строки в
+# логе, и свежепрошитая плата отвечала staging_missing. Незнакомый каталог в
+# vendor/ теперь виден как WARN (ниже). MPLC переехал из vendor/mplc4 в
+# MPLC4/cyntron — единый источник staging.
+VENDOR_SUBS="codesys nodered"
 if [ -d "$REPO_ROOT/vendor" ]; then
 	for d in "$REPO_ROOT"/vendor/*/; do
 		[ -d "$d" ] || continue
 		name=$(basename "$d")
 		case " $VENDOR_SUBS " in
 			*" $name "*) ;;
-			*) log "WARN: vendor/$name не в списке известных ($VENDOR_SUBS) — в образ НЕ копируется" ;;
+			*) log "WARN: vendor/$name не в списке известных ($VENDOR_SUBS; MPLC → MPLC4/cyntron) — в образ НЕ копируется" ;;
 		esac
 	done
 fi
-if [ "$vendor_any" = 1 ]; then
-	log "copy vendor-payload ($VENDOR_SUBS) → /opt/vendor-installers/"
+if [ -d "$REPO_ROOT/vendor/codesys" ] || [ -d "$REPO_ROOT/MPLC4/cyntron" ] \
+   || [ -d "$REPO_ROOT/vendor/nodered" ]; then
+	log "copy vendor-payload (CODESYS/MPLC/Node-RED) → /opt/vendor-installers/"
 	install -d -m 0755 "$OUTPUT/opt/vendor-installers"
-	for sub in $VENDOR_SUBS; do
-		if [ -d "$REPO_ROOT/vendor/$sub" ]; then
-			install -d -m 0755 "$OUTPUT/opt/vendor-installers/$sub"
-			cp -a "$REPO_ROOT/vendor/$sub/." "$OUTPUT/opt/vendor-installers/$sub/"
-			log "  vendor/$sub: $(du -sh "$OUTPUT/opt/vendor-installers/$sub" 2>/dev/null | awk '{print $1}')"
-		fi
-	done
+	# CODESYS payload stays under vendor/codesys; MPLC payload moved to
+	# MPLC4/cyntron (D1 — the single staging source, retiring vendor/mplc4);
+	# Node-RED payload stays under vendor/nodered.
+	if [ -d "$REPO_ROOT/vendor/codesys" ]; then
+		install -d -m 0755 "$OUTPUT/opt/vendor-installers/codesys"
+		cp -a "$REPO_ROOT/vendor/codesys/." "$OUTPUT/opt/vendor-installers/codesys/"
+		log "  vendor/codesys: $(du -sh "$OUTPUT/opt/vendor-installers/codesys" 2>/dev/null | awk '{print $1}')"
+	fi
+	if [ -d "$REPO_ROOT/MPLC4/cyntron" ]; then
+		install -d -m 0755 "$OUTPUT/opt/vendor-installers/mplc4"
+		cp -a "$REPO_ROOT/MPLC4/cyntron/." "$OUTPUT/opt/vendor-installers/mplc4/"
+		log "  MPLC4/cyntron → mplc4: $(du -sh "$OUTPUT/opt/vendor-installers/mplc4" 2>/dev/null | awk '{print $1}')"
+	fi
+	if [ -d "$REPO_ROOT/vendor/nodered" ]; then
+		install -d -m 0755 "$OUTPUT/opt/vendor-installers/nodered"
+		cp -a "$REPO_ROOT/vendor/nodered/." "$OUTPUT/opt/vendor-installers/nodered/"
+		log "  vendor/nodered: $(du -sh "$OUTPUT/opt/vendor-installers/nodered" 2>/dev/null | awk '{print $1}')"
+	fi
 	# Repo-owned runtime assets the on-device install/uninstall entry-point
 	# (etc/sa02m-web-service-ctl.sh) reads from the vendor dirs: the CODESYS
 	# systemd drop-in and the ЦИНТРОН MPLC plugin. Staged here so a freshly
@@ -365,7 +378,13 @@ if [ "$vendor_any" = 1 ]; then
 	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" ]; then
 		install -m 0755 "$REPO_ROOT/firmware/mplc4/mplc_cyntron.so" \
 			"$OUTPUT/opt/vendor-installers/mplc4/mplc_cyntron.so"
-		log "  vendor/mplc4: staged mplc_cyntron.so"
+		log "  mplc4: staged mplc_cyntron.so"
+	fi
+	if [ -d "$OUTPUT/opt/vendor-installers/mplc4" ] \
+	   && [ -f "$REPO_ROOT/firmware/mplc4/mplc_protocol_fast_modbus.so" ]; then
+		install -m 0755 "$REPO_ROOT/firmware/mplc4/mplc_protocol_fast_modbus.so" \
+			"$OUTPUT/opt/vendor-installers/mplc4/mplc_protocol_fast_modbus.so"
+		log "  mplc4: staged mplc_protocol_fast_modbus.so"
 	fi
 fi
 
