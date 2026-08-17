@@ -25,16 +25,24 @@ Vendor-дроп, версия payload **`1.3.10.34421`** (`version.txt`), 5 фа
 vendor-EULA (`.gitignore`: `/MPLC4/` + исключение `!/MPLC4/README.md`). Кладутся
 локально на build-host по инструкции из `docs/vendor-integrations.md`.
 
-## Плагин `mplc_cyntron.so` — отдельно, в git
+## Плагины — отдельно, в git (`firmware/mplc4/`)
 
-Дроп `MPLC4/cyntron/` **не содержит** `.so`. Плагин ЦИНТРОН
-`firmware/mplc4/mplc_cyntron.so` (483 KB) **отслеживается в git** отдельно и
-подставляется в `/opt/vendor-installers/mplc4/` при сборке образа.
+Дроп `MPLC4/cyntron/` **не содержит** `.so`. Оба плагина ЦИНТРОН
+**отслеживаются в git** по пути `firmware/mplc4/` (правильный ABI, `libmpsc++`):
+
+| Плагин | Размер | md5 (первые 8) |
+|---|---|---|
+| `mplc_cyntron.so` | 180356 B | `bf412755` |
+| `mplc_protocol_fast_modbus.so` | 226276 B | `9eba65e3` |
+
+(Прежняя запись «483 KB» относилась к старому, битому драйверу с ABI
+`libstdc++` → SIGSEGV — он больше не поставляется.)
 
 ## Staging при сборке образа
 
 `tools/debian-rootfs/create-sa02m-rootfs.sh` копирует `MPLC4/cyntron/.` →
-`/opt/vendor-installers/mplc4/` и добавляет туда же
-`firmware/mplc4/mplc_cyntron.so`. На устройстве `scripts/09-mplc.sh`
-запускает vendor `install.sh`. Fallback-кандидат для сборки —
-`$REPO/MPLC4/cyntron` (был `$REPO/vendor/mplc4`).
+`/opt/vendor-installers/mplc4/`. На устройстве `scripts/09-mplc.sh` запускает
+vendor `install.sh`, а плагины ставит **из `firmware/mplc4/`** (авторитетный
+git-источник; vendor-каталог — только fallback). Кандидат runtime выбирается
+по **новизне** `version.txt` (не первый попавшийся); ничья/непарсибельная
+версия → копия из репозитория (`$REPO/MPLC4/cyntron`, был `$REPO/vendor/mplc4`).

@@ -19,13 +19,15 @@ WEB_CGI="${WEB_ROOT:-/var/www/network_config}/cgi-bin"
 INSTALL_DIR="/opt/sa02m-alice"
 
 # ── Python deps (socketio optional until client_enabled) ───────────────────
-for pkg in python3 python3-paho-mqtt python3-yaml; do
-    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-        log INFO "apt install $pkg"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >>"$LOG_FILE" 2>&1 || \
-            log WARN "Не удалось установить $pkg"
-    fi
-done
+# Probe the IMPORT first: dpkg -s misses a pip-installed module living at
+# /usr/local/lib/pythonX/dist-packages (this retried paho even when already
+# importable). Already-satisfied ⇒ skip silently. Bounded/offline-aware via
+# lib.sh (never hangs on dead mirrors, never aborts under `set -e`).
+if ! dpkg -s python3 >/dev/null 2>&1; then
+    sa02m_pkg_install_tier optional python3
+fi
+python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
+python3 -c "import yaml"      2>/dev/null || sa02m_pkg_install_tier optional python3-yaml
 if ! python3 -c "import socketio" 2>/dev/null; then
     log INFO "pip3 install python-socketio (client)"
     pip3 install --break-system-packages --quiet "python-socketio[client]" >>"$LOG_FILE" 2>&1 || \
@@ -63,17 +65,41 @@ chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
            /etc/sa02m-alice/sa02m-alice-devices.conf 2>/dev/null || true
 
 # ── systemd ────────────────────────────────────────────────────────────────
+# Capture prior enable-state BEFORE (re)installing the units — the only reliable
+# first-install signal (a freshly-installed unit already reads "disabled").
+_alice_prev_cfg=$(systemctl is-enabled sa02m-alice-config.service 2>/dev/null || true)
+_alice_prev_cli=$(systemctl is-enabled sa02m-alice-client.service 2>/dev/null || true)
+
 install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-client.service" /etc/systemd/system/
 install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-config.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable sa02m-alice-client.service >/dev/null 2>&1 || true
-systemctl enable sa02m-alice-config.service >/dev/null 2>&1 || true
-# Start config API (localhost); client stays in standby (exit 0) until enabled
-systemctl restart sa02m-alice-config.service >/dev/null 2>&1 || \
-    log WARN "sa02m-alice-config не запущен"
-systemctl restart sa02m-alice-client.service >/dev/null 2>&1 || true
+
+# Both Alice services ship DISABLED + STOPPED by default — Operator opt-in
+# policy, same philosophy as the CODESYS install-only pattern
+# (docs/contracts/kernel-conditional-services.md). But this must be idempotent:
+# a device where the operator later ENABLED Alice via the web UI must NOT be
+# forcibly re-disabled on a re-install (the upgrade path). So the OFF default is
+# applied ONLY on first install (prior state unknown/absent); an operator's
+# opt-in is preserved and its code refreshed.
+_alice_apply_default() {
+    local svc=$1 prev=$2
+    if [ -z "$prev" ] || [ "$prev" = unknown ]; then
+        systemctl disable "$svc" >/dev/null 2>&1 || true
+        systemctl stop "$svc" >/dev/null 2>&1 || true
+        log INFO "$svc: выключен по умолчанию (opt-in через веб-интерфейс)"
+    elif [ "$prev" = enabled ]; then
+        systemctl enable "$svc" >/dev/null 2>&1 || true
+        systemctl restart "$svc" >/dev/null 2>&1 || true
+        log INFO "$svc: включён оператором — сохраняем (перезапуск на свежем коде)"
+    else
+        systemctl stop "$svc" >/dev/null 2>&1 || true
+        log INFO "$svc: оставлен выключенным ($prev) — состояние задано оператором"
+    fi
+}
+_alice_apply_default sa02m-alice-config.service "$_alice_prev_cfg"
+_alice_apply_default sa02m-alice-client.service "$_alice_prev_cli"
 
 # ── Privileged CGI helper + sudoers ────────────────────────────────────────
 install -m 0755 -o root -g root \
@@ -86,13 +112,7 @@ cat >"$SUDOERS_FILE" <<'SUDOERS'
 # SA-02m Alice CGI
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-alice-web-trigger.sh
 SUDOERS
-chmod 0440 "$SUDOERS_FILE"
-sed -i 's/\r$//' "$SUDOERS_FILE"
-if visudo -cf "$SUDOERS_FILE" >/dev/null 2>&1; then
-    log OK "sudoers sa02m-alice OK"
-else
-    log WARN "visudo отклонил $SUDOERS_FILE"
-fi
+sa02m_harden_sudoers "$SUDOERS_FILE"
 
 # ── CGI ────────────────────────────────────────────────────────────────────
 for cgi in sa02m_alice_api.cgi sa02m_alice_topics.cgi; do
@@ -111,5 +131,6 @@ if [ -f "$BASE_DIR/www/network_config/static/js/app/alice.js" ]; then
         "$WEB_ROOT_DIR/static/js/app/alice.js"
 fi
 
-log OK "=== [06-alice] sa02m-alice установлен (client_enabled=false по умолчанию) ==="
+log OK "=== [06-alice] sa02m-alice установлен (обе службы выключены по умолчанию) ==="
+log INFO "sa02m-alice-config и sa02m-alice-client: opt-in через веб-интерфейс (не запускаются сами)"
 log INFO "UI: Управление → Яндекс Алиса. Документация: docs/ALICE_INTEGRATION.md"

@@ -20,10 +20,13 @@
 если каталог `$REPO/vendor/{codesys,nodered}/` или `$REPO/MPLC4/cyntron/` есть на
 build-host, его содержимое копируется в rootfs → `/opt/vendor-installers/<служба>/`.
 MPLC переехал с `vendor/mplc4/` на `MPLC4/cyntron/` — единый источник staging
-(см. `MPLC4/README.md`). Плагин `mplc_cyntron.so` **не** входит в vendor-дроп: он
-отслеживается в git по пути `firmware/mplc4/mplc_cyntron.so` и подставляется в
-`/opt/vendor-installers/mplc4/` отдельным шагом сборки rootfs. После первой
-прошивки `install.sh` (шаги `07`, `08` и `09`) их подхватывает.
+(см. `MPLC4/README.md`). Плагины (`mplc_cyntron.so` 180356 B/`bf412755` +
+`mplc_protocol_fast_modbus.so` 226276 B/`9eba65e3`) **не** входят в vendor-дроп:
+оба отслеживаются в git по пути `firmware/mplc4/` и ставятся `09-mplc.sh`
+**оттуда** (vendor-каталог — только fallback). Runtime из двух кандидатов
+(`/opt/vendor-installers/mplc4` и `MPLC4/cyntron`) выбирается по новизне
+`version.txt`. После первой прошивки `install.sh` (шаги `07`, `08` и `09`) их
+подхватывает.
 
 Node-RED — единственный из трёх, чей payload мы **собираем сами**, а не получаем
 от вендора: рецепт и форма — в разделе «Node-RED (оффлайн payload)» ниже.
@@ -84,18 +87,24 @@ Copy-Item "$src\admin.tar.gz"      $dst
 Copy-Item "$src\version.txt"       $dst
 ```
 
-Плагин `mplc_cyntron.so` **не** входит в vendor-дроп `MPLC4/cyntron/` — он
-отслеживается в git по пути `firmware/mplc4/mplc_cyntron.so` и подставляется в
-`/opt/vendor-installers/mplc4/` автоматически при сборке rootfs (см. E12).
+Плагины `mplc_cyntron.so` + `mplc_protocol_fast_modbus.so` **не** входят в
+vendor-дроп `MPLC4/cyntron/` — оба отслеживаются в git по пути `firmware/mplc4/`
+и являются авторитетным источником (правильный ABI); vendor-каталог — только
+fallback.
 
 **Что делает `scripts/09-mplc.sh`:**
 
-1. Запускает vendor `install.sh --use-systemd --http-port=8082 --enable-log`.
+1. Выбирает runtime из кандидатов (`/opt/vendor-installers/mplc4`,
+   `MPLC4/cyntron`) по **новизне** `version.txt` — не первый попавшийся; ничья
+   или непарсибельная версия → копия из репозитория. `SA02M_MPLC_DIR=/path`
+   переопределяет явно.
+2. Запускает vendor `install.sh --use-systemd --http-port=8082 --enable-log`.
    Порт `8082` выбран специально — SA-02m nginx уже на `9999`, порт `80`
    оставлен свободным для сторонних UI на промышленных стендах. Изменить:
    `SA02M_MPLC_HTTP_PORT=8081 ./install.sh`.
-2. Копирует `mplc_cyntron.so` в `/opt/mplc4/` (плагин ЦИНТРОН для драйверов).
-3. Enable/start `mplc4.service`.
+3. Копирует оба плагина в `/opt/mplc4/` **из `firmware/mplc4/`** (fallback —
+   выбранный vendor-каталог).
+4. Enable/start `mplc4.service`.
 
 **Порты MPLC:** `8082/TCP` (nginx UI), `31550/TCP` (mplc_monitor), `30750/TCP`
 (fcgi backend).

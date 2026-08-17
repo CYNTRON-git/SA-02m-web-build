@@ -63,12 +63,8 @@ else
     fi
 fi
 
-# sudoers для управления службами/fuser
-install -m 0440 -o root -g root "$ETC_DIR/sudoers.d/sa02m-flasher" /etc/sudoers.d/sa02m-flasher
-# visudo на Linux не принимает CRLF в sudoers-файлах, а репозиторий может приезжать с Windows line endings.
-sed -i 's/\r$//' /etc/sudoers.d/sa02m-flasher
-visudo -cf /etc/sudoers.d/sa02m-flasher >> "$LOG_FILE" 2>&1 && log OK "sudoers flasher OK" \
-    || log WARN "visudo не принял sudoers.d/sa02m-flasher — проверьте вручную"
+# sudoers для управления службами/fuser (единый дом хардненинга — lib.sh)
+sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-flasher" /etc/sudoers.d/sa02m-flasher
 
 # logrotate
 install -m 0644 -o root -g root "$ETC_DIR/logrotate.d/sa02m-flasher" /etc/logrotate.d/sa02m-flasher
@@ -78,22 +74,45 @@ install -m 0644 -o root -g root "$ETC_DIR/logrotate.d/sa02m-flasher" /etc/logrot
 sed -i 's/\r$//' /etc/logrotate.d/sa02m-flasher
 
 # ── systemd unit ──────────────────────────────────────────────────────────
+# Capture prior state BEFORE (re)installing the unit: an absent unit (empty
+# is-enabled) marks a FIRST install → apply the default-on; an existing device
+# has its enabled/active state PRESERVED — never force-start a flasher the
+# operator deliberately stopped, and never re-enable a disabled one.
+read -r _FL_PREV_EN _FL_PREV_ACT < <(sa02m_capture_svc_state sa02m-flasher.service)
 log INFO "Устанавливаю systemd unit sa02m-flasher.service"
 install -m 0644 -o root -g root "$ETC_DIR/sa02m-flasher.service" /etc/systemd/system/sa02m-flasher.service
 systemctl daemon-reload
-systemctl enable sa02m-flasher.service >> "$LOG_FILE" 2>&1 || log WARN "enable sa02m-flasher не удался"
-systemctl restart sa02m-flasher.service >> "$LOG_FILE" 2>&1 && log OK "sa02m-flasher запущен" \
-    || log WARN "sa02m-flasher не стартовал (journalctl -u sa02m-flasher -n 100)"
+_FL_EXPECT_UP=0
+if [ -z "$_FL_PREV_EN" ] || [ "$_FL_PREV_EN" = unknown ]; then
+    # first install → default on (enable + start on fresh code)
+    systemctl enable sa02m-flasher.service >> "$LOG_FILE" 2>&1 || log WARN "enable sa02m-flasher не удался"
+    systemctl restart sa02m-flasher.service >> "$LOG_FILE" 2>&1 && log OK "sa02m-flasher запущен" \
+        || log WARN "sa02m-flasher не стартовал (journalctl -u sa02m-flasher -n 100)"
+    _FL_EXPECT_UP=1
+else
+    # upgrade → restore EXACTLY the prior state, refreshing code if it was active
+    sa02m_restore_svc_state sa02m-flasher.service "$_FL_PREV_EN" "$_FL_PREV_ACT" refresh
+    if [ "$_FL_PREV_ACT" = active ]; then
+        log OK "sa02m-flasher перезапущен на свежем коде (был активен)"
+        _FL_EXPECT_UP=1
+    else
+        log INFO "sa02m-flasher: прежнее состояние сохранено (en=$_FL_PREV_EN act=$_FL_PREV_ACT) — не форсируем запуск"
+    fi
+fi
 
 # ── Проверки ──────────────────────────────────────────────────────────────
-for _ in $(seq 1 10); do
-    [ -S /run/sa02m-flasher/flasher.sock ] && break
-    sleep 1
-done
-if [ -S /run/sa02m-flasher/flasher.sock ]; then
-    log OK "Unix-сокет /run/sa02m-flasher/flasher.sock создан"
-else
-    log WARN "Сокет /run/sa02m-flasher/flasher.sock не создан — смотрите journalctl"
+# Только когда флэшер должен быть запущен (первый install или был активен) —
+# иначе отсутствие сокета штатно (оператор остановил службу), не WARN.
+if [ "$_FL_EXPECT_UP" = 1 ]; then
+    for _ in $(seq 1 10); do
+        [ -S /run/sa02m-flasher/flasher.sock ] && break
+        sleep 1
+    done
+    if [ -S /run/sa02m-flasher/flasher.sock ]; then
+        log OK "Unix-сокет /run/sa02m-flasher/flasher.sock создан"
+    else
+        log WARN "Сокет /run/sa02m-flasher/flasher.sock не создан — смотрите journalctl"
+    fi
 fi
 
 log OK "=== [04] sa02m-flasher установлен ==="

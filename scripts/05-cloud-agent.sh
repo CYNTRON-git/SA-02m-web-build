@@ -68,13 +68,7 @@ if [ -f "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" ]; then
     log OK "sa02m-cloud-web-trigger.sh установлен"
 fi
 if [ -f "$REPO_ROOT/etc/sudoers.d/sa02m-cloud" ]; then
-    install -m 0440 -o root -g root "$REPO_ROOT/etc/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
-    sed -i 's/\r$//' /etc/sudoers.d/sa02m-cloud
-    if visudo -cf /etc/sudoers.d/sa02m-cloud >/dev/null 2>&1; then
-        log OK "sudoers sa02m-cloud OK"
-    else
-        log WARN "visudo не принял sudoers.d/sa02m-cloud — проверьте вручную"
-    fi
+    sa02m_install_sudoers "$REPO_ROOT/etc/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
 fi
 
 # ── 6. frpc binary ───────────────────────────────────────────────────────────

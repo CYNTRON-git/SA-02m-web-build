@@ -11,10 +11,16 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 # 9999 — конфликта нет, но 80 намеренно не занимаем, чтобы не мешать
 # сторонним UI на промышленных стендах.
 #
-# Источник vendor-payload:
-#   1. $SA02M_MPLC_DIR                — явный путь к каталогу с install.sh.
-#   2. /opt/vendor-installers/mplc4   — на устройстве (после pscp с ПК).
-#   3. $SCRIPT_DIR/../MPLC4/cyntron   — рядом с репо (единый источник, был vendor/mplc4).
+# Источник vendor RUNTIME (mplc4.tar.gz + install.sh):
+#   1. $SA02M_MPLC_DIR                — явный путь (override, берётся как есть).
+#   2. НАИБОЛЕЕ НОВЫЙ из кандидатов по version.txt (не первый попавшийся!):
+#        /opt/vendor-installers/mplc4   — на устройстве (после pscp с ПК),
+#        $SCRIPT_DIR/../MPLC4/cyntron   — рядом с репо (единый источник staging).
+#      Ничья/непарсибельный version.txt → предпочитаем копию из репозитория.
+# Источник ПЛАГИНОВ (mplc_cyntron.so, mplc_protocol_fast_modbus.so) — отдельный
+# и авторитетный: $SCRIPT_DIR/../firmware/mplc4 (в git; правильный ABI), с
+# vendor-каталогом как fallback. Развязано от runtime: стейл-дроп в vendor-дире
+# больше не подсовывает старый драйвер.
 #
 # Отключить: SA02M_SKIP_MPLC=1 ./install.sh
 # ═══════════════════════════════════════════════════════════════════════════
@@ -28,14 +34,47 @@ log INFO "=== [09] Установка MasterSCADA MPLC 4D Runtime ==="
 
 BASE_DIR="$SCRIPT_DIR/.."
 
+# Authoritative, git-tracked plugin source (correct-ABI cyntron + fast_modbus).
+# Decoupled from the runtime source so a stale vendor drop can't win here.
+MPLC_PLUGIN_SRC="$BASE_DIR/firmware/mplc4"
+
+# Print the version string from <dir>/version.txt (first dotted number), or empty.
+_mplc_read_ver() {
+    [ -f "$1/version.txt" ] || return 0
+    grep -m1 -oE '[0-9]+(\.[0-9]+){1,3}' "$1/version.txt" 2>/dev/null || true
+}
+# Return 0 iff version $1 is STRICTLY newer than $2 (version sort).
+_mplc_ver_gt() {
+    [ -n "$1" ] && [ "$1" != "$2" ] \
+        && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ]
+}
+_mplc_valid() { [ -d "$1" ] && [ -f "$1/install.sh" ] && [ -f "$1/mplc4.tar.gz" ]; }
+
+# Runtime source: explicit override wins; otherwise NEWEST-of-candidates, with
+# the repo copy preferred on a tie or any parse failure (Fork A1). Delivery of a
+# git-archive deploy still needs the vendor drop pscp'd to
+# /opt/vendor-installers/mplc4/ first — documented in docs/deployment.md.
+VENDOR_CAND=/opt/vendor-installers/mplc4
+REPO_CAND="$BASE_DIR/MPLC4/cyntron"
 MPLC_SRC="${SA02M_MPLC_DIR:-}"
 if [ -z "$MPLC_SRC" ]; then
-    for cand in /opt/vendor-installers/mplc4 "$BASE_DIR/MPLC4/cyntron"; do
-        if [ -d "$cand" ] && [ -f "$cand/install.sh" ] && [ -f "$cand/mplc4.tar.gz" ]; then
-            MPLC_SRC="$cand"
-            break
+    _v_ok=0; _r_ok=0
+    _mplc_valid "$VENDOR_CAND" && _v_ok=1
+    _mplc_valid "$REPO_CAND"   && _r_ok=1
+    if [ "$_v_ok" = 1 ] && [ "$_r_ok" = 1 ]; then
+        _vver=$(_mplc_read_ver "$VENDOR_CAND")
+        _rver=$(_mplc_read_ver "$REPO_CAND")
+        if [ -n "$_vver" ] && [ -n "$_rver" ] && _mplc_ver_gt "$_vver" "$_rver"; then
+            MPLC_SRC="$VENDOR_CAND"          # vendor strictly newer
+        else
+            MPLC_SRC="$REPO_CAND"            # repo newer, tie, or a parse failure → repo
         fi
-    done
+        log INFO "MPLC runtime: vendor=${_vver:-?} / repo=${_rver:-?} → выбран $MPLC_SRC (новейший, ничья→репо)"
+    elif [ "$_v_ok" = 1 ]; then
+        MPLC_SRC="$VENDOR_CAND"
+    elif [ "$_r_ok" = 1 ]; then
+        MPLC_SRC="$REPO_CAND"
+    fi
 fi
 
 if [ -z "$MPLC_SRC" ] || [ ! -d "$MPLC_SRC" ]; then
@@ -86,19 +125,21 @@ if [ $_rc -ne 0 ]; then
 fi
 log OK "MPLC 4D Runtime установлен в /opt/mplc4/"
 
-if [ -f "$MPLC_SRC/mplc_cyntron.so" ]; then
-    install -m 0755 "$MPLC_SRC/mplc_cyntron.so" /opt/mplc4/mplc_cyntron.so
-    log OK "Плагин mplc_cyntron.so установлен в /opt/mplc4/"
-else
-    log WARN "mplc_cyntron.so не найден в $MPLC_SRC — плагин ЦИНТРОН не установлен"
-fi
-
-if [ -f "$MPLC_SRC/mplc_protocol_fast_modbus.so" ]; then
-    install -m 0755 "$MPLC_SRC/mplc_protocol_fast_modbus.so" /opt/mplc4/mplc_protocol_fast_modbus.so
-    log OK "Плагин mplc_protocol_fast_modbus.so установлен в /opt/mplc4/"
-else
-    log WARN "mplc_protocol_fast_modbus.so не найден в $MPLC_SRC — драйвер fast_modbus не установлен"
-fi
+# Plugins come from the git-tracked firmware/mplc4 (authoritative, correct ABI);
+# the vendor payload dir is only a fallback. This guarantees the right driver
+# regardless of what stale .so a device's vendor dir may hold, and installs
+# fast_modbus (absent from older vendor drops).
+for _so in mplc_cyntron.so mplc_protocol_fast_modbus.so; do
+    if [ -f "$MPLC_PLUGIN_SRC/$_so" ]; then
+        install -m 0755 "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so"
+        log OK "Плагин $_so установлен в /opt/mplc4/ (из firmware/mplc4)"
+    elif [ -f "$MPLC_SRC/$_so" ]; then
+        install -m 0755 "$MPLC_SRC/$_so" "/opt/mplc4/$_so"
+        log OK "Плагин $_so установлен в /opt/mplc4/ (fallback: vendor-дроп $MPLC_SRC)"
+    else
+        log WARN "$_so не найден ни в firmware/mplc4, ни в $MPLC_SRC — плагин не установлен"
+    fi
+done
 
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true

@@ -269,6 +269,22 @@ PYMIG
     esac
 fi
 
+# ── Aggregate sudoers validation ───────────────────────────────────────────
+# Each drop-in installer validates its own file (visudo -cf via
+# sa02m_install_sudoers/sa02m_harden_sudoers), but only the www-only deploy path
+# ran the AGGREGATE `visudo -c`. A CRLF/syntax defect in ANY sudoers.d file
+# breaks sudo globally yet slips the per-file checks; mirror
+# update-www-only.sh so both deploy paths share the same final gate. Fail
+# direction: WARN + keep (never auto-rm — could widen a different failure); the
+# operator sees it in the log and the per-file OK/WARN lines above localise it.
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    if visudo -c >/dev/null 2>&1; then
+        log OK "sudoers: агрегатная проверка visudo -c пройдена"
+    else
+        log WARN "visudo -c: в наборе sudoers есть ошибка — проверьте /etc/sudoers.d"
+    fi
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 log OK "════════════════════════════════════════"

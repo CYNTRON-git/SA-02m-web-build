@@ -62,8 +62,10 @@ www-data ALL=(root) NOPASSWD: /usr/bin/systemctl stop sa02m-serial-gateway
 www-data ALL=(root) NOPASSWD: /usr/bin/systemctl restart sa02m-serial-gateway
 www-data ALL=(root) NOPASSWD: /usr/bin/systemctl reload sa02m-serial-gateway
 SUDOERS
-    chmod 0440 "$SUDOERS_FILE"
 fi
+# Harden (0440 + CRLF strip + visudo) — validates an existing file too. Single
+# home for the recipe (lib.sh). This site previously skipped both steps.
+sa02m_harden_sudoers "$SUDOERS_FILE"
 
 # ── config-apply helper ────────────────────────────────────────────────────
 log INFO "Устанавливаю sa02m-gateway-config-apply.sh"
@@ -100,6 +102,10 @@ install -m 0644 -o www-data -g www-data \
     "$WEB_STATIC/css/main.css"
 
 # ── systemd unit ──────────────────────────────────────────────────────────
+# Capture prior state BEFORE (re)installing the unit — a RUNNING gateway must be
+# restarted so it picks up the fresh .py just rsync'd (same stale-code class as
+# the MQTT bridge); a stopped gateway is left stopped (never force-started).
+read -r _GW_PREV_EN _GW_PREV_ACT < <(sa02m_capture_svc_state "$SVC_NAME.service")
 log INFO "Устанавливаю systemd unit $SVC_NAME.service"
 install -m 0644 -o root -g root \
     "$ETC_DIR/sa02m-serial-gateway.service" \
@@ -114,8 +120,14 @@ else
     systemctl enable "$SVC_NAME" >> "$LOG_FILE" 2>&1 || true
 fi
 
-# Не запускаем автоматически — пользователь включит нужные порты через веб
-log INFO "Служба $SVC_NAME установлена (не запущена — настройте порты через веб-интерфейс)"
-log INFO "Для запуска: systemctl start $SVC_NAME"
+# Restore prior RUNNING state on fresh code; a service the user hadn't started
+# stays stopped (they enable ports via the web UI).
+if [ "$_GW_PREV_ACT" = active ]; then
+    sa02m_restore_svc_state "$SVC_NAME.service" "$_GW_PREV_EN" "$_GW_PREV_ACT" refresh
+    log OK "Служба $SVC_NAME перезапущена на свежем коде (была активна)"
+else
+    log INFO "Служба $SVC_NAME установлена (не запущена — настройте порты через веб-интерфейс)"
+    log INFO "Для запуска: systemctl start $SVC_NAME"
+fi
 
 log INFO "=== [06] sa02m-serial-gateway установлен ==="

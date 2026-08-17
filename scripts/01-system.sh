@@ -95,10 +95,17 @@ elif [ ! -f "$SERIAL_PROFILE_CONF" ] && [ -f "$ETC_REPO/sa02m_serial_profile.con
     log INFO "Установлен шаблон $SERIAL_PROFILE_CONF"
 fi
 
-# ── Required packages ──────────────────────────────────────────────────────
+# ── Packages: two tiers (bounded apt; offline → skip, not hang) ────────────
+# REQUIRED — the web interface is dead without these; a failure still WARNs and
+#            continues (03-webserver surfaces it) but is flagged loudly.
+# DEGRADABLE — feature-local; a miss degrades a widget (I2C DO/beeper/USB,
+#            net-tools), never aborts. The three python modules are ALSO handled
+#            robustly downstream in 05-mqtt.sh (pip fallback + fail-loud import),
+#            so a miss here is not fatal — do NOT re-merge the tiers.
 log INFO "Установка пакетов"
-apt-get update -qq >> "$LOG_FILE" 2>&1
-pkg_install nginx fcgiwrap openssl net-tools psmisc exfatprogs \
+sa02m_apt_update
+sa02m_pkg_install_tier required nginx fcgiwrap openssl
+sa02m_pkg_install_tier optional net-tools psmisc exfatprogs \
     i2c-tools gpiod libgpiod2 python3-libgpiod \
     python3-paho-mqtt python3-yaml python3-serial
 
