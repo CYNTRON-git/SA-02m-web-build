@@ -2,11 +2,24 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-08-05 (whole-project
-audit).
+entries are pruned (history lives in git); last prune 2026-08-17 (whole-project
+audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-17 **[LOW] Decompose worklist — oversized/incohesive files
+  (audit 1.0.5.71 F2).** Split by cohesion, not raw line count, via the
+  `decompose` side-tool: `www/network_config/static/js/flasher.js` (~5130 lines)
+  · `www/network_config/static/css/main.css` (~5249) ·
+  `www/network_config/cgi-bin/status.cgi` (~2508, Bash on the status-poll hot
+  path) · `www/network_config/static/js/mqtt.js` (~2700) ·
+  `www/network_config/static/js/app/status.js` (~2449) ·
+  `opt/sa02m-flasher/.../flash_protocol.py` (~2517). Advisory; refresh of the
+  earlier module-size sweeps. Source: audit 1.0.5.71 F2.
+- [OPEN] 2026-08-17 **[LOW] Cloud deploy/enrollment path absent from
+  `docs/deployment.md` (audit 1.0.5.71 F4).** The cloud enrollment/deploy flow
+  is undocumented in the deployment runbook, already flagged `[?]` in
+  `docs/threat-model.md §7`; document it there. Source: audit 1.0.5.71 F4.
 - [OPEN] 2026-08-06 **[MED] Nothing cross-checks that a canonical `zImage` and
   the module tree it is paired with are the same build — and the panel writes
   that `zImage` to the boot partition.** `zimage_ok()`
@@ -59,27 +72,6 @@ audit).
   harness can drive it — that is a device-code change, which is why this is its
   own change and not a one-liner. Deliberately **not** built into the deletion
   change.
-- [RESOLVED] 2026-08-06 **[MED] `kernel-port/` + `tools/kernel-wb/` + the kernel
-  CI workflow built a kernel no device runs — deleted.** The Operator confirmed
-  the whole fleet runs the 6.1 line, which settled the premise this entry was
-  blocked on. 12 tracked files + the `build-sa02m-kernel` workflow removed;
-  history stays in git. The fact now has a committed home
-  (`.ai-dev/notes/kernel-line.md`) and a machine-checked half
-  (`docs/contracts/kernel-conditional-services.md` §6 + gate pin 8).
-  Every referrer in the recorded list was re-verified and updated in the same
-  change. Two corrections to that list, both evidenced:
-  (a) `docs/bugs/BUGLOG.md:849` is **not** a live ownership rule — it sits under
-  «Оставлено … (не тронуто по задаче)» inside the dated 2026-07-06 de-branding
-  entry, i.e. that task's scope statement in an append-only bug record. It stays
-  unedited; rewriting it would falsify history.
-  (b) The sweep found referrers the list missed — `tools/buildroot/README.md:17-18`,
-  `tools/debian-rootfs/README.md:3,44`, `docs/WB_LINUX_FUTURE_FEATURES.md:63`,
-  `docs/codesys-rt/README.md:14` — all fixed here.
-
-  **The safety condition this carried is now moot and stays moot:** the bench
-  RS-485 load test demanded before any `5.10.35-rt39` kernel reaches a device
-  cannot be triggered — nothing in the repo can produce that artifact any more.
-  It would apply again only to a deliberately revived pipeline.
 - [OPEN] 2026-08-06 **[MED] Stale 5.10.35 assumptions survive in live code after
   the 6.1 migration.** Narrowed 2026-08-06: the two sites this entry named —
   `etc/sa02m-iface-canonical.sh:190` and `install.sh:142-145` — are **fixed**;
@@ -105,16 +97,6 @@ audit).
   Found by the reviewer as a fourth mutation during the backlog sweep, after the
   builder's own three were confirmed.
 
-- [RESOLVED] 2026-08-06 **[was MED, FILED IN ERROR] `lib_rtc.sh` write path
-  still uses local time.** **Wrong — the fix was already on `main` as `fbeac21`
-  (PR #96) when this was filed.** The Orchestrator grepped `lib_rtc.sh` while
-  sitting on a feature branch cut from `main` BEFORE that merge, so the
-  comparison was device-vs-stale-worktree, not device-vs-`main`, and produced a
-  false "the repo is missing the fix" plus a false "do not deploy www" warning
-  to the Operator. **Lesson, worth keeping:** when comparing a device against
-  the repo, read the blob from `origin/main` (`git show origin/main:<path>`),
-  never from the working tree — a feature branch is by definition behind. The
-  real residue of this investigation is the item below.
 - [OPEN] 2026-08-06 **[LOW] «Время с RTC» in the panel now reads 3 hours behind
   «Текущее время», and both are unlabelled.** `index.html:429-438` shows system
   time (local) directly above chip time (UTC, since `fbeac21`). On MSK the RTC
@@ -138,18 +120,6 @@ audit).
   midnight. Only reachable when `date -d` is unavailable (busybox), and the
   DS3231 day-of-week register is never read back by our read path or the kernel
   driver. Cosmetic.
-- [RESOLVED] 2026-08-06 **[LOW] `nodered-pin-consistency` can print `ok` for a
-  removed marker.** Fixed: check 7 now greps UNCOMMENTED lines only (and fails
-  on a file with no executable lines). Driven to failure — with the ru spelling
-  deleted from the ctl matcher the old gate exits 0 with `ok`, the new one
-  exits 1. Was: `nodered-pin-consistency.sh:157` grepped the whole file while
-  `etc/sa02m-web-service-ctl.sh:936` mentions «Запущены потоки» in a *comment*,
-  so deleting the marker from the matcher still satisfied the gate, which then
-  printed `…matches the started-flows marker in both en and ru` at exit 0. The
-  same mutation on `scripts/07-nodered.sh` WAS caught, its ru literal being
-  code-only — that asymmetry was the proof. Never a coverage hole
-  (`nodered-ctl-install` pins the behaviour with two named assertions); the
-  gate's own message was what lied. Reviewer M-A on the nodered-offline change.
 - [OPEN] 2026-08-06 **[LOW] `docs/threat-model.md` has no entry for port 1880.**
   The offline Node-RED work moves a Node-RED footprint onto air-gapped and
   imaged boards, and it composes with the model's existing "no device-side port
@@ -191,21 +161,6 @@ audit).
   endangered — the repair simply does not happen on such a conf. The mirror of
   the CIDR-in-`address` gap already closed. Reviewer N4 on the net-and-log
   hygiene change.
-- [RESOLVED] 2026-08-06 **[LOW] `extract_guard`'s comment over-claims what it
-  pins.** Fixed by asserting the LOCATION, not by softening the claim: the
-  comment now says it pins the suffix, and a named check below `extract_guard`
-  pins the `mktemp "$conf.sa02m-gwtmp.XXXXXX"` template. Driven to failure —
-  with the template moved to `$TMPDIR` the old suite passes, the new one exits 1
-  with the cross-filesystem explanation; the braced `${conf}` spelling still
-  passes (no cry-wolf). `scripts/dev/test-iface-gw-repair.sh`, reviewer N5.
-- [RESOLVED] 2026-08-06 **[LOW] Broken inline code span in `docs/deployment.md:4-5`.**
-  Fixed by rewrapping the paragraph so the path sits on one line. Scanned all
-  146 tracked `*.md` for the same shape (fenced blocks stripped, then split on
-  backticks so odd segments are spans): **23 spans wrap across a line**, and
-  after this fix **none** breaks mid-token — every one joins where a space
-  belongs. So this was the only genuine instance in the tree. Was: renders
-  `.ai-dev/procedures/ deployment.md`, a broken pointer in the file that forbids
-  improvising a deploy. Found by two independent reviewers.
 - [OPEN] 2026-08-05 **[MED — accepted 2026-08-06: KEEP, not to be pruned] Default device password
   hard-coded in the imaging fallback.** `tools/imaging/make-image.sh:20` defaults
   `SSH_PASS` to `cyntron` when `SA02M_PASS` is unset, so a build host without the
@@ -223,15 +178,6 @@ audit).
   relying on the fallback — which is why it was escalated rather than swept, and
   it has now been decided (above). Code
   deliberately unchanged.
-- [RESOLVED] 2026-08-05 **[LOW] x-bit-dependent invocation documented for the rootfs
-  builder.** Fixed in both homes: `tools/debian-rootfs/README.md:31` and the
-  script's own `Usage:` header now say `sudo bash tools/…`, matching
-  `docs/contracts/uboot-boot-script.md` and the sibling `pack-sa02m-image.sh`
-  line. Was: `sudo ./tools/debian-rootfs/create-sa02m-rootfs.sh`, which fails on
-  a fresh clone because tracked `*.sh` are `100644` (all but five).
-  **Residual filed separately below** — nine other 644 scripts are still
-  documented with `./`.
-
 - [OPEN] 2026-08-06 **[LOW] Bulk Russian code comments in shell scripts, against
   invariant 5.** `PROTOCOL.md` invariant 5 puts code comments on the
   machine-facing axis — always English; `docLanguage: ru` reaches only `docs/`
@@ -247,8 +193,8 @@ audit).
   comment lines must be Latin) without a boil-the-ocean translation.
 
 - [OPEN] 2026-08-06 **[LOW] Nine more scripts documented with an x-bit-dependent
-  `./` invocation.** Same class as the rootfs-builder entry above, quantified
-  while fixing it: `etc/storage-mount.sh`, `scripts/03-webserver.sh`,
+  `./` invocation.** Same class as the x-bit-dependent rootfs-builder
+  invocation, quantified while fixing it: `etc/storage-mount.sh`, `scripts/03-webserver.sh`,
   `scripts/update-www-only.sh`, `tools/debian-rootfs/prepare-sa02m-flash-usb.sh`,
   and under `tools/imaging/`: `cleanup-donor.sh`, `flash-receiver.sh`,
   `make-image.sh`, `prepare-flash-media.sh`, `restore-donor-ssh.sh` — all
@@ -266,28 +212,6 @@ audit).
   that returns 0 on failure. Verified during the boot.scr review NOT to carry the
   boot.scr fail-open class (it never generated `boot.scr`), but the same
   swallow-the-error style remains.
-- [RESOLVED] 2026-08-06 **[LOW] Stale bootargs comments after the payload default
-  change.** Both rewritten to the current truth: the default payload
-  `etc/boot.cmd.sa02m.min` sets no `console=` at all (so default images boot with
-  no kernel console anywhere), the opt-in `etc/boot.cmd.sa02m` sets
-  `console=tty1`, and neither ever names a ttyS — which is the property the
-  empty `chosen{}` node and the getty masking both exist to hold. Comment-only,
-  no behaviour change; `bash -n` green on `scripts/01-system.sh`, no `dtc` on
-  this box for the `.dts`. Was: both claimed `console=tty1` "generated from
-  etc/boot.cmd.sa02m".
-- [RESOLVED] 2026-08-06 **[was MED, ALREADY FIXED WHEN RE-READ] Direct sysfs
-  writes of a watchdog timeout above the 16s cap.** **Not fixed by this sweep —
-  fixed by `66212b3` (PR #87) and verified against `origin/main` today.** Both
-  writers now ask for `min(30, max_timeout)` and skip the write when
-  `max_timeout` is unreadable (`etc/sa02m-watchdog-feed.sh:49-57`,
-  `tools/imaging/ssh-flash-safe.sh:153-158`), and `watchdog-cap` pin 8 gates
-  exactly this: no numeric literal above the cap, and every file writing the
-  path must also read `max_timeout`. The entry was filed mid-change against the
-  pre-fix text and never re-read. The one live residue is a cleanup question,
-  not a defect: the feeder is the unit `sa02m-watchdog.conf` masks and disables,
-  so it may be dead code on a correctly-installed device — re-file if that
-  matters, and note `watchdog-cap`'s `WD_SYSFS_MIN_SITES=2` would need lowering
-  with it.
 - [OPEN] 2026-08-05 **[LOW] `watchdog-cap` gate has no meta-test and a loose
   non-vacuity floor.** **Floor half fixed 2026-08-06; the meta-test half is the
   residual, and the original premise needed correcting.** The sweep floor is now
@@ -298,8 +222,8 @@ audit).
   files, and pin 8's `WD_SYSFS_MIN_SITES=2` incidentally covers both, so a drop
   today fails with pin 8's *misleading* message ("the writers moved") rather
   than silently. What was really wrong is that coupling: lower
-  `WD_SYSFS_MIN_SITES` (the feeder is a delete candidate — see the RESOLVED
-  sysfs entry above) and the hole becomes real. Demonstrated: with `etc` dropped
+  `WD_SYSFS_MIN_SITES` (the feeder unit is a delete candidate — it is masked and
+  disabled on a correctly-installed device) and the hole becomes real. Demonstrated: with `etc` dropped
   AND `WD_SYSFS_MIN_SITES=1` the old gate exits 0, the new one exits 1 naming
   `etc/systemd/sa02m-watchdog.conf`. Still OPEN: the widened
   value regex can absorb a following English word on a prose line (fail-closed
@@ -307,26 +231,6 @@ audit).
   gate has no meta-test — matching its two sibling gates
   (`iface-naming-contract`, `kernel-policy-contract`), so this is a shared shape,
   not a regression. Reviewer advisories A5–A7 on the watchdog-cap change.
-- [RESOLVED] 2026-08-06 **[MED] `covers` directory-prefix entries match nothing under
-  `--touched`.** Fixed in `.ai-dev/quality/run.mjs` `coversToRegex()`: a pattern
-  with no glob metacharacter now compiles as a PREFIX with a `/` boundary
-  (`"etc/"` → `/^etc(\/.*)?$/`) instead of literally (`/^etc\/$/`), which is the
-  semantics `tools.json:9` documents. The boundary keeps `"install.sh"` from
-  matching `install.sh.bak` and an exact file path from matching its own
-  `.orig`; the glob branch is untouched. Pinned by a 15-case table in
-  `.ai-dev/quality/run.test.mjs` (row `quality-runner-self-test`) covering the
-  prefix form, the `/` boundary, exact paths, `**` and single-`*`. Driven to
-  failure three ways: the pre-fix `coversToRegex` → 5 assertions fail; the
-  prefix without its `/` boundary → 3 fail; `*` allowed to cross `/` → 1 fails.
-  Effect measured on the fixing branch itself: `iface-naming-contract` and
-  `kernel-policy-contract` went from SKIP (a false green — a skipped row prints
-  PASS) to RUN. **The "vendored, do NOT patch locally" premise was wrong** and
-  is withdrawn: `git log -- .ai-dev/quality/run.mjs` shows `7882252` (#62), a
-  merged local patch to this exact file that also added `run.test.mjs` and its
-  registry row. The file is ours; the practice is patch-and-pin. Was: found by
-  the builder + reviewer during the watchdog-cap work, filed twice (see the
-  2026-07-22 entry) and mis-triaged as NOT A BUG in the 2026-08-06 sweep before
-  the reviewer refuted the premise.
 - [OPEN] 2026-08-05 **[LOW] `autorun.sh` / `autorun-fel.sh` twin drift is
   unpinned.** The two files are byte-identical today and every change so far has
   carried the same hunk to both, but nothing enforces it — unlike the
@@ -402,19 +306,6 @@ audit).
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
   the 1.0.5.46 tests pin backoff/insurance behaviour but not the loop
   itself. Seed for the bridge decompose above. Audit 2026-07-22 (A9).
-- [RESOLVED] 2026-07-22 **[LOW] `run.mjs --touched` vacuous on this repo.**
-  **Both named halves are now fixed, by different changes.** (1) The
-  `git status --short` fallback trimming the whole output before `slice(3)` and
-  mangling the first filename — fixed by **`7882252` (#62)**, not by this sweep;
-  the entry had carried it as live ever since. (2) `coversToRegex` anchoring
-  `^…$` with no prefix semantics, so every scoped row silently skipped — fixed
-  2026-08-06, see the RESOLVED `covers` entry above. The two entries were **not**
-  duplicates: this one named two defects, one of which the other never mentioned.
-  The "vendored framework file — do NOT patch locally" line was wrong (#62 is a
-  merged local patch to that exact file, with a local self-test) and is withdrawn;
-  the sibling D8/D9 entry is about vendored **doc pointers** and stands unchanged.
-  `--touched` is now trustworthy; the full beat remains the ship gate by design.
-  Builder 1.0.5.46.
 - [OPEN] 2026-07-22 **[LOW] HIG font-floor gate residual.** The ui-layout
   driver measures the 11px HIG font floor report-only; gating it is a
   one-line change + a seeded `FONT_WHITELIST` (mirrors the touch/contrast
@@ -444,22 +335,6 @@ audit).
   so this is optional — freeze its POST fields (`cmd`/`mode`/`root_password`)
   and JSON shape (`ok`/`rc`/`output`/`mode`/`truncated`) in a small contract
   entry on the next command-line touch. Audit 2026-08-05 (LOW-7).
-- [RESOLVED 2026-08-06] 2026-07-13 **[LOW] hw-backend-guard static session
-  cookie.** Both rollback guards (`sa02m-hw-backend-guard.sh`,
-  `sa02m-status-blocks-guard.sh`) now default their cookie to EMPTY and assert
-  the response BODY is a JSON object instead — a rollback guard needs no
-  credential, and on the HTTP-200-error-body CGI layer only a body assertion
-  can fail. This entry's own 2026-07-13 reading («`curl -fsS` still succeeds»)
-  was the correct one and is what identified the real defect: the probes did
-  not fail spuriously, they could not fail AT ALL. **Correcting the record:**
-  the 2026-08-06 audit's finding F3 claimed the opposite — that a 401 made
-  `curl -fsS` exit 22 so the tools "always roll back and blame the device", and
-  graded it MED. That inference is wrong: `status.cgi` answers HTTP **200**
-  with `{"error":"unauthorized"}` (no `Status:` line, and `location /cgi-bin/`
-  carries no `auth_request`), so the probes always passed. Severity is LOW and
-  the defect was a different one. Recorded here because the audit file itself
-  is a transient, gitignored artifact. Fixed with the port-lease work; the
-  class is now gated repo-wide by `no-retired-session-token`.
 - [OPEN] 2026-08-06 **[LOW] `sa02m-failure-monitor.sh` probe cannot fail.**
   `etc/sa02m-failure-monitor.sh:18,127` probes `status.cgi?part=priority` with
   `curl -fsS` and no cookie. Same class as the guards above, but this one feeds
@@ -502,54 +377,6 @@ audit).
   paths that don't exist in this repo. These are vendored framework files — do
   NOT edit locally (upstream drift); route as downstream-feedback on the next
   protocol upgrade.
-- [RESOLVED] 2026-08-06 **[MED] `etc/sa02m-kernel-select.sh` defaulted to a
-  kernel pair no device carries.** Both defaults were wrong, not just the RT one:
-  `SMP_VER_DEFAULT=5.10.35` and `RT_VER_DEFAULT=5.10.35-rt36`. Now `6.1.0-rc6` /
-  `6.1.0-rc6-rt4`, and the detector's case arm was widened to match them
-  (`*sa02m*|5.10.35*|6.1.0-rc6*`) — without that the new defaults would have had
-  the same unrescuable shape as the old ones. The live-fault case this entry
-  named (a 6.1 board booted SMP with no conf persisting a bogus RT version via
-  `write_conf()`) is closed, and its mirror (booted RT, bogus SMP version) with
-  it. Pinned by `kernel-policy-contract` pin 8 against
-  `docs/contracts/kernel-conditional-services.md` §6 — verified RED against the
-  pre-fix file, GREEN after.
-
-  **Disposition — merge, then bench** (Reviewer's judgement 2026-08-06, accepted
-  by the Orchestrator and relayed to the Operator). Blocking a strict improvement
-  would leave the *worse* behaviour deployed: the old defaults made the panel
-  refuse a profile the board physically has. The Reviewer ran the state machine
-  against nine synthetic `/lib/modules` fixtures — no scenario where the new code
-  is worse, unmigrated 5.10 boards byte-identical, and a board the old script had
-  already poisoned is repaired by the widened arm.
-
-  **Outstanding condition, not optional:** the device half must **not reach the
-  fleet** before a bench check of `sa02m-kernel-select.sh status` on a board with
-  `/etc/sa02m_kernel.conf` removed, **on both profiles** (booted SMP and booted
-  RT — the fault was mirrored across the two). Merging the repo change does not
-  discharge this; deploying to devices does.
-- [RESOLVED] 2026-08-06 **[LOW] `kernel-port/README.md:35` documented a patch
-  file that never existed.** Moot — the file is deleted with the tree. The
-  underlying fact (rt36 belongs to 5.10.27; 5.10.35 only ever had rt39) survives
-  in `docs/decisions/rt-patch-pinning.md`, which is kept precisely for it.
-- [RESOLVED] 2026-08-06 **[MED] The `.deb` job of `build-sa02m-kernel` had never
-  completed once.** Moot — workflow deleted. It was never going to be worth the
-  deliberate `workflow_dispatch` run: the artefact it would have proven is a
-  kernel line no device runs.
-- [RESOLVED] 2026-08-06 **[MED] The RT patch fallback left a half-patched kernel
-  tree.** Moot — `tools/kernel-wb/build-sa02m-kernel.sh` and `kernel-port/apply.sh`,
-  the two sites carrying the `patch --merge=diff3` shape, are both deleted.
-- [RESOLVED] 2026-08-06 **[MED] The kernel build's WB base was a moving branch
-  ref.** Moot — the build script is deleted. The warning itself is preserved in
-  `docs/decisions/rt-patch-pinning.md`, which now carries an OBSOLETE banner
-  explaining that its measurements were only ever valid against WB HEAD
-  `048d31b`: anyone reviving the port inherits the unpinned-base problem intact.
-- [RESOLVED] 2026-08-06 **[LOW] `build-sa02m-kernel.sh` .deb collection was a
-  no-op and the package version hid the RT level.** Moot — script deleted.
-- [RESOLVED] 2026-08-06 **[LOW] `build-sa02m-kernel` only fired on kernel paths,
-  so a red workflow went unnoticed for months.** Moot — workflow deleted;
-  `web-quality` is now the only workflow in the repo, and it runs on every PR.
-  The general lesson (a path-filtered workflow can rot unseen) is recorded in
-  `.ai-dev/notes/ci-budget.md`.
 - [OPEN] 2026-07-12 **[task] On-device verification (pre-deploy).** All device-
   side changes tested only locally/logically. Verify on a real SA-02m before
   deploy: login (hashed + legacy plaintext), password change, network apply +
