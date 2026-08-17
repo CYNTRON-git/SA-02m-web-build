@@ -136,5 +136,37 @@ else
     fail "helper must refuse when the flasher holds the COM lease"
 fi
 
+# ── 6. GET license read (points/clients) is bounded and fails SAFE ──────────
+# The GET meta reads the newest MPLC4 runtime log and maps InstancesLimit→points,
+# SessionsLimit→clients; any read/parse error must degrade to unknown, never
+# crash the GET.
+if grep -q '/var/log/mplc4/0' "$CGI"; then
+    pass "CGI reads the MPLC4 runtime log dir for the license"
+else
+    fail "CGI must read /var/log/mplc4/0 for the license field"
+fi
+if grep -q 'InstancesLimit' "$CGI" && grep -q 'SessionsLimit' "$CGI"; then
+    pass "CGI maps InstancesLimit→points and SessionsLimit→clients"
+else
+    fail "CGI must parse InstancesLimit (points) and SessionsLimit (clients)"
+fi
+# Not-activated demo state must be detected (numbers suppressed).
+if grep -q 'Not activated' "$CGI"; then
+    pass "CGI detects the 'Not activated' demo state"
+else
+    fail "CGI must detect 'Not activated' (report not-activated, not demo numbers)"
+fi
+# Fail-safe: the unknown fallback + the bounded tail read must both be present.
+if grep -q '"unknown": True' "$CGI" && grep -q 'activated.*false.*unknown' "$CGI"; then
+    pass "CGI license read fails safe to unknown (in-Python + shell fallback)"
+else
+    fail "CGI license read must fail safe to license:{activated:false,unknown:true}"
+fi
+if grep -qE 'cap = [0-9]+' "$CGI" && grep -q 'read > cap' "$CGI"; then
+    pass "CGI bounds the license log read (byte cap on the streaming pass)"
+else
+    fail "CGI must bound the license log read (a byte cap, not an unbounded read)"
+fi
+
 [ "$fails" = 0 ] || printf 'mplc-project-deploy-contract: %s check(s) failed — see docs/contracts/mplc-project-deploy.md\n' "$fails"
 exit "$fails"

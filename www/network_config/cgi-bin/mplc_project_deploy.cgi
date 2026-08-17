@@ -57,20 +57,85 @@ if [ "$METHOD" = "GET" ] && printf '%s' "${QUERY_STRING:-}" | grep -q 'result=1'
 fi
 
 # ── GET — currently deployed project meta (read cfg/ProjInfo.json directly) ──
+# Also reports the MPLC4 runtime license (points/clients) parsed from the newest
+# /var/log/mplc4/0/<date>.txt <Protect> block — see docs/contracts/mplc-project-
+# deploy.md. World-readable log; bounded forward scan (poll-path hygiene); fails
+# SAFE to license.unknown on any read/parse error — never crashes the GET.
 if [ "$METHOD" = "GET" ]; then
   _json_headers
-  CFG_DIR="$CFG_DIR" python3 - <<'PY' 2>/dev/null || printf '{"ok":true,"deployed":false}\n'
-import json, os
+  CFG_DIR="$CFG_DIR" MPLC_LOG_DIR=/var/log/mplc4/0 \
+    python3 - <<'PY' 2>/dev/null || printf '{"ok":true,"deployed":false,"license":{"activated":false,"unknown":true}}\n'
+import glob
+import json
+import os
+import re
 from pathlib import Path
+
+
+def read_license():
+    """Latest <Protect> block of the newest runtime log → license summary.
+
+    InstancesLimit → точки (points); SessionsLimit → клиенты (clients). A
+    'Not activated' line in the latest start block means the runtime is on demo
+    defaults → report not-activated, not the numbers. Any failure → unknown.
+
+    The Protect block is logged ONCE per runtime start, then buried under
+    thousands of periodic heartbeat lines — so a tail read would miss it. Scan
+    forward in a single O(1)-memory streaming pass (bounded by a hard byte cap;
+    logrotate keeps daily logs far smaller), keeping the LAST start's values and
+    resetting the activation verdict at each new start header (AllowedVersionDate).
+    """
+    try:
+        logs = glob.glob(os.path.join(os.environ["MPLC_LOG_DIR"], "*.txt"))
+        if not logs:
+            return {"activated": False, "unknown": True}
+        newest = max(logs, key=os.path.getmtime)
+        points = clients = None
+        not_activated = False
+        seen_protect = False
+        cap = 67108864  # 64 MiB read ceiling (safety; daily logs are logrotated)
+        read = 0
+        with open(newest, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                read += len(line)
+                if read > cap:
+                    break
+                if "AllowedVersionDate=" in line:
+                    # a new runtime-start Protect block begins — reset the verdict
+                    # so it reflects only the LATEST start.
+                    not_activated = False
+                    seen_protect = True
+                if "Not activated" in line:
+                    not_activated = True
+                if "Limit=" in line:
+                    m = re.search(r"InstancesLimit=(\d+)", line)
+                    if m:
+                        points = int(m.group(1))
+                    m = re.search(r"SessionsLimit=(\d+)", line)
+                    if m:
+                        clients = int(m.group(1))
+        if not seen_protect and points is None and clients is None:
+            return {"activated": False, "unknown": True}
+        if not_activated:
+            return {"activated": False}
+        if points is None or clients is None:
+            return {"activated": False, "unknown": True}
+        return {"activated": True, "points": points, "clients": clients}
+    except Exception:
+        return {"activated": False, "unknown": True}
+
+
+lic = read_license()
 cfg = Path(os.environ["CFG_DIR"])
 pj = cfg / "ProjInfo.json"
 if not pj.is_file():
-    print(json.dumps({"ok": True, "deployed": False}))
+    print(json.dumps({"ok": True, "deployed": False, "license": lic}, ensure_ascii=False))
     raise SystemExit
 try:
     d = json.loads(pj.read_text(encoding="utf-8", errors="replace"))
 except Exception:
-    print(json.dumps({"ok": True, "deployed": True, "project": None}))
+    print(json.dumps({"ok": True, "deployed": True, "project": None, "license": lic},
+                     ensure_ascii=False))
     raise SystemExit
 vi = d.get("VersionEditsInfo") or {}
 print(json.dumps({
@@ -81,6 +146,7 @@ print(json.dumps({
         "id": d.get("ProjectId"),
         "ide_version": (vi.get("IDEVersion") if isinstance(vi, dict) else None),
     },
+    "license": lic,
 }, ensure_ascii=False))
 PY
   exit 0

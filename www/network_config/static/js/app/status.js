@@ -2049,6 +2049,7 @@ function _mplcProjFlasherBusy() {
 
 function loadMplcProjectMeta() {
   var cur = document.getElementById('mplc-proj-current');
+  var lic = document.getElementById('mplc-license-line');
   fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi', {
     credentials: 'same-origin', cache: 'no-store'
   }, 8000)
@@ -2061,6 +2062,18 @@ function loadMplcProjectMeta() {
             (j.project.ide_version ? ' (IDE ' + j.project.ide_version + ')' : '');
         } else {
           cur.textContent = uiT('проект не развёрнут');
+        }
+      }
+      if (lic) {
+        var L = j.license;
+        if (L && L.activated === true &&
+            typeof L.points === 'number' && typeof L.clients === 'number') {
+          lic.textContent = uiT('Точки') + ': ' + L.points +
+            ' · ' + uiT('Клиенты') + ': ' + L.clients;
+        } else if (L && L.activated === false && !L.unknown) {
+          lic.textContent = uiT('не активирована');
+        } else {
+          lic.textContent = '—';
         }
       }
     })
