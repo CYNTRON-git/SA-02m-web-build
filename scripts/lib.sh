@@ -259,16 +259,204 @@ sa02m_systemctl() {
     fi
 }
 
-pkg_install() {
-    local pkgs=("$@")
-    local missing=()
-    for p in "${pkgs[@]}"; do
-        dpkg -l "$p" &>/dev/null || missing+=("$p")
-    done
-    if [ ${#missing[@]} -gt 0 ]; then
-        log INFO "Установка пакетов: ${missing[*]}"
-        apt-get install -y "${missing[@]}" >> "$LOG_FILE" 2>&1
+# ── Bounded apt + offline fast-path ────────────────────────────────────────
+# The installer must fail FAST when offline, not grind for minutes against
+# unreachable mirrors (a full run once spent ~6 min on `apt-get update` against
+# 6 dead mirrors). Two single-home pieces used by every module:
+#   1) bounded apt options — short per-mirror timeout, no retry storm, IPv4
+#      (an A40i on a dead-IPv6 LAN otherwise waits out the v6 timeout per
+#      request), all wrapped in `timeout SA02M_APT_TIMEOUT_SEC`;
+#   2) a ONE-SHOT online probe whose verdict is cached for the whole run — when
+#      offline, every apt op is skipped and the caller falls through to its
+#      [ -f ]/pip/vendored guards.
+SA02M_APT_TIMEOUT_SEC="${SA02M_APT_TIMEOUT_SEC:-90}"
+SA02M_ONLINE_CACHE=""
+
+# Bounded apt options as a word-split string (intentionally unquoted at the call
+# site). 6 s per-mirror connect/read timeout; a single retry, not the default
+# storm; force IPv4.
+sa02m_apt_opts() {
+    printf '%s' "-o Acquire::Retries=1 -o Acquire::http::Timeout=6 -o Acquire::https::Timeout=6 -o Acquire::ForceIPv4=true"
+}
+
+# Return 0 iff the box looks online. Probes once (<=3 s) and caches the verdict.
+# Fast DNS+resolve of the Ubuntu mirror host; falls back to a TCP:53 probe of
+# the default gateway when DNS itself is the thing that is down. No `timeout`
+# binary → assume online and rely on the bounded apt opts to cap the cost.
+sa02m_online() {
+    case "$SA02M_ONLINE_CACHE" in
+        yes) return 0 ;;
+        no)  return 1 ;;
+    esac
+    if ! command -v timeout >/dev/null 2>&1; then
+        SA02M_ONLINE_CACHE=yes; return 0
     fi
+    if timeout 3 getent hosts ports.ubuntu.com >/dev/null 2>&1; then
+        SA02M_ONLINE_CACHE=yes; return 0
+    fi
+    local gw
+    gw=$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i=="via"){print $(i+1); exit}}') || true
+    if [ -n "${gw:-}" ] && timeout 3 bash -c "exec 3<>/dev/tcp/${gw}/53" 2>/dev/null; then
+        SA02M_ONLINE_CACHE=yes; return 0
+    fi
+    SA02M_ONLINE_CACHE=no
+    return 1
+}
+
+# `apt-get update` with bounded opts; skipped entirely when offline. Never
+# aborts the install — a failed update just means the caller works from the
+# already-cached package index.
+sa02m_apt_update() {
+    if ! sa02m_online; then
+        log WARN "Нет сети — пропускаю apt-get update (offline fast-path)"
+        return 0
+    fi
+    local sec=${SA02M_APT_TIMEOUT_SEC:-90}
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$sec" apt-get $(sa02m_apt_opts) update -qq >> "$LOG_FILE" 2>&1 \
+            || log WARN "apt-get update: ошибка/таймаут — продолжаю (offline/медленные зеркала)"
+    else
+        apt-get $(sa02m_apt_opts) update -qq >> "$LOG_FILE" 2>&1 \
+            || log WARN "apt-get update: ошибка — продолжаю"
+    fi
+    return 0
+}
+
+# sa02m_pkg_install_tier required|optional <pkg>...
+# Install only the still-missing packages, with bounded opts. Offline ⇒ skip and
+# WARN (the caller's downstream guards cover the degraded case). A failed
+# OPTIONAL package → per-pkg WARN + continue; a failed REQUIRED package → a
+# prominent WARN naming the consequence. Never aborts the install (safe even
+# where the caller runs `set -e`).
+sa02m_pkg_install_tier() {
+    local tier=$1; shift
+    local missing=() p
+    for p in "$@"; do
+        dpkg -l "$p" 2>/dev/null | grep -q "^ii" || missing+=("$p")
+    done
+    [ ${#missing[@]} -gt 0 ] || return 0
+    if ! sa02m_online; then
+        if [ "$tier" = required ]; then
+            log WARN "ОФФЛАЙН: обязательные пакеты не установлены: ${missing[*]} — веб-интерфейс может не подняться (проявит 03-webserver)"
+        else
+            log WARN "ОФФЛАЙН: опциональные пакеты пропущены: ${missing[*]} (функции деградируют; продолжаю)"
+        fi
+        return 0
+    fi
+    log INFO "Установка пакетов ($tier): ${missing[*]}"
+    local sec=${SA02M_APT_TIMEOUT_SEC:-90}
+    if command -v timeout >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive timeout "$sec" apt-get $(sa02m_apt_opts) install -y "${missing[@]}" >> "$LOG_FILE" 2>&1 \
+            && { log OK "Установлены: ${missing[*]}"; return 0; }
+    else
+        DEBIAN_FRONTEND=noninteractive apt-get $(sa02m_apt_opts) install -y "${missing[@]}" >> "$LOG_FILE" 2>&1 \
+            && { log OK "Установлены: ${missing[*]}"; return 0; }
+    fi
+    local still=() q
+    for q in "${missing[@]}"; do
+        dpkg -l "$q" 2>/dev/null | grep -q "^ii" || still+=("$q")
+    done
+    if [ ${#still[@]} -gt 0 ]; then
+        if [ "$tier" = required ]; then
+            log WARN "ОБЯЗАТЕЛЬНЫЕ пакеты не установились: ${still[*]} — веб-интерфейс может не подняться"
+        else
+            for q in "${still[@]}"; do
+                log WARN "опциональный пакет не установлен: $q (функция деградирует)"
+            done
+        fi
+    fi
+    return 0
+}
+
+# Back-compat thin wrapper: bounded + offline-aware, non-aborting. Existing
+# callers pass a flat package list (mosquitto, openssl, …); they degrade
+# gracefully like the optional tier.
+pkg_install() {
+    sa02m_pkg_install_tier optional "$@"
+}
+
+# ── sudoers drop-in install: single home ────────────────────────────────────
+# One place for the "install a /etc/sudoers.d drop-in safely" recipe that was
+# copy-pasted (unevenly — some sites skipped the CRLF strip or the visudo check)
+# across the 03/04/05/06 installers: enforce 0440 root:root, strip CRLF (a
+# Windows-checkout \r is a visudo syntax error that breaks sudo globally —
+# BUGLOG sa02m-flasher), validate with `visudo -cf`. A rejected file is
+# WARN-and-kept — never auto-rm (could widen a different failure); the aggregate
+# `visudo -c` at the end of install.sh is the fail-closed catch. Never aborts.
+
+# Harden a sudoers drop-in already written to <dst> (for the installers that
+# generate their drop-in content inline via a heredoc).
+sa02m_harden_sudoers() {
+    local dst=$1
+    chown root:root "$dst" 2>/dev/null || true
+    chmod 0440 "$dst" 2>/dev/null || true
+    sed -i 's/\r$//' "$dst" 2>/dev/null || true
+    if visudo -cf "$dst" >/dev/null 2>&1; then
+        log OK "sudoers $(basename "$dst") OK"
+    else
+        log WARN "visudo отклонил $dst — файл оставлен как есть (см. итоговый visudo -c)"
+    fi
+    return 0
+}
+
+# Install a sudoers drop-in from repo <src> to <dst>, then harden it.
+sa02m_install_sudoers() {
+    local src=$1 dst=$2
+    if [ ! -f "$src" ]; then
+        log WARN "sudoers-источник $src не найден — пропуск"
+        return 0
+    fi
+    install -m 0440 -o root -g root "$src" "$dst" 2>>"$LOG_FILE" || {
+        log WARN "не удалось установить sudoers $dst из $src"
+        return 0
+    }
+    sa02m_harden_sudoers "$dst"
+    return 0
+}
+
+# ── Service state capture / restore ─────────────────────────────────────────
+# Record a service's enabled/active state BEFORE the installer touches it, then
+# restore EXACTLY that state after the new code lands — so a full re-install of
+# a configured device comes back with the SAME services running it had before,
+# on fresh code. Port-lease-safe: the installer does orderly restarts only, it
+# never grabs the flasher lease (sa02m-domain.md ## Subsystems). Direction
+# guarantees: never ENABLE a service that was disabled (no autostart widening),
+# never leave a service the operator was RUNNING stopped (the MQTT-bridge
+# stale-code failure this exists to prevent).
+
+# sa02m_capture_svc_state <service>  → prints "<enabled> <active>" tokens (each
+# "unknown" when the unit is absent / the query fails). Capture BEFORE the unit
+# file is (re)installed: a freshly-installed unit already reads "disabled", so
+# only a pre-install probe distinguishes a first install from an upgrade.
+sa02m_capture_svc_state() {
+    local svc=$1 en act
+    en=$(sa02m_systemctl is-enabled "$svc" 2>/dev/null) || true
+    act=$(sa02m_systemctl is-active "$svc" 2>/dev/null) || true
+    printf '%s %s\n' "${en:-unknown}" "${act:-unknown}"
+}
+
+# sa02m_restore_svc_state <service> <prev_enabled> <prev_active> [refresh|start]
+# Pure restore — never widens state:
+#   * re-enable ONLY if it was enabled (never newly enable a disabled unit);
+#   * if it WAS active: `refresh` → restart (load new code); `start` (default) →
+#     start only if not already running; if it was NOT active, leave it stopped.
+# The caller keeps its own FIRST-INSTALL default (its existing enable/start
+# lines); this layer re-asserts a real prior runtime state on the upgrade path.
+sa02m_restore_svc_state() {
+    local svc=$1 prev_en=$2 prev_act=$3 mode=${4:-start}
+    [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
+    if [ "$prev_en" = enabled ]; then
+        sa02m_systemctl enable "$svc" >> "$LOG_FILE" 2>&1 || true
+    fi
+    if [ "$prev_act" = active ]; then
+        if [ "$mode" = refresh ]; then
+            sa02m_systemctl restart "$svc" >> "$LOG_FILE" 2>&1 || true
+        else
+            sa02m_systemctl is-active --quiet "$svc" 2>/dev/null \
+                || sa02m_systemctl start "$svc" >> "$LOG_FILE" 2>&1 || true
+        fi
+    fi
+    return 0
 }
 
 svc_enable() {

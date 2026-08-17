@@ -119,6 +119,12 @@ log OK "Python-зависимости установлены и импортир
 # ── 3. Modbus→MQTT мост ───────────────────────────────────────────────────────
 log INFO "Деплой Modbus→MQTT моста..."
 
+# Capture the bridge's prior state BEFORE copying fresh code. A RUNNING bridge
+# must be restarted after the new .py land, or it keeps executing STALE code
+# until a manual restart/reboot (the live-device upgrade defect this fixes). We
+# never disable an enabled bridge and never start one the operator had stopped.
+read -r _BRIDGE_PREV_EN _BRIDGE_PREV_ACT < <(sa02m_capture_svc_state sa02m-modbus-mqtt.service)
+
 BRIDGE_DIR="/opt/sa02m-modbus-mqtt"
 install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 
@@ -163,8 +169,16 @@ sa02m_systemctl daemon-reload
 sa02m_systemctl enable sa02m-modbus-mqtt.service >> "$LOG_FILE" 2>&1 || true
 sa02m_systemctl enable sa02m-telemetry.service   >> "$LOG_FILE" 2>&1 || true
 
-# Не запускаем мост автоматически — сначала пользователь должен настроить устройства
-log INFO "sa02m-modbus-mqtt.service включён (не запущен — настройте устройства через веб-интерфейс)"
+# First install: leave the bridge enabled-but-stopped (user configures devices
+# first). Upgrade: restore the prior RUNNING state on fresh code so a running
+# bridge never keeps executing stale .py, and a bridge the operator was running
+# is never left stopped (the hard rule of this fix).
+if [ "$_BRIDGE_PREV_ACT" = active ]; then
+    sa02m_restore_svc_state sa02m-modbus-mqtt.service "$_BRIDGE_PREV_EN" "$_BRIDGE_PREV_ACT" refresh
+    log OK "sa02m-modbus-mqtt перезапущен на свежем коде (был активен до установки)"
+else
+    log INFO "sa02m-modbus-mqtt.service включён (не запущен — настройте устройства через веб-интерфейс)"
+fi
 
 # Телеметрию запускаем сразу
 sa02m_systemctl restart sa02m-telemetry.service >> "$LOG_FILE" 2>&1 && \
@@ -192,10 +206,7 @@ fi
 
 # ── 5. Sudoers для www-data ───────────────────────────────────────────────────
 log INFO "Устанавливаю sudoers sa02m-mqtt..."
-install -m 0440 -o root -g root "$ETC_DIR/sudoers.d/sa02m-mqtt" /etc/sudoers.d/sa02m-mqtt
-sed -i 's/\r$//' /etc/sudoers.d/sa02m-mqtt
-visudo -cf /etc/sudoers.d/sa02m-mqtt >> "$LOG_FILE" 2>&1 && log OK "sudoers sa02m-mqtt OK" \
-    || log WARN "visudo не принял sudoers sa02m-mqtt — проверьте вручную"
+sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-mqtt" /etc/sudoers.d/sa02m-mqtt
 
 # ── 6. nginx: добавить location для SSE mqtt_monitor.cgi ─────────────────────
 NGINX_CONF_SRC="$ETC_DIR/nginx/network_config.conf"

@@ -160,7 +160,10 @@ if mkdir -p "$STATEDIR" 2>/dev/null; then
             chmod 644 "$STATEDIR/deployed_commit" "$STATEDIR/deployed_at" 2>/dev/null || true
         fi
     else
-        log WARN "Нет git в $REPO_ROOT — в deployed_commit записана пометка по APP_VERSION или unknown"
+        # Expected on a git-archive deploy (no .git in the tarball) — the
+        # APP_VERSION fallback below is correct and sufficient. INFO, not WARN,
+        # so it stops reading as a defect in log reviews.
+        log INFO "Нет .git в $REPO_ROOT (штатно для git-archive деплоя) — deployed_commit по APP_VERSION"
         appver=""
         if [ -f "$WWW_DIR/static/js/app.js" ]; then
             appver=$(sed -n "s/^const APP_VERSION = '\\([^']*\\)'.*/\\1/p" "$WWW_DIR/static/js/app.js" | head -1) || true
@@ -387,8 +390,9 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-mplc-project-deploy.sh *, \
     /usr/local/sbin/sa02m-conf-rm.sh
 SUDO
-chmod 440 /etc/sudoers.d/sa02m-www
-visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 && log OK "sudoers OK"
+# Single-home harden (0440 + CRLF strip + visudo). This main write previously
+# skipped the CRLF strip and did not WARN on a rejected file.
+sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
 
 # ── Учётные данные веб-интерфейса (/etc/sa02m_web.env) ─────────────────────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
@@ -591,10 +595,7 @@ if [ -f "$ETC_DIR/sudoers.d/sa02m-www.fragment" ] && [ -f /etc/sudoers.d/sa02m-w
             printf '%s\n' "$_line" >>/etc/sudoers.d/sa02m-www
         fi
     done <"$ETC_DIR/sudoers.d/sa02m-www.fragment"
-    chmod 440 /etc/sudoers.d/sa02m-www
-    visudo -cf /etc/sudoers.d/sa02m-www >>"$LOG_FILE" 2>&1 \
-        && log OK "sudoers fragment sa02m-www (update) merged" \
-        || log WARN "visudo после merge update fragment — проверьте sudoers"
+    sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
 fi
 
 if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
@@ -704,8 +705,7 @@ fi
 
 grep -q 'sa02m-commit-web-env' /etc/sudoers.d/sa02m-www 2>/dev/null || {
     printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-commit-web-env\n' >> /etc/sudoers.d/sa02m-www
-    chmod 440 /etc/sudoers.d/sa02m-www
-    visudo -cf /etc/sudoers.d/sa02m-www >> "$LOG_FILE" 2>&1 || log WARN "visudo после доп. правила — проверьте sudoers"
+    sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
 }
 
 # ── fcgiwrap: prefork service вместо узкого socket-activation ──────────────

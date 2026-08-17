@@ -153,6 +153,19 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
   опциональные стеки: `SA02M_SKIP_MQTT`, `SA02M_SKIP_GATEWAY`,
   `SA02M_SKIP_CODESYS`, `SA02M_SKIP_MPLC`, `SA02M_SKIP_DOCKER`
   (перечень — `install.sh`).
+- **MPLC runtime на git-archive деплое — обязательная доставка payload'а.**
+  Runtime-тарбол MPLC (`mplc4.tar.gz`, ~18 MB) под vendor-EULA и **не в git**
+  (`.gitignore`), поэтому в `git archive` он не попадает. Чтобы MPLC поставился
+  на полном деплое, **до** запуска `install.sh` разложить vendor-дроп на
+  устройство:
+  ```
+  pscp -r .\MPLC4\cyntron\* root@<dev>:/opt/vendor-installers/mplc4/
+  ```
+  (полный рецепт pscp/plink — `docs/vendor-integrations.md` →
+  «Ручная загрузка на боевое устройство»). `09-mplc.sh` выберет **новейший**
+  из доставленного payload'а и `MPLC4/cyntron`; без payload'а шаг MPLC штатно
+  пропускается (`[WARN]`, не ошибка). Плагины ЦИНТРОН приезжают из git
+  (`firmware/mplc4/`) — их доставлять отдельно не нужно.
 - Известны SSH-доступ и host-key устройства.
 
 ### Шаги
@@ -233,6 +246,20 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
    - `systemctl --failed` — список пуст;
    - `curl -s -o /dev/null -w '%{http_code}' http://<dev>:9999/` — 200;
    - развёрнутый `/var/www/network_config/VERSION` равен ожидаемой версии;
+   - **MPLC-драйверы** (если MPLC ставился): `md5sum /opt/mplc4/mplc_cyntron.so`
+     начинается на `bf412755` (180356 B); `/opt/mplc4/mplc_protocol_fast_modbus.so`
+     присутствует (`9eba65e3`, 226276 B); в логе нет WARN про ненайденный
+     `mplc_protocol_fast_modbus.so`;
+   - **Алиса выключена по умолчанию** (первый install): `systemctl is-enabled
+     sa02m-alice-client sa02m-alice-config` = `disabled`, `is-active` =
+     `inactive`; веб-карточка Алисы при этом отвечает. На повторном install
+     ранее включённая оператором Алиса **сохраняется** включённой;
+   - **Core-службы восстановлены**: устройство, где `sa02m-modbus-mqtt` был
+     активен до установки, после re-install снова `is-active` (на свежем коде);
+     mosquitto/nginx/fcgiwrap активны; ничего работавшего не осталось
+     остановленным/выключенным;
+   - **sudoers чист**: `visudo -c` завершается кодом 0 (в логе строка
+     «агрегатная проверка visudo -c пройдена»);
    - `grep -E '\[(ERR|WARN)\]' /root/install-<topic>.log` — просмотреть каждую
      строку. Только `ERR` недостаточно: упавший опциональный стек `install.sh`
      логирует как `[WARN] <NN-модуль>.sh завершился с ошибкой` (он запускает
