@@ -4,6 +4,17 @@
 web_session_check_cookie || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
+# POST-only + CSRF BEFORE any mutation — network/time config is written to
+# /etc/network as root. policy: docs/decisions/selective-csrf-policy.md.
+# Headers not yet emitted here, so the gate prints its own and web_csrf_require
+# emits its own on failure.
+if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
+    echo "Content-type: application/json"; echo ""
+    echo '{"ok":false,"error":"method_not_allowed"}'
+    exit 0
+fi
+web_csrf_require
+
 # FCGI: читать ровно CONTENT_LENGTH байт (read -n останавливается на переводе строки)
 POST_DATA=""
 if [ -n "${CONTENT_LENGTH:-}" ]; then

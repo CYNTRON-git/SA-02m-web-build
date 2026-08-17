@@ -16,6 +16,14 @@ if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
     exit 0
 fi
 
+# CSRF BEFORE any mutation (web-code-rigor.md ## Bash CGI floors; policy:
+# docs/decisions/selective-csrf-policy.md). Headers already emitted above, so
+# validate inline and print the shared error shape.
+if ! web_csrf_validate; then
+    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    exit 0
+fi
+
 TMP_IN=$(mktemp /tmp/sa02m-cmd-in.XXXXXX)
 TMP_OUT=$(mktemp /tmp/sa02m-cmd-out.XXXXXX)
 TMP_PASS=$(mktemp /tmp/sa02m-cmd-pass.XXXXXX)

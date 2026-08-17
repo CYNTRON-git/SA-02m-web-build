@@ -10,6 +10,17 @@ web_session_check_cookie || {
   exit 0
 }
 
+# POST-only + CSRF BEFORE any mutation (changes the web user/password).
+# policy: docs/decisions/selective-csrf-policy.md. Headers already emitted.
+if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
+  echo '{"error":"method_not_allowed"}'
+  exit 0
+fi
+if ! web_csrf_validate; then
+  echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+  exit 0
+fi
+
 read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
 
 decode() { printf '%b' "$(echo "$1" | sed 's/+/ /g; s/%/\\x/g')"; }

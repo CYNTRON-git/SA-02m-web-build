@@ -10,6 +10,14 @@ invariant 5); пояснения — на русском.
 `POST`, `Content-Type: application/x-www-form-urlencoded`, cookie
 `session_token` обязателен (аутентификация проверяется ДО разбора тела).
 
+Заголовок `X-SA02M-CSRF` обязателен (defense-in-depth поверх `SameSite=Lax`):
+значение — CSRF-токен текущей сессии (минтуется при логине, зеркалится в
+JS-читаемую cookie `sa02m_csrf`; фронтенд шлёт его через `withCsrfHeaders`).
+Проверяется ПОСЛЕ аутентификации и ДО публикации. Отсутствующий/неверный токен →
+`E_CSRF`, публикации нет. Политика — `docs/decisions/selective-csrf-policy.md`.
+Браузерный путь только: у машинных клиентов (SCADA) пути через этот CGI нет —
+они пишут напрямую в MQTT/Modbus, поэтому требование заголовка ничего не ломает.
+
 | Поле | Allow-list (закрытый) | Отказ |
 |---|---|---|
 | `device` | `^[a-zA-Z0-9._-]+$`, длина ≤ 64 | `bad_device` |
@@ -49,6 +57,7 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
 {"ok":true,"device":"mr02m-COM4-6","control":"ao_1","value":500}
 {"ok":false,"error":"unauthorized"}
 {"ok":false,"error":"post_required"}
+{"ok":false,"error":"csrf","error_code":"E_CSRF"}  // нет/неверный X-SA02M-CSRF
 {"ok":false,"error":"bad_device"}   // также bad_control, bad_value
 {"ok":false,"error":"publish_failed"}  // брокер остановлен или timeout
 ```
@@ -63,7 +72,9 @@ timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 \
 со стабом окружения (`REQUEST_METHOD=POST`, `CONTENT_LENGTH`, тело на stdin;
 авторизация — стаб `lib_web_auth.sh` либо валидная сессия). Assert:
 
-1. без сессии → `unauthorized`, публикации нет;
+1. без сессии → `unauthorized`, публикации нет; с валидной сессией, но без
+   заголовка `X-SA02M-CSRF` (или с неверным значением) → `E_CSRF`, публикации
+   нет; с валидным `X-SA02M-CSRF` — публикация проходит (см. п. 3);
 2. отказы (публикации нет): `device=a;rm` → `bad_device`; `control=do_17`,
    `control=ao_13`, `control=do_1;x` → `bad_control`; `value=2` (для `do_1`),
    `value=1001` / `value=x` (для `ao_1`) → `bad_value`;

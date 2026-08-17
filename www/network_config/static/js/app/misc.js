@@ -140,6 +140,7 @@ function syncTimeFromPC(applyNow) {
   if (btn) btn.disabled = true;
   fetch('cgi-bin/apply.cgi', {
     method: 'POST',
+    headers: withCsrfHeaders({}),
     body: data,
     redirect: 'manual',
     credentials: 'same-origin'
@@ -336,6 +337,7 @@ function executeCommandLine(cmd, mode, rootPassword) {
   setCommandOutput(prompt + cmd + '\n[' + started + '] ' + uiT('выполнение…'));
   fetch('cgi-bin/cmd_exec.cgi', {
     method: 'POST',
+    headers: withCsrfHeaders({}),
     body: new URLSearchParams({
       cmd: execCmd,
       mode: execMode,
@@ -483,7 +485,7 @@ function initWebCredsForm() {
       method: 'POST',
       body,
       credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
+      headers: withCsrfHeaders({ Accept: 'application/json' }),
     })
       .then(r => r.json())
       .then(j => {
@@ -636,7 +638,7 @@ async function applyVariant() {
   try {
     const r = await fetch('cgi-bin/variant.cgi', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: withCsrfHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
       body: 'variant=' + encodeURIComponent(variant)
     });
     const d = await r.json();

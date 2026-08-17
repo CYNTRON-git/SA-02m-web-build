@@ -272,7 +272,7 @@ function applyKernelProfile() {
   fetch('cgi-bin/kernel_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ profile: profile }),
   })
     .then(async (r) => {
@@ -307,7 +307,7 @@ function refreshKernelBoot() {
   fetch('cgi-bin/kernel_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ action: 'refresh' }),
   })
     .then(async (r) => {
@@ -363,7 +363,7 @@ function applyCpuProfile() {
   fetch('cgi-bin/cpu_profile.cgi', {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ profile: profile }),
   })
     .then(async (r) => {
@@ -562,7 +562,7 @@ function serviceCtlAction(btn) {
   fetch('cgi-bin/services_ctrl.cgi', {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ id, action }),
   })
     .then(async (r) => {
@@ -597,7 +597,7 @@ function doRestart() {
     method: 'POST',
     redirect: 'manual',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: '{}',
   })
     .then(async (r) => {
@@ -624,7 +624,7 @@ function doReboot() {
     method: 'POST',
     redirect: 'manual',
     credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json; charset=utf-8' }),
     body: '{}',
   })
     .then(async (r) => {

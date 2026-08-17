@@ -51,6 +51,12 @@ fi
 
 # ── POST: JSON → YAML ─────────────────────────────────────────────────────────
 if [ "$REQUEST_METHOD" = "POST" ]; then
+    # CSRF BEFORE any mutation (policy: docs/decisions/selective-csrf-policy.md).
+    # Headers already emitted at top, so validate inline.
+    if ! web_csrf_validate; then
+        echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+        exit 0
+    fi
     TMP_IN=$(mktemp /tmp/sa02m-gwcfg-in.XXXXXX)
     TMP_OUT=$(mktemp /tmp/sa02m-gwcfg-out.XXXXXX)
     trap "rm -f '$TMP_IN' '$TMP_OUT'" EXIT

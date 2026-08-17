@@ -31,6 +31,10 @@ read_variant() {
 
 case "${REQUEST_METHOD:-GET}" in
     POST)
+        # CSRF BEFORE any mutation (policy: docs/decisions/selective-csrf-policy.md).
+        # This branch emits its own headers only AFTER the mutation below, so
+        # headers are NOT yet on the wire here — web_csrf_require prints its own.
+        web_csrf_require
         read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
         VARIANT=$(printf '%s' "$POST_DATA" \
             | sed 's/.*variant=\([^&]*\).*/\1/' \

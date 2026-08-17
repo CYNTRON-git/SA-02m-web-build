@@ -127,6 +127,7 @@ merge-запись сетевых конфигов из панели, закре
 | A5→S4 | MITM на пути frpc→frps / краже транзитного трафика | API `claim/enroll/heartbeat` — HTTPS (urllib TLS-verify); туннель аутентифицируется shared `auth.token`; TLS-шифрование транспорта туннеля задаётся на frps — **вне репозитория** `[?]`; облако в любом случае видит UI-креды (см. §3) `[частично]` |
 | A5→S2 | Кража activation/enroll-токена или frp `auth.token` → мошенническое сопряжение/перехват | Токены 0600, удаляются после enrollment (`finalize_enrollment` → `os.remove`); НО аппаратного корня доверия нет (нет secure element) — украденный токен = enroll как это устройство `[частично]` |
 | A1/A2/A5→S2 | Командная строка «Управление» (`cmd_exec.cgi`, 1.0.5.64): украденная сессия → произвольные команды от `www-data`; плюс root-пароль (или его перехват — HTTP без TLS, root-пароль уходит в POST открытым текстом) → полный root БЕЗ пиновки sudo | Auth-before-work (сессия до любых действий), POST-only, лимиты 1000 симв./32 KiB, `timeout 20`; root-режим — только по паролю root, проверка `crypt`/`/etc/shadow` в `sa02m-web-root-cmd.sh` (helper: пин пути, отказ по symlink, temp 0600, trap-очистка); `NOPASSWD`-строка sudoers эскалации не даёт — парольный гейт внутри helper. НО за украденной сессией — произвольный shell от `www-data`, а по связке «нет TLS + единый пароль» root-пароль перехватываем на пути → `[частично]`, наследует §5 |
+| A1/A5→S1/S2 | CSRF: кросс-сайт-запрос использует сессионную cookie жертвы для мутирующего CGI (`reboot`/`restart`/`cmd_exec`/`mqtt_set`/`*_ctrl`/конфиг-записи); до 1.0.5.72 `reboot`/`restart` мутировали на ЛЮБОМ методе, включая GET — а `SameSite=Lax` шлёт сессионную cookie на top-level GET-навигацию (кликнутая кросс-сайт-ссылка) → реальный обход Lax | `SameSite=Lax` на `session_token` (baseline, блокирует классический скриптовый кросс-сайт POST) + явный токен `X-SA02M-CSRF` (defense-in-depth) на ВСЕХ session-authed мутирующих эндпоинтах + обязательный POST-only (закрывает GET-вектор reboot/restart) — **держится (1.0.5.72)**; политика и перечень — `docs/decisions/selective-csrf-policy.md` |
 
 ## §5 Заключение — сильнейшая НЕЗАКРЫТАЯ угроза (честно)
 
@@ -208,6 +209,7 @@ allow-list — A5→S1/S2/S4), (2) облако видит UI-креды в от
 ## §7 Дом связанных правил
 
 - CGI/frontend/CSS «floor»-правила (allow-list, escaping, auth, timeouts): `docs/agent-rules/web-code-rigor.md`.
+- CSRF-политика (SameSite=Lax baseline + `X-SA02M-CSRF` defense-in-depth + POST-only, перечень эндпоинтов, механика токена, исключение `logout`): `docs/decisions/selective-csrf-policy.md`.
 - Архитектура опроса, port-lease, стек: `docs/agent-rules/sa02m-domain.md`.
 - Развёртывание и (кандидат) политика «только VPN»: `docs/deployment.md` (облачный
   deploy/enrollment пока НЕ описан там — `[?]`).
