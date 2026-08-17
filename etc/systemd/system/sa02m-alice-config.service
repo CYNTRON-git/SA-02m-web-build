@@ -1,0 +1,21 @@
+[Unit]
+Description=SA-02m Alice config API (localhost :8012)
+Documentation=file:///opt/sa02m-alice/THIRD_PARTY.md
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-alice
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/sa02m-alice
+ExecStart=/usr/bin/python3 -m sa02m_alice.config.api
+Restart=on-failure
+RestartSec=5s
+User=root
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+# Config API binds 127.0.0.1 only; web UI uses CGI with session auth.
+
+[Install]
+WantedBy=multi-user.target

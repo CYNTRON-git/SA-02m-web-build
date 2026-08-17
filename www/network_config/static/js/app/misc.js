@@ -37,7 +37,7 @@ function loadSshDebug() {
   const box = document.getElementById('log-box');
   if (!box) return;
   box.classList.remove('log-box-ssh-debug');
-  box.textContent = 'Загрузка SSH-диагностики… (до ~2 мин)';
+  box.textContent = 'Загрузка SSH-диагностики (до ~2 мин)';
   fetch('cgi-bin/ssh_debug.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -344,7 +344,12 @@ function executeCommandLine(cmd, mode, rootPassword) {
     credentials: 'same-origin',
     cache: 'no-store'
   })
-    .then(r => r.json())
+    .then(r => r.text().then(t => {
+      // A never-terminating command times nginx out (504) → HTML, not JSON.
+      // Surface a clean hint instead of a raw "Unexpected token '<'".
+      try { return JSON.parse(t); }
+      catch (e) { throw new Error(uiT('сервер вернул не-JSON (таймаут?); для непрерывных команд задайте предел, напр. ping -c 4')); }
+    }))
     .then(j => {
       if (!j || !j.ok) {
         setCommandOutput(prompt + cmd + '\n' + uiT('Ошибка:') + ' ' + ((j && j.error) || 'server_error'));
@@ -594,8 +599,8 @@ function scheduleVariantStatusAutoClear(el) {
 
 function variantDisplayLabel(variant) {
   const map = {
-    'sa02m-1eth': 'СА-02м-1eth',
-    'sa02m-2eth': 'СА-02м-2-2eth',
+    'sa02m-1eth': 'СА-02м',
+    'sa02m-2eth': 'СА-02м-2',
   };
   return map[variant] || String(variant || '').replace(/^sa02m-/i, 'СА-02м-');
 }
@@ -626,7 +631,7 @@ async function applyVariant() {
   if (!sel || !status) return;
   const variant = sel.value;
   cancelVariantStatusAutoClear();
-  status.textContent = 'Применяю…';
+  status.textContent = 'Применяю';
   status.style.color = 'var(--text-sec)';
   try {
     const r = await fetch('cgi-bin/variant.cgi', {

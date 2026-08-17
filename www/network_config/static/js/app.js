@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.66';
+const APP_VERSION = '1.0.5.69';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -40,6 +40,39 @@ function clearSessionCookie() {
     path += '/' + segs[i];
     document.cookie = 'session_token=; Path=' + path + '; Max-Age=0; SameSite=Lax';
   }
+}
+
+/* CSRF for mutating privileged CGI (X-SA02M-CSRF). Token is minted at login
+   into a non-HttpOnly cookie / optional meta / window.SA02M_CSRF — missing token
+   does not block legacy POSTs until the server enforces it. */
+function getSa02mCsrfToken() {
+  if (typeof window.SA02M_CSRF === 'string' && window.SA02M_CSRF) {
+    return window.SA02M_CSRF;
+  }
+  try {
+    const meta = document.querySelector('meta[name="sa02m-csrf"]');
+    if (meta) {
+      const mv = meta.getAttribute('content');
+      if (mv) return mv;
+    }
+  } catch (e) { /* ignore */ }
+  try {
+    const parts = document.cookie.split(';');
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].trim();
+      if (p.indexOf('sa02m_csrf=') === 0) {
+        return decodeURIComponent(p.slice('sa02m_csrf='.length));
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return '';
+}
+
+function withCsrfHeaders(headers) {
+  const out = Object.assign({}, headers || {});
+  const tok = getSa02mCsrfToken();
+  if (tok) out['X-SA02M-CSRF'] = tok;
+  return out;
 }
 
 /* ── 401 → login ──────────────────────────────────────────────────────────
@@ -102,7 +135,9 @@ function switchTab(tab) {
     loadLog();
     fetchSystemWidget();
     loadWebUpdateStatus();
+    probeOfflineUpdateCapability();
     loadServicesControl(false);
+    loadMplcProjectMeta();
     loadKernelControl(false);
     loadVariant();
     if (window.cloudTabInit) window.cloudTabInit();
@@ -117,6 +152,8 @@ function switchTab(tab) {
     refreshTimeReadouts();
   }
   if (tab === 'flasher' && window.flasherInit) window.flasherInit();
+  if (tab === 'devices' && window.devicesTabInit) window.devicesTabInit();
+  if (tab !== 'devices' && window.devicesTabDestroy) window.devicesTabDestroy();
   if (tab === 'mqtt' && window.mqttTabInit) window.mqttTabInit();
   if (tab !== 'mqtt' && window.mqttTabDestroy) window.mqttTabDestroy();
   if (tab === 'gateway' && window.gatewayInit) window.gatewayInit();

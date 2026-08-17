@@ -122,6 +122,85 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
 fi
+
+# Offline / shared updater bootstrap (same destinations as 03-webserver.sh; [ -f ] guards)
+REPO_ETC="$SCRIPT_DIR/../etc"
+REPO_OPT_UPDATE="$REPO_ROOT/opt/sa02m-update"
+REPO_SBIN_TREE="$REPO_ROOT/usr/local/sbin"
+SYSTEMD_SRC="$REPO_ETC/systemd"
+if [ -d "$REPO_OPT_UPDATE/lib" ]; then
+    install -d -m 0755 /opt/sa02m-update
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+            "$REPO_OPT_UPDATE/" /opt/sa02m-update/ >/dev/null 2>&1 \
+            && log OK "/opt/sa02m-update обновлён" \
+            || log WARN "rsync /opt/sa02m-update не удался"
+    else
+        cp -a "$REPO_OPT_UPDATE/." /opt/sa02m-update/ >/dev/null 2>&1 || true
+    fi
+fi
+install -d -m 0755 /usr/local/libexec
+if [ -f "$REPO_ETC/sa02m-update-runner.sh" ]; then
+    install -m 755 "$REPO_ETC/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
+    log OK "sa02m-update-runner установлен"
+fi
+if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
+    install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
+    log OK "sa02m-update-inspect установлен"
+fi
+if [ -f "$REPO_ETC/sa02m-factory-reset-runner.sh" ]; then
+    install -m 755 "$REPO_ETC/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
+fi
+if [ -f "$REPO_SBIN_TREE/sa02m-web-backup.sh" ]; then
+    install -m 755 "$REPO_SBIN_TREE/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
+elif [ -f "$REPO_ETC/sa02m-web-backup.sh" ]; then
+    install -m 755 "$REPO_ETC/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
+fi
+if [ -f "$REPO_SBIN_TREE/sa02m-restore-backup.sh" ]; then
+    install -m 755 "$REPO_SBIN_TREE/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
+elif [ -f "$REPO_ETC/sa02m-restore-backup.sh" ]; then
+    install -m 755 "$REPO_ETC/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
+fi
+if [ -d "$REPO_ETC/sa02m-update/trusted-keys" ]; then
+    install -d -m 0755 /etc/sa02m-update /etc/sa02m-update/trusted-keys
+    for _pem in "$REPO_ETC/sa02m-update/trusted-keys/"*.pem; do
+        [ -f "$_pem" ] || continue
+        install -m 644 "$_pem" "/etc/sa02m-update/trusted-keys/$(basename "$_pem")"
+    done
+fi
+if [ -d "$REPO_ETC/sa02m-factory-defaults" ]; then
+    install -d -m 0755 /usr/share/sa02m-factory-defaults
+    cp -a "$REPO_ETC/sa02m-factory-defaults/." /usr/share/sa02m-factory-defaults/ 2>/dev/null || true
+fi
+if [ -f "$REPO_ETC/tmpfiles.d/sa02m-update.conf" ]; then
+    install -m 644 "$REPO_ETC/tmpfiles.d/sa02m-update.conf" /etc/tmpfiles.d/sa02m-update.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-update.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-update.conf 2>/dev/null || true
+    fi
+fi
+_upd_daemon_reload=0
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+    if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
+        install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
+        _upd_daemon_reload=1
+    fi
+done
+if [ "$_upd_daemon_reload" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+fi
+if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
+    systemctl enable sa02m-update-recover.service 2>/dev/null || true
+fi
+
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
     install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
@@ -199,6 +278,29 @@ SUDO
 www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-apply
 SUDO
     fi
+    if ! grep -q 'systemctl start sa02m-update.service' /etc/sudoers.d/sa02m-www; then
+        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start sa02m-update.service
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl stop sa02m-update.service
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl reset-failed sa02m-update.service
+SUDO
+    fi
+    if ! grep -q '/usr/local/libexec/sa02m-update-inspect' /etc/sudoers.d/sa02m-www; then
+        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/libexec/sa02m-update-inspect\n' >> /etc/sudoers.d/sa02m-www
+    fi
+    if ! grep -q '/usr/local/sbin/sa02m-web-backup.sh' /etc/sudoers.d/sa02m-www; then
+        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-backup.sh\n' >> /etc/sudoers.d/sa02m-www
+    fi
+    if [ -f "$REPO_ETC/sudoers.d/sa02m-www.fragment" ]; then
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            case "$_line" in
+                ''|\#*) continue ;;
+            esac
+            if ! grep -Fqx "$_line" /etc/sudoers.d/sa02m-www 2>/dev/null; then
+                printf '%s\n' "$_line" >>/etc/sudoers.d/sa02m-www
+            fi
+        done <"$REPO_ETC/sudoers.d/sa02m-www.fragment"
+    fi
     if ! grep -q '/usr/bin/date' /etc/sudoers.d/sa02m-www; then
         printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/bin/date\n' >> /etc/sudoers.d/sa02m-www
     fi
@@ -236,13 +338,21 @@ if [ -f "$REPO_SBIN/sa02m-cloud-web-trigger.sh" ]; then
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
     log OK "sa02m-cloud-web-trigger.sh обновлён"
 fi
-if [ -f "$REPO_ETC/sudoers.d/sa02m-cloud" ]; then
-    install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/sa02m-cloud" /etc/sudoers.d/sa02m-cloud
-    sed -i 's/\r$//' /etc/sudoers.d/sa02m-cloud
-    visudo -cf /etc/sudoers.d/sa02m-cloud >/dev/null 2>&1 \
-        && log OK "sudoers sa02m-cloud OK" \
-        || log WARN "visudo отклонил sudoers.d/sa02m-cloud"
-fi
+# Reinstall + CRLF-strip + visudo-validate ALL sa02m-* sudoers we ship, not just
+# cloud: a CRLF in ANY sudoers.d file is a visudo syntax error that breaks sudo
+# globally (cloud enrollment, flasher, mqtt all fail). A www-only deploy that
+# fixed only sa02m-cloud left a broken sa02m-mqtt/-flasher and sudo stayed dead.
+for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt; do
+    if [ -f "$REPO_ETC/sudoers.d/$_sud" ]; then
+        install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/$_sud" "/etc/sudoers.d/$_sud"
+        sed -i 's/\r$//' "/etc/sudoers.d/$_sud"
+        visudo -cf "/etc/sudoers.d/$_sud" >/dev/null 2>&1 \
+            && log OK "sudoers $_sud OK" \
+            || log WARN "visudo отклонил sudoers.d/$_sud"
+    fi
+done
+# Final aggregate check so a broken sudoers set is surfaced by the deploy.
+visudo -c >/dev/null 2>&1 || log WARN "visudo -c: sudoers set has an error — проверьте /etc/sudoers.d"
 
 # Bus-free RS-485 roster aggregator — fleet card «Опрос модулей RS-485» and the
 # cloud heartbeat both read /run/sa02m-rs485-roster.json. Full install.sh runs
@@ -289,4 +399,11 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     fi
 fi
 
-log OK "Веб-интерфейс обновлён: $WEB_ROOT (nginx перезапускать не требуется)"
+# Devices tab (DTV / CE-02m-3): API :8765 + SQLite logger + nginx /api/devices*
+if [ -f "$SCRIPT_DIR/11-devices.sh" ] && [ -d "$REPO_ROOT/opt/sa02m-devices/sa02m_devices" ]; then
+    bash "$SCRIPT_DIR/11-devices.sh" \
+        && log OK "sa02m-devices (API+logger) установлен/обновлён" \
+        || log WARN "11-devices.sh завершился с ошибкой"
+fi
+
+log OK "Веб-интерфейс обновлён: $WEB_ROOT"

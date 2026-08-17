@@ -1,5 +1,5 @@
 #!/bin/bash
-# SA-02m • make-image.sh v1.3
+# SA-02m • make-image.sh v1.4
 # cleanup (фазы 1–4) → одна ssh-сессия: zerofill + id reset + dd → PiShrink → xz
 set -euo pipefail
 LC_ALL=C
@@ -92,20 +92,110 @@ fi
 STAMP="$(date +%Y%m%d-%H%M)"
 mkdir -p "$OUT_DIR" "$WORK"
 RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"
-RAW_XZ="$OUT_DIR/sa02m-${STAMP}-raw.img.xz"
+# Intermediate raw.xz stays under WORK only — never force-copy multi-GB xz onto OUT_DIR
+# (OUT_DIR on /mnt/c / drvfs often has no room after a successful stream).
+RAW_XZ="$WORK/sa02m-${STAMP}-raw.img.xz"
 
 if [ -n "$OUTPUT_NAME" ]; then
-    SHRUNK_XZ="$OUT_DIR/${OUTPUT_NAME}.img.xz"
-    FINAL_IMG="$OUT_DIR/${OUTPUT_NAME}.img"
+    SHRUNK_NAME="${OUTPUT_NAME}"
 elif [ -n "$RELEASE_PROFILE" ] && [ -n "$RELEASE_VERSION" ]; then
-    SHRUNK_XZ="$OUT_DIR/${RELEASE_PROFILE}-v${RELEASE_VERSION}-shrunk.img.xz"
-    FINAL_IMG="$OUT_DIR/${RELEASE_PROFILE}-v${RELEASE_VERSION}-shrunk.img"
+    SHRUNK_NAME="${RELEASE_PROFILE}-v${RELEASE_VERSION}-shrunk"
 else
-    SHRUNK_XZ="$OUT_DIR/sa02m-${STAMP}-shrunk.img.xz"
-    FINAL_IMG="$OUT_DIR/sa02m-${STAMP}-shrunk.img"
+    SHRUNK_NAME="sa02m-${STAMP}-shrunk"
 fi
+SHRUNK_XZ="$OUT_DIR/${SHRUNK_NAME}.img.xz"
+FINAL_IMG="$OUT_DIR/${SHRUNK_NAME}.img"
+# Uncompressed .img kept under WORK by default; copied to OUT_DIR only when safe.
+FINAL_IMG_KEEP="$WORK/${SHRUNK_NAME}.img"
 
-cleanup_work() { rm -rf "$WORK"; }
+# True when OUT_DIR is a Windows/drvfs mount (high risk of ENOSPC for large copies).
+out_dir_is_drvfs() {
+    case "$OUT_DIR" in
+        /mnt/[a-zA-Z]/*|/mnt/[a-zA-Z]) return 0 ;;
+    esac
+    local fst
+    fst=$(df -T "$OUT_DIR" 2>/dev/null | awk 'NR==2 {print $2}')
+    case "$fst" in
+        9p|drvfs|fuseblk|cifs) return 0 ;;
+    esac
+    return 1
+}
+
+# need_bytes: return 0 if OUT_DIR has at least that many free bytes (+64MiB slack).
+out_dir_has_space() {
+    local need=$1
+    local avail
+    avail=$(df -B1 --output=avail "$OUT_DIR" 2>/dev/null | tail -n1 | tr -d " ")
+    [ -n "$avail" ] || return 1
+    [ "$avail" -gt $((need + 64*1024*1024)) ]
+}
+
+# Copy src->dst only if OUT_DIR can hold it; else leave under WORK and echo path.
+safe_publish_to_out() {
+    local src=$1
+    local dst=$2
+    local sz
+    sz=$(stat -c%s "$src")
+    if out_dir_has_space "$sz"; then
+        cp -f "$src" "$dst"
+        return 0
+    fi
+    log "    WARN: OUT_DIR has insufficient space for $(basename "$dst") ($(numfmt --to=iec --suffix=B "$sz")); keeping under WORK: $src"
+    return 1
+}
+
+# If final artifacts remain under WORK (OUT_DIR full/drvfs), move them aside before rm -rf.
+rescue_work_artifacts() {
+    local keep_dir="$1"
+    mkdir -p "$keep_dir"
+    local f
+    for f in "$SHRUNK_XZ" "${SHRUNK_XZ}.sha256" "${SHRUNK_XZ%.img.xz}.manifest.json"; do
+        case "$f" in
+            "$WORK"/*)
+                if [ -e "$f" ]; then
+                    mv -f "$f" "$keep_dir/$(basename "$f")"
+                    log "    rescued: $keep_dir/$(basename "$f")"
+                fi
+                ;;
+        esac
+    done
+    if [ "$KEEP_RAW_IMG" -eq 1 ]; then
+        for f in "$FINAL_IMG" "$FINAL_IMG_KEEP"; do
+            case "$f" in
+                "$WORK"/*)
+                    if [ -e "$f" ]; then
+                        mv -f "$f" "$keep_dir/$(basename "$f")"
+                        log "    rescued KEEP_RAW_IMG: $keep_dir/$(basename "$f")"
+                        FINAL_IMG="$keep_dir/$(basename "$f")"
+                    fi
+                    ;;
+            esac
+        done
+    fi
+    # Update SHRUNK_XZ if it was under WORK
+    if [ -f "$keep_dir/$(basename "$SHRUNK_XZ")" ]; then
+        case "$SHRUNK_XZ" in
+            "$WORK"/*) SHRUNK_XZ="$keep_dir/$(basename "$SHRUNK_XZ")" ;;
+        esac
+    fi
+}
+
+cleanup_work() {
+    local need_rescue=0
+    case "$SHRUNK_XZ" in "$WORK"/*) need_rescue=1 ;; esac
+    if [ "$KEEP_RAW_IMG" -eq 1 ]; then
+        case "$FINAL_IMG$FINAL_IMG_KEEP" in "$WORK"/*|*"$WORK"*) need_rescue=1 ;; esac
+        [ -e "$FINAL_IMG_KEEP" ] && case "$FINAL_IMG_KEEP" in "$WORK"/*) need_rescue=1 ;; esac
+        [ -e "$FINAL_IMG" ] && case "$FINAL_IMG" in "$WORK"/*) need_rescue=1 ;; esac
+    fi
+    if [ "$need_rescue" -eq 1 ]; then
+        local keep_dir
+        keep_dir="$(dirname "$WORK")/sa02m-image-rescue-$$"
+        rescue_work_artifacts "$keep_dir"
+        echo "    WORK artifacts kept under: $keep_dir"
+    fi
+    rm -rf "$WORK"
+}
 trap cleanup_work EXIT
 
 collect_donor_metadata() {
@@ -160,7 +250,7 @@ doc = {
     "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
     "pipeline": {
         "tool": "make-image.sh",
-        "version": "1.3",
+        "version": "1.4",
         "pishrink": True,
         "zerofill": os.environ.get("PIPE_ZEROFILL") == "1",
         "cleanup": os.environ.get("PIPE_CLEANUP") == "1",
@@ -255,8 +345,9 @@ export DONOR_META DEVICE_IP RELEASE_PROFILE RELEASE_VERSION
 export PIPE_CLEANUP="$DO_CLEANUP" PIPE_ZEROFILL="$DO_ZEROFILL" PIPE_ID_RESET="$DO_ID_RESET" PIPE_XZ_LEVEL="$FINAL_XZ_LEVEL"
 
 if [ "$DO_CLEANUP" -eq 1 ]; then
-    log "[1/6] Cleanup на доноре (фазы 1–4, ssh остаётся рабочим)"
-    "${SSH[@]}" 'bash -s' < "$CLEANUP_SCRIPT"
+    log "[1/6] Cleanup на доноре (фазы 1–4, --apply, ssh остаётся рабочим)"
+    # --apply required: cleanup-donor.sh is fail-safe (default dry-run without flag)
+    "${SSH[@]}" 'bash -s -- --apply --report' < "$CLEANUP_SCRIPT"
 else
     log "[1/6] Cleanup пропущен (--no-cleanup)"
 fi
@@ -280,10 +371,10 @@ RAW_SIZE=$(stat -c%s "$RAW_IMG" 2>/dev/null || echo 0)
 log "    raw: $(numfmt --to=iec --suffix=B "$RAW_SIZE") (ssh_rc=${SSH_RC})"
 [ "$RAW_SIZE" -eq "$EMMC_BYTES" ] || die "размер raw $RAW_SIZE != $EMMC_BYTES (ssh_rc=${SSH_RC})"
 
-log "[3/6] Архив raw (опционально) + PiShrink"
-XZ_TMP="$WORK/$(basename "$RAW_XZ")"
-xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$XZ_TMP"
-cp -f "$XZ_TMP" "$RAW_XZ"
+log "[3/6] compress raw (optional archive under WORK) + PiShrink"
+# Write intermediate raw.xz only into WORK — do not copy onto OUT_DIR.
+xz "-T0" "-${STREAM_XZ_LEVEL}" -v -c "$RAW_IMG" > "$RAW_XZ"
+log "    raw.xz (WORK only): $RAW_XZ ($(numfmt --to=iec --suffix=B "$(stat -c%s "$RAW_XZ")"))"
 sudo pishrink.sh -a -v "$RAW_IMG"
 
 # Патч образа: first-boot resize/network/watchdog (см. patch-firstboot-image.sh).
@@ -313,22 +404,44 @@ log "    [patch] patch-firstboot-image.sh"
 run_firstboot_patch "$RAW_IMG" || \
     die "patch-firstboot-image.sh failed — образ непригоден (boot.scr/first-boot патч не применён)"
 
-log "[4/6] Финальный xz (-T0 -${FINAL_XZ_LEVEL})"
+log "[4/6] final xz (-T0 -${FINAL_XZ_LEVEL})"
 rm -f "$SHRUNK_XZ" "$FINAL_IMG"
 FINAL_IMG_WORK="$WORK/$(basename "$FINAL_IMG")"
 cp -f "$RAW_IMG" "$FINAL_IMG_WORK"
 FINAL_XZ_TMP="$WORK/$(basename "$SHRUNK_XZ")"
 xz "-T0" "-${FINAL_XZ_LEVEL}" -v -c "$FINAL_IMG_WORK" > "$FINAL_XZ_TMP"
-cp -f "$FINAL_XZ_TMP" "$SHRUNK_XZ"
+# Publish only the final shrunk .img.xz to OUT_DIR (skip if OUT_DIR cannot hold it).
+if ! safe_publish_to_out "$FINAL_XZ_TMP" "$SHRUNK_XZ"; then
+    SHRUNK_XZ="$FINAL_XZ_TMP"
+    log "    using WORK path for final xz: $SHRUNK_XZ"
+fi
 if [ "$KEEP_RAW_IMG" -eq 1 ]; then
-    cp -f "$FINAL_IMG_WORK" "$FINAL_IMG"
+    cp -f "$FINAL_IMG_WORK" "$FINAL_IMG_KEEP"
+    # Prefer native WORK for large .img when OUT_DIR is drvfs or low on space.
+    if out_dir_is_drvfs || ! out_dir_has_space "$(stat -c%s "$FINAL_IMG_KEEP")"; then
+        FINAL_IMG="$FINAL_IMG_KEEP"
+        log "    KEEP_RAW_IMG: keeping uncompressed .img under WORK (not copying to OUT_DIR): $FINAL_IMG"
+    else
+        if safe_publish_to_out "$FINAL_IMG_KEEP" "$FINAL_IMG"; then
+            : # published
+        else
+            FINAL_IMG="$FINAL_IMG_KEEP"
+        fi
+    fi
 else
-    rm -f "$FINAL_IMG"
+    rm -f "$FINAL_IMG" "$FINAL_IMG_KEEP"
 fi
 rm -f "$FINAL_IMG_WORK"
 
 log "[5/6] sha256"
-( cd "$OUT_DIR" && sha256sum "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )
+SHA_DIR="$(dirname "$SHRUNK_XZ")"
+( cd "$SHA_DIR" && sha256sum "$(basename "$SHRUNK_XZ")" > "$(basename "$SHRUNK_XZ").sha256" )
+# If final xz landed in WORK but OUT_DIR is usable for small sidecar files, mirror sha256 there.
+if [ "$SHA_DIR" != "$OUT_DIR" ] && [ -f "${SHRUNK_XZ}.sha256" ]; then
+    if out_dir_has_space "$(stat -c%s "${SHRUNK_XZ}.sha256")"; then
+        cp -f "${SHRUNK_XZ}.sha256" "$OUT_DIR/$(basename "$SHRUNK_XZ").sha256" || true
+    fi
+fi
 
 if [ "$DO_MANIFEST" -eq 1 ]; then
     log "[6/6] manifest.json"
@@ -337,9 +450,6 @@ else
     log "[6/6] manifest пропущен"
 fi
 
-if [ "$KEEP_RAW_IMG" -eq 1 ]; then
-    cp -f "$RAW_IMG" "$FINAL_IMG"
-fi
 
 FINAL_SIZE=$(stat -c%s "$SHRUNK_XZ")
 echo

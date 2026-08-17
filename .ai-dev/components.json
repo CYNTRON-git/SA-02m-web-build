@@ -42,6 +42,20 @@
       "path": "C:/Users/admin/Downloads/hardpy_tests",
       "repo": "CYNTRON-git/hardpy_tests",
       "description": "HardPy production/bench test-stand harness sharing physical devices with SA-02m-web-build (192.168.10.136 = stand SA02M-136). Deploys its own analytics/test-runner web app (/var/www/hardpy_stand, separate from network_config) and reads the RS-485 verifier modules on COM4 through THIS project's sa02m-modbus-mqtt bridge (verifier_via_mqtt=true, hardpy.toml.sa02m) — so a stale/broken bridge on a shared stand breaks hardpy_tests too. DUT flashing during test runs uses its OWN standalone flasher (/opt/MR-02m-flasher, flasher_path in hardpy.toml.sa02m), NOT this project's opt/sa02m-flasher web-integrated one. Version pin for the expected SA-02m-web-build deploy on each shared stand: docs/SA02M_WEB_BUILD_PIN.md in that repo. Added 2026-07-28 (flasher-signature feature) after discovering 192.168.10.136 was manually SSH-patched with no tracked version expectation."
+    },
+    {
+      "name": "fast-modbus-driver",
+      "root": "../fast_modbus_MasterSCADA4D_driver",
+      "path": "C:/Users/admin/Downloads/fast_modbus_MasterSCADA4D_driver",
+      "repo": "CYNTRON-git/fast_modbus_MasterSCADA4D_driver",
+      "description": "Fast Modbus driver for MasterSCADA4D / MPLC4 (the CyntronProtocol FB). SOURCE of half of the device's mplc_cyntron.so. Declared 2026-08-14 (Operator) to build it as a SEPARATE driver and debug the SIGSEGV the combined patched 483KB driver caused on FB load (bench 192.168.1.136)."
+    },
+    {
+      "name": "pca9536-driver",
+      "root": "../PCA9536-driver-for-MasterPLC",
+      "path": "C:/Users/admin/Downloads/PCA9536-driver-for-MasterPLC",
+      "repo": "CYNTRON-git/PCA9536-driver-for-MasterPLC",
+      "description": "PCA9536 I2C expander driver for MasterPLC/MPLC4. SOURCE of the other half of the device's mplc_cyntron.so. Declared 2026-08-14 (Operator) to build it as a SEPARATE driver and debug the combined-driver SIGSEGV on bench 192.168.1.136."
     }
   ],
   "siblings": [
@@ -50,6 +64,9 @@
     { "name": "dtv", "root": "../cyntron-dtv", "path": "C:/Users/admin/Downloads/cyntron-dtv" },
     { "name": "ce02m3", "root": "../CE-02m-3", "path": "C:/Users/admin/Downloads/CE-02m-3" },
     { "name": "mr02m-flasher", "root": "../MR-02m-flasher", "path": "C:/Users/admin/Downloads/MR-02m-flasher" },
-    { "name": "hardpy_tests", "root": "../hardpy_tests", "path": "C:/Users/admin/Downloads/hardpy_tests" }
+    { "name": "hardpy_tests", "root": "../hardpy_tests", "path": "C:/Users/admin/Downloads/hardpy_tests" },
+    { "name": "fast-modbus-driver", "root": "../fast_modbus_MasterSCADA4D_driver", "path": "C:/Users/admin/Downloads/fast_modbus_MasterSCADA4D_driver" },
+    { "name": "pca9536-driver", "root": "../PCA9536-driver-for-MasterPLC", "path": "C:/Users/admin/Downloads/PCA9536-driver-for-MasterPLC" },
+    { "name": "mplc-cyntron-original", "root": "../../YandexDisk/ЦИНТРОН/Сборка линукс/MasterSCADA/Драйвер микросхемы РСА9536/От разработчиков 4D/mplc_cyntron", "path": "C:/Users/admin/YandexDisk/ЦИНТРОН/Сборка линукс/MasterSCADA/Драйвер микросхемы РСА9536/От разработчиков 4D/mplc_cyntron" }
   ]
 }

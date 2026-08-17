@@ -5,6 +5,162 @@
 
 ---
 
+## [2026-08-14 14:00] branch: 1.0.5.69
+
+**Файл(ы):** `.gitattributes`, `etc/sudoers.d/{sa02m-cloud,sa02m-flasher,sa02m-mqtt}`, `scripts/update-www-only.sh`
+**Тип:** Некорректное поведение / инфраструктура (CRLF)
+**Описание:** Код сопряжения с облаком не генерировался: веб-блок «Облако» показывал «Запрошен код… появится через несколько секунд», но кода не было; агент облака висел в Standby.
+**Причина:** `/etc/sudoers.d/*` попадали на устройство с Windows-CRLF → `visudo` считает CRLF синтаксической ошибкой → sudo ломается глобально → CGI облака не может запросить код. Корень — `.gitattributes` НЕ покрывал файлы без расширения (sudoers.d, cron.d, ppp, kernel-postinst и т.д.): на Windows-чекауте (`core.autocrlf`) они выгружались CRLF, а прямой деплой (FileZilla/имидж) обходит `sed 's/\r$//'` установщиков. Рецидивный класс (ранее: cron.d «bad username», ps1, autorun). Установщики (`04-flasher.sh`, `05-mqtt.sh`, `05-cloud-agent.sh`) снимали CRLF, но `update-www-only.sh` чинил только `sa02m-cloud`.
+**Исправление:** `.gitattributes` — `* text=auto eol=lf` + явный LF для критичных классов (`etc/sudoers.d/*`, `etc/cron.d/*`, `etc/ppp/**`, `*.timer`, `*.yaml`, `*.py` …) + `binary`-исключения (png/so/gz/dtb…); индекс уже LF, будущие чекауты/деплои несут LF. `update-www-only.sh` — цикл, чинящий все `sa02m-*` sudoers + финальный `visudo -c`. На железе 1.136 CRLF снят (`sed 's/\r$//'` по трём файлам, `visudo -c` = parsed OK) → sudo восстановлен.
+
+---
+
+## [2026-08-10 19:59] branch: 1.0.5.68
+
+**Файл(ы):** `tools/imaging/make-image.sh`, `tools/imaging/out/*-raw.img.xz`
+**Тип:** Некорректное поведение
+**Описание:** После успешного stream eMMC (~7.3GB raw) пайплайн падал на `cp` промежуточного `*-raw.img.xz` в `OUT_DIR` на `/mnt/c` (диск C: 100% full, 0 avail), trap `cleanup_work` удалял raw из `/tmp`, захват приходилось повторять; donor SSH ломался после id-reset (host keys удалены).
+**Причина:** `RAW_XZ` указывал на `OUT_DIR`; обязательный `cp` multi-GB xz на drvfs при заполненном C:; intermediate raw не изолирован на native WSL disk.
+**Исправление:** `make-image.sh` v1.4 — `RAW_XZ` только под `WORK`; в `OUT_DIR` публикуются final shrunk `.img.xz` (+sha256/manifest) через `safe_publish_to_out` / проверку места; при `KEEP_RAW_IMG` несжатый `.img` остаётся в WORK если OUT_DIR=drvfs или мало места. Для захвата использовать `--out-dir` на native FS (`/home/admin/sa02m-imaging-out`).
+
+---
+
+## [2026-08-10 19:59] branch: 1.0.5.68
+
+**Файл(ы):** `tools/imaging/capture-image.ps1`
+**Тип:** Другое
+**Описание:** Обёртка PowerShell ломалась/некорректно исполнялась из‑за окончания строк (CRLF/LF) при запуске с Windows.
+**Причина:** Смешанные или неожиданные line endings для `.ps1` в среде агента/WSL/PowerShell.
+**Исправление:** Файл приведён к CRLF (подтверждено: чистый CRLF). Для длинных захватов предпочтителен `capture-image.sh` из WSL с `--out-dir` на native disk.
+
+---
+## [2026-08-08 22:33] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/js/devices.js`, `opt/sa02m-devices/sa02m_devices/{stand_devices,device_history_db}.py`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Энергия на виджете/графике выводилась с 3 знаками (1007.032 кВт·ч).
+**Причина:** `fmt(..., 3)` / `decimals: 3` / `round(..., 3)` после Wh÷1000.
+**Исправление:** Везде 1 знак после запятой (карточка, tip/legend/Δ, live, history API).
+
+---
+## [2026-08-08 22:23] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** В заголовках модалок была текстовая кнопка «Закрыть» вместо крестика.
+**Причина:** В style-коммите заменили `✕` на подпись.
+**Исправление:** Снова `✕` (`.modal-close-x`) в шапках окон устройств/MQTT/flasher/factory-reset; подписи в футере оставлены.
+
+---
+## [2026-08-08 22:11] branch: 1.0.5.68
+
+**Файл(ы):** `opt/sa02m-devices/sa02m_devices/device_history_db.py`, `www/network_config/static/js/devices.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На графиках истории (не только U) tip/легенда показывали много знаков после AVG-бакетов (T `27.675…`, f `49.993…`, light `6.184…` и т.д.).
+**Причина:** SQLite `AVG` даёт float-шум; UI/`fmtTipValue` не держали точность публикации; у `%` light ошибочно шёл как RH (1 знак); unit `kWh`/`мм рт.ст.` не матчились.
+**Исправление:** В METRICS добавлен `decimals` по шкале Modbus/stand; API округляет точки перед JSON; tip/legend/Δ — metric-first таблица точности; мощность в CE summary — 0 знаков. Импорт storage: `sa02m_devices` или `lib` (hardpy). На `.135`: web + `/opt/hardpy_tests/lib/device_history_db.py`, restart `sa02m-stand-api`; API `voltage/temp/light/freq/power` с нужной точностью.
+
+---
+## [2026-08-08 22:07] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/js/devices.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На графике напряжения CE в подсказке/легенде появлялись значения с 6 знаками после запятой (напр. 237.458333).
+**Причина:** MQTT публикует U×0.1 с `round(..., 1)` и в БД сырые точки с 1 знаком; для графика `AVG` по бакету даёт float-шум, а `fmtTipValue` печатал до 6 знаков.
+**Исправление:** Формат tip/legend/Δ по точности метрики (V → 1 знак, A → 3, …). Проверено на `.135`: raw `237.7`, AVG60 `237.4583…`.
+
+---
+## [2026-08-08 21:56] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/js/devices.js`, `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На графике истории устройств режим «закреплено» (pin) не давал измерить интервал между двумя точками.
+**Причина:** Один hover/pin с подсказкой; нет двух маркеров, заливки и Δ.
+**Исправление:** Pin убран. Клики: 1 — вертикаль+tip, 2 — вторая вертикаль, заливка между ними и блок Δt/Δвеличин по центру, 3 — сброс.
+
+---
+## [2026-08-08 18:45] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «ВКЛЮЧЕНО/ОТКЛЮЧЕНО» автоформата USB после опроса status становилась уже остальных в блоке «Действия».
+**Причина:** `btn.className = 'btn btn-danger'` снимал `system-action-btn` (width: 100%).
+**Исправление:** При перерисовке сохранять класс `system-action-btn`.
+
+---
+## [2026-08-08 18:18] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** В «Аппаратный вариант» select+«Применить» не занимали ширину блока — справа пусто.
+**Причина:** `#hw-variant-section` был `max-width: 560px`, select — `fit-content` / `flex: 0`.
+**Исправление:** Select `flex: 1` на всю ширину ряда, кнопка справа (`margin-left: auto`); ограничение ширины плитки снято.
+
+---
+## [2026-08-08 18:17] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/index.html`, `www/network_config/static/js/i18n.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** «Сбросить настройки…» была отдельной плиткой; лишнее многоточие в подписи кнопки.
+**Причина:** Factory reset вынесен в собственный `system-manage-factory-reset-card`; подпись с ellipsis.
+**Исправление:** Секция сброса перенесена в низ блока «Обновление»; подпись «Сбросить настройки» без точек; отдельная плитка удалена.
+
+---
+## [2026-08-08 17:57] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `.ai-dev/quality/checks/ui-layout.mjs`
+**Тип:** Некорректное поведение
+**Описание:** Заголовок MQTT был серым/uppercase 12px (не как «Устройства»); ui-layout FAIL по контрасту disabled `#alice-btn-enable` («…»).
+**Причина:** Локальный override `#tab-mqtt .page-header h2` на `--text-sec`; disabled primary с opacity .4 не был в CONTRAST_WHITELIST.
+**Исправление:** Единый `.page-header` (`h2` = `--text`, desc 13px); MQTT таблицы/формы 13px; whitelist `#alice-btn-enable`. `npm run ui-layout` → PASS.
+
+---
+## [2026-08-08 17:50] branch: 1.0.5.68
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** На вкладке MQTT статус-бар («Работает» / порты / «Клиентов» / «Мост активен») с разным кеглем и без общей горизонтальной базовой линии; зелёные `.badge` были слишком скруглены (`--radius-pill`).
+**Причина:** `.badge` — 12px/700 + pill; порты — `.82rem` mono; клиенты — `.widget-sub` 13px с `margin-top`.
+**Исправление:** Статус-бейджи → `--radius-xs`, 11px/600; единый ряд `.mqtt-broker-row` (11px/1.25); шкала MQTT titles 12 / body 11; RS-485 chips тоже `--radius-xs`.
+
+---
+## [2026-08-08 17:40] branch: 1.0.5.68
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`, `scripts/offline-update-deploy-map.json`, `www/network_config/static/js/{devices,i18n}.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение
+**Описание:** После аудита вкладки «Устройства»: offline OTA не включал/не рестартил `sa02m-devices-*`; неполный allowlist/tmpfiles; мёртвый overview-код; пробелы i18n/CSS badge.
+**Причина:** Первый порт закрыл только www+API на стенде; манифест апдейтера и i18n не синхронизировали.
+**Исправление:** `services.enable/restart` + `systemctl enable` в runner; allowlist `sa02m-devices` tmpfiles/default; deploy-map `/etc/default/`; i18n/CSS; удалён dead `loadOverview`. HW-тест на `.136` с seed MQTT-кэша ДТВ+СЭ.
+
+---
+## [2026-08-08 17:25] branch: 1.0.5.68
+
+**Файл(ы):** `opt/sa02m-devices/*`, `scripts/11-devices.sh`, `etc/systemd/sa02m-devices-*.service`, `etc/nginx/network_config.conf`, `www/network_config/static/js/devices.js`
+**Тип:** Некорректное поведение / отсутствующая подсистема
+**Описание:** Вкладка «Устройства» (виджеты ДТВ / СЭ-02м-3, графики, Excel, журнал пиков) была в UI репозитория, но на изделии не работала: нет бэкенда `/api/devices*`, сервисы не установлены.
+**Причина:** Реализация жила в hardpy_tests (`stand_web_api` + `sa02m-devices-logger`), в SA-02m-web-build перенесён только фронт и nginx-proxy; Flask/gunicorn на плате нет, units не деплоились.
+**Исправление:** Портирован пакет `opt/sa02m-devices` (stdlib API `:8765`, logger, SQLite USB→SD→eMMC, widgets/events/export); units `sa02m-devices-api` / `sa02m-devices-logger`; `scripts/11-devices.sh` из `update-www-only` / `install.sh`. На `.136`: API active, `/api/devices` через nginx :9999.
+
+---
+## [2026-08-08 00:18] branch: 1.0.5.68
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`
+**Тип:** Некорректное поведение
+**Описание:** Socket.IO к alice.cyntron.ru постоянно reconnect (connect/disconnect flapping), `controllers_online` мигал.
+**Причина:** Одновременно работали auto-reconnect python-socketio (`reconnection=True`) и outer tear-down/reconnect loop в `main.py` — при кратком disconnect создавались дублирующие сессии.
+**Исправление:** `reconnection=False` в `AliceSocketIO`; backoff `SIO_RECONNECT_MIN_S` перед повторным connect во внешнем цикле. На `.136`: units `sa02m-alice-client`/`sa02m-alice-config` enabled+active; 75s без повторных disconnect; healthz `controllers_online:1`.
+
+---
+
+## [2026-08-07 23:58] branch: feature/alice-client-prod
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `client/main.py`, `config/api.py`
+**Тип:** Некорректное поведение
+**Описание:** Prod WSS к alice.cyntron.ru: неверный path, SN=unknown при пустом serial=, ssl_context/LE verify fail; не было complete_link.
+**Причина:** socketio path join; пустой serial=; Alice CA как trust store; issue после OAuth не вызывался.
+**Исправление:** engine path controller/socket.io; SN fallback machine-id; sslopt cert/key + system CA; complete_link + controller unlink; кнопка «Завершить привязку».
+
+---
 ## [2026-08-05] branch: 1.0.5.65 — прошивка модулей падала на последних блоках: легаси-окно 0x2000 (сдвиг flash_offset при повторе)
 
 **Файл(ы):** `opt/sa02m-flasher/sa02m_flasher/flash_protocol.py`, `opt/sa02m-flasher/tests/test_indexed_block_window.py`

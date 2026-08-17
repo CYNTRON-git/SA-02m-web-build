@@ -64,7 +64,12 @@ if [ "$MODE" = "root" ] && [ -z "$ROOT_PASSWORD" ]; then
     exit 0
 fi
 
-TIMEOUT_SEC=20
+# Keep BELOW nginx `fastcgi_read_timeout` for /cgi-bin/ (20s, network_config.conf):
+# the command output is buffered and only returned after the command ends, so a
+# never-terminating command (e.g. `ping 8.8.8.8` without -c) must be killed and
+# the JSON returned before nginx times out — else nginx serves a 504 HTML page
+# and the client's JSON.parse fails ("Unexpected token '<'").
+TIMEOUT_SEC=15
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 

@@ -65,15 +65,16 @@ function formatDeviceDisplayName(dev) {
     if (/\([^)]*addr=\d+/i.test(stored)) return stored;
     return `${stored} (${comName} addr=${addr})`;
   }
+  if (dev.type === 'dtv' || dev.type === 'ce02m3') {
+    const portNum = String(comName || '').replace(/^COM/i, '') || '—';
+    const sku = dev.type === 'dtv' ? 'ДТВ-RS-485' : 'СЭ-02м-3';
+    const auto = `${sku} № ${addr} порт ${portNum}`;
+    if (!stored || /№\s*\d+\s+порт\s+\d+/i.test(stored) || /\([^)]*addr=\d+/i.test(stored)) {
+      return auto;
+    }
+    return `${stored} · ${auto}`;
+  }
   if (stored && /\([^)]*addr=\d+/i.test(stored)) return stored;
-  if (dev.type === 'dtv') {
-    const base = stored || 'ДТВ-RS-485';
-    return `${base} (${comName} addr=${addr})`;
-  }
-  if (dev.type === 'ce02m3') {
-    const base = stored || 'СЭ-02м-3';
-    return `${base} (${comName} addr=${addr})`;
-  }
   return `${dev.name || dev.id} (${comName} addr=${addr})`;
 }
 
@@ -139,7 +140,12 @@ function findListedDevice(port, addr) {
 
 function buildDeviceConfigName(shortName, port, addr) {
   const comName = (port || '').replace('/dev/', '');
-  const base = (shortName || '').trim() || `Устройство ${addr}`;
+  const portNum = String(comName || '').replace(/^COM/i, '') || '—';
+  const base = (shortName || '').trim();
+  if (base === 'ДТВ-RS-485' || base === 'СЭ-02м-3') {
+    return `${base} № ${addr} порт ${portNum}`;
+  }
+  if (!base) return `Устройство № ${addr} порт ${portNum}`;
   return `${base} (${comName} addr=${addr})`;
 }
 
@@ -615,6 +621,17 @@ let _uptimeTickTimer = null;
 const _doPending = Object.create(null);
 const _DO_CONFIRM_DEADLINE_MS = 5000;
 
+/** AO setpoint write reconciliation (numeric sibling of _doPending): devId:ctrl
+    → {target, prev, deadline}. Same optimistic-then-echo model as the DO path;
+    `prev` = pre-write live raw (-1 when unknown) so a stale pre-write poll is not
+    mistaken for a confirming echo. */
+const _aoPending = Object.create(null);
+/** AO input edit-guard (mirrors the AI-type select guard): while the operator
+    is typing a setpoint, the 1.5 s live poll must not overwrite the field. */
+const _aoEditGuard = new Set();
+const _aoEditGuardTimers = Object.create(null);
+const _AO_EDIT_GUARD_MS = 450;
+
 function aiUnitsForCode(code) {
   const c = Number(code) & 0xffff;
   if (c === 0) return '';
@@ -784,6 +801,7 @@ function refreshLiveCellsForDevice(devId) {
     updateLiveCell(devId, key.slice(prefix.length));
   });
   refreshDoTogglesForDevice(devId);
+  refreshAoInputsForDevice(devId);
 }
 
 function refreshAllLiveCells() {
@@ -940,6 +958,235 @@ function setDoToggleChannelEnabled(devId, ctrl, enabled) {
   updateDoToggleBtn(devId, ctrl, btn);
 }
 
+// ── AO setpoint write controls (numeric input per output row) ────────────────
+// Numeric sibling of the DO toggle: an input holding the 0..1000 raw setpoint
+// (= 0..10.00 V), written on Enter / blur (Operator decision F=B, no button).
+// Write path: POST mqtt_set.cgi → mosquitto → bridge → Modbus holding 33+ch-1 →
+// echo; only the bus echo confirms. The separate live span keeps showing volts.
+
+function aoInputKey(devId, ctrl) {
+  return `${devId}:${ctrl}`;
+}
+
+function aoInputEl(devId, ctrl) {
+  return document.querySelector(`[data-ao-input="${devId}:${ctrl}"]`);
+}
+
+/** Raw integer setpoint from the bus: 0..1000; error or unknown → -1. */
+function aoLiveRaw(devId, ctrl) {
+  const rec = _liveByDevice[devId] && _liveByDevice[devId][ctrl];
+  if (!rec || rec.isError) return -1;
+  const n = parseInt(rec.value, 10);
+  return Number.isNaN(n) ? -1 : n;
+}
+
+/** Clamp any typed value to an integer 0..1000; empty/non-numeric → -1. */
+function aoClampSetpoint(v) {
+  if (v == null || String(v).trim() === '') return -1;
+  let n = Math.round(Number(v));
+  if (!Number.isFinite(n)) return -1;
+  if (n < 0) n = 0;
+  if (n > 1000) n = 1000;
+  return n;
+}
+
+function aoEditGuardAdd(devId, ctrl) {
+  const key = aoInputKey(devId, ctrl);
+  _aoEditGuard.add(key);
+  if (_aoEditGuardTimers[key]) {
+    clearTimeout(_aoEditGuardTimers[key]);
+    delete _aoEditGuardTimers[key];
+  }
+}
+
+function aoEditGuardReleaseLater(devId, ctrl) {
+  const key = aoInputKey(devId, ctrl);
+  if (_aoEditGuardTimers[key]) clearTimeout(_aoEditGuardTimers[key]);
+  _aoEditGuardTimers[key] = setTimeout(() => {
+    _aoEditGuard.delete(key);
+    delete _aoEditGuardTimers[key];
+  }, _AO_EDIT_GUARD_MS);
+}
+
+function aoInputIsEditBlocked(devId, ctrl, inp) {
+  if (_aoEditGuard.has(aoInputKey(devId, ctrl))) return true;
+  return !!(inp && document.activeElement === inp);
+}
+
+/** Reflect bus/pending state on the setpoint input. While the operator is
+    editing (focused / guard) or a write is pending, the field is never
+    clobbered by the poll — mirrors updateDoToggleBtn's optimistic rule. */
+function updateAoInput(devId, ctrl, inpOpt) {
+  const inp = inpOpt || aoInputEl(devId, ctrl);
+  if (!inp) return;
+  if (inp.dataset.chDisabled === '1') {
+    inp.disabled = true;
+    inp.classList.remove('is-pending');
+    inp.title = uiT('Канал отключён');
+    return;
+  }
+  inp.disabled = false;
+  if (_aoPending[aoInputKey(devId, ctrl)]) {
+    inp.classList.add('is-pending');
+    inp.title = uiT('Ожидание подтверждения с шины');
+    return; // keep the optimistically-shown target
+  }
+  inp.classList.remove('is-pending');
+  inp.title = uiT('Задание, 0–1000 (1000 = 10.00 В)');
+  if (aoInputIsEditBlocked(devId, ctrl, inp)) return; // operator typing — do not overwrite
+  const live = aoLiveRaw(devId, ctrl);
+  inp.value = live < 0 ? '' : String(live);
+}
+
+function refreshAoInputsForDevice(devId) {
+  const prefix = `${devId}:`;
+  document.querySelectorAll(`[data-ao-input^="${prefix}"]`).forEach(inp => {
+    const key = inp.getAttribute('data-ao-input');
+    if (!key || key.indexOf(':') < 1) return;
+    updateAoInput(devId, key.slice(prefix.length), inp);
+  });
+}
+
+/** Reconcile pending AO writes with the bus (numeric sibling of sweepDoPending):
+    exact echo → confirmed; any new echo differing from the pre-write value →
+    show the bus truth (tolerates module quantisation and a contradicting write);
+    deadline → revert to live + timeout toast. */
+function sweepAoPending(devId) {
+  const prefix = `${devId}:`;
+  const now = Date.now();
+  for (const key of Object.keys(_aoPending)) {
+    if (!key.startsWith(prefix)) continue;
+    const ctrl = key.slice(prefix.length);
+    const p = _aoPending[key];
+    const live = aoLiveRaw(devId, ctrl);
+    if (live >= 0 && live === p.target) {
+      delete _aoPending[key]; // confirmed
+      updateAoInput(devId, ctrl);
+    } else if (live >= 0 && live !== p.prev) {
+      delete _aoPending[key]; // new echo (quantised or contradicting) — show bus truth
+      updateAoInput(devId, ctrl);
+    } else if (now > p.deadline) {
+      delete _aoPending[key];
+      updateAoInput(devId, ctrl);
+      showToast('Нет подтверждения от моста (мост остановлен или модуль не отвечает)', 'warn');
+    }
+  }
+}
+
+/** Commit the setpoint currently in the input (Enter / blur). Clamps to
+    0..1000, skips a no-op or an in-flight write, then POSTs like setDoOutput. */
+function setAoOutput(dev, ctrl) {
+  const devId = dev.id;
+  const key = aoInputKey(devId, ctrl);
+  const inp = aoInputEl(devId, ctrl);
+  if (!inp || inp.disabled) return;
+  const target = aoClampSetpoint(inp.value);
+  if (target < 0) { // empty / non-numeric → restore the bus value, no write
+    updateAoInput(devId, ctrl, inp);
+    return;
+  }
+  inp.value = String(target); // reflect the clamp immediately
+  if (_aoPending[key]) return; // a write is already in flight — ignore re-submit
+  const prev = aoLiveRaw(devId, ctrl);
+  if (prev === target) return; // already at target — no redundant analog re-drive
+  _aoPending[key] = {target, prev, deadline: Date.now() + _DO_CONFIRM_DEADLINE_MS};
+  updateAoInput(devId, ctrl, inp); // optimistic pending
+  fetch('cgi-bin/mqtt_set.cgi', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,
+    credentials: 'same-origin',
+  })
+    .then(r => r.json())
+    .then(j => {
+      if (j && j.ok) return; // "ok" = published; only the bus echo confirms (sweepAoPending)
+      delete _aoPending[key];
+      updateAoInput(devId, ctrl);
+      if (j && j.error === 'unauthorized') showToast('Нет доступа', 'err');
+      else if (j && j.error === 'publish_failed') showToast('Брокер MQTT недоступен', 'err');
+      else showToast('Ошибка: ' + ((j && j.error) || 'unknown'), 'err');
+    })
+    .catch(() => {
+      delete _aoPending[key];
+      updateAoInput(devId, ctrl);
+      showToast('Нет связи с сервером', 'err');
+    });
+}
+
+const _aoStepTimers = {};
+const _AO_STEP_DELAY_MS = 2000;
+/** Nudge an AO setpoint by ±step (clamped 0..1000). Rapid presses only move the
+ *  DISPLAYED value + hold the edit-guard (poll can't read/clobber); the actual
+ *  write fires ONCE, 2 s after the last press — avoids the per-press write race
+ *  where several quick clicks landed the wrong value on the bus. */
+function stepAo(dev, ctrl, delta) {
+  const inp = aoInputEl(dev.id, ctrl);
+  if (!inp || inp.disabled) return;
+  const base = aoClampSetpoint(inp.value);
+  const cur = base < 0 ? (aoLiveRaw(dev.id, ctrl) || 0) : base;
+  inp.value = String(aoClampSetpoint(String(cur + delta)));
+  const key = aoInputKey(dev.id, ctrl);
+  aoEditGuardAdd(dev.id, ctrl);                 // block the live poll while stepping
+  if (_aoStepTimers[key]) clearTimeout(_aoStepTimers[key]);
+  _aoStepTimers[key] = setTimeout(() => {
+    delete _aoStepTimers[key];
+    setAoOutput(dev, ctrl);                     // one write of the settled value
+    aoEditGuardReleaseLater(dev.id, ctrl);
+  }, _AO_STEP_DELAY_MS);
+}
+
+/** AO setpoint: −50 button · numeric field (write on Enter/blur) · +50 button.
+ *  Native spinners are hidden in CSS (they overlapped the value); the ± buttons
+ *  step by 50. The field keeps data-ao-input so aoInputEl/updateAoInput find it. */
+function buildAoSetpointInput(dev, ctrl, enabled) {
+  const inp = h('input', {
+    'type': 'number',
+    'class': 'mqtt-ao-input',
+    'min': '0',
+    'max': '1000',
+    'step': '50',
+    'inputmode': 'numeric',
+    'data-ao-input': `${dev.id}:${ctrl}`,
+    'onfocus': () => aoEditGuardAdd(dev.id, ctrl),
+    'onblur': () => { aoEditGuardReleaseLater(dev.id, ctrl); setAoOutput(dev, ctrl); },
+    'onkeydown': e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        setAoOutput(dev, ctrl);
+        if (e.target && typeof e.target.blur === 'function') e.target.blur();
+      }
+    },
+  });
+  inp.dataset.chDisabled = enabled ? '0' : '1';
+  updateAoInput(dev.id, ctrl, inp);
+  const dec = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '−50',
+    'onmousedown': e => e.preventDefault(),   // don't steal focus → no premature onblur write
+    'onclick': () => stepAo(dev, ctrl, -50) });
+  dec.textContent = '−';
+  dec.disabled = !enabled;
+  const inc = h('button', { 'type': 'button', 'class': 'mqtt-ao-step', 'title': '+50',
+    'onmousedown': e => e.preventDefault(),
+    'onclick': () => stepAo(dev, ctrl, 50) });
+  inc.textContent = '+';
+  inc.disabled = !enabled;
+  const wrap = h('div', { 'class': 'mqtt-ao-set' });
+  wrap.appendChild(dec);
+  wrap.appendChild(inp);
+  wrap.appendChild(inc);
+  return wrap;
+}
+
+/** A disabled channel is excluded from polling — no echo can come, so the input goes inert. */
+function setAoInputChannelEnabled(devId, ctrl, enabled) {
+  const inp = aoInputEl(devId, ctrl);
+  if (!inp) return;
+  inp.dataset.chDisabled = enabled ? '0' : '1';
+  updateAoInput(devId, ctrl, inp);
+  if (inp.parentElement) {
+    inp.parentElement.querySelectorAll('.mqtt-ao-step').forEach(b => { b.disabled = !enabled; });
+  }
+}
+
 function mr02mAiNMirrorActive(dev, ch, channels, mtCode) {
   if (!mr02mAiIsNLeg(mtCode, ch)) return false;
   const parent = mr02mAiPairParent(ch);
@@ -1002,6 +1249,7 @@ async function prefetchDeviceLive(devId) {
   if (dev) refreshAiTypeSelects(dev);
   refreshLiveCellsForDevice(devId);
   sweepDoPending(devId);
+  sweepAoPending(devId);
   return data;
 }
 
@@ -1020,6 +1268,7 @@ function startUptimeTick() {
     updateLiveCell(devId, 'uptime_s');
     // Pending expiry must not depend on a successful poll (mqtt_live may be failing).
     sweepDoPending(devId);
+    sweepAoPending(devId);
   }, 1000);
 }
 
@@ -1432,7 +1681,7 @@ function renderDeviceList() {
         }, topic)
       ),
       h('td', {},
-        h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, '✕ Удалить')
+        h('button', {'class':'btn btn-sm', 'onclick': () => removeDevice(dev.id)}, 'Удалить')
       )
     );
     tr.addEventListener('click', (ev) => {
@@ -1676,8 +1925,12 @@ function appendMr02mAoGroup(dev, channels, count) {
   const pack = buildChannelWidget('AO — аналоговые выходы');
   for (let i = 1; i <= count; i++) {
     const chCfg = getOrCreateChannel(channels, 'ao', i);
-    pack.body.appendChild(buildChannelRow(
-      chCfg, topicPath(dev.id, `ao_${i}`), 'ao', i, dev, `ao_${i}`, 'В'));
+    const ctrl = `ao_${i}`;
+    const row = buildChannelRow(chCfg, topicPath(dev.id, ctrl), 'ao', i, dev, ctrl, 'В');
+    row.appendChild(buildAoSetpointInput(dev, ctrl, chCfg.enabled !== false));
+    const cb = row.querySelector('.mqtt-ch-toggle input[type=checkbox]');
+    if (cb) cb.addEventListener('change', e => setAoInputChannelEnabled(dev.id, ctrl, e.target.checked));
+    pack.body.appendChild(row);
   }
   return pack.widget;
 }
@@ -1978,7 +2231,7 @@ async function runScan() {
   const range = Number(rangeEl.value);
 
   btn.disabled = true;
-  btn.textContent = 'Сканирование…';
+  btn.textContent = 'Сканирование';
   statusEl.innerHTML = '<span class="mqtt-scan-spinner"></span>Поиск устройств на ' + port + ' (' + baud + ' бод)…';
   resultsEl.innerHTML = '';
 
@@ -2181,7 +2434,13 @@ function confirmAddDevice() {
     return;
   }
 
-  const dev = {id, type, port, baudrate, address: addr, name: name || id};
+  const shortName = name || (type === 'dtv' ? 'ДТВ-RS-485' : type === 'ce02m3' ? 'СЭ-02м-3' : id);
+  const dev = {
+    id, type, port, baudrate, address: addr,
+    name: (type === 'dtv' || type === 'ce02m3')
+      ? buildDeviceConfigName(shortName === id ? (type === 'dtv' ? 'ДТВ-RS-485' : 'СЭ-02м-3') : shortName, port, addr)
+      : (name || id),
+  };
   if (type === 'mr02m') {
     dev.module_type = 1;
     dev.fast_modbus = true;
@@ -2216,7 +2475,7 @@ function confirmAddDevice() {
 // ── Save & Apply ──────────────────────────────────────────────────────────────
 async function saveAndApply() {
   const btn = document.getElementById('mqtt-save-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение'; }
 
   for (const dev of _config.devices || []) {
     if (dev.type === 'mr02m') {
@@ -2302,7 +2561,7 @@ function startMonitor() {
   if (logEl) {
     const hint = logEl.querySelector('.mqtt-monitor-hint');
     if (hint) hint.remove();
-    logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'}, 'Загрузка…'));
+    logEl.appendChild(h('div', {'class': 'mqtt-monitor-hint'}, 'Загрузка'));
   }
   void pollMonitorDevice(filter);
   _monitorPollTimer = setInterval(() => pollMonitorDevice(filter), 1000);
@@ -2416,7 +2675,7 @@ window.mqttToggleBridge = async function mqttToggleBridge() {
     // CGI returns immediately (pending); service finishes in background.
     const res = await apiPost('cgi-bin/mqtt_ctrl.cgi', {action});
     if (res?.ok) {
-      showToast(on ? 'Остановка моста…' : 'Запуск моста…', 'success');
+      showToast(on ? 'Остановка моста' : 'Запуск моста', 'success');
       // Optimistic badge until status poll catches up.
       if (_lastMqttBrokerStatus && typeof _lastMqttBrokerStatus === 'object') {
         _lastMqttBrokerStatus = Object.assign({}, _lastMqttBrokerStatus, {

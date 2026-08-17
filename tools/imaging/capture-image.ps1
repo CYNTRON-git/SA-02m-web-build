@@ -62,15 +62,10 @@ Write-Host "WARNING: during dd SSH on the donor drops until reboot; host keys ar
 Write-Host ""
 
 $bashExtra = ($extra | ForEach-Object { $_ }) -join " "
-$cmd = @"
-set -euo pipefail
-cd '$wslRepo/tools/imaging'
-chmod +x capture-image.sh make-image.sh cleanup-donor.sh stream-after-cleanup.sh wait-donor.sh 2>/dev/null || true
-export SA02M_HOST='$Ip'
-export SA02M_PASS='$(if ($env:SA02M_PASS) { $env:SA02M_PASS } else { "cyntron" })'
-export SA02M_USER='$(if ($env:SA02M_USER) { $env:SA02M_USER } else { "root" })'
-./capture-image.sh --ip '$Ip' --name '$Name' --out-dir '$wslOut' $bashExtra
-"@
+# Single-line bash avoids CRLF from PowerShell here-strings breaking `set -o pipefail`.
+$pass = if ($env:SA02M_PASS) { $env:SA02M_PASS } else { "cyntron" }
+$user = if ($env:SA02M_USER) { $env:SA02M_USER } else { "root" }
+$cmd = "set -euo pipefail; cd '$wslRepo/tools/imaging'; chmod +x capture-image.sh make-image.sh cleanup-donor.sh stream-after-cleanup.sh wait-donor.sh 2>/dev/null || true; export SA02M_HOST='$Ip' SA02M_PASS='$pass' SA02M_USER='$user'; ./capture-image.sh --ip '$Ip' --name '$Name' --out-dir '$wslOut' $bashExtra"
 
 wsl -e bash -lc $cmd
 if ($LASTEXITCODE -ne 0) { throw "capture-image failed (exit $LASTEXITCODE)" }

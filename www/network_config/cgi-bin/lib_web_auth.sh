@@ -56,6 +56,7 @@ web_session__cookie_token() {
 # Create a session, print its token. Returns 1 if the store cannot be written.
 # File name = sha256(token); content = "<expiry_epoch> <user>" — the daemon reads
 # the expiry from the content, and the file is group-readable (640) so it can.
+# Also mints a CSRF token file (<hash>.csrf) for mutating POSTs (plan §2.10 / §6.1).
 web_session_create() {
     web_session__ensure_dir || return 1
     local tok hash f exp user
@@ -67,7 +68,84 @@ web_session_create() {
     user="${1:-${SA02M_WEB_USER:-admin}}"
     f="$SA02M_SESSION_DIR/$hash"
     ( umask 027; printf '%s %s\n' "$exp" "$user" > "$f" ) 2>/dev/null || return 1
+    web_csrf_create_for_hash "$hash" >/dev/null || true
     printf '%s' "$tok"
+}
+
+# ── CSRF (X-SA02M-CSRF) ─────────────────────────────────────────────────────
+# Token file: /run/sa02m-web-sessions/<sha256(session_token)>.csrf
+# UI sends the value in the X-SA02M-CSRF request header (and may mirror it in a
+# non-HttpOnly cookie set at login for JS read).
+
+web_csrf__path_for_hash() {
+    printf '%s/%s.csrf' "$SA02M_SESSION_DIR" "$1"
+}
+
+# Write a fresh CSRF token for session hash $1; print the token. Returns 1 on I/O fail.
+web_csrf_create_for_hash() {
+    local hash="$1" f tok
+    [ -n "$hash" ] || return 1
+    web_session__ensure_dir || return 1
+    tok=$(web_session__gen_token)
+    [ -n "$tok" ] || return 1
+    f=$(web_csrf__path_for_hash "$hash")
+    ( umask 027; printf '%s\n' "$tok" > "$f" ) 2>/dev/null || return 1
+    printf '%s' "$tok"
+}
+
+# CSRF token for the raw session token $1 (create if missing). Prints token.
+web_csrf_token_for_session() {
+    local tok="$1" hash f cur
+    [ -n "$tok" ] || return 1
+    hash=$(web_session__hash "$tok") || return 1
+    f=$(web_csrf__path_for_hash "$hash")
+    if [ -f "$f" ]; then
+        IFS= read -r cur < "$f" 2>/dev/null || true
+        cur="${cur//$'\r'/}"
+        if [ -n "$cur" ]; then
+            printf '%s' "$cur"
+            return 0
+        fi
+    fi
+    web_csrf_create_for_hash "$hash"
+}
+
+# CSRF token for the current Cookie session (create if missing). Prints token.
+web_csrf_get_or_create() {
+    local tok
+    tok=$(web_session__cookie_token) || return 1
+    web_csrf_token_for_session "$tok"
+}
+
+# Validate X-SA02M-CSRF against the session's .csrf file. Fail closed.
+web_csrf_validate() {
+    local tok hash f stored got
+    tok=$(web_session__cookie_token) || return 1
+    hash=$(web_session__hash "$tok") || return 1
+    f=$(web_csrf__path_for_hash "$hash")
+    [ -f "$f" ] || return 1
+    IFS= read -r stored < "$f" 2>/dev/null || return 1
+    stored="${stored//$'\r'/}"
+    [ -n "$stored" ] || return 1
+    got="${HTTP_X_SA02M_CSRF:-}"
+    [ -n "$got" ] || return 1
+    # Constant-time-ish compare via salted hashes (same pattern as web_auth_verify).
+    local s h1 h2
+    s=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    h1=$(printf '%s' "${s}:$got" | sha256sum | cut -d' ' -f1)
+    h2=$(printf '%s' "${s}:$stored" | sha256sum | cut -d' ' -f1)
+    [ "$h1" = "$h2" ]
+}
+
+# JSON error + exit if CSRF invalid. Call after session check on mutating POSTs.
+web_csrf_require() {
+    if web_csrf_validate; then
+        return 0
+    fi
+    printf 'Content-type: application/json; charset=UTF-8\r\n'
+    printf 'Cache-Control: no-store\r\n\r\n'
+    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+    exit 0
 }
 
 # Validate the cookie's token against the store, pruning it if expired.
@@ -110,7 +188,7 @@ web_session_destroy_cookie() {
     local tok hash
     tok=$(web_session__cookie_token) || return 0
     hash=$(web_session__hash "$tok") || return 0
-    rm -f "$SA02M_SESSION_DIR/$hash" 2>/dev/null
+    rm -f "$SA02M_SESSION_DIR/$hash" "$(web_csrf__path_for_hash "$hash")" 2>/dev/null
     return 0
 }
 

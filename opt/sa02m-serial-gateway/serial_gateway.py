@@ -114,12 +114,37 @@ def _modbus_read_frame_len(data: bytes) -> int:
         return 8
     return 0
 
-def _strip_rtu_echo(request: bytes, data: bytes) -> bytes:
-    """Remove TX echo from RS-485 adapters (use > not >=: FC06 reply == request)."""
-    if (len(request) > 0 and len(data) > len(request)
-            and data[:len(request)] == request):
-        return data[len(request):]
-    return data
+def _strip_leading_echo(request: bytes, buf: bytes) -> bytes:
+    """Drop a leading full TX echo (== request) from the RX buffer if present.
+
+    Length-based, NOT the old strict-`>` heuristic: a buffer that lands EXACTLY
+    on the echo (len == len(request), e.g. an absent device echoing our own TX
+    on half-duplex RS-485) is also stripped, yielding b'' → a clean timeout
+    instead of a phantom framed echo. Conscious trade (plan Option A): a no-echo
+    adapter whose FC06 reply equals the request byte-for-byte is treated as an
+    echo — a case that cannot occur on the always-echoing A40i on-board RS-485.
+    """
+    if len(request) > 0 and buf[:len(request)] == request:
+        return buf[len(request):]
+    return buf
+
+def _extract_rtu_response(request: bytes, buf: bytes) -> bytes | None:
+    """Return the complete RTU response frame from the RX buffer, else None.
+
+    Half-duplex RS-485 prepends the TX echo, so buf == [echo][response]. While
+    buf is still a prefix of the outgoing request the echo is in flight — NEVER
+    frame it (this closes the exact-8-byte-echo boundary where the old loop
+    framed echo[:5], failed CRC, and hid the device). Once buf diverges from or
+    exceeds the request, the echo (== len(request) leading bytes) is consumed by
+    its known length and the remainder framed by _modbus_read_frame_len.
+    """
+    if len(request) > 0 and request.startswith(buf):
+        return None  # buf is still a (partial or exactly-full) echo in flight
+    rem = _strip_leading_echo(request, buf)
+    flen = _modbus_read_frame_len(rem)
+    if flen and len(rem) >= flen:
+        return rem[:flen]
+    return None
 
 # ── Serial worker (blocking, thread-safe) ─────────────────────────────────────
 
@@ -213,24 +238,25 @@ class SerialWorker:
                 if waiting:
                     buf += self._ser.read(max(waiting, 1))
                     last_recv = time.monotonic()
-                    buf = _strip_rtu_echo(request, buf)
-                    flen = _modbus_read_frame_len(buf)
-                    if flen and len(buf) >= flen:
+                    frame = _extract_rtu_response(request, buf)
+                    if frame is not None:
                         time.sleep(self._gap)
-                        return buf[:flen]
+                        return frame
                 elif buf and (time.monotonic() - last_recv) >= silence:
-                    buf = _strip_rtu_echo(request, buf)
-                    flen = _modbus_read_frame_len(buf)
-                    if flen and len(buf) >= flen:
+                    # RX went quiet — frame whatever complete response we have
+                    frame = _extract_rtu_response(request, buf)
+                    if frame is not None:
                         time.sleep(self._gap)
-                        return buf[:flen]
+                        return frame
                     break
                 else:
                     time.sleep(0.001)
 
-            buf = _strip_rtu_echo(request, buf)
+            # deadline / silence break: consume the echo, return the remainder
+            # (b'' ⇒ handler emits a clean Modbus exception 11, never a phantom)
+            rem = _strip_leading_echo(request, buf)
             time.sleep(self._gap)
-            return buf
+            return rem
 
     def write_raw(self, data: bytes):
         """Write raw bytes without awaiting a response (transparent TX)."""

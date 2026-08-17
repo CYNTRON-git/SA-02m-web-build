@@ -21,14 +21,20 @@
   `/run/sa02m-flasher/flasher.sock`.
 - Маркер развёрнутого коммита: `/var/lib/sa02m-web-build/deployed_commit`.
 
-## Три пути деплоя
+## Пути деплоя
 
 | Путь | Когда | Чем |
 |---|---|---|
 | **www-only** | изменения только в `www/` (frontend + CGI) | `scripts/update-www-only.sh` |
 | **full install** | новое устройство, или менялись `etc/`/`opt/`/systemd/демон | `install.sh` |
-| **web-update (OTA)** | штатное самообновление устройства | вкладка «Обновление веб» (`web_update_*.cgi`, semver) |
+| **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии |
+| **offline package** | обновление без интернета (с релиза N+1) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
+
+Состояние updater: `/var/lib/sa02m-update` (runner `/usr/local/libexec/sa02m-update-runner`,
+ключи `/etc/sa02m-update/trusted-keys/`). Bootstrap релиза N ставит runner/keys/units
+через `scripts/03-webserver.sh` / `update-www-only.sh` (`[ -f ]`-гарды); применение
+`.sa02m` — с N+1. Подробности формата: `docs/OFFLINE_UPDATE_PACKAGE_V1.md` (когда появится).
 
 `update-www-only.sh` синхронизирует `www/` → `/var/www/network_config`, чинит
 права (CGI 755, static 644, owner `www-data`), пишет маркер коммита,
@@ -36,10 +42,11 @@
 
 **Важно:** `update-www-only.sh` разворачивает `www/` и — если `etc/` есть в
 дереве рядом — часть helper-скриптов/юнитов из `etc/` (идемпотентно, по
-`[ -f … ]`-гардам). Он НИКОГДА не разворачивает демон прошивальщика
-(`opt/sa02m-flasher/`) и его tmpfiles-юнит. Если релиз менял демон/`opt/` —
-нужен `install.sh` (полный) ИЛИ отдельная доставка `opt/` + рестарт
-`sa02m-flasher`. Для чисто-www деплоя `etc/` намеренно не несут (см. шаг 2).
+`[ -f … ]`-гардам), включая bootstrap updater (`opt/sa02m-update`, libexec runner).
+Он НИКОГДА не разворачивает демон прошивальщика (`opt/sa02m-flasher/`) и его
+tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/` — нужен `install.sh`
+(полный) ИЛИ отдельная доставка `opt/` + рестарт `sa02m-flasher`. Для чисто-www
+деплоя `etc/` намеренно не несут (см. шаг 2).
 
 ---
 

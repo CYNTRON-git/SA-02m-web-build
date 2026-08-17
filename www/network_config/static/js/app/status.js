@@ -873,13 +873,13 @@ function applySystemStatus(d) {
     if (!installed) {
       btn.disabled = true;
       if (lbl) lbl.textContent = uiT('НЕ УСТАНОВЛЕНО');
-      btn.className = 'btn btn-danger';
+      btn.className = 'btn btn-danger system-action-btn';
       btn.title = uiT('Нет storage-mount — выполните установку системы (install.sh)');
     } else {
       btn.disabled = false;
       btn.title = uiT('Нажмите, чтобы переключить: при выкл. раздел без ФС или NTFS не форматируется');
       if (lbl) lbl.textContent = uiT(on ? 'ВКЛЮЧЕНО' : 'ОТКЛЮЧЕНО');
-      btn.className = 'btn btn-danger';
+      btn.className = 'btn btn-danger system-action-btn';
     }
   }
 }
@@ -1412,7 +1412,8 @@ function checkWebUpdatesManual() {
   fetchWithTimeout('cgi-bin/web_update_check.cgi?force=1', {
     method: 'POST',
     credentials: 'same-origin',
-    cache: 'no-store'
+    cache: 'no-store',
+    headers: withCsrfHeaders()
   }, 25000)
     .then(function (r) { return r.json(); })
     .then(function (j) {
@@ -1439,28 +1440,423 @@ function checkWebUpdatesManual() {
 }
 
 var _webUpdPollTimer = null;
+var _webUpdPollBackoffMs = 2000;
+var _webUpdPollInFlight = false;
+var _webUpdTxnActive = false;
+var _webUpdOfflineReady = false;
+var _webUpdInspect = null;
+var _factoryResetBackupDone = false;
+var _factoryResetPollTimer = null;
+var _factoryResetPollBackoffMs = 2000;
+var _factoryResetPollInFlight = false;
+var _factoryResetPollTries = 0;
+
+var WEB_UPD_STAGE_UI = {
+  upload: 'Загрузка файла…',
+  uploaded: 'Проверка пакета…',
+  validating: 'Проверка пакета…',
+  backing_up: 'Создание резервной копии…',
+  applying: 'Установка…',
+  verifying: 'Проверка сервисов…',
+  committing: 'Проверка сервисов…',
+  done: 'Обновление установлено. Перезагрузка через 5 с…',
+  disconnect: 'Плата применяет обновление. Повторное подключение…',
+  error: 'Ошибка',
+  cancelled: 'Обновление отменено',
+  rolling_back: 'Откат…',
+  rolled_back: 'Выполнен откат'
+};
+
+function _webUpdSetStatus(text, kind) {
+  var st = document.getElementById('web-upd-status');
+  if (!st) return;
+  st.className = 'web-upd-status' + (kind ? ' ' + kind : '');
+  st.textContent = text ? uiT(text) : '';
+  st.hidden = !text;
+}
+
+function _webUpdSetProgress(pct, label) {
+  var wrap = document.getElementById('web-upd-progress');
+  var fill = document.getElementById('web-upd-progress-fill');
+  var lab = document.getElementById('web-upd-progress-label');
+  if (!wrap) return;
+  var show = pct != null || !!label;
+  wrap.hidden = !show;
+  if (fill && pct != null && Number.isFinite(Number(pct))) {
+    fill.style.width = Math.max(0, Math.min(100, Number(pct))) + '%';
+  }
+  if (lab) lab.textContent = label ? uiT(label) : '';
+}
+
+function _webUpdLegacyStatus(j) {
+  if (!j || typeof j !== 'object') return '';
+  if (j.legacy && typeof j.legacy === 'object' && j.legacy.status != null) {
+    return String(j.legacy.status);
+  }
+  if (j.status != null) return String(j.status);
+  return '';
+}
+
+function _webUpdStageText(j) {
+  if (!j || typeof j !== 'object') return '';
+  var stage = String(j.stage || '').trim();
+  if (stage === 'applying') {
+    var done = Number(j.files_done);
+    var total = Number(j.files_total);
+    if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+      return WEB_UPD_STAGE_UI.applying + ' (' + done + '/' + total + ')';
+    }
+    return WEB_UPD_STAGE_UI.applying;
+  }
+  if (stage === 'error') {
+    var em = j.error_message != null ? String(j.error_message) : '';
+    return em ? ('Ошибка: ' + em) : 'Ошибка обновления';
+  }
+  if (WEB_UPD_STAGE_UI[stage]) return WEB_UPD_STAGE_UI[stage];
+  var legacy = _webUpdLegacyStatus(j);
+  if (legacy === 'running') return 'Загрузка и установка обновления…';
+  if (legacy === 'done') return WEB_UPD_STAGE_UI.done;
+  if (legacy === 'error') return 'Ошибка обновления. Проверьте лог ниже.';
+  return '';
+}
+
+function _webUpdIsTerminal(j) {
+  var stage = String((j && j.stage) || '').trim();
+  if (stage === 'done' || stage === 'error' || stage === 'cancelled' ||
+      stage === 'rolled_back') return true;
+  var legacy = _webUpdLegacyStatus(j);
+  return legacy === 'done' || legacy === 'error';
+}
+
+function _webUpdIsBusy(j) {
+  if (!j) return false;
+  var stage = String(j.stage || '').trim();
+  if (stage && stage !== 'idle' && stage !== 'done' && stage !== 'error' &&
+      stage !== 'cancelled' && stage !== 'rolled_back') return true;
+  return _webUpdLegacyStatus(j) === 'running';
+}
+
+function setOfflineUpdateEnabled(ready, reason) {
+  _webUpdOfflineReady = !!ready;
+  var pick = document.getElementById('web-upd-file-pick-btn');
+  var input = document.getElementById('web-upd-file-input');
+  var hint = document.getElementById('web-upd-file-disabled-hint');
+  var msg = reason || 'Доступно после обновления до версии с поддержкой загрузки из файла';
+  if (pick) {
+    pick.disabled = !ready || _webUpdTxnActive;
+    pick.title = ready ? '' : uiT(msg);
+  }
+  if (input) input.disabled = !ready || _webUpdTxnActive;
+  if (hint) {
+    hint.hidden = !!ready;
+    if (!ready) hint.textContent = uiT(msg);
+  }
+}
+
+function initOfflineUpdateUi() {
+  probeOfflineUpdateCapability();
+}
+
+function probeOfflineUpdateCapability() {
+  // Resume shared apply polling if a transaction is already running.
+  fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && _webUpdIsBusy(j)) {
+        _webUpdTxnActive = true;
+        _webUpdApplyTxnUI(j);
+        _webUpdStartPolling();
+      }
+    })
+    .catch(function () { /* ignore */ });
+
+  // Capability: upload CGI answers JSON (404 not_found = ready, no package yet).
+  fetchWithTimeout('cgi-bin/web_update_upload.cgi', {
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 8000)
+    .then(function (r) {
+      return r.text().then(function (t) {
+        var j = null;
+        try { j = JSON.parse(t); } catch (e) { j = null; }
+        return { r: r, j: j };
+      });
+    })
+    .then(function (x) {
+      var j = x.j;
+      if (!j || typeof j !== 'object') {
+        setOfflineUpdateEnabled(false);
+        return;
+      }
+      if (j.error === 'unauthorized') return;
+      var msg = String(j.error_message || j.error || '');
+      if (j.error_code === 'E_CMD' && /missing|inspect|upload_receive|sudo/i.test(msg)) {
+        setOfflineUpdateEnabled(false,
+          'Доступно после обновления до версии с поддержкой загрузки из файла');
+        return;
+      }
+      setOfflineUpdateEnabled(true);
+      if (j.inspect && typeof j.inspect === 'object' && j.ok !== false) {
+        applyOfflineInspectUI(j.inspect, j);
+      }
+    })
+    .catch(function () {
+      setOfflineUpdateEnabled(false);
+    });
+}
+
+function pickOfflineUpdateFile() {
+  var input = document.getElementById('web-upd-file-input');
+  if (!input || input.disabled) return;
+  input.value = '';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (file) uploadOfflineUpdateFile(file);
+  };
+  input.click();
+}
+
+function applyOfflineInspectUI(inspect, wrap) {
+  _webUpdInspect = inspect || null;
+  var box = document.getElementById('web-upd-inspect');
+  if (!box) return;
+  if (!inspect) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  setText('web-upd-pkg-ver', inspect.version || (wrap && wrap.target_version) || '—');
+  setText('web-upd-pkg-commit', inspect.commit || inspect.repo_commit || '—');
+  var sigOk = inspect.signature_ok;
+  setText('web-upd-pkg-sig', sigOk === true ? 'OK' : (sigOk === false ? 'нет' : '—'));
+  var compat = inspect.compatible;
+  setText('web-upd-pkg-compat', compat === true ? 'да' : (compat === false ? 'нет' : '—'));
+  var warnEl = document.getElementById('web-upd-pkg-warnings');
+  var warnings = inspect.warnings;
+  if (warnEl) {
+    if (Array.isArray(warnings) && warnings.length) {
+      warnEl.hidden = false;
+      warnEl.textContent = warnings.map(String).join('; ');
+    } else {
+      warnEl.hidden = true;
+      warnEl.textContent = '';
+    }
+  }
+  var applyBtn = document.getElementById('web-upd-file-apply-btn');
+  if (applyBtn) {
+    applyBtn.disabled = compat === false || sigOk === false || _webUpdTxnActive;
+  }
+}
+
+function uploadOfflineUpdateFile(file) {
+  if (!_webUpdOfflineReady) {
+    toast('Загрузка из файла недоступна', 'error');
+    return;
+  }
+  if (!file || !/\.sa02m$/i.test(file.name)) {
+    toast('Выберите файл .sa02m', 'error');
+    return;
+  }
+  var pick = document.getElementById('web-upd-file-pick-btn');
+  var applyBtn = document.getElementById('web-upd-file-apply-btn');
+  if (pick) pick.disabled = true;
+  if (applyBtn) applyBtn.disabled = true;
+  _webUpdSetStatus('Загрузка файла… 0%', 'is-warn');
+  _webUpdSetProgress(0, 'Загрузка файла… 0%');
+
+  var fd = new FormData();
+  fd.append('file', file, file.name);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'cgi-bin/web_update_upload.cgi', true);
+  xhr.withCredentials = true;
+  xhr.timeout = 600000;
+  var csrf = getSa02mCsrfToken();
+  if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
+  xhr.upload.onprogress = function (ev) {
+    if (!ev.lengthComputable) return;
+    var pct = Math.round((ev.loaded / ev.total) * 100);
+    var label = 'Загрузка файла… ' + pct + '%';
+    _webUpdSetStatus(label, 'is-warn');
+    _webUpdSetProgress(pct, label);
+  };
+  xhr.onerror = function () {
+    _webUpdSetProgress(null, '');
+    _webUpdSetStatus('Ошибка загрузки файла', 'is-err');
+    setOfflineUpdateEnabled(_webUpdOfflineReady);
+    toast('Ошибка загрузки файла', 'error');
+  };
+  xhr.ontimeout = function () {
+    _webUpdSetProgress(null, '');
+    _webUpdSetStatus('Таймаут загрузки файла', 'is-err');
+    setOfflineUpdateEnabled(_webUpdOfflineReady);
+    toast('Таймаут — повторите', 'error');
+  };
+  xhr.onload = function () {
+    setOfflineUpdateEnabled(_webUpdOfflineReady);
+    var j = null;
+    try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
+    if (xhr.status === 404) {
+      _webUpdSetProgress(null, '');
+      _webUpdSetStatus('Сервис загрузки недоступен', 'is-err');
+      setOfflineUpdateEnabled(false);
+      toast('Сервис загрузки недоступен', 'error');
+      return;
+    }
+    if (xhr.status < 200 || xhr.status >= 300 || !j || j.ok === false) {
+      var err = (j && (j.error_message || j.error)) || ('HTTP ' + xhr.status);
+      _webUpdSetProgress(null, '');
+      _webUpdSetStatus('Ошибка: ' + err, 'is-err');
+      toast('Ошибка: ' + err, 'error');
+      return;
+    }
+    _webUpdSetStatus('Проверка пакета…', 'is-warn');
+    _webUpdSetProgress(100, 'Проверка пакета…');
+    applyOfflineInspectUI(j.inspect || j, j);
+    toast('Пакет загружен', 'success');
+  };
+  xhr.send(fd);
+}
+
+function applyOfflineUpdate() {
+  if (!_webUpdInspect) {
+    toast('Сначала загрузите пакет .sa02m', 'error');
+    return;
+  }
+  var ver = String(_webUpdInspect.version || '').trim();
+  if (!ver) {
+    toast('В пакете нет версии', 'error');
+    return;
+  }
+  var applyBtn = document.getElementById('web-upd-file-apply-btn');
+  var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
+  var checkBtn = document.getElementById('web-upd-check-btn');
+  var onlineApply = document.getElementById('web-upd-apply-btn');
+  if (applyBtn) applyBtn.disabled = true;
+  if (cancelBtn) cancelBtn.hidden = false;
+  if (checkBtn) checkBtn.disabled = true;
+  if (onlineApply) onlineApply.disabled = true;
+  _webUpdTxnActive = true;
+  _webUpdSetStatus('Создание резервной копии…', 'is-warn');
+  _webUpdSetProgress(0, 'Создание резервной копии…');
+
+  fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ action: 'apply', confirm_version: ver, source: 'file' })
+  }, 15000)
+    .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+    .then(function (x) {
+      var j = x.j || {};
+      if (x.r.status === 202 || j.ok === true || _webUpdIsBusy(j) ||
+          _webUpdLegacyStatus(j) === 'running' || _webUpdLegacyStatus(j) === 'idle') {
+        _webUpdStartPolling();
+        return;
+      }
+      _webUpdFinish(j.stage === 'done' || _webUpdLegacyStatus(j) === 'done' ? 'done' : 'error',
+        j.log || j.error_message || '');
+    })
+    .catch(function () {
+      _webUpdFinish('error', 'Нет ответа от сервера');
+    });
+}
+
+function cancelOfflineUpdate() {
+  fetchWithTimeout('cgi-bin/web_update_cancel.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ action: 'cancel' })
+  }, 10000)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (j && j.ok === false) {
+        toast('Ошибка: ' + (j.error_message || j.error || 'cancel'), 'error');
+        return;
+      }
+      toast('Отмена запрошена', 'info');
+      _webUpdStartPolling();
+    })
+    .catch(function () {
+      toast('Нет связи с сервером', 'error');
+    });
+}
+
+function downloadWebBackup(forFactoryReset) {
+  var btn = document.getElementById(forFactoryReset ? 'factory-reset-backup-btn' : 'web-upd-backup-btn');
+  if (btn) btn.disabled = true;
+  fetchWithTimeout('cgi-bin/web_backup.cgi', {
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }, 120000)
+    .then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) {
+          var msg = t;
+          try {
+            var j = JSON.parse(t);
+            msg = j.error_message || j.error || t;
+          } catch (e) { /* keep text */ }
+          throw new Error(msg || ('HTTP ' + r.status));
+        });
+      }
+      var disp = r.headers.get('Content-Disposition') || '';
+      var m = /filename\*?=(?:UTF-8''|")?([^\";]+)/i.exec(disp);
+      var name = m ? decodeURIComponent(m[1].replace(/"/g, '')) : ('sa02m-backup-' + Date.now() + '.tar.gz');
+      return r.blob().then(function (blob) { return { blob: blob, name: name }; });
+    })
+    .then(function (x) {
+      var url = URL.createObjectURL(x.blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = x.name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
+      toast('Резервная копия скачана', 'success');
+      if (forFactoryReset) {
+        _factoryResetBackupDone = true;
+        var ok = document.getElementById('factory-reset-backup-ok');
+        if (ok) ok.hidden = false;
+        onFactoryResetConfirmInput();
+      }
+    })
+    .catch(function (e) {
+      var msg = (e && e.message) ? e.message : 'Ошибка резервной копии';
+      if (/404|Not Found/i.test(msg)) msg = 'Сервис резервной копии недоступен';
+      toast(msg, 'error');
+    })
+    .finally(function () { if (btn) btn.disabled = false; });
+}
 
 function applyWebUpdate() {
   const applyBtn = document.getElementById('web-upd-apply-btn');
   const checkBtn = document.getElementById('web-upd-check-btn');
   const logEl = document.getElementById('web-upd-log');
-  const st = document.getElementById('web-upd-status');
-  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = 'Применяется…'; }
+  if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = uiT('Применяется'); }
   if (checkBtn) checkBtn.disabled = true;
   if (logEl) { logEl.textContent = ''; logEl.hidden = false; }
-  if (st) { st.textContent = 'Загрузка и установка обновления…'; st.className = 'web-upd-status is-warn'; st.hidden = false; }
+  _webUpdTxnActive = true;
+  _webUpdSetStatus('Загрузка и установка обновления…', 'is-warn');
 
   fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
     method: 'POST',
     credentials: 'same-origin',
-    cache: 'no-store'
+    cache: 'no-store',
+    headers: withCsrfHeaders()
   }, 10000)
     .then(function (r) { return r.json(); })
     .then(function (j) {
-      if (j.status === 'running' || j.status === 'idle') {
+      if (j.status === 'running' || j.status === 'idle' || _webUpdIsBusy(j)) {
         _webUpdStartPolling();
       } else {
-        _webUpdFinish(j.status, j.log || '');
+        _webUpdFinish(j.status || j.stage || 'error', j.log || '');
       }
     })
     .catch(function () {
@@ -1468,43 +1864,543 @@ function applyWebUpdate() {
     });
 }
 
+function _webUpdApplyTxnUI(j) {
+  var logEl = document.getElementById('web-upd-log');
+  if (logEl && j.log) {
+    logEl.textContent = j.log;
+    logEl.hidden = false;
+  }
+  var txt = _webUpdStageText(j);
+  var stage = String(j.stage || '');
+  var kind = 'is-warn';
+  if (stage === 'done' || _webUpdLegacyStatus(j) === 'done') kind = 'is-ok';
+  else if (stage === 'error' || _webUpdLegacyStatus(j) === 'error') kind = 'is-err';
+  if (txt) _webUpdSetStatus(txt, kind);
+  var pct = j.progress_pct;
+  if (pct == null && j.files_total > 0) {
+    pct = Math.round((Number(j.files_done) / Number(j.files_total)) * 100);
+  }
+  if (_webUpdIsBusy(j) || pct != null) _webUpdSetProgress(pct, txt);
+  var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
+  if (cancelBtn) {
+    var cancellable = stage === 'uploaded' || stage === 'validating' || stage === 'backing_up';
+    cancelBtn.hidden = !cancellable;
+    cancelBtn.disabled = !cancellable;
+  }
+}
+
+function _webUpdSchedulePoll(delayMs) {
+  if (_webUpdPollTimer) clearTimeout(_webUpdPollTimer);
+  _webUpdPollTimer = setTimeout(function () {
+    _webUpdPollTimer = null;
+    _webUpdPollOnce();
+  }, delayMs);
+}
+
+function _webUpdPollOnce() {
+  if (_webUpdPollInFlight) return;
+  _webUpdPollInFlight = true;
+  fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function (j) {
+      _webUpdPollBackoffMs = 2000;
+      _webUpdApplyTxnUI(j);
+      if (_webUpdIsTerminal(j)) {
+        _webUpdPollInFlight = false;
+        _webUpdFinish(
+          (j.stage === 'done' || _webUpdLegacyStatus(j) === 'done') ? 'done' : 'error',
+          j.log || j.error_message || ''
+        );
+        return;
+      }
+      _webUpdPollInFlight = false;
+      _webUpdSchedulePoll(2000);
+    })
+    .catch(function () {
+      _webUpdPollInFlight = false;
+      if (_webUpdTxnActive) {
+        _webUpdSetStatus(WEB_UPD_STAGE_UI.disconnect, 'is-warn');
+        _webUpdSetProgress(null, WEB_UPD_STAGE_UI.disconnect);
+        _webUpdPollBackoffMs = Math.min(600000, Math.max(2000, _webUpdPollBackoffMs * 2));
+        _webUpdSchedulePoll(_webUpdPollBackoffMs);
+      }
+    });
+}
+
 function _webUpdStartPolling() {
-  if (_webUpdPollTimer) clearInterval(_webUpdPollTimer);
-  _webUpdPollTimer = setInterval(function () {
-    fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
-      credentials: 'same-origin', cache: 'no-store'
-    }, 8000)
-      .then(function (r) { return r.json(); })
-      .then(function (j) {
-        var logEl = document.getElementById('web-upd-log');
-        if (logEl && j.log) logEl.textContent = j.log;
-        if (j.status !== 'running') {
-          clearInterval(_webUpdPollTimer);
-          _webUpdPollTimer = null;
-          _webUpdFinish(j.status, j.log || '');
-        }
-      })
-      .catch(function () {});
-  }, 2000);
+  _webUpdPollBackoffMs = 2000;
+  if (_webUpdPollTimer) clearTimeout(_webUpdPollTimer);
+  _webUpdPollTimer = null;
+  _webUpdPollOnce();
 }
 
 function _webUpdFinish(status, log) {
   var applyBtn = document.getElementById('web-upd-apply-btn');
   var checkBtn = document.getElementById('web-upd-check-btn');
-  var st = document.getElementById('web-upd-status');
+  var fileApply = document.getElementById('web-upd-file-apply-btn');
+  var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
   var logEl = document.getElementById('web-upd-log');
+  _webUpdTxnActive = false;
+  if (_webUpdPollTimer) { clearTimeout(_webUpdPollTimer); _webUpdPollTimer = null; }
+  _webUpdPollInFlight = false;
   if (checkBtn) checkBtn.disabled = false;
-  if (logEl && log) logEl.textContent = log;
+  if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.disabled = false; }
+  if (fileApply) fileApply.disabled = !_webUpdInspect;
+  setOfflineUpdateEnabled(_webUpdOfflineReady);
+  if (logEl && log) { logEl.textContent = log; logEl.hidden = false; }
   if (status === 'done') {
-    if (st) { st.textContent = 'Обновление применено. Страница перезагрузится через 5 секунд…'; st.className = 'web-upd-status is-ok'; st.hidden = false; }
+    _webUpdSetStatus(WEB_UPD_STAGE_UI.done, 'is-ok');
+    _webUpdSetProgress(100, WEB_UPD_STAGE_UI.done);
     if (applyBtn) applyBtn.hidden = true;
     toast('Обновление применено успешно', 'success');
     setTimeout(function () { location.reload(); }, 5000);
   } else {
-    if (st) { st.textContent = 'Ошибка обновления. Проверьте лог ниже.'; st.className = 'web-upd-status is-err'; st.hidden = false; }
-    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = 'Применить'; }
+    _webUpdSetStatus(log ? ('Ошибка: ' + log) : 'Ошибка обновления. Проверьте лог ниже.', 'is-err');
+    _webUpdSetProgress(null, '');
+    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = uiT('Применить'); }
     toast('Ошибка обновления', 'error');
   }
+}
+
+/* ── «Обновление проекта MPLC» — upload + deploy a MasterSCADA project ──────
+   Own poll loop, active only during a deploy (never on the status-poll hot
+   path). The block lives outside any renderer-owned container. Endpoint +
+   contract: cgi-bin/mplc_project_deploy.cgi, docs/contracts/mplc-project-deploy.md. */
+var _mplcProjFile = null;
+var _mplcProjActive = false;
+var _mplcProjPollTimer = null;
+var _mplcProjPollInFlight = false;
+
+var MPLC_PROJ_STAGE_UI = {
+  validate: 'Проверка файла…',
+  stopping: 'Остановка MPLC…',
+  backup: 'Резервная копия…',
+  replace: 'Замена проекта…',
+  starting: 'Запуск MPLC…',
+  verify: 'Проверка загрузки…',
+  done: 'Проект развёрнут'
+};
+
+var MPLC_PROJ_ERR_UI = {
+  E_UPLOAD: 'битый файл загрузки',
+  E_SIZE: 'файл слишком большой',
+  E_ZIP: 'это не архив ZIP',
+  E_TRAVERSAL: 'подозрительный архив',
+  E_MEMBERS: 'это не экспорт проекта MasterSCADA',
+  E_PROJINFO: 'повреждён ProjInfo.json',
+  E_HASH: 'контрольная сумма не совпала',
+  E_BUSY: 'идёт прошивка или сканирование RS-485',
+  E_LOCK: 'развёртывание уже выполняется',
+  E_STOP: 'не удалось остановить MPLC',
+  E_BACKUP: 'не удалось создать резервную копию',
+  E_EXTRACT: 'не удалось записать проект',
+  E_START: 'не удалось запустить MPLC',
+  E_VERIFY: 'MPLC не загрузил проект',
+  E_CMD: 'служба развёртывания недоступна',
+  E_CSRF: 'ошибка защиты сессии',
+  E_INTERNAL: 'внутренняя ошибка'
+};
+
+function _mplcProjSetStatus(text, kind) {
+  var st = document.getElementById('mplc-proj-status');
+  if (!st) return;
+  st.className = 'web-upd-status' + (kind ? ' ' + kind : '');
+  st.textContent = text ? uiT(text) : '';
+  st.hidden = !text;
+}
+
+function _mplcProjSetProgress(pct, label) {
+  var wrap = document.getElementById('mplc-proj-progress');
+  var fill = document.getElementById('mplc-proj-progress-fill');
+  var lab = document.getElementById('mplc-proj-progress-label');
+  if (!wrap) return;
+  wrap.hidden = !(pct != null || !!label);
+  if (fill && pct != null && Number.isFinite(Number(pct))) {
+    fill.style.width = Math.max(0, Math.min(100, Number(pct))) + '%';
+  }
+  if (lab) lab.textContent = label ? uiT(label) : '';
+}
+
+// Stage → coarse progress %, so the bar advances through the deploy machine.
+function _mplcProjStagePct(stage) {
+  var order = ['validate', 'stopping', 'backup', 'replace', 'starting', 'verify', 'done'];
+  var i = order.indexOf(String(stage || ''));
+  return i < 0 ? null : Math.round((i / (order.length - 1)) * 100);
+}
+
+function _mplcProjErrText(j) {
+  var code = j && j.error_code ? String(j.error_code) : '';
+  if (MPLC_PROJ_ERR_UI[code]) return MPLC_PROJ_ERR_UI[code];
+  return (j && j.error_message) ? String(j.error_message) : 'ошибка развёртывания';
+}
+
+function _mplcProjFlasherBusy() {
+  try {
+    return !!(_lastSvcCtlData && _lastSvcCtlData.flasher_busy);
+  } catch (e) {
+    return false;
+  }
+}
+
+function loadMplcProjectMeta() {
+  var cur = document.getElementById('mplc-proj-current');
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (!j || typeof j !== 'object') return;
+      if (cur) {
+        if (j.deployed && j.project && j.project.name) {
+          cur.textContent = j.project.name +
+            (j.project.ide_version ? ' (IDE ' + j.project.ide_version + ')' : '');
+        } else {
+          cur.textContent = uiT('проект не развёрнут');
+        }
+      }
+    })
+    .catch(function () { /* ignore — leave dash */ });
+
+  // Resume the poll if a deploy is already running (F5 mid-deploy).
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi?result=1', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.pending) {
+        _mplcProjActive = true;
+        _mplcProjStartPolling();
+      }
+    })
+    .catch(function () { /* ignore */ });
+}
+
+function pickMplcProjectFile() {
+  var input = document.getElementById('mplc-proj-file-input');
+  if (!input || _mplcProjActive) return;
+  input.value = '';
+  input.onchange = function () {
+    var file = input.files && input.files[0];
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) {
+      toast('Выберите файл .zip', 'error');
+      return;
+    }
+    _mplcProjFile = file;
+    var nameEl = document.getElementById('mplc-proj-file-name');
+    if (nameEl) nameEl.textContent = file.name;
+    var chk = document.getElementById('mplc-proj-confirm-chk');
+    if (chk) chk.checked = false;
+    var picked = document.getElementById('mplc-proj-picked');
+    if (picked) picked.hidden = false;
+    onMplcProjectConfirmToggle();
+  };
+  input.click();
+}
+
+function onMplcProjectConfirmToggle() {
+  var chk = document.getElementById('mplc-proj-confirm-chk');
+  var btn = document.getElementById('mplc-proj-deploy-btn');
+  if (btn) btn.disabled = !(chk && chk.checked && _mplcProjFile) || _mplcProjActive;
+}
+
+function cancelMplcProjectPick() {
+  _mplcProjFile = null;
+  var picked = document.getElementById('mplc-proj-picked');
+  if (picked) picked.hidden = true;
+  var input = document.getElementById('mplc-proj-file-input');
+  if (input) input.value = '';
+}
+
+function deployMplcProject() {
+  var chk = document.getElementById('mplc-proj-confirm-chk');
+  if (!_mplcProjFile) { toast('Сначала выберите файл проекта', 'error'); return; }
+  if (!chk || !chk.checked) { toast('Подтвердите замену проекта', 'error'); return; }
+  if (_mplcProjFlasherBusy()) {
+    toast('идёт прошивка или сканирование RS-485', 'warn');
+    return;
+  }
+  var pick = document.getElementById('mplc-proj-pick-btn');
+  var deployBtn = document.getElementById('mplc-proj-deploy-btn');
+  if (pick) pick.disabled = true;
+  if (deployBtn) deployBtn.disabled = true;
+  _mplcProjActive = true;
+  _mplcProjSetStatus('Загрузка файла…', 'is-warn');
+  _mplcProjSetProgress(0, 'Загрузка файла…');
+
+  var fd = new FormData();
+  fd.append('file', _mplcProjFile, _mplcProjFile.name);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'cgi-bin/mplc_project_deploy.cgi', true);
+  xhr.withCredentials = true;
+  xhr.timeout = 120000;
+  var csrf = getSa02mCsrfToken();
+  if (csrf) xhr.setRequestHeader('X-SA02M-CSRF', csrf);
+  xhr.upload.onprogress = function (ev) {
+    if (!ev.lengthComputable) return;
+    var pct = Math.round((ev.loaded / ev.total) * 100);
+    _mplcProjSetProgress(pct, 'Загрузка файла…');
+  };
+  xhr.onerror = function () { _mplcProjFinish('error', { error_message: 'нет связи с сервером' }); };
+  xhr.ontimeout = function () { _mplcProjFinish('error', { error_message: 'таймаут загрузки' }); };
+  xhr.onload = function () {
+    var j = null;
+    try { j = JSON.parse(xhr.responseText || '{}'); } catch (e) { j = null; }
+    if (!j || xhr.status < 200 || xhr.status >= 300 || j.ok === false) {
+      _mplcProjFinish('error', j || { error_message: 'HTTP ' + xhr.status });
+      return;
+    }
+    // Accepted — the deploy runs in the background; poll for its stages.
+    _mplcProjSetStatus('Проверка файла…', 'is-warn');
+    _mplcProjSetProgress(_mplcProjStagePct('validate'), 'Проверка файла…');
+    _mplcProjStartPolling();
+  };
+  xhr.send(fd);
+}
+
+function _mplcProjApplyStatusUI(j) {
+  var stage = String(j.stage || '');
+  var txt = MPLC_PROJ_STAGE_UI[stage] || '';
+  var kind = 'is-warn';
+  if (j.result === 'success') kind = 'is-ok';
+  else if (j.result === 'error') kind = 'is-err';
+  if (j.result === 'error') {
+    _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j)), 'is-err');
+  } else if (txt) {
+    _mplcProjSetStatus(txt, kind);
+  }
+  var pct = _mplcProjStagePct(stage);
+  if (j.result === 'error') pct = null;
+  _mplcProjSetProgress(pct, j.result === 'error' ? '' : txt);
+}
+
+function _mplcProjPollOnce() {
+  if (_mplcProjPollInFlight) return;
+  _mplcProjPollInFlight = true;
+  fetchWithTimeout('cgi-bin/mplc_project_deploy.cgi?result=1', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (j) {
+      _mplcProjApplyStatusUI(j);
+      if (j.pending === false && (j.result === 'success' || j.result === 'error')) {
+        _mplcProjPollInFlight = false;
+        _mplcProjFinish(j.result, j);
+        return;
+      }
+      _mplcProjPollInFlight = false;
+      _mplcProjPollTimer = setTimeout(_mplcProjPollOnce, 2000);
+    })
+    .catch(function () {
+      _mplcProjPollInFlight = false;
+      if (_mplcProjActive) {
+        _mplcProjSetStatus('Ожидание ответа…', 'is-warn');
+        _mplcProjPollTimer = setTimeout(_mplcProjPollOnce, 3000);
+      }
+    });
+}
+
+function _mplcProjStartPolling() {
+  if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
+  _mplcProjPollOnce();
+}
+
+function _mplcProjFinish(result, j) {
+  _mplcProjActive = false;
+  if (_mplcProjPollTimer) { clearTimeout(_mplcProjPollTimer); _mplcProjPollTimer = null; }
+  _mplcProjPollInFlight = false;
+  var pick = document.getElementById('mplc-proj-pick-btn');
+  if (pick) pick.disabled = false;
+  if (result === 'success') {
+    _mplcProjSetStatus('Проект развёрнут', 'is-ok');
+    _mplcProjSetProgress(100, 'Проект развёрнут');
+    toast('Проект MPLC развёрнут', 'success');
+    _mplcProjFile = null;
+    cancelMplcProjectPick();
+    loadMplcProjectMeta();
+  } else {
+    _mplcProjSetStatus(uiT('Ошибка') + ': ' + uiT(_mplcProjErrText(j || {})), 'is-err');
+    _mplcProjSetProgress(null, '');
+    toast('Ошибка развёртывания проекта', 'error');
+    onMplcProjectConfirmToggle();
+  }
+}
+
+function openFactoryResetModal() {
+  _factoryResetBackupDone = false;
+  var modal = document.getElementById('factory-reset-modal');
+  var ok = document.getElementById('factory-reset-backup-ok');
+  var input = document.getElementById('factory-reset-confirm-input');
+  var msg = document.getElementById('factory-reset-modal-msg');
+  if (ok) ok.hidden = true;
+  if (input) input.value = '';
+  if (msg) { msg.hidden = true; msg.textContent = ''; }
+  onFactoryResetConfirmInput();
+  if (modal) modal.hidden = false;
+}
+
+function closeFactoryResetModal() {
+  var modal = document.getElementById('factory-reset-modal');
+  if (modal) modal.hidden = true;
+}
+
+function onFactoryResetConfirmInput() {
+  var input = document.getElementById('factory-reset-confirm-input');
+  var btn = document.getElementById('factory-reset-confirm-btn');
+  if (!btn) return;
+  var ok = _factoryResetBackupDone && input && input.value === 'SA02M-RESET';
+  btn.disabled = !ok;
+}
+
+function confirmFactoryReset() {
+  var input = document.getElementById('factory-reset-confirm-input');
+  var btn = document.getElementById('factory-reset-confirm-btn');
+  var msg = document.getElementById('factory-reset-modal-msg');
+  if (!_factoryResetBackupDone) {
+    if (msg) { msg.hidden = false; msg.textContent = uiT('Сначала скачайте резервную копию'); }
+    return;
+  }
+  if (!input || input.value !== 'SA02M-RESET') {
+    if (msg) { msg.hidden = false; msg.textContent = uiT('Введите SA02M-RESET для подтверждения'); }
+    return;
+  }
+  if (btn) btn.disabled = true;
+  fetchWithTimeout('cgi-bin/web_factory_reset.cgi', {
+    method: 'POST',
+    credentials: 'same-origin',
+    cache: 'no-store',
+    headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ confirm_phrase: 'SA02M-RESET', backup_ok: true })
+  }, 15000)
+    .then(function (r) { return r.json().then(function (j) { return { r: r, j: j }; }); })
+    .then(function (x) {
+      var j = x.j || {};
+      if (x.r.status === 404) {
+        if (msg) { msg.hidden = false; msg.textContent = uiT('Сервис сброса недоступен'); }
+        if (btn) btn.disabled = false;
+        return;
+      }
+      if (j.ok === false) {
+        if (msg) { msg.hidden = false; msg.textContent = uiT('Ошибка: ' + (j.error_message || j.error || 'reset')); }
+        if (btn) btn.disabled = false;
+        return;
+      }
+      closeFactoryResetModal();
+      _factoryResetSetStatus('Создание резервной копии…', 'is-warn');
+      _factoryResetStartPolling();
+    })
+    .catch(function () {
+      if (msg) { msg.hidden = false; msg.textContent = uiT('Нет связи с сервером'); }
+      if (btn) btn.disabled = false;
+    });
+}
+
+function _factoryResetSetStatus(text, kind) {
+  var st = document.getElementById('factory-reset-status');
+  if (!st) return;
+  st.className = 'web-upd-status' + (kind ? ' ' + kind : '');
+  st.textContent = text ? uiT(text) : '';
+  st.hidden = !text;
+}
+
+function _factoryResetSetProgress(pct, label) {
+  var wrap = document.getElementById('factory-reset-progress');
+  var fill = document.getElementById('factory-reset-progress-fill');
+  var lab = document.getElementById('factory-reset-progress-label');
+  if (!wrap) return;
+  var show = pct != null || !!label;
+  wrap.hidden = !show;
+  if (fill && pct != null && Number.isFinite(Number(pct))) {
+    fill.style.width = Math.max(0, Math.min(100, Number(pct))) + '%';
+  }
+  if (lab) lab.textContent = label ? uiT(label) : '';
+}
+
+function _factoryResetStageText(j) {
+  var stage = String((j && j.stage) || '').trim();
+  var map = {
+    validating: 'Проверка…',
+    backing_up: 'Создание резервной копии…',
+    confirmed: 'Подтверждение…',
+    wipe: 'Сброс настроек…',
+    apply: 'Применение заводских значений…',
+    verify: 'Проверка сервисов…',
+    done: 'Сброс выполнен. Перезагрузка через 5 с…',
+    rolling_back: 'Откат…',
+    rolled_back: 'Выполнен откат',
+    error: 'Ошибка сброса',
+    disconnect: 'Плата выполняет сброс. Повторное подключение…'
+  };
+  if (stage === 'error' && j.error_message) return 'Ошибка: ' + j.error_message;
+  return map[stage] || '';
+}
+
+function _factoryResetStartPolling() {
+  _factoryResetPollBackoffMs = 2000;
+  _factoryResetPollTries = 0;
+  if (_factoryResetPollTimer) clearTimeout(_factoryResetPollTimer);
+  _factoryResetPollTimer = null;
+  _factoryResetPollOnce();
+}
+
+function _factoryResetPollOnce() {
+  if (_factoryResetPollInFlight) return;
+  _factoryResetPollInFlight = true;
+  fetchWithTimeout('cgi-bin/web_factory_reset.cgi', {
+    credentials: 'same-origin', cache: 'no-store'
+  }, 8000)
+    .then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function (j) {
+      _factoryResetPollBackoffMs = 2000;
+      _factoryResetPollTries += 1;
+      var op = String(j.operation || '');
+      var stage = String(j.stage || '');
+      if (op !== 'factory_reset' && (stage === 'idle' || !stage) && _factoryResetPollTries > 8) {
+        _factoryResetPollInFlight = false;
+        return;
+      }
+      if (op === 'factory_reset' || stage === 'confirmed' || stage === 'wipe' ||
+          stage === 'apply' || stage === 'verify' || stage === 'backing_up' ||
+          stage === 'validating') {
+        var txt = _factoryResetStageText(j);
+        var kind = (stage === 'done') ? 'is-ok' : (stage === 'error' || stage === 'rolled_back' ? 'is-err' : 'is-warn');
+        if (txt) _factoryResetSetStatus(txt, kind);
+        _factoryResetSetProgress(j.progress_pct, txt);
+      }
+      if (op === 'factory_reset' && stage === 'done') {
+        _factoryResetPollInFlight = false;
+        toast('Сброс выполнен', 'success');
+        setTimeout(function () { location.reload(); }, 5000);
+        return;
+      }
+      if (op === 'factory_reset' && (stage === 'error' || stage === 'rolled_back')) {
+        _factoryResetPollInFlight = false;
+        toast('Ошибка сброса', 'error');
+        return;
+      }
+      _factoryResetPollInFlight = false;
+      _factoryResetPollTimer = setTimeout(function () {
+        _factoryResetPollTimer = null;
+        _factoryResetPollOnce();
+      }, 2000);
+    })
+    .catch(function () {
+      _factoryResetPollInFlight = false;
+      _factoryResetSetStatus('Плата выполняет сброс. Повторное подключение…', 'is-warn');
+      _factoryResetPollBackoffMs = Math.min(600000, Math.max(2000, _factoryResetPollBackoffMs * 2));
+      _factoryResetPollTimer = setTimeout(function () {
+        _factoryResetPollTimer = null;
+        _factoryResetPollOnce();
+      }, _factoryResetPollBackoffMs);
+    });
 }
 
 function fetchStatusRs485(force) {

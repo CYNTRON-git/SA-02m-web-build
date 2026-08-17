@@ -313,6 +313,17 @@ f /run/lock/sa02m-pca9536.lock 0666 root www-data -
 d /var/lib/sa02m-web-build 0755 root root -
 d /run/sa02m-web-sessions 2750 www-data www-data -
 d /run/sa02m-hw-override 0775 www-data www-data -
+d /var/lib/sa02m-update 0755 root root -
+d /var/lib/sa02m-update/incoming 0770 root www-data -
+d /var/lib/sa02m-update/staging 0750 root root -
+d /var/lib/sa02m-update/rollback 0750 root root -
+d /var/lib/sa02m-update/state 0750 root root -
+d /var/lib/sa02m-update/runner 0750 root root -
+d /var/lib/sa02m-update/backup-export 0750 root root -
+d /etc/sa02m-update/trusted-keys 0755 root root -
+d /var/lib/sa02m-mplc 0755 root root -
+d /var/lib/sa02m-mplc/incoming 0770 root www-data -
+d /var/lib/sa02m-mplc/backups 0700 root root -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 
@@ -351,6 +362,12 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-set-storage-auto-format, \
     /usr/local/sbin/sa02m-web-update-check, \
     /usr/local/sbin/sa02m-web-update-apply, \
+    /usr/bin/systemctl start sa02m-update.service, \
+    /usr/bin/systemctl stop sa02m-update.service, \
+    /usr/bin/systemctl reset-failed sa02m-update.service, \
+    /usr/bin/systemctl start sa02m-factory-reset.service, \
+    /usr/local/libexec/sa02m-update-inspect, \
+    /usr/local/sbin/sa02m-web-backup.sh, \
     /usr/local/sbin/sa02m-web-reboot.sh, \
     /usr/local/sbin/sa02m-web-restart-services.sh, \
     /usr/local/sbin/sa02m-web-service-ctl.sh list, \
@@ -367,6 +384,7 @@ www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclo
     /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
     /usr/local/sbin/sa02m-cpu-profile.sh apply, \
     /usr/local/sbin/sa02m-web-root-cmd.sh *, \
+    /usr/local/sbin/sa02m-mplc-project-deploy.sh *, \
     /usr/local/sbin/sa02m-conf-rm.sh
 SUDO
 chmod 440 /etc/sudoers.d/sa02m-www
@@ -408,6 +426,177 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
 else
     log WARN "Нет etc/sa02m-web-update-apply.sh — применение обновлений веб-UI из GitHub недоступно"
 fi
+# ── Offline updater bootstrap (release N): runner/keys/units/backup/reset ──
+if [ -d "$SCRIPT_DIR/../opt/sa02m-update" ]; then
+    mkdir -p /opt/sa02m-update
+    rsync -a --delete "$SCRIPT_DIR/../opt/sa02m-update/" /opt/sa02m-update/ 2>/dev/null \
+        || cp -a "$SCRIPT_DIR/../opt/sa02m-update/." /opt/sa02m-update/
+    find /opt/sa02m-update -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    log OK "opt/sa02m-update установлен"
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" ]; then
+    install -d -m 755 /usr/local/libexec
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" ]; then
+    install -d -m 755 /usr/local/libexec
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-web-backup.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-restore-backup.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
+fi
+if [ -f "$SCRIPT_DIR/../etc/sa02m-factory-reset-runner.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
+fi
+mkdir -p /etc/sa02m-update/trusted-keys
+if [ -d "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys/"*.pem /etc/sa02m-update/trusted-keys/ 2>/dev/null || true
+fi
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+    if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
+        install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
+    fi
+done
+if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
+    systemctl enable sa02m-update-recover.service >> "$LOG_FILE" 2>&1 || true
+fi
+if [ -d "$SCRIPT_DIR/../etc/sa02m-factory-defaults" ]; then
+    mkdir -p /usr/share/sa02m-factory-defaults/current
+    cp -a "$SCRIPT_DIR/../etc/sa02m-factory-defaults/." /usr/share/sa02m-factory-defaults/current/ 2>/dev/null || true
+fi
+
+# ── Offline / shared updater bootstrap (release N; [ -f ] guards) ───────────
+# Source → install destinations (plan §2.12):
+#   opt/sa02m-update/              → /opt/sa02m-update/
+#   etc/sa02m-update-runner.sh     → /usr/local/libexec/sa02m-update-runner
+#   etc/sa02m-update-inspect.sh    → /usr/local/libexec/sa02m-update-inspect
+#   usr/local/sbin/sa02m-web-backup.sh | etc/sa02m-web-backup.sh → /usr/local/sbin/
+#   usr/local/sbin/sa02m-restore-backup.sh → /usr/local/sbin/
+#   etc/sa02m-factory-reset-runner.sh → /usr/local/libexec/sa02m-factory-reset-runner
+#   etc/systemd/sa02m-update*.service → /etc/systemd/system/
+#   etc/tmpfiles.d/sa02m-update.conf → /etc/tmpfiles.d/
+#   etc/sa02m-update/trusted-keys/*.pem → /etc/sa02m-update/trusted-keys/
+#   etc/sa02m-factory-defaults/    → /usr/share/sa02m-factory-defaults/
+#   etc/sudoers.d/sa02m-www.fragment → merged into /etc/sudoers.d/sa02m-www
+REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR/..}"
+UPDATE_OPT_SRC="$REPO_ROOT/opt/sa02m-update"
+if [ -d "$UPDATE_OPT_SRC/lib" ]; then
+    log INFO "Установка /opt/sa02m-update"
+    install -d -m 0755 /opt/sa02m-update
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+            "$UPDATE_OPT_SRC/" /opt/sa02m-update/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-update обновлён" \
+            || log WARN "rsync /opt/sa02m-update не удался"
+    else
+        cp -a "$UPDATE_OPT_SRC/." /opt/sa02m-update/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-update скопирован" \
+            || log WARN "cp /opt/sa02m-update не удался"
+    fi
+fi
+install -d -m 0755 /usr/local/libexec
+if [ -f "$ETC_DIR/sa02m-update-runner.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
+    log OK "sa02m-update-runner → /usr/local/libexec/sa02m-update-runner"
+elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-update-runner" ]; then
+    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-runner" /usr/local/libexec/sa02m-update-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
+    log OK "sa02m-update-runner → /usr/local/libexec/sa02m-update-runner"
+fi
+if [ -f "$ETC_DIR/sa02m-update-inspect.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
+    log OK "sa02m-update-inspect → /usr/local/libexec/sa02m-update-inspect"
+elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-update-inspect" ]; then
+    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-inspect" /usr/local/libexec/sa02m-update-inspect
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
+    log OK "sa02m-update-inspect → /usr/local/libexec/sa02m-update-inspect"
+fi
+if [ -f "$ETC_DIR/sa02m-factory-reset-runner.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
+    log OK "sa02m-factory-reset-runner → /usr/local/libexec/sa02m-factory-reset-runner"
+elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-factory-reset-runner" ]; then
+    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-factory-reset-runner" /usr/local/libexec/sa02m-factory-reset-runner
+    sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
+fi
+_backup_src=""
+if [ -f "$REPO_ROOT/usr/local/sbin/sa02m-web-backup.sh" ]; then
+    _backup_src="$REPO_ROOT/usr/local/sbin/sa02m-web-backup.sh"
+elif [ -f "$ETC_DIR/sa02m-web-backup.sh" ]; then
+    _backup_src="$ETC_DIR/sa02m-web-backup.sh"
+fi
+if [ -n "$_backup_src" ]; then
+    install -m 755 "$_backup_src" /usr/local/sbin/sa02m-web-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
+    log OK "sa02m-web-backup.sh → /usr/local/sbin/sa02m-web-backup.sh"
+fi
+_restore_src=""
+if [ -f "$REPO_ROOT/usr/local/sbin/sa02m-restore-backup.sh" ]; then
+    _restore_src="$REPO_ROOT/usr/local/sbin/sa02m-restore-backup.sh"
+elif [ -f "$ETC_DIR/sa02m-restore-backup.sh" ]; then
+    _restore_src="$ETC_DIR/sa02m-restore-backup.sh"
+fi
+if [ -n "$_restore_src" ]; then
+    install -m 755 "$_restore_src" /usr/local/sbin/sa02m-restore-backup.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
+    log OK "sa02m-restore-backup.sh → /usr/local/sbin/sa02m-restore-backup.sh"
+fi
+if [ -d "$ETC_DIR/sa02m-update/trusted-keys" ]; then
+    install -d -m 0755 /etc/sa02m-update /etc/sa02m-update/trusted-keys
+    for _pem in "$ETC_DIR/sa02m-update/trusted-keys/"*.pem; do
+        [ -f "$_pem" ] || continue
+        install -m 644 "$_pem" "/etc/sa02m-update/trusted-keys/$(basename "$_pem")"
+    done
+    log OK "trusted-keys → /etc/sa02m-update/trusted-keys/"
+fi
+if [ -d "$ETC_DIR/sa02m-factory-defaults" ]; then
+    install -d -m 0755 /usr/share/sa02m-factory-defaults
+    cp -a "$ETC_DIR/sa02m-factory-defaults/." /usr/share/sa02m-factory-defaults/ >>"$LOG_FILE" 2>&1 \
+        && log OK "factory-defaults → /usr/share/sa02m-factory-defaults/" \
+        || log WARN "factory-defaults copy failed"
+fi
+if [ -f "$ETC_DIR/tmpfiles.d/sa02m-update.conf" ]; then
+    install -m 644 "$ETC_DIR/tmpfiles.d/sa02m-update.conf" /etc/tmpfiles.d/sa02m-update.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-update.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-update.conf >>"$LOG_FILE" 2>&1 || true
+    fi
+    log OK "tmpfiles sa02m-update.conf"
+fi
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+    if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
+        install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
+        log OK "unit $_upd_unit"
+    fi
+done
+if [ -f "$ETC_DIR/sudoers.d/sa02m-www.fragment" ] && [ -f /etc/sudoers.d/sa02m-www ]; then
+    # Merge pinned update lines not already present (idempotent).
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ''|\#*) continue ;;
+        esac
+        if ! grep -Fqx "$_line" /etc/sudoers.d/sa02m-www 2>/dev/null; then
+            printf '%s\n' "$_line" >>/etc/sudoers.d/sa02m-www
+        fi
+    done <"$ETC_DIR/sudoers.d/sa02m-www.fragment"
+    chmod 440 /etc/sudoers.d/sa02m-www
+    visudo -cf /etc/sudoers.d/sa02m-www >>"$LOG_FILE" 2>&1 \
+        && log OK "sudoers fragment sa02m-www (update) merged" \
+        || log WARN "visudo после merge update fragment — проверьте sudoers"
+fi
+
 if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
     # shellcheck disable=SC1091
     . /usr/local/lib/sa02m-web-build-lib.sh
@@ -429,6 +618,26 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
 else
     log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
+fi
+# ── MPLC4 project deploy («Обновление проекта MPLC»): helper + Python module ──
+if [ -f "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" /usr/local/sbin/sa02m-mplc-project-deploy.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-mplc-project-deploy.sh
+    log OK "sa02m-mplc-project-deploy.sh → /usr/local/sbin"
+else
+    log WARN "Нет etc/sa02m-mplc-project-deploy.sh — развёртывание проекта MPLC из веб недоступно"
+fi
+if [ -d "$SCRIPT_DIR/../opt/sa02m-mplc/lib" ]; then
+    install -d -m 0755 /opt/sa02m-mplc
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+            "$SCRIPT_DIR/../opt/sa02m-mplc/" /opt/sa02m-mplc/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-mplc установлен" || log WARN "rsync /opt/sa02m-mplc не удался"
+    else
+        cp -a "$SCRIPT_DIR/../opt/sa02m-mplc/." /opt/sa02m-mplc/ >>"$LOG_FILE" 2>&1 \
+            && log OK "/opt/sa02m-mplc скопирован" || log WARN "cp /opt/sa02m-mplc не удался"
+    fi
+    find /opt/sa02m-mplc -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" /usr/local/sbin/sa02m-kernel-select.sh
@@ -521,11 +730,22 @@ if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
     systemctl start sa02m-web-update-check.timer >> "$LOG_FILE" 2>&1 || true
     systemctl start sa02m-web-update-check.service >> "$LOG_FILE" 2>&1 || true
 fi
+if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
+    systemctl enable sa02m-update-recover.service >> "$LOG_FILE" 2>&1 || true
+    log OK "sa02m-update-recover.service enabled"
+fi
 
 if [ -x /usr/local/sbin/sa02m-prepare-working-board ] && [ "${SA02M_PREPARE_WORKING_BOARD:-0}" = "1" ]; then
     log INFO "Включение безопасного режима для рабочей платы"
     /usr/local/sbin/sa02m-prepare-working-board prepare >> "$LOG_FILE" 2>&1 || \
         log WARN "Не удалось принудительно включить safe mode через sa02m-prepare-working-board"
+fi
+
+# Devices tab backend (DTV / CE-02m-3) — API :8765 + SQLite logger
+if [ -f "$SCRIPT_DIR/11-devices.sh" ] && [ -d "$SCRIPT_DIR/../opt/sa02m-devices/sa02m_devices" ]; then
+    bash "$SCRIPT_DIR/11-devices.sh" \
+        && log OK "sa02m-devices установлен" \
+        || log WARN "11-devices.sh завершился с ошибкой"
 fi
 
 # ── Start services ────────────────────────────────────────────────────────

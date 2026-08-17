@@ -1,0 +1,93 @@
+# Интеграция СА-02м с Яндекс Алисой
+
+Один дом для native-пути через **Cyntron Alice Gateway**. Альтернатива
+Home Assistant + Yaha — в [ALICE_HA_YAHA_ALTERNATIVE.md](ALICE_HA_YAHA_ALTERNATIVE.md).
+Контракт MQTT-маппинга — [contracts/alice-mqtt-mapping.md](contracts/alice-mqtt-mapping.md).
+
+## Архитектура
+
+```text
+Яндекс Smart Home ──HTTPS/OAuth──► alice.cyntron.ru (gateway)
+                                         │ Socket.IO + mTLS
+                                         ▼
+                              SA-02m sa02m-alice-client
+                                         │
+                                         ▼
+                              mosquitto ← sa02m-modbus-mqtt
+```
+
+- **OAuth / токены навыка Яндекса** хранятся только на gateway.
+- На контроллере: карта устройств, `client_enabled`, программный mTLS-сертификат
+  в `/var/lib/sa02m-alice/`.
+- Код `opt/sa02m-alice/` — **clean-room** (не копия `wb-mqtt-alice`, MIT-WB).
+
+## Phase 0 (блокирующий для облачной привязки)
+
+Реализация шлюза: репозиторий **cloud** → каталог `alice-gateway/`
+(чеклист `alice-gateway/docs/PHASE0_CHECKLIST.md`, деплой `docs/DEPLOY.md`).
+
+Пока `https://alice.cyntron.ru/v1.0/ping` не отвечает 200, UI и API:
+
+- показывают «Шлюз недоступен»;
+- действие «Привязать» возвращает `gateway_unavailable`;
+- **не** показывают ложный успех сопряжения.
+
+Локально при этом работают: конфиг API/CGI, инвентарь MQTT-топиков, CRUD
+комнат/устройств, `client_enabled=false` (клиент выходит 0).
+
+После деплоя gateway + DNS/TLS + регистрации навыка Яндекса — Phase 0
+закрывается операторским sign-off по чеклисту.
+
+## Установка
+
+```bash
+# полный install
+./install.sh
+# или только Alice
+sudo bash scripts/06-alice.sh
+# отключить стек: SA02M_SKIP_ALICE=1 ./install.sh
+```
+
+По умолчанию `/etc/sa02m-alice/sa02m-alice-client.conf` содержит
+`client_enabled = false`.
+
+## Сервисы
+
+| Unit | Назначение |
+|---|---|
+| `sa02m-alice-client` | Socket.IO + MQTT; standby exit 0 если выключен |
+| `sa02m-alice-config` | локальный JSON API `127.0.0.1:8012` (опционально) |
+
+Веб-UI ходит через CGI с сессионной авторизацией:
+
+- `cgi-bin/sa02m_alice_api.cgi`
+- `cgi-bin/sa02m_alice_topics.cgi`
+
+## UI
+
+**Управление → Яндекс Алиса**: статус шлюза/клиента/сертификата, включение
+клиента, привязка/отвязка, добавление switch по MQTT-топику.
+
+## Файлы
+
+| Путь | Содержимое |
+|---|---|
+| `/etc/sa02m-alice/sa02m-alice-client.conf` | `client_enabled`, MQTT |
+| `/etc/sa02m-alice/sa02m-alice-devices.conf` | rooms/devices JSON |
+| `/etc/sa02m-alice/sa02m-alice-server.conf` | URL gateway |
+| `/var/lib/sa02m-alice/` | mTLS cert/key (сохранять при factory reset) |
+| `/run/sa02m-alice/status.json` | статус для UI |
+
+## Политика backup / update / factory reset
+
+| Операция | Alice |
+|---|---|
+| `.sa02m` update | деплой кода; preserve conf + cert |
+| User backup | включить conf + `/var/lib/sa02m-alice/` |
+| Factory reset | очистить mappings, `client_enabled=false`, **сохранить** cert |
+
+## Зависимости клиента
+
+При `client_enabled=true` нужны `python-socketio` и `paho-mqtt` (ставит
+`scripts/06-alice.sh`). Если зависимости нет — статус `missing_deps`, без
+фейкового «подключено».

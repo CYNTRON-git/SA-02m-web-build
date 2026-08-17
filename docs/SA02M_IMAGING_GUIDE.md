@@ -139,6 +139,8 @@ Device         Boot  Start      End  Sectors  Size   Id  Type
 
 **Прогноз после cleanup:** ~**1.0–1.3 GiB** занято → финальный `.img.xz` ~**350–500 MiB**.
 
+Актуально (2026-08-07, `.136` после `tools/imaging/cleanup-donor.sh --apply`): rootfs **used ~2.2 GiB** (было ~3.1), `/root` **~640 KiB** (было ~786 MiB стендового `sa02m-deploy-*` / `.npm` / `*.deb`). Скрипт: `--dry-run` / `--apply`; ТЗ — [`TZ_PRE_PRODUCTION_DONOR_CLEANUP.md`](TZ_PRE_PRODUCTION_DONOR_CLEANUP.md). `make-image.sh` вызывает cleanup с `--apply --purge-update-staging`.
+
 ### Снимок аудита эталона (192.168.1.136, май 2026)
 
 Проверка по SSH (`private/.ssh/sa02m_sa02`). Используйте как эталонные значения при сравнении после cleanup/заливки.
@@ -372,14 +374,17 @@ ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 uname -nrm
 
 #### Шаг 1 — мусор в `/root` и `/home`
 
-| Путь | Причина удаления |
+Явные glob-списки (не `rm -rf /root/*`). В т.ч. **`/root/sa02m-deploy-*`** (раньше чистилось только точное имя `sa02m-deploy`). Deny-лист защищает `/var/www/network_config`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, Alice certs, flasher firmware, сеть/nginx/MQTT.
+
+| Путь / паттерн | Причина удаления |
 |---|---|
-| `/root/backup` | резервные копии |
-| `/root/mplc_cyntron_build` | дерево сборки драйвера |
-| `/root/sa02m-deploy`, `sa02m-deploy.tar.gz` | деплой-артефакты |
-| `/root/cursor_build.swap` | временный swap-файл |
-| `/root/u-boot-sunxi-with-spl.bin` | копия U-Boot (уже в eMMC) |
-| `/root/.cache`, `.bash_history`, Trash | персональные/временные данные |
+| `/root/sa02m-deploy`, `sa02m-deploy-*`, `sa02m-install-*` | staging веб-деплоев |
+| `/root/deploy-*.tar*` , `deploy.tar.gz` | архивы деплоя |
+| `/root/.npm`, `.cache`, history, Trash | кеши разработчика |
+| `/root/mplc_backup*`, `*-backup-*.tgz`, `zImage*.bak*` | стендовые бэкапы / эксперименты |
+
+**Не удаляются** (нужны для работы/установки): `/opt/vendor-installers/**`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, веб, nginx/MQTT/SSH, flasher firmware, Node-RED (`/root/.node-red`), `/tmp/sa02m-gpioset-*` (USB power). `/root/*.deb` / `mplc_update` — только с `--purge-installers`. `/tmp` целиком не сносится.
+| `/var/lib/sa02m-update/{staging,incoming,runner}/*`, `/tmp/sa02m-*` | эфемерный update staging |
 
 #### Шаг 2 — тулчейн (apt purge)
 
@@ -437,19 +442,29 @@ touch /root/.not_logged_in_yet
 
 ### 8.3. Запуск cleanup
 
+Без `--apply` скрипт **ничего не удаляет** (dry-run). `make-image.sh` / `capture-image-win.py` передают `--apply` явно.
+
 **Вручную на доноре:**
 
 ```bash
-bash cleanup-donor.sh
+bash tools/imaging/cleanup-donor.sh --dry-run --report
+bash tools/imaging/cleanup-donor.sh --apply --report
 ```
 
-**С хоста (рекомендуется):**
+**С Windows-хоста (предпочтительно):**
 
 ```bash
-ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 'bash -s' < tools/imaging/cleanup-donor.sh
+py -3 tools/imaging/run-cleanup-donor.py --dry-run --report
+py -3 tools/imaging/run-cleanup-donor.py --apply --report
 ```
 
-**Через make-image.sh** — cleanup выполняется автоматически (флаг `--no-cleanup` отключает).
+**С хоста через SSH stdin:**
+
+```bash
+ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 'bash -s -- --dry-run --report' < tools/imaging/cleanup-donor.sh
+```
+
+**Через make-image.sh** — cleanup с `--apply` выполняется автоматически (флаг `--no-cleanup` отключает).
 
 ### 8.4. Zero-fill (заполнение нулями)
 
@@ -705,16 +720,54 @@ ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.XXX \
    xz -dc sa02m-*-shrunk.img.xz | dd of=/dev/mmcblk2 bs=4M conv=fsync && sync && reboot'
 ```
 
-### 11.4. Вариант D — сетевой провижионер (серийное производство)
+### 11.4. Вариант D — стенд FEL → Ethernet netinstall (серийное производство)
 
-По аналогии с [CM Provisioner / AntexGate](https://habr.com/ru/articles/1024312/):
+Zero-touch заливка голых плат (Allwinner FEL `1f3a:efe8` → U-Boot → TFTP netinstall → HTTP `current.img.xz` → `xz|dd` eMMC). Полный образ **не** идёт по USB DFU и **не** лежит на FEL-флешке.
 
-- **Сервер:** DHCP + TFTP + HTTP, хранит `sa02m-shrunk.img.xz` + sha256.
-- **Приёмник:** скрипт при boot скачивает образ, проверяет sha256, пишет в `/dev/mmcblk2`, reboot.
+Инструменты: [`tools/imaging/stand/`](../tools/imaging/stand/), [`tools/imaging/netinstall/`](../tools/imaging/netinstall/), [`tools/imaging/net-provisioner/`](../tools/imaging/net-provisioner/).
 
-Подходит для партий 20+ плат; требует отдельной инфраструктуры (не входит в текущие скрипты).
+#### Хост стенда (один раз)
+
+- Windows 10/11 + **WSL2 Ubuntu** + **usbipd-win** (проброс FEL OTG в WSL)
+- В WSL: `sunxi-tools` (`sunxi-fel`), `dnsmasq`, `u-boot-tools` (`mkimage`), `xz-utils`, `python3`, `openssh-client`
+- Зеркальная сеть WSL: [`setup-wsl-network.ps1`](../tools/imaging/setup-wsl-network.ps1)
+- Скопировать `tools/imaging/stand/stand.env.example` → `stand.env`, выставить `STAND_IP` = LAN-адрес ПК стенда
+
+#### Подготовка артефактов
+
+```bash
+# boot: zImage + DTB (+ u-boot уже в git)
+py -3 tools/imaging/boot/fetch-boot-artifacts.py
+
+# initramfs + boot.scr (сборка на доноре по SSH)
+cd tools/imaging/netinstall
+./build-netinstall.sh --ip 192.168.1.136 --server-ip "$STAND_IP"
+
+# образ смены
+./../publish-image.sh --image ./../out/sa02m-*-shrunk.img.xz
+```
+
+Опционально, если OTG→ПК недоступен: минимальная USB-флешка (без полного образа) — `./prepare-fel-usb.sh --dest /mnt/… --server-ip "$STAND_IP"`.
+
+#### Оператор (каждая плата)
+
+```text
+Раз за смену:  .\tools\imaging\stand\start-stand.ps1
+На каждую плату:
+  1) Ethernet + USB-OTG к стенду + питание
+  2) Войти в FEL  (если нужно — вставить FEL-USB)
+  3) Ждать статус DONE на http://localhost:8765
+Никаких команд, ImageUSB и ручного dd.
+```
+
+Статусы UI: `IDLE → FEL_SEEN → NETBOOT → FLASHING → REBOOT_WAIT → DONE|FAIL`.
+
+Целевое время на shrunk.xz (~350–800 MiB, eth0 100 Mb/s): **~3–6 мин**. Аварийные пути вне стенда: §11.1 flash-receiver, §11.2 ImageUSB, §11.3 `ssh-flash-safe`.
+
+> E2E на второй (голой) плате: подключить к стенду и пройти цикл до DONE; без второй платы достаточно синтаксической проверки скриптов и публикации образа.
 
 ---
+
 
 ## 12. Первая загрузка клона
 

@@ -1,0 +1,10 @@
+# SA-02m ? Modbus?MQTT bridge (factory default: no devices)
+mqtt:
+  broker: 127.0.0.1
+  port: 1883
+  client_id: sa02m-modbus-bridge
+  qos: 1
+  retain: true
+  reconnect_delay_s: 5
+
+devices: []

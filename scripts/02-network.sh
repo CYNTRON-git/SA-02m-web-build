@@ -138,6 +138,25 @@ HOOK
     log OK "dhclient exit hook для $LAN1 default route установлен"
 fi
 
+# ── dhclient: advertise the system hostname over DHCP (option 12) ───────────
+# Routers label the device by its host name only if dhclient sends option 12.
+# Non-destructive + idempotent: keep the package-default request list, add the
+# directive once. Covers every default-conf dhclient path (eth0-if-DHCP via the
+# web panel, eth1 DHCP on 2-eth, USB CDC-ethernet modem). Inert on a factory
+# 1-eth device where eth0 is STATIC (no DHCP transaction — documented limit).
+DHCLIENT_CONF=/etc/dhcp/dhclient.conf
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ] || [ -f "$DHCLIENT_CONF" ]; then
+    mkdir -p /etc/dhcp
+    if [ ! -f "$DHCLIENT_CONF" ]; then
+        printf '# SA-02m: send hostname (DHCP option 12)\nsend host-name = gethostname();\n' > "$DHCLIENT_CONF"
+        chmod 644 "$DHCLIENT_CONF"
+        log OK "dhclient.conf создан: send host-name (option 12)"
+    elif ! grep -qE '^[[:space:]]*send[[:space:]]+host-name' "$DHCLIENT_CONF"; then
+        printf '\n# SA-02m: send hostname (DHCP option 12)\nsend host-name = gethostname();\n' >> "$DHCLIENT_CONF"
+        log OK "dhclient.conf: добавлен send host-name (option 12)"
+    fi
+fi
+
 # ── Network watchdog deployment ────────────────────────────────────────────
 if [ -f "$ETC_DIR/sa02m-eth-led-lib.sh" ]; then
     log INFO "Установка sa02m-eth-led-lib.sh"

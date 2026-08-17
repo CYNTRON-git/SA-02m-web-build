@@ -254,8 +254,8 @@ echo WATCHDOGS_OFF
             raise SystemExit("watchdog prep failed")
 
         if not args.no_cleanup:
-            print("[1/4] cleanup-donor.sh", flush=True)
-            rc = run_script_file(client, cleanup, timeout=3600)
+            print("[1/4] cleanup-donor.sh --apply --report", flush=True)
+            rc = run_script_file(client, cleanup, args="--apply --report", timeout=3600)
             if rc != 0:
                 raise SystemExit(f"cleanup failed rc={rc}")
             client.close()

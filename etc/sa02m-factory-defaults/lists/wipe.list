@@ -1,0 +1,24 @@
+# Allowlist of paths that factory-reset MAY replace or clear (config-only).
+# One absolute path per line. Globs allowed only as a trailing basename pattern
+# with a single '*' (e.g. /etc/network/interfaces.d/*.conf). Directories end
+# with '/': contents under them are cleared, the directory itself is kept.
+# NEVER include block devices, /boot, machine-id, SSH host keys, cloud secrets,
+# Alice mTLS certs, MR firmware cache, Node-RED/CODESYS/MPLC data, or www/opt.
+/etc/nginx/.htpasswd
+/etc/sa02m_web.env
+/etc/network/interfaces.d/*.conf
+/etc/sa02m_modem.conf
+/etc/sa02m_network.conf
+/etc/sa02m_storage.conf
+/etc/sa02m_status_blocks.conf
+/etc/sa02m_serial_profile.conf
+/etc/sa02m_flasher.conf
+/etc/sa02m-mqtt-snmp.conf
+/etc/sa02m-mqtt-opcua.conf
+/etc/sa02m-modbus-mqtt.yaml
+/etc/sa02m-gateway.yaml
+/etc/sa02m-device-templates/user/
+/etc/sa02m-alice-client.conf
+/etc/sa02m-alice-devices.conf
+/etc/sa02m-alice/sa02m-alice-client.conf
+/etc/sa02m-alice/sa02m-alice-devices.conf

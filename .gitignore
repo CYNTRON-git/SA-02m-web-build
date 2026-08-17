@@ -30,15 +30,31 @@ private/
 # Артефакты снятия образа eMMC (make-image.sh)
 tools/imaging/out/
 tools/imaging/flash-media/
+# Flash stand runtime (images, tftp payloads, PIDs, logs) — not in git
+tools/imaging/stand-data/
+# Large donor kernel for netboot (re-fetch via boot/fetch-boot-artifacts.py)
+tools/imaging/boot/zImage
+tools/imaging/boot/*.device
+# Local stand env (may contain site-specific IPs)
+tools/imaging/stand/stand.env
+
 # Temporary working directory
 .tmp/
 tmp/
 
+# Offline update packer output (scripts/pack-offline-update.py)
+/out/
+
 # Vendor payload (CODESYS Runtime .deb, MPLC install tarballs, лицензионные .wbc/.lic).
 # Проприетарные бинарники не коммитим — они лежат локально на build-host в vendor/
-# и копируются в /opt/vendor-installers/ через tools/debian-rootfs/create-sa02m-rootfs.sh.
-# См. docs/vendor-integrations.md.
+# и MPLC4/cyntron/, и копируются в /opt/vendor-installers/ через
+# tools/debian-rootfs/create-sa02m-rootfs.sh. См. docs/vendor-integrations.md.
 /vendor/
+# MPLC 4D vendor-дроп (24 MB tarballs) — единый источник staging, только README в git.
+# NB: /MPLC4/* (не /MPLC4/) — иначе негация README не сработает (git не ре-включает
+# файл, если исключён родительский каталог).
+/MPLC4/*
+!/MPLC4/README.md
 *.wbc
 *.lic
 *.WibuCmLif

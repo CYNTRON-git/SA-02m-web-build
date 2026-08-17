@@ -1,0 +1,30 @@
+# Hard deny / preserve block (plan §4.2). Runner refuses to wipe/replace these.
+# Patterns with trailing '/' mean the whole tree. Globs: single '*' in basename.
+/etc/machine-id
+/var/lib/dbus/machine-id
+/etc/ssh/ssh_host_*
+/etc/sa02m_hw.conf
+/etc/sa02m_hw_variant.conf
+/etc/sa02m-hw.conf
+/etc/sa02m-cloud/
+/etc/sa02m-cloud/device_secret
+/etc/sa02m-cloud/frpc.toml
+/etc/sa02m-cloud/activation_token
+/var/lib/sa02m-alice/device.crt.pem
+/var/lib/sa02m-alice/device.key.pem
+/var/lib/sa02m-alice/ca.crt.pem
+/var/lib/sa02m-alice/
+/var/lib/sa02m-flasher/firmware/
+/var/lib/sa02m-flasher/
+/var/lib/node-red/
+/opt/codesys/
+/var/opt/codesys/
+/opt/mplc/
+/opt/mplc4/
+/home/root/mplc/
+/var/www/network_config/
+/opt/sa02m-*/
+/etc/sa02m-update/trusted-keys/
+/usr/share/sa02m-factory-defaults/
+/dev/mmcblk*
+/dev/sd*

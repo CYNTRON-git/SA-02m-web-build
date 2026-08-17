@@ -59,6 +59,32 @@ if [ ! -f /etc/sa02m_hw_variant.conf ] || [ -n "${SA02M_HW_VARIANT:-}" ]; then
     log INFO "Аппаратный вариант: $HW_VARIANT"
 fi
 
+# ── Hostname: recognizable «SA-02m» for the router client list ──────────────
+# Static «SA-02m» (Operator decision, branch 1.0.5.69). Take over ONLY the
+# vendor/base default — NEVER an operator-chosen custom name. Idempotent: a
+# re-run against the default (or an already-set «SA-02m») re-sets the same
+# value with no churn; a custom name hits the `*` no-op branch. Provides the
+# gethostname() that Part A (dhclient option 12) advertises over DHCP.
+# Consequence accepted by the Operator: the MQTT telemetry id
+# (sa02m-<hostname>, sa02m_telemetry.py) re-homes once from sa02m-SA-02 to
+# sa02m-SA-02m; cloud enrollment is unaffected (keyed on the cpuinfo serial).
+CUR_HN=$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null)
+case "$CUR_HN" in
+    ""|localhost|armbian|SA-02|sa02|SA-02m|sa02m)   # vendor/base defaults only
+        NEW_HN="SA-02m"
+        printf '%s\n' "$NEW_HN" > /etc/hostname
+        # keep 127.0.1.1 in /etc/hosts in sync (avoids "unable to resolve host" sudo warnings)
+        if grep -qE '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then
+            sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NEW_HN/" /etc/hosts
+        else
+            printf '127.0.1.1\t%s\n' "$NEW_HN" >> /etc/hosts
+        fi
+        [ -z "${SA02M_ROOTFS_BUILD:-}" ] && { hostnamectl set-hostname "$NEW_HN" 2>/dev/null || hostname "$NEW_HN" 2>/dev/null || true; }
+        log OK "Hostname: $NEW_HN"
+        ;;
+    *)  log INFO "Hostname '$CUR_HN' задан оператором — не трогаем" ;;
+esac
+
 SERIAL_PROFILE_CONF=/etc/sa02m_serial_profile.conf
 if [ -n "${SA02M_SERIAL_PROFILE:-}" ]; then
     printf 'SA02M_SERIAL_PROFILE=%s\n' "$SA02M_SERIAL_PROFILE" > "$SERIAL_PROFILE_CONF"
