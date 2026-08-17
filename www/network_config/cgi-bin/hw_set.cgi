@@ -17,6 +17,17 @@ if ! check_auth; then
     exit 0
 fi
 
+# POST-only + CSRF BEFORE any mutation (body-driven I2C write).
+# policy: docs/decisions/selective-csrf-policy.md. Headers already emitted.
+if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
+    echo '{"ok":false,"error":"method_not_allowed"}'
+    exit 0
+fi
+if ! web_csrf_validate; then
+    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    exit 0
+fi
+
 HW_CONF="/etc/sa02m_hw.conf"
 . "$SCRIPT_DIR/lib_hw.sh"
 

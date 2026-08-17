@@ -66,6 +66,10 @@ if [[ "$METHOD" != "POST" ]]; then
     exit 0
 fi
 
+# CSRF BEFORE any mutation (policy: docs/decisions/selective-csrf-policy.md).
+# Headers not yet emitted on the POST path, so web_csrf_require emits its own.
+web_csrf_require
+
 # FCGI: читать ровно CONTENT_LENGTH байт (как mqtt_ctrl.cgi / apply.cgi).
 TMP=$(mktemp /tmp/sa02m-svcctrl.XXXXXX)
 trap 'rm -f "$TMP"' EXIT

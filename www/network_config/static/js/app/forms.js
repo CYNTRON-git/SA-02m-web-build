@@ -283,6 +283,7 @@ function submitForm(form, onSuccess) {
   if (btn) btn.disabled = true;
   fetch('cgi-bin/apply.cgi', {
     method: 'POST',
+    headers: withCsrfHeaders({}),
     body: data,
     redirect: 'manual',
     credentials: 'same-origin'

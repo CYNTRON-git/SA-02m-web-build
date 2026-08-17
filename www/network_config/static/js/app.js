@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.71';
+const APP_VERSION = '1.0.5.72';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -102,6 +102,22 @@ function withCsrfHeaders(headers) {
     method = String(method).toUpperCase();
 
     return _fetch.apply(self, args).then(function (res) {
+      // E_CSRF is returned as HTTP 200 with error_code:"E_CSRF" in the body
+      // (project idiom — the CGI layer never uses a 401 status), so the
+      // status===401 path below cannot catch it. A stale/absent CSRF token means
+      // the session predates the sa02m_csrf cookie (upgraded device) or was
+      // revoked — surface the SAME "session expired → re-login" path. Peek a
+      // clone so the caller's body stays readable; only mutating methods can get
+      // E_CSRF, so GET/HEAD polling skips the extra parse.
+      if (res && res.ok && !redirecting && method !== 'GET' && method !== 'HEAD') {
+        res.clone().json().then(function (j) {
+          if (j && j.error_code === 'E_CSRF' && !redirecting) {
+            redirecting = true;
+            clearSessionCookie();
+            window.location.replace('login.html');
+          }
+        }).catch(function () { /* non-JSON body (e.g. 504 HTML) — ignore */ });
+      }
       if (!res || res.status !== 401 || redirecting) return res;
       // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
       // cached 200 that outlives the session) — and never from cache.

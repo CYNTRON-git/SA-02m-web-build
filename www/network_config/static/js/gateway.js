@@ -359,7 +359,7 @@ async function _savePort(port) {
   try {
     const resp = await fetch('cgi-bin/gateway_config.cgi', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ ports: _config }),
     });
     const data = await resp.json();
@@ -398,7 +398,7 @@ async function _svcCtrl(action) {
   try {
     const resp = await fetch('cgi-bin/gateway_ctrl.cgi', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ action }),
     });
     const data = await resp.json();

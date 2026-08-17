@@ -25,6 +25,14 @@ if [ "${REQUEST_METHOD:-}" != "POST" ]; then
     exit 0
 fi
 
+# CSRF BEFORE any mutation (web-code-rigor.md ## Bash CGI floors; policy:
+# docs/decisions/selective-csrf-policy.md; contract: mqtt-set-endpoint.md).
+# Headers already emitted above, so validate inline and print the shared shape.
+if ! web_csrf_validate; then
+    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    exit 0
+fi
+
 read -r -n "${CONTENT_LENGTH:-0}" POST_DATA
 decode() {
     echo "$POST_DATA" | sed -n "s/^.*$1=\([^&]*\).*$/\1/p" \

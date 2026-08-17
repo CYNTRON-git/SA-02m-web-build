@@ -155,7 +155,7 @@ function usbPowerReset() {
 
   fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
     body: 'channel=' + encodeURIComponent('usb_power') + '&value=' + encodeURIComponent('reset'),
     credentials: 'same-origin'
   })
@@ -211,7 +211,7 @@ function setHw(channel, value, opts) {
   const body = 'channel=' + encodeURIComponent(channel) + '&value=' + encodeURIComponent(value);
   fetch('cgi-bin/hw_set.cgi', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
     body, credentials: 'same-origin'
   })
     .then(r => r.json())

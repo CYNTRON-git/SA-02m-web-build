@@ -917,7 +917,7 @@ function setDoOutput(dev, ctrl) {
   updateDoToggleBtn(devId, ctrl); // optimistic: target state rendered right away
   fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    headers: withCsrfHeaders({'Content-Type': 'application/x-www-form-urlencoded'}),
     body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,
     credentials: 'same-origin',
   })
@@ -1093,7 +1093,7 @@ function setAoOutput(dev, ctrl) {
   updateAoInput(devId, ctrl, inp); // optimistic pending
   fetch('cgi-bin/mqtt_set.cgi', {
     method: 'POST',
-    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    headers: withCsrfHeaders({'Content-Type': 'application/x-www-form-urlencoded'}),
     body: `device=${encodeURIComponent(devId)}&control=${encodeURIComponent(ctrl)}&value=${target}`,
     credentials: 'same-origin',
   })
@@ -1405,7 +1405,7 @@ async function apiGet(url) {
 async function apiPost(url, data) {
   const r = await fetch(url, {
     method:'POST', credentials:'include',
-    headers:{'Content-Type':'application/json'},
+    headers: withCsrfHeaders({'Content-Type':'application/json'}),
     body: typeof data === 'string' ? data : JSON.stringify(data),
   });
   const text = await r.text();

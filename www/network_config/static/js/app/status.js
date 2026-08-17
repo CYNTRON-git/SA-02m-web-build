@@ -904,7 +904,7 @@ function setStorageAutoFormat(enabled) {
   const body = 'enabled=' + encodeURIComponent(enabled ? '1' : '0');
   fetchWithTimeout('cgi-bin/storage_format_set.cgi', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: withCsrfHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
     body,
     credentials: 'same-origin'
   }, 12000)

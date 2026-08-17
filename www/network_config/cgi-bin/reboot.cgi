@@ -4,8 +4,22 @@
 web_session_check_cookie || {
     echo "Content-type: text/html"; echo "Location: /login.html"; echo ""; exit 0; }
 
+# POST-only — a GET reboot is a Lax-defeating CSRF vector (top-level navigation
+# still sends the session cookie). policy: docs/decisions/selective-csrf-policy.md.
+if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
+    echo "Content-type: application/json"; echo ""
+    echo '{"ok":false,"error":"method_not_allowed"}'
+    exit 0
+fi
+
 echo "Content-type: application/json"
 echo ""
+# CSRF BEFORE the mutation (defense-in-depth on top of POST+SameSite=Lax).
+# Headers already emitted, so validate inline and print the shared shape.
+if ! web_csrf_validate; then
+    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    exit 0
+fi
 echo '{"ok":true}'
 echo "$(date '+%Y-%m-%d %H:%M:%S') reboot requested (web)" >> /var/log/sa02m_install.log 2>&1
 
