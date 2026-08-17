@@ -37,7 +37,7 @@ async function aliceApi(body) {
   const opt = body
     ? {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withCsrfHeaders({ 'Content-Type': 'application/json' }),
         credentials: 'same-origin',
         body: JSON.stringify(body),
       }

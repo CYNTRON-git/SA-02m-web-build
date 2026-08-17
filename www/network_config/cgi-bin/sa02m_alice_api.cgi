@@ -31,6 +31,19 @@ export PYTHONPATH="$ALICE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export SA02M_ALICE_ETC="${SA02M_ALICE_ETC:-/etc/sa02m-alice}"
 
 METHOD="${REQUEST_METHOD:-GET}"
+
+# CSRF guard BEFORE any mutation — POST/PUT/DELETE dispatch to the Alice config
+# API (enable/disable/link/unlink/upsert/delete) and a privileged sudo trigger.
+# Headers already emitted above, so validate directly and print the shared
+# error shape (web_csrf_require would re-emit headers into the body). Mirrors
+# cloud.cgi's CSRF check.
+if [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ] || [ "$METHOD" = "DELETE" ]; then
+    if ! web_csrf_validate; then
+        echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+        exit 0
+    fi
+fi
+
 BODY=""
 if [ "$METHOD" = "POST" ] || [ "$METHOD" = "PUT" ] || [ "$METHOD" = "DELETE" ]; then
     # Bound read — avoid hanging fcgiwrap
