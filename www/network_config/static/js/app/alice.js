@@ -406,13 +406,12 @@ function aliceInit() {
   _alicePoll = setInterval(aliceRefresh, 5000);
 }
 
+// Only functions invoked from HTML onclick handlers need a global handle;
+// aliceStartLink/CompleteLink/Unlink/Refresh are called internally (via
+// aliceLinkAction / the poll timer) and are intentionally not exported.
 window.aliceToggleClient = aliceToggleClient;
-window.aliceStartLink = aliceStartLink;
-window.aliceCompleteLink = aliceCompleteLink;
-window.aliceUnlink = aliceUnlink;
 window.aliceLinkAction = aliceLinkAction;
 window.aliceAddDevice = aliceAddDevice;
-window.aliceRefresh = aliceRefresh;
 window.aliceOpenModal = aliceOpenModal;
 window.aliceCloseModal = aliceCloseModal;
 window.aliceModalBackdrop = aliceModalBackdrop;
