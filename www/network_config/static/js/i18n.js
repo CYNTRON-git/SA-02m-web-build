@@ -849,6 +849,10 @@
     'Напряжение 0–30 В': 'Voltage 0–30 V',
     'Дифф. напряжение ±50 мВ': 'Diff. voltage ±50 mV',
     'Дифф. напряжение ±2 В': 'Diff. voltage ±2 V',
+    // Short AI captions on the Устройства MR-02m card (aiSensorLabel(code,{short})
+    // strips the «N — » prefix; codes 36/37 use the compact «Дифф. …» wording).
+    'Дифф. ±50 мВ': 'Diff. ±50 mV',
+    'Дифф. ±2 В': 'Diff. ±2 V',
     'Ток 0–5 мА': 'Current 0–5 mA',
     'Ток 0–20 мА': 'Current 0–20 mA',
     'Ток 4–20 мА': 'Current 4–20 mA',
