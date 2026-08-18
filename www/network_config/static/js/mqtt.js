@@ -1,7 +1,5 @@
 /* SA-02m MQTT tab — v1.0 */
 
-(function() {
-'use strict';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -2763,4 +2761,3 @@ window.mqttToggleBridge = async function mqttToggleBridge() {
   }
 };
 
-})();
