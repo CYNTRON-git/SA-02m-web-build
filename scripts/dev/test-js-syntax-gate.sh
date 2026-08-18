@@ -9,8 +9,12 @@
 # (docs/decisions/es-modules.md) a broken module would have shipped GREEN and
 # bricked the tab at load. This test pins the fix: a broken module must FAIL the
 # gate, a valid module and a valid classic script must pass, a broken classic
-# script must still fail, and the module heuristic must not misread the shipped
-# bundles' `exportHistory()` / `exported_at:` lines as modules.
+# script must still fail, the module heuristic must not misread the shipped
+# bundles' `exportHistory()` / `exported_at:` lines as modules, AND the
+# false-classic direction is closed too: a broken file whose only ESM marker is
+# mid-line (`… export { x };`) or `import.meta` is judged classic and must still
+# FAIL (the classic branch is a pinned `--input-type=commonjs` parse, not the
+# detection-prone plain `node --check`).
 #
 # §0 first re-proves the ORIGINAL defect on the local Node, so the test cannot
 # rot into asserting something the platform no longer does: if a future Node
@@ -46,6 +50,11 @@ printf '(function(){ var x = 1; window.x = x; })();\n' > "$tmp/ok-classic.js"
 printf 'function exportHistory(){ with(document){} }\nexportHistory();\nvar o = {\nexported_at: 1 };\n' > "$tmp/classic-export-word.js"
 # A classic script using dynamic import() at line start — still classic.
 printf 'function f( {\nimport("./x.js");\n' > "$tmp/broken-classic-dyn-import.js"
+# The false-CLASSIC direction: the only ESM marker is mid-line / import.meta, so
+# the heuristic says classic — plain `node --check` would flip to module
+# detection and pass the syntax error; the pinned commonjs parse must FAIL.
+printf 'const x = 1; export { x };\nfunction f( {\n' > "$tmp/broken-midline-export.js"
+printf 'const u = import.meta.url;\nfunction f( {\n' > "$tmp/broken-import-meta.js"
 
 # ── §0 the original defect, re-proven on this Node ─────────────────────────
 if node --check "$tmp/broken-module.js" >/dev/null 2>&1; then
@@ -76,6 +85,16 @@ grep -q "2 classic script(s) + 0 module(s)" "$tmp/out" && ok "§1 exportHistory(
 
 if run_gate "$tmp/broken-classic-dyn-import.js"; then bad "§1 broken classic with dynamic import() passed"; else ok "§1 broken classic with dynamic import() FAILS"; fi
 grep -q "(classic script)" "$tmp/out" && ok "§1 dynamic import() does not flip a file to module" || bad "§1 dynamic import() misread as module: $(cat "$tmp/out")"
+
+for fx in broken-midline-export broken-import-meta; do
+  if node --check "$tmp/$fx.js" >/dev/null 2>&1; then
+    ok "§1 premise: plain node --check passes $fx.js (the false-classic hole)"
+  else
+    echo "note  §1 this Node already fails plain node --check on $fx.js; the pinned parse below is still the gate"
+  fi
+  if run_gate "$tmp/$fx.js"; then bad "§1 $fx.js passed the gate (false-classic hole open)"; else ok "§1 $fx.js FAILS the gate (classic branch fail-closed)"; fi
+  grep -q "(classic script)" "$tmp/out" && ok "§1 $fx.js was judged on the classic branch (heuristic unchanged, parse pinned)" || bad "§1 $fx.js branch label wrong: $(cat "$tmp/out")"
+done
 
 if run_gate "$tmp/ok-module.js" "$tmp/broken-classic.js"; then bad "§1 mixed list with one broken file passed"; else ok "§1 one broken file fails the whole list"; fi
 

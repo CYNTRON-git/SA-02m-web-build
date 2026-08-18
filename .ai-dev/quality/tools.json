@@ -12,8 +12,8 @@
   "tools": [
     {
       "id": "js-syntax",
-      "checks": "Syntax errors in every hand-written frontend script under static/js/ (recursive: the top-level bundles, app/*.js from the F10 decomposition, and any module directory added later — mqtt/, flasher/, ...) — a broken script bricks the whole UI since there is no build step. MODULE-AWARE: a file with a line-leading `import`/`export` is checked via `node --input-type=module --check < file` because plain `node --check` exits 0 on a broken .js ES module (Node 20/24 module-detection — docs/decisions/es-modules.md П1); classic scripts keep `node --check`. Non-vacuous: zero files swept = FAIL; the module/classic split is pinned by scripts/dev/test-js-syntax-gate.sh (row js-syntax-gate).",
-      "config": ".ai-dev/quality/checks/js-syntax.sh",
+      "checks": "Syntax errors in every hand-written frontend script under static/js/ (recursive: the top-level bundles, app/*.js from the F10 decomposition, and any module directory added later — mqtt/, flasher/, ...) — a broken script bricks the whole UI since there is no build step. MODULE-AWARE: a file with a line-leading `import`/`export` is checked via `node --input-type=module --check < file` because plain `node --check` exits 0 on a broken .js ES module (Node 20/24 module-detection — docs/decisions/es-modules.md П1); classic scripts are parsed via `node --input-type=commonjs --check < file` (pinned, not detection-prone: a mid-line `export`/`import.meta` in a file the heuristic calls classic FAILS loudly instead of slipping through). Fail-closed both directions; residual stated in the script header. Non-vacuous: zero files swept = FAIL; the split is pinned by scripts/dev/test-js-syntax-gate.sh (row js-syntax-gate).",
+      "config": null,
       "run": "bash .ai-dev/quality/checks/js-syntax.sh",
       "beat": "build",
       "covers": ["www/network_config/static/js/", ".ai-dev/quality/checks/js-syntax.sh"],
@@ -21,7 +21,7 @@
     },
     {
       "id": "js-syntax-gate",
-      "checks": "Non-vacuity of the js-syntax row (scripts/dev/test-js-syntax-gate.sh): re-proves on the local Node that `node --check` passes a broken .js module, then asserts the shipped gate FAILS a broken module and a broken classic script, PASSES valid ones, does not misread the bundles' `exportHistory()`/`exported_at:` lines or a dynamic `import()` as module syntax (a non-strict classic body must not be parsed as a module), fails a missing file, and sweeps a non-empty tree. Without it the module branch of the gate could silently regress to the pre-fix vacuous pass the day the first ES module lands.",
+      "checks": "Non-vacuity of the js-syntax row (scripts/dev/test-js-syntax-gate.sh): re-proves on the local Node that `node --check` passes a broken .js module, then asserts the shipped gate FAILS a broken module and a broken classic script, PASSES valid ones, does not misread the bundles' `exportHistory()`/`exported_at:` lines or a dynamic `import()` as module syntax (a non-strict classic body must not be parsed as a module), closes the false-CLASSIC direction (a broken file whose only ESM marker is a mid-line `export` or `import.meta` still FAILS on the pinned commonjs parse where plain `node --check` passes it), fails a missing file, and sweeps a non-empty tree. Without it the module branch of the gate could silently regress to the pre-fix vacuous pass the day the first ES module lands.",
       "config": null,
       "run": "bash scripts/dev/test-js-syntax-gate.sh",
       "beat": "build",

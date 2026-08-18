@@ -5,14 +5,26 @@
 # covered from its first file without a registry edit.
 #
 # Why a script and not `node --check "$f"` inline: `node --check` on a `.js` file
-# that carries `import`/`export` SILENTLY EXITS 0 even when the file has a syntax
-# error (Node 20/24 module-detection path — reproduced on v24.14.1, see
-# docs/decisions/es-modules.md П1). So a module file is detected (a line that
-# starts with `import`/`export`) and checked through
-# `node --input-type=module --check < "$f"`, which does report the error;
-# classic scripts keep the plain `node --check`. The heuristic is line-anchored on
-# purpose: `import(` (dynamic import, legal in a classic script) and `import.meta`
-# do not match, a commented `// import x` does not match.
+# that carries ANY ESM marker (`import`/`export`, `import.meta`) SILENTLY EXITS 0
+# even when the file has a syntax error (Node 20/24 module-detection path —
+# reproduced on v24.14.1, see docs/decisions/es-modules.md П1). So the parse goal
+# is pinned explicitly, never left to detection:
+#   module  (a line that STARTS with `import`/`export`) →
+#           node --input-type=module   --check < "$f"
+#   classic (everything else) →
+#           node --input-type=commonjs --check < "$f"
+# Both stdin forms report the error. The classic branch is `--input-type=commonjs`
+# and NOT the plain `node --check "$f"` on purpose (fail-closed both ways): a file
+# whose only ESM marker is mid-line (`const x = 1; export { x };`) or `import.meta`
+# is classified classic by the line-anchored heuristic, and plain `node --check`
+# would flip to module-detection and pass its syntax error silently; the pinned
+# CommonJS parse instead fails LOUDLY on the marker itself ("Unexpected token
+# 'export'" / "Cannot use 'import.meta' outside a module"). Residual, stated: such
+# a file is reported RED even when otherwise valid — the fix is to write the
+# `import`/`export` at line start (the module idiom), never to weaken this row.
+# The heuristic is line-anchored so `import(` (dynamic import, legal in a classic
+# script), a commented `// import x`, and the bundles' `exportHistory()` /
+# `exported_at:` words do not read as modules.
 #
 # Usage: bash .ai-dev/quality/checks/js-syntax.sh [file ...]
 #   no args → the shipped tree (non-vacuous: zero files found = FAIL)
@@ -58,7 +70,9 @@ for f in "${files[@]}"; do
     fi
   else
     n_classic=$((n_classic + 1))
-    if ! node --check "$f"; then
+    # pinned CommonJS parse (see header) — the plain `node --check "$f"` would
+    # re-open module-detection on a mid-line ESM marker.
+    if ! node --input-type=commonjs --check < "$f"; then
       echo "js-syntax: FAIL — $f (classic script)" >&2
       fails=$((fails + 1))
     fi
