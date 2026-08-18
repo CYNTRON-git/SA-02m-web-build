@@ -12,9 +12,40 @@
 | Ошибка записи | `/controls/{name}/meta/error` = `"w"` |
 | Восстановление | `/controls/{name}/meta/error` = `""` (cleared) |
 | Запись значения | `/controls/{name}/on` ← write `0` / `1` / float; публикуют внешние клиенты **и веб-интерфейс** (`mqtt_set.cgi`, без retain — контракт `docs/contracts/mqtt-set-endpoint.md`) |
-| Публикация meta | Один раз при старте (retained) |
+| Публикация meta | Один раз при старте (retained) — И отдельные субтопики `/meta/<key>`, И сводный `/meta` JSON-блоб (см. ниже) |
 | **Устройство offline** | `/devices/{id}/meta/error` = `"r"` (device-level, retained) |
 | **Устройство online** | `/devices/{id}/meta/error` = `""` (cleared) |
+
+---
+
+## `/meta` JSON-блоб (совместимость с современным WB)
+
+Помимо отдельных retained-субтопиков `/meta/<key>` (`/meta/units`, `/meta/type`,
+`/meta/precision`, …) мост **дополнительно** публикует сводный retained JSON-блоб
+`/meta`, который читают современные инструменты WB (`wb-mqtt-serial` 2.x,
+HA-автодискавери через WB). Это **аддитивно**: все прежние субтопики остаются
+байт-в-байт, ничего не удалено и не переименовано. Блоб собирается из тех же
+накопленных значений, что и субтопики (один источник — не могут разойтись), и
+несёт тот же retain-флаг.
+
+- **Контрол** — `/devices/{id}/controls/{name}/meta` (топик, отдельный от
+  `…/meta/<key>` — в MQTT это разные топики, блоб не затирает субтопики):
+
+  ```
+  /devices/mr02m-COM1-5/controls/ao_1/meta
+      {"type":"range","min":0,"max":1000,"order":1,"units":"V","precision":3,"title":{"ru":"AO1","en":"AO1"}}
+  ```
+
+  Типизация под JSON-схему WB: `readonly` → boolean, `order`/`min`/`max`/`precision`
+  → число, `title`/`enum` → объект; `type`/`units` — строки как в субтопиках.
+
+- **Устройство** — `/devices/{id}/meta` (WB device-meta shape):
+
+  ```
+  /devices/mr02m-COM1-5/meta         {"driver":"modbus-rtu","title":{"ru":"MR-02м 6DO8DI (COM1 addr=5)","en":"MR-02м 6DO8DI (COM1 addr=5)"}}
+  ```
+
+  Субтопики `/meta/name` и `/meta/driver` сохранены (аддитивно).
 
 ---
 
