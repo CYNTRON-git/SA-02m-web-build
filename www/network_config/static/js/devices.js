@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel } from "./ai-sensors.js?v=1.0.5.82";
+import { aiSensorLabel } from "./ai-sensors.js?v=1.0.5.83";
 
 (function () {
   "use strict";
