@@ -175,6 +175,8 @@
     'Клиент': 'Client',
     'Шлюз': 'Gateway',
     'Сертификат': 'Certificate',
+    'Есть': 'Yes',
+    'Нет': 'No',
     'Включить клиент': 'Enable client',
     'Выключить клиент': 'Disable client',
     'Привязать': 'Link',
