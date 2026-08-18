@@ -59,6 +59,7 @@ EXPECTED_MODULES = [
     "bridge_mr02m",
     "bridge_mr02m_map",
     "bridge_serial",
+    "bridge_template",
 ]
 
 # Frozen test/import surface of the entry module. First block: every
@@ -75,7 +76,7 @@ FROZEN_SURFACE = [
     "get_port",
     "DeviceLiveCache", "DevicePoller", "PortCycleScheduler",
     "PortPollScheduler",
-    "MR02mPoller", "DTVPoller", "CE02M3Poller",
+    "MR02mPoller", "DTVPoller", "CE02M3Poller", "TemplatePoller",
     "MR02M_MODULE_TYPES", "MR02M_AI_CHUNK_ENV",
     "resolve_ai_read_chunk_regs", "_canonical_mr02m_device_name",
     # -- RS-485 wire grammar + transport (bridge_serial) --
