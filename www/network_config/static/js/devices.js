@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel } from "./ai-sensors.js?v=1.0.5.83";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.83";
 
 (function () {
   "use strict";
@@ -437,11 +437,17 @@ import { aiSensorLabel } from "./ai-sensors.js?v=1.0.5.83";
         const kpi = card.querySelector(`.dev-kpi[data-key="ai_${ch}"]`);
         if (!kpi) return;
         const hasVal =
-          c.value !== null && c.value !== undefined && !Number.isNaN(Number(c.value));
+          c.value !== null && c.value !== undefined && Number.isFinite(Number(c.value));
         const valEl = kpi.querySelector(`[data-f="ai_${ch}"]`);
         const unitEl = kpi.querySelector(`[data-u="ai_${ch}"]`);
         const subEl = kpi.querySelector(`[data-s="ai_${ch}"]`);
-        if (valEl) valEl.textContent = hasVal ? fmt(c.value) : "—";
+        // Render at the unit's WB display precision, keeping trailing zeros
+        // (28.0 not 28; a 0–10 V channel «5.000»). Disabled/null → «—».
+        if (valEl) {
+          valEl.textContent = hasVal
+            ? Number(c.value).toFixed(aiUnitPrecision(c.unit || ""))
+            : "—";
+        }
         if (unitEl) unitEl.textContent = hasVal ? c.unit || "" : "";
         // Short technical caption («NTC 10k», «Ток 4–20 мА», «Выключен» for a
         // code-0 channel); i18n observer translates the RU-source captions. The

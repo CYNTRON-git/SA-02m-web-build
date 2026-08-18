@@ -96,3 +96,38 @@ export function aiSensorLabel(code, opts) {
   }
   return full.replace(/^\s*\d+\s*—\s*/, '');
 }
+
+// Display precision (decimal places) per units string. Mirrors the bridge's
+// _PRECISION_BY_UNITS (opt/sa02m-modbus-mqtt/bridge_mqtt.py) VERBATIM — WB
+// /meta/precision conventions (https://github.com/wirenboard/conventions).
+// One home for the numbers is the bridge; this is the frontend copy for the
+// Устройства MR-02m card render (the devices-API package can't cross-import the
+// bridge). Keep in sync with the bridge on any WB-convention change.
+const AI_UNIT_PRECISION = {
+  '°C': 1, '°F': 1,
+  'V': 3, 'kV': 3, 'mV': 1,
+  'A': 3, 'mA': 2,
+  'W': 1, 'kW': 3,
+  'kWh': 3, 'Wh': 1,
+  'var': 1, 'kvar': 3,
+  'VA': 1, 'kVA': 3,
+  'Hz': 2,
+  '%': 1, '%, RH': 1,
+  'kPa': 2, 'Pa': 0, 'mbar': 1, 'bar': 3, 'mmHg': 0,
+  'kΩ': 2, 'Ω': 1,
+  'ppm': 1, 'ppb': 2,
+  'mg/m³': 2,
+  'IAQ': 1,
+  'cm': 0, 'm': 2,
+};
+
+/**
+ * Display precision (decimal places) for a units string — WB /meta/precision.
+ * @param {string} unit the units string as published (e.g. '°C', 'V', 'mA').
+ * @returns {number} the mapped precision, or a default of 1 for an unknown or
+ *   empty unit (keeps trailing zeros consistent with a temperature-like reading).
+ */
+export function aiUnitPrecision(unit) {
+  const p = AI_UNIT_PRECISION[unit];
+  return Number.isInteger(p) ? p : 1;
+}
