@@ -1,5 +1,7 @@
 /* SA-02m MQTT tab — v1.0 */
 
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.5.82';
+
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -167,52 +169,8 @@ function scanListedCheck() {
   return h('span', {'class': 'mqtt-scan-check', 'title': 'Уже в списке'}, '✓');
 }
 
-// Modbus selection codes 0..42 (регистр «тип датчика», MR-02m ≥1.0.9.1) — must match module_profiles.py / modbus_mqtt_bridge.py
-const AI_SENSOR_LABELS = [
-  {code:0,  label:'0 — Выключен'},
-  {code:1,  label:'1 — NTC 1.8k (B3380)'},
-  {code:2,  label:'2 — NTC 5k (B3470)'},
-  {code:3,  label:'3 — NTC 10k (B3950)'},
-  {code:4,  label:'4 — NTC 10k (B3988)'},
-  {code:5,  label:'5 — NTC 10k (B3435)'},
-  {code:6,  label:'6 — NTC 10k (B3470)'},
-  {code:7,  label:'7 — NTC 100k (B3950)'},
-  {code:8,  label:'8 — Pt50 (α385), 2-пров.'},
-  {code:9,  label:'9 — Pt100 (α385), 2-пров.'},
-  {code:10, label:'10 — Pt500 (α385), 2-пров.'},
-  {code:11, label:'11 — Pt1000 (α385), 2-пров.'},
-  {code:12, label:'12 — Pt50 (α391), 50П'},
-  {code:13, label:'13 — Pt100 (α391), 100П'},
-  {code:14, label:'14 — Pt1000 (α391), 1000П'},
-  {code:15, label:'15 — Pt50 (α428), 50М'},
-  {code:16, label:'16 — Pt100 (α428), 100М'},
-  {code:17, label:'17 — Pt1000 (α428), 1000М'},
-  {code:18, label:'18 — Ni100 (α617)'},
-  {code:19, label:'19 — Ni500 (α617)'},
-  {code:20, label:'20 — Ni1000 (α617)'},
-  {code:21, label:'21 — Pt50 (α385), 3-пров.'},
-  {code:22, label:'22 — Pt100 (α385), 3-пров.'},
-  {code:23, label:'23 — Pt500 (α385), 3-пров.'},
-  {code:24, label:'24 — Pt1000 (α385), 3-пров.'},
-  {code:25, label:'25 — Pt50 (α391), 50П, 3-пров.'},
-  {code:26, label:'26 — Pt100 (α391), 100П, 3-пров.'},
-  {code:27, label:'27 — Pt1000 (α391), 1000П, 3-пров.'},
-  {code:28, label:'28 — Pt50 (α428), 50М, 3-пров.'},
-  {code:29, label:'29 — Pt100 (α428), 100М, 3-пров.'},
-  {code:30, label:'30 — Pt1000 (α428), 1000М, 3-пров.'},
-  {code:31, label:'31 — Ni100 (α617), 3-пров.'},
-  {code:32, label:'32 — Ni500 (α617), 3-пров.'},
-  {code:33, label:'33 — Ni1000 (α617), 3-пров.'},
-  {code:34, label:'34 — Напряжение 0–10 В'},
-  {code:35, label:'35 — Напряжение 0–30 В'},
-  {code:36, label:'36 — Дифф. ±50 мВ'},
-  {code:37, label:'37 — Дифф. ±2 В'},
-  {code:38, label:'38 — Ток 0–5 мА'},
-  {code:39, label:'39 — Ток 0–20 мА'},
-  {code:40, label:'40 — Ток 4–20 мА'},
-  {code:41, label:'41 — Термопара K (ТХА)'},
-  {code:42, label:'42 — Сухой контакт'},
-];
+// AI_SENSOR_LABELS (codes 0..42) is imported from ./ai-sensors.js — the one home
+// shared with the Устройства MR-02m card (docs/decisions/es-modules.md).
 
 // Legacy ai_sensor_t enum (0x00..0x26, MR-02m <1.0.9.1) → Modbus selection codes 0..42.
 const AI_SENSOR_LEGACY_ENUM_MIGRATION = {
