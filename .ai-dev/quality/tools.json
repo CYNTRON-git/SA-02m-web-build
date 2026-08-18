@@ -12,12 +12,21 @@
   "tools": [
     {
       "id": "js-syntax",
-      "checks": "Syntax errors in every hand-written frontend script — the top-level bundles (app.js, i18n.js, flasher.js, mqtt.js, gateway.js) and the app/*.js modules app.js was decomposed into (F10) — a broken script bricks the whole UI since there is no build step.",
-      "config": null,
-      "run": "bash -c 'set -e; for f in www/network_config/static/js/*.js www/network_config/static/js/app/*.js; do node --check \"$f\"; done'",
+      "checks": "Syntax errors in every hand-written frontend script under static/js/ (recursive: the top-level bundles, app/*.js from the F10 decomposition, and any module directory added later — mqtt/, flasher/, ...) — a broken script bricks the whole UI since there is no build step. MODULE-AWARE: a file with a line-leading `import`/`export` is checked via `node --input-type=module --check < file` because plain `node --check` exits 0 on a broken .js ES module (Node 20/24 module-detection — docs/decisions/es-modules.md П1); classic scripts keep `node --check`. Non-vacuous: zero files swept = FAIL; the module/classic split is pinned by scripts/dev/test-js-syntax-gate.sh (row js-syntax-gate).",
+      "config": ".ai-dev/quality/checks/js-syntax.sh",
+      "run": "bash .ai-dev/quality/checks/js-syntax.sh",
       "beat": "build",
-      "covers": ["www/network_config/static/js/"],
-      "init": "Node 18+"
+      "covers": ["www/network_config/static/js/", ".ai-dev/quality/checks/js-syntax.sh"],
+      "init": "Node 18+ + bash"
+    },
+    {
+      "id": "js-syntax-gate",
+      "checks": "Non-vacuity of the js-syntax row (scripts/dev/test-js-syntax-gate.sh): re-proves on the local Node that `node --check` passes a broken .js module, then asserts the shipped gate FAILS a broken module and a broken classic script, PASSES valid ones, does not misread the bundles' `exportHistory()`/`exported_at:` lines or a dynamic `import()` as module syntax (a non-strict classic body must not be parsed as a module), fails a missing file, and sweeps a non-empty tree. Without it the module branch of the gate could silently regress to the pre-fix vacuous pass the day the first ES module lands.",
+      "config": null,
+      "run": "bash scripts/dev/test-js-syntax-gate.sh",
+      "beat": "build",
+      "covers": [".ai-dev/quality/checks/js-syntax.sh", "scripts/dev/test-js-syntax-gate.sh"],
+      "init": "bash + Node 18+ (no other deps) — run on demand: bash scripts/dev/test-js-syntax-gate.sh"
     },
     {
       "id": "bash-cgi-syntax",
@@ -228,12 +237,21 @@
     },
     {
       "id": "version-consistency",
-      "checks": "www/network_config/VERSION, APP_VERSION in app.js, and every ?v= cache-bust string agree with the version-named git branch — a skew ships stale cached assets to devices.",
+      "checks": "www/network_config/VERSION, APP_VERSION in app.js, every ?v= cache-bust string in index.html/login.html AND every ?v= inside an ES-module import/export specifier under static/js/**/*.js (docs/decisions/es-modules.md П2 — the browser fetches imported modules itself, so the HTML ?v= cannot bust them) agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" scripts/sync-app-version.py --check; fi; done; echo version-consistency: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["www/network_config/"],
+      "covers": ["www/network_config/", "scripts/sync-app-version.py"],
       "init": "Python 3.10+ as python3, python, or py — the runner picks the first that actually executes (Windows ships a non-functional python3 Store stub; Linux/CI resolves python3 first)"
+    },
+    {
+      "id": "sync-app-version-import-specs",
+      "checks": "Regression for the ES-module half of scripts/sync-app-version.py (scripts/dev/test_sync_app_version.py, stdlib unittest): a stale ?v= inside an import/export specifier (static from-imports, bare import, dynamic import(), both quote styles, multi-line bodies, an &r= suffix) is FLAGGED by --check and PATCHED by the sync; a ?v= that is not an import specifier (a runtime-built string, Array.from(...), a classic bundle) stays byte-identical; the shipped static/js tree is a byte-identical no-op; and main(['--check']) returns 1 with a stale module and 0 once synced. Without it the day the first module cluster lands, nginx's expires 1h could serve a stale imported module right after «Обновление веб» with version-consistency still green.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" scripts/dev/test_sync_app_version.py; fi; done; echo sync-app-version-import-specs: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["scripts/sync-app-version.py", "scripts/dev/test_sync_app_version.py"],
+      "init": "Python 3.10+ as python3, python, or py (stdlib only, no deps) — same interpreter picker as version-consistency; run on demand: python3 scripts/dev/test_sync_app_version.py"
     },
     {
       "id": "js-unit-flasher-signatures",
