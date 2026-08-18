@@ -5007,6 +5007,35 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.7rem; }
 #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.88rem; }
 #tab-devices .dev-card--dtv .dev-kpi-lbl { font-size: 0.82rem; }
+/* MR-02m analog card. Cell layout: «AI<n>» index on top, value+unit, then a
+   short sensor-type caption below — value-first (no order:-1 as with dev-kpi-lbl).
+   Grid: 6AI6AO/6AI2AO → 3 cols × 2 rows (mr3), 12AI → 4 cols × 3 rows (mr4);
+   both reserve the same ~3-row height as ДТВ/СЭ so the outer card matches.
+   Display-only → default cursor. Tokens only, both themes via --text-sec. */
+#tab-devices .dev-card--mr { cursor: default; }
+#tab-devices .dev-card--mr .dev-metrics {
+  min-height: calc(3 * 4.35rem + 2 * 8px);
+}
+#tab-devices .dev-metrics.dev-metrics--mr3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+/* 6AI: 2 rows stretched to fill the 3-row height (mirrors the ДТВ trick). */
+#tab-devices .dev-metrics.dev-metrics--mr3 .dev-kpi {
+  min-height: calc((3 * 4.35rem + 2 * 8px - 8px) / 2);
+}
+#tab-devices .dev-card--mr .dev-kpi { gap: 2px; padding: 8px 5px; }
+#tab-devices .dev-card--mr .dev-kpi-idx {
+  font-size: 0.66rem; font-weight: 700; color: var(--text-sec);
+  letter-spacing: 0.03em; line-height: 1.1; width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#tab-devices .dev-card--mr .dev-kpi-sub {
+  font-size: 0.66rem; color: var(--text-sec); line-height: 1.15; width: 100%;
+  min-height: 0.8rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* disabled (code 0) / errored channel: muted value «—». */
+#tab-devices .dev-card--mr .dev-kpi--off .dev-kpi-val,
+#tab-devices .dev-card--mr .dev-kpi--err .dev-kpi-val { color: var(--text-sec); }
 @media (max-width: 1100px) {
   #tab-devices .dev-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -5025,6 +5054,10 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   #tab-devices .dev-card--dtv .dev-kpi { min-height: 4.35rem; }
   #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.45rem; }
   #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.8rem; }
+  /* MR: 12AI 4-col → 3-col on narrow; un-stretch the 6AI cells (as ДТВ). */
+  #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #tab-devices .dev-card--mr .dev-metrics { min-height: 0; }
+  #tab-devices .dev-metrics.dev-metrics--mr3 .dev-kpi { min-height: 4.35rem; }
   /* Compact presence badge: pulsing dot + distance only (no «Присутствие»
      label) so title and online status stay on one line. */
   #tab-devices .dev-presence-txt { display: none; }
@@ -5033,6 +5066,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 @media (max-width: 400px) {
   /* Very narrow portrait: 2 columns so values stay legible. */
   #tab-devices .dev-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #tab-devices .dev-metrics.dev-metrics--mr4,
+  #tab-devices .dev-metrics.dev-metrics--mr3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 #tab-devices .page-header--devices { margin-bottom: 16px; }
 #tab-devices .dev-page-title-row {

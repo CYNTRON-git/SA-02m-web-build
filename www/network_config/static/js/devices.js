@@ -1,4 +1,6 @@
-/* Devices tab — live ДТВ / СЭ-02м-3 widgets + history modal / Excel / events */
+/* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
+import { aiSensorLabel } from "./ai-sensors.js?v=1.0.5.82";
+
 (function () {
   "use strict";
 
@@ -27,6 +29,8 @@
     '<svg viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M8 14a4 4 0 1 0 8 0c0-2.5-2-4-4-6-2 2-4 3.5-4 6z"/></svg>';
   const ICO_CE =
     '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 10-14h-7l0-6z"/></svg>';
+  const ICO_MR =
+    '<svg viewBox="0 0 24 24"><path d="M3 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"/></svg>';
 
   const DTV_METRICS = [
     ["room_temp", "Температура"],
@@ -119,7 +123,33 @@
   function deviceList(data) {
     const dtv = Array.isArray(data.dtv) ? data.dtv : data.dtv ? [data.dtv] : [];
     const ce = Array.isArray(data.ce) ? data.ce : data.ce ? [data.ce] : [];
-    return [...dtv, ...ce];
+    const mr = Array.isArray(data.mr) ? data.mr : data.mr ? [data.mr] : [];
+    return [...dtv, ...ce, ...mr];
+  }
+
+  /* MR-02m analog card body: fixed grid of ai_count cells (a disabled channel
+     keeps its cell). Grid columns: >6 AI → 4 (12AI), else 3 (6AI6AO / 6AI2AO).
+     Each cell: «AI<n>» mini-label / value+unit / short sensor-type caption. The
+     value/unit/caption are filled by updateCard (data-f/data-u/data-s hooks). */
+  function mrAiCount(d) {
+    const n = Number(d && d.ai_count);
+    if (Number.isFinite(n) && n > 0) return n;
+    return Array.isArray(d && d.channels) ? d.channels.length : 0;
+  }
+
+  function buildMrMetricsHtml(d) {
+    const n = mrAiCount(d);
+    let cells = "";
+    for (let ch = 1; ch <= n; ch++) {
+      cells +=
+        `<div class="dev-kpi" data-key="ai_${ch}">` +
+        `<span class="dev-kpi-idx">AI${ch}</span>` +
+        `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="ai_${ch}">—</span>` +
+        `<span class="dev-kpi-unit" data-u="ai_${ch}"></span></span>` +
+        `<span class="dev-kpi-sub" data-s="ai_${ch}"></span>` +
+        `</div>`;
+    }
+    return cells;
   }
 
   function buildDtvMetricsHtml() {
@@ -206,22 +236,36 @@
   }
 
   function buildCard(d) {
-    const kind = d.kind === "ce" ? "ce" : "dtv";
+    const kind = d.kind === "ce" ? "ce" : d.kind === "mr" ? "mr" : "dtv";
+    const isMr = kind === "mr";
     const id = String(d.id || "");
     const title = d.label || d.title || id;
     const el = document.createElement("article");
     el.className =
-      "widget dev-card" + (kind === "dtv" ? " dev-card--dtv" : "");
+      "widget dev-card" +
+      (kind === "dtv" ? " dev-card--dtv" : isMr ? " dev-card--mr" : "");
     el.dataset.deviceId = id;
     el.dataset.kind = kind;
-    el.setAttribute("role", "button");
-    el.tabIndex = 0;
-    el.title = "Открыть историю";
+    // MR-02m cards are display-only: no history modal, so no button role.
+    if (!isMr) {
+      el.setAttribute("role", "button");
+      el.tabIndex = 0;
+      el.title = "Открыть историю";
+    }
+    const ico = kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : ICO_CE;
+    let metricsCls = "dev-metrics";
+    let metricsHtml;
+    if (isMr) {
+      metricsCls += mrAiCount(d) > 6 ? " dev-metrics--mr4" : " dev-metrics--mr3";
+      metricsHtml = buildMrMetricsHtml(d);
+    } else if (kind === "dtv") {
+      metricsHtml = buildDtvMetricsHtml();
+    } else {
+      metricsHtml = buildCeMetricsHtml();
+    }
     el.innerHTML =
       `<div class="widget-title has-ico">` +
-      `<span class="w-ico w-ico-cyan" aria-hidden="true">${
-        kind === "dtv" ? ICO_DTV : ICO_CE
-      }</span>` +
+      `<span class="w-ico w-ico-cyan" aria-hidden="true">${ico}</span>` +
       `<span class="dev-card-title">${escapeHtml(title)}</span>` +
       `<button type="button" class="dev-card-rename" data-role="rename" title="Переименовать виджет" aria-label="Переименовать виджет">✎</button>` +
       (kind === "dtv"
@@ -234,17 +278,27 @@
       `<span data-role="alerts"></span>` +
       `<span class="dev-head-right">` +
       `<span class="dev-pill ok" data-role="status">…</span>` +
-      `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>` +
+      (isMr
+        ? ""
+        : `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>`) +
       `</span>` +
       `</div>` +
-      `<div class="widget-body dev-body"><div class="dev-metrics">` +
-      (kind === "dtv" ? buildDtvMetricsHtml() : buildCeMetricsHtml()) +
+      `<div class="widget-body dev-body"><div class="${metricsCls}">` +
+      metricsHtml +
       `</div></div>`;
-    el.addEventListener("click", (e) => {
-      if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
-      const kpi = e.target.closest(".dev-kpi[data-metric]");
-      openModal(kind, id, title, kpi ? kpi.dataset.metric : undefined);
-    });
+    if (!isMr) {
+      el.addEventListener("click", (e) => {
+        if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
+        const kpi = e.target.closest(".dev-kpi[data-metric]");
+        openModal(kind, id, title, kpi ? kpi.dataset.metric : undefined);
+      });
+      el.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openModal(kind, id, title);
+        }
+      });
+    }
     const renameBtn = el.querySelector('[data-role="rename"]');
     if (renameBtn) {
       renameBtn.addEventListener("click", (e) => {
@@ -253,12 +307,6 @@
         renameDevice(id);
       });
     }
-    el.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openModal(kind, id, title);
-      }
-    });
     const rm = el.querySelector('[data-role="remove"]');
     if (rm) {
       rm.addEventListener("click", (e) => {
@@ -381,6 +429,34 @@
     }
     const al = card.querySelector('[data-role="alerts"]');
     if (al) al.innerHTML = alertBadgeHtml(d.alerts);
+    if (d.kind === "mr" || card.dataset.kind === "mr") {
+      const channels = Array.isArray(d.channels) ? d.channels : [];
+      channels.forEach((c) => {
+        const ch = c && c.ch;
+        if (ch == null) return;
+        const kpi = card.querySelector(`.dev-kpi[data-key="ai_${ch}"]`);
+        if (!kpi) return;
+        const hasVal =
+          c.value !== null && c.value !== undefined && !Number.isNaN(Number(c.value));
+        const valEl = kpi.querySelector(`[data-f="ai_${ch}"]`);
+        const unitEl = kpi.querySelector(`[data-u="ai_${ch}"]`);
+        const subEl = kpi.querySelector(`[data-s="ai_${ch}"]`);
+        if (valEl) valEl.textContent = hasVal ? fmt(c.value) : "—";
+        if (unitEl) unitEl.textContent = hasVal ? c.unit || "" : "";
+        // Short technical caption («NTC 10k», «Ток 4–20 мА», «Выключен» for a
+        // code-0 channel); i18n observer translates the RU-source captions. The
+        // title mirrors it so a long caption that ellipsis-truncates in a narrow
+        // 3-col cell is recoverable on hover (property assignment = text-safe).
+        if (subEl) {
+          const cap = aiSensorLabel(c.sensor_code, { short: true });
+          subEl.textContent = cap;
+          subEl.title = cap;
+        }
+        kpi.classList.toggle("dev-kpi--off", c.enabled === false);
+        kpi.classList.toggle("dev-kpi--err", c.ok === false);
+      });
+      return;
+    }
     if (d.kind === "ce" || card.dataset.kind === "ce") {
       const u = d.voltage || {};
       const i = d.current || {};
