@@ -89,6 +89,8 @@ devices:
   #     - tvoc_zmod
   #     - presence
   #     - moving_distance
+  #     - still_distance    # LD2412: дистанция до неподвижной цели (см)
+  #     - detect_distance   # LD2412: дистанция обнаружения — «расстояние до объекта» (см)
 
   # ── Пример: CE-02m-3, COM2, addr=14 ─────────────────────────────────────
   # - id: ce02m3-COM2-14

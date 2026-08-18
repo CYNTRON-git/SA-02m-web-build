@@ -165,6 +165,46 @@
       .join("");
   }
 
+  /* Custom device names (pencil rename), stored per browser keyed by device id.
+     Overrides the backend label «… № 3 порт 4» without touching the widget config. */
+  const CUSTOM_NAMES_KEY = "dev-custom-names";
+  const lastLabelById = {};
+
+  function customDeviceNames() {
+    try {
+      return JSON.parse(localStorage.getItem(CUSTOM_NAMES_KEY) || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function displayLabel(d) {
+    if (d && d.id && (d.label || d.title)) lastLabelById[d.id] = d.label || d.title;
+    const custom = customDeviceNames()[d && d.id];
+    return custom || (d && (d.label || d.title)) || (d && d.id) || "";
+  }
+
+  function renameDevice(id) {
+    const names = customDeviceNames();
+    const def = lastLabelById[id] || "";
+    const next = window.prompt(
+      "Название виджета (пусто — вернуть стандартное «" + def + "»):",
+      names[id] || def
+    );
+    if (next === null) return;
+    const val = next.trim();
+    if (val) names[id] = val;
+    else delete names[id];
+    try {
+      localStorage.setItem(CUSTOM_NAMES_KEY, JSON.stringify(names));
+    } catch (e) {
+      /* ignore */
+    }
+    const card = document.querySelector('.dev-card[data-device-id="' + id + '"]');
+    const titleEl = card && card.querySelector(".dev-card-title");
+    if (titleEl) titleEl.textContent = names[id] || def;
+  }
+
   function buildCard(d) {
     const kind = d.kind === "ce" ? "ce" : "dtv";
     const id = String(d.id || "");
@@ -183,18 +223,36 @@
         kind === "dtv" ? ICO_DTV : ICO_CE
       }</span>` +
       `<span class="dev-card-title">${escapeHtml(title)}</span>` +
-      `<span class="dev-pill ok" data-role="status">…</span>` +
+      `<button type="button" class="dev-card-rename" data-role="rename" title="Переименовать виджет" aria-label="Переименовать виджет">✎</button>` +
+      (kind === "dtv"
+        ? `<span class="dev-presence" data-role="presence" hidden title="Датчик присутствия LD2412">` +
+          `<span class="dev-presence-dot" aria-hidden="true"></span>` +
+          `<span class="dev-presence-txt">Присутствие</span>` +
+          `<span class="dev-presence-dist" data-role="presence-dist"></span>` +
+          `</span>`
+        : "") +
       `<span data-role="alerts"></span>` +
+      `<span class="dev-head-right">` +
+      `<span class="dev-pill ok" data-role="status">…</span>` +
       `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>` +
+      `</span>` +
       `</div>` +
       `<div class="widget-body dev-body"><div class="dev-metrics">` +
       (kind === "dtv" ? buildDtvMetricsHtml() : buildCeMetricsHtml()) +
       `</div></div>`;
     el.addEventListener("click", (e) => {
-      if (e.target.closest('[data-role="remove"]')) return;
+      if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
       const kpi = e.target.closest(".dev-kpi[data-metric]");
       openModal(kind, id, title, kpi ? kpi.dataset.metric : undefined);
     });
+    const renameBtn = el.querySelector('[data-role="rename"]');
+    if (renameBtn) {
+      renameBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameDevice(id);
+      });
+    }
     el.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
@@ -313,8 +371,8 @@
     card.classList.toggle("dev-stale-border", stale);
     card.classList.toggle("dev-has-alert", !!(d.alerts && d.alerts.length));
     const titleEl = card.querySelector(".dev-card-title");
-    if (titleEl && (d.label || d.title)) {
-      titleEl.textContent = d.label || d.title;
+    if (titleEl) {
+      titleEl.textContent = displayLabel(d);
     }
     const st = card.querySelector('[data-role="status"]');
     if (st) {
@@ -343,7 +401,31 @@
       setField(card, "tvoc", fmt(d.tvoc_mg_m3, 2));
       setField(card, "pressure", fmt(d.pressure_mmhg, 1));
       setField(card, "light", fmt(d.light_pct, 0));
+      renderPresence(card, d, stale);
     }
+  }
+
+  /** LD2412 distance (cm) → «2.4 м» / «80 см». */
+  function fmtDistance(cm) {
+    const n = Number(cm);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    if (n >= 100) return (n / 100).toFixed(1) + " м";
+    return Math.round(n) + " см";
+  }
+
+  /** Presence badge in the ДТВ card header — visible only on fresh presence. */
+  function renderPresence(card, d, stale) {
+    const el = card.querySelector('[data-role="presence"]');
+    if (!el) return;
+    const active = Number(d.presence) > 0 && !stale;
+    el.hidden = !active;
+    if (!active) return;
+    const dist = fmtDistance(d.distance_cm);
+    const distEl = el.querySelector('[data-role="presence-dist"]');
+    if (distEl) distEl.textContent = dist ? "· " + dist : "";
+    el.title = dist
+      ? "Датчик присутствия LD2412: объект на расстоянии " + dist
+      : "Датчик присутствия LD2412: обнаружен объект";
   }
 
   function ensureCards(list) {

@@ -4907,8 +4907,17 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 #tab-devices .dev-card.dev-stale .dev-kpi-val { color: var(--text-sec); }
 #tab-devices .dev-card .widget-title {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; row-gap: 6px;
+  position: relative; padding-right: 92px;
 }
+/* Right cluster: online status + remove button, always pinned top-right for
+   every card. Title + presence badge flow to its left and the presence badge
+   wraps to a new line when it doesn't fit — the status never moves. */
+#tab-devices .dev-head-right {
+  position: absolute; top: 0; right: 0;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+#tab-devices .dev-head-right .dev-pill { margin-left: 0; }
 #tab-devices .has-ico .w-ico { display: inline-flex; width: 18px; height: 18px; flex: 0 0 auto; }
 #tab-devices .has-ico .w-ico svg {
   width: 18px; height: 18px; stroke: currentColor; fill: none;
@@ -4927,6 +4936,32 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-devices .dev-pill.bad {
   background: color-mix(in srgb, var(--red) 16%, transparent);
   border-color: color-mix(in srgb, var(--red) 45%, transparent); color: var(--red);
+}
+/* Presence indicator (LD2412) — centered between title and status pill (both
+   carry margin-left:auto, so the free space splits evenly). Header already wraps
+   (flex-wrap on .widget-title), so it drops to a new line on narrow screens
+   instead of overlapping. Shown only while the radar reports a target. */
+#tab-devices .dev-presence {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px; border-radius: 4px;
+  background: var(--chip-cyan-bg); border: 1px solid var(--chip-cyan-fg);
+  color: var(--chip-cyan-fg); font-size: 0.68rem; font-weight: 600;
+  letter-spacing: 0.02em; white-space: nowrap;
+}
+#tab-devices .dev-presence[hidden] { display: none; }
+#tab-devices .dev-presence-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--chip-cyan-fg);
+  animation: dev-presence-pulse 1.4s ease-in-out infinite;
+}
+#tab-devices .dev-presence-dist { font-variant-numeric: tabular-nums; font-weight: 700; }
+#tab-devices .dev-presence-dist:empty { display: none; }
+@keyframes dev-presence-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.82); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #tab-devices .dev-presence-dot { animation: none; }
 }
 #tab-devices .dev-body {
   display: flex; flex-direction: column; flex: 1 1 auto; gap: 8px;
@@ -4974,14 +5009,29 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 @media (max-width: 1100px) {
   #tab-devices .dev-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+/* Landscape phones / small tablets (701–1024px): one full-width card per row so
+   long values (давление «741.4 mmHg», мощность) fit in three comfortable tiles
+   instead of being squeezed into two narrow cards per row. */
+@media (min-width: 701px) and (max-width: 1024px) {
+  #tab-devices .dev-grid { grid-template-columns: 1fr; }
+  #tab-devices .dev-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 700px) {
   #tab-devices .dev-grid { grid-template-columns: minmax(0, 1fr); }
-  #tab-devices .dev-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #tab-devices .dev-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   #tab-devices .dev-kpi-val { font-size: 1.2rem; }
   #tab-devices .dev-card--dtv .dev-metrics { min-height: 0; }
   #tab-devices .dev-card--dtv .dev-kpi { min-height: 4.35rem; }
   #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.45rem; }
   #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.8rem; }
+  /* Compact presence badge: pulsing dot + distance only (no «Присутствие»
+     label) so title and online status stay on one line. */
+  #tab-devices .dev-presence-txt { display: none; }
+  #tab-devices .dev-presence { padding: 2px 7px; gap: 5px; }
+}
+@media (max-width: 400px) {
+  /* Very narrow portrait: 2 columns so values stay legible. */
+  #tab-devices .dev-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 #tab-devices .page-header--devices { margin-bottom: 16px; }
 #tab-devices .dev-page-title-row {
@@ -5045,17 +5095,30 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-devices .dev-card .widget-title {
   position: relative; padding-right: 2rem;
 }
+/* In the right cluster now — normal flex item, not absolute (was top/right:0
+   which would overlap the status pill inside the positioned cluster). */
 #tab-devices .dev-card-remove {
-  position: absolute; top: 0; right: 0;
-  width: 1.6rem; height: 1.6rem; padding: 0; margin: 0;
-  border: 1px solid var(--border); border-radius: 6px;
-  background: var(--bg-panel); color: var(--text-sec);
+  flex: 0 0 auto;
+  width: 1.35rem; height: 1.35rem; padding: 0; margin: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; color: var(--text-sec);
   font-size: 0.85rem; line-height: 1; cursor: pointer;
 }
 #tab-devices .dev-card-remove:hover {
   color: var(--red); border-color: color-mix(in srgb, var(--red) 50%, var(--border));
   background: color-mix(in srgb, var(--red) 12%, transparent);
 }
+/* Pencil rename — next to the title, subtle until hover. */
+#tab-devices .dev-card-rename {
+  flex: 0 0 auto;
+  width: 1.25rem; height: 1.25rem; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; color: var(--text-sec);
+  font-size: 0.8rem; line-height: 1; cursor: pointer; opacity: 0.65;
+  transition: color .15s, opacity .15s;
+}
+#tab-devices .dev-card-rename:hover { color: var(--cyan); opacity: 1; }
 #tab-devices .dev-alert-badge {
   display: inline-flex; align-items: center; gap: 3px;
   margin-left: 4px; padding: 2px 7px; border-radius: 4px;
