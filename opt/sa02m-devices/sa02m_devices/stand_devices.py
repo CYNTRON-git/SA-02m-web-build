@@ -31,9 +31,19 @@ _DTV_ECO2_KEYS = ("eco2_zmod", "eco2_bme680")
 _DTV_PRESS_KPA_KEYS = ("pressure_bme280_kpa", "pressure_bme680_kpa")
 
 _ID_RE = re.compile(
-    r"^(?P<prefix>dtv|ce02m3)-COM(?P<port>\d+)-(?P<addr>\d+)$",
+    r"^(?P<prefix>dtv|ce02m3|mr02m)-COM(?P<port>\d+)-(?P<addr>\d+)$",
     re.IGNORECASE,
 )
+
+# MR-02m analog modules that get an AI card, module_type name → AI channel count.
+# The count is authoritative (a disabled channel still gets its fixed-grid cell),
+# never re-counted from the published ai_* controls. A module_type NOT in this map
+# (14DI / 16DO / 12AO / 12DI / …) is not AI-bearing → no card (see _build_mr).
+_MR_AI_COUNT_BY_TYPE = {
+    "6AI6AO": 6,
+    "12AI": 12,
+    "6AI2AO": 6,
+}
 
 
 def _f(val: Any) -> float | None:
@@ -119,8 +129,14 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
     prefix = m.group("prefix").lower()
     port_num = int(m.group("port"))
     addr = int(m.group("addr"))
+    if prefix == "dtv":
+        kind = "dtv"
+    elif prefix == "mr02m":
+        kind = "mr"
+    else:
+        kind = "ce"
     return {
-        "kind": "dtv" if prefix == "dtv" else "ce",
+        "kind": kind,
         "port_num": port_num,
         "addr": addr,
         "com": f"COM{port_num}",
@@ -314,6 +330,94 @@ def _build_ce(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str,
     }
 
 
+def _int(val: Any, default: int = 0) -> int:
+    try:
+        return int(str(val).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _build_mr(
+    raw: dict[str, Any] | None, *, fallback_id: str = ""
+) -> dict[str, Any] | None:
+    """Read-only AI card for an MR-02m analog module (6AI6AO / 12AI / 6AI2AO).
+
+    Returns ``None`` when the device is not an AI-bearing module — a DI/DO/AO
+    MR-02m (14DI, 16DO, 12AO, …) shares the ``mr02m-COM<p>-<a>`` id space but must
+    NOT get a card (the module_type is not in _MR_AI_COUNT_BY_TYPE), and a device
+    whose module_type has not been published yet cannot be classified. Unlike
+    ДТВ/СЭ (kind is fixed by the id prefix), an MR-02m's analog subtype lives only
+    in the cached ``module_type`` control, so there is no id-only «empty» card to
+    build — hence no ``_empty_mr`` counterpart to _empty_dtv/_empty_ce.
+    """
+    if not raw:
+        return None
+    controls = raw.get("controls") if isinstance(raw.get("controls"), dict) else {}
+    module_type = str(controls.get("module_type") or "").strip()
+    ai_count = _MR_AI_COUNT_BY_TYPE.get(module_type)
+    if not ai_count:
+        return None
+
+    units = raw.get("units") if isinstance(raw.get("units"), dict) else {}
+    sensor_types = (
+        raw.get("sensor_types") if isinstance(raw.get("sensor_types"), dict) else {}
+    )
+    errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
+
+    device_id = str(raw.get("device") or fallback_id or "")
+    meta = parse_device_id(device_id)
+    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    # Staleness mirrors _build_dtv/_build_ce: age is the signal. A missing OR None
+    # online flag ("ok") is «unknown», not «offline» — the bench 12AI publishes a
+    # None flag while fresh and must read online (coordinator note, board 1.135).
+    ok_raw = raw.get("ok", True)
+    ok_flag = (True if ok_raw is None else bool(ok_raw)) and bool(controls)
+    if age is not None and age > STALE_S:
+        ok_flag = False
+
+    channels: list[dict[str, Any]] = []
+    for ch in range(1, ai_count + 1):
+        key = f"ai_{ch}"
+        sensor_code = _int(sensor_types.get(key), 0)
+        err = str(errors.get(key) or "")
+        enabled = sensor_code != 0  # code 0 = «Выключен»
+        ch_ok = err == ""
+        value = _f(controls.get(key)) if (enabled and ch_ok) else None
+        channels.append({
+            "ch": ch,
+            "value": value,
+            "unit": str(units.get(key) or ""),
+            "sensor_code": sensor_code,
+            "enabled": enabled,
+            "ok": ch_ok,
+        })
+
+    a = meta.get("addr")
+    p = meta.get("port_num")
+    label = (
+        f"MR-02m {module_type} № "
+        f"{'—' if a is None else a} порт {'—' if p is None else p}"
+    )
+    return {
+        "id": device_id,
+        "kind": "mr",
+        "sku": "MR-02m",
+        "module_type": module_type,
+        "ai_count": ai_count,
+        "label": label,
+        "title": label,
+        "port_num": p,
+        "addr": a,
+        "com": meta.get("com") or "",
+        "ok": ok_flag,
+        "ts": raw.get("ts"),
+        "age_s": age,
+        "age_label": _fmt_age(age),
+        "channels": channels,
+        "alerts": [],
+    }
+
+
 def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     """Снимок для ``GET /api/devices`` — списки всех ДТВ/СЭ из кэша MQTT."""
     root = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
@@ -331,6 +435,17 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         if raw is not None and not raw.get("device"):
             raw = {**raw, "device": device_id}
         ce_list.append(_build_ce(raw, fallback_id=device_id))
+    # MR-02m analog modules only — _build_mr returns None for a DI/DO/AO module
+    # sharing the mr02m id space, so those are skipped (never carded).
+    mr_list: list[dict[str, Any]] = []
+    for path in _list_device_files(root, "mr02m"):
+        raw = _load_cache(path)
+        device_id = path.stem
+        if raw is not None and not raw.get("device"):
+            raw = {**raw, "device": device_id}
+        built = _build_mr(raw, fallback_id=device_id)
+        if built is not None:
+            mr_list.append(built)
     # Сортировка: порт, затем адрес
     def _sort_key(d: dict[str, Any]) -> tuple:
         return (
@@ -341,7 +456,8 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
 
     dtv_list.sort(key=_sort_key)
     ce_list.sort(key=_sort_key)
-    devices = [*dtv_list, *ce_list]
+    mr_list.sort(key=_sort_key)
+    devices = [*dtv_list, *ce_list, *mr_list]
     return {
         "ok": True,
         "ts": time.time(),
@@ -349,6 +465,7 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         "cache_dir": str(root),
         "dtv": dtv_list,
         "ce": ce_list,
+        "mr": mr_list,
         "devices": devices,
         "alerts": [],
     }

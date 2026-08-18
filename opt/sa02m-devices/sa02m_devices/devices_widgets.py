@@ -188,7 +188,10 @@ def apply_widgets_view(
 
     out["dtv"] = [d for d in dtv_all if str(d.get("id") or "") not in removed]
     out["ce"] = [d for d in ce_all if str(d.get("id") or "") not in removed]
-    out["devices"] = list(out["dtv"]) + list(out["ce"])
+    # MR-02m analog cards are display-only (not removable), so they pass through
+    # unfiltered — but must stay in the rebuilt flat devices[] to match live[mr].
+    out["mr"] = [d for d in (out.get("mr") or []) if isinstance(d, dict)]
+    out["devices"] = list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
 
     available: list[dict[str, Any]] = []
     seen: set[str] = set()

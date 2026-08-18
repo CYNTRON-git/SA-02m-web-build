@@ -32,6 +32,24 @@ def test_remove_hides_and_stops_archive(tmp_path: Path):
     assert len(arch["ce"]) == 1
 
 
+def test_mr_passes_through_view_and_devices(tmp_path: Path):
+    """MR-02m analog cards are display-only: apply_widgets_view keeps them in
+    mr[] and in the rebuilt flat devices[], and removing a ДТВ never drops MR."""
+    cfg = tmp_path / "widgets.json"
+    snap = {
+        "ok": True,
+        "dtv": [{"id": "dtv-A", "kind": "dtv", "label": "ДТВ A", "ok": True}],
+        "ce": [],
+        "mr": [{"id": "mr02m-COM4-12", "kind": "mr", "module_type": "12AI", "ok": True}],
+    }
+    remove_widget("dtv-A", device=snap["dtv"][0], path=cfg)
+    view = apply_widgets_view(snap, path=cfg)
+    assert [d["id"] for d in view["dtv"]] == []  # removed
+    assert [d["id"] for d in view["mr"]] == ["mr02m-COM4-12"]  # untouched
+    # flat devices[] = dtv(filtered) + ce + mr → only the MR survives here
+    assert [d["id"] for d in view["devices"]] == ["mr02m-COM4-12"]
+
+
 def test_add_restores_widget(tmp_path: Path):
     cfg = tmp_path / "widgets.json"
     snap = {
