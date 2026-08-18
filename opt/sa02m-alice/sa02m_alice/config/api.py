@@ -86,6 +86,37 @@ def read_status_file() -> Dict[str, Any]:
     return {"state": "unknown"}
 
 
+# `cert_check` values reported next to `mtls.cert_present`.
+CERT_CHECK_CLIENT = "client"        # taken from the client's status file
+CERT_CHECK_LOCAL = "local"          # this process could isfile() the cert dir
+CERT_CHECK_UNREADABLE = "unreadable"  # cert dir not traversable → unknown
+
+
+def cert_presence(status: Dict[str, Any]) -> Tuple[Optional[bool], str]:
+    """(cert_present, cert_check) — True/False when known, None when unknowable.
+
+    The web API usually runs as www-data, which cannot traverse the root-only
+    cert dir: there `os.path.isfile()` returns False for files that exist. So
+    the client's status file (written as root, the actual cert user) is the
+    first source; a local isfile() only when this process can actually enter
+    the dir; otherwise an honest None — never a false False.
+    """
+    val = status.get("cert_present")
+    if isinstance(val, bool):
+        return val, CERT_CHECK_CLIENT
+    cert_dir = os.path.dirname(C.CERT_FILE) or "."
+    try:
+        os.stat(cert_dir)
+    except FileNotFoundError:
+        # No dir at all (never enrolled) — a definite absence, not "unknown".
+        return False, CERT_CHECK_LOCAL
+    except OSError:
+        return None, CERT_CHECK_UNREADABLE
+    if os.access(cert_dir, os.X_OK):
+        return cert_paths_present(), CERT_CHECK_LOCAL
+    return None, CERT_CHECK_UNREADABLE
+
+
 def probe_gateway(http_url: Optional[str] = None, timeout: float = C.GATEWAY_PROBE_TIMEOUT_S) -> Dict[str, Any]:
     """HEAD/GET gateway /v1.0/ping. Clear error when unreachable (Phase 0 may be down)."""
     _, http, _ = gateway_urls()
@@ -151,6 +182,8 @@ def full_config() -> Dict[str, Any]:
     status = read_status_file()
     probe = probe_gateway(http)
     enabled = client_enabled(cfg)
+    cert_present, cert_check = cert_presence(status)
+    connected = status.get("state") == C.STATE_CONNECTED
     return {
         "ok": True,
         "version": __version__,
@@ -162,19 +195,24 @@ def full_config() -> Dict[str, Any]:
             "probe": probe,
         },
         "mtls": {
-            "cert_present": cert_paths_present(),
+            # True / False when known; None when this process cannot tell
+            # (see cert_presence) — the UI renders None as «н/д», never «Нет».
+            "cert_present": cert_present,
+            "cert_check": cert_check,
             "cert_file": C.CERT_FILE,
             "key_file": C.KEY_FILE,
         },
         "status": status,
         "devices": devices,
         "link": {
-            # Honest link state — never invent "linked" when gateway/cert missing
+            # Honest link state — never invent "linked" when gateway/cert missing.
+            # A live mTLS session (state connected) is itself proof the cert is
+            # present, so only an explicit False vetoes; unknown does not.
             "linked": bool(
                 enabled
-                and cert_paths_present()
+                and cert_present is not False
                 and probe.get("available")
-                and status.get("state") == C.STATE_CONNECTED
+                and connected
             ),
             "state": status.get("state") or ("disabled" if not enabled else "unknown"),
         },
@@ -318,7 +356,11 @@ def complete_link() -> Dict[str, Any]:
                 "message": "Missing %s in issue response" % key,
             }
         _write_pem(path, str(pem), mode)
-    # Keep claim_token for authenticated /controller/unlink (required by gateway).
+    # Deliberately NOT cleared after a successful issue: the gateway requires the
+    # claim_token for the authenticated /controller/unlink, so pending_claim.json
+    # outlives enrollment (marked issued=True). Nothing in the status/link view
+    # reads this file — a leftover can never flip the UI to «ожидание
+    # завершения»; the UI's pending mark is session-local and yields to linked.
     _save_pending_claim(
         {
             "claim_token": token,
