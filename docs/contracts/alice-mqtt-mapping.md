@@ -64,6 +64,35 @@ Action capability result: `{status:"DONE"|"ERROR", error_code?}`.
   linked/paired success.
 - Config CRUD and MQTT topic inventory work without the gateway.
 
+## Client status file → web API cert / link truth (1.0.5.80)
+
+The cert dir `/var/lib/sa02m-alice` is root-only (key 0600 root) and stays so;
+the web API runs as `www-data` and MUST NOT probe it (an `isfile()` there is
+permission-blind and returns a false "absent").
+
+- **Status file** `/run/sa02m-alice/status.json` (client, root, mode 0644,
+  rewritten on every state change): `{state, ts, version, cert_present:
+  bool, …}` — `cert_present` is evaluated by the client on EVERY write
+  (`sa02m_alice/client/main.py::_write_status`), so the file is the source of
+  cert truth for unprivileged readers. Additive: older keys unchanged.
+- **API** (`sa02m_alice_api.cgi` GET / `full_config`) `mtls.cert_present` is
+  tri-state — `true` / `false` when known, `null` when this process cannot tell —
+  with `mtls.cert_check` naming the source: `"client"` (status file),
+  `"local"` (own `isfile()`, only when the process can traverse the dir; a
+  missing dir is a definite `false`), `"unreadable"` (dir present, not
+  traversable → `null`). Never a false `false`.
+- `link.linked` = enabled ∧ gateway available ∧ `status.state == connected` ∧
+  `cert_present is not false` — a live mTLS session is itself proof of the cert;
+  only an explicit `false` vetoes.
+- UI (`app/alice.js`): «Сертификат» renders `true`→«Есть», `false`→«Нет»,
+  unknown→«н/д»; «Статус: привязан» when `state == connected` OR
+  `cert_present === true`; a session-local pending mark yields to linked.
+- `pending_claim.json` is KEPT after a successful issue (`issued: true`) — the
+  gateway requires `claim_token` for `/controller/unlink`; the status/link view
+  never reads it.
+
+Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`.
+
 ## Non-goals
 
 - Copying `wb-mqtt-alice` source (MIT-WB).

@@ -37,13 +37,24 @@ _stop = threading.Event()
 
 
 def _write_status(state: str, **kw: Any) -> None:
-    payload = {"state": state, "ts": int(time.time()), "version": __version__, **kw}
+    # `cert_present` is published on EVERY write: this process (root) is the
+    # only one that can see into the root-only cert dir, so the world-readable
+    # status file is where the web layer (www-data) learns cert presence.
+    payload = {
+        "state": state,
+        "ts": int(time.time()),
+        "version": __version__,
+        "cert_present": cert_paths_present(),
+        **kw,
+    }
     path = C.STATUS_FILE
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False)
+        # World-readable regardless of the unit's umask — the CGI reads it.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except OSError as exc:
         log.debug("status write failed: %s", exc)

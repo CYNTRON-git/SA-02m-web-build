@@ -152,8 +152,17 @@ function aliceRender(d) {
   aliceSetBadge($('alice-gw-state'), avail ? 'Доступен' : 'Недоступен', avail ? 'ok' : 'err');
   aliceSetBadge($('alice-conn-state'), entry[0], entry[1]);
 
-  const certOk = !!(d.mtls && d.mtls.cert_present);
-  aliceSetBadge($('alice-cert-state'), certOk ? 'Есть' : 'Нет', certOk ? 'ok' : 'warn');
+  // mtls.cert_present is tri-state: true / false / null-or-absent (the API could
+  // not look — the cert dir is root-only and the CGI runs as www-data; or an
+  // older backend without the field). Unknown renders «н/д», never a false «Нет».
+  const certRaw = d.mtls ? d.mtls.cert_present : undefined;
+  const certOk = certRaw === true;
+  const certKnown = certRaw === true || certRaw === false;
+  aliceSetBadge(
+    $('alice-cert-state'),
+    certKnown ? (certOk ? 'Есть' : 'Нет') : 'н/д',
+    certKnown ? (certOk ? 'ok' : 'warn') : 'unk'
+  );
 
   const btn = $('alice-btn-enable');
   if (btn) {
@@ -167,10 +176,14 @@ function aliceRender(d) {
   // action follow the link state — not linked → «Привязать», link opened but
   // cert not yet issued → «Завершить привязку», linked → «Отвязать». The
   // session-local `link_pending` flag bridges our 2-step flow; it is cleared
-  // once the certificate appears (linked) or on unlink. All three actions hit
-  // the gateway, so the button is gated on reachability and the reserved
+  // once the device is linked or on unlink. All three actions hit the
+  // gateway, so the button is gated on reachability and the reserved
   // «нет интернета» note is surfaced when !avail (unchanged gate).
-  const linked = certOk;
+  // Linked = a live mTLS session (state connected — the strongest proof the
+  // cert is enrolled) OR a positively known cert; linkage is never hostage to
+  // an unknown cert flag. Checked BEFORE `pending`, so a stale pending mark
+  // cannot show «ожидание завершения» on a connected device.
+  const linked = st === 'connected' || certOk;
   if (linked) aliceSetPending(false);
   const pending = aliceGetPending();
   const linkBtn = $('alice-btn-link');
