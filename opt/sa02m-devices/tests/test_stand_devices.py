@@ -169,8 +169,9 @@ def test_mr_6ai6ao_shape_and_channels(tmp_path: Path):
     assert ch[2]["value"] is None
     # ch4 — current 4–20 mA
     assert ch[3]["value"] == 12.0 and ch[3]["unit"] == "mA" and ch[3]["sensor_code"] == 40
-    # ch5 — errored: value nulled, ok False (even though controls carried a value)
-    assert ch[4]["ok"] is False and ch[4]["value"] is None and ch[4]["enabled"] is True
+    # ch5 — errored: value HELD from controls (a transient read error must NOT
+    # blank the last good reading — 1.0.5.84), ok False flags the error
+    assert ch[4]["ok"] is False and ch[4]["value"] == 7.7 and ch[4]["enabled"] is True
     # ch6 — diff ±50 mV
     assert ch[5]["value"] == 3.3 and ch[5]["sensor_code"] == 36
     # additive: mr appears in the flat devices list, dtv/ce untouched
@@ -226,6 +227,34 @@ def test_mr_12ai_bench_shape(tmp_path: Path):
     assert ch[8]["value"] == 25.7 and ch[8]["sensor_code"] == 22
     assert ch[10]["value"] == 28.7 and ch[10]["sensor_code"] == 41
     assert all(c["ok"] for c in ch)  # no per-channel errors on the bench module
+
+
+def test_mr_channel_holds_value_through_transient_error(tmp_path: Path):
+    """A transient per-channel read error (errors.ai_N) must NOT blank the value —
+    controls still carries the last good reading. Regression for the 12AI card
+    flicker on the shared COM4 bus (1.0.5.84): ch_ok stays False to flag the
+    error, but the value is held; device-level age > STALE_S is the «old» signal.
+    """
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    controls = _bench_12ai_controls()
+    controls["ai_7"] = "25.3"  # last good reading, still in controls this poll
+    del controls["ai_12"]      # enabled (sensor 41) but no reading in controls
+    _write_mr(
+        cache, "mr02m-COM4-12",
+        controls,
+        units=dict(_BENCH_12AI_UNITS),
+        sensor_types=dict(_BENCH_12AI_SENSOR_TYPES),
+        errors={"ai_7": "r"},  # transient read error on ch7 THIS poll
+    )
+    snap = live_snapshot(cache)
+    ch = snap["mr"][0]["channels"]
+    # ch7 — errored this poll but value HELD (not None), ok False flags the error
+    assert ch[6]["value"] == 25.3 and ch[6]["ok"] is False and ch[6]["enabled"] is True
+    # a disabled channel (sensor_code 0) still nulls its value
+    assert ch[0]["sensor_code"] == 0 and ch[0]["enabled"] is False and ch[0]["value"] is None
+    # a genuinely-absent control → None even though the channel is enabled
+    assert ch[11]["enabled"] is True and ch[11]["value"] is None
 
 
 def test_mr_online_none_fresh_is_ok(tmp_path: Path):
