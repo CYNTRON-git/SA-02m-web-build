@@ -18,6 +18,8 @@ from pathlib import Path
 
 import paho.mqtt.client as mqtt
 
+from bridge_meta import control_meta_blob, device_meta_blob
+
 log = logging.getLogger("bridge")
 
 DEVICE_BASE = "/devices"
@@ -140,73 +142,8 @@ def _make_title(label_ru: str, label_en: str = "") -> str:
 
 
 # ── WB conventions: /meta JSON blob assembly ──────────────────────────────────
-# Modern WB tooling (wb-mqtt-serial 2.x, HA autodiscovery via WB) reads the
-# single retained /meta JSON blob rather than the individual /meta/<key>
-# subtopics. We publish BOTH: the subtopics (legacy-compat + our own consumers)
-# and, additively, the blob assembled from the SAME accumulated values so the
-# two can never drift. The blob is typed to WB's JSON shape (readonly boolean,
-# order/min/max/precision numeric, title/enum structured) while the subtopics
-# stay byte-for-byte the string values they always were.
-# Source: https://github.com/wirenboard/conventions
-
-# Control-meta keys WB defines as JSON numbers (published as decimal strings).
-_CTRL_META_NUMERIC_KEYS = ("min", "max", "order", "precision")
-# Control-meta keys WB defines as structured JSON (published as a JSON string
-# by _make_title / the enum builder, or as a plain string when single-valued).
-_CTRL_META_STRUCTURED_KEYS = ("title", "enum")
-
-
-def _num_or_str(value: str):
-    """Return int/float for a numeric string, else the string unchanged."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        pass
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return value
-
-
-def _obj_or_str(value: str):
-    """Return the parsed object for a JSON-object string, else the string."""
-    try:
-        parsed = _json.loads(value)
-    except (TypeError, ValueError):
-        return value
-    return parsed if isinstance(parsed, dict) else value
-
-
-def _control_meta_blob(meta: dict) -> dict:
-    """Assemble the WB control /meta blob from the accumulated subtopic values.
-
-    Same source dict that feeds the /meta/<key> subtopics — the blob is a typed
-    mirror, never an independent copy, so the two can't drift.
-    """
-    blob: dict = {}
-    for key, val in meta.items():
-        if key == "readonly":
-            blob[key] = (val == "1")
-        elif key in _CTRL_META_NUMERIC_KEYS:
-            blob[key] = _num_or_str(val)
-        elif key in _CTRL_META_STRUCTURED_KEYS:
-            blob[key] = _obj_or_str(val)
-        else:
-            blob[key] = val
-    return blob
-
-
-def _device_meta_blob(meta: dict) -> dict:
-    """Assemble the WB device /meta blob ({driver, title:{ru,en}}) from the
-    accumulated device-meta subtopic values (name → title, driver → driver)."""
-    blob: dict = {}
-    driver = meta.get("driver")
-    if driver is not None:
-        blob["driver"] = driver
-    name = meta.get("name")
-    if name is not None:
-        blob["title"] = {"ru": name, "en": name}
-    return blob
+# WB /meta JSON-blob assembly lives in bridge_meta.py (pure, stdlib-only); the
+# stateful publish orchestration below feeds it the accumulated subtopic values.
 
 
 # ── MQTTPublisher ──────────────────────────────────────────────────────────────
@@ -253,7 +190,7 @@ class MQTTPublisher:
         # WB /meta JSON blob: accumulate the per-control / per-device meta values
         # as their subtopics are published, then publish the assembled blob (the
         # *_pub caches dedup so a re-published identical blob is skipped). Fed by
-        # the SAME values as the subtopics — see _control_meta_blob.
+        # the SAME values as the subtopics — see bridge_meta.control_meta_blob.
         self._ctrl_meta: dict[tuple[str, str], dict[str, str]] = {}
         self._ctrl_meta_pub: dict[tuple[str, str], str] = {}
         self._dev_meta: dict[str, dict[str, str]] = {}
@@ -374,7 +311,7 @@ class MQTTPublisher:
         with self._lock:
             meta = self._ctrl_meta.setdefault(topic_key, {})
             meta[key] = value
-            blob = _json.dumps(_control_meta_blob(meta),
+            blob = _json.dumps(control_meta_blob(meta),
                                ensure_ascii=False, sort_keys=True)
             if self._ctrl_meta_pub.get(topic_key) == blob:
                 return
@@ -390,7 +327,7 @@ class MQTTPublisher:
         with self._lock:
             meta = self._dev_meta.setdefault(device_id, {})
             meta[key] = value
-            blob_obj = _device_meta_blob(meta)
+            blob_obj = device_meta_blob(meta)
             if not blob_obj:            # no driver/name yet — nothing to publish
                 return
             blob = _json.dumps(blob_obj, ensure_ascii=False, sort_keys=True)
