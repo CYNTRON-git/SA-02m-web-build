@@ -1,6 +1,6 @@
 {
   "label": "baseline",
-  "at": "2026-07-13T10:01:21.302Z",
+  "at": "2026-08-18T10:51:39.753Z",
   "device": "http://192.168.1.136:9999",
   "tabs": [
     "dashboard",
@@ -21,25 +21,78 @@
     "system"
   ],
   "globals": [
+    "MPLC_PROJ_ERR_UI:object",
+    "MPLC_PROJ_STAGE_UI:object",
     "USB_WIDGET_ICONS:object",
+    "WEB_UPD_STAGE_UI:object",
+    "_factoryResetBackupDone:boolean",
+    "_factoryResetPollBackoffMs:number",
+    "_factoryResetPollInFlight:boolean",
+    "_factoryResetPollOnce:function",
+    "_factoryResetPollTimer:object",
+    "_factoryResetPollTries:number",
+    "_factoryResetSetProgress:function",
+    "_factoryResetSetStatus:function",
+    "_factoryResetStageText:function",
+    "_factoryResetStartPolling:function",
+    "_lt:boolean",
+    "_m:object",
+    "_mplcProjActive:boolean",
+    "_mplcProjApplyStatusUI:function",
+    "_mplcProjErrText:function",
+    "_mplcProjFile:object",
+    "_mplcProjFinish:function",
+    "_mplcProjFlasherBusy:function",
+    "_mplcProjPollInFlight:boolean",
+    "_mplcProjPollOnce:function",
+    "_mplcProjPollTimer:object",
+    "_mplcProjSetProgress:function",
+    "_mplcProjSetStatus:function",
+    "_mplcProjStagePct:function",
+    "_mplcProjStartPolling:function",
+    "_webUpdApplyTxnUI:function",
     "_webUpdFinish:function",
+    "_webUpdInspect:object",
+    "_webUpdIsBusy:function",
+    "_webUpdIsTerminal:function",
+    "_webUpdLegacyStatus:function",
+    "_webUpdOfflineReady:boolean",
+    "_webUpdPollBackoffMs:number",
+    "_webUpdPollInFlight:boolean",
+    "_webUpdPollOnce:function",
     "_webUpdPollTimer:object",
+    "_webUpdSchedulePoll:function",
+    "_webUpdSetProgress:function",
+    "_webUpdSetStatus:function",
+    "_webUpdStageText:function",
     "_webUpdStartPolling:function",
+    "_webUpdTxnActive:boolean",
     "abortAllStatusFetches:function",
     "abortStatusPart:function",
+    "acceptRootPassword:function",
     "activeBackgroundParts:function",
+    "aliceAddDevice:function",
+    "aliceCloseModal:function",
+    "aliceLinkAction:function",
+    "aliceModalBackdrop:function",
+    "aliceOpenModal:function",
+    "aliceToggleClient:function",
     "allBackgroundPartsLoaded:function",
     "allBackgroundWidgetsLoaded:function",
     "applyCachedBackgroundPartsI18n:function",
     "applyCpuFrequencyLabels:function",
     "applyCpuProfile:function",
+    "applyDeepLinkTab:function",
     "applyDeviceTitle:function",
     "applyEthIfaceState:function",
     "applyHardwareStatus:function",
     "applyHwChannel:function",
     "applyKernelProfile:function",
     "applyLoadStatus:function",
+    "applyManagedServiceCardVisibility:function",
     "applyNetworkStatus:function",
+    "applyOfflineInspectUI:function",
+    "applyOfflineUpdate:function",
     "applyPriorityStatus:function",
     "applyRemovableDisk:function",
     "applyRs485Status:function",
@@ -54,34 +107,60 @@
     "applyVariantVisibility:function",
     "applyWebUpdate:function",
     "applyWebUpdateCheckUI:function",
+    "beginRootPasswordPrompt:function",
     "bindStatusPollingLifecycle:function",
     "bindUsbPowerResetButton:function",
     "bootstrapBackgroundWidgets:function",
     "browserIanaTz:function",
     "bumpMainStatusEpoch:function",
     "canFetchStatusPart:function",
+    "cancelMplcProjectPick:function",
+    "cancelOfflineUpdate:function",
     "cancelVariantStatusAutoClear:function",
     "checkWebUpdatesManual:function",
+    "clearCommandInput:function",
+    "clearCommandLine:function",
     "clearHwBlockStatusTimer:function",
     "clearHwHintPending:function",
     "clearPendingUsbPowerIfServerMatches:function",
+    "clearSessionCookie:function",
     "clearStatusFetchQueue:function",
     "clearStatusPollTimers:function",
+    "clearStoredRootPassword:function",
+    "closeFactoryResetModal:function",
+    "closeNavDrawer:function",
+    "cloudActivate:function",
+    "cloudCancelPairing:function",
+    "cloudCopyPairCode:function",
+    "cloudRecheck:function",
+    "cloudScrollIntoView:function",
+    "cloudStartPairing:function",
+    "cloudTabDestroy:function",
+    "cloudTabInit:function",
+    "cloudToggleAgent:function",
     "compareSemver:function",
     "compareSvcDisplayName:function",
+    "confirmFactoryReset:function",
     "cpuProfileErrorMessage:function",
     "cpuProfileLabel:function",
     "cssVar:function",
+    "deployMplcProject:function",
     "deployedRefDisplay:function",
     "deviceTitleRu:function",
+    "deviceTitleShort:function",
+    "devicesTabDestroy:function",
+    "devicesTabInit:function",
     "doLogout:function",
     "doReboot:function",
     "doRestart:function",
+    "downloadWebBackup:function",
     "escHtml:function",
     "ethPillPlaceholderText:function",
+    "executeCommandLine:function",
     "exportInstallLog:function",
     "fetchBackgroundPart:function",
     "fetchPriorityPart:function",
+    "fetchServicesFast:function",
     "fetchStatus:function",
     "fetchStatusBlocksConfig:function",
     "fetchStatusMain:function",
@@ -99,6 +178,7 @@
     "fmtNum:function",
     "fmtTrafficBytes:function",
     "fmtUptime:function",
+    "fmtUptime2:function",
     "fmtUptimeSvc:function",
     "fmtWebUpdChecked:function",
     "formatComPortCount:function",
@@ -108,6 +188,8 @@
     "gatewayNavClick:function",
     "getBackgroundPartApply:function",
     "getPriorityWarmupPart:function",
+    "getSa02mCsrfToken:function",
+    "handleCommandBuiltin:function",
     "handleUrlStatus:function",
     "hideDashboardPollAlert:function",
     "hwLogicalFromPayload:function",
@@ -115,32 +197,44 @@
     "hwRerenderBlockStatus:function",
     "hwToggleBtn:function",
     "hydratePriorityWarmup:function",
+    "initCommandLine:function",
     "initDashboardPlaceholders:function",
     "initForms:function",
     "initNav:function",
+    "initNavDrawer:function",
+    "initOfflineUpdateUi:function",
     "initStatusPolling:function",
     "initThemeToggle:function",
+    "initTopbarAutoHide:function",
     "initValidation:function",
     "initWebCredsForm:function",
+    "ipv4ToInt:function",
     "isBenignStatusFetchError:function",
     "isHeavyStatusPart:function",
+    "isInteractiveShellCommand:function",
+    "isNetApplyForm:function",
+    "isRootLoginCommand:function",
     "isRtKernelMode:function",
     "isStatusBlockEnabled:function",
     "isStatusPartPaused:function",
     "kernelErrorMessage:function",
     "kernelProfileLabel:function",
+    "loadCommandHistory:function",
     "loadConfig:function",
     "loadKernelControl:function",
     "loadLog:function",
+    "loadMplcProjectMeta:function",
     "loadServicesControl:function",
     "loadSshDebug:function",
     "loadVariant:function",
     "loadWebUpdateStatus:function",
+    "makeSvcCtlButton:function",
     "mqttClearMonitor:function",
     "mqttConfirmAdd:function",
     "mqttCtrl:function",
     "mqttHideAddModal:function",
     "mqttHideScanModal:function",
+    "mqttOnAddTypeChange:function",
     "mqttRefreshI18n:function",
     "mqttRunScan:function",
     "mqttSaveAndApply:function",
@@ -156,13 +250,20 @@
     "normSvcState:function",
     "noteStatusFailure:function",
     "noteStatusSuccess:function",
+    "onFactoryResetConfirmInput:function",
+    "onMplcProjectConfirmToggle:function",
+    "openFactoryResetModal:function",
     "pad2:function",
     "parseApplyRedirect:function",
+    "pickMplcProjectFile:function",
+    "pickOfflineUpdateFile:function",
     "pollServiceCtlDone:function",
     "pollServiceCtlResult:function",
     "pollServiceCtlState:function",
+    "probeOfflineUpdateCapability:function",
     "pumpStatusFetchQueue:function",
     "readPriorityWarmupCache:function",
+    "refreshKernelBoot:function",
     "refreshMainStatusI18n:function",
     "refreshPriorityStatusI18n:function",
     "refreshRs485I18n:function",
@@ -177,27 +278,44 @@
     "renderServicesDynamic:function",
     "renderServicesSkeleton:function",
     "resetBackgroundLoadedFlags:function",
+    "resolveExecCommand:function",
     "rs485ErrDelta:function",
     "rs485ErrParts:function",
     "rs485ErrSlotHtml:function",
+    "rs485ModuleChipHtml:function",
+    "rs485ModulesHtml:function",
     "rs485PortCountForVariant:function",
     "rs485PortLabel:function",
+    "rs485ScanDateStr:function",
     "rs485SkeletonCardHtml:function",
+    "rs485TxRxRowHtml:function",
+    "runCommandLine:function",
     "sa02mI18n:object",
+    "sameSubnet:function",
+    "saveCommandHistory:function",
     "scheduleStatusFetch:function",
     "scheduleVariantStatusAutoClear:function",
     "serviceCtlAction:function",
+    "setCommandMode:function",
+    "setCommandOutput:function",
     "setHtml:function",
     "setHw:function",
     "setHwBlockStatus:function",
     "setHwChannelBtns:function",
+    "setKlogicHint:function",
+    "setManagedServiceCardVisible:function",
+    "setOfflineUpdateEnabled:function",
+    "setRtcReadout:function",
     "setStatusPartPause:function",
     "setStorageAutoFormat:function",
+    "setStorageKpi:function",
     "setStyle:function",
     "setSvcRowUptime:function",
     "setText:function",
     "setUsbWidgetIcon:function",
     "setVal:function",
+    "setValThresh:function",
+    "setValUnit:function",
     "shortGitSha:function",
     "shouldFetchBackgroundPart:function",
     "startAllBackgroundPartPollTimers:function",
@@ -210,6 +328,9 @@
     "statusRequestTimeout:function",
     "submitForm:function",
     "svcBadge:function",
+    "svcCtlActionDoneMsg:function",
+    "svcCtlActionPendingMsg:function",
+    "svcCtlBtnMeta:function",
     "svcCtlDisplayLabel:function",
     "svcCtlErrorMessage:function",
     "svcCtlRowState:function",
@@ -232,214 +353,187 @@
     "toggleStorageAutoFormat:function",
     "uiT:function",
     "unitUiLabel:function",
+    "updateCommandPasswordVisibility:function",
     "updateCpuProfileTile:function",
     "updateHwToggleBtn:function",
     "updateThemeBtn:function",
+    "uploadOfflineUpdateFile:function",
     "usbPowerReset:function",
     "validateNetForm:function",
     "variantDisplayLabel:function",
     "webUpdResolveAvailable:function",
     "webUpdVersionDisplay:function",
+    "withCsrfHeaders:function",
     "writePriorityWarmupPart:function"
   ],
   "cells": {
     "dark/dashboard/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "4025832fbebe7ca3",
-        "pane": "5490707a1043eb1f"
+        "topbar": "4005963dafccf769",
+        "sidebar": "c4a79aa05f91c5d2",
+        "pane": "466dc2b1b8c34e1a"
       },
-      "shot": "b1f2b2deda6621df"
+      "shot": "b16cde9f542ad50b"
     },
     "dark/dashboard/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "4025832fbebe7ca3",
-        "pane": "775e5bd9a4ce65dd"
+        "topbar": "4005963dafccf769",
+        "sidebar": "c4a79aa05f91c5d2",
+        "pane": "4627af3f00491f83"
       },
-      "shot": "0eca8b1b4af321f8"
+      "shot": "9bceab63b7227b6f"
     },
     "dark/network/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "d01834a367bf2400",
-        "pane": "f6215de64c04363e"
+        "topbar": "4005963dafccf769",
+        "sidebar": "ecc4817369e29ca4",
+        "pane": "76886675d793c501"
       },
-      "shot": "17da195510507c8c"
+      "shot": "01984bd039c74cbc"
     },
     "dark/network/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "d01834a367bf2400",
-        "pane": "830cd6537059809c"
+        "topbar": "4005963dafccf769",
+        "sidebar": "ecc4817369e29ca4",
+        "pane": "18edf73d294364cb"
       },
-      "shot": "538ec1747924c026"
+      "shot": "b3992b7f33d86e14"
     },
     "dark/time/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "b85f4698fc743f83",
-        "pane": "d0d25a3977d51f70"
+        "topbar": "4005963dafccf769",
+        "sidebar": "cc75f64e0bf1deaa",
+        "pane": "040370f20bb1fbb1"
       },
-      "shot": "96e27dd345a03068"
+      "shot": "6680615700f8803d"
     },
     "dark/system/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "6b64f08377f754fa",
-        "pane": "1c85ba1519b91668"
+        "topbar": "4005963dafccf769",
+        "sidebar": "04d9f0424ba2ed35",
+        "pane": "7fc1df847d3b8274"
       },
-      "shot": "bc321e1338ea9bf1"
+      "shot": "bb7e218e8f4f26b5"
     },
     "dark/system/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "6b64f08377f754fa",
-        "pane": "1c85ba1519b91668"
+        "topbar": "4005963dafccf769",
+        "sidebar": "04d9f0424ba2ed35",
+        "pane": "7fc1df847d3b8274"
       },
-      "shot": "94a65a36689c4d2f"
+      "shot": "e278f6dfbfbe9692"
     },
     "dark/flasher/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "c251ccd16d394097",
-        "pane": "06353420a92d89d6"
+        "topbar": "4005963dafccf769",
+        "sidebar": "972303edbbdde564",
+        "pane": "9fbf7567c91f8011"
       },
-      "shot": "7c0e238e10d8e01d"
+      "shot": "fd725375d9f384ee"
     },
     "dark/mqtt/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "ba1a84f5ede6674c",
-        "pane": "772dddce5e7b93b3"
+        "topbar": "4005963dafccf769",
+        "sidebar": "0164d3255b49f24f",
+        "pane": "2e2706d9c194c116"
       },
-      "shot": "460126d4e711b908"
+      "shot": "4267fd9787883f8a"
     },
     "dark/gateway/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "f3e4297400c385f2",
-        "pane": "1ecb9d7dc6d0e950"
+        "topbar": "4005963dafccf769",
+        "sidebar": "1c3a7359caba2454",
+        "pane": "0a1ef55de9035459"
       },
-      "shot": "b1baa1c5b881252f"
+      "shot": "694e932573611cb7"
     },
     "light/dashboard/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "4025832fbebe7ca3",
-        "pane": "5490707a1043eb1f"
+        "topbar": "4005963dafccf769",
+        "sidebar": "c4a79aa05f91c5d2",
+        "pane": "466dc2b1b8c34e1a"
       },
-      "shot": "f2892151fcf4a5a1"
+      "shot": "c5eb9035a64d01c7"
     },
     "light/dashboard/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "4025832fbebe7ca3",
-        "pane": "775e5bd9a4ce65dd"
+        "topbar": "4005963dafccf769",
+        "sidebar": "c4a79aa05f91c5d2",
+        "pane": "4627af3f00491f83"
       },
-      "shot": "4100b3c715b6218b"
+      "shot": "8e2a90ed6b1fff70"
     },
     "light/network/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "d01834a367bf2400",
-        "pane": "f6215de64c04363e"
+        "topbar": "4005963dafccf769",
+        "sidebar": "ecc4817369e29ca4",
+        "pane": "19eb980c905aa39c"
       },
-      "shot": "4c7b0707a2474357"
+      "shot": "6990f92edf8b5536"
     },
     "light/network/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "d01834a367bf2400",
-        "pane": "830cd6537059809c"
+        "topbar": "4005963dafccf769",
+        "sidebar": "ecc4817369e29ca4",
+        "pane": "271e8785f526e7cb"
       },
-      "shot": "23c6e02afa406def"
+      "shot": "0ea6938e3ba461de"
     },
     "light/time/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "b85f4698fc743f83",
-        "pane": "d0d25a3977d51f70"
+        "topbar": "4005963dafccf769",
+        "sidebar": "cc75f64e0bf1deaa",
+        "pane": "040370f20bb1fbb1"
       },
-      "shot": "b10f0aae85ce9e2e"
+      "shot": "72c634cf9af718c7"
     },
     "light/system/sa02m-1eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "6b64f08377f754fa",
-        "pane": "1c85ba1519b91668"
+        "topbar": "4005963dafccf769",
+        "sidebar": "04d9f0424ba2ed35",
+        "pane": "78da65c49844689d"
       },
-      "shot": "8bfcc83b79f1fbfb"
+      "shot": "81985dd24053f7c2"
     },
     "light/system/sa02m-2eth": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "6b64f08377f754fa",
-        "pane": "1c85ba1519b91668"
+        "topbar": "4005963dafccf769",
+        "sidebar": "04d9f0424ba2ed35",
+        "pane": "78da65c49844689d"
       },
-      "shot": "d9e95a22db91bec7"
+      "shot": "7c949a3e8e6a8f3b"
     },
     "light/flasher/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "c251ccd16d394097",
-        "pane": "06353420a92d89d6"
+        "topbar": "4005963dafccf769",
+        "sidebar": "972303edbbdde564",
+        "pane": "9fbf7567c91f8011"
       },
-      "shot": "91828ed7142cb391"
+      "shot": "e27c7b76f3dc2b85"
     },
     "light/mqtt/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "ba1a84f5ede6674c",
-        "pane": "3701244f0e4eb0a4"
+        "topbar": "4005963dafccf769",
+        "sidebar": "0164d3255b49f24f",
+        "pane": "50718b47d0502940"
       },
-      "shot": "994b3c888e6ea95e"
+      "shot": "eee1fb4b7a80e87b"
     },
     "light/gateway/default": {
       "dom": {
-        "topbar": "c6425b3eb8d3cbbb",
-        "sidebar": "f3e4297400c385f2",
-        "pane": "1ecb9d7dc6d0e950"
+        "topbar": "4005963dafccf769",
+        "sidebar": "1c3a7359caba2454",
+        "pane": "7e03838c2849da56"
       },
-      "shot": "bc90de7a9fa4eea2"
+      "shot": "fd35cfaec96a56d2"
     }
   },
   "errors": {
-    "login": [
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    "dark/time/default": [
+      "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
     ],
-    "dark/system/sa02m-2eth": [
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
-    ],
-    "light/system/sa02m-2eth": [
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)",
-      "console: Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+    "light/time/default": [
+      "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
     ]
   }
 }
