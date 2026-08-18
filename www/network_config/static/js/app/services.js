@@ -121,6 +121,28 @@ function renderServicesControl(data) {
       badge.className = 'badge badge-unk';
     }
   });
+  applyManagedServiceCardVisibility(list);
+}
+
+/** Управление-tab tiles whose visibility follows a managed service's run state:
+    shown while the service runs, hidden when stopped/disabled. Keyed on the same
+    svc-ctl list the rows use, so a Пуск/Стоп there flips the card on the next
+    poll. Operates on tiles OUTSIDE #svc-ctl-list, so it survives the row
+    re-render; a service absent from the list (not present on this HW/build)
+    leaves its card untouched — fail-safe to visible. data-hide-for variant
+    hiding is independent (these tiles carry none). */
+function applyManagedServiceCardVisibility(list) {
+  const byId = {};
+  (list || []).forEach(function (s) { if (s && s.id) byId[s.id] = s; });
+  setManagedServiceCardVisible('alice-card', byId.alice);
+  setManagedServiceCardVisible('mplc-proj-card', byId.mplc4);
+}
+
+function setManagedServiceCardVisible(cardId, svc) {
+  const card = document.getElementById(cardId);
+  if (!card || !svc) return;
+  // svcCtlWantsStart is true when stopped/disabled/masked → hide the tile.
+  card.hidden = svcCtlWantsStart(svc);
 }
 
 window.refreshServicesControlI18n = function () {
