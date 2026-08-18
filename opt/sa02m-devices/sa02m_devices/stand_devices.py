@@ -382,7 +382,11 @@ def _build_mr(
         err = str(errors.get(key) or "")
         enabled = sensor_code != 0  # code 0 = «Выключен»
         ch_ok = err == ""
-        value = _f(controls.get(key)) if (enabled and ch_ok) else None
+        # A transient per-channel read error must NOT blank the value — controls
+        # still holds the last good reading. Mirror _build_dtv/_build_ce: read
+        # controls directly, let device-level age > STALE_S be the «data is old»
+        # signal. ch_ok is surfaced (below) for a future per-cell indicator only.
+        value = _f(controls.get(key)) if enabled else None
         channels.append({
             "ch": ch,
             "value": value,
