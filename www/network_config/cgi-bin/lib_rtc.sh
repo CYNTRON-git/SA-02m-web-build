@@ -324,7 +324,7 @@ read_rtc_from_sysfs() {
 }
 
 read_rtc_from_hwclock() {
-    local dev=$1 raw hc cleaned
+    local dev=$1 raw hc cleaned cleaned_utc
     [ -c "$dev" ] || return 1
     hc=$(command -v hwclock 2>/dev/null)
     [ -z "$hc" ] && [ -x /usr/sbin/hwclock ] && hc=/usr/sbin/hwclock
@@ -337,11 +337,24 @@ read_rtc_from_hwclock() {
     case "$cleaned" in
         1970-*) return 1 ;;
     esac
+    # NORMALIZE TO UTC. `hwclock --show` ALWAYS prints LOCAL wall time (the
+    # --utc flag only declares how the chip stores time, it does not change the
+    # displayed frame), unlike the sysfs/i2c paths which return the chip's raw
+    # UTC. read_rtc_datetime()'s contract is UTC, so convert this local value
+    # back to UTC here — otherwise a downstream UTC->local conversion would
+    # double-apply the zone offset.
+    cleaned_utc=$(date -u -d "$cleaned" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
+    [ -n "$cleaned_utc" ] && cleaned="$cleaned_utc"
     printf '%s' "$cleaned"
     return 0
 }
 
 # External RTC for UI: rtc1 sysfs/hwclock, /dev/rtc if not rtc0, then DS3231/PCF8563 over I2C.
+# INVARIANT: returns the RTC value in UTC ("YYYY-MM-DD HH:MM:SS"). The chip is
+# written in UTC (see write_ds3231_i2c_datetime / /etc/adjtime), so the sysfs
+# and i2c paths return UTC raw; read_rtc_from_hwclock normalizes its local
+# output back to UTC. Callers that display device-local time must convert
+# (status.cgi / config.cgi emit rtc_datetime_local for that).
 read_rtc_datetime() {
     local rtc devlink target
     for rtc in rtc1 rtc2 rtc3; do

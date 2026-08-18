@@ -97,7 +97,15 @@ RTC_DT=""
 if RTC_DT=$(read_rtc_datetime 2>/dev/null); then
     :
 fi
+# RTC value is UTC (read_rtc_datetime invariant); emit a device-local copy so
+# the time readouts fed from this endpoint (forms.js, refreshTimeReadouts) match
+# «Текущее время». Empty/failed conversion -> empty; frontend falls back to UTC.
+RTC_DT_LOCAL=""
+if [ -n "${RTC_DT:-}" ]; then
+    RTC_DT_LOCAL=$(date -d "${RTC_DT} UTC" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
+fi
 RTC_JSON=$(printf '%s' "$RTC_DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
+RTC_LOCAL_JSON=$(printf '%s' "$RTC_DT_LOCAL" | sed 's/\\/\\\\/g; s/"/\\"/g')
 DT_JSON=$(printf '%s' "$DT" | sed 's/\\/\\\\/g; s/"/\\"/g')
 TZ_JSON=$(printf '%s' "$TZ" | sed 's/\\/\\\\/g; s/"/\\"/g')
 
@@ -108,6 +116,7 @@ cat <<JSON
   "klogic": {"present":${KLOGIC_PRESENT},"eth0_hook":${KLOGIC_HOOK0},"eth1_hook":${KLOGIC_HOOK1}},
   "timezone": "${TZ_JSON}",
   "datetime": "${DT_JSON}",
-  "rtc_datetime": "${RTC_JSON}"
+  "rtc_datetime": "${RTC_JSON}",
+  "rtc_datetime_local": "${RTC_LOCAL_JSON}"
 }
 JSON
