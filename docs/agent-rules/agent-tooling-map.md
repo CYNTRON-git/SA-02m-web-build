@@ -20,7 +20,7 @@ via `CLAUDE.md` `@`-import.
 | Need | Command | Trap / note |
 |---|---|---|
 | There is NO build step | — | frontend is served as-is; "build" = quality gates green |
-| Version bump | branch `X.Y.Z.W` + `python3 scripts/sync-app-version.py` | three version homes must agree — the script is the only writer; never hand-edit `?v=` strings one by one |
+| Version bump | branch `X.Y.Z.W` + `python3 scripts/sync-app-version.py` | every version home must agree (the list has one home: `sa02m-domain.md ## Version discipline`) — the script is the only writer; never hand-edit `?v=` strings one by one |
 | New release | new branch `+1` from the latest version branch; CHANGELOG section | branch name IS the version (`sa02m-domain.md ## Version discipline`) |
 | Render/verify UI | headless recipe | `web-diagnostic-tools.md ## Headless UI verification` — the one home |
 
