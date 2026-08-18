@@ -1364,13 +1364,25 @@ gather_time_metrics() {
         DATETIME_SYS_JSON=""
         RTC_DT=""
         RTC_JSON=""
+        RTC_DT_LOCAL=""
+        RTC_LOCAL_JSON=""
         return 0
     fi
 
     RTC_DT=$(read_rtc_datetime 2>/dev/null || true)
+    # RTC value is UTC (read_rtc_datetime invariant, lib_rtc.sh). Convert to the
+    # device's effective local TZ so «Время с RTC» is directly comparable to
+    # «Текущее время» (system local): a synced RTC then matches, a real drift
+    # shows a real difference. Empty RTC or a `date` failure -> empty local, and
+    # the frontend falls back to the raw UTC field.
+    RTC_DT_LOCAL=""
+    if [ -n "${RTC_DT:-}" ]; then
+        RTC_DT_LOCAL=$(date -d "${RTC_DT} UTC" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "")
+    fi
     DATETIME_SYS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     DATETIME_SYS_JSON=$(json_escape "$DATETIME_SYS")
     RTC_JSON=$(json_escape "$RTC_DT")
+    RTC_LOCAL_JSON=$(json_escape "$RTC_DT_LOCAL")
 }
 
 gather_uptime_metrics() {
@@ -1949,7 +1961,8 @@ print_time_json() {
     cat <<JSON
 {
   "datetime_sys": "${DATETIME_SYS_JSON}",
-  "rtc_datetime": "${RTC_JSON}"
+  "rtc_datetime": "${RTC_JSON}",
+  "rtc_datetime_local": "${RTC_LOCAL_JSON}"
 }
 JSON
 }
@@ -2088,6 +2101,7 @@ print_main_json() {
   "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
+  "rtc_datetime_local": "${RTC_LOCAL_JSON}",
   "uptime_sec": ${UPTIME_SEC},
   "uptime_str": "${UPTIME_D}д ${UPTIME_H}ч ${UPTIME_M}м",
   "load_1": ${LOAD_1},
@@ -2187,6 +2201,7 @@ print_core_json() {
   "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
+  "rtc_datetime_local": "${RTC_LOCAL_JSON}",
   "uptime_sec": ${UPTIME_SEC},
   "uptime_str": "${UPTIME_D}д ${UPTIME_H}ч ${UPTIME_M}м",
   "load_1": ${LOAD_1},
@@ -2287,6 +2302,7 @@ print_full_json() {
   "usb_modem_tx": ${USB_MODEM_TX},
   "datetime_sys": "${DATETIME_SYS_JSON}",
   "rtc_datetime": "${RTC_JSON}",
+  "rtc_datetime_local": "${RTC_LOCAL_JSON}",
   "uptime_sec": ${UPTIME_SEC},
   "uptime_str": "${UPTIME_D}д ${UPTIME_H}ч ${UPTIME_M}м",
   "load_1": ${LOAD_1},

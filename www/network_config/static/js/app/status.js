@@ -752,10 +752,15 @@ function applyTimeStatus(d) {
   if (d.datetime_sys) setText('time-sys-disp', d.datetime_sys);
   else if (d.datetime) setText('time-sys-disp', d.datetime);
   if (document.getElementById('time-rtc-disp')) {
-    const rtc = (d.rtc_datetime !== undefined && d.rtc_datetime !== null)
+    const utc = (d.rtc_datetime !== undefined && d.rtc_datetime !== null)
       ? String(d.rtc_datetime).trim()
       : '';
-    setText('time-rtc-disp', rtc || '—');
+    // Prefer the device-local value; fall back to raw UTC for a cached-JS /
+    // older-CGI device that does not yet emit rtc_datetime_local.
+    const local = (d.rtc_datetime_local !== undefined && d.rtc_datetime_local !== null)
+      ? String(d.rtc_datetime_local).trim()
+      : '';
+    setRtcReadout(local || utc, utc);
   }
 }
 
@@ -763,7 +768,7 @@ function refreshTimeReadouts() {
   fetch('cgi-bin/config.cgi', { cache: 'no-store', credentials: 'same-origin' })
     .then(r => r.json())
     .then(d => {
-      applyTimeStatus({ datetime: d.datetime, rtc_datetime: d.rtc_datetime ?? '' });
+      applyTimeStatus({ datetime: d.datetime, rtc_datetime: d.rtc_datetime ?? '', rtc_datetime_local: d.rtc_datetime_local ?? '' });
     })
     .catch(() => {});
 }
