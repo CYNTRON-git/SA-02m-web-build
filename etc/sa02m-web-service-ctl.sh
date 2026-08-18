@@ -340,7 +340,11 @@ unit_admin_enabled() {
 }
 
 # id | UI label | candidate units (first existing wins)
+# alice: plain Type=simple systemd unit (no init.d/SysV shim, no COM lease) —
+# the generic present/resolve/list path handles it; not svc_is_installable, so
+# it shows Пуск/Стоп like mosquitto/mqtt-bridge (install-time-only overlay).
 SERVICE_DEFS=$(cat <<'SVC_DEFS'
+alice|Яндекс Алиса|sa02m-alice-client.service
 docker|Docker|docker.service
 codesys|CODESYS|codesyscontrol.service,codesys.service,CODESYSControl.service,CODESYSControlRuntime.service
 mplc4|MPLC4|mplc4.service

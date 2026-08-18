@@ -2068,6 +2068,11 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 /* .btn-row sets display:flex, which overrides the [hidden] UA rule — the Alice
    link/unlink row is toggled by hidden, so restore the hide explicitly. */
 #alice-link-row[hidden] { display: none !important; }
+/* .system-manage-tile sets display:flex, outranking the UA [hidden] rule —
+   restore it so services.js can hide the Alice / MPLC-project tiles while their
+   backing service (sa02m-alice-client / mplc4) is stopped or disabled. */
+#alice-card[hidden],
+#mplc-proj-card[hidden] { display: none !important; }
 /* Alice card action buttons (Привязать / Управление привязками) span the full
    card width, matching the foot enable button (.system-manage-tile-foot .btn). */
 #alice-card .btn-row > .btn { width: 100%; justify-content: center; }
