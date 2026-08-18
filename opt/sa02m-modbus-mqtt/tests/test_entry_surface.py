@@ -55,6 +55,7 @@ EXPECTED_MODULES = [
     "bridge_device",
     "bridge_dtv_ce",
     "bridge_fmb",
+    "bridge_meta",
     "bridge_mqtt",
     "bridge_mr02m",
     "bridge_mr02m_map",
