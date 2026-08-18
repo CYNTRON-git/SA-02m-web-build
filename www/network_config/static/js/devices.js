@@ -423,9 +423,10 @@
     const dist = fmtDistance(d.distance_cm);
     const distEl = el.querySelector('[data-role="presence-dist"]');
     if (distEl) distEl.textContent = dist ? "· " + dist : "";
-    el.title = dist
-      ? "Датчик присутствия LD2412: объект на расстоянии " + dist
-      : "Датчик присутствия LD2412: обнаружен объект";
+    // Keep the static translatable base title set in buildCard (has a DICT
+    // entry, so the i18n observer translates it); the distance is shown
+    // separately in the presence-dist span, never baked into the title (a
+    // runtime-assembled string can never match a DICT key — i18n floor).
   }
 
   function ensureCards(list) {

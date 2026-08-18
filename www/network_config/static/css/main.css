@@ -4937,10 +4937,11 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   background: color-mix(in srgb, var(--red) 16%, transparent);
   border-color: color-mix(in srgb, var(--red) 45%, transparent); color: var(--red);
 }
-/* Presence indicator (LD2412) — centered between title and status pill (both
-   carry margin-left:auto, so the free space splits evenly). Header already wraps
-   (flex-wrap on .widget-title), so it drops to a new line on narrow screens
-   instead of overlapping. Shown only while the radar reports a target. */
+/* Presence indicator (LD2412) — a normal flowing flex item in the .widget-title
+   header (the status pill sits out of flow in .dev-head-right, absolutely
+   positioned top/right). The header wraps (flex-wrap on .widget-title), so the
+   badge drops to a new line on narrow screens instead of overlapping. Shown
+   only while the radar reports a target. */
 #tab-devices .dev-presence {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 2px 9px; border-radius: 4px;
