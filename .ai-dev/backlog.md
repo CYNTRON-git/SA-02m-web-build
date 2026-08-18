@@ -7,6 +7,18 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-18 **[LOW] Two pre-existing `opt/sa02m-devices` test failures**
+  (unrelated to any recent change; reproduced on `main` via worktree by the
+  MR-widget Reviewer): `test_stand_storage_path` and `test_promote_copy_and_merge`.
+  Investigate + fix or delete-if-obsolete. Would be caught earlier once the
+  `py-unit-devices` gate row (below) exists.
+- [OPEN] 2026-08-18 **[LOW] No quality-registry row covers `opt/sa02m-devices/tests`.**
+  The devices-API tests (`test_stand_devices.py`, `test_devices_widgets.py`) are
+  pytest/unittest and gate nothing — `build --touched` runs only `py-syntax`
+  (compileall). The dtv/ce tests have the same gap; the MR-widget 1.0.5.83 tests
+  (26, incl. the non-AI-skip + online=None cases) were run by hand. Fix: a
+  `py-unit-devices` registry row (stdlib-unittest to match the repo's no-pytest
+  convention, or add pytest). Surfaced by the MR-widget build.
 - [OPEN] 2026-08-18 **[MED] Alice enrollment through the web UI likely fails as
   www-data (PermissionError writing into the root-only cert dir).**
   `scripts/06-alice.sh` makes `/var/lib/sa02m-alice` `0750 root:root`, yet
