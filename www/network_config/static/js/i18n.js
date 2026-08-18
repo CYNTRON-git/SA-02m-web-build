@@ -54,6 +54,8 @@
     'Стоимость': 'Cost',
     'Энергия ΔE': 'Energy ΔE',
     'Удалить виджет': 'Remove widget',
+    'Переименовать виджет': 'Rename widget',
+    'Датчик присутствия LD2412': 'LD2412 presence sensor',
     'Фаза': 'Phase',
     'Событие': 'Event',
     'Шлюз RS-485': 'RS-485 Gateway',
