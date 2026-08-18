@@ -36,10 +36,15 @@ looks for `config-<name>.json` then `<name>.json` in this dir. Example:
   type: template
   template: example        # → templates/config-example.json
   port: /dev/COM5
-  baudrate: 9600
+  baudrate: 9600           # only baudrate is configurable; the line is 8N1-only
   address: 30
   name: "Example meter (COM5 addr=30)"
   poll_s: 2
+
+# Serial framing: the bridge opens the port **8N1** (parity=NONE, stopbits=ONE),
+# hard-coded — there is no parity/stopbits field. A Wiren Board device on its
+# common 9600 **8N2** factory line is NOT supported in v1 and will not answer
+# (see docs/contracts/template-device.md §8).
 ```
 
 Only a `[A-Za-z0-9._-]+` name is accepted (no path separators, no traversal); a

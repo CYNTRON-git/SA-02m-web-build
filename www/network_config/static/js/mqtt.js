@@ -2473,7 +2473,9 @@ function confirmAddDevice() {
   const addr = parseInt(addrEl.value, 10);
   const name = nameEl.value.trim();
 
-  // Template device: a picked template is required; WB default line is 9600 8N2.
+  // Template device: a picked template is required. NB: the SA-02m bridge serial
+  // layer is 8N1-only (bridge_serial.py) — a WB device on a 9600 8N2 factory line
+  // is NOT accommodated in v1 (docs/contracts/template-device.md §8).
   let templateName = '';
   if (type === 'template') {
     const tEl = document.getElementById('mqtt-add-template');

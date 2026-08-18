@@ -149,7 +149,9 @@ devices:
   #   type: template
   #   template: example       # bare name → templates/config-example.json
   #   port: /dev/COM5
-  #   baudrate: 9600          # линия WB по умолчанию 9600; на устройство
+  #   baudrate: 9600          # только baudrate; линия ЖЁСТКО 8N1 (parity/stopbits
+  #                           # не настраиваются) — устройство WB на 9600 8N2 не
+  #                           # ответит (контракт §8). На устройство
   #   address: 30
   #   name: "Example (COM5 addr=30)"
   #   poll_s: 2

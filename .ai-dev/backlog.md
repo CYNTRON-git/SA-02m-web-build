@@ -7,8 +7,35 @@ audit 1.0.5.71).
 
 ## Open
 
-- [OPEN] 2026-08-17 **[LOW] Decompose worklist — oversized/incohesive files
-  (audit 1.0.5.71 F2).** Split by cohesion, not raw line count, via the
+- [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
+  homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
+  and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to
+  install; `opt/sa02m-modbus-mqtt/tests/test_entry_surface.py:54` freezes the
+  import SET (asserted `:135`) but nothing enforces the two shell deploy lists
+  match it. A future module added to the test + one script only would ship a board
+  missing a module with no gate firing. Fix: a quality-registry check that both
+  shell lists equal the frozen import set.
+- [OPEN] 2026-08-18 **[LOW] Decompose worklist refresh (audit 2026-08-18 LOW-3).**
+  Via the `decompose` side-tool, by cohesion: `www/network_config/static/js/mqtt.js`
+  (2764 lines) — split device-add modal/per-family builders · the `type:template`
+  picker (`_templateCatalog`/`fillTemplateSelect`/`refreshTemplateCatalog`) · MQTT
+  broker/credential settings · config model. `opt/sa02m-modbus-mqtt/bridge_mqtt.py`
+  (507) — extract the `/meta` blob cluster (`_num_or_str`/`_obj_or_str`/
+  `_control_meta_blob`/`_device_meta_blob`/the two `_publish_*_meta_blob`) →
+  `bridge_meta.py` (self-contained, covered by `test_meta_blob.py`).
+  `etc/sa02m-web-service-ctl.sh` (1518, standing — not this cycle's growth).
+- [OPEN] 2026-08-18 **[LOW→follow-up] Configurable serial parity/stopbits for
+  `type:template` (8N2 support).** The honesty/doc half of audit-2026-08-18 MED-1
+  is DONE in **1.0.5.78** (corrected the wrong "9600 8N2" comment → 8N1-only;
+  documented in `docs/contracts/template-device.md §8` + `templates/README.md` +
+  the YAML example). RESIDUAL: `bridge_serial.py:218-219,445` still hard-codes
+  8N1 (`parity=NONE, stopbits=ONE`), no config field — a WB device on 9600 **8N2**
+  cannot be polled. Follow-up: add YAML parity/stopbits and thread them through
+  `get_port`/`_ensure_open`. (Same as the "serial 8N2" deferred item.)
+
+- [RESOLVED-superseded 2026-08-18] **[LOW] Decompose worklist — oversized/incohesive
+  files (audit 1.0.5.71 F2).** Superseded by the 2026-08-18 decompose worklist
+  above (current line counts + the meta-blob/template growth). Split by cohesion via the
   `decompose` side-tool: `www/network_config/static/js/flasher.js` (~5130 lines)
   · `www/network_config/static/css/main.css` (~5249) ·
   `www/network_config/cgi-bin/status.cgi` (~2508, Bash on the status-poll hot
