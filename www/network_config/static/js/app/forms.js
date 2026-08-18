@@ -87,8 +87,9 @@ function loadConfig() {
       if (document.getElementById('time-sys-disp'))
         setText('time-sys-disp', d.datetime || '—');
       if (document.getElementById('time-rtc-disp')) {
-        const r = (d.rtc_datetime && String(d.rtc_datetime).trim()) ? String(d.rtc_datetime).trim() : '';
-        setText('time-rtc-disp', r || '—');
+        const utc = (d.rtc_datetime && String(d.rtc_datetime).trim()) ? String(d.rtc_datetime).trim() : '';
+        const local = (d.rtc_datetime_local && String(d.rtc_datetime_local).trim()) ? String(d.rtc_datetime_local).trim() : '';
+        setRtcReadout(local || utc, utc);
       }
     })
     .catch(() => {});

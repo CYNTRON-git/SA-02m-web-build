@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.5.78';
+const APP_VERSION = '1.0.5.79';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -321,6 +321,17 @@ function setSvcRowUptime(elOrId, sec, active) {
 }
 function setText(id, val)  { const e = document.getElementById(id); if (e) e.textContent = val; }
 function setHtml(id, val)  { const e = document.getElementById(id); if (e) e.innerHTML = val; }
+// «Время с RTC» readout: show the device-local value (or '—'); carry the raw
+// UTC the chip physically stores in the title tooltip. Setting .title via the
+// DOM property is attribute-safe (not HTML-parsed). #time-rtc-disp is excluded
+// from the i18n observer, so the literal "UTC:" prefix is left untranslated.
+function setRtcReadout(local, utcRaw) {
+  const e = document.getElementById('time-rtc-disp');
+  if (!e) return;
+  e.textContent = local || '—';
+  if (utcRaw) e.title = 'UTC: ' + utcRaw;
+  else e.removeAttribute('title');
+}
 function setStyle(id, prop, val) { const e = document.getElementById(id); if (e) e.style[prop] = val; }
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 const PRIORITY_WARMUP_KEY = 'sa02m-priority-warmup';
