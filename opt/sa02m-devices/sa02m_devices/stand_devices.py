@@ -45,6 +45,17 @@ def _f(val: Any) -> float | None:
         return None
 
 
+def _dtv_distance_cm(controls: dict[str, Any]) -> float | None:
+    """LD2412 «расстояние до объекта» (см). moving_distance републикуется раз в
+    ~1 с и живо для движущейся цели; still/detect обновляются реже (событие / ~30 с
+    страховка). Берём первое ненулевое: живой moving → detect → still."""
+    for _k in ("moving_distance", "detect_distance", "still_distance"):
+        v = _f(controls.get(_k))
+        if v is not None and v > 0:
+            return v
+    return None
+
+
 def _first_float(
     controls: dict[str, Any],
     keys: tuple[str, ...],
@@ -179,6 +190,10 @@ def _empty_dtv(device_id: str = "") -> dict[str, Any]:
         "pressure_mmhg": None,
         "light_pct": None,
         "presence": None,
+        "moving_distance_cm": None,
+        "still_distance_cm": None,
+        "detect_distance_cm": None,
+        "distance_cm": None,
         "alerts": [],
     }
 
@@ -242,6 +257,10 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
         ),
         "light_pct": _f(controls.get("light_pct")),
         "presence": _f(controls.get("presence")),
+        "moving_distance_cm": _f(controls.get("moving_distance")),
+        "still_distance_cm": _f(controls.get("still_distance")),
+        "detect_distance_cm": _f(controls.get("detect_distance")),
+        "distance_cm": _dtv_distance_cm(controls),
         "alerts": [],
     }
 

@@ -280,6 +280,8 @@ Baudrate: 19200 (по умолчанию). Адрес: 1 (по умолчани�
 # reg=30 detect_distance  cm   ×1.0
 /devices/dtv-COM3-1/controls/presence      type=switch  readonly
 /devices/dtv-COM3-1/controls/moving_distance type=value units=cm
+/devices/dtv-COM3-1/controls/still_distance  type=value units=cm
+/devices/dtv-COM3-1/controls/detect_distance type=value units=cm
 
 # Управляемые выходы
 /devices/dtv-COM3-1/controls/buzzer        type=switch

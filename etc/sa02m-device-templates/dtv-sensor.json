@@ -15,6 +15,8 @@
     "eco2_bme680",
     "tvoc_zmod",
     "presence",
-    "moving_distance"
+    "moving_distance",
+    "still_distance",
+    "detect_distance"
   ]
 }
