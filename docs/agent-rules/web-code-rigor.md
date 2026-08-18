@@ -81,11 +81,19 @@ a review; cite it.
 - **No layout jumps** — widgets reserve space for late-arriving data
   (`*-reserved` classes, min-heights); a new widget that reflows the grid on
   first poll response is a finding.
-- **ES5-leaning syntax** in device-served JS: the UI is opened from embedded
-  browsers and older WebKit — avoid optional chaining/nullish coalescing in
-  new code unless already present in that file (app.js mixes; match the
-  surrounding file), and never add module syntax (`import`) — bundles are
-  plain scripts.
+- **Syntax floor — ES2020 + native ES modules** (`import`/`export`,
+  `<script type="module">`, dynamic `import()`); the shipped bundles already
+  parse only on that floor, and no older client is in scope — the evidence and
+  the ban's origin are homed in `docs/decisions/es-modules.md`, never restated
+  here. Anything newer than the floor (import maps, `??=`, `.at()`,
+  `replaceAll`, top-level `await`) needs its own recorded decision first — a
+  finding otherwise. Module rules that fall out of the decision: every import
+  specifier in served JS carries `?v=<version>` (`sync-app-version.py` patches
+  it, `version-consistency` fails on a stale one); module files stay `.js`
+  (nginx's `mime.types` has no `.mjs` — an octet-stream module is refused);
+  the entry file of a module cluster keeps the `window.*` shims HTML `onclick`
+  handlers and cross-bundle callers read; no bundler/transpiler — the no-build
+  stack stays.
 
 ## CSS / UI floors (planner + reviewer)
 

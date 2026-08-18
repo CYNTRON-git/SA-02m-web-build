@@ -11,6 +11,9 @@
   - www/network_config/VERSION
   - www/network_config/static/js/app.js  (APP_VERSION)
   - www/network_config/index.html, login.html  (all ?v= cache-bust query strings)
+  - www/network_config/static/js/**/*.js  (?v= inside ES-module import/export
+    specifiers — the browser fetches those itself, so index.html's ?v= cannot
+    bust them; docs/decisions/es-modules.md П2)
   - README.md  (shields.io version badge)
 """
 from __future__ import annotations
@@ -25,6 +28,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WWW = REPO_ROOT / "www" / "network_config"
 VERSION_FILE = WWW / "VERSION"
 APP_JS = WWW / "static" / "js" / "app.js"
+JS_DIR = WWW / "static" / "js"
 INDEX_HTML = WWW / "index.html"
 LOGIN_HTML = WWW / "login.html"
 README_MD = REPO_ROOT / "README.md"
@@ -33,6 +37,15 @@ VERSION_RE = re.compile(r"^\d+(\.\d+){2,3}$")
 CACHE_BUST_RE = re.compile(r"(\?v=)(\d+(?:\.\d+){2,3}(?:[-.]\d+)?)")
 # shields.io badge: .../badge/version-<X.Y.Z[.W]>-cyan?...
 README_BADGE_RE = re.compile(r"(badge/version-)(\d+(?:\.\d+){2,3})(-cyan)")
+# ES-module import specifier carrying a cache-bust: the quoted string right after
+# `from` (static import/export ... from), a bare `import '...'`, or a dynamic
+# `import('...')`. Scoped to import syntax on purpose — the same `?v=` token
+# elsewhere in a bundle (flasher.js builds one at runtime from a variable) is
+# not a specifier and stays untouched. Groups: lead / q / pre / ver / post.
+IMPORT_SPEC_RE = re.compile(
+    r"""(?P<lead>\b(?:from\s*|import\s*\(?\s*))(?P<q>['"])"""
+    r"""(?P<pre>[^'"\n]*?\?v=)(?P<ver>\d+(?:\.\d+){2,3}(?:[-.]\d+)?)(?P<post>[^'"\n]*)(?P=q)"""
+)
 
 
 def read_version_file() -> str | None:
@@ -127,6 +140,41 @@ def html_cache_bust_mismatches(path: Path, version: str) -> list[str]:
     return bad
 
 
+def js_module_files(js_dir: Path | None = None) -> list[Path]:
+    """Every served *.js under static/js (recursive, sorted) — the files whose
+    import specifiers may carry a ?v= cache-bust."""
+    root = JS_DIR if js_dir is None else js_dir
+    if not root.is_dir():
+        return []
+    return sorted(p for p in root.rglob("*.js") if p.is_file())
+
+
+def patch_js_import_specs(version: str, js_dir: Path | None = None) -> bool:
+    """Rewrite ?v=<old> → ?v=<version> inside import/export specifiers of every
+    served JS file. Returns True when at least one file changed. A file with no
+    versioned specifier is never rewritten (byte-identical)."""
+    changed = False
+    for path in js_module_files(js_dir):
+        text = path.read_text(encoding="utf-8")
+        new = IMPORT_SPEC_RE.sub(rf"\g<lead>\g<q>\g<pre>{version}\g<post>\g<q>", text)
+        if new != text:
+            path.write_text(new, encoding="utf-8")
+            changed = True
+    return changed
+
+
+def js_import_spec_mismatches(version: str, js_dir: Path | None = None) -> list[str]:
+    root = JS_DIR if js_dir is None else js_dir
+    bad: list[str] = []
+    for path in js_module_files(js_dir):
+        text = path.read_text(encoding="utf-8")
+        for m in IMPORT_SPEC_RE.finditer(text):
+            if m.group("ver") != version:
+                rel = path.relative_to(root).as_posix()
+                bad.append(f"static/js/{rel}: import ?v={m.group('ver')!r} (expected {version!r})")
+    return bad
+
+
 def patch_readme_badge(version: str) -> bool:
     if not README_MD.is_file():
         return False
@@ -156,10 +204,10 @@ def current_app_version() -> str | None:
     return m.group(1) if m else None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync SA-02m web APP_VERSION with git branch")
     parser.add_argument("--check", action="store_true", help="Only verify sync; exit 1 on mismatch")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     version = resolve_version()
     cur = current_app_version()
@@ -170,6 +218,7 @@ def main() -> int:
             mismatches.append(f"app.js APP_VERSION={cur!r}, expected {version!r}")
         for html in (INDEX_HTML, LOGIN_HTML):
             mismatches.extend(html_cache_bust_mismatches(html, version))
+        mismatches.extend(js_import_spec_mismatches(version))
         mismatches.extend(readme_badge_mismatches(version))
         vf = read_version_file()
         if vf != version:
@@ -185,6 +234,7 @@ def main() -> int:
     changed = patch_app_js(version)
     for html in (INDEX_HTML, LOGIN_HTML):
         changed |= patch_html_cache_bust(html, version)
+    changed |= patch_js_import_specs(version)
     changed |= patch_readme_badge(version)
     if changed:
         print(f"Synced web version to {version}")

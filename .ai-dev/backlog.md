@@ -7,6 +7,17 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-18 **[MED] Alice enrollment through the web UI likely fails as
+  www-data (PermissionError writing into the root-only cert dir).**
+  `scripts/06-alice.sh` makes `/var/lib/sa02m-alice` `0750 root:root`, yet
+  `config/api.py` `start_link`/`complete_link` (writing `pending_claim.json` and
+  the issued PEMs there) run as **www-data** inside `sa02m_alice_api.cgi` (no sudo
+  on that path) → on-device enrollment via the card probably surfaces as
+  `enrollment_failed`/`alice_api_failed`. The bench device evidently got its certs
+  another way. Surfaced by the 1.0.5.80 cert-status Builder; deliberately NOT
+  changed there (out of scope). Fix direction: route the enrollment writes through
+  the privileged trigger (`sa02m-alice-web-trigger.sh` sudoers) or a root helper —
+  never chmod the cert dir open. Verify on 1.136 by attempting a link from the UI.
 - [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
   homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
   and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to

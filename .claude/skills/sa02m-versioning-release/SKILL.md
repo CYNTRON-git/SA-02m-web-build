@@ -11,10 +11,11 @@ description: SA-02m web version and release flow — branch name IS the version,
   branch **+1** from the LATEST version branch (list them:
   `git ls-remote --heads origin | grep -E 'refs/heads/[0-9]'`). Never stack a
   new version's work on an old branch.
-- Three version homes must agree (quality row `version-consistency`):
-  1. `www/network_config/VERSION` (first non-comment line)
-  2. `const APP_VERSION` in `static/js/app.js`
-  3. every `?v=` query string in `index.html` + `login.html`
+- Every version home must agree (quality row `version-consistency`) — the
+  list of homes lives ONLY in
+  `docs/agent-rules/sa02m-domain.md ## Version discipline`; do not assume it
+  is "VERSION + APP_VERSION + HTML `?v=`" (it also covers served JS, e.g.
+  ES-module import specifiers).
 - The ONLY writer is `python3 scripts/sync-app-version.py` (resolves from the
   branch name, else VERSION). `--check` exits 1 on skew. Never hand-edit
   `?v=` strings individually.
@@ -22,7 +23,8 @@ description: SA-02m web version and release flow — branch name IS the version,
 ## Release checklist
 
 1. `git checkout -b <X.Y.Z.W+1> origin/<latest>`; push with `-u`.
-2. `python3 scripts/sync-app-version.py` → commit the three homes.
+2. `python3 scripts/sync-app-version.py` → commit every file it rewrote (the
+   version homes — `sa02m-domain.md ## Version discipline`).
 3. Work; keep commits per `docs/agent-rules/git-commits.md`.
 4. `CHANGELOG.md`: prepend `## <version> - <one-line summary> (<месяц> <год>)`
    section, Russian, grouped by subsystem with **file:** bullets (match
@@ -31,9 +33,9 @@ description: SA-02m web version and release flow — branch name IS the version,
 
 ## Why the cache-bust matters
 
-Devices cache bundles aggressively (embedded browsers). A JS/CSS change
-without the `?v=` bump ships a NEW backend against an OLD cached bundle —
-the classic "works locally, broken after deploy". Symptom dispatch:
+nginx serves `/static/` with `expires 1h` (`etc/nginx/network_config.conf`).
+A JS/CSS change without the `?v=` bump ships a NEW backend against an OLD
+cached bundle — the classic "works locally, broken after deploy". Symptom dispatch:
 `web-diagnostic-tools.md ## Symptom → tool`.
 
 ## Self-update («Обновление веб»)

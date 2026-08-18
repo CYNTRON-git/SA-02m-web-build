@@ -83,8 +83,10 @@ protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
 
 - **git branch name == web version** (e.g. `1.0.4.1`). New release = new branch
   `+1` from the latest version branch.
-- Three version homes MUST agree: `www/network_config/VERSION`, `APP_VERSION`
-  in `app.js`, every `?v=` cache-bust in `index.html`/`login.html`.
+- The version homes MUST agree: `www/network_config/VERSION`, `APP_VERSION`
+  in `app.js`, every `?v=` cache-bust in `index.html`/`login.html`, and every
+  `?v=` inside an ES-module `import` specifier under `static/js/**`
+  (`docs/decisions/es-modules.md` П2).
   `python3 scripts/sync-app-version.py` syncs all from the branch name;
   `--check` is the gate (quality row `version-consistency`).
 - `CHANGELOG.md` gets a `## <version> - <summary> (<month>)` section per
