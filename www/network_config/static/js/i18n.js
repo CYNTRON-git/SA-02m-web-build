@@ -146,6 +146,7 @@
     'Настройка': 'Settings',
     'Текущее время': 'Current time',
     'Время с RTC': 'RTC time',
+    'Показано в местном времени устройства; наведите на значение для UTC': 'Shown in device-local time; hover the value for UTC',
     'Часовой пояс': 'Time Zone',
     'Москва, Санкт-Петербург (UTC+3)': 'Moscow, Saint Petersburg (UTC+3)',
     'Самара, Ижевск (UTC+4)': 'Samara, Izhevsk (UTC+4)',
