@@ -110,6 +110,9 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
   С тех пор этот случай — не ошибка: без payload'а и без сети модуль пишет
   `WARN` и выходит с кодом 0 (см. Предусловия полного деплоя). Чтобы Node-RED
   на стенде всё-таки ставился, нужен payload — процедура ниже.
+- Превращение этой платы в мастер-образ для клонирования — процедура
+  «Подготовка золотого образа (мастер для клонирования)» ниже (проверена на
+  этом стенде 2026-08-18).
 
 ---
 
@@ -272,6 +275,223 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
      `[OK] Node-RED: потоки запущены`. Открытый порт 1880 сам по себе ничего
      не доказывает — рантайм, поднявшийся с остановленными потоками, слушает
      точно так же.
+
+---
+
+## Подготовка золотого образа (мастер для клонирования)
+
+Единственный дом процедуры санитизации платы-мастера перед снятием образа eMMC
+для клонирования. Проверена и выполнена на стенде 192.168.1.136 (2026-08-18).
+Задача — убрать с мастера идентичность и данные конкретной платы, **сохранив
+установленный софт и службы**, чтобы образ размножался на новые платы чистым.
+
+### Предупреждения (прочитать до первой команды)
+
+- **Необратимо.** Удаление ключей, сертификатов и данных проекта отменить
+  нельзя — сначала бэкап (шаг 1).
+- **Образ размножается на клоны — ошибка тоже.** Всё, что осталось на мастере
+  (чужой проект, включённая привязка к облаку, забытый лог), приедет на каждую
+  плату из этого образа.
+- **НЕ удалять установочные файлы служб:** systemd-юниты, пакеты в `/opt/*`,
+  `start_mplc4.sh`, init.d-скрипты, `.so`-библиотеки. Санитизация убирает
+  *данные и идентичность*, а не *установленный софт* — иначе клон не запустится.
+- **СНАЧАЛА бэкап ключей/идентичности ЛОКАЛЬНО (off-device).** До любого
+  удаления скачать файлы шага 1 на машину оператора: с затёртого мастера
+  восстановить их будет уже неоткуда.
+
+### 0. Отключить запись истории в текущей сессии
+
+Первой же командой процедуры (до шага 1):
+
+```
+unset HISTFILE
+```
+
+Это останавливает перезапись `.bash_history` интерактивной SSH-сессией: иначе
+сами команды санитизации (шаги 9–11 и flush при logout) снова окажутся в
+истории и уедут в образ.
+
+### 1. Бэкап ключей и идентичности локально (off-device)
+
+До любого удаления скачать по SFTP на машину оператора и убедиться, что копии
+на месте и ненулевого размера:
+
+```
+/opt/mplc4/server/mplc.key
+/root/mplc_key_backup/*
+/var/lib/sa02m-alice/ca.crt.pem
+/var/lib/sa02m-alice/device.crt.pem
+/var/lib/sa02m-alice/device.key.pem
+/var/lib/sa02m-alice/pending_claim.json
+/etc/sa02m-cloud/agent.conf
+/etc/sa02m_web.env
+/etc/sa02m-alice/sa02m-alice-server.conf
+```
+
+Транспорт — тот же SFTP (`tools/ssh/sa02m_remote.py`), что и в деплое.
+
+### 2. Alice — отвязать
+
+```
+systemctl stop sa02m-alice-client
+systemctl disable sa02m-alice-client
+rm -f /var/lib/sa02m-alice/device.crt.pem \
+      /var/lib/sa02m-alice/device.key.pem \
+      /var/lib/sa02m-alice/pending_claim.json
+rm -f /run/sa02m-alice/status.json
+```
+
+`ca.crt.pem` **оставить** — это общий CA шлюза, не идентичность платы.
+Проверка: `ls /var/lib/sa02m-alice` — остаётся только `ca.crt.pem`;
+`systemctl is-enabled sa02m-alice-client` = `disabled`.
+
+### 3. Облако — отвязать
+
+```
+systemctl stop sa02m-cloud-agent sa02m-cloud-frpc sa02m-cloud-heartbeat
+systemctl disable sa02m-cloud-agent sa02m-cloud-frpc sa02m-cloud-heartbeat
+```
+
+В `/etc/sa02m-cloud/agent.conf` выставить `enrolled = false` и очистить
+`device_id` (пустое значение). Адреса `api_url` / `server_host` **оставить** —
+это конфигурация, а не идентичность. Файл уже сохранён off-device в шаге 1,
+поэтому правится на месте: локальную `.preimage`-копию на плате не оставлять
+(она несёт старый `device_id` в образ). Проверка:
+`grep -E 'enrolled|device_id' /etc/sa02m-cloud/agent.conf` → `enrolled = false`
+и пустой `device_id`; три службы `disabled`.
+
+### 4. MQTT — очистить устройства и retained
+
+В `/etc/sa02m-modbus-mqtt.yaml` заменить список устройств на `devices: []`
+(секцию `mqtt:` **не трогать**). Перед правкой снять локальную `.preimage`-копию
+и удалить её в конце (шаг 10 — иначе старый список приедет в образ):
+
+```
+cp -a /etc/sa02m-modbus-mqtt.yaml /etc/sa02m-modbus-mqtt.yaml.preimage
+# отредактировать: devices: []
+systemctl stop sa02m-modbus-mqtt mosquitto
+rm -f /var/lib/mosquitto/mosquitto.db
+rm -f /run/sa02m-modbus-mqtt/*.json
+systemctl start mosquitto sa02m-modbus-mqtt
+```
+
+`rm mosquitto.db` сбрасывает retained-сообщения; `/run/*.json` — оперативный
+кэш моста. Проверка: в yaml `devices: []`; `/var/lib/mosquitto/mosquitto.db`
+отсутствует.
+
+**Честно:** собственная телеметрия платы `sa02m-<hostname>` появится снова
+после старта моста — это самоотчёт службы о себе, а не «след» удалённого
+устройства.
+
+### 5. MPLC — снять проект и ключ, служба остаётся запущенной
+
+```
+systemctl stop mplc4
+rm -f /opt/mplc4/server/mplc.key
+rm -rf /root/mplc_key_backup
+rm -f /opt/mplc4/server/cfg/config.bin \
+      /opt/mplc4/server/cfg/ProjInfo.json \
+      /opt/mplc4/server/cfg/VMInfo.json \
+      /opt/mplc4/server/cfg/_files.xml
+rm -f /opt/mplc4/server/EventsData.db \
+      /opt/mplc4/server/session.bin \
+      /opt/mplc4/server/session2.bin \
+      /opt/mplc4/server/pid
+rm -rf /opt/mplc4/host_monitor_temp/*
+systemctl start mplc4
+```
+
+**НЕ трогать** `.so`-плагины, бинарники сервера и `start_mplc4.sh` — это
+установленный софт. Итог: `mplc4` работает, показывает «не активирована», без
+загруженного проекта.
+
+**Честно:** ключ MPLC привязан к железу (SystemKey из MAC), поэтому на клоне он
+всё равно невалиден — каждую новую плату активируют заново. Удаление ключа тут
+— гигиена мастера, а не то, что «чинит» активацию клона.
+
+Проверка: `systemctl is-active mplc4` = `active`; `mplc.key` отсутствует; в
+`cfg/` нет `config.bin` / `ProjInfo.json`.
+
+### 6. Финальное состояние служб
+
+| Службы | Состояние |
+|---|---|
+| mplc4, mosquitto, nginx, sa02m-flasher, sa02m-modbus-mqtt, sa02m-devices-api | running + enabled |
+| docker (+ docker.socket), nodered, klogic, codesyscontrol, codemeter (+ webadmin/logger), sa02m-alice-client, sa02m-cloud-agent/-frpc/-heartbeat | stopped + disabled |
+| regen-ssh-host-keys, sa02m-rootfs-expand | enabled (helper'ы первого старта клона) |
+
+Проверка: `systemctl is-active <svc>` и `systemctl is-enabled <svc>` по каждой
+строке таблицы.
+
+### 7. Мусор в /root и данных
+
+```
+rm -f  /root/*.tgz /root/deploy-*.tar.gz
+rm -rf /root/sa02m-deploy-* /root/dep-all
+rm -rf /root/opt-cloud*backup*
+rm -rf /root/.node-red
+rm -f  /root/install-*.log /root/apt-*.log
+rm -f  /var/lib/sa02m-stand/*.db
+```
+
+**Оставить** `.ssh`, `.zshrc`, `.oh-my-zsh`. **НЕ удалять** `.so` и
+установочные файлы. `/var/lib/sa02m-stand/*.db` — история устройств стенда, на
+мастере не нужна. Проверка: `ls -a /root` — только рабочие dotfiles, без
+деплой-архивов и логов.
+
+### 8. Логи и история — полная очистка
+
+```
+journalctl --rotate
+journalctl --vacuum-time=1s
+rm -rf /var/log/journal/*
+rm -rf /var/log/dumps/* /var/log/mplc4/*
+find /var/log -type f -name '*.log' -exec truncate -s 0 {} +
+: > /var/log/wtmp
+: > /var/log/btmp
+: > /var/log/lastlog
+cat /dev/null > ~/.bash_history
+history -c
+```
+
+Очистка `.bash_history` — **последнее действие с данными** (после неё в сессии
+не выполняют новых команд, кроме проверок). Благодаря `unset HISTFILE` из шага 0
+интерактивная сессия не перезапишет файл при logout, поэтому пустым он и уедет в
+образ. Проверка: `journalctl --disk-usage` минимален; `~/.bash_history` пуст.
+
+### 9. Идентичность клона
+
+```
+truncate -s 0 /etc/machine-id
+```
+
+**SSH host-ключи вручную НЕ удалять** из активной сессии: их регенерирует
+enabled-служба `regen-ssh-host-keys` на первом старте клона, а удаление на
+живой плате оборвёт текущую SSH-сессию.
+
+**Честно:** и `machine-id`, и SSH host-ключи заново создаются на первом старте
+клона — их «отсутствие» в образе это норма, а не потеря. Проверка:
+`stat -c %s /etc/machine-id` = `0`.
+
+### 10. Проверочный чек-лист (перед снятием образа)
+
+- [ ] Службы в целевом состоянии (таблица шага 6).
+- [ ] `/opt/mplc4/server/mplc.key` отсутствует.
+- [ ] alice device-сертификаты отсутствуют, `ca.crt.pem` на месте.
+- [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
+- [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
+- [ ] `stat -c %s /etc/machine-id` = `0`.
+- [ ] `~/.bash_history` пуст.
+- [ ] локальные `.preimage`-копии удалены (`sa02m-modbus-mqtt.yaml.preimage`
+      нет; `agent.conf` на плате не бэкапилась — её off-device копия в шаге 1).
+- [ ] установочные файлы НА МЕСТЕ: systemd-юниты, `/opt/*`, `start_mplc4.sh`,
+      `.so`-библиотеки.
+
+### 11. Снятие образа
+
+Образ eMMC снимает оператор своим инструментом (PiShrink — отсюда служба
+`sa02m-rootfs-expand`, разжимающая rootfs на первом старте клона). Внешняя SD
+(`/media/sdcard`) в образ eMMC **не входит**.
 
 ---
 

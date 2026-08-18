@@ -7,6 +7,17 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
+  (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
+  does NOT restart** — so the stand runs stale imported `sa02m_devices` code until
+  `systemctl restart sa02m-stand-api`. `scripts/11-devices.sh` restarts
+  `sa02m-devices-api` (the standard-board unit, present but NOT the :8765 owner on
+  the stand → gunicorn is). Cost this session: the MR card looked "missing" on 1.135
+  after deploy until a manual stand-api restart (code was correct all along; the
+  running process was old). Fix direction: teach `update-www-only.sh` / `11-devices.sh`
+  to detect + restart whichever unit owns :8765 (check `sa02m-stand-api` presence),
+  OR document the stand's extra restart step in `docs/deployment.md`. Note in the
+  deploy runbook that the stand is a hardpy_tests host with its own API service.
 - [OPEN] 2026-08-18 **[LOW] Two pre-existing `opt/sa02m-devices` test failures**
   (unrelated to any recent change; reproduced on `main` via worktree by the
   MR-widget Reviewer): `test_stand_storage_path` and `test_promote_copy_and_merge`.
