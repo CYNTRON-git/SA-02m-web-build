@@ -7,6 +7,13 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-19 **[LOW] Gateway regression test not in the quality registry.**
+  `opt/sa02m-serial-gateway/tests/test_exchange.py` (fast-modbus 0xFF-strip + the
+  pre-existing exchange tests) is not wired into `.ai-dev/quality/tools.json`, so the
+  1.0.5.86 BUG-A regression is uncovered by the merge gate. The daemon imports
+  `serial`/`yaml` (absent from the web CI env) — add a deps-guarded `py-unit-gateway`
+  row (skip-if-missing-deps), mirroring `py-unit-flasher`. Surfaced by the 1.0.5.86 Reviewer.
+
 - [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
   (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
   does NOT restart** — so the stand runs stale imported `sa02m_devices` code until
