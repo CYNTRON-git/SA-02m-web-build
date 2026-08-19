@@ -297,8 +297,7 @@ fi
 # ── util-linux-extra (hwclock) ────────────────────────────────────────────
 if ! command -v hwclock >/dev/null 2>&1; then
     log INFO "Установка util-linux-extra (hwclock)"
-    apt-get install -y util-linux-extra >> "$LOG_FILE" 2>&1 \
-        || log WARN "util-linux-extra не установлен — rtc_datetime будет недоступен"
+    sa02m_pkg_install_tier optional util-linux-extra
 fi
 
 # ── tmpfiles.d: lock file for PCA9536 I2C flock (www-data owned) + the web
@@ -401,6 +400,13 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
 else
     log WARN "Нет etc/sa02m-web-auth-lib.sh — безопасная запись sa02m_web.env недоступна"
 fi
+# ── Политика сторонних стеков (общая lib для установщика и service-ctl) ────
+if [ -f "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
+    sed -i 's/\r$//' /usr/local/lib/sa02m-stacks-policy.sh
+else
+    log WARN "Нет etc/sa02m-stacks-policy.sh — service-ctl не будет записывать /etc/sa02m_stacks.conf"
+fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
@@ -471,7 +477,7 @@ for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory
     fi
 done
 if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
-    systemctl enable sa02m-update-recover.service >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-update-recover.service infra
 fi
 if [ -d "$SCRIPT_DIR/../etc/sa02m-factory-defaults" ]; then
     mkdir -p /usr/share/sa02m-factory-defaults/current
@@ -664,7 +670,7 @@ fi
 for _cpu_unit in sa02m-cpu-profile.service; do
     if [ -f "$SYSTEMD_DIR/$_cpu_unit" ]; then
         install -m 644 "$SYSTEMD_DIR/$_cpu_unit" "/etc/systemd/system/$_cpu_unit"
-        systemctl enable "$_cpu_unit" >> "$LOG_FILE" 2>&1 || true
+        sa02m_svc_apply "$_cpu_unit" infra
     fi
 done
 if [ -x /usr/local/sbin/sa02m-cpu-profile.sh ]; then
@@ -726,14 +732,11 @@ fi
 systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
 
 if [ -f /etc/systemd/system/sa02m-web-update-check.timer ]; then
-    systemctl enable sa02m-web-update-check.timer >> "$LOG_FILE" 2>&1 || true
-    systemctl start sa02m-web-update-check.timer >> "$LOG_FILE" 2>&1 || true
-    systemctl start sa02m-web-update-check.service >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-web-update-check.timer infra start
+    # One-shot check now (no enable — the timer owns the schedule).
+    sa02m_svc_kick sa02m-web-update-check.service
 fi
-if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
-    systemctl enable sa02m-update-recover.service >> "$LOG_FILE" 2>&1 || true
-    log OK "sa02m-update-recover.service enabled"
-fi
+# (sa02m-update-recover is asserted once, above — next to its unit install.)
 
 if [ -x /usr/local/sbin/sa02m-prepare-working-board ] && [ "${SA02M_PREPARE_WORKING_BOARD:-0}" = "1" ]; then
     log INFO "Включение безопасного режима для рабочей платы"
@@ -741,18 +744,14 @@ if [ -x /usr/local/sbin/sa02m-prepare-working-board ] && [ "${SA02M_PREPARE_WORK
         log WARN "Не удалось принудительно включить safe mode через sa02m-prepare-working-board"
 fi
 
-# Devices tab backend (DTV / CE-02m-3) — API :8765 + SQLite logger
-if [ -f "$SCRIPT_DIR/11-devices.sh" ] && [ -d "$SCRIPT_DIR/../opt/sa02m-devices/sa02m_devices" ]; then
-    bash "$SCRIPT_DIR/11-devices.sh" \
-        && log OK "sa02m-devices установлен" \
-        || log WARN "11-devices.sh завершился с ошибкой"
-fi
+# 11-devices runs from install.sh ONLY (after 05-mqtt, gated by
+# SA02M_SKIP_DEVICES) — the call that used to live here predated that gate and
+# leaked past the skip (both landed in the same squash b9f3ad4).
 
 # ── Start services ────────────────────────────────────────────────────────
-svc_enable fcgiwrap
-svc_restart fcgiwrap
-svc_restart nginx
-svc_enable sa02m-failure-monitor
+sa02m_svc_apply fcgiwrap.service infra start restart
+sa02m_svc_apply nginx.service infra start restart
+sa02m_svc_apply sa02m-failure-monitor.service infra start
 
 # ── Верификация: сокет fcgiwrap должен появиться в течение 5 с ──────────────
 FCGI_SOCK="/run/fcgiwrap/fcgiwrap.socket"

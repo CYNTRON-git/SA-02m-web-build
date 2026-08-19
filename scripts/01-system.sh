@@ -250,8 +250,7 @@ if [ -f "$ETC_REPO/storage-mount.sh" ]; then
     # ntfs3 откажется монтировать «грязную» NTFS после Windows quick-eject.
     # На некоторых сборках Armbian пакет недоступен — установка опциональна.
     if ! command -v mount.ntfs-3g >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get -y install ntfs-3g >>"$LOG_FILE" 2>&1 || \
-            log WARN "ntfs-3g недоступен в репозитории — оставляем только kernel ntfs3"
+        sa02m_pkg_install_tier optional ntfs-3g
     fi
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
     udevadm control --reload-rules 2>/dev/null || true
@@ -274,11 +273,8 @@ log INFO "Настройка USB-модема"
 # libmbim-utils  — mbimcli, mbim-network для новых Fibocom / Quectel MBIM.
 # usbutils       — lsusb для диагностики.
 MODEM_PKGS="modemmanager ppp isc-dhcp-client usb-modeswitch usb-modeswitch-data libqmi-utils libmbim-utils usbutils"
-for pkg in $MODEM_PKGS; do
-    dpkg -s "$pkg" >/dev/null 2>&1 || \
-        DEBIAN_FRONTEND=noninteractive apt-get -y install "$pkg" >>"$LOG_FILE" 2>&1 || \
-        log WARN "Пакет $pkg не удалось установить (возможно, не в репозитории)"
-done
+# shellcheck disable=SC2086  # deliberate word-split of the package list
+sa02m_pkg_install_tier optional $MODEM_PKGS
 
 # udev-правила для модемов.
 if [ -f "$ETC_REPO/udev/99-modem.rules" ]; then
@@ -332,11 +328,10 @@ fi
 
 # ModemManager: разрешаем управлять модемами, но НЕ перегружаем NetworkManager.
 # ModemManager работает самостоятельно (mmcli, pppd) без NM.
-sa02m_systemctl unmask ModemManager.service 2>/dev/null || true
-sa02m_systemctl enable ModemManager.service >>"$LOG_FILE" 2>&1 || \
-    log WARN "ModemManager не удалось включить"
-sa02m_systemctl start ModemManager.service >>"$LOG_FILE" 2>&1 || \
+sa02m_svc_apply ModemManager.service infra start
+if [ "$SA02M_SVC_LAST_RESULT" = absent ]; then
     log WARN "ModemManager не запустился (возможно, не установлен)"
+fi
 
 systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
 udevadm control --reload-rules 2>/dev/null || true
@@ -349,12 +344,10 @@ if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     if [ -f "$ETC_REPO/systemd/sa02m-pre-start.service" ]; then
         install -m 644 "$ETC_REPO/systemd/sa02m-pre-start.service" /etc/systemd/system/sa02m-pre-start.service
     fi
-    if [ -f "$ETC_REPO/systemd/mplc4.service" ] && [ -x /etc/init.d/mplc4 ]; then
-        install -m 644 "$ETC_REPO/systemd/mplc4.service" /etc/systemd/system/mplc4.service
-    fi
+    # NOTE: the mplc4.service unit install + enable moved to scripts/09-mplc.sh
+    # (behind the stack verdict) — it used to leak past SA02M_SKIP_MPLC here.
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    systemctl enable sa02m-pre-start.service >> "$LOG_FILE" 2>&1 || true
-    systemctl enable mplc4.service >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-pre-start.service infra
     log OK "sa02m-pre-start установлен и включён"
 fi
 
@@ -368,7 +361,7 @@ if [ -f "$ETC_REPO/systemd/sa02m-usb-vbus.service" ]; then
     log INFO "Установка sa02m-usb-vbus.service (гарантированное VBUS ON после boot)"
     install -m 644 "$ETC_REPO/systemd/sa02m-usb-vbus.service" /etc/systemd/system/sa02m-usb-vbus.service
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    systemctl enable sa02m-usb-vbus.service >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-usb-vbus.service infra
     log OK "sa02m-usb-vbus установлен и включён"
 fi
 
@@ -391,7 +384,7 @@ if [ -f "$ETC_REPO/sa02m-kernel-service-guard.sh" ]; then
             /etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
     fi
     sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    sa02m_systemctl enable sa02m-kernel-service-guard.service >> "$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-kernel-service-guard.service infra
     /usr/local/sbin/sa02m-kernel-service-guard.sh apply-policy >> "$LOG_FILE" 2>&1 || true
     log OK "sa02m-kernel-service-guard установлен и включён (apply-policy применён)"
 fi
@@ -414,9 +407,8 @@ if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
         log OK "sa02m-lib-rtc.sh установлен в /usr/local/lib"
     fi
     sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-    sa02m_systemctl enable sa02m-rtc-sync.timer >> "$LOG_FILE" 2>&1 \
-        && log OK "sa02m-rtc-sync.timer включён" \
-        || log WARN "sa02m-rtc-sync.timer не включился"
+    sa02m_svc_apply sa02m-rtc-sync.timer infra
+    log OK "sa02m-rtc-sync.timer включён"
 fi
 
 # ── Postinst-hook для linux-image-*.deb ────────────────────────────────────
@@ -460,9 +452,12 @@ if [ -f "$ETC_REPO/systemd/sa02m-journald.conf" ]; then
     # не перечитывание). Рестарт безопасен: сокет /run/systemd/journal/* держит
     # systemd, клиенты пишут в него всё это время — записи не теряются.
     if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
-        sa02m_systemctl restart systemd-journald >> "$LOG_FILE" 2>&1 \
-            && log OK "journald: политика размера применена (drop-in sa02m-journald.conf)" \
-            || log WARN "journald: рестарт не удался — политика применится после перезагрузки"
+        sa02m_svc_apply systemd-journald.service infra restart
+        if [ "$SA02M_SVC_LAST_RESULT" = restarted ]; then
+            log OK "journald: политика размера применена (drop-in sa02m-journald.conf)"
+        else
+            log WARN "journald: рестарт не удался — политика применится после перезагрузки"
+        fi
     else
         log OK "journald: drop-in sa02m-journald.conf установлен (rootfs build — без рестарта)"
     fi
@@ -539,7 +534,7 @@ if [ -f "$ETC_REPO/ssh/sshd_config.d/10-sa02m.conf" ]; then
     install -d -m 755 /etc/ssh/sshd_config.d
     install -m 644 "$ETC_REPO/ssh/sshd_config.d/10-sa02m.conf" /etc/ssh/sshd_config.d/10-sa02m.conf
     if sshd -t 2>>"$LOG_FILE"; then
-        sa02m_systemctl reload ssh.service >>"$LOG_FILE" 2>&1 || sa02m_systemctl restart ssh.service >>"$LOG_FILE" 2>&1 || true
+        sa02m_systemctl reload ssh.service >>"$LOG_FILE" 2>&1 || sa02m_svc_apply ssh.service infra restart
     fi
 fi
 
@@ -593,7 +588,7 @@ if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
     sa02m_systemctl disable armbian-resize-filesystem.service 2>/dev/null || true
     sa02m_systemctl mask armbian-resize-filesystem.service 2>/dev/null || true
     sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
-    sa02m_systemctl enable sa02m-rootfs-expand.service >>"$LOG_FILE" 2>&1 || true
+    sa02m_svc_apply sa02m-rootfs-expand.service infra
 fi
 
 # sa02m-net-autolink — УСТАРЕЛО: ранее обновлял link-файлы 10-eth0.link/11-eth1.link
@@ -621,8 +616,7 @@ for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watc
        && [ "$(readlink -f "/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
         rm -f "/etc/systemd/system/$u"
     fi
-    sa02m_systemctl unmask "$u" 2>/dev/null || true
-    sa02m_systemctl enable "$u" 2>/dev/null || true
+    sa02m_svc_apply "$u" infra
 done
 
 # ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
@@ -647,9 +641,7 @@ done
 
 # ── Время: fake-hwclock + chrony (timesyncd в этом Armbian не пакетируется) ─
 log INFO "Настройка времени: fake-hwclock + chrony"
-if ! dpkg -l fake-hwclock 2>/dev/null | grep -q '^ii'; then
-    DEBIAN_FRONTEND=noninteractive apt-get -y install fake-hwclock >>"$LOG_FILE" 2>&1 || true
-fi
+sa02m_pkg_install_tier optional fake-hwclock
 # В Armbian образе fake-hwclock.service замаскирован vendor-симлинком в
 # /lib/systemd/system → /dev/null. Стандартный `systemctl unmask` НЕ снимает
 # vendor-маску. Создаём собственный unit в /etc/systemd/system/ — он имеет
@@ -694,7 +686,7 @@ RemainAfterExit=yes
 FHC
 fi
 sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
-sa02m_systemctl enable fake-hwclock.service >>"$LOG_FILE" 2>&1 || true
+sa02m_svc_apply fake-hwclock.service infra
 # Запишем текущее время как fallback (если оно валидное).
 if [ "$(date +%Y)" -ge 2024 ]; then
     fake-hwclock save 2>/dev/null || true
@@ -703,7 +695,7 @@ fi
 # Chrony: лёгкий NTP-клиент. Без интернета не повредит — просто будет
 # unsynced, время возьмётся из RTC/fake-hwclock.
 if ! command -v chronyd >/dev/null 2>&1; then
-    DEBIAN_FRONTEND=noninteractive apt-get -y install chrony >>"$LOG_FILE" 2>&1 || true
+    sa02m_pkg_install_tier optional chrony
 fi
 install -d -m 755 /etc/chrony/sources.d
 cat > /etc/chrony/sources.d/sa02m.sources <<'NTP'
@@ -718,9 +710,11 @@ if [ -f /etc/chrony/chrony.conf ]; then
     grep -qE '^[[:space:]]*rtcsync'  /etc/chrony/chrony.conf || echo 'rtcsync'  >> /etc/chrony/chrony.conf
     grep -qE '^[[:space:]]*makestep' /etc/chrony/chrony.conf || echo 'makestep 1.0 3' >> /etc/chrony/chrony.conf
 fi
-sa02m_systemctl unmask chrony.service chronyd.service 2>/dev/null || true
-sa02m_systemctl enable --now chrony.service 2>/dev/null \
-    || sa02m_systemctl enable --now chronyd.service 2>/dev/null || true
+if sa02m_unit_exists chrony.service; then
+    sa02m_svc_apply chrony.service infra start
+elif sa02m_unit_exists chronyd.service; then
+    sa02m_svc_apply chronyd.service infra start
+fi
 
 # Если shadow-дата root в будущем (из-за прежних сбоев RTC) — выравниваем,
 # иначе PAM пишет "account root has password changed in future" при каждом
