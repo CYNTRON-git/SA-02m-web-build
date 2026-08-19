@@ -209,6 +209,24 @@
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-installer-svc-helpers.sh"
     },
     {
+      "id": "installer-svc-policy-gate",
+      "checks": "Static gate for docs/contracts/installer-refresh-policy.md over install.sh + scripts/0*.sh + scripts/1*.sh: (a) no raw widening systemctl verb (enable/start/unmask/restart/reload-or-restart) outside scripts/lib.sh — field-wise match at command position, so try-restart/reload/daemon-reload/stop/disable/mask stay raw and a verb inside a log string or the /usr/bin/systemctl sudoers heredocs never trips it; (b) no inline apt-get/pip/npm install outside the tier helpers; (c) the four legacy helpers (svc_enable/svc_restart/sa02m_capture_svc_state/sa02m_restore_svc_state) are gone tree-wide; (d) every app-class sa02m_svc_apply has a PRECEDING sa02m_svc_capture in its file (an uncaptured apply cannot see a first install); (e) 07/08/09/12 read sa02m_stack_verdict BEFORE the first side-effecting act (useradd/dpkg -i/vendor install.sh/apt/curl — the 1.136 leftover-nodered-user class); (f) non-vacuity floors (>=25 apply sites, >=4 verdict sites, module glob alive); (g) install.sh keeps the literal completion banner the offline wrapper greps.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/installer-svc-policy-gate.sh",
+      "beat": "build",
+      "covers": ["install.sh", "scripts/", ".ai-dev/quality/checks/installer-svc-policy-gate.sh"],
+      "init": "bash + grep + awk (present everywhere the project builds)"
+    },
+    {
+      "id": "service-ctl-policy-write",
+      "checks": "Functional regression for the stack-policy writes in etc/sa02m-web-service-ctl.sh (cmd_install/cmd_uninstall/stack_key_for_id against the REAL etc/sa02m-stacks-policy.sh): a successful install records present, a successful uninstall records disabled (the «removed stays removed» guarantee every installer path reads), a FAILED action records nothing and passes the installer's rc through, a non-installable id never reaches the hooks, the id→ID map is exactly codesys/mplc4/node-red, and with the policy lib ABSENT (older board) the commands still emit their JSON and exit with the installer's rc. Extracts the SHIPPED functions (dispatch-marker anchored, like the port-lease harness), stubs the six per-stack installers with scripted rc; also pins the Node-RED block markers test-nodered-ctl.sh extracts by. Non-vacuous: a failed extraction or a missed soft-source retarget FAILS.",
+      "config": null,
+      "run": "bash scripts/dev/test-service-ctl-policy.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-web-service-ctl.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-service-ctl-policy.sh"],
+      "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-service-ctl-policy.sh"
+    },
+    {
       "id": "nodered-ctl-install",
       "checks": "Functional regression for the Node-RED install logic in etc/sa02m-web-service-ctl.sh — the code behind Управление → Службы → Node-RED, whose whole defect class is SILENT on the device. Runs the SHIPPED functions against a sandbox (payload resolution through the SA02M_NODERED_DIR seam, journalctl/sleep PATH shims, mutating helpers stubbed — nothing extracts a tarball, writes /usr/lib or talks to systemd): a half-staged directory is not a payload; the Node-tarball glob never selects node-red-*.tar.gz (that mis-selection extracted the Node-RED tree into /usr/local on a Node-less board and still failed); a cross-major overwrite is refused with both versions named and a next step in the log, while a clean install and a same-major update still proceed; the flow-level verdict, IN BOTH LOG LANGUAGES (node-red localises its runtime log: the bench board writes «Запущены потоки», so an English-only check silently stops firing there) — port 1880 open with the flows stopped is install_failed, NOT success; a unit that logged for the whole poll window without ever reporting started flows is a FAILURE rather than 'no evidence'; only a total absence of journal degrades to the honest runtime_only label; and the dispatch order (staged payload beats a reachable registry, no payload behaves exactly as before). Plus static wiring pins the behavioural cases cannot see: both install paths still CALL the major guard, and the offline path still stops the unit, removes the old tree before extracting (tar merges — it never deletes), and asserts a single node-red/ top level before a root extraction. Non-vacuous: a failed or short extraction FAILS rather than passing on zero matches.",
       "config": null,

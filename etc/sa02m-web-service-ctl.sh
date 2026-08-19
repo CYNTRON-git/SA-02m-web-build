@@ -10,6 +10,15 @@
 SC=/usr/bin/systemctl
 [ -x "$SC" ] || SC=/bin/systemctl
 LOG=/var/log/sa02m_install.log
+# Stack-policy lib (installed by scripts/03-webserver.sh; one home for the
+# /etc/sa02m_stacks.conf format — etc/sa02m-stacks-policy.sh). SOFT: an older
+# board without it simply records no policy (`command -v` guards at the two
+# write sites in cmd_install/cmd_uninstall).
+SA02M_STACKS_LIB=/usr/local/lib/sa02m-stacks-policy.sh
+if [ -f "$SA02M_STACKS_LIB" ]; then
+    # shellcheck disable=SC1090
+    . "$SA02M_STACKS_LIB"
+fi
 RESULT_DIR=/var/run/sa02m-svcctl
 TIMEOUT_SEC=8
 # SysV-synced units (mplc4, codesyscontrol) need 12–20s for enable/disable.
@@ -866,6 +875,13 @@ mplc4_install() {
     sc_run_slow restart mplc4 >>"$LOG" 2>&1 || true
     sleep 3
     if port_listening 8082 || service_runtime_active mplc4 mplc4.service; then
+        # Payload-version stamp — the same format scripts/09-mplc.sh writes
+        # (first dotted version, one line): an equal payload then never re-runs
+        # the vendor installer on the next full install.
+        _mv=$(grep -m1 -oE '[0-9]+(\.[0-9]+){1,3}' "$_src/version.txt" 2>/dev/null)
+        if [ -n "$_mv" ] && [ -d /opt/mplc4 ]; then
+            printf '%s\n' "$_mv" > /opt/mplc4/.sa02m-payload-version 2>>"$LOG" || true
+        fi
         emit_result '{"ok":true,"id":"mplc4","action":"install"}'
         return 0
     fi
@@ -1450,6 +1466,28 @@ nodered_uninstall() {
     emit_result '{"ok":true,"id":"node-red","action":"uninstall"}'
 }
 
+# Fixed service-id → stack-policy-ID map (never derived from the request:
+# validate_id + the closed case below are the injection floor).
+stack_key_for_id() {
+    case "$1" in
+        codesys) printf 'CODESYS' ;;
+        mplc4) printf 'MPLC' ;;
+        node-red) printf 'NODERED' ;;
+    esac
+}
+
+# Persist the operator's decision after a SUCCESSFUL install/uninstall:
+# install ⇒ present, uninstall ⇒ disabled (never auto-installed again —
+# docs/contracts/installer-refresh-policy.md). No-op when the policy lib is
+# absent (older board) or the action failed.
+stack_policy_record() {
+    _spr_key=$(stack_key_for_id "$1")
+    [ -n "$_spr_key" ] || return 0
+    command -v sa02m_stack_policy_set >/dev/null 2>&1 || return 0
+    sa02m_stack_policy_set "$_spr_key" "$2" 2>>"$LOG" || true
+    return 0
+}
+
 cmd_install() {
     _id=$1
     validate_id "$_id" || { emit_result '{"ok":false,"error":"invalid_id"}'; return 1; }
@@ -1467,6 +1505,9 @@ cmd_install() {
         mplc4) mplc4_install ;;
         node-red) nodered_install ;;
     esac
+    _rc=$?
+    [ "$_rc" -eq 0 ] && stack_policy_record "$_id" present
+    return $_rc
 }
 
 cmd_uninstall() {
@@ -1486,6 +1527,9 @@ cmd_uninstall() {
         mplc4) mplc4_uninstall ;;
         node-red) nodered_uninstall ;;
     esac
+    _rc=$?
+    [ "$_rc" -eq 0 ] && stack_policy_record "$_id" disabled
+    return $_rc
 }
 
 ACTION=${1:-}
