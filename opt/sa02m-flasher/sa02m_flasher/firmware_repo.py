@@ -38,6 +38,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from . import firmware as fw_parser
+from .module_profiles import (
+    manifest_device_family,
+    manifest_device_for_signature,
+)
 
 log = logging.getLogger(__name__)
 
@@ -274,8 +278,9 @@ class FirmwareRepo:
         refresh(download=False) — обновить манифест (и при необходимости скачать файлы).
         list_entries()          — все известные записи (манифест + локальные).
         download(entry)         — принудительно скачать файл под запись.
-        find_for_signature(sig) — устаревшее имя: возвращает все записи (образ общий для линейки).
-        version_tuple / latest_stable_version / latest_bootloader_version — подсказка «есть обновление».
+        find_for_signature(sig) — записи семейства устройства (образ общий ВНУТРИ семейства).
+        latest_stable_version(device) / latest_bootloader_version(device) / latest_by_device()
+                                — последняя версия по семейству; подсказка «есть обновление».
         add_upload(data, name)  — добавить .fw/.bin/.elf из UI (копирует в кеш).
         path_for(entry)         — локальный путь к файлу (или None).
     """
@@ -553,12 +558,16 @@ class FirmwareRepo:
         Версии, которые должны остаться в локальном кеше: latest stable + текущие с линии.
         """
         keep: Dict[str, Set[str]] = {"app": set(), "bootloader": set()}
-        latest_app = self._normalize_keep_version(self.latest_stable_version())
-        latest_bl = self._normalize_keep_version(self.latest_bootloader_version())
-        if latest_app:
-            keep["app"].add(latest_app)
-        if latest_bl:
-            keep["bootloader"].add(latest_bl)
+        # Keep the latest app + bootloader PER family (plus the global max for an
+        # unrecognised family) so a DTV/CE-02m-3 image is not purged just because
+        # its version is below MR-02m's global maximum.
+        for family in (None, "MR-02m", "RTU-Sensor", "CE-02m-3"):
+            latest_app = self._normalize_keep_version(self.latest_stable_version(family))
+            latest_bl = self._normalize_keep_version(self.latest_bootloader_version(family))
+            if latest_app:
+                keep["app"].add(latest_app)
+            if latest_bl:
+                keep["bootloader"].add(latest_bl)
         if keep_current:
             cur_app = self._normalize_keep_version(str(keep_current.get("app") or ""))
             cur_bl = self._normalize_keep_version(str(keep_current.get("bootloader") or ""))
@@ -722,11 +731,17 @@ class FirmwareRepo:
             log.exception("Не удалось разобрать .fw %s", path)
         size = path.stat().st_size
         kind = _infer_kind_from_filename(path.name)
+        # Derive the manifest device family from the .fw signature so an uploaded
+        # DTV/CE-02m-3 image is not mis-filed under MR-02m; unknown → "MR-02m"
+        # (the historical default, and the flasher's primary family).
+        device = "MR-02m"
+        if signatures:
+            device = manifest_device_for_signature(signatures[0]) or "MR-02m"
         return FirmwareEntry(
             file=path.name,
             version=version,
             signatures=signatures,
-            device="MR-02m",
+            device=device,
             size=size,
             sha256=_sha256_of(path),
             channel="local",
@@ -758,11 +773,20 @@ class FirmwareRepo:
                 "last_refresh_ts": self._last_refresh_ts,
                 "latest_stable_version": self.latest_stable_version(),
                 "latest_bootloader_version": self.latest_bootloader_version(),
+                "latest_by_device": self.latest_by_device(),
                 "entries": [e.to_dict() for e in self.list_entries()],
             }
 
-    def _latest_version_for_kind(self, kind: str) -> str:
-        """Наибольшая ``version`` среди manifest-записей ``stable`` с заданным ``kind``."""
+    def _latest_version_for(self, kind: str, device: Optional[str] = None) -> str:
+        """Наибольшая ``version`` среди manifest-записей ``stable`` с заданным ``kind``.
+
+        ``device`` — каноничный ключ семейства ("MR-02m" / "RTU-Sensor" /
+        "CE-02m-3"): при указании отбираем только образы своего семейства (по
+        полю ``device`` манифеста). Если семейство известно, но своих образов
+        нет — возвращаем "" (устройству не предлагается чужая прошивка). Если
+        ``device`` не задан или семейство не распознано — глобальный максимум
+        (обратная совместимость / неизвестное устройство).
+        """
         best: Optional[Tuple[int, int, int, int]] = None
         best_raw = ""
         with self._lock:
@@ -770,6 +794,11 @@ class FirmwareRepo:
                 e
                 for e in self._entries.values()
                 if e.channel == "stable" and e.source == "manifest" and e.kind == kind
+            ]
+        family = manifest_device_family(device) if device else None
+        if family is not None:
+            candidates = [
+                e for e in candidates if manifest_device_family(e.device) == family
             ]
         for e in candidates:
             t = version_tuple(e.version)
@@ -780,22 +809,64 @@ class FirmwareRepo:
                 best_raw = str(e.version).strip()
         return best_raw
 
-    def latest_stable_version(self) -> str:
-        """Наибольшая версия приложения (``kind`` = app) в канале ``stable`` манифеста."""
-        return self._latest_version_for_kind("app")
+    def _latest_version_for_kind(self, kind: str) -> str:
+        """Глобальный максимум версии для ``kind`` (без учёта семейства)."""
+        return self._latest_version_for(kind, None)
 
-    def latest_bootloader_version(self) -> str:
-        """Наибольшая версия образа бутлоадера (``kind`` = bootloader) в канале ``stable`` манифеста."""
-        return self._latest_version_for_kind("bootloader")
+    def latest_stable_version(self, device: Optional[str] = None) -> str:
+        """Наибольшая версия приложения (``kind`` = app) для семейства ``device``."""
+        return self._latest_version_for("app", device)
+
+    def latest_bootloader_version(self, device: Optional[str] = None) -> str:
+        """Наибольшая версия образа бутлоадера (``kind`` = bootloader) для семейства ``device``."""
+        return self._latest_version_for("bootloader", device)
+
+    def latest_by_device(self) -> Dict[str, Dict[str, str]]:
+        """Каталог «последняя app/bootloader версия» по каждому семейству устройств.
+
+        Ключи — каноничные строки ``device`` манифеста ("MR-02m" / "RTU-Sensor" /
+        "CE-02m-3"); значения — {"app": <ver>, "bootloader": <ver>} (пусто, если
+        у семейства нет соответствующего образа). Клиент (flasher.js) сверяет
+        версию отсканированного устройства с записью его семейства, а не с
+        глобальным максимумом.
+        """
+        families = {"MR-02m", "RTU-Sensor", "CE-02m-3"}
+        with self._lock:
+            for e in self._entries.values():
+                if e.source == "manifest" and e.channel == "stable":
+                    fam = manifest_device_family(e.device)
+                    if fam:
+                        families.add(fam)
+        out: Dict[str, Dict[str, str]] = {}
+        for fam in sorted(families):
+            out[fam] = {
+                "app": self.latest_stable_version(fam),
+                "bootloader": self.latest_bootloader_version(fam),
+            }
+        return out
 
     def find_for_signature(self, signature: str) -> List[FirmwareEntry]:
         """
-        Вернуть все записи репозитория.
+        Записи прошивки, подходящие семейству отсканированного устройства.
 
-        Один файл прошивки на все варианты MR-02м: отбор по полю ``signatures`` в манифесте
-        не выполняется (аргумент ``signature`` игнорируется — имя метода сохранено для совместимости).
+        Внутри семейства один образ обслуживает все варианты (одна прошивка на
+        все варианты MR-02м); между семействами ключом служит поле ``device``
+        манифеста, поэтому DTV/CE-02m-3 не получают образ MR-02m и наоборот.
+        Нераспознанная сигнатура (семейство неизвестно) → все записи (прежнее
+        поведение). Записи, чьё поле ``device`` не относится ни к одному
+        известному семейству (``manifest_device_family`` → None), НЕ скрываются
+        при выбранном устройстве — защита от чрезмерной фильтрации (загруженные
+        файлы обычно классифицируются по сигнатуре и сюда не попадают).
         """
-        return self.list_entries()
+        all_entries = self.list_entries()
+        family = manifest_device_for_signature(signature)
+        if family is None:
+            return all_entries
+        return [
+            e
+            for e in all_entries
+            if manifest_device_family(e.device) in (family, None)
+        ]
 
     def get(self, channel: str, file: str) -> Optional[FirmwareEntry]:
         with self._lock:
