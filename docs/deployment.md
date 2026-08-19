@@ -30,7 +30,7 @@
 | **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии |
 | **offline package** | обновление без интернета платы **≥ 1.0.5.60** (runner ≥ 1.0.5.66 — `MIN_VERSION`/`MIN_UPDATER` в `scripts/pack-offline-update.py`) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
 | **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/main` в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» |
-| **self-upgrade bridge** | плата **< 1.0.5.75** с интернетом: обновить через её же «Обновление веб», без SSH (полная установка — только legacy-apply платы **< 1.0.5.66**; 1.0.5.66–1.0.5.74 получают обычный OTA-overlay с `main`) | `tools/update-bridge/publish-bridge.sh` — «Мост самообновления» в разделе «Полный деплой» |
+| ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
 
 Состояние updater: `/var/lib/sa02m-update` (runner `/usr/local/libexec/sa02m-update-runner`,
@@ -323,7 +323,14 @@ vendor-payload; пропуск не трогает уже установленн
 Предусловия выше); пропустить ещё: `--skip MQTT,GATEWAY` (перечень —
 `install.sh`, раздел «Optional stacks»).
 
-### Мост самообновления для плат < 1.0.5.75
+### ~~Мост самообновления для плат < 1.0.5.75~~ — ОТМЕНЁН
+
+> **Не использовать.** Этот способ переписывал боевые version-ветки на origin
+> force-push'ем и признан слишком рискованным для флота — решение
+> `docs/decisions/no-force-push-version-branches.md`. Старые платы обновляйте
+> **офлайн-архивом** («Офлайн-вариант» выше), НЕ модификацией веток. Раздел ниже
+> оставлен как исторический; команды `publish-bridge.sh --push` запускать НЕЛЬЗЯ.
+
 
 Плата < 1.0.5.75 **с интернетом** может обновиться до текущего `main` через
 собственную вкладку «Обновление веб», без SSH. Почему нужен мост: её проверка

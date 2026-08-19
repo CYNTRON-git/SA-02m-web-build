@@ -13,6 +13,24 @@ audit 1.0.5.71).
   1.0.5.86 BUG-A regression is uncovered by the merge gate. The daemon imports
   `serial`/`yaml` (absent from the web CI env) — add a deps-guarded `py-unit-gateway`
   row (skip-if-missing-deps), mirroring `py-unit-flasher`. Surfaced by the 1.0.5.86 Reviewer.
+- [OPEN] 2026-08-19 **[MED] Gateway mode for RS-485 flashing/scan — UI must steer to
+  transparent.** Fixed in 1.0.5.86: WB/fast-modbus replies (`0xFF` arbitration) are no
+  longer truncated, so scan works in `rtu_over_tcp`. BUT the PC flasher / a fast-modbus
+  device scan through the gateway works ONLY in `transparent` (best) or `rtu_over_tcp`;
+  `modbus_tcp` cannot carry it (MBAP can't wrap the `FD 46` fast-modbus / raw-RTU frames,
+  and `fast_modbus_probe` answers the WB probe locally). Verified live on 1.135 (DTV+MR
+  on COM4, СЭ on COM2): transparent + rtu_over_tcp scan all devices; modbus_tcp drops raw
+  RTU. Follow-up: the «Шлюз RS-485» / flasher UI should warn (or auto-set) transparent @
+  the device baud when a port is used for flashing, instead of leaving the modbus_tcp
+  default as a trap; document in `docs/deployment.md` gateway section + the flasher hint.
+- [OPEN] 2026-08-19 **[LOW] `tools/update-bridge/` is deprecated (unused) — remove at
+  next cleanup.** The self-upgrade bridge (force-push a launcher onto fielded version
+  branches) was REJECTED — see `docs/decisions/no-force-push-version-branches.md`. Old
+  boards update via the offline full-tree archive (`scripts/offline-full-update.sh`),
+  which stays. `tools/update-bridge/{repair-web-env-launcher,publish-bridge}.sh` are
+  harmless (publish-bridge is dry-run by default) but no longer used; delete the dir at
+  the next `tools/` tidy. The `--unattended`/`--status-file`/`--log` flags in
+  offline-full-update.sh may stay (generic) or be trimmed with it.
 
 - [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
   (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
