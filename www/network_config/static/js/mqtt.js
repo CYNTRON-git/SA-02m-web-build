@@ -1,6 +1,6 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.5.85';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.5.86';
 
 
 function uiT(s) {

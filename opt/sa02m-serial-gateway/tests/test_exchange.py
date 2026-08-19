@@ -145,3 +145,53 @@ def test_no_echo_exception_reply_framed():
     resp = w.exchange(REQ, response_timeout=0.5)
     assert resp == exc
     assert sg._check_crc(resp)
+
+
+# ── Fast Modbus / Wiren Board 0xFF arbitration prefix ─────────────────────────
+# WB/fast-modbus devices prefix their RS-485 reply with 0xFF arbitration bytes.
+# Before the fix, _modbus_read_frame_len read the 2nd 0xFF as a function code
+# (0xFF & 0x80 set → 5) and TRUNCATED the reply to 5 bytes (ff ff ff ff ff),
+# hiding the real frame. These cover the strip in both spots: the frame extractor
+# and the exchange() silence/deadline fallback.
+
+# A long 29-byte standard reply (24 data bytes): 06 03 18 <24 data> CRC.
+LONG_RESP = _frame(bytes([0x06, 0x03, 0x18]) + bytes(range(24)))
+# A fast-modbus answer begins with the 0xFD command marker (raw, no CRC needed
+# for these remainder assertions).
+FD_FRAME = bytes([0xFD, 0x46, 0x03, 0x11, 0x22, 0x33, 0x44])
+
+
+def test_extract_strips_fast_modbus_0xff_prefix():
+    """echo + 0xFF padding + FC03 reply → the CLEAN standard frame, not 5 bytes."""
+    frame = sg._extract_rtu_response(REQ, ECHO + b'\xff' * 4 + ANALOG_RESP)
+    assert frame == ANALOG_RESP
+    assert len(frame) != 5
+    assert frame[:1] != b'\xff'
+    assert sg._check_crc(frame)
+
+
+def test_extract_fast_modbus_fd_marker_returns_none():
+    """echo + 0xFF padding + FD46 fast-modbus frame → None (defer to silence path)."""
+    frame = sg._extract_rtu_response(REQ, ECHO + b'\xff' * 6 + FD_FRAME)
+    assert frame is None
+
+
+def test_exchange_fast_modbus_fd_marker_returns_stripped_remainder():
+    """exchange() silence path yields the whole 0xFF-stripped FD46 frame, not 5 B."""
+    w = _make_worker([ECHO + b'\xff' * 6 + FD_FRAME])
+    resp = w.exchange(REQ, response_timeout=0.5)
+    assert resp == FD_FRAME
+    assert resp[:1] != b'\xff'
+
+
+def test_extract_plain_standard_reply_unchanged():
+    """no 0xFF prefix: a standard reply still frames byte-identically."""
+    assert sg._extract_rtu_response(REQ, ECHO + ANALOG_RESP) == ANALOG_RESP
+
+
+def test_extract_long_standard_reply_still_frames():
+    """29-byte standard reply frames whole (guards the 1.0.5.69 echo-length fix)."""
+    frame = sg._extract_rtu_response(REQ, ECHO + LONG_RESP)
+    assert frame == LONG_RESP
+    assert len(frame) == 29
+    assert sg._check_crc(frame)

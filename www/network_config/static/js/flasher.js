@@ -15,8 +15,9 @@
     devices: [],        // последний результат сканирования
     selectedDeviceIndices: new Set(), // индексы выбранных строк таблицы (multi-select)
     firmware: [],       // список прошивок (entries)
-    latestStableVersion: '', // max stable manifest, kind=app
-    latestBootloaderVersion: '', // max stable manifest, kind=bootloader
+    latestStableVersion: '', // max stable manifest, kind=app (global fallback)
+    latestBootloaderVersion: '', // max stable manifest, kind=bootloader (global fallback)
+    latestByDevice: {}, // { "MR-02m"|"RTU-Sensor"|"CE-02m-3": {app, bootloader} } — per-family latest
     selectedFirmwareKey: '', // channel::file
     firmwareDisplayOrder: [], // channel::file, newest first (UI order)
     scanJobId: null,
@@ -769,6 +770,8 @@
     state.firmware = data.entries;
     state.latestStableVersion = (data.latest_stable_version || '').trim();
     state.latestBootloaderVersion = (data.latest_bootloader_version || '').trim();
+    state.latestByDevice = (data.latest_by_device && typeof data.latest_by_device === 'object')
+      ? data.latest_by_device : {};
     pruneFirmwareDisplayOrder();
     return true;
   }
@@ -1054,10 +1057,33 @@
     }
   }
 
+  // Manifest device family (manifest_device_for_signature) → firmware product
+  // kind (firmwareProductKindFromEntry) — for the family filter below.
+  const FAMILY_TO_PRODUCT = { 'MR-02m': 'mr', 'RTU-Sensor': 'dtv', 'CE-02m-3': 'ce' };
+
+  /* Единственное семейство среди выбранных устройств ('' — нет выбора или смешение). */
+  function selectedDeviceFamily() {
+    const devs = selectedDevicesForFlash();
+    if (!devs.length) return '';
+    const fams = new Set(devs.map(d => manifestDeviceForSignature(d.signature)).filter(Boolean));
+    return fams.size === 1 ? [...fams][0] : '';
+  }
+
+  /* Отфильтровать список прошивок под семейство выбранного устройства
+     (нераспознанные/загруженные вручную образы не скрываем). */
+  function firmwareEntriesForFamily(entries, family) {
+    const product = FAMILY_TO_PRODUCT[family];
+    if (!product) return entries;
+    return entries.filter(e => {
+      const k = firmwareProductKindFromEntry(e);
+      return k === product || k === '';
+    });
+  }
+
   function renderFirmware(data) {
     const list = $('flasher-fw-list');
     const prevKey = state.selectedFirmwareKey;
-    const visible = visibleFirmwareEntries();
+    const visible = firmwareEntriesForFamily(visibleFirmwareEntries(), selectedDeviceFamily());
     if (!visible.length) {
       list.textContent = t('Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.');
       state.selectedFirmwareKey = '';
@@ -1288,7 +1314,10 @@
   function tokenLooksLikeCe(token) {
     const n = normalizeProductToken(token);
     if (!n) return false;
-    return n.includes('CE02M3') || n.includes('CE02M');
+    // ENMETER mezzanine belongs to the CE-02m-3 family — parity with Python
+    // module_profiles.SPECIAL_SIG_CODES (EN_METER/ENMETER → MP02_CE02M3).
+    // normalizeProductToken strips '_'/'-', so EN_METER and ENMETER both match.
+    return n.includes('CE02M3') || n.includes('CE02M') || n.includes('ENMETER');
   }
 
   function deviceProductKindForFlash(signature) {
@@ -1316,6 +1345,29 @@
     if (fn.includes('MR02M') || fn.includes('MP02M') || dev.includes('MR02M') || dev.includes('MP02M')) return 'mr';
     if (file.toLowerCase().endsWith('.fw') || file.toLowerCase().endsWith('.bin')) return 'mr';
     return '';
+  }
+
+  /* Семейство прошивки (ключ `device` манифеста) по сигнатуре устройства.
+     Зеркало sa02m_flasher.module_profiles.manifest_device_for_signature:
+     CE-02m-3 / DTV (RTU-Sensor) — по специфике, иначе MR-02m; '' — неизвестно. */
+  function manifestDeviceForSignature(signature) {
+    const sig = stripBootloaderSignatureSuffix(signature);
+    if (tokenLooksLikeCe(sig)) return 'CE-02m-3';
+    if (tokenLooksLikeDtv(sig)) return 'RTU-Sensor';
+    if (isMpModuleSignatureForFirmwareHint(sig)) return 'MR-02m';
+    return '';
+  }
+
+  /* Последняя версия прошивки семейства устройства (app|bootloader). '' — нет
+     образа для семейства. Неизвестное семейство → глобальный максимум. */
+  function latestVersionForDevice(signature, kind) {
+    const key = kind === 'bootloader' ? 'bootloader' : 'app';
+    const fam = manifestDeviceForSignature(signature);
+    const map = state.latestByDevice || {};
+    if (fam && Object.prototype.hasOwnProperty.call(map, fam)) {
+      return String((map[fam] && map[fam][key]) || '').trim();
+    }
+    return key === 'bootloader' ? state.latestBootloaderVersion : state.latestStableVersion;
   }
 
   function validateFirmwareSelectionForDevice(signature, entry) {
@@ -1503,7 +1555,13 @@
 
   function firmwareAppUpdateHintForDevice(d) {
     if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
-    const latest = state.latestStableVersion;
+    const fam = manifestDeviceForSignature(d.signature);
+    const latest = latestVersionForDevice(d.signature, 'app');
+    if (fam && !latest) {
+      // Family recognised but the manifest carries no image for it — never
+      // offer another family's version (regression: DTV/СЭ shown MR-02m's).
+      return '<div class="flasher-sub flasher-fw-nofw-hint">нет прошивки для этого устройства</div>';
+    }
     if (!latest) return '';
     const lv = parseVersionTuple(latest);
     const dv = parseVersionTuple(d.app_version);
@@ -1517,7 +1575,7 @@
 
   function firmwareBlUpdateHintForDevice(d) {
     if (!isMpModuleSignatureForFirmwareHint(d.signature)) return '';
-    const latest = state.latestBootloaderVersion;
+    const latest = latestVersionForDevice(d.signature, 'bootloader');
     if (!latest) return '';
     const lv = parseVersionTuple(latest);
     const dv = parseVersionTuple(d.bootloader_version);
@@ -1589,6 +1647,7 @@
           if (!state.devices[idx]) return;
           toggleDeviceSelection(idx);
           renderDevices();
+          renderFirmware();  // re-filter «Доступные прошивки» to the selected device's family
         }, 220);
       });
       if (isDeviceConfigSupported(d)) {

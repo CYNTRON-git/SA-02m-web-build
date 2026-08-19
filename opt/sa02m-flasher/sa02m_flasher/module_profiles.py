@@ -435,6 +435,54 @@ def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:
     return None
 
 
+# --- Firmware-manifest device family (index.json ``device`` key) ---------------
+# The firmware manifest keys each image by a ``device`` string that names the
+# family it belongs to: "MR-02m" (all MR/MP-02m I/O variants share one image),
+# "RTU-Sensor" (CYNTRON DTV-RS-45), "CE-02m-3" (network analyser). A scanned
+# device is matched to firmware within its OWN family only — one home for the
+# scanned-signature → manifest-``device`` mapping, so DTV/CE-02m-3 are never
+# offered an MR-02m image (and vice versa).
+MANIFEST_DEVICE_MR = "MR-02m"
+MANIFEST_DEVICE_DTV = "RTU-Sensor"
+MANIFEST_DEVICE_CE02M3 = "CE-02m-3"
+
+
+def manifest_device_for_signature(signature: str) -> Optional[str]:
+    """Canonical manifest ``device`` family for a scanned device signature (рег. 290).
+
+    Reuses the existing type-code classification: CE-02m-3 and DTV are matched
+    first (specific), then the MR/MP-02m batch-flash test. An unrecognised
+    signature → ``None`` (unknown family; caller keeps the global fallback).
+    """
+    code = code_from_signature(signature)
+    if code == MP02_CE02M3:
+        return MANIFEST_DEVICE_CE02M3
+    if code == DTV:
+        return MANIFEST_DEVICE_DTV
+    if is_mp_module_signature_for_batch_flash(signature):
+        return MANIFEST_DEVICE_MR
+    return None
+
+
+def manifest_device_family(device: str) -> Optional[str]:
+    """Canonical firmware family for a manifest ``device`` string.
+
+    Tolerant of a variant suffix (``"MR-02m DI16"`` → ``"MR-02m"``) as well as
+    the exact family keys returned by :func:`manifest_device_for_signature`.
+    Unrecognised → ``None`` (unknown family; caller falls back to global latest).
+    """
+    n = (device or "").strip().upper().replace(" ", "").replace("_", "-")
+    if not n:
+        return None
+    if n.startswith("RTU-SENSOR") or n.startswith("DTV") or "SENSOR" in n or n.startswith("SENS"):
+        return MANIFEST_DEVICE_DTV
+    if n.startswith("CE-02M"):
+        return MANIFEST_DEVICE_CE02M3
+    if n.startswith("MR-02M") or n.startswith("MP-02M") or n.startswith("MR02M") or n.startswith("MP02M"):
+        return MANIFEST_DEVICE_MR
+    return None
+
+
 # Modbus selection codes 0..42 (регистр «тип датчика», MR-02m ≥1.0.9.1) — порядок ≠ ai_sensor_t enum
 AI_SENSOR_MODBUS_CODE_MAX = 42
 AI_SENSOR_CHOICES: List[Tuple[int, str]] = [

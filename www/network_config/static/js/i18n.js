@@ -646,6 +646,7 @@
     'Прошивки не найдены. Нажмите «Проверить» или выберите .fw вручную.': 'No firmware images found. Click Check or select a .fw file manually.',
     'Нет скачанных прошивок. Нажмите «Скачать» или выберите .fw вручную.': 'No firmware downloaded to cache. Click Download or select a .fw file manually.',
     'все варианты MR-02м (общий образ)': 'all MR-02m variants (common image)',
+    'нет прошивки для этого устройства': 'no firmware for this device',
     'не скачан': 'not downloaded',
     'bootloader датчиков температуры и влажности ДТВ-RS-485': 'DTV-RS-485 temperature/humidity sensor bootloader',
     'bootloader модулей расширения МР-02м': 'MR-02m expansion module bootloader',
