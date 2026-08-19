@@ -17,7 +17,7 @@
 # Mechanics: git plumbing (read-tree / update-index / write-tree / commit-tree)
 # instead of a checkout — no worktree on disk, nothing to clean up, and the
 # result is byte-identical to "origin/main + one file". Runs on Linux, WSL and
-# Windows Git-Bash (temp index lives inside .git via `git rev-parse --git-path`).
+# Windows Git-Bash (temp index lives inside .git, removed on exit).
 # ═══════════════════════════════════════════════════════════════════════════
 set -u -o pipefail
 
@@ -92,9 +92,11 @@ fi
 REMOTE_ARCHIVE_TAGS="$(g ls-remote --tags "$REMOTE" 'refs/tags/archive/*' 2>/dev/null || true)"
 
 # ── Bridge commit builder: origin/main tree + one replaced blob ─────────────
+# Temp index: absolute path (rm must work from any cwd) and removed on exit.
+BRIDGE_IDX="$(g rev-parse --absolute-git-dir)/bridge-index-$$"
+trap 'rm -f "$BRIDGE_IDX"' EXIT
 build_bridge_commit() {   # $1 = branch → prints the new commit sha
-    local branch=$1 idx blob tree sha
-    idx="$(g rev-parse --git-path "bridge-index-$$")"
+    local branch=$1 idx=$BRIDGE_IDX blob tree sha
     rm -f "$idx"
     if [ -f "$LAUNCHER_SRC" ]; then blob="$(g hash-object -w "$LAUNCHER_SRC")"
     else blob="$(g rev-parse "$LAUNCHER_SRC")"; fi

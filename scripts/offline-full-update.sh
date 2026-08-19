@@ -8,7 +8,7 @@
 # режим --unattended — там же, «Мост самообновления для плат < 1.0.5.75».
 # ═══════════════════════════════════════════════════════════════════════════
 # On-device wrapper for the device-side steps of the full-deploy runbook
-# (docs/deployment.md `## Полный деплой (install.sh)`, steps 1,4,5,6,7): /etc +
+# (docs/deployment.md `## Полный деплой (install.sh)`, steps 1,5,6,7): /etc +
 # web-root backup → `bash -n install.sh` → detached `nohup install.sh` with a
 # log → poll → PASS/FAIL post-checks incl. the update-check proof (branch=main).
 # Two callers, one home: an operator over SSH (interactive poll loop) and the

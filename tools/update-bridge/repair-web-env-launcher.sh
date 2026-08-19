@@ -70,6 +70,8 @@ bridge_body() {
     bash "$clone/scripts/offline-full-update.sh" --unattended $dry \
         --status-file "$statedir/update_status" --log "$statedir/update.log"
     rc=$?
+    # Net: a wrapper killed before its EXIT trap (OOM, rc=127) must not leave the UI on `running`.
+    [ "$(cat "$statedir/update_status" 2>/dev/null)" = running ] && printf 'error' > "$statedir/update_status"
     [ "$rc" -eq 0 ] && rm -rf "$clone"   # keep the clone on failure for diagnosis
     return "$rc"
 }
@@ -77,8 +79,13 @@ bridge_body() {
 blog "запускаю полную установку из main в фоне (юнит ${UNIT}), лог /root/install-bridge-${TS}.log; подождите 10–15 мин, затем обновите страницу${DRY_FLAG:+ [DRY-RUN]}"
 
 if command -v systemd-run >/dev/null 2>&1; then
-    systemd-run --unit="$UNIT" --collect -q /bin/bash -c "$(declare -f bridge_body); bridge_body '$TS' '$REPO_URL' '$DRY_FLAG'" \
-        || blog "systemd-run не удался — установка не запущена (см. journalctl -u ${UNIT})"
+    # No fallback when systemd-run itself fails: a child in the caller's cgroup
+    # would be killed by install.sh's own fcgiwrap/nginx restarts mid-/etc —
+    # a half-written board is worse than a not-started install. Say so plainly
+    # (no unit exists, so no journal to point at); the web files are already
+    # main's by now (the old apply copied www/ before running this file).
+    systemd-run --unit="$UNIT" --collect -q --setenv=HOME=/root /bin/bash -c "$(declare -f bridge_body); bridge_body '$TS' '$REPO_URL' '$DRY_FLAG'" \
+        || blog "systemd-run не удался — установка НЕ запущена: веб-файлы уже новые, backend старый — выполните офлайн-вариант по SSH (docs/deployment.md, «Полный деплой» → «Офлайн-вариант»)"
 else
     # Fallback without systemd-run: the child stays in the caller's cgroup
     # (fcgiwrap → sudo → old apply), so a `systemctl restart fcgiwrap/nginx`
