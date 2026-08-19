@@ -45,6 +45,44 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Установленная версия node-red — из package.json обоих глобальных корней
+# (apt-Node владеет /usr/lib, staged Node 22 — /usr/local); НИКОГДА запуском
+# node-red (рантайм с неподходящим Node падает на старте).
+nodered_installed_ver() {
+    local f
+    for f in /usr/lib/node_modules/node-red/package.json /usr/local/lib/node_modules/node-red/package.json; do
+        [ -f "$f" ] || continue
+        sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$f" | head -n1
+        return 0
+    done
+    return 0
+}
+
+# ── Вердикт политики стеков — ДО любого действия (useradd, curl, apt) ──────
+# docs/contracts/installer-refresh-policy.md: в refresh сторонний стек не
+# ставится и не включается; отключённый оператором — не ставится ни в одном
+# режиме без --with-optional.
+_VERDICT=$(sa02m_stack_verdict NODERED)
+case "$_VERDICT" in
+    skip-disabled)
+        log INFO "Node-RED: отключён оператором (/etc/sa02m_stacks.conf) — пропуск; вернуть: кнопка «Установить» в панели или --with-optional"
+        exit 0
+        ;;
+    skip-absent)
+        log INFO "refresh: Node-RED не установлен — не ставлю (кнопка «Установить» или --with-optional)"
+        exit 0
+        ;;
+    overlay)
+        _iv=$(nodered_installed_ver)
+        _msg="refresh: Node-RED установлен (${_iv:-версия неизвестна}) — обновляю только надстройку sa02m, стек не переустанавливаю"
+        if [ -n "$_iv" ] && [ "$_iv" != "$NODERED_PIN_VERSION" ]; then
+            _msg="$_msg; в payload/пине $NODERED_PIN_VERSION — обновление стороннего стека в refresh не выполняется (панель или --with-optional)"
+        fi
+        log INFO "$_msg"
+        exit 0
+        ;;
+esac
+
 # ── Поиск vendor-payload (тот же порядок, что в 09-mplc.sh) ────────────────
 # Каталог считается payload'ом только если в нём ЕСТЬ и дерево node-red,
 # и unit: половина payload'а — это не payload (иначе «установка» пройдёт,
@@ -74,6 +112,19 @@ if [ -z "$NODERED_SRC" ]; then
     done
 fi
 
+# Состояние юнита — ДО установки (ctl и онлайн-инсталлятор сами включают и
+# запускают службу; свидетель TS в sa02m_svc_apply делает их рестарт no-op'ом).
+sa02m_svc_capture nodered.service node-red.service
+
+# Та же версия уже стоит ⇒ переустановка (распаковка payload / сеть) не нужна;
+# settings.js и состояние юнита ниже всё равно выравниваются.
+NR_SKIP_INSTALL=0
+_nr_have=$(nodered_installed_ver)
+if [ -n "$_nr_have" ] && [ "$_nr_have" = "$NODERED_PIN_VERSION" ]; then
+    log INFO "Node-RED $_nr_have уже установлен — переустановка не требуется"
+    NR_SKIP_INSTALL=1
+fi
+
 # ── Пользователь nodered ────────────────────────────────────────────────────
 if ! id "$NODERED_USER" &>/dev/null; then
     log INFO "Создание системного пользователя $NODERED_USER"
@@ -95,8 +146,11 @@ grep -q '^PORT=' "$ENV_FILE" 2>/dev/null \
     || echo "PORT=${NODERED_PORT}" >> "$ENV_FILE"
 chown "$NODERED_USER:$NODERED_USER" "$ENV_FILE" 2>/dev/null || true
 
+# ── Путь 0: нужная версия уже установлена ──────────────────────────────────
+if [ "$NR_SKIP_INSTALL" = 1 ]; then
+    :   # ниже — только settings.js и состояние юнита
 # ── Путь 1: оффлайн из payload ─────────────────────────────────────────────
-if [ -n "$NODERED_SRC" ]; then
+elif [ -n "$NODERED_SRC" ]; then
     log INFO "Node-RED vendor-payload: $NODERED_SRC ($(du -sh "$NODERED_SRC" 2>/dev/null | awk '{print $1}'))"
 
     if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
@@ -121,11 +175,9 @@ if [ -n "$NODERED_SRC" ]; then
         exit 1
     fi
     log INFO "Оффлайн-установка Node-RED $NODERED_PIN_VERSION через $CTL"
-    # Запомнить состояние ДО установки: ctl поднимает службу сам, и для
-    # --no-start её надо будет вернуть в исходное — но только если до нас она
-    # не работала. Останавливать чужую работающую службу флаг не должен.
-    NR_WAS_ACTIVE=0
-    systemctl is-active --quiet nodered.service 2>/dev/null && NR_WAS_ACTIVE=1
+    # Состояние ДО установки снято выше (sa02m_svc_capture): ctl поднимает
+    # службу сам, и для --no-start её надо будет вернуть в исходное — но
+    # только если до нас она не работала.
     if CTL_OUT=$(SA02M_NODERED_DIR="$NODERED_SRC" sh "$CTL" install node-red 2>>"$LOG_FILE"); then
         log OK "Node-RED установлен из payload: $CTL_OUT"
     else
@@ -143,10 +195,12 @@ if [ -n "$NODERED_SRC" ]; then
 elif curl -fsS --max-time 15 -I https://registry.npmjs.org/node-red >/dev/null 2>&1 \
      && curl -fsS --max-time 15 -I "$INSTALLER_URL" >/dev/null 2>&1; then
     log INFO "Проверка зависимостей..."
-    apt-get update -qq >> "$LOG_FILE" 2>&1 || true
+    sa02m_apt_update
     # build-essential/python3 нужны только этому пути: онлайн-установка может
     # собирать нативные модули. Оффлайн-дерево чистый JS — компилятор не нужен.
-    pkg_install curl ca-certificates gnupg build-essential python3
+    # Tier thirdparty: в refresh без --with-optional сюда не попасть (вердикт
+    # выше), но правило «сторонние пакеты — только по явному согласию» одно.
+    sa02m_pkg_install_tier thirdparty curl ca-certificates gnupg build-essential python3
 
     log INFO "Запуск официального инсталлятора Node-RED (Node.js 22, node-red $NODERED_PIN_VERSION, без Pi-нод)..."
     log INFO "Журнал инсталлятора: /var/log/nodered-install.log"
@@ -224,12 +278,15 @@ if [ -z "$NR_UNIT" ]; then
 fi
 
 sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
-sa02m_systemctl enable "$NR_UNIT" >> "$LOG_FILE" 2>&1 \
-    && log OK "$NR_UNIT включён (systemctl enable)" \
-    || log WARN "Не удалось enable $NR_UNIT"
 
+# Прежнее состояние — из sa02m_svc_capture (снято до ctl/инсталлятора).
+NR_WAS_ACTIVE=0
+[ "${SA02M_SVC_ACT[nodered.service]-}" = active ] && NR_WAS_ACTIVE=1
+[ "${SA02M_SVC_ACT[node-red.service]-}" = active ] && NR_WAS_ACTIVE=1
+
+NR_APPLIED=0
 if [ "${NODERED_VERIFIED_BY_CTL:-0}" = "1" ]; then
-    # Оффлайн-путь: служба уже поднята и проверена ctl-скриптом. Второй рестарт
+    # Оффлайн-путь: ctl уже включил, поднял и проверил службу. Второй рестарт
     # только удлинил бы простой, а вторая проверка разошлась бы с первой.
     if [ "$NO_START" -eq 1 ] && [ "$NR_WAS_ACTIVE" -eq 0 ]; then
         # Флаг обещает «не запускать»: возвращаем в исходное состояние — но
@@ -238,22 +295,32 @@ if [ "${NODERED_VERIFIED_BY_CTL:-0}" = "1" ]; then
         sa02m_systemctl stop "$NR_UNIT" >> "$LOG_FILE" 2>&1 || true
         log INFO "$NR_UNIT остановлен обратно (--no-start); включите: systemctl start $NR_UNIT"
     fi
-elif [ "$NO_START" -eq 0 ]; then
-    RESTART_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
-    sa02m_systemctl restart "$NR_UNIT" >> "$LOG_FILE" 2>&1 \
-        && log OK "$NR_UNIT запущен" \
-        || log WARN "$NR_UNIT не стартовал — journalctl -u $NR_UNIT -n 50"
-else
+elif [ "$NO_START" -eq 1 ]; then
+    # enable без запуска; активную службу флаг тоже не трогает (norestart).
+    sa02m_svc_apply "$NR_UNIT" app enabled norestart --stack=NODERED
     log INFO "$NR_UNIT не запускался (--no-start); включите: systemctl start $NR_UNIT"
+else
+    RESTART_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+    # Первая установка ⇒ enable+start; существующая — состояние оператора
+    # сохраняется, работавшая перезапускается на свежем коде (свидетель TS
+    # гасит повторный рестарт после онлайн-инсталлятора с --restart).
+    sa02m_svc_apply "$NR_UNIT" app on --stack=NODERED
+    case "$SA02M_SVC_LAST_RESULT" in
+        started|restarted) NR_APPLIED=1 ;;
+    esac
 fi
 
 # ── Проверка: порт + УРОВЕНЬ ПОТОКОВ ───────────────────────────────────────
 # Открытый 1880 — ложно-зелёный признак: рантайм, поднявшийся с остановленными
-# потоками (нет типов нод), слушает точно так же. Судим по журналу.
-if ss -H -ltn "sport = :${NODERED_PORT}" 2>/dev/null | grep -q ":${NODERED_PORT}"; then
-    log OK "Node-RED слушает порт ${NODERED_PORT}"
-else
-    log WARN "Порт ${NODERED_PORT} не обнаружен — проверьте: systemctl status $NR_UNIT"
+# потоками (нет типов нод), слушает точно так же. Судим по журналу. Проверяем
+# только когда служба должна работать (ctl-путь или наш запуск) — у
+# сохранённо-остановленной отсутствие порта штатно.
+if [ "${NODERED_VERIFIED_BY_CTL:-0}" = "1" ] || [ "$NR_APPLIED" = 1 ]; then
+    if ss -H -ltn "sport = :${NODERED_PORT}" 2>/dev/null | grep -q ":${NODERED_PORT}"; then
+        log OK "Node-RED слушает порт ${NODERED_PORT}"
+    else
+        log WARN "Порт ${NODERED_PORT} не обнаружен — проверьте: systemctl status $NR_UNIT"
+    fi
 fi
 
 # Вердикт по потокам — только для онлайн-пути: оффлайн его уже вынес ctl.
@@ -262,7 +329,7 @@ fi
 # на здоровой установке. Маркеры — из каталогов en-US и ru
 # (@node-red/runtime/locales/*/runtime.json): рантайм локализует свой лог, и на
 # плате с ru-локалью английские литералы не сработали бы вовсе.
-if [ "${NODERED_VERIFIED_BY_CTL:-0}" != "1" ] && [ "$NO_START" -eq 0 ] \
+if [ "${NODERED_VERIFIED_BY_CTL:-0}" != "1" ] && [ "$NR_APPLIED" = 1 ] \
    && command -v journalctl >/dev/null 2>&1; then
     NR_STARTED=0
     NR_STOPPED=0
@@ -295,6 +362,11 @@ NR_VER_FILE=/usr/lib/node_modules/node-red/package.json
 if [ -f "$NR_VER_FILE" ]; then
     nrv=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$NR_VER_FILE" | head -n1)
     [ -n "$nrv" ] && log OK "Node-RED $nrv, пользователь $NODERED_USER"
+fi
+
+# Стек на месте — политика фиксирует present (кнопка «Удалить» пишет disabled).
+if [ -n "$(nodered_installed_ver)" ]; then
+    sa02m_stack_policy_set NODERED present || true
 fi
 
 log OK "=== [07] Node-RED установлен ==="

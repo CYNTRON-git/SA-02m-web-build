@@ -309,7 +309,7 @@ log INFO "Каноническое именование интерфейсов: 
 # фейлил с "Netlink socket: Protocol not supported" → маскировали. Проверяем
 # и снимаем/накидываем маску в зависимости от возможностей ядра.
 if grep -qE '^CONFIG_NF_TABLES=[ym]' "/boot/config-$(uname -r)" 2>/dev/null; then
-    systemctl unmask nftables.service >>"$LOG_FILE" 2>&1 || true
+    sa02m_svc_unmask nftables.service
     log INFO "nftables.service unmasked (kernel с CONFIG_NF_TABLES)"
 else
     systemctl mask nftables.service >>"$LOG_FILE" 2>&1 || true
@@ -322,20 +322,20 @@ udevadm control --reload-rules 2>/dev/null || true
 # Ключевой сервис для ifupdown: без него /etc/network/interfaces.d/*.conf
 # не применяется при boot. На чистом Debian bullseye после debootstrap
 # --variant=minbase preset не всегда включён — включаем явно.
-svc_enable networking
+sa02m_svc_apply networking.service infra start
 
-svc_enable net-watchdog
+# infra: enabled + unmasked in every mode (a stale /dev/null mask from
+# imaging / old 01-system is repaired by the helper).
+sa02m_svc_apply net-watchdog.service infra start
 # Prefer unified eth0/eth1 coldboot; keep eth1 unit installed but disabled to
 # avoid double ethtool -r on LAN1.
-svc_enable sa02m-eth-coldboot
+sa02m_svc_apply sa02m-eth-coldboot.service infra start
 sa02m_systemctl disable sa02m-eth1-coldboot 2>/dev/null || true
-svc_enable sa02m-eth0-led-poll
-# Explicit unmask: imaging / old 01-system may have left /dev/null mask.
-sa02m_systemctl unmask net-watchdog.service 2>/dev/null || true
-# ENABLE only, deliberately not svc_enable: svc_enable also STARTS the unit on a
-# live board, and starting this one performs the rename — exactly what the
-# deferred-by-default rule above forbids without SA02M_CANONICAL_IFACE_NOW=1.
-sa02m_systemctl enable sa02m-iface-canonical >> "$LOG_FILE" 2>&1 || true
+sa02m_svc_apply sa02m-eth0-led-poll.service infra start
+# ENABLE only, deliberately no `start`: starting this unit performs the rename
+# on a live board — exactly what the deferred-by-default rule above forbids
+# without SA02M_CANONICAL_IFACE_NOW=1.
+sa02m_svc_apply sa02m-iface-canonical.service infra
 log OK "Network watchdog активирован"
 
 # ── Миграция состояния на канонические имена (end0/end1 → eth0/eth1) ──────

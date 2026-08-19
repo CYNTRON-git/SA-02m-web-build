@@ -32,6 +32,29 @@ audit 1.0.5.71).
   the next `tools/` tidy. The `--unattended`/`--status-file`/`--log` flags in
   offline-full-update.sh may stay (generic) or be trimmed with it.
 
+- [OPEN] 2026-08-19 **[MED] Imaging pipeline: two recurring traps that each cost a
+  failed capture run on 2026-08-19 (golden-image 1.136).** (a) **Stale known_hosts
+  after the donor regenerates its host keys.** The id-reset before dd deletes
+  `/etc/ssh/ssh_host_*`; on the donor's next boot `regen-ssh-host-keys` issues NEW
+  keys, but `wait-donor.sh`/`make-image.sh` use `StrictHostKeyChecking=accept-new`,
+  which accepts only UNKNOWN hosts and REJECTS a changed key → "ssh not ready yet"
+  for 5 min → capture dies; on BOTH `/root/.ssh/known_hosts` and the repo
+  `private/.ssh/known_hosts`. Fix: `ssh-keygen -R "$IP"` on both at the start of
+  `capture-image.sh` (the donor's host key is disposable by design), or
+  `-o UserKnownHostsFile=/dev/null`. (b) **Final `cp` to a drvfs OUT_DIR fails
+  "are the same file"** (`make-image.sh` `FINAL_IMG`/`FINAL_IMG_KEEP` resolve to the
+  same WORK path when OUT_DIR is `/mnt/d`) → exit 1 AFTER a fully successful
+  dd/PiShrink/xz; artifacts rescued under `/tmp/sa02m-image-rescue-*` but the run
+  reports failure and the `.img` never reaches OUT_DIR. Fix: `[ "$src" -ef "$dst" ]
+  || cp …`. Also (c) **`docs/deployment.md` golden-image runbook §10 must add:**
+  `sa02m-rootfs-expand` self-disables after running on the donor — before capture
+  `rm /var/lib/sa02m-rootfs-expand.done` + re-enable, else clones boot with an
+  un-expanded rootfs (imaging guide §941 trap); **never leave an `authorized_keys`
+  on the donor for the capture's key-auth** — `cleanup-donor.sh` keeps `/root/.ssh`
+  in its DENY (protected) list, so it SHIPS into the image (the 2026-08-19 run #1
+  was rejected for exactly this; the password/sshpass path is the safe one); and the
+  Alice check names `agent.conf` — current builds have
+  `/etc/sa02m-alice/sa02m-alice-*.conf` (no agent.conf).
 - [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
   (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
   does NOT restart** — so the stand runs stale imported `sa02m_devices` code until

@@ -38,43 +38,67 @@ log INFO "=== [08] Установка CODESYS Control for Linux ARM SL ==="
 BASE_DIR="$SCRIPT_DIR/.."
 ETC_DIR="$BASE_DIR/etc"
 
-CODESYS_DEB="${SA02M_CODESYS_DEB:-}"
-if [ -z "$CODESYS_DEB" ]; then
-    for cand in \
-        /opt/vendor-installers/codesys/codesyscontrol_linuxarm_*_armhf.deb \
-        /opt/vendor-installers/codesys/codesyscontrol_*_armhf.deb \
-        "$BASE_DIR/vendor/codesys/codesyscontrol_linuxarm_*_armhf.deb" \
-        "$BASE_DIR/vendor/codesys/codesyscontrol_*_armhf.deb"; do
-        for f in $cand; do
-            [ -f "$f" ] && CODESYS_DEB="$f" && break 2
-        done
-    done
-fi
-
-if [ -z "$CODESYS_DEB" ] || [ ! -f "$CODESYS_DEB" ]; then
-    log WARN "CODESYS .deb не найден (искали /opt/vendor-installers/codesys/, vendor/codesys/)."
-    log INFO "Как подготовить дистрибутив: см. docs/vendor-integrations.md → CODESYS Runtime."
-    log INFO "Пропускаю установку CODESYS (это не ошибка)."
-    exit 0
-fi
-
-log INFO "CODESYS deb: $CODESYS_DEB ($(stat -c%s "$CODESYS_DEB" 2>/dev/null || echo '?') bytes)"
-
-if command -v dpkg-deb >/dev/null 2>&1; then
-    _arch=$(dpkg-deb --field "$CODESYS_DEB" Architecture 2>/dev/null | tr -d '\r\n')
-    _host_arch=$(dpkg --print-architecture 2>/dev/null)
-    if [ -n "$_arch" ] && [ "$_arch" != "$_host_arch" ] && [ "$_arch" != "all" ]; then
-        log ERR "Архитектура пакета ($_arch) не совпадает с системой ($_host_arch)."
-        exit 1
-    fi
-fi
-
-if dpkg -s codesyscontrol >/dev/null 2>&1; then
-    _cur=$(dpkg -s codesyscontrol 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}')
-    _new=$(dpkg-deb --field "$CODESYS_DEB" Version 2>/dev/null | tr -d '\r\n')
-    if [ -n "$_cur" ] && [ "$_cur" = "$_new" ]; then
-        log INFO "codesyscontrol $_cur уже установлен — переустановка не требуется."
+# ── Вердикт политики стеков — ДО поиска .deb и dpkg ────────────────────────
+# docs/contracts/installer-refresh-policy.md: refresh никогда не (пере)ставляет
+# сторонний стек; установленный получает только sa02m-надстройку (drop-in,
+# apt-hold, apply-policy — хвост ниже); отключённый оператором не ставится ни
+# в одном режиме без --with-optional.
+_VERDICT=$(sa02m_stack_verdict CODESYS)
+case "$_VERDICT" in
+    skip-disabled)
+        log INFO "CODESYS: отключён оператором (/etc/sa02m_stacks.conf) — пропуск; вернуть: кнопка «Установить» в панели или --with-optional"
+        exit 0
+        ;;
+    skip-absent)
+        log INFO "refresh: CODESYS не установлен — не ставлю (кнопка «Установить» или --with-optional)"
+        exit 0
+        ;;
+    overlay)
+        _cur=$(dpkg -s codesyscontrol 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}')
+        log INFO "refresh: CODESYS установлен (${_cur:-версия неизвестна}) — обновляю только надстройку sa02m, стек не переустанавливаю"
         skip_install=1
+        ;;
+esac
+
+if [ "${skip_install:-0}" != "1" ]; then
+    CODESYS_DEB="${SA02M_CODESYS_DEB:-}"
+    if [ -z "$CODESYS_DEB" ]; then
+        for cand in \
+            /opt/vendor-installers/codesys/codesyscontrol_linuxarm_*_armhf.deb \
+            /opt/vendor-installers/codesys/codesyscontrol_*_armhf.deb \
+            "$BASE_DIR/vendor/codesys/codesyscontrol_linuxarm_*_armhf.deb" \
+            "$BASE_DIR/vendor/codesys/codesyscontrol_*_armhf.deb"; do
+            for f in $cand; do
+                [ -f "$f" ] && CODESYS_DEB="$f" && break 2
+            done
+        done
+    fi
+
+    if [ -z "$CODESYS_DEB" ] || [ ! -f "$CODESYS_DEB" ]; then
+        log WARN "CODESYS .deb не найден (искали /opt/vendor-installers/codesys/, vendor/codesys/)."
+        log INFO "Как подготовить дистрибутив: см. docs/vendor-integrations.md → CODESYS Runtime."
+        log INFO "Пропускаю установку CODESYS (это не ошибка)."
+        exit 0
+    fi
+
+    log INFO "CODESYS deb: $CODESYS_DEB ($(stat -c%s "$CODESYS_DEB" 2>/dev/null || echo '?') bytes)"
+
+    if command -v dpkg-deb >/dev/null 2>&1; then
+        _arch=$(dpkg-deb --field "$CODESYS_DEB" Architecture 2>/dev/null | tr -d '\r\n')
+        _host_arch=$(dpkg --print-architecture 2>/dev/null)
+        if [ -n "$_arch" ] && [ "$_arch" != "$_host_arch" ] && [ "$_arch" != "all" ]; then
+            log ERR "Архитектура пакета ($_arch) не совпадает с системой ($_host_arch)."
+            exit 1
+        fi
+    fi
+
+    if dpkg -s codesyscontrol >/dev/null 2>&1; then
+        _cur=$(dpkg -s codesyscontrol 2>/dev/null | awk -F': ' '/^Version:/{print $2; exit}')
+        _new=$(dpkg-deb --field "$CODESYS_DEB" Version 2>/dev/null | tr -d '\r\n')
+        if [ -n "$_cur" ] && [ "$_cur" = "$_new" ]; then
+            log INFO "codesyscontrol $_cur уже установлен — переустановка не требуется."
+            skip_install=1
+        fi
     fi
 fi
 
@@ -86,6 +110,11 @@ if [ "${skip_install:-0}" != "1" ]; then
         log ERR "dpkg -i завершился с ошибкой — см. $LOG_FILE"
         exit 1
     fi
+fi
+
+# Стек на месте — политика фиксирует present (кнопка «Удалить» пишет disabled).
+if [ "$_VERDICT" = install ] && dpkg -s codesyscontrol >/dev/null 2>&1; then
+    sa02m_stack_policy_set CODESYS present || true
 fi
 
 if [ -x "$ETC_DIR/sa02m-apt-hold-codesys.sh" ] || [ -f "$ETC_DIR/sa02m-apt-hold-codesys.sh" ]; then

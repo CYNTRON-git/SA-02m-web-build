@@ -77,6 +77,77 @@ if [ -z "$MPLC_SRC" ]; then
     fi
 fi
 
+# The version stamp: the payload version whose vendor install.sh last ran on
+# this box. Two writers, one format (first dotted version, one line): 09 after
+# a successful vendor run, and the ctl's mplc4_install
+# (etc/sa02m-web-service-ctl.sh). Makes 09 idempotent — an equal payload never
+# re-runs the vendor installer.
+MPLC_STAMP=/opt/mplc4/.sa02m-payload-version
+
+# Наша надстройка: unit-обёртка mplc4.service (перенесена из 01-system.sh —
+# там она утекала мимо SA02M_SKIP_MPLC) + плагины ЦИНТРОН. Всё cmp-gated:
+# без изменений — ноль действий, ноль рестартов. Возвращает 0, если что-то
+# изменилось (каналом _MPLC_OVERLAY_CHANGED).
+_MPLC_OVERLAY_CHANGED=0
+_mplc_install_overlay() {
+    local _so
+    if [ -f "$BASE_DIR/etc/systemd/mplc4.service" ] && [ -x /etc/init.d/mplc4 ]; then
+        if ! cmp -s "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service 2>/dev/null; then
+            install -m 644 "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service
+            systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+            _MPLC_OVERLAY_CHANGED=1
+            log OK "mplc4.service (обёртка systemd) установлен"
+        fi
+    fi
+    [ -d /opt/mplc4 ] || return 0
+    # Plugins from the git-tracked firmware/mplc4 (authoritative, correct ABI);
+    # the vendor payload dir is only a fallback.
+    for _so in mplc_cyntron.so mplc_protocol_fast_modbus.so; do
+        if [ -f "$MPLC_PLUGIN_SRC/$_so" ]; then
+            if ! cmp -s "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so" 2>/dev/null; then
+                install -m 0755 "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so"
+                _MPLC_OVERLAY_CHANGED=1
+                log OK "Плагин $_so установлен в /opt/mplc4/ (из firmware/mplc4)"
+            fi
+        elif [ -n "$MPLC_SRC" ] && [ -f "$MPLC_SRC/$_so" ]; then
+            if ! cmp -s "$MPLC_SRC/$_so" "/opt/mplc4/$_so" 2>/dev/null; then
+                install -m 0755 "$MPLC_SRC/$_so" "/opt/mplc4/$_so"
+                _MPLC_OVERLAY_CHANGED=1
+                log OK "Плагин $_so установлен в /opt/mplc4/ (fallback: vendor-дроп $MPLC_SRC)"
+            fi
+        else
+            log WARN "$_so не найден ни в firmware/mplc4, ни в ${MPLC_SRC:-<нет payload>} — плагин не установлен"
+        fi
+    done
+    return 0
+}
+
+# ── Вердикт политики стеков — ДО payload-требований и vendor install.sh ────
+# docs/contracts/installer-refresh-policy.md.
+_VERDICT=$(sa02m_stack_verdict MPLC)
+case "$_VERDICT" in
+    skip-disabled)
+        log INFO "MPLC: отключён оператором (/etc/sa02m_stacks.conf) — пропуск; вернуть: кнопка «Установить» в панели или --with-optional"
+        exit 0
+        ;;
+    skip-absent)
+        log INFO "refresh: MPLC не установлен — не ставлю (кнопка «Установить» или --with-optional)"
+        exit 0
+        ;;
+    overlay)
+        log INFO "refresh: MPLC установлен ($(cat "$MPLC_STAMP" 2>/dev/null || echo 'версия неизвестна')) — обновляю только надстройку sa02m, стек не переустанавливаю"
+        sa02m_svc_capture mplc4.service
+        _mplc_install_overlay
+        if [ "$_MPLC_OVERLAY_CHANGED" = 1 ]; then
+            sa02m_svc_apply mplc4.service app on --stack=MPLC
+        else
+            log INFO "MPLC: надстройка sa02m без изменений — служба не трогается"
+        fi
+        log OK "=== [09] MPLC: refresh-надстройка завершена ==="
+        exit 0
+        ;;
+esac
+
 if [ -z "$MPLC_SRC" ] || [ ! -d "$MPLC_SRC" ]; then
     log WARN "MPLC vendor-payload не найден (искали /opt/vendor-installers/mplc4/, MPLC4/cyntron/)."
     log INFO "Как подготовить дистрибутив: см. docs/vendor-integrations.md → MasterSCADA MPLC."
@@ -108,65 +179,77 @@ if dpkg -l | grep -qE '^ii\s+mplc4' 2>/dev/null; then
     log INFO "mplc4 dpkg-пакет обнаружен — vendor install.sh обновит установку"
 fi
 
-MPLC_INSTALL_LOG="/var/log/sa02m_mplc_install.log"
-log INFO "Запуск vendor install.sh (лог: $MPLC_INSTALL_LOG)"
-(
-    cd "$MPLC_SRC" || exit 1
-    chmod +x ./install.sh
-    bash ./install.sh --use-systemd --http-port="$MPLC_HTTP_PORT" --enable-log
-) >"$MPLC_INSTALL_LOG" 2>&1
-_rc=$?
-if [ $_rc -ne 0 ]; then
-    log ERR "vendor install.sh завершился с кодом $_rc — см. $MPLC_INSTALL_LOG"
-    tail -20 "$MPLC_INSTALL_LOG" 2>/dev/null | while read -r line; do
-        log WARN "  $line"
-    done
-    exit 1
-fi
-log OK "MPLC 4D Runtime установлен в /opt/mplc4/"
+# Состояние — ДО vendor install.sh: он сам делает `systemctl enable mplc4` +
+# start (MPLC4/cyntron/install.sh:1529-1531); apply ПОСЛЕ восстанавливает
+# операторское состояние точно (остановленный mplc4 возвращается остановленным
+# даже при реальном обновлении).
+sa02m_svc_capture mplc4.service
 
-# Plugins come from the git-tracked firmware/mplc4 (authoritative, correct ABI);
-# the vendor payload dir is only a fallback. This guarantees the right driver
-# regardless of what stale .so a device's vendor dir may hold, and installs
-# fast_modbus (absent from older vendor drops).
-for _so in mplc_cyntron.so mplc_protocol_fast_modbus.so; do
-    if [ -f "$MPLC_PLUGIN_SRC/$_so" ]; then
-        install -m 0755 "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so"
-        log OK "Плагин $_so установлен в /opt/mplc4/ (из firmware/mplc4)"
-    elif [ -f "$MPLC_SRC/$_so" ]; then
-        install -m 0755 "$MPLC_SRC/$_so" "/opt/mplc4/$_so"
-        log OK "Плагин $_so установлен в /opt/mplc4/ (fallback: vendor-дроп $MPLC_SRC)"
-    else
-        log WARN "$_so не найден ни в firmware/mplc4, ни в $MPLC_SRC — плагин не установлен"
+MPLC_INSTALL_LOG="/var/log/sa02m_mplc_install.log"
+_payload_ver=$(_mplc_read_ver "$MPLC_SRC")
+_stamp_ver=$(cat "$MPLC_STAMP" 2>/dev/null || true)
+if [ -n "$_payload_ver" ] && [ -n "$_stamp_ver" ] && [ "$_payload_ver" = "$_stamp_ver" ]; then
+    log INFO "MPLC $_payload_ver уже установлен из этого payload — vendor install.sh не запускаю"
+else
+    if [ -d /opt/mplc4 ] && [ -z "$_stamp_ver" ]; then
+        log INFO "версия установленного MPLC неизвестна (нет метки) — выполняю vendor install.sh"
     fi
-done
+    log INFO "Запуск vendor install.sh (лог: $MPLC_INSTALL_LOG)"
+    (
+        cd "$MPLC_SRC" || exit 1
+        chmod +x ./install.sh
+        bash ./install.sh --use-systemd --http-port="$MPLC_HTTP_PORT" --enable-log
+    ) >"$MPLC_INSTALL_LOG" 2>&1
+    _rc=$?
+    if [ $_rc -ne 0 ]; then
+        log ERR "vendor install.sh завершился с кодом $_rc — см. $MPLC_INSTALL_LOG"
+        tail -20 "$MPLC_INSTALL_LOG" 2>/dev/null | while read -r line; do
+            log WARN "  $line"
+        done
+        exit 1
+    fi
+    if [ -n "$_payload_ver" ] && [ -d /opt/mplc4 ]; then
+        printf '%s\n' "$_payload_ver" > "$MPLC_STAMP" 2>/dev/null || true
+    fi
+    log OK "MPLC 4D Runtime установлен в /opt/mplc4/"
+fi
+
+# sa02m-надстройка: unit-обёртка + плагины ЦИНТРОН (cmp-gated — см. функцию).
+_mplc_install_overlay
+
+# Apply: первая установка ⇒ enable+start (штатный рантайм изделия — контракт
+# kernel-conditional-services §3); обновление ⇒ точное восстановление
+# операторского состояния (ROOTFS-ветка внутри helper'а: enable через --root).
+sa02m_svc_apply mplc4.service app on --stack=MPLC
 
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
-    systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
-    systemctl enable mplc4 >>"$LOG_FILE" 2>&1 || true
-    systemctl restart mplc4 >>"$LOG_FILE" 2>&1 || true
-    sleep 3
-
-    if systemctl is-active --quiet mplc4; then
-        log OK "mplc4.service запущен"
-    else
-        log WARN "mplc4.service не активен — journalctl -u mplc4 -n 40"
-    fi
-
-    if ss -H -ltn "sport = :${MPLC_HTTP_PORT}" 2>/dev/null | grep -q ":${MPLC_HTTP_PORT}"; then
-        log OK "MPLC nginx слушает порт ${MPLC_HTTP_PORT}/TCP"
-    else
-        log WARN "MPLC nginx не слушает порт ${MPLC_HTTP_PORT}/TCP"
-    fi
-
-    for port in 30750 31550; do
-        if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
-            log OK "MPLC ${port}/TCP занят (fcgi/monitor)"
-        fi
-    done
+    case "$SA02M_SVC_LAST_RESULT" in
+        started|restarted)
+            sleep 3
+            if systemctl is-active --quiet mplc4; then
+                log OK "mplc4.service запущен"
+            else
+                log WARN "mplc4.service не активен — journalctl -u mplc4 -n 40"
+            fi
+            if ss -H -ltn "sport = :${MPLC_HTTP_PORT}" 2>/dev/null | grep -q ":${MPLC_HTTP_PORT}"; then
+                log OK "MPLC nginx слушает порт ${MPLC_HTTP_PORT}/TCP"
+            else
+                log WARN "MPLC nginx не слушает порт ${MPLC_HTTP_PORT}/TCP"
+            fi
+            for port in 30750 31550; do
+                if ss -H -ltn "sport = :${port}" 2>/dev/null | grep -q ":${port}"; then
+                    log OK "MPLC ${port}/TCP занят (fcgi/monitor)"
+                fi
+            done
+            ;;
+    esac
 else
     log INFO "SA02M_ROOTFS_BUILD=1 — mplc4 не запускаем в chroot"
-    systemctl --root="${SA02M_ROOTFS_ROOT:-/}" enable mplc4 >>"$LOG_FILE" 2>&1 || true
+fi
+
+# Стек на месте — политика фиксирует present (кнопка «Удалить» пишет disabled).
+if [ -d /opt/mplc4 ] || [ -x /etc/init.d/mplc4 ]; then
+    sa02m_stack_policy_set MPLC present || true
 fi
 
 log OK "=== [09] MPLC 4D Runtime установлен ==="

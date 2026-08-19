@@ -22,6 +22,9 @@ WWW_DIR="$BASE_DIR/www/network_config"
 
 # ── 1. Mosquitto ──────────────────────────────────────────────────────────────
 log INFO "Установка Mosquitto..."
+# Capture BEFORE pkg_install: installing the package (re)creates the unit, so
+# only a pre-install probe tells a first install from an upgrade.
+sa02m_svc_capture mosquitto.service
 pkg_install mosquitto mosquitto-clients
 
 # Конфиг listeners
@@ -56,74 +59,83 @@ if [ ! -f /etc/mosquitto/passwd/default.conf ]; then
     chmod 0600 /etc/sa02m_mqtt.env
 fi
 
-sa02m_systemctl enable mosquitto >> "$LOG_FILE" 2>&1 || true
-sa02m_systemctl restart mosquitto >> "$LOG_FILE" 2>&1 && log OK "Mosquitto запущен" \
-    || log WARN "Mosquitto не стартовал — проверьте: journalctl -u mosquitto -n 50"
+# Первая установка ⇒ enable+start; остановленный оператором брокер сохраняет
+# своё состояние (never-widen); работавший — перезапускается на свежем конфиге.
+sa02m_svc_apply mosquitto.service app on
 
-# Проверка порта 1883
-sleep 1
-if ss -H -ltn "sport = :1883" 2>/dev/null | grep -q ':1883'; then
-    log OK "Mosquitto слушает порт 1883 (localhost)"
-else
-    log WARN "Порт 1883 не обнаружен — Mosquitto, возможно, не запустился"
-fi
+# Проверка порта 1883 — только когда брокер должен работать (запущен/перезапущен
+# этой установкой); у сохранённо-остановленного отсутствие порта штатно.
+case "$SA02M_SVC_LAST_RESULT" in
+    started|restarted)
+        sleep 1
+        if ss -H -ltn "sport = :1883" 2>/dev/null | grep -q ':1883'; then
+            log OK "Mosquitto слушает порт 1883 (localhost)"
+        else
+            log WARN "Порт 1883 не обнаружен — Mosquitto, возможно, не запустился"
+        fi
+        ;;
+esac
 
 # ── 2. Python-зависимости ─────────────────────────────────────────────────────
 log INFO "Установка Python-зависимостей..."
-for pkg in python3 python3-pip; do
-    dpkg -l "$pkg" >/dev/null 2>&1 || apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1
-done
-
 # 2.1. Приоритет: apt-пакеты (стабильнее pip на embedded)
 #       python3-paho-mqtt, python3-yaml, python3-serial есть в bullseye main.
+sa02m_pkg_install_tier optional python3 python3-pip python3-paho-mqtt python3-yaml python3-serial
+
+# apt-get download + dpkg -i — единственный путь, работающий на плате со
+# сломанным/зафиксированным apt (класс 1.136): install отказывает целиком, а
+# download отдельных .deb проходит. Только при сети; bounded.
 _MQTT_APT_MISSING=""
 for _pkg in python3-paho-mqtt python3-yaml python3-serial; do
     if ! dpkg -l "$_pkg" 2>/dev/null | grep -q "^ii  $_pkg"; then
         _MQTT_APT_MISSING="$_MQTT_APT_MISSING $_pkg"
     fi
 done
-if [ -n "$_MQTT_APT_MISSING" ]; then
-    log INFO "apt install:$_MQTT_APT_MISSING"
-    if ! apt-get install -y --no-install-recommends $_MQTT_APT_MISSING >> "$LOG_FILE" 2>&1; then
-        log WARN "apt install не удался — fallback: apt-get download + dpkg -i"
-        _TMPDIR="$(mktemp -d)"
-        (cd "$_TMPDIR" && apt-get download $_MQTT_APT_MISSING >> "$LOG_FILE" 2>&1             && dpkg -i "$_TMPDIR"/*.deb >> "$LOG_FILE" 2>&1) || true
-        rm -rf "$_TMPDIR"
-    fi
+if [ -n "$_MQTT_APT_MISSING" ] && sa02m_online; then
+    log WARN "apt install не удался — fallback: apt-get download + dpkg -i"
+    _TMPDIR="$(mktemp -d)"
+    # shellcheck disable=SC2086,SC2046  # deliberate word-split: apt opts + package list
+    (cd "$_TMPDIR" && timeout "${SA02M_APT_TIMEOUT_SEC:-90}" apt-get $(sa02m_apt_opts) download $_MQTT_APT_MISSING >> "$LOG_FILE" 2>&1 \
+        && dpkg -i "$_TMPDIR"/*.deb >> "$LOG_FILE" 2>&1) || true
+    rm -rf "$_TMPDIR"
 fi
 
-# 2.2. Fallback через pip, если apt-версии всё ещё нет
-if ! python3 -c "import paho.mqtt" >/dev/null 2>&1; then
-    log WARN "python3-paho-mqtt из apt недоступен — fallback pip3"
-    pip3 install --break-system-packages --quiet paho-mqtt 2>&1 | tee -a "$LOG_FILE" | tail -3
-fi
-if ! python3 -c "import yaml" >/dev/null 2>&1; then
-    pip3 install --break-system-packages --quiet pyyaml 2>&1 | tee -a "$LOG_FILE" | tail -3
-fi
-if ! python3 -c "import serial" >/dev/null 2>&1; then
-    pip3 install --break-system-packages --quiet pyserial 2>&1 | tee -a "$LOG_FILE" | tail -3
-fi
+# 2.2. Fallback через pip, если apt-версии всё ещё нет (уже импортируемый
+# модуль — тихий no-op; оффлайн — WARN и деградация, см. lib.sh)
+sa02m_pip_install paho.mqtt paho-mqtt
+sa02m_pip_install yaml pyyaml
+sa02m_pip_install serial pyserial
 
-# 2.3. Обязательная проверка импорта (fail-loud, если не установилось)
+# 2.3. Обязательная проверка импорта (fail-loud в полной установке; в refresh —
+# WARN + пропуск установки юнитов: свежие юниты без зависимостей ушли бы в
+# restart-loop, а плата в refresh должна остаться в прежнем состоянии)
+_MQTT_DEPS_OK=1
 _MQTT_MISSING_MODULES=""
 python3 -c "import paho.mqtt" 2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES paho.mqtt"
 python3 -c "import yaml"      2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES yaml"
 python3 -c "import serial"    2>/dev/null || _MQTT_MISSING_MODULES="$_MQTT_MISSING_MODULES serial"
 if [ -n "$_MQTT_MISSING_MODULES" ]; then
-    log ERR "Python-зависимости НЕ установлены:$_MQTT_MISSING_MODULES"
-    log ERR "sa02m-modbus-mqtt/sa02m-telemetry уйдут в restart-loop!"
-    exit 1
+    if [ "${SA02M_INSTALL_MODE:-full}" = refresh ]; then
+        log WARN "Python-зависимости не установлены:$_MQTT_MISSING_MODULES — sa02m-modbus-mqtt/sa02m-telemetry не устанавливаю (ушли бы в restart-loop); поставьте при наличии сети и повторите"
+        _MQTT_DEPS_OK=0
+    else
+        log ERR "Python-зависимости НЕ установлены:$_MQTT_MISSING_MODULES"
+        log ERR "sa02m-modbus-mqtt/sa02m-telemetry уйдут в restart-loop!"
+        exit 1
+    fi
+else
+    log OK "Python-зависимости установлены и импортируются (paho.mqtt, yaml, serial)"
 fi
-log OK "Python-зависимости установлены и импортируются (paho.mqtt, yaml, serial)"
 
 # ── 3. Modbus→MQTT мост ───────────────────────────────────────────────────────
 log INFO "Деплой Modbus→MQTT моста..."
 
-# Capture the bridge's prior state BEFORE copying fresh code. A RUNNING bridge
-# must be restarted after the new .py land, or it keeps executing STALE code
-# until a manual restart/reboot (the live-device upgrade defect this fixes). We
-# never disable an enabled bridge and never start one the operator had stopped.
-read -r _BRIDGE_PREV_EN _BRIDGE_PREV_ACT < <(sa02m_capture_svc_state sa02m-modbus-mqtt.service)
+# Capture the bridge's and telemetry's prior state BEFORE copying fresh code.
+# A RUNNING bridge must be restarted after the new .py land, or it keeps
+# executing STALE code until a manual restart/reboot (the live-device upgrade
+# defect this fixes). We never disable an enabled unit and never start one the
+# operator had stopped.
+sa02m_svc_capture sa02m-modbus-mqtt.service sa02m-telemetry.service
 
 BRIDGE_DIR="/opt/sa02m-modbus-mqtt"
 install -d -m 0755 -o root -g root "$BRIDGE_DIR"
@@ -166,30 +178,32 @@ sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
 install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-external-info.py
 
-# Systemd units
-install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
-    /etc/systemd/system/sa02m-modbus-mqtt.service
-install -m 0644 -o root -g root "$ETC_DIR/sa02m-telemetry.service" \
-    /etc/systemd/system/sa02m-telemetry.service
+# Systemd units — refresh без зависимостей: юниты НЕ устанавливаются и не
+# трогаются (см. проверку импорта выше).
+if [ "$_MQTT_DEPS_OK" = 1 ]; then
+    install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
+        /etc/systemd/system/sa02m-modbus-mqtt.service
+    install -m 0644 -o root -g root "$ETC_DIR/sa02m-telemetry.service" \
+        /etc/systemd/system/sa02m-telemetry.service
+    sa02m_systemctl daemon-reload
 
-sa02m_systemctl daemon-reload
-sa02m_systemctl enable sa02m-modbus-mqtt.service >> "$LOG_FILE" 2>&1 || true
-sa02m_systemctl enable sa02m-telemetry.service   >> "$LOG_FILE" 2>&1 || true
+    # First install: the bridge is enabled-but-stopped (user configures devices
+    # first). Upgrade: a running bridge is restarted on the fresh .py (never
+    # left on stale code), a stopped one is never started (never-widen).
+    sa02m_svc_apply sa02m-modbus-mqtt.service app enabled
+    if [ "$SA02M_SVC_LAST_RESULT" = restarted ]; then
+        log OK "sa02m-modbus-mqtt перезапущен на свежем коде (был активен до установки)"
+    elif [ "$SA02M_SVC_LAST_RESULT" = enabled ]; then
+        log INFO "sa02m-modbus-mqtt.service включён (не запущен — настройте устройства через веб-интерфейс)"
+    fi
 
-# First install: leave the bridge enabled-but-stopped (user configures devices
-# first). Upgrade: restore the prior RUNNING state on fresh code so a running
-# bridge never keeps executing stale .py, and a bridge the operator was running
-# is never left stopped (the hard rule of this fix).
-if [ "$_BRIDGE_PREV_ACT" = active ]; then
-    sa02m_restore_svc_state sa02m-modbus-mqtt.service "$_BRIDGE_PREV_EN" "$_BRIDGE_PREV_ACT" refresh
-    log OK "sa02m-modbus-mqtt перезапущен на свежем коде (был активен до установки)"
-else
-    log INFO "sa02m-modbus-mqtt.service включён (не запущен — настройте устройства через веб-интерфейс)"
+    # Телеметрия: первая установка — включена и запущена; операторская остановка
+    # сохраняется.
+    sa02m_svc_apply sa02m-telemetry.service app on
+    case "$SA02M_SVC_LAST_RESULT" in
+        started|restarted) log OK "sa02m-telemetry запущен" ;;
+    esac
 fi
-
-# Телеметрию запускаем сразу
-sa02m_systemctl restart sa02m-telemetry.service >> "$LOG_FILE" 2>&1 && \
-    log OK "sa02m-telemetry запущен" || log WARN "sa02m-telemetry не стартовал"
 
 # ── 4. CGI-скрипты веб-интерфейса ────────────────────────────────────────────
 log INFO "Установка CGI MQTT..."
@@ -248,7 +262,12 @@ for svc in mosquitto sa02m-telemetry; do
     if pgrep -x "$svc" >/dev/null 2>&1 || (command -v systemctl && systemctl is-active "$svc" >/dev/null 2>&1); then
         log OK "$svc: запущен"
     else
-        log WARN "$svc: не запущен"
+        # Сохранённая операторская остановка — не сбой: WARN был бы ложным
+        # сигналом «пропущенный стек» в таблице пост-проверок.
+        case "${SA02M_SVC_ACT[$svc.service]-}" in
+            inactive|failed|deactivating) log INFO "$svc: не запущен (состояние сохранено)" ;;
+            *) log WARN "$svc: не запущен" ;;
+        esac
     fi
 done
 

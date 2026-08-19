@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.5.87-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.5.88-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -367,6 +367,11 @@ sudo ./install.sh [ПАРАМЕТРЫ]
   --gw   <gw>      Шлюз по умолчанию          (по умолчанию: зависит от --variant)
   --port <port>    Порт nginx                  (по умолчанию: 9999)
   --pass <pass>    Пароль пользователя admin   (по умолчанию: cyntron)
+  --refresh        Режим обновления: сторонние стеки (Node-RED, CODESYS,
+                   MPLC, Docker) не ставятся и не включаются, состояние
+                   служб сохраняется (docs/contracts/installer-refresh-policy.md)
+  --with-optional  Явно ставить/обновлять сторонние стеки, в том числе
+                   удалённые оператором через панель
 ```
 
 ### Примеры
@@ -378,8 +383,8 @@ sudo ./install.sh --ip 10.0.0.5 --gw 10.0.0.1 --pass MyPass123
 # Другой порт, интерфейс без шлюза
 sudo ./install.sh --ip 172.16.0.1 --mask 255.255.0.0 --gw "" --port 80
 
-# Только обновить веб-файлы (если уже установлено)
-sudo ./install.sh
+# Обновить уже настроенную плату (ничего решённого оператором не меняет)
+sudo ./install.sh --refresh
 ```
 
 ---
@@ -392,7 +397,7 @@ web/
 ├── install.sh                    ← главный скрипт установки
 │
 ├── scripts/
-│   ├── lib.sh                    ← общие функции (log, pkg_install, svc_enable)
+│   ├── lib.sh                    ← общие функции (log, pkg-tier'ы, sa02m_svc_capture/apply)
 │   ├── 01-system.sh              ← система: пакеты, locale, udev, RS-485 симлинки
 │   ├── 02-network.sh             ← сеть: eth0/1, watchdog, udev правила
 │   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/

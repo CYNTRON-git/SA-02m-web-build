@@ -55,10 +55,19 @@ if grep -q 'install -m 644 "\$ETC_DIR/systemd/sa02m-iface-canonical.service"' sc
 else
     fail "02-network.sh no longer installs sa02m-iface-canonical.{sh,service}"
 fi
-if grep -q 'systemctl enable sa02m-iface-canonical' scripts/02-network.sh; then
-    pass "02-network.sh enables the unit"
+# The enable goes through the service helper; the same line must NOT carry
+# `start` — starting the unit performs the rename on a live board (the
+# deferred-by-default rule; contract §1.0).
+canon_line=$(grep -E '^[[:space:]]*sa02m_svc_apply sa02m-iface-canonical\.service infra' scripts/02-network.sh)
+if [ -n "$canon_line" ]; then
+    pass "02-network.sh enables the unit (sa02m_svc_apply … infra)"
+    if grep -qE '\bstart\b' <<<"$canon_line"; then
+        fail "02-network.sh STARTS sa02m-iface-canonical — the rename would run on a live board (contract §1.0)"
+    else
+        pass "sa02m-iface-canonical is enable-only (no start on the apply line)"
+    fi
 else
-    fail "02-network.sh no longer enables sa02m-iface-canonical"
+    fail "02-network.sh no longer enables sa02m-iface-canonical (sa02m_svc_apply … infra line missing)"
 fi
 
 # ── 3. F6 regression guard on the conf write path ─────────────────────────

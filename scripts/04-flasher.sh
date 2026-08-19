@@ -20,13 +20,7 @@ LOG_DIR="/var/log/sa02m-flasher"
 FLASHER_USER="sa02m-flasher"
 
 # ── Системные зависимости ─────────────────────────────────────────────────
-for pkg in python3 python3-venv python3-pip python3-serial psmisc sudo; do
-    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-        log INFO "apt install $pkg"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1 || \
-            log WARN "Не удалось установить $pkg (продолжаем: pyserial может быть через venv)"
-    fi
-done
+sa02m_pkg_install_tier optional python3 python3-venv python3-pip python3-serial psmisc sudo
 
 # ── Пользователь и группы ─────────────────────────────────────────────────
 if ! id "$FLASHER_USER" >/dev/null 2>&1; then
@@ -74,31 +68,19 @@ install -m 0644 -o root -g root "$ETC_DIR/logrotate.d/sa02m-flasher" /etc/logrot
 sed -i 's/\r$//' /etc/logrotate.d/sa02m-flasher
 
 # ── systemd unit ──────────────────────────────────────────────────────────
-# Capture prior state BEFORE (re)installing the unit: an absent unit (empty
-# is-enabled) marks a FIRST install → apply the default-on; an existing device
-# has its enabled/active state PRESERVED — never force-start a flasher the
-# operator deliberately stopped, and never re-enable a disabled one.
-read -r _FL_PREV_EN _FL_PREV_ACT < <(sa02m_capture_svc_state sa02m-flasher.service)
+# Capture prior state BEFORE (re)installing the unit — the only reliable
+# first-install signal (a freshly-installed unit already reads "disabled").
+# The apply preserves an operator's stop/disable exactly; a running flasher is
+# restarted on fresh code (docs/contracts/installer-refresh-policy.md).
+sa02m_svc_capture sa02m-flasher.service
 log INFO "Устанавливаю systemd unit sa02m-flasher.service"
 install -m 0644 -o root -g root "$ETC_DIR/sa02m-flasher.service" /etc/systemd/system/sa02m-flasher.service
 systemctl daemon-reload
+sa02m_svc_apply sa02m-flasher.service app on
 _FL_EXPECT_UP=0
-if [ -z "$_FL_PREV_EN" ] || [ "$_FL_PREV_EN" = unknown ]; then
-    # first install → default on (enable + start on fresh code)
-    systemctl enable sa02m-flasher.service >> "$LOG_FILE" 2>&1 || log WARN "enable sa02m-flasher не удался"
-    systemctl restart sa02m-flasher.service >> "$LOG_FILE" 2>&1 && log OK "sa02m-flasher запущен" \
-        || log WARN "sa02m-flasher не стартовал (journalctl -u sa02m-flasher -n 100)"
-    _FL_EXPECT_UP=1
-else
-    # upgrade → restore EXACTLY the prior state, refreshing code if it was active
-    sa02m_restore_svc_state sa02m-flasher.service "$_FL_PREV_EN" "$_FL_PREV_ACT" refresh
-    if [ "$_FL_PREV_ACT" = active ]; then
-        log OK "sa02m-flasher перезапущен на свежем коде (был активен)"
-        _FL_EXPECT_UP=1
-    else
-        log INFO "sa02m-flasher: прежнее состояние сохранено (en=$_FL_PREV_EN act=$_FL_PREV_ACT) — не форсируем запуск"
-    fi
-fi
+case "$SA02M_SVC_LAST_RESULT" in
+    started|restarted) _FL_EXPECT_UP=1 ;;
+esac
 
 # ── Проверки ──────────────────────────────────────────────────────────────
 # Только когда флэшер должен быть запущен (первый install или был активен) —

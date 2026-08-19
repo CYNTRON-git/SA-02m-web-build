@@ -356,6 +356,12 @@ SA02M_SKIP_NODERED=1 ./install.sh   # без Node-RED
 SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 ./install.sh  # без обоих
 ```
 
+`SA02M_SKIP_*` — разовый пропуск на один запуск. Персистентное решение
+оператора живёт в `/etc/sa02m_stacks.conf` (`disabled` после «Удалить» в
+панели — стек не вернёт ни один путь установки); `--with-optional` явно
+ставит/обновляет сторонние стеки, включая отключённые. Контракт:
+`docs/contracts/installer-refresh-policy.md`.
+
 ## Файлы репозитория, участвующие в интеграции
 
 | Файл | Назначение |

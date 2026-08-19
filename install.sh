@@ -4,9 +4,15 @@
 # Дата: 2026
 # Использование: sudo ./install.sh [--ip X.X.X.X] [--port 9999] [--pass cyntron]
 #                                  [--canonical-iface-now] [--no-gw-repair]
+#                                  [--refresh] [--with-optional]
 #   --no-gw-repair (или SA02M_SKIP_GW_REPAIR=1) — не дописывать отсутствующие
 #   gateway/dns-nameservers в существующий /etc/network/interfaces.d/ethN.conf.
 #   Для сети, где шлюза нет намеренно (изолированный сегмент).
+#   --refresh (или SA02M_INSTALL_MODE=refresh) — режим обновления: сторонние
+#   стеки не ставятся/не включаются, состояние служб сохраняется
+#   (docs/contracts/installer-refresh-policy.md).
+#   --with-optional (или SA02M_WITH_OPTIONAL=1) — явно ставить/обновлять
+#   сторонние стеки, в т.ч. отключённые оператором.
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -46,9 +52,22 @@ while [[ $# -gt 0 ]]; do
         --variant) SA02M_HW_VARIANT="$2";   shift 2 ;;
         --canonical-iface-now) SA02M_CANONICAL_IFACE_NOW="1"; shift ;;
         --no-gw-repair) SA02M_SKIP_GW_REPAIR="1"; shift ;;
+        --refresh) SA02M_INSTALL_MODE="refresh"; shift ;;
+        --with-optional) SA02M_WITH_OPTIONAL="1"; shift ;;
         *)         shift ;;
     esac
 done
+
+# ── Install mode (docs/contracts/installer-refresh-policy.md) ──────────────
+# full (default) — the fresh-board install, byte-for-byte today's behaviour.
+# refresh — update-in-place: third-party stacks are never installed/enabled,
+# application service state is preserved. Env form (SA02M_INSTALL_MODE=refresh)
+# serves the offline wrapper and the self-upgrade bridge. Validated (fail
+# closed) after lib.sh is sourced, where `log` exists. Exported: the modules
+# are child processes.
+SA02M_INSTALL_MODE="${SA02M_INSTALL_MODE:-full}"
+SA02M_WITH_OPTIONAL="${SA02M_WITH_OPTIONAL:-0}"
+export SA02M_INSTALL_MODE SA02M_WITH_OPTIONAL
 
 # ── Init log ───────────────────────────────────────────────────────────────
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -57,6 +76,25 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') Установка СА-02м начата" >>
 
 source "$SCRIPT_DIR/scripts/lib.sh"
 check_root
+
+case "$SA02M_INSTALL_MODE" in
+    full|refresh) ;;
+    *)
+        log ERR "SA02M_INSTALL_MODE=$SA02M_INSTALL_MODE: допустимо full|refresh"
+        exit 2
+        ;;
+esac
+
+# Migration: create /etc/sa02m_stacks.conf from live state ONLY if absent (an
+# operator decision is never overwritten; never under a rootfs build — the
+# image must not bake a policy). One home: etc/sa02m-stacks-policy.sh.
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    _stacks_mig=$(sa02m_stack_policy_derive --write) || \
+        log WARN "Не удалось создать /etc/sa02m_stacks.conf — политика стеков читается как «absent»"
+    if [ -n "${_stacks_mig:-}" ]; then
+        log OK "$_stacks_mig"
+    fi
+fi
 
 # Persist variant if explicitly provided, then resolve IP/GW defaults
 if [ -n "$SA02M_HW_VARIANT" ]; then
@@ -81,11 +119,19 @@ printf "  ║   СА-02м  Installer  v%-16s ║\n" "${_WEB_VER:-?}"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 echo "  Вариант: $HW_VARIANT"
+if [ "$SA02M_INSTALL_MODE" = refresh ]; then
+    echo "  Режим : обновление (refresh)"
+else
+    echo "  Режим : полная установка"
+fi
 echo "  IP    : $IP_ADDRESS"
 echo "  Шлюз  : $GATEWAY"
 echo "  PORT  : $PORT"
 echo "  LOG   : $LOG_FILE"
 echo ""
+if [ "$SA02M_INSTALL_MODE" = refresh ]; then
+    log INFO "Режим refresh: сторонние стеки не ставятся и не включаются; состояние служб сохраняется; пакеты — только зависимости sa02m (при наличии сети)"
+fi
 
 # ── Run modules ────────────────────────────────────────────────────────────
 bash "$SCRIPT_DIR/scripts/01-system.sh"
@@ -140,80 +186,9 @@ if [ "${SA02M_SKIP_MPLC:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/09-mplc.sh" ]
     bash "$SCRIPT_DIR/scripts/09-mplc.sh" || log WARN "09-mplc.sh завершился с ошибкой"
 fi
 
-if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ]; then
+if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/12-docker.sh" ]; then
     log INFO "──── Опциональный стек: Docker CE (docker.io) ────"
-    if ! command -v docker >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose >> "$LOG_FILE" 2>&1 \
-            && log OK "docker.io + docker-compose установлены" \
-            || log WARN "docker.io не установлен — проверьте apt sources"
-    else
-        log INFO "docker уже установлен: $(docker --version 2>/dev/null | head -1)"
-    fi
-
-    # Настройка Docker зависит от возможностей ядра, а не от его версии: ядро
-    # с CONFIG_OVERLAY_FS + CONFIG_BRIDGE + CONFIG_NF_TABLES получает полноценный
-    # режим (overlay2 storage + iptables-nft + bridge networking), любое другое —
-    # minimal-mode (vfs + iptables=false + bridge=none). Штатные ядра флота
-    # (6.1.0-rc6 / 6.1.0-rc6-rt4) собраны с этим набором — 1.0.5.58.
-    # NOTE: this config-grep predicate is the legacy half of the check; the
-    # RUNTIME gate is the ExecCondition capability probe installed by
-    # 01-system.sh (/etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
-    # → sa02m-kernel-service-guard.sh docker-capable). The grep misses
-    # NFT_COMPAT and mis-detected the 6.1.0-rc6 bench kernel as full-mode
-    # (docs/contracts/kernel-conditional-services.md).
-    if command -v docker >/dev/null 2>&1; then
-        DOCKER_MODE=full
-        KERNEL_CFG="/boot/config-$(uname -r)"
-        for req in CONFIG_OVERLAY_FS CONFIG_BRIDGE CONFIG_NF_TABLES; do
-            if [ -f "$KERNEL_CFG" ]; then
-                if ! grep -qE "^${req}=[ym]" "$KERNEL_CFG"; then
-                    DOCKER_MODE=minimal
-                    log WARN "kernel $(uname -r): $req отсутствует → Docker minimal-mode"
-                    break
-                fi
-            fi
-        done
-
-        mkdir -p /etc/docker
-        if [ "$DOCKER_MODE" = "full" ]; then
-            update-alternatives --set iptables  /usr/sbin/iptables-nft  >> "$LOG_FILE" 2>&1 || true
-            update-alternatives --set ip6tables /usr/sbin/ip6tables-nft >> "$LOG_FILE" 2>&1 || true
-
-            if [ ! -f /etc/docker/daemon.json ] || grep -q '"storage-driver": "vfs"' /etc/docker/daemon.json 2>/dev/null; then
-                cat > /etc/docker/daemon.json <<'DOCKER_JSON'
-{
-  "storage-driver": "overlay2",
-  "iptables": true,
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
-}
-DOCKER_JSON
-                log INFO "docker daemon.json: full-mode (overlay2 + iptables-nft + bridge)"
-            fi
-        else
-            update-alternatives --set iptables  /usr/sbin/iptables-legacy  >> "$LOG_FILE" 2>&1 || true
-            update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy >> "$LOG_FILE" 2>&1 || true
-
-            if [ ! -f /etc/docker/daemon.json ] || ! grep -q '"storage-driver"' /etc/docker/daemon.json; then
-                cat > /etc/docker/daemon.json <<'DOCKER_JSON'
-{
-  "storage-driver": "vfs",
-  "iptables": false,
-  "bridge": "none",
-  "log-driver": "journald"
-}
-DOCKER_JSON
-                log INFO "docker daemon.json: minimal-mode (vfs, без iptables/bridge) — старое ядро"
-            fi
-        fi
-
-        systemctl reset-failed docker 2>/dev/null || true
-        systemctl enable --now docker >> "$LOG_FILE" 2>&1 && log OK "docker.service активен ($DOCKER_MODE-mode)" \
-            || log WARN "docker.service не стартует — journalctl -u docker -n 30"
-    fi
+    bash "$SCRIPT_DIR/scripts/12-docker.sh" || log WARN "12-docker.sh завершился с ошибкой"
 fi
 
 # ── Migration: sa02m-mqtt-opcua northbound gateway port 4840 → 4841 ────────
@@ -296,10 +271,12 @@ echo ""
 
 # ── Check services ─────────────────────────────────────────────────────────
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
-    # Базовые сервисы всегда обязательные
+    # Базовые сервисы всегда обязательные. «Установлен» = unit-файл есть;
+    # состояние печатается как факт: операторски остановленный флэшер — это
+    # НЕ «не установлен» (прежний is-active||is-enabled тест читал его так).
     for svc in nginx fcgiwrap sa02m-flasher sa02m-cloud-agent sa02m-pre-start; do
-        if systemctl is-active "$svc" &>/dev/null || systemctl is-enabled "$svc" &>/dev/null; then
-            log OK " ✓ $svc установлен"
+        if sa02m_unit_exists "$svc"; then
+            log OK " ✓ $svc установлен: $(systemctl is-active "$svc" 2>/dev/null || echo inactive)"
         else
             log WARN " ✗ $svc не установлен!"
         fi

@@ -45,12 +45,17 @@ log OK "Агент скопирован"
 
 # ── 2. Systemd units ─────────────────────────────────────────────────────────
 log INFO "Устанавливаю systemd units..."
+# Capture BEFORE the unit files land (first-install signal). An ACTIVE agent is
+# restarted on the fresh code just copied — the stale-code class the MQTT
+# bridge already fixed (1.0.5.73); a stopped/disabled one is preserved.
+sa02m_svc_capture sa02m-cloud-agent.service
 cp "$AGENT_SRC/sa02m-cloud-agent.service" "$SYSTEMD_DIR/"
 cp "$AGENT_SRC/sa02m-cloud-frpc.service"  "$SYSTEMD_DIR/"
 systemctl daemon-reload
-# Агент включаем сразу — до активации он в standby и ждёт код/токен.
-# Туннель включает сам агент после enrollment (юнит гейтится frpc.toml).
-systemctl enable sa02m-cloud-agent
+# Первый раз агент только включаем (enable, без запуска) — до активации он в
+# standby и ждёт код/токен. Туннель включает сам агент после enrollment
+# (юнит гейтится frpc.toml).
+sa02m_svc_apply sa02m-cloud-agent.service app enabled
 log OK "Units установлены (агент ждёт активации)"
 
 # ── 3. Замена ручных стендовых юнитов (прототип Фазы B) ─────────────────────
@@ -210,8 +215,8 @@ if install_frpc; then
     # do nothing; the agent starts the tunnel itself after pairing.
     if [ -n "$FRPC_INSTALLED_VIA" ] && [ -z "${SA02M_ROOTFS_BUILD:-}" ] \
        && [ -f /etc/sa02m-cloud/frpc.toml ]; then
-        log INFO "frpc установлен ($FRPC_INSTALLED_VIA), устройство привязано — перезапускаю агент"
-        sa02m_systemctl restart sa02m-cloud-agent >> "$LOG_FILE" 2>&1 || true
+        log INFO "frpc установлен ($FRPC_INSTALLED_VIA), устройство привязано — перезапуск агента при необходимости"
+        sa02m_svc_restart_if_active sa02m-cloud-agent.service
     fi
 else
     log WARN "frpc не найден ($FRPC_BIN) — облачный туннель не поднимется."

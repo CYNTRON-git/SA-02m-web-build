@@ -28,11 +28,7 @@ if ! dpkg -s python3 >/dev/null 2>&1; then
 fi
 python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional python3-paho-mqtt
 python3 -c "import yaml"      2>/dev/null || sa02m_pkg_install_tier optional python3-yaml
-if ! python3 -c "import socketio" 2>/dev/null; then
-    log INFO "pip3 install python-socketio (client)"
-    pip3 install --break-system-packages --quiet "python-socketio[client]" >>"$LOG_FILE" 2>&1 || \
-        log WARN "python-socketio не установлен — клиент сообщит missing_deps при enable"
-fi
+sa02m_pip_install socketio "python-socketio[client]"
 
 # ── Package tree ───────────────────────────────────────────────────────────
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
@@ -65,10 +61,15 @@ chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
            /etc/sa02m-alice/sa02m-alice-devices.conf 2>/dev/null || true
 
 # ── systemd ────────────────────────────────────────────────────────────────
-# Capture prior enable-state BEFORE (re)installing the units — the only reliable
+# Capture prior state BEFORE (re)installing the units — the only reliable
 # first-install signal (a freshly-installed unit already reads "disabled").
-_alice_prev_cfg=$(systemctl is-enabled sa02m-alice-config.service 2>/dev/null || true)
-_alice_prev_cli=$(systemctl is-enabled sa02m-alice-client.service 2>/dev/null || true)
+# Both Alice services ship DISABLED + STOPPED by default (`app off`) — Operator
+# opt-in policy, same philosophy as the CODESYS install-only pattern
+# (docs/contracts/kernel-conditional-services.md). The OFF default applies ONLY
+# on first install; an operator's opt-in (enabled and/or running) is preserved
+# and a running client is restarted on the fresh code
+# (docs/contracts/installer-refresh-policy.md).
+sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service
 
 install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-client.service" /etc/systemd/system/
@@ -76,30 +77,8 @@ install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-config.service" /etc/systemd/system/
 systemctl daemon-reload
 
-# Both Alice services ship DISABLED + STOPPED by default — Operator opt-in
-# policy, same philosophy as the CODESYS install-only pattern
-# (docs/contracts/kernel-conditional-services.md). But this must be idempotent:
-# a device where the operator later ENABLED Alice via the web UI must NOT be
-# forcibly re-disabled on a re-install (the upgrade path). So the OFF default is
-# applied ONLY on first install (prior state unknown/absent); an operator's
-# opt-in is preserved and its code refreshed.
-_alice_apply_default() {
-    local svc=$1 prev=$2
-    if [ -z "$prev" ] || [ "$prev" = unknown ]; then
-        systemctl disable "$svc" >/dev/null 2>&1 || true
-        systemctl stop "$svc" >/dev/null 2>&1 || true
-        log INFO "$svc: выключен по умолчанию (opt-in через веб-интерфейс)"
-    elif [ "$prev" = enabled ]; then
-        systemctl enable "$svc" >/dev/null 2>&1 || true
-        systemctl restart "$svc" >/dev/null 2>&1 || true
-        log INFO "$svc: включён оператором — сохраняем (перезапуск на свежем коде)"
-    else
-        systemctl stop "$svc" >/dev/null 2>&1 || true
-        log INFO "$svc: оставлен выключенным ($prev) — состояние задано оператором"
-    fi
-}
-_alice_apply_default sa02m-alice-config.service "$_alice_prev_cfg"
-_alice_apply_default sa02m-alice-client.service "$_alice_prev_cli"
+sa02m_svc_apply sa02m-alice-config.service app off
+sa02m_svc_apply sa02m-alice-client.service app off
 
 # ── Privileged CGI helper + sudoers ────────────────────────────────────────
 install -m 0755 -o root -g root \

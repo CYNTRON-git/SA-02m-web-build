@@ -52,6 +52,9 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-devices.conf" ]; then
 fi
 install -d -m 0755 /var/lib/sa02m-stand
 
+# Capture BEFORE the unit files land (first-install signal); operator stops
+# survive the upgrade (docs/contracts/installer-refresh-policy.md).
+sa02m_svc_capture sa02m-devices-api.service sa02m-devices-logger.service
 for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
     if [ -f "$ETC_DIR/systemd/$unit" ]; then
         install -m 644 "$ETC_DIR/systemd/$unit" "/etc/systemd/system/$unit"
@@ -59,10 +62,19 @@ for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
     fi
 done
 systemctl daemon-reload
-systemctl enable sa02m-devices-api.service sa02m-devices-logger.service >/dev/null 2>&1 || true
-systemctl restart sa02m-devices-api.service sa02m-devices-logger.service \
-    && log OK "sa02m-devices-api + logger active" \
-    || log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
+_DEV_OK=1
+for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
+    sa02m_svc_apply "$unit" app on
+    case "$SA02M_SVC_LAST_RESULT" in
+        started|restarted|kept|left-inactive|left-masked) : ;;
+        *) _DEV_OK=0 ;;
+    esac
+done
+if [ "$_DEV_OK" = 1 ]; then
+    log OK "sa02m-devices-api + logger: состояние применено"
+else
+    log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
+fi
 
 # nginx proxy /api/devices* (если в репо есть полный conf)
 if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then

@@ -88,9 +88,13 @@ if grep -q 'install -m 755 "\$ETC_REPO/sa02m-kernel-service-guard.sh"' scripts/0
 else
     fail "01-system.sh no longer installs the guard script/unit/docker drop-in (contract §2)"
 fi
-if grep -q 'enable sa02m-kernel-service-guard.service' scripts/01-system.sh \
+# The enable goes through the installer's service helper since the refresh-mode
+# refactor: `sa02m_svc_apply <unit> infra` asserts unmasked+enabled in every
+# mode (docs/contracts/installer-refresh-policy.md) — the same guarantee the
+# old raw `systemctl enable` line carried.
+if grep -q 'sa02m_svc_apply sa02m-kernel-service-guard.service infra' scripts/01-system.sh \
    && grep -q 'sa02m-kernel-service-guard.sh apply-policy' scripts/01-system.sh; then
-    pass "01-system.sh enables the guard unit and runs apply-policy"
+    pass "01-system.sh enables the guard unit (svc_apply infra) and runs apply-policy"
 else
     fail "01-system.sh no longer enables the guard unit / runs apply-policy (contract §2)"
 fi
