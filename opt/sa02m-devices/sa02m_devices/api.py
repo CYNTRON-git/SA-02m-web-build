@@ -145,10 +145,19 @@ def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
 
 
 def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
+    kind = _q1(qs, "kind")
     metric = _q1(qs, "metric")
     group = _q1(qs, "group") or None
     range_key = _q1(qs, "range", "1h") or "1h"
     device_id = _q1(qs, "device_id") or None
+    # MR-02m AI long-table path: channel=N → one channel; else all channels.
+    if kind == "mr":
+        channel = _q1(qs, "channel")
+        if channel:
+            return device_history_db.history_mr(
+                device_id, range_key, ch=channel
+            ), 200
+        return device_history_db.history_mr_batch(device_id, range_key), 200
     if group:
         return device_history_db.history_batch(
             range_key, group=group, device_id=device_id
@@ -236,6 +245,7 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
         return _send_json(self, {"ok": False, "error": "not found"}, 404)
 
     def _handle_export(self, qs: dict[str, list[str]]) -> None:
+        kind = _q1(qs, "kind") or None
         metric = _q1(qs, "metric") or None
         group = _q1(qs, "group") or None
         range_key = _q1(qs, "range", "1h") or "1h"
@@ -244,7 +254,8 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
 
         if fmt in ("txt", "tsv", "text"):
             body, filename = device_history_db.export_text(
-                range_key, metric_id=metric, group=group, device_id=device_id
+                range_key, metric_id=metric, group=group,
+                device_id=device_id, kind=kind
             )
             return _send_bytes(
                 self,
@@ -254,7 +265,8 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
             )
         try:
             raw, filename = device_history_db.export_xlsx(
-                range_key, metric_id=metric, group=group, device_id=device_id
+                range_key, metric_id=metric, group=group,
+                device_id=device_id, kind=kind
             )
         except RuntimeError as exc:
             return _send_json(self, {"ok": False, "error": str(exc)}, 503)
