@@ -28,12 +28,12 @@ PIDFILE=/run/sa02m-offline-update.pid
 [ -w /run ] || PIDFILE=/root/sa02m-offline-update.pid
 POLL_SEC=15
 CORE_SERVICES="nginx fcgiwrap mosquitto sa02m-modbus-mqtt sa02m-devices-api sa02m-flasher"
-# Optional vendor/heavy stacks skipped by default: Node-RED/CODESYS/Docker pull
-# from the internet or need an EULA payload, MPLC needs a vendor payload absent
-# from git. Skipping a module leaves an already-installed stack untouched
-# (install.sh semantics). Every sa02m stack (web, flasher, cloud, mqtt bridge,
-# devices, gateway, alice, update runner) always runs.
-DEFAULT_SKIPS="NODERED CODESYS DOCKER MPLC"
+# The wrapper runs install.sh in REFRESH mode (docs/contracts/
+# installer-refresh-policy.md): third-party stacks (Node-RED/CODESYS/MPLC/
+# Docker) are never installed or re-enabled — an installed, not-operator-
+# disabled one gets only its sa02m overlay; sa02m stacks install/update as
+# usual; application service state is preserved. --with-optional restores the
+# full third-party behaviour. SA02M_SKIP_* stays available via --skip.
 ALLOWED_SKIPS="NODERED CODESYS DOCKER MPLC MQTT GATEWAY ALICE DEVICES"
 
 EXTRA_LOG=""      # --log PATH: every line below is also appended there (plain, no colour)
@@ -71,8 +71,9 @@ usage() {
                     install.sh (дождаться его), выполнить пост-проверки
   --force           разрешить откат на версию НИЖЕ установленной
   --no-backup       не снимать бэкапы /etc и веб-корня
-  --with-optional   ставить и опциональные стеки (по умолчанию пропущены:
-                    ${DEFAULT_SKIPS})
+  --with-optional   ставить/обновлять сторонние стеки (Node-RED, CODESYS,
+                    MPLC, Docker); по умолчанию обновляются только уже
+                    установленные и не отключённые оператором
   --skip LIST       дополнительно пропустить модули, через запятую; допустимы:
                     ${ALLOWED_SKIPS}
   --unattended      без терминала (мост самообновления / systemd-юнит): без
@@ -116,7 +117,6 @@ while [ $# -gt 0 ]; do
     shift
 done
 SKIPS=""
-[ "$WITH_OPTIONAL" = 1 ] || SKIPS="$DEFAULT_SKIPS"
 for tok in $(printf '%s' "$EXTRA_SKIPS" | tr ',' ' ' | tr '[:lower:]' '[:upper:]'); do
     case " $ALLOWED_SKIPS " in
         *" $tok "*) case " $SKIPS " in *" $tok "*) ;; *) SKIPS="$SKIPS $tok" ;; esac ;;
@@ -160,6 +160,11 @@ if [ -z "$TARGET_VER" ]; then
 fi
 DEPLOYED_VER="$(read_version "$WEB_ROOT/VERSION")"
 LOG="/root/install-offline-${TARGET_VER}.log"
+# Per-version pre-install service snapshot (`<svc> <is-active>` per
+# CORE_SERVICES): written right before launching install.sh, read by the
+# post-check table (incl. --status re-attach) to tell a preserved operator
+# stop from a service the update dropped.
+SVC_BEFORE="/root/install-offline-${TARGET_VER}.svc-before"
 log INFO "Установлено: ${DEPLOYED_VER:-не установлено}  →  цель: ${TARGET_VER}  (дерево: $REPO_ROOT)"
 
 pid_alive() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
@@ -208,7 +213,7 @@ row() {   # row PASS|FAIL <name> <detail>
     say "$(printf '  %-4s  %s%*s%s' "$1" "$2" "$w" '' "${3:-}")"
 }
 post_checks() {   # $1 = install.sh exit code or "" when unknown (--status re-attach)
-    local rc=${1:-} out code ver svc st branch rv dv ua
+    local rc=${1:-} out code ver svc st branch rv dv ua prev
     say ""; log INFO "Пост-проверки (docs/deployment.md, шаг 7):"
     if grep -q 'Установка завершена' "$LOG" 2>/dev/null; then
         row PASS "install.sh завершён" "финальный баннер в логе${rc:+, rc=$rc}"
@@ -238,8 +243,20 @@ post_checks() {   # $1 = install.sh exit code or "" when unknown (--status re-at
         st="$(systemctl is-active "$svc" 2>/dev/null || true)"
         if [ "$st" = active ]; then row PASS "служба $svc" "active"
         else
-            systemctl cat "$svc" >/dev/null 2>&1 && row FAIL "служба $svc" "${st:-unknown}" \
-                || row FAIL "служба $svc" "юнит не установлен"
+            # Preserved operator stop (refresh guarantee) is a PASS: only a
+            # service that WAS active before the update and is not now is a
+            # regression. No snapshot (older log dir) ⇒ the strict rule.
+            prev=""
+            [ -f "$SVC_BEFORE" ] && prev="$(awk -v s="$svc" '$1==s {print $2; exit}' "$SVC_BEFORE" 2>/dev/null)"
+            if systemctl cat "$svc" >/dev/null 2>&1; then
+                if [ -n "$prev" ] && [ "$prev" != active ]; then
+                    row PASS "служба $svc" "не был запущен до обновления — состояние сохранено"
+                else
+                    row FAIL "служба $svc" "${st:-unknown}"
+                fi
+            else
+                row FAIL "служба $svc" "юнит не установлен"
+            fi
         fi
     done
     # Update-check proof: the symptom this path exists for — the old check
@@ -326,19 +343,32 @@ else log ERR "install.sh: синтаксическая ошибка — уста
 # the command word; after nohup they would become its program name. The same
 # launch serves --unattended: the PID file lets an SSH `--status` observe the
 # bridge's install, and `wait` gives the exit code in both modes.
-SKIP_ENV=()
-for tok in $SKIPS; do SKIP_ENV+=("SA02M_SKIP_${tok}=1"); done
-log INFO "Пропускаемые модули: ${SKIPS:-нет (ставится всё)}"
+# Launch env: ALWAYS refresh (the mode's one home for wrapper+bridge is here —
+# the bridge launcher calls this wrapper without a mode and inherits it).
+# --with-optional passes the explicit third-party opt-in through.
+LAUNCH_ENV=("SA02M_INSTALL_MODE=refresh")
+[ "$WITH_OPTIONAL" = 1 ] && LAUNCH_ENV+=("SA02M_WITH_OPTIONAL=1")
+for tok in $SKIPS; do LAUNCH_ENV+=("SA02M_SKIP_${tok}=1"); done
+_mode_note=""
+[ "$WITH_OPTIONAL" = 1 ] && _mode_note="; --with-optional: сторонние стеки разрешены"
+log INFO "Режим: обновление (refresh) — сторонние стеки не ставятся и не включаются, состояние служб сохраняется${_mode_note}"
+[ -n "$SKIPS" ] && log INFO "Дополнительно пропускаемые модули:$SKIPS"
 cd "$REPO_ROOT" || exit 1
 if [ "$DRY_RUN" = 1 ]; then
     # Test hook for the bridge chain (no board): same path up to the launch,
     # then report instead of act; the status contract still ends in `done`.
     log WARN "DRY-RUN: install.sh не запускался"
-    log INFO "DRY-RUN: выполнил бы: (cd $REPO_ROOT && nohup env ${SKIP_ENV[*]:-} bash install.sh > $LOG 2>&1 &), PID-файл $PIDFILE, unattended=$UNATTENDED"
+    log INFO "DRY-RUN: выполнил бы: (cd $REPO_ROOT && nohup env ${LAUNCH_ENV[*]} bash install.sh > $LOG 2>&1 &), PID-файл $PIDFILE, unattended=$UNATTENDED"
     log INFO "DRY-RUN: затем пост-проверки (таблица PASS/FAIL), статус-файл: ${STATUS_FILE:-нет}, доп. лог: ${EXTRA_LOG:-нет}"
     exit 0
 fi
-nohup env ${SKIP_ENV[@]+"${SKIP_ENV[@]}"} bash install.sh > "$LOG" 2>&1 &
+# Service-state snapshot BEFORE the install: the post-check table must tell a
+# PRESERVED operator stop (PASS) from a service the update dropped (FAIL).
+# --status re-runs read the same file.
+for svc in $CORE_SERVICES; do
+    printf '%s %s\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null || true)"
+done > "$SVC_BEFORE" 2>/dev/null || true
+nohup env "${LAUNCH_ENV[@]}" bash install.sh > "$LOG" 2>&1 &
 INSTALL_PID=$!
 echo "$INSTALL_PID" > "$PIDFILE"
 poll_install "$INSTALL_PID"
