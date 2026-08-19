@@ -18,22 +18,10 @@ INSTALL_DIR="/opt/sa02m-serial-gateway"
 SVC_NAME="sa02m-serial-gateway"
 
 # ── Python зависимости ────────────────────────────────────────────────────
-for pkg in python3 python3-serial python3-yaml; do
-    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
-        log INFO "apt install $pkg"
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg" >> "$LOG_FILE" 2>&1 || \
-            log WARN "Не удалось установить $pkg"
-    fi
-done
-# fallback: pip3 install pyserial pyyaml if apt packages unavailable
-if ! python3 -c "import serial" 2>/dev/null; then
-    log INFO "pip3 install pyserial"
-    pip3 install --quiet pyserial 2>>"$LOG_FILE" || true
-fi
-if ! python3 -c "import yaml" 2>/dev/null; then
-    log INFO "pip3 install pyyaml"
-    pip3 install --quiet pyyaml 2>>"$LOG_FILE" || true
-fi
+sa02m_pkg_install_tier optional python3 python3-serial python3-yaml
+# fallback: pip, если apt-версии нет (уже импортируемые — тихий no-op)
+sa02m_pip_install serial pyserial
+sa02m_pip_install yaml pyyaml
 
 # ── Каталог установки ─────────────────────────────────────────────────────
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
@@ -105,7 +93,7 @@ install -m 0644 -o www-data -g www-data \
 # Capture prior state BEFORE (re)installing the unit — a RUNNING gateway must be
 # restarted so it picks up the fresh .py just rsync'd (same stale-code class as
 # the MQTT bridge); a stopped gateway is left stopped (never force-started).
-read -r _GW_PREV_EN _GW_PREV_ACT < <(sa02m_capture_svc_state "$SVC_NAME.service")
+sa02m_svc_capture "$SVC_NAME.service"
 log INFO "Устанавливаю systemd unit $SVC_NAME.service"
 install -m 0644 -o root -g root \
     "$ETC_DIR/sa02m-serial-gateway.service" \
@@ -113,17 +101,11 @@ install -m 0644 -o root -g root \
 
 systemctl daemon-reload >> "$LOG_FILE" 2>&1
 
-if systemctl is-enabled --quiet "$SVC_NAME" 2>/dev/null; then
-    log INFO "Служба $SVC_NAME уже включена"
-else
-    log INFO "Включаю $SVC_NAME"
-    systemctl enable "$SVC_NAME" >> "$LOG_FILE" 2>&1 || true
-fi
-
-# Restore prior RUNNING state on fresh code; a service the user hadn't started
-# stays stopped (they enable ports via the web UI).
-if [ "$_GW_PREV_ACT" = active ]; then
-    sa02m_restore_svc_state "$SVC_NAME.service" "$_GW_PREV_EN" "$_GW_PREV_ACT" refresh
+# First install: enabled, not started (ports are off until configured in the
+# web UI). Upgrade: prior state restored exactly, a running gateway restarted
+# on fresh code.
+sa02m_svc_apply "$SVC_NAME.service" app enabled
+if [ "$SA02M_SVC_LAST_RESULT" = restarted ]; then
     log OK "Служба $SVC_NAME перезапущена на свежем коде (была активна)"
 else
     log INFO "Служба $SVC_NAME установлена (не запущена — настройте порты через веб-интерфейс)"

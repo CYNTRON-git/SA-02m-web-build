@@ -33,6 +33,9 @@ chmod 0755 "$INSTALL_DIR/aggregate.py" 2>/dev/null || true
 
 # ── systemd unit + timer ───────────────────────────────────────────────────
 log INFO "Устанавливаю sa02m-rs485-roster.service + .timer"
+# Capture BEFORE the unit files land (first-install signal); an operator-stopped
+# timer stays stopped (docs/contracts/installer-refresh-policy.md).
+sa02m_svc_capture sa02m-rs485-roster.timer
 install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.service" /etc/systemd/system/sa02m-rs485-roster.service
 install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.timer"   /etc/systemd/system/sa02m-rs485-roster.timer
 systemctl daemon-reload
@@ -42,8 +45,11 @@ systemctl daemon-reload
     && log OK "первичный ростер /run/sa02m-rs485-roster.json создан" \
     || log INFO "первичный прогон агрегатора без данных (нет источников) — норма"
 
-systemctl enable --now sa02m-rs485-roster.timer >> "$LOG_FILE" 2>&1 \
-    && log OK "sa02m-rs485-roster.timer активен (тик 8 с)" \
-    || log WARN "sa02m-rs485-roster.timer не активирован (journalctl -u sa02m-rs485-roster)"
+sa02m_svc_apply sa02m-rs485-roster.timer app on
+case "$SA02M_SVC_LAST_RESULT" in
+    started|restarted|kept) log OK "sa02m-rs485-roster.timer активен (тик 8 с)" ;;
+    left-inactive) : ;;  # preserve line already logged by the helper
+    *) log WARN "sa02m-rs485-roster.timer не активирован (journalctl -u sa02m-rs485-roster)" ;;
+esac
 
 log OK "=== [10] sa02m-rs485-roster установлен ==="
