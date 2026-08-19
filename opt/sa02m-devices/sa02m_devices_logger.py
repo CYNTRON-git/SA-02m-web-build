@@ -18,6 +18,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sa02m_devices.device_history_db import (  # noqa: E402
+    insert_mr_sample,
     insert_sample,
     purge_old,
     rotate_if_needed,
@@ -31,6 +32,9 @@ from sa02m_devices.stand_storage_path import (  # noqa: E402
 
 INTERVAL_S = float(os.environ.get("STAND_DEVICES_LOG_INTERVAL_S", "1"))
 INTERVAL_EMMC_S = float(os.environ.get("STAND_DEVICES_LOG_INTERVAL_EMMC_S", "5"))
+# MR-02m AI moves slowly (temp/pressure/current) — its own cadence, independent
+# of the dtv/ce tick (do NOT slow dtv/ce). 10 s ≈ 10× lighter than 1 Hz.
+MR_INTERVAL_S = float(os.environ.get("STAND_DEVICES_MR_INTERVAL_S", "10"))
 PURGE_EVERY_S = float(os.environ.get("STAND_DEVICES_PURGE_EVERY_S", "3600"))
 RESOLVE_EVERY_S = float(os.environ.get("STAND_DEVICES_RESOLVE_EVERY_S", "10"))
 
@@ -47,13 +51,14 @@ def main() -> int:
     signal.signal(signal.SIGINT, _on_term)
     last_purge = 0.0
     last_resolve = 0.0
+    last_mr = 0.0
     prev_backend: str | None = None
     prev_path: Path | None = None
     target = resolve_storage_target(force_refresh=True)
     print(
         f"devices logger: backend={target.backend} path={target.active_path} "
         f"interval_usb_sd={INTERVAL_S}s interval_emmc={INTERVAL_EMMC_S}s "
-        f"purge_every={PURGE_EVERY_S}s",
+        f"interval_mr={MR_INTERVAL_S}s purge_every={PURGE_EVERY_S}s",
         flush=True,
     )
     prev_backend = target.backend
@@ -111,6 +116,11 @@ def main() -> int:
             except Exception:  # noqa: BLE001
                 pass
             insert_sample(snap, path=target.active_path)
+            # MR-02m AI on its own (slower) cadence — same already-built snap,
+            # no extra bus/MQTT I/O; only the SQLite write is added.
+            if now_m - last_mr >= MR_INTERVAL_S:
+                insert_mr_sample(snap, path=target.active_path)
+                last_mr = now_m
             try:
                 from sa02m_devices.device_events import detect_ce_events
 
@@ -129,9 +139,10 @@ def main() -> int:
             if now - last_purge >= PURGE_EVERY_S:
                 stats = purge_old(path=target.active_path)
                 last_purge = now
-                if stats["dtv_deleted"] or stats["ce_deleted"]:
+                if stats["dtv_deleted"] or stats["ce_deleted"] or stats.get("mr_deleted"):
                     print(
-                        f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']}",
+                        f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']} "
+                        f"mr={stats.get('mr_deleted', 0)}",
                         flush=True,
                     )
         except Exception as exc:  # noqa: BLE001

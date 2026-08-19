@@ -10,6 +10,9 @@ from sa02m_devices.device_history_db import (
     export_xlsx,
     history,
     history_batch,
+    history_mr,
+    history_mr_batch,
+    insert_mr_sample,
     insert_sample,
     period_summary_ce,
     purge_old,
@@ -151,6 +154,116 @@ def test_ranges_7d_30d_and_ce_summary(tmp_path: Path):
     assert summary["cost_basis"] == "energy_kwh"
     # Не по мощности: при P∑=330 Вт за час ≈0.33 кВт·ч ≠ 0.4 кВт·ч счётчика
     assert abs(summary["cost_rub"] - (330.0 / 1000.0) * 10.5) > 0.01
+
+
+def _mr_snap(
+    ts: float,
+    *,
+    mr_id: str = "mr02m-COM3-7",
+    channels: list[dict] | None = None,
+) -> dict:
+    if channels is None:
+        channels = [
+            {"ch": 1, "value": 22.5, "unit": "°C", "sensor_code": 3,
+             "enabled": True, "ok": True},
+            {"ch": 2, "value": 5.0, "unit": "V", "sensor_code": 34,
+             "enabled": True, "ok": True},
+            # disabled (sensor_code 0) — must write NO row
+            {"ch": 3, "value": None, "unit": "", "sensor_code": 0,
+             "enabled": False, "ok": True},
+        ]
+    return {
+        "ts": ts,
+        "mr": [{"id": mr_id, "kind": "mr", "ai_count": 12, "channels": channels}],
+    }
+
+
+def test_mr_insert_history_and_units(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(6):
+        insert_mr_sample(_mr_snap(now - 5 + i), path=db)
+    h = history_mr("mr02m-COM3-7", "1h", ch=1, path=db)
+    assert h["ok"] is True and h["device"] == "mr"
+    assert h["unit"] == "°C"
+    assert h["series"] and h["series"][0]["field"] == "ai_1"
+    assert h["series"][0]["points"]
+    # Disabled channel wrote no row → empty series (hidden from the chart).
+    h3 = history_mr("mr02m-COM3-7", "1h", ch=3, path=db)
+    assert h3["series"] == []
+    # Batch = enabled channels only, each carrying its own unit.
+    batch = history_mr_batch("mr02m-COM3-7", "1h", path=db)
+    assert batch["ok"] is True and batch["device"] == "mr"
+    fields = sorted(m["metric"] for m in batch["metrics"])
+    assert fields == ["ai_1", "ai_2"]
+    units = {m["metric"]: m["unit"] for m in batch["metrics"]}
+    assert units["ai_1"] == "°C" and units["ai_2"] == "V"
+
+
+def test_mr_dtv_ce_untouched_by_mr_insert(tmp_path: Path):
+    # insert_mr_sample must NOT write dtv/ce rows; insert_sample must NOT write mr.
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_snap(now - 2), path=db)  # dtv/ce only
+    insert_mr_sample(_mr_snap(now - 1), path=db)  # mr only
+    dtv = history("room_temp", "1h", path=db, device_id="dtv-COM4-3")
+    assert dtv["series"] and dtv["series"][0]["points"]
+    mr = history_mr("mr02m-COM3-7", "1h", ch=1, path=db)
+    assert mr["series"] and mr["series"][0]["points"]
+    # A dtv/ce-only snap leaves mr empty; an mr-only snap leaves dtv empty.
+    db2 = tmp_path / "hist2.db"
+    insert_sample(_snap(now), path=db2)
+    assert history_mr("mr02m-COM3-7", "1h", ch=1, path=db2)["series"] == []
+
+
+def test_mr_purge(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_mr_sample(_mr_snap(now - 5), path=db)
+    insert_mr_sample(_mr_snap(now - 40 * 86400), path=db)
+    purged = purge_old(path=db, now=now)
+    assert purged["mr_deleted"] >= 1
+    # dtv/ce counters still present (schema unchanged for them).
+    assert "dtv_deleted" in purged and "ce_deleted" in purged
+    h = history_mr("mr02m-COM3-7", "30d", ch=1, path=db)
+    assert len(h["series"][0]["points"]) == 1
+
+
+def test_mr_unit_change_mid_history_last_wins(tmp_path: Path):
+    # Ch 1 reconfigured °C → V mid-window: unit follows the latest sample,
+    # both real points survive (honest, no synthetic bridge).
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_mr_sample(
+        _mr_snap(now - 100, channels=[
+            {"ch": 1, "value": 22.0, "unit": "°C", "sensor_code": 3,
+             "enabled": True, "ok": True},
+        ]),
+        path=db,
+    )
+    insert_mr_sample(
+        _mr_snap(now - 2, channels=[
+            {"ch": 1, "value": 5.0, "unit": "V", "sensor_code": 34,
+             "enabled": True, "ok": True},
+        ]),
+        path=db,
+    )
+    h = history_mr("mr02m-COM3-7", "1h", ch=1, path=db)
+    assert h["unit"] == "V"
+    assert len(h["series"][0]["points"]) == 2
+
+
+def test_mr_export(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(4):
+        insert_mr_sample(_mr_snap(now - 120 + i * 30), path=db)
+    body, name = export_text("1h", device_id="mr02m-COM3-7", kind="mr", path=db)
+    assert name.startswith("mr_export_") and name.endswith(".txt")
+    assert "AI 1" in body and "Время" in body
+    raw, xname = export_xlsx("1h", device_id="mr02m-COM3-7", kind="mr", path=db)
+    assert xname.startswith("mr_export_") and xname.endswith(".xlsx")
+    assert raw[:2] == b"PK"
 
 
 def test_resolve_mtd_and_month_and_export(tmp_path: Path):

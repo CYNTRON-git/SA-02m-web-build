@@ -1,7 +1,11 @@
-"""Архив телеметрии ДТВ / СЭ-02м-3 (SQLite, 1 Гц, окно 30 суток).
+"""Архив телеметрии ДТВ / СЭ-02м-3 / MR-02m AI (SQLite, окно 30 суток).
 
-По умолчанию пишутся все устройства из live_snapshot (dtv[] / ce[]).
-PK: (ts, device_id). Путь: USB → SD → eMMC (см. stand_storage_path).
+По умолчанию пишутся все устройства из live_snapshot (dtv[] / ce[] / mr[]).
+ДТВ/СЭ — широкие таблицы, PK (ts, device_id), пишутся каждый тик (1 Гц USB/SD,
+5 с eMMC). MR-02m AI — «длинная» таблица mr_samples(ts, device_id, ch, value,
+unit), PK (ts, device_id, ch): число каналов и единица на канал динамические,
+пишется отдельной каденцией (10 с, insert_mr_sample). Путь: USB → SD → eMMC
+(см. stand_storage_path).
 """
 
 from __future__ import annotations
@@ -270,6 +274,20 @@ _CREATE_CE = """
         PRIMARY KEY (ts, device_id)
     );
 """
+# MR-02m analog «длинная» таблица: одна строка на канал за отсчёт. Число AI на
+# модуль (6/12/…) и единица канала (°C / V / mA / …) динамические, поэтому НЕ
+# столбцы-как-у-dtv/ce, а (ch, value, unit). Единица хранится на момент отсчёта —
+# смена типа датчика в истории видна честно (ось идёт по последней единице окна).
+_CREATE_MR = """
+    CREATE TABLE IF NOT EXISTS mr_samples (
+        ts REAL NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        ch INTEGER NOT NULL,
+        value REAL,
+        unit TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (ts, device_id, ch)
+    );
+"""
 
 
 def _ensure_ce_power_phase_cols(conn: sqlite3.Connection) -> None:
@@ -361,7 +379,7 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     journal, sync = journaling_for_fstype(fst)
     conn.execute(f"PRAGMA journal_mode={journal}")
     conn.execute(f"PRAGMA synchronous={sync}")
-    conn.executescript(_CREATE_DTV + _CREATE_CE)
+    conn.executescript(_CREATE_DTV + _CREATE_CE + _CREATE_MR)
     with conn:
         if _needs_pk_migration(conn, "dtv_samples"):
             _migrate_table(conn, "dtv_samples", _CREATE_DTV)
@@ -375,6 +393,12 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ce_device_ts "
             "ON ce_samples(device_id, ts)"
+        )
+        # mr_samples is a fresh table (no legacy PK to migrate); its read path
+        # is (device_id, ch, ts) — one channel's series over a window.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts "
+            "ON mr_samples(device_id, ch, ts)"
         )
     return conn
 
@@ -456,6 +480,63 @@ def insert_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
         conn.close()
 
 
+def _ai_ch_num(field: str) -> int:
+    """«ai_5» → 5 (сортировка каналов); нераспознанное → большое число."""
+    s = str(field or "")
+    if s.startswith("ai_"):
+        s = s[3:]
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return 10_000
+
+
+def _insert_mr(conn: sqlite3.Connection, ts: float, mr: dict[str, Any]) -> None:
+    """Одна строка на ВКЛЮЧЁННЫЙ канал с конечным значением (иначе — нет строки,
+    как «—» на карточке; отключённый канал в графике не появляется)."""
+    device_id = str(mr.get("id") or "")
+    channels = mr.get("channels")
+    if not isinstance(channels, list):
+        return
+    rows: list[tuple[Any, ...]] = []
+    for c in channels:
+        if not isinstance(c, dict):
+            continue
+        if not c.get("enabled"):
+            continue
+        ch = c.get("ch")
+        val = c.get("value")
+        if ch is None or val is None or not _number_is_finite(val):
+            continue
+        try:
+            rows.append(
+                (ts, device_id, int(ch), float(val), str(c.get("unit") or ""))
+            )
+        except (TypeError, ValueError):
+            continue
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO mr_samples(ts, device_id, ch, value, unit)"
+            " VALUES (?,?,?,?,?)",
+            rows,
+        )
+
+
+def insert_mr_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+    """Записать MR-02m AI из снимка (отдельная каденция от dtv/ce — 10 с)."""
+    ts = float(snapshot.get("ts") or time.time())
+    mr_list = _as_device_list(snapshot.get("mr"))
+    if not mr_list:
+        return
+    conn = _connect(path)
+    try:
+        with conn:
+            for mr in mr_list:
+                _insert_mr(conn, ts, mr)
+    finally:
+        conn.close()
+
+
 def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
     """При размере active ≥ 3 ГиБ — архивировать и создать новый active."""
     p = db_path(path)
@@ -520,6 +601,9 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             c2 = conn.execute(
                 "DELETE FROM ce_samples WHERE ts < ?", (cutoff,)
             ).rowcount
+            c3 = conn.execute(
+                "DELETE FROM mr_samples WHERE ts < ?", (cutoff,)
+            ).rowcount
         ev_deleted = 0
         try:
             from sa02m_devices.device_events import purge_events
@@ -530,6 +614,7 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
         return {
             "dtv_deleted": int(c1 or 0),
             "ce_deleted": int(c2 or 0),
+            "mr_deleted": int(c3 or 0),
             "events_deleted": int(ev_deleted),
             "cutoff": cutoff,
         }
@@ -805,6 +890,257 @@ def history_batch(
     }
 
 
+def _coerce_ch(ch: Any) -> int | None:
+    """«ai_5» / «5» / 5 → 5; None / мусор → None."""
+    if ch is None:
+        return None
+    s = str(ch).strip()
+    if s.startswith("ai_"):
+        s = s[3:]
+    try:
+        return int(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_device_id(
+    conn: sqlite3.Connection, table: str, t0: float, t1: float
+) -> str | None:
+    row = conn.execute(
+        f"SELECT device_id FROM {table}"
+        " WHERE ts >= ? AND ts <= ? AND device_id != ''"
+        " ORDER BY device_id LIMIT 1",
+        (t0, t1),
+    ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _query_series_mr(
+    conn: sqlite3.Connection,
+    t0: float,
+    t1: float,
+    bucket_s: float,
+    device_id: str,
+    ch_filter: int | None = None,
+) -> list[dict[str, Any]]:
+    """Серии по каналам: [{field:'ai_N', label:'AI N', unit, unit_ts, points}].
+
+    Единица канала — из строки с максимальным ts в окне (last-wins), поэтому смена
+    типа датчика видна честно (без синтетического «моста»)."""
+    where = " WHERE ts >= ? AND ts <= ? AND device_id = ? AND value IS NOT NULL"
+    params: list[Any] = [t0, t1, device_id]
+    if ch_filter is not None:
+        where += " AND ch = ?"
+        params.append(int(ch_filter))
+
+    by_ch: dict[int, list[list[Any]]] = {}
+    if bucket_s <= 1.0:
+        sql = f"SELECT ch, ts, value FROM mr_samples{where} ORDER BY ch, ts"
+        rows = conn.execute(sql, params).fetchall()
+    else:
+        sql = (
+            "SELECT ch, cast(ts / ? as integer) * ? AS bucket, avg(value)"
+            f" FROM mr_samples{where}"
+            " GROUP BY ch, bucket ORDER BY ch, bucket"
+        )
+        rows = conn.execute(sql, [bucket_s, bucket_s, *params]).fetchall()
+    for row in rows:
+        if row[2] is None:
+            continue
+        try:
+            ch = int(row[0])
+            ts_ms = int(float(row[1]) * 1000)
+            val = float(row[2])
+        except (TypeError, ValueError):
+            continue
+        by_ch.setdefault(ch, []).append([ts_ms, val])
+
+    # Единица на канал: строка с MAX(ts) в окне (SQLite bare-column-с-агрегатом).
+    unit_where = " WHERE ts >= ? AND ts <= ? AND device_id = ?"
+    unit_params: list[Any] = [t0, t1, device_id]
+    if ch_filter is not None:
+        unit_where += " AND ch = ?"
+        unit_params.append(int(ch_filter))
+    unit_by_ch: dict[int, tuple[str, float]] = {}
+    for row in conn.execute(
+        f"SELECT ch, unit, MAX(ts) FROM mr_samples{unit_where} GROUP BY ch",
+        unit_params,
+    ).fetchall():
+        try:
+            ch = int(row[0])
+        except (TypeError, ValueError):
+            continue
+        unit_by_ch[ch] = (str(row[1] or ""), float(row[2] or 0.0))
+
+    out: list[dict[str, Any]] = []
+    for ch in sorted(by_ch):
+        unit, unit_ts = unit_by_ch.get(ch, ("", 0.0))
+        out.append({
+            "field": f"ai_{ch}",
+            "label": f"AI {ch}",
+            "unit": unit,
+            "unit_ts": unit_ts,
+            "points": by_ch[ch],
+        })
+    return out
+
+
+def _merge_mr_series(
+    parts: list[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Объединить MR-серии из нескольких БД по каналу; единица — самая свежая."""
+    by_field: dict[str, dict[str, Any]] = {}
+    for series_list in parts:
+        for ser in series_list:
+            field = ser["field"]
+            entry = by_field.get(field)
+            if entry is None:
+                entry = by_field[field] = {
+                    "field": field,
+                    "label": ser.get("label", field),
+                    "unit": "",
+                    "unit_ts": -1.0,
+                    "points": [],
+                }
+            unit = ser.get("unit") or ""
+            unit_ts = float(ser.get("unit_ts") or 0.0)
+            if unit and unit_ts >= entry["unit_ts"]:
+                entry["unit"] = unit
+                entry["unit_ts"] = unit_ts
+            entry["points"].extend(ser.get("points") or [])
+    out: list[dict[str, Any]] = []
+    for field in sorted(by_field, key=_ai_ch_num):
+        entry = by_field[field]
+        seen: dict[int, float] = {}
+        for ts_ms, val in entry["points"]:
+            seen[int(ts_ms)] = val
+        merged = [[ts, seen[ts]] for ts in sorted(seen)]
+        if merged:
+            out.append({
+                "field": field,
+                "label": entry["label"],
+                "unit": entry["unit"],
+                "points": merged,
+            })
+    return out
+
+
+def _mr_series_over_dbs(
+    device_id: str | None,
+    range_key: str,
+    path: Path | None,
+    ch_filter: int | None,
+    bucket_s: float | None,
+) -> tuple[list[dict[str, Any]], str, float, float]:
+    """Собрать MR-серии по всем файлам БД; вернуть (series, device_id, t0, t1)."""
+    if range_key not in RANGES:
+        range_key = "1h"
+    t0, t1, chart_bucket = resolve_time_range(range_key)
+    if bucket_s is None:
+        bucket_s = chart_bucket
+    did = (device_id or "").strip() or None
+    parts: list[list[dict[str, Any]]] = []
+    for dbfile in _read_paths(path):
+        if not dbfile.is_file():
+            continue
+        try:
+            conn = _connect(dbfile)
+        except sqlite3.Error:
+            continue
+        try:
+            if not did:
+                did = _first_device_id(conn, "mr_samples", t0, t1)
+            if not did:
+                continue
+            parts.append(
+                _query_series_mr(conn, t0, t1, bucket_s, did, ch_filter=ch_filter)
+            )
+        finally:
+            conn.close()
+    return _merge_mr_series(parts), (did or ""), t0, t1
+
+
+def history_mr(
+    device_id: str | None,
+    range_key: str = "1h",
+    ch: Any = None,
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """История одного AI-канала MR-02m — форма ответа как у history()."""
+    ch_num = _coerce_ch(ch)
+    series, did, t0, t1 = _mr_series_over_dbs(
+        device_id, range_key, path, ch_num, bucket_s
+    )
+    if range_key not in RANGES:
+        range_key = "1h"
+    unit = series[0]["unit"] if series else ""
+    label = f"AI {ch_num}" if ch_num is not None else "MR-02m AI"
+    return {
+        "ok": True,
+        "metric": f"ai_{ch_num}" if ch_num is not None else "",
+        "label": label,
+        "unit": unit,
+        "decimals": None,
+        "device": "mr",
+        "device_id": did,
+        "range": range_key,
+        "t0": t0,
+        "t1": t1,
+        "t0_ms": int(t0 * 1000),
+        "t1_ms": int(t1 * 1000),
+        "series": series,
+        **(storage_status() if path is None else {}),
+    }
+
+
+def history_mr_batch(
+    device_id: str | None,
+    range_key: str = "1h",
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """Все включённые AI-каналы MR-02m как metrics[] — форма как history_batch()."""
+    series, did, t0, t1 = _mr_series_over_dbs(
+        device_id, range_key, path, None, bucket_s
+    )
+    if range_key not in RANGES:
+        range_key = "1h"
+    metrics = [
+        {
+            "metric": s["field"],
+            "label": s["label"],
+            "unit": s["unit"],
+            "decimals": None,
+            "device": "mr",
+            "device_id": did,
+            "series": [{
+                "field": s["field"],
+                "label": s["label"],
+                "unit": s["unit"],
+                "points": s["points"],
+            }],
+        }
+        for s in series
+    ]
+    return {
+        "ok": True,
+        "range": range_key,
+        "group": "all",
+        "device": "mr",
+        "device_id": did,
+        "t0": t0,
+        "t1": t1,
+        "t0_ms": int(t0 * 1000),
+        "t1_ms": int(t1 * 1000),
+        "metrics": metrics,
+        "errors": [],
+        **(storage_status() if path is None else {}),
+    }
+
+
 def _number_is_finite(v: Any) -> bool:
     try:
         f = float(v)
@@ -1069,6 +1405,66 @@ def collect_export_table(
     }
 
 
+def collect_export_table_mr(
+    range_key: str = "1h",
+    *,
+    device_id: str | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Таблица экспорта MR-02m AI (время × включённые каналы) — форма как
+    collect_export_table(), но колонки динамические (по каналам в окне)."""
+    if range_key not in RANGES:
+        range_key = "1h"
+    bucket = export_bucket_s(range_key)
+    batch = history_mr_batch(device_id, range_key, path=path, bucket_s=bucket)
+    did = str(batch.get("device_id") or (device_id or "").strip())
+    t0 = float(batch.get("t0") or 0.0)
+    t1 = float(batch.get("t1") or 0.0)
+
+    col_fields: list[str] = []
+    col_titles: list[str] = []
+    by_ts: dict[int, dict[str, float]] = {}
+    for metric in batch.get("metrics") or []:
+        unit = str(metric.get("unit") or "").strip()
+        for ser in metric.get("series") or []:
+            field = str(ser.get("field") or "")
+            if not field:
+                continue
+            label = str(ser.get("label") or field)
+            col_fields.append(field)
+            col_titles.append(f"{label}, {unit}" if unit else label)
+            for ts_ms, val in ser.get("points") or []:
+                try:
+                    by_ts.setdefault(int(ts_ms), {})[field] = float(val)
+                except (TypeError, ValueError):
+                    continue
+
+    headers = ["Время"] + col_titles
+    rows: list[list[Any]] = []
+    for ts_ms in sorted(by_ts):
+        cells: list[Any] = [_fmt_export_ts(ts_ms / 1000.0, bucket)]
+        vals = by_ts[ts_ms]
+        for field in col_fields:
+            v = vals.get(field)
+            cells.append(None if v is None else float(v))
+        rows.append(cells)
+
+    return {
+        "ok": True,
+        "error": "",
+        "headers": headers,
+        "rows": rows,
+        "device_id": did,
+        "range": range_key,
+        "bucket_s": bucket,
+        "t0": t0,
+        "t1": t1,
+        "metric_ids": col_fields,
+        "kind": "mr",
+        "title": "MR-02m AI",
+    }
+
+
 def _xml_escape(s: str) -> str:
     return (
         s.replace("&", "&amp;")
@@ -1189,16 +1585,20 @@ def export_xlsx(
     metric_id: str | None = None,
     group: str | None = None,
     device_id: str | None = None,
+    kind: str | None = None,
     path: Path | None = None,
 ) -> tuple[bytes, str]:
     """Выгрузка в Excel (.xlsx) с таблицей. Возвращает (bytes, filename)."""
     from io import BytesIO
 
-    table = collect_export_table(
-        range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
-    )
+    if kind == "mr":
+        table = collect_export_table_mr(range_key, device_id=device_id, path=path)
+    else:
+        table = collect_export_table(
+            range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
+        )
     stamp = _now_local().strftime("%Y%m%d_%H%M%S")
-    mid_part = metric_id or group or "data"
+    mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
     kind = str(table.get("kind") or "device")
     filename = f"{kind}_export_{safe_id}_{mid_part}_{range_key}_{stamp}.xlsx"
@@ -1286,12 +1686,16 @@ def export_text(
     metric_id: str | None = None,
     group: str | None = None,
     device_id: str | None = None,
+    kind: str | None = None,
     path: Path | None = None,
 ) -> tuple[str, str]:
     """Текстовая выгрузка (TSV) — совместимость; основной формат: export_xlsx."""
-    table = collect_export_table(
-        range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
-    )
+    if kind == "mr":
+        table = collect_export_table_mr(range_key, device_id=device_id, path=path)
+    else:
+        table = collect_export_table(
+            range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
+        )
     if not table.get("ok"):
         return f"# error: {table.get('error')}\n", "export_error.txt"
     headers = table["headers"]
@@ -1318,10 +1722,10 @@ def export_text(
         lines.append("# (нет точек)")
     body = "\n".join(lines) + "\n"
     stamp = _now_local().strftime("%Y%m%d_%H%M%S")
-    mid_part = metric_id or group or "data"
+    mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
-    kind = str(table.get("kind") or "device")
-    filename = f"{kind}_export_{safe_id}_{mid_part}_{range_key}_{stamp}.txt"
+    kind_part = str(table.get("kind") or "device")
+    filename = f"{kind_part}_export_{safe_id}_{mid_part}_{range_key}_{stamp}.txt"
     return body, filename
 
 

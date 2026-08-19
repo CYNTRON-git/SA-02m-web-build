@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.85";
 
 (function () {
   "use strict";
@@ -137,6 +137,27 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
     return Array.isArray(d && d.channels) ? d.channels.length : 0;
   }
 
+  /* Last live device object per id — the modal reads channel metadata (units,
+     enabled) from this SNAPSHOT at open time, so a concurrent poll can't mutate
+     the open modal's chip set. Populated in updateCard. */
+  const lastDeviceById = {};
+
+  /** «ai_5» → "5" for the API channel= param; "" when not an AI-channel key. */
+  function mrChNum(metric) {
+    const m = /^ai_(\d+)$/.exec(String(metric || ""));
+    return m ? m[1] : "";
+  }
+
+  /** Chip list [["ai_N","AI N"], …] for a MR device — ENABLED channels only
+      (a disabled channel, sensor_code 0, is hidden from the chart). */
+  function mrMetricsFor(id) {
+    const d = lastDeviceById[String(id || "")];
+    const channels = d && Array.isArray(d.channels) ? d.channels : [];
+    return channels
+      .filter((c) => c && c.enabled !== false && c.ch != null)
+      .map((c) => ["ai_" + c.ch, "AI " + c.ch]);
+  }
+
   function buildMrMetricsHtml(d) {
     const n = mrAiCount(d);
     let cells = "";
@@ -246,12 +267,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
       (kind === "dtv" ? " dev-card--dtv" : isMr ? " dev-card--mr" : "");
     el.dataset.deviceId = id;
     el.dataset.kind = kind;
-    // MR-02m cards are display-only: no history modal, so no button role.
-    if (!isMr) {
-      el.setAttribute("role", "button");
-      el.tabIndex = 0;
-      el.title = "Открыть историю";
-    }
+    // Every card opens the history modal (MR-02m AI included since 1.0.5.85).
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.title = "Открыть историю";
     const ico = kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : ICO_CE;
     let metricsCls = "dev-metrics";
     let metricsHtml;
@@ -286,19 +305,26 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
       `<div class="widget-body dev-body"><div class="${metricsCls}">` +
       metricsHtml +
       `</div></div>`;
-    if (!isMr) {
-      el.addEventListener("click", (e) => {
-        if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
-        const kpi = e.target.closest(".dev-kpi[data-metric]");
-        openModal(kind, id, title, kpi ? kpi.dataset.metric : undefined);
-      });
-      el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openModal(kind, id, title);
-        }
-      });
-    }
+    el.addEventListener("click", (e) => {
+      if (e.target.closest('[data-role="remove"], [data-role="rename"]')) return;
+      // MR KPIs carry data-key="ai_N" (no data-metric); a KPI click opens that
+      // channel's chip. DTV/CE KPIs carry data-metric.
+      const kpi = isMr
+        ? e.target.closest(".dev-kpi[data-key]")
+        : e.target.closest(".dev-kpi[data-metric]");
+      const shortcut = kpi
+        ? isMr
+          ? kpi.dataset.key
+          : kpi.dataset.metric
+        : undefined;
+      openModal(kind, id, title, shortcut);
+    });
+    el.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openModal(kind, id, title);
+      }
+    });
     const renameBtn = el.querySelector('[data-role="rename"]');
     if (renameBtn) {
       renameBtn.addEventListener("click", (e) => {
@@ -414,6 +440,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
 
   function updateCard(card, d) {
     if (!card || !d) return;
+    if (d.id) lastDeviceById[String(d.id)] = d;
     const stale = isAgeStale(d);
     card.classList.toggle("dev-stale", stale);
     card.classList.toggle("dev-stale-border", stale);
@@ -673,6 +700,9 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
    */
   function tipDecimalsFor(unit, metric) {
     const m = String(metric || "").trim();
+    // MR-02m AI channel («ai_N»): precision is unit-driven (WB /meta/precision),
+    // one home in ai-sensors.js — a channel can be °C / V / mA with its own scale.
+    if (/^ai_\d+$/.test(m)) return aiUnitPrecision(String(unit || ""));
     const byMetric = {
       room_temp: 1,
       humidity: 1,
@@ -788,7 +818,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
   function exportHistory() {
     const params = { range: activeRange, format: "xlsx" };
     if (activeDeviceId) params.device_id = activeDeviceId;
-    if (modalMode === "overview") {
+    if (activeDevice === "mr") {
+      // One MR table = all enabled AI channels (columns), regardless of mode.
+      params.kind = "mr";
+    } else if (modalMode === "overview") {
       params.group = activeDevice === "dtv" ? "climate" : "energy";
     } else {
       params.metric = activeMetric;
@@ -797,7 +830,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
     const status = $("dev-chart-status");
     if (status) status.textContent = "Экспорт Excel";
     const fallback =
-      (activeDevice === "dtv" ? "dtv" : "ce") + "_export.xlsx";
+      (activeDevice === "dtv" ? "dtv" : activeDevice === "mr" ? "mr" : "ce") +
+      "_export.xlsx";
     fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -1724,20 +1758,35 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
   }
 
   function openModal(kind, deviceId, label, metricId) {
-    activeDevice = kind === "ce" ? "ce" : "dtv";
+    activeDevice = kind === "ce" ? "ce" : kind === "mr" ? "mr" : "dtv";
     activeDeviceId = String(deviceId || "");
     activeDeviceLabel = String(label || "");
-    const metrics = activeDevice === "dtv" ? DTV_METRICS : CE_METRICS;
+    const metrics =
+      activeDevice === "mr"
+        ? mrMetricsFor(deviceId)
+        : activeDevice === "dtv"
+        ? DTV_METRICS
+        : CE_METRICS;
     const ids = metrics.map((m) => m[0]);
-    activeMetric = metricId && ids.indexOf(metricId) >= 0 ? metricId : metrics[0][0];
+    activeMetric =
+      metricId && ids.indexOf(metricId) >= 0
+        ? metricId
+        : metrics.length
+        ? metrics[0][0]
+        : "";
     activeRange = "1h";
     modalMode = "metric";
     const modal = $("dev-modal");
     if (!modal) return;
     const titleEl = $("dev-modal-title");
     if (titleEl) {
-      titleEl.textContent = (activeDeviceLabel || (activeDevice === "dtv" ? "ДТВ-RS-485" : "СЭ-02м-3")) +
-        " · история";
+      const fallback =
+        activeDevice === "dtv"
+          ? "ДТВ-RS-485"
+          : activeDevice === "ce"
+          ? "СЭ-02м-3"
+          : "MR-02m";
+      titleEl.textContent = (activeDeviceLabel || fallback) + " · история";
     }
     const chips = $("dev-metric-chips");
     if (!chips) return;
@@ -1826,10 +1875,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
     }
 
     if (modalMode === "overview") {
-      const group = activeDevice === "dtv" ? "climate" : "energy";
-      const url =
-        "/api/devices/history?" +
-        historyQs({ group: group, range: activeRange });
+      const isMr = activeDevice === "mr";
+      const overviewQs = isMr
+        ? { kind: "mr", group: "all", range: activeRange }
+        : {
+            group: activeDevice === "dtv" ? "climate" : "energy",
+            range: activeRange,
+          };
+      const url = "/api/devices/history?" + historyQs(overviewQs);
       fetchJson(url, fetchOpts)
         .then((data) => {
           if (!stillCurrent()) return;
@@ -1842,7 +1895,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
           }
           chartSeries = flattenMetricSeries(data.metrics || []);
           chartMeta = {
-            label: activeDevice === "dtv" ? "Климат · Общее" : "Энергия · Общее",
+            label:
+              activeDevice === "dtv"
+                ? "Климат · Общее"
+                : activeDevice === "mr"
+                ? "MR-02m · Общее"
+                : "Энергия · Общее",
             unit: "",
             range: data.range || activeRange,
             normalize: true,
@@ -1879,9 +1937,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.5.84";
         });
       return;
     }
-    const url =
-      "/api/devices/history?" +
-      historyQs({ metric: activeMetric, range: activeRange });
+    const metricQs =
+      activeDevice === "mr"
+        ? { kind: "mr", channel: mrChNum(activeMetric), range: activeRange }
+        : { metric: activeMetric, range: activeRange };
+    const url = "/api/devices/history?" + historyQs(metricQs);
     fetchJson(url, fetchOpts)
       .then((data) => {
         if (!stillCurrent()) return;
