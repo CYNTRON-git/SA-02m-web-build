@@ -155,7 +155,11 @@ install_frpc() {
     fi
 
     # Tier 3: pinned download (online only; sha256 verified BEFORE install).
-    if sa02m_online; then
+    # Arch-guarded like tier 2: the pin verifies content, not that an ARM binary
+    # belongs on THIS host — a non-ARM invocation falls through to tier 4.
+    if ! _frpc_arch_ok; then
+        log WARN "frpc: архитектура $(uname -m) не ARM — загрузку пропускаю"
+    elif sa02m_online; then
         if ! command -v curl >/dev/null 2>&1; then
             log WARN "frpc: curl отсутствует — загрузка невозможна"
         else
