@@ -141,6 +141,19 @@ def _extract_rtu_response(request: bytes, buf: bytes) -> bytes | None:
     if len(request) > 0 and request.startswith(buf):
         return None  # buf is still a (partial or exactly-full) echo in flight
     rem = _strip_leading_echo(request, buf)
+    # Fast Modbus / Wiren Board replies prefix the frame with 0xFF arbitration
+    # padding; strip it before framing. A valid RTU reply starts with the slave
+    # address (1..247), never 0xFF — so leading 0xFF is always padding. Without
+    # this, _modbus_read_frame_len reads the second 0xFF as a function code
+    # (0xFF & 0x80 set) → returns 5 → the reply is truncated to 5 bytes, hiding
+    # the real frame (1.0.5.69 reworked this echo/framing path). Raw-RTU device
+    # scan / fast-scan through the gateway therefore needs transparent or
+    # rtu_over_tcp mode.
+    rem = rem.lstrip(b'\xff')
+    if not rem or not (1 <= rem[0] <= 247):
+        # empty, or a fast-modbus 0xFD-marker frame: let the exchange loop's
+        # silence/deadline path return the whole 0xFF-stripped remainder.
+        return None
     flen = _modbus_read_frame_len(rem)
     if flen and len(rem) >= flen:
         return rem[:flen]
@@ -252,9 +265,10 @@ class SerialWorker:
                 else:
                     time.sleep(0.001)
 
-            # deadline / silence break: consume the echo, return the remainder
+            # deadline / silence break: consume the echo and the fast-modbus
+            # 0xFF arbitration padding, return the remainder
             # (b'' ⇒ handler emits a clean Modbus exception 11, never a phantom)
-            rem = _strip_leading_echo(request, buf)
+            rem = _strip_leading_echo(request, buf).lstrip(b'\xff')
             time.sleep(self._gap)
             return rem
 
@@ -453,7 +467,12 @@ class ModbusTcpGateway:
                     self._stats.last_error = f"RTU timeout ({self.port_name})"
                     continue
 
-                # Strip Fast Modbus arbitration prefix byte 0xFF
+                # Strip Fast Modbus arbitration prefix byte 0xFF (now also
+                # stripped in _extract_rtu_response; kept here as a harmless
+                # belt-and-braces for the framed reply). Note: raw-RTU clients
+                # (e.g. the PC flasher's serial-over-TCP, fast-scan) must use the
+                # transparent or rtu_over_tcp mode — modbus_tcp needs an MBAP
+                # header and cannot carry a raw FD 46 fast-modbus frame.
                 while rtu_resp and rtu_resp[0] == 0xFF:
                     rtu_resp = rtu_resp[1:]
 
