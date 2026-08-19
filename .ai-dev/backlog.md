@@ -71,13 +71,19 @@ audit 1.0.5.71).
   MR-widget Reviewer): `test_stand_storage_path` and `test_promote_copy_and_merge`.
   Investigate + fix or delete-if-obsolete. Would be caught earlier once the
   `py-unit-devices` gate row (below) exists.
-- [OPEN] 2026-08-18 **[LOW] No quality-registry row covers `opt/sa02m-devices/tests`.**
-  The devices-API tests (`test_stand_devices.py`, `test_devices_widgets.py`) are
-  pytest/unittest and gate nothing — `build --touched` runs only `py-syntax`
-  (compileall). The dtv/ce tests have the same gap; the MR-widget 1.0.5.83 tests
-  (26, incl. the non-AI-skip + online=None cases) were run by hand. Fix: a
-  `py-unit-devices` registry row (stdlib-unittest to match the repo's no-pytest
-  convention, or add pytest). Surfaced by the MR-widget build.
+- [OPEN] 2026-08-19 **[MED] Daemon unit-test suites are not wired into the merge gate**
+  (elevated from LOW 2026-08-18; audit 2026-08-19 MED-2). No quality-registry row runs
+  `opt/sa02m-devices/tests` (`test_stand_devices.py`, `test_devices_widgets.py`,
+  `test_api_mr.py`, `test_device_history_db.py`) — `build --touched` runs only `py-syntax`
+  (compileall), so the gate never executes them. Raised to MED because
+  `docs/contracts/devices-mr-history.md` names `test_api_mr.py` + `test_device_history_db.py`
+  as ITS validating tests, and 1.0.5.83-85 (the network-facing `:8765` API + the 1733-line
+  `device_history_db.py`) all shipped through this gap. Same gap: `sa02m-rs485-roster` (1 test)
+  and `sa02m-update` (2 tests) have no row either. Fix as ONE registry-wiring batch: a
+  deps-guarded `py-unit-devices` row (skip-if-missing-deps, stdlib-unittest to match the repo's
+  no-pytest convention) + `py-unit-roster` + `py-unit-update`, mirroring `py-unit-flasher` /
+  `py-unit-cloud`. Fold in the already-listed gateway (`py-unit-gateway`, above) and cloud
+  `test_agent.py` entries so the whole daemon test surface gates in one pass.
 - [OPEN] 2026-08-18 **[MED] Alice enrollment through the web UI likely fails as
   www-data (PermissionError writing into the root-only cert dir).**
   `scripts/06-alice.sh` makes `/var/lib/sa02m-alice` `0750 root:root`, yet
@@ -114,17 +120,6 @@ audit 1.0.5.71).
   8N1 (`parity=NONE, stopbits=ONE`), no config field — a WB device on 9600 **8N2**
   cannot be polled. Follow-up: add YAML parity/stopbits and thread them through
   `get_port`/`_ensure_open`. (Same as the "serial 8N2" deferred item.)
-
-- [RESOLVED-superseded 2026-08-18] **[LOW] Decompose worklist — oversized/incohesive
-  files (audit 1.0.5.71 F2).** Superseded by the 2026-08-18 decompose worklist
-  above (current line counts + the meta-blob/template growth). Split by cohesion via the
-  `decompose` side-tool: `www/network_config/static/js/flasher.js` (~5130 lines)
-  · `www/network_config/static/css/main.css` (~5249) ·
-  `www/network_config/cgi-bin/status.cgi` (~2508, Bash on the status-poll hot
-  path) · `www/network_config/static/js/mqtt.js` (~2700) ·
-  `www/network_config/static/js/app/status.js` (~2449) ·
-  `opt/sa02m-flasher/.../flash_protocol.py` (~2517). Advisory; refresh of the
-  earlier module-size sweeps. Source: audit 1.0.5.71 F2.
 - [OPEN] 2026-08-17 **[LOW] Cloud deploy/enrollment path absent from
   `docs/deployment.md` (audit 1.0.5.71 F4).** The cloud enrollment/deploy flow
   is undocumented in the deployment runbook, already flagged `[?]` in
