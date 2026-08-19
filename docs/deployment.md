@@ -616,6 +616,14 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
       нет; `agent.conf` на плате не бэкапилась — её off-device копия в шаге 1).
 - [ ] установочные файлы НА МЕСТЕ: systemd-юниты, `/opt/*`, `start_mplc4.sh`,
       `.so`-библиотеки.
+- [ ] **`frpc --version` возвращает `0.61.x`** — мастер обязан нести
+      `/usr/local/bin/frpc`, чтобы клоны унаследовали его (иначе агент клона
+      рапортует `frpc_missing`, туннель не поднимается). Бинарник переживает
+      санитайз и factory-reset: `/usr/local/bin/frpc` **не** входит в
+      `etc/sa02m-factory-defaults/lists/wipe.list` (там только конфиги `/etc`),
+      а служба `sa02m-cloud-frpc` лишь останавливается/отключается (шаг 6) —
+      сам файл не трогается. Источник истины по frpc:
+      `docs/vendor-integrations.md → frpc`.
 
 ### 11. Снятие образа
 

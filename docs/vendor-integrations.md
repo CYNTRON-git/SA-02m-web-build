@@ -15,6 +15,13 @@
 | CODESYS Runtime | `SA02M_CODESYS_DEB=/path/.deb` | `/opt/vendor-installers/codesys/*.deb` | `$REPO/vendor/codesys/*.deb` |
 | MPLC 4D | `SA02M_MPLC_DIR=/path/dir` | `/opt/vendor-installers/mplc4/` | `$REPO/MPLC4/cyntron/` |
 | Node-RED | `SA02M_NODERED_DIR=/path/dir` | `/opt/vendor-installers/nodered/` | `$REPO/vendor/nodered/` |
+| frpc (туннель облака) | — | `/opt/vendor-installers/frpc/` | — (иначе пиннутая загрузка / ручной комплект — см. «frpc» ниже) |
+
+frpc — **исключение** из «опционального» правила выше: это ОБЯЗАТЕЛЬНАЯ часть
+облачного агента (`scripts/05-cloud-agent.sh`), не сторонний стек, поэтому он не
+гейтится `SA02M_SKIP_*` и не «пропускается без ошибки» — при отсутствии payload
+установщик пробует пиннутую загрузку, а в самом крайнем случае указывает на
+ручной комплект. Полный порядок — в разделе «frpc» ниже.
 
 Приоритет 3 используется автоматически в `tools/debian-rootfs/create-sa02m-rootfs.sh`:
 если каталог `$REPO/vendor/{codesys,nodered}/` или `$REPO/MPLC4/cyntron/` есть на
@@ -193,6 +200,69 @@ NodeSource для armhf отдаёт свой 22.x, не обязательно 
 (`docs/deployment.md` → «Доставка vendor-payload Node-RED и обновление
 стека»), а не одной кнопкой.
 Причина и что делать — в `/var/log/sa02m_install.log`.
+
+### frpc — туннель облачного агента
+
+`frpc` (fatedier/frp, клиент реверс-туннеля) — обязательный бинарник облачного
+агента: без него `sa02m-cloud-agent` рапортует `frpc_missing`, устройство
+«online» по heartbeat, но управление через облако недоступно. Это **источник
+истины по frpc** (пин, sha256, payload-путь, URL, подготовка образа).
+
+**Пин (единственный дом):**
+
+| Что | Значение |
+|---|---|
+| Версия frp | `0.61.1` |
+| Ассет | `frp_0.61.1_linux_arm.tar.gz` (static, ARMv7/armhf) |
+| URL | `https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_arm.tar.gz` |
+| sha256(`frpc`) | `55179be988a1987145f50ee36ef15ec37d06f1901d120bfb7b3ad091f7facd0a` |
+| Куда ставится | `/usr/local/bin/frpc` (0755 root:root) |
+
+Тот же пин зашит в `scripts/05-cloud-agent.sh` (§6, шапка файла) и в ручном
+комплекте `out/frpc-bundle/` (`frpc.sha256`). Смена версии frp — правка всех
+трёх домов + пересбор бандла.
+
+**Как `scripts/05-cloud-agent.sh` §6 ставит frpc** (4 уровня, первый
+сработавший побеждает — идемпотентно):
+
+1. **Уже стоит и работает** (`/usr/local/bin/frpc --version` успешен) → пропуск,
+   рабочий бинарник не перезаписывается.
+2. **Vendor-payload (оффлайн):** `/opt/vendor-installers/frpc/frpc` (готовый
+   бинарник, предпочтительно) или `frp_*_linux_arm*.tar.gz` в том же каталоге →
+   проверка ARCH (armv7l/armhf) → `install -m 0755 root:root`.
+3. **Пиннутая загрузка (только онлайн):** скачивает ассет по URL выше (bounded
+   `timeout`), извлекает `frpc`, **сверяет sha256 с пином ДО установки**; любой
+   сбой (сеть, несовпадение хеша, нет `frpc` в архиве) → бинарник НЕ ставится,
+   переход к уровню 4. Временный каталог чистится всегда.
+4. **Ничего не сработало** (старая плата, нет сети, нет payload) → WARN с
+   указателем на ручной комплект, `exit 0` (не ошибка установщика).
+
+После установки уровнем 2/3, если устройство уже привязано
+(`/etc/sa02m-cloud/frpc.toml` есть) — `systemctl restart sa02m-cloud-agent`,
+чтобы агент подхватил бинарник; не привязано — ничего (агент поднимет туннель
+сам после сопряжения).
+
+**Как подготовить payload для золотого образа.** Мастер-образ должен нести frpc,
+чтобы клоны его унаследовали (см. `docs/deployment.md` → золотой образ, §6/§10).
+Два способа:
+
+- **Проще:** на мастере уже стоит `/usr/local/bin/frpc` 0.61.1 → уровень 1
+  подхватит его на клоне; `frpc` **не** входит в wipe-список factory-reset
+  (`etc/sa02m-factory-defaults/lists/wipe.list` — только конфиги в `/etc`), т.е.
+  переживает и санитайз, и factory-reset.
+- **Запечь payload:** положить бинарник в `/opt/vendor-installers/frpc/frpc`
+  (0755) на build-host/мастере — уровень 2 поставит его на первом `install.sh`
+  оффлайн.
+
+Готовый бинарник и его sha256 берутся из `out/frpc-bundle/` (или из ассета по
+URL выше, сверив sha256).
+
+**Ручной комплект для уже развёрнутых старых плат** (обновлённых с pre-frpc
+версии, часто без сети): `out/sa02m-frpc-bundle.tar.gz` (`frpc`, `frpc.sha256`,
+`sa02m-cloud-frpc.service`, `install-frpc.sh`). `scp` на плату → распаковать →
+`bash install-frpc.sh`: проверит арх/sha256, поставит бинарник (если нет или
+отличается) и юнит, перезапустит агент, напечатает PASS/FAIL. Инструкция
+оператору — `out/frpc-bundle/README.txt`.
 
 ## Ручная загрузка на боевое устройство
 
