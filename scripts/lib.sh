@@ -322,12 +322,14 @@ sa02m_apt_update() {
     return 0
 }
 
-# sa02m_pkg_install_tier required|optional <pkg>...
+# sa02m_pkg_install_tier required|optional|thirdparty <pkg>...
 # Install only the still-missing packages, with bounded opts. Offline ⇒ skip and
 # WARN (the caller's downstream guards cover the degraded case). A failed
 # OPTIONAL package → per-pkg WARN + continue; a failed REQUIRED package → a
-# prominent WARN naming the consequence. Never aborts the install (safe even
-# where the caller runs `set -e`).
+# prominent WARN naming the consequence. THIRDPARTY = a third-party stack's
+# own packages (docker.io, …): never installed in a refresh run without
+# --with-optional (INFO + return 0), otherwise exactly the optional tier.
+# Never aborts the install (safe even where the caller runs `set -e`).
 sa02m_pkg_install_tier() {
     local tier=$1; shift
     local missing=() p
@@ -335,6 +337,13 @@ sa02m_pkg_install_tier() {
         dpkg -l "$p" 2>/dev/null | grep -q "^ii" || missing+=("$p")
     done
     [ ${#missing[@]} -gt 0 ] || return 0
+    if [ "$tier" = thirdparty ]; then
+        if [ "${SA02M_INSTALL_MODE:-full}" = refresh ] && [ "${SA02M_WITH_OPTIONAL:-0}" != 1 ]; then
+            log INFO "refresh: сторонние пакеты не ставятся: ${missing[*]} (--with-optional — поставить)"
+            return 0
+        fi
+        tier=optional
+    fi
     if ! sa02m_online; then
         if [ "$tier" = required ]; then
             log WARN "ОФФЛАЙН: обязательные пакеты не установлены: ${missing[*]} — веб-интерфейс может не подняться (проявит 03-webserver)"
@@ -414,58 +423,537 @@ sa02m_install_sudoers() {
     return 0
 }
 
-# ── Service state capture / restore ─────────────────────────────────────────
-# Record a service's enabled/active state BEFORE the installer touches it, then
-# restore EXACTLY that state after the new code lands — so a full re-install of
-# a configured device comes back with the SAME services running it had before,
-# on fresh code. Port-lease-safe: the installer does orderly restarts only, it
-# never grabs the flasher lease (sa02m-domain.md ## Subsystems). Direction
-# guarantees: never ENABLE a service that was disabled (no autostart widening),
-# never leave a service the operator was RUNNING stopped (the MQTT-bridge
-# stale-code failure this exists to prevent).
+# ── Stack policy (third-party stacks) ───────────────────────────────────────
+# The ID set, /etc/sa02m_stacks.conf, live detection and the verdict table live
+# in ONE POSIX file shared with the web ctl; a missing file is a broken tree —
+# fail loud, not soft. Contract: docs/contracts/installer-refresh-policy.md.
+# shellcheck source=../etc/sa02m-stacks-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../etc/sa02m-stacks-policy.sh"
 
-# sa02m_capture_svc_state <service>  → prints "<enabled> <active>" tokens (each
-# "unknown" when the unit is absent / the query fails). Capture BEFORE the unit
-# file is (re)installed: a freshly-installed unit already reads "disabled", so
-# only a pre-install probe distinguishes a first install from an upgrade.
-sa02m_capture_svc_state() {
-    local svc=$1 en act
-    en=$(sa02m_systemctl is-enabled "$svc" 2>/dev/null) || true
-    act=$(sa02m_systemctl is-active "$svc" 2>/dev/null) || true
-    printf '%s %s\n' "${en:-unknown}" "${act:-unknown}"
-}
-
-# sa02m_restore_svc_state <service> <prev_enabled> <prev_active> [refresh|start]
-# Pure restore — never widens state:
-#   * re-enable ONLY if it was enabled (never newly enable a disabled unit);
-#   * if it WAS active: `refresh` → restart (load new code); `start` (default) →
-#     start only if not already running; if it was NOT active, leave it stopped.
-# The caller keeps its own FIRST-INSTALL default (its existing enable/start
-# lines); this layer re-asserts a real prior runtime state on the upgrade path.
-sa02m_restore_svc_state() {
-    local svc=$1 prev_en=$2 prev_act=$3 mode=${4:-start}
-    [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
-    if [ "$prev_en" = enabled ]; then
-        sa02m_systemctl enable "$svc" >> "$LOG_FILE" 2>&1 || true
+# sa02m_pip_install <import_name> <pip_spec>
+# Already importable ⇒ return 0 silently; offline ⇒ WARN + skip (the feature
+# degrades); else a bounded `pip3 install`, failure ⇒ WARN. Never aborts.
+sa02m_pip_install() {
+    local mod=$1 spec=$2 sec=${SA02M_APT_TIMEOUT_SEC:-90}
+    local -a opts=(--quiet)
+    python3 -c "import $mod" >/dev/null 2>&1 && return 0
+    if ! sa02m_online; then
+        log WARN "ОФФЛАЙН: python-модуль $mod не установлен (функция деградирует)"
+        return 0
     fi
-    if [ "$prev_act" = active ]; then
-        if [ "$mode" = refresh ]; then
-            sa02m_systemctl restart "$svc" >> "$LOG_FILE" 2>&1 || true
-        else
-            sa02m_systemctl is-active --quiet "$svc" 2>/dev/null \
-                || sa02m_systemctl start "$svc" >> "$LOG_FILE" 2>&1 || true
-        fi
+    if ! command -v pip3 >/dev/null 2>&1; then
+        log WARN "pip3 не найден — python-модуль $mod не установлен (функция деградирует)"
+        return 0
+    fi
+    # PEP 668 (bookworm+): system pip refuses without the flag; older pip has
+    # no such option and rejects it — probe the help text once per call.
+    if pip3 install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
+        opts+=(--break-system-packages)
+    fi
+    log INFO "pip3 install $spec"
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$sec" pip3 install "${opts[@]}" "$spec" >> "$LOG_FILE" 2>&1 \
+            || log WARN "pip3 install $spec не удался/таймаут — модуль $mod не установлен (функция деградирует)"
+    else
+        pip3 install "${opts[@]}" "$spec" >> "$LOG_FILE" 2>&1 \
+            || log WARN "pip3 install $spec не удался — модуль $mod не установлен (функция деградирует)"
     fi
     return 0
 }
 
-svc_enable() {
-    sa02m_systemctl enable "$1" >> "$LOG_FILE" 2>&1 || true
-    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
-        sa02m_systemctl start "$1" >> "$LOG_FILE" 2>&1 || true
-    fi
+# ── Service state: capture BEFORE, apply AFTER ───────────────────────────────
+# The ONE home for «what may the installer do to a unit's enable/run state».
+# Contract and decision table: docs/contracts/installer-refresh-policy.md.
+# Two unit classes:
+#   app   — an application unit whose run-state belongs to the operator: the
+#           installer NEVER widens it (never enables a disabled one, never
+#           starts a stopped one, never unmasks) in ANY mode; a unit that was
+#           active is restarted on fresh code (once); a unit that did not exist
+#           gets its module's first-install default — unless it belongs to a
+#           third-party stack and the run is a refresh without --with-optional.
+#   infra — a platform unit the installer owns (nginx, fcgiwrap, networking,
+#           watchdogs, chrony, the sa02m system units): asserted unmasked +
+#           enabled (+ started / restarted on request) in every mode; historic
+#           masks on them are our own imaging bugs the installer must repair.
+# Port-lease-safe: orderly restarts only, never the flasher lease
+# (sa02m-domain.md ## Subsystems). Every systemctl call acts on the DELTA —
+# a state read precedes it — so an unchanged board produces zero calls.
+# All helpers are `set -e`-safe (always return 0) and log RU.
+declare -gA SA02M_SVC_EN=() SA02M_SVC_ACT=() SA02M_SVC_TS=()
+# shellcheck disable=SC2034  # the caller-facing result channel — read by the modules, not here
+SA02M_SVC_LAST_RESULT=""
+
+# Canonical unit name: a bare name is a .service.
+_sa02m_unit_name() {
+    case "$1" in
+        *.service|*.timer|*.socket|*.target|*.path|*.mount|*.slice|*.device) printf '%s' "$1" ;;
+        *) printf '%s.service' "$1" ;;
+    esac
 }
 
-svc_restart() {
-    sa02m_systemctl restart "$1" >> "$LOG_FILE" 2>&1 || true
+# sa02m_unit_exists <unit> → 0 iff systemd knows the unit (fragment or generated).
+sa02m_unit_exists() {
+    local u; u=$(_sa02m_unit_name "$1")
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        systemctl --root="${SA02M_ROOTFS_ROOT:-/}" cat "$u" >/dev/null 2>&1
+        return $?
+    fi
+    sa02m_systemctl cat "$u" >/dev/null 2>&1
+}
+
+# sa02m_sysv_autostart <name> → 0 iff /etc/rc[2-5].d/S??<name> exists — the
+# autostart truth of a SysV-only (`generated`) unit; mirror of the ctl's
+# mplc4_rc_autostart (6 lines, cross-referenced). SA02M_SYSV_RC_DIRS is a test
+# seam (word-split deliberately).
+sa02m_sysv_autostart() {
+    local d l
+    # shellcheck disable=SC2086
+    for d in ${SA02M_SYSV_RC_DIRS:-/etc/rc2.d /etc/rc3.d /etc/rc4.d /etc/rc5.d}; do
+        [ -d "$d" ] || continue
+        for l in "$d"/S??"$1"; do
+            [ -e "$l" ] && return 0
+        done
+    done
+    return 1
+}
+
+# Internal: one bounded systemctl query. Prints stdout; returns the rc
+# (124 = timeout). Never logs.
+_sa02m_svc_query() {
+    sa02m_systemctl "$@" 2>/dev/null
+}
+
+# Internal: 0 iff a unit file with this name exists on disk (no bus needed) —
+# the second witness that a silent `is-enabled` answer is NOT "absent".
+_sa02m_unit_file_on_disk() {
+    local d
+    for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system /run/systemd/system /run/systemd/generator /run/systemd/generator.late; do
+        [ -e "$d/$1" ] && return 0
+    done
+    return 1
+}
+
+# sa02m_svc_capture <unit>...
+# Record each unit's enable state, active state and ActiveEnterTimestampMonotonic
+# BEFORE the installer (re)installs its files. Enable states: systemd's own words
+# (enabled|enabled-runtime|disabled|masked|masked-runtime|static|indirect|
+# generated|alias|linked|transient|…) plus two of ours: `absent` (the unit does
+# not exist — the ONLY first-install signal) and `timeout` (systemd did not
+# answer — never treated as new, so a wedged D-Bus cannot widen anything).
+# `absent` needs THREE witnesses: is-enabled rc=1 with empty stdout, no unit
+# file on disk, and is-active answering a real state (the manager is alive).
+# Under SA02M_ROOTFS_BUILD everything is `absent` (a chroot has no manager).
+sa02m_svc_capture() {
+    local u en act ts rc
+    for u in "$@"; do
+        u=$(_sa02m_unit_name "$u")
+        if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+            SA02M_SVC_EN[$u]=absent; SA02M_SVC_ACT[$u]=absent; SA02M_SVC_TS[$u]=""
+            continue
+        fi
+        act=$(_sa02m_svc_query is-active "$u"); rc=$?
+        if [ "$rc" -eq 124 ] || [ -z "$act" ]; then act=timeout; fi
+        en=$(_sa02m_svc_query is-enabled "$u"); rc=$?
+        if [ "$rc" -eq 124 ]; then
+            en=timeout
+        elif [ -z "$en" ]; then
+            if [ "$rc" -eq 1 ] && [ "$act" != timeout ] && ! _sa02m_unit_file_on_disk "$u"; then
+                en=absent
+            else
+                en=timeout
+            fi
+        fi
+        ts=""
+        case "$act" in
+            active|activating|reloading)
+                ts=$(_sa02m_svc_query show -p ActiveEnterTimestampMonotonic --value "$u") || ts="" ;;
+        esac
+        SA02M_SVC_EN[$u]=$en; SA02M_SVC_ACT[$u]=$act; SA02M_SVC_TS[$u]=$ts
+    done
+    return 0
+}
+
+# Internal: `daemon-reload` once when systemd says the unit needs it — the
+# insurance before any enable/start/restart (the module's own daemon-reload
+# calls stay).
+_sa02m_svc_reload_if_needed() {
+    local need
+    need=$(_sa02m_svc_query show -p NeedDaemonReload --value "$1") || need=""
+    if [ "$need" = yes ]; then
+        sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    fi
+    return 0
+}
+
+# Internal verbs — each reads state first, acts only on the delta. Print
+# nothing; the caller logs. Return 0 on success (or no-op), 1 on failure.
+_sa02m_svc_enable() {   # <unit> [--runtime]
+    local u=$1 rt=${2:-} now
+    now=$(_sa02m_svc_query is-enabled "$u") || true
+    if [ -n "$rt" ]; then
+        case "$now" in enabled|enabled-runtime) return 0 ;; esac
+        _sa02m_svc_reload_if_needed "$u"
+        sa02m_systemctl enable --runtime "$u" >> "$LOG_FILE" 2>&1
+        return $?
+    fi
+    [ "$now" = enabled ] && return 0
+    _sa02m_svc_reload_if_needed "$u"
+    sa02m_systemctl enable "$u" >> "$LOG_FILE" 2>&1
+}
+_sa02m_svc_start() {
+    local u=$1 now
+    now=$(_sa02m_svc_query is-active "$u") || true
+    case "$now" in active|activating|reloading) return 0 ;; esac
+    _sa02m_svc_reload_if_needed "$u"
+    sa02m_systemctl start "$u" >> "$LOG_FILE" 2>&1
+}
+_sa02m_svc_restart() {
+    _sa02m_svc_reload_if_needed "$1"
+    sa02m_systemctl restart "$1" >> "$LOG_FILE" 2>&1
+}
+
+# sa02m_svc_unmask <unit> — unmask ONLY (no enable, no start): the repair half
+# of a kernel-aware mask/unmask pair (02-network.sh nftables). Delta-only; one
+# log line when something changed.
+sa02m_svc_unmask() {
+    local u now; u=$(_sa02m_unit_name "$1")
+    SA02M_SVC_LAST_RESULT=kept
+    [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
+    now=$(_sa02m_svc_query is-enabled "$u") || true
+    case "$now" in
+        masked|masked-runtime)
+            if sa02m_systemctl unmask "$u" >> "$LOG_FILE" 2>&1; then
+                log INFO "$u: маска снята"
+                SA02M_SVC_LAST_RESULT=unmasked
+            else
+                log WARN "$u: не удалось снять маску"
+            fi
+            ;;
+    esac
+    return 0
+}
+
+# sa02m_svc_kick <unit> — start a oneshot job NOW (no enable, no state change
+# recorded): sa02m-web-update-check.service after its timer is enabled.
+sa02m_svc_kick() {
+    local u; u=$(_sa02m_unit_name "$1")
+    SA02M_SVC_LAST_RESULT=kept
+    [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
+    _sa02m_svc_reload_if_needed "$u"
+    if sa02m_systemctl start "$u" >> "$LOG_FILE" 2>&1; then
+        SA02M_SVC_LAST_RESULT=started
+    else
+        log WARN "$u: разовый запуск не удался — journalctl -u $u"
+    fi
+    return 0
+}
+
+# sa02m_svc_restart_if_active <unit>
+# Restart a unit ONLY if it is currently active — to reload a freshly installed
+# runtime dependency (e.g. frpc for the cloud agent) WITHOUT starting a unit the
+# operator has stopped (never-widen). No enable, no start-if-inactive. This is a
+# targeted dependency-reload, distinct from sa02m_svc_apply's code-deploy restart
+# (which the TS witness suppresses once code has already been restarted).
+# Sets SA02M_SVC_LAST_RESULT ∈ {restarted, left-inactive, kept}. Always returns 0.
+sa02m_svc_restart_if_active() {
+    local u; u=$(_sa02m_unit_name "$1")
+    SA02M_SVC_LAST_RESULT=kept
+    [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
+    local _act; _act=$(_sa02m_svc_query is-active "$u")
+    if [ "$_act" = active ]; then
+        if _sa02m_svc_restart "$u"; then
+            SA02M_SVC_LAST_RESULT=restarted
+            log OK "$u: перезапущен для подхвата свежей зависимости"
+        else
+            log WARN "$u: перезапуск не удался — journalctl -u $u"
+        fi
+    else
+        SA02M_SVC_LAST_RESULT=left-inactive
+        log INFO "$u: не активен — перезапуск для подхвата зависимости не требуется"
+    fi
+    return 0
+}
+
+# sa02m_svc_apply <unit> app <on|enabled|off> [norestart] [--stack=<ID>]
+# sa02m_svc_apply <unit> infra [start] [restart]
+# Sets SA02M_SVC_LAST_RESULT ∈ {started, restarted, enabled, left-inactive,
+# left-masked, kept, skipped-thirdparty, uncaptured, timeout, absent} so a
+# caller can branch (a socket wait only on started|restarted, an INFO instead of
+# a WARN on left-inactive). Always returns 0.
+sa02m_svc_apply() {
+    local u kind
+    u=$(_sa02m_unit_name "$1"); kind=${2:-}
+    shift; [ $# -gt 0 ] && shift
+    SA02M_SVC_LAST_RESULT=kept
+    case "$kind" in
+        app)   _sa02m_svc_apply_app "$u" "$@" ;;
+        infra) _sa02m_svc_apply_infra "$u" "$@" ;;
+        *)     log WARN "sa02m_svc_apply $u: неизвестный класс юнита '${kind}' (app|infra) — ничего не делаю" ;;
+    esac
+    return 0
+}
+
+_sa02m_svc_apply_app() {
+    local u=$1 first=${2:-}
+    shift; [ $# -gt 0 ] && shift
+    local norestart=0 stack="" a en act ts
+    for a in "$@"; do
+        case "$a" in
+            norestart) norestart=1 ;;
+            --stack=*) stack=${a#--stack=} ;;
+            *) log WARN "sa02m_svc_apply $u: неизвестный аргумент '$a' — игнорирую" ;;
+        esac
+    done
+    case "$first" in
+        on|enabled|off) ;;
+        *) log WARN "sa02m_svc_apply $u app: первичное состояние должно быть on|enabled|off (получено '${first}') — считаю 'enabled'"; first=enabled ;;
+    esac
+
+    # rootfs build: only the enable symlinks can be baked (via --root); no
+    # manager to start anything.
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        case "$first" in
+            on|enabled) sa02m_systemctl enable "$u"; SA02M_SVC_LAST_RESULT=enabled ;;
+            off)        sa02m_systemctl disable "$u"; SA02M_SVC_LAST_RESULT=left-inactive ;;
+        esac
+        return 0
+    fi
+
+    if [ -z "${SA02M_SVC_EN[$u]+x}" ]; then
+        # Caller bug: apply without a prior capture. Fall through as EXISTING
+        # (never `first` — a post-install capture cannot see a first install),
+        # so the run-state is preserved and nothing widens.
+        log WARN "$u: состояние до установки не снято — считаю существующим, автозапуск не расширяю"
+        sa02m_svc_capture "$u"
+        if [ "${SA02M_SVC_EN[$u]}" = absent ] || [ "${SA02M_SVC_EN[$u]}" = timeout ] \
+           || [ "${SA02M_SVC_ACT[$u]}" = timeout ]; then
+            SA02M_SVC_LAST_RESULT=uncaptured
+            return 0
+        fi
+        _sa02m_svc_apply_app_existing "$u" "${SA02M_SVC_EN[$u]}" "${SA02M_SVC_ACT[$u]}" "${SA02M_SVC_TS[$u]-}" "$norestart"
+        SA02M_SVC_LAST_RESULT=uncaptured
+        return 0
+    fi
+    en=${SA02M_SVC_EN[$u]}; act=${SA02M_SVC_ACT[$u]}; ts=${SA02M_SVC_TS[$u]-}
+
+    if [ "$en" = timeout ] || [ "$act" = timeout ]; then
+        log WARN "$u: systemd не ответил до установки — состояние не трогаю"
+        SA02M_SVC_LAST_RESULT=timeout
+        return 0
+    fi
+
+    # ── New unit: the module's first-install default ─────────────────────────
+    if [ "$en" = absent ]; then
+        if [ -n "$stack" ]; then
+            if ! sa02m_stack_id_valid "$stack"; then
+                log WARN "$u: неизвестный стек '$stack' в --stack= — считаю сторонним"
+            fi
+            if { ! sa02m_stack_id_valid "$stack" || sa02m_stack_is_thirdparty "$stack"; } \
+               && [ "${SA02M_INSTALL_MODE:-full}" = refresh ] && [ "${SA02M_WITH_OPTIONAL:-0}" != 1 ]; then
+                log INFO "refresh: $u (сторонний стек $stack) — автозапуск не включаю"
+                SA02M_SVC_LAST_RESULT=skipped-thirdparty
+                return 0
+            fi
+        fi
+        case "$first" in
+            on)
+                if _sa02m_svc_enable "$u" && _sa02m_svc_start "$u"; then
+                    log INFO "$u: первая установка — включён и запущен"
+                    SA02M_SVC_LAST_RESULT=started
+                else
+                    log WARN "$u: первая установка — не удалось включить/запустить (journalctl -u $u)"
+                fi
+                ;;
+            enabled)
+                if _sa02m_svc_enable "$u"; then
+                    log INFO "$u: первая установка — включён (без запуска)"
+                    SA02M_SVC_LAST_RESULT=enabled
+                else
+                    log WARN "$u: первая установка — не удалось включить автозапуск"
+                fi
+                ;;
+            off)
+                sa02m_systemctl disable "$u" >> "$LOG_FILE" 2>&1 || true
+                sa02m_systemctl stop "$u" >> "$LOG_FILE" 2>&1 || true
+                log INFO "$u: первая установка — выключен по умолчанию"
+                SA02M_SVC_LAST_RESULT=left-inactive
+                ;;
+        esac
+        return 0
+    fi
+
+    _sa02m_svc_apply_app_existing "$u" "$en" "$act" "$ts" "$norestart"
+    return 0
+}
+
+# Internal: the existing-unit half of the app decision table — the enable state
+# is restored exactly (never widened); run state: active ⇒ one restart on fresh
+# code (skipped when the TS witness shows it already happened), everything else
+# preserved.
+_sa02m_svc_apply_app_existing() {
+    local u=$1 en=$2 act=$3 ts=$4 norestart=$5 now
+    case "$en" in
+        enabled)
+            _sa02m_svc_enable "$u" || log WARN "$u: не удалось восстановить автозапуск (был enabled)" ;;
+        enabled-runtime)
+            _sa02m_svc_enable "$u" --runtime || log WARN "$u: не удалось восстановить автозапуск (был enabled-runtime)" ;;
+        disabled)
+            # Restore-exact: a vendor installer run between capture and apply
+            # may have re-enabled the unit (MPLC's own install.sh does) — the
+            # operator's disable wins.
+            now=$(_sa02m_svc_query is-enabled "$u") || true
+            case "$now" in
+                enabled|enabled-runtime)
+                    sa02m_systemctl disable "$u" >> "$LOG_FILE" 2>&1 || true
+                    log INFO "$u: автозапуск снят обратно (до установки был выключен оператором)"
+                    ;;
+            esac
+            ;;
+        masked|masked-runtime)
+            # The mask symlink cannot have been clobbered (systemd refuses to
+            # mask a unit whose fragment lives in /etc, so a masked unit is a
+            # /lib one and `install` never touched it) — verify, never touch.
+            now=$(_sa02m_svc_query is-enabled "$u") || true
+            case "$now" in
+                masked|masked-runtime) log INFO "$u: прежнее состояние сохранено (en=$en act=$act)" ;;
+                *) log WARN "$u: был замаскирован, сейчас '$now' — маска потеряна при установке; проверьте вручную" ;;
+            esac
+            SA02M_SVC_LAST_RESULT=left-masked
+            return 0
+            ;;
+        generated)
+            # SysV-only unit that may now be a native fragment: the autostart
+            # truth is the S-links (the mplc4/codesys generator→native step).
+            now=$(_sa02m_svc_query is-enabled "$u") || true
+            if [ "$now" != generated ] && sa02m_sysv_autostart "${u%.service}"; then
+                _sa02m_svc_enable "$u" || log WARN "$u: не удалось перенести автозапуск SysV → systemd"
+            fi
+            ;;
+        *) : ;;   # disabled / static / indirect / alias / linked / transient — no enable change
+    esac
+
+    case "$act" in
+        active|activating|reloading)
+            if [ "$norestart" = 1 ]; then
+                log INFO "$u: активен — перезапуск не требуется (norestart)"
+                SA02M_SVC_LAST_RESULT=kept
+                return 0
+            fi
+            now=$(_sa02m_svc_query show -p ActiveEnterTimestampMonotonic --value "$u") || now=""
+            if [ -n "$ts" ] && [ -n "$now" ] && [ "$now" != "$ts" ]; then
+                log INFO "$u: уже перезапущен после копирования кода — повторный рестарт не нужен"
+                SA02M_SVC_LAST_RESULT=kept
+                return 0
+            fi
+            if _sa02m_svc_restart "$u"; then
+                log OK "$u: перезапущен на свежем коде (был активен)"
+                SA02M_SVC_LAST_RESULT=restarted
+            else
+                log WARN "$u: перезапуск не удался — journalctl -u $u -n 50"
+                SA02M_SVC_LAST_RESULT=kept
+            fi
+            ;;
+        *)
+            # Restore-exact: if something (a vendor installer) STARTED the unit
+            # between capture and apply, the operator's stop wins — stop back.
+            now=$(_sa02m_svc_query is-active "$u") || true
+            case "$now" in
+                active|activating|reloading)
+                    sa02m_systemctl stop "$u" >> "$LOG_FILE" 2>&1 || true
+                    log INFO "$u: остановлен обратно (до установки был остановлен оператором)"
+                    ;;
+                *)
+                    if [ "$act" = failed ]; then
+                        log INFO "$u: прежнее состояние сохранено (en=$en act=$act) — не запускаю; journalctl -u $u"
+                    else
+                        log INFO "$u: прежнее состояние сохранено (en=$en act=$act)"
+                    fi
+                    ;;
+            esac
+            SA02M_SVC_LAST_RESULT=left-inactive
+            ;;
+    esac
+    return 0
+}
+
+_sa02m_svc_apply_infra() {
+    local u=$1; shift
+    local want_start=0 want_restart=0 a now rc changed=""
+    for a in "$@"; do
+        case "$a" in
+            start)   want_start=1 ;;
+            restart) want_restart=1 ;;
+            *) log WARN "sa02m_svc_apply $u infra: неизвестный аргумент '$a' — игнорирую" ;;
+        esac
+    done
+    if [ -n "${SA02M_ROOTFS_BUILD:-}" ]; then
+        sa02m_systemctl enable "$u"
+        SA02M_SVC_LAST_RESULT=enabled
+        return 0
+    fi
+    now=$(_sa02m_svc_query is-enabled "$u"); rc=$?
+    if [ "$rc" -eq 124 ]; then
+        log WARN "$u: systemd не ответил — состояние не трогаю"
+        SA02M_SVC_LAST_RESULT=timeout
+        return 0
+    fi
+    if [ -z "$now" ] && ! _sa02m_unit_file_on_disk "$u" && ! sa02m_unit_exists "$u"; then
+        # The unit genuinely is not there (an optional infra piece not shipped
+        # on this variant) — nothing to assert.
+        SA02M_SVC_LAST_RESULT=absent
+        return 0
+    fi
+    case "$now" in
+        masked|masked-runtime)
+            # Historic masks on infra units are our own imaging/old-installer
+            # bugs — repaired unconditionally (the operator has no UI for them).
+            if sa02m_systemctl unmask "$u" >> "$LOG_FILE" 2>&1; then
+                changed="маска снята"
+            else
+                log WARN "$u: не удалось снять маску"
+            fi
+            now=$(_sa02m_svc_query is-enabled "$u") || true
+            ;;
+    esac
+    case "$now" in
+        enabled|static|indirect|alias|linked|generated|transient) : ;;
+        *)
+            if _sa02m_svc_enable "$u"; then
+                changed="${changed:+$changed, }включён"
+                SA02M_SVC_LAST_RESULT=enabled
+            else
+                log WARN "$u: не удалось включить автозапуск"
+            fi
+            ;;
+    esac
+    if [ "$want_start" = 1 ] || [ "$want_restart" = 1 ]; then
+        now=$(_sa02m_svc_query is-active "$u") || true
+        case "$now" in
+            active|activating|reloading)
+                if [ "$want_restart" = 1 ]; then
+                    if _sa02m_svc_restart "$u"; then
+                        changed="${changed:+$changed, }перезапущен"
+                        SA02M_SVC_LAST_RESULT=restarted
+                    else
+                        log WARN "$u: перезапуск не удался — journalctl -u $u -n 50"
+                    fi
+                fi
+                ;;
+            *)
+                if [ "$want_start" = 1 ]; then
+                    if _sa02m_svc_start "$u"; then
+                        changed="${changed:+$changed, }запущен"
+                        # shellcheck disable=SC2034  # result channel, read by callers
+                        SA02M_SVC_LAST_RESULT=started
+                    else
+                        log WARN "$u: не запустился — journalctl -u $u -n 50"
+                    fi
+                fi
+                ;;
+        esac
+    fi
+    if [ -n "$changed" ]; then
+        log OK "$u: $changed"
+    fi
+    return 0
 }
