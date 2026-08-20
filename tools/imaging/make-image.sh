@@ -135,6 +135,12 @@ safe_publish_to_out() {
     local src=$1
     local dst=$2
     local sz
+    # src and dst can resolve to the same file (e.g. FINAL_IMG already == a WORK
+    # path after a keep/rescue reassignment) — a plain `cp` would error
+    # "are the same file". Nothing to copy: it is already at dst.
+    if [ "$src" -ef "$dst" ]; then
+        return 0
+    fi
     sz=$(stat -c%s "$src")
     if out_dir_has_space "$sz"; then
         cp -f "$src" "$dst"
@@ -416,7 +422,9 @@ if ! safe_publish_to_out "$FINAL_XZ_TMP" "$SHRUNK_XZ"; then
     log "    using WORK path for final xz: $SHRUNK_XZ"
 fi
 if [ "$KEEP_RAW_IMG" -eq 1 ]; then
-    cp -f "$FINAL_IMG_WORK" "$FINAL_IMG_KEEP"
+    # FINAL_IMG_WORK ($WORK/<name>.img) and FINAL_IMG_KEEP ($WORK/<name>.img) are the
+    # same path — do NOT cp a file onto itself (it errors and, under set -e, aborts).
+    [ "$FINAL_IMG_WORK" -ef "$FINAL_IMG_KEEP" ] || cp -f "$FINAL_IMG_WORK" "$FINAL_IMG_KEEP"
     # Prefer native WORK for large .img when OUT_DIR is drvfs or low on space.
     if out_dir_is_drvfs || ! out_dir_has_space "$(stat -c%s "$FINAL_IMG_KEEP")"; then
         FINAL_IMG="$FINAL_IMG_KEEP"
@@ -431,7 +439,9 @@ if [ "$KEEP_RAW_IMG" -eq 1 ]; then
 else
     rm -f "$FINAL_IMG" "$FINAL_IMG_KEEP"
 fi
-rm -f "$FINAL_IMG_WORK"
+# Keep the raw .img if FINAL_IMG_WORK ended up being the final kept image
+# (drvfs/low-space/publish-failed set FINAL_IMG to this WORK path).
+[ "$FINAL_IMG_WORK" -ef "$FINAL_IMG" ] || rm -f "$FINAL_IMG_WORK"
 
 log "[5/6] sha256"
 SHA_DIR="$(dirname "$SHRUNK_XZ")"
