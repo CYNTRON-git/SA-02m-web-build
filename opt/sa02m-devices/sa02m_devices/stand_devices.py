@@ -30,6 +30,36 @@ _DTV_RH_KEYS = ("humidity_hdc1080", "humidity_bme280", "humidity_bme680")
 _DTV_ECO2_KEYS = ("eco2_zmod", "eco2_bme680")
 _DTV_PRESS_KPA_KEYS = ("pressure_bme280_kpa", "pressure_bme680_kpa")
 
+# Per-sensor rosters for the ДТВ multi-sensor metrics, in the SAME priority order
+# as the first-available _DTV_*_KEYS above. Each entry: (control key, chip label).
+# The chip label is the caption the card rotates through and the series name in
+# the chart; it also keys the archive column (device_history_db._DTV_SENSOR_*).
+# The first-available scalars (room_temp/humidity/eco2_ppm/pressure_mmhg) are kept
+# unchanged; these lists carry EVERY present sensor so the card can cycle them and
+# the logger can archive all of them. tvoc (single ZMOD4410) stays scalar.
+_DTV_TEMP_SENSORS = (
+    ("temp_hdc1080", "HDC1080"),
+    ("temp_mcp9808", "MCP9808"),
+    ("temp_bme280", "BME280"),
+    ("temp_ds18b20", "DS18B20"),
+    ("temp_bme680", "BME680"),
+)
+_DTV_RH_SENSORS = (
+    ("humidity_hdc1080", "HDC1080"),
+    ("humidity_bme280", "BME280"),
+    ("humidity_bme680", "BME680"),
+)
+_DTV_ECO2_SENSORS = (
+    ("eco2_zmod", "ZMOD4410"),
+    ("eco2_bme680", "BME680"),
+)
+# Pressure sensors publish kPa; the list values are converted to mmHg to match the
+# `pressure_mmhg` scalar and the archive `pressure_*` columns.
+_DTV_PRESS_SENSORS = (
+    ("pressure_bme280_kpa", "BME280"),
+    ("pressure_bme680_kpa", "BME680"),
+)
+
 _ID_RE = re.compile(
     r"^(?P<prefix>dtv|ce02m3|mr02m)-COM(?P<port>\d+)-(?P<addr>\d+)$",
     re.IGNORECASE,
@@ -83,6 +113,39 @@ def _first_float(
             continue
         return v
     return None
+
+
+def _sensor_list(
+    controls: dict[str, Any],
+    spec: tuple[tuple[str, str], ...],
+    *,
+    lo: float | None = None,
+    hi: float | None = None,
+    scale: float | None = None,
+    decimals: int | None = None,
+) -> list[dict[str, Any]]:
+    """Present-sensor roster [{"t": chip, "v": value}] in ``spec`` (priority) order.
+
+    A sensor whose control is missing or out of the [lo, hi] plausibility band is
+    omitted, so the card only cycles through sensors that actually reported. When
+    ``scale`` is given the raw value is multiplied (kPa→mmHg) and rounded to
+    ``decimals`` — matching the corresponding scalar's units.
+    """
+    out: list[dict[str, Any]] = []
+    for key, chip in spec:
+        v = _f(controls.get(key))
+        if v is None:
+            continue
+        if lo is not None and v < lo:
+            continue
+        if hi is not None and v > hi:
+            continue
+        if scale is not None:
+            v = v * scale
+            if decimals is not None:
+                v = round(v, decimals)
+        out.append({"t": chip, "v": v})
+    return out
 
 
 def _fmt_age(age: float | None) -> str:
@@ -204,6 +267,10 @@ def _empty_dtv(device_id: str = "") -> dict[str, Any]:
         "eco2_ppm": None,
         "tvoc_mg_m3": None,
         "pressure_mmhg": None,
+        "temp_sensors": [],
+        "humidity_sensors": [],
+        "eco2_sensors": [],
+        "pressure_sensors": [],
         "light_pct": None,
         "presence": None,
         "moving_distance_cm": None,
@@ -270,6 +337,23 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
         "tvoc_mg_m3": _f(controls.get("tvoc_zmod")),
         "pressure_mmhg": (
             None if press_kpa is None else round(press_kpa * KPA_TO_MMHG, 1)
+        ),
+        "temp_sensors": _sensor_list(
+            controls, _DTV_TEMP_SENSORS, lo=-40.0, hi=85.0
+        ),
+        "humidity_sensors": _sensor_list(
+            controls, _DTV_RH_SENSORS, lo=0.0, hi=100.0
+        ),
+        "eco2_sensors": _sensor_list(
+            controls, _DTV_ECO2_SENSORS, lo=0.0, hi=100000.0
+        ),
+        "pressure_sensors": _sensor_list(
+            controls,
+            _DTV_PRESS_SENSORS,
+            lo=50.0,
+            hi=120.0,
+            scale=KPA_TO_MMHG,
+            decimals=1,
         ),
         "light_pct": _f(controls.get("light_pct")),
         "presence": _f(controls.get("presence")),

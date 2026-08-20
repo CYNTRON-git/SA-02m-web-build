@@ -54,10 +54,22 @@ ROTATE_HEADROOM = int(
 # decimals = publish/display precision (Modbus scale / stand_devices round).
 # Chart AVG buckets are rounded to this before JSON so tip/axis stay clean.
 METRICS: dict[str, dict[str, Any]] = {
+    # Multi-sensor ДТВ metrics: one series per PHYSICAL sensor (like CE voltage =
+    # Ua/Ub/Uc), so the chart draws every present sensor. Missing per-sensor column
+    # on an old (scalar-only) row = NULL → that series simply skips the gap. The
+    # scalar `room_temp/humidity/eco2_ppm/pressure_mmhg` columns are still written
+    # (first-available) for back-compat but are no longer charted.
     "room_temp": {
         "table": "dtv_samples",
-        "fields": ["room_temp"],
-        "labels": {"room_temp": "T"},
+        "fields": [
+            "temp_hdc1080", "temp_mcp9808", "temp_bme280",
+            "temp_ds18b20", "temp_bme680",
+        ],
+        "labels": {
+            "temp_hdc1080": "HDC1080", "temp_mcp9808": "MCP9808",
+            "temp_bme280": "BME280", "temp_ds18b20": "DS18B20",
+            "temp_bme680": "BME680",
+        },
         "label": "Температура",
         "unit": "°C",
         "device": "dtv",
@@ -65,8 +77,11 @@ METRICS: dict[str, dict[str, Any]] = {
     },
     "humidity": {
         "table": "dtv_samples",
-        "fields": ["humidity"],
-        "labels": {"humidity": "RH"},
+        "fields": ["humidity_hdc1080", "humidity_bme280", "humidity_bme680"],
+        "labels": {
+            "humidity_hdc1080": "HDC1080", "humidity_bme280": "BME280",
+            "humidity_bme680": "BME680",
+        },
         "label": "Влажность",
         "unit": "%",
         "device": "dtv",
@@ -74,8 +89,8 @@ METRICS: dict[str, dict[str, Any]] = {
     },
     "eco2_ppm": {
         "table": "dtv_samples",
-        "fields": ["eco2_ppm"],
-        "labels": {"eco2_ppm": "eCO₂"},
+        "fields": ["eco2_zmod", "eco2_bme680"],
+        "labels": {"eco2_zmod": "ZMOD4410", "eco2_bme680": "BME680"},
         "label": "eCO₂",
         "unit": "ppm",
         "device": "dtv",
@@ -92,8 +107,8 @@ METRICS: dict[str, dict[str, Any]] = {
     },
     "pressure_mmhg": {
         "table": "dtv_samples",
-        "fields": ["pressure_mmhg"],
-        "labels": {"pressure_mmhg": "P"},
+        "fields": ["pressure_bme280", "pressure_bme680"],
+        "labels": {"pressure_bme280": "BME280", "pressure_bme680": "BME680"},
         "label": "Давление",
         "unit": "мм рт.ст.",
         "device": "dtv",
@@ -290,6 +305,35 @@ _CREATE_MR = """
 """
 
 
+# Per-sensor ДТВ archive columns (added to dtv_samples via idempotent ALTER-ADD,
+# NOT baked into _CREATE_DTV — so a legacy PK migration's `SELECT *` never sees a
+# column count the freshly-created temp table lacks). Written by _insert_dtv from
+# the `*_sensors` rosters live_snapshot() now emits; read as the room_temp/humidity/
+# eco2_ppm/pressure_mmhg METRICS fields.
+_DTV_SENSOR_COLUMNS = (
+    "temp_hdc1080", "temp_mcp9808", "temp_bme280", "temp_ds18b20", "temp_bme680",
+    "humidity_hdc1080", "humidity_bme280", "humidity_bme680",
+    "eco2_zmod", "eco2_bme680",
+    "pressure_bme280", "pressure_bme680",
+)
+
+# dtv dict roster field → {chip label: archive column}. The chip labels are the
+# ones stand_devices._DTV_*_SENSORS emit; the ZMOD4410→eco2_zmod row is why this
+# is an explicit map, not a lowercase of the label.
+_DTV_SENSOR_LIST_COLS: dict[str, dict[str, str]] = {
+    "temp_sensors": {
+        "HDC1080": "temp_hdc1080", "MCP9808": "temp_mcp9808",
+        "BME280": "temp_bme280", "DS18B20": "temp_ds18b20", "BME680": "temp_bme680",
+    },
+    "humidity_sensors": {
+        "HDC1080": "humidity_hdc1080", "BME280": "humidity_bme280",
+        "BME680": "humidity_bme680",
+    },
+    "eco2_sensors": {"ZMOD4410": "eco2_zmod", "BME680": "eco2_bme680"},
+    "pressure_sensors": {"BME280": "pressure_bme280", "BME680": "pressure_bme680"},
+}
+
+
 def _ensure_ce_power_phase_cols(conn: sqlite3.Connection) -> None:
     cols = {
         str(r[1])
@@ -298,6 +342,43 @@ def _ensure_ce_power_phase_cols(conn: sqlite3.Connection) -> None:
     for col in ("power_w_a", "power_w_b", "power_w_c"):
         if col not in cols:
             conn.execute(f"ALTER TABLE ce_samples ADD COLUMN {col} REAL")
+
+
+def _ensure_dtv_sensor_cols(conn: sqlite3.Connection) -> None:
+    """Idempotent per-sensor column add to dtv_samples (mirrors the ce loop).
+
+    An OLD scalar-only dtv_samples gains the 12 per-sensor REAL columns with no
+    data loss; existing rows keep NULL there (charts skip the gap)."""
+    cols = {
+        str(r[1])
+        for r in conn.execute("PRAGMA table_info(dtv_samples)").fetchall()
+    }
+    for col in _DTV_SENSOR_COLUMNS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE dtv_samples ADD COLUMN {col} REAL")
+
+
+def _dtv_sensor_col_values(dtv: dict[str, Any]) -> dict[str, float | None]:
+    """Flatten the dtv dict's `*_sensors` rosters into {column: value} for insert."""
+    vals: dict[str, float | None] = {c: None for c in _DTV_SENSOR_COLUMNS}
+    for field, chip_map in _DTV_SENSOR_LIST_COLS.items():
+        roster = dtv.get(field)
+        if not isinstance(roster, list):
+            continue
+        for item in roster:
+            if not isinstance(item, dict):
+                continue
+            col = chip_map.get(str(item.get("t") or ""))
+            if not col:
+                continue
+            v = item.get("v")
+            if v is None:
+                continue
+            try:
+                vals[col] = float(v)
+            except (TypeError, ValueError):
+                continue
+    return vals
 
 
 def db_path(path: Path | None = None) -> Path:
@@ -386,6 +467,7 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
         if _needs_pk_migration(conn, "ce_samples"):
             _migrate_table(conn, "ce_samples", _CREATE_CE)
         _ensure_ce_power_phase_cols(conn)
+        _ensure_dtv_sensor_cols(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_dtv_device_ts "
             "ON dtv_samples(device_id, ts)"
@@ -415,12 +497,16 @@ def _insert_dtv(conn: sqlite3.Connection, ts: float, dtv: dict[str, Any]) -> Non
         )
     ):
         return
+    sensor_cols = _dtv_sensor_col_values(dtv)
+    col_sql = ", ".join(_DTV_SENSOR_COLUMNS)
+    col_ph = ", ".join("?" for _ in _DTV_SENSOR_COLUMNS)
     conn.execute(
-        """
+        f"""
         INSERT OR REPLACE INTO dtv_samples(
             ts, device_id, room_temp, humidity, eco2_ppm,
-            tvoc_mg_m3, pressure_mmhg, light_pct, presence
-        ) VALUES (?,?,?,?,?,?,?,?,?)
+            tvoc_mg_m3, pressure_mmhg, light_pct, presence,
+            {col_sql}
+        ) VALUES (?,?,?,?,?,?,?,?,?,{col_ph})
         """,
         (
             ts,
@@ -432,6 +518,7 @@ def _insert_dtv(conn: sqlite3.Connection, ts: float, dtv: dict[str, Any]) -> Non
             dtv.get("pressure_mmhg"),
             dtv.get("light_pct"),
             dtv.get("presence"),
+            *(sensor_cols[c] for c in _DTV_SENSOR_COLUMNS),
         ),
     )
 

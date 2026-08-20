@@ -75,6 +75,67 @@ def test_live_snapshot_maps_dtv_and_ce(tmp_path: Path):
     assert len(snap["devices"]) == 2
 
 
+def test_dtv_per_sensor_rosters(tmp_path: Path):
+    """`_build_dtv` emits present-sensor rosters (priority order) alongside the
+    first-available scalars. Absent / out-of-range sensors are omitted; kPa
+    pressures convert to mmHg; the eco2 ZMOD4410 label maps to the eco2_zmod key."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM4-3", {
+        # temp: HDC1080 + MCP9808 + BME280 present; DS18B20 absent;
+        # BME680 out-of-range (200 > 85) → omitted.
+        "temp_hdc1080": "22.5",
+        "temp_mcp9808": "22.8",
+        "temp_bme280": "23.1",
+        "temp_bme680": "200.0",
+        "humidity_hdc1080": "48.0",
+        "humidity_bme680": "49.5",
+        "eco2_zmod": "410",
+        "eco2_bme680": "430",
+        "tvoc_zmod": "0.12",
+        "pressure_bme280_kpa": "100.0",
+        "pressure_bme680_kpa": "100.2",
+        "temp_ext": "-55.0",  # external NTC — out of scope, never a roster entry
+    })
+    dtv = live_snapshot(cache)["dtv"][0]
+    # temp: 3 present sensors in priority order, BME680 dropped as out-of-range
+    assert dtv["temp_sensors"] == [
+        {"t": "HDC1080", "v": 22.5},
+        {"t": "MCP9808", "v": 22.8},
+        {"t": "BME280", "v": 23.1},
+    ]
+    # humidity: HDC1080 then BME680 (BME280 absent)
+    assert dtv["humidity_sensors"] == [
+        {"t": "HDC1080", "v": 48.0},
+        {"t": "BME680", "v": 49.5},
+    ]
+    # eco2: ZMOD4410 label first, then BME680
+    assert dtv["eco2_sensors"] == [
+        {"t": "ZMOD4410", "v": 410.0},
+        {"t": "BME680", "v": 430.0},
+    ]
+    # pressure: kPa → mmHg, rounded 1
+    assert dtv["pressure_sensors"] == [
+        {"t": "BME280", "v": 750.1},
+        {"t": "BME680", "v": 751.6},
+    ]
+    # first-available scalars kept unchanged
+    assert dtv["room_temp"] == 22.5
+    assert dtv["eco2_ppm"] == 410.0
+
+
+def test_dtv_empty_rosters_when_no_sensors(tmp_path: Path):
+    """An offline/empty ДТВ has empty rosters (shape stable for the card)."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM4-3", {"light_pct": "5"})
+    dtv = live_snapshot(cache)["dtv"][0]
+    assert dtv["temp_sensors"] == []
+    assert dtv["humidity_sensors"] == []
+    assert dtv["eco2_sensors"] == []
+    assert dtv["pressure_sensors"] == []
+
+
 def test_live_snapshot_multiple_devices(tmp_path: Path):
     cache = tmp_path / "mqtt"
     cache.mkdir()
