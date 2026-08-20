@@ -771,6 +771,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
 
   function fmtTimeLabel(ms, rangeKey) {
     const d = new Date(ms);
+    if (rangeKey === "sec") return fmtTimeSec(d); // sub-minute zoom: HH:MM:SS
     const t = fmtTime(d);
     const dd = String(d.getDate()).padStart(2, "0");
     const mo = String(d.getMonth() + 1).padStart(2, "0");
@@ -1443,6 +1444,141 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     });
   }
 
+  /* Measure-card placement (2 marks): tipA, tipB and the Δ card can each be tall
+     (up to 5 sensor rows), so positions come from MEASURED rects, not fixed px.
+     Each card avoids the ones already placed and stays inside the chart wrap. */
+  function rectsOverlapArea(a, b) {
+    const ox = Math.min(a.left + a.w, b.left + b.w) - Math.max(a.left, b.left);
+    const oy = Math.min(a.top + a.h, b.top + b.h) - Math.max(a.top, b.top);
+    return ox > 0 && oy > 0 ? ox * oy : 0;
+  }
+
+  function clampCardRect(r, b) {
+    let left = r.left;
+    let top = r.top;
+    if (left + r.w > b.right) left = b.right - r.w;
+    if (left < b.left) left = b.left;
+    if (top + r.h > b.bottom) top = b.bottom - r.h;
+    if (top < b.top) top = b.top;
+    return { left, top, w: r.w, h: r.h };
+  }
+
+  // First candidate (after clamping to bounds) that clears every obstacle; else
+  // the clamped candidate with the least total overlap. Non-null for non-empty cands.
+  function fitCardRect(cands, obstacles, bounds) {
+    let best = null;
+    let bestOverlap = Infinity;
+    for (let i = 0; i < cands.length; i++) {
+      const r = clampCardRect(cands[i], bounds);
+      let overlap = 0;
+      for (let k = 0; k < obstacles.length; k++) {
+        overlap += rectsOverlapArea(r, obstacles[k]);
+      }
+      if (overlap === 0) return r;
+      if (overlap < bestOverlap) {
+        bestOverlap = overlap;
+        best = r;
+      }
+    }
+    return best;
+  }
+
+  // Point card anchored to its mark: outer side of the mark first (spreads the
+  // two cards apart), then inner; top row first, then bottom.
+  function pointCardCands(xm, isLeft, size, pad, plotH) {
+    const gap = 8;
+    const outerLeft = isLeft ? xm - gap - size.w : xm + gap;
+    const innerLeft = isLeft ? xm + gap : xm - gap - size.w;
+    const topY = pad.t + 8;
+    const botY = pad.t + plotH - 8 - size.h;
+    return [
+      { left: outerLeft, top: topY, w: size.w, h: size.h },
+      { left: outerLeft, top: botY, w: size.w, h: size.h },
+      { left: innerLeft, top: topY, w: size.w, h: size.h },
+      { left: innerLeft, top: botY, w: size.w, h: size.h },
+    ];
+  }
+
+  // Δ card centred between the marks: middle band first (clear of top-anchored
+  // point cards), then top / bottom, then flush to a plot edge.
+  function deltaCardCands(xMid, size, w, pad, plotH) {
+    const centerLeft = xMid - size.w / 2;
+    const topY = pad.t + 8;
+    const midY = pad.t + plotH / 2 - size.h / 2;
+    const botY = pad.t + plotH - 8 - size.h;
+    return [
+      { left: centerLeft, top: midY, w: size.w, h: size.h },
+      { left: centerLeft, top: botY, w: size.w, h: size.h },
+      { left: centerLeft, top: topY, w: size.w, h: size.h },
+      { left: pad.l + 4, top: midY, w: size.w, h: size.h },
+      { left: w - pad.r - 4 - size.w, top: midY, w: size.w, h: size.h },
+    ];
+  }
+
+  // Content already set on each el; measure the rendered rects and place point-A,
+  // point-B, Δ in turn so each later card avoids the earlier ones and the wrap edge.
+  function placeMeasureCards(cards, xA, xB, w, h, pad, plotH) {
+    const bounds = { left: 4, top: pad.t + 4, right: w - 4, bottom: pad.t + plotH - 4 };
+    const midX = (Math.min(xA, xB) + Math.max(xA, xB)) / 2;
+    const placed = [];
+    cards.forEach((c) => {
+      if (!c.el) return;
+      if (!c.html) {
+        c.el.hidden = true;
+        return;
+      }
+      c.el.innerHTML = c.html;
+      c.el.hidden = false;
+      const size = {
+        w: c.el.offsetWidth || (c.kind === "delta" ? 140 : 160),
+        h: c.el.offsetHeight || 48,
+      };
+      const cands =
+        c.kind === "delta"
+          ? deltaCardCands(midX, size, w, pad, plotH)
+          : pointCardCands(c.x, c.isLeft, size, pad, plotH);
+      const r = fitCardRect(cands, placed, bounds);
+      c.el.style.left = r.left + "px";
+      c.el.style.top = r.top + "px";
+      placed.push(r);
+    });
+  }
+
+  function deltaHtmlFromRows(rows0, rows1, dtMs, metric) {
+    const byIdx = {};
+    (rows0 || []).forEach((r) => {
+      byIdx[r.idx] = { a: r, b: null };
+    });
+    (rows1 || []).forEach((r) => {
+      if (!byIdx[r.idx]) byIdx[r.idx] = { a: null, b: r };
+      else byIdx[r.idx].b = r;
+    });
+    const dLines = [
+      `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(dtMs))}</div>`,
+    ];
+    Object.keys(byIdx)
+      .map((k) => Number(k))
+      .sort((a, b) => a - b)
+      .forEach((idx) => {
+        const pair = byIdx[idx];
+        const a = pair.a;
+        const b = pair.b;
+        if (!a || !b) return;
+        const color = COLORS[idx % COLORS.length];
+        const unit = a.unit || b.unit || "";
+        const unitS = unit ? ` ${unit}` : "";
+        const dy = Number(b.y) - Number(a.y);
+        const dec = tipDecimalsFor(unit, a.metric || b.metric || metric);
+        dLines.push(
+          `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
+            `<b>Δ ${escapeAttr(a.label || "")} ${escapeAttr(
+              fmtSignedTipValue(dy, dec) + unitS
+            )}</b></div>`
+        );
+      });
+    return dLines.join("");
+  }
+
   function drawOntoCanvas(canvas, series, opts) {
     opts = opts || {};
     if (!canvas) return;
@@ -1694,75 +1830,32 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
       const rows1 = markRows[1] || [];
       const xA = xScale(marks[0]);
       const xB = xScale(marks[1]);
-      if (rows0.length) {
-        placeTipNearX(
-          tipA,
-          tipHtmlFromRows(rows0, rangeKey, metricId),
-          xA,
-          w,
-          h,
-          pad,
-          xA > xB
-        );
-      }
-      if (rows1.length) {
-        placeTipNearX(
-          tipB,
-          tipHtmlFromRows(rows1, rangeKey, metricId),
-          xB,
-          w,
-          h,
-          pad,
-          xB > xA
-        );
-      }
-      if (deltaEl && (rows0.length || rows1.length)) {
-        const dt = Math.abs((marks[1] || 0) - (marks[0] || 0));
-        const byIdx = {};
-        rows0.forEach((r) => {
-          byIdx[r.idx] = { a: r, b: null };
-        });
-        rows1.forEach((r) => {
-          if (!byIdx[r.idx]) byIdx[r.idx] = { a: null, b: r };
-          else byIdx[r.idx].b = r;
-        });
-        const dLines = [
-          `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(dt))}</div>`,
-        ];
-        Object.keys(byIdx)
-          .map((k) => Number(k))
-          .sort((a, b) => a - b)
-          .forEach((idx) => {
-            const pair = byIdx[idx];
-            const a = pair.a;
-            const b = pair.b;
-            if (!a || !b) return;
-            const color = COLORS[idx % COLORS.length];
-            const unit = a.unit || b.unit || "";
-            const unitS = unit ? ` ${unit}` : "";
-            const dy = Number(b.y) - Number(a.y);
-            const dec = tipDecimalsFor(unit, a.metric || b.metric || metricId);
-            dLines.push(
-              `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
-                `<b>Δ ${escapeAttr(a.label || "")} ${escapeAttr(
-                  fmtSignedTipValue(dy, dec) + unitS
-                )}</b></div>`
-            );
-          });
-        deltaEl.innerHTML = dLines.join("");
-        deltaEl.hidden = false;
-        const midX = (Math.min(xA, xB) + Math.max(xA, xB)) / 2;
-        const tipW = deltaEl.offsetWidth || 140;
-        const tipH = deltaEl.offsetHeight || 48;
-        let left = midX - tipW / 2;
-        let top = pad.t + plotH / 2 - tipH / 2;
-        if (left < pad.l + 4) left = pad.l + 4;
-        if (left + tipW > w - pad.r - 4) left = w - pad.r - tipW - 4;
-        if (top < pad.t + 4) top = pad.t + 4;
-        if (top + tipH > pad.t + plotH - 4) top = pad.t + plotH - tipH - 4;
-        deltaEl.style.left = left + "px";
-        deltaEl.style.top = top + "px";
-      }
+      const htmlA = rows0.length ? tipHtmlFromRows(rows0, rangeKey, metricId) : "";
+      const htmlB = rows1.length ? tipHtmlFromRows(rows1, rangeKey, metricId) : "";
+      const htmlD =
+        rows0.length || rows1.length
+          ? deltaHtmlFromRows(
+              rows0,
+              rows1,
+              Math.abs((marks[1] || 0) - (marks[0] || 0)),
+              metricId
+            )
+          : "";
+      // Measured, collision-free placement: the two point cards + the Δ card
+      // never overlap each other or clip the wrap, for either mark ordering.
+      placeMeasureCards(
+        [
+          { el: tipA, html: htmlA, kind: "point", x: xA, isLeft: xA <= xB },
+          { el: tipB, html: htmlB, kind: "point", x: xB, isLeft: xB < xA },
+          { el: deltaEl, html: htmlD, kind: "delta" },
+        ],
+        xA,
+        xB,
+        w,
+        h,
+        pad,
+        plotH
+      );
     }
 
     if (opts.legendEl) {
@@ -1869,7 +1962,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   /** Preset-like key that drives the x-axis / tip label GRANULARITY only. */
   function rangeLabelKey() {
     if (calendarMode) return calendarMode;
-    if (windowSec <= 12 * 3600) return "1h"; // time-only labels
+    if (windowSec <= 600) return "sec"; // ≤10 min: HH:MM:SS (minute ticks repeat)
+    if (windowSec <= 12 * 3600) return "1h"; // time-only labels HH:MM
     if (windowSec <= 7 * 86400) return "24h"; // dd.mm HH:MM
     return "30d"; // dd.mm
   }

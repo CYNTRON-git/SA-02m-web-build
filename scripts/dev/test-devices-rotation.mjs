@@ -72,6 +72,18 @@ const debounceTrailing = new Function(
   extractFn(SRC, 'debounceTrailing') + '\nreturn debounceTrailing;'
 )(fakeSetTimeout, fakeClearTimeout);
 
+// rangeLabelKey() closes over `calendarMode` + `windowSec`; expose a setter that
+// writes those (as Function-body globals the extracted source reads) so the
+// x-axis label GRANULARITY tiers can be exercised against the real source.
+const rangeLabelBridge = new Function(
+  extractFn(SRC, 'rangeLabelKey') +
+  '\nreturn { fn: rangeLabelKey, set: function (w, c) { windowSec = w; calendarMode = c; } };'
+)();
+function labelKey(windowSec, calendarMode) {
+  rangeLabelBridge.set(windowSec, calendarMode || null);
+  return rangeLabelBridge.fn();
+}
+
 let failures = 0;
 function check(cond, msg) {
   if (cond) { console.log('  ok   - ' + msg); }
@@ -84,6 +96,21 @@ check(SRC.includes('const WINDOW_MIN_S = 60'), 'source WINDOW_MIN_S = 60');
 check(SRC.includes('const WINDOW_MAX_S = 30 * 86400'), 'source WINDOW_MAX_S = 30d');
 check(SRC.includes('const ZOOM_IN_FACTOR = 0.8'), 'source ZOOM_IN_FACTOR = 0.8');
 check(SRC.includes('const ZOOM_OUT_FACTOR = 1.25'), 'source ZOOM_OUT_FACTOR = 1.25');
+check(SRC.includes('return "sec"'), 'source defines the sub-minute seconds axis tier');
+
+/* ── rangeLabelKey: x-axis label granularity tiers ────────────────────────── */
+// The sub-minute «sec» tier (≤10 min → HH:MM:SS) is the fix: below it every
+// minute-resolution tick collapses to the same value. Drop the tier and the
+// first three asserts go red.
+eq(labelKey(60), 'sec', '1-min window → seconds axis');
+eq(labelKey(300), 'sec', '5-min window → seconds axis');
+eq(labelKey(600), 'sec', 'at the 10-min boundary → seconds axis');
+eq(labelKey(601), '1h', 'just over 10 min → HH:MM');
+eq(labelKey(12 * 3600), '1h', 'at 12 h → HH:MM');
+eq(labelKey(12 * 3600 + 1), '24h', 'over 12 h → dd.mm HH:MM');
+eq(labelKey(7 * 86400), '24h', 'at 7 d → 24h tier');
+eq(labelKey(7 * 86400 + 1), '30d', 'over 7 d → dd.mm');
+eq(labelKey(300, 'mtd'), 'mtd', 'calendar mode short-circuits the window tiers');
 
 /* ── dtvRotationIndex ─────────────────────────────────────────────────────── */
 eq(dtvRotationIndex(3, 0), 0, 'tick 0, len 3 → 0');
