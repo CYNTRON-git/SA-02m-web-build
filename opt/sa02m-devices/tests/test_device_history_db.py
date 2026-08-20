@@ -6,6 +6,12 @@ import time
 from pathlib import Path
 
 from sa02m_devices.device_history_db import (
+    WINDOW_MAX_S,
+    WINDOW_MIN_S,
+    _range_slug,
+    clamp_window_s,
+    custom_range_key,
+    export_bucket_s,
     export_text,
     export_xlsx,
     history,
@@ -513,3 +519,52 @@ def test_resolve_mtd_and_month_and_export(tmp_path: Path):
         assert any(h and "HDC1080" in str(h) for h in headers[1:])
     except ImportError:
         pass
+
+
+def test_custom_window_clamp_and_key():
+    # clamp_window_s pins both ends of the continuous-zoom span.
+    assert clamp_window_s(10) == WINDOW_MIN_S  # below floor → 60
+    assert clamp_window_s(WINDOW_MIN_S) == WINDOW_MIN_S
+    assert clamp_window_s(3600) == 3600
+    assert clamp_window_s(999_999_999) == WINDOW_MAX_S  # above ceiling → 30 d
+    assert clamp_window_s("nonsense") == WINDOW_MIN_S
+    # custom_range_key round-trips through the clamp.
+    assert custom_range_key(3600) == "w:3600"
+    assert custom_range_key(5) == f"w:{WINDOW_MIN_S}"
+    assert custom_range_key(10**9) == f"w:{WINDOW_MAX_S}"
+    # filename slug drops the colon (invalid on Windows / awkward on POSIX).
+    assert _range_slug("w:3600") == "w3600"
+    assert _range_slug("1h") == "1h"
+
+
+def test_custom_window_resolve_and_bucket_derivation():
+    now = time.time()
+    for win in (WINDOW_MIN_S, 900, 3600, 86400, 7 * 86400, WINDOW_MAX_S):
+        t0, t1, bucket = resolve_time_range(f"w:{win}")
+        assert abs(t1 - now) < 5  # window ends at "now"
+        assert abs((t1 - t0) - win) < 5  # span == window seconds
+        # bucket is never 0 and yields a readable point count (~200-500 target).
+        assert bucket >= 1.0
+        pts = win / bucket
+        assert 30 <= pts <= 500  # small windows have few points but never 0-bucket
+        # export bucket is coarser and never sub-minute.
+        assert export_bucket_s(f"w:{win}") >= 60.0
+    # Out-of-range custom windows are CLAMPED (not an error) in resolve.
+    lo0, lo1, _ = resolve_time_range("w:1")  # below floor
+    assert abs((lo1 - lo0) - WINDOW_MIN_S) < 5
+    hi0, hi1, _ = resolve_time_range("w:999999999")  # above ceiling
+    assert abs((hi1 - hi0) - WINDOW_MAX_S) < 5
+
+
+def test_custom_window_history_query(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(5):
+        insert_sample(_snap(now - 4 + i, temp=20.0 + i), path=db)
+    # A custom 1-hour window returns data and echoes its own range token.
+    h = history("room_temp", "w:3600", path=db, device_id="dtv-COM4-3")
+    assert h["ok"] and h["range"] == "w:3600"
+    assert h["series"] and any(s.get("points") for s in h["series"])
+    # An out-of-range window is clamped, not rejected, and still returns ok.
+    h2 = history("room_temp", "w:5", path=db, device_id="dtv-COM4-3")
+    assert h2["ok"]

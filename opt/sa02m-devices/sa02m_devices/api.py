@@ -144,11 +144,20 @@ def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
     return device_events.list_events(limit=limit, device_id=device_id), 200
 
 
+def _range_key_from_qs(qs: dict[str, list[str]]) -> str:
+    """A `window_s` (arbitrary seconds — the continuous wheel-zoom) overrides the
+    preset `range`; it is carried downstream as a `w:<seconds>` token."""
+    window_s = _q1(qs, "window_s")
+    if window_s:
+        return device_history_db.custom_range_key(window_s)
+    return _q1(qs, "range", "1h") or "1h"
+
+
 def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
     kind = _q1(qs, "kind")
     metric = _q1(qs, "metric")
     group = _q1(qs, "group") or None
-    range_key = _q1(qs, "range", "1h") or "1h"
+    range_key = _range_key_from_qs(qs)
     device_id = _q1(qs, "device_id") or None
     # MR-02m AI long-table path: channel=N → one channel; else all channels.
     if kind == "mr":
@@ -172,7 +181,7 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
 
 
 def handle_summary(qs: dict[str, list[str]]) -> tuple[Any, int]:
-    range_key = _q1(qs, "range", "1h") or "1h"
+    range_key = _range_key_from_qs(qs)
     device_id = _q1(qs, "device_id") or None
     kwh_raw = _q1(qs, "kwh_rub")
     kwh_rub = None
@@ -248,7 +257,7 @@ class DevicesAPIHandler(BaseHTTPRequestHandler):
         kind = _q1(qs, "kind") or None
         metric = _q1(qs, "metric") or None
         group = _q1(qs, "group") or None
-        range_key = _q1(qs, "range", "1h") or "1h"
+        range_key = _range_key_from_qs(qs)
         device_id = _q1(qs, "device_id") or None
         fmt = (_q1(qs, "format", "xlsx") or "xlsx").lower()
 

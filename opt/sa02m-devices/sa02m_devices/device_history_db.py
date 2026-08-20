@@ -238,8 +238,103 @@ def _now_local() -> datetime:
     return datetime.now(_TZ)
 
 
+# ── Continuous (custom) window support ────────────────────────────
+# The chart wheel-zoom produces an ARBITRARY span (seconds), not a preset key.
+# It is carried through the same `range_key` argument as a "w:<seconds>" token,
+# so every history/export path validates and resolves it via the same helpers
+# below — no new parameter is threaded through the call graph.
+WINDOW_MIN_S = 60  # 1 minute — finest zoom-in
+WINDOW_MAX_S = 30 * 86400  # 30 days — widest zoom-out
+_CUSTOM_PREFIX = "w:"
+# Target point counts: chart wants a dense-but-readable curve, export a coarser
+# table. The bucket is snapped UP to a "sane" step so labels/ticks stay clean.
+CHART_TARGET_POINTS = 400
+EXPORT_TARGET_POINTS = 200
+_BUCKET_STEPS: tuple[float, ...] = (
+    1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800,
+    3600, 7200, 10800, 21600, 43200, 86400,
+)
+
+
+def clamp_window_s(window_s: Any) -> int:
+    """Coerce an arbitrary window to an int in [WINDOW_MIN_S, WINDOW_MAX_S]."""
+    try:
+        w = int(round(float(window_s)))
+    except (TypeError, ValueError):
+        return WINDOW_MIN_S
+    return max(WINDOW_MIN_S, min(WINDOW_MAX_S, w))
+
+
+def custom_range_key(window_s: Any) -> str:
+    """Build the `w:<seconds>` range token from a clamped window."""
+    return f"{_CUSTOM_PREFIX}{clamp_window_s(window_s)}"
+
+
+def _parse_custom_window(range_key: Any) -> int | None:
+    """Return the clamped window seconds for a `w:<seconds>` token, else None."""
+    if isinstance(range_key, str) and range_key.startswith(_CUSTOM_PREFIX):
+        return clamp_window_s(range_key[len(_CUSTOM_PREFIX):])
+    return None
+
+
+def _normalize_range(range_key: Any) -> str:
+    """A valid preset OR a valid custom window passes through; else default 1h."""
+    if range_key in RANGES or _parse_custom_window(range_key) is not None:
+        return str(range_key)
+    return "1h"
+
+
+def _snap_bucket_up(raw: float) -> float:
+    """Smallest sane bucket step ≥ raw (never below 1 s)."""
+    for step in _BUCKET_STEPS:
+        if step >= raw:
+            return float(step)
+    return float(_BUCKET_STEPS[-1])
+
+
+def _derive_bucket_s(window_s: int, target_points: int = CHART_TARGET_POINTS) -> float:
+    """Chart bucket for a custom window: ~target_points, snapped to a sane step."""
+    w = max(1, int(window_s))
+    return _snap_bucket_up(w / float(max(1, target_points)))
+
+
+def _derive_export_bucket_s(window_s: int) -> float:
+    """Export bucket for a custom window — coarser than chart, never sub-minute."""
+    return max(60.0, _derive_bucket_s(window_s, target_points=EXPORT_TARGET_POINTS))
+
+
+def _range_slug(range_key: str) -> str:
+    """Filename-safe token — a `w:3600` custom range becomes `w3600` (no colon)."""
+    win = _parse_custom_window(range_key)
+    return f"w{win}" if win is not None else str(range_key)
+
+
+def _fmt_window_ru(window_s: int) -> str:
+    """Human window label, e.g. «90 мин» / «6 ч» / «3 д»."""
+    s = int(window_s)
+    if s < 3600:
+        return f"{max(1, round(s / 60))} мин"
+    if s < 86400:
+        h = s / 3600.0
+        return f"{int(h) if h.is_integer() else round(h, 1)} ч"
+    d = s / 86400.0
+    return f"{int(d) if d.is_integer() else round(d, 1)} д"
+
+
+def range_label_ru(range_key: str) -> str:
+    """RU period label for a preset OR a custom window."""
+    win = _parse_custom_window(range_key)
+    if win is not None:
+        return _fmt_window_ru(win)
+    return RANGE_LABELS_RU.get(range_key, range_key)
+
+
 def resolve_time_range(range_key: str) -> tuple[float, float, float]:
-    """Вернуть (t0, t1, chart_bucket_s) для range_key."""
+    """Вернуть (t0, t1, chart_bucket_s) для range_key (пресет или w:<сек>)."""
+    win = _parse_custom_window(range_key)
+    if win is not None:
+        now = time.time()
+        return now - float(win), now, _derive_bucket_s(win)
     key = range_key if range_key in RANGES else "1h"
     window_s, bucket_s = RANGES[key]
     now = time.time()
@@ -258,6 +353,9 @@ def resolve_time_range(range_key: str) -> tuple[float, float, float]:
 
 
 def export_bucket_s(range_key: str) -> float:
+    win = _parse_custom_window(range_key)
+    if win is not None:
+        return _derive_export_bucket_s(win)
     return float(EXPORT_BUCKET_S.get(range_key) or EXPORT_BUCKET_S["1h"])
 
 _CREATE_DTV = """
@@ -861,8 +959,7 @@ def history(
     meta = METRICS.get(metric_id)
     if not meta:
         return {"ok": False, "error": "unknown metric", "metric": metric_id}
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     t0, t1, chart_bucket = resolve_time_range(range_key)
     if bucket_s is None:
         bucket_s = chart_bucket
@@ -931,8 +1028,7 @@ def history_batch(
     *,
     device_id: str | None = None,
 ) -> dict[str, Any]:
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     if metric_ids:
         ids = [m for m in metric_ids if m in METRICS]
     elif group and group in HISTORY_GROUPS:
@@ -1128,8 +1224,7 @@ def _mr_series_over_dbs(
     bucket_s: float | None,
 ) -> tuple[list[dict[str, Any]], str, float, float]:
     """Собрать MR-серии по всем файлам БД; вернуть (series, device_id, t0, t1)."""
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     t0, t1, chart_bucket = resolve_time_range(range_key)
     if bucket_s is None:
         bucket_s = chart_bucket
@@ -1168,8 +1263,7 @@ def history_mr(
     series, did, t0, t1 = _mr_series_over_dbs(
         device_id, range_key, path, ch_num, bucket_s
     )
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     unit = series[0]["unit"] if series else ""
     label = f"AI {ch_num}" if ch_num is not None else "MR-02m AI"
     return {
@@ -1201,8 +1295,7 @@ def history_mr_batch(
     series, did, t0, t1 = _mr_series_over_dbs(
         device_id, range_key, path, None, bucket_s
     )
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     metrics = [
         {
             "metric": s["field"],
@@ -1252,8 +1345,7 @@ def period_summary_ce(
     kwh_rub: float | None = None,
 ) -> dict[str, Any]:
     """Сводка СЭ за период: ср. мощность по фазам, ΔE, стоимость."""
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     t0, t1, _bucket = resolve_time_range(range_key)
     did = (device_id or "").strip() or None
     tariff = float(kwh_rub if kwh_rub is not None else DEFAULT_KWH_RUB)
@@ -1411,8 +1503,7 @@ def collect_export_table(
     path: Path | None = None,
 ) -> dict[str, Any]:
     """Собрать одну таблицу (время × колонки) для экспорта."""
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     bucket = export_bucket_s(range_key)
     t0, t1, _ = resolve_time_range(range_key)
     did = (device_id or "").strip()
@@ -1508,8 +1599,7 @@ def collect_export_table_mr(
 ) -> dict[str, Any]:
     """Таблица экспорта MR-02m AI (время × включённые каналы) — форма как
     collect_export_table(), но колонки динамические (по каналам в окне)."""
-    if range_key not in RANGES:
-        range_key = "1h"
+    range_key = _normalize_range(range_key)
     bucket = export_bucket_s(range_key)
     batch = history_mr_batch(device_id, range_key, path=path, bucket_s=bucket)
     did = str(batch.get("device_id") or (device_id or "").strip())
@@ -1696,7 +1786,7 @@ def export_xlsx(
     mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
     kind = str(table.get("kind") or "device")
-    filename = f"{kind}_export_{safe_id}_{mid_part}_{range_key}_{stamp}.xlsx"
+    filename = f"{kind}_export_{safe_id}_{mid_part}_{_range_slug(range_key)}_{stamp}.xlsx"
 
     try:
         import openpyxl
@@ -1720,7 +1810,7 @@ def export_xlsx(
         ("Метрика", table.get("title") or mid_part),
         (
             "Период",
-            f"{RANGE_LABELS_RU.get(range_key, range_key)} "
+            f"{range_label_ru(range_key)} "
             f"({_fmt_export_ts(float(table['t0']), 60)} — "
             f"{_fmt_export_ts(float(table['t1']), 60)})",
         ),
@@ -1797,7 +1887,7 @@ def export_text(
     lines = [
         f"# устройство: {table.get('device_id') or '—'}",
         f"# метрика: {table.get('title')}",
-        f"# период: {RANGE_LABELS_RU.get(range_key, range_key)}"
+        f"# период: {range_label_ru(range_key)}"
         f" ({_fmt_export_ts(float(table['t0']), 60)} — "
         f"{_fmt_export_ts(float(table['t1']), 60)})",
         f"# шаг: {_export_bucket_label(float(table['bucket_s']))}",
@@ -1820,7 +1910,7 @@ def export_text(
     mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
     kind_part = str(table.get("kind") or "device")
-    filename = f"{kind_part}_export_{safe_id}_{mid_part}_{range_key}_{stamp}.txt"
+    filename = f"{kind_part}_export_{safe_id}_{mid_part}_{_range_slug(range_key)}_{stamp}.txt"
     return body, filename
 
 
