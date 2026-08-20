@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Install Python test deps (make the py-unit-* pytest rows real, not skipped)
+        run: python3 -m pip install --quiet pytest pyserial pyyaml cryptography
       - name: Build-beat gate (full registry, build beat)
         run: node .ai-dev/quality/run.mjs build
       - name: Review-beat gate (full registry, review beat)
