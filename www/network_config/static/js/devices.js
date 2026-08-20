@@ -143,13 +143,13 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   const lastDeviceById = {};
 
   /* ── ДТВ per-sensor rotation ──────────────────────────────────────────────
-     A single module-level 2 s timer advances one shared tick; every visible ДТВ
+     A single module-level 5 s timer advances one shared tick; every visible ДТВ
      card steps its cycling KPIs (temp/rh/eco2/pressure) together, each modulo its
      own sensor count. The value comes from d.<metric>_sensors[tick % len], the
      caption from that entry's chip name. A single-sensor roster shows that one
      entry (no visible motion); an empty roster falls back to «—». TVOC is a single
      ZMOD4410 sensor (static caption in markup); light/presence are untouched. */
-  const DTV_ROTATE_MS = 2000;
+  const DTV_ROTATE_MS = 5000;
   let dtvRotTimer = null;
   let dtvRotTick = 0;
 
