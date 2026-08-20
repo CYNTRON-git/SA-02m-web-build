@@ -142,6 +142,89 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
      the open modal's chip set. Populated in updateCard. */
   const lastDeviceById = {};
 
+  /* ── ДТВ per-sensor rotation ──────────────────────────────────────────────
+     A single module-level 2 s timer advances one shared tick; every visible ДТВ
+     card steps its cycling KPIs (temp/rh/eco2/pressure) together, each modulo its
+     own sensor count. The value comes from d.<metric>_sensors[tick % len], the
+     caption from that entry's chip name. A single-sensor roster shows that one
+     entry (no visible motion); an empty roster falls back to «—». TVOC is a single
+     ZMOD4410 sensor (static caption in markup); light/presence are untouched. */
+  const DTV_ROTATE_MS = 2000;
+  let dtvRotTimer = null;
+  let dtvRotTick = 0;
+
+  // cell key → { list: per-sensor roster field, scalar: first-available fallback,
+  //   digits: display precision }.
+  const DTV_CYCLING = {
+    temp: { list: "temp_sensors", scalar: "room_temp", digits: 1 },
+    rh: { list: "humidity_sensors", scalar: "humidity", digits: 1 },
+    eco2: { list: "eco2_sensors", scalar: "eco2_ppm", digits: 0 },
+    pressure: { list: "pressure_sensors", scalar: "pressure_mmhg", digits: 1 },
+  };
+
+  /** Index into a per-sensor roster of length `len` for a shared `tick`;
+      -1 for an empty/absent roster. Wraps safely for any integer tick. */
+  function dtvRotationIndex(len, tick) {
+    const n = Number(len);
+    if (!Number.isFinite(n) || n <= 0) return -1;
+    const t = Number(tick);
+    const k = Number.isFinite(t) ? Math.trunc(t) : 0;
+    return ((k % n) + n) % n;
+  }
+
+  /** Fill one cycling ДТВ cell's value + caption from its roster at `tick`.
+      No roster (old backend) → first-available scalar, blank caption. */
+  function applyDtvCyclingCell(card, key, d, tick) {
+    const spec = DTV_CYCLING[key];
+    if (!spec || !card) return;
+    const valEl = card.querySelector(`[data-f="${key}"]`);
+    const subEl = card.querySelector(`[data-s="${key}"]`);
+    const roster = d && Array.isArray(d[spec.list]) ? d[spec.list] : null;
+    const idx = roster ? dtvRotationIndex(roster.length, tick) : -1;
+    if (idx >= 0) {
+      const item = roster[idx] || {};
+      if (valEl) valEl.textContent = fmt(item.v, spec.digits);
+      if (subEl) subEl.textContent = item.t || "";
+    } else {
+      if (valEl) valEl.textContent = fmt(d ? d[spec.scalar] : null, spec.digits);
+      if (subEl) subEl.textContent = "";
+    }
+  }
+
+  function applyDtvCyclingCells(card, d, tick) {
+    Object.keys(DTV_CYCLING).forEach((key) =>
+      applyDtvCyclingCell(card, key, d, tick)
+    );
+  }
+
+  /** Advance the shared tick and re-apply every visible ДТВ card — reads
+      lastDeviceById (the live snapshot) so rotation survives a poll re-render. */
+  function rotateDtvCards() {
+    dtvRotTick += 1;
+    const grid = $("dev-grid");
+    if (!grid) return;
+    grid.querySelectorAll(".dev-card--dtv").forEach((card) => {
+      const d = lastDeviceById[card.dataset.deviceId];
+      if (d) applyDtvCyclingCells(card, d, dtvRotTick);
+    });
+  }
+
+  function startDtvRotation() {
+    if (dtvRotTimer) return;
+    dtvRotTimer = setInterval(() => {
+      // Pause work when the page/tab is hidden (tick freezes, no DOM churn).
+      if (typeof document !== "undefined" && document.hidden) return;
+      rotateDtvCards();
+    }, DTV_ROTATE_MS);
+  }
+
+  function stopDtvRotation() {
+    if (dtvRotTimer) {
+      clearInterval(dtvRotTimer);
+      dtvRotTimer = null;
+    }
+  }
+
   /** «ai_5» → "5" for the API channel= param; "" when not an AI-channel key. */
   function mrChNum(metric) {
     const m = /^ai_(\d+)$/.exec(String(metric || ""));
@@ -174,22 +257,34 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   }
 
   function buildDtvMetricsHtml() {
+    // [metric, key, unit, label, sub]: sub = "cycle" → a rotating caption span
+    // (data-s) the timer fills with the current per-sensor chip name; a literal
+    // string → static caption (TVOC = one ZMOD4410 sensor); "" → no caption.
     const rows = [
-      ["room_temp", "temp", "°C", "Температура"],
-      ["humidity", "rh", "%", "Влажность"],
-      ["eco2_ppm", "eco2", "ppm", "eCO₂"],
-      ["tvoc_mg_m3", "tvoc", "mg/m³", "TVOC"],
-      ["pressure_mmhg", "pressure", "mmHg", "Давление"],
-      ["light_pct", "light", "%", "Освещённость"],
+      ["room_temp", "temp", "°C", "Температура", "cycle"],
+      ["humidity", "rh", "%", "Влажность", "cycle"],
+      ["eco2_ppm", "eco2", "ppm", "eCO₂", "cycle"],
+      ["tvoc_mg_m3", "tvoc", "mg/m³", "TVOC", "ZMOD4410"],
+      ["pressure_mmhg", "pressure", "mmHg", "Давление", "cycle"],
+      ["light_pct", "light", "%", "Освещённость", ""],
     ];
     return rows
-      .map(
-        ([metric, key, unit, lbl]) =>
+      .map(([metric, key, unit, lbl, sub]) => {
+        let subHtml = "";
+        if (sub === "cycle") {
+          subHtml = `<span class="dev-kpi-sub" data-s="${key}"></span>`;
+        } else if (sub) {
+          subHtml = `<span class="dev-kpi-sub">${escapeHtml(sub)}</span>`;
+        }
+        return (
           `<div class="dev-kpi" data-metric="${metric}" data-key="${key}">` +
           `<span class="dev-kpi-lbl">${lbl}</span>` +
           `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
-          `<span class="dev-kpi-unit">${unit}</span></span></div>`
-      )
+          `<span class="dev-kpi-unit">${unit}</span></span>` +
+          subHtml +
+          `</div>`
+        );
+      })
       .join("");
   }
 
@@ -504,11 +599,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
       setField(card, "f", fmt(d.frequency_hz, 2));
       setField(card, "e", fmt(d.energy_kwh_import, 1));
     } else {
-      setField(card, "temp", fmt(d.room_temp, 1));
-      setField(card, "rh", fmt(d.humidity, 1));
-      setField(card, "eco2", fmt(d.eco2_ppm, 0));
+      // Cycling cells (temp/rh/eco2/pressure) render at the CURRENT shared tick
+      // so a 5 s poll refresh keeps the caption the 2 s timer last showed.
+      applyDtvCyclingCells(card, d, dtvRotTick);
       setField(card, "tvoc", fmt(d.tvoc_mg_m3, 2));
-      setField(card, "pressure", fmt(d.pressure_mmhg, 1));
       setField(card, "light", fmt(d.light_pct, 0));
       renderPresence(card, d, stale);
     }
@@ -1743,6 +1837,55 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     return out;
   }
 
+  /* ── Chart wheel-zoom ────────────────────────────────────────────────────
+     Scroll over the chart steps the time window along the windowed-range ladder
+     (1ч…30д): scroll up = zoom IN (shorter window, finer sampling), down = zoom
+     OUT. The CE-only calendar modes (mtd/month) are not on the ladder — a wheel
+     from one enters at the wide end. The refetch is debounced so a fast scroll
+     fires ONE /api/devices/history load; the presets stay clickable (same axis).
+     preventDefault stops the page scrolling while zooming the chart. */
+  const ZOOM_LADDER = ["1h", "6h", "24h", "7d", "30d"];
+
+  function nextZoomRange(currentRange, deltaY) {
+    let idx = ZOOM_LADDER.indexOf(String(currentRange));
+    if (idx < 0) idx = ZOOM_LADDER.length; // off-ladder (mtd/month) → wide end
+    const dir = Number(deltaY) > 0 ? 1 : -1; // down = out (+), up = in (−)
+    let next = idx + dir;
+    if (next < 0) next = 0;
+    if (next > ZOOM_LADDER.length - 1) next = ZOOM_LADDER.length - 1;
+    return ZOOM_LADDER[next];
+  }
+
+  function debounceTrailing(fn, ms) {
+    let t = null;
+    return function () {
+      if (t) clearTimeout(t);
+      t = setTimeout(function () {
+        t = null;
+        fn();
+      }, ms);
+    };
+  }
+
+  const scheduleZoomRefetch = debounceTrailing(function () {
+    loadHistory();
+  }, 200);
+
+  function onChartWheel(e) {
+    const modal = $("dev-modal");
+    if (!modal || modal.hidden) return;
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    const next = nextZoomRange(activeRange, e ? e.deltaY : 0);
+    if (!next || next === activeRange) return;
+    activeRange = next;
+    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
+      b.classList.toggle("active", b.dataset.range === activeRange);
+    });
+    const status = $("dev-chart-status");
+    if (status) status.textContent = "Загрузка";
+    scheduleZoomRefetch();
+  }
+
   /* ── Modal / chart ───────────────────────────────────────────────────── */
 
   function setModalMode(mode) {
@@ -2059,6 +2202,13 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
       addBack.__bound = true;
       addBack.addEventListener("click", closeAddModal);
     }
+    const chartWrap =
+      $("dev-modal") && $("dev-modal").querySelector(".dev-chart-wrap");
+    if (chartWrap && !chartWrap.__wheelBound) {
+      chartWrap.__wheelBound = true;
+      // passive:false — the handler calls preventDefault to stop page scroll.
+      chartWrap.addEventListener("wheel", onChartWheel, { passive: false });
+    }
     window.addEventListener("resize", () => {
       if ($("dev-modal") && !$("dev-modal").hidden) drawChart();
     });
@@ -2069,6 +2219,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     refreshLive();
     if (timer) clearInterval(timer);
     timer = setInterval(refreshLive, POLL_MS);
+    startDtvRotation();
   };
 
   window.devicesTabDestroy = function () {
@@ -2076,6 +2227,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
       clearInterval(timer);
       timer = null;
     }
+    stopDtvRotation();
     closeModal();
     closeAddModal();
   };
