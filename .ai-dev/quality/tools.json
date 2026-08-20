@@ -254,6 +254,15 @@
       "init": "bash + grep + awk (present everywhere the project builds)"
     },
     {
+      "id": "health-gate-operator-disabled",
+      "checks": "Static gate for the update runner's health check (etc/sa02m-update-runner.sh restart_services_and_health): an operator-disabled required unit (masked/masked-runtime/disabled) must be SKIPPED, not roll the update back — the never-widen rule (a shared HardPy stand masks sa02m-devices-api because its own app serves :8765, so requiring it active wrongly rolled back every OTA there). Asserts (a) the is-active failure branch still guards each units_active entry; (b) it reads is-enabled to classify operator intent; (c) a masked/masked-runtime/disabled case does `continue`; (d) that skip precedes the log+return-1 fail path within the branch; (e) the fail path is preserved so an ENABLED-but-down unit still fails. Non-vacuous: removing the skip logic or the fail path FAILS the gate.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/health-gate-operator-disabled.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", ".ai-dev/quality/checks/health-gate-operator-disabled.sh"],
+      "init": "bash + sed + grep (present everywhere the project builds)"
+    },
+    {
       "id": "service-ctl-policy-write",
       "checks": "Functional regression for the stack-policy writes in etc/sa02m-web-service-ctl.sh (cmd_install/cmd_uninstall/stack_key_for_id against the REAL etc/sa02m-stacks-policy.sh): a successful install records present, a successful uninstall records disabled (the «removed stays removed» guarantee every installer path reads), a FAILED action records nothing and passes the installer's rc through, a non-installable id never reaches the hooks, the id→ID map is exactly codesys/mplc4/node-red, and with the policy lib ABSENT (older board) the commands still emit their JSON and exit with the installer's rc. Extracts the SHIPPED functions (dispatch-marker anchored, like the port-lease harness), stubs the six per-stack installers with scripted rc; also pins the Node-RED block markers test-nodered-ctl.sh extracts by. Non-vacuous: a failed extraction or a missed soft-source retarget FAILS.",
       "config": null,
