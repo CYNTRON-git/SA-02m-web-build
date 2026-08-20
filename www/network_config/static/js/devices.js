@@ -16,7 +16,19 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   let activeDeviceId = "";
   let activeDeviceLabel = "";
   let activeMetric = "room_temp";
-  let activeRange = "1h";
+  /**
+   * Chart span state - CONTINUOUS wheel-zoom. `windowSec` (seconds) is the
+   * source of truth for a windowed view; the preset buttons are TEMPLATES that
+   * set it. `calendarMode` ("" | "mtd" | "month") selects the CE-only calendar
+   * spans, which are NOT windowed - while one is active `windowSec` is dormant.
+   */
+  const PRESET_SEC = { "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000 };
+  const WINDOW_MIN_S = 60; // 1 minute - finest zoom-in
+  const WINDOW_MAX_S = 30 * 86400; // 30 days - widest zoom-out
+  const ZOOM_IN_FACTOR = 0.8; // wheel up -> shrink the window
+  const ZOOM_OUT_FACTOR = 1.25; // wheel down -> grow the window
+  let windowSec = PRESET_SEC["1h"];
+  let calendarMode = "";
   /** Modal chart mode: "metric" (single) | "overview" (all series for device). */
   let modalMode = "metric";
   /** Signature of last rendered card set (device ids). */
@@ -882,11 +894,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     document.querySelectorAll(".dev-range-ce").forEach((btn) => {
       btn.hidden = !on;
     });
-    if (!on && (activeRange === "mtd" || activeRange === "month")) {
-      activeRange = "1h";
-      document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.range === activeRange);
-      });
+    if (!on && calendarMode) {
+      // Leaving CE: a calendar mode is no longer selectable -> fall to 1h window.
+      calendarMode = "";
+      windowSec = PRESET_SEC["1h"];
+      updateRangeButtons();
     }
   }
 
@@ -910,7 +922,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   }
 
   function exportHistory() {
-    const params = { range: activeRange, format: "xlsx" };
+    const params = { ...rangeReqParams(), format: "xlsx" };
     if (activeDeviceId) params.device_id = activeDeviceId;
     if (activeDevice === "mr") {
       // One MR table = all enabled AI channels (columns), regardless of mode.
@@ -1005,7 +1017,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     }
     setCeSideVisible(true);
     const tariff = getKwhRub();
-    const rangeAtStart = activeRange;
+    const rangeAtStart = rangeToken();
     const idAtStart = activeDeviceId;
     const req = ++summaryReqId;
     if (summaryAbort) {
@@ -1018,11 +1030,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     summaryAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
     const url =
       "/api/devices/history/summary?" +
-      historyQs({ range: activeRange, kwh_rub: String(tariff) });
+      historyQs({ ...rangeReqParams(), kwh_rub: String(tariff) });
     return fetchJson(url, summaryAbort ? { signal: summaryAbort.signal } : {})
       .then((data) => {
         if (req !== summaryReqId) return;
-        if (rangeAtStart !== activeRange || idAtStart !== activeDeviceId) return;
+        if (rangeAtStart !== rangeToken() || idAtStart !== activeDeviceId) return;
         if (!data || !data.ok) {
           renderCeSummary({});
           return;
@@ -1837,23 +1849,66 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     return out;
   }
 
-  /* ── Chart wheel-zoom ────────────────────────────────────────────────────
-     Scroll over the chart steps the time window along the windowed-range ladder
-     (1ч…30д): scroll up = zoom IN (shorter window, finer sampling), down = zoom
-     OUT. The CE-only calendar modes (mtd/month) are not on the ladder — a wheel
-     from one enters at the wide end. The refetch is debounced so a fast scroll
-     fires ONE /api/devices/history load; the presets stay clickable (same axis).
-     preventDefault stops the page scrolling while zooming the chart. */
-  const ZOOM_LADDER = ["1h", "6h", "24h", "7d", "30d"];
+  /* -- Chart span state (continuous) --------------------------------------
+     The presets are templates: a click sets `windowSec` to that duration. The
+     wheel then scales `windowSec` by a smooth factor between 1 min and 30 days.
+     Requests carry an arbitrary `window_s` (or `range` for a calendar mode);
+     the chart x-axis label granularity is derived locally, not from the server
+     range echo (now a `w:<seconds>` token for a windowed view). */
 
-  function nextZoomRange(currentRange, deltaY) {
-    let idx = ZOOM_LADDER.indexOf(String(currentRange));
-    if (idx < 0) idx = ZOOM_LADDER.length; // off-ladder (mtd/month) → wide end
-    const dir = Number(deltaY) > 0 ? 1 : -1; // down = out (+), up = in (−)
-    let next = idx + dir;
-    if (next < 0) next = 0;
-    if (next > ZOOM_LADDER.length - 1) next = ZOOM_LADDER.length - 1;
-    return ZOOM_LADDER[next];
+  /** Request params for the active span - calendar mode vs continuous window. */
+  function rangeReqParams() {
+    return calendarMode ? { range: calendarMode } : { window_s: String(windowSec) };
+  }
+
+  /** Stable token for in-flight request guards + button highlight. */
+  function rangeToken() {
+    return calendarMode || "w:" + windowSec;
+  }
+
+  /** Preset-like key that drives the x-axis / tip label GRANULARITY only. */
+  function rangeLabelKey() {
+    if (calendarMode) return calendarMode;
+    if (windowSec <= 12 * 3600) return "1h"; // time-only labels
+    if (windowSec <= 7 * 86400) return "24h"; // dd.mm HH:MM
+    return "30d"; // dd.mm
+  }
+
+  /** Human span label for the status line («90 мин» / «6 ч» / «3 д»). */
+  function rangeHumanLabel() {
+    if (calendarMode === "mtd") return "с начала месяца";
+    if (calendarMode === "month") return "за месяц";
+    const s = windowSec;
+    if (s < 3600) return Math.max(1, Math.round(s / 60)) + " мин";
+    if (s < 86400) {
+      const h = s / 3600;
+      return (Number.isInteger(h) ? h : h.toFixed(1)) + " ч";
+    }
+    const d = s / 86400;
+    return (Number.isInteger(d) ? d : d.toFixed(1)) + " д";
+  }
+
+  function clampWindowSec(sec) {
+    const n = Math.round(Number(sec));
+    if (!Number.isFinite(n)) return WINDOW_MIN_S;
+    return Math.max(WINDOW_MIN_S, Math.min(WINDOW_MAX_S, n));
+  }
+
+  /* -- Chart wheel-zoom ---------------------------------------------------
+     One wheel notch scales `windowSec`: up (deltaY<0) shrinks toward 1 min,
+     down (deltaY>0) grows toward 30 days, by a smooth factor. The +/-1 s floor
+     keeps each notch changing the integer window at small spans. A wheel over a
+     CE calendar mode leaves it and starts continuous zoom at the 30 d end. The
+     refetch is debounced (one /api/devices/history load per burst); presets stay
+     clickable. preventDefault stops the page scrolling while zooming. */
+  function stepWindowSec(sec, deltaY) {
+    const cur = clampWindowSec(sec);
+    const dir = Number(deltaY) > 0 ? 1 : -1; // down = out (grow), up = in (shrink)
+    const factor = dir > 0 ? ZOOM_OUT_FACTOR : ZOOM_IN_FACTOR;
+    let next = Math.round(cur * factor);
+    if (dir < 0 && next >= cur) next = cur - 1; // force a change zooming in
+    if (dir > 0 && next <= cur) next = cur + 1; // force a change zooming out
+    return clampWindowSec(next);
   }
 
   function debounceTrailing(fn, ms) {
@@ -1871,16 +1926,41 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     loadHistory();
   }, 200);
 
+  function updateRangeButtons() {
+    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
+      const on = calendarMode
+        ? b.dataset.range === calendarMode
+        : PRESET_SEC[b.dataset.range] === windowSec;
+      b.classList.toggle("active", !!on);
+    });
+  }
+
+  /** A preset button click: mtd/month are calendar modes; the rest set windowSec. */
+  function setSpanFromPreset(rangeKey) {
+    if (rangeKey === "mtd" || rangeKey === "month") {
+      calendarMode = rangeKey;
+    } else {
+      calendarMode = "";
+      windowSec = clampWindowSec(PRESET_SEC[rangeKey] || PRESET_SEC["1h"]);
+    }
+  }
+
   function onChartWheel(e) {
     const modal = $("dev-modal");
     if (!modal || modal.hidden) return;
     if (e && typeof e.preventDefault === "function") e.preventDefault();
-    const next = nextZoomRange(activeRange, e ? e.deltaY : 0);
-    if (!next || next === activeRange) return;
-    activeRange = next;
-    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
-      b.classList.toggle("active", b.dataset.range === activeRange);
-    });
+    if (calendarMode) {
+      // Enter continuous zoom from a calendar mode at the 30 d (widest) end.
+      calendarMode = "";
+      windowSec = WINDOW_MAX_S;
+    }
+    const next = stepWindowSec(windowSec, e ? e.deltaY : 0);
+    if (next === windowSec) {
+      updateRangeButtons();
+      return;
+    }
+    windowSec = next;
+    updateRangeButtons();
     const status = $("dev-chart-status");
     if (status) status.textContent = "Загрузка";
     scheduleZoomRefetch();
@@ -1917,7 +1997,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
         : metrics.length
         ? metrics[0][0]
         : "";
-    activeRange = "1h";
+    calendarMode = "";
+    windowSec = PRESET_SEC["1h"];
     modalMode = "metric";
     const modal = $("dev-modal");
     if (!modal) return;
@@ -1962,9 +2043,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
     });
-    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.range === activeRange);
-    });
+    updateRangeButtons();
     setCeSideVisible(activeDevice === "ce");
     setExportVisible(true);
     const inp = $("dev-ce-kwh-rub");
@@ -1992,7 +2071,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     if (status) status.textContent = "Загрузка";
     if (activeDevice === "ce") loadCeSummary();
     else setCeSideVisible(false);
-    const rangeAtStart = activeRange;
+    const rangeAtStart = rangeToken();
     const metricAtStart = activeMetric;
     const modeAtStart = modalMode;
     const idAtStart = activeDeviceId;
@@ -2010,7 +2089,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     function stillCurrent() {
       return (
         req === historyReqId &&
-        rangeAtStart === activeRange &&
+        rangeAtStart === rangeToken() &&
         metricAtStart === activeMetric &&
         modeAtStart === modalMode &&
         idAtStart === activeDeviceId
@@ -2020,10 +2099,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     if (modalMode === "overview") {
       const isMr = activeDevice === "mr";
       const overviewQs = isMr
-        ? { kind: "mr", group: "all", range: activeRange }
+        ? { kind: "mr", group: "all", ...rangeReqParams() }
         : {
             group: activeDevice === "dtv" ? "climate" : "energy",
-            range: activeRange,
+            ...rangeReqParams(),
           };
       const url = "/api/devices/history?" + historyQs(overviewQs);
       fetchJson(url, fetchOpts)
@@ -2032,7 +2111,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
           if (!data || !data.ok) {
             if (status) status.textContent = (data && data.error) || "Нет данных";
             chartSeries = [];
-            chartMeta = { label: "Общее", unit: "", range: activeRange, normalize: true };
+            chartMeta = { label: "Общее", unit: "", range: rangeLabelKey(), normalize: true };
             drawChart();
             return;
           }
@@ -2045,7 +2124,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
                 ? "MR-02m · Общее"
                 : "Энергия · Общее",
             unit: "",
-            range: data.range || activeRange,
+            range: rangeLabelKey(),
             normalize: true,
             windowMin: data.t0_ms,
             windowMax: data.t1_ms,
@@ -2063,7 +2142,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
             : { minY: 0, maxY: 1 };
           if (status) {
             status.textContent = n
-              ? `${chartMeta.label} · ${chartMeta.range} · ${chartSeries.length} рядов · Y: 0…${fmtYTick(
+              ? `${chartMeta.label} · ${rangeHumanLabel()} · ${chartSeries.length} рядов · Y: 0…${fmtYTick(
                   yDom.maxY,
                   yTickDecimals(0, yDom.maxY, 4)
                 )} · ${n} точек`
@@ -2082,8 +2161,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     }
     const metricQs =
       activeDevice === "mr"
-        ? { kind: "mr", channel: mrChNum(activeMetric), range: activeRange }
-        : { metric: activeMetric, range: activeRange };
+        ? { kind: "mr", channel: mrChNum(activeMetric), ...rangeReqParams() }
+        : { metric: activeMetric, ...rangeReqParams() };
     const url = "/api/devices/history?" + historyQs(metricQs);
     fetchJson(url, fetchOpts)
       .then((data) => {
@@ -2091,7 +2170,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
         if (!data || !data.ok) {
           if (status) status.textContent = (data && data.error) || "Нет данных";
           chartSeries = [];
-          chartMeta = { label: "", unit: "", range: activeRange, normalize: false };
+          chartMeta = { label: "", unit: "", range: rangeLabelKey(), normalize: false };
           drawChart();
           return;
         }
@@ -2099,7 +2178,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
           label: data.label || "",
           unit: data.unit || "",
           metric: activeMetric,
-          range: data.range || activeRange,
+          range: rangeLabelKey(),
           normalize: false,
           windowMin: data.t0_ms,
           windowMax: data.t1_ms,
@@ -2108,7 +2187,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
         const n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
         if (status) {
           status.textContent = n
-            ? `${data.label || ""} · ${data.range} · ${n} точек`
+            ? `${data.label || ""} · ${rangeHumanLabel()} · ${n} точек`
             : "Нет точек за выбранный период";
         }
         drawChart();
@@ -2125,7 +2204,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
   function drawChart() {
     const normalize = !!chartMeta.normalize;
     drawOntoCanvas($("dev-chart"), chartSeries, {
-      range: chartMeta.range || activeRange,
+      range: chartMeta.range || rangeLabelKey(),
       normalize: normalize,
       legendEl: $("dev-chart-legend"),
       unitNote: chartMeta.unit || "",
@@ -2150,9 +2229,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
     });
     document.querySelectorAll("#dev-modal .dev-range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        activeRange = btn.dataset.range;
+        setSpanFromPreset(btn.dataset.range);
+        updateRangeButtons();
         loadHistory();
       });
     });

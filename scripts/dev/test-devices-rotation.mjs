@@ -1,23 +1,25 @@
 #!/usr/bin/env node
 /* ═══════════════════════════════════════════════════════════════════════════
    js-unit-devices — standalone Node test for the ДТВ per-sensor rotation index
-   math and the chart wheel-zoom ladder + debounce, in devices.js.
+   math and the chart CONTINUOUS wheel-zoom window math + debounce, in devices.js.
    ───────────────────────────────────────────────────────────────────────────
    The project has no JS unit runner (only js-syntax = `node --check`). This is
    stdlib-only — no framework, no npm dep — the same graceful posture the js-unit
    and ui-layout rows keep. Each function under test is extracted from the SHIPPED
    devices.js source by brace-matching and evaluated with the closure identifiers
-   it needs injected (ZOOM_LADDER for nextZoomRange, fake timers for the debounce),
-   so the test exercises the real source, not a copy.
+   it needs injected (window bounds + zoom factors for the step math, fake timers
+   for the debounce), so the test exercises the real source, not a copy.
 
    Under test:
    • dtvRotationIndex(len, tick) — the shared-tick modulo the card cycles KPIs by.
      Mutation proof: change `((k % n) + n) % n` to a bare `k % n` and the negative-
      tick case goes red.
-   • nextZoomRange(range, deltaY) — one wheel step along the 1ч…30д ladder.
+   • clampWindowSec(sec) — pins the continuous span to [60 s, 30 d].
+   • stepWindowSec(sec, deltaY) — one smooth wheel notch (factor in/out), a ≥1 s
+     floor so small windows still move, clamped at both ends.
    • debounceTrailing(fn, ms) — a fast scroll fires ONE trailing refetch.
-   • integration: several rapid wheel steps move the range the right way and
-     schedule exactly one refetch.
+   • integration: a burst of wheel-in notches shrinks the window toward 60 s and
+     schedules exactly one refetch.
    ═══════════════════════════════════════════════════════════════════════════ */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -40,16 +42,24 @@ function extractFn(src, name) {
   throw new Error('unbalanced braces extracting ' + name + '()');
 }
 
-// The ladder the source defines; asserted below so a source rename is caught.
-const ZOOM_LADDER = ['1h', '6h', '24h', '7d', '30d'];
+// The continuous-zoom constants the source defines; asserted below so a source
+// rename/retune is caught by this test rather than silently drifting.
+const WINDOW_MIN_S = 60;
+const WINDOW_MAX_S = 30 * 86400; // 2592000
+const ZOOM_IN_FACTOR = 0.8;
+const ZOOM_OUT_FACTOR = 1.25;
 
 const dtvRotationIndex = new Function(
   extractFn(SRC, 'dtvRotationIndex') + '\nreturn dtvRotationIndex;'
 )();
-const nextZoomRange = new Function(
-  'ZOOM_LADDER',
-  extractFn(SRC, 'nextZoomRange') + '\nreturn nextZoomRange;'
-)(ZOOM_LADDER);
+const clampWindowSec = new Function(
+  'WINDOW_MIN_S', 'WINDOW_MAX_S',
+  extractFn(SRC, 'clampWindowSec') + '\nreturn clampWindowSec;'
+)(WINDOW_MIN_S, WINDOW_MAX_S);
+const stepWindowSec = new Function(
+  'clampWindowSec', 'ZOOM_IN_FACTOR', 'ZOOM_OUT_FACTOR',
+  extractFn(SRC, 'stepWindowSec') + '\nreturn stepWindowSec;'
+)(clampWindowSec, ZOOM_IN_FACTOR, ZOOM_OUT_FACTOR);
 
 // Fake timers so the debounce is deterministic (no wall-clock wait).
 let timers = [];
@@ -69,8 +79,11 @@ function check(cond, msg) {
 }
 function eq(a, b, msg) { check(a === b, msg + ' (got ' + JSON.stringify(a) + ')'); }
 
-// Drift guard: the source still defines the ladder we test against.
-check(SRC.includes('"1h", "6h", "24h", "7d", "30d"'), 'source ZOOM_LADDER matches test');
+// Drift guard: the source still defines the bounds and factors we test against.
+check(SRC.includes('const WINDOW_MIN_S = 60'), 'source WINDOW_MIN_S = 60');
+check(SRC.includes('const WINDOW_MAX_S = 30 * 86400'), 'source WINDOW_MAX_S = 30d');
+check(SRC.includes('const ZOOM_IN_FACTOR = 0.8'), 'source ZOOM_IN_FACTOR = 0.8');
+check(SRC.includes('const ZOOM_OUT_FACTOR = 1.25'), 'source ZOOM_OUT_FACTOR = 1.25');
 
 /* ── dtvRotationIndex ─────────────────────────────────────────────────────── */
 eq(dtvRotationIndex(3, 0), 0, 'tick 0, len 3 → 0');
@@ -82,16 +95,47 @@ eq(dtvRotationIndex(0, 5), -1, 'empty roster → -1');
 eq(dtvRotationIndex(3, -1), 2, 'negative tick wraps forward (−1 → 2)');
 eq(dtvRotationIndex(5, 2), 2, 'tick 2, len 5 → 2');
 
-/* ── nextZoomRange ────────────────────────────────────────────────────────── */
-eq(nextZoomRange('1h', -1), '1h', 'zoom-in at floor stays 1h');
-eq(nextZoomRange('1h', 1), '6h', 'zoom-out from 1h → 6h');
-eq(nextZoomRange('6h', -1), '1h', 'zoom-in from 6h → 1h');
-eq(nextZoomRange('24h', 1), '7d', 'zoom-out from 24h → 7d');
-eq(nextZoomRange('30d', 1), '30d', 'zoom-out at ceiling stays 30d');
-eq(nextZoomRange('30d', -1), '7d', 'zoom-in from 30d → 7d');
-// CE calendar mode is off-ladder → a zoom-in enters at the wide end (30d).
-eq(nextZoomRange('mtd', -1), '30d', 'off-ladder mtd, zoom-in → 30d');
-eq(nextZoomRange('month', 1), '30d', 'off-ladder month, zoom-out clamps 30d');
+/* ── clampWindowSec: both ends pinned ─────────────────────────────────────── */
+eq(clampWindowSec(10), WINDOW_MIN_S, 'below floor → 60');
+eq(clampWindowSec(WINDOW_MIN_S), WINDOW_MIN_S, 'at floor → 60');
+eq(clampWindowSec(3600), 3600, 'in range passes through');
+eq(clampWindowSec(9e9), WINDOW_MAX_S, 'above ceiling → 30 d');
+eq(clampWindowSec(NaN), WINDOW_MIN_S, 'NaN → floor');
+eq(clampWindowSec(3600.4), 3600, 'rounds to integer seconds');
+
+/* ── stepWindowSec: smooth continuous notch ───────────────────────────────── */
+// deltaY > 0 = wheel DOWN = zoom OUT (grow); deltaY < 0 = wheel UP = zoom IN.
+eq(stepWindowSec(3600, 1), 4500, 'zoom-out from 1h → *1.25 = 4500 s');
+eq(stepWindowSec(3600, -1), 2880, 'zoom-in from 1h → *0.8 = 2880 s');
+eq(stepWindowSec(WINDOW_MIN_S, -1), WINDOW_MIN_S, 'zoom-in at floor stays 60');
+eq(stepWindowSec(WINDOW_MIN_S, 1), 75, 'zoom-out from 60 → 75');
+eq(stepWindowSec(WINDOW_MAX_S, 1), WINDOW_MAX_S, 'zoom-out at ceiling stays 30 d');
+eq(stepWindowSec(WINDOW_MAX_S, -1), 2073600, 'zoom-in from 30 d → *0.8');
+
+// Monotonic, no-stall: repeated zoom-in strictly shrinks until the 60 s floor.
+{
+  let w = 3600;
+  let stalled = false;
+  for (let i = 0; i < 200; i++) {
+    const n = stepWindowSec(w, -1);
+    if (w > WINDOW_MIN_S && n >= w) { stalled = true; break; } // never stall above floor
+    w = n;
+  }
+  check(!stalled, 'zoom-in never stalls above the floor (≥1 s change each notch)');
+  eq(w, WINDOW_MIN_S, 'repeated zoom-in converges to 60 s');
+}
+// Repeated zoom-out strictly grows until the 30 d ceiling.
+{
+  let w = 3600;
+  let stalled = false;
+  for (let i = 0; i < 200; i++) {
+    const n = stepWindowSec(w, 1);
+    if (w < WINDOW_MAX_S && n <= w) { stalled = true; break; }
+    w = n;
+  }
+  check(!stalled, 'zoom-out never stalls below the ceiling');
+  eq(w, WINDOW_MAX_S, 'repeated zoom-out converges to 30 d');
+}
 
 /* ── debounceTrailing: rapid calls → one trailing fire ─────────────────────── */
 {
@@ -104,18 +148,18 @@ eq(nextZoomRange('month', 1), '30d', 'off-ladder month, zoom-out clamps 30d');
   eq(calls, 1, 'debounced refetch fires exactly once');
 }
 
-/* ── integration: wheel steps move the range + schedule one refetch ───────── */
+/* ── integration: wheel-in notches shrink the window + schedule one refetch ── */
 {
-  let range = '1h';
+  let w = 3600;
   let refetches = 0;
   const scheduleRefetch = debounceTrailing(() => { refetches++; }, 200);
-  // Simulate three fast zoom-out wheel ticks (deltaY > 0).
+  // Three fast zoom-in wheel notches (deltaY < 0).
   for (let i = 0; i < 3; i++) {
-    const next = nextZoomRange(range, 10);
-    if (next !== range) { range = next; scheduleRefetch(); }
+    const next = stepWindowSec(w, -10);
+    if (next !== w) { w = next; scheduleRefetch(); }
   }
-  eq(range, '7d', '1h → 6h → 24h → 7d after three zoom-out steps');
-  eq(timers.length, 1, 'three wheel steps leave ONE pending refetch');
+  check(w < 3600, 'three zoom-in notches shrank the window below 1h');
+  eq(timers.length, 1, 'three wheel notches leave ONE pending refetch');
   flushTimers();
   eq(refetches, 1, 'debounced refetch fired once for the burst');
 }
@@ -124,5 +168,5 @@ if (failures) {
   console.error('js-unit-devices: ' + failures + ' assertion(s) failed');
   process.exit(1);
 }
-console.log('js-unit-devices: dtv rotation + wheel-zoom ok');
+console.log('js-unit-devices: dtv rotation + continuous wheel-zoom ok');
 process.exit(0);
