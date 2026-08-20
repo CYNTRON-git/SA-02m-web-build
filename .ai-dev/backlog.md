@@ -7,6 +7,17 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-20 **[LOW] Functional test for the update-runner health-gate operator-disabled
+  skip (deferred).** The skip logic (masked/masked-runtime/disabled required units are skipped,
+  enabled-but-down still fails — `etc/sa02m-update-runner.sh` restart_services_and_health) is
+  covered only by the STATIC gate `health-gate-operator-disabled` (structure, non-vacuous), below
+  the repo's functional-extraction idiom (service-ctl-policy-write, port-lease). A functional
+  harness extracting `restart_services_and_health` + a systemctl shim was attempted but hit a
+  Git-Bash tmp-file gremlin (the shim's per-unit state files read empty inside the sourced
+  function despite working standalone) and was dropped for the static gate. Follow-up: drive the
+  four is-enabled branches through a stubbed systemctl (masked/disabled → rc0 skip, enabled-down
+  → rc1 fail) — likely needs a Linux/WSL runner, not Git-Bash. Surfaced by the health-gate
+  Reviewer (F1 advisory).
 - [OPEN] 2026-08-19 **[MED] Gateway mode for RS-485 flashing/scan — UI must steer to
   transparent.** Fixed in 1.0.5.86: WB/fast-modbus replies (`0xFF` arbitration) are no
   longer truncated, so scan works in `rtu_over_tcp`. BUT the PC flasher / a fast-modbus
