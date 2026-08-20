@@ -57,12 +57,12 @@
     },
     {
       "id": "py-unit-cloud",
-      "checks": "Cloud-agent stdlib unit tests (opt/sa02m-cloud-agent/tests, unittest-style test_render*.py). Despite the pattern name this row now covers the whole agent seam: frpc.toml rendering + the device-side local-port allow-list (drops :22/:1883, keeps :80/:9999) + pinned transport TLS (A5 defense-in-depth), per-device identity metadatas emission and 0600 credential storage, the heartbeat send-only guarantee (threat-model F1), and revocation stand-down/recovery. The test_render*.py pattern deliberately excludes the pytest-style test_agent.py (pytest is not a device/CI dep) — widening it to test_*.py would fail the gate on the missing import.",
+      "checks": "Functional regression for the cloud agent — the WHOLE tests dir via pytest (test_render_frpc.py + test_agent.py: the send-only / no-command-channel / no-wireguard F1-removal guards, which are pytest-style and were previously UNGATED — the old unittest `-p test_render*.py` row silently skipped them). 58 tests via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (pytest is now a CI dep — web-quality.yml). Non-vacuous: a collection error or a failing test FAILS the run.",
       "config": null,
-      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-cloud-agent/tests -p \"test_render*.py\" -q; fi; done; echo py-unit-cloud: no working python interpreter; exit 1'",
+      "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-cloud opt/sa02m-cloud-agent",
       "beat": "build",
-      "covers": ["opt/sa02m-cloud-agent/"],
-      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+      "covers": ["opt/sa02m-cloud-agent/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
     },
     {
       "id": "py-unit-flasher",
@@ -90,6 +90,42 @@
       "beat": "build",
       "covers": ["opt/sa02m-mplc/"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "py-unit-devices",
+      "checks": "Functional regression for the «Устройства» daemon (sa02m_devices live snapshot / MR-AI / history-db / storage-path / device-events / widgets) — the :8765 API + the 1733-line device_history_db.py that 1.0.5.83-85 shipped through the gate gap; contract docs/contracts/devices-mr-history.md names test_api_mr.py + test_device_history_db.py as its validating tests — pytest-style tests that `unittest discover` SILENTLY SKIPS (plain test_ functions, not unittest.TestCase), so before this row the merge gate never executed them (36 tests). Runs `pytest opt/sa02m-devices/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (skips cleanly when pytest is absent — same skipped-locally/real-in-CI contract as shellcheck; CI installs the deps). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-devices opt/sa02m-devices",
+      "beat": "build",
+      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
+    },
+    {
+      "id": "py-unit-gateway",
+      "checks": "Functional regression for the RS-485 serial gateway exchange() framing (fast-modbus 0xFF-strip regression from 1.0.5.86 BUG-A + echo/analog/discrete chunking + timeout paths) — pytest-style tests that `unittest discover` SILENTLY SKIPS (plain test_ functions, not unittest.TestCase), so before this row the merge gate never executed them (11 tests). Runs `pytest opt/sa02m-serial-gateway/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (skips cleanly when pytest or serial, yaml is absent — same skipped-locally/real-in-CI contract as shellcheck; CI installs the deps). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-gateway opt/sa02m-serial-gateway serial yaml",
+      "beat": "build",
+      "covers": ["opt/sa02m-serial-gateway/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "init": "bash + python3 + pytest (pip install pytest pyserial pyyaml) — installed in CI (web-quality.yml)"
+    },
+    {
+      "id": "py-unit-roster",
+      "checks": "Functional regression for the RS-485 roster aggregator (live-bridge-over-scan precedence, disjoint-addr merge, freshness). The 11 tests are unittest.TestCase, but opt/sa02m-rs485-roster/tests has no __init__.py, so `unittest discover` reports the dir non-importable and runs NONE of them — the suite was completely ungated. Runs `pytest opt/sa02m-rs485-roster/tests` via the shared runner .ai-dev/quality/checks/pytest-suite.sh (stdlib-only; skips cleanly only if pytest is absent). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-roster opt/sa02m-rs485-roster",
+      "beat": "build",
+      "covers": ["opt/sa02m-rs485-roster/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
+    },
+    {
+      "id": "py-unit-update",
+      "checks": "Functional regression for the offline-update package validator + semver logic (atomic journal/stages, signature roundtrip, bad-trailer rejection). The 15 tests are unittest.TestCase and were runnable by unittest discover, but NO registry row ran them at all — so the merge gate never gated them. Runs `pytest opt/sa02m-update/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (guards `cryptography`, which test_validate_package.py imports for the signature roundtrip; skips cleanly when pytest or cryptography is absent — CI installs both). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-update opt/sa02m-update cryptography",
+      "beat": "build",
+      "covers": ["opt/sa02m-update/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "init": "bash + python3 + pytest (pip install pytest cryptography) — installed in CI (web-quality.yml)"
     },
     {
       "id": "mplc-project-deploy-contract",
