@@ -254,8 +254,45 @@ def test_insert_dtv_writes_all_columns(tmp_path: Path):
     assert p_bme280 == 750.1 and p_bme680 == 751.6
 
 
+def test_dtv_external_temp_column_and_series(tmp_path: Path):
+    """The external input (temp_sensors entry with an NTC10k/Pt1000 caption) is
+    archived under the single temp_ext column and charted as the fixed «Внеш.»
+    series — the chart label is static even though the card caption is dynamic."""
+    import sqlite3
+
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(3):
+        s = _dtv_multi_snap(now - 2 + i)
+        # Append the external entry AFTER the onboard sensors (as _build_dtv does),
+        # captioned Pt1000 for this device's configured mode.
+        s["dtv"][0]["temp_sensors"] = [
+            *s["dtv"][0]["temp_sensors"],
+            {"t": "Pt1000", "v": 23.7},
+        ]
+        insert_sample(s, path=db)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT temp_ext FROM dtv_samples WHERE device_id = ?"
+            " ORDER BY ts DESC LIMIT 1",
+            ("dtv-COM4-3",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 23.7  # external value mapped Pt1000 caption → temp_ext column
+
+    h = history("room_temp", "1h", path=db, device_id="dtv-COM4-3")
+    labels = {s["field"]: s["label"] for s in h["series"]}
+    # Static chart label «Внеш.», not the mode-dynamic card caption.
+    assert labels.get("temp_ext") == "Внеш."
+    # Onboard series unchanged alongside it.
+    assert labels.get("temp_hdc1080") == "HDC1080"
+
+
 def test_dtv_old_schema_migration_no_data_loss(tmp_path: Path):
-    """An OLD scalar-only dtv_samples gains the 12 per-sensor columns via
+    """An OLD scalar-only dtv_samples gains the 13 per-sensor columns via
     idempotent ALTER-ADD; the pre-existing row survives intact and a new
     multi-sensor insert reads back its per-sensor series."""
     import sqlite3
@@ -285,16 +322,16 @@ def test_dtv_old_schema_migration_no_data_loss(tmp_path: Path):
     finally:
         conn.close()
 
-    # Opening through the module ensures the schema (adds the 12 columns).
+    # Opening through the module ensures the schema (adds the 13 columns).
     insert_sample(_dtv_multi_snap(now - 1), path=db)
 
     conn = sqlite3.connect(str(db))
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(dtv_samples)").fetchall()}
-        # All 12 per-sensor columns now present.
+        # All 13 per-sensor columns now present.
         for c in (
             "temp_hdc1080", "temp_mcp9808", "temp_bme280", "temp_ds18b20",
-            "temp_bme680", "humidity_hdc1080", "humidity_bme280",
+            "temp_bme680", "temp_ext", "humidity_hdc1080", "humidity_bme280",
             "humidity_bme680", "eco2_zmod", "eco2_bme680",
             "pressure_bme280", "pressure_bme680",
         ):

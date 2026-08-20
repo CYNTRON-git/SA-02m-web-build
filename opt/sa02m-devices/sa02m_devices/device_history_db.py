@@ -63,12 +63,16 @@ METRICS: dict[str, dict[str, Any]] = {
         "table": "dtv_samples",
         "fields": [
             "temp_hdc1080", "temp_mcp9808", "temp_bme280",
-            "temp_ds18b20", "temp_bme680",
+            "temp_ds18b20", "temp_bme680", "temp_ext",
         ],
+        # `temp_ext` = external NTC10k/Pt1000 input (DTV reg 6). Its CARD caption
+        # is mode-dynamic (NTC10k/Pt1000), but the chart series label is a fixed
+        # «Внеш.» — the archive stores the value under one column regardless of
+        # the configured type (stand_devices._dtv_ext_entry hides break/Off).
         "labels": {
             "temp_hdc1080": "HDC1080", "temp_mcp9808": "MCP9808",
             "temp_bme280": "BME280", "temp_ds18b20": "DS18B20",
-            "temp_bme680": "BME680",
+            "temp_bme680": "BME680", "temp_ext": "Внеш.",
         },
         "label": "Температура",
         "unit": "°C",
@@ -312,6 +316,7 @@ _CREATE_MR = """
 # eco2_ppm/pressure_mmhg METRICS fields.
 _DTV_SENSOR_COLUMNS = (
     "temp_hdc1080", "temp_mcp9808", "temp_bme280", "temp_ds18b20", "temp_bme680",
+    "temp_ext",
     "humidity_hdc1080", "humidity_bme280", "humidity_bme680",
     "eco2_zmod", "eco2_bme680",
     "pressure_bme280", "pressure_bme680",
@@ -324,6 +329,9 @@ _DTV_SENSOR_LIST_COLS: dict[str, dict[str, str]] = {
     "temp_sensors": {
         "HDC1080": "temp_hdc1080", "MCP9808": "temp_mcp9808",
         "BME280": "temp_bme280", "DS18B20": "temp_ds18b20", "BME680": "temp_bme680",
+        # External input: both mode captions map to the single temp_ext column
+        # (stand_devices appends the entry with an NTC10k/Pt1000 caption).
+        "NTC10k": "temp_ext", "Pt1000": "temp_ext",
     },
     "humidity_sensors": {
         "HDC1080": "humidity_hdc1080", "BME280": "humidity_bme280",
@@ -347,7 +355,7 @@ def _ensure_ce_power_phase_cols(conn: sqlite3.Connection) -> None:
 def _ensure_dtv_sensor_cols(conn: sqlite3.Connection) -> None:
     """Idempotent per-sensor column add to dtv_samples (mirrors the ce loop).
 
-    An OLD scalar-only dtv_samples gains the 12 per-sensor REAL columns with no
+    An OLD scalar-only dtv_samples gains the 13 per-sensor REAL columns with no
     data loss; existing rows keep NULL there (charts skip the gap)."""
     cols = {
         str(r[1])
