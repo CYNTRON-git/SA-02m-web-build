@@ -114,6 +114,41 @@ def _modbus_read_frame_len(data: bytes) -> int:
         return 8
     return 0
 
+def _fast_modbus_frame_len(rem: bytes) -> int:
+    """Deterministic length of a Fast-Modbus (FD 46 …) frame, 0 if unknown/partial.
+
+    Silence-based framing races two-burst replies (arbitration FFs, then the
+    frame) under sustained load — the flasher's 601-block by-serial firmware
+    flash over modbus_tcp mode lost random blocks to truncated replies.
+    Response formats (WB fast modbus):
+      FD 46 09 SN4 <inner-pdu> CRC2  — by-serial response; inner: fc + per-fc body
+      FD 46 03 SN4 <addr>      CRC2  — scan reply (10 bytes total)
+      FD 46 01/02/04           CRC2  — scan cmds / scan end (5 bytes total)
+    """
+    if len(rem) < 3 or rem[0] != 0xFD or rem[1] != 0x46:
+        return 0
+    sub = rem[2]
+    if sub in (0x01, 0x02, 0x04):
+        return 5
+    if sub == 0x03:
+        return 10
+    if sub in (0x08, 0x09):
+        if len(rem) < 8:
+            return 0
+        fc = rem[7]
+        if fc & 0x80:
+            inner = 2
+        elif fc in (0x03, 0x04):
+            if len(rem) < 9:
+                return 0
+            inner = 2 + rem[8]
+        elif fc in (0x06, 0x10):
+            inner = 5
+        else:
+            return 0
+        return 3 + 4 + inner + 2
+    return 0
+
 def _strip_leading_echo(request: bytes, buf: bytes) -> bytes:
     """Drop a leading full TX echo (== request) from the RX buffer if present.
 
@@ -151,7 +186,13 @@ def _extract_rtu_response(request: bytes, buf: bytes) -> bytes | None:
     # rtu_over_tcp mode.
     rem = rem.lstrip(b'\xff')
     if not rem or not (1 <= rem[0] <= 247):
-        # empty, or a fast-modbus 0xFD-marker frame: let the exchange loop's
+        # Fast-modbus FD 46 frames: frame deterministically by structure — the
+        # silence heuristic truncated two-burst replies under sustained load
+        # (by-serial firmware flash over modbus_tcp mode).
+        flen46 = _fast_modbus_frame_len(rem)
+        if flen46 and len(rem) >= flen46:
+            return rem[:flen46]
+        # empty, partial FD 46, or unknown marker: let the exchange loop's
         # silence/deadline path return the whole 0xFF-stripped remainder.
         return None
     flen = _modbus_read_frame_len(rem)
@@ -223,6 +264,8 @@ class SerialWorker:
             except Exception:
                 pass
 
+    # 2.5 s, not 1.0: bootloader flash-write ACKs on long by-serial FC16 frames
+    # can exceed 1 s; the MBAP client's own deadline still governs overall.
     def exchange(self, request: bytes, response_timeout: float = 1.0) -> bytes:
         """Send bytes on RS-485, receive Modbus RTU response. Blocking, thread-safe."""
         with self._lock:
@@ -419,7 +462,12 @@ class ModbusTcpGateway:
                 break
             tid, pid, length = parsed
 
-            if length < 1 or length > 253:
+            # 260, not the spec-strict 253: a Fast-Modbus by-serial data block
+            # (FD 46 08 + SN4 wrapping an FC16 123-reg write) arrives as a
+            # 259-byte MBAP body — the flasher's by-serial firmware flash over
+            # modbus_tcp mode was impossible at 253 (the connection dropped
+            # here on every data block). Standard Modbus PDUs stay ≤ 253.
+            if length < 1 or length > 260:
                 log.warning("[%s] invalid MBAP length %d", self.port_name, length)
                 break
 
@@ -450,9 +498,10 @@ class ModbusTcpGateway:
                 try:
                     rtu_resp = await asyncio.wait_for(
                         loop.run_in_executor(
-                            self._executor, self._worker.exchange, rtu_req
+                            self._executor, self._worker.exchange, rtu_req,
+                            2.5 if len(rtu_req) > 200 else 1.0,
                         ),
-                        timeout=3.0,
+                        timeout=3.5,
                     )
                 except asyncio.TimeoutError:
                     rtu_resp = b''
