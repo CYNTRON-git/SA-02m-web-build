@@ -9,9 +9,9 @@
 # Skips CLEANLY (exit 0, one INFO line) when no python / pytest / a listed
 # runtime dep is missing, so local dev without the device deps is never blocked.
 # The gate is made REAL in CI, where .github/workflows/web-quality.yml installs
-# pytest + the deps (the same "skipped locally, runs in CI" contract as the
-# shellcheck row). Runs `pytest <daemon-dir>/tests` from inside <daemon-dir>
-# (the suites have no conftest and import their package by cwd on sys.path).
+# pytest + the deps (the same skipped-locally / runs-in-CI contract the lint row
+# uses). It runs `pytest <daemon-dir>/tests` from inside the daemon dir (the
+# suites have no conftest and import their package by cwd on sys.path).
 set -u
 
 id="${1:?row-id required}"
