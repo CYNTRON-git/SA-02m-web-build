@@ -5007,6 +5007,16 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.7rem; }
 #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.88rem; }
 #tab-devices .dev-card--dtv .dev-kpi-lbl { font-size: 0.82rem; }
+/* Rotating per-sensor chip caption below the ДТВ value (temp/rh/eco2/pressure);
+   TVOC carries a static «ZMOD4410». Reserved min-height so the 2 s caption swap
+   never reflows the tile. --text-sec on --bg-panel is AA: 5.69:1 dark, 5.37:1
+   light (same pair as the MR caption). */
+#tab-devices .dev-card--dtv .dev-kpi-sub {
+  font-size: 0.72rem; font-weight: 600; color: var(--text-sec);
+  line-height: 1.15; width: 100%; min-height: 0.9rem; margin-top: 1px;
+  letter-spacing: 0.02em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* MR-02m analog card. Cell layout: «AI<n>» index on top, value+unit, then a
    short sensor-type caption below — value-first (no order:-1 as with dev-kpi-lbl).
    Grid: 6AI6AO/6AI2AO → 3 cols × 2 rows (mr3), 12AI → 4 cols × 3 rows (mr4);

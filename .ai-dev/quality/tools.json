@@ -344,6 +344,15 @@
       "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
     },
     {
+      "id": "js-unit-devices",
+      "checks": "devices.js ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges) and the continuous chart wheel-zoom + debounce (stepWindowSec factor-in/out with a >=1s floor, clampWindowSec pins [60s, 30d] at both ends, monotonic convergence; debounceTrailing collapses a fast scroll to ONE refetch). A regression here breaks the card caption cycling or fires a refetch storm on scroll.",
+      "config": null,
+      "run": "node scripts/dev/test-devices-rotation.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/devices.js", "scripts/dev/test-devices-rotation.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
+    },
+    {
       "id": "js-unit",
       "checks": "Frontend logic unit tests the js-syntax `node --check` cannot reach. Currently: clearSessionCookie() in app.js clears session_token at EVERY path prefix (the 401 auto-logout must evict the cloud-scoped Path=/devcfg/<id> cookie, not only Path=/). Stdlib-only Node (no framework), so no extra dep — mirrors the ui-layout row's dep-free/graceful posture.",
       "config": null,

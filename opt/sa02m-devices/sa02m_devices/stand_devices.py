@@ -30,6 +30,58 @@ _DTV_RH_KEYS = ("humidity_hdc1080", "humidity_bme280", "humidity_bme680")
 _DTV_ECO2_KEYS = ("eco2_zmod", "eco2_bme680")
 _DTV_PRESS_KPA_KEYS = ("pressure_bme280_kpa", "pressure_bme680_kpa")
 
+# Per-sensor rosters for the ДТВ multi-sensor metrics, in the SAME priority order
+# as the first-available _DTV_*_KEYS above. Each entry: (control key, chip label).
+# The chip label is the caption the card rotates through and the series name in
+# the chart; it also keys the archive column (device_history_db._DTV_SENSOR_*).
+# The first-available scalars (room_temp/humidity/eco2_ppm/pressure_mmhg) are kept
+# unchanged; these lists carry EVERY present sensor so the card can cycle them and
+# the logger can archive all of them. tvoc (single ZMOD4410) stays scalar.
+_DTV_TEMP_SENSORS = (
+    ("temp_hdc1080", "HDC1080"),
+    ("temp_mcp9808", "MCP9808"),
+    ("temp_bme280", "BME280"),
+    ("temp_ds18b20", "DS18B20"),
+    ("temp_bme680", "BME680"),
+)
+_DTV_RH_SENSORS = (
+    ("humidity_hdc1080", "HDC1080"),
+    ("humidity_bme280", "BME280"),
+    ("humidity_bme680", "BME680"),
+)
+_DTV_ECO2_SENSORS = (
+    ("eco2_zmod", "ZMOD4410"),
+    ("eco2_bme680", "BME680"),
+)
+# Pressure sensors publish kPa; the list values are converted to mmHg to match the
+# `pressure_mmhg` scalar and the archive `pressure_*` columns.
+_DTV_PRESS_SENSORS = (
+    ("pressure_bme280_kpa", "BME280"),
+    ("pressure_bme680_kpa", "BME680"),
+)
+
+# External analog temperature input (DTV Holding reg 6, code 0..7, EEPROM). Its
+# TYPE selects the caption the card cycles for temp_ext: 0=Off (hidden); 1..4 =
+# NTC10k families (B3950/B3988/B3435/B3470); 5..7 = Pt1000 (α385/1000П/1000М).
+# The bridge publishes the code as `ext_temp_mode`. Homes: ../cyntron-dtv
+# MODBUS_VARIABLES.txt reg 6 (mode map), Core/Inc/analog_input_table.h (sentinels).
+_DTV_EXT_MODE_LABEL = {
+    1: "NTC10k", 2: "NTC10k", 3: "NTC10k", 4: "NTC10k",
+    5: "Pt1000", 6: "Pt1000", 7: "Pt1000",
+}
+# Firmware break/open-circuit sentinels the external channel publishes per NTC
+# mode: on an open/short the analog table clamps to its UNDER/OVER limit
+# (×0.1 °C → °C). B3950/B3988/B3470 clamp to −55.0/125.0; B3435 to −50.0/105.0.
+# A Pt1000 open publishes 0 °C (indistinct from a real 0), so Pt1000 has no
+# distinct sentinel — modes 5..7 are absent from this map and rely on the band.
+_DTV_EXT_BREAK = {
+    1: (-55.0, 125.0), 2: (-55.0, 125.0),
+    3: (-50.0, 105.0), 4: (-55.0, 125.0),
+}
+_DTV_EXT_BREAK_EPS = 0.5   # published temp is quantized to 0.1 °C; clamp is exact
+_DTV_EXT_MIN_C = -60.0     # sane external floor (below any table UNDER sentinel)
+_DTV_EXT_MAX_C = 130.0     # sane external ceil (above any table OVER sentinel)
+
 _ID_RE = re.compile(
     r"^(?P<prefix>dtv|ce02m3|mr02m)-COM(?P<port>\d+)-(?P<addr>\d+)$",
     re.IGNORECASE,
@@ -53,6 +105,46 @@ def _f(val: Any) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def _int_or_none(val: Any) -> int | None:
+    """Parse a control to int (via float, so «5.0» parses); None on absent/junk.
+
+    Distinct from `_int` (which defaults to 0 = «Off») — an unpublished
+    `ext_temp_mode` must read «unknown» (hide the entry), never «Off»."""
+    if val is None or val == "":
+        return None
+    try:
+        return int(float(val))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dtv_ext_entry(controls: dict[str, Any]) -> dict[str, Any] | None:
+    """External-temp roster entry (DTV Holding reg-6 mode + Input reg-6 value), or
+    None when it must not show.
+
+    Omitted when: the channel is Off (mode 0), the mode is unset/out-of-range
+    (old bridge, or a code the firmware rejects), the value is a break sentinel
+    (an NTC open/short clamped to the analog table's UNDER/OVER limit), or the
+    value is outside a sane external band. The caption is dynamic — NTC10k
+    (modes 1..4) or Pt1000 (5..7) — so this cannot go through `_sensor_list`
+    (which takes a static chip label); the caller appends it to `temp_sensors`
+    explicitly, AFTER the onboard sensors."""
+    mode = _int_or_none(controls.get("ext_temp_mode"))
+    label = _DTV_EXT_MODE_LABEL.get(mode) if mode is not None else None
+    if label is None:   # Off (0), unset, or out-of-range code → hide
+        return None
+    val = _f(controls.get("temp_ext"))
+    if val is None or val < _DTV_EXT_MIN_C or val > _DTV_EXT_MAX_C:
+        return None
+    band = _DTV_EXT_BREAK.get(mode)
+    if band is not None:
+        under, over = band
+        if (abs(val - under) <= _DTV_EXT_BREAK_EPS
+                or abs(val - over) <= _DTV_EXT_BREAK_EPS):
+            return None
+    return {"t": label, "v": round(val, 1)}
 
 
 def _dtv_distance_cm(controls: dict[str, Any]) -> float | None:
@@ -83,6 +175,39 @@ def _first_float(
             continue
         return v
     return None
+
+
+def _sensor_list(
+    controls: dict[str, Any],
+    spec: tuple[tuple[str, str], ...],
+    *,
+    lo: float | None = None,
+    hi: float | None = None,
+    scale: float | None = None,
+    decimals: int | None = None,
+) -> list[dict[str, Any]]:
+    """Present-sensor roster [{"t": chip, "v": value}] in ``spec`` (priority) order.
+
+    A sensor whose control is missing or out of the [lo, hi] plausibility band is
+    omitted, so the card only cycles through sensors that actually reported. When
+    ``scale`` is given the raw value is multiplied (kPa→mmHg) and rounded to
+    ``decimals`` — matching the corresponding scalar's units.
+    """
+    out: list[dict[str, Any]] = []
+    for key, chip in spec:
+        v = _f(controls.get(key))
+        if v is None:
+            continue
+        if lo is not None and v < lo:
+            continue
+        if hi is not None and v > hi:
+            continue
+        if scale is not None:
+            v = v * scale
+            if decimals is not None:
+                v = round(v, decimals)
+        out.append({"t": chip, "v": v})
+    return out
 
 
 def _fmt_age(age: float | None) -> str:
@@ -204,6 +329,10 @@ def _empty_dtv(device_id: str = "") -> dict[str, Any]:
         "eco2_ppm": None,
         "tvoc_mg_m3": None,
         "pressure_mmhg": None,
+        "temp_sensors": [],
+        "humidity_sensors": [],
+        "eco2_sensors": [],
+        "pressure_sensors": [],
         "light_pct": None,
         "presence": None,
         "moving_distance_cm": None,
@@ -250,6 +379,14 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
     if age is not None and age > STALE_S:
         ok_flag = False
     press_kpa = _first_float(controls, _DTV_PRESS_KPA_KEYS, lo=50.0, hi=120.0)
+    # Onboard 5 temp sensors (band −40..85), then the external analog input
+    # appended AFTER them when present, not Off, and not a break sentinel. The
+    # external entry bypasses the onboard band (industrial range is wider) and
+    # carries a mode-dynamic caption; the onboard 5 stay byte-identical.
+    temp_sensors = _sensor_list(controls, _DTV_TEMP_SENSORS, lo=-40.0, hi=85.0)
+    ext_entry = _dtv_ext_entry(controls)
+    if ext_entry is not None:
+        temp_sensors.append(ext_entry)
     label = device_label("dtv", meta.get("addr"), meta.get("port_num"))
     return {
         "id": device_id,
@@ -270,6 +407,21 @@ def _build_dtv(raw: dict[str, Any] | None, *, fallback_id: str = "") -> dict[str
         "tvoc_mg_m3": _f(controls.get("tvoc_zmod")),
         "pressure_mmhg": (
             None if press_kpa is None else round(press_kpa * KPA_TO_MMHG, 1)
+        ),
+        "temp_sensors": temp_sensors,
+        "humidity_sensors": _sensor_list(
+            controls, _DTV_RH_SENSORS, lo=0.0, hi=100.0
+        ),
+        "eco2_sensors": _sensor_list(
+            controls, _DTV_ECO2_SENSORS, lo=0.0, hi=100000.0
+        ),
+        "pressure_sensors": _sensor_list(
+            controls,
+            _DTV_PRESS_SENSORS,
+            lo=50.0,
+            hi=120.0,
+            scale=KPA_TO_MMHG,
+            decimals=1,
         ),
         "light_pct": _f(controls.get("light_pct")),
         "presence": _f(controls.get("presence")),

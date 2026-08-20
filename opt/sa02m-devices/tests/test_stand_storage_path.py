@@ -50,6 +50,12 @@ def _snap(ts: float, temp: float = 21.0) -> dict:
             "eco2_ppm": 400.0,
             "tvoc_mg_m3": 0.1,
             "pressure_mmhg": 750.0,
+            # Per-sensor rosters mirror live_snapshot(): the charted room_temp
+            # metric reads temp_hdc1080 (the first-available scalar's source).
+            "temp_sensors": [{"t": "HDC1080", "v": temp}],
+            "humidity_sensors": [{"t": "HDC1080", "v": 40.0}],
+            "eco2_sensors": [{"t": "ZMOD4410", "v": 400.0}],
+            "pressure_sensors": [{"t": "BME280", "v": 750.0}],
             "light_pct": 5.0,
             "presence": 0.0,
         }],

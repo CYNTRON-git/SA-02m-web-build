@@ -6,6 +6,12 @@ import time
 from pathlib import Path
 
 from sa02m_devices.device_history_db import (
+    WINDOW_MAX_S,
+    WINDOW_MIN_S,
+    _range_slug,
+    clamp_window_s,
+    custom_range_key,
+    export_bucket_s,
     export_text,
     export_xlsx,
     history,
@@ -38,6 +44,12 @@ def _snap(
             "eco2_ppm": 400.0,
             "tvoc_mg_m3": 0.1,
             "pressure_mmhg": 750.0,
+            # Per-sensor rosters as live_snapshot() now emits — the charted
+            # room_temp/humidity/eco2_ppm/pressure_mmhg metrics read these cols.
+            "temp_sensors": [{"t": "HDC1080", "v": temp}],
+            "humidity_sensors": [{"t": "HDC1080", "v": 50.0}],
+            "eco2_sensors": [{"t": "ZMOD4410", "v": 400.0}],
+            "pressure_sensors": [{"t": "BME280", "v": 750.0}],
             "light_pct": 10.0,
             "presence": 0.0,
         }],
@@ -94,11 +106,13 @@ def test_multi_device_same_ts(tmp_path: Path):
                 "ok": True, "id": "dtv-COM1-1", "room_temp": 21.0,
                 "humidity": 40, "eco2_ppm": 400, "tvoc_mg_m3": 0.1,
                 "pressure_mmhg": 750, "light_pct": 1, "presence": 0,
+                "temp_sensors": [{"t": "HDC1080", "v": 21.0}],
             },
             {
                 "ok": True, "id": "dtv-COM4-3", "room_temp": 28.0,
                 "humidity": 50, "eco2_ppm": 410, "tvoc_mg_m3": 0.2,
                 "pressure_mmhg": 751, "light_pct": 2, "presence": 1,
+                "temp_sensors": [{"t": "HDC1080", "v": 28.0}],
             },
         ],
         "ce": [
@@ -154,6 +168,196 @@ def test_ranges_7d_30d_and_ce_summary(tmp_path: Path):
     assert summary["cost_basis"] == "energy_kwh"
     # Не по мощности: при P∑=330 Вт за час ≈0.33 кВт·ч ≠ 0.4 кВт·ч счётчика
     assert abs(summary["cost_rub"] - (330.0 / 1000.0) * 10.5) > 0.01
+
+
+def _dtv_multi_snap(ts: float, dtv_id: str = "dtv-COM4-3") -> dict:
+    """A ДТВ snap carrying several physical sensors per metric (multi-field)."""
+    return {
+        "ts": ts,
+        "dtv": [{
+            "ok": True,
+            "id": dtv_id,
+            "room_temp": 22.5,
+            "humidity": 48.0,
+            "eco2_ppm": 410.0,
+            "tvoc_mg_m3": 0.12,
+            "pressure_mmhg": 750.1,
+            "light_pct": 10.0,
+            "presence": 0.0,
+            "temp_sensors": [
+                {"t": "HDC1080", "v": 22.5},
+                {"t": "MCP9808", "v": 22.8},
+                {"t": "BME280", "v": 23.1},
+            ],
+            "humidity_sensors": [
+                {"t": "HDC1080", "v": 48.0},
+                {"t": "BME680", "v": 49.5},
+            ],
+            "eco2_sensors": [
+                {"t": "ZMOD4410", "v": 410.0},
+                {"t": "BME680", "v": 430.0},
+            ],
+            "pressure_sensors": [
+                {"t": "BME280", "v": 750.1},
+                {"t": "BME680", "v": 751.6},
+            ],
+        }],
+        "ce": [],
+    }
+
+
+def test_dtv_multi_field_series(tmp_path: Path):
+    """room_temp is now multi-field: one chart series per present temp sensor,
+    each labelled by chip. humidity/eco2/pressure the same."""
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(5):
+        insert_sample(_dtv_multi_snap(now - 4 + i), path=db)
+    h = history("room_temp", "1h", path=db, device_id="dtv-COM4-3")
+    assert h["ok"] is True
+    fields = {s["field"]: s["label"] for s in h["series"]}
+    assert fields == {
+        "temp_hdc1080": "HDC1080",
+        "temp_mcp9808": "MCP9808",
+        "temp_bme280": "BME280",
+    }
+    hu = history("humidity", "1h", path=db, device_id="dtv-COM4-3")
+    assert {s["field"] for s in hu["series"]} == {"humidity_hdc1080", "humidity_bme680"}
+    e = history("eco2_ppm", "1h", path=db, device_id="dtv-COM4-3")
+    assert {s["label"] for s in e["series"]} == {"ZMOD4410", "BME680"}
+    pr = history("pressure_mmhg", "1h", path=db, device_id="dtv-COM4-3")
+    assert {s["field"] for s in pr["series"]} == {"pressure_bme280", "pressure_bme680"}
+    # A sensor absent from every row produces no series (chart skips the gap).
+    assert "temp_ds18b20" not in {s["field"] for s in h["series"]}
+
+
+def test_insert_dtv_writes_all_columns(tmp_path: Path):
+    """_insert_dtv persists every per-sensor column (mapped from the rosters),
+    keeping the scalar columns too."""
+    import sqlite3
+
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_dtv_multi_snap(now), path=db)
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT room_temp, temp_hdc1080, temp_mcp9808, temp_bme280,"
+            " temp_ds18b20, temp_bme680, humidity_hdc1080, humidity_bme680,"
+            " eco2_zmod, eco2_bme680, pressure_bme280, pressure_bme680"
+            " FROM dtv_samples WHERE device_id = ?",
+            ("dtv-COM4-3",),
+        ).fetchone()
+    finally:
+        conn.close()
+    (room_temp, t_hdc, t_mcp, t_bme280, t_ds, t_bme680,
+     h_hdc, h_bme680, e_zmod, e_bme680, p_bme280, p_bme680) = row
+    assert room_temp == 22.5  # scalar still written
+    assert t_hdc == 22.5 and t_mcp == 22.8 and t_bme280 == 23.1
+    assert t_ds is None and t_bme680 is None  # absent sensors → NULL
+    assert h_hdc == 48.0 and h_bme680 == 49.5
+    assert e_zmod == 410.0 and e_bme680 == 430.0
+    assert p_bme280 == 750.1 and p_bme680 == 751.6
+
+
+def test_dtv_external_temp_column_and_series(tmp_path: Path):
+    """The external input (temp_sensors entry with an NTC10k/Pt1000 caption) is
+    archived under the single temp_ext column and charted as the fixed «Внеш.»
+    series — the chart label is static even though the card caption is dynamic."""
+    import sqlite3
+
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(3):
+        s = _dtv_multi_snap(now - 2 + i)
+        # Append the external entry AFTER the onboard sensors (as _build_dtv does),
+        # captioned Pt1000 for this device's configured mode.
+        s["dtv"][0]["temp_sensors"] = [
+            *s["dtv"][0]["temp_sensors"],
+            {"t": "Pt1000", "v": 23.7},
+        ]
+        insert_sample(s, path=db)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT temp_ext FROM dtv_samples WHERE device_id = ?"
+            " ORDER BY ts DESC LIMIT 1",
+            ("dtv-COM4-3",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == 23.7  # external value mapped Pt1000 caption → temp_ext column
+
+    h = history("room_temp", "1h", path=db, device_id="dtv-COM4-3")
+    labels = {s["field"]: s["label"] for s in h["series"]}
+    # Static chart label «Внеш.», not the mode-dynamic card caption.
+    assert labels.get("temp_ext") == "Внеш."
+    # Onboard series unchanged alongside it.
+    assert labels.get("temp_hdc1080") == "HDC1080"
+
+
+def test_dtv_old_schema_migration_no_data_loss(tmp_path: Path):
+    """An OLD scalar-only dtv_samples gains the 13 per-sensor columns via
+    idempotent ALTER-ADD; the pre-existing row survives intact and a new
+    multi-sensor insert reads back its per-sensor series."""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    now = time.time()
+    # Build the legacy scalar-only table + one historical row.
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE dtv_samples (
+                ts REAL NOT NULL,
+                device_id TEXT NOT NULL DEFAULT '',
+                room_temp REAL, humidity REAL, eco2_ppm REAL,
+                tvoc_mg_m3 REAL, pressure_mmhg REAL, light_pct REAL, presence REAL,
+                PRIMARY KEY (ts, device_id)
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO dtv_samples(ts, device_id, room_temp, humidity)"
+            " VALUES (?,?,?,?)",
+            (now - 100, "dtv-COM4-3", 19.5, 44.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Opening through the module ensures the schema (adds the 13 columns).
+    insert_sample(_dtv_multi_snap(now - 1), path=db)
+
+    conn = sqlite3.connect(str(db))
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(dtv_samples)").fetchall()}
+        # All 13 per-sensor columns now present.
+        for c in (
+            "temp_hdc1080", "temp_mcp9808", "temp_bme280", "temp_ds18b20",
+            "temp_bme680", "temp_ext", "humidity_hdc1080", "humidity_bme280",
+            "humidity_bme680", "eco2_zmod", "eco2_bme680",
+            "pressure_bme280", "pressure_bme680",
+        ):
+            assert c in cols
+        # The old row is intact, with NULL in the new columns.
+        old = conn.execute(
+            "SELECT room_temp, humidity, temp_hdc1080 FROM dtv_samples"
+            " WHERE ts = ?",
+            (now - 100,),
+        ).fetchone()
+        assert old == (19.5, 44.0, None)
+    finally:
+        conn.close()
+
+    # Idempotent: a second open does not error or duplicate columns.
+    insert_sample(_dtv_multi_snap(now), path=db)
+    h = history("room_temp", "1h", path=db, device_id="dtv-COM4-3")
+    assert {s["field"] for s in h["series"]} == {
+        "temp_hdc1080", "temp_mcp9808", "temp_bme280",
+    }
 
 
 def _mr_snap(
@@ -311,6 +515,56 @@ def test_resolve_mtd_and_month_and_export(tmp_path: Path):
             if headers and headers[0] == "Время":
                 break
         assert headers[0] == "Время"
-        assert any(h and "T" in str(h) for h in headers[1:])
+        # room_temp is now multi-field: one column per present temp sensor.
+        assert any(h and "HDC1080" in str(h) for h in headers[1:])
     except ImportError:
         pass
+
+
+def test_custom_window_clamp_and_key():
+    # clamp_window_s pins both ends of the continuous-zoom span.
+    assert clamp_window_s(10) == WINDOW_MIN_S  # below floor → 60
+    assert clamp_window_s(WINDOW_MIN_S) == WINDOW_MIN_S
+    assert clamp_window_s(3600) == 3600
+    assert clamp_window_s(999_999_999) == WINDOW_MAX_S  # above ceiling → 30 d
+    assert clamp_window_s("nonsense") == WINDOW_MIN_S
+    # custom_range_key round-trips through the clamp.
+    assert custom_range_key(3600) == "w:3600"
+    assert custom_range_key(5) == f"w:{WINDOW_MIN_S}"
+    assert custom_range_key(10**9) == f"w:{WINDOW_MAX_S}"
+    # filename slug drops the colon (invalid on Windows / awkward on POSIX).
+    assert _range_slug("w:3600") == "w3600"
+    assert _range_slug("1h") == "1h"
+
+
+def test_custom_window_resolve_and_bucket_derivation():
+    now = time.time()
+    for win in (WINDOW_MIN_S, 900, 3600, 86400, 7 * 86400, WINDOW_MAX_S):
+        t0, t1, bucket = resolve_time_range(f"w:{win}")
+        assert abs(t1 - now) < 5  # window ends at "now"
+        assert abs((t1 - t0) - win) < 5  # span == window seconds
+        # bucket is never 0 and yields a readable point count (~200-500 target).
+        assert bucket >= 1.0
+        pts = win / bucket
+        assert 30 <= pts <= 500  # small windows have few points but never 0-bucket
+        # export bucket is coarser and never sub-minute.
+        assert export_bucket_s(f"w:{win}") >= 60.0
+    # Out-of-range custom windows are CLAMPED (not an error) in resolve.
+    lo0, lo1, _ = resolve_time_range("w:1")  # below floor
+    assert abs((lo1 - lo0) - WINDOW_MIN_S) < 5
+    hi0, hi1, _ = resolve_time_range("w:999999999")  # above ceiling
+    assert abs((hi1 - hi0) - WINDOW_MAX_S) < 5
+
+
+def test_custom_window_history_query(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(5):
+        insert_sample(_snap(now - 4 + i, temp=20.0 + i), path=db)
+    # A custom 1-hour window returns data and echoes its own range token.
+    h = history("room_temp", "w:3600", path=db, device_id="dtv-COM4-3")
+    assert h["ok"] and h["range"] == "w:3600"
+    assert h["series"] and any(s.get("points") for s in h["series"])
+    # An out-of-range window is clamped, not rejected, and still returns ok.
+    h2 = history("room_temp", "w:5", path=db, device_id="dtv-COM4-3")
+    assert h2["ok"]

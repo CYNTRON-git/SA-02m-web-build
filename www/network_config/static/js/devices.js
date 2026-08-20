@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.1";
 
 (function () {
   "use strict";
@@ -16,7 +16,19 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
   let activeDeviceId = "";
   let activeDeviceLabel = "";
   let activeMetric = "room_temp";
-  let activeRange = "1h";
+  /**
+   * Chart span state - CONTINUOUS wheel-zoom. `windowSec` (seconds) is the
+   * source of truth for a windowed view; the preset buttons are TEMPLATES that
+   * set it. `calendarMode` ("" | "mtd" | "month") selects the CE-only calendar
+   * spans, which are NOT windowed - while one is active `windowSec` is dormant.
+   */
+  const PRESET_SEC = { "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800, "30d": 2592000 };
+  const WINDOW_MIN_S = 60; // 1 minute - finest zoom-in
+  const WINDOW_MAX_S = 30 * 86400; // 30 days - widest zoom-out
+  const ZOOM_IN_FACTOR = 0.8; // wheel up -> shrink the window
+  const ZOOM_OUT_FACTOR = 1.25; // wheel down -> grow the window
+  let windowSec = PRESET_SEC["1h"];
+  let calendarMode = "";
   /** Modal chart mode: "metric" (single) | "overview" (all series for device). */
   let modalMode = "metric";
   /** Signature of last rendered card set (device ids). */
@@ -142,6 +154,89 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
      the open modal's chip set. Populated in updateCard. */
   const lastDeviceById = {};
 
+  /* ── ДТВ per-sensor rotation ──────────────────────────────────────────────
+     A single module-level 5 s timer advances one shared tick; every visible ДТВ
+     card steps its cycling KPIs (temp/rh/eco2/pressure) together, each modulo its
+     own sensor count. The value comes from d.<metric>_sensors[tick % len], the
+     caption from that entry's chip name. A single-sensor roster shows that one
+     entry (no visible motion); an empty roster falls back to «—». TVOC is a single
+     ZMOD4410 sensor (static caption in markup); light/presence are untouched. */
+  const DTV_ROTATE_MS = 5000;
+  let dtvRotTimer = null;
+  let dtvRotTick = 0;
+
+  // cell key → { list: per-sensor roster field, scalar: first-available fallback,
+  //   digits: display precision }.
+  const DTV_CYCLING = {
+    temp: { list: "temp_sensors", scalar: "room_temp", digits: 1 },
+    rh: { list: "humidity_sensors", scalar: "humidity", digits: 1 },
+    eco2: { list: "eco2_sensors", scalar: "eco2_ppm", digits: 0 },
+    pressure: { list: "pressure_sensors", scalar: "pressure_mmhg", digits: 1 },
+  };
+
+  /** Index into a per-sensor roster of length `len` for a shared `tick`;
+      -1 for an empty/absent roster. Wraps safely for any integer tick. */
+  function dtvRotationIndex(len, tick) {
+    const n = Number(len);
+    if (!Number.isFinite(n) || n <= 0) return -1;
+    const t = Number(tick);
+    const k = Number.isFinite(t) ? Math.trunc(t) : 0;
+    return ((k % n) + n) % n;
+  }
+
+  /** Fill one cycling ДТВ cell's value + caption from its roster at `tick`.
+      No roster (old backend) → first-available scalar, blank caption. */
+  function applyDtvCyclingCell(card, key, d, tick) {
+    const spec = DTV_CYCLING[key];
+    if (!spec || !card) return;
+    const valEl = card.querySelector(`[data-f="${key}"]`);
+    const subEl = card.querySelector(`[data-s="${key}"]`);
+    const roster = d && Array.isArray(d[spec.list]) ? d[spec.list] : null;
+    const idx = roster ? dtvRotationIndex(roster.length, tick) : -1;
+    if (idx >= 0) {
+      const item = roster[idx] || {};
+      if (valEl) valEl.textContent = fmt(item.v, spec.digits);
+      if (subEl) subEl.textContent = item.t || "";
+    } else {
+      if (valEl) valEl.textContent = fmt(d ? d[spec.scalar] : null, spec.digits);
+      if (subEl) subEl.textContent = "";
+    }
+  }
+
+  function applyDtvCyclingCells(card, d, tick) {
+    Object.keys(DTV_CYCLING).forEach((key) =>
+      applyDtvCyclingCell(card, key, d, tick)
+    );
+  }
+
+  /** Advance the shared tick and re-apply every visible ДТВ card — reads
+      lastDeviceById (the live snapshot) so rotation survives a poll re-render. */
+  function rotateDtvCards() {
+    dtvRotTick += 1;
+    const grid = $("dev-grid");
+    if (!grid) return;
+    grid.querySelectorAll(".dev-card--dtv").forEach((card) => {
+      const d = lastDeviceById[card.dataset.deviceId];
+      if (d) applyDtvCyclingCells(card, d, dtvRotTick);
+    });
+  }
+
+  function startDtvRotation() {
+    if (dtvRotTimer) return;
+    dtvRotTimer = setInterval(() => {
+      // Pause work when the page/tab is hidden (tick freezes, no DOM churn).
+      if (typeof document !== "undefined" && document.hidden) return;
+      rotateDtvCards();
+    }, DTV_ROTATE_MS);
+  }
+
+  function stopDtvRotation() {
+    if (dtvRotTimer) {
+      clearInterval(dtvRotTimer);
+      dtvRotTimer = null;
+    }
+  }
+
   /** «ai_5» → "5" for the API channel= param; "" when not an AI-channel key. */
   function mrChNum(metric) {
     const m = /^ai_(\d+)$/.exec(String(metric || ""));
@@ -174,22 +269,34 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
   }
 
   function buildDtvMetricsHtml() {
+    // [metric, key, unit, label, sub]: sub = "cycle" → a rotating caption span
+    // (data-s) the timer fills with the current per-sensor chip name; a literal
+    // string → static caption (TVOC = one ZMOD4410 sensor); "" → no caption.
     const rows = [
-      ["room_temp", "temp", "°C", "Температура"],
-      ["humidity", "rh", "%", "Влажность"],
-      ["eco2_ppm", "eco2", "ppm", "eCO₂"],
-      ["tvoc_mg_m3", "tvoc", "mg/m³", "TVOC"],
-      ["pressure_mmhg", "pressure", "mmHg", "Давление"],
-      ["light_pct", "light", "%", "Освещённость"],
+      ["room_temp", "temp", "°C", "Температура", "cycle"],
+      ["humidity", "rh", "%", "Влажность", "cycle"],
+      ["eco2_ppm", "eco2", "ppm", "eCO₂", "cycle"],
+      ["tvoc_mg_m3", "tvoc", "mg/m³", "TVOC", "ZMOD4410"],
+      ["pressure_mmhg", "pressure", "mmHg", "Давление", "cycle"],
+      ["light_pct", "light", "%", "Освещённость", ""],
     ];
     return rows
-      .map(
-        ([metric, key, unit, lbl]) =>
+      .map(([metric, key, unit, lbl, sub]) => {
+        let subHtml = "";
+        if (sub === "cycle") {
+          subHtml = `<span class="dev-kpi-sub" data-s="${key}"></span>`;
+        } else if (sub) {
+          subHtml = `<span class="dev-kpi-sub">${escapeHtml(sub)}</span>`;
+        }
+        return (
           `<div class="dev-kpi" data-metric="${metric}" data-key="${key}">` +
           `<span class="dev-kpi-lbl">${lbl}</span>` +
           `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
-          `<span class="dev-kpi-unit">${unit}</span></span></div>`
-      )
+          `<span class="dev-kpi-unit">${unit}</span></span>` +
+          subHtml +
+          `</div>`
+        );
+      })
       .join("");
   }
 
@@ -504,11 +611,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
       setField(card, "f", fmt(d.frequency_hz, 2));
       setField(card, "e", fmt(d.energy_kwh_import, 1));
     } else {
-      setField(card, "temp", fmt(d.room_temp, 1));
-      setField(card, "rh", fmt(d.humidity, 1));
-      setField(card, "eco2", fmt(d.eco2_ppm, 0));
+      // Cycling cells (temp/rh/eco2/pressure) render at the CURRENT shared tick
+      // so a 5 s poll refresh keeps the caption the 2 s timer last showed.
+      applyDtvCyclingCells(card, d, dtvRotTick);
       setField(card, "tvoc", fmt(d.tvoc_mg_m3, 2));
-      setField(card, "pressure", fmt(d.pressure_mmhg, 1));
       setField(card, "light", fmt(d.light_pct, 0));
       renderPresence(card, d, stale);
     }
@@ -665,6 +771,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
 
   function fmtTimeLabel(ms, rangeKey) {
     const d = new Date(ms);
+    if (rangeKey === "sec") return fmtTimeSec(d); // sub-minute zoom: HH:MM:SS
     const t = fmtTime(d);
     const dd = String(d.getDate()).padStart(2, "0");
     const mo = String(d.getMonth() + 1).padStart(2, "0");
@@ -788,11 +895,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     document.querySelectorAll(".dev-range-ce").forEach((btn) => {
       btn.hidden = !on;
     });
-    if (!on && (activeRange === "mtd" || activeRange === "month")) {
-      activeRange = "1h";
-      document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
-        b.classList.toggle("active", b.dataset.range === activeRange);
-      });
+    if (!on && calendarMode) {
+      // Leaving CE: a calendar mode is no longer selectable -> fall to 1h window.
+      calendarMode = "";
+      windowSec = PRESET_SEC["1h"];
+      updateRangeButtons();
     }
   }
 
@@ -816,7 +923,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
   }
 
   function exportHistory() {
-    const params = { range: activeRange, format: "xlsx" };
+    const params = { ...rangeReqParams(), format: "xlsx" };
     if (activeDeviceId) params.device_id = activeDeviceId;
     if (activeDevice === "mr") {
       // One MR table = all enabled AI channels (columns), regardless of mode.
@@ -911,7 +1018,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     }
     setCeSideVisible(true);
     const tariff = getKwhRub();
-    const rangeAtStart = activeRange;
+    const rangeAtStart = rangeToken();
     const idAtStart = activeDeviceId;
     const req = ++summaryReqId;
     if (summaryAbort) {
@@ -924,11 +1031,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     summaryAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
     const url =
       "/api/devices/history/summary?" +
-      historyQs({ range: activeRange, kwh_rub: String(tariff) });
+      historyQs({ ...rangeReqParams(), kwh_rub: String(tariff) });
     return fetchJson(url, summaryAbort ? { signal: summaryAbort.signal } : {})
       .then((data) => {
         if (req !== summaryReqId) return;
-        if (rangeAtStart !== activeRange || idAtStart !== activeDeviceId) return;
+        if (rangeAtStart !== rangeToken() || idAtStart !== activeDeviceId) return;
         if (!data || !data.ok) {
           renderCeSummary({});
           return;
@@ -1337,6 +1444,141 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     });
   }
 
+  /* Measure-card placement (2 marks): tipA, tipB and the Δ card can each be tall
+     (up to 5 sensor rows), so positions come from MEASURED rects, not fixed px.
+     Each card avoids the ones already placed and stays inside the chart wrap. */
+  function rectsOverlapArea(a, b) {
+    const ox = Math.min(a.left + a.w, b.left + b.w) - Math.max(a.left, b.left);
+    const oy = Math.min(a.top + a.h, b.top + b.h) - Math.max(a.top, b.top);
+    return ox > 0 && oy > 0 ? ox * oy : 0;
+  }
+
+  function clampCardRect(r, b) {
+    let left = r.left;
+    let top = r.top;
+    if (left + r.w > b.right) left = b.right - r.w;
+    if (left < b.left) left = b.left;
+    if (top + r.h > b.bottom) top = b.bottom - r.h;
+    if (top < b.top) top = b.top;
+    return { left, top, w: r.w, h: r.h };
+  }
+
+  // First candidate (after clamping to bounds) that clears every obstacle; else
+  // the clamped candidate with the least total overlap. Non-null for non-empty cands.
+  function fitCardRect(cands, obstacles, bounds) {
+    let best = null;
+    let bestOverlap = Infinity;
+    for (let i = 0; i < cands.length; i++) {
+      const r = clampCardRect(cands[i], bounds);
+      let overlap = 0;
+      for (let k = 0; k < obstacles.length; k++) {
+        overlap += rectsOverlapArea(r, obstacles[k]);
+      }
+      if (overlap === 0) return r;
+      if (overlap < bestOverlap) {
+        bestOverlap = overlap;
+        best = r;
+      }
+    }
+    return best;
+  }
+
+  // Point card anchored to its mark: outer side of the mark first (spreads the
+  // two cards apart), then inner; top row first, then bottom.
+  function pointCardCands(xm, isLeft, size, pad, plotH) {
+    const gap = 8;
+    const outerLeft = isLeft ? xm - gap - size.w : xm + gap;
+    const innerLeft = isLeft ? xm + gap : xm - gap - size.w;
+    const topY = pad.t + 8;
+    const botY = pad.t + plotH - 8 - size.h;
+    return [
+      { left: outerLeft, top: topY, w: size.w, h: size.h },
+      { left: outerLeft, top: botY, w: size.w, h: size.h },
+      { left: innerLeft, top: topY, w: size.w, h: size.h },
+      { left: innerLeft, top: botY, w: size.w, h: size.h },
+    ];
+  }
+
+  // Δ card centred between the marks: middle band first (clear of top-anchored
+  // point cards), then top / bottom, then flush to a plot edge.
+  function deltaCardCands(xMid, size, w, pad, plotH) {
+    const centerLeft = xMid - size.w / 2;
+    const topY = pad.t + 8;
+    const midY = pad.t + plotH / 2 - size.h / 2;
+    const botY = pad.t + plotH - 8 - size.h;
+    return [
+      { left: centerLeft, top: midY, w: size.w, h: size.h },
+      { left: centerLeft, top: botY, w: size.w, h: size.h },
+      { left: centerLeft, top: topY, w: size.w, h: size.h },
+      { left: pad.l + 4, top: midY, w: size.w, h: size.h },
+      { left: w - pad.r - 4 - size.w, top: midY, w: size.w, h: size.h },
+    ];
+  }
+
+  // Content already set on each el; measure the rendered rects and place point-A,
+  // point-B, Δ in turn so each later card avoids the earlier ones and the wrap edge.
+  function placeMeasureCards(cards, xA, xB, w, h, pad, plotH) {
+    const bounds = { left: 4, top: pad.t + 4, right: w - 4, bottom: pad.t + plotH - 4 };
+    const midX = (Math.min(xA, xB) + Math.max(xA, xB)) / 2;
+    const placed = [];
+    cards.forEach((c) => {
+      if (!c.el) return;
+      if (!c.html) {
+        c.el.hidden = true;
+        return;
+      }
+      c.el.innerHTML = c.html;
+      c.el.hidden = false;
+      const size = {
+        w: c.el.offsetWidth || (c.kind === "delta" ? 140 : 160),
+        h: c.el.offsetHeight || 48,
+      };
+      const cands =
+        c.kind === "delta"
+          ? deltaCardCands(midX, size, w, pad, plotH)
+          : pointCardCands(c.x, c.isLeft, size, pad, plotH);
+      const r = fitCardRect(cands, placed, bounds);
+      c.el.style.left = r.left + "px";
+      c.el.style.top = r.top + "px";
+      placed.push(r);
+    });
+  }
+
+  function deltaHtmlFromRows(rows0, rows1, dtMs, metric) {
+    const byIdx = {};
+    (rows0 || []).forEach((r) => {
+      byIdx[r.idx] = { a: r, b: null };
+    });
+    (rows1 || []).forEach((r) => {
+      if (!byIdx[r.idx]) byIdx[r.idx] = { a: null, b: r };
+      else byIdx[r.idx].b = r;
+    });
+    const dLines = [
+      `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(dtMs))}</div>`,
+    ];
+    Object.keys(byIdx)
+      .map((k) => Number(k))
+      .sort((a, b) => a - b)
+      .forEach((idx) => {
+        const pair = byIdx[idx];
+        const a = pair.a;
+        const b = pair.b;
+        if (!a || !b) return;
+        const color = COLORS[idx % COLORS.length];
+        const unit = a.unit || b.unit || "";
+        const unitS = unit ? ` ${unit}` : "";
+        const dy = Number(b.y) - Number(a.y);
+        const dec = tipDecimalsFor(unit, a.metric || b.metric || metric);
+        dLines.push(
+          `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
+            `<b>Δ ${escapeAttr(a.label || "")} ${escapeAttr(
+              fmtSignedTipValue(dy, dec) + unitS
+            )}</b></div>`
+        );
+      });
+    return dLines.join("");
+  }
+
   function drawOntoCanvas(canvas, series, opts) {
     opts = opts || {};
     if (!canvas) return;
@@ -1588,75 +1830,32 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
       const rows1 = markRows[1] || [];
       const xA = xScale(marks[0]);
       const xB = xScale(marks[1]);
-      if (rows0.length) {
-        placeTipNearX(
-          tipA,
-          tipHtmlFromRows(rows0, rangeKey, metricId),
-          xA,
-          w,
-          h,
-          pad,
-          xA > xB
-        );
-      }
-      if (rows1.length) {
-        placeTipNearX(
-          tipB,
-          tipHtmlFromRows(rows1, rangeKey, metricId),
-          xB,
-          w,
-          h,
-          pad,
-          xB > xA
-        );
-      }
-      if (deltaEl && (rows0.length || rows1.length)) {
-        const dt = Math.abs((marks[1] || 0) - (marks[0] || 0));
-        const byIdx = {};
-        rows0.forEach((r) => {
-          byIdx[r.idx] = { a: r, b: null };
-        });
-        rows1.forEach((r) => {
-          if (!byIdx[r.idx]) byIdx[r.idx] = { a: null, b: r };
-          else byIdx[r.idx].b = r;
-        });
-        const dLines = [
-          `<div class="dev-chart-delta-time">Δt ${escapeAttr(fmtDurationMs(dt))}</div>`,
-        ];
-        Object.keys(byIdx)
-          .map((k) => Number(k))
-          .sort((a, b) => a - b)
-          .forEach((idx) => {
-            const pair = byIdx[idx];
-            const a = pair.a;
-            const b = pair.b;
-            if (!a || !b) return;
-            const color = COLORS[idx % COLORS.length];
-            const unit = a.unit || b.unit || "";
-            const unitS = unit ? ` ${unit}` : "";
-            const dy = Number(b.y) - Number(a.y);
-            const dec = tipDecimalsFor(unit, a.metric || b.metric || metricId);
-            dLines.push(
-              `<div class="dev-chart-delta-row"><i style="background:${color}"></i>` +
-                `<b>Δ ${escapeAttr(a.label || "")} ${escapeAttr(
-                  fmtSignedTipValue(dy, dec) + unitS
-                )}</b></div>`
-            );
-          });
-        deltaEl.innerHTML = dLines.join("");
-        deltaEl.hidden = false;
-        const midX = (Math.min(xA, xB) + Math.max(xA, xB)) / 2;
-        const tipW = deltaEl.offsetWidth || 140;
-        const tipH = deltaEl.offsetHeight || 48;
-        let left = midX - tipW / 2;
-        let top = pad.t + plotH / 2 - tipH / 2;
-        if (left < pad.l + 4) left = pad.l + 4;
-        if (left + tipW > w - pad.r - 4) left = w - pad.r - tipW - 4;
-        if (top < pad.t + 4) top = pad.t + 4;
-        if (top + tipH > pad.t + plotH - 4) top = pad.t + plotH - tipH - 4;
-        deltaEl.style.left = left + "px";
-        deltaEl.style.top = top + "px";
-      }
+      const htmlA = rows0.length ? tipHtmlFromRows(rows0, rangeKey, metricId) : "";
+      const htmlB = rows1.length ? tipHtmlFromRows(rows1, rangeKey, metricId) : "";
+      const htmlD =
+        rows0.length || rows1.length
+          ? deltaHtmlFromRows(
+              rows0,
+              rows1,
+              Math.abs((marks[1] || 0) - (marks[0] || 0)),
+              metricId
+            )
+          : "";
+      // Measured, collision-free placement: the two point cards + the Δ card
+      // never overlap each other or clip the wrap, for either mark ordering.
+      placeMeasureCards(
+        [
+          { el: tipA, html: htmlA, kind: "point", x: xA, isLeft: xA <= xB },
+          { el: tipB, html: htmlB, kind: "point", x: xB, isLeft: xB < xA },
+          { el: deltaEl, html: htmlD, kind: "delta" },
+        ],
+        xA,
+        xB,
+        w,
+        h,
+        pad,
+        plotH
+      );
     }
 
     if (opts.legendEl) {
@@ -1743,6 +1942,124 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     return out;
   }
 
+  /* -- Chart span state (continuous) --------------------------------------
+     The presets are templates: a click sets `windowSec` to that duration. The
+     wheel then scales `windowSec` by a smooth factor between 1 min and 30 days.
+     Requests carry an arbitrary `window_s` (or `range` for a calendar mode);
+     the chart x-axis label granularity is derived locally, not from the server
+     range echo (now a `w:<seconds>` token for a windowed view). */
+
+  /** Request params for the active span - calendar mode vs continuous window. */
+  function rangeReqParams() {
+    return calendarMode ? { range: calendarMode } : { window_s: String(windowSec) };
+  }
+
+  /** Stable token for in-flight request guards + button highlight. */
+  function rangeToken() {
+    return calendarMode || "w:" + windowSec;
+  }
+
+  /** Preset-like key that drives the x-axis / tip label GRANULARITY only. */
+  function rangeLabelKey() {
+    if (calendarMode) return calendarMode;
+    if (windowSec <= 600) return "sec"; // ≤10 min: HH:MM:SS (minute ticks repeat)
+    if (windowSec <= 12 * 3600) return "1h"; // time-only labels HH:MM
+    if (windowSec <= 7 * 86400) return "24h"; // dd.mm HH:MM
+    return "30d"; // dd.mm
+  }
+
+  /** Human span label for the status line («90 мин» / «6 ч» / «3 д»). */
+  function rangeHumanLabel() {
+    if (calendarMode === "mtd") return "с начала месяца";
+    if (calendarMode === "month") return "за месяц";
+    const s = windowSec;
+    if (s < 3600) return Math.max(1, Math.round(s / 60)) + " мин";
+    if (s < 86400) {
+      const h = s / 3600;
+      return (Number.isInteger(h) ? h : h.toFixed(1)) + " ч";
+    }
+    const d = s / 86400;
+    return (Number.isInteger(d) ? d : d.toFixed(1)) + " д";
+  }
+
+  function clampWindowSec(sec) {
+    const n = Math.round(Number(sec));
+    if (!Number.isFinite(n)) return WINDOW_MIN_S;
+    return Math.max(WINDOW_MIN_S, Math.min(WINDOW_MAX_S, n));
+  }
+
+  /* -- Chart wheel-zoom ---------------------------------------------------
+     One wheel notch scales `windowSec`: up (deltaY<0) shrinks toward 1 min,
+     down (deltaY>0) grows toward 30 days, by a smooth factor. The +/-1 s floor
+     keeps each notch changing the integer window at small spans. A wheel over a
+     CE calendar mode leaves it and starts continuous zoom at the 30 d end. The
+     refetch is debounced (one /api/devices/history load per burst); presets stay
+     clickable. preventDefault stops the page scrolling while zooming. */
+  function stepWindowSec(sec, deltaY) {
+    const cur = clampWindowSec(sec);
+    const dir = Number(deltaY) > 0 ? 1 : -1; // down = out (grow), up = in (shrink)
+    const factor = dir > 0 ? ZOOM_OUT_FACTOR : ZOOM_IN_FACTOR;
+    let next = Math.round(cur * factor);
+    if (dir < 0 && next >= cur) next = cur - 1; // force a change zooming in
+    if (dir > 0 && next <= cur) next = cur + 1; // force a change zooming out
+    return clampWindowSec(next);
+  }
+
+  function debounceTrailing(fn, ms) {
+    let t = null;
+    return function () {
+      if (t) clearTimeout(t);
+      t = setTimeout(function () {
+        t = null;
+        fn();
+      }, ms);
+    };
+  }
+
+  const scheduleZoomRefetch = debounceTrailing(function () {
+    loadHistory();
+  }, 200);
+
+  function updateRangeButtons() {
+    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => {
+      const on = calendarMode
+        ? b.dataset.range === calendarMode
+        : PRESET_SEC[b.dataset.range] === windowSec;
+      b.classList.toggle("active", !!on);
+    });
+  }
+
+  /** A preset button click: mtd/month are calendar modes; the rest set windowSec. */
+  function setSpanFromPreset(rangeKey) {
+    if (rangeKey === "mtd" || rangeKey === "month") {
+      calendarMode = rangeKey;
+    } else {
+      calendarMode = "";
+      windowSec = clampWindowSec(PRESET_SEC[rangeKey] || PRESET_SEC["1h"]);
+    }
+  }
+
+  function onChartWheel(e) {
+    const modal = $("dev-modal");
+    if (!modal || modal.hidden) return;
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
+    if (calendarMode) {
+      // Enter continuous zoom from a calendar mode at the 30 d (widest) end.
+      calendarMode = "";
+      windowSec = WINDOW_MAX_S;
+    }
+    const next = stepWindowSec(windowSec, e ? e.deltaY : 0);
+    if (next === windowSec) {
+      updateRangeButtons();
+      return;
+    }
+    windowSec = next;
+    updateRangeButtons();
+    const status = $("dev-chart-status");
+    if (status) status.textContent = "Загрузка";
+    scheduleZoomRefetch();
+  }
+
   /* ── Modal / chart ───────────────────────────────────────────────────── */
 
   function setModalMode(mode) {
@@ -1774,7 +2091,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
         : metrics.length
         ? metrics[0][0]
         : "";
-    activeRange = "1h";
+    calendarMode = "";
+    windowSec = PRESET_SEC["1h"];
     modalMode = "metric";
     const modal = $("dev-modal");
     if (!modal) return;
@@ -1819,9 +2137,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
       btn.classList.toggle("active", on);
       btn.setAttribute("aria-selected", on ? "true" : "false");
     });
-    document.querySelectorAll("#dev-modal .dev-range-btn").forEach((btn) => {
-      btn.classList.toggle("active", btn.dataset.range === activeRange);
-    });
+    updateRangeButtons();
     setCeSideVisible(activeDevice === "ce");
     setExportVisible(true);
     const inp = $("dev-ce-kwh-rub");
@@ -1849,7 +2165,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     if (status) status.textContent = "Загрузка";
     if (activeDevice === "ce") loadCeSummary();
     else setCeSideVisible(false);
-    const rangeAtStart = activeRange;
+    const rangeAtStart = rangeToken();
     const metricAtStart = activeMetric;
     const modeAtStart = modalMode;
     const idAtStart = activeDeviceId;
@@ -1867,7 +2183,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     function stillCurrent() {
       return (
         req === historyReqId &&
-        rangeAtStart === activeRange &&
+        rangeAtStart === rangeToken() &&
         metricAtStart === activeMetric &&
         modeAtStart === modalMode &&
         idAtStart === activeDeviceId
@@ -1877,10 +2193,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     if (modalMode === "overview") {
       const isMr = activeDevice === "mr";
       const overviewQs = isMr
-        ? { kind: "mr", group: "all", range: activeRange }
+        ? { kind: "mr", group: "all", ...rangeReqParams() }
         : {
             group: activeDevice === "dtv" ? "climate" : "energy",
-            range: activeRange,
+            ...rangeReqParams(),
           };
       const url = "/api/devices/history?" + historyQs(overviewQs);
       fetchJson(url, fetchOpts)
@@ -1889,7 +2205,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
           if (!data || !data.ok) {
             if (status) status.textContent = (data && data.error) || "Нет данных";
             chartSeries = [];
-            chartMeta = { label: "Общее", unit: "", range: activeRange, normalize: true };
+            chartMeta = { label: "Общее", unit: "", range: rangeLabelKey(), normalize: true };
             drawChart();
             return;
           }
@@ -1902,7 +2218,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
                 ? "MR-02m · Общее"
                 : "Энергия · Общее",
             unit: "",
-            range: data.range || activeRange,
+            range: rangeLabelKey(),
             normalize: true,
             windowMin: data.t0_ms,
             windowMax: data.t1_ms,
@@ -1920,7 +2236,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
             : { minY: 0, maxY: 1 };
           if (status) {
             status.textContent = n
-              ? `${chartMeta.label} · ${chartMeta.range} · ${chartSeries.length} рядов · Y: 0…${fmtYTick(
+              ? `${chartMeta.label} · ${rangeHumanLabel()} · ${chartSeries.length} рядов · Y: 0…${fmtYTick(
                   yDom.maxY,
                   yTickDecimals(0, yDom.maxY, 4)
                 )} · ${n} точек`
@@ -1939,8 +2255,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     }
     const metricQs =
       activeDevice === "mr"
-        ? { kind: "mr", channel: mrChNum(activeMetric), range: activeRange }
-        : { metric: activeMetric, range: activeRange };
+        ? { kind: "mr", channel: mrChNum(activeMetric), ...rangeReqParams() }
+        : { metric: activeMetric, ...rangeReqParams() };
     const url = "/api/devices/history?" + historyQs(metricQs);
     fetchJson(url, fetchOpts)
       .then((data) => {
@@ -1948,7 +2264,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
         if (!data || !data.ok) {
           if (status) status.textContent = (data && data.error) || "Нет данных";
           chartSeries = [];
-          chartMeta = { label: "", unit: "", range: activeRange, normalize: false };
+          chartMeta = { label: "", unit: "", range: rangeLabelKey(), normalize: false };
           drawChart();
           return;
         }
@@ -1956,7 +2272,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
           label: data.label || "",
           unit: data.unit || "",
           metric: activeMetric,
-          range: data.range || activeRange,
+          range: rangeLabelKey(),
           normalize: false,
           windowMin: data.t0_ms,
           windowMax: data.t1_ms,
@@ -1965,7 +2281,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
         const n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
         if (status) {
           status.textContent = n
-            ? `${data.label || ""} · ${data.range} · ${n} точек`
+            ? `${data.label || ""} · ${rangeHumanLabel()} · ${n} точек`
             : "Нет точек за выбранный период";
         }
         drawChart();
@@ -1982,7 +2298,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
   function drawChart() {
     const normalize = !!chartMeta.normalize;
     drawOntoCanvas($("dev-chart"), chartSeries, {
-      range: chartMeta.range || activeRange,
+      range: chartMeta.range || rangeLabelKey(),
       normalize: normalize,
       legendEl: $("dev-chart-legend"),
       unitNote: chartMeta.unit || "",
@@ -2007,9 +2323,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     });
     document.querySelectorAll("#dev-modal .dev-range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
-        document.querySelectorAll("#dev-modal .dev-range-btn").forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        activeRange = btn.dataset.range;
+        setSpanFromPreset(btn.dataset.range);
+        updateRangeButtons();
         loadHistory();
       });
     });
@@ -2059,6 +2374,13 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
       addBack.__bound = true;
       addBack.addEventListener("click", closeAddModal);
     }
+    const chartWrap =
+      $("dev-modal") && $("dev-modal").querySelector(".dev-chart-wrap");
+    if (chartWrap && !chartWrap.__wheelBound) {
+      chartWrap.__wheelBound = true;
+      // passive:false — the handler calls preventDefault to stop page scroll.
+      chartWrap.addEventListener("wheel", onChartWheel, { passive: false });
+    }
     window.addEventListener("resize", () => {
       if ($("dev-modal") && !$("dev-modal").hidden) drawChart();
     });
@@ -2069,6 +2391,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
     refreshLive();
     if (timer) clearInterval(timer);
     timer = setInterval(refreshLive, POLL_MS);
+    startDtvRotation();
   };
 
   window.devicesTabDestroy = function () {
@@ -2076,6 +2399,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.0";
       clearInterval(timer);
       timer = null;
     }
+    stopDtvRotation();
     closeModal();
     closeAddModal();
   };

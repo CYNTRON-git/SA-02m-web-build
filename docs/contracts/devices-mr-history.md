@@ -51,6 +51,10 @@ CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts ON mr_samples(device_id, ch, ts);
 `GET /api/devices/history?kind=mr&device_id=<id>&range=<key>[&channel=<N>]`
 
 - `range` — как у ДТВ (`1h` по умолчанию, ключи `RANGES`).
+- `window_s` — опционально, целое число секунд (зажим `[60, 2592000]`): произвольное
+  окно для плавного зума. Задаёт `range=w:<секунды>` (конец = сейчас, начало =
+  сейчас − `window_s`, бакет выводится под ~150–400 точек). Аддитивно; при отсутствии
+  поведение пресетных `range`-ключей байт-идентично. Действует и для ДТВ/СЭ.
 - С `channel=N` → **один канал**: `history_mr()`.
 - Без `channel` → **обзор** всех включённых каналов: `history_mr_batch()`
   (форма как у `history_batch()` ДТВ, `group:"all"`).

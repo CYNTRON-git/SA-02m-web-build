@@ -75,6 +75,104 @@ def test_live_snapshot_maps_dtv_and_ce(tmp_path: Path):
     assert len(snap["devices"]) == 2
 
 
+def test_dtv_per_sensor_rosters(tmp_path: Path):
+    """`_build_dtv` emits present-sensor rosters (priority order) alongside the
+    first-available scalars. Absent / out-of-range sensors are omitted; kPa
+    pressures convert to mmHg; the eco2 ZMOD4410 label maps to the eco2_zmod key."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM4-3", {
+        # temp: HDC1080 + MCP9808 + BME280 present; DS18B20 absent;
+        # BME680 out-of-range (200 > 85) → omitted.
+        "temp_hdc1080": "22.5",
+        "temp_mcp9808": "22.8",
+        "temp_bme280": "23.1",
+        "temp_bme680": "200.0",
+        "humidity_hdc1080": "48.0",
+        "humidity_bme680": "49.5",
+        "eco2_zmod": "410",
+        "eco2_bme680": "430",
+        "tvoc_zmod": "0.12",
+        "pressure_bme280_kpa": "100.0",
+        "pressure_bme680_kpa": "100.2",
+        # external input present but NO ext_temp_mode published (old bridge) →
+        # the external entry is hidden, so temp_sensors carries the onboard 5 only.
+        "temp_ext": "-55.0",
+    })
+    dtv = live_snapshot(cache)["dtv"][0]
+    # temp: 3 present sensors in priority order, BME680 dropped as out-of-range
+    assert dtv["temp_sensors"] == [
+        {"t": "HDC1080", "v": 22.5},
+        {"t": "MCP9808", "v": 22.8},
+        {"t": "BME280", "v": 23.1},
+    ]
+    # humidity: HDC1080 then BME680 (BME280 absent)
+    assert dtv["humidity_sensors"] == [
+        {"t": "HDC1080", "v": 48.0},
+        {"t": "BME680", "v": 49.5},
+    ]
+    # eco2: ZMOD4410 label first, then BME680
+    assert dtv["eco2_sensors"] == [
+        {"t": "ZMOD4410", "v": 410.0},
+        {"t": "BME680", "v": 430.0},
+    ]
+    # pressure: kPa → mmHg, rounded 1
+    assert dtv["pressure_sensors"] == [
+        {"t": "BME280", "v": 750.1},
+        {"t": "BME680", "v": 751.6},
+    ]
+    # first-available scalars kept unchanged
+    assert dtv["room_temp"] == 22.5
+    assert dtv["eco2_ppm"] == 410.0
+
+
+def test_dtv_external_temp_roster(tmp_path: Path):
+    """The external analog input (DTV reg 6) is appended to temp_sensors AFTER the
+    onboard 5, captioned NTC10k (mode 1..4) or Pt1000 (5..7), and ONLY when it is
+    present, not Off, and not a break sentinel."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+
+    def _ext(mode: str | None, temp: str) -> list[dict]:
+        controls = {"temp_hdc1080": "22.5", "temp_ext": temp}
+        if mode is not None:
+            controls["ext_temp_mode"] = mode
+        _write(cache, "dtv-COM4-3", controls)
+        return live_snapshot(cache)["dtv"][0]["temp_sensors"]
+
+    onboard = {"t": "HDC1080", "v": 22.5}
+    # Pt1000 (mode 5), in-band value → appended after the onboard sensor.
+    assert _ext("5", "23.5") == [onboard, {"t": "Pt1000", "v": 23.5}]
+    # NTC10k (mode 2), in-band value.
+    assert _ext("2", "20.0") == [onboard, {"t": "NTC10k", "v": 20.0}]
+    # Off (mode 0) → hidden, onboard only.
+    assert _ext("0", "0.0") == [onboard]
+    # NTC break sentinel (mode 1 clamps an open to −55.0) → hidden.
+    assert _ext("1", "-55.0") == [onboard]
+    # NTC over-range sentinel (mode 1 clamps to 125.0) → hidden.
+    assert _ext("1", "125.0") == [onboard]
+    # B3435 (mode 3) has a tighter −50.0 sentinel → hidden at its clamp…
+    assert _ext("3", "-50.0") == [onboard]
+    # …but a real reading just inside the B3435 floor is shown.
+    assert _ext("3", "-49.0") == [onboard, {"t": "NTC10k", "v": -49.0}]
+    # No ext_temp_mode published (old bridge) → hidden even with a live value.
+    assert _ext(None, "23.5") == [onboard]
+    # Unknown / out-of-range mode code → hidden.
+    assert _ext("9", "23.5") == [onboard]
+
+
+def test_dtv_empty_rosters_when_no_sensors(tmp_path: Path):
+    """An offline/empty ДТВ has empty rosters (shape stable for the card)."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM4-3", {"light_pct": "5"})
+    dtv = live_snapshot(cache)["dtv"][0]
+    assert dtv["temp_sensors"] == []
+    assert dtv["humidity_sensors"] == []
+    assert dtv["eco2_sensors"] == []
+    assert dtv["pressure_sensors"] == []
+
+
 def test_live_snapshot_multiple_devices(tmp_path: Path):
     cache = tmp_path / "mqtt"
     cache.mkdir()
