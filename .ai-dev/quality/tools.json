@@ -336,7 +336,7 @@
     },
     {
       "id": "js-unit-devices",
-      "checks": "devices.js ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges) and the chart wheel-zoom ladder + debounce (nextZoomRange steps 1ч…30д and clamps off-ladder CE calendar modes; debounceTrailing collapses a fast scroll to ONE refetch). A regression here breaks the card caption cycling or fires a refetch storm on scroll.",
+      "checks": "devices.js ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges) and the continuous chart wheel-zoom + debounce (stepWindowSec factor-in/out with a >=1s floor, clampWindowSec pins [60s, 30d] at both ends, monotonic convergence; debounceTrailing collapses a fast scroll to ONE refetch). A regression here breaks the card caption cycling or fires a refetch storm on scroll.",
       "config": null,
       "run": "node scripts/dev/test-devices-rotation.mjs",
       "beat": "build",
