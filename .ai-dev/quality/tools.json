@@ -345,7 +345,7 @@
     },
     {
       "id": "js-unit-devices",
-      "checks": "devices.js ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges) and the continuous chart wheel-zoom + debounce (stepWindowSec factor-in/out with a >=1s floor, clampWindowSec pins [60s, 30d] at both ends, monotonic convergence; debounceTrailing collapses a fast scroll to ONE refetch). A regression here breaks the card caption cycling or fires a refetch storm on scroll.",
+      "checks": "devices.js pure helpers, brace-extracted from the shipped source (real RED/GREEN ratchet). (1) ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges). (2) Continuous chart wheel-zoom + debounce (stepWindowSec factor-in/out with a >=1s floor, clampWindowSec pins [60s, 30d] at both ends, monotonic convergence; debounceTrailing collapses a fast scroll to ONE refetch). (3) rangeLabelKey x-axis label granularity tiers, including the sub-minute «sec» (HH:MM:SS) tier that keeps <=10-min windows from collapsing every tick to the same minute. (4) Measure-card placement geometry (rectsOverlapArea intersection/disjoint/containment; clampCardRect pins a rect inside bounds on all four edges incl. larger-than-bounds degrade; fitCardRect first-clear-else-least-overlap candidate pick). A regression breaks the card caption cycling, fires a refetch storm on scroll, flattens the sub-minute axis, or lets measure cards overlap or escape the plot.",
       "config": null,
       "run": "node scripts/dev/test-devices-rotation.mjs",
       "beat": "build",
