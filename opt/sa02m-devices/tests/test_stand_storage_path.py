@@ -79,8 +79,13 @@ def test_resolve_falls_back_sd_then_emmc(storage_roots, monkeypatch):
 def test_promote_copy_and_merge(storage_roots):
     emmc_db = storage_roots["emmc"] / "devices_history.db"
     usb_db = storage_roots["usb"] / "sa02m-stand" / "devices_history.db"
-    now = time.time()
-    device_history_db.insert_sample(_snap(now - 10, temp=10.0), path=emmc_db)
+    # Bucket-aligned, >=1 chart bucket (5 s for "1h") apart so the three samples
+    # land in THREE distinct avg-buckets on every platform. A raw time.time()
+    # lets the now-5 and now-1 samples share a 5 s bucket and average to 11.5
+    # depending on the fractional second — a pre-existing flaky assumption that
+    # Linux CI surfaced once this suite was wired into the merge gate.
+    now = float(int(time.time()) // 5 * 5)
+    device_history_db.insert_sample(_snap(now - 15, temp=10.0), path=emmc_db)
     # copy when no media db
     r = migrate.promote_to_media(emmc_db, usb_db)
     assert r["ok"] and r["action"] == "copy"
@@ -89,9 +94,9 @@ def test_promote_copy_and_merge(storage_roots):
     h = device_history_db.history("room_temp", "1h", path=usb_db, device_id="dtv-COM4-3")
     assert h["ok"] and h["series"]
 
-    # staging again + merge into existing
-    device_history_db.insert_sample(_snap(now - 5, temp=11.0), path=emmc_db)
-    device_history_db.insert_sample(_snap(now - 1, temp=12.0), path=usb_db)
+    # staging again + merge into existing (distinct 5 s buckets: -15/-10/-5)
+    device_history_db.insert_sample(_snap(now - 10, temp=11.0), path=emmc_db)
+    device_history_db.insert_sample(_snap(now - 5, temp=12.0), path=usb_db)
     r2 = migrate.promote_to_media(emmc_db, usb_db)
     assert r2["ok"] and r2["action"] == "merge"
     assert not emmc_db.is_file()
