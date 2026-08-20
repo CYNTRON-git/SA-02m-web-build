@@ -7,12 +7,6 @@ audit 1.0.5.71).
 
 ## Open
 
-- [OPEN] 2026-08-19 **[LOW] Gateway regression test not in the quality registry.**
-  `opt/sa02m-serial-gateway/tests/test_exchange.py` (fast-modbus 0xFF-strip + the
-  pre-existing exchange tests) is not wired into `.ai-dev/quality/tools.json`, so the
-  1.0.5.86 BUG-A regression is uncovered by the merge gate. The daemon imports
-  `serial`/`yaml` (absent from the web CI env) — add a deps-guarded `py-unit-gateway`
-  row (skip-if-missing-deps), mirroring `py-unit-flasher`. Surfaced by the 1.0.5.86 Reviewer.
 - [OPEN] 2026-08-19 **[MED] Gateway mode for RS-485 flashing/scan — UI must steer to
   transparent.** Fixed in 1.0.5.86: WB/fast-modbus replies (`0xFF` arbitration) are no
   longer truncated, so scan works in `rtu_over_tcp`. BUT the PC flasher / a fast-modbus
@@ -66,24 +60,6 @@ audit 1.0.5.71).
   to detect + restart whichever unit owns :8765 (check `sa02m-stand-api` presence),
   OR document the stand's extra restart step in `docs/deployment.md`. Note in the
   deploy runbook that the stand is a hardpy_tests host with its own API service.
-- [OPEN] 2026-08-18 **[LOW] Two pre-existing `opt/sa02m-devices` test failures**
-  (unrelated to any recent change; reproduced on `main` via worktree by the
-  MR-widget Reviewer): `test_stand_storage_path` and `test_promote_copy_and_merge`.
-  Investigate + fix or delete-if-obsolete. Would be caught earlier once the
-  `py-unit-devices` gate row (below) exists.
-- [OPEN] 2026-08-19 **[MED] Daemon unit-test suites are not wired into the merge gate**
-  (elevated from LOW 2026-08-18; audit 2026-08-19 MED-2). No quality-registry row runs
-  `opt/sa02m-devices/tests` (`test_stand_devices.py`, `test_devices_widgets.py`,
-  `test_api_mr.py`, `test_device_history_db.py`) — `build --touched` runs only `py-syntax`
-  (compileall), so the gate never executes them. Raised to MED because
-  `docs/contracts/devices-mr-history.md` names `test_api_mr.py` + `test_device_history_db.py`
-  as ITS validating tests, and 1.0.5.83-85 (the network-facing `:8765` API + the 1733-line
-  `device_history_db.py`) all shipped through this gap. Same gap: `sa02m-rs485-roster` (1 test)
-  and `sa02m-update` (2 tests) have no row either. Fix as ONE registry-wiring batch: a
-  deps-guarded `py-unit-devices` row (skip-if-missing-deps, stdlib-unittest to match the repo's
-  no-pytest convention) + `py-unit-roster` + `py-unit-update`, mirroring `py-unit-flasher` /
-  `py-unit-cloud`. Fold in the already-listed gateway (`py-unit-gateway`, above) and cloud
-  `test_agent.py` entries so the whole daemon test surface gates in one pass.
 - [OPEN] 2026-08-18 **[MED] Alice enrollment through the web UI likely fails as
   www-data (PermissionError writing into the root-only cert dir).**
   `scripts/06-alice.sh` makes `/var/lib/sa02m-alice` `0750 root:root`, yet
@@ -369,13 +345,6 @@ audit 1.0.5.71).
   `gateway` and `inet-failover.sh` metrics; the live panel↔KLogic write race is
   inherent to two writers and is not closed from our side; VLAN sub-interfaces
   (`eth0.1`/`eth0.2` in KLogic's table) are neither created nor migrated.
-- [OPEN] 2026-07-17 **[LOW] `test_agent.py` gated by no quality row.**
-  `opt/sa02m-cloud-agent/tests/test_agent.py` (the send-only / no-command-channel
-  / no-wireguard guards — the F1-removal net) is pytest-style, so the new
-  `py-unit-cloud` row (`-p test_render*.py`, stdlib unittest) deliberately
-  excludes it and pytest is not a device/CI dep. It never runs in CI. Convert it
-  to `unittest`-style (or add a pytest CI dep) so the F1-removal guard is
-  enforced, not just present. Surfaced by the 1.0.5.15 build + reviewer.
 - [OPEN] 2026-07-17 **[MED→Phase-4, cross-repo] Cloud identity: fleet-shared FRP
   token → per-device mTLS.** v1 uses one shared `FRP_TOKEN` across the fleet
   (`CYNTRON-git/cloud` `config/frps.toml.template`); extract it from one device's
