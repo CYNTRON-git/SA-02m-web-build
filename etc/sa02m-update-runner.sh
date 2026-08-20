@@ -1000,6 +1000,20 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("r
     while IFS= read -r u; do
         [ -n "$u" ] || continue
         if ! systemctl is-active --quiet "$u"; then
+            # An operator-disabled required unit is NOT a health failure: the
+            # operator deliberately took it out of service (never-widen). A shared
+            # HardPy stand masks sa02m-devices-api because the stand app serves
+            # :8765 instead — requiring it active would wrongly roll back every
+            # update there. masked / masked-runtime / disabled ⇒ skip; an ENABLED
+            # unit that is merely down still fails (a real regression).
+            local _en_state
+            _en_state=$(systemctl is-enabled "$u" 2>/dev/null || true)
+            case "$_en_state" in
+                masked|masked-runtime|disabled)
+                    log "health: $u is $_en_state (operator-disabled) — not required active"
+                    continue
+                    ;;
+            esac
             log "health: unit not active: $u"
             return 1
         fi
