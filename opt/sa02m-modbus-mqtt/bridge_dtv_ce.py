@@ -212,6 +212,20 @@ class DTVPoller(DevicePoller):
             except Exception:
                 pass
 
+    def _poll_ext_temp_mode(self) -> None:
+        # Holding reg 6 = external-temp type selector (code 0..7, EEPROM): 0=Off,
+        # 1..4 NTC10k families, 5..7 Pt1000 (../cyntron-dtv MODBUS_VARIABLES.txt
+        # reg 6). EEPROM config changes rarely, so this rides the slow diag
+        # cadence — NOT the hot loop: an extra fast read here would recreate the
+        # COM1 CRC storm the insurance clamp guards against. Published as
+        # `ext_temp_mode` so the API can caption the external sensor NTC10k/Pt1000
+        # and hide it on Off. A read failure keeps the last value (mirrors _poll_diag).
+        try:
+            r = self.read_holding_registers(self.address, 6, 1)
+            self.pub.pub_control(self.device_id, "ext_temp_mode", str(int(r[0]) & 0xFFFF))
+        except Exception:
+            pass
+
     def _writeback_coil(self, coil: int, name: str, on: bool) -> None:
         if self._wb_offline_skip(name):
             return
@@ -296,6 +310,7 @@ class DTVPoller(DevicePoller):
             flushed = True
         if now - self._t_diag >= self._poll_diag_s:
             self._poll_diag()
+            self._poll_ext_temp_mode()
             self._t_diag = now
             flushed = True
         if flushed:

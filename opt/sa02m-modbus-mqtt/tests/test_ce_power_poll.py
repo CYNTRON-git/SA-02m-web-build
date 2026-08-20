@@ -84,6 +84,45 @@ class TestCE02PowerInterval(unittest.TestCase):
         self.assertEqual(pp.call_count, 2)
 
 
+class TestDTVExtTempMode(unittest.TestCase):
+    """DTV Holding reg 6 (external-temp type selector) publishes on the slow
+    diag cadence as `ext_temp_mode` — the caption the API reads (NTC10k/Pt1000)."""
+
+    def _poller(self):
+        return bridge.DTVPoller({
+            "id": "dtv-COM4-3", "type": "dtv", "port": "/dev/COM4", "address": 3,
+            "sensors_present": ["temp_hdc1080"],  # explicit list → no autodetect
+        }, mock.Mock())
+
+    def test_reads_holding6_and_publishes_mode(self):
+        p = self._poller()
+        with mock.patch.object(
+            p, "read_holding_registers", return_value=[5]
+        ) as rh:
+            p._poll_ext_temp_mode()
+        rh.assert_called_once_with(3, 6, 1)  # addr, reg 6, count 1
+        p.pub.pub_control.assert_any_call("dtv-COM4-3", "ext_temp_mode", "5")
+
+    def test_read_failure_publishes_nothing(self):
+        p = self._poller()
+        with mock.patch.object(
+            p, "read_holding_registers", side_effect=IOError("timeout")
+        ):
+            p._poll_ext_temp_mode()  # must not raise
+        for call in p.pub.pub_control.call_args_list:
+            self.assertNotIn("ext_temp_mode", call.args)
+
+    def test_slow_poll_fires_ext_mode_at_diag_cadence(self):
+        p = self._poller()
+        with mock.patch.object(p, "_poll_uptime"), \
+                mock.patch.object(p, "_poll_diag"), \
+                mock.patch.object(p, "_poll_ext_temp_mode") as pe, \
+                mock.patch.object(bridge.DeviceLiveCache, "flush_file"):
+            # _t_diag starts at 0 → the first slow poll is due immediately.
+            p.poll_slow_if_due(1000.0)
+        pe.assert_called_once()
+
+
 class TestCE02FmbEvents(unittest.TestCase):
     def test_event_ranges(self):
         pub = mock.Mock()
