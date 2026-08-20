@@ -13,6 +13,7 @@ Run: python3 -m pytest opt/sa02m-serial-gateway/tests/test_exchange.py
 
 from __future__ import annotations
 
+import struct
 import sys
 from pathlib import Path
 
@@ -194,4 +195,151 @@ def test_extract_long_standard_reply_still_frames():
     frame = sg._extract_rtu_response(REQ, ECHO + LONG_RESP)
     assert frame == LONG_RESP
     assert len(frame) == 29
+    assert sg._check_crc(frame)
+
+
+# ── By-serial Fast-Modbus framing (branch gateway-byserial-flash) ─────────────
+# WB Fast-Modbus by-serial replies are framed DETERMINISTICALLY by structure —
+# NOT by RS-485 silence, which raced two-burst replies (arbitration FFs, then
+# the frame) and lost random blocks of the flasher's 601-block by-serial
+# firmware flash over modbus_tcp mode. _fast_modbus_frame_len returns the exact
+# frame length, 0 for a partial / unknown / non-FD remainder. Layout:
+#   FD 46 01/02/04                CRC2  — scan cmd / scan end       (5 B total)
+#   FD 46 03 <SN4> <addr>         CRC2  — scan reply                (10 B total)
+#   FD 46 08/09 <SN4> <inner-pdu> CRC2  — by-serial response  (3+4+inner+2)
+#     inner: fc(1)+4 for FC06/FC16, fc(1)+bc(1)+bc for FC03/FC04, fc(1)+1 for
+#     an exception (fc & 0x80 set).
+# SN4 / CRC2 bytes are placeholders — the length function never inspects them.
+
+_SN4 = bytes([0x12, 0x34, 0x56, 0x78])   # 4-byte device serial number
+_CRC2 = b'\x00\x00'                      # placeholder CRC (length-only tests)
+
+
+def test_fast_modbus_frame_len_scan_cmd_and_end():
+    """sub 0x01 / 0x02 / 0x04 (scan cmd / scan end) → fixed 5-byte frame."""
+    for sub in (0x01, 0x02, 0x04):
+        rem = bytes([0xFD, 0x46, sub]) + _CRC2   # 5 bytes, >= returned 5
+        assert sg._fast_modbus_frame_len(rem) == 5
+
+
+def test_fast_modbus_frame_len_scan_reply():
+    """sub 0x03 (scan reply: SN4 + addr) → fixed 10-byte frame."""
+    rem = bytes([0xFD, 0x46, 0x03]) + _SN4 + bytes([0x0A]) + _CRC2   # 10 bytes
+    assert sg._fast_modbus_frame_len(rem) == 10
+
+
+def test_fast_modbus_frame_len_byserial_fc16_ack():
+    """by-serial FC16 write ACK: inner fc 0x10 (inner 5) → 3+4+5+2 = 14."""
+    for sub in (0x08, 0x09):
+        inner = bytes([0x10, 0x00, 0x00, 0x00, 0x02])   # fc16: start(2)+qty(2)
+        rem = bytes([0xFD, 0x46, sub]) + _SN4 + inner + _CRC2   # 14 bytes
+        assert sg._fast_modbus_frame_len(rem) == 14
+
+
+def test_fast_modbus_frame_len_byserial_fc06_ack():
+    """by-serial FC06 write ACK: inner fc 0x06 (inner 5) → 14."""
+    inner = bytes([0x06, 0x00, 0x01, 0x00, 0x0A])   # fc06: reg(2)+value(2)
+    rem = bytes([0xFD, 0x46, 0x08]) + _SN4 + inner + _CRC2   # 14 bytes
+    assert sg._fast_modbus_frame_len(rem) == 14
+
+
+def test_fast_modbus_frame_len_byserial_fc03_fc04_read():
+    """by-serial FC03/FC04 read: inner = 2 + byte_count → 3+4+(2+bc)+2."""
+    for fc in (0x03, 0x04):
+        byte_count = 6
+        inner = bytes([fc, byte_count]) + bytes(range(byte_count))   # 2+bc
+        rem = bytes([0xFD, 0x46, 0x09]) + _SN4 + inner + _CRC2
+        assert sg._fast_modbus_frame_len(rem) == 3 + 4 + (2 + byte_count) + 2
+        assert sg._fast_modbus_frame_len(rem) == 17
+
+
+def test_fast_modbus_frame_len_byserial_exception():
+    """inner fc with 0x80 bit set (exception): inner 2 → 3+4+2+2 = 11."""
+    for sub in (0x08, 0x09):
+        inner = bytes([0x90, 0x02])   # fc16 | 0x80, then exception code
+        rem = bytes([0xFD, 0x46, sub]) + _SN4 + inner + _CRC2   # 11 bytes
+        assert sg._fast_modbus_frame_len(rem) == 11
+
+
+def test_fast_modbus_frame_len_partial_returns_zero():
+    """A remainder shorter than the field the next decision needs → 0 (wait)."""
+    # < 3 bytes: sub byte not yet present
+    assert sg._fast_modbus_frame_len(bytes([0xFD])) == 0
+    assert sg._fast_modbus_frame_len(bytes([0xFD, 0x46])) == 0
+    # sub 0x08 but < 8 bytes: inner fc (rem[7]) not yet present
+    assert sg._fast_modbus_frame_len(bytes([0xFD, 0x46, 0x08]) + _SN4) == 0   # 7 B
+    # inner FC03 but < 9 bytes: byte_count (rem[8]) not yet present
+    assert sg._fast_modbus_frame_len(
+        bytes([0xFD, 0x46, 0x08]) + _SN4 + bytes([0x03])) == 0                # 8 B
+
+
+def test_fast_modbus_frame_len_non_fd_and_unknown_returns_zero():
+    """Non-FD marker, unknown sub, or unknown inner fc → 0."""
+    # rem[0] != 0xFD
+    assert sg._fast_modbus_frame_len(bytes([0x01, 0x46, 0x03]) + _SN4) == 0
+    # rem[1] != 0x46
+    assert sg._fast_modbus_frame_len(bytes([0xFD, 0x99, 0x03]) + _SN4) == 0
+    # unknown sub (not scan / by-serial)
+    assert sg._fast_modbus_frame_len(bytes([0xFD, 0x46, 0x05]) + _SN4) == 0
+    # by-serial sub but unknown inner fc (not exc / 03 / 04 / 06 / 10)
+    assert sg._fast_modbus_frame_len(
+        bytes([0xFD, 0x46, 0x08]) + _SN4 + bytes([0x2B, 0x00])) == 0
+
+
+# ── MBAP length cap (by-serial FC16 data block, branch gateway-byserial-flash) ─
+# _client_loop rejects an MBAP body length outside 1..260. The 260 (vs the
+# spec-strict 253) admits a 259-byte by-serial FC16 data block — an FD 46 08
+# SN4-wrapped FC16 123-register write, which dropped the TCP connection at 253.
+# The cap is a bare `if length < 1 or length > 260` inside the async client
+# loop (serial_gateway.py ~L470), not a standalone predicate — so the smallest
+# honest unit test drives the real header parser the loop uses
+# (_parse_mbap_header) for the parsed length, then asserts the SAME boundary via
+# a mirror of that `if`. LIMIT: the predicate is duplicated here because the
+# loop's inline `if` is not independently importable; if the 260 constant moves,
+# update _mbap_length_accepted too.
+
+def _mbap_length_accepted(length: int) -> bool:
+    """Mirror of the _client_loop MBAP cap: 1 <= length <= 260."""
+    return not (length < 1 or length > 260)
+
+
+def test_mbap_length_cap_boundary():
+    """259-byte by-serial body accepted (<=260); 261 rejected (>260)."""
+    # the header parser the loop feeds the cap round-trips the length field
+    assert sg._parse_mbap_header(struct.pack('>HHH', 1, 0, 259))[2] == 259
+    assert sg._parse_mbap_header(struct.pack('>HHH', 1, 0, 261))[2] == 261
+    # the boundary the loop enforces on that parsed length
+    assert _mbap_length_accepted(259) is True    # by-serial FC16 data block
+    assert _mbap_length_accepted(261) is False   # over the cap → reject/break
+    # exact edges
+    assert _mbap_length_accepted(260) is True
+    assert _mbap_length_accepted(1) is True
+    assert _mbap_length_accepted(0) is False
+
+
+def test_extract_byserial_fd46_ack_framed_deterministically():
+    """FF arbitration + complete FD46 09 by-serial FC16 ACK → exact 14-B frame.
+
+    Structural (not silence-truncated) framing: the extractor returns exactly
+    the FD46 frame and drops trailing bytes past its computed length.
+    """
+    inner = bytes([0x10, 0x00, 0x00, 0x00, 0x02])          # FC16 ACK inner (5 B)
+    ack = bytes([0xFD, 0x46, 0x09]) + _SN4 + inner + _CRC2  # 14-byte frame
+    buf = ECHO + b'\xff' * 5 + ack + b'\x77\x88'            # + trailing noise
+    frame = sg._extract_rtu_response(REQ, buf)
+    assert frame == ack
+    assert len(frame) == 14
+    assert frame[:2] == b'\xfd\x46'
+
+
+def test_extract_standard_fc03_unchanged_by_byserial_branch():
+    """addr 1..247 first byte → standard framing; the FD46 branch is unreachable.
+
+    A valid RTU reply starts with the slave address (0x06 here), so rem[0] is in
+    1..247 and _extract_rtu_response never enters the fast-modbus FD46 path —
+    identical framing to before the by-serial branch.
+    """
+    frame = sg._extract_rtu_response(REQ, ECHO + ANALOG_RESP)
+    assert frame == ANALOG_RESP
+    assert 1 <= frame[0] <= 247
     assert sg._check_crc(frame)
