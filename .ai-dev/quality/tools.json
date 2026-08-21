@@ -263,6 +263,15 @@
       "init": "bash + sed + grep (present everywhere the project builds)"
     },
     {
+      "id": "update-recover-rollback",
+      "checks": "Functional RED/GREEN regression for the update runner's power-loss recovery path (etc/sa02m-update-runner.sh rollback_from_journal archive fallback) — the two bugs that made a freshly-flashed golden image fail sa02m-update-recover on every boot (board 1.136, 2026-08-21): mktemp -d under staging/$txn (gone after a tmpfs-staging power loss) aborted recover in the very case it exists for, and `install -m 644` hardcoded mode 644 on every restored file (stripped exec bits -> systemd 203/EXEC on ~37 scripts; loosened 640/600 perms to 644). Extracts the SHIPPED rollback_from_journal(), builds a real rollback archive of absolute sandbox paths (same tar recipe as build_rollback_archive), and runs the fallback with staging/$txn ABSENT: asserts recover succeeds (Fix 1) and a restored executable keeps its +x (Fix 2). The archive's leading-slash-stripped members restore back INTO the sandbox — no root, no device, no systemd/flock/python. Non-vacuous: a broken extraction FAILS; UPDATE_RUNNER_SRC re-runs it against any older revision (RED on the pre-fix runner, recipe in the test header).",
+      "config": null,
+      "run": "bash scripts/dev/test-update-recover-rollback.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-recover-rollback.sh"],
+      "init": "bash + tar + coreutils stat/install/find (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-recover-rollback.sh"
+    },
+    {
       "id": "imaging-samefile-guard",
       "checks": "Static gate for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate.",
       "config": null,
