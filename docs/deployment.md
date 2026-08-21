@@ -289,9 +289,13 @@ diff /root/before.txt /root/after.txt
    - `curl -s -o /dev/null -w '%{http_code}' http://<dev>:9999/` — 200;
    - развёрнутый `/var/www/network_config/VERSION` равен ожидаемой версии;
    - **MPLC-драйверы** (если MPLC ставился): `md5sum /opt/mplc4/mplc_cyntron.so`
-     начинается на `bf412755` (180356 B); `/opt/mplc4/mplc_protocol_fast_modbus.so`
-     присутствует (`9eba65e3`, 226276 B); в логе нет WARN про ненайденный
-     `mplc_protocol_fast_modbus.so`;
+     начинается на `f6ae6026` (186356 B — сборка с публикацией лицензии, с
+     1.0.6.5; до неё было `bf412755`/180356 B);
+     `/opt/mplc4/mplc_protocol_fast_modbus.so` присутствует (`9eba65e3`,
+     226276 B); в логе нет WARN про ненайденный
+     `mplc_protocol_fast_modbus.so`. Отпечаток обязан совпадать с
+     `firmware/mplc4/` — этот каталог авторитетен, и расхождение означает, что
+     на устройстве осталась прежняя сборка;
    - **Алиса выключена по умолчанию** (первый install): `systemctl is-enabled
      sa02m-alice-client sa02m-alice-config` = `disabled`, `is-active` =
      `inactive`; веб-карточка Алисы при этом отвечает. На повторном install

@@ -27,7 +27,7 @@ frpc — **исключение** из «опционального» прави
 если каталог `$REPO/vendor/{codesys,nodered}/` или `$REPO/MPLC4/cyntron/` есть на
 build-host, его содержимое копируется в rootfs → `/opt/vendor-installers/<служба>/`.
 MPLC переехал с `vendor/mplc4/` на `MPLC4/cyntron/` — единый источник staging
-(см. `MPLC4/README.md`). Плагины (`mplc_cyntron.so` 180356 B/`bf412755` +
+(см. `MPLC4/README.md`). Плагины (`mplc_cyntron.so` 186356 B/`f6ae6026` +
 `mplc_protocol_fast_modbus.so` 226276 B/`9eba65e3`) **не** входят в vendor-дроп:
 оба отслеживаются в git по пути `firmware/mplc4/` и ставятся `09-mplc.sh`
 **оттуда** (vendor-каталог — только fallback). Runtime из двух кандидатов
