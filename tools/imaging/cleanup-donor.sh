@@ -9,7 +9,6 @@
 #   --verbose   печать каждого пути
 #   --report    du ключевых деревьев до/после (совместим с dry-run/apply)
 #   --purge-update-state  удалить deployed_* / trusted keys (ОПАСНО, default off)
-#   --purge-rollback[=N]  rollback старше N дней (default N=30; без флага не трогать)
 #   --purge-docker        apt purge docker.io (default off)
 #   --purge-installers    удалить /root/*.deb|*.rpm и /root/mplc_update
 #                         (по умолчанию НЕ трогаем — нужны для CODESYS/MPLC/CodeMeter)
@@ -24,10 +23,8 @@ MODE=dry-run
 VERBOSE=0
 REPORT=0
 PURGE_UPDATE_STATE=0
-PURGE_ROLLBACK=0
 PURGE_DOCKER=0
 PURGE_INSTALLERS=0
-ROLLBACK_DAYS=30
 PARTIAL_FAIL=0
 REPORT_FILE=/tmp/sa02m-cleanup-report.txt
 
@@ -36,7 +33,7 @@ log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 die_usage() {
     cat >&2 <<'USAGE'
 Usage: cleanup-donor.sh [--dry-run|--apply] [--verbose] [--report]
-                        [--purge-update-state] [--purge-rollback[=DAYS]]
+                        [--purge-update-state]
                         [--purge-docker] [--purge-installers]
   --dry-run   list candidates only (default; fail-safe)
   --apply     delete candidates + toolchain/apt/logs phases
@@ -54,8 +51,6 @@ while [ "$#" -gt 0 ]; do
         --verbose|-v) VERBOSE=1; shift ;;
         --report) REPORT=1; shift ;;
         --purge-update-state) PURGE_UPDATE_STATE=1; shift ;;
-        --purge-rollback) PURGE_ROLLBACK=1; shift ;;
-        --purge-rollback=*) PURGE_ROLLBACK=1; ROLLBACK_DAYS="${1#--purge-rollback=}"; shift ;;
         --purge-docker) PURGE_DOCKER=1; shift ;;
         --purge-installers) PURGE_INSTALLERS=1; shift ;;
         -h|--help) die_usage ;;
@@ -341,11 +336,18 @@ collect_junk() {
         '/root/zImage*.bak*' \
         '/root/modules-*.bak*'
 
-    # F. Update staging (эфемерное; state/rollback — только по флагам)
+    # F. Update staging + in-flight transaction state (ephemeral). A donor must
+    # not ship an interrupted update: a baked transaction.json makes every flashed
+    # board run sa02m-update-recover on boot. state/deployed_* and trusted-keys
+    # stay preserved (only --purge-update-state removes them).
     expand_globs \
         '/var/lib/sa02m-update/staging/*' \
         '/var/lib/sa02m-update/incoming/*' \
         '/var/lib/sa02m-update/runner/*' \
+        '/var/lib/sa02m-update/rollback/*' \
+        '/var/lib/sa02m-update/transaction.json' \
+        '/var/lib/sa02m-update/update.lock' \
+        '/var/lib/sa02m-update/update.log' \
         '/tmp/sa02m-update*' \
         '/tmp/sa02m-deploy*' \
         '/tmp/sa02m-ota*' \
@@ -356,18 +358,6 @@ collect_junk() {
         expand_globs \
             '/var/lib/sa02m-update/state/deployed_*' \
             '/etc/sa02m-update/trusted-keys/*'
-    fi
-
-    if [ "$PURGE_ROLLBACK" -eq 1 ]; then
-        local f
-        shopt -s nullglob
-        for f in /var/lib/sa02m-update/rollback/*; do
-            [ -e "$f" ] || continue
-            if [ -n "$(find "$f" -maxdepth 0 -mtime +"$ROLLBACK_DAYS" 2>/dev/null)" ]; then
-                add_candidate "$f"
-            fi
-        done
-        shopt -u nullglob
     fi
 }
 
