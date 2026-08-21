@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-21 00:00] branch: 1.0.6.6
+
+**Файл(ы):** `usr/local/sbin/sa02m-{dns-ensure,wait-carrier,eth-coldboot}.sh`, `etc/fix-eth.sh`, `etc/systemd/system/{sa02m-dns-ensure.service,ifup@.service.d,networking.service.d}`, `scripts/02-network.sh`, `etc/sa02m_network.conf`
+**Тип:** Некорректное поведение / гонка при загрузке (молчаливая)
+**Описание:** Плата загружается без DNS: `/etc/resolv.conf` пуст, `/run/resolvconf/interface/` пуст, при этом адрес и default-маршрут на месте — плата пингуется и отдаёт панель. Отказ не виден до первой попытки разрешить имя: «Обновление веб» падает с `Could not resolve host: github.com`. Дополнительно два красных юнита: `ifup@eth0.service` (`Error: Nexthop device is not up`, T+18.3) и `networking.service` (`RTNETLINK answers: File exists`, T+22.2). Стенд 192.168.1.136, журнал загрузки 2026-08-21.
+**Причина:** Переименование `end0 → eth0` (`sa02m-iface-canonical`, 1.0.5.56) даёт udev-uevent; `/lib/udev/ifupdown-hotplug` видит `eth0` как `auto` (fallback-ветка своего же скрипта) и запускает `ifup@eth0` — дубль той установки, которой через секунды займётся `networking.service`. Этот ранний прогон назначает адрес и падает на шаге `gateway`, потому что PHY ещё не согласовал линк, а значит **обрывается ДО стадии `if-up.d`** — хук `/etc/network/if-up.d/000resolvconf` не выполняется. На плате он был **единственным**, что когда-либо запускало `resolvconf`: рабочий статический fallback `/etc/resolvconf/resolv.conf.d/base` (два публичных nameserver'а) присутствовал и был корректен, но никто его не применял. `File exists` у `networking.service` — следствие: упавший `ifup` не записал `eth0` в `/run/network/ifstate`. Маршрутная половина того же класса закрыта в 1.0.3.27 (`fix-eth.sh` восстанавливает default-маршрут при `linkdown`), DNS-половина — нет. `sa02m-eth-coldboot.sh` на этой загрузке ушёл в ветку `carrier already up, skip`, а её `continue` стоит ДО `systemctl start fix-eth@`, поэтому дальше по лестнице восстановления не выполнялось ничего — плата оставалась без DNS до перезагрузки.
+**Исправление:** Две независимые половины. (1) `sa02m-dns-ensure.sh` — пересборка резолвера **независимо** от того, дошёл ли `ifup` до конца: ступень 1 подаёт запись интерфейса из `dns-nameservers` тем же именем записи, что и `000resolvconf`, и только когда записи нет; ступень 2 запускает `resolvconf -u`, если `nameserver` нет вовсе. Вызывается из собственного юнита `sa02m-dns-ensure.service` (`After=networking.service`), из `fix-eth.sh` (две точки) и из `sa02m-eth-coldboot.sh` (обе ветки, включая ту, что делает `continue`). (2) `sa02m-wait-carrier.sh` — ограниченное ожидание carrier перед установкой на **обоих** путях (`ExecStartPre=-` в drop-in'ах `ifup@.service.d` и `networking.service.d`), бюджет `IFUP_CARRIER_WAIT_SECS` (по умолчанию 10 с, `0` выключает, жёсткий потолок 120 с против `TimeoutStartUSec=5min` у обоих юнитов). Форма `interfaces.d/<if>.conf` НЕ меняется — у файла три писателя плюс KLogic. Оба хелпера всегда выходят с кодом 0 и не могут уронить юнит или снять плату с сети. Контракт: `docs/contracts/boot-network-dns.md`; регрессия — строка реестра `iface-dns-ensure`.
+
+---
+
 ## [2026-08-14 14:00] branch: 1.0.5.69
 
 **Файл(ы):** `.gitattributes`, `etc/sudoers.d/{sa02m-cloud,sa02m-flasher,sa02m-mqtt}`, `scripts/update-www-only.sh`

@@ -538,6 +538,11 @@ def build_manifest(
             "enable": [
                 "sa02m-devices-api.service",
                 "sa02m-devices-logger.service",
+                # Must stay in step with the online generator's list in
+                # etc/sa02m-update-runner.sh — an entry in one path only means
+                # the offline and online updates disagree about what runs at
+                # the next boot. See docs/contracts/boot-network-dns.md.
+                "sa02m-dns-ensure.service",
             ],
             "restart": [
                 "fcgiwrap",
