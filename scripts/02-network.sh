@@ -262,6 +262,41 @@ if [ -f "$ETC_DIR/systemd/sa02m-eth-coldboot.service" ]; then
         /etc/systemd/system/sa02m-eth-coldboot.service
 fi
 
+# ── Загрузка без DNS: ожидание carrier + пересборка резолвера ─────────────
+# Контракт: docs/contracts/boot-network-dns.md. Оба хелпера идемпотентны и
+# всегда выходят с кодом 0; drop-in'ы подключены через `ExecStartPre=-`, так
+# что ни один из них не может уронить ifup@ или networking.
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" ]; then
+    log INFO "Установка sa02m-dns-ensure.sh"
+    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" \
+        /usr/local/sbin/sa02m-dns-ensure.sh
+fi
+if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" ]; then
+    log INFO "Установка sa02m-wait-carrier.sh"
+    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" \
+        /usr/local/sbin/sa02m-wait-carrier.sh
+fi
+if [ -f "$ETC_DIR/systemd/system/sa02m-dns-ensure.service" ]; then
+    log INFO "Установка sa02m-dns-ensure.service"
+    install -m 644 "$ETC_DIR/systemd/system/sa02m-dns-ensure.service" \
+        /etc/systemd/system/sa02m-dns-ensure.service
+fi
+# Drop-in'ы к ЧУЖИМ юнитам (ifup@, networking) — тот же идиом, что и
+# docker.service.d/sa02m-kernel-guard.conf в 01-system.sh: install -d + install.
+# Переустановка поверх существующего файла идемпотентна.
+if [ -f "$ETC_DIR/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf" ]; then
+    log INFO "Установка drop-in ifup@.service.d/sa02m-carrier-wait.conf"
+    install -d -m 755 "/etc/systemd/system/ifup@.service.d"
+    install -m 644 "$ETC_DIR/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf" \
+        "/etc/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf"
+fi
+if [ -f "$ETC_DIR/systemd/system/networking.service.d/sa02m-carrier-wait.conf" ]; then
+    log INFO "Установка drop-in networking.service.d/sa02m-carrier-wait.conf"
+    install -d -m 755 /etc/systemd/system/networking.service.d
+    install -m 644 "$ETC_DIR/systemd/system/networking.service.d/sa02m-carrier-wait.conf" \
+        /etc/systemd/system/networking.service.d/sa02m-carrier-wait.conf
+fi
+
 if [ -f "$ETC_DIR/fix-eth1-internet.sh" ]; then
     log INFO "Установка fix-eth1-internet.sh"
     install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
@@ -332,6 +367,11 @@ sa02m_svc_apply net-watchdog.service infra start
 sa02m_svc_apply sa02m-eth-coldboot.service infra start
 sa02m_systemctl disable sa02m-eth1-coldboot 2>/dev/null || true
 sa02m_svc_apply sa02m-eth0-led-poll.service infra start
+# ENABLE only, deliberately no `start`: the belt's job is the NEXT boot, and a
+# live board must never be disturbed by an installer re-run. The unit only ever
+# adds a resolver record when one is missing, so starting it would be harmless
+# — the restraint is the installer's own rule, not a property of the helper.
+sa02m_svc_apply sa02m-dns-ensure.service infra
 # ENABLE only, deliberately no `start`: starting this unit performs the rename
 # on a live board — exactly what the deferred-by-default rule above forbids
 # without SA02M_CANONICAL_IFACE_NOW=1.
