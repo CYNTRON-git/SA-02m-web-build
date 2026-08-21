@@ -41,7 +41,7 @@ read_status() {
 # device can actually reach the cloud. A bare curl per 5 s status poll would
 # fork a network call on every poll on the shared ARM target, so cache the
 # verdict ~60 s behind a flock (mirrors status.cgi cache_print_or_build), and
-# bound the probe hard (--max-time 4) so a poll never hangs on a wedged WAN.
+# bound the probe hard (--max-time 5) so a poll never hangs on a wedged WAN.
 CLOUD_REACH_HOST="cloud.cyntron.ru"
 CLOUD_CACHE_DIR="/tmp/sa02m_cloud_cache"
 CLOUD_REACH_CACHE="$CLOUD_CACHE_DIR/reachable"
@@ -81,7 +81,7 @@ cloud_probe_reachable() {
         fi
     fi
     if command -v curl >/dev/null 2>&1 && \
-       curl -s -o /dev/null -I --max-time 4 "https://${CLOUD_REACH_HOST}" >/dev/null 2>&1; then
+       curl -s -o /dev/null -I --max-time 5 "https://${CLOUD_REACH_HOST}" >/dev/null 2>&1; then
         out=true
     else
         out=false
