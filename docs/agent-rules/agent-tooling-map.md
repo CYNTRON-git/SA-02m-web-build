@@ -57,6 +57,7 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 | Stack, tabs, polling architecture, port lease | `docs/agent-rules/sa02m-domain.md` |
 | CGI/JS/CSS floors, contrast, i18n rules | `docs/agent-rules/web-code-rigor.md` |
 | Pre/post-edit discipline, «—» trace recipe | `docs/agent-rules/web-workflow.md` |
+| MPLC4 runtime API, license reads, the FastCGI-not-HTTP trap | `docs/agent-rules/mplc4-api.md` |
 | Regression history ("when did X break") | `CHANGELOG.md` — grep it FIRST |
 | Install/HW variants (Operator-facing) | `README.md` |
 | MR-02m module internals (Modbus map, .fw) | the sibling repo `CYNTRON-git/MR-02m`, its `docs/agent-rules/` |

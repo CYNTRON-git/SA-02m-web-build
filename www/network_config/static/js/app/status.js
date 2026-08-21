@@ -2071,10 +2071,29 @@ function loadMplcProjectMeta() {
       }
       if (lic) {
         var L = j.license;
-        if (L && L.activated === true &&
-            typeof L.points === 'number' && typeof L.clients === 'number') {
-          lic.textContent = uiT('Точки') + ': ' + L.points +
-            ' · ' + uiT('Клиенты') + ': ' + L.clients;
+        lic.title = '';   // never carry a tooltip over from the previous render
+        if (L && L.activated === true && typeof L.points === 'number') {
+          // Visible value stays SHORT: «№ 413850 · 100 / 1». The value column is
+          // ~123 px — spelled out («точек 100 · клиентов 1») it measures 181 px
+          // and wraps, so the words live in the title tooltip instead.
+          // lic_number/clients/instances are the additive 1.0.6.4 fields: an
+          // older backend omits them, so every part is added only when present.
+          var nums = [L.points];
+          if (typeof L.clients === 'number') nums.push(L.clients);
+          var parts = [];
+          if (typeof L.lic_number === 'number') parts.push('№ ' + L.lic_number);
+          parts.push(nums.join(' / '));
+          lic.textContent = parts.join(' · ');
+          // The tooltip is the ONLY place the numbers are named — and the only
+          // place экземпляры appear at all (a third number would wrap the line).
+          var tip = [];
+          if (typeof L.lic_number === 'number') tip.push(uiT('Лицензия') + ' № ' + L.lic_number);
+          tip.push(uiT('точек') + ': ' + L.points);
+          if (typeof L.clients === 'number') tip.push(uiT('клиентов') + ': ' + L.clients);
+          if (typeof L.instances === 'number' && L.instances > 1) {
+            tip.push(uiT('экземпляров') + ': ' + L.instances);
+          }
+          lic.title = tip.join(' · ');
         } else if (L && L.activated === false && !L.unknown) {
           lic.textContent = uiT('не активирована');
         } else {

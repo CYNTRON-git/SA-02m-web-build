@@ -302,8 +302,11 @@
     'Загрузка экспорта проекта MasterSCADA (.zip) и развёртывание на MPLC4': 'Upload a MasterSCADA project export (.zip) and deploy it to MPLC4',
     'Текущий проект': 'Current project',
     'Лицензия': 'License',
-    'Точки': 'Points',
-    'Клиенты': 'Clients',
+    // License line: «№ 413850 · точек 100 · клиентов 1». The № sign stays in
+    // both languages, as in 'Серийный №' above.
+    'точек': 'points',
+    'клиентов': 'clients',
+    'экземпляров': 'instances',
     'не активирована': 'not activated',
     'Файл': 'File',
     'Это остановит MPLC и заменит текущий проект': 'This stops MPLC and replaces the current project',

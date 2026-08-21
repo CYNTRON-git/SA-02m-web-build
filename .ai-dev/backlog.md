@@ -477,3 +477,16 @@ audit 1.0.5.71).
   alternative (it was almost certainly meant to be
   `/etc/sa02m-update/trusted-keys/*`) and add a regression test that asserts a
   DENY-listed path is still refused with `--purge-update-state` on.
+- [OPEN] 2026-08-21 **[LOW] EN tooltips go stale after a re-poll (`i18n.js`).**
+  `translateAttr(el, attr, refreshOriginal)` is never called with
+  `refreshOriginal` — `i18n.js:1483` (the MutationObserver's `attributes`
+  branch) omits it, so `:1330` pins the FIRST recorded original and re-applies
+  it over any later JS-set `title` / `aria-label` / `placeholder`. Reproduced on
+  the MPLC licence tooltip: change the licence with the page open in EN and the
+  visible numbers update while the tooltip still describes the previous licence;
+  RU is unaffected, and the text path is immune (`textContent =` replaces the
+  node). Fix is one line — pass `true` — but it changes behaviour for EVERY
+  dynamic attribute in the app, so it needs its own pass over the attribute
+  consumers plus a re-run of the headless harness. Found by the 1.0.6.4 builder,
+  root cause confirmed independently by its reviewer; deliberately left outside
+  that branch's fence.

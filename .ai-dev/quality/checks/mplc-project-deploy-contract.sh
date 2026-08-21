@@ -136,19 +136,43 @@ else
     fail "helper must refuse when the flasher holds the COM lease"
 fi
 
-# ── 6. GET license read (points/clients) is bounded and fails SAFE ──────────
-# The GET meta reads the newest MPLC4 runtime log and maps InstancesLimit→points,
-# SessionsLimit→clients; any read/parse error must degrade to unknown, never
-# crash the GET.
+# ── 6. GET license read is bounded, correctly mapped, and fails SAFE ───────
+# The GET meta reads the log-free addin file first and the newest MPLC4 runtime
+# log second, mapping PLCConnectionsLimit→points, SessionsLimit→clients,
+# InstancesLimit→instances, LicNumber→lic_number; any read/parse error must
+# degrade to unknown, never crash the GET.
+if grep -q '/run/sa02m-mplc-license.json' "$CGI"; then
+    pass "CGI reads the log-free addin license file as the primary source"
+else
+    fail "CGI must read /run/sa02m-mplc-license.json (primary, log-free source)"
+fi
 if grep -q '/var/log/mplc4/0' "$CGI"; then
-    pass "CGI reads the MPLC4 runtime log dir for the license"
+    pass "CGI reads the MPLC4 runtime log dir as the license fallback"
 else
     fail "CGI must read /var/log/mplc4/0 for the license field"
 fi
-if grep -q 'InstancesLimit' "$CGI" && grep -q 'SessionsLimit' "$CGI"; then
-    pass "CGI maps InstancesLimit→points and SessionsLimit→clients"
+if grep -q 'read_license_file() or read_license_log()' "$CGI"; then
+    pass "license source order is addin file first, runtime log second"
 else
-    fail "CGI must parse InstancesLimit (points) and SessionsLimit (clients)"
+    fail "CGI must try the addin file before the log (read_license_file() or read_license_log())"
+fi
+# точки = fpPLCConnectionsLimit (SDK core/main_imp.h). Mapping точки←InstancesLimit
+# shipped through 1.0.6.3 and is fixed here: it printed 1 instead of 100.
+# Assert the ASSIGNMENT, not just the token: each limit regex must be followed
+# by the variable it feeds, so swapping the two limits back would fail here.
+_maps_to() {  # <limit-name> <variable>
+    grep -A2 -E "$1=\(\\\\d\+\)" "$CGI" | grep -qE "^\s+$2 = int\(m\.group\(1\)\)"
+}
+if _maps_to PLCConnectionsLimit points && _maps_to SessionsLimit clients \
+   && _maps_to InstancesLimit instances && _maps_to LicNumber lic_number; then
+    pass "CGI maps PLCConnectionsLimit→points, SessionsLimit→clients, InstancesLimit→instances, LicNumber→lic_number"
+else
+    fail "CGI must map точки←PLCConnectionsLimit (NOT InstancesLimit), клиенты←SessionsLimit, экземпляры←InstancesLimit, номер←LicNumber"
+fi
+if grep -q 'lic\["instances"\]' "$CGI" && grep -q 'lic\["lic_number"\]' "$CGI"; then
+    pass "CGI emits the additive lic_number + instances fields"
+else
+    fail "CGI must emit lic_number and instances alongside points/clients"
 fi
 # Not-activated demo state must be detected (numbers suppressed).
 if grep -q 'Not activated' "$CGI"; then
