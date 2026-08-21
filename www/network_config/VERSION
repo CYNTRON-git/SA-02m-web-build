@@ -4,4 +4,4 @@
 # При создании новой версионной ветки:
 #   1. Обновите строку ниже ИЛИ запустите: py -3 scripts/sync-app-version.py
 #   2. Разверните www/network_config на устройство (scripts/update-www-only.sh или SFTP)
-1.0.6.4
+1.0.6.5
