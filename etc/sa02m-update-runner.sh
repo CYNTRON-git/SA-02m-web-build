@@ -419,6 +419,12 @@ manifest = {
         "enable": [
             "sa02m-devices-api.service",
             "sa02m-devices-logger.service",
+            # Boot-time DNS belt (docs/contracts/boot-network-dns.md). Deploying
+            # the unit file is NOT enough: without an entry here no
+            # multi-user.target.wants symlink is ever created and the unit stays
+            # inert forever. Enable only, never restart[]: it is a Type=oneshot
+            # whose job is the NEXT boot, and restart[] feeds the health check.
+            "sa02m-dns-ensure.service",
         ],
         "restart": [
             "fcgiwrap",

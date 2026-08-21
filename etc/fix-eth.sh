@@ -35,6 +35,17 @@ log() {
     echo "[${ts}] [${level}] ${msg}"
 }
 
+# ── Резолвер ───────────────────────────────────────────────────────────────
+# Пересобрать /etc/resolv.conf независимо от того, дошёл ли ifup до if-up.d.
+# Guard на -x: частичный деплой (fix-eth.sh обновлён, хелпер ещё нет)
+# деградирует до сегодняшнего поведения, а не ломается.
+# Одна точка правды по механизму: docs/contracts/boot-network-dns.md.
+DNS_ENSURE_BIN=/usr/local/sbin/sa02m-dns-ensure.sh
+dns_ensure() {
+    [ -x "$DNS_ENSURE_BIN" ] || return 0
+    "$DNS_ENSURE_BIN" "$1" >/dev/null 2>&1 || true
+}
+
 rotate_log() {
     [ -f "$LOG_FILE" ] || return
     local size; size=$(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0)
@@ -310,6 +321,13 @@ recover_iface() {
                 ip route add default via "$gw" dev "$iface" ${metric:+metric $metric} 2>/dev/null || true
             fi
         fi
+        # Тот же класс отказа, что и у маршрута выше: если ifup упал на шаге
+        # gateway (поздний carrier), его хуки if-up.d не выполнились и
+        # /etc/resolv.conf остался пустым. Маршрут здесь восстанавливался с
+        # 1.0.3.27, резолвер — нет. Хелпер идемпотентен и почти бесплатен:
+        # при уже поданной записи выходит после одного [ -e ].
+        # Контракт: docs/contracts/boot-network-dns.md
+        dns_ensure "$iface"
         check_connectivity "$iface"
         # Gratuitous ARP burst: каждую секунду 15с — перекрывает окно когда
         # Windows выходит из ARP FAILED (~15-20с от device offline).
@@ -364,6 +382,9 @@ recover_iface() {
         log INFO "$iface: восстановлен, IP=$(ip -4 addr show dev "$iface" | awk '/inet /{print $2}')"
         debug_iface_state "$iface"
         release_lock "$iface"
+        # «Кабель пришёл позже»: восстановление прошло, резолвер тоже должен
+        # быть подтверждён — ifdown/ifup выше мог снова не дойти до if-up.d.
+        dns_ensure "$iface"
         # Grat-ARP burst после восстановления IP (тот же механизм что и при has_ip)
         local grat_marker="${STATE_DIR}/${iface}.grat_arp_done"
         if [ ! -f "$grat_marker" ] && command -v python3 >/dev/null 2>&1 \

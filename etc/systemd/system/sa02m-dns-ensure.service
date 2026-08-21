@@ -1,0 +1,24 @@
+[Unit]
+Description=SA-02m: ensure /etc/resolv.conf is populated regardless of ifup
+Documentation=file:/usr/local/sbin/sa02m-dns-ensure.sh
+# The deterministic pass. The recovery ladder (fix-eth.sh, sa02m-eth-coldboot.sh)
+# also calls the helper, but both have early-return / skip branches, so a boot
+# exists where neither fires — this unit is the branch-independent one.
+After=networking.service
+# A partial deploy (unit without the helper) must skip cleanly, not fail.
+ConditionPathExists=/usr/local/sbin/sa02m-dns-ensure.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/sa02m-dns-ensure.sh --all
+# FAILURE MODE, stated: the helper exits 0 unconditionally, so this unit cannot
+# go FAILED; ordering is After= only and nothing is Before= it, so even a hung
+# run could not keep the board off the LAN. TimeoutStartSec is the backstop.
+TimeoutStartSec=30
+RemainAfterExit=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sa02m-dns-ensure
+
+[Install]
+WantedBy=multi-user.target
