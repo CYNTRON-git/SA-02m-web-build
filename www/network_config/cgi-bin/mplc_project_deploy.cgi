@@ -57,13 +57,18 @@ if [ "$METHOD" = "GET" ] && printf '%s' "${QUERY_STRING:-}" | grep -q 'result=1'
 fi
 
 # ── GET — currently deployed project meta (read cfg/ProjInfo.json directly) ──
-# Also reports the MPLC4 runtime license (points/clients) parsed from the newest
-# /var/log/mplc4/0/<date>.txt <Protect> block — see docs/contracts/mplc-project-
-# deploy.md. World-readable log; bounded forward scan (poll-path hygiene); fails
-# SAFE to license.unknown on any read/parse error — never crashes the GET.
+# Also reports the MPLC4 runtime license (number/points/clients/instances) from
+# TWO sources, in order: the log-free status file /run/sa02m-mplc-license.json
+# (tmpfs, written by the CYNTRON MPLC addin at runtime start), then the
+# <Protect> block of the newest /var/log/mplc4/0/<date>.txt — see
+# docs/contracts/mplc-project-deploy.md. Both paths are hard-coded constants,
+# never request-derived. The log is world-readable and scanned forward under a
+# byte cap (poll-path hygiene); ANY read/parse error on either source degrades
+# to license.unknown — the GET never crashes.
 if [ "$METHOD" = "GET" ]; then
   _json_headers
   CFG_DIR="$CFG_DIR" MPLC_LOG_DIR=/var/log/mplc4/0 \
+  MPLC_LIC_FILE=/run/sa02m-mplc-license.json \
     python3 - <<'PY' 2>/dev/null || printf '{"ok":true,"deployed":false,"license":{"activated":false,"unknown":true}}\n'
 import glob
 import json
@@ -72,10 +77,62 @@ import re
 from pathlib import Path
 
 
-def read_license():
-    """Latest <Protect> block of the newest runtime log → license summary.
+def _limit(d, key):
+    """A non-negative int license value out of the addin JSON, else None."""
+    v = d.get(key)
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return None
+    return v
 
-    InstancesLimit → точки (points); SessionsLimit → клиенты (clients). A
+
+def read_license_file():
+    """PRIMARY source — the log-free status file the CYNTRON MPLC addin writes
+    at runtime start (tmpfs, ~100 bytes):
+
+        {"lic_number":413850,"points":100,"clients":1,"instances":1,
+         "activated":true}
+
+    Returns the license summary, or None to FALL THROUGH to the log scan
+    (missing file, bad JSON, wrong types, oversized file). Never raises: the
+    runtime that writes this file ships separately from the web layer, so the
+    absent/garbage case is the normal one, not an error.
+    """
+    try:
+        path = os.environ["MPLC_LIC_FILE"]
+        if not os.path.isfile(path):
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read(4097)   # cap: the real file is ~100 bytes
+        if len(raw) > 4096:
+            return None
+        d = json.loads(raw)
+        if not isinstance(d, dict):
+            return None
+        if d.get("activated") is False:
+            return {"activated": False}      # demo runtime — numbers suppressed
+        if d.get("activated") is not True:
+            return None                      # unusable verdict → try the log
+        points = _limit(d, "points")
+        clients = _limit(d, "clients")
+        if points is None or clients is None:
+            return None
+        lic = {"activated": True, "points": points, "clients": clients}
+        for key in ("lic_number", "instances"):
+            val = _limit(d, key)
+            if val is not None:
+                lic[key] = val
+        return lic
+    except Exception:
+        return None
+
+
+def read_license_log():
+    """FALLBACK — latest <Protect> block of the newest runtime log → license.
+
+    PLCConnectionsLimit → точки (points); SessionsLimit → клиенты (clients);
+    InstancesLimit → экземпляры (instances); LicNumber → номер (lic_number).
+    The точки mapping is the SDK's `fpPLCConnectionsLimit` (core/main_imp.h,
+    enum FeatureParameter) — NOT InstancesLimit, which is экземпляры. A
     'Not activated' line in the latest start block means the runtime is on demo
     defaults → report not-activated, not the numbers. Any failure → unknown.
 
@@ -90,7 +147,7 @@ def read_license():
         if not logs:
             return {"activated": False, "unknown": True}
         newest = max(logs, key=os.path.getmtime)
-        points = clients = None
+        points = clients = instances = lic_number = None
         not_activated = False
         seen_protect = False
         cap = 67108864  # 64 MiB read ceiling (safety; daily logs are logrotated)
@@ -108,24 +165,37 @@ def read_license():
                 if "Not activated" in line:
                     not_activated = True
                 if "Limit=" in line:
-                    m = re.search(r"InstancesLimit=(\d+)", line)
+                    m = re.search(r"PLCConnectionsLimit=(\d+)", line)
                     if m:
                         points = int(m.group(1))
                     m = re.search(r"SessionsLimit=(\d+)", line)
                     if m:
                         clients = int(m.group(1))
+                    m = re.search(r"InstancesLimit=(\d+)", line)
+                    if m:
+                        instances = int(m.group(1))
+                if "LicNumber=" in line:
+                    m = re.search(r"LicNumber=(\d+)", line)
+                    if m:
+                        lic_number = int(m.group(1))
         if not seen_protect and points is None and clients is None:
             return {"activated": False, "unknown": True}
         if not_activated:
             return {"activated": False}
         if points is None or clients is None:
             return {"activated": False, "unknown": True}
-        return {"activated": True, "points": points, "clients": clients}
+        lic = {"activated": True, "points": points, "clients": clients}
+        if lic_number is not None:
+            lic["lic_number"] = lic_number
+        if instances is not None:
+            lic["instances"] = instances
+        return lic
     except Exception:
         return {"activated": False, "unknown": True}
 
 
-lic = read_license()
+# Source order: the log-free addin file first, the runtime log second.
+lic = read_license_file() or read_license_log()
 cfg = Path(os.environ["CFG_DIR"])
 pj = cfg / "ProjInfo.json"
 if not pj.is_file():
