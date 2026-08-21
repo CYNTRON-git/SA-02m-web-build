@@ -32,7 +32,7 @@ vendor-EULA (`.gitignore`: `/MPLC4/` + исключение `!/MPLC4/README.md`)
 
 | Плагин | Размер | md5 (первые 8) |
 |---|---|---|
-| `mplc_cyntron.so` | 180356 B | `bf412755` |
+| `mplc_cyntron.so` | 186356 B | `f6ae6026` |
 | `mplc_protocol_fast_modbus.so` | 226276 B | `9eba65e3` |
 
 (Прежняя запись «483 KB» относилась к старому, битому драйверу с ABI

@@ -75,7 +75,7 @@ the licence at init, which is exactly what the log-free source below relies on.
 
 | # | Source | State |
 |---|---|---|
-| 1 | `/run/sa02m-mplc-license.json` (tmpfs, written by the addin at runtime start) | primary; the addin ships from the **driver repo**, separately from this repo |
+| 1 | `/run/sa02m-mplc-license.json` (tmpfs, written by the addin at runtime start) | primary; since 1.0.6.5 the built addin ships HERE (`firmware/mplc4/mplc_cyntron.so`), its sources in the separate driver repo |
 | 2 | `<Protect>` block in `/var/log/mplc4/0/<YYYY_MM_DD>.txt` | fallback; gated by `WriteLogsToHost` |
 
 One home each: the enum ids above are SDK truth and live here; the JSON shape,
