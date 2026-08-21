@@ -467,3 +467,13 @@ audit 1.0.5.71).
   re-run `install.sh` preserves the static IP, cloud activation, storage
   autoformat off by default. A www-only OTA needs `/etc/sa02m_web.env` present
   (login now fails closed).
+- [OPEN] 2026-08-21 **[MED] `cleanup-donor.sh` DENY list is disabled by a `/*`
+  alternative.** `tools/imaging/cleanup-donor.sh:140` — the case pattern reads
+  `/etc/sa02m-update/trusted-keys|/*) return 1 ;;`, and the `/*` alternative
+  matches EVERY absolute path, so under `--purge-update-state` the whole DENY
+  list (`/var/www/network_config`, `/opt/mplc4`, `/boot`, …) silently stops
+  protecting anything. Found by the #140 reviewer, verified in a shell;
+  pre-existing on main and out of that PR's scope. Fix: drop the stray `/*`
+  alternative (it was almost certainly meant to be
+  `/etc/sa02m-update/trusted-keys/*`) and add a regression test that asserts a
+  DENY-listed path is still refused with `--purge-update-state` on.
