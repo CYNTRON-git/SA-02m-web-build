@@ -934,14 +934,20 @@ PY
         archive=$(txn_get rollback_archive)
         if [ -n "$archive" ] && [ -f "$archive" ]; then
             local tmp
-            tmp=$(mktemp -d "$STATEDIR/staging/$txn/rollback-extract.XXXXXX")
-            tar -xzf "$archive" -C "$tmp" || true
-            # Archive stored absolute paths; walk and restore.
+            # $STATEDIR/staging is guaranteed by ensure_dirs, but staging/$txn is
+            # gone after a power loss (tmpfs/lost staging) — the very case recover
+            # exists for. mktemp under staging itself so extraction never fails.
+            tmp=$(mktemp -d "$STATEDIR/staging/rollback-extract.XXXXXX")
+            # -p preserves each member's mode/owner so the restore keeps exec bits
+            # (else systemd 203/EXEC on the restored scripts) and restrictive perms.
+            tar -xpzf "$archive" -C "$tmp" || true
+            # Archive stored absolute paths; walk and restore each with its real mode.
             find "$tmp" -type f | while IFS= read -r f; do
                 local rel="${f#"$tmp"}"
                 if [ -n "$rel" ]; then
                     mkdir -p "$(dirname "$rel")"
-                    install -m 644 "$f" "$rel"
+                    install -m "$(stat -c '%a' "$f")" -o "$(stat -c '%u' "$f")" \
+                        -g "$(stat -c '%g' "$f")" "$f" "$rel"
                 fi
             done
             rm -rf "$tmp"

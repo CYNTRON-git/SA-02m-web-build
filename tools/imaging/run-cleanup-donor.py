@@ -73,7 +73,6 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--purge-update-state", action="store_true")
-    ap.add_argument("--purge-rollback", nargs="?", const="30", metavar="DAYS")
     ap.add_argument("--purge-docker", action="store_true")
     ap.add_argument(
         "--purge-installers",
@@ -97,8 +96,6 @@ def main() -> int:
         remote_args.append("--report")
     if args.purge_update_state:
         remote_args.append("--purge-update-state")
-    if args.purge_rollback is not None:
-        remote_args.append(f"--purge-rollback={args.purge_rollback}")
     if args.purge_docker:
         remote_args.append("--purge-docker")
     if args.purge_installers:
