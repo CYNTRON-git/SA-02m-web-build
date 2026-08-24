@@ -857,11 +857,18 @@ apply_deploy_items() {
         if [ "$total" -gt 0 ]; then
             pct=$((done * 100 / total))
         fi
-        txn_patch "files_done=$done" "progress_pct=$pct"
+        # Patch txn every 10 files (and on the last): per-file JSON rewrite + fsync
+        # made 1.0.6.1→latest apply take ~12 min with no log lines between re-exec
+        # and verifying — UI looked frozen on "updating packages".
+        if [ "$done" -eq "$total" ] || [ $((done % 10)) -eq 0 ]; then
+            txn_patch "files_done=$done" "progress_pct=$pct"
+            log "apply: files $done/$total (${pct}%)"
+        fi
     done < <(python3 -c 'import json,sys
 for it in json.load(open(sys.argv[1],encoding="utf-8")).get("deploy",[]):
     print(json.dumps(it,ensure_ascii=False))
 ' "$mf")
+    txn_patch "files_done=$done" "progress_pct=100"
     return 0
 }
 
@@ -965,6 +972,18 @@ PY
     log "rollback complete"
 }
 
+# systemctl restart can block indefinitely when stop waits on busy CGI children
+# (web UI polls web_update_apply.cgi during verify). Always bound the wait.
+_systemctl_bounded() {
+    local secs=$1
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$secs" systemctl "$@" 2>/dev/null
+    else
+        systemctl "$@" 2>/dev/null
+    fi
+}
+
 # Returns 0 on success, 1 on failure (does not exit — caller may rollback).
 restart_services_and_health() {
     local txn=$1
@@ -973,21 +992,31 @@ restart_services_and_health() {
     local daemon_reload
     daemon_reload=$(python3 -c 'import json,sys; print("true" if json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("daemon_reload",True) else "false")' "$mf")
     if [ "$daemon_reload" = "true" ]; then
-        systemctl daemon-reload || true
+        log "health: daemon-reload..."
+        _systemctl_bounded 60 daemon-reload || true
     fi
     # Enable new/updated units so they survive reboot (e.g. sa02m-devices-*).
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        systemctl enable "$u" 2>/dev/null || true
+        _systemctl_bounded 60 enable "$u" || true
         log "enabled after apply: $u"
     done < <(python3 -c 'import json,sys
 for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("enable",[]):
     print(u)
 ' "$mf")
-    # Ordered: fcgiwrap → nginx -t && reload → other restart[] (e.g. sa02m-flasher)
-    systemctl restart fcgiwrap 2>/dev/null || systemctl restart fcgiwrap.service 2>/dev/null || true
+    # Ordered: fcgiwrap → nginx -t && reload → other restart[] (e.g. sa02m-flasher).
+    # Bound fcgiwrap restart: UI polling keeps CGI children alive and can stall
+    # an unbounded systemctl restart for many minutes (looks like "stuck on verifying").
+    log "health: restarting fcgiwrap..."
+    if ! _systemctl_bounded 45 restart fcgiwrap \
+        && ! _systemctl_bounded 45 restart fcgiwrap.service; then
+        log "health: fcgiwrap restart timed out - SIGTERM workers and continue"
+        _systemctl_bounded 15 kill -s SIGTERM fcgiwrap || true
+        _systemctl_bounded 30 start fcgiwrap || _systemctl_bounded 30 start fcgiwrap.service || true
+    fi
+    log "health: nginx -t / reload..."
     if nginx -t 2>/dev/null; then
-        systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+        _systemctl_bounded 30 reload nginx || _systemctl_bounded 45 restart nginx || true
     else
         log "health: nginx -t failed"
         return 1
@@ -997,7 +1026,8 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
         case "$u" in
             fcgiwrap|fcgiwrap.service|nginx|nginx.service) continue ;;
         esac
-        systemctl restart "$u" 2>/dev/null || systemctl start "$u" 2>/dev/null || true
+        log "health: restarting $u..."
+        _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
         log "restarted after apply: $u"
     done < <(python3 -c 'import json,sys
 for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
@@ -1229,9 +1259,41 @@ cmd_recover() {
             fi
             cleanup_imaging_lock || true
             ;;
-        applying|verifying)
+        applying)
             install_imaging_lock || true
             rollback_from_journal "$txn"
+            ;;
+        verifying)
+            # Deploy finished (files on disk) but health/restart aborted — prefer
+            # completing like committing, not rolling back a good tree. Fall back
+            # to rollback only when the health gate still fails.
+            install_imaging_lock || true
+            if [ -n "$txn" ] && [ -f "$(manifest_path "$txn")" ]; then
+                local files_done files_total ver_got ver_want
+                files_done=$(txn_get files_done)
+                files_total=$(txn_get files_total)
+                ver_want=$(txn_get target_version)
+                ver_got=$(tr -d '\r' <"$VERSION_FILE" 2>/dev/null | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+                if [ -n "$files_total" ] && [ "$files_total" -gt 0 ] 2>/dev/null \
+                    && [ "$files_done" = "$files_total" ] \
+                    && [ -n "$ver_want" ] && [ "$ver_got" = "$ver_want" ]; then
+                    log "recover: verifying with deploy complete ($files_done/$files_total, VERSION=$ver_got) - finish health"
+                    if restart_services_and_health "$txn"; then
+                        commit_markers "$txn"
+                        txn_patch "stage=done" "result=success" "progress_pct=100" \
+                            "finished_at=$(utc_now)"
+                        cleanup_imaging_lock || true
+                    else
+                        log "recover: health still failing after complete deploy - rollback"
+                        rollback_from_journal "$txn"
+                    fi
+                else
+                    log "recover: verifying incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
+                    rollback_from_journal "$txn"
+                fi
+            else
+                rollback_from_journal "$txn"
+            fi
             ;;
         committing)
             # Health OK → complete markers; else rollback.

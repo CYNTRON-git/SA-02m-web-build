@@ -1685,7 +1685,7 @@ function uploadOfflineUpdateFile(file) {
   if (pick) pick.disabled = true;
   if (applyBtn) applyBtn.disabled = true;
   _webUpdSetStatus('Загрузка файла… 0%', 'is-warn');
-  _webUpdSetProgress(0, 'Загрузка файла… 0%');
+  _webUpdSetProgress(0, '0%');
 
   var fd = new FormData();
   fd.append('file', file, file.name);
@@ -1700,7 +1700,7 @@ function uploadOfflineUpdateFile(file) {
     var pct = Math.round((ev.loaded / ev.total) * 100);
     var label = 'Загрузка файла… ' + pct + '%';
     _webUpdSetStatus(label, 'is-warn');
-    _webUpdSetProgress(pct, label);
+    _webUpdSetProgress(pct, pct + '%');
   };
   xhr.onerror = function () {
     _webUpdSetProgress(null, '');
@@ -1733,7 +1733,7 @@ function uploadOfflineUpdateFile(file) {
       return;
     }
     _webUpdSetStatus('Проверка пакета…', 'is-warn');
-    _webUpdSetProgress(100, 'Проверка пакета…');
+    _webUpdSetProgress(100, '100%');
     applyOfflineInspectUI(j.inspect || j, j);
     toast('Пакет загружен', 'success');
   };
@@ -1760,7 +1760,7 @@ function applyOfflineUpdate() {
   if (onlineApply) onlineApply.disabled = true;
   _webUpdTxnActive = true;
   _webUpdSetStatus('Создание резервной копии…', 'is-warn');
-  _webUpdSetProgress(0, 'Создание резервной копии…');
+  _webUpdSetProgress(0, '0%');
   _webUpdShowLog('=== Обновление ===\nСоздание резервной копии…');
 
   fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
@@ -1896,7 +1896,13 @@ function _webUpdApplyTxnUI(j) {
   if (pct == null && j.files_total > 0) {
     pct = Math.round((Number(j.files_done) / Number(j.files_total)) * 100);
   }
-  if (_webUpdIsBusy(j) || pct != null) _webUpdSetProgress(pct, txt);
+  // Stage text lives in #web-upd-status only — do not repeat it under the bar.
+  if (_webUpdIsBusy(j) || pct != null) {
+    var progLab = (pct != null && Number.isFinite(Number(pct)))
+      ? (Math.max(0, Math.min(100, Math.round(Number(pct)))) + '%')
+      : '';
+    _webUpdSetProgress(pct, progLab);
+  }
   var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
   if (cancelBtn) {
     var cancellable = stage === 'uploaded' || stage === 'validating' || stage === 'backing_up';
@@ -1941,7 +1947,7 @@ function _webUpdPollOnce() {
       _webUpdPollInFlight = false;
       if (_webUpdTxnActive) {
         _webUpdSetStatus(WEB_UPD_STAGE_UI.disconnect, 'is-warn');
-        _webUpdSetProgress(null, WEB_UPD_STAGE_UI.disconnect);
+        _webUpdSetProgress(null, '');
         _webUpdPollBackoffMs = Math.min(600000, Math.max(2000, _webUpdPollBackoffMs * 2));
         _webUpdSchedulePoll(_webUpdPollBackoffMs);
       }
@@ -1970,7 +1976,7 @@ function _webUpdFinish(status, log) {
   if (log) _webUpdShowLog(log);
   if (status === 'done') {
     _webUpdSetStatus(WEB_UPD_STAGE_UI.done, 'is-ok');
-    _webUpdSetProgress(100, WEB_UPD_STAGE_UI.done);
+    _webUpdSetProgress(100, '100%');
     if (applyBtn) applyBtn.hidden = true;
     toast('Обновление применено успешно', 'success');
     setTimeout(function () { location.reload(); }, 5000);
@@ -2178,7 +2184,7 @@ function deployMplcProject() {
   if (deployBtn) deployBtn.disabled = true;
   _mplcProjActive = true;
   _mplcProjSetStatus('Загрузка файла…', 'is-warn');
-  _mplcProjSetProgress(0, 'Загрузка файла…');
+  _mplcProjSetProgress(0, '0%');
 
   var fd = new FormData();
   fd.append('file', _mplcProjFile, _mplcProjFile.name);
@@ -2191,7 +2197,8 @@ function deployMplcProject() {
   xhr.upload.onprogress = function (ev) {
     if (!ev.lengthComputable) return;
     var pct = Math.round((ev.loaded / ev.total) * 100);
-    _mplcProjSetProgress(pct, 'Загрузка файла…');
+    _mplcProjSetStatus('Загрузка файла…', 'is-warn');
+    _mplcProjSetProgress(pct, pct + '%');
   };
   xhr.onerror = function () { _mplcProjFinish('error', { error_message: 'нет связи с сервером' }); };
   xhr.ontimeout = function () { _mplcProjFinish('error', { error_message: 'таймаут загрузки' }); };
@@ -2204,7 +2211,7 @@ function deployMplcProject() {
     }
     // Accepted — the deploy runs in the background; poll for its stages.
     _mplcProjSetStatus('Проверка файла…', 'is-warn');
-    _mplcProjSetProgress(_mplcProjStagePct('validate'), 'Проверка файла…');
+    _mplcProjSetProgress(_mplcProjStagePct('validate'), '0%');
     _mplcProjStartPolling();
   };
   xhr.send(fd);
@@ -2223,7 +2230,9 @@ function _mplcProjApplyStatusUI(j) {
   }
   var pct = _mplcProjStagePct(stage);
   if (j.result === 'error') pct = null;
-  _mplcProjSetProgress(pct, j.result === 'error' ? '' : txt);
+  // Stage text only in status; bar label is percent (no duplicate stage string).
+  var progLab = (pct != null && Number.isFinite(Number(pct))) ? (Math.round(Number(pct)) + '%') : '';
+  _mplcProjSetProgress(pct, j.result === 'error' ? '' : progLab);
 }
 
 function _mplcProjPollOnce() {
@@ -2265,7 +2274,7 @@ function _mplcProjFinish(result, j) {
   if (pick) pick.disabled = false;
   if (result === 'success') {
     _mplcProjSetStatus('Проект развёрнут', 'is-ok');
-    _mplcProjSetProgress(100, 'Проект развёрнут');
+    _mplcProjSetProgress(100, '100%');
     toast('Проект MPLC развёрнут', 'success');
     _mplcProjFile = null;
     cancelMplcProjectPick();
@@ -2420,7 +2429,11 @@ function _factoryResetPollOnce() {
         var txt = _factoryResetStageText(j);
         var kind = (stage === 'done') ? 'is-ok' : (stage === 'error' || stage === 'rolled_back' ? 'is-err' : 'is-warn');
         if (txt) _factoryResetSetStatus(txt, kind);
-        _factoryResetSetProgress(j.progress_pct, txt);
+        var frPct = j.progress_pct;
+        var frLab = (frPct != null && Number.isFinite(Number(frPct)))
+          ? (Math.max(0, Math.min(100, Math.round(Number(frPct)))) + '%')
+          : '';
+        _factoryResetSetProgress(frPct, frLab);
       }
       if (op === 'factory_reset' && stage === 'done') {
         _factoryResetPollInFlight = false;

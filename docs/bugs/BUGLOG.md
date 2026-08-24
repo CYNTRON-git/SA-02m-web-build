@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-24 13:51] branch: 1.0.6.8
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `www/network_config/static/js/app/status.js`, `www/network_config/static/css/main.css`
+**Тип:** Некорректное поведение / UX
+**Описание:** (1) Обновление 1.0.6.1→1.0.6.7 зависало на «Проверка сервисов» после долгого apply. (2) В виджете Обновление этап дублировался над и под прогресс-баром; подписи «Текущая версия» / «Доступная версия» переносились на две строки из‑за узкой колонки dt.
+**Причина:** Бесконечный `systemctl restart fcgiwrap` при поллинге CGI; per-file `txn_patch`; `_webUpdSetStatus` и `_webUpdSetProgress` получали один и тот же текст; `grid-template-columns: 5.75rem` не вмещал длинные dt.
+**Исправление:** Таймауты/`_systemctl_bounded`, прогресс apply каждые 10 файлов, recover на verifying с полным deploy завершает health. Под баром только `%`; dt/dd в одну строку (`max-content` + `nowrap`).
+
+---
+
 ## [2026-08-24 12:19] branch: 1.0.6.7
 
 **Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/index.html`, `www/network_config/static/js/i18n.js`

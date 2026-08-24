@@ -1758,8 +1758,8 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 }
 .system-manage-grid .web-upd-meta > div {
   display: grid;
-  grid-template-columns: 5.75rem minmax(0, 1fr);
-  gap: 6px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
   line-height: 1.25;
 }
@@ -1769,11 +1769,15 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   font-size: .8rem;
   font-weight: 500;
 }
-.system-manage-grid .web-upd-meta dt { color: var(--text-sec); }
+.system-manage-grid .web-upd-meta dt {
+  color: var(--text-sec);
+  white-space: nowrap;
+}
 .system-manage-grid .web-upd-meta dd {
   color: var(--text);
   word-break: normal;
   overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 /* Поля внутри плиток */
@@ -3614,14 +3618,27 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   font-size: .78rem;
   color: var(--text-sec);
 }
-.web-upd-meta > div { display: grid; grid-template-columns: 7.5rem 1fr; gap: 8px; align-items: baseline; }
+.web-upd-meta > div {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
 .web-upd-meta .web-upd-meta-sub dt,
 .web-upd-meta .web-upd-meta-sub dd {
   font-size: .78rem;
   color: var(--text-dim);
 }
-.web-upd-meta dt { margin: 0; font-weight: 500; color: var(--text-sec); }
-.web-upd-meta dd { margin: 0; word-break: break-all; }
+.web-upd-meta dt {
+  margin: 0;
+  font-weight: 500;
+  color: var(--text-sec);
+  white-space: nowrap;
+}
+.web-upd-meta dd {
+  margin: 0;
+  word-break: break-all;
+}
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 /* ═══════════════════════════════ MQTT TAB STYLES ══════════════════════════ */
