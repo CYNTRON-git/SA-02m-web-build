@@ -1521,8 +1521,23 @@ function _webUpdStageText(j) {
   var legacy = _webUpdLegacyStatus(j);
   if (legacy === 'running') return 'Загрузка и установка обновления…';
   if (legacy === 'done') return WEB_UPD_STAGE_UI.done;
-  if (legacy === 'error') return 'Ошибка обновления. Проверьте лог ниже.';
+  if (legacy === 'error') return 'Ошибка обновления. См. Журнал событий.';
   return '';
+}
+
+/** Route update debug output to the shared Event Log panel (not the narrow update tile). */
+function _webUpdShowLog(log) {
+  if (log == null || log === '') return;
+  var box = document.getElementById('log-box');
+  if (!box) return;
+  box.classList.remove('log-box-ssh-debug');
+  var text = String(log);
+  if (typeof renderLogText === 'function') {
+    renderLogText(box, text);
+  } else {
+    box.textContent = text;
+    box.scrollTop = box.scrollHeight;
+  }
 }
 
 function _webUpdIsTerminal(j) {
@@ -1746,6 +1761,7 @@ function applyOfflineUpdate() {
   _webUpdTxnActive = true;
   _webUpdSetStatus('Создание резервной копии…', 'is-warn');
   _webUpdSetProgress(0, 'Создание резервной копии…');
+  _webUpdShowLog('=== Обновление ===\nСоздание резервной копии…');
 
   fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
     method: 'POST',
@@ -1843,12 +1859,11 @@ function downloadWebBackup(forFactoryReset) {
 function applyWebUpdate() {
   const applyBtn = document.getElementById('web-upd-apply-btn');
   const checkBtn = document.getElementById('web-upd-check-btn');
-  const logEl = document.getElementById('web-upd-log');
   if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = uiT('Применяется'); }
   if (checkBtn) checkBtn.disabled = true;
-  if (logEl) { logEl.textContent = ''; logEl.hidden = false; }
   _webUpdTxnActive = true;
   _webUpdSetStatus('Загрузка и установка обновления…', 'is-warn');
+  _webUpdShowLog('=== Обновление ===\nОбновление запущено…');
 
   fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
     method: 'POST',
@@ -1870,11 +1885,7 @@ function applyWebUpdate() {
 }
 
 function _webUpdApplyTxnUI(j) {
-  var logEl = document.getElementById('web-upd-log');
-  if (logEl && j.log) {
-    logEl.textContent = j.log;
-    logEl.hidden = false;
-  }
+  if (j && j.log) _webUpdShowLog(j.log);
   var txt = _webUpdStageText(j);
   var stage = String(j.stage || '');
   var kind = 'is-warn';
@@ -1949,7 +1960,6 @@ function _webUpdFinish(status, log) {
   var checkBtn = document.getElementById('web-upd-check-btn');
   var fileApply = document.getElementById('web-upd-file-apply-btn');
   var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
-  var logEl = document.getElementById('web-upd-log');
   _webUpdTxnActive = false;
   if (_webUpdPollTimer) { clearTimeout(_webUpdPollTimer); _webUpdPollTimer = null; }
   _webUpdPollInFlight = false;
@@ -1957,7 +1967,7 @@ function _webUpdFinish(status, log) {
   if (cancelBtn) { cancelBtn.hidden = true; cancelBtn.disabled = false; }
   if (fileApply) fileApply.disabled = !_webUpdInspect;
   setOfflineUpdateEnabled(_webUpdOfflineReady);
-  if (logEl && log) { logEl.textContent = log; logEl.hidden = false; }
+  if (log) _webUpdShowLog(log);
   if (status === 'done') {
     _webUpdSetStatus(WEB_UPD_STAGE_UI.done, 'is-ok');
     _webUpdSetProgress(100, WEB_UPD_STAGE_UI.done);
@@ -1965,7 +1975,7 @@ function _webUpdFinish(status, log) {
     toast('Обновление применено успешно', 'success');
     setTimeout(function () { location.reload(); }, 5000);
   } else {
-    _webUpdSetStatus(log ? ('Ошибка: ' + log) : 'Ошибка обновления. Проверьте лог ниже.', 'is-err');
+    _webUpdSetStatus('Ошибка обновления. См. Журнал событий.', 'is-err');
     _webUpdSetProgress(null, '');
     if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = uiT('Применить'); }
     toast('Ошибка обновления', 'error');

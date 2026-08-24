@@ -1030,6 +1030,7 @@
     [/^Обновление применено\. Страница перезагрузится через 5 секунд…$/u, 'Update applied. The page will reload in 5 seconds...'],
     [/^Обновление применено успешно$/u, 'Update applied successfully'],
     [/^Ошибка обновления\. Проверьте лог ниже\.$/u, 'Update failed. Check the log below.'],
+    [/^Ошибка обновления\. См\. Журнал событий\.$/u, 'Update failed. See Event Log.'],
     [/^Ошибка обновления$/u, 'Update failed'],
     [/^Загрузка файла… (\d+)%$/u, 'Uploading file… $1%'],
     [/^Загрузка файла…$/u, 'Uploading file…'],
