@@ -818,6 +818,37 @@ atomic_install_file() {
     python3 -c 'import os,sys; d=os.path.dirname(sys.argv[1]) or "."; fd=os.open(d,os.O_RDONLY); os.fsync(fd); os.close(fd)' "$dst" 2>/dev/null || sync
 }
 
+# Deploy-skip predicate: returns 0 (unchanged) ONLY when $dst already matches the
+# manifest on ALL THREE axes — content, mode, and owner. Any mismatch, or any doubt
+# (stat/cmp failure, unparseable mode), returns 1 (changed) so the caller deploys:
+# fail-safe to deploying, never to a silently stale file. Caller ensures $dst exists
+# (a missing dst is the create path, never a skip). Replaces the cp -a + install +
+# 2x fsync + journal spawn a re-install of an identical file would otherwise cost.
+is_unchanged() {
+    local src=$1 dst=$2 mode=$3 owner=$4
+    # Content — byte-identical (cmp is coreutils; present on device and in sandbox).
+    cmp -s "$src" "$dst" || return 1
+    # Mode — the manifest carries 4-digit "0755"/"0644"; stat '%a' returns "755"/
+    # "644" (no leading zero). Validate both as pure octal, then compare numerically
+    # so 0644 == 644 — a naive string == would treat every file as changed (skip
+    # nothing). A right-content wrong-mode file (0644-vs-0755) mismatches here and is
+    # re-deployed with the mode corrected.
+    local live_mode
+    live_mode=$(stat -c '%a' "$dst" 2>/dev/null) || return 1
+    case "$live_mode" in ''|*[!0-7]*) return 1 ;; esac
+    case "$mode"      in ''|*[!0-7]*) return 1 ;; esac
+    [ "$((8#$live_mode))" -eq "$((8#$mode))" ] || return 1
+    # Owner — only when the manifest owner is populated (matches the runner's own
+    # owner-optional install fallback in atomic_install_file). Empty owner ⇒
+    # content+mode only.
+    if [ -n "$owner" ]; then
+        local live_owner
+        live_owner=$(stat -c '%U:%G' "$dst" 2>/dev/null) || return 1
+        [ "$live_owner" = "$owner" ] || return 1
+    fi
+    return 0
+}
+
 apply_deploy_items() {
     local txn=$1
     local mf overlay total done item_json
@@ -840,17 +871,27 @@ apply_deploy_items() {
             return 1
         fi
         bak=""
-        if [ -e "$dst" ]; then
-            bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$dst" | sha256sum | awk '{print $1}')"
-            mkdir -p "$(dirname "$bak")"
-            cp -a "$dst" "$bak"
-            journal_append "$txn" "{\"op\":\"replace\",\"dst\":\"$dst\",\"backup\":\"$bak\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
+        if [ -e "$dst" ] && is_unchanged "$src_abs" "$dst" "$mode" "$owner"; then
+            # Already installed identically (content + mode + owner) — skip the
+            # backup, the journal line, AND the install entirely. Suppressing all
+            # three together keeps content ⇄ backup ⇄ journal consistent, so a later
+            # rollback never tries to restore a backup that was never taken. Still
+            # counted as done below so files_done reaches files_total (the recover-
+            # verify invariant); the log line keeps an all-skipped run visible.
+            log "apply: skip unchanged $dst"
         else
-            journal_append "$txn" "{\"op\":\"create\",\"dst\":\"$dst\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
-        fi
-        if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
-            log "ERROR: atomic install failed: $dst"
-            return 1
+            if [ -e "$dst" ]; then
+                bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$dst" | sha256sum | awk '{print $1}')"
+                mkdir -p "$(dirname "$bak")"
+                cp -a "$dst" "$bak"
+                journal_append "$txn" "{\"op\":\"replace\",\"dst\":\"$dst\",\"backup\":\"$bak\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
+            else
+                journal_append "$txn" "{\"op\":\"create\",\"dst\":\"$dst\",\"mode\":\"$mode\",\"owner\":\"$owner\"}"
+            fi
+            if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
+                log "ERROR: atomic install failed: $dst"
+                return 1
+            fi
         fi
         done=$((done + 1))
         local pct=0

@@ -281,6 +281,15 @@
       "init": "bash + tar + coreutils stat/install/find (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-recover-rollback.sh"
     },
     {
+      "id": "update-deploy-skip",
+      "checks": "Functional RED/GREEN regression for the deploy-skip guard in the update runner (etc/sa02m-update-runner.sh apply_deploy_items + its is_unchanged predicate) — a web update re-installed ALL ~344 deploy files every run (cp -a backup + install-to-tmp + 2x fsync + a python3 journal spawn PER FILE) even when a patch release changed only a handful (Operator: 'обновление ставит все 300+ файлов заново, даже если изменились единицы'). Extracts the SHIPPED is_unchanged / apply_deploy_items / journal_append / atomic_install_file / rollback_from_journal (literal-prefix awk slices, portable across mawk/gawk), stubs only txn (file-backed, survives the deploy loop's subshell) / log / manifest_path, and runs a mixed deploy against a sandbox manifest whose owner axis is the test user's own id (non-root). Asserts: an identical file (content AND mode AND owner) is SKIPPED — no journal line, no backup, dst inode+mtime untouched; a content-changed file still deploys with its replace journal line; a right-content wrong-mode file (0644-vs-0755) is RE-DEPLOYED (the over-skip tripwire); files_done==files_total with skips counted (the recover-verify invariant); and rollback restores the changed file while leaving the skipped file intact (the 1.0.6.2 recovery contract). No root, no device. Non-vacuous: a broken extraction FAILS; the guard-presence check keeps the drive-to-failure run (UPDATE_RUNNER_SRC=main) RED on the skip assertion while the changed-content/wrong-mode assertions stay the over-skip tripwires.",
+      "config": null,
+      "run": "bash scripts/dev/test-update-deploy-skip.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-deploy-skip.sh"],
+      "init": "bash + python3 + coreutils cmp/stat/install (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-deploy-skip.sh"
+    },
+    {
       "id": "imaging-samefile-guard",
       "checks": "Static gate for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate.",
       "config": null,
