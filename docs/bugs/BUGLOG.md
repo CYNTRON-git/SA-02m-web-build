@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-24 12:19] branch: 1.0.6.7
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/index.html`, `www/network_config/static/js/i18n.js`
+**Тип:** Некорректное поведение / UX
+**Описание:** При обновлении в «Управление → Обновление» отладочный лог (`j.log`) выводился в узкий `<pre id="web-upd-log">` внутри плитки обновления — длинные строки не помещались.
+**Причина:** Отдельный блок лога внутри узкой карточки вместо общего «Журнал событий» (`#log-box`).
+**Исправление:** Удалён `#web-upd-log`; вывод через `_webUpdShowLog` → `#log-box` (`renderLogText`). В плитке остаются только краткий статус и прогресс; при ошибке — «См. Журнал событий».
+
+---
+
 ## [2026-08-21 00:00] branch: 1.0.6.6
 
 **Файл(ы):** `usr/local/sbin/sa02m-{dns-ensure,wait-carrier,eth-coldboot}.sh`, `etc/fix-eth.sh`, `etc/systemd/system/{sa02m-dns-ensure.service,ifup@.service.d,networking.service.d}`, `scripts/02-network.sh`, `etc/sa02m_network.conf`
