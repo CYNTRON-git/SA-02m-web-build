@@ -364,6 +364,7 @@ def map_dst(rel: str):
                 "sa02m-cpu-profile.sh", "sa02m-web-backup.sh",
                 "sa02m-restore-backup.sh", "sa02m-update-runner.sh",
                 "sa02m-update-inspect.sh", "sa02m-factory-reset-runner.sh",
+                "sa02m-iface-conf-write.sh", "sa02m-usb-power.sh",
             ):
                 if "runner" in name or "inspect" in name or "factory-reset" in name:
                     return "/usr/local/libexec/" + name.replace(".sh", "")
@@ -849,6 +850,26 @@ is_unchanged() {
     return 0
 }
 
+# B1 deploy-gap: remove legacy sudoers + extension-less OTA helper twins after
+# the manifest files land. Allow-list only — never glob /etc/sudoers.d/*.
+cleanup_b1_deploy_artifacts() {
+    local _name _path _p
+    for _name in www-data sa02m-www.fragment; do
+        _path="/etc/sudoers.d/$_name"
+        if [ -f "$_path" ]; then
+            rm -f "$_path" && log "cleanup: removed obsolete sudoers $_path"
+        fi
+    done
+    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power; do
+        if [ -f "$_p" ] && [ ! -L "$_p" ]; then
+            rm -f "$_p" && log "cleanup: removed extension-less B1 helper twin $_p"
+        fi
+    done
+    if command -v visudo >/dev/null 2>&1; then
+        visudo -c >/dev/null 2>&1 || log "WARN: visudo -c after B1 cleanup"
+    fi
+}
+
 apply_deploy_items() {
     local txn=$1
     local mf overlay total done item_json
@@ -1240,6 +1261,7 @@ cmd_apply() {
         log "ERROR [E_APPLY]: deploy failed (rolled back)"
         exit 1
     fi
+    cleanup_b1_deploy_artifacts
     if ! apply_deletes "$txn"; then
         rollback_from_journal "$txn"
         log "ERROR [E_APPLY]: delete failed (rolled back)"

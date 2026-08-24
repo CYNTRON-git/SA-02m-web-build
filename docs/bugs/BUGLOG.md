@@ -5,7 +5,15 @@
 
 ---
 
-## [2026-08-24 13:51] branch: 1.0.6.8
+## [2026-08-24 19:39] branch: 1.0.6.11
+
+**Файл(ы):** `scripts/lib.sh`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-deploy-map.json`
+**Тип:** Логическая ошибка / Безопасность (deploy-слой B1)
+**Описание:** На OTA/обновлённых платах 1.0.6.10 не закрывал эскалацию web→root: legacy `/etc/sudoers.d/www-data` и `sa02m-www.fragment` сохранялись; B1-хелперы деплоились без `.sh`, sudoers ссылался на `.sh`.
+**Причина:** Установщик/OTA перезаписывали только `sa02m-www`, но не удаляли старые drop-in по другим именам; `map_dst` в runner срезал `.sh` у новых хелперов.
+**Исправление:** `sa02m_cleanup_b1_deploy_artifacts()` (allow-list legacy sudoers + twins без `.sh`); вызов из installer/www-only/runner; `map_dst` и offline-map сохраняют `.sh`; gate в sudoers-pin-contract §8.
+
+---
 
 **Файл(ы):** `etc/sa02m-update-runner.sh`, `www/network_config/static/js/app/status.js`, `www/network_config/static/css/main.css`
 **Тип:** Некорректное поведение / UX

@@ -5,6 +5,26 @@
 
 ---
 
+## 1.0.6.11 - Безопасность: B1 deploy-gap — legacy sudoers и OTA-хелперы (август 2026)
+
+### Безопасность (аудит B1, deploy-слой)
+
+- **1.0.6.10 не закрывал эскалацию на OTA/обновлённых платах.** Старый
+  `/etc/sudoers.d/www-data` (сырой `tee`/`ifup`/`reboot`) и `sa02m-www.fragment`
+  не удалялись; OTA клала B1-хелперы без `.sh`, тогда как sudoers/CGI ссылаются
+  на пути с `.sh`.
+- **Как исправлено.**
+  - `scripts/lib.sh`: `sa02m_cleanup_b1_deploy_artifacts()` — allow-list удаление
+    `www-data`, `sa02m-www.fragment` + extension-less twins хелперов.
+  - `scripts/03-webserver.sh`, `scripts/update-www-only.sh`: вызов cleanup после
+    установки `sa02m-www`.
+  - `etc/sa02m-update-runner.sh`: `map_dst` сохраняет `.sh` для B1-хелперов;
+    cleanup после deploy.
+  - `scripts/offline-update-deploy-map.json`: явные пути `/usr/local/sbin/*.sh`.
+  - `.ai-dev/quality/checks/sudoers-pin-contract.sh`: секция 8 (deploy-gap gate).
+
+---
+
 ## 1.0.6.10 - Безопасность: закрыта возможность стать root через веб-панель без пароля root (август 2026)
 
 ### Безопасность (аудит B1)

@@ -189,6 +189,16 @@
       "mode": "0755",
       "owner": "root:root"
     },
+    "etc/sa02m-iface-conf-write.sh": {
+      "dst": "/usr/local/sbin/sa02m-iface-conf-write.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/sa02m-usb-power.sh": {
+      "dst": "/usr/local/sbin/sa02m-usb-power.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
     "etc/sa02m-kernel-select.sh": {
       "dst": "/usr/local/sbin/sa02m-kernel-select.sh",
       "mode": "0755",
