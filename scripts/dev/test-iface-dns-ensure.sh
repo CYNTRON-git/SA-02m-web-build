@@ -767,7 +767,7 @@ enable_has() {  # is sa02m-dns-ensure.service inside $1's "enable": [ ... ] bloc
       | grep -q '"sa02m-dns-ensure.service"'
 }
 if enable_has "$runner" && enable_has "$packer" \
-   && grep -Fq 'systemctl enable "$u" 2>/dev/null || true' "$runner"; then
+   && grep -Eq '_systemctl_bounded [0-9]+ enable "\$u" \|\| true|systemctl enable "\$u" 2>/dev/null \|\| true' "$runner"; then
     ok "wiring: the belt unit is in services.enable in BOTH generators, and the enable loop cannot fail the apply"
 else
     bad "wiring: sa02m-dns-ensure.service missing from a manifest enable list or the enable loop lost its || true"
