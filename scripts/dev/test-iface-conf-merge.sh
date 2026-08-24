@@ -9,10 +9,12 @@
 # half of that contract's gate (the static half is
 # .ai-dev/quality/checks/iface-naming-contract.sh).
 #
-# Method: extract the SHIPPED functions from apply.cgi and retarget only the two
-# absolute roots (/sys/class/net, /var/log/sa02m_install.log) into a scratch
-# tree, so the logic under test is byte-for-byte what runs on the device. `sudo`
-# and the lib_net_iface helpers are stubbed; nothing touches the real system.
+# Method: extract the SHIPPED functions from apply.cgi and retarget the two
+# absolute roots (/sys/class/net, /var/log/sa02m_install.log) plus the pinned
+# root-write helper (sa02m-iface-conf-write.sh, audit B1) into a scratch tree, so
+# the logic under test is byte-for-byte what runs on the device. `sudo` (incl.
+# its `-n` flag), the pinned write helper and the lib_net_iface helpers are
+# stubbed; nothing touches the real system.
 #
 # Run: bash scripts/dev/test-iface-conf-merge.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -30,13 +32,23 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 sed -n '/^PRESERVE_MAX_LINES=/,/^timeout_run() {/p' "$APPLY" \
   | sed '$d' \
-  | sed "s#/sys/class/net/#$ND/#g; s#/var/log/sa02m_install.log#$T/install.log#g" > "$T/fn.sh"
+  | sed "s#/sys/class/net/#$ND/#g; s#/var/log/sa02m_install.log#$T/install.log#g; s#/usr/local/sbin/sa02m-iface-conf-write.sh#iface_conf_write_stub#g" > "$T/fn.sh"
 if ! grep -q '^write_lan_pair()' "$T/fn.sh"; then
     echo "FAIL  could not extract the merge functions from $APPLY (did the section markers move?)"
     exit 1
 fi
 
-sudo() { "$@"; }
+# sudo shim eats the `-n` flag (the pinned-helper call carries it); the pinned
+# root-write helper is stubbed to a plain stdin->dest write. This isolates the
+# MERGE layer (ordering / bounds / dedup / sibling rule) under test here; the
+# helper's OWN guards — the dest-path allow-list, symlink refusal, and the
+# CONTENT allow-list that rejects a planted root-exec hook (audit B1 round 2) —
+# are exercised end-to-end by .ai-dev/quality/checks/sudoers-pin-contract.sh.
+# (So a synthetic foreign line like `post-up KEEPME` is preserved by the merge
+# here but WOULD be rejected by the real content validator; real confs carry only
+# the allow-listed klogic / default-route hooks.)
+sudo() { [ "${1:-}" = "-n" ] && shift; "$@"; }
+iface_conf_write_stub() { cat > "$1"; }
 lan_iface_conf() { printf '%s/%s.conf' "$CD" "$1"; }
 lan_iface_sibling() {
     case "$1" in eth0) printf end0 ;; end0) printf eth0 ;; eth1) printf end1 ;; end1) printf eth1 ;; *) printf '' ;; esac

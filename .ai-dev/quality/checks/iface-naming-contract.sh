@@ -22,6 +22,7 @@ pass() { printf 'iface-naming-contract: ok    %s\n' "$*"; }
 # too. Widening it is a deliberate one-line change, reviewed as such.
 LEDGER="etc/sa02m-conf-rm.sh
 etc/sa02m-iface-canonical.sh
+etc/sa02m-iface-conf-write.sh
 etc/sa02m_network.conf
 install.sh
 scripts/02-network.sh
@@ -92,20 +93,30 @@ if grep -q 'sudo rm' <<<"$apply_code"; then
 else
     pass "apply.cgi carries no raw 'sudo rm'"
 fi
-# The sudoers GRANT line sits alone on its continuation line (leading spaces,
-# bare path, EOL) — the installer's `install -m 755 … sa02m-conf-rm.sh` line
-# does NOT match this shape, so removing only the grant fails the gate
-# (mutation-verified in the 1.0.5.54 round-2 review).
-if grep -q '^[[:space:]]*/usr/local/sbin/sa02m-conf-rm\.sh$' scripts/03-webserver.sh; then
-    pass "sudoers grant line for the pinned conf-rm helper present"
+# The sudoers GRANT for the pinned conf-rm helper now lives in the single
+# committed drop-in (audit B1 collapsed the three install paths to one file —
+# the escalation-close gate `sudoers-pin-contract` owns the full sudoers proof).
+if grep -q '/usr/local/sbin/sa02m-conf-rm\.sh' etc/sudoers.d/sa02m-www; then
+    pass "sudoers grant for the pinned conf-rm helper present (etc/sudoers.d/sa02m-www)"
 else
-    fail "sudoers grant line for sa02m-conf-rm.sh missing from scripts/03-webserver.sh"
+    fail "sudoers grant for sa02m-conf-rm.sh missing from etc/sudoers.d/sa02m-www"
 fi
+# Conf writes now go through the pinned sa02m-iface-conf-write.sh (audit B1 —
+# www-data holds no raw `tee`). So apply.cgi carries ZERO `sudo tee`, and both
+# writers (write_iface_conf, conf_backup) route through the helper; a third,
+# unpinned writer would reopen the arbitrary-root-write hole the merge relies on
+# staying closed.
 tee_lines=$(printf '%s\n' "$apply_code" | grep -c 'sudo tee')
-if [ "$tee_lines" = "2" ]; then
-    pass "apply.cgi writes confs through exactly the two known writers (write_iface_conf, conf_backup)"
+if [ "$tee_lines" = "0" ]; then
+    pass "apply.cgi carries no raw 'sudo tee' (writes go through sa02m-iface-conf-write.sh)"
 else
-    fail "apply.cgi has $tee_lines 'sudo tee' sites, expected 2 (write_iface_conf + conf_backup). A third writer bypasses the preservation merge — route it through write_iface_conf or update this ledger."
+    fail "apply.cgi has $tee_lines raw 'sudo tee' sites, expected 0 — route every conf write through the pinned sa02m-iface-conf-write.sh (audit B1)."
+fi
+helper_writers=$(printf '%s\n' "$apply_code" | grep -c 'sa02m-iface-conf-write\.sh')
+if [ "$helper_writers" = "2" ]; then
+    pass "apply.cgi routes both writers (write_iface_conf, conf_backup) through the pinned helper"
+else
+    fail "apply.cgi calls the iface-conf-write helper $helper_writers times, expected 2 (write_iface_conf + conf_backup). A missing writer means a conf write bypasses the pin."
 fi
 
 # ── 4. systemd ordering + the per-device initialized gate (contract §1.0/§7) ──

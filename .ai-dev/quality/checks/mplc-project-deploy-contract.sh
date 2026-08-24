@@ -75,11 +75,13 @@ fi
 # ── 4. Sudoers: ONE pinned grant for the helper, no unit wildcard ──────────
 # The grant sits on its own continuation line: leading spaces, the pinned path,
 # a single trailing `*`, then either EOL or a `, \` continuation. No broader
-# wildcard on any unit name (the helper hard-codes mplc4).
-if grep -qE '^[[:space:]]*/usr/local/sbin/sa02m-mplc-project-deploy\.sh \*(,[[:space:]]*\\)?[[:space:]]*$' "$INSTALLER"; then
+# wildcard on any unit name (the helper hard-codes mplc4). Audit B1 moved the
+# grant from the 03-webserver heredoc into the single committed drop-in.
+SUDOERS=etc/sudoers.d/sa02m-www
+if grep -qE '^[[:space:]]*/usr/local/sbin/sa02m-mplc-project-deploy\.sh \*(,[[:space:]]*\\)?[[:space:]]*$' "$SUDOERS"; then
     pass "sudoers grants exactly the pinned helper path"
 else
-    fail "installer must grant /usr/local/sbin/sa02m-mplc-project-deploy.sh * (one pinned line)"
+    fail "the committed sudoers file must grant /usr/local/sbin/sa02m-mplc-project-deploy.sh * (one pinned line)"
 fi
 # The installer must install the helper and the Python module.
 if grep -q 'install -m 755 "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh"' "$INSTALLER" \
