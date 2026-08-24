@@ -251,83 +251,25 @@ if [ -f "$ETC_REPO/storage-mount.sh" ] && [ -f "$ETC_REPO/sa02m-set-storage-auto
     log OK "storage-mount обновлён (/usr/local/bin/storage-mount.sh)"
 fi
 
-if [ -f /etc/sudoers.d/sa02m-www ]; then
-    log INFO "Синхронизация sudoers для restart/reboot CGI"
-    if ! grep -q '/usr/bin/systemctl restart fix-eth.service' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/sbin/reboot, /usr/bin/systemctl reboot, /usr/bin/systemctl restart networking.service, /usr/bin/systemctl restart fix-eth.service
-SUDO
+# ── sudoers: install the single committed file WHOLESALE (audit B1) ─────────
+# This path used to APPEND-if-missing, which NEVER removed a stale grant — a
+# device installed with the old 03-webserver.sh kept the raw `tee`/`ifup`/`kill`
+# line forever, and a www-only update could never converge it. Installing the
+# one-home committed file wholesale (install -m 0440 + CRLF strip + visudo -cf,
+# via sa02m_install_sudoers) OVERWRITES the old file and removes the dangerous
+# grant by construction. Same file, same helpers, as 03-webserver.sh.
+log INFO "Синхронизация sudoers (установка единого файла sa02m-www)"
+sa02m_install_sudoers "$REPO_ETC/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
+# Pinned helpers referenced by that grant (the two new B1 helpers + the existing
+# rm/root-cmd pins).
+for _h in sa02m-iface-conf-write.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-web-root-cmd.sh; do
+    if [ -f "$REPO_ETC/$_h" ]; then
+        install -m 755 "$REPO_ETC/$_h" "/usr/local/sbin/$_h"
+        sed -i 's/\r$//' "/usr/local/sbin/$_h"
     fi
-    if ! grep -q '/usr/bin/gpioset\|/usr/sbin/gpioset' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/sbin/gpioset, /usr/bin/gpioset, /usr/sbin/gpioget, /usr/bin/gpioget
-SUDO
-    fi
-    if ! grep -q '/usr/bin/kill\|/bin/kill' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /bin/kill, /usr/bin/kill
-SUDO
-    fi
-    if ! grep -q '/usr/local/sbin/sa02m-web-update-check' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-check
-SUDO
-    fi
-    if ! grep -q '/usr/local/sbin/sa02m-web-update-apply' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-update-apply
-SUDO
-    fi
-    if ! grep -q 'systemctl start sa02m-update.service' /etc/sudoers.d/sa02m-www; then
-        cat >> /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start sa02m-update.service
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl stop sa02m-update.service
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl reset-failed sa02m-update.service
-SUDO
-    fi
-    if ! grep -q '/usr/local/libexec/sa02m-update-inspect' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/libexec/sa02m-update-inspect\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q '/usr/local/sbin/sa02m-web-backup.sh' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-backup.sh\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if [ -f "$REPO_ETC/sudoers.d/sa02m-www.fragment" ]; then
-        while IFS= read -r _line || [ -n "$_line" ]; do
-            case "$_line" in
-                ''|\#*) continue ;;
-            esac
-            if ! grep -Fqx "$_line" /etc/sudoers.d/sa02m-www 2>/dev/null; then
-                printf '%s\n' "$_line" >>/etc/sudoers.d/sa02m-www
-            fi
-        done <"$REPO_ETC/sudoers.d/sa02m-www.fragment"
-    fi
-    if ! grep -q '/usr/bin/date' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/bin/date\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q 'sa02m-set-storage-auto-format' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-set-storage-auto-format\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q 'sa02m-web-reboot' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-reboot.sh\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q 'sa02m-web-restart-services' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-web-restart-services.sh\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q 'sa02m-rs485-stats.sh' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-rs485-stats.sh\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if ! grep -q 'sa02m-web-root-cmd.sh' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-root-cmd.sh *\n' >> /etc/sudoers.d/sa02m-www
-    fi
-    if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
-        install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
-    fi
-    if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
-        install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
-        sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
-    fi
-    chmod 440 /etc/sudoers.d/sa02m-www
-    visudo -cf /etc/sudoers.d/sa02m-www >/dev/null
+done
+if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
+    install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
 fi
 
 # Cloud agent web trigger (pair/token) — needed for Management → Облако

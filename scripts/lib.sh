@@ -408,13 +408,40 @@ sa02m_harden_sudoers() {
     return 0
 }
 
-# Install a sudoers drop-in from repo <src> to <dst>, then harden it.
+# Install a sudoers drop-in from repo <src> to <dst>.
+# VALIDATE-then-ACTIVATE: a malformed drop-in breaks sudo globally, so never let
+# a file visudo rejects reach the live path. Validate a CRLF-stripped copy of the
+# source FIRST; only a clean file is installed (as the already-stripped, valid
+# copy). Where visudo/mktemp are unavailable, fall back to the prior
+# install-then-harden (the aggregate `visudo -c` at the end of install.sh is the
+# remaining net). A rejected source leaves the live $dst UNTOUCHED.
 sa02m_install_sudoers() {
     local src=$1 dst=$2
     if [ ! -f "$src" ]; then
         log WARN "sudoers-источник $src не найден — пропуск"
         return 0
     fi
+    if command -v visudo >/dev/null 2>&1; then
+        local _tmp
+        _tmp=$(mktemp 2>/dev/null) || _tmp=""
+        if [ -n "$_tmp" ]; then
+            sed 's/\r$//' "$src" > "$_tmp" 2>/dev/null
+            if ! visudo -cf "$_tmp" >/dev/null 2>&1; then
+                rm -f "$_tmp"
+                log WARN "sudoers $dst НЕ установлен: visudo отклонил источник $src (живой файл не тронут)"
+                return 0
+            fi
+            if install -m 0440 -o root -g root "$_tmp" "$dst" 2>>"$LOG_FILE"; then
+                rm -f "$_tmp"
+                log OK "sudoers $(basename "$dst") OK"
+                return 0
+            fi
+            rm -f "$_tmp"
+            log WARN "не удалось установить sudoers $dst из $src"
+            return 0
+        fi
+    fi
+    # Fallback (no visudo / no mktemp): prior install-then-harden behaviour.
     install -m 0440 -o root -g root "$src" "$dst" 2>>"$LOG_FILE" || {
         log WARN "не удалось установить sudoers $dst из $src"
         return 0

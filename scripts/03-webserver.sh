@@ -287,6 +287,17 @@ fi
 if [ -f "$ETC_DIR/sa02m-conf-rm.sh" ]; then
     install -m 755 "$ETC_DIR/sa02m-conf-rm.sh" /usr/local/sbin/sa02m-conf-rm.sh
 fi
+# Pinned root-write / GPIO helpers (audit B1): the only file-write and GPIO
+# capability www-data holds via sudoers — replaces the former raw tee/gpioset/
+# kill grants. CRLF-strip because the repo often transits Windows.
+if [ -f "$ETC_DIR/sa02m-iface-conf-write.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-iface-conf-write.sh" /usr/local/sbin/sa02m-iface-conf-write.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-iface-conf-write.sh
+fi
+if [ -f "$ETC_DIR/sa02m-usb-power.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-usb-power.sh
+fi
 if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
     install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
 fi
@@ -345,53 +356,16 @@ if getent group i2c >/dev/null 2>&1; then
     fi
 fi
 
-# ── sudoers for www-data ──────────────────────────────────────────────────
+# ── sudoers for www-data (single-home, installed wholesale) ────────────────
+# The COMPLETE pinned grant lives in ONE committed file (etc/sudoers.d/sa02m-www),
+# installed via sa02m_install_sudoers (install -m 0440 + CRLF strip + visudo -cf).
+# A wholesale install OVERWRITES any older drop-in, so an installer re-run
+# REMOVES a stale dangerous grant — audit B1 retired the former unpinned
+# tee/ifup/ifdown/kill/i2cset/gpioset that let a web session become root without
+# the root password. No heredoc, no append-if-missing, no .fragment (they drifted
+# and never removed a stale grant).
 log INFO "Настройка sudoers"
-cat > /etc/sudoers.d/sa02m-www <<'SUDO'
-www-data ALL=(ALL) NOPASSWD: /usr/bin/tee, /bin/date, /usr/bin/date, /sbin/hwclock, /usr/sbin/hwclock, \
-    /usr/bin/timedatectl, /sbin/ifdown, /sbin/ifup, /sbin/reboot, /usr/sbin/reboot, /usr/bin/reboot, \
-    /sbin/reboot -f, /usr/sbin/reboot -f, /usr/bin/reboot -f, \
-    /sbin/shutdown -r now, /usr/sbin/shutdown -r now, \
-    /usr/bin/systemctl reboot, \
-    /usr/bin/systemctl restart nginx, /usr/bin/systemctl restart fcgiwrap, \
-    /usr/bin/systemctl restart networking, /usr/bin/systemctl restart networking.service, \
-    /usr/bin/systemctl restart fix-eth.service, \
-    /usr/sbin/i2cget, /usr/bin/i2cget, \
-    /usr/sbin/i2cset, /usr/bin/i2cset, \
-    /usr/sbin/gpioset, /usr/bin/gpioset, \
-    /usr/sbin/gpioget, /usr/bin/gpioget, \
-    /bin/kill, /usr/bin/kill, \
-    /usr/local/sbin/sa02m-set-storage-auto-format, \
-    /usr/local/sbin/sa02m-web-update-check, \
-    /usr/local/sbin/sa02m-web-update-apply, \
-    /usr/bin/systemctl start sa02m-update.service, \
-    /usr/bin/systemctl stop sa02m-update.service, \
-    /usr/bin/systemctl reset-failed sa02m-update.service, \
-    /usr/bin/systemctl start sa02m-factory-reset.service, \
-    /usr/local/libexec/sa02m-update-inspect, \
-    /usr/local/sbin/sa02m-web-backup.sh, \
-    /usr/local/sbin/sa02m-web-reboot.sh, \
-    /usr/local/sbin/sa02m-web-restart-services.sh, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh list, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh start *, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh stop *, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh install *, \
-    /usr/local/sbin/sa02m-web-service-ctl.sh uninstall *, \
-    /usr/local/sbin/sa02m-rs485-stats.sh, \
-    /usr/local/sbin/sa02m-kernel-select.sh status --json, \
-    /usr/local/sbin/sa02m-kernel-select.sh set smp, \
-    /usr/local/sbin/sa02m-kernel-select.sh set rt, \
-    /usr/local/sbin/sa02m-kernel-select.sh refresh, \
-    /usr/local/sbin/sa02m-set-cpu-profile, \
-    /usr/local/sbin/sa02m-cpu-profile.sh status --json, \
-    /usr/local/sbin/sa02m-cpu-profile.sh apply, \
-    /usr/local/sbin/sa02m-web-root-cmd.sh *, \
-    /usr/local/sbin/sa02m-mplc-project-deploy.sh *, \
-    /usr/local/sbin/sa02m-conf-rm.sh
-SUDO
-# Single-home harden (0440 + CRLF strip + visudo). This main write previously
-# skipped the CRLF strip and did not WARN on a rejected file.
-sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
+sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
 
 # ── Учётные данные веб-интерфейса (/etc/sa02m_web.env) ─────────────────────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
@@ -496,7 +470,7 @@ fi
 #   etc/tmpfiles.d/sa02m-update.conf → /etc/tmpfiles.d/
 #   etc/sa02m-update/trusted-keys/*.pem → /etc/sa02m-update/trusted-keys/
 #   etc/sa02m-factory-defaults/    → /usr/share/sa02m-factory-defaults/
-#   etc/sudoers.d/sa02m-www.fragment → merged into /etc/sudoers.d/sa02m-www
+#   etc/sudoers.d/sa02m-www → /etc/sudoers.d/sa02m-www (single committed file, B1)
 REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR/..}"
 UPDATE_OPT_SRC="$REPO_ROOT/opt/sa02m-update"
 if [ -d "$UPDATE_OPT_SRC/lib" ]; then
@@ -591,18 +565,8 @@ for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory
         log OK "unit $_upd_unit"
     fi
 done
-if [ -f "$ETC_DIR/sudoers.d/sa02m-www.fragment" ] && [ -f /etc/sudoers.d/sa02m-www ]; then
-    # Merge pinned update lines not already present (idempotent).
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        case "$_line" in
-            ''|\#*) continue ;;
-        esac
-        if ! grep -Fqx "$_line" /etc/sudoers.d/sa02m-www 2>/dev/null; then
-            printf '%s\n' "$_line" >>/etc/sudoers.d/sa02m-www
-        fi
-    done <"$ETC_DIR/sudoers.d/sa02m-www.fragment"
-    sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
-fi
+# (The former sa02m-www.fragment merge is gone — its pinned update lines are now
+# part of the single committed etc/sudoers.d/sa02m-www installed above; audit B1.)
 
 if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
     # shellcheck disable=SC1091
@@ -709,10 +673,8 @@ if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
         log WARN "sa02m-repair-web-env завершился с ошибкой"
 fi
 
-grep -q 'sa02m-commit-web-env' /etc/sudoers.d/sa02m-www 2>/dev/null || {
-    printf '\nwww-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-commit-web-env\n' >> /etc/sudoers.d/sa02m-www
-    sa02m_harden_sudoers /etc/sudoers.d/sa02m-www
-}
+# (The sa02m-commit-web-env grant is part of the single committed
+# etc/sudoers.d/sa02m-www installed above — no post-hoc append; audit B1.)
 
 # ── fcgiwrap: prefork service вместо узкого socket-activation ──────────────
 if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
