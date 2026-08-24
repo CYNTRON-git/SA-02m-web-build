@@ -366,6 +366,7 @@ fi
 # and never removed a stale grant).
 log INFO "Настройка sudoers"
 sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
+sa02m_cleanup_b1_deploy_artifacts
 
 # ── Учётные данные веб-интерфейса (/etc/sa02m_web.env) ─────────────────────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then

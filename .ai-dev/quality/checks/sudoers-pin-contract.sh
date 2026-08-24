@@ -284,5 +284,39 @@ if [ -f "$IFACE_HELPER" ]; then
     fi
 fi
 
+# ── 8. B1 deploy-gap: legacy sudoers removal + OTA helper .sh paths ─────────
+grep -q 'sa02m_remove_obsolete_www_sudoers' scripts/lib.sh \
+    && pass "lib.sh defines sa02m_remove_obsolete_www_sudoers (allow-list legacy cleanup)" \
+    || fail "lib.sh missing sa02m_remove_obsolete_www_sudoers"
+grep -q 'sa02m_cleanup_b1_deploy_artifacts' scripts/03-webserver.sh \
+    && pass "03-webserver calls sa02m_cleanup_b1_deploy_artifacts after sudoers install" \
+    || fail "03-webserver does not call sa02m_cleanup_b1_deploy_artifacts"
+grep -q 'sa02m_cleanup_b1_deploy_artifacts' scripts/update-www-only.sh \
+    && pass "update-www-only calls sa02m_cleanup_b1_deploy_artifacts" \
+    || fail "update-www-only does not call sa02m_cleanup_b1_deploy_artifacts"
+grep -q 'cleanup_b1_deploy_artifacts' etc/sa02m-update-runner.sh \
+    && pass "update-runner cleans up B1 deploy artifacts after apply" \
+    || fail "update-runner missing cleanup_b1_deploy_artifacts"
+grep -q 'sa02m-iface-conf-write\.sh' etc/sa02m-update-runner.sh \
+    && pass "update-runner map_dst keeps .sh for sa02m-iface-conf-write.sh" \
+    || fail "update-runner map_dst does not keep .sh for sa02m-iface-conf-write.sh"
+grep -q 'sa02m-usb-power\.sh' etc/sa02m-update-runner.sh \
+    && pass "update-runner map_dst keeps .sh for sa02m-usb-power.sh" \
+    || fail "update-runner map_dst does not keep .sh for sa02m-usb-power.sh"
+python3 -c "
+import json
+m=json.load(open('scripts/offline-update-deploy-map.json',encoding='utf-8'))
+r=m.get('etc_helper_renames') or {}
+for k,d in [
+    ('etc/sa02m-iface-conf-write.sh','/usr/local/sbin/sa02m-iface-conf-write.sh'),
+    ('etc/sa02m-usb-power.sh','/usr/local/sbin/sa02m-usb-power.sh'),
+]:
+    if r.get(k,{}).get('dst')!=d:
+        raise SystemExit(k)
+print('ok')
+" >/dev/null 2>&1 \
+    && pass "offline deploy-map ships B1 helpers WITH .sh extension" \
+    || fail "offline deploy-map missing or wrong dst for B1 helpers (.sh required)"
+
 [ "$fails" = 0 ] || printf 'sudoers-pin-contract: %s check(s) failed — audit B1 escalation not fully closed\n' "$fails"
 exit "$fails"

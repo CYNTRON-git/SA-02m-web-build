@@ -268,6 +268,7 @@ for _h in sa02m-iface-conf-write.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-we
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
     fi
 done
+sa02m_cleanup_b1_deploy_artifacts
 if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
     install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
 fi

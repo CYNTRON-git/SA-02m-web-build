@@ -450,6 +450,42 @@ sa02m_install_sudoers() {
     return 0
 }
 
+# Remove known-obsolete www-data sudoers drop-ins superseded by etc/sudoers.d/sa02m-www
+# (audit B1 deploy-gap). Allow-list ONLY — never glob /etc/sudoers.d/*.
+sa02m_remove_obsolete_www_sudoers() {
+    local _name _path
+    for _name in www-data sa02m-www.fragment; do
+        _path="/etc/sudoers.d/$_name"
+        if [ -f "$_path" ]; then
+            rm -f "$_path" \
+                && log OK "удалён устаревший sudoers: $_path" \
+                || log WARN "не удалось удалить устаревший sudoers: $_path"
+        fi
+    done
+    if command -v visudo >/dev/null 2>&1; then
+        visudo -c >/dev/null 2>&1 \
+            || log WARN "visudo -c после удаления legacy sudoers — проверьте /etc/sudoers.d"
+    fi
+}
+
+# OTA map_dst used to strip .sh from the two B1 helpers; remove the twins so
+# sudoers (which grants the .sh path) and apply.cgi resolve the real helper.
+sa02m_remove_stale_b1_helper_twins() {
+    local _p
+    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power; do
+        if [ -f "$_p" ] && [ ! -L "$_p" ]; then
+            rm -f "$_p" \
+                && log OK "удалён helper без .sh (OTA twin): $_p" \
+                || log WARN "не удалось удалить helper без .sh: $_p"
+        fi
+    done
+}
+
+sa02m_cleanup_b1_deploy_artifacts() {
+    sa02m_remove_obsolete_www_sudoers
+    sa02m_remove_stale_b1_helper_twins
+}
+
 # ── Stack policy (third-party stacks) ───────────────────────────────────────
 # The ID set, /etc/sa02m_stacks.conf, live detection and the verdict table live
 # in ONE POSIX file shared with the web ctl; a missing file is a broken tree —
