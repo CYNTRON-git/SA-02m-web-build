@@ -133,7 +133,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/mplc-project-deploy-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mplc_project_deploy.cgi", "etc/sa02m-mplc-project-deploy.sh", "opt/sa02m-mplc/", "scripts/03-webserver.sh", ".ai-dev/quality/checks/mplc-project-deploy-contract.sh"],
+      "covers": ["www/network_config/cgi-bin/mplc_project_deploy.cgi", "etc/sa02m-mplc-project-deploy.sh", "opt/sa02m-mplc/", "scripts/03-webserver.sh", "etc/sudoers.d/sa02m-www", ".ai-dev/quality/checks/mplc-project-deploy-contract.sh"],
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
@@ -144,6 +144,15 @@
       "beat": "build",
       "covers": ["www/network_config/cgi-bin/", "etc/", "scripts/02-network.sh", "install.sh", ".ai-dev/quality/checks/iface-naming-contract.sh"],
       "init": "bash + grep (present everywhere the project builds)"
+    },
+    {
+      "id": "sudoers-pin-contract",
+      "checks": "The escalation-CLOSED gate for audit B1 (web session -> root without the root password): the single-home www-data sudoers grant (etc/sudoers.d/sa02m-www) lists ONLY pinned helpers and fixed argument vectors — no raw tee (arbitrary root file-write), no bare/wildcard ifup/ifdown (root exec via a pre-up stanza), no raw kill, no i2cset/i2cget/gpioset/gpioget at all (I2C via group i2c, GPIO via the pinned helper); apply.cgi carries 0 `sudo tee` and routes both writers through sa02m-iface-conf-write.sh; the two pinned helpers exist and validate (iface-conf-write: 4-name case allow-list + symlink refusal + CONTENT validation — a per-line ifupdown allow-list where exec/hook directives (pre-up/up/post-up/*-down/source/mapping) are permitted ONLY in the enumerated safe forms (klogic adjust hook, installer default-route hook) so www-data cannot plant a root-exec pre-up/post-up hook that `ifup` would run — the B1-round-2 COMPOSITION escalation; usb-power: closed verb set + gpioset-cmdline kill guard); lib_hw holds no raw sudo tee/gpioset/gpioget/kill and no dead sudo i2cset/i2cget fallback; the i2c drop-grant prerequisite lives in the SAME change (both installer paths keep `usermod -aG i2c www-data` and the i2c udev rule is present — drop-grant-without-group = beeper break); and the grant is single-home (both 03-webserver.sh and update-www-only.sh install the committed file wholesale via sa02m_install_sudoers, no heredoc, no append, the .fragment gone — so an installer re-run REMOVES a stale dangerous grant). Plus a sandboxed behavioural run of the SHIPPED iface-conf-write helper (allow-listed name + valid content written from stdin; a non-allow-listed dest refused exit 2; a symlink dest refused exit 2, target untouched; the COMPOSITION case — an allow-listed dest whose CONTENT plants `pre-up /bin/sh …` is REFUSED with no write (RED against a verbatim writer, GREEN against the content validator), a hostile post-up and an unknown keyword refused, while a legitimate static+klogic-hook conf and the installer default-route-hook conf still write) — the escalation-closed + function-preserved proof, sed-retargeted into a temp dir. Non-vacuous: a missing file, a gutted grant, or a dropped pin FAILS. RED against the pre-fix tree (no committed file, raw tee in the 03-webserver heredoc, sudo i2cset in lib_hw), GREEN after. Device-only residual (stated in the check header): the real `sudo -n tee -> refused` needs the sudoers loaded + real sudo; modelled here by the granted-Cmnd assertions, and `visudo -cf` runs on every install via sa02m_harden_sudoers.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/sudoers-pin-contract.sh",
+      "beat": "build",
+      "covers": ["etc/sudoers.d/sa02m-www", "etc/sa02m-iface-conf-write.sh", "etc/sa02m-usb-power.sh", "www/network_config/cgi-bin/apply.cgi", "www/network_config/cgi-bin/lib_hw.sh", "scripts/03-webserver.sh", "scripts/update-www-only.sh", "etc/udev/rules.d/50-sa02m-i2c2-unbind.rules", ".ai-dev/quality/checks/sudoers-pin-contract.sh"],
+      "init": "bash + grep + mktemp (present everywhere the project builds)"
     },
     {
       "id": "kernel-policy-contract",

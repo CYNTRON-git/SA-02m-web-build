@@ -82,12 +82,15 @@ conf_token_starts_stanza() {
     return 1
 }
 
-# Single-generation backup before any destructive write. `sudo tee` is the only
-# root-write primitive the panel holds (pinned in sudoers), so the backup goes
-# through it too. One home, no accumulating history.
+# Single-generation backup before any destructive write. The pinned helper
+# sa02m-iface-conf-write.sh is the only root file-write primitive the panel
+# holds (audit B1 — www-data no longer has raw `tee`); it allow-lists the four
+# LAN conf names and their .sa02m-bak targets, refuses symlinks, and
+# content-validates the live .conf (the backup targets are inert, never sourced,
+# so they skip the content check). One home, no accumulating history.
 conf_backup() {
     [ -f "$1" ] && [ -r "$1" ] || return 0
-    sudo tee "${1}.sa02m-bak" < "$1" >/dev/null 2>&1 || true
+    sudo -n /usr/local/sbin/sa02m-iface-conf-write.sh "${1}.sa02m-bak" < "$1" >/dev/null 2>&1 || true
 }
 
 # conf_scan_foreign <conf> <iface>
@@ -268,9 +271,13 @@ write_lan_pair() {
 # arbitrary preserved lines pass through it — a `\t` or `\n` inside a foreign
 # post-up would be rewritten. printf '%s\n' interprets nothing, and the output
 # is byte-identical to the old form for the managed lines.
+# The write goes through the pinned sa02m-iface-conf-write.sh (audit B1 — no raw
+# `tee`); it allow-lists the destination to the four LAN conf names AND
+# content-validates each line (rejecting any non-enumerated pre-up/post-up hook),
+# so a direct helper call cannot plant a root-exec hook `ifup` would run.
 write_iface_conf() {
     local conf="$1"; shift
-    printf '%s\n' "$@" | sudo tee "$conf" >/dev/null
+    printf '%s\n' "$@" | sudo -n /usr/local/sbin/sa02m-iface-conf-write.sh "$conf" >/dev/null
 }
 
 timeout_run() {

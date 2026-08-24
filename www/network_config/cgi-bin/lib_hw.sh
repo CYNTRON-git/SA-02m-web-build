@@ -123,7 +123,8 @@ sa02m_hw_usb_gpiod_chip() {
     printf '%s' "${SA02M_GPIO_USB_GPIOD_CHIP:-0}"
 }
 
-# Pid в /tmp (www-data не пишет в /run). Остановка процесса root — через sudo kill (см. sudoers).
+# Pid в /tmp (www-data не пишет в /run). Остановка процесса root — внутри
+# пиннованного хелпера sa02m-usb-power.sh (см. sudoers), не raw kill.
 sa02m_hw_usb_gpiod_pidfile() {
     local chip line
     chip=$(sa02m_hw_usb_gpiod_chip)
@@ -140,164 +141,55 @@ sa02m_hw_usb_gpiod_statefile() {
     printf '%s' "/tmp/sa02m-gpioset-usb-power-c${chip}-l${line}.state"
 }
 
-# Найти gpioset-процессы, удерживающие нашу линию (chip/offset=value).
-sa02m_hw_usb_gpiod_foreach_holder() {
-    local chip line _gs_pid _gs_cmd _gs_val
+# USB-power gpiod lifecycle is owned by the pinned root helper
+# /usr/local/sbin/sa02m-usb-power.sh (audit B1 — www-data no longer holds raw
+# gpioset/gpioget/kill or a raw `tee` to /tmp pid/state files). These wrappers
+# pass the config chip/line/value to the helper; the helper stops the old
+# holder, spawns a persistent one, and persists the pid/state files itself. The
+# /proc cmdline reads in the read path below stay unprivileged (any user).
+SA02M_USB_POWER_HELPER="${SA02M_USB_POWER_HELPER:-/usr/local/sbin/sa02m-usb-power.sh}"
+
+# Persist a verified live holder's pid/state (read-path optimisation). The
+# helper re-verifies the pid's /proc cmdline before writing, so a bad pid can
+# never be recorded.
+sa02m_hw_usb_gpiod_commit_holder() {
+    local holder_pid=$1 raw=$2 chip line
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
-    [[ "$line" =~ ^[0-9]+$ ]] || return 0
-    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
-        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
-        [[ "$_gs_cmd" =~ gpioset ]] || continue
-        [[ "$_gs_cmd" =~ (^|[[:space:]])${chip}[[:space:]] ]] || continue
-        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
-            _gs_val="${BASH_REMATCH[2]}"
-            "$1" "$_gs_pid" "$_gs_val"
-        fi
-    done
-}
-
-sa02m_hw_usb_gpiod_kill_one_holder() {
-    local pid=$1
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-    sudo -n kill -TERM "$pid" 2>/dev/null || sudo kill -TERM "$pid" 2>/dev/null || true
-}
-
-sa02m_hw_usb_gpiod_kill_holders() {
-    local pf
-    pf=$(sa02m_hw_usb_gpiod_pidfile)
-    sa02m_hw_usb_gpiod_foreach_holder sa02m_hw_usb_gpiod_kill_one_holder
-    sleep 0.12
-    sa02m_hw_usb_gpiod_foreach_holder sa02m_hw_usb_gpiod_force_kill_one_holder
-    sudo -n rm -f "$pf" 2>/dev/null || sudo rm -f "$pf" 2>/dev/null || rm -f "$pf" 2>/dev/null || true
-}
-
-sa02m_hw_usb_gpiod_force_kill_one_holder() {
-    local pid=$1
-    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-    sudo -n kill -KILL "$pid" 2>/dev/null || sudo kill -KILL "$pid" 2>/dev/null || true
+    [[ "$holder_pid" =~ ^[0-9]+$ ]] || return 1
+    sudo -n "$SA02M_USB_POWER_HELPER" gpiod-commit "$chip" "$line" "$holder_pid" "$raw" 2>/dev/null
 }
 
 sa02m_hw_usb_gpiod_stop_holder() {
-    sa02m_hw_usb_gpiod_kill_holders
+    local chip line
+    chip=$(sa02m_hw_usb_gpiod_chip)
+    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
+    sudo -n "$SA02M_USB_POWER_HELPER" gpiod-stop "$chip" "$line" 2>/dev/null || true
     sleep 0.2
 }
 
-sa02m_hw_usb_gpiod_find_holder_pid_for_raw() {
-    local want_raw=$1 chip line _gs_pid _gs_cmd _gs_val
-    chip=$(sa02m_hw_usb_gpiod_chip)
-    line=${SA02M_GPIO_USB_GPIOD_LINE:-}
-    [[ "$line" =~ ^[0-9]+$ ]] || return 1
-    for _gs_pid in $(pgrep -x gpioset 2>/dev/null); do
-        _gs_cmd=$(tr '\0' ' ' < "/proc/${_gs_pid}/cmdline" 2>/dev/null) || continue
-        [[ "$_gs_cmd" =~ gpioset ]] || continue
-        [[ "$_gs_cmd" =~ (^|[[:space:]])${chip}[[:space:]] ]] || continue
-        if [[ "$_gs_cmd" =~ (^|[[:space:]])${line}=([01])([[:space:]]|$) ]]; then
-            _gs_val="${BASH_REMATCH[2]}"
-            if [ "$_gs_val" = "$want_raw" ]; then
-                printf '%s' "$_gs_pid"
-                return 0
-            fi
-        fi
-    done
-    return 1
-}
-
-sa02m_hw_usb_gpiod_wait_holder() {
-    local want_raw=$1 tries=${2:-24} i holder_pid
-    [ "$want_raw" = "0" ] || [ "$want_raw" = "1" ] || return 1
-    for i in $(seq 1 "$tries"); do
-        if holder_pid=$(sa02m_hw_usb_gpiod_find_holder_pid_for_raw "$want_raw"); then
-            printf '%s' "$holder_pid"
-            return 0
-        fi
-        sleep 0.05
-    done
-    return 1
-}
-
-sa02m_hw_usb_gpiod_commit_holder() {
-    local holder_pid=$1 raw=$2 pf sf cmd
-    pf=$(sa02m_hw_usb_gpiod_pidfile)
-    sf=$(sa02m_hw_usb_gpiod_statefile)
-    [[ "$holder_pid" =~ ^[0-9]+$ ]] || return 1
-    cmd=$(tr '\0' ' ' < "/proc/${holder_pid}/cmdline" 2>/dev/null) || return 1
-    [[ "$cmd" =~ gpioset ]] || return 1
-    echo "$holder_pid" | sudo -n tee "$pf" >/dev/null 2>&1 \
-        || echo "$holder_pid" | sudo tee "$pf" >/dev/null 2>&1 \
-        || return 1
-    printf '%s' "$raw" | sudo -n tee "$sf" >/dev/null 2>&1 \
-        || printf '%s' "$raw" | sudo tee "$sf" >/dev/null 2>&1 \
-        || return 1
-    sudo -n chmod 644 "$pf" "$sf" 2>/dev/null || sudo chmod 644 "$pf" "$sf" 2>/dev/null || true
-    return 0
-}
-
-sa02m_hw_usb_gpiod_spawn_bg() {
-    if sudo -n "$@" </dev/null >/dev/null 2>&1 & then
-        return 0
-    fi
-    sudo "$@" </dev/null >/dev/null 2>&1 &
-}
-
+# The helper stops the old holder, spawns a persistent one (-m signal etc.) and
+# commits pid/state atomically — the caller only supplies the logical value.
 sa02m_hw_usb_gpiod_write() {
-    local logical=$1 chip line gs help pf sf raw holder_pid
+    local logical=$1 chip line raw
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || return 1
     [ "$logical" = "0" ] || [ "$logical" = "1" ] || return 1
     raw=$(sa02m_hw_usb_logical_to_raw_line "$logical")
     [ "$raw" = "0" ] || [ "$raw" = "1" ] || return 1
-    gs=$(command -v gpioset 2>/dev/null) || return 1
-    help=$("$gs" -h 2>&1 || true)
-
-    sa02m_hw_usb_gpiod_stop_holder
-    pf=$(sa02m_hw_usb_gpiod_pidfile)
-    sf=$(sa02m_hw_usb_gpiod_statefile)
-
-    _usb_gpiod_commit_after_spawn() {
-        holder_pid=$(sa02m_hw_usb_gpiod_wait_holder "$raw") || return 1
-        sa02m_hw_usb_gpiod_commit_holder "$holder_pid" "$raw"
-    }
-
-    if echo "$help" | grep -q -- '-m'; then
-        # Предпочитаем -m signal: держит линию до SIGTERM/SIGINT, не падает от EOF stdin.
-        # -m wait + /dev/null = немедленный выход, линия отпускается, питание гаснет.
-        if echo "$help" | grep -qi 'signal'; then
-            sa02m_hw_usb_gpiod_spawn_bg "$gs" -m signal "$chip" "${line}=${raw}" \
-                && _usb_gpiod_commit_after_spawn && return 0
-        fi
-        if echo "$help" | grep -qi 'wait'; then
-            sa02m_hw_usb_gpiod_spawn_bg "$gs" -m wait "$chip" "${line}=${raw}" \
-                && _usb_gpiod_commit_after_spawn && return 0
-        fi
-        if echo "$help" | grep -qi 'time'; then
-            if echo "$help" | grep -qE '\-\-sec|[[:space:]]-s[[:space:]]'; then
-                sa02m_hw_usb_gpiod_spawn_bg "$gs" -m time -s 604800 "$chip" "${line}=${raw}" \
-                    && _usb_gpiod_commit_after_spawn && return 0
-            fi
-            if echo "$help" | grep -qi usec; then
-                sa02m_hw_usb_gpiod_spawn_bg "$gs" -m time --usec=604800000000 "$chip" "${line}=${raw}" \
-                    && _usb_gpiod_commit_after_spawn && return 0
-            fi
-        fi
-        # Не использовать -m exit: процесс завершается — линия часто отпускается (USB гаснет).
-    fi
-    if sa02m_hw_usb_gpiod_spawn_bg "$gs" "$chip" "${line}=${raw}" \
-        && _usb_gpiod_commit_after_spawn; then
-        return 0
-    fi
-    return 1
+    command -v gpioset >/dev/null 2>&1 || return 1
+    sudo -n "$SA02M_USB_POWER_HELPER" gpiod-set "$chip" "$line" "$raw" 2>/dev/null
 }
 
 sa02m_hw_usb_gpiod_read() {
-    local chip line gg v pf sf pid
+    local chip line v pf sf pid
     chip=$(sa02m_hw_usb_gpiod_chip)
     line=${SA02M_GPIO_USB_GPIOD_LINE:-}
     [[ "$line" =~ ^[0-9]+$ ]] || { echo -1; return; }
-    gg=$(command -v gpioget 2>/dev/null) || { echo -1; return; }
-    v=$(sa02m_hw_timeout_run sudo -n "$gg" "$chip" "$line" 2>/dev/null) \
-        || v=$(sa02m_hw_timeout_run sudo "$gg" "$chip" "$line" 2>/dev/null) \
+    command -v gpioget >/dev/null 2>&1 || { echo -1; return; }
+    # Privileged read via the pinned helper (audit B1 — no raw `sudo gpioget`).
+    v=$(sa02m_hw_timeout_run sudo -n "$SA02M_USB_POWER_HELPER" gpiod-get "$chip" "$line" 2>/dev/null) \
         || v=""
     v=$(printf '%s' "$v" | tr -d '\r\n\t ')
     case "$v" in
@@ -509,6 +401,12 @@ sa02m_hw_i2c_run_tool() {
     local tool=$1
     shift
 
+    # I2C (PCA9536) goes DIRECT: www-data is in group `i2c` and /dev/i2c-* are
+    # group-rw, so the direct call below already succeeds. The former
+    # `sudo -n i2cset/i2cget` fallback was dead code, and its sudoers grant was
+    # an arbitrary-I2C escalation — both dropped in audit B1. The group
+    # membership + udev rule are the load-bearing prerequisite (installer keeps
+    # `usermod -aG i2c www-data`; see the sudoers-pin-contract gate).
     local bin rc
     bin=$(command -v "$tool" 2>/dev/null) || return "$SA02M_HW_RC_TOOL"
 
@@ -518,15 +416,6 @@ sa02m_hw_i2c_run_tool() {
         0) return 0 ;;
         124|137) return "$SA02M_HW_RC_TIMEOUT" ;;
     esac
-
-    if command -v sudo >/dev/null 2>&1; then
-        sa02m_hw_timeout_run sudo -n "$bin" "$@" 2>/dev/null
-        rc=$?
-        case "$rc" in
-            0) return 0 ;;
-            124|137) return "$SA02M_HW_RC_TIMEOUT" ;;
-        esac
-    fi
 
     return "$SA02M_HW_RC_IO"
 }
@@ -699,15 +588,12 @@ sa02m_hw_gpio_state() {
     fi
 }
 
+# Export + direction-out via the pinned helper (audit B1 — no raw `tee` to
+# sysfs). The helper validates the pin against the configured channel pins and
+# builds the /sys/class/gpio path itself.
 sa02m_hw_gpio_export_out() {
     local n=$1
-    if [ ! -d "/sys/class/gpio/gpio${n}" ]; then
-        echo "$n" | sudo tee /sys/class/gpio/export >/dev/null 2>&1 || true
-        sleep 0.08
-    fi
-    [ -d "/sys/class/gpio/gpio${n}" ] || return 1
-    echo out | sudo tee "/sys/class/gpio/gpio${n}/direction" >/dev/null 2>&1 || return 1
-    return 0
+    sudo -n "$SA02M_USB_POWER_HELPER" sysfs-export-out "$n" 2>/dev/null
 }
 
 sa02m_hw_gpio_write_channel() {
@@ -719,7 +605,7 @@ sa02m_hw_gpio_write_channel() {
     pin=$(sa02m_hw_gpio_pin "$channel") || return 1
     [[ "$pin" =~ ^[0-9]+$ ]] || return 1
     sa02m_hw_gpio_export_out "$pin" || return 1
-    echo "$logical" | sudo tee "/sys/class/gpio/gpio${pin}/value" >/dev/null 2>&1
+    sudo -n "$SA02M_USB_POWER_HELPER" sysfs-write "$pin" "$logical" 2>/dev/null
 }
 
 sa02m_hw_usb_reset_duration_sec() {
