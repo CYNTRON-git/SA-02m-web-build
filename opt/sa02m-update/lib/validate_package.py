@@ -58,6 +58,8 @@ _DST_PREFIX_RES = (
     re.compile(r"^/var/www/network_config/"),
     re.compile(r"^/usr/local/(sbin|lib|libexec)/"),
     re.compile(r"^/opt/sa02m-[a-z0-9-]+/"),
+    # Closed-set MPLC plugins (firmware/mplc4 → /opt/mplc4/<name>.so only).
+    re.compile(r"^/opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so$"),
     re.compile(r"^/etc/systemd/system/sa02m-"),
     re.compile(r"^/etc/nginx/"),
     re.compile(r"^/etc/tmpfiles\.d/"),

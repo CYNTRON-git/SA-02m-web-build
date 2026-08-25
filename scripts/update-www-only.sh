@@ -273,6 +273,31 @@ if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
     install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
 fi
 
+# MPLC RT plugins from firmware/mplc4 (authoritative ABI). Web OTA also maps
+# these via sa02m-update-runner; www-only must converge the same paths so a
+# field board updated only via update-www-only still gets the licence publisher.
+MPLC_PLUGIN_SRC="$REPO_ROOT/firmware/mplc4"
+if [ -d /opt/mplc4 ] && [ -d "$MPLC_PLUGIN_SRC" ]; then
+    _mplc_changed=0
+    for _so in mplc_cyntron.so mplc_protocol_fast_modbus.so; do
+        if [ -f "$MPLC_PLUGIN_SRC/$_so" ]; then
+            if [ ! -f "/opt/mplc4/$_so" ] || ! cmp -s "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so"; then
+                install -m 755 "$MPLC_PLUGIN_SRC/$_so" "/opt/mplc4/$_so" \
+                    && log OK "MPLC плагин $_so обновлён в /opt/mplc4/" \
+                    && _mplc_changed=1 \
+                    || log WARN "не удалось установить $_so в /opt/mplc4/"
+            fi
+        fi
+    done
+    if [ "$_mplc_changed" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet mplc4 2>/dev/null; then
+            systemctl restart mplc4 2>/dev/null \
+                && log OK "mplc4 перезапущен после обновления плагинов" \
+                || log WARN "mplc4 restart после плагинов не удался"
+        fi
+    fi
+fi
+
 # Cloud agent web trigger (pair/token) — needed for Management → Облако
 REPO_ETC="$SCRIPT_DIR/../etc"
 REPO_SBIN="$SCRIPT_DIR/../usr/local/sbin"

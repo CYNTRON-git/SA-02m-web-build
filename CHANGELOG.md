@@ -5,6 +5,26 @@
 
 ---
 
+## 1.0.6.12 - OTA: плагины MPLC (лицензия в веб) и правки sudoers (август 2026)
+
+### Обновление / MPLC
+
+- **Web OTA не обновлял `mplc_cyntron.so` / `mplc_protocol_fast_modbus.so`.**
+  Плагины ставились только при полной установке (`09-mplc.sh`). После OTA на
+  полевых платах оставался старый vendor `.so` (без публикации
+  `/run/sa02m-mplc-license.json`) — карточка «Лицензия» в веб не получала
+  актуальные данные от драйвера.
+- **Как исправлено.**
+  - `etc/sa02m-update-runner.sh`: closed-set `firmware/mplc4/*.so` → `/opt/mplc4/`,
+    restart `mplc4` после apply.
+  - Offline allowlist + deploy-map + `validate_package` / packer — те же пути.
+  - `scripts/update-www-only.sh`: установка плагинов + restart mplc4 при изменении.
+  - Gate `mplc-ota-deploy-contract`.
+- **Дополнительно:** после OTA `chmod 0440` для `sa02m-*` sudoers (иначе
+  `visudo -c` WARN при 0644).
+
+---
+
 ## 1.0.6.11 - Безопасность: B1 deploy-gap — legacy sudoers и OTA-хелперы (август 2026)
 
 ### Безопасность (аудит B1, deploy-слой)

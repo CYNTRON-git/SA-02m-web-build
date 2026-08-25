@@ -316,10 +316,17 @@ meta.mkdir(parents=True, exist_ok=True)
 
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|etc/systemd/system/sa02m-|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/sa02m-update/trusted-keys/)"
 )
+# Git-tracked MPLC plugins (firmware/mplc4/) → /opt/mplc4/<name>. Closed set —
+# never map arbitrary firmware/* into the live RT tree.
+MPLC_OTA_PLUGINS = frozenset({
+    "mplc_cyntron.so",
+    "mplc_protocol_fast_modbus.so",
+})
 
 def map_dst(rel: str):
     rel = rel.replace("\\", "/").lstrip("./")
@@ -340,8 +347,12 @@ def map_dst(rel: str):
         return "/" + rel
     if rel.startswith("etc/systemd/") and "sa02m-" in Path(rel).name:
         return "/etc/systemd/system/" + Path(rel).name
-    # Helpers etc/sa02m-*.sh → /usr/local/sbin or lib
     name = Path(rel).name
+    # MPLC RT plugins (licence publisher + Fast Modbus) — otherwise web OTA
+    # never refreshes them and the licence card falls back to a log scrape.
+    if rel.startswith("firmware/mplc4/") and name in MPLC_OTA_PLUGINS:
+        return "/opt/mplc4/" + name
+    # Helpers etc/sa02m-*.sh → /usr/local/sbin or lib
     if rel.startswith("etc/") and name.startswith("sa02m-"):
         if name.endswith("-lib.sh") or name in ("sa02m-web-build-lib.sh", "sa02m-web-auth-lib.sh"):
             return "/usr/local/lib/" + name
@@ -382,7 +393,10 @@ for p in overlay.rglob("*"):
     dst = map_dst(rel)
     if not dst or not DST_RE.match(dst):
         continue
-    mode = "0755" if (rel.endswith(".cgi") or rel.endswith(".sh") or "libexec" in dst) else "0644"
+    mode = "0755" if (
+        rel.endswith(".cgi") or rel.endswith(".sh") or "libexec" in dst
+        or (dst.startswith("/opt/mplc4/") and rel.endswith(".so"))
+    ) else "0644"
     owner = "www-data:www-data" if dst.startswith("/var/www/") else "root:root"
     deploy.append({"src": rel, "dst": dst, "mode": mode, "owner": owner})
 
@@ -433,6 +447,10 @@ manifest = {
             "sa02m-flasher",
             "sa02m-devices-api",
             "sa02m-devices-logger",
+            # Reload MPLC plugins after OTA (mplc_cyntron.so publishes licence).
+            # Masked/disabled units are skipped by the health loop; restart uses
+            # the same soft || true path as other optional services.
+            "mplc4",
         ],
         "health": {
             "http_url": "http://127.0.0.1:9999/login.html",
@@ -530,7 +548,8 @@ os.makedirs(meta, exist_ok=True)
 
 DST_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|etc/systemd/system/sa02m-|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
+    r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/sa02m-update/trusted-keys/)"
 )
@@ -863,6 +882,14 @@ cleanup_b1_deploy_artifacts() {
     for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" && log "cleanup: removed extension-less B1 helper twin $_p"
+        fi
+    done
+    # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
+    # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt; do
+        _path="/etc/sudoers.d/$_name"
+        if [ -f "$_path" ]; then
+            chmod 0440 "$_path" 2>/dev/null || true
         fi
     done
     if command -v visudo >/dev/null 2>&1; then
