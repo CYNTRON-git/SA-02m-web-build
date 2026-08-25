@@ -51,7 +51,8 @@ SIG_DOMAIN = b"SA02M-MANIFEST-V1\0"
 VERSION_RE = re.compile(r"^\d+(\.\d+){2,3}$")
 DST_PREFIX_RE = re.compile(
     r"^/(var/www/network_config/|usr/local/(sbin|lib|libexec)/|"
-    r"opt/sa02m-[a-z0-9-]+/|etc/systemd/system/sa02m-|"
+    r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so|"
+    r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
     r"etc/sa02m-update/trusted-keys/)"
 )

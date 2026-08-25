@@ -462,6 +462,12 @@ sa02m_remove_obsolete_www_sudoers() {
                 || log WARN "не удалось удалить устаревший sudoers: $_path"
         fi
     done
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt; do
+        _path="/etc/sudoers.d/$_name"
+        if [ -f "$_path" ]; then
+            chmod 0440 "$_path" 2>/dev/null || true
+        fi
+    done
     if command -v visudo >/dev/null 2>&1; then
         visudo -c >/dev/null 2>&1 \
             || log WARN "visudo -c после удаления legacy sudoers — проверьте /etc/sudoers.d"

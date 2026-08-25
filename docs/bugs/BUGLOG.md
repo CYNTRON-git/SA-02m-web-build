@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-25 11:30] branch: 1.0.6.12
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/offline-update-*.{txt,json}`, `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `scripts/update-www-only.sh`, `scripts/lib.sh`
+**Тип:** Некорректное поведение (OTA / MPLC)
+**Описание:** После web OTA 1.0.5.66→1.0.6.11 на плате оставался старый `mplc_cyntron.so` (483 KB, md5 e6d1c51e); `/run/sa02m-mplc-license.json` не создавался — карточка лицензии в веб не получала данные от драйвера. Также OTA оставлял sudoers `sa02m-*` с mode 0644 → WARN `visudo -c`.
+**Причина:** `map_dst` / allowlist / DST_RE не включали `firmware/mplc4/*.so` → `/opt/mplc4/`; плагины ставились только `09-mplc.sh`. Mode sudoers не harden'ился после OTA.
+**Исправление:** Closed-set деплой двух плагинов во все пути (runner/offline/www-only) + restart `mplc4`; gate `mplc-ota-deploy-contract`; `chmod 0440` для `sa02m-*` sudoers в cleanup.
+
+---
+
 ## [2026-08-24 19:39] branch: 1.0.6.11
 
 **Файл(ы):** `scripts/lib.sh`, `scripts/03-webserver.sh`, `scripts/update-www-only.sh`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-deploy-map.json`

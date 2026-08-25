@@ -61,3 +61,7 @@ etc/sudoers.d/sa02m-*
 
 # Helper shipped from scripts/ (not scripts/0*.sh installer stages)
 scripts/sa02m-rs485-stats.sh
+
+# MPLC RT plugins (licence publisher + Fast Modbus) → /opt/mplc4/
+firmware/mplc4/mplc_cyntron.so
+firmware/mplc4/mplc_protocol_fast_modbus.so

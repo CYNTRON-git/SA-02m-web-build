@@ -7,6 +7,7 @@
     "/usr/local/lib/",
     "/usr/local/libexec/",
     "/opt/sa02m-",
+    "/opt/mplc4/",
     "/etc/systemd/system/sa02m-",
     "/etc/nginx/",
     "/etc/tmpfiles.d/",
@@ -251,6 +252,17 @@
     },
     "etc/sa02m-update-inspect.sh": {
       "dst": "/usr/local/libexec/sa02m-update-inspect",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "firmware/mplc4/mplc_cyntron.so": {
+      "dst": "/opt/mplc4/mplc_cyntron.so",
+      "mode": "0755",
+      "owner": "root:root",
+      "note": "CYNTRON addin — publishes /run/sa02m-mplc-license.json for the web licence card."
+    },
+    "firmware/mplc4/mplc_protocol_fast_modbus.so": {
+      "dst": "/opt/mplc4/mplc_protocol_fast_modbus.so",
       "mode": "0755",
       "owner": "root:root"
     }

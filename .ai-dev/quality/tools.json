@@ -155,6 +155,15 @@
       "init": "bash + grep + mktemp (present everywhere the project builds)"
     },
     {
+      "id": "mplc-ota-deploy-contract",
+      "checks": "MPLC RT plugins (mplc_cyntron.so licence publisher + mplc_protocol_fast_modbus.so) ship via web OTA and offline pack to /opt/mplc4/, and update-www-only converges the same paths. Without this gate a board updated only via GitHub OTA keeps the vendor-baseline .so and never publishes /run/sa02m-mplc-license.json.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/mplc-ota-deploy-contract.sh",
+      "beat": "build",
+      "covers": ["firmware/mplc4/", "etc/sa02m-update-runner.sh", "scripts/offline-update-allowlist.txt", "scripts/offline-update-deploy-map.json", "scripts/update-www-only.sh", "opt/sa02m-update/lib/validate_package.py", ".ai-dev/quality/checks/mplc-ota-deploy-contract.sh"],
+      "init": "bash + grep + python3"
+    },
+    {
       "id": "kernel-policy-contract",
       "checks": "Static gate for docs/contracts/kernel-conditional-services.md: the opcua gateway port default agrees between etc/sa02m-mqtt-opcua.conf and BOTH py defaults and is not 4840 (CODESYS's own OPC UA server owns 4840 — a regression re-creates the EADDRINUSE crash-loop), sa02m-grat-arp@.service stays Type=simple (a oneshot regression re-blocks multi-user.target ~29 s), the kernel-service guard script + unit + docker ExecCondition drop-in exist and 01-system.sh installs/enables them and runs apply-policy, 08-codesys.sh carries no unconditional enable/start of codesyscontrol (install-only policy), service-ctl cmd_start/codesys_install carry no codesys_rc_enable (start = runtime only), the boot-hold pins: sa02m-modem-dhcp@.service stays event-driven (no [Install] — a statically enabled instance holds multi-user ~90 s on an absent modem) with the 99-modem.rules start line and the 01-system.sh stale-symlink cleanup in place, and sa02m-mqtt-opcua.py sends exactly one sd_notify(\"READY=1\") at the top of main() BEFORE `gw = OpcuaGateway(cfg)` (early READY decouples the OPC UA address-space build — ~9 s in OpcuaServer() construction inside __init__, ~17 s total — from multi-user.target; moving it into/after construction reintroduces the boot hold, contract §5.1). Non-vacuous: a missing file or an empty extraction FAILS.",
       "config": null,
