@@ -213,6 +213,9 @@ function initForms() {
     if (en && !document.getElementById('f-ip1')?.value.trim()) {
       toast('Укажите IP для Ethernet № 2', 'error'); return;
     }
+    if (en && !document.getElementById('f-mask1')?.value.trim()) {
+      toast('Укажите IP и маску для Ethernet № 2', 'error'); return;
+    }
     if (en) {
       const gw1 = document.getElementById('f-gw1')?.value.trim();
       const mask1 = document.getElementById('f-mask1')?.value.trim();
@@ -226,7 +229,11 @@ function initForms() {
     }
     submitForm(f1, () => {
       configLoaded = false;
-      toast('Ethernet № 2: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с.', 'success', 8000);
+      const dhcp = !document.getElementById('eth1-en')?.checked;
+      toast(dhcp
+        ? 'Ethernet № 2: DHCP — конфиг сохранён, адрес запрашивается…'
+        : 'Ethernet № 2: конфиг сохранён, адрес применяется… При смене IP откройте новый адрес через 2–3 с.',
+        'success', 8000);
     });
   });
 

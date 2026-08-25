@@ -397,6 +397,9 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth0" ]; then
 fi
 
 # ── Ethernet № 2 (form net_iface=eth1; on-disk name may be eth1 or end1) ───
+# Same semantics as eth0: enable+IP = static; toggle OFF = DHCP (NOT retire).
+# Factory default on 2-eth boards is already dhcp; retiring the conf was the
+# panel trap that left eth1 with no address and no way back to DHCP.
 if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
     IF1=$(resolve_lan_iface eth1 end1)
     CONF1=$(lan_iface_conf "$IF1")
@@ -407,12 +410,17 @@ if [ "$SKIP_NETWORK" != "1" ] && [ "$NET_IFACE" = "eth1" ]; then
         write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug static "${MANAGED1[@]}"
         echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf updated IP=$IP_ETH1 (merged from ${CONF1})" >> /var/log/sa02m_install.log 2>&1
     else
-        # Disabling Ethernet № 2 drops any operator/vendor stanza in this conf.
-        # It is recoverable only from <conf>.sa02m-bak — see the contract entry.
-        lan_conf_retire "$CONF1" eth1
-        lan_conf_retire "$(lan_iface_conf "$(lan_iface_sibling "$IF1")")" eth1
-        echo "$(date '+%Y-%m-%d %H:%M:%S') ${IF1}.conf retired (Ethernet 2 disabled)" >> /var/log/sa02m_install.log 2>&1
-        schedule_iface_apply "$IF1" down
+        # Match installer default: allow-hotplug + dhcp + metric 100. Default
+        # route comes from dhclient exit-hook (ensure below), not a hard-coded GW.
+        write_lan_pair eth1 end1 "$IF1" "$CONF1" allow-hotplug dhcp "    metric 100"
+        echo "$(date '+%Y-%m-%d %H:%M:%S') eth1.conf set to dhcp (merged from ${CONF1})" >> /var/log/sa02m_install.log 2>&1
+        # OTA-only boards may lack the installer hook; www-data cannot write
+        # /etc/dhcp — pinned helper (fixed content, no args). Best-effort.
+        if sudo -n /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh >/dev/null 2>&1; then
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: eth1-default-route dhclient hook ensured" >> /var/log/sa02m_install.log 2>&1
+        else
+            echo "$(date '+%Y-%m-%d %H:%M:%S') apply.cgi: eth1 dhcp hook ensure skipped (helper/sudoers absent)" >> /var/log/sa02m_install.log 2>&1
+        fi
     fi
 fi
 

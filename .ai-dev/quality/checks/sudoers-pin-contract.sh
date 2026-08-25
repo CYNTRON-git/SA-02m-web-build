@@ -300,6 +300,9 @@ grep -q 'cleanup_b1_deploy_artifacts' etc/sa02m-update-runner.sh \
 grep -q 'sa02m-iface-conf-write\.sh' etc/sa02m-update-runner.sh \
     && pass "update-runner map_dst keeps .sh for sa02m-iface-conf-write.sh" \
     || fail "update-runner map_dst does not keep .sh for sa02m-iface-conf-write.sh"
+grep -q 'sa02m-ensure-eth1-dhcp-hook\.sh' etc/sa02m-update-runner.sh \
+    && pass "update-runner map_dst keeps .sh for sa02m-ensure-eth1-dhcp-hook.sh" \
+    || fail "update-runner map_dst does not keep .sh for sa02m-ensure-eth1-dhcp-hook.sh"
 grep -q 'sa02m-usb-power\.sh' etc/sa02m-update-runner.sh \
     && pass "update-runner map_dst keeps .sh for sa02m-usb-power.sh" \
     || fail "update-runner map_dst does not keep .sh for sa02m-usb-power.sh"
@@ -310,6 +313,7 @@ r=m.get('etc_helper_renames') or {}
 for k,d in [
     ('etc/sa02m-iface-conf-write.sh','/usr/local/sbin/sa02m-iface-conf-write.sh'),
     ('etc/sa02m-usb-power.sh','/usr/local/sbin/sa02m-usb-power.sh'),
+    ('etc/sa02m-ensure-eth1-dhcp-hook.sh','/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh'),
 ]:
     if r.get(k,{}).get('dst')!=d:
         raise SystemExit(k)

@@ -23,6 +23,7 @@ www-data ALL=(ALL) NOPASSWD: /bin/date, /usr/bin/date, /sbin/hwclock, /usr/sbin/
 # refusal, content from stdin). ifup/ifdown are argument-pinned to the four LAN
 # names, which closes the `-i <file>` / pre-up-stanza root-exec vector.
 www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-iface-conf-write.sh
+www-data ALL=(ALL) NOPASSWD: /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
 www-data ALL=(ALL) NOPASSWD: /sbin/ifup eth0, /sbin/ifup eth1, /sbin/ifup end0, /sbin/ifup end1
 www-data ALL=(ALL) NOPASSWD: /sbin/ifdown eth0, /sbin/ifdown eth1, /sbin/ifdown end0, /sbin/ifdown end1
 

@@ -319,7 +319,8 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
-    r"etc/sa02m-update/trusted-keys/)"
+    r"etc/sa02m-update/trusted-keys/|"
+    r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 # Git-tracked MPLC plugins (firmware/mplc4/) → /opt/mplc4/<name>. Closed set —
 # never map arbitrary firmware/* into the live RT tree.
@@ -376,11 +377,15 @@ def map_dst(rel: str):
                 "sa02m-restore-backup.sh", "sa02m-update-runner.sh",
                 "sa02m-update-inspect.sh", "sa02m-factory-reset-runner.sh",
                 "sa02m-iface-conf-write.sh", "sa02m-usb-power.sh",
+                "sa02m-ensure-eth1-dhcp-hook.sh",
             ):
                 if "runner" in name or "inspect" in name or "factory-reset" in name:
                     return "/usr/local/libexec/" + name.replace(".sh", "")
                 return "/usr/local/sbin/" + name
             return "/usr/local/sbin/" + base
+    # eth1 DHCP default-route exit-hook (panel/installer parity on OTA boards)
+    if rel == "etc/dhcp/dhclient-exit-hooks.d/eth1-default-route":
+        return "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route"
     return None
 
 deploy = []
@@ -551,7 +556,8 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
-    r"etc/sa02m-update/trusted-keys/)"
+    r"etc/sa02m-update/trusted-keys/|"
+    r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 DEL_RE = re.compile(
     r"^/(var/www/network_config|opt/sa02m-[a-z0-9-]+|usr/local/|etc/systemd/system/sa02m-)/"

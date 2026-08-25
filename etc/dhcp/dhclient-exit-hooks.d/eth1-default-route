@@ -1,0 +1,15 @@
+#!/bin/sh
+# Default route for LAN2 DHCP (eth1/end1). Metric 100 keeps eth0 preferred.
+# Some DHCP servers send RFC3442 option 121, which makes dhclient-script ignore
+# option 3 (routers); this hook forces the default via the DHCP gateway.
+case "$interface" in
+    eth1|end1)
+        if [ -n "$new_routers" ]; then
+            case "$reason" in
+                BOUND|RENEW|REBIND|REBOOT)
+                    ip route replace default via $new_routers dev "$interface" metric 100 2>/dev/null || true
+                    ;;
+            esac
+        fi
+        ;;
+esac
