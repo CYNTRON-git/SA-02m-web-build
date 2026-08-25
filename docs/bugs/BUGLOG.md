@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-25 11:46] branch: 1.0.6.13
+
+**Файл(ы):** `www/network_config/cgi-bin/apply.cgi`, `www/network_config/static/js/app/forms.js`, `www/network_config/static/js/i18n.js`, `etc/sa02m-ensure-eth1-dhcp-hook.sh`, `etc/sudoers.d/sa02m-www`, `docs/contracts/ethernet-iface-naming.md`
+**Тип:** Некорректное поведение
+**Описание:** Тумблер «Статический IP» на Ethernet № 2 при OFF вызывал `lan_conf_retire` (порт без адреса), а не DHCP — в отличие от Ethernet № 1. Первая попытка писать dhclient-hook из apply.cgi от www-data не создавала файл.
+**Причина:** В `apply.cgi` ветка eth1 не имела dhcp-пути; OFF = retire. Запись в `/etc/dhcp` без sudo невозможна для www-data.
+**Исправление:** OFF пишет `inet dhcp` + `metric 100`; hook через pinned `sa02m-ensure-eth1-dhcp-hook.sh` + sudoers/OTA/www-only; UI toast для DHCP; gate в iface-naming-contract.
+
+---
+
 ## [2026-08-25 11:30] branch: 1.0.6.12
 
 **Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/offline-update-*.{txt,json}`, `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `scripts/update-www-only.sh`, `scripts/lib.sh`

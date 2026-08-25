@@ -21,6 +21,7 @@ pass() { printf 'iface-naming-contract: ok    %s\n' "$*"; }
 # file entering the set fails, and a stale entry that no longer matches fails
 # too. Widening it is a deliberate one-line change, reviewed as such.
 LEDGER="etc/sa02m-conf-rm.sh
+etc/sa02m-ensure-eth1-dhcp-hook.sh
 etc/sa02m-iface-canonical.sh
 etc/sa02m-iface-conf-write.sh
 etc/sa02m_network.conf
@@ -231,6 +232,43 @@ if grep -q 'install -m 644 "\$ETC_DIR/98-sa02m-iface-canonical.rules"' scripts/0
     pass "02-network.sh installs the mechanism-4 rule + retry unit"
 else
     fail "scripts/02-network.sh no longer installs 98-sa02m-iface-canonical.rules / sa02m-iface-canonical-retry.service"
+fi
+
+# ── eth1 panel DHCP (operator: toggle like eth0 — OFF = dhcp, not retire) ───
+if printf '%s\n' "$apply_code" | grep -q "write_lan_pair eth1 end1 .* allow-hotplug dhcp"; then
+    pass "apply.cgi eth1 OFF path writes allow-hotplug dhcp (mirrors eth0)"
+else
+    fail "apply.cgi eth1 branch lost dhcp write — OFF must write inet dhcp, not lan_conf_retire"
+fi
+if printf '%s\n' "$apply_code" | grep -qE 'lan_conf_retire "\$CONF1" eth1'; then
+    fail "apply.cgi still retires eth1 on toggle-OFF — that leaves port 2 with no address (the panel trap)"
+else
+    pass "apply.cgi no longer retires eth1 on toggle-OFF"
+fi
+if printf '%s\n' "$apply_code" | grep -q 'metric 100'; then
+    pass "apply.cgi eth1 dhcp carries metric 100 (eth0 preferred for default route)"
+else
+    fail "apply.cgi eth1 dhcp missing metric 100"
+fi
+if printf '%s\n' "$apply_code" | grep -q 'sa02m-ensure-eth1-dhcp-hook\.sh'; then
+    pass "apply.cgi ensures eth1 dhcp hook via pinned helper (not raw cat as www-data)"
+else
+    fail "apply.cgi must call sa02m-ensure-eth1-dhcp-hook.sh for the dhclient exit-hook"
+fi
+if printf '%s\n' "$apply_code" | grep -qE 'cat > /etc/dhcp/dhclient-exit-hooks'; then
+    fail "apply.cgi must not write /etc/dhcp as www-data — use sa02m-ensure-eth1-dhcp-hook.sh"
+else
+    pass "apply.cgi has no raw write into /etc/dhcp/dhclient-exit-hooks.d"
+fi
+if grep -q '/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook\.sh' etc/sudoers.d/sa02m-www; then
+    pass "sudoers grants sa02m-ensure-eth1-dhcp-hook.sh"
+else
+    fail "sudoers missing grant for sa02m-ensure-eth1-dhcp-hook.sh"
+fi
+if [ -f etc/sa02m-ensure-eth1-dhcp-hook.sh ] && [ -f etc/dhcp/dhclient-exit-hooks.d/eth1-default-route ]; then
+    pass "repo ships eth1 dhcp hook helper + etc/dhcp hook file"
+else
+    fail "missing etc/sa02m-ensure-eth1-dhcp-hook.sh or etc/dhcp/dhclient-exit-hooks.d/eth1-default-route"
 fi
 
 [ "$fails" = 0 ] || printf 'iface-naming-contract: %s check(s) failed — see docs/contracts/ethernet-iface-naming.md\n' "$fails"

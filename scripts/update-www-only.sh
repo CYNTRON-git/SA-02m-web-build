@@ -262,12 +262,20 @@ log INFO "Синхронизация sudoers (установка единого 
 sa02m_install_sudoers "$REPO_ETC/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
 # Pinned helpers referenced by that grant (the two new B1 helpers + the existing
 # rm/root-cmd pins).
-for _h in sa02m-iface-conf-write.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-web-root-cmd.sh; do
+for _h in sa02m-iface-conf-write.sh sa02m-ensure-eth1-dhcp-hook.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-web-root-cmd.sh; do
     if [ -f "$REPO_ETC/$_h" ]; then
         install -m 755 "$REPO_ETC/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
     fi
 done
+# eth1 DHCP default-route hook (installer also writes this; OTA/www-only boards
+# need the file on disk even before the first panel DHCP save).
+if [ -f "$REPO_ETC/dhcp/dhclient-exit-hooks.d/eth1-default-route" ]; then
+    mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+    install -m 755 "$REPO_ETC/dhcp/dhclient-exit-hooks.d/eth1-default-route" \
+        /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+    sed -i 's/\r$//' /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+fi
 sa02m_cleanup_b1_deploy_artifacts
 if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
     install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh

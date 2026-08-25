@@ -5,6 +5,20 @@
 
 ---
 
+## 1.0.6.13 - Сеть: Ethernet № 2 — DHCP как у Ethernet № 1 (август 2026)
+
+### Сеть / веб-панель
+
+- **Тумблер «Статический IP» на Ethernet № 2 при OFF отключал порт**
+  (`lan_conf_retire`), а не включал DHCP — в отличие от Ethernet № 1. Заводской
+  дефолт 2-eth плат — `inet dhcp`, панель уничтожала его при первом сохранении.
+- **Как исправлено.** OFF = `allow-hotplug eth1` + `iface eth1 inet dhcp` +
+  `metric 100` (как installer); ON = static. Хук `eth1-default-route` ставится
+  через pinned helper `sa02m-ensure-eth1-dhcp-hook.sh` (www-data не пишет в
+  `/etc/dhcp` напрямую) и доезжает OTA/`update-www-only`.
+
+---
+
 ## 1.0.6.12 - OTA: плагины MPLC (лицензия в веб) и правки sudoers (август 2026)
 
 ### Обновление / MPLC

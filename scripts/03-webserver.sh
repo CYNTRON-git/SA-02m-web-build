@@ -294,6 +294,16 @@ if [ -f "$ETC_DIR/sa02m-iface-conf-write.sh" ]; then
     install -m 755 "$ETC_DIR/sa02m-iface-conf-write.sh" /usr/local/sbin/sa02m-iface-conf-write.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-iface-conf-write.sh
 fi
+if [ -f "$ETC_DIR/sa02m-ensure-eth1-dhcp-hook.sh" ]; then
+    install -m 755 "$ETC_DIR/sa02m-ensure-eth1-dhcp-hook.sh" /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
+    sed -i 's/\r$//' /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
+fi
+if [ -f "$ETC_DIR/dhcp/dhclient-exit-hooks.d/eth1-default-route" ]; then
+    mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+    install -m 755 "$ETC_DIR/dhcp/dhclient-exit-hooks.d/eth1-default-route" \
+        /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+    sed -i 's/\r$//' /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
+fi
 if [ -f "$ETC_DIR/sa02m-usb-power.sh" ]; then
     install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-usb-power.sh

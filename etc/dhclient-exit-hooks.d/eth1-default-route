@@ -1,8 +1,0 @@
-#!/bin/sh
-if [ "$interface" = "eth1" ] && [ -n "$new_routers" ]; then
-    case "$reason" in
-        BOUND|RENEW|REBIND|REBOOT)
-            ip route replace default via $new_routers dev eth1 metric 100 2>/dev/null || true
-            ;;
-    esac
-fi

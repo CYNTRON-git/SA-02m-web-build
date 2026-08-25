@@ -28,6 +28,10 @@ etc/sa02m-commit-web-env.sh
 etc/sa02m-pre-start.sh
 etc/sa02m-beeper-override.sh
 etc/sa02m-conf-rm.sh
+etc/sa02m-iface-conf-write.sh
+etc/sa02m-ensure-eth1-dhcp-hook.sh
+etc/sa02m-usb-power.sh
+etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
 etc/sa02m-kernel-select.sh
 etc/sa02m-cpu-profile.sh
 etc/sa02m-set-cpu-profile

@@ -195,6 +195,16 @@
       "mode": "0755",
       "owner": "root:root"
     },
+    "etc/sa02m-ensure-eth1-dhcp-hook.sh": {
+      "dst": "/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh",
+      "mode": "0755",
+      "owner": "root:root"
+    },
+    "etc/dhcp/dhclient-exit-hooks.d/eth1-default-route": {
+      "dst": "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route",
+      "mode": "0755",
+      "owner": "root:root"
+    },
     "etc/sa02m-usb-power.sh": {
       "dst": "/usr/local/sbin/sa02m-usb-power.sh",
       "mode": "0755",
