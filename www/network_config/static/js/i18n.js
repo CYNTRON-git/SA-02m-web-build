@@ -219,7 +219,9 @@
     'Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».':
       'Alice picks up changes after "Refresh device list" in the Yandex Home app.',
     'Запрос привязки': 'Requesting link',
-    'Откройте ссылку привязки в браузере': 'Open the registration link in the browser',
+    'Откройте ссылку привязки, затем «Завершить привязку»:':
+      'Open the registration link, then press «Complete linking»:',
+    'Открыть ссылку привязки': 'Open the registration link',
     'Шлюз ответил без ссылки привязки': 'Gateway responded without a registration URL',
     'Отвязка': 'Unlinking',
     'Отвязка не выполнена': 'Unlink did not complete',

@@ -185,6 +185,16 @@ def full_config() -> Dict[str, Any]:
     enabled = client_enabled(cfg)
     cert_present, cert_check = cert_presence(status)
     connected = status.get("state") == C.STATE_CONNECTED
+    # Stored OAuth URL while a claim is pending (started, not yet issued):
+    # popup blockers eat window.open and an F5 must not strand the operator
+    # with no way back to the link page. The claim file outlives enrollment
+    # marked issued=True — gate on that flag.
+    _claim = _load_pending_claim()
+    pending_reg_url = (
+        _claim.get("registration_url")
+        if _claim.get("claim_token") and not _claim.get("issued")
+        else None
+    )
     return {
         "ok": True,
         "version": __version__,
@@ -216,6 +226,7 @@ def full_config() -> Dict[str, Any]:
                 and connected
             ),
             "state": status.get("state") or ("disabled" if not enabled else "unknown"),
+            "registration_url": pending_reg_url,
         },
     }
 

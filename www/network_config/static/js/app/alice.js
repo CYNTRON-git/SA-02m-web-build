@@ -30,6 +30,29 @@ function aliceSetMsgOn(id, text, ok) {
 
 // Card-level status/link/enable feedback.
 function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
+
+// Message + a real clickable link (DOM-built, no innerHTML). Needed because
+// window.open after an await is eaten by popup blockers — the operator must
+// always have the registration link ON the card while a claim is pending.
+function aliceSetMsgLink(text, url, label) {
+  const msg = $('alice-msg');
+  if (!msg) return;
+  msg.hidden = false;
+  msg.className = 'cloud-msg is-ok';
+  msg.textContent = '';
+  msg.appendChild(document.createTextNode(text + ' '));
+  const a = document.createElement('a');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.textContent = label;
+  msg.appendChild(a);
+}
+
+// Registration URL of the pending claim: server-fed (link.registration_url
+// survives F5 and other browsers) with the last start_link response as the
+// same-session fallback.
+let aliceRegUrl = null;
 // Binding-modal feedback (add-device), so it shows inside the open dialog.
 function aliceSetBindMsg(text, ok) { aliceSetMsgOn('alice-bind-msg', text, ok); }
 
@@ -190,7 +213,12 @@ function aliceRender(d) {
   // cannot show «ожидание завершения» on a connected device.
   const linked = st === 'connected' || certOk;
   if (linked) aliceSetPending(false);
-  const pending = aliceGetPending();
+  const srvRegUrl = (d.link && d.link.registration_url) || null;
+  if (srvRegUrl) aliceRegUrl = srvRegUrl;
+  if (linked) aliceRegUrl = null;
+  // Server knowledge of a pending claim counts even when this browser session
+  // never pressed «Привязать» (F5, another tab).
+  const pending = aliceGetPending() || (!linked && !!srvRegUrl);
   const linkBtn = $('alice-btn-link');
   const linkRow = $('alice-link-row');
   const statusVal = $('alice-link-status-val');
@@ -257,6 +285,14 @@ function aliceRender(d) {
   // feedback message («Сохранено» etc.) in place.
   if (friendly.kind === 'err') {
     aliceSetMsg(uiT(friendly.text), false);
+  } else if (enabled && pending && aliceRegUrl) {
+    // Keep the reopen link visible for the whole pending window — a closed
+    // tab or a blocked popup must not strand the operator.
+    aliceSetMsgLink(
+      uiT('Откройте ссылку привязки, затем «Завершить привязку»:'),
+      aliceRegUrl,
+      uiT('Открыть ссылку привязки')
+    );
   } else if (!enabled) {
     aliceSetMsg('', true);
   }
@@ -298,8 +334,15 @@ async function aliceStartLink() {
       aliceSetMsg(d.message || d.error || uiT('Шлюз недоступен'), false);
     } else if (d.enrollment && d.enrollment.registration_url) {
       aliceSetPending(true);
-      aliceSetMsg(uiT('Откройте ссылку привязки, затем «Завершить привязку»'), true);
-      window.open(d.enrollment.registration_url, '_blank', 'noopener');
+      aliceRegUrl = d.enrollment.registration_url;
+      // The anchor is the reliable path — window.open after an await is
+      // routinely eaten by popup blockers; keep it as a best-effort bonus.
+      aliceSetMsgLink(
+        uiT('Откройте ссылку привязки, затем «Завершить привязку»:'),
+        aliceRegUrl,
+        uiT('Открыть ссылку привязки')
+      );
+      window.open(aliceRegUrl, '_blank', 'noopener');
     } else {
       aliceSetMsg(uiT('Шлюз ответил без ссылки привязки'), false);
     }
