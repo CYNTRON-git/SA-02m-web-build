@@ -87,14 +87,17 @@ def yandex_to_range(
     return ("%g" % num), None
 
 
-def mqtt_to_float_property(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def mqtt_to_float_property(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     params = parameters or {}
     instance = params.get("instance", "temperature")
     unit = params.get("unit")
     try:
         value = float(str(raw).strip())
     except (TypeError, ValueError):
-        value = 0.0
+        # An unparseable payload must not fabricate a 0.0 reading (Alice would
+        # show 0 °C / 0 W as real). Callers skip falsy blocks — the property
+        # is simply omitted from query/state.
+        return None
     block: Dict[str, Any] = {
         "type": "devices.properties.float",
         "state": {"instance": instance, "value": value},

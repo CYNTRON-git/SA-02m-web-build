@@ -10,6 +10,22 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _NAME_RE = re.compile(r"^[\w \-./+]{1,64}$", re.UNICODE)
 _MQTT_RE = re.compile(r"^/devices/[A-Za-z0-9_./+-]+$")
 
+# Float-property instance allowlist (docs/contracts/alice-mqtt-mapping.md).
+# Wider than the UI's six kinds on purpose: hand-edited configs may bind
+# pressure/co2/battery; anything else is rejected before it reaches Yandex.
+FLOAT_INSTANCES = {
+    "temperature",
+    "humidity",
+    "voltage",
+    "amperage",
+    "power",
+    "pressure",
+    "co2_level",
+    "battery_level",
+}
+# Keeps the unit string forwarded to Yandex shell/JSON-safe by construction.
+_UNIT_RE = re.compile(r"^unit\.[a-z_.]{1,32}$")
+
 
 def new_id() -> str:
     return str(uuid.uuid4())
@@ -48,11 +64,23 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Optional[str]:
     if not isinstance(item, dict):
         return "%s must be object" % kind
     t = str(item.get("type") or "")
-    if not t.startswith("devices."):
+    # A capability typed as a property (or vice versa) would be silently
+    # discovered wrong — pin the namespace per kind.
+    prefix = "devices.capabilities." if kind == "capability" else "devices.properties."
+    if not t.startswith(prefix):
         return "invalid %s type" % kind
     mqtt = str(item.get("mqtt") or "").strip()
     if not mqtt or not _MQTT_RE.match(mqtt):
         return "invalid mqtt topic"
+    if t == "devices.properties.float":
+        params = item.get("parameters")
+        if not isinstance(params, dict):
+            return "float property requires parameters"
+        if str(params.get("instance") or "") not in FLOAT_INSTANCES:
+            return "invalid float property instance"
+        unit = params.get("unit")
+        if not isinstance(unit, str) or not _UNIT_RE.match(unit):
+            return "invalid float property unit"
     return None
 
 

@@ -57,9 +57,37 @@ class TestRange(unittest.TestCase):
 class TestFloatAndColor(unittest.TestCase):
     def test_float(self):
         block = converters.mqtt_to_float_property(
-            "21.5", {"instance": "temperature", "unit": "unit.degree.celsius"}
+            "21.5", {"instance": "temperature", "unit": "unit.temperature.celsius"}
         )
         self.assertEqual(block["state"]["value"], 21.5)
+        self.assertEqual(
+            block["parameters"],
+            {"instance": "temperature", "unit": "unit.temperature.celsius"},
+        )
+
+    def test_float_negative(self):
+        # CE-02m-3 power export publishes negative values — must parse as-is.
+        block = converters.mqtt_to_float_property(
+            "-1500.5", {"instance": "power", "unit": "unit.watt"}
+        )
+        self.assertEqual(block["state"]["value"], -1500.5)
+
+    def test_float_unparseable_returns_none(self):
+        # A garbage payload must NOT fabricate a 0.0 reading (Alice would show
+        # 0 °C as real) — the property block is omitted instead.
+        self.assertIsNone(
+            converters.mqtt_to_float_property(
+                "garbage", {"instance": "temperature", "unit": "unit.temperature.celsius"}
+            )
+        )
+        self.assertIsNone(converters.mqtt_to_float_property(None))
+        self.assertIsNone(
+            converters.property_mqtt_to_yandex(
+                "devices.properties.float",
+                "",
+                {"instance": "humidity", "unit": "unit.percent"},
+            )
+        )
 
     def test_color_hex(self):
         block = converters.mqtt_to_color_setting("#112233", {"instance": "rgb"})

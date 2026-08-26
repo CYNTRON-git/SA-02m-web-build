@@ -33,6 +33,48 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
 }
 ```
 
+### Float properties (sensor devices)
+
+A sensor binding is a device whose `properties` carry one
+`devices.properties.float` item (topic names: `docs/MQTT_TOPICS.md`
+§cyntron-dtv, §CE-02m-3 — never restated here):
+
+```json
+{
+  "id": "s1",
+  "name": "DTV temp",
+  "type": "devices.types.sensor.climate",
+  "capabilities": [],
+  "properties": [{
+    "type": "devices.properties.float",
+    "mqtt": "/devices/dtv-COM3-1/controls/temp_bme680",
+    "retrievable": true,
+    "reportable": true,
+    "parameters": {"instance": "temperature", "unit": "unit.temperature.celsius"}
+  }]
+}
+```
+
+- `parameters` (instance + unit) is REQUIRED for a float property (Yandex
+  requires it for discovery). Validation (`config/models.py`):
+  `instance` ∈ `FLOAT_INSTANCES` = `temperature | humidity | voltage |
+  amperage | power | pressure | co2_level | battery_level`; `unit` matches
+  `^unit\.[a-z_.]{1,32}$` (shell/JSON-safe by construction). A capability's
+  `type` must start `devices.capabilities.`, a property's
+  `devices.properties.` — a cross-typed item is rejected.
+- UI kinds (`app/alice.js` `ALICE_KINDS`): temperature/humidity →
+  `devices.types.sensor.climate`; voltage/amperage/power →
+  `devices.types.sensor`. The bridge publishes engineering units (°C, %RH,
+  V/A/W) — `float(raw)` is the whole conversion; negative values (CE power
+  export) parse as-is.
+- An unparseable MQTT payload converts to NO reading (the property is omitted
+  from query/state) — never a fabricated `0.0`.
+- Properties are read-only: they never enter `apply_actions`, so a sensor
+  topic gets no `/on` command publish.
+
+Validating tests: `opt/sa02m-alice/tests/test_models.py`,
+`test_converters.py`, `test_device_registry.py`, `test_topics_inventory.py`.
+
 ## Socket.IO events (controller ↔ `alice.cyntron.ru`)
 
 | Direction | Event | Body |

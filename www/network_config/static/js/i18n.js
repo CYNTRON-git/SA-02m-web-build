@@ -204,9 +204,12 @@
     'сертификат шлюза не доверенный': 'gateway certificate not trusted',
     'Управление привязками': 'Manage bindings',
     'Выключатель': 'Switch',
+    'Переключатель': 'Switch',
     'Розетка': 'Socket',
     'Освещение': 'Lighting',
     'Датчик': 'Sensor',
+    'Климат-датчик': 'Climate sensor',
+    'Мощность': 'Power',
     'Термостат': 'Thermostat',
     'Шлюз alice.cyntron.ru недоступен (Phase 0). Привязка невозможна.':
       'alice.cyntron.ru gateway unavailable (Phase 0). Linking is not possible.',
