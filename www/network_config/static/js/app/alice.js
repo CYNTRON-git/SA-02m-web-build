@@ -756,6 +756,7 @@ function aliceModalBackdrop(e) {
 
 let _alicePoll = null;
 let _aliceFastPoll = null;
+let _aliceFastPollGen = 0;
 
 // After an action that changes state on the device (cert issued → client
 // restart, enable/disable), the 5 s cadence makes the card look stuck for
@@ -779,6 +780,10 @@ function aliceFastPollSettled(d) {
 
 function aliceFastPoll() {
   const until = Date.now() + 20000;
+  // A second call landing while a tick is awaiting must not start a second
+  // chain: the generation counter makes the older chain retire on its return.
+  _aliceFastPollGen += 1;
+  const gen = _aliceFastPollGen;
   if (_aliceFastPoll) clearTimeout(_aliceFastPoll);
   // The base 5 s poll would race the window and hit the same probing
   // endpoint — park it and restore it when the window ends.
@@ -798,6 +803,9 @@ function aliceFastPoll() {
     } catch (e) {
       /* transport hiccup — keep the window running */
     }
+    // A newer window took over while this tick was in flight — retire this
+    // chain and leave the pollers to the newer one.
+    if (gen !== _aliceFastPollGen) return;
     if (settled || Date.now() >= until) {
       stop();
       return;
