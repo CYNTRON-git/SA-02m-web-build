@@ -5,6 +5,20 @@
 
 ---
 
+## 1.0.6.14 - OTA: режим 0755 для хелперов без .sh в /usr/local/sbin (август 2026)
+
+### Обновление
+
+- **Web OTA ставила extension-less хелперы как 0644** — после каждого OTA
+  `sa02m-set-storage-auto-format` и `sa02m-set-cpu-profile` теряли +x:
+  кнопка «Автоформат exFAT» — «НЕ УСТАНОВЛЕНО», переключение CPU-профиля —
+  тихий отказ.
+- **Как исправлено.** `deploy_mode(rel, dst)` в `sa02m-update-runner.sh`:
+  режим по **назначению** (`/usr/local/sbin`, `libexec`, `bin`, dhclient-hooks
+  → 0755), не по расширению исходника. Gate `ota-deploy-mode-contract`.
+
+---
+
 ## 1.0.6.13 - Сеть: Ethernet № 2 — DHCP как у Ethernet № 1 (август 2026)
 
 ### Сеть / веб-панель

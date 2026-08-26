@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-26 08:47] branch: 1.0.6.14
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `.ai-dev/quality/checks/ota-deploy-mode-contract.sh`
+**Тип:** Некорректное поведение
+**Описание:** Web OTA деплоила `sa02m-set-storage-auto-format` и `sa02m-set-cpu-profile` как 0644 (без +x) — кнопка автоформата и CPU-профиль ломались после каждого OTA.
+**Причина:** Режим в manifest брался из расширения исходника (`rel.endswith(".sh")`), а не из dst.
+**Исправление:** `deploy_mode(rel, dst)` — `/usr/local/sbin|libexec|bin` и dhclient-hooks → 0755; gate `ota-deploy-mode-contract`.
+
+---
+
 ## [2026-08-25 11:46] branch: 1.0.6.13
 
 **Файл(ы):** `www/network_config/cgi-bin/apply.cgi`, `www/network_config/static/js/app/forms.js`, `www/network_config/static/js/i18n.js`, `etc/sa02m-ensure-eth1-dhcp-hook.sh`, `etc/sudoers.d/sa02m-www`, `docs/contracts/ethernet-iface-naming.md`
