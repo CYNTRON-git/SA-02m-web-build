@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-26 13:30] branch: 1.0.6.14
+
+**Файл(ы):** `etc/tmpfiles.d/sa02m-alice.conf` (новый), `scripts/06-alice.sh`, `scripts/update-www-only.sh`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`
+**Тип:** Некорректное поведение (Алиса)
+**Описание:** Первый «Привязать» на свежей плате → `{"ok":false,"error":"enrollment_failed","message":"[Errno 13] Permission denied: '/var/lib/sa02m-alice'"}`. Воспроизведено на 1.136 (web 1.0.6.13).
+**Причина:** Enroll-запись (`device.key.pem`/`device.crt.pem`) выполняется в `sa02m_alice_api.cgi` от www-data, а каталог состояния либо отсутствовал вовсе (вычищен `cleanup-donor.sh` при подготовке образа, ничем не воссоздавался), либо после install был `root:root 0750` (`06-alice.sh`).
+**Исправление:** Вариант 1 из ТЗ — каталог `www-data:www-data 0700` (CGI и так пишет ключ от www-data — граница доверия не меняется). Новый `etc/tmpfiles.d/sa02m-alice.conf` (+ `/run/sa02m-alice`): создаётся на каждом буте, идемпотентно мигрирует права на живых платах; ставится installer'ом, www-only деплоем и web OTA (runner вызывает `systemd-tmpfiles --create` сразу после daemon-reload).
+
+---
+
 ## [2026-08-26 08:47] branch: 1.0.6.14
 
 **Файл(ы):** `etc/sa02m-update-runner.sh`, `.ai-dev/quality/checks/ota-deploy-mode-contract.sh`

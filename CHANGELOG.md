@@ -17,6 +17,20 @@
   режим по **назначению** (`/usr/local/sbin`, `libexec`, `bin`, dhclient-hooks
   → 0755), не по расширению исходника. Gate `ota-deploy-mode-contract`.
 
+### Алиса
+
+- **«Привязать» падала с `enrollment_failed / Permission denied:
+  /var/lib/sa02m-alice`** на свежих платах. Каталог состояния вычищается при
+  подготовке образа (`cleanup-donor.sh`) и не воссоздавался; после полного
+  install он был `root:root 0750` — а enroll (запись `device.key.pem` /
+  `device.crt.pem`) выполняется CGI от **www-data**, которому писать было
+  некуда.
+- **Как исправлено.** Каталог теперь `www-data:www-data 0700`
+  (граница доверия не меняется — ключ и сегодня пишет www-data):
+  `etc/tmpfiles.d/sa02m-alice.conf` (создание на каждом буте + идемпотентная
+  миграция прав на живых платах) едет через installer (`06-alice.sh`),
+  www-only деплой и web OTA (runner применяет tmpfiles сразу, без перезагрузки).
+
 ---
 
 ## 1.0.6.13 - Сеть: Ethernet № 2 — DHCP как у Ethernet № 1 (август 2026)
