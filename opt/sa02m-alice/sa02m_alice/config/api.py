@@ -95,11 +95,12 @@ CERT_CHECK_UNREADABLE = "unreadable"  # cert dir not traversable → unknown
 def cert_presence(status: Dict[str, Any]) -> Tuple[Optional[bool], str]:
     """(cert_present, cert_check) — True/False when known, None when unknowable.
 
-    The web API usually runs as www-data, which cannot traverse the root-only
-    cert dir: there `os.path.isfile()` returns False for files that exist. So
-    the client's status file (written as root, the actual cert user) is the
-    first source; a local isfile() only when this process can actually enter
-    the dir; otherwise an honest None — never a false False.
+    The state dir is www-data-owned 0700 (tmpfiles.d/sa02m-alice.conf), so the
+    CGI (www-data) can enter it — but a caller running as another non-root user
+    still cannot: there `os.path.isfile()` returns False for files that exist.
+    So the client's status file (written by the client service, the actual cert
+    user) is the first source; a local isfile() only when this process can
+    actually enter the dir; otherwise an honest None — never a false False.
     """
     val = status.get("cert_present")
     if isinstance(val, bool):
