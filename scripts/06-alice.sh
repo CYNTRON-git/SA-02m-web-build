@@ -65,7 +65,8 @@ for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.con
         log INFO "/etc/sa02m-alice/$f уже есть — не перезаписываю"
     fi
 done
-# www-data needs read on conf for CGI status; write via Python as root through trigger/API
+# www-data reads AND writes client/devices confs directly (CGI atomic write —
+# hence the 0770 dir above); server.conf stays 0640 root:www-data read-only.
 chmod 0640 /etc/sa02m-alice/*.conf 2>/dev/null || true
 chgrp www-data /etc/sa02m-alice /etc/sa02m-alice/*.conf 2>/dev/null || true
 # Allow www-data to update devices/client via API running as www-data in CGI
