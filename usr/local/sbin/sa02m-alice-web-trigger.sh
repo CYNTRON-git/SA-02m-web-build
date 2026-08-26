@@ -6,6 +6,9 @@ ACTION="${1:-}"
 case "$ACTION" in
   enable)
     # Do not force client_enabled here — CGI/Python already wrote the conf.
+    # unmask first: the services-list Стоп masks the unit (web-service-ctl
+    # cmd_stop policy) — without this the card's enable cannot start it.
+    systemctl unmask sa02m-alice-client.service >/dev/null 2>&1 || true
     systemctl enable sa02m-alice-client.service >/dev/null 2>&1 || true
     systemctl restart sa02m-alice-client.service
     echo '{"ok":true,"action":"enable"}'
