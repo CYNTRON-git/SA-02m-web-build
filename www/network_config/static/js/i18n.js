@@ -213,6 +213,11 @@
     'Ошибка запроса API Алисы': 'Alice API request failed',
     'Укажите имя и MQTT-топик': 'Provide a name and MQTT topic',
     'Устройство сохранено': 'Device saved',
+    'Изменить': 'Edit',
+    'Удалить устройство': 'Delete device',
+    'Устройство удалено': 'Device deleted',
+    'Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».':
+      'Alice picks up changes after "Refresh device list" in the Yandex Home app.',
     'Запрос привязки': 'Requesting link',
     'Откройте ссылку привязки в браузере': 'Open the registration link in the browser',
     'Шлюз ответил без ссылки привязки': 'Gateway responded without a registration URL',

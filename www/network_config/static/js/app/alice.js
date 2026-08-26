@@ -33,6 +33,11 @@ function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
 // Binding-modal feedback (add-device), so it shows inside the open dialog.
 function aliceSetBindMsg(text, ok) { aliceSetMsgOn('alice-bind-msg', text, ok); }
 
+// Edit-mode state for the bindings modal: id being edited + the last rendered
+// device objects by id (source for prefill and id/room_id/type preservation).
+let aliceEditId = null;
+let aliceDevCache = {};
+
 function aliceSetBadge(el, text, kind) {
   if (!el) return;
   el.innerHTML = aliceBadge(uiT(text), kind);
@@ -220,13 +225,24 @@ function aliceRender(d) {
   const rooms = (d.devices && d.devices.rooms) || [];
   const list = $('alice-device-list');
   if (list) {
+    aliceDevCache = {};
+    devices.forEach(function (dev) {
+      if (dev && dev.id) aliceDevCache[dev.id] = dev;
+    });
+    // The device being edited disappeared (deleted elsewhere / re-poll) —
+    // drop the stale edit mode instead of saving over a ghost id.
+    if (aliceEditId && !aliceDevCache[aliceEditId]) aliceCancelEdit();
     if (!devices.length) {
       list.innerHTML = '<p class="field-hint">' + escHtml(uiT('Устройства ещё не добавлены')) + '</p>';
     } else {
       list.innerHTML = devices.map(function (dev) {
-        return '<div class="alice-dev-row"><span class="mono text-sm">' +
+        return '<div class="alice-dev-row" data-id="' + escHtml(dev.id || '') + '"><span class="mono text-sm">' +
           escHtml(dev.name || dev.id) + '</span> <span class="text-sm text-sec">' +
-          escHtml(aliceDeviceTypeLabel(dev.type)) + '</span></div>';
+          escHtml(aliceDeviceTypeLabel(dev.type)) + '</span>' +
+          '<span class="alice-dev-actions">' +
+          '<button type="button" class="btn btn-sm" data-act="edit">' + escHtml(uiT('Изменить')) + '</button> ' +
+          '<button type="button" class="btn btn-sm btn-danger" data-act="del">' + escHtml(uiT('Удалить')) + '</button>' +
+          '</span></div>';
       }).join('');
     }
   }
@@ -355,25 +371,123 @@ async function aliceAddDevice() {
     aliceSetBindMsg(uiT('Укажите имя и MQTT-топик'), false);
     return;
   }
-  const device = {
-    name: name,
-    type: 'devices.types.switch',
-    capabilities: [{
-      type: 'devices.capabilities.on_off',
-      mqtt: topic,
-      retrievable: true,
-      reportable: true,
-      parameters: { instance: 'on' },
-    }],
-    properties: [],
-  };
+  let device;
+  const editing = aliceEditId && aliceDevCache[aliceEditId];
+  if (editing) {
+    // Edit: send the ORIGINAL object with id — the backend replaces in
+    // place; id/room_id/type/extra capabilities survive, only name and the
+    // on_off capability's topic change.
+    device = JSON.parse(JSON.stringify(aliceDevCache[aliceEditId]));
+    device.name = name;
+    const caps = device.capabilities || [];
+    let onoff = null;
+    for (let i = 0; i < caps.length; i++) {
+      if (caps[i] && caps[i].type === 'devices.capabilities.on_off') { onoff = caps[i]; break; }
+    }
+    if (onoff) {
+      onoff.mqtt = topic;
+    } else {
+      caps.push({
+        type: 'devices.capabilities.on_off',
+        mqtt: topic,
+        retrievable: true,
+        reportable: true,
+        parameters: { instance: 'on' },
+      });
+      device.capabilities = caps;
+    }
+  } else {
+    device = {
+      name: name,
+      type: 'devices.types.switch',
+      capabilities: [{
+        type: 'devices.capabilities.on_off',
+        mqtt: topic,
+        retrievable: true,
+        reportable: true,
+        parameters: { instance: 'on' },
+      }],
+      properties: [],
+    };
+  }
   try {
     const d = await aliceApi({ action: 'upsert_device', device: device });
     if (!d.ok) {
       aliceSetBindMsg(d.message || d.error || uiT('Ошибка'), false);
     } else {
       aliceSetBindMsg(uiT('Устройство сохранено'), true);
-      if ($('alice-dev-name')) $('alice-dev-name').value = '';
+      aliceCancelEdit();
+    }
+    await aliceRefresh();
+  } catch (e) {
+    aliceSetBindMsg(uiT('Ошибка запроса API Алисы'), false);
+  }
+}
+
+// ── Edit / delete on the device rows (delegated from #alice-device-list) ────
+function aliceListClick(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+  if (!btn) return;
+  const row = btn.closest('.alice-dev-row');
+  const id = row && row.getAttribute('data-id');
+  if (!id) return;
+  if (btn.getAttribute('data-act') === 'edit') aliceBeginEdit(id);
+  else if (btn.getAttribute('data-act') === 'del') aliceDeleteDevice(id);
+}
+
+function aliceBeginEdit(id) {
+  const dev = aliceDevCache[id];
+  if (!dev) return;
+  aliceEditId = id;
+  if ($('alice-dev-name')) $('alice-dev-name').value = dev.name || '';
+  const sel = $('alice-topic-select');
+  const caps = dev.capabilities || [];
+  let topic = '';
+  for (let i = 0; i < caps.length; i++) {
+    if (caps[i] && caps[i].type === 'devices.capabilities.on_off' && caps[i].mqtt) { topic = caps[i].mqtt; break; }
+  }
+  if (sel && topic) {
+    // The bound topic may no longer be in the live topic list — keep it
+    // selectable so an edit of the name alone does not silently retarget.
+    let found = false;
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === topic) { found = true; break; }
+    }
+    if (!found) {
+      const opt = document.createElement('option');
+      opt.value = topic;
+      opt.textContent = topic;
+      sel.appendChild(opt);
+    }
+    sel.value = topic;
+  }
+  const save = $('alice-dev-save');
+  if (save) save.textContent = uiT('Сохранить');
+  const cancel = $('alice-dev-cancel');
+  if (cancel) cancel.hidden = false;
+  aliceSetBindMsg('', true);
+}
+
+function aliceCancelEdit() {
+  aliceEditId = null;
+  if ($('alice-dev-name')) $('alice-dev-name').value = '';
+  const save = $('alice-dev-save');
+  if (save) save.textContent = uiT('Добавить');
+  const cancel = $('alice-dev-cancel');
+  if (cancel) cancel.hidden = true;
+}
+
+async function aliceDeleteDevice(id) {
+  const dev = aliceDevCache[id];
+  const label = (dev && dev.name) || id;
+  if (!window.confirm(uiT('Удалить устройство') + ' «' + label + '»?')) return;
+  try {
+    const d = await aliceApi({ action: 'delete_device', id: id });
+    if (!d.ok) {
+      aliceSetBindMsg(d.message || d.error || uiT('Ошибка'), false);
+    } else {
+      aliceSetBindMsg(uiT('Устройство удалено'), true);
+      if (aliceEditId === id) aliceCancelEdit();
     }
     await aliceRefresh();
   } catch (e) {
@@ -402,6 +516,7 @@ function aliceCloseModal() {
   const m = $('alice-modal');
   if (m) m.setAttribute('hidden', '');
   document.removeEventListener('keydown', aliceModalEsc);
+  aliceCancelEdit();
 }
 
 // Close only on a click on the overlay backdrop itself, not its dialog contents.
@@ -413,6 +528,8 @@ let _alicePoll = null;
 
 function aliceInit() {
   if (!$('alice-card')) return;
+  const list = $('alice-device-list');
+  if (list) list.addEventListener('click', aliceListClick);
   aliceRefresh();
   aliceLoadTopics();
   if (_alicePoll) clearInterval(_alicePoll);
@@ -425,6 +542,7 @@ function aliceInit() {
 window.aliceToggleClient = aliceToggleClient;
 window.aliceLinkAction = aliceLinkAction;
 window.aliceAddDevice = aliceAddDevice;
+window.aliceCancelEdit = aliceCancelEdit;
 window.aliceOpenModal = aliceOpenModal;
 window.aliceCloseModal = aliceCloseModal;
 window.aliceModalBackdrop = aliceModalBackdrop;

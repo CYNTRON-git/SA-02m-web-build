@@ -19,6 +19,14 @@ case "$ACTION" in
     systemctl restart sa02m-alice-client.service >/dev/null 2>&1 || true
     echo '{"ok":true,"action":"disable"}'
     ;;
+  restart)
+    # Binding edits: the running client's DeviceRegistry is built once and
+    # MQTT subs are taken at connect — a restart is how changes apply. The
+    # CGI gates this on client_enabled=true; on a disabled client it is a
+    # harmless standby cycle (client exits 0).
+    systemctl restart sa02m-alice-client.service
+    echo '{"ok":true,"action":"restart"}'
+    ;;
   *)
     echo '{"ok":false,"error":"unknown_action"}'
     exit 1
