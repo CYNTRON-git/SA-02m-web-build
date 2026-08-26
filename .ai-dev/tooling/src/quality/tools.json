@@ -152,7 +152,7 @@
       "run": "node src/adapter/merge-gate-stamp-resolution.test.mjs",
       "beat": "build",
       "init": "Node >= 18, no install",
-      "covers": ["src/adapter/merge-gate-stamp-resolution.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+      "covers": ["src/adapter/merge-gate-stamp-resolution.test.mjs", "src/adapter/merge-gate-helpers.mjs", "src/adapter/engine-git.mjs"]
     },
     {
       "id": "merge-gate-ref-parsing",
@@ -161,7 +161,7 @@
       "run": "node src/adapter/merge-gate-ref-parsing.test.mjs",
       "beat": "build",
       "init": "Node >= 18, no install",
-      "covers": ["src/adapter/merge-gate-ref-parsing.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+      "covers": ["src/adapter/merge-gate-ref-parsing.test.mjs", "src/adapter/merge-gate-helpers.mjs", "src/adapter/engine-git.mjs"]
     },
     {
       "id": "merge-gate-trunk-and-worktree",
@@ -170,7 +170,7 @@
       "run": "node src/adapter/merge-gate-trunk-and-worktree.test.mjs",
       "beat": "build",
       "init": "Node >= 18, no install",
-      "covers": ["src/adapter/merge-gate-trunk-and-worktree.test.mjs", "src/adapter/merge-gate-helpers.mjs"]
+      "covers": ["src/adapter/merge-gate-trunk-and-worktree.test.mjs", "src/adapter/merge-gate-helpers.mjs", "src/adapter/engine-git.mjs"]
     },
     {
       "id": "f4-floor",
@@ -179,7 +179,7 @@
       "run": "node src/adapter/f4-floor.test.mjs",
       "beat": "build",
       "init": "Node >= 18, no install",
-      "covers": ["src/adapter/f4-floor.test.mjs", "src/adapter/engine.mjs", "src/adapter/deny-rules.json"]
+      "covers": ["src/adapter/f4-floor.test.mjs", "src/adapter/engine.mjs", "src/adapter/engine-git.mjs", "src/adapter/deny-rules.json"]
     },
     {
       "id": "forge-map",

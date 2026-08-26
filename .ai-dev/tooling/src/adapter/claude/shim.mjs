@@ -12,7 +12,7 @@ import { evaluate, loadConfig } from "../engine.mjs";
 import { resolveSessionRoot, targetsSessionRepo, extractGitEffectiveCwd } from "../session-root.mjs";
 import { deriveSanctionedScratch, deriveSanctionedScratchWritable } from "./sanctioned-scratch.mjs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 // SessionStart inject — the crash-resume FIRST-action reminder. The pointer's STATUS content
 // (version, branch, queue) lives in `.ai-dev/state/current.md` alone (invariant 6); this text
@@ -194,9 +194,4 @@ function main() {
 }
 
 // Run main only as the hook entry, not when imported by the parity test.
-// pathToFileURL, not string concatenation: on Windows argv[1] is `C:\...` while
-// import.meta.url is `file:///C:/...` — the old `file://${argv[1]}` compare was
-// always false, main() never ran, and the hook exited 0 (= allow): the ENTIRE
-// deny layer was silently inert on win32 (CE-02m-3 Phase-10 acceptance probes,
-// 2026-07-11; Unix unaffected, which is why it shipped).
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (import.meta.url === `file://${process.argv[1]}`) main();

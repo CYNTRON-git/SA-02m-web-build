@@ -31,6 +31,9 @@ import {
   pushExplicitTrunkRef,
   resolveMergeTopic,
   reviewStampSatisfied,
+  reviewStampDiagnosis,
+  STAMP_SEPARATORS,
+  STAMP_LABELS,
   isTrunkFastForward,
 } from "./engine-git.mjs";
 import {
@@ -395,6 +398,49 @@ const PREDICATES = {
   },
 };
 
+// ── diagnostics map — keyed by predicate name ────────────────────────────────
+// When a deny or ask rule hits and a diagnostic function exists for its predicate,
+// the diagnostic is appended to rule.intent to give the actor a remediation path.
+const DIAGNOSTICS = {
+  mergeWithUnstampedReview(input) {
+    // Merge-gate diagnostic: name the topic, the expected stamp file, what's missing,
+    // and the remediation (re-spawn the Reviewer).
+    const topic = resolveMergeTopic(input.command, input.root) ||
+                  pushExplicitTrunkRef(input.command);
+    if (!topic) return "";
+    const diagnosis = reviewStampDiagnosis(input.root, topic);
+    const parts = [];
+    parts.push(`Expected stamp: ${diagnosis.expectedFile}`);
+    if (!diagnosis.fileExists) {
+      parts.push(`Stamp file absent. Stamps in .ai-dev/reviews/: ${diagnosis.siblingStamps.join(", ") || "(none)"}`);
+    } else {
+      if (!diagnosis.anchors.verdict?.ok) {
+        parts.push(`Code review/Doc review: ${diagnosis.anchors.verdict?.reason || "unknown issue"}`);
+      }
+      if (!diagnosis.anchors.contracts?.ok) {
+        parts.push(`Contracts: ${diagnosis.anchors.contracts?.reason || "unknown issue"}`);
+      }
+    }
+    // Build "Required form" by interpolating actual label and separator constants (single home, never hand-typed second copy)
+    const verdictLabels = STAMP_LABELS.verdict;  // both possible verdict labels
+    const contractsLabel = STAMP_LABELS.contracts;
+    const canonicalSep = STAMP_SEPARATORS[0];  // canonical separator: first in list
+    // Build examples with all verdict labels and all separators mentioned
+    let requiredFormMsg = `Required form: ## ${verdictLabels[0]}${canonicalSep} APPROVED (or ## ${verdictLabels[1]}${canonicalSep} APPROVED); ## ${contractsLabel}${canonicalSep} <value>`;
+    if (STAMP_SEPARATORS.length > 1) {
+      requiredFormMsg += ` (separators accepted: ${STAMP_SEPARATORS.map(s => JSON.stringify(s)).join(", ")}; no separator accepted when value starts with uppercase token or literal "none")`;
+    }
+    parts.push(requiredFormMsg);
+    parts.push(`Remediation: Re-spawn the Reviewer to regenerate the stamp. Do NOT author or edit the stamp yourself.`);
+    return "\n" + parts.join("\n");
+  },
+  mergeTopicUnresolvable() {
+    // Unresolvable-topic diagnostic: explain the issue and the path to resolve it.
+    return "\nUnable to determine which branch is being pushed (detached HEAD and no branch ref in command). " +
+           "Name the branch explicitly in the command (e.g. `git push origin feature/topic`) so the gate can check the review stamp.";
+  }
+};
+
 // ── config + evaluate ────────────────────────────────────────────────────────
 export function loadConfig(dir) {
   const base = dir || path.dirname(fileURLToPath(import.meta.url));
@@ -432,18 +478,55 @@ export function evaluate(input, config) {
     if (rule.toggleable === true && disabled.has(rule.id)) continue; // opted-out guard
     const pred = PREDICATES[rule.predicate];
     if (!pred || !pred(input, config)) continue;
-    if (rule.class === "deny") return { verdict: "deny", ruleId: rule.id, reason: rule.intent };
+    if (rule.class === "deny") {
+      let reason = rule.intent;
+      // Append diagnostic if one exists for this predicate.
+      const diag = DIAGNOSTICS[rule.predicate];
+      if (diag) {
+        try {
+          const diagnostic = diag(input, config);
+          if (diagnostic) reason = reason + diagnostic;
+        } catch {
+          // Diagnostic error; fall back to intent alone
+        }
+      }
+      return { verdict: "deny", ruleId: rule.id, reason };
+    }
     if (rule.class === "ask") {
       // In light mode, an ask-class match returns deny immediately (same precedence
       // as deny) with an informative reason naming what's denied + the safe path.
       if (lightMode) {
+        let reason = rule.intent;
+        // Append diagnostic for ask-class rules too.
+        const diag = DIAGNOSTICS[rule.predicate];
+        if (diag) {
+          try {
+            const diagnostic = diag(input, config);
+            if (diagnostic) reason = reason + diagnostic;
+          } catch {
+            // Diagnostic error; fall back to intent alone
+          }
+        }
         const alt = rule.lightAlternative || "";
-        const reason = alt
-          ? `[hookMode: light] ${rule.intent} Safe path: ${alt}`
-          : `[hookMode: light] ${rule.intent}`;
-        return { verdict: "deny", ruleId: rule.id, reason };
+        const msg = alt
+          ? `[hookMode: light] ${reason} Safe path: ${alt}`
+          : `[hookMode: light] ${reason}`;
+        return { verdict: "deny", ruleId: rule.id, reason: msg };
       }
-      if (!ask) ask = { verdict: "ask", ruleId: rule.id, reason: rule.intent };
+      if (!ask) {
+        let reason = rule.intent;
+        // Append diagnostic for ask-class rules.
+        const diag = DIAGNOSTICS[rule.predicate];
+        if (diag) {
+          try {
+            const diagnostic = diag(input, config);
+            if (diagnostic) reason = reason + diagnostic;
+          } catch {
+            // Diagnostic error; fall back to intent alone
+          }
+        }
+        ask = { verdict: "ask", ruleId: rule.id, reason };
+      }
     }
     if (rule.class === "inject") {
       if (injectId === null) injectId = rule.id; // leading inject keeps its identity
@@ -457,4 +540,4 @@ export function evaluate(input, config) {
   return ask || { verdict: "allow", ruleId: null, reason: "" };
 }
 
-export const _internals = { bashWriteTargets, bashReadTargets, isOrchestratorAuthorable, resolveMergeTopic, reviewStampSatisfied, stripHeredocBodies, projectProfile, projectHookMode, disabledSafeguards, safeguardRegistry, componentRoots, pushExplicitTrunkRef, PREDICATES };
+export const _internals = { bashWriteTargets, bashReadTargets, isOrchestratorAuthorable, resolveMergeTopic, reviewStampSatisfied, reviewStampDiagnosis, STAMP_SEPARATORS, STAMP_LABELS, stripHeredocBodies, projectProfile, projectHookMode, disabledSafeguards, safeguardRegistry, componentRoots, pushExplicitTrunkRef, PREDICATES };

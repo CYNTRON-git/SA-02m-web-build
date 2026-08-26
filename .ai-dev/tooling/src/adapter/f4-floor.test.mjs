@@ -47,7 +47,7 @@ function mkRoot({ branch, configured = false, commits = false, stampTrunk = null
   if (stampTrunk) {
     const d = path.join(root, ".ai-dev", "reviews");
     fs.mkdirSync(d, { recursive: true });
-    fs.writeFileSync(path.join(d, `${stampTrunk}_review.md`), "## Code review: APPROVED\n");
+    fs.writeFileSync(path.join(d, `${stampTrunk}_review.md`), "## Code review: APPROVED\n## Contracts: none\n");
   }
   return root;
 }
