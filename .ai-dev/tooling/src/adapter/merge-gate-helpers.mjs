@@ -15,10 +15,16 @@ export function rootOnBranch(branch) {
 }
 
 // Drop a SATISFIED review stamp for `topic` into a root (so the gate sees it stamped).
+// Carries a `Contracts:` line too — the gate requires it (8D
+// contracts-ignored-autonomous, fix B); omitting it here would make every
+// caller of this fixture fail closed for a reason unrelated to what it tests.
 export function stamp(root, topic) {
   const dir = path.join(root, ".ai-dev", "reviews");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, `${topic}_review.md`), "## Code review: APPROVED\n");
+  fs.writeFileSync(
+    path.join(dir, `${topic}_review.md`),
+    "## Code review: APPROVED\n## Contracts: none\n"
+  );
 }
 
 // A root whose HEAD is DETACHED (raw sha, no ref) — the HEAD signal yields nothing.

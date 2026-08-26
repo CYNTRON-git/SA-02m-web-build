@@ -1,6 +1,6 @@
 ---
 name: sa02m-ui-style
-description: SA-02m web UI design system — dark/light theme tokens, icon chips (w-ico/chip-*), KPI tiles, widget skeletons (title/val/sub/bar-row), status pills with dots, nav states, WCAG AA contrast floors and verified color pairs. Use BEFORE any visual change: new widget, new color, icon, badge, theme work, or when the Operator reports readability issues.
+description: Use BEFORE any visual change — new widget, new color, icon, badge, theme work, or when the Operator reports readability issues — SA-02m web UI design system: dark/light theme tokens, icon chips (w-ico/chip-*), KPI tiles, widget skeletons (title/val/sub/bar-row), status pills with dots, nav states, WCAG AA contrast floors and verified color pairs.
 ---
 
 # SA-02m UI style

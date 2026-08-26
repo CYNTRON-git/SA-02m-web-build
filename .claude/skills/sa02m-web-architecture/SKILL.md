@@ -1,6 +1,6 @@
 ---
 name: sa02m-web-architecture
-description: SA-02m web stack internals — nginx+fcgiwrap+Bash CGI backend, app.js rolling status scheduler (priority/main/rs485/background parts, warmup cache, pause-on-failure), tab/subsystem map (MQTT, flasher, gateway, kernel), i18n runtime, auth flow. Use BEFORE editing app.js polling, status.cgi parts, adding widgets/endpoints, or for symptoms: widget stuck at «—», data stops after failures, UI element wiped after a poll.
+description: Use BEFORE editing app.js polling, status.cgi parts, adding widgets/endpoints, or for symptoms — widget stuck at «—», data stops after failures, UI element wiped after a poll — SA-02m web stack internals: nginx+fcgiwrap+Bash CGI backend, app.js rolling status scheduler (priority/main/rs485/background parts, warmup cache, pause-on-failure), tab/subsystem map (MQTT, flasher, gateway, kernel), i18n runtime, auth flow.
 ---
 
 # SA-02m web architecture
@@ -51,17 +51,11 @@ USB widget title (`#usb-widget-title` textContent rewritten on every storage
 poll). Static decorations (icon chips etc.) live OUTSIDE these nodes — id on
 the inner text span, icon as a sibling (the 1.0.4.1 USB-icon lesson).
 
-## Tabs → files
+## Tabs → subsystems
 
-| Tab | JS | CGI | Notes |
-|---|---|---|---|
-| dashboard | app.js | status.cgi | parts above |
-| network/time | app.js | config.cgi, apply.cgi | static IP toggles per iface |
-| mqtt | mqtt.js | mqtt_*.cgi | broker 1883 local / 1884 ext; bridge sa02m-modbus-mqtt |
-| devices (ДТВ/СЭ) | devices.js | nginx `/api/devices*` → `sa02m-devices-api` :8765 | live MQTT cache + SQLite history (`sa02m-devices-logger`); charts / Excel / CE peak journal |
-| flasher | flasher.js | flasher daemon + CGI | port lease (MPLC_STOP_SERVICES), reconnect via sessionStorage, irreversible-flash guard |
-| gateway | gateway.js (builds its own DOM) | gateway_*.cgi | COM1..COM5 sub-nav dots |
-| system | app.js | services_ctrl, kernel_ctrl, cpu_profile, web_update_*, web_creds | kernel RT/SMP swap → reboot; CPU profiles SMP-only |
+The tab → frontend / backend / device map has ONE home:
+`docs/agent-rules/sa02m-domain.md ## Subsystems behind the tabs` — cite it,
+never restate (this skill's former second copy merged there, 2026-08-26).
 
 ## HW variants
 

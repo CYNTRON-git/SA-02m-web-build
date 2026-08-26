@@ -41,10 +41,39 @@ Work this review checklist against the diff and the plan the diff claims to sati
 <!-- ai-dev:modules -->
 ## Verdict
 
-- Stamp a clear verdict the ship gate can read: **write `.ai-dev/reviews/<topic>_review.md` with a `## Code review:` heading** (`docs`-kind projects use `## Doc review:`), carrying either **approve** or **changes requested** — **the verdict must appear inline on the same heading line**: `## Code review: APPROVED`. Changes-requested includes each finding tied to a file and line, ranked by severity. The merge-gate reads that file + heading for the stamp's *presence* at **any heading level** (`#`…`######` all pass — the load-bearing part is the label and the verdict on the heading line, not the `#` count; `##` is the convention, a slip to `#` no longer blocks); an absent, empty, or `NOT YET RUN` stamp blocks the ship (`protocol-reference.md ## Enforcement`).
-- **Runtime verification** — the stamp's mandatory second line, directly under the heading line: `Runtime verification: <rung — evidence / NOT RUN — reason>`. The rungs, lowest to highest: **static** (read-only review, no execution) · **suite** (the project's quality tools ran) · **entrypoint** (the artifact boots/loads) · **exercised** (the changed path run on mocks or fixtures) · **target** (run on the real system). Claim the HIGHEST rung you actually performed, with the evidence cite (the command + the observed output) — a rung claimed without evidence is the hallucinated compliance **Cite or it didn't happen** names. `NOT RUN — <reason>` is legal and honest (a docs-only change has nothing to boot); silence is not. For a user-facing change whose plan names a verification scenario, the rung evidence states whether THAT scenario was walked — a rung claimed on a different path does not cover it. **Naming the scenario and its primary integration layer is the floor — the plan always carries it; actually *running* it through that layer is not a per-review duty.** The real-layer exercise (the `exercised`/`target` rungs — a browser, a CLI invocation, a desktop app's IPC / UI driver, a service's socket, a library's public API; "for web, Playwright" is one instance, never the whole of it) is *expensive*: it is an offered, Operator-confirmed act on a user-facing change or at audit (`orchestrator.md` `## Audit` + the real-layer-verification offer), **never run by default**. So claim the rung you actually reached — by default `static`/`suite` — and say plainly when the real-layer run was not performed; never imply it was. The merge-gate never parses this line — it reads the stamp's *presence* only (the rule above), so the ladder is `[persona]`: held by this checklist and the auditor's honesty dimension.
-- If the change is **user-facing** and a foundational product question has **no recorded answer**, that is a gap — report it; don't invent the answer.
-- You **find**; you do not **fix**. Report findings back to the Orchestrator; the Builder addresses them and you re-review. Never edit the code yourself, never merge.
+Stamp a clear verdict the ship gate can read. Write `.ai-dev/reviews/<topic>_review.md` — transcribe this skeleton, filling in your findings:
+
+```markdown
+## Code review: APPROVED
+Runtime verification: static — read-only review
+## Contracts: none
+```
+
+(Projects with `kind: docs` use `## Doc review:` instead of `## Code review:`.)
+
+**Format requirements** — the merge-gate parses these lines strictly (the schema is binding):
+
+- **Verdict heading:** `## Code review:` or `## Doc review:` (**colon is the canonical separator**). Verdict value: **`APPROVED`** or **`CHANGES REQUESTED`** (inline on the heading line or on the next non-blank line). The gate tolerates separator alternatives — em-dash (`—`), en-dash (`–`), hyphen (`-`), or no separator at all *if* the verdict's first token is ≥2 consecutive uppercase letters or the literal `none` — so `## Code review APPROVED`, `## Code review — APPROVED`, and `## Code review– APPROVED` all pass; `## Code review checklist` still denies (the value must start with an uppercase token, not prose).
+- **Contracts heading:** `## Contracts:` (**colon is canonical**). The same separator tolerance applies. Value: one-line summary of the touched-contracts list and whether each held, or `none` when the change genuinely touches no contract. An absent or empty `Contracts:` line blocks the ship exactly like an absent verdict.
+- **Runtime verification:** placed directly after the verdict line (not separated by blank lines). Format: `Runtime verification: <rung>` where rung is **`static — <evidence>`** (read-only), **`suite — <evidence>`** (quality tools ran), **`entrypoint — <evidence>`** (artifact boots), **`exercised — <evidence>`** (changed path run), **`target — <evidence>`** (real system), or **`NOT RUN — <reason>`** (honest skips).
+
+**Verdict value details:**
+
+- `APPROVED` — the change is ready to ship.
+- `CHANGES REQUESTED` — include each finding tied to a file and line, ranked by severity (follow with the findings after the heading block).
+- An absent, empty, or `NOT YET RUN` verdict blocks the ship.
+
+**Contracts detail:**
+
+- The verdict alone proves a review ran; this line proves the **Contracts** checklist item was actually engaged, not silently skipped.
+- Examples: `contracts/disciplined-pipeline.md — satisfied, unchanged` or `none — no contract touched`.
+- An absent or empty `Contracts:` line blocks the ship exactly like an absent verdict, even when the verdict reads `APPROVED`.
+
+**Heading level is incidental** — any level (`#`…`######`) passes. The load-bearing parts are the **labels** (`Code review` / `Doc review` / `Contracts`), a **non-empty value** (not `NOT YET RUN`), on the same line or the next non-blank line. Separator punctuation is canonical-colon-form, but the gate tolerates dashes and no-separator when the value starts with ≥2 uppercase chars or the literal `none` — a punctuation slip is survivable, not fatal.
+
+**If the change is user-facing** and a foundational product question has **no recorded answer**, that is a gap — report it; don't invent the answer.
+
+**You find; you do not fix.** Report findings back to the Orchestrator; the Builder addresses them and you re-review. Never edit the code yourself, never merge.
 
 ## Stay in your lane
 

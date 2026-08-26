@@ -62,3 +62,4 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 | Install/HW variants (Operator-facing) | `README.md` |
 | MR-02m module internals (Modbus map, .fw) | the sibling repo `CYNTRON-git/MR-02m`, its `docs/agent-rules/` |
 | Skills (deep dives) | `.claude/skills/` — sa02m-web-architecture, sa02m-versioning-release, sa02m-ui-style, sa02m-web-testing |
+| How a skill is written (triggers, budget) | `docs/agent-rules/skill-authoring.md` |

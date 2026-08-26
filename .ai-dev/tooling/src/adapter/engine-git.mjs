@@ -277,32 +277,170 @@ function isCleanTopic(topic) {
 // unclean topic leaves the stamp UNsatisfiable ⇒ the merge-gate DENIES (fail
 // toward deny). A nested branch name (feature/sub/topic → `sub/topic`) is
 // rejected by the same rule: the convention is a single `<prefix>/<topic>`.
+
+// Stamp separator constants — single home for accepted punctuation forms.
+// Used by the parser and exported for diagnostic messages (to avoid second-copy drift).
+const STAMP_SEPARATORS = [":", "—", "–", "-"];  // canonical first, then alternatives
+
+// Stamp label constants — single home for verdict and contracts label names.
+// Verdict labels are alternatives (either one satisfies); Contracts is singular.
+const STAMP_LABELS = {
+  verdict: ["Code review", "Doc review"],  // either one satisfies the verdict anchor
+  contracts: "Contracts"                    // required single label
+};
+
+// Shared line-value reader for any `<label>:` heading in the stamp — the verdict
+// and the Contracts anchor are both "a labelled heading, value inline or on the
+// next non-blank line", so the extraction lives once here.
+// Returns { value, foundLabel } where foundLabel is the matched label (with separator stripped).
+// Fix C: separator tolerance — accept `:` (canonical) or `—` `–` `-` after the label.
+// No separator at all is accepted ONLY when value's first token is ≥2 uppercase chars or literal "none"
+// (so `## Code review APPROVED` and `## Contracts none` pass; `## Code review checklist` fails).
+function stampLineValue(text, label) {
+  // Heading level is incidental — the gate reads the value's PRESENCE, not
+  // the markdown level. Accept any level (#…######): a reviewer authoring a
+  // fresh file naturally opens with an H1 title, and pinning ## only cost a
+  // blocked push + a wasted re-review (8D reviewer-stamp-heading-level).
+  // Match label with optional separator; capture everything after.
+  const sepPattern = STAMP_SEPARATORS.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+  const m = text.match(new RegExp("^#{1,6}[ \\t]+" + label + "(?:" + sepPattern + ")?[ \\t]*(.*)$", "m"));
+  if (!m) return { value: null, foundLabel: null };
+  let content = m[1].trim();
+
+  // Check if there's an explicit separator in the matched text between label and content
+  // by examining the span between label and the captured content.
+  const labelIndex = m[0].indexOf(label);
+  const labelEnd = labelIndex + label.length;
+  const spanBetween = m[0].slice(labelEnd, m[0].length - m[1].length);
+  const sepRegex = new RegExp("[" + STAMP_SEPARATORS.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("") + "]");
+  const hasExplicitSeparator = sepRegex.test(spanBetween);
+
+  // Normalize the captured value — strip a leading separator + whitespace BEFORE the
+  // NOT YET RUN test (Fix C security-critical ordering).
+  const normRegex = new RegExp("^[" + STAMP_SEPARATORS.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("") + "\\s]+");
+  content = content.replace(normRegex, "").trim();
+
+  // Validate no-separator case: if the matched text had no separator character,
+  // the first token of content must be ≥2 uppercase chars OR the literal "none".
+  if (!hasExplicitSeparator && content) {
+    const firstToken = content.split(/\s+/)[0];
+    // Accept if: "none" (case-insensitive) OR ≥2 consecutive uppercase letters
+    const isAcceptable = /^none$/i.test(firstToken) || /^[A-Z]{2,}/.test(firstToken);
+    if (!isAcceptable) {
+      // No separator and first token doesn't match the pattern — reject by returning null value
+      return { value: null, foundLabel: null };
+    }
+  }
+
+  // Also accept the value on the very next non-blank line after the heading
+  // (resilient to reviewers that split "## Code review:" and "APPROVED").
+  // Fix D: next-line value must NOT itself be a labelled stamp line (Runtime verification, verdict labels, contracts label)
+  // — such a line is another anchor's value, never this anchor's value.
+  if (!content) {
+    const after = text.slice(text.indexOf(m[0]) + m[0].length);
+    const next = after.match(/^\r?\n([^\r\n#][^\r\n]*)/);
+    if (next) {
+      const nextLine = next[1].trim();
+      // Check if this next line is itself a labelled stamp line (matches a known anchor label).
+      // Use a set of all possible anchor labels: verdict labels + contracts label + runtime-verification.
+      const allAnchorLabels = [...STAMP_LABELS.verdict, STAMP_LABELS.contracts, "Runtime verification"];
+      const labelPattern = allAnchorLabels
+        .map(l => l.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|");
+      const isStampLine = new RegExp("^(" + labelPattern + ")\\s*[:—–-]?\\s*").test(nextLine);
+      if (!isStampLine) {
+        content = nextLine;
+      }
+    }
+  }
+  return { value: content, foundLabel: label };
+}
+
+// Full stamp diagnostic — structured result with topic, file path, presence, and per-anchor status.
+// Returns { topic, expectedFile, fileExists, siblingStamps, anchors }.
+// anchors = { codeReview, docReview, contracts } with { ok, reason }.
+function reviewStampDiagnosis(root, topic) {
+  const expectedFile = path.join(path.resolve(root), ".ai-dev", "reviews", topic + "_review.md");
+  let text;
+  try {
+    text = fs.readFileSync(expectedFile, "utf8");
+  } catch {
+    // Read failed; list siblings for diagnostic.
+    let siblingStamps = [];
+    try {
+      const reviewsDir = path.dirname(expectedFile);
+      const files = fs.readdirSync(reviewsDir);
+      siblingStamps = files.filter(f => f.endsWith("_review.md")).sort();
+    } catch {
+      // Siblings dir read also failed; sibling list stays empty
+    }
+    return {
+      topic,
+      expectedFile,
+      fileExists: false,
+      siblingStamps,
+      anchors: {}
+    };
+  }
+
+  // File exists; analyze anchors.
+  const verdictResults = STAMP_LABELS.verdict.map(label => ({
+    label,
+    result: stampLineValue(text, label)
+  }));
+  const contractsResult = stampLineValue(text, STAMP_LABELS.contracts);
+
+  const anchors = {};
+
+  // Verdict anchor — either verdict label satisfies it.
+  const firstSatisfied = verdictResults.find(vr => vr.result.value && !/^NOT YET RUN$/i.test(vr.result.value));
+  const anyFound = verdictResults.some(vr => vr.result.foundLabel !== null);
+  const anyHasValue = verdictResults.some(vr => vr.result.value === "" || vr.result.value);
+
+  if (firstSatisfied) {
+    anchors.verdict = { ok: true, which: firstSatisfied.label, reason: null };
+  } else if (!anyFound) {
+    anchors.verdict = { ok: false, reason: `${STAMP_LABELS.verdict.join(" / ")} label absent` };
+  } else if (anyHasValue && !firstSatisfied) {
+    const firstNyr = verdictResults.find(vr => vr.result.value && /^NOT YET RUN$/i.test(vr.result.value));
+    if (firstNyr) {
+      anchors.verdict = { ok: false, reason: "verdict set to NOT YET RUN" };
+    } else {
+      anchors.verdict = { ok: false, reason: "verdict value empty" };
+    }
+  } else {
+    anchors.verdict = { ok: false, reason: `${STAMP_LABELS.verdict.join(" / ")} label absent or value not parseable` };
+  }
+
+  // Contracts anchor.
+  const contractsValue = contractsResult.value;
+  if (contractsValue && !/^NOT YET RUN$/i.test(contractsValue)) {
+    anchors.contracts = { ok: true, reason: null };
+  } else if (contractsResult.foundLabel === null) {
+    anchors.contracts = { ok: false, reason: `${STAMP_LABELS.contracts}: label absent` };
+  } else if (contractsValue === "") {
+    anchors.contracts = { ok: false, reason: `${STAMP_LABELS.contracts}: value empty` };
+  } else if (contractsValue && /^NOT YET RUN$/i.test(contractsValue)) {
+    anchors.contracts = { ok: false, reason: `${STAMP_LABELS.contracts}: set to NOT YET RUN` };
+  } else {
+    anchors.contracts = { ok: false, reason: `${STAMP_LABELS.contracts}: label absent or value not parseable` };
+  }
+
+  return {
+    topic,
+    expectedFile,
+    fileExists: true,
+    anchors
+  };
+}
+
 function reviewStampSatisfied(root, topic) {
   if (!isCleanTopic(topic)) return false;
-  const file = path.join(path.resolve(root), ".ai-dev", "reviews", topic + "_review.md");
-  let text;
-  try { text = fs.readFileSync(file, "utf8"); } catch { return false; }
-  const stampOK = (label) => {
-    // Heading level is incidental — the gate reads the verdict's PRESENCE, not
-    // the markdown level. Accept any level (#…######): a reviewer authoring a
-    // fresh file naturally opens with an H1 title, and pinning ## only cost a
-    // blocked push + a wasted re-review (8D reviewer-stamp-heading-level).
-    const m = text.match(new RegExp("^#{1,6}[ \\t]+" + label + ":[ \\t]*(.*)$", "m"));
-    if (!m) return false;
-    let content = m[1].trim();
-    // Also accept the verdict on the very next non-blank line after the heading
-    // (resilient to reviewers that split "## Code review:" and "APPROVED").
-    if (!content) {
-      const after = text.slice(text.indexOf(m[0]) + m[0].length);
-      const next = after.match(/^\r?\n([^\r\n#][^\r\n]*)/);
-      if (next) content = next[1].trim();
-    }
-    if (!content || /^NOT YET RUN$/i.test(content)) return false;
-    return true;
-  };
-  // The accepted heading labels are exactly the Reviewer's documented stamp
-  // forms (src/agents/reviewer.md, Verdict).
-  return stampOK("Code review") || stampOK("Doc review");
+  const diagnosis = reviewStampDiagnosis(root, topic);
+  if (!diagnosis.fileExists) return false;
+  const verdictOk = diagnosis.anchors.verdict?.ok ?? false;
+  const contractsOk = diagnosis.anchors.contracts?.ok ?? false;
+  return verdictOk && contractsOk;
 }
 
 export {
@@ -317,5 +455,8 @@ export {
   isTrunkFastForward,
   resolveMergeTopic,
   isCleanTopic,
+  STAMP_SEPARATORS,
+  STAMP_LABELS,
+  reviewStampDiagnosis,
   reviewStampSatisfied,
 };

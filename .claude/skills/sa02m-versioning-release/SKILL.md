@@ -1,6 +1,6 @@
 ---
 name: sa02m-versioning-release
-description: SA-02m web version and release flow — branch name IS the version, +1 branch per release, sync-app-version.py (VERSION / APP_VERSION / ?v= cache-bust), CHANGELOG format, «Обновление веб» semver self-update, deploy paths. Use when creating a release branch, bumping versions, editing CHANGELOG, or debugging stale-cache / update-not-offered symptoms.
+description: Use when creating a release branch, bumping versions, editing CHANGELOG, or debugging stale-cache / update-not-offered symptoms — SA-02m web version and release flow: branch name IS the version, +1 branch per release, sync-app-version.py (VERSION / APP_VERSION / ?v= cache-bust), CHANGELOG format, «Обновление веб» semver self-update, deploy paths.
 ---
 
 # SA-02m versioning & release

@@ -16,3 +16,4 @@
 @docs/agent-rules/git-commits.md
 @docs/agent-rules/web-diagnostic-tools.md
 @docs/agent-rules/agent-tooling-map.md
+@docs/agent-rules/skill-authoring.md

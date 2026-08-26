@@ -61,6 +61,16 @@ Every non-trivial plan carries these three columns of judgement:
 - Renaming or moving a file: grep the OLD name across `www/`, `etc/`,
   `install.sh`, nginx config, and docs; update every reference before deleting.
 
+## Refactor discipline (planner + builder)
+
+- **Chesterton's Fence** — before simplifying or removing code, understand why
+  it exists (git blame, a `CHANGELOG.md` grep, the comment at the site); a
+  guard that "looks redundant" usually pins a past regression.
+- **Rule of 500** — a refactor touching more than ~500 lines wants a script or
+  codemod (re-runnable, reviewable), not manual edits.
+
+(Both adapted from addyosmani/agent-skills.)
+
 ## Post-edit — the verification checklist (reviewer)
 
 Every review confirms:
@@ -82,7 +92,11 @@ Every review confirms:
 ## «Значение — / не обновляется» — the standing recipe
 
 When the Operator reports a widget stuck at `—`, zero, or not updating, DO NOT
-lead with "please attach logs". Trace the chain first, by code:
+lead with "please attach logs". For a regression with a known-good version,
+`git bisect` across the version branches beats reading diffs; and a NEW
+failure appearing mid-task stops the line — halt feature work until it is
+understood (adapted from addyosmani/agent-skills). Trace the chain first,
+by code:
 
 1. **Device source** — does the script/`/proc` path exist on this HW variant
    and kernel? (RT vs SMP, 1eth vs 2eth differ.)

@@ -1,6 +1,6 @@
 ---
 name: sa02m-web-testing
-description: Verify SA-02m web changes without a device — headless Chromium/Playwright harness (static server, session-cookie auth bypass, CGI stubs, apply*-function state injection), state matrix (themes, variants, thresholds, link/modem states), quality gates, live-device curl probes. Use when verifying any UI or CGI change, reproducing a reported visual bug, or setting up screenshots for the Operator.
+description: Use when verifying any UI or CGI change, reproducing a reported visual bug, or setting up screenshots for the Operator — verify SA-02m web changes without a device: headless Chromium/Playwright harness (static server, session-cookie auth bypass, CGI stubs, apply*-function state injection), state matrix (themes, variants, thresholds, link/modem states), quality gates, live-device curl probes.
 ---
 
 # SA-02m web testing

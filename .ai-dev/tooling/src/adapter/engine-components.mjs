@@ -12,12 +12,6 @@ import { isInsideRoot, isFilesystemRoot, isAncestorOrEqual } from "./engine-path
 // matches that dir and everything under it; otherwise the exact path or anything
 // under it as a dir.
 function relMatches(rel, entry) {
-  // Normalize separators: path.relative() yields backslashes on Windows while
-  // deny-rules.json entries are forward-slash — without this the startsWith
-  // never matched on win32: the tooling self-patch deny failed OPEN and the
-  // orchestrator allow_prefixes false-DENIED (analyzer sweep 2026-07-11; the
-  // single normalization here covers every caller — engine.mjs imports this).
-  rel = rel.split(path.sep).join("/");
   if (entry.endsWith("/")) return rel === entry.slice(0, -1) || rel.startsWith(entry);
   return rel === entry || rel.startsWith(entry + "/");
 }

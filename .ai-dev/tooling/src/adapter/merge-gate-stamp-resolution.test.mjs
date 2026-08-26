@@ -22,7 +22,7 @@ import { rootOnBranch, stamp, rootDetached } from "./merge-gate-helpers.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const config = loadConfig(HERE);
-const { resolveMergeTopic } = _internals;
+const { resolveMergeTopic, STAMP_SEPARATORS, STAMP_LABELS } = _internals;
 
 let pass = 0, fail = 0;
 function check(name, got, want) {
@@ -100,7 +100,7 @@ console.log("SPLIT-LINE STAMP (next-line verdict accepted):");
   const root = rootOnBranch("feature/split");
   const dir = path.join(root, ".ai-dev", "reviews");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "split_review.md"), "## Code review:\nAPPROVED\n\nFull review body follows.\n");
+  fs.writeFileSync(path.join(dir, "split_review.md"), "## Code review:\nAPPROVED\n\n## Contracts: none\n\nFull review body follows.\n");
   const v = evaluate({ act: "bash", root, command: "git push origin feature/split" }, config);
   check("split-line-stamp:allows", v.verdict, "allow");
   fs.rmSync(root, { recursive: true, force: true });
@@ -159,7 +159,7 @@ console.log("SPLIT-LINE STAMP (next-line verdict accepted):");
     const root = rootOnBranch(`feature/level-${lvl}`);
     const dir = path.join(root, ".ai-dev", "reviews");
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `level-${lvl}_review.md`), `${hashes} Code review: APPROVED\n`);
+    fs.writeFileSync(path.join(dir, `level-${lvl}_review.md`), `${hashes} Code review: APPROVED\n${hashes} Contracts: none\n`);
     const v = evaluate({ act: "bash", root, command: `git push origin feature/level-${lvl}` }, config);
     check(`heading-${lvl}:allows`, v.verdict, "allow");
     fs.rmSync(root, { recursive: true, force: true });
@@ -253,9 +253,309 @@ console.log("STAMP LABELS (Code review / Doc review accepted; Validation dropped
   const root = rootOnBranch("feature/docs");
   const dir = path.join(root, ".ai-dev", "reviews");
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "docs_review.md"), "## Doc review: APPROVED\n");
+  fs.writeFileSync(path.join(dir, "docs_review.md"), "## Doc review: APPROVED\n## Contracts: none\n");
   const v = evaluate({ act: "bash", root, command: "git push origin feature/docs" }, config);
   check("doc-review-label:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 8. CONTRACTS ANCHOR — the verdict alone no longer satisfies the gate ──────
+// 8D contracts-ignored-autonomous, fix B: a stamp missing the `Contracts:`
+// line fails closed even with an APPROVED verdict — the anchor forces a
+// recorded claim (any non-empty value, including "none"), never silent
+// omission.
+console.log("CONTRACTS ANCHOR (verdict alone is no longer enough):");
+
+// 8a. APPROVED verdict, no Contracts line at all ⇒ DENY.
+{
+  const root = rootOnBranch("feature/nocontracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "nocontracts_review.md"), "## Code review: APPROVED\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/nocontracts" }, config);
+  check("no-contracts-line:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 8b. APPROVED verdict, an empty `Contracts:` heading (no inline or next-line
+// value) ⇒ DENY — same empty-stamp discipline as the verdict line.
+{
+  const root = rootOnBranch("feature/emptycontracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "emptycontracts_review.md"),
+    "## Code review: APPROVED\n## Contracts:\n\n\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/emptycontracts" }, config);
+  check("empty-contracts-line:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 8c. APPROVED verdict + `Contracts: none` ⇒ ALLOW — "none" is a valid,
+// recorded claim, not a silent gap.
+{
+  const root = rootOnBranch("feature/nonecontracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "nonecontracts_review.md"),
+    "## Code review: APPROVED\n## Contracts: none\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/nonecontracts" }, config);
+  check("none-contracts-line:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 8d. APPROVED verdict + a filled Contracts value on the next line (split
+// form) ⇒ ALLOW — mirrors the verdict's own split-line fallback.
+{
+  const root = rootOnBranch("feature/splitcontracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "splitcontracts_review.md"),
+    "## Code review: APPROVED\n## Contracts:\nmessengers.md — satisfied, unchanged\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/splitcontracts" }, config);
+  check("split-contracts-line:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 8e. APPROVED verdict + `Contracts: NOT YET RUN` ⇒ DENY — the anchor rejects
+// the same not-yet-engaged placeholder the verdict line rejects (mirrors 3c);
+// a reviewer that stamped APPROVED but left Contracts unaddressed must not
+// satisfy the gate just because the line exists.
+{
+  const root = rootOnBranch("feature/nyrcontracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "nyrcontracts_review.md"),
+    "## Code review: APPROVED\n## Contracts: NOT YET RUN\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/nyrcontracts" }, config);
+  check("not-yet-run-contracts-line:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 8b. DIAGNOSTIC OUTPUT (Fix A) ──────────────────────────────────────────
+// The deny reason includes a structured diagnostic with expected path,
+// failing anchor reason, and remediation guidance.
+console.log("DIAGNOSTIC OUTPUT (Fix A transparency):");
+
+// 8b-i. Missing stamp file — diagnostic lists siblings.
+{
+  const root = rootOnBranch("feature/diagmissing");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  // Create a sibling stamp to verify it's listed
+  fs.writeFileSync(path.join(dir, "other_review.md"), "## Code review: APPROVED\n## Contracts: none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/diagmissing" }, config);
+  check("diag-missing-verdict", v.verdict, "deny");
+  // Verify diagnostic mentions the expected path and lists siblings
+  const hasPath = v.reason.includes("diagmissing_review.md");
+  const hasSiblings = v.reason.includes("other_review.md");
+  const hasRemediation = v.reason.includes("Re-spawn the Reviewer");
+  if (!hasPath || !hasSiblings || !hasRemediation) {
+    fail++; console.log(`  ✗ diag-missing-content: path=${hasPath}, siblings=${hasSiblings}, remediation=${hasRemediation}`);
+  } else { pass++; }
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 8b-ii. Present stamp, verdict absent — diagnostic explains the failure.
+{
+  const root = rootOnBranch("feature/diagbadverdict");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "diagbadverdict_review.md"), "## Code review:\n\n## Contracts: none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/diagbadverdict" }, config);
+  check("diag-bad-verdict", v.verdict, "deny");
+  const hasReason = v.reason.includes("verdict value empty") || v.reason.includes("absent");
+  const hasRemediation = v.reason.includes("Re-spawn the Reviewer");
+  if (!hasReason || !hasRemediation) {
+    fail++; console.log(`  ✗ diag-bad-verdict-content: reason=${hasReason}, remediation=${hasRemediation}`);
+  } else { pass++; }
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 9. SEPARATOR TOLERANCE (Fix C) ──────────────────────────────────────────
+// Accept em-dash, en-dash, hyphen as alternatives to colon. No separator
+// accepted only when value's first token is ≥2 uppercase chars or literal "none".
+console.log("SEPARATOR TOLERANCE (colon/dash alternatives, no-separator guards):");
+
+// 9a. Em-dash separator ⇒ ALLOW.
+{
+  const root = rootOnBranch("feature/emdash");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "emdash_review.md"), "## Code review— APPROVED\n## Contracts— none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/emdash" }, config);
+  check("em-dash-separator:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 9b. En-dash separator ⇒ ALLOW.
+{
+  const root = rootOnBranch("feature/endash");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "endash_review.md"), "## Code review– APPROVED\n## Contracts– none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/endash" }, config);
+  check("en-dash-separator:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 9c. Hyphen separator ⇒ ALLOW.
+{
+  const root = rootOnBranch("feature/hyphen");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "hyphen_review.md"), "## Code review- APPROVED\n## Contracts- none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/hyphen" }, config);
+  check("hyphen-separator:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 9d. No separator, value starts with ≥2 uppercase (APPROVED) ⇒ ALLOW.
+{
+  const root = rootOnBranch("feature/nosep-upper");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "nosep-upper_review.md"), "## Code review APPROVED\n## Contracts none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/nosep-upper" }, config);
+  check("no-separator-uppercase:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 9e. No separator, value is literal "none" (lowercase) ⇒ ALLOW.
+{
+  const root = rootOnBranch("feature/none-lower");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "none-lower_review.md"), "## Code review: APPROVED\n## Contracts none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/none-lower" }, config);
+  check("none-literal:allows", v.verdict, "allow");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 9f. No separator, value starts with mixed case (checklist) ⇒ DENY.
+{
+  const root = rootOnBranch("feature/nosep-mixed");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "nosep-mixed_review.md"), "## Code review checklist\n## Contracts and guarantees\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/nosep-mixed" }, config);
+  check("no-separator-mixed-case:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 10. ANCHOR BYPASS REGRESSION (Fix C normalization order) ───────────────────
+// `## Code review — NOT YET RUN` must DENY after separator normalization.
+// The separator `— ` is stripped before the NOT YET RUN test.
+console.log("ANCHOR BYPASS REGRESSION (separator + NOT YET RUN normalization):");
+
+// 10a. Separator before NOT YET RUN value ⇒ DENY.
+{
+  const root = rootOnBranch("feature/sep-nyr");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "sep-nyr_review.md"), "## Code review — NOT YET RUN\n## Contracts: none\n");
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/sep-nyr" }, config);
+  check("separator-not-yet-run:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 11. FIX D — NEXT-LINE FALLBACK HOLE CLOSURE ──────────────────────────────
+// Empty verdict heading followed only by labelled stamp lines must DENY.
+console.log("FIX D — NEXT-LINE FALLBACK HOLE (labelled lines not accepted as values):");
+
+// 11a. `## Code review:` (empty) + `Runtime verification: static — …` ⇒ DENY.
+// Today: the next-line fallback accepts `Runtime verification: static — …` as the verdict value.
+// After Fix D: the next-line check skips labelled stamp lines, so verdict is empty ⇒ DENY.
+{
+  const root = rootOnBranch("feature/fix-d-hole");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "fix-d-hole_review.md"),
+    "## Code review:\nRuntime verification: static — read the diff\n## Contracts: none\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/fix-d-hole" }, config);
+  check("fix-d-hole-runtime-line:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 11b. `## Code review:` (empty) + `Contracts: none` as next line ⇒ DENY
+// (Contracts line is also a labelled stamp line).
+{
+  const root = rootOnBranch("feature/fix-d-contracts");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "fix-d-contracts_review.md"),
+    "## Code review:\n## Contracts: none\n"
+  );
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/fix-d-contracts" }, config);
+  check("fix-d-contracts-line:denies", v.verdict, "deny");
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// ── 12. DIAGNOSTIC DRIFT GUARD — "Required form" derives from parser constants ──────────
+// Mechanical guard: every separator in STAMP_SEPARATORS and every label in STAMP_LABELS
+// must appear in the diagnostic text. Adding/removing a separator or label fails the test
+// until the message is regenerated from the updated constants.
+console.log("DIAGNOSTIC DRIFT GUARD (constant values present in diagnostic):");
+
+// 12a. Diagnostic mentions every separator constant value.
+{
+  const root = rootOnBranch("feature/diagsep");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/diagsep" }, config);
+  check("diag-verdict", v.verdict, "deny");
+  // Every separator in STAMP_SEPARATORS must appear in the reason
+  let allFound = true;
+  for (const sep of STAMP_SEPARATORS) {
+    if (!v.reason.includes(sep)) {
+      allFound = false;
+      fail++; console.log(`  ✗ diag-missing-separator: separator ${JSON.stringify(sep)} not in diagnostic`);
+      break;
+    }
+  }
+  if (allFound) { pass++; }
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 12b. Diagnostic mentions every verdict label constant value.
+{
+  const root = rootOnBranch("feature/diaglabel");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/diaglabel" }, config);
+  check("diag-label-verdict", v.verdict, "deny");
+  let allFound = true;
+  for (const label of STAMP_LABELS.verdict) {
+    if (!v.reason.includes(label)) {
+      allFound = false;
+      fail++; console.log(`  ✗ diag-missing-verdict-label: label ${JSON.stringify(label)} not in diagnostic`);
+      break;
+    }
+  }
+  if (allFound) { pass++; }
+  fs.rmSync(root, { recursive: true, force: true });
+}
+
+// 12c. Diagnostic mentions the contracts label constant value.
+{
+  const root = rootOnBranch("feature/diagcontract");
+  const dir = path.join(root, ".ai-dev", "reviews");
+  fs.mkdirSync(dir, { recursive: true });
+  const v = evaluate({ act: "bash", root, command: "git push origin feature/diagcontract" }, config);
+  check("diag-contract-label", v.verdict, "deny");
+  if (!v.reason.includes(STAMP_LABELS.contracts)) {
+    fail++; console.log(`  ✗ diag-missing-contracts-label: label ${JSON.stringify(STAMP_LABELS.contracts)} not in diagnostic`);
+  } else { pass++; }
   fs.rmSync(root, { recursive: true, force: true });
 }
 
