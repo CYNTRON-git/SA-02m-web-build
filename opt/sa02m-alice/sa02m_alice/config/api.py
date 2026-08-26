@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -190,9 +191,13 @@ def full_config() -> Dict[str, Any]:
     # with no way back to the link page. The claim file outlives enrollment
     # marked issued=True — gate on that flag.
     _claim = _load_pending_claim()
+    _claim_fresh = (
+        not _claim.get("expires_at")  # legacy claim without the field
+        or time.time() < float(_claim.get("expires_at") or 0)
+    )
     pending_reg_url = (
         _claim.get("registration_url")
-        if _claim.get("claim_token") and not _claim.get("issued")
+        if _claim.get("claim_token") and not _claim.get("issued") and _claim_fresh
         else None
     )
     return {
@@ -293,6 +298,9 @@ def start_link() -> Dict[str, Any]:
                 "claim_token": data.get("claim_token"),
                 "registration_url": data.get("registration_url"),
                 "controller_sn": _controller_sn(),
+                # The gateway's claim lifetime — lets the status stop serving
+                # a dead OAuth link once the claim has expired server-side.
+                "expires_at": time.time() + float(data.get("expires_in") or 600),
             }
             if data.get("ca_pem"):
                 _write_pem(C.CA_FILE, str(data["ca_pem"]), 0o644)
