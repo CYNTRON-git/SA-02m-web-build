@@ -7,6 +7,19 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-26 **[MED] www-only deploy without `etc/` is broken — `scripts/lib.sh:500`
+  unconditionally sources `../etc/sa02m-stacks-policy.sh` ("fail loud"), but the runbook's
+  www-only procedure (docs/deployment.md шаг 2) deliberately ships www+scripts WITHOUT etc/ —
+  the sanctioned path now aborts at source time (hit live on 1.136, 2026-08-26; deploy fell
+  back to a full-tree archive). Resolve the doc-vs-code conflict: either the runbook requires
+  `etc/sa02m-stacks-policy.sh` in the delivery, or lib.sh guards the source for www-only use.
+- [OPEN] 2026-08-26 **[MED] Alice type expansion — sensors (DTV temp/humidity, CE-02m-3 meter)
+  in the smart home.** Operator ask (2026-08-26): bench 1.135 carries a real DTV sensor and a
+  network analyzer worth exposing to Алиса. Needs devices.types.sensor + float properties in
+  the capability model (client converters/state_sender + discovery blocks). Cloud session
+  CONFIRMED (2026-08-26) the gateway is a verbatim passthrough (fulfillment.py) — ZERO
+  gateway changes needed; sensor values reach Alice via the query fan-out (poll-based
+  freshness). Device-side work only; Part A deliberately descoped it.
 - [OPEN] 2026-08-20 **[LOW] Functional test for the update-runner health-gate operator-disabled
   skip (deferred).** The skip logic (masked/masked-runtime/disabled required units are skipped,
   enabled-but-down still fails — `etc/sa02m-update-runner.sh` restart_services_and_health) is
