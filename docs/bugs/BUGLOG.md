@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-26 15:10] branch: 1.0.6.14
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `opt/sa02m-alice/sa02m_alice/common/config_store.py`, `scripts/06-alice.sh`, `etc/tmpfiles.d/sa02m-alice.conf`, `opt/sa02m-alice/tests/test_config_store.py`
+**Тип:** Некорректное поведение (Алиса / Управление)
+**Описание:** «Не удалось запустить службу» при запуске Яндекс Алисы из веб-панели на 1.135 — обоими путями: «Пуск» в списке служб и «Включить» в карточке Алисы.
+**Причина:** Две независимые: (1) «Пуск» делал голый `systemctl start`, но `client_enabled=false` — клиент штатно выходит в standby (exit 0), и проверка runtime-active честно отдавала `start_failed`; (2) «Включить» из карточки падало: atomic-запись конфига (tmp+rename) требует WRITE на каталоге, а `/etc/sa02m-alice` был `0750 root:www-data` — www-data не мог создать temp-файл (`alice_api_failed`). Плюс мина: `_atomic_write` ставил temp-файлу владельца-писателя и 0640 — запись от root оставила бы конфиг нечитаемым для www-data.
+**Исправление:** (1) `cmd_start`/`cmd_stop` для alice синхронизируют `client_enabled` через `config_store.set_client_enabled` (тот же дом, что у карточки); (2) каталог `/etc/sa02m-alice` → `0770 root:www-data` (installer + tmpfiles — доезжает OTA и бутом); (3) `_atomic_write` сохраняет режим/владельца существующего файла (chown под `hasattr`-гардом для Windows-хостов). Юнит-тесты: сохранение режима и пользовательских ключей конфига.
+
+---
+
 ## [2026-08-26 14:05] branch: 1.0.6.14
 
 **Файл(ы):** `scripts/lib.sh`
