@@ -15,6 +15,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -197,8 +198,9 @@ class _Resp:
 
 class TestPendingClaimLifecycle(_CertStatusBase):
     """Decision (1.0.5.80): pending_claim.json is KEPT after enrollment — the
-    gateway needs claim_token for unlink — and the status/link view never reads
-    it, so a leftover cannot flip the UI."""
+    gateway needs claim_token for unlink. Since 1.0.6.14 the status/link view
+    reads it for registration_url, triple-gated (claim_token + not issued +
+    fresh expires_at) so an issued or stale leftover cannot flip the UI."""
 
     def test_complete_link_keeps_claim_token_marked_issued(self):
         api._save_pending_claim({"claim_token": "tok", "registration_url": "u", "controller_sn": "SN1"})
@@ -223,6 +225,25 @@ class TestPendingClaimLifecycle(_CertStatusBase):
         self.assertEqual(without["link"], with_file["link"])
         self.assertEqual(without["mtls"], with_file["mtls"])
         self.assertTrue(with_file["link"]["linked"])
+
+    def test_registration_url_served_only_while_claim_fresh(self):
+        """Pins the 1.0.6.14 freshness gate: a fresh un-issued claim serves its
+        registration_url; an expired one does not; a LEGACY claim without
+        expires_at (pre-1.0.6.14 abandoned link) does not either — otherwise a
+        dead URL locks the UI into «Завершить привязку» with no way back."""
+        self.write_status(state="missing_cert", client_enabled=True, cert_present=False)
+        fresh = {"claim_token": "tok", "registration_url": "https://u/1",
+                 "controller_sn": "SN1", "expires_at": time.time() + 500}
+        api._save_pending_claim(fresh)
+        self.assertEqual(self.full_config()["link"]["registration_url"], "https://u/1")
+        api._save_pending_claim(dict(fresh, expires_at=time.time() - 5))
+        self.assertIsNone(self.full_config()["link"]["registration_url"])
+        legacy = {"claim_token": "tok", "registration_url": "https://u/1",
+                  "controller_sn": "SN1"}
+        api._save_pending_claim(legacy)
+        self.assertIsNone(self.full_config()["link"]["registration_url"])
+        api._save_pending_claim(dict(fresh, issued=True))
+        self.assertIsNone(self.full_config()["link"]["registration_url"])
 
 
 if __name__ == "__main__":

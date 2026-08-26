@@ -191,9 +191,13 @@ def full_config() -> Dict[str, Any]:
     # with no way back to the link page. The claim file outlives enrollment
     # marked issued=True — gate on that flag.
     _claim = _load_pending_claim()
+    # Only claims WITH a stored deadline are servable: a pre-1.0.6.14 abandoned
+    # claim (no expires_at, never issued) must NOT lock the UI into a dead
+    # «Завершить привязку» forever — pressing «Привязать» writes a fresh claim
+    # with the field and recovers.
     _claim_fresh = (
-        not _claim.get("expires_at")  # legacy claim without the field
-        or time.time() < float(_claim.get("expires_at") or 0)
+        bool(_claim.get("expires_at"))
+        and time.time() < float(_claim.get("expires_at") or 0)
     )
     pending_reg_url = (
         _claim.get("registration_url")
@@ -378,9 +382,10 @@ def complete_link() -> Dict[str, Any]:
         _write_pem(path, str(pem), mode)
     # Deliberately NOT cleared after a successful issue: the gateway requires the
     # claim_token for the authenticated /controller/unlink, so pending_claim.json
-    # outlives enrollment (marked issued=True). Nothing in the status/link view
-    # reads this file — a leftover can never flip the UI to «ожидание
-    # завершения»; the UI's pending mark is session-local and yields to linked.
+    # outlives enrollment (marked issued=True). The status/link view DOES read
+    # this file since 1.0.6.14 (registration_url while pending), but it is
+    # triple-gated — claim_token present, issued unset, expires_at fresh — so
+    # this issued=True leftover can never flip the UI to «ожидание завершения».
     _save_pending_claim(
         {
             "claim_token": token,
