@@ -388,6 +388,22 @@ def map_dst(rel: str):
         return "/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route"
     return None
 
+def deploy_mode(rel: str, dst: str) -> str:
+    # Mode follows DESTINATION role, not source extension. Extension-less helpers
+    # (sa02m-set-storage-auto-format, sa02m-set-cpu-profile) land in
+    # /usr/local/sbin and must stay executable — see private/BUG-ota-mode-0644.md.
+    if dst.startswith("/usr/local/sbin/") or dst.startswith("/usr/local/libexec/"):
+        return "0755"
+    if dst.startswith("/usr/local/bin/"):
+        return "0755"
+    if dst.startswith("/etc/dhcp/dhclient-exit-hooks.d/"):
+        return "0755"
+    if rel.endswith(".cgi") or rel.endswith(".sh"):
+        return "0755"
+    if dst.startswith("/opt/mplc4/") and rel.endswith(".so"):
+        return "0755"
+    return "0644"
+
 deploy = []
 for p in overlay.rglob("*"):
     if not p.is_file():
@@ -398,10 +414,7 @@ for p in overlay.rglob("*"):
     dst = map_dst(rel)
     if not dst or not DST_RE.match(dst):
         continue
-    mode = "0755" if (
-        rel.endswith(".cgi") or rel.endswith(".sh") or "libexec" in dst
-        or (dst.startswith("/opt/mplc4/") and rel.endswith(".so"))
-    ) else "0644"
+    mode = deploy_mode(rel, dst)
     owner = "www-data:www-data" if dst.startswith("/var/www/") else "root:root"
     deploy.append({"src": rel, "dst": dst, "mode": mode, "owner": owner})
 
