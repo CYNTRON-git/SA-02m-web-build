@@ -41,7 +41,9 @@ if [ -d "$OPT_SRC/tests" ]; then
 fi
 
 # ── Runtime dirs ───────────────────────────────────────────────────────────
-install -d -m 0750 -o root -g root /etc/sa02m-alice
+# 0770: the CGI (www-data) writes client/devices confs via atomic tmp+rename,
+# which needs WRITE on the dir, not just on the conf files.
+install -d -m 0770 -o root -g www-data /etc/sa02m-alice
 # State dir is www-data-owned: the enroll write (device key/cert, pending
 # claim) runs as www-data inside sa02m_alice_api.cgi. Idempotent migration:
 # install -d re-asserts owner/mode on an existing dir, file contents untouched.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import stat as stat_module
 import tempfile
 from typing import Any, Dict, Tuple
 
@@ -14,13 +15,30 @@ from . import constants as C
 def _atomic_write(path: str, data: str, mode: int = 0o640) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
+    # Preserve the existing file's mode/owner across the replace: writers run
+    # as BOTH root (client/config services, web-service-ctl) and www-data (the
+    # CGI) — without this a root write leaves the conf root:root 0640 and the
+    # www-data web layer can no longer read or write it.
+    st = None
+    try:
+        st = os.stat(path)
+    except OSError:
+        pass
     fd, tmp = tempfile.mkstemp(prefix=".alice-", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(data)
             if not data.endswith("\n"):
                 fh.write("\n")
-        os.chmod(tmp, mode)
+        if st is not None:
+            os.chmod(tmp, stat_module.S_IMODE(st.st_mode))
+            if hasattr(os, "chown"):  # absent on Windows dev hosts
+                try:
+                    os.chown(tmp, st.st_uid, st.st_gid)
+                except OSError:
+                    pass  # non-root writer keeps its own uid; group suffices
+        else:
+            os.chmod(tmp, mode)
         os.replace(tmp, path)
     except Exception:
         try:
