@@ -126,9 +126,116 @@ const ALICE_DEV_TYPES = {
   'devices.types.socket': 'Розетка',
   'devices.types.light': 'Освещение',
   'devices.types.sensor': 'Датчик',
+  'devices.types.sensor.climate': 'Климат-датчик',
   'devices.types.thermostat': 'Термостат',
   'devices.types.other': 'Устройство',
 };
+
+// Kind key (#alice-dev-kind option value) → the Yandex device/property pin
+// (docs/contracts/alice-mqtt-mapping.md). `switch` marks the capability path;
+// sensor kinds carry the float-property instance + unit forwarded verbatim.
+const ALICE_KINDS = {
+  switch: { type: 'devices.types.switch' },
+  temperature: { type: 'devices.types.sensor.climate', instance: 'temperature', unit: 'unit.temperature.celsius' },
+  humidity: { type: 'devices.types.sensor.climate', instance: 'humidity', unit: 'unit.percent' },
+  voltage: { type: 'devices.types.sensor', instance: 'voltage', unit: 'unit.volt' },
+  amperage: { type: 'devices.types.sensor', instance: 'amperage', unit: 'unit.ampere' },
+  power: { type: 'devices.types.sensor', instance: 'power', unit: 'unit.watt' },
+};
+
+// Sentinel option value for a hand-edited config whose float-property instance
+// is outside ALICE_KINDS: the select is locked on it and save touches only
+// name + topic (instance/unit preserved).
+const ALICE_KIND_RAW = '__raw__';
+
+function aliceKindSelect() { return $('alice-dev-kind'); }
+
+// The form owns exactly ONE managed binding per device: the on_off capability
+// (switch) or the first devices.properties.float property (sensor).
+function aliceManagedProp(dev) {
+  const props = (dev && dev.properties) || [];
+  for (let i = 0; i < props.length; i++) {
+    if (props[i] && props[i].type === 'devices.properties.float') return props[i];
+  }
+  return null;
+}
+
+function aliceManagedCap(dev) {
+  const caps = (dev && dev.capabilities) || [];
+  for (let i = 0; i < caps.length; i++) {
+    if (caps[i] && caps[i].type === 'devices.capabilities.on_off') return caps[i];
+  }
+  return null;
+}
+
+// Detect the form kind of an existing device: on_off capability wins (switch),
+// else the first float property's instance; an instance we do not know maps to
+// the locked raw sentinel.
+function aliceDetectKind(dev) {
+  if (aliceManagedCap(dev)) return 'switch';
+  const prop = aliceManagedProp(dev);
+  if (prop) {
+    const inst = prop.parameters && prop.parameters.instance;
+    const keys = Object.keys(ALICE_KINDS);
+    for (let i = 0; i < keys.length; i++) {
+      if (ALICE_KINDS[keys[i]].instance === inst) return keys[i];
+    }
+    return ALICE_KIND_RAW;
+  }
+  return 'switch';
+}
+
+function aliceMakeManagedItem(kind, topic) {
+  const spec = ALICE_KINDS[kind];
+  if (!spec || kind === 'switch') {
+    return {
+      type: 'devices.capabilities.on_off',
+      mqtt: topic,
+      retrievable: true,
+      reportable: true,
+      parameters: { instance: 'on' },
+    };
+  }
+  return {
+    type: 'devices.properties.float',
+    mqtt: topic,
+    retrievable: true,
+    reportable: true,
+    parameters: { instance: spec.instance, unit: spec.unit },
+  };
+}
+
+// Reset the kind select to a plain enabled state (drop any raw option).
+function aliceResetKindSelect() {
+  const sel = aliceKindSelect();
+  if (!sel) return;
+  sel.disabled = false;
+  for (let i = sel.options.length - 1; i >= 0; i--) {
+    if (sel.options[i].value === ALICE_KIND_RAW) sel.remove(i);
+  }
+  sel.value = 'switch';
+}
+
+// Prefill the kind select for edit mode; a raw (unknown-instance) kind gets a
+// locked option labelled with the stored instance so the operator sees what is
+// bound without being able to silently retype it.
+function alicePrefillKind(kind, dev) {
+  const sel = aliceKindSelect();
+  if (!sel) return;
+  aliceResetKindSelect();
+  if (kind === ALICE_KIND_RAW) {
+    const prop = aliceManagedProp(dev);
+    const inst = (prop && prop.parameters && prop.parameters.instance) || 'custom';
+    const opt = document.createElement('option');
+    opt.value = ALICE_KIND_RAW;
+    opt.textContent = String(inst);
+    sel.appendChild(opt);
+    sel.value = ALICE_KIND_RAW;
+    sel.disabled = true;
+    return;
+  }
+  sel.value = kind;
+}
 
 function aliceDeviceTypeLabel(type) {
   if (!type) return '';
@@ -426,44 +533,74 @@ async function aliceAddDevice() {
     aliceSetBindMsg(uiT('Укажите имя и MQTT-топик'), false);
     return;
   }
+  const kindSel = aliceKindSelect();
+  const kind = (kindSel && kindSel.value) || 'switch';
   let device;
   const editing = aliceEditId && aliceDevCache[aliceEditId];
   if (editing) {
-    // Edit: send the ORIGINAL object with id — the backend replaces in
-    // place; id/room_id/type/extra capabilities survive, only name and the
-    // on_off capability's topic change.
+    // Edit: send the ORIGINAL object with id — the backend replaces in place;
+    // id/room_id and any extra (hand-edited) items survive. The form owns
+    // exactly ONE managed binding (see aliceManagedCap/aliceManagedProp).
     device = JSON.parse(JSON.stringify(aliceDevCache[aliceEditId]));
     device.name = name;
-    const caps = device.capabilities || [];
-    let onoff = null;
-    for (let i = 0; i < caps.length; i++) {
-      if (caps[i] && caps[i].type === 'devices.capabilities.on_off') { onoff = caps[i]; break; }
-    }
-    if (onoff) {
-      onoff.mqtt = topic;
+    const prevKind = aliceDetectKind(device);
+    if (kind === ALICE_KIND_RAW) {
+      // Locked unknown-instance sensor: retarget the topic only; the stored
+      // instance/unit are preserved untouched.
+      const rawProp = aliceManagedProp(device);
+      if (rawProp) rawProp.mqtt = topic;
+    } else if (kind === prevKind) {
+      // Kind unchanged: update the managed item's topic in place (a sensor
+      // keeps its stored instance/unit; a switch with no on_off yet gains one
+      // — same semantics as before this selector existed).
+      if (kind === 'switch') {
+        const onoff = aliceManagedCap(device);
+        if (onoff) {
+          onoff.mqtt = topic;
+        } else {
+          device.capabilities = device.capabilities || [];
+          device.capabilities.push(aliceMakeManagedItem('switch', topic));
+        }
+      } else {
+        const prop = aliceManagedProp(device);
+        if (prop) prop.mqtt = topic;
+        else {
+          device.properties = device.properties || [];
+          device.properties.push(aliceMakeManagedItem(kind, topic));
+        }
+      }
     } else {
-      caps.push({
-        type: 'devices.capabilities.on_off',
-        mqtt: topic,
-        retrievable: true,
-        reportable: true,
-        parameters: { instance: 'on' },
-      });
+      // Kind CHANGED: remove the old managed item, insert the new kind's,
+      // and move the Yandex device type — never leave both bindings behind.
+      const caps = device.capabilities || [];
+      const props = device.properties || [];
+      if (prevKind === 'switch') {
+        const onoff = aliceManagedCap(device);
+        if (onoff) caps.splice(caps.indexOf(onoff), 1);
+      } else {
+        const prop = aliceManagedProp(device);
+        if (prop) props.splice(props.indexOf(prop), 1);
+      }
+      const item = aliceMakeManagedItem(kind, topic);
+      if (kind === 'switch') caps.push(item);
+      else props.push(item);
       device.capabilities = caps;
+      device.properties = props;
+      device.type = (ALICE_KINDS[kind] || {}).type || device.type;
     }
   } else {
+    const spec = ALICE_KINDS[kind] || ALICE_KINDS.switch;
     device = {
       name: name,
-      type: 'devices.types.switch',
-      capabilities: [{
-        type: 'devices.capabilities.on_off',
-        mqtt: topic,
-        retrievable: true,
-        reportable: true,
-        parameters: { instance: 'on' },
-      }],
+      type: spec.type,
+      capabilities: [],
       properties: [],
     };
+    if (kind !== 'switch' && spec.instance) {
+      device.properties.push(aliceMakeManagedItem(kind, topic));
+    } else {
+      device.capabilities.push(aliceMakeManagedItem('switch', topic));
+    }
   }
   try {
     const d = await aliceApi({ action: 'upsert_device', device: device });
@@ -495,11 +632,16 @@ function aliceBeginEdit(id) {
   if (!dev) return;
   aliceEditId = id;
   if ($('alice-dev-name')) $('alice-dev-name').value = dev.name || '';
+  const kind = aliceDetectKind(dev);
+  alicePrefillKind(kind, dev);
   const sel = $('alice-topic-select');
-  const caps = dev.capabilities || [];
   let topic = '';
-  for (let i = 0; i < caps.length; i++) {
-    if (caps[i] && caps[i].type === 'devices.capabilities.on_off' && caps[i].mqtt) { topic = caps[i].mqtt; break; }
+  if (kind === 'switch') {
+    const onoff = aliceManagedCap(dev);
+    topic = (onoff && onoff.mqtt) || '';
+  } else {
+    const prop = aliceManagedProp(dev);
+    topic = (prop && prop.mqtt) || '';
   }
   if (sel && topic) {
     // The bound topic may no longer be in the live topic list — keep it
@@ -526,6 +668,7 @@ function aliceBeginEdit(id) {
 function aliceCancelEdit() {
   aliceEditId = null;
   if ($('alice-dev-name')) $('alice-dev-name').value = '';
+  aliceResetKindSelect();
   const save = $('alice-dev-save');
   if (save) save.textContent = uiT('Добавить');
   const cancel = $('alice-dev-cancel');

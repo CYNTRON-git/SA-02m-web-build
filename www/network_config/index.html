@@ -1280,6 +1280,17 @@
         <input type="text" id="alice-dev-name" maxlength="64" autocomplete="off" placeholder="Реле 1">
       </div>
       <div class="field">
+        <label for="alice-dev-kind" data-i18n="Тип">Тип</label>
+        <select id="alice-dev-kind">
+          <option value="switch" selected>Переключатель</option>
+          <option value="temperature">Температура</option>
+          <option value="humidity">Влажность</option>
+          <option value="voltage">Напряжение</option>
+          <option value="amperage">Ток</option>
+          <option value="power">Мощность</option>
+        </select>
+      </div>
+      <div class="field">
         <label for="alice-topic-select" data-i18n="MQTT-топик">MQTT-топик</label>
         <select id="alice-topic-select"></select>
       </div>
@@ -1296,7 +1307,7 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.6.15&r=agofmt1"></script>
+<script src="static/js/i18n.js?v=1.0.6.15&r=sensors1"></script>
 <script src="static/js/app.js?v=1.0.6.15&r=devhist1"></script>
 <script src="static/js/app/status.js?v=1.0.6.15&r=updlog1"></script>
 <script src="static/js/app/hw.js?v=1.0.6.15&r=devhist1"></script>
@@ -1311,7 +1322,7 @@
 <script src="static/js/gateway.js?v=1.0.6.15&r=noell1"></script>
 <script type="module" src="static/js/devices.js?v=1.0.6.15&r=e1dec"></script>
 <script src="static/js/cloud.js?v=1.0.6.15&r=agofmt1"></script>
-<script src="static/js/app/alice.js?v=1.0.6.15&r=bindedit2"></script>
+<script src="static/js/app/alice.js?v=1.0.6.15&r=sensors1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

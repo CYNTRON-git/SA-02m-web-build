@@ -24,6 +24,50 @@ ROSTER_CANDIDATES = (
     "/var/cache/sa02m-flasher/last_scan.json",
 )
 
+# Control names for bridge yaml devices that carry no controls/Channels key
+# (type: dtv / type: ce02m3 entries describe polling, not channels).
+# Conscious duplication: the topic canon is docs/MQTT_TOPICS.md (§cyntron-dtv,
+# §CE-02m-3) — the alice package cannot import the bridge package at runtime.
+# A stale name here costs only a missing picker entry (a bound topic stays
+# selectable on edit regardless).
+DTV_DEFAULT_CONTROLS = (
+    # Mirrors /etc/sa02m-device-templates/dtv-sensor.json `sensors_present`.
+    "temp_ds18b20",
+    "temp_bme680",
+    "humidity_bme680",
+    "pressure_bme680_kpa",
+    "iaq_bme680",
+    "eco2_bme680",
+    "tvoc_zmod",
+    "presence",
+    "moving_distance",
+    "still_distance",
+    "detect_distance",
+)
+DTV_ACTUATOR_CONTROLS = ("buzzer", "leds")
+CE02M3_CONTROLS = (
+    "voltage_a",
+    "voltage_b",
+    "voltage_c",
+    "voltage_ab",
+    "voltage_bc",
+    "voltage_ca",
+    "current_a",
+    "current_b",
+    "current_c",
+    "current_n",
+    "power_a",
+    "power_b",
+    "power_c",
+    "power_total",
+    "frequency",
+    "pf_a",
+    "pf_b",
+    "pf_c",
+    "pf_total",
+    "asic_temp",
+)
+
 
 def _load_yaml(path: str) -> Any:
     try:
@@ -64,6 +108,19 @@ def _topics_from_yaml(doc: Any) -> List[str]:
                     cname = c.get("name") or c.get("id")
                     if cname:
                         out.add("/devices/%s/controls/%s" % (did, cname))
+        # dtv/ce02m3 yaml entries carry no controls key — expand by type.
+        dtype = str(dev.get("type") or "").strip().lower()
+        if dtype == "dtv":
+            sensors = dev.get("sensors_present")
+            if isinstance(sensors, list):
+                names = [s for s in sensors if isinstance(s, str) and s]
+            else:
+                names = list(DTV_DEFAULT_CONTROLS)
+            for cname in names + list(DTV_ACTUATOR_CONTROLS):
+                out.add("/devices/%s/controls/%s" % (did, cname))
+        elif dtype == "ce02m3":
+            for cname in CE02M3_CONTROLS:
+                out.add("/devices/%s/controls/%s" % (did, cname))
         # Fallback: device id alone is not enough — skip
     return sorted(out)
 
