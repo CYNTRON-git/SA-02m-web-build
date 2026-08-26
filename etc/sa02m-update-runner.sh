@@ -1103,6 +1103,11 @@ restart_services_and_health() {
         log "health: daemon-reload..."
         _systemctl_bounded 60 daemon-reload || true
     fi
+    # Apply the freshly deployed Alice tmpfiles conf without waiting for a
+    # reboot: the enroll CGI needs the www-data-writable state dir right away.
+    if [ -f /etc/tmpfiles.d/sa02m-alice.conf ] && command -v systemd-tmpfiles >/dev/null 2>&1; then
+        timeout 30 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-alice.conf 2>/dev/null || true
+    fi
     # Enable new/updated units so they survive reboot (e.g. sa02m-devices-*).
     while IFS= read -r u; do
         [ -n "$u" ] || continue

@@ -186,6 +186,15 @@ if [ -f "$REPO_ETC/tmpfiles.d/sa02m-update.conf" ]; then
         systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-update.conf 2>/dev/null || true
     fi
 fi
+# Alice state dir must be www-data-writable (enroll runs as www-data in the
+# CGI) and must exist on boards flashed from a cleaned donor image.
+if [ -f "$REPO_ETC/tmpfiles.d/sa02m-alice.conf" ]; then
+    install -m 644 "$REPO_ETC/tmpfiles.d/sa02m-alice.conf" /etc/tmpfiles.d/sa02m-alice.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-alice.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-alice.conf 2>/dev/null || true
+    fi
+fi
 _upd_daemon_reload=0
 for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
