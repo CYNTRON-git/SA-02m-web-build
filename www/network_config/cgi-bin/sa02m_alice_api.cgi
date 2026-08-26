@@ -102,6 +102,16 @@ if [ "$METHOD" = "POST" ]; then
     # The running client builds its DeviceRegistry once (MQTT subs taken at
     # connect) — after a successful binding mutation restart it so edits
     # apply, but only when the operator has the client enabled.
+    # Enrollment just installed the certs: the running client is still in
+    # missing_cert standby and only re-reads them at start, so without this
+    # the card sits at «нет сертификата» until something else restarts it.
+    if [ "$ACTION" = "complete_link" ]; then
+        case "$RESULT" in
+            *'"ok": true'*|*'"ok":true'*)
+                sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh restart >/dev/null 2>&1 || true
+                ;;
+        esac
+    fi
     case "$ACTION" in
         upsert_device|delete_device|upsert_room|delete_room)
             case "$RESULT" in

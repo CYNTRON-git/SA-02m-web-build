@@ -14,9 +14,22 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
+// Transient success notices auto-clear; errors and the pending-link notice
+// (rendered by aliceSetMsgLink) stay until the state itself changes.
+const ALICE_MSG_TTL_MS = 5000;
+let _aliceMsgTimer = null;
+
+function aliceClearMsgTimer() {
+  if (_aliceMsgTimer) {
+    clearTimeout(_aliceMsgTimer);
+    _aliceMsgTimer = null;
+  }
+}
+
 function aliceSetMsgOn(id, text, ok) {
   const msg = $(id);
   if (!msg) return;
+  if (id === 'alice-msg') aliceClearMsgTimer();
   if (!text) {
     msg.hidden = true;
     msg.textContent = '';
@@ -26,6 +39,14 @@ function aliceSetMsgOn(id, text, ok) {
   msg.hidden = false;
   msg.textContent = text;
   msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
+  if (id === 'alice-msg' && ok) {
+    _aliceMsgTimer = setTimeout(function () {
+      _aliceMsgTimer = null;
+      const el = $('alice-msg');
+      // Only clear what is still this notice — a newer message owns itself.
+      if (el && !el.hidden && el.textContent === text) aliceSetMsgOn('alice-msg', '', true);
+    }, ALICE_MSG_TTL_MS);
+  }
 }
 
 // Card-level status/link/enable feedback.
@@ -37,6 +58,7 @@ function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
 function aliceSetMsgLink(text, url, label) {
   const msg = $('alice-msg');
   if (!msg) return;
+  aliceClearMsgTimer();  // the link notice lives as long as the claim does
   msg.hidden = false;
   msg.className = 'cloud-msg is-ok';
   msg.textContent = '';
@@ -430,7 +452,10 @@ async function aliceToggleClient() {
     if (!d.ok) {
       aliceSetMsg(d.message || d.error || uiT('Ошибка'), false);
     } else {
-      aliceSetMsg(d.message || uiT('Сохранено'), true);
+      // The unit start/stop + first gateway connect take a few seconds —
+      // poll fast so the badges do not look frozen.
+      aliceSetMsg(uiT('Сохранено'), true);
+      aliceFastPoll();
     }
     await aliceRefresh();
   } catch (e) {
@@ -478,7 +503,10 @@ async function aliceCompleteLink() {
         false
       );
     } else {
-      aliceSetMsg(d.message || uiT('Сертификат установлен'), true);
+      // Never relay the backend's English operator-note («…enable client and
+      // restart…») — the CGI already restarts the client for us.
+      aliceSetMsg(uiT('Сертификат установлен, подключаем…'), true);
+      aliceFastPoll();
     }
     await aliceRefresh();
   } catch (e) {
@@ -723,6 +751,24 @@ function aliceModalBackdrop(e) {
 }
 
 let _alicePoll = null;
+let _aliceFastPoll = null;
+
+// After an action that changes state on the device (cert issued → client
+// restart, enable/disable), the 5 s cadence makes the card look stuck for
+// several seconds. Poll every second for a short window instead, and stop
+// early once the state settles.
+function aliceFastPoll(windowMs) {
+  const until = Date.now() + (windowMs || 20000);
+  if (_aliceFastPoll) clearInterval(_aliceFastPoll);
+  _aliceFastPoll = setInterval(function () {
+    if (Date.now() > until) {
+      clearInterval(_aliceFastPoll);
+      _aliceFastPoll = null;
+      return;
+    }
+    aliceRefresh();
+  }, 1000);
+}
 
 function aliceInit() {
   if (!$('alice-card')) return;

@@ -83,3 +83,33 @@ class TestTopicsFromYaml(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMr02mChannelExpansion(unittest.TestCase):
+    """Pins the 1.0.6.16 gap: a `type: mr02m` entry carries `channels`, not
+    `controls`, so the picker listed nothing for it — the bench 12AI module's
+    live temperature probes (ai_7..ai_12) could not be bound to Alice at all."""
+
+    def test_channels_expand_per_kind(self):
+        doc = {"devices": [{
+            "id": "mr02m-COM4-12", "type": "mr02m",
+            "channels": {
+                "ai": [{"ch": 1, "enabled": True}, {"ch": 2}, {"ch": 3, "enabled": False}],
+                "sys": [{"ch": 1}],
+            },
+        }]}
+        out = topics._topics_from_yaml(doc)
+        self.assertIn("/devices/mr02m-COM4-12/controls/ai_1", out)
+        self.assertIn("/devices/mr02m-COM4-12/controls/ai_2", out)
+        self.assertNotIn("/devices/mr02m-COM4-12/controls/ai_3", out)  # disabled
+        self.assertNotIn("/devices/mr02m-COM4-12/controls/sys_1", out)  # unknown kind
+        self.assertIn("/devices/mr02m-COM4-12/controls/mcu_temp", out)
+
+    def test_explicit_controls_are_not_second_guessed(self):
+        doc = {"devices": [{
+            "id": "mr02m-COM1-5", "type": "mr02m",
+            "controls": ["do_1"],
+            "channels": {"do": [{"ch": 9}]},
+        }]}
+        out = topics._topics_from_yaml(doc)
+        self.assertEqual(out, ["/devices/mr02m-COM1-5/controls/do_1"])
