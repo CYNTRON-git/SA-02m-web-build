@@ -222,6 +222,8 @@
     'Откройте ссылку привязки, затем «Завершить привязку»:':
       'Open the registration link, then press «Complete linking»:',
     'Открыть ссылку привязки': 'Open the registration link',
+    'если ссылка устарела, нажмите «Привязать» заново':
+      'if the link has expired, press «Link» again',
     'Шлюз ответил без ссылки привязки': 'Gateway responded without a registration URL',
     'Отвязка': 'Unlinking',
     'Отвязка не выполнена': 'Unlink did not complete',
@@ -276,9 +278,9 @@
     'frpc не установлен': 'frpc not installed',
     'Нет конфигурации': 'No configuration',
     'истёк': 'expired',
-    'с назад': 's ago',
-    'м назад': 'm ago',
-    'ч назад': 'h ago',
+    'сек. назад': 'sec ago',
+    'мин. назад': 'min ago',
+    'ч. назад': 'h ago',
     'мин': 'min',
     'с': 's',
     'Доступ': 'Access',

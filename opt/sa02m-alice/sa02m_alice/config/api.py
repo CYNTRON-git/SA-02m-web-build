@@ -236,6 +236,11 @@ def full_config() -> Dict[str, Any]:
             ),
             "state": status.get("state") or ("disabled" if not enabled else "unknown"),
             "registration_url": pending_reg_url,
+            # Server truth for the UI's «ожидание завершения» state: True only
+            # while a FRESH un-issued claim exists. An expired/abandoned claim
+            # reads False, which returns the card to «Привязать» — the UI's
+            # session-local pending mark alone must never hold that lock.
+            "pending": pending_reg_url is not None,
         },
     }
 

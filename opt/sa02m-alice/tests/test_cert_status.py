@@ -235,13 +235,19 @@ class TestPendingClaimLifecycle(_CertStatusBase):
         fresh = {"claim_token": "tok", "registration_url": "https://u/1",
                  "controller_sn": "SN1", "expires_at": time.time() + 500}
         api._save_pending_claim(fresh)
-        self.assertEqual(self.full_config()["link"]["registration_url"], "https://u/1")
+        link = self.full_config()["link"]
+        self.assertEqual(link["registration_url"], "https://u/1")
+        self.assertIs(link["pending"], True)
         api._save_pending_claim(dict(fresh, expires_at=time.time() - 5))
-        self.assertIsNone(self.full_config()["link"]["registration_url"])
+        link = self.full_config()["link"]
+        self.assertIsNone(link["registration_url"])
+        self.assertIs(link["pending"], False)
         legacy = {"claim_token": "tok", "registration_url": "https://u/1",
                   "controller_sn": "SN1"}
         api._save_pending_claim(legacy)
-        self.assertIsNone(self.full_config()["link"]["registration_url"])
+        link = self.full_config()["link"]
+        self.assertIsNone(link["registration_url"])
+        self.assertIs(link["pending"], False)
         api._save_pending_claim(dict(fresh, issued=True))
         self.assertIsNone(self.full_config()["link"]["registration_url"])
 

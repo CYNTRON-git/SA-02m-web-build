@@ -1778,6 +1778,10 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   word-break: normal;
   overflow-wrap: anywhere;
   white-space: nowrap;
+  /* Values flush right on every tile row (Operator rule 2026-08-26): label
+     left, status/value right — Алиса, Облако, Обновление веб, all tiles. */
+  justify-self: end;
+  text-align: right;
 }
 
 /* Поля внутри плиток */

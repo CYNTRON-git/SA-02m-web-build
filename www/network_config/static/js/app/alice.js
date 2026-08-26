@@ -216,9 +216,15 @@ function aliceRender(d) {
   const srvRegUrl = (d.link && d.link.registration_url) || null;
   if (srvRegUrl) aliceRegUrl = srvRegUrl;
   if (linked) aliceRegUrl = null;
-  // Server knowledge of a pending claim counts even when this browser session
-  // never pressed «Привязать» (F5, another tab).
-  const pending = aliceGetPending() || (!linked && !!srvRegUrl);
+  // Server truth wins: link.pending is False once the claim expired or was
+  // abandoned — the card must return to «Привязать», never hang on the
+  // session-local mark (Operator hit exactly that deadlock, 2026-08-26).
+  // An older backend without the field falls back to the local heuristics.
+  const srvPending = d.link && typeof d.link.pending === 'boolean' ? d.link.pending : null;
+  if (srvPending === false) { aliceSetPending(false); aliceRegUrl = null; }
+  const pending = srvPending !== null
+    ? (srvPending && !linked)
+    : (aliceGetPending() || (!linked && !!srvRegUrl));
   const linkBtn = $('alice-btn-link');
   const linkRow = $('alice-link-row');
   const statusVal = $('alice-link-status-val');
@@ -357,7 +363,13 @@ async function aliceCompleteLink() {
   try {
     const d = await aliceApi({ action: 'complete_link' });
     if (!d.ok) {
-      aliceSetMsg(d.message || d.error || uiT('Не удалось завершить привязку'), false);
+      // The raw gateway error alone (e.g. «HTTP Error 400») strands the
+      // operator — name the recovery path in the same message.
+      aliceSetMsg(
+        (d.message || d.error || uiT('Не удалось завершить привязку')) +
+        ' — ' + uiT('если ссылка устарела, нажмите «Привязать» заново'),
+        false
+      );
     } else {
       aliceSetMsg(d.message || uiT('Сертификат установлен'), true);
     }
