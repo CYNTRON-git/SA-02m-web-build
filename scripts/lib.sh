@@ -620,9 +620,12 @@ sa02m_svc_capture() {
             SA02M_SVC_EN[$u]=absent; SA02M_SVC_ACT[$u]=absent; SA02M_SVC_TS[$u]=""
             continue
         fi
-        act=$(_sa02m_svc_query is-active "$u"); rc=$?
+        # rc captured via || — a bare `var=$(cmd); rc=$?` dies under the
+        # caller's set -e when the unit does not exist yet (is-active/is-enabled
+        # exit 3/4/1 on first install — the exact case capture must survive).
+        rc=0; act=$(_sa02m_svc_query is-active "$u") || rc=$?
         if [ "$rc" -eq 124 ] || [ -z "$act" ]; then act=timeout; fi
-        en=$(_sa02m_svc_query is-enabled "$u"); rc=$?
+        rc=0; en=$(_sa02m_svc_query is-enabled "$u") || rc=$?
         if [ "$rc" -eq 124 ]; then
             en=timeout
         elif [ -z "$en" ]; then
@@ -960,7 +963,8 @@ _sa02m_svc_apply_infra() {
         SA02M_SVC_LAST_RESULT=enabled
         return 0
     fi
-    now=$(_sa02m_svc_query is-enabled "$u"); rc=$?
+    # set -e-safe rc capture (see sa02m_svc_capture) — absent unit exits 1/4.
+    rc=0; now=$(_sa02m_svc_query is-enabled "$u") || rc=$?
     if [ "$rc" -eq 124 ]; then
         log WARN "$u: systemd не ответил — состояние не трогаю"
         SA02M_SVC_LAST_RESULT=timeout

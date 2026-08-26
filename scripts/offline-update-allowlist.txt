@@ -52,6 +52,7 @@ etc/sa02m-update/
 etc/tmpfiles.d/sa02m.conf
 etc/tmpfiles.d/sa02m-update.conf
 etc/tmpfiles.d/sa02m-devices.conf
+etc/tmpfiles.d/sa02m-alice.conf
 
 # Devices tab (DTV / CE) optional env overrides
 etc/default/sa02m-devices

@@ -348,6 +348,20 @@ unit_admin_enabled() {
     return 1
 }
 
+# alice: the client unit exits 0 (standby) while client_enabled=false in
+# /etc/sa02m-alice/sa02m-alice-client.conf, so a bare `systemctl start` can
+# never pass the runtime-active check. Пуск/Стоп therefore also sync that
+# flag through its one home (sa02m_alice config_store — same code path as the
+# Alice card's enable/disable). Bounded; a failed write is logged and start
+# proceeds (it will then fail honestly on the runtime-active check).
+alice_sync_client_enabled() {
+    _val=$1  # true|false
+    PYTHONPATH=/opt/sa02m-alice timeout 15 python3 -c "
+from sa02m_alice.common.config_store import set_client_enabled
+set_client_enabled($([ "$_val" = true ] && echo True || echo False))
+" >>"$LOG" 2>&1 || echo "$(date '+%Y-%m-%d %H:%M:%S') sa02m-web-service-ctl: alice client_enabled=${_val} write FAILED" >>"$LOG" 2>&1
+}
+
 # id | UI label | candidate units (first existing wins)
 # alice: plain Type=simple systemd unit (no init.d/SysV shim, no COM lease) —
 # the generic present/resolve/list path handles it; not svc_is_installable, so
@@ -683,6 +697,9 @@ cmd_stop() {
         /etc/init.d/mplc4 stop >>"$LOG" 2>&1 || true
         mplc4_rc_disable
     fi
+    if [ "$_id" = "alice" ]; then
+        alice_sync_client_enabled false
+    fi
     if [ -n "$_u" ]; then
         sc_run_slow stop "$_u" >>"$LOG" 2>&1 || true
         sc_run_slow disable "$_u" >>"$LOG" 2>&1 || true
@@ -749,6 +766,9 @@ cmd_start() {
     fi
     if [ "$_id" = "mplc4" ]; then
         mplc4_rc_enable
+    fi
+    if [ "$_id" = "alice" ]; then
+        alice_sync_client_enabled true
     fi
     if [ -n "$_u" ]; then
         sc_run_slow unmask "$_u" >>"$LOG" 2>&1 || true

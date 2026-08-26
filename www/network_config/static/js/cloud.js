@@ -16,9 +16,9 @@ function cloudBadge(text, kind) {
 
 function cloudRelativeTime(ts) {
   const diff = Math.floor(Date.now() / 1000) - ts;
-  if (diff < 60) return diff + uiT('с назад');
-  if (diff < 3600) return Math.floor(diff / 60) + uiT('м назад');
-  return Math.floor(diff / 3600) + uiT('ч назад');
+  if (diff < 60) return diff + ' ' + uiT('сек. назад');
+  if (diff < 3600) return Math.floor(diff / 60) + ' ' + uiT('мин. назад');
+  return Math.floor(diff / 3600) + ' ' + uiT('ч. назад');
 }
 
 function cloudFmtRemaining(expiresAt) {

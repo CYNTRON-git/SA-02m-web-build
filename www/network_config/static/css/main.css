@@ -1778,6 +1778,10 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   word-break: normal;
   overflow-wrap: anywhere;
   white-space: nowrap;
+  /* Values flush right on every tile row (Operator rule 2026-08-26): label
+     left, status/value right — Алиса, Облако, Обновление веб, all tiles. */
+  justify-self: end;
+  text-align: right;
 }
 
 /* Поля внутри плиток */
@@ -2091,6 +2095,25 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    the bindings-modal message (#alice-bind-msg, add-device feedback). Neither was
    styled by the cloud-card-scoped rule — give them the same both-theme error/ok
    tokens so a friendly status reads clearly (never a raw exception, 1.0.5.73). */
+/* The registration link inside the card message inherits the message color
+   (AA already holds for the surrounding text in both themes) — a themed link
+   color on the tinted is-ok background is not contrast-guaranteed. */
+#alice-msg a { color: inherit; text-decoration: underline; }
+
+/* Bindings-modal device rows: name grows, type stays secondary, the
+   edit/delete pair sits flush right and never wraps into the name. */
+.alice-dev-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.alice-dev-row > .mono { flex: 1 1 auto; overflow-wrap: anywhere; }
+.alice-dev-actions { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
+/* .btn sets display:inline-flex, which outranks the UA [hidden] rule — the
+   edit-mode «Отмена» button must stay hidden in add mode (JS sets `hidden`). */
+#alice-dev-cancel[hidden] { display: none !important; }
+
 #alice-msg.cloud-msg,
 #alice-bind-msg.cloud-msg {
   margin-top: 4px;

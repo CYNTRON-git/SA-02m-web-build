@@ -41,9 +41,21 @@ if [ -d "$OPT_SRC/tests" ]; then
 fi
 
 # ── Runtime dirs ───────────────────────────────────────────────────────────
-install -d -m 0750 -o root -g root /etc/sa02m-alice
-install -d -m 0750 -o root -g root /var/lib/sa02m-alice
+# 0770: the CGI (www-data) writes client/devices confs via atomic tmp+rename,
+# which needs WRITE on the dir, not just on the conf files.
+install -d -m 0770 -o root -g www-data /etc/sa02m-alice
+# State dir is www-data-owned: the enroll write (device key/cert, pending
+# claim) runs as www-data inside sa02m_alice_api.cgi. Idempotent migration:
+# install -d re-asserts owner/mode on an existing dir, file contents untouched.
+install -d -m 0700 -o www-data -g www-data /var/lib/sa02m-alice
 install -d -m 0755 -o root -g root /run/sa02m-alice
+# Boot-persistent home for both dirs (donor cleanup wipes /var/lib state).
+install -m 0644 -o root -g root \
+    "$BASE_DIR/etc/tmpfiles.d/sa02m-alice.conf" /etc/tmpfiles.d/sa02m-alice.conf
+sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-alice.conf
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-alice.conf 2>/dev/null || true
+fi
 
 for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.conf; do
     if [ ! -f "/etc/sa02m-alice/$f" ]; then
@@ -53,7 +65,8 @@ for f in sa02m-alice-client.conf sa02m-alice-devices.conf sa02m-alice-server.con
         log INFO "/etc/sa02m-alice/$f уже есть — не перезаписываю"
     fi
 done
-# www-data needs read on conf for CGI status; write via Python as root through trigger/API
+# www-data reads AND writes client/devices confs directly (CGI atomic write —
+# hence the 0770 dir above); server.conf stays 0640 root:www-data read-only.
 chmod 0640 /etc/sa02m-alice/*.conf 2>/dev/null || true
 chgrp www-data /etc/sa02m-alice /etc/sa02m-alice/*.conf 2>/dev/null || true
 # Allow www-data to update devices/client via API running as www-data in CGI

@@ -5,6 +5,46 @@
 
 ---
 
+## [2026-08-26 15:10] branch: 1.0.6.14
+
+**Файл(ы):** `etc/sa02m-web-service-ctl.sh`, `opt/sa02m-alice/sa02m_alice/common/config_store.py`, `scripts/06-alice.sh`, `etc/tmpfiles.d/sa02m-alice.conf`, `opt/sa02m-alice/tests/test_config_store.py`
+**Тип:** Некорректное поведение (Алиса / Управление)
+**Описание:** «Не удалось запустить службу» при запуске Яндекс Алисы из веб-панели на 1.135 — обоими путями: «Пуск» в списке служб и «Включить» в карточке Алисы.
+**Причина:** Две независимые: (1) «Пуск» делал голый `systemctl start`, но `client_enabled=false` — клиент штатно выходит в standby (exit 0), и проверка runtime-active честно отдавала `start_failed`; (2) «Включить» из карточки падало: atomic-запись конфига (tmp+rename) требует WRITE на каталоге, а `/etc/sa02m-alice` был `0750 root:www-data` — www-data не мог создать temp-файл (`alice_api_failed`). Плюс мина: `_atomic_write` ставил temp-файлу владельца-писателя и 0640 — запись от root оставила бы конфиг нечитаемым для www-data.
+**Исправление:** (1) `cmd_start`/`cmd_stop` для alice синхронизируют `client_enabled` через `config_store.set_client_enabled` (тот же дом, что у карточки); (2) каталог `/etc/sa02m-alice` → `0770 root:www-data` (installer + tmpfiles — доезжает OTA и бутом); (3) `_atomic_write` сохраняет режим/владельца существующего файла (chown под `hasattr`-гардом для Windows-хостов); (4) триггер карточки делает защитный `unmask` перед enable+restart (`sa02m-alice-web-trigger.sh`). Юнит-тесты: сохранение режима и пользовательских ключей конфига.
+
+---
+
+## [2026-08-26 14:05] branch: 1.0.6.14
+
+**Файл(ы):** `scripts/lib.sh`
+**Тип:** Некорректное поведение (installer)
+**Описание:** Первая установка опционального стека на живой плате обрывалась молча посреди модуля: на 1.135 `06-alice.sh` умирал после копирования конфигов — юниты/CGI/sudoers Алисы не ставились («полуустановка»). Найдено при приёмке 1.0.6.14 на 1.135.
+**Причина:** `sa02m_svc_capture` / `sa02m_svc_apply` в `lib.sh` захватывали rc идиомой `var=$(cmd); rc=$?` — под `set -e` вызывающего скрипта упавшая подстановка (`systemctl is-active`/`is-enabled` на ещё не существующем юните → exit 1/3/4) убивает скрипт ДО `rc=$?`. На собранных образах скрыто коротким путём `SA02M_ROOTFS_BUILD`; на пере-установках юниты уже есть (exit 0) — всплывает ТОЛЬКО на первой установке стека на живой плате.
+**Исправление:** `rc=0; var=$(cmd) || rc=$?` во всех трёх местах — семантика идентична, `set -e`-безопасно. Проверено на 1.135: `06-alice.sh` проходит до конца, юниты установлены (disabled по умолчанию), «Привязать» → `ok:true`.
+
+---
+
+## [2026-08-26 13:30] branch: 1.0.6.14
+
+**Файл(ы):** `etc/tmpfiles.d/sa02m-alice.conf` (новый), `scripts/06-alice.sh`, `scripts/update-www-only.sh`, `etc/sa02m-update-runner.sh`, `scripts/offline-update-allowlist.txt`
+**Тип:** Некорректное поведение (Алиса)
+**Описание:** Первый «Привязать» на свежей плате → `{"ok":false,"error":"enrollment_failed","message":"[Errno 13] Permission denied: '/var/lib/sa02m-alice'"}`. Воспроизведено на 1.136 (web 1.0.6.13).
+**Причина:** Enroll-запись (`device.key.pem`/`device.crt.pem`) выполняется в `sa02m_alice_api.cgi` от www-data, а каталог состояния либо отсутствовал вовсе (вычищен `cleanup-donor.sh` при подготовке образа, ничем не воссоздавался), либо после install был `root:root 0750` (`06-alice.sh`).
+**Исправление:** Вариант 1 из ТЗ — каталог `www-data:www-data 0700` (CGI и так пишет ключ от www-data — граница доверия не меняется). Новый `etc/tmpfiles.d/sa02m-alice.conf` (+ `/run/sa02m-alice`): создаётся на каждом буте, идемпотентно мигрирует права на живых платах; ставится installer'ом, www-only деплоем и web OTA (runner вызывает `systemd-tmpfiles --create` сразу после daemon-reload).
+
+---
+
+## [2026-08-26 08:47] branch: 1.0.6.14
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `.ai-dev/quality/checks/ota-deploy-mode-contract.sh`
+**Тип:** Некорректное поведение
+**Описание:** Web OTA деплоила `sa02m-set-storage-auto-format` и `sa02m-set-cpu-profile` как 0644 (без +x) — кнопка автоформата и CPU-профиль ломались после каждого OTA.
+**Причина:** Режим в manifest брался из расширения исходника (`rel.endswith(".sh")`), а не из dst.
+**Исправление:** `deploy_mode(rel, dst)` — `/usr/local/sbin|libexec|bin` и dhclient-hooks → 0755; gate `ota-deploy-mode-contract`.
+
+---
+
 ## [2026-08-25 11:46] branch: 1.0.6.13
 
 **Файл(ы):** `www/network_config/cgi-bin/apply.cgi`, `www/network_config/static/js/app/forms.js`, `www/network_config/static/js/i18n.js`, `etc/sa02m-ensure-eth1-dhcp-hook.sh`, `etc/sudoers.d/sa02m-www`, `docs/contracts/ethernet-iface-naming.md`

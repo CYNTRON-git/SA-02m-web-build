@@ -164,6 +164,15 @@
       "init": "bash + grep + python3"
     },
     {
+      "id": "ota-deploy-mode-contract",
+      "checks": "OTA manifest deploy mode follows DESTINATION role, not source extension. Pins private/BUG-ota-mode-0644.md: extension-less helpers (sa02m-set-storage-auto-format, sa02m-set-cpu-profile) in /usr/local/sbin were deployed 0644 on every web update — exFAT autoformat button greyed out, CPU profile switch failed silently. Asserts deploy_mode(rel,dst) exists, manifest builder uses it, sbin/libexec/bin/dhclient-hooks → 0755 while nginx/sudoers stay 0644, and offline map still marks the two helpers 0755.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/ota-deploy-mode-contract.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/offline-update-deploy-map.json", "private/BUG-ota-mode-0644.md", ".ai-dev/quality/checks/ota-deploy-mode-contract.sh"],
+      "init": "bash + grep + python3"
+    },
+    {
       "id": "kernel-policy-contract",
       "checks": "Static gate for docs/contracts/kernel-conditional-services.md: the opcua gateway port default agrees between etc/sa02m-mqtt-opcua.conf and BOTH py defaults and is not 4840 (CODESYS's own OPC UA server owns 4840 — a regression re-creates the EADDRINUSE crash-loop), sa02m-grat-arp@.service stays Type=simple (a oneshot regression re-blocks multi-user.target ~29 s), the kernel-service guard script + unit + docker ExecCondition drop-in exist and 01-system.sh installs/enables them and runs apply-policy, 08-codesys.sh carries no unconditional enable/start of codesyscontrol (install-only policy), service-ctl cmd_start/codesys_install carry no codesys_rc_enable (start = runtime only), the boot-hold pins: sa02m-modem-dhcp@.service stays event-driven (no [Install] — a statically enabled instance holds multi-user ~90 s on an absent modem) with the 99-modem.rules start line and the 01-system.sh stale-symlink cleanup in place, and sa02m-mqtt-opcua.py sends exactly one sd_notify(\"READY=1\") at the top of main() BEFORE `gw = OpcuaGateway(cfg)` (early READY decouples the OPC UA address-space build — ~9 s in OpcuaServer() construction inside __init__, ~17 s total — from multi-user.target; moving it into/after construction reintroduces the boot hold, contract §5.1). Non-vacuous: a missing file or an empty extraction FAILS.",
       "config": null,

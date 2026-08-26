@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -95,11 +96,12 @@ CERT_CHECK_UNREADABLE = "unreadable"  # cert dir not traversable → unknown
 def cert_presence(status: Dict[str, Any]) -> Tuple[Optional[bool], str]:
     """(cert_present, cert_check) — True/False when known, None when unknowable.
 
-    The web API usually runs as www-data, which cannot traverse the root-only
-    cert dir: there `os.path.isfile()` returns False for files that exist. So
-    the client's status file (written as root, the actual cert user) is the
-    first source; a local isfile() only when this process can actually enter
-    the dir; otherwise an honest None — never a false False.
+    The state dir is www-data-owned 0700 (tmpfiles.d/sa02m-alice.conf), so the
+    CGI (www-data) can enter it — but a caller running as another non-root user
+    still cannot: there `os.path.isfile()` returns False for files that exist.
+    So the client's status file (written by the client service, the actual cert
+    user) is the first source; a local isfile() only when this process can
+    actually enter the dir; otherwise an honest None — never a false False.
     """
     val = status.get("cert_present")
     if isinstance(val, bool):
@@ -184,6 +186,24 @@ def full_config() -> Dict[str, Any]:
     enabled = client_enabled(cfg)
     cert_present, cert_check = cert_presence(status)
     connected = status.get("state") == C.STATE_CONNECTED
+    # Stored OAuth URL while a claim is pending (started, not yet issued):
+    # popup blockers eat window.open and an F5 must not strand the operator
+    # with no way back to the link page. The claim file outlives enrollment
+    # marked issued=True — gate on that flag.
+    _claim = _load_pending_claim()
+    # Only claims WITH a stored deadline are servable: a pre-1.0.6.14 abandoned
+    # claim (no expires_at, never issued) must NOT lock the UI into a dead
+    # «Завершить привязку» forever — pressing «Привязать» writes a fresh claim
+    # with the field and recovers.
+    _claim_fresh = (
+        bool(_claim.get("expires_at"))
+        and time.time() < float(_claim.get("expires_at") or 0)
+    )
+    pending_reg_url = (
+        _claim.get("registration_url")
+        if _claim.get("claim_token") and not _claim.get("issued") and _claim_fresh
+        else None
+    )
     return {
         "ok": True,
         "version": __version__,
@@ -215,6 +235,12 @@ def full_config() -> Dict[str, Any]:
                 and connected
             ),
             "state": status.get("state") or ("disabled" if not enabled else "unknown"),
+            "registration_url": pending_reg_url,
+            # Server truth for the UI's «ожидание завершения» state: True only
+            # while a FRESH un-issued claim exists. An expired/abandoned claim
+            # reads False, which returns the card to «Привязать» — the UI's
+            # session-local pending mark alone must never hold that lock.
+            "pending": pending_reg_url is not None,
         },
     }
 
@@ -281,6 +307,9 @@ def start_link() -> Dict[str, Any]:
                 "claim_token": data.get("claim_token"),
                 "registration_url": data.get("registration_url"),
                 "controller_sn": _controller_sn(),
+                # The gateway's claim lifetime — lets the status stop serving
+                # a dead OAuth link once the claim has expired server-side.
+                "expires_at": time.time() + float(data.get("expires_in") or 600),
             }
             if data.get("ca_pem"):
                 _write_pem(C.CA_FILE, str(data["ca_pem"]), 0o644)
@@ -358,9 +387,10 @@ def complete_link() -> Dict[str, Any]:
         _write_pem(path, str(pem), mode)
     # Deliberately NOT cleared after a successful issue: the gateway requires the
     # claim_token for the authenticated /controller/unlink, so pending_claim.json
-    # outlives enrollment (marked issued=True). Nothing in the status/link view
-    # reads this file — a leftover can never flip the UI to «ожидание
-    # завершения»; the UI's pending mark is session-local and yields to linked.
+    # outlives enrollment (marked issued=True). The status/link view DOES read
+    # this file since 1.0.6.14 (registration_url while pending), but it is
+    # triple-gated — claim_token present, issued unset, expires_at fresh — so
+    # this issued=True leftover can never flip the UI to «ожидание завершения».
     _save_pending_claim(
         {
             "claim_token": token,
