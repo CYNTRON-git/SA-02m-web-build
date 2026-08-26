@@ -81,9 +81,6 @@ class TestTopicsFromYaml(unittest.TestCase):
         self.assertEqual(topics._topics_from_yaml([]), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestMr02mChannelExpansion(unittest.TestCase):
     """Pins the 1.0.6.16 gap: a `type: mr02m` entry carries `channels`, not
@@ -113,3 +110,7 @@ class TestMr02mChannelExpansion(unittest.TestCase):
         }]}
         out = topics._topics_from_yaml(doc)
         self.assertEqual(out, ["/devices/mr02m-COM1-5/controls/do_1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

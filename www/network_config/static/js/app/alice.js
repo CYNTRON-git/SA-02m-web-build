@@ -433,13 +433,17 @@ function aliceRender(d) {
   }
 }
 
+// Returns the rendered status (or null) so a caller can tell whether the
+// device state has settled — see aliceFastPoll.
 async function aliceRefresh() {
   try {
     const d = await aliceApi(null);
-    if (d && d.error === 'unauthorized') return;
+    if (d && d.error === 'unauthorized') return null;
     aliceRender(d);
+    return d;
   } catch (e) {
     aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
+    return null;
   }
 }
 
@@ -755,19 +759,52 @@ let _aliceFastPoll = null;
 
 // After an action that changes state on the device (cert issued → client
 // restart, enable/disable), the 5 s cadence makes the card look stuck for
-// several seconds. Poll every second for a short window instead, and stop
-// early once the state settles.
-function aliceFastPoll(windowMs) {
-  const until = Date.now() + (windowMs || 20000);
-  if (_aliceFastPoll) clearInterval(_aliceFastPoll);
-  _aliceFastPoll = setInterval(function () {
-    if (Date.now() > until) {
-      clearInterval(_aliceFastPoll);
-      _aliceFastPoll = null;
+// several seconds. Poll faster for a short window instead.
+//
+// CHAINED, never setInterval: the status endpoint probes the gateway with a
+// 5 s timeout inside its own CGI, so a fixed-rate 1 Hz timer would stack
+// overlapping requests on a slow uplink — exactly the post-enrollment case —
+// and hold several of the 8 shared fcgiwrap workers (web-code-rigor
+// ## Architecture: no per-request network work piled onto a polled endpoint).
+// Each tick waits for its own refresh to settle, and the window ends early
+// once the state stops being transitional.
+const ALICE_POLL_MS = 5000;
+const ALICE_SETTLED_STATES = ['connected', 'disabled', 'error'];
+
+function aliceFastPollSettled(d) {
+  if (!d) return false;
+  const st = (d.status && d.status.state) || '';
+  return ALICE_SETTLED_STATES.indexOf(st) !== -1;
+}
+
+function aliceFastPoll() {
+  const until = Date.now() + 20000;
+  if (_aliceFastPoll) clearTimeout(_aliceFastPoll);
+  // The base 5 s poll would race the window and hit the same probing
+  // endpoint — park it and restore it when the window ends.
+  if (_alicePoll) {
+    clearInterval(_alicePoll);
+    _alicePoll = null;
+  }
+  const stop = function () {
+    _aliceFastPoll = null;
+    if (!_alicePoll) _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
+  };
+  const tick = async function () {
+    _aliceFastPoll = null;
+    let settled = false;
+    try {
+      settled = aliceFastPollSettled(await aliceRefresh());
+    } catch (e) {
+      /* transport hiccup — keep the window running */
+    }
+    if (settled || Date.now() >= until) {
+      stop();
       return;
     }
-    aliceRefresh();
-  }, 1000);
+    _aliceFastPoll = setTimeout(tick, 1000);
+  };
+  _aliceFastPoll = setTimeout(tick, 700);
 }
 
 function aliceInit() {
@@ -777,7 +814,7 @@ function aliceInit() {
   aliceRefresh();
   aliceLoadTopics();
   if (_alicePoll) clearInterval(_alicePoll);
-  _alicePoll = setInterval(aliceRefresh, 5000);
+  _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
 }
 
 // Only functions invoked from HTML onclick handlers need a global handle;
