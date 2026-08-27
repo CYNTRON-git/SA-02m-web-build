@@ -62,22 +62,89 @@ A sensor binding is a device whose `properties` carry one
 - `parameters` (instance + unit) is REQUIRED for a float property (Yandex
   requires it for discovery). Validation (`config/models.py`):
   `instance` ∈ `FLOAT_INSTANCES` = `temperature | humidity | voltage |
-  amperage | power | pressure | co2_level | battery_level`; `unit` matches
-  `^unit\.[a-z_.]{1,32}$` (shell/JSON-safe by construction). A capability's
+  amperage | power | pressure | co2_level | tvoc | illumination |
+  battery_level | water_level | electricity_meter`; `unit` matches
+  `^unit\.[a-z0-9_.]{1,32}$` (shell/JSON-safe by construction — the digit
+  class is load-bearing for `unit.density.mcg_m3`). A capability's
   `type` must start `devices.capabilities.`, a property's
   `devices.properties.` — a cross-typed item is rejected.
-- UI kinds (`app/alice.js` `ALICE_KINDS`): temperature/humidity →
-  `devices.types.sensor.climate`; voltage/amperage/power →
-  `devices.types.sensor`. The bridge publishes engineering units (°C, %RH,
-  V/A/W) — `float(raw)` is the whole conversion; negative values (CE power
-  export) parse as-is.
+- UI kinds (`app/alice.js` `ALICE_KINDS`): temperature/humidity/pressure/
+  co2/tvoc → `devices.types.sensor.climate`; voltage/amperage/power →
+  `devices.types.sensor`; motion → `devices.types.sensor.motion`. The
+  allowlist is deliberately wider than the UI — the rest is hand-edit surface.
+- The bridge publishes engineering units — `float(raw) × scale` is the whole
+  conversion; negative values (CE power export) parse as-is.
 - An unparseable MQTT payload converts to NO reading (the property is omitted
   from query/state) — never a fabricated `0.0`.
 - Properties are read-only: they never enter `apply_actions`, so a sensor
   topic gets no `/on` command publish.
 
+### One property per `(type, instance)` per device
+
+A Yandex property is addressed by `(type, instance)` and nothing else — the
+state wire format (`{"type":…,"state":{"instance":…,"value":…}}`) carries no
+per-property identifier. **Honesty label: derived, not quoted.** The platform
+docs do not state that an instance must be unique per device; they provide no
+discriminator, which forces it.
+
+`validate_device` therefore rejects a repeated `(type, instance)` within
+`capabilities` or within `properties`
+(`duplicate property instance: <instance>`). Consequences:
+
+- A DTV maps to ONE device: temperature · humidity · pressure · co2_level ·
+  tvoc · motion are six distinct instances.
+- A CE-02m-3 does NOT: `voltage_a/b/c/ab/bc/ca` are all instance `voltage`,
+  every current is `amperage`, every power is `power`. It needs one device per
+  phase plus a totals device.
+- The load path is unaffected — `config_store.load_devices` does not validate,
+  so a pre-existing hand-edited document keeps loading; only writes are gated.
+
+### Scale (item level, never sent to Yandex)
+
+An optional `scale` sits beside `mqtt`, NOT inside `parameters`: discovery
+copies `parameters` verbatim into the Yandex payload, so a key there would
+leak a non-Yandex field to the platform.
+
+```json
+{"type":"devices.properties.float","mqtt":"/devices/dtv-COM4-3/controls/pressure_bme680_kpa",
+ "parameters":{"instance":"pressure","unit":"unit.pressure.mmhg"},"scale":7.50062}
+```
+
+- Absent ⇒ `1.0`, so every pre-existing item is byte-identical and unaffected.
+- Validated as a finite number, `0 < |scale| ≤ 1e6`.
+- Applied ONCE, in `converters.mqtt_to_float_property`, and rounded to 3
+  decimals. No other code multiplies a reading.
+- In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC).
+
+### Event properties
+
+```json
+{"type":"devices.properties.event","mqtt":"/devices/dtv-COM4-3/controls/presence",
+ "retrievable":true,"reportable":true,
+ "parameters":{"instance":"motion","events":[{"value":"detected"},{"value":"not_detected"}]}}
+```
+
+- `parameters.events` is REQUIRED by Yandex for discovery: a non-empty list of
+  `{"value": …}`, each value in the instance's closed set, no duplicates.
+  `instance` ∈ `EVENT_INSTANCES` (`models.py`) = `motion | open | button |
+  vibration | smoke | gas | water_leak | battery_level | food_level |
+  water_level`.
+- State shape: `{"type":"devices.properties.event","state":{"instance":"motion","value":"detected"}}`.
+- **Payload mapping** (`converters.BOOL_EVENT_VALUES`): a payload already
+  equal to an allowed value passes through unchanged; otherwise it is read as
+  boolean-ish (numeric first, then `on/off/true/false/yes/no`) and mapped to
+  the instance's (false, true) pair. The numeric branch is what the real bus
+  needs — the bridge publishes DTV presence as `"1.0"` / `"0.0"` (a scaled
+  register), which Yandex refuses verbatim.
+- An unmappable payload, an unknown instance, or a pair slot with no event
+  yields NO block — the same "omit rather than fabricate" rule as floats.
+- Yandex has **no `presence` instance**; `motion` is the platform's home for
+  presence detection. There is **no distance/length instance at all**, so a
+  radar distance reading cannot be represented — nothing is substituted.
+
 Validating tests: `opt/sa02m-alice/tests/test_models.py`,
-`test_converters.py`, `test_device_registry.py`, `test_topics_inventory.py`.
+`test_converters.py`, `test_device_registry.py`, `test_state_sender.py`,
+`test_topics_inventory.py`.
 
 ## Socket.IO events (controller ↔ `alice.cyntron.ru`)
 
@@ -102,6 +169,15 @@ Action capability result: `{status:"DONE"|"ERROR", error_code?}`.
 - properties.float: 300 s
 - properties.event: 0.01 s + fast batch 0.1 s
 - batch flush: 1.0 s normal / 0.1 s fast
+
+The budget is **per `(device, type, instance)`**, not per device — a
+multi-reading device's readings each hold their own window, and the outbound
+batch keeps one row per instance. Keyed by type alone (through 1.0.6.17) all
+float readings of one device shared a single 300 s slot AND collapsed into a
+single batch row, so a six-reading card refreshed one value per window. The
+limit is a floor between reports of the SAME reading, not a refresh period;
+`query` answers from the MQTT cache and is unrated, so a card is never stale
+on open.
 
 ## Offline / Phase 0
 

@@ -7,9 +7,32 @@ from typing import Any, Dict, Optional, Tuple
 from ..common import constants as C
 
 
+# Boolean-ish MQTT payload → the (false, true) event value of an instance.
+# A `None` slot means "this instance has no event for that state" — vibration
+# reports the event, never its absence.
+BOOL_EVENT_VALUES = {
+    "motion": ("not_detected", "detected"),
+    "open": ("closed", "opened"),
+    "water_leak": ("dry", "leak"),
+    "smoke": ("not_detected", "detected"),
+    "gas": ("not_detected", "detected"),
+    "vibration": (None, "vibration"),
+}
+
+
 def _truthy_mqtt(raw: str) -> bool:
+    """Numeric first, then the word set.
+
+    The Modbus→MQTT bridge publishes scaled registers, so a DTV coil arrives as
+    `"1.0"` / `"0.0"` — a word-set-only test read every one of them as false.
+    """
     s = (raw or "").strip().lower()
-    return s in ("1", "true", "on", "yes")
+    if not s:
+        return False
+    try:
+        return float(s) != 0.0
+    except ValueError:
+        return s in ("1", "true", "on", "yes")
 
 
 def mqtt_to_on_off(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -87,7 +110,9 @@ def yandex_to_range(
     return ("%g" % num), None
 
 
-def mqtt_to_float_property(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+def mqtt_to_float_property(
+    raw: str, parameters: Optional[Dict[str, Any]] = None, scale: float = 1.0
+) -> Optional[Dict[str, Any]]:
     params = parameters or {}
     instance = params.get("instance", "temperature")
     unit = params.get("unit")
@@ -98,6 +123,15 @@ def mqtt_to_float_property(raw: str, parameters: Optional[Dict[str, Any]] = None
         # show 0 °C / 0 W as real). Callers skip falsy blocks — the property
         # is simply omitted from query/state.
         return None
+    try:
+        factor = float(scale)
+    except (TypeError, ValueError):
+        factor = 1.0
+    if factor != 1.0:
+        # The ONE home for reading arithmetic. Rounded because a raw product
+        # (101.32 × 7.50062) carries a 16-digit mantissa that is ugly in the
+        # app and bloats every device_state payload.
+        value = round(value * factor, 3)
     block: Dict[str, Any] = {
         "type": "devices.properties.float",
         "state": {"instance": instance, "value": value},
@@ -107,10 +141,48 @@ def mqtt_to_float_property(raw: str, parameters: Optional[Dict[str, Any]] = None
     return block
 
 
-def mqtt_to_event_property(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def mqtt_to_event_property(
+    raw: str, parameters: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """MQTT payload → a Yandex event value the platform actually accepts.
+
+    Yandex takes only the closed value set of the instance (`detected` /
+    `not_detected` for motion, …), so a raw `"1.0"` forwarded verbatim is
+    refused. A payload that maps to nothing yields no block at all — the same
+    "omit rather than fabricate" rule the float converter follows.
+    """
     params = parameters or {}
-    instance = params.get("instance", "open")
-    value = (raw or "").strip() or params.get("value", "detected")
+    instance = str(params.get("instance", "open"))
+    s = (raw or "").strip()
+    allowed = []
+    for ev in params.get("events") or []:
+        if isinstance(ev, dict) and isinstance(ev.get("value"), str):
+            allowed.append(ev["value"])
+    # A hand-edited binding whose topic already publishes the Yandex word
+    # (`"opened"`) keeps working untouched.
+    if s and (s in allowed or (not allowed and s in (BOOL_EVENT_VALUES.get(instance) or ()))):
+        return {
+            "type": "devices.properties.event",
+            "state": {"instance": instance, "value": s},
+        }
+    pair = BOOL_EVENT_VALUES.get(instance)
+    if not pair:
+        return None
+    if not s:
+        return None
+    try:
+        on = float(s) != 0.0
+    except ValueError:
+        low = s.lower()
+        if low in ("1", "true", "on", "yes"):
+            on = True
+        elif low in ("0", "false", "off", "no"):
+            on = False
+        else:
+            return None
+    value = pair[1] if on else pair[0]
+    if not value:
+        return None
     return {
         "type": "devices.properties.event",
         "state": {"instance": instance, "value": value},
@@ -172,10 +244,10 @@ def capability_mqtt_to_yandex(
 
 
 def property_mqtt_to_yandex(
-    prop_type: str, raw: str, parameters: Optional[Dict[str, Any]] = None
+    prop_type: str, raw: str, parameters: Optional[Dict[str, Any]] = None, scale: float = 1.0
 ) -> Optional[Dict[str, Any]]:
     if prop_type.endswith("float") or prop_type == "devices.properties.float":
-        return mqtt_to_float_property(raw, parameters)
+        return mqtt_to_float_property(raw, parameters, scale)
     if prop_type.endswith("event") or prop_type == "devices.properties.event":
         return mqtt_to_event_property(raw, parameters)
     return None

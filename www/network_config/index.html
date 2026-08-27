@@ -7,8 +7,8 @@
        iPhone top/bottom areas must match the page background, not a default). -->
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.6.17&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.17&r=linkux1">
+  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.6.18&r=devhist1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.18&r=alicemp1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -21,8 +21,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.6.17&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.6.17&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.6.18&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.6.18&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
     </div>
     <div class="topbar-branding">
       <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
@@ -1267,7 +1267,7 @@
 
 <!-- Яндекс Алиса — device/command binding management; opened from #alice-card -->
 <div id="alice-modal" class="mqtt-modal-overlay" hidden onclick="aliceModalBackdrop(event)">
-  <div class="mqtt-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="alice-modal-title">
+  <div class="mqtt-modal-dialog mqtt-modal-wide" role="dialog" aria-modal="true" aria-labelledby="alice-modal-title">
     <div class="mqtt-modal-head">
       <h3 id="alice-modal-title" data-i18n="Управление привязками">Управление привязками</h3>
       <button type="button" class="btn btn-sm modal-close-x" onclick="aliceCloseModal()" aria-label="Закрыть" title="Закрыть">✕</button>
@@ -1280,19 +1280,20 @@
         <input type="text" id="alice-dev-name" maxlength="64" autocomplete="off" placeholder="Реле 1">
       </div>
       <div class="field">
-        <label for="alice-dev-kind" data-i18n="Тип">Тип</label>
-        <select id="alice-dev-kind">
-          <option value="switch" selected>Переключатель</option>
-          <option value="temperature">Температура</option>
-          <option value="humidity">Влажность</option>
-          <option value="voltage">Напряжение</option>
-          <option value="amperage">Ток</option>
-          <option value="power">Мощность</option>
+        <label for="alice-dev-dtype" data-i18n="Тип устройства">Тип устройства</label>
+        <select id="alice-dev-dtype">
+          <option value="devices.types.switch">Выключатель</option>
+          <option value="devices.types.sensor" selected>Датчик</option>
+          <option value="devices.types.sensor.climate">Климат-датчик</option>
+          <option value="devices.types.sensor.motion">Датчик движения</option>
+          <option value="devices.types.smart_meter.electricity">Счётчик электроэнергии</option>
+          <option value="devices.types.other">Устройство</option>
         </select>
       </div>
       <div class="field">
-        <label for="alice-topic-select" data-i18n="MQTT-топик">MQTT-топик</label>
-        <select id="alice-topic-select"></select>
+        <label id="alice-rows-label" data-i18n="Показания">Показания</label>
+        <div id="alice-rows" class="alice-rows" role="group" aria-labelledby="alice-rows-label"></div>
+        <button type="button" class="btn btn-sm" id="alice-row-add" onclick="aliceAddRow()" data-i18n="Добавить показание">Добавить показание</button>
       </div>
       <div class="btn-row">
         <button type="button" class="btn btn-sm btn-primary" id="alice-dev-save" onclick="aliceAddDevice()" data-i18n="Добавить">Добавить</button>
@@ -1307,22 +1308,22 @@
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.6.17&r=linkux1"></script>
-<script src="static/js/app.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/app/status.js?v=1.0.6.17&r=updlog1"></script>
-<script src="static/js/app/hw.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/app/rs485.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/app/forms.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/app/services.js?v=1.0.6.17&r=noell1"></script>
-<script src="static/js/app/misc.js?v=1.0.6.17&r=hwname1"></script>
-<script src="static/js/app/init.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/app/nav.js?v=1.0.6.17&r=devhist1"></script>
-<script src="static/js/flasher.js?v=1.0.6.17&r=noell1"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.6.17&r=noell1"></script>
-<script src="static/js/gateway.js?v=1.0.6.17&r=noell1"></script>
-<script type="module" src="static/js/devices.js?v=1.0.6.17&r=e1dec"></script>
-<script src="static/js/cloud.js?v=1.0.6.17&r=agofmt1"></script>
-<script src="static/js/app/alice.js?v=1.0.6.17&r=linkux2"></script>
+<script src="static/js/i18n.js?v=1.0.6.18&r=alicemp1"></script>
+<script src="static/js/app.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/app/status.js?v=1.0.6.18&r=updlog1"></script>
+<script src="static/js/app/hw.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/app/rs485.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/app/forms.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/app/services.js?v=1.0.6.18&r=noell1"></script>
+<script src="static/js/app/misc.js?v=1.0.6.18&r=hwname1"></script>
+<script src="static/js/app/init.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/app/nav.js?v=1.0.6.18&r=devhist1"></script>
+<script src="static/js/flasher.js?v=1.0.6.18&r=noell1"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.6.18&r=noell1"></script>
+<script src="static/js/gateway.js?v=1.0.6.18&r=noell1"></script>
+<script type="module" src="static/js/devices.js?v=1.0.6.18&r=e1dec"></script>
+<script src="static/js/cloud.js?v=1.0.6.18&r=agofmt1"></script>
+<script src="static/js/app/alice.js?v=1.0.6.18&r=alicemp1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

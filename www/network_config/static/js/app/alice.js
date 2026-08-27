@@ -149,67 +149,103 @@ const ALICE_DEV_TYPES = {
   'devices.types.light': 'Освещение',
   'devices.types.sensor': 'Датчик',
   'devices.types.sensor.climate': 'Климат-датчик',
+  'devices.types.sensor.motion': 'Датчик движения',
+  'devices.types.smart_meter': 'Счётчик',
+  'devices.types.smart_meter.electricity': 'Счётчик электроэнергии',
   'devices.types.thermostat': 'Термостат',
   'devices.types.other': 'Устройство',
 };
 
-// Kind key (#alice-dev-kind option value) → the Yandex device/property pin
-// (docs/contracts/alice-mqtt-mapping.md). `switch` marks the capability path;
-// sensor kinds carry the float-property instance + unit forwarded verbatim.
+// Reading kind (row select value) → the Yandex pin
+// (docs/contracts/alice-mqtt-mapping.md). `kindOf` picks the item shape:
+// cap = on_off capability, float = float property (instance + unit + an
+// optional unit conversion), event = event property (instance + events[]).
+// `type` is the device type auto-suggested when this kind leads the card.
+// `scale` converts what the Modbus→MQTT bridge publishes into the unit Yandex
+// names; the conversion itself happens once, in the Python converter.
 const ALICE_KINDS = {
-  switch: { type: 'devices.types.switch' },
-  temperature: { type: 'devices.types.sensor.climate', instance: 'temperature', unit: 'unit.temperature.celsius' },
-  humidity: { type: 'devices.types.sensor.climate', instance: 'humidity', unit: 'unit.percent' },
-  voltage: { type: 'devices.types.sensor', instance: 'voltage', unit: 'unit.volt' },
-  amperage: { type: 'devices.types.sensor', instance: 'amperage', unit: 'unit.ampere' },
-  power: { type: 'devices.types.sensor', instance: 'power', unit: 'unit.watt' },
+  switch:      { kindOf: 'cap',   type: 'devices.types.switch' },
+  temperature: { kindOf: 'float', instance: 'temperature', unit: 'unit.temperature.celsius', scale: 1,       type: 'devices.types.sensor.climate' },
+  humidity:    { kindOf: 'float', instance: 'humidity',    unit: 'unit.percent',             scale: 1,       type: 'devices.types.sensor.climate' },
+  pressure:    { kindOf: 'float', instance: 'pressure',    unit: 'unit.pressure.mmhg',       scale: 7.50062, type: 'devices.types.sensor.climate' },
+  co2:         { kindOf: 'float', instance: 'co2_level',   unit: 'unit.ppm',                 scale: 1,       type: 'devices.types.sensor.climate' },
+  tvoc:        { kindOf: 'float', instance: 'tvoc',        unit: 'unit.density.mcg_m3',      scale: 1000,    type: 'devices.types.sensor.climate' },
+  voltage:     { kindOf: 'float', instance: 'voltage',     unit: 'unit.volt',                scale: 1,       type: 'devices.types.sensor' },
+  amperage:    { kindOf: 'float', instance: 'amperage',    unit: 'unit.ampere',              scale: 1,       type: 'devices.types.sensor' },
+  power:       { kindOf: 'float', instance: 'power',       unit: 'unit.watt',                scale: 1,       type: 'devices.types.sensor' },
+  motion:      { kindOf: 'event', instance: 'motion',      events: ['detected', 'not_detected'], type: 'devices.types.sensor.motion' },
 };
 
-// Sentinel option value for a hand-edited config whose float-property instance
-// is outside ALICE_KINDS: the select is locked on it and save touches only
-// name + topic (instance/unit preserved).
+// Russian source labels — NOT passed through uiT() when a row is built: the
+// i18n engine remembers a node's first text as its original, so an English
+// label baked in at build time would stay English after a switch back to RU.
+// Emitting the RU source lets the DICT observer own both directions.
+const ALICE_KIND_LABELS = {
+  switch: 'Переключатель',
+  temperature: 'Температура',
+  humidity: 'Влажность',
+  pressure: 'Давление',
+  co2: 'Углекислый газ',
+  tvoc: 'Летучие вещества',
+  voltage: 'Напряжение',
+  amperage: 'Ток',
+  power: 'Мощность',
+  motion: 'Движение',
+};
+
+// Sentinel option value for a hand-edited binding whose instance is outside
+// ALICE_KINDS: the row's select is locked on it and save touches only the
+// topic (instance/unit/scale preserved verbatim).
 const ALICE_KIND_RAW = '__raw__';
 
-function aliceKindSelect() { return $('alice-dev-kind'); }
+// Item types the form can express; anything else on a device is preserved
+// untouched through an edit.
+const ALICE_MANAGED_TYPES = [
+  'devices.capabilities.on_off',
+  'devices.properties.float',
+  'devices.properties.event',
+];
 
-// The form owns exactly ONE managed binding per device: the on_off capability
-// (switch) or the first devices.properties.float property (sensor).
-function aliceManagedProp(dev) {
-  const props = (dev && dev.properties) || [];
-  for (let i = 0; i < props.length; i++) {
-    if (props[i] && props[i].type === 'devices.properties.float') return props[i];
-  }
-  return null;
+function aliceIsManagedItem(item) {
+  return !!item && ALICE_MANAGED_TYPES.indexOf(item.type) !== -1;
 }
 
-function aliceManagedCap(dev) {
-  const caps = (dev && dev.capabilities) || [];
-  for (let i = 0; i < caps.length; i++) {
-    if (caps[i] && caps[i].type === 'devices.capabilities.on_off') return caps[i];
-  }
-  return null;
+function aliceItemInstance(item) {
+  return (item && item.parameters && item.parameters.instance) || '';
 }
 
-// Detect the form kind of an existing device: on_off capability wins (switch),
-// else the first float property's instance; an instance we do not know maps to
-// the locked raw sentinel.
-function aliceDetectKind(dev) {
-  if (aliceManagedCap(dev)) return 'switch';
-  const prop = aliceManagedProp(dev);
-  if (prop) {
-    const inst = prop.parameters && prop.parameters.instance;
-    const keys = Object.keys(ALICE_KINDS);
-    for (let i = 0; i < keys.length; i++) {
-      if (ALICE_KINDS[keys[i]].instance === inst) return keys[i];
-    }
-    return ALICE_KIND_RAW;
+// The kind key describing a stored item, or the raw sentinel when its instance
+// is one we do not offer.
+function aliceKindForItem(item) {
+  if (!item) return ALICE_KIND_RAW;
+  if (item.type === 'devices.capabilities.on_off') return 'switch';
+  const inst = aliceItemInstance(item);
+  const wantEvent = item.type === 'devices.properties.event';
+  const keys = Object.keys(ALICE_KINDS);
+  for (let i = 0; i < keys.length; i++) {
+    const spec = ALICE_KINDS[keys[i]];
+    const isEvent = spec.kindOf === 'event';
+    if (spec.instance === inst && isEvent === wantEvent) return keys[i];
   }
-  return 'switch';
+  return ALICE_KIND_RAW;
+}
+
+// Every managed binding of a device, in stored order (capabilities first) —
+// one form row each.
+function aliceDetectRows(dev) {
+  const rows = [];
+  const push = function (item) {
+    if (!aliceIsManagedItem(item)) return;
+    rows.push({ kind: aliceKindForItem(item), topic: (item && item.mqtt) || '', rawItem: item });
+  };
+  ((dev && dev.capabilities) || []).forEach(push);
+  ((dev && dev.properties) || []).forEach(push);
+  return rows;
 }
 
 function aliceMakeManagedItem(kind, topic) {
   const spec = ALICE_KINDS[kind];
-  if (!spec || kind === 'switch') {
+  if (!spec || spec.kindOf === 'cap') {
     return {
       type: 'devices.capabilities.on_off',
       mqtt: topic,
@@ -218,45 +254,206 @@ function aliceMakeManagedItem(kind, topic) {
       parameters: { instance: 'on' },
     };
   }
-  return {
+  if (spec.kindOf === 'event') {
+    return {
+      type: 'devices.properties.event',
+      mqtt: topic,
+      retrievable: true,
+      reportable: true,
+      parameters: {
+        instance: spec.instance,
+        events: spec.events.map(function (v) { return { value: v }; }),
+      },
+    };
+  }
+  const item = {
     type: 'devices.properties.float',
     mqtt: topic,
     retrievable: true,
     reportable: true,
     parameters: { instance: spec.instance, unit: spec.unit },
   };
+  // Emitted ONLY when it converts something: every kind that existed before
+  // this version writes a byte-identical item to the one it wrote yesterday.
+  if (spec.scale && spec.scale !== 1) item.scale = spec.scale;
+  return item;
 }
 
-// Reset the kind select to a plain enabled state (drop any raw option).
-function aliceResetKindSelect() {
-  const sel = aliceKindSelect();
-  if (!sel) return;
-  sel.disabled = false;
-  for (let i = sel.options.length - 1; i >= 0; i--) {
-    if (sel.options[i].value === ALICE_KIND_RAW) sel.remove(i);
-  }
-  sel.value = 'switch';
-}
-
-// Prefill the kind select for edit mode; a raw (unknown-instance) kind gets a
-// locked option labelled with the stored instance so the operator sees what is
-// bound without being able to silently retype it.
-function alicePrefillKind(kind, dev) {
-  const sel = aliceKindSelect();
-  if (!sel) return;
-  aliceResetKindSelect();
+// The (item type, instance) pair a row will write — the address Yandex uses,
+// and therefore what may not repeat within one device.
+function aliceRowPair(kind, rawItem) {
   if (kind === ALICE_KIND_RAW) {
-    const prop = aliceManagedProp(dev);
-    const inst = (prop && prop.parameters && prop.parameters.instance) || 'custom';
-    const opt = document.createElement('option');
-    opt.value = ALICE_KIND_RAW;
-    opt.textContent = String(inst);
-    sel.appendChild(opt);
-    sel.value = ALICE_KIND_RAW;
-    sel.disabled = true;
+    return (rawItem && rawItem.type ? rawItem.type : '') + '|' + aliceItemInstance(rawItem);
+  }
+  const item = aliceMakeManagedItem(kind, '');
+  return item.type + '|' + aliceItemInstance(item);
+}
+
+// ── Reading rows («Показания») ──────────────────────────────────────────────
+// #alice-rows is USER-owned: only the functions below touch it. aliceRender —
+// which the 5 s poll drives — must never read or rebuild it, or a poll landing
+// mid-edit would wipe half-filled rows (the renderer-owned-container trap).
+
+// Picker topics, cached once per modal open so a topic refresh never rebuilds
+// an existing row or resets the value chosen in it.
+let aliceTopicList = [];
+// True once the operator picks a device type by hand — the first row's kind
+// stops auto-filling it, so an edited device is never silently retyped.
+let aliceDtypeTouched = false;
+
+function aliceRowsHost() { return $('alice-rows'); }
+
+function aliceRowKindOptions(selected) {
+  return Object.keys(ALICE_KINDS).map(function (k) {
+    return '<option value="' + escHtml(k) + '"' + (k === selected ? ' selected' : '') + '>' +
+      escHtml(ALICE_KIND_LABELS[k] || k) + '</option>';
+  }).join('');
+}
+
+function aliceRowTopicOptions(topic) {
+  const list = aliceTopicList.slice();
+  // A bound topic missing from the live list stays selectable — editing the
+  // name alone must never silently retarget the binding.
+  if (topic && list.indexOf(topic) === -1) list.push(topic);
+  return list.map(function (t) {
+    return '<option value="' + escHtml(t) + '"' + (t === topic ? ' selected' : '') + '>' +
+      escHtml(t) + '</option>';
+  }).join('');
+}
+
+function aliceAddRow(kind, topic, rawItem) {
+  const host = aliceRowsHost();
+  if (!host) return;
+  const locked = kind === ALICE_KIND_RAW;
+  const k = locked ? ALICE_KIND_RAW : (ALICE_KINDS[kind] ? kind : 'temperature');
+  const row = document.createElement('div');
+  row.className = 'alice-bind-row';
+  let kindHtml;
+  if (locked) {
+    // Unknown stored instance: show what is bound, refuse to retype it.
+    const inst = aliceItemInstance(rawItem) || 'custom';
+    kindHtml = '<option value="' + escHtml(ALICE_KIND_RAW) + '" selected>' + escHtml(inst) + '</option>';
+  } else {
+    kindHtml = aliceRowKindOptions(k);
+  }
+  row.innerHTML =
+    '<select class="alice-row-kind" aria-label="Вид показания"' + (locked ? ' disabled' : '') + '>' +
+    kindHtml + '</select>' +
+    '<select class="alice-row-topic" aria-label="MQTT-топик">' +
+    aliceRowTopicOptions(topic || '') + '</select>' +
+    '<button type="button" class="btn btn-sm btn-danger alice-row-del" data-act="row-del"' +
+    ' aria-label="Удалить показание" title="Удалить показание">✕</button>';
+  // JS properties, never data-attributes: the stored item must not be
+  // serialised into the markup.
+  row._aliceRawItem = rawItem || null;
+  row._aliceOrigKind = rawItem ? k : null;
+  host.appendChild(row);
+  return row;
+}
+
+function aliceClearRows() {
+  const host = aliceRowsHost();
+  if (host) host.innerHTML = '';
+}
+
+// Add mode starts on one empty row; the device type follows it, so the form
+// never opens showing «Датчик» beside a «Температура» row.
+const ALICE_DEFAULT_KIND = 'temperature';
+
+function aliceSeedDefaultRow() {
+  aliceAddRow(ALICE_DEFAULT_KIND, '', null);
+  if (!aliceDtypeTouched) aliceSetDtype(ALICE_KINDS[ALICE_DEFAULT_KIND].type);
+}
+
+function aliceRowsClick(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-act="row-del"]') : null;
+  if (!btn) return;
+  const host = aliceRowsHost();
+  const row = btn.closest('.alice-bind-row');
+  if (!host || !row) return;
+  if (host.querySelectorAll('.alice-bind-row').length <= 1) {
+    aliceSetBindMsg(uiT('Нужно хотя бы одно показание'), false);
     return;
   }
-  sel.value = kind;
+  row.parentNode.removeChild(row);
+  aliceSetBindMsg('', true);
+}
+
+function aliceRowsChange(e) {
+  const sel = e.target;
+  if (!sel || !sel.classList || !sel.classList.contains('alice-row-kind')) return;
+  if (aliceDtypeTouched) return;
+  const host = aliceRowsHost();
+  const first = host && host.querySelector('.alice-bind-row .alice-row-kind');
+  if (!first || first !== sel) return;
+  const spec = ALICE_KINDS[sel.value];
+  const dtype = $('alice-dev-dtype');
+  if (spec && dtype) aliceSetDtype(spec.type);
+}
+
+// Read the rows back at save time — the DOM is the state, so there is no
+// parallel array to fall out of sync with it.
+function aliceCollectRows() {
+  const host = aliceRowsHost();
+  const out = [];
+  const seen = {};
+  const nodes = host ? host.querySelectorAll('.alice-bind-row') : [];
+  for (let i = 0; i < nodes.length; i++) {
+    const row = nodes[i];
+    const kindSel = row.querySelector('.alice-row-kind');
+    const topicSel = row.querySelector('.alice-row-topic');
+    const kind = (kindSel && kindSel.value) || '';
+    const topic = (topicSel && topicSel.value) || '';
+    if (!topic) return { rows: [], error: uiT('Укажите MQTT-топик для каждого показания') };
+    const pair = aliceRowPair(kind, row._aliceRawItem);
+    if (seen[pair]) {
+      return { rows: [], error: uiT('Два показания одного вида в одном устройстве — выберите разные') };
+    }
+    seen[pair] = true;
+    out.push({ kind: kind, topic: topic, rawItem: row._aliceRawItem, origKind: row._aliceOrigKind });
+  }
+  if (!out.length) return { rows: [], error: uiT('Нужно хотя бы одно показание') };
+  return { rows: out, error: null };
+}
+
+// The item a row writes: an untouched stored item keeps every field it had
+// (instance, unit, scale, hand-added keys) and is only retargeted — the
+// round-trip guarantee deployed bindings depend on.
+function aliceRowItem(row) {
+  if (row.rawItem && row.origKind === row.kind) {
+    const item = JSON.parse(JSON.stringify(row.rawItem));
+    item.mqtt = row.topic;
+    return item;
+  }
+  return aliceMakeManagedItem(row.kind, row.topic);
+}
+
+function aliceSetDtype(type) {
+  const sel = $('alice-dev-dtype');
+  if (!sel || !type) return;
+  for (let i = 0; i < sel.options.length; i++) {
+    if (sel.options[i].value === type) { sel.value = type; return; }
+  }
+  // An unusual stored type gets a locked-in option rather than being rewritten.
+  // RU source text (not uiT) so the DICT observer owns both directions.
+  const opt = document.createElement('option');
+  opt.value = type;
+  opt.textContent = ALICE_DEV_TYPES[type] || String(type);
+  sel.appendChild(opt);
+  sel.value = type;
+}
+
+// « · 6 показаний» for a multi-reading card, nothing for a single binding —
+// so a card carrying several values is legible in the list. Russian counts
+// 2–4 differently from 5+; the list is rebuilt on every poll, so uiT() here
+// cannot freeze a language (unlike the durable row labels above).
+function aliceReadingCount(dev) {
+  const n = (((dev && dev.capabilities) || []).length) + (((dev && dev.properties) || []).length);
+  if (n < 2) return '';
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  const few = mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14);
+  return ' · ' + n + ' ' + uiT(few ? 'показания' : 'показаний');
 }
 
 function aliceDeviceTypeLabel(type) {
@@ -393,7 +590,10 @@ function aliceRender(d) {
       if (dev && dev.id) aliceDevCache[dev.id] = dev;
     });
     // The device being edited disappeared (deleted elsewhere / re-poll) —
-    // drop the stale edit mode instead of saving over a ghost id.
+    // drop the stale edit mode instead of saving over a ghost id. This is the
+    // ONE path on which the poll may reset #alice-rows, and only because the
+    // rows describe a device that no longer exists; the render never otherwise
+    // reads or rebuilds them (they are user-owned).
     if (aliceEditId && !aliceDevCache[aliceEditId]) aliceCancelEdit();
     if (!devices.length) {
       list.innerHTML = '<p class="field-hint">' + escHtml(uiT('Устройства ещё не добавлены')) + '</p>';
@@ -401,7 +601,7 @@ function aliceRender(d) {
       list.innerHTML = devices.map(function (dev) {
         return '<div class="alice-dev-row" data-id="' + escHtml(dev.id || '') + '"><span class="mono text-sm">' +
           escHtml(dev.name || dev.id) + '</span> <span class="text-sm text-sec">' +
-          escHtml(aliceDeviceTypeLabel(dev.type)) + '</span>' +
+          escHtml(aliceDeviceTypeLabel(dev.type) + aliceReadingCount(dev)) + '</span>' +
           '<span class="alice-dev-actions">' +
           '<button type="button" class="btn btn-sm" data-act="edit">' + escHtml(uiT('Изменить')) + '</button> ' +
           '<button type="button" class="btn btn-sm btn-danger" data-act="del">' + escHtml(uiT('Удалить')) + '</button>' +
@@ -544,96 +744,55 @@ async function aliceLinkAction() {
   return aliceStartLink();
 }
 
+// Fills the cached picker list ONLY — existing rows are never rebuilt, so a
+// refresh cannot reset a topic the operator already chose.
 async function aliceLoadTopics() {
-  const sel = $('alice-topic-select');
-  if (!sel) return;
   try {
     const d = await aliceTopics();
-    const topics = (d && d.topics) || [];
-    sel.innerHTML = topics.map(function (t) {
-      return '<option value="' + escHtml(t) + '">' + escHtml(t) + '</option>';
-    }).join('');
+    aliceTopicList = (d && d.topics) || [];
   } catch (e) {
-    /* ignore */
+    /* ignore — an empty list still lets a bound topic show through */
   }
 }
 
 async function aliceAddDevice() {
   const name = ($('alice-dev-name') && $('alice-dev-name').value || '').trim();
-  const topic = $('alice-topic-select') && $('alice-topic-select').value;
-  if (!name || !topic) {
+  if (!name) {
     aliceSetBindMsg(uiT('Укажите имя и MQTT-топик'), false);
     return;
   }
-  const kindSel = aliceKindSelect();
-  const kind = (kindSel && kindSel.value) || 'switch';
-  let device;
-  const editing = aliceEditId && aliceDevCache[aliceEditId];
-  if (editing) {
-    // Edit: send the ORIGINAL object with id — the backend replaces in place;
-    // id/room_id and any extra (hand-edited) items survive. The form owns
-    // exactly ONE managed binding (see aliceManagedCap/aliceManagedProp).
-    device = JSON.parse(JSON.stringify(aliceDevCache[aliceEditId]));
-    device.name = name;
-    const prevKind = aliceDetectKind(device);
-    if (kind === ALICE_KIND_RAW) {
-      // Locked unknown-instance sensor: retarget the topic only; the stored
-      // instance/unit are preserved untouched.
-      const rawProp = aliceManagedProp(device);
-      if (rawProp) rawProp.mqtt = topic;
-    } else if (kind === prevKind) {
-      // Kind unchanged: update the managed item's topic in place (a sensor
-      // keeps its stored instance/unit; a switch with no on_off yet gains one
-      // — same semantics as before this selector existed).
-      if (kind === 'switch') {
-        const onoff = aliceManagedCap(device);
-        if (onoff) {
-          onoff.mqtt = topic;
-        } else {
-          device.capabilities = device.capabilities || [];
-          device.capabilities.push(aliceMakeManagedItem('switch', topic));
-        }
-      } else {
-        const prop = aliceManagedProp(device);
-        if (prop) prop.mqtt = topic;
-        else {
-          device.properties = device.properties || [];
-          device.properties.push(aliceMakeManagedItem(kind, topic));
-        }
-      }
-    } else {
-      // Kind CHANGED: remove the old managed item, insert the new kind's,
-      // and move the Yandex device type — never leave both bindings behind.
-      const caps = device.capabilities || [];
-      const props = device.properties || [];
-      if (prevKind === 'switch') {
-        const onoff = aliceManagedCap(device);
-        if (onoff) caps.splice(caps.indexOf(onoff), 1);
-      } else {
-        const prop = aliceManagedProp(device);
-        if (prop) props.splice(props.indexOf(prop), 1);
-      }
-      const item = aliceMakeManagedItem(kind, topic);
-      if (kind === 'switch') caps.push(item);
-      else props.push(item);
-      device.capabilities = caps;
-      device.properties = props;
-      device.type = (ALICE_KINDS[kind] || {}).type || device.type;
-    }
-  } else {
-    const spec = ALICE_KINDS[kind] || ALICE_KINDS.switch;
-    device = {
-      name: name,
-      type: spec.type,
-      capabilities: [],
-      properties: [],
-    };
-    if (kind !== 'switch' && spec.instance) {
-      device.properties.push(aliceMakeManagedItem(kind, topic));
-    } else {
-      device.capabilities.push(aliceMakeManagedItem('switch', topic));
-    }
+  const collected = aliceCollectRows();
+  if (collected.error) {
+    aliceSetBindMsg(collected.error, false);
+    return;
   }
+  const dtype = ($('alice-dev-dtype') && $('alice-dev-dtype').value) || 'devices.types.sensor';
+  const caps = [];
+  const props = [];
+  const editing = aliceEditId && aliceDevCache[aliceEditId];
+  let device;
+  if (editing) {
+    // Edit: keep id/room_id and every item the form cannot express, in stored
+    // order, then re-emit one item per row.
+    device = JSON.parse(JSON.stringify(aliceDevCache[aliceEditId]));
+    (device.capabilities || []).forEach(function (it) {
+      if (!aliceIsManagedItem(it)) caps.push(it);
+    });
+    (device.properties || []).forEach(function (it) {
+      if (!aliceIsManagedItem(it)) props.push(it);
+    });
+  } else {
+    device = { capabilities: [], properties: [] };
+  }
+  device.name = name;
+  device.type = dtype;
+  collected.rows.forEach(function (row) {
+    const item = aliceRowItem(row);
+    if (item.type.indexOf('devices.capabilities.') === 0) caps.push(item);
+    else props.push(item);
+  });
+  device.capabilities = caps;
+  device.properties = props;
   try {
     const d = await aliceApi({ action: 'upsert_device', device: device });
     if (!d.ok) {
@@ -664,32 +823,13 @@ function aliceBeginEdit(id) {
   if (!dev) return;
   aliceEditId = id;
   if ($('alice-dev-name')) $('alice-dev-name').value = dev.name || '';
-  const kind = aliceDetectKind(dev);
-  alicePrefillKind(kind, dev);
-  const sel = $('alice-topic-select');
-  let topic = '';
-  if (kind === 'switch') {
-    const onoff = aliceManagedCap(dev);
-    topic = (onoff && onoff.mqtt) || '';
-  } else {
-    const prop = aliceManagedProp(dev);
-    topic = (prop && prop.mqtt) || '';
-  }
-  if (sel && topic) {
-    // The bound topic may no longer be in the live topic list — keep it
-    // selectable so an edit of the name alone does not silently retarget.
-    let found = false;
-    for (let i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].value === topic) { found = true; break; }
-    }
-    if (!found) {
-      const opt = document.createElement('option');
-      opt.value = topic;
-      opt.textContent = topic;
-      sel.appendChild(opt);
-    }
-    sel.value = topic;
-  }
+  // An existing device's type is the operator's, never re-derived from a row.
+  aliceDtypeTouched = true;
+  aliceSetDtype(dev.type || 'devices.types.sensor');
+  aliceClearRows();
+  const rows = aliceDetectRows(dev);
+  if (!rows.length) aliceAddRow(ALICE_DEFAULT_KIND, '', null);
+  else rows.forEach(function (r) { aliceAddRow(r.kind, r.topic, r.rawItem); });
   const save = $('alice-dev-save');
   if (save) save.textContent = uiT('Сохранить');
   const cancel = $('alice-dev-cancel');
@@ -700,7 +840,9 @@ function aliceBeginEdit(id) {
 function aliceCancelEdit() {
   aliceEditId = null;
   if ($('alice-dev-name')) $('alice-dev-name').value = '';
-  aliceResetKindSelect();
+  aliceDtypeTouched = false;
+  aliceClearRows();
+  aliceSeedDefaultRow();
   const save = $('alice-dev-save');
   if (save) save.textContent = uiT('Добавить');
   const cancel = $('alice-dev-cancel');
@@ -732,14 +874,17 @@ function aliceModalEsc(e) {
   if (e.key === 'Escape') aliceCloseModal();
 }
 
-function aliceOpenModal() {
+async function aliceOpenModal() {
   const m = $('alice-modal');
   if (!m) return;
   aliceSetBindMsg('', true);
   m.removeAttribute('hidden');
   document.addEventListener('keydown', aliceModalEsc);
   aliceRefresh();
-  aliceLoadTopics();
+  // Topics FIRST: the seeded row's topic picker would otherwise open empty.
+  await aliceLoadTopics();
+  const host = aliceRowsHost();
+  if (host && !host.querySelector('.alice-bind-row')) aliceSeedDefaultRow();
 }
 
 function aliceCloseModal() {
@@ -819,6 +964,15 @@ function aliceInit() {
   if (!$('alice-card')) return;
   const list = $('alice-device-list');
   if (list) list.addEventListener('click', aliceListClick);
+  // Delegated from the container, which itself is static markup — a rebuilt
+  // row keeps working without re-binding anything.
+  const rows = aliceRowsHost();
+  if (rows) {
+    rows.addEventListener('click', aliceRowsClick);
+    rows.addEventListener('change', aliceRowsChange);
+  }
+  const dtype = $('alice-dev-dtype');
+  if (dtype) dtype.addEventListener('change', function () { aliceDtypeTouched = true; });
   aliceRefresh();
   aliceLoadTopics();
   if (_alicePoll) clearInterval(_alicePoll);
@@ -831,6 +985,7 @@ function aliceInit() {
 window.aliceToggleClient = aliceToggleClient;
 window.aliceLinkAction = aliceLinkAction;
 window.aliceAddDevice = aliceAddDevice;
+window.aliceAddRow = aliceAddRow;
 window.aliceCancelEdit = aliceCancelEdit;
 window.aliceOpenModal = aliceOpenModal;
 window.aliceCloseModal = aliceCloseModal;
