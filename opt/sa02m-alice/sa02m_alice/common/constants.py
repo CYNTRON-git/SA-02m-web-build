@@ -47,6 +47,28 @@ GATEWAY_PROBE_TIMEOUT_S = 5.0
 SIO_RECONNECT_MIN_S = 2.0
 SIO_RECONNECT_MAX_S = 60.0
 SIO_WATCHDOG_S = 60.0
+# Symmetric jitter fraction on the reconnect ladder: an OTA wave restarts many
+# boards at once, and a flat ladder would reconnect them all in lockstep.
+SIO_RECONNECT_JITTER = 0.25
+# A session must last this long before the attempt counter resets. A gateway
+# that drops us seconds after connect must be backed away from, not hammered:
+# resetting on every successful connect would turn "connect → dropped at 16 s"
+# into a hot retry loop.
+SIO_STABLE_S = 60.0
+
+# In-place device-document reload (docs/contracts/alice-mqtt-mapping.md).
+# Grace window during which the retained burst of a NEWLY subscribed topic is
+# cached but not reported. Bounded by the LOCAL broker (127.0.0.1) — the burst
+# arrives in milliseconds; gateway latency is not on this path.
+RETAINED_GRACE_S = 5.0
+# Status-file heartbeat: `ts` must keep advancing in a quiet session, because
+# the privileged web trigger uses its freshness as proof that the client is
+# still alive and still watching the document.
+STATUS_HEARTBEAT_S = 30.0
+# How old `ts` may be before the trigger stops trusting `config_watch` and
+# falls back to a restart (3× the heartbeat). Read by the shell helper too —
+# usr/local/sbin/sa02m-alice-web-trigger.sh keeps the same value.
+STATUS_STALE_S = 90
 
 # Client status states written for the web UI
 STATE_DISABLED = "disabled"
