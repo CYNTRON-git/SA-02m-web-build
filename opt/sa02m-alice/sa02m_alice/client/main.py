@@ -27,7 +27,8 @@ from ..common.config_store import (
 )
 from ..common.fw_version import HW_VARIANT, get_fw_version
 from .device_registry import DeviceRegistry
-from .sio_connection import AliceSocketIO, SocketIOUnavailable
+from .reload_watch import DevicesWatcher, RetainedGrace, apply_reload
+from .sio_connection import AliceSocketIO, SocketIOUnavailable, reconnect_delay
 from .sio_handlers import SioHandlers
 from .state_sender import StateSender
 
@@ -45,6 +46,12 @@ def _write_status(state: str, **kw: Any) -> None:
         "ts": int(time.time()),
         "version": __version__,
         "cert_present": cert_paths_present(),
+        # Capability handshake with usr/local/sbin/sa02m-alice-web-trigger.sh:
+        # this binary re-reads the device document in place, so the helper may
+        # skip the restart on a binding edit. A static property of the build —
+        # written in EVERY state, so the helper never has to guess. An older
+        # client never writes it, and the helper then restarts as before.
+        "config_watch": True,
         **kw,
     }
     path = C.STATUS_FILE
@@ -174,6 +181,10 @@ def run() -> int:
             return 0
 
     registry = DeviceRegistry()
+    # A binding edit rewrites the device document atomically; the watchdog loop
+    # below notices and reloads in place instead of the unit being restarted.
+    watcher = DevicesWatcher(C.DEVICES_CONF)
+    grace = RetainedGrace()
     mqtt_host = cfg.get("client", "mqtt_host", fallback=C.DEFAULT_MQTT_HOST)
     mqtt_port = cfg.getint("client", "mqtt_port", fallback=C.DEFAULT_MQTT_PORT)
 
@@ -217,13 +228,18 @@ def run() -> int:
             return
         retained = bool(getattr(msg, "retain", False))
         # The retained burst on subscribe is CACHED (query serves state from
-        # the cache) but never reported as a change — see note_mqtt.
-        if registry.note_mqtt(topic, payload, retained=ignore_retained["active"] and retained):
+        # the cache) but never reported as a change — see note_mqtt. Two
+        # windows feed it: the global one right after connect, and a per-topic
+        # grace for the topics a reload just added. Left-to-right short-circuit
+        # keeps the grace lock off the live (non-retained) path entirely.
+        suppress = retained and (ignore_retained["active"] or grace.suppress(topic))
+        if registry.note_mqtt(topic, payload, retained=suppress):
             blocks = registry.state_blocks_for_topic(topic)
             if blocks and sender:
                 sender.offer(blocks)
 
     # Main reconnect loop
+    attempt = 0
     while not _stop.is_set():
         if not client_enabled():
             log.info("client_enabled cleared — stopping")
@@ -244,6 +260,17 @@ def run() -> int:
                 hw_variant=HW_VARIANT,
             )
             sio.connect()
+            # Re-arm the watcher and re-read the document BEFORE subscribing,
+            # so the subscribed set matches the file that was just
+            # fingerprinted. An edit made while we were reconnecting is picked
+            # up here rather than being lost.
+            watcher.arm()
+            try:
+                registry.reload()
+            except Exception as exc:
+                # Keep the last good document — a corrupt file must not kill
+                # the connect path, but it must not pass silently either.
+                log.error("device document reload at connect failed: %s", exc)
             for topic in registry.mqtt_topics():
                 mqtt.subscribe(topic, qos=1)
             # Allow retained storm to pass, then accept live updates
@@ -256,11 +283,37 @@ def run() -> int:
                 gateway_wss=wss,
                 client_enabled=True,
             )
-            # Watchdog loop
+            # Watchdog loop. One os.stat per tick, beside the INI open+parse
+            # client_enabled() already does every tick — a rounding error.
+            last_heartbeat = time.monotonic()
             while not _stop.is_set() and sio.connected:
                 if not client_enabled():
                     break
+                if watcher.changed():
+                    added, removed = apply_reload(
+                        registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=log
+                    )
+                    if added or removed:
+                        _write_status(
+                            C.STATE_CONNECTED,
+                            message="Device document reloaded",
+                            gateway_wss=wss,
+                            client_enabled=True,
+                        )
+                        last_heartbeat = time.monotonic()
+                if time.monotonic() - last_heartbeat >= C.STATUS_HEARTBEAT_S:
+                    # Keep `ts` advancing in a quiet session: the web trigger
+                    # treats a stale status file as "not proven alive" and
+                    # falls back to restarting us.
+                    _write_status(
+                        C.STATE_CONNECTED,
+                        message="Connected to Alice gateway",
+                        gateway_wss=wss,
+                        client_enabled=True,
+                    )
+                    last_heartbeat = time.monotonic()
                 time.sleep(1.0)
+            log.info("%s", sio.session_summary())
             if _stop.is_set():
                 break
             _write_status(
@@ -271,7 +324,12 @@ def run() -> int:
                 client_enabled=True,
             )
             # Backoff before outer-loop reconnect (SIO auto-reconnect is off).
-            _stop.wait(C.SIO_RECONNECT_MIN_S)
+            # The counter resets only after a session that actually held —
+            # a gateway dropping us seconds after connect must be backed away
+            # from, not retried every 2 s forever.
+            session_s = sio.session_duration_s()
+            attempt = 0 if session_s >= C.SIO_STABLE_S else attempt + 1
+            _stop.wait(reconnect_delay(attempt))
         except SocketIOUnavailable as exc:
             _write_status(C.STATE_MISSING_DEPS, error="missing_deps", message=str(exc))
             return 1
@@ -288,7 +346,13 @@ def run() -> int:
                 gateway_http=http,
                 client_enabled=True,
             )
-            _stop.wait(min(C.SIO_RECONNECT_MAX_S, C.SIO_WATCHDOG_S))
+            # Was a flat 60 s after EVERY error, so the first transient failure
+            # cost a full minute of empty house (measured: ~150 s to recover a
+            # restart on bench 1.135, 2026-08-27). Now a bounded jittered
+            # ladder — the wait only sits BETWEEN attempts, never competing
+            # with GATEWAY_PROBE_TIMEOUT_S.
+            attempt += 1
+            _stop.wait(reconnect_delay(attempt))
         finally:
             if sender:
                 sender.stop()

@@ -6,6 +6,8 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+# Widen these deliberately: nothing downstream re-checks them (why —
+# docs/contracts/alice-mqtt-mapping.md, §Device document).
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _NAME_RE = re.compile(r"^[\w \-./+]{1,64}$", re.UNICODE)
 _MQTT_RE = re.compile(r"^/devices/[A-Za-z0-9_./+-]+$")
