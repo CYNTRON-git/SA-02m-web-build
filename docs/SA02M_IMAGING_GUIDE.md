@@ -374,7 +374,7 @@ ssh -i ~/.ssh/sa02m_sa02 root@192.168.1.136 uname -nrm
 
 #### Шаг 1 — мусор в `/root` и `/home`
 
-Явные glob-списки (не `rm -rf /root/*`). В т.ч. **`/root/sa02m-deploy-*`** (раньше чистилось только точное имя `sa02m-deploy`). Deny-лист защищает `/var/www/network_config`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, Alice certs, flasher firmware, сеть/nginx/MQTT.
+Явные glob-списки (не `rm -rf /root/*`). В т.ч. **`/root/sa02m-deploy-*`** (раньше чистилось только точное имя `sa02m-deploy`). Deny-лист защищает `/var/www/network_config`, `/opt/mplc4`, `/opt/codesys`, `/opt/sa02m-*`, `/var/lib/sa02m-alice`, flasher firmware, сеть/nginx/MQTT — **от glob-сборщика мусора**, а не «навсегда»: идентичность (облако и Алиса) снимают отдельные именованные стадии `stream-after-cleanup.sh` / `patch-firstboot-image.sh`, см. `docs/contracts/image-identity-reset.md`.
 
 | Путь / паттерн | Причина удаления |
 |---|---|

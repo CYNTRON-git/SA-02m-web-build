@@ -1,7 +1,8 @@
 #!/bin/sh
 # SA-02m raw restore autorun: write a known-good captured image as-is.
-# Intentionally does NOT patch rootfs, boot.scr, cloud enrollment, watchdogs,
-# or first-boot wiring. Use only from external USB/buildroot, never on the
+# Intentionally does NOT patch rootfs, boot.scr, cloud enrollment, alice
+# enrollment, watchdogs, or first-boot wiring: the image is restored byte for
+# byte. Use only from external USB/buildroot, never on the
 # running eMMC rootfs.
 set -eu
 

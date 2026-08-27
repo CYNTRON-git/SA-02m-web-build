@@ -63,6 +63,40 @@ apply_overlay() {
     done
 }
 
+# Donor Alice controller identity must not clone onto new boards: the gateway
+# identifies a controller by its mTLS DN alone, so two boards holding one
+# device.crt.pem are ONE controller to alice.cyntron.ru. This receiver is the
+# only defence when the image on this stick was captured by a PRE-FIX pipeline.
+# Offline copy of the clear-list — its one home is
+# docs/contracts/image-identity-reset.md (no repo on the media, so the block is
+# duplicated and pinned by the alice-image-identity quality row).
+# ca.crt.pem is the shared gateway CA, NOT board identity — never removed.
+wipe_alice_enrollment() {
+    local root=$1
+    # The two globs cover the atomic-write sidecars by SHAPE (the donor's key
+    # can survive as device.key.pem.tmp after a crash mid-link; the mkstemp
+    # .alice-XXXXXX beside a conf carries the donor's bindings). Same shape as
+    # the cloud twin's frpc.toml.bak* row; *.tmp cannot match ca.crt.pem.
+    rm -f "$root/var/lib/sa02m-alice/device.crt.pem" \
+          "$root/var/lib/sa02m-alice/device.key.pem" \
+          "$root/var/lib/sa02m-alice/pending_claim.json" \
+          "$root/var/lib/sa02m-alice"/*.tmp \
+          "$root/etc/sa02m-alice"/.alice-*
+    # Each file guarded — an absent one is a no-op, never an abort under set -e.
+    for f in "$root/etc/sa02m-alice/sa02m-alice-devices.conf" \
+             "$root/etc/sa02m-alice-devices.conf"; do
+        [ -f "$f" ] || continue
+        printf '%s\n' '{' '  "rooms": [],' '  "devices": []' '}' > "$f"
+    done
+    for f in "$root/etc/sa02m-alice/sa02m-alice-client.conf" \
+             "$root/etc/sa02m-alice-client.conf"; do
+        [ -f "$f" ] || continue
+        grep -q 'client_enabled' "$f" 2>/dev/null || continue
+        sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' "$f"
+    done
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
+}
+
 apply_firstboot_wiring() {
     local root=$1
     mkdir -p "$root/etc/systemd/system" \
@@ -124,6 +158,9 @@ apply_firstboot_wiring() {
       'web_port = 9999' \
       > "$root/etc/sa02m-cloud/agent.conf"
     chmod 640 "$root/etc/sa02m-cloud/agent.conf"
+
+    wipe_alice_enrollment "$root"
+    log "image identity: alice enrollment cleared on new rootfs"
 }
 
 apply_boot_wiring() {

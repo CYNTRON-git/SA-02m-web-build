@@ -97,6 +97,51 @@ EOF
     chmod 640 /etc/sa02m-cloud/agent.conf
 }
 
+wipe_alice_enrollment() {
+    # The gateway identifies a controller by its mTLS DN alone, so two boards
+    # holding one device.crt.pem are ONE controller to alice.cyntron.ru — a
+    # customer's board would surface in the donor's «Дом с Алисой». The device
+    # document goes too: its uuid4 ids identify BINDINGS, and the donor's bench
+    # bindings must not clone at all. Wiped HERE, before dd, so the private key
+    # never enters the raw stream or any intermediate artifact.
+    # ca.crt.pem STAYS — it is the shared gateway CA, not board identity.
+    # Capture is the OPPOSITE policy to factory reset, which deliberately
+    # preserves a board's OWN certs. Clear-list home:
+    # docs/contracts/image-identity-reset.md.
+    log "сброс Alice identity (device.crt/key, pending_claim, привязки)"
+    timeout 10 systemctl stop sa02m-alice-client.service 2>/dev/null || true
+    timeout 10 systemctl disable sa02m-alice-client.service 2>/dev/null || true
+    # The globs cover the ATOMIC-WRITE SIDECARS by shape, not by name: a crash
+    # or ENOSPC mid-link strands device.key.pem.tmp (api.py writes <path>.tmp
+    # then os.replace) or a mkstemp .alice-XXXXXX holding the donor's bindings.
+    # Literal names alone would clone the private key one character off the
+    # list. Same shape as the cloud twin's frpc.toml.bak* row above.
+    # `*.tmp` cannot match ca.crt.pem, which must survive.
+    rm -f /var/lib/sa02m-alice/device.crt.pem \
+          /var/lib/sa02m-alice/device.key.pem \
+          /var/lib/sa02m-alice/pending_claim.json \
+          /var/lib/sa02m-alice/*.tmp \
+          /etc/sa02m-alice/.alice-* \
+          /run/sa02m-alice/status.json \
+          /run/sa02m-alice/*.tmp
+    # Every file guarded: an absent file must be a no-op, never an abort under
+    # `set -euo pipefail` — a donor that never linked has no client.conf, and
+    # the legacy flat layout is absent on any modern board. Aborting here would
+    # kill the capture BEFORE dd.
+    local _f
+    for _f in /etc/sa02m-alice/sa02m-alice-devices.conf \
+              /etc/sa02m-alice-devices.conf; do
+        [ -f "$_f" ] || continue
+        printf '%s\n' '{' '  "rooms": [],' '  "devices": []' '}' > "$_f"
+    done
+    for _f in /etc/sa02m-alice/sa02m-alice-client.conf \
+              /etc/sa02m-alice-client.conf; do
+        [ -f "$_f" ] || continue
+        grep -q 'client_enabled' "$_f" 2>/dev/null || continue
+        sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' "$_f"
+    done
+}
+
 prepare_clone_ids() {
     log "сброс machine-id (ssh keys — непосредственно перед dd)"
     truncate -s 0 /etc/machine-id
@@ -104,6 +149,7 @@ prepare_clone_ids() {
     ln -sf /etc/machine-id /var/lib/dbus/machine-id
     install_regen_ssh_service
     wipe_cloud_enrollment
+    wipe_alice_enrollment
     prepare_firstboot_resize
     touch /root/.not_logged_in_yet
     sync

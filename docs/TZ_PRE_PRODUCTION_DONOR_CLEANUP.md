@@ -169,7 +169,7 @@ rollback-архивы в `/var/lib/sa02m-update/rollback/` **удаляются*
 | `/opt/codesys` | runtime |
 | `/opt/sa02m-*` | продуктовые агенты (код маленький, нужен) |
 | `/etc/sa02m*` , `/etc/sa02m_*` | конфиги |
-| `/var/lib/sa02m-alice` | mTLS certs (policy: preserve on factory reset) |
+| `/var/lib/sa02m-alice` | **не** трогать в этом скрипте (идентичность снимает `stream-after-cleanup`) |
 | `/var/lib/sa02m-flasher/firmware` | кеш прошивок MR (нужен offline) |
 | `/etc/network`, `/etc/nginx`, `/etc/mosquitto*` | сеть/брокер |
 | `/home/klogic` проектные рабочие файлы **кроме** `.cache`/history | не сносить home целиком |
@@ -177,6 +177,17 @@ rollback-архивы в `/var/lib/sa02m-update/rollback/` **удаляются*
 | `/boot`, ядро, dtb (кроме явных `*.bak` в `/root`) | |
 
 Реализация: функция `is_denied(path)`; перед `rm` проверка canonical path.
+
+> **Уточнение 2026-08-27 (заменяет прежнее обоснование строки
+> `/var/lib/sa02m-alice`).** В строке было написано «policy: preserve on factory
+> reset» — политика factory reset, ошибочно применённая к пути снятия образа.
+> Это и есть первопричина того, что идентичность Алисы уезжала в каждый клон:
+> **снятие образа и factory reset — противоположные политики** (образ обязан
+> стереть идентичность, factory reset обязан её сохранить). DENY здесь остаётся
+> в силе и он верен, но по другой причине: этот скрипт — glob-сборщик мусора, и
+> ослабление его списка безопасности ради одного файла открыло бы всё дерево
+> любому будущему глобу. Идентичность снимается отдельной именованной стадией.
+> Единственный дом списка очистки — `docs/contracts/image-identity-reset.md`.
 
 ### 4.4 Тулчейн (фаза 3 — сохранить)
 
@@ -264,7 +275,9 @@ py -3 tools/ssh/sa02m_remote.py exec 'bash -s -- --dry-run' < tools/imaging/clea
 - **Запрещено** self-flash / `dd` на eMMC из этого скрипта.
 - **Запрещено** `rm -rf /root` целиком.
 - **Запрещено** трогать `/etc/ssh`, `machine-id` здесь.
-- **Запрещено** удалять calibration / cloud enrollment / Alice certs.
+- **Запрещено** удалять calibration / cloud enrollment / Alice certs **в ЭТОМ
+  скрипте**: идентичность (облако и Алиса) снимают `stream-after-cleanup.sh` и
+  `patch-firstboot-image.sh` — `docs/contracts/image-identity-reset.md`.
 - PowerShell на хосте: не передавать `$`/`|` голым ssh — использовать `sa02m_remote.py`.
 
 ---
