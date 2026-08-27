@@ -265,5 +265,110 @@ class TestDeviceRegistry(unittest.TestCase):
         self.assertEqual(self.reg.get_cached(topic), "0")
 
 
+class TestReloadInPlace(unittest.TestCase):
+    """1.0.6.19: a binding edit reloads the registry in place instead of
+    restarting the unit, so `reload()` moved from unused to load-bearing.
+    Three threads touch this object — main reloads, the SIO handler queries,
+    the paho thread caches."""
+
+    DOC_A = {
+        "rooms": [{"id": "r1", "name": "Lab"}],
+        "devices": [
+            {
+                "id": "a1",
+                "name": "A",
+                "room_id": "r1",
+                "type": "devices.types.switch",
+                "capabilities": [
+                    {
+                        "type": "devices.capabilities.on_off",
+                        "mqtt": "/devices/a/controls/do",
+                        "parameters": {"instance": "on"},
+                    }
+                ],
+                "properties": [],
+            }
+        ],
+    }
+    DOC_B = {
+        "rooms": [{"id": "r2", "name": "Цех"}],
+        "devices": [
+            {
+                "id": "b1",
+                "name": "B",
+                "room_id": "r2",
+                "type": "devices.types.switch",
+                "capabilities": [
+                    {
+                        "type": "devices.capabilities.on_off",
+                        "mqtt": "/devices/b/controls/do",
+                        "parameters": {"instance": "on"},
+                    }
+                ],
+                "properties": [],
+            }
+        ],
+    }
+
+    def test_reload_swaps_rooms_devices_and_topics(self):
+        reg = DeviceRegistry(self.DOC_A)
+        reg.reload(self.DOC_B)
+        self.assertEqual([d["id"] for d in reg.discovery_devices()], ["b1"])
+        self.assertEqual(reg.mqtt_topics(), {"/devices/b/controls/do"})
+        self.assertEqual(reg.room_name("r2"), "Цех")
+        self.assertEqual(reg.room_name("r1"), "")
+
+    def test_reload_preserves_the_mqtt_cache(self):
+        """A value cached before the edit still answers `query` after it —
+        otherwise every reading would go blank for one publish period."""
+        reg = DeviceRegistry(self.DOC_A)
+        reg.note_mqtt("/devices/a/controls/do", "1")
+        reg.reload(self.DOC_B)
+        self.assertEqual(reg.get_cached("/devices/a/controls/do"), "1")
+
+    def test_reader_never_sees_a_half_built_index(self):
+        import threading
+
+        reg = DeviceRegistry(self.DOC_A)
+        # Each observation is ONE locked call, asserted on its own: a reload
+        # landing between two separate calls is legitimate interleaving, not a
+        # torn index, so pairing them would make this flaky for no signal.
+        seen_ids = []
+        seen_topics = []
+        errors = []
+        stop = threading.Event()
+
+        def reader():
+            try:
+                while not stop.is_set():
+                    seen_ids.append(
+                        tuple(sorted(d["id"] for d in reg.discovery_devices()))
+                    )
+                    seen_topics.append(tuple(sorted(reg.mqtt_topics())))
+            except Exception as exc:  # pragma: no cover - a crash IS the failure
+                errors.append(exc)
+
+        t = threading.Thread(target=reader)
+        t.start()
+        try:
+            for i in range(200):
+                reg.reload(self.DOC_B if i % 2 else self.DOC_A)
+        finally:
+            stop.set()
+            t.join(timeout=5)
+
+        self.assertEqual(errors, [])
+        self.assertTrue(seen_ids, "the reader thread produced no observations")
+        self.assertTrue(
+            set(seen_ids) <= {("a1",), ("b1",)},
+            "observed a mixed device index: %r" % (set(seen_ids) - {("a1",), ("b1",)}),
+        )
+        allowed_topics = {("/devices/a/controls/do",), ("/devices/b/controls/do",)}
+        self.assertTrue(
+            set(seen_topics) <= allowed_topics,
+            "observed a mixed topic set: %r" % (set(seen_topics) - allowed_topics),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
