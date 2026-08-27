@@ -93,6 +93,90 @@ build_bootscr() {
         || die "generated boot.scr failed format validation: $out"
 }
 
+# ── Alice controller identity (offline copy of the clear-list) ─────────────
+# The clear-list has ONE home — docs/contracts/image-identity-reset.md. This
+# offline copy is duplicated in autorun.sh / autorun-fel.sh by necessity (the
+# receivers run from a USB stick with no repo present); the copies are pinned
+# by the alice-image-identity quality row, the same discipline as watchdog-cap.
+# ca.crt.pem is the shared gateway CA, NOT board identity — never removed.
+wipe_alice_enrollment() {
+    local root=$1 f
+    # The two globs cover the ATOMIC-WRITE SIDECARS, by shape rather than by
+    # name: _write_pem / _save_pending_claim write "<path>.tmp" and only then
+    # os.replace it, and config_store._atomic_write leaves a mkstemp
+    # ".alice-XXXXXX" beside the conf — so a crash or ENOSPC mid-link strands a
+    # file holding the private key or the donor's bindings under a name one
+    # character off the literal list. Same shape as the cloud twin's
+    # frpc.toml.bak* row. `*.tmp` cannot match ca.crt.pem, which must survive.
+    rm -f "$root/var/lib/sa02m-alice/device.crt.pem" \
+          "$root/var/lib/sa02m-alice/device.key.pem" \
+          "$root/var/lib/sa02m-alice/pending_claim.json" \
+          "$root/var/lib/sa02m-alice"/*.tmp \
+          "$root/etc/sa02m-alice"/.alice-*
+    # Each file guarded — an absent one is a no-op, never an abort (a donor
+    # that never linked has no client.conf; the legacy flat layout is absent on
+    # any modern board).
+    for f in "$root/etc/sa02m-alice/sa02m-alice-devices.conf" \
+             "$root/etc/sa02m-alice-devices.conf"; do
+        [ -f "$f" ] || continue
+        printf '%s\n' '{' '  "rooms": [],' '  "devices": []' '}' > "$f"
+    done
+    for f in "$root/etc/sa02m-alice/sa02m-alice-client.conf" \
+             "$root/etc/sa02m-alice-client.conf"; do
+        [ -f "$f" ] || continue
+        grep -q 'client_enabled' "$f" 2>/dev/null || continue
+        sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' "$f"
+    done
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
+}
+
+# Fatal by design: this is the belt. It also covers a capture whose donor-side
+# wipe did not run — `--no-id-reset`, or an older stream-after-cleanup.sh. A
+# `|| true` here is exactly the fail-open that neutered the pre-2026-08-05
+# boot.scr guard.
+assert_alice_enrollment_clean() {
+    local root=$1 f base
+    # WHITELIST, not a list of the three known names: the identity dir may hold
+    # ca.crt.pem and NOTHING else. A blacklist would wave through
+    # device.key.pem.tmp — the atomic-write sidecar — i.e. pass an image
+    # carrying the donor's private key under a name one character different,
+    # which is the exact exposure this branch exists to close. It also fails
+    # closed on a sidecar shape no one has invented yet.
+    for f in "$root/var/lib/sa02m-alice"/* "$root/var/lib/sa02m-alice"/.[!.]*; do
+        [ -e "$f" ] || continue
+        base="${f##*/}"
+        if [ "$base" != ca.crt.pem ]; then
+            die "image identity: $base survived in /var/lib/sa02m-alice — only ca.crt.pem (the shared gateway CA) may remain there"
+        fi
+    done
+    # The conf dir cannot be whitelisted (it legitimately holds three confs), so
+    # its sidecar class is named by shape.
+    for f in "$root/etc/sa02m-alice"/.alice-*; do
+        [ -e "$f" ] || continue
+        die "image identity: ${f#"$root"} survived — a config_store mkstemp sidecar carries the donor's bindings"
+    done
+    for f in "$root/etc/sa02m-alice/sa02m-alice-devices.conf" \
+             "$root/etc/sa02m-alice-devices.conf"; do
+        [ -f "$f" ] || continue
+        if grep -q '"id"' "$f"; then
+            die "image identity: a device binding survived in ${f#"$root"}"
+        fi
+        if ! grep -q '"devices"' "$f"; then
+            die "image identity: ${f#"$root"} is not a device document"
+        fi
+    done
+    for f in "$root/etc/sa02m-alice/sa02m-alice-client.conf" \
+             "$root/etc/sa02m-alice-client.conf"; do
+        [ -f "$f" ] || continue
+        if grep -Eqi '^[[:space:]]*client_enabled[[:space:]]*=[[:space:]]*(true|1|yes|on)' "$f"; then
+            die "image identity: client_enabled is still on in ${f#"$root"}"
+        fi
+    done
+    if [ -e "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service" ]; then
+        die "image identity: sa02m-alice-client is still enabled in the image"
+    fi
+}
+
 mnt=""
 boot_mnt=""
 loop=$(losetup --partscan -f --show "$IMG") || die "losetup failed"
@@ -249,6 +333,20 @@ serial =
 web_port = 9999
 EOF
 chmod 640 "$mnt/etc/sa02m-cloud/agent.conf"
+
+# ── Wipe donor Alice identity so clones are not the donor's controller ─────
+# UNCONDITIONAL and fatal — there is no flag here on purpose: a security clear
+# must not be skippable by a test flag (--no-id-reset governs the DONOR, not
+# the artifact). docs/contracts/image-identity-reset.md §5.
+log "wipe Alice controller identity in image"
+alice_had_ca=0
+if [ -f "$mnt/var/lib/sa02m-alice/ca.crt.pem" ]; then alice_had_ca=1; fi
+wipe_alice_enrollment "$mnt"
+assert_alice_enrollment_clean "$mnt"
+if [ "$alice_had_ca" = 1 ] && [ ! -f "$mnt/var/lib/sa02m-alice/ca.crt.pem" ]; then
+    die "image identity: ca.crt.pem was removed — that is the SHARED gateway CA, not board identity; every clone's client would break"
+fi
+log "image identity: clean"
 
 sync
 log "OK: first-boot patch applied to $(basename "$IMG")"

@@ -79,6 +79,16 @@ A sensor binding is a device whose `properties` carry one
   conversion; negative values (CE power export) parse as-is.
 - An unparseable MQTT payload converts to NO reading (the property is omitted
   from query/state) — never a fabricated `0.0`.
+- **A real `power: 0` IS sent, and that is a deliberate deviation from Yandex's
+  stated range** (their float table says power «должно быть больше 0»).
+  Operator decision, 2026-08-27: an idle line genuinely draws 0 W, and a
+  provider inventing a non-zero floor would misreport the customer's own
+  installation. The alternative — omitting the property while the reading is 0
+  — was rejected because the app then shows "no data", which is a different
+  fact from "no load". Recorded here so a moderator's question during the
+  skill video test is answered from a decision, not improvised. A measured 0
+  and an absent reading stay distinguishable: the unparseable case above still
+  omits the property.
 - Properties are read-only: they never enter `apply_actions`, so a sensor
   topic gets no `/on` command publish.
 

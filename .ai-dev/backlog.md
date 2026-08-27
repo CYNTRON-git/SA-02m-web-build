@@ -7,6 +7,59 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-27 **[MED] The action path writes the commanded value into our own
+  state cache, so a failed command is indistinguishable from a successful one.**
+  `device_registry.apply_actions` does `self._mqtt_cache[topic] = payload` as it builds
+  the publish, so a later `query` echoes what we ASKED for, not what the device did.
+  This is why the 2026-08-27 "control does not work" investigation took four steps: the
+  cloud, the app and our own status all reported success while the bus read 0. Predates
+  1.0.6.19. **Do NOT fix this by gating on "the publish left"** — in that incident the
+  publish DID leave and the module reverted afterwards, so that version still reports
+  success. The fix is to let the cache follow the reading that comes back from the bus.
+  Known trade to design for: a slow device would briefly report the previous value after
+  a successful command, so the optimistic write exists for a reason and its removal
+  needs a real pass (how long to wait, what to report meanwhile) rather than a patch.
+- [OPEN] 2026-08-27 **[MED, NOT OURS — route to the MR-02m project] The 16DO module at
+  COM4 addr=11 drops its own output seconds after it is set.** Bench 1.135, verified
+  from both sides: the command reaches the bus, the bridge writes it
+  (`writeback DO1=1`, 33-43 ms), the output really does go to 1 — and then returns to 0
+  with nothing re-commanding it (no second writeback; the bridge only publishes what it
+  reads). **The identical module at addr=14 holds** under the identical command, and the
+  board's local I²C output holds too, so it is that module, not the bus/bridge/Alice/
+  cloud. Hold time measured twice with different sampling: ours (2 s interval) showed
+  the drop within 2-4 s; the cloud session's (1 s interval) showed a hold of 8 s then a
+  drop between t+8 and t+10 — a ~10 s round number looks like a configured comms/
+  safe-state watchdog. Next step is a register comparison between addr=11 and addr=14
+  in the MR-02m firmware project; do not guess at the register map from this repo.
+
+- [OPEN] 2026-08-27 **[MED] `ssh-flash-safe.sh` resets neither cloud nor Alice identity
+  (cloud-parity gap).** It loop-mounts a freshly written rootfs (`:119-179`) — the same
+  moment `patch-firstboot-image.sh` uses to clear enrollment — but performs no identity
+  reset at all. So a board flashed through THAT path inherits whatever the source image
+  carried, bypassing both the cloud twin's fix (2026-07-31) and the Alice one (1.0.6.20).
+  Deliberately left outside 1.0.6.20's fence (different script, different acceptance);
+  named by that build. Fix direction: call the same two wipes at the existing mount, or
+  state in the script header why the path is exempt.
+- [OPEN] 2026-08-27 **[LOW] `cleanup-donor.sh:140` DENY bypass pattern.** The
+  `--purge-update-state` branch carries a `case` arm `/etc/sa02m-update/trusted-keys|/*)`
+  whose `|/*` alternative matches ANY absolute path, so the arm is far wider than its
+  apparent intent. It currently only *returns 1* (protects), so the effect is
+  conservative — but the pattern is almost certainly a typo for a second literal, and a
+  future edit that flips the branch's polarity would turn it into a hole. Found by the
+  1.0.6.20 build while reading the DENY model.
+
+- [OPEN] 2026-08-27 **[LOW] A binding created outside the UI can silently lose a unit
+  conversion.** The UI attaches `scale` from `ALICE_KINDS` (tvoc ×1000 mg/m³→µg/m³,
+  pressure ×7.50062 kPa→mmHg), but `validate_device` accepts a float property with no
+  `scale` at all, so a hand-made API call — or an older document — sends a value three
+  orders out and the Alice app renders «0 мкг/м³». Hit for real on 2026-08-27: a test
+  binding made via curl without `scale` read 0.27 instead of 270; the cloud session
+  spotted it in the app. The UI path was correct throughout — this is about the API
+  path having no guard. Fix direction (needs thought, not a reflex): the backend cannot
+  simply inject a default, because a topic already publishing µg/m³ would then be
+  scaled wrongly — so either warn when a known-conversion instance arrives without a
+  scale, or carry the source unit explicitly. Do not silently coerce.
+
 - [OPEN] 2026-08-27 **[LOW] A contract sentence is hostage to an unpinned JS line.**
   `docs/contracts/alice-mqtt-mapping.md` states that a `complete_link` over an already
   connected client is unreachable from the panel; that is true only because
@@ -42,6 +95,17 @@ audit 1.0.5.71).
   the FIX is ours. Urgency: "fix before the next image capture", NOT a field incident —
   today's golden image predates the Alice work, so no shipped image carries an
   enrollment; the exposure starts with the next capture from a configured bench board.
+  **AUDIT 2026-08-27 (loop-mounted the actual artifact, not the notes):** the in-tree
+  `tools/imaging/stand-data/images/sa02m-1eth-golden-20260820.img.xz` — captured AFTER
+  the Alice tree landed, so the premise needed testing — contains **NO `device.key.pem`,
+  NO `device.crt.pem`, NO `pending_claim.json`** anywhere; `/var/lib/sa02m-alice/` holds
+  only the public `ca.crt.pem`. Its donor was never linked. The cloud twin is correctly
+  reset in the same image (`enrolled = false`, empty `device_id`). So the cross-tenant
+  exposure is NOT materialised in any existing artifact and this stays "fix before the
+  next capture". Two lesser things the same audit found IN that image: the device
+  document ships with a leftover test binding (`id: d1`, «Lab Switch») and
+  `client_enabled = true` — harmless today (no cert, so the client cannot connect) but
+  both would ride into every clone and both are on the clear-list anyway.
   Fix direction: the image-capture path must clear the Alice enrollment (certs +
   pending claim) and the device document, or regenerate ids at first boot — while
   leaving the factory-reset preserve policy intact (they are different paths and the

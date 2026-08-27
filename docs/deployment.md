@@ -507,6 +507,14 @@ unset HISTFILE
 
 ### 2. Alice — отвязать
 
+Одной командой (тот же список, идемпотентно, с блоком `=== VERIFY ===`):
+
+```
+bash tools/imaging/reset-alice-enrollment.sh
+```
+
+Или по шагам:
+
 ```
 systemctl stop sa02m-alice-client
 systemctl disable sa02m-alice-client
@@ -514,11 +522,27 @@ rm -f /var/lib/sa02m-alice/device.crt.pem \
       /var/lib/sa02m-alice/device.key.pem \
       /var/lib/sa02m-alice/pending_claim.json
 rm -f /run/sa02m-alice/status.json
+# привязки: uuid4-идентификаторы устройств уезжают в клон так же, как сертификат
+printf '%s\n' '{' '  "rooms": [],' '  "devices": []' '}' \
+      > /etc/sa02m-alice/sa02m-alice-devices.conf
+sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' \
+      /etc/sa02m-alice/sa02m-alice-client.conf
 ```
 
 `ca.crt.pem` **оставить** — это общий CA шлюза, не идентичность платы.
+`sa02m-alice-server.conf` (адреса шлюза) и остальные ключи `client.conf`
+(`mqtt_host`, `mqtt_port`, `log_level`) — тоже конфигурация, их не трогают.
+Если на плате есть легаси-раскладка (`/etc/sa02m-alice-devices.conf`,
+`/etc/sa02m-alice-client.conf`) — те же две правки применяют и к ней.
 Проверка: `ls /var/lib/sa02m-alice` — остаётся только `ca.crt.pem`;
-`systemctl is-enabled sa02m-alice-client` = `disabled`.
+`systemctl is-enabled sa02m-alice-client` = `disabled`; в
+`sa02m-alice-devices.conf` пустые `rooms`/`devices`; `client_enabled = false`.
+
+С 1.0.6.20 **пайплайн снятия образа делает это сам** (`stream-after-cleanup.sh`
+до `dd`, плюс безусловная фатальная проверка в `patch-firstboot-image.sh` —
+`docs/contracts/image-identity-reset.md`). Поэтому шаг остаётся обязательным не
+как единственная защита, а ради двух вещей: off-device бэкапа (шаг 1) и ручного
+`dd` мимо `make-image.sh`, куда автоматика не дотягивается.
 
 ### 3. Облако — отвязать
 
@@ -665,6 +689,10 @@ enabled-служба `regen-ssh-host-keys` на первом старте кло
       регрессий, а не доказательство.
 - [ ] `/opt/mplc4/server/mplc.key` отсутствует.
 - [ ] alice device-сертификаты отсутствуют, `ca.crt.pem` на месте.
+- [ ] `sa02m-alice-devices.conf` — пустой документ (`"rooms": []`,
+      `"devices": []`), ни одной привязки донора (обе раскладки, если есть).
+- [ ] `client_enabled = false` в `sa02m-alice-client.conf`, служба
+      `sa02m-alice-client` = `disabled`.
 - [ ] `enrolled = false` и пустой `device_id` в `agent.conf`.
 - [ ] в `sa02m-modbus-mqtt.yaml` — `devices: []` (0 устройств).
 - [ ] `stat -c %s /etc/machine-id` = `0`.
