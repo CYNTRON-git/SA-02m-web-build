@@ -110,11 +110,19 @@ mask_migration_section() {
     ' "$1"
 }
 
-# Allow-list: files whose job is to record history verbatim. The check script
-# itself lives under .ai-dev/, which is excluded wholesale.
+# Allow-list: files whose job is to name the legacy ids on purpose — history
+# records, and the test that pins the legacy CLEAR (it cannot assert the old
+# subtree is wiped without naming it). The check script itself lives under
+# .ai-dev/, which is excluded wholesale.
+#
+# This list only bites on TRACKED files (the sweep reads `git ls-files`), which
+# is how the test file passed the sweep while it was still uncommitted and
+# failed the moment it was staged. A green run on an untracked tree is not
+# evidence — A2 below keeps every entry honest by failing if it excuses nothing.
 is_allowed() {
     case "$1" in
         CHANGELOG.md|docs/bugs/BUGLOG.md|.ai-dev/*) return 0 ;;
+        opt/sa02m-modbus-mqtt/tests/test_telemetry_device_id.py) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -185,6 +193,14 @@ if sweep_file CHANGELOG.md | grep -q .; then
     ok "CHANGELOG.md still carries the historical id (exclusion live, not stale)"
 else
     fail "A2: CHANGELOG.md no longer matches — the history exclusion is stale or the sweep is blind"
+fi
+
+TEL_TEST=opt/sa02m-modbus-mqtt/tests/test_telemetry_device_id.py
+if sweep_file "$TEL_TEST" | grep -q .; then
+    ok "the legacy-clear test still names the old ids (exclusion live, not stale)"
+else
+    fail "A2: $TEL_TEST no longer names a legacy id — either the clear lost its
+      test coverage, or the exclusion is now excusing nothing and must go"
 fi
 
 mask_migration_section docs/MQTT_TOPICS.md > "$TMP/masked.md"
