@@ -234,6 +234,7 @@
     'Сохранение': 'Saving',
     'Сохранено': 'Saved',
     'Выпуск сертификата': 'Issuing certificate',
+    'Сертификат установлен, подключаем…': 'Certificate installed, connecting…',
     'Агент': 'Agent',
     'Соединение': 'Connection',
     'Туннель': 'Tunnel',

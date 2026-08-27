@@ -7,6 +7,38 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-26 **[HIGH] `py-syntax` merge gate is blind to device Python under
+  `etc/` (audit H2, carried from 2026-08-21 C-1).** The row runs `compileall -q opt/`
+  with `covers:["opt/"]`, but `etc/sa02m-grat-arp.py` (systemd unit + cron) and
+  `etc/sa02m-mqtt-external-info.py` (installed by `scripts/05-mqtt.sh`) also ship to the
+  device — a syntax error in either passes the FULL build beat. Smallest fix: widen the
+  row to `compileall -q etc opt scripts tools` plus the matching `covers`.
+- [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
+  is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
+  `create-sa02m-rootfs.sh:35`, `serial-restore-ssh.py:24`, `sa02m-check-perms.py:22`,
+  `pack-factory-defaults.py:228`; `docs/threat-model.md` names password-change as the
+  mitigation but never states the default is public. Amend the threat model (the
+  forced-change product feature is the separate 2026-07-14 entry).
+- [OPEN] 2026-08-26 **[MED] Threat model has no Alice section (audit M1).** The
+  1.0.6.14/15 surface — `/var/lib/sa02m-alice` www-data 0700 (device private key written
+  by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
+  trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
+  stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-08-26 **[MED] Prior-audit coverage findings never dispatched (audit M3):**
+  C-2/C-3/C-5 from 2026-08-21 (their run-notes are now deleted; recover detail from git
+  history of `.ai-dev/audit/`).
+- [OPEN] 2026-08-26 **[LOW] `reachable` is never derived for sensor-only devices (audit
+  L1).** `opt/sa02m-alice/sa02m_alice/client/device_registry.py:127-136` sets it in the
+  capabilities loop only, so a property-only device reads reachable regardless of
+  freshness. One-line follow-up (reviewer advisory, 1.0.6.15).
+- [OPEN] 2026-08-26 **[LOW] `cleanup_b1_deploy_artifacts` skips `sa02m-alice` sudoers
+  0440-hardening (audit L5).** Low impact today — that file is install-only, not
+  OTA-deployed; act if alice sudoers ever enters the OTA set.
+- [OPEN] 2026-08-26 **[LOW] GitHub Actions did not fire the `pull_request` event on
+  first PR open** for #153 AND #154 (close/reopen re-armed it both times). Workflow
+  triggers verified correct in-repo; recorded as observed-unexplained (delivery-side).
+  Watch on the next ship; escalate to GitHub support if it recurs.
+
 - [OPEN] 2026-08-26 **[MED] www-only deploy without `etc/` is broken — `scripts/lib.sh:500`
   unconditionally sources `../etc/sa02m-stacks-policy.sh` ("fail loud"), but the runbook's
   www-only procedure (docs/deployment.md шаг 2) deliberately ships www+scripts WITHOUT etc/ —
@@ -84,17 +116,6 @@ audit 1.0.5.71).
   to detect + restart whichever unit owns :8765 (check `sa02m-stand-api` presence),
   OR document the stand's extra restart step in `docs/deployment.md`. Note in the
   deploy runbook that the stand is a hardpy_tests host with its own API service.
-- [OPEN] 2026-08-18 **[MED] Alice enrollment through the web UI likely fails as
-  www-data (PermissionError writing into the root-only cert dir).**
-  `scripts/06-alice.sh` makes `/var/lib/sa02m-alice` `0750 root:root`, yet
-  `config/api.py` `start_link`/`complete_link` (writing `pending_claim.json` and
-  the issued PEMs there) run as **www-data** inside `sa02m_alice_api.cgi` (no sudo
-  on that path) → on-device enrollment via the card probably surfaces as
-  `enrollment_failed`/`alice_api_failed`. The bench device evidently got its certs
-  another way. Surfaced by the 1.0.5.80 cert-status Builder; deliberately NOT
-  changed there (out of scope). Fix direction: route the enrollment writes through
-  the privileged trigger (`sa02m-alice-web-trigger.sh` sudoers) or a root helper —
-  never chmod the cert dir open. Verify on 1.136 by attempting a link from the UI.
 - [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
   homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
   and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to
@@ -503,8 +524,6 @@ audit 1.0.5.71).
   consumers plus a re-run of the headless harness. Found by the 1.0.6.4 builder,
   root cause confirmed independently by its reviewer; deliberately left outside
   that branch's fence.
-- [DONE 2026-08-26 1.0.6.14] OTA mode 0644 for extension-less /usr/local/sbin helpers — deploy_mode(rel,dst). Was: rel.endswith only → autoformat + CPU profile die after web OTA. `private/BUG-ota-mode-0644.md`.
-- [DONE 2026-08-25 1.0.6.13] eth1 (port 2) DHCP path in the panel — toggle like eth0 (ON=static, OFF=dhcp). Was: OFF retired conf / no dhcp write. Plan `.ai-dev/plans/eth1-dhcp-panel.md`.
 - [OPEN] 2026-08-24 **[MED] carrier-wait drop-ins are not OTA-reachable — the DNS boot-race fix reaches field boards only half-way.** `etc/systemd/system/ifup@.service.d/` + `networking.service.d/` drop-ins (1.0.6.6) install only via `scripts/02-network.sh` / a fresh image, not web update. HARDWARE-CONFIRMED 2026-08-24 (FR-CABLE via Keenetic on the OTA'd bench board): the belt restores DNS, but with no carrier-wait a no-carrier boot did NOT recover the interface until a reboot. Field boards need a NEW image built from ≥1.0.6.8 (or a reinstall) to get carrier-wait. The current golden image is 1.0.6.4 (pre-fix).
 - [OPEN] 2026-08-24 **[MED] firstboot-overlay carries stale twins of two ladder scripts (audit A1).** `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-eth-coldboot.sh` and `.../fix-eth.sh` were byte-identical to `main` before 1.0.6.6 and were NOT updated by that branch. `autorun.sh` mirrors that dir onto a freshly flashed rootfs, so a FEL/USB-imaged board silently reverts the 1.0.6.6 ladder call sites. Sync the overlay twins (or replace with a symlink/build step) before the next image capture.
 - [OPEN] 2026-08-24 **[LOW] HW-variant auto-detect flake (1eth ↔ 2eth).** The 2-eth bench board reported `SA02M_HW_VARIANT=sa02m-1eth` on one boot and `sa02m-2eth` on the next (both eth0+eth1 present physically). Detect-by-physical-eth-count is racing something at boot. Investigate the detection ordering vs PHY/link readiness.

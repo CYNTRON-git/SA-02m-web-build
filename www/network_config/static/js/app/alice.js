@@ -14,9 +14,22 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
+// Transient success notices auto-clear; errors and the pending-link notice
+// (rendered by aliceSetMsgLink) stay until the state itself changes.
+const ALICE_MSG_TTL_MS = 5000;
+let _aliceMsgTimer = null;
+
+function aliceClearMsgTimer() {
+  if (_aliceMsgTimer) {
+    clearTimeout(_aliceMsgTimer);
+    _aliceMsgTimer = null;
+  }
+}
+
 function aliceSetMsgOn(id, text, ok) {
   const msg = $(id);
   if (!msg) return;
+  if (id === 'alice-msg') aliceClearMsgTimer();
   if (!text) {
     msg.hidden = true;
     msg.textContent = '';
@@ -26,6 +39,14 @@ function aliceSetMsgOn(id, text, ok) {
   msg.hidden = false;
   msg.textContent = text;
   msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
+  if (id === 'alice-msg' && ok) {
+    _aliceMsgTimer = setTimeout(function () {
+      _aliceMsgTimer = null;
+      const el = $('alice-msg');
+      // Only clear what is still this notice — a newer message owns itself.
+      if (el && !el.hidden && el.textContent === text) aliceSetMsgOn('alice-msg', '', true);
+    }, ALICE_MSG_TTL_MS);
+  }
 }
 
 // Card-level status/link/enable feedback.
@@ -37,6 +58,7 @@ function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
 function aliceSetMsgLink(text, url, label) {
   const msg = $('alice-msg');
   if (!msg) return;
+  aliceClearMsgTimer();  // the link notice lives as long as the claim does
   msg.hidden = false;
   msg.className = 'cloud-msg is-ok';
   msg.textContent = '';
@@ -411,13 +433,17 @@ function aliceRender(d) {
   }
 }
 
+// Returns the rendered status (or null) so a caller can tell whether the
+// device state has settled — see aliceFastPoll.
 async function aliceRefresh() {
   try {
     const d = await aliceApi(null);
-    if (d && d.error === 'unauthorized') return;
+    if (d && d.error === 'unauthorized') return null;
     aliceRender(d);
+    return d;
   } catch (e) {
     aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
+    return null;
   }
 }
 
@@ -430,7 +456,10 @@ async function aliceToggleClient() {
     if (!d.ok) {
       aliceSetMsg(d.message || d.error || uiT('Ошибка'), false);
     } else {
-      aliceSetMsg(d.message || uiT('Сохранено'), true);
+      // The unit start/stop + first gateway connect take a few seconds —
+      // poll fast so the badges do not look frozen.
+      aliceSetMsg(uiT('Сохранено'), true);
+      aliceFastPoll();
     }
     await aliceRefresh();
   } catch (e) {
@@ -478,7 +507,10 @@ async function aliceCompleteLink() {
         false
       );
     } else {
-      aliceSetMsg(d.message || uiT('Сертификат установлен'), true);
+      // Never relay the backend's English operator-note («…enable client and
+      // restart…») — the CGI already restarts the client for us.
+      aliceSetMsg(uiT('Сертификат установлен, подключаем…'), true);
+      aliceFastPoll();
     }
     await aliceRefresh();
   } catch (e) {
@@ -723,6 +755,65 @@ function aliceModalBackdrop(e) {
 }
 
 let _alicePoll = null;
+let _aliceFastPoll = null;
+let _aliceFastPollGen = 0;
+
+// After an action that changes state on the device (cert issued → client
+// restart, enable/disable), the 5 s cadence makes the card look stuck for
+// several seconds. Poll faster for a short window instead.
+//
+// CHAINED, never setInterval: the status endpoint probes the gateway with a
+// 5 s timeout inside its own CGI, so a fixed-rate 1 Hz timer would stack
+// overlapping requests on a slow uplink — exactly the post-enrollment case —
+// and hold several of the 8 shared fcgiwrap workers (web-code-rigor
+// ## Architecture: no per-request network work piled onto a polled endpoint).
+// Each tick waits for its own refresh to settle, and the window ends early
+// once the state stops being transitional.
+const ALICE_POLL_MS = 5000;
+const ALICE_SETTLED_STATES = ['connected', 'disabled', 'error'];
+
+function aliceFastPollSettled(d) {
+  if (!d) return false;
+  const st = (d.status && d.status.state) || '';
+  return ALICE_SETTLED_STATES.indexOf(st) !== -1;
+}
+
+function aliceFastPoll() {
+  const until = Date.now() + 20000;
+  // A second call landing while a tick is awaiting must not start a second
+  // chain: the generation counter makes the older chain retire on its return.
+  _aliceFastPollGen += 1;
+  const gen = _aliceFastPollGen;
+  if (_aliceFastPoll) clearTimeout(_aliceFastPoll);
+  // The base 5 s poll would race the window and hit the same probing
+  // endpoint — park it and restore it when the window ends.
+  if (_alicePoll) {
+    clearInterval(_alicePoll);
+    _alicePoll = null;
+  }
+  const stop = function () {
+    _aliceFastPoll = null;
+    if (!_alicePoll) _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
+  };
+  const tick = async function () {
+    _aliceFastPoll = null;
+    let settled = false;
+    try {
+      settled = aliceFastPollSettled(await aliceRefresh());
+    } catch (e) {
+      /* transport hiccup — keep the window running */
+    }
+    // A newer window took over while this tick was in flight — retire this
+    // chain and leave the pollers to the newer one.
+    if (gen !== _aliceFastPollGen) return;
+    if (settled || Date.now() >= until) {
+      stop();
+      return;
+    }
+    _aliceFastPoll = setTimeout(tick, 1000);
+  };
+  _aliceFastPoll = setTimeout(tick, 700);
+}
 
 function aliceInit() {
   if (!$('alice-card')) return;
@@ -731,7 +822,7 @@ function aliceInit() {
   aliceRefresh();
   aliceLoadTopics();
   if (_alicePoll) clearInterval(_alicePoll);
-  _alicePoll = setInterval(aliceRefresh, 5000);
+  _alicePoll = setInterval(aliceRefresh, ALICE_POLL_MS);
 }
 
 // Only functions invoked from HTML onclick handlers need a global handle;

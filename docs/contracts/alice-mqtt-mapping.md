@@ -8,8 +8,12 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
 - State subscribe: `/devices/<id>/controls/<name>` (Wiren Board MQTT shape).
 - Command publish: `/devices/<id>/controls/<name>/on` — payload `"0"` / `"1"` /
   numeric string; **no retain** on writes (same rule as `mqtt_set.cgi`).
-- On Socket.IO connect: ignore MQTT retained messages until a short settle
-  window elapses.
+- On Socket.IO connect the retained burst is **cached but never reported**:
+  retained values fill the state cache (the query fan-out answers from it, so a
+  freshly started client has state immediately), and only the outbound
+  `device_state` event is suppressed until the settle window elapses. Caching
+  them was the 1.0.6.16 fix — dropping them left every sensor empty in the
+  Alice app until the bridge happened to republish.
 
 ## Device document (`/etc/sa02m-alice/sa02m-alice-devices.conf`)
 

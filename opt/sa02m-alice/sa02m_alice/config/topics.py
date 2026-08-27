@@ -45,6 +45,13 @@ DTV_DEFAULT_CONTROLS = (
     "detect_distance",
 )
 DTV_ACTUATOR_CONTROLS = ("buzzer", "leds")
+
+# MR-02m channel kinds the bridge publishes as `<kind>_<ch>` controls, plus the
+# per-module diagnostics every module carries (docs/MQTT_TOPICS.md is the home
+# of the naming). `ai` on a 12AI module carries live sensor readings — bench
+# 1.135 has temperature probes on ai_7..ai_12.
+MR02M_CHANNEL_KINDS = ("ai", "ao", "di", "do")
+MR02M_DIAG_CONTROLS = ("mcu_temp",)
 CE02M3_CONTROLS = (
     "voltage_a",
     "voltage_b",
@@ -120,6 +127,28 @@ def _topics_from_yaml(doc: Any) -> List[str]:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "ce02m3":
             for cname in CE02M3_CONTROLS:
+                out.add("/devices/%s/controls/%s" % (did, cname))
+        elif dtype == "mr02m" and not controls:
+            # MR-02m modules publish per-channel controls named <kind>_<ch>
+            # (the bridge's own naming — docs/MQTT_TOPICS.md). The analog
+            # inputs of a 12AI carry real sensor readings (temperature
+            # probes on the bench), so the picker must offer them; digital
+            # kinds are offered too — a DO channel is a valid switch binding.
+            # Only when the entry has no explicit `controls` list: an explicit
+            # list is the author's own inventory and is never second-guessed.
+            channels = dev.get("channels")
+            if isinstance(channels, dict):
+                for kind, chans in channels.items():
+                    kname = str(kind).strip().lower()
+                    if kname not in MR02M_CHANNEL_KINDS or not isinstance(chans, list):
+                        continue
+                    for c in chans:
+                        if isinstance(c, dict):
+                            num = c.get("ch")
+                            if c.get("enabled") is False or num is None:
+                                continue
+                            out.add("/devices/%s/controls/%s_%s" % (did, kname, num))
+            for cname in MR02M_DIAG_CONTROLS:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         # Fallback: device id alone is not enough — skip
     return sorted(out)

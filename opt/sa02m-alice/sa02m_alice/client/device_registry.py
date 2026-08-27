@@ -16,7 +16,7 @@ class DeviceRegistry:
     def __init__(self, devices_doc: Optional[Dict[str, Any]] = None) -> None:
         self._lock = threading.RLock()
         self._doc = devices_doc if devices_doc is not None else load_devices()
-        self._mqtt_cache: Dict[str, str] = {}  # topic -> last non-retained value
+        self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._rebuild_indexes()
 
     def _rebuild_indexes(self) -> None:
@@ -49,11 +49,21 @@ class DeviceRegistry:
             return set(self._topic_map.keys())
 
     def note_mqtt(self, topic: str, payload: str, *, retained: bool = False) -> bool:
-        """Cache a live MQTT value. Retained-on-connect must be ignored by caller."""
-        if retained:
-            return False
+        """Cache an MQTT value; return True when it should also be REPORTED.
+
+        Retained messages are cached like any other — they are the only state
+        a freshly (re)started client has, and Yandex reads state through the
+        query fan-out, which serves this cache. What retained must NOT do is
+        emit a state event: the retained burst on subscribe would otherwise
+        flood the gateway with hundreds of "changes" that never happened.
+        Dropping them from the cache instead (the pre-1.0.6.16 behaviour) left
+        every sensor value empty in the Alice app until the bridge happened to
+        republish — up to a minute, or never for a steady reading.
+        """
         with self._lock:
             self._mqtt_cache[topic] = payload
+            if retained:
+                return False
             return topic in self._topic_map
 
     def get_cached(self, topic: str) -> Optional[str]:

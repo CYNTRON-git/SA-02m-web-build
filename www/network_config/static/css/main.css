@@ -2095,6 +2095,20 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    the bindings-modal message (#alice-bind-msg, add-device feedback). Neither was
    styled by the cloud-card-scoped rule — give them the same both-theme error/ok
    tokens so a friendly status reads clearly (never a raw exception, 1.0.5.73). */
+/* «Статус: значение» on the Alice card follows the tile rule — label left,
+   value flush right (same alignment as the dl rows above it). */
+.alice-link-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.alice-link-status .alice-link-status-label { white-space: nowrap; }
+.alice-link-status #alice-link-status-val {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
 /* The registration link inside the card message inherits the message color
    (AA already holds for the surrounding text in both themes) — a themed link
    color on the tinted is-ok background is not contrast-guaranteed. */
