@@ -550,6 +550,13 @@ def build_manifest(
                 "nginx",
                 "sa02m-devices-api",
                 "sa02m-devices-logger",
+                # Telemetry owns its own device id + legacy-retained clear
+                # (1.0.6.21) — the new .py does nothing until the process
+                # restarts. This generator runs on the dev host, so unlike the
+                # online path the entry is live in the very package that
+                # delivers the change. Must stay in step with the online
+                # generator's list in etc/sa02m-update-runner.sh.
+                "sa02m-telemetry",
             ],
             "health": {
                 "http_url": "http://127.0.0.1:9999/login.html",

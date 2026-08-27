@@ -80,10 +80,10 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 > `sa02m-bridge`. Смена id **осиротит** весь старый retained-поддерево статуса
 > моста (`devices_total`, `devices_online`, `poll_errors`, `connection`,
 > `meta/error`) — эти топики останутся висеть под старым id и потребуют ручной
-> очистки на брокере. И **никогда** не задавайте его равным телеметрийному
-> `sa02m-{hostname}` (например `sa02m-SA-02`): это id живого устройства
-> телеметрии (`sa02m_telemetry.py`, см. ниже), и совпадение смешает
-> bridge-контролы с телеметрией в одном дереве.
+> очистки на брокере. И **никогда** не задавайте его равным телеметрийному id —
+> имени платы (например `SA-02m`): это id живого устройства телеметрии
+> (`sa02m_telemetry.py`, см. ниже), и совпадение смешает bridge-контролы с
+> телеметрией в одном дереве.
 
 ---
 
@@ -91,7 +91,7 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 
 | Тип | Device ID | Пример |
 |-----|-----------|--------|
-| СА-02м контроллер | `sa02m-{hostname}` | `sa02m-SA-02` |
+| СА-02м контроллер | имя платы (`{hostname}`) | `SA-02m` |
 | MR-02м модуль | `mr02m-{port}-{addr}` | `mr02m-COM1-5` |
 | cyntron-dtv | `dtv-{port}-{addr}` | `dtv-COM3-1` |
 | CE-02m-3 счётчик | `ce02m3-{port}-{addr}` | `ce02m3-COM2-14` |
@@ -100,36 +100,96 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 
 ## СА-02м — системная телеметрия
 
-Device ID: `sa02m-{hostname}` (пример: `sa02m-SA-02`)
+Device ID: **имя платы** (`hostname`, пример: `SA-02m`) — без префикса.
+Порядок разрешения id, побеждает первое **корректное** значение:
+`$SA02M_TELEMETRY_DEVICE_ID` → `/etc/sa02m_telemetry.conf` → `hostname` →
+`SA-02m`. Допустимый набор символов `^[A-Za-z0-9_.:-]{1,64}$` — значение
+становится сегментом топика, поэтому `/`, `+`, `#` отклоняются с WARN в журнале
+и разрешение идёт дальше. Живой id всегда печатается в журнал при старте
+службы: `journalctl -u sa02m-telemetry | grep 'telemetry device id'`.
 
 ```
-/devices/sa02m-SA-02/meta/name          "СА-02м (192.168.1.136)"
-/devices/sa02m-SA-02/meta/driver        "sa02m-telemetry"
-/devices/sa02m-SA-02/meta/error         ""    (LWT → "r" при падении телеметрии)
+/devices/SA-02m/meta/name          "СА-02м (SA-02m)"
+/devices/SA-02m/meta/driver        "sa02m-telemetry"
+/devices/SA-02m/meta/error         ""    (LWT → "r" при падении телеметрии)
 
 # Доступность контроллера (connection — активная публикация; offline через LWT meta/error)
-/devices/sa02m-SA-02/controls/connection  type=switch  "1" online / "0" штатная остановка
+/devices/SA-02m/controls/connection  type=switch  "1" online / "0" штатная остановка
 
 # Системные показатели (интервал 30 с)
-/devices/sa02m-SA-02/controls/cpu_pct           type=value      %
-/devices/sa02m-SA-02/controls/temp_c            type=temperature °C
-/devices/sa02m-SA-02/controls/ram_pct           type=value      %
-/devices/sa02m-SA-02/controls/uptime_s          type=value      (д/ч/м, без ед.)
+/devices/SA-02m/controls/cpu_pct           type=value      %
+/devices/SA-02m/controls/temp_c            type=temperature °C
+/devices/SA-02m/controls/ram_pct           type=value      %
+/devices/SA-02m/controls/uptime_s          type=value      (д/ч/м, без ед.)
 
 # Управляемые выходы PCA9536 (R/W)
-/devices/sa02m-SA-02/controls/do                type=switch
-/devices/sa02m-SA-02/controls/do/on             ← write 0/1
-/devices/sa02m-SA-02/controls/beeper            type=switch
-/devices/sa02m-SA-02/controls/beeper/on         ← write 0/1
-/devices/sa02m-SA-02/controls/alarm_led         type=switch
-/devices/sa02m-SA-02/controls/alarm_led/on      ← write 0/1
+/devices/SA-02m/controls/do                type=switch
+/devices/SA-02m/controls/do/on             ← write 0/1
+/devices/SA-02m/controls/beeper            type=switch
+/devices/SA-02m/controls/beeper/on         ← write 0/1
+/devices/SA-02m/controls/alarm_led         type=switch
+/devices/SA-02m/controls/alarm_led/on      ← write 0/1
 
 # RS-485 статистика (5 портов: com1..com5)
-/devices/sa02m-SA-02/controls/rs485_com1_tx     type=value
-/devices/sa02m-SA-02/controls/rs485_com1_rx     type=value
-/devices/sa02m-SA-02/controls/rs485_com1_errors type=value
+/devices/SA-02m/controls/rs485_com1_tx     type=value
+/devices/SA-02m/controls/rs485_com1_rx     type=value
+/devices/SA-02m/controls/rs485_com1_errors type=value
 # ... rs485_com2_* ... rs485_com5_*
 ```
+
+### Закрепление id (`/etc/sa02m_telemetry.conf`)
+
+Файл **никем не создаётся** — он существует, только если интегратор сам его
+написал. Смысл: после закрепления последующая смена `hostname` уже не осиротит
+ни одну привязку.
+
+```
+SA02M_TELEMETRY_DEVICE_ID=boiler-room-1
+```
+
+Второе применение — **общий внешний брокер**: с 1.0.5.69 все платы носят имя
+`SA-02m`, поэтому на одном внешнем брокере они сталкиваются на одном id (так
+было и раньше, с прежней схемой). Закрепление разных id — штатный выход.
+
+### Смена id телеметрии (1.0.6.21)
+
+| Было | Стало |
+|---|---|
+| `/devices/sa02m-{hostname}/…` (`sa02m-SA-02`, `sa02m-SA-02m`) | `/devices/{hostname}/…` (`SA-02m`) |
+
+Затронуты только топики самого контроллера. Модули (`mr02m-*`, `dtv-*`,
+`ce02m3-*`) и статус моста (`sa02m-bridge`) — **без изменений**.
+
+- **Внешние клиенты** (SCADA, скрипты, интеграции), подписанные на старое
+  поддерево контроллера, должны переподписаться на новое имя.
+- **`sa02m-mqtt-opcua` / `sa02m-mqtt-snmp`** подписаны по wildcard, поэтому узел
+  появится под новым именем сам, но **поканальное включение** в
+  `/etc/sa02m-mqtt-opcua.conf` задано ключом `<device_id>/<control>` — каналы,
+  включённые под старым id, перестанут экспортироваться, пока ключи не
+  переписаны. Путь узла у OPC UA-клиентов тоже меняется.
+- **Старое поддерево** (retained, без публикатора) плата очищает сама один раз
+  при первом старте новой версии — но **только** если брокер локальный
+  (`127.0.0.1`/`localhost`/`::1`) **и** в поддереве лежит retained
+  `meta/driver` = `sa02m-telemetry`. Оба условия — доказательство «это моё»:
+  все платы носят одно имя, и на общем брокере очистка стёрла бы живое
+  поддерево соседа. Если доказательства нет, плата **ничего не удаляет** и
+  пишет WARN с причиной.
+
+Ручной эквивалент (единственный путь для внешнего брокера или платы с
+переименованным вручную `hostname` — подставьте свой старый id):
+
+```sh
+# Посмотреть, что осталось под старым id
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-SA-02m/#' --retained-only -W 3
+# Очистить (пустой retained-payload на каждый топик)
+mosquitto_sub -h 127.0.0.1 -t '/devices/sa02m-SA-02m/#' --retained-only -W 3 -F '%t' \
+  | while read -r t; do mosquitto_pub -h 127.0.0.1 -t "$t" -r -n; done
+```
+
+**Привязки Алисы**, указывающие на старое имя, надо выбрать заново: сравните
+сегмент `/devices/<id>/…` каждой привязки в `/etc/sa02m-alice-devices.conf` с
+живым id из журнала телеметрии и с id устройств моста — привязка, не совпавшая
+ни с одним, мертва.
 
 ---
 
@@ -460,9 +520,9 @@ insurance-опрос.
 # Все устройства
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/#'
 
-# SA-02m телеметрия
-mosquitto_sub -h 127.0.0.1 -v -t '/devices/sa02m-SA-02/#' -C 20
-mosquitto_pub -h 127.0.0.1 -t '/devices/sa02m-SA-02/controls/beeper/on' -m '1'
+# SA-02m телеметрия (id = имя платы; проверить живой id — в журнале службы)
+mosquitto_sub -h 127.0.0.1 -v -t '/devices/SA-02m/#' -C 20
+mosquitto_pub -h 127.0.0.1 -t '/devices/SA-02m/controls/beeper/on' -m '1'
 
 # MR-02m
 mosquitto_sub -h 127.0.0.1 -v -t '/devices/mr02m-COM1-5/#' -C 30

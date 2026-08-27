@@ -682,7 +682,7 @@ sa02m-flasher.service (Python stdlib HTTP + ThreadingMixIn, пользовате
 /devices/mr02m-COM1-5/controls/do_1
 /devices/mr02m-COM1-5/controls/di_1
 /devices/mr02m-COM1-5/controls/ai_1
-/devices/sa02m-SA-02/controls/cpu_pct
+/devices/SA-02m/controls/cpu_pct
 /devices/sa02m-bridge/controls/devices_online
 ```
 
