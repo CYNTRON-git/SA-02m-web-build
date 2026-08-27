@@ -7,12 +7,6 @@ audit 1.0.5.71).
 
 ## Open
 
-- [OPEN] 2026-08-26 **[HIGH] `py-syntax` merge gate is blind to device Python under
-  `etc/` (audit H2, carried from 2026-08-21 C-1).** The row runs `compileall -q opt/`
-  with `covers:["opt/"]`, but `etc/sa02m-grat-arp.py` (systemd unit + cron) and
-  `etc/sa02m-mqtt-external-info.py` (installed by `scripts/05-mqtt.sh`) also ship to the
-  device — a syntax error in either passes the FULL build beat. Smallest fix: widen the
-  row to `compileall -q etc opt scripts tools` plus the matching `covers`.
 - [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
   is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
   `create-sa02m-rootfs.sh:35`, `serial-restore-ssh.py:24`, `sa02m-check-perms.py:22`,

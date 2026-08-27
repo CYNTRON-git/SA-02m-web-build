@@ -39,11 +39,11 @@
     },
     {
       "id": "py-syntax",
-      "checks": "Syntax errors in every on-device Python service under opt/ (the Modbus-MQTT bridge, snapshot/scan/monitor helpers, the flasher) — a broken script fails only at systemd start on the device, with no build step to catch it.",
+      "checks": "Syntax errors in every Python file this repo ships or runs — on-device services under opt/ (the Modbus-MQTT bridge, snapshot/scan/monitor helpers, the flasher), device helpers under etc/ (sa02m-grat-arp.py has a systemd unit + cron; sa02m-mqtt-external-info.py is installed by scripts/05-mqtt.sh), and the dev/build tooling under scripts/ and tools/ (imaging, ssh, update, version sync). A broken script fails only when systemd starts it on the device — or mid-deploy — and there is no build step to catch it. Audit 2026-08-26 H2: the row covered opt/ ONLY, so a syntax error in the etc/ helpers passed the full build beat.",
       "config": null,
-      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m compileall -q opt/; fi; done; echo py-syntax: no working python interpreter; exit 1'",
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m compileall -q etc opt scripts tools; fi; done; echo py-syntax: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/"],
+      "covers": ["etc/", "opt/", "scripts/", "tools/"],
       "init": "Python 3.10+ as python3, python, or py — same interpreter picker as version-consistency (Windows ships a non-functional python3 Store stub)"
     },
     {
