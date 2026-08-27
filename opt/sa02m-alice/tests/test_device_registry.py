@@ -25,7 +25,7 @@ DOC = {
             "capabilities": [
                 {
                     "type": "devices.capabilities.on_off",
-                    "mqtt": "/devices/sa02m-SA-02/controls/do",
+                    "mqtt": "/devices/test-ctl/controls/do",
                     "parameters": {"instance": "on"},
                 }
             ],
@@ -228,12 +228,12 @@ class TestDeviceRegistry(unittest.TestCase):
         self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
 
     def test_query_after_mqtt(self):
-        self.reg.note_mqtt("/devices/sa02m-SA-02/controls/do", "1")
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "1")
         out = self.reg.query_devices(["d1"])
         self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
 
     def test_action_publishes_on_suffix(self):
-        self.reg.note_mqtt("/devices/sa02m-SA-02/controls/do", "0")
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "0")
         results, pubs = self.reg.apply_actions(
             [
                 {
@@ -248,7 +248,7 @@ class TestDeviceRegistry(unittest.TestCase):
             ]
         )
         self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
-        self.assertEqual(pubs, [("/devices/sa02m-SA-02/controls/do/on", "1")])
+        self.assertEqual(pubs, [("/devices/test-ctl/controls/do/on", "1")])
 
     def test_retained_is_cached_but_not_reported(self):
         """1.0.6.16: retained WAS dropped entirely, so a freshly restarted
@@ -256,7 +256,7 @@ class TestDeviceRegistry(unittest.TestCase):
         until the bridge republished (steady readings: never). Retained now
         fills the cache (query serves from it) while still not emitting a
         state event (no retained-burst storm to the gateway)."""
-        topic = "/devices/sa02m-SA-02/controls/do"
+        topic = "/devices/test-ctl/controls/do"
         ok = self.reg.note_mqtt(topic, "1", retained=True)
         self.assertFalse(ok, "retained must not trigger a state report")
         self.assertEqual(self.reg.get_cached(topic), "1", "retained must be cached")

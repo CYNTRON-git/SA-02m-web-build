@@ -65,9 +65,12 @@ fi
 # re-run against the default (or an already-set «SA-02m») re-sets the same
 # value with no churn; a custom name hits the `*` no-op branch. Provides the
 # gethostname() that Part A (dhclient option 12) advertises over DHCP.
-# Consequence accepted by the Operator: the MQTT telemetry id
-# (sa02m-<hostname>, sa02m_telemetry.py) re-homes once from sa02m-SA-02 to
-# sa02m-SA-02m; cloud enrollment is unaffected (keyed on the cpuinfo serial).
+# This script is the UPSTREAM of the MQTT telemetry id: since 1.0.6.22 the id
+# IS the hostname (sa02m_telemetry.py, docs/MQTT_TOPICS.md), so renaming the
+# board here renames its telemetry subtree and orphans every binding that
+# named the old one — pin the id in /etc/sa02m_telemetry.conf first if the
+# hostname must change on a board already in service. Cloud enrollment is
+# unaffected (keyed on the cpuinfo serial).
 CUR_HN=$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null)
 case "$CUR_HN" in
     ""|localhost|armbian|SA-02|sa02|SA-02m|sa02m)   # vendor/base defaults only

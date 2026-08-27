@@ -25,7 +25,7 @@ def _switch_device():
         "capabilities": [
             {
                 "type": "devices.capabilities.on_off",
-                "mqtt": "/devices/sa02m-SA-02/controls/do",
+                "mqtt": "/devices/test-ctl/controls/do",
                 "retrievable": True,
                 "reportable": True,
                 "parameters": {"instance": "on"},

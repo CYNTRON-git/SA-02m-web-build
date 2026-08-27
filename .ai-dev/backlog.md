@@ -59,6 +59,21 @@ audit 1.0.5.71).
   simply inject a default, because a topic already publishing µg/m³ would then be
   scaled wrongly — so either warn when a known-conversion instance arrives without a
   scale, or carry the source unit explicitly. Do not silently coerce.
+- [OPEN] 2026-08-27 **[MED] Telemetry self-evicts in a ~1 Hz reconnect loop.** Broker log
+  on 1.135 (cloud session, measured): `Client sa02m-SA-02m-telemetry already connected,
+  closing old connection` repeating at ~1 Hz for 2.5 hours, journal alternating
+  `MQTT connected` / `MQTT disconnected: Unspecified error`, 31 s of CPU burned — from a
+  SINGLE process holding one ESTAB socket. Cause: `sa02m_telemetry.py`'s reconnect path
+  builds a NEW paho client with the same FIXED client id (`<device_id>-telemetry`)
+  without stopping or disconnecting the old one, so each CONNECT evicts its predecessor
+  and the survivor's disconnect drives the next reconnect — self-sustaining once
+  triggered. A clean `systemctl stop` + `start` breaks it. MQTT is effectively down for
+  the duration, which is worse than the CPU. Deliberately NOT folded into 1.0.6.22: that
+  branch's production code is byte-stable after three review rounds and the id fix should
+  not wait. Fix shape: stop/disconnect the previous client before building a new one (and
+  check whether a new client is needed at all — paho reconnects on its own). Acceptance:
+  restart mosquitto, watch exactly one clean reconnect in the journal and no eviction line
+  in the broker log.
 
 - [OPEN] 2026-08-27 **[LOW] A contract sentence is hostage to an unpinned JS line.**
   `docs/contracts/alice-mqtt-mapping.md` states that a `complete_link` over an already

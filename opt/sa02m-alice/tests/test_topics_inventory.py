@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -110,6 +111,59 @@ class TestMr02mChannelExpansion(unittest.TestCase):
         }]}
         out = topics._topics_from_yaml(doc)
         self.assertEqual(out, ["/devices/mr02m-COM1-5/controls/do_1"])
+
+
+class TestControllerBuiltinsAreDerived(unittest.TestCase):
+    """Pins the 1.0.6.22 defect: the builtins used to be a FROZEN literal id.
+
+    The picker offered `<prefix><old-hostname>` topics no board ever published
+    to, the Operator bound «Пищалка контроллера» to one of them, and the
+    command went nowhere. Every offered topic must now carry the live id.
+    """
+
+    def setUp(self):
+        env = mock.patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop(topics.CONTROLLER_ID_ENV, None)
+        conf = mock.patch.object(
+            topics, "CONTROLLER_ID_CONF", os.path.join(ROOT, "no-such-file.conf")
+        )
+        conf.start()
+        self.addCleanup(conf.stop)
+
+    def _builtins(self, hostname="SA-02m"):
+        with mock.patch.object(topics.socket, "gethostname", return_value=hostname):
+            with mock.patch.object(topics, "YAML_CANDIDATES", ()), \
+                    mock.patch.object(topics, "ROSTER_CANDIDATES", ()):
+                return topics.list_mqtt_topics()["topics"]
+
+    def test_builtins_carry_the_live_hostname(self):
+        out = self._builtins("boiler-room")
+        for name in topics.CONTROLLER_CONTROLS:
+            self.assertIn("/devices/boiler-room/controls/%s" % name, out)
+
+    def test_every_offered_topic_carries_the_live_id(self):
+        # Stronger than "no old prefix", and it names no legacy literal (the
+        # telemetry-device-id-contract gate sweeps the tree for those): every
+        # device segment offered must BE the derived id.
+        out = self._builtins("SA-02m")
+        self.assertEqual({t.split("/")[2] for t in out}, {"SA-02m"})
+
+    def test_never_empty_on_a_fresh_board(self):
+        # The whole reason the builtins exist — the guarantee survives.
+        self.assertEqual(len(self._builtins()), len(topics.CONTROLLER_CONTROLS))
+
+    def test_env_override_reaches_the_picker(self):
+        os.environ[topics.CONTROLLER_ID_ENV] = "pinned-id"
+        self.assertIn("/devices/pinned-id/controls/beeper", self._builtins("SA-02m"))
+
+    def test_invalid_hostname_falls_back_rather_than_offering_a_broken_topic(self):
+        out = self._builtins("bad/host")
+        self.assertIn(
+            "/devices/%s/controls/beeper" % topics.CONTROLLER_ID_FALLBACK, out
+        )
+        self.assertFalse([t for t in out if "bad/host" in t])
 
 
 if __name__ == "__main__":
