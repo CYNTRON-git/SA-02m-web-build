@@ -42,6 +42,17 @@ audit 1.0.5.71).
   the FIX is ours. Urgency: "fix before the next image capture", NOT a field incident —
   today's golden image predates the Alice work, so no shipped image carries an
   enrollment; the exposure starts with the next capture from a configured bench board.
+  **AUDIT 2026-08-27 (loop-mounted the actual artifact, not the notes):** the in-tree
+  `tools/imaging/stand-data/images/sa02m-1eth-golden-20260820.img.xz` — captured AFTER
+  the Alice tree landed, so the premise needed testing — contains **NO `device.key.pem`,
+  NO `device.crt.pem`, NO `pending_claim.json`** anywhere; `/var/lib/sa02m-alice/` holds
+  only the public `ca.crt.pem`. Its donor was never linked. The cloud twin is correctly
+  reset in the same image (`enrolled = false`, empty `device_id`). So the cross-tenant
+  exposure is NOT materialised in any existing artifact and this stays "fix before the
+  next capture". Two lesser things the same audit found IN that image: the device
+  document ships with a leftover test binding (`id: d1`, «Lab Switch») and
+  `client_enabled = true` — harmless today (no cert, so the client cannot connect) but
+  both would ride into every clone and both are on the clear-list anyway.
   Fix direction: the image-capture path must clear the Alice enrollment (certs +
   pending claim) and the device document, or regenerate ids at first boot — while
   leaving the factory-reset preserve policy intact (they are different paths and the
