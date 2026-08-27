@@ -216,9 +216,9 @@ def run() -> int:
         except Exception:
             return
         retained = bool(getattr(msg, "retain", False))
-        if ignore_retained["active"] and retained:
-            return
-        if registry.note_mqtt(topic, payload, retained=False):
+        # The retained burst on subscribe is CACHED (query serves state from
+        # the cache) but never reported as a change — see note_mqtt.
+        if registry.note_mqtt(topic, payload, retained=ignore_retained["active"] and retained):
             blocks = registry.state_blocks_for_topic(topic)
             if blocks and sender:
                 sender.offer(blocks)
