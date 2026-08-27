@@ -68,7 +68,7 @@ audit 1.0.5.71).
   without stopping or disconnecting the old one, so each CONNECT evicts its predecessor
   and the survivor's disconnect drives the next reconnect — self-sustaining once
   triggered. A clean `systemctl stop` + `start` breaks it. MQTT is effectively down for
-  the duration, which is worse than the CPU. Deliberately NOT folded into 1.0.6.21: that
+  the duration, which is worse than the CPU. Deliberately NOT folded into 1.0.6.22: that
   branch's production code is byte-stable after three review rounds and the id fix should
   not wait. Fix shape: stop/disconnect the previous client before building a new one (and
   check whether a new client is needed at all — paho reconnects on its own). Acceptance:

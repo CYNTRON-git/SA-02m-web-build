@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# telemetry-device-id-contract — the "no consumer was missed" gate for 1.0.6.21.
+# telemetry-device-id-contract — the "no consumer was missed" gate for 1.0.6.22.
 #
 # The defect this closes was invisible to every other row. The telemetry service
 # derived its MQTT device id by gluing the hostname behind a fixed prefix, while
@@ -103,7 +103,7 @@ sweep_file() {
 # section's own lines; a section that stops naming the old id fails A2.
 mask_migration_section() {
     awk '
-      /^### .*1\.0\.6\.21/            { inmig = 1; print ""; next }
+      /^### .*1\.0\.6\.22/            { inmig = 1; print ""; next }
       inmig && (/^---[[:space:]]*$/ || /^## /) { inmig = 0 }
       inmig                           { print ""; next }
                                       { print }

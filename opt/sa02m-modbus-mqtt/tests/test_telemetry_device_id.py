@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telemetry device id resolution + the legacy retained clear (1.0.6.21).
+"""Telemetry device id resolution + the legacy retained clear (1.0.6.22).
 
 Two defect classes are pinned here:
 

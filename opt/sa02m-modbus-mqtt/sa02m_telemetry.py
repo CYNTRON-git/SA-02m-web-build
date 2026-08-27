@@ -59,8 +59,8 @@ DEVICE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 TELEMETRY_DRIVER = "sa02m-telemetry"
 MQTT_CLIENT_ID_MAX = 22          # MQTT 3.1 caps at 23; the package slices to 22
 
-# ── Legacy retained clear (1.0.6.21 migration) ───────────────────────────────
-# Before 1.0.6.21 the id was the hostname glued behind a fixed prefix, so the
+# ── Legacy retained clear (1.0.6.22 migration) ───────────────────────────────
+# Before 1.0.6.22 the id was the hostname glued behind a fixed prefix, so the
 # old subtree has no publisher after the rename and stays in the broker looking
 # alive — that is exactly how a stale retained `1` made the app show the
 # opposite of the hardware. Ride the producer itself rather than an OTA
@@ -166,7 +166,7 @@ def get_device_id() -> str:
 
 
 def _legacy_device_ids(current: str) -> list[str]:
-    """The deterministic pre-1.0.6.21 id set, minus the current id.
+    """The deterministic pre-1.0.6.22 id set, minus the current id.
 
     The id was always `<prefix><hostname>` and scripts/01-system.sh only ever
     sets the hostname to the vendor defaults — a custom operator hostname is
@@ -277,7 +277,7 @@ def _clear_one_legacy(client, legacy_id: str, collect_s: float) -> tuple[str, in
 def clear_legacy_retained(
     client, device_id: str, broker: str, collect_s: float | None = None,
 ) -> dict[str, tuple[str, int]]:
-    """Clear this board's own orphaned pre-1.0.6.21 retained subtree.
+    """Clear this board's own orphaned pre-1.0.6.22 retained subtree.
 
     Returns {legacy id: (verdict, topic count)}; verdicts are `cleared`,
     `empty`, `unproven`, `not-loopback`. Fail closed on every ambiguity — a
@@ -638,7 +638,7 @@ class TelemetryClient:
         # moment the broker answers, so anything between connect() and a ready
         # self._hw is a window where a beeper/DO command is accepted and
         # dropped. The clear does not touch _hw, so ordering it after costs
-        # nothing and keeps that window at its pre-1.0.6.21 length.
+        # nothing and keeps that window at its pre-1.0.6.22 length.
         self.init_hw()
         self._clear_legacy_retained()
         time.sleep(1)

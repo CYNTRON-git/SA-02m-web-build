@@ -65,7 +65,7 @@ fi
 # re-run against the default (or an already-set «SA-02m») re-sets the same
 # value with no churn; a custom name hits the `*` no-op branch. Provides the
 # gethostname() that Part A (dhclient option 12) advertises over DHCP.
-# This script is the UPSTREAM of the MQTT telemetry id: since 1.0.6.21 the id
+# This script is the UPSTREAM of the MQTT telemetry id: since 1.0.6.22 the id
 # IS the hostname (sa02m_telemetry.py, docs/MQTT_TOPICS.md), so renaming the
 # board here renames its telemetry subtree and orphans every binding that
 # named the old one — pin the id in /etc/sa02m_telemetry.conf first if the

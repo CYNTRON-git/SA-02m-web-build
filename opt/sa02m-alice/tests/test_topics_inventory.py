@@ -114,7 +114,7 @@ class TestMr02mChannelExpansion(unittest.TestCase):
 
 
 class TestControllerBuiltinsAreDerived(unittest.TestCase):
-    """Pins the 1.0.6.21 defect: the builtins used to be a FROZEN literal id.
+    """Pins the 1.0.6.22 defect: the builtins used to be a FROZEN literal id.
 
     The picker offered `<prefix><old-hostname>` topics no board ever published
     to, the Operator bound «Пищалка контроллера» to one of them, and the
