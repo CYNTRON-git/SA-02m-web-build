@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import socket
 from typing import Any, Dict, List, Set
 
 YAML_CANDIDATES = (
@@ -74,6 +76,67 @@ CE02M3_CONTROLS = (
     "pf_total",
     "asic_temp",
 )
+
+
+# The controller's own device id — the board name (docs/MQTT_TOPICS.md
+# §Схема Device ID). Conscious duplication of sa02m_telemetry.py's resolution:
+# the alice package cannot import the bridge package at runtime, the same
+# constraint as DTV_DEFAULT_CONTROLS above. Unlike that list, a drift here is
+# NOT cheap — a FROZEN literal here is what let «Пищалка контроллера» be bound
+# to a topic no board ever served — so the two derivations are pinned equal by
+# the `telemetry-device-id-contract` quality row, not by good intentions.
+CONTROLLER_ID_ENV = "SA02M_TELEMETRY_DEVICE_ID"
+CONTROLLER_ID_CONF = os.environ.get(
+    "SA02M_TELEMETRY_CONF", "/etc/sa02m_telemetry.conf"
+)
+CONTROLLER_ID_FALLBACK = "SA-02m"
+CONTROLLER_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+# The board's own onboard controls: always present, so the picker is never
+# empty on a fresh board before any bridge device is configured.
+CONTROLLER_CONTROLS = ("do", "beeper", "alarm_led", "temp_c")
+
+
+def _controller_conf_value(path: str, key: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    found = ""
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        name, sep, raw = line.partition("=")
+        if not sep or name.strip() != key:
+            continue
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] in ("'", '"') and raw[-1] == raw[0]:
+            raw = raw[1:-1]
+        found = raw.strip()
+    return found
+
+
+def _controller_hostname() -> str:
+    try:
+        return (socket.gethostname() or "").strip()
+    except Exception:
+        return ""
+
+
+def _controller_device_id() -> str:
+    """env → conf → hostname → fallback, first VALID wins (fail closed)."""
+    for raw in (
+        os.environ.get(CONTROLLER_ID_ENV, ""),
+        _controller_conf_value(CONTROLLER_ID_CONF, CONTROLLER_ID_ENV),
+        _controller_hostname(),
+    ):
+        value = (raw or "").strip()
+        if value and CONTROLLER_ID_RE.match(value):
+            return value
+    return CONTROLLER_ID_FALLBACK
 
 
 def _load_yaml(path: str) -> Any:
@@ -207,12 +270,13 @@ def list_mqtt_topics() -> Dict[str, Any]:
                 if topics:
                     source = path
                     break
-    # Always include onboard SA-02m examples so the picker is never empty on a fresh board
+    # Always include the onboard controls so the picker is never empty on a
+    # fresh board — DERIVED from the live id, so every offered topic is one the
+    # board actually serves.
+    controller = _controller_device_id()
     builtins = [
-        "/devices/sa02m-SA-02/controls/do",
-        "/devices/sa02m-SA-02/controls/beeper",
-        "/devices/sa02m-SA-02/controls/alarm_led",
-        "/devices/sa02m-SA-02/controls/temp_c",
+        "/devices/%s/controls/%s" % (controller, name)
+        for name in CONTROLLER_CONTROLS
     ]
     merged = sorted(set(topics) | set(builtins))
     return {
