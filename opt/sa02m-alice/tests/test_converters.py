@@ -94,5 +94,117 @@ class TestFloatAndColor(unittest.TestCase):
         self.assertEqual(block["state"]["value"], 0x112233)
 
 
+class TestFloatScale(unittest.TestCase):
+    """The item-level `scale` is the ONE home for reading arithmetic."""
+
+    def test_float_scale_default_one(self):
+        block = converters.mqtt_to_float_property(
+            "21.5", {"instance": "temperature", "unit": "unit.temperature.celsius"}
+        )
+        self.assertEqual(block["state"]["value"], 21.5)
+
+    def test_float_scale_applied(self):
+        # DTV publishes kPa; Yandex takes mmHg — ×7.50062, rounded to 3.
+        block = converters.mqtt_to_float_property(
+            "101.32", {"instance": "pressure", "unit": "unit.pressure.mmhg"}, 7.50062
+        )
+        self.assertEqual(block["state"]["value"], 759.963)
+
+    def test_tvoc_mg_to_mcg(self):
+        block = converters.mqtt_to_float_property(
+            "0.35", {"instance": "tvoc", "unit": "unit.density.mcg_m3"}, 1000
+        )
+        self.assertEqual(block["state"]["value"], 350.0)
+
+    def test_scale_threaded_through_property_dispatch(self):
+        block = converters.property_mqtt_to_yandex(
+            "devices.properties.float",
+            "0.35",
+            {"instance": "tvoc", "unit": "unit.density.mcg_m3"},
+            1000,
+        )
+        self.assertEqual(block["state"]["value"], 350.0)
+
+    def test_scale_preserves_sign_and_never_leaks(self):
+        block = converters.mqtt_to_float_property(
+            "-1.5", {"instance": "power", "unit": "unit.watt"}, 1000
+        )
+        self.assertEqual(block["state"]["value"], -1500.0)
+        self.assertNotIn("scale", block)
+        self.assertNotIn("scale", block["parameters"])
+
+
+MOTION_PARAMS = {
+    "instance": "motion",
+    "events": [{"value": "detected"}, {"value": "not_detected"}],
+}
+
+
+class TestEventProperty(unittest.TestCase):
+    def test_event_numeric_payload_maps_to_motion(self):
+        """The bridge publishes DTV presence as "1.0"/"0.0" (a scaled
+        register), which Yandex refuses verbatim — it must be mapped."""
+        for raw, expect in (("1.0", "detected"), ("0.0", "not_detected"),
+                            ("1", "detected"), ("0", "not_detected")):
+            block = converters.mqtt_to_event_property(raw, MOTION_PARAMS)
+            self.assertIsNotNone(block, "payload %r must map" % raw)
+            self.assertEqual(block["type"], "devices.properties.event")
+            self.assertEqual(block["state"]["instance"], "motion")
+            self.assertEqual(block["state"]["value"], expect)
+
+    def test_event_literal_payload_passthrough(self):
+        params = {"instance": "open", "events": [{"value": "opened"}, {"value": "closed"}]}
+        block = converters.mqtt_to_event_property("opened", params)
+        self.assertEqual(block["state"]["value"], "opened")
+
+    def test_event_word_payload_maps(self):
+        self.assertEqual(
+            converters.mqtt_to_event_property("true", MOTION_PARAMS)["state"]["value"],
+            "detected",
+        )
+        self.assertEqual(
+            converters.mqtt_to_event_property("off", MOTION_PARAMS)["state"]["value"],
+            "not_detected",
+        )
+
+    def test_event_unparseable_returns_none(self):
+        for raw in ("", None, "garbage", "   "):
+            self.assertIsNone(converters.mqtt_to_event_property(raw, MOTION_PARAMS))
+
+    def test_event_unknown_instance_returns_none(self):
+        self.assertIsNone(
+            converters.mqtt_to_event_property("1.0", {"instance": "presence", "events": []})
+        )
+
+    def test_event_none_slot_returns_none(self):
+        # vibration reports the event, never its absence.
+        params = {"instance": "vibration", "events": [{"value": "vibration"}]}
+        self.assertEqual(
+            converters.mqtt_to_event_property("1", params)["state"]["value"], "vibration"
+        )
+        self.assertIsNone(converters.mqtt_to_event_property("0", params))
+
+    def test_event_dispatch_through_property_mqtt_to_yandex(self):
+        block = converters.property_mqtt_to_yandex(
+            "devices.properties.event", "1.0", MOTION_PARAMS
+        )
+        self.assertEqual(block["state"]["value"], "detected")
+
+
+class TestTruthyMqtt(unittest.TestCase):
+    def test_truthy_mqtt_accepts_float_string(self):
+        """A ×1.0-scaled coil arrives as "1.0" — a word-set test read false."""
+        self.assertTrue(converters._truthy_mqtt("1.0"))
+        self.assertFalse(converters._truthy_mqtt("0.0"))
+        self.assertTrue(converters.mqtt_to_on_off("1.0")["state"]["value"])
+        self.assertFalse(converters.mqtt_to_on_off("0.0")["state"]["value"])
+
+    def test_truthy_mqtt_keeps_word_set(self):
+        for raw in ("1", "true", "on", "yes", "TRUE"):
+            self.assertTrue(converters._truthy_mqtt(raw), raw)
+        for raw in ("0", "false", "off", "no", "", "garbage"):
+            self.assertFalse(converters._truthy_mqtt(raw), raw)
+
+
 if __name__ == "__main__":
     unittest.main()

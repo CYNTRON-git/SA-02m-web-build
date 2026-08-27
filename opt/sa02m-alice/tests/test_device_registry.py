@@ -108,6 +108,111 @@ class TestSensorProperties(unittest.TestCase):
         self.assertNotIn("error_code", out[0])
 
 
+MULTI_DOC = {
+    "rooms": [],
+    "devices": [
+        {
+            "id": "m1",
+            "name": "DTV",
+            "type": "devices.types.sensor.climate",
+            "capabilities": [],
+            "properties": [
+                {
+                    "type": "devices.properties.float",
+                    "mqtt": "/devices/dtv-COM4-3/controls/temp_bme680",
+                    "parameters": {
+                        "instance": "temperature",
+                        "unit": "unit.temperature.celsius",
+                    },
+                },
+                {
+                    "type": "devices.properties.float",
+                    "mqtt": "/devices/dtv-COM4-3/controls/humidity_bme680",
+                    "parameters": {"instance": "humidity", "unit": "unit.percent"},
+                },
+                {
+                    "type": "devices.properties.float",
+                    "mqtt": "/devices/dtv-COM4-3/controls/pressure_bme680_kpa",
+                    "parameters": {"instance": "pressure", "unit": "unit.pressure.mmhg"},
+                    "scale": 7.50062,
+                },
+                {
+                    "type": "devices.properties.event",
+                    "mqtt": "/devices/dtv-COM4-3/controls/presence",
+                    "parameters": {
+                        "instance": "motion",
+                        "events": [{"value": "detected"}, {"value": "not_detected"}],
+                    },
+                },
+            ],
+        }
+    ],
+}
+
+TEMP_TOPIC = "/devices/dtv-COM4-3/controls/temp_bme680"
+HUM_TOPIC = "/devices/dtv-COM4-3/controls/humidity_bme680"
+PRESSURE_TOPIC = "/devices/dtv-COM4-3/controls/pressure_bme680_kpa"
+PRESENCE_TOPIC = "/devices/dtv-COM4-3/controls/presence"
+
+
+class TestMultiPropertyDevice(unittest.TestCase):
+    """One physical device → one Alice card carrying several readings."""
+
+    def setUp(self):
+        self.reg = DeviceRegistry(MULTI_DOC)
+
+    def test_query_returns_all_properties_of_multiproperty_device(self):
+        self.reg.note_mqtt(TEMP_TOPIC, "21.5")
+        self.reg.note_mqtt(HUM_TOPIC, "45.0")
+        self.reg.note_mqtt(PRESENCE_TOPIC, "1.0")
+        out = self.reg.query_devices(["m1"])
+        got = dict(
+            (p["state"]["instance"], p["state"]["value"]) for p in out[0]["properties"]
+        )
+        self.assertEqual(got, {"temperature": 21.5, "humidity": 45.0, "motion": "detected"})
+
+    def test_scale_applied_in_query_and_state_blocks(self):
+        self.reg.note_mqtt(PRESSURE_TOPIC, "101.32")
+        out = self.reg.query_devices(["m1"])
+        props = [p for p in out[0]["properties"] if p["state"]["instance"] == "pressure"]
+        self.assertEqual(props[0]["state"]["value"], 759.963)
+        blocks = self.reg.state_blocks_for_topic(PRESSURE_TOPIC)
+        self.assertEqual(blocks[0]["properties"][0]["state"]["value"], 759.963)
+
+    def test_unscaled_property_untouched(self):
+        self.reg.note_mqtt(TEMP_TOPIC, "21.5")
+        blocks = self.reg.state_blocks_for_topic(TEMP_TOPIC)
+        self.assertEqual(blocks[0]["properties"][0]["state"]["value"], 21.5)
+
+    def test_discovery_does_not_leak_scale(self):
+        """`scale` is ours, not Yandex's — discovery copies `parameters`
+        verbatim, so the field must live at item level and stay local."""
+        devices = self.reg.discovery_devices()
+        for block in devices[0]["properties"]:
+            self.assertNotIn("scale", block)
+            self.assertNotIn("scale", block.get("parameters") or {})
+
+    def test_discovery_event_carries_events_array(self):
+        devices = self.reg.discovery_devices()
+        events = [
+            b for b in devices[0]["properties"] if b["type"] == "devices.properties.event"
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["parameters"]["instance"], "motion")
+        self.assertEqual(
+            events[0]["parameters"]["events"],
+            [{"value": "detected"}, {"value": "not_detected"}],
+        )
+
+    def test_presence_payload_maps_to_motion_state_block(self):
+        self.reg.note_mqtt(PRESENCE_TOPIC, "1.0")
+        blocks = self.reg.state_blocks_for_topic(PRESENCE_TOPIC)
+        self.assertEqual(blocks[0]["properties"][0]["state"]["value"], "detected")
+        self.reg.note_mqtt(PRESENCE_TOPIC, "0.0")
+        blocks = self.reg.state_blocks_for_topic(PRESENCE_TOPIC)
+        self.assertEqual(blocks[0]["properties"][0]["state"]["value"], "not_detected")
+
+
 class TestDeviceRegistry(unittest.TestCase):
     def setUp(self):
         self.reg = DeviceRegistry(DOC)

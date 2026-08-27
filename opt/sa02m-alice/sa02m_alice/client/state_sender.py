@@ -22,6 +22,21 @@ def _load_rates() -> Dict[str, Any]:
         }
 
 
+def _instance_of(item: Dict[str, Any]) -> str:
+    """The Yandex instance of a converted block, read from `state`.
+
+    `state.instance` is emitted by every converter; `parameters` is not — a
+    float block omits it when the unit is falsy. Keying on `parameters` would
+    therefore collapse exactly the multi-property devices this key exists for.
+    """
+    if not isinstance(item, dict):
+        return ""
+    state = item.get("state")
+    if not isinstance(state, dict):
+        return ""
+    return str(state.get("instance") or "")
+
+
 class StateSender:
     """Stage1 per-topic rate → Stage2 batch flush → emit callback."""
 
@@ -83,7 +98,11 @@ class StateSender:
                     if not isinstance(cap, dict):
                         continue
                     ctype = str(cap.get("type") or "")
-                    key = "c:%s:%s" % (did, ctype)
+                    # Keyed by (device, type, INSTANCE): the platform rate is a
+                    # per-property limit, so two instances of one type on one
+                    # device each get their own budget. Keyed by type alone,
+                    # a multi-reading device refreshed one reading per window.
+                    key = "c:%s:%s:%s" % (did, ctype, _instance_of(cap))
                     rate = self._rate_for("capability", ctype)
                     last = self._last_sent.get(key, 0.0)
                     if now - last < rate:
@@ -95,7 +114,7 @@ class StateSender:
                     if not isinstance(prop, dict):
                         continue
                     ptype = str(prop.get("type") or "")
-                    key = "p:%s:%s" % (did, ptype)
+                    key = "p:%s:%s:%s" % (did, ptype, _instance_of(prop))
                     rate = self._rate_for("property", ptype)
                     last = self._last_sent.get(key, 0.0)
                     if now - last < rate:
@@ -109,16 +128,18 @@ class StateSender:
                 merged = self._pending.setdefault(
                     did, {"id": did, "capabilities": [], "properties": []}
                 )
-                # last_value wins per type
+                # last_value wins per (type, instance) — keyed on type alone,
+                # two float blocks of one device collapsed into one and the
+                # earlier reading was silently lost from the batch.
                 def _merge(dst_key: str, items: List[Dict[str, Any]]) -> None:
-                    by_type = {
-                        str(x.get("type")): x
+                    by_key = {
+                        (str(x.get("type")), _instance_of(x)): x
                         for x in merged[dst_key]
                         if isinstance(x, dict)
                     }
                     for it in items:
-                        by_type[str(it.get("type"))] = it
-                    merged[dst_key] = list(by_type.values())
+                        by_key[(str(it.get("type")), _instance_of(it))] = it
+                    merged[dst_key] = list(by_key.values())
 
                 _merge("capabilities", allowed_caps)
                 _merge("properties", allowed_props)

@@ -2128,6 +2128,28 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    edit-mode «Отмена» button must stay hidden in add mode (JS sets `hidden`). */
 #alice-dev-cancel[hidden] { display: none !important; }
 
+/* Bindings-modal reading rows: kind and topic share the width, the delete
+   button stays flush right; under 520 px the pair stacks so neither select is
+   squeezed below a readable width (the dialog is 600 px on desktop).
+   `min-width: 0` is load-bearing — without it a long topic string blows the
+   flex row out past the dialog edge. */
+.alice-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.alice-bind-row { display: flex; align-items: center; gap: 8px; }
+.alice-bind-row > .alice-row-kind  { flex: 0 0 40%; min-width: 0; }
+.alice-bind-row > .alice-row-topic { flex: 1 1 auto; min-width: 0; }
+.alice-bind-row > .alice-row-del   { flex: 0 0 auto; }
+/* Stacked: the kind keeps the delete button on its own line (an orphaned ✕
+   on a line of its own reads as belonging to the next row), the long topic
+   takes the full width beneath it. */
+@media (max-width: 520px) {
+  .alice-bind-row { flex-wrap: wrap; row-gap: 4px; padding-bottom: 6px; }
+  /* basis 0, not auto: a select's auto basis is its full content width, which
+     would wrap the ✕ onto a line of its own before any shrinking happens. */
+  .alice-bind-row > .alice-row-kind  { flex: 1 1 0; }
+  .alice-bind-row > .alice-row-topic { flex: 1 1 100%; order: 3; }
+  .alice-bind-row > .alice-row-del   { order: 2; }
+}
+
 #alice-msg.cloud-msg,
 #alice-bind-msg.cloud-msg {
   margin-top: 4px;

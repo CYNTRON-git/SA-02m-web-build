@@ -10,6 +10,18 @@ from ..common.config_store import load_devices
 from . import converters
 
 
+def _item_scale(item: Dict[str, Any]) -> float:
+    """Item-level unit conversion factor; absent or unusable ⇒ identity.
+
+    `scale` is stored beside `mqtt`, never inside `parameters` — discovery
+    copies `parameters` verbatim to Yandex and must not leak a local field.
+    """
+    scale = item.get("scale")
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+        return 1.0
+    return float(scale)
+
+
 class DeviceRegistry:
     """In-memory registry backed by sa02m-alice-devices.conf."""
 
@@ -157,7 +169,10 @@ class DeviceRegistry:
                     if raw is None:
                         continue
                     block = converters.property_mqtt_to_yandex(
-                        str(item.get("type") or ""), raw, item.get("parameters")
+                        str(item.get("type") or ""),
+                        raw,
+                        item.get("parameters"),
+                        _item_scale(item),
                     )
                     if block:
                         props.append(block)
@@ -260,7 +275,10 @@ class DeviceRegistry:
                         out.append({"id": did, "capabilities": [block], "properties": []})
                 else:
                     block = converters.property_mqtt_to_yandex(
-                        str(item.get("type") or ""), raw, item.get("parameters")
+                        str(item.get("type") or ""),
+                        raw,
+                        item.get("parameters"),
+                        _item_scale(item),
                     )
                     if block:
                         out.append({"id": did, "capabilities": [], "properties": [block]})
