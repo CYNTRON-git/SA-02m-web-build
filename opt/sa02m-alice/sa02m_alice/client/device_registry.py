@@ -16,7 +16,7 @@ class DeviceRegistry:
     def __init__(self, devices_doc: Optional[Dict[str, Any]] = None) -> None:
         self._lock = threading.RLock()
         self._doc = devices_doc if devices_doc is not None else load_devices()
-        self._mqtt_cache: Dict[str, str] = {}  # topic -> last non-retained value
+        self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._rebuild_indexes()
 
     def _rebuild_indexes(self) -> None:
