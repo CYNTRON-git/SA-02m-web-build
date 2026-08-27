@@ -7,6 +7,97 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-27 **[LOW] A contract sentence is hostage to an unpinned JS line.**
+  `docs/contracts/alice-mqtt-mapping.md` states that a `complete_link` over an already
+  connected client is unreachable from the panel; that is true only because
+  `www/network_config/static/js/app/alice.js` computes `linked` as
+  `st === 'connected' || certOk` and renders «Завершить привязку» in a later branch.
+  Nothing asserts it — edit that line and the contract silently becomes false. Same
+  seam class the 1.0.6.19 gate pins on the helper↔client side, left unpinned on the
+  JS↔contract side. Fix direction: a small assertion in the headless driver (the
+  linked-state card offers «Отвязать», never «Завершить привязку»).
+
+- [OPEN] 2026-08-27 **[HIGH] A golden image captured from a LINKED donor carries that
+  donor's Alice identity — certificates AND device ids — onto every cloned board.**
+  Raised by the cloud session (they see duplicate device ids across controllers and now
+  dedup, so the second board's device silently vanishes from Alice); verified in-tree
+  and it is WIDER than they thought:
+  - `tools/imaging/cleanup-donor.sh` lists `/var/lib/sa02m-alice` in BOTH `DENY_TREES`
+    and `DENY_LITERALS` — the donor's mTLS **device.key.pem / device.crt.pem are
+    deliberately preserved**, carrying the donor's controller identity into the image.
+    The rationale recorded in `docs/TZ_PRE_PRODUCTION_DONOR_CLEANUP.md:172` is
+    "policy: preserve on factory reset" — a FACTORY-RESET policy applied to the
+    IMAGE-CAPTURE path, where it is wrong.
+  - `/etc/sa02m-alice/sa02m-alice-devices.conf` (the `uuid4` device ids) is cleared by
+    nothing at all — not the donor cleanup, not `stream-after-cleanup.sh`, not the
+    firstboot overlay.
+  So two cloned boards present the same device ids AND the same client certificate.
+  **Cloud-side impact, analysed at source by the cloud session (2026-08-27): a cloned
+  cert makes two physical boards ONE controller.** The gateway identifies a controller
+  by the mTLS DN alone, so both boards resolve to the DONOR's account — a customer's
+  cloned board would surface in someone else's «Дом с Алисой» and vice versa
+  (cross-tenant exposure, not merely confusing UX); the last board to connect silently
+  becomes the command target; and their duplicate-id warning degrades because both SNs
+  read as the same string. Detection is theirs (filed on their side, not started);
+  the FIX is ours. Urgency: "fix before the next image capture", NOT a field incident —
+  today's golden image predates the Alice work, so no shipped image carries an
+  enrollment; the exposure starts with the next capture from a configured bench board.
+  Fix direction: the image-capture path must clear the Alice enrollment (certs +
+  pending claim) and the device document, or regenerate ids at first boot — while
+  leaving the factory-reset preserve policy intact (they are different paths and the
+  donor doc must say so). Acceptance: capture an image from a linked donor, flash it,
+  and confirm the fresh board is unlinked with no device ids inherited.
+
+- [OPEN] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
+  branch that already has a commit — a false-green shape.** It resolves the touched set
+  from `origin/main..HEAD` and only falls back to the unstaged working tree when that
+  diff comes up EMPTY. A Builder handing back uncommitted work on a branch carrying at
+  least the version-bump commit therefore gets a subset scoped to the committed diff
+  only: on 1.0.6.19 it selected 4 rows and saw none of the new alice work. Found by the
+  1.0.6.19 Builder (which relied on the full beat throughout, so nothing shipped
+  unchecked). Fix direction: union the committed diff with the working-tree diff, or
+  make the fallback additive rather than conditional.
+
+- [OPEN] 2026-08-27 **[MED] Alice client never resubscribes MQTT after a broker
+  reconnect.** Subscriptions are taken once, right after `mqtt.connect()`
+  (`client/main.py`, the connect path); `loop_start()` reconnects the socket but
+  paho does NOT restore subscriptions — the documented idiom is to subscribe
+  inside `on_connect` precisely so they are renewed. A mosquitto restart
+  therefore leaves the client Socket.IO-connected and MQTT-deaf: values freeze
+  at their last cached reading and `query` keeps serving them as current, until
+  the SIO session happens to drop and the outer loop rebuilds everything.
+  **Honesty label: derived from paho's documented reconnect/`on_connect`
+  behaviour and this code's structure — NOT reproduced on hardware.**
+  Acceptance: `systemctl restart mosquitto` on bench 1.135, then watch state
+  keep flowing. Fix shape: subscribe inside an `on_connect` handler, arming
+  `RetainedGrace` for ALL topics first — the 1.0.6.19 grace mechanism
+  generalises to it directly (~10 lines). Deliberately NOT folded into
+  1.0.6.19: a different guarantee ("survive a broker restart") with a different
+  acceptance test, and it would re-time the connect settle window that shipped
+  in 1.0.6.16. Fork 2 of plan `alice-registry-reload.md`.
+- [OPEN] 2026-08-27 **[MED → cross-repo, `CYNTRON-git/cloud`] Overlapping
+  controller sessions across a restart: the hub's `sn → sid` map is overwritten
+  silently.** Bench 1.135, 2026-08-27 09:31–09:34: connect 09:31:47 → unprompted
+  disconnect 09:32:03 (16 s into a healthy session) while `/v1.0/ping` answered
+  200 from the same board (RTT ~270 ms, 0 % loss). The cloud session then found
+  the hub sets `sn → sid` unconditionally on connect, so a second session for
+  the same serial overwrites the first and the old socket's later disconnect is
+  a no-op there — their log shows a connect and a disconnect for the same SN
+  1 ms apart. Most probable reading: OUR old client process had not fully
+  released its socket when the new one connected (two overlapping sessions from
+  the device side), not a server timeout — so there is nothing to patch on their
+  side and no timeout was changed. Evidence channel now exists: since 1.0.6.19
+  every ended session logs `sid`, both timestamps, the monotonic duration and
+  the disconnect source (`local_shutdown` / `lib:<reason>` / `unknown` — never a
+  guess). Next step is to read those lines after a restart on 1.135 and decide
+  whether the client must close the old session before opening a new one.
+- [OPEN] 2026-08-27 **[LOW → cross-repo, `CYNTRON-git/cloud`] No
+  controller→gateway "devices changed" event exists**, so a new binding reaches
+  Alice only when the user runs «Обновить список устройств». A push would be a
+  gateway-side call to the skill's discovery callback, which needs the SKILL's
+  credentials — the controller does not have them and must not. Needs a new C→G
+  event first. Owner: the `cloud` repo. Fork of plan
+  `alice-registry-reload.md` §5.4.
 - [OPEN] 2026-08-27 **[MED] Client restart after a binding mutation costs a
   ~60 s window in which the account shows ZERO devices.** Cloud-side hardware
   verification on the linked 1.135 (cloud session, 2026-08-27): after a
@@ -18,6 +109,10 @@ audit 1.0.5.71).
   Fix directions: reload the DeviceRegistry in place (SIGHUP / config-watch)
   instead of restarting the unit, or make the socket.io reconnect prompt after
   a restart (backoff//jitter review in `client/sio_connection.py`).
+  **Both directions built in 1.0.6.19** (in-place reload + a bounded jittered
+  reconnect ladder); the entry stays OPEN until the bench acceptance on 1.135
+  confirms an edit leaves the session up — it is a hardware-verified finding
+  and closing it on code alone would over-claim.
 - [OPEN] 2026-08-27 **[LOW] Device-name validator rejects ordinary punctuation
   and the error says nothing useful.** `models.py` `^[\w \-./+]{1,64}$` excludes
   parentheses, commas, «№» — «Проверка облака (изменено)» fails with a bare

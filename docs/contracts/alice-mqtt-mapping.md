@@ -8,12 +8,15 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
 - State subscribe: `/devices/<id>/controls/<name>` (Wiren Board MQTT shape).
 - Command publish: `/devices/<id>/controls/<name>/on` — payload `"0"` / `"1"` /
   numeric string; **no retain** on writes (same rule as `mqtt_set.cgi`).
-- On Socket.IO connect the retained burst is **cached but never reported**:
+- The retained burst on a NEW subscription is **cached but never reported**:
   retained values fill the state cache (the query fan-out answers from it, so a
   freshly started client has state immediately), and only the outbound
-  `device_state` event is suppressed until the settle window elapses. Caching
-  them was the 1.0.6.16 fix — dropping them left every sensor empty in the
-  Alice app until the bridge happened to republish.
+  `device_state` event is suppressed until that subscription's settle window
+  elapses. Caching them was the 1.0.6.16 fix — dropping them left every sensor
+  empty in the Alice app until the bridge happened to republish. The rule is
+  **per subscription, not per connect**: it covers the burst after Socket.IO
+  connect AND the burst for a topic a reload newly subscribes (a bounded grace
+  window per added topic, `RETAINED_GRACE_S`).
 
 ## Device document (`/etc/sa02m-alice/sa02m-alice-devices.conf`)
 
@@ -98,6 +101,10 @@ discriminator, which forces it.
   phase plus a totals device.
 - The load path is unaffected — `config_store.load_devices` does not validate,
   so a pre-existing hand-edited document keeps loading; only writes are gated.
+- **`config/models.py` is the only guard before Yandex**: the gateway forwards
+  the payload verbatim and validates nothing (checked against the sibling
+  `cloud` repo, 2026-08-27). Widen a pattern there deliberately — nothing
+  downstream re-checks it.
 
 ### Scale (item level, never sent to Yandex)
 
@@ -143,8 +150,42 @@ leak a non-Yandex field to the platform.
   radar distance reading cannot be represented — nothing is substituted.
 
 Validating tests: `opt/sa02m-alice/tests/test_models.py`,
-`test_converters.py`, `test_device_registry.py`, `test_state_sender.py`,
-`test_topics_inventory.py`.
+`test_converters.py`, `test_device_registry.py`, `test_reload_watch.py`,
+`test_state_sender.py`, `test_topics_inventory.py`.
+
+### Binding edits apply without a restart (1.0.6.19)
+
+A mutation of the device document (`upsert_device` / `delete_device` /
+`upsert_room` / `delete_room`) made **while the client is connected** is applied
+in place, without restarting it and without dropping the Socket.IO session:
+
+- The client polls the document's `(inode, mtime, size)` on its existing
+  one-second watchdog tick and re-reads it within ~1 s of the atomic write.
+  Every writer is covered — the CGI, a hand edit, an offline restore.
+- **That poll lives in the watchdog loop, which runs only while the Socket.IO
+  session is up.** In the reconnect backoff, the error state and the
+  missing-cert wait the document is not polled at all; an edit made then is
+  picked up at the next connect, which re-reads before subscribing.
+- Subscriptions are **diffed**: added topics are subscribed at QoS 1 (their
+  retained burst under the grace window above), removed topics unsubscribed,
+  unchanged topics left alone. A document that fails to parse is logged and the
+  previous device set keeps serving.
+- **No discovery push exists** (the event table below is gateway→controller
+  pull only), so a NEW device reaches Alice when the user runs «Обновить список
+  устройств» — unchanged from before.
+- **The restart is skipped only for a client proven to be watching.** The
+  privileged trigger's `restart` verb is sent by two CGI call sites — the
+  binding mutation and the `complete_link` cert nudge — so it requires
+  `state == connected` on top of the capability flag and the heartbeat. Outside
+  a live session the client is not polling anything, and the restart happens as
+  it always did: `enable` / `disable` use their own verbs and always restart,
+  and `complete_link` on a client in missing-cert standby (the only state the
+  panel offers it in — «Завершить привязку» appears only while NOT linked)
+  restarts too, so a freshly enrolled cert is picked up at once.
+  Residual, stated rather than hidden: a `complete_link` issued straight at the
+  API while a session is already live is not restarted, and that session keeps
+  its previous cert until it drops — the SSL context is built in
+  `sio_connection.connect()`.
 
 ## Socket.IO events (controller ↔ `alice.cyntron.ru`)
 
@@ -194,9 +235,17 @@ permission-blind and returns a false "absent").
 
 - **Status file** `/run/sa02m-alice/status.json` (client, root, mode 0644,
   rewritten on every state change): `{state, ts, version, cert_present:
-  bool, …}` — `cert_present` is evaluated by the client on EVERY write
-  (`sa02m_alice/client/main.py::_write_status`), so the file is the source of
-  cert truth for unprivileged readers. Additive: older keys unchanged.
+  bool, config_watch: bool, …}` — `cert_present` is evaluated by the client on
+  EVERY write (`sa02m_alice/client/main.py::_write_status`), so the file is the
+  source of cert truth for unprivileged readers. Additive: older keys unchanged.
+- `config_watch` is `true` when the running client re-reads the device document
+  without a restart. The privileged web trigger
+  (`usr/local/sbin/sa02m-alice-web-trigger.sh`) reads it — together with unit
+  liveness and `ts` freshness (`STATUS_STALE_S`, 3× the 30 s heartbeat) — to
+  decide whether a binding edit still needs a restart. **Absent, false, or
+  stale ⇒ restart**, the pre-1.0.6.19 behaviour: the client and the helper ship
+  together in one `06-alice.sh` run, while the CGI arrives by web update, so a
+  newer CGI against an older client is normal and must not change anything.
 - **API** (`sa02m_alice_api.cgi` GET / `full_config`) `mtls.cert_present` is
   tri-state — `true` / `false` when known, `null` when this process cannot tell —
   with `mtls.cert_check` naming the source: `"client"` (status file),
@@ -213,7 +262,9 @@ permission-blind and returns a false "absent").
   gateway requires `claim_token` for `/controller/unlink`; the status/link view
   never reads it.
 
-Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`.
+Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`,
+`test_reload_watch.py`; the cross-language handshake is pinned by the
+`alice-reload-handshake` quality row.
 
 ## Non-goals
 
