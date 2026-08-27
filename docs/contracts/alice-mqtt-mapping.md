@@ -30,7 +30,7 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
     "type": "devices.types.switch",
     "capabilities": [{
       "type": "devices.capabilities.on_off",
-      "mqtt": "/devices/sa02m-SA-02/controls/do",
+      "mqtt": "/devices/SA-02m/controls/do",
       "retrievable": true,
       "reportable": true,
       "parameters": {"instance": "on"}

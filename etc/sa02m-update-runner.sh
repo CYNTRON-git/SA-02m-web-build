@@ -469,6 +469,17 @@ manifest = {
             # Masked/disabled units are skipped by the health loop; restart uses
             # the same soft || true path as other optional services.
             "mplc4",
+            # Telemetry owns its own device id and its legacy-retained clear
+            # (1.0.6.21), so the new .py on disk changes nothing until the
+            # process restarts. Safe here: it touches /proc, /sys and i2c bus 2
+            # only, never an RS-485 port — unlike sa02m-modbus-mqtt, which
+            # stays OUT of this list under the port-lease invariant.
+            # HONEST LIMIT: this manifest is built by the runner ALREADY on the
+            # board, so the entry first bites on the update AFTER the one that
+            # delivers it. Landing 1.0.6.21 over the web leaves the old process
+            # running until a reboot or `systemctl restart sa02m-telemetry`.
+            # Must stay in step with scripts/pack-offline-update.py.
+            "sa02m-telemetry",
         ],
         "health": {
             "http_url": "http://127.0.0.1:9999/login.html",
