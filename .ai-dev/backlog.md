@@ -21,9 +21,15 @@ audit 1.0.5.71).
 - [OPEN] 2026-08-27 **[LOW] Device-name validator rejects ordinary punctuation
   and the error says nothing useful.** `models.py` `^[\w \-./+]{1,64}$` excludes
   parentheses, commas, «№» — «Проверка облака (изменено)» fails with a bare
-  `invalid device name`. Either widen the class (weigh what the gateway and
-  Yandex accept) or state the rule in the field help AND the error text. Found
-  by the cloud session's hardware run, 2026-08-27.
+  `invalid device name`. **There is no upstream rule to adopt** (cloud session
+  checked the source, 2026-08-27): Yandex's Discovery reference documents `name`
+  only as required — no length cap, no charset; their support page gives only
+  semantic advice (unique within a room, no room name embedded). The gateway
+  forwards the payload verbatim, and Cyrillic + spaces + digits are verified
+  end-to-end. So this regex is OUR constraint: keep a validator (control
+  characters + a length cap are genuinely useful), widen the printable set,
+  state the rule in the field help AND the error text, and pin a test with a
+  punctuation-bearing name so a future narrowing is caught.
 
 - [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
   is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
