@@ -7,6 +7,24 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-27 **[MED] Client restart after a binding mutation costs a
+  ~60 s window in which the account shows ZERO devices.** Cloud-side hardware
+  verification on the linked 1.135 (cloud session, 2026-08-27): after a
+  mutation the auto-restart reconnected, the gateway logged connect→disconnect
+  within 2 ms, the board logged `One or more namespaces failed to connect`, and
+  the next successful connect came ~60 s later; `/v1.0/user/devices` returned an
+  empty list for the whole account during that window — an Alice discovery
+  landing there shows the user an empty house. Self-heals, so not a blocker.
+  Fix directions: reload the DeviceRegistry in place (SIGHUP / config-watch)
+  instead of restarting the unit, or make the socket.io reconnect prompt after
+  a restart (backoff//jitter review in `client/sio_connection.py`).
+- [OPEN] 2026-08-27 **[LOW] Device-name validator rejects ordinary punctuation
+  and the error says nothing useful.** `models.py` `^[\w \-./+]{1,64}$` excludes
+  parentheses, commas, «№» — «Проверка облака (изменено)» fails with a bare
+  `invalid device name`. Either widen the class (weigh what the gateway and
+  Yandex accept) or state the rule in the field help AND the error text. Found
+  by the cloud session's hardware run, 2026-08-27.
+
 - [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
   is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
   `create-sa02m-rootfs.sh:35`, `serial-restore-ssh.py:24`, `sa02m-check-perms.py:22`,
