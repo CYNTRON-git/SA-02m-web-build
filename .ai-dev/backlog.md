@@ -7,6 +7,18 @@ audit 1.0.5.71).
 
 ## Open
 
+- [OPEN] 2026-08-27 **[LOW] A binding created outside the UI can silently lose a unit
+  conversion.** The UI attaches `scale` from `ALICE_KINDS` (tvoc ×1000 mg/m³→µg/m³,
+  pressure ×7.50062 kPa→mmHg), but `validate_device` accepts a float property with no
+  `scale` at all, so a hand-made API call — or an older document — sends a value three
+  orders out and the Alice app renders «0 мкг/м³». Hit for real on 2026-08-27: a test
+  binding made via curl without `scale` read 0.27 instead of 270; the cloud session
+  spotted it in the app. The UI path was correct throughout — this is about the API
+  path having no guard. Fix direction (needs thought, not a reflex): the backend cannot
+  simply inject a default, because a topic already publishing µg/m³ would then be
+  scaled wrongly — so either warn when a known-conversion instance arrives without a
+  scale, or carry the source unit explicitly. Do not silently coerce.
+
 - [OPEN] 2026-08-27 **[LOW] A contract sentence is hostage to an unpinned JS line.**
   `docs/contracts/alice-mqtt-mapping.md` states that a `complete_link` over an already
   connected client is unreachable from the panel; that is true only because
