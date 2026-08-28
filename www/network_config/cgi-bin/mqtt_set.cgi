@@ -85,7 +85,9 @@ esac
 
 TOPIC="/devices/${DEVICE}/controls/${CONTROL}/on"
 # NO retain (-r) — a retained /on replays on bridge restart and re-toggles
-# real outputs. Hard floor of this endpoint; asserted by the contract check.
+# real outputs. Hard floor of this endpoint; asserted by the quality row
+# `mqtt-set-contract` (.ai-dev/quality/checks/mqtt-set-contract.sh), which
+# fails on `-r` in the publish argv and anywhere in this file.
 if timeout 5 mosquitto_pub -h 127.0.0.1 -p 1883 -t "$TOPIC" -m "$VAL" >/dev/null 2>&1; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] mqtt_set.cgi: device=$DEVICE control=$CONTROL value=$VAL" >> /var/log/sa02m_install.log 2>&1
     printf '{"ok":true,"device":"%s","control":"%s","value":%s}\n' "$DEVICE" "$CONTROL" "$VAL"
