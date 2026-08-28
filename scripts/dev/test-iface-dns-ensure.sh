@@ -775,12 +775,21 @@ fi
 
 # The recovery ladder's two call sites — a belt that only lives in the unit
 # inherits none of the "cable arrived later" coverage.
-if grep -q 'dns_ensure "\$iface"' etc/fix-eth.sh \
-   && [ "$(grep -c 'dns_ensure "\$iface"' etc/fix-eth.sh)" -ge 2 ] \
-   && [ "$(grep -c 'dns_ensure "\$IFACE"' usr/local/sbin/sa02m-eth-coldboot.sh)" -ge 2 ]; then
-    ok "wiring: the ladder calls the belt on both fix-eth and both coldboot paths"
+#
+# COMMENT-STRIPPED, not raw grep: a `#` in front of either call leaves the text
+# in the file, so a raw `grep -c` counted a DISABLED call site as a live one and
+# this assertion could not go RED (shape (a), found by the coverage sweep of
+# review Q6, 1.0.6.24). lib_check.sh is the one home for the stripping; an
+# unavailable lib FAILS the case rather than skipping it.
+if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_count >/dev/null; then
+    if [ "$(stripped_count etc/fix-eth.sh 'dns_ensure "\$iface"')" -ge 2 ] \
+       && [ "$(stripped_count usr/local/sbin/sa02m-eth-coldboot.sh 'dns_ensure "\$IFACE"')" -ge 2 ]; then
+        ok "wiring: the ladder calls the belt on both fix-eth and both coldboot paths"
+    else
+        bad "wiring: a recovery-ladder call site is missing (or commented out)"
+    fi
 else
-    bad "wiring: a recovery-ladder call site is missing"
+    bad "wiring: .ai-dev/quality/checks/lib_check.sh could not be sourced — the recovery-ladder call sites were NOT verified (a skip is not a pass)"
 fi
 
 # ── harness non-vacuity ────────────────────────────────────────────────────
