@@ -856,43 +856,259 @@ else:
 # ── Helper-side validation: the pin is not the fix ─────────────────────────
 # Every arg-taking privileged helper must validate its OWN argv, because the
 # sudoers wildcard's reach is not something this repo has verified (a sudo
-# argument `*` is documented to match `/` as well). Each row: file, then the
-# literal markers that prove the in-helper guard exists.
+# argument `*` is documented to match `/` as well).
+#
+# TWO layers, because the first one alone was hollow. Until the 1.0.6.24
+# security review this block searched for literal substrings only, so it could
+# not tell a guard that RUNS from a guard that is merely DEFINED: deleting the
+# whole `if ! src_path_ok "$TMP_SRC"; then … exit 2; fi` block while leaving the
+# function definition left this gate at exit 0 — and that mutation restores
+# "install any caller-named file as the root gateway config", the trust-the-
+# caller shape the branch exists to remove (review finding F3, reproduced by
+# running before this check was written).
+#   Layer 1 — `markers`: the guard's CONTENT still bounds the right things.
+#   Layer 2 — `calls`:   the guard is INVOKED, in a refusal construct, before
+#                        the privileged action, outside its own body.
 HELPER_GUARDS = [
     ("usr/local/sbin/sa02m-gateway-config-apply.sh", [
         ("/tmp/", "restricts the caller-supplied path to /tmp"),
         ("sa02m-gwcfg-out", "pins the caller's mktemp basename"),
         ("-L ", "refuses a symlink"),
+    ], [
+        ("src_path_ok", [r"\binstall\s+-m\s+0660\b", r"\bdd\b[^\n]*\bif="],
+         "installs the caller's file as the root gateway config"),
     ]),
     ("usr/local/sbin/sa02m-mqtt-config-apply.sh", [
         ("/tmp/", "restricts the caller-supplied path to /tmp"),
         ("sa02m-mqcfg-out", "pins the caller's mktemp basename"),
         ("-L ", "refuses a symlink"),
+    ], [
+        ("src_path_ok", [r"\binstall\s+-m\s+0660\b", r"\bdd\b[^\n]*\bif="],
+         "installs the caller's file as the root MQTT bridge config"),
     ]),
     ("usr/local/sbin/sa02m-cloud-web-trigger.sh", [
         ("valid_server_host", "validates the server hostname inside the helper"),
         ("A-Za-z0-9", "carries an explicit hostname character allow-list"),
+    ], [
+        ("valid_server_host", [r"SA02M_SERVER=", r"os\.replace\("],
+         "rewrites the root agent.conf with the caller's hostname"),
     ]),
     ("opt/sa02m-modbus-mqtt/mqtt_bus_scan.py", [
         ("sa02m-mqttscan", "pins the caller's mktemp basename"),
         ("islink", "refuses a symlink"),
         ("/dev/", "allow-lists the serial port path it opens as root"),
+    ], [
+        ("params_path_ok", [r"serial\.Serial\("],
+         "opens the caller-named serial port as root"),
     ]),
 ]
-for rel, markers in HELPER_GUARDS:
+
+# The function's own body, so a call INSIDE it is not mistaken for a call site.
+# Returns (def_index, last_body_index) 0-based inclusive, or None when the
+# function is not defined at all.
+def _fn_span(lines, fn, python):
+    if python:
+        dre = re.compile(r"^(\s*)def\s+%s\s*\(" % re.escape(fn))
+    else:
+        dre = re.compile(r"^(\s*)(?:function\s+)?%s\s*\(\)" % re.escape(fn))
+    for i, ln in enumerate(lines):
+        m = dre.match(ln)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        for j in range(i + 1, len(lines)):
+            s = lines[j]
+            if not s.strip():
+                continue
+            if python:
+                if len(s) - len(s.lstrip()) <= indent:
+                    return i, j - 1
+            elif re.match(r"^\s{0,%d}\}\s*$" % max(indent, 0), s):
+                return i, j
+        return i, len(lines) - 1
+    return None
+
+# A call that REFUSES: `if ! guard …` / `guard … ||` in shell, `if not guard(`
+# in Python, followed within a few lines by a non-zero exit / refuse / raise.
+# A bare `guard "$x"` whose result is discarded is not a guard.
+def _refusing_call(lines, idx, fn, python):
+    ln = lines[idx]
+    if python:
+        if not re.search(r"\bnot\s+%s\s*\(" % re.escape(fn), ln):
+            return False
+        window = "\n".join(lines[idx:idx + 5])
+        return bool(re.search(r"\b(refuse|sys\.exit|raise)\b", window))
+    if not (re.search(r"^\s*if\s+!\s+%s\b" % re.escape(fn), ln)
+            or re.search(r"%s\b[^\n]*\|\|" % re.escape(fn), ln)):
+        return False
+    window = "\n".join(lines[idx:idx + 8])
+    return bool(re.search(r"\b(exit\s+[1-9]|return\s+[1-9])", window))
+
+for rel, markers, calls in HELPER_GUARDS:
     text = read(rel)
     if text is None:
         bad("privileged helper missing from the tree: %s" % rel)
         continue
-    code = "\n".join(
-        re.sub(r"^\s*#.*$", "", ln) for ln in text.splitlines()
-    )
+    # Whole-line comments blanked, never removed — line indexes stay comparable
+    # to the real file, and a `#`-disabled guard reads as absent.
+    lines = [re.sub(r"^\s*#.*$", "", ln) for ln in text.splitlines()]
+    code = "\n".join(lines)
+    python = rel.endswith(".py")
+
     absent = [why for needle, why in markers if needle not in code]
-    if absent:
-        for why in absent:
-            bad("%s no longer %s — the in-helper validation is what closes the hole; the sudoers pin is only defence in depth" % (rel, why))
+    for why in absent:
+        bad("%s no longer %s — the in-helper validation is what closes the hole; the sudoers pin is only defence in depth" % (rel, why))
+
+    invoked = []
+    for fn, sink_res, sink_why in calls:
+        span = _fn_span(lines, fn, python)
+        if span is None:
+            bad("%s no longer defines the guard %s() — the argv validation is gone entirely" % (rel, fn))
+            continue
+        d0, d1 = span
+        fre = re.compile(r"\b%s\b" % re.escape(fn))
+        call_idxs = [i for i, ln in enumerate(lines)
+                     if fre.search(ln) and not (d0 <= i <= d1)]
+        if not call_idxs:
+            bad("%s DEFINES %s() but never calls it — a defined-but-uncalled guard validates nothing, and the helper is back to trusting the caller's argv (it %s)" % (rel, fn, sink_why))
+            continue
+        refusing = [i for i in call_idxs if _refusing_call(lines, i, fn, python)]
+        if not refusing:
+            bad("%s calls %s() but not as a refusal (expected `if ! %s …` / `%s … ||` guarding a non-zero exit) — a call whose result is discarded validates nothing" % (rel, fn, fn, fn))
+            continue
+        sink_idxs = [i for i, ln in enumerate(lines)
+                     if any(re.search(r, ln) for r in sink_res)]
+        if not sink_idxs:
+            bad("%s: none of the privileged-action patterns %r matched — the helper was restructured and this assertion has stopped watching anything; update the sink pattern, do not delete the check" % (rel, sink_res))
+            continue
+        if min(refusing) > min(sink_idxs):
+            bad("%s calls %s() at line %d, AFTER it already %s at line %d — validation must precede the privileged action" % (rel, fn, min(refusing) + 1, sink_why, min(sink_idxs) + 1))
+            continue
+        invoked.append("%s() refuses at line %d before it %s at line %d"
+                       % (fn, min(refusing) + 1, sink_why, min(sink_idxs) + 1))
+
+    if not absent and len(invoked) == len(calls):
+        ok("%s validates its own argv — %s; guard invoked, not merely defined: %s"
+           % (rel, ", ".join(why for _, why in markers), "; ".join(invoked)))
+
+# ── A pin never travels without its helper ─────────────────────────────────
+# The grant/deploy check above proves each granted path is deliverable; it does
+# NOT prove that a script converging a sudoers drop-in also delivers the helper
+# that drop-in pins. Two paths did exactly that: scripts/update-www-only.sh and
+# etc/sa02m-web-update-apply.sh installed the new sa02m-gateway / sa02m-mqtt
+# pins while shipping neither config-apply helper, so a board updated only that
+# way kept the vulnerable, trust-the-caller helper and reported the new version
+# (review finding F4). Nothing broke — the pins permit the argv the shipped CGIs
+# send — which is precisely why it was invisible.
+#
+# Scoped to the helpers whose in-helper argv validation IS the H1/H2 fix, and
+# keyed on the path DEPLOYING THE PANEL rather than on the path installing the
+# pin. Keying on the pin was itself hollow (caught while RED-proving this check:
+# `sa02m-gateway` matches inside `sa02m-gateway-config-apply.sh`, so the helper
+# line satisfied the very precondition it was supposed to be tested against),
+# and it under-reaches — the legacy rsync path installs only sudoers.d/sa02m-www
+# yet still replaces every CGI that calls these helpers. The true invariant is
+# simpler: a path that updates the panel must also update the privileged helpers
+# the panel calls, or the new CGI drives the old helper.
+PIN_CARRIERS = [
+    "scripts/03-webserver.sh",
+    "scripts/update-www-only.sh",
+    "etc/sa02m-web-update-apply.sh",
+]
+GUARDED_HELPER_SRCS = [rel for rel, _m, _c in HELPER_GUARDS if rel.startswith("usr/local/sbin/")]
+carrier_text = {}
+for rel in PIN_CARRIERS:
+    t = read(rel)
+    if t is None:
+        bad("pin-carrier script missing from the tree: %s — this assertion cannot run" % rel)
+    carrier_text[rel] = "\n".join(re.sub(r"^\s*#.*$", "", ln) for ln in (t or "").splitlines())
+
+# The installer splits its work across scripts/0*.sh, so 03-webserver.sh is
+# read together with its siblings — one installer run executes them all.
+installer_siblings = "".join(
+    "\n".join(re.sub(r"^\s*#.*$", "", ln) for ln in (read(rel) or "").splitlines()) + "\n"
+    for rel in tree_files
+    if re.match(r"^scripts/0\d+-.*\.sh$", rel) or rel == "install.sh"
+)
+carrier_text["scripts/03-webserver.sh"] = installer_siblings
+
+checked_pin = 0
+for carrier in PIN_CARRIERS:
+    text = carrier_text[carrier]
+    # Does this path replace the panel's CGI tree? Every one of them rsyncs /
+    # copies www/network_config into the web root.
+    if not re.search(r"www/network_config|WEB_ROOT", text):
+        bad("%s no longer looks like a panel-deploying path (no www/network_config / WEB_ROOT reference) — this assertion has stopped watching it; update the carrier list, do not delete the check" % carrier)
+        continue
+    for src in GUARDED_HELPER_SRCS:
+        base = os.path.basename(src)
+        dst = "/" + src
+        grants = sorted(
+            os.path.basename(f) for f in tree_files
+            if f.startswith("etc/sudoers.d/") and dst in (read(f) or "")
+        )
+        if not grants:
+            bad("no etc/sudoers.d/ file grants %s — either the grant was dropped or this assertion's path shape drifted; it is now watching nothing" % dst)
+            continue
+        # Whole-token match: the trailing (?![\w.-]) is what stops the drop-in
+        # name `sa02m-gateway` from matching inside `sa02m-gateway-config-apply.sh`
+        # (the circularity that made the first draft of this check hollow). The
+        # leading class must NOT exclude `/` or `.` — every install line writes
+        # the basename right after a slash.
+        if re.search(r"(?<![\w-])%s(?![\w.-])" % re.escape(base), text):
+            ok("%s deploys the panel AND delivers %s (granted by sudoers.d/%s)"
+               % (carrier, base, ",".join(grants)))
+            checked_pin += 1
+        else:
+            bad("PIN WITHOUT HELPER: %s replaces the panel's CGI tree but never delivers %s, which sudoers.d/%s grants at %s — a board updated only through that path runs the NEW CGI against the OLD, trust-the-caller helper while reporting the new version (the in-helper argv validation IS the fix; the pin is only defence in depth)"
+                % (carrier, base, ",".join(grants), dst))
+if checked_pin:
+    ok("every panel-deploying path also delivers the privileged helpers the panel calls (%d pairings checked)" % checked_pin)
+else:
+    bad("the pin-without-helper check verified NOTHING (vacuous) — no carrier/helper pairing resolved")
+
+# ── TOCTOU: validated bytes must BE the installed bytes ────────────────────
+# A path check is a statement about an inode at check time, not at use time.
+# www-data owns the /tmp file these helpers are handed and can replace it with a
+# symlink after `[ -L ]`/`[ -f ]` and before `install`, which follows symlinks on
+# its source — any root-readable file (/etc/shadow) then lands in the destination
+# as 0660 root:www-data (review finding F2, demonstrated by running the old and
+# new shapes side by side with the swap injected into the window). The fix shape:
+# open ONCE, verify the OPENED inode through /proc/self/fd, copy into a 0700
+# root-owned work dir, and validate + install THAT copy.
+TOCTOU_HELPERS = [
+    ("usr/local/sbin/sa02m-gateway-config-apply.sh", "TMP_SRC"),
+    ("usr/local/sbin/sa02m-mqtt-config-apply.sh", "SRC"),
+]
+for rel, argv_var in TOCTOU_HELPERS:
+    text = read(rel)
+    if text is None:
+        bad("privileged helper missing from the tree: %s" % rel)
+        continue
+    lines = [re.sub(r"^\s*#.*$", "", ln) for ln in text.splitlines()]
+    code = "\n".join(lines)
+    inst = [i for i, ln in enumerate(lines) if re.search(r"\binstall\s+-m\s+0660\b", ln)]
+    if not inst:
+        bad("%s: no `install -m 0660` line found — the helper was restructured and this TOCTOU assertion has stopped watching anything; update the pattern, do not delete the check" % rel)
+        continue
+    raw = [i for i in inst
+           if re.search(r"\$\{?%s\b" % re.escape(argv_var), lines[i])]
+    if raw:
+        bad("%s installs the CALLER-SUPPLIED path ($%s) directly at line %d — the path check above it only holds at check time, so www-data can swap in a symlink before `install` follows it and copy any root-readable file into the root config (review F2). Install a private copy taken through one verified open instead."
+            % (rel, argv_var, raw[0] + 1))
+        continue
+    missing = []
+    if "/proc/self/fd" not in code:
+        missing.append("verify the inode it actually opened via /proc/self/fd (readlink), so a symlink swapped in after the path check is refused rather than followed")
+    if not re.search(r"\bmktemp\s+-d\b", code):
+        missing.append("stage the copy in a private root-owned work dir (mktemp -d) www-data cannot reach")
+    if not re.search(r"\btimeout\s+\d+\s+bash\b", code):
+        missing.append("bound the open with `timeout` so a FIFO swapped in cannot hang the helper as root")
+    if missing:
+        for why in missing:
+            bad("%s no longer does one thing the TOCTOU fix rests on: %s" % (rel, why))
     else:
-        ok("%s validates its own argv (%s)" % (rel, ", ".join(why for _, why in markers)))
+        ok("%s installs a private copy taken through one verified open, never the caller's path (TOCTOU closed at use time, not just check time)" % rel)
 
 # The confession comment H2 shipped with must not come back.
 cloud = read("usr/local/sbin/sa02m-cloud-web-trigger.sh") or ""
