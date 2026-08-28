@@ -1,7 +1,14 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# test-storage-automount.sh — regression test for the auto-format DECISION
-# in etc/storage-mount.sh do_mount().
+# test-storage-automount.sh — regression test for the STORAGE_AUTO_FORMAT flag:
+# the decision it drives (etc/storage-mount.sh do_mount, cases 1-15), the two
+# readers that must agree on what it means (do_mount + status.cgi, cases 16-17),
+# and the writer that owns it (etc/sa02m-set-storage-auto-format, case 18).
+#
+# One harness rather than three, because all three surfaces pin ONE fact — what
+# this flag means and who may change it — and every defect found so far was a
+# disagreement between them, which only a test that reads more than one file
+# can see.
 #
 # Why this exists: the decision has two opposite failure modes and BOTH are
 # silent on a board.
@@ -39,6 +46,21 @@
 # Other proven-RED mutations: hardcoding the value back into the skip log line;
 # dropping the ntfs3 attempt; formatting before try_mount_ntfs; returning 1
 # from the intentional skip; defaulting STORAGE_AUTO_FORMAT to 1.
+#
+# STATUS_CGI_SRC and STORAGE_SETTER_SRC do the same for the other two surfaces.
+# Proven RED there: the panel defaulting to ON again (`:-1`); the panel's
+# allow-list drifting from the mounter's (both shape and value level); BOTH
+# readers agreeing on the UNSAFE default (agreement alone must not pass); a new
+# unclassified file naming the flag; a stale ledger entry; the writer
+# regenerating the config from scratch, keeping a stale duplicate of its own
+# key, carrying an unsafe value, losing the 0|1 argument guard, losing the
+# rescan-on-enable, or losing the status-cache invalidation.
+#
+# Deliberate limit: pointing STORAGE_SETTER_SRC at a writer that hardcodes its
+# paths (the pre-fix version) FAILS on the retarget guard rather than running —
+# the harness refuses to execute a writer it cannot keep inside the sandbox.
+# The 0644 config-mode assertion runs on Linux only (printed as a skip
+# elsewhere); CI is the enforcing run.
 #
 # Run: bash scripts/dev/test-storage-automount.sh   (stdlib bash only, no deps)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -287,6 +309,182 @@ check_conf "STORAGE_AUTO_FORMAT=1"     1 "explicit 1"
 check_conf "STORAGE_AUTO_FORMAT=yes"   1 "yes"
 check_conf "STORAGE_AUTO_FORMAT=0n"    0 "corrupted 0n (the 01-system.sh repair case)"
 check_conf "STORAGE_AUTO_FORMAT=maybe" 0 "unrecognised value"
+
+echo "── 16. every READER normalises the flag identically, and fail-safe OFF ──"
+# The mounter decides whether to format; the panel tells the operator what the
+# mounter will do. When they disagree on the default for an absent/unreadable
+# config the panel lies (it showed ON while nothing was ever formatted), so the
+# two shipped normalisers are run over ONE value table and must agree — and the
+# absent case must be OFF on both, since agreement alone would also be
+# satisfied by both defaulting to ON.
+STATUS_SRC=${STATUS_CGI_SRC:-www/network_config/cgi-bin/status.cgi}
+[ -f "$STATUS_SRC" ] || bad "status.cgi not found: $STATUS_SRC"
+
+extract_norm() { sed -n '/STORAGE_AUTO_FORMAT:-/,/esac/p' "$1"; }
+
+norm_ok=1
+for f in "$SRC" "$STATUS_SRC"; do
+    blk=$(extract_norm "$f")
+    n_esac=$(printf '%s\n' "$blk" | grep -c '^[[:space:]]*esac')
+    n_line=$(printf '%s\n' "$blk" | grep -c .)
+    if [ -z "$blk" ] || [ "$n_esac" != 1 ] || [ "$n_line" -gt 8 ]; then
+        bad "could not extract exactly one normaliser from $f (lines=$n_line esac=$n_esac)"; norm_ok=0
+    fi
+    printf '%s\n' "$blk" | grep -q '1|yes|true|on|ON|Y' || { bad "$f: normaliser allow-list changed shape"; norm_ok=0; }
+done
+
+norm_verdict() { # $1=file $2=outvar $3=__unset__|raw value
+    {
+        [ "$3" = "__unset__" ] || printf "STORAGE_AUTO_FORMAT='%s'\n" "$3"
+        extract_norm "$1"
+        printf 'printf "%%s" "${%s-UNSET}"\n' "$2"
+    } > "$T/norm.sh"
+    bash "$T/norm.sh" 2>/dev/null
+}
+
+if [ "$norm_ok" = 1 ]; then
+    for v in __unset__ "" 0 1 yes true on ON Y y 2 0n maybe "1 "; do
+        m=$(norm_verdict "$SRC" STORAGE_AUTO_FORMAT "$v")
+        u=$(norm_verdict "$STATUS_SRC" STORAGE_AUTO_FORMAT_UI "$v")
+        label=$([ "$v" = "__unset__" ] && echo "<absent>" || echo "'$v'")
+        case "$m" in 0|1) ;; *) bad "mounter verdict for $label is not 0/1: '$m'" ;; esac
+        [ "$m" = "$u" ] && ok "$label -> both readers say $m" \
+                        || bad "$label -> mounter says '$m', panel says '$u' (the panel would lie)"
+    done
+    [ "$(norm_verdict "$SRC" STORAGE_AUTO_FORMAT __unset__)" = 0 ] \
+        && ok "absent config -> mounter OFF (fail-safe)" || bad "absent config is not OFF in the mounter"
+    [ "$(norm_verdict "$STATUS_SRC" STORAGE_AUTO_FORMAT_UI __unset__)" = 0 ] \
+        && ok "absent config -> panel OFF (fail-safe)" || bad "absent config is not OFF in the panel"
+fi
+
+echo "── 17. no UNCLASSIFIED file touches the flag (open-world sweep + ledger) ──"
+# A third reader with its own default would just move the bug, so every shipped
+# file naming the key is classified here. Sweep scope = what the repo ships;
+# docs/.ai-dev/CHANGELOG (prose about the defect) and the gitignored private/
+# deploy artifact are deliberately outside it.
+ledger_role() {
+    case "$1" in
+        etc/storage-mount.sh)                      echo "reader-normaliser (agreement table, case 16)" ;;
+        www/network_config/cgi-bin/status.cgi)     echo "reader-normaliser (agreement table, case 16)" ;;
+        etc/sa02m-set-storage-auto-format)         echo "the panel's writer (case 18)" ;;
+        etc/sa02m_storage.conf)                    echo "shipped default config" ;;
+        etc/sa02m-prepare-working-board.sh)        echo "writer + raw reporter (prints the value, interprets no default)" ;;
+        etc/udev/99-storage.rules)                 echo "comment only" ;;
+        scripts/01-system.sh)                      echo "installer: install + repair of the corrupted 0n shape" ;;
+        scripts/dev/test-storage-automount.sh)     echo "this harness" ;;
+        *) return 1 ;;
+    esac
+}
+LEDGER="etc/storage-mount.sh www/network_config/cgi-bin/status.cgi etc/sa02m-set-storage-auto-format etc/sa02m_storage.conf etc/sa02m-prepare-working-board.sh etc/udev/99-storage.rules scripts/01-system.sh scripts/dev/test-storage-automount.sh"
+FOUND=$(grep -rIl "STORAGE_AUTO_FORMAT" etc www opt usr scripts tools install.sh 2>/dev/null | tr '\\' '/' | sort -u)
+n_found=$(printf '%s\n' "$FOUND" | grep -c .)
+if [ "$n_found" -lt 7 ]; then
+    bad "sweep found only $n_found files naming the flag — the sweep itself is broken (expected >= 7)"
+else
+    ok "sweep is alive ($n_found shipped files name the flag)"
+    for f in $FOUND; do
+        ledger_role "$f" >/dev/null || bad "UNCLASSIFIED file names STORAGE_AUTO_FORMAT: $f — classify it here, and if it interprets a default add it to the case-16 table"
+    done
+    for f in $LEDGER; do
+        printf '%s\n' "$FOUND" | grep -qx "$f" || bad "stale ledger entry: $f no longer names the flag"
+    done
+    [ "$fails" = 0 ] && ok "every file naming the flag is classified" || true
+fi
+
+echo "── 18. the panel's writer keeps keys it does not own ──"
+SETTER_SRC=${STORAGE_SETTER_SRC:-etc/sa02m-set-storage-auto-format}
+SCONF="$T/set-storage.conf"; SCACHE="$T/status-cache"; SMOUNT="$T/scan-shim.sh"
+sed -e "s|^CONF=.*|CONF=$SCONF|" \
+    -e "s|^STORAGE_MOUNT=.*|STORAGE_MOUNT=$SMOUNT|" \
+    -e "s|^STATUS_CACHE=.*|STATUS_CACHE=$SCACHE|" "$SETTER_SRC" > "$T/setter.sh"
+printf '#!/bin/bash\nprintf "scan %%s\\n" "$*" >> "%s/scan.log"\nexit 0\n' "$T" > "$SMOUNT"; chmod +x "$SMOUNT"
+
+setter_ok=1
+for p in /etc/sa02m_storage.conf /usr/local/bin/storage-mount.sh /tmp/sa02m_status_cache; do
+    if grep -qF "$p" "$T/setter.sh"; then
+        bad "writer not retargetable ($p still present) — refusing to run it against the real system"
+        setter_ok=0
+    fi
+done
+
+write_conf() { printf '%s\n' "$@" > "$SCONF"; }
+setter_run() { rm -f "$T/scan.log"; mkdir -p "$SCACHE"; : > "$SCACHE/system.json"; : > "$SCACHE/storage.json"
+               bash "$T/setter.sh" "$1" >/dev/null 2>&1; SRC_RC=$?; }
+conf_has() { grep -qx "$1" "$SCONF" 2>/dev/null; }
+
+if [ "$setter_ok" = 1 ]; then
+    # a. the reported defect: toggling autoformat must not wipe the autorun opt-in
+    write_conf "# комментарий оператора" "STORAGE_AUTO_FORMAT=0" "STORAGE_ALLOW_AUTORUN=1"
+    setter_run 1
+    [ "$SRC_RC" = 0 ] && ok "exit 0" || bad "exit $SRC_RC, expected 0"
+    conf_has "STORAGE_AUTO_FORMAT=1" && ok "owned key written" || bad "owned key not written: $(cat "$SCONF")"
+    conf_has "STORAGE_ALLOW_AUTORUN=1" \
+        && ok "foreign key STORAGE_ALLOW_AUTORUN=1 preserved" \
+        || bad "toggling autoformat silently reset the operator's autorun opt-in"
+    # The readers SOURCE this file, so a duplicate stale assignment would win
+    # over ours: assert the EFFECTIVE value, not just that our line is present.
+    n_own=$(grep -c '^STORAGE_AUTO_FORMAT=' "$SCONF")
+    [ "$n_own" = 1 ] && ok "exactly one STORAGE_AUTO_FORMAT assignment" \
+                     || bad "$n_own assignments of the owned key — a stale one would win on source"
+    eff=$(bash -c ". '$SCONF' >/dev/null 2>&1; printf '%s' \"\${STORAGE_AUTO_FORMAT-UNSET}:\${STORAGE_ALLOW_AUTORUN-UNSET}\"")
+    [ "$eff" = "1:1" ] && ok "sourcing the result yields autoformat=1, autorun=1" \
+                       || bad "sourced result is '$eff', expected '1:1'"
+
+    # b. byte-identical re-run (the file must not grow or reorder)
+    cp "$SCONF" "$T/conf.snap"; setter_run 1
+    cmp -s "$SCONF" "$T/conf.snap" && ok "re-run is byte-identical" || bad "re-run changed the file: $(diff "$T/conf.snap" "$SCONF" | head -3)"
+
+    # c. toggling back off keeps it too
+    setter_run 0
+    conf_has "STORAGE_AUTO_FORMAT=0" && ok "toggled back off" || bad "off not written"
+    conf_has "STORAGE_ALLOW_AUTORUN=1" && ok "foreign key survives the off-toggle" || bad "foreign key lost on the off-toggle"
+
+    # d. no config yet -> created, and a key that was never there is NOT invented
+    rm -f "$SCONF"; setter_run 1
+    conf_has "STORAGE_AUTO_FORMAT=1" && ok "config created from nothing" || bad "config not created"
+    grep -q "STORAGE_ALLOW_AUTORUN" "$SCONF" && bad "invented an autorun key that was never set" || ok "absent key stays absent (autorun stays OFF)"
+
+    # e. an unsafe value is dropped, never carried into a root-sourced file
+    # `$(id)` has no whitespace, so ONLY the unsafe-character rule can reject it
+    write_conf "STORAGE_AUTO_FORMAT=0" 'STORAGE_ALLOW_AUTORUN=$(id)' "OTHER_KEY=ok"
+    setter_run 1
+    grep -q '\$(' "$SCONF" && bad "carried a command substitution into a file sourced as root" || ok "unsafe value dropped"
+    grep -q "STORAGE_ALLOW_AUTORUN" "$SCONF" && bad "unparseable autorun value survived (must fail safe to absent=OFF)" || ok "unparseable autorun value -> absent -> OFF"
+    conf_has "OTHER_KEY=ok" && ok "an unrelated well-formed key still survives" || bad "dropped a well-formed foreign key"
+
+    # f. a trailing comment is not a parseable assignment -> dropped (fail-safe OFF)
+    write_conf "STORAGE_AUTO_FORMAT=0" "STORAGE_ALLOW_AUTORUN=1 # приёмник"
+    setter_run 1
+    grep -q "STORAGE_ALLOW_AUTORUN" "$SCONF" && bad "carried a line with a trailing comment" || ok "trailing-comment line dropped (fail-safe OFF)"
+
+    # g. a bad argument changes nothing at all
+    write_conf "STORAGE_AUTO_FORMAT=1" "STORAGE_ALLOW_AUTORUN=1"
+    cp "$SCONF" "$T/conf.snap"
+    for badarg in 2 "" "1; rm -rf /" yes; do
+        setter_run "$badarg"
+        [ "$SRC_RC" != 0 ] || bad "bad argument '$badarg' accepted"
+        cmp -s "$SCONF" "$T/conf.snap" || bad "bad argument '$badarg' modified the config"
+    done
+    ok "every bad argument refused with the config untouched"
+
+    # h. the enable path still rescans; the disable path must not
+    write_conf "STORAGE_AUTO_FORMAT=0"
+    setter_run 1; [ -s "$T/scan.log" ] && ok "enable triggers a rescan" || bad "enable no longer rescans"
+    setter_run 0; [ -s "$T/scan.log" ] && bad "disable triggered a rescan" || ok "disable does not rescan"
+
+    # i. the panel's status cache is still invalidated
+    setter_run 1
+    { [ ! -f "$SCACHE/system.json" ] && [ ! -f "$SCACHE/storage.json" ]; } \
+        && ok "status cache invalidated" || bad "stale status cache left behind (panel would show the old value)"
+
+    # j. mode: www-data must still be able to read the config (Linux only)
+    if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
+        mode=$(stat -c %a "$SCONF" 2>/dev/null)
+        [ "$mode" = "644" ] && ok "config mode 644" || bad "config mode is $mode, expected 644 (the panel reads it as www-data)"
+    else
+        echo "skip  config-mode check (not Linux; CI enforces)"
+    fi
+fi
 
 echo "---"
 if [ "$fails" = 0 ]; then

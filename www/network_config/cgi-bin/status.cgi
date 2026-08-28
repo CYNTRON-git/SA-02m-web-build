@@ -1571,7 +1571,7 @@ gather_system_metrics() {
         fi
     fi
     ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
-    STORAGE_AUTO_FORMAT_UI=1
+    STORAGE_AUTO_FORMAT_UI=0
     STORAGE_MOUNT_INSTALLED=0
     if [ -x /usr/local/bin/storage-mount.sh ] && [ -x /usr/local/sbin/sa02m-set-storage-auto-format ]; then
         STORAGE_MOUNT_INSTALLED=1
@@ -1580,7 +1580,12 @@ gather_system_metrics() {
         # shellcheck source=/dev/null
         . /etc/sa02m_storage.conf 2>/dev/null || true
     fi
-    case "${STORAGE_AUTO_FORMAT:-1}" in
+    # The panel must report what the MOUNTER will do, so the default for an
+    # absent/unreadable config is the mounter's fail-safe 0 — never 1, which
+    # showed the toggle ON while no partition was ever formatted. Keep this
+    # normaliser byte-identical to etc/storage-mount.sh's (quality row
+    # storage-automount-decision runs both over one value table).
+    case "${STORAGE_AUTO_FORMAT:-0}" in
         1|yes|true|on|ON|Y) STORAGE_AUTO_FORMAT_UI=1 ;;
         *) STORAGE_AUTO_FORMAT_UI=0 ;;
     esac
