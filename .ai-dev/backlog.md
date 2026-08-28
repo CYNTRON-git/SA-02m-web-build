@@ -2,8 +2,9 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-08-17 (whole-project
-audit 1.0.5.71).
+entries are pruned (history lives in git); last prune 2026-08-28 (1.0.6.24 P6 —
+shipped Alice items and a duplicated deploy finding removed, the decompose
+worklist collapsed into one home).
 
 ## Open
 
@@ -84,48 +85,6 @@ audit 1.0.5.71).
   seam class the 1.0.6.19 gate pins on the helper↔client side, left unpinned on the
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
-
-- [OPEN] 2026-08-27 **[HIGH] A golden image captured from a LINKED donor carries that
-  donor's Alice identity — certificates AND device ids — onto every cloned board.**
-  Raised by the cloud session (they see duplicate device ids across controllers and now
-  dedup, so the second board's device silently vanishes from Alice); verified in-tree
-  and it is WIDER than they thought:
-  - `tools/imaging/cleanup-donor.sh` lists `/var/lib/sa02m-alice` in BOTH `DENY_TREES`
-    and `DENY_LITERALS` — the donor's mTLS **device.key.pem / device.crt.pem are
-    deliberately preserved**, carrying the donor's controller identity into the image.
-    The rationale recorded in `docs/TZ_PRE_PRODUCTION_DONOR_CLEANUP.md:172` is
-    "policy: preserve on factory reset" — a FACTORY-RESET policy applied to the
-    IMAGE-CAPTURE path, where it is wrong.
-  - `/etc/sa02m-alice/sa02m-alice-devices.conf` (the `uuid4` device ids) is cleared by
-    nothing at all — not the donor cleanup, not `stream-after-cleanup.sh`, not the
-    firstboot overlay.
-  So two cloned boards present the same device ids AND the same client certificate.
-  **Cloud-side impact, analysed at source by the cloud session (2026-08-27): a cloned
-  cert makes two physical boards ONE controller.** The gateway identifies a controller
-  by the mTLS DN alone, so both boards resolve to the DONOR's account — a customer's
-  cloned board would surface in someone else's «Дом с Алисой» and vice versa
-  (cross-tenant exposure, not merely confusing UX); the last board to connect silently
-  becomes the command target; and their duplicate-id warning degrades because both SNs
-  read as the same string. Detection is theirs (filed on their side, not started);
-  the FIX is ours. Urgency: "fix before the next image capture", NOT a field incident —
-  today's golden image predates the Alice work, so no shipped image carries an
-  enrollment; the exposure starts with the next capture from a configured bench board.
-  **AUDIT 2026-08-27 (loop-mounted the actual artifact, not the notes):** the in-tree
-  `tools/imaging/stand-data/images/sa02m-1eth-golden-20260820.img.xz` — captured AFTER
-  the Alice tree landed, so the premise needed testing — contains **NO `device.key.pem`,
-  NO `device.crt.pem`, NO `pending_claim.json`** anywhere; `/var/lib/sa02m-alice/` holds
-  only the public `ca.crt.pem`. Its donor was never linked. The cloud twin is correctly
-  reset in the same image (`enrolled = false`, empty `device_id`). So the cross-tenant
-  exposure is NOT materialised in any existing artifact and this stays "fix before the
-  next capture". Two lesser things the same audit found IN that image: the device
-  document ships with a leftover test binding (`id: d1`, «Lab Switch») and
-  `client_enabled = true` — harmless today (no cert, so the client cannot connect) but
-  both would ride into every clone and both are on the clear-list anyway.
-  Fix direction: the image-capture path must clear the Alice enrollment (certs +
-  pending claim) and the device document, or regenerate ids at first boot — while
-  leaving the factory-reset preserve policy intact (they are different paths and the
-  donor doc must say so). Acceptance: capture an image from a linked donor, flash it,
-  and confirm the fresh board is unlinked with no device ids inherited.
 
 - [OPEN] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
   branch that already has a commit — a false-green shape.** It resolves the touched set
@@ -231,19 +190,6 @@ audit 1.0.5.71).
   triggers verified correct in-repo; recorded as observed-unexplained (delivery-side).
   Watch on the next ship; escalate to GitHub support if it recurs.
 
-- [OPEN] 2026-08-26 **[MED] www-only deploy without `etc/` is broken — `scripts/lib.sh:500`
-  unconditionally sources `../etc/sa02m-stacks-policy.sh` ("fail loud"), but the runbook's
-  www-only procedure (docs/deployment.md шаг 2) deliberately ships www+scripts WITHOUT etc/ —
-  the sanctioned path now aborts at source time (hit live on 1.136, 2026-08-26; deploy fell
-  back to a full-tree archive). Resolve the doc-vs-code conflict: either the runbook requires
-  `etc/sa02m-stacks-policy.sh` in the delivery, or lib.sh guards the source for www-only use.
-- [OPEN] 2026-08-26 **[MED] Alice type expansion — sensors (DTV temp/humidity, CE-02m-3 meter)
-  in the smart home.** Operator ask (2026-08-26): bench 1.135 carries a real DTV sensor and a
-  network analyzer worth exposing to Алиса. Needs devices.types.sensor + float properties in
-  the capability model (client converters/state_sender + discovery blocks). Cloud session
-  CONFIRMED (2026-08-26) the gateway is a verbatim passthrough (fulfillment.py) — ZERO
-  gateway changes needed; sensor values reach Alice via the query fan-out (poll-based
-  freshness). Device-side work only; Part A deliberately descoped it.
 - [OPEN] 2026-08-20 **[LOW] Functional test for the update-runner health-gate operator-disabled
   skip (deferred).** The skip logic (masked/masked-runtime/disabled required units are skipped,
   enabled-but-down still fails — `etc/sa02m-update-runner.sh` restart_services_and_health) is
@@ -316,15 +262,6 @@ audit 1.0.5.71).
   match it. A future module added to the test + one script only would ship a board
   missing a module with no gate firing. Fix: a quality-registry check that both
   shell lists equal the frozen import set.
-- [OPEN] 2026-08-18 **[LOW] Decompose worklist refresh (audit 2026-08-18 LOW-3).**
-  Via the `decompose` side-tool, by cohesion: `www/network_config/static/js/mqtt.js`
-  (2764 lines) — split device-add modal/per-family builders · the `type:template`
-  picker (`_templateCatalog`/`fillTemplateSelect`/`refreshTemplateCatalog`) · MQTT
-  broker/credential settings · config model. `opt/sa02m-modbus-mqtt/bridge_mqtt.py`
-  (507) — extract the `/meta` blob cluster (`_num_or_str`/`_obj_or_str`/
-  `_control_meta_blob`/`_device_meta_blob`/the two `_publish_*_meta_blob`) →
-  `bridge_meta.py` (self-contained, covered by `test_meta_blob.py`).
-  `etc/sa02m-web-service-ctl.sh` (1518, standing — not this cycle's growth).
 - [OPEN] 2026-08-18 **[LOW→follow-up] Configurable serial parity/stopbits for
   `type:template` (8N2 support).** The honesty/doc half of audit-2026-08-18 MED-1
   is DONE in **1.0.5.78** (corrected the wrong "9600 8N2" comment → 8N1-only;
@@ -458,10 +395,6 @@ audit 1.0.5.71).
   `/usr/lib/node_modules` where the ctl now weighs all global roots — fail-closed
   and install-time only, so narrowing rather than a defect.
   Reviewer L-A/L-B/L-C.
-- [OPEN] 2026-08-06 **[LOW] `etc/sa02m-web-service-ctl.sh` is now 1414 lines.**
-  +174 in the nodered work. The reviewer names a decompose seam at `:782-1247`
-  (the Node-RED block). Candidate for the `decompose` side-tool on the next
-  module-size sweep.
 - [OPEN] 2026-08-06 **[LOW] Panel shows a raw error code for a refused
   cross-major Node-RED upgrade.** `svcCtlErrorMessage` in
   `www/network_config/static/js/app/services.js` falls back to `map[c] || c`, so
@@ -601,16 +534,6 @@ audit 1.0.5.71).
   (frontend `#cloud-card` consumer) is still uncontracted — freeze its field
   names in a small contract entry on the next cloud UI touch. (Threat-model
   cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
-- [OPEN] 2026-07-17 **[LOW] Decompose worklist (module-size sweep).**
-  Refreshed by audit 2026-08-05: `flasher.js` **4428** (see F10 below —
-  deferred, cohesive IIFE) · `main.css` **4424** · `modbus_mqtt_bridge.py`
-  **3422** (fastest grower; **first priority** — an Operator-started decompose
-  session is already running on it, coordinate; the FMB event/insurance unit
-  tests seed the behaviour net; clean up legacy `except Exception: pass`
-  clusters during the split) · `status.cgi` **2507** · `mqtt.js` **2441** ·
-  `flash_protocol.py` **2418** · `app/status.js` **1553**. Start with the
-  bridge. Audits 2026-07-17 (F6, evening F3), refreshed 2026-07-22 and
-  2026-08-05.
 - [OPEN] 2026-07-22 **[LOW] Bridge `PortCycleScheduler` loop untested.**
   The per-port scheduling loop (classic/event balancing, warmup gate, the
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
@@ -671,12 +594,13 @@ audit 1.0.5.71).
   scripts `static/js/app/*.js` (app.js is now the ~389-line core) — one file per
   commit, oracle PASS after each. `flasher.js` DEFERRED (follow-up): it is a
   single cohesive IIFE — 230 closure-private functions threaded through one
-  shared mutable `state` (260 refs), only 5 `window.*` exports. Splitting it into
-  plain global scripts (ES modules forbidden) would mean promoting `state` + the
-  fn set to global scope and rewriting hundreds of internal references — a
-  semantic rewrite, not a behaviour-preserving move, and it would recreate the
-  god-object in global scope. Not worth the risk vs the [LOW] payoff; revisit
-  only if the no-modules constraint is lifted. Still OPEN for app.js:
+  shared mutable `state` (260 refs), only 5 `window.*` exports. The 2026-07 reason
+  for deferring it (no ES modules ⇒ the split would mean promoting `state` and the
+  whole fn set to global scope — a semantic rewrite that recreates the god-object)
+  is **VOID since 2026-08-18**: `docs/decisions/es-modules.md` lifted the ban and
+  names this split as its motivation, and `mqtt.js`/`devices.js` already ship as
+  modules. The live entry is the 2026-08-28 decomposition worklist (item 1) — do
+  not re-argue it here. Still OPEN for app.js:
   on-device click-through before deploy (headless is necessary, not sufficient
   for a global-scope reorg).
 - [OPEN] 2026-07-12 **[LOW] Y7-b — `set -u` in installer modules.** `set -o pipefail`
@@ -722,3 +646,208 @@ audit 1.0.5.71).
 - [OPEN] 2026-08-24 **[MED] make-image.sh strands the donor after capture.** It strips SSH host keys as its last pre-`dd` step but never reboots the donor in the still-live session, so post-capture the board is unreachable (sshd has no host keys, panel stopped) until a manual power cycle — a problem on a remote bench. One line: schedule a detached reboot at the end of the stream session (rc.local already regenerates keys at boot).
 - [OPEN] 2026-08-24 **[BLOCKER→in-progress 1.0.6.11] B1 (1.0.6.10) is a no-op on OTA/upgraded boards.** Hardware-verified on the 2-eth bench (OTA'd to 1.0.6.10): (1) a legacy `/etc/sudoers.d/www-data` file (pre-rename name, raw `tee`/`ifup`/`reboot` grant) survives — nothing in the current repo writes or removes it — so `sudo -n tee /etc/sudoers.d/zz`→root is STILL open (PoC created `/etc/sudoers.d/zzhack`). (2) OTA `map_dst` strips `.sh` from the two new B1 helpers, so they land as `/usr/local/sbin/sa02m-{iface-conf-write,usb-power}` while the sudoers grants the `.sh` path → network-apply + USB-power break once the legacy grant is removed. Also the stale `sa02m-www.fragment` survived OTA. B1's validator/pinning LOGIC is correct (reviewer-confirmed); this is purely the deploy/cleanup layer. Fix = installer+updater+OTA+offline remove the known-obsolete legacy sudoers names (allow-list, never blanket) + deploy the helpers WITH `.sh` on all three paths + a RED→GREEN gate. Plan `.ai-dev/plans/b1-deploy-gap.md`. **FIX IN BRANCH 1.0.6.11** — hardware acceptance pending.
 - [OPEN] 2026-08-27 **[MED] «Время без опроса» accepts a value that silently breaks outputs, with no warning.** MR-02m holding 134 clears ALL of a module's outputs after N seconds without a frame that resets its inactivity counter (five reset sites, only one of them address-matched — the table is in the note named below). The module-config window (`flasher.js`, `saveMrGlobalInactivity` + the per-AO field + the bulk template-apply path at ~4322) offers the raw range 0–255 with no guidance, so a value shorter than one bus sweep — 1 s on a line the bridge polls round-robin — makes every output fall by itself during normal operation. Cost a full firmware-update cycle and hours of bus tracing on bench 1.135 before the register was read (root cause + the A/B/A proof: `.ai-dev/notes/mr02m-inactivity-timeout.md`). Fix candidates: warn (do not block) below a threshold derived from the port's device count and poll period; surface the current value in the module card next to the DO states; make the template-apply path name this field explicitly in its confirmation, since it copies it onto other modules. Fold in round-1 finding 10 while there: neither `docs/agent-rules/web-diagnostic-tools.md` nor `docs/agent-rules/sa02m-domain.md` points at the note, so the symptom->tool dispatch still cannot route "an output falls by itself".
+
+<!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
+     security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
+     protection verified live — every finding below is what green does NOT cover. -->
+
+- [OPEN] 2026-08-28 **[BLOCKER] Root code injection in the gateway config helper.**
+  `etc/sa02m-gateway-config-apply.sh:16` opens the Python heredoc UNQUOTED and
+  interpolates `open("$TMP_SRC")` into the Python source; `scripts/06-gateway.sh:47`
+  grants `www-data` NOPASSWD on that helper with NO argument pinning. A logged-in panel
+  user reaches root (`cmd_exec.cgi` is an authenticated `www-data` shell by design).
+  Orchestrator-verified at both lines. Fix: quote the heredoc delimiter + pass the path as
+  argv, and pin the grant. Every other privileged helper already uses the quoted form —
+  this is the lone exception.
+- [OPEN] 2026-08-28 **[BLOCKER] Root sed injection in the cloud pairing helper.**
+  `usr/local/sbin/sa02m-cloud-web-trigger.sh:48` interpolates `$SERVER` into a `sed -i`
+  substitution under a comment asserting the CALLER validated it; `etc/sudoers.d/sa02m-cloud:2-3`
+  is unpinned, so the caller is bypassable. A pipe character terminates the expression; GNU
+  sed's `e`/`w` flags then execute/write as root. Precondition: `/etc/sa02m-cloud/agent.conf`
+  exists (post-enrolment). Orchestrator-verified. Fix: validate INSIDE the helper (never trust
+  the caller) + pin the grant.
+- [OPEN] 2026-08-28 **[HIGH] The B1 escalation gate reads 1 of the 6 homes that grant
+  www-data root — hollow ratchet #9, on a security-load-bearing claim.**
+  `.ai-dev/quality/checks/sudoers-pin-contract.sh:29` reads only `etc/sudoers.d/sa02m-www`.
+  The other homes: `etc/sudoers.d/sa02m-cloud`, `etc/sudoers.d/sa02m-mqtt`,
+  `scripts/06-alice.sh:105`, `scripts/06-gateway.sh:47-51`, and a RUNTIME APPEND at
+  `etc/sa02m-web-update-apply.sh:308`. The `sa02m-www` header claims to be "the COMPLETE,
+  single-home" grant list — false. This is why the two BLOCKERs above are green today, and why
+  `docs/threat-model.md` still says the escalation class is closed (B1). Fix: extend the gate to
+  all six homes and prove it RED against the two injections BEFORE fixing them.
+- [OPEN] 2026-08-28 **[HIGH] Two shipped daemons put process control on the LAN with no auth
+  at all, and neither is in the threat model.** `opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py:180`
+  sets the NoSecurity policy, bound `0.0.0.0:4841` (`:157`), with WRITABLE nodes (`:284`) polled
+  back into MQTT (`:309-319`); `UserManager` is imported at `:33` and never used.
+  `opt/sa02m-serial-gateway/serial_gateway.py:413,564,642` — all three modes bind hardcoded
+  `0.0.0.0` (ports 502-506/8502-8506/9502-9506) with no bind-address, IP allow-list or key in the
+  config schema. Both ship DISABLED and are Operator-enabled per port — but the Operator enables
+  them without being told what they expose. Fix: bind-address + allow-list options, and a
+  threat-model row so the trade is visible at the moment of enabling.
+- [OPEN] 2026-08-28 **[HIGH] Five safety gates are defeated by putting a comment mark in front
+  of a line.** Mutation-proven GREEN on comment-out (16 of 22 mutations correctly went RED;
+  these 5 did not): `mplc-ota-deploy-contract.sh:20`, `mplc-project-deploy-contract.sh:36`,
+  `kernel-policy-contract.sh:177`, `health-gate-operator-disabled.sh:28`,
+  `sudoers-pin-contract.sh:76`. All five DO go red on deletion — only the comment form slips.
+  `tools.json:159` and `:303` explicitly promise these cases fail. 8 of 16 check scripts have no
+  comment handling, though `no-retired-session-token.sh` already solved it in-repo.
+  Fix: reuse that pattern across the 8; add a comment-out mutation to each row's own proof.
+- [OPEN] 2026-08-28 **[HIGH] The one endpoint that switches real relay outputs is guarded only
+  by a comment.** No registry row touches `www/network_config/cgi-bin/mqtt_set.cgi` beyond
+  `bash -n`; `docs/contracts/mqtt-set-endpoint.md:74-96` is a MANUAL recipe, and `mqtt_set.cgi:88`
+  claims "Hard floor of this endpoint; asserted by the contract check" — no such check exists.
+  Re-adding the MQTT retain flag would re-fire every output on the next bridge restart with
+  nothing in the pipeline noticing. Fix: a real row + delete the false comment.
+- [OPEN] 2026-08-28 **[HIGH] The panel's login/CSRF core has zero functional tests.**
+  `www/network_config/cgi-bin/lib_web_auth.sh` — 354 lines, 27 functions (session tokens, CSRF
+  minting/validation, password hashing, credential-file repair), sourced by every mutating
+  endpoint — is reached only by `bash -n` and CI shellcheck. A mistake in the code deciding
+  "is this person logged in" ships green. Harness pattern already in-repo: `test-subnet-validate.sh`.
+- [OPEN] 2026-08-28 **[HIGH] README is 2-3 subsystems behind while its version badge reads
+  current.** Zero mentions of Alice (6 of the last 9 releases) or the devices tab;
+  `README.md:392-474` lists `scripts/` 01-07 (tree has 01-12+85), `opt/` 5 (tree 11), 4 JS
+  bundles (index.html loads 16); `:1456` claims a complete CGI list — 26 of 42 absent.
+- [OPEN] 2026-08-28 **[HIGH] The deploy runbook documents a step that aborts, and one deploy
+  rule lives only in a gitignored file.** `docs/deployment.md:78-80` says the www-only path
+  deliberately omits `etc/`, but `scripts/lib.sh:500` sources `../etc/sa02m-stacks-policy.sh`
+  unconditionally, so that path fails (hit live 2026-08-26, backlog:234) with no warning in the
+  runbook. And the rule "Alice reaches a board ONLY via install.sh/06-alice.sh — never OTA"
+  exists ONLY in `.ai-dev/state/current.md:58-60` (gitignored, dies on a state reset); its home
+  is `docs/deployment.md:24-38`.
+- [OPEN] 2026-08-28 **[MED-HIGH] `headless-smoke` is a dormant row over a stale baseline.**
+  `headless-smoke.sh:12` skips unless playwright AND `SA02M_WEB_PASS` are present; CI provides
+  neither, so it has no environment where it runs. Its committed baseline
+  `scripts/dev/baseline/manifest.json` was last touched at 1.0.5.81 while the JS is at 1.0.6.23.
+- [OPEN] 2026-08-28 **[MED-HIGH] The `rs485-roster` contract is validated producer-side only.**
+  `py-unit-roster` covers `opt/sa02m-rs485-roster/` (`tools.json:127`); the contracted `modules`
+  field is emitted from `status.cgi:1116-1124`, which NO row covers. Edit `status.cgi`, lose the
+  RS-485 module list from the dashboard, every gate stays green — the exact blind spot this audit
+  dimension exists for.
+- [OPEN] 2026-08-28 **[MED-HIGH] Four always-loaded rule docs say the quality registry has 3
+  rows; it has 53.** `web-code-rigor.md:142`, `web-diagnostic-tools.md:96-97`,
+  `web-workflow.md:78-79`, `sa02m-web-testing/SKILL.md:64-65`. The registry is the one home —
+  the prose should point at it, not enumerate.
+- [OPEN] 2026-08-28 **[MED] MQTT password written to a web-served log.** `scripts/05-mqtt.sh:55`
+  logs the generated password via `scripts/lib.sh:20` into `/var/log/sa02m_install.log`, served
+  verbatim by `log_export.cgi:18` and `log.cgi:21`. The same secret is 0600 in
+  `/etc/sa02m_mqtt.env`; the log is never chmod'd. It opens :1884 with readwrite on all device
+  topics. Related: `scripts/05-mqtt.sh:52` fallback password is a timestamp-derived string —
+  predictable.
+- [OPEN] 2026-08-28 **[MED] `session_token` is not HttpOnly, and login has no brute-force
+  protection.** `login.cgi:54` (deliberate — the `app.js` guard reads `document.cookie`), but the
+  JS-readable `sa02m_csrf` mirror at `:58` shows the guard could key off a non-session cookie
+  instead. Any XSS then reaches `cmd_exec.cgi` and (via the two BLOCKERs) root. Separately
+  `login.cgi` has no counter, lockout or delay against a single shared password over plain HTTP.
+- [OPEN] 2026-08-28 **[MED] The Alice config API is an unauthenticated root API, and its
+  function name lies.** `opt/sa02m-alice/sa02m_alice/config/api.py:640-653` — `serve_unix` binds
+  TCP, not a unix socket — serves enable/disable/link/unlink/upsert_device/delete_device
+  (`:580-603`) with no authn under `User=root`. Loopback + opt-in, so reach is any local process
+  including `www-data` (no session, no CSRF).
+- [OPEN] 2026-08-28 **[MED] CSRF gap on the legacy OTA endpoint contradicts our own canon.**
+  `web_update_apply.cgi:318-330` runs the update helper marked "no CSRF", while
+  `docs/decisions/selective-csrf-policy.md` names only `logout` as an exception and the threat
+  model requires CSRF on ALL mutating endpoints. SameSite=Lax still holds, so this is broken
+  defence-in-depth plus false canon — fix the endpoint or amend the decision, not neither.
+- [OPEN] 2026-08-28 **[MED] Default credential `cyntron` is committed in 8 places and nothing
+  forces a change.** `install.sh:28`, `scripts/03-webserver.sh:15`,
+  `tools/debian-rootfs/create-sa02m-rootfs.sh:20,35`, `tools/imaging/make-image.sh:20`,
+  `tools/ssh/sa02m-check-perms.py:22`, `tools/ssh/sa02m_remote.py:16,56`; the password hash in
+  `etc/sa02m-factory-defaults/templates/etc/sa02m_web.env:2`; and in clear as a password hint in
+  the factory manifest. `etc/ssh/sshd_config.d/10-sa02m.conf:30-32` leaves password SSH enabled
+  with that note.
+- [OPEN] 2026-08-28 **[MED] GitHub OTA installs unsigned code as root.**
+  `etc/sa02m-update-runner.sh:509-511` allows unsigned artifacts for the github source, skipping
+  the Ed25519 check the upload path requires (`:657-664`). Deliberate — but the threat model
+  carries no supply-chain row for it, so the trade is invisible.
+- [OPEN] 2026-08-28 **[MED] Two shipped daemons have no tests at all.** `opt/sa02m-mqtt-opcua`
+  (451 L, OPC UA server on 4841) and `opt/sa02m-mqtt-snmp` (427 L) have no `tests/` and no
+  `py-unit-*` row; every other `opt/` package has one.
+- [OPEN] 2026-08-28 **[MED] `ui-layout` never runs in CI** — the workflow installs Python deps
+  only, no playwright, so layout / mobile KPI centring / clipping / the WCAG contrast ledger are
+  dev-box-only. Honestly labelled (`tools.json:482`, `.ai-dev/notes/quality-gate-environment.md`),
+  so this is coverage, not dishonesty.
+- [OPEN] 2026-08-28 **[MED] Backlog and pointer carry shipped work as open, and the decompose
+  worklist is stale in 4 homes.** backlog:88 (golden-image Alice identity) shipped as 1.0.6.20 —
+  and `current.md:36-40` still ASKS the Operator whether to take it; backlog:240 shipped as
+  1.0.6.15/18; `current.md:19-20` contradicts `current.md:66-67` on the audit-cadence count.
+  Worklist: backlog:604 names `modbus_mqtt_bridge.py` at 3422 L (now 298 — already split);
+  backlog:461 says service-ctl is 1414 L (now 1582); backlog:667 defers `flasher.js` because
+  "ES modules forbidden" — lifted by `docs/decisions/es-modules.md` on 2026-08-18, whose stated
+  motivation IS that split.
+- [OPEN] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
+  always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
+  Every session is pointed at a missing home.
+- [OPEN] 2026-08-28 **[MED] Two homes for the polling architecture, one of them declaring itself
+  the single home.** `sa02m-web-architecture/SKILL.md:25-51` restates cadences, `statusPauseUntil`,
+  warmup and renderer-owned DOM from `sa02m-domain.md:56-72` while `:7` claims "One home". Also
+  `sa02m-domain.md:28` names 5 JS bundles (tree has 8 + a 9-file `app/` cluster) and contradicts
+  its own tab table at `:79`.
+- [OPEN] 2026-08-28 **[MED-LOW] Two declared reviewer floors have no mechanical row** — i18n
+  completeness and the HTML-id contract are named as floors in `web-code-rigor.md` but nothing
+  implements them. Concrete: a DICT-completeness script (RU strings in markup/JS vs `i18n.js`
+  keys) and an id-contract grep (getElementById against `index.html`).
+- [OPEN] 2026-08-28 **[LOW] Security long tail.** Response-header injection in the devices export
+  (`device_history_db.py:1788-1789` raw metric/group into `api.py:59-66`; the ascii filter keeps
+  CR/LF, `_q1` strips only edges) — authenticated · no dependency-CVE and no secret-scanner row in
+  the 55-row registry, deps floor-pinned with no lock · 42 of 48 systemd units run root with zero
+  hardening, including the four that parse hostile input · `docs/threat-model.md` says the frpc
+  port allow-list is absent — it exists (`sa02m-cloud-agent.py:66`).
+- [OPEN] 2026-08-28 **[LOW] Docs long tail.** Durable docs citing deleted transient plans
+  (`selective-csrf-policy.md:48`, `web-bus-mode-bacnet.md:24`, `mplc-driver-build.md:233`) · an
+  unbuilt 2026-07 plan with no status marker (`storage-benchmark-plan.md`) · `CLAUDE.md:5` says
+  "six docs", seven are imported · superseded wording kept as archaeology
+  (`TZ_PRE_PRODUCTION_DONOR_CLEANUP.md:180-185`) · `docs/audits/AUDIT_1.0.4.0.md` not marked
+  historical · `docs/contracts/web-bus-mode-bacnet.md` names no validating test though coverage
+  exists (`test_bus_mode.py`, `test_bacnet_mstp.py` under `py-unit-flasher`).
+- [OPEN] 2026-08-28 **[MED] `docs/architecture.md` is a pointer stub — the real doc-bootstrap
+  pass is still owed.** 1.0.6.24 created the file so no session is sent to a missing home, but
+  deliberately only as a map ("куда идти за чем"); it says so in its own text. A real
+  architecture document (layers, data flow, boundaries, the deploy model of the whole system)
+  wants a doc-bootstrap pass over the tree and would have swamped the review of a security
+  branch. Do it on its own branch; its natural seed is §3 of the 1.0.6.24 plan (the deploy
+  reality tables) plus `docs/agent-rules/sa02m-domain.md`.
+- [OPEN] 2026-08-28 **[LOW] `docs/storage-benchmark-plan.md` — build it or drop it.**
+  A 2026-07-04 design for «Управление → Тест накопителя» (`etc/sa02m-storage-bench.sh` +
+  `storage_bench.cgi`), never implemented, 19 versions on. 1.0.6.24 marked it
+  «Статус: НЕ РЕАЛИЗОВАН» so it stops reading as a description of shipped behaviour. The
+  Operator decision it needs: is disk diagnostics from the panel still wanted? If no, delete
+  the file (git keeps it); if yes, it is a ready-made plan.
+- [OPEN] 2026-08-28 **[SUSPECTED — Operator to settle] Three open questions from the audit.**
+  (1) `etc/nginx/network_config.conf` carries ZERO assertions though `flasher-health.md` names its
+  `auth_request` lines (165,180,195,204) as load-bearing; the counter-position "nginx conf is
+  device config, verified at deploy" is defensible. (2) Frontend XSS was spot-checked (~6000 lines,
+  escaping held everywhere inspected) but NOT exhaustively swept — MQTT device payloads do reach
+  the UI, so a dedicated pass is warranted given the non-HttpOnly cookie. (3) Git history was never
+  scanned for secrets (`private/`, `.tmp/` are correctly gitignored).
+- [OPEN] 2026-08-28 **[MED] Decomposition worklist (audit-derived, by cohesion not line count).**
+  **THE one home for this worklist** — the 2026-07-17 / 2026-08-06 / 2026-08-18 entries were
+  collapsed into it on 2026-08-28 (their numbers were stale, one on a void rationale). Line
+  counts re-measured in-tree 2026-08-28 on branch 1.0.6.24.
+  1. `flasher.js` 5189 L — ~10 responsibilities in one IIFE; the ES-module blocker is void since
+  2026-08-18 (`docs/decisions/es-modules.md`, whose stated motivation IS this split).
+  2. `app/status.js` 2509 L — the update flow (`:1294-2030`) and MPLC deploy
+  (`:2030-2300`) are not status. 3. `device_history_db.py` 1918 L — ranges/schema/write/query.
+  4. `devices.js` 2406 L — extract the canvas chart engine (`:1068-2008`). 5. `flash_protocol.py`
+  2517 L — split the three flash-sequence drivers. 6. `etc/sa02m-web-service-ctl.sh` 1582 L —
+  Node-RED block (`:955-1491`); it grew 1414 → 1518 → 1582 across three sweeps, so it is a
+  standing item, not this cycle's growth. 7. `mqtt.js` 2721 L — seams already named: device-add
+  modal / per-family builders · the `type:template` picker (`_templateCatalog` /
+  `fillTemplateSelect` / `refreshTemplateCatalog`) · broker+credential settings · config model;
+  already an ES module. 8. `status.cgi` ~2530 L (size relief, not cohesion) ·
+  9. `sa02m-update-runner.sh` 1479 L. Smaller, self-contained and still worth doing:
+  `opt/sa02m-modbus-mqtt/bridge_mqtt.py` (444 L) — extract the `/meta` blob cluster
+  (`_num_or_str`/`_obj_or_str`/`_control_meta_blob`/`_device_meta_blob`/the two
+  `_publish_*_meta_blob`) → `bridge_meta.py`, covered by `test_meta_blob.py`.
+  NOT a finding: `main.css` 5466 L — sectioned, one token root, no-build stack.
+  Already done, do not re-raise: `modbus_mqtt_bridge.py` (was 3422 L, now 298 — split into
+  `bridge_*.py`) and `app.js` (F10, now a ~389 L core + the `app/` cluster).
+- [OPEN] 2026-08-28 **[MED] Empty `FSTYPE` conflates "blank" with "probe failed", and
+  auto-format cannot tell them apart.** `etc/storage-mount.sh` `probe_fstype` returns the
+  same empty value for a genuinely blank partition and for one udev+blkid could not read,
+  so with the flag on, an unreadable-but-populated partition is formatted. This is the
+  feature's original 1.0.3 semantics, mitigated three ways (5 probe retries over ~5 s,
+  try-mount-before-mkfs ordering, and the flag shipping OFF) — and it is the plausible
+  reason someone might mistake the `-z` clause removed in 71e92ba for an intentional
+  guard. The honest fix is a DISTINCT "probe failed" outcome in `probe_fstype` that never
+  reaches mkfs; that is a separate planned change, not a one-liner. Found by the 1.0.6.24
+  builder while fixing the regression, deliberately left outside that commit's fence.
