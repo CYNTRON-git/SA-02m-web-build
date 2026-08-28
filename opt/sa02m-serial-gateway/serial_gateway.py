@@ -6,6 +6,11 @@ Modes per port:
   rtu_over_tcp — Raw RTU bytes over TCP (no MBAP stripping). Queue-based.
   transparent  — Raw serial bytes ↔ TCP. Multi-client fan-out from RS-485.
 
+Per-port network access (1.0.6.24, both optional, both default to today's
+behaviour — see "Network access control" below):
+  bind         — listening address, default 0.0.0.0 (all interfaces).
+  allow_from   — IP/CIDR allow-list; absent or empty = no filtering.
+
 Config:  /etc/sa02m-gateway.yaml  (env SA02M_GATEWAY_CONFIG to override)
 Status:  /run/sa02m-gateway/status.json  (updated every 5 s)
 Lock:    /var/lock/sa02m-gateway-{port}.lock
@@ -15,6 +20,7 @@ Systemd: sd_notify READY=1 / WATCHDOG=1
 import argparse
 import asyncio
 import fcntl
+import ipaddress
 import json
 import logging
 import os
@@ -50,6 +56,147 @@ CONFIG_PATH = Path(os.environ.get("SA02M_GATEWAY_CONFIG", "/etc/sa02m-gateway.ya
 STATUS_DIR  = Path("/run/sa02m-gateway")
 STATUS_FILE = STATUS_DIR / "status.json"
 LOCK_DIR    = Path("/var/lock")
+
+# ── Network access control ────────────────────────────────────────────────────
+#
+# An enabled port publishes Modbus process control on the network with NO
+# authentication — Modbus TCP has none by protocol (2026-08-28 audit, H3). Two
+# optional per-port keys let the operator narrow that: `bind` (which address the
+# listener takes) and `allow_from` (which peers may connect).
+#
+# THE DEFAULT DOES NOT MOVE. Absent or empty = bind 0.0.0.0, no filtering —
+# byte-identical to every release before 1.0.6.24. A deployed SCADA client must
+# not lose its connection to an update (Operator decision D, 2026-08-28); a
+# silent field outage would be worse than the exposure it fixes. In particular a
+# PRESENT BUT EMPTY list means "no restriction", never "deny all": the web UI
+# writes `allow_from: []` for every port the operator leaves unrestricted, and
+# reading that as deny-all would black-hole all five ports on the next save.
+#
+# THE FAILURE DIRECTION IS CLOSED. A malformed entry refuses the port (the mode
+# never starts, the panel shows why) instead of falling back to the open default
+# or dropping the bad entry and keeping the rest. An allow-list that fails open
+# is worse than no allow-list: the operator believes access is narrowed and it is
+# not. `opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py` holds the same rule for the
+# OPC UA northbound server; the two packages deploy independently and share no
+# library, so the code is separate and the SEMANTICS are pinned by the tests on
+# both sides (tests/test_access_control.py here).
+
+DEFAULT_BIND = '0.0.0.0'
+
+
+class AccessConfigError(ValueError):
+    """A bind/allow_from value the daemon refuses to guess about."""
+
+
+def _parse_bind(raw) -> str:
+    """Listening address from config. Absent/empty → 0.0.0.0; junk → refused.
+
+    Only IP literals are accepted. A hostname would make the bound address
+    depend on DNS at daemon start, so "which interfaces is this port on" would
+    stop being answerable from the config alone.
+    """
+    if raw is None:
+        return DEFAULT_BIND
+    if not isinstance(raw, str):
+        raise AccessConfigError(f"bind must be an IP address string, got {raw!r}")
+    value = raw.strip()
+    if not value:
+        return DEFAULT_BIND
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        raise AccessConfigError(
+            f"bind {value!r} is not an IP address (use 0.0.0.0 for all interfaces)"
+        ) from None
+    return value
+
+
+def _parse_allow_from(raw):
+    """Allow-list from config → list of networks, or None for "no filtering".
+
+    Accepts a YAML list of IP/CIDR strings, or one string with comma- or
+    whitespace-separated entries (the form a hand-edited config produces).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        items = [p for p in raw.replace(',', ' ').split() if p]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise AccessConfigError(
+            f"allow_from must be a list of IP/CIDR strings, got {raw!r}")
+    if not items:
+        return None
+    nets = []
+    for item in items:
+        if not isinstance(item, str):
+            raise AccessConfigError(
+                f"allow_from entry must be a string, got {item!r}")
+        entry = item.strip()
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise AccessConfigError(
+                f"allow_from entry {entry!r} is not an IP address or CIDR range"
+            ) from None
+    return nets
+
+
+def _peer_allowed(nets, host) -> bool:
+    """True when `host` may connect. `nets is None` = filtering off."""
+    if nets is None:
+        return True
+    if not isinstance(host, str) or not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # A dual-stack listener reports an IPv4 client as ::ffff:a.b.c.d; without
+    # this the operator's own 192.168.1.0/24 rule would refuse that client.
+    if getattr(addr, 'ipv4_mapped', None) is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in nets)
+
+
+def _peer_host(peername) -> str | None:
+    """Host part of an asyncio peername tuple ((host, port[, flow, scope]))."""
+    if isinstance(peername, (tuple, list)) and peername:
+        return peername[0]
+    return None
+
+
+def _refuse_peer(port_name: str, nets, stats, writer) -> bool:
+    """True when this peer is outside allow_from — then the socket is closed.
+
+    Called as the FIRST statement of every mode's client handler, so a refused
+    peer never reaches the RS-485 bus: not one byte read, not one request
+    forwarded, and (transparent mode) never registered for the serial fan-out.
+    """
+    if nets is None:
+        return False
+    peer = writer.get_extra_info('peername')
+    if _peer_allowed(nets, _peer_host(peer)):
+        return False
+    stats.refused += 1
+    log.warning("[%s] refused TCP connection from %s - not in allow_from",
+                port_name, peer)
+    try:
+        writer.close()
+    except Exception:
+        pass
+    return True
+
+
+def _access_summary(bind: str, nets) -> str:
+    if nets is not None:
+        return f"bind {bind}, allow_from {', '.join(str(n) for n in nets)}"
+    if bind in ('0.0.0.0', '::'):
+        return (f"bind {bind} and NO allow_from — any host on the network can "
+                f"control the connected equipment, there is no password on this "
+                f"port (set bind/allow_from in the web UI to narrow it)")
+    return f"bind {bind}, no allow_from"
 
 # ── Modbus RTU helpers ────────────────────────────────────────────────────────
 
@@ -339,7 +486,7 @@ class SerialWorker:
 
 class PortStats:
     __slots__ = ('bytes_tx', 'bytes_rx', 'requests', 'errors',
-                 'tcp_clients', 'started_at', 'last_error')
+                 'tcp_clients', 'started_at', 'last_error', 'refused')
 
     def __init__(self):
         self.bytes_tx    = 0
@@ -349,6 +496,10 @@ class PortStats:
         self.tcp_clients = 0
         self.started_at  = time.time()
         self.last_error  = ""
+        # Connections turned away by allow_from. Published so the restriction is
+        # visible in the panel and to any status.json reader, not only in the
+        # journal — an allow-list nobody can see working is one nobody trusts.
+        self.refused     = 0
 
     def to_dict(self) -> dict:
         return {
@@ -359,6 +510,7 @@ class PortStats:
             "tcp_clients": self.tcp_clients,
             "uptime_s":    int(time.time() - self.started_at),
             "last_error":  self.last_error,
+            "refused":     self.refused,
         }
 
 # ── Lock file ─────────────────────────────────────────────────────────────────
@@ -405,15 +557,19 @@ class ModbusTcpGateway:
         self._executor    = executor
         self._tcp_port    = int(cfg.get('tcp_port', 502))
         self._fm_probe    = bool(cfg.get('fast_modbus_probe', True))
+        self._bind        = _parse_bind(cfg.get('bind'))
+        self._allow       = _parse_allow_from(cfg.get('allow_from'))
         self._server      = None
         self._req_lock    = asyncio.Lock()  # one RTU exchange at a time
 
     async def start(self):
         self._server = await asyncio.start_server(
-            self._handle_client, '0.0.0.0', self._tcp_port,
+            self._handle_client, self._bind, self._tcp_port,
             reuse_address=True,
         )
-        log.info("[%s] Modbus TCP server on :%d", self.port_name, self._tcp_port)
+        log.info("[%s] Modbus TCP server on %s:%d (%s)", self.port_name,
+                 self._bind, self._tcp_port,
+                 _access_summary(self._bind, self._allow))
 
     async def stop(self):
         if self._server:
@@ -426,6 +582,8 @@ class ModbusTcpGateway:
     async def _handle_client(self,
                               reader: asyncio.StreamReader,
                               writer: asyncio.StreamWriter):
+        if _refuse_peer(self.port_name, self._allow, self._stats, writer):
+            return
         peer = writer.get_extra_info('peername')
         log.info("[%s] Modbus TCP connect from %s", self.port_name, peer)
         self._stats.tcp_clients += 1
@@ -556,15 +714,19 @@ class RtuOverTcpGateway:
         self._stats    = stats
         self._executor = executor
         self._tcp_port = int(cfg.get('tcp_port', 8502))
+        self._bind     = _parse_bind(cfg.get('bind'))
+        self._allow    = _parse_allow_from(cfg.get('allow_from'))
         self._server   = None
         self._lock     = asyncio.Lock()
 
     async def start(self):
         self._server = await asyncio.start_server(
-            self._handle_client, '0.0.0.0', self._tcp_port,
+            self._handle_client, self._bind, self._tcp_port,
             reuse_address=True,
         )
-        log.info("[%s] RTU-over-TCP server on :%d", self.port_name, self._tcp_port)
+        log.info("[%s] RTU-over-TCP server on %s:%d (%s)", self.port_name,
+                 self._bind, self._tcp_port,
+                 _access_summary(self._bind, self._allow))
 
     async def stop(self):
         if self._server:
@@ -575,6 +737,8 @@ class RtuOverTcpGateway:
                 pass
 
     async def _handle_client(self, reader, writer):
+        if _refuse_peer(self.port_name, self._allow, self._stats, writer):
+            return
         peer = writer.get_extra_info('peername')
         log.info("[%s] RTU-over-TCP connect from %s", self.port_name, peer)
         self._stats.tcp_clients += 1
@@ -631,6 +795,8 @@ class TransparentGateway:
         self._stats     = stats
         self._executor  = executor
         self._tcp_port  = int(cfg.get('tcp_port', 9502))
+        self._bind      = _parse_bind(cfg.get('bind'))
+        self._allow     = _parse_allow_from(cfg.get('allow_from'))
         self._server    = None
         self._clients: set[asyncio.StreamWriter] = set()
         self._cli_lock  = asyncio.Lock()
@@ -639,11 +805,13 @@ class TransparentGateway:
     async def start(self):
         self._stop_evt.clear()
         self._server = await asyncio.start_server(
-            self._handle_client, '0.0.0.0', self._tcp_port,
+            self._handle_client, self._bind, self._tcp_port,
             reuse_address=True,
         )
         asyncio.create_task(self._serial_read_loop(), name=f"ser-rx-{self.port_name}")
-        log.info("[%s] Transparent server on :%d", self.port_name, self._tcp_port)
+        log.info("[%s] Transparent server on %s:%d (%s)", self.port_name,
+                 self._bind, self._tcp_port,
+                 _access_summary(self._bind, self._allow))
 
     async def stop(self):
         self._stop_evt.set()
@@ -662,6 +830,8 @@ class TransparentGateway:
             self._clients.clear()
 
     async def _handle_client(self, reader, writer):
+        if _refuse_peer(self.port_name, self._allow, self._stats, writer):
+            return
         peer = writer.get_extra_info('peername')
         log.info("[%s] Transparent connect from %s", self.port_name, peer)
         async with self._cli_lock:
@@ -744,6 +914,19 @@ class PortGateway:
 
     async def start(self) -> bool:
         if not self.enabled or self.mode not in self._GATEWAY_CLASSES:
+            return False
+
+        # Access config FIRST — before the RS-485 lock. A refused port must not
+        # take the line away from MPLC4 / the MQTT bridge on its way to failing
+        # (the port-lease invariant), and one bad allow_from entry must fail its
+        # own port only, never the daemon or the other four.
+        try:
+            _parse_bind(self._cfg.get('bind'))
+            _parse_allow_from(self._cfg.get('allow_from'))
+        except AccessConfigError as exc:
+            log.error("[%s] refusing to start: %s", self.port_name, exc)
+            self.stats.last_error = str(exc)
+            self.stats.errors    += 1
             return False
 
         if not self._lock.acquire():
