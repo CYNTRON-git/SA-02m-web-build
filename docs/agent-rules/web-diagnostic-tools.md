@@ -93,9 +93,9 @@ ratios into the plan/review. Floors: `web-code-rigor.md ## CSS / UI floors`.
 
 | Need | Command | Trap / note |
 |---|---|---|
-| Builder green check | `node .ai-dev/quality/run.mjs build` (`--touched` for the diff subset) | rows: js-syntax, bash-cgi-syntax, version-consistency |
-| Reviewer beat | `node .ai-dev/quality/run.mjs review` | install.sh syntax |
-| Registry (what "green" means) | `.ai-dev/quality/tools.json` | add a tool = add a row, never edit the runner |
+| Builder green check | `node .ai-dev/quality/run.mjs build` (`--touched` for the diff subset) | the runner prints the rows it ran — read that, not a list in prose |
+| Reviewer beat | `node .ai-dev/quality/run.mjs review` | same |
+| Which rows exist / what "green" means | `.ai-dev/quality/tools.json` | THE one home (dozens of rows, growing every release); add a tool = add a row, never edit the runner |
 
 ## Version / release helpers
 

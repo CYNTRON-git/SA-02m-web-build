@@ -75,8 +75,9 @@ Every non-trivial plan carries these three columns of judgement:
 
 Every review confirms:
 
-1. **Quality gates green** — `node .ai-dev/quality/run.mjs build` (js-syntax,
-   bash-cgi-syntax, version-consistency) and the review beat.
+1. **Quality gates green** — `node .ai-dev/quality/run.mjs build` and the
+   review beat. The row set lives in `.ai-dev/quality/tools.json` (one home) and
+   grows every release; the runner names what it ran.
 2. **id/i18n contract** — new ids exist in both HTML and JS; new strings have
    DICT entries (`web-code-rigor.md` floors).
 3. **Both themes, both variants** — dark AND light theme render correctly;

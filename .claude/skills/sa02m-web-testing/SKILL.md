@@ -61,8 +61,8 @@ Screenshots: whole page, `locator('.widget', {hasText:'…'})` for one card,
 
 ## Gates & probes
 
-- `node .ai-dev/quality/run.mjs build` — js-syntax, bash-cgi-syntax,
-  version-consistency; `review` — install.sh. Green before handing back.
+- `node .ai-dev/quality/run.mjs build` (+ `review`) — green before handing
+  back. Row set: `.ai-dev/quality/tools.json` (one home), not listed here.
 - Live device: `curl -s 'http://<ip>/cgi-bin/status.cgi?part=priority'`
   (login first for protected endpoints); flasher daemon `GET /status`.
 - CGI locally: `bash -n` first; then run with stubbed env

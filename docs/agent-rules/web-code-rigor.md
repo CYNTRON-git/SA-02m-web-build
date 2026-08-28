@@ -138,8 +138,10 @@ An SA-02m web review passes only when:
   one-line homes.
 - New colors are token-based, themed both ways, and meet the AA contrast
   floor with stated ratios.
-- The quality registry is green (`node .ai-dev/quality/run.mjs build`) —
-  js-syntax + bash-cgi-syntax + version-consistency.
+- The quality registry is green (`node .ai-dev/quality/run.mjs build`; add
+  `--touched` for the diff subset). WHICH rows exist is the registry's to say —
+  `.ai-dev/quality/tools.json` is the one home and it grows every release; never
+  enumerate it here.
 - A change visible in the UI was verified by the headless-render recipe
   (`web-diagnostic-tools.md ## Headless UI verification`) or the reviewer
   states why it could not be.
