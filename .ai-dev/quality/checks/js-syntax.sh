@@ -4,6 +4,8 @@
 # so a module directory added later (static/js/mqtt/, static/js/flasher/, ...) is
 # covered from its first file without a registry edit.
 #
+# comment-mutation-proof-exempt: runner, no source-line needle — it parses every JS file rather than pinning a line, so no `#`/`//` in front of a line could satisfy it; its own non-vacuity is gated by js-syntax-gate.
+#
 # Why a script and not `node --check "$f"` inline: `node --check` on a `.js` file
 # that carries ANY ESM marker (`import`/`export`, `import.meta`) SILENTLY EXITS 0
 # even when the file has a syntax error (Node 20/24 module-detection path —

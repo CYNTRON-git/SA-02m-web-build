@@ -1,6 +1,8 @@
 #!/bin/bash
 # Static gate for the SA-02m RTC time-frame convention.
 #
+# comment-mutation-proof-exempt: fail-IF-PRESENT open-world sweep — commenting a line REMOVES a needle this gate wants ABSENT (the opposite mutation), so it cannot be defeated by a comment-out; the defeating mutation is re-introducing a local-frame call, documented below.
+#
 # Convention home (rationale + the divergence it caused): the comment block in
 # etc/sa02m-pre-start.sh at the DS3231 I2C load. In one line: the battery-backed
 # chip holds UTC, so every conversion between system time and chip time names

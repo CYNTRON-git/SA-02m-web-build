@@ -9,6 +9,7 @@
 # COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A — this row runs shellcheck over the
 # Bash surface. It asserts no needle of its own, so there is no pin a comment
 # could satisfy.
+# comment-mutation-proof-exempt: runner, no source-line needle — shellcheck over the whole Bash surface asserts no pin a comment could satisfy.
 set -u
 
 if ! command -v shellcheck >/dev/null 2>&1; then

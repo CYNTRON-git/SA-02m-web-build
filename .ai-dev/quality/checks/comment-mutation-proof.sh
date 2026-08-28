@@ -36,6 +36,26 @@
 # case whose text matches no line FAILS (non-vacuity): a pin that moved must be
 # re-pinned here, never silently dropped.
 #
+# COVERAGE — WHY A NEW GATE CANNOT FORGET ITS CASE. Below the mutation loop,
+# coverage_check() enumerates every check script the registry (tools.json) runs
+# under .ai-dev/quality/checks/ and FAILS unless each one EITHER carries a case
+# in CASES above OR carries an exemption marker in its OWN header — a comment
+# line whose text, right after the `#`/`//`, is the hyphenated token
+# comment<->mutation<->proof<->exempt, a colon, and a NON-EMPTY reason. This is
+# the mechanical half of the Operator's 2026-08-28 "prevent recurrence"
+# directive: "register your case" was discipline; this makes it can't-forget
+# (docs/agent-rules/quality-gate-rigor.md — "the gap that remains", and its
+# "exemption is recorded in the gate's header" convention). The exemption lives
+# in the gate's OWN header, never a side list, so a stale exemption for a
+# deleted gate is structurally impossible — the marker dies with the file. An
+# exemption that is ALSO cased FAILS (the exemption is stale), and a marker with
+# an empty reason FAILS (non-vacuity, the way CONTRAST_WHITELIST catches a stale
+# entry). This harness pins no source line of its own, so it exempts ITSELF with
+# a recorded reason (marker line just below) — its completeness is floored by
+# coverage_check()'s own non-vacuity and the n_cases check, not by a case.
+#
+# comment-mutation-proof-exempt: this IS the comment-out mutation harness — it pins no source line of its own; its completeness is floored by coverage_check() and the n_cases>=10 check below, not by a mutation case.
+#
 # `covers` IS WIDE ON PURPOSE. This row's cases pin lines in www/, etc/, opt/,
 # scripts/, tools/imaging/ and install.sh, so an edit to any of those can move a
 # pin and make a case vacuous — and `covers` must name what can BREAK the check,
@@ -75,6 +95,7 @@ telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not re
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
+web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
 '
@@ -228,6 +249,76 @@ n_cases=$(printf '%s\n' "$CASES" | grep -c '|')
 if [ "$n_cases" -lt 10 ]; then
     bad "only $n_cases mutation case(s) — the table was gutted (expected >=10)"
 fi
+
+# ── COVERAGE: every registered static gate is cased here, or exempted in its
+# own header. The mechanical half of the Operator's "prevent recurrence": a new
+# gate added without a mutation case can no longer slip in unmeasured. This
+# section reads the REAL working tree (tools.json + each gate's header), not the
+# pristine copy — it governs what is being handed back.
+coverage_check() {
+    command -v node >/dev/null 2>&1 || {
+        bad "coverage: node is required to read the registry (tools.json) — cannot verify gate coverage"; return; }
+    local tools="$ROOT/.ai-dev/quality/tools.json"
+    [ -f "$tools" ] || { bad "coverage: $tools not found — cannot enumerate the gate set"; return; }
+
+    # Gate ids that carry >=1 mutation case (field 1 of CASES) — read from the
+    # same table the loop above used, so there is no second enumeration.
+    local cased
+    cased=$(awk -F'|' 'NF && $1 != "" { print $1 }' <<<"$CASES" | sort -u)
+
+    # The authoritative set: every check-dir script a registry `run` field
+    # invokes (NOT a directory glob — an unregistered file is not the target).
+    # Parse the JSON properly rather than grepping it; `covers` arrays also name
+    # these paths and would over-include.
+    local scripts
+    scripts=$(node -e '
+        const fs = require("fs");
+        const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const re = /\.ai-dev\/quality\/checks\/([A-Za-z0-9_.-]+\.(?:sh|mjs))/;
+        const s = new Set();
+        for (const t of (j.tools || [])) { const m = (t.run || "").match(re); if (m) s.add(m[1]); }
+        for (const f of [...s].sort()) console.log(f);
+    ' "$tools") || { bad "coverage: could not parse $tools"; return; }
+
+    local n=0 fname id path reason marker_line is_cased marker_present
+    while IFS= read -r fname; do
+        [ -n "$fname" ] || continue
+        n=$((n + 1))
+        id="${fname%.*}"                       # strip .sh / .mjs — the gate id
+        path="$ROOT/.ai-dev/quality/checks/$fname"
+        if [ ! -f "$path" ]; then
+            bad "coverage: registry runs $fname but the file is absent — stale registry row"
+            continue
+        fi
+        is_cased=0
+        grep -qxF "$id" <<<"$cased" && is_cased=1
+        # Exemption marker: a header comment line (`#` or `//`) whose text is the
+        # hyphenated exempt token, a colon, then the reason. Reason captured for
+        # the non-empty check and the ok line.
+        marker_line=$(grep -nE '^[[:space:]]*(#+|//)[[:space:]]*comment-mutation-proof-exempt:' "$path" | head -1)
+        marker_present=0; [ -n "$marker_line" ] && marker_present=1
+        reason=$(printf '%s\n' "$marker_line" | sed -E 's/^[0-9]+:[[:space:]]*(#+|\/\/)[[:space:]]*comment-mutation-proof-exempt:[[:space:]]*//')
+
+        if [ "$is_cased" -eq 1 ] && [ "$marker_present" -eq 1 ]; then
+            bad "coverage: $id is BOTH cased (CASES) and exempt (header marker) — the exemption is stale; remove it"
+        elif [ "$is_cased" -eq 1 ]; then
+            ok "coverage: $id has a mutation case"
+        elif [ "$marker_present" -eq 1 ] && [ -n "$reason" ]; then
+            ok "coverage: $id exempt — $reason"
+        elif [ "$marker_present" -eq 1 ]; then
+            bad "coverage: $id carries an exemption marker with an EMPTY reason — record why it is exempt"
+        else
+            bad "coverage: $id is a registered static gate with NEITHER a mutation case in CASES NOR a 'comment-mutation-proof-exempt:' marker in its header — add one (docs/agent-rules/quality-gate-rigor.md)"
+        fi
+    done <<< "$scripts"
+
+    # Non-vacuity: the enumeration itself must have found the real set, not a
+    # broken parse that would pass because it checked nothing.
+    if [ "$n" -lt 15 ]; then
+        bad "coverage: enumerated only $n registry check script(s) — the registry read is broken, not the set small (expected >=15)"
+    fi
+}
+coverage_check
 
 echo
 if [ "$fails" -eq 0 ]; then

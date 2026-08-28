@@ -6,6 +6,8 @@
 # remove). This test is the condition on which the shared lib was allowed to
 # exist at all (plan decision L, 1.0.6.24).
 #
+# comment-mutation-proof-exempt: self-test / RED-GREEN mutation harness — it pins no source-line needle to comment out and is itself the comment-mutation proof for lib_check.sh.
+#
 # Run: bash .ai-dev/quality/checks/lib_check.test.sh
 set -uo pipefail
 

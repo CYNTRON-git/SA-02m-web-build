@@ -4,6 +4,8 @@
 # (the daemon suites are pytest functions, which `unittest discover` silently
 # skips; this row actually executes them).
 #
+# comment-mutation-proof-exempt: shared pytest runner, no source-line needle — it executes a daemon's suite rather than pinning a line; non-vacuity is per-suite (a collection error or a failing test FAILS the run).
+#
 # Usage: pytest-suite.sh <row-id> <daemon-dir> [import-dep ...]
 #
 # Skips CLEANLY (exit 0, one INFO line) when no python / pytest / a listed

@@ -12,6 +12,7 @@
    COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A. This driver asserts on measured
    geometry in a real browser, never on a needle grepped out of source, so
    there is no pin here a `#`/`//` in front of a line could satisfy.
+   // comment-mutation-proof-exempt: geometry/contrast renderer, no source-line needle — measures rendered boxes; every collection check is non-vacuous (an empty selector FAILS).
 
    It reuses the existing dev harness's serving approach
    (scripts/dev/characterize-ui.mjs): serve the repo copy of www/network_config
