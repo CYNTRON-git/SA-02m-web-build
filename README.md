@@ -46,7 +46,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ## Содержание
 
-- [Возможности](#возможности)
+- [Возможности](#возможности) — в т.ч. [Устройства (ДТВ / СЭ)](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м), [Яндекс Алиса](#яндекс-алиса), [Облако](#облако-удалённый-доступ)
 - [Скриншоты](#скриншоты)
 - [Требования](#требования)
 - [Установка на СА-02м](#установка-на-са-02м)
@@ -138,6 +138,22 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Fast Modbus probe** — локальный ответ на Modbus TCP-пробу (`FC 0x47`, `WB-FAST-MODBUS?`) без выхода на RS-485; сканирование и обмен на шине — Fast Modbus `0xFD 0x46` (как в MR-02m / WB).
 - **Веб-вкладка «Шлюз RS-485»** — боковое подменю по COM1–COM5, настройка скорости/чётности, статус TCP-клиентов, сохранение в `/etc/sa02m-gateway.yaml`.
 - **Эксклюзивный захват порта** — включённый порт блокируется lock-файлом; перед использованием в MQTT/flasher его нужно отключить в конфиге шлюза.
+
+### Устройства (ДТВ / СЭ-02м-3 / AI-каналы MR-02м)
+- **Вкладка «Устройства»** — живые показания датчиков температуры/влажности (ДТВ), анализаторов сети (СЭ-02м-3) и аналоговых каналов MR-02м карточками, без ручной настройки: список строится из MQTT-кэша моста.
+- **Архив и графики** — служба `sa02m-devices-logger` пишет измерения в SQLite; клик по карточке открывает график (Canvas 2D) за выбранный период, с экспортом в Excel и журналом пиков СЭ.
+- **Backend** — Python-демон `sa02m-devices-api` на `:8765`, проксируется nginx как `/api/devices*` (не CGI); код `opt/sa02m-devices/`.
+- Контракты: `docs/contracts/devices-mr-history.md`, `docs/contracts/template-device.md`.
+
+### Яндекс Алиса
+- **Голосовое управление** устройствами шины через навык Яндекса: gateway `alice.cyntron.ru` ↔ контроллер по Socket.IO + mTLS, дальше MQTT → RS-485.
+- **Привязки** — «Управление» → «Яндекс Алиса»: какое устройство/канал каким умным устройством видит Алиса, комнаты, типы (реле, розетка, датчик).
+- **Службы** — `sa02m-alice-client` (связь с gateway) и `sa02m-alice-config` (локальный конфиг-API); обе поставляются **выключенными**, включает оператор.
+- Установка — только `scripts/06-alice.sh` / `install.sh` (OTA обновляет, но не устанавливает: `docs/deployment.md`). Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
+
+### Облако (удалённый доступ)
+- **Агент `sa02m-cloud-agent`** — привязка платы к `cloud.cyntron.ru` и туннель frpc для доступа к панели без белого IP; страница `cloud.html`, карточка «Облако» во вкладке «Управление».
+- Локальные порты, которые туннель вправе публиковать, ограничены allow-list'ом на стороне устройства. Контракт: `docs/contracts/cloud-enrollment.md`.
 
 ### Управление системой
 - **Вкладка «Управление»** — смена логина/пароля веб-интерфейса (`/etc/sa02m_web.env`), перезапуск служб, перезагрузка устройства.
@@ -236,26 +252,37 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 # Укажите нужный IP-адрес устройства, шлюз и пароль для веб-интерфейса
 ./install.sh --ip 192.168.1.136 --mask 255.255.255.0 --gw 192.168.1.1 --pass cyntron
 
-# (Опционально) MQTT, шлюз RS-485 и Node-RED — отдельные скрипты после install.sh
-sudo bash scripts/05-mqtt.sh
-sudo bash scripts/06-gateway.sh
-sudo bash scripts/07-nodered.sh
+# Всё перечисленное ниже установщик ставит САМ. Отключить стек по отдельности —
+# переменной окружения, а не «запустить скрипт потом»:
+# SA02M_SKIP_MQTT=1 SA02M_SKIP_DEVICES=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_ALICE=1 # SA02M_SKIP_NODERED=1 SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 SA02M_SKIP_DOCKER=1 #   ./install.sh --ip ...
 ```
 
 > Установщик автоматически устанавливает все зависимости (`nginx`, `fcgiwrap` и др.) через `apt`. Не нужно запускать `apt-get install` вручную перед `install.sh` — это может создать конфликт сокетов fcgiwrap и вызвать ошибку **502 Bad Gateway** в веб-интерфейсе.
 
 Установщик автоматически выполняет:
 
-| Шаг | Что происходит |
-|-----|----------------|
-| `01-system.sh` | Установка пакетов, настройка locale, udev-симлинки RS-485 |
-| `02-network.sh` | Конфигурация eth0, деплой сетевого watchdog |
-| `03-webserver.sh` | Настройка nginx + fcgiwrap, деплой веб-файлов, sudoers |
-| `04-flasher.sh` | Демон `sa02m-flasher` (Python + systemd), перенос библиотек Modbus/flasher, sudoers, logrotate |
-| `05-cloud-agent.sh` | Агент облачного подключения (если используется) |
-| `05-mqtt.sh` *(опционально)* | Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI, sudoers |
-| `06-gateway.sh` *(опционально)* | RS-485→Ethernet шлюз, gateway CGI, systemd unit |
-| `07-nodered.sh` *(опционально)* | Node.js 20 LTS + Node-RED, `nodered.service`, UI на порту 1880 |
+Порядок и признак «обязательный / отключаемый» задаёт сам `install.sh` — он и
+есть источник истины (`grep 'scripts/[0-9]' install.sh`):
+
+| Шаг | Что происходит | Отключается |
+|-----|----------------|---|
+| `01-system.sh` | Установка пакетов, настройка locale, udev-симлинки RS-485 | — |
+| `02-network.sh` | Конфигурация eth0/eth1, деплой сетевого watchdog | — |
+| `03-webserver.sh` | Настройка nginx + fcgiwrap, деплой веб-файлов, sudoers | — |
+| `04-flasher.sh` | Демон `sa02m-flasher` (Python + systemd), библиотеки Modbus/flasher, sudoers, logrotate | — |
+| `05-cloud-agent.sh` | Агент облачного подключения (`sa02m-cloud-agent`, frpc) | — |
+| `10-rs485-roster.sh` | Агрегатор списка модулей RS-485 (без обращения к шине) | — |
+| `05-mqtt.sh` | Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI, sudoers | `SA02M_SKIP_MQTT=1` |
+| `11-devices.sh` | Вкладка «Устройства»: `sa02m-devices-api` + logger (после MQTT) | `SA02M_SKIP_DEVICES=1` |
+| `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
+| `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
+| `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |
+| `08-codesys.sh` | CODESYS Control SL (только при наличии vendor-payload) | `SA02M_SKIP_CODESYS=1` |
+| `09-mplc.sh` | MasterSCADA MPLC 4D Runtime (только при наличии vendor-payload) | `SA02M_SKIP_MPLC=1` |
+| `12-docker.sh` | Docker CE | `SA02M_SKIP_DOCKER=1` |
+
+Отсутствие vendor-payload для CODESYS/MPLC — не ошибка: шаг пропускается
+(`docs/vendor-integrations.md`).
 
 Процесс занимает **~20 минут** (загрузка пакетов и репозитория зависит от скорости канала). По окончании в терминале появится:
 
@@ -391,83 +418,48 @@ sudo ./install.sh --refresh
 
 ## Структура проекта
 
+Репозиторий — **overlay файловой системы устройства**: `www/` → `/var/www`,
+`etc/` → `/etc`, `opt/` → `/opt`, `usr/local/` → `/usr/local` (раскладку
+выполняет `install.sh`, пути деплоя — `docs/deployment.md`).
+
 ```
 web/
-│
-├── install.sh                    ← главный скрипт установки
-│
-├── scripts/
-│   ├── lib.sh                    ← общие функции (log, pkg-tier'ы, sa02m_svc_capture/apply)
-│   ├── 01-system.sh              ← система: пакеты, locale, udev, RS-485 симлинки
-│   ├── 02-network.sh             ← сеть: eth0/1, watchdog, udev правила
-│   ├── 03-webserver.sh           ← nginx, fcgiwrap, sudoers, деплой www/
-│   ├── 04-flasher.sh             ← демон sa02m-flasher (Python, systemd), sudoers, logrotate
-│   ├── 05-mqtt.sh                ← Mosquitto, Modbus→MQTT мост, телеметрия, MQTT CGI
-│   ├── 06-gateway.sh             ← RS-485→Ethernet шлюз (serial_gateway.py)
-│   └── 07-nodered.sh             ← Node-RED (Node.js LTS + nodered.service)
-│
-├── etc/
-│   ├── nginx/
-│   │   └── network_config.conf   ← шаблон nginx (токены __PORT__, __WEB_ROOT__) + /api/flasher/
-│   ├── mosquitto/                ← listeners (1883/1884), ACL
-│   ├── sa02m-device-templates/   ← JSON-шаблоны MR-02м, ДТВ, CE-02m-3
-│   ├── sa02m-gateway.yaml        ← конфиг RS-485→Ethernet шлюза
-│   ├── fix-eth.sh                ← восстановление интерфейса, grat-ARP, LED eth0
-│   ├── fix-eth.service           ← systemd unit (oneshot, запуск udev)
-│   ├── net-watchdog.sh           ← демон мониторинга сети
-│   ├── net-watchdog.service      ← systemd unit (Restart=always)
-│   ├── 99-lan-recovery.rules     ← udev правила (eth0/eth1, add/bind)
-│   ├── sa02m_hw.conf             ← шаблон GPIO-пинов
-│   ├── sa02m_network.conf        ← шаблон настроек watchdog
-│   ├── sa02m_flasher.conf        ← конфиг демона flasher (URL манифеста, ports, services)
-│   ├── sa02m-modbus-mqtt.service ← systemd unit Modbus→MQTT моста
-│   ├── sa02m-serial-gateway.service ← systemd unit RS-485 шлюза
-│   ├── sa02m-flasher.service     ← systemd unit демона flasher
-│   ├── sudoers.d/sa02m-flasher   ← NOPASSWD: systemctl stop/start mplc, fuser
-│   ├── sudoers.d/sa02m-mqtt      ← NOPASSWD: mqtt config apply, systemctl
-│   └── logrotate.d/sa02m-flasher ← ротация /var/log/sa02m-flasher/*.log
-│
-├── opt/
-│   ├── sa02m-flasher/            ← демон прошивки MR-02м (service.py, modbus_rtu, flash_protocol…)
-│   ├── sa02m-modbus-mqtt/        ← Modbus→MQTT мост + mqtt_bus_scan + sa02m_telemetry
-│   ├── sa02m-serial-gateway/     ← serial_gateway.py (Modbus TCP / RTU over TCP / transparent)
-│   ├── sa02m-mqtt-snmp/          ← SNMP→MQTT northbound-драйвер
-│   └── sa02m-mqtt-opcua/         ← OPC UA→MQTT northbound-драйвер
-│
-├── tools/
-│   └── imaging/                  ← снятие и тиражирование образа eMMC
-│       ├── cleanup-donor.sh      ← подготовка донора перед dd
-│       ├── make-image.sh         ← полный цикл: ssh stream + PiShrink (WSL2)
-│       ├── prepare-flash-media.sh← упаковка USB для приёмника
-│       ├── flash-receiver.sh     ← заливка .img.xz на приёмник (autorun)
-│       ├── setup-wsl-network.ps1 ← зеркальная сеть WSL2 (один раз)
-│       └── README.md             ← краткая инструкция
-│
-├── docs/
-│   ├── SA02M_IMAGING_GUIDE.md    ← тиражирование образа eMMC
-│   ├── MQTT_TOPICS.md            ← схема MQTT-топиков
-│   ├── MPLC4_MQTT.md             ← интеграция MPLC4 vs Python-мост
-│   └── bugs/BUGLOG.md            ← известные проблемы и обходные пути
-│
-└── www/
-    └── network_config/
-        ├── index.html            ← SPA (Dashboard, Сеть, Время, MR-02м, MQTT, Шлюз, Управление)
-        ├── login.html            ← страница входа + анимация огня
-        ├── static/
-        │   ├── css/main.css      ← дизайн-система (тёмная тема, flasher/mqtt/gateway)
-        │   └── js/
-        │       ├── app.js        ← SPA: dashboard, сеть, управление, службы
-        │       ├── flasher.js    ← вкладка «Устройства MR-02м»
-        │       ├── mqtt.js       ← вкладка «MQTT»
-        │       └── gateway.js    ← вкладка «Шлюз RS-485»
-        └── cgi-bin/
-            ├── status.cgi        ← GET метрики (part=cpu|ram|…)
-            ├── config.cgi        ← GET настройки сети/времени
-            ├── mqtt_*.cgi        ← config, status, ctrl, scan, monitor (SSE)
-            ├── gateway_*.cgi     ← config, status, ctrl
-            ├── services_ctrl.cgi ← управление прикладными службами
-            └── …                 ← login, apply, hw_set, restart, reboot, log
+├── install.sh        ← установщик; последовательно запускает модули scripts/NN-*.sh
+├── scripts/          ← модули установщика 01-system … 12-docker + lib.sh (общие функции)
+│                       и утилиты релиза (sync-app-version.py, pack-offline-update.py,
+│                       update-www-only.sh, dev/ — тестовые харнессы)
+├── etc/              ← оверлей /etc: nginx, mosquitto, systemd/, sudoers.d/, udev,
+│                       шаблоны устройств sa02m-device-templates/, helper-скрипты sa02m-*.sh
+├── usr/local/sbin/   ← привилегированные helper'ы, которые CGI вызывает через sudo
+├── opt/              ← демоны устройства, один каталог на службу (flasher, modbus-mqtt,
+│                       serial-gateway, devices, alice, cloud-agent, update, …)
+├── www/network_config/
+│   ├── index.html    ← SPA (вкладки: Сведения, Сеть, Время, Устройства MR-02м,
+│   │                   MQTT, Шлюз RS-485, Устройства, Управление)
+│   ├── login.html · cloud.html
+│   ├── static/css/main.css   ← дизайн-система (тёмная + светлая тема)
+│   ├── static/js/            ← бандлы вкладок + кластер app/ (декомпозиция app.js)
+│   └── cgi-bin/              ← Bash CGI (см. «CGI API»)
+├── tools/            ← imaging (тиражирование eMMC), ssh, debian-rootfs, buildroot, deploy
+├── firmware/         ← прошивки MR-02м (.fw) и плагины MPLC4
+└── docs/             ← документация (см. «Документация (docs/)»)
 ```
+
+Перечни намеренно не выписаны файл-в-файл — они устаревают быстрее README.
+Актуальный список всегда даёт дерево:
+
+```bash
+ls scripts/*.sh                       # модули установщика и утилиты
+ls -d opt/*/                          # демоны устройства
+ls www/network_config/static/js/*.js www/network_config/static/js/app/*.js
+ls www/network_config/cgi-bin/*.cgi   # эндпоинты CGI
+ls docs/ docs/contracts/ docs/decisions/ docs/agent-rules/
+```
+
+Что где описано (единственные дома): стек, вкладки и опрос —
+`docs/agent-rules/sa02m-domain.md`; пути деплоя — `docs/deployment.md`;
+контракты внешних поверхностей — `docs/contracts/`; принятые решения —
+`docs/decisions/`.
 
 ---
 
@@ -1457,6 +1449,25 @@ hwclock -r   # прочитать время из PCF8563
 
 Все CGI-скрипты возвращают **JSON** (без HTML). Аутентификация через cookie `session_token`.
 
+Ниже разобраны **основные** эндпоинты. Полный перечень — это само дерево:
+`ls www/network_config/cgi-bin/*.cgi`. Семейства, чтобы найти нужный:
+
+| Семейство | Файлы | О чём |
+|---|---|---|
+| статус и настройки | `status.cgi`, `config.cgi`, `apply.cgi`, `variant.cgi` | метрики дашборда, сеть/время, применение настроек |
+| вход и сессия | `login.cgi`, `logout.cgi`, `auth_check.cgi`, `web_creds.cgi` | сессия, CSRF, смена логина/пароля |
+| железо | `hw_set.cgi`, `storage_format_set.cgi`, `cpu_profile.cgi`, `kernel_ctrl.cgi` | DO/beeper/LED, авто-формат накопителя, профиль CPU, ядро SMP/RT |
+| службы и система | `services_ctrl.cgi`, `restart.cgi`, `reboot.cgi`, `cmd_exec.cgi`, `ssh_debug.cgi`, `log*.cgi` | управление службами, перезагрузка, журналы |
+| MQTT | `mqtt_*.cgi` | конфиг, статус, управление, скан, live/монитор, шаблоны, запись значения |
+| шлюз RS-485 | `gateway_*.cgi` | конфиг, статус, управление службой |
+| Алиса | `sa02m_alice_api.cgi`, `sa02m_alice_topics.cgi` | привязки и инвентарь MQTT-топиков |
+| облако | `cloud.cgi` | привязка платы, состояние агента и туннеля |
+| обновление и резерв | `web_update_*.cgi`, `web_backup.cgi`, `web_factory_reset.cgi`, `mplc_project_deploy.cgi` | OTA/офлайн-обновление, бэкап, сброс, деплой проекта MPLC |
+
+Вкладка «Устройства» ходит **не в CGI**, а в демон `sa02m-devices-api`
+(`:8765`), который nginx проксирует как `/api/devices*`; прошивальщик — в
+`sa02m-flasher` через `/api/flasher/*` (см. ниже).
+
 Начиная с `1.0.2`, `status.cgi` поддерживает раздельные части ответа, чтобы виджеты обновлялись независимо и не ждали общий медленный JSON.
 
 ### `GET /cgi-bin/status.cgi`
@@ -2008,17 +2019,25 @@ sudo /usr/local/sbin/sa02m-web-update-apply
 
 ## Документация (docs/)
 
-| Документ | Назначение |
-|----------|------------|
-| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | **Тиражирование образа eMMC:** эталон → PiShrink → `.img.xz` → заливка на серию |
-| [**docs/MQTT_TOPICS.md**](docs/MQTT_TOPICS.md) | Схема MQTT-топиков, доступность, device ID |
-| [**docs/MPLC4_MQTT.md**](docs/MPLC4_MQTT.md) | Когда использовать MPLC4 vs Python-мост, настройка Modbus/MQTT в MasterSCADA |
-| [**docs/bugs/BUGLOG.md**](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
+Карта: где что лежит. Полный список — `ls docs/ docs/contracts/ docs/decisions/ docs/agent-rules/`.
+
+| Дом | Что там |
+|---|---|
+| [**docs/deployment.md**](docs/deployment.md) | **Единственный дом процедуры деплоя:** пути доставки, www-only, OTA/офлайн-пакет, золотой образ |
+| [docs/agent-rules/sa02m-domain.md](docs/agent-rules/sa02m-domain.md) | Стек, вкладки, архитектура опроса дашборда, дисциплина версий |
+| [docs/contracts/](docs/contracts/) | Контракты внешних поверхностей (MQTT, CGI, облако, Алиса, образ, ядро) — форма, которую нельзя менять молча |
+| [docs/decisions/](docs/decisions/) | Принятые решения с обоснованием и статусом (ES-модули, CSRF-политика, пароль по умолчанию, …) |
+| [docs/threat-model.md](docs/threat-model.md) | Модель угроз: актёры, границы доверия, что закрыто и чем |
+| [docs/product.md](docs/product.md) | Для кого продукт и зачем |
+| [**docs/SA02M_IMAGING_GUIDE.md**](docs/SA02M_IMAGING_GUIDE.md) | Тиражирование образа eMMC: эталон → PiShrink → `.img.xz` → серия |
+| [docs/MQTT_TOPICS.md](docs/MQTT_TOPICS.md) | Схема MQTT-топиков, доступность, device ID |
+| [docs/MPLC4_MQTT.md](docs/MPLC4_MQTT.md) | MPLC4 vs Python-мост, настройка Modbus/MQTT в MasterSCADA |
+| [docs/ALICE_INTEGRATION.md](docs/ALICE_INTEGRATION.md) | Интеграция с Яндекс Алисой (native-путь через gateway) |
+| [docs/OFFLINE_UPDATE_PACKAGE_V1.md](docs/OFFLINE_UPDATE_PACKAGE_V1.md) | Формат офлайн-пакета обновления `.sa02m` |
+| [docs/bugs/BUGLOG.md](docs/bugs/BUGLOG.md) | Известные проблемы и обходные пути |
+| [docs/audits/](docs/audits/) | Отчёты аудитов (исторические срезы) |
 | [CHANGELOG.md](CHANGELOG.md) | Полный журнал изменений по версиям |
 | [tools/imaging/README.md](tools/imaging/README.md) | Быстрый старт: `make-image.sh`, `prepare-flash-media.sh`, `flash-receiver.sh` |
-| [tools/imaging/manifest.example.json](tools/imaging/manifest.example.json) | Шаблон метаданных релиза образа |
-| [docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md](docs/SA02M_SSH_ACCESS_PROBLEM_AND_FIX.md) | SSH: задержки, post-auth hang, PAM/MOTD |
-| [docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md](docs/SA02M_SSH_SERIAL_INVESTIGATION_1.0.3.3.md) | Профили serial 1eth/2eth, карта COM |
 | [MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md](MPLC_CYNTRON_DRIVER_BUILD_ON_DEVICE.md) | Сборка драйвера на устройстве (до/после cleanup донора) |
 
 ---
