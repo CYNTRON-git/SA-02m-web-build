@@ -57,7 +57,7 @@ sudo bash scripts/06-alice.sh
 | Unit | Назначение |
 |---|---|
 | `sa02m-alice-client` | Socket.IO + MQTT; standby exit 0 если выключен |
-| `sa02m-alice-config` | локальный JSON API `127.0.0.1:8012` (опционально) |
+| `sa02m-alice-config` | локальный JSON API поверх AF_UNIX-сокета `/run/sa02m-alice/config.sock` (0600, владелец root; служба опциональна, по умолчанию выключена) |
 
 Веб-UI ходит через CGI с сессионной авторизацией:
 

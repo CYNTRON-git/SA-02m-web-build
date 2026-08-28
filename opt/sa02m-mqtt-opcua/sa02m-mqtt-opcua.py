@@ -606,14 +606,33 @@ def main() -> None:
                         help="Enable debug logging")
     args = parser.parse_args()
 
+    # Config load + access-config validation run BEFORE READY. Both are cheap —
+    # a small JSON read and two ipaddress parses — so they do not reintroduce
+    # the boot hold the early READY below exists to avoid, and they are the only
+    # init that can legitimately REFUSE to start. Reporting READY and then dying
+    # inside OpcuaGateway.__init__ turned a malformed opcua.host / allow_from
+    # into a crash-loop under Restart=on-failure instead of a clean start
+    # failure (security review 1.0.6.24, F7 — the failure direction was already
+    # closed, the daemon never listened; this makes the failure legible).
+    # __init__ parses these again; they are pure functions, so that is a
+    # re-validation, not a second source of truth.
+    cfg = load_config(Path(args.config))
+    if args.debug:
+        cfg["debug"] = True
+    if cfg.get("debug"):
+        log.setLevel(logging.DEBUG)
+    _ocfg = cfg.get("opcua", {})
+    _parse_bind(_ocfg.get("host"))
+    _parse_allow_from(_ocfg.get("allow_from"))
+
     # Signal systemd-ready IMMEDIATELY, before ANY slow init, so this
     # Type=notify unit does NOT gate multi-user.target. The heavy cost is the
     # OPC UA address-space build: ~9 s in OpcuaServer() construction (inside
     # OpcuaGateway.__init__, below) + more in server.start()/populate — ~17 s
     # total on the A40i. With Type=notify all of that was blocking boot
     # (systemd stayed "activating" until READY). Sending READY here — before
-    # load_config()/OpcuaGateway(cfg) — marks the unit active at t≈0 and runs
-    # the whole build in RUNNING state instead. One explicit WATCHDOG=1 ping
+    # OpcuaGateway(cfg) — marks the unit active at t≈0 and runs the whole build
+    # in RUNNING state instead. One explicit WATCHDOG=1 ping
     # here; the watchdog loop in start() then pings every ~30 s
     # (WATCHDOG_USEC/2), well inside WatchdogSec=60. A real init failure still
     # raises out of load_config()/__init__/start() → the process exits
@@ -625,12 +644,6 @@ def main() -> None:
     # main() — an accepted residual, not restructured.)
     sd_notify("READY=1")
     sd_notify("WATCHDOG=1")
-
-    cfg = load_config(Path(args.config))
-    if args.debug:
-        cfg["debug"] = True
-    if cfg.get("debug"):
-        log.setLevel(logging.DEBUG)
 
     gw = OpcuaGateway(cfg)
 

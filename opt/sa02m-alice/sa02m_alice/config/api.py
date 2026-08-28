@@ -684,6 +684,19 @@ def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
         os.unlink(sock_path)
     except FileNotFoundError:
         pass
+    # An upgraded board can still carry the breadcrumb the TCP era wrote beside
+    # the socket ("<sock>.tcp", holding the old loopback endpoint named in the
+    # docstring above). Nothing reads it any more, but leaving it advertises a
+    # listener that no longer exists. /run is tmpfs so a reboot would clear it
+    # anyway — remove it here so the first start after the upgrade does
+    # (security review 1.0.6.24, F6). The port literal is deliberately NOT
+    # repeated: tests/test_config_api_socket.py asserts this function's body
+    # names it nowhere, which is what keeps the retired endpoint from creeping
+    # back in.
+    try:
+        os.unlink(sock_path + ".tcp")
+    except OSError:
+        pass
     # Create the socket owner-only from the outset (umask), then re-assert 0600 in
     # case a lax umask or a prior file survived — the socket is the whole boundary.
     old_umask = os.umask(0o177)
