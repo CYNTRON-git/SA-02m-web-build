@@ -253,8 +253,12 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 ./install.sh --ip 192.168.1.136 --mask 255.255.255.0 --gw 192.168.1.1 --pass cyntron
 
 # Всё перечисленное ниже установщик ставит САМ. Отключить стек по отдельности —
-# переменной окружения, а не «запустить скрипт потом»:
-# SA02M_SKIP_MQTT=1 SA02M_SKIP_DEVICES=1 SA02M_SKIP_GATEWAY=1 SA02M_SKIP_ALICE=1 # SA02M_SKIP_NODERED=1 SA02M_SKIP_CODESYS=1 SA02M_SKIP_MPLC=1 SA02M_SKIP_DOCKER=1 #   ./install.sh --ip ...
+# переменной окружения, а не «запустить скрипт потом». Пример:
+#
+#   SA02M_SKIP_MQTT=1 SA02M_SKIP_DEVICES=1 SA02M_SKIP_GATEWAY=1 \
+#   SA02M_SKIP_ALICE=1 SA02M_SKIP_NODERED=1 SA02M_SKIP_CODESYS=1 \
+#   SA02M_SKIP_MPLC=1 SA02M_SKIP_DOCKER=1 \
+#   ./install.sh --ip 192.168.1.136 --mask 255.255.255.0 --gw 192.168.1.1 --pass cyntron
 ```
 
 > Установщик автоматически устанавливает все зависимости (`nginx`, `fcgiwrap` и др.) через `apt`. Не нужно запускать `apt-get install` вручную перед `install.sh` — это может создать конфликт сокетов fcgiwrap и вызвать ошибку **502 Bad Gateway** в веб-интерфейсе.

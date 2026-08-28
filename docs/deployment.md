@@ -49,11 +49,22 @@ OTA и офлайн-пакет **копируют файлы по карте н�
 
 **Практическое правило для Алисы.** Код Алисы (`opt/sa02m-alice/**`,
 `usr/local/sbin/sa02m-alice-web-trigger.sh`, юниты `sa02m-alice-*.service`,
-`etc/tmpfiles.d/sa02m-alice.conf`, CGI и `static/js/app/alice.js`) по карте
+`etc/tmpfiles.d/sa02m-alice.conf`, грант `etc/sudoers.d/sa02m-alice`, CGI и
+`static/js/app/alice.js`) по карте
 проходит, поэтому OTA **обновляет уже установленную** Алису. Но **установить**
 её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0770 root:www-data),
-`/var/lib/sa02m-alice` (0700 www-data), `/run/sa02m-alice`, засевка
-`/etc/sa02m-alice/*.conf` и грант sudoers живут только в `scripts/06-alice.sh`.
+`/var/lib/sa02m-alice` (0700 www-data), `/run/sa02m-alice` и засевка
+`/etc/sa02m-alice/*.conf` живут только в `scripts/06-alice.sh`.
+
+Грант sudoers Алисы — с 1.0.6.24 **не** исключение: heredoc заменён коммитнутым
+файлом `etc/sudoers.d/sa02m-alice` (`97e9658`) именно потому, что heredoc был
+невидим для OTA и офлайн-пакета. Карта несёт его по обоим путям (`map_dst` и
+`DST_RE` в `etc/sa02m-update-runner.sh` → `/etc/sudoers.d/`; правило
+`etc/sudoers.d/` → `/etc/sudoers.d/` с `mode 0440` в
+`scripts/offline-update-deploy-map.json`), а runner после копирования доводит
+режим известных drop-in'ов до 0440 и прогоняет `visudo -c`. То есть изменение
+самого гранта уезжает на плату по OTA — переустановка нужна только для того,
+что перечислено выше.
 Плата, на которой `06-alice.sh` не отрабатывал, Алису по OTA не получит, а
 изменение любой из перечисленных вещей требует `install.sh --refresh` или
 точечного `sudo bash scripts/06-alice.sh`. Та же логика — для любого модуля
@@ -75,6 +86,23 @@ OTA обновляет код, установку делает установщ�
 Он НИКОГДА не разворачивает демон прошивальщика (`opt/sa02m-flasher/`) и его
 tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/` — нужен `install.sh`
 (полный) ИЛИ отдельная доставка `opt/` + рестарт `sa02m-flasher`.
+
+**Привилегированные хелперы едут вместе с панелью — все пять путей.** Правило:
+путь, который заменяет CGI-дерево панели, обязан заменить и хелперы из
+`usr/local/sbin/`, которые эта панель вызывает через sudo (`sa02m-gateway-config-apply.sh`,
+`sa02m-mqtt-config-apply.sh`, `sa02m-cloud-web-trigger.sh`). Именно валидация argv
+ВНУТРИ хелпера закрывает H1/H2 — пиновка в `sudoers.d` только defence in depth,
+поэтому «пин доехал, хелпер нет» = плата с новой версией на экране и старым
+уязвимым хелпером на диске. До 1.0.6.24 так вели себя два пути (ревью
+безопасности F4): `scripts/update-www-only.sh` (ставил пины `sa02m-gateway`/
+`sa02m-mqtt`, хелперы — нет) и легаси-rsync `etc/sa02m-web-update-apply.sh`
+(ставил `sudoers.d/sa02m-www` и восемь `etc/`-хелперов, ни одного config-apply).
+Сейчас хелперы доставляют все пять путей — installer (`scripts/05-mqtt.sh`,
+`scripts/06-gateway.sh`), www-only, OTA `map_dst`, оффлайн-пакет и легаси-rsync;
+это утверждение гейтится (`sudoers-pin-contract`, проверка PIN WITHOUT HELPER),
+удаление доставки на любом пути = RED. Тем же правилом едет
+`etc/tmpfiles.d/sa02m-web-login.conf`: без него throttle логина в
+`lib_web_auth.sh` fail-open (F1), гейт — `web-auth-behaviour`.
 
 **`etc/` обязателен в поставке — без него скрипт не стартует.**
 `update-www-only.sh` подключает `scripts/lib.sh`, а тот безусловно
