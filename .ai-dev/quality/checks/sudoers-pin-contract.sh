@@ -54,34 +54,14 @@ APPLY=www/network_config/cgi-bin/apply.cgi
 LIBHW=www/network_config/cgi-bin/lib_hw.sh
 UDEV_RULE=etc/udev/rules.d/50-sa02m-i2c2-unbind.rules
 
-# Strip comment lines AND trailing/inline comments before matching, so a rule
-# named in prose above an assertion cannot stand in for the assertion itself.
-# Reads stdin so it can filter a file OR an extracted function body.
-strip_comments() {
-    sed -e 's/[[:space:]]#.*$//' -e 's/^[[:space:]]*#.*$//'
-}
-
-# True when the comment-stripped file contains the literal needle.
-#
-# Do NOT collapse this back into `strip_comments < f | grep -qF needle`.
-# `grep -q` exits on the FIRST match; the still-writing `sed` then takes a
-# SIGPIPE and exits 141, and under `set -o pipefail` that 141 becomes the
-# pipeline's status — so a token that WAS found reads back as "not found".
-# Same trap already cost a false-green in no-retired-session-token.sh; see
-# .ai-dev/notes/quality-gate-environment.md ("A row that RUNS everywhere").
-stripped_has() {  # $1=path  $2=literal needle
-    local text
-    text=$(strip_comments < "$1")
-    case "$text" in *"$2"*) return 0 ;; *) return 1 ;; esac
-}
-
-# True when the comment-stripped file matches the ERE. Herestring, not a pipe —
-# same SIGPIPE reasoning as stripped_has.
-stripped_matches() {  # $1=path  $2=ERE
-    local text
-    text=$(strip_comments < "$1")
-    grep -qE "$2" <<<"$text"
-}
+# Comment handling is shared: .ai-dev/quality/checks/lib_check.sh is the one
+# home for the strippers and for the SIGPIPE rule they encode (row check-lib
+# self-tests it). This gate reads sudoers, shell and udev files, where a
+# trailing ` #` is unambiguously a comment, so it uses the *_inline variants
+# throughout — a rule named in prose above an assertion must never stand in
+# for the assertion itself.
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "sudoers-pin-contract: cannot source lib_check.sh"; exit 1; }
 
 # ── 1. The committed grant exists and lists no dangerous raw Cmnd ───────────
 # The POSITIVE side of this home (which pins must be present) is the complete
@@ -89,7 +69,7 @@ stripped_matches() {  # $1=path  $2=ERE
 # named negatives, each pinning a specific escalation vector B1 closed.
 if [ -f "$SUD" ]; then
     pass "single-home sudoers drop-in present ($SUD)"
-    grant=$(strip_comments < "$SUD")
+    grant=$(strip_comments_inline < "$SUD")
 
     # Raw tee — the arbitrary-root-write pivot. Any tee Cmnd is a fail.
     if printf '%s\n' "$grant" | grep -qE '(^|[[:space:],])(/usr)?/bin/tee\b'; then
@@ -136,7 +116,7 @@ fi
 
 # ── 2. apply.cgi holds no raw tee; both writers route through the helper ────
 if [ -f "$APPLY" ]; then
-    acode=$(strip_comments < "$APPLY")
+    acode=$(strip_comments_inline < "$APPLY")
     n_tee=$(printf '%s\n' "$acode" | grep -c 'sudo tee')
     n_help=$(printf '%s\n' "$acode" | grep -c 'sa02m-iface-conf-write\.sh')
     [ "$n_tee" = 0 ] && pass "apply.cgi: 0 raw 'sudo tee'" || fail "apply.cgi still has $n_tee raw 'sudo tee' (expected 0)"
@@ -148,7 +128,7 @@ fi
 
 # ── 3. The pinned helpers exist and validate their input ────────────────────
 if [ -f "$IFACE_HELPER" ]; then
-    hb=$(strip_comments < "$IFACE_HELPER")
+    hb=$(strip_comments_inline < "$IFACE_HELPER")
     grep -q 'interfaces.d/eth0.conf' <<<"$hb" && grep -q 'interfaces.d/end1.conf' <<<"$hb" \
         && pass "iface-conf-write helper carries the 4-name case allow-list" \
         || fail "iface-conf-write helper lost its 4-name allow-list"
@@ -170,7 +150,7 @@ else
     fail "iface-conf-write helper missing ($IFACE_HELPER)"
 fi
 if [ -f "$USB_HELPER" ]; then
-    ub=$(strip_comments < "$USB_HELPER")
+    ub=$(strip_comments_inline < "$USB_HELPER")
     for v in sysfs-export-out sysfs-write gpiod-set gpiod-stop gpiod-get; do
         grep -q "$v)" <<<"$ub" || fail "usb-power helper missing verb: $v"
     done
@@ -183,14 +163,14 @@ fi
 
 # ── 4. lib_hw holds no raw privileged primitives (all via the helper) ───────
 if [ -f "$LIBHW" ]; then
-    lcode=$(strip_comments < "$LIBHW")
+    lcode=$(strip_comments_inline < "$LIBHW")
     # The dead I2C sudo fallback invoked `sudo -n "$bin"` (a variable — no literal
     # i2cset to grep), so assert the sa02m_hw_i2c_run_tool BODY carries no sudo at
     # all. Non-vacuous: RED on the pre-fix tree (its body has `sudo -n "$bin"`).
     i2c_body=$(sed -n '/^sa02m_hw_i2c_run_tool() {/,/^}/p' "$LIBHW")
     if [ -z "$i2c_body" ]; then
         fail "lib_hw: sa02m_hw_i2c_run_tool not found (cannot verify the dead fallback removal)"
-    elif printf '%s\n' "$i2c_body" | strip_comments | grep -q 'sudo'; then
+    elif printf '%s\n' "$i2c_body" | strip_comments_inline | grep -q 'sudo'; then
         fail "lib_hw: sa02m_hw_i2c_run_tool still contains a sudo call — the dead i2cset/i2cget fallback was not removed (I2C goes DIRECT via group i2c)"
     else
         pass "lib_hw: sa02m_hw_i2c_run_tool has no sudo (dead i2cset/i2cget fallback removed)"
@@ -213,9 +193,9 @@ fi
 # /dev/i2c-* stay group-rw. Assert both installer paths keep the group-add and
 # the udev rule is present — remove one without the other and the beeper breaks.
 gadd='usermod -aG i2c www-data'
-stripped_has scripts/03-webserver.sh "$gadd" && pass "03-webserver keeps usermod -aG i2c www-data" \
+stripped_has_inline scripts/03-webserver.sh "$gadd" && pass "03-webserver keeps usermod -aG i2c www-data" \
     || fail "03-webserver dropped 'usermod -aG i2c www-data' — beeper/alarm-LED break without the group"
-stripped_has scripts/update-www-only.sh "$gadd" && pass "update-www-only keeps usermod -aG i2c www-data" \
+stripped_has_inline scripts/update-www-only.sh "$gadd" && pass "update-www-only keeps usermod -aG i2c www-data" \
     || fail "update-www-only dropped 'usermod -aG i2c www-data'"
 [ -f "$UDEV_RULE" ] && pass "i2c udev rule present in the tree ($UDEV_RULE)" \
     || fail "i2c udev rule missing ($UDEV_RULE)"
@@ -231,10 +211,10 @@ if grep -qE ">>+ */etc/sudoers.d/sa02m-www" scripts/update-www-only.sh; then
 else
     pass "update-www-only has no sudoers append blocks"
 fi
-stripped_matches scripts/03-webserver.sh 'sa02m_install_sudoers .+/etc/sudoers\.d/sa02m-www' \
+stripped_matches_inline scripts/03-webserver.sh 'sa02m_install_sudoers .+/etc/sudoers\.d/sa02m-www' \
     && pass "03-webserver installs the committed sudoers file via sa02m_install_sudoers" \
     || fail "03-webserver does not install etc/sudoers.d/sa02m-www via sa02m_install_sudoers"
-stripped_matches scripts/update-www-only.sh 'sa02m_install_sudoers .+/etc/sudoers\.d/sa02m-www' \
+stripped_matches_inline scripts/update-www-only.sh 'sa02m_install_sudoers .+/etc/sudoers\.d/sa02m-www' \
     && pass "update-www-only installs the committed sudoers file via sa02m_install_sudoers" \
     || fail "update-www-only does not install etc/sudoers.d/sa02m-www via sa02m_install_sudoers"
 [ -f etc/sudoers.d/sa02m-www.fragment ] \
@@ -328,16 +308,16 @@ if [ -f "$IFACE_HELPER" ]; then
 fi
 
 # ── 8. B1 deploy-gap: legacy sudoers removal + OTA helper .sh paths ─────────
-stripped_has scripts/lib.sh 'sa02m_remove_obsolete_www_sudoers' \
+stripped_has_inline scripts/lib.sh 'sa02m_remove_obsolete_www_sudoers' \
     && pass "lib.sh defines sa02m_remove_obsolete_www_sudoers (allow-list legacy cleanup)" \
     || fail "lib.sh missing sa02m_remove_obsolete_www_sudoers"
-stripped_has scripts/03-webserver.sh 'sa02m_cleanup_b1_deploy_artifacts' \
+stripped_has_inline scripts/03-webserver.sh 'sa02m_cleanup_b1_deploy_artifacts' \
     && pass "03-webserver calls sa02m_cleanup_b1_deploy_artifacts after sudoers install" \
     || fail "03-webserver does not call sa02m_cleanup_b1_deploy_artifacts"
-stripped_has scripts/update-www-only.sh 'sa02m_cleanup_b1_deploy_artifacts' \
+stripped_has_inline scripts/update-www-only.sh 'sa02m_cleanup_b1_deploy_artifacts' \
     && pass "update-www-only calls sa02m_cleanup_b1_deploy_artifacts" \
     || fail "update-www-only does not call sa02m_cleanup_b1_deploy_artifacts"
-stripped_has etc/sa02m-update-runner.sh 'cleanup_b1_deploy_artifacts' \
+stripped_has_inline etc/sa02m-update-runner.sh 'cleanup_b1_deploy_artifacts' \
     && pass "update-runner cleans up B1 deploy artifacts after apply" \
     || fail "update-runner missing cleanup_b1_deploy_artifacts"
 # The extension-less OTA twins a PAST release created must still be cleaned on
@@ -347,12 +327,12 @@ for _twin in sa02m-iface-conf-write sa02m-usb-power sa02m-gateway-config-apply \
              sa02m-mqtt-config-apply sa02m-conf-rm sa02m-mplc-project-deploy; do
     # Boundary-matched: the twin path must appear as a whole token, never as the
     # prefix of the .sh path it is the twin OF.
-    if stripped_matches etc/sa02m-update-runner.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
+    if stripped_matches_inline etc/sa02m-update-runner.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
         pass "update-runner cleanup removes the extension-less OTA twin: /usr/local/sbin/$_twin"
     else
         fail "update-runner cleanup does NOT remove the extension-less OTA twin /usr/local/sbin/$_twin — a past OTA left a stale root helper there"
     fi
-    if stripped_matches scripts/lib.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
+    if stripped_matches_inline scripts/lib.sh "/usr/local/sbin/$_twin([^A-Za-z0-9._-]|$)"; then
         pass "lib.sh twin cleanup covers /usr/local/sbin/$_twin"
     else
         fail "lib.sh sa02m_remove_stale_b1_helper_twins does NOT cover /usr/local/sbin/$_twin"

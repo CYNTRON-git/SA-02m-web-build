@@ -5,8 +5,15 @@
 # firmware/mplc4/*.so, so mplc_cyntron.so stayed on the vendor baseline and
 # /run/sa02m-mplc-license.json was never published (web licence card fell back
 # to a log scrape / «не активирована»).
+#
+# Every needle below is matched against COMMENT-STRIPPED text: the allow-list
+# file comments with `#`, so `#firmware/mplc4/mplc_cyntron.so` used to satisfy
+# the pin while the offline pack silently dropped the MPLC RT plugin — the very
+# regression this row exists for (audit 2026-08-28, finding C3).
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "mplc-ota-deploy-contract: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'mplc-ota-deploy-contract: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -17,10 +24,10 @@ for so in mplc_cyntron.so mplc_protocol_fast_modbus.so; do
         || fail "firmware/mplc4/$so missing"
 done
 
-grep -q 'firmware/mplc4/mplc_cyntron.so' scripts/offline-update-allowlist.txt \
+stripped_has scripts/offline-update-allowlist.txt 'firmware/mplc4/mplc_cyntron.so' \
     && pass "offline allowlist includes mplc_cyntron.so" \
     || fail "offline allowlist missing mplc_cyntron.so"
-grep -q 'firmware/mplc4/mplc_protocol_fast_modbus.so' scripts/offline-update-allowlist.txt \
+stripped_has scripts/offline-update-allowlist.txt 'firmware/mplc4/mplc_protocol_fast_modbus.so' \
     && pass "offline allowlist includes mplc_protocol_fast_modbus.so" \
     || fail "offline allowlist missing mplc_protocol_fast_modbus.so"
 
@@ -40,21 +47,21 @@ print('ok')
     && pass "deploy-map maps firmware/mplc4 plugins to /opt/mplc4/" \
     || fail "deploy-map missing/wrong MPLC plugin destinations"
 
-grep -q 'MPLC_OTA_PLUGINS' etc/sa02m-update-runner.sh \
+stripped_has etc/sa02m-update-runner.sh 'MPLC_OTA_PLUGINS' \
     && pass "update-runner defines MPLC_OTA_PLUGINS closed set" \
     || fail "update-runner missing MPLC_OTA_PLUGINS"
-grep -q 'opt/mplc4/' etc/sa02m-update-runner.sh \
+stripped_has etc/sa02m-update-runner.sh 'opt/mplc4/' \
     && pass "update-runner DST_RE allows /opt/mplc4/" \
     || fail "update-runner DST_RE missing /opt/mplc4/"
-grep -qE '"mplc4"' etc/sa02m-update-runner.sh \
+stripped_matches etc/sa02m-update-runner.sh '"mplc4"' \
     && pass "update-runner restarts mplc4 after apply" \
     || fail "update-runner does not restart mplc4 after plugin deploy"
 
-grep -q 'mplc_cyntron.so' scripts/update-www-only.sh \
+stripped_has scripts/update-www-only.sh 'mplc_cyntron.so' \
     && pass "update-www-only installs mplc_cyntron.so" \
     || fail "update-www-only does not install mplc_cyntron.so"
 
-grep -q 'opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)' opt/sa02m-update/lib/validate_package.py \
+stripped_has opt/sa02m-update/lib/validate_package.py 'opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)' \
     && pass "validate_package allows closed-set /opt/mplc4/*.so" \
     || fail "validate_package missing /opt/mplc4 plugin allow"
 

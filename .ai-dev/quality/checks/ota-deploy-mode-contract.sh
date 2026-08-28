@@ -4,8 +4,13 @@
 # Pins private/BUG-ota-mode-0644.md: extension-less helpers in /usr/local/sbin
 # (sa02m-set-storage-auto-format, sa02m-set-cpu-profile) were deployed 0644
 # because mode was derived from the source filename extension.
+# The grep pins read COMMENT-STRIPPED text (lib_check.sh): `#mode = deploy_mode(
+# rel, dst)` would otherwise satisfy the pin while the manifest builder went back
+# to deriving the mode from the source extension — the 0644 sbin-helper bug.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "ota-deploy-mode-contract: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'ota-deploy-mode-contract: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -13,15 +18,15 @@ pass() { printf 'ota-deploy-mode-contract: ok    %s\n' "$*"; }
 
 RUNNER=etc/sa02m-update-runner.sh
 
-grep -q 'def deploy_mode' "$RUNNER" \
+stripped_has "$RUNNER" 'def deploy_mode' \
     && pass "update-runner defines deploy_mode(rel, dst)" \
     || fail "update-runner missing deploy_mode — mode must follow dst, not source extension"
 
-grep -q 'mode = deploy_mode(rel, dst)' "$RUNNER" \
+stripped_has "$RUNNER" 'mode = deploy_mode(rel, dst)' \
     && pass "manifest builder calls deploy_mode(rel, dst)" \
     || fail "manifest builder still derives mode from rel.endswith only"
 
-if grep -qE 'mode = "0755" if.*rel\.endswith' "$RUNNER"; then
+if stripped_matches "$RUNNER" 'mode = "0755" if.*rel\.endswith'; then
     fail "legacy rel.endswith-only mode derivation still present"
 else
     pass "no legacy rel.endswith-only mode assignment in manifest builder"

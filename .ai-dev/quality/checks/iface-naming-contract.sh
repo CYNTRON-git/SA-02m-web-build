@@ -6,8 +6,17 @@
 # losing the unit, and the F6 `echo -e` write path coming back.
 #
 # Run: bash .ai-dev/quality/checks/iface-naming-contract.sh
+#
+# Presence pins read COMMENT-STRIPPED text (lib_check.sh): a `#` in front of an
+# `install -m …` line or a sudoers grant leaves the needle in the file, so an
+# unstripped grep reports a guarantee that is no longer installed (the
+# hollow-gate class, audit 2026-08-28 finding C3). Pins already anchored at line
+# start (`^Before=`, `^WantedBy=`, `^source …`, `^udev_initialized() {`) cannot
+# be defeated that way and are left as they are.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "iface-naming-contract: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'iface-naming-contract: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -51,8 +60,8 @@ fi
 [ -z "$extra" ] && [ -z "$missing" ] && pass "legacy-name ledger matches ($(printf '%s\n' "$found" | grep -c .) files)"
 
 # ── 2. The installer installs AND enables the unit ────────────────────────
-if grep -q 'install -m 644 "\$ETC_DIR/systemd/sa02m-iface-canonical.service"' scripts/02-network.sh \
-   && grep -q 'install -m 755 "\$ETC_DIR/sa02m-iface-canonical.sh"' scripts/02-network.sh; then
+if stripped_has scripts/02-network.sh 'install -m 644 "$ETC_DIR/systemd/sa02m-iface-canonical.service"' \
+   && stripped_has scripts/02-network.sh 'install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh"'; then
     pass "02-network.sh installs the unit and its script"
 else
     fail "02-network.sh no longer installs sa02m-iface-canonical.{sh,service}"
@@ -97,7 +106,7 @@ fi
 # The sudoers GRANT for the pinned conf-rm helper now lives in the single
 # committed drop-in (audit B1 collapsed the three install paths to one file —
 # the escalation-close gate `sudoers-pin-contract` owns the full sudoers proof).
-if grep -q '/usr/local/sbin/sa02m-conf-rm\.sh' etc/sudoers.d/sa02m-www; then
+if stripped_has etc/sudoers.d/sa02m-www '/usr/local/sbin/sa02m-conf-rm.sh'; then
     pass "sudoers grant for the pinned conf-rm helper present (etc/sudoers.d/sa02m-www)"
 else
     fail "sudoers grant for sa02m-conf-rm.sh missing from etc/sudoers.d/sa02m-www"
@@ -166,9 +175,10 @@ fi
 # canon_body captured first so the grep -q below is a single-command pipeline —
 # `sed … | grep -q` would SIGPIPE sed on the (healthy) match and pipefail would
 # read the FOUND gate as absent, failing a correct file (same class as above).
-canon_body=$(sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh)
+canon_body=$(sed -n '/^canonicalize_pair() {/,/^}/p' etc/sa02m-iface-canonical.sh | strip_comments)
+grep -q '[^[:space:]]' <<<"$canon_body" || fail "canonicalize_pair() not found in etc/sa02m-iface-canonical.sh (or wholly commented out)"
 if grep -q '^udev_initialized() {' etc/sa02m-iface-canonical.sh \
-   && grep -q 'udev_initialized ' <<<"$canon_body"; then
+   && text_has "$canon_body" 'udev_initialized '; then
     pass "rename script gates canonicalize_pair on udev_initialized"
 else
     fail "etc/sa02m-iface-canonical.sh lost the udev_initialized gate in canonicalize_pair — the boot-0 'already canonical' no-op against a kernel-native name returns silently"
@@ -191,7 +201,7 @@ fi
 RULE=etc/98-sa02m-iface-canonical.rules
 RETRY_UNIT=etc/systemd/system/sa02m-iface-canonical-retry.service
 if [ -f "$RULE" ] \
-   && grep -qE 'ACTION=="add\|move".*KERNEL=="end\*".*--no-block start sa02m-iface-canonical-retry\.service' "$RULE"; then
+   && stripped_matches "$RULE" 'ACTION=="add\|move".*KERNEL=="end\*".*--no-block start sa02m-iface-canonical-retry\.service'; then
     pass "98-sa02m-iface-canonical.rules retriggers the retry unit on end* add|move with --no-block"
 else
     fail "etc/98-sa02m-iface-canonical.rules missing or lost the end* add|move --no-block retry line — the §1.0 mechanism-4 ms race (db entry before rename) reopens"
@@ -213,7 +223,7 @@ fi
 # 99-lan-recovery must stay end*-free: an end* line there would start
 # fix-eth@end0 against a legacy name — the reason the retry rule is a
 # separate file.
-if grep -qE 'KERNEL=="end' etc/99-lan-recovery.rules; then
+if stripped_matches etc/99-lan-recovery.rules 'KERNEL=="end'; then
     fail "99-lan-recovery.rules grew an end* line — it would start fix-eth@end0 against a legacy name; end* handling lives only in 98-sa02m-iface-canonical.rules"
 else
     pass "99-lan-recovery.rules carries no end* lines"
@@ -221,14 +231,14 @@ fi
 # fix-eth.sh: an exhausted per-boot link-cycle budget must re-arm on
 # carrier-up (bench 2026-07-29/30 night: eth1 logged "cycles=5, пропуск" for
 # hours and recovery never resumed until reboot).
-if grep -q 'link_cycle_count' etc/fix-eth.sh \
-   && grep -qE 'rm -f "\$\{LOCK_DIR\}/\$\{iface\}\.link_cycle_count"' etc/fix-eth.sh; then
+if stripped_has etc/fix-eth.sh 'link_cycle_count' \
+   && stripped_matches etc/fix-eth.sh 'rm -f "\$\{LOCK_DIR\}/\$\{iface\}\.link_cycle_count"'; then
     pass "fix-eth.sh re-arms the link-cycle budget on carrier-up (counter reset present)"
 else
     fail "etc/fix-eth.sh lost the link_cycle_count reset — an exhausted budget then blocks link recovery until reboot"
 fi
-if grep -q 'install -m 644 "\$ETC_DIR/98-sa02m-iface-canonical.rules"' scripts/02-network.sh \
-   && grep -q 'install -m 644 "\$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service"' scripts/02-network.sh; then
+if stripped_has scripts/02-network.sh 'install -m 644 "$ETC_DIR/98-sa02m-iface-canonical.rules"' \
+   && stripped_has scripts/02-network.sh 'install -m 644 "$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service"'; then
     pass "02-network.sh installs the mechanism-4 rule + retry unit"
 else
     fail "scripts/02-network.sh no longer installs 98-sa02m-iface-canonical.rules / sa02m-iface-canonical-retry.service"
@@ -260,7 +270,7 @@ if printf '%s\n' "$apply_code" | grep -qE 'cat > /etc/dhcp/dhclient-exit-hooks';
 else
     pass "apply.cgi has no raw write into /etc/dhcp/dhclient-exit-hooks.d"
 fi
-if grep -q '/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook\.sh' etc/sudoers.d/sa02m-www; then
+if stripped_has etc/sudoers.d/sa02m-www '/usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh'; then
     pass "sudoers grants sa02m-ensure-eth1-dhcp-hook.sh"
 else
     fail "sudoers missing grant for sa02m-ensure-eth1-dhcp-hook.sh"
