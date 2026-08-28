@@ -393,12 +393,18 @@ else
     GW_JS_PATH="$GW_JS" WARN_RC="$T/warn.rc" node "$T/warn.mjs" 2>&1 | while IFS= read -r line; do
         printf '%s\n' "$line"
     done
-    # the node script writes a verdict file the shell can read (a pipe would
-    # lose its exit status through the loop above)
-    if [ -f "$T/warn.rc" ] && [ "$(cat "$T/warn.rc")" = "0" ]; then
-        :
+    # The node script writes its FAILURE COUNT to a verdict file the shell can
+    # read (a pipe would lose its exit status through the loop above). Add the
+    # count, not 1: the bash half used to fold the whole sub-run into a single
+    # failure, so five printed FAILs summarised as "1 FAILURE(S)" — the exit code
+    # was right and the total was a lie (review Q13, 1.0.6.24). A missing or
+    # unparseable verdict file counts as one failure (fail closed).
+    warn_fails=""
+    [ -f "$T/warn.rc" ] && warn_fails=$(tr -dc '0-9' < "$T/warn.rc")
+    if [ -z "$warn_fails" ]; then
+        bad "16 the panel-warning sub-run left no readable verdict file — its result is unknown, not green"
     else
-        fails=$((fails + 1))
+        fails=$((fails + warn_fails))
     fi
 fi
 

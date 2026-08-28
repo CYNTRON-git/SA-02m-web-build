@@ -173,8 +173,18 @@ function loadI18n() {
   // Self-check the oracle before trusting it: a known pair must translate and
   // a nonsense string must not. Without this a broken load would report the
   // whole tree missing (noise) or the whole tree fine (a false green).
-  if (api.t('Сеть') === 'Сеть') {
-    console.log('i18n-dict-contract: FAIL  the oracle does not translate a known DICT entry — DICT is empty or unreachable');
+  //
+  // SEVERAL canaries, not one: with a single probe ('Сеть'), deleting exactly
+  // that DICT entry tripped the canary — "DICT is empty or unreachable" — and
+  // sent the reader hunting a broken load instead of the deleted entry the
+  // missing-translation path would have named. RED either way, wrong signpost
+  // (review Q11, 1.0.6.24). One surviving canary is enough to prove the oracle
+  // loaded; none means the load itself is broken.
+  const CANARIES = ['Сеть', 'Время', 'Устройства', 'Сохранить'];
+  const liveCanaries = CANARIES.filter(s => api.t(s) !== s);
+  if (liveCanaries.length === 0) {
+    console.log('i18n-dict-contract: FAIL  the oracle translated NONE of the known DICT entries ' +
+      JSON.stringify(CANARIES) + ' — DICT is empty or unreachable (a load failure, not a missing translation)');
     process.exit(1);
   }
   if (api.t('Зумбарабумбарашечка') !== 'Зумбарабумбарашечка') {

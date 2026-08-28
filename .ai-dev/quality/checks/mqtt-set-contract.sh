@@ -260,11 +260,17 @@ else
     bad "30 no audit line written for the accepted mutations (contract §Действие)"
 fi
 
-# Non-vacuity of Part A: the shims must actually have been exercised.
+# Non-vacuity of Part A: the shims must actually have been exercised. The two
+# logs answer DIFFERENT questions and used to be conflated — an empty $TMOLOG was
+# reported as "no publish was ever attempted", which sent the reader to the auth
+# path when the real cause was `timeout` dropped from an argv that still
+# published (review Q11, 1.0.6.24). Name the shim that stayed silent.
 if [ -s "$TMOLOG" ]; then
     ok "31 the timeout/mosquitto_pub shims were exercised (Part A is not vacuous)"
+elif [ -s "$PUBLOG" ]; then
+    bad "31 the \`timeout\` shim was never invoked although a publish WAS attempted — the endpoint calls mosquitto_pub without the \`timeout N\` wrapper, so a wedged broker hangs the request"
 else
-    bad "31 no publish was ever attempted — Part A never reached the broker call"
+    bad "31 neither shim was invoked — no publish was attempted at all; Part A never reached the broker call (a sandbox/extraction failure, not a contract result)"
 fi
 
 # ═══ Part B — source floors ═══════════════════════════════════════════════

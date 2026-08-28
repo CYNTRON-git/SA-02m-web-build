@@ -78,8 +78,14 @@ BIN="$T/bin"; mkdir -p "$BIN"
 INSTALL_LOG="$T/install.log"
 
 fails=0
+skips=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+# A case the ENVIRONMENT cannot run is reported as SKIP and counted, never as ok
+# (quality-gate-rigor.md ## Honesty: "a skipped row is reported as skipped, never
+# as passed"; review Q4, 1.0.6.24). Reserved for genuine environment gaps whose
+# authority is CI — never for a missing in-repo file, which is a defect.
+skip() { skips=$((skips + 1)); printf 'SKIP  %s\n' "$1"; }
 
 # ── recording `install` shim ───────────────────────────────────────────────
 # web_auth_repair_file asks for `install -m 640 -o root -g www-data`. Neither a
@@ -150,8 +156,8 @@ if [ "$(uname -s 2>/dev/null)" = "Linux" ]; then
     [ "$m" = "640" ] && ok "5  session file mode 640" || bad "5  session file mode is $m, expected 640 (umask 027)"
     [ "$d" = "2750" ] && ok "6  session dir mode 2750" || bad "6  session dir mode is $d, expected 2750 (flasher daemon traverses by group)"
 else
-    ok "5  session/dir mode assertions skipped (POSIX modes are not meaningful on $(uname -s 2>/dev/null)); CI is the authority"
-    ok "6  (see 5)"
+    skip "5  session/dir mode assertions (POSIX modes are not meaningful on $(uname -s 2>/dev/null)); CI is the authority"
+    skip "6  (see 5)"
 fi
 
 # ═══ 2. FAIL CLOSED on the session decision ═══════════════════════════════
@@ -269,6 +275,12 @@ else
     bad "30 web_csrf_require did not stop the request: $out"
 fi
 
+# Sample the store's high-water mark HERE, while both sessions and their CSRF
+# files are still live: §4 below revokes everything, so a count taken at the end
+# would be zero on a perfectly healthy run. This is the non-vacuity floor case 56
+# reports.
+STORE_PEAK=$(find "$SA02M_SESSION_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+
 # ═══ 4. Revocation ════════════════════════════════════════════════════════
 HTTP_COOKIE="session_token=$TOK" web_session_destroy_cookie
 check "31 after logout" "session_token=$TOK" deny
@@ -290,8 +302,8 @@ if [ -n "$H" ]; then
     web_auth_verify '' "$H"           && bad "37 an EMPTY password verified against the hash" \
                                        || ok "37 an empty password is rejected"
 else
-    ok "34 hashing skipped — no openssl/python3 hasher on this box (best-effort by design)"
-    ok "35 (see 34)"; ok "36 (see 34)"; ok "37 (see 34)"
+    skip "34 hashing cases — no openssl/python3 hasher on this box (best-effort by design)"
+    skip "35 (see 34)"; skip "36 (see 34)"; skip "37 (see 34)"
 fi
 web_auth_is_hash 'plaintextpw' && bad "38 a plaintext credential was read as a hash" \
                                || ok "38 a plaintext credential is not mistaken for a hash"
@@ -469,8 +481,12 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_has 
         && ok "66 login.cgi clears the counter on success" \
         || bad "66 login.cgi never clears the counter — a locked-out operator can't recover by logging in"
 else
-    ok "64 login.cgi wiring assertions skipped (lib_check.sh unavailable)"
-    ok "65 (see 64)"; ok "66 (see 64)"
+    # A skip is NOT a pass (quality-gate-rigor.md ## Honesty). lib_check.sh is a
+    # committed sibling that is always present, so failing to source it is itself
+    # the defect — and these three are the whole delivery of the M4 throttle:
+    # counting them ok would report the wiring verified when nothing looked at it
+    # (review Q4, 1.0.6.24).
+    bad "64 .ai-dev/quality/checks/lib_check.sh could not be sourced — the login.cgi wiring assertions (64-66) could NOT run; the throttle wiring is UNVERIFIED, not passed"
 fi
 
 # ═══ 9. The runtime dirs the lib DEFAULTS to are PROVISIONED by the repo ═══
@@ -627,12 +643,24 @@ for _entry in "${RUNTIME_DIRS[@]}"; do
 done
 
 # ── non-vacuity ────────────────────────────────────────────────────────────
-n_store=$(find "$SA02M_SESSION_DIR" -type f 2>/dev/null | wc -l)
-[ -d "$SA02M_SESSION_DIR" ] || bad "56 the session store was never created — the whole run was vacuous"
-[ -s "$INSTALL_LOG" ] || bad "56 the \`install\` shim was never invoked — the repair assertions were vacuous"
-[ "$n_store" -ge 0 ] && ok "56 store + shim were exercised"
+# `[ "$n_store" -ge 0 ]` used to stand here: a count is never negative, so the
+# line printed "store + shim were exercised" without testing anything — decoration
+# that reads as evidence (review Q4, 1.0.6.24). The real floor is a store that
+# actually HELD session files at some point in the run (STORE_PEAK is sampled
+# while sessions are live, before §4 revokes them) and an `install` shim that was
+# actually invoked.
+vacuous=0
+[ -d "$SA02M_SESSION_DIR" ] \
+    || { bad "56 the session store was never created — the whole run was vacuous"; vacuous=1; }
+[ "${STORE_PEAK:-0}" -ge 1 ] \
+    || { bad "56 the session store never held a single file — every session case ran against an empty store"; vacuous=1; }
+[ -s "$INSTALL_LOG" ] \
+    || { bad "56 the \`install\` shim was never invoked — the repair assertions were vacuous"; vacuous=1; }
+[ "$vacuous" -eq 0 ] \
+    && ok "56 the store held $STORE_PEAK session file(s) at its peak and the \`install\` shim was invoked — the run was not vacuous"
 
 echo
+[ "$skips" -gt 0 ] && echo "NOTE  $skips case(s) SKIPPED (environment) — skipped is not passed; CI is their authority"
 if [ "$fails" -eq 0 ]; then
     echo "PASS  all lib_web_auth.sh cases green"
     exit 0
