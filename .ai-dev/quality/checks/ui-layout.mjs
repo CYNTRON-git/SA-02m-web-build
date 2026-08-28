@@ -91,8 +91,16 @@
    Usage:   node .ai-dev/quality/checks/ui-layout.mjs
             npm run ui-layout           (after: npm run ui-layout:install)
    Skips gracefully (exit 0) when playwright / chromium is absent — CI has no
-   browser, so this is an on-demand real-layer check, not a headless-less gate
-   (same fail-safe contract as the `headless-smoke` quality row).
+   browser, so this is an on-demand real-layer check, not a headless-less gate.
+   Honesty about what that costs: a skipped row is reported as skipped, never as
+   passed (.ai-dev/notes/quality-gate-environment.md). The row that used to sit
+   beside this one under the same contract, `headless-smoke`, was RETIRED in
+   1.0.6.24 for exactly that reason — it needed a live board too, so it skipped
+   in every environment it was ever invoked in, CI included, while reporting
+   PASS (2026-08-28 audit, C4). This row survives because a dev box CAN run it
+   and it is the only automation over the rendered UI; the CI-runnable floors
+   are carried by `html-id-contract` and `i18n-dict-contract`, which need no
+   browser.
    ═══════════════════════════════════════════════════════════════════════════ */
 
 import http from 'node:http';
