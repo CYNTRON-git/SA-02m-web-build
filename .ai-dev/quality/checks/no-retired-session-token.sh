@@ -87,6 +87,12 @@ allowed() {
     return 1
 }
 
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): this gate is where the repo first solved
+# the class, and it keeps its own copy rather than sourcing lib_check.sh for one
+# reason: it also blanks a leading `*` (a JS block-comment continuation), which
+# the shared lib deliberately does not — in shell that same shape is a `case`
+# label another gate has to read. Same rules, one extra line for a JS sweep.
+#
 # Strip whole comment lines (#-style and //-style) before matching. Reads
 # stdin so it can filter a file OR an extracted function body — pin C needs
 # the latter: the rejection test carries a COMMENT naming the retired token

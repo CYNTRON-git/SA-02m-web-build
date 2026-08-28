@@ -30,6 +30,12 @@
 #   no args → the shipped tree (non-vacuous: zero files found = FAIL)
 #   args    → exactly those files (the self-test uses this to prove a broken
 #             module FAILS and a valid one passes — scripts/dev/test-js-syntax-gate.sh)
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A. This row runs a real parser
+# (`node --check`), not a needle grep, so nothing here can be satisfied by a
+# comment. Its one grep is the module/classic classifier, whose regex is
+# anchored at line start (`^[[:space:]]*import|export`) — a `//`-commented
+# import cannot fake a module marker, and a misread would surface as a parse
+# error, not as a silent pass.
 set -u
 
 JS_ROOT="www/network_config/static/js"

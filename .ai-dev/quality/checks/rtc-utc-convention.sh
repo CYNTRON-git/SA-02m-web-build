@@ -105,6 +105,11 @@ fail() { printf 'rtc-utc: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 pass() { printf 'rtc-utc: ok    %s\n' "$*"; }
 note() { printf 'rtc-utc: ---   %s\n' "$*"; }
 
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): this gate was already comment-safe — every
+# sweep and every pin below runs through uncommented(). It keeps its OWN stripper
+# rather than sourcing lib_check.sh because the same pass also neutralises
+# fake-hwclock (a domain filter the shared lib has no business carrying).
+#
 # Uncommented lines only (shell, systemd conf and nginx conf all comment with #).
 # fake-hwclock is neutralised in the same pass: it saves a timestamp to a file
 # and has no frame, so its mentions must never reach the hwclock matcher.

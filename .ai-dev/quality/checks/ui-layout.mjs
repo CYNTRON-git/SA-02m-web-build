@@ -9,6 +9,10 @@
    what let two wrong layout fixes slip through in the sibling `cloud` repo's
    driver, whose shape this mirrors; measuring the rendered box is the fix.
 
+   COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A. This driver asserts on measured
+   geometry in a real browser, never on a needle grepped out of source, so
+   there is no pin here a `#`/`//` in front of a line could satisfy.
+
    It reuses the existing dev harness's serving approach
    (scripts/dev/characterize-ui.mjs): serve the repo copy of www/network_config
    locally, STUB every /cgi-bin/* to `{}` (no device needed), and set the

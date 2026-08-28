@@ -12,6 +12,9 @@
 # pytest + the deps (the same skipped-locally / runs-in-CI contract the lint row
 # uses). It runs `pytest <daemon-dir>/tests` from inside the daemon dir (the
 # suites have no conftest and import their package by cwd on sys.path).
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A — this is a runner, not a grep. It
+# dispatches a real pytest run; a commented-out test disappears from the run
+# as a missing test, which is a coverage question, not a hollow pin.
 set -u
 
 id="${1:?row-id required}"
