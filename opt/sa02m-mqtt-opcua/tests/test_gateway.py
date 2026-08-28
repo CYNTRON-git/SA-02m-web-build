@@ -27,6 +27,7 @@ import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -247,3 +248,208 @@ class TestSdNotify(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Network access control (1.0.6.24) ─────────────────────────────────────────
+#
+# WHY. This daemon publishes writable process-control nodes with `NoSecurity`
+# on 0.0.0.0:4841 as root; the 2026-08-28 audit (H3) found no device-side way to
+# narrow that and no record of the trade-off. The keys pinned here —
+# `opcua.host` (which already existed, undocumented and unvalidated) and
+# `opcua.allow_from` (new) — are the narrowing, and they are OPT-IN: absent or
+# empty behaves exactly as every release before 1.0.6.24 (Operator decision D).
+#
+# The failure direction is CLOSED and it is the same as the RS-485 gateway's
+# (opt/sa02m-serial-gateway, tests/test_access_control.py): a malformed value
+# refuses to run rather than falling back to the open default, and a configured
+# allow-list that CANNOT be enforced refuses to run rather than listening
+# unrestricted while the operator believes it is filtered.
+
+class _FakeTransport:
+    def __init__(self, peer):
+        self._peer = peer
+        self.closed = False
+
+    def get_extra_info(self, key):
+        return self._peer if key == "peername" else None
+
+    def close(self):
+        self.closed = True
+
+
+def _seam_module(record):
+    """A stand-in for opcua.server.binary_server_asyncio with one protocol
+    class, so the filter can be installed and driven without the real library."""
+    mod = types.ModuleType(gw._PROTOCOL_SEAM)
+
+    class OPCUAProtocol:
+        def connection_made(self, transport):
+            record.append(transport)
+
+    mod.OPCUAProtocol = OPCUAProtocol
+    return mod
+
+
+class _SeamCase(unittest.TestCase):
+    """Installs a throwaway seam module and restores sys.modules afterwards, so
+    one test's patched protocol class cannot leak into another."""
+
+    def setUp(self):
+        self.served = []
+        self.seam = _seam_module(self.served)
+        self._saved = sys.modules.get(gw._PROTOCOL_SEAM)
+        sys.modules[gw._PROTOCOL_SEAM] = self.seam
+        gw._ACL_NETS = None
+
+    def tearDown(self):
+        if self._saved is None:
+            sys.modules.pop(gw._PROTOCOL_SEAM, None)
+        else:
+            sys.modules[gw._PROTOCOL_SEAM] = self._saved
+        gw._ACL_NETS = None
+
+
+class TestAccessConfigParsing(unittest.TestCase):
+    def test_absent_allow_from_means_no_filtering(self):
+        self.assertIsNone(gw._parse_allow_from(None))
+        self.assertIsNone(make_gateway()._allow)
+
+    def test_empty_allow_from_means_no_filtering_not_deny_all(self):
+        for empty in ([], "", "   "):
+            self.assertIsNone(gw._parse_allow_from(empty), repr(empty))
+
+    def test_absent_host_is_all_interfaces(self):
+        self.assertEqual(gw._parse_bind(None), "0.0.0.0")
+        self.assertEqual(gw._parse_bind(""), "0.0.0.0")
+        self.assertEqual(make_gateway()._opcua_host, "0.0.0.0")
+
+    def test_addresses_and_ranges_parse(self):
+        nets = gw._parse_allow_from(["192.168.1.0/24", "10.0.0.5"])
+        self.assertTrue(gw._peer_allowed(nets, "192.168.1.77"))
+        self.assertTrue(gw._peer_allowed(nets, "10.0.0.5"))
+        self.assertFalse(gw._peer_allowed(nets, "10.0.0.6"))
+
+    def test_comma_separated_string_parses(self):
+        nets = gw._parse_allow_from("192.168.1.10, 10.0.0.0/8")
+        self.assertTrue(gw._peer_allowed(nets, "10.1.2.3"))
+        self.assertFalse(gw._peer_allowed(nets, "192.168.1.11"))
+
+    def test_ipv4_mapped_ipv6_peer_matches_an_ipv4_rule(self):
+        nets = gw._parse_allow_from(["192.168.1.0/24"])
+        self.assertTrue(gw._peer_allowed(nets, "::ffff:192.168.1.10"))
+        self.assertFalse(gw._peer_allowed(nets, "::ffff:10.0.0.1"))
+
+    def test_no_filtering_allows_every_peer(self):
+        for host in ("10.0.0.1", "::1", "garbage", None):
+            self.assertTrue(gw._peer_allowed(None, host), repr(host))
+
+    def test_unparseable_peer_is_refused_when_filtering_is_on(self):
+        nets = gw._parse_allow_from(["192.168.1.0/24"])
+        for host in (None, "", "garbage"):
+            self.assertFalse(gw._peer_allowed(nets, host), repr(host))
+
+    def test_malformed_entry_refuses_and_names_the_value(self):
+        with self.assertRaises(gw.AccessConfigError) as ctx:
+            gw._parse_allow_from(["192.168.1.999"])
+        self.assertIn("192.168.1.999", str(ctx.exception))
+
+    def test_one_bad_entry_refuses_the_whole_list(self):
+        with self.assertRaises(gw.AccessConfigError):
+            gw._parse_allow_from(["192.168.1.10", "scada.example.com"])
+
+    def test_non_string_entries_are_refused(self):
+        for bad in ([42], [None], {"a": "b"}, 42):
+            with self.assertRaises(gw.AccessConfigError):
+                gw._parse_allow_from(bad)
+
+    def test_malformed_host_refuses_and_does_not_fall_back_to_open(self):
+        for bad in ("0.0.0.0.0", "localhost", "192.168.1.256", 5):
+            with self.assertRaises(gw.AccessConfigError):
+                gw._parse_bind(bad)
+
+    def test_a_bad_access_config_refuses_to_construct_the_gateway(self):
+        with self.assertRaises(gw.AccessConfigError):
+            make_gateway({"opcua": {"allow_from": ["nonsense"]}, "mqtt": {}})
+        with self.assertRaises(gw.AccessConfigError):
+            make_gateway({"opcua": {"host": "localhost"}, "mqtt": {}})
+
+    def test_default_config_file_carries_the_new_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "sa02m-mqtt-opcua.conf"
+            cfg = gw.load_config(p)
+            self.assertEqual(cfg["opcua"]["allow_from"], [])
+            self.assertEqual(cfg["opcua"]["host"], "0.0.0.0")
+
+    def test_a_config_predating_the_key_still_loads_and_stays_open(self):
+        # Every deployed board has one of these. It must keep working, unchanged.
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "c.conf"
+            p.write_text(json.dumps({"opcua": {"host": "0.0.0.0", "port": 4841},
+                                     "mqtt": {}, "groups": []}), encoding="utf-8")
+            g = gw.OpcuaGateway(gw.load_config(p))
+            self.assertIsNone(g._allow)
+            self.assertEqual(g._opcua_host, "0.0.0.0")
+
+
+class TestPeerFilter(_SeamCase):
+    def test_without_an_allow_list_nothing_is_patched(self):
+        original = self.seam.OPCUAProtocol.connection_made
+        make_gateway()._apply_access_control()
+        self.assertIs(self.seam.OPCUAProtocol.connection_made, original)
+
+    def test_allow_listed_peer_reaches_the_library_handler(self):
+        g = make_gateway({"opcua": {"allow_from": ["192.168.1.0/24"]}, "mqtt": {}})
+        g._apply_access_control()
+        t = _FakeTransport(("192.168.1.7", 50000))
+        self.seam.OPCUAProtocol().connection_made(t)
+        self.assertEqual(self.served, [t])
+        self.assertFalse(t.closed)
+
+    def test_peer_outside_the_allow_list_is_closed_and_never_handled(self):
+        g = make_gateway({"opcua": {"allow_from": ["192.168.1.0/24"]}, "mqtt": {}})
+        g._apply_access_control()
+        t = _FakeTransport(("10.0.0.9", 50000))
+        self.seam.OPCUAProtocol().connection_made(t)
+        self.assertEqual(self.served, [], "a refused peer reached the OPC UA stack")
+        self.assertTrue(t.closed)
+
+    def test_a_peer_with_no_address_is_refused(self):
+        g = make_gateway({"opcua": {"allow_from": ["192.168.1.0/24"]}, "mqtt": {}})
+        g._apply_access_control()
+        t = _FakeTransport(None)
+        self.seam.OPCUAProtocol().connection_made(t)
+        self.assertEqual(self.served, [])
+        self.assertTrue(t.closed)
+
+    def test_a_configured_allow_list_that_cannot_be_installed_refuses_to_run(self):
+        # python-opcua has no access-control hook of its own, so the filter is
+        # installed on the protocol class its binary server uses. If that seam
+        # is ever gone, the daemon must NOT listen unrestricted while the
+        # operator believes allow_from is in force.
+        sys.modules[gw._PROTOCOL_SEAM] = types.ModuleType(gw._PROTOCOL_SEAM)
+        g = make_gateway({"opcua": {"allow_from": ["192.168.1.0/24"]}, "mqtt": {}})
+        with self.assertRaises(gw.AccessConfigError):
+            g._apply_access_control()
+
+    def test_start_refuses_before_the_server_listens_when_the_seam_is_gone(self):
+        sys.modules[gw._PROTOCOL_SEAM] = types.ModuleType(gw._PROTOCOL_SEAM)
+        g = make_gateway({"opcua": {"allow_from": ["192.168.1.0/24"]}, "mqtt": {}})
+        # Pre-stopped so that a REGRESSION here fails the assertion below instead
+        # of hanging the suite in the daemon's main loop.
+        g._stop.set()
+        with self.assertRaises(gw.AccessConfigError):
+            g.start()
+        self.assertFalse(g._server.started,
+                         "the OPC UA server started despite an unenforceable allow_from")
+
+
+class TestNoDeadSecurityImport(unittest.TestCase):
+    def test_user_manager_is_not_imported(self):
+        # `from opcua.server.user_manager import UserManager` sat in this daemon
+        # unused (audit H3). A security symbol imported and never wired reads as
+        # a guarantee that is not there; the enforceable controls are the bind
+        # address and the allow-list above. Wiring username/password would be
+        # worse than nothing on this endpoint: it is NoSecurity, so credentials
+        # would cross the wire in clear text.
+        self.assertFalse(hasattr(gw, "UserManager"),
+                         "a security symbol is imported but nothing uses it")

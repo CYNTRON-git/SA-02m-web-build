@@ -138,6 +138,10 @@ def _install_stubs():
     opcua.ua = types.SimpleNamespace(
         SecurityPolicyType=types.SimpleNamespace(NoSecurity="NoSecurity"))
     server_pkg = types.ModuleType("opcua.server")
+    # user_manager is NOT imported by the daemon any more (1.0.6.24 — a security
+    # symbol nothing wires is a guarantee that is not there). The stub stays so
+    # that re-adding the import fails with the DEDICATED assertion in
+    # TestNoDeadSecurityImport rather than with an opaque ImportError at load.
     user_manager = types.ModuleType("opcua.server.user_manager")
     user_manager.UserManager = type("UserManager", (), {})
     server_pkg.user_manager = user_manager
