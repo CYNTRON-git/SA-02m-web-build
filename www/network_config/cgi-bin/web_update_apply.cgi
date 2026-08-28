@@ -1,7 +1,7 @@
 #!/bin/bash
 # Web update apply / status (legacy GitHub OTA + offline file transaction).
 # GET: transaction fields + legacy.status/log for status.js (plan §2.10 / §6.1).
-# POST without confirm_version: legacy sa02m-web-update-apply (BC for status.js; no CSRF).
+# POST without confirm_version: legacy sa02m-web-update-apply (BC for status.js). CSRF required (launches a root GitHub OTA).
 # POST with confirm_version: CSRF + write transaction → systemctl start sa02m-update.service.
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
@@ -315,7 +315,20 @@ PY
   exit 0
 fi
 
-# ── Legacy GitHub OTA (status.js BC — empty/no confirm_version; no CSRF) ───
+# ── Legacy GitHub OTA (status.js BC — empty/no confirm_version) ───
+# CSRF required: this path launches a full root update from GitHub via
+# `sudo -n sa02m-web-update-apply`. The policy (docs/decisions/selective-csrf-policy.md)
+# and the threat model both say every session-authed mutating endpoint carries the
+# token; until 1.0.6.24 this one was marked "no CSRF" and did not (audit M6). The web
+# UI already sends X-SA02M-CSRF here (app/status.js withCsrfHeaders()). Checked BEFORE
+# any header is emitted so the shared E_CSRF error shape can be returned; a stale
+# cached bundle without the token gets E_CSRF and the app.js wrapper re-logs in.
+if ! web_csrf_validate; then
+  _json_headers
+  printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+  exit 0
+fi
+
 _json_headers
 
 if _legacy_running; then
