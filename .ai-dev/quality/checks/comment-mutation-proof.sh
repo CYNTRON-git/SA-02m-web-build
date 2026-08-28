@@ -93,6 +93,7 @@ watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchd
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
+gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
