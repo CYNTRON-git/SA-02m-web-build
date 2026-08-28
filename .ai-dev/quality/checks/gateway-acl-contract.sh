@@ -34,12 +34,19 @@
 #   docs/agent-rules/quality-gate-rigor.md (a)). That line is also this gate's
 #   registered case in `comment-mutation-proof`.
 #
-#   Cases 16-21 cover the PANEL half — the warning shown at the moment a port is
+#   Cases 16-23 cover the PANEL half — the warning shown at the moment a port is
 #   enabled is the only notice the operator gets, so "it stopped appearing" must
-#   fail here and not in the field. `_accessWarnNeeded` / `_parseAllowInput` are
-#   EXTRACTED from the shipped gateway.js and executed in a vm (the
-#   rs485-roster-consumer idiom: run the shipped function, never re-implement
-#   it), so the gate and the panel cannot drift apart. A failed extraction FAILS.
+#   fail here and not in the field. `_accessWarnNeeded`, `_parseAllowInput` and
+#   the two helpers deciding what counts as restricted (`_allowListRestricts`,
+#   `_allowEntryIsOpen`) are EXTRACTED from the shipped gateway.js and executed
+#   in a vm (the rs485-roster-consumer idiom: run the shipped function, never
+#   re-implement it), so the gate and the panel cannot drift apart. A failed
+#   extraction of any of the four FAILS.
+#   Cases 22* pin the direction that shipped wrong in 1.0.6.24: the warning was
+#   silenced by allow_from.length alone, so a wide-open list (`0.0.0.0/0`) read
+#   as "restricted" and the operator was told nothing about a fully open port.
+#   Case 23 pins the opposite direction so the fix cannot become "anything
+#   containing 0.0.0.0" — a prefix-less address is a single host.
 #
 # NON-VACUOUS: an un-retargeted config path, a `sudo` shim that was never
 # invoked across the whole run, a session the shipped lib refuses to mint, or a
@@ -52,12 +59,16 @@
 #   * accepting a malformed allow_from entry         -> case 9 FAIL
 #   * skipping the bad entry and writing the rest    -> case 9 FAIL
 #   * accepting a malformed bind                     -> cases 10, 11 FAIL
-# and five of a scratch gateway.js through GATEWAY_JS_SRC:
+# and eight of a scratch gateway.js through GATEWAY_JS_SRC:
 #   * the warning never shows                        -> cases 16, 20b FAIL
 #   * an allow-list no longer silences it            -> case 19 FAIL
 #   * any 1x.x.x bind counted as loopback            -> case 20b FAIL
 #   * the allow-list field split on commas only      -> case 21 FAIL
 #   * the decision function renamed away             -> case 16 FAIL (non-vacuity)
+#   * `_allowEntryIsOpen` always answering "not open"-> cases 22,22b,22c,22d,22e FAIL
+#   * any non-empty list counted as restricting
+#     (the defect as shipped in 1.0.6.24)            -> cases 22,22b,22c,22d,22e FAIL
+#   * `_allowEntryIsOpen` renamed away               -> case 16 FAIL (non-vacuity)
 # and by the standing `comment-mutation-proof` row, which comments the
 # `norm_allow_from(name, pcfg, all_errors)` line out.
 #
@@ -146,14 +157,18 @@ let fails = 0;
 const ok  = m => console.log('gateway-acl-contract: ok    ' + m);
 const bad = m => { console.log('gateway-acl-contract: FAIL  ' + m); fails++; };
 
-const need = grab('_accessWarnNeeded');
-const parse = grab('_parseAllowInput');
-if (!need || !parse) {
-  bad('16 could not extract _accessWarnNeeded/_parseAllowInput from the shipped '
+// Every function the decision depends on is extracted from the shipped file —
+// a helper re-implemented here could pass while the panel's own copy is wrong.
+const NEEDED = ['_accessWarnNeeded', '_parseAllowInput',
+                '_allowListRestricts', '_allowEntryIsOpen'];
+const parts = NEEDED.map(grab);
+const missing = NEEDED.filter((n, i) => !parts[i]);
+if (missing.length) {
+  bad('16 could not extract ' + missing.join(', ') + ' from the shipped '
       + 'gateway.js — the extraction is broken, not the panel');
 } else {
   const ctx = vm.createContext({});
-  vm.runInContext(need + '\n' + parse + '\nglobalThis.W = _accessWarnNeeded;'
+  vm.runInContext(parts.join('\n') + '\nglobalThis.W = _accessWarnNeeded;'
                   + '\nglobalThis.P = _parseAllowInput;', ctx);
   const W = ctx.W, P = ctx.P;
 
@@ -173,6 +188,26 @@ if (!need || !parse) {
     { ...base, bind: '127.0.0.1' }, false);
   t('20b a LAN bind does NOT silence it (an interface is not an allow-list)',
     { ...base, bind: '192.168.1.5' }, true);
+
+  // 22*: an allow-list that narrows NOTHING must not read as "restricted".
+  // The daemon parses each entry with ipaddress.ip_network(entry,
+  // strict=False), so every /0 spelling below covers the whole address family
+  // and the port stays open to everyone — a hidden warning there is the same
+  // lie the warning exists to prevent.
+  t('22 an all-addresses allow-list (0.0.0.0/0) still warns',
+    { ...base, allow_from: ['0.0.0.0/0'] }, true);
+  t('22b an all-addresses IPv6 allow-list (::/0) still warns',
+    { ...base, allow_from: ['::/0'] }, true);
+  t('22c a host form the daemon normalises to /0 (192.168.1.10/0) still warns',
+    { ...base, allow_from: ['192.168.1.10/0'] }, true);
+  t('22d a wide-open entry mixed into a real list still warns',
+    { ...base, allow_from: ['192.168.1.0/24', '0.0.0.0/0'] }, true);
+  t('22e the netmask spelling of /0 (0.0.0.0/0.0.0.0) still warns',
+    { ...base, allow_from: ['0.0.0.0/0.0.0.0'] }, true);
+  // The opposite direction, so the fix cannot be "anything containing 0.0.0.0":
+  // a bare address carries no prefix, so the daemon reads it as a single host.
+  t('23 a bare address without a prefix is a single host, not a wildcard',
+    { ...base, allow_from: ['0.0.0.0'] }, false);
 
   const parsed = P(' 192.168.1.10, 10.0.0.0/8  ');
   if (JSON.stringify(parsed) === JSON.stringify(['192.168.1.10', '10.0.0.0/8'])) {

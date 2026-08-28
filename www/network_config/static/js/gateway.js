@@ -384,14 +384,41 @@ function _renderPortPanel(area, port) {
 // allow-list narrowing it. A loopback bind is the one address that makes the
 // port unreachable from the network, so warning there would be untrue — and a
 // warning that cries wolf is one the operator stops reading.
-// Behaviour pinned by gateway-acl-contract (cases 16-21), which runs THIS
+// Behaviour pinned by gateway-acl-contract (cases 16-23), which runs THIS
 // function, extracted from the shipped file.
 function _accessWarnNeeded(cfg) {
   const bind = String(cfg.bind == null ? '' : cfg.bind).trim() || '0.0.0.0';
   const loopback = /^127\./.test(bind) || bind === '::1';
   return !!cfg.enabled && (cfg.mode || 'disabled') !== 'disabled'
          && !loopback
-         && !(cfg.allow_from && cfg.allow_from.length);
+         && !_allowListRestricts(cfg.allow_from);
+}
+
+// An allow-list entry that narrows nothing. The daemon parses every entry with
+// `ipaddress.ip_network(entry, strict=False)` (serial_gateway.py
+// `_parse_allow_from`) and admits a peer with `addr in net`, so the prefix
+// LENGTH decides: any /0 covers its whole address family, whatever the entry
+// looks like — `0.0.0.0/0`, `::/0`, the netmask spelling `0.0.0.0/0.0.0.0`, and
+// the host forms strict=False normalises (`192.168.1.10/0` -> `0.0.0.0/0`).
+// A bare address carries no prefix and is a single host (`0.0.0.0` -> /32),
+// which restricts. Keeping this identical to the daemon's notion of
+// "restricted" is the point of the function: a panel calling a wide-open list
+// restricted tells the operator exactly the lie the warning exists to prevent.
+function _allowEntryIsOpen(entry) {
+  const s = String(entry == null ? '' : entry).trim();
+  const slash = s.indexOf('/');
+  if (slash < 0) return false;
+  const prefix = s.slice(slash + 1).trim();
+  if (/^[0-9]+$/.test(prefix)) return parseInt(prefix, 10) === 0;
+  return /^0+\.0+\.0+\.0+$/.test(prefix);
+}
+
+// True only when the list really narrows access: non-empty AND with no entry
+// that admits everyone. One wide-open entry opens the port whatever else the
+// list holds — the daemon accepts a peer matching ANY entry.
+function _allowListRestricts(list) {
+  if (!list || !list.length) return false;
+  return !Array.prototype.some.call(list, _allowEntryIsOpen);
 }
 
 function _updateAccessWarn(port) {
