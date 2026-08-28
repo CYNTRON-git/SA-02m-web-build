@@ -199,6 +199,89 @@ web_session_destroy_all() {
     return 0
 }
 
+# ── Login brute-force throttle (M4) ─────────────────────────────────────────
+# A single shared password over plain HTTP with no attempt limit is an
+# unthrottled password oracle for A1/A2 (threat model §5). A per-client windowed
+# counter under /run rate-limits failed logins: MAXFAIL failures inside a LOCKOUT
+# window lock that client for the rest of the window, then the counter resets.
+#
+# FAIL OPEN on the throttle, never closed: the password is ALWAYS still required,
+# and a broken /run (unwritable, full) must never permanently lock out a
+# legitimate operator — so every state error returns "allowed". The window is
+# bounded and auto-clears, so a lockout can never be permanent (a reboot clears
+# /run entirely, and the window expires without one). State survives a service
+# restart (tmpfs persists across fcgiwrap/nginx restarts) but not a reboot.
+SA02M_LOGIN_DIR="${SA02M_LOGIN_DIR:-/run/sa02m-web-login}"
+SA02M_LOGIN_MAXFAIL="${SA02M_LOGIN_MAXFAIL:-10}"   # failed attempts per window per client
+SA02M_LOGIN_LOCKOUT="${SA02M_LOGIN_LOCKOUT:-300}"  # window / lockout seconds (5 min)
+
+web_login__ensure_dir() {
+    mkdir -p "$SA02M_LOGIN_DIR" 2>/dev/null || return 1
+    chmod 0700 "$SA02M_LOGIN_DIR" 2>/dev/null || true
+    return 0
+}
+
+# A stable, filesystem-safe key for the client. REMOTE_ADDR is set by nginx; an
+# absent one (direct CGI, misconfig) collapses to a single shared bucket, which
+# still throttles — it never fails to a per-request-unique key that can't be
+# counted.
+web_login__client_key() {
+    printf '%s' "${REMOTE_ADDR:-unknown}" | sha256sum 2>/dev/null | cut -d' ' -f1
+}
+
+# 0 = the client may attempt a login now; 1 = locked out. Fail OPEN on any error.
+web_login_check() {
+    web_login__ensure_dir || return 0
+    local key f count start now
+    key=$(web_login__client_key); [ -n "$key" ] || return 0
+    f="$SA02M_LOGIN_DIR/$key"
+    [ -f "$f" ] || return 0
+    IFS=' ' read -r count start < "$f" 2>/dev/null || return 0
+    case "$count" in ''|*[!0-9]*) return 0 ;; esac
+    case "$start" in ''|*[!0-9]*) return 0 ;; esac
+    now=$(date +%s 2>/dev/null) || return 0
+    # Window elapsed → stale counter, allow (a failure will start a fresh window).
+    [ "$(( now - start ))" -ge "$SA02M_LOGIN_LOCKOUT" ] && return 0
+    # Inside the window: locked once the failure count reaches the threshold.
+    [ "$count" -ge "$SA02M_LOGIN_MAXFAIL" ] && return 1
+    return 0
+}
+
+# Record one failed login for the current client. Read-modify-write serialised by
+# flock so a login burst cannot under-count. Best-effort throughout.
+web_login_record_failure() {
+    web_login__ensure_dir || return 0
+    local key f now
+    key=$(web_login__client_key); [ -n "$key" ] || return 0
+    f="$SA02M_LOGIN_DIR/$key"
+    now=$(date +%s 2>/dev/null) || return 0
+    (
+        flock -w 2 9 2>/dev/null || true
+        local c s count start
+        count=0; start="$now"
+        if IFS=' ' read -r c s < "$f" 2>/dev/null; then
+            case "$c" in ''|*[!0-9]*) c=0 ;; esac
+            case "$s" in ''|*[!0-9]*) s="$now" ;; esac
+            # Same window → carry the count; expired window → start a new one.
+            if [ "$(( now - s ))" -lt "$SA02M_LOGIN_LOCKOUT" ]; then
+                count="$c"; start="$s"
+            fi
+        fi
+        count=$(( count + 1 ))
+        printf '%s %s\n' "$count" "$start" > "$f"
+    ) 9>"$f.lock" 2>/dev/null || true
+    return 0
+}
+
+# Clear the client's counter after a successful login.
+web_login_record_success() {
+    web_login__ensure_dir || return 0
+    local key
+    key=$(web_login__client_key); [ -n "$key" ] || return 0
+    rm -f "$SA02M_LOGIN_DIR/$key" "$SA02M_LOGIN_DIR/$key.lock" 2>/dev/null
+    return 0
+}
+
 
 web_auth__strip_quotes() {
     local v="$1"

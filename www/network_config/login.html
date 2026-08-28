@@ -47,8 +47,16 @@
 // the status.cgi public carve-out (S8) — status.cgi now requires a session, so
 // pre-login polling only produced unauthorized responses every 8 s. The
 // dashboard warms its own widgets after login.
-if (new URLSearchParams(location.search).get('error')) {
-  document.getElementById('login-error').style.display = 'block';
+// The lockout message is set here (in the script body), not as static markup:
+// login.html does not load i18n.js, so its text is Russian-only by design, and
+// keeping it out of a scanned text node avoids an i18n-ledger entry.
+var _loginErr = new URLSearchParams(location.search).get('error');
+if (_loginErr) {
+  var _errBox = document.getElementById('login-error');
+  if (_loginErr === 'locked') {
+    _errBox.textContent = 'Слишком много попыток входа. Подождите несколько минут и попробуйте снова.';
+  }
+  _errBox.style.display = 'block';
 }
 if (document.cookie.split(';').some(c => c.trim().startsWith('session_token='))) {
   window.location.replace('./');

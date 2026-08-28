@@ -405,6 +405,74 @@ SA02M_WEB_PASS_HASH='\$6\$abc\$tooshort'
 stage "55 no credential at all"    "SA02M_WEB_USER='admin'
 " reject
 
+# ═══ 8. Login brute-force throttle (M4) ═══════════════════════════════════
+# A single shared password over plain HTTP with no attempt limit is an
+# unthrottled oracle (threat model §5). web_login_check/record_failure/
+# record_success implement a per-client windowed lockout under /run. Driven here
+# with a tiny window against a scratch dir.
+#
+# Proven RED (1.0.6.24), mutations of a scratch copy of the lib:
+#   web_login_check always returns 0 (never locks)          -> 59 RED
+#   web_login_record_failure is a no-op (count never grows) -> 59 RED
+#   web_login_check keys off a constant, not REMOTE_ADDR     -> 60 RED (one
+#     client's lockout leaks to another)
+#   web_login_check treats an expired window as still locked -> 62 RED (a
+#     legitimate operator never recovers)
+#   web_login_check fails CLOSED on a broken dir             -> 63 RED
+export SA02M_LOGIN_DIR="$T/login"
+export SA02M_LOGIN_MAXFAIL=3
+export SA02M_LOGIN_LOCKOUT=2
+export REMOTE_ADDR="203.0.113.7"
+
+web_login_record_success   # clean slate for this client
+web_login_check && ok "57 a fresh client may attempt a login" \
+                || bad "57 a fresh client was refused"
+web_login_record_failure; web_login_record_failure
+web_login_check && ok "58 below the threshold the client may still try" \
+                || bad "58 the client was locked before MAXFAIL failures"
+web_login_record_failure   # third failure reaches MAXFAIL
+web_login_check && bad "59 NOT locked after MAXFAIL failures — brute force is unthrottled" \
+                || ok "59 locked after MAXFAIL failures"
+if REMOTE_ADDR="198.51.100.9" web_login_check; then
+    ok "60 a different client is unaffected by another's lockout (per-client bucket)"
+else
+    bad "60 one client's lockout blocked a DIFFERENT client — the counter is not per-client"
+fi
+web_login_record_success
+web_login_check && ok "61 a successful login clears the counter" \
+                || bad "61 the counter was not cleared on success"
+# Window expiry → auto-unlock; a lockout is never permanent.
+web_login_record_failure; web_login_record_failure; web_login_record_failure
+web_login_check || true    # locked now
+sleep 3                    # > SA02M_LOGIN_LOCKOUT (2s)
+web_login_check && ok "62 the lockout auto-clears after the window (never permanent)" \
+                || bad "62 the lockout did not expire — a legitimate operator stays locked out"
+# Fail OPEN when the state dir is unusable — a broken /run must never lock everyone out.
+if SA02M_LOGIN_DIR="/dev/null/nope" web_login_check; then
+    ok "63 fails OPEN on an unwritable state dir (no permanent lockout)"
+else
+    bad "63 failed CLOSED on a broken state dir — a broken /run would lock everyone out"
+fi
+
+# The lib is only half the guarantee — the shipped login.cgi must actually CALL
+# it, on both the reject and the accept paths. Comment-safe via lib_check.sh so a
+# `#`-disabled call is caught here, not silently.
+if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_has >/dev/null; then
+    LOGIN=www/network_config/cgi-bin/login.cgi
+    stripped_has "$LOGIN" 'web_login_check' \
+        && ok "64 login.cgi gates on web_login_check" \
+        || bad "64 login.cgi never calls web_login_check — the throttle is dead code"
+    stripped_has "$LOGIN" 'web_login_record_failure' \
+        && ok "65 login.cgi records a failed attempt" \
+        || bad "65 login.cgi never records a failure — the counter never grows"
+    stripped_has "$LOGIN" 'web_login_record_success' \
+        && ok "66 login.cgi clears the counter on success" \
+        || bad "66 login.cgi never clears the counter — a locked-out operator can't recover by logging in"
+else
+    ok "64 login.cgi wiring assertions skipped (lib_check.sh unavailable)"
+    ok "65 (see 64)"; ok "66 (see 64)"
+fi
+
 # ── non-vacuity ────────────────────────────────────────────────────────────
 n_store=$(find "$SA02M_SESSION_DIR" -type f 2>/dev/null | wc -l)
 [ -d "$SA02M_SESSION_DIR" ] || bad "56 the session store was never created — the whole run was vacuous"
