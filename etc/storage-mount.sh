@@ -152,8 +152,20 @@ do_mount() {
     if try_mount_ntfs; then
       return 0
     fi
-    if [[ -z "${FSTYPE}" ]] || (( STORAGE_AUTO_FORMAT != 1 )); then
-      log "Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел ${DEV_PATH} без подходящей ФС для монтирования без mkfs — пропуск."
+    # The ONLY condition here is the operator's flag. An empty FSTYPE must
+    # reach mkfs too — /etc/sa02m_storage.conf and the panel both promise
+    # «пустой или NTFS раздел перезаписывается в exFAT», and an extra
+    # `-z "${FSTYPE}"` term in this test silently killed half that promise
+    # (an empty partition was never formatted). Guarded by the quality row
+    # storage-automount-decision.
+    if (( STORAGE_AUTO_FORMAT != 1 )); then
+      local reason
+      if [[ -z "${FSTYPE}" ]]; then
+        reason="раздел без распознанной ФС"
+      else
+        reason="раздел ${FSTYPE} не смонтирован ни ntfs3, ни ntfs-3g"
+      fi
+      log "${DEV_PATH}: ${reason}, автоформатирование выключено (STORAGE_AUTO_FORMAT=${STORAGE_AUTO_FORMAT} в /etc/sa02m_storage.conf) — пропуск без mkfs."
       # Намеренный «нечего монтировать» — НЕ ошибка сервиса. Возвращаем 0,
       # чтобы systemd не показывал unit как failed (UI «1 loaded units listed»
       # после каждой загрузки сбивал с толку).
