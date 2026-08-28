@@ -18,9 +18,9 @@ Why it exists: ten checks in this project have been found reporting protection
 they did not have. The 2026-08-28 sweep measured the scale — **12 of 14 pinned
 lines in the static gates were defeated by putting `#` in front of them; 0
 after the fix** (`4686bf3`). The ninth was the gate `docs/threat-model.md`
-cited as proof that root escalation was closed
-(`.ai-dev/audit/security-verdict.md` M1, widened in `373a2f9`); the tenth was
-the runner itself (`3a3e0ac`).
+cited as proof that root escalation was closed (audit 2026-08-28, the
+«escalation gate reads 1 of the 6 homes» record in `.ai-dev/backlog.md`; gate
+widened in `373a2f9`); the tenth was the runner itself (`3a3e0ac`).
 
 ---
 
@@ -51,13 +51,14 @@ offline allow-list (the pack silently drops the MPLC RT plugin),
 `#web_csrf_require` in `mplc_project_deploy.cgi` (CSRF gone from an endpoint
 that launches a root helper) — both GREEN. The audit found five by mutation;
 measuring the whole set found six more it had missed and one gate that was
-half-safe (`.ai-dev/audit/contracts-verdict.md` C3, fixed `4686bf3`).
+half-safe (audit 2026-08-28, the «five safety gates are defeated by a comment
+mark» record in `.ai-dev/backlog.md`; fixed `4686bf3`).
 
 **(b) Incomplete enumeration — the check reads one home of many.**
 `sudoers-pin-contract` read `etc/sudoers.d/sa02m-www` while `www-data` root
 grants live in **six** homes, two written by installer heredocs and one a
 runtime append — the two unpinned grants were structurally invisible to the
-check meant to prove escalation closed (`security-verdict.md` M1). Same shape
+check meant to prove escalation closed (same record; `373a2f9`). Same shape
 by scope: `py-syntax` compiled `opt/` only, so a syntax error in Python shipped
 from `etc/` passed the full build beat and failed first at systemd start on the
 board (`b4f6e0c`).
@@ -66,8 +67,9 @@ board (`b4f6e0c`).
 `py-unit-roster` covers `opt/sa02m-rs485-roster/`; the contracted `modules`
 block is assembled by the consumer in `status.cgi`, which the audit found
 covered by nothing but bash syntax — deleting it broke the contract with every
-gate green (`contracts-verdict.md` C2). `covers` names every file that can BREAK the
-guarantee, not only the file that defines it.
+gate green (audit 2026-08-28, the «rs485-roster contract is validated
+producer-side only» record in `.ai-dev/backlog.md`). `covers` names every file
+that can BREAK the guarantee, not only the file that defines it.
 
 **(d) The runner never selects the work.** `--touched` resolved the touched set
 from the committed `origin/main..HEAD` diff and read the working tree only when
@@ -84,8 +86,8 @@ construction — a selector that stops matching turns the run RED instead of
 quietly checking zero elements (the non-vacuity rule ported with the driver,
 `3bdf021`); `telemetry-device-id-contract`
 fails loudly outside a git checkout because its non-vacuity floor catches the
-dead `git ls-files` sweep instead of quietly checking one file
-(`contracts-verdict.md` S2).
+dead `git ls-files` sweep instead of quietly checking one file (the floor and
+its reason are in that script's own header).
 
 **(f) An early-exit pipe under `pipefail` turns "found" into "not found".**
 `strip_comments < "$f" | grep -qF "$needle"`: `grep -q` exits on the first
@@ -129,7 +131,9 @@ pattern) and documents that in its own header.
   and unexamined, because a doc said a gate held it.
 - Same class, smaller: `mqtt_set.cgi`'s «asserted by the contract check»
   comment named a row that did not exist; the guarantee was live but unguarded,
-  and the comment is what made it look guarded (`contracts-verdict.md` C1).
+  and the comment is what made it look guarded (audit 2026-08-28, the «one
+  endpoint that switches real relay outputs is guarded only by a comment»
+  record in `.ai-dev/backlog.md`; row added in `3b44f24`).
 - A skipped row is reported as **skipped**, never as passed; a local substitute
   for a CI-authoritative row is evidence, not proof
   (`.ai-dev/notes/quality-gate-environment.md`).
