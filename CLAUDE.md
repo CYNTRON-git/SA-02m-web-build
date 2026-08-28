@@ -2,10 +2,10 @@
 @.claude/ai-dev.md
 
 <!-- Project canon — loaded into every orchestrator session (Claude Code @-imports
-     resolve at session start). The six docs below are the ONE HOME for our
-     project's web-code rigor, workflow discipline, SA-02m domain knowledge,
-     commit message format, the diagnostic-tool catalog, and the agent tooling
-     map. Never restated in a plan or a review; cited. Machine-facing (English
+     resolve at session start). Each doc listed below is the ONE HOME for its
+     subject — web-code rigor, workflow discipline, SA-02m domain knowledge,
+     commit message format, the diagnostic-tool catalog, the agent tooling map,
+     skill authoring. Never restated in a plan or a review; cited. Machine-facing (English
      only) per PROTOCOL.md invariant 5; conversation follows docLanguage: ru.
      Adapted from the MR-02m firmware project's ruleset (same ai-dev protocol,
      web domain). -->

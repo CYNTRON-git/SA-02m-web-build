@@ -24,7 +24,8 @@ Home Assistant + Yaha — в [ALICE_HA_YAHA_ALTERNATIVE.md](ALICE_HA_YAHA_ALTERN
 ## Phase 0 (блокирующий для облачной привязки)
 
 Реализация шлюза: репозиторий **cloud** → каталог `alice-gateway/`
-(чеклист `alice-gateway/docs/PHASE0_CHECKLIST.md`, деплой `docs/DEPLOY.md`).
+(чеклист и деплой — там же: `alice-gateway/docs/PHASE0_CHECKLIST.md` и
+`docs/DEPLOY.md` **в репозитории cloud**, не в этом).
 
 Пока `https://alice.cyntron.ru/v1.0/ping` не отвечает 200, UI и API:
 
