@@ -113,17 +113,32 @@ stripped_count() {  # $1=path  $2=ERE
 # Line number of the FIRST comment-stripped line of FILE matching the ERE
 # (empty when none). Blanking, not deleting, is what makes this number line up
 # with the real file — the property the ordering pins depend on.
+#
+# Both helpers CAPTURE the whole match list, then pick the first/last line and
+# its number with shell parameter expansion. The obvious `grep -nE … | head -1 |
+# cut -d: -f1` is trap 1 above, in the file that encodes trap 1: `head -1` is an
+# early-exit consumer, so on a large input grep takes SIGPIPE and under
+# `set -o pipefail` the helper returns 141 while still printing the right value.
+# Every current call site captures the value, so nothing was broken — the shape
+# is banned because the failure is platform-dependent and silent, not because it
+# had bitten here yet (review Q9, 1.0.6.24; self-test case 9e pins the shape).
 stripped_first_line() {  # $1=path  $2=ERE
-    local text
+    local text matches line
     text=$(stripped_text "$1")
     [ -n "$text" ] || return 0
-    grep -nE "$2" <<<"$text" | head -1 | cut -d: -f1
+    matches=$(grep -nE "$2" <<<"$text")
+    [ -n "$matches" ] || return 0
+    line=${matches%%$'\n'*}          # first matching "N:content"
+    printf '%s\n' "${line%%:*}"
 }
 
 # Line number of the LAST such line.
 stripped_last_line() {  # $1=path  $2=ERE
-    local text
+    local text matches line
     text=$(stripped_text "$1")
     [ -n "$text" ] || return 0
-    grep -nE "$2" <<<"$text" | tail -1 | cut -d: -f1
+    matches=$(grep -nE "$2" <<<"$text")
+    [ -n "$matches" ] || return 0
+    line=${matches##*$'\n'}          # last matching "N:content"
+    printf '%s\n' "${line%%:*}"
 }

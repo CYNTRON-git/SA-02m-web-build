@@ -122,6 +122,37 @@ stripped_matches "$BIG" '^needle_marker=1$' \
     && ok "9b: stripped_matches() likewise" \
     || bad "9b: stripped_matches() lost a present needle on a huge file"
 
+# 9c/9d. The LINE-NUMBER helpers must be immune too. `stripped_first_line` used
+#    to end in `grep -nE … | head -1 | cut -d: -f1` — the very shape (f) bans:
+#    `head -1` is an early-exit consumer, so under `set -o pipefail` the
+#    pipeline's status is grep's SIGPIPE 141 on a large input. Every call site
+#    happens to capture the VALUE, so nothing was broken — but the poisoning is
+#    platform-dependent (GNU vs MSYS) and silent, which is why the shape is
+#    banned rather than the symptom watched (review Q9, 1.0.6.24).
+first_big=$(stripped_first_line "$BIG" '^needle_marker=1$'); rc_first=$?
+[ "$rc_first" -eq 0 ] && [ "$first_big" = "1" ] \
+    && ok "9c: stripped_first_line() returns line 1 with rc=0 on a huge file (no early-exit pipe)" \
+    || bad "9c: stripped_first_line() on a huge file gave '$first_big' rc=$rc_first — expected '1' rc=0"
+last_big=$(stripped_last_line "$BIG" '^needle_marker=1$'); rc_last=$?
+[ "$rc_last" -eq 0 ] && [ "$last_big" = "1" ] \
+    && ok "9d: stripped_last_line() likewise (rc=0, line 1)" \
+    || bad "9d: stripped_last_line() on a huge file gave '$last_big' rc=$rc_last — expected '1' rc=0"
+
+# 9e. The SHAPE itself, not only its symptom. A run on THIS host may or may not
+#    reproduce the SIGPIPE poisoning (MSYS sed does not die on the signal), so
+#    watching the status proves nothing portable. Pin the source instead: no
+#    helper in the shared lib may pipe a producer into an early-exit consumer
+#    (`| head`, `| grep -q/-l/-m`) — docs/agent-rules/quality-gate-rigor.md (f).
+LIB="$HERE/lib_check.sh"
+n_lib=$(strip_comments < "$LIB" | grep -c '')
+if [ "$n_lib" -lt 50 ]; then
+    bad "9e: only $n_lib lines swept from lib_check.sh — the sweep is broken, not the lib small (vacuity floor)"
+elif stripped_matches "$LIB" '\|[[:space:]]*(head([[:space:]]|$)|grep[[:space:]]+-[^[:space:]]*[qlm])'; then
+    bad "9e: lib_check.sh itself pipes a producer into an early-exit consumer (| head / | grep -q|-l|-m) — banned shape (f), the trap this lib exists to encode"
+else
+    ok "9e: no early-exit pipe in lib_check.sh's own helpers ($n_lib lines swept)"
+fi
+
 # 10. Non-vacuity: an unreadable file must never read as "everything present".
 stripped_has "$TMP/does-not-exist" 'anything' \
     && bad "10a: stripped_has() reported a needle in a nonexistent file" \
