@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: self-test of the runner's own touched-set and covers matching - it drives run.mjs against purpose-built temp git repos and asserts the returned file lists; it pins no source line of any shipped file.
 /* ═══════════════════════════════════════════════════════════════════════════
    quality-runner-self-test — standalone Node test for run.mjs's `--touched`
    row selection. Two regressions, both of which made `--touched` report a
@@ -41,6 +42,11 @@
    `www/network_config/cgi-bin/status.cgi` left `bash-cgi-syntax` and every
    other `cgi-bin/` row unselected. The touched set is now the UNION of the
    committed diff and the working tree (staged + unstaged + untracked).
+   Second half of the same class: BOTH halves must read git's `-z` output.
+   The union landed with `-z` on the working-tree side only, so a COMMITTED
+   path holding a non-ASCII byte came back quoted (`"\320\260\320\261.js"`)
+   and matched no `covers` glob — the same silent skip, on the other half
+   (review Q3, 1.0.6.24). Both are pinned below with a real quoted path.
 
    No framework — mirrors scripts/dev/test-clear-session-cookie.mjs's
    stdlib-only posture. Spins up a real temp git repo so the test exercises
@@ -109,7 +115,13 @@ try {
   git2('update-ref refs/remotes/origin/main refs/heads/main');
   git2('checkout -q -b feature');
   writeFileSync(join(dir2, 'committed.js'), 'a\n');
-  git2('add committed.js');
+  // The COMMITTED half's own hostile shapes: git's human format quotes a path
+  // holding a space or a non-ASCII byte ("www/\320\260.js"), so a naive
+  // newline split hands the runner a quoted path that matches no `covers` glob
+  // — the same silent skip the working-tree half was fixed for (Q3, 1.0.6.24).
+  writeFileSync(join(dir2, 'абв.js'), 'a\n');
+  writeFileSync(join(dir2, 'committed name with space.js'), 'a\n');
+  git2('add -A');
   git2('commit -q -m "first commit on the branch"');
 
   // The handback, uncommitted.
@@ -124,6 +136,15 @@ try {
   check(Array.isArray(touched), 'union: computeTouchedFiles() returns an array on a branch with a commit');
   const has = (p) => Array.isArray(touched) && touched.includes(p);
   check(has('committed.js'), 'union: the committed half survives (committed.js)');
+  check(has('абв.js'),
+    'union: a COMMITTED non-ASCII path comes back verbatim, unquoted (абв.js) — got ' + JSON.stringify(touched));
+  check(has('committed name with space.js'),
+    'union: a COMMITTED path with a space comes back verbatim, unquoted');
+  // The consequence, not just the string: a quoted path matches no `covers`
+  // pattern, so the row that guards it is silently skipped. The pattern here
+  // can be satisfied by NOTHING else in the touched set.
+  check(Array.isArray(touched) && fileMatchesCovers(touched, ['абв.js']),
+    'union: the committed non-ASCII path MATCHES its own covers pattern — the silent skip is closed');
   check(has('status.cgi'),
     'union: an UNSTAGED edit is seen even though the committed diff is non-empty — the regression (status.cgi)');
   check(has('staged.py'), 'union: a STAGED add is seen (staged.py)');

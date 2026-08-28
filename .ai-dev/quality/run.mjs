@@ -123,6 +123,20 @@ export function fileMatchesCovers(files, covers) {
 // resolution the runner has always used (explicit base → origin/main →
 // merge-base against origin/main or main). Returns [] when nothing resolves —
 // the caller decides what an empty result means.
+//
+// `-z` for the same reason workingTreeFiles() carries it (below): without it
+// git QUOTES any path holding a non-ASCII byte or a control character
+// (`"www/\320\260.js"`), and a quoted path matches no `covers` glob — the row
+// guarding that file is skipped while the run still prints PASS. The fix was
+// applied to the working-tree half only when the union landed; this is the
+// committed half of it (review Q3, 1.0.6.24). Latent in this repo today (no
+// tracked path carries such a byte) and fail-OPEN when it bites, which is
+// exactly why it is not left to be found later.
+function diffNamesZ(root, range) {
+  const out = execSync(`git diff --name-only -z ${range}`, { cwd: root, stdio: "pipe", encoding: "utf8" });
+  return out.split("\0").filter(Boolean);
+}
+
 export function committedTouchedFiles(root, base) {
   const candidates = [];
   if (base) candidates.push(base);
@@ -130,8 +144,8 @@ export function committedTouchedFiles(root, base) {
 
   for (const ref of candidates) {
     try {
-      const out = execSync(`git diff --name-only ${ref}..HEAD`, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-      if (out) return out.split("\n").filter(Boolean);
+      const files = diffNamesZ(root, `${ref}..HEAD`);
+      if (files.length) return files;
     } catch {
       // ref missing or diff failed — try the next resolution step
     }
@@ -143,8 +157,8 @@ export function committedTouchedFiles(root, base) {
       { cwd: root, stdio: "pipe", encoding: "utf8", shell: true }
     ).trim();
     if (mergeBase) {
-      const out = execSync(`git diff --name-only ${mergeBase}..HEAD`, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-      if (out) return out.split("\n").filter(Boolean);
+      const files = diffNamesZ(root, `${mergeBase}..HEAD`);
+      if (files.length) return files;
     }
   } catch {
     // no merge-base either
