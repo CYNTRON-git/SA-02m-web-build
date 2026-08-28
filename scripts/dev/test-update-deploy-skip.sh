@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-update-deploy-skip.sh — regression for the deploy-skip guard in
 # etc/sa02m-update-runner.sh apply_deploy_items() (+ its is_unchanged predicate).
 # Quality row `update-deploy-skip`.

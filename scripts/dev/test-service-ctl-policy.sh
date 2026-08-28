@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-service-ctl-policy.sh — regression for the stack-policy writes in
 # etc/sa02m-web-service-ctl.sh (cmd_install / cmd_uninstall / stack_key_for_id)
 # against etc/sa02m-stacks-policy.sh. Quality row `service-ctl-policy-write`.

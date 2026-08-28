@@ -267,6 +267,17 @@ else
     ok "18 the extracted consumer produced output for both fixture ports"
 fi
 
+# The contract doc must keep naming this row, so the next reader knows what to
+# re-run for the CONSUMER half. A check nobody can find from the contract is how
+# §2 went a year with producer-only coverage (audit C2). Mirrors case 36 of
+# mqtt-set-contract (review Q2, 1.0.6.24).
+CONTRACT=docs/contracts/rs485-roster.md
+if [ -f "$CONTRACT" ] && grep -q 'rs485-roster-consumer' "$CONTRACT"; then
+    ok "19 the contract doc names this row"
+else
+    bad "19 $CONTRACT does not name the \`rs485-roster-consumer\` row — the consumer-side check is undiscoverable from the contract it validates"
+fi
+
 echo
 if [ "$fails" -eq 0 ]; then
     echo "PASS  rs485-roster consumer contract (§2) green"

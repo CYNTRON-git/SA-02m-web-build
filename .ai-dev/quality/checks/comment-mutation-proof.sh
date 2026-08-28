@@ -32,27 +32,46 @@
 # would.
 #
 # ADDING A GATE: one row in CASES below — `gate|file|literal text`. The gate id
-# resolves to `.ai-dev/quality/checks/<id>.sh` (bash) or `<id>.mjs` (node). A
-# case whose text matches no line FAILS (non-vacuity): a pin that moved must be
-# re-pinned here, never silently dropped.
+# is a REGISTRY id (tools.json `id`), and the gate is run by that row's own `run`
+# command — so a harness living in scripts/dev/ is as casable as one in
+# .ai-dev/quality/checks/. (It used to resolve `<id>.sh|.mjs` under checks/
+# only, which is why a scripts/dev/ harness could not be cased even when it
+# pinned a commentable line — review Q1/Q6, 1.0.6.24.) A case whose text matches
+# no line FAILS (non-vacuity): a pin that moved must be re-pinned here, never
+# silently dropped.
 #
 # COVERAGE — WHY A NEW GATE CANNOT FORGET ITS CASE. Below the mutation loop,
-# coverage_check() enumerates every check script the registry (tools.json) runs
-# under .ai-dev/quality/checks/ and FAILS unless each one EITHER carries a case
-# in CASES above OR carries an exemption marker in its OWN header — a comment
-# line whose text, right after the `#`/`//`, is the hyphenated token
-# comment<->mutation<->proof<->exempt, a colon, and a NON-EMPTY reason. This is
-# the mechanical half of the Operator's 2026-08-28 "prevent recurrence"
-# directive: "register your case" was discipline; this makes it can't-forget
-# (docs/agent-rules/quality-gate-rigor.md — "the gap that remains", and its
-# "exemption is recorded in the gate's header" convention). The exemption lives
-# in the gate's OWN header, never a side list, so a stale exemption for a
-# deleted gate is structurally impossible — the marker dies with the file. An
-# exemption that is ALSO cased FAILS (the exemption is stale), and a marker with
-# an empty reason FAILS (non-vacuity, the way CONTRAST_WHITELIST catches a stale
-# entry). This harness pins no source line of its own, so it exempts ITSELF with
-# a recorded reason (marker line just below) — its completeness is floored by
-# coverage_check()'s own non-vacuity and the n_cases check, not by a case.
+# coverage_check() enumerates EVERY row of the registry (tools.json), whatever
+# directory its check lives in, and FAILS unless each one EITHER carries a case
+# in CASES above OR carries a recorded exemption. This is the mechanical half of
+# the Operator's 2026-08-28 "prevent recurrence" directive: "register your case"
+# was discipline; this makes it can't-forget
+# (docs/agent-rules/quality-gate-rigor.md — the floors table and its "exemption
+# is recorded in the gate's header" convention).
+#
+# WHERE AN EXEMPTION LIVES — two homes, decided by the row, never by choice:
+#   * the row runs a check SCRIPT of ours (a path under .ai-dev/quality/ or
+#     scripts/dev/) -> the marker goes in that script's own HEADER: a comment
+#     line whose text, right after the `#`/`//`, is the hyphenated token
+#     comment<->mutation<->proof<->exempt, a colon, and a NON-EMPTY single-line
+#     reason. It must sit ABOVE the first executable line — a marker further
+#     down is REFUSED, so "in the gate's header" is measured, not asserted
+#     (review Q10) — and there must be exactly ONE of them: only the first is
+#     read, so a second marker is invisible text and FAILS. One line, because a
+#     reason that wraps would be reported truncated.
+#   * the row runs no such script — an inline interpreter command (`bash -n`,
+#     `compileall`, `unittest discover`) or a repo tool outside those two check
+#     homes -> there is no gate header of ours to annotate, so the exemption is
+#     the row's own `mutationExempt` field in tools.json. Putting that field on
+#     a row that DOES have a script FAILS: the header is that row's only home.
+# Either way the exemption dies with the thing it describes (the file, or the
+# row) — a stale exemption for a deleted gate is structurally impossible, and
+# there is no side list. An exemption that is ALSO cased FAILS (the exemption is
+# stale), and an empty reason FAILS (non-vacuity, the way CONTRAST_WHITELIST
+# catches a stale entry). This harness pins no source line of its own, so it
+# exempts ITSELF with a recorded reason (marker line just below) — its
+# completeness is floored by coverage_check()'s own non-vacuity and the n_cases
+# check, not by a case.
 #
 # comment-mutation-proof-exempt: this IS the comment-out mutation harness — it pins no source line of its own; its completeness is floored by coverage_check() and the n_cases>=10 check below, not by a mutation case.
 #
@@ -61,7 +80,8 @@
 # pin and make a case vacuous — and `covers` must name what can BREAK the check,
 # not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
 # The cost is that a `--touched` review run almost always includes this row's
-# ~60 s. That is the fail-safe direction, and CI runs the full set regardless.
+# ~3.5 min (29 mutations plus one green baseline per gate; it was ~60 s at 20
+# cases). That is the fail-safe direction, and CI runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -99,10 +119,52 @@ mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
+rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
+web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check
+version-consistency|www/network_config/static/js/app.js|const APP_VERSION
+mqtt-install-secret|scripts/05-mqtt.sh|mosquitto_passwd
+rtc-utc-convention|www/network_config/cgi-bin/lib_rtc.sh|--systohc --utc
+nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || return 1
+iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
+uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
+storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
 command -v tar >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — tar is required to build the pristine copy"; exit 1; }
+command -v node >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — node is required to read the registry (a gate is run by its registry row)"; exit 1; }
+
+# ── The registry, read ONCE: it is both how a gate is run (its row's `run`) and
+# what coverage enumerates. Emitted as one record per row, four fields:
+#   id US our-check-script (or empty) US mutationExempt (or empty) US run
+# The separator is US (\x1f), NOT a tab: a tab is IFS whitespace, so bash `read`
+# collapses a run of them and an empty middle field silently shifts every field
+# after it. "Our check script" is the first path in `run` under one of the two
+# homes this project keeps checks in; a row naming none (an inline `bash -n` /
+# compileall / unittest command, or a repo tool outside those homes) gets an
+# empty field and is exempted in the row instead of a header.
+TOOLS="$ROOT/.ai-dev/quality/tools.json"
+[ -f "$TOOLS" ] || { echo "comment-mutation-proof: FAIL — $TOOLS not found; the gate set cannot be enumerated"; exit 1; }
+REGISTRY_TSV=$(node -e '
+    const fs = require("fs");
+    const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const re = /(?:\.ai-dev\/quality\/|scripts\/dev\/)[A-Za-z0-9_.\/-]+\.(?:sh|mjs|py)/;
+    const clean = (s) => String(s == null ? "" : s).replace(new RegExp("[\t\r\n\u001f]+", "g"), " ").trim();
+    for (const t of (j.tools || [])) {
+        const id = clean(t.id);
+        if (!id) continue;
+        const run = clean(t.run);
+        const m = run.match(re);
+        console.log([id, m ? m[0] : "", clean(t.mutationExempt), run].join(String.fromCharCode(31)));
+    }
+' "$TOOLS") || { echo "comment-mutation-proof: FAIL — could not parse $TOOLS"; exit 1; }
+
+declare -A ROW_RUN=() ROW_SCRIPT=() ROW_EXEMPT=()
+ROW_IDS=()
+while IFS=$'\x1f' read -r _id _script _exempt _run; do
+    [ -n "${_id:-}" ] || continue
+    ROW_IDS+=("$_id"); ROW_SCRIPT[$_id]=$_script; ROW_EXEMPT[$_id]=$_exempt; ROW_RUN[$_id]=$_run
+done <<< "$REGISTRY_TSV"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -149,19 +211,17 @@ done < <(cd "$ROOT" && git status --porcelain -z -uall 2>/dev/null)
 ( cd "$TREE" && git init -q && git add -A ) >/dev/null 2>&1 || {
     echo "comment-mutation-proof: FAIL — could not init a git index in the pristine copy"; exit 1; }
 
-# A gate is a bash script or a node one; the id names the file either way.
-gate_script() {  # $1 = gate id ; prints the runnable path, empty when absent
-    if [ -f "$TREE/.ai-dev/quality/checks/$1.sh" ]; then printf '%s\n' ".ai-dev/quality/checks/$1.sh"
-    elif [ -f "$TREE/.ai-dev/quality/checks/$1.mjs" ]; then printf '%s\n' ".ai-dev/quality/checks/$1.mjs"
-    fi
+# A gate is run by its REGISTRY ROW's own command — the same string
+# `run.mjs` executes — so bash/node/python and any directory are covered
+# alike, and the proof can never diverge from what the beat actually runs.
+gate_cmd() {  # $1 = gate id ; prints the row's run command, empty when unknown
+    printf '%s\n' "${ROW_RUN[$1]:-}"
 }
 
 run_gate() {  # $1 = gate id ; returns the gate's exit status
-    local s; s=$(gate_script "$1")
-    case "$s" in
-        *.mjs) ( cd "$TREE" && node "$s" ) >/dev/null 2>&1 ;;
-        *)     ( cd "$TREE" && bash "$s" ) >/dev/null 2>&1 ;;
-    esac
+    local cmd="${ROW_RUN[$1]:-}"
+    [ -n "$cmd" ] || return 2
+    ( cd "$TREE" && bash -c "$cmd" ) >/dev/null 2>&1
 }
 
 # The token a developer would actually use to disable a line in THIS file type.
@@ -190,8 +250,8 @@ green_baseline() {  # $1 = gate id
 
 while IFS='|' read -r gate file needle; do
     [ -n "$gate" ] || continue
-    if [ -z "$(gate_script "$gate")" ]; then
-        bad "$gate: no such check script (.sh or .mjs) — the case table names a gate that does not exist"
+    if [ -z "$(gate_cmd "$gate")" ]; then
+        bad "$gate: no registry row with that id — the case table names a gate the beat does not run"
         continue
     fi
     if [ ! -f "$TREE/$file" ]; then
@@ -251,72 +311,106 @@ if [ "$n_cases" -lt 10 ]; then
     bad "only $n_cases mutation case(s) — the table was gutted (expected >=10)"
 fi
 
-# ── COVERAGE: every registered static gate is cased here, or exempted in its
-# own header. The mechanical half of the Operator's "prevent recurrence": a new
-# gate added without a mutation case can no longer slip in unmeasured. This
-# section reads the REAL working tree (tools.json + each gate's header), not the
-# pristine copy — it governs what is being handed back.
-coverage_check() {
-    command -v node >/dev/null 2>&1 || {
-        bad "coverage: node is required to read the registry (tools.json) — cannot verify gate coverage"; return; }
-    local tools="$ROOT/.ai-dev/quality/tools.json"
-    [ -f "$tools" ] || { bad "coverage: $tools not found — cannot enumerate the gate set"; return; }
+# ── COVERAGE: EVERY registry row is cased here, or carries a recorded
+# exemption — in its check script's own header where the row runs one of ours,
+# in the row itself where it does not. The mechanical half of the Operator's
+# "prevent recurrence": a new check added without a mutation case can no longer
+# slip in unmeasured, whatever directory it lives in. This section reads the
+# REAL working tree (tools.json + each gate's header), not the pristine copy —
+# it governs what is being handed back.
+#
+# The line number of a file's first EXECUTABLE line: everything above it is the
+# header, and an exemption marker must live there. `/* … */` blocks count as
+# header too, so a .mjs gate is measured the same way (review Q10).
+header_end() {  # $1 = path ; prints the first executable line number, empty when none
+    awk '
+        inblk { if (index($0, "*/") > 0) inblk = 0; next }
+        /^[[:space:]]*\/\*/ { rest = substr($0, index($0, "/*") + 2); if (index(rest, "*/") == 0) inblk = 1; next }
+        /^[[:space:]]*(#|\/\/)/ { next }
+        /^[[:space:]]*$/ { next }
+        { print NR; exit }
+    ' "$1"
+}
 
+coverage_check() {
     # Gate ids that carry >=1 mutation case (field 1 of CASES) — read from the
     # same table the loop above used, so there is no second enumeration.
     local cased
     cased=$(awk -F'|' 'NF && $1 != "" { print $1 }' <<<"$CASES" | sort -u)
 
-    # The authoritative set: every check-dir script a registry `run` field
-    # invokes (NOT a directory glob — an unregistered file is not the target).
-    # Parse the JSON properly rather than grepping it; `covers` arrays also name
-    # these paths and would over-include.
-    local scripts
-    scripts=$(node -e '
-        const fs = require("fs");
-        const j = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        const re = /\.ai-dev\/quality\/checks\/([A-Za-z0-9_.-]+\.(?:sh|mjs))/;
-        const s = new Set();
-        for (const t of (j.tools || [])) { const m = (t.run || "").match(re); if (m) s.add(m[1]); }
-        for (const f of [...s].sort()) console.log(f);
-    ' "$tools") || { bad "coverage: could not parse $tools"; return; }
-
-    local n=0 fname id path reason marker_line is_cased marker_present
-    while IFS= read -r fname; do
-        [ -n "$fname" ] || continue
+    local n=0 n_scripts=0 id script path reason marker_line marker_no is_cased marker_present hdr row_exempt
+    for id in "${ROW_IDS[@]}"; do
         n=$((n + 1))
-        id="${fname%.*}"                       # strip .sh / .mjs — the gate id
-        path="$ROOT/.ai-dev/quality/checks/$fname"
-        if [ ! -f "$path" ]; then
-            bad "coverage: registry runs $fname but the file is absent — stale registry row"
-            continue
-        fi
+        script="${ROW_SCRIPT[$id]:-}"
+        row_exempt="${ROW_EXEMPT[$id]:-}"
         is_cased=0
         grep -qxF "$id" <<<"$cased" && is_cased=1
-        # Exemption marker: a header comment line (`#` or `//`) whose text is the
-        # hyphenated exempt token, a colon, then the reason. Reason captured for
-        # the non-empty check and the ok line.
-        marker_line=$(grep -nE '^[[:space:]]*(#+|//)[[:space:]]*comment-mutation-proof-exempt:' "$path" | head -1)
-        marker_present=0; [ -n "$marker_line" ] && marker_present=1
-        reason=$(printf '%s\n' "$marker_line" | sed -E 's/^[0-9]+:[[:space:]]*(#+|\/\/)[[:space:]]*comment-mutation-proof-exempt:[[:space:]]*//')
+
+        marker_present=0; reason=""
+        if [ -n "$script" ]; then
+            n_scripts=$((n_scripts + 1))
+            path="$ROOT/$script"
+            if [ ! -f "$path" ]; then
+                bad "coverage: registry row $id runs $script but the file is absent — stale registry row"
+                continue
+            fi
+            # Exemption marker: a header comment line (`#` or `//`) whose text is
+            # the hyphenated exempt token, a colon, then the reason. Only the
+            # FIRST marker is read, and it must sit above the first executable
+            # line — a marker at the bottom of the file is not a header note.
+            marker_line=$(grep -nE '^[[:space:]]*(#+|//)[[:space:]]*comment-mutation-proof-exempt:' "$path")
+            n_markers=$(grep -cE '^[[:space:]]*(#+|//)[[:space:]]*comment-mutation-proof-exempt:' "$path")
+            if [ "$n_markers" -gt 1 ]; then
+                bad "coverage: $id carries $n_markers exemption markers — only the first is read, so the others are invisible text; keep ONE, on ONE line"
+                continue
+            fi
+            marker_line=${marker_line%%$'\n'*}
+            if [ -n "$marker_line" ]; then
+                marker_no=${marker_line%%:*}
+                hdr=$(header_end "$path")
+                if [ -n "$hdr" ] && [ "$marker_no" -ge "$hdr" ]; then
+                    bad "coverage: $id's exemption marker sits at line $marker_no, below the first executable line ($hdr) — the exemption belongs in the gate's OWN HEADER where the next reader meets it"
+                    continue
+                fi
+                marker_present=1
+                reason=$(printf '%s\n' "$marker_line" | sed -E 's/^[0-9]+:[[:space:]]*(#+|\/\/)[[:space:]]*comment-mutation-proof-exempt:[[:space:]]*//')
+            fi
+            if [ -n "$row_exempt" ]; then
+                bad "coverage: $id carries a 'mutationExempt' field in tools.json while it runs a check script of ours ($script) — the exemption's one home is that script's header; move it there"
+                continue
+            fi
+        elif [ -n "$row_exempt" ]; then
+            # No check script of ours to annotate (an inline interpreter command,
+            # or a repo tool outside .ai-dev/quality/ and scripts/dev/), so the
+            # row itself is the exemption's home.
+            marker_present=1
+            reason="[registry row] $row_exempt"
+        fi
 
         if [ "$is_cased" -eq 1 ] && [ "$marker_present" -eq 1 ]; then
-            bad "coverage: $id is BOTH cased (CASES) and exempt (header marker) — the exemption is stale; remove it"
+            bad "coverage: $id is BOTH cased (CASES) and exempt — the exemption is stale; remove it"
         elif [ "$is_cased" -eq 1 ]; then
             ok "coverage: $id has a mutation case"
         elif [ "$marker_present" -eq 1 ] && [ -n "$reason" ]; then
             ok "coverage: $id exempt — $reason"
         elif [ "$marker_present" -eq 1 ]; then
             bad "coverage: $id carries an exemption marker with an EMPTY reason — record why it is exempt"
+        elif [ -n "$script" ]; then
+            bad "coverage: $id is a registered check with NEITHER a mutation case in CASES NOR a 'comment-mutation-proof-exempt:' marker in $script's header — add one (docs/agent-rules/quality-gate-rigor.md)"
         else
-            bad "coverage: $id is a registered static gate with NEITHER a mutation case in CASES NOR a 'comment-mutation-proof-exempt:' marker in its header — add one (docs/agent-rules/quality-gate-rigor.md)"
+            bad "coverage: $id is a registered check that runs no check script of ours, with NEITHER a mutation case in CASES NOR a non-empty 'mutationExempt' reason on its tools.json row — add one (docs/agent-rules/quality-gate-rigor.md)"
         fi
-    done <<< "$scripts"
+    done
 
-    # Non-vacuity: the enumeration itself must have found the real set, not a
-    # broken parse that would pass because it checked nothing.
-    if [ "$n" -lt 15 ]; then
-        bad "coverage: enumerated only $n registry check script(s) — the registry read is broken, not the set small (expected >=15)"
+    # Non-vacuity, both dimensions: the enumeration must have found the real row
+    # set, and the path resolution must still be resolving scripts. A broken
+    # parse or a regex that stopped matching would otherwise pass by checking
+    # nothing.
+    if [ "$n" -lt 40 ]; then
+        bad "coverage: enumerated only $n registry row(s) — the registry read is broken, not the set small (expected >=40)"
+    fi
+    if [ "$n_scripts" -lt 15 ]; then
+        bad "coverage: resolved a check script for only $n_scripts row(s) — the path resolution is broken (expected >=15)"
     fi
 }
 coverage_check

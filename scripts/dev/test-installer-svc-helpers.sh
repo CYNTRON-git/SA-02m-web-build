@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-installer-svc-helpers.sh — regression harness for the installer's
 # service-state helpers (scripts/lib.sh: sa02m_svc_capture / sa02m_svc_apply /
 # sa02m_svc_kick / sa02m_pkg_install_tier thirdparty / sa02m_pip_install) and

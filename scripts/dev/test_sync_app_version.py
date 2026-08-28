@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# comment-mutation-proof-exempt: unit test - it calls the shipped sync-app-version functions on fixtures and asserts their return values, pinning no source line by text.
 """
 test_sync_app_version.py — regression test for the ES-module cache-bust half of
 scripts/sync-app-version.py (docs/decisions/es-modules.md П2).

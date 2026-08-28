@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: unit test - it imports the shipped helper and asserts its return values, pinning no source line by text; a commented-out line changes the result it measures.
 /* ═══════════════════════════════════════════════════════════════════════════
    js-unit-flasher-signatures — standalone Node test for flasher.js's
    module-signature recognition/caps/route functions.

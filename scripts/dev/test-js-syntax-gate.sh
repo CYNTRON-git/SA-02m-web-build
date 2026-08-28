@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: meta-test of the js-syntax row - it plants a broken bundle and asserts the gate goes RED, so it pins no shipped source line; a comment-out anywhere in it changes the behaviour it measures.
 # test-js-syntax-gate.sh — non-vacuity test for the `js-syntax` quality row
 # (.ai-dev/quality/checks/js-syntax.sh).
 #
