@@ -129,22 +129,34 @@ function _buildContentArea() {
 }
 
 // ── Device panel ──────────────────────────────────────────────────────────────
-function _gwUiT(s) {
+// Named `uiT` (not a private alias) on purpose: the i18n-dict-contract gate
+// sweeps literals passed to `uiT(...)`, so every visible string in this file is
+// mechanically required to have an EN entry in i18n.js from now on.
+function uiT(s) {
   return (window.sa02mI18n && window.sa02mI18n.t) ? window.sa02mI18n.t(s) : s;
+}
+
+// Config values reach this file from gateway_config.cgi, which returns the YAML
+// verbatim on GET — a hand-edited /etc/sa02m-gateway.yaml can therefore carry
+// anything. Escape before innerHTML (web-code-rigor.md, Frontend floors).
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function _gwToggleBtnHtml(active) {
   const on = !!active;
-  const label = _gwUiT(on ? 'Остановить' : 'Запустить');
+  const label = uiT(on ? 'Остановить' : 'Запустить');
   const cls = on ? 'btn btn-sm hw-io-btn hw-io-to-off' : 'btn btn-sm hw-io-btn hw-io-to-on';
-  const title = _gwUiT(on ? 'Остановить шлюз RS-485→Ethernet' : 'Запустить шлюз RS-485→Ethernet');
+  const title = uiT(on ? 'Остановить шлюз RS-485→Ethernet' : 'Запустить шлюз RS-485→Ethernet');
   return `<button type="button" class="${cls}" id="gw-btn-toggle" title="${title}">${label}</button>`;
 }
 
 function _renderDevicePanel(area) {
   const active = _status.service_active;
   const svcClass = active ? 'badge badge-ok' : 'badge badge-err';
-  const svcText  = _gwUiT(active ? 'Активен' : 'Остановлен');
+  const svcText  = uiT(active ? 'Активен' : 'Остановлен');
 
   const activePorts = PORTS.filter(p => (_config[p] || {}).enabled);
   const runningPorts = PORTS.filter(p => {
@@ -310,6 +322,29 @@ function _renderPortPanel(area, port) {
           </div>
         </div>
 
+        <div class="gw-port-col">
+          <p class="field-label gw-col-label">${uiT('Доступ по сети')}</p>
+
+          <div id="gw-access-warn-${port}" class="field-hint warn gw-access-warn${_accessWarnNeeded(cfg) ? '' : ' gw-block-collapsed'}">
+            ${uiT('Внимание: включённый порт принимает подключения с любого компьютера в сети — без пароля. Ограничьте доступ полем «Разрешённые адреса» ниже.')}
+          </div>
+
+          <div class="field gw-field-row">
+            <label class="gw-field-label">${uiT('Адрес прослушивания')}</label>
+            <input type="text" id="gw-bind-${port}" class="gw-field-control"
+                   value="${escAttr(cfg.bind || '0.0.0.0')}" placeholder="0.0.0.0">
+            <p class="field-hint">${uiT('0.0.0.0 — все сетевые интерфейсы платы')}</p>
+          </div>
+
+          <div class="field gw-field-row">
+            <label class="gw-field-label">${uiT('Разрешённые адреса')}</label>
+            <input type="text" id="gw-allow-${port}" class="gw-field-control"
+                   value="${escAttr((cfg.allow_from || []).join(', '))}"
+                   placeholder="192.168.1.10, 192.168.2.0/24">
+            <p class="field-hint">${uiT('Пусто — подключаться может любой. Через запятую: адреса и диапазоны, которым разрешено подключаться к этому порту.')}</p>
+          </div>
+        </div>
+
       </div>
 
       <div class="gw-save-row">
@@ -329,11 +364,54 @@ function _renderPortPanel(area, port) {
     if (a) _renderPortPanel(a, port);
   });
 
-  const fields = ['gw-en-', 'gw-tcpport-', 'gw-fmb-', 'gw-baud-', 'gw-parity-', 'gw-stop-', 'gw-data-'];
+  const fields = ['gw-en-', 'gw-tcpport-', 'gw-fmb-', 'gw-baud-', 'gw-parity-', 'gw-stop-',
+                  'gw-data-', 'gw-bind-', 'gw-allow-'];
   fields.forEach(prefix => {
     const el = area.querySelector(`#${prefix}${port}`);
     if (el) el.addEventListener('change', () => { _dirty[port] = true; });
   });
+
+  // The warning belongs at the MOMENT of enabling, not only on the next reload:
+  // the operator is told what the port will accept while deciding to open it.
+  ['gw-en-', 'gw-allow-', 'gw-bind-'].forEach(prefix => {
+    const el = area.querySelector(`#${prefix}${port}`);
+    if (el) el.addEventListener('change', () => _updateAccessWarn(port));
+  });
+}
+
+// True when this port will accept connections from anyone on the network:
+// enabled, actually serving a TCP mode, not bound to loopback, and with no
+// allow-list narrowing it. A loopback bind is the one address that makes the
+// port unreachable from the network, so warning there would be untrue — and a
+// warning that cries wolf is one the operator stops reading.
+// Behaviour pinned by gateway-acl-contract (cases 16-21), which runs THIS
+// function, extracted from the shipped file.
+function _accessWarnNeeded(cfg) {
+  const bind = String(cfg.bind == null ? '' : cfg.bind).trim() || '0.0.0.0';
+  const loopback = /^127\./.test(bind) || bind === '::1';
+  return !!cfg.enabled && (cfg.mode || 'disabled') !== 'disabled'
+         && !loopback
+         && !(cfg.allow_from && cfg.allow_from.length);
+}
+
+function _updateAccessWarn(port) {
+  const area = document.getElementById('gw-content');
+  if (!area) return;
+  const box = area.querySelector(`#gw-access-warn-${port}`);
+  if (!box) return;
+  const enabled = area.querySelector(`#gw-en-${port}`)?.checked === true;
+  const mode    = area.querySelector(`#gw-mode-${port}`)?.value || 'disabled';
+  const bind    = area.querySelector(`#gw-bind-${port}`)?.value;
+  const allow   = _parseAllowInput(area.querySelector(`#gw-allow-${port}`)?.value);
+  box.classList.toggle('gw-block-collapsed',
+                       !_accessWarnNeeded({ enabled, mode, bind, allow_from: allow }));
+}
+
+// Comma- or whitespace-separated input → list. Validation belongs to the
+// endpoint and the daemon (both refuse a malformed entry rather than dropping
+// it); this only splits.
+function _parseAllowInput(raw) {
+  return String(raw || '').split(/[\s,]+/).filter(Boolean);
 }
 
 function _onModeChange(port) {
@@ -344,6 +422,7 @@ function _onModeChange(port) {
   const fmbDiv = area.querySelector(`#gw-fmb-field-${port}`);
   if (tcpDiv) tcpDiv.classList.toggle('gw-block-collapsed', mode === 'disabled');
   if (fmbDiv) fmbDiv.classList.toggle('gw-block-collapsed', mode !== 'modbus_tcp');
+  _updateAccessWarn(port);
   _dirty[port] = true;
 }
 
@@ -390,6 +469,10 @@ function _readFormCfg(port) {
     stopbits:          parseInt(getVal(`gw-stop-${port}`)) || defs.stopbits,
     databits:          parseInt(getVal(`gw-data-${port}`)) || 8,
     fast_modbus_probe: getChk(`gw-fmb-${port}`),
+    // Carried on every save: gateway_config.cgi rewrites the whole per-port map,
+    // so a key the panel does not send is erased from /etc/sa02m-gateway.yaml.
+    bind:              (getVal(`gw-bind-${port}`) || '').trim() || '0.0.0.0',
+    allow_from:        _parseAllowInput(getVal(`gw-allow-${port}`)),
   };
 }
 
@@ -531,6 +614,11 @@ function _defaultPortCfg(port) {
     stopbits: 1,
     databits: 8,
     fast_modbus_probe: true,
+    // Network access: all interfaces, no IP filtering — the behaviour every
+    // release before 1.0.6.24 had, kept as the default on purpose so an
+    // existing SCADA client does not lose its connection to an update.
+    bind: '0.0.0.0',
+    allow_from: [],
   };
 }
 

@@ -32,6 +32,10 @@ for i, name in enumerate(['COM1','COM2','COM3','COM4','COM5'], start=1):
         "stopbits": 1,
         "databits": 8,
         "fast_modbus_probe": True,
+        # Network access defaults: all interfaces, no IP filtering — the
+        # behaviour every release before 1.0.6.24 had.
+        "bind": "0.0.0.0",
+        "allow_from": [],
     }
 print(json.dumps({"ports": default_ports}))
 PYEOF
@@ -64,12 +68,61 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP_IN"
 
     RESULT=$(python3 - "$TMP_IN" "$TMP_OUT" <<'PYEOF'
-import sys, json, yaml, pathlib
+import sys, json, yaml, pathlib, ipaddress
 
 VALID_MODES     = {'disabled', 'modbus_tcp', 'rtu_over_tcp', 'transparent'}
 VALID_PARITIES  = {'none', 'even', 'odd'}
 VALID_STOPBITS  = {1, 2}
 VALID_BAUDRATES = {1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200}
+
+# Network access (1.0.6.24). These two keys MUST be carried through here: this
+# endpoint rewrites the whole per-port map from the enumerated keys below, so a
+# key it does not know is erased on the next save from the panel — an allow-list
+# that silently disappears is worse than none. Semantics and the fail-closed
+# rule are the daemon's (opt/sa02m-serial-gateway/serial_gateway.py); this side
+# refuses the WHOLE save on a malformed value rather than writing a config the
+# daemon will then refuse to start a port on.
+
+def norm_bind(name, pcfg, errs):
+    raw = pcfg.get('bind', '')
+    if raw is None:
+        raw = ''
+    if not isinstance(raw, str):
+        errs.append(f"{name}: bind must be an IP address")
+        return '0.0.0.0'
+    value = raw.strip() or '0.0.0.0'
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        errs.append(f"{name}: bind '{value}' is not an IP address")
+    return value
+
+def norm_allow_from(name, pcfg, errs):
+    raw = pcfg.get('allow_from', [])
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        items = [p for p in raw.replace(',', ' ').split() if p]
+    elif isinstance(raw, list):
+        items = raw
+    else:
+        errs.append(f"{name}: allow_from must be a list of IP addresses")
+        return []
+    out = []
+    for item in items:
+        if not isinstance(item, str):
+            errs.append(f"{name}: allow_from entry must be text")
+            continue
+        entry = item.strip()
+        if not entry:
+            continue
+        try:
+            ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            errs.append(f"{name}: allow_from '{entry}' is not an IP address or range")
+            continue
+        out.append(entry)
+    return out
 
 def validate_port(name, pcfg):
     errs = []
@@ -113,6 +166,8 @@ try:
             "stopbits":          int(pcfg.get('stopbits', 1)),
             "databits":          int(pcfg.get('databits', 8)),
             "fast_modbus_probe": bool(pcfg.get('fast_modbus_probe', True)),
+            "bind":              norm_bind(name, pcfg, all_errors),
+            "allow_from":        norm_allow_from(name, pcfg, all_errors),
         }
 
     if all_errors:
