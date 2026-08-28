@@ -16,8 +16,10 @@ by design — a missing optional tool must not block a dev machine — but it me
 | Row | Skips when | Real authority |
 |---|---|---|
 | `shellcheck` | `shellcheck` not on `PATH` | Linux CI |
-| `headless-smoke` | playwright deps or `SA02M_WEB_PASS` absent | on-demand, see `scripts/dev/README.md` |
 | `ui-layout` | playwright not installed | `npm run ui-layout:install` |
+| `i18n-dict-contract` | never (node only) | Linux CI |
+| `html-id-contract` | never (node only) | Linux CI |
+| `web-auth-behaviour` | two POSIX-mode asserts skip off Linux | Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.
