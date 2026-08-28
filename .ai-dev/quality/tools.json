@@ -433,6 +433,69 @@
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-storage-automount.sh"
     },
     {
+      "id": "mqtt-set-contract",
+      "checks": "The validating check for docs/contracts/mqtt-set-endpoint.md — the ONE web endpoint that switches a real relay output (MR-02m DO coils, AO setpoints, DTV coils), which until 1.0.6.24 was reached by nothing but `bash -n` and CI shellcheck while its own comment claimed a contract check that did not exist (audit C1). BEHAVIOUR (31 cases): the shipped CGI runs in a sandbox against a REAL session minted by the shipped lib_web_auth.sh, with recording mosquitto_pub/timeout shims — no session, a forged session, a missing or wrong CSRF header, a GET, and every rejected device/control/value vector are each proven to publish NOTHING; the accepted DO/buzzer/AO vectors are each proven to publish EXACTLY ONCE with the contracted topic and payload; a broker failure is proven to answer publish_failed and never a false ok:true; the audit line is proven written. SOURCE FLOORS (5 more): no -r/--retain in the publish argv OR anywhere in the endpoint source (a retained /on replays on the next bridge restart and re-fires every output), the loopback 127.0.0.1:1883 constants, `timeout N`, the auth -> CSRF -> allow-list -> publish ORDER, and the contract doc still naming this row. Source floors are read comment-stripped via lib_check.sh, and the timeout+publish and CSRF pins have cases in comment-mutation-proof. Non-vacuous: an un-retargeted audit path, an extraction that lost the publish call, or a run where the shims were never invoked FAILS.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/mqtt-set-contract.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/mqtt_set.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "docs/contracts/mqtt-set-endpoint.md", ".ai-dev/quality/checks/mqtt-set-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "init": "bash + coreutils — no mosquitto, no broker, no device (both external commands are recording shims)"
+    },
+    {
+      "id": "web-auth-behaviour",
+      "checks": "Functional regression for www/network_config/cgi-bin/lib_web_auth.sh — 354 lines, 27 functions, sourced by every mutating CGI, and covered by nothing but `bash -n` + CI shellcheck until 1.0.6.24 (audit C6). Sources the SHIPPED lib into a scratch session store ($SA02M_SESSION_DIR) and drives it: the session decision fails CLOSED for an absent, malformed, short, non-hex, unknown, EXPIRED, corrupt-expiry or empty-file token (and an expired file is pruned); the store never holds a raw token (files are named sha256(token), and the token appears in no file's contents); the cookie PARSER itself rejects the same vectors, so the charset/length pattern cannot be widened unnoticed; the sliding-renewal throttle holds (a fresh session is not rewritten on every authed request — the burst race that produced spurious 401s) while a >1h-old one is renewed; CSRF is per-session and rejects a missing, empty, wrong, cross-session or file-less token, and web_csrf_require stops the request with E_CSRF; logout and destroy_all revoke; password verification separates right from wrong on both the $6$ crypt and the legacy plaintext paths; the credential file is PARSED, never sourced (a double-quoted $(...) value is proven not to execute, on read AND on repair) and the repair keeps 0640 root:www-data and does not cascade its escaping. Non-vacuous: a missing function, an un-created store, or an `install` shim that was never invoked FAILS. Two assertions (file and dir POSIX modes) are Linux-only and are printed as skipped elsewhere — CI is their authority.",
+      "config": null,
+      "run": "bash scripts/dev/test-web-auth.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-web-auth.sh"],
+      "init": "bash + coreutils (sha256sum, od, install) — no root, no /run, no /etc access"
+    },
+    {
+      "id": "rs485-roster-consumer",
+      "checks": "The CONSUMER half of docs/contracts/rs485-roster.md §2, which py-unit-roster does not reach: that row covers opt/sa02m-rs485-roster/ (the producer), while the contracted `modules` block is assembled in www/network_config/cgi-bin/status.cgi — a file covered by nothing but bash syntax, so deleting the modules_frag broke the contract with every gate green (audit C2, the covers-names-the-origin-not-the-breakers shape). Extracts the shipped rs485_load_roster / rs485_port_json and their globals from status.cgi by function anchor, retargets every absolute root into a sandbox, and runs the real chain end to end — fixture cache -> the shipped rs485_roster_cgi.py helper -> the consumer: the port object carries `modules`, RS-485-N maps to COM(N+1), the block is the helper's output VERBATIM (so the frozen cloud seam and the UI cannot diverge), a scan-sourced port keeps live:false and online:null (a stale name never renders as live), every legacy port field survives, and an absent, unreadable, corrupt or empty cache OMITS `modules` while still emitting valid JSON. Non-vacuous: a failed or over-wide extraction, an un-retargeted absolute path, or a run that produced no output FAILS. Its comment-out case is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "bash scripts/dev/test-rs485-roster-consumer.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/status.cgi", "www/network_config/cgi-bin/lib_web_json.sh", "opt/sa02m-rs485-roster/", "docs/contracts/rs485-roster.md", "scripts/dev/test-rs485-roster-consumer.sh"],
+      "init": "bash + python3 (the roster helper is the shipped Python one) — no bus, no device"
+    },
+    {
+      "id": "py-unit-opcua",
+      "checks": "Unit tests for the shipped MQTT->OPC UA gateway (opt/sa02m-mqtt-opcua/tests, stdlib unittest) — 451 lines and a network listener on port 4841 whose entire gate was py-syntax until 1.0.6.24, while every other opt/ package had a py-unit-* row (audit C7). Pins the write-back path (the daemon publishes to the same /devices/<id>/controls/<x>/on topic mqtt_set.cgi writes, and that publish must NOT be retained — a retained /on re-fires a real output on the next broker restart), the enabled-topic filter that decides which controls become nodes, the readonly flag that is the only thing between an OPC UA client and a coil, MQTT value typing and the meta protocol including the JSON-titled form, and the config defaults. paho and opcua are stubbed by tests/stubs.py, so the row is REAL on a bare box and in CI instead of skipping for a missing device dep.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-mqtt-opcua/tests -t opt/sa02m-mqtt-opcua -q; fi; done; echo py-unit-opcua: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-mqtt-opcua/"],
+      "init": "Python 3.10+ (stdlib unittest; paho/opcua stubbed) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "py-unit-snmp",
+      "checks": "Unit tests for the shipped MQTT-SNMP bridge (opt/sa02m-mqtt-snmp/tests, stdlib unittest) — 427 lines gated by py-syntax alone until 1.0.6.24 (audit C7). Pins the retain policy in BOTH directions (device meta retained so a late subscriber learns the topology; a control VALUE never retained, since a retained reading replays after a restart and shows stale data as current), that every SNMP-sourced control is advertised readonly, MIB-prefix composition in _make_oid, value formatting (units precision, the channel scale, the TimeTicks /100 conversion, and the non-numeric passthrough that must not raise), and the poll loop (publish-on-change with the max_unchanged force, a failing GET publishing meta/error=r and NO value, and an err_indication or err_status arriving WITH a payload still treated as a failure). paho and pysnmp are stubbed by tests/stubs.py, so the row is REAL on a bare box and in CI instead of skipping for a missing device dep.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-mqtt-snmp/tests -t opt/sa02m-mqtt-snmp -q; fi; done; echo py-unit-snmp: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-mqtt-snmp/"],
+      "init": "Python 3.10+ (stdlib unittest; paho/pysnmp stubbed) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "i18n-dict-contract",
+      "checks": "The mechanical half of the i18n floor docs/agent-rules/web-code-rigor.md declares (\"a shipped string with no EN translation is a finding\") and that no row implemented until 1.0.6.24 (audit C8). Loads the SHIPPED i18n.js in a vm sandbox and asks its own window.sa02mI18n.t() after setLang('en'), so DICT, the REGEX fallback table and normalize() are the real runtime rather than a copy that can drift out of sync. Sweeps every literal uiT('...') in the served JS plus the Cyrillic text nodes and title/aria-label/placeholder/alt attributes of index/login/cloud.html, excluding exactly what the runtime's walk() never visits (<head>, script/style/textarea bodies, the isI18nControl ids). Both grammars are comment-stripped, so a commented-out string is neither reported nor able to satisfy a pin. DICT_WHITELIST is the accepted-debt ledger (36 rows at 1.0.6.24, each with its reason), non-vacuous BOTH ways: a row whose string now translates, or that matches no swept string, FAILS. Non-vacuous overall: an unloadable runtime, an oracle that cannot tell a known DICT entry from a nonsense string, fewer than 50 uiT() literals, or a missing served page FAILS. Its comment-out case is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "node .ai-dev/quality/checks/i18n-dict-contract.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/", "www/network_config/index.html", "www/network_config/login.html", "www/network_config/cloud.html", ".ai-dev/quality/checks/i18n-dict-contract.mjs", ".ai-dev/quality/checks/lib_source.mjs"],
+      "init": "Node 18+ — no browser, no deps, runs in CI"
+    },
+    {
+      "id": "html-id-contract",
+      "checks": "The mechanical half of the id-contract floor docs/agent-rules/web-code-rigor.md declares (\"every getElementById id in JS exists in index.html\") and that no row implemented until 1.0.6.24 (audit C8; the DOM-skeleton half was nominally covered by the dormant headless-smoke row, C4). Checks every literal getElementById('x') and simple querySelector('#x') in the served JS against the ids declared in index/login/cloud.html UNION the ids the served JS creates at runtime (an id= attribute inside a template string, .id = 'x', setAttribute). Both sources are legitimate — gateway.js and the RS-485 renderer build their own DOM, and a markup-only check would fire on correct code, which is how a gate gets switched off. Markup is comment-stripped, so an id inside an HTML comment does NOT count as declared: that is the blind direction, where commenting an element out would otherwise keep satisfying every lookup that reads it. A computed id is out of scope by construction — only literals are swept. The defect it catches is silent: the lookup returns null, the null-safe helpers swallow it, and the widget simply stops updating. ID_WHITELIST is empty (measured: zero unresolved ids) and non-vacuous. Non-vacuous overall: fewer than 5 swept JS files, 100 markup ids or 100 lookups, or a missing served page FAILS. Its comment-out case is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "node .ai-dev/quality/checks/html-id-contract.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/", "www/network_config/index.html", "www/network_config/login.html", "www/network_config/cloud.html", ".ai-dev/quality/checks/html-id-contract.mjs", ".ai-dev/quality/checks/lib_source.mjs"],
+      "init": "Node 18+ — no browser, no deps, runs in CI"
+    },
+    {
       "id": "version-consistency",
       "checks": "www/network_config/VERSION, APP_VERSION in app.js, every ?v= cache-bust string in index.html/login.html AND every ?v= inside an ES-module import/export specifier under static/js/**/*.js (docs/decisions/es-modules.md П2 — the browser fetches imported modules itself, so the HTML ?v= cannot bust them) agree with the version-named git branch — a skew ships stale cached assets to devices.",
       "config": null,
@@ -505,15 +568,6 @@
       "init": "shellcheck (preinstalled on GitHub ubuntu runners; `apt install shellcheck` / `brew install shellcheck` locally). Absent -> the row skips (exit 0), so Windows/dev boxes without it stay green; the Linux CI is the enforcing run."
     },
     {
-      "id": "headless-smoke",
-      "checks": "Frontend regression smoke via the committed characterization harness (scripts/dev/characterize-ui.mjs --compare baseline): loads the dashboard headless over every tab/theme/variant and diffs globals + new console errors + DOM skeleton against the saved baseline (scripts/dev/baseline/). Catches a JS bundle break or a widget-id/skeleton regression no syntax check sees.",
-      "config": ".ai-dev/quality/checks/headless-smoke.sh",
-      "run": "bash .ai-dev/quality/checks/headless-smoke.sh",
-      "beat": "review",
-      "covers": ["www/network_config/static/", "www/network_config/index.html"],
-      "init": "cd scripts/dev && npm install && npx playwright install chromium; set SA02M_WEB_PASS and serve/point the harness (scripts/dev/README.md). Absent deps/password -> the row skips (exit 0); it is the on-demand real-layer UI check, not a headless-less CI gate."
-    },
-    {
       "id": "check-lib",
       "checks": "Self-test for .ai-dev/quality/checks/lib_check.sh, the comment-stripping helper most static gates now source: whole-line # and // comments are blanked (not deleted, so ordering pins keep their line numbers), real code survives, a shell `case` label starting with `*` is NOT mistaken for a block comment, a needle living only in a comment reads as ABSENT while the same needle in code reads as present, and the SIGPIPE trap stays closed (a `strip_comments | grep -q` pipe under pipefail reports a FOUND needle as missing on a large file — reproduced here on a 200k-line fixture). A bug in that one file would break every gate sourcing it at once, each failing silently green, which is why the shared helper was only allowed to exist with this row.",
       "config": null,
@@ -524,11 +578,11 @@
     },
     {
       "id": "comment-mutation-proof",
-      "checks": "The standing proof that the static gates cannot be defeated by commenting a line out — the hollow-gate class the 2026-08-28 audit found on five gates (offline pack silently dropping the MPLC RT plugin, CSRF gone from a root-helper endpoint, the ~17 s multi-user boot hold back, an operator-disabled unit rolling an OTA back). For each case in its table it extracts a pristine copy of HEAD, overlays the WORKING-TREE .ai-dev/quality/ (so it proves the gates as they are now, not as they were committed), confirms the gate is green, comments out every line carrying the pinned text (the `#` after the indentation, the way a person actually does it) and requires the gate to go RED. The real tree is never mutated. Non-vacuous both ways: a needle that matches no live line FAILS (the pin moved), a named gate or target file that does not exist FAILS, and a gate that is not green before the mutation FAILS. Measured 2026-08-28: 12 of 14 cases stayed GREEN against the pre-fix gates, 14 of 14 go RED after.",
+      "checks": "The standing proof that the static gates cannot be defeated by commenting a line out — the hollow-gate class the 2026-08-28 audit found on five gates (offline pack silently dropping the MPLC RT plugin, CSRF gone from a root-helper endpoint, the ~17 s multi-user boot hold back, an operator-disabled unit rolling an OTA back). For each case in its table it extracts a pristine copy of HEAD, overlays the WORKING TREE on it — the whole .ai-dev/quality/ directory plus every path git reports as changed or untracked, so it proves the gates AND the sources they read as they are being handed back, not as they were last committed — confirms the gate is green, comments out every line carrying the pinned text with the token that file type actually uses (`#`, `//`, or an HTML-comment wrap), placed after the indentation the way a person does it, and requires the gate to go RED. A gate id resolves to a .sh or a .mjs check, so a node gate is measured too. The real tree is never mutated. Non-vacuous both ways: a needle that matches no live line FAILS (the pin moved), a named gate or target file that does not exist FAILS, and a gate that is not green before its mutation FAILS. Measured 2026-08-28: 12 of 14 cases stayed GREEN against the pre-fix gates and 14 of 14 go RED after; 1.0.6.24 P3 adds four more cases (the mqtt_set publish and CSRF pins, the i18n DICT, the markup id contract), all RED.",
       "config": null,
       "run": "bash .ai-dev/quality/checks/comment-mutation-proof.sh",
       "beat": "review",
-      "covers": [".ai-dev/quality/checks/"],
+      "covers": [".ai-dev/quality/checks/", "scripts/dev/", "www/network_config/", "etc/", "opt/", "scripts/", "tools/imaging/", "install.sh"],
       "init": "bash + git + tar + awk (git archive builds the pristine copy; CI's actions/checkout provides the repo)"
     },
     {

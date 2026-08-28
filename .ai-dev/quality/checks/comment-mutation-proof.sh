@@ -13,16 +13,35 @@
 # written with a plain `grep -q`) fails here instead of in the next audit.
 #
 # METHOD. A pristine copy of HEAD is extracted into a temp dir, the CURRENT
-# working-tree `.ai-dev/quality/` is overlaid on it (so the proof covers the
-# gates as they are right now, not as they were committed), and each case then:
+# working tree is overlaid on it (the whole `.ai-dev/quality/` tree, plus every
+# path git reports as changed or untracked — so the proof covers the gates and
+# the sources AS THEY ARE BEING HANDED BACK, not as they were last committed;
+# a gate a Builder wrote five minutes ago is exactly the one that has never
+# been measured), and each case then:
 #   1. runs its gate on the untouched copy               -> must be GREEN,
 #   2. comments out every line carrying the pinned text  -> must go RED,
 #   3. restores the file from the pristine copy.
 # The real tree is NEVER mutated.
 #
-# ADDING A GATE: one row in CASES below — `gate|file|literal text`. A case whose
-# text matches no line FAILS (non-vacuity): a pin that moved must be re-pinned
-# here, never silently dropped.
+# THE COMMENT TOKEN FOLLOWS THE FILE, not the habit of shell. Commenting a
+# JavaScript line out with `#` is a syntax error, not a disabled line, and an
+# HTML attribute cannot be commented per-line at all — so a `#`-only mutation
+# would "prove" a JS or markup gate RED for the wrong reason, or leave it
+# untestable. `comment_token()` picks `#`, `//` or an `<!-- ... -->` wrap from
+# the extension, so each case mutates the file the way a developer actually
+# would.
+#
+# ADDING A GATE: one row in CASES below — `gate|file|literal text`. The gate id
+# resolves to `.ai-dev/quality/checks/<id>.sh` (bash) or `<id>.mjs` (node). A
+# case whose text matches no line FAILS (non-vacuity): a pin that moved must be
+# re-pinned here, never silently dropped.
+#
+# `covers` IS WIDE ON PURPOSE. This row's cases pin lines in www/, etc/, opt/,
+# scripts/, tools/imaging/ and install.sh, so an edit to any of those can move a
+# pin and make a case vacuous — and `covers` must name what can BREAK the check,
+# not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
+# The cost is that a `--touched` review run almost always includes this row's
+# ~60 s. That is the fail-safe direction, and CI runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -54,6 +73,10 @@ watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchd
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
+mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
+mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
+i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
+html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }
@@ -79,14 +102,53 @@ rm -rf "$TREE/.ai-dev/quality"
 mkdir -p "$TREE/.ai-dev"
 cp -r "$ROOT/.ai-dev/quality" "$TREE/.ai-dev/quality"
 
+# ...and so must the SOURCES those gates read. A gate added together with the
+# doc pointer or the harness it asserts on would otherwise be measured against
+# HEAD's copy of them and fail its own green baseline for a reason that has
+# nothing to do with the mutation. Overlay every path git reports as changed
+# or untracked (deletions skipped — the pristine copy is already the "before").
+while IFS= read -r -d '' rec; do
+    st=${rec:0:2}
+    p=${rec:3}
+    case "$st" in
+        R*|C*) IFS= read -r -d '' _old || true ;;   # rename/copy: consume the source path
+    esac
+    case "$st" in
+        *D*) continue ;;
+    esac
+    [ -f "$ROOT/$p" ] || continue
+    mkdir -p "$TREE/$(dirname "$p")"
+    cp "$ROOT/$p" "$TREE/$p"
+done < <(cd "$ROOT" && git status --porcelain -z -uall 2>/dev/null)
+
 # Several gates sweep via `git ls-files`; without an index they would see one
 # file and (correctly) fail their own non-vacuity floor, which would read here
 # as a mutation success it is not. Give the copy a real index.
 ( cd "$TREE" && git init -q && git add -A ) >/dev/null 2>&1 || {
     echo "comment-mutation-proof: FAIL — could not init a git index in the pristine copy"; exit 1; }
 
+# A gate is a bash script or a node one; the id names the file either way.
+gate_script() {  # $1 = gate id ; prints the runnable path, empty when absent
+    if [ -f "$TREE/.ai-dev/quality/checks/$1.sh" ]; then printf '%s\n' ".ai-dev/quality/checks/$1.sh"
+    elif [ -f "$TREE/.ai-dev/quality/checks/$1.mjs" ]; then printf '%s\n' ".ai-dev/quality/checks/$1.mjs"
+    fi
+}
+
 run_gate() {  # $1 = gate id ; returns the gate's exit status
-    ( cd "$TREE" && bash ".ai-dev/quality/checks/$1.sh" ) >/dev/null 2>&1
+    local s; s=$(gate_script "$1")
+    case "$s" in
+        *.mjs) ( cd "$TREE" && node "$s" ) >/dev/null 2>&1 ;;
+        *)     ( cd "$TREE" && bash "$s" ) >/dev/null 2>&1 ;;
+    esac
+}
+
+# The token a developer would actually use to disable a line in THIS file type.
+comment_token() {  # $1 = path ; prints `#`, `//`, or `html`
+    case "$1" in
+        *.js|*.mjs|*.cjs) printf '//\n' ;;
+        *.html|*.htm)     printf 'html\n' ;;
+        *)                printf '#\n' ;;
+    esac
 }
 
 # One green baseline per gate, cached: a gate that is already RED would make
@@ -106,8 +168,8 @@ green_baseline() {  # $1 = gate id
 
 while IFS='|' read -r gate file needle; do
     [ -n "$gate" ] || continue
-    if [ ! -f "$TREE/.ai-dev/quality/checks/$gate.sh" ]; then
-        bad "$gate: no such check script — the case table names a gate that does not exist"
+    if [ -z "$(gate_script "$gate")" ]; then
+        bad "$gate: no such check script (.sh or .mjs) — the case table names a gate that does not exist"
         continue
     fi
     if [ ! -f "$TREE/$file" ]; then
@@ -120,15 +182,26 @@ while IFS='|' read -r gate file needle; do
     # Comment out every non-comment line carrying the pinned text. index() is a
     # literal match — the needles carry regex metacharacters ($ * " ( ) ).
     #
-    # The `#` goes AFTER the indentation, not at column 0. That is how a person
-    # actually comments a line out, and it is the harder mutation: a column-0
-    # `#` inside a Python method also terminates several gates' own body
-    # extractors (an unindented line ends the block), which turns them RED for
-    # a reason that has nothing to do with the pin — a proof that would pass
+    # The token goes AFTER the indentation, not at column 0. That is how a
+    # person actually comments a line out, and it is the harder mutation: a
+    # column-0 `#` inside a Python method also terminates several gates' own
+    # body extractors (an unindented line ends the block), which turns them RED
+    # for a reason that has nothing to do with the pin — a proof that would pass
     # while the pin stayed blind.
-    awk -v needle="$needle" '
-        index($0, needle) > 0 && $0 !~ /^[[:space:]]*#/ {
-            sub(/^[[:space:]]*/, "&#"); hits++
+    #
+    # An HTML line is WRAPPED (`<!-- … -->`), the only per-line disable markup
+    # has; a line already carrying either delimiter is skipped rather than
+    # producing malformed nesting.
+    tok=$(comment_token "$file")
+    awk -v needle="$needle" -v tok="$tok" '
+        tok == "html" {
+            if (index($0, needle) > 0 && index($0, "<!--") == 0 && index($0, "-->") == 0) {
+                sub(/^[[:space:]]*/, "&<!-- "); $0 = $0 " -->"; hits++
+            }
+            print; next
+        }
+        index($0, needle) > 0 && $0 !~ /^[[:space:]]*(#|\/\/)/ {
+            sub(/^[[:space:]]*/, "&" tok); hits++
         }
         { print }
         END { exit (hits > 0 ? 0 : 3) }
