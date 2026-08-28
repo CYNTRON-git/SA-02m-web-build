@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
+import stat
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -637,18 +639,60 @@ class _Handler(BaseHTTPRequestHandler):
     do_DELETE = _handle  # noqa: N815
 
 
-def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
-    """Optional long-running config API (sa02m-alice-config.service).
+# AF_UNIX (and socketserver.UnixStreamServer) exist only on POSIX; the target is
+# Linux. Guard the class so this module still imports on a Windows dev box, where
+# the server is never run. `_UnixConfigServer` is simply absent off-POSIX.
+_HAVE_AF_UNIX = hasattr(socketserver, "UnixStreamServer")
 
-    Binds 127.0.0.1:8012. Web UI uses session-authenticated CGI; this process
-    is for local tooling / future nginx proxy.
+if _HAVE_AF_UNIX:
+
+    class _UnixConfigServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        """HTTP over AF_UNIX for the local config API. Filesystem permissions on the
+        socket ARE the access control — see serve_unix(). Why not http.server: it is
+        AF_INET only; the flasher daemon uses the same AF_UNIX shape for the same
+        reason (opt/sa02m-flasher/sa02m_flasher/service.py)."""
+
+        daemon_threads = True
+        allow_reuse_address = True
+
+        def get_request(self) -> Tuple[Any, Any]:
+            sock, _ = self.socket.accept()
+            return sock, ("unix", 0)
+
+
+def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
+    """Local config API over a root-only AF_UNIX socket (sa02m-alice-config.service).
+
+    The web UI does NOT talk to this socket — sa02m_alice_api.cgi dispatches
+    in-process behind session auth. This endpoint is for root-local tooling / a
+    future nginx proxy.
+
+    It previously bound 127.0.0.1:8012 over TCP with NO authentication of any kind
+    (the name "serve_unix" was itself a lie), so ANY local process — www-data
+    (bypassing the session + CSRF the CGI enforces), mosquitto, nodered, CODESYS —
+    could drive enable/disable/link/unlink/upsert_device/delete_device as root
+    (audit 2026-08-28, M5). It now binds an AF_UNIX socket at mode 0600 owned by the
+    service user (root), so the only reach is a process already running as root. A
+    future caller that legitimately needs it gets an explicit group grant then;
+    nothing today does.
     """
-    os.makedirs(os.path.dirname(sock_path) or "/run/sa02m-alice", exist_ok=True)
-    host, port = "127.0.0.1", 8012
-    httpd = ThreadingHTTPServer((host, port), _Handler)
+    if not _HAVE_AF_UNIX:
+        raise RuntimeError("AF_UNIX sockets are unavailable on this platform")
+    parent = os.path.dirname(sock_path) or "/run/sa02m-alice"
+    os.makedirs(parent, exist_ok=True)
     try:
-        with open(sock_path + ".tcp", "w", encoding="utf-8") as fh:
-            fh.write("%s:%d\n" % (host, port))
+        os.unlink(sock_path)
+    except FileNotFoundError:
+        pass
+    # Create the socket owner-only from the outset (umask), then re-assert 0600 in
+    # case a lax umask or a prior file survived — the socket is the whole boundary.
+    old_umask = os.umask(0o177)
+    try:
+        httpd = _UnixConfigServer(sock_path, _Handler)
+    finally:
+        os.umask(old_umask)
+    try:
+        os.chmod(sock_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600, owner (root) only
     except OSError:
         pass
     httpd.serve_forever()
