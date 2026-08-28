@@ -14,13 +14,17 @@ registry row, every `scripts/dev/test-*.sh` harness, and every sentence in a
 doc, contract or comment claiming a guarantee is "gated". Machine-facing
 English (`.ai-dev/PROTOCOL.md` invariant 5).
 
-Why it exists: ten checks in this project have been found reporting protection
-they did not have. The 2026-08-28 sweep measured the scale — **12 of 14 pinned
-lines in the static gates were defeated by putting `#` in front of them; 0
-after the fix** (`4686bf3`). The ninth was the gate `docs/threat-model.md`
-cited as proof that root escalation was closed (audit 2026-08-28, the
-«escalation gate reads 1 of the 6 homes» record in `.ai-dev/backlog.md`; gate
-widened in `373a2f9`); the tenth was the runner itself (`3a3e0ac`).
+Why it exists: checks in this project keep being found reporting protection they
+did not have — the count is not the point and goes stale, the recurrence is. The
+2026-08-28 sweep measured the scale — **12 of 14 pinned lines in the static
+gates were defeated by putting `#` in front of them; 0 after the fix**
+(`4686bf3`). Others: the gate `docs/threat-model.md` cited as proof that root
+escalation was closed while it read one of six grant homes (audit 2026-08-28,
+the «escalation gate reads 1 of the 6 homes» record in `.ai-dev/backlog.md`;
+widened in `373a2f9`); the runner itself (`3a3e0ac`); and — in the very branch
+that built the mechanical registration below — a new row claiming a mutation
+case that did not exist, in the one directory that enforcement did not yet
+enumerate.
 
 ---
 
@@ -61,7 +65,11 @@ runtime append — the two unpinned grants were structurally invisible to the
 check meant to prove escalation closed (same record; `373a2f9`). Same shape
 by scope: `py-syntax` compiled `opt/` only, so a syntax error in Python shipped
 from `etc/` passed the full build beat and failed first at systemd start on the
-board (`b4f6e0c`).
+board (`b4f6e0c`). Newest instance: `mqtt-install-secret` promised the broker
+password is "never written to" the web-served install log while its pin read one
+sink — the `log` helper — so a bare `echo "$MQTT_PASS" >> …install.log` left it
+ALL OK. The fix is the shape that scales: an ALLOW-LIST of the sanctioned uses,
+not a denylist of the sinks you thought of.
 
 **(c) Scope that never re-runs — `covers` names the origin, not the breakers.**
 `py-unit-roster` covers `opt/sa02m-rs485-roster/`; the contracted `modules`
@@ -95,7 +103,12 @@ match, the still-writing `sed` takes SIGPIPE and exits 141, and under
 `set -o pipefail` that 141 becomes the pipeline status. `no-retired-session-token`
 ran RED in CI (GNU sed) and falsely GREEN on Windows git-bash (MSYS sed) on the
 same bytes. Capture first, then match in-shell. Full account:
-`.ai-dev/notes/quality-gate-environment.md`.
+`.ai-dev/notes/quality-gate-environment.md`. The shape survived inside
+`lib_check.sh` itself — `stripped_first_line` ended in `grep -nE … | head -1`,
+in the file whose header advertises capture-then-match — because every call site
+happened to read the value rather than the status. Do not wait for a symptom on
+a host that reproduces it: `check-lib` case 9e now pins the lib's own source
+against the shape.
 
 **(g) A stale allow-list or ledger entry.** `#cloud-btn-activate` sat in
 `CONTRAST_WHITELIST` excusing a pair the harness never measures — the button
@@ -103,21 +116,38 @@ lives inside a collapsed `<details>` the driver never opens, so the exemption
 covered an element under no test at all (`bb109d7`). An entry that excuses
 nothing is stale; the ledger's own non-vacuity is what caught it.
 
-## The floors now in place, and the gap that remains
+## The floors now in place, and what they do not reach
 
 Three mechanisms — each documents itself in its own header; do not restate them:
 
 | Mechanism | What it actually covers |
 |---|---|
-| `.ai-dev/quality/checks/lib_check.sh` (row `check-lib`) | The comment-stripping helpers a static gate sources: comments blanked not deleted (ordering pins keep their line numbers), capture-then-match (no early-exit pipe). Self-tested, because a bug here breaks every sourcing gate at once. |
-| `.ai-dev/quality/checks/comment-mutation-proof.sh` (review beat) | Re-runs the comment-out mutation on a pristine copy of HEAD for **the cases registered in its `CASES` table** — nothing else. |
-| `.ai-dev/quality/run.mjs` `computeTouchedFiles` (`run.test.mjs` section C) | `--touched` = committed diff UNION working tree (staged, unstaged, untracked), so the pre-handback command sees the work being handed back. |
+| `.ai-dev/quality/checks/lib_check.sh` (row `check-lib`) | The comment-stripping helpers a static gate sources: comments blanked not deleted (ordering pins keep their line numbers), capture-then-match (no early-exit pipe). Self-tested — including a pin on its OWN source against shape (f) — because a bug here breaks every sourcing gate at once. |
+| `.ai-dev/quality/checks/comment-mutation-proof.sh` (review beat) | Re-runs the comment-out mutation on a pristine copy of HEAD for the cases in its `CASES` table, **and** enforces that EVERY registry row is either cased there or carries a recorded exemption. |
+| `.ai-dev/quality/run.mjs` `computeTouchedFiles` (`run.test.mjs` section C) | `--touched` = committed diff UNION working tree (staged, unstaged, untracked), both halves read from git's `-z` output so a quoted path cannot silently match no `covers` glob. |
 
-**The gap, stated plainly: a newly added gate is covered by the mutation proof
-only if its case is registered there.** The proof cannot discover a pin it was
-never told about — adding a gate means adding its case. A gate whose pins are
-fail-IF-PRESENT sweeps needs the opposite mutation (re-introduce the banned
-pattern) and documents that in its own header.
+**Registration is mechanical, not discipline.** `coverage_check()` enumerates
+every row of `tools.json` — whatever directory the check lives in — and fails
+the run unless the row carries a mutation case **or** a recorded exemption. It
+first enumerated only scripts under `.ai-dev/quality/checks/`, which left 20
+`scripts/dev/` rows outside the measurement with no exemption on record; the
+branch that added the enforcement reproduced the class inside that blind spot
+(a new row claiming a case that did not exist). The enumeration is now every
+row, and the exemption has one home per row, decided by the row: a check script
+of ours carries a `comment-mutation-proof-exempt: <reason>` marker **above its
+first executable line** (measured, not asserted); a row that runs no such script
+— an inline `bash -n` / `compileall` / `unittest` command — carries a
+non-empty `mutationExempt` reason on the row itself.
+
+**What it still does not reach**, stated so the next sweep does not re-derive
+it: the proof measures whether a gate NOTICES its pinned line being commented
+out; it cannot tell you the pin is the *right* line. A case naming a pin the
+gate never really depended on passes for the wrong reason, and only reading the
+gate catches that. A gate whose pins are fail-IF-PRESENT sweeps needs the
+opposite mutation (re-introduce the banned pattern) and documents that in its
+own header — but "all my pins are fail-IF-PRESENT" is a claim to check, not
+accept: two gates recorded exactly that while carrying presence-floored pins
+that a comment-out **does** turn RED, and both are cased now.
 
 ## Honesty — the description is part of the check
 
@@ -143,12 +173,23 @@ pattern) and documents that in its own header.
 
 A gate left unchanged during a sweep is indistinguishable from a gate that was
 overlooked. When a gate is deliberately outside a floor, the reason goes at the
-top of the script — seven carry such a note today (`a13b93f`: four runners or
-renderers with no needle greps, one line-anchored grep a comment cannot fake,
-one carrying its own domain-specific stripping, one the origin of the pattern).
-Without it the next sweep re-asks the same question, or "fixes" a gate that was
-right. The same applies to a ledger exemption: it carries its reason and, where
-the value can drift, a `floor` ratchet.
+top of the script, above its first executable line. Without it the next sweep
+re-asks the same question, or "fixes" a gate that was right. The same applies to
+a ledger exemption: it carries its reason and, where the value can drift, a
+`floor` ratchet.
+
+Do not count the notes here — the count is what goes stale (`:145` of this file
+claimed seven while nine files carried one, drifted inside a single branch).
+`grep -rl 'comment-mutation-proof-exempt:' .ai-dev/quality/ scripts/dev/` is the
+answer, and `comment-mutation-proof` fails the run when a row has neither a case
+nor one of these notes.
+
+**The reason has to be TRUE of the gate, not plausible about its kind.** Two
+notes recorded "every pin here is fail-IF-PRESENT" while the gate's non-vacuity
+floor was a presence pin that a comment-out turns RED — the conclusion (safe)
+was right and the stated reason was wrong, which is exactly what the next sweep
+reads and trusts. Where a comment-out really does turn the gate RED, register
+the case instead of writing the note.
 
 ## Before a check is called done
 
@@ -158,5 +199,9 @@ the value can drift, a `floor` ratchet.
 3. Every home of the thing enumerated — not the first one found.
 4. `covers` names the files that can break the guarantee, not just its origin.
 5. Non-vacuous: missing file, empty sweep, unmatched pin all FAIL.
-6. No producer piped into `grep -q` / `-l` / `-m N` / `head` under `pipefail`.
-7. Registry description matches the check; deliberate exemptions carry reasons.
+6. No producer piped into `grep -q` / `-l` / `-m N` / `head` under `pipefail`
+   (pinned for `lib_check.sh` itself by `check-lib` case 9e).
+7. Registry description matches the check; deliberate exemptions carry reasons
+   that are true of THIS gate, not of its kind.
+8. A skip is reported as a skip. An assertion that cannot fail (`-ge 0` on a
+   count) is decoration, not evidence — delete it or make it real.
