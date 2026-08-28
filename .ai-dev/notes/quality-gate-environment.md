@@ -109,3 +109,16 @@ A local substitute for a skipping row is **evidence, not proof**. Say which
 tool and which version produced a result, and name CI as the authority where it
 is. The remote gate exists precisely because a local judgement can be wrong in
 ways the local machine cannot see.
+
+## New rows, 1.0.6.24 — what they need and what they cost
+
+- **`comment-mutation-proof`** (review beat) needs `git`, `tar` and `awk`. It extracts
+  a pristine copy of HEAD, overlays the working-tree gates, comments out each pinned
+  line and requires the gate to fail. **~40 s on Windows** — the largest single row we
+  have added; budget it when judging CI time (`.ai-dev/notes/ci-budget.md`).
+- **`check-lib`** (build beat) is a pure shell self-test of `checks/lib_check.sh`, no
+  external tooling beyond bash. Fast.
+- Both are **standing measurements, not one-off sweeps**: they exist so the
+  hollow-gate class cannot return through a newly added gate. A future gate that
+  greps for a pinned line WILL be caught by `comment-mutation-proof` only if its case
+  is registered there — adding a gate means adding its case.
