@@ -190,6 +190,18 @@
       "mode": "0755",
       "owner": "root:root"
     },
+    "etc/sa02m-mplc-project-deploy.sh": {
+      "dst": "/usr/local/sbin/sa02m-mplc-project-deploy.sh",
+      "mode": "0755",
+      "owner": "root:root",
+      "note": "sudoers grants the .sh path; a stripped extension deploys a twin nobody calls (audit B1 deploy gap)."
+    },
+    "etc/sa02m-mqtt-external-info.py": {
+      "dst": "/usr/local/sbin/sa02m-mqtt-external-info.py",
+      "mode": "0755",
+      "owner": "root:root",
+      "note": "sudoers grants this exact path; without a rule the offline package never refreshed it."
+    },
     "etc/sa02m-iface-conf-write.sh": {
       "dst": "/usr/local/sbin/sa02m-iface-conf-write.sh",
       "mode": "0755",

@@ -357,6 +357,11 @@ def map_dst(rel: str):
     if rel.startswith("etc/") and name.startswith("sa02m-"):
         if name.endswith("-lib.sh") or name in ("sa02m-web-build-lib.sh", "sa02m-web-auth-lib.sh"):
             return "/usr/local/lib/" + name
+        # Privileged helpers sudo grants by an explicit path must land at THAT
+        # path — a stripped extension deploys a twin nobody calls and leaves the
+        # granted file stale (audit B1 deploy gap). Gate: sudoers-pin-contract.
+        if name == "sa02m-mqtt-external-info.py":
+            return "/usr/local/sbin/" + name
         if name.endswith(".sh") or name in (
             "sa02m-web-update-check", "sa02m-web-update-apply",
             "sa02m-set-cpu-profile", "sa02m-set-storage-auto-format",
@@ -378,6 +383,7 @@ def map_dst(rel: str):
                 "sa02m-update-inspect.sh", "sa02m-factory-reset-runner.sh",
                 "sa02m-iface-conf-write.sh", "sa02m-usb-power.sh",
                 "sa02m-ensure-eth1-dhcp-hook.sh",
+                "sa02m-conf-rm.sh", "sa02m-mplc-project-deploy.sh",
             ):
                 if "runner" in name or "inspect" in name or "factory-reset" in name:
                     return "/usr/local/libexec/" + name.replace(".sh", "")
@@ -909,14 +915,16 @@ cleanup_b1_deploy_artifacts() {
             rm -f "$_path" && log "cleanup: removed obsolete sudoers $_path"
         fi
     done
-    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power; do
+    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power \
+              /usr/local/sbin/sa02m-gateway-config-apply /usr/local/sbin/sa02m-mqtt-config-apply \
+              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" && log "cleanup: removed extension-less B1 helper twin $_p"
         fi
     done
     # OTA may land sa02m-* sudoers as 0644 (source tree mode); visudo -c then
     # WARN-fails even when syntax is OK. Harden known drop-ins we ship.
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt; do
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
         _path="/etc/sudoers.d/$_name"
         if [ -f "$_path" ]; then
             chmod 0440 "$_path" 2>/dev/null || true

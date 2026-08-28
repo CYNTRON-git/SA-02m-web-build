@@ -173,7 +173,10 @@ else
     log INFO "/etc/sa02m-modbus-mqtt.yaml уже существует — права обновлены для www-data"
 fi
 
-install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
+# Источник — usr/local/sbin/ (не etc/): путь установки совпадает с путём в
+# репозитории, поэтому OTA и оффлайн-пакет кладут файл ровно туда, где его
+# вызывают sudoers и mqtt_config.cgi (audit B1 deploy-gap).
+install -m 0755 -o root -g root "$BASE_DIR/usr/local/sbin/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
 install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-external-info.py

@@ -99,12 +99,10 @@ install -m 0755 -o root -g root \
     /usr/local/sbin/sa02m-alice-web-trigger.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-alice-web-trigger.sh
 
-SUDOERS_FILE="/etc/sudoers.d/sa02m-alice"
-cat >"$SUDOERS_FILE" <<'SUDOERS'
-# SA-02m Alice CGI
-www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-alice-web-trigger.sh
-SUDOERS
-sa02m_harden_sudoers "$SUDOERS_FILE"
+# Устанавливается ЦЕЛИКОМ из коммитнутого etc/sudoers.d/sa02m-alice (audit B1):
+# heredoc-версия была невидима для OTA и оффлайн-пакета и выдавала хелпер БЕЗ
+# аргументов, то есть с любым argv. Коммитнутый файл — пин по трём глаголам.
+sa02m_install_sudoers "$BASE_DIR/etc/sudoers.d/sa02m-alice" /etc/sudoers.d/sa02m-alice
 
 # ── CGI ────────────────────────────────────────────────────────────────────
 for cgi in sa02m_alice_api.cgi sa02m_alice_topics.cgi; do

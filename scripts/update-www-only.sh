@@ -327,7 +327,12 @@ fi
 # cloud: a CRLF in ANY sudoers.d file is a visudo syntax error that breaks sudo
 # globally (cloud enrollment, flasher, mqtt all fail). A www-only deploy that
 # fixed only sa02m-cloud left a broken sa02m-mqtt/-flasher and sudo stayed dead.
-for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt; do
+# sa02m-gateway / sa02m-alice joined the list in 1.0.6.24: both were written by
+# an installer heredoc and are now committed files, so this path can converge
+# them too. Safe on a board whose helpers are older — the pins name the exact
+# argument vectors the shipped CGIs already send, so no order of arrival breaks
+# gateway config save or the Alice enable/disable/restart buttons.
+for _sud in sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
     if [ -f "$REPO_ETC/sudoers.d/$_sud" ]; then
         install -m 0440 -o root -g root "$REPO_ETC/sudoers.d/$_sud" "/etc/sudoers.d/$_sud"
         sed -i 's/\r$//' "/etc/sudoers.d/$_sud"

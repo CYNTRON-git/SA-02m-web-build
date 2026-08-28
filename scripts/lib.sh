@@ -462,7 +462,7 @@ sa02m_remove_obsolete_www_sudoers() {
                 || log WARN "не удалось удалить устаревший sudoers: $_path"
         fi
     done
-    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt; do
+    for _name in sa02m-www sa02m-cloud sa02m-flasher sa02m-mqtt sa02m-gateway sa02m-alice; do
         _path="/etc/sudoers.d/$_name"
         if [ -f "$_path" ]; then
             chmod 0440 "$_path" 2>/dev/null || true
@@ -474,11 +474,15 @@ sa02m_remove_obsolete_www_sudoers() {
     fi
 }
 
-# OTA map_dst used to strip .sh from the two B1 helpers; remove the twins so
-# sudoers (which grants the .sh path) and apply.cgi resolve the real helper.
+# OTA map_dst used to strip .sh from these helpers; remove the twins so sudoers
+# (which grants the .sh path) and the CGIs resolve the real helper. The gateway,
+# MQTT-config, conf-rm and MPLC-deploy twins joined the list in 1.0.6.24 — the
+# same divergence, found by the widened sudoers-pin-contract gate.
 sa02m_remove_stale_b1_helper_twins() {
     local _p
-    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power; do
+    for _p in /usr/local/sbin/sa02m-iface-conf-write /usr/local/sbin/sa02m-usb-power \
+              /usr/local/sbin/sa02m-gateway-config-apply /usr/local/sbin/sa02m-mqtt-config-apply \
+              /usr/local/sbin/sa02m-conf-rm /usr/local/sbin/sa02m-mplc-project-deploy; do
         if [ -f "$_p" ] && [ ! -L "$_p" ]; then
             rm -f "$_p" \
                 && log OK "удалён helper без .sh (OTA twin): $_p" \

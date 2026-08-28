@@ -303,11 +303,28 @@ if [ -d "$TMPDIR/repo/opt/sa02m-update" ]; then
     fi
     log "Обновлён /opt/sa02m-update"
 fi
-if [ -x /usr/local/sbin/sa02m-web-root-cmd.sh ] && [ -f /etc/sudoers.d/sa02m-www ]; then
-    if ! grep -q 'sa02m-web-root-cmd.sh' /etc/sudoers.d/sa02m-www; then
-        printf '\nwww-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-web-root-cmd.sh *\n' >> /etc/sudoers.d/sa02m-www
-        chmod 440 /etc/sudoers.d/sa02m-www 2>/dev/null || true
-        visudo -cf /etc/sudoers.d/sa02m-www >>"$LOGFILE" 2>&1 || true
+# sudoers: install the committed single-home file WHOLESALE (audit B1, home 6).
+#
+# This used to APPEND the sa02m-web-root-cmd.sh grant when it was missing. An
+# append can only ever WIDEN: it never removes a stale dangerous grant, and it
+# falsified the "installed WHOLESALE … no append-if-missing" claim in the file's
+# own header. It could not simply be deleted either — this legacy rsync path
+# deploys no /etc/sudoers.d file of its own (see the helper loop above), so a
+# board that only ever updated this way would stop converging altogether.
+# Installing the committed file whole does both jobs: the root-cmd grant lands,
+# and a stale grant is REMOVED. Validate before activating — a malformed
+# drop-in breaks sudo globally.
+if [ -f "$TMPDIR/repo/etc/sudoers.d/sa02m-www" ]; then
+    _sud_tmp=$(mktemp 2>/dev/null) || _sud_tmp=""
+    if [ -n "$_sud_tmp" ]; then
+        sed 's/\r$//' "$TMPDIR/repo/etc/sudoers.d/sa02m-www" > "$_sud_tmp"
+        if ! command -v visudo >/dev/null 2>&1 || visudo -cf "$_sud_tmp" >>"$LOGFILE" 2>&1; then
+            install -m 0440 -o root -g root "$_sud_tmp" /etc/sudoers.d/sa02m-www \
+                && log "Обновлён /etc/sudoers.d/sa02m-www (установлен целиком)"
+        else
+            log "WARN: visudo отклонил etc/sudoers.d/sa02m-www — живой файл не тронут"
+        fi
+        rm -f "$_sud_tmp"
     fi
 fi
 if [ -x /usr/local/sbin/sa02m-repair-web-env ]; then
