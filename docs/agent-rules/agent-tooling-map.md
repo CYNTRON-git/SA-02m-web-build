@@ -54,6 +54,7 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 
 | Question | One home |
 |---|---|
+| Which doc answers a system question at all | `docs/architecture.md` — a pointer stub by design (the map), not a full architecture doc |
 | Stack, tabs, polling architecture, port lease | `docs/agent-rules/sa02m-domain.md` |
 | CGI/JS/CSS floors, contrast, i18n rules | `docs/agent-rules/web-code-rigor.md` |
 | Pre/post-edit discipline, «—» trace recipe | `docs/agent-rules/web-workflow.md` |
