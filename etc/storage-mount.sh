@@ -1,6 +1,7 @@
 #!/bin/bash
 # Монтирование USB (/media/usb) и microSD (mmcblk1/3 → /media/sdcard; eMMC на СА-02м обычно mmcblk2).
-# Опционально: автоформат в exFAT при пустой ФС или NTFS — см. /etc/sa02m_storage.conf
+# Опционально: автоформат в exFAT для раздела без распознанной ФС (или NTFS,
+# который не удалось смонтировать) — см. /etc/sa02m_storage.conf
 
 ACTION=${1:-}
 DEVICE=${2:-}
@@ -75,11 +76,17 @@ format_exfat() {
 
 probe_fstype() {
   # Читаем FSTYPE с ретраями. При boot-time udev ещё не успевает прочесть
-  # таблицу разделов и blkid возвращает пусто. Делаем до 5 попыток с
-  # backoff: 0, 0.5, 1, 1.5, 2 c — суммарно ~5 c, для USB это безопасно.
+  # таблицу разделов и blkid возвращает пусто. До 5 попыток; пауза только
+  # МЕЖДУ попытками: 0.5, 1, 1.5, 2 c — суммарно 5 c ожидания, плюс
+  # до 2 c `udevadm settle` на каждой попытке. Пустой ответ отсюда — это вход в
+  # ветку, которая при STORAGE_AUTO_FORMAT=1 форматирует раздел, поэтому
+  # подождать дольше безопаснее, чем ошибиться; запас по TimeoutStartSec=120
+  # в storage-mount@.service это позволяет. До 1.0.6.24 здесь стояло
+  # `sleep "0.$((i * 5))"` — то есть 0.5, 0.10, 0.15, 0.20, 0.25 c: не
+  # монотонно (вторая пауза короче первой) и 1.2 c вместо обещанных ~5 c.
   # Сначала пробуем udev (он берёт значение из стандартного property
   # ID_FS_TYPE), потом blkid как fallback.
-  local fs=""
+  local fs="" delay_ds
   for i in 1 2 3 4 5; do
     udevadm settle --timeout=2 -E "${DEV_PATH}" 2>/dev/null || true
     fs=$(udevadm info --query=property --name "${DEV_PATH}" 2>/dev/null \
@@ -87,7 +94,12 @@ probe_fstype() {
     [ -n "$fs" ] && { printf '%s' "$fs"; return; }
     fs=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)
     [ -n "$fs" ] && { printf '%s' "$fs"; return; }
-    sleep "0.$((i * 5))"
+    # Десятые доли секунды целыми числами: 5, 10, 15, 20 → 0.5 1.0 1.5 2.0.
+    # После последней попытки не спим — ждать больше нечего.
+    if (( i < 5 )); then
+      delay_ds=$(( i * 5 ))
+      sleep "$(( delay_ds / 10 )).$(( delay_ds % 10 ))"
+    fi
   done
   printf ''
 }
@@ -153,8 +165,9 @@ do_mount() {
       return 0
     fi
     # The ONLY condition here is the operator's flag. An empty FSTYPE must
-    # reach mkfs too — /etc/sa02m_storage.conf and the panel both promise
-    # «пустой или NTFS раздел перезаписывается в exFAT», and an extra
+    # reach mkfs too — /etc/sa02m_storage.conf promises exactly this branch
+    # («раздел без распознанной ФС — или NTFS, который не удалось
+    # смонтировать, — перезаписывается в exFAT»), and an extra
     # `-z "${FSTYPE}"` term in this test silently killed half that promise
     # (an empty partition was never formatted). Guarded by the quality row
     # storage-automount-decision.

@@ -845,7 +845,8 @@ worklist collapsed into one home).
   auto-format cannot tell them apart.** `etc/storage-mount.sh` `probe_fstype` returns the
   same empty value for a genuinely blank partition and for one udev+blkid could not read,
   so with the flag on, an unreadable-but-populated partition is formatted. This is the
-  feature's original 1.0.3 semantics, mitigated three ways (5 probe retries over ~5 s,
+  feature's original 1.0.3 semantics, mitigated three ways (5 probe retries over ~5 s of
+  backoff — 1.2 s and non-monotonic until 1.0.6.24 made the code match that figure,
   try-mount-before-mkfs ordering, and the flag shipping OFF) — and it is the plausible
   reason someone might mistake the `-z` clause removed in 71e92ba for an intentional
   guard. The honest fix is a DISTINCT "probe failed" outcome in `probe_fstype` that never
