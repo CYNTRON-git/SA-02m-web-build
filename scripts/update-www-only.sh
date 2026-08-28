@@ -105,6 +105,19 @@ if [ -d /run/sa02m-web-sessions ]; then
     chmod 2750 /run/sa02m-web-sessions 2>/dev/null || true
     chown www-data:www-data /run/sa02m-web-sessions 2>/dev/null || true
 fi
+# Login-throttle state dir (/run/sa02m-web-login). Same reason as the session
+# store above: the CGI is www-data and cannot mkdir under root-owned /run, so
+# without this the lockout in lib_web_auth.sh fails OPEN. Committed conf, so the
+# one home is etc/tmpfiles.d/sa02m-web-login.conf — install it, don't restate it.
+if [ -f "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-login.conf" ]; then
+    install -m 644 "$SCRIPT_DIR/../etc/tmpfiles.d/sa02m-web-login.conf" \
+        /etc/tmpfiles.d/sa02m-web-login.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-web-login.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-login.conf 2>/dev/null || true
+    fi
+    log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
+fi
 
 if systemctl is-active --quiet fcgiwrap 2>/dev/null; then
     systemctl restart fcgiwrap 2>/dev/null || true
@@ -323,6 +336,18 @@ if [ -f "$REPO_SBIN/sa02m-cloud-web-trigger.sh" ]; then
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
     log OK "sa02m-cloud-web-trigger.sh обновлён"
 fi
+# Privileged config-apply helpers. The sudoers loop below converges the pins
+# sa02m-gateway / sa02m-mqtt, and a pin without its helper is a board that
+# reports the new version while still running the OLD trust-the-caller helper —
+# the in-helper argv validation IS the H1/H2 fix, the pin is only defence in
+# depth (security review 1.0.6.24, F4). Deliver the two together, always.
+for _h in sa02m-gateway-config-apply.sh sa02m-mqtt-config-apply.sh; do
+    if [ -f "$REPO_SBIN/$_h" ]; then
+        install -m 755 -o root -g root "$REPO_SBIN/$_h" "/usr/local/sbin/$_h"
+        sed -i 's/\r$//' "/usr/local/sbin/$_h"
+        log OK "$_h обновлён"
+    fi
+done
 # Reinstall + CRLF-strip + visudo-validate ALL sa02m-* sudoers we ship, not just
 # cloud: a CRLF in ANY sudoers.d file is a visudo syntax error that breaks sudo
 # globally (cloud enrollment, flasher, mqtt all fail). A www-only deploy that

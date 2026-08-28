@@ -1122,10 +1122,17 @@ restart_services_and_health() {
         log "health: daemon-reload..."
         _systemctl_bounded 60 daemon-reload || true
     fi
-    # Apply the freshly deployed Alice tmpfiles conf without waiting for a
-    # reboot: the enroll CGI needs the www-data-writable state dir right away.
-    if [ -f /etc/tmpfiles.d/sa02m-alice.conf ] && command -v systemd-tmpfiles >/dev/null 2>&1; then
-        timeout 30 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-alice.conf 2>/dev/null || true
+    # Apply the freshly deployed tmpfiles confs without waiting for a reboot:
+    # the enroll CGI needs the www-data-writable Alice state dir right away, and
+    # the login throttle in lib_web_auth.sh fails OPEN until /run/sa02m-web-login
+    # exists — www-data cannot create either dir itself (security review
+    # 1.0.6.24, F1). Named list, not a glob: /etc/tmpfiles.d/ also holds distro
+    # files this runner has no business re-applying mid-update.
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        for _tf in sa02m-alice.conf sa02m-web-login.conf; do
+            [ -f "/etc/tmpfiles.d/$_tf" ] || continue
+            timeout 30 systemd-tmpfiles --create "/etc/tmpfiles.d/$_tf" 2>/dev/null || true
+        done
     fi
     # Enable new/updated units so they survive reboot (e.g. sa02m-devices-*).
     while IFS= read -r u; do

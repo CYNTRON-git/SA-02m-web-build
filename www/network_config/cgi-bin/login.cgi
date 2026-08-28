@@ -72,8 +72,13 @@ if [ "$u_in" = "$u_ok" ] && web_auth_verify "$PASSWORD" "$STORED_SECRET"; then
     echo ""
 else
     web_login_record_failure
-    # A short delay slows scripted guessing even before the window lockout trips;
-    # bounded so it cannot exhaust fcgiwrap workers.
+    # A short delay slows scripted guessing before the window lockout trips.
+    # HONEST LIMIT (security review 1.0.6.24): this does NOT protect the worker
+    # pool — fcgiwrap has a fixed number of children and every CGI on the panel
+    # shares them, so N concurrent bogus logins hold N workers for a second
+    # each. It is bounded per request, not in aggregate. The lockout above is
+    # what actually stops a sustained attempt; this only raises the cost of the
+    # first MAXFAIL guesses.
     sleep 1
     fail_login
 fi

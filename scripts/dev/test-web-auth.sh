@@ -473,6 +473,159 @@ else
     ok "65 (see 64)"; ok "66 (see 64)"
 fi
 
+# ═══ 9. The runtime dirs the lib DEFAULTS to are PROVISIONED by the repo ═══
+# The finding behind finding F1 (security review 1.0.6.24). Every case in §8
+# exports SA02M_LOGIN_DIR itself, so the throttle was exercised in a
+# configuration production never reaches: the shipped default is /run/…, the
+# CGI runs as www-data, /run is root-owned 0755, and NOTHING in the tree created
+# the dir. `web_login__ensure_dir` therefore failed on every real board and each
+# caller took its fail-OPEN branch — the throttle was inert while §8 was green
+# and the threat model claimed a lockout. A test that supplies the very
+# precondition the production path lacks proves nothing about production.
+#
+# So: read the DEFAULT out of the shipped lib (never a literal repeated here —
+# renaming the dir in the lib must drag this assertion with it) and prove the
+# repo creates it.
+#
+# STATED LIMIT, not a hidden one: case 68 (delivery-path coverage) applies to
+# dirs carried by a COMMITTED etc/tmpfiles.d/ file, because only such a file
+# rides map_dst to an OTA/offline board. /run/sa02m-web-sessions is provisioned
+# by the installer's generated /etc/tmpfiles.d/sa02m.conf heredoc plus the
+# www-only convergence, so it passes 67 and is reported as heredoc-homed in 68
+# rather than silently skipped. Moving it to a committed conf is a separate
+# change (two declarations of one path make systemd-tmpfiles warn).
+#
+# Proven RED (1.0.6.24), on the tree as the review found it:
+#   67 RED  — "/run/sa02m-web-login is not created by ANY committed
+#             provisioning site …" (no tmpfiles line existed anywhere)
+#   68 RED  — each delivery path listed as not carrying it
+# and after the fix, by deleting the provisioning again one site at a time:
+#   drop etc/tmpfiles.d/sa02m-web-login.conf            -> 67 + 68 RED
+#   drop the install from scripts/03-webserver.sh       -> 68 RED (installer)
+#   drop the install from scripts/update-www-only.sh    -> 68 RED (www-only)
+#   drop the install from etc/sa02m-web-update-apply.sh -> 68 RED (legacy rsync)
+#   drop the line from scripts/offline-update-allowlist.txt -> 68 RED (offline)
+#   comment out any of the above (`#` in front)         -> RED, not green
+
+# Comment-blind matching is the whole point here (a `#`-disabled install line
+# must read as absent), so lib_check.sh is a HARD requirement for this section —
+# skipping on its absence is exactly the vacuity this section exists to punish.
+if ! declare -F stripped_has >/dev/null 2>&1; then
+    . .ai-dev/quality/checks/lib_check.sh 2>/dev/null || true
+fi
+declare -F stripped_has >/dev/null 2>&1 \
+    || bad "67 lib_check.sh unavailable — the provisioning assertions cannot run comment-blind and would be vacuous"
+
+# The `${VAR:-default}` baked into the shipped lib, comment lines ignored.
+lib_default_of() {
+    local var="$1" line re
+    re="^[[:space:]]*${var}=\"\\\$\\{${var}:-([^}]*)\\}\""
+    while IFS= read -r line; do
+        case "${line#"${line%%[![:space:]]*}"}" in '#'*) continue ;; esac
+        if [[ "$line" =~ $re ]]; then
+            printf '%s' "${BASH_REMATCH[1]}"
+            return 0
+        fi
+    done < "$LIB"
+    return 1
+}
+
+# Does $1 (a file) create the directory $2? Comment-stripped, so a `#`-disabled
+# line reads as absent. Accepts the three shapes this repo provisions with: a
+# tmpfiles `d <path> …` line, `install -d … <path>`, `mkdir -p <path>`.
+provisions_dir() {
+    local f="$1" d="$2"
+    [ -f "$f" ] || return 1
+    if declare -F stripped_matches >/dev/null 2>&1; then
+        stripped_matches "$f" "^[[:space:]]*d[[:space:]]+${d}([[:space:]]|$)" && return 0
+        stripped_matches "$f" "(install[[:space:]]+-d|mkdir[[:space:]]+-p)[^\"']*${d}([^A-Za-z0-9_/-]|$)" && return 0
+        return 1
+    fi
+    grep -Eq "^[[:space:]]*d[[:space:]]+${d}([[:space:]]|$)" "$f" && return 0
+    grep -Eq "(install[[:space:]]+-d|mkdir[[:space:]]+-p)[^\"']*${d}([^A-Za-z0-9_/-]|$)" "$f"
+}
+
+RUNTIME_DIRS=()
+for _v in SA02M_SESSION_DIR SA02M_LOGIN_DIR; do
+    _d=$(lib_default_of "$_v" || true)
+    case "$_d" in
+        /run/*) RUNTIME_DIRS+=("$_v=$_d") ;;
+        *) bad "67 $_v has no /run default in $LIB (read '${_d:-}') — the extraction pattern drifted; fix this assertion, do not delete it" ;;
+    esac
+done
+if [ "${#RUNTIME_DIRS[@]}" -lt 2 ]; then
+    bad "67 only ${#RUNTIME_DIRS[@]} runtime dir default(s) extracted from $LIB — this whole section would be vacuous"
+fi
+
+# Every file that may create a runtime dir: the committed tmpfiles confs plus
+# the installer/deploy scripts (the heredoc case).
+PROV_SITES=(scripts/03-webserver.sh scripts/06-alice.sh scripts/update-www-only.sh
+            etc/sa02m-web-update-apply.sh install.sh)
+while IFS= read -r _c; do PROV_SITES+=("$_c"); done < <(ls etc/tmpfiles.d/*.conf 2>/dev/null)
+
+# ── 67: SOMETHING in the repo creates it ──────────────────────────────────
+for _entry in "${RUNTIME_DIRS[@]}"; do
+    _var="${_entry%%=*}"; _dir="${_entry#*=}"
+    _hits=""
+    for _site in "${PROV_SITES[@]}"; do
+        provisions_dir "$_site" "$_dir" && _hits="$_hits $_site"
+    done
+    if [ -n "$_hits" ]; then
+        ok "67 $_dir ($_var) is provisioned by:$_hits"
+    else
+        bad "67 $_dir ($_var) is not created by ANY committed provisioning site — www-data cannot mkdir under root-owned /run, so the feature that depends on it FAILS OPEN on every real board while these tests, which supply their own dir, stay green"
+    fi
+done
+
+# ── 68: it reaches a board through EVERY delivery path ────────────────────
+# A dir carried by a committed etc/tmpfiles.d/ file travels on all of them; the
+# per-path assertion is that each path actually installs that file.
+for _entry in "${RUNTIME_DIRS[@]}"; do
+    _var="${_entry%%=*}"; _dir="${_entry#*=}"
+    _conf=""
+    for _c in etc/tmpfiles.d/*.conf; do
+        [ -f "$_c" ] || continue
+        provisions_dir "$_c" "$_dir" && { _conf="$_c"; break; }
+    done
+    if [ -z "$_conf" ]; then
+        if provisions_dir scripts/03-webserver.sh "$_dir"; then
+            ok "68 $_dir is heredoc-homed in the installer (stated limit: reaches installed boards, not an OTA-only upgrade)"
+        else
+            bad "68 $_dir ($_var) is in no committed etc/tmpfiles.d/ file and no installer heredoc — no delivery path can create it"
+        fi
+        continue
+    fi
+    _base=$(basename "$_conf")
+    for _path in scripts/03-webserver.sh scripts/update-www-only.sh etc/sa02m-web-update-apply.sh; do
+        stripped_has "$_path" "$_base" \
+            && ok "68 $_path installs $_base (provisions $_dir)" \
+            || bad "68 $_path does NOT install $_base — a board updated through that path gets the code that needs $_dir but never the dir, and the feature silently fails open"
+    done
+    # OTA + offline package: the runner maps etc/tmpfiles.d/ 1:1, so the only
+    # thing that can drop the file is the packer's allowlist.
+    stripped_has scripts/offline-update-allowlist.txt "$_conf" \
+        && ok "68 $_conf is in the offline package allowlist (offline + OTA payload)" \
+        || bad "68 $_conf is not in scripts/offline-update-allowlist.txt — the offline package ships the code without the dir it needs"
+    stripped_matches etc/sa02m-update-runner.sh 'etc/tmpfiles\.d/' \
+        && ok "68 the OTA runner maps etc/tmpfiles.d/ to the live tree" \
+        || bad "68 etc/sa02m-update-runner.sh no longer maps etc/tmpfiles.d/ — an OTA-delivered tmpfiles conf lands nowhere"
+    # Presence of the basename ANYWHERE would be the substring-check shape this
+    # round exists to kill, so require it within 8 comment-stripped lines of a
+    # systemd-tmpfiles invocation — the conf must be named BY the apply site.
+    if stripped_text etc/sa02m-update-runner.sh | awk -v n="$_base" '
+            { L[NR] = $0 }
+            END {
+                for (i = 1; i <= NR; i++) if (index(L[i], "systemd-tmpfiles"))
+                    for (j = i - 8; j <= i + 8; j++)
+                        if (j >= 1 && j <= NR && index(L[j], n)) { print "hit"; exit }
+            }
+        ' | grep -q hit; then
+        ok "68 the OTA runner applies $_base with systemd-tmpfiles (no reboot needed)"
+    else
+        bad "68 etc/sa02m-update-runner.sh does not name $_base at a systemd-tmpfiles apply site — an OTA-updated board has the conf but not the dir until it reboots"
+    fi
+done
+
 # ── non-vacuity ────────────────────────────────────────────────────────────
 n_store=$(find "$SA02M_SESSION_DIR" -type f 2>/dev/null | wc -l)
 [ -d "$SA02M_SESSION_DIR" ] || bad "56 the session store was never created — the whole run was vacuous"

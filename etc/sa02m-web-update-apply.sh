@@ -292,6 +292,36 @@ for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-we
         log "Обновлён $tgt"
     fi
 done
+# Privileged config-apply helpers from usr/local/sbin. The sudoers block below
+# installs the pins that name these paths; shipping the pin without the helper
+# leaves a board that only ever updates this way running the OLD, trust-the-
+# caller helper while the panel reports the new version (security review
+# 1.0.6.24, F4). They live under usr/local/sbin/ precisely so every delivery
+# path — this one included — can copy them 1:1 with no rename table.
+for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
+           usr/local/sbin/sa02m-mqtt-config-apply.sh \
+           usr/local/sbin/sa02m-cloud-web-trigger.sh; do
+    if [ -f "$TMPDIR/repo/$src" ]; then
+        tgt="/usr/local/sbin/$(basename "$src")"
+        install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        log "Обновлён $tgt"
+    fi
+done
+
+# tmpfiles: runtime dirs the deployed CGI needs but www-data cannot create
+# itself under root-owned /run (the login-throttle store — without it the
+# lockout in lib_web_auth.sh fails OPEN; security review 1.0.6.24, F1).
+for conf in sa02m-web-login.conf; do
+    if [ -f "$TMPDIR/repo/etc/tmpfiles.d/$conf" ]; then
+        install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/$conf" "/etc/tmpfiles.d/$conf"
+        sed -i 's/\r$//' "/etc/tmpfiles.d/$conf"
+        if command -v systemd-tmpfiles >/dev/null 2>&1; then
+            systemd-tmpfiles --create "/etc/tmpfiles.d/$conf" >>"$LOGFILE" 2>&1 || true
+        fi
+        log "Обновлён /etc/tmpfiles.d/$conf"
+    fi
+done
+
 # Bootstrap updater libs from the same clone when present (release N → N+1).
 if [ -d "$TMPDIR/repo/opt/sa02m-update" ]; then
     mkdir -p /opt/sa02m-update
