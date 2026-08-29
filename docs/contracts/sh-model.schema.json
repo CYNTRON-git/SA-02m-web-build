@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyntron.ru/schemas/sa02m/sh-model.schema.json",
+  "title": "SA-02m unified device model (sh-model)",
+  "description": "Machine artefact for docs/contracts/sh-model.md. Device -> functions[] -> points[]. quality is REQUIRED on every Point and has no default (fail-closed: an absent/unknown quality is read as bad/uncertain by the consumer, never good). additionalProperties:false everywhere (an unknown field is an error, never silently accepted). English only (PROTOCOL.md invariant 5).",
+  "type": "object",
+  "$ref": "#/$defs/device",
+
+  "$defs": {
+
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "functions"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "MQTT device id, the /devices/<id>/ segment (docs/MQTT_TOPICS.md schema). A roster row's identity (docs/contracts/rs485-roster.md).",
+          "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+        },
+        "model": {
+          "type": "string",
+          "description": "Module model as the roster reports it (rs485-roster.md ours[].model), or the catalog model for a third-party template device."
+        },
+        "manufacturer": { "type": "string" },
+        "address": {
+          "type": "integer",
+          "description": "Modbus slave address on the RS-485 line.",
+          "minimum": 0,
+          "maximum": 247
+        },
+        "port": { "type": "string", "description": "Serial port, e.g. /dev/COM5." },
+        "online": {
+          "type": ["boolean", "null"],
+          "description": "From the roster; null when the source cannot tell (scan source, rs485-roster.md)."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["bridge", "scan"],
+          "description": "Provenance of the roster row (rs485-roster.md): bridge = live poll, scan = last flasher scan."
+        },
+        "ts": { "type": "number", "description": "Unix seconds of the snapshot." },
+        "setup": {
+          "type": "array",
+          "description": "Holding-register init writes applied on start (adapts Spruthub options[] / template-device.md device.setup). Trusted input from the model file itself, never from a request.",
+          "items": { "$ref": "#/$defs/setupWrite" }
+        },
+        "functions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/function" }
+        }
+      }
+    },
+
+    "setupWrite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "value"],
+      "properties": {
+        "address": { "type": "integer", "minimum": 0 },
+        "value": { "type": "integer" },
+        "name": { "type": "string", "description": "Human label of the option (documentation only)." }
+      }
+    },
+
+    "function": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "points"],
+      "properties": {
+        "type": { "$ref": "#/$defs/functionType" },
+        "name": { "type": "string" },
+        "endpoint": {
+          "type": "integer",
+          "description": "Widget instance index within the device (adapts Spruthub services[].endpoint)."
+        },
+        "layout": { "$ref": "#/$defs/layout" },
+        "composition": {
+          "type": "boolean",
+          "description": "true marks a SEMANTIC grouping over Point-roles that already exist on the wire (Pump/Valve/Drive/Alarm), not a distinct driver. Honesty: a composed type must be marked so it is not passed off as its own device."
+        },
+        "virtual": {
+          "type": "boolean",
+          "description": "true marks a computed/group device with no direct wire binding; its points MAY omit binding (their value is derived from other points). A physical Function's points MUST carry binding (enforced below)."
+        },
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/point" }
+        }
+      },
+      "if": {
+        "not": { "properties": { "virtual": { "const": true } }, "required": ["virtual"] }
+      },
+      "then": {
+        "description": "A non-virtual (physical) Function requires binding on every point.",
+        "properties": {
+          "points": { "items": { "required": ["binding"] } }
+        }
+      }
+    },
+
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Widget placement (adapts Spruthub HSQLDB Services gridOrder/Width/Height).",
+      "properties": {
+        "gridOrder": { "type": "integer" },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      }
+    },
+
+    "functionType": {
+      "type": "string",
+      "description": "The v1 (WIDE) Function-type set. Every value is grounded in a real WB module, a live SA-02m control, or the HomeKit/Spruthub service catalog (docs/contracts/sh-model.md 4.2).",
+      "enum": [
+        "DiscreteOutput",
+        "DiscreteInput",
+        "AnalogInput",
+        "AnalogOutput",
+        "TemperatureSensor",
+        "HumiditySensor",
+        "Meter",
+        "Pump",
+        "Valve",
+        "Drive",
+        "Alarm",
+        "MotionSensor",
+        "WindowCovering",
+        "Thermostat",
+        "HeaterCooler",
+        "LeakSensor",
+        "SmokeSensor",
+        "AirQualitySensor",
+        "SecuritySystem"
+      ]
+    },
+
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "valueType", "quality"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Point identity, unique within its Function (typically the WB control name, docs/MQTT_TOPICS.md).",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$"
+        },
+        "role": { "$ref": "#/$defs/role" },
+        "valueType": { "$ref": "#/$defs/valueType" },
+        "unit": {
+          "type": "string",
+          "description": "Engineering unit (WB units, docs/MQTT_TOPICS.md; e.g. V, A, W, degC, %)."
+        },
+        "read": { "type": "boolean" },
+        "write": { "type": "boolean" },
+        "events": { "type": "boolean" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number" },
+        "enum": {
+          "type": "array",
+          "description": "Closed value set (adapts Spruthub validValues).",
+          "items": {}
+        },
+        "quality": { "$ref": "#/$defs/quality" },
+        "ts": { "type": "number", "description": "Unix seconds of the last value update." },
+        "binding": { "$ref": "#/$defs/binding" }
+      }
+    },
+
+    "role": {
+      "type": "string",
+      "description": "What the point DOES (orthogonal to valueType).",
+      "enum": ["measurement", "command", "setpoint", "feedback", "alarm"]
+    },
+
+    "valueType": {
+      "type": "string",
+      "description": "Value type on the wire (grounded on Spruthub common.js bool/int/float/stringValue and WB formats).",
+      "enum": ["bool", "int", "float", "string"]
+    },
+
+    "quality": {
+      "type": "string",
+      "description": "COMPUTED value fitness (docs/contracts/sh-model.md 4.4). Normalised on the model layer from existing wire signals (meta/error + device-offline + ts freshness); nothing new is added on the MQTT bus. REQUIRED, no default.",
+      "enum": ["good", "bad", "stale", "uncertain"]
+    },
+
+    "binding": {
+      "description": "Tagged union: a point is bound to a Modbus register OR an MQTT topic. Discriminated by kind.",
+      "oneOf": [
+        { "$ref": "#/$defs/bindingModbus" },
+        { "$ref": "#/$defs/bindingMqtt" }
+      ]
+    },
+
+    "bindingModbus": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Adapts the Spruthub link[] entry (address/function/pollingTime/valueType) and KEEPS the SA-02m rich fields template-device.md channels[] carries (scale/offset/word_order/units).",
+      "required": ["kind", "address", "function"],
+      "properties": {
+        "kind": { "const": "modbus" },
+        "address": { "type": "integer", "minimum": 0 },
+        "function": {
+          "type": "string",
+          "description": "Modbus object type (Spruthub link.function; reconciles to template-device.md reg_type coil/discrete/holding/input).",
+          "enum": ["Coil", "Discrete", "Holding", "Input"]
+        },
+        "valueType": {
+          "type": "string",
+          "description": "Wire format (Spruthub link.valueType; reconciles to template-device.md format).",
+          "enum": ["u16", "s16", "u32", "s32", "float"]
+        },
+        "pollingTime": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Poll cadence in MILLISECONDS, per channel (Spruthub link.pollingTime). template-device.md poll_s is SECONDS, per device: a granularity difference reconciled in sh-model.md 4.5."
+        },
+        "scale": { "type": "number", "description": "value = raw*scale+offset (SA-02m rich field; not in Spruthub link)." },
+        "offset": { "type": "number" },
+        "word_order": {
+          "type": "string",
+          "enum": ["big_endian", "little_endian"],
+          "description": "32-bit word order (SA-02m rich field; not in Spruthub link)."
+        },
+        "units": { "type": "string", "description": "WB units (SA-02m rich field)." }
+      }
+    },
+
+    "bindingMqtt": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Binding to a live WB-MQTT control (the model built from the running bus, not directly from Modbus).",
+      "required": ["kind", "topic"],
+      "properties": {
+        "kind": { "const": "mqtt" },
+        "topic": {
+          "type": "string",
+          "description": "State topic /devices/<id>/controls/<name> (docs/MQTT_TOPICS.md).",
+          "pattern": "^/devices/[^/]+/controls/[^/]+$"
+        },
+        "writeTopic": {
+          "type": "string",
+          "description": "Command topic /devices/<id>/controls/<name>/on for a command/setpoint point. The write path itself is docs/contracts/mqtt-set-endpoint.md (auth->CSRF->allow-list->publish, no retain) - referenced, never re-specified here.",
+          "pattern": "^/devices/[^/]+/controls/[^/]+/on$"
+        },
+        "retained": { "type": "boolean", "description": "Whether the state topic is retained (WB convention: /controls/* are retained)." }
+      }
+    }
+  }
+}
