@@ -3,7 +3,8 @@
 # test-storage-automount.sh — regression test for the STORAGE_AUTO_FORMAT flag:
 # the decision it drives (etc/storage-mount.sh do_mount, cases 1-15), the two
 # readers that must agree on what it means (do_mount + status.cgi, cases 16-17),
-# and the writer that owns it (etc/sa02m-set-storage-auto-format, case 18).
+# the writer that owns it (etc/sa02m-set-storage-auto-format, case 18), and the
+# exFAT volume-label limit that the format itself dies on (case 19).
 #
 # One harness rather than three, because all three surfaces pin ONE fact — what
 # this flag means and who may change it — and every defect found so far was a
@@ -26,6 +27,15 @@
 # Neither is reachable by a syntax gate or a grep: the bug is which branch
 # runs for which (FSTYPE, flag, mount-outcome) triple.
 #
+# And once the right branch IS reached, the format still has to succeed. The
+# microSD label was SDCARD_EXFAT — 12 characters against exFAT's limit of 11 —
+# from 85ba6f6 (1.0.3) to 1.0.6.24, so mkfs.exfat answered «input string is too
+# long» and auto-format had never once worked for a card; USB_EXFAT (9) fits,
+# which is why only the USB half was ever seen working. Case 19 pins the
+# CONSTRAINT (every label the script can pass to mkfs.exfat is 1..11 chars) and
+# the guard that refuses a bad one BEFORE the umount, so the failure direction
+# stays "refuse to format", never "format an unlabelled card".
+#
 # Method: the SHIPPED script is copied, its dispatcher tail (`case "${ACTION}"`)
 # dropped so sourcing runs no action, and its two absolute roots
 # (/etc/sa02m_storage.conf, /proc/mounts) sed-retargeted into a scratch tree.
@@ -45,7 +55,9 @@
 #   # -> FAILS (empty-partition format cases + the log-truth case)
 # Other proven-RED mutations: hardcoding the value back into the skip log line;
 # dropping the ntfs3 attempt; formatting before try_mount_ntfs; returning 1
-# from the intentional skip; defaulting STORAGE_AUTO_FORMAT to 1.
+# from the intentional skip; defaulting STORAGE_AUTO_FORMAT to 1; restoring the
+# 12-char SDCARD_EXFAT label; deleting the `label_fits_exfat … || return 1`
+# call site (case 19 then reports the injected labels reaching mkfs.exfat).
 #
 # STATUS_CGI_SRC and STORAGE_SETTER_SRC do the same for the other two surfaces.
 # Proven RED there: the panel defaulting to ON again (`:-1`); the panel's
@@ -87,7 +99,7 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 sed '/^case .*ACTION/,$d' "$SRC" > "$T/mount-fns.sh"
 sed -i -e "s|/etc/sa02m_storage.conf|$CONF|g" -e "s|/proc/mounts|$MOUNTS|g" "$T/mount-fns.sh"
 
-for fn in do_mount format_exfat probe_fstype try_mount_ntfs is_disk_with_partitions log; do
+for fn in do_mount format_exfat label_fits_exfat probe_fstype try_mount_ntfs is_disk_with_partitions log; do
     grep -q "^${fn}() {" "$T/mount-fns.sh" \
         || { echo "FAIL  could not extract ${fn}() from $SRC (did the file shape change?)"; exit 1; }
 done
@@ -269,7 +281,7 @@ echo "── 11. sdcard label + empty FSTYPE + flag ON ──"
 reset_case mmcblk1p1 sdcard
 STORAGE_AUTO_FORMAT=1
 run_mount
-grep -q -- "-n SDCARD_EXFAT" "$T/mkfs.log" 2>/dev/null && ok "SDCARD label used" || bad "wrong/absent sdcard label: $(cat "$T/mkfs.log" 2>/dev/null)"
+grep -q -- "-n SD_EXFAT " "$T/mkfs.log" 2>/dev/null && ok "SDCARD label used" || bad "wrong/absent sdcard label: $(cat "$T/mkfs.log" 2>/dev/null)"
 
 echo "── 12. whole disk with partitions -> quiet skip, no mkfs, exit 0 ──"
 reset_case sda usb
@@ -485,6 +497,91 @@ if [ "$setter_ok" = 1 ]; then
         echo "skip  config-mode check (not Linux; CI enforces)"
     fi
 fi
+
+echo "── 19. exFAT volume label: EVERY label reaching mkfs.exfat fits the 11-char limit ──"
+# exFAT stores at most 11 characters in the volume label. mkfs.exfat refuses a
+# longer -n with «input string is too long» and formats NOTHING, so an over-long
+# literal silently kills auto-format for that whole device class. SDCARD_EXFAT
+# (12 chars) did exactly that for every microSD from the feature's introduction
+# (85ba6f6, 1.0.3) until 1.0.6.24 — invisible because USB_EXFAT (9) fits, and
+# unreachable before this branch because the too-strict skip test never let an
+# empty card get to the format at all.
+#
+# Pinned as the CONSTRAINT, not as the current spelling: a future 12-char label
+# of any other spelling fails here too, and (c) proves the guard itself exists
+# rather than trusting that the shipped literals happen to be short.
+EXFAT_LABEL_MAX=11
+
+# a. static: every label literal the shipped body can assign
+labels=$(sed -n 's/^[[:space:]]*LABEL="\([^"]*\)".*/\1/p' "$T/mount-fns.sh")
+n_assign=$(grep -cE '^[[:space:]]*LABEL="' "$T/mount-fns.sh")
+if [ "${n_assign:-0}" -lt 2 ]; then
+    bad "found ${n_assign:-0} LABEL= assignments in the shipped body — expected >= 2 (usb + sdcard); the sweep is broken or a label became dynamic"
+else
+    ok "label sweep is alive ($n_assign literal labels)"
+    while IFS= read -r lbl; do
+        if [ -z "$lbl" ]; then
+            bad "empty exFAT label literal — mkfs.exfat would format an unlabelled volume"
+        elif [ "${#lbl}" -le "$EXFAT_LABEL_MAX" ]; then
+            ok "label '$lbl' is ${#lbl} chars (<= $EXFAT_LABEL_MAX)"
+        else
+            bad "label '$lbl' is ${#lbl} chars — mkfs.exfat refuses > $EXFAT_LABEL_MAX («input string is too long») and formats nothing"
+        fi
+    done <<< "$labels"
+fi
+
+# b. behavioural: the label mkfs.exfat is REALLY invoked with, per device class
+while read -r cls dev; do
+    [ -n "${cls:-}" ] || continue
+    reset_case "$dev" "$cls"
+    format_exfat >/dev/null 2>&1 || bad "format_exfat refused the shipped $cls label"
+    arg=$(awk '{ for (i = 1; i < NF; i++) if ($i == "-n") { print $(i + 1); exit } }' "$T/mkfs.log" 2>/dev/null)
+    if [ -z "$arg" ]; then
+        bad "$cls: no -n label reached mkfs.exfat: $(cat "$T/mkfs.log" 2>/dev/null)"
+    elif [ "${#arg}" -gt "$EXFAT_LABEL_MAX" ]; then
+        bad "$cls: mkfs.exfat called with '$arg' (${#arg} chars) — it refuses > $EXFAT_LABEL_MAX and formats nothing"
+    else
+        ok "$cls: mkfs.exfat called with '$arg' (${#arg} chars)"
+    fi
+done <<'CLASSES'
+usb sda1
+sdcard mmcblk1p1
+CLASSES
+
+# c. the guard: a bad label REFUSES to format; it never formats unlabelled.
+#    The shipped literals all fit, so without injecting one the guard could be
+#    deleted and (a) and (b) would both still pass.
+label_case() { # $1 = injected label, $2 = refuse|format, $3 = description
+    local body="$T/mount-fns-label.sh" out rc
+    sed 's/^\([[:space:]]*\)LABEL="[^"]*"/\1LABEL="'"$1"'"/' "$T/mount-fns.sh" > "$body"
+    grep -qF "LABEL=\"$1\"" "$body" || { bad "could not inject $3 — the mutation itself is broken"; return; }
+    reset_case mmcblk1p1 sdcard
+    out=$(
+        # shellcheck disable=SC1090
+        . "$body" >/dev/null 2>&1
+        DEV_PATH="$T_DIR/dev/mmcblk1p1"; TYPE="sdcard"; MOUNT_POINT="$T_DIR/media/usb"
+        format_exfat 2>&1
+    ); rc=$?
+    if [ "$2" = refuse ]; then
+        [ "$rc" != 0 ] && ok "$3 -> format_exfat refused (exit $rc)" \
+                       || bad "$3 -> format_exfat returned 0; mkfs.exfat would fail after the point of no return"
+        mkfs_ran && bad "$3 -> reached mkfs.exfat (a card wiped, or left unformatted, on a label the code could have rejected first)" \
+                 || ok "$3 -> mkfs.exfat never invoked"
+        # «отменено» belongs to the refusal line ALONE — «метка» would also be
+        # matched by the ordinary «Форматирование … с меткой:» line and pass on
+        # the unfixed code, which is the vacuous shape this file exists to avoid.
+        printf '%s\n' "$out" | grep -q "отменено" \
+            && ok "$3 -> the refusal is logged for the operator" \
+            || bad "$3 -> refused with no log line saying so: $out"
+    else
+        [ "$rc" = 0 ] && ok "$3 -> accepted (exit 0)" || bad "$3 -> refused (exit $rc) although it fits"
+        mkfs_ran && ok "$3 -> mkfs.exfat invoked" || bad "$3 -> the guard blocked a label that fits — auto-format would be dead"
+    fi
+}
+label_case "SDCARD_EXFAT" refuse "the 12-char label shipped since 1.0.3"
+label_case "ABCDEFGHIJKL" refuse "a 12-char label of a different spelling"
+label_case ""             refuse "an empty label"
+label_case "ABCDEFGHIJK"  format "an 11-char label (the boundary must be inclusive)"
 
 echo "---"
 if [ "$fails" = 0 ]; then

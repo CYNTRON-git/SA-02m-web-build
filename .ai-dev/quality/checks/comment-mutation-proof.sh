@@ -128,6 +128,7 @@ nodered-ctl-install|etc/sa02m-web-service-ctl.sh|nodered_guard_major_upgrade || 
 iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
+storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

@@ -55,12 +55,32 @@ set_device_context() {
   fi
 }
 
+label_fits_exfat() {
+  # exFAT stores at most 11 characters in the volume label; mkfs.exfat refuses a
+  # longer -n with «input string is too long» and formats NOTHING. Checked here
+  # so an over-long label is a refusal BEFORE the umount, never a card left
+  # unformatted — or formatted with no label at all — after mkfs has started.
+  # SDCARD_EXFAT was 12 characters from 85ba6f6 (1.0.3) to 1.0.6.24, so
+  # auto-format never once ran on a microSD; USB_EXFAT (9) fits and hid it.
+  # Labels here are ASCII, so ${#label} is both the byte and the character count.
+  local label=${1-}
+  if [ -z "$label" ] || [ "${#label}" -gt 11 ]; then
+    log "Недопустимая метка тома exFAT «${label}» (${#label} симв., допустимо 1-11) — форматирование ${DEV_PATH} отменено"
+    return 1
+  fi
+  return 0
+}
+
 format_exfat() {
   if [[ "${TYPE}" == "sdcard" ]]; then
-    LABEL="SDCARD_EXFAT"
+    LABEL="SD_EXFAT"
   else
     LABEL="USB_EXFAT"
   fi
+
+  # Refuse before anything destructive. Pinned by the quality row
+  # storage-automount-decision (case 19) and by comment-mutation-proof.
+  label_fits_exfat "${LABEL}" || return 1
 
   umount "${DEV_PATH}" 2>/dev/null || true
   log "Форматирование ${DEV_PATH} в exFAT с меткой: ${LABEL}"
