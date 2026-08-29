@@ -852,3 +852,22 @@ worklist collapsed into one home).
   guard. The honest fix is a DISTINCT "probe failed" outcome in `probe_fstype` that never
   reaches mkfs; that is a separate planned change, not a one-liner. Found by the 1.0.6.24
   builder while fixing the regression, deliberately left outside that commit's fence.
+- [OPEN] 2026-08-29 **[MED] codesys presence still trusts wrappers — same class the
+  mplc4 fix (c7a4443) closed for mplc4 only.** On bench 1.135 a leftover
+  `/etc/systemd/system/codesyscontrol.service` (июн 23) with no runtime, no
+  `/etc/init.d/codesyscontrol` and no dpkg package makes `service_present codesys`
+  (generic unit-file candidate loop in `etc/sa02m-web-service-ctl.sh`) and the
+  stacks-policy CODESYS probe read "installed" — the panel shows a dead Пуск/Стоп
+  pair instead of «Установить». Fix mirrors c7a4443: presence = the runtime
+  (`/opt/codesys`/dpkg/init.d), not unit-file remnants; codesys_uninstall should
+  also remove the leftover unit it currently strands (it rm's the drop-in dir but
+  not `/etc/systemd/system/codesyscontrol.service` when dpkg is already gone).
+- [OPEN] 2026-08-29 **[LOW] installer WARN «sa02m-userspace-watchdog.service: не
+  удалось включить автозапуск» on every run — the unit exists nowhere.** Observed
+  on the 1.135 refresh (1.0.6.24, c7a4443): the enable site targets a unit that is
+  neither on the board (`is-enabled` → not-found) nor in the deployed tree
+  (`etc/systemd/system/` ships no watchdog unit). Either the unit was renamed/
+  retired and the enable site is stale, or the unit file was never added — find
+  the enable call in `scripts/` and make it match reality (drop it or ship the
+  unit). Every refresh currently logs a WARN the runbook tells the operator to
+  review by hand.
