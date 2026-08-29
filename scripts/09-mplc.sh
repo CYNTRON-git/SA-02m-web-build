@@ -248,7 +248,9 @@ else
 fi
 
 # Стек на месте — политика фиксирует present (кнопка «Удалить» пишет disabled).
-if [ -d /opt/mplc4 ] || [ -x /etc/init.d/mplc4 ]; then
+# Тот же признак, что у live-пробы (sa02m_stack_installed MPLC): runtime-payload,
+# а не обёртки — полуудалённая установка не должна записываться как present.
+if [ -x /opt/mplc4/start_mplc4.sh ]; then
     sa02m_stack_policy_set MPLC present || true
 fi
 

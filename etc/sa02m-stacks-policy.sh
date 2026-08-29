@@ -136,9 +136,13 @@ sa02m_stack_installed() {
             [ -x "$_si_r/etc/init.d/codesyscontrol" ]
             ;;
         MPLC)
-            [ -x "$_si_r/etc/init.d/mplc4" ] && return 0
-            [ -d "$_si_r/opt/mplc4" ] && return 0
-            _sa02m_stack_unit_file mplc4.service
+            # The runtime payload, not its wrappers: /etc/init.d/mplc4 and
+            # mplc4.service only exec start_mplc4.sh, and a leftover wrapper
+            # (or bare /opt/mplc4) without it is a half-removed install that
+            # must read NOT installed — the refresh verdict was overlaying a
+            # corpse and the panel offered a dead «Пуск» (bench 1.135,
+            # 2026-08-29).
+            [ -x "$_si_r/opt/mplc4/start_mplc4.sh" ]
             ;;
         DOCKER)
             command -v docker >/dev/null 2>&1

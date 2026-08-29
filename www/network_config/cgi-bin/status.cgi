@@ -1818,8 +1818,17 @@ gather_services_metrics() {
     SVC_BRIDGE_INSTALLED=0
     systemd_unit_file_installed sa02m-modbus-mqtt.service && SVC_BRIDGE_INSTALLED=1
     MPLC_INSTALLED=0
-    if systemd_unit_file_installed mplc4.service || systemd_unit_file_installed mplc.service \
-        || [ -x /etc/init.d/mplc4 ]; then
+    # Runtime payload or a live process — never the init.d/unit wrappers alone:
+    # the wrappers only exec /opt/mplc4/start_mplc4.sh, and a half-removed
+    # install (wrappers left, /opt/mplc4 gone) showed a phantom MPLC4 row on
+    # the dashboard while Управление honestly offered «Установить» (bench
+    # 1.135, 2026-08-29). Mirrors the runtime-payload rule of
+    # sa02m-web-service-ctl.sh service_present / sa02m-stacks-policy.sh
+    # sa02m_stack_installed. proc_is_running, not raw pgrep: the process
+    # snapshot is already primed here and this runs on every services poll.
+    if [ -x /opt/mplc4/start_mplc4.sh ] \
+        || proc_is_running mplc || proc_is_running mplc4 \
+        || proc_is_running mplc_monitor; then
         MPLC_INSTALLED=1
     fi
 
