@@ -1,0 +1,220 @@
+{
+  "id": "wb-mr6c-COM5-30",
+  "model": "WB-MR6C",
+  "manufacturer": "WirenBoard",
+  "port": "/dev/COM5",
+  "address": 30,
+  "online": null,
+  "setup": [
+    { "address": 6,  "value": 0, "name": "Relay state on power loss" },
+    { "address": 9,  "value": 0, "name": "External input mode (input 1)" },
+    { "address": 10, "value": 0, "name": "External input mode (input 2)" },
+    { "address": 11, "value": 0, "name": "External input mode (input 3)" },
+    { "address": 12, "value": 0, "name": "External input mode (input 4)" },
+    { "address": 13, "value": 0, "name": "External input mode (input 5)" },
+    { "address": 14, "value": 0, "name": "External input mode (input 6)" }
+  ],
+  "functions": [
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 1",
+      "endpoint": 1,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 0, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 2",
+      "endpoint": 2,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 1, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 3",
+      "endpoint": 3,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 2, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 4",
+      "endpoint": 4,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 3, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 5",
+      "endpoint": 5,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 4, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteOutput",
+      "name": "Relay 6",
+      "endpoint": 6,
+      "points": [
+        {
+          "id": "on",
+          "role": "command",
+          "valueType": "bool",
+          "read": true,
+          "write": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 5, "function": "Coil", "valueType": "u16", "pollingTime": 1000 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 1",
+      "endpoint": 101,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 0, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 2",
+      "endpoint": 102,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 1, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 3",
+      "endpoint": 103,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 2, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 4",
+      "endpoint": 104,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 3, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 5",
+      "endpoint": 105,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 4, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 6",
+      "endpoint": 106,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 5, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    },
+    {
+      "type": "DiscreteInput",
+      "name": "Input 0",
+      "endpoint": 107,
+      "points": [
+        {
+          "id": "state",
+          "role": "measurement",
+          "valueType": "bool",
+          "read": true,
+          "quality": "good",
+          "binding": { "kind": "modbus", "address": 6, "function": "Discrete", "valueType": "u16", "pollingTime": 100 }
+        }
+      ]
+    }
+  ]
+}
