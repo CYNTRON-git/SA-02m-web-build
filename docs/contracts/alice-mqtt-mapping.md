@@ -237,6 +237,15 @@ first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
 neither capabilities nor properties does not emit. No `callback/discovery`.
 
+**History snapshot.** While Socket.IO is connected, the same
+`offer_snapshot` + `flush_now` runs every `STATE_SNAPSHOT_S` (30 s) from the
+MQTT cache, so Yandex Station graphs/history receive a point even when the
+broker does not republish a steady reading. In-place document reload with
+added/removed topics also snapshots once. This is a cadence, not a replacement
+for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
+the floor between *MQTT-driven* reports of the same reading; the history
+snapshot bypasses it. Gateway Callback belt (30 POSTs / SN / 60 s) is unchanged.
+
 ## Offline / Phase 0
 
 - `client_enabled=false` → client process exits 0.

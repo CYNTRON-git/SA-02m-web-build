@@ -67,6 +67,21 @@ def _write_status(state: str, **kw: Any) -> None:
         log.debug("status write failed: %s", exc)
 
 
+def _emit_cache_snapshot(
+    sender: Optional[StateSender], registry: DeviceRegistry
+) -> None:
+    """Push the MQTT cache through the rate-bypass snapshot path.
+
+    Reconnect, in-place document reload, and the 30 s history cadence all
+    share this: query is unrated, live `offer` is not. No-op if sender is
+    unset or stopped (`offer_snapshot` already no-ops when stopped).
+    """
+    if sender is None:
+        return
+    sender.offer_snapshot(registry.query_devices())
+    sender.flush_now()
+
+
 def _setup_logging(level: str) -> None:
     handlers = [logging.StreamHandler(sys.stdout)]
     logging.basicConfig(
@@ -277,8 +292,7 @@ def run() -> int:
             time.sleep(1.0)
             ignore_retained["active"] = False
             sender.start()
-            sender.offer_snapshot(registry.query_devices())
-            sender.flush_now()
+            _emit_cache_snapshot(sender, registry)
             _write_status(
                 C.STATE_CONNECTED,
                 message="Connected to Alice gateway",
@@ -288,6 +302,7 @@ def run() -> int:
             # Watchdog loop. One os.stat per tick, beside the INI open+parse
             # client_enabled() already does every tick — a rounding error.
             last_heartbeat = time.monotonic()
+            last_snapshot = last_heartbeat
             while not _stop.is_set() and sio.connected:
                 if not client_enabled():
                     break
@@ -303,6 +318,11 @@ def run() -> int:
                             client_enabled=True,
                         )
                         last_heartbeat = time.monotonic()
+                        _emit_cache_snapshot(sender, registry)
+                        last_snapshot = last_heartbeat
+                if time.monotonic() - last_snapshot >= C.STATE_SNAPSHOT_S:
+                    _emit_cache_snapshot(sender, registry)
+                    last_snapshot = time.monotonic()
                 if time.monotonic() - last_heartbeat >= C.STATUS_HEARTBEAT_S:
                     # Keep `ts` advancing in a quiet session: the web trigger
                     # treats a stale status file as "not proven alive" and

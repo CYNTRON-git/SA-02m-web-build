@@ -90,8 +90,9 @@ class StateSender:
     def offer_snapshot(self, devices: List[Dict[str, Any]]) -> None:
         """Same merge as offer; skip the per-instance rate, still stamp last_sent.
 
-        Used after the MQTT retained-settle window so a reconnect reports the
-        cache even when floats sit inside the 300 s window. No-op if stopped.
+        Used after the MQTT retained-settle window and on the history cadence
+        (`STATE_SNAPSHOT_S`) so reconnect and graphs both report the cache
+        even when floats sit inside the live 300 s window. No-op if stopped.
         """
         self._ingest(devices, bypass_rate=True)
 
