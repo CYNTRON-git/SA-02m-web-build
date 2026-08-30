@@ -85,6 +85,17 @@ class StateSender:
 
     def offer(self, devices: List[Dict[str, Any]]) -> None:
         """Accept partial device_state devices[] from registry."""
+        self._ingest(devices, bypass_rate=False)
+
+    def offer_snapshot(self, devices: List[Dict[str, Any]]) -> None:
+        """Same merge as offer; skip the per-instance rate, still stamp last_sent.
+
+        Used after the MQTT retained-settle window so a reconnect reports the
+        cache even when floats sit inside the 300 s window. No-op if stopped.
+        """
+        self._ingest(devices, bypass_rate=True)
+
+    def _ingest(self, devices: List[Dict[str, Any]], *, bypass_rate: bool) -> None:
         now = self._clock()
         with self._lock:
             if self._stopped:
@@ -104,9 +115,10 @@ class StateSender:
                     # a multi-reading device refreshed one reading per window.
                     key = "c:%s:%s:%s" % (did, ctype, _instance_of(cap))
                     rate = self._rate_for("capability", ctype)
-                    last = self._last_sent.get(key, 0.0)
-                    if now - last < rate:
-                        continue
+                    if not bypass_rate:
+                        last = self._last_sent.get(key, 0.0)
+                        if now - last < rate:
+                            continue
                     self._last_sent[key] = now
                     allowed_caps.append(cap)
                 allowed_props = []
@@ -116,9 +128,10 @@ class StateSender:
                     ptype = str(prop.get("type") or "")
                     key = "p:%s:%s:%s" % (did, ptype, _instance_of(prop))
                     rate = self._rate_for("property", ptype)
-                    last = self._last_sent.get(key, 0.0)
-                    if now - last < rate:
-                        continue
+                    if not bypass_rate:
+                        last = self._last_sent.get(key, 0.0)
+                        if now - last < rate:
+                            continue
                     self._last_sent[key] = now
                     allowed_props.append(prop)
                     if self._is_event(ptype):

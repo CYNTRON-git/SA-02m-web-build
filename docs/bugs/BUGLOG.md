@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-08-30 12:56] branch: 1.0.6.25
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/state_sender.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`
+**Тип:** Некорректное поведение
+**Описание:** после reconnect клиент не отправлял текущий кэш MQTT — стабильный датчик не порождал `device_state` до следующего live-публиша (до 300 с или никогда), даже если шлюз уже умел бы форвардить.
+**Причина:** `StateSender.offer` режет float 300 с на `(device, type, instance)`; `stop()` чистит pending, но не `_last_sent`; после retained-settle не было snapshot.
+**Исправление:** `offer_snapshot` (тот же merge, без rate, штамп `_last_sent`) и вызов после settle sleep + `flush_now()`. Live `offer` не менялся.
+
+---
+
 ## [2026-08-27 13:40] branch: 1.0.6.20 — клон образа уносит Alice enrollment донора
 
 **Файл(ы):** `/var/lib/sa02m-alice/*`, `/etc/sa02m-alice/*`, `tools/imaging/reset-alice-enrollment.sh`, `tools/imaging/stream-after-cleanup.sh`, `tools/imaging/patch-firstboot-image.sh`, `tools/imaging/autorun.sh`, `tools/imaging/autorun-fel.sh`, `docs/contracts/image-identity-reset.md`, `scripts/dev/test-alice-image-identity.sh`

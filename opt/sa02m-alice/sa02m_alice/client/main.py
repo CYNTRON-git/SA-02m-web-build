@@ -277,6 +277,8 @@ def run() -> int:
             time.sleep(1.0)
             ignore_retained["active"] = False
             sender.start()
+            sender.offer_snapshot(registry.query_devices())
+            sender.flush_now()
             _write_status(
                 C.STATE_CONNECTED,
                 message="Connected to Alice gateway",

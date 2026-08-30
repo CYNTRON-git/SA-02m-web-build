@@ -230,6 +230,13 @@ limit is a floor between reports of the SAME reading, not a refresh period;
 `query` answers from the MQTT cache and is unrated, so a card is never stale
 on open.
 
+**Reconnect snapshot.** After the retained-settle sleep the client offers
+`registry.query_devices()` through `StateSender.offer_snapshot` (same merge as
+`offer`, rate-bypass, still stamps `_last_sent`) and `flush_now()`, so the
+first post-reconnect report leaves the board. Live MQTT still uses `offer`.
+Retained bursts stay cached-not-reported. A `query_devices()` entry with
+neither capabilities nor properties does not emit. No `callback/discovery`.
+
 ## Offline / Phase 0
 
 - `client_enabled=false` → client process exits 0.
