@@ -896,6 +896,12 @@ worklist collapsed into one home).
   (2) the ~1 s window right after a reconnect, while the client re-offers the snapshot before
   the first live echo can be attributed (`client/main.py` reconnect path); (3) the retained-
   grace window after an in-place document reload, when retained MQTT values are deliberately
-  not reported as live. Each is a designed non-confirmation; a tap in those windows shows the
-  cloud's "no confirmation" outcome without a device fault. Resolve by folding the three into
+  not reported as live; (4) a held live frame is LOST, not delayed, when the session drops
+  inside the hold window (≤ 1 s during an event burst, 1.0.6.26 B6 ceiling) — `_last_value`
+  already counts it as sent, so the reconnect snapshot restores the value but never confirms
+  the tap (found by the 1.0.6.26 review's loss probe; same class as the three above). Each is a
+  designed non-confirmation; a tap in those windows shows the cloud's "no confirmation"
+  outcome without a device fault. Resolve by folding the four into
   `docs/contracts/alice-mqtt-mapping.md` (device side) once the bench confirms the timings.
+  Notes from the same review, not defects: a dead defensive branch in `state_sender.py`
+  (`_split_fast_lane` fallback) and the one literal exception to "a snapshot never holds".

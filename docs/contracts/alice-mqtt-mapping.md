@@ -283,8 +283,10 @@ cadence an event property latches (events keep that cadence untouched) — so
 per key it is at most one bypass report per second plus at most one
 window-elapsed report; a manual full flush (the ≤ 1-per-30 s snapshot
 cadence, a reload, a reconnect) may deliver a held report earlier, never
-more often. That keeps the send rate inside Yandex's 0.75 s on/off floor on
-both profiles. Cost: during an event burst an on/off change leaves up to 1 s
+more often. That holds the send rate at or below the pre-1.0.6.26 rate on
+both profiles; the 0.75 s floor is a budget between *ingests*, and a burst
+edge can still place two reports closer together — unchanged from 1.0.6.25.
+Cost: during an event burst an on/off change leaves up to 1 s
 later, irrelevant for the cloud's 8 s confirm window. Validating tests:
 `test_state_origin.py` `TestReportCeiling`.
 
