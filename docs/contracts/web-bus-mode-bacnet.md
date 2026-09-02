@@ -17,11 +17,16 @@ MS/TP **строго** по этим контрактам; любое расхо
 `sa02m_flasher/runner.py` (задачи verify/recover под port-lease),
 `sa02m_flasher/service.py` (маршруты). UI — `www/network_config/static/js/flasher.js`.
 
+**Проверка контракта:** `opt/sa02m-flasher/tests/test_bus_mode.py` (значения и
+семантика рег. 122) и `opt/sa02m-flasher/tests/test_bacnet_mstp.py` (кодек
+MS/TP) — обе под строкой реестра `py-unit-flasher`.
+
 ## Область (Phase 1)
 
 Селектор + verify + recover. **Вне области:** router BACnet/IP↔MS/TP, poller,
 чтение объектов ввода-вывода по BACnet, любая правка MQTT-моста, BACnet-поверхность
-для CE-02m-3. Полный разбор фаз — план `.ai-dev/plans/bacnet-mstp-web-integration.md`.
+для CE-02m-3. Полный разбор фаз — диф PR #88 (`4fcf09a`) и раздел `1.0.5.65` в
+`CHANGELOG.md`; транзиентный план ветки удалён на ship-бите.
 
 ## Селектор полевой шины (§5.1)
 

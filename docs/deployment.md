@@ -33,10 +33,48 @@
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
 
+### Чего OTA/офлайн-пакет не делает никогда
+
+OTA и офлайн-пакет **копируют файлы по карте назначений** и после этого делают
+`daemon-reload` + рестарт юнитов из манифеста. Карта — `map_dst`/`DST_RE` в
+`etc/sa02m-update-runner.sh` (github-путь) и `scripts/offline-update-deploy-map.json`
+(офлайн-путь). Всё, чего в карте нет, и всё, что установщик делает **сверх**
+копирования, на плату этим путём не попадает:
+
+- новые пакеты и python-зависимости (`apt`, `pip`);
+- каталоги с владельцем/режимом (`install -d -o … -g … -m …`);
+- первичная засевка конфигов в `/etc/…` (карта их не несёт — это состояние платы);
+- гранты sudoers, которые пишет сам установщик, а не файл из `etc/sudoers.d/`;
+- политика enable/disable юнитов (`sa02m_svc_capture`/`sa02m_svc_apply`).
+
+**Практическое правило для Алисы.** Код Алисы (`opt/sa02m-alice/**`,
+`usr/local/sbin/sa02m-alice-web-trigger.sh`, юниты `sa02m-alice-*.service`,
+`etc/tmpfiles.d/sa02m-alice.conf`, грант `etc/sudoers.d/sa02m-alice`, CGI и
+`static/js/app/alice.js`) по карте
+проходит, поэтому OTA **обновляет уже установленную** Алису. Но **установить**
+её OTA не может: python-socketio, каталоги `/etc/sa02m-alice` (0770 root:www-data),
+`/var/lib/sa02m-alice` (0700 www-data), `/run/sa02m-alice` и засевка
+`/etc/sa02m-alice/*.conf` живут только в `scripts/06-alice.sh`.
+
+Грант sudoers Алисы — с 1.0.6.24 **не** исключение: heredoc заменён коммитнутым
+файлом `etc/sudoers.d/sa02m-alice` (`97e9658`) именно потому, что heredoc был
+невидим для OTA и офлайн-пакета. Карта несёт его по обоим путям (`map_dst` и
+`DST_RE` в `etc/sa02m-update-runner.sh` → `/etc/sudoers.d/`; правило
+`etc/sudoers.d/` → `/etc/sudoers.d/` с `mode 0440` в
+`scripts/offline-update-deploy-map.json`), а runner после копирования доводит
+режим известных drop-in'ов до 0440 и прогоняет `visudo -c`. То есть изменение
+самого гранта уезжает на плату по OTA — переустановка нужна только для того,
+что перечислено выше.
+Плата, на которой `06-alice.sh` не отрабатывал, Алису по OTA не получит, а
+изменение любой из перечисленных вещей требует `install.sh --refresh` или
+точечного `sudo bash scripts/06-alice.sh`. Та же логика — для любого модуля
+установщика (`11-devices`, `05-cloud-agent`, `08-codesys`, `12-docker`, `07-nodered`):
+OTA обновляет код, установку делает установщик.
+
 Состояние updater: `/var/lib/sa02m-update` (runner `/usr/local/libexec/sa02m-update-runner`,
 ключи `/etc/sa02m-update/trusted-keys/`). Bootstrap релиза N ставит runner/keys/units
 через `scripts/03-webserver.sh` / `update-www-only.sh` (`[ -f ]`-гарды); применение
-`.sa02m` — с N+1. Подробности формата: `docs/OFFLINE_UPDATE_PACKAGE_V1.md` (когда появится).
+`.sa02m` — с N+1. Подробности формата: `docs/OFFLINE_UPDATE_PACKAGE_V1.md`.
 
 `update-www-only.sh` синхронизирует `www/` → `/var/www/network_config`, чинит
 права (CGI 755, static 644, owner `www-data`), пишет маркер коммита,
@@ -47,8 +85,47 @@
 `[ -f … ]`-гардам), включая bootstrap updater (`opt/sa02m-update`, libexec runner).
 Он НИКОГДА не разворачивает демон прошивальщика (`opt/sa02m-flasher/`) и его
 tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/` — нужен `install.sh`
-(полный) ИЛИ отдельная доставка `opt/` + рестарт `sa02m-flasher`. Для чисто-www
-деплоя `etc/` намеренно не несут (см. шаг 2).
+(полный) ИЛИ отдельная доставка `opt/` + рестарт `sa02m-flasher`.
+
+**Привилегированные хелперы едут вместе с панелью — все пять путей.** Правило:
+путь, который заменяет CGI-дерево панели, обязан заменить и хелперы из
+`usr/local/sbin/`, которые эта панель вызывает через sudo (`sa02m-gateway-config-apply.sh`,
+`sa02m-mqtt-config-apply.sh`, `sa02m-cloud-web-trigger.sh`). Именно валидация argv
+ВНУТРИ хелпера закрывает H1/H2 — пиновка в `sudoers.d` только defence in depth,
+поэтому «пин доехал, хелпер нет» = плата с новой версией на экране и старым
+уязвимым хелпером на диске. До 1.0.6.24 так вели себя два пути (ревью
+безопасности F4): `scripts/update-www-only.sh` (ставил пины `sa02m-gateway`/
+`sa02m-mqtt`, хелперы — нет) и легаси-rsync `etc/sa02m-web-update-apply.sh`
+(ставил `sudoers.d/sa02m-www` и восемь `etc/`-хелперов, ни одного config-apply).
+Сейчас хелперы доставляют все пять путей — installer (`scripts/05-mqtt.sh`,
+`scripts/06-gateway.sh`), www-only, OTA `map_dst`, оффлайн-пакет и легаси-rsync;
+это утверждение гейтится (`sudoers-pin-contract`, проверка PIN WITHOUT HELPER),
+удаление доставки на любом пути = RED. Тем же правилом едет
+`etc/tmpfiles.d/sa02m-web-login.conf`: без него throttle логина в
+`lib_web_auth.sh` fail-open (F1), гейт — `web-auth-behaviour`.
+
+**`etc/` обязателен в поставке — без него скрипт не стартует.**
+`update-www-only.sh` подключает `scripts/lib.sh`, а тот безусловно
+`source`-ит `../etc/sa02m-stacks-policy.sh` (`scripts/lib.sh` — блок
+«Stack policy», намеренный fail-loud: отсутствие файла = сломанное дерево).
+При `set -euo pipefail` это обрывает скрипт **до первого копирования**:
+
+```
+scripts/lib.sh: line <N>: .../scripts/../etc/sa02m-stacks-policy.sh: No such file or directory
+# exit 1, /var/www не тронут
+```
+
+Отказ безопасный (ничего не развёрнуто, откат не нужен), но деплой не
+происходит. Рабочие формы поставки — любая из двух:
+
+| Форма | Что везём | Что получаем |
+|---|---|---|
+| **полная (рекомендуется)** | `www/` + `scripts/` + `etc/` | www + идемпотентные `[ -f ]`-инсталлы helper'ов/юнитов из `etc/` (см. абзац выше) |
+| **минимальная** | `www/` + `scripts/` + **только** `etc/sa02m-stacks-policy.sh` | ровно синхронизация `www/`: остальные `[ -f ]`-гарды не срабатывают — исходное «чисто-www» поведение |
+
+Минимальная форма годится, когда релиз не менял ничего в `etc/`; во всех
+остальных случаях берите полную. Проверено на пустом дереве 2026-08-28
+(обе формы), симптом впервые пойман живьём на 1.136 2026-08-26.
 
 ---
 
@@ -67,16 +144,18 @@ tmpfiles-юнит. Если релиз менял демон/`opt/sa02m-flasher/
    ```
    ssh root@<dev> 'tar czf /root/www-backup-$(date +%Y%m%d-%H%M%S).tgz -C /var/www network_config'
    ```
-2. **Доставка** `www/` и `scripts/` в staging на устройстве. Два
+2. **Доставка** `www/`, `scripts/` **и `etc/`** в staging на устройстве. Два
    равнозначных транспорта:
-   - `pscp -r www scripts root@<dev>:/root/sa02m-deploy-<ver>/`;
+   - `pscp -r www scripts etc root@<dev>:/root/sa02m-deploy-<ver>/`;
    - архив из git (гарантированно LF, без CRLF-сюрпризов Windows-чекаута):
-     `git archive --format=tar.gz -o deploy.tar.gz HEAD www/network_config scripts`,
+     `git archive --format=tar.gz -o deploy.tar.gz HEAD www/network_config scripts etc`,
      загрузка по SFTP (paramiko / WinSCP), на устройстве
      `tar xzf … -C /root/sa02m-deploy-<ver>` (практика деплоев 1.0.5.10–12).
-   `etc/` намеренно не несём для www-only — тогда скрипт пропускает
-   helper/sudoers/systemd-инсталлы (они уже provisioned), и деплой ограничен
-   синхронизацией www — минимальный риск на работающем сервере.
+   **`etc/` без вариантов должен быть в поставке** — иначе скрипт падает на
+   `source` ещё до копирования (см. «Пути деплоя» выше). Если нужен именно
+   «чисто-www» эффект, везите `etc/sa02m-stacks-policy.sh` в одиночку —
+   остальные `[ -f ]`-гарды тогда молчат:
+   `git archive … HEAD www/network_config scripts etc/sa02m-stacks-policy.sh`.
 3. **Снять CRLF** со скриптов (репозиторий часто синхронизируется с Windows):
    ```
    ssh root@<dev> "sed -i 's/\r$//' /root/sa02m-deploy-<ver>/scripts/*.sh"

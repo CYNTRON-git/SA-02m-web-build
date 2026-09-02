@@ -5,9 +5,17 @@
 # its own app serves :8765). An ENABLED-but-down unit must still FAIL. Verifies the
 # skip logic is present, correctly gated, and positioned before the fail path in
 # etc/sa02m-update-runner.sh's restart_services_and_health health loop.
+#
+# Every pin below reads the COMMENT-STRIPPED function body: commenting out the
+# `systemctl is-enabled` line left this gate green while `_en_state` went empty
+# and an operator-disabled unit rolled the OTA back again (audit 2026-08-28,
+# finding C3). Comments are blanked rather than deleted (lib_check.sh), so the
+# ordering pin (d) keeps its line arithmetic.
 set -u
 HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
 RUNNER="$HERE/etc/sa02m-update-runner.sh"
+# shellcheck source=/dev/null
+. "$(cd "$(dirname "$0")" && pwd)/lib_check.sh" || { echo "health-gate-operator-disabled: cannot source lib_check.sh"; exit 1; }
 fails=0
 ok(){ printf '  ok    %s\n' "$1"; }
 bad(){ printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
@@ -16,22 +24,24 @@ bad(){ printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 # The health loop lives inside restart_services_and_health, between the units_active
 # read and the http/version checks. Extract that function body.
-fn="$(sed -n '/^restart_services_and_health() {/,/^}/p' "$RUNNER")"
-[ -n "$fn" ] || { echo "restart_services_and_health not found"; exit 1; }
+fn="$(sed -n '/^restart_services_and_health() {/,/^}/p' "$RUNNER" | strip_comments)"
+# Non-vacuity: an empty extraction (function renamed, or its body entirely
+# commented out) FAILS the gate, it never passes silently.
+grep -q '[^[:space:]]' <<<"$fn" || { echo "restart_services_and_health not found (or its body is entirely commented out)"; exit 1; }
 
 # (a) the is-active failure branch still exists (non-vacuous anchor)
-printf '%s\n' "$fn" | grep -qE 'if ! systemctl is-active --quiet "\$u"; then' \
+text_matches "$fn" 'if ! systemctl is-active --quiet "\$u"; then' \
     && ok "(a) health loop still guards each units_active with is-active" \
     || bad "(a) the is-active failure branch is gone — health loop changed shape"
 
 # (b) an is-enabled read of the same unit inside that branch
-printf '%s\n' "$fn" | grep -qE 'systemctl is-enabled "\$u"' \
+text_matches "$fn" 'systemctl is-enabled "\$u"' \
     && ok "(b) the branch reads is-enabled to classify operator intent" \
     || bad "(b) no is-enabled check — the skip cannot distinguish operator-disabled"
 
 # (c) a case skipping masked / masked-runtime / disabled with continue
-printf '%s\n' "$fn" | grep -qE 'masked\|masked-runtime\|disabled\)' \
-    && printf '%s\n' "$fn" | grep -A2 'masked\|masked-runtime\|disabled)' | grep -qw continue \
+text_matches "$fn" 'masked\|masked-runtime\|disabled\)' \
+    && grep -A2 'masked\|masked-runtime\|disabled)' <<<"$fn" | grep -qw continue \
     && ok "(c) masked/masked-runtime/disabled -> continue (skip)" \
     || bad "(c) no masked/disabled skip case with continue"
 
@@ -48,7 +58,7 @@ else
 fi
 
 # (e) the fail path (return 1 on a genuinely-down enabled unit) still exists
-printf '%s\n' "$fn" | grep -qE 'log "health: unit not active: \$u"' \
+text_matches "$fn" 'log "health: unit not active: \$u"' \
     && ok "(e) the enabled-but-down FAIL path is preserved (still rolls back a real regression)" \
     || bad "(e) the fail path log is gone — the gate no longer catches a down required unit"
 

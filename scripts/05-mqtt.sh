@@ -47,16 +47,26 @@ fi
 # Создать пользователя mqttuser если нет файла паролей
 if [ ! -f /etc/mosquitto/passwd/default.conf ]; then
     log INFO "Создаю пользователя mqttuser для внешнего MQTT-доступа..."
-    # Генерируем случайный пароль
-    MQTT_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16 || echo "cyntron_mqtt_$(date +%s)")
-    mosquitto_passwd -b -c /etc/mosquitto/passwd/default.conf mqttuser "$MQTT_PASS"
-    chown root:mosquitto /etc/mosquitto/passwd/default.conf
-    chmod 0640 /etc/mosquitto/passwd/default.conf
-    log OK "Пользователь mqttuser создан. Пароль: $MQTT_PASS"
-    log WARN "Сохраните пароль! Он больше не отображается."
-    echo "MQTT_USER=mqttuser" > /etc/sa02m_mqtt.env
-    echo "MQTT_PASS=$MQTT_PASS" >> /etc/sa02m_mqtt.env
-    chmod 0600 /etc/sa02m_mqtt.env
+    # Случайный пароль. Fail-closed: если /dev/urandom недоступен, НЕ создаём
+    # пользователя со слабым паролем. Прежний fallback `cyntron_mqtt_$(date +%s)`
+    # был предсказуем офлайн по времени установки (аудит 2026-08-28, L4) — секрет
+    # обязан быть непредсказуемым или отсутствовать.
+    MQTT_PASS=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16)
+    if [ "${#MQTT_PASS}" -ne 16 ]; then
+        log ERR "Не удалось получить случайный пароль из /dev/urandom — mqttuser НЕ создан (внешний MQTT-доступ останется ненастроенным до повторной установки)"
+    else
+        mosquitto_passwd -b -c /etc/mosquitto/passwd/default.conf mqttuser "$MQTT_PASS"
+        chown root:mosquitto /etc/mosquitto/passwd/default.conf
+        chmod 0640 /etc/mosquitto/passwd/default.conf
+        echo "MQTT_USER=mqttuser" > /etc/sa02m_mqtt.env
+        echo "MQTT_PASS=$MQTT_PASS" >> /etc/sa02m_mqtt.env
+        chmod 0600 /etc/sa02m_mqtt.env
+        # НЕ логируем сам пароль: /var/log/sa02m_install.log отдаётся веб-панелью
+        # (log.cgi / log_export.cgi) целиком, а секрет уже лежит 0600 в
+        # /etc/sa02m_mqtt.env (аудит 2026-08-28, M2). Пишем факт, не значение.
+        log OK "Пользователь mqttuser создан; пароль сохранён в /etc/sa02m_mqtt.env (0600)"
+        log WARN "Пароль mqttuser в журнал НЕ выводится — при необходимости читайте /etc/sa02m_mqtt.env под root"
+    fi
 fi
 
 # Первая установка ⇒ enable+start; остановленный оператором брокер сохраняет
@@ -173,7 +183,10 @@ else
     log INFO "/etc/sa02m-modbus-mqtt.yaml уже существует — права обновлены для www-data"
 fi
 
-install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
+# Источник — usr/local/sbin/ (не etc/): путь установки совпадает с путём в
+# репозитории, поэтому OTA и оффлайн-пакет кладут файл ровно туда, где его
+# вызывают sudoers и mqtt_config.cgi (audit B1 deploy-gap).
+install -m 0755 -o root -g root "$BASE_DIR/usr/local/sbin/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
 install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-external-info.py

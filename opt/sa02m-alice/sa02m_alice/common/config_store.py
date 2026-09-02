@@ -106,6 +106,34 @@ def set_client_enabled(enabled: bool) -> None:
     save_ini(C.CLIENT_CONF, cfg)
 
 
+def unlinked_at(cfg: configparser.ConfigParser | None = None) -> str:
+    """The durable «cloud unlinked us» marker, or "" when the board is normal.
+
+    Home of the key: C.KEY_UNLINKED_AT in the [client] section — see the
+    constant for why it may not live under VAR_DIR.
+    """
+    c = cfg or default_client_cfg()
+    return (c.get("client", C.KEY_UNLINKED_AT, fallback="") or "").strip()
+
+
+def set_unlinked_at(value: str | None) -> None:
+    """Set the marker (a timestamp string) or clear it with None/"".
+
+    Writes through save_ini/_atomic_write so the root/www-data mode dance is
+    preserved — never hand-roll a writer for this file.
+    """
+    cfg = default_client_cfg()
+    if not cfg.has_section("client"):
+        cfg.add_section("client")
+    if value:
+        cfg.set("client", C.KEY_UNLINKED_AT, str(value))
+    elif cfg.has_option("client", C.KEY_UNLINKED_AT):
+        cfg.remove_option("client", C.KEY_UNLINKED_AT)
+    else:
+        return  # nothing to clear — do not rewrite the file for a no-op
+    save_ini(C.CLIENT_CONF, cfg)
+
+
 def empty_devices() -> Dict[str, Any]:
     return {"rooms": [], "devices": []}
 

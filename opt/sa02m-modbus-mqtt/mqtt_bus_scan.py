@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Modbus bus scanner for MQTT device discovery (runs as root via sudo from CGI)."""
 import json
+import os
+import re
 import struct
 import sys
 import time
@@ -283,12 +285,52 @@ def load_params(path: Path) -> dict:
     return {}
 
 
+# SECURITY (audit B1 class): the sudoers grant is
+# `/usr/bin/python3 …/mqtt_bus_scan.py *`, so www-data chooses this argv and
+# this file runs as ROOT. mqtt_scan.cgi validates the params before handing
+# them over, but the grant means the CGI is not the only caller — so the
+# validation is repeated HERE, at the privilege boundary. Fail closed: refuse
+# and print the endpoint's own error shape (exit 0, one JSON document — a
+# non-zero exit would make the CGI's unprivileged fallback print a SECOND one).
+_PARAMS_NAME_RE = re.compile(r"^sa02m-mqttscan\.[A-Za-z0-9]{6}$")
+_PORT_RE = re.compile(r"^/dev/[A-Za-z0-9_-]+$")
+
+
+def params_path_ok(path: Path) -> bool:
+    """The caller's own mktemp template is the contract: /tmp/sa02m-mqttscan.XXXXXX."""
+    p = str(path).replace("\\", "/")
+    if not p.startswith("/tmp/"):
+        return False
+    base = p[len("/tmp/"):]
+    if "/" in base or not _PARAMS_NAME_RE.match(base):
+        return False
+    return not os.path.islink(p) and os.path.isfile(p)
+
+
+def refuse(msg: str) -> None:
+    print(json.dumps({"ok": False, "error": msg, "devices": []}, ensure_ascii=False))
+    sys.exit(0)
+
+
 def main() -> None:
     params_path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-    params = load_params(params_path) if params_path else {}
+    if params_path is not None and not params_path_ok(params_path):
+        refuse("refusing params path (expected a regular, non-symlink "
+               "/tmp/sa02m-mqttscan.XXXXXX file)")
+    try:
+        params = load_params(params_path) if params_path else {}
+    except (OSError, ValueError):
+        refuse("unreadable scan parameters")
     port = str(params.get("port", "/dev/COM1"))
-    baud = int(params.get("baudrate", 115200))
-    max_addr = min(int(params.get("max_addr", 32)), 247)
+    if not _PORT_RE.match(port):
+        refuse("invalid scan parameters (port)")
+    try:
+        baud = int(params.get("baudrate", 115200))
+        max_addr = min(int(params.get("max_addr", 32)), 247)
+    except (TypeError, ValueError):
+        refuse("invalid scan parameters (baudrate/max_addr)")
+    if not (300 <= baud <= 4000000) or not (1 <= max_addr <= 247):
+        refuse("invalid scan parameters (baudrate/max_addr)")
 
     try:
         if not Path(port).exists():

@@ -24,7 +24,8 @@ Home Assistant + Yaha — в [ALICE_HA_YAHA_ALTERNATIVE.md](ALICE_HA_YAHA_ALTERN
 ## Phase 0 (блокирующий для облачной привязки)
 
 Реализация шлюза: репозиторий **cloud** → каталог `alice-gateway/`
-(чеклист `alice-gateway/docs/PHASE0_CHECKLIST.md`, деплой `docs/DEPLOY.md`).
+(чеклист и деплой — там же: `alice-gateway/docs/PHASE0_CHECKLIST.md` и
+`docs/DEPLOY.md` **в репозитории cloud**, не в этом).
 
 Пока `https://alice.cyntron.ru/v1.0/ping` не отвечает 200, UI и API:
 
@@ -56,7 +57,7 @@ sudo bash scripts/06-alice.sh
 | Unit | Назначение |
 |---|---|
 | `sa02m-alice-client` | Socket.IO + MQTT; standby exit 0 если выключен |
-| `sa02m-alice-config` | локальный JSON API `127.0.0.1:8012` (опционально) |
+| `sa02m-alice-config` | локальный JSON API поверх AF_UNIX-сокета `/run/sa02m-alice/config.sock` (0600, владелец root; служба опциональна, по умолчанию выключена) |
 
 Веб-UI ходит через CGI с сессионной авторизацией:
 

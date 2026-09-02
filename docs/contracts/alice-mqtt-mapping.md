@@ -206,7 +206,34 @@ in place, without restarting it and without dropping the Socket.IO session:
 | G→C | `alice_devices_query` | `{request_id, devices:[{id}]}` |
 | G→C | `alice_devices_action` | `{request_id, payload:{devices:[…]}}` |
 | C→G | `device_state` | `{ts, payload:{devices:[]}}` |
-| G→C | `controller_unlink` | `{}` |
+| G→C | `controller_unlink` | `{"reason":"unlinked"}` (пустой `{}` — шлюз до 0.6.0) |
+
+**`controller_unlink` — обязанность платы.** Семантика доставки события —
+один дом, и он в репозитории `cloud`: `docs/contracts/alice-gateway.md`,
+раздел «`controller_unlink` delivery semantics» (живая отвязка и отвязка,
+которую плата узнаёт при следующем подключении; полезная нагрузка
+необязательна; событие идемпотентно). Здесь фиксируется только то, что
+делает плата, и чего не делает:
+
+- любое получение события на аутентифицированной mTLS-сессии —
+  авторитетно, форма полезной нагрузки не проверяется: подлинность даёт
+  канал, а не тело сообщения;
+- плата стирает **только** привязку к облаку —
+  `device.crt.pem`, `device.key.pem`, `pending_claim.json`, `ca.crt.pem` и
+  sidecar'ы `*.tmp` в каталоге идентичности, плюс один ключ
+  `unlinked_at` в `sa02m-alice-client.conf`. Полный список того, что
+  трогать запрещено, — в докстроке
+  `opt/sa02m-alice/sa02m_alice/common/binding_reset.py` (единственный дом
+  стирания, общий для события и локальной кнопки «Отвязать»);
+- `client_enabled` остаётся включённым: замолкает плата не из-за флага, а
+  из-за стёртой привязки — после стирания цикл уходит в мягкое ожидание
+  сертификата и больше не звонит на шлюз **на любом транспорте**
+  (`client/main.py::_should_wait_for_cert`). Выключение клиента скрыло бы на
+  карточке саму кнопку «Привязать». Отдельно: плата, которую никогда не
+  привязывали, по-прежнему звонит на лабораторный `ws://`-шлюз — это
+  прежнее поведение, и оно не менялось;
+- отказ, таймаут, HTTP 403, недоступность или перезапуск шлюза **не
+  стирают ничего** — стирает только само событие.
 
 ## Error codes (Yandex)
 
@@ -229,6 +256,22 @@ single batch row, so a six-reading card refreshed one value per window. The
 limit is a floor between reports of the SAME reading, not a refresh period;
 `query` answers from the MQTT cache and is unrated, so a card is never stale
 on open.
+
+**Reconnect snapshot.** After the retained-settle sleep the client offers
+`registry.query_devices()` through `StateSender.offer_snapshot` (same merge as
+`offer`, rate-bypass, still stamps `_last_sent`) and `flush_now()`, so the
+first post-reconnect report leaves the board. Live MQTT still uses `offer`.
+Retained bursts stay cached-not-reported. A `query_devices()` entry with
+neither capabilities nor properties does not emit. No `callback/discovery`.
+
+**History snapshot.** While Socket.IO is connected, the same
+`offer_snapshot` + `flush_now` runs every `STATE_SNAPSHOT_S` (30 s) from the
+MQTT cache, so Yandex Station graphs/history receive a point even when the
+broker does not republish a steady reading. In-place document reload with
+added/removed topics also snapshots once. This is a cadence, not a replacement
+for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
+the floor between *MQTT-driven* reports of the same reading; the history
+snapshot bypasses it. Gateway Callback belt (30 POSTs / SN / 60 s) is unchanged.
 
 ## Offline / Phase 0
 

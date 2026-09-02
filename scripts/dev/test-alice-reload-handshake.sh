@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Gate for the Alice reload handshake (1.0.6.19).
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 #
 # `config_watch` is a STRING shared across two languages: the Python client
 # writes it into /run/sa02m-alice/status.json, the privileged shell helper
@@ -153,7 +154,7 @@ else
     # that matters most: `complete_link` shares this verb, and skipping there
     # leaves the card at «нет сертификата» until the client's own 60 s
     # re-check.
-    for state in missing_cert error offline connecting disabled missing_deps; do
+    for state in missing_cert error offline connecting disabled missing_deps unlinked; do
         expect "state=$state (not watching)" RESTART \
             "{\"state\":\"$state\",\"ts\":$NOW,\"config_watch\": true}"
     done

@@ -169,8 +169,9 @@ nginx отдаёт `/static/` с `expires 1h` (`etc/nginx/network_config.conf`).
 1. **Шаг 0 — «флип» файла**: IIFE-обёртка → модуль (`export` того, что
    импортируют другие; `window.*` для HTML/кросс-бандла), точка входа получает
    `type="module"`; поведение байт-в-байт то же. Оракул — характеризационный
-   базовый снимок `scripts/dev/characterize-ui.mjs --compare baseline`
-   (строка `headless-smoke`).
+   базовый снимок `scripts/dev/characterize-ui.mjs --compare baseline` — теперь
+   on-demand инструмент (строка `headless-smoke` снята в 1.0.6.24, требовала
+   живую плату и не могла работать в CI; см. `scripts/dev/README.md`).
 2. Далее — **по одному кластеру ответственности за коммит** (`mqtt/scan.js`,
    `mqtt/bridge.js`, …), каждый со своим `?v=` в спецификаторе; после каждого —
    тот же оракул + `js-syntax` + `version-consistency`.

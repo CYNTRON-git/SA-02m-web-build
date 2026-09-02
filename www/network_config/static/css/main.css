@@ -4345,7 +4345,10 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   box-sizing: border-box;
 }
 #tab-gateway #gw-content > .widget.gw-port-panel .gw-form-grid {
-  grid-template-columns: repeat(2, minmax(280px, 1fr));
+  /* auto-fit, not a fixed 2: the port panel gained a third settings column
+     («Доступ по сети», 1.0.6.24). Columns still never go below 280px, so a
+     narrow viewport drops to two and then to one instead of overflowing. */
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   width: 100%;
   align-items: stretch;
 }
@@ -4414,6 +4417,17 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 #tab-gateway #gw-content .gw-block-collapsed {
   visibility: hidden;
   pointer-events: none;
+}
+/* The "this port is open to everyone" warning. Slightly larger than a plain
+   field hint (it is a security statement, not a caption) and with its own
+   bottom margin; it keeps `.field-hint.warn`'s themed colour, measured at
+   10.98:1 dark / 5.02:1 light against the card — both above the AA 4.5:1 floor.
+   Hidden via gw-block-collapsed (visibility, not display), so switching the
+   allow-list on and off never reflows the panel. */
+#tab-gateway #gw-content .gw-access-warn {
+  font-size: .78rem;
+  line-height: 1.35;
+  margin: 0 0 12px;
 }
 #tab-gateway #gw-content .gw-save-row {
   display: flex;

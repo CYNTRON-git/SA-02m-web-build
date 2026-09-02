@@ -137,6 +137,10 @@ const ALICE_STATE_MAP = {
   error: ['Ошибка', 'err'],
   missing_deps: ['Нет зависимостей', 'err'],
   missing_cert: ['Нет сертификата', 'warn'],
+  // Distinct from missing_cert on purpose: the board WAS bound and the
+  // cloud unbound it, so the card must say why the certificate is gone
+  // instead of reading like a board that was never bound.
+  unlinked: ['Отвязано в облаке — можно привязать заново', 'warn'],
   unknown: ['Нет данных', 'unk'],
 };
 

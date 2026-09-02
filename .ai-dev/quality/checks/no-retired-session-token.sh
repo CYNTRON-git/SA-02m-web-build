@@ -1,6 +1,8 @@
 #!/bin/bash
 # Static gate: no hard-coded / retired web session token in shipped or dev code.
 #
+# comment-mutation-proof-exempt: fail-IF-PRESENT sweep — a comment REMOVES the banned needle this gate wants ABSENT; the defeating mutation is re-introducing the retired token, not commenting a line out, so the comment-out proof does not apply.
+#
 # The defect this closes, concretely: the fixed cookie `cyntron_session` was
 # retired on 2026-07-12 when the panel moved to a server-side session store
 # (www/network_config/cgi-bin/lib_web_auth.sh — the one home of the auth rule).
@@ -87,6 +89,12 @@ allowed() {
     return 1
 }
 
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): this gate is where the repo first solved
+# the class, and it keeps its own copy rather than sourcing lib_check.sh for one
+# reason: it also blanks a leading `*` (a JS block-comment continuation), which
+# the shared lib deliberately does not — in shell that same shape is a `case`
+# label another gate has to read. Same rules, one extra line for a JS sweep.
+#
 # Strip whole comment lines (#-style and //-style) before matching. Reads
 # stdin so it can filter a file OR an extracted function body — pin C needs
 # the latter: the rejection test carries a COMMENT naming the retired token

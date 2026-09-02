@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-iface-conf-merge.sh — regression test for apply.cgi's interfaces.d
 # foreign-stanza merge (docs/contracts/ethernet-iface-naming.md §5).
 #

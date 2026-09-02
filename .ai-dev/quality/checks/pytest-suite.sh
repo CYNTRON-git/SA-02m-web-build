@@ -4,6 +4,8 @@
 # (the daemon suites are pytest functions, which `unittest discover` silently
 # skips; this row actually executes them).
 #
+# comment-mutation-proof-exempt: shared pytest runner, no source-line needle — it executes a daemon's suite rather than pinning a line; non-vacuity is per-suite (a collection error or a failing test FAILS the run).
+#
 # Usage: pytest-suite.sh <row-id> <daemon-dir> [import-dep ...]
 #
 # Skips CLEANLY (exit 0, one INFO line) when no python / pytest / a listed
@@ -12,6 +14,9 @@
 # pytest + the deps (the same skipped-locally / runs-in-CI contract the lint row
 # uses). It runs `pytest <daemon-dir>/tests` from inside the daemon dir (the
 # suites have no conftest and import their package by cwd on sys.path).
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A — this is a runner, not a grep. It
+# dispatches a real pytest run; a commented-out test disappears from the run
+# as a missing test, which is a coverage question, not a hollow pin.
 set -u
 
 id="${1:?row-id required}"

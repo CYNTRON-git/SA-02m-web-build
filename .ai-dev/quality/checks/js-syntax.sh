@@ -4,6 +4,8 @@
 # so a module directory added later (static/js/mqtt/, static/js/flasher/, ...) is
 # covered from its first file without a registry edit.
 #
+# comment-mutation-proof-exempt: runner, no source-line needle — it parses every JS file rather than pinning a line, so no `#`/`//` in front of a line could satisfy it; its own non-vacuity is gated by js-syntax-gate.
+#
 # Why a script and not `node --check "$f"` inline: `node --check` on a `.js` file
 # that carries ANY ESM marker (`import`/`export`, `import.meta`) SILENTLY EXITS 0
 # even when the file has a syntax error (Node 20/24 module-detection path —
@@ -30,6 +32,12 @@
 #   no args → the shipped tree (non-vacuous: zero files found = FAIL)
 #   args    → exactly those files (the self-test uses this to prove a broken
 #             module FAILS and a valid one passes — scripts/dev/test-js-syntax-gate.sh)
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): N/A. This row runs a real parser
+# (`node --check`), not a needle grep, so nothing here can be satisfied by a
+# comment. Its one grep is the module/classic classifier, whose regex is
+# anchored at line start (`^[[:space:]]*import|export`) — a `//`-commented
+# import cannot fake a module marker, and a misread would surface as a parse
+# error, not as a silent pass.
 set -u
 
 JS_ROOT="www/network_config/static/js"

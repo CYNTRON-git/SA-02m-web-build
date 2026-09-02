@@ -11,6 +11,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from sa02m_alice.client.state_sender import StateSender  # noqa: E402
+from sa02m_alice.common import constants as C  # noqa: E402
 
 
 class TestStateSender(unittest.TestCase):
@@ -156,6 +157,137 @@ class TestMultiPropertyDevice(unittest.TestCase):
         self.assertEqual(len(props), 1)
         # The second offer is inside the rate window, so the first value stands.
         self.assertEqual(props[0]["state"]["value"], 21.5)
+
+
+class TestReconnectSnapshot(unittest.TestCase):
+    """offer_snapshot bypasses the float window and stamps last_sent."""
+
+    def setUp(self):
+        self.emitted = []
+        self.clock = {"t": 1000.0}
+        rates = {
+            "capabilities": {"on_off": {"time_rate_s": 0.75}},
+            "properties": {"float": {"time_rate_s": 300.0}},
+            "batch": {"flush_normal_s": 1.0, "flush_fast_s": 0.1},
+        }
+        self.sender = StateSender(
+            lambda p: self.emitted.append(p), rates=rates, clock=lambda: self.clock["t"]
+        )
+        self.sender._stopped = False
+
+    def _float_dev(self, value):
+        return {
+            "id": "d1",
+            "capabilities": [],
+            "properties": [_float_prop("temperature", value)],
+        }
+
+    def test_snapshot_emits_inside_float_window(self):
+        self.sender.offer([self._float_dev(21.5)])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 1)
+        self.clock["t"] = 1010.0
+        self.sender.offer_snapshot([self._float_dev(21.5)])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 2)
+
+    def test_ordinary_offer_still_rate_limited_after_snapshot_window(self):
+        self.sender.offer([self._float_dev(21.5)])
+        self.sender.flush_now()
+        self.clock["t"] = 1010.0
+        self.sender.offer([self._float_dev(22.0)])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 1)
+
+    def test_snapshot_stamps_last_sent_so_followup_offer_is_dropped(self):
+        self.sender.offer_snapshot([self._float_dev(21.5)])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 1)
+        self.clock["t"] = 1010.0
+        self.sender.offer([self._float_dev(22.0)])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 1)
+
+    def test_snapshot_while_stopped_does_not_emit(self):
+        self.sender._stopped = True
+        self.sender.offer_snapshot([self._float_dev(21.5)])
+        self.sender.flush_now()
+        self.assertEqual(self.emitted, [])
+
+    def test_empty_query_devices_shaped_list_does_not_emit(self):
+        self.sender.offer_snapshot([])
+        self.sender.flush_now()
+        self.assertEqual(self.emitted, [])
+        self.sender.offer_snapshot(
+            [{"id": "d1", "error_code": "DEVICE_UNREACHABLE"}]
+        )
+        self.sender.flush_now()
+        self.assertEqual(self.emitted, [])
+
+
+class TestHistorySnapshotCadence(unittest.TestCase):
+    """Periodic cache snapshot for Yandex Station graphs (STATE_SNAPSHOT_S)."""
+
+    def setUp(self):
+        self.emitted = []
+        self.clock = {"t": 1000.0}
+        rates = {
+            "capabilities": {"on_off": {"time_rate_s": 0.75}},
+            "properties": {"float": {"time_rate_s": 300.0}},
+            "batch": {"flush_normal_s": 1.0, "flush_fast_s": 0.1},
+        }
+        self.sender = StateSender(
+            lambda p: self.emitted.append(p), rates=rates, clock=lambda: self.clock["t"]
+        )
+        self.sender._stopped = False
+
+    def test_cadence_constant_is_30s(self):
+        self.assertEqual(C.STATE_SNAPSHOT_S, 30.0)
+
+    def test_snapshots_a_cadence_apart_each_emit(self):
+        dev = {
+            "id": "d1",
+            "capabilities": [],
+            "properties": [_float_prop("temperature", 21.5)],
+        }
+        self.sender.offer_snapshot([dev])
+        self.sender.flush_now()
+        self.clock["t"] = 1000.0 + C.STATE_SNAPSHOT_S
+        self.sender.offer_snapshot([dev])
+        self.sender.flush_now()
+        self.assertEqual(len(self.emitted), 2)
+
+    def test_emit_cache_snapshot_none_sender_is_noop(self):
+        from sa02m_alice.client.main import _emit_cache_snapshot
+
+        class _Reg:
+            def query_devices(self):
+                raise AssertionError("must not query when sender is unset")
+
+        _emit_cache_snapshot(None, _Reg())
+
+    def test_emit_cache_snapshot_offers_then_flushes(self):
+        from sa02m_alice.client.main import _emit_cache_snapshot
+
+        class _Sender:
+            def __init__(self):
+                self.order = []
+
+            def offer_snapshot(self, devices):
+                self.order.append(("offer", devices))
+
+            def flush_now(self):
+                self.order.append(("flush", None))
+
+        class _Reg:
+            def query_devices(self):
+                return [{"id": "d1"}]
+
+        sender = _Sender()
+        _emit_cache_snapshot(sender, _Reg())
+        self.assertEqual(
+            sender.order, [("offer", [{"id": "d1"}]), ("flush", None)]
+        )
 
 
 if __name__ == "__main__":

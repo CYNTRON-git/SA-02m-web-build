@@ -14,7 +14,10 @@
 // project-root-relative) runs only if a touched file matches at least one glob;
 // a row WITHOUT `covers` always runs (fail-safe — an undeclared-scope tool is
 // never silently dropped). No --touched flag = current full-run behaviour
-// (this stays the ship-gate invocation).
+// (this stays the ship-gate invocation). The touched set is the UNION of the
+// committed <base>..HEAD diff and the working tree (staged + unstaged +
+// untracked) — see computeTouchedFiles(); a Builder's uncommitted handback is
+// exactly what the pre-handback invocation has to look at.
 //
 // Exit codes: 0 = every matched row passed (or no rows matched, or no registry);
 //             non-zero = a row failed, a bad beat arg, or a malformed registry.
@@ -116,8 +119,103 @@ export function fileMatchesCovers(files, covers) {
   return false;
 }
 
-// Compute the touched-file set from git. Returns an array of project-root-relative
-// paths, or `null` when no git / no base resolves — caller degrades to full run.
+// The committed half of the touched set: `<base>..HEAD`, with the same base
+// resolution the runner has always used (explicit base → origin/main →
+// merge-base against origin/main or main). Returns [] when nothing resolves —
+// the caller decides what an empty result means.
+//
+// `-z` for the same reason workingTreeFiles() carries it (below): without it
+// git QUOTES any path holding a non-ASCII byte or a control character
+// (`"www/\320\260.js"`), and a quoted path matches no `covers` glob — the row
+// guarding that file is skipped while the run still prints PASS. The fix was
+// applied to the working-tree half only when the union landed; this is the
+// committed half of it (review Q3, 1.0.6.24). Latent in this repo today (no
+// tracked path carries such a byte) and fail-OPEN when it bites, which is
+// exactly why it is not left to be found later.
+function diffNamesZ(root, range) {
+  const out = execSync(`git diff --name-only -z ${range}`, { cwd: root, stdio: "pipe", encoding: "utf8" });
+  return out.split("\0").filter(Boolean);
+}
+
+export function committedTouchedFiles(root, base) {
+  const candidates = [];
+  if (base) candidates.push(base);
+  if (!base) candidates.push("origin/main");
+
+  for (const ref of candidates) {
+    try {
+      const files = diffNamesZ(root, `${ref}..HEAD`);
+      if (files.length) return files;
+    } catch {
+      // ref missing or diff failed — try the next resolution step
+    }
+  }
+
+  try {
+    const mergeBase = execSync(
+      `git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo ""`,
+      { cwd: root, stdio: "pipe", encoding: "utf8", shell: true }
+    ).trim();
+    if (mergeBase) {
+      const files = diffNamesZ(root, `${mergeBase}..HEAD`);
+      if (files.length) return files;
+    }
+  } catch {
+    // no merge-base either
+  }
+
+  return [];
+}
+
+// The working-tree half: staged + unstaged + untracked, from
+// `git status --porcelain -z -uall`.
+//
+// `-z` (NUL-separated, never quoted) rather than `--short`: the human format
+// quotes any path holding a space, a quote or a non-ASCII byte
+// (`"www/\320\260.js"`), so a naive slice(3) hands the runner a path that
+// matches no `covers` glob — a silent skip, the exact failure mode this
+// function exists to prevent. A rename/copy entry carries TWO NUL fields
+// ("XY new\0old\0"); both are recorded, since a rename touches the coverage
+// of the old path as well as the new.
+export function workingTreeFiles(root) {
+  let out;
+  try {
+    out = execSync("git status --porcelain -z -uall", { cwd: root, stdio: "pipe", encoding: "utf8" });
+  } catch {
+    return [];
+  }
+
+  const fields = out.split("\0");
+  const files = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue; // "XY p" is the shortest valid entry
+    const status = entry.slice(0, 2);
+    const p = entry.slice(3);
+    if (p) files.push(p);
+    // Rename/copy: the ORIGINAL path is the next NUL-separated field, not part
+    // of this entry. Consume it here or the loop would read it as an entry and
+    // strip its first three characters.
+    if (status.includes("R") || status.includes("C")) {
+      const orig = fields[++i];
+      if (orig) files.push(orig);
+    }
+  }
+  return files;
+}
+
+// Compute the touched-file set from git: the UNION of the committed diff
+// (`<base>..HEAD`) and the working tree (staged + unstaged + untracked).
+// Returns an array of project-root-relative paths, or `null` when no git / no
+// file resolves — caller degrades to full run.
+//
+// The union is the point. The working tree used to be a LAST RESORT, reached
+// only when the committed diff came back empty; on any branch carrying a
+// commit, a Builder's own uncommitted handback therefore selected no rows and
+// `run.mjs build --touched` — the documented pre-handback command — reported
+// green having never looked at the new work (found 2026-08-28, hollow-ratchet
+// audit). Both halves are real edits a beat must check, so both are read every
+// time; the direction is fail-safe (it can only make MORE rows run).
 export function computeTouchedFiles(root, base) {
   try {
     const topLevel = execSync("git rev-parse --show-toplevel", { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
@@ -126,54 +224,12 @@ export function computeTouchedFiles(root, base) {
     return null; // no git at all
   }
 
-  if (base) {
-    // Explicit base — use it directly.
-    try {
-      const out = execSync(`git diff --name-only ${base}..HEAD`, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-      if (out) return out.split("\n").filter(Boolean);
-    } catch {
-      // fall through to merge-base
-    }
-  }
+  const files = new Set();
+  for (const f of committedTouchedFiles(root, base)) files.add(f);
+  for (const f of workingTreeFiles(root)) files.add(f);
 
-  // Default base: origin/main, then merge-base fallback.
-  const defaultBase = base || "origin/main";
-  try {
-    const out = execSync(`git diff --name-only ${defaultBase}..HEAD`, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-    if (out) return out.split("\n").filter(Boolean);
-  } catch {
-    // origin/main doesn't exist or diff failed — try merge-base.
-  }
-
-  // Merge-base fallback.
-  try {
-    const mergeBase = execSync(
-      `git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo ""`,
-      { cwd: root, stdio: "pipe", encoding: "utf8", shell: true }
-    ).trim();
-    if (mergeBase) {
-      const out = execSync(`git diff --name-only ${mergeBase}..HEAD`, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
-      if (out) return out.split("\n").filter(Boolean);
-    }
-  } catch {
-    // fall through to unstaged fallback
-  }
-
-  // Last resort: unstaged changes. Each line is "XY path" — a 2-char status
-  // code + a space. Split BEFORE trimming: trimming the whole multi-line blob
-  // first eats the leading space of the FIRST line only, desyncing its
-  // slice(3) by one character (over-trims the path).
-  try {
-    const out = execSync("git status --short", { cwd: root, stdio: "pipe", encoding: "utf8" });
-    const lines = out.split("\n").filter((line) => line.length > 0);
-    if (lines.length > 0) {
-      return lines.map((line) => line.slice(3).trim()).filter(Boolean);
-    }
-  } catch {
-    // nothing
-  }
-
-  return null; // no files resolved — degrade to full
+  if (files.size === 0) return null; // nothing resolved — degrade to full
+  return [...files];
 }
 
 // Filter `rows` to only those whose `covers` field matches the touched set.

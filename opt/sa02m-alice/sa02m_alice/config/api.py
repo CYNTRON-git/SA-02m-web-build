@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import json
 import os
+import socketserver
+import stat
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from .. import __version__
 from ..common import constants as C
+from ..common.binding_reset import SOURCE_LOCAL, reset_cloud_binding
 from ..common.config_store import (
     cert_paths_present,
     client_enabled,
@@ -25,6 +28,7 @@ from ..common.config_store import (
     load_devices,
     save_devices,
     set_client_enabled,
+    set_unlinked_at,
 )
 from . import models
 from .topics import list_mqtt_topics
@@ -314,6 +318,11 @@ def start_link() -> Dict[str, Any]:
             if data.get("ca_pem"):
                 _write_pem(C.CA_FILE, str(data["ca_pem"]), 0o644)
             _save_pending_claim(pending)
+            # A board being bound again is no longer "unlinked in the cloud".
+            # Cleared here so the card is correct one step early; the
+            # authoritative clear is in complete_link, which is the step that
+            # actually produces certificates.
+            set_unlinked_at(None)
             return {"ok": True, "enrollment": data, "pending": pending}
     except Exception as exc:
         return {
@@ -398,6 +407,9 @@ def complete_link() -> Dict[str, Any]:
             "issued": True,
         }
     )
+    # Authoritative clear of the durable unlink marker: certificates now exist,
+    # so a reboot must not resurrect «unlinked in the cloud» on a bound board.
+    set_unlinked_at(None)
     return {
         "ok": True,
         "controller_sn": sn,
@@ -408,9 +420,18 @@ def complete_link() -> Dict[str, Any]:
 
 
 def unlink_controller() -> Dict[str, Any]:
-    """Ask gateway to unlink via controller API; clear local enable on success.
+    """Ask the gateway to unlink, then erase the local binding on success.
 
-    When gateway is down — return error, do NOT claim unlink succeeded.
+    When the gateway is down — return an error and wipe NOTHING; the same
+    "never erase on an outage" rule the gateway-driven path holds. Both
+    refusals below (unreachable, HTTP >= 400) return BEFORE the wipe, and the
+    HTTP call itself must stay ahead of it: the claim_token that authenticates
+    /controller/unlink lives in pending_claim.json, which the wipe deletes.
+
+    Since 1.0.6.27 this shares reset_cloud_binding with the gateway-driven
+    path. Leaving certificates behind after a CONFIRMED cloud unlink is exactly
+    what produced the false «привязан» card: the page treats a certificate on
+    disk as proof of binding.
     """
     probe = probe_gateway()
     if not probe.get("available"):
@@ -448,11 +469,18 @@ def unlink_controller() -> Dict[str, Any]:
                     "message": "Gateway unlink HTTP %s" % code,
                     "http_status": code,
                 }
-            set_client_enabled(False)
+            summary = reset_cloud_binding(SOURCE_LOCAL)
+            # client_enabled stays ON: the client goes quiet because the
+            # binding is gone, not because the flag was cleared — the loop
+            # routes into its no-certificate soft wait on every transport
+            # (client/main.py::_should_wait_for_cert). Switching the flag off
+            # would HIDE the link row on the card (alice.js) — the very button
+            # the next owner needs.
             return {
                 "ok": True,
-                "message": "Unlinked; local client_enabled set false",
-                "client_enabled": False,
+                "message": "Unlinked; local cloud binding erased",
+                "client_enabled": client_enabled(),
+                "reset": summary,
             }
     except Exception as exc:
         return {
@@ -637,18 +665,73 @@ class _Handler(BaseHTTPRequestHandler):
     do_DELETE = _handle  # noqa: N815
 
 
-def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
-    """Optional long-running config API (sa02m-alice-config.service).
+# AF_UNIX (and socketserver.UnixStreamServer) exist only on POSIX; the target is
+# Linux. Guard the class so this module still imports on a Windows dev box, where
+# the server is never run. `_UnixConfigServer` is simply absent off-POSIX.
+_HAVE_AF_UNIX = hasattr(socketserver, "UnixStreamServer")
 
-    Binds 127.0.0.1:8012. Web UI uses session-authenticated CGI; this process
-    is for local tooling / future nginx proxy.
+if _HAVE_AF_UNIX:
+
+    class _UnixConfigServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+        """HTTP over AF_UNIX for the local config API. Filesystem permissions on the
+        socket ARE the access control — see serve_unix(). Why not http.server: it is
+        AF_INET only; the flasher daemon uses the same AF_UNIX shape for the same
+        reason (opt/sa02m-flasher/sa02m_flasher/service.py)."""
+
+        daemon_threads = True
+        allow_reuse_address = True
+
+        def get_request(self) -> Tuple[Any, Any]:
+            sock, _ = self.socket.accept()
+            return sock, ("unix", 0)
+
+
+def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
+    """Local config API over a root-only AF_UNIX socket (sa02m-alice-config.service).
+
+    The web UI does NOT talk to this socket — sa02m_alice_api.cgi dispatches
+    in-process behind session auth. This endpoint is for root-local tooling / a
+    future nginx proxy.
+
+    It previously bound 127.0.0.1:8012 over TCP with NO authentication of any kind
+    (the name "serve_unix" was itself a lie), so ANY local process — www-data
+    (bypassing the session + CSRF the CGI enforces), mosquitto, nodered, CODESYS —
+    could drive enable/disable/link/unlink/upsert_device/delete_device as root
+    (audit 2026-08-28, M5). It now binds an AF_UNIX socket at mode 0600 owned by the
+    service user (root), so the only reach is a process already running as root. A
+    future caller that legitimately needs it gets an explicit group grant then;
+    nothing today does.
     """
-    os.makedirs(os.path.dirname(sock_path) or "/run/sa02m-alice", exist_ok=True)
-    host, port = "127.0.0.1", 8012
-    httpd = ThreadingHTTPServer((host, port), _Handler)
+    if not _HAVE_AF_UNIX:
+        raise RuntimeError("AF_UNIX sockets are unavailable on this platform")
+    parent = os.path.dirname(sock_path) or "/run/sa02m-alice"
+    os.makedirs(parent, exist_ok=True)
     try:
-        with open(sock_path + ".tcp", "w", encoding="utf-8") as fh:
-            fh.write("%s:%d\n" % (host, port))
+        os.unlink(sock_path)
+    except FileNotFoundError:
+        pass
+    # An upgraded board can still carry the breadcrumb the TCP era wrote beside
+    # the socket ("<sock>.tcp", holding the old loopback endpoint named in the
+    # docstring above). Nothing reads it any more, but leaving it advertises a
+    # listener that no longer exists. /run is tmpfs so a reboot would clear it
+    # anyway — remove it here so the first start after the upgrade does
+    # (security review 1.0.6.24, F6). The port literal is deliberately NOT
+    # repeated: tests/test_config_api_socket.py asserts this function's body
+    # names it nowhere, which is what keeps the retired endpoint from creeping
+    # back in.
+    try:
+        os.unlink(sock_path + ".tcp")
+    except OSError:
+        pass
+    # Create the socket owner-only from the outset (umask), then re-assert 0600 in
+    # case a lax umask or a prior file survived — the socket is the whole boundary.
+    old_umask = os.umask(0o177)
+    try:
+        httpd = _UnixConfigServer(sock_path, _Handler)
+    finally:
+        os.umask(old_umask)
+    try:
+        os.chmod(sock_path, stat.S_IRUSR | stat.S_IWUSR)  # 0600, owner (root) only
     except OSError:
         pass
     httpd.serve_forever()

@@ -1,21 +1,58 @@
 #!/bin/bash
 # Вызывается от root (sudo). Аргумент: 0 | 1
+#
+# Owns exactly ONE key in the storage config — STORAGE_AUTO_FORMAT. Every other
+# assignment in the file belongs to the operator (STORAGE_ALLOW_AUTORUN today)
+# and is carried over: regenerating the file from scratch silently reset an
+# opt-in the panel never asked about.
 set -euo pipefail
+
+CONF=/etc/sa02m_storage.conf
+STORAGE_MOUNT=/usr/local/bin/storage-mount.sh
+STATUS_CACHE=/tmp/sa02m_status_cache
+
 case "${1:-}" in
   0|1) ;;
   *) exit 1 ;;
 esac
-umask 022
-cat > /etc/sa02m_storage.conf <<EOF
-# Управляется веб-панелью СА-02м (scripts install). Не правьте вручную без необходимости.
-# 1 — при подключении пустой или NTFS раздел перезаписывается в exFAT; 0 — форматирование отключено.
-STORAGE_AUTO_FORMAT=$1
-EOF
-chmod 644 /etc/sa02m_storage.conf
 
-if [ "$1" = "1" ] && [ -x /usr/local/bin/storage-mount.sh ]; then
-  /usr/local/bin/storage-mount.sh scan
+# Carry over only bare `KEY=value` assignments we do not own, and only in a
+# shape that is safe to source as root (this file is sourced by
+# storage-mount.sh and by status.cgi). A line carrying a substitution, a
+# command separator, a redirect, a trailing comment or embedded whitespace is
+# DROPPED rather than preserved — every key here is fail-safe when absent
+# (no STORAGE_ALLOW_AUTORUN = autorun OFF), so dropping is the safe direction
+# and the config stays a pure assignment list.
+carry_over() {
+  [ -f "$CONF" ] || return 0
+  local unsafe='[$`\;&|<>()]'
+  local shape='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=([^[:space:]]*)[[:space:]]*$'
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    if [[ $line =~ $unsafe ]]; then continue; fi
+    if [[ ! $line =~ $shape ]]; then continue; fi
+    if [ "${BASH_REMATCH[1]}" = "STORAGE_AUTO_FORMAT" ]; then continue; fi
+    printf '%s=%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  done < "$CONF"
+}
+
+umask 022
+TMP=$(mktemp "${CONF}.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+{
+  echo "# Управляется веб-панелью СА-02м (scripts install). Не правьте вручную без необходимости."
+  echo "# 1 — при подключении раздел без распознанной ФС — или NTFS, который не удалось смонтировать, — перезаписывается в exFAT (ДАННЫЕ ТЕРЯЮТСЯ); 0 — форматирование отключено."
+  echo "STORAGE_AUTO_FORMAT=$1"
+  carry_over
+} > "$TMP"
+chmod 644 "$TMP"
+mv -f "$TMP" "$CONF"
+trap - EXIT
+
+if [ "$1" = "1" ] && [ -x "$STORAGE_MOUNT" ]; then
+  "$STORAGE_MOUNT" scan
 fi
 
-rm -f /tmp/sa02m_status_cache/system.json /tmp/sa02m_status_cache/storage.json 2>/dev/null || true
+rm -f "$STATUS_CACHE/system.json" "$STATUS_CACHE/storage.json" 2>/dev/null || true
 exit 0

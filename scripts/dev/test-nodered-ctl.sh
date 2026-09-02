@@ -234,22 +234,34 @@ echo "── the guard is WIRED into both install paths ────────
 # being unwired from a caller. Assert the call sites statically — an unwired
 # guard is exactly how this fix would silently disappear.
 fnbody() { awk -v f="$1" 'index($0, f"() {")==1 {p=1} p; p && /^}$/ {exit}' "$T/fn.sh"; }
+# These are SOURCE-TEXT pins on an extracted function body, so they must be
+# COMMENT-BLIND: a `#` in front of a call leaves the text in the body and a raw
+# `grep -q` counted a disabled call site as a live one (shape (a), found by the
+# coverage sweep of review Q6, 1.0.6.24). Capturing then matching in-shell also
+# retires the `producer | grep -q` early-exit pipe (shape (f)). lib_check.sh is
+# the one home for both; an unavailable lib FAILS rather than skipping.
+if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F text_has >/dev/null; then
+    body_has() { local _t; _t=$(strip_comments <<<"$1"); text_has "$_t" "$2"; }
+else
+    echo "FAIL  .ai-dev/quality/checks/lib_check.sh could not be sourced — the static wiring pins would be comment-blind; not skipping them"
+    exit 1
+fi
 for caller in nodered_install_offline nodered_install_online; do
     body=$(fnbody "$caller")
     [ -n "$body" ] || { bad "could not read $caller() out of the extraction"; continue; }
-    printf '%s\n' "$body" | grep -q 'nodered_guard_major_upgrade' \
+    body_has "$body" 'nodered_guard_major_upgrade' \
         && ok "$caller() calls nodered_guard_major_upgrade" \
         || bad "$caller() no longer calls nodered_guard_major_upgrade — a cross-major overwrite would go through unattended"
 done
 # Same class: the tree is replaced, not merged, and the unit is stopped first.
 body=$(fnbody nodered_install_offline)
-printf '%s\n' "$body" | grep -q 'rm -rf /usr/lib/node_modules/node-red' \
+body_has "$body" 'rm -rf /usr/lib/node_modules/node-red' \
     && ok "nodered_install_offline() removes the old tree before extracting (tar merges, it never deletes)" \
     || bad "nodered_install_offline() extracts over the existing tree again — the 3.x-leftovers franken-tree is back"
-printf '%s\n' "$body" | grep -q 'sc_run_slow stop' \
+body_has "$body" 'sc_run_slow stop' \
     && ok "nodered_install_offline() stops the unit before touching the tree" \
     || bad "nodered_install_offline() replaces the tree under a running unit"
-printf '%s\n' "$body" | grep -q 'nodered_payload_top_level_ok' \
+body_has "$body" 'nodered_payload_top_level_ok' \
     && ok "nodered_install_offline() asserts a single node-red/ top level before a root extraction" \
     || bad "the payload top-level assertion is gone — a root tar into /usr/lib with no shape check"
 # nodered_global_roots is THIS harness's sandbox seam, so no behavioural case
@@ -257,14 +269,14 @@ printf '%s\n' "$body" | grep -q 'nodered_payload_top_level_ok' \
 # how a cross-major install hides from the guard on a board that carries two.
 roots=$(fnbody nodered_global_roots)
 for want in '/usr/lib/node_modules' '/usr/local/lib/node_modules' 'npm root -g'; do
-    printf '%s\n' "$roots" | grep -qF "$want" \
+    body_has "$roots" "$want" \
         && ok "nodered_global_roots() still consults $want" \
         || bad "nodered_global_roots() no longer consults $want — an install there would be invisible to the F3 guard"
 done
 # The empty-first-component mapping is the load-bearing half of the absolute-path
 # defence: filtering empties out (the original `grep -v '^$'`) is exactly how an
 # absolute member rides along beside a valid node-red/.
-printf '%s\n' "$(fnbody nodered_payload_top_level_ok)" | grep -q "grep -v '\^\$'" \
+body_has "$(fnbody nodered_payload_top_level_ok)" "grep -v '^\$'" \
     && bad "nodered_payload_top_level_ok() filters empty components again — absolute-path members stop being seen" \
     || ok "nodered_payload_top_level_ok() does not discard empty path components"
 

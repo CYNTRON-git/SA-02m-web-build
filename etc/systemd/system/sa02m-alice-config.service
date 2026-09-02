@@ -1,5 +1,5 @@
 [Unit]
-Description=SA-02m Alice config API (localhost :8012)
+Description=SA-02m Alice config API (root-only AF_UNIX socket /run/sa02m-alice/config.sock)
 Documentation=file:///opt/sa02m-alice/THIRD_PARTY.md
 After=network.target
 
@@ -15,7 +15,9 @@ User=root
 NoNewPrivileges=true
 ProtectHome=true
 PrivateTmp=true
-# Config API binds 127.0.0.1 only; web UI uses CGI with session auth.
+# Config API listens on a root-only AF_UNIX socket (0600); web UI uses CGI with
+# session auth and does not touch the socket. Was TCP 127.0.0.1:8012 with no
+# auth — reachable by any local process — until 1.0.6.24 (audit M5).
 
 [Install]
 WantedBy=multi-user.target

@@ -25,8 +25,14 @@ English (`PROTOCOL.md` invariant 5); the Operator conversation is Russian per
 ## Stack — hard facts
 
 - **No build step.** The frontend is hand-written vanilla JS/CSS served as-is:
-  `www/network_config/index.html` + `static/js/{app,i18n,flasher,mqtt,gateway}.js`
-  + `static/css/main.css`. There is no bundler, no npm at runtime, no framework.
+  `www/network_config/index.html` + `static/css/main.css` + the JS under
+  `static/js/` — top-level bundles (one per tab/subsystem) plus the `app/`
+  cluster the dashboard bundle was split into. There is no bundler, no npm at
+  runtime, no framework. Two bundles ship as native ES modules
+  (`docs/decisions/es-modules.md`); the rest are classic scripts, and one file
+  (`ai-sensors.js`) is module-only — imported, never `<script>`-tagged. Do not
+  keep a bundle list here: `index.html`'s script tags are the load order and
+  `ls static/js/*.js static/js/app/*.js` is the inventory.
   A syntax error in any bundle bricks the whole page — `node --check` is the
   build gate (quality registry row `js-syntax`).
 - **Backend = Bash CGI** under `www/network_config/cgi-bin/*.cgi` behind
@@ -43,7 +49,13 @@ English (`PROTOCOL.md` invariant 5); the Operator conversation is Russian per
 
 ## Dashboard status polling — the architecture to respect
 
-`app.js` polls `status.cgi?part=<name>` on a rolling scheduler — parts:
+This section is the ONE home for the polling facts; the deep-dive skill
+(`.claude/skills/sa02m-web-architecture/`) cites it and adds only executable
+detail (queue functions, the apply-map).
+
+`app/status.js` polls `status.cgi?part=<name>` on a rolling scheduler (the
+scheduler and every `apply*Status` live there since the F10 split, not in
+`app.js`) — parts:
 `priority` (CPU/temp/RAM/swap/disk, 6 s), `main` (6 s), `rs485` (12 s), and the
 background set `storage,time,uptime,network,load,system,services,hardware`
 (phase-shifted). Facts that bite:
@@ -65,13 +77,13 @@ background set `storage,time,uptime,network,load,system,services,hardware`
 
 | Tab | Frontend | Backend | Device side |
 |---|---|---|---|
-| Сведения (dashboard) | `app.js` apply*/render* | `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
-| Сеть / Время | `app.js` forms (static-IP toggles per iface) | `config.cgi`, `apply.cgi` | ifupdown/netplan per installer |
+| Сведения (dashboard) | `app/status.js` apply*/render* | `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
+| Сеть / Время | `app/forms.js` (static-IP toggles per iface) | `config.cgi`, `apply.cgi` | ifupdown/netplan per installer |
 | MQTT | `mqtt.js` | `mqtt_*.cgi` | mosquitto (1883 local / 1884 external+auth), `sa02m-modbus-mqtt` bridge |
 | Устройства (ДТВ / СЭ) | `devices.js` | nginx `/api/devices*` → `sa02m-devices-api` `:8765` | `opt/sa02m-devices` — live из MQTT-кэша, SQLite-архив (`sa02m-devices-logger`), графики / Excel / журнал пиков СЭ |
 | Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3 modules. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
 | Шлюз RS-485 | `gateway.js` (builds its own DOM; COM1..COM5 sub-nav dots) | `gateway_*.cgi` | `sa02m-gateway.yaml` (Modbus TCP / RTU-over-TCP / transparent) |
-| Управление | `app.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only) |
+| Управление (+ карточки «Яндекс Алиса», «Облако») | `app/services.js`, `app/misc.js`, `app/alice.js`, `cloud.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi`, `sa02m_alice_*.cgi`, `cloud.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only) |
 
 Port-sharing invariant: RS-485 lines are shared between MPLC4 polling, the
 MQTT bridge, and the flasher — the flasher takes a **port lease**

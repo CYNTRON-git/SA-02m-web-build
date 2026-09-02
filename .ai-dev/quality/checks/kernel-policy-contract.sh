@@ -28,8 +28,17 @@
 #      board actually has.
 #
 # Run: bash .ai-dev/quality/checks/kernel-policy-contract.sh
+# Needles are matched against COMMENT-STRIPPED text (lib_check.sh) wherever a
+# `#` in front of the pinned line would otherwise satisfy the pin: commenting
+# out sd_notify("READY=1") used to leave pin 7 green while the ~17 s
+# multi-user boot hold came back (audit 2026-08-28, finding C3). Pins that
+# anchor at line start (`^Type=simple`, `^ExecCondition=`, `^Before=`,
+# `^SMP_VER_DEFAULT=`) are comment-safe as written — a leading `#` breaks the
+# anchor — and are left alone.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "kernel-policy-contract: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'kernel-policy-contract: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -40,8 +49,8 @@ CONF=etc/sa02m-mqtt-opcua.conf
 PY=opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py
 # The conf has two "port" keys (opcua, mqtt) — take the one inside "opcua".
 conf_port=$(awk '/"opcua"/{f=1} f && /"port"/{gsub(/[^0-9]/,""); print; exit}' "$CONF" 2>/dev/null)
-py_default1=$(grep -oE '"opcua": \{"host": "[^"]*", "port": [0-9]+' "$PY" 2>/dev/null | grep -oE '[0-9]+$')
-py_default2=$(grep -oE 'ocfg\.get\("port", [0-9]+\)' "$PY" 2>/dev/null | grep -oE '[0-9]+')
+py_default1=$(stripped_text "$PY" | grep -oE '"opcua": \{"host": "[^"]*", "port": [0-9]+' | grep -oE '[0-9]+$')
+py_default2=$(stripped_text "$PY" | grep -oE 'ocfg\.get\("port", [0-9]+\)' | grep -oE '[0-9]+')
 
 if [ -z "${conf_port:-}" ] || [ -z "${py_default1:-}" ] || [ -z "${py_default2:-}" ]; then
     fail "opcua port extraction came up empty (conf='${conf_port:-}' py1='${py_default1:-}' py2='${py_default2:-}') — file moved or pattern drifted; update this gate"
@@ -81,9 +90,9 @@ if [ -f "$DOCKER_DROPIN" ] && grep -q '^ExecCondition=/usr/local/sbin/sa02m-kern
 else
     fail "docker drop-in lost the docker-capable ExecCondition line (contract §2)"
 fi
-if grep -q 'install -m 755 "\$ETC_REPO/sa02m-kernel-service-guard.sh"' scripts/01-system.sh \
-   && grep -q 'install -m 644 "\$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service"' scripts/01-system.sh \
-   && grep -q 'install -m 644 "\$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf"' scripts/01-system.sh; then
+if stripped_has scripts/01-system.sh 'install -m 755 "$ETC_REPO/sa02m-kernel-service-guard.sh"' \
+   && stripped_has scripts/01-system.sh 'install -m 644 "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service"' \
+   && stripped_has scripts/01-system.sh 'install -m 644 "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf"'; then
     pass "01-system.sh installs guard script + unit + docker drop-in"
 else
     fail "01-system.sh no longer installs the guard script/unit/docker drop-in (contract §2)"
@@ -92,8 +101,8 @@ fi
 # refactor: `sa02m_svc_apply <unit> infra` asserts unmasked+enabled in every
 # mode (docs/contracts/installer-refresh-policy.md) — the same guarantee the
 # old raw `systemctl enable` line carried.
-if grep -q 'sa02m_svc_apply sa02m-kernel-service-guard.service infra' scripts/01-system.sh \
-   && grep -q 'sa02m-kernel-service-guard.sh apply-policy' scripts/01-system.sh; then
+if stripped_has scripts/01-system.sh 'sa02m_svc_apply sa02m-kernel-service-guard.service infra' \
+   && stripped_has scripts/01-system.sh 'sa02m-kernel-service-guard.sh apply-policy'; then
     pass "01-system.sh enables the guard unit (svc_apply infra) and runs apply-policy"
 else
     fail "01-system.sh no longer enables the guard unit / runs apply-policy (contract §2)"
@@ -155,12 +164,12 @@ elif grep -qE '^\[Install\]|^WantedBy=' "$MODEM_UNIT"; then
 else
     pass "sa02m-modem-dhcp@.service has no [Install]/WantedBy (event-driven only)"
 fi
-if grep -q 'systemctl start sa02m-modem-dhcp@%k.service' etc/udev/99-modem.rules; then
+if stripped_has etc/udev/99-modem.rules 'systemctl start sa02m-modem-dhcp@%k.service'; then
     pass "99-modem.rules still starts sa02m-modem-dhcp@%k on interface add"
 else
     fail "etc/udev/99-modem.rules lost the sa02m-modem-dhcp@%k start line — with no [Install] the unit would never run at all (contract §5)"
 fi
-if grep -q 'rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@\*.service' scripts/01-system.sh; then
+if stripped_has scripts/01-system.sh 'rm -f /etc/systemd/system/multi-user.target.wants/sa02m-modem-dhcp@*.service'; then
     pass "01-system.sh removes stale modem-dhcp enable symlinks (migration)"
 else
     fail "scripts/01-system.sh lost the stale sa02m-modem-dhcp@ wants-symlink cleanup — a previously-enabled device keeps the 90 s boot hold (contract §5)"
@@ -174,9 +183,12 @@ fi
 if [ ! -f "$PY" ]; then
     fail "$PY missing — cannot check early-READY (contract §5.1)"
 else
-    ready_count=$(grep -c 'sd_notify("READY=1")' "$PY")
-    ready_line=$(grep -n 'sd_notify("READY=1")' "$PY" | head -1 | cut -d: -f1)
-    ctor_line=$(grep -n 'gw = OpcuaGateway(' "$PY" | head -1 | cut -d: -f1)
+    # CODE only (lib_check.sh): a commented-out READY kept this pin green while
+    # the boot hold returned — and blanking, not deleting, is what keeps these
+    # line numbers comparable to the real file.
+    ready_count=$(stripped_count "$PY" 'sd_notify\("READY=1"\)')
+    ready_line=$(stripped_first_line "$PY" 'sd_notify\("READY=1"\)')
+    ctor_line=$(stripped_first_line "$PY" 'gw = OpcuaGateway\(')
     if [ -z "${ready_line:-}" ] || [ -z "${ctor_line:-}" ]; then
         fail "opcua daemon READY=1 / OpcuaGateway() extraction empty (ready='${ready_line:-}' ctor='${ctor_line:-}') — file moved or pattern drifted; update this gate"
     elif [ "$ready_count" != "1" ]; then

@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-installer-svc-helpers.sh — regression harness for the installer's
 # service-state helpers (scripts/lib.sh: sa02m_svc_capture / sa02m_svc_apply /
 # sa02m_svc_kick / sa02m_pkg_install_tier thirdparty / sa02m_pip_install) and
@@ -518,6 +519,17 @@ grep -q 'pip3 install.*pyyaml' "$CALLS" \
 
 echo "── 8. stack-policy lib ──"
 
+# MPLC "installed" fixture = the runtime payload, not a bare directory: the
+# live probe requires an executable /opt/mplc4/start_mplc4.sh (a leftover
+# wrapper or empty dir is a half-removed install — bench 1.135, 2026-08-29).
+seed_mplc_runtime() {
+    mkdir -p "$T/root/opt/mplc4"
+    # A shebang, not an empty file: Windows git-bash `test -x` derives
+    # executability from content (#!), ignoring chmod on an empty file.
+    printf '#!/bin/sh\n' > "$T/root/opt/mplc4/start_mplc4.sh"
+    chmod +x "$T/root/opt/mplc4/start_mplc4.sh"
+}
+
 # 8a. get on a missing file ⇒ absent; invalid ID ⇒ rc 2
 reset_case
 rm -f "$SA02M_STACKS_CONF"
@@ -599,12 +611,27 @@ unset SA02M_ROOTFS_BUILD
 # 8g. derive --write creates from live state; a later hand-edit survives
 reset_case
 rm -f "$SA02M_STACKS_CONF"
-mkdir -p "$T/root/opt/mplc4"        # MPLC installed via the probe root
+seed_mplc_runtime                   # MPLC installed via the probe root
 out=$(sa02m_stack_policy_derive --write)
 grep -q '^STACK_MPLC=present$' "$SA02M_STACKS_CONF" && grep -q '^STACK_CODESYS=absent$' "$SA02M_STACKS_CONF" \
     && ok "derive --write: file created from live detection (MPLC=present)" \
     || bad "derive --write content wrong: $(cat "$SA02M_STACKS_CONF" 2>/dev/null)"
 case "$out" in *"создан по текущему состоянию"*) ok "derive --write: RU log line" ;; *) bad "derive --write log line missing: $out" ;; esac
+
+# 8g2. a half-removed MPLC (leftover init.d wrapper + bare /opt/mplc4, no
+# start_mplc4.sh) is NOT installed — the state bench 1.135 was left in: the
+# old probe read the wrappers and the refresh verdict overlaid a corpse.
+rm -rf "$T/root/opt/mplc4"
+mkdir -p "$T/root/opt/mplc4" "$T/root/etc/init.d"
+: > "$T/root/etc/init.d/mplc4"; chmod +x "$T/root/etc/init.d/mplc4"
+mkdir -p "$T/root/etc/systemd/system"
+: > "$T/root/etc/systemd/system/mplc4.service"
+if sa02m_stack_installed MPLC; then
+    bad "stack_installed MPLC: half-removed (wrappers, no runtime payload) read as installed"
+else
+    ok "stack_installed MPLC: wrappers without start_mplc4.sh ⇒ not installed"
+fi
+rm -rf "$T/root/etc/init.d/mplc4" "$T/root/etc/systemd/system/mplc4.service"
 sed -i 's/^STACK_MPLC=present$/STACK_MPLC=disabled/' "$SA02M_STACKS_CONF"
 before=$(cat "$SA02M_STACKS_CONF")
 out=$(sa02m_stack_policy_derive --write)
@@ -614,12 +641,12 @@ out=$(sa02m_stack_policy_derive --write)
 
 echo "── 9. verdict table (12 cells + --with-optional) ──"
 
-# Fixture control: MPLC installed ⇔ $T/root/opt/mplc4 exists.
+# Fixture control: MPLC installed ⇔ the runtime payload exists (seed_mplc_runtime).
 verdict_case() {  # verdict_case <policy> <installed yes|no> <mode> <expect>
     local pol=$1 inst=$2 mode=$3 expect=$4 got
     rm -f "$SA02M_STACKS_CONF"; rm -rf "$T/root/opt/mplc4"
     [ "$pol" != none ] && sa02m_stack_policy_set MPLC "$pol"
-    [ "$inst" = yes ] && mkdir -p "$T/root/opt/mplc4"
+    [ "$inst" = yes ] && seed_mplc_runtime
     if [ "$mode" = refresh ]; then SA02M_INSTALL_MODE=refresh; else unset SA02M_INSTALL_MODE 2>/dev/null || true; fi
     got=$(sa02m_stack_verdict MPLC)
     [ "$got" = "$expect" ] \

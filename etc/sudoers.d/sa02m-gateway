@@ -1,0 +1,25 @@
+# SA-02m RS-485 gateway — the COMPLETE sudoers grant for www-data's gateway CGI.
+#
+# Installed WHOLESALE (install -m 0440, visudo-validated) by scripts/06-gateway.sh
+# via sa02m_install_sudoers, and delivered by OTA / the offline package through
+# the etc/sudoers.d/ prefix rule. It replaces the heredoc scripts/06-gateway.sh
+# used to write under `[ ! -f "$SUDOERS_FILE" ]`: that guard meant a board which
+# already had the file NEVER received a corrected grant — not on a refresh, not
+# on an OTA, never. A committed file converges by construction.
+#
+# SECURITY (audit B1 / finding H1): the config-apply grant is argument-pinned to
+# the exact vector gateway_config.cgi sends (its own mktemp template). The pin is
+# DEFENCE IN DEPTH only — sudo matches arguments with fnmatch and a `*` is
+# documented to match `/` as well, so the helper validates the path ITSELF
+# (usr/local/sbin/sa02m-gateway-config-apply.sh). Never read the pin as the fix.
+#
+# Gate: .ai-dev/quality/checks/sudoers-pin-contract.sh (complete-ledger check).
+
+# ── Gateway config write (pinned to the caller's mktemp template) ───────────
+www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-gateway-config-apply.sh /tmp/sa02m-gwcfg-out.*
+
+# ── Service control (fixed verbs, fixed unit) ──────────────────────────────
+www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start sa02m-serial-gateway, \
+    /usr/bin/systemctl stop sa02m-serial-gateway, \
+    /usr/bin/systemctl restart sa02m-serial-gateway, \
+    /usr/bin/systemctl reload sa02m-serial-gateway

@@ -37,6 +37,8 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT" || { echo "telemetry-device-id-contract: cannot cd to repo root"; exit 1; }
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "telemetry-device-id-contract: cannot source lib_check.sh"; exit 1; }
 
 TEL_PY="opt/sa02m-modbus-mqtt/sa02m_telemetry.py"
 ALICE_PY="opt/sa02m-alice/sa02m_alice/config/topics.py"
@@ -362,9 +364,13 @@ py_method_body() {   # $1 = class method name (one indent level)
     ' "$TEL_PY"
 }
 
+# Bodies are extracted COMMENT-STRIPPED (lib_check.sh): every presence pin
+# below asks whether the CODE still calls something, and a `#` in front of the
+# call leaves the needle in the file. The ordering pin already learned this the
+# hard way (review finding A9); the presence pins around it had not.
 RUN_BODY="$TMP/run_body.txt"
-py_method_body run > "$RUN_BODY"
-if [ ! -s "$RUN_BODY" ]; then
+py_method_body run | strip_comments > "$RUN_BODY"
+if ! grep -q '[^[:space:]]' "$RUN_BODY"; then
     fail "C: could not extract run() from $TEL_PY — the gate cannot see its wiring"
 else
     grep -q 'telemetry device id' "$RUN_BODY" \
@@ -388,7 +394,7 @@ else
     # in both directions, which for a one-line ordering guard is the right way
     # to be wrong.
     RUN_CODE="$TMP/run_code.txt"
-    sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//' "$RUN_BODY" > "$RUN_CODE"
+    strip_comments_inline < "$RUN_BODY" > "$RUN_CODE"
     HW_LINE=$(grep -n 'self\.init_hw()' "$RUN_CODE" | tail -1 | cut -d: -f1)
     CLEAR_LINE=$(grep -n 'self\._clear_legacy_retained()' "$RUN_CODE" | head -1 | cut -d: -f1)
     if [ -z "$HW_LINE" ] || [ -z "$CLEAR_LINE" ]; then
@@ -399,8 +405,8 @@ else
     # Scoped to the callback that must carry it, not the whole file — the same
     # mention-vs-structure rule the cap and marker pins already follow.
     HW_CB="$TMP/hw_cb.txt"
-    py_method_body _make_hw_cb > "$HW_CB"
-    if [ ! -s "$HW_CB" ]; then
+    py_method_body _make_hw_cb | strip_comments > "$HW_CB"
+    if ! grep -q '[^[:space:]]' "$HW_CB"; then
         fail "C: could not extract _make_hw_cb — the gate cannot see whether a dropped command leaves a trace"
     else
         grep -q 'command dropped' "$HW_CB" \
@@ -411,10 +417,10 @@ fi
 
 CLEAR_ALL="$TMP/clear_all.txt"
 CLEAR_ONE="$TMP/clear_one.txt"
-py_func_body clear_legacy_retained > "$CLEAR_ALL"
-py_func_body _clear_one_legacy     > "$CLEAR_ONE"
+py_func_body clear_legacy_retained | strip_comments > "$CLEAR_ALL"
+py_func_body _clear_one_legacy     | strip_comments > "$CLEAR_ONE"
 
-if [ ! -s "$CLEAR_ALL" ] || [ ! -s "$CLEAR_ONE" ]; then
+if ! grep -q '[^[:space:]]' "$CLEAR_ALL" || ! grep -q '[^[:space:]]' "$CLEAR_ONE"; then
     fail "C: could not extract the clear functions from $TEL_PY — the gate cannot see their guards"
 else
     grep -q '_broker_is_loopback(broker)' "$CLEAR_ALL" \
@@ -423,8 +429,8 @@ else
     # in the function NAME and at the call site, so a whole-file grep stayed
     # green with the body replaced by `return True` (found by review mutation).
     LOOPBACK_BODY="$TMP/loopback_body.txt"
-    py_func_body _broker_is_loopback > "$LOOPBACK_BODY"
-    if [ ! -s "$LOOPBACK_BODY" ]; then
+    py_func_body _broker_is_loopback | strip_comments > "$LOOPBACK_BODY"
+    if ! grep -q '[^[:space:]]' "$LOOPBACK_BODY"; then
         fail "C: could not extract _broker_is_loopback — the gate cannot see whether it resolves anything"
     else
         grep -qF 'ip_address(value).is_loopback' "$LOOPBACK_BODY" \

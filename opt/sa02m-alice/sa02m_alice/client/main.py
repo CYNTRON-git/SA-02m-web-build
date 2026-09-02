@@ -15,15 +15,17 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from .. import __version__
 from ..common import constants as C
+from ..common.binding_reset import SOURCE_GATEWAY, reset_cloud_binding
 from ..common.config_store import (
     cert_paths_present,
     client_enabled,
     default_client_cfg,
     gateway_urls,
+    unlinked_at,
 )
 from ..common.fw_version import HW_VARIANT, get_fw_version
 from .device_registry import DeviceRegistry
@@ -35,9 +37,39 @@ from .state_sender import StateSender
 log = logging.getLogger("sa02m_alice.client")
 
 _stop = threading.Event()
+# Set by the Socket.IO callback thread once the cloud has unlinked this
+# controller and the binding was erased; CLEARED by the main loop when a
+# certificate reappears — two sites, `_reconcile_unlink_state` and
+# `_await_cert`. Read by the status writer and by both loops.
+# A threading.Event is the atomic primitive for that cross-thread hand-off:
+# every set, clear and read is atomic on its own, so no reader sees a torn
+# value. It is NOT a lock, and this is no longer a set-once flag — what keeps
+# the set and the clear from fighting is the filesystem, not mutual
+# exclusion: the wipe removes the certificates BEFORE it sets the flag, and
+# every clear is gated on a certificate being PRESENT, so the two can never
+# be true of the same on-disk state. `_reconcile_unlink_state` scopes the
+# residual.
+_unlinked = threading.Event()
+
+
+def _suppress_status(state: str, unlinked: bool) -> bool:
+    """Should this status write be dropped? Pure, so the rule is testable.
+
+    Once the cloud has unlinked us, `unlinked` is TERMINAL for this process.
+    The gateway disconnects immediately after the event, so `offline` (the
+    post-watchdog write), `error` (the "One or more namespaces failed to
+    connect" path) and `disabled` (both loop entries) all RACE the unlinked
+    write — and whichever lands last is a timing accident. Any of them
+    winning erases the only explanation the card has and puts the Operator
+    back in front of the bug this change exists to fix. Cleared on a re-bind,
+    when a certificate reappears.
+    """
+    return unlinked and state != C.STATE_UNLINKED
 
 
 def _write_status(state: str, **kw: Any) -> None:
+    if _suppress_status(state, _unlinked.is_set()):
+        return
     # `cert_present` is published on EVERY write: this process (root) is the
     # only one that can see into the root-only cert dir, so the world-readable
     # status file is where the web layer (www-data) learns cert presence.
@@ -65,6 +97,118 @@ def _write_status(state: str, **kw: Any) -> None:
         os.replace(tmp, path)
     except OSError as exc:
         log.debug("status write failed: %s", exc)
+
+
+def _emit_cache_snapshot(
+    sender: Optional[StateSender], registry: DeviceRegistry
+) -> None:
+    """Push the MQTT cache through the rate-bypass snapshot path.
+
+    Reconnect, in-place document reload, and the 30 s history cadence all
+    share this: query is unrated, live `offer` is not. No-op if sender is
+    unset or stopped (`offer_snapshot` already no-ops when stopped).
+    """
+    if sender is None:
+        return
+    sender.offer_snapshot(registry.query_devices())
+    sender.flush_now()
+
+
+def _reconcile_unlink_state() -> None:
+    """Reconcile `_unlinked` with what is actually on disk. Symmetric.
+
+    SET: the durable marker has two writers and only one of them is this
+    process — the local «Отвязать» button runs in the CGI, erases the binding
+    there and leaves the marker in client.conf, and this loop learns about it
+    only by reading it. The same read carries the state across a reboot.
+
+    LIFT: a certificate present means this board is bound again, whoever put
+    it there. The lift must live here and not only inside `_await_cert`,
+    because a re-bind can land while the loop is somewhere else entirely —
+    during the post-disconnect backoff, say — and then the soft wait is never
+    entered, the flag stays terminal, and the card is frozen at «unlinked» on
+    a board that is connected and working (review F-B).
+
+    The lift also makes a stale marker beside a fresh binding inert rather
+    than a lie.
+
+    Race, scoped. The wipe removes the certificates BEFORE it sets the flag,
+    and every lift is gated on a certificate being present, so a lift could
+    only beat an in-flight unlink inside the window between those two steps.
+    On the gateway path that window is **structurally unreachable**: both call
+    sites of this function run with no live Socket.IO session — the outer
+    loop's `finally` disconnects `sio` before the next iteration begins — so
+    the callback that sets the flag cannot be in flight while this runs.
+    What remains is the CGI path, where another process writes the marker;
+    there the next pass through THIS function re-reads the durable marker and
+    re-establishes the flag. Note `_await_cert` does NOT re-reconcile, so a
+    board already sitting in the soft wait picks a newly written marker up on
+    its next trip round the outer loop, not mid-wait.
+    """
+    if cert_paths_present():
+        _unlinked.clear()
+        return
+    if not _unlinked.is_set() and unlinked_at():
+        _unlinked.set()
+
+
+def _should_wait_for_cert(
+    needs_cert: bool, unlinked: bool, cert_present: bool
+) -> bool:
+    """Sit in the no-certificate soft wait instead of dialling? Pure.
+
+    TWO INDEPENDENT REASONS, and the second must not hang off the first:
+
+    * `needs_cert` - a wss:// transport cannot authenticate without a device
+      certificate. Pre-existing rule, unchanged; a lab ws:// gateway may
+      legitimately be dialled by a board that never had one.
+    * `unlinked` - the cloud erased this board's binding. That must silence
+      the board on ANY transport. Gating it behind `needs_cert` left a ws://
+      board dialling after the wipe, and left `_unlinked` terminal forever,
+      because `_await_cert` is the only place that clears it (review B1).
+    """
+    return (needs_cert or unlinked) and not cert_present
+
+
+def _cert_wait_state(
+    missing_cert_msg: str, http: str
+) -> Tuple[str, str, Dict[str, Any]]:
+    """(state, message, extra) for the no-certificate wait — one home.
+
+    The same wait serves two very different situations and the card must tell
+    them apart: never bound (`missing_cert`) versus the cloud erased our
+    binding (`unlinked`).
+    """
+    if _unlinked.is_set():
+        return C.STATE_UNLINKED, C.UNLINKED_MESSAGE, {}
+    return (
+        C.STATE_MISSING_CERT,
+        missing_cert_msg,
+        {"error": "missing_cert", "gateway_http": http},
+    )
+
+
+def _await_cert(state: str, message: str, extra: Dict[str, Any]) -> bool:
+    """Soft-wait for a certificate instead of dialling the gateway.
+
+    Two callers share it so the not-dialling rule has ONE home: the cold start
+    and the post-unlink route. It is also the ONLY place that clears
+    `_unlinked`, which is why `_should_wait_for_cert` must be able to send a
+    ws:// board here too — otherwise the flag would stay terminal for the life
+    of the process. Returns True when a certificate appeared (a re-bind, picked up with
+    no service restart) and False when this process must exit. Stays up so
+    systemd Restart= does not thrash, and never claims linked/paired.
+    """
+    while True:
+        if cert_paths_present():
+            # Re-bound: the unlinked state stops being terminal.
+            _unlinked.clear()
+            return True
+        if not client_enabled():
+            return False
+        _write_status(state, message=message, client_enabled=True, **extra)
+        if _stop.wait(C.SIO_WATCHDOG_S):
+            return False
 
 
 def _setup_logging(level: str) -> None:
@@ -150,34 +294,21 @@ def run() -> int:
 
     # Lab ws:// may run without mTLS; production wss:// requires device certs.
     needs_cert = wss.startswith("wss://") or wss.startswith("https://")
-    if needs_cert and not cert_paths_present():
-        msg = (
-            "mTLS certificate not enrolled (%s / %s). "
-            "Gateway Phase 0 must be available; pairing cannot succeed without it."
-            % (C.CERT_FILE, C.KEY_FILE)
-        )
-        log.error("%s", msg)
-        _write_status(
-            C.STATE_MISSING_CERT,
-            error="missing_cert",
-            message=msg,
-            client_enabled=True,
-            gateway_http=http,
-        )
-        # Stay up in a soft wait loop so systemd Restart= doesn't thrash, but
-        # never claim linked/paired.
-        while not _stop.wait(C.SIO_WATCHDOG_S):
-            if not client_enabled():
-                return 0
-            if cert_paths_present():
-                break
-            _write_status(
-                C.STATE_MISSING_CERT,
-                error="missing_cert",
-                message=msg,
-                client_enabled=True,
-            )
-        if _stop.is_set():
+    missing_cert_msg = (
+        "mTLS certificate not enrolled (%s / %s). "
+        "Gateway Phase 0 must be available; pairing cannot succeed without it."
+        % (C.CERT_FILE, C.KEY_FILE)
+    )
+    # A cloud unlink outlives this process: the durable marker keeps the card
+    # explaining WHY there is no certificate after a reboot, instead of
+    # degrading to a bland "never enrolled".
+    _reconcile_unlink_state()
+    if _should_wait_for_cert(
+        needs_cert, _unlinked.is_set(), cert_paths_present()
+    ):
+        state, message, extra = _cert_wait_state(missing_cert_msg, http)
+        log.error("%s", message)
+        if not _await_cert(state, message, extra):
             return 0
 
     registry = DeviceRegistry()
@@ -214,7 +345,34 @@ def run() -> int:
         except Exception as exc:
             log.error("device_state emit failed: %s", exc)
 
-    handlers = SioHandlers(registry, publish_mqtt=publish, emit_response=emit_response)
+    def on_unlink() -> None:
+        """Act on the gateway's controller_unlink. Runs on the Socket.IO thread.
+
+        Order is load-bearing: erase FIRST, then mark the state terminal, then
+        write the status. Marking before the erase would let the card claim
+        "unlinked" while the certificates were still on disk — the same class
+        of lie as the false "linked" card reading this change removes.
+        """
+        try:
+            reset_cloud_binding(SOURCE_GATEWAY)
+        except OSError as exc:
+            # A wipe that failed must not read as done: leave the state alone
+            # so the next gateway contact tries again.
+            log.error("cloud unlink: binding erase failed: %s", exc)
+            return
+        _unlinked.set()
+        _write_status(
+            C.STATE_UNLINKED,
+            message=C.UNLINKED_MESSAGE,
+            client_enabled=True,
+        )
+
+    handlers = SioHandlers(
+        registry,
+        publish_mqtt=publish,
+        emit_response=emit_response,
+        on_unlink=on_unlink,
+    )
     sender = StateSender(emit_state)
 
     def on_sio_event(event: str, data: Any) -> None:
@@ -245,6 +403,25 @@ def run() -> int:
             log.info("client_enabled cleared — stopping")
             _write_status(C.STATE_DISABLED, client_enabled=False)
             return 0
+        # Reconcile BEFORE the test: this is what tells the process that the
+        # CGI erased the binding, AND what lifts the flag when a certificate
+        # reappeared while the loop was elsewhere. The test below reads the
+        # flag it settles. One INI read per outer-loop iteration, beside the
+        # client_enabled() read already there.
+        _reconcile_unlink_state()
+        if _should_wait_for_cert(
+            needs_cert, _unlinked.is_set(), cert_paths_present()
+        ):
+            # Do not dial. Either this board was never bound on a transport
+            # that requires a certificate, or the cloud unlinked it and
+            # on_unlink erased the binding. Either way a dial is pointless —
+            # this is the branch that makes the Operator's "no further
+            # connection attempts" observable.
+            state, message, extra = _cert_wait_state(missing_cert_msg, http)
+            if not _await_cert(state, message, extra):
+                return 0
+            attempt = 0  # a fresh binding deserves a fresh ladder
+            continue
         try:
             mqtt = _mqtt_client(mqtt_host, mqtt_port)
             mqtt.on_message = on_mqtt_message
@@ -277,6 +454,7 @@ def run() -> int:
             time.sleep(1.0)
             ignore_retained["active"] = False
             sender.start()
+            _emit_cache_snapshot(sender, registry)
             _write_status(
                 C.STATE_CONNECTED,
                 message="Connected to Alice gateway",
@@ -286,7 +464,8 @@ def run() -> int:
             # Watchdog loop. One os.stat per tick, beside the INI open+parse
             # client_enabled() already does every tick — a rounding error.
             last_heartbeat = time.monotonic()
-            while not _stop.is_set() and sio.connected:
+            last_snapshot = last_heartbeat
+            while not _stop.is_set() and sio.connected and not _unlinked.is_set():
                 if not client_enabled():
                     break
                 if watcher.changed():
@@ -301,6 +480,11 @@ def run() -> int:
                             client_enabled=True,
                         )
                         last_heartbeat = time.monotonic()
+                        _emit_cache_snapshot(sender, registry)
+                        last_snapshot = last_heartbeat
+                if time.monotonic() - last_snapshot >= C.STATE_SNAPSHOT_S:
+                    _emit_cache_snapshot(sender, registry)
+                    last_snapshot = time.monotonic()
                 if time.monotonic() - last_heartbeat >= C.STATUS_HEARTBEAT_S:
                     # Keep `ts` advancing in a quiet session: the web trigger
                     # treats a stale status file as "not proven alive" and

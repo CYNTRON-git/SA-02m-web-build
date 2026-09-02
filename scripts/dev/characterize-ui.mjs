@@ -315,7 +315,10 @@ async function run() {
   }
 
   if (COMPARE) {
-    // "--compare baseline" reads the committed oracle in baseline/; any other
+    // "--compare baseline" reads the oracle in baseline/ — captured by
+    // --save-baseline at the start of THIS refactor session, never committed
+    // (see README.md; the committed copy went stale and was removed in
+    // 1.0.6.24 along with the `headless-smoke` row that never ran). Any other
     // value is treated as a prior run label under artifacts/.
     const baseFile = COMPARE === 'baseline'
       ? join(BASELINE_DIR, 'manifest.json')

@@ -1,4 +1,18 @@
 # SA-02m cloud agent — allow web UI (www-data) to request pairing / write activation token.
-Cmnd_Alias SA02M_CLOUD_WEB = /usr/local/sbin/sa02m-cloud-web-trigger.sh
+#
+# SECURITY (audit B1 / finding H2): verb-pinned. The grant used to name the
+# helper with NO arguments, which in sudoers permits ANY argument vector — so
+# www-data could drive every code path in the helper directly, bypassing
+# cloud.cgi's validation entirely. HONESTY: `token *` still admits an arbitrary
+# argument vector; the pin narrows the verb surface, and what actually closes
+# H2 is the in-helper hostname validation plus the quoted-heredoc config
+# rewriter in usr/local/sbin/sa02m-cloud-web-trigger.sh. Do not read the pin as
+# the fix. Gate: .ai-dev/quality/checks/sudoers-pin-contract.sh.
+Cmnd_Alias SA02M_CLOUD_WEB = \
+    /usr/local/sbin/sa02m-cloud-web-trigger.sh pair, \
+    /usr/local/sbin/sa02m-cloud-web-trigger.sh cancel, \
+    /usr/local/sbin/sa02m-cloud-web-trigger.sh enable, \
+    /usr/local/sbin/sa02m-cloud-web-trigger.sh disable, \
+    /usr/local/sbin/sa02m-cloud-web-trigger.sh token *
 www-data ALL=(root) NOPASSWD: SA02M_CLOUD_WEB
 Defaults:www-data !requiretty

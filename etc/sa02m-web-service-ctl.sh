@@ -178,9 +178,16 @@ service_present() {
             command -v docker >/dev/null 2>&1 && return 0
             ;;
         mplc4)
-            [ -x /etc/init.d/mplc4 ] && return 0
-            unit_file_installed mplc4.service && return 0
-            unit_file_installed mplc.service && return 0
+            # Installed ⇔ the runtime payload is present (or its process is
+            # live). The init.d script and mplc4.service are wrappers that only
+            # exec start_mplc4.sh — a leftover wrapper without the payload (the
+            # pre-1.0.6.24 uninstall left them behind) made the panel show a
+            # dead «Пуск» instead of «Установить» (bench 1.135, 2026-08-29).
+            # MPLC4_RUNTIME is a test seam: sudoers runs this script under
+            # env_reset, so no web request can point it elsewhere (same
+            # argument as FLASHER_SOCK / SA02M_NODERED_DIR).
+            [ -x "${MPLC4_RUNTIME:-/opt/mplc4/start_mplc4.sh}" ] && return 0
+            mplc4_process_active && return 0
             return 1
             ;;
         mosquitto)
@@ -1434,9 +1441,10 @@ mplc4_uninstall() {
         update-rc.d mplc4 remove >>"$LOG" 2>&1 || true
     fi
     # Tarball install (not dpkg): update-rc.d only drops the rc symlinks, not the
-    # SysV script itself. Remove it (and its late generator unit) so a leftover
-    # executable /etc/init.d/mplc4 does not keep installed:true after uninstall
-    # (service_present now recognises it). All rm -f — idempotent on a clean
+    # SysV script itself. Remove it (and its late generator unit) so no dead
+    # wrapper lingers after uninstall (service_present no longer reads the
+    # wrappers — the payload probe decides — but a leftover would still confuse
+    # a human and old deployed builds). All rm -f — idempotent on a clean
     # device; the generator is regenerated on daemon-reload below.
     rm -f /etc/init.d/mplc4 2>>"$LOG" || true
     rm -f /run/systemd/generator.late/mplc4.service 2>>"$LOG" || true

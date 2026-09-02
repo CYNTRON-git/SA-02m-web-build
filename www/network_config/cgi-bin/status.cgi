@@ -1571,7 +1571,7 @@ gather_system_metrics() {
         fi
     fi
     ARMBIAN_VER=$(json_escape "${ARMBIAN_VER:-}")
-    STORAGE_AUTO_FORMAT_UI=1
+    STORAGE_AUTO_FORMAT_UI=0
     STORAGE_MOUNT_INSTALLED=0
     if [ -x /usr/local/bin/storage-mount.sh ] && [ -x /usr/local/sbin/sa02m-set-storage-auto-format ]; then
         STORAGE_MOUNT_INSTALLED=1
@@ -1580,7 +1580,12 @@ gather_system_metrics() {
         # shellcheck source=/dev/null
         . /etc/sa02m_storage.conf 2>/dev/null || true
     fi
-    case "${STORAGE_AUTO_FORMAT:-1}" in
+    # The panel must report what the MOUNTER will do, so the default for an
+    # absent/unreadable config is the mounter's fail-safe 0 — never 1, which
+    # showed the toggle ON while no partition was ever formatted. Keep this
+    # normaliser byte-identical to etc/storage-mount.sh's (quality row
+    # storage-automount-decision runs both over one value table).
+    case "${STORAGE_AUTO_FORMAT:-0}" in
         1|yes|true|on|ON|Y) STORAGE_AUTO_FORMAT_UI=1 ;;
         *) STORAGE_AUTO_FORMAT_UI=0 ;;
     esac
@@ -1813,8 +1818,17 @@ gather_services_metrics() {
     SVC_BRIDGE_INSTALLED=0
     systemd_unit_file_installed sa02m-modbus-mqtt.service && SVC_BRIDGE_INSTALLED=1
     MPLC_INSTALLED=0
-    if systemd_unit_file_installed mplc4.service || systemd_unit_file_installed mplc.service \
-        || [ -x /etc/init.d/mplc4 ]; then
+    # Runtime payload or a live process — never the init.d/unit wrappers alone:
+    # the wrappers only exec /opt/mplc4/start_mplc4.sh, and a half-removed
+    # install (wrappers left, /opt/mplc4 gone) showed a phantom MPLC4 row on
+    # the dashboard while Управление honestly offered «Установить» (bench
+    # 1.135, 2026-08-29). Mirrors the runtime-payload rule of
+    # sa02m-web-service-ctl.sh service_present / sa02m-stacks-policy.sh
+    # sa02m_stack_installed. proc_is_running, not raw pgrep: the process
+    # snapshot is already primed here and this runs on every services poll.
+    if [ -x /opt/mplc4/start_mplc4.sh ] \
+        || proc_is_running mplc || proc_is_running mplc4 \
+        || proc_is_running mplc_monitor; then
         MPLC_INSTALLED=1
     fi
 

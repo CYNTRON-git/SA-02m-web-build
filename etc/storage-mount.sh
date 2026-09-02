@@ -1,6 +1,7 @@
 #!/bin/bash
 # Монтирование USB (/media/usb) и microSD (mmcblk1/3 → /media/sdcard; eMMC на СА-02м обычно mmcblk2).
-# Опционально: автоформат в exFAT при пустой ФС или NTFS — см. /etc/sa02m_storage.conf
+# Опционально: автоформат в exFAT для раздела без распознанной ФС (или NTFS,
+# который не удалось смонтировать) — см. /etc/sa02m_storage.conf
 
 ACTION=${1:-}
 DEVICE=${2:-}
@@ -54,12 +55,32 @@ set_device_context() {
   fi
 }
 
+label_fits_exfat() {
+  # exFAT stores at most 11 characters in the volume label; mkfs.exfat refuses a
+  # longer -n with «input string is too long» and formats NOTHING. Checked here
+  # so an over-long label is a refusal BEFORE the umount, never a card left
+  # unformatted — or formatted with no label at all — after mkfs has started.
+  # SDCARD_EXFAT was 12 characters from 85ba6f6 (1.0.3) to 1.0.6.24, so
+  # auto-format never once ran on a microSD; USB_EXFAT (9) fits and hid it.
+  # Labels here are ASCII, so ${#label} is both the byte and the character count.
+  local label=${1-}
+  if [ -z "$label" ] || [ "${#label}" -gt 11 ]; then
+    log "Недопустимая метка тома exFAT «${label}» (${#label} симв., допустимо 1-11) — форматирование ${DEV_PATH} отменено"
+    return 1
+  fi
+  return 0
+}
+
 format_exfat() {
   if [[ "${TYPE}" == "sdcard" ]]; then
-    LABEL="SDCARD_EXFAT"
+    LABEL="SD_EXFAT"
   else
     LABEL="USB_EXFAT"
   fi
+
+  # Refuse before anything destructive. Pinned by the quality row
+  # storage-automount-decision (case 19) and by comment-mutation-proof.
+  label_fits_exfat "${LABEL}" || return 1
 
   umount "${DEV_PATH}" 2>/dev/null || true
   log "Форматирование ${DEV_PATH} в exFAT с меткой: ${LABEL}"
@@ -75,11 +96,17 @@ format_exfat() {
 
 probe_fstype() {
   # Читаем FSTYPE с ретраями. При boot-time udev ещё не успевает прочесть
-  # таблицу разделов и blkid возвращает пусто. Делаем до 5 попыток с
-  # backoff: 0, 0.5, 1, 1.5, 2 c — суммарно ~5 c, для USB это безопасно.
+  # таблицу разделов и blkid возвращает пусто. До 5 попыток; пауза только
+  # МЕЖДУ попытками: 0.5, 1, 1.5, 2 c — суммарно 5 c ожидания, плюс
+  # до 2 c `udevadm settle` на каждой попытке. Пустой ответ отсюда — это вход в
+  # ветку, которая при STORAGE_AUTO_FORMAT=1 форматирует раздел, поэтому
+  # подождать дольше безопаснее, чем ошибиться; запас по TimeoutStartSec=120
+  # в storage-mount@.service это позволяет. До 1.0.6.24 здесь стояло
+  # `sleep "0.$((i * 5))"` — то есть 0.5, 0.10, 0.15, 0.20, 0.25 c: не
+  # монотонно (вторая пауза короче первой) и 1.2 c вместо обещанных ~5 c.
   # Сначала пробуем udev (он берёт значение из стандартного property
   # ID_FS_TYPE), потом blkid как fallback.
-  local fs=""
+  local fs="" delay_ds
   for i in 1 2 3 4 5; do
     udevadm settle --timeout=2 -E "${DEV_PATH}" 2>/dev/null || true
     fs=$(udevadm info --query=property --name "${DEV_PATH}" 2>/dev/null \
@@ -87,7 +114,12 @@ probe_fstype() {
     [ -n "$fs" ] && { printf '%s' "$fs"; return; }
     fs=$(blkid -o value -s TYPE "${DEV_PATH}" 2>/dev/null)
     [ -n "$fs" ] && { printf '%s' "$fs"; return; }
-    sleep "0.$((i * 5))"
+    # Десятые доли секунды целыми числами: 5, 10, 15, 20 → 0.5 1.0 1.5 2.0.
+    # После последней попытки не спим — ждать больше нечего.
+    if (( i < 5 )); then
+      delay_ds=$(( i * 5 ))
+      sleep "$(( delay_ds / 10 )).$(( delay_ds % 10 ))"
+    fi
   done
   printf ''
 }
@@ -152,8 +184,21 @@ do_mount() {
     if try_mount_ntfs; then
       return 0
     fi
-    if [[ -z "${FSTYPE}" ]] || (( STORAGE_AUTO_FORMAT != 1 )); then
-      log "Автоформатирование отключено (STORAGE_AUTO_FORMAT=0 в /etc/sa02m_storage.conf). Раздел ${DEV_PATH} без подходящей ФС для монтирования без mkfs — пропуск."
+    # The ONLY condition here is the operator's flag. An empty FSTYPE must
+    # reach mkfs too — /etc/sa02m_storage.conf promises exactly this branch
+    # («раздел без распознанной ФС — или NTFS, который не удалось
+    # смонтировать, — перезаписывается в exFAT»), and an extra
+    # `-z "${FSTYPE}"` term in this test silently killed half that promise
+    # (an empty partition was never formatted). Guarded by the quality row
+    # storage-automount-decision.
+    if (( STORAGE_AUTO_FORMAT != 1 )); then
+      local reason
+      if [[ -z "${FSTYPE}" ]]; then
+        reason="раздел без распознанной ФС"
+      else
+        reason="раздел ${FSTYPE} не смонтирован ни ntfs3, ни ntfs-3g"
+      fi
+      log "${DEV_PATH}: ${reason}, автоформатирование выключено (STORAGE_AUTO_FORMAT=${STORAGE_AUTO_FORMAT} в /etc/sa02m_storage.conf) — пропуск без mkfs."
       # Намеренный «нечего монтировать» — НЕ ошибка сервиса. Возвращаем 0,
       # чтобы systemd не показывал unit как failed (UI «1 loaded units listed»
       # после каждой загрузки сбивал с толку).

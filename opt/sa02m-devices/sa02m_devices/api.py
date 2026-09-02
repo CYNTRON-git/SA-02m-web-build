@@ -56,7 +56,16 @@ def _send_bytes(
     filename: str,
     status: int = 200,
 ) -> None:
-    ascii_name = filename.encode("ascii", "ignore").decode("ascii") or "export.bin"
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii")
+    # Header-injection guard (audit 2026-08-28, L1): the filename is built from
+    # request-supplied metric_id/group (device_history_db.export_*), which _q1
+    # only edge-strips, and encode("ascii","ignore") keeps CR/LF and the quote.
+    # A `%0d%0a` in the value would split the Content-Disposition header; a `"`
+    # would break out of the quoted filename. Drop anything non-printable or
+    # quote-like — the UTF-8 filename* part below is percent-encoded by quote()
+    # and is safe on its own.
+    ascii_name = "".join(c for c in ascii_name if c.isprintable() and c not in '"\\')
+    ascii_name = ascii_name or "export.bin"
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(raw)))

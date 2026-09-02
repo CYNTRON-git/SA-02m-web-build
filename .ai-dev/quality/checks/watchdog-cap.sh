@@ -58,6 +58,8 @@
 # Run: bash .ai-dev/quality/checks/watchdog-cap.sh
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "watchdog-cap: cannot source lib_check.sh"; exit 1; }
 
 HW_CAP_SEC=16          # sun4i-wdt on the Allwinner A40i, from dmesg on device
 POLICY_HOME=etc/systemd/sa02m-watchdog.conf
@@ -284,7 +286,10 @@ INST=scripts/01-system.sh
 if [ ! -f "$INST" ]; then
     fail "$INST missing — cannot check the installer"
 else
-    if grep -q 'install -m 644 "\$ETC_REPO/systemd/sa02m-watchdog.conf"' "$INST"; then
+    # Comment-stripped (lib_check.sh): a `#` in front of the install line would
+    # otherwise keep this pin green while the main install path shipped no
+    # policy file at all — the 2026-08-05 finding, re-openable by one keystroke.
+    if stripped_has "$INST" 'install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"'; then
         pass "$INST installs the watchdog drop-in from \$ETC_REPO"
     else
         fail "$INST no longer installs \$ETC_REPO/systemd/sa02m-watchdog.conf — the main install path would silently ship a different policy again (the 2026-08-05 finding)"

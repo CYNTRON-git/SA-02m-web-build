@@ -229,8 +229,8 @@ arm-mpssoft-linux-gnueabihf-gdb /opt/mplc4/mplc Main.core \
 «Установить MPLC» (`sa02m-web-service-ctl.sh`) и сборка образа
 (`create-sa02m-rootfs.sh`, `09-mplc.sh`). **Здесь лежит featured-билд**, а НЕ
 чистый вендорный baseline: базовый API нового поколения (Oct-2025 исходник против
-SDK `API/API/`) ПЛЮС перенесённые проектные правки — план
-`.ai-dev/plans/mplc-driver-project-features.md`:
+SDK `API/API/`) ПЛЮС перенесённые проектные правки — перечислены здесь
+целиком (транзиентный план ветки удалён на ship-бите, этот список и есть дом):
 
 - **i2c-лок** `/run/lock/sa02m-pca9536.lock` (координация разделяемой шины i2c-2
   с boot-indication `sa02m-pre-start.sh` и веб-путём) + EINTR-retry + проверка

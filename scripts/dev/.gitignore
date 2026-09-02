@@ -1,4 +1,9 @@
 # Dev-harness runtime — never committed.
 node_modules/
-# Per-run artifacts (screenshots + manifests). The committed oracle lives in baseline/.
+# Per-run artifacts (screenshots + manifests).
 artifacts/
+# The characterization oracle. Captured per refactor session against a specific
+# board, immediately before the first split step — never a standing committed
+# artifact. The committed copy went stale at 1.0.5.81 while its only drift guard
+# (the retired `headless-smoke` row) skipped everywhere it ran; see README.md.
+baseline/

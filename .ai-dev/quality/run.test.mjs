@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: self-test of the runner's own touched-set and covers matching - it drives run.mjs against purpose-built temp git repos and asserts the returned file lists; it pins no source line of any shipped file.
 /* ═══════════════════════════════════════════════════════════════════════════
    quality-runner-self-test — standalone Node test for run.mjs's `--touched`
    row selection. Two regressions, both of which made `--touched` report a
@@ -8,6 +9,8 @@
         --short` branch, used right after branching with no new commits yet —
         no origin/main, no merge-base diff).
      B. coversToRegex()'s handling of a bare path PREFIX.
+     C. computeTouchedFiles() ignoring the working tree once the branch has a
+        commit — the Builder's own handback invisible to `--touched`.
    ───────────────────────────────────────────────────────────────────────────
    Regression A: the fallback used to `.trim()` the WHOLE multi-line
    `git status --short` output before splitting into lines. Trimming the
@@ -30,6 +33,21 @@
    pinned below, plus the `/` boundary that keeps a prefix from matching a
    sibling whose name merely starts the same way.
 
+   Regression C: the working tree was a LAST RESORT — read only when the
+   committed `<base>..HEAD` diff came back empty. On any branch carrying a
+   commit (i.e. every real feature branch past its first commit), a Builder's
+   uncommitted edits therefore selected NO rows: `run.mjs build --touched`,
+   the documented pre-handback command, printed a green summary having never
+   run a single check over the new work. Live instance, 1.0.6.24: an edit to
+   `www/network_config/cgi-bin/status.cgi` left `bash-cgi-syntax` and every
+   other `cgi-bin/` row unselected. The touched set is now the UNION of the
+   committed diff and the working tree (staged + unstaged + untracked).
+   Second half of the same class: BOTH halves must read git's `-z` output.
+   The union landed with `-z` on the working-tree side only, so a COMMITTED
+   path holding a non-ASCII byte came back quoted (`"\320\260\320\261.js"`)
+   and matched no `covers` glob — the same silent skip, on the other half
+   (review Q3, 1.0.6.24). Both are pinned below with a real quoted path.
+
    No framework — mirrors scripts/dev/test-clear-session-cookie.mjs's
    stdlib-only posture. Spins up a real temp git repo so the test exercises
    the actual fallback path (no origin remote, branch even with main, one
@@ -39,7 +57,7 @@ import { execSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { computeTouchedFiles, coversToRegex, fileMatchesCovers } from './run.mjs';
+import { computeTouchedFiles, coversToRegex, fileMatchesCovers, workingTreeFiles } from './run.mjs';
 
 let failures = 0;
 function check(cond, msg) {
@@ -75,6 +93,81 @@ try {
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ── C. the Builder's own handback: committed diff UNION working tree ───────
+// The scenario that shipped hollow: a branch WITH a commit (so the committed
+// diff is non-empty and the old last-resort fallback never fired) plus
+// uncommitted work of every shape a handback carries — unstaged, staged,
+// untracked, renamed, and a path git's human format would have QUOTED.
+const dir2 = mkdtempSync(join(tmpdir(), 'sa02m-run-mjs-test-union-'));
+function git2(cmd) {
+  execSync('git ' + cmd, { cwd: dir2, stdio: 'pipe', env });
+}
+try {
+  git2('init -q -b main');
+  writeFileSync(join(dir2, 'base.txt'), 'a\n');
+  writeFileSync(join(dir2, 'renamed-from.sh'), 'a\n');
+  writeFileSync(join(dir2, 'status.cgi'), 'a\n');
+  git2('add base.txt renamed-from.sh status.cgi');
+  git2('commit -q -m initial');
+  // A real feature branch: cut from origin/main, then a commit of its own.
+  git2('update-ref refs/remotes/origin/main refs/heads/main');
+  git2('checkout -q -b feature');
+  writeFileSync(join(dir2, 'committed.js'), 'a\n');
+  // The COMMITTED half's own hostile shapes: git's human format quotes a path
+  // holding a space or a non-ASCII byte ("www/\320\260.js"), so a naive
+  // newline split hands the runner a quoted path that matches no `covers` glob
+  // — the same silent skip the working-tree half was fixed for (Q3, 1.0.6.24).
+  writeFileSync(join(dir2, 'абв.js'), 'a\n');
+  writeFileSync(join(dir2, 'committed name with space.js'), 'a\n');
+  git2('add -A');
+  git2('commit -q -m "first commit on the branch"');
+
+  // The handback, uncommitted.
+  writeFileSync(join(dir2, 'status.cgi'), 'a\nb\n');            // unstaged edit
+  writeFileSync(join(dir2, 'staged.py'), 'a\n');                 // staged add
+  git2('add staged.py');
+  writeFileSync(join(dir2, 'untracked.sh'), 'a\n');              // untracked
+  writeFileSync(join(dir2, 'name with space.js'), 'a\n');        // untracked, quoted by --short
+  git2('mv renamed-from.sh renamed-to.sh');                      // staged rename
+
+  const touched = computeTouchedFiles(dir2, null);
+  check(Array.isArray(touched), 'union: computeTouchedFiles() returns an array on a branch with a commit');
+  const has = (p) => Array.isArray(touched) && touched.includes(p);
+  check(has('committed.js'), 'union: the committed half survives (committed.js)');
+  check(has('абв.js'),
+    'union: a COMMITTED non-ASCII path comes back verbatim, unquoted (абв.js) — got ' + JSON.stringify(touched));
+  check(has('committed name with space.js'),
+    'union: a COMMITTED path with a space comes back verbatim, unquoted');
+  // The consequence, not just the string: a quoted path matches no `covers`
+  // pattern, so the row that guards it is silently skipped. The pattern here
+  // can be satisfied by NOTHING else in the touched set.
+  check(Array.isArray(touched) && fileMatchesCovers(touched, ['абв.js']),
+    'union: the committed non-ASCII path MATCHES its own covers pattern — the silent skip is closed');
+  check(has('status.cgi'),
+    'union: an UNSTAGED edit is seen even though the committed diff is non-empty — the regression (status.cgi)');
+  check(has('staged.py'), 'union: a STAGED add is seen (staged.py)');
+  check(has('untracked.sh'), 'union: an UNTRACKED file is seen (untracked.sh)');
+  check(has('name with space.js'),
+    'union: a path git would quote in --short comes back verbatim, unquoted (name with space.js)');
+  check(has('renamed-to.sh') && has('renamed-from.sh'),
+    'union: a rename yields BOTH paths — the new one and the old one whose covers also mattered');
+  check(Array.isArray(touched) && new Set(touched).size === touched.length,
+    'union: no duplicate entries (got ' + JSON.stringify(touched) + ')');
+
+  // Non-vacuity for the working-tree half: it must actually read git, not
+  // return a constant. A clean tree yields nothing.
+  git2('reset -q --hard HEAD');
+  git2('clean -qfd');
+  check(workingTreeFiles(dir2).length === 0,
+    'union: workingTreeFiles() returns nothing on a clean tree (not a constant) — got ' +
+    JSON.stringify(workingTreeFiles(dir2)));
+  const clean = computeTouchedFiles(dir2, null);
+  check(Array.isArray(clean) && clean.includes('committed.js') && !clean.includes('status.cgi'),
+    'union: with a clean tree only the committed half remains');
+} finally {
+  rmSync(dir2, { recursive: true, force: true });
 }
 
 // ── B. covers: bare path prefix AND glob ──────────────────────────────────

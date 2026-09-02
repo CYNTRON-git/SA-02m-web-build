@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: unit test - it drives the shipped cookie-clearing helper and asserts its output, pinning no source line by text; a commented-out line changes the result it measures.
 /* ═══════════════════════════════════════════════════════════════════════════
    js-unit — standalone Node test for clearSessionCookie() in app.js.
    ───────────────────────────────────────────────────────────────────────────

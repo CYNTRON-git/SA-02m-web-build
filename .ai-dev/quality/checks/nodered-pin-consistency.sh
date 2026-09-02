@@ -23,6 +23,12 @@
 # Run: bash .ai-dev/quality/checks/nodered-pin-consistency.sh
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# Presence pins read COMMENT-STRIPPED text (lib_check.sh) wherever a leading `#`
+# would leave the needle behind. Pins anchored at line start (`^ExecStart=`,
+# `^User=`, `^Environment=`, the `^NODERED_PIN_VERSION=` extractions) are
+# comment-safe as written and are left alone.
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "nodered-pin-consistency: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'nodered-pin-consistency: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -81,7 +87,7 @@ fi
 
 # ── 2. --node22 in both install homes, no surviving --node20 ───────────────
 if [ -f "$CTL" ] && [ -f "$S07" ]; then
-    if grep -q -- '--node22' "$CTL" && grep -q -- '--node22' "$S07"; then
+    if stripped_has "$CTL" '--node22' && stripped_has "$S07" '--node22'; then
         pass "--node22 present in both install homes"
     else
         fail "--node22 missing from $CTL and/or $S07 — the Node major is part of the pin"
@@ -106,7 +112,7 @@ fi
 
 # ── 4. --omit=optional in the build recipe ─────────────────────────────────
 if [ -f "$BUILD" ]; then
-    if grep -q -- '--omit=optional' "$BUILD"; then
+    if stripped_has "$BUILD" '--omit=optional'; then
         pass "build recipe keeps --omit=optional (pure-JS tree, no Node-ABI binding)"
     else
         fail "$BUILD lost --omit=optional — the payload would carry native code and bind to one Node major"
@@ -187,7 +193,7 @@ fi
 
 # ── 5. The unit resolves node explicitly ───────────────────────────────────
 if [ -f "$UNIT" ]; then
-    if grep -q '^ExecStart=' "$UNIT" && grep -q '/usr/lib/node_modules/node-red/red.js' "$UNIT"; then
+    if stripped_matches "$UNIT" '^ExecStart=' && stripped_has "$UNIT" '/usr/lib/node_modules/node-red/red.js'; then
         pass "$UNIT starts node-red from the global module tree"
     else
         fail "$UNIT has no ExecStart naming /usr/lib/node_modules/node-red/red.js"

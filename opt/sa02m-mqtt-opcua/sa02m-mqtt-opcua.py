@@ -8,11 +8,18 @@ Based on:  https://github.com/wirenboard/wb-mqtt-opcua (MIT License)
 Config:    /etc/sa02m-mqtt-opcua.conf  (JSON, mirrors WB wb-mqtt-opcua.conf)
 Systemd:   sd_notify READY=1 / WATCHDOG=1
 
+Network access (1.0.6.24, both under "opcua", both optional and defaulting to
+today's behaviour — see "Network access control" below):
+    host        — listening address, default 0.0.0.0 (all interfaces).
+    allow_from  — IP/CIDR allow-list; absent or empty = no filtering.
+
 Dependencies (on target):
     pip3 install opcua --break-system-packages
     (paho-mqtt already installed)
 """
 
+import importlib
+import ipaddress
 import json
 import logging
 import os
@@ -29,8 +36,13 @@ except ImportError:
     sys.exit("paho-mqtt not installed: pip3 install paho-mqtt")
 
 try:
+    # NOTE: opcua.server.user_manager.UserManager was imported here and never
+    # used. It is gone (1.0.6.24, audit H3): a security symbol that nothing
+    # wires reads as an authentication guarantee this daemon does not make.
+    # Username/password would be worse than nothing on this endpoint — it is
+    # NoSecurity (below), so credentials would cross the wire in clear text.
+    # The enforceable controls are `opcua.host` and `opcua.allow_from`.
     from opcua import Server as OpcuaServer, ua
-    from opcua.server.user_manager import UserManager
 except ImportError:
     sys.exit("opcua not installed: pip3 install opcua --break-system-packages")
 
@@ -48,6 +60,166 @@ logging.getLogger("asyncio").setLevel(logging.WARNING)
 CONFIG_PATH = Path(os.environ.get("SA02M_OPCUA_CONFIG", "/etc/sa02m-mqtt-opcua.conf"))
 DEVICE_BASE = "/devices"
 OPCUA_NS = "urn:sa02m:mqtt-opcua"
+
+
+# ── Network access control ─────────────────────────────────────────────────────
+#
+# This server exposes WRITABLE control nodes (an OPC UA write is republished to
+# `/devices/<id>/controls/<x>/on`, i.e. it moves real equipment) with the
+# NoSecurity policy and no user authentication — OPC UA NoSecurity has none by
+# protocol. Two optional config keys under "opcua" let the operator narrow who
+# can reach it: `host` (which address the listener takes) and `allow_from`
+# (which peers may connect).
+#
+# THE DEFAULT DOES NOT MOVE. Absent or empty = host 0.0.0.0, no filtering —
+# byte-identical to every release before 1.0.6.24, so an existing client keeps
+# working across the update (Operator decision D, 2026-08-28). A present but
+# EMPTY allow_from means "no restriction", never "deny all".
+#
+# THE FAILURE DIRECTION IS CLOSED, and it matches the RS-485 gateway's
+# (opt/sa02m-serial-gateway/serial_gateway.py — same rules, separate packages
+# that deploy independently and share no library, so the code is separate and
+# the semantics are pinned by the tests on both sides):
+#   * a malformed `host` or `allow_from` value refuses to run instead of
+#     falling back to the open default or dropping the bad entry;
+#   * an allow-list that is configured but CANNOT be enforced refuses to run.
+#     That last one matters here: python-opcua exposes no access-control hook,
+#     so the filter is installed on the asyncio protocol class its binary server
+#     uses (`_PROTOCOL_SEAM`). That seam is library-internal by necessity, so it
+#     is resolved and verified at startup — if the library ever changes shape,
+#     the daemon exits instead of listening unrestricted while the operator
+#     believes allow_from is in force.
+
+DEFAULT_BIND = "0.0.0.0"
+_PROTOCOL_SEAM = "opcua.server.binary_server_asyncio"
+_ACL_NETS = None  # read live by the installed filter; None = filtering off
+
+
+class AccessConfigError(ValueError):
+    """A host/allow_from value the daemon refuses to guess about."""
+
+
+def _parse_bind(raw) -> str:
+    """Listening address from config. Absent/empty → 0.0.0.0; junk → refused.
+
+    Only IP literals are accepted: a hostname would make the bound address
+    depend on DNS at daemon start, so "which interfaces is this on" would stop
+    being answerable from the config alone.
+    """
+    if raw is None:
+        return DEFAULT_BIND
+    if not isinstance(raw, str):
+        raise AccessConfigError(f"opcua.host must be an IP address string, got {raw!r}")
+    value = raw.strip()
+    if not value:
+        return DEFAULT_BIND
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        raise AccessConfigError(
+            f"opcua.host {value!r} is not an IP address "
+            f"(use 0.0.0.0 for all interfaces)") from None
+    return value
+
+
+def _parse_allow_from(raw):
+    """Allow-list from config → list of networks, or None for "no filtering".
+
+    Accepts a JSON list of IP/CIDR strings, or one string with comma- or
+    whitespace-separated entries (the form a hand-edited config produces).
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        items = [p for p in raw.replace(",", " ").split() if p]
+    elif isinstance(raw, (list, tuple)):
+        items = list(raw)
+    else:
+        raise AccessConfigError(
+            f"opcua.allow_from must be a list of IP/CIDR strings, got {raw!r}")
+    if not items:
+        return None
+    nets = []
+    for item in items:
+        if not isinstance(item, str):
+            raise AccessConfigError(
+                f"opcua.allow_from entry must be a string, got {item!r}")
+        entry = item.strip()
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            raise AccessConfigError(
+                f"opcua.allow_from entry {entry!r} is not an IP address "
+                f"or CIDR range") from None
+    return nets
+
+
+def _peer_allowed(nets, host) -> bool:
+    """True when `host` may connect. `nets is None` = filtering off."""
+    if nets is None:
+        return True
+    if not isinstance(host, str) or not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # A dual-stack listener reports an IPv4 client as ::ffff:a.b.c.d; without
+    # this the operator's own 192.168.1.0/24 rule would refuse that client.
+    if getattr(addr, "ipv4_mapped", None) is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in nets)
+
+
+def _peer_host(peername):
+    """Host part of an asyncio peername tuple ((host, port[, flow, scope]))."""
+    if isinstance(peername, (tuple, list)) and peername:
+        return peername[0]
+    return None
+
+
+def _install_peer_filter(nets) -> int:
+    """Refuse OPC UA connections from outside `nets`; return classes wrapped.
+
+    Raises AccessConfigError when the protocol seam cannot be found — the caller
+    must then refuse to start rather than listen without the restriction.
+    """
+    global _ACL_NETS
+    _ACL_NETS = nets
+    try:
+        mod = importlib.import_module(_PROTOCOL_SEAM)
+    except Exception as exc:  # ImportError, or a library that moved
+        raise AccessConfigError(
+            f"opcua.allow_from is configured but cannot be enforced: "
+            f"{_PROTOCOL_SEAM} is unavailable ({exc}). Refusing to start rather "
+            f"than listen unrestricted.") from None
+    targets = [obj for obj in vars(mod).values()
+               if isinstance(obj, type) and "connection_made" in obj.__dict__]
+    if not targets:
+        raise AccessConfigError(
+            f"opcua.allow_from is configured but cannot be enforced: no "
+            f"connection handler found in {_PROTOCOL_SEAM}. Refusing to start "
+            f"rather than listen unrestricted.")
+    for cls in targets:
+        if getattr(cls.connection_made, "_sa02m_acl", False):
+            continue  # already wrapped; _ACL_NETS above carries the new list
+        original = cls.connection_made
+
+        def guarded(self, transport, _original=original):
+            peer = transport.get_extra_info("peername")
+            if not _peer_allowed(_ACL_NETS, _peer_host(peer)):
+                log.warning("Refused OPC UA connection from %s - not in "
+                            "opcua.allow_from", peer)
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+                return None
+            return _original(self, transport)
+
+        guarded._sa02m_acl = True
+        cls.connection_made = guarded
+    return len(targets)
 
 
 # ── sd_notify ──────────────────────────────────────────────────────────────────
@@ -69,7 +241,9 @@ def load_config(path: Path) -> dict:
     if not path.exists():
         default = {
             "debug": False,
-            "opcua": {"host": "0.0.0.0", "port": 4841},
+            # allow_from empty = no restriction (the shipped default); fill it
+            # with IP/CIDR entries to limit who may reach the OPC UA server.
+            "opcua": {"host": "0.0.0.0", "port": 4841, "allow_from": []},
             "mqtt": {"host": "localhost", "port": 1883, "keepalive": 60,
                      "auth": False, "username": "", "password": ""},
             "groups": []
@@ -154,7 +328,10 @@ class OpcuaGateway:
         ocfg = cfg.get("opcua", {})
         mcfg = cfg.get("mqtt", {})
 
-        self._opcua_host = ocfg.get("host", "0.0.0.0") or "0.0.0.0"
+        # Raises AccessConfigError on a malformed value — main() lets it out, so
+        # a bad access config exits non-zero instead of listening wide open.
+        self._opcua_host = _parse_bind(ocfg.get("host"))
+        self._allow = _parse_allow_from(ocfg.get("allow_from"))
         # 4841, never 4840: CODESYS's own OPC UA server owns the IANA port
         # 4840 (docs/contracts/kernel-conditional-services.md) — binding it
         # crash-loops on EADDRINUSE while CODESYS runs. Kept in lock-step with
@@ -335,8 +512,21 @@ class OpcuaGateway:
                     pass
             self._stop.wait(1.0)
 
+    # ── Access control ─────────────────────────────────────────────────────────
+    def _apply_access_control(self) -> None:
+        """Install the allow_from filter, or raise. No-op when not configured."""
+        if self._allow is None:
+            return
+        wrapped = _install_peer_filter(self._allow)
+        log.info("OPC UA allow_from active (%s) on %d connection handler(s)",
+                 ", ".join(str(n) for n in self._allow), wrapped)
+
     # ── Main lifecycle ─────────────────────────────────────────────────────────
     def start(self) -> None:
+        # BEFORE anything listens: an allow-list that cannot be enforced must
+        # stop the daemon, not become a restriction the operator only believes in.
+        self._apply_access_control()
+
         # Register namespace
         uri_idx = self._server.register_namespace(OPCUA_NS)
         self._ns_idx = uri_idx
@@ -345,6 +535,12 @@ class OpcuaGateway:
         self._server.start()
         log.info("OPC UA server started: opc.tcp://%s:%d/sa02m/",
                  self._opcua_host, self._opcua_port)
+        if self._allow is None and self._opcua_host in ("0.0.0.0", "::"):
+            log.warning(
+                "OPC UA server accepts connections from ANY host on the network "
+                "with no password (security policy NoSecurity), and writable "
+                "nodes control the connected equipment. Narrow it with "
+                "opcua.host / opcua.allow_from in %s", CONFIG_PATH)
 
         # Start MQTT
         self._mqtt.connect(self._mqtt_host, self._mqtt_port, self._mqtt_keepalive)
@@ -410,14 +606,33 @@ def main() -> None:
                         help="Enable debug logging")
     args = parser.parse_args()
 
+    # Config load + access-config validation run BEFORE READY. Both are cheap —
+    # a small JSON read and two ipaddress parses — so they do not reintroduce
+    # the boot hold the early READY below exists to avoid, and they are the only
+    # init that can legitimately REFUSE to start. Reporting READY and then dying
+    # inside OpcuaGateway.__init__ turned a malformed opcua.host / allow_from
+    # into a crash-loop under Restart=on-failure instead of a clean start
+    # failure (security review 1.0.6.24, F7 — the failure direction was already
+    # closed, the daemon never listened; this makes the failure legible).
+    # __init__ parses these again; they are pure functions, so that is a
+    # re-validation, not a second source of truth.
+    cfg = load_config(Path(args.config))
+    if args.debug:
+        cfg["debug"] = True
+    if cfg.get("debug"):
+        log.setLevel(logging.DEBUG)
+    _ocfg = cfg.get("opcua", {})
+    _parse_bind(_ocfg.get("host"))
+    _parse_allow_from(_ocfg.get("allow_from"))
+
     # Signal systemd-ready IMMEDIATELY, before ANY slow init, so this
     # Type=notify unit does NOT gate multi-user.target. The heavy cost is the
     # OPC UA address-space build: ~9 s in OpcuaServer() construction (inside
     # OpcuaGateway.__init__, below) + more in server.start()/populate — ~17 s
     # total on the A40i. With Type=notify all of that was blocking boot
     # (systemd stayed "activating" until READY). Sending READY here — before
-    # load_config()/OpcuaGateway(cfg) — marks the unit active at t≈0 and runs
-    # the whole build in RUNNING state instead. One explicit WATCHDOG=1 ping
+    # OpcuaGateway(cfg) — marks the unit active at t≈0 and runs the whole build
+    # in RUNNING state instead. One explicit WATCHDOG=1 ping
     # here; the watchdog loop in start() then pings every ~30 s
     # (WATCHDOG_USEC/2), well inside WatchdogSec=60. A real init failure still
     # raises out of load_config()/__init__/start() → the process exits
@@ -429,12 +644,6 @@ def main() -> None:
     # main() — an accepted residual, not restructured.)
     sd_notify("READY=1")
     sd_notify("WATCHDOG=1")
-
-    cfg = load_config(Path(args.config))
-    if args.debug:
-        cfg["debug"] = True
-    if cfg.get("debug"):
-        log.setLevel(logging.DEBUG)
 
     gw = OpcuaGateway(cfg)
 

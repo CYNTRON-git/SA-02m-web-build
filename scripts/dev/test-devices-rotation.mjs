@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: unit test - it drives the shipped rotation logic and asserts its output, pinning no source line by text; a commented-out line changes the result it measures.
 /* ═══════════════════════════════════════════════════════════════════════════
    js-unit-devices — standalone Node test for the ДТВ per-sensor rotation index
    math and the chart CONTINUOUS wheel-zoom window math + debounce, in devices.js.

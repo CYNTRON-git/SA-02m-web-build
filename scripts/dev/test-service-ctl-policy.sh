@@ -1,5 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep. Exception, stated honestly: section 1f also carries ONE load-bearing static pin (the mplc4 probe must stay wrapper-free) - it reads the extracted block COMMENT-STRIPPED, so a commented-out wrapper line cannot satisfy it, and it is non-vacuous (an extraction that misses the block FAILS). The remaining source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
 # test-service-ctl-policy.sh — regression for the stack-policy writes in
 # etc/sa02m-web-service-ctl.sh (cmd_install / cmd_uninstall / stack_key_for_id)
 # against etc/sa02m-stacks-policy.sh. Quality row `service-ctl-policy-write`.
@@ -139,6 +140,68 @@ fi
     && [ "$(stack_key_for_id node-red)" = NODERED ] && [ -z "$(stack_key_for_id docker)" ] \
     && ok "stack_key_for_id: codesys→CODESYS mplc4→MPLC node-red→NODERED, docker unmapped" \
     || bad "stack_key_for_id map wrong"
+
+echo "── 1f. service_present mplc4: runtime payload, not wrappers ──"
+# A half-removed install (leftover /etc/init.d/mplc4 + unit file, /opt/mplc4
+# gone — bench 1.135, 2026-08-29) must read NOT installed, so the panel offers
+# «Установить» instead of a dead «Пуск». The probe goes through the
+# MPLC4_RUNTIME seam (sudoers env_reset keeps it unreachable from the web).
+#
+# The behavioural cases below cover the payload/process axes; the WRAPPER axis
+# (no falling back to init.d / unit files) cannot be exercised behaviourally
+# here — those paths are host-absolute and absent on every dev/CI host, so a
+# regression re-adding them would stay green. Pin it statically instead, on
+# the comment-stripped extracted block: any init.d / unit_file_installed
+# token inside the mplc4 case is a FAIL. Non-vacuous: an extraction that
+# misses the block (no MPLC4_RUNTIME line) FAILS rather than checking nothing.
+_mplc4_block=$(awk '
+    /^service_present\(\) \{/ { f = 1 }
+    f && /^\}/ { f = 0 }
+    f && /^[[:space:]]*mplc4\)/ { g = 1 }
+    g { print }
+    g && /;;/ { g = 0 }
+' "$T/raw.sh" | sed 's/[[:space:]]*#.*$//')
+if printf '%s' "$_mplc4_block" | grep -q 'MPLC4_RUNTIME'; then
+    ok "service_present mplc4: block extracted (MPLC4_RUNTIME probe present)"
+else
+    bad "service_present mplc4: extraction missed the block — the wrapper pin below checks nothing"
+fi
+if printf '%s' "$_mplc4_block" | grep -Eq 'init\.d|unit_file_installed'; then
+    bad "service_present mplc4: wrapper fallback (init.d/unit file) re-added to the probe"
+else
+    ok "service_present mplc4: no wrapper fallback in the probe (static pin)"
+fi
+MPLC4_RUNTIME="$T/opt/mplc4/start_mplc4.sh"
+mplc4_process_active() { return 1; }
+rm -rf "$T/opt/mplc4"
+if service_present mplc4 "mplc4.service"; then
+    bad "service_present mplc4: wrapper-only (no runtime payload) read as installed"
+else
+    ok "service_present mplc4: no runtime payload ⇒ not installed"
+fi
+mkdir -p "$T/opt/mplc4"
+if service_present mplc4 "mplc4.service"; then
+    bad "service_present mplc4: bare /opt/mplc4 dir (no start_mplc4.sh) read as installed"
+else
+    ok "service_present mplc4: bare runtime dir ⇒ not installed"
+fi
+# A shebang, not an empty file: on Windows git-bash `test -x` ignores the
+# mode bits and derives executability from content (#!) — an empty +x file
+# reads non-executable there and only there (CI Linux honours the chmod).
+printf '#!/bin/sh\n' > "$T/opt/mplc4/start_mplc4.sh"; chmod +x "$T/opt/mplc4/start_mplc4.sh"
+if service_present mplc4 "mplc4.service"; then
+    ok "service_present mplc4: executable start_mplc4.sh ⇒ installed"
+else
+    bad "service_present mplc4: runtime payload present but read as not installed"
+fi
+rm -rf "$T/opt/mplc4"
+mplc4_process_active() { return 0; }
+if service_present mplc4 "mplc4.service"; then
+    ok "service_present mplc4: live process without files ⇒ installed (Стоп must work)"
+else
+    bad "service_present mplc4: live process read as not installed"
+fi
+mplc4_process_active() { return 1; }
 
 echo "── 2. with the policy lib ABSENT (older board) ──"
 # Simulate: drop the policy functions; the ctl's `command -v` guard must skip.

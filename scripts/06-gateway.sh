@@ -39,27 +39,22 @@ else
 fi
 
 # ── sudo правило для CGI ──────────────────────────────────────────────────
-SUDOERS_FILE="/etc/sudoers.d/sa02m-gateway"
-if [ ! -f "$SUDOERS_FILE" ]; then
-    log INFO "Создаю sudoers: $SUDOERS_FILE"
-    cat > "$SUDOERS_FILE" <<'SUDOERS'
-# SA-02m gateway CGI sudo rules
-www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-gateway-config-apply.sh
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl start sa02m-serial-gateway
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl stop sa02m-serial-gateway
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl restart sa02m-serial-gateway
-www-data ALL=(root) NOPASSWD: /usr/bin/systemctl reload sa02m-serial-gateway
-SUDOERS
-fi
-# Harden (0440 + CRLF strip + visudo) — validates an existing file too. Single
-# home for the recipe (lib.sh). This site previously skipped both steps.
-sa02m_harden_sudoers "$SUDOERS_FILE"
+# Устанавливается ЦЕЛИКОМ из коммитнутого etc/sudoers.d/sa02m-gateway (audit B1):
+# прежний heredoc был под `[ ! -f ]`, поэтому на плате, где файл уже есть, пин
+# не появлялся НИКОГДА — ни при refresh, ни при OTA. Коммитнутый файл сходится
+# по построению и доезжает по всем трём путям доставки.
+log INFO "Устанавливаю sudoers: /etc/sudoers.d/sa02m-gateway (целиком)"
+sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-gateway" /etc/sudoers.d/sa02m-gateway
 
 # ── config-apply helper ────────────────────────────────────────────────────
+# Источник — usr/local/sbin/ (не etc/): путь установки совпадает с путём в
+# репозитории, поэтому OTA и оффлайн-пакет кладут файл ровно туда, где его
+# вызывают sudoers и gateway_config.cgi.
 log INFO "Устанавливаю sa02m-gateway-config-apply.sh"
 install -m 0755 -o root -g root \
-    "$ETC_DIR/sa02m-gateway-config-apply.sh" \
+    "$BASE_DIR/usr/local/sbin/sa02m-gateway-config-apply.sh" \
     /usr/local/sbin/sa02m-gateway-config-apply.sh
+sed -i 's/\r$//' /usr/local/sbin/sa02m-gateway-config-apply.sh
 
 # ── CGI скрипты ──────────────────────────────────────────────────────────
 log INFO "Устанавливаю CGI: gateway_config.cgi, gateway_status.cgi, gateway_ctrl.cgi"

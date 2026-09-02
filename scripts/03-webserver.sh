@@ -350,6 +350,19 @@ d /var/lib/sa02m-mplc/backups 0700 root root -
 EOF
 systemd-tmpfiles --create /etc/tmpfiles.d/sa02m.conf >> "$LOG_FILE" 2>&1 || true
 
+# Login-throttle state dir. Committed file, not another heredoc line: only a
+# committed etc/tmpfiles.d/ file reaches an already-installed board through OTA
+# / the offline package (see the conf's own header). Without it the throttle in
+# lib_web_auth.sh fails open — www-data cannot mkdir under root-owned /run.
+if [ -f "$ETC_DIR/tmpfiles.d/sa02m-web-login.conf" ]; then
+    install -m 644 "$ETC_DIR/tmpfiles.d/sa02m-web-login.conf" /etc/tmpfiles.d/sa02m-web-login.conf
+    sed -i 's/\r$//' /etc/tmpfiles.d/sa02m-web-login.conf
+    if command -v systemd-tmpfiles >/dev/null 2>&1; then
+        systemd-tmpfiles --create /etc/tmpfiles.d/sa02m-web-login.conf >>"$LOG_FILE" 2>&1 || true
+    fi
+    log OK "tmpfiles sa02m-web-login.conf (/run/sa02m-web-login)"
+fi
+
 if [ -f "$ETC_DIR/sa02m-beeper-override.sh" ]; then
     install -m 755 "$ETC_DIR/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi

@@ -19,8 +19,16 @@
 #       wrapper's post-check greps.
 #
 # Run: bash .ai-dev/quality/checks/installer-svc-policy-gate.sh
+#
+# The negative sweeps (a)-(e) already skip comment lines by construction; the
+# COUNTS in (f) and the banner pin in (g) did not, and a count that includes
+# commented-out call sites is a non-vacuity floor that a mass comment-out slides
+# straight under (audit 2026-08-28, finding C3 — the hollow-gate class). Both
+# now read comment-stripped text via lib_check.sh.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.." || exit 1
+# shellcheck source=/dev/null
+. "$(dirname "${BASH_SOURCE[0]}")/lib_check.sh" || { echo "installer-svc-policy-gate: cannot source lib_check.sh"; exit 1; }
 
 fails=0
 fail() { printf 'installer-svc-policy-gate: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
@@ -143,8 +151,14 @@ for f in scripts/07-nodered.sh scripts/08-codesys.sh scripts/09-mplc.sh scripts/
 done
 
 # ── (f) non-vacuity: the helpers are really used ───────────────────────────
-apply_n=$(grep -chE 'sa02m_svc_apply[[:space:]]' "${MODULES[@]}" | awk '{s+=$1} END {print s}')
-verdict_n=$(grep -chE 'sa02m_stack_verdict' scripts/07-nodered.sh scripts/08-codesys.sh scripts/09-mplc.sh scripts/12-docker.sh 2>/dev/null | awk '{s+=$1} END {print s}')
+apply_n=0
+for f in "${MODULES[@]}"; do
+    apply_n=$((apply_n + $(stripped_count "$f" 'sa02m_svc_apply[[:space:]]')))
+done
+verdict_n=0
+for f in scripts/07-nodered.sh scripts/08-codesys.sh scripts/09-mplc.sh scripts/12-docker.sh; do
+    verdict_n=$((verdict_n + $(stripped_count "$f" 'sa02m_stack_verdict')))
+done
 if [ "${apply_n:-0}" -ge 25 ]; then
     pass "(f) >=25 sa02m_svc_apply sites ($apply_n)"
 else
@@ -157,7 +171,7 @@ else
 fi
 
 # ── (g) the completion banner literal ──────────────────────────────────────
-if grep -q 'Установка завершена' install.sh; then
+if stripped_has install.sh 'Установка завершена'; then
     pass "(g) install.sh keeps the literal completion banner"
 else
     fail "(g) install.sh lost the 'Установка завершена' banner (the wrapper's post-check greps it)"

@@ -1,6 +1,14 @@
 #!/bin/bash
 # Static gate for the SA-02m RTC time-frame convention.
 #
+# NOT exempt from comment-mutation-proof, and the reason it used to give was
+# wrong: the sweep's fail-IF-PRESENT half is only pin 1. Pins 2-4 are
+# presence-FLOORED (HWCLOCK_MIN_SITES, I2C_WRITE_MIN_FNS, DATE_SET_MIN_SITES),
+# and the awk pass skips comment lines — so commenting the `--systohc --utc`
+# write sites out of lib_rtc.sh drops the resolved count below the floor and
+# this gate goes RED. That is now a registered case in comment-mutation-proof,
+# not a claim (review Q8, 1.0.6.24).
+#
 # Convention home (rationale + the divergence it caused): the comment block in
 # etc/sa02m-pre-start.sh at the DS3231 I2C load. In one line: the battery-backed
 # chip holds UTC, so every conversion between system time and chip time names
@@ -105,6 +113,11 @@ fail() { printf 'rtc-utc: FAIL  %s\n' "$*"; fails=$((fails + 1)); }
 pass() { printf 'rtc-utc: ok    %s\n' "$*"; }
 note() { printf 'rtc-utc: ---   %s\n' "$*"; }
 
+# COMMENT-BLINDNESS AUDIT (1.0.6.24): this gate was already comment-safe — every
+# sweep and every pin below runs through uncommented(). It keeps its OWN stripper
+# rather than sourcing lib_check.sh because the same pass also neutralises
+# fake-hwclock (a domain filter the shared lib has no business carrying).
+#
 # Uncommented lines only (shell, systemd conf and nginx conf all comment with #).
 # fake-hwclock is neutralised in the same pass: it saves a timestamp to a file
 # and has no frame, so its mentions must never reach the hwclock matcher.
