@@ -200,6 +200,8 @@
     'Проверить снова': 'Check again',
     'Проверка соединения': 'Checking connection',
     'Шлюз недоступен': 'Gateway unavailable',
+    'Отвязано в облаке — можно привязать заново':
+      'Unlinked in the cloud — can be linked again',
     'Отключено': 'Disabled',
     'сертификат шлюза не доверенный': 'gateway certificate not trusted',
     'Управление привязками': 'Manage bindings',

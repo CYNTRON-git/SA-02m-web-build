@@ -154,7 +154,7 @@ else
     # that matters most: `complete_link` shares this verb, and skipping there
     # leaves the card at «нет сертификата» until the client's own 60 s
     # re-check.
-    for state in missing_cert error offline connecting disabled missing_deps; do
+    for state in missing_cert error offline connecting disabled missing_deps unlinked; do
         expect "state=$state (not watching)" RESTART \
             "{\"state\":\"$state\",\"ts\":$NOW,\"config_watch\": true}"
     done

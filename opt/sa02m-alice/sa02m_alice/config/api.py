@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from .. import __version__
 from ..common import constants as C
+from ..common.binding_reset import SOURCE_LOCAL, reset_cloud_binding
 from ..common.config_store import (
     cert_paths_present,
     client_enabled,
@@ -27,6 +28,7 @@ from ..common.config_store import (
     load_devices,
     save_devices,
     set_client_enabled,
+    set_unlinked_at,
 )
 from . import models
 from .topics import list_mqtt_topics
@@ -316,6 +318,11 @@ def start_link() -> Dict[str, Any]:
             if data.get("ca_pem"):
                 _write_pem(C.CA_FILE, str(data["ca_pem"]), 0o644)
             _save_pending_claim(pending)
+            # A board being bound again is no longer "unlinked in the cloud".
+            # Cleared here so the card is correct one step early; the
+            # authoritative clear is in complete_link, which is the step that
+            # actually produces certificates.
+            set_unlinked_at(None)
             return {"ok": True, "enrollment": data, "pending": pending}
     except Exception as exc:
         return {
@@ -400,6 +407,9 @@ def complete_link() -> Dict[str, Any]:
             "issued": True,
         }
     )
+    # Authoritative clear of the durable unlink marker: certificates now exist,
+    # so a reboot must not resurrect «unlinked in the cloud» on a bound board.
+    set_unlinked_at(None)
     return {
         "ok": True,
         "controller_sn": sn,
@@ -410,9 +420,18 @@ def complete_link() -> Dict[str, Any]:
 
 
 def unlink_controller() -> Dict[str, Any]:
-    """Ask gateway to unlink via controller API; clear local enable on success.
+    """Ask the gateway to unlink, then erase the local binding on success.
 
-    When gateway is down — return error, do NOT claim unlink succeeded.
+    When the gateway is down — return an error and wipe NOTHING; the same
+    "never erase on an outage" rule the gateway-driven path holds. Both
+    refusals below (unreachable, HTTP >= 400) return BEFORE the wipe, and the
+    HTTP call itself must stay ahead of it: the claim_token that authenticates
+    /controller/unlink lives in pending_claim.json, which the wipe deletes.
+
+    Since 1.0.6.27 this shares reset_cloud_binding with the gateway-driven
+    path. Leaving certificates behind after a CONFIRMED cloud unlink is exactly
+    what produced the false «привязан» card: the page treats a certificate on
+    disk as proof of binding.
     """
     probe = probe_gateway()
     if not probe.get("available"):
@@ -450,11 +469,18 @@ def unlink_controller() -> Dict[str, Any]:
                     "message": "Gateway unlink HTTP %s" % code,
                     "http_status": code,
                 }
-            set_client_enabled(False)
+            summary = reset_cloud_binding(SOURCE_LOCAL)
+            # client_enabled stays ON: the client goes quiet because the
+            # binding is gone, not because the flag was cleared — the loop
+            # routes into its no-certificate soft wait on every transport
+            # (client/main.py::_should_wait_for_cert). Switching the flag off
+            # would HIDE the link row on the card (alice.js) — the very button
+            # the next owner needs.
             return {
                 "ok": True,
-                "message": "Unlinked; local client_enabled set false",
-                "client_enabled": False,
+                "message": "Unlinked; local cloud binding erased",
+                "client_enabled": client_enabled(),
+                "reset": summary,
             }
     except Exception as exc:
         return {

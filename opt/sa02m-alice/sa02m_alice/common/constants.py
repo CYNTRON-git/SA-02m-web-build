@@ -85,3 +85,18 @@ STATE_CONNECTED = "connected"
 STATE_ERROR = "error"
 STATE_MISSING_DEPS = "missing_deps"
 STATE_MISSING_CERT = "missing_cert"
+# The cloud unlinked this controller: the binding was erased locally and the
+# board is claim-ready. Distinct from missing_cert (never bound) because the
+# card must explain WHY the certificate is gone.
+STATE_UNLINKED = "unlinked"
+
+# Durable marker for STATE_UNLINKED, written as ONE key in the client INI.
+# Never a file under VAR_DIR: the factory-image build refuses any file in the
+# identity dir but the shared CA (docs/contracts/image-identity-reset.md §3),
+# so a marker there would abort image capture from a previously-unlinked donor.
+KEY_UNLINKED_AT = "unlinked_at"
+# Machine-facing status message. The user-facing Russian lives once, in
+# ALICE_STATE_MAP (www/network_config/static/js/app/alice.js).
+UNLINKED_MESSAGE = (
+    "Cloud unlinked this controller; binding erased, ready to be claimed again"
+)
