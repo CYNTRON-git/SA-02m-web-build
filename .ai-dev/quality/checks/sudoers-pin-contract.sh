@@ -521,6 +521,11 @@ LEDGER = {
         "/usr/local/sbin/sa02m-alice-web-trigger.sh enable",
         "/usr/local/sbin/sa02m-alice-web-trigger.sh disable",
         "/usr/local/sbin/sa02m-alice-web-trigger.sh restart",
+        # Second unit (sa02m-cloud-control, 1.0.6.26) — same helper, two more
+        # pinned verbs; the CGI sends exactly these on cloud_control_enable /
+        # cloud_control_disable.
+        "/usr/local/sbin/sa02m-alice-web-trigger.sh cloud-enable",
+        "/usr/local/sbin/sa02m-alice-web-trigger.sh cloud-disable",
     ],
 }
 

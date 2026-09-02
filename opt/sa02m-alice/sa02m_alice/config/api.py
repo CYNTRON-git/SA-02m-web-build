@@ -5,6 +5,7 @@ Never reports fake pairing/link success when the gateway is down.
 
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import socketserver
@@ -21,12 +22,14 @@ from ..common import constants as C
 from ..common.config_store import (
     cert_paths_present,
     client_enabled,
+    cloud_control_enabled,
     default_client_cfg,
     empty_devices,
     gateway_urls,
     load_devices,
     save_devices,
     set_client_enabled,
+    set_cloud_control_enabled,
 )
 from . import models
 from .topics import list_mqtt_topics
@@ -119,6 +122,92 @@ def cert_presence(status: Dict[str, Any]) -> Tuple[Optional[bool], str]:
     if os.access(cert_dir, os.X_OK):
         return cert_paths_present(), CERT_CHECK_LOCAL
     return None, CERT_CHECK_UNREADABLE
+
+
+def read_cloud_status_file() -> Dict[str, Any]:
+    try:
+        with open(C.STATUS_FILE_CLOUD, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"state": "unknown"}
+
+
+def _cloud_identity_files_present() -> Optional[bool]:
+    """Do the cloud agent's identity files exist? True / False / None (unknown).
+
+    Presence only — this process (www-data) must NEVER open the device secret
+    (0600 root): `os.path.exists` stats it and reads nothing. `agent.conf`
+    (0640) is parsed for `device_id` / `serial`; if even that is not readable
+    the answer is None, not a false False.
+    """
+    if not os.path.exists(C.CLOUD_DEVICE_SECRET):
+        return False
+    cfg = configparser.ConfigParser()
+    try:
+        with open(C.CLOUD_AGENT_CONF, encoding="utf-8") as fh:
+            cfg.read_file(fh)
+    except FileNotFoundError:
+        return False
+    except (OSError, configparser.Error):
+        return None
+    device_id = cfg.get("cloud", "device_id", fallback="").strip()
+    serial = cfg.get("device", "serial", fallback="").strip()
+    return bool(device_id or serial)
+
+
+def cloud_identity_presence(status: Dict[str, Any]) -> Tuple[Optional[bool], str]:
+    """(cloud_enrolled, cloud_check) — the cloud twin of cert_presence().
+
+    /etc/sa02m-cloud is 750 root:root on an installed board
+    (scripts/05-cloud-agent.sh), so this process (www-data) normally cannot
+    even enter it: the cloud-profile client (root) publishes
+    `identity_present` in its status file on every write and that is the
+    practical source. A local check runs only when the dir is traversable
+    (a bench / a hand-widened install) and is presence-only — it never opens
+    the secret (see _cloud_identity_files_present). Otherwise an honest None,
+    never a false False (a false `false` would lock the «Управление из
+    облака» button on an enrolled board).
+    """
+    val = status.get("identity_present")
+    if isinstance(val, bool):
+        return val, CERT_CHECK_CLIENT
+    cloud_dir = os.path.dirname(C.CLOUD_DEVICE_SECRET) or "."
+    try:
+        os.stat(cloud_dir)
+    except FileNotFoundError:
+        return False, CERT_CHECK_LOCAL
+    except OSError:
+        return None, CERT_CHECK_UNREADABLE
+    if not os.access(cloud_dir, os.X_OK):
+        return None, CERT_CHECK_UNREADABLE
+    present = _cloud_identity_files_present()
+    if present is None:
+        return None, CERT_CHECK_UNREADABLE
+    return present, CERT_CHECK_LOCAL
+
+
+def cloud_control_block(cfg=None) -> Dict[str, Any]:
+    """`cloud_control` view for the UI: enable flag + the cloud client's
+    status file + tri-state enrollment (identity files present)."""
+    status = read_cloud_status_file()
+    enabled = cloud_control_enabled(cfg)
+    enrolled, check = cloud_identity_presence(status)
+    # Flag off ⇒ `disabled`, whatever the file still says: the disable verb
+    # restarts the unit and the file catches up, but the flag is the truth
+    # the operator just set and the card must not show a stale `connected`.
+    state = (status.get("state") or "unknown") if enabled else C.STATE_DISABLED
+    return {
+        "enabled": enabled,
+        "state": state,
+        "ts": status.get("ts"),
+        "error": status.get("error"),
+        "cloud_enrolled": enrolled,
+        "cloud_check": check,
+        "status_file": C.STATUS_FILE_CLOUD,
+    }
 
 
 def probe_gateway(http_url: Optional[str] = None, timeout: float = C.GATEWAY_PROBE_TIMEOUT_S) -> Dict[str, Any]:
@@ -225,6 +314,9 @@ def full_config() -> Dict[str, Any]:
             "key_file": C.KEY_FILE,
         },
         "status": status,
+        # Second unit (sa02m-cloud-control, `--profile cloud`): enable flag,
+        # its own status file, tri-state enrollment like mtls.cert_present.
+        "cloud_control": cloud_control_block(cfg),
         "devices": devices,
         "link": {
             # Honest link state — never invent "linked" when gateway/cert missing.
@@ -259,6 +351,24 @@ def set_enable(enabled: bool) -> Dict[str, Any]:
             else "Client disabled — client exits 0 on next start"
         ),
         "restart_unit": "sa02m-alice-client",
+    }
+
+
+def set_cloud_control(enabled: bool) -> Dict[str, Any]:
+    """Flip `cloud_control_enabled` — gates sa02m-cloud-control.service exactly
+    as client_enabled gates the Yandex unit. Refuses nothing here: an
+    un-enrolled board simply lands in `missing_identity` standby, which the UI
+    already names — the CGI's sudo trigger does the unit restart."""
+    set_cloud_control_enabled(bool(enabled))
+    return {
+        "ok": True,
+        "cloud_control_enabled": bool(enabled),
+        "message": (
+            "Cloud control enabled — start sa02m-cloud-control"
+            if enabled
+            else "Cloud control disabled — client exits 0 on next start"
+        ),
+        "restart_unit": "sa02m-cloud-control",
     }
 
 
@@ -536,10 +646,17 @@ def delete_device(device_id: str) -> Dict[str, Any]:
 
 
 def reset_mappings() -> Dict[str, Any]:
-    """Factory-reset helper: clear devices, keep certs, disable client."""
+    """Factory-reset helper: clear devices, keep certs, disable both clients
+    (the cloud flag mirrors client_enabled — same conf, same policy row)."""
     save_devices(empty_devices())
     set_client_enabled(False)
-    return {"ok": True, "client_enabled": False, "devices": empty_devices()}
+    set_cloud_control_enabled(False)
+    return {
+        "ok": True,
+        "client_enabled": False,
+        "cloud_control_enabled": False,
+        "devices": empty_devices(),
+    }
 
 
 def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
@@ -587,6 +704,10 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> T
         return 200, set_enable(True)
     if action == "disable":
         return 200, set_enable(False)
+    if action == "cloud_control_enable":
+        return 200, set_cloud_control(True)
+    if action == "cloud_control_disable":
+        return 200, set_cloud_control(False)
     if action == "link":
         return 200, start_link()
     if action == "complete_link":

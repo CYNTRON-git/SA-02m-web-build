@@ -21,10 +21,12 @@ class SioHandlers:
         *,
         publish_mqtt: PublishFn,
         emit_response: EmitFn,
+        profile: str = C.PROFILE_YANDEX,
     ) -> None:
         self.registry = registry
         self._publish = publish_mqtt
         self._emit_response = emit_response
+        self._profile = profile
 
     def handle(self, event: str, data: Any) -> None:
         if not isinstance(data, dict):
@@ -39,12 +41,19 @@ class SioHandlers:
             payload = data.get("payload") or data
             self._on_action(request_id, (payload or {}).get("devices") or [])
         elif event == C.EVT_CONTROLLER_UNLINK:
+            # Yandex-profile only: an unlink is about the mTLS enrollment, and
+            # the cloud session has none to unlink — on the cloud profile the
+            # event is not even registered (sio_connection), and if one ever
+            # arrived it must not touch the Alice cert.
+            if self._profile == C.PROFILE_CLOUD:
+                log.info("controller_unlink ignored on the cloud profile")
+                return
             log.info("Gateway requested controller unlink (local flag clear is UI/API concern)")
         else:
             log.debug("Unhandled event %s", event)
 
     def _on_list(self, request_id: Optional[str]) -> None:
-        devices = self.registry.discovery_devices()
+        devices = self.registry.discovery_devices(profile=self._profile)
         self._emit_response({"request_id": request_id, "payload": {"devices": devices}})
 
     def _on_query(self, request_id: Optional[str], devices: List[Any]) -> None:

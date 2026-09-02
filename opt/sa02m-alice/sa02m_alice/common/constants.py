@@ -17,9 +17,38 @@ PENDING_CLAIM_FILE = os.path.join(VAR_DIR, "pending_claim.json")
 STATUS_FILE = os.environ.get(
     "SA02M_ALICE_STATUS", "/run/sa02m-alice/status.json"
 )
+# Second client profile (docs/contracts/alice-mqtt-mapping.md §Profiles): the
+# same package run by sa02m-cloud-control.service against the fleet cloud's
+# control entry. Its own status file — the two units run side by side.
+STATUS_FILE_CLOUD = os.environ.get(
+    "SA02M_ALICE_STATUS_CLOUD", "/run/sa02m-alice/status-cloud.json"
+)
+
+# Client profiles. `alice` is the package's historical name; the package is the
+# smart-home transport and the Yandex gateway is one consumer of it.
+PROFILE_YANDEX = "yandex"
+PROFILE_CLOUD = "cloud"
+PROFILES = (PROFILE_YANDEX, PROFILE_CLOUD)
+
+# Cloud identity — written by the cloud agent at enrollment (Phase C), never by
+# this package. The secret is 0600 root: only the root client reads it.
+CLOUD_AGENT_CONF = os.environ.get("SA02M_CLOUD_AGENT_CONF", "/etc/sa02m-cloud/agent.conf")
+CLOUD_DEVICE_SECRET = os.environ.get(
+    "SA02M_CLOUD_DEVICE_SECRET", "/etc/sa02m-cloud/device_secret"
+)
 
 DEFAULT_GATEWAY_WSS = "wss://alice.cyntron.ru/controller/socket.io"
 DEFAULT_GATEWAY_HTTP = "https://alice.cyntron.ru"
+# Cloud profile seam (fixed with the sibling `cloud` repo, 1.0.6.26): nginx
+# rewrites /control/socket.io to the hub's /controller/socket.io.
+DEFAULT_CLOUD_CONTROL_URL = "wss://cloud.cyntron.ru/control/socket.io"
+# Token mint endpoint, relative to the cloud agent's `api_url`
+# (/etc/sa02m-cloud/agent.conf [cloud] api_url, default …/api/v1).
+DEFAULT_CLOUD_API_URL = "https://cloud.cyntron.ru/api/v1"
+CLOUD_TOKEN_PATH = "/control/token"
+CLOUD_TOKEN_TIMEOUT_S = 10.0
+# Handshake header carrying the minted JWT. Fixed seam name — never rename.
+HDR_CONTROL_TOKEN = "X-Control-Token"
 DEFAULT_MQTT_HOST = "127.0.0.1"
 DEFAULT_MQTT_PORT = 1883
 SIO_PATH = "/socket.io"
@@ -30,6 +59,19 @@ EVT_DEVICES_QUERY = "alice_devices_query"
 EVT_DEVICES_ACTION = "alice_devices_action"
 EVT_DEVICE_STATE = "device_state"
 EVT_CONTROLLER_UNLINK = "controller_unlink"
+
+# `device_state.origin` (additive, both profiles): `live` = an MQTT-driven
+# report through StateSender.offer, `snapshot` = offer_snapshot (reconnect /
+# STATE_SNAPSHOT_S cadence / reload). What the cloud does with it is the cloud
+# contract's (docs/contracts/cloud-device-control.md in the sibling repo:
+# `live` frames confirm a tap, snapshots never do); an older gateway ignores
+# the field.
+ORIGIN_LIVE = "live"
+ORIGIN_SNAPSHOT = "snapshot"
+
+# Device-document tile icons (config/models.py allow-list; the ids are shared
+# with the cloud control page's sprite).
+DEVICE_ICONS = ("bulb", "fan", "socket", "relay", "pump", "valve", "siren", "generic")
 
 # Yandex action/query error codes
 ERR_DEVICE_UNREACHABLE = "DEVICE_UNREACHABLE"
@@ -85,3 +127,6 @@ STATE_CONNECTED = "connected"
 STATE_ERROR = "error"
 STATE_MISSING_DEPS = "missing_deps"
 STATE_MISSING_CERT = "missing_cert"
+# Cloud profile only: agent.conf has no device_id/serial or the device_secret
+# file is absent — standby, exit 0, the cloud twin of missing_cert.
+STATE_MISSING_IDENTITY = "missing_identity"

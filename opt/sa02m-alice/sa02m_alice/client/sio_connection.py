@@ -6,10 +6,11 @@ import logging
 import random
 import ssl
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 from ..common import constants as C
-from ..common.config_store import cert_paths_present, gateway_urls
+from ..common.config_store import cert_paths_present, cloud_control_urls, gateway_urls
 
 log = logging.getLogger("sa02m_alice.sio")
 
@@ -75,8 +76,32 @@ def build_ssl_context(
     return ctx
 
 
+def split_engine_url(wss: str) -> Tuple[str, str]:
+    """(host root URL, engine path) for a full `…/socket.io` control URL.
+
+    python-socketio joins `socketio_path` from the host root, so the URL's own
+    path is handed over as the engine path. `wss://h/control/socket.io` →
+    (`wss://h`, `control/socket.io`). A URL with no `socket.io` segment gets
+    the default engine path appended below its own path.
+    """
+    parts = urlsplit(wss.strip())
+    root = urlunsplit((parts.scheme, parts.netloc, "", "", ""))
+    path = parts.path.strip("/")
+    if not path:
+        return root, "socket.io"
+    if "socket.io" not in path:
+        path = path + "/socket.io"
+    return root, path
+
+
 class AliceSocketIO:
-    """Thin wrapper around python-socketio Client with mTLS + reconnect policy."""
+    """Thin wrapper around python-socketio Client with mTLS + reconnect policy.
+
+    Two profiles (constants.PROFILES): `yandex` — the Alice gateway over mTLS,
+    controller-serial handshake; `cloud` — the fleet cloud's control entry
+    over plain TLS (system roots), authenticated by a short-lived token that
+    `token_provider` mints on EVERY connect (the token is never stored here).
+    """
 
     def __init__(
         self,
@@ -86,6 +111,8 @@ class AliceSocketIO:
         client_version: str = "1.0.0",
         fw_version: str = "",
         hw_variant: str = "",
+        profile: str = C.PROFILE_YANDEX,
+        token_provider: Optional[Callable[[], str]] = None,
         monotonic: Callable[[], float] = time.monotonic,
         walltime: Callable[[], float] = time.time,
     ) -> None:
@@ -94,6 +121,8 @@ class AliceSocketIO:
         self._client_version = client_version
         self._fw_version = fw_version
         self._hw_variant = hw_variant
+        self._profile = profile
+        self._token_provider = token_provider
         self._sio = None
         self._connected = False
         # Session evidence. Duration is measured on the MONOTONIC clock (an
@@ -110,18 +139,40 @@ class AliceSocketIO:
         self._disconnect_reason: Optional[str] = None
         self._local_shutdown = False
 
-    def _build_headers(self) -> Dict[str, str]:
-        """Handshake headers for the mTLS connect.
+    @property
+    def profile(self) -> str:
+        return self._profile
+
+    def _events(self) -> Tuple[str, ...]:
+        """Gateway→controller events this profile listens to.
+
+        `controller_unlink` is a Yandex-profile event about the mTLS
+        enrollment; the cloud session has none, so it is NOT registered there
+        — the event cannot reach the handler and cannot touch the Alice cert.
+        """
+        base = (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION)
+        if self._profile == C.PROFILE_CLOUD:
+            return base
+        return base + (C.EVT_CONTROLLER_UNLINK,)
+
+    def _build_headers(self, token: str = "") -> Dict[str, str]:
+        """Handshake headers for the connect.
 
         X-FW-Version / X-HW-Variant are a fixed seam-contract with the gateway
         (repo `cloud`, branch feature/alice-gateway-standard) — never rename.
         Each is sent ONLY when non-empty so an old gateway that ignores them
         and a client with no value both still connect (backward-compat).
+
+        Yandex profile: X-Controller-SN identifies the mTLS-enrolled
+        controller. Cloud profile: X-Control-Token carries the minted JWT
+        instead — no serial, no device id/secret headers, no client cert (the
+        hub keys the session `cloud:<device_id>` from the token itself).
         """
-        headers = {
-            "X-Controller-SN": self._controller_sn or "unknown",
-            "X-Client-Version": self._client_version,
-        }
+        headers = {"X-Client-Version": self._client_version}
+        if self._profile == C.PROFILE_CLOUD:
+            headers[C.HDR_CONTROL_TOKEN] = token
+        else:
+            headers["X-Controller-SN"] = self._controller_sn or "unknown"
         if self._fw_version:
             headers["X-FW-Version"] = self._fw_version
         if self._hw_variant:
@@ -225,8 +276,18 @@ class AliceSocketIO:
             )
         )
 
-    def connect(self) -> None:
-        socketio = import_socketio()
+    def _connect_target(self) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+        """(host root URL, engine path, verify TLS, websocket extra options).
+
+        Yandex: mTLS client cert via websocket-client's sslopt, system CAs for
+        the server. Cloud: plain TLS on system roots, no client cert at all.
+        Lab ws:// on either profile skips TLS.
+        """
+        if self._profile == C.PROFILE_CLOUD:
+            wss, _token_url = cloud_control_urls()
+            use_tls = wss.startswith("wss://") or wss.startswith("https://")
+            url, engine_path = split_engine_url(wss)
+            return url, engine_path, use_tls, None
         wss, _http, path = gateway_urls()
         # Lab: ws:// skips TLS (LAN smoke). Production uses wss:// + mTLS.
         use_tls = wss.startswith("wss://") or wss.startswith("https://")
@@ -247,6 +308,38 @@ class AliceSocketIO:
                     "cert_reqs": ssl.CERT_REQUIRED,
                 }
             }
+        # Normalize to host root + engine path "controller/socket.io".
+        # python-socketio joins socketio_path from the host root, not from a
+        # path prefix left in the URL — leaving "/controller" in the URL made
+        # lab clients hit "/socket.io" and get 403.
+        url = wss
+        engine_path = "controller/socket.io"
+        if "/controller/socket.io" in url:
+            url = url.split("/controller/socket.io", 1)[0]
+            engine_path = "controller/socket.io"
+        elif url.rstrip("/").endswith("/socket.io"):
+            url = url[: url.rfind("/socket.io")]
+            stripped = (path or "").lstrip("/")
+            engine_path = stripped if stripped.startswith("controller/") else (
+                "controller/" + stripped if stripped else engine_path
+            )
+        else:
+            stripped = (path or "").lstrip("/")
+            if stripped:
+                engine_path = stripped if "socket.io" in stripped else engine_path
+        return url, engine_path, use_tls, ws_extra
+
+    def connect(self) -> None:
+        socketio = import_socketio()
+        url, engine_path, use_tls, ws_extra = self._connect_target()
+        # Cloud profile: a fresh token on EVERY connect — minted here, inside
+        # the connect, so no reconnect path can reuse one. Held only for the
+        # duration of the handshake and never logged.
+        token = ""
+        if self._profile == C.PROFILE_CLOUD:
+            if self._token_provider is None:
+                raise RuntimeError("cloud profile needs a token_provider")
+            token = self._token_provider()
         # Reconnect is owned by client/main.py outer loop. Enabling both
         # python-socketio auto-reconnect and the outer tear-down/reconnect
         # loop caused connect/disconnect flapping (duplicate sessions).
@@ -275,34 +368,10 @@ class AliceSocketIO:
                 self._disconnect_reason,
             )
 
-        for name in (
-            C.EVT_DEVICES_LIST,
-            C.EVT_DEVICES_QUERY,
-            C.EVT_DEVICES_ACTION,
-            C.EVT_CONTROLLER_UNLINK,
-        ):
+        for name in self._events():
             self._register(name)
 
-        headers = self._build_headers()
-        # Normalize to host root + engine path "controller/socket.io".
-        # python-socketio joins socketio_path from the host root, not from a
-        # path prefix left in the URL — leaving "/controller" in the URL made
-        # lab clients hit "/socket.io" and get 403.
-        url = wss
-        engine_path = "controller/socket.io"
-        if "/controller/socket.io" in url:
-            url = url.split("/controller/socket.io", 1)[0]
-            engine_path = "controller/socket.io"
-        elif url.rstrip("/").endswith("/socket.io"):
-            url = url[: url.rfind("/socket.io")]
-            stripped = (path or "").lstrip("/")
-            engine_path = stripped if stripped.startswith("controller/") else (
-                "controller/" + stripped if stripped else engine_path
-            )
-        else:
-            stripped = (path or "").lstrip("/")
-            if stripped:
-                engine_path = stripped if "socket.io" in stripped else engine_path
+        headers = self._build_headers(token)
         self._sio.connect(
             url,
             socketio_path=engine_path,

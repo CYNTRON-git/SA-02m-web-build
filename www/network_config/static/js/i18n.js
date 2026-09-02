@@ -203,6 +203,43 @@
     'Отключено': 'Disabled',
     'сертификат шлюза не доверенный': 'gateway certificate not trusted',
     'Управление привязками': 'Manage bindings',
+    // «Умный дом» card + rooms/devices modal (1.0.6.26)
+    'Умный дом': 'Smart home',
+    'Комнаты и устройства': 'Rooms and devices',
+    'Управление из облака': 'Cloud control',
+    'Показывать в Алисе': 'Show in Alice',
+    'скрыто из Алисы': 'hidden from Alice',
+    'Комната': 'Room',
+    'Комнаты': 'Rooms',
+    'Без комнаты': 'No room',
+    'Добавить комнату': 'Add room',
+    'Удалить комнату': 'Delete room',
+    'Название комнаты': 'Room name',
+    'Укажите название комнаты': 'Enter a room name',
+    'Комната добавлена': 'Room added',
+    'Комната удалена': 'Room deleted',
+    'Комнаты ещё не добавлены': 'No rooms added yet',
+    'Значок': 'Icon',
+    'Включить/выключить': 'On/off',
+    'Датчики': 'Sensors',
+    'Вентилятор': 'Fan',
+    'Другое': 'Other',
+    'Насос': 'Pump',
+    'Клапан': 'Valve',
+    'Сирена': 'Siren',
+    'в Алисе': 'in Alice',
+    'Устройств в Алисе': 'Devices in Alice',
+    'Сначала привяжите устройство к облаку': 'Pair the device with the cloud first',
+    'Нет идентификации': 'Not enrolled',
+    'файл не найден': 'file not found',
+    'сервер недоступен': 'server unreachable',
+    'соединение потеряно': 'connection lost',
+    'доступ отозван': 'access revoked',
+    'неверные учётные данные': 'invalid credentials',
+    'слишком много запросов': 'too many requests',
+    'управление не включено на сервере': 'control not enabled on the server',
+    'нет облачной идентификации': 'no cloud identity',
+    'Включено': 'Enabled',
     'Выключатель': 'Switch',
     'Переключатель': 'Switch',
     'Розетка': 'Socket',
@@ -1442,6 +1479,7 @@
     applyDataI18n();
     if (typeof window.updateThemeBtn === 'function') window.updateThemeBtn();
     if (typeof window.refreshServicesControlI18n === 'function') window.refreshServicesControlI18n();
+    if (typeof window.refreshSmartHomeI18n === 'function') window.refreshSmartHomeI18n();
     if (typeof window.refreshServicesDynamicI18n === 'function') window.refreshServicesDynamicI18n();
     if (typeof window.refreshMainStatusI18n === 'function') window.refreshMainStatusI18n();
     if (typeof window.refreshPriorityStatusI18n === 'function') window.refreshPriorityStatusI18n();

@@ -1,8 +1,13 @@
 #!/bin/bash
-# SA-02m Alice config API bridge (session auth → Python dispatch).
-# GET  → full config + link/probe status
-# POST {"action":"enable"|"disable"|"link"|"unlink"|"upsert_room"|"delete_room"|
+# SA-02m smart-home config API bridge (session auth → Python dispatch).
+# One CGI for both cards («Умный дом» rooms/devices/bindings + cloud control,
+# «Яндекс Алиса» status/link/enable) — the split is UI-level only.
+# GET  → full config + link/probe status (+ cloud_control block)
+# POST {"action":"enable"|"disable"|"cloud_control_enable"|"cloud_control_disable"|
+#               "link"|"unlink"|"upsert_room"|"delete_room"|
 #               "upsert_device"|"delete_device"|"available"|"mqtt_topics"|"status", ...}
+# The action allow-list is the Python dispatch (unknown ⇒ not_found); the sudo
+# nudges below fire only on the exact verbs the sudoers pin grants.
 
 set -u
 
@@ -99,6 +104,16 @@ if [ "$METHOD" = "POST" ]; then
     if [ "$ACTION" = "enable" ] || [ "$ACTION" = "disable" ]; then
         sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh "$ACTION" >/dev/null 2>&1 || true
     fi
+    # Cloud control (second unit, sa02m-cloud-control): same shape, its own
+    # pinned verbs — the conf flag is already written by the dispatch above.
+    case "$ACTION" in
+        cloud_control_enable)
+            sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh cloud-enable >/dev/null 2>&1 || true
+            ;;
+        cloud_control_disable)
+            sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh cloud-disable >/dev/null 2>&1 || true
+            ;;
+    esac
     # Enrollment just installed the certs: the running client is still in
     # missing_cert standby and only re-reads them at start, so without this
     # the card sits at «нет сертификата» until something else restarts it.
@@ -113,12 +128,14 @@ if [ "$METHOD" = "POST" ]; then
     fi
     # The running client builds its DeviceRegistry once (MQTT subs taken at
     # connect) — after a successful binding mutation restart it so edits
-    # apply, but only when the operator has the client enabled.
+    # apply, but only when the operator has a client enabled. Both units read
+    # the same document: the trigger's `restart` verb covers each enabled one
+    # (a connected client is reloaded in place, never restarted).
     case "$ACTION" in
         upsert_device|delete_device|upsert_room|delete_room)
             case "$RESULT" in
                 *'"ok": true'*|*'"ok":true'*)
-                    if grep -Eq '^\s*client_enabled\s*=\s*[Tt]rue' /etc/sa02m-alice/sa02m-alice-client.conf 2>/dev/null; then
+                    if grep -Eq '^\s*(client_enabled|cloud_control_enabled)\s*=\s*[Tt]rue' /etc/sa02m-alice/sa02m-alice-client.conf 2>/dev/null; then
                         sudo -n /usr/local/sbin/sa02m-alice-web-trigger.sh restart >/dev/null 2>&1 || true
                     fi
                     ;;

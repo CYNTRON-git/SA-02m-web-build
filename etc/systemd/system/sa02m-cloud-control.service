@@ -1,0 +1,25 @@
+[Unit]
+Description=SA-02m cloud control (smart-home client, cloud profile — cloud.cyntron.ru control entry)
+Documentation=file:///opt/sa02m-alice/THIRD_PARTY.md
+After=network-online.target mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/sa02m-alice
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/sa02m-alice
+# Same package as sa02m-alice-client, second profile: authenticates with the
+# cloud agent's device identity (/etc/sa02m-cloud/device_secret, 0600 root —
+# hence User=root), no mTLS cert; status in /run/sa02m-alice/status-cloud.json.
+ExecStart=/usr/bin/python3 -m sa02m_alice.client.main --profile cloud
+# cloud_control_enabled=false → exit 0; do not restart storm on intentional standby
+Restart=on-failure
+RestartSec=10s
+User=root
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

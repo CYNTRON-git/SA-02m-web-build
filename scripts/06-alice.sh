@@ -82,16 +82,21 @@ chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
 # on first install; an operator's opt-in (enabled and/or running) is preserved
 # and a running client is restarted on the fresh code
 # (docs/contracts/installer-refresh-policy.md).
-sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service
+sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service sa02m-cloud-control.service
 
 install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-client.service" /etc/systemd/system/
 install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-config.service" /etc/systemd/system/
+# Second profile of the same package (1.0.6.26): the cloud control entry.
+# Opt-in through the «Умный дом» card, same OFF-by-default policy.
+install -m 0644 -o root -g root \
+    "$UNIT_SRC/sa02m-cloud-control.service" /etc/systemd/system/
 systemctl daemon-reload
 
 sa02m_svc_apply sa02m-alice-config.service app off
 sa02m_svc_apply sa02m-alice-client.service app off
+sa02m_svc_apply sa02m-cloud-control.service app off
 
 # ── Privileged CGI helper + sudoers ────────────────────────────────────────
 install -m 0755 -o root -g root \
@@ -101,7 +106,8 @@ sed -i 's/\r$//' /usr/local/sbin/sa02m-alice-web-trigger.sh
 
 # Устанавливается ЦЕЛИКОМ из коммитнутого etc/sudoers.d/sa02m-alice (audit B1):
 # heredoc-версия была невидима для OTA и оффлайн-пакета и выдавала хелпер БЕЗ
-# аргументов, то есть с любым argv. Коммитнутый файл — пин по трём глаголам.
+# аргументов, то есть с любым argv. Коммитнутый файл — пин по пяти глаголам
+# (три для sa02m-alice-client, два для sa02m-cloud-control).
 sa02m_install_sudoers "$BASE_DIR/etc/sudoers.d/sa02m-alice" /etc/sudoers.d/sa02m-alice
 
 # ── CGI ────────────────────────────────────────────────────────────────────
@@ -112,15 +118,17 @@ for cgi in sa02m_alice_api.cgi sa02m_alice_topics.cgi; do
     sed -i 's/\r$//' "$WEB_CGI/$cgi"
 done
 
-# ── WWW assets (alice.js may also arrive via www-only update) ──────────────
+# ── WWW assets (alice.js / smarthome.js may also arrive via www-only update) ─
 WEB_ROOT_DIR="${WEB_ROOT:-/var/www/network_config}"
-if [ -f "$BASE_DIR/www/network_config/static/js/app/alice.js" ]; then
-    install -d -m 0755 "$WEB_ROOT_DIR/static/js/app"
-    install -m 0644 -o www-data -g www-data \
-        "$BASE_DIR/www/network_config/static/js/app/alice.js" \
-        "$WEB_ROOT_DIR/static/js/app/alice.js"
-fi
+for js in alice.js smarthome.js; do
+    if [ -f "$BASE_DIR/www/network_config/static/js/app/$js" ]; then
+        install -d -m 0755 "$WEB_ROOT_DIR/static/js/app"
+        install -m 0644 -o www-data -g www-data \
+            "$BASE_DIR/www/network_config/static/js/app/$js" \
+            "$WEB_ROOT_DIR/static/js/app/$js"
+    fi
+done
 
-log OK "=== [06-alice] sa02m-alice установлен (обе службы выключены по умолчанию) ==="
-log INFO "sa02m-alice-config и sa02m-alice-client: opt-in через веб-интерфейс (не запускаются сами)"
-log INFO "UI: Управление → Яндекс Алиса. Документация: docs/ALICE_INTEGRATION.md"
+log OK "=== [06-alice] sa02m-alice установлен (все три службы выключены по умолчанию) ==="
+log INFO "sa02m-alice-config, sa02m-alice-client и sa02m-cloud-control: opt-in через веб-интерфейс (не запускаются сами)"
+log INFO "UI: Управление → Умный дом / Яндекс Алиса. Документация: docs/ALICE_INTEGRATION.md"

@@ -1,13 +1,22 @@
 #!/bin/bash
-# Privileged helper for Alice CGI (enable/disable client unit).
+# Privileged helper for the smart-home CGI (enable/disable the two client
+# units: sa02m-alice-client = Yandex profile, sa02m-cloud-control = cloud
+# profile; `restart` = make every enabled client serve the current document).
 set -euo pipefail
 
 STATUS_FILE=/run/sa02m-alice/status.json
+STATUS_FILE_CLOUD=/run/sa02m-alice/status-cloud.json
+CLIENT_CONF=/etc/sa02m-alice/sa02m-alice-client.conf
+ALICE_UNIT=sa02m-alice-client.service
+CLOUD_UNIT=sa02m-cloud-control.service
 # Must match STATUS_STALE_S in opt/sa02m-alice/sa02m_alice/common/constants.py
 # (3x the client's status heartbeat).
 STATUS_STALE_S=90
 
 # Is the client re-reading its device document RIGHT NOW?
+#
+# Args: [unit] [status-file] — default the Yandex unit and its status file;
+# the cloud unit passes its own pair (same binary, same handshake keys).
 #
 # The burden of proof is on the SKIP: this helper is choosing not to do
 # something that always happened before, so every failure path — unreadable
@@ -19,12 +28,13 @@ STATUS_STALE_S=90
 # 0755 root and status.json is written 0644 by the root client. Nothing here
 # evaluates the file's contents — two fixed patterns and one integer range.
 alice_reload_capable() {
+    local unit="${1:-sa02m-alice-client.service}" file="${2:-$STATUS_FILE}"
     # 1. The unit is actually running (stopped/failed/crashed => restart).
-    timeout 5 systemctl is-active --quiet sa02m-alice-client.service || return 1
+    timeout 5 systemctl is-active --quiet "$unit" || return 1
 
-    [ -r "$STATUS_FILE" ] || return 1
+    [ -r "$file" ] || return 1
     local raw ts now age
-    raw=$(head -c 4096 "$STATUS_FILE" 2>/dev/null) || return 1
+    raw=$(head -c 4096 "$file" 2>/dev/null) || return 1
     [ -n "$raw" ] || return 1
 
     # 2. The capability handshake. An older client never writes this key, and
@@ -67,26 +77,51 @@ alice_reload_capable() {
     return 0
 }
 
+# Is a client flag set in the shared conf? (`client_enabled` /
+# `cloud_control_enabled`.) The CGI already gated on the same grep; re-read
+# here so the restart verb touches only a unit the operator has opted into.
+conf_flag_true() {
+    grep -Eq "^[[:space:]]*$1[[:space:]]*=[[:space:]]*[Tt]rue" "$CLIENT_CONF" 2>/dev/null
+}
+
+# enable/disable one unit. Do not force the conf flag here — CGI/Python
+# already wrote it. Defensive unmask: cmd_stop's mask SKIPS these units (real
+# fragments in /etc/systemd/system — unit_can_mask declines), so this only
+# repairs a unit left masked by hand or by legacy states; harmless otherwise.
+# Every systemctl is bounded: the CGI calls this trigger SYNCHRONOUSLY inside
+# nginx's 20 s fastcgi budget on a shared 8-worker fcgiwrap — an unbounded
+# call on a wedged unit/dbus pins workers and 504s the request
+# (web-code-rigor "timeouts everywhere" floor).
+unit_enable() {
+    timeout 10 systemctl unmask "$1" >/dev/null 2>&1 || true
+    timeout 10 systemctl enable "$1" >/dev/null 2>&1 || true
+    timeout 10 systemctl restart "$1" || true
+}
+
+# Stop, then restart: with the flag false the client exits 0 at once, and that
+# run is what writes the `disabled` status the card shows.
+unit_disable() {
+    timeout 10 systemctl stop "$1" >/dev/null 2>&1 || true
+    timeout 10 systemctl restart "$1" >/dev/null 2>&1 || true
+}
+
 ACTION="${1:-}"
 case "$ACTION" in
   enable)
-    # Do not force client_enabled here — CGI/Python already wrote the conf.
-    # Defensive unmask: cmd_stop's mask SKIPS this unit (real fragment in
-    # /etc/systemd/system — unit_can_mask declines), so this only repairs a
-    # unit left masked by hand or by legacy states; harmless otherwise.
-    # Every systemctl is bounded: the CGI calls this trigger SYNCHRONOUSLY
-    # inside nginx's 20 s fastcgi budget on a shared 8-worker fcgiwrap — an
-    # unbounded call on a wedged unit/dbus pins workers and 504s the request
-    # (web-code-rigor "timeouts everywhere" floor).
-    timeout 10 systemctl unmask sa02m-alice-client.service >/dev/null 2>&1 || true
-    timeout 10 systemctl enable sa02m-alice-client.service >/dev/null 2>&1 || true
-    timeout 10 systemctl restart sa02m-alice-client.service || true
+    unit_enable "$ALICE_UNIT"
     echo '{"ok":true,"action":"enable"}'
     ;;
   disable)
-    timeout 10 systemctl stop sa02m-alice-client.service >/dev/null 2>&1 || true
-    timeout 10 systemctl restart sa02m-alice-client.service >/dev/null 2>&1 || true
+    unit_disable "$ALICE_UNIT"
     echo '{"ok":true,"action":"disable"}'
+    ;;
+  cloud-enable)
+    unit_enable "$CLOUD_UNIT"
+    echo '{"ok":true,"action":"cloud-enable"}'
+    ;;
+  cloud-disable)
+    unit_disable "$CLOUD_UNIT"
+    echo '{"ok":true,"action":"cloud-disable"}'
     ;;
   restart)
     # The verb means "make the running client serve the CURRENT device
@@ -95,18 +130,34 @@ case "$ACTION" in
     # Socket.IO session down with the process (a restart cost the account
     # 60-150 s with zero devices). The CGI is unchanged and knows none of
     # this: the decision lives here, where the client and this file ship
-    # together in one 06-alice.sh run. Bounded — see enable.
+    # together in one 06-alice.sh run. Bounded — see unit_enable.
     #
     # TWO CGI call sites send this verb — a binding mutation and the
     # `complete_link` cert nudge. The skip must therefore be safe for both,
     # which is what the state check buys: outside a live session the client
     # is not watching anything, so the restart still happens.
+    #
+    # Since 1.0.6.26 the same document feeds the cloud-control unit too: it
+    # gets the same reload-or-restart decision against ITS status file, but
+    # only when its flag is on — a disabled unit is left alone (the Yandex
+    # unit keeps its unconditional pre-1.0.6.26 behaviour: the CGI already
+    # gates it, and the cert nudge must reach a client in standby).
     if alice_reload_capable; then
-        echo '{"ok":true,"action":"restart","applied":"reload"}'
+        applied=reload
     else
         timeout 10 systemctl restart sa02m-alice-client.service || true
-        echo '{"ok":true,"action":"restart","applied":"restart"}'
+        applied=restart
     fi
+    cloud_applied=skipped
+    if conf_flag_true cloud_control_enabled; then
+        if alice_reload_capable "$CLOUD_UNIT" "$STATUS_FILE_CLOUD"; then
+            cloud_applied=reload
+        else
+            timeout 10 systemctl restart "$CLOUD_UNIT" || true
+            cloud_applied=restart
+        fi
+    fi
+    echo "{\"ok\":true,\"action\":\"restart\",\"applied\":\"$applied\",\"cloud_applied\":\"$cloud_applied\"}"
     ;;
   *)
     echo '{"ok":false,"error":"unknown_action"}'

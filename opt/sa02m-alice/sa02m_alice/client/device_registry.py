@@ -89,11 +89,23 @@ class DeviceRegistry:
             room = self._rooms.get(room_id) or {}
             return str(room.get("name") or "")
 
-    def discovery_devices(self) -> List[Dict[str, Any]]:
-        """Yandex discovery device list (no live state)."""
+    def discovery_devices(self, profile: str = C.PROFILE_YANDEX) -> List[Dict[str, Any]]:
+        """Discovery device list (no live state), shaped per profile.
+
+        The Yandex profile drops devices with `alice_visible: false` (absent ⇒
+        visible) and carries nothing but the Yandex fields. The cloud profile
+        lists EVERY device and adds the local tile fields (`icon`,
+        `alice_visible`) — additive, its own consumer. Query / action / state
+        stay unfiltered on both: a stale Yandex list is harmless and self-heals
+        on «Обновить список устройств» (docs/contracts/alice-mqtt-mapping.md).
+        """
+        cloud = profile == C.PROFILE_CLOUD
         out: List[Dict[str, Any]] = []
         with self._lock:
             for did, dev in self._devices_by_id.items():
+                visible = dev.get("alice_visible", True) is not False
+                if not cloud and not visible:
+                    continue
                 caps = []
                 for item in dev.get("capabilities", []) or []:
                     if not isinstance(item, dict):
@@ -118,16 +130,19 @@ class DeviceRegistry:
                     if item.get("parameters"):
                         block["parameters"] = item["parameters"]
                     props.append(block)
-                out.append(
-                    {
-                        "id": did,
-                        "name": dev.get("name") or did,
-                        "room": self.room_name(dev.get("room_id")),
-                        "type": dev.get("type") or "devices.types.other",
-                        "capabilities": caps,
-                        "properties": props,
-                    }
-                )
+                entry: Dict[str, Any] = {
+                    "id": did,
+                    "name": dev.get("name") or did,
+                    "room": self.room_name(dev.get("room_id")),
+                    "type": dev.get("type") or "devices.types.other",
+                    "capabilities": caps,
+                    "properties": props,
+                }
+                if cloud:
+                    entry["alice_visible"] = visible
+                    if dev.get("icon"):
+                        entry["icon"] = str(dev["icon"])
+                out.append(entry)
         return out
 
     def query_devices(self, device_ids: Optional[Iterable[str]] = None) -> List[Dict[str, Any]]:

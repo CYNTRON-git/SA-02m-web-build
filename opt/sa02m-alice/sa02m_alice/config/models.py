@@ -6,6 +6,11 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..common import constants as C
+
+# Tile icon allow-list (docs/contracts/alice-mqtt-mapping.md §Device document).
+DEVICE_ICONS = frozenset(C.DEVICE_ICONS)
+
 # Widen these deliberately: nothing downstream re-checks them (why —
 # docs/contracts/alice-mqtt-mapping.md, §Device document).
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -203,6 +208,20 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
         if not _ID_RE.match(str(out["room_id"])):
             return None, "invalid room_id"
         out["room_id"] = str(out["room_id"])
+    # `alice_visible`: absent ⇒ true (every pre-existing document is unchanged
+    # and stays visible). Only the Yandex discovery list reads it — a strict
+    # bool so a stray "false" string can never hide a device by accident.
+    if "alice_visible" in out:
+        if not isinstance(out["alice_visible"], bool):
+            return None, "invalid alice_visible"
+    # `icon`: optional tile icon for the cloud control page. Empty/None is
+    # "unset" and the key is dropped; anything else must be in the allow-list.
+    if "icon" in out:
+        icon = out["icon"]
+        if icon in (None, ""):
+            del out["icon"]
+        elif not isinstance(icon, str) or icon not in DEVICE_ICONS:
+            return None, "invalid icon"
     for key in ("capabilities", "properties"):
         if key in out and out[key] is not None:
             if not isinstance(out[key], list):

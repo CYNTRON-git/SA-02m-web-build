@@ -40,6 +40,28 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
 }
 ```
 
+### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
+
+Two optional device-level keys beside `room_id`, validated by
+`config/models.py::validate_device`:
+
+- `alice_visible` (bool; **absent ⇒ `true`**, so every pre-existing document
+  is unchanged). Read by the **Yandex-profile discovery list only**: a device
+  with `alice_visible: false` is dropped from `alice_devices_list` on that
+  profile and never reaches the Alice app. Query / action / state stay
+  **unfiltered** on both profiles — a Yandex list that still names a hidden
+  device is harmless (its query answers from the cache as before) and
+  self-heals on «Обновить список устройств». A non-bool value is rejected.
+- `icon` (string, allow-list `bulb | fan | socket | relay | pump | valve |
+  siren | generic`; `""`/`null` drops the key). A tile icon for the cloud
+  control page; the ids match that page's sprite and the board's own
+  `#sh-icons`. Never forwarded to Yandex.
+
+Discovery per profile (`device_registry.discovery_devices(profile)`): the
+Yandex profile carries only the Yandex fields; the **cloud profile lists every
+device** and adds `alice_visible` + `icon` to each entry (additive — the cloud
+page is its only consumer).
+
 ### Float properties (sensor devices)
 
 A sensor binding is a device whose `properties` carry one
@@ -197,7 +219,11 @@ in place, without restarting it and without dropping the Socket.IO session:
   its previous cert until it drops — the SSL context is built in
   `sio_connection.connect()`.
 
-## Socket.IO events (controller ↔ `alice.cyntron.ru`)
+## Socket.IO events (controller ↔ gateway, both profiles)
+
+The package is the smart-home transport; `alice` is a historical name. A
+second unit runs the cloud profile (§Profiles below) against the fleet cloud's
+control entry with the **identical** event set.
 
 | Direction | Event | Body |
 |---|---|---|
@@ -205,8 +231,22 @@ in place, without restarting it and without dropping the Socket.IO session:
 | C→G | `alice_devices_response` | `{request_id, payload:{devices:[]}}` |
 | G→C | `alice_devices_query` | `{request_id, devices:[{id}]}` |
 | G→C | `alice_devices_action` | `{request_id, payload:{devices:[…]}}` |
-| C→G | `device_state` | `{ts, payload:{devices:[]}}` |
-| G→C | `controller_unlink` | `{}` |
+| C→G | `device_state` | `{ts, origin, payload:{devices:[]}}` |
+| G→C | `controller_unlink` | `{}` — Yandex profile only; **not registered on the cloud profile** (it must never touch the mTLS cert) |
+
+`device_state.origin` (additive, 1.0.6.26; an older gateway ignores it):
+`"live"` = an MQTT-driven report through `StateSender.offer`, `"snapshot"` =
+`offer_snapshot` (reconnect / the 30 s cadence / an in-place reload). Live and
+snapshot batches are flushed as **separate** payloads, snapshot first, live
+last. What the cloud does with the tag is the cloud contract's, one home:
+`docs/contracts/cloud-device-control.md` §Подтверждение in the sibling repo (a
+`live` frame confirms a tap when all three hold: its per-capability `live`
+timestamp is newer than the command, its live value equals the commanded
+value, and the current value equals the commanded value; snapshots and
+queries never confirm and never cancel a `live` that already happened — push
+order does not matter there). The snapshot-first order is
+kept as defence in depth for a hub older than 0.8.1, which kept only the last
+`origin` per device. Both profiles send it.
 
 ## Error codes (Yandex)
 
@@ -229,6 +269,24 @@ single batch row, so a six-reading card refreshed one value per window. The
 limit is a floor between reports of the SAME reading, not a refresh period;
 `query` answers from the MQTT cache and is unrated, so a card is never stale
 on open.
+
+**Capability change-bypass (1.0.6.26).** A live capability report whose
+normalised `state` differs from the value last sent for that key goes out
+even inside the window (a repeat of the same value inside the window stays
+suppressed; the snapshot path still stamps the budget) — otherwise a cadence
+snapshot at T silenced the MQTT echo of a tap landing before T + 0.75 s and
+no `live` frame ever left the board. Properties keep their windows unchanged.
+
+**Ceiling, by construction.** A report admitted by the bypass alone is
+scheduled on the **normal 1.0 s flush only** — it never rides the 0.1 s fast
+cadence an event property latches (events keep that cadence untouched) — so
+per key it is at most one bypass report per second plus at most one
+window-elapsed report; a manual full flush (the ≤ 1-per-30 s snapshot
+cadence, a reload, a reconnect) may deliver a held report earlier, never
+more often. That keeps the send rate inside Yandex's 0.75 s on/off floor on
+both profiles. Cost: during an event burst an on/off change leaves up to 1 s
+later, irrelevant for the cloud's 8 s confirm window. Validating tests:
+`test_state_origin.py` `TestReportCeiling`.
 
 **Reconnect snapshot.** After the retained-settle sleep the client offers
 `registry.query_devices()` through `StateSender.offer_snapshot` (same merge as
@@ -291,6 +349,42 @@ permission-blind and returns a false "absent").
 Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`,
 `test_reload_watch.py`; the cross-language handshake is pinned by the
 `alice-reload-handshake` quality row.
+
+## Profiles (1.0.6.26) — one package, two units
+
+`sa02m_alice.client.main --profile {yandex,cloud}` (env `SA02M_ALICE_PROFILE`
+too; default `yandex`). Every machine name stays (`opt/sa02m-alice`,
+`/etc/sa02m-alice/*`, `SA02M_ALICE_*`); only the UI names it «Умный дом».
+Reconnect backoff, watchdog, in-place document reload, retained grace, the
+30 s snapshot cadence and the event table above are shared unchanged.
+
+| | `yandex` — `sa02m-alice-client.service` | `cloud` — `sa02m-cloud-control.service` |
+|---|---|---|
+| Enable flag (`sa02m-alice-client.conf`) | `client_enabled` | `cloud_control_enabled` (default `false`) |
+| Endpoint | `[gateway] wss_url` (`wss://alice.cyntron.ru/controller/socket.io`) | `[gateway] cloud_control_url` (`wss://cloud.cyntron.ru/control/socket.io`; nginx rewrites to the hub's `/controller/socket.io`) |
+| Identity | mTLS device cert (`/var/lib/sa02m-alice`) | the cloud agent's `device_id` (`/etc/sa02m-cloud/agent.conf`) + `device_secret` (0600 root); **never** `_controller_sn()` |
+| Auth on connect | client cert | (1) `POST <api_url>/control/token` `{device_id, device_secret}` → `{ok, token, expires_in_s:600}` (`api_url` from `agent.conf`, override `[gateway] cloud_token_url`); (2) header `X-Control-Token: <jwt>` + the existing `X-Client-Version` / `X-FW-Version` / `X-HW-Variant`. No `X-Controller-SN`, no device id/secret headers, no client cert (plain TLS, system roots). A **fresh token on every (re)connect**, never persisted or logged. |
+| Token refusal | — | `ok:false` / 403 ⇒ state `error` with the fleet's reason (`revoked`, `invalid credential`); 429 (the fleet's per-IP / per-device throttle) ⇒ `error` with reason `too many requests` — reachable only under an abnormal reconnect rate, the ladder resets only after a ≥ 60 s session; 503 ⇒ `offline` (cloud control not enabled on the host); normal reconnect backoff in every case |
+| Missing prerequisite | `missing_cert` standby (exit 0 on disable) | `missing_identity` standby — `agent.conf` has no `device_id`/`serial` or the secret file is absent |
+| Status file | `/run/sa02m-alice/status.json` | `/run/sa02m-alice/status-cloud.json`, same shape + `profile` + `identity_present` (the root client's answer — the www-data API reads it first, exactly like `cert_present`); states `disabled, connecting, connected, offline, error, missing_deps, missing_identity` |
+| Discovery | filtered on `alice_visible` | all devices + tile fields |
+| `controller_unlink` | handled | not registered, ignored |
+| Hub session key | controller serial | `cloud:<device_id>` — nothing on the board depends on it |
+
+The web API (`sa02m_alice_api.cgi`, one CGI for both cards) adds a
+`cloud_control` block to `status`/`full_config`: `{enabled, state, ts, error,
+cloud_enrolled, cloud_check}` — `cloud_enrolled` is tri-state like
+`mtls.cert_present` (`true`/`false`/`null` = unknowable, `cloud_check` names
+the source). Actions `cloud_control_enable` / `cloud_control_disable` flip the
+flag and nudge the unit through the privileged trigger's `cloud-enable` /
+`cloud-disable` verbs (sudoers-pinned). A binding mutation restarts/reloads
+**both** enabled units (`restart` verb: the in-place reload check runs per
+unit against its own status file; a disabled cloud unit is left alone).
+
+Validating tests: `opt/sa02m-alice/tests/test_cloud_profile.py`,
+`test_state_origin.py`, `test_tile_fields.py`, `test_cloud_control_api.py`;
+the trigger verbs by `scripts/dev/test-alice-reload-handshake.sh` and the
+sudoers pin by `.ai-dev/quality/checks/sudoers-pin-contract.sh`.
 
 ## Non-goals
 

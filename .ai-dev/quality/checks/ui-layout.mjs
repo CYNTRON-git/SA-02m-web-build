@@ -220,6 +220,8 @@ const CONTRAST_WHITELIST = [
     reason: 'Storage auto-format toggle in its «НЕ УСТАНОВЛЕНО» (no storage-mount) state: the button is btn.disabled=true (app/status.js) — WCAG 1.4.3 disabled-control exemption.' },
   { match: '.kernel-apply-inline', floor: 1.25,
     reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
+  { match: '#sh-btn-cloud', floor: 1.25,
+    reason: '«Умный дом» cloud-control button (added 1.0.6.26) while it cannot act: the harness stubs the CGI with {} so the status payload carries no cloud_control block, and app/smarthome.js shRenderCloud sets btn.disabled=true (the same lock a not-cloud-enrolled board gets) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-apply-inline case. The ENABLED button is the standard btn-primary pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
   { match: '.kernel-refresh-inline', floor: 2.0,
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
   // NOTE: no #cloud-btn-activate entry — it lives inside a collapsed

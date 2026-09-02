@@ -6,12 +6,15 @@
 # widened or corrected grant could only ever reach a board through a full
 # install.sh run.
 #
-# SECURITY (audit B1 class): the grant is verb-pinned to the three actions
-# sa02m_alice_api.cgi actually sends. A Cmnd written without arguments permits
-# ANY argument vector, which is what the heredoc form granted.
+# SECURITY (audit B1 class): the grant is verb-pinned to the five actions
+# sa02m_alice_api.cgi actually sends — three for the Yandex unit, two for the
+# cloud-control unit (1.0.6.26). A Cmnd written without arguments permits ANY
+# argument vector, which is what the heredoc form granted.
 #
 # Gate: .ai-dev/quality/checks/sudoers-pin-contract.sh (complete-ledger check).
 
 www-data ALL=(root) NOPASSWD: /usr/local/sbin/sa02m-alice-web-trigger.sh enable, \
     /usr/local/sbin/sa02m-alice-web-trigger.sh disable, \
-    /usr/local/sbin/sa02m-alice-web-trigger.sh restart
+    /usr/local/sbin/sa02m-alice-web-trigger.sh restart, \
+    /usr/local/sbin/sa02m-alice-web-trigger.sh cloud-enable, \
+    /usr/local/sbin/sa02m-alice-web-trigger.sh cloud-disable

@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""sa02m-alice-client — Socket.IO + MQTT bridge to Cyntron Alice Gateway.
+"""sa02m-alice-client — Socket.IO + MQTT bridge, two profiles.
 
-Default: client_enabled=false → exit 0 (standby).
-When enabled: connect with mTLS; on gateway/deps failure write clear status
-and reconnect — never report fake pairing success.
+`--profile yandex` (default; sa02m-alice-client.service): the Cyntron Alice
+Gateway over mTLS. `--profile cloud` (sa02m-cloud-control.service): the fleet
+cloud's control entry, authenticated by the board's cloud identity. Same
+device document, same MQTT cache, same event set; the package name `alice` is
+historical (docs/contracts/alice-mqtt-mapping.md §Profiles).
+
+Default: the profile's enable flag is false → exit 0 (standby).
+When enabled: connect; on gateway/deps failure write clear status and
+reconnect — never report fake pairing success.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -21,12 +28,14 @@ from .. import __version__
 from ..common import constants as C
 from ..common.config_store import (
     cert_paths_present,
-    client_enabled,
+    cloud_control_urls,
     default_client_cfg,
     gateway_urls,
+    profile_enabled,
 )
 from ..common.fw_version import HW_VARIANT, get_fw_version
 from .device_registry import DeviceRegistry
+from .fleet_token import FleetTokenError, cloud_identity_present, mint_control_token, read_cloud_identity
 from .reload_watch import DevicesWatcher, RetainedGrace, apply_reload
 from .sio_connection import AliceSocketIO, SocketIOUnavailable, reconnect_delay
 from .sio_handlers import SioHandlers
@@ -37,14 +46,21 @@ log = logging.getLogger("sa02m_alice.client")
 _stop = threading.Event()
 
 
-def _write_status(state: str, **kw: Any) -> None:
+def status_path(profile: str = C.PROFILE_YANDEX) -> str:
+    return C.STATUS_FILE_CLOUD if profile == C.PROFILE_CLOUD else C.STATUS_FILE
+
+
+def _write_status(state: str, *, profile: str = C.PROFILE_YANDEX, **kw: Any) -> None:
     # `cert_present` is published on EVERY write: this process (root) is the
     # only one that can see into the root-only cert dir, so the world-readable
-    # status file is where the web layer (www-data) learns cert presence.
+    # status file is where the web layer (www-data) learns cert presence. The
+    # cloud profile publishes `identity_present` the same way and for the same
+    # reason (the device secret is 0600 root).
     payload = {
         "state": state,
         "ts": int(time.time()),
         "version": __version__,
+        "profile": profile,
         "cert_present": cert_paths_present(),
         # Capability handshake with usr/local/sbin/sa02m-alice-web-trigger.sh:
         # this binary re-reads the device document in place, so the helper may
@@ -54,7 +70,12 @@ def _write_status(state: str, **kw: Any) -> None:
         "config_watch": True,
         **kw,
     }
-    path = C.STATUS_FILE
+    if profile == C.PROFILE_CLOUD:
+        payload["identity_present"] = cloud_identity_present()
+        # The flag this unit reflects is cloud_control_enabled — name it so.
+        if "client_enabled" in payload:
+            payload["cloud_control_enabled"] = payload.pop("client_enabled")
+    path = status_path(profile)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
@@ -126,23 +147,63 @@ def _controller_sn() -> str:
     return "sa02m"
 
 
-def run() -> int:
+def _cloud_token_provider(token_url: str):
+    """Mint a fresh control token from the cloud identity — called on EVERY
+    connect by AliceSocketIO, never cached (the token lives 10 min)."""
+
+    def provide() -> str:
+        device_id, secret = read_cloud_identity()
+        if not device_id or not secret:
+            raise FleetTokenError("cloud identity missing", C.STATE_MISSING_IDENTITY)
+        return mint_control_token(token_url, device_id, secret)
+
+    return provide
+
+
+def _standby_wait(profile: str, state: str, error: str, msg: str, ready) -> bool:
+    """Soft wait loop for a missing prerequisite (cert / cloud identity).
+
+    Stays up so systemd Restart= does not thrash, re-checks every watchdog
+    tick, never claims linked. Returns True when the prerequisite appeared,
+    False when the profile was disabled or the process is stopping.
+    """
+    while not _stop.wait(C.SIO_WATCHDOG_S):
+        if not profile_enabled(profile):
+            return False
+        if ready():
+            return True
+        _write_status(state, profile=profile, error=error, message=msg, client_enabled=True)
+    return False
+
+
+def run(profile: str = C.PROFILE_YANDEX) -> int:
+    if profile not in C.PROFILES:
+        raise SystemExit("unknown profile %r (expected one of %s)" % (profile, ", ".join(C.PROFILES)))
+    cloud = profile == C.PROFILE_CLOUD
     cfg = default_client_cfg()
     _setup_logging(cfg.get("client", "log_level", fallback="INFO"))
+    flag = "cloud_control_enabled" if cloud else "client_enabled"
+    label = "cloud control" if cloud else "Alice gateway"
 
-    if not client_enabled(cfg):
-        log.info("client_enabled=false — exiting 0 (Alice client standby)")
+    if not profile_enabled(profile, cfg):
+        log.info("%s=false — exiting 0 (%s client standby)", flag, profile)
         _write_status(
             C.STATE_DISABLED,
-            message="Alice client disabled (client_enabled=false)",
+            profile=profile,
+            message="%s client disabled (%s=false)" % (profile, flag),
             client_enabled=False,
         )
         return 0
 
-    wss, http, _path = gateway_urls()
+    if cloud:
+        wss, token_url = cloud_control_urls()
+        http = token_url
+    else:
+        wss, http, _path = gateway_urls()
     _write_status(
         C.STATE_CONNECTING,
-        message="Connecting to gateway",
+        profile=profile,
+        message="Connecting to %s" % label,
         gateway_wss=wss,
         gateway_http=http,
         client_enabled=True,
@@ -157,43 +218,55 @@ def run() -> int:
         log.error("%s", exc)
         _write_status(
             C.STATE_MISSING_DEPS,
+            profile=profile,
             error="missing_deps",
             message=str(exc),
             client_enabled=True,
         )
         return 1
 
-    # Lab ws:// may run without mTLS; production wss:// requires device certs.
-    needs_cert = wss.startswith("wss://") or wss.startswith("https://")
-    if needs_cert and not cert_paths_present():
-        msg = (
-            "mTLS certificate not enrolled (%s / %s). "
-            "Gateway Phase 0 must be available; pairing cannot succeed without it."
-            % (C.CERT_FILE, C.KEY_FILE)
-        )
-        log.error("%s", msg)
-        _write_status(
-            C.STATE_MISSING_CERT,
-            error="missing_cert",
-            message=msg,
-            client_enabled=True,
-            gateway_http=http,
-        )
-        # Stay up in a soft wait loop so systemd Restart= doesn't thrash, but
-        # never claim linked/paired.
-        while not _stop.wait(C.SIO_WATCHDOG_S):
-            if not client_enabled():
-                return 0
-            if cert_paths_present():
-                break
+    if cloud:
+        # The cloud identity is the cloud agent's (device_id + secret file);
+        # without it there is nothing to authenticate as — standby, exit 0 on
+        # disable, exactly the missing_cert shape below.
+        if not cloud_identity_present():
+            msg = (
+                "cloud identity not enrolled (%s / %s). "
+                "Pair the device with the cloud first; control cannot connect without it."
+                % (C.CLOUD_AGENT_CONF, C.CLOUD_DEVICE_SECRET)
+            )
+            log.error("%s", msg)
             _write_status(
-                C.STATE_MISSING_CERT,
-                error="missing_cert",
+                C.STATE_MISSING_IDENTITY,
+                profile=profile,
+                error="missing_identity",
                 message=msg,
                 client_enabled=True,
             )
-        if _stop.is_set():
-            return 0
+            if not _standby_wait(profile, C.STATE_MISSING_IDENTITY, "missing_identity", msg, cloud_identity_present):
+                return 0
+    else:
+        # Lab ws:// may run without mTLS; production wss:// requires device certs.
+        needs_cert = wss.startswith("wss://") or wss.startswith("https://")
+        if needs_cert and not cert_paths_present():
+            msg = (
+                "mTLS certificate not enrolled (%s / %s). "
+                "Gateway Phase 0 must be available; pairing cannot succeed without it."
+                % (C.CERT_FILE, C.KEY_FILE)
+            )
+            log.error("%s", msg)
+            _write_status(
+                C.STATE_MISSING_CERT,
+                profile=profile,
+                error="missing_cert",
+                message=msg,
+                client_enabled=True,
+                gateway_http=http,
+            )
+            # Stay up in a soft wait loop so systemd Restart= doesn't thrash, but
+            # never claim linked/paired.
+            if not _standby_wait(profile, C.STATE_MISSING_CERT, "missing_cert", msg, cert_paths_present):
+                return 0
 
     registry = DeviceRegistry()
     # A binding edit rewrites the device document atomically; the watchdog loop
@@ -229,7 +302,9 @@ def run() -> int:
         except Exception as exc:
             log.error("device_state emit failed: %s", exc)
 
-    handlers = SioHandlers(registry, publish_mqtt=publish, emit_response=emit_response)
+    handlers = SioHandlers(
+        registry, publish_mqtt=publish, emit_response=emit_response, profile=profile
+    )
     sender = StateSender(emit_state)
 
     def on_sio_event(event: str, data: Any) -> None:
@@ -253,12 +328,21 @@ def run() -> int:
             if blocks and sender:
                 sender.offer(blocks)
 
+    def write_connected(message: str) -> None:
+        _write_status(
+            C.STATE_CONNECTED,
+            profile=profile,
+            message=message,
+            gateway_wss=wss,
+            client_enabled=True,
+        )
+
     # Main reconnect loop
     attempt = 0
     while not _stop.is_set():
-        if not client_enabled():
-            log.info("client_enabled cleared — stopping")
-            _write_status(C.STATE_DISABLED, client_enabled=False)
+        if not profile_enabled(profile):
+            log.info("%s cleared — stopping", flag)
+            _write_status(C.STATE_DISABLED, profile=profile, client_enabled=False)
             return 0
         try:
             mqtt = _mqtt_client(mqtt_host, mqtt_port)
@@ -269,10 +353,12 @@ def run() -> int:
 
             sio = AliceSocketIO(
                 on_event=on_sio_event,
-                controller_sn=_controller_sn(),
+                controller_sn="" if cloud else _controller_sn(),
                 client_version=__version__,
                 fw_version=get_fw_version(),
                 hw_variant=HW_VARIANT,
+                profile=profile,
+                token_provider=_cloud_token_provider(http) if cloud else None,
             )
             sio.connect()
             # Re-arm the watcher and re-read the document BEFORE subscribing,
@@ -293,33 +379,25 @@ def run() -> int:
             ignore_retained["active"] = False
             sender.start()
             _emit_cache_snapshot(sender, registry)
-            _write_status(
-                C.STATE_CONNECTED,
-                message="Connected to Alice gateway",
-                gateway_wss=wss,
-                client_enabled=True,
-            )
+            write_connected("Connected to %s" % label)
             # Watchdog loop. One os.stat per tick, beside the INI open+parse
-            # client_enabled() already does every tick — a rounding error.
+            # profile_enabled() already does every tick — a rounding error.
             last_heartbeat = time.monotonic()
             last_snapshot = last_heartbeat
             while not _stop.is_set() and sio.connected:
-                if not client_enabled():
+                if not profile_enabled(profile):
                     break
                 if watcher.changed():
                     added, removed = apply_reload(
                         registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=log
                     )
                     if added or removed:
-                        _write_status(
-                            C.STATE_CONNECTED,
-                            message="Device document reloaded",
-                            gateway_wss=wss,
-                            client_enabled=True,
-                        )
+                        write_connected("Device document reloaded")
                         last_heartbeat = time.monotonic()
                         _emit_cache_snapshot(sender, registry)
                         last_snapshot = last_heartbeat
+                # The snapshot cadence is a REQUIREMENT on the cloud profile
+                # (the hub marks a tile stale past 60 s) — never lengthened.
                 if time.monotonic() - last_snapshot >= C.STATE_SNAPSHOT_S:
                     _emit_cache_snapshot(sender, registry)
                     last_snapshot = time.monotonic()
@@ -327,12 +405,7 @@ def run() -> int:
                     # Keep `ts` advancing in a quiet session: the web trigger
                     # treats a stale status file as "not proven alive" and
                     # falls back to restarting us.
-                    _write_status(
-                        C.STATE_CONNECTED,
-                        message="Connected to Alice gateway",
-                        gateway_wss=wss,
-                        client_enabled=True,
-                    )
+                    write_connected("Connected to %s" % label)
                     last_heartbeat = time.monotonic()
                 time.sleep(1.0)
             log.info("%s", sio.session_summary())
@@ -340,8 +413,9 @@ def run() -> int:
                 break
             _write_status(
                 C.STATE_OFFLINE,
+                profile=profile,
                 error="gateway_disconnected",
-                message="Gateway connection lost; reconnecting",
+                message="%s connection lost; reconnecting" % label,
                 gateway_wss=wss,
                 client_enabled=True,
             )
@@ -353,15 +427,47 @@ def run() -> int:
             attempt = 0 if session_s >= C.SIO_STABLE_S else attempt + 1
             _stop.wait(reconnect_delay(attempt))
         except SocketIOUnavailable as exc:
-            _write_status(C.STATE_MISSING_DEPS, error="missing_deps", message=str(exc))
+            _write_status(C.STATE_MISSING_DEPS, profile=profile, error="missing_deps", message=str(exc))
             return 1
+        except FleetTokenError as exc:
+            # Cloud profile: the fleet refused a token (`error` with its
+            # reason — revoked / invalid credential), or cloud control is not
+            # enabled on the host (`offline`), or the identity vanished
+            # (`missing_identity`). Same bounded ladder as any other failure.
+            log.error("cloud control token: %s", exc.reason)
+            _write_status(
+                exc.state,
+                profile=profile,
+                error=exc.reason,
+                message="cloud control token refused: %s" % exc.reason,
+                gateway_wss=wss,
+                gateway_http=http,
+                client_enabled=True,
+            )
+            attempt += 1
+            _stop.wait(reconnect_delay(attempt))
         except FileNotFoundError as exc:
-            _write_status(C.STATE_MISSING_CERT, error="missing_cert", message=str(exc))
+            # Yandex: the mTLS cert vanished mid-run → the missing_cert standby.
+            # Cloud: there is no cert to miss, and the card has no such state —
+            # publish a real `error` with the real reason instead.
+            if cloud:
+                _write_status(
+                    C.STATE_ERROR,
+                    profile=profile,
+                    error="file_not_found",
+                    message=str(exc),
+                    gateway_wss=wss,
+                    gateway_http=http,
+                    client_enabled=True,
+                )
+            else:
+                _write_status(C.STATE_MISSING_CERT, profile=profile, error="missing_cert", message=str(exc))
             _stop.wait(C.SIO_WATCHDOG_S)
         except Exception as exc:
-            log.error("Alice client error: %s", exc)
+            log.error("%s client error: %s", profile, exc)
             _write_status(
                 C.STATE_ERROR,
+                profile=profile,
                 error="gateway_unreachable",
                 message=str(exc),
                 gateway_wss=wss,
@@ -392,14 +498,26 @@ def run() -> int:
     return 0
 
 
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="SA-02m smart-home client (Alice gateway / cloud control)")
+    parser.add_argument(
+        "--profile",
+        choices=list(C.PROFILES),
+        default=os.environ.get("SA02M_ALICE_PROFILE") or C.PROFILE_YANDEX,
+        help="yandex = Alice gateway over mTLS (default); cloud = fleet cloud control entry",
+    )
+    return parser.parse_args(argv)
+
+
 def main(argv=None) -> int:
-    _ = argv
+    args = parse_args(argv)
+
     def _sig(*_a):
         _stop.set()
 
     signal.signal(signal.SIGTERM, _sig)
     signal.signal(signal.SIGINT, _sig)
-    return run()
+    return run(args.profile)
 
 
 if __name__ == "__main__":

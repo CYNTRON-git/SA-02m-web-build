@@ -8,6 +8,9 @@
   --bg:          #161618;
   --bg-nav:      #1c1c1e;
   --bg-card:     #242426;
+  /* Minimum tap target (WCAG 2.5.8 / web-code-rigor CSS floor); one value for
+     both themes — a size, not a colour. */
+  --tap:         44px;
   --bg-panel:    #2c2c2e;
   --bg-input:    #1c1c1e;
   --bg-toolbar:  #2c2c2e;
@@ -2081,9 +2084,29 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    backing service (sa02m-alice-client / mplc4) is stopped or disabled. */
 #alice-card[hidden],
 #mplc-proj-card[hidden] { display: none !important; }
-/* Alice card action buttons (Привязать / Управление привязками) span the full
-   card width, matching the foot enable button (.system-manage-tile-foot .btn). */
-#alice-card .btn-row > .btn { width: 100%; justify-content: center; }
+/* Alice / Smart-home card action buttons (Привязать / Комнаты и устройства)
+   span the full card width, matching the foot button (.system-manage-tile-foot .btn). */
+#alice-card .btn-row > .btn,
+#sh-card .btn-row > .btn { width: 100%; justify-content: center; }
+/* «Устройств в Алисе: K · Умный дом ›» on the Alice card — the link inherits
+   the secondary text colour and underlines on hover only. */
+/* flex-wrap: at phone-portrait (360 px) the nowrap link would otherwise run
+   past the card edge (ui-layout measured right=416 px) — it drops to its own
+   line instead. */
+.alice-sh-summary { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0 8px; color: var(--text-sec); }
+/* The link is a tap target: --tap tall (ui-layout measured 40.3 px without it).
+   Dark: --cyan #22d3ee on --bg-card #242426 = 8.57:1. */
+.alice-sh-summary a {
+  display: inline-flex; align-items: center; min-height: var(--tap);
+  color: var(--cyan); text-decoration: none; white-space: nowrap;
+}
+/* Light: --cyan #0891b2 on the white card is 3.68:1 (ui-layout, AA fail);
+   --cyan-hover #0e7490 measures 5.36:1 on #ffffff (4.80:1 on --bg-panel). */
+html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
+.alice-sh-summary a:hover { text-decoration: underline; }
+/* «Управление из облака» row on the Smart-home card: label + state badge. */
+.sh-cloud-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; }
+.sh-cloud-row .sh-cloud-label { font-size: .85rem; white-space: nowrap; }
 .conn-offline-note .conn-recheck-btn {
   width: 100%;
 }
@@ -2091,10 +2114,11 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   margin-top: 6px;
   color: var(--red);
 }
-/* Яндекс Алиса — the card message (#alice-msg, status/link/enable feedback) and
-   the bindings-modal message (#alice-bind-msg, add-device feedback). Neither was
-   styled by the cloud-card-scoped rule — give them the same both-theme error/ok
-   tokens so a friendly status reads clearly (never a raw exception, 1.0.5.73). */
+/* Card messages (#alice-msg on «Яндекс Алиса», #sh-msg on «Умный дом») and the
+   rooms/devices-modal message (#sh-bind-msg, add-device feedback). None is
+   styled by the cloud-card-scoped rule — the rules below give them the same
+   both-theme error/ok tokens so a friendly status reads clearly (never a raw
+   exception, 1.0.5.73). */
 /* «Статус: значение» on the Alice card follows the tile rule — label left,
    value flush right (same alignment as the dl rows above it). */
 .alice-link-status {
@@ -2114,44 +2138,75 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    color on the tinted is-ok background is not contrast-guaranteed. */
 #alice-msg a { color: inherit; text-decoration: underline; }
 
-/* Bindings-modal device rows: name grows, type stays secondary, the
-   edit/delete pair sits flush right and never wraps into the name. */
-.alice-dev-row {
+/* «Умный дом» modal (#sh-modal — rooms / devices / bindings; moved out of the
+   Alice card in 1.0.6.26, every `.alice-*` modal hook renamed `.sh-*`).
+   Device rows: icon, name grows, type/room stay secondary, the edit/delete
+   pair sits flush right and never wraps into the name. */
+.sh-dev-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
 }
-.alice-dev-row > .mono { flex: 1 1 auto; overflow-wrap: anywhere; }
-.alice-dev-actions { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
+.sh-dev-row > .mono { flex: 1 1 auto; overflow-wrap: anywhere; }
+.sh-dev-actions { margin-left: auto; white-space: nowrap; flex: 0 0 auto; }
+/* Breathing room between the counts line, the room block and the device
+   list — each is a separate group inside one dialog body. */
+#sh-modal-counts { margin-bottom: 10px; }
+.sh-device-list { margin: 12px 0 8px; }
+/* Tile icon (own sprite #sh-icons): inherits the text colour, both themes. */
+.sh-icon { width: 20px; height: 20px; flex: 0 0 auto; color: var(--text-sec); vertical-align: middle; }
+.sh-dev-row > .sh-icon { color: var(--cyan); }
+#sh-type-preview { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; }
+#sh-type-preview .sh-icon { width: 28px; height: 28px; color: var(--cyan); }
 /* .btn sets display:inline-flex, which outranks the UA [hidden] rule — the
    edit-mode «Отмена» button must stay hidden in add mode (JS sets `hidden`). */
-#alice-dev-cancel[hidden] { display: none !important; }
+#sh-dev-cancel[hidden] { display: none !important; }
+#sh-icon-field[hidden] { display: none !important; }
 
-/* Bindings-modal reading rows: kind and topic share the width, the delete
-   button stays flush right; under 520 px the pair stacks so neither select is
-   squeezed below a readable width (the dialog is 600 px on desktop).
+/* Room rows: name grows, delete button flush right. */
+.sh-room-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.sh-room-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.sh-room-row > .sh-room-name { flex: 1 1 auto; overflow-wrap: anywhere; }
+.sh-room-form { display: flex; gap: 8px; align-items: stretch; }
+.sh-room-form > input { flex: 1 1 auto; min-width: 0; }
+.sh-room-form > .btn { flex: 0 0 auto; }
+/* New modal controls keep a ≥44 px hit target (web-code-rigor CSS floor):
+   the room form, the room/icon selects, the export toggle row and the room
+   delete buttons. The pre-existing reading rows keep their compact scale. */
+.sh-room-form > input,
+.sh-room-form > .btn,
+.sh-room-row > .btn,
+#sh-dev-room,
+#sh-dev-icon { min-height: var(--tap); }
+.sh-export-label { display: flex; align-items: center; gap: 10px; min-height: var(--tap); cursor: pointer; user-select: none; }
+.sh-export-label span { font-size: .85rem; color: var(--text); }
+
+/* Reading rows: kind and topic share the width, the delete button stays
+   flush right; under 520 px the pair stacks so neither select is squeezed
+   below a readable width (the dialog is 600 px on desktop).
    `min-width: 0` is load-bearing — without it a long topic string blows the
    flex row out past the dialog edge. */
-.alice-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
-.alice-bind-row { display: flex; align-items: center; gap: 8px; }
-.alice-bind-row > .alice-row-kind  { flex: 0 0 40%; min-width: 0; }
-.alice-bind-row > .alice-row-topic { flex: 1 1 auto; min-width: 0; }
-.alice-bind-row > .alice-row-del   { flex: 0 0 auto; }
+.sh-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.sh-bind-row { display: flex; align-items: center; gap: 8px; }
+.sh-bind-row > .sh-row-kind  { flex: 0 0 40%; min-width: 0; }
+.sh-bind-row > .sh-row-topic { flex: 1 1 auto; min-width: 0; }
+.sh-bind-row > .sh-row-del   { flex: 0 0 auto; }
 /* Stacked: the kind keeps the delete button on its own line (an orphaned ✕
    on a line of its own reads as belonging to the next row), the long topic
    takes the full width beneath it. */
 @media (max-width: 520px) {
-  .alice-bind-row { flex-wrap: wrap; row-gap: 4px; padding-bottom: 6px; }
+  .sh-bind-row { flex-wrap: wrap; row-gap: 4px; padding-bottom: 6px; }
   /* basis 0, not auto: a select's auto basis is its full content width, which
      would wrap the ✕ onto a line of its own before any shrinking happens. */
-  .alice-bind-row > .alice-row-kind  { flex: 1 1 0; }
-  .alice-bind-row > .alice-row-topic { flex: 1 1 100%; order: 3; }
-  .alice-bind-row > .alice-row-del   { order: 2; }
+  .sh-bind-row > .sh-row-kind  { flex: 1 1 0; }
+  .sh-bind-row > .sh-row-topic { flex: 1 1 100%; order: 3; }
+  .sh-bind-row > .sh-row-del   { order: 2; }
 }
 
 #alice-msg.cloud-msg,
-#alice-bind-msg.cloud-msg {
+#sh-msg.cloud-msg,
+#sh-bind-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -2159,13 +2214,15 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
   line-height: 1.4;
 }
 #alice-msg.cloud-msg.is-ok,
-#alice-bind-msg.cloud-msg.is-ok {
+#sh-msg.cloud-msg.is-ok,
+#sh-bind-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
 }
 #alice-msg.cloud-msg.is-err,
-#alice-bind-msg.cloud-msg.is-err {
+#sh-msg.cloud-msg.is-err,
+#sh-bind-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
   border: 1px solid var(--badge-err-border);

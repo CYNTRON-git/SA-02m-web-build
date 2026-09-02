@@ -871,3 +871,31 @@ worklist collapsed into one home).
   the enable call in `scripts/` and make it match reality (drop it or ship the
   unit). Every refresh currently logs a WARN the runbook tells the operator to
   review by hand.
+- [OPEN] 2026-09-02 **[LOW] The image-identity reset leaves the cloud-control profile's
+  traces on a cloned board.** `tools/imaging/*` and `docs/contracts/image-identity-reset.md`
+  clear the Alice identity but neither remove `/run/sa02m-alice/status-cloud.json` nor
+  disable `sa02m-cloud-control.service` (1.0.6.26, the second profile of the same
+  package). Harmless today: the status file is tmpfs and, with the cloud agent's
+  identity wiped, the unit lands in `missing_identity` standby — but a clone that is
+  later re-enrolled starts cloud control without an explicit operator opt-in. Left out
+  of 1.0.6.26 deliberately so the `alice-image-identity` gate's mutation set stayed
+  untouched; the parity fix is a planned change that extends that mutation set and the
+  contract together, not a one-liner.
+- [OPEN] 2026-09-02 **[MED] CI runs the `ui-layout` review gate VACUOUSLY — Playwright is never
+  installed in `.github/workflows/web-quality.yml`, so the row self-skips and reports PASS.**
+  Exactly the class of defect caught locally during the 1.0.6.26 review: the driver "passed"
+  on the developer host until `npm run ui-layout:install` was run, after which it found three
+  real violations (tap target, two contrast pairs) in the new «Умный дом» UI. Until CI runs
+  `npm run ui-layout:install` before the review beat (chromium download + cache step), the
+  remote floor does not cover geometry/contrast at all and the gate is honest only on a
+  prepared workstation. Separate CI change, deliberately outside the 1.0.6.26 PR.
+- [OPEN] 2026-09-02 **[INFO — bench reference, not a defect] Three paths where a cloud tap is
+  NOT confirmed by design (1.0.6.26 cloud control).** Recorded so the bench run on 192.168.1.135
+  does not book them as regressions: (1) the target already equals the actual state — the cloud
+  tile never enters the pending state (cloud `ui_pages.py`, target==actual short-circuit);
+  (2) the ~1 s window right after a reconnect, while the client re-offers the snapshot before
+  the first live echo can be attributed (`client/main.py` reconnect path); (3) the retained-
+  grace window after an in-place document reload, when retained MQTT values are deliberately
+  not reported as live. Each is a designed non-confirmation; a tap in those windows shows the
+  cloud's "no confirmation" outcome without a device fault. Resolve by folding the three into
+  `docs/contracts/alice-mqtt-mapping.md` (device side) once the bench confirms the timings.

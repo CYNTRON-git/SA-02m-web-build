@@ -56,8 +56,13 @@ sudo bash scripts/06-alice.sh
 
 | Unit | Назначение |
 |---|---|
-| `sa02m-alice-client` | Socket.IO + MQTT; standby exit 0 если выключен |
+| `sa02m-alice-client` | Socket.IO + MQTT, профиль `yandex` (шлюз Алисы, mTLS); standby exit 0 если выключен (`client_enabled`) |
+| `sa02m-cloud-control` | тот же пакет, профиль `cloud` (`--profile cloud`): вход управления на `cloud.cyntron.ru`, авторизация облачной идентичностью платы (`device_id` + `device_secret` агента облака), без mTLS; standby exit 0 если выключен (`cloud_control_enabled`). Алиса — один из потребителей: без неё всё работает |
 | `sa02m-alice-config` | локальный JSON API поверх AF_UNIX-сокета `/run/sa02m-alice/config.sock` (0600, владелец root; служба опциональна, по умолчанию выключена) |
+
+Пакет `opt/sa02m-alice` — транспорт умного дома; `alice` в именах —
+историческое название, все машинные имена сохранены. Сим-контракт профилей:
+`docs/contracts/alice-mqtt-mapping.md` §Profiles.
 
 Веб-UI ходит через CGI с сессионной авторизацией:
 
@@ -66,9 +71,15 @@ sudo bash scripts/06-alice.sh
 
 ## UI
 
+**Управление → Умный дом** (с 1.0.6.26): комнаты, устройства и привязки к
+MQTT-топикам (переключатели и датчики; одно устройство — одно или несколько
+показаний), значок плитки для устройств «включить/выключить», тумблер
+«Показывать в Алисе» (скрытое устройство не попадает в список Алисы, но
+управляется из облака), кнопка «Управление из облака» (включает/выключает
+`sa02m-cloud-control`; недоступна, пока плата не привязана к облаку).
+
 **Управление → Яндекс Алиса**: статус шлюза/клиента/сертификата, включение
-клиента, привязка/отвязка, добавление устройств по MQTT-топикам
-(переключатели и датчики; одно устройство — одно или несколько показаний).
+клиента, привязка/отвязка, счётчик «Устройств в Алисе» и ссылка «Умный дом ›».
 
 ## Датчики
 
@@ -127,19 +138,22 @@ Modbus→MQTT.
 
 | Путь | Содержимое |
 |---|---|
-| `/etc/sa02m-alice/sa02m-alice-client.conf` | `client_enabled`, MQTT |
-| `/etc/sa02m-alice/sa02m-alice-devices.conf` | rooms/devices JSON |
-| `/etc/sa02m-alice/sa02m-alice-server.conf` | URL gateway |
+| `/etc/sa02m-alice/sa02m-alice-client.conf` | `client_enabled`, `cloud_control_enabled`, MQTT |
+| `/etc/sa02m-alice/sa02m-alice-devices.conf` | rooms/devices JSON (+ `alice_visible`, `icon`) |
+| `/etc/sa02m-alice/sa02m-alice-server.conf` | URL gateway Алисы; `cloud_control_url` / `cloud_token_url` для профиля `cloud` |
 | `/var/lib/sa02m-alice/` | mTLS cert/key (сохранять при factory reset) |
-| `/run/sa02m-alice/status.json` | статус для UI |
+| `/run/sa02m-alice/status.json` | статус `sa02m-alice-client` для UI |
+| `/run/sa02m-alice/status-cloud.json` | статус `sa02m-cloud-control` для UI (та же форма, `identity_present`) |
+| `/etc/sa02m-cloud/agent.conf`, `/etc/sa02m-cloud/device_secret` | облачная идентичность (пишет агент облака, не этот пакет) |
 
 ## Политика backup / update / factory reset
 
-| Операция | Alice |
-|---|---|
-| `.sa02m` update | деплой кода; preserve conf + cert |
-| User backup | включить conf + `/var/lib/sa02m-alice/` |
-| Factory reset | очистить mappings, `client_enabled=false`, **сохранить** cert |
+| Операция | Alice (`sa02m-alice-client`) | Cloud control (`sa02m-cloud-control`) |
+|---|---|---|
+| `.sa02m` update | деплой кода; preserve conf + cert | тот же пакет и conf — деплоится вместе; unit из `etc/systemd/system/sa02m-*` |
+| User backup | включить conf + `/var/lib/sa02m-alice/` | ничего своего: идентичность — у агента облака (`/etc/sa02m-cloud/`) |
+| Factory reset | очистить mappings, `client_enabled=false`, **сохранить** cert | `cloud_control_enabled=false` (тот же `reset_mappings`); `status-cloud.json` — tmpfs, очищается перезагрузкой |
+| Снятие образа (identity reset) | стирает cert/claim/status.json (`docs/contracts/image-identity-reset.md`) | ничего не стирает: облачная идентичность стирается сбросом агента облака, без неё unit уходит в `missing_identity`; `status-cloud.json` живёт в tmpfs |
 
 ## Зависимости клиента
 

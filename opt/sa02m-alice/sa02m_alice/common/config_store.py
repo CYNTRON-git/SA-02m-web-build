@@ -72,6 +72,9 @@ def default_client_cfg() -> configparser.ConfigParser:
         {
             "client": {
                 "client_enabled": "false",
+                # Gates the cloud profile exactly as client_enabled gates the
+                # Yandex one (sa02m-cloud-control.service exits 0 while false).
+                "cloud_control_enabled": "false",
                 "log_level": "INFO",
                 "mqtt_host": C.DEFAULT_MQTT_HOST,
                 "mqtt_port": str(C.DEFAULT_MQTT_PORT),
@@ -88,6 +91,11 @@ def default_server_cfg() -> configparser.ConfigParser:
                 "wss_url": C.DEFAULT_GATEWAY_WSS,
                 "http_url": C.DEFAULT_GATEWAY_HTTP,
                 "sio_path": C.SIO_PATH,
+                # Cloud profile: the control entry on the fleet cloud. The
+                # token endpoint follows the cloud agent's api_url unless
+                # pinned here (empty = derive).
+                "cloud_control_url": C.DEFAULT_CLOUD_CONTROL_URL,
+                "cloud_token_url": "",
             }
         },
     )
@@ -98,12 +106,32 @@ def client_enabled(cfg: configparser.ConfigParser | None = None) -> bool:
     return c.getboolean("client", "client_enabled", fallback=False)
 
 
-def set_client_enabled(enabled: bool) -> None:
+def cloud_control_enabled(cfg: configparser.ConfigParser | None = None) -> bool:
+    c = cfg or default_client_cfg()
+    return c.getboolean("client", "cloud_control_enabled", fallback=False)
+
+
+def profile_enabled(profile: str, cfg: configparser.ConfigParser | None = None) -> bool:
+    """The enable flag that gates `profile` — one flag per unit, same shape."""
+    if profile == C.PROFILE_CLOUD:
+        return cloud_control_enabled(cfg)
+    return client_enabled(cfg)
+
+
+def _set_client_flag(key: str, enabled: bool) -> None:
     cfg = default_client_cfg()
     if not cfg.has_section("client"):
         cfg.add_section("client")
-    cfg.set("client", "client_enabled", "true" if enabled else "false")
+    cfg.set("client", key, "true" if enabled else "false")
     save_ini(C.CLIENT_CONF, cfg)
+
+
+def set_client_enabled(enabled: bool) -> None:
+    _set_client_flag("client_enabled", enabled)
+
+
+def set_cloud_control_enabled(enabled: bool) -> None:
+    _set_client_flag("cloud_control_enabled", enabled)
 
 
 def empty_devices() -> Dict[str, Any]:
@@ -134,6 +162,32 @@ def gateway_urls(cfg: configparser.ConfigParser | None = None) -> Tuple[str, str
     http = c.get("gateway", "http_url", fallback=C.DEFAULT_GATEWAY_HTTP).strip().rstrip("/")
     path = c.get("gateway", "sio_path", fallback=C.SIO_PATH).strip() or C.SIO_PATH
     return wss, http, path
+
+
+def cloud_control_urls(cfg: configparser.ConfigParser | None = None) -> Tuple[str, str]:
+    """(control wss URL, token mint URL) for the cloud profile.
+
+    The token URL is derived from the cloud agent's own `api_url` so a bench
+    pointed at another host mints from that host too; `cloud_token_url` in
+    the server conf pins it explicitly.
+    """
+    c = cfg or default_server_cfg()
+    wss = c.get("gateway", "cloud_control_url", fallback=C.DEFAULT_CLOUD_CONTROL_URL).strip()
+    token = c.get("gateway", "cloud_token_url", fallback="").strip()
+    if not token:
+        token = cloud_agent_api_url().rstrip("/") + C.CLOUD_TOKEN_PATH
+    return wss or C.DEFAULT_CLOUD_CONTROL_URL, token
+
+
+def cloud_agent_api_url(path: str | None = None) -> str:
+    """`[cloud] api_url` from the cloud agent's conf; its default when absent."""
+    p = path or C.CLOUD_AGENT_CONF
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(p, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return C.DEFAULT_CLOUD_API_URL
+    return cfg.get("cloud", "api_url", fallback=C.DEFAULT_CLOUD_API_URL).strip() or C.DEFAULT_CLOUD_API_URL
 
 
 def cert_paths_present() -> bool:
