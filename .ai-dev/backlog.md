@@ -934,3 +934,26 @@ worklist collapsed into one home).
   Fix: seed the baseline inside the same calendar day (or inject the clock) — untouched code,
   out of the 1.0.6.26 fence. Until then a midnight-hour `build` run is a false red.
 - [RESOLVED] 2026-09-03 **The «Облако» card's CSS/JS half has no in-tree test** → closed by the `cloud-card-smoke` review row (`scripts/dev/cloud-card-smoke.mjs`, 1.0.6.28): renders every contract state of the card in headless Chromium with in-page transitions from `active`; RED without chromium by design (exit 2), never a vacuous green.
+- [OPEN] 2026-09-03 **[MED] Neither cloud client logs a line when it executes an action, so the
+  source of a command cannot be established after the fact.** On the 1.0.6.26 bench run
+  (192.168.1.135) a second write to `/devices/SA-02m/controls/alarm_led/on` arrived 6 s after the
+  first; `journalctl -u sa02m-cloud-control` and `-u sa02m-alice-client` had NO entries at all in
+  that minute, although both were connected. Distinguishing "the operator tapped twice" from "the
+  chain generated a command" was impossible from the board and had to be answered from the cloud
+  hub's own log (it was ten taps from the control page, no Alice path). A device that executes a
+  remote command must record who asked and what it did: one INFO line per executed action
+  (channel/profile, device id, capability+instance, requested value, resulting publish) in both
+  profiles. Cheap, and it is the difference between a diagnosis and a guess.
+- [OPEN] 2026-09-03 **[LOW] In the stand-down state the cloud-control profile logs an ERROR every
+  ~50 s: `cloud control token: cloud identity missing`.** Observed on the bench between 10:35 and
+  10:59 while the board was revoked. The behaviour is correct — with the identity erased no token
+  can be minted — but "revoked" is an EXPECTED state, not an error: the profile should back off
+  and log at INFO/DEBUG (or once per transition), not raise a recurring ERROR that pollutes the
+  journal exactly while an operator is diagnosing a revocation.
+- [OPEN] 2026-09-03 **[LOW] `sa02m-alice-client` dropped its Socket.IO session twice in one hour
+  with `reason=lib:transport error`** (10:45:04 after 303 s, 11:02:51 after 1062 s), each time
+  reconnecting on its own (10:45:09, 11:03:08 — once via `[ERROR] yandex client error: One or more
+  namespaces failed to connect`). Self-healing, so not a defect, but the cadence is worth a look:
+  if the transport drops on a ~5-17 min cycle, every drop is a window in which a tap is not
+  confirmed. Bench 192.168.1.135, 1.0.6.26.
+
