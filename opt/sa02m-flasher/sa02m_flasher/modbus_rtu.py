@@ -324,7 +324,7 @@ def _parse_response_from(data: bytes, offset: int = 0) -> Tuple[Optional[int], O
         # FC17 Report Slave ID: byte_count 1..246 (RTU кадр ≤ 251 байта).
         # Верхняя граница отсекает мусор, нижняя — «пустой» ответ.
         if func == 0x11 and (byte_count < 1 or byte_count > 246):
-            return None, None, "Неверная длина ответа 0x03/0x04"
+            return None, None, "Неверная длина ответа 0x11"
         frame_len = 3 + byte_count + 2
         if len(d) < frame_len:
             return None, None, "Неверная длина ответа 0x03/0x04"

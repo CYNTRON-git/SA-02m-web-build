@@ -5,7 +5,7 @@ Why a poller of its own rather than a `type: template` entry:
 
   * the uAria map is IEEE float32 spread over two big-endian words, and template
     writeback is 16-bit only — a setpoint written one word at a time makes the
-    PLC act on a half-updated number (docs/contracts/template-device.md §8);
+    PLC act on a half-updated number (docs/contracts/template-device.md §3);
   * starting the unit is a WRITE PLAN, not a register: the c.pCOmini needs
     Ma18 (coil 130) enabled and a settle before the BMS coil 65 is honoured, the
     uAria needs Gs04 (coil 13) before coil 0 — a template has no way to express

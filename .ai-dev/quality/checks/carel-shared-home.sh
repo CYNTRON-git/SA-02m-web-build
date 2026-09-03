@@ -85,7 +85,7 @@ fi
 # local-terminal coil we must never write.
 dup=0
 for needle in 'COIL_BMS_OFF_ON = 65' 'COIL_UARIA_LOCAL = 30'; do
-    hits=$(grep -rlF "$needle" --include='*.py' opt/ www/ scripts/ tools/ 2>/dev/null | sort || true)
+    hits=$(grep -rlF "$needle" --include='*.py' opt/ www/ scripts/ tools/ etc/ usr/ firmware/ 2>/dev/null | sort || true)
     if ! printf '%s\n' "$hits" | grep -qx "$PKG/carel_ahu.py"; then
         bad "5 sweep for '$needle' no longer finds the package — the check reads nothing"
         dup=1
