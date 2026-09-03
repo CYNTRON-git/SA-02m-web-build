@@ -128,7 +128,11 @@ def _read_uaria(
         return ca.be_float32(regs[addr], regs[addr + 1])
 
     _oat = f32(ca.IR_UARIA_OAT)
-    out["oat"] = None if ca.optional_probe_is_unfitted(_oat) else _oat
+    out["oat"] = None if ca.probe_is_unfitted("oat", _oat) else _oat
+    # The I/O tab rebuilds its analog column from this snapshot, so the raw word
+    # is kept beside the judged value: the column shows what the register says,
+    # the plant tab shows what we are willing to call a reading.
+    out["oat_raw"] = _oat
     out["sat"] = f32(ca.IR_UARIA_SAT)
     out["rwt"] = f32(ca.IR_UARIA_RWT)
     out["valve"] = f32(ca.IR_UARIA_VALVE)
@@ -223,7 +227,7 @@ def _crst_temps(ca: Any, out: Dict[str, Any], ir: Sequence[int]) -> None:
     «0,0 °C» — про один и тот же вход.
     """
     out["oat"] = (
-        None if ca.optional_probe_is_unfitted(ir[0])
+        None if ca.probe_is_unfitted("oat", ir[0])
         else ca.int16_x10_to_phys(ir[0])
     )
     out["sat"] = ca.int16_x10_to_phys(ir[1])
@@ -365,8 +369,13 @@ def _uaria_io_from_snapshot(
         ("sat", ca.IR_UARIA_SAT),
         ("rwt", ca.IR_UARIA_RWT),
     ):
-        if key in out:
-            ir_u[addr] = out[key]
+        # The raw word when we have it: the I/O column is the engineering view
+        # and shows the register even where the plant tab reports no reading.
+        # `None` must never reach the row builder — it means "not read", and
+        # float(None) is a 500 for the whole tick (it was, on uAria).
+        value = out.get(key + "_raw", out.get(key))
+        if value is not None:
+            ir_u[addr] = value
     ao: Dict[int, Any] = {}
     if "valve" in out:
         ao[ca.IR_UARIA_VALVE] = out["valve"]

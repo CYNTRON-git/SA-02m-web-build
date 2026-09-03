@@ -583,20 +583,39 @@ def _s16(raw: int) -> int:
 #   * OPTIONAL_PROBES — outdoor and room air. Their absence raises no alarm, so
 #     an exact 0 is not publishable: on an installation with no outdoor probe it
 #     would be a permanent, plausible-looking lie ("0.0 °C outside") that never
-#     self-corrects. A genuine 0.0 °C outdoors — the freezing point, a real
-#     reading — is withheld for one poll and returns as soon as the value moves
-#     off exact zero, which at a tenth of a degree it does immediately.
+#     self-corrects.
+#
+#     The cost, stated exactly: a working probe sitting at the freezing point is
+#     withheld on EVERY poll that reads exactly 0.0 — not once — and while that
+#     lasts the control carries a read-ERROR flag, so a healthy sensor is
+#     reported to consumers as a faulty one. It returns as soon as the value
+#     leaves exact zero, which at a tenth of a degree is the next movement, but
+#     a probe held precisely at 0.0 stays hidden. We accept that: it is a
+#     bounded, self-correcting wrong state on an installation that HAS the
+#     probe, against a permanent invention on every installation that has not.
 #   * The supply-air and return-water probes are NOT in this set. Their absence
 #     IS alarmed (E04, E05), so a 0 with no alarm standing is a real 0 and is
 #     published as measured.
 OPTIONAL_PROBES = ("oat", "rmt")
 
 
-def optional_probe_is_unfitted(raw: object) -> bool:
-    """True when an optional probe's raw reading must be reported as no reading.
+def probe_is_unfitted(probe: str, raw: object) -> bool:
+    """True when this probe's raw reading must be reported as no reading.
 
-    `raw` is the register word as read (int16 x10 on c.pCO, the float on uAria).
+    `probe` is a key from the snapshot ("oat", "sat", "rmt", "rwt"); only the
+    OPTIONAL_PROBES are ever judged, so a supply-air or return-water zero can
+    never be suppressed by a mistake at a call site. `raw` is the register word
+    as read (int16 x10 on c.pCO, the float on uAria).
+
+    A raw value that is missing or unreadable returns False — "not judged". The
+    caller then publishes what it has: losing a real reading because a key was
+    absent would be silent data loss, which is worse than the zero this rule
+    exists to catch.
     """
+    if probe not in OPTIONAL_PROBES:
+        return False
+    if raw is None:
+        return False
     try:
         return float(raw) == 0.0
     except (TypeError, ValueError):

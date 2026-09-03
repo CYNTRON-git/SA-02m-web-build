@@ -243,6 +243,31 @@ class TestCrstAlarms(unittest.TestCase):
         self.assertEqual(v["plant_state"], ca.PLANT_ALARM)
 
 
+class TestUnfittedProbeRule(unittest.TestCase):
+    """The rule itself, at the seam where it is easy to get quietly wrong."""
+
+    def test_only_optional_probes_are_ever_judged(self):
+        # A zero supply-air or return-water reading is a REAL zero: the PLC
+        # alarms those probes' absence (E04/E05), so nothing may suppress them.
+        for probe in ("sat", "rwt"):
+            self.assertFalse(ca.probe_is_unfitted(probe, 0))
+        for probe in ("oat", "rmt"):
+            self.assertTrue(ca.probe_is_unfitted(probe, 0))
+
+    def test_a_missing_raw_word_does_not_count_as_unfitted(self):
+        # Failing open matters more than the rule: suppressing a reading because
+        # a key went missing would be silent data loss, and the default used to
+        # do exactly that.
+        self.assertFalse(ca.probe_is_unfitted("oat", None))
+
+    def test_a_zero_supply_reading_survives_the_poll(self):
+        regs, coils, discretes = crst_bank()
+        regs[("i", 2)] = 0
+        p, pub, _ = _poller("crst", (regs, coils, discretes))
+        p.poll_io()
+        self.assertEqual(_published(pub)["supply_temp"], "0.0")
+
+
 class TestUariaPoll(unittest.TestCase):
     def setUp(self):
         self.p, self.pub, self.ser = _poller("uaria", uaria_bank(), address=2,
@@ -253,6 +278,21 @@ class TestUariaPoll(unittest.TestCase):
     def test_float32_temperatures(self):
         self.assertEqual(self.values["supply_temp"], "27.22")
         self.assertEqual(self.values["return_water_temp"], "43.59")
+
+    def test_absent_outdoor_probe_is_not_published_as_zero(self):
+        # The uAria half of the rule. It went in with no test of its own: with
+        # `oat_raw` dropped from the uAria read the whole suite still passed
+        # while a real reading was silently discarded.
+        self.assertNotIn("outdoor_temp", self.values)
+        self.assertEqual(_errors(self.pub).get("outdoor_temp"), "r")
+
+    def test_a_real_outdoor_reading_is_published(self):
+        regs, coils, discretes = uaria_bank()
+        regs[("i", 0)], regs[("i", 1)] = ca.float32_to_be_words(-7.4)
+        p, pub, _ = _poller("uaria", (regs, coils, discretes), address=2,
+                            app_version="")
+        p.poll_io()
+        self.assertEqual(_published(pub)["outdoor_temp"], "-7.4")
 
     def test_setpoint_and_fan_step(self):
         self.assertEqual(self.values["setpoint"], "22.0")

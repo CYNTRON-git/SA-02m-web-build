@@ -283,7 +283,7 @@ class CarelPoller(DevicePoller):
     @staticmethod
     def _room_temp(snap: dict):
         """Room air — an optional probe (ca.OPTIONAL_PROBES owns the reasoning)."""
-        if ca.optional_probe_is_unfitted(snap.get("rmt_raw", 0)):
+        if ca.probe_is_unfitted("rmt", snap.get("rmt_raw")):
             return None
         return _num(snap.get("rmt"))
 
@@ -296,7 +296,7 @@ class CarelPoller(DevicePoller):
         was published as a measurement. Both come from inputs the PLC does not
         alarm when they are absent, so both are judged the same way now.
         """
-        if ca.optional_probe_is_unfitted(snap.get("oat_raw", 0)):
+        if ca.probe_is_unfitted("oat", snap.get("oat_raw")):
             return None
         return _num(snap.get("oat"))
 

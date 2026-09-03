@@ -296,6 +296,27 @@ class TestSnapshotDoesNotProbeDeadRegisters(unittest.TestCase):
         self.assertIn("io_u", payload["carel"])
 
 
+    def test_uaria_io_tab_survives_a_judged_away_reading(self) -> None:
+        """The uAria I/O tab builds its analog column from the snapshot itself.
+
+        When the outdoor reading is judged away it becomes None, and None used
+        to be copied straight into the row builder, where float(None) took the
+        whole snapshot down with a 500 — on the bench configuration, whose
+        outdoor probe is exactly the unfitted one.
+        """
+        payload = _snapshot(uaria_plc(), UARIA_DEVICE,
+                            active_tab=device_config.CAREL_IO_TAB)
+        rows = payload["carel"]["io_u"]
+        self.assertTrue(rows, "колонка аналоговых входов uAria пуста")
+        # uAria names its analog inputs U1..U3; U1 is the outdoor probe.
+        outdoor = [r for r in rows if r["tag"] == "U1"]
+        self.assertEqual(len(outdoor), 1)
+        # The engineering column still shows what the register said.
+        self.assertAlmostEqual(outdoor[0]["value"], 0.0, places=2)
+        # while the plant page reports no reading for the same probe.
+        self.assertIsNone(payload["carel"]["oat"])
+
+
 class TestCrstSnapshotDecodesBenchValues(unittest.TestCase):
     def setUp(self) -> None:
         self.plc = crst_plc()
