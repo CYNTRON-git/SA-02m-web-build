@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.6.28-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.6.29-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -148,7 +148,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Яндекс Алиса
 - **Голосовое управление** устройствами шины через навык Яндекса: gateway `alice.cyntron.ru` ↔ контроллер по Socket.IO + mTLS, дальше MQTT → RS-485.
 - **Привязки** — «Управление» → «Яндекс Алиса»: какое устройство/канал каким умным устройством видит Алиса, комнаты, типы (реле, розетка, датчик).
-- **Службы** — `sa02m-alice-client` (связь с gateway Алисы), `sa02m-cloud-control` (тот же пакет, профиль `cloud`: управление из облака `cloud.cyntron.ru`) и `sa02m-alice-config` (локальный конфиг-API); все поставляются **выключенными**, включает оператор (карточки «Умный дом» / «Яндекс Алиса»).
+- **Службы** — `sa02m-alice-client` (связь с gateway Алисы), `sa02m-cloud-control` (тот же пакет, профиль `cloud`: управление из облака `cloud.cyntron.ru`) и `sa02m-alice-config` (локальный конфиг-API); все поставляются **выключенными**, включает оператор (карточки «Облако» / «Яндекс Алиса»).
 - Установка — только `scripts/06-alice.sh` / `install.sh` (OTA обновляет, но не устанавливает: `docs/deployment.md`). Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
 
 ### Облако (удалённый доступ)

@@ -2104,9 +2104,6 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
    --cyan-hover #0e7490 measures 5.36:1 on #ffffff (4.80:1 on --bg-panel). */
 html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 .alice-sh-summary a:hover { text-decoration: underline; }
-/* «Управление из облака» row on the Smart-home card: label + state badge. */
-.sh-cloud-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 6px 0; }
-.sh-cloud-row .sh-cloud-label { font-size: .85rem; white-space: nowrap; }
 .conn-offline-note .conn-recheck-btn {
   width: 100%;
 }
@@ -2114,7 +2111,7 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   margin-top: 6px;
   color: var(--red);
 }
-/* Card messages (#alice-msg on «Яндекс Алиса», #sh-msg on «Умный дом») and the
+/* Card messages (#alice-msg on «Яндекс Алиса», #cloud-ctrl-msg on «Облако») and the
    rooms/devices-modal message (#sh-bind-msg, add-device feedback). None is
    styled by the cloud-card-scoped rule — the rules below give them the same
    both-theme error/ok tokens so a friendly status reads clearly (never a raw
@@ -2140,7 +2137,64 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 
 /* «Умный дом» modal (#sh-modal — rooms / devices / bindings; moved out of the
    Alice card in 1.0.6.26, every `.alice-*` modal hook renamed `.sh-*`).
-   Device rows: icon, name grows, type/room stay secondary, the edit/delete
+
+   Two panes (1.0.6.29): the catalogue — rooms, devices and their readings — on
+   the left, every add/edit control on the right, so the operator works both
+   without hunting below the fold. Wider than the shared 600 px dialog and
+   height-capped by `.mqtt-modal-dialog`; the panes scroll, the dialog never
+   grows past the screen. The `.mqtt-*` half of each selector below is
+   load-bearing: the shared modal rules sit LATER in this file and would win on
+   source order otherwise. */
+.mqtt-modal-dialog.sh-modal-dialog { width: min(1080px, 96vw); }
+.mqtt-modal-body.sh-modal-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  /* A definite row: the panes get the body's height and scroll INSIDE it,
+     instead of an auto row growing to its content and being clipped. */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0 22px;
+  overflow: hidden;
+}
+.sh-col { min-width: 0; min-height: 0; }
+/* The catalogue owns the scroll — the last device stays reachable however long
+   the list grows (the bench board holds 11). */
+.sh-col-catalog { overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+.sh-col-actions { overflow-y: auto; overscroll-behavior: contain; }
+.sh-col-catalog > .field:last-child { margin-bottom: 0; }
+/* Tighter than the page's 16 px, and the four short fields (name · type ·
+   room · значок) pair up two per row: the whole add/edit form has to fit its
+   pane unscrolled at 1280×720, the smallest desktop the dashboard targets.
+   Measured there in the on/off editing state — the tallest one, icon picker
+   and «Инвертировать» both showing: 651 px of content in a 524 px pane at one
+   field per row, 500 px paired (1.0.6.29). */
+.sh-col-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-content: start;
+  gap: 0 14px;
+}
+.sh-col-actions > * { grid-column: 1 / -1; }
+.sh-col-actions > .sh-field-half { grid-column: span 1; }
+.sh-col-actions > .field { margin-bottom: 12px; }
+/* The standing Alice note belongs to the dialog, not to the actions pane —
+   left of the Закрыть button, wrapping onto its own line when the foot is
+   narrow. */
+.mqtt-modal-foot.sh-modal-foot { flex-wrap: wrap; row-gap: 6px; align-items: center; }
+.sh-foot-hint { margin: 0 auto 0 0; flex: 1 1 240px; text-align: left; }
+/* Below 900 px the panes stack, catalogue first, and the body is again the ONE
+   scrolling layer — nested scrollers on a phone swallow the drag. `display:
+   block` and not a one-column grid on purpose: an `auto` grid row inside a
+   height-capped container is stretched to share that height, which clipped the
+   pane content instead of letting the body scroll it (measured 1.0.6.29). */
+@media (max-width: 900px) {
+  .mqtt-modal-body.sh-modal-body { display: block; overflow-y: auto; }
+  /* Full width in the stack: two selects side by side at 322 px squeeze both. */
+  .sh-col-actions { display: block; }
+  .sh-col-catalog, .sh-col-actions { overflow: visible; padding-right: 0; }
+  .sh-col-catalog { margin-bottom: 10px; }
+}
+
+/* Device rows: icon, name grows, type/room stay secondary, the edit/delete
    pair sits flush right and never wraps into the name. */
 .sh-dev-row {
   display: flex;
@@ -2192,6 +2246,34 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 .sh-bind-row > .sh-row-kind  { flex: 0 0 40%; min-width: 0; }
 .sh-bind-row > .sh-row-topic { flex: 1 1 auto; min-width: 0; }
 .sh-bind-row > .sh-row-del   { flex: 0 0 auto; }
+/* «Инвертировать» — active-low on/off outputs (contract §Inverted). A DEVICE
+   field (#sh-inv-field) paired with the export toggle, not a control on the
+   binding row: on the row it took the width from the topic select (282 px →
+   132 px at 1280×720), and every topic a board offers shares the 25-character
+   `/devices/SA-02m/controls/` prefix, so all bindings read alike in the closed
+   select. Paired with «Показывать в Алисе» it costs the pane no height — both
+   are toggles on one grid row. It borrows .sh-export-label for the ≥44 px tap
+   target; the gloss sits under the label. */
+/* The icon preview sits BESIDE its select, not under it: in the paired grid the
+   icon cell drove that row's height (+34 px), and the actions pane has to fit
+   unscrolled at 1280×720 in the tallest state with room to spare. */
+#sh-icon-field { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; }
+#sh-icon-field > label { flex: 1 1 100%; }
+#sh-icon-field > #sh-dev-icon { flex: 1 1 auto; width: auto; min-width: 0; }
+#sh-icon-field > #sh-type-preview { flex: 0 0 auto; margin-top: 0; }
+/* `.field label:not(.toggle-inline)` sets display:block and outranks the
+   .sh-export-label flex borrowed above, so the toggle and the text landed on
+   separate lines (measured: box at y 332.1, text at 356.1). Restore the row
+   with a matching-specificity rule. */
+.field label.sh-inv-label { display: flex; align-items: center; gap: 10px; }
+.sh-inv-text { display: flex; flex-direction: column; min-width: 0; }
+/* Two classes, not one: `.sh-export-label span` (borrowed above) would outrank
+   a single-class rule and give the gloss the label's size and colour. */
+.sh-inv-label .sh-inv-hint { font-size: .72rem; color: var(--text-sec); }
+/* Same explicit guard this file already documents for #sh-icon-field: a rule
+   that gives the field a display would outrank the UA [hidden] rule. */
+#sh-inv-field[hidden] { display: none !important; }
+
 /* Stacked: the kind keeps the delete button on its own line (an orphaned ✕
    on a line of its own reads as belonging to the next row), the long topic
    takes the full width beneath it. */
@@ -2205,7 +2287,7 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 }
 
 #alice-msg.cloud-msg,
-#sh-msg.cloud-msg,
+#cloud-ctrl-msg.cloud-msg,
 #sh-bind-msg.cloud-msg {
   margin-top: 4px;
   padding: 8px 12px;
@@ -2214,14 +2296,14 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   line-height: 1.4;
 }
 #alice-msg.cloud-msg.is-ok,
-#sh-msg.cloud-msg.is-ok,
+#cloud-ctrl-msg.cloud-msg.is-ok,
 #sh-bind-msg.cloud-msg.is-ok {
   background: var(--badge-ok-bg);
   color: var(--green);
   border: 1px solid var(--badge-ok-border);
 }
 #alice-msg.cloud-msg.is-err,
-#sh-msg.cloud-msg.is-err,
+#cloud-ctrl-msg.cloud-msg.is-err,
 #sh-bind-msg.cloud-msg.is-err {
   background: var(--badge-err-bg);
   color: var(--red);
@@ -2229,7 +2311,8 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 }
 .system-manage-cloud-card #cloud-btn-pair,
 .system-manage-cloud-card #cloud-btn-cancel,
-.system-manage-cloud-card #cloud-btn-activate {
+.system-manage-cloud-card #cloud-btn-activate,
+.system-manage-cloud-card #cloud-btn-ctrl {
   width: 100%;
   font-size: .82rem;
   padding: 0 12px;
@@ -2245,6 +2328,13 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
    the «Туннель» / «Последний отчёт» / «Серийный №» rows cloud.js hides via
    `hidden` stayed visible with their last value (bench 1.135, 2026-09-03). */
 .system-manage-cloud-card .cloud-meta > div[hidden] { display: none !important; }
+/* «Управление из облака» (the sa02m-cloud-control unit) — moved onto this card
+   in 1.0.6.29. A separated block at the end of the card body: label + state
+   badge on one line, its own full-width button and its own message line (the
+   pairing actions own #cloud-msg). */
+.cloud-ctrl-block { border-top: 1px solid var(--border); padding-top: 10px; }
+.cloud-ctrl-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px; }
+.cloud-ctrl-row .cloud-ctrl-label { font-size: .85rem; white-space: nowrap; }
 .system-manage-cloud-card .cloud-agent-ctrl .btn {
   width: 100%;
   min-height: 38px;
@@ -4280,12 +4370,23 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 }
 /* hidden attribute must override display:flex */
 .mqtt-modal-overlay[hidden] { display: none !important; }
+/* Capped to the viewport and scrolling in ONE layer — the body; head and foot
+   stay pinned (the .flasher-config-dialog pattern). Until 1.0.6.29 no layer
+   was capped or scrollable, so a dialog taller than the screen (#sh-modal with
+   a real catalogue) was centred by the overlay's flex with its head AND its
+   foot outside the viewport and nothing to scroll — the fixed overlay adds no
+   document scroll area. Shared by every .mqtt-modal-* dialog. */
 .mqtt-modal-dialog {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
   width: 420px;
   max-width: 96vw;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   box-shadow: 0 8px 32px rgba(0,0,0,.4);
 }
 .mqtt-modal-head {
@@ -4294,15 +4395,24 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   align-items: center;
   padding: 14px 18px;
   border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 .mqtt-modal-head h3 { margin: 0; font-size: 1rem; }
-.mqtt-modal-body { padding: 16px 18px; }
+.mqtt-modal-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  /* Load-bearing: a flex child defaults to min-height:auto and would refuse to
+     shrink below its content, so the cap above would clip instead of scroll. */
+  min-height: 0;
+  overscroll-behavior: contain;
+}
 .mqtt-modal-foot {
   display: flex;
   gap: 8px;
   padding: 12px 18px;
   border-top: 1px solid var(--border);
   justify-content: flex-end;
+  flex: 0 0 auto;
 }
 
 .mqtt-modal-dialog.mqtt-modal-wide { width: 600px; }

@@ -13,16 +13,6 @@ function uiT(s) {
 
 function $(id) { return document.getElementById(id); }
 
-function shBadge(text, kind) {
-  const cls = kind === 'ok' ? 'badge-ok' : kind === 'warn' ? 'badge-warn' : kind === 'err' ? 'badge-err' : 'badge-unk';
-  return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
-}
-
-function shSetBadge(el, text, kind) {
-  if (!el) return;
-  el.innerHTML = shBadge(uiT(text), kind);
-}
-
 // The shared CGI + poll pipeline is alice.js's; read the handles lazily so a
 // load-order slip degrades to "no data" rather than a TypeError at parse.
 function shApi(body) {
@@ -71,8 +61,8 @@ function shSetMsgOn(id, text, ok) {
   }
 }
 
-// Card-level feedback (#sh-msg) and modal feedback (#sh-bind-msg).
-function shSetMsg(text, ok) { shSetMsgOn('sh-msg', text, ok); }
+// Modal feedback (#sh-bind-msg). The card-level line moved to the «Облако»
+// card with the cloud-control button (1.0.6.29).
 function shSetBindMsg(text, ok) { shSetMsgOn('sh-bind-msg', text, ok); }
 
 // ── Vocabulary ─────────────────────────────────────────────────────────────
@@ -200,23 +190,32 @@ function shDetectRows(dev) {
   const rows = [];
   const push = function (item) {
     if (!shIsManagedItem(item)) return;
-    rows.push({ kind: shKindForItem(item), topic: (item && item.mqtt) || '', rawItem: item });
+    rows.push({
+      kind: shKindForItem(item),
+      topic: (item && item.mqtt) || '',
+      inverted: !!(item && item.inverted),
+      rawItem: item,
+    });
   };
   ((dev && dev.capabilities) || []).forEach(push);
   ((dev && dev.properties) || []).forEach(push);
   return rows;
 }
 
-function shMakeManagedItem(kind, topic) {
+function shMakeManagedItem(kind, topic, inverted) {
   const spec = SH_KINDS[kind];
   if (!spec || spec.kindOf === 'cap') {
-    return {
+    const cap = {
       type: 'devices.capabilities.on_off',
       mqtt: topic,
       retrievable: true,
       reportable: true,
       parameters: { instance: 'on' },
     };
+    // Emitted ONLY when true — an unchecked box writes the item a pre-1.0.6.29
+    // version wrote (the `scale` rule; the validator drops a stored `false`).
+    if (inverted) cap.inverted = true;
+    return cap;
   }
   if (spec.kindOf === 'event') {
     return {
@@ -315,12 +314,35 @@ function shAddRow(kind, topic, rawItem) {
   row._shRawItem = rawItem || null;
   row._shOrigKind = rawItem ? k : null;
   host.appendChild(row);
+  shSyncInvertedField();
   return row;
+}
+
+// «Инвертировать» is a DEVICE-level control (#sh-inv-field), shown only while
+// the device has an on/off binding — a reading has no output to invert. It is
+// device level, not row level, because a device can hold at most one on_off
+// item (validate_device refuses a second one with the same type+instance), and
+// on the row it squeezed the topic select below legibility.
+function shSyncInvertedField() {
+  const field = $('sh-inv-field');
+  if (!field) return;
+  field.hidden = !shHasOnOffRow();
+}
+
+function shHasOnOffRow() {
+  const host = shRowsHost();
+  const sels = host ? host.querySelectorAll('.sh-bind-row .sh-row-kind') : [];
+  for (let i = 0; i < sels.length; i++) {
+    const spec = SH_KINDS[sels[i].value];
+    if (spec && spec.kindOf === 'cap') return true;
+  }
+  return false;
 }
 
 function shClearRows() {
   const host = shRowsHost();
   if (host) host.innerHTML = '';
+  shSyncInvertedField();
 }
 
 // Add mode starts on one empty row; the device type follows it, so the form
@@ -373,6 +395,8 @@ function shRowsClick(e) {
     return;
   }
   row.parentNode.removeChild(row);
+  // Deleting the on/off row takes the «Инвертировать» field with it.
+  shSyncInvertedField();
   shSetBindMsg('', true);
 }
 
@@ -382,6 +406,8 @@ function shRowsChange(e) {
   // later type pick must not replace it (see shRowsUntouched).
   const row = sel && sel.closest ? sel.closest('.sh-bind-row') : null;
   if (row) row._shTouched = true;
+  // A kind change may reveal or hide the «Инвертировать» field.
+  if (sel && sel.classList && sel.classList.contains('sh-row-kind')) shSyncInvertedField();
   if (!sel || !sel.classList || !sel.classList.contains('sh-row-kind')) return;
   if (shDtypeTouched) return;
   const host = shRowsHost();
@@ -398,6 +424,8 @@ function shCollectRows() {
   const host = shRowsHost();
   const out = [];
   const seen = {};
+  const invEl = $('sh-dev-inverted');
+  const inverted = !!(invEl && invEl.checked);
   const nodes = host ? host.querySelectorAll('.sh-bind-row') : [];
   for (let i = 0; i < nodes.length; i++) {
     const row = nodes[i];
@@ -411,7 +439,14 @@ function shCollectRows() {
       return { rows: [], error: uiT('Два показания одного вида в одном устройстве — выберите разные') };
     }
     seen[pair] = true;
-    out.push({ kind: kind, topic: topic, rawItem: row._shRawItem, origKind: row._shOrigKind });
+    out.push({
+      kind: kind,
+      topic: topic,
+      // Device-level flag, applied to the one on/off binding it can describe.
+      inverted: inverted && !!(SH_KINDS[kind] && SH_KINDS[kind].kindOf === 'cap'),
+      rawItem: row._shRawItem,
+      origKind: row._shOrigKind,
+    });
   }
   if (!out.length) return { rows: [], error: uiT('Нужно хотя бы одно показание') };
   return { rows: out, error: null };
@@ -424,9 +459,15 @@ function shRowItem(row) {
   if (row.rawItem && row.origKind === row.kind) {
     const item = JSON.parse(JSON.stringify(row.rawItem));
     item.mqtt = row.topic;
+    // The checkbox owns the flag on an on/off item: set it when ticked, drop it
+    // when not, so unticking really clears it instead of keeping the old value.
+    if (item.type === 'devices.capabilities.on_off') {
+      if (row.inverted) item.inverted = true;
+      else delete item.inverted;
+    }
     return item;
   }
-  return shMakeManagedItem(row.kind, row.topic);
+  return shMakeManagedItem(row.kind, row.topic, row.inverted);
 }
 
 // ── Type / icon ─────────────────────────────────────────────────────────────
@@ -597,75 +638,6 @@ function shRenderDevices(devices, rooms) {
   }).join('');
 }
 
-// Cloud control: the second client unit (sa02m-cloud-control). State comes
-// from the cloud_control block the CGI adds to the status payload.
-const SH_CLOUD_STATE_MAP = {
-  disabled: ['Отключено', 'unk'],
-  offline: ['Шлюз недоступен', 'err'],
-  connecting: ['Подключение', 'warn'],
-  connected: ['Подключено', 'ok'],
-  error: ['Ошибка', 'err'],
-  missing_deps: ['Нет зависимостей', 'err'],
-  missing_identity: ['Нет идентификации', 'warn'],
-  unknown: ['Нет данных', 'unk'],
-};
-
-// Error tokens the cloud-profile client writes (`error` in status-cloud.json)
-// → RU phrases (DICT-translated). An unknown token still shows raw, as the
-// Alice card does for the gateway's own reasons.
-const SH_CLOUD_ERROR_MAP = {
-  file_not_found: 'файл не найден',
-  gateway_unreachable: 'сервер недоступен',
-  gateway_disconnected: 'соединение потеряно',
-  revoked: 'доступ отозван',
-  'invalid credential': 'неверные учётные данные',
-  'too many requests': 'слишком много запросов',
-  'cloud control not enabled on the host': 'управление не включено на сервере',
-  'cloud identity missing': 'нет облачной идентификации',
-  missing_identity: 'нет облачной идентификации',
-};
-
-function shCloudErrorText(token) {
-  const ru = SH_CLOUD_ERROR_MAP[String(token)];
-  return ru ? uiT(ru) : String(token);
-}
-
-function shRenderCloud(d) {
-  const cc = d.cloud_control;
-  const badge = $('sh-cloud-state');
-  const btn = $('sh-btn-cloud');
-  if (!cc) {
-    // Older backend without the block (cached CGI): say so, do not guess.
-    shSetBadge(badge, 'Нет данных', 'unk');
-    if (btn) btn.disabled = true;
-    return;
-  }
-  const enabled = !!cc.enabled;
-  const st = enabled ? (cc.state || 'unknown') : 'disabled';
-  const entry = SH_CLOUD_STATE_MAP[st] || SH_CLOUD_STATE_MAP.unknown;
-  shSetBadge(badge, entry[0], entry[1]);
-  // cloud_enrolled is tri-state (true / false / null = unknowable): only an
-  // explicit false locks the button — an unknown lets the operator try, and
-  // the client then reports `missing_identity` honestly.
-  const notEnrolled = cc.cloud_enrolled === false;
-  if (btn) {
-    btn.dataset.action = enabled ? 'cloud_control_disable' : 'cloud_control_enable';
-    btn.className = 'btn btn-sm ' + (enabled ? 'btn-danger' : 'btn-primary');
-    btn.textContent = uiT(enabled ? 'Выключить' : 'Включить');
-    btn.disabled = notEnrolled && !enabled;
-    btn.title = notEnrolled ? uiT('Сначала привяжите устройство к облаку') : '';
-  }
-  if (notEnrolled && !enabled) {
-    shSetMsg(uiT('Сначала привяжите устройство к облаку'), null);
-  } else if (enabled && entry[1] === 'err' && cc.error) {
-    shSetMsg(uiT(entry[0]) + ': ' + shCloudErrorText(cc.error), false);
-  } else {
-    const msg = $('sh-msg');
-    // Leave a transient «Сохранено» in place; clear only our own hint/error.
-    if (msg && !msg.classList.contains('is-ok')) shSetMsg('', true);
-  }
-}
-
 // Last poll payload, kept so a language switch can re-render the counts and
 // rows in the new language without waiting for the next tick.
 let _shLastData = null;
@@ -684,37 +656,9 @@ function shOnData(d) {
   if (card) card.textContent = counts;
   const modal = $('sh-modal-counts');
   if (modal) modal.textContent = counts;
-  shRenderCloud(d);
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
-// Bounded follow-up refreshes after a unit toggle — the unit start + first
-// connect take a few seconds and the 5 s poll would look frozen. Two chained
-// timeouts, never an interval (the endpoint probes the gateway in-CGI).
-function shRefreshSoon() {
-  setTimeout(function () { shRefresh(); }, 2000);
-  setTimeout(function () { shRefresh(); }, 6000);
-}
-
-async function shToggleCloud() {
-  const btn = $('sh-btn-cloud');
-  const action = btn && btn.dataset.action === 'cloud_control_disable' ? 'cloud_control_disable' : 'cloud_control_enable';
-  if (btn) btn.disabled = true;
-  shSetMsg(uiT('Сохранение'), true);
-  try {
-    const d = await shApi({ action: action });
-    if (!d.ok) {
-      shSetMsg(d.message || d.error || uiT('Ошибка'), false);
-    } else {
-      shSetMsg(uiT('Сохранено'), true);
-      shRefreshSoon();
-    }
-    await shRefresh();
-  } catch (e) {
-    shSetMsg(uiT('Ошибка запроса API Алисы'), false);
-  }
-}
-
 // Fills the cached picker list ONLY — existing rows are never rebuilt, so a
 // refresh cannot reset a topic the operator already chose.
 async function shLoadTopics() {
@@ -861,6 +805,10 @@ function shBeginEdit(id) {
   const rows = shDetectRows(dev);
   if (!rows.length) shAddRow(SH_DEFAULT_KIND, '', null);
   else rows.forEach(function (r) { shAddRow(r.kind, r.topic, r.rawItem); });
+  // The stored flag lives on the device's single on/off binding.
+  const invEl = $('sh-dev-inverted');
+  if (invEl) invEl.checked = rows.some(function (r) { return r.inverted; });
+  shSyncInvertedField();
   const save = $('sh-dev-save');
   if (save) save.textContent = uiT('Сохранить');
   const cancel = $('sh-dev-cancel');
@@ -875,6 +823,8 @@ function shCancelEdit() {
   if (roomSel) roomSel.value = '';
   const exportEl = $('sh-dev-export');
   if (exportEl) exportEl.checked = true;
+  const invEl = $('sh-dev-inverted');
+  if (invEl) invEl.checked = false;
   shDtypeTouched = false;
   shIconTouched = false;
   shClearRows();
@@ -986,7 +936,6 @@ window.shAddRow = shAddRow;
 window.shAddDevice = shAddDevice;
 window.shCancelEdit = shCancelEdit;
 window.shAddRoom = shAddRoom;
-window.shToggleCloud = shToggleCloud;
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', shInit);

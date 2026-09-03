@@ -957,3 +957,10 @@ worklist collapsed into one home).
   if the transport drops on a ~5-17 min cycle, every drop is a window in which a tap is not
   confirmed. Bench 192.168.1.135, 1.0.6.26.
 
+- [RESOLVED] 2026-09-03 **Two MQTT overlays were not viewport-anchored** — `#mqtt-scan-modal`
+  and `#mqtt-add-modal` lived inside `#tab-mqtt`, whose entry animation leaves a `transform` on
+  the ancestor for ~200 ms, and a transformed ancestor becomes the containing block for
+  `position: fixed`. Fixed in 1.0.6.29 in the same change that found it (per the standing rule
+  «найденный дефект назначается, а не заносится»): both overlays moved to the document root,
+  `mqttTabDestroy` hides them on leaving the tab, and `sh-modal-layout-smoke` asserts both stay
+  inside the viewport with the ancestor deliberately transformed.

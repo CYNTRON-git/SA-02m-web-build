@@ -1,6 +1,6 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.28';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.29';
 
 
 function uiT(s) {
@@ -2648,6 +2648,11 @@ window.mqttTabInit = function() {
 window.mqttTabDestroy = function() {
   stopMonitor();
   stopChannelPoll();
+  // The two dialogs live at the document root (they must be positioned
+  // against the viewport, not against the transformed .tab-pane), so leaving
+  // the tab no longer hides them with it — close them here instead.
+  hideScanModal();
+  hideAddModal();
   if (window._mqttStatusTimer) {
     clearInterval(window._mqttStatusTimer);
     window._mqttStatusTimer = null;

@@ -220,8 +220,8 @@ const CONTRAST_WHITELIST = [
     reason: 'Storage auto-format toggle in its «НЕ УСТАНОВЛЕНО» (no storage-mount) state: the button is btn.disabled=true (app/status.js) — WCAG 1.4.3 disabled-control exemption.' },
   { match: '.kernel-apply-inline', floor: 1.25,
     reason: 'Kernel «Применить и перезагрузить» when no switchable kernel is staged: btn.disabled=true → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption.' },
-  { match: '#sh-btn-cloud', floor: 1.25,
-    reason: '«Умный дом» cloud-control button (added 1.0.6.26) while it cannot act: the harness stubs the CGI with {} so the status payload carries no cloud_control block, and app/smarthome.js shRenderCloud sets btn.disabled=true (the same lock a not-cloud-enrolled board gets) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-apply-inline case. The ENABLED button is the standard btn-primary pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
+  { match: '#cloud-btn-ctrl', floor: 1.25,
+    reason: '«Управление из облака» button (on the «Умный дом» card as #sh-btn-cloud from 1.0.6.26, moved onto the «Облако» card in 1.0.6.29) while it cannot act: the harness stubs the CGI with {} so the status payload carries no cloud_control block, and cloud.js cloudRenderControl sets btn.disabled=true (the same lock a not-cloud-enrolled board gets) → .btn:disabled opacity .4 (main.css) — WCAG 1.4.3 disabled-control exemption, the .kernel-apply-inline case. The ENABLED button is the standard btn-primary pair. floor 1.25 ratchets the measured worst (1.29 light / 3.08 dark).' },
   { match: '.kernel-refresh-inline', floor: 2.0,
     reason: 'Kernel «Обновить загрузочное ядро» (added 1.0.5.59) when the running kernel artifact is not valid: renderKernelControl (app/services.js) sets btn.disabled=true → .btn:disabled opacity .4 (main.css). Same disabled-control case as the sibling .kernel-apply-inline above (WCAG 1.4.3 exemption); the ENABLED button is --text on --bg-panel ≈ 12:1. floor 2.0 ratchets the measured worst (2.46 light / 3.40 dark).' },
   // NOTE: no #cloud-btn-activate entry — it lives inside a collapsed
@@ -521,6 +521,15 @@ function probeContrastRuns(wlContrast) {
     if (!ownText(el)) continue;
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    // The same phantom class as the clipped-away guard below, via a different
+    // mechanism: a subtree the browser skips painting (content-visibility, the
+    // UA hiding inside a CLOSED <details>) still reports computed style and a
+    // laid-out Range box, so the backdrop sampled at those coordinates belongs
+    // to whatever IS painted there — the token-fallback labels inside the
+    // closed #cloud-token-fallback measured against the button that follows it
+    // in flow (1.0.6.29). Ask the browser itself whether the run is rendered.
+    if (typeof el.checkVisibility === 'function'
+        && !el.checkVisibility({ contentVisibilityAuto: true, opacityProperty: false, visibilityProperty: true })) continue;
     const rg = document.createRange();
     rg.selectNodeContents(el);
     const r = rg.getBoundingClientRect();

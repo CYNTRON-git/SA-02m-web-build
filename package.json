@@ -5,6 +5,7 @@
   "scripts": {
     "ui-layout": "node .ai-dev/quality/checks/ui-layout.mjs",
     "ui-layout:install": "npm --prefix scripts/dev install && node scripts/dev/node_modules/playwright/cli.js install chromium",
-    "cloud-card-smoke": "node scripts/dev/cloud-card-smoke.mjs"
+    "cloud-card-smoke": "node scripts/dev/cloud-card-smoke.mjs",
+    "sh-modal-layout-smoke": "node scripts/dev/sh-modal-layout-smoke.mjs"
   }
 }

@@ -35,16 +35,38 @@ def _truthy_mqtt(raw: str) -> bool:
         return s in ("1", "true", "on", "yes")
 
 
-def mqtt_to_on_off(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def apply_on_off_inversion(value: bool, inverted: bool) -> bool:
+    """The ONE home for `inverted` (active-low outputs). Absent ⇒ False.
+
+    The rule: **the bus side holds the electrical value, the Yandex/cloud side
+    holds the logical one**, and `inverted` says they are opposites — bus 0 =
+    logically on (the SA-02m `alarm_led` output sounds the buzzer at 0).
+
+    It lives here once and only once because the transformation is its own
+    inverse: `not` applied twice is identity, so the SAME call converts
+    bus→logical (read) and logical→bus (write). The two boundary functions
+    below are the only places an on_off value crosses that boundary, and they
+    both call THIS function — a change to the rule cannot land on one path and
+    miss the other.
+    """
+    return (not bool(value)) if inverted else bool(value)
+
+
+def mqtt_to_on_off(
+    raw: str, parameters: Optional[Dict[str, Any]] = None, *, inverted: bool = False
+) -> Dict[str, Any]:
+    """Bus payload → the logical on/off Yandex and the cloud page see."""
     _ = parameters
     return {
         "type": "devices.capabilities.on_off",
-        "state": {"instance": "on", "value": _truthy_mqtt(raw)},
+        "state": {"instance": "on", "value": apply_on_off_inversion(_truthy_mqtt(raw), inverted)},
     }
 
 
-def yandex_to_on_off(state: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    """Return (mqtt_payload, error_code)."""
+def yandex_to_on_off(
+    state: Dict[str, Any], *, inverted: bool = False
+) -> Tuple[Optional[str], Optional[str]]:
+    """Logical on/off → the bus payload. Return (mqtt_payload, error_code)."""
     if not isinstance(state, dict):
         return None, C.ERR_INVALID_VALUE
     if state.get("instance", "on") != "on":
@@ -52,7 +74,7 @@ def yandex_to_on_off(state: Dict[str, Any]) -> Tuple[Optional[str], Optional[str
     value = state.get("value")
     if not isinstance(value, bool):
         return None, C.ERR_INVALID_VALUE
-    return ("1" if value else "0"), None
+    return ("1" if apply_on_off_inversion(value, inverted) else "0"), None
 
 
 def mqtt_to_range(raw: str, parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -232,10 +254,13 @@ def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optio
 
 
 def capability_mqtt_to_yandex(
-    cap_type: str, raw: str, parameters: Optional[Dict[str, Any]] = None
+    cap_type: str,
+    raw: str,
+    parameters: Optional[Dict[str, Any]] = None,
+    inverted: bool = False,
 ) -> Optional[Dict[str, Any]]:
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
-        return mqtt_to_on_off(raw, parameters)
+        return mqtt_to_on_off(raw, parameters, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return mqtt_to_range(raw, parameters)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
@@ -259,9 +284,10 @@ def capability_yandex_to_mqtt(
     *,
     current_raw: Optional[str] = None,
     parameters: Optional[Dict[str, Any]] = None,
+    inverted: bool = False,
 ) -> Tuple[Optional[str], Optional[str]]:
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
-        return yandex_to_on_off(state)
+        return yandex_to_on_off(state, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return yandex_to_range(state, current_raw=current_raw, parameters=parameters)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":

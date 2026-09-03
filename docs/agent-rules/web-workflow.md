@@ -131,6 +131,23 @@ cannot answer decisively.
   checks, audit-cadence offers. An empty block is stated explicitly («решений
   от вас не требуется»), never omitted.
 
+## A found defect is assigned, not just filed (orchestrator)
+
+Operator rule, 2026-09-03: **when a defect is found, dispatch an agent to fix it — do not
+merely record it in the backlog.** A backlog line is a memory aid, not an outcome; filing
+alone leaves the defect in the product and hands the Operator a list instead of a fix.
+
+- Found a defect while doing something else? Fix it in the same session: give it to a
+  Builder, run it through the same floors, land it on a branch.
+- The backlog entry still gets written — as the record of what is being fixed and why, and
+  it is marked `RESOLVED` when the fix lands. Recording and fixing are not alternatives.
+- The ONE reason to defer is a real technical conflict, and it must be named out loud: the
+  fix touches a file another agent is editing right now, or it needs a decision that is the
+  Operator's. Deferring then means **queued to a named agent with its position in the
+  queue**, not «записал в бэклог».
+- «Out of this change's fence» is a reason to put the fix on its OWN branch, never a reason
+  to leave it unfixed.
+
 ## Response scope — "explore all"
 
 When the Operator says "study all X" (all tabs, all CGI, all themes), the

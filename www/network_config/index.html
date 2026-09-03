@@ -7,8 +7,8 @@
        iPhone top/bottom areas must match the page background, not a default). -->
   <meta name="theme-color" content="#161618" id="theme-color-meta">
   <title>СА-02м — Панель управления</title>
-  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.6.28&r=devhist1">
-  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.28&r=alicemp1">
+  <link rel="icon" type="image/svg+xml" href="static/favicon_cyntron.svg?v=1.0.6.29&r=devhist1">
+  <link rel="stylesheet" href="static/css/main.css?v=1.0.6.29&r=alicemp1">
   <script>try{var _lt=localStorage.getItem('sa02m-theme')==='light';if(_lt)document.documentElement.setAttribute('data-theme','light');var _m=document.getElementById('theme-color-meta');if(_m)_m.setAttribute('content',_lt?'#ececf3':'#161618');}catch(e){}</script>
 </head>
 <body>
@@ -21,8 +21,8 @@
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="topbar-logo">
-      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.6.28&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
-      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.6.28&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-img" src="static/logo-vector_cyntron.svg?v=1.0.6.29&r=devhist1" height="28" width="120" alt="ЦИНТРОН" title="Сведения">
+      <img class="topbar-logo-chip" src="static/logo-chip_cyntron.svg?v=1.0.6.29&r=devhist1" height="28" width="28" alt="ЦИНТРОН" title="Сведения">
     </div>
     <div class="topbar-branding">
       <span class="topbar-brand-text" id="device-title">Сервер автоматизации СА-02м</span><span class="topbar-brand-short" id="device-title-short">СА-02м</span><span class="topbar-brand-ver" id="app-version" title="Версия веб-интерфейса"></span>
@@ -563,14 +563,6 @@
                 <div class="btn-row">
                   <button type="button" class="btn btn-sm" id="sh-btn-manage" onclick="shOpenModal()" aria-haspopup="dialog" aria-controls="sh-modal" data-i18n="Комнаты и устройства">Комнаты и устройства</button>
                 </div>
-                <div class="sh-cloud-row">
-                  <span class="sh-cloud-label" data-i18n="Управление из облака">Управление из облака</span>
-                  <span id="sh-cloud-state"><span class="badge badge-unk">…</span></span>
-                </div>
-                <div id="sh-msg" class="cloud-msg" role="status" hidden></div>
-              </div>
-              <div class="cloud-agent-ctrl system-manage-tile-foot">
-                <button type="button" class="btn btn-sm btn-primary" id="sh-btn-cloud" onclick="shToggleCloud()" disabled>…</button>
               </div>
             </div>
             <div class="ctrl-card system-manage-tile system-manage-alice-card" id="alice-card">
@@ -648,6 +640,19 @@
                   <p id="cloud-token-offline" class="field-hint conn-offline-hint" data-i18n="нет интернета" hidden>нет интернета</p>
                 </details>
                 <div id="cloud-msg" class="cloud-msg" role="status" hidden></div>
+                <!-- «Управление из облака» (the sa02m-cloud-control unit) — moved off
+                     the «Умный дом» card in 1.0.6.29: the cloud binding, its state and
+                     its actions belong together. Its data rides the Alice-API poll (the
+                     `cloud_control` block, which cloud.cgi does not carry) — cloud.js
+                     cloudRenderControl, no second CGI poll. -->
+                <div class="cloud-ctrl-block">
+                  <div class="cloud-ctrl-row">
+                    <span class="cloud-ctrl-label" data-i18n="Управление из облака">Управление из облака</span>
+                    <span id="cloud-ctrl-state"><span class="badge badge-unk">…</span></span>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-primary" id="cloud-btn-ctrl" onclick="cloudToggleControl()" disabled>…</button>
+                  <div id="cloud-ctrl-msg" class="cloud-msg" role="status" hidden></div>
+                </div>
               </div>
               <div class="cloud-agent-ctrl system-manage-tile-foot">
                 <button type="button" class="btn btn-sm btn-danger" id="cloud-btn-agent" onclick="cloudToggleAgent()" disabled>…</button>
@@ -1141,108 +1146,6 @@
           <div id="mqtt-monitor-log" class="mqtt-monitor-log"></div>
         </div>
 
-        <!-- Scan modal -->
-        <div id="mqtt-scan-modal" class="mqtt-modal-overlay" hidden>
-          <div class="mqtt-modal-dialog mqtt-modal-wide">
-            <div class="mqtt-modal-head">
-              <h3>Поиск устройств на шине</h3>
-              <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideScanModal()" aria-label="Закрыть" title="Закрыть">✕</button>
-            </div>
-            <div class="mqtt-modal-body">
-              <div class="mqtt-scan-params">
-                <div class="form-row">
-                  <label>Порт</label>
-                  <select id="mqtt-scan-port">
-                    <option>/dev/COM1</option>
-                    <option>/dev/COM2</option>
-                    <option>/dev/COM3</option>
-                    <option>/dev/COM4</option>
-                    <option>/dev/COM5</option>
-                  </select>
-                </div>
-                <div class="form-row">
-                  <label>Скорость</label>
-                  <select id="mqtt-scan-baud">
-                    <option value="115200" selected>115200</option>
-                    <option value="57600">57600</option>
-                    <option value="38400">38400</option>
-                    <option value="19200">19200</option>
-                    <option value="9600">9600</option>
-                  </select>
-                </div>
-                <div class="form-row">
-                  <label>Адреса</label>
-                  <select id="mqtt-scan-range">
-                    <option value="32">1 – 32</option>
-                    <option value="64">1 – 64</option>
-                    <option value="247">1 – 247 (медл.)</option>
-                  </select>
-                </div>
-                <div class="form-row" style="flex:0">
-                  <label>&nbsp;</label>
-                  <button class="btn btn-primary" id="mqtt-scan-btn" onclick="mqttRunScan()">Сканировать</button>
-                </div>
-              </div>
-              <div id="mqtt-scan-status" class="mqtt-scan-status"></div>
-              <div id="mqtt-scan-results" class="mqtt-scan-results"></div>
-            </div>
-            <div class="mqtt-modal-foot">
-              <button class="btn btn-sm" onclick="mqttHideScanModal()">Закрыть</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Add device modal -->
-        <div id="mqtt-add-modal" class="mqtt-modal-overlay" hidden>
-          <div class="mqtt-modal-dialog">
-            <div class="mqtt-modal-head">
-              <h3>Добавить устройство</h3>
-              <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideAddModal()" aria-label="Закрыть" title="Закрыть">✕</button>
-            </div>
-            <div class="mqtt-modal-body">
-              <div class="form-row">
-                <label>Тип устройства</label>
-                <select id="mqtt-add-type" onchange="mqttOnAddTypeChange()">
-                  <option value="mr02m">МР-02м</option>
-                  <option value="dtv">ДТВ-RS-485</option>
-                  <option value="ce02m3">СЭ-02м-3</option>
-                  <option value="template">Шаблон устройства</option>
-                </select>
-              </div>
-              <div class="form-row" id="mqtt-add-template-row" hidden>
-                <label>Шаблон</label>
-                <select id="mqtt-add-template" onchange="mqttUpdateId()"></select>
-              </div>
-              <div class="form-row">
-                <label>Порт</label>
-                <select id="mqtt-add-port" onchange="mqttUpdateId()">
-                  <option>/dev/COM1</option>
-                  <option>/dev/COM2</option>
-                  <option>/dev/COM3</option>
-                  <option>/dev/COM4</option>
-                  <option>/dev/COM5</option>
-                </select>
-              </div>
-              <div class="form-row">
-                <label>Адрес Modbus</label>
-                <input type="number" id="mqtt-add-addr" value="1" min="1" max="247" oninput="mqttUpdateId()">
-              </div>
-              <div class="form-row">
-                <label>Имя устройства</label>
-                <input type="text" id="mqtt-add-name" placeholder="Щит освещения">
-              </div>
-              <div class="form-row">
-                <label>MQTT Device ID</label>
-                <input type="text" id="mqtt-add-id" class="mono">
-              </div>
-            </div>
-            <div class="mqtt-modal-foot">
-              <button class="btn btn-primary" onclick="mqttConfirmAdd()">Добавить</button>
-              <button class="btn btn-sm" onclick="mqttHideAddModal()">Отмена</button>
-            </div>
-          </div>
-        </div>
-
       </div><!-- /tab-mqtt -->
 
       <!-- ══════════════════════════════════ GATEWAY ════════════════════════ -->
@@ -1253,6 +1156,120 @@
     </main><!-- /main -->
   </div><!-- /body -->
 </div><!-- /app -->
+
+<!-- MQTT scan / add-device dialogs live at the document root, NOT inside
+     #tab-mqtt: .tab-pane.active carries a transform (its entry animation),
+     and a transformed ancestor becomes the containing block for
+     position:fixed — nested, the OVERLAY itself was laid out against the
+     tab instead of the viewport: its box stopped matching the screen and grew
+     past it (measured 1.0.6.29 at 1280×720: the overlay box goes from
+     0,0 1280×720 to 224,88 1032×770.9 — 50.9 px taller than the viewport).
+     The dialog rides that displaced box; at 375×812 it is pushed off-screen
+     too — the add dialog's bottom lands at 887.4 px in an 812 px viewport.
+     Per-viewport numbers: scripts/dev/sh-modal-layout-smoke.mjs (the MQTT
+     anchoring pass). mqttTabDestroy closes them when the tab is left, the
+     role the tab's own display:none used to play. -->
+<!-- Scan modal -->
+<div id="mqtt-scan-modal" class="mqtt-modal-overlay" hidden>
+  <div class="mqtt-modal-dialog mqtt-modal-wide">
+    <div class="mqtt-modal-head">
+      <h3>Поиск устройств на шине</h3>
+      <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideScanModal()" aria-label="Закрыть" title="Закрыть">✕</button>
+    </div>
+    <div class="mqtt-modal-body">
+      <div class="mqtt-scan-params">
+        <div class="form-row">
+          <label>Порт</label>
+          <select id="mqtt-scan-port">
+            <option>/dev/COM1</option>
+            <option>/dev/COM2</option>
+            <option>/dev/COM3</option>
+            <option>/dev/COM4</option>
+            <option>/dev/COM5</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Скорость</label>
+          <select id="mqtt-scan-baud">
+            <option value="115200" selected>115200</option>
+            <option value="57600">57600</option>
+            <option value="38400">38400</option>
+            <option value="19200">19200</option>
+            <option value="9600">9600</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>Адреса</label>
+          <select id="mqtt-scan-range">
+            <option value="32">1 – 32</option>
+            <option value="64">1 – 64</option>
+            <option value="247">1 – 247 (медл.)</option>
+          </select>
+        </div>
+        <div class="form-row" style="flex:0">
+          <label>&nbsp;</label>
+          <button class="btn btn-primary" id="mqtt-scan-btn" onclick="mqttRunScan()">Сканировать</button>
+        </div>
+      </div>
+      <div id="mqtt-scan-status" class="mqtt-scan-status"></div>
+      <div id="mqtt-scan-results" class="mqtt-scan-results"></div>
+    </div>
+    <div class="mqtt-modal-foot">
+      <button class="btn btn-sm" onclick="mqttHideScanModal()">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add device modal -->
+<div id="mqtt-add-modal" class="mqtt-modal-overlay" hidden>
+  <div class="mqtt-modal-dialog">
+    <div class="mqtt-modal-head">
+      <h3>Добавить устройство</h3>
+      <button type="button" class="btn btn-sm modal-close-x" onclick="mqttHideAddModal()" aria-label="Закрыть" title="Закрыть">✕</button>
+    </div>
+    <div class="mqtt-modal-body">
+      <div class="form-row">
+        <label>Тип устройства</label>
+        <select id="mqtt-add-type" onchange="mqttOnAddTypeChange()">
+          <option value="mr02m">МР-02м</option>
+          <option value="dtv">ДТВ-RS-485</option>
+          <option value="ce02m3">СЭ-02м-3</option>
+          <option value="template">Шаблон устройства</option>
+        </select>
+      </div>
+      <div class="form-row" id="mqtt-add-template-row" hidden>
+        <label>Шаблон</label>
+        <select id="mqtt-add-template" onchange="mqttUpdateId()"></select>
+      </div>
+      <div class="form-row">
+        <label>Порт</label>
+        <select id="mqtt-add-port" onchange="mqttUpdateId()">
+          <option>/dev/COM1</option>
+          <option>/dev/COM2</option>
+          <option>/dev/COM3</option>
+          <option>/dev/COM4</option>
+          <option>/dev/COM5</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Адрес Modbus</label>
+        <input type="number" id="mqtt-add-addr" value="1" min="1" max="247" oninput="mqttUpdateId()">
+      </div>
+      <div class="form-row">
+        <label>Имя устройства</label>
+        <input type="text" id="mqtt-add-name" placeholder="Щит освещения">
+      </div>
+      <div class="form-row">
+        <label>MQTT Device ID</label>
+        <input type="text" id="mqtt-add-id" class="mono">
+      </div>
+    </div>
+    <div class="mqtt-modal-foot">
+      <button class="btn btn-primary" onclick="mqttConfirmAdd()">Добавить</button>
+      <button class="btn btn-sm" onclick="mqttHideAddModal()">Отмена</button>
+    </div>
+  </div>
+</div>
 
 <div id="factory-reset-modal" class="mqtt-modal-overlay" hidden>
   <div class="mqtt-modal-dialog mqtt-modal-wide" role="dialog" aria-modal="true" aria-labelledby="factory-reset-modal-title">
@@ -1298,105 +1315,136 @@
 <!-- Умный дом — rooms / devices / bindings; opened from #sh-card and the
      «Умный дом ›» link on #alice-card. -->
 <div id="sh-modal" class="mqtt-modal-overlay" hidden onclick="shModalBackdrop(event)">
-  <div class="mqtt-modal-dialog mqtt-modal-wide" role="dialog" aria-modal="true" aria-labelledby="sh-modal-title">
+  <div class="mqtt-modal-dialog sh-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="sh-modal-title">
     <div class="mqtt-modal-head">
       <h3 id="sh-modal-title" data-i18n="Комнаты и устройства">Комнаты и устройства</h3>
       <button type="button" class="btn btn-sm modal-close-x" onclick="shCloseModal()" aria-label="Закрыть" title="Закрыть">✕</button>
     </div>
+    <!-- Two panes (main.css `.sh-modal-body`): the catalogue on the left, every
+         add/edit control on the right, so both are on screen at once. The panes
+         stack below 900 px, catalogue first. -->
     <div class="mqtt-modal-body sh-modal-body">
-      <p class="field-hint text-sm" id="sh-modal-counts">—</p>
-      <div class="field">
-        <label id="sh-room-list-label" data-i18n="Комнаты">Комнаты</label>
-        <div id="sh-room-list" class="sh-room-list" role="group" aria-labelledby="sh-room-list-label"></div>
-        <div class="sh-room-form">
-          <input type="text" id="sh-room-name" maxlength="64" autocomplete="off" placeholder="Название комнаты" aria-label="Название комнаты">
-          <button type="button" class="btn btn-sm" id="sh-room-add" onclick="shAddRoom()" data-i18n="Добавить комнату">Добавить комнату</button>
+      <div class="sh-col sh-col-catalog">
+        <p class="field-hint text-sm" id="sh-modal-counts">—</p>
+        <div class="field">
+          <label id="sh-room-list-label" data-i18n="Комнаты">Комнаты</label>
+          <div id="sh-room-list" class="sh-room-list" role="group" aria-labelledby="sh-room-list-label"></div>
+        </div>
+        <div class="field">
+          <label id="sh-device-list-label" data-i18n="Устройства">Устройства</label>
+          <div id="sh-device-list" class="sh-device-list" role="group" aria-labelledby="sh-device-list-label"></div>
         </div>
       </div>
-      <div id="sh-device-list" class="sh-device-list"></div>
-      <div class="field">
-        <label for="sh-dev-name" data-i18n="Имя устройства">Имя устройства</label>
-        <input type="text" id="sh-dev-name" maxlength="64" autocomplete="off" placeholder="Реле 1">
+      <div class="sh-col sh-col-actions">
+        <div class="field">
+          <label for="sh-room-name" data-i18n="Новая комната">Новая комната</label>
+          <div class="sh-room-form">
+            <input type="text" id="sh-room-name" maxlength="64" autocomplete="off" placeholder="Название комнаты" aria-label="Название комнаты">
+            <button type="button" class="btn btn-sm" id="sh-room-add" onclick="shAddRoom()" data-i18n="Добавить комнату">Добавить комнату</button>
+          </div>
+        </div>
+        <div class="field sh-field-half">
+          <label for="sh-dev-name" data-i18n="Имя устройства">Имя устройства</label>
+          <input type="text" id="sh-dev-name" maxlength="64" autocomplete="off" placeholder="Реле 1">
+        </div>
+        <div class="field sh-field-half">
+          <label for="sh-dev-room" data-i18n="Комната">Комната</label>
+          <select id="sh-dev-room"><option value="" data-i18n="Без комнаты">Без комнаты</option></select>
+        </div>
+        <div class="field sh-field-half">
+          <label for="sh-dev-type" data-i18n="Тип устройства">Тип устройства</label>
+          <select id="sh-dev-type">
+            <!-- optgroup labels are translated by smarthome.js (refreshSmartHomeI18n) —
+                 a data-i18n here would let applyDataI18n() textContent-wipe the options. -->
+            <optgroup label="Включить/выключить" data-label="Включить/выключить">
+              <option value="devices.types.light">Освещение</option>
+              <option value="devices.types.socket">Розетка</option>
+              <option value="devices.types.ventilation.fan">Вентилятор</option>
+              <option value="devices.types.switch">Выключатель</option>
+              <option value="devices.types.other">Другое</option>
+            </optgroup>
+            <optgroup label="Датчики" data-label="Датчики">
+              <option value="devices.types.sensor" selected>Датчик</option>
+              <option value="devices.types.sensor.climate">Климат-датчик</option>
+              <option value="devices.types.sensor.motion">Датчик движения</option>
+              <option value="devices.types.smart_meter.electricity">Счётчик электроэнергии</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="field sh-field-half" id="sh-icon-field" hidden>
+          <label for="sh-dev-icon" data-i18n="Значок">Значок</label>
+          <select id="sh-dev-icon">
+            <option value="bulb">Освещение</option>
+            <option value="socket">Розетка</option>
+            <option value="fan">Вентилятор</option>
+            <option value="relay" selected>Выключатель</option>
+            <option value="pump">Насос</option>
+            <option value="valve">Клапан</option>
+            <option value="siren">Сирена</option>
+            <option value="generic">Другое</option>
+          </select>
+          <span id="sh-type-preview"><svg class="sh-icon" aria-hidden="true"><use href="#i-relay"></use></svg></span>
+        </div>
+        <div class="field sh-field-half">
+          <label class="sh-export-label" for="sh-dev-export">
+            <input type="checkbox" class="toggle" id="sh-dev-export" checked>
+            <span data-i18n="Показывать в Алисе">Показывать в Алисе</span>
+          </label>
+        </div>
+        <!-- «Инвертировать» — active-low outputs (contract §Inverted). A device
+             carries at most ONE on_off binding (validate_device refuses a second
+             item with the same type+instance, and on_off has only `on`), so this
+             is a device-level control paired with the export toggle rather than
+             a per-row one: on the row it squeezed the topic select to 132 px,
+             where every /devices/SA-02m/controls/… topic reads alike.
+             shSyncInvertedField shows it only while an on/off binding exists. -->
+        <div class="field sh-field-half" id="sh-inv-field" hidden>
+          <label class="sh-export-label sh-inv-label" for="sh-dev-inverted">
+            <input type="checkbox" class="toggle" id="sh-dev-inverted">
+            <span class="sh-inv-text">
+              <span data-i18n="Инвертировать">Инвертировать</span>
+              <span class="sh-inv-hint" data-i18n="выход активен нулём">выход активен нулём</span>
+            </span>
+          </label>
+        </div>
+        <div class="field">
+          <label id="sh-rows-label" data-i18n="Показания">Показания</label>
+          <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
+          <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-sm btn-primary" id="sh-dev-save" onclick="shAddDevice()" data-i18n="Добавить">Добавить</button>
+          <button type="button" class="btn btn-sm" id="sh-dev-cancel" onclick="shCancelEdit()" data-i18n="Отмена" hidden>Отмена</button>
+        </div>
+        <div id="sh-bind-msg" class="cloud-msg" role="status" hidden></div>
       </div>
-      <div class="field">
-        <label for="sh-dev-room" data-i18n="Комната">Комната</label>
-        <select id="sh-dev-room"><option value="" data-i18n="Без комнаты">Без комнаты</option></select>
-      </div>
-      <div class="field">
-        <label for="sh-dev-type" data-i18n="Тип устройства">Тип устройства</label>
-        <select id="sh-dev-type">
-          <!-- optgroup labels are translated by smarthome.js (refreshSmartHomeI18n) —
-               a data-i18n here would let applyDataI18n() textContent-wipe the options. -->
-          <optgroup label="Включить/выключить" data-label="Включить/выключить">
-            <option value="devices.types.light">Освещение</option>
-            <option value="devices.types.socket">Розетка</option>
-            <option value="devices.types.ventilation.fan">Вентилятор</option>
-            <option value="devices.types.switch">Выключатель</option>
-            <option value="devices.types.other">Другое</option>
-          </optgroup>
-          <optgroup label="Датчики" data-label="Датчики">
-            <option value="devices.types.sensor" selected>Датчик</option>
-            <option value="devices.types.sensor.climate">Климат-датчик</option>
-            <option value="devices.types.sensor.motion">Датчик движения</option>
-            <option value="devices.types.smart_meter.electricity">Счётчик электроэнергии</option>
-          </optgroup>
-        </select>
-      </div>
-      <div class="field" id="sh-icon-field" hidden>
-        <label for="sh-dev-icon" data-i18n="Значок">Значок</label>
-        <select id="sh-dev-icon">
-          <option value="bulb">Освещение</option>
-          <option value="socket">Розетка</option>
-          <option value="fan">Вентилятор</option>
-          <option value="relay" selected>Выключатель</option>
-          <option value="pump">Насос</option>
-          <option value="valve">Клапан</option>
-          <option value="siren">Сирена</option>
-          <option value="generic">Другое</option>
-        </select>
-        <span id="sh-type-preview"><svg class="sh-icon" aria-hidden="true"><use href="#i-relay"></use></svg></span>
-      </div>
-      <div class="field">
-        <label class="sh-export-label" for="sh-dev-export">
-          <input type="checkbox" class="toggle" id="sh-dev-export" checked>
-          <span data-i18n="Показывать в Алисе">Показывать в Алисе</span>
-        </label>
-      </div>
-      <div class="field">
-        <label id="sh-rows-label" data-i18n="Показания">Показания</label>
-        <div id="sh-rows" class="sh-rows" role="group" aria-labelledby="sh-rows-label"></div>
-        <button type="button" class="btn btn-sm" id="sh-row-add" onclick="shAddRow()" data-i18n="Добавить показание">Добавить показание</button>
-      </div>
-      <div class="btn-row">
-        <button type="button" class="btn btn-sm btn-primary" id="sh-dev-save" onclick="shAddDevice()" data-i18n="Добавить">Добавить</button>
-        <button type="button" class="btn btn-sm" id="sh-dev-cancel" onclick="shCancelEdit()" data-i18n="Отмена" hidden>Отмена</button>
-      </div>
-      <div id="sh-bind-msg" class="cloud-msg" role="status" hidden></div>
-      <p class="field-hint text-sm" data-i18n="Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».">Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».</p>
     </div>
-    <div class="mqtt-modal-foot">
+    <!-- The standing note sits in the foot, not in the actions pane: it is a
+         reminder, not a control, and the pane must fit its actions unscrolled. -->
+    <div class="mqtt-modal-foot sh-modal-foot">
+      <p class="field-hint text-sm sh-foot-hint" data-i18n="Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».">Алиса увидит изменения после «Обновить список устройств» в приложении «Дом с Алисой».</p>
       <button type="button" class="btn btn-sm" onclick="shCloseModal()" data-i18n="Закрыть">Закрыть</button>
     </div>
   </div>
 </div>
 
-<script src="static/js/i18n.js?v=1.0.6.28&r=alicemp1"></script>
-<script src="static/js/app.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/app/status.js?v=1.0.6.28&r=updlog1"></script>
-<script src="static/js/app/hw.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/app/rs485.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/app/forms.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/app/services.js?v=1.0.6.28&r=noell1"></script>
-<script src="static/js/app/misc.js?v=1.0.6.28&r=hwname1"></script>
-<script src="static/js/app/init.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/app/nav.js?v=1.0.6.28&r=devhist1"></script>
-<script src="static/js/flasher.js?v=1.0.6.28&r=noell1"></script>
-<script type="module" src="static/js/mqtt.js?v=1.0.6.28&r=noell1"></script>
-<script src="static/js/gateway.js?v=1.0.6.28&r=noell1"></script>
-<script type="module" src="static/js/devices.js?v=1.0.6.28&r=e1dec"></script>
-<script src="static/js/cloud.js?v=1.0.6.28&r=agofmt1"></script>
-<script src="static/js/app/alice.js?v=1.0.6.28&r=alicemp1"></script>
-<script src="static/js/app/smarthome.js?v=1.0.6.28&r=sh1"></script>
+<script src="static/js/i18n.js?v=1.0.6.29&r=alicemp1"></script>
+<script src="static/js/app.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/app/status.js?v=1.0.6.29&r=updlog1"></script>
+<script src="static/js/app/hw.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/app/rs485.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/app/forms.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/app/services.js?v=1.0.6.29&r=noell1"></script>
+<script src="static/js/app/misc.js?v=1.0.6.29&r=hwname1"></script>
+<script src="static/js/app/init.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/app/nav.js?v=1.0.6.29&r=devhist1"></script>
+<script src="static/js/flasher.js?v=1.0.6.29&r=noell1"></script>
+<script type="module" src="static/js/mqtt.js?v=1.0.6.29&r=noell1"></script>
+<script src="static/js/gateway.js?v=1.0.6.29&r=noell1"></script>
+<script type="module" src="static/js/devices.js?v=1.0.6.29&r=e1dec"></script>
+<script src="static/js/cloud.js?v=1.0.6.29&r=agofmt1"></script>
+<script src="static/js/app/alice.js?v=1.0.6.29&r=alicemp1"></script>
+<script src="static/js/app/smarthome.js?v=1.0.6.29&r=sh1"></script>
 
 <div id="dev-modal" class="dev-modal" hidden>
   <div class="dev-modal-backdrop" id="dev-modal-backdrop"></div>

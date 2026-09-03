@@ -22,6 +22,17 @@ def _item_scale(item: Dict[str, Any]) -> float:
     return float(scale)
 
 
+def _item_inverted(item: Dict[str, Any]) -> bool:
+    """Item-level active-low flag; absent or non-bool ⇒ False (as-is).
+
+    Beside `mqtt` for the same reason `scale` is: discovery copies `parameters`
+    verbatim to Yandex and must not leak a local field. The flag is only read
+    here and handed to converters.apply_on_off_inversion, which owns the rule.
+    """
+    inverted = item.get("inverted")
+    return inverted is True
+
+
 class DeviceRegistry:
     """In-memory registry backed by sa02m-alice-devices.conf."""
 
@@ -172,7 +183,8 @@ class DeviceRegistry:
                         reachable = False
                         continue
                     block = converters.capability_mqtt_to_yandex(
-                        str(item.get("type") or ""), raw, item.get("parameters")
+                        str(item.get("type") or ""), raw, item.get("parameters"),
+                        _item_inverted(item),
                     )
                     if block:
                         caps.append(block)
@@ -251,6 +263,7 @@ class DeviceRegistry:
                         cap.get("state") or {},
                         current_raw=current,
                         parameters=local.get("parameters"),
+                        inverted=_item_inverted(local),
                     )
                     if err or payload is None:
                         cap_results.append(
@@ -284,7 +297,8 @@ class DeviceRegistry:
             for did, kind, item in self._topic_map.get(topic, []):
                 if kind == "capability":
                     block = converters.capability_mqtt_to_yandex(
-                        str(item.get("type") or ""), raw, item.get("parameters")
+                        str(item.get("type") or ""), raw, item.get("parameters"),
+                        _item_inverted(item),
                     )
                     if block:
                         out.append({"id": did, "capabilities": [block], "properties": []})

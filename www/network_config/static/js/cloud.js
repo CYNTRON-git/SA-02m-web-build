@@ -173,6 +173,143 @@ function cloudUpdateAgentBtn(d) {
   }
 }
 
+/* -- «Управление из облака» (the sa02m-cloud-control unit) -----------------
+   Moved here from the «Умный дом» card in 1.0.6.29 (markup: #cloud-ctrl-*).
+   Its data does NOT come from cloud.cgi: the `cloud_control` block rides the
+   Alice-API status poll (app/alice.js -> window.sa02mAliceOnData), and its
+   actions go to the same sa02m_alice_api.cgi endpoint - no second CGI poll is
+   added, and the payload here is the ALICE one, never cloudRenderStatus's. */
+const CLOUD_CTRL_STATE_MAP = {
+  disabled: ['Отключено', 'unk'],
+  offline: ['Шлюз недоступен', 'err'],
+  connecting: ['Подключение', 'warn'],
+  connected: ['Подключено', 'ok'],
+  error: ['Ошибка', 'err'],
+  missing_deps: ['Нет зависимостей', 'err'],
+  missing_identity: ['Нет идентификации', 'warn'],
+  unknown: ['Нет данных', 'unk'],
+};
+
+// Error tokens the cloud-profile client writes (`error` in status-cloud.json)
+// to RU phrases (DICT-translated). An unknown token still shows raw, as the
+// Alice card does for the gateway's own reasons.
+const CLOUD_CTRL_ERROR_MAP = {
+  file_not_found: 'файл не найден',
+  gateway_unreachable: 'сервер недоступен',
+  gateway_disconnected: 'соединение потеряно',
+  revoked: 'доступ отозван',
+  'invalid credential': 'неверные учётные данные',
+  'too many requests': 'слишком много запросов',
+  'cloud control not enabled on the host': 'управление не включено на сервере',
+  'cloud identity missing': 'нет облачной идентификации',
+  missing_identity: 'нет облачной идентификации',
+};
+
+function cloudCtrlErrorText(token) {
+  const ru = CLOUD_CTRL_ERROR_MAP[String(token)];
+  return ru ? uiT(ru) : String(token);
+}
+
+// Its own line (#cloud-ctrl-msg), never the card's #cloud-msg: the pairing
+// actions own that one and the two would overwrite each other. Transient
+// success notices auto-clear, errors stay until the state changes, `ok === null`
+// is a neutral hint - the behaviour that came with the control.
+const CLOUD_CTRL_MSG_TTL_MS = 5000;
+let _cloudCtrlMsgTimer = null;
+
+function cloudCtrlSetMsg(text, ok) {
+  const msg = $('cloud-ctrl-msg');
+  if (!msg) return;
+  if (_cloudCtrlMsgTimer) { clearTimeout(_cloudCtrlMsgTimer); _cloudCtrlMsgTimer = null; }
+  if (!text) {
+    msg.hidden = true;
+    msg.textContent = '';
+    msg.className = 'cloud-msg';
+    return;
+  }
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'cloud-msg' + (ok === null ? '' : (ok ? ' is-ok' : ' is-err'));
+  if (ok === true) {
+    _cloudCtrlMsgTimer = setTimeout(function () {
+      _cloudCtrlMsgTimer = null;
+      const el = $('cloud-ctrl-msg');
+      // Only clear what is still this notice - a newer message owns itself.
+      if (el && !el.hidden && el.textContent === text) cloudCtrlSetMsg('', true);
+    }, CLOUD_CTRL_MSG_TTL_MS);
+  }
+}
+
+function cloudRenderControl(d) {
+  if (!$('cloud-card')) return;
+  const cc = d && d.cloud_control;
+  const badge = $('cloud-ctrl-state');
+  const btn = $('cloud-btn-ctrl');
+  if (!cc) {
+    // Older backend without the block (cached CGI): say so, do not guess.
+    cloudSetBadgeEl(badge, 'Нет данных', 'unk');
+    if (btn) btn.disabled = true;
+    return;
+  }
+  const enabled = !!cc.enabled;
+  const st = enabled ? (cc.state || 'unknown') : 'disabled';
+  const entry = CLOUD_CTRL_STATE_MAP[st] || CLOUD_CTRL_STATE_MAP.unknown;
+  cloudSetBadgeEl(badge, entry[0], entry[1]);
+  // cloud_enrolled is tri-state (true / false / null = unknowable): only an
+  // explicit false locks the button - an unknown lets the operator try, and
+  // the client then reports `missing_identity` honestly.
+  const notEnrolled = cc.cloud_enrolled === false;
+  if (btn) {
+    btn.dataset.action = enabled ? 'cloud_control_disable' : 'cloud_control_enable';
+    btn.className = 'btn btn-sm ' + (enabled ? 'btn-danger' : 'btn-primary');
+    btn.textContent = uiT(enabled ? 'Выключить' : 'Включить');
+    btn.disabled = notEnrolled && !enabled;
+    btn.title = notEnrolled ? uiT('Сначала привяжите устройство к облаку') : '';
+  }
+  if (notEnrolled && !enabled) {
+    cloudCtrlSetMsg(uiT('Сначала привяжите устройство к облаку'), null);
+  } else if (enabled && entry[1] === 'err' && cc.error) {
+    cloudCtrlSetMsg(uiT(entry[0]) + ': ' + cloudCtrlErrorText(cc.error), false);
+  } else {
+    const msg = $('cloud-ctrl-msg');
+    // Leave a transient «Сохранено» in place; clear only our own hint/error.
+    if (msg && !msg.classList.contains('is-ok')) cloudCtrlSetMsg('', true);
+  }
+}
+
+// Bounded follow-up refreshes after a unit toggle - the unit start + first
+// connect take a few seconds and the 5 s poll would look frozen. Two chained
+// timeouts, never an interval (the endpoint probes the gateway in-CGI).
+function cloudCtrlRefreshSoon() {
+  const again = function () {
+    if (typeof window.sa02mAliceRefresh === 'function') window.sa02mAliceRefresh();
+  };
+  setTimeout(again, 2000);
+  setTimeout(again, 6000);
+}
+
+// The shared Alice pipeline is app/alice.js's; the handles are read lazily so a
+// load-order slip degrades to a message rather than a TypeError.
+window.cloudToggleControl = async function cloudToggleControl() {
+  const btn = $('cloud-btn-ctrl');
+  const action = btn && btn.dataset.action === 'cloud_control_disable' ? 'cloud_control_disable' : 'cloud_control_enable';
+  if (btn) btn.disabled = true;
+  cloudCtrlSetMsg(uiT('Сохранение'), true);
+  try {
+    if (typeof window.sa02mAliceApi !== 'function') throw new Error('alice api missing');
+    const d = await window.sa02mAliceApi({ action: action });
+    if (!d.ok) {
+      cloudCtrlSetMsg(d.message || d.error || uiT('Ошибка'), false);
+    } else {
+      cloudCtrlSetMsg(uiT('Сохранено'), true);
+      cloudCtrlRefreshSoon();
+    }
+    if (typeof window.sa02mAliceRefresh === 'function') await window.sa02mAliceRefresh();
+  } catch (e) {
+    cloudCtrlSetMsg(uiT('Ошибка запроса API Алисы'), false);
+  }
+};
+
 function cloudRenderStatus(d) {
   const card = $('cloud-card');
   if (!card) return;
@@ -470,6 +607,21 @@ window.cloudTabDestroy = function cloudTabDestroy() {
     _cloudPollTimer = null;
   }
 };
+
+// «Управление из облака» rides app/alice.js's poll - registered once, at
+// DOMContentLoaded: that file is loaded AFTER this one, so window.sa02mAliceOnData
+// does not exist yet at parse time. A listener registered late still gets the
+// last payload at once (aliceOnData replays it), so the control never waits a tick.
+function cloudCtrlInit() {
+  if (!$('cloud-card')) return;
+  if (typeof window.sa02mAliceOnData === 'function') window.sa02mAliceOnData(cloudRenderControl);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', cloudCtrlInit);
+} else {
+  cloudCtrlInit();
+}
 
 window.cloudScrollIntoView = function cloudScrollIntoView() {
   const card = $('cloud-card');

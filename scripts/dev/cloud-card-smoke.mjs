@@ -24,6 +24,11 @@
    line tests/test_status_contract.py parses — a documented state with no
    fixture here FAILS, and so does a fixture for an undocumented state.
 
+   A second pass (runControlPlacement, 1.0.6.29) pins WHERE «Управление из
+   облака» lives: on this card, gone from «Умный дом», honest on an absent
+   `cloud_control` block, and really rendered from the Alice poll that carries
+   it.
+
    Exit codes (the runner has no skip signal distinct from success):
      0  every assertion passed (never without a real render);
      1  an assertion failed (state + assertion named), the contract line is
@@ -195,6 +200,112 @@ async function readCard(page) {
   });
 }
 
+/* ── «Управление из облака» — placement + honesty ─────────────────────────
+   The control (unit sa02m-cloud-control) moved off the «Умный дом» card onto
+   this one in 1.0.6.29. Its data does NOT come from cloud.cgi: the
+   `cloud_control` block rides the Alice-API poll, so this pass stubs
+   sa02m_alice_api.cgi (the state matrix above keeps its `{}` stub untouched)
+   and asserts, per theme:
+     * the button and the state badge are INSIDE #cloud-card — and no longer
+       anywhere on #sh-card (both directions, so a copy-instead-of-move FAILS);
+     * with no `cloud_control` in the payload the badge says «Нет данных» and
+       the button is locked — never «Подключено» on absent live keys;
+     * with a live block it really renders «Подключено» / «Выключить» — the
+       moved render path is wired, not dead markup;
+     * not enrolled: the button stays locked, with the hint that came with it.
+   Mutation proof: put the button back inside #sh-card -> "inside #cloud-card"
+   and "gone from #sh-card" both FAIL. */
+const CTRL_CASES = [
+  { name: 'no cloud_control block', cc: null, badge: 'Нет данных', disabled: true, label: null, hint: false },
+  { name: 'enabled + connected', cc: { enabled: true, state: 'connected', cloud_enrolled: true }, badge: 'Подключено', disabled: false, label: 'Выключить', hint: false },
+  { name: 'not enrolled', cc: { enabled: false, cloud_enrolled: false }, badge: 'Отключено', disabled: true, label: 'Включить', hint: true },
+];
+
+async function readControl(page) {
+  return page.evaluate(() => {
+    const btn = document.getElementById('cloud-btn-ctrl');
+    const badge = document.getElementById('cloud-ctrl-state');
+    const msg = document.getElementById('cloud-ctrl-msg');
+    const card = document.getElementById('cloud-card');
+    const sh = document.getElementById('sh-card');
+    // Where each element ACTUALLY sits, so a failure names the card to look in
+    // rather than restating that the element exists.
+    const cardOf = (el) => {
+      if (!el) return 'absent';
+      const host = el.closest('.ctrl-card');
+      return host ? (host.id || '(unnamed .ctrl-card)') : '(outside any card)';
+    };
+    return {
+      btnExists: !!btn,
+      badgeExists: !!badge,
+      btnCard: cardOf(btn),
+      badgeCard: cardOf(badge),
+      inCloudCard: !!(card && btn && badge && card.contains(btn) && card.contains(badge)),
+      onShCard: !!(sh && (sh.querySelector('#cloud-btn-ctrl, #cloud-ctrl-state, #cloud-ctrl-msg, #sh-btn-cloud, #sh-cloud-state, #sh-msg')
+        || sh.textContent.includes('Управление из облака'))),
+      legacyIds: ['sh-btn-cloud', 'sh-cloud-state', 'sh-msg'].filter((id) => !!document.getElementById(id)),
+      badgeText: badge ? badge.textContent.trim() : '',
+      btnText: btn ? btn.textContent.trim() : '',
+      btnDisabled: btn ? btn.disabled : null,
+      btnTitle: btn ? btn.title : '',
+      msgText: msg && !msg.hidden ? msg.textContent.trim() : '',
+    };
+  });
+}
+
+async function runControlPlacement(browser, base) {
+  let renders = 0;
+  for (const theme of THEMES) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    // Switchable inside one page, exactly like the state matrix above.
+    let alice = { ok: true, client_enabled: true, gateway: { available: true }, status: { state: 'connected' }, devices: { devices: [], rooms: [] } };
+    await page.route('**/cgi-bin/**', (r) => {
+      const url = r.request().url();
+      const body = /cloud\.cgi/.test(url) ? JSON.stringify(FIXTURES.active)
+        : /sa02m_alice_api\.cgi/.test(url) ? JSON.stringify(alice) : '{}';
+      return r.fulfill({ status: 200, contentType: 'application/json', body });
+    });
+    await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+    if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.evaluate(() => {
+      document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
+      document.getElementById('tab-system').classList.add('active');
+      window.cloudTabInit();
+    });
+    console.log(`\n[${theme}] «Управление из облака» placement`);
+    for (const c of CTRL_CASES) {
+      alice = c.cc ? { ...alice, cloud_control: c.cc } : { ...alice, cloud_control: undefined };
+      if (!c.cc) delete alice.cloud_control;
+      // Reached state, never a bare timeout: the badge is rendered from the poll.
+      await page.waitForFunction(
+        (want) => document.getElementById('cloud-ctrl-state').textContent.trim() === want,
+        c.badge, { timeout: 12000 },
+      );
+      renders++;
+      const s = await readControl(page);
+      check(s.btnExists && s.badgeExists && s.inCloudCard,
+        `${c.name}: the control is inside #cloud-card — button in ${s.btnCard}, badge in ${s.badgeCard}`);
+      check(!s.onShCard && s.legacyIds.length === 0,
+        `${c.name}: gone from the «Умный дом» card (on #sh-card: ${s.onShCard}, legacy ids left: ${s.legacyIds.join(',') || 'none'})`);
+      check(s.badgeText === c.badge, `${c.name}: badge reads "${s.badgeText}"`);
+      check(s.btnDisabled === c.disabled, `${c.name}: button ${c.disabled ? 'locked' : 'usable'} (disabled=${s.btnDisabled})`);
+      if (c.label) check(s.btnText === c.label, `${c.name}: button reads «${s.btnText}»`);
+      if (c.hint) {
+        check(/привяжите устройство к облаку/.test(s.btnTitle) && /привяжите устройство к облаку/.test(s.msgText),
+          `${c.name}: not-enrolled hint kept (title "${s.btnTitle}", line "${s.msgText}")`);
+      }
+    }
+    check(errors.length === 0, `placement: no page errors (${errors.join(' | ')})`);
+    await page.locator('#cloud-card').screenshot({ path: join(SHOTS, `cloud-card-control-${theme}.png`) });
+    await ctx.close();
+  }
+  return renders;
+}
+
 async function run() {
   const srv = await listen();
   const base = `http://127.0.0.1:${srv.address().port}`;
@@ -274,6 +385,7 @@ async function run() {
         await ctx.close();
       }
     }
+    rendered += await runControlPlacement(browser, base);
   } finally {
     await browser.close();
     srv.close();
@@ -282,7 +394,7 @@ async function run() {
   for (const m of matrix) console.log(`  ${m.theme.padEnd(5)} ${m.state.padEnd(16)} ${m.label.padEnd(18)} ${m.tunnel} ${m.ts}`);
   if (rendered === 0) die(1, `${TAG}: ERROR — nothing was rendered; a pass without a render is not a pass`);
   if (failures) die(1, `\n${TAG}: ${failures} FAILURE(S) across ${documented.length} states × ${THEMES.length} themes`);
-  console.log(`\n${TAG}: PASS — ${assertions} assertions across ${documented.length} contract states × ${THEMES.length} themes (in-page transitions from active, ${rendered} renders)`);
+  console.log(`\n${TAG}: PASS — ${assertions} assertions across ${documented.length} contract states + the «Управление из облака» placement pass × ${THEMES.length} themes (in-page transitions, ${rendered} renders)`);
   process.exit(0);
 }
 

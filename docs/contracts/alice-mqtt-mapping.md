@@ -155,6 +155,56 @@ leak a non-Yandex field to the platform.
   decimals. No other code multiplies a reading.
 - In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC).
 
+### Inverted (`on_off`, item level, never sent to Yandex) — 1.0.6.29
+
+An optional `inverted` sits beside `mqtt` on an **`on_off` capability**, for an
+**active-low output** — one where the bus value 0 energises the load. On the
+SA-02m the `alarm_led` output is such a case: bus 0 sounds the buzzer, bus 1 is
+silence.
+
+```json
+{"type":"devices.capabilities.on_off","mqtt":"/devices/SA-02m/controls/alarm_led",
+ "parameters":{"instance":"on"},"inverted":true}
+```
+
+**Which side holds which value — the direction, stated so it cannot be read
+backwards: the MQTT side of the seam holds the BUS (electrical) value, the
+Yandex / cloud side holds the LOGICAL value ("is the load on?"), and
+`inverted: true` declares that those two are opposites.** So with the flag set:
+bus `0` is reported upward as `on: true`, bus `1` as `on: false`; and a command
+`on: true` writes `0` to the bus, `on: false` writes `1`. Without the flag both
+sides carry the same value, exactly as before.
+
+- Absent ⇒ `false`, and the validator drops a stored `false`, so every
+  pre-existing item stays byte-identical and behaves as it did.
+- Validated as a strict bool, and **only on an `on_off` capability**: on a
+  property or any other capability it is refused (`inverted is only valid on an
+  on_off capability`) rather than silently ignored. Readings are never
+  inverted — a sensor reports what it measures.
+- Applied ONCE, in `converters.apply_on_off_inversion`, which is **self-inverse**
+  (`not` twice is identity), so the same function serves both directions:
+  `mqtt_to_on_off` (report) and `yandex_to_on_off` (command) both call it, and
+  no other code path converts an on_off value across the seam. The flag reaches
+  them through `device_registry._item_inverted(item)`, the same route
+  `_item_scale` takes.
+- The MQTT cache always holds the **bus** value — an action stores what it
+  published, and the read path inverts it back — so a tile cannot flip state
+  right after a command.
+- Never forwarded to Yandex: like `scale`, it lives beside `mqtt` because
+  discovery copies `parameters` verbatim into the platform payload.
+- UI: the «Инвертировать» checkbox in the «Умный дом» modal, beside «Показывать
+  в Алисе», shown only while the device has an on/off binding and saved through
+  the ordinary `upsert_device` action. It is a **device-level** control because
+  a device carries a single `on_off` item in practice. What each layer really
+  enforces: `validate_device` refuses a **repeated** `(type, instance)` (the
+  duplicate rule above); Yandex's `on_off` has only the `on` instance, and
+  `yandex_to_on_off` refuses any other; the web form hashes every on/off row to
+  `…on_off|on` and will not save a second one. A hand-edited document naming
+  two `on_off` items under **different** instances therefore passes the
+  validator — the command path refuses the second instance rather than
+  half-inverting the device. On the binding row the checkbox left the topic
+  select too narrow to tell two `/devices/SA-02m/controls/…` topics apart.
+
 ### Event properties
 
 ```json

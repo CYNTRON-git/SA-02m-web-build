@@ -142,6 +142,23 @@ def _validate_scale(item: Dict[str, Any]) -> Tuple[Optional[float], Optional[str
     return value, None
 
 
+def _validate_inverted(item: Dict[str, Any], kind: str) -> Optional[str]:
+    """Optional active-low flag on an `on_off` capability. Absent ⇒ `False`.
+
+    Item level, NOT inside `parameters`, for the same reason as `scale`:
+    discovery copies `parameters` verbatim into the Yandex payload. Refused on
+    anything but an `on_off` capability — a flag on a sensor or a range item
+    would silently do nothing, which is a typo, not a configuration.
+    """
+    if "inverted" not in item:
+        return None
+    if not isinstance(item.get("inverted"), bool):
+        return "invalid inverted"
+    if kind != "capability" or str(item.get("type") or "") != "devices.capabilities.on_off":
+        return "inverted is only valid on an on_off capability"
+    return None
+
+
 def _item_instance(item: Dict[str, Any]) -> str:
     params = item.get("parameters")
     if not isinstance(params, dict):
@@ -175,13 +192,23 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         err = _validate_event_item(item)
         if err:
             return None, err
+    err = _validate_inverted(item, kind)
+    if err:
+        return None, err
     scale, err = _validate_scale(item)
     if err:
         return None, err
-    if scale is None:
+    # `inverted: false` is the default — drop the key so a document the UI
+    # saved with the box unchecked is byte-identical to one written before the
+    # flag existed (the `icon: ""` rule).
+    drop_inverted = item.get("inverted") is False
+    if scale is None and not drop_inverted:
         return item, None
     out = dict(item)
-    out["scale"] = scale
+    if scale is not None:
+        out["scale"] = scale
+    if drop_inverted:
+        del out["inverted"]
     return out, None
 
 
