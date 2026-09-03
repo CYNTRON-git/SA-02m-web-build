@@ -48,6 +48,35 @@ DTV_DEFAULT_CONTROLS = (
 )
 DTV_ACTUATOR_CONTROLS = ("buzzer", "leds")
 
+# Carel AHU controls (bridge `type: carel`). Same conscious duplication as the
+# DTV list above: the one home is `sa02m_carel.controls`, which the alice
+# package cannot import at runtime (it is deployed as its own root-owned tree).
+# The frozen copy is pinned against that home by
+# opt/sa02m-carel/tests/test_controls_pin.py, so a control renamed there fails
+# a gate instead of silently emptying the binding picker.
+CAREL_CONTROLS = (
+    "unit_on",
+    "unit_status",
+    "unit_status_text",
+    "plant_state",
+    "supply_temp",
+    "return_water_temp",
+    "room_temp",
+    "outdoor_temp",
+    "heat_valve",
+    "setpoint",
+    "setpoint_summer",
+    "net_enable",
+    "sys_mode",
+    "fan_supply",
+    "fan_exhaust",
+    "fan_step",
+    "pump",
+    "alarm",
+    "alarm_count",
+    "alarm_text",
+)
+
 # MR-02m channel kinds the bridge publishes as `<kind>_<ch>` controls, plus the
 # per-module diagnostics every module carries (docs/MQTT_TOPICS.md is the home
 # of the naming). `ai` on a 12AI module carries live sensor readings — bench
@@ -190,6 +219,13 @@ def _topics_from_yaml(doc: Any) -> List[str]:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "ce02m3":
             for cname in CE02M3_CONTROLS:
+                out.add("/devices/%s/controls/%s" % (did, cname))
+        elif dtype == "carel" and not controls:
+            # A Carel entry carries no `controls` list either — the poller
+            # derives them from the family. Offer the superset: a control the
+            # family does not publish simply never reports, exactly like an
+            # absent DTV sensor.
+            for cname in CAREL_CONTROLS:
                 out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "mr02m" and not controls:
             # MR-02m modules publish per-channel controls named <kind>_<ch>

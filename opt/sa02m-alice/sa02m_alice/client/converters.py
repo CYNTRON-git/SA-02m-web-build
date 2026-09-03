@@ -17,7 +17,17 @@ BOOL_EVENT_VALUES = {
     "smoke": ("not_detected", "detected"),
     "gas": ("not_detected", "detected"),
     "vibration": (None, "vibration"),
+    # Cloud-only (a ventilation unit's alarm flag): the bridge publishes 0/1,
+    # the cloud page reads the word. Never sent to Yandex — the item carrying
+    # this instance is `cloud_only` and the Yandex profile drops it.
+    "alarm": ("normal", "alarm"),
 }
+
+# Cloud-only event instances whose value is FREE TEXT, not a closed set: a PLC
+# status line («Выключено по тревоге») has no Yandex equivalent to map onto, and
+# the cloud renders it verbatim. Anything here is admitted only on a `cloud_only`
+# item (config/models.py), so it cannot reach Yandex.
+FREE_TEXT_EVENT_INSTANCES = ("unit_status",)
 
 
 def _truthy_mqtt(raw: str) -> bool:
@@ -176,6 +186,13 @@ def mqtt_to_event_property(
     params = parameters or {}
     instance = str(params.get("instance", "open"))
     s = (raw or "").strip()
+    if instance in FREE_TEXT_EVENT_INSTANCES:
+        if not s:
+            return None
+        return {
+            "type": "devices.properties.event",
+            "state": {"instance": instance, "value": s},
+        }
     allowed = []
     for ev in params.get("events") or []:
         if isinstance(ev, dict) and isinstance(ev.get("value"), str):

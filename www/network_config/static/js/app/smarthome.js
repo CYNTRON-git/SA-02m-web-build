@@ -82,6 +82,7 @@ const SH_DEV_TYPES = {
   'devices.types.smart_meter': 'Счётчик',
   'devices.types.smart_meter.electricity': 'Счётчик электроэнергии',
   'devices.types.thermostat': 'Термостат',
+  'devices.types.ventilation': 'Вентустановка',
 };
 
 // The on/off device types — the «Включить/выключить» optgroup in #sh-dev-type.
@@ -103,8 +104,19 @@ const SH_ICON_BY_TYPE = {
   'devices.types.ventilation.fan': 'fan',
   'devices.types.switch': 'relay',
   'devices.types.other': 'generic',
+  'devices.types.ventilation': 'fan',
 };
 const SH_ICONS = ['bulb', 'fan', 'socket', 'relay', 'pump', 'valve', 'siren', 'generic'];
+
+// A ventilation unit is neither a plain switch nor a plain sensor: it is
+// switched on/off AND carries a setpoint and several readings, so it gets the
+// icon picker (the cloud page draws a tile for it) without joining
+// SH_ONOFF_TYPES, whose members seed a single «Переключатель» row.
+const SH_COMPOSITE_TYPES = ['devices.types.ventilation'];
+
+function shIsCompositeType(type) {
+  return SH_COMPOSITE_TYPES.indexOf(type) !== -1;
+}
 
 function shIsOnOffType(type) {
   return SH_ONOFF_TYPES.indexOf(type) !== -1;
@@ -128,6 +140,18 @@ const SH_KINDS = {
   amperage:    { kindOf: 'float', instance: 'amperage',    unit: 'unit.ampere',              scale: 1,       type: 'devices.types.sensor' },
   power:       { kindOf: 'float', instance: 'power',       unit: 'unit.watt',                scale: 1,       type: 'devices.types.sensor' },
   motion:      { kindOf: 'event', instance: 'motion',      events: ['detected', 'not_detected'], type: 'devices.types.sensor.motion' },
+  // Ventilation unit (Carel AHU). `range` is a writable setpoint, so its
+  // bounds travel with it; `cloudOnly` marks a reading Yandex has no instance
+  // for — it reaches the cloud control page and is dropped from everything
+  // the Alice profile sends (docs/contracts/alice-mqtt-mapping.md).
+  setpoint:    { kindOf: 'range', instance: 'temperature', unit: 'unit.temperature.celsius', range: { min: 0, max: 99, precision: 0.5 }, type: 'devices.types.ventilation' },
+  supply_temp: { kindOf: 'float', instance: 'temperature', unit: 'unit.temperature.celsius', scale: 1, type: 'devices.types.ventilation' },
+  return_water: { kindOf: 'float', instance: 'return_water_temperature', unit: 'unit.temperature.celsius', scale: 1, cloudOnly: true, type: 'devices.types.ventilation' },
+  room_temp:   { kindOf: 'float', instance: 'room_temperature', unit: 'unit.temperature.celsius', scale: 1, cloudOnly: true, type: 'devices.types.ventilation' },
+  outdoor_temp: { kindOf: 'float', instance: 'outdoor_temperature', unit: 'unit.temperature.celsius', scale: 1, cloudOnly: true, type: 'devices.types.ventilation' },
+  plant_state: { kindOf: 'event', instance: 'plant_state', events: ['run', 'stop', 'alarm'], cloudOnly: true, type: 'devices.types.ventilation' },
+  unit_status: { kindOf: 'event', instance: 'unit_status', cloudOnly: true, type: 'devices.types.ventilation' },
+  alarm:       { kindOf: 'event', instance: 'alarm', events: ['alarm', 'normal'], cloudOnly: true, type: 'devices.types.ventilation' },
 };
 
 // Russian source labels — NOT passed through uiT() when a row is built: the
@@ -145,6 +169,14 @@ const SH_KIND_LABELS = {
   amperage: 'Ток',
   power: 'Мощность',
   motion: 'Движение',
+  setpoint: 'Уставка температуры',
+  supply_temp: 'Температура притока',
+  return_water: 'Температура обратной воды',
+  room_temp: 'Температура в помещении',
+  outdoor_temp: 'Температура снаружи',
+  plant_state: 'Состояние установки',
+  unit_status: 'Статус установки (текст)',
+  alarm: 'Авария',
 };
 
 // Sentinel option value for a hand-edited binding whose instance is outside
@@ -156,6 +188,7 @@ const SH_KIND_RAW = '__raw__';
 // untouched through an edit.
 const SH_MANAGED_TYPES = [
   'devices.capabilities.on_off',
+  'devices.capabilities.range',
   'devices.properties.float',
   'devices.properties.event',
 ];
@@ -174,12 +207,19 @@ function shKindForItem(item) {
   if (!item) return SH_KIND_RAW;
   if (item.type === 'devices.capabilities.on_off') return 'switch';
   const inst = shItemInstance(item);
+  const isRange = item.type === 'devices.capabilities.range';
   const wantEvent = item.type === 'devices.properties.event';
   const keys = Object.keys(SH_KINDS);
   for (let i = 0; i < keys.length; i++) {
     const spec = SH_KINDS[keys[i]];
+    const specRange = spec.kindOf === 'range';
     const isEvent = spec.kindOf === 'event';
-    if (spec.instance === inst && isEvent === wantEvent) return keys[i];
+    if (specRange !== isRange) continue;
+    if (spec.instance !== inst || isEvent !== wantEvent) continue;
+    // temperature is claimed by two kinds — a plain climate sensor and the
+    // unit's supply-air reading. They write the same item, so the first match
+    // round-trips an edit unchanged either way.
+    return keys[i];
   }
   return SH_KIND_RAW;
 }
@@ -204,6 +244,19 @@ function shDetectRows(dev) {
 
 function shMakeManagedItem(kind, topic, inverted) {
   const spec = SH_KINDS[kind];
+  if (spec && spec.kindOf === 'range') {
+    return {
+      type: 'devices.capabilities.range',
+      mqtt: topic,
+      retrievable: true,
+      reportable: true,
+      parameters: {
+        instance: spec.instance,
+        unit: spec.unit,
+        range: { min: spec.range.min, max: spec.range.max, precision: spec.range.precision },
+      },
+    };
+  }
   if (!spec || spec.kindOf === 'cap') {
     const cap = {
       type: 'devices.capabilities.on_off',
@@ -218,16 +271,19 @@ function shMakeManagedItem(kind, topic, inverted) {
     return cap;
   }
   if (spec.kindOf === 'event') {
-    return {
+    const item = {
       type: 'devices.properties.event',
       mqtt: topic,
       retrievable: true,
       reportable: true,
-      parameters: {
-        instance: spec.instance,
-        events: spec.events.map(function (v) { return { value: v }; }),
-      },
+      parameters: { instance: spec.instance },
     };
+    // A free-text status line has no closed value set to declare.
+    if (spec.events) {
+      item.parameters.events = spec.events.map(function (v) { return { value: v }; });
+    }
+    if (spec.cloudOnly) item.cloud_only = true;
+    return item;
   }
   const item = {
     type: 'devices.properties.float',
@@ -239,6 +295,7 @@ function shMakeManagedItem(kind, topic, inverted) {
   // Emitted ONLY when it converts something: every kind that existed before
   // this version writes a byte-identical item to the one it wrote yesterday.
   if (spec.scale && spec.scale !== 1) item.scale = spec.scale;
+  if (spec.cloudOnly) item.cloud_only = true;
   return item;
 }
 
@@ -371,11 +428,24 @@ function shRowsUntouched() {
 // Choosing an on/off type seeds one `switch` row; choosing a sensor type over
 // an untouched `switch` seed puts the default reading back. Bound rows are
 // never replaced.
+// The readings a ventilation unit publishes, in the order the cloud card
+// draws them. Seeded together because binding them one by one is eight manual
+// topic picks for a device whose control names are fixed.
+const SH_VENT_ROWS = ['switch', 'setpoint', 'supply_temp', 'return_water',
+                      'room_temp', 'plant_state', 'unit_status', 'alarm'];
+
 function shSeedRowsForType(type) {
   if (!shRowsUntouched()) return;
   const host = shRowsHost();
   const first = host && host.querySelector('.sh-bind-row .sh-row-kind');
   const current = first ? first.value : '';
+  if (shIsCompositeType(type)) {
+    // shRowsUntouched() above already guarantees at most one untouched row
+    // here, so this only ever replaces a seed, never a bound row.
+    shClearRows();
+    SH_VENT_ROWS.forEach(function (kind) { shAddRow(kind, '', null); });
+    return;
+  }
   if (shIsOnOffType(type)) {
     if (current !== 'switch') { shClearRows(); shAddRow('switch', '', null); }
   } else if (current === 'switch') {
@@ -513,8 +583,9 @@ function shSyncTypeUi() {
   const type = shCurrentDtype();
   const field = $('sh-icon-field');
   const onOff = shIsOnOffType(type);
-  if (field) field.hidden = !onOff;
-  if (onOff && !shIconTouched) shSetIcon(SH_ICON_BY_TYPE[type] || 'generic');
+  const tiled = onOff || shIsCompositeType(type);
+  if (field) field.hidden = !tiled;
+  if (tiled && !shIconTouched) shSetIcon(SH_ICON_BY_TYPE[type] || 'generic');
 }
 
 function shDtypeChanged() {

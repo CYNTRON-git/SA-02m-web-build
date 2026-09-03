@@ -240,6 +240,18 @@ class TestUariaPoll(unittest.TestCase):
         self.assertEqual(self.values["net_enable"], "1")   # Gs04 coil 13
         self.assertEqual(self.values["plant_state"], ca.PLANT_RUN)
 
+    def test_status_text_comes_from_the_uaria_table(self):
+        # The families number statuses differently. Code 3 is «Выключено по
+        # сети» on a uAria and «Выключено по сети BMS» in the c.pCOmini v2
+        # table — the wrong table shipped a wrong word to the operator until
+        # the bench caught it (1.135, 2026-09-03).
+        regs, coils, discretes = uaria_bank()
+        regs[("i", 26)] = 3
+        coils[0] = 0
+        p, pub, _ = _poller("uaria", (regs, coils, discretes), address=2, app_version="")
+        p.poll_io()
+        self.assertEqual(_published(pub)["unit_status_text"], "Выключено по сети")
+
     def test_crst_only_controls_are_absent(self):
         for name in ("sys_mode", "fan_supply", "fan_exhaust", "room_temp"):
             self.assertNotIn(name, self.values)

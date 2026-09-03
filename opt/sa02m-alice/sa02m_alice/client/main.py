@@ -268,7 +268,7 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             if not _standby_wait(profile, C.STATE_MISSING_CERT, "missing_cert", msg, cert_paths_present):
                 return 0
 
-    registry = DeviceRegistry()
+    registry = DeviceRegistry(profile=profile)
     # A binding edit rewrites the device document atomically; the watchdog loop
     # below notices and reloads in place instead of the unit being restarted.
     watcher = DevicesWatcher(C.DEVICES_CONF)

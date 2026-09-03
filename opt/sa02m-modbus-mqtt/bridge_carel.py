@@ -294,8 +294,18 @@ class CarelPoller(DevicePoller):
         return _num(snap.get("rmt"))
 
     def _status_text(self, code) -> str:
+        """The status word for THIS family and firmware.
+
+        The two families number their statuses differently: uAria has its own
+        five-entry table, while the c.pCOmini has two (the table changed with
+        application 2.02.xx.52). Reading a uAria code out of the c.pCOmini table
+        produced «Выключено по сети BMS» for a controller that says «Выключено
+        по сети» — bench 1.135, 2026-09-03.
+        """
         if code is None:
             return ""
+        if self.family == cc.FAMILY_UARIA:
+            return ca.uaria_unit_status_label(int(code))
         v1, v2 = ca.unit_status_labels(int(code))
         return v2 if ca.unit_status_use_v2(self._version) else v1
 
