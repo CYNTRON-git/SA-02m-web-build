@@ -578,6 +578,15 @@
       "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
     },
     {
+      "id": "js-unit-carel-window",
+      "checks": "The Carel (c.pCOmini / uAria) config window in flasher.js, brace-extracted from the shipped source and driven against a minimal DOM. (1) deviceConfigKindFromSignature answers 'carel' for every _SIG_CARELS token BEFORE the MP/MR hints — without it the scan row is not double-clickable and a PLC answering holding 0 with [0,0] is offered MR-02m firmware. (2) The five tabs, and the I/O tab id EQUALS device_config.CAREL_IO_TAB read from the Python source — a typo there leaves the four I/O tables permanently empty with no error. (3) The JS action list equals device_config.CAREL_ACTIONS (parsed from the daemon source, not re-typed). (4) Every id the live patch writes is emitted by its tab renderer, per family (crst: Sys_Mode/Ma18/fan %; uAria: fan step/Gs04) — the silent 'widget stops updating' class. (5) The 1 s poll patches in place: a FOCUSED or dirty (dataset.carelDirty) input is never overwritten, I/O row NODES are reused (scroll survives), and only a changed skeleton (tab, family, row count) rebuilds. (6) A missing value renders '—' / an empty input, never a plausible 0.0 (carel-ahu.md §5). (7) Every authored Russian string the tab renderers emit, plus the Cyrillic confirm/toast literals, has an i18n.js DICT entry — the half i18n-dict-contract cannot see, since it sweeps uiT() literals and HTML markup, not flasher.js template strings. Non-vacuous: fewer than 25 swept Russian strings, or a DICT under 500 keys, FAILS.",
+      "config": null,
+      "run": "node scripts/dev/test-carel-window.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/flasher.js", "www/network_config/static/js/i18n.js", "opt/sa02m-flasher/sa02m_flasher/device_config.py", "scripts/dev/test-carel-window.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit rows."
+    },
+    {
       "id": "js-unit-devices",
       "checks": "devices.js pure helpers, brace-extracted from the shipped source (real RED/GREEN ratchet). (1) ДТВ per-sensor rotation index math (dtvRotationIndex — shared-tick modulo, single-sensor/empty/negative-tick edges). (2) Continuous chart wheel-zoom + debounce (stepWindowSec factor-in/out with a >=1s floor, clampWindowSec pins [60s, 30d] at both ends, monotonic convergence; debounceTrailing collapses a fast scroll to ONE refetch). (3) rangeLabelKey x-axis label granularity tiers, including the sub-minute «sec» (HH:MM:SS) tier that keeps <=10-min windows from collapsing every tick to the same minute. (4) Measure-card placement geometry (rectsOverlapArea intersection/disjoint/containment; clampCardRect pins a rect inside bounds on all four edges incl. larger-than-bounds degrade; fitCardRect first-clear-else-least-overlap candidate pick). A regression breaks the card caption cycling, fires a refetch storm on scroll, flattens the sub-minute axis, or lets measure cards overlap or escape the plot.",
       "config": null,

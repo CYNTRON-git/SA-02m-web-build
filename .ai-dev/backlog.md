@@ -964,3 +964,12 @@ worklist collapsed into one home).
   «найденный дефект назначается, а не заносится»): both overlays moved to the document root,
   `mqttTabDestroy` hides them on leaving the tab, and `sh-modal-layout-smoke` asserts both stay
   inside the viewport with the ancestor deliberately transformed.
+### [LOW] Тексты входов/выходов Carel не переведены на английский
+
+Строки таблиц «Входы/выходы» и расшифровки цифровых состояний живут в
+`opt/sa02m-carel/sa02m_carel/carel_ahu_map.py` только по-русски — у тревог там
+есть `text_en`, у остальных строк нет. В английском интерфейсе окна настройки
+контроллера эти две таблицы остаются русскими. Заметно только при переключении
+языка; чинится добавлением `text_en` в карту (её единственный дом) и
+использованием его в рендерере, как уже сделано для тревог.
+Найдено при сборке окна 1.0.6.31. OPEN.

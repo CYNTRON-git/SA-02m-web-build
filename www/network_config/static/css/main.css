@@ -3311,6 +3311,21 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   flex-wrap: wrap;
 }
 
+/* Carel: строка состояния установки — чип состояния и слово статуса в одну
+   строку. Только раскладка: цвет чипа берётся из .badge-ok/-err/-unk. */
+.cfg-carel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.cfg-carel-status {
+  color: var(--text);
+  font-weight: 600;
+  font-size: .95rem;
+}
+
 /* MR parity: DI — два столбца как у desktop (слева статус/частота, справа параметры входа). */
 .flasher-config-di-split {
   grid-template-columns: minmax(260px, 1fr) minmax(280px, 1fr);
