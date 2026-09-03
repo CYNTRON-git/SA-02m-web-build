@@ -603,9 +603,12 @@ def probe_is_unfitted(probe: str, raw: object) -> bool:
     """True when this probe's raw reading must be reported as no reading.
 
     `probe` is a key from the snapshot ("oat", "sat", "rmt", "rwt"); only the
-    OPTIONAL_PROBES are ever judged, so a supply-air or return-water zero can
-    never be suppressed by a mistake at a call site. `raw` is the register word
-    as read (int16 x10 on c.pCO, the float on uAria).
+    OPTIONAL_PROBES are ever judged, so asking about a supply-air or
+    return-water probe by name can never suppress it. That is the whole of the
+    guard: hand this the supply reading under the name "oat" and it will still
+    say unfitted, because it judges the name it is given, not the value's
+    provenance. `raw` is the register word as read (int16 x10 on c.pCO, the
+    float on uAria).
 
     A raw value that is missing or unreadable returns False — "not judged". The
     caller then publishes what it has: losing a real reading because a key was

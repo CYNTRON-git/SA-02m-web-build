@@ -254,7 +254,7 @@ class TestSharedMapAvailable(unittest.TestCase):
         self.assertIsNotNone(ca, "sa02m_carel не разрешается через шов пакета")
 
 
-class TestSnapshotDoesNotProbeDeadRegisters(unittest.TestCase):
+class TestSnapshotReadScope(unittest.TestCase):
     def test_crst_snapshot_never_reads_identity_or_network_block(self) -> None:
         plc = crst_plc()
         _snapshot(plc, CRST_DEVICE)
