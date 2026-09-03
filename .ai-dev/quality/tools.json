@@ -630,6 +630,15 @@
       "beat": "review",
       "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs"],
       "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). Absent chromium/playwright -> the row skips (exit 0), so CI (no browser) stays green; it is an on-demand real-layer layout check, not a headless-less CI gate. Run on demand: npm run ui-layout."
+    },
+    {
+      "id": "sh-model-schema",
+      "checks": "Validates the unified device-model contract (docs/contracts/sh-model.md): the reference example sh-model.example.json (a direct translation of the WB-MR6C catalog template) MUST validate against sh-model.schema.json (JSON Schema draft 2020-12), and broken variants (a point missing the required 'quality', a point with an unknown field, a physical-function point missing 'binding') MUST be rejected. The negative half is load-bearing: it proves the schema's fail-closed guarantees (quality required + no default, additionalProperties:false, binding required on physical points) are enforced, not just documented. Deps-guarded: skips cleanly when python/jsonschema is absent, real in CI.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/sh-model-schema.sh",
+      "beat": "build",
+      "covers": ["docs/contracts/sh-model.md", "docs/contracts/sh-model.schema.json", "docs/contracts/sh-model.example.json", ".ai-dev/quality/checks/sh-model-schema.sh"],
+      "init": "python3 + jsonschema (pip install jsonschema)"
     }
   ]
 }
