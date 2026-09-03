@@ -38,6 +38,11 @@
 #   * commenting out the call in update-www-only.sh   -> case 3 FAIL
 #   * deleting the helper body from lib.sh            -> case 4 FAIL
 #   * copying led_mb2ws.py into opt/sa02m-flasher/    -> case 5 FAIL
+# Case 7 was reworked when the first consumer landed (led_poll.py, 1.0.6.33): it
+# swept the bare word `sa02m_led`, which case 6 requires every consumer to carry,
+# so the two cases could not both pass. Proven RED after the rework by adding a
+# real `from sa02m_led import led_mb2ws` to led_poll.py, and proven not to fire
+# on the package name inside its "not installed" message.
 #
 # Run: bash .ai-dev/quality/checks/led-shared-home.sh
 set -u
@@ -125,13 +130,34 @@ if stripped_has "$seam" "def led_mb2ws()" && stripped_has "$seam" "def signature
 else
     bad "7 $seam lost the led_mb2ws() / signature_is_led() import seam"
 fi
-direct=$(grep -rl 'sa02m_led' --include='*.py' opt/sa02m-flasher/ 2>/dev/null \
-         | grep -v '^opt/sa02m-flasher/sa02m_flasher/module_profiles.py$' \
-         | grep -v '^opt/sa02m-flasher/tests/' | sort || true)
-if [ -n "$direct" ]; then
-    bad "7 sa02m_led imported outside the seam: $(printf '%s' "$direct" | tr '\n' ' ')"
+# The defect is an IMPORT, not a mention. Case 6 above REQUIRES each consumer to
+# name the package (its "not installed" message says which package to deploy), so
+# a sweep for the bare word makes case 6 and case 7 unsatisfiable at once — it
+# did, the moment led_poll.py landed. The sweep therefore reads import
+# STATEMENTS, comment-stripped, so a commented-out import is not a finding and a
+# real one cannot hide behind a `#`.
+sweep_hits=$(grep -rlF 'sa02m_led' --include='*.py' opt/sa02m-flasher/ 2>/dev/null | sort || true)
+if ! printf '%s\n' "$sweep_hits" | grep -qx "$seam"; then
+    bad "7 the direct-import sweep no longer sees $seam — it is reading nothing"
 else
-    ok "7 no flasher module bypasses the seam"
+    direct=""
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in
+            "$seam") continue ;;
+            opt/sa02m-flasher/tests/*) continue ;;
+        esac
+        if stripped_matches "$f" '(^|[[:space:]])(import[[:space:]]+sa02m_led|from[[:space:]]+sa02m_led)'; then
+            direct="$direct $f"
+        fi
+    done <<EOF
+$sweep_hits
+EOF
+    if [ -n "$direct" ]; then
+        bad "7 sa02m_led imported outside the seam:$direct"
+    else
+        ok "7 no flasher module bypasses the seam"
+    fi
 fi
 
 if [ "$fails" -eq 0 ]; then

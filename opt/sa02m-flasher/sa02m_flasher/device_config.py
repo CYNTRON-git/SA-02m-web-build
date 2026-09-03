@@ -18,11 +18,13 @@ FC17), а сетевой блок отдаётся как «только чте�
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import bus_mode
 from . import carel_poll
 from . import dtv_registers
+from . import led_poll
 from .flash_protocol import FlasherProtocol
 from .modbus_io import (
     coil_bits_from_payload,
@@ -57,6 +59,7 @@ REG_FAST_MODBUS = 122  # family-common bus-mode selector: 0 classic / 1 Fast / 2
 REG_NET_ADDR = 128
 
 CAREL_KIND = "carel"
+LED_KIND = "led"
 
 
 def family_from_kind(kind: Optional[str]) -> Optional[str]:
@@ -298,6 +301,12 @@ def _kind_from_identity(signature: str, type_code: Optional[int]) -> Optional[st
     # code_from_signature ниже уже вернул бы CAREL_AHU и увёл ветку в «mr».
     if module_profiles.signature_is_carel(sig):
         return CAREL_KIND
+    # Лента — до линейки MR: её сигнатура не проходит батч-прошивочный отбор
+    # (L2), поэтому без этой ветки окно настройки для неё вообще не открылось бы.
+    # Порядок «сигнатура важнее рег. 0» задаёт module_profiles.scan_type_code —
+    # одно место, здесь только вызов.
+    if module_profiles.scan_type_code(sig, type_code) == module_profiles.RGBW_WS2812:
+        return LED_KIND
     sig_code = module_profiles.code_from_signature(sig)
     if sig_code == module_profiles.DTV:
         return "dtv"
@@ -1186,6 +1195,601 @@ def carel_write(
     return payload
 
 
+# ── светодиодная лента MR-02m (RGBW_WS2812, тип 120) ───────────────────────
+# The action list is closed: the window sends a NAME, and the register plan is
+# assembled here from the shared map. Single-register and single-coil writes are
+# refused for the strip entirely — half its settings live behind the reg-410
+# lock, and a plain write to a locked device is REJECTED while the wire looks
+# fine (PlayCtrl 416 is inside that block, so a "Stop" written that way leaves
+# the strip playing).
+LED_ACTIONS: Tuple[str, ...] = (
+    "pwm",
+    "di",
+    "strip",
+    "scene",
+    "text",
+    "clock",
+    "weather",
+    "spy",
+    "play",
+    "stop",
+    "refresh",
+    "load_flash",
+)
+
+_LED_SINGLE_WRITE_REFUSED = (
+    "Светодиодная лента управляется командами окна, а не записью одиночного "
+    "регистра или катушки: блок настроек 400–419 пишется только под снятой "
+    "блокировкой рег. 410"
+)
+
+# One step of an action's plan.
+#   LED_OP_REGS  — a {register: value} batch handed to rgbw_lock_bracket_writes(),
+#                  which decides ITSELF whether the unlock/lock bracket is needed.
+#   LED_OP_BLOCK — an FC16 block write; the marquee window is the only one.
+LED_OP_REGS = "regs"
+LED_OP_BLOCK = "block"
+
+# Wiring checkboxes of the matrix layout (reg 418, bits 0-3). The request carries
+# the state of the four boxes; a box the request omits reads as unchecked, which
+# is exactly what an unchecked box sends.
+_LED_LAYOUT_FLAG_KEYS = ("progressive", "origin_bottom", "mirror_x", "swap_xy")
+
+
+def _led_map() -> Any:
+    """The shared LED map through the package seam (module_profiles.led_mb2ws())."""
+    lm = module_profiles.led_mb2ws()
+    if lm is None:
+        raise ValueError("Пакет карты светодиодной ленты не установлен на этом устройстве")
+    return lm
+
+
+def _device_is_led(device: Dict[str, Any]) -> bool:
+    """Recognised from the scan row: signature first, Input reg 0 second — the
+    order and its reason live in module_profiles.scan_type_code()."""
+    return (
+        module_profiles.scan_type_code(
+            str(device.get("signature") or ""), _device_type_code_hint(device)
+        )
+        == module_profiles.RGBW_WS2812
+    )
+
+
+def _led_number(raw: Any, field: str) -> float:
+    try:
+        return float(str(raw).replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("Недопустимое значение поля «%s» команды ленты" % field) from None
+
+
+def _led_int(
+    params: Dict[str, Any],
+    key: str,
+    lo: int,
+    hi: int,
+    *,
+    default: Optional[int] = None,
+    required: bool = False,
+) -> Optional[int]:
+    """A request field as a bounded int. Absent/blank → ``default`` (or a refusal).
+
+    Values are CLAMPED, never wrapped: every caller has already chosen the target
+    register from the map, so a clamp cannot move a write to another address —
+    while a silently masked 0x1FFFF could hand firmware a value it answers with
+    exception 3.
+    """
+    raw = params.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        if required:
+            raise ValueError("Поле «%s» команды ленты обязательно" % key)
+        return default
+    return max(int(lo), min(int(hi), int(_led_number(raw, key))))
+
+
+def _led_opt_float(
+    params: Dict[str, Any], key: str, lo: float, hi: float
+) -> Optional[float]:
+    raw = params.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    return max(float(lo), min(float(hi), _led_number(raw, key)))
+
+
+def _led_enum(params: Dict[str, Any], key: str, allowed: Sequence[Any], default: Any) -> Any:
+    """An enum field. An unlisted value is REFUSED, never folded to the default —
+    a fold would write a mode the user did not pick and report success."""
+    raw = params.get(key)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return default
+    value = str(raw).strip() if isinstance(allowed[0], str) else int(_led_number(raw, key))
+    if value not in allowed:
+        raise ValueError("Недопустимое значение поля «%s» команды ленты" % key)
+    return value
+
+
+def _led_color(lm: Any, container: Dict[str, Any], key: str) -> int:
+    """'#RRGGBB' or a raw RGB565 word → the u16 the colour register takes."""
+    raw = container.get(key)
+    if isinstance(raw, str) and raw.strip().startswith("#"):
+        return int(lm.rgbw_hex_to_rgb565(raw.strip())) & 0xFFFF
+    value = _led_int(container, key, 0, 0xFFFF, required=True)
+    return int(value or 0)
+
+
+def _led_op_regs(regs: Dict[int, int]) -> Tuple[str, Any]:
+    return (LED_OP_REGS, {int(r): int(v) & 0xFFFF for r, v in regs.items()})
+
+
+def _led_op_block(addr: int, words: Sequence[int]) -> Tuple[str, Any]:
+    return (LED_OP_BLOCK, (int(addr), [int(w) & 0xFFFF for w in words]))
+
+
+def _led_layout_wiring(lm: Any, params: Dict[str, Any]) -> Optional[int]:
+    """The four wiring bits of reg 418, or None when the request names none."""
+    if not any(k in params for k in _LED_LAYOUT_FLAG_KEYS):
+        return None
+    masks = (
+        lm.MB2WS_MATRIX_LAYOUT_PROGRESSIVE,
+        lm.MB2WS_MATRIX_LAYOUT_ORIGIN_BOTTOM,
+        lm.MB2WS_MATRIX_LAYOUT_MIRROR_X,
+        lm.MB2WS_MATRIX_LAYOUT_SWAP_XY,
+    )
+    wiring = 0
+    for key, mask in zip(_LED_LAYOUT_FLAG_KEYS, masks):
+        if params.get(key):
+            wiring |= int(mask)
+    return wiring
+
+
+def _led_strip_writes(
+    lm: Any, params: Dict[str, Any], layout_prior: Optional[int]
+) -> Dict[int, int]:
+    """«Адресная лента» → one settings batch (the executor brackets it).
+
+    Every value comes out of the map's own builders: the line mode through
+    ``rgbw_line_mode_to_regs`` (which owns the pixel-pool clamps), the geometry
+    through ``rgbw_matrix_type_writes`` (which REFUSES rather than clamps when the
+    pixels do not fit), and reg 418 through ``rgbw_matrix_layout_write_value_ex``,
+    which returns None — meaning *do not write it at all* — when the prior value
+    is unknown and the request does not supply every tiling field. Writing 418
+    anyway would compose the missing fields from nothing and silently zero the
+    user's tiling.
+    """
+    line = _led_enum(
+        params, "line", [k for k, _lab in lm.rgbw_line_ui_choices()], lm.RGBW_LINE_UI_SINGLE
+    )
+    led_type = _led_enum(
+        params, "led_type", [c for c, _lab in lm.rgbw_led_type_choices()], lm.MB2WS_LED_TYPE_WS2812_0
+    )
+    writes = dict(
+        lm.rgbw_line_mode_to_regs(
+            line,
+            led_type,
+            _led_int(params, "led_count0", 0, 0xFFFF, default=0),
+            _led_int(params, "led_count1", 0, 0xFFFF, default=0),
+            _led_int(params, "pixel_format", 0, 1, default=0),
+            byte_order=_led_int(params, "byte_order", 0, 0xFFFF),
+            auto_refresh=_led_int(params, "auto_refresh", 0, 1),
+        )
+    )
+    gamma = _led_int(params, "gamma", 0, 255)
+    if gamma is not None:
+        writes[lm.MB2WS_GAMMA] = gamma
+    ch2 = _led_int(params, "ch2_mode", lm.MB2WS_CH2_OFF, lm.MB2WS_CH2_CONTINUATION)
+    if ch2 is not None:
+        writes[lm.MB2WS_CH2_MODE] = ch2
+
+    tile_count = _led_int(params, "tile_count", 0, lm.MB2WS_MATRIX_LAYOUT_TILECOUNT_MAX)
+    tile_mode = _led_int(params, "tile_mode", 0, lm.MB2WS_MATRIX_LAYOUT_TILEMODE_MAX)
+    width = _led_int(params, "matrix_width", 1, 64)
+    height = _led_int(params, "matrix_height", 0, 255)
+    if width is not None and height is not None:
+        geometry = lm.rgbw_matrix_type_writes(
+            width,
+            height,
+            tile_count or 0,
+            pixel_format=writes.get(lm.MB2WS_PIXEL_FORMAT, 0),
+            led_count1=writes.get(lm.MB2WS_LED_COUNT1, 0),
+            ui_mode=line,
+        )
+        if geometry is None:
+            raise ValueError(
+                "Выбранная геометрия матрицы не помещается в пул пикселей ленты"
+            )
+        writes.update(geometry)
+
+    wiring = _led_layout_wiring(lm, params)
+    touches_layout = wiring is not None or tile_mode is not None or tile_count is not None
+    if wiring is None and layout_prior is not None:
+        wiring = int(layout_prior) & lm.MB2WS_MATRIX_LAYOUT_WIRING_MASK
+    if touches_layout and wiring is not None:
+        layout = lm.rgbw_matrix_layout_write_value_ex(
+            layout_prior, wiring, tile_mode, tile_count
+        )
+        if layout is not None:
+            writes[lm.MB2WS_MATRIX_LAYOUT] = layout
+    return writes
+
+
+def _led_scene_writes(lm: Any, params: Dict[str, Any], *, play: bool) -> Dict[int, int]:
+    """«Сцена» → one settings batch.
+
+    Scale (460) is never written: firmware stores it and no render path reads it
+    (``rgbw_scale_is_honoured()`` is False), so the window does not offer it and
+    the plan must not smuggle it in.
+
+    PlayCtrl rides the batch only for flash playback — the desktop's behaviour and
+    the reason for it: firmware starts a built-in effect when the scene registers
+    land, so a bare PlayCtrl=1 was a no-op for every mode except flash.
+    """
+    source = _led_enum(
+        params, "source", [k for k, _lab in lm.rgbw_scene_ui_choices()], lm.RGBW_SCENE_UI_POOL
+    )
+    writes = dict(
+        lm.rgbw_scene_mode_to_regs(
+            source,
+            fx_id=_led_int(params, "fx_id", 0, lm.RGBW_FX_MODE_COUNT - 1, default=0),
+            fx_speed=_led_int(params, "fx_speed", 0, 255, default=128),
+            fx_param=_led_int(params, "fx_param", 0, 255, default=255),
+            flash_slot=_led_int(params, "flash_slot", 0, 31, default=0),
+            loop=bool(params.get("loop")),
+            scale=None,
+        )
+    )
+    if play and source == lm.RGBW_SCENE_UI_FLASH:
+        writes[lm.MB2WS_PLAY_CTRL] = lm.MB2WS_PLAY_PLAY
+    return writes
+
+
+def _led_text_color_writes(lm: Any, colors: Any) -> Dict[int, int]:
+    if not isinstance(colors, dict):
+        raise ValueError("Цвета бегущей строки задаются объектом")
+    homes = (
+        ("color1", lm.MB2WS_TEXT_COLOR1),
+        ("color2", lm.MB2WS_TEXT_COLOR2),
+        ("bg1", lm.MB2WS_TEXT_BG1),
+        ("bg2", lm.MB2WS_TEXT_BG2),
+    )
+    out: Dict[int, int] = {}
+    for key, reg in homes:
+        if key in colors:
+            out[reg] = _led_color(lm, colors, key)
+    if not out:
+        raise ValueError("Цвета бегущей строки: не задано ни одного известного поля")
+    return out
+
+
+def _led_spy_writes(lm: Any, params: Dict[str, Any]) -> Dict[int, int]:
+    """«Индикатор линии» (эффект 81) → the Spy/Master block 640..695.
+
+    Every address is asked of the map (``rgbw_spy_slot_reg`` / ``rgbw_spy_lim_reg``
+    / ``rgbw_wx_spy_reg``); the codes are enums checked against the map's own
+    choice lists, so no request value reaches a register unvalidated.
+    """
+    mode = _led_int(params, "mode", lm.MB2WS_SPY_MODE_OFF, lm.MB2WS_SPY_MODE_MASTER, default=lm.MB2WS_SPY_MODE_OFF)
+    if params.get("tap"):
+        mode = int(mode) | lm.MB2WS_SPY_TAP_BIT
+    stopbits = 2 if _led_int(params, "stopbits", 1, 2, default=1) == 2 else 1
+    writes: Dict[int, int] = {
+        lm.MB2WS_SPY_WORK_PORT: _led_int(params, "port", 0, 2, default=0),
+        lm.MB2WS_SPY_WORK_MODE: mode,
+        lm.MB2WS_SPY_BAUD: _led_enum(
+            params, "baud", [c for c, _lab in lm.rgbw_spy_baud_choices()],
+            lm.rgbw_spy_baud_choices()[0][0],
+        ),
+        lm.MB2WS_SPY_LINE: _led_int(params, "parity", 0, 2, default=0) | (stopbits << 8),
+        lm.MB2WS_SPY_POLL_MS: _led_int(params, "poll_ms", 10, 60000, default=1000),
+        lm.MB2WS_SPY_TIMEOUT_MS: _led_int(params, "timeout_ms", 10, 10000, default=1000),
+        lm.MB2WS_SPY_STALE_MS: _led_int(params, "stale_ms", 100, 60000, default=10000),
+    }
+    fc_codes = [c for c, _lab in lm.rgbw_spy_fc_choices()]
+    type_codes = [c for c, _lab in lm.rgbw_spy_type_choices()]
+    slots = params.get("slots") or []
+    if not isinstance(slots, (list, tuple)):
+        raise ValueError("Слоты индикатора линии задаются списком")
+    for n in range(min(lm.MB2WS_SPY_SLOT_COUNT, len(slots))):
+        slot = slots[n]
+        if not isinstance(slot, dict):
+            raise ValueError("Слот индикатора линии задаётся объектом")
+        unit01, unit23 = lm.rgbw_spy_pack_unit(str(slot.get("unit") or ""))
+        base = lm.rgbw_spy_slot_reg(n, 0)
+        writes[base + 0] = _led_int(slot, "uid", 0, 247, default=0)
+        writes[base + 1] = _led_enum(slot, "fc", fc_codes, lm.MB2WS_SPY_FC_HOLDING)
+        writes[base + 2] = _led_int(slot, "reg", 0, 0xFFFF, default=0)
+        writes[base + 3] = _led_enum(slot, "type", type_codes, lm.MB2WS_SPY_TYPE_INT16)
+        writes[base + 4] = _led_int(slot, "decimals", 0, 3, default=0)
+        writes[base + 5] = unit01
+        writes[base + 6] = unit23
+        writes[base + 7] = 0
+        writes[lm.rgbw_spy_lim_reg(n, 0)] = lm.rgbw_i16_to_u16(
+            _led_int(slot, "lo", -32768, 32767, default=0)
+        )
+        writes[lm.rgbw_spy_lim_reg(n, 1)] = lm.rgbw_i16_to_u16(
+            _led_int(slot, "hi", -32768, 32767, default=0)
+        )
+    weather = params.get("weather") or []
+    if not isinstance(weather, (list, tuple)):
+        raise ValueError("Поля погоды индикатора линии задаются списком")
+    for n in range(min(lm.MB2WS_WX_SPY_COUNT, len(weather))):
+        field = weather[n]
+        if not isinstance(field, dict):
+            raise ValueError("Поле погоды индикатора линии задаётся объектом")
+        writes[lm.rgbw_wx_spy_reg(n, 0)] = lm.rgbw_wx_spy_pack_uid_fc(
+            _led_int(field, "uid", 0, 247, default=0),
+            _led_enum(field, "fc", fc_codes, lm.MB2WS_SPY_FC_HOLDING),
+        )
+        writes[lm.rgbw_wx_spy_reg(n, 1)] = _led_int(field, "reg", 0, 0xFFFF, default=0)
+    return writes
+
+
+def _led_weather_writes(lm: Any, params: Dict[str, Any]) -> Dict[int, int]:
+    """The weather block. An omitted field writes its firmware SENTINEL, not 0 —
+    0 is a real reading (0 °C, the 1st of month 0) and would render as one.
+
+    Scale (460) sits between humidity (459) and pressure (461) and is deliberately
+    not part of the batch: these are single-register writes, so the gap costs
+    nothing and 460 is not a weather field.
+    """
+    day = _led_int(params, "day", 1, 31)
+    month = _led_int(params, "month", 1, 12)
+    temp = _led_opt_float(params, "temp_c", -3276.7, 3276.7)
+    humidity = _led_opt_float(params, "humidity_pct", 0.0, 100.0)
+    pressure = _led_opt_float(params, "pressure_mmhg", 400.0, 850.0)
+    year = _led_int(params, "year", lm.MB2WS_WX_YEAR_MIN, lm.MB2WS_WX_YEAR_MAX)
+    return {
+        lm.MB2WS_WX_DATE: (
+            ((int(day) & 0xFF) << 8) | (int(month) & 0xFF)
+            if (day and month)
+            else lm.MB2WS_WX_DATE_UNSET
+        ),
+        lm.MB2WS_WX_TEMP: (
+            lm.rgbw_i16_to_u16(int(round(temp * 10.0)))
+            if temp is not None
+            else lm.MB2WS_WX_TEMP_UNSET
+        ),
+        lm.MB2WS_WX_HUM: (
+            int(round(humidity * 10.0)) if humidity is not None else lm.MB2WS_WX_HUM_UNSET
+        ),
+        lm.MB2WS_WX_PRESS: (
+            int(round(pressure * 10.0)) if pressure is not None else lm.MB2WS_WX_PRESS_UNSET
+        ),
+        lm.MB2WS_WX_YEAR: year if year is not None else lm.MB2WS_WX_YEAR_UNSET,
+    }
+
+
+def _led_write_plan(
+    lm: Any,
+    action: str,
+    params: Dict[str, Any],
+    *,
+    layout_prior: Optional[int] = None,
+    device_fx_id: Optional[int] = None,
+) -> List[Tuple[str, Any]]:
+    """Action name → the ordered plan. Only the action decides the plan's shape;
+    whether a step needs the reg-410 bracket is the executor's question and it
+    asks the map, never a list here."""
+    if action == "pwm":
+        ops: List[Tuple[str, Any]] = []
+        if "mode" in params:
+            ops.append(
+                _led_op_regs(
+                    {
+                        lm.RGBW_PWM_STRIP_MODE_HOLDING: _led_enum(
+                            params, "mode", [c for c, _lab in lm.rgbw_pwm_mode_choices()],
+                            lm.RGBW_PWM_MODE_RGBW,
+                        )
+                    }
+                )
+            )
+        if "channel" in params or "value" in params:
+            idx = _led_int(params, "channel", 0, lm.RGBW_PWM_CHANNELS - 1, required=True)
+            level = _led_int(params, "value", 0, lm.RGBW_PWM_PERMILLE_MAX, required=True)
+            # Level first, then the mirror register that enables the channel —
+            # the desktop's order, so the channel never lights at the old level.
+            ops.append(_led_op_regs({lm.RGBW_PWM_HOLDING_BASE + int(idx): int(level)}))
+            ops.append(_led_op_regs({lm.RGBW_PWM_MIRROR_BASE + int(idx): int(level)}))
+        if not ops:
+            raise ValueError("Команда «RGBW каналы» без параметров")
+        return ops
+
+    if action == "di":
+        idx = _led_int(params, "channel", 0, lm.RGBW_DI_COUNT - 1, required=True)
+        ops = []
+        if "mode" in params:
+            ops.append(
+                _led_op_regs(
+                    {lm.RGBW_DI_MODE_BASE + int(idx): 1 if _led_int(params, "mode", 0, 1, required=True) else 0}
+                )
+            )
+        if "debounce_ms" in params:
+            ops.append(
+                _led_op_regs(
+                    {lm.RGBW_DI_DEBOUNCE_BASE + int(idx): _led_int(params, "debounce_ms", 10, 2000, required=True)}
+                )
+            )
+        if not ops:
+            raise ValueError("Команда «Входы DI» без параметров")
+        return ops
+
+    if action == "strip":
+        return [_led_op_regs(_led_strip_writes(lm, params, layout_prior))]
+
+    if action in ("scene", "play"):
+        return [_led_op_regs(_led_scene_writes(lm, params, play=action == "play"))]
+
+    if action == "text":
+        ops = []
+        if "text" in params:
+            raw = params.get("text")
+            if not isinstance(raw, str):
+                raise ValueError("Текст бегущей строки задаётся строкой")
+            if not lm.rgbw_text_within_limit(raw):
+                raise ValueError(
+                    "Текст бегущей строки длиннее %d символов" % lm.MB2WS_TEXT_MAX_CHARS
+                )
+            ops.append(_led_op_block(lm.MB2WS_TEXT_BASE, lm.rgbw_pack_text_cp1251(raw)))
+        if "lines" in params:
+            ops.append(
+                _led_op_regs(
+                    {
+                        lm.MB2WS_TEXT_LINES: _led_enum(
+                            params, "lines", [c for c, _key in lm.rgbw_text_lines_choices()],
+                            lm.MB2WS_TEXT_LINES_SINGLE,
+                        )
+                    }
+                )
+            )
+        if params.get("colors") is not None:
+            ops.append(_led_op_regs(_led_text_color_writes(lm, params.get("colors"))))
+        if not ops:
+            raise ValueError("Команда «Бегущая строка» без параметров")
+        return ops
+
+    if action == "clock":
+        if params.get("unset"):
+            return [_led_op_regs(dict(lm.rgbw_tod_unset_writes()))]
+        if params.get("from_pc"):
+            now = datetime.now()
+            writes = dict(lm.rgbw_pc_clock_writes(now))
+            # The weather renderer composes "HH:MM DD.MM.YYYY" from both blocks,
+            # so seeding the time without the date leaves half the panel unset.
+            # Which effect is running is asked of the DEVICE, not of the request.
+            if device_fx_id is not None and lm.rgbw_fx_uses_weather(device_fx_id):
+                writes.update(lm.rgbw_pc_date_writes(now))
+            return [_led_op_regs(writes)]
+        hours = _led_int(params, "hours", 0, 23)
+        minutes = _led_int(params, "minutes", 0, 59)
+        if hours is None or minutes is None:
+            # Firmware ticks only while BOTH registers are set, and 0 is a real
+            # time — a half-filled request must not seed midnight.
+            raise ValueError("Часы и минуты задаются вместе — иначе часы ленты не пойдут")
+        return [_led_op_regs({lm.MB2WS_TOD_HOURS: hours, lm.MB2WS_TOD_MINUTES: minutes})]
+
+    if action == "weather":
+        ops = [_led_op_regs(_led_weather_writes(lm, params))]
+        if "temp_color" in params:
+            ops.append(_led_op_regs({lm.MB2WS_WX_TEMP_COLOR: _led_color(lm, params, "temp_color")}))
+        return ops
+
+    if action == "spy":
+        return [_led_op_regs(_led_spy_writes(lm, params))]
+
+    if action == "stop":
+        # Order is load-bearing (stop → pool → clear → latch), so each register
+        # is its own step. The `lock_protected` column of the map's plan is not
+        # read here: the executor asks rgbw_reg_is_lock_gated() through
+        # rgbw_lock_bracket_writes(), which is where that column comes from too.
+        return [
+            _led_op_regs({int(reg): int(value)})
+            for reg, value, _locked in lm.rgbw_stop_blank_writes()
+        ]
+
+    if action == "refresh":
+        return [_led_op_regs({lm.MB2WS_CMD: lm.MB2WS_CMD_REFRESH})]
+
+    if action == "load_flash":
+        ops = []
+        slot = _led_int(params, "slot", 0, 31)
+        if slot is not None:
+            ops.append(_led_op_regs({lm.MB2WS_FLASH_SLOT: slot}))
+        ops.append(_led_op_regs({lm.MB2WS_CMD: lm.MB2WS_CMD_LOAD_FLASH}))
+        return ops
+
+    raise ValueError("Неизвестная команда светодиодной ленты")
+
+
+def _led_run_plan(lm: Any, send, slave: int, plan: Sequence[Tuple[str, Any]]) -> None:
+    """Execute the plan. Two defence-in-depth guards live here rather than in the
+    plan builder, so they hold for any future action too:
+
+      * the ONLY block write is the marquee window at 516. The pre-1.0.2.2 base
+        495 overlapped the family safe-state AO block 503..506, so writing text
+        there silently drove the module's PWM safe values to 100 %.
+      * CMD 3 (save-to-flash) never reaches the wire. Firmware ACKS it and stores
+        nothing, so it looks successful and does nothing at all.
+    """
+    for kind, payload in plan:
+        if kind == LED_OP_BLOCK:
+            addr, words = payload
+            if int(addr) != lm.MB2WS_TEXT_BASE:
+                raise ValueError(
+                    "Блочная запись ленты разрешена только в окно бегущей строки "
+                    "(рег. %d)" % lm.MB2WS_TEXT_BASE
+                )
+            err = write_multiple(send, slave, int(addr), list(words), 1000)
+            if err:
+                raise RuntimeError(f"Запись бегущей строки (рег. {addr}): {err}")
+            continue
+        regs: Dict[int, int] = dict(payload)
+        for reg, value in regs.items():
+            if int(reg) == lm.MB2WS_CMD and not lm.rgbw_cmd_is_allowed(int(value)):
+                raise ValueError(
+                    "Команда %d ленте не отправляется — прошивка подтверждает её "
+                    "на шине и не выполняет" % int(value)
+                )
+        bracketed = any(lm.rgbw_reg_is_lock_gated(int(r)) for r in regs)
+        for reg, value in lm.rgbw_lock_bracket_writes(regs):
+            err = write_single(send, slave, int(reg), int(value) & 0xFFFF, 800)
+            if err:
+                if bracketed:
+                    # Leave the device locked as we found it; the desktop does the
+                    # same, and an aborted batch must not leave 400..419 open.
+                    write_single(send, slave, lm.MB2WS_LOCK, 0, 800)
+                raise RuntimeError(f"Запись рег. {reg}: {err}")
+
+
+def led_write(
+    device_path: str,
+    device: Dict[str, Any],
+    action: str,
+    params: Optional[Dict[str, Any]] = None,
+    *,
+    active_tab: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run one LED-window command and return a fresh snapshot."""
+    act = str(action or "").strip().lower()
+    if act not in LED_ACTIONS:
+        raise ValueError("Неизвестная команда светодиодной ленты")
+    if not _device_is_led(device):
+        raise ValueError("Команда доступна только для светодиодной ленты")
+    p = dict(params) if isinstance(params, dict) else {}
+    lm = _led_map()
+    # Refuse a malformed request BEFORE the line is opened — a bad field must not
+    # cost a transport on a bus shared with MPLC4 and the MQTT bridge. The plan is
+    # pure, so building it twice costs nothing, and the two device-read inputs are
+    # absent on purpose: each can only ADD a register to the plan, never turn a
+    # valid request into an invalid one.
+    _led_write_plan(lm, act, p)
+
+    send, close_transport = _open_transport(device_path, device)
+    try:
+        slave = _device_slave(device)
+        # Two reads the plan needs FROM THE DEVICE, not from the request: reg 418
+        # is read-modify-write (tiling is preserved, never composed from nothing),
+        # and the PC-clock seed must know which effect is running.
+        layout_prior: Optional[int] = None
+        if act == "strip":
+            layout_prior = _read_u16(send, slave, lm.MB2WS_MATRIX_LAYOUT, 700)
+        device_fx_id: Optional[int] = None
+        if act == "clock" and p.get("from_pc"):
+            raw_fx = _read_u16(send, slave, lm.MB2WS_FX_ID, 700)
+            if raw_fx is not None:
+                device_fx_id = lm.rgbw_resolve_fx_id(int(raw_fx))
+        _led_run_plan(
+            lm,
+            send,
+            slave,
+            _led_write_plan(lm, act, p, layout_prior=layout_prior, device_fx_id=device_fx_id),
+        )
+    finally:
+        close_transport()
+    payload = snapshot_for_device(
+        device_path, device, snapshot_detail="full", active_tab=active_tab
+    )
+    payload["action"] = act
+    return payload
+
+
 def snapshot_for_device(
     device_path: str,
     device: Dict[str, Any],
@@ -1241,6 +1845,11 @@ def snapshot_for_device(
         elif kind == "dtv":
             payload["dtv"] = _read_dtv_snapshot(send, slave)
             detail_out = "full"
+        elif kind == LED_KIND:
+            # The strip IS one of ours: it answers the identity and network block
+            # above, so only the LED-specific reads are added here. Their cost is
+            # dialled by `active_tab`, not by `snapshot_detail` — see led_poll.
+            payload["led"] = led_poll.read_led_snapshot(send, slave, active_tab=active_tab)
         elif kind == "mr":
             if detail == "minimal":
                 payload["mr"] = _read_mr_snapshot_minimal(send, slave, identity)
@@ -1338,6 +1947,8 @@ def write_allowed_holding(
 ) -> Dict[str, Any]:
     if _device_is_carel(device):
         raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
+    if _device_is_led(device):
+        raise ValueError(_LED_SINGLE_WRITE_REFUSED)
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
@@ -1345,6 +1956,8 @@ def write_allowed_holding(
         kind, identity = _resolve_kind(identity, device)
         if kind == CAREL_KIND:
             raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
+        if kind == LED_KIND:
+            raise ValueError(_LED_SINGLE_WRITE_REFUSED)
         allowed_regs: set[int] = set()
         if kind == "dtv":
             allowed_regs.update({dtv_registers.DTV_HOLDING_EXT_TEMP_SELECT, dtv_registers.DTV_HOLDING_PRESENCE_OFF_DELAY})
@@ -1440,6 +2053,8 @@ def write_allowed_coil(
 ) -> Dict[str, Any]:
     if _device_is_carel(device):
         raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
+    if _device_is_led(device):
+        raise ValueError(_LED_SINGLE_WRITE_REFUSED)
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
@@ -1447,6 +2062,8 @@ def write_allowed_coil(
         kind, identity = _resolve_kind(identity, device)
         if kind == CAREL_KIND:
             raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
+        if kind == LED_KIND:
+            raise ValueError(_LED_SINGLE_WRITE_REFUSED)
         if kind == "dtv":
             if coil not in (dtv_registers.DTV_COIL_BUZZER, dtv_registers.DTV_COIL_LEDS_ALL):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")
