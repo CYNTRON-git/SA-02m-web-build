@@ -6,7 +6,7 @@ import os
 import time
 from pathlib import Path
 
-from sa02m_devices.device_events import detect_ce_events, list_events
+from sa02m_devices.device_events import _day_start_ts, detect_ce_events, list_events
 from sa02m_devices.device_history_db import insert_sample
 
 
@@ -38,9 +38,16 @@ def test_voltage_jump_and_current_spike(tmp_path: Path):
     os.environ["STAND_DEVICES_EVENT_COOLDOWN_S"] = "1"
     try:
         now = time.time()
-        # база за день: ток ~1 А
+        # База за день: ток ~1 А. Сеять её ровно «час назад» нельзя —
+        # detect_ce_events усредняет ток по КАЛЕНДАРНЫМ суткам
+        # (_day_avg_current → _day_start_ts), поэтому в первый час после
+        # полуночи такие отсчёты попадают во вчера, среднее видит только сам
+        # пик, и current_spike не срабатывает. Раскладываем базу внутри
+        # текущих суток, между их началом (или часом назад) и now.
+        base_from = max(now - 3600.0, _day_start_ts(now))
+        step = (now - base_from) / 10.0
         for i in range(10):
-            insert_sample(_ce_snap(now - 3600 + i * 60, ua=230.0, ia=1.0), path=db)
+            insert_sample(_ce_snap(base_from + i * step, ua=230.0, ia=1.0), path=db)
         # резкий скачок U и I
         spike = _ce_snap(now, ua=250.0, ia=3.0)
         insert_sample(spike, path=db)
