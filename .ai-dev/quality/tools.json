@@ -630,6 +630,21 @@
       "beat": "review",
       "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs"],
       "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). Absent chromium/playwright -> the row skips (exit 0), so CI (no browser) stays green; it is an on-demand real-layer layout check, not a headless-less CI gate. Run on demand: npm run ui-layout."
+    },
+    {
+      "id": "cloud-card-smoke",
+      "checks": "The «Облако» card's stand-down states rendered FOR REAL in headless Chromium — the renderer half no other row can witness (ui-layout drives only the dashboard/Управление surfaces, never cloudRenderStatus, and stubs every CGI with {}). Serves www/network_config statically, stubs ONLY cgi-bin/cloud.cgi per state, renders `active` first and switches the stub inside the same page (the 1.0.6.26 bench transition), then asserts per state and both themes: the state label is reached (non-vacuous precondition), the «Туннель»/«Последний отчёт» rows are visible only in `active` (computed box, not the attribute) and reset outside it, the reason line appears in the four stand-down/409 states, no raw Errno reaches the card, the pair button is locked only in unlink_failed. The state list is read from docs/contracts/cloud-agent-status.md (`state ∈ …`): a documented state without a fixture FAILS, a fixture for an undocumented state FAILS. Mutation proof: comment out the `.cloud-meta > div[hidden]` override in main.css → every non-active state fails «rows absent». Dev-only; never shipped to the device.",
+      "config": null,
+      "run": "node scripts/dev/cloud-card-smoke.mjs",
+      "beat": "review",
+      "covers": [
+        "www/network_config/static/js/cloud.js",
+        "www/network_config/static/css/main.css",
+        "www/network_config/cgi-bin/cloud.cgi",
+        "docs/contracts/cloud-agent-status.md",
+        "scripts/dev/cloud-card-smoke.mjs"
+      ],
+      "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver reuses — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `cloud-card-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the error. CI stays red on the review beat until playwright lands in web-quality.yml (the backlog entry «CI runs the `ui-layout` review gate VACUOUSLY…», 2026-09-02) — intended pressure. Run on demand: npm run cloud-card-smoke."
     }
   ]
 }

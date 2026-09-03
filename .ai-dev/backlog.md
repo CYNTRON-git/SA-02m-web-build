@@ -933,16 +933,4 @@ worklist collapsed into one home).
   2026-09-03 with `opt/sa02m-devices` untouched (last change b9f3ad4); green at any other hour.
   Fix: seed the baseline inside the same calendar day (or inject the clock) — untouched code,
   out of the 1.0.6.26 fence. Until then a midnight-hour `build` run is a false red.
-- [OPEN] 2026-09-03 **[LOW] The «Облако» card's CSS/JS half has no in-tree test.** The 1.0.6.26
-  revoke stand-down landed its agent-side behaviour under `opt/sa02m-cloud-agent/tests`, but the
-  renderer rules that fixed the bench leftover (`cloud.js` live-only rows, the
-  `.cloud-meta > div[hidden]` override in `main.css`, the 409 reason line) are pinned only by a
-  scratchpad Playwright smoke that is not committed. A future CSS change can silently re-break
-  the `[hidden]` override. Graduate that smoke into `scripts/dev/` + a `js-unit`/`ui-layout`
-  row (the standing harness, `web-diagnostic-tools.md`), asserting per state that the
-  «Туннель»/«Последний отчёт» rows are absent after an `active` render. Found by the 1.0.6.26
-  review (device-revoke-standdown round 1); deliberately outside that PR. Sharpened by round 3
-  of that review: `ui-layout` cannot witness this card at all — its `pageSetup` drives only the
-  dashboard and Управление surfaces, never calls `cloudRenderStatus`, and stubs every CGI with
-  `{}`, so none of the stand-down states (`revoked`, `unlinked`, `already_claimed`,
-  `unlink_failed`) is rendered by any gate; a `review: 6/6` says nothing about them.
+- [RESOLVED] 2026-09-03 **The «Облако» card's CSS/JS half has no in-tree test** → closed by the `cloud-card-smoke` review row (`scripts/dev/cloud-card-smoke.mjs`, 1.0.6.28): renders every contract state of the card in headless Chromium with in-page transitions from `active`; RED without chromium by design (exit 2), never a vacuous green.

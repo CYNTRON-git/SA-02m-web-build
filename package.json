@@ -4,6 +4,7 @@
   "description": "SA-02m web interface repo. There is NO build step — the frontend is served as-is (see docs/agent-rules/sa02m-domain.md). This manifest only exposes dev-only tooling entry points. The Playwright geometry UI-layout driver reuses the existing dev harness's install under scripts/dev (playwright + a downloaded chromium) — playwright is intentionally NOT duplicated as a root devDependency; run `npm run ui-layout:install` to provision it.",
   "scripts": {
     "ui-layout": "node .ai-dev/quality/checks/ui-layout.mjs",
-    "ui-layout:install": "npm --prefix scripts/dev install && node scripts/dev/node_modules/playwright/cli.js install chromium"
+    "ui-layout:install": "npm --prefix scripts/dev install && node scripts/dev/node_modules/playwright/cli.js install chromium",
+    "cloud-card-smoke": "node scripts/dev/cloud-card-smoke.mjs"
   }
 }
