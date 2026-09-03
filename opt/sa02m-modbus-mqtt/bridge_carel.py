@@ -176,6 +176,7 @@ class CarelPoller(DevicePoller):
         out: dict = {"family": cc.FAMILY_CRST}
         a = self.address
         ir = self.read_input_registers(a, ca.IR_OAT, 4)          # IR1..4
+        out["oat_raw"] = int(ir[0])
         out["oat"] = ca.int16_x10_to_phys(ir[0])
         out["sat"] = ca.int16_x10_to_phys(ir[1])
         out["rmt_raw"] = int(ir[2])
@@ -222,7 +223,8 @@ class CarelPoller(DevicePoller):
         out: dict = {"family": cc.FAMILY_UARIA}
         a = self.address
         ir = self.read_input_registers(a, 0, 36)
-        out["oat"] = ca.be_float32(ir[0], ir[1])
+        out["oat_raw"] = ca.be_float32(ir[0], ir[1])
+        out["oat"] = out["oat_raw"]
         out["sat"] = ca.be_float32(ir[2], ir[3])
         out["rwt"] = ca.be_float32(ir[4], ir[5])
         out["valve"] = ca.be_float32(ir[18], ir[19])
@@ -258,7 +260,7 @@ class CarelPoller(DevicePoller):
             "plant_state": state,
             "supply_temp": _num(snap.get("sat")),
             "return_water_temp": _num(snap.get("rwt")),
-            "outdoor_temp": _num(snap.get("oat")),
+            "outdoor_temp": self._outdoor_temp(snap),
             "heat_valve": _num(snap.get("valve")),
             "setpoint": _num(snap.get("sp_w")),
             "setpoint_summer": _num(snap.get("sp_s")),
@@ -280,18 +282,23 @@ class CarelPoller(DevicePoller):
 
     @staticmethod
     def _room_temp(snap: dict):
-        """CRST IR3 with no probe wired reads exactly 0, not an error code.
-
-        Bench 192.168.1.135 addr 1 has no room sensor and answers raw 0 with no
-        E03 raised. A room at exactly 0.0 C is not a reading this product would
-        take in an occupied space, so raw 0 is reported as "no reading" — the
-        control gets the read-error flag and keeps its last value rather than
-        publishing a plausible-looking zero into a smart-home tile. A genuine
-        broken probe still raises E03 and shows up in alarm_text.
-        """
-        if int(snap.get("rmt_raw", 0)) == 0:
+        """Room air — an optional probe (ca.OPTIONAL_PROBES owns the reasoning)."""
+        if ca.optional_probe_is_unfitted(snap.get("rmt_raw", 0)):
             return None
         return _num(snap.get("rmt"))
+
+    @staticmethod
+    def _outdoor_temp(snap: dict):
+        """Outdoor air — the same optional probe rule as the room.
+
+        This one shipped wrong: the room reading was withheld on an exact zero
+        while the outdoor reading beside it, from an identically unfitted input,
+        was published as a measurement. Both come from inputs the PLC does not
+        alarm when they are absent, so both are judged the same way now.
+        """
+        if ca.optional_probe_is_unfitted(snap.get("oat_raw", 0)):
+            return None
+        return _num(snap.get("oat"))
 
     def _status_text(self, code) -> str:
         """The status word for THIS family and firmware.

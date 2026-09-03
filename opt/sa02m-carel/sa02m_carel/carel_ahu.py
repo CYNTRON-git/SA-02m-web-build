@@ -572,6 +572,37 @@ def _s16(raw: int) -> int:
     return v - 0x10000 if v >= 0x8000 else v
 
 
+# Probes the PLC does NOT alarm when they are absent. An unused analog input on
+# these programs answers a successful read with a literal 0 and raises nothing —
+# measured on bench 192.168.1.135 addr 1, where 16 of 18 analog inputs read
+# exactly 0.0 and only the two wired probes (supply air, return water) carried a
+# value, with no alarm set. A single reading therefore cannot tell "no probe
+# fitted" from "the probe really reads zero".
+#
+# We resolve that ambiguity per probe, by whether the PLC would complain:
+#   * OPTIONAL_PROBES — outdoor and room air. Their absence raises no alarm, so
+#     an exact 0 is not publishable: on an installation with no outdoor probe it
+#     would be a permanent, plausible-looking lie ("0.0 °C outside") that never
+#     self-corrects. A genuine 0.0 °C outdoors — the freezing point, a real
+#     reading — is withheld for one poll and returns as soon as the value moves
+#     off exact zero, which at a tenth of a degree it does immediately.
+#   * The supply-air and return-water probes are NOT in this set. Their absence
+#     IS alarmed (E04, E05), so a 0 with no alarm standing is a real 0 and is
+#     published as measured.
+OPTIONAL_PROBES = ("oat", "rmt")
+
+
+def optional_probe_is_unfitted(raw: object) -> bool:
+    """True when an optional probe's raw reading must be reported as no reading.
+
+    `raw` is the register word as read (int16 x10 on c.pCO, the float on uAria).
+    """
+    try:
+        return float(raw) == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
 def int16_x10_to_phys(raw: int) -> float:
     return _s16(raw) / 10.0
 

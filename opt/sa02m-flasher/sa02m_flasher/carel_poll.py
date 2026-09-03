@@ -127,7 +127,8 @@ def _read_uaria(
             return float("nan")
         return ca.be_float32(regs[addr], regs[addr + 1])
 
-    out["oat"] = f32(ca.IR_UARIA_OAT)
+    _oat = f32(ca.IR_UARIA_OAT)
+    out["oat"] = None if ca.optional_probe_is_unfitted(_oat) else _oat
     out["sat"] = f32(ca.IR_UARIA_SAT)
     out["rwt"] = f32(ca.IR_UARIA_RWT)
     out["valve"] = f32(ca.IR_UARIA_VALVE)
@@ -213,8 +214,18 @@ def _read_crst_compact(
 
 
 def _crst_temps(ca: Any, out: Dict[str, Any], ir: Sequence[int]) -> None:
-    """IR1..4: наружная / приток / помещение / обратка, int16 ×10."""
-    out["oat"] = ca.int16_x10_to_phys(ir[0])
+    """IR1..4: наружная / приток / помещение / обратка, int16 ×10.
+
+    Наружная — необязательный вход: неподключённый отвечает ровно нулём и не
+    поднимает тревогу, поэтому судится общим правилом карты (там же и разбор,
+    почему приток и обратка так не судятся). Окно и мост обязаны отвечать про
+    один и тот же датчик одинаково, иначе на карточке «нет данных», а в окне
+    «0,0 °C» — про один и тот же вход.
+    """
+    out["oat"] = (
+        None if ca.optional_probe_is_unfitted(ir[0])
+        else ca.int16_x10_to_phys(ir[0])
+    )
     out["sat"] = ca.int16_x10_to_phys(ir[1])
     out["rwt"] = ca.int16_x10_to_phys(ir[3])
 

@@ -320,7 +320,10 @@ class TestCrstSnapshotDecodesBenchValues(unittest.TestCase):
 
     def test_temperatures_are_int16_x10(self) -> None:
         # IR1..4 = [0, 265, 0, 751] -> 0.0 / 26.5 / (нет датчика) / 75.1 °C
-        self.assertAlmostEqual(self.snap["oat"], 0.0, places=2)
+        # Outdoor read exactly 0 on the bench: an unfitted optional input, not
+        # a measurement. This asserted 0.0 until 1.0.6.31 and was pinning the
+        # defect — the window now reports no reading, like the bridge.
+        self.assertIsNone(self.snap["oat"])
         self.assertAlmostEqual(self.snap["sat"], 26.5, places=2)
         self.assertAlmostEqual(self.snap["rwt"], 75.1, places=2)
 
@@ -372,7 +375,10 @@ class TestUariaSnapshotDecodesBenchValues(unittest.TestCase):
         # to garbage in the 1e-30 range, not to a temperature.
         self.assertAlmostEqual(self.snap["sat"], 27.22, places=2)
         self.assertAlmostEqual(self.snap["rwt"], 43.59, places=2)
-        self.assertAlmostEqual(self.snap["oat"], 0.0, places=2)
+        # Outdoor read exactly 0 on the bench: an unfitted optional input, not
+        # a measurement. This asserted 0.0 until 1.0.6.31 and was pinning the
+        # defect — the window now reports no reading, like the bridge.
+        self.assertIsNone(self.snap["oat"])
         self.assertAlmostEqual(self.snap["valve"], 0.0, places=2)
         self.assertAlmostEqual(self.snap["fan"], 0.0, places=2)
         self.assertEqual(self.snap["unit"], 1)

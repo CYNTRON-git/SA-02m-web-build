@@ -166,9 +166,14 @@ class TestCrstPoll(unittest.TestCase):
         self.values = _published(self.pub)
 
     def test_temperatures_match_the_bench(self):
+        # Only the two wired probes carry a value on the bench unit. This
+        # asserted outdoor_temp == "0.0" until 1.0.6.31 — it was pinning the
+        # defect, not the behaviour: that zero is an unfitted input, and the
+        # test made it look intended. The absence is now pinned in
+        # test_absent_outdoor_probe_is_not_published_as_zero.
         self.assertEqual(self.values["supply_temp"], "26.5")
         self.assertEqual(self.values["return_water_temp"], "75.1")
-        self.assertEqual(self.values["outdoor_temp"], "0.0")
+        self.assertNotIn("outdoor_temp", self.values)
 
     def test_setpoints_and_fans(self):
         self.assertEqual(self.values["setpoint"], "27.2")
@@ -198,6 +203,24 @@ class TestCrstPoll(unittest.TestCase):
         # would put a plausible-looking «0 °C in the room» on a smart-home tile.
         self.assertNotIn("room_temp", self.values)
         self.assertEqual(_errors(self.pub).get("room_temp"), "r")
+
+    def test_absent_outdoor_probe_is_not_published_as_zero(self):
+        # The defect this pins shipped: the room reading beside it was withheld
+        # on an exact zero while this one, from an identically unfitted input,
+        # went out as a measurement. On the bench 16 of 18 analog inputs read
+        # exactly 0 with no alarm raised, so a zero here is "no probe", not
+        # "0 °C outside" — and unlike the room, that lie is seasonally
+        # plausible, which is what makes it worth pinning.
+        self.assertNotIn("outdoor_temp", self.values)
+        self.assertEqual(_errors(self.pub).get("outdoor_temp"), "r")
+
+    def test_a_real_outdoor_reading_is_published(self):
+        # A genuine sub-zero reading must survive: only an EXACT zero is judged.
+        regs, coils, discretes = crst_bank()
+        regs[("i", 1)] = 0x10000 - 74      # -7.4 °C as int16 x10
+        p, pub, _ = _poller("crst", (regs, coils, discretes))
+        p.poll_io()
+        self.assertEqual(_published(pub)["outdoor_temp"], "-7.4")
 
     def test_a_real_room_reading_is_published(self):
         regs, coils, discretes = crst_bank()
