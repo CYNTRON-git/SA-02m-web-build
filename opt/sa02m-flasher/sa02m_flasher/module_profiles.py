@@ -12,9 +12,68 @@
 """
 from __future__ import annotations
 
+import os
 import re
+import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+# ── shared Carel map: the one import seam of this package ───────────────────
+# `sa02m_carel` is the ONE home of the Carel c.pCOmini / uAria register map
+# (docs/contracts/carel-ahu.md); it is deployed to /opt/sa02m-carel, which is on
+# no service's PYTHONPATH — the flasher runs out of /opt/sa02m-flasher as its own
+# user. This module is the lowest layer of the package that needs the map, so the
+# seam lives here once and every other module reads it through `carel_ahu()`
+# (scanner, and the config backend that follows). Never copy a constant out of
+# the package: two homes drift the moment a firmware bump moves a register.
+_carel_ahu_mod: Any = None
+_carel_ahu_tried = False
+
+
+def carel_ahu() -> Any:
+    """The shared `sa02m_carel.carel_ahu` module, or None when it is not deployed.
+
+    Returns None rather than raising: a device whose Carel package is missing must
+    still scan its MR-02m modules. Every caller treats None as «no Carel support».
+    """
+    global _carel_ahu_mod, _carel_ahu_tried
+    if _carel_ahu_tried:
+        return _carel_ahu_mod
+    _carel_ahu_tried = True
+    try:
+        from sa02m_carel import carel_ahu as _ca  # type: ignore
+
+        _carel_ahu_mod = _ca
+        return _carel_ahu_mod
+    except ImportError:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.environ.get("SA02M_CAREL_DIR", "/opt/sa02m-carel"),
+        # repo layout: opt/sa02m-flasher/sa02m_flasher/… → opt/sa02m-carel
+        os.path.join(os.path.dirname(os.path.dirname(here)), "sa02m-carel"),
+    ]
+    for path in candidates:
+        if path and os.path.isdir(path) and path not in sys.path:
+            sys.path.insert(0, path)
+    try:
+        from sa02m_carel import carel_ahu as _ca2  # type: ignore
+
+        _carel_ahu_mod = _ca2
+    except ImportError:
+        _carel_ahu_mod = None
+    return _carel_ahu_mod
+
+
+def signature_is_carel(signature: str) -> bool:
+    """True for a Carel FC17 app id (CRSTDrAHAQ, CRSTDm_AHU, uARIA …).
+
+    The token list belongs to the shared package; without it nothing is Carel.
+    """
+    ca = carel_ahu()
+    if ca is None:
+        return False
+    return bool(ca.signature_looks_like_carel(signature or ""))
 
 # mp02_t как в MODBUS_VARIABLES.txt / get_type_module
 MP02_DO6DI8 = 1
@@ -31,6 +90,9 @@ MP02_EN_METER = 14    # мезонин EN_METER в составе MR-02m (Input 
 MP02_TO4DI6 = 15
 MP02_CE02M3  = 100   # CE-02m-3: автономный анализатор сети ATM90E32 (Input reg 0 = 100)
 DTV          = 17    # CYNTRON DTV-RS-45: RTU_SENSOR (Input reg 0 = 17), идентификация по type_code или сигнатуре "Sens."
+CAREL_AHU    = 210   # Carel c.pCO / c.pCOmini / uAria: приточная установка. Опознаётся
+                     # ответом FC17 (Report Slave ID), а НЕ Input reg 0 — своей карты
+                     # MP-02m у неё нет; прошивке по нашему маршруту не подлежит.
 
 # Canonical module signatures — count-first display form (authoritative source:
 # MR-02m firmware Core/Inc/main.h enum + its error strings 6DO8DI/16DO/12AI/
@@ -50,6 +112,7 @@ MP02_TYPE_NAMES: Dict[int, str] = {
     MP02_TO4DI6:  "4TO6DI",
     MP02_CE02M3:  "CE-02m-3",
     DTV:          "DTV-RS-45",
+    CAREL_AHU:    "Carel AHU",
 }
 
 # (max_do, max_di, max_ao, max_ai) — грубо по карте Modbus
@@ -68,6 +131,7 @@ TYPE_IO_CAPS: Dict[int, Tuple[int, int, int, int]] = {
     MP02_EN_METER:(0, 0, 0, 0),
     MP02_CE02M3:  (0, 0, 0, 0),
     DTV:          (0, 0, 0, 0),
+    CAREL_AHU:    (0, 0, 0, 0),  # ПЛК: состав входов/выходов по сети не читается
 }
 
 AI_ADC_SAMPLE_RATES_SPS: Tuple[int, ...] = (20, 45, 90, 175, 330, 600, 1000)
@@ -349,6 +413,18 @@ def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[s
     """
     if not targets:
         return "Список устройств для пакетной прошивки пуст"
+    # Carel c.pCO / uAria — чужой ПЛК на той же линии: своей прошивки у нас для него
+    # нет, и «Сигнатура не распознана» увело бы оператора на повторное сканирование.
+    carel_sigs = [
+        strip_bootloader_signature_suffix(str(t.get("signature") or "").strip())
+        for t in targets
+        if signature_is_carel(str(t.get("signature") or ""))
+    ]
+    if carel_sigs:
+        return (
+            "Carel c.pCO / uAria — приточная установка, а не модуль MR-02м: "
+            f"прошивка недоступна ({', '.join(carel_sigs[:4])})."
+        )
     routes = [
         device_flash_route(str(t.get("signature") or ""))
         for t in targets
@@ -417,7 +493,10 @@ def application_line_profile(
 
 
 def code_from_signature(signature: str) -> Optional[int]:
-    """Определить тип устройства по строке сигнатуры (рег. 290)."""
+    """Определить тип устройства по строке сигнатуры (рег. 290 или app id из FC17)."""
+    # Carel — первым: список его app id живёт в общем пакете, не здесь.
+    if signature_is_carel(signature):
+        return CAREL_AHU
     n = normalize_signature(signature)
     for key, code in SPECIAL_SIG_CODES.items():
         if key in n or n.startswith(key):

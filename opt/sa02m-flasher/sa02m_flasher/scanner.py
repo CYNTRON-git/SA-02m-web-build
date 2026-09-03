@@ -15,6 +15,7 @@ from . import flasher_log
 from .modbus_io import (
     decode_bootloader_version_registers_8,
     decode_signature_from_holding_290_payload,
+    parse_regs_be_u16,
     serial_reconcile_modbus_regs_with_wb,
     u32_swap_halfwords,
     uint32_from_modbus_reg_pair_be,
@@ -150,6 +151,37 @@ def _phase2_gap_between_addresses_s(baudrate: int, parity: str, stopbits: int) -
     return max(d * t["gap_hi_mul"], t["gap_floor_fast"])
 
 
+# FC17 (Report Slave ID): [addr, func, byte_count≤246, data…, crc] — максимум 251 байт RTU.
+_FC17_MAX_RTU_LEN = 3 + 246 + 2
+# Время реакции ПЛК: Carel отвечает не мгновенно, ответ идёт следом за паузой.
+_FC17_PLC_THINK_MS = 120
+
+
+def _carel_fc17_timeout_ms(
+    requested_ms: int,
+    baudrate: int,
+    parity: str = "N",
+    stopbits: int = 1,
+    *,
+    tcp: bool = False,
+) -> int:
+    """Нижняя граница таймаута для FC17 Report Slave ID.
+
+    Ответ c.pCOmini — 206 байт (замер на стенде), предельный кадр — 251: на 9600
+    это уже 215/261 мс ТОЛЬКО на проводе, плюс реакция ПЛК. Обычный таймаут скана
+    (280 мс) обрезает кадр — CRC не сходится, сигнатура остаётся пустой, и ПЛК
+    попадает в таблицу как модуль в бутлоадере. Поэтому — как для WB-broadcast:
+    не короче двойного стандартного профиля и не короче «провод + реакция».
+    При успехе send_receive выходит раньше, по предсказанной длине кадра.
+    """
+    want = int(requested_ms)
+    std_scan = int(SCAN_TIMING_STANDARD["scan_timeout_ms"])
+    if tcp:
+        return max(want, int(SCAN_TIMING_STANDARD["tcp_ms"]), std_scan * 2, 560)
+    wire_ms = int(_FC17_MAX_RTU_LEN * _rtu_char_time_s(baudrate, parity, stopbits) * 1000.0)
+    return max(want, std_scan * 2, wire_ms + _FC17_PLC_THINK_MS, 400)
+
+
 def _tcp_scan_response_timeout_ms(requested_ms: int) -> int:
     t = _active_scan_timing()
     want = int(requested_ms)
@@ -245,6 +277,8 @@ class DeviceInfo:
     supports_fast_modbus: bool = False  # True если найдено в фазе 1 (0xFD 0x46); иначе только стандартный Modbus
     # Серийный из WB extended-скана для этой строки; стабилен при опросе регистров (различает два устройства с одним адресом).
     wb_scan_serial: Optional[int] = None
+    # Carel c.pCOmini: вариант платы из метки FC17 (STD_B/STD_E/STD_H) — "B"/"E"/"H", "" если неизвестен.
+    carel_variant: str = ""
 
 
 def _is_scan_info_missing(s: Optional[str]) -> bool:
@@ -256,7 +290,15 @@ def _is_scan_info_missing(s: Optional[str]) -> bool:
 
 
 def device_identity_complete_for_module_config(dev: DeviceInfo) -> bool:
-    """Сканер прочитал сигнатуру, серийный и версию ПО (или версию загрузчика в режиме BL)."""
+    """Сканер прочитал сигнатуру, серийный и версию ПО (или версию загрузчика в режиме BL).
+
+    Carel: FC17 даёт app id и версию, серийного в карте BMS нет — SN не требуем.
+    """
+    ca = module_profiles.carel_ahu()
+    if ca is not None and ca.identity_complete_for_carel(
+        dev.signature or "", dev.app_version or ""
+    ):
+        return True
     if _is_scan_info_missing(dev.signature):
         return False
     sn = int(dev.serial) & 0xFFFFFFFF
@@ -272,7 +314,11 @@ def device_is_mp02_product_line_for_config(dev: DeviceInfo) -> bool:
     sig = dev.signature or ""
     if module_profiles.is_mp_module_signature_for_batch_flash(sig):
         return True
-    if module_profiles.code_from_signature(sig) is not None:
+    code = module_profiles.code_from_signature(sig)
+    if code == module_profiles.CAREL_AHU:
+        # Опознанный ПЛК Carel — не наша линейка: ни прошивки, ни карты MP-02m.
+        return False
+    if code is not None:
         return True
     return False
 
@@ -457,11 +503,10 @@ def _poll_identity_fast_modbus_for_dup_addr(
             log_cb(f"[DUP_ADDR {cfg}] SN 0x{sn:08X}: исключение при опросе: {ex!r}")
 
 
-def _read_regs(
+def _transact_raw(
+    req: bytes,
     port: str,
     slave: int,
-    start: int,
-    count: int,
     baudrate: int,
     parity: str,
     stopbits: int,
@@ -470,10 +515,18 @@ def _read_regs(
     cancel_cb: Optional[Callable[[], bool]] = None,
     ser: Optional[Any] = None,
 ) -> Tuple[Optional[int], Optional[bytes]]:
-    """Возвращает (адрес ответившего, payload) или (None, None). При broadcast (slave=255) в ответе приходит реальный адрес устройства (1–247).
-    Если передан открытый ser — порт не закрывается (для серии запросов в scan_address)."""
+    """Отправить готовый RTU-кадр, вернуть (адрес ответившего, payload) или (None, None).
+
+    При broadcast (slave=255) в ответе приходит реальный адрес устройства (1–247).
+    Если передан открытый ser — порт не закрывается (для серии запросов в scan_address).
+    Одно исключение по таймауту — FC17: его ответ на порядок длиннее любого кадра
+    скана (см. _carel_fc17_timeout_ms). Остальные функции идут со своим таймаутом.
+    """
     try:
-        req = modbus_rtu.build_read_holding_registers(slave, start, count)
+        if len(req) >= 2 and req[1] == 0x11:
+            timeout_ms = _carel_fc17_timeout_ms(
+                timeout_ms, baudrate, parity, stopbits, tcp=tcp_ep is not None
+            )
         if tcp_ep is not None:
             th, tp, tmode = tcp_endpoint_host_port_mode(tcp_ep)
             if th is None or tp is None:
@@ -528,6 +581,132 @@ def _read_regs(
                 s.close()
     except Exception:
         return (None, None)
+
+
+def _read_regs(
+    port: str,
+    slave: int,
+    start: int,
+    count: int,
+    baudrate: int,
+    parity: str,
+    stopbits: int,
+    timeout_ms: int = SCAN_TIMEOUT_MS,
+    tcp_ep: Optional[Tuple[str, int]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    ser: Optional[Any] = None,
+) -> Tuple[Optional[int], Optional[bytes]]:
+    """FC03 Holding registers: (адрес ответившего, payload) или (None, None)."""
+    try:
+        req = modbus_rtu.build_read_holding_registers(slave, start, count)
+    except ValueError:
+        return (None, None)
+    return _transact_raw(
+        req, port, slave, baudrate, parity, stopbits, timeout_ms,
+        tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser,
+    )
+
+
+def _read_input_regs(
+    port: str,
+    slave: int,
+    start: int,
+    count: int,
+    baudrate: int,
+    parity: str,
+    stopbits: int,
+    timeout_ms: int = SCAN_TIMEOUT_MS,
+    tcp_ep: Optional[Tuple[str, int]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    ser: Optional[Any] = None,
+) -> Tuple[Optional[int], Optional[bytes]]:
+    """FC04 Input registers — версия uAria из IR100, когда FC17 её не несёт."""
+    try:
+        req = modbus_rtu.build_read_input_registers(slave, start, count)
+    except ValueError:
+        return (None, None)
+    return _transact_raw(
+        req, port, slave, baudrate, parity, stopbits, timeout_ms,
+        tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser,
+    )
+
+
+def _apply_carel_fc17(
+    dev: DeviceInfo,
+    port: str,
+    address: int,
+    baud: int,
+    parity: str,
+    stop: int,
+    timeout_ms: int,
+    tcp_ep: Optional[Tuple[str, int]] = None,
+    cancel_cb: Optional[Callable[[], bool]] = None,
+    ser: Optional[Any] = None,
+) -> DeviceInfo:
+    """Опознать Carel c.pCO / uAria по FC17 и дописать строку скана.
+
+    Вызывается на КАЖДОМ выходе scan_address: у ПЛК нет ни рег. 290, ни серийного
+    270–271, поэтому без этого шага он попадает в таблицу как «модуль в
+    бутлоадере». Одна попытка + один повтор через межкадровую паузу (первый кадр
+    ПЛК иногда теряет после смены скорости).
+    """
+    ca = module_profiles.carel_ahu()
+    if ca is None:
+        return dev
+    if not ca.scan_should_probe_fc17(
+        serial=dev.serial,
+        signature=dev.signature or "",
+        is_known_module=module_profiles.is_mp_module_signature_for_batch_flash,
+    ):
+        return dev
+    req = modbus_rtu.build_report_slave_id(address)
+    payload: Optional[bytes] = None
+    for attempt in range(2):
+        _addr, payload = _transact_raw(
+            req, port, address, baud, parity, stop, timeout_ms,
+            tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser,
+        )
+        if payload:
+            break
+        if attempt == 0:
+            gap = (
+                0.025
+                if tcp_ep is not None
+                else max(0.05, _rtu_inter_frame_delay_s(baud, parity, stop) * 4.0)
+            )
+            if not _sleep_interruptible(gap, cancel_cb, step=0.005):
+                return dev
+    if not payload:
+        return dev
+    fp = ca.parse_report_slave_id(payload)
+    if fp is None:
+        return dev
+    existing = (dev.signature or "").strip()
+    # Защита в глубину: строку с уже известной НЕ-Carel сигнатурой не переписываем,
+    # даже если бы гейт выше когда-нибудь пропустил её до обмена.
+    if existing and ca.known_non_carel_module_signature(
+        existing, is_known_module=module_profiles.is_mp_module_signature_for_batch_flash
+    ):
+        return dev
+    ver = fp.version_str()
+    if fp.family == ca.FAMILY_UARIA and ver in ("", "—", "-"):
+        # CRSTDm_AHU не дублирует байты версии в ответе FC17 — версия читается из IR100.
+        _addr100, pl100 = _read_input_regs(
+            port, address, ca.IR_UARIA_PROG_VER, 1,
+            baud, parity, stop, timeout_ms, tcp_ep=tcp_ep,
+            cancel_cb=cancel_cb, ser=ser,
+        )
+        if pl100:
+            words = parse_regs_be_u16(pl100)
+            if words:
+                ver = ca.format_uaria_ir100(words[0])
+    return replace(
+        dev,
+        signature=fp.app_id,
+        app_version=ver,
+        in_bootloader=False,
+        carel_variant=ca.variant_from_std_mark(fp.std_mark),
+    )
 
 
 def _read_regs_broadcast(
@@ -867,6 +1046,13 @@ def scan_address(
                     cancel_cb=cancel_cb, ser=ser_local,
                 )
                 if pl_ser is None:
+                    # Несущий случай: ПЛК Carel отвечает на рег. 0, но серийного
+                    # 270–271 у него нет — без FC17 строка уходит в таблицу как
+                    # «модуль в бутлоадере» (оба ПЛК стенда именно так и выглядели).
+                    dev = _apply_carel_fc17(
+                        dev, port, address, baud, parity, stopbits, SCAN_TIMEOUT_MS,
+                        tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser_local,
+                    )
                     _emit(_tag(dev))
                     return _tag(dev)
                 serial_val = _parse_serial(pl_ser)
@@ -895,6 +1081,11 @@ def scan_address(
                 )
                 bl_ver = _parse_bootloader_ver(bl_ver_pl) if bl_ver_pl else "—"
                 dev = replace(dev, bootloader_version=bl_ver)
+                _emit(dev)
+                dev = _apply_carel_fc17(
+                    dev, port, address, baud, parity, stopbits, SCAN_TIMEOUT_MS,
+                    tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser_local,
+                )
                 _emit(dev)
                 return _tag(_apply_signature_from_serial_if_missing(dev))
             # Приложение: сначала серийный 270–271
@@ -940,6 +1131,11 @@ def scan_address(
                 )
                 bl_ver = _parse_bootloader_ver(bl_ver_pl) if bl_ver_pl else "—"
                 dev = replace(dev, bootloader_version=bl_ver)
+                _emit(dev)
+                dev = _apply_carel_fc17(
+                    dev, port, address, baud, parity, stopbits, SCAN_TIMEOUT_MS,
+                    tcp_ep=tcp_ep, cancel_cb=cancel_cb, ser=ser_local,
+                )
                 _emit(dev)
                 return _tag(_apply_signature_from_serial_if_missing(dev))
         finally:

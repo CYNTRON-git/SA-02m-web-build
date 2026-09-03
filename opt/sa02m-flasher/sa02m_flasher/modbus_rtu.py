@@ -80,6 +80,17 @@ def build_read_discrete_inputs(slave: int, start_addr: int, count: int) -> bytes
     return frame + struct.pack("<H", crc)
 
 
+def build_report_slave_id(slave: int) -> bytes:
+    """Function 0x11: Report Slave ID (Carel c.pCO / c.pCOmini / uAria identity).
+
+    PDU is the function code alone; the reply carries a vendor ASCII blob
+    (app id, STD_x mark, firmware bytes) parsed by ``sa02m_carel.carel_ahu``.
+    """
+    frame = bytes([slave & 0xFF, 0x11])
+    crc = crc16_modbus(frame)
+    return frame + struct.pack("<H", crc)
+
+
 def build_read_coils(slave: int, start_addr: int, count: int) -> bytes:
     """Function 0x01: Read Coils (count 1..2000 bits; use small count for MP-02m)."""
     if not (1 <= count <= 2000):
@@ -308,8 +319,12 @@ def _parse_response_from(data: bytes, offset: int = 0) -> Tuple[Optional[int], O
                 return slave, None, f"Исключение Modbus: код {d[2]}"
             return None, None, "Ошибка CRC в ответе"
         return slave, None, f"Исключение Modbus: код {d[2]}"
-    if func in (0x03, 0x04):
+    if func in (0x03, 0x04, 0x11):
         byte_count = d[2]
+        # FC17 Report Slave ID: byte_count 1..246 (RTU кадр ≤ 251 байта).
+        # Верхняя граница отсекает мусор, нижняя — «пустой» ответ.
+        if func == 0x11 and (byte_count < 1 or byte_count > 246):
+            return None, None, "Неверная длина ответа 0x03/0x04"
         frame_len = 3 + byte_count + 2
         if len(d) < frame_len:
             return None, None, "Неверная длина ответа 0x03/0x04"
@@ -375,7 +390,12 @@ def parse_response(
         if f not in (
             0x01, 0x81, 0x02, 0x82, 0x03, 0x83, 0x04, 0x84,
             0x05, 0x85, 0x06, 0x10, 0x86, 0x90,
+            0x11, 0x91,
         ):
+            continue
+        # События Wiren Board: [slave][0x46][0x11]… — байт функции 0x46 не должен
+        # читаться как адрес слейва кадра FC17 (иначе FLAG становится byte_count).
+        if f == 0x11 and data[i] == 0x46:
             continue
         slave, payload, err = _parse_response_from(data, i)
         _log(f"parse_response: offset={i} slave={data[i]} func=0x{f:02x} err={err!r}")
