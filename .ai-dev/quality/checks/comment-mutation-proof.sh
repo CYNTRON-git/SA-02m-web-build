@@ -115,6 +115,8 @@ telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not re
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
 carel-shared-home|scripts/05-mqtt.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
+led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
+led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate

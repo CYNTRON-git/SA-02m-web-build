@@ -318,6 +318,11 @@ def device_is_mp02_product_line_for_config(dev: DeviceInfo) -> bool:
     if code == module_profiles.CAREL_AHU:
         # Опознанный ПЛК Carel — не наша линейка: ни прошивки, ни карты MP-02m.
         return False
+    if code == module_profiles.RGBW_WS2812:
+        # Лента опознаётся, но окна настройки для неё ещё нет: строка станет
+        # доступной для двойного клика в шаге L3 этого релиза, вместе с kind
+        # «led» в device_config. Пока — не предлагать окно, которое упадёт.
+        return False
     if code is not None:
         return True
     return False
@@ -656,7 +661,7 @@ def _apply_carel_fc17(
     if not ca.scan_should_probe_fc17(
         serial=dev.serial,
         signature=dev.signature or "",
-        is_known_module=module_profiles.is_mp_module_signature_for_batch_flash,
+        is_known_module=module_profiles.signature_is_known_module_family,
     ):
         return dev
     req = modbus_rtu.build_report_slave_id(address)
@@ -685,7 +690,7 @@ def _apply_carel_fc17(
     # Защита в глубину: строку с уже известной НЕ-Carel сигнатурой не переписываем,
     # даже если бы гейт выше когда-нибудь пропустил её до обмена.
     if existing and ca.known_non_carel_module_signature(
-        existing, is_known_module=module_profiles.is_mp_module_signature_for_batch_flash
+        existing, is_known_module=module_profiles.signature_is_known_module_family
     ):
         return dev
     ver = fp.version_str()

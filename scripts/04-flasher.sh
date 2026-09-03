@@ -48,6 +48,9 @@ find "$INSTALL_DIR" -type f -exec chmod 0644 {} \;
 # Shared Carel register map (imported by the scan/config-window path).
 sa02m_install_carel_pkg "$BASE_DIR"
 
+# Shared LED (RGBW_WS2812 / MB2WS) register map — same path, same reason.
+sa02m_install_led_pkg "$BASE_DIR"
+
 # ── /etc конфигурация ────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m_flasher.conf ]; then
     log INFO "Создаю /etc/sa02m_flasher.conf"

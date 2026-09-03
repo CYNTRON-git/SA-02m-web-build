@@ -340,6 +340,12 @@ def _resolve_kind(identity: Dict[str, Any], device: Dict[str, Any]) -> Tuple[str
 
 def _module_kind_from_identity(signature: str, type_code: Optional[int]) -> module_profiles.ModuleKind:
     code = int(type_code) if type_code is not None else 0
+    # Лента: сигнатура перевешивает Input reg 0. Порядок и его причина — в
+    # module_profiles.scan_type_code (одно место), здесь только вызов: ветка
+    # ниже начинает с рег. 0, и ложный код 1..15 с общей линии увёл бы ленту
+    # в карту дискретного модуля.
+    if module_profiles.scan_type_code(signature, type_code) == module_profiles.RGBW_WS2812:
+        return module_profiles.kind_from_type_code(module_profiles.RGBW_WS2812)
     if code in module_profiles.TYPE_IO_CAPS:
         kind = module_profiles.kind_from_type_code(code)
         if kind.max_do or kind.max_di or kind.max_ao or kind.max_ai:

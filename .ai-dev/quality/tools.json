@@ -89,6 +89,25 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
+      "id": "py-unit-led",
+      "mutationExempt": "stdlib `unittest discover` over the shared LED package's own test suite - a test RUNNER, not a needle pin: it holds no source line a `#` could satisfy, and commenting a line out of the package changes the behaviour the tests assert.",
+      "checks": "LED strip (RGBW_WS2812 / MB2WS, base 400) map unit tests (opt/sa02m-led/tests, stdlib unittest). The five non-negotiables the desktop paid for, each its own class: (1) the 410 lock gates the WHOLE settings block 400..419 including PlayCtrl 416, and rgbw_lock_bracket_writes() emits unlock -> DEPENDENCY-ordered writes -> lock, never sorted(); (2) the marquee window is 516..579 and clears the safe-state AO block 503..506 the pre-1.0.2.2 base 495 overwrote; (3) CMD 3 (SAVE_FLASH) is refused - firmware accepts it in the range check and the handler stores nothing; (4) the mode-data read is exactly ONE FC03 of 15 regs at 453..467, an unmapped address anywhere failing the whole block; (5) reg 418 is read-modify-write - unknown prior plus an unknown tiling field means SKIP the register, never compose it from nothing. Plus the ported map: 82-effect catalog (the code, not the note's 81) with groups tiling 0..81, the six per-mode reg-455 layouts, cp1251 text packing, RGB565/permille round-trips, pool clamps, and the signature aliases (exact for all four, prefix only for the two long ones - 'LED' as a 3-char prefix would steal the Wiren Board signature 'ledGe').",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-led/tests -t opt/sa02m-led -q; fi; done; echo py-unit-led: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-led/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "led-shared-home",
+      "checks": "The LED (RGBW_WS2812 / MB2WS) register map has ONE home (opt/sa02m-led/sa02m_led) and every deploy path that needs it installs it. The flasher daemon and the Modbus→MQTT bridge import it from different trees under different users, and update-www-only.sh refreshes the bridge WITHOUT touching the flasher tree — so a forgotten installer call ships a bridge whose LED poller dies on import: green in CI, dead on the board. Pins: all three deploy scripts call sa02m_install_led_pkg; the helper exists in scripts/lib.sh and targets /opt/sa02m-led; the load-bearing constants (MB2WS_UNLOCK_KEY 0x10C8, MB2WS_TEXT_BASE 516) appear in exactly ONE file tree-wide; each shipped consumer imports the package instead of restating it; and the flasher reaches it only through the module_profiles led_mb2ws()/signature_is_led() seam, so a missing package degrades to «no LED support» instead of killing the whole scan on import. Read through lib_check.sh, so a commented-out call cannot satisfy a pin. Non-vacuous: a missing package file, a missing deploy script, or a sweep that stops finding the constants FAILS.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/led-shared-home.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-led/", "opt/sa02m-modbus-mqtt/bridge_led.py", "opt/sa02m-flasher/sa02m_flasher/module_profiles.py", "opt/sa02m-flasher/sa02m_flasher/led_poll.py", "scripts/lib.sh", "scripts/04-flasher.sh", "scripts/05-mqtt.sh", "scripts/update-www-only.sh", "docs/contracts/led-mb2ws.md"],
+      "init": "bash + coreutils (no extra deps)"
+    },
+    {
       "id": "carel-shared-home",
       "checks": "The Carel register map has ONE home (opt/sa02m-carel/sa02m_carel) and every deploy path that needs it installs it. The flasher daemon and the Modbus→MQTT bridge import it from different trees under different users, and update-www-only.sh refreshes the bridge WITHOUT touching the flasher tree — so a forgotten installer call ships a bridge whose Carel poller dies on import: green in CI, dead on the board. Pins: all three deploy scripts call sa02m_install_carel_pkg; the helper exists in scripts/lib.sh and targets /opt/sa02m-carel; the load-bearing addresses (COIL_BMS_OFF_ON, COIL_UARIA_LOCAL) appear in exactly ONE file tree-wide; each shipped consumer imports the package instead of restating it. Read through lib_check.sh, so a commented-out call cannot satisfy a pin. Non-vacuous: a missing package file, a missing deploy script, or a sweep that stops finding the constants FAILS.",
       "config": null,

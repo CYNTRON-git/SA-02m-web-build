@@ -18,51 +18,60 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-# ── shared Carel map: the one import seam of this package ───────────────────
-# `sa02m_carel` is the ONE home of the Carel c.pCOmini / uAria register map
-# (docs/contracts/carel-ahu.md); it is deployed to /opt/sa02m-carel, which is on
+# ── shared device maps: the one import seam of this package ─────────────────
+# `sa02m_carel` and `sa02m_led` are the ONE home of, respectively, the Carel
+# c.pCOmini / uAria register map (docs/contracts/carel-ahu.md) and the LED strip
+# MB2WS map (docs/contracts/led-mb2ws.md). Both deploy to /opt/<pkg>, which is on
 # no service's PYTHONPATH — the flasher runs out of /opt/sa02m-flasher as its own
-# user. This module is the lowest layer of the package that needs the map, so the
-# seam lives here once and every other module reads it through `carel_ahu()`
-# (scanner, and the config backend that follows). Never copy a constant out of
-# the package: two homes drift the moment a firmware bump moves a register.
-_carel_ahu_mod: Any = None
-_carel_ahu_tried = False
+# user. This module is the lowest layer of the package that needs them, so the
+# seam lives here once and every other module reads it through `carel_ahu()` /
+# `led_mb2ws()` (scanner, config backend). Never copy a constant out of a shared
+# package: two homes drift the moment a firmware bump moves a register.
+_shared_pkg_cache: Dict[str, Any] = {}
+
+
+def _shared_pkg(pkg: str, module: str, opt_dir: str, env_var: str) -> Any:
+    """Import ``<pkg>.<module>`` from /opt/<opt_dir>, or None when not deployed.
+
+    Returns None rather than raising: a device whose shared package is missing
+    must still scan its MR-02m modules. Every caller treats None as «no support
+    for that family». One loader for every shared map, so a new one is a call
+    here and not a second copy of the sys.path dance.
+    """
+    key = "%s.%s" % (pkg, module)
+    if key in _shared_pkg_cache:
+        return _shared_pkg_cache[key]
+
+    def _try_import() -> Any:
+        try:
+            return getattr(__import__(pkg, fromlist=[module]), module)
+        except (ImportError, AttributeError):
+            return None
+
+    found = _try_import()
+    if found is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.environ.get(env_var, "/opt/%s" % opt_dir),
+            # repo layout: opt/sa02m-flasher/sa02m_flasher/… → opt/<opt_dir>
+            os.path.join(os.path.dirname(os.path.dirname(here)), opt_dir),
+        ]
+        for path in candidates:
+            if path and os.path.isdir(path) and path not in sys.path:
+                sys.path.insert(0, path)
+        found = _try_import()
+    _shared_pkg_cache[key] = found
+    return found
 
 
 def carel_ahu() -> Any:
-    """The shared `sa02m_carel.carel_ahu` module, or None when it is not deployed.
+    """The shared `sa02m_carel.carel_ahu` module, or None when it is not deployed."""
+    return _shared_pkg("sa02m_carel", "carel_ahu", "sa02m-carel", "SA02M_CAREL_DIR")
 
-    Returns None rather than raising: a device whose Carel package is missing must
-    still scan its MR-02m modules. Every caller treats None as «no Carel support».
-    """
-    global _carel_ahu_mod, _carel_ahu_tried
-    if _carel_ahu_tried:
-        return _carel_ahu_mod
-    _carel_ahu_tried = True
-    try:
-        from sa02m_carel import carel_ahu as _ca  # type: ignore
 
-        _carel_ahu_mod = _ca
-        return _carel_ahu_mod
-    except ImportError:
-        pass
-    here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [
-        os.environ.get("SA02M_CAREL_DIR", "/opt/sa02m-carel"),
-        # repo layout: opt/sa02m-flasher/sa02m_flasher/… → opt/sa02m-carel
-        os.path.join(os.path.dirname(os.path.dirname(here)), "sa02m-carel"),
-    ]
-    for path in candidates:
-        if path and os.path.isdir(path) and path not in sys.path:
-            sys.path.insert(0, path)
-    try:
-        from sa02m_carel import carel_ahu as _ca2  # type: ignore
-
-        _carel_ahu_mod = _ca2
-    except ImportError:
-        _carel_ahu_mod = None
-    return _carel_ahu_mod
+def led_mb2ws() -> Any:
+    """The shared `sa02m_led.led_mb2ws` module, or None when it is not deployed."""
+    return _shared_pkg("sa02m_led", "led_mb2ws", "sa02m-led", "SA02M_LED_DIR")
 
 
 def signature_is_carel(signature: str) -> bool:
@@ -74,6 +83,17 @@ def signature_is_carel(signature: str) -> bool:
     if ca is None:
         return False
     return bool(ca.signature_looks_like_carel(signature or ""))
+
+
+def signature_is_led(signature: str) -> bool:
+    """True for an LED-strip signature (RGBW_WS2812 / RGBWWS2812 / RGBW / LED).
+
+    The alias list belongs to the shared package; without it nothing is a strip.
+    """
+    lm = led_mb2ws()
+    if lm is None:
+        return False
+    return bool(lm.signature_looks_like_led(signature or ""))
 
 # mp02_t как в MODBUS_VARIABLES.txt / get_type_module
 MP02_DO6DI8 = 1
@@ -93,6 +113,10 @@ DTV          = 17    # CYNTRON DTV-RS-45: RTU_SENSOR (Input reg 0 = 17), иде�
 CAREL_AHU    = 210   # Carel c.pCO / c.pCOmini / uAria: приточная установка. Опознаётся
                      # ответом FC17 (Report Slave ID), а НЕ Input reg 0 — своей карты
                      # MP-02m у неё нет; прошивке по нашему маршруту не подлежит.
+RGBW_WS2812  = 120   # Светодиодная лента RGBW_WS2812: силовой PWM + адресная лента
+                     # (Input/Holding reg 0 = 120, карта MB2WS с базой 400 —
+                     # docs/contracts/led-mb2ws.md). Пакетной прошивке не подлежит:
+                     # своего образа в манифесте у неё нет.
 
 # Canonical module signatures — count-first display form (authoritative source:
 # MR-02m firmware Core/Inc/main.h enum + its error strings 6DO8DI/16DO/12AI/
@@ -113,6 +137,7 @@ MP02_TYPE_NAMES: Dict[int, str] = {
     MP02_CE02M3:  "CE-02m-3",
     DTV:          "DTV-RS-45",
     CAREL_AHU:    "Carel AHU",
+    RGBW_WS2812:  "LED",
 }
 
 # (max_do, max_di, max_ao, max_ai) — грубо по карте Modbus
@@ -132,6 +157,7 @@ TYPE_IO_CAPS: Dict[int, Tuple[int, int, int, int]] = {
     MP02_CE02M3:  (0, 0, 0, 0),
     DTV:          (0, 0, 0, 0),
     CAREL_AHU:    (0, 0, 0, 0),  # ПЛК: состав входов/выходов по сети не читается
+    RGBW_WS2812:  (0, 4, 0, 0),  # 4 DI; каналы RGBW PWM и адресная лента — не AO/AI
 }
 
 AI_ADC_SAMPLE_RATES_SPS: Tuple[int, ...] = (20, 45, 90, 175, 330, 600, 1000)
@@ -208,6 +234,13 @@ def is_mp_module_signature_for_batch_flash(signature: str) -> bool:
     for tok in _EXTRA_SIG_TOKENS_FOR_BATCH:
         if tok in n:
             return True
+    # Лента — ДО блока MP-токенов: её сигнатура «RGBW_WS2812» после удаления
+    # «-» и «_» превращается в «RGBWWS2812», а сравнение MP-токенов идёт
+    # подстрокой по этой же строке. Отказ здесь — явный и закреплён тестом,
+    # а не побочный результат того, что ни один токен пока не совпал.
+    # Своего образа в манифесте у ленты нет: цель пакетной прошивки — не она.
+    if signature_is_led(s):
+        return False
     c_sig = code_from_signature(s)
     if c_sig in (MP02_CE02M3, DTV):
         return True
@@ -255,6 +288,13 @@ SPECIAL_SIG_CODES: Dict[str, int] = {
     "SENSOR":  DTV,     # модельная строка рег. 200 у DTV
     "SENS.":   DTV,     # дефолтная сигнатура EEPROM при пустом/несфабрикованном приборе
     "SENS":    DTV,
+    # Лента RGBW_WS2812 — четыре формы, как в настольном флешере. Сам подбор
+    # ведёт signature_is_led() (точное совпадение или префикс): проход по этому
+    # словарю сравнивает ПОДСТРОКОЙ, и «LED» подстрокой поймал бы чужую модель.
+    "RGBW_WS2812": RGBW_WS2812,
+    "RGBWWS2812": RGBW_WS2812,
+    "RGBW":    RGBW_WS2812,
+    "LED":     RGBW_WS2812,
 }
 
 # --- RS-485 line profiles (application mode / reg 129 → bootloader) ---
@@ -425,6 +465,20 @@ def validate_batch_flash_targets(targets: List[Mapping[str, Any]]) -> Optional[s
             "Carel c.pCO / uAria — приточная установка, а не модуль MR-02м: "
             f"прошивка недоступна ({', '.join(carel_sigs[:4])})."
         )
+    # Светодиодная лента RGBW_WS2812 — своё изделие, но своего образа в манифесте
+    # у неё нет. Без явного отказа она провалилась бы в ветку «Сигнатура не
+    # распознана», которая уводит оператора на повторное сканирование вместо
+    # того, чтобы назвать причину.
+    led_sigs = [
+        strip_bootloader_signature_suffix(str(t.get("signature") or "").strip())
+        for t in targets
+        if signature_is_led(str(t.get("signature") or ""))
+    ]
+    if led_sigs:
+        return (
+            "Светодиодная лента RGBW_WS2812 — не модуль MR-02м: "
+            f"прошивка недоступна ({', '.join(led_sigs[:4])})."
+        )
     routes = [
         device_flash_route(str(t.get("signature") or ""))
         for t in targets
@@ -497,11 +551,60 @@ def code_from_signature(signature: str) -> Optional[int]:
     # Carel — первым: список его app id живёт в общем пакете, не здесь.
     if signature_is_carel(signature):
         return CAREL_AHU
+    # Лента — ДО прохода по SPECIAL_SIG_CODES: там сравнение идёт подстрокой,
+    # а её псевдонимы нужны точным совпадением/префиксом (signature_is_led).
+    # Иначе «LED» внутри чужой модельной строки объявил бы её лентой.
+    if signature_is_led(signature):
+        return RGBW_WS2812
     n = normalize_signature(signature)
     for key, code in SPECIAL_SIG_CODES.items():
+        # Ключи ленты уже разобраны выше более строгим сопоставлением; здесь их
+        # пропускаем, иначе подстрока «LED»/«RGBW» внутри чужой модельной строки
+        # объявила бы прибор лентой и вывела бы его из «Обновить все».
+        # Тот же приём, что в настольном флешере для ключей CE*.
+        if code == RGBW_WS2812:
+            continue
         if key in n or n.startswith(key):
             return code
     return None
+
+
+def scan_type_code(signature: str, type_code: Optional[int]) -> Optional[int]:
+    """Тип устройства для строки скана: СИГНАТУРА ПЕРВЕЕ Input reg 0.
+
+    Порядок настольного флешера (``module_config_window._resolve_kind``:
+    ветка ленты стоит до ветки «номер платы с шины»). Для ленты это не стиль,
+    а защита: рег. 0 на общей линии читается чужим ответом при неверном адресе
+    или скорости, и ложный код 1..15 превратил бы ленту в строку «модуль
+    MR-02m» — единственную, которой предлагается прошивка. Сигнатура рег. 290
+    приходит из EEPROM самой ленты и такой подмене не подвержена.
+
+    Возвращает None, когда ни сигнатура, ни рег. 0 ничего не опознали, — вызов
+    должен оставить прежнее поведение (подсказка по caps_from_signature и т.д.).
+    """
+    sig_code = code_from_signature(signature)
+    if sig_code == RGBW_WS2812:
+        return RGBW_WS2812
+    tc = (int(type_code) & 0xFFFF) if type_code is not None else None
+    if tc == RGBW_WS2812:
+        return RGBW_WS2812
+    if sig_code is not None:
+        return sig_code
+    return tc
+
+
+def signature_is_known_module_family(signature: str) -> bool:
+    """Сигнатура принадлежит распознаваемому НЕ-Carel семейству.
+
+    Предикат для FC17-шлюза общего пакета Carel
+    (``sa02m_carel.carel_ahu.known_non_carel_module_signature``): устройство,
+    которое мы уже опознали, зондировать «Report Slave ID» не нужно. Лента
+    отвечает сигнатурой рег. 290 и опознаётся ею — но целью пакетной прошивки
+    НЕ является, поэтому одного ``is_mp_module_signature_for_batch_flash``
+    здесь мало: без ленты в этом предикате каждая строка ленты получала бы
+    лишний FC17 на общей шине.
+    """
+    return is_mp_module_signature_for_batch_flash(signature) or signature_is_led(signature)
 
 
 def caps_from_signature(signature: str) -> Optional[Tuple[int, int, int, int]]:

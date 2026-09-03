@@ -162,6 +162,8 @@ for f in bridge_serial.py bridge_fmb.py bridge_meta.py bridge_mqtt.py bridge_mr0
 done
 # Shared Carel register map (imported by bridge_carel.py and mqtt_bus_scan.py).
 sa02m_install_carel_pkg "$BASE_DIR"
+# Shared LED register map (imported by the type: led bridge poller).
+sa02m_install_led_pkg "$BASE_DIR"
 
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
 

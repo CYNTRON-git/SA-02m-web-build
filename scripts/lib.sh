@@ -441,6 +441,40 @@ sa02m_install_carel_pkg() {
     return 0
 }
 
+# Install the shared LED (RGBW_WS2812 / MB2WS) register-map package (repo
+# opt/sa02m-led) to /opt/sa02m-led. Same reason as sa02m_install_carel_pkg: the
+# flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher) and the
+# Modbus-MQTT bridge (root, /opt/sa02m-modbus-mqtt) import the same map from two
+# different trees under two different users, so it lives in its own root-owned,
+# world-readable package instead of a copy inside each. Called from
+# 04-flasher.sh, 05-mqtt.sh and update-www-only.sh; idempotent.
+# Contract: docs/contracts/led-mb2ws.md.
+sa02m_install_led_pkg() {
+    local repo_root=$1
+    if [ -z "$repo_root" ]; then
+        log WARN "sa02m_install_led_pkg вызван без корня репозитория — пропуск"
+        return 0
+    fi
+    local src="$repo_root/opt/sa02m-led/sa02m_led"
+    local dst=/opt/sa02m-led/sa02m_led
+    if [ ! -d "$src" ]; then
+        log WARN "пакет LED не найден в $src — пропуск"
+        return 0
+    fi
+    install -d -m 0755 -o root -g root /opt/sa02m-led
+    install -d -m 0755 -o root -g root "$dst"
+    local f
+    for f in "$src"/*.py; do
+        [ -f "$f" ] || continue
+        install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
+        sed -i 's/$//' "$dst/$(basename "$f")" 2>/dev/null || true
+    done
+    # A stale .pyc from an older layout would shadow a removed module.
+    rm -rf "$dst/__pycache__" 2>/dev/null || true
+    log OK "пакет LED /opt/sa02m-led OK"
+    return 0
+}
+
 # Install a sudoers drop-in from repo <src> to <dst>.
 # VALIDATE-then-ACTIVATE: a malformed drop-in breaks sudo globally, so never let
 # a file visudo rejects reach the live path. Validate a CRLF-stripped copy of the
