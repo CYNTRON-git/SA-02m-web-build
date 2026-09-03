@@ -638,6 +638,15 @@ systemctl disable sa02m-cloud-agent sa02m-cloud-frpc sa02m-cloud-heartbeat
 `grep -E 'enrolled|device_id' /etc/sa02m-cloud/agent.conf` → `enrolled = false`
 и пустой `device_id`; три службы `disabled`.
 
+Тот же набор шагов агент выполняет **сам** после подтверждённого отказа
+облака (три подряд отказа одного вида — `stand_down()` в
+`opt/sa02m-cloud-agent/sa02m-cloud-agent.py`): останавливает `sa02m-cloud-frpc`,
+стирает `device_secret` и `frpc.toml`, ставит `enrolled = false` и пустой
+`device_id`, оставляет `api_url`/`server_host`, пишет `unlinked_at` и причину в
+`agent.conf` и состояние `revoked`/`unlinked` в `/run/sa02m-cloud-status.json`;
+сам агент остаётся запущенным и ждёт «Привязать заново». Для золотого образа
+это не замена ручной процедуре: службы здесь выключают вручную.
+
 ### 4. MQTT — очистить устройства и retained
 
 В `/etc/sa02m-modbus-mqtt.yaml` заменить список устройств на `devices: []`

@@ -7,9 +7,18 @@ reverse tunnel, and POSTs send-only telemetry heartbeats.
 
 Contract: cloud repo docs/contracts/cloud-enrollment.md (frozen).
 SECURITY: there is deliberately NO command channel — the cloud can never
-make this device execute anything. Heartbeat responses are ignored except
-for the "ok" field. (The former handle_command() root channel — threat
-model F1 — was removed in Phase B together with WireGuard.)
+make this device execute anything. The heartbeat is send-only: the ONLY
+thing read back is the refusal reason (HTTP status + `error`) of a NON-200
+response. A 200 body is JSON-parsed inside api_post (shared with claim/enroll)
+but the parsed value never reaches any agent logic: the heartbeat call site
+discards api_post's return and _note_heartbeat forces error=None on a 200;
+an unparseable 200 is recorded as status 0, i.e. not a success
+(tests/test_agent.py, tests/test_revoke_standdown.py pin all of it). A
+refusal stated N times makes the
+board erase its own cloud binding (stand_down) — a cloud-driven action that
+is confined to the binding and needs TLS-verified HTTPS to be stated
+(docs/threat-model.md §3). (The former handle_command() root channel —
+threat model F1 — was removed in Phase B together with WireGuard.)
 
 Activation modes (no SSH needed):
   1. Claim code (primary): web UI Cloud tab → "connect" → the agent requests
@@ -67,8 +76,20 @@ WATCHDOG_S      = 60
 ALLOWED_LOCAL_PORTS = frozenset({80, 9999})
 
 
+# Keys that only mean something while the binding is LIVE. Any other state
+# must not carry them: the file is rewritten whole on every write, but a
+# writer that passed a stale `tunnel` through would put «Туннель: Работает»
+# on the card of a board that has no binding (bench 1.135, 2026-09-03).
+LIVE_ONLY_KEYS = ("tunnel", "last_heartbeat", "identity")
+
+
 def _write_status(state: str, **kw):
-    """Write machine-readable status for CGI/web UI."""
+    """Write machine-readable status for CGI/web UI. Whole-file rewrite —
+    nothing from a previous state survives — and the live-only keys are
+    dropped by construction unless the state is `active`."""
+    if state != "active":
+        for key in LIVE_ONLY_KEYS:
+            kw.pop(key, None)
     payload = {"state": state, "ts": int(time.time()), **kw}
     try:
         with open(STATUS_FILE, "w") as f:
@@ -176,6 +197,38 @@ def get_fw_version() -> str:
 
 
 # ── HTTP (stdlib only) ────────────────────────────────────────────────────────
+# Heartbeat refusal side channel (threat-model F1, contract §2/§4). The
+# heartbeat stays SEND-ONLY: its call site never captures api_post's result
+# (tests/test_agent.py::test_heartbeat_response_not_interpreted pins that by
+# regex). What the agent needs from a heartbeat is one bit the cloud is
+# entitled to say — "I refuse you, and why" — and that arrives on a NON-200
+# response. api_post records (status, error) of the last heartbeat here; on a
+# 200 it records the status ONLY and the body is not read for it. The
+# classifier below sees nothing but (status, error).
+_HEARTBEAT_LAST = {"status": None, "error": None}
+
+
+def _note_heartbeat(url: str, status: int, error):
+    if not url.rstrip("/").endswith("/heartbeat"):
+        return
+    _HEARTBEAT_LAST["status"] = status
+    _HEARTBEAT_LAST["error"] = error if status != 200 else None
+
+
+def heartbeat_refusal() -> dict:
+    """(status, error) of the LAST heartbeat — the only thing read from it."""
+    return dict(_HEARTBEAT_LAST)
+
+
+def _refusal_error(body) -> str:
+    """The `error` string of a refusal body, or "" — nothing else is read."""
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, str):
+            return err.strip().lower()
+    return ""
+
+
 def api_post(url: str, payload: dict, timeout: int = 15):
     """POST JSON; returns (http_status, parsed_body|None). Network failure
     returns (0, None)."""
@@ -188,16 +241,23 @@ def api_post(url: str, payload: dict, timeout: int = 15):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            _note_heartbeat(url, resp.status, None)
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body = e.read()[:300]
         log.warning("POST %s -> HTTP %d: %s", url, e.code, body)
         try:
-            return e.code, json.loads(body)
+            parsed = json.loads(body)
         except Exception:
-            return e.code, None
+            parsed = None
+        _note_heartbeat(url, e.code, _refusal_error(parsed))
+        return e.code, parsed
     except Exception as e:
+        # Transport failure — AND a 200 whose body is not JSON (json.loads
+        # above raises into here): recorded as status 0, so it is neither a
+        # refusal nor a success for the heartbeat tracker.
         log.debug("POST %s error: %s", url, e)
+        _note_heartbeat(url, 0, None)
         return 0, None
 
 
@@ -339,104 +399,397 @@ def ensure_frpc_running() -> str:
 # конкретной причиной (см. cloud docs/contracts/cloud-enrollment.md §4), frpc
 # печатает её в свой журнал. Это ЕДИНСТВЕННЫЙ доступный агенту сигнал: ответ
 # heartbeat агент принципиально не читает (send-only, threat-model F1).
+# `subdomain not enrolled` is what frps prints for an UNCLAIMED board: under
+# FRP_IDENTITY_MODE=grace a heartbeat without a secret gets no 403 at all, so
+# this marker is the ONLY signal of a detach — mandatory, not a bonus.
 FRPC_REJECT_MARKERS = ("device revoked", "device identity required",
                        "credential mismatch", "device not enrolled",
-                       "no credential issued", "invalid credential")
-FRPC_FAIL_CYCLES = 3          # подряд неудачных циклов watchdog до диагностики
-REVOKED_RETRY_S  = 600        # как часто пере-проверять отказ, стоя в standby
-RECOVERY_SETTLE_S = 30        # дать frpc реально попытаться залогиниться перед вердиктом
-JOURNAL_FALLBACK_SINCE = "-10 min"   # если точное время старта юнита недоступно
+                       "no credential issued", "invalid credential",
+                       "subdomain not enrolled")
+
+# ── Refusal classes (contract §4) ─────────────────────────────────────────────
+# What the cloud / frps SAID → what it means for this board. Only these
+# strings are refusals; a network error, a timeout, a 5xx, a DNS failure or an
+# unrecognised 403 is a tunnel/transport failure and NEVER a stand-down.
+REFUSAL_CLASS_REVOKED  = "revoked"    # owner pressed «Отозвать доступ»
+REFUSAL_CLASS_UNLINKED = "unlinked"   # owner detached («Отвязать»/«Забыть») — free to re-pair
+REFUSAL_CLASS_UNKNOWN  = "unknown"    # identity refused for a reason the board cannot tell apart
+HEARTBEAT_REFUSALS = {
+    "device revoked":           REFUSAL_CLASS_REVOKED,
+    "unknown device":           REFUSAL_CLASS_UNLINKED,
+    "invalid credential":       REFUSAL_CLASS_UNKNOWN,
+    "device identity required": REFUSAL_CLASS_UNKNOWN,
+}
+FRPS_REFUSALS = {
+    "device revoked":           REFUSAL_CLASS_REVOKED,
+    "subdomain not enrolled":   REFUSAL_CLASS_UNLINKED,
+    "device not enrolled":      REFUSAL_CLASS_UNLINKED,
+    "no credential issued":     REFUSAL_CLASS_UNLINKED,
+    "credential mismatch":      REFUSAL_CLASS_UNKNOWN,
+    "device identity required": REFUSAL_CLASS_UNKNOWN,
+    "invalid credential":       REFUSAL_CLASS_UNKNOWN,
+}
+# N consecutive refusals of ONE class ⇒ stand-down: N refused heartbeats
+# (≈ 30 s at the 10 s interval), or N watchdog ticks each bringing a NEW
+# refusal line in the frpc journal. Any success resets — for the frps path a
+# success is a tick with no new refusal line (the journal is read through a
+# cursor, so one line is counted exactly once; see frpc_reject_reason).
+REFUSAL_STANDDOWN_COUNT = 3
+
+# Durable stand-down marker keys in agent.conf — IDENTITY, not configuration:
+# cleared by a fresh enrollment and by the image/identity reset
+# (docs/contracts/image-identity-reset.md §6).
+STAND_DOWN_MARKER_KEYS = ("unlinked_at", "unlinked_reason", "unlinked_reason_text")
+
+# Every `state` this agent writes to STATUS_FILE — the one home of the enum
+# that docs/contracts/cloud-agent-status.md documents and cloud.js renders
+# (tests/test_status_contract.py::test_status_state_enum_matches_contract_and_card).
+STATUS_STATES = (
+    "standby", "pairing", "pair_expired", "already_claimed", "claim_failed",
+    "enrolling", "enroll_failed", "active",
+    "revoked", "unlinked", "unlink_failed",
+)
+
+# Journal cursor of the last frpc line read. /run is tmpfs: a reboot starts
+# afresh from the agent's own start time, which is what we want.
+CURSOR_FILE = "/run/sa02m-cloud-frpc.cursor"
+# The agent's own start, in a form `journalctl --since` accepts: the window of
+# the very first read (no cursor yet) — narrow, never a previous life.
+AGENT_STARTED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _unit_active_since(unit: str) -> str:
-    """Момент последнего запуска юнита в формате, понятном journalctl --since.
+def classify_refusal(status, error) -> str:
+    """Heartbeat verdict → refusal class or "" (not a refusal).
 
-    Возвращает "" если значение недоступно или неправдоподобно — вызывающий
-    обязан подставить своё ограничение окна, но НИКОГДА не читать журнал целиком."""
+    Reads exactly two things: the HTTP status and the `error` string of a
+    NON-200 body. A 200 is a success whatever it carries; anything that is
+    not a 403 with a known reason is not a refusal.
+    """
+    if status != 403:
+        return ""
+    return HEARTBEAT_REFUSALS.get((error or "").strip().lower(), "")
+
+
+def classify_frps_marker(marker: str) -> str:
+    return FRPS_REFUSALS.get((marker or "").strip().lower(), "")
+
+
+class RefusalTracker:
+    """Counts CONSECUTIVE refusal EVENTS of one class; any success resets.
+
+    An event is one refused heartbeat, or one NEW refusal line in the frpc
+    journal (the cursor guarantees a line is fed here once, never re-read on
+    the next tick). A refusal of a different class restarts the count at one
+    (three refusals are only meaningful when they all say the same thing).
+    On the heartbeat path a network error or a 5xx is neither a refusal nor a
+    success and leaves the count alone; on the frps path a tick with no new
+    refusal line IS a success.
+    """
+
+    def __init__(self, threshold: int = REFUSAL_STANDDOWN_COUNT):
+        self.threshold = int(threshold)
+        self.cls = ""
+        self.count = 0
+
+    def note_success(self):
+        self.cls = ""
+        self.count = 0
+
+    def note_refusal(self, cls: str) -> bool:
+        """Record one refusal; True when the threshold is reached."""
+        if not cls:
+            return False
+        if cls == self.cls:
+            self.count += 1
+        else:
+            self.cls = cls
+            self.count = 1
+        return self.count >= self.threshold
+
+
+# In-memory twin of CURSOR_FILE. Within one process it is always the NEWER
+# position (it moves before the file write), so _read_cursor prefers it; the
+# file matters only at process start. What this buys is "never re-COUNTED":
+# with the file unwritable the process keeps reading from the twin, and any
+# tick whose cursor could not be saved is clean, so a line can never add a
+# second count. Lost on restart — then /run's copy (if any) or the --since
+# window takes over.
+_MEM_CURSOR = {"cursor": ""}
+# The `--since` window used whenever no cursor is at hand. It is spent by a
+# read that yields a cursor and RE-ARMED by every read that does not (a failed
+# journalctl, an empty or footerless answer, a dropped stale cursor) — so
+# journalctl is invoked on every tick for the life of the process, never
+# once. Recount-safe: every re-arm follows a tick that returned "" and reset
+# the counter (review 1.0.6.26, round 10).
+_SINCE_FROM = {"at": AGENT_STARTED_AT}
+_WARNED = set()
+
+
+def _warn_once(key: str, msg: str, *args) -> None:
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    log.warning(msg, *args)
+
+
+def _read_cursor(path: str = None) -> str:
+    if _MEM_CURSOR["cursor"]:
+        return _MEM_CURSOR["cursor"]
     try:
-        r = subprocess.run(["systemctl", "show", "-p", "ActiveEnterTimestamp",
-                            "--value", unit],
-                           capture_output=True, text=True, timeout=10)
-    except Exception:
+        with open(path or CURSOR_FILE) as f:
+            return f.read().strip()
+    except OSError:
         return ""
-    if r.returncode != 0:
-        return ""
-    v = (r.stdout or "").strip()
-    # systemctl отдаёт "n/a" для незапущенного юнита. Грубая проверка на дату:
-    # нужны цифра, дефис и двоеточие — иначе это не timestamp.
-    if (not v or v == "n/a" or not any(ch.isdigit() for ch in v)
-            or "-" not in v or ":" not in v):
-        return ""
-    return v
+
+
+def _save_cursor(cursor: str, path: str = None) -> bool:
+    """Persist the cursor; the in-memory twin moves first. False on a failed
+    write — the caller then treats the tick as CLEAN (B1): inability to save
+    the cursor must never turn into re-reading the same window."""
+    _MEM_CURSOR["cursor"] = cursor
+    p = path or CURSOR_FILE
+    try:
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(cursor)
+        os.replace(tmp, p)
+        return True
+    except OSError as e:
+        _warn_once("save:" + p, "journal cursor not saved (%s): %s — the tick counts as "
+                   "clean; reads continue from the in-memory position, so nothing "
+                   "is counted twice", p, e)
+        return False
+
+
+def _drop_cursor(path: str = None) -> None:
+    """A cursor journalctl refuses (its entry rotated out): drop it and re-arm
+    the one-shot window from NOW — nothing already counted can be re-read."""
+    _MEM_CURSOR["cursor"] = ""
+    try:
+        os.unlink(path or CURSOR_FILE)
+    except OSError:
+        pass
+    _SINCE_FROM["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def frpc_reject_reason(unit: str = FRPC_UNIT) -> str:
-    """Причина серверного отказа из журнала frpc, или "" если её там нет.
+    """Причина серверного отказа из НОВЫХ строк журнала frpc, или "".
 
-    Окно чтения ОГРАНИЧЕНО текущим запуском frpc (--since). Без этого маркер от
-    прошлого отказа переживал перепривязку: после честного revoke → re-pair три
-    неудачных цикла watchdog по любой причине (сеть, рестарт frps) вычитывали
-    старое "device revoked" и глушили исправное устройство.
+    Журнал читается по КУРСОРУ: `--after-cursor <последняя прочитанная строка>`
+    (`--show-cursor` даёт новый курсор — он сохраняется в CURSOR_FILE и в
+    памяти), а в самый первый раз — `--since <старт агента>`. Каждая строка
+    отказа видна ровно один раз; такт без НОВЫХ строк отказа — успех.
+
+    FAIL-CLOSED (ревью 1.0.6.26, B1 второго круга): любая невозможность
+    получить или сохранить курсор означает «новых отказов нет» — такт чистый.
+    Ответ journalctl без строки `-- cursor:` — чистый такт. Не сохранившийся
+    курсор — чистый такт, следующее чтение идёт от позиции в памяти.
+    НО журнал читается на КАЖДОМ такте (ревью, круг 10): окно `--since`
+    тратится только чтением, которое вернуло курсор, а каждый выход без
+    курсора (ошибка journalctl, пустой или без-футерный ответ, сброшенный
+    устаревший курсор) взводит окно заново — иначе одно неудачное первое
+    чтение глушило сигнал отвязки до перезапуска процесса. Повторного счёта
+    это не даёт: каждому повторному взведению предшествует такт, вернувший ""
+    и сбросивший счётчик. Лимита `-n` нет: на пути курсора окно и так
+    ограничено, а на пути `--since` каждое чтение всё равно чистое, пока не
+    появится курсор.
 
     Честность важнее удобства: «отозвано» показываем ТОЛЬКО когда сервер прямо
-    это сказал в ЭТОМ запуске. Недоступное облако, севшая сеть или упавший
-    frpc — это не отзыв, и выдавать их за отзыв нельзя."""
-    since = _unit_active_since(unit) or JOURNAL_FALLBACK_SINCE
+    это сказал. Недоступное облако, севшая сеть, упавший frpc или нечитаемый
+    журнал — это не отказ ("" — как «нет новых отказов»; в сторону стирания
+    привязки это никогда не ошибается)."""
+    cursor = _read_cursor()
+    since = ""
+    if cursor:
+        args = ["journalctl", "-u", unit, "--after-cursor", cursor,
+                "--show-cursor", "--no-pager"]
+    else:
+        since = _SINCE_FROM["at"] or time.strftime("%Y-%m-%d %H:%M:%S")
+        args = ["journalctl", "-u", unit, "--since", since,
+                "--show-cursor", "--no-pager"]
+        # Spent by THIS read; every exit below that yields no cursor puts it
+        # back, so the next tick reads again (same window — nothing in it was
+        # counted, so nothing can be counted twice).
+        _SINCE_FROM["at"] = ""
+
+    def _rearm():
+        if not cursor:
+            _SINCE_FROM["at"] = since
+
     try:
-        r = subprocess.run(["journalctl", "-u", unit, "--since", since,
-                            "-n", "80", "--no-pager"],
-                           capture_output=True, text=True, timeout=10)
+        r = subprocess.run(args, capture_output=True, text=True, timeout=10)
     except Exception as e:
         log.debug("journalctl unavailable: %s", e)
+        _rearm()
         return ""
     if r.returncode != 0:
+        if cursor:
+            # A stale cursor fails on every tick and would silently kill the
+            # only detach signal (L8): drop it, read from NOW next time.
+            log.warning("journalctl refused cursor %s (rc=%d) — dropping it, "
+                        "next read starts from now", cursor, r.returncode)
+            _drop_cursor()
+        else:
+            log.warning("journalctl failed (rc=%d): %s", r.returncode,
+                        (r.stderr or "").strip()[:200])
+            _rearm()
         return ""
-    text = (r.stdout or "").lower()
+    body = []
+    new_cursor = ""
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("-- cursor:"):
+            new_cursor = line.split(":", 1)[1].strip()
+        else:
+            body.append(line)
+    if not new_cursor:
+        # An empty window (a connected, quiet frpc — the ordinary case on an
+        # agent restart) or a footerless answer: clean tick, read again next.
+        if body:
+            _warn_once("nofooter", "journalctl returned %d line(s) without a cursor "
+                       "footer — counted as clean", len(body))
+        _rearm()
+        return ""
+    if not _save_cursor(new_cursor):
+        return ""
+    text = "\n".join(body).lower()
+    # The LATEST refusal line wins when several new lines carry markers.
+    found, at = "", -1
     for marker in FRPC_REJECT_MARKERS:
-        if marker in text:
-            return marker
-    return ""
+        pos = text.rfind(marker)
+        if pos > at:
+            found, at = marker, pos
+    return found
 
 
-def revoked_standby(cfg, device_id: str, reason: str) -> str:
-    """Отказ сервера подтверждён: гасим туннель и встаём в standby.
+# The cloud binding, enumerated. The stand-down may erase THESE and nothing
+# else — the identity files the cloud issued at enrollment. api_url /
+# server_host stay (configuration, not identity — the same rule the manual
+# «Облако — отвязать» step in docs/deployment.md §3 follows), and so do the
+# serial, the heartbeat interval and everything outside /etc/sa02m-cloud.
+def binding_files():
+    return [DEVICE_SECRET_FILE, FRPC_CONFIG]
 
-    НЕ выходим из процесса. `Restart=on-failure` в юните не перезапускает чистый
-    exit(0), поэтому прежний `return` из main() означал: устройство заглушено
-    навсегда, пока человек не приедет и не зайдёт по SSH. Вместо этого:
-      - раз в REVOKED_RETRY_S пере-проверяем, не сняли ли отзыв в облаке;
-      - в любой момент реагируем на запрос привязки из веб-UI устройства.
-    Оба пути восстанавливают связь без выезда на объект."""
-    log.error("cloud refused this device (%s) — tunnel stopped, standing by", reason)
-    _systemctl("stop", FRPC_UNIT)
-    _systemctl("disable", FRPC_UNIT)
+
+def wipe_cloud_binding() -> dict:
+    """Delete the identity files. Idempotent; a missing file is reported as
+    `absent`, never hidden; any other OSError is logged and RAISED — a binding
+    that could not be erased must not read as erased."""
+    removed, absent = [], []
+    for path in binding_files():
+        name = os.path.basename(path)
+        try:
+            os.unlink(path)
+            removed.append(name)
+        except FileNotFoundError:
+            absent.append(name)
+        except OSError as e:
+            # A partial wipe: say what DID go before raising, or that record
+            # is lost with the exception.
+            log.error("stand-down: could not remove %s: %s (already removed: %s; absent: %s)",
+                      path, e, ", ".join(removed) or "nothing", ", ".join(absent) or "nothing")
+            raise
+    return {"removed": removed, "absent": absent}
+
+
+def _status_state() -> str:
+    try:
+        with open(STATUS_FILE) as f:
+            return str(json.load(f).get("state") or "")
+    except Exception:
+        return ""
+
+
+def stand_down(cfg, config_path: str, cls: str, reason: str, systemctl=None) -> str:
+    """The cloud refused this board N times for one reason: de-enroll locally.
+
+    The SAME routine the manual «Отвязать» performs (docs/deployment.md §3):
+    stop the tunnel and the heartbeats, `enrolled = false`, clear `device_id`,
+    delete the device secret and frpc.toml, keep api_url / server_host, and
+    leave a durable `unlinked_at` + reason in agent.conf. The status file gets
+    `revoked` (owner revoked) or `unlinked` (detached / unknown) with the
+    reason and the time, so the «Облако» card can say so.
+
+    Returns "repair": the caller drops to the standby loop, which polls the
+    web UI's pairing trigger — «Привязать заново» is one button press away and
+    needs no SSH. The process never exits (Restart=on-failure would not bring
+    it back).
+    """
+    run = systemctl or _systemctl
+    log.error("cloud refused this device (%s: %s) — standing down: tunnel stopped, "
+              "binding erased, waiting for a new pairing", cls, reason)
+    run("stop", FRPC_UNIT)
+    run("disable", FRPC_UNIT)
+    try:
+        wiped = wipe_cloud_binding()
+    except OSError as e:
+        # The binding is STILL on disk: say so — never «Подключено», never
+        # «отвязано». main() retries the wipe from this state (low 2).
+        PENDING_STAND_DOWN.update({"cls": cls, "reason": reason})
+        log.error("stand-down: binding NOT erased: %s", e)
+        _write_status("unlink_failed", reason="wipe_failed", detail=str(e), reason_class=cls,
+                      refusal=reason, serial=cfg["device"]["serial"])
+        return "unlink_failed"
+    return _finish_stand_down(cfg, config_path, cls, reason, wiped)
+
+
+# (cls, reason) of a stand-down whose wipe failed — main() finishes it once the
+# wipe succeeds. Module-level because the failure crosses the loop boundary.
+PENDING_STAND_DOWN = {"cls": "", "reason": ""}
+
+
+def _stand_down_state(cls: str) -> str:
+    return "revoked" if cls == REFUSAL_CLASS_REVOKED else "unlinked"
+
+
+def _finish_stand_down(cfg, config_path: str, cls: str, reason: str, wiped: dict) -> str:
+    """Bookkeeping after a SUCCESSFUL wipe: config, durable marker, status."""
+    state = _stand_down_state(cls)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    cfg["cloud"]["enrolled"] = "false"
+    cfg["cloud"]["device_id"] = ""
+    cfg["cloud"]["unlinked_at"] = stamp
+    cfg["cloud"]["unlinked_reason"] = cls
+    cfg["cloud"]["unlinked_reason_text"] = reason
+    save_config(config_path, cfg)
+    _write_status(state, reason=reason, reason_class=cls, unlinked_at=stamp,
+                  serial=cfg["device"]["serial"])
+    log.warning("cloud binding erased: removed %s; already absent %s",
+                ", ".join(wiped["removed"]) or "nothing",
+                ", ".join(wiped["absent"]) or "nothing")
+    return "repair"
+
+
+def retry_wipe_loop(cfg, config_path: str, sleep=time.sleep) -> str:
+    """After a failed wipe: keep the error state on the card and retry the
+    wipe every WATCHDOG_S until it succeeds, then finish the stand-down."""
+    cls, reason = PENDING_STAND_DOWN["cls"], PENDING_STAND_DOWN["reason"]
     while True:
-        _write_status("revoked", device_id=device_id, reason=reason,
-                      serial=cfg["device"]["serial"])
-        waited = 0
-        while waited < REVOKED_RETRY_S:
-            # Пользователь нажал «подключить» в веб-UI — сразу в привязку.
-            if os.path.exists(PAIR_REQUEST_FILE):
-                log.info("pairing requested from the web UI — leaving stand-down")
-                return "repair"
-            time.sleep(STANDBY_POLL_S)
-            waited += STANDBY_POLL_S
-        log.info("re-testing the tunnel after stand-down (%s)", reason)
-        if ensure_frpc_running() != "running":
-            _systemctl("stop", FRPC_UNIT)
+        sleep(WATCHDOG_S)
+        try:
+            wiped = wipe_cloud_binding()
+        except OSError as e:
+            log.error("stand-down retry: binding still NOT erased: %s", e)
+            _write_status("unlink_failed", reason="wipe_failed", detail=str(e), reason_class=cls,
+                          refusal=reason, serial=cfg["device"]["serial"])
             continue
-        # frpc — Type=simple: is-active отвечает 0 сразу после спавна, ДО первой
-        # попытки логина, и журнал в этот момент пуст. Объявлять восстановление
-        # здесь значило бы мигать active/revoked каждые REVOKED_RETRY_S на
-        # устройстве, которое облако по-прежнему отвергает. Даём frpc время
-        # реально сходить на сервер и перечитываем — юнит должен ВЫЖИТЬ и журнал
-        # остаться чистым.
-        time.sleep(RECOVERY_SETTLE_S)
-        if _systemctl("is-active", "--quiet", FRPC_UNIT) == 0 and not frpc_reject_reason():
-            log.info("cloud accepts this device again — resuming normal operation")
-            return "recovered"
-        log.info("still refused after settle — staying in stand-down")
-        _systemctl("stop", FRPC_UNIT)
+        PENDING_STAND_DOWN.update({"cls": "", "reason": ""})
+        return _finish_stand_down(cfg, config_path, cls, reason, wiped)
+
+
+def restore_stand_down_status(cfg) -> bool:
+    """On start in the stand-down state rebuild the status file from the
+    durable marker in agent.conf (/run is tmpfs — after a reboot the card
+    would otherwise show a bare «Не подключено» for a revoked board)."""
+    if cfg["cloud"].getboolean("enrolled", fallback=False):
+        return False
+    stamp = cfg["cloud"].get("unlinked_at", "").strip()
+    if not stamp:
+        return False
+    cls = cfg["cloud"].get("unlinked_reason", "").strip() or REFUSAL_CLASS_UNKNOWN
+    reason = cfg["cloud"].get("unlinked_reason_text", "").strip() or cls
+    _write_status(_stand_down_state(cls), reason=reason, reason_class=cls,
+                  unlinked_at=stamp, serial=cfg["device"]["serial"], restored=True)
+    return True
 
 
 # ── Telemetry (heartbeat filler) ──────────────────────────────────────────────
@@ -600,6 +953,13 @@ def finalize_enrollment(resp: dict, cfg: configparser.ConfigParser,
             log.error("cannot store device secret: %s", e)
     cfg["cloud"]["enrolled"]  = "true"
     cfg["cloud"]["device_id"] = device_id
+    # A new identity supersedes any stand-down marker (docs/contracts/
+    # image-identity-reset.md §6 lists these three keys as identity).
+    for key in STAND_DOWN_MARKER_KEYS:
+        cfg.remove_option("cloud", key)
+    # The frpc journal cursor is a per-enrollment read position: a new
+    # identity starts reading from now (docs/contracts/image-identity-reset.md §6).
+    _drop_cursor()
     hb = resp.get("heartbeat_interval_s")
     if hb:
         cfg["cloud"]["heartbeat_interval"] = str(int(hb))
@@ -632,7 +992,11 @@ def run_claim_flow(cfg: configparser.ConfigParser, config_path: str) -> bool:
     })
     if status == 409:
         log.warning("device already claimed in the cloud — detach it first")
-        _write_status("already_claimed", device_id=device_id, serial=serial)
+        # A reason the card can explain without the journal: the cloud still
+        # lists this board under an owner (revoked, or simply not detached).
+        _write_status("already_claimed", device_id=device_id, serial=serial,
+                      reason="already claimed", reason_class="already_claimed",
+                      since=int(time.time()))
         return False
     if status != 200 or not resp or not resp.get("claim_code"):
         log.warning("claim request failed (HTTP %s)", status)
@@ -696,7 +1060,10 @@ def run_token_flow(token: str, cfg: configparser.ConfigParser,
 def bootstrap_loop(cfg: configparser.ConfigParser, config_path: str) -> bool:
     log.info("Standby: waiting for pairing (web UI Cloud tab) or an enroll "
              "token at %s", ACTIVATION_TOKEN_FILE)
-    _write_status("standby", serial=get_serial())
+    # After a stand-down the status already says revoked/unlinked with its
+    # reason — the card must keep showing that, not a bare «Не подключено».
+    if _status_state() not in ("revoked", "unlinked"):
+        _write_status("standby", serial=get_serial())
     while True:
         if os.path.exists(PAIR_REQUEST_FILE):
             if run_claim_flow(cfg, config_path):
@@ -725,9 +1092,10 @@ def bootstrap_loop(cfg: configparser.ConfigParser, config_path: str) -> bool:
 
 
 # ── Active loop — frpc watchdog + send-only heartbeat ─────────────────────────
-def active_loop(cfg: configparser.ConfigParser) -> str:
-    """Основной цикл. Возвращает "repair" (нужна повторная привязка) или
-    "recovered" (отказ снят) — оба через revoked_standby; иначе не возвращается."""
+def active_loop(cfg: configparser.ConfigParser, config_path: str = DEFAULT_CONFIG) -> str:
+    """Основной цикл. Возвращает "repair" после stand-down (облако отказало
+    N раз подряд по одной причине — привязка стёрта, нужна новая); иначе не
+    возвращается."""
     api_url    = cfg["cloud"]["api_url"].rstrip("/")
     device_id  = get_device_id(cfg)
     h_interval = int(cfg["cloud"]["heartbeat_interval"])
@@ -739,7 +1107,8 @@ def active_loop(cfg: configparser.ConfigParser) -> str:
     last_watchdog  = 0.0
     tunnel         = ensure_frpc_running()
     cpu_snap       = None
-    fail_cycles    = 0
+    hb_refusals    = RefusalTracker()
+    frps_refusals  = RefusalTracker()
     device_secret  = load_device_secret()
     log.info("per-device identity: %s",
              "present" if device_secret else "absent (legacy grace path)")
@@ -750,18 +1119,21 @@ def active_loop(cfg: configparser.ConfigParser) -> str:
         if now - last_watchdog > WATCHDOG_S:
             tunnel = ensure_frpc_running()
             last_watchdog = now
-            if tunnel == "running":
-                fail_cycles = 0
+            # The journal is read on EVERY tick, not only when the unit is
+            # down: frps refuses the proxies but the login succeeds, so the
+            # unit stays active while the board is already detached
+            # (`subdomain not enrolled`). Cursor-based: only lines NEW since
+            # the last tick, each counted once; no new refusal line == success,
+            # and so is any tick on which the cursor could not be obtained or
+            # saved (fail-closed — see frpc_reject_reason).
+            marker = frpc_reject_reason()
+            if marker:
+                cls = classify_frps_marker(marker)
+                if cls and frps_refusals.note_refusal(cls):
+                    # Контракт §4: повторный отказ == снятие с учёта.
+                    return stand_down(cfg, config_path, cls, marker)
             else:
-                fail_cycles += 1
-                # Туннель не поднимается подряд — выясняем, отказ ли это сервера.
-                if fail_cycles >= FRPC_FAIL_CYCLES:
-                    reason = frpc_reject_reason()
-                    if reason:
-                        # Контракт §4: повторный отказ в логине == снятие с учёта.
-                        # Перестаём звонить (иначе бесконечный цикл рестартов), но
-                        # процесс НЕ завершаем — standby умеет восстановиться сам.
-                        return revoked_standby(cfg, device_id, reason)
+                frps_refusals.note_success()
 
         if now - last_heartbeat > h_interval:
             telemetry, cpu_snap = collect_telemetry(cpu_snap)
@@ -778,8 +1150,17 @@ def active_loop(cfg: configparser.ConfigParser) -> str:
             if device_secret:
                 payload["device_secret"] = device_secret
             # Send-only by design: the response carries no commands (F1
-            # removed cloud-side too); nothing here interprets it.
+            # removed cloud-side too); nothing here interprets it. The ONE bit
+            # the board may learn is a refusal — (status, error) of a non-200,
+            # left on the side channel by api_post, never a 200 body.
             api_post(f"{api_url}/heartbeat", payload)
+            verdict = heartbeat_refusal()
+            if verdict["status"] == 200:
+                hb_refusals.note_success()
+            else:
+                cls = classify_refusal(verdict["status"], verdict["error"])
+                if cls and hb_refusals.note_refusal(cls):
+                    return stand_down(cfg, config_path, cls, verdict["error"] or "")
             _write_status("active", device_id=device_id, tunnel=tunnel,
                           serial=cfg["device"]["serial"],
                           identity="present" if device_secret else "absent",
@@ -802,12 +1183,21 @@ def main():
     # standby -> восстановление или повторная привязка. Процесс не завершается
     # сам: юнит имеет Restart=on-failure, который чистый выход НЕ перезапускает,
     # поэтому любой выход отсюда означал бы «устройство молчит до приезда людей».
+    # A board that stood down before this (re)boot: /run is empty, but
+    # agent.conf carries the durable marker — put the reason back on the card.
+    restore_stand_down_status(cfg)
+
     while True:
         if not cfg["cloud"].getboolean("enrolled"):
             bootstrap_loop(cfg, args.config)
             cfg = load_config(args.config)
-        if active_loop(cfg) == "repair":
-            cfg["cloud"]["enrolled"] = "false"   # обратно в привязку
+        rc = active_loop(cfg, args.config)
+        if rc == "unlink_failed":
+            rc = retry_wipe_loop(cfg, args.config)
+        if rc == "repair":
+            # stand_down already wrote enrolled=false + the wiped identity to
+            # disk — reload so the standby loop runs on what is on disk.
+            cfg = load_config(args.config)
 
 
 if __name__ == "__main__":

@@ -137,9 +137,11 @@ def test_no_wireguard_remnants():
 
 
 def test_heartbeat_response_not_interpreted():
-    # Send-only: the active loop must not read fields out of the heartbeat
-    # response (beyond discarding it). Guard: no assignment from the
-    # heartbeat api_post and no .get() chained on it.
+    # Send-only: the heartbeat call site must not capture api_post's result.
+    # The ONLY thing the agent learns from a heartbeat is the refusal reason
+    # (status + `error` of a NON-200), left on a side channel INSIDE api_post
+    # (tests/test_revoke_standdown.py pins that a 200 body is never read).
+    # Guard: no assignment from the heartbeat api_post and no .get() chained.
     import re
     m = re.search(r"(\w+\s*=\s*)?api_post\(f?\"?\{?api_url\}?/heartbeat", AGENT_SOURCE)
     assert m, "heartbeat call not found"

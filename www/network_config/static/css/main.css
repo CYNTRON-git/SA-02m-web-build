@@ -2241,6 +2241,10 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 /* .btn sets display:inline-flex, which outranks the UA [hidden] rule — restore
    it so the offline gate can hide the pair button (JS sets its `hidden`). */
 .system-manage-cloud-card #cloud-btn-pair[hidden] { display: none !important; }
+/* .web-upd-meta > div is display:grid, which outranks the UA [hidden] rule —
+   the «Туннель» / «Последний отчёт» / «Серийный №» rows cloud.js hides via
+   `hidden` stayed visible with their last value (bench 1.135, 2026-09-03). */
+.system-manage-cloud-card .cloud-meta > div[hidden] { display: none !important; }
 .system-manage-cloud-card .cloud-agent-ctrl .btn {
   width: 100%;
   min-height: 38px;

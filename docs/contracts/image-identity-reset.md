@@ -171,8 +171,17 @@ firstrun этой конкретной платы. Очистка Алисы н�
 `stream-after-cleanup.sh` (`wipe_cloud_enrollment`), `patch-firstboot-image.sh`,
 `autorun.sh`, `autorun-fel.sh`. Clear-list облака: `device_secret`, `frpc.toml`
 (+ `.bak*`), `pair_request`, `activation_token`, `/run/sa02m-cloud-status.json`,
-и `agent.conf` приводится к `enrolled = false` с пустым `device_id`; адреса
-`api_url` / `server_host` — конфигурация, остаются.
+`/run/sa02m-cloud-frpc.cursor` (позиция чтения журнала frpc — снимается
+`reset-cloud-enrollment.sh` и свежей привязкой; это tmpfs, в образ не попадает,
+поэтому площадки образа его не трогают), и `agent.conf` приводится к `enrolled = false`
+с пустым `device_id` **и без ключей `unlinked_at` / `unlinked_reason` /
+`unlinked_reason_text`** (маркер stand-down, 1.0.6.26 — идентичность: агент
+восстанавливает из него «Доступ отозван» на карточке, и клон унёс бы отзыв
+донора; тот же ключ стирает и свежая привязка, `finalize_enrollment`); адреса
+`api_url` / `server_host` — конфигурация, остаются. Площадки, переписывающие
+`agent.conf` целиком, ключ не переносят по построению; `reset-cloud-enrollment.sh`
+(сливающая ветка) удаляет его явно — тест
+`opt/sa02m-cloud-agent/tests/test_revoke_standdown.py::test_reset_script_drops_the_stand_down_marker`.
 
 Пин A8 держит все пять облачных площадок на месте: правка по Алисе не имеет
 права незаметно повредить уже отгруженное исправление.

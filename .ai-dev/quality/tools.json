@@ -61,7 +61,7 @@
     },
     {
       "id": "py-unit-cloud",
-      "checks": "Functional regression for the cloud agent — the WHOLE tests dir via pytest (test_render_frpc.py + test_agent.py: the send-only / no-command-channel / no-wireguard F1-removal guards, which are pytest-style and were previously UNGATED — the old unittest `-p test_render*.py` row silently skipped them). 58 tests via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (pytest is now a CI dep — web-quality.yml). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "checks": "Functional regression for the cloud agent — the WHOLE tests dir via pytest: test_render_frpc.py (frpc.toml rendering, identity, the journal reader and stand-down transitions), test_agent.py (the send-only / no-command-channel / no-wireguard F1-removal guards, previously UNGATED — the old unittest `-p test_render*.py` row silently skipped them) and test_revoke_standdown.py (the revoke stand-down: classifier, tracker, cursor reader, wipe, restore, re-pairing). The test count grows with the suite and is deliberately not pinned here. Runs via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (pytest is a CI dep — web-quality.yml). Non-vacuous: a collection error or a failing test FAILS the run.",
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-cloud opt/sa02m-cloud-agent",
       "beat": "build",

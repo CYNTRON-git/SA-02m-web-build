@@ -18,7 +18,8 @@ rm -f \
   "$CLOUD_DIR/frpc.toml.bak"* \
   "$CLOUD_DIR/pair_request" \
   "$CLOUD_DIR/activation_token" \
-  /run/sa02m-cloud-status.json
+  /run/sa02m-cloud-status.json \
+  /run/sa02m-cloud-frpc.cursor
 
 # Keep agent.conf skeleton but clear enrollment identity.
 if [ -f "$CFG" ]; then
@@ -34,8 +35,11 @@ cfg["cloud"]["server_host"] = cfg["cloud"].get("server_host", "cloud.cyntron.ru"
 cfg["cloud"]["enrolled"] = "false"
 cfg["cloud"]["device_id"] = ""
 cfg["cloud"]["heartbeat_interval"] = cfg["cloud"].get("heartbeat_interval", "30") or "30"
-# drop token leftovers
-for opt in ("device_token", "metrics_interval"):
+# drop token leftovers AND the stand-down marker (unlinked_* — identity, not
+# configuration: a clone must not boot on the donor's «Доступ отозван»;
+# docs/contracts/image-identity-reset.md §6)
+for opt in ("device_token", "metrics_interval",
+            "unlinked_at", "unlinked_reason", "unlinked_reason_text"):
     if cfg.has_option("cloud", opt):
         cfg.remove_option("cloud", opt)
 if cfg.has_section("wireguard"):

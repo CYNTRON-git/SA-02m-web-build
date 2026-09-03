@@ -20,6 +20,10 @@ worklist collapsed into one home).
   Known trade to design for: a slow device would briefly report the previous value after
   a successful command, so the optimistic write exists for a reason and its removal
   needs a real pass (how long to wait, what to report meanwhile) rather than a patch.
+  Direction agreed with the cloud side (2026-09-02): while a command is pending the device
+  reports the PREVIOUS bus value, never the commanded one, in `query`/`device_state`; the cloud's
+  three-condition confirm (`live_ts` newer than the command AND live value == target AND current
+  value == target) then works without lying, and a module that reverts simply never confirms.
 - [OPEN] 2026-08-27 **[MED, NOT OURS — route to the MR-02m project] The 16DO module at
   COM4 addr=11 drops its own output seconds after it is set.** Bench 1.135, verified
   from both sides: the command reaches the bus, the bridge writes it
@@ -163,6 +167,10 @@ worklist collapsed into one home).
   characters + a length cap are genuinely useful), widen the printable set,
   state the rule in the field help AND the error text, and pin a test with a
   punctuation-bearing name so a future narrowing is caught.
+  Cloud-side note (2026-09-02, its `docs/yandex-smart-home-rules.md` §4.1-4.3): the API sets no
+  limit; the «Дом с Алисой» web INPUT field is stricter (25-char counter, «без пунктуации и
+  спецсимволов»); so the field help also says: a name meant to survive auto-add in the app is
+  best kept punctuation-free and ≤ 25 chars — that limit lives in Yandex's UI, not its API.
 
 - [OPEN] 2026-08-26 **[HIGH] B2 honesty gap: the committed default password `cyntron`
   is a threat-model omission (audit H1).** The constant lives in `install.sh:28`,
@@ -905,3 +913,36 @@ worklist collapsed into one home).
   `docs/contracts/alice-mqtt-mapping.md` (device side) once the bench confirms the timings.
   Notes from the same review, not defects: a dead defensive branch in `state_sender.py`
   (`_split_fast_lane` fallback) and the one literal exception to "a snapshot never holds".
+- [OPEN] 2026-09-02 **[MED, cross-repo with the cloud] The controller's `action` result shape
+  does not match Yandex.** The client answers `alice_devices_action` with `status`/`error_code`
+  one level ABOVE `state.action_result`; the platform reads the result from exactly two
+  alternative places — `capabilities[].state.action_result` or `action_result` beside `id` — with
+  `status` = `DONE|ERROR` and `error_code`/`error_message` INSIDE `action_result`. Today the
+  cloud gateway normalises the shape (a load-bearing fix-up); the device should emit the Yandex
+  shape itself so the gateway's normalisation becomes a safety net. Homes of the expected shape
+  (cloud repo): `docs/yandex-smart-home-rules.md` §1 (platform requirement, source-linked,
+  verified 2026-08-27) and `docs/contracts/alice-gateway.md` «`action` result shape (gateway
+  guarantee)» (what the controller sends today and how the gateway rewrites it). Touches
+  `client/sio_handlers.py` / `device_registry.apply_actions` — schedule after the 1.0.6.26
+  revoke stand-down round, together with the optimistic-cache item above.
+- [OPEN] 2026-09-03 **[LOW] `py-unit-devices` is a clock-of-day flake: `tests/test_device_events.py::
+  test_voltage_jump_and_current_spike` fails in the first hour after local midnight.** The test
+  seeds its baseline at `now − 3600 s` (yesterday) while `detect_ce_events` averages over the
+  CALENDAR day (`_day_avg_current` → `_day_start_ts(ts)`), so between 00:00 and 01:00 local
+  there is no same-day baseline and no `current_spike` fires. Reproduced 3/3 at 00:23 on
+  2026-09-03 with `opt/sa02m-devices` untouched (last change b9f3ad4); green at any other hour.
+  Fix: seed the baseline inside the same calendar day (or inject the clock) — untouched code,
+  out of the 1.0.6.26 fence. Until then a midnight-hour `build` run is a false red.
+- [OPEN] 2026-09-03 **[LOW] The «Облако» card's CSS/JS half has no in-tree test.** The 1.0.6.26
+  revoke stand-down landed its agent-side behaviour under `opt/sa02m-cloud-agent/tests`, but the
+  renderer rules that fixed the bench leftover (`cloud.js` live-only rows, the
+  `.cloud-meta > div[hidden]` override in `main.css`, the 409 reason line) are pinned only by a
+  scratchpad Playwright smoke that is not committed. A future CSS change can silently re-break
+  the `[hidden]` override. Graduate that smoke into `scripts/dev/` + a `js-unit`/`ui-layout`
+  row (the standing harness, `web-diagnostic-tools.md`), asserting per state that the
+  «Туннель»/«Последний отчёт» rows are absent after an `active` render. Found by the 1.0.6.26
+  review (device-revoke-standdown round 1); deliberately outside that PR. Sharpened by round 3
+  of that review: `ui-layout` cannot witness this card at all — its `pageSetup` drives only the
+  dashboard and Управление surfaces, never calls `cloudRenderStatus`, and stubs every CGI with
+  `{}`, so none of the stand-down states (`revoked`, `unlinked`, `already_claimed`,
+  `unlink_failed`) is rendered by any gate; a `review: 6/6` says nothing about them.

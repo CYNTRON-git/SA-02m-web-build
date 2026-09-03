@@ -20,6 +20,7 @@ import contextlib
 import importlib.util
 import os
 import re
+import tempfile
 import unittest
 
 AGENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -341,65 +342,41 @@ class RevocationHandlingTest(unittest.TestCase):
 
     Honesty rule: only a reason the SERVER actually stated counts as revocation.
     An unreachable cloud or a crashed frpc is not a revocation and must never be
-    reported as one."""
+    reported as one.
+
+    The reader is cursor-based and fail-closed (1.0.6.26): a journal answer
+    without a `-- cursor:` footer is a CLEAN tick by design, so the fake
+    journal here appends the footer whenever `--show-cursor` is requested;
+    the cursor home and the reader's one-shot window are reset per test so
+    no ambient /run state and no earlier test can decide a verdict."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        self._orig = (agent.CURSOR_FILE, dict(agent._SINCE_FROM), dict(agent._MEM_CURSOR))
+        agent.CURSOR_FILE = os.path.join(self._tmp, "frpc.cursor")
+        agent._SINCE_FROM["at"] = agent.AGENT_STARTED_AT
+        agent._MEM_CURSOR["cursor"] = ""
+        agent._WARNED.clear()
+
+    def tearDown(self):
+        agent.CURSOR_FILE = self._orig[0]
+        agent._SINCE_FROM.update(self._orig[1])
+        agent._MEM_CURSOR.update(self._orig[2])
 
     def _fake_run(self, stdout, returncode=0, calls=None):
-        class R(object):
-            pass
-        r = R()
-        r.stdout = stdout
-        r.returncode = returncode
-
         def run(args, **kw):
+            class R(object):
+                pass
+            r = R()
+            r.returncode = returncode
+            r.stderr = ""
+            r.stdout = stdout
+            if "--show-cursor" in args and stdout:
+                r.stdout = stdout.rstrip("\n") + "\n-- cursor: s=1\n"
             if calls is not None:
                 calls.append(args)
             return r
         return run
-
-    @contextlib.contextmanager
-    def _standby_env(self, unit_alive_after_settle, reject_reason,
-                     repair_after_cycles=None):
-        """Stub the host surface revoked_standby touches.
-
-        `unit_alive_after_settle` models the real distinction: `is-active` says 0
-        right after spawn, but a login-refused frpc is gone by the time the settle
-        elapses. `repair_after_cycles` makes the web-UI pairing file appear so a
-        non-recovering run still terminates."""
-        state = {"cycles": 0, "settled": False}
-
-        def fake_systemctl(*args, **kw):
-            if args and args[0] == "is-active":
-                # Only consulted after the settle, by design.
-                return 0 if unit_alive_after_settle else 1
-            return 0
-
-        def fake_sleep(_s):
-            state["settled"] = True
-
-        def fake_exists(path):
-            return (repair_after_cycles is not None
-                    and state["cycles"] >= repair_after_cycles
-                    and path == agent.PAIR_REQUEST_FILE)
-
-        def fake_ensure(*a, **kw):
-            state["cycles"] += 1
-            return "running"
-
-        orig = (agent._systemctl, agent._write_status, agent.os.path.exists,
-                agent.time.sleep, agent.ensure_frpc_running,
-                agent.frpc_reject_reason)
-        try:
-            agent._systemctl = fake_systemctl
-            agent._write_status = lambda *a, **kw: None
-            agent.os.path.exists = fake_exists
-            agent.time.sleep = fake_sleep
-            agent.ensure_frpc_running = fake_ensure
-            agent.frpc_reject_reason = lambda *a, **kw: reject_reason
-            yield state
-        finally:
-            (agent._systemctl, agent._write_status, agent.os.path.exists,
-             agent.time.sleep, agent.ensure_frpc_running,
-             agent.frpc_reject_reason) = orig
 
     def test_server_reject_reason_detected(self):
         orig = agent.subprocess.run
@@ -434,41 +411,39 @@ class RevocationHandlingTest(unittest.TestCase):
                 raise OSError("no journalctl")
             agent.subprocess.run = boom
             self.assertEqual(agent.frpc_reject_reason(), "")
-            agent.subprocess.run = self._fake_run("", returncode=1)
+            calls = []
+            agent.subprocess.run = self._fake_run("", returncode=1, calls=calls)
             self.assertEqual(agent.frpc_reject_reason(), "")
+            # Non-vacuous: the rc!=0 branch was really reached (the window
+            # is re-armed after the OSError, so the reader called journalctl).
+            self.assertEqual(len([c for c in calls if c and c[0] == "journalctl"]), 1)
         finally:
             agent.subprocess.run = orig
 
 
-    def test_journal_scan_is_time_bounded(self):
+    def test_journal_scan_is_bounded(self):
         # The stale-marker bug: an UNBOUNDED scan re-read a rejection from a
         # previous life, so a re-paired device stood itself down on the next
-        # network blip. Every journalctl read must carry --since.
+        # network blip. Every journalctl read must be bounded — by --since on
+        # the one-shot first read, by --after-cursor afterwards (1.0.6.26:
+        # the cursor reader). Never an open window. The cursor home is
+        # redirected so ambient /run state cannot decide the verdict.
         calls = []
         orig = agent.subprocess.run
         try:
             agent.subprocess.run = self._fake_run("nothing here", calls=calls)
-            agent.frpc_reject_reason()
+            agent.frpc_reject_reason()          # the one-shot --since read
+            agent.frpc_reject_reason()          # the steady-state --after-cursor read
         finally:
             agent.subprocess.run = orig
         journal = [a for a in calls if a and a[0] == "journalctl"]
-        self.assertTrue(journal, "journalctl was never called")
+        self.assertEqual(len(journal), 2, "expected one --since read and one cursor read")
+        self.assertIn("--since", journal[0])
+        self.assertIn("--after-cursor", journal[1])
         for args in journal:
-            self.assertIn("--since", args)
-            self.assertTrue(args[args.index("--since") + 1],
-                            "--since given an empty bound")
-
-    def test_unit_active_since_rejects_implausible_values(self):
-        orig = agent.subprocess.run
-        try:
-            for junk in ("n/a", "", "not a timestamp"):
-                agent.subprocess.run = self._fake_run(junk)
-                self.assertEqual(agent._unit_active_since("x"), "")
-            agent.subprocess.run = self._fake_run("Fri 2026-07-18 13:00:00 MSK")
-            self.assertEqual(agent._unit_active_since("x"),
-                             "Fri 2026-07-18 13:00:00 MSK")
-        finally:
-            agent.subprocess.run = orig
+            bound = "--since" if "--since" in args else "--after-cursor"
+            self.assertIn(bound, args, "unbounded journal read")
+            self.assertTrue(args[args.index(bound) + 1], "%s given an empty bound" % bound)
 
     def test_stand_down_never_exits_the_process(self):
         # sa02m-cloud-agent.service is Restart=on-failure, which does NOT restart
@@ -479,78 +454,114 @@ class RevocationHandlingTest(unittest.TestCase):
                       "main() must not fall off the end after active_loop")
         self.assertNotIn("sys.exit", body)
 
-    def test_stand_down_recovers_on_a_pairing_request(self):
-        # The web-UI "connect" button must break the stand-down without SSH.
-        orig = (agent._systemctl, agent._write_status, agent.os.path.exists,
-                agent.time.sleep)
+    @contextlib.contextmanager
+    def _stand_down_env(self):
+        """Stub the host surface stand_down() touches: systemd, the identity
+        files, agent.conf and the status file. Returns a recorder."""
+        rec = {"systemctl": [], "wiped": 0, "saved": None, "status": []}
+
+        def fake_wipe():
+            rec["wiped"] += 1
+            return {"removed": ["device_secret", "frpc.toml"], "absent": []}
+
+        orig = (agent._systemctl, agent._write_status, agent.save_config,
+                agent.wipe_cloud_binding)
         try:
-            agent._systemctl = lambda *a, **kw: 0
-            agent._write_status = lambda *a, **kw: None
-            agent.os.path.exists = lambda p: p == agent.PAIR_REQUEST_FILE
-            agent.time.sleep = lambda s: None
-            cfg = agent.load_config("/nonexistent")
-            cfg["device"]["serial"] = "abc"
-            self.assertEqual(
-                agent.revoked_standby(cfg, "sa02m-abc", "device revoked"), "repair")
+            agent._systemctl = lambda *a, **kw: rec["systemctl"].append(a) or 0
+            agent._write_status = lambda state, **kw: rec["status"].append((state, kw))
+            agent.save_config = lambda p, cfg: rec.__setitem__("saved", (p, cfg))
+            agent.wipe_cloud_binding = fake_wipe
+            yield rec
         finally:
-            (agent._systemctl, agent._write_status, agent.os.path.exists,
-             agent.time.sleep) = orig
+            (agent._systemctl, agent._write_status, agent.save_config,
+             agent.wipe_cloud_binding) = orig
 
-    def test_stand_down_recovers_when_the_cloud_relents(self):
-        # No pairing request, but the re-test finds the tunnel up AND the unit
-        # still alive after the settle AND the journal clean -> resume on our
-        # own, no truck roll.
-        with self._standby_env(unit_alive_after_settle=True, reject_reason=""):
+    def test_stand_down_hands_back_to_standby_where_the_pairing_request_is_polled(self):
+        # The web-UI "connect" button must break the stand-down without SSH:
+        # stand_down returns "repair" at once, main() reloads the (now
+        # enrolled=false) config and drops into bootstrap_loop, which polls the
+        # pairing trigger every STANDBY_POLL_S — the button is live immediately.
+        with self._stand_down_env() as rec:
             cfg = agent.load_config("/nonexistent")
+            cfg["cloud"]["device_id"] = "sa02m-abc"
             cfg["device"]["serial"] = "abc"
             self.assertEqual(
-                agent.revoked_standby(cfg, "sa02m-abc", "device revoked"), "recovered")
+                agent.stand_down(cfg, "/nonexistent", "revoked", "device revoked"), "repair")
+        self.assertEqual(cfg["cloud"]["enrolled"], "false")
+        self.assertEqual(cfg["cloud"]["device_id"], "")
+        self.assertEqual(rec["saved"][0], "/nonexistent")
+        self.assertEqual(rec["wiped"], 1)
+        self.assertIn(("stop", agent.FRPC_UNIT), rec["systemctl"])
+        self.assertEqual(rec["status"][-1][0], "revoked")
+        self.assertEqual(rec["status"][-1][1]["reason"], "device revoked")
 
-    def test_stand_down_does_NOT_recover_while_the_cloud_still_refuses(self):
-        # The false-recovery shape: frpc is Type=simple, so is-active returns 0
-        # the instant it spawns — before it has tried to log in — and the journal
-        # window is briefly empty. Declaring "recovered" there makes the device
-        # flap active/revoked. The unit must SURVIVE the settle.
-        with self._standby_env(unit_alive_after_settle=False, reject_reason="",
-                               repair_after_cycles=2) as state:
+    def test_stand_down_does_NOT_auto_recover_it_waits_for_a_new_pairing(self):
+        # Decided behaviour (plan cloud-revoke-standdown, mirror of e15b44d):
+        # the identity is erased, so there is nothing to "recover" with. A
+        # tunnel that comes up and a clean journal must NOT re-enroll the
+        # board; only a claim (the pairing button) can. Replaces the retired
+        # periodic re-test of revoked_standby.
+        calls = {"claim": 0, "polls": 0}
+
+        def fake_sleep(_s):
+            calls["polls"] += 1
+            if calls["polls"] > 12:
+                raise KeyboardInterrupt      # unwind the deliberately endless standby
+
+        orig = (agent.run_claim_flow, agent.time.sleep, agent.os.path.exists,
+                agent.ensure_frpc_running, agent.frpc_reject_reason, agent._write_status)
+        try:
+            agent.run_claim_flow = lambda *a, **kw: calls.__setitem__("claim", calls["claim"] + 1) or True
+            agent.time.sleep = fake_sleep
+            agent.os.path.exists = lambda p: False      # no pairing trigger, no token
+            agent.ensure_frpc_running = lambda *a, **kw: "running"
+            agent.frpc_reject_reason = lambda *a, **kw: ""
+            agent._write_status = lambda *a, **kw: None
             cfg = agent.load_config("/nonexistent")
-            cfg["device"]["serial"] = "abc"
-            self.assertEqual(
-                agent.revoked_standby(cfg, "sa02m-abc", "device revoked"), "repair")
-        self.assertGreaterEqual(state["cycles"], 1,
-                                "the re-test never ran")
+            cfg["cloud"]["enrolled"] = "false"
+            try:
+                agent.bootstrap_loop(cfg, "/nonexistent")
+            except KeyboardInterrupt:
+                pass
+        finally:
+            (agent.run_claim_flow, agent.time.sleep, agent.os.path.exists,
+             agent.ensure_frpc_running, agent.frpc_reject_reason, agent._write_status) = orig
+        self.assertEqual(calls["claim"], 0, "re-enrolled without a pairing request")
+        self.assertEqual(cfg["cloud"]["enrolled"], "false")
 
-    def test_stand_down_does_NOT_recover_when_the_journal_still_shows_refusal(self):
-        with self._standby_env(unit_alive_after_settle=True,
-                               reject_reason="device revoked",
-                               repair_after_cycles=2) as state:
-            cfg = agent.load_config("/nonexistent")
-            cfg["device"]["serial"] = "abc"
-            self.assertEqual(
-                agent.revoked_standby(cfg, "sa02m-abc", "device revoked"), "repair")
-
+    def test_stand_down_state_follows_the_refusal_class(self):
+        # revoked → «Доступ отозван»; a detach or an undecidable identity
+        # refusal → «Отвязано»: the card must never show a revoke for a detach.
+        for cls, state in (("revoked", "revoked"), ("unlinked", "unlinked"), ("unknown", "unlinked")):
+            with self._stand_down_env() as rec:
+                cfg = agent.load_config("/nonexistent")
+                cfg["device"]["serial"] = "abc"
+                agent.stand_down(cfg, "/nonexistent", cls, "x")
+            self.assertEqual(rec["status"][-1][0], state, cls)
+            self.assertEqual(rec["status"][-1][1]["reason_class"], cls)
 
     def test_active_loop_reaches_stand_down_after_repeated_refusals(self):
         """The TRIGGER path, which nothing else covers.
 
-        `revoked_standby` and the journal parser are tested directly, but the
-        transition into them — FRPC_FAIL_CYCLES consecutive failed watchdog
-        samples, then a server-stated reason — is what makes the whole revocation
-        path fire at all. Drive it end to end."""
+        `stand_down` and the journal parser are tested directly, but the
+        transition into them — REFUSAL_STANDDOWN_COUNT consecutive watchdog
+        samples carrying the SAME server-stated reason — is what makes the whole
+        revocation path fire at all. Drive it end to end."""
         seen = {}
 
-        def fake_standby(cfg, device_id, reason):
+        def fake_standby(cfg, config_path, cls, reason, systemctl=None):
             seen["reason"] = reason
-            seen["device_id"] = device_id
+            seen["cls"] = cls
+            seen["device_id"] = cfg["cloud"]["device_id"]
             return "repair"
 
         orig = (agent.ensure_frpc_running, agent.frpc_reject_reason,
-                agent.revoked_standby, agent.time.sleep, agent._write_status,
+                agent.stand_down, agent.time.sleep, agent._write_status,
                 agent.load_device_secret, agent.api_post, agent.WATCHDOG_S)
         try:
             agent.ensure_frpc_running = lambda *a, **kw: "failed"
             agent.frpc_reject_reason = lambda *a, **kw: "device revoked"
-            agent.revoked_standby = fake_standby
+            agent.stand_down = fake_standby
             agent.time.sleep = lambda _s: None
             agent._write_status = lambda *a, **kw: None
             agent.load_device_secret = lambda *a, **kw: "s3cr3t"
@@ -560,12 +571,13 @@ class RevocationHandlingTest(unittest.TestCase):
             cfg["cloud"]["device_id"] = "sa02m-abc"
             cfg["cloud"]["heartbeat_interval"] = "999999"   # keep heartbeats out
             cfg["device"]["serial"] = "abc"
-            self.assertEqual(agent.active_loop(cfg), "repair")
+            self.assertEqual(agent.active_loop(cfg, "/nonexistent"), "repair")
         finally:
             (agent.ensure_frpc_running, agent.frpc_reject_reason,
-             agent.revoked_standby, agent.time.sleep, agent._write_status,
+             agent.stand_down, agent.time.sleep, agent._write_status,
              agent.load_device_secret, agent.api_post, agent.WATCHDOG_S) = orig
         self.assertEqual(seen.get("reason"), "device revoked")
+        self.assertEqual(seen.get("cls"), "revoked")
         self.assertEqual(seen.get("device_id"), "sa02m-abc")
 
     def test_active_loop_does_NOT_stand_down_without_a_server_reason(self):
@@ -584,12 +596,12 @@ class RevocationHandlingTest(unittest.TestCase):
             return "failed"
 
         orig = (agent.ensure_frpc_running, agent.frpc_reject_reason,
-                agent.revoked_standby, agent.time.sleep, agent._write_status,
+                agent.stand_down, agent.time.sleep, agent._write_status,
                 agent.load_device_secret, agent.api_post, agent.WATCHDOG_S)
         try:
             agent.ensure_frpc_running = fake_ensure
             agent.frpc_reject_reason = lambda *a, **kw: ""     # no server reason
-            agent.revoked_standby = fake_standby
+            agent.stand_down = fake_standby
             agent.time.sleep = lambda _s: None
             agent._write_status = lambda *a, **kw: None
             agent.load_device_secret = lambda *a, **kw: ""
@@ -605,7 +617,7 @@ class RevocationHandlingTest(unittest.TestCase):
                 pass
         finally:
             (agent.ensure_frpc_running, agent.frpc_reject_reason,
-             agent.revoked_standby, agent.time.sleep, agent._write_status,
+             agent.stand_down, agent.time.sleep, agent._write_status,
              agent.load_device_secret, agent.api_post, agent.WATCHDOG_S) = orig
         self.assertEqual(calls["standby"], 0,
                          "stood down on a plain tunnel failure — that is a truck roll")

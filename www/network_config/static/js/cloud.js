@@ -40,8 +40,49 @@ const CLOUD_STATE_MAP = {
   enroll_failed:   ['Ошибка активации', 'err'],
   activating:      ['Активация', 'warn'],
   activation_failed: ['Ошибка активации', 'err'],
+  // Stand-down after a confirmed cloud refusal (agent contract §4): the board
+  // erased its binding and waits for «Привязать заново».
+  revoked:         ['Доступ отозван', 'err'],
+  unlinked:        ['Отвязано в облаке', 'warn'],
+  // The cloud refused the board but its binding could NOT be erased (a wipe
+  // error) — the agent keeps retrying; never «Подключено», never «отвязано».
+  unlink_failed:   ['Ошибка отвязки', 'err'],
   unknown:         ['Нет данных', 'unk'],
 };
+
+// Reason class written by the agent's stand-down → human RU (DICT-translated).
+const CLOUD_REASON_MAP = {
+  revoked:  'доступ отозван владельцем',
+  unlinked: 'устройство отвязано в облаке',
+  unknown:  'облако не признаёт устройство',
+  // unlink_failed: the agent writes the code, the errno stays in `detail`/journal.
+  wipe_failed: 'не удалось стереть файлы привязки в /etc/sa02m-cloud — подробности в журнале агента; попытка повторяется',
+};
+
+// ISO stamp from the agent → «N мин. назад»; a stamp that does not parse is
+// shown as-is rather than as NaN.
+function cloudRelativeStamp(iso) {
+  const ms = Date.parse(String(iso || ''));
+  return isNaN(ms) ? String(iso || '') : cloudRelativeTime(Math.floor(ms / 1000));
+}
+// The «Причина» line for the 409 state (the claim endpoint answers 409 until
+// the owner detaches the device) — explains «Уже привязано» without the journal.
+const CLOUD_ALREADY_CLAIMED_REASON = 'в облаке доступ отозван или устройство числится за владельцем; нажмите «Отвязать» в облаке';
+// The «Туннель» / «Последний отчёт» rows describe a LIVE binding and nothing
+// else: they render only in `active`. Hidden rows are also emptied, so no
+// value from a previous state can survive a transition (bench 1.135: a card
+// in already_claimed still read «Туннель: Работает / 19 сек. назад»).
+const CLOUD_LIVE_STATE = 'active';
+
+function cloudIsStandDown(d) {
+  return !!d && (d.state === 'revoked' || d.state === 'unlinked');
+}
+
+function cloudPairLabel(d) {
+  return uiT(cloudIsStandDown(d) ? 'Привязать заново' : 'Подключить к облаку');
+}
+
+let _cloudStandDown = false;
 
 const CLOUD_TUNNEL_MAP = {
   running:      ['Работает', 'ok'],
@@ -156,12 +197,14 @@ function cloudRenderStatus(d) {
     cloudSetBadgeEl($('cloud-conn-state'), stateEntry[0], stateEntry[1]);
   }
 
-  if (d.tunnel && svcActive) {
+  const live = d.state === CLOUD_LIVE_STATE && svcActive;
+  if (live && d.tunnel) {
     cloudShowRow('cloud-row-tunnel', true);
     const tEntry = CLOUD_TUNNEL_MAP[d.tunnel] || [d.tunnel, 'unk'];
     cloudSetBadgeEl($('cloud-tunnel-state'), tEntry[0], tEntry[1]);
   } else {
     cloudShowRow('cloud-row-tunnel', false);
+    cloudSetBadgeEl($('cloud-tunnel-state'), '…', 'unk');
   }
 
   if (d.serial) {
@@ -172,12 +215,51 @@ function cloudRenderStatus(d) {
     cloudShowRow('cloud-row-serial', false);
   }
 
-  if (d.last_heartbeat && svcActive) {
+  const tsEl = $('cloud-last-ts');
+  if (live && d.last_heartbeat) {
     cloudShowRow('cloud-row-ts', true);
-    const ts = $('cloud-last-ts');
-    if (ts) ts.textContent = cloudRelativeTime(d.last_heartbeat);
+    if (tsEl) tsEl.textContent = cloudRelativeTime(d.last_heartbeat);
   } else {
     cloudShowRow('cloud-row-ts', false);
+    if (tsEl) tsEl.textContent = '—';
+  }
+
+  // Stand-down: the reason + time line, and the pair button relabelled. The
+  // «Соединение» badge carries the state itself; «Туннель»/«Последний отчёт»
+  // stay hidden (the stand-down status has neither key).
+  const standDown = cloudIsStandDown(d);
+  _cloudStandDown = standDown;
+  const info = $('cloud-unlink-info');
+  if (info) {
+    if (standDown) {
+      const why = CLOUD_REASON_MAP[d.reason_class] || CLOUD_REASON_MAP[d.state] || '';
+      info.textContent = uiT('Причина') + ': ' + (why ? uiT(why) : String(d.reason || '')) +
+        (d.unlinked_at ? ' · ' + cloudRelativeStamp(d.unlinked_at) : '');
+      info.hidden = false;
+    } else if (d.state === 'already_claimed') {
+      // The 409 state carries `since` (agent ≥ 1.0.6.26) — fall back to `ts`.
+      const at = Number(d.since || d.ts || 0);
+      info.textContent = uiT('Причина') + ': ' + uiT(CLOUD_ALREADY_CLAIMED_REASON) +
+        (at ? ' · ' + cloudRelativeTime(at) : '');
+      info.hidden = false;
+    } else if (d.state === 'unlink_failed') {
+      const why = CLOUD_REASON_MAP[d.reason];
+      info.textContent = uiT('Причина') + ': ' + (why ? uiT(why) : String(d.reason || ''));
+      info.hidden = false;
+    } else {
+      info.hidden = true;
+      info.textContent = '';
+    }
+  }
+  const pairBtnEl = $('cloud-btn-pair');
+  if (pairBtnEl && !pairBtnEl.disabled) pairBtnEl.textContent = cloudPairLabel(d);
+  // While the binding could not be erased the agent is retrying the wipe and
+  // nothing polls the pairing trigger — a live button would report a code
+  // that never comes. Locked with the reason; unlocked in every other state.
+  if (pairBtnEl) {
+    const locked = d.state === 'unlink_failed';
+    pairBtnEl.disabled = locked;
+    pairBtnEl.title = locked ? uiT('Сначала нужно стереть привязку — агент повторяет попытку') : '';
   }
 
   const idle = $('cloud-pair-idle');
@@ -289,7 +371,7 @@ window.cloudStartPairing = async function cloudStartPairing() {
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = uiT('Подключить к облаку');
+      btn.textContent = uiT(_cloudStandDown ? 'Привязать заново' : 'Подключить к облаку');
     }
   }
 };
