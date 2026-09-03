@@ -397,6 +397,9 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
             sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true
         fi
     done
+    # Shared Carel register map — the bridge imports it, so it has to travel
+    # with a bridge refresh (this script never touches the flasher tree).
+    sa02m_install_carel_pkg "$REPO_ROOT"
     install -m 0755 -o root -g root \
         "$MQTT_OPT/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
     sed -i 's/\r$//' "$BRIDGE_DIR/modbus_mqtt_bridge.py" 2>/dev/null || true
