@@ -79,6 +79,25 @@
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
+      "id": "py-unit-carel",
+      "mutationExempt": "stdlib `unittest discover` over the shared Carel package's own test suite - a test RUNNER, not a needle pin: it holds no source line a `#` could satisfy, and commenting a line out of the package changes the behaviour the tests assert.",
+      "checks": "Carel c.pCOmini/uAria map unit tests (opt/sa02m-carel/tests, stdlib unittest) — FC17 fingerprint against the two real captures (CRSTDrAHAQ+STD_E → crst 2.03.00.46, CRSTDm_AHU → uaria), garbage rejected, the mixed-bus FC17 gate (our own signatures at serial 0 are NOT probed — the only case where that check is load-bearing), int16×10 and float32-ABCD scaling, UnitStatus v1/v2 table choice by firmware version, alarm/DiStat decode, and the start/stop write plans including «no plan ever writes uAria coil 30». Proven RED by four mutations: swapped Ma18/coil-65 order, coil 30 substituted for the network coil, float32 read as CDAB, the known-module gate deleted.",
+      "config": null,
+      "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-carel/tests -t opt/sa02m-carel -q; fi; done; echo py-unit-carel: no working python interpreter; exit 1'",
+      "beat": "build",
+      "covers": ["opt/sa02m-carel/"],
+      "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
+    },
+    {
+      "id": "carel-shared-home",
+      "checks": "The Carel register map has ONE home (opt/sa02m-carel/sa02m_carel) and every deploy path that needs it installs it. The flasher daemon and the Modbus→MQTT bridge import it from different trees under different users, and update-www-only.sh refreshes the bridge WITHOUT touching the flasher tree — so a forgotten installer call ships a bridge whose Carel poller dies on import: green in CI, dead on the board. Pins: all three deploy scripts call sa02m_install_carel_pkg; the helper exists in scripts/lib.sh and targets /opt/sa02m-carel; the load-bearing addresses (COIL_BMS_OFF_ON, COIL_UARIA_LOCAL) appear in exactly ONE file tree-wide; each shipped consumer imports the package instead of restating it. Read through lib_check.sh, so a commented-out call cannot satisfy a pin. Non-vacuous: a missing package file, a missing deploy script, or a sweep that stops finding the constants FAILS.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/carel-shared-home.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-carel/", "opt/sa02m-modbus-mqtt/bridge_carel.py", "opt/sa02m-flasher/sa02m_flasher/carel_poll.py", "scripts/lib.sh", "scripts/04-flasher.sh", "scripts/05-mqtt.sh", "scripts/update-www-only.sh", "docs/contracts/carel-ahu.md"],
+      "init": "bash + coreutils (no extra deps)"
+    },
+    {
       "id": "py-unit-alice",
       "mutationExempt": "stdlib `unittest discover` over a shipped package's own test suite - a test RUNNER, not a needle pin: it holds no source line a `#` could satisfy, and commenting a line out of the package changes the behaviour the tests assert.",
       "checks": "Alice controller unit tests (opt/sa02m-alice/tests, stdlib unittest) — converters, device registry, state-sender rate limits, and honest offline/gateway-down API (no fake pairing success).",
@@ -557,6 +576,15 @@
       "beat": "build",
       "covers": ["www/network_config/static/js/flasher.js", "scripts/dev/test-flasher-signature-hints.mjs"],
       "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
+    },
+    {
+      "id": "js-unit-carel-window",
+      "checks": "The Carel (c.pCOmini / uAria) config window in flasher.js, brace-extracted from the shipped source and driven against a minimal DOM. (1) deviceConfigKindFromSignature answers 'carel' for every _SIG_CARELS token BEFORE the MP/MR hints — without it the scan row is not double-clickable and a PLC answering holding 0 with [0,0] is offered MR-02m firmware. (2) The five tabs, and the I/O tab id EQUALS device_config.CAREL_IO_TAB read from the Python source — a typo there leaves the four I/O tables permanently empty with no error. (3) The JS action list equals device_config.CAREL_ACTIONS (parsed from the daemon source, not re-typed). (4) Every id the live patch writes is emitted by its tab renderer, per family (crst: Sys_Mode/Ma18/fan %; uAria: fan step/Gs04) — the silent 'widget stops updating' class. (5) The 1 s poll patches in place: a FOCUSED or dirty (dataset.carelDirty) input is never overwritten, I/O row NODES are reused (scroll survives), and only a changed skeleton (tab, family, row count) rebuilds. (6) A missing value renders '—' / an empty input, never a plausible 0.0 (carel-ahu.md §5). (7) Every authored Russian string the tab renderers emit, plus the Cyrillic confirm/toast literals, has an i18n.js DICT entry — the half i18n-dict-contract cannot see, since it sweeps uiT() literals and HTML markup, not flasher.js template strings. Non-vacuous: fewer than 25 swept Russian strings, or a DICT under 500 keys, FAILS.",
+      "config": null,
+      "run": "node scripts/dev/test-carel-window.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/flasher.js", "www/network_config/static/js/i18n.js", "opt/sa02m-flasher/sa02m_flasher/device_config.py", "scripts/dev/test-carel-window.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit rows."
     },
     {
       "id": "js-unit-devices",

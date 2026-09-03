@@ -52,6 +52,28 @@ EVENT_INSTANCES = {
     "water_level": frozenset(("empty", "low", "normal")),
 }
 
+# Instances that exist for the CLOUD control page only and are never sent to
+# Yandex. A ventilation unit reports readings Yandex has no instance for — the
+# return-water temperature a service engineer needs, the room probe, the plant
+# status text, the alarm flag. Modelling them as separate sensor devices would
+# scatter one unit across several tiles; carrying them as extra items on the
+# unit's own device keeps the tile whole. They are admitted ONLY on an item
+# carrying `cloud_only: true`, and every path that feeds Yandex drops such an
+# item (client/device_registry.py). Widen deliberately: nothing downstream
+# re-checks these (docs/contracts/alice-mqtt-mapping.md).
+CLOUD_ONLY_FLOAT_INSTANCES = {
+    "supply_temperature",
+    "return_water_temperature",
+    "room_temperature",
+    "outdoor_temperature",
+}
+
+CLOUD_ONLY_EVENT_INSTANCES = {
+    "plant_state": frozenset(("run", "stop", "alarm")),
+    "unit_status": None,      # free text from the PLC status table
+    "alarm": frozenset(("alarm", "normal")),
+}
+
 # Keeps the unit string forwarded to Yandex shell/JSON-safe by construction.
 # The digit class is load-bearing: without it `unit.density.mcg_m3` (tvoc,
 # PM densities) was rejected.
@@ -105,7 +127,15 @@ def _validate_event_item(item: Dict[str, Any]) -> Optional[str]:
     if not isinstance(params, dict):
         return "event property requires parameters"
     instance = str(params.get("instance") or "")
-    allowed = EVENT_INSTANCES.get(instance)
+    cloud_only = item.get("cloud_only") is True
+    if cloud_only and instance in CLOUD_ONLY_EVENT_INSTANCES:
+        allowed = CLOUD_ONLY_EVENT_INSTANCES[instance]
+        if allowed is None:
+            # Free text (a PLC status line): no value list to declare, and the
+            # cloud renders it verbatim. Yandex never sees it.
+            return None
+    else:
+        allowed = EVENT_INSTANCES.get(instance)
     if allowed is None:
         return "invalid event property instance"
     events = params.get("events")
@@ -179,11 +209,18 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     mqtt = str(item.get("mqtt") or "").strip()
     if not mqtt or not _MQTT_RE.match(mqtt):
         return None, "invalid mqtt topic"
+    if "cloud_only" in item and not isinstance(item["cloud_only"], bool):
+        # Strict bool: a stray "false" string must never widen an allow-list.
+        return None, "invalid %s cloud_only" % kind
+    cloud_only = item.get("cloud_only") is True
     if t == "devices.properties.float":
         params = item.get("parameters")
         if not isinstance(params, dict):
             return None, "float property requires parameters"
-        if str(params.get("instance") or "") not in FLOAT_INSTANCES:
+        instance = str(params.get("instance") or "")
+        allowed = instance in FLOAT_INSTANCES or (
+            cloud_only and instance in CLOUD_ONLY_FLOAT_INSTANCES)
+        if not allowed:
             return None, "invalid float property instance"
         unit = params.get("unit")
         if not isinstance(unit, str) or not _UNIT_RE.match(unit):
@@ -192,6 +229,26 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         err = _validate_event_item(item)
         if err:
             return None, err
+    elif t == "devices.capabilities.range":
+        # A range capability reaches Yandex verbatim; without min/max/precision
+        # the app has no slider to draw and the platform rejects discovery. It
+        # was unchecked here until a setpoint became the first real user.
+        params = item.get("parameters")
+        if not isinstance(params, dict):
+            return None, "range capability requires parameters"
+        if not str(params.get("instance") or ""):
+            return None, "range capability requires an instance"
+        rng = params.get("range")
+        if not isinstance(rng, dict):
+            return None, "range capability requires parameters.range"
+        for key in ("min", "max", "precision"):
+            value = rng.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, "invalid range %s" % key
+            if value != value or value in (float("inf"), float("-inf")):
+                return None, "invalid range %s" % key
+        if float(rng["min"]) >= float(rng["max"]) or float(rng["precision"]) <= 0:
+            return None, "invalid range bounds"
     err = _validate_inverted(item, kind)
     if err:
         return None, err

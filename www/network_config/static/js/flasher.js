@@ -39,6 +39,7 @@
     configSnapshot: null,
     configPollTimer: null,
     configNetworkDirty: false,
+    configBodyKey: '',
     configPortReleased: false,
     scanArbitrationActive: false,
   };
@@ -1447,6 +1448,10 @@
     const raw = stripBootloaderSignatureSuffix(sig);
     const n = String(raw || '').trim().toUpperCase().replace(/\s/g, '');
     if (!n || n === 'NONE' || n === '—' || n === '?') return '';
+    // Carel — ПЕРЕД подсказками MP/MR: сигнатура установки приходит из ответа на
+    // функцию 17, а не из holding 290, и ни одна из них не должна попасть в
+    // ветку модуля расширения (иначе строке предложат прошивку МР-02м).
+    if (signatureLooksLikeCarel(n)) return 'carel';
     if (n.includes('SENSOR') || n.startsWith('SENS.') || n === 'SENS' || n.startsWith('SENS')) return 'dtv';
     if (n.includes('CE02M3') || n.includes('CE-02M-3') || n.includes('CE-02M3')) return 'ce';
     if (isMpModuleSignatureForFirmwareHint(raw)) return 'mr';
@@ -1460,6 +1465,7 @@
   function deviceConfigTitle(kind, sig) {
     if (kind === 'dtv') return 'Датчик Sens / DTV-RS-485';
     if (kind === 'ce') return 'Анализатор сети CE-02м-3';
+    if (kind === 'carel') return 'Приточная установка Carel';
     return String(sig || '').trim() || 'Модуль MR/MP-02м';
   }
 
@@ -1537,6 +1543,16 @@
         fast_modbus: false,
       },
     };
+    if (kind === 'carel') {
+      // Личность установки берётся из строки скана: живого чтения регистров
+      // личности у Carel нет (docs/contracts/carel-ahu.md §1).
+      stub.family = carelFamilyFromSignature(sig);
+      stub.info.model = carelModelLabel(sig);
+      stub.info.carel_variant = String(dev.carel_variant || '');
+      stub.info.variant_label = carelVariantLabel(dev.carel_variant);
+      stub.network.writable = false;
+      stub.carel = {};
+    }
     if (kind === 'mr') {
       const caps = capsFromSignature(sig) || [0, 0, 0, 0];
       stub.mr = {
@@ -2570,6 +2586,7 @@
   }
 
   function patchConfigLiveReadouts(snap) {
+    if (snap && snap.kind === 'carel') return patchCarelLiveReadouts(snap);
     if (!snap || snap.kind !== 'mr') return;
     const mr = snap.mr || {};
     const mcu = mr.mcu || {};
@@ -2668,6 +2685,18 @@
 
   function configTabsForSnapshot(snap) {
     if (!snap) return [];
+    if (snap.kind === 'carel') {
+      const alarms = ((snap.carel || {}).alarms || []).length;
+      return [
+        { id: 'info', label: 'Сведения' },
+        { id: 'network', label: 'Сеть' },
+        { id: 'plant', label: 'Установка' },
+        // id вкладки входов/выходов = CAREL_IO_TAB: демон читает дорогой блок
+        // io_* только когда окно прислало именно это имя в active_tab.
+        { id: CAREL_IO_TAB, label: 'Входы/выходы' },
+        { id: 'alarms', label: 'Тревоги', suffix: alarms ? ' - ' + alarms : '' },
+      ];
+    }
     if (snap.kind === 'dtv') return [
       { id: 'info', label: 'Сведения' },
       { id: 'measures', label: 'Измерения' },
@@ -3402,6 +3431,552 @@
     `;
   }
 
+  /* ── Приточная установка Carel (c.pCOmini / uAria) ───────────────────────
+     Окно повторяет страницы десктопного прошивальщика (ветка `carel`,
+     specialized_pages_carel.py): Сведения · Сеть · Установка · Входы/выходы ·
+     Тревоги. Карта регистров и смысл значений живут в общем пакете и в демоне
+     (docs/contracts/carel-ahu.md) — здесь только показ и имена команд.
+     Живые значения обновляются НА МЕСТЕ (patchCarelLiveReadouts): полный
+     ре-рендер тела раз в секунду сбрасывал бы прокрутку и ввод оператора. */
+
+  /** Токены сигнатур Carel — зеркало sa02m_carel.carel_ahu._SIG_CARELS. */
+  const CAREL_SIGNATURE_TOKENS = [
+    'CRSTDRAHAQ', 'CRKRFAHAQ', 'CRSTDM_AHU', 'CRSTDM', 'UARIA',
+    'C.PCOMINI', 'CPCOMINI', 'C.PCO',
+  ];
+  /** Действия окна — зеркало device_config.CAREL_ACTIONS: всё вне списка демон отвергает. */
+  const CAREL_ACTIONS = [
+    'start', 'stop', 'alarm_reset', 'net_enable', 'sys_mode',
+    'sp_winter', 'sp_summer', 'fan_supply', 'fan_exhaust', 'fan_step',
+  ];
+  const CAREL_FAMILY_CRST = 'crst';
+  const CAREL_FAMILY_UARIA = 'uaria';
+  /** Имя вкладки входов/выходов = device_config.CAREL_IO_TAB (дорогой блок по запросу). */
+  const CAREL_IO_TAB = 'carel_io';
+  const CAREL_IO_COLUMNS = [
+    { key: 'io_u', id: 'cfg-carel-io-u', title: 'Аналоговые входы (датчики)', bits: false },
+    { key: 'io_no', id: 'cfg-carel-io-no', title: 'Дискретные выходы (реле)', bits: true },
+    { key: 'io_di', id: 'cfg-carel-io-di', title: 'Цифровые входы', bits: true },
+    { key: 'io_ao', id: 'cfg-carel-io-ao', title: 'Аналоговые выходы', bits: false },
+  ];
+  const CAREL_SYS_MODES = [
+    { value: 0, label: '0 - Выключено' },
+    { value: 1, label: '1 - Включено' },
+    { value: 2, label: '2 - Расписание' },
+    { value: 3, label: '3 - Цифровой вход' },
+    { value: 4, label: '4 - Расписание и цифровой вход' },
+    { value: 5, label: '5 - th-Tune' },
+  ];
+  /* Состояние установки: цвет берётся из штатного словаря badge-* (обе темы уже
+     проверены на контраст) — новых цветов окно не заводит. */
+  const CAREL_PLANT_STATES = {
+    alarm: { badge: 'badge-err', label: 'Авария' },
+    run: { badge: 'badge-ok', label: 'Работает' },
+    stop: { badge: 'badge-unk', label: 'Остановлена' },
+  };
+  const CAREL_VARIANT_LABELS = { B: 'Basic', E: 'Enhanced', H: 'HighEnd' };
+
+  function signatureLooksLikeCarel(sig) {
+    const n = String(stripBootloaderSignatureSuffix(sig) || '').trim().toUpperCase().replace(/\s/g, '');
+    if (!n || n === 'NONE' || n === '—' || n === '-' || n === '?') return false;
+    return CAREL_SIGNATURE_TOKENS.some(function (key) { return n.includes(key); });
+  }
+
+  /** Зеркало carel_ahu.family_from_signature — нужно до первого снимка (заглушка окна). */
+  function carelFamilyFromSignature(sig) {
+    const n = String(stripBootloaderSignatureSuffix(sig) || '').trim().toUpperCase().replace(/\s/g, '');
+    return (n.includes('UARIA') || n.includes('CRSTDM')) ? CAREL_FAMILY_UARIA : CAREL_FAMILY_CRST;
+  }
+
+  function carelModelLabel(sig) {
+    return carelFamilyFromSignature(sig) === CAREL_FAMILY_UARIA ? 'uAria' : 'c.pCOmini';
+  }
+
+  function carelVariantLabel(variant) {
+    return CAREL_VARIANT_LABELS[String(variant || '').trim().toUpperCase()] || '';
+  }
+
+  function carelFamily(snap) {
+    const fam = String((snap && snap.family) || '').trim().toLowerCase();
+    if (fam === CAREL_FAMILY_UARIA || fam === CAREL_FAMILY_CRST) return fam;
+    return carelFamilyFromSignature((snap && snap.info && snap.info.signature) || '');
+  }
+
+  function carelIsUaria(snap) { return carelFamily(snap) === CAREL_FAMILY_UARIA; }
+
+  function carelBlock(snap) { return (snap && snap.carel) || {}; }
+
+  /** Число с единицей; прочерк — когда датчика нет (float32 NaN) или блок не
+      прочитан. null через formatFloat дал бы «0.0 °C» — правдоподобное
+      показание вместо отсутствия данных (контракт §5, случай IR3 без датчика). */
+  function carelValueText(value, digits, unit) {
+    if (value == null || value === '') return '—';
+    const txt = formatFloat(value, digits == null ? 1 : digits);
+    if (txt === '—' || !unit) return txt;
+    return txt + ' ' + unit;
+  }
+
+  /** Значение поля ввода: непрочитанная уставка оставляет поле пустым, а не «0.0». */
+  function carelInputValue(value, digits) {
+    if (value == null || value === '') return '';
+    const txt = formatFloat(value, digits == null ? 1 : digits);
+    return txt === '—' ? '' : txt;
+  }
+
+  function carelOnOffText(value) {
+    if (value == null) return '—';
+    return value ? 'Вкл' : 'Выкл';
+  }
+
+  function carelPlantStateView(carel) {
+    const c = carel || {};
+    // Молчащий ПЛК — это не «остановлена»: отсутствие ответа нельзя показывать состоянием.
+    if (c.answered === false) return { badge: 'badge-unk', label: 'Нет данных' };
+    const st = String(c.plant_state || '').trim().toLowerCase();
+    return CAREL_PLANT_STATES[st] || CAREL_PLANT_STATES.stop;
+  }
+
+  /** Строка тревоги «код — текст»; EN-текст приходит из карты — наблюдатель i18n его не знает. */
+  function carelAlarmLine(row) {
+    const r = row || {};
+    const en = window.sa02mI18n && window.sa02mI18n.lang === 'en' && r.text_en;
+    return String(r.code || '') + ' — ' + String(en || r.text || '');
+  }
+
+  /* Ответ на команду и такт опроса вне вкладки «Входы/выходы» дорогой блок io_*
+     не читают: без переноса прошлых колонок таблицы моргали бы пустыми. */
+  const CAREL_IO_KEYS = ['io_u', 'io_no', 'io_di', 'io_ao'];
+
+  function mergeCarelSnapshot(prev, snap) {
+    if (!snap || snap.kind !== 'carel') return snap;
+    const pc = (prev && prev.kind === 'carel' && prev.carel) || null;
+    if (!pc) return snap;
+    const carel = Object.assign({}, snap.carel || {});
+    CAREL_IO_KEYS.forEach(function (key) {
+      if (!Array.isArray(carel[key]) && Array.isArray(pc[key])) carel[key] = pc[key];
+    });
+    return Object.assign({}, snap, { carel: carel });
+  }
+
+  function renderCarelInfoTab(snap) {
+    const info = snap.info || {};
+    const line = info.line || {};
+    const model = info.model || carelModelLabel(info.signature);
+    const variant = info.variant_label || carelVariantLabel(info.carel_variant);
+    return `
+      <div class="flasher-config-grid">
+        <section class="flasher-config-card">
+          <h4>Устройство</h4>
+          <dl class="flasher-config-kv">
+            <div><dt>Тип</dt><dd>Приточная установка</dd></div>
+            <div><dt>Модель</dt><dd>${escapeHtml(model)}</dd></div>
+            <div><dt>Сигнатура</dt><dd class="mono">${escapeHtml(info.signature || '—')}</dd></div>
+            <div><dt>Версия ПО</dt><dd>${escapeHtml(info.app_version || '—')}</dd></div>
+            <div><dt>Исполнение платы</dt><dd>${escapeHtml(variant || '—')}</dd></div>
+            <div><dt>Адрес</dt><dd>${escapeHtml(String(info.address ?? '—'))}</dd></div>
+          </dl>
+        </section>
+        <section class="flasher-config-card">
+          <h4>Линия</h4>
+          <dl class="flasher-config-kv">
+            <div><dt>Скорость</dt><dd>${escapeHtml(String(line.baudrate || '—'))}</dd></div>
+            <div><dt>Чётность</dt><dd>${escapeHtml(String(line.parity || '—'))}</dd></div>
+            <div><dt>Стоп-биты</dt><dd>${escapeHtml(String(line.stopbits || '—'))}</dd></div>
+          </dl>
+          <div class="flasher-config-note">Установка опознана ответом на функцию 17: регистр сигнатуры и серийный номер контроллер Carel не отдаёт.</div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderCarelNetworkTab(snap) {
+    const net = snap.network || {};
+    return `
+      <div class="flasher-config-grid">
+        <section class="flasher-config-card">
+          <h4>Параметры линии (только просмотр)</h4>
+          <dl class="flasher-config-kv">
+            <div><dt>Modbus-адрес</dt><dd>${escapeHtml(String(net.address ?? '—'))}</dd></div>
+            <div><dt>Скорость</dt><dd>${escapeHtml(String(net.baudrate || '—'))}</dd></div>
+            <div><dt>Чётность</dt><dd>${escapeHtml(String(net.parity || '—'))}</dd></div>
+            <div><dt>Стоп-биты</dt><dd>${escapeHtml(String(net.stopbits || '—'))}</dd></div>
+          </dl>
+          <div class="flasher-config-note">Смена адреса, скорости и чётности — с клавиатуры контроллера (uAria: Hd01–Hd03; c.pCO: Sv01–Sv05), по сети эти параметры не пишутся.</div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderCarelPlantTab(snap) {
+    const c = carelBlock(snap);
+    const view = carelPlantStateView(c);
+    const settings = carelIsUaria(snap) ? renderCarelUariaSettings(c) : renderCarelCrstSettings(c);
+    return `
+      <div class="flasher-config-grid">
+        <section class="flasher-config-card">
+          <h4>Состояние установки</h4>
+          <div class="cfg-carel-head">
+            <span class="badge ${view.badge}" id="cfg-carel-state-badge">${escapeHtml(view.label)}</span>
+            <span class="cfg-carel-status" id="cfg-carel-status">${escapeHtml(c.unit_status_text || '—')}</span>
+          </div>
+          <dl class="flasher-config-kv">
+            <div><dt>Температура притока</dt><dd id="cfg-carel-sat">${escapeHtml(carelValueText(c.sat, 1, '°C'))}</dd></div>
+            <div><dt>Температура обратной воды</dt><dd id="cfg-carel-rwt">${escapeHtml(carelValueText(c.rwt, 1, '°C'))}</dd></div>
+            <div><dt>Температура снаружи</dt><dd id="cfg-carel-oat">${escapeHtml(carelValueText(c.oat, 1, '°C'))}</dd></div>
+            <div><dt>Клапан нагрева</dt><dd id="cfg-carel-valve">${escapeHtml(carelValueText(c.valve, 1, '%'))}</dd></div>
+            <div><dt>Насос</dt><dd id="cfg-carel-pump">${escapeHtml(carelOnOffText(c.pump))}</dd></div>
+          </dl>
+          <div class="flasher-config-actions">
+            <button class="btn btn-primary" type="button" id="cfg-carel-start-btn">Пуск</button>
+            <button class="btn btn-warn" type="button" id="cfg-carel-stop-btn">Стоп</button>
+          </div>
+        </section>
+        ${settings}
+      </div>
+    `;
+  }
+
+  function renderCarelCrstSettings(c) {
+    return `
+      <section class="flasher-config-card">
+        <h4>Команды и уставки</h4>
+        <div class="flasher-config-form">
+          <label for="cfg-carel-sp-w">Уставка зима, °C</label>
+          <input id="cfg-carel-sp-w" data-carel-field="1" type="number" step="0.1" min="0" max="99" value="${escapeHtml(carelInputValue(c.sp_w, 1))}" />
+
+          <label for="cfg-carel-sp-s">Уставка лето, °C</label>
+          <input id="cfg-carel-sp-s" data-carel-field="1" type="number" step="0.1" min="0" max="99" value="${escapeHtml(carelInputValue(c.sp_s, 1))}" />
+
+          <label for="cfg-carel-fan-sa">Приточный вентилятор, %</label>
+          <input id="cfg-carel-fan-sa" data-carel-field="1" type="number" step="0.1" min="20" max="100" value="${escapeHtml(carelInputValue(c.fan_sa, 1))}" />
+
+          <label for="cfg-carel-fan-ea">Вытяжной вентилятор, %</label>
+          <input id="cfg-carel-fan-ea" data-carel-field="1" type="number" step="0.1" min="20" max="100" value="${escapeHtml(carelInputValue(c.fan_ea, 1))}" />
+
+          <label for="cfg-carel-sys-mode">Режим работы</label>
+          <select id="cfg-carel-sys-mode" data-carel-field="1">
+            ${CAREL_SYS_MODES.map(m => `<option value="${m.value}" ${Number(c.mode) === m.value ? 'selected' : ''}>${escapeHtml(m.label)}</option>`).join('')}
+          </select>
+
+          <label class="checkbox-line"><input id="cfg-carel-ma18" type="checkbox" ${c.ma18 ? 'checked' : ''} /> Разрешение запуска по сети</label>
+        </div>
+        <dl class="flasher-config-kv" style="margin-top:12px">
+          <div><dt>Запуск по сети</dt><dd id="cfg-carel-run">${escapeHtml(carelOnOffText(c.bms_run))}</dd></div>
+        </dl>
+        <div class="flasher-config-actions">
+          <button class="btn btn-primary" type="button" id="cfg-carel-apply-btn">Применить уставки</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderCarelUariaSettings(c) {
+    return `
+      <section class="flasher-config-card">
+        <h4>Команды и уставки</h4>
+        <div class="flasher-config-form">
+          <label for="cfg-carel-sp-w">Уставка зима, °C</label>
+          <input id="cfg-carel-sp-w" data-carel-field="1" type="number" step="0.1" min="0" max="50" value="${escapeHtml(carelInputValue(c.sp_w, 1))}" />
+
+          <label for="cfg-carel-sp-s">Уставка лето, °C</label>
+          <input id="cfg-carel-sp-s" data-carel-field="1" type="number" step="0.1" min="0" max="50" value="${escapeHtml(carelInputValue(c.sp_s, 1))}" />
+
+          <label for="cfg-carel-fan-step">Скорость вентилятора, ступень 1–10</label>
+          <input id="cfg-carel-fan-step" data-carel-field="1" type="number" step="1" min="1" max="10" value="${escapeHtml(c.fan_sp == null ? '' : String(c.fan_sp))}" />
+
+          <label class="checkbox-line"><input id="cfg-carel-gs04" type="checkbox" ${c.gs04 ? 'checked' : ''} /> Разрешение запуска по сети</label>
+        </div>
+        <dl class="flasher-config-kv" style="margin-top:12px">
+          <div><dt>Запуск по сети</dt><dd id="cfg-carel-run">${escapeHtml(carelOnOffText(c.uaria_run))}</dd></div>
+          <div><dt>Расчётный выход</dt><dd id="cfg-carel-fan-calc">${escapeHtml(carelValueText(c.fan_calc, 1, '%'))}</dd></div>
+          <div><dt>Фактический AO</dt><dd id="cfg-carel-fan-act">${escapeHtml(carelValueText(c.fan, 1, '%'))}</dd></div>
+          <div><dt>Локальный терминал (только чтение)</dt><dd id="cfg-carel-local">${escapeHtml(carelOnOffText(c.uaria_local))}</dd></div>
+          <div><dt>Сезон</dt><dd id="cfg-carel-season">${escapeHtml(c.season_code == null ? '—' : String(c.season_code))}</dd></div>
+        </dl>
+        <div class="flasher-config-actions">
+          <button class="btn btn-primary" type="button" id="cfg-carel-apply-btn">Применить уставки</button>
+        </div>
+        <div class="flasher-config-note">Карта uAria: пуск по сети — катушка 0, разрешение Gs04 — катушка 13. Катушка 30 принадлежит местному терминалу и из веба не пишется.</div>
+      </section>
+    `;
+  }
+
+  function carelIoRowHead(row) {
+    const r = row || {};
+    return String(r.tag || '') + (r.text ? ' · ' + String(r.text) : '');
+  }
+
+  function carelIoRowValue(row, bits) {
+    const r = row || {};
+    return bits ? carelOnOffText(r.on == null ? null : !!r.on) : carelValueText(r.value, 1, r.unit || '');
+  }
+
+  function carelIoRowHtml(row, bits) {
+    const cls = bits && (row || {}).on === true ? ' do-state-on' : '';
+    return `<div class="flasher-config-row"><span>${escapeHtml(carelIoRowHead(row))}</span>` +
+      `<strong class="do-state-value${cls}">${escapeHtml(carelIoRowValue(row, bits))}</strong></div>`;
+  }
+
+  function renderCarelIoTab(snap) {
+    const c = carelBlock(snap);
+    const cards = CAREL_IO_COLUMNS.map(function (col) {
+      const rows = c[col.key] || [];
+      const body = rows.length
+        ? rows.map(r => carelIoRowHtml(r, col.bits)).join('')
+        : '<div class="flasher-empty">Нет данных</div>';
+      return `
+        <section class="flasher-config-card">
+          <h4>${escapeHtml(col.title)}</h4>
+          <div class="flasher-config-list" id="${col.id}">${body}</div>
+        </section>
+      `;
+    }).join('');
+    return `
+      <div class="flasher-config-grid">${cards}</div>
+      <div class="flasher-config-note" style="margin-top:14px">Показаны переменные карты BMS (функции программы) и их состояния. Номера клемм по сети не читаются: что на какой клемме — задаёт мастер входов/выходов в самом ПЛК.</div>
+    `;
+  }
+
+  function renderCarelAlarmsTab(snap) {
+    const alarms = carelBlock(snap).alarms || [];
+    const lines = alarms.length ? alarms.map(carelAlarmLine) : ['Нет активных тревог'];
+    const body = lines.map(line => `<div class="flasher-config-row"><span>${escapeHtml(line)}</span></div>`).join('');
+    return `
+      <div class="flasher-config-grid">
+        <section class="flasher-config-card">
+          <h4>Тревоги</h4>
+          <div class="flasher-config-list" id="cfg-carel-alarms">${body}</div>
+          <div class="flasher-config-actions">
+            <button class="btn btn-warn" type="button" id="cfg-carel-alarm-reset-btn">Сброс тревог</button>
+          </div>
+          <div class="flasher-config-note">Сброс — импульс 5 с на катушке сброса. Активный контакт на клемме останется, и тревога поднимется снова.</div>
+        </section>
+      </div>
+    `;
+  }
+
+  function renderCarelTab(snap) {
+    const tab = state.configTab;
+    if (tab === 'network') return renderCarelNetworkTab(snap);
+    if (tab === 'plant') return renderCarelPlantTab(snap);
+    if (tab === CAREL_IO_TAB) return renderCarelIoTab(snap);
+    if (tab === 'alarms') return renderCarelAlarmsTab(snap);
+    return renderCarelInfoTab(snap);
+  }
+
+  /* ── Живые значения на месте ───────────────────────────────────────────── */
+
+  /** Поле оператора не затирается: под фокусом или с несохранённой правкой. */
+  function carelFieldHolds(el, activeEl) {
+    if (!el) return true;
+    if (activeEl && el === activeEl) return true;
+    return !!(el.dataset && el.dataset.carelDirty === '1');
+  }
+
+  function carelSetText(id, text) {
+    const el = configModalEl(id);
+    if (el) el.textContent = text;
+  }
+
+  function carelSetField(id, value, activeEl) {
+    const el = configModalEl(id);
+    if (!el || carelFieldHolds(el, activeEl)) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = value;
+  }
+
+  /** Строки списка обновляются на месте: innerHTML сбрасывал бы прокрутку. */
+  function carelPatchList(id, rows, bits) {
+    const host = configModalEl(id);
+    if (!host) return;
+    const list = rows || [];
+    if (host.children.length !== list.length) {
+      host.innerHTML = list.length
+        ? list.map(r => carelIoRowHtml(r, bits)).join('')
+        : '<div class="flasher-empty">Нет данных</div>';
+      return;
+    }
+    list.forEach(function (row, idx) {
+      const node = host.children[idx];
+      if (!node) return;
+      const head = node.querySelector('span');
+      const val = node.querySelector('strong');
+      const headText = carelIoRowHead(row);
+      if (head && head.textContent !== headText) head.textContent = headText;
+      if (!val) return;
+      const text = carelIoRowValue(row, bits);
+      if (val.textContent !== text) val.textContent = text;
+      val.classList.toggle('do-state-on', !!(bits && (row || {}).on === true));
+    });
+  }
+
+  function carelPatchAlarms(snap) {
+    const host = configModalEl('cfg-carel-alarms');
+    if (!host) return;
+    const alarms = carelBlock(snap).alarms || [];
+    const lines = alarms.length ? alarms.map(carelAlarmLine) : ['Нет активных тревог'];
+    if (host.children.length !== lines.length) {
+      host.innerHTML = lines.map(line => `<div class="flasher-config-row"><span>${escapeHtml(line)}</span></div>`).join('');
+      return;
+    }
+    lines.forEach(function (line, idx) {
+      const node = host.children[idx];
+      const span = node && node.querySelector('span');
+      if (span && span.textContent !== line) span.textContent = line;
+    });
+  }
+
+  function patchCarelLiveReadouts(snap) {
+    const c = carelBlock(snap);
+    const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+    const view = carelPlantStateView(c);
+    const badge = configModalEl('cfg-carel-state-badge');
+    if (badge) {
+      badge.textContent = view.label;
+      badge.className = 'badge ' + view.badge;
+    }
+    carelSetText('cfg-carel-status', c.unit_status_text || '—');
+    carelSetText('cfg-carel-sat', carelValueText(c.sat, 1, '°C'));
+    carelSetText('cfg-carel-rwt', carelValueText(c.rwt, 1, '°C'));
+    carelSetText('cfg-carel-oat', carelValueText(c.oat, 1, '°C'));
+    carelSetText('cfg-carel-valve', carelValueText(c.valve, 1, '%'));
+    carelSetText('cfg-carel-pump', carelOnOffText(c.pump));
+    carelSetField('cfg-carel-sp-w', carelInputValue(c.sp_w, 1), activeEl);
+    carelSetField('cfg-carel-sp-s', carelInputValue(c.sp_s, 1), activeEl);
+    if (carelIsUaria(snap)) {
+      carelSetText('cfg-carel-run', carelOnOffText(c.uaria_run));
+      carelSetText('cfg-carel-fan-calc', carelValueText(c.fan_calc, 1, '%'));
+      carelSetText('cfg-carel-fan-act', carelValueText(c.fan, 1, '%'));
+      carelSetText('cfg-carel-local', carelOnOffText(c.uaria_local));
+      carelSetText('cfg-carel-season', c.season_code == null ? '—' : String(c.season_code));
+      carelSetField('cfg-carel-fan-step', c.fan_sp == null ? '' : String(c.fan_sp), activeEl);
+      carelSetField('cfg-carel-gs04', !!c.gs04, activeEl);
+    } else {
+      carelSetText('cfg-carel-run', carelOnOffText(c.bms_run));
+      carelSetField('cfg-carel-fan-sa', carelInputValue(c.fan_sa, 1), activeEl);
+      carelSetField('cfg-carel-fan-ea', carelInputValue(c.fan_ea, 1), activeEl);
+      carelSetField('cfg-carel-sys-mode', c.mode == null ? '' : String(c.mode), activeEl);
+      carelSetField('cfg-carel-ma18', !!c.ma18, activeEl);
+    }
+    CAREL_IO_COLUMNS.forEach(function (col) {
+      if (Array.isArray(c[col.key])) carelPatchList(col.id, c[col.key], col.bits);
+    });
+    carelPatchAlarms(snap);
+  }
+
+  /* ── Команды установки ─────────────────────────────────────────────────── */
+
+  function clearCarelDirtyFields() {
+    const body = configModalEl('flasher-config-body');
+    if (!body) return;
+    body.querySelectorAll('[data-carel-field]').forEach(function (el) {
+      delete el.dataset.carelDirty;
+    });
+  }
+
+  async function carelCommand(action, params, okMsg) {
+    if (CAREL_ACTIONS.indexOf(action) < 0) return;
+    const dev = currentConfigDevice();
+    const port = $('flasher-port').value;
+    if (!dev || !port) return;
+    setConfigBusy(true);
+    try {
+      const snap = await configApi('/device_config/carel_write', {
+        port, device: dev, action, params: params || {},
+      });
+      clearCarelDirtyFields();
+      applyConfigSnapshot(snap, false);
+      if (okMsg) toast(okMsg, 'success');
+    } catch (err) {
+      setConfigBanner('Команда установки: ' + err.message, 'error');
+      toast('Установка Carel: ' + err.message, 'error');
+    } finally {
+      setConfigBusy(false);
+    }
+  }
+
+  function carelFieldNumber(id) {
+    const el = configModalEl(id);
+    if (!el) return null;
+    const raw = String(el.value == null ? '' : el.value).replace(',', '.').trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function carelFieldChanged(id) {
+    const el = configModalEl(id);
+    return !!(el && el.dataset && el.dataset.carelDirty === '1');
+  }
+
+  /** Какие уставки уходят по «Применить»: только правленые поля с числом — лишняя
+      запись это лишний сеанс на общей линии, а у uAria ещё и два слова float32. */
+  function carelSetpointPlan(uaria, changed, number) {
+    const plan = [
+      { id: 'cfg-carel-sp-w', action: 'sp_winter' },
+      { id: 'cfg-carel-sp-s', action: 'sp_summer' },
+    ];
+    if (uaria) plan.push({ id: 'cfg-carel-fan-step', action: 'fan_step' });
+    else plan.push({ id: 'cfg-carel-fan-sa', action: 'fan_supply' }, { id: 'cfg-carel-fan-ea', action: 'fan_exhaust' });
+    return plan
+      .filter(item => changed(item.id) && number(item.id) != null)
+      .map(item => ({ action: item.action, value: number(item.id) }));
+  }
+
+  async function applyCarelSetpoints() {
+    const todo = carelSetpointPlan(carelIsUaria(state.configSnapshot), carelFieldChanged, carelFieldNumber);
+    if (!todo.length) {
+      toast('Изменённых уставок нет', 'info');
+      return;
+    }
+    for (const item of todo) {
+      await carelCommand(item.action, { value: item.value }, '');
+    }
+    toast('Уставки сохранены', 'success');
+  }
+
+  function carelStartPlant() {
+    const msg = carelIsUaria(state.configSnapshot)
+      ? 'Включить установку по сети (катушка 0)? При необходимости сначала уйдёт Gs04 (катушка 13).'
+      : 'Включить установку по сети? Уйдут разрешение Ma18 (катушка 130), выдержка и команда пуска (катушка 65).';
+    if (!confirm(t(msg))) return;
+    carelCommand('start', {}, 'Команда пуска отправлена');
+  }
+
+  function carelStopPlant() {
+    if (!confirm(t('Остановить установку по сети? Разрешение сети и пуск с клавиатуры остаются как были.'))) return;
+    carelCommand('stop', {}, 'Команда останова отправлена');
+  }
+
+  function carelResetAlarms() {
+    if (!confirm(t('Сбросить тревоги (импульс 5 с)? Активный контакт на клемме останется.'))) return;
+    carelCommand('alarm_reset', {}, 'Сброс тревог выполнен');
+  }
+
+  function wireCarelBodyEvents(body) {
+    body.querySelectorAll('[data-carel-field]').forEach(function (el) {
+      const mark = function () { el.dataset.carelDirty = '1'; };
+      el.addEventListener('input', mark);
+      el.addEventListener('change', mark);
+    });
+    const start = body.querySelector('#cfg-carel-start-btn');
+    if (start) start.addEventListener('click', carelStartPlant);
+    const stop = body.querySelector('#cfg-carel-stop-btn');
+    if (stop) stop.addEventListener('click', carelStopPlant);
+    const apply = body.querySelector('#cfg-carel-apply-btn');
+    if (apply) apply.addEventListener('click', applyCarelSetpoints);
+    const reset = body.querySelector('#cfg-carel-alarm-reset-btn');
+    if (reset) reset.addEventListener('click', carelResetAlarms);
+    // Разрешение сети и режим работы уходят сразу, а не по «Применить»: пуск
+    // оценивается ПЛК по уже защёлкнутому разрешению (контракт §4).
+    const ma18 = body.querySelector('#cfg-carel-ma18');
+    if (ma18) ma18.addEventListener('change', () => carelCommand('net_enable', { enable: ma18.checked }, 'Разрешение сети записано'));
+    const gs04 = body.querySelector('#cfg-carel-gs04');
+    if (gs04) gs04.addEventListener('change', () => carelCommand('net_enable', { enable: gs04.checked }, 'Разрешение сети записано'));
+    const mode = body.querySelector('#cfg-carel-sys-mode');
+    if (mode) mode.addEventListener('change', () => carelCommand('sys_mode', { value: clampInt(mode.value, 0, 5, 0) }, 'Режим работы записан'));
+  }
+
   function renderConfigBody() {
     const host = configModalEl('flasher-config-body');
     if (!host) return;
@@ -3411,7 +3986,8 @@
       return;
     }
     let html = '';
-    if (state.configTab === 'network') html = renderNetworkTab(snap);
+    if (snap.kind === 'carel') html = renderCarelTab(snap);
+    else if (state.configTab === 'network') html = renderNetworkTab(snap);
     else if (state.configTab === 'relay' && snap.kind === 'mr') html = renderModuleRelayTab(snap);
     else if (snap.kind === 'mr' && /^do_\d+$/.test(state.configTab)) html = renderModuleDoTab(snap, parseInt(state.configTab.split('_')[1], 10));
     else if (snap.kind === 'mr' && /^di_\d+$/.test(state.configTab)) html = renderModuleDiTab(snap, parseInt(state.configTab.split('_')[1], 10));
@@ -3424,7 +4000,27 @@
     else if (snap.kind === 'mr') html = renderModuleInfoTab(snap);
     else html = renderInfoTab(snap);
     host.innerHTML = html;
+    state.configBodyKey = configBodyRenderKey(snap);
     wireConfigBodyEvents();
+  }
+
+  /* Ключ отрисованного тела: тот же ключ ⇒ каркас не изменился и живые значения
+     обновляются на месте. Иначе innerHTML раз в секунду сбрасывал бы прокрутку
+     таблиц входов/выходов и ввод оператора. */
+  function configBodyRenderKey(snap) {
+    if (!snap || snap.kind !== 'carel') return '';
+    const c = carelBlock(snap);
+    const counts = CAREL_IO_KEYS.concat(['alarms'])
+      .map(key => (Array.isArray(c[key]) ? c[key].length : -1))
+      .join(',');
+    return ['carel', state.configTab || '', carelFamily(snap), counts].join('|');
+  }
+
+  function configBodyIsPatchable(snap) {
+    if (!snap || snap.kind !== 'carel' || !state.configBodyKey) return false;
+    const host = configModalEl('flasher-config-body');
+    if (!host || !host.firstChild) return false;
+    return state.configBodyKey === configBodyRenderKey(snap);
   }
 
   function renderConfigTabs() {
@@ -3445,6 +4041,7 @@
     host.querySelectorAll('[data-config-tab]').forEach(btn => {
       btn.addEventListener('click', async () => {
         state.configTab = btn.dataset.configTab || 'info';
+        state.configBodyKey = '';
         renderConfigTabs();
         renderConfigBody();
         await waitConfigBackgroundIdle();
@@ -3474,6 +4071,7 @@
     ) {
       merged = mergeDeviceConfigSnapshot(state.configSnapshot, snap);
     }
+    if (merged && merged.kind === 'carel') merged = mergeCarelSnapshot(state.configSnapshot, merged);
     if (merged && merged.mr) aiSensorReconcilePending(merged.mr);
     state.configSnapshot = merged;
     configDeviceFromSnapshot(merged);
@@ -3482,16 +4080,21 @@
     const sub = configModalEl('flasher-config-sub');
     const kicker = configModalEl('flasher-config-kicker');
     if (title) title.textContent = deviceConfigTitle(merged.kind, merged.info && merged.info.signature);
-    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : 'Настройка модуля расширения';
+    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : merged.kind === 'carel' ? 'Настройка приточной установки' : 'Настройка модуля расширения';
     if (sub) {
       const info = merged.info || {};
-      sub.textContent = `${info.address ?? '—'} адр. · ${(merged.network && merged.network.baudrate) || '—'} ${(merged.network && merged.network.parity) || 'N'}${(merged.network && merged.network.stopbits) || 1} · ${serialHex(info.serial)}`;
+      const line = `${info.address ?? '—'} адр. · ${(merged.network && merged.network.baudrate) || '—'} ${(merged.network && merged.network.parity) || 'N'}${(merged.network && merged.network.stopbits) || 1}`;
+      // У Carel серийного номера нет (holding 270/271 ПЛК не отдаёт) — вместо
+      // прочерка в подзаголовке стоит модель из ответа на функцию 17.
+      sub.textContent = merged.kind === 'carel'
+        ? `${line} · ${info.model || carelModelLabel(info.signature)}`
+        : `${line} · ${serialHex(info.serial)}`;
     }
     if (!state.configTab) state.configTab = 'info';
     const available = configTabsForSnapshot(merged).map(t => t.id);
     if (!available.includes(state.configTab)) state.configTab = available[0] || 'info';
     renderConfigTabs();
-    if (shouldSkipConfigBodyRerender()) patchConfigLiveReadouts(merged);
+    if (shouldSkipConfigBodyRerender() || configBodyIsPatchable(merged)) patchConfigLiveReadouts(merged);
     else renderConfigBody();
     if (!silent) setConfigBanner('', '');
   }
@@ -3547,6 +4150,7 @@
     state.configTab = 'info';
     state.configSnapshot = null;
     state.configNetworkDirty = false;
+    state.configBodyKey = '';
     state.configBusy = false;
     state.configBackgroundBusy = false;
     clearAiConfigEditState();
@@ -3575,6 +4179,7 @@
     state.configDeviceIdx = -1;
     state.configSnapshot = null;
     state.configTab = '';
+    state.configBodyKey = '';
     const modal = configModalEl('flasher-config-modal');
     if (modal) modal.hidden = true;
     document.body.style.overflow = '';
@@ -4360,6 +4965,7 @@
   function wireConfigBodyEvents() {
     const body = configModalEl('flasher-config-body');
     if (!body) return;
+    wireCarelBodyEvents(body);
     const saveNet = body.querySelector('#cfg-net-save-btn');
     if (saveNet) saveNet.addEventListener('click', saveConfigNetwork);
     const refreshNet = body.querySelector('#cfg-net-refresh-btn');

@@ -45,6 +45,9 @@ chown -R "$FLASHER_USER":"$FLASHER_USER" "$INSTALL_DIR"
 find "$INSTALL_DIR" -type d -exec chmod 0755 {} \;
 find "$INSTALL_DIR" -type f -exec chmod 0644 {} \;
 
+# Shared Carel register map (imported by the scan/config-window path).
+sa02m_install_carel_pkg "$BASE_DIR"
+
 # ── /etc конфигурация ────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m_flasher.conf ]; then
     log INFO "Создаю /etc/sa02m_flasher.conf"

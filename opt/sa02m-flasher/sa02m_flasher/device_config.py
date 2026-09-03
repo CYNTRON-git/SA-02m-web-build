@@ -5,15 +5,23 @@
 Поддерживаются:
   - линейка MP/MR-02m: сведения + сеть;
   - DTV / Sens.: живые данные, профильные настройки, сеть;
-  - CE-02m-3: живые данные, ТТ/фазы, сеть.
+  - CE-02m-3: живые данные, ТТ/фазы, сеть;
+  - приточная установка Carel (c.pCOmini / uAria): живые данные и команды.
+
+Carel — чужой ПЛК, и это меняет форму снимка: у него нет ни сигнатуры (рег. 290),
+ни серийного (270–271), ни блока сети (110–112, 122, 128). Опрос этих адресов
+даёт восемь таймаутов подряд — около пяти секунд внутри окна, которое обновляется
+раз в секунду. Поэтому личность установки берётся из строки скана (её заполнил
+FC17), а сетевой блок отдаётся как «только чтение».
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from . import bus_mode
+from . import carel_poll
 from . import dtv_registers
 from .flash_protocol import FlasherProtocol
 from .modbus_io import (
@@ -47,6 +55,8 @@ REG_NET_PARITY = 111
 REG_NET_STOP = 112
 REG_FAST_MODBUS = 122  # family-common bus-mode selector: 0 classic / 1 Fast / 2 BACnet
 REG_NET_ADDR = 128
+
+CAREL_KIND = "carel"
 
 
 def family_from_kind(kind: Optional[str]) -> Optional[str]:
@@ -284,6 +294,10 @@ def _read_live_identity(send, slave: int, fallback: Dict[str, Any]) -> Dict[str,
 
 def _kind_from_identity(signature: str, type_code: Optional[int]) -> Optional[str]:
     sig = str(signature or "").strip()
+    # Carel — первым: его app id из FC17 ни на что из нашей линейки не похож, а
+    # code_from_signature ниже уже вернул бы CAREL_AHU и увёл ветку в «mr».
+    if module_profiles.signature_is_carel(sig):
+        return CAREL_KIND
     sig_code = module_profiles.code_from_signature(sig)
     if sig_code == module_profiles.DTV:
         return "dtv"
@@ -904,6 +918,268 @@ def _read_dtv_snapshot(send, slave: int) -> Dict[str, Any]:
     }
 
 
+# ── приточная установка Carel ──────────────────────────────────────────────
+# Список команд закрыт: окно шлёт имя действия, а план записи собирает общий
+# пакет. Одиночные регистры и катушки установке не пишутся вовсе — пуск это
+# последовательность (разрешение → выдержка → команда), а не один регистр.
+CAREL_ACTIONS: Tuple[str, ...] = (
+    "start",
+    "stop",
+    "alarm_reset",
+    "net_enable",
+    "sys_mode",
+    "sp_winter",
+    "sp_summer",
+    "fan_supply",
+    "fan_exhaust",
+    "fan_step",
+)
+
+_CAREL_SINGLE_WRITE_REFUSED = (
+    "Установка Carel управляется командами окна, а не записью "
+    "одиночного регистра или катушки"
+)
+
+# Вкладка «Входы/выходы»: дорогой блок (два набора блоков IR + длинный DI),
+# читается только когда она открыта, не на каждом такте опроса.
+CAREL_IO_TAB = "carel_io"
+
+
+def _carel_map() -> Any:
+    """Общая карта Carel через шов пакета (module_profiles.carel_ahu())."""
+    ca = module_profiles.carel_ahu()
+    if ca is None:
+        raise ValueError("Пакет карты Carel не установлен на этом устройстве")
+    return ca
+
+
+def _device_is_carel(device: Dict[str, Any]) -> bool:
+    """Опознание по строке скана: живого чтения для этого не делаем (см. модуль)."""
+    return module_profiles.signature_is_carel(str(device.get("signature") or ""))
+
+
+def _carel_identity(device: Dict[str, Any]) -> Dict[str, Any]:
+    ca = _carel_map()
+    signature = str(device.get("signature") or "").strip()
+    app_version = str(device.get("app_version") or "—").strip() or "—"
+    variant = str(device.get("carel_variant") or "").strip().upper()
+    return {
+        "signature": signature,
+        "family": ca.family_from_signature(signature),
+        "app_version": app_version,
+        "variant": variant,
+    }
+
+
+def _carel_unit_status_text(ca: Any, family: str, snap: Dict[str, Any], app_version: str) -> str:
+    unit = snap.get("unit")
+    if unit is None:
+        return ""
+    if family == ca.FAMILY_UARIA:
+        return ca.uaria_unit_status_label(int(unit))
+    return ca.unit_status_label(int(unit), app_version)
+
+
+def _carel_unit_status_algo(ca: Any, family: str, app_version: str) -> str:
+    """Какой таблицей UnitStatus подписан код.
+
+    У uAria своя таблица (короткая карта), поэтому «v2» здесь было бы неправдой —
+    честнее назвать её своим именем, чем подогнать под пару v1/v2 c.pCOmini.
+    """
+    if family == ca.FAMILY_UARIA:
+        return "uaria"
+    return "v2" if ca.unit_status_use_v2(app_version) else "v1"
+
+
+def _carel_payload(
+    send,
+    slave: int,
+    device: Dict[str, Any],
+    *,
+    io_hw: bool = False,
+) -> Dict[str, Any]:
+    ca = _carel_map()
+    ident = _carel_identity(device)
+    family = ident["family"]
+    baud, parity, stop = _device_line(device)
+    snap = carel_poll.read_carel_snapshot(
+        send, slave, family, io_hw=io_hw, variant=ident["variant"]
+    ) or {}
+    carel: Dict[str, Any] = dict(snap)
+    carel["plant_state"] = ca.plant_run_state(snap, family, version=ident["app_version"])
+    carel["unit_status_text"] = _carel_unit_status_text(ca, family, snap, ident["app_version"])
+    carel["unit_status_algo"] = _carel_unit_status_algo(ca, family, ident["app_version"])
+    carel["alarm_reset_coil"] = ca.alarm_reset_coil(family)
+    carel["answered"] = bool(snap)
+    line = {"baudrate": baud, "parity": parity, "stopbits": stop}
+    return {
+        "kind": CAREL_KIND,
+        "family": family,
+        "bus_mode_supported": False,
+        "info": {
+            "address": slave,
+            "signature": ident["signature"],
+            "app_version": ident["app_version"],
+            "carel_variant": ident["variant"],
+            "variant_label": ca.variant_label(ident["variant"]),
+            "model": ca.info_model_label(ident["signature"]),
+            "line": dict(line),
+        },
+        "network": dict(line, address=slave, writable=ca.network_params_writable(family)),
+        "carel": carel,
+    }
+
+
+def _carel_coil_state(send, slave: int, coil: int, timeout_ms: int = 700) -> Optional[bool]:
+    payload, err = read_coils(send, slave, coil, 1, timeout_ms)
+    if err or not payload:
+        return None
+    bits = coil_bits_from_payload(payload, 1)
+    return bool(bits[0]) if bits else None
+
+
+def _carel_number(params: Dict[str, Any], key: str = "value") -> float:
+    raw = params.get(key)
+    try:
+        return float(str(raw).replace(",", "."))
+    except (TypeError, ValueError):
+        raise ValueError("Недопустимое значение команды Carel") from None
+
+
+def _carel_write_plan(
+    ca: Any,
+    family: str,
+    action: str,
+    params: Dict[str, Any],
+    *,
+    net_enable: Optional[int] = None,
+) -> List[Any]:
+    """План записи для действия окна. Планы приходят из общей карты; здесь только
+    выбор плана и разбор параметра. Катушка 30 uAria (местное управление) не
+    встречается ни в одной ветке — установку по сети запускает катушка 0."""
+    uaria = family == ca.FAMILY_UARIA
+    if action == "start":
+        if uaria:
+            writes, err = ca.uaria_start_writes(net_enable, True)
+            if err:
+                raise ValueError("Не прочитано разрешение пуска по сети (Gs04)")
+            return writes
+        writes, _err = ca.crst_start_writes({}, None, True)
+        return writes
+    if action == "stop":
+        if uaria:
+            writes, _err = ca.uaria_start_writes(net_enable, False)
+            return writes
+        writes, _err = ca.start_write_plan(None, None, False)
+        return writes
+    if action == "net_enable":
+        return [ca.net_enable_write(family, bool(params.get("enable")))]
+    if action == "sys_mode":
+        if uaria:
+            raise ValueError("Режим системы доступен только для c.pCOmini")
+        target = ca.clamp_sys_mode(int(_carel_number(params)))
+        if target == 0:
+            writes, _err = ca.start_write_plan(None, 0, None)
+            return writes
+        writes, _err = ca.crst_start_writes({}, target, True)
+        return writes
+    if action in ("sp_winter", "sp_summer"):
+        summer = action == "sp_summer"
+        if uaria:
+            addr = ca.HR_UARIA_SP_SUMMER if summer else ca.HR_UARIA_SP
+            hi, lo = ca.float32_to_be_words(ca.clamp_uaria_sp_c(_carel_number(params)))
+            return [ca.CarelWrite(ca.KIND_HOLDING_MULTI, addr, 0, (hi, lo))]
+        addr = ca.HR_SP_SUMMER if summer else ca.HR_SP_WINTER
+        raw = ca.phys_to_raw_x10(_carel_number(params), ca.SP_C_MIN, ca.SP_C_MAX)
+        return [ca.CarelWrite(ca.KIND_HOLDING, addr, raw)]
+    if action in ("fan_supply", "fan_exhaust"):
+        if uaria:
+            raise ValueError("Уставки вентиляторов в процентах доступны только для c.pCOmini")
+        addr = ca.HR_FAN_EXHAUST if action == "fan_exhaust" else ca.HR_FAN_SUPPLY
+        raw = ca.phys_to_raw_x10(_carel_number(params), ca.FAN_PCT_MIN, ca.FAN_PCT_MAX)
+        return [ca.CarelWrite(ca.KIND_HOLDING, addr, raw)]
+    if action == "fan_step":
+        if not uaria:
+            raise ValueError("Ступень вентилятора доступна только для uAria")
+        step = ca.clamp_uaria_fan_step(int(_carel_number(params)))
+        return [ca.CarelWrite(ca.KIND_HOLDING, ca.HR_UARIA_FAN_SP, step)]
+    raise ValueError("Неизвестная команда установки Carel")
+
+
+def _carel_run_writes(ca: Any, send, slave: int, family: str, writes: Sequence[Any]) -> None:
+    """Выполнить план. Ma18 (разрешение сети) требует выдержки перед пуском:
+    без неё ПЛК принимает катушку 65 раньше, чем разрешение вступило в силу."""
+    for w in writes:
+        addr = int(w.address)
+        if (
+            family == ca.FAMILY_UARIA
+            and w.kind == ca.KIND_COIL
+            and addr == ca.COIL_UARIA_LOCAL
+        ):
+            # Защита в глубину: ни один план сюда не приводит, и если приведёт —
+            # обмена не будет. Катушка местного управления принадлежит панели ПЛК.
+            raise ValueError("Катушка местного управления uAria из веба не пишется")
+        if w.kind == ca.KIND_COIL:
+            err = write_coil(send, slave, addr, bool(w.value), 800)
+            if err is None and addr == ca.COIL_MA18 and int(w.value) == 1:
+                time.sleep(ca.START_MA18_SETTLE_S)
+        elif w.kind == ca.KIND_HOLDING_MULTI:
+            err = write_multiple(send, slave, addr, [int(x) & 0xFFFF for x in w.words], 800)
+        else:
+            err = write_single(send, slave, addr, int(w.value) & 0xFFFF, 800)
+        if err:
+            raise RuntimeError(f"Запись Carel ({w.kind} {addr}): {err}")
+
+
+def _carel_alarm_reset(ca: Any, send, slave: int, family: str) -> None:
+    """Сброс тревог — импульс: у части прошивок катушка сама не снимается."""
+    coil = ca.alarm_reset_coil(family)
+    err = write_coil(send, slave, coil, True, 800)
+    if err:
+        raise RuntimeError(f"Сброс тревог (coil {coil}): {err}")
+    time.sleep(ca.ALARM_RESET_PULSE_S)
+    err = write_coil(send, slave, coil, False, 800)
+    if err:
+        raise RuntimeError(f"Снятие импульса сброса (coil {coil}): {err}")
+
+
+def carel_write(
+    device_path: str,
+    device: Dict[str, Any],
+    action: str,
+    params: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Выполнить команду окна установки Carel и вернуть свежий снимок."""
+    act = str(action or "").strip().lower()
+    if act not in CAREL_ACTIONS:
+        raise ValueError("Неизвестная команда установки Carel")
+    if not _device_is_carel(device):
+        raise ValueError("Команда доступна только для приточной установки Carel")
+    p = dict(params) if isinstance(params, dict) else {}
+    ca = _carel_map()
+    family = _carel_identity(device)["family"]
+
+    send, close_transport = _open_transport(device_path, device)
+    try:
+        slave = _device_slave(device)
+        if act == "alarm_reset":
+            _carel_alarm_reset(ca, send, slave, family)
+        else:
+            net_enable: Optional[int] = None
+            if family == ca.FAMILY_UARIA and act in ("start", "stop"):
+                state = _carel_coil_state(send, slave, ca.COIL_UARIA_NET_ENABLE)
+                net_enable = None if state is None else (1 if state else 0)
+            _carel_run_writes(
+                ca, send, slave, family,
+                _carel_write_plan(ca, family, act, p, net_enable=net_enable),
+            )
+        payload = _carel_payload(send, slave, device)
+    finally:
+        close_transport()
+    payload["action"] = act
+    return payload
+
+
 def snapshot_for_device(
     device_path: str,
     device: Dict[str, Any],
@@ -921,6 +1197,13 @@ def snapshot_for_device(
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
+        if _device_is_carel(device):
+            # Ни живой личности, ни сетевого блока: ПЛК не отвечает ни на один из
+            # этих адресов, и восемь таймаутов не помещаются в такт окна.
+            payload = _carel_payload(send, slave, device, io_hw=active_tab == CAREL_IO_TAB)
+            payload["snapshot_detail"] = "full"
+            payload["active_tab"] = active_tab
+            return payload
         identity = _read_live_identity(send, slave, device)
         kind, identity = _resolve_kind(identity, device)
 
@@ -983,6 +1266,10 @@ def apply_network_settings(
     if not 1 <= address <= 247:
         raise ValueError("Modbus-адрес: только 1..247")
     want_fast = bool(network.get("fast_modbus"))
+    if _device_is_carel(device):
+        # Снимок отдаёт network.writable=false; здесь та же правда механически:
+        # у ПЛК нет регистров 110–112/122/128, запись ушла бы в чужие адреса.
+        raise ValueError("Параметры линии установки Carel меняются только с панели ПЛК")
 
     send, close_transport = _open_transport(device_path, device)
     try:
@@ -1043,11 +1330,15 @@ def write_allowed_holding(
     reg: int,
     value: int,
 ) -> Dict[str, Any]:
+    if _device_is_carel(device):
+        raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
         kind, identity = _resolve_kind(identity, device)
+        if kind == CAREL_KIND:
+            raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
         allowed_regs: set[int] = set()
         if kind == "dtv":
             allowed_regs.update({dtv_registers.DTV_HOLDING_EXT_TEMP_SELECT, dtv_registers.DTV_HOLDING_PRESENCE_OFF_DELAY})
@@ -1141,11 +1432,15 @@ def write_allowed_coil(
     coil: int,
     on: bool,
 ) -> Dict[str, Any]:
+    if _device_is_carel(device):
+        raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
     send, close_transport = _open_transport(device_path, device)
     try:
         slave = _device_slave(device)
         identity = _read_live_identity(send, slave, device)
         kind, identity = _resolve_kind(identity, device)
+        if kind == CAREL_KIND:
+            raise ValueError(_CAREL_SINGLE_WRITE_REFUSED)
         if kind == "dtv":
             if coil not in (dtv_registers.DTV_COIL_BUZZER, dtv_registers.DTV_COIL_LEDS_ALL):
                 raise ValueError("Запись этой катушки через веб-окно не разрешена")

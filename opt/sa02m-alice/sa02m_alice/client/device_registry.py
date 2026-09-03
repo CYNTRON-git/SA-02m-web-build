@@ -36,11 +36,32 @@ def _item_inverted(item: Dict[str, Any]) -> bool:
 class DeviceRegistry:
     """In-memory registry backed by sa02m-alice-devices.conf."""
 
-    def __init__(self, devices_doc: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, devices_doc: Optional[Dict[str, Any]] = None, *,
+                 profile: str = C.PROFILE_YANDEX) -> None:
         self._lock = threading.RLock()
+        self._profile = profile
         self._doc = devices_doc if devices_doc is not None else load_devices()
         self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._rebuild_indexes()
+
+    def _items(self, dev: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
+        """Items of a device visible to THIS profile.
+
+        An item flagged `cloud_only` carries a reading Yandex has no instance
+        for (a ventilation unit's return-water temperature, its status text, its
+        alarm flag). On the Yandex profile it is dropped here, which is the one
+        place every path reads from — so it never reaches discovery, query,
+        state or a topic subscription. The cloud profile sees everything.
+        """
+        out = []
+        cloud = self._profile == C.PROFILE_CLOUD
+        for item in dev.get(key, []) or []:
+            if not isinstance(item, dict):
+                continue
+            if not cloud and item.get("cloud_only") is True:
+                continue
+            out.append(item)
+        return out
 
     def _rebuild_indexes(self) -> None:
         self._devices_by_id: Dict[str, Dict[str, Any]] = {}
@@ -54,9 +75,7 @@ class DeviceRegistry:
             did = str(dev["id"])
             self._devices_by_id[did] = dev
             for kind, key in (("capability", "capabilities"), ("property", "properties")):
-                for item in dev.get(key, []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in self._items(dev, key):
                     topic = str(item.get("mqtt") or "").strip()
                     if not topic:
                         continue
@@ -118,9 +137,7 @@ class DeviceRegistry:
                 if not cloud and not visible:
                     continue
                 caps = []
-                for item in dev.get("capabilities", []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in self._items(dev, "capabilities"):
                     block = {
                         "type": item.get("type"),
                         "retrievable": bool(item.get("retrievable", True)),
@@ -130,9 +147,7 @@ class DeviceRegistry:
                         block["parameters"] = item["parameters"]
                     caps.append(block)
                 props = []
-                for item in dev.get("properties", []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in self._items(dev, "properties"):
                     block = {
                         "type": item.get("type"),
                         "retrievable": bool(item.get("retrievable", True)),
@@ -174,9 +189,7 @@ class DeviceRegistry:
                 caps = []
                 props = []
                 reachable = True
-                for item in dev.get("capabilities", []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in self._items(dev, "capabilities"):
                     topic = str(item.get("mqtt") or "")
                     raw = self._mqtt_cache.get(topic)
                     if raw is None:
@@ -188,9 +201,7 @@ class DeviceRegistry:
                     )
                     if block:
                         caps.append(block)
-                for item in dev.get("properties", []) or []:
-                    if not isinstance(item, dict):
-                        continue
+                for item in self._items(dev, "properties"):
                     topic = str(item.get("mqtt") or "")
                     raw = self._mqtt_cache.get(topic)
                     if raw is None:
