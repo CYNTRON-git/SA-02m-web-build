@@ -157,7 +157,7 @@ install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 # composition. Keep this ordered list in sync with tests/test_entry_surface.py
 # EXPECTED_MODULES and scripts/update-www-only.sh.
 for f in bridge_serial.py bridge_fmb.py bridge_meta.py bridge_mqtt.py bridge_mr02m_map.py \
-         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py; do
+         bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
 done
 # Shared Carel register map (imported by bridge_carel.py and mqtt_bus_scan.py).

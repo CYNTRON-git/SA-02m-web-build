@@ -391,7 +391,7 @@ if [ -d "$BRIDGE_DIR" ] && [ -f "$MQTT_OPT/modbus_mqtt_bridge.py" ]; then
     # file (sources may transit with CRLF). Keep the list in sync with
     # tests/test_entry_surface.py EXPECTED_MODULES and scripts/05-mqtt.sh.
     for f in bridge_serial.py bridge_fmb.py bridge_meta.py bridge_mqtt.py bridge_mr02m_map.py \
-             bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py; do
+             bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py; do
         if [ -f "$MQTT_OPT/$f" ]; then
             install -m 0755 -o root -g root "$MQTT_OPT/$f" "$BRIDGE_DIR/$f"
             sed -i 's/\r$//' "$BRIDGE_DIR/$f" 2>/dev/null || true

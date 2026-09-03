@@ -52,6 +52,7 @@ import modbus_mqtt_bridge as bridge  # noqa: E402
 # it exactly: a module added later must be declared here AND in both deploy
 # scripts (scripts/05-mqtt.sh, scripts/update-www-only.sh).
 EXPECTED_MODULES = [
+    "bridge_carel",
     "bridge_device",
     "bridge_dtv_ce",
     "bridge_fmb",
@@ -126,6 +127,25 @@ class TestFrozenSurface(unittest.TestCase):
 class TestSubmoduleImportSmoke(unittest.TestCase):
     def _found_modules(self) -> list[str]:
         return sorted(p.stem for p in BRIDGE_DIR.glob("bridge_*.py"))
+
+    def test_every_module_travels_in_both_deploy_paths(self):
+        """A bridge module absent from a deploy script is a dead board.
+
+        `scripts/05-mqtt.sh` (installer) and `scripts/update-www-only.sh` (the
+        www/bridge refresh) both copy an EXPLICIT list of bridge modules. Until
+        1.0.6.31 the comment above claimed this list was kept in sync with them
+        and nothing checked it: a module added here and forgotten there imports
+        fine in CI and raises ImportError on the device the moment the entry
+        module composes the poller table.
+        """
+        repo = BRIDGE_DIR.parent.parent
+        for script in ("scripts/05-mqtt.sh", "scripts/update-www-only.sh"):
+            text = (repo / script).read_text(encoding="utf-8", errors="replace")
+            self.assertTrue(text.strip(), "%s is empty or unreadable" % script)
+            missing = [n for n in EXPECTED_MODULES if "%s.py" % n not in text]
+            # assertIn would dump the whole script into the failure message.
+            self.assertEqual([], missing,
+                             "%s never copies: %s" % (script, ", ".join(missing)))
 
     def test_split_modules_import_cleanly(self):
         found = self._found_modules()

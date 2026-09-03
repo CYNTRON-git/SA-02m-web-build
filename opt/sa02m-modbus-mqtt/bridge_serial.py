@@ -73,9 +73,15 @@ def _modbus_read_frame_len(data: bytes) -> int:
     func = data[1]
     if func & 0x80:
         return 5
-    if func in (0x01, 0x02, 0x03, 0x04):
+    if func in (0x01, 0x02, 0x03, 0x04, 0x11):
+        # FC17 Report Slave ID is byte-count driven like a read. A Carel
+        # c.pCOmini answers ~206 bytes; without this the reader waits out the
+        # whole timeout and the reply is cut at the first quiet gap.
         return 3 + int(data[2]) + 2
     if func in (0x05, 0x06):
+        return 8
+    if func == 0x10:
+        # FC16 echo: [addr][0x10][start hi][start lo][qty hi][qty lo][crc]
         return 8
     return 0
 
@@ -91,6 +97,25 @@ def build_write_coil(addr: int, coil: int, value: bool) -> bytes:
 
 def build_write_register(addr: int, reg: int, value: int) -> bytes:
     return _append_crc(bytes([addr, 0x06, reg >> 8, reg & 0xFF, value >> 8, value & 0xFF]))
+
+
+def build_write_registers(addr: int, start: int, values) -> bytes:
+    """FC16 Write Multiple Registers — needed for a 32-bit value that must land
+    in one transaction (a uAria float32 setpoint spans two words; writing them
+    one at a time makes the PLC act on a half-updated number)."""
+    vals = [int(v) & 0xFFFF for v in values]
+    if not 1 <= len(vals) <= 123:
+        raise ValueError("write_registers: 1..123 registers, got %d" % len(vals))
+    body = bytes([addr, 0x10, start >> 8, start & 0xFF,
+                  len(vals) >> 8, len(vals) & 0xFF, len(vals) * 2])
+    for v in vals:
+        body += bytes([v >> 8, v & 0xFF])
+    return _append_crc(body)
+
+
+def build_report_slave_id(addr: int) -> bytes:
+    """FC17 Report Slave ID — the only identity a Carel PLC answers."""
+    return _append_crc(bytes([addr, 0x11]))
 
 
 def build_fmb5(sub: int) -> bytes:
@@ -316,6 +341,42 @@ class ModbusSerial:
         finally:
             with self._prio_lock:
                 self._write_waiting -= 1
+
+    def write_registers(self, addr: int, start: int, values) -> None:
+        """FC16 — one transaction for a multi-word value (uAria float32)."""
+        with self._prio_lock:
+            self._write_waiting += 1
+        try:
+            with self._lock:
+                self._transact(build_write_registers(addr, start, values), 8)
+        finally:
+            with self._prio_lock:
+                self._write_waiting -= 1
+
+    def report_slave_id(self, addr: int, timeout: float = 0.7) -> bytes:
+        """FC17 payload (identity blob), or b"" when the device does not answer.
+
+        The reply is long (a c.pCOmini sends ~206 bytes = ~118 ms of wire time at
+        19200) so the read timeout is raised for this one transaction; the caller
+        gets bytes, never an exception, because "no FC17" is the normal answer
+        for every device that is not a Carel.
+        """
+        self._yield_to_writer()
+        with self._lock:
+            saved = self._ser.timeout if self._ser is not None else None
+            try:
+                self._ensure_open()
+                if self._ser is not None:
+                    self._ser.timeout = max(float(saved or 0.0), float(timeout))
+                resp = self._transact(build_report_slave_id(addr), 5)
+            except Exception:
+                return b""
+            finally:
+                if self._ser is not None and saved is not None:
+                    self._ser.timeout = saved
+        if len(resp) < 5 or resp[1] != 0x11:
+            return b""
+        return bytes(resp[3 : 3 + resp[2]])
 
     # --- Fast Modbus ----------------------------------------------------------
 
