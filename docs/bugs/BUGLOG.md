@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-04 09:45] branch: 1.0.6.35
+
+**Файл(ы):** `tools/imaging/ssh-flash-safe.sh`, `scripts/dev/test-alice-image-identity.sh`, `docs/contracts/image-identity-reset.md`
+**Тип:** Уязвимость (межарендная утечка)
+**Описание:** Прошивка через `ssh-flash-safe.sh` монтировала свежий rootfs только ради watchdog и не стирала облачную/Alice-идентичность исходного образа.
+**Причина:** Скрипт считался путём починки watchdog, не приёмником; контракт §4 явно исключал его.
+**Исправление:** На смонтированном `$MNT` вызываются те же offline-wipe, что у `patch-firstboot-image.sh` (`wipe_cloud_enrollment` / `wipe_alice_enrollment`). Площадка 5 контракта; гейт `alice-image-identity`.
+
+---
+
 ## [2026-09-04 07:48] branch: 1.0.6.34
 
 **Файл(ы):** `scripts/11-devices.sh`; стенд `hardpy_tests/services/stand_web_api.py`

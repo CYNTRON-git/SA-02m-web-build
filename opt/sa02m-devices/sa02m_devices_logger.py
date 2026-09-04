@@ -18,6 +18,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from sa02m_devices.device_history_db import (  # noqa: E402
+    insert_carel_sample,
     insert_mr_sample,
     insert_sample,
     purge_old,
@@ -120,6 +121,7 @@ def main() -> int:
             # no extra bus/MQTT I/O; only the SQLite write is added.
             if now_m - last_mr >= MR_INTERVAL_S:
                 insert_mr_sample(snap, path=target.active_path)
+                insert_carel_sample(snap, path=target.active_path)
                 last_mr = now_m
             try:
                 from sa02m_devices.device_events import detect_ce_events
@@ -139,10 +141,16 @@ def main() -> int:
             if now - last_purge >= PURGE_EVERY_S:
                 stats = purge_old(path=target.active_path)
                 last_purge = now
-                if stats["dtv_deleted"] or stats["ce_deleted"] or stats.get("mr_deleted"):
+                if (
+                    stats["dtv_deleted"]
+                    or stats["ce_deleted"]
+                    or stats.get("mr_deleted")
+                    or stats.get("carel_deleted")
+                ):
                     print(
                         f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']} "
-                        f"mr={stats.get('mr_deleted', 0)}",
+                        f"mr={stats.get('mr_deleted', 0)} "
+                        f"carel={stats.get('carel_deleted', 0)}",
                         flush=True,
                     )
         except Exception as exc:  # noqa: BLE001

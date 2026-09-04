@@ -8,6 +8,12 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-04 **[LOW] L4 flasher tape UI waits for hardware.** Backend
+  (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3
+  are ready; frontend tabs are not wired, and `scanner.py` still returns false
+  for `RGBW_WS2812` («окно ещё нет»). Bench has no type-120 on any COM. Do not
+  invent a five-tab window against a missing module — verify on hardware first.
+
 - [OPEN] 2026-08-27 **[MED] The action path writes the commanded value into our own
   state cache, so a failed command is indistinguishable from a successful one.**
   `device_registry.apply_actions` does `self._mqtt_cache[topic] = payload` as it builds
@@ -37,14 +43,9 @@ worklist collapsed into one home).
   safe-state watchdog. Next step is a register comparison between addr=11 and addr=14
   in the MR-02m firmware project; do not guess at the register map from this repo.
 
-- [OPEN] 2026-08-27 **[MED] `ssh-flash-safe.sh` resets neither cloud nor Alice identity
-  (cloud-parity gap).** It loop-mounts a freshly written rootfs (`:119-179`) — the same
-  moment `patch-firstboot-image.sh` uses to clear enrollment — but performs no identity
-  reset at all. So a board flashed through THAT path inherits whatever the source image
-  carried, bypassing both the cloud twin's fix (2026-07-31) and the Alice one (1.0.6.20).
-  Deliberately left outside 1.0.6.20's fence (different script, different acceptance);
-  named by that build. Fix direction: call the same two wipes at the existing mount, or
-  state in the script header why the path is exempt.
+- [RESOLVED] 2026-09-04 **`ssh-flash-safe.sh` now wipes cloud and Alice identity**
+  on the loop-mounted rootfs after `dd` (same offline path set as
+  `patch-firstboot-image.sh`). Contract §4 site 5; gate `alice-image-identity`.
 - [OPEN] 2026-08-27 **[LOW] `cleanup-donor.sh:140` DENY bypass pattern.** The
   `--purge-update-state` branch carries a `case` arm `/etc/sa02m-update/trusted-keys|/*)`
   whose `|/*` alternative matches ANY absolute path, so the arm is far wider than its

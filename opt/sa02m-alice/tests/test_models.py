@@ -307,5 +307,46 @@ class TestDuplicateInstances(unittest.TestCase):
         self.assertEqual(len(out["properties"]), 6)
 
 
+class TestCarelVentilationDefault(unittest.TestCase):
+    """Carel MQTT bindings must not stay other/generic after validate."""
+
+    def test_other_generic_becomes_ventilation_fan(self):
+        dev = {
+            "id": "carel-pcomini",
+            "name": "Карел c.pCOmini",
+            "type": "devices.types.other",
+            "icon": "generic",
+            "capabilities": [{
+                "type": "devices.capabilities.on_off",
+                "mqtt": "/devices/carel-COM3-1/controls/unit_on",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {"instance": "on"},
+            }],
+            "properties": [{
+                "type": "devices.properties.float",
+                "mqtt": "/devices/carel-COM3-1/controls/supply_temp",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {
+                    "instance": "temperature",
+                    "unit": "unit.temperature.celsius",
+                },
+            }],
+        }
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.ventilation")
+        self.assertEqual(out["icon"], "fan")
+
+    def test_non_carel_other_untouched(self):
+        dev = _switch_device()
+        dev["type"] = "devices.types.other"
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.other")
+        self.assertNotIn("icon", out)
+
+
 if __name__ == "__main__":
     unittest.main()

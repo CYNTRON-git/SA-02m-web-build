@@ -269,6 +269,21 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     return out, None
 
 
+def _carel_mqtt_bound(dev: Dict[str, Any]) -> bool:
+    """True when any binding topic is a Carel AHU control (carel-COM…)."""
+    for key in ("capabilities", "properties"):
+        items = dev.get(key) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mqtt = str(item.get("mqtt") or "")
+            if mqtt.startswith("/devices/carel-"):
+                return True
+    return False
+
+
 def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(dev, dict):
         return None, "device must be an object"
@@ -288,6 +303,11 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
         if not dtype.startswith("devices.types."):
             return None, "invalid device type"
         out["type"] = dtype
+        # Carel AHU bindings default to the ventilation tile (contract
+        # carel-ahu.md §6). A live other/generic widget must not come back
+        # after the next save — the board's type change is not in git.
+        if _carel_mqtt_bound(out) and dtype == "devices.types.other":
+            out["type"] = "devices.types.ventilation"
     if "room_id" in out and out["room_id"] not in (None, ""):
         if not _ID_RE.match(str(out["room_id"])):
             return None, "invalid room_id"
@@ -329,4 +349,6 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
             out[key] = cleaned
         else:
             out.setdefault(key, [])
+    if _carel_mqtt_bound(out) and out.get("icon") in (None, "", "generic"):
+        out["icon"] = "fan"
     return out, None

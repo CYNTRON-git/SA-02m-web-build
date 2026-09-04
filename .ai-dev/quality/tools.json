@@ -424,7 +424,7 @@
       "config": null,
       "run": "bash scripts/dev/test-alice-image-identity.sh",
       "beat": "build",
-      "covers": ["tools/imaging/reset-alice-enrollment.sh", "tools/imaging/stream-after-cleanup.sh", "tools/imaging/patch-firstboot-image.sh", "tools/imaging/autorun.sh", "tools/imaging/autorun-fel.sh", "tools/imaging/cleanup-donor.sh", "etc/sa02m-factory-defaults/lists/preserve.list", "etc/sa02m-factory-reset-runner.sh", "docs/contracts/image-identity-reset.md", "opt/sa02m-alice/sa02m_alice/common/constants.py", "scripts/dev/test-alice-image-identity.sh"],
+      "covers": ["tools/imaging/reset-alice-enrollment.sh", "tools/imaging/stream-after-cleanup.sh", "tools/imaging/patch-firstboot-image.sh", "tools/imaging/autorun.sh", "tools/imaging/autorun-fel.sh", "tools/imaging/ssh-flash-safe.sh", "tools/imaging/cleanup-donor.sh", "etc/sa02m-factory-defaults/lists/preserve.list", "etc/sa02m-factory-reset-runner.sh", "docs/contracts/image-identity-reset.md", "opt/sa02m-alice/sa02m_alice/common/constants.py", "scripts/dev/test-alice-image-identity.sh"],
       "init": "bash + grep + sed + awk + mktemp (present everywhere the project builds); python3 optional (adds the JSON-parse assertion) — run on demand: bash scripts/dev/test-alice-image-identity.sh"
     },
     {

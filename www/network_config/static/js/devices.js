@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
 
 (function () {
   "use strict";
@@ -10,7 +10,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
   let timer = null;
   let chartSeries = [];
   let chartMeta = { label: "", unit: "", range: "1h" };
-  /** kind: "dtv" | "ce" */
+  /** kind: "dtv" | "ce" | "mr" | "carel" */
   let activeDevice = "dtv";
   /** MQTT/cache id, e.g. ce02m3-COM2-14 */
   let activeDeviceId = "";
@@ -43,6 +43,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     '<svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 10-14h-7l0-6z"/></svg>';
   const ICO_MR =
     '<svg viewBox="0 0 24 24"><path d="M3 12c2-6 4-6 6 0s4 6 6 0 4-6 6 0"/></svg>';
+  const ICO_CAREL =
+    '<svg viewBox="0 0 24 24"><path d="M4 14h16v2H4zm2-4h3v8H6zm5-4h3v12h-3zm5 6h3v6h-3z"/></svg>';
 
   const DTV_METRICS = [
     ["room_temp", "Температура"],
@@ -59,6 +61,17 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     ["power", "Мощность"],
     ["frequency_hz", "Частота"],
     ["energy_kwh_import", "Энергия"],
+  ];
+  const CAREL_METRICS = [
+    ["supply_temp", "Приток"],
+    ["return_water_temp", "Обратка"],
+    ["room_temp", "Помещение"],
+    ["outdoor_temp", "Улица"],
+    ["setpoint", "Уставка"],
+    ["heat_valve", "Клапан"],
+    ["fan_supply", "Приток вент."],
+    ["fan_exhaust", "Вытяжка"],
+    ["fan_step", "Ступень вент."],
   ];
 
   const COLORS = [
@@ -136,7 +149,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     const dtv = Array.isArray(data.dtv) ? data.dtv : data.dtv ? [data.dtv] : [];
     const ce = Array.isArray(data.ce) ? data.ce : data.ce ? [data.ce] : [];
     const mr = Array.isArray(data.mr) ? data.mr : data.mr ? [data.mr] : [];
-    return [...dtv, ...ce, ...mr];
+    const carel = Array.isArray(data.carel) ? data.carel : data.carel ? [data.carel] : [];
+    return [...dtv, ...ce, ...mr, ...carel];
   }
 
   /* MR-02m analog card body: fixed grid of ai_count cells (a disabled channel
@@ -323,6 +337,26 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
       .join("");
   }
 
+  function buildCarelMetricsHtml() {
+    const rows = [
+      ["plant", "plant", "", "Состояние"],
+      ["supply_temp", "supply", "°C", "Приток"],
+      ["return_water_temp", "return", "°C", "Обратка"],
+      ["setpoint", "setpoint", "°C", "Уставка"],
+      ["heat_valve", "valve", "%", "Клапан"],
+      ["fan", "fan", "", "Вентилятор"],
+    ];
+    return rows
+      .map(
+        ([metric, key, unit, lbl]) =>
+          `<div class="dev-kpi" data-metric="${metric}" data-key="${key}">` +
+          `<span class="dev-kpi-lbl">${lbl}</span>` +
+          `<span class="dev-kpi-row"><span class="dev-kpi-val" data-f="${key}">—</span>` +
+          `<span class="dev-kpi-unit" data-u="${key}">${unit}</span></span></div>`
+      )
+      .join("");
+  }
+
   /* Custom device names (pencil rename), stored per browser keyed by device id.
      Overrides the backend label «… № 3 порт 4» without touching the widget config. */
   const CUSTOM_NAMES_KEY = "dev-custom-names";
@@ -363,22 +397,36 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     if (titleEl) titleEl.textContent = names[id] || def;
   }
 
+  function cardKind(d) {
+    const k = d && d.kind;
+    if (k === "ce" || k === "mr" || k === "carel" || k === "dtv") return k;
+    return "dtv";
+  }
+
   function buildCard(d) {
-    const kind = d.kind === "ce" ? "ce" : d.kind === "mr" ? "mr" : "dtv";
+    const kind = cardKind(d);
     const isMr = kind === "mr";
+    const isCarel = kind === "carel";
     const id = String(d.id || "");
     const title = d.label || d.title || id;
     const el = document.createElement("article");
     el.className =
       "widget dev-card" +
-      (kind === "dtv" ? " dev-card--dtv" : isMr ? " dev-card--mr" : "");
+      (kind === "dtv"
+        ? " dev-card--dtv"
+        : isMr
+        ? " dev-card--mr"
+        : isCarel
+        ? " dev-card--carel"
+        : "");
     el.dataset.deviceId = id;
     el.dataset.kind = kind;
     // Every card opens the history modal (MR-02m AI included since 1.0.5.85).
     el.setAttribute("role", "button");
     el.tabIndex = 0;
     el.title = "Открыть историю";
-    const ico = kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : ICO_CE;
+    const ico =
+      kind === "dtv" ? ICO_DTV : isMr ? ICO_MR : isCarel ? ICO_CAREL : ICO_CE;
     let metricsCls = "dev-metrics";
     let metricsHtml;
     if (isMr) {
@@ -386,6 +434,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
       metricsHtml = buildMrMetricsHtml(d);
     } else if (kind === "dtv") {
       metricsHtml = buildDtvMetricsHtml();
+    } else if (isCarel) {
+      metricsHtml = buildCarelMetricsHtml();
     } else {
       metricsHtml = buildCeMetricsHtml();
     }
@@ -507,7 +557,13 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
       row.innerHTML =
         `<span class="dev-add-item-title">${escapeHtml(d.label || id)}</span>` +
         `<span class="dev-add-item-meta muted">${escapeHtml(
-          (d.kind === "ce" ? "СЭ-02м-3" : "ДТВ") +
+          (d.kind === "ce"
+            ? "СЭ-02м-3"
+            : d.kind === "carel"
+            ? "Carel"
+            : d.kind === "mr"
+            ? "MR-02m"
+            : "ДТВ") +
             (d.online ? " · online" : " · offline")
         )}</span>` +
         `<span class="dev-add-item-action">Добавить</span>`;
@@ -563,6 +619,24 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     }
     const al = card.querySelector('[data-role="alerts"]');
     if (al) al.innerHTML = alertBadgeHtml(d.alerts);
+    if (d.kind === "carel" || card.dataset.kind === "carel") {
+      setField(card, "plant", d.plant_state_text || "—");
+      setField(card, "supply", fmt(d.supply_temp, 1));
+      setField(card, "return", fmt(d.return_water_temp, 1));
+      setField(card, "setpoint", fmt(d.setpoint, 1));
+      setField(card, "valve", fmt(d.heat_valve, 0));
+      const fanEl = card.querySelector('[data-f="fan"]');
+      const fanUnit = card.querySelector('[data-u="fan"]');
+      if (d.family === "uaria") {
+        if (fanEl) fanEl.textContent = fmt(d.fan_step, 0);
+        if (fanUnit) fanUnit.textContent = "";
+      } else {
+        if (fanEl) fanEl.textContent = fmt(d.fan_supply, 0);
+        if (fanUnit) fanUnit.textContent = "%";
+      }
+      card.classList.toggle("dev-has-alarm", Number(d.alarm) === 1);
+      return;
+    }
     if (d.kind === "mr" || card.dataset.kind === "mr") {
       const channels = Array.isArray(d.channels) ? d.channels : [];
       channels.forEach((c) => {
@@ -741,7 +815,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
           empty.textContent =
             availableDevices.length > 0
               ? "Нет отображаемых виджетов. Нажмите «Добавить виджет», чтобы вернуть удалённые, или добавьте устройства на вкладке MQTT."
-              : "Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
+              : "Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.";
         }
       })
       .catch(() => {})
@@ -928,6 +1002,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     if (activeDevice === "mr") {
       // One MR table = all enabled AI channels (columns), regardless of mode.
       params.kind = "mr";
+    } else if (activeDevice === "carel") {
+      params.kind = "carel";
     } else if (modalMode === "overview") {
       params.group = activeDevice === "dtv" ? "climate" : "energy";
     } else {
@@ -937,8 +1013,13 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     const status = $("dev-chart-status");
     if (status) status.textContent = "Экспорт Excel";
     const fallback =
-      (activeDevice === "dtv" ? "dtv" : activeDevice === "mr" ? "mr" : "ce") +
-      "_export.xlsx";
+      (activeDevice === "dtv"
+        ? "dtv"
+        : activeDevice === "mr"
+        ? "mr"
+        : activeDevice === "carel"
+        ? "carel"
+        : "ce") + "_export.xlsx";
     fetch(url, { credentials: "same-origin", cache: "no-store" })
       .then((r) => {
         if (!r.ok) throw new Error("HTTP " + r.status);
@@ -2075,7 +2156,14 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
   }
 
   function openModal(kind, deviceId, label, metricId) {
-    activeDevice = kind === "ce" ? "ce" : kind === "mr" ? "mr" : "dtv";
+    activeDevice =
+      kind === "ce"
+        ? "ce"
+        : kind === "mr"
+        ? "mr"
+        : kind === "carel"
+        ? "carel"
+        : "dtv";
     activeDeviceId = String(deviceId || "");
     activeDeviceLabel = String(label || "");
     const metrics =
@@ -2083,6 +2171,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
         ? mrMetricsFor(deviceId)
         : activeDevice === "dtv"
         ? DTV_METRICS
+        : activeDevice === "carel"
+        ? CAREL_METRICS
         : CE_METRICS;
     const ids = metrics.map((m) => m[0]);
     activeMetric =
@@ -2103,6 +2193,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
           ? "ДТВ-RS-485"
           : activeDevice === "ce"
           ? "СЭ-02м-3"
+          : activeDevice === "carel"
+          ? "Carel"
           : "MR-02m";
       titleEl.textContent = (activeDeviceLabel || fallback) + " · история";
     }
@@ -2192,12 +2284,16 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
 
     if (modalMode === "overview") {
       const isMr = activeDevice === "mr";
-      const overviewQs = isMr
-        ? { kind: "mr", group: "all", ...rangeReqParams() }
-        : {
-            group: activeDevice === "dtv" ? "climate" : "energy",
-            ...rangeReqParams(),
-          };
+      const isCarel = activeDevice === "carel";
+      const overviewQs =
+        isMr
+          ? { kind: "mr", group: "all", ...rangeReqParams() }
+          : isCarel
+          ? { kind: "carel", ...rangeReqParams() }
+          : {
+              group: activeDevice === "dtv" ? "climate" : "energy",
+              ...rangeReqParams(),
+            };
       const url = "/api/devices/history?" + historyQs(overviewQs);
       fetchJson(url, fetchOpts)
         .then((data) => {
@@ -2216,6 +2312,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
                 ? "Климат · Общее"
                 : activeDevice === "mr"
                 ? "MR-02m · Общее"
+                : activeDevice === "carel"
+                ? "Carel · Общее"
                 : "Энергия · Общее",
             unit: "",
             range: rangeLabelKey(),
@@ -2256,6 +2354,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.34";
     const metricQs =
       activeDevice === "mr"
         ? { kind: "mr", channel: mrChNum(activeMetric), ...rangeReqParams() }
+        : activeDevice === "carel"
+        ? { kind: "carel", metric: activeMetric, ...rangeReqParams() }
         : { metric: activeMetric, ...rangeReqParams() };
     const url = "/api/devices/history?" + historyQs(metricQs);
     fetchJson(url, fetchOpts)

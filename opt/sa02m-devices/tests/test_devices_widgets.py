@@ -50,6 +50,36 @@ def test_mr_passes_through_view_and_devices(tmp_path: Path):
     assert [d["id"] for d in view["devices"]] == ["mr02m-COM4-12"]
 
 
+def test_carel_hide_and_restore(tmp_path: Path):
+    """Carel cards are removable like ДТВ, unlike display-only MR."""
+    cfg = tmp_path / "widgets.json"
+    snap = {
+        "ok": True,
+        "dtv": [],
+        "ce": [],
+        "mr": [{"id": "mr02m-COM4-12", "kind": "mr", "ok": True}],
+        "carel": [{
+            "id": "carel-COM3-1",
+            "kind": "carel",
+            "label": "Carel c.pCOmini № 1 порт 3",
+            "ok": True,
+        }],
+    }
+    r = remove_widget("carel-COM3-1", device=snap["carel"][0], path=cfg)
+    assert r["ok"] and "carel-COM3-1" in r["removed_ids"]
+    view = apply_widgets_view(snap, path=cfg)
+    assert view["carel"] == []
+    assert [d["id"] for d in view["mr"]] == ["mr02m-COM4-12"]
+    assert [d["id"] for d in view["devices"]] == ["mr02m-COM4-12"]
+    assert view["available"][0]["id"] == "carel-COM3-1"
+    arch = filter_for_archive(snap, path=cfg)
+    assert arch["carel"] == []
+    add_widget("carel-COM3-1", path=cfg)
+    restored = apply_widgets_view(snap, path=cfg)
+    assert [d["id"] for d in restored["carel"]] == ["carel-COM3-1"]
+    assert restored["available"] == []
+
+
 def test_add_restores_widget(tmp_path: Path):
     cfg = tmp_path / "widgets.json"
     snap = {

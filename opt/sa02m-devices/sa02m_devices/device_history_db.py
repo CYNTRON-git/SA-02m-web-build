@@ -1,11 +1,10 @@
-"""Архив телеметрии ДТВ / СЭ-02м-3 / MR-02m AI (SQLite, окно 30 суток).
+"""Архив телеметрии ДТВ / СЭ-02м-3 / MR-02m AI / Carel (SQLite, окно 30 суток).
 
-По умолчанию пишутся все устройства из live_snapshot (dtv[] / ce[] / mr[]).
-ДТВ/СЭ — широкие таблицы, PK (ts, device_id), пишутся каждый тик (1 Гц USB/SD,
-5 с eMMC). MR-02m AI — «длинная» таблица mr_samples(ts, device_id, ch, value,
-unit), PK (ts, device_id, ch): число каналов и единица на канал динамические,
-пишется отдельной каденцией (10 с, insert_mr_sample). Путь: USB → SD → eMMC
-(см. stand_storage_path).
+По умолчанию пишутся все устройства из live_snapshot (dtv[] / ce[] / mr[] /
+carel[]). ДТВ/СЭ — широкие таблицы, PK (ts, device_id), пишутся каждый тик
+(1 Гц USB/SD, 5 с eMMC). MR-02m AI и Carel — «длинные» таблицы
+(ts, device_id, ключ, value, unit), пишутся отдельной каденцией (10 с).
+Путь: USB → SD → eMMC (см. stand_storage_path).
 """
 
 from __future__ import annotations
@@ -405,6 +404,28 @@ _CREATE_MR = """
         PRIMARY KEY (ts, device_id, ch)
     );
 """
+_CREATE_CAREL = """
+    CREATE TABLE IF NOT EXISTS carel_samples (
+        ts REAL NOT NULL,
+        device_id TEXT NOT NULL DEFAULT '',
+        metric TEXT NOT NULL,
+        value REAL,
+        unit TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (ts, device_id, metric)
+    );
+"""
+
+CAREL_METRIC_META: dict[str, tuple[str, str, int]] = {
+    "supply_temp": ("Приток", "°C", 1),
+    "return_water_temp": ("Обратка", "°C", 1),
+    "room_temp": ("Помещение", "°C", 1),
+    "outdoor_temp": ("Улица", "°C", 1),
+    "setpoint": ("Уставка", "°C", 1),
+    "heat_valve": ("Клапан", "%", 0),
+    "fan_supply": ("Приток вент.", "%", 0),
+    "fan_exhaust": ("Вытяжка", "%", 0),
+    "fan_step": ("Ступень вент.", "", 0),
+}
 
 
 # Per-sensor ДТВ archive columns (added to dtv_samples via idempotent ALTER-ADD,
@@ -566,7 +587,7 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     journal, sync = journaling_for_fstype(fst)
     conn.execute(f"PRAGMA journal_mode={journal}")
     conn.execute(f"PRAGMA synchronous={sync}")
-    conn.executescript(_CREATE_DTV + _CREATE_CE + _CREATE_MR)
+    conn.executescript(_CREATE_DTV + _CREATE_CE + _CREATE_MR + _CREATE_CAREL)
     with conn:
         if _needs_pk_migration(conn, "dtv_samples"):
             _migrate_table(conn, "dtv_samples", _CREATE_DTV)
@@ -587,6 +608,10 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts "
             "ON mr_samples(device_id, ch, ts)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_carel_device_metric_ts "
+            "ON carel_samples(device_id, metric, ts)"
         )
     return conn
 
@@ -730,6 +755,41 @@ def insert_mr_sample(snapshot: dict[str, Any], path: Path | None = None) -> None
         conn.close()
 
 
+def _insert_carel(conn: sqlite3.Connection, ts: float, carel: dict[str, Any]) -> None:
+    """Одна строка на именованную метрику с конечным значением."""
+    device_id = str(carel.get("id") or "")
+    rows: list[tuple[Any, ...]] = []
+    for metric, (_label, unit, _dec) in CAREL_METRIC_META.items():
+        val = carel.get(metric)
+        if val is None or not _number_is_finite(val):
+            continue
+        try:
+            rows.append((ts, device_id, metric, float(val), unit))
+        except (TypeError, ValueError):
+            continue
+    if rows:
+        conn.executemany(
+            "INSERT OR REPLACE INTO carel_samples(ts, device_id, metric, value, unit)"
+            " VALUES (?,?,?,?,?)",
+            rows,
+        )
+
+
+def insert_carel_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:
+    """Записать Carel AHU из снимка (та же 10 с каденция, что у MR)."""
+    ts = float(snapshot.get("ts") or time.time())
+    carel_list = _as_device_list(snapshot.get("carel"))
+    if not carel_list:
+        return
+    conn = _connect(path)
+    try:
+        with conn:
+            for carel in carel_list:
+                _insert_carel(conn, ts, carel)
+    finally:
+        conn.close()
+
+
 def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
     """При размере active ≥ 3 ГиБ — архивировать и создать новый active."""
     p = db_path(path)
@@ -797,6 +857,9 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             c3 = conn.execute(
                 "DELETE FROM mr_samples WHERE ts < ?", (cutoff,)
             ).rowcount
+            c4 = conn.execute(
+                "DELETE FROM carel_samples WHERE ts < ?", (cutoff,)
+            ).rowcount
         ev_deleted = 0
         try:
             from sa02m_devices.device_events import purge_events
@@ -808,6 +871,7 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             "dtv_deleted": int(c1 or 0),
             "ce_deleted": int(c2 or 0),
             "mr_deleted": int(c3 or 0),
+            "carel_deleted": int(c4 or 0),
             "events_deleted": int(ev_deleted),
             "cutoff": cutoff,
         }
@@ -1284,6 +1348,184 @@ def history_mr(
     }
 
 
+def _query_series_carel(
+    conn: sqlite3.Connection,
+    t0: float,
+    t1: float,
+    bucket_s: float,
+    device_id: str,
+    metric_filter: str | None = None,
+) -> list[dict[str, Any]]:
+    """Серии Carel: [{field, label, unit, points}] — единица last-wins как у MR."""
+    where = " WHERE ts >= ? AND ts <= ? AND device_id = ? AND value IS NOT NULL"
+    params: list[Any] = [t0, t1, device_id]
+    if metric_filter:
+        where += " AND metric = ?"
+        params.append(metric_filter)
+
+    by_m: dict[str, list[list[Any]]] = {}
+    if bucket_s <= 1.0:
+        sql = f"SELECT metric, ts, value FROM carel_samples{where} ORDER BY metric, ts"
+        rows = conn.execute(sql, params).fetchall()
+    else:
+        sql = (
+            "SELECT metric, cast(ts / ? as integer) * ? AS bucket, avg(value)"
+            f" FROM carel_samples{where}"
+            " GROUP BY metric, bucket ORDER BY metric, bucket"
+        )
+        rows = conn.execute(sql, [bucket_s, bucket_s, *params]).fetchall()
+    for row in rows:
+        if row[2] is None:
+            continue
+        try:
+            metric = str(row[0] or "")
+            ts_ms = int(float(row[1]) * 1000)
+            val = float(row[2])
+        except (TypeError, ValueError):
+            continue
+        if not metric:
+            continue
+        by_m.setdefault(metric, []).append([ts_ms, val])
+
+    unit_where = " WHERE ts >= ? AND ts <= ? AND device_id = ?"
+    unit_params: list[Any] = [t0, t1, device_id]
+    if metric_filter:
+        unit_where += " AND metric = ?"
+        unit_params.append(metric_filter)
+    unit_by_m: dict[str, tuple[str, float]] = {}
+    for row in conn.execute(
+        f"SELECT metric, unit, MAX(ts) FROM carel_samples{unit_where} GROUP BY metric",
+        unit_params,
+    ).fetchall():
+        unit_by_m[str(row[0] or "")] = (str(row[1] or ""), float(row[2] or 0.0))
+
+    out: list[dict[str, Any]] = []
+    for metric in sorted(by_m, key=lambda m: list(CAREL_METRIC_META).index(m) if m in CAREL_METRIC_META else 99):
+        meta = CAREL_METRIC_META.get(metric, (metric, "", 1))
+        unit, unit_ts = unit_by_m.get(metric, (meta[1], 0.0))
+        out.append({
+            "field": metric,
+            "label": meta[0],
+            "unit": unit or meta[1],
+            "unit_ts": unit_ts,
+            "points": by_m[metric],
+        })
+    return out
+
+
+def _carel_series_over_dbs(
+    device_id: str | None,
+    range_key: str,
+    path: Path | None,
+    metric_filter: str | None,
+    bucket_s: float | None,
+) -> tuple[list[dict[str, Any]], str, float, float]:
+    range_key = _normalize_range(range_key)
+    t0, t1, chart_bucket = resolve_time_range(range_key)
+    if bucket_s is None:
+        bucket_s = chart_bucket
+    did = (device_id or "").strip() or None
+    parts: list[list[dict[str, Any]]] = []
+    for dbfile in _read_paths(path):
+        if not dbfile.is_file():
+            continue
+        try:
+            conn = _connect(dbfile)
+        except sqlite3.Error:
+            continue
+        try:
+            if not did:
+                did = _first_device_id(conn, "carel_samples", t0, t1)
+            if not did:
+                continue
+            parts.append(
+                _query_series_carel(
+                    conn, t0, t1, bucket_s, did, metric_filter=metric_filter
+                )
+            )
+        finally:
+            conn.close()
+    return _merge_mr_series(parts), (did or ""), t0, t1
+
+
+def history_carel(
+    device_id: str | None,
+    range_key: str = "1h",
+    metric: str | None = None,
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """История одной метрики Carel — форма ответа как у history()."""
+    mid = str(metric or "").strip()
+    series, did, t0, t1 = _carel_series_over_dbs(
+        device_id, range_key, path, mid or None, bucket_s
+    )
+    range_key = _normalize_range(range_key)
+    meta = CAREL_METRIC_META.get(mid, (mid or "Carel", "", 1))
+    unit = series[0]["unit"] if series else meta[1]
+    return {
+        "ok": True,
+        "metric": mid,
+        "label": meta[0],
+        "unit": unit,
+        "decimals": meta[2],
+        "device": "carel",
+        "device_id": did,
+        "range": range_key,
+        "t0": t0,
+        "t1": t1,
+        "t0_ms": int(t0 * 1000),
+        "t1_ms": int(t1 * 1000),
+        "series": series,
+        **(storage_status() if path is None else {}),
+    }
+
+
+def history_carel_batch(
+    device_id: str | None,
+    range_key: str = "1h",
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """Все метрики Carel как metrics[] — форма как history_batch()."""
+    series, did, t0, t1 = _carel_series_over_dbs(
+        device_id, range_key, path, None, bucket_s
+    )
+    range_key = _normalize_range(range_key)
+    metrics = [
+        {
+            "metric": s["field"],
+            "label": s["label"],
+            "unit": s["unit"],
+            "decimals": CAREL_METRIC_META.get(s["field"], ("", "", 1))[2],
+            "device": "carel",
+            "device_id": did,
+            "series": [{
+                "field": s["field"],
+                "label": s["label"],
+                "unit": s["unit"],
+                "points": s["points"],
+            }],
+        }
+        for s in series
+    ]
+    return {
+        "ok": True,
+        "range": range_key,
+        "group": "all",
+        "device": "carel",
+        "device_id": did,
+        "t0": t0,
+        "t1": t1,
+        "t0_ms": int(t0 * 1000),
+        "t1_ms": int(t1 * 1000),
+        "metrics": metrics,
+        **(storage_status() if path is None else {}),
+    }
+
+
 def history_mr_batch(
     device_id: str | None,
     range_key: str = "1h",
@@ -1650,6 +1892,64 @@ def collect_export_table_mr(
     }
 
 
+def collect_export_table_carel(
+    range_key: str = "1h",
+    *,
+    device_id: str | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Таблица экспорта Carel (время × метрики) — форма как collect_export_table_mr()."""
+    range_key = _normalize_range(range_key)
+    bucket = export_bucket_s(range_key)
+    batch = history_carel_batch(device_id, range_key, path=path, bucket_s=bucket)
+    did = str(batch.get("device_id") or (device_id or "").strip())
+    t0 = float(batch.get("t0") or 0.0)
+    t1 = float(batch.get("t1") or 0.0)
+
+    col_fields: list[str] = []
+    col_titles: list[str] = []
+    by_ts: dict[int, dict[str, float]] = {}
+    for metric in batch.get("metrics") or []:
+        unit = str(metric.get("unit") or "").strip()
+        for ser in metric.get("series") or []:
+            field = str(ser.get("field") or "")
+            if not field:
+                continue
+            label = str(ser.get("label") or field)
+            col_fields.append(field)
+            col_titles.append(f"{label}, {unit}" if unit else label)
+            for ts_ms, val in ser.get("points") or []:
+                try:
+                    by_ts.setdefault(int(ts_ms), {})[field] = float(val)
+                except (TypeError, ValueError):
+                    continue
+
+    headers = ["Время"] + col_titles
+    rows: list[list[Any]] = []
+    for ts_ms in sorted(by_ts):
+        cells: list[Any] = [_fmt_export_ts(ts_ms / 1000.0, bucket)]
+        vals = by_ts[ts_ms]
+        for field in col_fields:
+            v = vals.get(field)
+            cells.append(None if v is None else float(v))
+        rows.append(cells)
+
+    return {
+        "ok": True,
+        "error": "",
+        "headers": headers,
+        "rows": rows,
+        "device_id": did,
+        "range": range_key,
+        "bucket_s": bucket,
+        "t0": t0,
+        "t1": t1,
+        "metric_ids": col_fields,
+        "kind": "carel",
+        "title": "Carel AHU",
+    }
+
+
 def _xml_escape(s: str) -> str:
     return (
         s.replace("&", "&amp;")
@@ -1778,12 +2078,16 @@ def export_xlsx(
 
     if kind == "mr":
         table = collect_export_table_mr(range_key, device_id=device_id, path=path)
+    elif kind == "carel":
+        table = collect_export_table_carel(range_key, device_id=device_id, path=path)
     else:
         table = collect_export_table(
             range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
         )
     stamp = _now_local().strftime("%Y%m%d_%H%M%S")
-    mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
+    mid_part = metric_id or group or (
+        "ai" if kind == "mr" else "ahu" if kind == "carel" else "data"
+    )
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
     kind = str(table.get("kind") or "device")
     filename = f"{kind}_export_{safe_id}_{mid_part}_{_range_slug(range_key)}_{stamp}.xlsx"
@@ -1877,6 +2181,8 @@ def export_text(
     """Текстовая выгрузка (TSV) — совместимость; основной формат: export_xlsx."""
     if kind == "mr":
         table = collect_export_table_mr(range_key, device_id=device_id, path=path)
+    elif kind == "carel":
+        table = collect_export_table_carel(range_key, device_id=device_id, path=path)
     else:
         table = collect_export_table(
             range_key, metric_id=metric_id, group=group, device_id=device_id, path=path
@@ -1907,7 +2213,9 @@ def export_text(
         lines.append("# (нет точек)")
     body = "\n".join(lines) + "\n"
     stamp = _now_local().strftime("%Y%m%d_%H%M%S")
-    mid_part = metric_id or group or ("ai" if kind == "mr" else "data")
+    mid_part = metric_id or group or (
+        "ai" if kind == "mr" else "ahu" if kind == "carel" else "data"
+    )
     safe_id = (str(table.get("device_id") or "device")).replace("/", "-")
     kind_part = str(table.get("kind") or "device")
     filename = f"{kind_part}_export_{safe_id}_{mid_part}_{_range_slug(range_key)}_{stamp}.txt"

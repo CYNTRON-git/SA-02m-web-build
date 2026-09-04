@@ -123,7 +123,9 @@ def handle_widgets_remove(body: dict[str, Any], qs: dict[str, list[str]]) -> tup
         return {"ok": False, "error": "укажите id"}, 400
     snap = live_snapshot()
     device = None
-    for d in list(snap.get("dtv") or []) + list(snap.get("ce") or []):
+    for d in list(snap.get("dtv") or []) + list(snap.get("ce") or []) + list(
+        snap.get("carel") or []
+    ):
         if isinstance(d, dict) and str(d.get("id") or "") == device_id:
             device = d
             break
@@ -176,6 +178,12 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
                 device_id, range_key, ch=channel
             ), 200
         return device_history_db.history_mr_batch(device_id, range_key), 200
+    if kind == "carel":
+        if metric:
+            return device_history_db.history_carel(
+                device_id, range_key, metric=metric
+            ), 200
+        return device_history_db.history_carel_batch(device_id, range_key), 200
     if group:
         return device_history_db.history_batch(
             range_key, group=group, device_id=device_id

@@ -16,8 +16,11 @@ from sa02m_devices.device_history_db import (
     export_xlsx,
     history,
     history_batch,
+    history_carel,
+    history_carel_batch,
     history_mr,
     history_mr_batch,
+    insert_carel_sample,
     insert_mr_sample,
     insert_sample,
     period_summary_ce,
@@ -468,6 +471,54 @@ def test_mr_export(tmp_path: Path):
     raw, xname = export_xlsx("1h", device_id="mr02m-COM3-7", kind="mr", path=db)
     assert xname.startswith("mr_export_") and xname.endswith(".xlsx")
     assert raw[:2] == b"PK"
+
+
+def _carel_snap(
+    ts: float,
+    *,
+    device_id: str = "carel-COM3-1",
+    supply: float = 26.5,
+    room: float | None = None,
+) -> dict:
+    return {
+        "ts": ts,
+        "carel": [{
+            "id": device_id,
+            "kind": "carel",
+            "supply_temp": supply,
+            "return_water_temp": 75.1,
+            "setpoint": 27.2,
+            "heat_valve": 12,
+            "fan_supply": 45,
+            "room_temp": room,
+            "outdoor_temp": None,
+        }],
+    }
+
+
+def test_carel_insert_history_purge_export(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(4):
+        insert_carel_sample(_carel_snap(now - 30 + i * 5, supply=26.0 + i), path=db)
+    h = history_carel("carel-COM3-1", "1h", metric="supply_temp", path=db)
+    assert h["ok"] is True and h["device"] == "carel"
+    assert h["unit"] == "°C" and h["series"] and h["series"][0]["field"] == "supply_temp"
+    assert h["series"][0]["points"]
+    # Unfitted probes write no row.
+    h_room = history_carel("carel-COM3-1", "1h", metric="room_temp", path=db)
+    assert h_room["series"] == []
+    batch = history_carel_batch("carel-COM3-1", "1h", path=db)
+    assert batch["ok"] is True and batch["device"] == "carel"
+    fields = sorted(m["metric"] for m in batch["metrics"])
+    assert "supply_temp" in fields and "room_temp" not in fields
+    insert_carel_sample(_carel_snap(now - 40 * 86400), path=db)
+    purged = purge_old(path=db, now=now)
+    assert purged["carel_deleted"] >= 1
+    body, name = export_text("1h", device_id="carel-COM3-1", kind="carel", path=db)
+    assert name.startswith("carel_export_") and "Приток" in body
+    raw, xname = export_xlsx("1h", device_id="carel-COM3-1", kind="carel", path=db)
+    assert xname.startswith("carel_export_") and raw[:2] == b"PK"
 
 
 def test_resolve_mtd_and_month_and_export(tmp_path: Path):

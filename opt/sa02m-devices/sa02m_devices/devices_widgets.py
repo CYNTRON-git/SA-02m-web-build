@@ -99,10 +99,24 @@ def removed_set(path: Path | None = None) -> set[str]:
     return set(load(path=path).get("removed_ids") or [])
 
 
+def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
+    kind = str((device or {}).get("kind") or "")
+    if kind in ("ce", "mr", "carel", "dtv"):
+        return kind
+    did = str((device or {}).get("id") or device_id or "")
+    if did.startswith("ce"):
+        return "ce"
+    if did.startswith("mr"):
+        return "mr"
+    if did.startswith("carel"):
+        return "carel"
+    return "dtv"
+
+
 def _catalog_entry(device: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(device.get("id") or ""),
-        "kind": "ce" if device.get("kind") == "ce" else "dtv",
+        "kind": _kind_name(device),
         "label": str(device.get("label") or device.get("title") or device.get("id") or ""),
         "sku": str(device.get("sku") or ""),
         "port_num": device.get("port_num"),
@@ -131,7 +145,7 @@ def remove_widget(
     elif did not in catalog:
         catalog[did] = {
             "id": did,
-            "kind": "ce" if did.startswith("ce") else "dtv",
+            "kind": _kind_name(None, did),
             "label": did,
             "removed_at": time.time(),
         }
@@ -155,7 +169,7 @@ def add_widget(device_id: str, *, path: Path | None = None) -> dict[str, Any]:
 def _device_brief(d: dict[str, Any], *, online: bool) -> dict[str, Any]:
     return {
         "id": str(d.get("id") or ""),
-        "kind": "ce" if d.get("kind") == "ce" else "dtv",
+        "kind": _kind_name(d),
         "label": str(d.get("label") or d.get("title") or d.get("id") or ""),
         "sku": str(d.get("sku") or ""),
         "port_num": d.get("port_num"),
@@ -180,18 +194,22 @@ def apply_widgets_view(
 
     dtv_all = [d for d in (out.get("dtv") or []) if isinstance(d, dict)]
     ce_all = [d for d in (out.get("ce") or []) if isinstance(d, dict)]
+    carel_all = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
     live_by_id = {
         str(d.get("id") or ""): d
-        for d in dtv_all + ce_all
+        for d in dtv_all + ce_all + carel_all
         if str(d.get("id") or "")
     }
 
     out["dtv"] = [d for d in dtv_all if str(d.get("id") or "") not in removed]
     out["ce"] = [d for d in ce_all if str(d.get("id") or "") not in removed]
+    out["carel"] = [d for d in carel_all if str(d.get("id") or "") not in removed]
     # MR-02m analog cards are display-only (not removable), so they pass through
     # unfiltered — but must stay in the rebuilt flat devices[] to match live[mr].
     out["mr"] = [d for d in (out.get("mr") or []) if isinstance(d, dict)]
-    out["devices"] = list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
+    out["devices"] = (
+        list(out["dtv"]) + list(out["ce"]) + list(out["mr"]) + list(out["carel"])
+    )
 
     available: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -205,7 +223,7 @@ def apply_widgets_view(
         else:
             available.append(
                 _device_brief(
-                    {"id": did, "kind": "ce" if did.startswith("ce") else "dtv"},
+                    {"id": did, "kind": _kind_name(None, did)},
                     online=False,
                 )
             )
@@ -240,5 +258,10 @@ def filter_for_archive(
         for d in (out.get("ce") or [])
         if isinstance(d, dict) and str(d.get("id") or "") not in removed
     ]
-    out["devices"] = list(out["dtv"]) + list(out["ce"])
+    out["carel"] = [
+        d
+        for d in (out.get("carel") or [])
+        if isinstance(d, dict) and str(d.get("id") or "") not in removed
+    ]
+    out["devices"] = list(out["dtv"]) + list(out["ce"]) + list(out["carel"])
     return out

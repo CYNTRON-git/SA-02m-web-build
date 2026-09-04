@@ -5293,6 +5293,18 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   letter-spacing: 0.02em;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Carel AHU: same 3-col / 2-row stretch as ДТВ so the tile height matches. */
+#tab-devices .dev-card--carel .dev-metrics {
+  min-height: calc(3 * 4.35rem + 2 * 8px);
+}
+#tab-devices .dev-card--carel .dev-kpi {
+  min-height: calc((3 * 4.35rem + 2 * 8px - 8px) / 2);
+  gap: 4px; padding: 10px 6px;
+}
+#tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.7rem; }
+#tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.88rem; }
+#tab-devices .dev-card--carel .dev-kpi-lbl { font-size: 0.82rem; }
+#tab-devices .dev-card--carel.dev-has-alarm .dev-pill { background: var(--danger, #c0392b); }
 /* MR-02m analog card. Cell layout: «AI<n>» index on top, value+unit, then a
    short sensor-type caption below — value-first (no order:-1 as with dev-kpi-lbl).
    Grid: 6AI6AO/6AI2AO → 3 cols × 2 rows (mr3), 12AI → 4 cols × 3 rows (mr4);
@@ -5340,6 +5352,10 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   #tab-devices .dev-card--dtv .dev-kpi { min-height: 4.35rem; }
   #tab-devices .dev-card--dtv .dev-kpi-val { font-size: 1.45rem; }
   #tab-devices .dev-card--dtv .dev-kpi-unit { font-size: 0.8rem; }
+  #tab-devices .dev-card--carel .dev-metrics { min-height: 0; }
+  #tab-devices .dev-card--carel .dev-kpi { min-height: 4.35rem; }
+  #tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.45rem; }
+  #tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.8rem; }
   /* MR: 12AI 4-col → 3-col on narrow; un-stretch the 6AI cells (as ДТВ). */
   #tab-devices .dev-metrics.dev-metrics--mr4 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   #tab-devices .dev-card--mr .dev-metrics { min-height: 0; }

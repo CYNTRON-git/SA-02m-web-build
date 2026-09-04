@@ -470,6 +470,36 @@ function shRowsClick(e) {
   shSetBindMsg('', true);
 }
 
+function shCarelControl(topic) {
+  const m = /^\/devices\/carel-[^/]+\/controls\/([^/]+)$/.exec(String(topic || ''));
+  return m ? m[1] : '';
+}
+
+const SH_CAREL_KIND = {
+  unit_on: 'switch',
+  setpoint: 'setpoint',
+  supply_temp: 'supply_temp',
+  return_water_temp: 'return_water',
+  room_temp: 'room_temp',
+  outdoor_temp: 'outdoor_temp',
+  plant_state: 'plant_state',
+  unit_status: 'unit_status',
+  unit_status_text: 'unit_status',
+  alarm: 'alarm',
+};
+
+function shApplyCarelTopic(row, topic) {
+  const ctrl = shCarelControl(topic);
+  if (!ctrl) return;
+  const kind = SH_CAREL_KIND[ctrl];
+  const kindSel = row && row.querySelector('.sh-row-kind');
+  if (kindSel && kind && SH_KINDS[kind] && !kindSel.disabled) kindSel.value = kind;
+  if (!shDtypeTouched) {
+    shSetDtype('devices.types.ventilation');
+    shSyncTypeUi();
+  }
+}
+
 function shRowsChange(e) {
   const sel = e.target;
   // Any change inside a row (kind or topic) marks it as the operator's: a
@@ -478,6 +508,11 @@ function shRowsChange(e) {
   if (row) row._shTouched = true;
   // A kind change may reveal or hide the «Инвертировать» field.
   if (sel && sel.classList && sel.classList.contains('sh-row-kind')) shSyncInvertedField();
+  if (sel && sel.classList && sel.classList.contains('sh-row-topic')) {
+    shApplyCarelTopic(row, sel.value);
+    shSyncInvertedField();
+    return;
+  }
   if (!sel || !sel.classList || !sel.classList.contains('sh-row-kind')) return;
   if (shDtypeTouched) return;
   const host = shRowsHost();
