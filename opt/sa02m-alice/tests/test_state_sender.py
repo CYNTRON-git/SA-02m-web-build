@@ -49,6 +49,28 @@ class TestStateSender(unittest.TestCase):
         sender.flush_now()
         self.assertEqual(len(emitted), 2)
 
+    def test_unreachable_stub_is_emitted(self):
+        emitted = []
+        sender = StateSender(lambda p: emitted.append(p))
+        sender._stopped = False
+        sender.offer_snapshot(
+            [
+                {
+                    "id": "uaria",
+                    "capabilities": [],
+                    "properties": [],
+                    "error_code": C.ERR_DEVICE_UNREACHABLE,
+                }
+            ]
+        )
+        sender.flush_now()
+        self.assertEqual(len(emitted), 1)
+        dev = emitted[0]["payload"]["devices"][0]
+        self.assertEqual(dev["id"], "uaria")
+        self.assertEqual(dev["error_code"], C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(dev["capabilities"], [])
+        self.assertEqual(dev["properties"], [])
+
 
 def _float_prop(instance, value, unit="unit.percent"):
     return {
@@ -219,7 +241,7 @@ class TestReconnectSnapshot(unittest.TestCase):
         self.sender.flush_now()
         self.assertEqual(self.emitted, [])
         self.sender.offer_snapshot(
-            [{"id": "d1", "error_code": "DEVICE_UNREACHABLE"}]
+            [{"id": "d1", "capabilities": [], "properties": []}]
         )
         self.sender.flush_now()
         self.assertEqual(self.emitted, [])
@@ -282,6 +304,9 @@ class TestHistorySnapshotCadence(unittest.TestCase):
         class _Reg:
             def query_devices(self):
                 return [{"id": "d1"}]
+
+            def take_unreachable_transitions(self):
+                return []
 
         sender = _Sender()
         _emit_cache_snapshot(sender, _Reg())

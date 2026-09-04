@@ -124,6 +124,7 @@ def led_bank():
     regs[("h", lm.MB2WS_FX_PARAM)] = 200
     regs[("h", lm.MB2WS_LINE_MODE)] = lm.MB2WS_LINE_SINGLE_WS
     regs[("h", lm.MB2WS_PLAY_CTRL)] = lm.MB2WS_PLAY_PLAY
+    regs[("h", lm.MB2WS_TEXT_LINES)] = 0
     # PWM triple + W (permille), and the strip mode on its own read.
     r, g, b = lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)
     for i, v in enumerate((r, g, b, 250)):
@@ -353,15 +354,42 @@ class TestLockBracket(unittest.TestCase):
         """
         p, _pub, ser = _poller()
         p._writeback("power", "0")
-        self.assertEqual(ser.writes, [
+        self.assertEqual(ser.writes[:3], [
             ("reg", lm.MB2WS_LOCK, lm.MB2WS_UNLOCK_KEY),
             ("reg", lm.MB2WS_PLAY_CTRL, lm.MB2WS_PLAY_STOP),
             ("reg", lm.MB2WS_LOCK, 0),
         ])
 
+    def test_power_off_blanks_in_map_order(self):
+        """STOP alone leaves the last weather frame; the map's blank plan does not."""
+        p, _pub, ser = _poller()
+        p._writeback("power", "0")
+        order = [
+            (lm.MB2WS_PLAY_CTRL, lm.MB2WS_PLAY_STOP),
+            (lm.MB2WS_RENDER_SOURCE, lm.MB2WS_RENDER_POOL),
+            (lm.MB2WS_CMD, lm.MB2WS_CMD_CLEAR_POOL),
+            (lm.MB2WS_CMD, lm.MB2WS_CMD_REFRESH),
+        ]
+        pairs = [(w[1], w[2]) for w in ser.writes if w[0] == "reg"]
+        positions = [pairs.index(step) for step in order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn(lm.MB2WS_CMD_SAVE_FLASH_DEPRECATED,
+                         [w[2] for w in ser.writes if w[1] == lm.MB2WS_CMD])
+
+    def test_power_on_writes_static_fx_not_weather(self):
+        p, _pub, ser = _poller(effect=0, brightness=255)
+        p._writeback("power", "1")
+        pairs = {(w[1], w[2]) for w in ser.writes if w[0] == "reg"}
+        self.assertIn((lm.MB2WS_FX_ID, lm.RGBW_FX_MODE_STATIC), pairs)
+        self.assertNotIn((lm.MB2WS_FX_ID, lm.RGBW_FX_MODE_WEATHER), pairs)
+        self.assertIn((lm.MB2WS_RENDER_SOURCE, lm.MB2WS_RENDER_FX), pairs)
+        self.assertIn((lm.MB2WS_PLAY_CTRL, lm.MB2WS_PLAY_PLAY), pairs)
+        self.assertIn((lm.MB2WS_FX_PARAM, 255), pairs)
+        self.assertEqual(ser.writes[0], ("reg", lm.MB2WS_LOCK, lm.MB2WS_UNLOCK_KEY))
+        self.assertEqual(ser.writes[-1], ("reg", lm.MB2WS_LOCK, 0))
+
     def test_every_settings_control_is_bracketed(self):
         for name, payload, reg in (
-                ("power", "1", lm.MB2WS_PLAY_CTRL),
                 ("brightness", "77", lm.MB2WS_FX_PARAM),
                 ("speed", "33", lm.MB2WS_FX_SPEED),
                 ("effect", "12", lm.MB2WS_FX_ID),
@@ -418,6 +446,39 @@ class TestLockBracket(unittest.TestCase):
         got = [w[1] for w in ser.writes[1:-1]]
         self.assertEqual(got, lm.rgbw_settings_write_order(batch.keys()))
         self.assertNotEqual(got, sorted(batch.keys()))
+
+
+class TestYamlDefaults(unittest.TestCase):
+    def test_yaml_pins_418_and_static_fx_not_weather(self):
+        p, pub, ser = _poller(
+            matrix_layout=0x0408, weather_lines=1, effect=0, brightness=255,
+        )
+        p.poll_io()
+        self.assertIn(("reg", lm.MB2WS_LOCK, lm.MB2WS_UNLOCK_KEY), ser.writes)
+        self.assertIn(("reg", lm.MB2WS_MATRIX_LAYOUT, 0x0408), ser.writes)
+        self.assertIn(("reg", lm.MB2WS_FX_ID, lm.RGBW_FX_MODE_STATIC), ser.writes)
+        self.assertNotIn(("reg", lm.MB2WS_FX_ID, lm.RGBW_FX_MODE_WEATHER), ser.writes)
+        self.assertIn(("reg", lm.MB2WS_TEXT_LINES, 1), ser.writes)
+        self.assertEqual(_published(pub)["text_lines"], "1")
+        self.assertEqual(_published(pub)["effect"], "0")
+        n = len(ser.writes)
+        p._t_poll = 0.0
+        p.poll_io()
+        self.assertEqual(len(ser.writes), n)
+
+    def test_matching_live_values_write_nothing(self):
+        regs = led_bank()
+        regs[("h", lm.MB2WS_MATRIX_LAYOUT)] = 0x0408
+        regs[("h", lm.MB2WS_TEXT_LINES)] = 1
+        regs[("h", lm.MB2WS_FX_ID)] = lm.RGBW_FX_MODE_STATIC
+        regs[("h", lm.MB2WS_FX_PARAM)] = 255
+        p, pub, ser = _poller(
+            regs, matrix_layout=0x0408, weather_lines=1, effect=0, brightness=255,
+        )
+        p.poll_io()
+        self.assertEqual(ser.writes, [])
+        self.assertEqual(_published(pub)["text_lines"], "1")
+        self.assertEqual(_published(pub)["effect"], "0")
 
 
 class TestColourForm(unittest.TestCase):
@@ -508,8 +569,8 @@ class TestPayloadValidation(unittest.TestCase):
                               ("off", lm.MB2WS_PLAY_STOP), ("False", lm.MB2WS_PLAY_STOP)):
             p, _pub, ser = _poller()
             p._writeback("power", payload)
-            self.assertEqual(ser.writes[1], ("reg", lm.MB2WS_PLAY_CTRL, want),
-                             payload)
+            play = [w for w in ser.writes if w[1] == lm.MB2WS_PLAY_CTRL]
+            self.assertEqual(play[0], ("reg", lm.MB2WS_PLAY_CTRL, want), payload)
 
     def test_a_non_numeric_range_payload_reaches_no_write(self):
         for name in ("brightness", "speed", "effect", "white", "scene_source"):

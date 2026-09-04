@@ -207,6 +207,36 @@ class TestNonNegotiable5Reg418ReadModifyWrite(unittest.TestCase):
         with self.assertRaises(ValueError):
             lm.rgbw_matrix_layout_compose_full(0, 0, 5)
 
+    def test_4tiles_90cw_is_swap_xy_without_mirror_x(self):
+        """4 tiles + 90° CW + no MIRROR_X → 0x0408 (bit 3, not bit 2)."""
+        v = lm.rgbw_matrix_layout_4tiles_90cw()
+        self.assertEqual(v, 0x0408)
+        self.assertEqual(v & lm.MB2WS_MATRIX_LAYOUT_MIRROR_X, 0)
+        self.assertEqual(v & lm.MB2WS_MATRIX_LAYOUT_SWAP_XY, lm.MB2WS_MATRIX_LAYOUT_SWAP_XY)
+        self.assertEqual(v & lm.MB2WS_MATRIX_LAYOUT_ROTATE_90_CW, lm.MB2WS_MATRIX_LAYOUT_ROTATE_90_CW)
+        self.assertEqual(lm.rgbw_matrix_layout_tilecount(v), 4)
+        self.assertEqual(lm.rgbw_matrix_layout_tilemode(v), 0)
+        self.assertNotEqual(v, 0x0404)  # previous bench: tiles + MIRROR_X only
+        self.assertEqual(lm.rgbw_matrix_layout_4tiles_90cw(mirror_x=True), 0x040C)
+
+    def test_weather_two_line_is_register_494_value_2(self):
+        self.assertEqual(lm.MB2WS_TEXT_LINES, 494)
+        self.assertEqual(lm.MB2WS_TEXT_LINES_DOUBLE, 2)
+        self.assertEqual(lm.rgbw_text_lines_ui_code(0), lm.MB2WS_TEXT_LINES_SINGLE)
+        self.assertEqual(lm.rgbw_text_lines_ui_code(2), lm.MB2WS_TEXT_LINES_DOUBLE)
+        self.assertEqual(lm.rgbw_wx_lines_choices()[-1][0], lm.MB2WS_TEXT_LINES_DOUBLE)
+
+    def test_yaml_bench_recipe_is_0x0408_and_two_lines(self):
+        layout = lm.rgbw_layout_from_yaml(
+            {"tile_count": 4, "rotate_90_cw": True, "mirror_x": False}
+        )
+        self.assertEqual(layout, 0x0408)
+        self.assertEqual(lm.rgbw_layout_from_yaml({"matrix_layout": 0x0408}), 0x0408)
+        self.assertIsNone(lm.rgbw_layout_from_yaml({}))
+        self.assertEqual(lm.rgbw_text_lines_from_yaml({"weather_lines": 2}), 2)
+        self.assertEqual(lm.rgbw_text_lines_from_yaml({"text_lines": 0}), 1)
+        self.assertIsNone(lm.rgbw_text_lines_from_yaml({}))
+
 
 class TestWriteOrder(unittest.TestCase):
     """The batch order is a correctness constraint — never `sorted()`."""
@@ -462,6 +492,20 @@ class TestClockAndWeatherWrites(unittest.TestCase):
     def test_pc_clock_writes(self):
         w = lm.rgbw_pc_clock_writes(datetime(2026, 9, 3, 14, 7))
         self.assertEqual(w, {453: 14, 454: 7})
+
+    def test_11_05_is_hours_then_minutes_not_swapped(self):
+        """A reversed 4×16×16 panel (11:00 shown as 00:11) is MIRROR_X, not this."""
+        w = lm.rgbw_pc_clock_writes(datetime(2026, 9, 4, 11, 5))
+        self.assertEqual(w, {lm.MB2WS_TOD_HOURS: 11, lm.MB2WS_TOD_MINUTES: 5})
+        self.assertNotEqual(w.get(lm.MB2WS_TOD_HOURS), 5)
+
+    def test_04_09_is_day_high_month_low_not_swapped(self):
+        """Firmware ``(day<<8)|month``: 04.09 → 0x0409. 0x0904 would paint 09.04."""
+        self.assertEqual(lm.rgbw_wx_date_pack(4, 9), 0x0409)
+        self.assertEqual(lm.rgbw_wx_date_unpack(0x0409), (4, 9))
+        w = lm.rgbw_pc_date_writes(datetime(2026, 9, 4, 11, 5))
+        self.assertEqual(w[lm.MB2WS_WX_DATE], 0x0409)
+        self.assertNotEqual(w[lm.MB2WS_WX_DATE], 0x0904)
 
     def test_pc_date_clamps_the_year(self):
         w = lm.rgbw_pc_date_writes(datetime(1999, 12, 31))

@@ -14,6 +14,41 @@ from sa02m_alice.client.device_registry import DeviceRegistry  # noqa: E402
 from sa02m_alice.common import constants as C  # noqa: E402
 
 
+MODBUS_DO_TOPIC = "/devices/mr02m-COM3-10/controls/do_1"
+MODBUS_DO2_TOPIC = "/devices/mr02m-COM3-10/controls/do_2"
+MODBUS_DO3_TOPIC = "/devices/mr02m-COM3-10/controls/do_3"
+MODBUS_DO4_TOPIC = "/devices/mr02m-COM3-10/controls/do_4"
+MODBUS_UPTIME = "/devices/mr02m-COM3-10/controls/uptime_s"
+_ON_OFF = {
+    "type": "devices.capabilities.on_off",
+    "parameters": {"instance": "on"},
+}
+
+
+def _modbus_switch(did, name, topic):
+    cap = dict(_ON_OFF)
+    cap["mqtt"] = topic
+    return {
+        "id": did,
+        "name": name,
+        "type": "devices.types.switch",
+        "capabilities": [cap],
+        "properties": [],
+    }
+
+
+MODBUS_SWITCH_DOC = {"rooms": [], "devices": [_modbus_switch("sw1", "Light 1", MODBUS_DO_TOPIC)]}
+MODBUS_FOUR_DOC = {
+    "rooms": [],
+    "devices": [
+        _modbus_switch("bench-switch-1", "Свет 1", MODBUS_DO_TOPIC),
+        _modbus_switch("bench-socket-2", "Свет 2", MODBUS_DO2_TOPIC),
+        _modbus_switch("bench-light-3", "Спальня", MODBUS_DO3_TOPIC),
+        _modbus_switch("bench-light-4", "Гостиная", MODBUS_DO4_TOPIC),
+    ],
+}
+
+
 DOC = {
     "rooms": [{"id": "r1", "name": "Lab", "devices": ["d1"]}],
     "devices": [
@@ -99,11 +134,18 @@ class TestSensorProperties(unittest.TestCase):
     def test_state_blocks_unparseable_payload_omitted(self):
         self.reg.note_mqtt(SENSOR_TOPIC, "not-a-number")
         self.assertEqual(self.reg.state_blocks_for_topic(SENSOR_TOPIC), [])
-    def test_retained_sensor_value_answers_query(self):
+    def test_retained_modbus_sensor_returns_temperature(self):
+        """Unchanged retained °C with no /meta/error is a successful poll."""
         self.reg.note_mqtt(SENSOR_TOPIC, "21.5", retained=True)
         out = self.reg.query_devices([SENSOR_DEVICE_ID])
         props = out[0].get("properties") or []
-        self.assertTrue(props, "a retained reading must answer the query fan-out")
+        self.assertEqual(props[0]["state"]["value"], 21.5)
+        self.assertNotIn("error_code", out[0])
+
+    def test_live_modbus_sensor_returns_temperature(self):
+        self.reg.note_mqtt(SENSOR_TOPIC, "21.5")
+        out = self.reg.query_devices([SENSOR_DEVICE_ID])
+        props = out[0].get("properties") or []
         self.assertEqual(props[0]["state"]["value"], 21.5)
         self.assertNotIn("error_code", out[0])
 
@@ -231,6 +273,256 @@ class TestDeviceRegistry(unittest.TestCase):
         self.reg.note_mqtt("/devices/test-ctl/controls/do", "1")
         out = self.reg.query_devices(["d1"])
         self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+
+    def test_query_stale_live_cache_is_unreachable(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(DOC, clock=lambda: clock["t"])
+        reg.note_mqtt("/devices/test-ctl/controls/do", "1")
+        clock["t"] = C.STATUS_STALE_S + 0.1
+        out = reg.query_devices(["d1"])
+        self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(out[0].get("capabilities"), [])
+
+    def test_query_fresh_poll_returns_on_off(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(DOC, clock=lambda: clock["t"])
+        reg.note_mqtt("/devices/test-ctl/controls/do", "1")
+        clock["t"] = C.STATUS_STALE_S - 1.0
+        out = reg.query_devices(["d1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_query_control_meta_error_is_unreachable_despite_cached_on(self):
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "1")
+        self.reg.note_mqtt(
+            "/devices/test-ctl/controls/do/meta/error", "r", retained=True
+        )
+        out = self.reg.query_devices(["d1"])
+        self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(out[0].get("capabilities"), [])
+
+    def test_query_device_meta_error_is_unreachable_despite_cached_on(self):
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "1")
+        self.reg.note_mqtt("/devices/test-ctl/meta/error", "r")
+        out = self.reg.query_devices(["d1"])
+        self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(out[0].get("capabilities"), [])
+
+    def test_query_retained_only_does_not_age_out(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(DOC, clock=lambda: clock["t"])
+        reg.note_mqtt("/devices/test-ctl/controls/do", "1", retained=True)
+        clock["t"] = C.STATUS_STALE_S + 50.0
+        out = reg.query_devices(["d1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_query_retained_modbus_coil_returns_on_off(self):
+        """Unchanged retained coil with no /meta/error is reachable."""
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC, clock=lambda: clock["t"])
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1", retained=True)
+        out = reg.query_devices(["sw1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_query_live_modbus_coil_returns_on_off(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC, clock=lambda: clock["t"])
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1")
+        clock["t"] = C.STATUS_STALE_S - 1.0
+        out = reg.query_devices(["sw1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_action_writes_when_modbus_coil_retained_only(self):
+        """Alice action must write the coil when the slave is reachable."""
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "0", retained=True)
+        results, pubs = reg.apply_actions(
+            [
+                {
+                    "id": "sw1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+        self.assertNotIn("error_code", results[0]["capabilities"][0])
+        self.assertEqual(pubs, [("%s/on" % MODBUS_DO_TOPIC, "1")])
+
+    def test_state_blocks_omit_retained_modbus_coil(self):
+        """Query serves retained; callback_state must not flood on subscribe."""
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1", retained=True)
+        self.assertEqual(reg.state_blocks_for_topic(MODBUS_DO_TOPIC), [])
+
+    def test_query_modbus_control_error_is_unreachable(self):
+        """Sticky poller /meta/error is the real dead-slave signal."""
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1", retained=True)
+        reg.note_mqtt(MODBUS_DO_TOPIC + "/meta/error", "r", retained=True)
+        out = reg.query_devices(["sw1"])
+        self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(out[0].get("capabilities"), [])
+
+    def test_query_modbus_device_error_is_unreachable(self):
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1", retained=True)
+        reg.note_mqtt("/devices/mr02m-COM3-10/meta/error", "r")
+        out = reg.query_devices(["sw1"])
+        self.assertEqual(out[0].get("error_code"), C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(out[0].get("capabilities"), [])
+
+    def test_query_modbus_control_error_reachable_when_slave_live(self):
+        """Per-channel r while uptime_s is live is a busy bus, not offline."""
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1", retained=True)
+        reg.note_mqtt(MODBUS_DO_TOPIC + "/meta/error", "r", retained=True)
+        reg.note_mqtt(MODBUS_UPTIME, "100")
+        out = reg.query_devices(["sw1"])
+        self.assertNotIn("error_code", out[0])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+
+    def test_action_on_one_coil_does_not_unreach_siblings(self):
+        reg = DeviceRegistry(MODBUS_FOUR_DOC)
+        for topic in (MODBUS_DO_TOPIC, MODBUS_DO2_TOPIC, MODBUS_DO3_TOPIC, MODBUS_DO4_TOPIC):
+            reg.note_mqtt(topic, "0", retained=True)
+            reg.note_mqtt(topic + "/meta/error", "r", retained=True)
+        reg.note_mqtt(MODBUS_UPTIME, "42")
+        results, pubs = reg.apply_actions(
+            [
+                {
+                    "id": "bench-switch-1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+        self.assertEqual(len(pubs), 1)
+        by_id = {e["id"]: e for e in reg.query_devices()}
+        for did in ("bench-switch-1", "bench-socket-2", "bench-light-3", "bench-light-4"):
+            self.assertNotIn("error_code", by_id[did], did)
+            self.assertTrue(by_id[did]["capabilities"])
+
+    def test_rapid_apply_actions_two_coils_both_done(self):
+        """Yandex scenario: switch ON + socket ON in one burst."""
+        reg = DeviceRegistry(MODBUS_FOUR_DOC)
+        for topic in (MODBUS_DO_TOPIC, MODBUS_DO2_TOPIC, MODBUS_DO3_TOPIC, MODBUS_DO4_TOPIC):
+            reg.note_mqtt(topic, "0", retained=True)
+            reg.note_mqtt(topic + "/meta/error", "r", retained=True)
+        results, pubs = reg.apply_actions(
+            [
+                {
+                    "id": "bench-switch-1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                },
+                {
+                    "id": "bench-socket-2",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                },
+            ]
+        )
+        self.assertEqual([r["capabilities"][0]["status"] for r in results], [C.STATUS_DONE, C.STATUS_DONE])
+        self.assertEqual(
+            pubs,
+            [("%s/on" % MODBUS_DO_TOPIC, "1"), ("%s/on" % MODBUS_DO2_TOPIC, "1")],
+        )
+        by_id = {e["id"]: e for e in reg.query_devices()}
+        for did in ("bench-switch-1", "bench-socket-2", "bench-light-3", "bench-light-4"):
+            self.assertNotIn("error_code", by_id[did], did)
+
+    def test_action_writes_when_modbus_control_error_slave_not_down(self):
+        """Sticky per-channel r must not refuse a write; the slave is up."""
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC)
+        reg.note_mqtt(MODBUS_DO_TOPIC, "0", retained=True)
+        reg.note_mqtt(MODBUS_DO_TOPIC + "/meta/error", "r")
+        results, pubs = reg.apply_actions(
+            [
+                {
+                    "id": "sw1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
+        self.assertNotIn("error_code", results[0]["capabilities"][0])
+        self.assertEqual(pubs, [("%s/on" % MODBUS_DO_TOPIC, "1")])
+
+    def test_query_stale_live_modbus_coil_still_returns_on_off(self):
+        """A live echo that then stays quiet is still a successful poll."""
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(MODBUS_SWITCH_DOC, clock=lambda: clock["t"])
+        reg.note_mqtt(MODBUS_DO_TOPIC, "1")
+        clock["t"] = C.STATUS_STALE_S + 0.1
+        out = reg.query_devices(["sw1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_cleared_control_error_returns_on_off(self):
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "1")
+        self.reg.note_mqtt("/devices/test-ctl/controls/do/meta/error", "r")
+        self.reg.note_mqtt("/devices/test-ctl/controls/do/meta/error", "")
+        out = self.reg.query_devices(["d1"])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertNotIn("error_code", out[0])
+
+    def test_subscribe_topics_include_availability(self):
+        topics = self.reg.subscribe_topics()
+        self.assertIn("/devices/test-ctl/controls/do", topics)
+        self.assertIn("/devices/test-ctl/controls/do/meta/error", topics)
+        self.assertIn("/devices/test-ctl/meta/error", topics)
+
+    def test_subscribe_topics_include_modbus_uptime(self):
+        topics = DeviceRegistry(MODBUS_SWITCH_DOC).subscribe_topics()
+        self.assertIn(MODBUS_UPTIME, topics)
+        self.assertIn("/devices/mr02m-COM3-10/meta/error", topics)
+
+    def test_action_unreachable_when_control_error(self):
+        self.reg.note_mqtt("/devices/test-ctl/controls/do", "0")
+        self.reg.note_mqtt("/devices/test-ctl/controls/do/meta/error", "r")
+        results, pubs = self.reg.apply_actions(
+            [
+                {
+                    "id": "d1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": True},
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(
+            results[0]["capabilities"][0]["error_code"], C.ERR_DEVICE_UNREACHABLE
+        )
+        self.assertEqual(pubs, [])
 
     def test_action_publishes_on_suffix(self):
         self.reg.note_mqtt("/devices/test-ctl/controls/do", "0")
@@ -368,6 +660,117 @@ class TestReloadInPlace(unittest.TestCase):
             set(seen_topics) <= allowed_topics,
             "observed a mixed topic set: %r" % (set(seen_topics) - allowed_topics),
         )
+
+
+CAREL_ON_TOPIC = "/devices/carel-COM3-2/controls/on"
+CAREL_TEMP_TOPIC = "/devices/carel-COM3-2/controls/supply_air_temp"
+CAREL_DOC = {
+    "rooms": [],
+    "devices": [
+        {
+            "id": "uaria",
+            "name": "Carel uAria",
+            "type": "devices.types.ventilation",
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.on_off",
+                    "mqtt": CAREL_ON_TOPIC,
+                    "parameters": {"instance": "on"},
+                }
+            ],
+            "properties": [
+                {
+                    "type": "devices.properties.float",
+                    "mqtt": CAREL_TEMP_TOPIC,
+                    "retrievable": True,
+                    "reportable": True,
+                    "parameters": {
+                        "instance": "temperature",
+                        "unit": "unit.temperature.celsius",
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+GPIO_TEMP_TOPIC = "/devices/SA-02m/controls/cpu_temp"
+GPIO_SENSOR_DOC = {
+    "rooms": [],
+    "devices": [
+        {
+            "id": "cpu",
+            "name": "CPU",
+            "type": "devices.types.sensor",
+            "capabilities": [],
+            "properties": [
+                {
+                    "type": "devices.properties.float",
+                    "mqtt": GPIO_TEMP_TOPIC,
+                    "parameters": {
+                        "instance": "temperature",
+                        "unit": "unit.temperature.celsius",
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+
+class TestCarelAhuUnreachable(unittest.TestCase):
+    """Carel/AHU is unreachable on /meta/error, not on a quiet retained poll."""
+
+    def test_retained_modbus_cache_returns_on_and_temp(self):
+        reg = DeviceRegistry(CAREL_DOC)
+        reg.note_mqtt(CAREL_ON_TOPIC, "1", retained=True)
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2", retained=True)
+        out = reg.query_devices(["uaria"])
+        self.assertNotIn("error_code", out[0])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertEqual(out[0]["properties"][0]["state"]["value"], 27.2)
+
+    def test_fresh_poll_returns_temps(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(CAREL_DOC, clock=lambda: clock["t"])
+        reg.note_mqtt(CAREL_ON_TOPIC, "1")
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2")
+        clock["t"] = C.STATUS_STALE_S - 1.0
+        out = reg.query_devices(["uaria"])
+        self.assertNotIn("error_code", out[0])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertEqual(out[0]["properties"][0]["state"]["value"], 27.2)
+
+    def test_stale_live_cache_without_error_still_answers(self):
+        clock = {"t": 0.0}
+        reg = DeviceRegistry(CAREL_DOC, clock=lambda: clock["t"])
+        reg.note_mqtt(CAREL_ON_TOPIC, "1")
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2")
+        clock["t"] = C.STATUS_STALE_S + 0.1
+        out = reg.query_devices(["uaria"])
+        self.assertNotIn("error_code", out[0])
+        self.assertEqual(out[0]["capabilities"][0]["state"]["value"], True)
+        self.assertEqual(out[0]["properties"][0]["state"]["value"], 27.2)
+
+    def test_down_edge_emits_once(self):
+        reg = DeviceRegistry(CAREL_DOC)
+        reg.note_mqtt(CAREL_ON_TOPIC, "1")
+        reg.note_mqtt(CAREL_TEMP_TOPIC, "27.2")
+        self.assertEqual(reg.take_unreachable_transitions(), [])
+        reg.note_mqtt("/devices/carel-COM3-2/meta/error", "r")
+        first = reg.take_unreachable_transitions()
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["id"], "uaria")
+        self.assertEqual(first[0]["error_code"], C.ERR_DEVICE_UNREACHABLE)
+        self.assertEqual(reg.take_unreachable_transitions(), [])
+
+    def test_gpio_retained_property_still_answers(self):
+        """Board telemetry has no poll heartbeat — retained stays valid."""
+        reg = DeviceRegistry(GPIO_SENSOR_DOC)
+        reg.note_mqtt(GPIO_TEMP_TOPIC, "48.0", retained=True)
+        out = reg.query_devices(["cpu"])
+        self.assertEqual(out[0]["properties"][0]["state"]["value"], 48.0)
+        self.assertNotIn("error_code", out[0])
 
 
 if __name__ == "__main__":

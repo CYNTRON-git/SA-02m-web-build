@@ -348,5 +348,47 @@ class TestCarelVentilationDefault(unittest.TestCase):
         self.assertNotIn("icon", out)
 
 
+class TestLedLightDefault(unittest.TestCase):
+    """LED MQTT bindings must not stay other/generic after validate."""
+
+    def test_other_generic_becomes_light_bulb(self):
+        dev = {
+            "id": "led-strip",
+            "name": "LED",
+            "type": "devices.types.other",
+            "icon": "generic",
+            "capabilities": [{
+                "type": "devices.capabilities.on_off",
+                "mqtt": "/devices/led-COM3-13/controls/power",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {"instance": "on"},
+            }],
+        }
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.light")
+        self.assertEqual(out["icon"], "bulb")
+
+
+
+class TestDeviceName(unittest.TestCase):
+    def test_cyrillic_spaces_plus_dot_slash(self):
+        out, err = models.validate_device({"id": "lamp", "name": "Лампа PV-1.2/A+"})
+        self.assertIsNone(err)
+        self.assertEqual(out["name"], "Лампа PV-1.2/A+")
+
+    def test_internal_spaces_kept(self):
+        out, err = models.validate_device({"id": "lamp", "name": "  Лампа  кухни  "})
+        self.assertIsNone(err)
+        self.assertEqual(out["name"], "Лампа  кухни")
+
+    def test_empty_and_at_and_too_long_rejected(self):
+        for name in ("", "   ", "bad@name", "x" * 65):
+            out, err = models.validate_device({"id": "lamp", "name": name})
+            self.assertIsNone(out, name)
+            self.assertEqual(err, "invalid device name")
+
+
 if __name__ == "__main__":
     unittest.main()

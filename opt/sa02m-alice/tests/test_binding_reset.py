@@ -776,6 +776,7 @@ class TestHandlerUnlinkBranch(_BindingBase):
             C.EVT_DEVICES_LIST,
             C.EVT_DEVICES_QUERY,
             C.EVT_DEVICES_ACTION,
+            C.EVT_DEVICES_RENAME,
             C.EVT_DEVICE_STATE,
             "alice_devices_response",
             "connect",

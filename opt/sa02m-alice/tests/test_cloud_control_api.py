@@ -232,5 +232,189 @@ class TestCloudControlActions(_CloudApiBase):
         self.assertTrue(cfg.getboolean("client", "cloud_control_enabled"))
 
 
+from sa02m_alice.client.device_registry import DeviceRegistry  # noqa: E402
+from sa02m_alice.client.sio_handlers import SioHandlers  # noqa: E402
+from sa02m_alice.common.config_store import load_devices, save_devices  # noqa: E402
+
+
+class TestRenameDevice(_CloudApiBase):
+    def setUp(self):
+        super().setUp()
+        save_devices({"rooms": [], "devices": [{
+            "id": "lamp", "name": "Лампа", "type": "devices.types.light",
+            "capabilities": [], "properties": [],
+        }]})
+
+    def test_rename_cyrillic(self):
+        r = api.rename_device("lamp", "Лампа кухни")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["name"], "Лампа кухни")
+        self.assertEqual(load_devices()["devices"][0]["name"], "Лампа кухни")
+
+    def test_internal_spaces_kept(self):
+        r = api.rename_device("lamp", "  Лампа  кухни  ")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["name"], "Лампа  кухни")
+
+    def test_empty_at_too_long_non_str_rejected(self):
+        for name in ("", "   ", "bad@name", "x" * 65, None, 1):
+            r = api.rename_device("lamp", name)
+            self.assertFalse(r["ok"], name)
+            self.assertEqual(r.get("error"), "invalid_name")
+        self.assertEqual(load_devices()["devices"][0]["name"], "Лампа")
+
+    def test_unknown_device(self):
+        r = api.rename_device("nope", "X")
+        self.assertEqual(r.get("error"), "not_found")
+
+    def test_dispatch(self):
+        code, body = api.dispatch("POST", "/", {"action": "rename_device", "id": "lamp", "name": "Стенд"})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["name"], "Стенд")
+
+    def test_sio_rename_reloads_and_emits(self):
+        emitted = []
+        h = SioHandlers(
+            DeviceRegistry(),
+            publish_mqtt=lambda *_a: None,
+            emit_response=lambda d: emitted.append(d),
+            profile=C.PROFILE_CLOUD,
+        )
+        h.handle(C.EVT_DEVICES_RENAME, {"request_id": "r1", "device": "lamp", "name": "Новое"})
+        self.assertEqual(emitted[0]["ok"], True)
+        self.assertEqual(emitted[0]["name"], "Новое")
+        self.assertEqual(load_devices()["devices"][0]["name"], "Новое")
+
+
+class TestApplyRooms(_CloudApiBase):
+    def setUp(self):
+        super().setUp()
+        save_devices({"rooms": [], "devices": [
+            {"id": "lamp", "name": "Лампа", "type": "devices.types.light",
+             "capabilities": [], "properties": []},
+            {"id": "sock", "name": "Розетка", "type": "devices.types.socket",
+             "capabilities": [], "properties": []},
+        ]})
+
+    def test_create_bind_unbind_and_delete_unassigns(self):
+        created = api.apply_rooms({"name": "Кухня", "devices": ["lamp"]})
+        self.assertTrue(created["ok"], created)
+        rid = created["room"]["id"]
+        self.assertEqual(created["room"]["name"], "Кухня")
+        doc = load_devices()
+        self.assertEqual(doc["devices"][0]["room_id"], rid)
+        self.assertEqual(doc["devices"][1].get("room_id") or "", "")
+        moved = api.apply_rooms({"id": rid, "name": "Кухня", "devices": ["sock"]})
+        self.assertTrue(moved["ok"], moved)
+        doc = load_devices()
+        self.assertEqual(doc["devices"][0].get("room_id") or "", "")
+        self.assertEqual(doc["devices"][1]["room_id"], rid)
+        dropped = api.apply_rooms({"id": rid, "delete": True})
+        self.assertTrue(dropped["ok"], dropped)
+        doc = load_devices()
+        self.assertEqual(doc["rooms"], [])
+        self.assertEqual(doc["devices"][0].get("room_id") or "", "")
+        self.assertEqual(doc["devices"][1].get("room_id") or "", "")
+        self.assertEqual(len(doc["devices"]), 2)
+
+    def test_delete_room_cgi_unassigns(self):
+        created = api.apply_rooms({"name": "Коридор", "devices": ["lamp"]})
+        rid = created["room"]["id"]
+        r = api.delete_room(rid)
+        self.assertTrue(r["ok"])
+        doc = load_devices()
+        self.assertEqual(doc["devices"][0].get("room_id") or "", "")
+        self.assertEqual(doc["devices"][0]["id"], "lamp")
+
+    def test_invalid_name_rejected(self):
+        for name in ("", "   ", "bad@name", "x" * 65, None, 1):
+            r = api.apply_rooms({"name": name})
+            self.assertFalse(r["ok"], name)
+            self.assertIn(r.get("error"), ("invalid_name", "invalid_room"))
+        self.assertEqual(load_devices()["rooms"], [])
+
+    def test_unknown_room_edit_is_not_found(self):
+        r = api.apply_rooms({"id": "nope", "name": "X"})
+        self.assertEqual(r.get("error"), "not_found")
+
+    def test_sio_rooms_reloads_and_emits(self):
+        emitted = []
+        h = SioHandlers(
+            DeviceRegistry(),
+            publish_mqtt=lambda *_a: None,
+            emit_response=lambda d: emitted.append(d),
+            profile=C.PROFILE_CLOUD,
+        )
+        h.handle(C.EVT_DEVICES_ROOMS, {"request_id": "r1", "name": "Зал", "devices": ["lamp"]})
+        self.assertEqual(emitted[0]["ok"], True)
+        self.assertEqual(emitted[0]["room"]["name"], "Зал")
+        self.assertEqual(emitted[0]["devices"][0]["room"], "Зал")
+        self.assertEqual(load_devices()["devices"][0]["room_id"], emitted[0]["room"]["id"])
+        listed = h.registry.discovery_devices(profile=C.PROFILE_CLOUD)
+        self.assertEqual(listed[0].get("room_id"), emitted[0]["room"]["id"])
+        self.assertIn({"id": emitted[0]["room"]["id"], "name": "Зал"},
+                      h.registry.listed_rooms())
+
+
+class TestApplyGroups(_CloudApiBase):
+    def setUp(self):
+        super().setUp()
+        save_devices({"rooms": [], "groups": [], "devices": [
+            {"id": "lamp", "name": "Лампа", "type": "devices.types.light",
+             "capabilities": [], "properties": []},
+            {"id": "sock", "name": "Розетка", "type": "devices.types.socket",
+             "capabilities": [], "properties": []},
+        ]})
+
+    def test_create_move_and_delete_keeps_devices(self):
+        created = api.apply_groups({"name": "Зал", "device_ids": ["lamp"]})
+        self.assertTrue(created["ok"], created)
+        gid = created["group"]["id"]
+        self.assertEqual(created["group"]["name"], "Зал")
+        self.assertEqual(created["group"]["device_ids"], ["lamp"])
+        doc = load_devices()
+        self.assertEqual(len(doc["devices"]), 2)
+        self.assertEqual(doc["groups"][0]["device_ids"], ["lamp"])
+        moved = api.apply_groups({"id": gid, "name": "Зал", "device_ids": ["lamp", "sock"]})
+        self.assertTrue(moved["ok"], moved)
+        doc = load_devices()
+        self.assertEqual(doc["groups"][0]["device_ids"], ["lamp", "sock"])
+        dropped = api.apply_groups({"id": gid, "delete": True})
+        self.assertTrue(dropped["ok"], dropped)
+        doc = load_devices()
+        self.assertEqual(doc["groups"], [])
+        self.assertEqual([d["id"] for d in doc["devices"]], ["lamp", "sock"])
+
+    def test_invalid_name_rejected(self):
+        for name in ("", "   ", "bad@name", "x" * 65, None, 1):
+            r = api.apply_groups({"name": name})
+            self.assertFalse(r["ok"], name)
+            self.assertIn(r.get("error"), ("invalid_name", "invalid_group"))
+        self.assertEqual(load_devices()["groups"], [])
+
+    def test_unknown_group_edit_is_not_found(self):
+        r = api.apply_groups({"id": "nope", "name": "X"})
+        self.assertEqual(r.get("error"), "not_found")
+
+    def test_sio_groups_reloads_and_emits(self):
+        emitted = []
+        h = SioHandlers(
+            DeviceRegistry(),
+            publish_mqtt=lambda *_a: None,
+            emit_response=lambda d: emitted.append(d),
+            profile=C.PROFILE_CLOUD,
+        )
+        h.handle(C.EVT_DEVICES_GROUPS, {"request_id": "g1", "name": "Зал",
+                                        "device_ids": ["lamp"]})
+        self.assertEqual(emitted[0]["ok"], True)
+        self.assertEqual(emitted[0]["group"]["name"], "Зал")
+        self.assertEqual(emitted[0]["group"]["device_ids"], ["lamp"])
+        listed = h.registry.listed_groups()
+        self.assertEqual(listed[0]["name"], "Зал")
+        listed_devs = h.registry.discovery_devices(profile=C.PROFILE_CLOUD)
+        self.assertTrue(all("groups" not in d for d in listed_devs))
+
+
 if __name__ == "__main__":
     unittest.main()

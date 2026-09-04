@@ -32,6 +32,9 @@ from sa02m_alice.common import constants as C  # noqa: E402
 
 TOPIC_A = "/devices/dtv-COM3-1/controls/temp_bme680"
 TOPIC_B = "/devices/dtv-COM3-1/controls/humidity_bme680"
+ERR_A = TOPIC_A + "/meta/error"
+ERR_B = TOPIC_B + "/meta/error"
+DEV_ERR = "/devices/dtv-COM3-1/meta/error"
 
 
 def _doc(topics):
@@ -193,10 +196,10 @@ class TestApplyReload(_DevicesFileCase):
             registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=self.log
         )
 
-        self.assertEqual(added, {TOPIC_B})
-        self.assertEqual(removed, {TOPIC_A})
-        self.assertEqual(mqtt.subscribed, [(TOPIC_B, 1)])
-        self.assertEqual(mqtt.unsubscribed, [TOPIC_A])
+        self.assertEqual(added, {TOPIC_B, ERR_B})
+        self.assertEqual(removed, {TOPIC_A, ERR_A})
+        self.assertEqual(mqtt.subscribed, [(t, 1) for t in sorted({TOPIC_B, ERR_B})])
+        self.assertEqual(mqtt.unsubscribed, sorted({TOPIC_A, ERR_A}))
 
     def test_unchanged_topic_is_not_resubscribed(self):
         """A re-subscribe would trigger a fresh retained delivery and churn
@@ -210,9 +213,9 @@ class TestApplyReload(_DevicesFileCase):
             registry, mqtt, RetainedGrace(), window_s=5.0, log=self.log
         )
 
-        self.assertEqual(added, {TOPIC_B})
+        self.assertEqual(added, {TOPIC_B, ERR_B})
         self.assertEqual(removed, set())
-        self.assertEqual([t for t, _q in mqtt.subscribed], [TOPIC_B])
+        self.assertEqual([t for t, _q in mqtt.subscribed], sorted({TOPIC_B, ERR_B}))
         self.assertNotIn(TOPIC_A, [t for t, _q in mqtt.subscribed])
         self.assertEqual(mqtt.unsubscribed, [])
 
@@ -232,7 +235,7 @@ class TestApplyReload(_DevicesFileCase):
         mqtt = _FakeMqtt(on_subscribe=_at_subscribe)
         apply_reload(registry, mqtt, grace, window_s=5.0, log=self.log)
 
-        self.assertEqual(seen, {TOPIC_B: True})
+        self.assertEqual(seen, {TOPIC_B: True, ERR_B: True})
 
     def test_broken_document_keeps_the_previous_device_set(self):
         self.write(_doc([TOPIC_A]))
@@ -308,7 +311,7 @@ class TestApplyReload(_DevicesFileCase):
 
         class _FlakyMqtt(_FakeMqtt):
             def subscribe(self, topic, qos=0):
-                if topic == sorted([TOPIC_A, TOPIC_B])[0]:
+                if topic == TOPIC_B:
                     raise RuntimeError("broker refused")
                 super().subscribe(topic, qos)
 
@@ -317,8 +320,10 @@ class TestApplyReload(_DevicesFileCase):
             added, _removed = apply_reload(
                 registry, mqtt, RetainedGrace(), window_s=5.0, log=self.log
             )
-        self.assertEqual(added, {TOPIC_A, TOPIC_B})
-        self.assertEqual([t for t, _q in mqtt.subscribed], [sorted([TOPIC_A, TOPIC_B])[1]])
+        want = {TOPIC_A, TOPIC_B, ERR_A, ERR_B, DEV_ERR}
+        self.assertEqual(added, want)
+        self.assertNotIn(TOPIC_B, [t for t, _q in mqtt.subscribed])
+        self.assertEqual(set(t for t, _q in mqtt.subscribed), want - {TOPIC_B})
 
 
 class TestConfigWatchHandshake(unittest.TestCase):
