@@ -642,6 +642,214 @@ def unlink_controller() -> Dict[str, Any]:
         }
 
 
+def _listed_groups(doc: Dict[str, Any]) -> list:
+    out = []
+    for g in doc.get("groups") or []:
+        if not isinstance(g, dict) or not g.get("id"):
+            continue
+        ids = []
+        for item in g.get("device_ids") if isinstance(g.get("device_ids"), list) else []:
+            if isinstance(item, str) and item:
+                ids.append(item)
+        out.append({"id": str(g["id"]), "name": str(g.get("name") or ""), "device_ids": ids})
+    return out
+
+
+def apply_groups(body: Dict[str, Any]) -> Dict[str, Any]:
+    """One atomic write: upsert or delete a lighting group.
+
+    Membership lives only on the group (`device_ids`). Delete drops the
+    group and never the devices. Unknown device ids are refused.
+    """
+    if not isinstance(body, dict):
+        return {"ok": False, "error": "invalid_group", "message": "group must be an object"}
+    delete = body.get("delete") is True
+    gid = body.get("id")
+    if gid is not None:
+        if not isinstance(gid, str) or not models._ID_RE.match(gid.strip()):
+            return {"ok": False, "error": "invalid_group", "message": "invalid group id"}
+        gid = gid.strip()
+    if delete:
+        if not gid:
+            return {"ok": False, "error": "not_found", "message": "group id required"}
+        return delete_group(gid)
+    name = body.get("name")
+    if not isinstance(name, str):
+        return {"ok": False, "error": "invalid_name", "message": "invalid group name"}
+    name = name.strip()
+    if not name or not models._NAME_RE.match(name):
+        return {"ok": False, "error": "invalid_name", "message": "invalid group name"}
+    if not gid:
+        gid = models.new_id()
+    devices = body.get("device_ids")
+    if devices is None:
+        devices = body.get("devices")
+    bind = None
+    if devices is not None:
+        if not isinstance(devices, list):
+            return {"ok": False, "error": "invalid_devices", "message": "device_ids must be a list"}
+        bind = []
+        for item in devices:
+            if not isinstance(item, str) or not models._ID_RE.match(item.strip()):
+                return {"ok": False, "error": "invalid_device", "message": "invalid device id"}
+            bind.append(item.strip())
+    doc = load_devices()
+    groups = doc.setdefault("groups", [])
+    existing = None
+    idx = None
+    for i, g in enumerate(groups):
+        if isinstance(g, dict) and g.get("id") == gid:
+            existing = g
+            idx = i
+            break
+    if body.get("id") and existing is None:
+        return {"ok": False, "error": "not_found", "message": "group not found"}
+    if bind is not None:
+        known = {
+            d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+        }
+        for did in bind:
+            if did not in known:
+                return {"ok": False, "error": "not_found", "message": "device not found"}
+    row = {"id": gid, "name": name, "device_ids": list(bind) if bind is not None else (
+        list(existing.get("device_ids") or []) if existing else [])}
+    if existing is None:
+        groups.append(row)
+    else:
+        groups[idx] = row
+    save_devices(doc)
+    return {"ok": True, "group": {"id": row["id"], "name": row["name"],
+                                  "device_ids": list(row["device_ids"])},
+            "groups": _listed_groups(doc)}
+
+
+def delete_group(group_id: str) -> Dict[str, Any]:
+    doc = load_devices()
+    before = len(doc.get("groups") or [])
+    doc["groups"] = [
+        g for g in (doc.get("groups") or [])
+        if not (isinstance(g, dict) and g.get("id") == group_id)
+    ]
+    if len(doc["groups"]) == before:
+        return {"ok": False, "error": "not_found", "message": "group not found"}
+    save_devices(doc)
+    return {"ok": True, "groups": _listed_groups(doc)}
+
+
+def _listed_rooms(doc: Dict[str, Any]) -> list:
+    out = []
+    for r in doc.get("rooms") or []:
+        if isinstance(r, dict) and r.get("id"):
+            out.append({"id": str(r["id"]), "name": str(r.get("name") or "")})
+    return out
+
+
+def _listed_room_devices(doc: Dict[str, Any]) -> list:
+    names = {
+        r.get("id"): str(r.get("name") or "")
+        for r in (doc.get("rooms") or [])
+        if isinstance(r, dict) and r.get("id")
+    }
+    out = []
+    for d in doc.get("devices") or []:
+        if not isinstance(d, dict) or not d.get("id"):
+            continue
+        rid = d.get("room_id") if isinstance(d.get("room_id"), str) else ""
+        out.append({"id": d["id"], "room_id": rid, "room": names.get(rid, "")})
+    return out
+
+
+def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
+    """One atomic write: upsert or delete a room and bind listed devices.
+
+    Checking a device sets its `room_id` to this room (a move, if it was
+    elsewhere). Unchecking removes it from THIS room only — it becomes
+    unassigned, never deleted. A room delete unassigns its devices; it
+    never unlinks the controller or wipes the catalogue.
+    """
+    if not isinstance(body, dict):
+        return {"ok": False, "error": "invalid_room", "message": "room must be an object"}
+    delete = body.get("delete") is True
+    rid = body.get("id")
+    if rid is not None:
+        if not isinstance(rid, str) or not models._ID_RE.match(rid.strip()):
+            return {"ok": False, "error": "invalid_room", "message": "invalid room id"}
+        rid = rid.strip()
+    if delete:
+        if not rid:
+            return {"ok": False, "error": "not_found", "message": "room id required"}
+        return delete_room(rid)
+    name = body.get("name")
+    if not isinstance(name, str):
+        return {"ok": False, "error": "invalid_name", "message": "invalid room name"}
+    room_in: Dict[str, Any] = {"name": name}
+    if rid:
+        room_in["id"] = rid
+    cleaned, err = models.validate_room(room_in)
+    if err:
+        key = "invalid_name" if "name" in (err or "") else "invalid_room"
+        return {"ok": False, "error": key, "message": err}
+    devices = body.get("devices")
+    bind = None
+    if devices is not None:
+        if not isinstance(devices, list):
+            return {"ok": False, "error": "invalid_devices", "message": "devices must be a list"}
+        bind = []
+        for item in devices:
+            if not isinstance(item, str) or not models._ID_RE.match(item.strip()):
+                return {"ok": False, "error": "invalid_device", "message": "invalid device id"}
+            bind.append(item.strip())
+    doc = load_devices()
+    rooms = doc.setdefault("rooms", [])
+    existing = None
+    idx = None
+    for i, r in enumerate(rooms):
+        if isinstance(r, dict) and r.get("id") == cleaned["id"]:
+            existing = r
+            idx = i
+            break
+    if rid and existing is None:
+        return {"ok": False, "error": "not_found", "message": "room not found"}
+    if existing is None:
+        rooms.append(cleaned)
+        existing = cleaned
+        idx = len(rooms) - 1
+    else:
+        existing["name"] = cleaned["name"]
+        rooms[idx] = existing
+    if bind is not None:
+        known = {
+            d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+        }
+        for did in bind:
+            if did not in known:
+                return {"ok": False, "error": "not_found", "message": "device not found"}
+        bind_set = set(bind)
+        for d in doc.get("devices") or []:
+            if not isinstance(d, dict):
+                continue
+            did = d.get("id")
+            if did in bind_set:
+                d["room_id"] = cleaned["id"]
+            elif d.get("room_id") == cleaned["id"]:
+                d["room_id"] = ""
+        for r in rooms:
+            if not isinstance(r, dict):
+                continue
+            if r.get("id") == cleaned["id"]:
+                r["devices"] = list(bind)
+            elif isinstance(r.get("devices"), list):
+                r["devices"] = [x for x in r["devices"] if x not in bind_set]
+    save_devices(doc)
+    room_out = {"id": cleaned["id"], "name": cleaned["name"]}
+    return {
+        "ok": True,
+        "room": room_out,
+        "rooms": _listed_rooms(doc),
+        "devices": _listed_room_devices(doc),
+    }
+
+
 def upsert_room(room: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, err = models.validate_room(room)
     if err:
@@ -667,8 +875,15 @@ def delete_room(room_id: str) -> Dict[str, Any]:
     ]
     if len(doc["rooms"]) == before:
         return {"ok": False, "error": "not_found", "message": "room not found"}
+    for d in doc.get("devices") or []:
+        if isinstance(d, dict) and d.get("room_id") == room_id:
+            d["room_id"] = ""
     save_devices(doc)
-    return {"ok": True}
+    return {
+        "ok": True,
+        "rooms": _listed_rooms(doc),
+        "devices": _listed_room_devices(doc),
+    }
 
 
 def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
@@ -696,6 +911,25 @@ def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "device": cleaned}
 
 
+def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
+    """Patch only the catalogue `name`. Bindings, type and icon stay as stored."""
+    did = str(device_id or "").strip()
+    if not models._ID_RE.match(did):
+        return {"ok": False, "error": "not_found", "message": "device not found"}
+    if not isinstance(name, str):
+        return {"ok": False, "error": "invalid_name", "message": "invalid device name"}
+    cleaned = name.strip()
+    if not cleaned or not models._NAME_RE.match(cleaned):
+        return {"ok": False, "error": "invalid_name", "message": "invalid device name"}
+    doc = load_devices()
+    for d in doc.get("devices") or []:
+        if isinstance(d, dict) and d.get("id") == did:
+            d["name"] = cleaned
+            save_devices(doc)
+            return {"ok": True, "name": cleaned, "device": d}
+    return {"ok": False, "error": "not_found", "message": "device not found"}
+
+
 def delete_device(device_id: str) -> Dict[str, Any]:
     doc = load_devices()
     before = len(doc.get("devices") or [])
@@ -708,6 +942,9 @@ def delete_device(device_id: str) -> Dict[str, Any]:
     for r in doc.get("rooms") or []:
         if isinstance(r, dict) and isinstance(r.get("devices"), list):
             r["devices"] = [x for x in r["devices"] if x != device_id]
+    for g in doc.get("groups") or []:
+        if isinstance(g, dict) and isinstance(g.get("device_ids"), list):
+            g["device_ids"] = [x for x in g["device_ids"] if x != device_id]
     save_devices(doc)
     return {"ok": True}
 
@@ -791,6 +1028,8 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> T
         return 200, upsert_device(body.get("device") or body)
     if action == "delete_device":
         return 200, delete_device(str(body.get("id") or ""))
+    if action == "rename_device":
+        return 200, rename_device(str(body.get("id") or body.get("device") or ""), body.get("name"))
 
     return 404, {"ok": False, "error": "not_found", "message": "unknown path %s" % path}
 

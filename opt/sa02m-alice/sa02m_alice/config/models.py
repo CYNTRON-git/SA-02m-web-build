@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common import constants as C
+from .device_types import OFFICIAL_DEVICE_TYPES
 
 # Tile icon allow-list (docs/contracts/alice-mqtt-mapping.md §Device document).
 DEVICE_ICONS = frozenset(C.DEVICE_ICONS)
@@ -66,12 +67,17 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
     "return_water_temperature",
     "room_temperature",
     "outdoor_temperature",
+    "heat_valve",
+    "fan_speed",
+    "fan_step",
 }
 
 CLOUD_ONLY_EVENT_INSTANCES = {
     "plant_state": frozenset(("run", "stop", "alarm")),
     "unit_status": None,      # free text from the PLC status table
     "alarm": frozenset(("alarm", "normal")),
+    "pump": frozenset(("on", "off")),
+    "alarm_text": None,       # active alarm codes, free text
 }
 
 # Keeps the unit string forwarded to Yandex shell/JSON-safe by construction.
@@ -284,6 +290,21 @@ def _carel_mqtt_bound(dev: Dict[str, Any]) -> bool:
     return False
 
 
+def _led_mqtt_bound(dev: Dict[str, Any]) -> bool:
+    """True when any binding topic is an LED-strip control (led-COM…)."""
+    for key in ("capabilities", "properties"):
+        items = dev.get(key) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mqtt = str(item.get("mqtt") or "")
+            if mqtt.startswith("/devices/led-"):
+                return True
+    return False
+
+
 def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(dev, dict):
         return None, "device must be an object"
@@ -300,14 +321,16 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
         out["name"] = name
     if "type" in out or not partial:
         dtype = str(out.get("type") or "devices.types.other")
-        if not dtype.startswith("devices.types."):
-            return None, "invalid device type"
-        out["type"] = dtype
         # Carel AHU bindings default to the ventilation tile (contract
         # carel-ahu.md §6). A live other/generic widget must not come back
         # after the next save — the board's type change is not in git.
         if _carel_mqtt_bound(out) and dtype == "devices.types.other":
-            out["type"] = "devices.types.ventilation"
+            dtype = "devices.types.ventilation"
+        if _led_mqtt_bound(out) and dtype in ("devices.types.other", "devices.types.generic"):
+            dtype = "devices.types.light"
+        if dtype not in OFFICIAL_DEVICE_TYPES:
+            return None, "invalid device type"
+        out["type"] = dtype
     if "room_id" in out and out["room_id"] not in (None, ""):
         if not _ID_RE.match(str(out["room_id"])):
             return None, "invalid room_id"
@@ -351,4 +374,6 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
             out.setdefault(key, [])
     if _carel_mqtt_bound(out) and out.get("icon") in (None, "", "generic"):
         out["icon"] = "fan"
+    if _led_mqtt_bound(out) and out.get("icon") in (None, "", "generic"):
+        out["icon"] = "bulb"
     return out, None

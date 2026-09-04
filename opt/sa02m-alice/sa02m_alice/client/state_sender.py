@@ -153,6 +153,18 @@ class StateSender:
                 if not isinstance(dev, dict) or not dev.get("id"):
                     continue
                 did = str(dev["id"])
+                error = str(dev.get("error_code") or "").strip()
+                if error == C.ERR_DEVICE_UNREACHABLE:
+                    # A down-edge stub has no caps/props; dropping it (the
+                    # pre-fix path) left the hub painting last-known °C
+                    # until someone opened the widget and queried.
+                    pending[did] = {
+                        "id": did,
+                        "capabilities": [],
+                        "properties": [],
+                        "error_code": error,
+                    }
+                    continue
                 allowed_caps = []
                 for cap in dev.get("capabilities") or []:
                     if not isinstance(cap, dict):

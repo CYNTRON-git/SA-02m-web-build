@@ -21,13 +21,14 @@ BOOL_EVENT_VALUES = {
     # the cloud page reads the word. Never sent to Yandex — the item carrying
     # this instance is `cloud_only` and the Yandex profile drops it.
     "alarm": ("normal", "alarm"),
+    "pump": ("off", "on"),
 }
 
 # Cloud-only event instances whose value is FREE TEXT, not a closed set: a PLC
 # status line («Выключено по тревоге») has no Yandex equivalent to map onto, and
 # the cloud renders it verbatim. Anything here is admitted only on a `cloud_only`
 # item (config/models.py), so it cannot reach Yandex.
-FREE_TEXT_EVENT_INSTANCES = ("unit_status",)
+FREE_TEXT_EVENT_INSTANCES = ("unit_status", "alarm_text")
 
 
 def _truthy_mqtt(raw: str) -> bool:

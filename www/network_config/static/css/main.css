@@ -4413,6 +4413,32 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   flex: 0 0 auto;
 }
 .mqtt-modal-head h3 { margin: 0; font-size: 1rem; }
+.sh-title-row, .dev-modal-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--tap);
+  align-items: center;
+  min-width: 0;
+  flex: 1;
+}
+.sh-title-row h3, .dev-modal-title-row h3,
+.sh-nin, .dev-nin { grid-column: 1; grid-row: 1; min-width: 0; margin: 0; }
+.sh-nin, .dev-nin {
+  z-index: 1; opacity: 0; pointer-events: none; width: 100%; padding: 0; border: 0;
+  background: transparent; color: inherit; font: inherit; font-size: 1rem; font-weight: 700;
+  line-height: 1.25; outline: none; box-shadow: none;
+}
+.sh-title-row[data-edit] .sh-nin, .dev-modal-title-row[data-edit] .dev-nin { opacity: 1; pointer-events: auto; }
+.sh-title-row[data-edit] h3, .dev-modal-title-row[data-edit] h3 { opacity: 0; }
+.sh-nin:focus-visible, .dev-nin:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.sh-nin[aria-invalid="true"], .dev-nin[aria-invalid="true"] { outline: 2px solid var(--red, #ff453a); outline-offset: 2px; }
+.sh-pen, .dev-pen {
+  grid-column: 2; grid-row: 1; flex-shrink: 0;
+  width: var(--tap); height: var(--tap); margin: 0; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: none; color: var(--text-sec); cursor: pointer; border-radius: 8px;
+}
+.sh-pen:hover, .dev-pen:hover { color: var(--text); }
+.sh-pen:focus-visible, .dev-pen:focus-visible { outline: 2px solid var(--cyan); outline-offset: -4px; }
 .mqtt-modal-body {
   padding: 16px 18px;
   overflow-y: auto;

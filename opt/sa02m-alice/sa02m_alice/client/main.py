@@ -33,10 +33,13 @@ from ..common.config_store import (
     cloud_control_urls,
     default_client_cfg,
     gateway_urls,
+    load_devices,
     profile_enabled,
+    save_devices,
     unlink_marker,
 )
 from ..common.fw_version import HW_VARIANT, get_fw_version
+from .auto_provision import AutoProvisioner, WATCH_TOPICS
 from .device_registry import DeviceRegistry
 from .fleet_token import FleetTokenError, cloud_identity_present, mint_control_token, read_cloud_identity
 from .reload_watch import DevicesWatcher, RetainedGrace, apply_reload
@@ -148,7 +151,11 @@ def _emit_cache_snapshot(
     """
     if sender is None:
         return
-    sender.offer_snapshot(registry.query_devices())
+    live = [d for d in registry.query_devices() if not d.get("error_code")]
+    sender.offer_snapshot(live)
+    stubs = registry.take_unreachable_transitions()
+    if stubs:
+        sender.offer_snapshot(stubs)
     sender.flush_now()
 
 
@@ -464,6 +471,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
     # below notices and reloads in place instead of the unit being restarted.
     watcher = DevicesWatcher(C.DEVICES_CONF)
     grace = RetainedGrace()
+    # One home: the same document both profiles read. Only the Yandex unit
+    # writes auto-discovered DTV/CE rows — the cloud profile would race it.
+    provisioner = None
+    if not cloud:
+        provisioner = AutoProvisioner(load=load_devices, save=save_devices)
     mqtt_host = cfg.get("client", "mqtt_host", fallback=C.DEFAULT_MQTT_HOST)
     mqtt_port = cfg.getint("client", "mqtt_port", fallback=C.DEFAULT_MQTT_PORT)
 
@@ -544,6 +556,18 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             blocks = registry.state_blocks_for_topic(topic)
             if blocks and sender:
                 sender.offer(blocks)
+        if provisioner is not None:
+            extra = provisioner.note(topic, payload)
+            if extra and mqtt is not None:
+                try:
+                    mqtt.subscribe(extra, qos=1)
+                except Exception as exc:
+                    log.error("auto-provision subscribe failed for %s: %s", extra, exc)
+        if sender:
+            stubs = registry.take_unreachable_transitions()
+            if stubs:
+                sender.offer_snapshot(stubs)
+                sender.flush_now()
 
     def write_connected(message: str) -> None:
         _write_status(
@@ -607,8 +631,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 # Keep the last good document — a corrupt file must not kill
                 # the connect path, but it must not pass silently either.
                 log.error("device document reload at connect failed: %s", exc)
-            for topic in registry.mqtt_topics():
+            for topic in registry.subscribe_topics():
                 mqtt.subscribe(topic, qos=1)
+            if provisioner is not None:
+                for topic in WATCH_TOPICS:
+                    mqtt.subscribe(topic, qos=1)
             # Allow retained storm to pass, then accept live updates
             time.sleep(1.0)
             ignore_retained["active"] = False
@@ -622,6 +649,19 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             while not _stop.is_set() and sio.connected and not _unlinked.is_set():
                 if not profile_enabled(profile):
                     break
+                if provisioner is not None and provisioner.tick():
+                    # We just wrote the document — consume the fingerprint so
+                    # the next watcher tick does not reload twice, then subscribe
+                    # the new topics the same path a CGI edit uses.
+                    watcher.arm()
+                    added, removed = apply_reload(
+                        registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=log
+                    )
+                    if added or removed:
+                        write_connected("Device document reloaded")
+                        last_heartbeat = time.monotonic()
+                        _emit_cache_snapshot(sender, registry)
+                        last_snapshot = last_heartbeat
                 if watcher.changed():
                     added, removed = apply_reload(
                         registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=log

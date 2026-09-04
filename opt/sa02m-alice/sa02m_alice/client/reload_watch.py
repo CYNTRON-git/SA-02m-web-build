@@ -125,7 +125,7 @@ def apply_reload(
     the document could not be loaded. `mqtt` is duck-typed (subscribe /
     unsubscribe) so tests can pass a fake.
     """
-    old: Set[str] = set(registry.mqtt_topics())
+    old: Set[str] = set(registry.subscribe_topics())
     try:
         registry.reload()
     except Exception as exc:
@@ -136,7 +136,7 @@ def apply_reload(
         log.error("device document reload failed, keeping the previous set: %s", exc)
         return set(), set()
 
-    new: Set[str] = set(registry.mqtt_topics())
+    new: Set[str] = set(registry.subscribe_topics())
     added = new - old
     removed = old - new
 

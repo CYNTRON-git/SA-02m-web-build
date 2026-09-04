@@ -5,7 +5,7 @@
 # GET  → full config + link/probe status (+ cloud_control block)
 # POST {"action":"enable"|"disable"|"cloud_control_enable"|"cloud_control_disable"|
 #               "link"|"unlink"|"upsert_room"|"delete_room"|
-#               "upsert_device"|"delete_device"|"available"|"mqtt_topics"|"status", ...}
+#               "upsert_device"|"delete_device"|"rename_device"|"available"|"mqtt_topics"|"status", ...}
 # The action allow-list is the Python dispatch (unknown ⇒ not_found); the sudo
 # nudges below fire only on the exact verbs the sudoers pin grants.
 
@@ -132,7 +132,7 @@ if [ "$METHOD" = "POST" ]; then
     # the same document: the trigger's `restart` verb covers each enabled one
     # (a connected client is reloaded in place, never restarted).
     case "$ACTION" in
-        upsert_device|delete_device|upsert_room|delete_room)
+        upsert_device|delete_device|rename_device|upsert_room|delete_room)
             case "$RESULT" in
                 *'"ok": true'*|*'"ok":true'*)
                     if grep -Eq '^\s*(client_enabled|cloud_control_enabled)\s*=\s*[Tt]rue' /etc/sa02m-alice/sa02m-alice-client.conf 2>/dev/null; then

@@ -6,6 +6,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from ..common import constants as C
+from ..config import api as config_api
 from .device_registry import DeviceRegistry
 
 log = logging.getLogger("sa02m_alice.handlers")
@@ -59,6 +60,12 @@ class SioHandlers:
         elif event == C.EVT_DEVICES_ACTION:
             payload = data.get("payload") or data
             self._on_action(request_id, (payload or {}).get("devices") or [])
+        elif event == C.EVT_DEVICES_RENAME:
+            self._on_rename(request_id, data)
+        elif event == C.EVT_DEVICES_ROOMS:
+            self._on_rooms(request_id, data)
+        elif event == C.EVT_DEVICES_GROUPS:
+            self._on_groups(request_id, data)
         else:
             log.debug("Unhandled event %s", event)
 
@@ -81,7 +88,11 @@ class SioHandlers:
 
     def _on_list(self, request_id: Optional[str]) -> None:
         devices = self.registry.discovery_devices(profile=self._profile)
-        self._emit_response({"request_id": request_id, "payload": {"devices": devices}})
+        payload: Dict[str, Any] = {"devices": devices}
+        if self._profile == C.PROFILE_CLOUD:
+            payload["rooms"] = self.registry.listed_rooms()
+            payload["groups"] = self.registry.listed_groups()
+        self._emit_response({"request_id": request_id, "payload": payload})
 
     def _on_query(self, request_id: Optional[str], devices: List[Any]) -> None:
         ids = [str(d.get("id")) for d in devices if isinstance(d, dict) and d.get("id")]
@@ -102,3 +113,56 @@ class SioHandlers:
                             cap["status"] = C.STATUS_ERROR
                             cap["error_code"] = C.ERR_DEVICE_UNREACHABLE
         self._emit_response({"request_id": request_id, "payload": {"devices": results}})
+
+    def _on_rename(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
+        device = data.get("device") or data.get("id")
+        result = config_api.rename_device(str(device or ""), data.get("name"))
+        if result.get("ok"):
+            try:
+                self.registry.reload()
+            except Exception as exc:
+                log.error("registry reload after rename failed: %s", exc)
+        self._emit_response({
+            "request_id": request_id,
+            "ok": bool(result.get("ok")),
+            "name": result.get("name"),
+            "error": result.get("error"),
+        })
+
+    def _on_rooms(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
+        result = config_api.apply_rooms(data)
+        if result.get("ok"):
+            try:
+                self.registry.reload()
+            except Exception as exc:
+                log.error("registry reload after rooms failed: %s", exc)
+        out: Dict[str, Any] = {
+            "request_id": request_id,
+            "ok": bool(result.get("ok")),
+            "error": result.get("error"),
+        }
+        if isinstance(result.get("room"), dict):
+            out["room"] = result["room"]
+        if isinstance(result.get("rooms"), list):
+            out["rooms"] = result["rooms"]
+        if isinstance(result.get("devices"), list):
+            out["devices"] = result["devices"]
+        self._emit_response(out)
+
+    def _on_groups(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
+        result = config_api.apply_groups(data)
+        if result.get("ok"):
+            try:
+                self.registry.reload()
+            except Exception as exc:
+                log.error("registry reload after groups failed: %s", exc)
+        out: Dict[str, Any] = {
+            "request_id": request_id,
+            "ok": bool(result.get("ok")),
+            "error": result.get("error"),
+        }
+        if isinstance(result.get("group"), dict):
+            out["group"] = result["group"]
+        if isinstance(result.get("groups"), list):
+            out["groups"] = result["groups"]
+        self._emit_response(out)

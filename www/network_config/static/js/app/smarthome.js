@@ -66,24 +66,118 @@ function shSetMsgOn(id, text, ok) {
 function shSetBindMsg(text, ok) { shSetMsgOn('sh-bind-msg', text, ok); }
 
 // ── Vocabulary ─────────────────────────────────────────────────────────────
-// Yandex device-type ids are machine keys, never a user label — map to a human
-// RU string (translated by uiT / DICT), falling back to the last dotted
-// segment so a new type never renders its raw key. Ids verified against the
-// Yandex device-type reference on 2026-09-02.
+// Official Yandex Smart Home type enum (picker + labels). One home with
+// opt/sa02m-alice/sa02m_alice/config/device_types.py — the unit test
+// pins the key sets equal. Source:
+// https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
+// (2026-09-04). RU string (translated by uiT / DICT), falling back to the
+// last dotted segment so a new type never renders its raw key.
 const SH_DEV_TYPES = {
-  'devices.types.light': 'Освещение',
-  'devices.types.socket': 'Розетка',
-  'devices.types.ventilation.fan': 'Вентилятор',
-  'devices.types.switch': 'Выключатель',
-  'devices.types.other': 'Другое',
   'devices.types.sensor': 'Датчик',
+  'devices.types.sensor.button': 'Умная кнопка',
   'devices.types.sensor.climate': 'Климат-датчик',
+  'devices.types.sensor.gas': 'Датчик газа',
+  'devices.types.sensor.illumination': 'Датчик освещённости',
   'devices.types.sensor.motion': 'Датчик движения',
+  'devices.types.sensor.open': 'Датчик открытия двери',
+  'devices.types.sensor.smoke': 'Датчик дыма',
+  'devices.types.sensor.vibration': 'Датчик вибрации',
+  'devices.types.sensor.water_leak': 'Датчик протечки воды',
   'devices.types.smart_meter': 'Счётчик',
+  'devices.types.smart_meter.cold_water': 'Счётчик холодной воды',
   'devices.types.smart_meter.electricity': 'Счётчик электроэнергии',
+  'devices.types.smart_meter.gas': 'Счётчик газа',
+  'devices.types.smart_meter.heat': 'Счётчик тепла',
+  'devices.types.smart_meter.hot_water': 'Счётчик горячей воды',
+  'devices.types.camera': 'Видеокамера',
+  'devices.types.media_device': 'Медиаустройство',
+  'devices.types.media_device.receiver': 'Ресивер',
+  'devices.types.media_device.tv': 'Телевизор',
+  'devices.types.media_device.tv_box': 'ТВ-приставка',
+  'devices.types.cooking': 'Кухонная техника',
+  'devices.types.cooking.coffee_maker': 'Кофеварка',
+  'devices.types.cooking.kettle': 'Чайник',
+  'devices.types.cooking.multicooker': 'Мультиварка',
+  'devices.types.dishwasher': 'Посудомоечная машина',
+  'devices.types.iron': 'Утюг',
+  'devices.types.vacuum_cleaner': 'Робот-пылесос',
+  'devices.types.washing_machine': 'Стиральная машина',
+  'devices.types.pet_drinking_fountain': 'Поилка',
+  'devices.types.pet_feeder': 'Кормушка',
+  'devices.types.humidifier': 'Увлажнитель воздуха',
+  'devices.types.purifier': 'Очиститель воздуха',
   'devices.types.thermostat': 'Термостат',
+  'devices.types.thermostat.ac': 'Кондиционер',
   'devices.types.ventilation': 'Вентустановка',
+  'devices.types.ventilation.fan': 'Вентилятор',
+  'devices.types.light': 'Освещение',
+  'devices.types.light.ceiling': 'Люстра',
+  'devices.types.light.dimmable': 'Диммер',
+  'devices.types.light.garland': 'Гирлянда',
+  'devices.types.light.lamp': 'Настольная лампа',
+  'devices.types.light.sconce': 'Бра',
+  'devices.types.light.strip': 'Диодная лента',
+  'devices.types.light.torchere': 'Торшер',
+  'devices.types.socket': 'Розетка',
+  'devices.types.switch': 'Выключатель',
+  'devices.types.switch.relay': 'Реле',
+  'devices.types.openable': 'Открываемое',
+  'devices.types.openable.curtain': 'Шторы',
+  'devices.types.openable.valve': 'Шаровой кран',
+  'devices.types.openable.door_lock': 'Замок',
+  'devices.types.other': 'Другое',
 };
+
+// Official category groups for #sh-dev-type (same order as device_types.py).
+const SH_DEV_TYPE_GROUPS = [
+  {label: 'Датчики', types: [
+    'devices.types.sensor', 'devices.types.sensor.button',
+    'devices.types.sensor.climate', 'devices.types.sensor.gas',
+    'devices.types.sensor.illumination', 'devices.types.sensor.motion',
+    'devices.types.sensor.open', 'devices.types.sensor.smoke',
+    'devices.types.sensor.vibration', 'devices.types.sensor.water_leak',
+  ]},
+  {label: 'Счётчики', types: [
+    'devices.types.smart_meter', 'devices.types.smart_meter.cold_water',
+    'devices.types.smart_meter.electricity', 'devices.types.smart_meter.gas',
+    'devices.types.smart_meter.heat', 'devices.types.smart_meter.hot_water',
+  ]},
+  {label: 'Медиаустройства', types: [
+    'devices.types.camera', 'devices.types.media_device',
+    'devices.types.media_device.receiver', 'devices.types.media_device.tv',
+    'devices.types.media_device.tv_box',
+  ]},
+  {label: 'Кухонная техника', types: [
+    'devices.types.cooking', 'devices.types.cooking.coffee_maker',
+    'devices.types.cooking.kettle', 'devices.types.cooking.multicooker',
+    'devices.types.dishwasher',
+  ]},
+  {label: 'Бытовая техника', types: [
+    'devices.types.iron', 'devices.types.vacuum_cleaner',
+    'devices.types.washing_machine',
+  ]},
+  {label: 'Устройства для животных', types: [
+    'devices.types.pet_drinking_fountain', 'devices.types.pet_feeder',
+  ]},
+  {label: 'Климатическая техника', types: [
+    'devices.types.humidifier', 'devices.types.purifier',
+    'devices.types.thermostat', 'devices.types.thermostat.ac',
+    'devices.types.ventilation', 'devices.types.ventilation.fan',
+  ]},
+  {label: 'Электрооборудование', types: [
+    'devices.types.light', 'devices.types.light.ceiling',
+    'devices.types.light.dimmable', 'devices.types.light.garland',
+    'devices.types.light.lamp', 'devices.types.light.sconce',
+    'devices.types.light.strip', 'devices.types.light.torchere',
+    'devices.types.socket', 'devices.types.switch',
+    'devices.types.switch.relay',
+  ]},
+  {label: 'Открытие/закрытие', types: [
+    'devices.types.openable', 'devices.types.openable.curtain',
+    'devices.types.openable.valve', 'devices.types.openable.door_lock',
+  ]},
+  {label: 'Остальные устройства', types: ['devices.types.other']},
+];
 
 // The on/off device types — the «Включить/выключить» optgroup in #sh-dev-type.
 // Named explicitly (not derived from the icon map below) so a type added here
@@ -119,7 +213,38 @@ function shIsCompositeType(type) {
 }
 
 function shIsOnOffType(type) {
-  return SH_ONOFF_TYPES.indexOf(type) !== -1;
+  if (SH_ONOFF_TYPES.indexOf(type) !== -1) return true;
+  // Light subtypes and the relay switch share the on/off seed + icon field.
+  if (String(type).indexOf('devices.types.light.') === 0) return true;
+  return type === 'devices.types.switch.relay';
+}
+
+function shIconForType(type) {
+  if (SH_ICON_BY_TYPE[type]) return SH_ICON_BY_TYPE[type];
+  if (String(type).indexOf('devices.types.light') === 0) return 'bulb';
+  if (type === 'devices.types.switch.relay') return 'relay';
+  return 'generic';
+}
+
+function shFillTypeSelect() {
+  const sel = $('sh-dev-type');
+  if (!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = '';
+  SH_DEV_TYPE_GROUPS.forEach(function (g) {
+    const og = document.createElement('optgroup');
+    og.dataset.label = g.label;
+    og.label = uiT(g.label);
+    g.types.forEach(function (type) {
+      const opt = document.createElement('option');
+      opt.value = type;
+      opt.textContent = uiT(SH_DEV_TYPES[type] || type);
+      if (type === 'devices.types.sensor') opt.selected = true;
+      og.appendChild(opt);
+    });
+    sel.appendChild(og);
+  });
+  if (keep) shSetDtype(keep);
 }
 
 // Reading kind (row select value) → the Yandex pin
@@ -432,7 +557,7 @@ function shRowsUntouched() {
 // draws them. Seeded together because binding them one by one is eight manual
 // topic picks for a device whose control names are fixed.
 const SH_VENT_ROWS = ['switch', 'setpoint', 'supply_temp', 'return_water',
-                      'room_temp', 'plant_state', 'unit_status', 'alarm'];
+                      'room_temp', 'outdoor_temp', 'plant_state', 'unit_status', 'alarm'];
 
 function shSeedRowsForType(type) {
   if (!shRowsUntouched()) return;
@@ -475,6 +600,11 @@ function shCarelControl(topic) {
   return m ? m[1] : '';
 }
 
+function shLedControl(topic) {
+  const m = /^\/devices\/led-[^/]+\/controls\/([^/]+)$/.exec(String(topic || ''));
+  return m ? m[1] : '';
+}
+
 const SH_CAREL_KIND = {
   unit_on: 'switch',
   setpoint: 'setpoint',
@@ -500,6 +630,17 @@ function shApplyCarelTopic(row, topic) {
   }
 }
 
+function shApplyLedTopic(row, topic) {
+  const ctrl = shLedControl(topic);
+  if (!ctrl) return;
+  const kindSel = row && row.querySelector('.sh-row-kind');
+  if (ctrl === 'power' && kindSel && SH_KINDS.switch && !kindSel.disabled) kindSel.value = 'switch';
+  if (!shDtypeTouched) {
+    shSetDtype('devices.types.light');
+    shSyncTypeUi();
+  }
+}
+
 function shRowsChange(e) {
   const sel = e.target;
   // Any change inside a row (kind or topic) marks it as the operator's: a
@@ -510,6 +651,7 @@ function shRowsChange(e) {
   if (sel && sel.classList && sel.classList.contains('sh-row-kind')) shSyncInvertedField();
   if (sel && sel.classList && sel.classList.contains('sh-row-topic')) {
     shApplyCarelTopic(row, sel.value);
+    shApplyLedTopic(row, sel.value);
     shSyncInvertedField();
     return;
   }
@@ -620,7 +762,7 @@ function shSyncTypeUi() {
   const onOff = shIsOnOffType(type);
   const tiled = onOff || shIsCompositeType(type);
   if (field) field.hidden = !tiled;
-  if (tiled && !shIconTouched) shSetIcon(SH_ICON_BY_TYPE[type] || 'generic');
+  if (tiled && !shIconTouched) shSetIcon(shIconForType(type));
 }
 
 function shDtypeChanged() {
@@ -652,7 +794,7 @@ function shDeviceTypeLabel(type) {
 
 function shDeviceIcon(dev) {
   if (dev && SH_ICONS.indexOf(dev.icon) !== -1) return dev.icon;
-  return SH_ICON_BY_TYPE[dev && dev.type] || 'generic';
+  return shIconForType(dev && dev.type);
 }
 
 function shVisibleInAlice(dev) {
@@ -881,6 +1023,92 @@ async function shAddDevice() {
   }
 }
 
+// Alice `_NAME_RE`: 1–64 letters/digits/spaces/-./+ (JS \w is ASCII, so \p{L}).
+var SH_NAME_RE = /^[\p{L}\p{N}_ \-./+]{1,64}$/u;
+var shTitleEditing = false;
+
+function shTitleRow() { return document.querySelector('#sh-modal .sh-title-row'); }
+function shPenEl() { return $('sh-title-pen'); }
+function shNinEl() { return $('sh-title-in'); }
+
+function shSyncPen() {
+  var p = shPenEl();
+  if (!p) return;
+  var k = shTitleEditing ? 'Сохранить название' : 'Переименовать';
+  p.setAttribute('aria-label', uiT(k));
+  p.title = uiT(k);
+}
+
+function shSetModalTitle(name, editing) {
+  var t = $('sh-modal-title');
+  var pen = shPenEl();
+  if (!t) return;
+  if (editing && name) {
+    t.removeAttribute('data-i18n');
+    t.textContent = name;
+    if (pen) pen.hidden = false;
+  } else {
+    t.setAttribute('data-i18n', 'Комнаты и устройства');
+    t.textContent = uiT('Комнаты и устройства');
+    if (pen) pen.hidden = true;
+    shCancelTitleEdit();
+  }
+  shSyncPen();
+}
+
+function shStartTitleEdit() {
+  var nin = shNinEl(), row = shTitleRow(), t = $('sh-modal-title');
+  if (!shEditId || !nin || !row || !t) return;
+  shTitleEditing = true;
+  nin.hidden = false;
+  nin.value = t.textContent || '';
+  nin.removeAttribute('aria-invalid');
+  nin.setAttribute('tabindex', '0');
+  row.setAttribute('data-edit', '');
+  shSyncPen();
+  nin.focus();
+  nin.select();
+}
+
+function shCancelTitleEdit() {
+  var nin = shNinEl(), row = shTitleRow();
+  shTitleEditing = false;
+  if (row) row.removeAttribute('data-edit');
+  if (nin) {
+    nin.hidden = true;
+    nin.removeAttribute('aria-invalid');
+    nin.setAttribute('tabindex', '-1');
+  }
+  shSyncPen();
+}
+
+async function shCommitTitleEdit() {
+  var nin = shNinEl();
+  if (!shEditId || !nin || !shTitleEditing) return;
+  var name = (nin.value || '').replace(/^\s+|\s+$/g, '');
+  if (!name || !SH_NAME_RE.test(name)) {
+    nin.setAttribute('aria-invalid', 'true');
+    shSetBindMsg(uiT('Недопустимое название'), false);
+    nin.focus();
+    return;
+  }
+  try {
+    var d = await shApi({ action: 'rename_device', id: shEditId, name: name });
+    if (!d.ok) {
+      shSetBindMsg(d.message || d.error || uiT('Недопустимое название'), false);
+      return;
+    }
+    if ($('sh-dev-name')) $('sh-dev-name').value = name;
+    if (shDevCache[shEditId]) shDevCache[shEditId].name = name;
+    shCancelTitleEdit();
+    shSetModalTitle(name, true);
+    shSetBindMsg('', true);
+    await shRefresh();
+  } catch (e) {
+    shSetBindMsg(uiT('Ошибка запроса API Алисы'), false);
+  }
+}
+
 // ── Edit / delete on the device rows (delegated from #sh-device-list) ───────
 function shListClick(e) {
   const btn = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
@@ -920,6 +1148,7 @@ function shBeginEdit(id) {
   const cancel = $('sh-dev-cancel');
   if (cancel) cancel.hidden = false;
   shSetBindMsg('', true);
+  shSetModalTitle(dev.name || '', true);
 }
 
 function shCancelEdit() {
@@ -939,6 +1168,7 @@ function shCancelEdit() {
   if (save) save.textContent = uiT('Добавить');
   const cancel = $('sh-dev-cancel');
   if (cancel) cancel.hidden = true;
+  shSetModalTitle('', false);
 }
 
 async function shDeleteDevice(id) {
@@ -962,7 +1192,9 @@ async function shDeleteDevice(id) {
 // ── Modal («Комнаты и устройства») ──────────────────────────────────────────
 // Reuses the shared mqtt-modal markup/behaviour, not a new one.
 function shModalEsc(e) {
-  if (e.key === 'Escape') shCloseModal();
+  if (e.key !== 'Escape') return;
+  if (shTitleEditing) { e.preventDefault(); e.stopPropagation(); shCancelTitleEdit(); return; }
+  shCloseModal();
 }
 
 async function shOpenModal() {
@@ -994,6 +1226,16 @@ function shInit() {
   if (!$('sh-card')) return;
   const list = $('sh-device-list');
   if (list) list.addEventListener('click', shListClick);
+  var pen = shPenEl();
+  if (pen) pen.addEventListener('click', function (ev) {
+    ev.preventDefault(); ev.stopPropagation();
+    if (shTitleEditing) shCommitTitleEdit(); else shStartTitleEdit();
+  });
+  var nin = shNinEl();
+  if (nin) nin.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); shCommitTitleEdit(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); shCancelTitleEdit(); }
+  });
   const roomList = $('sh-room-list');
   if (roomList) roomList.addEventListener('click', shRoomListClick);
   // Delegated from the containers, which are static markup — a rebuilt row
@@ -1004,7 +1246,10 @@ function shInit() {
     rows.addEventListener('change', shRowsChange);
   }
   const dtype = $('sh-dev-type');
-  if (dtype) dtype.addEventListener('change', shDtypeChanged);
+  if (dtype) {
+    shFillTypeSelect();
+    dtype.addEventListener('change', shDtypeChanged);
+  }
   const icon = $('sh-dev-icon');
   if (icon) icon.addEventListener('change', function () { shIconTouched = true; shRenderPreview(); });
   const roomInput = $('sh-room-name');
@@ -1029,8 +1274,14 @@ function shRefreshI18n() {
     sel.querySelectorAll('optgroup[data-label]').forEach(function (og) {
       og.label = uiT(og.dataset.label);
     });
+    sel.querySelectorAll('option').forEach(function (opt) {
+      const ru = SH_DEV_TYPES[opt.value];
+      if (ru) opt.textContent = uiT(ru);
+    });
   }
   if (_shLastData) shOnData(_shLastData);
+  if (shEditId && shDevCache[shEditId]) shSetModalTitle(shDevCache[shEditId].name || '', true);
+  else shSetModalTitle('', false);
 }
 
 // Only functions invoked from HTML onclick handlers need a global handle.

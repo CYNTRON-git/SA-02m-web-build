@@ -181,7 +181,7 @@ def clear_unlink_marker() -> None:
 
 
 def empty_devices() -> Dict[str, Any]:
-    return {"rooms": [], "devices": []}
+    return {"rooms": [], "groups": [], "devices": []}
 
 
 def load_devices(path: str | None = None) -> Dict[str, Any]:
@@ -193,6 +193,7 @@ def load_devices(path: str | None = None) -> Dict[str, Any]:
     if not isinstance(data, dict):
         return empty_devices()
     data.setdefault("rooms", [])
+    data.setdefault("groups", [])
     data.setdefault("devices", [])
     return data
 

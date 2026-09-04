@@ -284,8 +284,10 @@ function aliceRender(d) {
     statusAction = 'link';
     statusLabel = 'Привязать';
   }
-  // Offline surfaces in the Status line itself (no separate «нет интернета» row).
-  if (statusVal) statusVal.textContent = avail ? uiT(statusText) : uiT('нет интернета');
+  // Gateway probe fail is «Шлюз недоступен» on the badge — not «нет интернета».
+  // The box can still have a default route (skill unlink wiped certs, TLS
+  // blip, hub 5xx). Only a dedicated offline note may use that phrase.
+  if (statusVal) statusVal.textContent = uiT(statusText);
   if (linkRow) linkRow.hidden = !enabled;
   if (linkBtn) {
     linkBtn.dataset.action = statusAction || '';

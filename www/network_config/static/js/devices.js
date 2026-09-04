@@ -1,5 +1,5 @@
 /* Devices tab — live ДТВ / СЭ-02м-3 widgets + MR-02m analog cards + history modal / Excel / events */
-import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
+import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.36";
 
 (function () {
   "use strict";
@@ -376,15 +376,12 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
     return custom || (d && (d.label || d.title)) || (d && d.id) || "";
   }
 
-  function renameDevice(id) {
+  const WIDGET_NAME_RE = /^[\p{L}\p{N}_ \-./+]{1,64}$/u;
+  let titleEditing = false;
+
+  function applyCustomName(id, val) {
     const names = customDeviceNames();
     const def = lastLabelById[id] || "";
-    const next = window.prompt(
-      "Название виджета (пусто — вернуть стандартное «" + def + "»):",
-      names[id] || def
-    );
-    if (next === null) return;
-    const val = next.trim();
     if (val) names[id] = val;
     else delete names[id];
     try {
@@ -395,6 +392,76 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
     const card = document.querySelector('.dev-card[data-device-id="' + id + '"]');
     const titleEl = card && card.querySelector(".dev-card-title");
     if (titleEl) titleEl.textContent = names[id] || def;
+    if (activeDeviceId === id) {
+      activeDeviceLabel = names[id] || def || activeDeviceLabel;
+      const modalTitle = $("dev-modal-title");
+      if (modalTitle) {
+        modalTitle.textContent = (activeDeviceLabel || "") + " · история";
+        modalTitle.dataset.baseName = activeDeviceLabel || "";
+      }
+    }
+  }
+
+  function renameDevice(id) {
+    const names = customDeviceNames();
+    const def = lastLabelById[id] || "";
+    const next = window.prompt(
+      "Название виджета (пусто — вернуть стандартное «" + def + "»):",
+      names[id] || def
+    );
+    if (next === null) return;
+    applyCustomName(id, next.trim());
+  }
+
+  function syncDevPen() {
+    const p = $("dev-title-pen");
+    if (!p) return;
+    const k = titleEditing ? "Сохранить название" : "Переименовать";
+    const lab = window.sa02mI18n ? window.sa02mI18n.t(k) : k;
+    p.setAttribute("aria-label", lab);
+    p.title = lab;
+  }
+
+  function startDevRen() {
+    const nin = $("dev-title-in"),
+      row = document.querySelector("#dev-modal .dev-modal-title-row"),
+      ttl = $("dev-modal-title");
+    if (!nin || !row || !ttl || !activeDeviceId) return;
+    titleEditing = true;
+    nin.value = ttl.dataset.baseName || "";
+    nin.removeAttribute("aria-invalid");
+    nin.setAttribute("tabindex", "0");
+    nin.removeAttribute("aria-hidden");
+    row.setAttribute("data-edit", "");
+    syncDevPen();
+    nin.focus();
+    nin.select();
+  }
+
+  function cancelDevRen() {
+    const nin = $("dev-title-in"),
+      row = document.querySelector("#dev-modal .dev-modal-title-row");
+    titleEditing = false;
+    if (row) row.removeAttribute("data-edit");
+    if (nin) {
+      nin.removeAttribute("aria-invalid");
+      nin.setAttribute("tabindex", "-1");
+      nin.setAttribute("aria-hidden", "true");
+    }
+    syncDevPen();
+  }
+
+  function commitDevRen() {
+    const nin = $("dev-title-in");
+    if (!nin || !titleEditing || !activeDeviceId) return;
+    const name = nin.value.replace(/^\s+|\s+$/g, "");
+    if (!name || !WIDGET_NAME_RE.test(name)) {
+      nin.setAttribute("aria-invalid", "true");
+      nin.focus();
+      return;
+    }
+    applyCustomName(activeDeviceId, name);
+    cancelDevRen();
   }
 
   function cardKind(d) {
@@ -2196,7 +2263,11 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
           : activeDevice === "carel"
           ? "Carel"
           : "MR-02m";
-      titleEl.textContent = (activeDeviceLabel || fallback) + " · история";
+      const nm = activeDeviceLabel || fallback;
+      titleEl.textContent = nm + " · история";
+      titleEl.dataset.baseName = nm;
+      cancelDevRen();
+      syncDevPen();
     }
     const chips = $("dev-metric-chips");
     if (!chips) return;
@@ -2240,6 +2311,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
   }
 
   function closeModal() {
+    cancelDevRen();
     const modal = $("dev-modal");
     if (modal) modal.hidden = true;
     document.body.classList.remove("dev-modal-open");
@@ -2419,8 +2491,39 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.35";
     const backdrop = $("dev-modal-backdrop");
     if (backdrop) backdrop.addEventListener("click", closeModal);
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && $("dev-modal") && !$("dev-modal").hidden) closeModal();
+      if (e.key === "Escape" && $("dev-modal") && !$("dev-modal").hidden) {
+        if (titleEditing) {
+          e.preventDefault();
+          cancelDevRen();
+          return;
+        }
+        closeModal();
+      }
     });
+    const pen = $("dev-title-pen");
+    if (pen) {
+      pen.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (titleEditing) commitDevRen();
+        else startDevRen();
+      });
+    }
+    const nin = $("dev-title-in");
+    if (nin) {
+      nin.setAttribute("aria-hidden", "true");
+      nin.setAttribute("tabindex", "-1");
+      nin.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          commitDevRen();
+        } else if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancelDevRen();
+        }
+      });
+    }
     document.querySelectorAll("#dev-modal .dev-range-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         setSpanFromPreset(btn.dataset.range);
