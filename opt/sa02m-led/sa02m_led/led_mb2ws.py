@@ -300,8 +300,16 @@ RGBW_DI_CNT_SHORTLONG_BASE = 232
 RGBW_DI_ENC_STEPS_BASE = 236
 RGBW_DI_CNT_LAST = 237
 RGBW_IREG_CURRENT_BASE = 37  # mA R/G/B/W
-RGBW_IREG_NTC = 131
-RGBW_IREG_VLED = 132
+RGBW_IREG_NTC = 131  # int16 ×0.1 °C — family scale, see rgbw_ntc_celsius()
+RGBW_IREG_VLED = 132  # u16 ×0.01 V — family scale, see rgbw_vled_volts()
+# Live DI state — the MR-02m FAMILY block (Input 18..17+N, FC04), not a
+# product-low-map address: every module of the family answers it there
+# (bridge_mr02m._poll_do_di, docs/MQTT_TOPICS.md «MR-02м … DI»), and the
+# relocation note above only moved the DI *configuration* and press counters.
+# UNVERIFIED on a type-120 device — no strip has answered a scan yet, so a
+# consumer must treat a read failure here as "block absent", never as an error
+# worth taking the device offline.
+RGBW_DI_INPUT_BASE = 18
 
 
 def mb2ws_reg(offset: int) -> int:
@@ -1089,27 +1097,106 @@ def rgbw_rgb565_to_hex(v: int) -> str:
     return "#%02X%02X%02X" % (r, g, b)
 
 
-def rgbw_rgb_permille_to_rgb565(r: int, g: int, b: int) -> int:
-    """Colour-wheel permille (0..1000) → RGB565, for the text-colour registers.
+def rgbw_permille_to_rgb8(value: int) -> int:
+    """One PWM channel: permille 0..1000 → 8-bit 0..255, ROUNDED and clamped.
 
-    Both permille bridges ROUND rather than truncate: flooring in both directions
-    loses a whole 5-bit step, so a colour read off the device and handed straight
-    back to the wheel would drift one shade darker on every trip.
+    Both permille bridges round rather than truncate: flooring in both directions
+    loses a whole step, so a colour read off the device and handed straight back
+    would drift one shade darker on every trip.
     """
-    def _to8(x: int) -> int:
-        return (max(0, min(1000, int(x))) * 255 + 500) // 1000
+    x = max(0, min(RGBW_PWM_PERMILLE_MAX, int(value)))
+    return (x * 255 + 500) // 1000
 
-    return rgbw_rgb565_from_rgb8(_to8(r), _to8(g), _to8(b))
+
+def rgbw_rgb8_to_permille(value: int) -> int:
+    """One PWM channel: 8-bit 0..255 → permille 0..1000, ROUNDED and clamped.
+
+    Exact inverse of :func:`rgbw_permille_to_rgb8` over the whole 0..255 domain
+    (asserted in the package tests): an 8-bit colour written to the strip reads
+    back as the same 8-bit colour, so an MQTT echo never disagrees with the next
+    poll of the same untouched register.
+    """
+    x = max(0, min(255, int(value)))
+    return (x * 1000 + 127) // 255
+
+
+def rgbw_rgb_permille_to_rgb565(r: int, g: int, b: int) -> int:
+    """Colour-wheel permille (0..1000) → RGB565, for the text-colour registers."""
+    return rgbw_rgb565_from_rgb8(rgbw_permille_to_rgb8(r),
+                                 rgbw_permille_to_rgb8(g),
+                                 rgbw_permille_to_rgb8(b))
 
 
 def rgbw_rgb565_to_rgb_permille(v: int) -> Tuple[int, int, int]:
     """RGB565 → permille (0..1000), to seed the colour wheel from a stored colour."""
     r, g, b = rgbw_rgb565_to_rgb8(v)
-    return (
-        (r * 1000 + 127) // 255,
-        (g * 1000 + 127) // 255,
-        (b * 1000 + 127) // 255,
-    )
+    return (rgbw_rgb8_to_permille(r),
+            rgbw_rgb8_to_permille(g),
+            rgbw_rgb8_to_permille(b))
+
+
+def rgbw_pwm_permille_to_hex(r: int, g: int, b: int) -> str:
+    """The PWM R/G/B triple (holdings 33..35, permille) → '#RRGGBB'.
+
+    NOT via RGB565: that path is for the text-colour registers and quantises to
+    5/6/5 bits, which would throw away most of the PWM resolution on the way out
+    and make a written colour read back visibly different.
+    """
+    return "#%02X%02X%02X" % (rgbw_permille_to_rgb8(r),
+                              rgbw_permille_to_rgb8(g),
+                              rgbw_permille_to_rgb8(b))
+
+
+# ---------------------------------------------------------------------------
+# Live analog inputs (NTC 131, VLED 132)
+# ---------------------------------------------------------------------------
+# SCALES ARE THE MR-02m FAMILY CONVENTION, NOT A MEASURED FACT. The product low
+# map names the two addresses and stops there; the family's own diagnostics pair
+# (holdings 123/124 on every MR/DTV/CE module) is voltage ×0.01 V and temperature
+# int16 ×0.1 °C, documented in docs/MQTT_TOPICS.md and read that way by
+# bridge_mr02m and bridge_dtv_ce. No type-120 device has answered a scan, so the
+# scale is UNVERIFIED here — it is a single constant on purpose, so confirming it
+# on the bench is a one-line edit in one file rather than a hunt through two
+# services.
+
+
+RGBW_IREG_VLED_SCALE = 0.01   # raw u16 → volts
+RGBW_IREG_NTC_SCALE = 0.1     # raw int16 → °C
+
+
+def rgbw_vled_volts(raw: int) -> float:
+    """Input register 132 → supply volts (family scale, see the note above)."""
+    return round((int(raw) & 0xFFFF) * RGBW_IREG_VLED_SCALE, 2)
+
+
+def rgbw_ntc_celsius(raw: int) -> float:
+    """Input register 131 → °C, SIGNED (family scale, see the note above).
+
+    Signed because the strip's NTC can legitimately read below zero outdoors and
+    an unsigned read would publish −5 °C as +6549 °C.
+    """
+    return round(rgbw_u16_to_i16(raw) * RGBW_IREG_NTC_SCALE, 1)
+
+
+def rgbw_hex_to_pwm_permille(s: str) -> Optional[Tuple[int, int, int]]:
+    """'#RRGGBB' → the PWM permille triple, or None when ``s`` is not that form.
+
+    None rather than a default colour: this feeds a Modbus write, and a
+    malformed payload must be REFUSED, not silently rendered as black. The
+    text-colour sibling :func:`rgbw_hex_to_rgb565` returns the firmware default
+    instead because there the value is a UI field, not a bus write.
+    """
+    t = str(s or "").strip()
+    if len(t) != 7 or not t.startswith("#"):
+        return None
+    try:
+        r = int(t[1:3], 16)
+        g = int(t[3:5], 16)
+        b = int(t[5:7], 16)
+    except ValueError:
+        return None
+    return (rgbw_rgb8_to_permille(r), rgbw_rgb8_to_permille(g),
+            rgbw_rgb8_to_permille(b))
 
 
 def rgbw_hsv_to_rgb_permille(h: float, s: float, v: float) -> Tuple[int, int, int]:

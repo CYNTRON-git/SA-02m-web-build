@@ -56,6 +56,7 @@ EXPECTED_MODULES = [
     "bridge_device",
     "bridge_dtv_ce",
     "bridge_fmb",
+    "bridge_led",
     "bridge_meta",
     "bridge_mqtt",
     "bridge_mr02m",
@@ -79,6 +80,7 @@ FROZEN_SURFACE = [
     "DeviceLiveCache", "DevicePoller", "PortCycleScheduler",
     "PortPollScheduler",
     "MR02mPoller", "DTVPoller", "CE02M3Poller", "TemplatePoller",
+    "CarelPoller", "LedPoller", "mixed_baud_port_conflicts",
     "MR02M_MODULE_TYPES", "MR02M_AI_CHUNK_ENV",
     "resolve_ai_read_chunk_regs", "_canonical_mr02m_device_name",
     # -- RS-485 wire grammar + transport (bridge_serial) --

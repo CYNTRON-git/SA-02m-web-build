@@ -346,6 +346,68 @@ class TestColour(unittest.TestCase):
         self.assertEqual(again, v)  # no drift on a second trip
 
 
+class TestPwmColourBridge(unittest.TestCase):
+    """The PWM triple 33..35 is permille; MQTT publishes 8-bit hex."""
+
+    def test_the_eight_bit_round_trip_is_exact_over_the_whole_domain(self):
+        # A colour written from MQTT is echoed at once and re-read on the next
+        # poll. If the two disagree by one step anywhere, the tile flickers
+        # between two values forever and the writeback guard just hides it.
+        for v in range(256):
+            self.assertEqual(
+                lm.rgbw_permille_to_rgb8(lm.rgbw_rgb8_to_permille(v)), v)
+
+    def test_the_bridges_clamp_rather_than_wrap(self):
+        self.assertEqual(lm.rgbw_rgb8_to_permille(-5), 0)
+        self.assertEqual(lm.rgbw_rgb8_to_permille(999), lm.RGBW_PWM_PERMILLE_MAX)
+        self.assertEqual(lm.rgbw_permille_to_rgb8(-5), 0)
+        self.assertEqual(lm.rgbw_permille_to_rgb8(99999), 255)
+
+    def test_hex_round_trips_through_permille(self):
+        for hexs in ("#000000", "#FFFFFF", "#FF8000", "#123456", "#010203"):
+            triple = lm.rgbw_hex_to_pwm_permille(hexs)
+            self.assertEqual(lm.rgbw_pwm_permille_to_hex(*triple), hexs)
+
+    def test_the_pwm_hex_path_does_not_go_through_rgb565(self):
+        # RGB565 quantises to 5/6/5 bits. Routing the PWM triple through it
+        # would throw away most of the strip's resolution: #010203 collapses to
+        # black on the way out.
+        self.assertEqual(lm.rgbw_pwm_permille_to_hex(
+            *lm.rgbw_hex_to_pwm_permille("#010203")), "#010203")
+        self.assertNotEqual(
+            lm.rgbw_rgb565_to_hex(lm.rgbw_hex_to_rgb565("#010203")), "#010203")
+
+    def test_a_malformed_hex_is_refused_not_defaulted(self):
+        # This one feeds a Modbus write, unlike the text-colour sibling: a
+        # malformed payload must be REFUSED, never silently rendered as black.
+        for bad in ("", "nope", "#12345", "#GGGGGG", "FF8000", None):
+            self.assertIsNone(lm.rgbw_hex_to_pwm_permille(bad), bad)
+        # The text-colour path deliberately keeps the other behaviour.
+        self.assertEqual(lm.rgbw_hex_to_rgb565("nope"), 0)
+
+
+class TestLiveAnalogInputs(unittest.TestCase):
+    """UNVERIFIED family scales — pinned so a bench correction is one edit."""
+
+    def test_vled_uses_the_family_hundredths_of_a_volt(self):
+        self.assertEqual(lm.rgbw_vled_volts(1198), 11.98)
+        self.assertEqual(lm.rgbw_vled_volts(0), 0.0)
+
+    def test_the_ntc_reading_is_signed(self):
+        # Unsigned, −5.0 °C reads as +6549.1 °C — a plausible-looking number on
+        # a tile is worse than none.
+        self.assertEqual(lm.rgbw_ntc_celsius(315), 31.5)
+        self.assertEqual(lm.rgbw_ntc_celsius(0x10000 - 50), -5.0)
+
+    def test_the_live_di_block_is_the_family_input_base(self):
+        # Product-low-map relocation moved the DI CONFIGURATION and the press
+        # counters; the live state stays on the family block, so the two must
+        # not be confused.
+        self.assertEqual(lm.RGBW_DI_INPUT_BASE, 18)
+        self.assertNotEqual(lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_MODE_BASE)
+        self.assertNotEqual(lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_CNT_SHORT_BASE)
+
+
 class TestLineAndSceneMode(unittest.TestCase):
     def test_apa102_forces_rgb_and_zero_second_strip(self):
         regs = lm.rgbw_line_mode_to_regs(lm.RGBW_LINE_UI_APA102, lm.MB2WS_LED_TYPE_SK6812, 300, 100, 1)
