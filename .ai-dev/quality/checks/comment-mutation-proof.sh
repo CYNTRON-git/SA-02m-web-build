@@ -133,6 +133,7 @@ iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1
+binding-reset-parity|opt/sa02m-cloud-agent/binding_core.py|def stand_down(spec, cls, reason):
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

@@ -125,8 +125,29 @@ const ALICE_STATE_MAP = {
   error: ['Ошибка', 'err'],
   missing_deps: ['Нет зависимостей', 'err'],
   missing_cert: ['Нет сертификата', 'warn'],
+  // Distinct from missing_cert on purpose: the board WAS bound and the cloud
+  // unbound it, so the card must say why the certificate is gone instead of
+  // reading like a board that was never bound. Same wording as the «Облако»
+  // card's state of the same name — one vocabulary for one situation.
+  unlinked: ['Отвязано в облаке', 'warn'],
+  // Unlinked, but the binding files could NOT be erased — the client keeps
+  // retrying. Never «привязан», never «отвязано».
+  unlink_failed: ['Ошибка отвязки', 'err'],
   unknown: ['Нет данных', 'unk'],
 };
+
+// Client status state / reason code → human RU (DICT-translated), the twin of
+// cloud.js's CLOUD_REASON_MAP. Shown in the card's message line as
+// «Причина: …» for the two stand-down states and nothing else.
+const ALICE_REASON_MAP = {
+  unlinked: 'устройство отвязано в облаке',
+  wipe_failed: 'не удалось стереть файлы привязки в /var/lib/sa02m-alice — подробности в журнале клиента; попытка повторяется',
+  // The local «Отвязать» could not erase the binding AND could not hand the
+  // retry to the client (the same read-only filesystem, most likely) — nothing
+  // is retrying, so the card must ask for the action instead of implying one.
+  wipe_failed_not_recorded: 'не удалось стереть файлы привязки и передать повтор клиенту — нажмите «Отвязать» ещё раз',
+};
+const ALICE_STAND_DOWN_STATES = ['unlinked', 'unlink_failed'];
 
 // A raw gateway exception (str(URLError): "<urlopen error [SSL:
 // CERTIFICATE_VERIFY_FAILED] … self-signed certificate …>") is a TLS-trust
@@ -287,7 +308,18 @@ function aliceRender(d) {
   // never the raw urlopen/SSL exception string (Operator rule, 1.0.5.73). The
   // mapping lives in aliceFriendlyStatus; a healthy state leaves any action
   // feedback message («Сохранено» etc.) in place.
-  if (friendly.kind === 'err') {
+  // The «Причина» line for the two stand-down states — checked BEFORE the
+  // generic error branch, which would otherwise replace the explanation with a
+  // bare «Ошибка отвязки» (or «Шлюз недоступен» on a board that is unlinked AND
+  // offline) and leave the Operator with no reason at all. Unlike the «Облако»
+  // card this line carries no timestamp: the Alice status file's `unlinked_at`
+  // is the durable marker's, and formatting it would duplicate cloud.js's
+  // relative-time helper across bundles for a value the reason already implies.
+  if (ALICE_STAND_DOWN_STATES.indexOf(st) !== -1) {
+    const raw = (d.status && d.status.reason) || '';
+    const why = ALICE_REASON_MAP[raw] || ALICE_REASON_MAP[st] || '';
+    aliceSetMsg(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
+  } else if (friendly.kind === 'err') {
     aliceSetMsg(uiT(friendly.text), false);
   } else if (enabled && pending && aliceRegUrl) {
     // Keep the reopen link visible for the whole pending window — a closed
@@ -394,7 +426,11 @@ async function aliceUnlink() {
   try {
     const d = await aliceApi({ action: 'unlink' });
     if (!d.ok) {
-      aliceSetMsg(d.message || d.error || uiT('Отвязка не выполнена'), false);
+      // Prefer the mapped Russian phrase over the backend's English `message`:
+      // these two codes are the wipe-failure outcomes and the operator has to
+      // act on the difference between them.
+      const why = ALICE_REASON_MAP[d.error];
+      aliceSetMsg(why ? uiT(why) : (d.message || d.error || uiT('Отвязка не выполнена')), false);
     } else {
       aliceSetPending(false);
       aliceSetMsg(d.message || uiT('Отвязано'), true);

@@ -282,7 +282,25 @@ control entry with the **identical** event set.
 | G→C | `alice_devices_query` | `{request_id, devices:[{id}]}` |
 | G→C | `alice_devices_action` | `{request_id, payload:{devices:[…]}}` |
 | C→G | `device_state` | `{ts, origin, payload:{devices:[]}}` |
-| G→C | `controller_unlink` | `{}` — Yandex profile only; **not registered on the cloud profile** (it must never touch the mTLS cert) |
+| G→C | `controller_unlink` | необязательное тело (`{"reason":"unlinked"}` сегодня, `{}` до 0.6.0) — только профиль `yandex`; **на облачном профиле не зарегистрировано** (он не должен трогать mTLS-сертификат) |
+
+**`controller_unlink` — получение авторитетно независимо от формы тела.** Ветка
+обработчика стоит **выше** проверки «тело — словарь»: подлинность даёт
+проверенная mTLS-сессия, а не поле в теле (контракт доставки — соседний
+репозиторий `cloud`, `docs/contracts/alice-gateway.md`, «controller_unlink
+delivery semantics» — делает тело необязательным). Ниже этой проверки пустое
+тело молча отбрасывалось бы, и плата продолжала бы считать себя привязанной —
+исходный дефект 1.0.6.27.
+
+Что получение делает: это одна из двух **дверей** в общее ядро сброса привязки
+(`opt/sa02m-cloud-agent/binding_core.py`, побайтовая копия
+`sa02m_alice/common/binding_core.py`; строка реестра `binding-reset-parity`), с
+`threshold = 1` — здесь приходит **вердикт**, а не улика: шлюз рвёт соединение
+сразу после события, второго в той же сессии не будет. Список стираемого,
+долговечный маркер, состояния статуса и правило «никогда по сомнению» — ядра;
+здесь они **названы ссылкой, а не пересказаны**, потому что облачная дверь
+пользуется теми же. Решение и отвергнутая альтернатива:
+`docs/decisions/binding-reset-one-home.md`.
 
 `device_state.origin` (additive, 1.0.6.26; an older gateway ignores it):
 `"live"` = an MQTT-driven report through `StateSender.offer`, `"snapshot"` =
@@ -374,6 +392,32 @@ permission-blind and returns a false "absent").
   bool, config_watch: bool, …}` — `cert_present` is evaluated by the client on
   EVERY write (`sa02m_alice/client/main.py::_write_status`), so the file is the
   source of cert truth for unprivileged readers. Additive: older keys unchanged.
+- Перечень состояний — одна строка, один дом в этом документе (её читает
+  валидирующий тест; дом в коде — константы `STATE_*` в
+  `sa02m_alice/common/constants.py`):
+
+  `state ∈ disabled | offline | connecting | connected | error | missing_deps | missing_cert | missing_identity | unlinked | unlink_failed`
+
+  `missing_identity` пишет только облачный профиль (в свой файл), остальные —
+  оба. Подписи для карточек: `ALICE_STATE_MAP` (`app/alice.js`) и
+  `CLOUD_CTRL_STATE_MAP` (`cloud.js`); `unknown` есть только в картах — это
+  запасная подпись, клиент такого состояния не пишет.
+- **`unlinked` / `unlink_failed` (1.0.6.32)** — плата отвязана в облаке: привязка
+  стёрта локально, плата готова к новой привязке (`unlink_failed` — отвязка
+  подтверждена, но стереть файлы не удалось; клиент повторяет попытку). Форма
+  ключей `reason` / `reason_class` / `unlinked_at` / `restored` — **общий словарь
+  обеих дверей, его дом `docs/contracts/cloud-agent-status.md` §Поля stand-down**
+  (здесь не пересказывается). Долговечный маркер — три ключа `unlinked_at` /
+  `unlinked_reason` / `unlinked_reason_text` в `[client]`
+  `sa02m-alice-client.conf`; это **идентичность, а не конфигурация** — кто и
+  когда их стирает, `docs/contracts/image-identity-reset.md` §2/§6.
+  `client_enabled` при отвязке **остаётся включённым**: карточка прячет всю
+  строку привязки при выключенном клиенте, а именно её кнопка «Привязать» нужна
+  следующему владельцу; цикл и без флага замолкает — без сертификата клиент
+  уходит в мягкое ожидание на любом транспорте.
+  Осторожно, два разных пространства имён на одно слово: `unlink_failed` здесь —
+  **состояние статуса** (стереть не удалось), а в ответе API
+  `sa02m_alice_api.cgi` — **токен ошибки** отказа шлюза.
 - `config_watch` is `true` when the running client re-reads the device document
   without a restart. The privileged web trigger
   (`usr/local/sbin/sa02m-alice-web-trigger.sh`) reads it — together with unit
@@ -399,8 +443,12 @@ permission-blind and returns a false "absent").
   never reads it.
 
 Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`,
-`test_reload_watch.py`; the cross-language handshake is pinned by the
-`alice-reload-handshake` quality row.
+`test_reload_watch.py`; перечень состояний, константы, места записи и подписи
+обеих карточек сверяет как множества
+`opt/sa02m-alice/tests/test_status_contract.py::test_status_state_enum_matches_contract_and_cards`,
+а поведение сброса привязки — `test_binding_reset.py`; со стороны рендера то же
+состояние проверяет `scripts/dev/cloud-card-smoke.mjs` (строка реестра
+`cloud-card-smoke`). Cross-language handshake — строка `alice-reload-handshake`.
 
 ## Profiles (1.0.6.26) — one package, two units
 
@@ -421,6 +469,7 @@ Reconnect backoff, watchdog, in-place document reload, retained grace, the
 | Status file | `/run/sa02m-alice/status.json` | `/run/sa02m-alice/status-cloud.json`, same shape + `profile` + `identity_present` (the root client's answer — the www-data API reads it first, exactly like `cert_present`); states `disabled, connecting, connected, offline, error, missing_deps, missing_identity` |
 | Discovery | filtered on `alice_visible` | all devices + tile fields |
 | `controller_unlink` | handled | not registered, ignored |
+| Сброс привязки (stand-down) | да — общее ядро, `threshold = 1` | **нет, и это названный не-цель** (D4): профиль не несёт своей идентичности — он аутентифицируется `device_id` + `device_secret` облачного агента, и их стирает собственный stand-down агента. Второй писатель на одну привязку — это возвращённый класс «пересчёта», два процесса наперегонки стирают одну идентичность. Поведение при отказе не меняется: `error` с причиной флота и обычная лестница отступа |
 | Hub session key | controller serial | `cloud:<device_id>` — nothing on the board depends on it |
 
 The web API (`sa02m_alice_api.cgi`, one CGI for both cards) adds a

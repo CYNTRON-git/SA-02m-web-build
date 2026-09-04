@@ -18,9 +18,12 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from .. import __version__
+from ..common import binding_core
+from ..common import binding_sources
 from ..common import constants as C
 from ..common.config_store import (
     cert_paths_present,
+    clear_unlink_marker,
     client_enabled,
     cloud_control_enabled,
     default_client_cfg,
@@ -426,6 +429,11 @@ def start_link() -> Dict[str, Any]:
             if data.get("ca_pem"):
                 _write_pem(C.CA_FILE, str(data["ca_pem"]), 0o644)
             _save_pending_claim(pending)
+            # A board being bound again is no longer «отвязан в облаке».
+            # Cleared here so the card is correct one step early; the
+            # authoritative clear is in complete_link, which is the step that
+            # actually produces certificates.
+            clear_unlink_marker()
             return {"ok": True, "enrollment": data, "pending": pending}
     except Exception as exc:
         return {
@@ -510,6 +518,9 @@ def complete_link() -> Dict[str, Any]:
             "issued": True,
         }
     )
+    # Authoritative clear of the durable unlink marker: certificates now exist,
+    # so a reboot must not resurrect «отвязано в облаке» on a bound board.
+    clear_unlink_marker()
     return {
         "ok": True,
         "controller_sn": sn,
@@ -520,9 +531,23 @@ def complete_link() -> Dict[str, Any]:
 
 
 def unlink_controller() -> Dict[str, Any]:
-    """Ask gateway to unlink via controller API; clear local enable on success.
+    """Ask the gateway to unlink, then erase the local binding on success.
 
-    When gateway is down — return error, do NOT claim unlink succeeded.
+    When the gateway is down — return an error and wipe NOTHING; the same
+    "never erase on an outage" rule the gateway-driven path holds. Both refusals
+    below (unreachable, HTTP >= 400) return BEFORE the wipe, and the HTTP call
+    itself must stay ahead of it: the claim_token that authenticates
+    /controller/unlink lives in pending_claim.json, which the wipe deletes.
+
+    Since 1.0.6.32 this shares the binding-reset core with the gateway-driven
+    path — same erase-list, same durable marker, same never-on-doubt rule.
+    Leaving certificates behind after a CONFIRMED unlink is exactly what
+    produced the false «привязан» card: the page treats a certificate on disk as
+    proof of binding.
+
+    NOTE the two namespaces one word apart: `unlink_failed` below is this API's
+    ERROR TOKEN for a gateway refusal, distinct from the client status STATE of
+    the same name (a wipe that could not complete).
     """
     probe = probe_gateway()
     if not probe.get("available"):
@@ -560,11 +585,53 @@ def unlink_controller() -> Dict[str, Any]:
                     "message": "Gateway unlink HTTP %s" % code,
                     "http_status": code,
                 }
-            set_client_enabled(False)
+            spec = binding_sources.yandex_source()
+            rc = binding_core.stand_down(
+                spec, C.REFUSAL_CLASS_UNLINKED, binding_sources.SOURCE_LOCAL
+            )
+            if rc != "repair":
+                # The gateway unlinked us but the files are still on disk. Say
+                # so: never «отвязано» on a board that is not.
+                #
+                # This process cannot finish the job and must not pretend it
+                # will: it exits the moment it answers, and /run/sa02m-alice is
+                # root-only so it cannot even write the status file. What it CAN
+                # do is hand the stand-down over durably — the core wrote it
+                # into the client INI — and the running client adopts it on its
+                # next watchdog tick and retries.
+                #
+                # So the answer distinguishes the two outcomes instead of
+                # promising one of them: `wipe_failed` = handed over, the client
+                # retries; `wipe_failed_not_recorded` = the hand-over failed too
+                # (the same read-only filesystem, most likely), nothing is
+                # retrying, and the operator has to press the button again. Read
+                # BACK from disk rather than trusted — a claim about a write is
+                # only worth what a read confirms.
+                handed_over = bool(binding_sources.read_pending()[0])
+                return {
+                    "ok": False,
+                    "error": "wipe_failed" if handed_over else "wipe_failed_not_recorded",
+                    "message": (
+                        "Gateway unlinked the controller, but the local binding "
+                        "could not be erased; the running client has taken the "
+                        "retry over."
+                        if handed_over else
+                        "Gateway unlinked the controller, but the local binding "
+                        "could not be erased and the retry could not be recorded; "
+                        "nothing is retrying — repeat the unlink."
+                    ),
+                    "client_enabled": client_enabled(),
+                }
+            # client_enabled stays ON: the client goes quiet because the binding
+            # is gone, not because the flag was cleared — with no certificate
+            # the loop routes into its soft wait on every transport
+            # (client/main.py::_should_wait_for_cert). Switching the flag off
+            # would HIDE the link row on the card (app/alice.js) — the very
+            # «Привязать» button the next owner needs.
             return {
                 "ok": True,
-                "message": "Unlinked; local client_enabled set false",
-                "client_enabled": False,
+                "message": "Unlinked; local cloud binding erased",
+                "client_enabled": client_enabled(),
             }
     except Exception as exc:
         return {

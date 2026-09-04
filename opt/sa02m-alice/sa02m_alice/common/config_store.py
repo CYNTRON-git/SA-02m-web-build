@@ -134,6 +134,52 @@ def set_cloud_control_enabled(enabled: bool) -> None:
     _set_client_flag("cloud_control_enabled", enabled)
 
 
+def unlink_marker(cfg: configparser.ConfigParser | None = None) -> Tuple[str, str, str]:
+    """The durable «the cloud unlinked us» marker as (stamp, class, reason).
+
+    ("", "", "") when the board is normal. Read on every outer-loop pass and at
+    start: /run is tmpfs, so this INI is what carries the explanation across a
+    reboot — and it is also how the client learns that the CGI (another
+    process) ran the local «Отвязать».
+    """
+    c = cfg or default_client_cfg()
+    def _get(key: str) -> str:
+        return (c.get("client", key, fallback="") or "").strip()
+    return (_get(C.KEY_UNLINKED_AT), _get(C.KEY_UNLINKED_REASON),
+            _get(C.KEY_UNLINKED_REASON_TEXT))
+
+
+def set_unlink_marker(stamp: str, cls: str, reason: str) -> None:
+    """Write the three marker keys.
+
+    Through save_ini/_atomic_write so the root/www-data mode dance is preserved
+    — both the root client and the www-data CGI write this file, and a
+    hand-rolled writer would strip one of them of access.
+    """
+    cfg = default_client_cfg()
+    if not cfg.has_section("client"):
+        cfg.add_section("client")
+    cfg.set("client", C.KEY_UNLINKED_AT, str(stamp))
+    cfg.set("client", C.KEY_UNLINKED_REASON, str(cls))
+    cfg.set("client", C.KEY_UNLINKED_REASON_TEXT, str(reason))
+    save_ini(C.CLIENT_CONF, cfg)
+
+
+def clear_unlink_marker() -> None:
+    """Drop the marker — the board is being bound again."""
+    cfg = default_client_cfg()
+    if not cfg.has_section("client"):
+        return
+    dropped = False
+    for key in C.UNLINK_MARKER_KEYS:
+        if cfg.has_option("client", key):
+            cfg.remove_option("client", key)
+            dropped = True
+    if not dropped:
+        return  # nothing to clear — do not rewrite the file for a no-op
+    save_ini(C.CLIENT_CONF, cfg)
+
+
 def empty_devices() -> Dict[str, Any]:
     return {"rooms": [], "devices": []}
 

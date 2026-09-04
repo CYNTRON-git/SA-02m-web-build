@@ -327,6 +327,10 @@
     'Ошибка отвязки': 'Unlink error',
     'не удалось стереть файлы привязки в /etc/sa02m-cloud — подробности в журнале агента; попытка повторяется':
       'could not erase the binding files in /etc/sa02m-cloud — see the agent journal; retrying',
+    'не удалось стереть файлы привязки в /var/lib/sa02m-alice — подробности в журнале клиента; попытка повторяется':
+      'could not erase the binding files in /var/lib/sa02m-alice — see the client journal; retrying',
+    'не удалось стереть файлы привязки и передать повтор клиенту — нажмите «Отвязать» ещё раз':
+      'could not erase the binding files, and the retry could not be handed to the client — press «Unlink» again',
     'Сначала нужно стереть привязку — агент повторяет попытку': 'The binding must be erased first — the agent keeps retrying',
     'в облаке доступ отозван или устройство числится за владельцем; нажмите «Отвязать» в облаке':
       'access was revoked in the cloud, or the device is still listed under an owner; press «Unlink» in the cloud',

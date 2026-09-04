@@ -130,3 +130,41 @@ STATE_MISSING_CERT = "missing_cert"
 # Cloud profile only: agent.conf has no device_id/serial or the device_secret
 # file is absent — standby, exit 0, the cloud twin of missing_cert.
 STATE_MISSING_IDENTITY = "missing_identity"
+# The gateway unlinked this controller: the binding was erased locally and the
+# board is claim-ready. Distinct from missing_cert (never bound) because the
+# card must explain WHY the certificate is gone. Yandex profile only — the
+# cloud profile holds no identity of its own and never stands down
+# (docs/contracts/alice-mqtt-mapping.md §Profiles).
+STATE_UNLINKED = "unlinked"
+# The unlink was confirmed but the binding could NOT be erased (a read-only
+# filesystem, a permission error). The board keeps retrying; the card must say
+# so and never «привязан», never «отвязано».
+STATE_UNLINK_FAILED = "unlink_failed"
+
+# Durable stand-down marker in the client INI — the same three keys the cloud
+# agent writes into agent.conf, so both doors restore the same explanation
+# after a reboot (/run is tmpfs). Never a file under VAR_DIR: the factory-image
+# build refuses any file in the identity dir but the shared CA
+# (docs/contracts/image-identity-reset.md §3), so a marker there would abort
+# image capture from a previously-unlinked donor. These keys are IDENTITY, not
+# configuration — the image sites clear them (§2, mirroring §6).
+KEY_UNLINKED_AT = "unlinked_at"
+KEY_UNLINKED_REASON = "unlinked_reason"
+KEY_UNLINKED_REASON_TEXT = "unlinked_reason_text"
+UNLINK_MARKER_KEYS = (KEY_UNLINKED_AT, KEY_UNLINKED_REASON, KEY_UNLINKED_REASON_TEXT)
+
+# The refusal class this door reports. One class only: the gateway's unlink
+# event does not distinguish an owner revoke from a detach, and the handler
+# deliberately does not read the optional payload — so `revoked` is N/A here
+# and the descriptor declares it unwritable.
+REFUSAL_CLASS_UNLINKED = "unlinked"
+# What the durable marker records as the refusal text on this door.
+UNLINK_REFUSAL = "controller_unlink"
+# Machine-facing status messages. The user-facing Russian lives once, in
+# ALICE_STATE_MAP (www/network_config/static/js/app/alice.js).
+UNLINKED_MESSAGE = (
+    "Cloud unlinked this controller; binding erased, ready to be claimed again"
+)
+UNLINK_FAILED_MESSAGE = (
+    "Cloud unlinked this controller but the binding could not be erased; retrying"
+)

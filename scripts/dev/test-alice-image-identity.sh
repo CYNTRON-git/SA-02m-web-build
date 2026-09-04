@@ -415,12 +415,19 @@ seed_donor() { # <root> — a board LINKED to the gateway, with bench bindings
   ]
 }
 EOF
+    # The stand-down marker of a donor that was unlinked in the cloud before
+    # the image was taken. IDENTITY, not configuration (contract §2, the twin
+    # of the cloud half's §6): carried into a clone it makes every board's card
+    # read «отвязано в облаке» instead of «нет сертификата».
     cat > "$r/etc/sa02m-alice/sa02m-alice-client.conf" <<'EOF'
 [client]
 client_enabled = true
 log_level = INFO
 mqtt_host = 127.0.0.1
 mqtt_port = 1883
+unlinked_at = 2026-09-02T10:00:00Z
+unlinked_reason = unlinked
+unlinked_reason_text = controller_unlink
 EOF
     # The legacy flat layout, which the factory-reset and update runners still know.
     cp "$r/etc/sa02m-alice/sa02m-alice-devices.conf" "$r/etc/sa02m-alice-devices.conf"
@@ -554,6 +561,16 @@ assert_wiped() { # <label> <root> <form: ondevice|offline>
         else
             bad "(B/$lbl) the wipe damaged configuration keys in ${f#"$r"}"
         fi
+        # The stand-down marker: identity, so it must be GONE. Non-vacuous —
+        # seed_donor writes all three keys and B3 below proves the seed carries
+        # them, so an assertion that passed on an unseeded file would fail there.
+        left="$(grep -cE '^[[:space:]]*unlinked_(at|reason|reason_text)[[:space:]]*=' "$f")"
+        if [ "${left:-0}" -eq 0 ]; then
+            ok "(B/$lbl) the stand-down marker is gone from ${f#"$r"} (identity, contract §2)"
+        else
+            bad "(B/$lbl) $left stand-down marker key(s) survived in ${f#"$r"} — every clone
+  would boot with the donor's «отвязано в облаке» instead of «нет сертификата»"
+        fi
     done
 
     if [ "$(cat "$r/etc/sa02m-alice/sa02m-alice-server.conf" 2>/dev/null)" = "$SERVER_CONF" ]; then
@@ -646,6 +663,22 @@ run_site() { # <label> <src> <form>
     fi
 }
 
+# ── B3 — the seed itself carries what B asserts is removed ────────────────
+# Without this the marker assertion above could pass on a file that never had a
+# marker: a check that passes because it tested nothing is the defect.
+seedprobe="$SANDBOX/seedcheck"
+rm -rf "$seedprobe"; mkdir -p "$seedprobe"; seed_donor "$seedprobe"
+seeded=0
+for f in "$seedprobe/etc/sa02m-alice/sa02m-alice-client.conf"          "$seedprobe/etc/sa02m-alice-client.conf"; do
+    n="$(grep -cE '^[[:space:]]*unlinked_(at|reason|reason_text)[[:space:]]*=' "$f" 2>/dev/null || echo 0)"
+    [ "${n:-0}" -eq 3 ] && seeded=$((seeded + 1))
+done
+if [ "$seeded" -eq 2 ]; then
+    ok "(B3) the donor fixture really carries the three stand-down marker keys in both layouts"
+else
+    bad "(B3) the donor fixture seeds the marker in only $seeded/2 client.conf layouts — the removal assertion would pass vacuously"
+fi
+
 run_site reset  "$RESET_SRC"       ondevice
 run_site stream "$STREAM_SRC"      ondevice
 run_site patch  "$PATCH_SRC"       offline
@@ -655,6 +688,21 @@ run_site autorunfel "$AUTORUN_FEL_SRC" offline
 # ── B2 — the shipped ASSERTION, run for real ──────────────────────────────
 # The belt itself: it must PASS a wiped rootfs and DIE on one that still holds
 # the donor's key (a capture that ran with --no-id-reset, or a pre-fix stream).
+# ── A9 — every site drops the stand-down marker (static, all five files) ──
+marker_sites=0
+for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
+    body="$(extract_fn "$f" wipe_alice_enrollment | sed 's/#.*$//')"
+    if printf '%s
+' "$body" | grep -q 'unlinked_at'        && printf '%s
+' "$body" | grep -q 'unlinked_reason'        && printf '%s
+' "$body" | grep -q 'unlinked_reason_text'; then
+        marker_sites=$((marker_sites + 1))
+    else
+        bad "(A9) ${f#"$HERE"/} does not drop all three stand-down marker keys — a clone from an unlinked donor inherits its «отвязано в облаке»"
+    fi
+done
+[ "$marker_sites" -eq 5 ] && ok "(A9) all five sites drop the stand-down marker keys"
+
 echo
 echo "B2. the shipped fail-closed assertion (patch site)"
 abody="$(extract_fn "$PATCH_SRC" assert_alice_enrollment_clean)"
