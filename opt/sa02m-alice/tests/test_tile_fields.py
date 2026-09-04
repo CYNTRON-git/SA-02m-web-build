@@ -149,3 +149,30 @@ class TestDiscoveryPerProfile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestCloudDiscoveryWritable(unittest.TestCase):
+    def test_cloud_discovery_carries_writable_false_yandex_does_not(self):
+        """Latching DI: cloud list keeps writable false; Yandex omits it."""
+        doc = {
+            "rooms": [],
+            "devices": [{
+                "id": "bench-switch-1",
+                "name": "Switch",
+                "type": "devices.types.switch",
+                "capabilities": [{
+                    "type": "devices.capabilities.on_off",
+                    "mqtt": "/devices/mr02m-COM3-10/controls/di_1",
+                    "retrievable": True,
+                    "reportable": True,
+                    "writable": False,
+                    "parameters": {"instance": "on"},
+                }],
+                "properties": [],
+            }],
+        }
+        reg = DeviceRegistry(doc)
+        yandex = reg.discovery_devices(C.PROFILE_YANDEX)[0]["capabilities"][0]
+        cloud = reg.discovery_devices(C.PROFILE_CLOUD)[0]["capabilities"][0]
+        self.assertNotIn("writable", yandex)
+        self.assertIs(cloud.get("writable"), False)
+

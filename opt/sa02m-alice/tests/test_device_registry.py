@@ -542,6 +542,52 @@ class TestDeviceRegistry(unittest.TestCase):
         self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_DONE)
         self.assertEqual(pubs, [("/devices/test-ctl/controls/do/on", "1")])
 
+    def test_writable_false_refuses_and_publishes_nothing(self):
+        """Latching DI: retrievable/reportable, but apply_actions must not
+        publish `/on`."""
+        topic = "/devices/mr02m-COM3-10/controls/di_1"
+        doc = {
+            "rooms": [],
+            "devices": [
+                {
+                    "id": "bench-switch-1",
+                    "name": "Выключатель",
+                    "type": "devices.types.switch",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "mqtt": topic,
+                            "retrievable": True,
+                            "reportable": True,
+                            "writable": False,
+                            "parameters": {"instance": "on"},
+                        }
+                    ],
+                    "properties": [],
+                }
+            ],
+        }
+        reg = DeviceRegistry(doc)
+        reg.note_mqtt(topic, "1")
+        results, pubs = reg.apply_actions(
+            [
+                {
+                    "id": "bench-switch-1",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": False},
+                        }
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(
+            results[0]["capabilities"][0]["error_code"], C.ERR_INVALID_ACTION
+        )
+        self.assertEqual(pubs, [])
+        self.assertEqual(reg.get_cached(topic), "1")
+
     def test_retained_is_cached_but_not_reported(self):
         """1.0.6.16: retained WAS dropped entirely, so a freshly restarted
         client had no state at all — every sensor read empty in the Alice app

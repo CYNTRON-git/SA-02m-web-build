@@ -348,6 +348,11 @@ class DeviceRegistry:
                     }
                     if item.get("parameters"):
                         block["parameters"] = item["parameters"]
+                    # Cloud catalogue only: Yandex has no `writable`. Absent
+                    # stays omitted (fleet treats missing as True). Explicit
+                    # false is a latching DI — the fleet 400s on_off.
+                    if cloud and item.get("writable") is False:
+                        block["writable"] = False
                     caps.append(block)
                 props = []
                 for item in self._items(dev, "properties"):
@@ -429,6 +434,13 @@ class DeviceRegistry:
                         caps.append(block)
                 for item in prop_items:
                     topic = str(item.get("mqtt") or "")
+                    # A live slave can leave sticky per-channel `r` on an
+                    # unfitted analogue (Carel outdoor/room: retained 0.0).
+                    # That must not become a reported °C. Capabilities still
+                    # use `_fresh_payload` / `_control_dead` so a busy coil
+                    # does not mark the whole device unreachable.
+                    if (self._control_error.get(topic) or "").strip():
+                        continue
                     raw = self._fresh_payload(
                         topic, age_retained=_modbus_slave_topic(topic)
                     )
@@ -529,6 +541,18 @@ class DeviceRegistry:
                     ctype = str(cap.get("type") or "")
                     local = by_type.get(ctype)
                     if not local:
+                        cap_results.append(
+                            {
+                                "type": ctype,
+                                "state": cap.get("state") or {},
+                                "status": C.STATUS_ERROR,
+                                "error_code": C.ERR_INVALID_ACTION,
+                            }
+                        )
+                        continue
+                    if local.get("writable") is False:
+                        # Latching DI / report-only capability: query and
+                        # report stay, a command must not publish `/on`.
                         cap_results.append(
                             {
                                 "type": ctype,

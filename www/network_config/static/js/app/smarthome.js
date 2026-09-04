@@ -554,10 +554,12 @@ function shRowsUntouched() {
 // an untouched `switch` seed puts the default reading back. Bound rows are
 // never replaced.
 // The readings a ventilation unit publishes, in the order the cloud card
-// draws them. Seeded together because binding them one by one is eight manual
-// topic picks for a device whose control names are fixed.
+// draws them. Outdoor / room stay off the seed: those MQTT controls exist
+// with retained 0.0 + meta/error=r when the analogue input is unfitted, and
+// binding them paints «0,0 °C улица». Add the kind by hand when the control
+// is live and in the Carel point list.
 const SH_VENT_ROWS = ['switch', 'setpoint', 'supply_temp', 'return_water',
-                      'room_temp', 'outdoor_temp', 'plant_state', 'unit_status', 'alarm'];
+                      'plant_state', 'unit_status', 'alarm'];
 
 function shSeedRowsForType(type) {
   if (!shRowsUntouched()) return;
