@@ -671,9 +671,10 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                         last_heartbeat = time.monotonic()
                         _emit_cache_snapshot(sender, registry)
                         last_snapshot = last_heartbeat
-                # The snapshot cadence is a REQUIREMENT on the cloud profile
-                # (the hub marks a tile stale past 60 s) — never lengthened.
-                if time.monotonic() - last_snapshot >= C.STATE_SNAPSHOT_S:
+                # Cloud stays at STATE_SNAPSHOT_S (30 s, stale bound).
+                # Yandex uses STATE_SNAPSHOT_YANDEX_S (60 s, graphs).
+                snap_s = C.STATE_SNAPSHOT_S if cloud else C.STATE_SNAPSHOT_YANDEX_S
+                if time.monotonic() - last_snapshot >= snap_s:
                     _emit_cache_snapshot(sender, registry)
                     last_snapshot = time.monotonic()
                 if time.monotonic() - last_heartbeat >= C.STATUS_HEARTBEAT_S:

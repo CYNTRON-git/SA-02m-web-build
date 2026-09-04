@@ -114,13 +114,13 @@ STATUS_HEARTBEAT_S = 30.0
 # falls back to a restart (3× the heartbeat). Read by the shell helper too —
 # usr/local/sbin/sa02m-alice-web-trigger.sh keeps the same value.
 STATUS_STALE_S = 90
-# While Socket.IO is up, push the MQTT cache through offer_snapshot this
-# often so Yandex Station graphs/history get a point even when the broker
-# is quiet (a steady reading is cached, not re-published). Same 30 s as
-# Yandex's own devices (~1 min) tightened to the Operator's 30 s choice.
-# Live on_off/event still uses the shorter rates in event_rates.json.
+# Cloud-profile cache flush. The hub marks a tile stale past 60 s, so
+# this must stay at 30 s on the cloud profile — never lengthened.
 # Home: docs/contracts/alice-mqtt-mapping.md (History snapshot).
 STATE_SNAPSHOT_S = 30.0
+# Yandex-profile history cadence: one graph point per minute. Graphs
+# read Callback state, not query; MQTT does not republish a steady float.
+STATE_SNAPSHOT_YANDEX_S = 60.0
 
 # Client status states written for the web UI
 STATE_DISABLED = "disabled"

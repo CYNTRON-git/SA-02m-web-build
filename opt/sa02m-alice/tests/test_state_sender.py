@@ -266,6 +266,9 @@ class TestHistorySnapshotCadence(unittest.TestCase):
     def test_cadence_constant_is_30s(self):
         self.assertEqual(C.STATE_SNAPSHOT_S, 30.0)
 
+    def test_yandex_cadence_constant_is_60s(self):
+        self.assertEqual(C.STATE_SNAPSHOT_YANDEX_S, 60.0)
+
     def test_snapshots_a_cadence_apart_each_emit(self):
         dev = {
             "id": "d1",
