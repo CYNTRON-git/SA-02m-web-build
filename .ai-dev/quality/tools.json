@@ -123,7 +123,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-alice/tests -t opt/sa02m-alice -q; fi; done; echo py-unit-alice: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-alice/", "docs/contracts/alice-mqtt-mapping.md", "www/network_config/static/js/app/alice.js", "www/network_config/static/js/cloud.js"],
+      "covers": ["opt/sa02m-alice/", "docs/contracts/alice-mqtt-mapping.md", "www/network_config/static/js/app/alice.js", "www/network_config/static/js/app/smarthome.js", "www/network_config/static/js/cloud.js"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {

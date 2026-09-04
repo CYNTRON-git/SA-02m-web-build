@@ -5,6 +5,146 @@
 
 ---
 
+## [2026-09-04 20:10] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_tile_fields.py`
+**Тип:** Некорректное поведение
+**Описание:** Карандаш/облако видели выключатель `bench-switch-1` как управляемый; POST on_off не давал 400. В `devices.conf` `writable: false` был, в `alice_devices_list` — нет.
+**Причина:** `discovery_devices` не копировал `writable` в каталог (Yandex schema). Облако считает отсутствие writable = True.
+**Исправление:** Cloud-профиль кладёт `writable: false` в list. Yandex по-прежнему без поля.
+
+---
+
+## [2026-09-04 19:56] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_mr02m.py`, `opt/sa02m-modbus-mqtt/tests/test_mr02m_sibling_error.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** После записи на один DO поллер ставил retained `do_N/meta/error=r` на все соседние каналы модуля; device-level `/meta/error` оставался пустым, `uptime_s` жил. Alice/cloud видели ложный offline соседей.
+**Причина:** `_poll_do_di` / AO / DI-counters на исключении блок-чтения красили все каналы банка `r`.
+**Исправление:** Блок-промах больше не пишет per-control `r`. Канальный `r` только у реально мёртвого канала (дыра AI). Запись с ошибкой по-прежнему `w` на том канале. Device-level `r` после `offline_after_fails` валит весь слейв.
+
+---
+
+## [2026-09-04 16:05] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Четыре катушки `mr02m-COM3-10` (Свет 1/2, Спальня, Гостиная) иногда query=`DEVICE_UNREACHABLE`; сценарий Алисы «выключатель → розетка» и запись одной DO красили соседей «нет сети». Модуль при этом жив (`uptime_s` растёт, device-level `/meta/error` пуст).
+**Причина:** Поллер оставляет retained `controls/do_N/meta/error=r` на канале после записи/занятой шины. `_fresh_payload` считал любой control `r` смертью слейва; `apply_actions` отказывался писать. Клиент не слушал `uptime_s`.
+**Исправление:** Control `r` на `-COM` — UNREACHABLE только если нет live-опроса слейва (`uptime_s` или любая катушка). Device-level `r` по-прежнему валит все каналы. Action на Modbus уходит, пока слейв не down. Подписка на `uptime_s`.
+
+## [2026-09-04 15:42] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/auto_provision.py`, `opt/sa02m-alice/tests/test_auto_provision.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Auto-provision добавлял мусорные плитки `dtv-COM3-1` («ДТВ COM3 1») и `ce02m3-COM2-10` (три фазы) по одному retained `meta/name` «… test», без yaml и без живых `/controls/*`.
+**Причина:** `present_topics is None` (нет controls за settle) разворачивался в полный шаблон DTV/CE.
+**Исправление:** Provision только если id есть в `/etc/sa02m-modbus-mqtt.yaml` или пришёл живой `/controls/<name>`; `meta/name` с `test` игнорируется. На 1.135 каталог 19→15, retain junk-деревьев сброшен.
+
+## [2026-09-04 14:28] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Статусы выключателей/розеток доходили до Алисы (cloud write → live MQTT → callback_state), а управление из Алисы было серым: query по retained катушке MR-02m отдавал `DEVICE_UNREACHABLE`.
+**Причина:** `_fresh_payload(age_retained=True)` считал отсутствие live-перепубликации мёртвым слейвом. Поллер не шлёт unchanged coil; `apply_actions` так же резал запись при retained-only.
+**Исправление:** `DEVICE_UNREACHABLE` только при `/meta/error` или пустом кэше (нет успешного опроса). Retained/unchanged coil без ошибки → on_off в query и запись катушки в action.
+
+## [2026-09-04 13:50] branch: 1.0.6.34
+
+**Файл(ы):** `www/network_config/static/js/app/alice.js`, `opt/sa02m-alice/tests/test_api_offline.py`
+**Тип:** Некорректное поведение
+**Описание:** Карточка Алисы писала «нет интернета» при любом провале probe шлюза (в т.ч. после wipe сертификата). «Включить клиент» после unlink не должен трогать каталог.
+**Причина:** `statusVal` подменял честный статус на «нет интернета» когда `!gateway.available`.
+**Исправление:** статус всегда `statusText`; бейдж шлюза уже говорит «Недоступен». Тест: enable при unlinked-маркере не гасит клиент и не чистит devices.conf.
+
+## [2026-09-04 13:31] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/device_types.py`, `opt/sa02m-alice/sa02m_alice/config/models.py`, `www/network_config/static/js/app/smarthome.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Пикер типа Алисы (`#sh-dev-type`) и `validate_device` знали только 12 `devices.types.*` (префикс `devices.types.` пропускал любой выдуманный id). Официальная страница Яндекса перечисляет 53 типа, включая уже используемый на стенде `smart_meter.electricity` и отсутствовавшие `cooking.kettle`, `pet_feeder`, `light.dimmable`.
+**Причина:** Каталог в `SH_DEV_TYPES` / HTML `<option>` был сокращённым списком, не официальным enum.
+**Исправление:** Один каталог `device_types.py` (53 id с той страницы). Пикер собирает `<select>` из него; валидатор принимает только официальные id, неизвестные отклоняет. Иконка без глифа → `generic`, сохранение не блокирует.
+
+## [2026-09-04 12:54] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** После подписки на `meta/error` Яндекс всё ещё отвечал on_off из retained катушки MR-02m: поллер не держал sticky `controls/do_*/meta/error=r` (uptime/`mark_ok` сбрасывал device-level `r`), Alice не старила retained-only capability.
+**Причина:** `_fresh_payload` старил только live-кэш; retained-only (как GPIO) отдавался как живой on_off.
+**Исправление:** capability на топике `/devices/<driver>-COM…/` без live-опроса → `DEVICE_UNREACHABLE`. GPIO и sensor properties по-прежнему из retained.
+
+---
+
+## [2026-09-04 12:48] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `main.py`, `reload_watch.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Модуль реле снят с RS-485, поллера нет, а Яндекс продолжал показывать «Свет 1/2» как живые (last on/off).
+**Причина:** `query_devices` отвечал из retained MQTT-кэша. Подписки не включали `/devices/<id>/meta/error` и `<mqtt>/meta/error`. На стенде отвал давал `controls/do_1/meta/error=r`, не device-level `r`.
+**Исправление:** подписка на оба `/meta/error`; query/action → `DEVICE_UNREACHABLE`, без on_off из retained. Живой топик старше `STATUS_STALE_S` (90 с) — то же. Retained-only (GPIO) не старится.
+
+---
+
+## [2026-09-04 12:40] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_led.py`, `opt/sa02m-modbus-mqtt/sa02m-modbus-mqtt.yaml`, стенд `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** Алиса on/off ленты оставляла метеостанцию (FX 64, 494=2): «вкл» не заливка, «выкл» не гасила кадр.
+**Причина:** YAML пиннил `effect: 64` / `weather_lines: 2`; `power` писал только PlayCtrl 416.
+**Исправление:** YAML `effect: 0`, `brightness: 255`, `weather_lines`/`text_lines`: 1. ON: RenderSource=FX + FxId 0 + Play. OFF: `rgbw_stop_blank_writes`. Layout `0x0408` не трогали.
+
+---
+
+## [2026-09-04 11:20] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, `opt/sa02m-modbus-mqtt/bridge_led.py`, `/etc/sa02m-modbus-mqtt.yaml`, стенд `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** Верная раскладка 4×16×16 (418 `0x0408`) не была в yaml; метеостанция шла в 1 строку (494=0).
+**Причина:** 494 по умолчанию 0 (одна строка). Поллер не пинил layout/строки.
+**Исправление:** 494=2 на проводе. YAML: `matrix_layout: 0x0408`, `rotate_90_cw`, `mirror_x: false`, `weather_lines: 2`, `effect: 64`. Поллер один раз восстанавливает, публикует `text_lines`.
+
+---
+
+## [2026-09-04 11:19] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/api.py`, `www/network_config/static/js/app/smarthome.js`, `www/network_config/static/js/devices.js`
+**Тип:** Другое
+**Описание:** При открытии виджета не было карандаша у названия для переименования.
+**Причина:** Редактор Алисы и модалка истории показывали только статичный заголовок.
+**Исправление:** Карандаш справа от названия; Алиса — `rename_device` в каталог; вкладка «Устройства» — localStorage.
+
+---
+
+## [2026-09-04 11:15] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, стенд 192.168.1.135 `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** После MIRROR_X (418 `0x0404`) часы/дата на 4×16×16 всё ещё читались неверно; оператор просил 90° по часовой и затем выключить зеркало по X.
+**Причина:** 90° CW в прошивке — SWAP_XY (418 bit 3), не отдельный бит и не byte-swap 453/454/457. MIRROR_X — независимый RTL.
+**Исправление:** 418 = TileCount=4 + SWAP_XY, MIRROR_X сброшен (`0x0408`). Рецепт `rgbw_matrix_layout_4tiles_90cw()`. Поллер 418 не пишет.
+
+---
+
+## [2026-09-04 11:05] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, стенд 192.168.1.135 `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** На 4 матрицах 16×16 метеостанция (FX 64) показывала время и дату задом наперёд (11:00 как 00:11, 04.09 как 09.04).
+**Причина:** Упаковка регистров верная (453=часы, 454=минуты, 457=`(день<<8)|месяц`, прошивка 1.0.3.0). Холст без MIRROR_X читается справа налево — две группы цифр меняются местами.
+**Исправление:** Включён MIRROR_X (reg 418: `0x0400` → `0x0404`), 4×16×16 не трогали. В карте — один pack `rgbw_wx_date_pack`; тест фиксирует 11:05 / 04.09 без byte-swap.
+
+---
+
+## [2026-09-04 10:40] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`, `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** Скан COM3 19200 addr 13 отдавал type unknown (сигнатура «LED»); в списке типов не было LED, id получался mr02m-COM3-13.
+**Причина:** `detect_type` не знал IR0=120 и точные алиасы LED/RGBW_*; UI скана не имел `type: led`.
+**Исправление:** IR0=120 или сигнатура из sa02m_led → `type: led`; префикс id `led-`; poll_s 2. На стенде baud 19200 как у Carel на той же линии.
+
+---
+
 ## [2026-09-04 09:45] branch: 1.0.6.35
 
 **Файл(ы):** `tools/imaging/ssh-flash-safe.sh`, `scripts/dev/test-alice-image-identity.sh`, `docs/contracts/image-identity-reset.md`

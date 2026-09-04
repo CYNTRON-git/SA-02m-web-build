@@ -5,6 +5,41 @@
 
 ---
 
+## 1.0.6.36 - LED type-120 on the MQTT scan, Alice light tile (сентябрь 2026)
+
+### Smart home / devices
+- **Pencil to the right of an opened widget name.** Alice device editor
+  (`#sh-modal` while editing) and Home history modal (`#dev-modal`): click
+  to rename. Alice names persist in `sa02m-alice-devices.conf` via
+  `rename_device` / `alice_devices_rename`. The cloud.cyntron.ru pencil
+  uses the **cloud** Socket.IO session — Yandex-only `sa02m-alice-client`
+  is not enough. Home widget labels stay in
+  `localStorage` (`dev-custom-names`). Closed compact tiles are unchanged.
+
+### Лента
+
+- **Метеостанция 4×16×16: время/дата читались задом наперёд.** Регистры не
+  переставлялись (453=часы, 454=минуты, 457=`(день<<8)|месяц`). MIRROR_X
+  (418 bit 2) выключен. Поворот 90° CW — SWAP_XY (bit 3): 418 `0x0400` /
+  `0x0404` → `0x0408`. Две строки: reg **494 = 2**. YAML/поллер
+  восстанавливают `0x0408` + 494=2 + FX 64. `rgbw_matrix_layout_4tiles_90cw`,
+  `rgbw_wx_date_pack`.
+
+### MQTT
+
+- **Скан опознаёт ленту LED (type 120 / сигнатура LED).** На стенде модуль
+  отвечает на COM3 **19200 addr 13** (та же линия, что Carel). YAML
+  `type: led`, id `led-COM3-13`, опрос 2 с. Смешанный baud на одном COM по-
+  прежнему не поддерживается.
+- **Алиса: привязка `/devices/led-…` с типом other становится
+  `devices.types.light` / иконка bulb**, чтобы плитка света не откатывалась
+  в «другое» при следующем сохранении.
+
+### Известное ограничение
+
+- Окно ленты во вкладке прошивальщика по-прежнему не рисуется; путь MQTT +
+  облачная плитка — рабочий.
+
 ## 1.0.6.35 - Carel на «Устройствах», wipe в ssh-flash-safe (сентябрь 2026)
 
 ### Устройства

@@ -179,8 +179,9 @@ c.pCOmini их две (сменилась с программы 2.02.xx.52, вы
 - `devices.properties.float`, instance `temperature` → `supply_temp` —
   единственная температура, которую видит Алиса;
 - **облачные элементы** с флагом `cloud_only: true`: `return_water_temperature`,
-  `room_temperature`, `outdoor_temperature`, события `plant_state`,
-  `unit_status` (свободный текст) и `alarm`.
+  `room_temperature`, `outdoor_temperature`, `heat_valve`, `fan_speed`,
+  `fan_step`, события `plant_state`, `unit_status` (свободный текст),
+  `alarm`, `pump` и `alarm_text`.
 
 **Граница `range` в документе шире, чем у uAria.** Окно «Умный дом» проставляет
 `parameters.range` = 0..99 обоим семействам: топик уставки

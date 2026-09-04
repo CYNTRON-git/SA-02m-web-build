@@ -18,6 +18,30 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
   connect AND the burst for a topic a reload newly subscribes (a bounded grace
   window per added topic, `RETAINED_GRACE_S`).
 
+### Auto-provision (DTV / CE-02m-3)
+
+The Yandex-profile client watches `/devices/+/meta/name` and
+`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-` or `ce02m3-`
+and that **no existing binding already maps** is appended to the same
+document (`save_devices`, atomic, mode/owner preserved) **only when**
+the id is listed in `/etc/sa02m-modbus-mqtt.yaml` **or** at least one
+live `/devices/<id>/controls/<name>` value has arrived (not `…/meta/*`).
+A `meta/name` containing `test` is ignored. Meta-only (no yaml row, no
+live control) is a no-op — it must not invent a tile from a stale
+retained name. Implementation: `sa02m_alice/client/auto_provision.py`.
+Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
+
+- `dtv-` → one `devices.types.sensor.climate` (temperature, humidity,
+  pressure, co2_level, tvoc, motion) using the first control that exists
+  on that slave (BME680 then BME280 for T/RH/P, same set as live «ДТВ цех»).
+- `ce02m3-` → three `devices.types.smart_meter.electricity` (фаза A/B/C):
+  voltage, amperage, power; `electricity_meter` from
+  `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics
+  exist, else total `energy_active_import` on phase C only.
+- A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
+- After persist the in-process registry reloads (same `apply_reload` path
+  as a CGI edit). The hub catalog is the next `alice_devices_list`.
+
 ## Device document (`/etc/sa02m-alice/sa02m-alice-devices.conf`)
 
 ```json
@@ -39,6 +63,22 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
   }]
 }
 ```
+
+Optional capability field `writable` (bool; **absent ⇒ `true`**).
+`writable: false` is a latching discrete input: discovery still lists
+`on_off` (`retrievable` / `reportable` stay), `apply_actions` returns
+`INVALID_ACTION` and publishes no `/on`. Cloud POST is 400
+`not controllable` (`docs/contracts/cloud-device-control.md` in the
+cloud repo).
+
+### Device type (`type`)
+
+`type` is a Yandex `devices.types.*` id. The official allow-list — picker
+(`#sh-dev-type` on `/network_config/`) + `validate_device` + discovery
+passthrough — is `sa02m_alice/config/device_types.py`, taken from
+https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
+and not restated here. Unknown ids are rejected. A missing tile icon
+falls back to `generic` and does not block save.
 
 ### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
 
@@ -153,7 +193,8 @@ leak a non-Yandex field to the platform.
 - Validated as a finite number, `0 < |scale| ≤ 1e6`.
 - Applied ONCE, in `converters.mqtt_to_float_property`, and rounded to 3
   decimals. No other code multiplies a reading.
-- In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC).
+- In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC),
+  Wh → kWh `0.001` (CE `electricity_meter`).
 
 ### Inverted (`on_off`, item level, never sent to Yandex) — 1.0.6.29
 
@@ -322,6 +363,29 @@ kept as defence in depth for a hub older than 0.8.1, which kept only the last
 
 Action capability result: `{status:"DONE"|"ERROR", error_code?}`.
 
+`query` returns `DEVICE_UNREACHABLE` when the Modbus **slave** is down
+(`/devices/<id>/meta/error` = `r`) or when a control's `/meta/error` = `r`
+**and** that slave has had no live poll (`uptime_s` or any coil) this
+session. A sticky per-channel `r` while `uptime_s` still advances is a busy
+bus (write + Carel on the same COM), not offline — query keeps the last
+successful coil. The MR-02m poller does **not** stamp sibling `do_N` /
+`di_N` / `ao_N` with `r` on a failed block read; only the channel that
+actually failed (AI hole, that channel's write = `w`) gets a per-control
+flag. Device-level `r` after `offline_after_fails` still kills every
+channel of a dead slave. A retained or unchanged coil on a Modbus slave
+(`/devices/<driver>-COM<n>-<addr>/…`) is **not** unreachable. GPIO and board
+telemetry (no `-COM` in the device id) still age a **live** cache entry past
+`STATUS_STALE_S` (90 s) and still answer from retained. `action` writes a
+Modbus coil unless the **slave** is down; a per-channel `r` does not refuse
+the command (Yandex scenario: switch + socket on one module in one burst).
+
+**Unreachable transition (one `device_state`).** When a catalog device
+crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
+`device_state` stub (`error_code` only) — on the MQTT `/meta/error` down-edge
+and at most once from the 30 s history snapshot. Already-down devices are
+not re-pushed every cadence. GPIO retained is unchanged. No extra
+`callback_state` flood.
+
 ## Rate limits (`event_rates.json`)
 
 - capabilities (on_off/range/…): 0.75 s, last_value
@@ -363,16 +427,22 @@ later, irrelevant for the cloud's 8 s confirm window. Validating tests:
 `offer`, rate-bypass, still stamps `_last_sent`) and `flush_now()`, so the
 first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
-neither capabilities nor properties does not emit. No `callback/discovery`.
+neither capabilities nor properties does not emit unless it is a
+`DEVICE_UNREACHABLE` stub from `take_unreachable_transitions` (one per
+down-edge). No `callback/discovery`.
 
 **History snapshot.** While Socket.IO is connected, the same
-`offer_snapshot` + `flush_now` runs every `STATE_SNAPSHOT_S` (30 s) from the
-MQTT cache, so Yandex Station graphs/history receive a point even when the
+`offer_snapshot` + `flush_now` runs from the MQTT cache: every
+`STATE_SNAPSHOT_S` (30 s) on the **cloud** profile (hub stale bound — do not
+lengthen), and every `STATE_SNAPSHOT_YANDEX_S` (60 s) on the **Yandex**
+profile so Station graphs get about one point per minute even when the
 broker does not republish a steady reading. In-place document reload with
 added/removed topics also snapshots once. This is a cadence, not a replacement
 for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
 the floor between *MQTT-driven* reports of the same reading; the history
-snapshot bypasses it. Gateway Callback belt (30 POSTs / SN / 60 s) is unchanged.
+snapshot bypasses it. The gateway forwards Yandex-visible float/event
+properties from `origin=snapshot` about once per 60 s (not on_off, not
+`cloud_only`).
 
 ## Offline / Phase 0
 
