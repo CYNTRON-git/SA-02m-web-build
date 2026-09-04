@@ -90,7 +90,7 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_error(did, f"do_{reg}", "")
 
         elif evt_type == FMB_EVT_INPUT:
-            # DI states: Input Reg 18..(17+di_count) — arrive as FMB_EVT_INPUT per MODBUS_VARIABLES
+            # DI events: Input Reg 18+ as FMB_EVT_INPUT (same address as FC04).
             # (NOT as FMB_EVT_DISCRETE; configure_events type 0x03=INPUT, same address as FC04 reg 18+)
             if self._fmb_di > 0 and 18 <= reg < 18 + self._fmb_di:
                 di_n = reg - 17
@@ -369,12 +369,15 @@ class MR02mPoller(DevicePoller):
                         self.pub.pub_error(self.device_id, f"do_{i}", "")
             except Exception as e:
                 self.log.warning("DO read: %s", e)
-                for i in range(1, self._do + 1):
-                    self.pub.pub_error(self.device_id, f"do_{i}", "r")
+                # Block-read miss is a bus/device event (write collision,
+                # Carel sharing the COM). Not a per-channel fault -- stamping
+                # every do_N with r made siblings look dead while uptime_s
+                # and device-level error stayed live. Device-level r after
+                # offline_after_fails still marks the whole slave dead.
 
         if self._di > 0:
             try:
-                # DI — Input Reg 18..(17+N), FC04 (как FMB_EVT_INPUT и device_config).
+                # DI -- Input Reg 18..(17+N), FC04 (as FMB_EVT_INPUT and device_config).
                 regs = self.read_input_registers(self.address, 18, self._di)
                 for i, raw in enumerate(regs, 1):
                     if self._ch_enabled("di", i):
@@ -382,8 +385,6 @@ class MR02mPoller(DevicePoller):
                         self.pub.pub_error(self.device_id, f"di_{i}", "")
             except Exception as e:
                 self.log.warning("DI read: %s", e)
-                for i in range(1, self._di + 1):
-                    self.pub.pub_error(self.device_id, f"di_{i}", "r")
         self._poll_di_counters()
 
     def _poll_di_counters(self) -> None:
@@ -407,8 +408,6 @@ class MR02mPoller(DevicePoller):
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "")
         except Exception as e:
             self.log.warning("DI counters: %s", e)
-            for i in chs:
-                self.pub.pub_error(self.device_id, f"di_{i}_count", "r")
 
     def _poll_ai_ao(self) -> None:
         # AI first (chunked FC03), then AO — on 6AI6AO the first AO frame often
@@ -487,8 +486,7 @@ class MR02mPoller(DevicePoller):
                         self.pub.pub_error(self.device_id, f"ao_{i}", "")
             else:
                 self.log.warning("AO read: %s", last_err)
-                for i in range(1, self._ao + 1):
-                    self.pub.pub_error(self.device_id, f"ao_{i}", "r")
+                # Same as DO/DI: a failed AO block is not every ao_N dead.
 
     @staticmethod
     def _s16_word(raw: int) -> int:
