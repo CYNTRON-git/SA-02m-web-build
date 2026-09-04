@@ -251,17 +251,11 @@ worklist collapsed into one home).
   was rejected for exactly this; the password/sshpass path is the safe one); and the
   Alice check names `agent.conf` — current builds have
   `/etc/sa02m-alice/sa02m-alice-*.conf` (no agent.conf).
-- [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
-  (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
-  does NOT restart** — so the stand runs stale imported `sa02m_devices` code until
-  `systemctl restart sa02m-stand-api`. `scripts/11-devices.sh` restarts
-  `sa02m-devices-api` (the standard-board unit, present but NOT the :8765 owner on
-  the stand → gunicorn is). Cost this session: the MR card looked "missing" on 1.135
-  after deploy until a manual stand-api restart (code was correct all along; the
-  running process was old). Fix direction: teach `update-www-only.sh` / `11-devices.sh`
-  to detect + restart whichever unit owns :8765 (check `sa02m-stand-api` presence),
-  OR document the stand's extra restart step in `docs/deployment.md`. Note in the
-  deploy runbook that the stand is a hardpy_tests host with its own API service.
+- [RESOLVED] 2026-09-01 **STAND 1.135 `/api/devices` via `sa02m-stand-api`.**
+  `scripts/11-devices.sh` now restarts an active `sa02m-stand-api` after the
+  devices package refresh. The empty 12AI chart (2026-09-01) was a second defect
+  in the same owner: `stand_web_api.devices_history` lacked `kind=mr` — fixed in
+  hardpy_tests (`services/stand_web_api.py` + `tests/test_devices_history_mr.py`).
 - [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
   homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
   and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to

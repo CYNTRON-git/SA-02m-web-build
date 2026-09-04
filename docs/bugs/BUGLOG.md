@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-04 07:48] branch: 1.0.6.34
+
+**Файл(ы):** `scripts/11-devices.sh`; стенд `hardpy_tests/services/stand_web_api.py`
+**Тип:** Некорректное поведение
+**Описание:** На 1.135 карточка MR-02m 12АИ во вкладке «Устройства» живая (каналы 7–12 с °C), но клик открывает пустой график «Нет данных».
+**Причина:** Стенд отдаёт `/api/devices*` через gunicorn `sa02m-stand-api` (:8765), а не `sa02m-devices-api` (drop-in `10-stand-disable.conf`). `stand_web_api.devices_history` не читал `kind=mr` / `channel=` — фронт шлёт именно это, API отвечал HTTP 400 «укажите metric=…». В SQLite `mr_samples` 639k строк по `mr02m-COM4-12` уже были (логгер писал).
+**Исправление:** Маршрут `kind=mr` (+ `window_s`, экспорт `kind=`) в `stand_web_api.py`; тест `tests/test_devices_history_mr.py`. `11-devices.sh` перезапускает активный `sa02m-stand-api` после обновления пакета устройств.
+
+---
+
 ## [2026-08-30 12:56] branch: 1.0.6.25
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/state_sender.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`

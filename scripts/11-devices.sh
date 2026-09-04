@@ -76,6 +76,16 @@ else
     log WARN "не удалось запустить sa02m-devices-* — см. journalctl -u sa02m-devices-api"
 fi
 
+# HardPy stand (1.135): gunicorn sa02m-stand-api owns :8765; devices-api is
+# Condition-skipped (10-stand-disable.conf). Restart the stand API so a
+# devices-package / nginx refresh does not leave a stale gunicorn worker
+# serving /api/devices* (12AI history kind=mr lives in that process).
+if systemctl is-active --quiet sa02m-stand-api.service 2>/dev/null; then
+    systemctl restart sa02m-stand-api.service \
+        && log OK "sa02m-stand-api: перезапущен (стенд, владелец :8765)" \
+        || log WARN "sa02m-stand-api: restart не удался"
+fi
+
 # nginx proxy /api/devices* (если в репо есть полный conf)
 if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then
     sed "s|__PORT__|$PORT|g; s|__WEB_ROOT__|$WEB_ROOT|g" \
