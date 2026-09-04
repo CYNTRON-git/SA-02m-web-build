@@ -1538,7 +1538,7 @@ def _led_weather_writes(lm: Any, params: Dict[str, Any]) -> Dict[int, int]:
     year = _led_int(params, "year", lm.MB2WS_WX_YEAR_MIN, lm.MB2WS_WX_YEAR_MAX)
     return {
         lm.MB2WS_WX_DATE: (
-            ((int(day) & 0xFF) << 8) | (int(month) & 0xFF)
+            lm.rgbw_wx_date_pack(day, month)
             if (day and month)
             else lm.MB2WS_WX_DATE_UNSET
         ),

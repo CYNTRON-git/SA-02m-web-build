@@ -166,6 +166,10 @@ MB2WS_MATRIX_LAYOUT_PROGRESSIVE = 0x01  # 0=serpentine / 1=progressive
 MB2WS_MATRIX_LAYOUT_ORIGIN_BOTTOM = 0x02  # 0=top-start / 1=bottom-start
 MB2WS_MATRIX_LAYOUT_MIRROR_X = 0x04  # canvas x right-to-left
 MB2WS_MATRIX_LAYOUT_SWAP_XY = 0x08  # column-major wiring (runs along Y)
+# 90° clockwise of the painted canvas: SWAP_XY only. Not 180°
+# (MIRROR_X|ORIGIN_BOTTOM) and not CCW (SWAP_XY|ORIGIN_BOTTOM).
+# MIRROR_X is a separate RTL flip — the 4×16×16 weather bench keeps it off.
+MB2WS_MATRIX_LAYOUT_ROTATE_90_CW = MB2WS_MATRIX_LAYOUT_SWAP_XY
 MB2WS_MATRIX_LAYOUT_WIRING_MASK = 0x000F
 # Reg 418 also carries the tiling fields (svc_mb_mb2ws.h:294-304). A caller
 # WITHOUT their UI state still preserves them via the prior-based path — see
@@ -827,6 +831,54 @@ def rgbw_text_lines_ui_code(reg_value: int) -> int:
     )
 
 
+def rgbw_layout_from_yaml(cfg: Mapping) -> Optional[int]:
+    """Reg-418 from a poller yaml entry, or ``None`` if the entry does not pin it.
+
+    ``matrix_layout`` wins when present. Otherwise any of ``tile_count`` /
+    ``tile_mode`` / ``rotate_90_cw`` / ``swap_xy`` / ``mirror_x`` /
+    ``progressive`` / ``origin_bottom`` composes the word. Weather bench
+    (4 tiles, 90° CW, no MIRROR_X) is ``0x0408``.
+    """
+    if cfg.get("matrix_layout") is not None:
+        return int(cfg["matrix_layout"]) & 0xFFFF
+    keys = (
+        "tile_count",
+        "tile_mode",
+        "rotate_90_cw",
+        "swap_xy",
+        "mirror_x",
+        "progressive",
+        "origin_bottom",
+    )
+    if not any(cfg.get(k) is not None for k in keys):
+        return None
+    wiring = 0
+    if cfg.get("progressive"):
+        wiring |= MB2WS_MATRIX_LAYOUT_PROGRESSIVE
+    if cfg.get("origin_bottom"):
+        wiring |= MB2WS_MATRIX_LAYOUT_ORIGIN_BOTTOM
+    if cfg.get("mirror_x"):
+        wiring |= MB2WS_MATRIX_LAYOUT_MIRROR_X
+    if cfg.get("rotate_90_cw") or cfg.get("swap_xy"):
+        wiring |= MB2WS_MATRIX_LAYOUT_ROTATE_90_CW
+    return rgbw_matrix_layout_compose_full(
+        wiring, int(cfg.get("tile_mode") or 0), int(cfg.get("tile_count") or 0)
+    )
+
+
+def rgbw_text_lines_from_yaml(cfg: Mapping) -> Optional[int]:
+    """``weather_lines`` or ``text_lines`` → 1 or 2, or ``None`` if unset.
+
+    Weather FX 64 two-line mode is register 494 = ``MB2WS_TEXT_LINES_DOUBLE``.
+    """
+    raw = cfg.get("weather_lines")
+    if raw is None:
+        raw = cfg.get("text_lines")
+    if raw is None:
+        return None
+    return rgbw_text_lines_ui_code(int(raw))
+
+
 def rgbw_text_2x_capacity(canvas_width_px: int) -> int:
     """How many characters render at 2x on a canvas this wide.
 
@@ -1249,12 +1301,32 @@ def rgbw_pc_clock_writes(now: datetime) -> Dict[int, int]:
     """Soft-clock writes (453/454) seeding the device from a host ``datetime``.
 
     Pure: the caller supplies the moment, so the mapping is unit-testable and the
-    UI decides when "now" is.
+    UI decides when "now" is. 453 is hours 0..23, 454 is minutes 0..59 — firmware
+    ``svc_time_of_day_write_reg`` rejects anything else (except 0xFFFF unset).
+    Do **not** swap the pair to "fix" a reversed panel: that is MIRROR_X on
+    reg 418 (4×16×16 bench), not these registers. 11:05 → ``{453: 11, 454: 5}``.
     """
     return {
         MB2WS_TOD_HOURS: int(now.hour) & 0xFFFF,
         MB2WS_TOD_MINUTES: int(now.minute) & 0xFFFF,
     }
+
+
+def rgbw_wx_date_pack(day: int, month: int) -> int:
+    """WxDate 457: firmware ``(day << 8) | month``. 04.09 → ``0x0409``.
+
+    The weather renderer prints high byte then low (``fx_wx_put_date``). A
+    reversed *panel* on four 16×16 tiles is MIRROR_X (418 bit 2), not a
+    byte-swap here — ``0x0904`` would display 09.04 and fail validation when
+    day > 12.
+    """
+    return ((int(day) & 0xFF) << 8) | (int(month) & 0xFF)
+
+
+def rgbw_wx_date_unpack(packed: int) -> Tuple[int, int]:
+    """Inverse of :func:`rgbw_wx_date_pack`: ``(day, month)`` from reg 457."""
+    v = int(packed) & 0xFFFF
+    return (v >> 8) & 0xFF, v & 0xFF
 
 
 def rgbw_pc_date_writes(now: datetime) -> Dict[int, int]:
@@ -1264,7 +1336,7 @@ def rgbw_pc_date_writes(now: datetime) -> Dict[int, int]:
     would answer exception 3 rather than seed anything.
     """
     return {
-        MB2WS_WX_DATE: ((int(now.day) & 0xFF) << 8) | (int(now.month) & 0xFF),
+        MB2WS_WX_DATE: rgbw_wx_date_pack(now.day, now.month),
         MB2WS_WX_YEAR: max(MB2WS_WX_YEAR_MIN, min(MB2WS_WX_YEAR_MAX, int(now.year))),
     }
 
@@ -1332,8 +1404,12 @@ def rgbw_mode_data_decode(regs: List[int]) -> Optional[RgbwModeData]:
         tod_minutes=mm if clock_set else None,
         fx_aux=at(MB2WS_FX_AUX),
         fx_density=at(MB2WS_FX_DENSITY),
-        wx_day=((date >> 8) & 0xFF) if date != MB2WS_WX_DATE_UNSET else None,
-        wx_month=(date & 0xFF) if date != MB2WS_WX_DATE_UNSET else None,
+        wx_day=(
+            rgbw_wx_date_unpack(date)[0] if date != MB2WS_WX_DATE_UNSET else None
+        ),
+        wx_month=(
+            rgbw_wx_date_unpack(date)[1] if date != MB2WS_WX_DATE_UNSET else None
+        ),
         # int16 tenths of a degree — 0x8000 is the sentinel, not -3276.8 °C.
         wx_temp_c=(
             None
@@ -1410,6 +1486,19 @@ def rgbw_matrix_layout_compose_full(wiring: int, tile_mode: int, tile_count: int
         | (tm << MB2WS_MATRIX_LAYOUT_TILEMODE_SHIFT)
         | (tc << MB2WS_MATRIX_LAYOUT_TILECOUNT_SHIFT)
     )
+
+
+def rgbw_matrix_layout_4tiles_90cw(*, mirror_x: bool = False) -> int:
+    """Reg 418: TileCount=4, TileMode=span, 90° CW (SWAP_XY), MIRROR_X off.
+
+    Bench recipe for the 4×16×16 weather panel: ``0x0408`` when ``mirror_x``
+    is False. Setting ``mirror_x=True`` adds bit 2 (``0x040C``) — the operator
+    asked that bit cleared.
+    """
+    wiring = int(MB2WS_MATRIX_LAYOUT_ROTATE_90_CW)
+    if mirror_x:
+        wiring |= MB2WS_MATRIX_LAYOUT_MIRROR_X
+    return rgbw_matrix_layout_compose_full(wiring, 0, 4)
 
 
 def rgbw_matrix_layout_write_value(prior: Optional[int], wiring: int) -> Optional[int]:

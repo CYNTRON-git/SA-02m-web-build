@@ -55,6 +55,8 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Optional[int]], ...] = (
     ("led_count",    "value",  "",  True,  lm.MB2WS_LED_COUNT0),
     ("led_type",     "value",  "",  True,  lm.MB2WS_LED_TYPE),
     ("line_mode",    "value",  "",  True,  lm.MB2WS_LINE_MODE),
+    # TextLines 494: 0/1 = one line, 2 = two 5×7 lines (FX 62/64). Not lock-gated.
+    ("text_lines",   "value",  "",  True,  lm.MB2WS_TEXT_LINES),
     ("vled",         "voltage", "V", True, lm.RGBW_IREG_VLED),
     ("temperature",  "temperature", "°C", True, lm.RGBW_IREG_NTC),
     # --- 4 dry-contact inputs (TYPE_IO_CAPS RGBW_WS2812 = (0, 4, 0, 0)) -------

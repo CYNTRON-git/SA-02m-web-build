@@ -1,6 +1,6 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.35';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.36';
 
 
 function uiT(s) {
@@ -122,6 +122,7 @@ function scanShortName(scanDev, type) {
   }
   if (type === 'dtv') return 'ДТВ-RS-485';
   if (type === 'ce02m3') return 'СЭ-02м-3';
+  if (type === 'led') return 'LED';
   if (scanDev.signature) return String(scanDev.signature).trim();
   return `Устройство ${addr}`;
 }
@@ -155,6 +156,7 @@ function scanTypeHint(dev) {
   }
   if (dev.type === 'dtv') return 'ДТВ-RS-485';
   if (dev.type === 'ce02m3') return 'СЭ-02м-3';
+  if (dev.type === 'led') return 'LED';
   const tn = (dev.type_name || '').trim();
   const sig = (dev.signature || '').trim();
   if (tn && tn !== 'unknown' && sig && normalizeSigKey(tn) !== normalizeSigKey(sig)) {
@@ -348,6 +350,7 @@ function makeDeviceId(type, port, addr) {
   let prefix;
   if (type === 'dtv') prefix = 'dtv';
   else if (type === 'ce02m3') prefix = 'ce02m3';
+  else if (type === 'led') prefix = 'led';
   else if (type === 'template') {
     // Prefix by the picked template name so the id reads like the device family.
     const tEl = document.getElementById('mqtt-add-template');
@@ -1674,7 +1677,7 @@ function onPollConfigChanged(devId) {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', template:'Шаблон'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -2236,7 +2239,7 @@ function renderScanResults(port, baud, devices) {
   for (const dev of devices) {
     const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
     const typeSelect = h('select', {'class': 'mqtt-select-small'});
-    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3']]) {
+    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED']]) {
       const opt = h('option', {value: val}, lbl);
       if (val === devType) opt.selected = true;
       typeSelect.appendChild(opt);
@@ -2331,6 +2334,11 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
     dev.fast_modbus = false;
     dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
+  } else if (type === 'led') {
+    // PlayCtrl 416 + colour; text block is slower. Same baud as the COM's
+    // other devices — mixed baud on one port is unsupported.
+    dev.poll_s = 2;
+    dev.poll_text_s = 30;
   }
 
   _config.devices.push(dev);
@@ -2484,6 +2492,9 @@ function confirmAddDevice() {
     dev.ct_ratio = 4000;
     dev.phases = ['A','B','C'];
     dev.channels_enabled = {};
+  } else if (type === 'led') {
+    dev.poll_s = 2;
+    dev.poll_text_s = 30;
   }
 
   _config.devices.push(dev);

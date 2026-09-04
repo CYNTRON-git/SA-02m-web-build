@@ -103,6 +103,7 @@ class LedPoller(DevicePoller):
         self._poll_text_s = float(cfg.get("poll_text_s", DEFAULT_TEXT_POLL_S))
         self._t_poll = 0.0
         self._t_text = 0.0
+        self._yaml_applied = False
         self._names = set(lc.control_names())
 
     # --- setup ----------------------------------------------------------------
@@ -146,6 +147,7 @@ class LedPoller(DevicePoller):
         snap = self._read_snapshot()
         if snap is None:
             return
+        self._apply_yaml_defaults(snap)
         self._publish(self._controls_from_snapshot(snap), t_read)
         DeviceLiveCache.flush_file(self.device_id)
 
@@ -211,6 +213,8 @@ class LedPoller(DevicePoller):
         out["supply"] = self._read_optional("input", lm.RGBW_IREG_NTC, 2)
         out["di"] = self._read_optional(
             "input", lm.RGBW_DI_INPUT_BASE, lm.RGBW_DI_COUNT)
+        lines = self._read_optional("holding", lm.MB2WS_TEXT_LINES, 1)
+        out["text_lines"] = None if lines is None else int(lines[0]) & 0xFFFF
         return out
 
     # --- snapshot -> controls -------------------------------------------------
@@ -238,6 +242,11 @@ class LedPoller(DevicePoller):
             "led_type": str(reg(lm.MB2WS_LED_TYPE)),
             "line_mode": str(reg(lm.MB2WS_LINE_MODE)),
         }
+        raw_lines = snap.get("text_lines")
+        out["text_lines"] = (
+            None if raw_lines is None
+            else str(lm.rgbw_text_lines_ui_code(raw_lines))
+        )
         out.update(self._pwm_controls(snap))
         out.update(self._supply_controls(snap))
         out.update(self._di_controls(snap))
@@ -278,6 +287,58 @@ class LedPoller(DevicePoller):
             else:
                 out[name] = str(int(di[i]) & 1)
         return out
+
+    def _apply_yaml_defaults(self, snap: dict) -> None:
+        """One-shot: pin yaml layout / weather lines so a restart cannot wipe them.
+
+        418 is lock-gated; 494 is not. Live values that already match are left
+        alone — this is a restore path, not a rewrite every poll.
+        """
+        if self._yaml_applied:
+            return
+        settings: dict = {}
+        layout = lm.rgbw_layout_from_yaml(self.cfg)
+        if layout is not None:
+            live = snap["base"][lm.MB2WS_MATRIX_LAYOUT - lm.MB2WS_LOCK_GATED_FIRST]
+            if int(live) != int(layout):
+                settings[lm.MB2WS_MATRIX_LAYOUT] = int(layout)
+        fx = self.cfg.get("effect")
+        if fx is not None:
+            live_fx = lm.rgbw_resolve_fx_id(
+                snap["base"][lm.MB2WS_FX_ID - lm.MB2WS_LOCK_GATED_FIRST]
+            )
+            if live_fx != int(fx):
+                settings[lm.MB2WS_FX_ID] = int(fx)
+        br = self.cfg.get("brightness")
+        if br is not None:
+            live_br = snap["base"][lm.MB2WS_FX_PARAM - lm.MB2WS_LOCK_GATED_FIRST]
+            want_br = _clamp(int(br), *lc.RANGE_LIMITS["brightness"])
+            if int(live_br) != want_br:
+                settings[lm.MB2WS_FX_PARAM] = want_br
+        lines = lm.rgbw_text_lines_from_yaml(self.cfg)
+        try:
+            if settings:
+                self._write_settings(settings)
+                if lm.MB2WS_MATRIX_LAYOUT in settings:
+                    snap["base"][lm.MB2WS_MATRIX_LAYOUT - lm.MB2WS_LOCK_GATED_FIRST] = (
+                        settings[lm.MB2WS_MATRIX_LAYOUT]
+                    )
+                if lm.MB2WS_FX_ID in settings:
+                    snap["base"][lm.MB2WS_FX_ID - lm.MB2WS_LOCK_GATED_FIRST] = (
+                        settings[lm.MB2WS_FX_ID]
+                    )
+                if lm.MB2WS_FX_PARAM in settings:
+                    snap["base"][lm.MB2WS_FX_PARAM - lm.MB2WS_LOCK_GATED_FIRST] = (
+                        settings[lm.MB2WS_FX_PARAM]
+                    )
+            if lines is not None and snap.get("text_lines") != lines:
+                self._wb_write_retry(
+                    lambda: self.write_register(
+                        self.address, lm.MB2WS_TEXT_LINES, int(lines)))
+                snap["text_lines"] = int(lines)
+            self._yaml_applied = True
+        except Exception as e:
+            self.log.warning("led yaml defaults: %s", e)
 
     # --- writeback ------------------------------------------------------------
 
@@ -351,10 +412,49 @@ class LedPoller(DevicePoller):
     # --- writeback handlers ---------------------------------------------------
 
     def _wb_power(self, payload: str) -> None:
+        """Alice/cloud on_off → light or black, never weather FX 64.
+
+        ON writes STATIC (or yaml `effect`) + RenderSource=FX + Play, in one
+        lock bracket. STOP alone leaves the last meteo frame on the LEDs;
+        OFF walks `rgbw_stop_blank_writes` in that list's order (402 before
+        416 would be the map's address sort — the plan order is load-bearing).
+        """
         on = _bool_payload(payload)
-        value = lm.MB2WS_PLAY_PLAY if on else lm.MB2WS_PLAY_STOP
-        self._write_settings({lm.MB2WS_PLAY_CTRL: value})
-        self._wb_done("power", "1" if on else "0")
+        if on:
+            self._write_settings(self._power_on_settings())
+            self._wb_done("power", "1")
+            return
+        self._write_blank_plan(lm.rgbw_stop_blank_writes())
+        self._wb_done("power", "0")
+
+    def _power_on_settings(self) -> dict:
+        fx = self.cfg.get("effect")
+        fx_id = (
+            lm.rgbw_clamp_fx_id(int(fx)) if fx is not None
+            else lm.RGBW_FX_MODE_STATIC
+        )
+        br = self.cfg.get("brightness")
+        brightness = (
+            _clamp(int(br), *lc.RANGE_LIMITS["brightness"])
+            if br is not None else lc.RANGE_LIMITS["brightness"][1]
+        )
+        return {
+            lm.MB2WS_RENDER_SOURCE: lm.MB2WS_RENDER_FX,
+            lm.MB2WS_FX_ID: fx_id,
+            lm.MB2WS_FX_PARAM: brightness,
+            lm.MB2WS_PLAY_CTRL: lm.MB2WS_PLAY_PLAY,
+        }
+
+    def _write_blank_plan(self, plan) -> None:
+        for reg, value, _gated in plan:
+            if int(reg) == lm.MB2WS_CMD and not lm.rgbw_cmd_is_allowed(int(value)):
+                raise ValueError("refused LED CMD %s" % (value,))
+            if lm.rgbw_reg_is_lock_gated(reg):
+                self._write_settings({int(reg): int(value)})
+            else:
+                self._wb_write_retry(
+                    lambda r=int(reg), v=int(value): self.write_register(
+                        self.address, r, v))
 
     def _wb_brightness(self, payload: str) -> None:
         self._wb_ranged_setting("brightness", payload, lm.MB2WS_FX_PARAM)
