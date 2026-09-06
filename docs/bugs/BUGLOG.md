@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-06 10:04] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/tests/test_reload_watch.py`
+**Тип:** Некорректное поведение (тест)
+**Описание:** `TestApplyReload.test_subscribe_failure_does_not_abort_the_rest` падал на чистой 1.0.6.36: `added` содержал лишний `/devices/dtv-COM3-1/controls/uptime_s`.
+**Причина:** Ожидание `want` не обновили после фикса 1.0.6.36 «Подписка на `uptime_s`» (COM-слейв жив, пока поллер шлёт `uptime_s`) — `subscribe_topics()` теперь включает топик живости, а тест pinning'овал старый набор.
+**Исправление:** В `want` добавлена константа `UPTIME` (`/devices/dtv-COM3-1/controls/uptime_s`); поведение кода не тронуто, тест соответствует задокументированному контракту `subscribe_topics`.
+
+---
+
 ## [2026-09-06 09:45] branch: 1.0.6.27
 
 **Файл(ы):** `opt/sa02m-rules/sa02m_rules/service.py`

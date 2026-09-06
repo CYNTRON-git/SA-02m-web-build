@@ -35,6 +35,9 @@ TOPIC_B = "/devices/dtv-COM3-1/controls/humidity_bme680"
 ERR_A = TOPIC_A + "/meta/error"
 ERR_B = TOPIC_B + "/meta/error"
 DEV_ERR = "/devices/dtv-COM3-1/meta/error"
+# COM slaves also subscribe the poller liveness topic (1.0.6.36: a sticky
+# per-channel `r` on a still-publishing slave is a busy bus, not offline).
+UPTIME = "/devices/dtv-COM3-1/controls/uptime_s"
 
 
 def _doc(topics):
@@ -320,7 +323,7 @@ class TestApplyReload(_DevicesFileCase):
             added, _removed = apply_reload(
                 registry, mqtt, RetainedGrace(), window_s=5.0, log=self.log
             )
-        want = {TOPIC_A, TOPIC_B, ERR_A, ERR_B, DEV_ERR}
+        want = {TOPIC_A, TOPIC_B, ERR_A, ERR_B, DEV_ERR, UPTIME}
         self.assertEqual(added, want)
         self.assertNotIn(TOPIC_B, [t for t, _q in mqtt.subscribed])
         self.assertEqual(set(t for t, _q in mqtt.subscribed), want - {TOPIC_B})
