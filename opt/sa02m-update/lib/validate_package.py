@@ -102,7 +102,19 @@ _MANIFEST_TOP_KEYS = frozenset(
 _PAYLOAD_KEYS = frozenset({"size", "sha256", "uncompressed_size_max"})
 _PREFLIGHT_KEYS = frozenset({"commands", "free_bytes_min", "free_bytes_multiplier"})
 _DEPLOY_KEYS = frozenset({"src", "dst", "mode", "owner"})
-_SERVICES_KEYS = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+# services: the REQUIRED set is frozen at the v1 wire contract — a manifest
+# missing any of these is rejected. OPTIONAL keys are ones a newer packer may
+# add; they must NOT be required (manifests from an older packer stay valid
+# here) and they ARE rejected by older validators (additionalProperties: false
+# is the forward-compat posture — an offline pack built by pack-offline-update.py
+# >= 1.0.6.37 applies only on boards already running >= 1.0.6.37, because the
+# on-device validator during an update is still the previous release's).
+# `enable` joined the generators in 1.0.5.69 but was never added here — every
+# offline pack since then failed on-device validation with E_MANIFEST until
+# this split (1.0.6.37).
+_SERVICES_KEYS_REQUIRED = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+_SERVICES_KEYS_OPTIONAL = frozenset({"enable", "restart_if_active", "restart_if_changed"})
+_SERVICES_KEYS = _SERVICES_KEYS_REQUIRED | _SERVICES_KEYS_OPTIONAL
 _HEALTH_KEYS = frozenset({"http_url", "units_active", "version_file"})
 _MIGRATION_KEYS = frozenset({"id", "min_from", "script", "sha256", "reversible"})
 
@@ -294,13 +306,32 @@ def validate_manifest_object(obj: Any) -> Dict[str, Any]:
     if not isinstance(services, dict):
         raise _type_err("services", "object", services)
     _reject_unknown("services", services, _SERVICES_KEYS)
-    _require_keys("services", services, _SERVICES_KEYS)
+    _require_keys("services", services, _SERVICES_KEYS_REQUIRED)
     if not isinstance(services["daemon_reload"], bool):
         raise PackageError("E_MANIFEST", "services.daemon_reload must be bool")
-    for list_key in ("stop_before_apply", "restart"):
-        arr = services[list_key]
+    for list_key in ("stop_before_apply", "restart", "enable", "restart_if_active"):
+        arr = services.get(list_key)
+        if arr is None:
+            continue  # optional key absent
         if not isinstance(arr, list) or not all(isinstance(x, str) and x for x in arr):
             raise PackageError("E_MANIFEST", f"services.{list_key} must be string array")
+    rifc = services.get("restart_if_changed")
+    if rifc is not None:
+        if not isinstance(rifc, dict):
+            raise _type_err("services.restart_if_changed", "object", rifc)
+        for unit, prefix in rifc.items():
+            if not isinstance(unit, str) or not unit:
+                raise PackageError("E_MANIFEST", "services.restart_if_changed: unit names must be non-empty strings")
+            if (
+                not isinstance(prefix, str)
+                or not prefix.startswith("/")
+                or not prefix.endswith("/")
+                or ".." in prefix.split("/")
+            ):
+                raise PackageError(
+                    "E_MANIFEST",
+                    f"services.restart_if_changed[{unit!r}] must be an absolute path prefix ending in '/'",
+                )
     health = services["health"]
     if not isinstance(health, dict):
         raise _type_err("services.health", "object", health)

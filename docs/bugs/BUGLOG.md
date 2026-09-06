@@ -5,6 +5,26 @@
 
 ---
 
+## [2026-09-06 12:39] branch: 1.0.6.37
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `opt/sa02m-update/tests/test_validate_package.py`, `scripts/dev/test-update-conditional-restart.sh`, `.ai-dev/quality/tools.json`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** OTA (github-overlay) и оффлайн-пакет деплоили код `/opt/sa02m-*` (движок сценариев, канал Алисы, облачный профиль, мост Modbus↔MQTT), но не рестартовали ни одну из держащих его в памяти служб: в `services.restart[]` манифеста не было ни `sa02m-rules`, ни Alice-семейства, ни моста — свежий движок подхватывался только после перезагрузки (тот же класс, что инцидент приёмки 1.0.6.37 со stale `trigger`/`end`, закрытый вручную в d2f9493 только для пути `06b-rules.sh`).
+**Причина:** OTA/offline updates deploy opt code without restarting the services that hold it in memory — а условного (never-widen) механизма рестарта в формате манифеста не существовало: `restart[]` исполняется как `restart || start`, что для opt-in юнитов (Alice-семейство ships `app off`) означало бы расширение состояния, а для моста — удар по port-lease RS-485.
+**Исправление:** restart set added to the update path: в манифест добавлены `services.restart_if_active[]` (рестарт только активного юнита: `sa02m-alice-client`, `sa02m-alice-config`, `sa02m-cloud-control`) и `services.restart_if_changed{unit→prefix}` (`sa02m-modbus-mqtt` → `/opt/sa02m-modbus-mqtt/`: рестарт активного моста, только когда журнал apply записал изменение под префиксом; журнал отсутствует ⇒ считается изменённым); `sa02m-rules` добавлен в `restart[]`. Оба генератора манифеста (онлайн в runner, оффлайн в packer) и валидатор обновлены согласованно; регрессия — `scripts/dev/test-update-conditional-restart.sh` (строка `update-conditional-restart`). Честный предел: обновление применяет runner предыдущего релиза — набор срабатывает со следующего после 1.0.6.37 обновления.
+
+---
+
+## [2026-09-06 12:39] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-update/lib/validate_package.py`
+**Тип:** Некорректное поведение
+**Описание:** Оффлайн-пакет, собранный `pack-offline-update.py` релизов 1.0.5.69–1.0.6.36, отклонялся на плате с `E_MANIFEST` («services: unknown keys: ['enable']»): оба генератора манифеста пишут `services.enable` с b9f3ad4, а валидатор этот ключ не знал — `_reject_unknown("services", …)` его отвергал (найдено при работе над `restart_if_*`: round-trip валидация пакера падала на собственном манифесте).
+**Причина:** При добавлении ключа `enable` в генераторы (1.0.5.69) `_SERVICES_KEYS` валидатора не обновили; один и тот же frozenset использовался и для `_reject_unknown`, и для `_require_keys`, так что любое расширение `services` было одновременно отклонено старым и обязательно для нового валидатора.
+**Исправление:** Набор ключей `services` разделён на обязательный (`daemon_reload`, `stop_before_apply`, `restart`, `health` — без изменений, старые манифесты по-прежнему валидны) и опциональный (`enable`, `restart_if_active`, `restart_if_changed` — принимаются, но не требуются); добавлены проверки типов опциональных ключей. Предел честности задокументирован в `docs/OFFLINE_UPDATE_PACKAGE_V1.md`: валидатор на плате обновляется самим обновлением, поэтому оффлайн-пакет ≥ 1.0.6.37 ставится на плату уже с ≥ 1.0.6.37.
+
+---
+
 ## [2026-09-06 12:27] branch: 1.0.6.37
 
 **Файл(ы):** `scripts/06b-rules.sh`, `docs/deployment.md`

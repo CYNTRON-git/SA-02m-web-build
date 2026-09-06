@@ -397,6 +397,15 @@
       "init": "bash + python3 + coreutils cmp/stat/install (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-deploy-skip.sh"
     },
     {
+      "id": "update-conditional-restart",
+      "checks": "Functional RED/GREEN regression for the conditional restart sets in the update runner (etc/sa02m-update-runner.sh restart_services_and_health + _journal_has_dst_prefix) — the 1.0.6.37 bench incident class: OTA/offline deployed new /opt/sa02m-* code but restarted NONE of sa02m-rules / sa02m-alice-client / sa02m-cloud-control / sa02m-alice-config / sa02m-modbus-mqtt, so services kept running STALE in-memory code until reboot (cloud scenario push silently lost trigger/end). Extracts the SHIPPED functions (literal-prefix awk slices, portable across mawk/gawk), shims systemctl/nginx/systemd-tmpfiles as PATH executables (timeout inside _systemctl_bounded execs a PATH lookup, never a shell function) with a file-backed active-unit set, and runs restart_services_and_health against a sandbox manifest + apply journal. Asserts: restart[] hard-restarts a core unit with no is-active gate; restart_if_active probes is-active, restarts ONLY an active opt-in unit and never restarts/starts an inactive one (never-widen — Alice ships `app off`); restart_if_changed skips the restart when the journal recorded no dst under the watched /opt prefix, restarts when it did, and treats a MISSING journal as changed (power-loss recover fails toward freshness, not staleness); a pre-1.0.6.37 manifest without the new keys applies as a clean no-op. Non-vacuous: a missing loop, an unconditional restart, or a wrong change gate FAILS; UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) drives the pre-fix source RED.",
+      "config": null,
+      "run": "bash scripts/dev/test-update-conditional-restart.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-update-runner.sh", "scripts/dev/test-update-conditional-restart.sh"],
+      "init": "bash + python3 + coreutils (present everywhere the project builds) — run on demand: bash scripts/dev/test-update-conditional-restart.sh"
+    },
+    {
       "id": "imaging-samefile-guard",
       "checks": "Static gate for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row.",
       "config": null,

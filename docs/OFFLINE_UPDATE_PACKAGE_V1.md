@@ -121,6 +121,27 @@ Allowlist путей overlay: `scripts/offline-update-allowlist.txt`.
 `deploy[].dst` обязан совпадать с runtime regex (§2.2 плана). `preserve[]` в
 manifest **нет** — константа runner `PRESERVE_PATHS`.
 
+`services` — действия над службами после деплоя (исполнитель —
+`restart_services_and_health` в `etc/sa02m-update-runner.sh`; тот же набор
+ключей пишет онлайн-генератор манифеста в том же файле):
+
+| Key | Обязательный | Семантика |
+|---|---|---|
+| `daemon_reload` | да | `systemctl daemon-reload` перед рестартами |
+| `stop_before_apply[]` | да | остановить ДО деплоя (`sa02m-flasher`) |
+| `restart[]` | да | безусловный bounded `restart \|\| start` — core-службы (nginx/fcgiwrap, `sa02m-devices-*`, `mplc4`, `sa02m-telemetry`, `sa02m-rules`) |
+| `health{http_url,units_active,version_file}` | да | гейт после рестартов; провал ⇒ rollback |
+| `enable[]` | нет | включить автозапуск (пережить перезагрузку), без start |
+| `restart_if_active[]` | нет | рестарт **только активного** юнита, остановленный никогда не стартуется (never-widen; opt-in Alice-семейство: `sa02m-alice-client`, `sa02m-alice-config`, `sa02m-cloud-control` — держат в памяти код `/opt/sa02m-rules`/`sa02m_alice`) |
+| `restart_if_changed{unit: prefix}` | нет | то же + только когда журнал apply записал изменённый `dst` под `prefix` (`sa02m-modbus-mqtt` → `/opt/sa02m-modbus-mqtt/`: port-lease RS-485 — не бить активный мост, когда пакет моста не менялся; журнал отсутствует ⇒ считается изменённым) |
+
+Совместимость ключей: неизвестный ключ старый валидатор отклоняет
+(`additionalProperties: false` — осознанная позиция forward-compat), поэтому
+оффлайн-пакет с `restart_if_*` ставится на плату уже с ≥ 1.0.6.37. Ключ
+`enable` генераторы пишут с 1.0.5.69, а валидатор научился принимать его
+только в 1.0.6.37 — оффлайн-пакеты релизов 1.0.5.69–1.0.6.36 отклонялись на
+плате с `E_MANIFEST` («services: unknown keys: ['enable']»).
+
 Gates на устройстве до backup: версия payload `VERSION` == `manifest.version`;
 semver installed ≥ `min_version`, runner ≥ `min_updater`, target > installed;
 подпись + три совпадения hash/size payload.

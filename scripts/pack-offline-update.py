@@ -557,7 +557,38 @@ def build_manifest(
                 # delivers the change. Must stay in step with the online
                 # generator's list in etc/sa02m-update-runner.sh.
                 "sa02m-telemetry",
+                # Scenario engine holds /opt/sa02m-rules in memory — bounce it
+                # on deploy or scenarios keep running the stale engine until
+                # reboot (1.0.6.37 bench incident class). Core unit, enabled by
+                # 06b-rules.sh on every full install — restart||start semantics
+                # fit. Must stay in step with etc/sa02m-update-runner.sh.
+                "sa02m-rules",
             ],
+            # Conditional restarts (never-widen): the runner restarts these ONLY
+            # when already active — `systemctl restart` on an inactive unit
+            # STARTS it, and the Alice family ships disabled by default
+            # (scripts/06-alice.sh `app off`). All three hold the scenario
+            # channel code in memory (sa02m_alice + sa02m_rules.store from
+            # /opt/sa02m-rules). Must stay in step with
+            # etc/sa02m-update-runner.sh.
+            # HONEST LIMIT: the package is validated and applied by the runner
+            # ALREADY on the board — boards before 1.0.6.37 reject these keys
+            # (E_MANIFEST unknown keys, additionalProperties:false posture) and
+            # boards on 1.0.6.37+ consume them from the FIRST offline pack.
+            "restart_if_active": [
+                "sa02m-alice-client",
+                "sa02m-alice-config",
+                "sa02m-cloud-control",
+            ],
+            # Change-gated conditional restart: unit -> /opt prefix watched in
+            # the apply journal. sa02m-modbus-mqtt owns the RS-485 port lease:
+            # restart only when the bridge code actually changed (a www-only
+            # patch must not bounce industrial polling) and only when already
+            # running (a stopped bridge may be stopped FOR a flasher lease).
+            # Must stay in step with etc/sa02m-update-runner.sh.
+            "restart_if_changed": {
+                "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",
+            },
             "health": {
                 "http_url": "http://127.0.0.1:9999/login.html",
                 "units_active": ["nginx", "fcgiwrap", "sa02m-devices-api"],

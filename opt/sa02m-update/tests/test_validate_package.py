@@ -182,6 +182,54 @@ class TestManifestAndPackage(unittest.TestCase):
             vp.validate_manifest_object(m)
         self.assertEqual(cm.exception.code, "E_MANIFEST")
 
+    def test_services_required_only_manifest_ok(self) -> None:
+        # Pre-1.0.6.37 manifest shape (no optional services keys) stays valid:
+        # the optional keys must never become required (older packers).
+        vp.validate_manifest_object(_sample_manifest())
+
+    def test_services_optional_keys_accepted(self) -> None:
+        # The 1.0.6.37 packer manifest: enable (emitted since 1.0.5.69 — the
+        # validator rejected it until the required/optional split) plus the
+        # conditional-restart sets for the /opt code freshness fix.
+        m = _sample_manifest()
+        m["services"]["enable"] = ["sa02m-devices-api.service"]
+        m["services"]["restart_if_active"] = [
+            "sa02m-alice-client",
+            "sa02m-alice-config",
+            "sa02m-cloud-control",
+        ]
+        m["services"]["restart_if_changed"] = {"sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/"}
+        vp.validate_manifest_object(m)  # must not raise
+
+    def test_services_unknown_key_still_rejected(self) -> None:
+        m = _sample_manifest()
+        m["services"]["bogus"] = []
+        with self.assertRaises(PackageError) as cm:
+            vp.validate_manifest_object(m)
+        self.assertEqual(cm.exception.code, "E_MANIFEST")
+
+    def test_services_restart_if_active_must_be_string_array(self) -> None:
+        for bad in ("sa02m-rules", ["sa02m-rules", 5], [""]):
+            m = _sample_manifest()
+            m["services"]["restart_if_active"] = bad
+            with self.assertRaises(PackageError) as cm:
+                vp.validate_manifest_object(m)
+            self.assertEqual(cm.exception.code, "E_MANIFEST")
+
+    def test_services_restart_if_changed_shape(self) -> None:
+        for bad in (
+            ["not-a-dict"],
+            {"sa02m-modbus-mqtt": "opt/relative/"},
+            {"sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt"},  # no trailing slash
+            {"sa02m-modbus-mqtt": "/opt/../etc/"},
+            {"": "/opt/x/"},
+        ):
+            m = _sample_manifest()
+            m["services"]["restart_if_changed"] = bad
+            with self.assertRaises(PackageError) as cm:
+                vp.validate_manifest_object(m)
+            self.assertEqual(cm.exception.code, "E_MANIFEST")
+
     def test_reject_preserve_dst(self) -> None:
         m = _sample_manifest()
         m["deploy"] = [
