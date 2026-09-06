@@ -34,4 +34,10 @@ fi
 systemctl daemon-reload
 systemctl enable sa02m-rules.service
 systemctl restart sa02m-rules.service || systemctl start sa02m-rules.service
+# sa02m-cloud-control держит в памяти тот же код сценарного канала
+# (sa02m_alice → sa02m_rules.store из /opt/sa02m-rules): без рестарта push
+# сценария из облака обрабатывается старым кодом (приёмка 1.0.6.37: молча
+# срезались trigger/end). Юнит opt-in — только рестарт активного, никогда
+# не стартовать остановленный.
+sa02m_svc_restart_if_active sa02m-cloud-control.service
 log INFO "=== [06b-rules] готово ==="

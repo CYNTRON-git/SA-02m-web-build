@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-06 12:27] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/06b-rules.sh`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** На приёмке сценарных шаблонов push сценария из облака доезжал до стендовой платы с молча срезанными `trigger`/`end`: после деплоя обновлённых Python-файлов в `/opt` рестартовали `sa02m-rules` и `sa02m-alice-client`, но не `sa02m-cloud-control`; его рестарт починил путь.
+**Причина:** stale in-memory code: sa02m-cloud-control not restarted after /opt deploy — процесс держал в памяти код до поддержки `button`/`end` (тот же пакет `sa02m_alice` + импорт `sa02m_rules.store` из `/opt/sa02m-rules`).
+**Исправление:** `sa02m-cloud-control` добавлен в набор рестарта `scripts/06b-rules.sh` (через `sa02m_svc_restart_if_active` — юнит opt-in, остановленный не стартуем) + предложение в runbook `docs/deployment.md`: после обновления `/opt/sa02m-*` рестартовать `sa02m-rules`, `sa02m-alice-client`, `sa02m-modbus-mqtt` (если менялся мост) и `sa02m-cloud-control`.
+
+---
+
 ## [2026-09-06 10:04] branch: 1.0.6.37
 
 **Файл(ы):** `opt/sa02m-alice/tests/test_reload_watch.py`
