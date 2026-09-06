@@ -247,6 +247,18 @@ Device ID: `mr02m-{port}-{addr}` (пример: `mr02m-COM1-5`)
 /devices/mr02m-COM1-5/controls/di_1_freq   type=value  Hz
 ```
 
+DI в режиме «Кнопка» (holding 630+ch-1 = 1; настраивается flasher'ом) —
+счётчики нажатий из input regs 695/711/727+ch-1 (uint16, FC04, R):
+```
+/devices/mr02m-COM1-5/controls/di_1_short   type=value  readonly  (короткие нажатия)
+/devices/mr02m-COM1-5/controls/di_1_long    type=value  readonly  (длинные нажатия)
+/devices/mr02m-COM1-5/controls/di_1_double  type=value  readonly  (двойные нажатия)
+```
+Публикуются только для каналов в режиме «Кнопка» (режим перечитывается раз в
+poll_diag_s). Сценарный движок (sa02m-rules) использует фронт счётчика как
+событие жеста single/long/double; long_release прошивка не считает — его
+распознаёт классификатор движка по фронтам di_N.
+
 ### AO (аналоговые выходы — holding regs 33..32+N, сырое ×0,01 В, R/W)
 ```
 /devices/mr02m-COM1-5/controls/ao_1    type=range  min=0 max=1000  meta/units=V

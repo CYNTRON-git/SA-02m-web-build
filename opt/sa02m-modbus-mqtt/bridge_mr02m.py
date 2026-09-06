@@ -24,6 +24,9 @@ from bridge_mr02m_map import (
     MR02M_AI_CHANNEL_STRIDE, MR02M_AI_READ_RETRIES, MR02M_AI_PAIR_TYPES,
     MR_MCU_HOLD_OP_DAYS, MR_MCU_HOLD_POWER_TEMP, MR_INP_MCU_UPTIME_LO,
     MR_INP_DI_CNT_BASE, MR_INP_MCU_DIAG_START, MR_RESET_REASON_LABELS,
+    MR_REG_DI_MODE_BASE, MR_DI_MODE_BUTTON,
+    MR_INP_DI_SHORT_CNT_BASE, MR_INP_DI_LONG_CNT_BASE,
+    MR_INP_DI_DOUBLE_CNT_BASE,
     MR02M_SYS_CONTROLS, AI_RTD_CODES_3_WIRE, AI_TC_K_CODE,
     _ai_register_is_legacy_enum, _resolve_ai_sensor_type,
     AI_SENSOR_TYPES, _TEMP,
@@ -49,6 +52,10 @@ class MR02mPoller(DevicePoller):
         self._ai_chunk_regs = resolve_ai_read_chunk_regs(cfg)
         self._channels      = cfg.get("channels", {})
         self._ai_types: dict[int, int] = {}
+        # DI channels in «Кнопка» mode (holding 630+): press counters polled.
+        self._di_button: set[int] = set()
+        self._press_fails = 0
+        self._press_disabled = False  # older firmware w/o regs 695+ (until retry)
         self._t_diag        = 0.0
         self._t_uptime      = 0.0
         # FMB event counts, cached by fmb_event_ranges() from yaml module_type.
@@ -229,6 +236,7 @@ class MR02mPoller(DevicePoller):
             self.pub.pub_control_meta(self.device_id, "module_type", "type", "text")
             self.log.info("type=%d(%s) do=%d di=%d ao=%d ai=%d",
                           mt, type_name, self._do, self._di, self._ao, self._ai)
+            self._refresh_di_modes()
             self._publish_channel_meta()
             self._apply_configured_ai_sensor_types()
             return True
@@ -311,6 +319,8 @@ class MR02mPoller(DevicePoller):
             ct = self._ch_title("di", i, f"DI{i} счётчик")
             if ct:
                 self.pub.pub_control_meta(self.device_id, cn, "title", ct)
+            if i in self._di_button:
+                self._publish_press_meta(i)
 
         for i in range(1, self._ao + 1):
             n = f"ao_{i}"
@@ -386,6 +396,7 @@ class MR02mPoller(DevicePoller):
             except Exception as e:
                 self.log.warning("DI read: %s", e)
         self._poll_di_counters()
+        self._poll_di_press_counters()
 
     def _poll_di_counters(self) -> None:
         """DI pulse counters: Input Reg 77+2*(ch-1).. (uint32 lo-hi), FC04."""
@@ -408,6 +419,83 @@ class MR02mPoller(DevicePoller):
                 self.pub.pub_error(self.device_id, f"di_{i}_count", "")
         except Exception as e:
             self.log.warning("DI counters: %s", e)
+
+    # (suffix, title_ru, title_en) — value controls per «Кнопка»-mode DI channel.
+    _PRESS_CONTROLS = (
+        ("short",  "короткие нажатия", "short presses"),
+        ("long",   "длинные нажатия",  "long presses"),
+        ("double", "двойные нажатия",  "double presses"),
+    )
+
+    def _refresh_di_modes(self) -> None:
+        """DI mode holdings (630+ch-1): which channels are in «Кнопка» mode.
+
+        Re-read on the diag cadence so flasher changes are picked up without
+        a bridge restart; a successful read also re-arms press-counter polling
+        disabled by earlier read failures (e.g. after a firmware upgrade).
+        """
+        if self._di <= 0:
+            return
+        try:
+            regs = self.read_holding_registers(
+                self.address, MR_REG_DI_MODE_BASE, self._di)
+        except Exception as e:
+            self.log.warning("DI mode read: %s", e)
+            return
+        self._press_disabled = False
+        self._press_fails = 0
+        for i, raw in enumerate(regs, 1):
+            if (int(raw) & 0xFFFF) == MR_DI_MODE_BUTTON:
+                if i not in self._di_button:
+                    self._di_button.add(i)
+                    self._publish_press_meta(i)
+            else:
+                self._di_button.discard(i)
+
+    def _publish_press_meta(self, ch: int) -> None:
+        base = self._ch_label("di", ch)
+        for suffix, ru, en in self._PRESS_CONTROLS:
+            n = f"di_{ch}_{suffix}"
+            self.pub.pub_control_meta(self.device_id, n, "type", "value")
+            self.pub.pub_control_meta(self.device_id, n, "readonly", "1")
+            self.pub.pub_control_meta(self.device_id, n, "title",
+                                      _make_title(f"{base}: {ru}",
+                                                  f"{base}: {en}"))
+
+    def _poll_di_press_counters(self) -> None:
+        """Press counters for «Кнопка»-mode DI: Input 695/711/727+ch-1, FC04."""
+        if not self._di_button or self._press_disabled:
+            return
+        chs = sorted(self._di_button)
+        max_ch = chs[-1]
+        try:
+            shorts = self.read_input_registers(
+                self.address, MR_INP_DI_SHORT_CNT_BASE, max_ch)
+            longs = self.read_input_registers(
+                self.address, MR_INP_DI_LONG_CNT_BASE, max_ch)
+            doubles = self.read_input_registers(
+                self.address, MR_INP_DI_DOUBLE_CNT_BASE, max_ch)
+        except Exception as e:
+            self._press_fails += 1
+            if self._press_fails >= 3:
+                # Older firmware without the press registers — stop polling
+                # until the next mode refresh re-arms it.
+                self._press_disabled = True
+            self.log.warning("DI press counters: %s", e)
+            for i in chs:
+                for suffix, _, _ in self._PRESS_CONTROLS:
+                    self.pub.pub_error(self.device_id, f"di_{i}_{suffix}", "r")
+            return
+        self._press_fails = 0
+        for i in chs:
+            for regs, suffix in ((shorts, "short"), (longs, "long"),
+                                 (doubles, "double")):
+                if i - 1 >= len(regs):
+                    continue
+                n = f"di_{i}_{suffix}"
+                self.pub.pub_control(
+                    self.device_id, n, str(int(regs[i - 1]) & 0xFFFF))
+                self.pub.pub_error(self.device_id, n, "")
 
     def _poll_ai_ao(self) -> None:
         # AI first (chunked FC03), then AO — on 6AI6AO the first AO frame often
@@ -504,6 +592,7 @@ class MR02mPoller(DevicePoller):
             pass
 
     def _poll_diag(self) -> None:
+        self._refresh_di_modes()
         if self._sys_enabled("serial"):
             try:
                 r = self.read_input_registers(self.address, 270, 2)

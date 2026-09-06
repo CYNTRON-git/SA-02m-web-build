@@ -102,6 +102,15 @@ MR_MCU_HOLD_POWER_TEMP = 123
 MR_INP_MCU_UPTIME_LO = 105
 MR_INP_DI_CNT_BASE = 77
 MR_INP_MCU_DIAG_START = 65505
+# DI press counters («Кнопка» mode) — mirrored from sa02m_flasher/device_config.py
+# (INP_DI_*_CNT_BASE / REG_DI_MODE_BASE). Kept as a local copy: opt/* packages
+# deploy independently and must not import across package boundaries.
+# Holding 630+ch-1: 0 = счётчик импульсов, 1 = Кнопка (flasher.js MODULE_DI_MODES).
+MR_REG_DI_MODE_BASE = 630
+MR_DI_MODE_BUTTON = 1
+MR_INP_DI_SHORT_CNT_BASE = 695   # input, uint16 per channel
+MR_INP_DI_LONG_CNT_BASE = 711
+MR_INP_DI_DOUBLE_CNT_BASE = 727
 # Коды как в MR-02m decode_reset_csr / Input 65508 (MODBUS_VARIABLES.txt, приоритет LPWR→…→V18PWR).
 MR_RESET_REASON_LABELS: dict[int, str] = {
     0: "неизвестно",
