@@ -318,8 +318,11 @@ class DeviceRegistry:
                 raw = (group or {}).get("device_ids")
                 if isinstance(raw, list):
                     ids = [str(x) for x in raw if x]
-                out.append({"id": str(gid), "name": str((group or {}).get("name") or ""),
-                            "device_ids": ids})
+                row: Dict[str, Any] = {"id": str(gid), "name": str((group or {}).get("name") or ""),
+                                       "device_ids": ids}
+                if (group or {}).get("icon") in ("light", "ahu"):
+                    row["icon"] = str(group["icon"])
+                out.append(row)
             return out
 
     def discovery_devices(self, profile: str = C.PROFILE_YANDEX) -> List[Dict[str, Any]]:

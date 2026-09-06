@@ -66,6 +66,8 @@ class SioHandlers:
             self._on_rooms(request_id, data)
         elif event == C.EVT_DEVICES_GROUPS:
             self._on_groups(request_id, data)
+        elif event == C.EVT_DEVICES_SCENARIOS:
+            self._on_scenarios(request_id, data)
         else:
             log.debug("Unhandled event %s", event)
 
@@ -92,6 +94,13 @@ class SioHandlers:
         if self._profile == C.PROFILE_CLOUD:
             payload["rooms"] = self.registry.listed_rooms()
             payload["groups"] = self.registry.listed_groups()
+            extra = config_api.listed_scenarios()
+            if extra is not None:
+                payload["scenarios"] = extra.get("scenarios") or []
+                payload["scenario_runs"] = extra.get("runs") or []
+                payload["scenario_notify"] = extra.get("notify_queue") or []
+                payload["scenario_library"] = extra.get("library") or ""
+                payload["rules_engine"] = int(extra.get("rules_engine") or 1)
         self._emit_response({"request_id": request_id, "payload": payload})
 
     def _on_query(self, request_id: Optional[str], devices: List[Any]) -> None:
@@ -165,4 +174,20 @@ class SioHandlers:
             out["group"] = result["group"]
         if isinstance(result.get("groups"), list):
             out["groups"] = result["groups"]
+        self._emit_response(out)
+
+    def _on_scenarios(self, request_id: Optional[str], data: Dict[str, Any]) -> None:
+        result = config_api.apply_scenarios(data)
+        out: Dict[str, Any] = {
+            "request_id": request_id,
+            "ok": bool(result.get("ok")),
+            "error": result.get("error"),
+        }
+        for key in ("scenario", "scenarios", "library", "run_now", "notify_queue", "runs"):
+            if key in result:
+                out[key] = result[key]
+        if "runs" in result:
+            out["scenario_runs"] = result["runs"]
+        if "notify_queue" in result:
+            out["scenario_notify"] = result["notify_queue"]
         self._emit_response(out)

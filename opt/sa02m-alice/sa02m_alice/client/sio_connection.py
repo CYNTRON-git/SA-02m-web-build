@@ -151,7 +151,7 @@ class AliceSocketIO:
         — the event cannot reach the handler and cannot touch the Alice cert.
         """
         base = (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION,
-                C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS)
+                C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_SCENARIOS)
         if self._profile == C.PROFILE_CLOUD:
             return base + (C.EVT_DEVICES_GROUPS,)
         return base + (C.EVT_CONTROLLER_UNLINK,)

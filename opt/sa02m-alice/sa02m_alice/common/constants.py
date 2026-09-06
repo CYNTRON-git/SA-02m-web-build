@@ -26,6 +26,11 @@ STATUS_FILE_CLOUD = os.environ.get(
 
 # Client profiles. `alice` is the package's historical name; the package is the
 # smart-home transport and the Yandex gateway is one consumer of it.
+# PROFILE_YANDEX is the mTLS session to the Alice gateway (alice.cyntron.ru) —
+# the only session that carries controller_unlink, and the one whose list
+# payload must stay Yandex-discovery-shaped. PROFILE_CLOUD is a plain cloud-hub
+# session (no enrolment to unlink; the list payload additionally carries
+# rooms/groups/scenarios for the cloud control view).
 PROFILE_YANDEX = "yandex"
 PROFILE_CLOUD = "cloud"
 PROFILES = (PROFILE_YANDEX, PROFILE_CLOUD)
@@ -62,6 +67,10 @@ EVT_DEVICES_ROOMS = "alice_devices_rooms"
 EVT_DEVICES_GROUPS = "alice_devices_groups"
 EVT_DEVICE_STATE = "device_state"
 EVT_CONTROLLER_UNLINK = "controller_unlink"
+# Cloud catalogue/scenario channel (hub → board, request_id-bearing):
+# rename one device, upsert/delete a room or a lighting group, drive the
+# on-board scenario store (docs/contracts/cloud-scenarios.md §Channel).
+EVT_DEVICES_SCENARIOS = "alice_devices_scenarios"
 
 # `device_state.origin` (additive, both profiles): `live` = an MQTT-driven
 # report through StateSender.offer, `snapshot` = offer_snapshot (reconnect /

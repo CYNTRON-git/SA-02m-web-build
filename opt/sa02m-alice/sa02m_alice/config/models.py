@@ -94,6 +94,52 @@ def new_id() -> str:
     return str(uuid.uuid4())
 
 
+def id_ok(value: Any) -> bool:
+    """Public read on `_ID_RE` for the config API (rename/rooms/groups)."""
+    return isinstance(value, str) and bool(_ID_RE.match(value))
+
+
+def name_ok(value: Any) -> bool:
+    """Public read on `_NAME_RE` for the config API (rename/rooms/groups)."""
+    return isinstance(value, str) and bool(_NAME_RE.match(value))
+
+
+def validate_group(group: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Cloud lighting/ventilation group: {id, name, device_ids, icon?}.
+
+    Membership lives ONLY on the group (never a field on each device) —
+    docs/contracts/alice-gateway.md `/controllers/{id}/groups`. `icon` is
+    `light` (default) or `ahu`.
+    """
+    if not isinstance(group, dict):
+        return None, "group must be an object"
+    gid = str(group.get("id") or new_id())
+    if not _ID_RE.match(gid):
+        return None, "invalid group id"
+    name = str(group.get("name") or "").strip()
+    if not name or not _NAME_RE.match(name):
+        return None, "invalid group name"
+    out: Dict[str, Any] = {"id": gid, "name": name, "device_ids": []}
+    raw_ids = group.get("device_ids")
+    if raw_ids is None:
+        raw_ids = group.get("devices")
+    if raw_ids is not None:
+        if not isinstance(raw_ids, list):
+            return None, "group.device_ids must be a list"
+        ids = []
+        for d in raw_ids:
+            s = str(d)
+            if not _ID_RE.match(s):
+                return None, "invalid device id in group"
+            if s not in ids:
+                ids.append(s)
+        out["device_ids"] = ids
+    icon = group.get("icon")
+    if icon in ("light", "ahu"):
+        out["icon"] = icon
+    return out, None
+
+
 def validate_room(room: Dict[str, Any], *, partial: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(room, dict):
         return None, "room must be an object"

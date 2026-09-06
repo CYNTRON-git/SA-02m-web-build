@@ -297,6 +297,43 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
             return {"ok": False, "error": "not_found"}
         save(doc, path)
         return _ok(doc)
+    if body.get("get") is True:
+        # Fetch one FULL document (the editor opens a scenario from this —
+        # list rows carry only the summary).
+        if not sid or not ID_RE.match(sid):
+            return {"ok": False, "error": "invalid id"}
+        found = next((s for s in doc["scenarios"]
+                      if isinstance(s, dict) and s.get("id") == sid), None)
+        if not found:
+            return {"ok": False, "error": "not_found"}
+        return _ok(doc, scenario=found)
+    if isinstance(body.get("upsert"), list):
+        # Batch upsert: validate ALL entries first so a template compile never
+        # lands half-written (docs/contracts/cloud-scenarios.md §Channel).
+        cleaned = []
+        ids = [s.get("id") for s in doc["scenarios"] if isinstance(s, dict)]
+        for raw in body["upsert"][:16]:
+            if not isinstance(raw, dict):
+                return {"ok": False, "error": "bad json"}
+            row, err = validate_row(raw, raw.get("id") if isinstance(raw.get("id"), str) else None)
+            if err:
+                return {"ok": False, "error": err}
+            if not row["id"]:
+                row["id"] = _new_id([i for i in ids if isinstance(i, str)])
+                ids.append(row["id"])
+            cleaned.append(row)
+        for row in cleaned:
+            idx = next((i for i, s in enumerate(doc["scenarios"])
+                        if isinstance(s, dict) and s.get("id") == row["id"]), None)
+            if idx is None:
+                doc["scenarios"].append(row)
+            else:
+                prev = doc["scenarios"][idx]
+                row["last_run"] = prev.get("last_run")
+                row["last_error"] = prev.get("last_error") or ""
+                doc["scenarios"][idx] = row
+        save(doc, path)
+        return _ok(doc)
     if body.get("ack_notify") is True:
         take_notify(doc, path)
         return _ok(doc, notify_queue=[])

@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import configparser
 import json
+import logging
 import os
 import socketserver
 import stat
+import sys
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from .. import __version__
@@ -36,6 +38,29 @@ from ..common.config_store import (
 )
 from . import models
 from .topics import list_mqtt_topics
+
+log = logging.getLogger("sa02m_alice.config.api")
+
+# The on-board scenario engine package (opt/sa02m-rules) is a sibling install,
+# not a python dependency of sa02m_alice — resolve it lazily and treat its
+# absence as «scenarios unsupported», never as an import-time crash.
+RULES_DIR = os.environ.get("SA02M_RULES_DIR", "/opt/sa02m-rules")
+
+
+def _rules_store():
+    """sa02m_rules.store module, or None when the rules stack is absent."""
+    try:
+        from sa02m_rules import store as rules_store  # type: ignore
+        return rules_store
+    except ImportError:
+        pass
+    if RULES_DIR not in sys.path:
+        sys.path.insert(0, RULES_DIR)
+    try:
+        from sa02m_rules import store as rules_store  # type: ignore
+        return rules_store
+    except ImportError:
+        return None
 
 
 def _controller_sn() -> str:
@@ -651,7 +676,10 @@ def _listed_groups(doc: Dict[str, Any]) -> list:
         for item in g.get("device_ids") if isinstance(g.get("device_ids"), list) else []:
             if isinstance(item, str) and item:
                 ids.append(item)
-        out.append({"id": str(g["id"]), "name": str(g.get("name") or ""), "device_ids": ids})
+        row = {"id": str(g["id"]), "name": str(g.get("name") or ""), "device_ids": ids}
+        if g.get("icon") in ("light", "ahu"):
+            row["icon"] = g["icon"]
+        out.append(row)
     return out
 
 
@@ -713,13 +741,24 @@ def apply_groups(body: Dict[str, Any]) -> Dict[str, Any]:
                 return {"ok": False, "error": "not_found", "message": "device not found"}
     row = {"id": gid, "name": name, "device_ids": list(bind) if bind is not None else (
         list(existing.get("device_ids") or []) if existing else [])}
+    # Group tile icon (`light`/`ahu`, docs/contracts/alice-gateway.md §groups):
+    # set when the body carries a valid one, preserved from the stored group
+    # when the body omits it — same upsert rule as `device_ids`.
+    icon = body.get("icon")
+    if icon in ("light", "ahu"):
+        row["icon"] = icon
+    elif existing and existing.get("icon") in ("light", "ahu"):
+        row["icon"] = existing["icon"]
     if existing is None:
         groups.append(row)
     else:
         groups[idx] = row
     save_devices(doc)
-    return {"ok": True, "group": {"id": row["id"], "name": row["name"],
-                                  "device_ids": list(row["device_ids"])},
+    group_out = {"id": row["id"], "name": row["name"],
+                 "device_ids": list(row["device_ids"])}
+    if "icon" in row:
+        group_out["icon"] = row["icon"]
+    return {"ok": True, "group": group_out,
             "groups": _listed_groups(doc)}
 
 
@@ -832,7 +871,9 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
             if did in bind_set:
                 d["room_id"] = cleaned["id"]
             elif d.get("room_id") == cleaned["id"]:
-                d["room_id"] = ""
+                # Unassigned devices DROP the key (an empty string would still
+                # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
+                d.pop("room_id", None)
         for r in rooms:
             if not isinstance(r, dict):
                 continue
@@ -877,7 +918,7 @@ def delete_room(room_id: str) -> Dict[str, Any]:
         return {"ok": False, "error": "not_found", "message": "room not found"}
     for d in doc.get("devices") or []:
         if isinstance(d, dict) and d.get("room_id") == room_id:
-            d["room_id"] = ""
+            d.pop("room_id", None)
     save_devices(doc)
     return {
         "ok": True,
@@ -912,7 +953,11 @@ def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
-    """Patch only the catalogue `name`. Bindings, type and icon stay as stored."""
+    """Patch only the catalogue `name`. Bindings, type and icon stay as stored.
+
+    The success payload is exactly {ok, name} — the hub cache patches itself
+    from those keys (docs/contracts/cloud-scenarios.md §Channel).
+    """
     did = str(device_id or "").strip()
     if not models._ID_RE.match(did):
         return {"ok": False, "error": "not_found", "message": "device not found"}
@@ -926,7 +971,7 @@ def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
         if isinstance(d, dict) and d.get("id") == did:
             d["name"] = cleaned
             save_devices(doc)
-            return {"ok": True, "name": cleaned, "device": d}
+            return {"ok": True, "name": cleaned}
     return {"ok": False, "error": "not_found", "message": "device not found"}
 
 
@@ -961,6 +1006,64 @@ def reset_mappings() -> Dict[str, Any]:
         "cloud_control_enabled": False,
         "devices": empty_devices(),
     }
+
+
+# ── Cloud scenario channel (alice_devices_scenarios) ────────────────────────
+# Event payloads arrive with a hub-minted request_id; the handlers below only
+# touch the local JSON documents and answer the dict the hub cache patches
+# from (docs/contracts/alice-gateway.md, docs/contracts/cloud-scenarios.md).
+# rename/rooms/groups are served by the same functions the local CGI uses
+# (above) — one write path, one validation rule set.
+
+
+def listed_scenarios() -> Optional[Dict[str, Any]]:
+    """Scenario store snapshot for the cloud-profile list payload.
+
+    None when the rules stack is not installed or has never written its store
+    — the hub reads the ABSENT key as «scenarios unsupported» and the editor
+    shows «контроллер не поддерживает сценарии» (cloud-scenarios.md).
+    """
+    store = _rules_store()
+    if store is None:
+        return None
+    path = getattr(store, "DEFAULT_PATH", "")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        doc = store.load()
+        return {
+            "scenarios": store.listed(doc),
+            "runs": list(doc.get("runs") or [])[-20:],
+            "notify_queue": list(doc.get("notify_queue") or []),
+            "library": doc.get("library") or "",
+            "rules_engine": int(getattr(store, "RULES_ENGINE", 1)),
+        }
+    except Exception as exc:
+        log.error("listed_scenarios failed: %s", exc)
+        return None
+
+
+def apply_scenarios(data: Dict[str, Any]) -> Dict[str, Any]:
+    """`alice_devices_scenarios`: hand the document to sa02m_rules.store.
+
+    The store answers the full ok payload (scenarios + runs + notify_queue +
+    library); `rules_engine` rides along so the hub cache records the board
+    engine version on every exchange, not only on the list fetch.
+    """
+    store = _rules_store()
+    if store is None:
+        return {"ok": False, "error": "rules_unavailable"}
+    if not isinstance(data, dict):
+        return {"ok": False, "error": "bad json"}
+    body = {k: v for k, v in data.items() if k != "request_id"}
+    try:
+        result = store.apply_command(body)
+    except Exception as exc:
+        log.error("apply_scenarios failed: %s", exc)
+        return {"ok": False, "error": "internal"}
+    if isinstance(result, dict) and result.get("ok"):
+        result.setdefault("rules_engine", int(getattr(store, "RULES_ENGINE", 1)))
+    return result if isinstance(result, dict) else {"ok": False, "error": "internal"}
 
 
 def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Tuple[int, Dict[str, Any]]:
