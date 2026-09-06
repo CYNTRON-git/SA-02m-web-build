@@ -1,0 +1,17 @@
+[Unit]
+Description=SA-02m local scenario engine
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m sa02m_rules.service
+WorkingDirectory=/opt/sa02m-rules
+Environment=PYTHONPATH=/opt/sa02m-rules
+Restart=on-failure
+RestartSec=5
+MemoryMax=32M
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
