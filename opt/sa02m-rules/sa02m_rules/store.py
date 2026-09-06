@@ -10,17 +10,38 @@ from typing import Any, Dict, List, Optional, Tuple
 
 NAME_RE = re.compile(r"^[\w \-./+]{1,64}$", re.UNICODE)
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+TEMPLATE_RE = re.compile(r"^[a-z0-9_]{2,32}$")
+BUTTON_INPUT_RE = re.compile(r"^di_\d{1,2}$")
 DEFAULT_PATH = os.environ.get("SA02M_RULES_PATH", "/etc/sa02m-rules/scenarios.json")
 RUNS_MAX = 50
 NOTIFY_MAX = 20
+PARAMS_MAX_BYTES = 4096
+#: Engine version reported to the cloud (control view `rules_engine`):
+#: 2 = end events, edge operators, day/night presets, button/every/presence.
+RULES_ENGINE = 2
 TYPES = ("block", "code", "logic", "scene")
-TRIGGER_KINDS = ("state", "time", "sun", "boot")
-ACTION_KINDS = ("set", "toggle", "delay", "scenario", "notify", "http")
-LOGIC_TEMPLATES = ("thermostat", "motion_off", "adaptive_light")
+TRIGGER_KINDS = ("state", "time", "sun", "boot", "every", "button", "presence")
+ACTION_KINDS = ("set", "toggle", "ramp", "delay", "scenario", "scene",
+                "mode", "notify", "http")
+LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=", "changed")
+EDGE_OPS = ("rises_above", "drops_below", "enters_range", "leaves_range")
+EVENT_OPS = ("motion_detected", "motion_cleared", "opened", "closed")
+STATE_OPS = LEVEL_OPS + EDGE_OPS + EVENT_OPS
+GESTURES = ("single", "double", "long", "long_release")
+HOME_MODES = ("home", "away", "night", "holiday")
+#: Logic templates this engine executes (synced with the cloud catalog's
+#: BOARD_LOGIC_TEMPLATES — docs/contracts/scenario-templates.md). Unknown
+#: names are STORED (the catalog may be newer) and rejected at run time
+#: with last_error="unknown template".
+LOGIC_TEMPLATES = (
+    "switch_light", "motion_light", "circadian", "thermostat",
+    "humidity_fan", "co2_ventilation", "humidifier", "away_home",
+)
 
 
 def empty_doc() -> Dict[str, Any]:
-    return {"scenarios": [], "library": "", "runs": [], "notify_queue": []}
+    return {"scenarios": [], "library": "", "runs": [], "notify_queue": [],
+            "vars": {}}
 
 
 def _atomic_write(path: str, data: str) -> None:
@@ -53,6 +74,8 @@ def load(path: str = DEFAULT_PATH) -> Dict[str, Any]:
     data.setdefault("library", "")
     data.setdefault("runs", [])
     data.setdefault("notify_queue", [])
+    if not isinstance(data.get("vars"), dict):
+        data["vars"] = {}
     return data
 
 
@@ -65,7 +88,7 @@ def listed(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     for s in doc.get("scenarios") or []:
         if not isinstance(s, dict) or not isinstance(s.get("id"), str):
             continue
-        out.append({
+        row: Dict[str, Any] = {
             "id": s["id"],
             "name": s.get("name") or s["id"],
             "enabled": s.get("enabled") is not False,
@@ -74,7 +97,17 @@ def listed(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
             "last_run": s.get("last_run"),
             "last_error": s.get("last_error") or "",
             "summary": s.get("summary") or "",
-        })
+        }
+        # Provenance rides the list row so the editor can re-open the wizard
+        # instance and offer catalog updates without a `get` per scenario.
+        if s.get("template_id"):
+            row["template_id"] = s["template_id"]
+            row["template_version"] = int(s.get("template_version") or 1)
+        if s.get("source"):
+            row["source"] = s["source"]
+        if isinstance(s.get("params"), dict) and s["params"]:
+            row["params"] = s["params"]
+        out.append(row)
     out.sort(key=lambda r: (r["order"], r["name"]))
     return out
 
@@ -84,6 +117,31 @@ def _new_id(existing: List[str]) -> str:
     while ("s%d" % n) in existing:
         n += 1
     return "s%d" % n
+
+
+def _clean_state_op(item: Dict[str, Any], row: Dict[str, Any],
+                    allow_changed: bool = True) -> bool:
+    """Shared op/value validation for state triggers and conditions."""
+    op = item.get("op") or "=="
+    allowed = STATE_OPS if allow_changed else tuple(
+        o for o in STATE_OPS if o != "changed")
+    if op not in allowed:
+        op = "=="
+    if op in EDGE_OPS and op in ("enters_range", "leaves_range"):
+        rng = item.get("value")
+        if not isinstance(rng, dict):
+            return False
+        try:
+            lo, hi = float(rng.get("min")), float(rng.get("max"))
+        except (TypeError, ValueError):
+            return False
+        row["value"] = {"min": lo, "max": hi}
+    elif op in EVENT_OPS:
+        row.pop("value", None)
+    else:
+        row["value"] = item.get("value")
+    row["op"] = op
+    return True
 
 
 def _clean_trigger(raw: Any) -> Optional[List[Dict[str, Any]]]:
@@ -96,14 +154,14 @@ def _clean_trigger(raw: Any) -> Optional[List[Dict[str, Any]]]:
         kind = item.get("kind")
         if kind not in TRIGGER_KINDS:
             continue
-        row = {"kind": kind}
+        row: Dict[str, Any] = {"kind": kind}
         if kind == "state":
             if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
                 continue
             row["device"] = item["device"]
             row["cap"] = str(item.get("cap") or "on_off")[:32]
-            row["op"] = item.get("op") if item.get("op") in ("==", "!=", ">", "<", ">=", "<=", "changed") else "=="
-            row["value"] = item.get("value")
+            if not _clean_state_op(item, row):
+                continue
         elif kind == "time":
             at = str(item.get("at") or "")
             if not re.match(r"^\d{2}:\d{2}$", at):
@@ -118,6 +176,29 @@ def _clean_trigger(raw: Any) -> Optional[List[Dict[str, Any]]]:
                 row["offset"] = max(-180, min(180, int(item.get("offset") or 0)))
             except (TypeError, ValueError):
                 row["offset"] = 0
+        elif kind == "every":
+            try:
+                minutes = int(item.get("minutes") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= minutes <= 60:
+                continue
+            row["minutes"] = minutes
+        elif kind == "button":
+            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
+                continue
+            gesture = item.get("gesture")
+            if gesture not in GESTURES:
+                continue
+            row["device"] = item["device"]
+            row["gesture"] = gesture
+            inp = item.get("input")
+            if isinstance(inp, str) and BUTTON_INPUT_RE.match(inp):
+                row["input"] = inp
+        elif kind == "presence":
+            if item.get("event") not in ("arrive", "leave"):
+                continue
+            row["event"] = item["event"]
         out.append(row)
     return out
 
@@ -133,22 +214,66 @@ def _clean_condition(raw: Any) -> Dict[str, Any]:
             continue
         kind = item.get("kind")
         if kind == "time_window":
+            preset = item.get("preset")
+            if preset in ("any", "day", "night"):
+                cleaned.append({"kind": "time_window", "preset": preset})
+                continue
             fr, to = str(item.get("from") or ""), str(item.get("to") or "")
             if re.match(r"^\d{2}:\d{2}$", fr) and re.match(r"^\d{2}:\d{2}$", to):
                 cleaned.append({"kind": "time_window", "from": fr, "to": to})
+        elif kind == "weekday":
+            row: Dict[str, Any] = {"kind": "weekday"}
+            days = item.get("days")
+            if isinstance(days, list) and days:
+                row["days"] = [int(d) for d in days
+                               if isinstance(d, (int, float)) and 0 <= int(d) <= 6][:7]
+                if not row["days"]:
+                    continue
+            elif item.get("preset") in ("workday", "weekend"):
+                row["preset"] = item["preset"]
+            else:
+                continue
+            cleaned.append(row)
+        elif kind == "mode":
+            if item.get("value") in HOME_MODES:
+                cleaned.append({"kind": "mode", "value": item["value"]})
         elif kind == "state":
-            if isinstance(item.get("device"), str) and ID_RE.match(item["device"]):
-                cleaned.append({
-                    "kind": "state",
-                    "device": item["device"],
-                    "cap": str(item.get("cap") or "on_off")[:32],
-                    "op": item.get("op") if item.get("op") in ("==", "!=", ">", "<", ">=", "<=") else "==",
-                    "value": item.get("value"),
-                })
+            if not (isinstance(item.get("device"), str) and ID_RE.match(item["device"])):
+                continue
+            row = {
+                "kind": "state",
+                "device": item["device"],
+                "cap": str(item.get("cap") or "on_off")[:32],
+            }
+            # Conditions are level-only (contract: no `changed`); for_s asks
+            # the level to hold steadily for N seconds. Edge/event ops keep
+            # their steady-state level meaning («is above», «is inside the
+            # range», «is open») — the engine evaluates them as levels.
+            if not _clean_state_op(item, row, allow_changed=False):
+                continue
+            op = row.get("op")
+            if op == "rises_above":
+                row["op"] = ">"
+            elif op == "drops_below":
+                row["op"] = "<"
+            elif op in ("motion_detected", "opened"):
+                row["op"] = "=="
+                row["value"] = 1
+            elif op in ("motion_cleared", "closed"):
+                row["op"] = "=="
+                row["value"] = 0
+            # enters_range / leaves_range stay as-is: level «inside/outside».
+            try:
+                for_s = int(item.get("for_s") or 0)
+            except (TypeError, ValueError):
+                for_s = 0
+            if for_s > 0:
+                row["for_s"] = min(for_s, 86400)
+            cleaned.append(row)
     return {key: cleaned} if cleaned else {}
 
 
-def _clean_action(raw: Any) -> Optional[List[Dict[str, Any]]]:
+def _clean_action(raw: Any, scene_only: bool = False) -> Optional[List[Dict[str, Any]]]:
     if not isinstance(raw, list):
         return []
     out = []
@@ -158,6 +283,8 @@ def _clean_action(raw: Any) -> Optional[List[Dict[str, Any]]]:
         kind = item.get("kind")
         if kind not in ACTION_KINDS:
             continue
+        if scene_only and kind != "set":
+            continue  # a scene IS a list of set actions (contract §Scenes)
         row = {"kind": kind}
         if kind in ("set", "toggle"):
             if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
@@ -166,15 +293,40 @@ def _clean_action(raw: Any) -> Optional[List[Dict[str, Any]]]:
             row["cap"] = str(item.get("cap") or "on_off")[:32]
             if kind == "set":
                 row["value"] = item.get("value")
+                try:
+                    transition = float(item.get("transition_s") or 0)
+                except (TypeError, ValueError):
+                    transition = 0.0
+                if transition > 0:
+                    row["transition_s"] = min(transition, 300.0)
+        elif kind == "ramp":
+            if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
+                continue
+            if not isinstance(item.get("to"), (int, float)) or isinstance(item.get("to"), bool):
+                continue
+            try:
+                seconds = float(item.get("seconds") or 0)
+            except (TypeError, ValueError):
+                continue
+            if not 1.0 <= seconds <= 300.0:
+                continue
+            row["device"] = item["device"]
+            row["cap"] = str(item.get("cap") or "on_off")[:32]
+            row["to"] = item.get("to")
+            row["seconds"] = seconds
         elif kind == "delay":
             try:
                 row["seconds"] = max(1, min(300, int(item.get("seconds") or 1)))
             except (TypeError, ValueError):
                 continue
-        elif kind == "scenario":
+        elif kind in ("scenario", "scene"):
             if not isinstance(item.get("id"), str) or not ID_RE.match(item["id"]):
                 continue
             row["id"] = item["id"]
+        elif kind == "mode":
+            if item.get("value") not in HOME_MODES:
+                continue
+            row["value"] = item["value"]
         elif kind == "notify":
             text = str(item.get("text") or "").strip()[:240]
             if not text:
@@ -190,6 +342,34 @@ def _clean_action(raw: Any) -> Optional[List[Dict[str, Any]]]:
                 row["body"] = str(item.get("body"))[:2000]
         out.append(row)
     return out
+
+
+def _clean_end(raw: Any) -> Optional[Dict[str, Any]]:
+    """`end` event: {after_s: 60..14400, mode: off|restore} (contract §End)."""
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("mode") not in ("off", "restore"):
+        return None
+    try:
+        after_s = int(raw.get("after_s") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not 60 <= after_s <= 14400:
+        return None
+    return {"after_s": after_s, "mode": raw["mode"]}
+
+
+def _clean_params(raw: Any) -> Optional[Dict[str, Any]]:
+    """Template params: object, ≤ 4 KB JSON (contract §Document)."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    try:
+        blob = json.dumps(raw, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    if len(blob) > PARAMS_MAX_BYTES:
+        return None
+    return raw
 
 
 def _summary(s: Dict[str, Any]) -> str:
@@ -225,13 +405,43 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None) -> Tup
         "order": 0,
         "trigger": _clean_trigger(body.get("trigger")),
         "condition": _clean_condition(body.get("condition")),
-        "action": _clean_action(body.get("action")),
+        "action": _clean_action(body.get("action"), scene_only=(typ == "scene")),
         "code": str(body.get("code") or "")[:8000] if typ == "code" else "",
-        "template": body.get("template") if body.get("template") in LOGIC_TEMPLATES else "",
         "summary": "",
         "last_run": body.get("last_run"),
         "last_error": "",
     }
+    # `template` is stored even when this engine predates the name — the
+    # catalog may be newer than the firmware; the ENGINE rejects unknown
+    # names at run time with last_error="unknown template" (§Versioning).
+    template = body.get("template")
+    if isinstance(template, str) and TEMPLATE_RE.match(template):
+        row["template"] = template
+    else:
+        row["template"] = ""
+    template_id = body.get("template_id")
+    if isinstance(template_id, str) and TEMPLATE_RE.match(template_id):
+        row["template_id"] = template_id
+        try:
+            row["template_version"] = max(1, int(body.get("template_version") or 1))
+        except (TypeError, ValueError):
+            row["template_version"] = 1
+    if body.get("source") in ("wizard", "manual"):
+        row["source"] = body["source"]
+    params = _clean_params(body.get("params"))
+    if params is not None:
+        row["params"] = params
+    end = _clean_end(body.get("end"))
+    if end is not None:
+        row["end"] = end
+    if body.get("alice_expose") is True and typ == "scene":
+        row["alice_expose"] = True
+    captured = body.get("captured_from")
+    if isinstance(captured, dict) and typ == "scene":
+        keep = {k: str(v)[:64] for k, v in captured.items()
+                if k in ("room_id", "group_id") and isinstance(v, str)}
+        if keep:
+            row["captured_from"] = keep
     try:
         row["order"] = int(body.get("order") or 0)
     except (TypeError, ValueError):

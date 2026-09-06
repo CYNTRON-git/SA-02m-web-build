@@ -15,9 +15,8 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from sa02m_rules.code_runner import run_code
-from sa02m_rules.engine import maybe_run
-from sa02m_rules.store import DEFAULT_PATH, listed, load, save
+from sa02m_rules.engine import Engine
+from sa02m_rules.store import DEFAULT_PATH, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("SA02M_MQTT_PORT", "1883"))
@@ -81,17 +80,24 @@ class RulesApp:
         self.client = client
         self.path = path
         self.lat, self.lon = lat, lon
-        self.state: Dict[str, Dict[str, Any]] = {}
-        self.last_tick: Dict[str, Any] = {}
-        self.vars: Dict[str, Any] = {}
         self._last_mtime = 0.0
         self._alice_mtime = 0.0
         self._alice_path = ALICE_DEVICES
         self._by_dev_cap: Dict[Any, str] = {}
         self._by_topic: Dict[str, Any] = {}
         self._readonly = set()
-        self._doc = load(path)
         self.reload_index()
+        self.engine = Engine(self.pub, path, now=time.time, lat=lat, lon=lon,
+                             pub_state=self.pub_state)
+        self.state = self.engine.state  # shared MQTT state mirror
+        self.engine.set_caps_provider(self.caps_of)
+        try:
+            self._last_mtime = os.path.getmtime(self.path)
+        except OSError:
+            self._last_mtime = 0.0
+
+    def caps_of(self, device: str) -> tuple:
+        return tuple(short for (did, short) in self._by_dev_cap if did == device)
 
     def reload_index(self) -> None:
         try:
@@ -123,6 +129,19 @@ class RulesApp:
         self.client.publish(topic, payload, qos=1, retain=False)
         self.state.setdefault(device, {})[short] = value
 
+    def pub_state(self, device: str, cap: str, value: Any) -> None:
+        """State topic (retained) for our own virtual sa02m-rules-* devices —
+        template state the cloud reads for debugging. Never `/on`."""
+        if not device or not cap:
+            return
+        short = cap_short(cap)
+        topic = self.mqtt_topic(device, short)
+        payload = "1" if value in (True, 1, "1", "on", "true") else (
+            "0" if value in (False, 0, "0", "off", "false") else str(value)
+        )
+        self.client.publish(topic, payload, qos=1, retain=True)
+        self.state.setdefault(device, {})[short] = value
+
     def on_message(self, _c: Any, _u: Any, msg: Any) -> None:
         topic = getattr(msg, "topic", "") or ""
         parts = topic.strip("/").split("/")
@@ -140,15 +159,12 @@ class RulesApp:
             value: Any = json.loads(raw)
         except ValueError:
             value = raw
-        prev = (self.state.get(device) or {}).get(cap)
-        self.state.setdefault(device, {})[cap] = value
-        self.state.setdefault(parts[1], {})[parts[3]] = value
-        if prev == value:
-            return
         self.reload()
-        event = {"kind": "state", "device": device, "cap": cap, "value": value}
-        maybe_run(self._doc, event, self.state, self.pub, time.time(),
-                  self.lat, self.lon, self.last_tick, self.path)
+        if mapped:
+            self.engine.alias_state(parts[1], parts[3], value)
+            self.engine.on_state(device, cap, value)
+        else:
+            self.engine.on_state(device, cap, value)
 
     def reload(self) -> None:
         self.reload_index()
@@ -157,15 +173,13 @@ class RulesApp:
         except OSError:
             mtime = 0.0
         if mtime != self._last_mtime:
-            self._doc = load(self.path)
             self._last_mtime = mtime
+            self.engine.adopt(load(self.path))
 
     def tick(self) -> None:
         self.reload()
-        now = time.time()
-        event = {"kind": "time"}
-        maybe_run(self._doc, event, self.state, self.pub, now,
-                  self.lat, self.lon, self.last_tick, self.path)
+        self.engine.tick()
+        self.engine.logic_status_poll()
         run_flag = self.path + ".run"
         try:
             with open(run_flag, encoding="utf-8") as fh:
@@ -174,22 +188,10 @@ class RulesApp:
         except OSError:
             sid = ""
         if sid:
-            s = next((x for x in self._doc.get("scenarios") or []
-                      if isinstance(x, dict) and x.get("id") == sid), None)
-            if s and s.get("type") == "code":
-                rec = run_code(s, self._doc.get("library") or "", self.state, self.pub,
-                               now, self.lat, self.lon, self._doc, self.path, self.vars)
-                runs = self._doc.setdefault("runs", [])
-                runs.append(rec)
-                del runs[:-50]
-                save(self._doc, self.path)
-            elif s:
-                maybe_run(self._doc, {"kind": "run_now", "id": sid}, self.state,
-                          self.pub, now, self.lat, self.lon, self.last_tick, self.path)
+            self.engine.run_now(sid)
 
     def boot(self) -> None:
-        maybe_run(self._doc, {"kind": "boot"}, self.state, self.pub, time.time(),
-                  self.lat, self.lon, self.last_tick, self.path)
+        self.engine.on_boot()
 
 
 def main() -> int:

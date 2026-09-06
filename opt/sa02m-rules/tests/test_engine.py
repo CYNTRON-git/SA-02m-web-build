@@ -14,6 +14,23 @@ from sa02m_rules import code_runner, engine, store  # noqa: E402
 from sa02m_rules import service as rules_service  # noqa: E402
 
 
+def make_engine(doc, pubs, now=1000.0, tpl_state=None):
+    """Engine on a temp store with a preloaded doc and a fake clock."""
+    td = tempfile.TemporaryDirectory()
+    path = os.path.join(td.name, "scenarios.json")
+    doc.setdefault("runs", [])
+    doc.setdefault("notify_queue", [])
+    doc.setdefault("library", "")
+    doc.setdefault("vars", {})
+    store.save(doc, path)
+    clock = [now]
+    e = engine.Engine(lambda d, c, v: pubs.append((d, c, v)), path,
+                      now=lambda: clock[0],
+                      pub_state=lambda d, c, v: (tpl_state if tpl_state is not None
+                                                 else []).append((d, c, v)))
+    return e, clock, td
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -57,45 +74,63 @@ class StoreTests(unittest.TestCase):
 class EngineTests(unittest.TestCase):
     def test_state_trigger_and_set(self):
         pubs = []
-        doc = {"scenarios": [{
+        e, _clock, td = make_engine({"scenarios": [{
             "id": "s1", "name": "t", "enabled": True, "type": "block",
             "trigger": [{"kind": "state", "device": "lamp", "cap": "on_off", "op": "==", "value": 1}],
             "condition": {},
             "action": [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
-        }], "runs": [], "notify_queue": []}
-        path = os.path.join(tempfile.gettempdir(), "sa02m-rules-test.json")
-        recs = engine.maybe_run(
-            doc, {"kind": "state", "device": "lamp", "cap": "on_off", "value": 1},
-            {"lamp": {"on_off": 1}}, lambda d, c, v: pubs.append((d, c, v)),
-            1.0, 55.75, 37.62, {}, path)
+        }]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("lamp", "on_off", 1)
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+        recs = e.doc.get("runs") or []
         self.assertEqual(len(recs), 1)
         self.assertTrue(recs[0]["ok"])
-        self.assertEqual(pubs, [("led", "on_off", 1)])
+        self.assertEqual(recs[0]["source"], "scenario")
 
     def test_time_window_blocks(self):
         pubs = []
-        doc = {"scenarios": [{
+        e, clock, td = make_engine({"scenarios": [{
             "id": "s1", "name": "t", "enabled": True, "type": "block",
             "trigger": [{"kind": "state", "device": "lamp", "cap": "on_off", "op": "changed"}],
             "condition": {"all": [{"kind": "time_window", "from": "22:00", "to": "06:00"}]},
             "action": [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
-        }]}
-        recs = engine.maybe_run(
-            doc, {"kind": "state", "device": "lamp", "cap": "on_off", "value": 0},
-            {}, lambda *a: pubs.append(a), 12 * 3600, 55.0, 37.0, {},
-            os.path.join(tempfile.gettempdir(), "sa02m-rules-test2.json"))
-        self.assertEqual(recs, [])
+        }]}, pubs, now=12 * 3600)
+        self.addCleanup(td.cleanup)
+        clock[0] = 12 * 3600  # noon — outside the night window
+        e.on_state("lamp", "on_off", 0)
         self.assertEqual(pubs, [])
+        self.assertEqual(e.doc.get("runs"), [])
 
     def test_loop_guard(self):
-        path = os.path.join(tempfile.gettempdir(), "sa02m-rules-loop.json")
-        doc = {"scenarios": [{
+        pubs = []
+        e, _clock, td = make_engine({"scenarios": [{
             "id": "s1", "name": "t", "enabled": True, "type": "block",
             "trigger": [], "condition": {},
             "action": [{"kind": "scenario", "id": "s1"}],
-        }], "runs": []}
-        rec = engine.run_actions(doc["scenarios"][0], doc, {}, lambda *_a: None, 1.0, path)
+        }]}, pubs)
+        self.addCleanup(td.cleanup)
+        rec = e.run_now("s1")
         self.assertEqual(rec["error"], "loop")
+
+    def test_delay_is_non_blocking(self):
+        pubs = []
+        e, clock, td = make_engine({"scenarios": [{
+            "id": "s1", "name": "t", "enabled": True, "type": "block",
+            "trigger": [{"kind": "state", "device": "pir", "cap": "motion",
+                         "op": "motion_detected"}],
+            "condition": {},
+            "action": [{"kind": "set", "device": "led", "cap": "on_off", "value": 1},
+                       {"kind": "delay", "seconds": 60},
+                       {"kind": "set", "device": "led", "cap": "on_off", "value": 0}],
+        }]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("pir", "motion", 0)   # baseline for the edge op
+        e.on_state("pir", "motion", 1)   # rising → run
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+        clock[0] += 61
+        e.tick()
+        self.assertEqual(pubs, [("led", "on_off", 1), ("led", "on_off", 0)])
 
 
 class MqttIndexTests(unittest.TestCase):
@@ -131,6 +166,20 @@ class CodeTests(unittest.TestCase):
             "", {}, lambda *_a: None, 1.0, 55.0, 37.0, doc, path, {})
         self.assertFalse(rec["ok"])
         self.assertIn("banned", rec["error"])
+
+    def test_vars_home_mode_and_cron_every(self):
+        modes = []
+        doc = {"notify_queue": [], "runs": []}
+        path = os.path.join(tempfile.gettempdir(), "sa02m-rules-code2.json")
+        rec = code_runner.run_code(
+            {"id": "c1", "name": "c",
+             "code": "Vars.home_mode = 'away'\n"
+                     "ok = Cron.every(30) and Vars.home_mode == 'away'\n"
+                     "Vars.set('flag', ok)"},
+            "", {}, lambda *_a: None, 1800.0, 55.0, 37.0, doc, path, {},
+            on_home_mode=lambda m: modes.append(m))
+        self.assertTrue(rec["ok"], rec.get("error"))
+        self.assertEqual(modes, ["away"])
 
 
 if __name__ == "__main__":

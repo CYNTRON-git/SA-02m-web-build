@@ -51,6 +51,19 @@ class Cron:
         lt = time.localtime(self.now)
         return ("%02d:%02d" % (lt.tm_hour, lt.tm_min)) == str(at)
 
+    def every(self, minutes: int) -> bool:
+        """True on whole `minutes` boundaries of the epoch clock (1–60).
+
+        Pair with an `every` trigger: the trigger schedules the run, this
+        helper gates the body to the N-minute grid."""
+        try:
+            m = int(minutes)
+        except (TypeError, ValueError):
+            return False
+        if not 1 <= m <= 60:
+            return False
+        return (int(self.now) // 60) % m == 0
+
     def sunrise(self, offset: int = 0) -> float:
         rise, _ = sun_times(self.now, self.lat, self.lon)
         return rise + offset * 60.0
@@ -87,8 +100,11 @@ class Http:
 
 
 class Vars:
-    def __init__(self, bucket: Dict[str, Any]):
+    _HOME_MODES = ("home", "away", "night", "holiday")
+
+    def __init__(self, bucket: Dict[str, Any], on_home_mode: Optional[Callable] = None):
         self._b = bucket
+        self._on_home_mode = on_home_mode
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._b.get(str(key), default)
@@ -97,6 +113,22 @@ class Vars:
         if len(self._b) >= 32 and str(key) not in self._b:
             return
         self._b[str(key)[:32]] = value
+
+    @property
+    def home_mode(self) -> str:
+        """The home mode the `mode` action / `mode`/`presence` conditions use."""
+        mode = str(self._b.get("home_mode") or "home")
+        return mode if mode in self._HOME_MODES else "home"
+
+    @home_mode.setter
+    def home_mode(self, mode: Any) -> None:
+        mode = str(mode)
+        if mode not in self._HOME_MODES:
+            raise RuntimeError("bad home_mode")
+        if self._on_home_mode is not None:
+            self._on_home_mode(mode)  # engine validates + fires presence
+        else:
+            self._b["home_mode"] = mode
 
 
 def _walk_ok(tree: ast.AST) -> str:
@@ -115,7 +147,8 @@ def _walk_ok(tree: ast.AST) -> str:
 
 def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
              pub: Callable, now: float, lat: float, lon: float,
-             doc: Dict[str, Any], path: str, vars_bucket: Dict[str, Any]) -> Dict[str, Any]:
+             doc: Dict[str, Any], path: str, vars_bucket: Dict[str, Any],
+             on_home_mode: Optional[Callable] = None) -> Dict[str, Any]:
     src = ((library or "") + "\n" + (s.get("code") or "")).strip()
     err = ""
     if not src:
@@ -135,7 +168,7 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
                 "Cron": Cron(now, lat, lon),
                 "Notify": Notify(doc, path),
                 "Http": Http(),
-                "Vars": Vars(vars_bucket),
+                "Vars": Vars(vars_bucket, on_home_mode),
                 "math": math,
                 "True": True, "False": False, "None": None,
                 "abs": abs, "min": min, "max": max, "int": int, "float": float,
