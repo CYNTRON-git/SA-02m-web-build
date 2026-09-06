@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-06 09:45] branch: 1.0.6.27
+
+**Файл(ы):** `opt/sa02m-rules/sa02m_rules/service.py`
+**Тип:** Краш
+**Описание:** sa02m-rules падает на старте с `AttributeError: 'RulesApp' object has no attribute 'state'`, если scenarios.json уже содержит хотя бы один сценарий (на стенде 1.135 — s1/s2). На пустом сторе (и в тестах, где Engine создаётся напрямую) не воспроизводится.
+**Причина:** `RulesApp.__init__` создавал `Engine(...)` до присвоения `self.state`; `Engine.__init__` → `_adopt(force=True)` → `_publish_tpl_state(rule_enabled)` → `pub_state` → `self.state.setdefault(...)` — атрибута ещё нет.
+**Исправление:** `self.state = {}` создаётся до `Engine(...)`, после чего алиас `self.state = self.engine.state` переключает на канонический mirror. Регрессионный тест `ServiceBootTests.test_boot_with_existing_scenarios_no_crash` в `tests/test_engine.py`.
+
+---
+
 ## [2026-09-04 20:10] branch: 1.0.6.36
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_tile_fields.py`

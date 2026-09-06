@@ -87,6 +87,11 @@ class RulesApp:
         self._by_topic: Dict[str, Any] = {}
         self._readonly = set()
         self.reload_index()
+        # Pre-create the mirror: Engine.__init__ adopts the existing doc and
+        # may publish template state (rule_enabled) via pub_state, which
+        # touches self.state — before the alias below exists (boot crash on
+        # any non-empty scenarios.json).
+        self.state: Dict[str, Dict[str, Any]] = {}
         self.engine = Engine(self.pub, path, now=time.time, lat=lat, lon=lon,
                              pub_state=self.pub_state)
         self.state = self.engine.state  # shared MQTT state mirror

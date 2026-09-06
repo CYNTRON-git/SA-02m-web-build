@@ -133,6 +133,34 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(pubs, [("led", "on_off", 1), ("led", "on_off", 0)])
 
 
+class ServiceBootTests(unittest.TestCase):
+    def test_boot_with_existing_scenarios_no_crash(self):
+        """Regression (bench 1.135): Engine.__init__ adopts the existing doc
+        and publishes rule_enabled via pub_state, which touches
+        RulesApp.state — it must exist before Engine() is constructed."""
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = os.path.join(td.name, "scenarios.json")
+        store.save({"scenarios": [{"id": "s1", "name": "t", "enabled": True,
+                                   "type": "block", "trigger": [],
+                                   "condition": {}, "action": []}],
+                    "runs": [], "notify_queue": [], "library": "", "vars": {}},
+                   path)
+
+        class FakeClient:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload, retain))
+
+        client = FakeClient()
+        app = rules_service.RulesApp(client, path)
+        self.assertIn(("/devices/sa02m-rules-s1/controls/rule_enabled", "1", True),
+                      client.published)
+        self.assertIs(app.state, app.engine.state)
+
+
 class MqttIndexTests(unittest.TestCase):
     def test_cap_maps_to_alice_topic(self):
         d = tempfile.TemporaryDirectory()
