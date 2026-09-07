@@ -16,6 +16,7 @@
 | Стек (nginx + fcgiwrap + Bash CGI, vanilla JS без сборки), вкладки и подсистемы, архитектура опроса дашборда, port-lease RS-485, дисциплина версий | `docs/agent-rules/sa02m-domain.md` |
 | Слои и границы: устройство → CGI → fetch → DOM; полы качества для CGI/JS/CSS | `docs/agent-rules/web-code-rigor.md` |
 | Контракты внешних поверхностей (MQTT-топики, CGI-эндпоинты, облако, Алиса, сценарии, образ, ядро) | `docs/contracts/` (сценарии: `cloud-scenarios.md`) |
+| Целевое состояние служб стендовых плат (эталон 192.168.1.136, 1.0.6.37) | `docs/contracts/bench-board-target-state.md` |
 | Принятые архитектурные решения с обоснованием и статусом | `docs/decisions/` |
 | Как изменение попадает на плату (все пути деплоя, что OTA не делает) | `docs/deployment.md` |
 | Модель угроз, границы доверия, привилегированные helper'ы | `docs/threat-model.md` |

@@ -61,6 +61,7 @@ renderer-owned DOM containers wipe hand-inserted nodes on the next poll;
 | MPLC4 runtime API, license reads, the FastCGI-not-HTTP trap | `docs/agent-rules/mplc4-api.md` |
 | Regression history ("when did X break") | `CHANGELOG.md` — grep it FIRST |
 | Install/HW variants (Operator-facing) | `README.md` |
+| Bench board target services / Alice / Cloud / Docker (gold 1.136) | `docs/contracts/bench-board-target-state.md` |
 | MR-02m module internals (Modbus map, .fw) | the sibling repo `CYNTRON-git/MR-02m`, its `docs/agent-rules/` |
 | Skills (deep dives) | `.claude/skills/` — sa02m-web-architecture, sa02m-versioning-release, sa02m-ui-style, sa02m-web-testing |
 | How a skill is written (triggers, budget) | `docs/agent-rules/skill-authoring.md` |
