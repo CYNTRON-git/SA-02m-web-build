@@ -64,7 +64,9 @@ _DST_PREFIX_RES = (
     re.compile(r"^/etc/nginx/"),
     re.compile(r"^/etc/tmpfiles\.d/"),
     re.compile(r"^/etc/sudoers\.d/"),
+    re.compile(r"^/etc/default/sa02m-"),
     re.compile(r"^/etc/sa02m-update/trusted-keys/"),
+    re.compile(r"^/etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$"),
 )
 
 _DELETE_RE = re.compile(
@@ -106,12 +108,14 @@ _DEPLOY_KEYS = frozenset({"src", "dst", "mode", "owner"})
 # missing any of these is rejected. OPTIONAL keys are ones a newer packer may
 # add; they must NOT be required (manifests from an older packer stay valid
 # here) and they ARE rejected by older validators (additionalProperties: false
-# is the forward-compat posture — an offline pack built by pack-offline-update.py
-# >= 1.0.6.37 applies only on boards already running >= 1.0.6.37, because the
-# on-device validator during an update is still the previous release's).
+# is the forward-compat posture). The packer emits frozen v1 services
+# (required keys only) while MIN_UPDATER is still 1.0.5.66 so boards on
+# the documented floor can apply the pack; optional keys are packed only
+# after MIN_UPDATER is raised to a validator that accepts them.
 # `enable` joined the generators in 1.0.5.69 but was never added here — every
 # offline pack since then failed on-device validation with E_MANIFEST until
-# this split (1.0.6.37).
+# this split (1.0.6.37). The packer freeze (same release) stops advertising
+# a pack that 1.0.5.66 always rejects.
 _SERVICES_KEYS_REQUIRED = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
 _SERVICES_KEYS_OPTIONAL = frozenset({"enable", "restart_if_active", "restart_if_changed"})
 _SERVICES_KEYS = _SERVICES_KEYS_REQUIRED | _SERVICES_KEYS_OPTIONAL

@@ -2,6 +2,11 @@
 # SA-02m  •  06b-rules.sh  —  on-board scenario engine
 # Installs opt/sa02m-rules, empty JSON store, systemd unit.
 # NOT added to sa02m-userspace-watchdog REQUIRED_PROCS.
+# Service policy: capture BEFORE the unit file lands, apply AFTER
+# (docs/contracts/installer-refresh-policy.md). Raw enable/restart here
+# aborted refresh with set -e on an already-active unit (boards 1–2,
+# 1.0.5.66 → 1.0.6.37): systemd returned non-zero while Restart=on-failure
+# later brought the unit back to active.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
@@ -28,12 +33,15 @@ if [ ! -f "$ETC_DIR/scenarios.json" ]; then
         > "$ETC_DIR/scenarios.json"
     chmod 0644 "$ETC_DIR/scenarios.json"
 fi
+
+# Capture BEFORE (re)installing the unit — first-install vs restore-exact.
+sa02m_svc_capture sa02m-rules.service
 if [ -f "$UNIT_SRC/sa02m-rules.service" ]; then
     install -m 0644 "$UNIT_SRC/sa02m-rules.service" /etc/systemd/system/sa02m-rules.service
 fi
 systemctl daemon-reload
-systemctl enable sa02m-rules.service
-systemctl restart sa02m-rules.service || systemctl start sa02m-rules.service
+# sa02m stack: first install enable+start; refresh never-widens an operator stop.
+sa02m_svc_apply sa02m-rules.service app on
 # sa02m-cloud-control держит в памяти тот же код сценарного канала
 # (sa02m_alice → sa02m_rules.store из /opt/sa02m-rules): без рестарта push
 # сценария из облака обрабатывается старым кодом (приёмка 1.0.6.37: молча

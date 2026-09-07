@@ -5,6 +5,68 @@
 
 ---
 
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `etc/sa02m-update-runner.sh`
+**Тип:** Ошибка компиляции
+**Описание:** `pack-offline-update.py` отказывался собирать `.sa02m`: `deploy dst not allowlisted: /etc/default/sa02m-devices`. Карта и allowlist уже несли этот dest (устройства), regex пакера/валидатора/runner — нет.
+**Причина:** `DST_PREFIX_RE` / `_DST_PREFIX_RES` / `DST_RE` не обновлены, когда в deploy-map добавили `/etc/default/`.
+**Исправление:** закрытый префикс `/etc/default/sa02m-` и точный dest
+`/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route` в regex пакера и
+валидатора (у runner хук уже был).
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/06b-rules.sh`, `scripts/11-devices.sh`
+**Тип:** Некорректное поведение
+**Описание:** `scripts/06b-rules.sh` падал на refresh (1.0.5.66 → 1.0.6.37) на обеих стендовых платах, хотя `sa02m-rules` в итоге был active. `install.sh` ловил ненулевой rc и писал WARN.
+**Причина:** сырой `systemctl enable` + `restart || start` под `set -e`: systemd мог вернуть non-zero (таймаут, start-limit, краткий crash до `Restart=on-failure`), скрипт выходил, юнит позже поднимался. Плюс нарушение installer-svc-policy-gate (widening verbs вне lib.sh).
+**Исправление:** `sa02m_svc_capture` до установки unit-файла, `sa02m_svc_apply sa02m-rules.service app on` после — never-widen, apply всегда rc 0. `11-devices.sh`: сырой restart стендового `sa02m-stand-api` заменён на `sa02m_svc_restart_if_active`.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `opt/sa02m-update/tests/test_validate_package.py`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** Пакет `out/SA-02m-update-1.0.6.37.sa02m` с HEAD 398c338 отклонялся валидатором на плате 1.0.5.66 (`E_MANIFEST` unknown keys `enable` / `restart_if_*`), хотя `MIN_VERSION`/`MIN_UPDATER` рекламировали 1.0.5.60 / 1.0.5.66.
+**Причина:** apply использует runner/валидатор *предыдущего* релиза; пакер писал опциональные ключи, которые 1.0.5.66 не знает (additionalProperties:false).
+**Исправление:** пакер эмитит замороженный v1 `services{}` (только обязательные ключи), пока `MIN_UPDATER` < 1.0.6.37; `sa02m-rules` остаётся в `restart[]`. Онлайн-генератор runner'а по-прежнему пишет полный набор. Тест: `test_packer_frozen_v1_for_min_updater_1_0_5_66`.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `usr/local/sbin/sa02m-alice-web-trigger.sh`, `scripts/06-alice.sh`, `scripts/dev/test-alice-reload-handshake.sh`
+**Тип:** Некорректное поведение
+**Описание:** После disable на никогда не привязанной плате карточка/gold показывали `state=unknown`: `/run/sa02m-alice/status.json` не существовал (клиент ни разу не стартовал).
+**Причина:** `unit_disable` делал stop+restart и полагался на запись клиента; без успешного старта файла нет. Gold читает файл, не API-fallback.
+**Исправление:** хелпер пишет `state=disabled` после disable; `06-alice.sh` пишет тот же файл при первой установке, если его ещё нет. Регрессия в `test-alice-reload-handshake.sh` часть C.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/01-system.sh`
+**Тип:** Некорректное поведение
+**Описание:** На стендах Ubuntu/Armbian noble `apt` не находит `libgpiod2` (в логе E: / WARN зеркал). Пакет optional, модуль уже не abort'ился, но имя пакета на gpiod 2.x — `libgpiod3`.
+**Причина:** в `01-system.sh` зашито bookworm-имя `libgpiod2`; noble переименовал shared lib.
+**Исправление:** если `libgpiod2` не установлен — `sa02m_pkg_install_tier optional libgpiod3`. По-прежнему WARN + продолжение, без фейкового OK.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/08-codesys.sh`
+**Тип:** Некорректное поведение
+**Описание:** Refresh/overlay писал WARN «CODESYS Runtime работает в DEMO-режиме», хотя юнит уже был выключен (never-widen не ставит demo).
+**Причина:** grep по `/var/opt/codesys/codesyscontrol.log` без проверки, что runtime сейчас active — stale строка из прошлого запуска.
+**Исправление:** DEMO WARN только если `systemctl is-active codesyscontrol`.
+
+---
+
 ## [2026-09-07 14:30] branch: 1.0.6.37
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`, `opt/sa02m-alice/tests/test_sio_connection.py`, `opt/sa02m-alice/tests/test_cloud_profile.py`, `opt/sa02m-alice/tests/test_binding_reset.py`

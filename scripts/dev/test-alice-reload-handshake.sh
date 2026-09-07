@@ -170,5 +170,37 @@ else
 fi
 
 echo
+echo "C. behavioural — disable writes status.json (never-linked board)"
+
+# unit_disable + write_disabled_status: a never-started client leaves no
+# status file; gold then reads state=unknown. The helper must write
+# state=disabled itself so the card is honest without a successful restart.
+fn_disable="$(sed -n '/^write_disabled_status() {/,/^}/p' "$HELPER")"
+fn_unit="$(sed -n '/^unit_disable() {/,/^}/p' "$HELPER")"
+if [ -z "$fn_disable" ] || [ -z "$fn_unit" ]; then
+    bad "(C) write_disabled_status/unit_disable could not be extracted"
+else
+    CBOX="$(mktemp -d)"
+    {
+        echo "STATUS_FILE=\"$CBOX/status.json\""
+        echo "STATUS_FILE_CLOUD=\"$CBOX/status-cloud.json\""
+        echo "ALICE_UNIT=sa02m-alice-client.service"
+        echo "CLOUD_UNIT=sa02m-cloud-control.service"
+        echo 'systemctl(){ return 0; }'
+        echo 'timeout(){ shift; "$@"; }'
+        printf '%s\n' "$fn_disable"
+        printf '%s\n' "$fn_unit"
+        echo 'unit_disable "$ALICE_UNIT"'
+    } > "$CBOX/disable.sh"
+    bash "$CBOX/disable.sh" >/dev/null 2>&1 || true
+    if [ -f "$CBOX/status.json" ] && grep -q '"state":"disabled"' "$CBOX/status.json"; then
+        ok "(C) disable writes status.json state=disabled without a prior client run"
+    else
+        bad "(C) disable left no disabled status.json (never-linked card would show unknown)"
+    fi
+    rm -rf "$CBOX"
+fi
+
+echo
 [ "$fails" -eq 0 ] && { echo "alice-reload-handshake: ALL OK"; exit 0; }
 echo "alice-reload-handshake: $fails FAILURE(S)"; exit 1

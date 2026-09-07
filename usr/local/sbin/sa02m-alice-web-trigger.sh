@@ -98,11 +98,36 @@ unit_enable() {
     timeout 10 systemctl restart "$1" || true
 }
 
+# Write the gold `disabled` status even when the client never started
+# (never-linked board: no status.json → card showed state=unknown).
+# The client overwrite on a successful restart is the richer payload;
+# this file is the fallback when restart is a no-op or fails.
+write_disabled_status() {
+    local file="$1" profile="$2" flag="$3"
+    local dir now
+    dir=$(dirname "$file")
+    mkdir -p "$dir" 2>/dev/null || true
+    now=$(date +%s 2>/dev/null) || now=0
+    printf '{"state":"disabled","ts":%s,"profile":"%s","%s":false,"message":"%s client disabled (%s=false)"}\n' \
+        "$now" "$profile" "$flag" "$profile" "$flag" > "${file}.tmp" 2>/dev/null || return 0
+    chmod 0644 "${file}.tmp" 2>/dev/null || true
+    mv -f "${file}.tmp" "$file" 2>/dev/null || true
+}
+
 # Stop, then restart: with the flag false the client exits 0 at once, and that
-# run is what writes the `disabled` status the card shows.
+# run is what writes the `disabled` status the card shows. If the unit never
+# ran, write the file here so the card is honest without waiting for a start.
 unit_disable() {
     timeout 10 systemctl stop "$1" >/dev/null 2>&1 || true
     timeout 10 systemctl restart "$1" >/dev/null 2>&1 || true
+    case "$1" in
+        "$ALICE_UNIT"|sa02m-alice-client.service)
+            write_disabled_status "$STATUS_FILE" "yandex" "client_enabled"
+            ;;
+        "$CLOUD_UNIT"|sa02m-cloud-control.service)
+            write_disabled_status "$STATUS_FILE_CLOUD" "cloud" "cloud_control_enabled"
+            ;;
+    esac
 }
 
 ACTION="${1:-}"

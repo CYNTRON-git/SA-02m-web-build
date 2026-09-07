@@ -319,6 +319,7 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
+    r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
@@ -621,6 +622,7 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
+    r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )

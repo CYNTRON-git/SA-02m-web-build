@@ -98,6 +98,17 @@ sa02m_svc_apply sa02m-alice-config.service app off
 sa02m_svc_apply sa02m-alice-client.service app off
 sa02m_svc_apply sa02m-cloud-control.service app off
 
+# Never-started Yandex client leaves no status.json; gold and the card
+# then read state=unknown. Write disabled only when the file is absent
+# (do not clobber a live client; do not invent cloud status — that unit
+# has its own file and may already be opted in).
+install -d -m 0755 -o root -g root /run/sa02m-alice
+if [ ! -f /run/sa02m-alice/status.json ]; then
+    printf '%s\n' "{\"state\":\"disabled\",\"ts\":$(date +%s),\"profile\":\"yandex\",\"client_enabled\":false,\"message\":\"yandex client disabled (client_enabled=false)\"}" \
+        > /run/sa02m-alice/status.json
+    chmod 0644 /run/sa02m-alice/status.json 2>/dev/null || true
+fi
+
 # ── Privileged CGI helper + sudoers ────────────────────────────────────────
 install -m 0755 -o root -g root \
     "$BASE_DIR/usr/local/sbin/sa02m-alice-web-trigger.sh" \

@@ -187,6 +187,38 @@ class TestManifestAndPackage(unittest.TestCase):
         # the optional keys must never become required (older packers).
         vp.validate_manifest_object(_sample_manifest())
 
+    def test_packer_frozen_v1_for_min_updater_1_0_5_66(self) -> None:
+        # 1.0.5.66 on-device validator = required keys only (additionalProperties
+        # false). While packer MIN_UPDATER is still 1.0.5.66 the packed
+        # services{} must not grow enable / restart_if_* or every remaining
+        # 1.0.5.66 board rejects the pack with E_MANIFEST.
+        import importlib.util
+
+        pack_path = Path(__file__).resolve().parents[3] / "scripts" / "pack-offline-update.py"
+        spec = importlib.util.spec_from_file_location("pack_offline_update", pack_path)
+        pack = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(pack)
+
+        legacy_keys = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+        frozen = pack.build_services_block("1.0.5.66")
+        self.assertEqual(set(frozen), legacy_keys)
+        self.assertIn("sa02m-rules", frozen["restart"])
+        vp.validate_manifest_object(_sample_manifest())
+        m = _sample_manifest()
+        m["services"] = frozen
+        vp.validate_manifest_object(m)
+
+        extra = set(frozen) - legacy_keys
+        self.assertEqual(extra, set())
+
+        full = pack.build_services_block("1.0.6.37")
+        self.assertIn("enable", full)
+        self.assertIn("restart_if_active", full)
+        self.assertIn("restart_if_changed", full)
+        self.assertFalse(pack.emit_optional_service_keys("1.0.5.66"))
+        self.assertTrue(pack.emit_optional_service_keys("1.0.6.37"))
+
     def test_services_optional_keys_accepted(self) -> None:
         # The 1.0.6.37 packer manifest: enable (emitted since 1.0.5.69 — the
         # validator rejected it until the required/optional split) plus the

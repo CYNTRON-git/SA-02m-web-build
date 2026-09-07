@@ -80,11 +80,8 @@ fi
 # Condition-skipped (10-stand-disable.conf). Restart the stand API so a
 # devices-package / nginx refresh does not leave a stale gunicorn worker
 # serving /api/devices* (12AI history kind=mr lives in that process).
-if systemctl is-active --quiet sa02m-stand-api.service 2>/dev/null; then
-    systemctl restart sa02m-stand-api.service \
-        && log OK "sa02m-stand-api: перезапущен (стенд, владелец :8765)" \
-        || log WARN "sa02m-stand-api: restart не удался"
-fi
+# Never-widen: only bounce a running stand API (1.135 owns :8765).
+sa02m_svc_restart_if_active sa02m-stand-api.service
 
 # nginx proxy /api/devices* (если в репо есть полный conf)
 if [ -f "$ETC_DIR/nginx/network_config.conf" ]; then

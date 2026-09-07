@@ -56,18 +56,36 @@
   `restart[]`; Alice-семейство в `restart_if_active[]` (остановленный не
   стартуем); мост в `restart_if_changed` (port-lease RS-485).
 - **Честный предел:** обновление применяет runner предыдущего релиза —
-  набор срабатывает со *следующего* после 1.0.6.37 обновления; офлайн-пакет
-  ≥ 1.0.6.37 принимает только плата уже на ≥ 1.0.6.37.
+  условные `restart_if_*` срабатывают со *следующего* после 1.0.6.37
+  обновления. Офлайн-пакет 1.0.6.37 с замороженным v1 принимается платой
+  ≥ 1.0.5.60 / runner ≥ 1.0.5.66 (`sa02m-rules` в обязательном `restart[]`).
 - Валидатор `services` разделён на обязательные и опциональные ключи —
   пакеты 1.0.5.69–1.0.6.36 больше не отклоняются с `E_MANIFEST unknown keys
   ['enable']`.
+- Regex dest пакера/валидатора догнал карту: `/etc/default/sa02m-*` и
+  dhcp-hook eth1 (иначе сборка `.sa02m` падала).
+- **Пакер пишет замороженный v1 `services{}`**, пока `MIN_UPDATER` = 1.0.5.66
+  (`enable` / `restart_if_*` не кладутся в `.sa02m`). Плата на 1.0.5.66
+  принимает пакет; `sa02m-rules` рестартует через обязательный `restart[]`.
+  Условные рестарты Alice/моста — со следующего обновления после 1.0.6.37
+  (apply = предыдущий runner).
 - `06b-rules.sh` рестартует активный `sa02m-cloud-control` после деплоя
   `/opt` (www-only / ручной путь).
+- **Refresh `06b-rules.sh` больше не падает** на уже установленном
+  `sa02m-rules`: сырой `systemctl enable`/`restart` заменён на
+  `sa02m_svc_capture` + `sa02m_svc_apply app on` (never-widen, rc 0).
+- Карточка Алисы после «Отключить» на никогда не привязанной плате пишет
+  `status.json` `state=disabled` (хелпер + первая установка, если файла нет).
+- `libgpiod2` отсутствует (Ubuntu 24.04 / gpiod 2.x) — fallback `libgpiod3`,
+  модуль не падает.
+- CODESYS DEMO WARN только если `codesyscontrol` реально active (не stale log).
 
 ### Тесты
 
 - `TestApplyReload`: ожидание подписки догнало контракт `uptime_s` из 1.0.6.36.
 - Socket.IO: `wait_timeout` берёт `SIO_CONNECT_TIMEOUT_S`; один wait_timeout не пишет `gateway_unreachable`.
+- Пакер: `test_packer_frozen_v1_for_min_updater_1_0_5_66` — манифест для 1.0.5.66 без опциональных ключей.
+- Alice trigger: часть C `test-alice-reload-handshake.sh` — disable пишет `status.json`.
 
 ## 1.0.6.36 - LED type-120 on the MQTT scan, Alice light tile (сентябрь 2026)
 
