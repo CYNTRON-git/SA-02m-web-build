@@ -13,7 +13,8 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 #                   operator's unit state (capture/apply, norestart — a docker
 #                   restart kills containers and no sa02m code lives in it);
 #   install       — full mode / --with-optional: packages via the thirdparty
-#                   tier, then the same overlay + unit apply.
+#                   tier, then the same overlay + unit apply (`app off` since
+#                   1.0.6.37 — docker is installed, not started).
 #
 # Отключить: SA02M_SKIP_DOCKER=1 ./install.sh
 # Контракт: docs/contracts/installer-refresh-policy.md;
@@ -62,8 +63,8 @@ fi
 # (docs/contracts/kernel-conditional-services.md).
 if command -v docker >/dev/null 2>&1; then
     # The unit's run-state belongs to the operator: capture BEFORE the overlay
-    # lands, apply after (first install ⇒ on; docker gets `norestart` — see the
-    # header).
+    # lands, apply after (first install ⇒ off since 1.0.6.37; docker gets
+    # `norestart` — see the header). A refresh never starts a stopped unit.
     sa02m_svc_capture docker.service
 
     DOCKER_MODE=full
@@ -115,7 +116,7 @@ DOCKER_JSON
     fi
 
     systemctl reset-failed docker 2>/dev/null || true
-    sa02m_svc_apply docker.service app on norestart --stack=DOCKER
+    sa02m_svc_apply docker.service app off norestart --stack=DOCKER
     case "$SA02M_SVC_LAST_RESULT" in
         started) log OK "docker.service активен ($DOCKER_MODE-mode)" ;;
     esac
