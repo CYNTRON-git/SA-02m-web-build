@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-07 14:30] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`, `opt/sa02m-alice/tests/test_sio_connection.py`, `opt/sa02m-alice/tests/test_cloud_profile.py`, `opt/sa02m-alice/tests/test_binding_reset.py`
+**Тип:** Некорректное поведение
+**Описание:** После включения «Управление из облака» карточка показывала «сервер недоступен», хотя хаб живой. Journal: два `One or more namespaces failed to connect`, затем `Socket.IO connected` ≈ 38 с.
+**Причина:** `AliceSocketIO.connect` брал `wait_timeout=GATEWAY_PROBE_TIMEOUT_S` (5 с, бюджет HTTP `/v1.0/ping`). Замер на 1.136 (n=3, бюджет 60 с): handshake 5.185 / 3.665 / 3.371 с — первый > 5 с. Любой Exception писался как `state=error`, `error=gateway_unreachable`.
+**Исправление:** отдельный `SIO_CONNECT_TIMEOUT_S=15` (~3× измеренный max); HTTP probe остаётся 5 с. Wait_timeout внутри `SIO_CONNECT_SOFT_FAILS=3` пишет `connecting` без error-токена; DNS/HTTP/refused и исчерпание soft-окна — по-прежнему `gateway_unreachable`.
+
+---
+
 ## [2026-09-07 13:55] branch: 1.0.6.37
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/api.py`, `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/tests/test_binding_reset.py`

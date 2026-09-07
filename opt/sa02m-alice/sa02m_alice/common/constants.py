@@ -98,7 +98,20 @@ STATUS_ERROR = "ERROR"
 GATEWAY_PING_PATH = "/v1.0/ping"
 GATEWAY_ENROLL_PATH = "/controller/enroll"
 GATEWAY_UNLINK_PATH = "/controller/unlink"
+# HTTP /v1.0/ping and enroll/unlink urllib budgets. Do NOT reuse this for
+# Socket.IO wait_timeout — a live hub's websocket+namespace handshake from
+# the ARM board is slower than a HEAD ping.
 GATEWAY_PROBE_TIMEOUT_S = 5.0
+# Socket.IO namespace wait (python-socketio Client.connect wait_timeout).
+# Board 1.136, 2026-09-07, n=3 against wss://cloud.cyntron.ru/control/socket.io:
+# handshake 5.185 / 3.665 / 3.371 s (token mint 1.3–1.7 s is outside this
+# wait). 5.185 > 5.0 is why the cloud card flashed gateway_unreachable on a
+# live hub. 15 s ≈ 3× measured max.
+SIO_CONNECT_TIMEOUT_S = 15.0
+# Consecutive wait_timeouts that stay `connecting` (not gateway_unreachable).
+# The reconnect loop keeps going after this; the card just stops lying on
+# the first miss. A DNS / HTTP / refused error is still fail-closed immediately.
+SIO_CONNECT_SOFT_FAILS = 3
 SIO_RECONNECT_MIN_S = 2.0
 SIO_RECONNECT_MAX_S = 60.0
 SIO_WATCHDOG_S = 60.0

@@ -22,6 +22,7 @@
 
 ### Облако · Алиса
 
+- **Карточка «Управление из облака» больше не врёт «сервер недоступен» на первом handshake.** Socket.IO `wait_timeout` был 5 с (`GATEWAY_PROBE_TIMEOUT_S`, бюджет HTTP ping). На 1.136 живой `cloud.cyntron.ru`: handshake 5.185 / 3.665 / 3.371 с — первый промах красил `gateway_unreachable`. Отдельный `SIO_CONNECT_TIMEOUT_S=15` (~3× max) и первые `SIO_CONNECT_SOFT_FAILS=3` wait_timeout остаются `connecting` («Подключение»). DNS/HTTP/refused — сразу `gateway_unreachable`.
 - **Канал каталога на профиле `cloud`:** события `alice_devices_rename` /
   `alice_devices_rooms` / `alice_devices_groups` / `alice_devices_scenarios`.
   `alice_devices_list` несёт `rooms` / `groups` / `scenarios` / `scenario_runs`
@@ -66,6 +67,7 @@
 ### Тесты
 
 - `TestApplyReload`: ожидание подписки догнало контракт `uptime_s` из 1.0.6.36.
+- Socket.IO: `wait_timeout` берёт `SIO_CONNECT_TIMEOUT_S`; один wait_timeout не пишет `gateway_unreachable`.
 
 ## 1.0.6.36 - LED type-120 on the MQTT scan, Alice light tile (сентябрь 2026)
 

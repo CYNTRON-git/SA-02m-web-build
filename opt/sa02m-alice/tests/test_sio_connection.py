@@ -17,8 +17,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from unittest import mock  # noqa: E402
+
 from sa02m_alice.client.sio_connection import (  # noqa: E402
     AliceSocketIO,
+    connect_failure_status,
+    is_sio_wait_timeout,
     reconnect_delay,
 )
 from sa02m_alice.common import constants as C  # noqa: E402
@@ -180,6 +184,85 @@ class TestSessionEvidence(unittest.TestCase):
         self.assertEqual(sio.session_duration_s(), 0.0)
         self.assertEqual(sio.session_report()["reason"], "unknown")
         self.assertIn("sid=unknown", sio.session_summary())
+
+
+class TestSioConnectTimeout(unittest.TestCase):
+    """Socket.IO wait_timeout is its own budget — not the HTTP ping 5 s."""
+
+    def test_sio_budget_is_wider_than_http_probe(self):
+        self.assertEqual(C.GATEWAY_PROBE_TIMEOUT_S, 5.0)
+        self.assertGreater(C.SIO_CONNECT_TIMEOUT_S, C.GATEWAY_PROBE_TIMEOUT_S)
+        self.assertGreaterEqual(C.SIO_CONNECT_SOFT_FAILS, 1)
+
+    def test_connect_passes_sio_budget_not_http_probe(self):
+        captured = {}
+
+        class _FakeClient:
+            def __init__(self, **_kw):
+                pass
+
+            def event(self, fn):
+                return fn
+
+            def on(self, *_a, **_k):
+                pass
+
+            def connect(self, _url, **kw):
+                captured.update(kw)
+
+            def get_sid(self):
+                return "sid"
+
+        class _FakeLib:
+            Client = _FakeClient
+
+        sio = AliceSocketIO(
+            profile=C.PROFILE_CLOUD,
+            token_provider=lambda: "tok",
+            client_version="test",
+        )
+        with mock.patch(
+            "sa02m_alice.client.sio_connection.import_socketio",
+            return_value=_FakeLib,
+        ), mock.patch.object(
+            sio, "_connect_target", return_value=("wss://h", "control/socket.io", True, None)
+        ):
+            sio.connect()
+        self.assertEqual(captured.get("wait_timeout"), C.SIO_CONNECT_TIMEOUT_S)
+        self.assertNotEqual(captured.get("wait_timeout"), C.GATEWAY_PROBE_TIMEOUT_S)
+
+
+class TestConnectFailureStatus(unittest.TestCase):
+    """First wait_timeout is connecting; real failures stay fail-closed."""
+
+    def test_wait_timeout_mark(self):
+        self.assertTrue(
+            is_sio_wait_timeout(RuntimeError("One or more namespaces failed to connect"))
+        )
+        self.assertFalse(is_sio_wait_timeout(OSError("Connection refused")))
+        self.assertFalse(is_sio_wait_timeout(OSError("Name or service not known")))
+
+    def test_single_wait_timeout_stays_connecting(self):
+        state, error = connect_failure_status(
+            RuntimeError("One or more namespaces failed to connect"), 1
+        )
+        self.assertEqual(state, C.STATE_CONNECTING)
+        self.assertEqual(error, "")
+
+    def test_soft_window_then_unreachable(self):
+        exc = RuntimeError("One or more namespaces failed to connect")
+        for n in range(1, C.SIO_CONNECT_SOFT_FAILS + 1):
+            state, error = connect_failure_status(exc, n)
+            self.assertEqual(state, C.STATE_CONNECTING, n)
+            self.assertEqual(error, "")
+        state, error = connect_failure_status(exc, C.SIO_CONNECT_SOFT_FAILS + 1)
+        self.assertEqual(state, C.STATE_ERROR)
+        self.assertEqual(error, "gateway_unreachable")
+
+    def test_refused_is_unreachable_immediately(self):
+        state, error = connect_failure_status(OSError("Connection refused"), 1)
+        self.assertEqual(state, C.STATE_ERROR)
+        self.assertEqual(error, "gateway_unreachable")
 
 
 class TestGetFwVersion(unittest.TestCase):

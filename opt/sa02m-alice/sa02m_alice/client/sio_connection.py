@@ -23,6 +23,29 @@ class SocketIOUnavailable(RuntimeError):
     """python-socketio is not installed on this system."""
 
 
+# python-socketio raises ConnectionError with this text when wait_timeout
+# expires before the namespace confirms. That is a slow handshake, not a
+# dead hub — do not treat it as gateway_unreachable while soft retries remain.
+_SIO_WAIT_TIMEOUT_MARK = "namespaces failed to connect"
+
+
+def is_sio_wait_timeout(exc: BaseException) -> bool:
+    return _SIO_WAIT_TIMEOUT_MARK in str(exc).lower()
+
+
+def connect_failure_status(exc: BaseException, fail_count: int) -> Tuple[str, str]:
+    """Return ``(state, error)`` for a connect exception.
+
+    ``fail_count`` is 1-based and includes this failure. A wait_timeout inside
+    ``SIO_CONNECT_SOFT_FAILS`` stays ``connecting`` with no error token; a
+    real DNS/HTTP/refused error, or wait_timeouts past the soft window, is
+    ``gateway_unreachable``.
+    """
+    if is_sio_wait_timeout(exc) and fail_count <= C.SIO_CONNECT_SOFT_FAILS:
+        return C.STATE_CONNECTING, ""
+    return C.STATE_ERROR, "gateway_unreachable"
+
+
 def reconnect_delay(
     attempt: int,
     *,
@@ -373,12 +396,26 @@ class AliceSocketIO:
             self._register(name)
 
         headers = self._build_headers(token)
-        self._sio.connect(
-            url,
-            socketio_path=engine_path,
-            headers=headers,
-            transports=["websocket"],
-            wait_timeout=C.GATEWAY_PROBE_TIMEOUT_S,
+        t0 = time.monotonic()
+        try:
+            self._sio.connect(
+                url,
+                socketio_path=engine_path,
+                headers=headers,
+                transports=["websocket"],
+                wait_timeout=C.SIO_CONNECT_TIMEOUT_S,
+            )
+        except Exception:
+            log.warning(
+                "Socket.IO handshake failed after %.1f s (budget %.1f s)",
+                time.monotonic() - t0,
+                C.SIO_CONNECT_TIMEOUT_S,
+            )
+            raise
+        log.info(
+            "Socket.IO handshake completed in %.1f s (budget %.1f s)",
+            time.monotonic() - t0,
+            C.SIO_CONNECT_TIMEOUT_S,
         )
         if self._sid is None:
             # The connect callback runs on the background thread and normally

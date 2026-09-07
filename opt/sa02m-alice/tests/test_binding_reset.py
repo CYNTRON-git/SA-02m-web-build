@@ -1072,7 +1072,10 @@ class TestN1ErrorPathWipesNothing(_BindingBase):
         self.assertEqual(self.read(C.DEVICES_CONF), devices_before)
         self.assertEqual(self.marker()[0], "")
         self.assertFalse(client_main._unlinked.is_set())
-        self.assertEqual(self.status()["state"], C.STATE_ERROR)
+        # Three wait_timeouts stay inside SIO_CONNECT_SOFT_FAILS — connecting,
+        # not gateway_unreachable. The binding is still on disk either way.
+        self.assertEqual(self.status()["state"], C.STATE_CONNECTING)
+        self.assertNotEqual(self.status().get("error"), "gateway_unreachable")
 
 
 # =====================================================================

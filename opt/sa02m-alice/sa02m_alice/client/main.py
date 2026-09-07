@@ -43,7 +43,12 @@ from .auto_provision import AutoProvisioner, WATCH_TOPICS
 from .device_registry import DeviceRegistry
 from .fleet_token import FleetTokenError, cloud_identity_present, mint_control_token, read_cloud_identity
 from .reload_watch import DevicesWatcher, RetainedGrace, apply_reload
-from .sio_connection import AliceSocketIO, SocketIOUnavailable, reconnect_delay
+from .sio_connection import (
+    AliceSocketIO,
+    SocketIOUnavailable,
+    connect_failure_status,
+    reconnect_delay,
+)
 from .sio_handlers import SioHandlers
 from .state_sender import StateSender
 
@@ -749,20 +754,28 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             _stop.wait(C.SIO_WATCHDOG_S)
         except Exception as exc:
             log.error("%s client error: %s", profile, exc)
+            # wait_timeout is a slow handshake, not a dead hub. First paint
+            # stays connecting while soft retries remain (cloud card UX:
+            # 5 s miss → «сервер недоступен» on a live hub). DNS / HTTP /
+            # refused, or wait_timeouts past SIO_CONNECT_SOFT_FAILS, still
+            # fail-closed as gateway_unreachable.
+            fail_count = attempt + 1
+            state, error = connect_failure_status(exc, fail_count)
+            extra = {"error": error} if error else {}
             _write_status(
-                C.STATE_ERROR,
+                state,
                 profile=profile,
-                error="gateway_unreachable",
                 message=str(exc),
                 gateway_wss=wss,
                 gateway_http=http,
                 client_enabled=True,
+                **extra,
             )
             # Was a flat 60 s after EVERY error, so the first transient failure
             # cost a full minute of empty house (measured: ~150 s to recover a
             # restart on bench 1.135, 2026-08-27). Now a bounded jittered
             # ladder — the wait only sits BETWEEN attempts, never competing
-            # with GATEWAY_PROBE_TIMEOUT_S.
+            # with SIO_CONNECT_TIMEOUT_S.
             attempt += 1
             _stop.wait(reconnect_delay(attempt))
         finally:
