@@ -27,6 +27,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 
 NL = chr(10)
 
@@ -1501,6 +1502,53 @@ class TestN3LocalUnlinkRefusals(_BindingBase):
             self.assertFalse(result["ok"], "HTTP %s must not claim success" % code)
             self.assertEqual(result["http_status"], code)
             self.assert_nothing_erased(conf_before)
+
+    def test_http_error_raise_refuses_and_wipes_nothing(self):
+        """Real urllib raises HTTPError for 4xx/5xx — it never returns a 400 body."""
+        self.seed_binding()
+        conf_before = self.read(C.CLIENT_CONF)
+        err = urllib.error.HTTPError(
+            "https://alice.cyntron.ru/controller/unlink",
+            403, "Forbidden", None, io.BytesIO(b'{"detail":"forbidden"}'),
+        )
+        with mock.patch.object(api, "probe_gateway", return_value=PROBE_UP), \
+                mock.patch.object(api.urllib.request, "urlopen", side_effect=err):
+            result = api.unlink_controller()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "unlink_failed")
+        self.assertEqual(result["http_status"], 403)
+        self.assertEqual(result["message"], "forbidden")
+        self.assert_nothing_erased(conf_before)
+
+    def test_404_controller_not_linked_erases_the_orphaned_binding(self):
+        """Live gateway: 404 `controller not linked` = already unlinked there.
+        The board still holds certs; treating urllib's 'HTTP Error 404: Not
+        Found' as a refusal left the false «привязан» card (1.136, 1.0.6.24)."""
+        self.seed_binding()
+        err = urllib.error.HTTPError(
+            "https://alice.cyntron.ru/controller/unlink",
+            404, "Not Found", None, io.BytesIO(b'{"detail":"controller not linked"}'),
+        )
+        with mock.patch.object(api, "probe_gateway", return_value=PROBE_UP), \
+                mock.patch.object(api.urllib.request, "urlopen", side_effect=err):
+            result = api.unlink_controller()
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.binding_present(), [])
+        self.assertTrue(self.marker()[0])
+
+    def test_bare_404_without_not_linked_detail_wipes_nothing(self):
+        self.seed_binding()
+        conf_before = self.read(C.CLIENT_CONF)
+        err = urllib.error.HTTPError(
+            "https://alice.cyntron.ru/controller/unlink",
+            404, "Not Found", None, io.BytesIO(b'{"detail":"Not Found"}'),
+        )
+        with mock.patch.object(api, "probe_gateway", return_value=PROBE_UP), \
+                mock.patch.object(api.urllib.request, "urlopen", side_effect=err):
+            result = api.unlink_controller()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 404)
+        self.assert_nothing_erased(conf_before)
 
     def test_transport_exception_refuses_and_wipes_nothing(self):
         self.seed_binding()

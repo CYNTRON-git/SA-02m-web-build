@@ -587,7 +587,7 @@ def unlink_controller() -> Dict[str, Any]:
             "local_disabled": False,
         }
     _, http, _ = gateway_urls()
-    url = http.rstrip("/") + "/controller/unlink"
+    url = http.rstrip("/") + C.GATEWAY_UNLINK_PATH
     pending = _load_pending_claim()
     payload = {
         "controller_sn": pending.get("controller_sn") or _controller_sn(),
@@ -601,63 +601,28 @@ def unlink_controller() -> Dict[str, Any]:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=C.GATEWAY_PROBE_TIMEOUT_S) as resp:
-            code = getattr(resp, "status", 200)
-            if code >= 400:
-                return {
-                    "ok": False,
-                    "error": "unlink_failed",
-                    "message": "Gateway unlink HTTP %s" % code,
-                    "http_status": code,
-                }
-            spec = binding_sources.yandex_source()
-            rc = binding_core.stand_down(
-                spec, C.REFUSAL_CLASS_UNLINKED, binding_sources.SOURCE_LOCAL
-            )
-            if rc != "repair":
-                # The gateway unlinked us but the files are still on disk. Say
-                # so: never «отвязано» on a board that is not.
-                #
-                # This process cannot finish the job and must not pretend it
-                # will: it exits the moment it answers, and /run/sa02m-alice is
-                # root-only so it cannot even write the status file. What it CAN
-                # do is hand the stand-down over durably — the core wrote it
-                # into the client INI — and the running client adopts it on its
-                # next watchdog tick and retries.
-                #
-                # So the answer distinguishes the two outcomes instead of
-                # promising one of them: `wipe_failed` = handed over, the client
-                # retries; `wipe_failed_not_recorded` = the hand-over failed too
-                # (the same read-only filesystem, most likely), nothing is
-                # retrying, and the operator has to press the button again. Read
-                # BACK from disk rather than trusted — a claim about a write is
-                # only worth what a read confirms.
-                handed_over = bool(binding_sources.read_pending()[0])
-                return {
-                    "ok": False,
-                    "error": "wipe_failed" if handed_over else "wipe_failed_not_recorded",
-                    "message": (
-                        "Gateway unlinked the controller, but the local binding "
-                        "could not be erased; the running client has taken the "
-                        "retry over."
-                        if handed_over else
-                        "Gateway unlinked the controller, but the local binding "
-                        "could not be erased and the retry could not be recorded; "
-                        "nothing is retrying — repeat the unlink."
-                    ),
-                    "client_enabled": client_enabled(),
-                }
-            # client_enabled stays ON: the client goes quiet because the binding
-            # is gone, not because the flag was cleared — with no certificate
-            # the loop routes into its soft wait on every transport
-            # (client/main.py::_should_wait_for_cert). Switching the flag off
-            # would HIDE the link row on the card (app/alice.js) — the very
-            # «Привязать» button the next owner needs.
+        try:
+            with urllib.request.urlopen(req, timeout=C.GATEWAY_PROBE_TIMEOUT_S) as resp:
+                code = getattr(resp, "status", 200)
+                raw = resp.read() if hasattr(resp, "read") else b""
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code or 0)
+            raw = exc.read() if exc.fp is not None else b""
+        detail = _unlink_gateway_detail(raw)
+        if _gateway_already_unlinked(code, detail):
+            return _commit_local_unlink()
+        if code >= 400:
             return {
-                "ok": True,
-                "message": "Unlinked; local cloud binding erased",
-                "client_enabled": client_enabled(),
+                "ok": False,
+                "error": "unlink_failed",
+                "message": (
+                    str(detail).strip()
+                    or ("Gateway unlink HTTP %s" % code)
+                ),
+                "http_status": code,
+                "url": url,
             }
+        return _commit_local_unlink()
     except Exception as exc:
         return {
             "ok": False,
@@ -665,6 +630,90 @@ def unlink_controller() -> Dict[str, Any]:
             "message": str(exc),
             "url": url,
         }
+
+
+def _unlink_gateway_detail(raw: Any) -> str:
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw or "")
+    text = text.strip()
+    if not text:
+        return ""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return text[:240]
+    if isinstance(data, dict):
+        detail = data.get("detail")
+        if isinstance(detail, str):
+            return detail
+        if isinstance(detail, list) and detail:
+            return str(detail[0])[:240]
+    return text[:240]
+
+
+def _gateway_already_unlinked(code: int, detail: str) -> bool:
+    """The live gateway answers HTTP 404 `controller not linked` when the
+    cloud record is already gone. That is a confirmed unlink, not a missing
+    route — urllib raises HTTPError 404 and the card used to show
+    `HTTP Error 404: Not Found` while leaving the mTLS files on disk."""
+    if int(code or 0) != 404:
+        return False
+    text = (detail or "").lower()
+    return "not linked" in text or "already unlink" in text
+
+
+def _commit_local_unlink() -> Dict[str, Any]:
+    spec = binding_sources.yandex_source()
+    rc = binding_core.stand_down(
+        spec, C.REFUSAL_CLASS_UNLINKED, binding_sources.SOURCE_LOCAL
+    )
+    if rc != "repair":
+        # The gateway unlinked us but the files are still on disk. Say
+        # so: never «отвязано» on a board that is not.
+        #
+        # This process cannot finish the job and must not pretend it
+        # will: it exits the moment it answers, and /run/sa02m-alice is
+        # root-only so it cannot even write the status file. What it CAN
+        # do is hand the stand-down over durably — the core wrote it
+        # into the client INI — and the running client adopts it on its
+        # next watchdog tick and retries.
+        #
+        # So the answer distinguishes the two outcomes instead of
+        # promising one of them: `wipe_failed` = handed over, the client
+        # retries; `wipe_failed_not_recorded` = the hand-over failed too
+        # (the same read-only filesystem, most likely), nothing is
+        # retrying, and the operator has to press the button again. Read
+        # BACK from disk rather than trusted — a claim about a write is
+        # only worth what a read confirms.
+        handed_over = bool(binding_sources.read_pending()[0])
+        return {
+            "ok": False,
+            "error": "wipe_failed" if handed_over else "wipe_failed_not_recorded",
+            "message": (
+                "Gateway unlinked the controller, but the local binding "
+                "could not be erased; the running client has taken the "
+                "retry over."
+                if handed_over else
+                "Gateway unlinked the controller, but the local binding "
+                "could not be erased and the retry could not be recorded; "
+                "nothing is retrying — repeat the unlink."
+            ),
+            "client_enabled": client_enabled(),
+        }
+    # client_enabled stays ON: the client goes quiet because the binding
+    # is gone, not because the flag was cleared — with no certificate
+    # the loop routes into its soft wait on every transport
+    # (client/main.py::_should_wait_for_cert). Switching the flag off
+    # would HIDE the link row on the card (app/alice.js) — the very
+    # «Привязать» button the next owner needs. The operator can still
+    # disable the unit from the card or SSH after this.
+    return {
+        "ok": True,
+        "message": "Unlinked; local cloud binding erased",
+        "client_enabled": client_enabled(),
+    }
 
 
 def _listed_groups(doc: Dict[str, Any]) -> list:

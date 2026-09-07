@@ -97,6 +97,7 @@ STATUS_ERROR = "ERROR"
 # Gateway probe / reconnect
 GATEWAY_PING_PATH = "/v1.0/ping"
 GATEWAY_ENROLL_PATH = "/controller/enroll"
+GATEWAY_UNLINK_PATH = "/controller/unlink"
 GATEWAY_PROBE_TIMEOUT_S = 5.0
 SIO_RECONNECT_MIN_S = 2.0
 SIO_RECONNECT_MAX_S = 60.0

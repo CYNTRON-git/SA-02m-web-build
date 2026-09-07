@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-07 13:55] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/api.py`, `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/tests/test_binding_reset.py`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Отвязать» Алисы на 1.136 (1.0.6.24) показывала `HTTP Error 404: Not Found` и не стирала сертификаты. Шлюз живой (`/v1.0/ping` 200); `POST /controller/unlink` с SN+claim_token отвечает 404 `{"detail":"controller not linked"}` — запись в облаке уже снята, локальные mTLS остались.
+**Причина:** urllib.raise HTTPError на любом 4xx; обработчик писал `str(exc)` (`HTTP Error 404: Not Found`) и по правилу never-wipe-on-refusal не трогал файлы. Ветка `if code >= 400` после `urlopen` в проде мёртвая — urlopen не возвращает 4xx.
+**Исправление:** HTTP 404 с `controller not linked` / `already unlink` трактуется как подтверждённая отвязка и вызывает тот же `stand_down`, что успешный 200. Прочие 4xx/5xx по-прежнему отказывают без wipe; `message` = `detail` шлюза. Регрессия в `test_binding_reset.py`.
+
+---
+
 ## [2026-09-06 12:39] branch: 1.0.6.37
 
 **Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `opt/sa02m-update/tests/test_validate_package.py`, `scripts/dev/test-update-conditional-restart.sh`, `.ai-dev/quality/tools.json`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`, `docs/deployment.md`
