@@ -102,6 +102,15 @@ GATEWAY_UNLINK_PATH = "/controller/unlink"
 # Socket.IO wait_timeout — a live hub's websocket+namespace handshake from
 # the ARM board is slower than a HEAD ping.
 GATEWAY_PROBE_TIMEOUT_S = 5.0
+# CGI `timeout` around python dispatch (sa02m_alice_api.cgi). Slowest honest
+# path is unlink / enroll: probe + gateway POST, each GATEWAY_PROBE_TIMEOUT_S;
+# a HEAD 405 retry on probe adds a third urllib wait. Import + JSON of ~15
+# devices on a loaded ARM board adds ~1–3 s. Must stay below nginx
+# fastcgi_read_timeout for /cgi-bin/ (20 s). Fail-closed: the CGI still
+# returns alice_api_failed JSON when this budget is exceeded.
+# Keep the default in sa02m_alice_api.cgi (`SA02M_ALICE_CGI_TIMEOUT`) in lockstep
+# — tests/test_sio_connection.py TestCgiDispatchTimeout asserts both.
+CGI_DISPATCH_TIMEOUT_S = 18
 # Socket.IO namespace wait (python-socketio Client.connect wait_timeout).
 # Board 1.136, 2026-09-07, n=3 against wss://cloud.cyntron.ru/control/socket.io:
 # handshake 5.185 / 3.665 / 3.371 s (token mint 1.3–1.7 s is outside this

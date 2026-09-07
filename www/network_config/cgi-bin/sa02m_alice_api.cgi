@@ -71,7 +71,12 @@ export SA02M_ALICE_PATH="${PATH_INFO:-/integrations/alice/}"
 
 # Result captured (still printed verbatim below) so the post-dispatch nudge
 # can act only on a successful mutation.
-RESULT=$(timeout 8 python3 - <<'PY'
+# Budget: sa02m_alice.common.constants.CGI_DISPATCH_TIMEOUT_S (18). Covers
+# unlink/enroll (probe + gateway POST, each 5 s) and a HEAD 405 retry, plus
+# import/JSON on a loaded ARM board. Must stay below nginx /cgi-bin/
+# fastcgi_read_timeout (20 s). Override: SA02M_ALICE_CGI_TIMEOUT.
+ALICE_CGI_TIMEOUT="${SA02M_ALICE_CGI_TIMEOUT:-18}"
+RESULT=$(timeout "$ALICE_CGI_TIMEOUT" python3 - <<'PY'
 import json, os, sys
 method = os.environ.get("SA02M_ALICE_METHOD", "GET")
 path = os.environ.get("SA02M_ALICE_PATH") or "/integrations/alice/"

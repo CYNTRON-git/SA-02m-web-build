@@ -17,61 +17,61 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
-// Transient success notices auto-clear; errors and the pending-link notice
-// (rendered by aliceSetMsgLink) stay until the state itself changes.
-const ALICE_MSG_TTL_MS = 5000;
-let _aliceMsgTimer = null;
+// Ephemeral action/gateway notices go to the viewport toast (cardNotice, 5 s)
+// so #alice-msg never unhides and .ctrl-card height stays put. Standing errors
+// from the poll toast once (same text is not repeated every 5 s).
+let _aliceLastPollNotice = '';
 
-function aliceClearMsgTimer() {
-  if (_aliceMsgTimer) {
-    clearTimeout(_aliceMsgTimer);
-    _aliceMsgTimer = null;
-  }
-}
-
-function aliceSetMsgOn(id, text, ok) {
-  const msg = $(id);
-  if (!msg) return;
-  if (id === 'alice-msg') aliceClearMsgTimer();
-  if (!text) {
-    msg.hidden = true;
-    msg.textContent = '';
-    msg.className = 'cloud-msg';
-    return;
-  }
-  msg.hidden = false;
-  msg.textContent = text;
-  msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
-  if (id === 'alice-msg' && ok) {
-    _aliceMsgTimer = setTimeout(function () {
-      _aliceMsgTimer = null;
-      const el = $('alice-msg');
-      // Only clear what is still this notice — a newer message owns itself.
-      if (el && !el.hidden && el.textContent === text) aliceSetMsgOn('alice-msg', '', true);
-    }, ALICE_MSG_TTL_MS);
-  }
-}
-
-// Card-level status/link/enable feedback.
-function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
-
-// Message + a real clickable link (DOM-built, no innerHTML). Needed because
-// window.open after an await is eaten by popup blockers — the operator must
-// always have the registration link ON the card while a claim is pending.
-function aliceSetMsgLink(text, url, label) {
+function aliceHideCardMsg() {
   const msg = $('alice-msg');
   if (!msg) return;
-  aliceClearMsgTimer();  // the link notice lives as long as the claim does
-  msg.hidden = false;
-  msg.className = 'cloud-msg is-ok';
+  msg.hidden = true;
   msg.textContent = '';
-  msg.appendChild(document.createTextNode(text + ' '));
-  const a = document.createElement('a');
+  msg.className = 'cloud-msg';
+}
+
+function aliceNotice(text, ok) {
+  aliceHideCardMsg();
+  if (!text) return;
+  if (typeof cardNotice === 'function') cardNotice(text, ok);
+  else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
+}
+
+function alicePollNoticeOnce(text, ok) {
+  const key = String(ok) + '\0' + String(text || '');
+  if (key === _aliceLastPollNotice) return;
+  _aliceLastPollNotice = key;
+  aliceNotice(text, ok);
+}
+
+// Card-level status/link/enable feedback — viewport toast, not an in-card banner.
+function aliceSetMsg(text, ok) {
+  _aliceLastPollNotice = '';
+  aliceNotice(text, ok);
+}
+
+// Compact reopen link lives in the existing status row (#alice-reg-link) so a
+// blocked popup still has a target without growing the card. The toast carries
+// the same wording for 5 s.
+function aliceSetRegLink(url, label) {
+  const a = $('alice-reg-link');
+  if (!a) return;
+  if (!url) {
+    a.hidden = true;
+    a.removeAttribute('href');
+    a.textContent = '';
+    return;
+  }
   a.href = url;
   a.target = '_blank';
   a.rel = 'noopener';
-  a.textContent = label;
-  msg.appendChild(a);
+  a.textContent = label || uiT('Открыть ссылку привязки');
+  a.hidden = false;
+}
+
+function aliceSetMsgLink(text, url, label) {
+  aliceSetRegLink(url, label);
+  aliceNotice(text, true);
 }
 
 // Registration URL of the pending claim: server-fed (link.registration_url
@@ -212,7 +212,7 @@ function aliceRender(d) {
   const st = (d.status && d.status.state) || (enabled ? 'unknown' : 'disabled');
   const entry = ALICE_STATE_MAP[st] || ALICE_STATE_MAP.unknown;
 
-  // Friendly overall status (never raw exception text) — surfaced in #alice-msg
+  // Friendly overall status (never raw exception text) — toast, not #alice-msg
   const friendly = aliceFriendlyStatus(d);
 
   aliceSetBadge($('alice-svc-state'), enabled ? 'Включен' : 'Выключен', enabled ? 'ok' : 'unk');
@@ -306,33 +306,23 @@ function aliceRender(d) {
     count.textContent = String(k);
   }
 
-  // Surface a gateway/client problem in the card as the FRIENDLY label only —
-  // never the raw urlopen/SSL exception string (Operator rule, 1.0.5.73). The
-  // mapping lives in aliceFriendlyStatus; a healthy state leaves any action
-  // feedback message («Сохранено» etc.) in place.
-  // The «Причина» line for the two stand-down states — checked BEFORE the
-  // generic error branch, which would otherwise replace the explanation with a
-  // bare «Ошибка отвязки» (or «Шлюз недоступен» on a board that is unlinked AND
-  // offline) and leave the Operator with no reason at all. Unlike the «Облако»
-  // card this line carries no timestamp: the Alice status file's `unlinked_at`
-  // is the durable marker's, and formatting it would duplicate cloud.js's
-  // relative-time helper across bundles for a value the reason already implies.
+  // Standing poll feedback used to land in #alice-msg and grow the card.
+  // Badges (Клиент/Шлюз/Соединение) stay; ephemeral copy is a 5 s viewport
+  // toast, once per distinct text. The reopen link sits in the status row.
+  aliceHideCardMsg();
   if (ALICE_STAND_DOWN_STATES.indexOf(st) !== -1) {
     const raw = (d.status && d.status.reason) || '';
     const why = ALICE_REASON_MAP[raw] || ALICE_REASON_MAP[st] || '';
-    aliceSetMsg(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
+    aliceSetRegLink(null);
+    alicePollNoticeOnce(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
   } else if (friendly.kind === 'err') {
-    aliceSetMsg(uiT(friendly.text), false);
+    aliceSetRegLink(null);
+    alicePollNoticeOnce(uiT(friendly.text), false);
   } else if (enabled && pending && aliceRegUrl) {
-    // Keep the reopen link visible for the whole pending window — a closed
-    // tab or a blocked popup must not strand the operator.
-    aliceSetMsgLink(
-      uiT('Откройте ссылку привязки, затем «Завершить привязку»:'),
-      aliceRegUrl,
-      uiT('Открыть ссылку привязки')
-    );
-  } else if (!enabled) {
-    aliceSetMsg('', true);
+    aliceSetRegLink(aliceRegUrl, uiT('Открыть ссылку привязки'));
+  } else {
+    aliceSetRegLink(null);
+    if (!enabled) _aliceLastPollNotice = '';
   }
 
   aliceNotify(d);
@@ -347,7 +337,7 @@ async function aliceRefresh() {
     aliceRender(d);
     return d;
   } catch (e) {
-    aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
+    alicePollNoticeOnce(uiT('Ошибка запроса API Алисы'), false);
     return null;
   }
 }

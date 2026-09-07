@@ -9,6 +9,7 @@ sent only when non-empty (backward-compat).
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -289,6 +290,35 @@ class TestGetFwVersion(unittest.TestCase):
     def test_comment_only_returns_unknown(self):
         path = self._write("# only a comment\n\n")
         self.assertEqual(get_fw_version(path), "unknown")
+
+
+class TestCgiDispatchTimeout(unittest.TestCase):
+    """CGI python timeout must cover the slowest honest gateway path."""
+
+    def test_cgi_budget_covers_probe_stack_and_stays_under_nginx(self):
+        self.assertEqual(C.CGI_DISPATCH_TIMEOUT_S, 18)
+        # HEAD 405 retry + unlink/enroll POST: three urllib waits.
+        self.assertGreaterEqual(
+            C.CGI_DISPATCH_TIMEOUT_S, 3 * C.GATEWAY_PROBE_TIMEOUT_S
+        )
+        self.assertLess(C.CGI_DISPATCH_TIMEOUT_S, 20)
+
+    def test_cgi_shell_default_matches_constant(self):
+        cgi = os.path.join(
+            os.path.dirname(os.path.dirname(ROOT)),
+            "www",
+            "network_config",
+            "cgi-bin",
+            "sa02m_alice_api.cgi",
+        )
+        with open(cgi, encoding="utf-8") as fh:
+            text = fh.read()
+        match = re.search(r"SA02M_ALICE_CGI_TIMEOUT:-(\d+)", text)
+        self.assertIsNotNone(match, "CGI default timeout missing")
+        self.assertEqual(int(match.group(1)), int(C.CGI_DISPATCH_TIMEOUT_S))
+        self.assertIn('timeout "$ALICE_CGI_TIMEOUT"', text)
+        self.assertIn("alice_api_failed", text)
+        self.assertIn("python dispatch failed or timed out", text)
 
 
 if __name__ == "__main__":
