@@ -113,6 +113,40 @@ class TestMr02mChannelExpansion(unittest.TestCase):
         self.assertEqual(out, ["/devices/mr02m-COM1-5/controls/do_1"])
 
 
+class TestTheFlatListNoLongerLosesAModule(unittest.TestCase):
+    """The bench 1.135 regression, through the entry the CGI actually calls.
+
+    `_topics_from_yaml` above reads the yaml and nothing else, which is all it
+    ever could: `mr02m-COM3-10` carries no `channels` block, so that function
+    yields ONE topic (`mcu_temp`) for a module with 6 DO and 8 DI. Since
+    1.0.6.38 `list_mqtt_topics()` is a projection of the structured inventory
+    (channel counts from the module TYPE), and this is the test that says the
+    CGI's answer changed — not just the new module's.
+    """
+
+    BENCH = {"devices": [{
+        "id": "mr02m-COM3-10", "type": "mr02m",
+        "port": "/dev/COM3", "address": 10, "module_type": 2,
+    }]}
+
+    def _offered(self):
+        with mock.patch.object(topics, "_load_yaml", return_value=self.BENCH), \
+                mock.patch.object(topics, "YAML_CANDIDATES", (__file__,)), \
+                mock.patch.object(topics, "ROSTER_CANDIDATES", ()):
+            return topics.list_mqtt_topics()["topics"]
+
+    def test_the_yaml_only_derivation_really_is_this_poor(self):
+        # Non-vacuity: without the inventory the module contributes one topic.
+        self.assertEqual(topics._topics_from_yaml(self.BENCH),
+                         ["/devices/mr02m-COM3-10/controls/mcu_temp"])
+
+    def test_the_picker_now_offers_the_whole_module(self):
+        offered = self._offered()
+        for n in range(1, 17):
+            self.assertIn("/devices/mr02m-COM3-10/controls/do_%d" % n, offered)
+        self.assertIn("/devices/mr02m-COM3-10/controls/mcu_temp", offered)
+
+
 class TestControllerBuiltinsAreDerived(unittest.TestCase):
     """Pins the 1.0.6.22 defect: the builtins used to be a FROZEN literal id.
 

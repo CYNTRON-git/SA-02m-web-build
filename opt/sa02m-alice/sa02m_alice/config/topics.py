@@ -288,36 +288,36 @@ def _topics_from_roster(path: str) -> List[str]:
 
 
 def list_mqtt_topics() -> Dict[str, Any]:
-    """Return inventory; works fully offline (no gateway)."""
-    topics: List[str] = []
-    source = None
-    for path in YAML_CANDIDATES:
-        ap = os.path.abspath(path)
-        if os.path.isfile(ap):
-            doc = _load_yaml(ap)
-            topics = _topics_from_yaml(doc)
-            if topics:
-                source = ap
-                break
-    if not topics:
+    """Flat topic list; works fully offline (no gateway).
+
+    A PROJECTION of inventory.build_mqtt_inventory() since 1.0.6.38, so the
+    flat list and the structured picker can not disagree about what is
+    bindable — before that the two derivations would have had to be kept
+    equal by hand, and a module whose yaml carries no `channels` block was
+    offered one topic where it has fourteen channels.
+    """
+    from .inventory import build_mqtt_inventory, inventory_topics
+
+    inv = build_mqtt_inventory()
+    topics: List[str] = inventory_topics(inv)
+    source = inv.get("source")
+    # The controller entry is always present, so "the yaml told us nothing" is
+    # measured by the configured devices, not by the topic count.
+    configured = [
+        dev for dev in inv.get("devices") or []
+        if dev.get("type") != "controller"
+    ]
+    if not configured:
         for path in ROSTER_CANDIDATES:
             if os.path.isfile(path):
-                topics = _topics_from_roster(path)
-                if topics:
+                from_roster = _topics_from_roster(path)
+                if from_roster:
+                    topics = sorted(set(topics) | set(from_roster))
                     source = path
                     break
-    # Always include the onboard controls so the picker is never empty on a
-    # fresh board — DERIVED from the live id, so every offered topic is one the
-    # board actually serves.
-    controller = _controller_device_id()
-    builtins = [
-        "/devices/%s/controls/%s" % (controller, name)
-        for name in CONTROLLER_CONTROLS
-    ]
-    merged = sorted(set(topics) | set(builtins))
     return {
         "ok": True,
         "source": source,
-        "topics": merged,
-        "count": len(merged),
+        "topics": topics,
+        "count": len(topics),
     }

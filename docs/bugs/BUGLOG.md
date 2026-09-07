@@ -5,6 +5,66 @@
 
 ---
 
+## [2026-09-07 23:05] branch: 1.0.6.38
+
+**Файл(ы):** `www/network_config/static/js/app/smarthome.js`, `scripts/dev/sh-modal-layout-smoke.mjs`
+**Тип:** Некорректное поведение
+**Описание:** В пикере канала на стенде 1.135 строки именованных каналов (группа «Показания и команды» драйвера `led-COM3-13`: `power`, `brightness`, `led_count`, и так же `unit_on` у Carel) выводились без подписи — только бейдж «чт/зп» и «занят: LED лента».
+**Причина:** `shPickChannelHtml` печатал заголовок только при `title !== tag && title !== ch.tag`. Колонка тега существует лишь для `<kind>_<n>` (`shChTagLabel` → `DO3`); у именованного канала тег пустой, а `title` равен `ch.tag` («power»), поэтому не печаталось ни то, ни другое.
+**Исправление:** Заголовок печатается всегда, когда он несёт то, чего нет в колонке тега: `named = !!title && title !== tag && !(tag && title === ch.tag)`. В smoke добавлен LED-фикстур (title == tag) и инвариант «у каждого предлагаемого канала есть подпись» по всем устройствам — проверено, что он краснеет на старом условии.
+
+---
+
+## [2026-09-07 22:30] branch: 1.0.6.38
+
+**Файл(ы):** `www/network_config/cgi-bin/sa02m_alice_topics.cgi`
+**Тип:** Некорректное поведение
+**Описание:** На стенде 1.135 `?format=inventory` периодически отдавал невалидный JSON: полный ответ (~39.7 КБ, `…"count":12}`), а сразу за ним второй объект `{"ok":false,"error":"topics_failed"}`. `JSON.parse` в пикере падал, и вкладка уходила в ручной ввод топика, хотя инвентарь был получен целиком.
+**Причина:** `timeout 5 python3 - <<PY || echo '{"ok":false,…}'` — fallback дописывался ПОСЛЕ уже выведенного тела, если python завершался ненулевым кодом в самом конце. Сборка инвентаря на плате измерена 1.1–2.4 с (12 устройств, live-кеш), под нагрузкой 5 с не оставляли запаса, и `timeout` убивал процесс уже после печати.
+**Исправление:** Ответ собирается в `TOPICS_JSON="$(timeout 15 python3 …)"` и печатается один раз; fallback ЗАМЕНЯЕТ ответ (`if … && [ -n … ]; then … else …`), а не следует за ним. Бюджет 15 с — ниже nginx `/cgi-bin/` 20 с.
+
+---
+
+## [2026-09-07 22:10] branch: 1.0.6.38
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/inventory.py`, `opt/sa02m-alice/tests/test_inventory.py`
+**Тип:** Логическая ошибка
+**Описание:** Устройство `led-COM3-13` (`type: led`, живое, публикует 21 control, включая 4 сухих контакта) полностью отсутствовало и в пикере, и в плоском списке топиков на стенде 1.135 — привязать ленту или её входы в «Умном доме» было нечем.
+**Причина:** `_device_entry` знал только `mr02m` / `dtv` / `ce02m3` / `carel` и явный `controls` в YAML. У `type: led` блока `controls` в YAML нет (мост берёт список из `sa02m_led.controls`), поэтому запись возвращала `None`, и устройство молча выпадало. Тот же провал был и у старой YAML-выборки — просто не был виден.
+**Исправление:** Таблица `LED_CONTROLS` / `LED_WRITABLE` (осознанная копия `opt/sa02m-led/sa02m_led/controls.py`, приколочена pin-тестом, читающим тот файл как текст) плюс общий fallback: семейство без офлайн-таблицы получает каналы из своего live-кеша. На плате: 248 → 269 топиков, LED = 4 DI + 17 именованных.
+
+---
+
+## [2026-09-07 21:18] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/cgi-bin/sa02m_alice_api.cgi`, `opt/sa02m-alice/sa02m_alice/common/constants.py`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Яндекс Алиса» на стенде 1.135 (`16554153d32a50ed`, клиент ON, шлюз доступен, 15 устройств) показывала `python dispatch failed or timed out`.
+**Причина:** CGI оборачивал `dispatch` в `timeout 8`. GET `full_config` каждый раз поднимает новый python (import ~1 с) и `probe_gateway` (до 5 с, на живом alice.cyntron.ru 1.5–2.1 с). При loadavg ~7 три GET сегодня вернули HTTP 200 с телом 99 байт (17:45, 19:02, 20:15 MSK). Unlink структурно ещё длиннее: probe 5 с + `/controller/unlink` 5 с (HEAD 405 — третий wait). Живой GET без пика: 3.3–3.7 с.
+**Исправление:** `CGI_DISPATCH_TIMEOUT_S=18` (ниже nginx `/cgi-bin/` 20 с); CGI `timeout "$ALICE_CGI_TIMEOUT"` с тем же дефолтом. JSON `alice_api_failed` при срыве сохранён.
+
+---
+
+## [2026-09-07 21:17] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/js/app/alice.js`, `www/network_config/static/js/cloud.js`, `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Баннеры привязки Алисы / Облака (`#alice-msg`, `#cloud-msg`, `#cloud-ctrl-msg`) вставлялись внутрь `.ctrl-card` и прыгала высота плитки (код сопряжения, ошибки отвязки, «python dispatch failed», «Сохранено»).
+**Причина:** Эфемерные notices писались в скрываемый `div.cloud-msg` внутри карточки; появление текста снимало `hidden` и растягивало flex-плитку.
+**Исправление:** Тот же `toast()` / `cardNotice` (`.toast-area` справа сверху, 5.0 с). Слоты в карточке принудительно `display:none`. Ссылка привязки Алисы — в строке «Статус». Строки Клиент/Шлюз/Соединение и `#cloud-unlink-info` не трогали. cache-bust `&r=toast5s1`.
+
+---
+
+## [2026-09-07 20:06] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `www/network_config/login.html`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Облако» (нет идентификации, серийный `165541530e336045`) показывала тонкую серую полоску шириной с кнопки между «Выключить» и «Отключить агент» — как обломок кнопки.
+**Причина:** `.ctrl-card-main { overflow-y: auto }` по спецификации CSS выставляет и `overflow-x: auto`. Узкий overflow (nowrap «Управление из облака» + бейдж, flex `min-width: auto`) рисовал кастомный горизонтальный thumb `::-webkit-scrollbar` (6 px, `#48484a`, pill) у нижнего края тела карточки — ровно между двумя красными кнопками.
+**Исправление:** `overflow-x: hidden` + `min-width: 0` на теле плитки и детях; `.cloud-ctrl-row` с `flex-wrap`. «Выключить» / «Отключить агент» не трогали. cache-bust `&r=cloudslv1`.
+
+---
+
 ## [2026-09-07 15:41] branch: 1.0.6.37
 
 **Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/cgi-bin/web_update_apply.cgi`

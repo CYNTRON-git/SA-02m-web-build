@@ -1712,12 +1712,20 @@ html[data-theme="light"] .nav-item.active { color: var(--btn-primary-hover); }
 /* Тело карточки */
 .system-manage-grid .ctrl-card-main {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
+  /* overflow-y:auto alone computes overflow-x to auto (CSS overflow spec).
+     A 1–2 px-wide child then paints the 6 px #48484a horizontal thumb
+     (::-webkit-scrollbar) under the last body control — on «Облако» that
+     sat between «Выключить» and «Отключить агент» and read as a leftover
+     button sliver. Clip X; keep Y for a tall tile. */
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+.system-manage-grid .ctrl-card-main > * { min-width: 0; }
 
 /* Подвал с кнопками — всегда внизу, кнопки на всю ширину */
 .system-manage-grid .system-manage-tile-foot,
@@ -2125,9 +2133,37 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   gap: 8px;
 }
 .alice-link-status .alice-link-status-label { white-space: nowrap; }
-.alice-link-status #alice-link-status-val {
+.alice-link-status-end {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
   text-align: right;
+}
+.alice-link-status #alice-link-status-val {
   overflow-wrap: anywhere;
+}
+/* Compact reopen target in the existing status row — not a second banner. */
+.alice-reg-link {
+  white-space: nowrap;
+  color: var(--cyan);
+  text-decoration: underline;
+}
+html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
+.alice-reg-link[hidden] { display: none !important; }
+
+/* In-card ephemeral banners moved to .toast-area (1.0.6.37). Keep the
+   slots in the DOM for older scripts, but they must never grow .ctrl-card. */
+#alice-msg,
+#cloud-msg,
+#cloud-ctrl-msg {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
 }
 
 /* The registration link inside the card message inherits the message color
@@ -2244,8 +2280,21 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 .sh-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .sh-bind-row { display: flex; align-items: center; gap: 8px; }
 .sh-bind-row > .sh-row-kind  { flex: 0 0 40%; min-width: 0; }
-.sh-bind-row > .sh-row-topic { flex: 1 1 auto; min-width: 0; }
+/* The binding target is a BUTTON since 1.0.6.38 (.sh-row-bind); the topic
+   itself is a hidden input in the same row, which contributes no box. The
+   button takes the width the old <select class="sh-row-topic"> had. */
+.sh-bind-row > .sh-row-bind  { flex: 1 1 auto; min-width: 0; text-align: left; }
 .sh-bind-row > .sh-row-del   { flex: 0 0 auto; }
+/* The label is one line («МР-02м 6ДО 8ДИ · COM3:10 · DO3»); a narrow pane
+   ellipsises it rather than growing the row. The full topic is the title. */
+.sh-row-bind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .8rem;
+}
+.sh-row-bind.is-empty { color: var(--text-sec); font-style: italic; }
+.sh-row-bind.is-unknown { border-color: var(--yellow); }
 /* «Инвертировать» — active-low on/off outputs (contract §Inverted). A DEVICE
    field (#sh-inv-field) paired with the export toggle, not a control on the
    binding row: on the row it took the width from the topic select (282 px →
@@ -2282,9 +2331,142 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   /* basis 0, not auto: a select's auto basis is its full content width, which
      would wrap the ✕ onto a line of its own before any shrinking happens. */
   .sh-bind-row > .sh-row-kind  { flex: 1 1 0; }
-  .sh-bind-row > .sh-row-topic { flex: 1 1 100%; order: 3; }
+  .sh-bind-row > .sh-row-bind  { flex: 1 1 100%; order: 3; }
   .sh-bind-row > .sh-row-del   { order: 2; }
 }
+
+/* ── Channel picker (#sh-pick-modal) ────────────────────────────────────────
+   Layered over #sh-modal (z-index above it), reusing the .mqtt-modal-* shell:
+   head and foot pinned, ONE scrolling layer (the list), so a board with a
+   dozen modules scrolls its channels and not the dialog. */
+#sh-pick-modal { z-index: 1010; }
+.mqtt-modal-dialog.sh-pick-dialog { width: min(720px, 96vw); }
+.mqtt-modal-body.sh-pick-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  min-height: 0;
+}
+.sh-pick-search-field { margin-bottom: 0; }
+#sh-pick-search { min-height: var(--tap); width: 100%; }
+.sh-pick-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.sh-pick-chip {
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-sec);
+  font-size: .78rem;
+  cursor: pointer;
+}
+.sh-pick-chip:hover { background: var(--bg-hover); }
+.sh-pick-chip.is-on { border-color: var(--cyan); color: var(--text); }
+/* The one scrolling layer. */
+.sh-pick-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.sh-pick-dev { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+.sh-pick-dev-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: .84rem;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-pick-dev-head:hover { background: var(--bg-hover); }
+.sh-pick-dev-title { font-weight: 600; }
+.sh-pick-dev-sub { color: var(--text-sec); font-size: .76rem; }
+.sh-pick-badge { font-size: .7rem; }
+.sh-pick-mismatch {
+  font-size: .7rem;
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+.sh-pick-dev-body { border-top: 1px solid var(--border); padding: 6px 12px 10px; }
+.sh-pick-group { margin-top: 6px; }
+.sh-pick-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--text-sec);
+  font-size: .76rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-pick-arrow { font-size: .78rem; color: var(--text-sec); min-width: 12px; }
+.sh-pick-pref { color: var(--cyan); text-transform: none; letter-spacing: 0; }
+.sh-pick-group-body { display: flex; flex-direction: column; gap: 4px; }
+.sh-pick-ch-wrap { display: flex; flex-direction: column; }
+/* The counters toggle sits BESIDE its channel, not under it: a line of its
+   own per DI turned 8 channels into 16 rows of scrolling. */
+.sh-pick-ch-line { display: flex; align-items: center; gap: 6px; }
+.sh-pick-ch-line > .sh-pick-ch { flex: 1 1 auto; min-width: 0; }
+.sh-pick-ch-line > .sh-pick-subs-toggle { flex: 0 0 auto; }
+/* A channel row: tag, title, access, and the «занят» note — one ≥44 px tap
+   target, so the whole row is the button and not just its text. */
+.sh-pick-ch,
+.sh-pick-hit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: .82rem;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-pick-ch:hover,
+.sh-pick-hit:hover { background: var(--bg-hover); border-color: var(--border); }
+.sh-pick-ch-tag { font-weight: 600; min-width: 46px; font-family: 'Courier New', monospace; }
+.sh-pick-ch-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sh-pick-ch-rw,
+.sh-pick-ch-off,
+.sh-pick-ch-busy,
+.sh-pick-hit-dev { font-size: .72rem; color: var(--text-sec); }
+.sh-pick-ch-busy { color: var(--yellow); }
+/* A channel `enabled: false` in the bridge yaml: offered (the operator may be
+   about to enable it), but visibly not live. */
+.sh-pick-ch-off { color: var(--text-sec); font-style: italic; }
+.sh-pick-ch.is-pref .sh-pick-ch-tag { color: var(--cyan); }
+.sh-pick-subs-toggle {
+  align-self: center;
+  margin: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-sec);
+  font-size: .72rem;
+  cursor: pointer;
+}
+.sh-pick-subs { padding-left: 46px; }
+.sh-pick-hit { border-color: var(--border); }
+.sh-pick-hit-ch { flex: 1 1 auto; min-width: 0; }
+.sh-pick-manual-row { display: flex; gap: 8px; }
+.sh-pick-manual-row > input { flex: 1 1 auto; min-width: 0; min-height: var(--tap); }
+.sh-pick-manual-row > .btn { flex: 0 0 auto; min-height: var(--tap); }
 
 #alice-msg.cloud-msg,
 #cloud-ctrl-msg.cloud-msg,
@@ -2332,8 +2514,8 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
    in 1.0.6.29. A separated block at the end of the card body: label + state
    badge on one line, its own full-width button and its own message line (the
    pairing actions own #cloud-msg). */
-.cloud-ctrl-block { border-top: 1px solid var(--border); padding-top: 10px; }
-.cloud-ctrl-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 6px; }
+.cloud-ctrl-block { border-top: 1px solid var(--border); padding-top: 10px; min-width: 0; }
+.cloud-ctrl-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0 0 6px; min-width: 0; }
 .cloud-ctrl-row .cloud-ctrl-label { font-size: .85rem; white-space: nowrap; }
 .system-manage-cloud-card .cloud-agent-ctrl .btn {
   width: 100%;
@@ -4071,6 +4253,17 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
 .mqtt-accordion-body.mqtt-ch-loading {
   opacity: 0.55;
   pointer-events: none;
+}
+/* «YAML говорит одно, модуль ответил другое» — плашка над каналами; каналы
+   ниже нарисованы по YAML, поэтому расхождение надо назвать словами. */
+.mqtt-mt-warn {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--yellow);
+  border-radius: var(--radius-sm);
+  color: var(--yellow);
+  font-size: .8rem;
+  line-height: 1.45;
 }
 .mqtt-accordion-body .mqtt-ch-widgets.dash-grid {
   grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));

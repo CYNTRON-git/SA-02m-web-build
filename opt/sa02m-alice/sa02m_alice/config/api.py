@@ -37,6 +37,7 @@ from ..common.config_store import (
     set_cloud_control_enabled,
 )
 from . import models
+from .inventory import build_mqtt_inventory
 from .topics import list_mqtt_topics
 
 log = logging.getLogger("sa02m_alice.config.api")
@@ -1137,6 +1138,8 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> T
         return 200, unlink_controller()
     if path.endswith("/mqtt-topics") and m == "GET":
         return 200, list_mqtt_topics()
+    if path.endswith("/mqtt-inventory") and m == "GET":
+        return 200, build_mqtt_inventory()
     if path.endswith("/room"):
         if m in ("POST", "PUT"):
             return 200, upsert_room(body.get("room") or body)
@@ -1172,6 +1175,8 @@ def dispatch(method: str, path: str, body: Optional[Dict[str, Any]] = None) -> T
         return 200, unlink_controller()
     if action == "mqtt_topics":
         return 200, list_mqtt_topics()
+    if action == "mqtt_inventory":
+        return 200, build_mqtt_inventory()
     if action == "upsert_room":
         return 200, upsert_room(body.get("room") or body)
     if action == "delete_room":

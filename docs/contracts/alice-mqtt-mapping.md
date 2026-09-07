@@ -18,6 +18,45 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
   connect AND the burst for a topic a reload newly subscribes (a bounded grace
   window per added topic, `RETAINED_GRACE_S`).
 
+### Binding inventory — what the picker may offer (1.0.6.38)
+
+`www/network_config/cgi-bin/sa02m_alice_topics.cgi` answers two shapes off the
+same builder, so they can not disagree about what is bindable:
+
+- no query → the flat `{ok, source, topics[], count}` every pre-1.0.6.38
+  caller expects (`sa02m_alice/config/topics.py: list_mqtt_topics`);
+- `?format=inventory` → the structured device/channel tree the «Умный дом»
+  channel picker groups by COM port → module → DI/DO/AI/AO
+  (`sa02m_alice/config/inventory.py: build_mqtt_inventory`).
+
+The flat list is a PROJECTION of the inventory (`inventory_topics`): every
+enabled channel and sub-channel, sorted. Both are file reads only — the bridge
+yaml plus the live cache (`/run/sa02m-modbus-mqtt/<id>.json`, `_roster.json`) —
+so the picker works with no gateway and no bus. Rules:
+
+- an MR-02m's channel set comes from its **`module_type`**, never from whether
+  the yaml author wrote a `channels` block (`MR02M_MODULE_TYPES`, a pinned copy
+  of the bridge's table);
+- a type the module itself reported **outranks** the yaml one, and the answer
+  says which it used (`model_source: detected|yaml`, plus `yaml_model`). Never
+  written back to the yaml — never-widen; the operator fixes the type;
+- a yaml channel beyond the type's count is kept (a mistyped `module_type` must
+  not hide a configured channel either);
+- `enabled: false` is offered in the picker, marked «отключён в MQTT», and left
+  OUT of the flat list (a flat consumer cannot show the mark);
+- every DI carries its pulse counter as a sub-channel; the «Кнопка»-mode press
+  counters are offered only while the live cache shows them;
+- the named-control families come from frozen tables (`DTV_*`, `CAREL_*`,
+  `CE02M3_*`, `CONTROLLER_*` in `topics.py`, `LED_*` in `inventory.py`, each
+  pinned to its home by tests). A family with no table falls back to the
+  controls its live cache carries — the bridge polls it, so what it publishes
+  is the truth;
+- the board's own four controls are always offered, so the picker is never
+  empty on a fresh board.
+
+Validating tests: `opt/sa02m-alice/tests/test_inventory.py`,
+`test_topics_inventory.py`, `scripts/dev/sh-modal-layout-smoke.mjs`.
+
 ### Auto-provision (DTV / CE-02m-3)
 
 The Yandex-profile client watches `/devices/+/meta/name` and

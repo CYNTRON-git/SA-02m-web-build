@@ -39,8 +39,8 @@
     'Добавить виджет': 'Add widget',
     'Экспорт Excel': 'Export Excel',
     'Пиковые нагрузки СЭ · U/I': 'CE peak loads · U/I',
-    'Нет устройств ДТВ / СЭ-02м-3 в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.':
-      'No DTV / CE-02m-3 devices in MQTT. Add them on the MQTT tab — widgets appear here automatically.',
+    'Нет устройств ДТВ / СЭ-02м-3 / Carel / MR-02m в MQTT. Добавьте их на вкладке MQTT — виджеты появятся здесь автоматически.':
+      'No DTV / CE-02m-3 / Carel / MR-02m devices in MQTT. Add them on the MQTT tab — widgets appear here automatically.',
     'Пока нет событий пиковых нагрузок': 'No peak-load events yet',
     'Добавить ранее удалённый виджет': 'Add a previously removed widget',
     'Доступны устройства, которые были удалены с вкладки (или снова видны в MQTT).':
@@ -328,6 +328,40 @@
     'Движение': 'Motion',
     'показания': 'readings',
     'показаний': 'readings',
+    // Channel picker #sh-pick-modal (1.0.6.38) — the binding row's <select>
+    // of raw topic paths became a button plus a searchable device tree.
+    'Выбор канала': 'Pick a channel',
+    'Выбрать канал': 'Pick a channel',
+    'Выбрать канал…': 'Pick a channel…',
+    'Поиск канала': 'Channel search',
+    'Модуль, модель, COM, адрес, канал': 'Module, model, COM, address, channel',
+    'Вид канала': 'Channel kind',
+    'неизвестный топик': 'unknown topic',
+    'Вентустановка Carel': 'Carel air handling unit',
+    'Контроллер SA-02m': 'SA-02m controller',
+    'адрес': 'address',
+    'встроенные выходы': 'onboard outputs',
+    'чт/зп': 'read/write',
+    'чтение': 'read-only',
+    'отключён в MQTT': 'disabled in MQTT',
+    'занят': 'in use',
+    'счётчики': 'counters',
+    'рекомендуется': 'recommended',
+    'обнаружено': 'detected',
+    'Тип модуля определён по опросу; в YAML указан другой':
+      'The module type was detected by polling; the YAML declares another one',
+    'Ничего не найдено': 'Nothing found',
+    'Список каналов недоступен — введите топик вручную':
+      'Channel list unavailable — enter the topic by hand',
+    'Устройства не настроены — добавьте модуль во вкладке «Каналы MQTT»':
+      'No devices configured — add a module on the «MQTT channels» tab',
+    'Занятые каналы помечены — один выход можно привязать к нескольким устройствам.':
+      'Channels already in use are marked — one output may be bound to several devices.',
+    // MQTT tab: the yaml/detected module-type disagreement banner.
+    'Тип модуля в YAML': 'Module type in the YAML',
+    'модуль ответил': 'the module answered',
+    'Каналы ниже нарисованы по YAML — исправьте тип модуля и сохраните.':
+      'The channels below are drawn from the YAML — fix the module type and save.',
     'Нужно хотя бы одно показание': 'At least one reading is required',
     'Укажите MQTT-топик для каждого показания': 'Select an MQTT topic for every reading',
     'Два показания одного вида в одном устройстве — выберите разные':

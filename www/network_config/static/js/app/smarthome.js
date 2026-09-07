@@ -25,8 +25,12 @@ function shRefresh() {
   return window.sa02mAliceRefresh();
 }
 
+// The STRUCTURED inventory (1.0.6.38): the picker groups by COM port →
+// module → DI/DO/AI/AO, which a flat topic list cannot express. The CGI still
+// answers the flat shape without the parameter, so an older cached page keeps
+// working against a new board.
 async function shTopics() {
-  const r = await fetch('cgi-bin/sa02m_alice_topics.cgi', {
+  const r = await fetch('cgi-bin/sa02m_alice_topics.cgi?format=inventory', {
     method: 'GET',
     credentials: 'same-origin',
   });
@@ -439,9 +443,16 @@ function shRowPair(kind, rawItem) {
 // render must never read or rebuild it, or a poll landing mid-edit would wipe
 // half-filled rows (the renderer-owned-container trap).
 
-// Picker topics, cached once per modal open so a topic refresh never rebuilds
-// an existing row or resets the value chosen in it.
+// Picker inventory, cached once per modal open so a refresh never rebuilds an
+// existing row or resets the value chosen in it.
 let shTopicList = [];
+// The inventory's devices, and `topic → {devTitle, devShort, chLabel}` for the
+// row buttons. `shInvOk` false means the board could not answer: the picker
+// then falls back to hand entry and keeps whatever is already bound
+// (fail-closed — a picker outage may not silently blank a binding).
+let shInvDevices = [];
+let shInvOk = false;
+let shTopicMeta = {};
 // True once the operator picks a device type by hand — the first row's kind
 // stops auto-filling it, so an edited device is never silently retyped.
 let shDtypeTouched = false;
@@ -458,15 +469,54 @@ function shRowKindOptions(selected) {
   }).join('');
 }
 
-function shRowTopicOptions(topic) {
-  const list = shTopicList.slice();
-  // A bound topic missing from the live list stays selectable — editing the
-  // name alone must never silently retarget the binding.
-  if (topic && list.indexOf(topic) === -1) list.push(topic);
-  return list.map(function (t) {
-    return '<option value="' + escHtml(t) + '"' + (t === topic ? ' selected' : '') + '>' +
-      escHtml(t) + '</option>';
-  }).join('');
+// ── Binding target: the button and its label ────────────────────────────────
+// The topic lives in a hidden input, so shCollectRows()/validation read the
+// row exactly as they did when it was a <select>. Until 1.0.6.38 the row WAS
+// a select of raw paths (`/devices/mr02m-COM3-10/controls/do_3`): every option
+// shared the 25-character prefix, nothing said which module or channel that
+// was, and a module whose yaml carried no `channels` block offered one option
+// for its fourteen channels.
+
+// A bound topic missing from the inventory keeps its own label: editing the
+// name alone must never silently retarget — or lose — the binding.
+function shBindLabel(topic) {
+  if (!topic) return uiT('Выбрать канал…');
+  const meta = shTopicMeta[topic];
+  if (!meta) return topic + ' · ' + uiT('неизвестный топик');
+  const parts = [meta.devTitle];
+  if (meta.devShort) parts.push(meta.devShort);
+  parts.push(meta.chLabel);
+  return parts.join(' · ');
+}
+
+function shBindButtonHtml(topic) {
+  const known = !topic || !!shTopicMeta[topic];
+  return '<input type="hidden" class="sh-row-topic" value="' + escHtml(topic || '') + '">' +
+    '<button type="button" class="btn btn-sm sh-row-bind' + (topic ? '' : ' is-empty') +
+    (known ? '' : ' is-unknown') + '" data-act="pick"' +
+    ' aria-label="' + escHtml(uiT('Выбрать канал')) + '"' +
+    ' title="' + escHtml(topic || uiT('Выбрать канал')) + '">' +
+    escHtml(shBindLabel(topic)) + '</button>';
+}
+
+// Refresh a row's button after its hidden input changed (pick / inventory
+// arriving after the row was built).
+function shSyncBindButton(row) {
+  if (!row) return;
+  const input = row.querySelector('.sh-row-topic');
+  const btn = row.querySelector('.sh-row-bind');
+  if (!input || !btn) return;
+  const topic = input.value || '';
+  btn.textContent = shBindLabel(topic);
+  btn.title = topic || uiT('Выбрать канал');
+  btn.classList.toggle('is-empty', !topic);
+  btn.classList.toggle('is-unknown', !!topic && !shTopicMeta[topic]);
+}
+
+function shSyncAllBindButtons() {
+  const host = shRowsHost();
+  if (!host) return;
+  host.querySelectorAll('.sh-bind-row').forEach(shSyncBindButton);
 }
 
 function shAddRow(kind, topic, rawItem) {
@@ -487,8 +537,7 @@ function shAddRow(kind, topic, rawItem) {
   row.innerHTML =
     '<select class="sh-row-kind" aria-label="Вид показания"' + (locked ? ' disabled' : '') + '>' +
     kindHtml + '</select>' +
-    '<select class="sh-row-topic" aria-label="MQTT-топик">' +
-    shRowTopicOptions(topic || '') + '</select>' +
+    shBindButtonHtml(topic || '') +
     '<button type="button" class="btn btn-sm btn-danger sh-row-del" data-act="row-del"' +
     ' aria-label="Удалить показание" title="Удалить показание">✕</button>';
   // JS properties, never data-attributes: the stored item must not be
@@ -582,7 +631,12 @@ function shSeedRowsForType(type) {
 }
 
 function shRowsClick(e) {
-  const btn = e.target && e.target.closest ? e.target.closest('button[data-act="row-del"]') : null;
+  const act = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+  if (act && act.getAttribute('data-act') === 'pick') {
+    shPickOpen(act.closest('.sh-bind-row'));
+    return;
+  }
+  const btn = act && act.getAttribute('data-act') === 'row-del' ? act : null;
   if (!btn) return;
   const host = shRowsHost();
   const row = btn.closest('.sh-bind-row');
@@ -651,12 +705,6 @@ function shRowsChange(e) {
   if (row) row._shTouched = true;
   // A kind change may reveal or hide the «Инвертировать» field.
   if (sel && sel.classList && sel.classList.contains('sh-row-kind')) shSyncInvertedField();
-  if (sel && sel.classList && sel.classList.contains('sh-row-topic')) {
-    shApplyCarelTopic(row, sel.value);
-    shApplyLedTopic(row, sel.value);
-    shSyncInvertedField();
-    return;
-  }
   if (!sel || !sel.classList || !sel.classList.contains('sh-row-kind')) return;
   if (shDtypeTouched) return;
   const host = shRowsHost();
@@ -717,6 +765,409 @@ function shRowItem(row) {
     return item;
   }
   return shMakeManagedItem(row.kind, row.topic, row.inverted);
+}
+
+// ── Channel picker (#sh-pick-modal) ─────────────────────────────────────────
+// A dialog with a search field and a one-at-a-time device accordion (the MQTT
+// tab's pattern), not a longer <select>: the operator picks a MODULE first and
+// then a channel inside it, which is how the hardware is wired and labelled.
+
+// Channel groups, in render order. `other` holds the named controls of the
+// non-modular families (a DTV's sensors, a Carel unit's points) — real
+// channels with no DI/DO/AI/AO number.
+const SH_PICK_GROUPS = [
+  { key: 'di', short: 'DI', label: 'Дискретные входы' },
+  { key: 'do', short: 'DO', label: 'Дискретные выходы' },
+  { key: 'ai', short: 'AI', label: 'Аналоговые входы' },
+  { key: 'ao', short: 'AO', label: 'Аналоговые выходы' },
+  { key: 'other', short: '', label: 'Показания и команды' },
+  { key: 'diag', short: '', label: 'Диагностика' },
+];
+// Chips filter by group; «Все» is the default and stays the default even when
+// a reading kind has a preference. A kind only ever HINTS: the operator
+// legitimately binds an AI to «Температура» and a DI to «Движение», and one
+// board has both, so a kind may not cut the list (contract §Bindings).
+const SH_PICK_CHIPS = [
+  { key: '', label: 'Все' },
+  { key: 'do', label: 'DO' },
+  { key: 'di', label: 'DI' },
+  { key: 'ai', label: 'AI' },
+  { key: 'ao', label: 'AO' },
+];
+
+// Which groups a reading kind is usually bound to — the groups shown first,
+// with a «рекомендуется» note. Nothing is hidden.
+function shPreferredGroups(kind) {
+  const spec = SH_KINDS[kind];
+  if (!spec) return [];
+  if (spec.kindOf === 'cap') return ['do', 'di'];
+  if (spec.kindOf === 'range') return ['ao', 'other'];
+  if (spec.kindOf === 'event') return ['di', 'other'];
+  return ['ai', 'other'];
+}
+
+let shPickRow = null;      // the row being (re)bound
+let shPickOpenDev = '';    // the one expanded device id
+let shPickChip = '';
+let shPickQuery = '';
+
+function shPickDevTitle(dev) {
+  const stored = (dev.name && String(dev.name).trim()) || '';
+  if (dev.type === 'mr02m') {
+    const sig = dev.model_ru || dev.model || '';
+    return uiT('МР-02м') + (sig ? ' ' + sig : '');
+  }
+  if (dev.type === 'dtv') return uiT('ДТВ-RS-485');
+  if (dev.type === 'ce02m3') return uiT('СЭ-02м-3');
+  if (dev.type === 'carel') return stored || uiT('Вентустановка Carel');
+  if (dev.type === 'controller') return uiT('Контроллер SA-02m');
+  return stored || dev.id;
+}
+
+// «COM3:10» — the compact form for the row button.
+function shPickDevShort(dev) {
+  if (!dev.port) return '';
+  return dev.port + (dev.address != null && dev.address !== '' ? ':' + dev.address : '');
+}
+
+// «COM3 · адрес 10» — the card's second line.
+function shPickDevSub(dev) {
+  const parts = [];
+  if (dev.port) parts.push(dev.port);
+  if (dev.address != null && dev.address !== '') parts.push(uiT('адрес') + ' ' + dev.address);
+  if (dev.type === 'controller') parts.push(uiT('встроенные выходы'));
+  return parts.join(' · ');
+}
+
+function shPickChannels(dev, group) {
+  return ((dev.channels || {})[group]) || [];
+}
+
+// «6 DO · 8 DI» — what the module is, before it is expanded.
+function shPickDevBadges(dev) {
+  return SH_PICK_GROUPS.filter(function (g) { return g.short; }).map(function (g) {
+    const n = shPickChannels(dev, g.key).length;
+    return n ? n + ' ' + g.short : '';
+  }).filter(Boolean);
+}
+
+// Every topic already bound, with the device names holding it. The same DO in
+// two Alice devices is legitimate (a relay in two scenes), so this marks and
+// never blocks.
+function shOccupancy() {
+  const map = {};
+  const add = function (topic, name) {
+    if (!topic) return;
+    if (!map[topic]) map[topic] = [];
+    if (map[topic].indexOf(name) === -1) map[topic].push(name);
+  };
+  Object.keys(shDevCache).forEach(function (id) {
+    const dev = shDevCache[id];
+    const name = (dev && dev.name) || id;
+    shDetectRows(dev).forEach(function (r) { add(r.topic, name); });
+  });
+  return map;
+}
+
+function shPickChipsHtml() {
+  return SH_PICK_CHIPS.map(function (c) {
+    return '<button type="button" class="sh-pick-chip' +
+      (c.key === shPickChip ? ' is-on' : '') + '" data-act="chip" data-chip="' +
+      escHtml(c.key) + '">' + escHtml(uiT(c.label)) + '</button>';
+  }).join('');
+}
+
+// `do_3` → «DO3». A named control (`alarm_led`, `supply_temp`) and a DI
+// sub-counter (`di_2_short`) have no terminal number of their own — their
+// title already names the channel they belong to.
+function shChTagLabel(tag) {
+  const m = /^(di|do|ai|ao)_(\d+)$/.exec(String(tag || ''));
+  return m ? m[1].toUpperCase() + m[2] : '';
+}
+
+function shPickChannelHtml(dev, ch, occupied, prefer) {
+  const busy = occupied[ch.topic];
+  const cls = 'sh-pick-ch' + (busy ? ' is-busy' : '') + (prefer ? ' is-pref' : '');
+  const subs = (ch.sub || []).length;
+  const tag = shChTagLabel(ch.tag);
+  const title = String(ch.title || ch.tag || '');
+  // The bridge's default title for a channel IS its tag («DO3»), so printing
+  // both would read «DO3  DO3»; the title earns its column only when it says
+  // something the tag column does not. A named control («power», «unit_on»,
+  // a DI counter) has NO tag column — only `<kind>_<n>` gets one — so there
+  // the title is the only label the row has, and dropping it left the operator
+  // an anonymous row (bench 1.135: the LED driver's whole command group).
+  const named = !!title && title !== tag && !(tag && title === ch.tag);
+  return '<div class="sh-pick-ch-wrap"><div class="sh-pick-ch-line">' +
+    '<button type="button" class="' + cls + '" data-act="ch" data-topic="' +
+    escHtml(ch.topic) + '" title="' + escHtml(ch.topic) + '">' +
+    (tag ? '<span class="sh-pick-ch-tag">' + escHtml(tag) + '</span>' : '') +
+    '<span class="sh-pick-ch-title">' + (named ? escHtml(title) : '') + '</span>' +
+    '<span class="sh-pick-ch-rw">' + escHtml(ch.rw === 'rw' ? uiT('чт/зп') : uiT('чтение')) + '</span>' +
+    (ch.enabled === false ? '<span class="sh-pick-ch-off">' + escHtml(uiT('отключён в MQTT')) + '</span>' : '') +
+    (busy ? '<span class="sh-pick-ch-busy">' + escHtml(uiT('занят') + ': ' + busy.join(', ')) + '</span>' : '') +
+    '</button>' +
+    (subs ? '<button type="button" class="sh-pick-subs-toggle" data-act="subs"' +
+      ' aria-expanded="false">' + escHtml(uiT('счётчики')) + ' (' + subs + ')</button>' : '') +
+    '</div>' +
+    (subs ? '<div class="sh-pick-subs" hidden>' +
+      ch.sub.map(function (s) {
+        return shPickChannelHtml(dev, s, occupied, false);
+      }).join('') + '</div>' : '') +
+    '</div>';
+}
+
+// The group order is FIXED (DI → DO → AI → AO → named → diagnostics): it is
+// the order of the module's own terminal block, so the operator reads the
+// dialog the way the wires are numbered. The reading kind only marks its
+// groups «рекомендуется» — it never reorders and never hides.
+function shPickGroupsHtml(dev, occupied, prefer) {
+  return SH_PICK_GROUPS.map(function (g) {
+    if (shPickChip && g.key !== shPickChip) return '';
+    const chans = shPickChannels(dev, g.key);
+    if (!chans.length) return '';
+    const isPref = prefer.indexOf(g.key) !== -1;
+    // Diagnostics are bindable but never what the operator came for.
+    const collapsed = g.key === 'diag' && !shPickChip;
+    return '<div class="sh-pick-group' + (collapsed ? ' is-collapsed' : '') + '">' +
+      '<button type="button" class="sh-pick-group-head" data-act="group"' +
+      ' aria-expanded="' + (collapsed ? 'false' : 'true') + '">' +
+      '<span class="sh-pick-arrow">' + (collapsed ? '▸' : '▾') + '</span>' +
+      escHtml(uiT(g.label)) +
+      (isPref ? ' <span class="sh-pick-pref">' + escHtml(uiT('рекомендуется')) + '</span>' : '') +
+      '</button>' +
+      '<div class="sh-pick-group-body"' + (collapsed ? ' hidden' : '') + '>' +
+      chans.map(function (ch) {
+        return shPickChannelHtml(dev, ch, occupied, isPref);
+      }).join('') + '</div></div>';
+  }).join('');
+}
+
+// The yaml says one module, the module itself answered another (inventory
+// `model_source: detected`). The picker follows the module — and says so,
+// because the yaml is what the MQTT tab shows.
+function shPickMismatchHtml(dev) {
+  if (dev.model_source !== 'detected' || !dev.yaml_model || dev.yaml_model === dev.model) return '';
+  return '<span class="sh-pick-mismatch" title="' +
+    escHtml(uiT('Тип модуля определён по опросу; в YAML указан другой')) + '">' +
+    escHtml('YAML: ' + dev.yaml_model + ' · ' + uiT('обнаружено') + ': ' + dev.model) + '</span>';
+}
+
+function shPickDevHtml(dev, occupied, prefer) {
+  const open = dev.id === shPickOpenDev;
+  const badges = shPickDevBadges(dev);
+  return '<div class="sh-pick-dev' + (open ? ' is-open' : '') + '" data-id="' + escHtml(dev.id) + '">' +
+    '<button type="button" class="sh-pick-dev-head" data-act="dev" aria-expanded="' +
+    (open ? 'true' : 'false') + '">' +
+    '<span class="sh-pick-arrow">' + (open ? '▾' : '▸') + '</span>' +
+    '<span class="sh-pick-dev-title">' + escHtml(shPickDevTitle(dev)) + '</span>' +
+    '<span class="sh-pick-dev-sub">' + escHtml(shPickDevSub(dev)) + '</span>' +
+    badges.map(function (b) {
+      return '<span class="badge sh-pick-badge">' + escHtml(b) + '</span>';
+    }).join('') + shPickMismatchHtml(dev) + '</button>' +
+    '<div class="sh-pick-dev-body"' + (open ? '' : ' hidden') + '>' +
+    (open ? shPickGroupsHtml(dev, occupied, prefer) : '') + '</div></div>';
+}
+
+// Search matches the words on the card AND on the channel — module name,
+// model, COM, address, channel tag, channel title (as in Home Assistant, a
+// query flattens the tree into results).
+function shPickMatches(dev, ch, query) {
+  const hay = [
+    dev.id, dev.name, dev.model, dev.model_ru, dev.port,
+    dev.address == null ? '' : String(dev.address),
+    shPickDevTitle(dev), ch.tag, ch.title,
+  ].join(' ').toLowerCase();
+  return query.split(/\s+/).every(function (word) {
+    return !word || hay.indexOf(word) !== -1;
+  });
+}
+
+function shPickSearchHtml(occupied, prefer) {
+  const query = shPickQuery.toLowerCase();
+  const out = [];
+  shInvDevices.forEach(function (dev) {
+    SH_PICK_GROUPS.forEach(function (g) {
+      if (shPickChip && g.key !== shPickChip) return;
+      shPickChannels(dev, g.key).forEach(function (ch) {
+        const flat = [ch].concat(ch.sub || []);
+        flat.forEach(function (item) {
+          if (!shPickMatches(dev, item, query)) return;
+          const busy = occupied[item.topic];
+          out.push('<button type="button" class="sh-pick-hit' + (busy ? ' is-busy' : '') +
+            (prefer.indexOf(g.key) !== -1 ? ' is-pref' : '') +
+            '" data-act="ch" data-topic="' + escHtml(item.topic) + '" title="' +
+            escHtml(item.topic) + '">' +
+            '<span class="sh-pick-hit-dev">' + escHtml(shPickDevTitle(dev)) +
+            (shPickDevShort(dev) ? ' · ' + escHtml(shPickDevShort(dev)) : '') + '</span>' +
+            '<span class="sh-pick-hit-ch">' + escHtml(item.title || item.tag) + '</span>' +
+            (busy ? '<span class="sh-pick-ch-busy">' + escHtml(uiT('занят') + ': ' + busy.join(', ')) +
+              '</span>' : '') + '</button>');
+        });
+      });
+    });
+  });
+  if (!out.length) {
+    return '<p class="field-hint">' + escHtml(uiT('Ничего не найдено')) + '</p>';
+  }
+  return out.join('');
+}
+
+function shPickRender() {
+  const list = $('sh-pick-list');
+  const chips = $('sh-pick-chips');
+  if (chips) chips.innerHTML = shPickChipsHtml();
+  if (!list) return;
+  const manual = $('sh-pick-manual');
+  if (!shInvOk) {
+    // Fail-closed: the board could not answer, so the picker offers hand
+    // entry and the bound topic stays exactly as it is.
+    list.innerHTML = '<p class="field-hint">' +
+      escHtml(uiT('Список каналов недоступен — введите топик вручную')) + '</p>';
+    if (manual) manual.hidden = false;
+    return;
+  }
+  if (manual) manual.hidden = true;
+  if (!shInvDevices.length) {
+    list.innerHTML = '<p class="field-hint">' +
+      escHtml(uiT('Устройства не настроены — добавьте модуль во вкладке «Каналы MQTT»')) + '</p>';
+    return;
+  }
+  const occupied = shOccupancy();
+  const prefer = shPreferredGroups(shPickKind());
+  list.innerHTML = shPickQuery.trim()
+    ? shPickSearchHtml(occupied, prefer)
+    : shInvDevices.map(function (dev) {
+        return shPickDevHtml(dev, occupied, prefer);
+      }).join('');
+}
+
+function shPickKind() {
+  const sel = shPickRow && shPickRow.querySelector('.sh-row-kind');
+  return (sel && sel.value) || '';
+}
+
+function shPickCurrentTopic() {
+  const input = shPickRow && shPickRow.querySelector('.sh-row-topic');
+  return (input && input.value) || '';
+}
+
+function shPickOpen(row) {
+  if (!row) return;
+  const m = $('sh-pick-modal');
+  if (!m) return;
+  shPickRow = row;
+  shPickQuery = '';
+  shPickChip = '';
+  const current = shPickCurrentTopic();
+  const meta = shTopicMeta[current];
+  // Open on the device the row is already bound to — the common case is
+  // "same module, other channel".
+  shPickOpenDev = meta ? meta.deviceId : (shInvDevices.length === 1 ? shInvDevices[0].id : '');
+  const search = $('sh-pick-search');
+  if (search) search.value = '';
+  const manualIn = $('sh-pick-manual-in');
+  if (manualIn) manualIn.value = current;
+  m.removeAttribute('hidden');
+  shPickRender();
+  if (search) search.focus();
+}
+
+function shPickClose() {
+  const m = $('sh-pick-modal');
+  if (m) m.setAttribute('hidden', '');
+  shPickRow = null;
+}
+
+function shPickIsOpen() {
+  const m = $('sh-pick-modal');
+  return !!m && !m.hasAttribute('hidden');
+}
+
+function shPickBackdrop(e) {
+  if (e.target && e.target.id === 'sh-pick-modal') shPickClose();
+}
+
+// Writing the topic is the ONLY thing a pick changes: instance, unit, scale
+// and every hand-added key of a stored item travel through untouched
+// (shRowItem's round-trip guarantee).
+function shApplyPickedTopic(row, topic) {
+  const input = row && row.querySelector('.sh-row-topic');
+  if (!input) return;
+  input.value = topic;
+  row._shTouched = true;
+  shSyncBindButton(row);
+  shApplyCarelTopic(row, topic);
+  shApplyLedTopic(row, topic);
+  shSyncInvertedField();
+}
+
+function shPickApply(topic) {
+  if (!topic || !shPickRow) return;
+  shApplyPickedTopic(shPickRow, topic);
+  shPickClose();
+}
+
+function shPickManualApply() {
+  const input = $('sh-pick-manual-in');
+  const topic = (input && input.value || '').trim();
+  if (!topic) return;
+  shPickApply(topic);
+}
+
+function shPickListClick(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+  if (!btn) return;
+  const act = btn.getAttribute('data-act');
+  if (act === 'ch') {
+    shPickApply(btn.getAttribute('data-topic') || '');
+    return;
+  }
+  if (act === 'dev') {
+    const card = btn.closest('.sh-pick-dev');
+    const id = card && card.getAttribute('data-id');
+    // One device at a time: on a phone that is "tapped it → only its
+    // channels", and the way back is one tap, not a second screen.
+    shPickOpenDev = (id === shPickOpenDev) ? '' : (id || '');
+    shPickRender();
+    return;
+  }
+  if (act === 'group' || act === 'subs') {
+    const host = act === 'group'
+      ? btn.closest('.sh-pick-group')
+      : btn.closest('.sh-pick-ch-wrap');
+    const body = host && host.querySelector(
+      act === 'group' ? ':scope > .sh-pick-group-body' : ':scope > .sh-pick-subs');
+    if (!body) return;
+    const show = body.hidden;
+    body.hidden = !show;
+    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (act === 'group') {
+      const arrow = btn.querySelector('.sh-pick-arrow');
+      if (arrow) arrow.textContent = show ? '▾' : '▸';
+      host.classList.toggle('is-collapsed', !show);
+    }
+  }
+}
+
+function shPickChipsClick(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-act="chip"]') : null;
+  if (!btn) return;
+  shPickChip = btn.getAttribute('data-chip') || '';
+  shPickRender();
+}
+
+function shPickSearchInput() {
+  const input = $('sh-pick-search');
+  shPickQuery = (input && input.value) || '';
+  shPickRender();
+}
+
+function shPickSearchKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = document.querySelector('#sh-pick-list button[data-act="ch"]');
+  if (first) shPickApply(first.getAttribute('data-topic') || '');
 }
 
 // ── Type / icon ─────────────────────────────────────────────────────────────
@@ -911,13 +1362,65 @@ function shOnData(d) {
 // ── Actions ────────────────────────────────────────────────────────────────
 // Fills the cached picker list ONLY — existing rows are never rebuilt, so a
 // refresh cannot reset a topic the operator already chose.
+function shBuildTopicMeta(devices) {
+  const meta = {};
+  devices.forEach(function (dev) {
+    const devTitle = shPickDevTitle(dev);
+    const devShort = shPickDevShort(dev);
+    SH_PICK_GROUPS.forEach(function (g) {
+      shPickChannels(dev, g.key).forEach(function (ch) {
+        [ch].concat(ch.sub || []).forEach(function (item) {
+          meta[item.topic] = {
+            deviceId: dev.id,
+            devTitle: devTitle,
+            devShort: devShort,
+            chLabel: item.title || item.tag,
+            group: g.key,
+          };
+        });
+      });
+    });
+  });
+  return meta;
+}
+
 async function shLoadTopics() {
   try {
     const d = await shTopics();
-    shTopicList = (d && d.topics) || [];
+    if (d && d.ok && Array.isArray(d.devices)) {
+      shInvDevices = d.devices;
+      shInvOk = true;
+      shTopicMeta = shBuildTopicMeta(shInvDevices);
+      shTopicList = Object.keys(shTopicMeta).sort();
+    } else if (d && Array.isArray(d.topics)) {
+      // A flat answer — a board whose CGI predates `?format=inventory`. There
+      // is no structure to group by, so the picker offers hand entry with the
+      // known topics as suggestions rather than an empty tree.
+      shInvDevices = [];
+      shInvOk = false;
+      shTopicMeta = {};
+      shTopicList = d.topics;
+    } else {
+      shInvOk = false;
+      shInvDevices = [];
+    }
   } catch (e) {
-    /* ignore — an empty list still lets a bound topic show through */
+    // Fail-closed: whatever is bound stays bound and stays visible.
+    shInvOk = false;
+    shInvDevices = [];
   }
+  shSyncManualSuggestions();
+  shSyncAllBindButtons();
+}
+
+// Hand-entry suggestions (fail-closed mode only) — a datalist, so the field
+// stays free text.
+function shSyncManualSuggestions() {
+  const list = $('sh-pick-manual-list');
+  if (!list) return;
+  list.innerHTML = shTopicList.map(function (t) {
+    return '<option value="' + escHtml(t) + '"></option>';
+  }).join('');
 }
 
 async function shAddRoom() {
@@ -1195,6 +1698,10 @@ async function shDeleteDevice(id) {
 // Reuses the shared mqtt-modal markup/behaviour, not a new one.
 function shModalEsc(e) {
   if (e.key !== 'Escape') return;
+  // Innermost layer first: the picker sits on top of #sh-modal, so Esc there
+  // closes only the picker (checked here rather than in a second document
+  // listener — listener order would decide it otherwise).
+  if (shPickIsOpen()) { e.preventDefault(); e.stopPropagation(); shPickClose(); return; }
   if (shTitleEditing) { e.preventDefault(); e.stopPropagation(); shCancelTitleEdit(); return; }
   shCloseModal();
 }
@@ -1215,6 +1722,7 @@ async function shOpenModal() {
 function shCloseModal() {
   const m = $('sh-modal');
   if (m) m.setAttribute('hidden', '');
+  shPickClose();
   document.removeEventListener('keydown', shModalEsc);
   shCancelEdit();
 }
@@ -1246,6 +1754,15 @@ function shInit() {
   if (rows) {
     rows.addEventListener('click', shRowsClick);
     rows.addEventListener('change', shRowsChange);
+  }
+  const pickList = $('sh-pick-list');
+  if (pickList) pickList.addEventListener('click', shPickListClick);
+  const pickChips = $('sh-pick-chips');
+  if (pickChips) pickChips.addEventListener('click', shPickChipsClick);
+  const pickSearch = $('sh-pick-search');
+  if (pickSearch) {
+    pickSearch.addEventListener('input', shPickSearchInput);
+    pickSearch.addEventListener('keydown', shPickSearchKey);
   }
   const dtype = $('sh-dev-type');
   if (dtype) {
@@ -1281,6 +1798,11 @@ function shRefreshI18n() {
       if (ru) opt.textContent = uiT(ru);
     });
   }
+  // The picker's device titles are composed (uiT at build time), so they are
+  // rebuilt here rather than walked by the DICT observer.
+  if (shInvOk) shTopicMeta = shBuildTopicMeta(shInvDevices);
+  shSyncAllBindButtons();
+  if (shPickIsOpen()) shPickRender();
   if (_shLastData) shOnData(_shLastData);
   if (shEditId && shDevCache[shEditId]) shSetModalTitle(shDevCache[shEditId].name || '', true);
   else shSetModalTitle('', false);
@@ -1291,6 +1813,9 @@ window.refreshSmartHomeI18n = shRefreshI18n;
 window.shOpenModal = shOpenModal;
 window.shCloseModal = shCloseModal;
 window.shModalBackdrop = shModalBackdrop;
+window.shPickClose = shPickClose;
+window.shPickBackdrop = shPickBackdrop;
+window.shPickManualApply = shPickManualApply;
 window.shAddRow = shAddRow;
 window.shAddDevice = shAddDevice;
 window.shCancelEdit = shCancelEdit;
