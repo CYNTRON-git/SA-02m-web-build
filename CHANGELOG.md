@@ -40,6 +40,13 @@
 
 ### Обновление
 
+- **«Применить» из интернета было кликабельно при «Обновлений нет».**
+  `.btn { display:inline-flex }` перекрывал UA `[hidden]`, кнопка оставалась
+  видимой и активной при текущей 1.0.6.37 > GitHub `origin/main` 1.0.6.29.
+  Сравнение — dotted integers (`compareSemver`); Apply disabled, POST не
+  уходит; CGI `E_NO_UPDATE` если check.json уже current ≥ available.
+  Офлайн-пакет — отдельная кнопка. file: `status.js`, `index.html`,
+  `main.css`, `web_update_apply.cgi`. Тест: `scripts/dev/test-web-update-semver.mjs`.
 - **Отвязка Алисы, когда шлюз уже не знает контроллер.** Живой
   `POST /controller/unlink` отвечает HTTP 404 `controller not linked` (запись
   в облаке уже снята). urllib поднимает `HTTP Error 404: Not Found`, плата
@@ -82,6 +89,8 @@
 
 ### Тесты
 
+- `test-web-update-semver.mjs`: 1.0.6.37 > 1.0.6.29 → Apply не предлагать;
+  `update_available:true` не перекрывает semver.
 - `TestApplyReload`: ожидание подписки догнало контракт `uptime_s` из 1.0.6.36.
 - Socket.IO: `wait_timeout` берёт `SIO_CONNECT_TIMEOUT_S`; один wait_timeout не пишет `gateway_unreachable`.
 - Пакер: `test_packer_frozen_v1_for_min_updater_1_0_5_66` — манифест для 1.0.5.66 без опциональных ключей.

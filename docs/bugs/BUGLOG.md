@@ -5,6 +5,16 @@
 
 ---
 
+## [2026-09-07 15:41] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/cgi-bin/web_update_apply.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Обновление» показывала «Обновлений нет» (текущая 1.0.6.37, доступная 1.0.6.29), но кнопка «Применить» канала «Из интернета» оставалась кликабельной.
+**Причина:** JS ставил `hidden` на `#web-upd-apply-btn`, но `.btn { display:inline-flex }` перекрывал UA-правило `[hidden]`; `disabled` не выставлялся. Клик уходил в `web_update_apply.cgi`.
+**Исправление:** dotted-integer `compareSemver` (current ≥ available → нет обновления); интернет-Apply `disabled` + `pointer-events:none`; `applyWebUpdate()` / CGI `E_NO_UPDATE` не запускают GitHub OTA. Офлайн-пакет не трогали.
+
+---
+
 ## [2026-09-07 15:30] branch: 1.0.6.37
 
 **Файл(ы):** `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `etc/sa02m-update-runner.sh`

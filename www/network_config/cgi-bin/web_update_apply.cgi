@@ -329,6 +329,39 @@ if ! web_csrf_validate; then
   exit 0
 fi
 
+# Internet Apply only (this branch). Refuse when check.json already says
+# current ≥ GitHub available — file-package apply uses confirm_version above.
+CHECK_JSON="$LEGACY_STATEDIR/check.json"
+if [ -f "$CHECK_JSON" ] && command -v python3 >/dev/null 2>&1; then
+  if ! python3 - "$CHECK_JSON" <<'PY'
+import json, re, sys
+try:
+    j = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+def parse(v):
+    if v is None:
+        return None
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?", str(v).strip())
+    if not m:
+        return None
+    return [int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4) or 0)]
+
+dep, rem = parse(j.get("deployed_version")), parse(j.get("remote_version"))
+if dep is not None and rem is not None:
+    raise SystemExit(2 if dep >= rem else 0)
+if j.get("update_available") is False:
+    raise SystemExit(2)
+raise SystemExit(0)
+PY
+  then
+    _json_headers
+    printf '{"ok":false,"status":"error","error":"no_update","error_code":"E_NO_UPDATE","log":"Обновлений нет"}\n'
+    exit 0
+  fi
+fi
+
 _json_headers
 
 if _legacy_running; then

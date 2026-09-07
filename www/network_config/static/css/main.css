@@ -2392,6 +2392,11 @@ html[data-theme="light"] .alice-sh-summary a { color: var(--cyan-hover); }
   width: auto;
   min-width: 0;
 }
+/* .btn display:inline-flex outranks the UA [hidden] rule — internet Apply
+   stays visible and disabled when current ≥ available; keep hidden working
+   if a caller still sets the attribute. */
+#web-upd-apply-btn[hidden] { display: none !important; }
+#web-upd-apply-btn:disabled { pointer-events: none; cursor: not-allowed; }
 .web-upd-progress {
   display: flex;
   flex-direction: column;

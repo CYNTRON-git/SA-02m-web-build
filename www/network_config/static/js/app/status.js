@@ -1332,14 +1332,18 @@ function compareSemver(a, b) {
 }
 
 function webUpdResolveAvailable(j) {
+  if (!j || typeof j !== 'object') return null;
   const depVer = j.deployed_version != null ? String(j.deployed_version).trim() : '';
   const remVer = j.remote_version != null ? String(j.remote_version).trim() : '';
   if (depVer && remVer) {
     const cmp = compareSemver(depVer, remVer);
+    // Dotted-integer compare wins over update_available / commit fallback:
+    // current ≥ available (e.g. 1.0.6.37 vs origin/main 1.0.6.29) is not an update.
     if (cmp !== null) return cmp < 0;
+    return null;
   }
-  if (j.update_available === true) return true;
   if (j.update_available === false) return false;
+  if (j.update_available === true) return true;
   const rem = String(j.remote_commit || '').trim().toLowerCase();
   if (!rem) return null;
   const dep = String(j.deployed_commit || '').trim().toLowerCase();
@@ -1351,6 +1355,28 @@ function webUpdResolveAvailable(j) {
     return lab !== rem && !rem.startsWith(lab);
   }
   return null;
+}
+
+function webUpdStatusSaysNone() {
+  const st = document.getElementById('web-upd-status');
+  if (!st || st.hidden) return false;
+  const t = String(st.textContent || '').trim();
+  return /Обновлений нет/i.test(t) || /No updates available/i.test(t);
+}
+
+function webUpdOnlineApplyAllowed(j) {
+  return webUpdResolveAvailable(j) === true && !webUpdStatusSaysNone();
+}
+
+function webUpdSetOnlineApplyEnabled(canApply) {
+  _webUpdOnlineCanApply = !!canApply && !_webUpdTxnActive;
+  const applyBtn = document.getElementById('web-upd-apply-btn');
+  if (!applyBtn) return;
+  applyBtn.hidden = false;
+  applyBtn.disabled = !_webUpdOnlineCanApply;
+  applyBtn.setAttribute('aria-disabled', applyBtn.disabled ? 'true' : 'false');
+  applyBtn.title = applyBtn.disabled ? uiT('Обновлений нет') : '';
+  if (!_webUpdTxnActive) applyBtn.textContent = uiT('Применить');
 }
 
 function webUpdVersionDisplay(ver, commitOrLabel, fallbackLabel) {
@@ -1367,15 +1393,21 @@ function webUpdVersionDisplay(ver, commitOrLabel, fallbackLabel) {
 
 function applyWebUpdateCheckUI(j) {
   if (!j || typeof j !== 'object') return;
-  if (j.error === 'unauthorized') return;
+  if (j.error === 'unauthorized') {
+    webUpdSetOnlineApplyEnabled(false);
+    return;
+  }
+  _webUpdLastCheck = j;
   const depVer = webUpdVersionDisplay(j.deployed_version, j.deployed_commit, deployedRefDisplay(j));
   const remVer = webUpdVersionDisplay(j.remote_version, j.remote_commit, null);
   setText('web-upd-deployed-ver', depVer);
   setText('web-upd-remote-ver', remVer);
   setText('web-upd-checked', fmtWebUpdChecked(j.checked_at));
   const st = document.getElementById('web-upd-status');
-  const applyBtn = document.getElementById('web-upd-apply-btn');
-  if (!st) return;
+  if (!st) {
+    webUpdSetOnlineApplyEnabled(webUpdOnlineApplyAllowed(j));
+    return;
+  }
   st.classList.remove('is-ok', 'is-warn', 'is-err', 'is-muted');
   const emsg = j.error && j.error !== 'no_cache_yet' ? String(j.error) : '';
   const ua = webUpdResolveAvailable(j);
@@ -1383,22 +1415,20 @@ function applyWebUpdateCheckUI(j) {
     st.textContent = 'Доступно обновление';
     st.classList.add('is-ok');
     st.hidden = false;
-    if (applyBtn) applyBtn.hidden = false;
   } else if (ua === false) {
     st.textContent = 'Обновлений нет';
     st.classList.add('is-muted');
     st.hidden = false;
-    if (applyBtn) applyBtn.hidden = true;
   } else if (emsg && !j.remote_commit) {
     st.textContent = 'Проверка не удалась.';
     st.classList.add('is-err');
     st.hidden = false;
-    if (applyBtn) applyBtn.hidden = true;
   } else {
     st.textContent = '';
     st.hidden = true;
-    if (applyBtn) applyBtn.hidden = true;
   }
+  // Internet Apply only — file-package apply is a different control.
+  webUpdSetOnlineApplyEnabled(ua === true);
 }
 
 function loadWebUpdateStatus() {
@@ -1408,7 +1438,7 @@ function loadWebUpdateStatus() {
   }, 8000)
     .then(function (r) { return r.json(); })
     .then(applyWebUpdateCheckUI)
-    .catch(function () { /* вкладка открыта без бэкенда */ });
+    .catch(function () { webUpdSetOnlineApplyEnabled(false); });
 }
 
 function checkWebUpdatesManual() {
@@ -1435,6 +1465,7 @@ function checkWebUpdatesManual() {
       }
     })
     .catch(function (e) {
+      webUpdSetOnlineApplyEnabled(false);
       if (e && e.name === 'AbortError') {
         toast('Таймаут — повторите', 'error');
       } else {
@@ -1450,6 +1481,8 @@ var _webUpdPollInFlight = false;
 var _webUpdTxnActive = false;
 var _webUpdOfflineReady = false;
 var _webUpdInspect = null;
+var _webUpdLastCheck = null;
+var _webUpdOnlineCanApply = false;
 var _factoryResetBackupDone = false;
 var _factoryResetPollTimer = null;
 var _factoryResetPollBackoffMs = 2000;
@@ -1856,9 +1889,23 @@ function downloadWebBackup(forFactoryReset) {
     .finally(function () { if (btn) btn.disabled = false; });
 }
 
+function webUpdShouldPostApply() {
+  if (_webUpdTxnActive) return false;
+  if (!_webUpdOnlineCanApply) return false;
+  if (webUpdStatusSaysNone()) return false;
+  if (webUpdResolveAvailable(_webUpdLastCheck) !== true) return false;
+  const applyBtn = document.getElementById('web-upd-apply-btn');
+  if (applyBtn && applyBtn.disabled) return false;
+  return true;
+}
+
 function applyWebUpdate() {
   const applyBtn = document.getElementById('web-upd-apply-btn');
   const checkBtn = document.getElementById('web-upd-check-btn');
+  if (!webUpdShouldPostApply()) {
+    webUpdSetOnlineApplyEnabled(false);
+    return;
+  }
   if (applyBtn) { applyBtn.disabled = true; applyBtn.textContent = uiT('Применяется'); }
   if (checkBtn) checkBtn.disabled = true;
   _webUpdTxnActive = true;
@@ -1962,7 +2009,6 @@ function _webUpdStartPolling() {
 }
 
 function _webUpdFinish(status, log) {
-  var applyBtn = document.getElementById('web-upd-apply-btn');
   var checkBtn = document.getElementById('web-upd-check-btn');
   var fileApply = document.getElementById('web-upd-file-apply-btn');
   var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
@@ -1977,13 +2023,13 @@ function _webUpdFinish(status, log) {
   if (status === 'done') {
     _webUpdSetStatus(WEB_UPD_STAGE_UI.done, 'is-ok');
     _webUpdSetProgress(100, '100%');
-    if (applyBtn) applyBtn.hidden = true;
+    webUpdSetOnlineApplyEnabled(false);
     toast('Обновление применено успешно', 'success');
     setTimeout(function () { location.reload(); }, 5000);
   } else {
     _webUpdSetStatus('Ошибка обновления. См. Журнал событий.', 'is-err');
     _webUpdSetProgress(null, '');
-    if (applyBtn) { applyBtn.disabled = false; applyBtn.textContent = uiT('Применить'); }
+    webUpdSetOnlineApplyEnabled(webUpdOnlineApplyAllowed(_webUpdLastCheck));
     toast('Ошибка обновления', 'error');
   }
 }
