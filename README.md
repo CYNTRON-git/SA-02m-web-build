@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.6.36-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.6.37-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -46,7 +46,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ## Содержание
 
-- [Возможности](#возможности) — в т.ч. [Устройства (ДТВ / СЭ)](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м), [Яндекс Алиса](#яндекс-алиса), [Облако](#облако-удалённый-доступ)
+- [Возможности](#возможности) — в т.ч. [Устройства](#устройства-дтв--сэ-02м-3--ai-каналы-mr-02м--carel--led), [Яндекс Алиса](#яндекс-алиса), [Облако](#облако-удалённый-доступ), [Сценарии](#сценарии-на-плате)
 - [Скриншоты](#скриншоты)
 - [Требования](#требования)
 - [Установка на СА-02м](#установка-на-са-02м)
@@ -123,7 +123,8 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 
 ### MQTT (Modbus→MQTT мост)
 - **Брокер Mosquitto** — локальный порт `1883` (только localhost), внешний `1884` с ACL и пользователем `mqttuser` для подключения SCADA/ПК.
-- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3 по RS-485 и публикация в MQTT (`/devices/<id>/controls/*`).
+- **Modbus→MQTT мост** (`sa02m-modbus-mqtt.service`) — опрос MR-02м, ДТВ, СЭ-02м-3, Carel (c.pCOmini / uAria) и ленты LED (type 120) по RS-485 и публикация в MQTT (`/devices/<id>/controls/*`). Смешанный baud на одном COM не поддерживается.
+- **DI в режиме «Кнопка»** — счётчики `di_N_short` / `di_N_long` / `di_N_double` для сценарного движка (`docs/MQTT_TOPICS.md`).
 - **Шаблоны устройств** — 15 JSON-шаблонов в `etc/sa02m-device-templates/` (все варианты MR-02м, ДТВ, CE-02m-3): каналы DO/DI/AO/AI, счётчики импульсов, AI в вольтах как в desktop flasher.
 - **Веб-вкладка «MQTT»** — поиск устройств на шине, ручное добавление, настройка каналов, live-значения, монитор топиков (SSE), панель подключения с ПК (пароль маскируется как `******`).
 - **Доступность в стиле wb-mqtt-serial** — Last Will, device-level `/meta/error`, экспоненциальный back-off «мёртвых» устройств, статус-устройство `sa02m-bridge`, graceful offline при `systemctl stop`.
@@ -139,17 +140,23 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 - **Веб-вкладка «Шлюз RS-485»** — боковое подменю по COM1–COM5, настройка скорости/чётности, статус TCP-клиентов, сохранение в `/etc/sa02m-gateway.yaml`.
 - **Эксклюзивный захват порта** — включённый порт блокируется lock-файлом; перед использованием в MQTT/flasher его нужно отключить в конфиге шлюза.
 
-### Устройства (ДТВ / СЭ-02м-3 / AI-каналы MR-02м)
-- **Вкладка «Устройства»** — живые показания датчиков температуры/влажности (ДТВ), анализаторов сети (СЭ-02м-3) и аналоговых каналов MR-02м карточками, без ручной настройки: список строится из MQTT-кэша моста.
-- **Архив и графики** — служба `sa02m-devices-logger` пишет измерения в SQLite; клик по карточке открывает график (Canvas 2D) за выбранный период, с экспортом в Excel и журналом пиков СЭ.
-- **Backend** — Python-демон `sa02m-devices-api` на `:8765`, проксируется nginx как `/api/devices*` (не CGI); код `opt/sa02m-devices/`.
-- Контракты: `docs/contracts/devices-mr-history.md`, `docs/contracts/template-device.md`.
+### Устройства (ДТВ / СЭ-02м-3 / AI-каналы MR-02м / Carel / LED)
+- **Вкладка «Устройства»** — живые показания ДТВ, анализаторов сети (СЭ-02м-3), аналоговых каналов MR-02м, вентустановок Carel (c.pCOmini / uAria) и адресной ленты LED (type 120) карточками, без ручной настройки: список строится из MQTT-кэша моста.
+- **Архив и графики** — служба `sa02m-devices-logger` пишет измерения в SQLite; клик по карточке открывает график (Canvas 2D) за выбранный период, с экспортом в Excel и журналом пиков СЭ. Carel — `kind=carel`, та же 10 с каденция, что у MR.
+- **Backend** — Python-демон `sa02m-devices-api` на `:8765`, проксируется nginx как `/api/devices*` (не CGI); код `opt/sa02m-devices/`. На стенде 1.135 `:8765` держит gunicorn `sa02m-stand-api` (`11-devices.sh` рестартует его, если юнит активен).
+- Контракты: `docs/contracts/devices-mr-history.md`, `docs/contracts/template-device.md`, `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
 
 ### Яндекс Алиса
 - **Голосовое управление** устройствами шины через навык Яндекса: gateway `alice.cyntron.ru` ↔ контроллер по Socket.IO + mTLS, дальше MQTT → RS-485.
 - **Привязки** — «Управление» → «Яндекс Алиса»: какое устройство/канал каким умным устройством видит Алиса, комнаты, типы (реле, розетка, датчик).
 - **Службы** — `sa02m-alice-client` (связь с gateway Алисы), `sa02m-cloud-control` (тот же пакет, профиль `cloud`: управление из облака `cloud.cyntron.ru`) и `sa02m-alice-config` (локальный конфиг-API); все поставляются **выключенными**, включает оператор (карточки «Облако» / «Яндекс Алиса»).
 - Установка — только `scripts/06-alice.sh` / `install.sh` (OTA обновляет, но не устанавливает: `docs/deployment.md`). Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
+- **Облачный каталог (профиль `cloud`, с 1.0.6.37)** — переименование, комнаты, группы и сценарии едут тем же Socket.IO, что управление из `cloud.cyntron.ru`. Контракт канала: `docs/contracts/cloud-scenarios.md`.
+
+### Сценарии на плате
+- **Служба `sa02m-rules`** — движок сценариев на контроллере (`rules_engine=2`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
+- Ставится `scripts/06b-rules.sh` вместе с `install.sh` (отключить: `SA02M_SKIP_RULES=1`). Редактирование — из облака (`alice_devices_scenarios`), не отдельной вкладкой панели.
+- После обновления файлов `/opt/sa02m-*` нужны рестарты `sa02m-rules` и активного Alice-семейства, иначе push сценария работает на старом коде (`docs/deployment.md`).
 
 ### Облако (удалённый доступ)
 - **Агент `sa02m-cloud-agent`** — привязка платы к `cloud.cyntron.ru` и туннель frpc для доступа к панели без белого IP; страница `cloud.html`, карточка «Облако» во вкладке «Управление». Отзыв доступа или отвязку в облаке плата замечает сама (три подряд отказа одного вида): агент гасит туннель, стирает свою облачную привязку (секрет, `frpc.toml`, `device_id`; адреса сервера остаются) и показывает на карточке «Доступ отозван» / «Отвязано в облаке» с причиной и временем и кнопку «Привязать заново».
@@ -280,10 +287,11 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `11-devices.sh` | Вкладка «Устройства»: `sa02m-devices-api` + logger (после MQTT) | `SA02M_SKIP_DEVICES=1` |
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
+| `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules`, `sa02m-rules.service` | `SA02M_SKIP_RULES=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |
 | `08-codesys.sh` | CODESYS Control SL (только при наличии vendor-payload) | `SA02M_SKIP_CODESYS=1` |
 | `09-mplc.sh` | MasterSCADA MPLC 4D Runtime (только при наличии vendor-payload) | `SA02M_SKIP_MPLC=1` |
-| `12-docker.sh` | Docker CE | `SA02M_SKIP_DOCKER=1` |
+| `12-docker.sh` | Docker CE (пакет ставится, служба **выключена** по умолчанию с 1.0.6.37) | `SA02M_SKIP_DOCKER=1` |
 
 Отсутствие vendor-payload для CODESYS/MPLC — не ошибка: шаг пропускается
 (`docs/vendor-integrations.md`).
@@ -1469,7 +1477,8 @@ hwclock -r   # прочитать время из PCF8563
 | обновление и резерв | `web_update_*.cgi`, `web_backup.cgi`, `web_factory_reset.cgi`, `mplc_project_deploy.cgi` | OTA/офлайн-обновление, бэкап, сброс, деплой проекта MPLC |
 
 Вкладка «Устройства» ходит **не в CGI**, а в демон `sa02m-devices-api`
-(`:8765`), который nginx проксирует как `/api/devices*`; прошивальщик — в
+(`:8765`), который nginx проксирует как `/api/devices*`; на стенде 1.135
+тот же порт держит `sa02m-stand-api`. Прошивальщик — в
 `sa02m-flasher` через `/api/flasher/*` (см. ниже).
 
 Начиная с `1.0.2`, `status.cgi` поддерживает раздельные части ответа, чтобы виджеты обновлялись независимо и не ждали общий медленный JSON.
@@ -1827,6 +1836,9 @@ tail -f /var/log/fix-eth.log
 | MQTT — конфиг моста | `/etc/sa02m-modbus-mqtt.yaml` |
 | MQTT — код моста | `/opt/sa02m-modbus-mqtt/` |
 | MQTT — пароль external | `/etc/sa02m_mqtt.env` |
+| Сценарии — код | `/opt/sa02m-rules/` |
+| Сценарии — store | `/etc/sa02m-rules/scenarios.json` |
+| Сценарии — unit | `/etc/systemd/system/sa02m-rules.service` |
 | MQTT — Mosquitto ACL | `/etc/mosquitto/acl/default.conf` |
 | Gateway — конфиг | `/etc/sa02m-gateway.yaml` |
 | Gateway — код | `/opt/sa02m-serial-gateway/` |

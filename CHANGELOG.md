@@ -5,6 +5,68 @@
 
 ---
 
+## 1.0.6.37 - Сценарии на плате, облачный каталог, рестарт /opt после OTA (сентябрь 2026)
+
+### Сценарии
+
+- **Движок `sa02m-rules` на плате** (v2, `rules_engine=2`). Store
+  `/etc/sa02m-rules/scenarios.json`, unit с `MemoryMax=32M`, установка
+  `scripts/06b-rules.sh` (`SA02M_SKIP_RULES=1`). Триггеры: state / time / sun /
+  boot / every / button / presence; действия: set / toggle / ramp / delay /
+  scenario / scene / mode / notify / http; end `{after_s, mode off|restore}`.
+  Планировщик неблокирующий: бюджет `RUN_S=30` считает только исполнение, не
+  ожидание таймера. Контракт: `docs/contracts/cloud-scenarios.md`.
+- **Старт с непустым store больше не падает.** `RulesApp` создавал `Engine`
+  до `self.state`; adopt публиковал `rule_enabled` через `pub_state` и ловил
+  `AttributeError` на любой плате, где уже были сценарии (стенд 1.135).
+
+### Облако · Алиса
+
+- **Канал каталога на профиле `cloud`:** события `alice_devices_rename` /
+  `alice_devices_rooms` / `alice_devices_groups` / `alice_devices_scenarios`.
+  `alice_devices_list` несёт `rooms` / `groups` / `scenarios` / `scenario_runs`
+  / `scenario_notify` / `scenario_library` / `rules_engine`. Ключ `scenarios`
+  отсутствует, если store не установлен — хаб показывает «контроллер не
+  поддерживает сценарии». Группы регистрируются только на cloud-профиле;
+  `controller_unlink` — только на yandex.
+
+### MQTT
+
+- **Счётчики нажатий DI в режиме «Кнопка»** (holding 630+ch−1 = 1):
+  `di_N_short` / `di_N_long` / `di_N_double` (input 695/711/727+ch−1).
+  Движок сценариев читает фронт счётчика как жест; без регистров прошивки
+  опрос отключается до следующего refresh режима.
+
+### Обновление
+
+- **Отвязка Алисы, когда шлюз уже не знает контроллер.** Живой
+  `POST /controller/unlink` отвечает HTTP 404 `controller not linked` (запись
+  в облаке уже снята). urllib поднимает `HTTP Error 404: Not Found`, плата
+  отказывалась стирать mTLS и карточка оставалась «привязан». 404 с этой
+  формулировкой — подтверждённая отвязка: локальные сертификаты стираются.
+  Прочие 4xx/5xx по-прежнему не трогают файлы; в `message` уходит `detail`
+  шлюза, не строка urllib.
+- **Docker по умолчанию выключен.** Первая установка ставит пакет, юнит
+  `app off` (как семейство Алисы). Refresh состояние оператора не расширяет.
+
+- **OTA и офлайн-пакет рестартуют службы, которые держат `/opt/sa02m-*` в
+  памяти.** Иначе свежий движок подхватывался только после reboot (приёмка:
+  push сценария молча терял `trigger`/`end`). Манифест: `sa02m-rules` в
+  `restart[]`; Alice-семейство в `restart_if_active[]` (остановленный не
+  стартуем); мост в `restart_if_changed` (port-lease RS-485).
+- **Честный предел:** обновление применяет runner предыдущего релиза —
+  набор срабатывает со *следующего* после 1.0.6.37 обновления; офлайн-пакет
+  ≥ 1.0.6.37 принимает только плата уже на ≥ 1.0.6.37.
+- Валидатор `services` разделён на обязательные и опциональные ключи —
+  пакеты 1.0.5.69–1.0.6.36 больше не отклоняются с `E_MANIFEST unknown keys
+  ['enable']`.
+- `06b-rules.sh` рестартует активный `sa02m-cloud-control` после деплоя
+  `/opt` (www-only / ручной путь).
+
+### Тесты
+
+- `TestApplyReload`: ожидание подписки догнало контракт `uptime_s` из 1.0.6.36.
+
 ## 1.0.6.36 - LED type-120 on the MQTT scan, Alice light tile (сентябрь 2026)
 
 ### Smart home / devices

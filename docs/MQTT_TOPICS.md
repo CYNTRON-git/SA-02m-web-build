@@ -95,6 +95,13 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | MR-02м модуль | `mr02m-{port}-{addr}` | `mr02m-COM1-5` |
 | cyntron-dtv | `dtv-{port}-{addr}` | `dtv-COM3-1` |
 | CE-02m-3 счётчик | `ce02m3-{port}-{addr}` | `ce02m3-COM2-14` |
+| Carel AHU | `carel-{port}-{addr}` | `carel-COM3-1` |
+| LED type 120 | `led-{port}-{addr}` | `led-COM3-13` |
+| Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
+
+Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
+Виртуальные контролы сценария (`rule_enabled`, `remaining_s`, …) — retained
+state, без `/on`: `docs/contracts/cloud-scenarios.md` §MQTT mirror.
 
 ---
 
@@ -522,6 +529,8 @@ insurance-опрос.
 | CE-02m-3 | Мощность/Напряжения/Токи | каждый проход устройства |
 | CE-02m-3 | Счётчики энергии | 60 с |
 | CE-02m-3 | Диагностика | 120 с |
+| Carel AHU | пробы с ошибкой «r» на карточку не идут | 10 с (как MR) |
+| LED type 120 | PlayCtrl / цвет / эффект | 2 с |
 | СА-02м | Системная телеметрия | 30 с |
 
 ---
