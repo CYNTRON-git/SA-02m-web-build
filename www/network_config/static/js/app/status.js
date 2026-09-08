@@ -1357,15 +1357,28 @@ function webUpdResolveAvailable(j) {
   return null;
 }
 
-function webUpdStatusSaysNone() {
-  const st = document.getElementById('web-upd-status');
-  if (!st || st.hidden) return false;
-  const t = String(st.textContent || '').trim();
-  return /Обновлений нет/i.test(t) || /No updates available/i.test(t);
+// Data-derived only (audit C9): the answer is in the last check payload.
+// Until 1.0.6.39 this also regex-probed the RENDERED status text («Обновлений
+// нет» / «No updates available») — a DICT wording change, a third locale or
+// the i18n observer not having run yet silently re-opened or jammed a
+// root-launching POST. Derive, never scrape.
+function webUpdOnlineApplyAllowed(j) {
+  return webUpdResolveAvailable(j) === true;
 }
 
-function webUpdOnlineApplyAllowed(j) {
-  return webUpdResolveAvailable(j) === true && !webUpdStatusSaysNone();
+// The CGI's explicit refusals (docs/contracts/web-update.md): each gets its
+// own status line and keeps Apply disabled, instead of the generic «Ошибка
+// обновления» + error toast. null = not a refusal (the caller's normal path).
+function webUpdApplyRefusal(j) {
+  if (!j || j.ok !== false) return null;
+  const code = String(j.error_code || '');
+  if (code === 'E_NO_UPDATE') {
+    return { status: 'Обновлений нет', tone: 'is-ok', canApply: false };
+  }
+  if (code === 'E_CHECK_STALE') {
+    return { status: 'Сведения об обновлении устарели — нажмите «Проверить»', tone: 'is-warn', canApply: false };
+  }
+  return null;
 }
 
 function webUpdSetOnlineApplyEnabled(canApply) {
@@ -1892,7 +1905,6 @@ function downloadWebBackup(forFactoryReset) {
 function webUpdShouldPostApply() {
   if (_webUpdTxnActive) return false;
   if (!_webUpdOnlineCanApply) return false;
-  if (webUpdStatusSaysNone()) return false;
   if (webUpdResolveAvailable(_webUpdLastCheck) !== true) return false;
   const applyBtn = document.getElementById('web-upd-apply-btn');
   if (applyBtn && applyBtn.disabled) return false;
@@ -1920,7 +1932,10 @@ function applyWebUpdate() {
   }, 10000)
     .then(function (r) { return r.json(); })
     .then(function (j) {
-      if (j.status === 'running' || j.status === 'idle' || _webUpdIsBusy(j)) {
+      const refusal = webUpdApplyRefusal(j);
+      if (refusal) {
+        _webUpdFinishRefused(refusal, j.log || '');
+      } else if (j.status === 'running' || j.status === 'idle' || _webUpdIsBusy(j)) {
         _webUpdStartPolling();
       } else {
         _webUpdFinish(j.status || j.stage || 'error', j.log || '');
@@ -1929,6 +1944,20 @@ function applyWebUpdate() {
     .catch(function () {
       _webUpdFinish('error', 'Нет ответа от сервера');
     });
+}
+
+// A refused launch is not a failed update: no error toast, the CGI's own line
+// as the status, Apply stays disabled until the next check says otherwise.
+function _webUpdFinishRefused(refusal, log) {
+  var checkBtn = document.getElementById('web-upd-check-btn');
+  _webUpdTxnActive = false;
+  if (checkBtn) checkBtn.disabled = false;
+  setOfflineUpdateEnabled(_webUpdOfflineReady);
+  if (log) _webUpdShowLog(log);
+  _webUpdSetStatus(refusal.status, refusal.tone);
+  _webUpdSetProgress(null, '');
+  webUpdSetOnlineApplyEnabled(refusal.canApply);
+  toast(refusal.status, 'info');
 }
 
 function _webUpdApplyTxnUI(j) {

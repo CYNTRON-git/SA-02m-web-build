@@ -1,6 +1,17 @@
 #!/usr/bin/env node
+// comment-mutation-proof-exempt: behavioural harness - brace-extracts the SHIPPED status.js functions and RUNS them in a vm against a minimal DOM; every assertion is a computed result (a compare, a button state, a refusal text), never a source-line pin a comment token could satisfy. Its RED/GREEN evidence is the pre-fix tree (a7183c1~1 for the gate, 1f6f1a1 for the C9/C13 cases) recorded in the header below.
 /* Unit-test status.js internet-update gate: dotted-integer compare,
-   webUpdResolveAvailable, and applyWebUpdateCheckUI button disable. */
+   webUpdResolveAvailable, applyWebUpdateCheckUI button disable, and — since
+   1.0.6.39 — (D) the Apply guard is DATA-derived only (audit C9: the old
+   webUpdStatusSaysNone() regex over localized rendered text is gone, so a DICT
+   wording change or a third locale can no longer re-open or jam a root-
+   launching POST) and (E) the CGI's refusal codes are handled explicitly
+   (audit C13: E_NO_UPDATE / E_CHECK_STALE map to their own status line and
+   keep Apply disabled instead of the generic «Ошибка обновления»; contract:
+   docs/contracts/web-update.md). PROVEN RED on 1f6f1a1: D — POST refused
+   while the data said "update available" because the status text read
+   «Обновлений нет», and webUpdStatusSaysNone still defined; E — no
+   webUpdApplyRefusal in status.js. */
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
@@ -62,15 +73,22 @@ function makeCtx(els) {
     'fmtWebUpdChecked',
     'compareSemver',
     'webUpdResolveAvailable',
-    'webUpdStatusSaysNone',
     'webUpdOnlineApplyAllowed',
     'webUpdSetOnlineApplyEnabled',
     'webUpdVersionDisplay',
     'applyWebUpdateCheckUI',
     'webUpdShouldPostApply'
-  ].map(extractFn).join('\n\n');
+  ].map(extractFn)
+    // Present on one side of the 1.0.6.39 change only — extracted when found
+    // so BOTH trees run to a verdict (section D/E) instead of throwing here.
+    .concat(['webUpdStatusSaysNone', 'webUpdApplyRefusal'].map(extractFnOpt))
+    .join('\n\n');
   vm.runInNewContext(code, ctx, { filename: 'status.js-extract' });
   return ctx;
+}
+
+function extractFnOpt(name) {
+  return src.indexOf('function ' + name + '(') < 0 ? '' : extractFn(name);
 }
 
 let fails = 0;
@@ -210,6 +228,46 @@ function runCheck(payload) {
     update_available: true
   });
   eq('file Apply untouched when GitHub has nothing', els['web-upd-file-apply-btn'].disabled, false);
+}
+
+process.stdout.write('D. the Apply guard is data-derived only (no localized-text probe)\n');
+eq('webUpdStatusSaysNone is gone from status.js', typeof bare.webUpdStatusSaysNone, 'undefined');
+{
+  // The rendered status says «Обновлений нет» (a stale line, a renamed DICT
+  // entry, a locale the regex never knew) while the DATA says an update is
+  // available: the data decides. Before 1.0.6.39 the text probe vetoed it.
+  const els = makeEls();
+  const ctx = makeCtx(els);
+  ctx.applyWebUpdateCheckUI({ deployed_version: '1.0.6.29', remote_version: '1.0.6.37', update_available: true });
+  els['web-upd-status'].hidden = false;
+  els['web-upd-status'].textContent = 'Обновлений нет';
+  eq('status text «Обновлений нет» does not veto a data-available POST', ctx.webUpdShouldPostApply(), true);
+  eq('webUpdOnlineApplyAllowed ignores the rendered text', ctx.webUpdOnlineApplyAllowed(ctx._webUpdLastCheck), true);
+}
+{
+  // The inverse: the text says nothing at all, the data says "current is
+  // newer" — still refused, from the data.
+  const els = makeEls();
+  const ctx = makeCtx(els);
+  ctx.applyWebUpdateCheckUI({ deployed_version: '1.0.6.37', remote_version: '1.0.6.29', update_available: true });
+  els['web-upd-status'].hidden = true;
+  els['web-upd-status'].textContent = '';
+  eq('an empty status line does not re-open a data-refused POST', ctx.webUpdShouldPostApply(), false);
+}
+
+process.stdout.write('E. the CGI refusal codes are handled explicitly (docs/contracts/web-update.md)\n');
+if (typeof bare.webUpdApplyRefusal !== 'function') {
+  bad('webUpdApplyRefusal is missing from status.js — E_NO_UPDATE / E_CHECK_STALE fall into the generic error path');
+} else {
+  const noUpd = bare.webUpdApplyRefusal({ ok: false, status: 'error', error: 'no_update', error_code: 'E_NO_UPDATE', log: 'Обновлений нет' });
+  eq('E_NO_UPDATE → its own status line', noUpd && noUpd.status, 'Обновлений нет');
+  eq('E_NO_UPDATE → Apply stays disabled', noUpd && noUpd.canApply, false);
+  const stale = bare.webUpdApplyRefusal({ ok: false, status: 'error', error: 'check_stale', error_code: 'E_CHECK_STALE', log: 'x' });
+  eq('E_CHECK_STALE → asks for a fresh check', stale && stale.status, 'Сведения об обновлении устарели — нажмите «Проверить»');
+  eq('E_CHECK_STALE → Apply stays disabled', stale && stale.canApply, false);
+  eq('a generic error is not a refusal (null → the error path)', bare.webUpdApplyRefusal({ ok: false, status: 'error', log: 'boom' }), null);
+  eq('a running answer is not a refusal', bare.webUpdApplyRefusal({ ok: true, status: 'running' }), null);
+  eq('a null payload is not a refusal', bare.webUpdApplyRefusal(null), null);
 }
 
 if (fails) {
