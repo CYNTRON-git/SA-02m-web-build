@@ -41,7 +41,12 @@ export SA02M_TOPICS_FORMAT
 # `{"ok":false,...}` — two objects, so the picker's JSON.parse threw and the
 # tab fell back to manual entry with every channel on the board in hand).
 # A fallback must REPLACE the answer, never trail it.
-if TOPICS_JSON="$(timeout 15 python3 - <<'PY'
+# Budget: sa02m_alice.common.constants.TOPICS_CGI_TIMEOUT_S (15) — the two
+# homes are pinned by tests/test_sio_connection.py TestTopicsCgiTimeout; the
+# one-object guarantee by scripts/dev/test-alice-topics-cgi.sh. Must stay below
+# nginx /cgi-bin/ fastcgi_read_timeout (20 s). Override: SA02M_ALICE_TOPICS_TIMEOUT.
+TOPICS_CGI_TIMEOUT="${SA02M_ALICE_TOPICS_TIMEOUT:-15}"
+if TOPICS_JSON="$(timeout "$TOPICS_CGI_TIMEOUT" python3 - <<'PY'
 import json, os
 try:
     if os.environ.get("SA02M_TOPICS_FORMAT") == "inventory":
