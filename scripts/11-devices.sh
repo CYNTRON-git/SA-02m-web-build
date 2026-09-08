@@ -81,6 +81,9 @@ fi
 # devices-package / nginx refresh does not leave a stale gunicorn worker
 # serving /api/devices* (12AI history kind=mr lives in that process).
 # Never-widen: only bounce a running stand API (1.135 owns :8765).
+# The unit is bench-only and NOT in this tree (no etc/systemd/ fragment): a
+# field board has no such unit and the helper is a logged no-op there. Its one
+# home is the bench runbook docs/bench-board-target-state.md.
 sa02m_svc_restart_if_active sa02m-stand-api.service
 
 # nginx proxy /api/devices* (если в репо есть полный conf)
