@@ -110,6 +110,7 @@ done
 # Skipped until the consumers land (they arrive later in the same release); once
 # a consumer file exists it must import the package, never define the addresses.
 for consumer in opt/sa02m-modbus-mqtt/bridge_led.py \
+                opt/sa02m-modbus-mqtt/mqtt_bus_scan.py \
                 opt/sa02m-flasher/sa02m_flasher/led_poll.py; do
     [ -f "$consumer" ] || continue
     if stripped_has "$consumer" "sa02m_led"; then

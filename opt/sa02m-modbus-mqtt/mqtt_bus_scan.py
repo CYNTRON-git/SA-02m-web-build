@@ -74,7 +74,12 @@ _LED_SIG_PREFIX = ("RGBW_WS2812", "RGBWWS2812")
 
 def signature_is_led(signature: str) -> bool:
     """True for an LED-strip EEPROM signature. One home is sa02m_led;
-    this copy is the scan's fallback when that package is not on sys.path.
+    this copy is the scan's fallback ONLY when that package is not deployed
+    (ImportError) — the scan runs as root from a CGI on a board where
+    update-www-only.sh may have refreshed the bridge without the package. A
+    bug inside the shared helper propagates: masking it with the copy would
+    hide a broken one home behind a silently diverging second one
+    (led-shared-home sweeps this file as a consumer).
     Exact for all four aliases; prefix only for the two long names — never
     a three-letter prefix (Wiren Board ``ledGe``)."""
     led_dir = os.environ.get("SA02M_LED_DIR", "/opt/sa02m-led")
@@ -82,14 +87,35 @@ def signature_is_led(signature: str) -> bool:
         sys.path.insert(0, led_dir)
     try:
         from sa02m_led.led_mb2ws import signature_looks_like_led
-        return bool(signature_looks_like_led(signature or ""))
-    except Exception:
+    except ImportError:
         n = (signature or "").strip().upper().replace(" ", "")
         if not n or n in ("—", "-", "NONE", "?"):
             return False
         if n in _LED_SIG_EXACT:
             return True
         return any(n.startswith(p) for p in _LED_SIG_PREFIX)
+    return bool(signature_looks_like_led(signature or ""))
+
+
+def _module_type_from_signature(signature: str):
+    """MR-02m module type named by an EEPROM signature, or None.
+
+    Exact code/label match first (``6DO`` must not resolve through the
+    ``6DO8DI`` alias containment), then the alias containment the short-name
+    resolver already trusts."""
+    sig = (signature or "").strip()
+    if not sig:
+        return None
+    sk = _latinize_sig(sig)
+    for mt, code in MR02M_MODULE_TYPES.items():
+        if sk == _latinize_sig(code) or sk == _latinize_sig(
+            MR02M_TYPE_LABELS_RU.get(mt, "")
+        ):
+            return mt
+    for mt in MR02M_MODULE_TYPES:
+        if _sig_implies_module_type(sig, mt):
+            return mt
+    return None
 
 
 def crc16(data):
@@ -261,14 +287,22 @@ def detect_type(ser, addr, *, read_signature: bool = False):
             return "dtv", 0, "ДТВ-RS-485", ""
 
     inp = read_input(ser, addr, 0, 1, timeout=0.05)
-    # Type 120 is the RGBW_WS2812 strip, not an MR-02m I/O module.
-    # Signature still wins when Input0 is missing or a false 1..15:
-    # a shared line can answer the wrong device at this address.
+    # Type 120 is the RGBW_WS2812 strip, not an MR-02m I/O module — but the
+    # SIGNATURE (holding 290, the device's own EEPROM) beats Input reg 0 in
+    # BOTH directions, the flasher's rule (module_profiles.scan_type_code):
+    # on a shared line reg 0 can be a neighbour's answer, so a crosstalk 120
+    # must not turn a module into a strip any more than a false 1..15 turns
+    # a strip into a module. Reg 0 decides only when the signature names
+    # neither family.
     if inp and inp[0] == LED_TYPE_CODE:
         signature = ""
         sig_regs = read_holding(ser, addr, 290, 12, timeout=0.07)
         if sig_regs:
             signature = decode_signature(sig_regs)
+        if not signature_is_led(signature):
+            mt = _module_type_from_signature(signature)
+            if mt is not None:
+                return "mr02m", mt, MR02M_MODULE_TYPES[mt], signature
         return "led", LED_TYPE_CODE, "LED", signature
 
     if inp and inp[0] in MR02M_MODULE_TYPES:
