@@ -44,11 +44,24 @@ DEFAULT_KEY_ID = "release-2026-08"
 MIN_UPDATER = "1.0.5.66"
 MIN_VERSION = "1.0.5.60"
 # First on-device validator that accepts services.enable / restart_if_*
-# (commit 1295837). Packs that still advertise MIN_UPDATER 1.0.5.66 MUST
-# emit frozen v1 services (required keys only): apply uses the PREVIOUS
-# runner/validator, and 1.0.5.66 rejects unknown keys with E_MANIFEST.
-# Bump MIN_UPDATER to this (or later) to start emitting the optional keys.
+# (commit 1295837). Packs that advertise a MIN_UPDATER below it MUST emit
+# frozen v1 services (required keys only): apply uses the PREVIOUS
+# runner/validator, and the validators of 1.0.5.69-1.0.6.36 reject unknown
+# keys with E_MANIFEST (a runner < 1.0.5.69 has no validator and skips the
+# check: opt/sa02m-update/ and the runner were both born in b9f3ad4 = 1.0.5.69;
+# validate_package.py's comment is the one home of that window).
+# Raising MIN_UPDATER to SERVICES_OPTIONAL_SINCE or later is what turns the
+# tier on. That is executable since 1.0.6.39: the runner derives
+# UPDATER_VERSION from the deployed VERSION file, whereas before every board
+# reported a stamped 1.0.5.66 and a bump would have E_COMPAT-rejected all of
+# them. Raise it only once the fleet you must reach runs >= 1.0.6.39. Until
+# then an offline pack enables NOTHING, and the DNS belt unit reaches an
+# offline-updated board through the one-time bootstrap shim in
+# usr/local/sbin/sa02m-eth-coldboot.sh (pinned by test-iface-dns-ensure.sh).
 SERVICES_OPTIONAL_SINCE = "1.0.6.37"
+# The keys the freeze withholds — named once so the pack-time note and the
+# tests read the same list as build_services_block().
+SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"
 FOOTER = FOOTER_MAGIC + b"\0\0"
@@ -507,6 +520,23 @@ def emit_optional_service_keys(min_updater: str) -> bool:
     return semver_key(min_updater) >= semver_key(SERVICES_OPTIONAL_SINCE)
 
 
+def frozen_services_note(min_updater: str = MIN_UPDATER) -> str:
+    """One line for stderr when the pack ships a frozen v1 services block.
+
+    Empty when the tier is on. The docs carry the honest limit; a release
+    engineer reading only the tool's output saw `Wrote ...` and nothing about
+    the keys this pack does not carry (audit 2026-09-08, D7).
+    """
+    if emit_optional_service_keys(min_updater):
+        return ""
+    return (
+        f"note: services block is frozen v1 (min_updater={min_updater} < "
+        f"{SERVICES_OPTIONAL_SINCE}): omitted keys {', '.join(SERVICES_OPTIONAL_KEYS)}; "
+        "this pack enables NO unit (sa02m-dns-ensure.service relies on the "
+        "coldboot bootstrap shim) and runs no Alice/bridge conditional restart"
+    )
+
+
 def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
     """services{} for the packed manifest.
 
@@ -699,6 +729,12 @@ def main() -> int:
         help="Allow packing with a dirty git worktree (bench/CI only; not for release)",
     )
     args = ap.parse_args()
+
+    # Before any gate: a pack that dies on a dirty tree still tells the release
+    # engineer what the services block would have withheld.
+    note = frozen_services_note(MIN_UPDATER)
+    if note:
+        print(note, file=sys.stderr)
 
     ensure_sync_app_version()
     if not args.allow_dirty:

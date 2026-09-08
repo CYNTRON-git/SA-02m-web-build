@@ -26,9 +26,16 @@ dns_ensure() {
 # enable list only takes effect on the NEXT update. This shim closes that
 # one-release bootstrap gap from a unit that is already enabled everywhere.
 #
-# DELETE THIS BLOCK once every board in the field runs a runner >= 1.0.6.6:
-# from then on both manifest generators enable the unit themselves and this is
-# dead weight. Nothing else depends on it.
+# Since 1.0.6.37 the OFFLINE pack does not enable the unit either: its packer
+# emits services.enable only once its advertised MIN_UPDATER reaches the first
+# validator that accepts the key (frozen v1 meanwhile — scripts/
+# pack-offline-update.py), so this shim is the mechanism for an offline-updated
+# board too, not only the one-release online gap.
+#
+# DELETE THIS BLOCK only when BOTH hold: every board in the field runs a runner
+# >= 1.0.6.6 (the online generator enables it) AND the packer's MIN_UPDATER has
+# been raised to >= 1.0.6.37 (offline packs enable it again). Until then it is
+# pinned by scripts/dev/test-iface-dns-ensure.sh. Nothing else depends on it.
 #
 # ONE-TIME by design. The marker is written BEFORE the enable is attempted, so
 # a refused or failing enable is never retried every boot, and a later

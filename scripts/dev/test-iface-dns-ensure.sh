@@ -754,23 +754,41 @@ else
 fi
 
 # Deploying the unit file is NOT the guarantee: the runner only enables what the
-# manifest's services.enable lists, and that list is hardcoded in BOTH manifest
-# generators. Missing from either one = the unit lands on a field device and
-# stays inert forever (the defect this case now pins).
+# manifest's services.enable lists. ONLINE half: the runner's own generator
+# carries the entry and its enable loop cannot fail the apply. OFFLINE half:
+# since the frozen-v1 freeze (1.0.6.37, e1f1b6a) the packer emits enable[] ONLY
+# when its advertised MIN_UPDATER is >= SERVICES_OPTIONAL_SINCE — while it is
+# below, an offline pack enables NOTHING and the belt unit reaches an
+# offline-updated board through the one-time dns_ensure_bootstrap shim in
+# sa02m-eth-coldboot.sh (run behaviourally above). So the offline pin is
+# three-fold: (a) the entry is still in the packer's optional-tier enable[], so
+# it returns the moment the tier turns on — the release that raises MIN_UPDATER
+# to >= 1.0.6.37, earliest 1.0.6.40, once the fleet reports a derived
+# UPDATER_VERSION (runner >= 1.0.6.39; audit 2026-09-08, decision O1); (b) the
+# freeze is the TIER gate, not a deleted block; (c) the shim is CALLED from the
+# coldboot script body — the mechanism carrying the guarantee meanwhile.
+# Removing the entry from EITHER generator FAILS; so does deleting the shim call.
 runner=etc/sa02m-update-runner.sh
 packer=scripts/pack-offline-update.py
-enable_has() {  # is sa02m-dns-ensure.service inside $1's "enable": [ ... ] block?
+enable_has() {  # is sa02m-dns-ensure.service inside $1's enable block opened by $2?
     # Range end is the block terminator on its OWN line, not any `]`: a comment
     # inside the block mentioning `restart[]` would otherwise close it early and
     # this case would fail on correct code.
-    sed -n '/"enable": \[/,/^[[:space:]]*\],\{0,1\}[[:space:]]*$/p' "$1" \
+    sed -n "/$2/,/^[[:space:]]*\],\{0,1\}[[:space:]]*\$/p" "$1" \
       | grep -q '"sa02m-dns-ensure.service"'
 }
-if enable_has "$runner" && enable_has "$packer" \
+if enable_has "$runner" '"enable": \[' \
    && grep -Eq '_systemctl_bounded [0-9]+ enable "\$u" \|\| true|systemctl enable "\$u" 2>/dev/null \|\| true' "$runner"; then
-    ok "wiring: the belt unit is in services.enable in BOTH generators, and the enable loop cannot fail the apply"
+    ok "wiring (online): the belt unit is in the runner's services.enable, and the enable loop cannot fail the apply"
 else
-    bad "wiring: sa02m-dns-ensure.service missing from a manifest enable list or the enable loop lost its || true"
+    bad "wiring (online): sa02m-dns-ensure.service missing from the runner's enable list or the enable loop lost its || true"
+fi
+if enable_has "$packer" 'services\["enable"\] = \[' \
+   && grep -q 'if not emit_optional_service_keys(min_updater):' "$packer" \
+   && grep -q '^dns_ensure_bootstrap$' "$COLD_SRC"; then
+    ok "wiring (offline): the belt unit is in the packer's tier enable[], the freeze is the tier gate, and the coldboot shim carries it meanwhile"
+else
+    bad "wiring (offline): the belt unit left the packer's tier enable[], the tier gate is gone, or the coldboot shim is no longer called — an offline-updated board never enables the belt"
 fi
 
 # The recovery ladder's two call sites — a belt that only lives in the unit
