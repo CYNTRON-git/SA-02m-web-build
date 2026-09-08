@@ -313,6 +313,18 @@
   'Состояние установки': 'Unit state',
   'Статус установки (текст)': 'Unit status (text)',
   'Авария': 'Alarm',
+  // Carel chart labels — the server-side CAREL_METRIC_META set (devices API
+  // `label`); one home in Python, pinned here by test_carel_labels_i18n.py.
+  'Приток': 'Supply',
+  'Обратка': 'Return water',
+  'Помещение': 'Room',
+  'Улица': 'Outdoor',
+  'Уставка': 'Setpoint',
+  'Приток вент.': 'Supply fan',
+  'Вытяжка': 'Exhaust',
+  'Ступень вент.': 'Fan step',
+  'Тревог': 'Alarms',
+  'Установка вкл.': 'Unit on',
     'Датчик движения': 'Motion sensor',
     'Счётчик': 'Meter',
     'Счётчик электроэнергии': 'Electricity meter',
