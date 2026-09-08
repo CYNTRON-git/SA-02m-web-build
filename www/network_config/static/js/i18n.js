@@ -348,6 +348,15 @@
     'счётчики': 'counters',
     'рекомендуется': 'recommended',
     'обнаружено': 'detected',
+    // Picker group headings + the «Все» chip (SH_PICK_GROUPS / SH_PICK_CHIPS
+    // tables, read through uiT(g.label) — the label-table sweep of
+    // i18n-dict-contract). «Аналоговые выходы» already has its entry below.
+    'Дискретные входы': 'Digital inputs',
+    'Дискретные выходы': 'Digital outputs',
+    'Аналоговые входы': 'Analog inputs',
+    'Показания и команды': 'Readings and commands',
+    'Диагностика': 'Diagnostics',
+    'Все': 'All',
     'Тип модуля определён по опросу; в YAML указан другой':
       'The module type was detected by polling; the YAML declares another one',
     'Ничего не найдено': 'Nothing found',
@@ -640,6 +649,8 @@
     'Проверить обновления': 'Check for Updates',
     'Применить обновление': 'Apply Update',
     'Проверить': 'Check',
+    // web_update_apply.cgi E_CHECK_STALE (docs/contracts/web-update.md).
+    'Сведения об обновлении устарели — нажмите «Проверить»': 'Update information is stale — click Check',
     'Загрузка': 'Loading',
     'Обновить список': 'Refresh List',
     'Командная строка': 'Command Line',
