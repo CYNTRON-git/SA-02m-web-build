@@ -54,6 +54,16 @@ so the picker works with no gateway and no bus. Rules:
 - the board's own four controls are always offered, so the picker is never
   empty on a fresh board.
 
+**Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
+`TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
+`SA02M_ALICE_TOPICS_TIMEOUT`, the two homes pinned by
+`tests/test_sio_connection.py TestTopicsCgiTimeout`) and emits **exactly one
+JSON object** whatever python does: the body when it exits 0 with output, the
+`topics_failed` fallback *in its place* on a non-zero exit, empty output or the
+budget — never both (the bench 1.135 double-object body that dropped the tab
+to manual entry). Harness: `scripts/dev/test-alice-topics-cgi.sh` (registry
+row `alice-topics-cgi`).
+
 Validating tests: `opt/sa02m-alice/tests/test_inventory.py`,
 `test_topics_inventory.py`, `scripts/dev/sh-modal-layout-smoke.mjs`.
 
@@ -103,6 +113,11 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
 }
 ```
 
+`rooms` and `groups` are each capped at `COLLECTION_CAP` (64, `constants.py`,
+one constant for both): a NEW row past the cap is refused with
+`error: too_many` and nothing is saved; an update or a delete at the cap works.
+Validating: `tests/test_collection_caps.py`.
+
 Optional capability field `writable` (bool; **absent ⇒ `true`**).
 `writable: false` is a latching discrete input: discovery still lists
 `on_off` (`retrievable` / `reportable` stay), `apply_actions` returns
@@ -140,6 +155,23 @@ Discovery per profile (`device_registry.discovery_devices(profile)`): the
 Yandex profile carries only the Yandex fields; the **cloud profile lists every
 device** and adds `alice_visible` + `icon` to each entry (additive — the cloud
 page is its only consumer).
+
+### Carel AHU rows at catalogue build (1.0.6.39)
+
+A Carel binding (`/devices/carel-…`) gains, **in memory at every catalogue
+build** (`DeviceRegistry.__init__` / `reload` →
+`config/ahu_status.prepare_catalogue_doc`), the cloud-only status events
+(`plant_state`, `unit_status`, `alarm`, `pump`, `alarm_text`) and extra floats
+(`return_water_temperature`, `heat_valve`, `fan_speed`, `fan_step`) it is
+missing. The optional probes `outdoor_temperature` / `room_temperature` are
+bound only when the bridge live cache (`/run/sa02m-modbus-mqtt/<id>.json`)
+lists the control with no `errors[name]`, and a stored row for a probe the
+cache marks dead or unconfigured is dropped from the catalogue — the same
+input answers the same on the «Устройства» card (`docs/contracts/carel-ahu.md`
+§5). No cache file for the device = unknown: nothing added, nothing dropped.
+The stored document is never rewritten; the Yandex profile sees none of it
+(`cloud_only`). Validating: `tests/test_ahu_status_wiring.py` (through the
+registry), `tests/test_ahu_status.py` (the helper).
 
 ### Float properties (sensor devices)
 
@@ -348,6 +380,13 @@ in place, without restarting it and without dropping the Socket.IO session:
   API while a session is already live is not restarted, and that session keeps
   its previous cert until it drops — the SSL context is built in
   `sio_connection.connect()`.
+- **Writers serialise (1.0.6.39).** Every writer of the document — the CGI
+  dispatch (www-data), both units' Socket.IO rename / rooms / groups handlers,
+  the Yandex unit's auto-provisioner — holds one advisory `flock`
+  (`config_store.devices_lock`, taken on the conf directory so root and
+  www-data share it) around its load→modify→save; a concurrent edit waits
+  instead of being lost. Validating: `tests/test_devices_lock.py` (the real
+  contention case needs Linux; it skips loudly elsewhere).
 
 ## Socket.IO events (controller ↔ gateway, both profiles)
 
@@ -423,7 +462,13 @@ crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
 `device_state` stub (`error_code` only) — on the MQTT `/meta/error` down-edge
 and at most once from the 30 s history snapshot. Already-down devices are
 not re-pushed every cadence. GPIO retained is unchanged. No extra
-`callback_state` flood.
+`callback_state` flood. **The sweep is gated (1.0.6.39):** from the MQTT path
+the transition sweep (a full `query_devices()`) runs only for an availability
+topic (`/devices/<id>/meta/error`, `<control>/meta/error`) — a value message,
+the retained storm included, never pays it; the snapshot / reload path always
+sweeps. The auto-provisioner reads the document once per new id (an
+mtime-keyed cache), not per `/meta/*` message. Validating:
+`tests/test_mqtt_message_cost.py`.
 
 ## Rate limits (`event_rates.json`)
 
@@ -479,9 +524,23 @@ broker does not republish a steady reading. In-place document reload with
 added/removed topics also snapshots once. This is a cadence, not a replacement
 for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
 the floor between *MQTT-driven* reports of the same reading; the history
-snapshot bypasses it. The gateway forwards Yandex-visible float/event
-properties from `origin=snapshot` about once per 60 s (not on_off, not
-`cloud_only`).
+snapshot bypasses it.
+
+**Gateway Callback belt.** The gateway throttles its Callback/state POSTs to
+Yandex at **30 POSTs per controller SN per 60 s** (gateway side,
+`alice.cyntron.ru`; the belt's home is the `cloud` repo's
+`docs/contracts/alice-gateway.md` — nothing on the board changes it). The 60 s
+snapshot fits under it by construction on the board side: one `device_state`
+frame per cadence carrying every device (`state_sender._flush_unlocked` merges
+the devices into a single emit), so the cadence adds at most one frame per
+minute per SN; live reports stay bounded by the per-key windows above. What
+the gateway forwards from that frame is the gateway's: Yandex-visible
+float/event properties from `origin=snapshot` about once per 60 s (not on_off,
+not `cloud_only`) — how it splits one frame into Callback POSTs, and what it
+holds back when a controller's property count would exceed the belt, is
+decided there, not here. Honesty label: the 30 / SN / 60 s figure is the one
+this contract carried through 1.0.6.35 (dropped by mistake in 1.0.6.36), not
+re-measured on this branch.
 
 ## Offline / Phase 0
 
@@ -550,6 +609,14 @@ permission-blind and returns a false "absent").
 - `pending_claim.json` is KEPT after a successful issue (`issued: true`) — the
   gateway requires `claim_token` for `/controller/unlink`; the status/link view
   never reads it.
+- A gateway **404 whose JSON `detail` says `controller not linked` /
+  `already unlink…`** in answer to the operator's unlink is a confirmed unlink
+  and erases the local binding — honoured **only over `https`** (urlopen's
+  verifying TLS context is what makes that answer the gateway's;
+  `[gateway] http_url` is operator-settable, and over plain http a LAN peer
+  could answer the POST) and **only on the parsed JSON `detail`**, never on a
+  raw body (1.0.6.39). Validating: `test_binding_reset.py`
+  `TestN3LocalUnlinkRefusals` / `TestLocalUnlinkSuccess`.
 
 Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`,
 `test_reload_watch.py`; перечень состояний, константы, места записи и подписи
