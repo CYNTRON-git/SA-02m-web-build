@@ -89,6 +89,33 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
 
+    def test_batch_upsert_with_client_ids_cannot_grow_past_the_cap(self):
+        """Review 1.0.6.39 F1: the batch total is counted on the RESULTING
+        document, so rows that carry their own new id (the cloud's template
+        compile) count like minted ones. Before the fix 64 singles + a 16-row
+        explicit-id batch stored 80."""
+        for i in range(store.SCENARIOS_MAX):
+            self.assertTrue(store.apply_command({"name": "s%d" % i}, self.path)["ok"])
+        batch = [{"id": "cloud-%02d" % i, "name": "b%d" % i} for i in range(16)]
+        r = store.apply_command({"upsert": batch}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many"})
+        self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
+        # Exactly the free slots fit; one more explicit-id row does not, and
+        # a refused batch lands nothing (all-or-nothing, contract §Channel).
+        store.apply_command({"id": "s1", "delete": True}, self.path)
+        store.apply_command({"id": "s2", "delete": True}, self.path)
+        r = store.apply_command({"upsert": [{"id": "cloud-a", "name": "a"}, {"id": "cloud-b", "name": "b"},
+                                            {"id": "cloud-c", "name": "c"}]}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many"})
+        self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX - 2)
+        r = store.apply_command({"upsert": [{"id": "cloud-a", "name": "a"}, {"id": "cloud-b", "name": "b"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
+        # Re-upserting rows that already exist is not growth even at the cap.
+        r = store.apply_command({"upsert": [{"id": "cloud-a", "name": "a2"}, {"id": "s3", "name": "s3b"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
+
     def test_more_than_max_writes_is_refused_at_validation(self):
         """A13: store cap == engine cap; a 12-lamp scene is refused with an
         explicit error instead of half-applying at run time."""

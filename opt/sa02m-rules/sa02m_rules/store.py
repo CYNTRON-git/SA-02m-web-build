@@ -557,7 +557,8 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         # Batch upsert: validate ALL entries first so a template compile never
         # lands half-written (docs/contracts/cloud-scenarios.md §Channel).
         cleaned = []
-        ids = [s.get("id") for s in doc["scenarios"] if isinstance(s, dict)]
+        ids = [s.get("id") for s in doc["scenarios"]
+               if isinstance(s, dict) and isinstance(s.get("id"), str)]
         for raw in body["upsert"][:16]:
             if not isinstance(raw, dict):
                 return {"ok": False, "error": "bad json"}
@@ -565,10 +566,13 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
             if err:
                 return {"ok": False, "error": err}
             if not row["id"]:
-                row["id"] = _new_id([i for i in ids if isinstance(i, str)])
-                ids.append(row["id"])
+                row["id"] = _new_id(ids)
+            # Every resulting id, client-supplied or minted: the cap is judged
+            # on the document the merge would produce (review 1.0.6.39 F1 —
+            # counting only minted ids let a 16-row explicit-id batch store 80).
+            ids.append(row["id"])
             cleaned.append(row)
-        if len(set(i for i in ids if isinstance(i, str))) > SCENARIOS_MAX:
+        if len(set(ids)) > SCENARIOS_MAX:
             return {"ok": False, "error": "too_many"}  # post-merge total
         for row in cleaned:
             idx = next((i for i, s in enumerate(doc["scenarios"])
