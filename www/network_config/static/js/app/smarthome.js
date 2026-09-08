@@ -29,12 +29,22 @@ function shRefresh() {
 // module → DI/DO/AI/AO, which a flat topic list cannot express. The CGI still
 // answers the flat shape without the parameter, so an older cached page keeps
 // working against a new board.
-async function shTopics() {
-  const r = await fetch('cgi-bin/sa02m_alice_topics.cgi?format=inventory', {
+// Bounded (audit C7): the CGI's own budget is 15 s under nginx's 20 s, and
+// shOpenModal awaits this before seeding the first binding row — an unbounded
+// hang left the dialog with no row and no error. One request in flight at a
+// time: a poll landing while the modal opens must not fan out into a second
+// CGI fork on the shared ARM target.
+const SH_TOPICS_TIMEOUT_MS = 8000;
+let _shTopicsInflight = null;
+function shTopics() {
+  if (_shTopicsInflight) return _shTopicsInflight;
+  _shTopicsInflight = fetchWithTimeout('cgi-bin/sa02m_alice_topics.cgi?format=inventory', {
     method: 'GET',
     credentials: 'same-origin',
-  });
-  return r.json();
+  }, SH_TOPICS_TIMEOUT_MS)
+    .then(function (r) { return r.json(); })
+    .finally(function () { _shTopicsInflight = null; });
+  return _shTopicsInflight;
 }
 
 // Transient success notices auto-clear; errors stay until the state changes.
@@ -464,7 +474,7 @@ function shRowsHost() { return $('sh-rows'); }
 
 function shRowKindOptions(selected) {
   return Object.keys(SH_KINDS).map(function (k) {
-    return '<option value="' + escHtml(k) + '"' + (k === selected ? ' selected' : '') + '>' +
+    return '<option value="' + escAttr(k) + '"' + (k === selected ? ' selected' : '') + '>' +
       escHtml(SH_KIND_LABELS[k] || k) + '</option>';
   }).join('');
 }
@@ -491,11 +501,11 @@ function shBindLabel(topic) {
 
 function shBindButtonHtml(topic) {
   const known = !topic || !!shTopicMeta[topic];
-  return '<input type="hidden" class="sh-row-topic" value="' + escHtml(topic || '') + '">' +
+  return '<input type="hidden" class="sh-row-topic" value="' + escAttr(topic || '') + '">' +
     '<button type="button" class="btn btn-sm sh-row-bind' + (topic ? '' : ' is-empty') +
     (known ? '' : ' is-unknown') + '" data-act="pick"' +
-    ' aria-label="' + escHtml(uiT('Выбрать канал')) + '"' +
-    ' title="' + escHtml(topic || uiT('Выбрать канал')) + '">' +
+    ' aria-label="' + escAttr(uiT('Выбрать канал')) + '"' +
+    ' title="' + escAttr(topic || uiT('Выбрать канал')) + '">' +
     escHtml(shBindLabel(topic)) + '</button>';
 }
 
@@ -530,7 +540,7 @@ function shAddRow(kind, topic, rawItem) {
   if (locked) {
     // Unknown stored instance: show what is bound, refuse to retype it.
     const inst = shItemInstance(rawItem) || 'custom';
-    kindHtml = '<option value="' + escHtml(SH_KIND_RAW) + '" selected>' + escHtml(inst) + '</option>';
+    kindHtml = '<option value="' + escAttr(SH_KIND_RAW) + '" selected>' + escHtml(inst) + '</option>';
   } else {
     kindHtml = shRowKindOptions(k);
   }
@@ -873,7 +883,7 @@ function shPickChipsHtml() {
   return SH_PICK_CHIPS.map(function (c) {
     return '<button type="button" class="sh-pick-chip' +
       (c.key === shPickChip ? ' is-on' : '') + '" data-act="chip" data-chip="' +
-      escHtml(c.key) + '">' + escHtml(uiT(c.label)) + '</button>';
+      escAttr(c.key) + '">' + escHtml(uiT(c.label)) + '</button>';
   }).join('');
 }
 
@@ -900,7 +910,7 @@ function shPickChannelHtml(dev, ch, occupied, prefer) {
   const named = !!title && title !== tag && !(tag && title === ch.tag);
   return '<div class="sh-pick-ch-wrap"><div class="sh-pick-ch-line">' +
     '<button type="button" class="' + cls + '" data-act="ch" data-topic="' +
-    escHtml(ch.topic) + '" title="' + escHtml(ch.topic) + '">' +
+    escAttr(ch.topic) + '" title="' + escAttr(ch.topic) + '">' +
     (tag ? '<span class="sh-pick-ch-tag">' + escHtml(tag) + '</span>' : '') +
     '<span class="sh-pick-ch-title">' + (named ? escHtml(title) : '') + '</span>' +
     '<span class="sh-pick-ch-rw">' + escHtml(ch.rw === 'rw' ? uiT('чт/зп') : uiT('чтение')) + '</span>' +
@@ -949,14 +959,14 @@ function shPickGroupsHtml(dev, occupied, prefer) {
 function shPickMismatchHtml(dev) {
   if (dev.model_source !== 'detected' || !dev.yaml_model || dev.yaml_model === dev.model) return '';
   return '<span class="sh-pick-mismatch" title="' +
-    escHtml(uiT('Тип модуля определён по опросу; в YAML указан другой')) + '">' +
+    escAttr(uiT('Тип модуля определён по опросу; в YAML указан другой')) + '">' +
     escHtml('YAML: ' + dev.yaml_model + ' · ' + uiT('обнаружено') + ': ' + dev.model) + '</span>';
 }
 
 function shPickDevHtml(dev, occupied, prefer) {
   const open = dev.id === shPickOpenDev;
   const badges = shPickDevBadges(dev);
-  return '<div class="sh-pick-dev' + (open ? ' is-open' : '') + '" data-id="' + escHtml(dev.id) + '">' +
+  return '<div class="sh-pick-dev' + (open ? ' is-open' : '') + '" data-id="' + escAttr(dev.id) + '">' +
     '<button type="button" class="sh-pick-dev-head" data-act="dev" aria-expanded="' +
     (open ? 'true' : 'false') + '">' +
     '<span class="sh-pick-arrow">' + (open ? '▾' : '▸') + '</span>' +
@@ -996,8 +1006,8 @@ function shPickSearchHtml(occupied, prefer) {
           const busy = occupied[item.topic];
           out.push('<button type="button" class="sh-pick-hit' + (busy ? ' is-busy' : '') +
             (prefer.indexOf(g.key) !== -1 ? ' is-pref' : '') +
-            '" data-act="ch" data-topic="' + escHtml(item.topic) + '" title="' +
-            escHtml(item.topic) + '">' +
+            '" data-act="ch" data-topic="' + escAttr(item.topic) + '" title="' +
+            escAttr(item.topic) + '">' +
             '<span class="sh-pick-hit-dev">' + escHtml(shPickDevTitle(dev)) +
             (shPickDevShort(dev) ? ' · ' + escHtml(shPickDevShort(dev)) : '') + '</span>' +
             '<span class="sh-pick-hit-ch">' + escHtml(item.title || item.tag) + '</span>' +
@@ -1278,10 +1288,10 @@ function shRenderRooms(rooms) {
       list.innerHTML = '<p class="field-hint">' + escHtml(uiT('Комнаты ещё не добавлены')) + '</p>';
     } else {
       list.innerHTML = rooms.map(function (r) {
-        return '<div class="sh-room-row" data-id="' + escHtml(r.id || '') + '">' +
+        return '<div class="sh-room-row" data-id="' + escAttr(r.id || '') + '">' +
           '<span class="sh-room-name text-sm">' + escHtml(r.name || r.id) + '</span>' +
           '<button type="button" class="btn btn-sm btn-danger" data-act="room-del" aria-label="' +
-          escHtml(uiT('Удалить комнату')) + '" title="' + escHtml(uiT('Удалить комнату')) + '">✕</button>' +
+          escAttr(uiT('Удалить комнату')) + '" title="' + escAttr(uiT('Удалить комнату')) + '">✕</button>' +
           '</div>';
       }).join('');
     }
@@ -1328,8 +1338,8 @@ function shRenderDevices(devices, rooms) {
       (room ? ' · ' + (room.name || room.id) : '');
     const hidden = shVisibleInAlice(dev) ? '' :
       ' <span class="badge badge-unk">' + escHtml(uiT('скрыто из Алисы')) + '</span>';
-    return '<div class="sh-dev-row" data-id="' + escHtml(dev.id || '') + '">' +
-      '<svg class="sh-icon" aria-hidden="true"><use href="#i-' + escHtml(shDeviceIcon(dev)) + '"></use></svg>' +
+    return '<div class="sh-dev-row" data-id="' + escAttr(dev.id || '') + '">' +
+      '<svg class="sh-icon" aria-hidden="true"><use href="#i-' + escAttr(shDeviceIcon(dev)) + '"></use></svg>' +
       '<span class="mono text-sm">' + escHtml(dev.name || dev.id) + '</span> ' +
       '<span class="text-sm text-sec">' + escHtml(meta) + '</span>' + hidden +
       '<span class="sh-dev-actions">' +
@@ -1419,7 +1429,7 @@ function shSyncManualSuggestions() {
   const list = $('sh-pick-manual-list');
   if (!list) return;
   list.innerHTML = shTopicList.map(function (t) {
-    return '<option value="' + escHtml(t) + '"></option>';
+    return '<option value="' + escAttr(t) + '"></option>';
   }).join('');
 }
 
@@ -1714,9 +1724,14 @@ async function shOpenModal() {
   document.addEventListener('keydown', shModalEsc);
   shRefresh();
   // Topics FIRST: the seeded row's topic picker would otherwise open empty.
-  await shLoadTopics();
-  const host = shRowsHost();
-  if (host && !host.querySelector('.sh-bind-row')) shSeedDefaultRow();
+  // The seed is in `finally` so a timed-out or throwing inventory still leaves
+  // the operator a row (the picker then offers hand entry — fail-closed).
+  try {
+    await shLoadTopics();
+  } finally {
+    const host = shRowsHost();
+    if (host && !host.querySelector('.sh-bind-row')) shSeedDefaultRow();
+  }
 }
 
 function shCloseModal() {

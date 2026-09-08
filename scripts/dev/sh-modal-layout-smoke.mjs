@@ -73,6 +73,27 @@
    `inverted: true`, unticked drops the KEY (never `false`). Rationale and its
    two hand-run mutations are at the pass itself.
 
+   Fifth (inside runPicker, 1.0.6.39, audit C4): a channel whose topic carries
+   `"` and the audit's verbatim onfocus/autofocus payload (INJECT_TAG) is
+   rendered, picked and rebuilt through shAddRow — asserted on the PARSED DOM:
+   one button, exact data-topic and title, no onfocus/autofocus anywhere in the
+   two modals, window.__PWNED never set. PROVEN RED against the pristine
+   1.0.6.38 bundles (SH_MODAL_SMOKE_WWW=<git archive HEAD copy>): 4 failures —
+   data-topic truncated to `…/controls/x` (0 buttons match), 2 onfocus/
+   autofocus attributes parsed inside the modals, and both round-trips lost
+   the tail of the topic. The handler itself did not fire in this flow (an
+   autofocus on a node inserted after load does not focus); the audit's PoC
+   fired it by focusing — the parsed attributes are the defect either way.
+   GREEN once every attribute site uses escAttr() (app.js). The static half
+   is the registry row no-eschtml-in-attr.
+
+   Sixth (runInventoryHang, 1.0.6.39, audit C7): the inventory route is never
+   fulfilled; the default binding row must still be seeded (at the fetch
+   budget, measured) and the picker must fall back to hand entry. PROVEN RED
+   on the same pristine copy: no row after 12 014 ms (the fallback check is
+   then unreachable); GREEN with fetchWithTimeout + the seed in a `finally`
+   (smarthome.js shTopics / shOpenModal).
+
    Harness: the standing Playwright install under scripts/dev (npm run
    ui-layout:install — the same chromium ui-layout and cloud-card-smoke reuse;
    no new dependency). Dev-only; never shipped to the device.
@@ -177,6 +198,14 @@ const LED_CH = (tag, title, rw) => ({
 });
 const MODULE_DO = 6;
 const MODULE_DI = 8;
+// A topic carrying `"` (audit 2026-09-08 C4): the inventory's strings come from
+// the bridge's live cache, which the LAN broker feeds — so the picker MUST treat
+// them as attribute-hostile. This tag is the verbatim attribute-injection
+// payload the audit executed against the 1.0.6.38 escHtml() picker: rendered
+// into `data-topic="…"` unescaped it closes the attribute and adds onfocus +
+// autofocus, and Chromium runs the handler.
+const INJECT_TAG = 'x" onfocus="window.__PWNED=1" autofocus="y';
+const INJECT_TOPIC = '/devices/SA-02m/controls/' + INJECT_TAG;
 const INVENTORY = {
   ok: true,
   source: '/etc/sa02m-modbus-mqtt.yaml',
@@ -229,6 +258,7 @@ const INVENTORY = {
           CTRL_CH('beeper', 'Пищалка контроллера', 'rw'),
           CTRL_CH('alarm_led', 'Светодиод «Авария»', 'rw'),
           CTRL_CH('temp_c', 'Температура платы', 'r'),
+          CTRL_CH(INJECT_TAG, 'Реле "A" (кавычки в имени)', 'rw'),
         ],
         diag: [],
       },
@@ -845,6 +875,27 @@ async function runPicker(browser, base) {
   });
   check(anon.length === 0,
     `every offered channel carries a label (${anon.length ? anon.join(', ') : 'all named'})`);
+
+  // Attribute context (audit C4): every card is expanded here, so the `"`-
+  // bearing channel is rendered. What is asserted is the PARSED result — the
+  // attributes Chromium actually gave the button, the exact data-topic and
+  // title, and that nothing ran — not the source text of the escaper.
+  const inj = await page.evaluate((t) => {
+    const btns = [...document.querySelectorAll('#sh-pick-list button[data-act="ch"]')]
+      .filter((b) => b.dataset.topic === t);
+    const b = btns[0];
+    return {
+      matches: btns.length,
+      title: b ? b.getAttribute('title') : null,
+      attrs: b ? [...b.attributes].map((a) => a.name).sort().join(' ') : '(no button)',
+      leaked: document.querySelectorAll('#sh-modal [onfocus], #sh-modal [autofocus], #sh-pick-modal [onfocus], #sh-pick-modal [autofocus]').length,
+      executed: window.__PWNED !== undefined,
+    };
+  }, INJECT_TOPIC);
+  check(inj.matches === 1 && inj.title === INJECT_TOPIC,
+    `a topic carrying «"» renders as ONE channel with its exact topic in data-topic and title (${inj.matches} match, title ${JSON.stringify(inj.title)})`);
+  check(inj.leaked === 0 && !inj.executed,
+    `no attribute escapes the quoted value — parsed [${inj.attrs}], onfocus/autofocus in the modals: ${inj.leaked}, handler executed: ${inj.executed}`);
   await page.locator('#sh-pick-modal .mqtt-modal-dialog').screenshot({ path: join(SHOTS, 'sh-pick-modal.png') });
 
   // Search: the tree flattens, and the query reaches the COM/address and the
@@ -886,6 +937,48 @@ async function runPicker(browser, base) {
   check(/gone-away/.test(ghost.label) && ghost.unknown,
     `a stored topic outside the inventory keeps its own label ("${ghost.label}")`);
 
+  // The `"`-bearing topic ROUND-TRIPS: picked from the tree it lands verbatim
+  // in the row's hidden input (the value shBindButtonHtml writes into
+  // value="…"), and a row built for it by shAddRow renders the same value
+  // with no attribute leaking out of the binding row either.
+  await openPicker(page);
+  // Reached through the SEARCH (the reopened picker collapses every card, and
+  // a flat hit is the other attribute site the audit named). A truncated
+  // data-topic (the defect) means no hit matches: recorded as a failure
+  // below, never an exception that hides the later passes.
+  const clicked = await page.evaluate((t) => {
+    const input = document.getElementById('sh-pick-search');
+    input.value = 'кавычки';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const b = [...document.querySelectorAll('#sh-pick-list .sh-pick-hit[data-act="ch"]')]
+      .find((x) => x.dataset.topic === t);
+    if (b) b.click();
+    return !!b;
+  }, INJECT_TOPIC);
+  if (clicked) {
+    await page.waitForFunction(
+      () => document.getElementById('sh-pick-modal').hasAttribute('hidden'), null, { timeout: 8000 });
+  } else {
+    await page.evaluate(() => window.shPickClose());
+  }
+  const trip = await page.evaluate((t) => {
+    const first = document.querySelector('#sh-rows .sh-bind-row');
+    window.shAddRow('switch', t, null);
+    const rows = document.querySelectorAll('#sh-rows .sh-bind-row');
+    const added = rows[rows.length - 1];
+    return {
+      picked: first.querySelector('.sh-row-topic').value,
+      pickedTitle: first.querySelector('.sh-row-bind').title,
+      built: added.querySelector('.sh-row-topic').value,
+      leaked: document.querySelectorAll('#sh-rows [onfocus], #sh-rows [autofocus]').length,
+      executed: window.__PWNED !== undefined,
+    };
+  }, INJECT_TOPIC);
+  check(trip.picked === INJECT_TOPIC && trip.pickedTitle === INJECT_TOPIC,
+    `picking the «"» topic stores it verbatim (${JSON.stringify(trip.picked)})`);
+  check(trip.built === INJECT_TOPIC && trip.leaked === 0 && !trip.executed,
+    `a binding row built for the «"» topic keeps it verbatim and leaks no attribute (value ${JSON.stringify(trip.built)}, leaked ${trip.leaked}, executed ${trip.executed})`);
+
   // Fail-closed: the CGI cannot answer → hand entry, binding intact.
   inventoryOk = false;
   await page.evaluate(() => { window.shCloseModal(); window.shOpenModal(); });
@@ -909,6 +1002,61 @@ async function runPicker(browser, base) {
     `the binding survives the outage untouched (${failClosed.bound})`);
 
   check(errors.length === 0, `picker: no page errors (${errors.join(' | ')})`);
+  await ctx.close();
+  return 1;
+}
+
+/* ── The inventory that never answers (audit C7) ──────────────────────────
+   shOpenModal() awaits the inventory before seeding the default binding row.
+   Until 1.0.6.39 that fetch had no timeout, so a hung sa02m_alice_topics.cgi
+   (its budget is 15 s under nginx's 20 s) left the operator a «Комнаты и
+   устройства» with NO binding row and NO error — the 500 / auth / bad-JSON
+   paths were handled, only the hang was not. Here the inventory route is
+   simply never fulfilled; the row must appear within the fetch budget plus
+   slack (smarthome.js SH_TOPICS_TIMEOUT_MS, 8 s) and the picker must offer
+   hand entry, the same fail-closed shape the outage case above proves.
+   Non-vacuous: the elapsed time is measured — a row that appears before the
+   budget would mean the harness did not really hang the fetch. */
+const HANG_BUDGET_MS = 8000;
+async function runInventoryHang(browser, base) {
+  const vp = VIEWPORTS.find((v) => v.wide) || VIEWPORTS[0];
+  const ctx = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+  await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const pending = [];
+  await page.route('**/cgi-bin/**', (r) => {
+    const url = r.request().url();
+    if (/format=inventory/.test(url)) { pending.push(r); return; }   // never answered
+    return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
+  });
+  await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+  console.log(`\n[${vp.name} ${vp.width}x${vp.height}] inventory that never answers — the modal still seeds its row`);
+  const t0 = Date.now();
+  // Not awaited on purpose: on the pre-fix bundle this promise never settles.
+  await page.evaluate(() => { window.shOpenModal(); return 0; });
+  let seeded = false;
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('#sh-rows .sh-bind-row').length >= 1,
+      null, { timeout: HANG_BUDGET_MS + 4000 });
+    seeded = true;
+  } catch (e) { /* reported below */ }
+  const elapsed = Date.now() - t0;
+  check(seeded, `the default binding row is seeded although the inventory never answered (after ${elapsed} ms)`);
+  check(!seeded || (elapsed >= HANG_BUDGET_MS - 500 && elapsed <= HANG_BUDGET_MS + 4000),
+    `the row arrives at the fetch budget, not before it (${elapsed} ms vs ${HANG_BUDGET_MS} ms) — the hang was real`);
+  if (seeded) {
+    await openPicker(page);
+    const fb = await page.evaluate(() => ({
+      manualShown: !(document.getElementById('sh-pick-manual') || { hidden: true }).hidden,
+      channels: document.querySelectorAll('#sh-pick-list button[data-act="ch"]').length,
+    }));
+    check(fb.manualShown && fb.channels === 0,
+      `the picker falls back to hand entry (manual ${fb.manualShown}, channels ${fb.channels})`);
+  }
+  check(errors.length === 0, `inventory hang: no page errors (${errors.join(' | ')})`);
+  for (const r of pending) { try { await r.abort(); } catch (e) { /* context closing */ } }
   await ctx.close();
   return 1;
 }
@@ -1042,6 +1190,7 @@ async function run() {
     rendered += await runPicker(browser, base);
     rendered += await runInvertSave(browser, base);
     rendered += await runMqttAnchoring(browser, base);
+    rendered += await runInventoryHang(browser, base);
   } finally {
     await browser.close();
     srv.close();
@@ -1050,7 +1199,7 @@ async function run() {
   for (const m of matrix) console.log(`  ${m.label.padEnd(28)} ${m.cols.padEnd(14)} ${m.scrolled}`);
   if (rendered === 0) die(1, `${TAG}: ERROR — nothing was rendered; a pass without a render is not a pass`);
   if (failures) die(1, `\n${TAG}: ${failures} FAILURE(S) across ${VIEWPORTS.length} viewports × ${THEMES.length} themes`);
-  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the channel picker, the invert flag's save side and the MQTT-dialog viewport anchoring (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
+  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the channel picker (with a «"»-bearing topic), the invert flag's save side, the MQTT-dialog viewport anchoring and the inventory hang (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
   process.exit(0);
 }
 

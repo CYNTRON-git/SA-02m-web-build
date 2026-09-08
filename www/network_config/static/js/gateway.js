@@ -138,12 +138,8 @@ function uiT(s) {
 
 // Config values reach this file from gateway_config.cgi, which returns the YAML
 // verbatim on GET — a hand-edited /etc/sa02m-gateway.yaml can therefore carry
-// anything. Escape before innerHTML (web-code-rigor.md, Frontend floors).
-function escAttr(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+// anything. Escape before innerHTML (web-code-rigor.md, Frontend floors):
+// escAttr() is app.js's (promoted from here in 1.0.6.39; app.js loads first).
 
 function _gwToggleBtnHtml(active) {
   const on = !!active;

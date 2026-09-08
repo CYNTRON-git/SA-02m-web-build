@@ -346,6 +346,16 @@ function setRtcReadout(local, utcRaw) {
 }
 function setStyle(id, prop, val) { const e = document.getElementById(id); if (e) e.style[prop] = val; }
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Attribute context (`title="…"`, `data-topic="…"`, `value="…"`): escHtml leaves
+// `"` alive, so a quoted value closes the attribute and the rest of the string
+// becomes new attributes (1.0.6.38 picker, audit C4 — an injected handler ran).
+// Gate: .ai-dev/quality/checks/no-eschtml-in-attr.mjs. Null-tolerant on purpose:
+// renderers pass absent fields.
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 const PRIORITY_WARMUP_KEY = 'sa02m-priority-warmup';
 const PRIORITY_WARMUP_TTL_MS = 15000;
 
