@@ -58,6 +58,7 @@ done
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+SANCTIONED_LST="$TMP/sanctioned.lst"
 
 # ── A. No legacy id literal survives ─────────────────────────────────────────
 # Three narrow patterns, each naming the form it catches. They are narrow ON
@@ -68,7 +69,10 @@ trap 'rm -rf "$TMP"' EXIT
 #      /devices/sa02m-{hostname}, /devices/sa02m-<hostname>, /devices/sa02m-SA-02
 #   3  the prose/config form that states the id IS the glued hostname
 # Deliberate non-flags, all verified present in this tree:
-#   * /devices/sa02m-bridge — the bridge STATUS device, a real and unchanged id;
+#   * the SANCTIONED_PREFIXES below — real ids in the `sa02m-<subsystem>`
+#     namespace that docs/MQTT_TOPICS.md records as unchanged by the 1.0.6.22
+#     migration (its «Смена id … остаётся» line); each entry carries its reason
+#     inline and is non-vacuity-asserted in A2 (an entry excusing nothing FAILS);
 #   * sa02m-<serial> / "sa02m-" + get_serial() (opt/sa02m-cloud-agent,
 #     docs/contracts/cloud-enrollment.md) — the CLOUD ENROLLMENT id, a different
 #     namespace keyed on the cpuinfo serial, deliberately not hostname-derived;
@@ -79,17 +83,22 @@ trap 'rm -rf "$TMP"' EXIT
 PAT1='sa02m-SA-02'
 PAT2='/devices/sa02m-'
 PAT3='sa02m-[<{(]?[$]?[{(]?[A-Za-z_]{0,12}[Hh][Oo][Ss][Tt][Nn][Aa][Mm][Ee]'
-BRIDGE_ID='/devices/sa02m-bridge'
+# Topic-form hits carrying one of these prefixes are not the retired id. Keep
+# the list NARROW: a bare `/devices/sa02m-` entry would blind the sweep.
+SANCTIONED_PREFIXES=(
+    '/devices/sa02m-bridge'   # the bridge STATUS device (docs/MQTT_TOPICS.md, «sa02m-bridge»)
+    '/devices/sa02m-rules-'   # per-scenario VIRTUAL device sa02m-rules-{id} (docs/MQTT_TOPICS.md:100; docs/contracts/cloud-scenarios.md §MQTT mirror) — retained on deployed boards since 1.0.6.37, a rename would orphan that subtree
+)
 
 # Sweep a LIST of files in three grep invocations rather than three per file —
 # a per-file loop over ~700 tracked files costs ~40 s on a Windows dev box, and
 # a build-beat row that slow gets skipped by hand. `-H` forces the filename
-# prefix even for a one-file list. The bridge status device — a real, unchanged
-# id — is filtered out of the topic-form hits.
+# prefix even for a one-file list. The sanctioned subsystem ids — real,
+# unchanged — are filtered out of the topic-form hits.
 sweep_list() {
     {
         xargs -d '\n' -a "$1" grep -HnI  -e "$PAT1" 2>/dev/null
-        xargs -d '\n' -a "$1" grep -HnIF -e "$PAT2" 2>/dev/null | grep -vF "$BRIDGE_ID"
+        xargs -d '\n' -a "$1" grep -HnIF -e "$PAT2" 2>/dev/null | grep -vF -f "$SANCTIONED_LST"
         xargs -d '\n' -a "$1" grep -HnIE -e "$PAT3" 2>/dev/null
     } | sort -u
 }
@@ -137,9 +146,12 @@ echo "A. legacy id literal sweep"
 # silent pass; one quietly widened would get the gate disabled.
 BAD="$TMP/known-bad.txt"
 GOOD="$TMP/known-good.txt"
+printf '%s\n' "${SANCTIONED_PREFIXES[@]}" > "$SANCTIONED_LST"
+[ "${#SANCTIONED_PREFIXES[@]}" -ge 1 ] || fail "A0: the sanctioned-prefix list is empty — grep -v -f on an empty file would blind the topic-form sweep"
 printf '%s\n' '/devices/sa02m-SA-02/controls/beeper' > "$BAD"
 printf '%s\n' 'f"sa02m-{hostname}"' 'sa02m-<hostname> — id телеметрии' >> "$BAD"
 printf '%s\n' '/devices/sa02m-bridge/controls/devices_online' \
+              '/devices/sa02m-rules-s1/controls/rule_enabled' \
               'sa02m-<serial> cloud enrollment' \
               'RAW_IMG="$WORK/sa02m-${STAMP}-raw.img"' \
               '/devices/SA-02m/controls/beeper' > "$GOOD"
@@ -213,6 +225,18 @@ if [ "$UNMASKED" -le "$MASKED" ]; then
 else
     ok "the migration section still documents the old id ($((UNMASKED - MASKED)) line(s) masked)"
 fi
+
+# Each sanctioned prefix must still excuse a real topic-form line in the swept
+# tree — the same stale-ledger rule as the two exclusions above (a prefix whose
+# consumer is gone would silently cover the day a regression lands under it).
+for prefix in "${SANCTIONED_PREFIXES[@]}"; do
+    N=$(xargs -d '\n' -a "$LIST" grep -HnIF -e "$prefix" 2>/dev/null | wc -l)
+    if [ "$N" -gt 0 ]; then
+        ok "sanctioned prefix $prefix still names a live subsystem id ($N line(s) excused)"
+    else
+        fail "A2: sanctioned prefix $prefix excuses nothing in the swept tree — the entry is stale and must go"
+    fi
+done
 
 # ── B. The two derivations agree ─────────────────────────────────────────────
 echo "B. telemetry and alice-picker id derivations agree"
