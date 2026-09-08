@@ -481,6 +481,39 @@ class TestYamlDefaults(unittest.TestCase):
         self.assertEqual(_published(pub)["effect"], "0")
 
 
+    def test_a_failing_restore_is_bounded_not_retried_every_poll(self):
+        """E11: a persistent write failure must not re-run the lock-bracketed
+        restore on EVERY 2 s poll forever on a shared COM. MR parity: three
+        attempts, then the restore is marked applied and the poller goes quiet;
+        a later successful poll writes nothing more."""
+        p, _pub, ser = _poller(
+            matrix_layout=0x0408, weather_lines=1, effect=0, brightness=255,
+        )
+        attempts = []
+
+        def boom(addr, reg, value):
+            attempts.append((reg, value))
+            raise IOError("bus busy")
+
+        ser.write_register = boom
+        with mock.patch("bridge_device.time.sleep", return_value=None):
+            for _ in range(bridge_led.LedPoller.YAML_RESTORE_ATTEMPTS + 2):
+                p._t_poll = 0.0
+                p.poll_io()
+        # Each attempt opens with the unlock write, retried once by
+        # _wb_write_retry: exactly 2 × attempts unlock writes, then silence.
+        unlocks = [a for a in attempts if a == (lm.MB2WS_LOCK, lm.MB2WS_UNLOCK_KEY)]
+        self.assertEqual(len(unlocks), 2 * bridge_led.LedPoller.YAML_RESTORE_ATTEMPTS)
+        self.assertTrue(p._yaml_applied)
+        n = len(attempts)
+        # The bus recovers: the restore is NOT re-issued.
+        ser.write_register = lambda addr, reg, value: ser.writes.append(("reg", reg, value))
+        p._t_poll = 0.0
+        p.poll_io()
+        self.assertEqual(ser.writes, [])
+        self.assertEqual(len(attempts), n)
+
+
 class TestColourForm(unittest.TestCase):
     """The published form and the read form are ONE decision, checked both ways."""
 

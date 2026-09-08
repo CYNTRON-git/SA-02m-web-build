@@ -170,11 +170,11 @@ devices:
   #   poll_s: 2
   #   poll_text_s: 30
   #   # Стенд 4×16×16 (1.135): wiring 0x0408. Alice on/off = static fill, not FX 64.
+  #   # Один факт — одна форма. Слово 418 задаётся ЛИБО целиком (matrix_layout),
+  #   # ЛИБО полями tile_count / rotate_90_cw / mirror_x; при обоих matrix_layout
+  #   # побеждает, поля молча игнорируются (rgbw_layout_from_yaml). Так же reg 494:
+  #   # weather_lines побеждает text_lines (rgbw_text_lines_from_yaml).
   #   matrix_layout: 0x0408   # TileCount=4 + SWAP_XY 90° CW, MIRROR_X off
-  #   tile_count: 4
-  #   rotate_90_cw: true
-  #   mirror_x: false
   #   text_lines: 1           # reg 494 = 1 (not two-line weather)
-  #   weather_lines: 1
   #   effect: 0               # STATIC — weather FX 64 is not restored
   #   brightness: 255

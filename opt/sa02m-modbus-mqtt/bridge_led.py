@@ -104,6 +104,7 @@ class LedPoller(DevicePoller):
         self._t_poll = 0.0
         self._t_text = 0.0
         self._yaml_applied = False
+        self._yaml_attempts = 0
         self._names = set(lc.control_names())
 
     # --- setup ----------------------------------------------------------------
@@ -288,14 +289,29 @@ class LedPoller(DevicePoller):
                 out[name] = str(int(di[i]) & 1)
         return out
 
-    def _apply_yaml_defaults(self, snap: dict) -> None:
-        """One-shot: pin yaml layout / weather lines so a restart cannot wipe them.
+    # MR parity (offline_after_fails): after this many failed polls the restore
+    # is marked applied and the poller goes quiet instead of re-running the
+    # lock-bracketed batch every poll_s on a COM shared with Carel and MPLC4.
+    YAML_RESTORE_ATTEMPTS = 3
 
-        418 is lock-gated; 494 is not. Live values that already match are left
-        alone — this is a restore path, not a rewrite every poll.
+    def _apply_yaml_defaults(self, snap: dict) -> None:
+        """One-shot restore of the FOUR yaml-pinned registers, so a strip
+        restart (or a hand edit from the flasher window) cannot silently drift
+        from the yaml: 418 matrix layout (`matrix_layout` & co.), 494 text
+        lines (`weather_lines` / `text_lines`), the FX id (`effect`) and the FX
+        parameter, i.e. brightness (`brightness`). The last two DO override a
+        live effect/brightness a user set from the flasher window — a yaml that
+        pins them is the declared source of truth for them.
+
+        418 and the FX pair are lock-gated; 494 is not. Live values that already
+        match are left alone — this is a restore path, not a rewrite every poll.
+        Bounded: a failing write is retried on the next poll at most
+        YAML_RESTORE_ATTEMPTS times, then given up (logged) — never a batch
+        re-issued on every poll for the life of the process.
         """
         if self._yaml_applied:
             return
+        self._yaml_attempts += 1
         settings: dict = {}
         layout = lm.rgbw_layout_from_yaml(self.cfg)
         if layout is not None:
@@ -338,7 +354,15 @@ class LedPoller(DevicePoller):
                 snap["text_lines"] = int(lines)
             self._yaml_applied = True
         except Exception as e:
-            self.log.warning("led yaml defaults: %s", e)
+            if self._yaml_attempts >= self.YAML_RESTORE_ATTEMPTS:
+                self._yaml_applied = True
+                self.log.warning(
+                    "led yaml defaults: giving up after %d attempts: %s",
+                    self._yaml_attempts, e)
+            else:
+                self.log.warning("led yaml defaults (attempt %d/%d): %s",
+                                 self._yaml_attempts,
+                                 self.YAML_RESTORE_ATTEMPTS, e)
 
     # --- writeback ------------------------------------------------------------
 
