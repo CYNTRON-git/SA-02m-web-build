@@ -116,6 +116,23 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
 
+    def test_minted_ids_never_collide_with_explicit_ids_in_the_same_batch(self):
+        """Review 1.0.6.39 N2: an id-less row minted BEFORE an explicit row
+        carrying that same id was silently overwritten by the merge (two rows
+        asked, one stored, no error) — on a path the contract documents as
+        all-or-nothing. The mint must see every explicit id of the batch first;
+        the same holds for the replace path, which used to store two rows
+        under one id."""
+        r = store.apply_command({"upsert": [{"name": "a"}, {"id": "s1", "name": "b"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        rows = [(x["id"], x["name"]) for x in store.load(self.path)["scenarios"]]
+        self.assertEqual(sorted(rows), [("s1", "b"), ("s2", "a")])
+        r = store.apply_command({"replace": True, "scenarios": [{"name": "c"}, {"id": "s1", "name": "d"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        ids = [x["id"] for x in store.load(self.path)["scenarios"]]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2, ids)
+
     def test_more_than_max_writes_is_refused_at_validation(self):
         """A13: store cap == engine cap; a 12-lamp scene is refused with an
         explicit error instead of half-applying at run time."""

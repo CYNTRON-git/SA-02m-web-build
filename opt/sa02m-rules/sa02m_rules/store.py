@@ -130,6 +130,12 @@ def listed(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _explicit_ids(rows: List[Any]) -> List[str]:
+    """The client-supplied ids of a batch, in order — the mint's seed."""
+    return [r["id"] for r in rows
+            if isinstance(r, dict) and isinstance(r.get("id"), str) and r["id"]]
+
+
 def _new_id(existing: List[str]) -> str:
     n = 1
     while ("s%d" % n) in existing:
@@ -519,7 +525,11 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         save(doc, path)
         return _ok(doc)
     if body.get("replace") is True and isinstance(body.get("scenarios"), list):
-        cleaned, ids = [], []
+        cleaned = []
+        # Seed the mint with every explicit id of the batch FIRST: an id-less
+        # row minted before an explicit row carrying the same id used to land
+        # two rows under one id (review 1.0.6.39 N2).
+        ids = _explicit_ids(body["scenarios"][:SCENARIOS_MAX])
         for raw in body["scenarios"][:SCENARIOS_MAX]:
             if not isinstance(raw, dict):
                 continue
@@ -528,7 +538,7 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
                 return {"ok": False, "error": err}
             if not row["id"]:
                 row["id"] = _new_id(ids)
-            ids.append(row["id"])
+                ids.append(row["id"])
             cleaned.append(row)
         doc["scenarios"] = cleaned
         save(doc, path)
@@ -559,6 +569,9 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         cleaned = []
         ids = [s.get("id") for s in doc["scenarios"]
                if isinstance(s, dict) and isinstance(s.get("id"), str)]
+        # Explicit batch ids seed the mint too (review 1.0.6.39 N2): a minted
+        # id must never collide with an explicit id later in the same batch.
+        ids += _explicit_ids(body["upsert"][:16])
         for raw in body["upsert"][:16]:
             if not isinstance(raw, dict):
                 return {"ok": False, "error": "bad json"}
