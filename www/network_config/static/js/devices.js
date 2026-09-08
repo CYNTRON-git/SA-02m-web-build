@@ -2056,9 +2056,17 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.39";
         const name = s.label || s.field || s.metric || "";
         return `<span class="dev-legend-item"><i style="background:${
           COLORS[i % COLORS.length]
-        }"></i>${escapeAttr(name)} · ${escapeAttr(val)}</span>`;
+        }"></i>${escapeAttr(tl(name))} · ${escapeAttr(val)}</span>`;
       })
       .join("");
+  }
+
+  // A label rendered INSIDE a composite string (legend «name · value», the
+  // status line) is never a whole text node, so the DICT observer cannot
+  // translate it — translate it here (audit 2026-09-08, R3 residual).
+  function tl(x) {
+    const k = x == null ? "" : String(x);
+    return k && window.sa02mI18n ? window.sa02mI18n.t(k) : k;
   }
 
   function renderLegend(series) {
@@ -2407,10 +2415,10 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.39";
             : { minY: 0, maxY: 1 };
           if (status) {
             status.textContent = n
-              ? `${chartMeta.label} · ${rangeHumanLabel()} · ${chartSeries.length} рядов · Y: 0…${fmtYTick(
+              ? `${tl(chartMeta.label)} · ${rangeHumanLabel()} · ${chartSeries.length} ${tl("рядов")} · Y: 0…${fmtYTick(
                   yDom.maxY,
                   yTickDecimals(0, yDom.maxY, 4)
-                )} · ${n} точек`
+                )} · ${n} ${tl("точек")}`
               : "Нет точек за выбранный период";
           }
           drawChart();
@@ -2454,7 +2462,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.39";
         const n = chartSeries.reduce((s, ser) => s + (ser.points || []).length, 0);
         if (status) {
           status.textContent = n
-            ? `${data.label || ""} · ${rangeHumanLabel()} · ${n} точек`
+            ? `${tl(data.label || "")} · ${rangeHumanLabel()} · ${n} ${tl("точек")}`
             : "Нет точек за выбранный период";
         }
         drawChart();
