@@ -98,18 +98,98 @@ class SandboxBoundTests(unittest.TestCase):
                 self.assertFalse(rec["ok"])
                 self.assertEqual(rec["error"], "timeout")
 
+    # Review 1.0.6.39 F2: the `try` OUTSIDE the loop is the shape that swallows
+    # the first raise and then spins again — only a mechanism that keeps
+    # raising (REARMING_MECHANISMS) stops it; the loop-internal shape passes
+    # on any mechanism because the raise lands outside the `try`.
+    OUTER_TRY = ("try:\n"
+                 "    while True:\n"
+                 "        pass\n"
+                 "except:\n"
+                 "    pass\n"
+                 "while True:\n"
+                 "    pass\n")
+
     def test_bare_except_cannot_ride_out_the_deadline(self):
-        code = ("while True:\n"
-                "    try:\n"
-                "        pass\n"
-                "    except:\n"
-                "        pass\n")
-        for mech in code_runner.deadline_mechanisms():
-            with self.subTest(mechanism=mech):
+        inner = ("while True:\n"
+                 "    try:\n"
+                 "        pass\n"
+                 "    except:\n"
+                 "        pass\n")
+        available = code_runner.deadline_mechanisms()
+        for mech in available:
+            with self.subTest(mechanism=mech, shape="inner"):
                 t0 = time.monotonic()
-                rec = _run(code, self.path, budget=0.3, mechanism=mech)
+                rec = _run(inner, self.path, budget=0.3, mechanism=mech)
                 self.assertLess(time.monotonic() - t0, 5.0)
                 self.assertEqual(rec["error"], "timeout")
+        rearming = [m for m in code_runner.REARMING_MECHANISMS if m in available]
+        self.assertTrue(rearming, "no re-arming mechanism on this host: %r" % (available,))
+        for mech in rearming:
+            with self.subTest(mechanism=mech, shape="outer"):
+                t0 = time.monotonic()
+                rec = _run(self.OUTER_TRY, self.path, budget=0.3, mechanism=mech)
+                self.assertLess(time.monotonic() - t0, 5.0)
+                self.assertEqual(rec["error"], "timeout")
+
+    def test_swallowed_timeout_is_still_journaled(self):
+        """Plan row A1: expiry journals last_error even when the body caught
+        the raise and finished on its own (before the fix: ok=True, error='')."""
+        code = ("try:\n"
+                "    while True:\n"
+                "        pass\n"
+                "except:\n"
+                "    pass\n"
+                "x = 1\n")
+        for mech in code_runner.deadline_mechanisms():
+            with self.subTest(mechanism=mech):
+                rec = _run(code, self.path, budget=0.3, mechanism=mech)
+                self.assertFalse(rec["ok"])
+                self.assertEqual(rec["error"], "timeout")
+
+    def test_settrace_fallback_fires_once(self):
+        """The measured boundary of the last-resort mechanism: CPython unsets
+        a sys.settrace hook that raises, so after a swallowed ScenarioTimeout
+        the body runs on (the bounded second loop completes and publishes),
+        and the run is still journaled `timeout`. If this ever fails because
+        the publish did NOT happen, CPython re-arms now: move `trace` into
+        REARMING_MECHANISMS and rewrite the claim homes it names."""
+        self.assertNotIn("trace", code_runner.REARMING_MECHANISMS)
+        code = ("n = 0\n"
+                "try:\n"
+                "    while True:\n"
+                "        pass\n"
+                "except:\n"
+                "    pass\n"
+                "for i in range(1000):\n"
+                "    n = n + 1\n"
+                "Hub.set('d', 'on_off', n)\n")
+        pubs = []
+        rec = _run(code, self.path, pubs=pubs, budget=0.3, mechanism="trace")
+        self.assertEqual(pubs, [("d", "on_off", 1000)])
+        self.assertEqual(rec["error"], "timeout")
+
+    @unittest.skipUnless(hasattr(sys, "monitoring"),
+                         "CPython < 3.12: the non-main-thread fallback is the one-shot "
+                         "settrace clock — the outer-try bound is NOT verified here")
+    def test_non_main_thread_caller_is_bounded_by_the_fallback(self):
+        """service.py runs on the main thread (itimer); any other caller gets
+        the auto-selected fallback, which must be a re-arming one."""
+        out = {}
+
+        def body():
+            out["mechs"] = code_runner.deadline_mechanisms()
+            out["rec"] = _run(self.OUTER_TRY, self.path, budget=0.3)
+
+        th = threading.Thread(target=body, daemon=True)
+        t0 = time.monotonic()
+        th.start()
+        th.join(5.0)
+        self.assertFalse(th.is_alive(), "the fallback did not stop the outer-try body")
+        self.assertLess(time.monotonic() - t0, 5.0)
+        self.assertNotIn("itimer", out["mechs"])
+        self.assertEqual(out["mechs"][0], "monitor")
+        self.assertEqual(out["rec"]["error"], "timeout")
 
     def test_engine_runs_code_under_the_run_budget(self):
         """The engine passes RUN_S down; a wedged body journals last_error."""
@@ -138,6 +218,20 @@ class SandboxBoundTests(unittest.TestCase):
         self.assertIsNone(sys.gettrace())
         _run("x = 1\n", self.path, budget=1.0, mechanism="trace")
         self.assertIsNone(sys.gettrace())
+
+    @unittest.skipUnless(hasattr(sys, "monitoring"), "sys.monitoring is CPython >= 3.12")
+    def test_monitor_tool_is_released_after_the_run(self):
+        mon = sys.monitoring
+        self.assertIsNone(mon.get_tool(code_runner._MONITOR_TOOL_ID))
+        for code in ("x = 1\n", "while True:\n    pass\n"):
+            _run(code, self.path, budget=0.3, mechanism="monitor")
+            self.assertIsNone(mon.get_tool(code_runner._MONITOR_TOOL_ID))
+        # A taken slot drops `monitor` from the auto list instead of colliding.
+        mon.use_tool_id(code_runner._MONITOR_TOOL_ID, "someone else")
+        try:
+            self.assertNotIn("monitor", code_runner.deadline_mechanisms())
+        finally:
+            mon.free_tool_id(code_runner._MONITOR_TOOL_ID)
 
     def test_underscore_names_and_attrs_are_banned(self):
         rec = _run("x = Hub._state\n", self.path)

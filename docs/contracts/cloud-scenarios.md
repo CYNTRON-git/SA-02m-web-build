@@ -133,9 +133,12 @@ Non-blocking scheduler (heap of timers, cancel-by-key generations).
 `RUN_S=30` counts **execution** only — scheduler waits are excluded. For
 `type=code` it is a hard wall-clock deadline on the body itself
 (`code_runner._Deadline`: `signal.setitimer`/SIGALRM on the daemon's main
-thread, a `sys.settrace` clock elsewhere; it keeps raising once expired so
-a bare `except:` cannot ride it out): an expired body aborts with
-`last_error="timeout"` and the engine keeps ticking. Memory:
+thread, a `sys.monitoring` line clock elsewhere on CPython ≥ 3.12 — both
+keep raising once expired, so a bare `except:` cannot ride them out; the
+last-resort `sys.settrace` clock fires once, and `REARMING_MECHANISMS` in
+`code_runner` is the one home of that boundary): an expired body aborts
+with `last_error="timeout"` — journaled even when the body swallowed the
+raise — and the engine keeps ticking. Memory:
 `MemoryMax=32M`, bounded heap/rings/trackers (`HEAP_MAX=4096`).
 
 Threading: the service applies MQTT messages on its main thread — paho's

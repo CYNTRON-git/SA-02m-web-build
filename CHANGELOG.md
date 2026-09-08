@@ -14,7 +14,9 @@
 
 ### Сценарии (sa02m-rules) — по аудиту 1.0.6.34→1.0.6.38, срез A
 - **Безопасность движка.** `type=code` исполняется под жёстким лимитом времени `RUN_S`
-  (SIGALRM-таймер в процессе демона, trace-fallback вне POSIX): бесконечный цикл,
+  (SIGALRM-таймер в основном потоке демона, `sys.monitoring`-часы вне его — оба
+  поднимают исключение повторно; резервный `sys.settrace`-хук срабатывает один раз,
+  но проглоченный тайм-аут всё равно журналируется): бесконечный цикл,
   присланный из облака, больше не вешает движок вместе с аварийными авто-выключениями —
   сценарий завершается с `last_error="timeout"`. Закрыта утечка состояния через
   `'{…}'.format(Hub)` (`.format`/`.format_map` запрещены в песочнице, `%`-форматирование
@@ -354,7 +356,7 @@
   `update_available:true` не перекрывает semver.
 - `TestApplyReload`: ожидание подписки догнало контракт `uptime_s` из 1.0.6.36.
 - Socket.IO: `wait_timeout` берёт `SIO_CONNECT_TIMEOUT_S`; один wait_timeout не пишет `gateway_unreachable`.
-- Пакер: `test_packer_frozen_v1_for_min_updater_1_0_5_66` — манифест для 1.0.5.66 без опциональных ключей.
+- Пакер: `test_packer_frozen_v1_for_min_updater_1_0_5_66` (с 1.0.6.39 — `test_packer_services_tier_rule`) — манифест для 1.0.5.66 без опциональных ключей.
 - Alice trigger: часть C `test-alice-reload-handshake.sh` — disable пишет `status.json`.
 
 ## 1.0.6.36 - Лента type-120 в скане MQTT, плитка света в Алисе (сентябрь 2026)

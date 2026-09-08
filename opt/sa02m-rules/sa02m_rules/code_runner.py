@@ -4,7 +4,13 @@ The AST walk is a denylist (banned node kinds, `_`-prefixed names and
 attributes, introspection builtins, `str.format`/`format_map` — a format
 string reaches attributes the walk cannot see). Execution runs under a hard
 wall-clock deadline (`_Deadline`): the engine's RUN_S budget is a bound on
-the body itself, not a stopwatch read after it returns.
+the body itself, not a stopwatch read after it returns. Three mechanisms,
+preferred in this order — `itimer` (SIGALRM, POSIX main thread: the daemon),
+`monitor` (sys.monitoring line clock, CPython >= 3.12, any thread), `trace`
+(sys.settrace line clock, any CPython). The first two keep raising once
+expired; `trace` fires once (REARMING_MECHANISMS is the one home of that
+boundary). Whatever the mechanism, an expired run is journaled `timeout`
+even when the body swallowed the raise.
 """
 from __future__ import annotations
 
@@ -39,22 +45,47 @@ class ScenarioTimeout(BaseException):
     on purpose: a scenario's own `except Exception` must not swallow it."""
 
 
+#: The filename every scenario body is compiled under — the `monitor` clock
+#: raises on lines of THIS code only, never inside Hub/Notify helpers.
+_SCENARIO_FILENAME = "<scenario>"
+#: sys.monitoring slot for the line clock (0-2 and 5 are the documented
+#: debugger / coverage / profiler / optimizer ids; settrace uses a private one).
+_MONITOR_TOOL_ID = 4
+#: Mechanisms that KEEP raising once expired, so a body that swallows the
+#: first ScenarioTimeout is stopped at its next line. `trace` is not one:
+#: CPython unsets a sys.settrace hook that raises (and clears the frame's
+#: f_trace), so it fires exactly once — re-installing it from inside the
+#: callback does not survive the trampoline's reset (measured on 3.12 and
+#: 3.14; test_security pins the boundary). The docs that state the property
+#: cite this tuple: docs/contracts/cloud-scenarios.md §Engine v2,
+#: docs/threat-model.md §4 A5/A6→S1, the py-unit-rules registry row.
+REARMING_MECHANISMS = ("itimer", "monitor")
+
+
 def deadline_mechanisms() -> Tuple[str, ...]:
     """Mechanisms usable on this platform/thread, preferred first."""
+    out = []
     if (hasattr(signal, "setitimer") and hasattr(signal, "SIGALRM")
             and threading.current_thread() is threading.main_thread()):
-        return ("itimer", "trace")
-    return ("trace",)
+        out.append("itimer")
+    mon = getattr(sys, "monitoring", None)
+    if mon is not None and mon.get_tool(_MONITOR_TOOL_ID) is None:
+        out.append("monitor")
+    out.append("trace")
+    return tuple(out)
 
 
 class _Deadline:
     """Bound the wall time of the `with` body.
 
     `itimer` — signal.setitimer + SIGALRM (POSIX, main thread; the deployed
-    daemon path). `trace` — sys.settrace with a per-line clock check (every
-    platform and thread; the fallback). Both raise ScenarioTimeout inside the
-    body and KEEP raising once expired (repeating timer / every line event),
-    so a bare `except:` loop inside the body cannot ride the deadline out.
+    daemon path), repeating every 0.05 s once expired. `monitor` —
+    sys.monitoring LINE events (CPython >= 3.12, every thread): the callback
+    raises on every scenario line once expired and stays registered.
+    `trace` — sys.settrace with the same per-line clock (every CPython; the
+    last resort): fires ONCE, see REARMING_MECHANISMS. All three raise
+    ScenarioTimeout inside the body and set `expired`, which run_code reads
+    after the body returns so a swallowed raise is still journaled.
     """
 
     def __init__(self, budget_s: float, mechanism: Optional[str] = None) -> None:
@@ -71,6 +102,12 @@ class _Deadline:
         if self.mechanism == "itimer":
             self._prev_handler = signal.signal(signal.SIGALRM, self._on_alarm)
             signal.setitimer(signal.ITIMER_REAL, self.budget, 0.05)
+        elif self.mechanism == "monitor":
+            self._t_end = time.monotonic() + self.budget
+            mon = sys.monitoring
+            mon.use_tool_id(_MONITOR_TOOL_ID, "sa02m-rules deadline")
+            mon.register_callback(_MONITOR_TOOL_ID, mon.events.LINE, self._on_line)
+            mon.set_events(_MONITOR_TOOL_ID, mon.events.LINE)
         else:
             self._t_end = time.monotonic() + self.budget
             self._prev_trace = sys.gettrace()
@@ -82,6 +119,11 @@ class _Deadline:
         if self.mechanism == "itimer":
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, self._prev_handler)
+        elif self.mechanism == "monitor":
+            mon = sys.monitoring
+            mon.set_events(_MONITOR_TOOL_ID, 0)
+            mon.register_callback(_MONITOR_TOOL_ID, mon.events.LINE, None)
+            mon.free_tool_id(_MONITOR_TOOL_ID)
         else:
             sys.settrace(self._prev_trace)
         return False
@@ -90,6 +132,16 @@ class _Deadline:
         if self._active:
             self.expired = True
             raise ScenarioTimeout()
+
+    def _on_line(self, code: Any, _line: int) -> Any:
+        if code.co_filename != _SCENARIO_FILENAME:
+            # Engine / helper / test code: never the thing being bounded, and
+            # DISABLE keeps the clock off that location for the rest of the run.
+            return sys.monitoring.DISABLE
+        if self._active and (self.expired or time.monotonic() >= self._t_end):
+            self.expired = True
+            raise ScenarioTimeout()
+        return None
 
     def _trace(self, frame: Any, event: str, arg: Any) -> Any:
         if self._active and (self.expired or time.monotonic() >= self._t_end):
@@ -253,14 +305,17 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
                 "abs": abs, "min": min, "max": max, "int": int, "float": float,
                 "str": str, "bool": bool, "len": len, "range": range,
             }
+            dl = _Deadline(budget_s, deadline_mechanism)
             try:
-                compiled = compile(tree, "<scenario>", "exec")
-                with _Deadline(budget_s, deadline_mechanism):
+                compiled = compile(tree, _SCENARIO_FILENAME, "exec")
+                with dl:
                     exec(compiled, {"__builtins__": {}}, env)  # noqa: S102 — sandbox
             except ScenarioTimeout:
                 err = "timeout"
             except Exception as exc:
                 err = str(exc)[:200]
+            if dl.expired and not err:
+                err = "timeout"  # the body swallowed the raise and finished on its own
     rec = {"ts": now, "id": s.get("id"), "name": s.get("name"), "error": err, "ok": not err}
     s["last_run"] = now
     s["last_error"] = err
