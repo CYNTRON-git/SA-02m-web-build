@@ -100,7 +100,7 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
 
 Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
-Виртуальные контролы сценария (`rule_enabled`, `remaining_s`, …) — retained
+Виртуальные контролы сценария (`rule_enabled`, `end_after_s`, …) — retained
 state, без `/on`: `docs/contracts/cloud-scenarios.md` §MQTT mirror.
 
 ---
