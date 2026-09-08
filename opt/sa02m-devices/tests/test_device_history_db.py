@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -669,3 +670,79 @@ def test_carel_state_group_archived_and_alarm_bucket_is_max(tmp_path: Path):
     insert_carel_sample(_carel_snap(base + 40, plant_state="???"), path=db)
     ps2 = history_carel("carel-COM3-1", "1h", metric="plant_state", path=db, bucket_s=1.0)
     assert len(ps2["series"][0]["points"]) == 3
+
+
+def _seed_event(db: Path, ts: float, kind: str = "carel_alarm_on") -> None:
+    from sa02m_devices import device_events
+
+    conn = device_events._connect(db)
+    try:
+        with conn:
+            assert device_events._insert_event(
+                conn,
+                ts=ts,
+                device_id="carel-COM3-1",
+                kind=kind,
+                phase="",
+                port_num=3,
+                addr=1,
+                value=1.0,
+                ref_value=None,
+                message="E04",
+                cooldown_s=0,
+            )
+    finally:
+        conn.close()
+
+
+def test_event_rows_outlive_samples_for_a_year(tmp_path: Path):
+    """F10 / Operator decision F3 (Carel plan): a sample older than 30 d is
+    purged, an event of the same age is NOT — event rows live 365 d, because
+    losing them at 30 d would discard exactly the evidence the journal exists
+    to keep. A row past the year is still purged."""
+    from sa02m_devices.device_events import list_events
+
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_snap(now - 40 * 86400, temp=1.0), path=db)
+    _seed_event(db, now - 40 * 86400)
+    _seed_event(db, now - 400 * 86400, kind="carel_alarm_off")
+    purged = purge_old(path=db, now=now)
+    assert purged["dtv_deleted"] == 1
+    assert purged["events_deleted"] == 1, purged
+    left = list_events(path=db, device_id="carel-COM3-1")
+    assert [e["kind"] for e in left["events"]] == ["carel_alarm_on"]
+    assert left["events"][0]["ts"] == now - 40 * 86400
+
+
+def test_event_retention_is_its_own_env_knob():
+    from sa02m_devices import device_history_db as m
+
+    assert m.EVENT_RETENTION_S == 365 * 86400
+    assert m.RETENTION_S == 30 * 86400
+    # Both knobs read their env var at import, the same way.
+    src = Path(m.__file__).read_text(encoding="utf-8")
+    assert 'os.environ.get("STAND_DEVICES_EVENT_RETENTION_S"' in src
+
+
+def test_a_failing_event_purge_is_logged_not_swallowed(tmp_path: Path, monkeypatch, caplog):
+    """The old `except Exception: ev_deleted = 0` hid a broken events purge
+    behind a healthy-looking report; the failure now reaches the daemon's log."""
+    import logging
+
+    from sa02m_devices import device_events
+
+    def boom(**_kw):
+        raise sqlite3.OperationalError("device_events is locked")
+
+    monkeypatch.setattr(device_events, "purge_events", boom)
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_snap(now - 40 * 86400, temp=1.0), path=db)
+    with caplog.at_level(logging.WARNING):
+        purged = purge_old(path=db, now=now)
+    assert purged["dtv_deleted"] == 1 and purged["events_deleted"] == 0
+    assert any(
+        "device_events is locked" in r.getMessage() and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]

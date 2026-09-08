@@ -9,6 +9,7 @@ carel[]). ДТВ/СЭ — широкие таблицы, PK (ts, device_id), п�
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import time
@@ -42,7 +43,15 @@ try:
 except Exception:  # noqa: BLE001
     _TZ = timezone(timedelta(hours=3))
 
+log = logging.getLogger("sa02m-devices-history")
+
 RETENTION_S = float(os.environ.get("STAND_DEVICES_RETENTION_S", str(30 * 86400)))
+# Event rows (device_events) outlive the sample tables: Operator decision F3
+# (Carel plan, 2026-09-03) — the journal is the evidence the feature exists to
+# keep; purging it with the 30 d samples would discard exactly that.
+EVENT_RETENTION_S = float(
+    os.environ.get("STAND_DEVICES_EVENT_RETENTION_S", str(365 * 86400))
+)
 ROTATE_BYTES = int(
     os.environ.get("STAND_DEVICES_HISTORY_ROTATE_BYTES", str(3 * 1024**3))
 )
@@ -887,7 +896,9 @@ def rotate_if_needed(path: Path | None = None) -> dict[str, Any]:
 
 
 def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str, int]:
-    cutoff = float(now if now is not None else time.time()) - RETENTION_S
+    t_now = float(now if now is not None else time.time())
+    cutoff = t_now - RETENTION_S
+    ev_cutoff = t_now - EVENT_RETENTION_S
     conn = _connect(path)
     try:
         with conn:
@@ -905,11 +916,14 @@ def purge_old(path: Path | None = None, *, now: float | None = None) -> dict[str
             ).rowcount
         ev_deleted = 0
         try:
-            from sa02m_devices.device_events import purge_events
+            from sa02m_devices import device_events
 
-            ev_deleted = purge_events(path=path, cutoff=cutoff)
-        except Exception:  # noqa: BLE001
-            ev_deleted = 0
+            ev_deleted = device_events.purge_events(path=path, cutoff=ev_cutoff)
+        except Exception as exc:  # noqa: BLE001
+            # A swallowed failure here left a healthy-looking report over a
+            # journal that was never trimmed; the samples above are already
+            # purged, so report zero and say why.
+            log.warning("device_events purge failed: %s", exc)
         return {
             "dtv_deleted": int(c1 or 0),
             "ce_deleted": int(c2 or 0),
