@@ -1441,6 +1441,33 @@ def _led_scene_writes(lm: Any, params: Dict[str, Any], *, play: bool) -> Dict[in
     return writes
 
 
+def _led_scene_plain_writes(lm: Any, params: Dict[str, Any]) -> Dict[int, int]:
+    """FxAux (455) and FxDensity (456) from a scene request — the per-effect
+    adjustments, packed for the effect the REQUEST selects.
+
+    ``fx_aux`` is ``{low, flag, high}`` as the window's widgets stand; the map's
+    composer clamps every field to what firmware accepts for this mode and
+    forces the high byte to 0 where the mode ignores it — so a colour combo can
+    never leak into Escort's pool length. Absent keys write nothing.
+    """
+    out: Dict[int, int] = {}
+    fx_id = _led_int(params, "fx_id", 0, lm.RGBW_FX_MODE_COUNT - 1, default=0)
+    aux = params.get("fx_aux")
+    if aux is not None:
+        if not isinstance(aux, dict):
+            raise ValueError("Поле «fx_aux» команды ленты задаётся объектом")
+        out[lm.MB2WS_FX_AUX] = lm.rgbw_fx_aux_compose(
+            fx_id,
+            low=_led_int(aux, "low", 0, 255, default=0),
+            flag=bool(aux.get("flag")),
+            high=_led_int(aux, "high", 0, 255, default=0),
+        )
+    density = _led_int(params, "fx_density", 0, 255)
+    if density is not None:
+        out[lm.MB2WS_FX_DENSITY] = density
+    return out
+
+
 def _led_text_color_writes(lm: Any, colors: Any) -> Dict[int, int]:
     if not isinstance(colors, dict):
         raise ValueError("Цвета бегущей строки задаются объектом")
@@ -1588,6 +1615,16 @@ def _led_write_plan(
             # the desktop's order, so the channel never lights at the old level.
             ops.append(_led_op_regs({lm.RGBW_PWM_HOLDING_BASE + int(idx): int(level)}))
             ops.append(_led_op_regs({lm.RGBW_PWM_MIRROR_BASE + int(idx): int(level)}))
+        if "color" in params:
+            # The colour picker (RGB + W mode): one '#RRGGBB' → the R/G/B permille
+            # triple, each channel level-then-mirror as above, in one session.
+            # A malformed value is REFUSED (None from the map), never black.
+            triple = lm.rgbw_hex_to_pwm_permille(str(params.get("color") or ""))
+            if triple is None:
+                raise ValueError("Цвет каналов RGB задаётся строкой вида #RRGGBB")
+            for ch, level in enumerate(triple):
+                ops.append(_led_op_regs({lm.RGBW_PWM_HOLDING_BASE + ch: int(level)}))
+                ops.append(_led_op_regs({lm.RGBW_PWM_MIRROR_BASE + ch: int(level)}))
         if not ops:
             raise ValueError("Команда «RGBW каналы» без параметров")
         return ops
@@ -1615,7 +1652,14 @@ def _led_write_plan(
         return [_led_op_regs(_led_strip_writes(lm, params, layout_prior))]
 
     if action in ("scene", "play"):
-        return [_led_op_regs(_led_scene_writes(lm, params, play=action == "play"))]
+        ops = [_led_op_regs(_led_scene_writes(lm, params, play=action == "play"))]
+        plain = _led_scene_plain_writes(lm, params)
+        if plain:
+            # A SECOND op, not merged into the batch above: 455/456 are not
+            # lock-gated, and folding them into the bracketed batch would put
+            # two plain registers under an open lock on a shared line.
+            ops.append(_led_op_regs(plain))
+        return ops
 
     if action == "text":
         ops = []
@@ -1849,7 +1893,11 @@ def snapshot_for_device(
             # The strip IS one of ours: it answers the identity and network block
             # above, so only the LED-specific reads are added here. Their cost is
             # dialled by `active_tab`, not by `snapshot_detail` — see led_poll.
-            payload["led"] = led_poll.read_led_snapshot(send, slave, active_tab=active_tab)
+            # The static choice lists ride every reply but the 1 s `panel` poll:
+            # the window caches them from the first full snapshot.
+            payload["led"] = led_poll.read_led_snapshot(
+                send, slave, active_tab=active_tab, include_choices=detail != "panel"
+            )
         elif kind == "mr":
             if detail == "minimal":
                 payload["mr"] = _read_mr_snapshot_minimal(send, slave, identity)
