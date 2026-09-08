@@ -29,7 +29,7 @@ worklist collapsed into one home).
   off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
   `.checkbox-line` rows sit under the same rule — check their screenshots.
 - [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
-  (`--accent` ×3 at 1904/1905/4700, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
+  (`--accent` ×3 at 1904/1905/4819, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
   `--text-muted` ×5) and silently inherit today — a monospace font that is not
   monospace, a muted colour that is the full text colour. Reported (not gated) by
   `css-token-fallback` since 1.0.6.40. Fixing them CHANGES rendering where a token was
@@ -92,7 +92,7 @@ worklist collapsed into one home).
   Batch journal writes (timer / N records) and keep `runs` in a separate small file —
   design change, measure first.
 
-- [RESOLVED 2026-09-08] 1.0.6.40: window wired (`static/js/flasher/led.js`, seam in
+- [RESOLVED] 2026-09-08 1.0.6.40: window wired (`static/js/flasher/led.js`, seam in
   `flasher.js`); bench 1.135 COM3 19200 addr 13 is the acceptance target (plan §7).
   **[LOW] L4 flasher tape UI waits for hardware.** Backend
   (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3

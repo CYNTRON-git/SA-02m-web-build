@@ -20,6 +20,11 @@ MS/TP **строго** по этим контрактам; любое расхо
 **Проверка контракта:** `opt/sa02m-flasher/tests/test_bus_mode.py` (значения и
 семантика рег. 122) и `opt/sa02m-flasher/tests/test_bacnet_mstp.py` (кодек
 MS/TP) — обе под строкой реестра `py-unit-flasher`.
+Путь записи проверяется поведенчески строкой реестра `web-bus-mode-bacnet`
+(`.ai-dev/quality/checks/web-bus-mode-bacnet.sh`, с 1.0.6.40): shipped
+`write_bus_mode` выполняется с подменённым транспортом — мусор и чужие семейства
+отказываются до открытия порта, рег. 122 пишется по allow-list; мутация номера
+регистра роняет гейт.
 
 ## Область (Phase 1)
 

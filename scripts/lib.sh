@@ -408,13 +408,6 @@ sa02m_harden_sudoers() {
     return 0
 }
 
-# Install the shared Carel register-map package (repo opt/sa02m-carel) to
-# /opt/sa02m-carel. Two services import it from two different trees under two
-# different users - the flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher)
-# and the Modbus-MQTT bridge (root, /opt/sa02m-modbus-mqtt) - so it lives in its
-# own root-owned, world-readable package instead of a copy inside each. Called
-# from 04-flasher.sh, 05-mqtt.sh and update-www-only.sh; idempotent.
-# Contract: docs/contracts/carel-ahu.md.
 # Stamp "which release installed this runner": $STATEDIR/runner.version, read
 # FIRST by etc/sa02m-update-runner.sh and etc/sa02m-update-inspect.sh when
 # they report UPDATER_VERSION (the runner's UPDATER_VERSION block is the one
@@ -442,6 +435,13 @@ sa02m_stamp_runner_version() {
     log OK "runner.version = $ver"
 }
 
+# Install the shared Carel register-map package (repo opt/sa02m-carel) to
+# /opt/sa02m-carel. Two services import it from two different trees under two
+# different users - the flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher)
+# and the Modbus-MQTT bridge (root, /opt/sa02m-modbus-mqtt) - so it lives in its
+# own root-owned, world-readable package instead of a copy inside each. Called
+# from 04-flasher.sh, 05-mqtt.sh and update-www-only.sh; idempotent.
+# Contract: docs/contracts/carel-ahu.md.
 sa02m_install_carel_pkg() {
     local repo_root=$1
     if [ -z "$repo_root" ]; then
@@ -460,7 +460,8 @@ sa02m_install_carel_pkg() {
     for f in "$src"/*.py; do
         [ -f "$f" ] || continue
         install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
-        sed -i 's/$//' "$dst/$(basename "$f")" 2>/dev/null || true
+        sed -i 's/
+$//' "$dst/$(basename "$f")" 2>/dev/null || true
     done
     # A stale .pyc from an older layout would shadow a removed module.
     rm -rf "$dst/__pycache__" 2>/dev/null || true
@@ -494,7 +495,8 @@ sa02m_install_led_pkg() {
     for f in "$src"/*.py; do
         [ -f "$f" ] || continue
         install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
-        sed -i 's/$//' "$dst/$(basename "$f")" 2>/dev/null || true
+        sed -i 's/
+$//' "$dst/$(basename "$f")" 2>/dev/null || true
     done
     # A stale .pyc from an older layout would shadow a removed module.
     rm -rf "$dst/__pycache__" 2>/dev/null || true
