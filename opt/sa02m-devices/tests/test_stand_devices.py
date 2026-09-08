@@ -439,11 +439,30 @@ def test_snapshot_mixes_all_kinds(tmp_path: Path):
     )
     snap = live_snapshot(cache)
     assert len(snap["dtv"]) == 1 and len(snap["ce"]) == 1 and len(snap["mr"]) == 1
-    # devices = dtv + ce + mr + carel, in that order (additive)
+    # devices = carel + dtv + ce + mr (Operator decision F5, 2026-09-03: the
+    # AHU cards come FIRST in the grid; the rest keep their additive order).
     assert [d["id"] for d in snap["devices"]] == [
         "dtv-COM1-1", "ce02m3-COM2-14", "mr02m-COM4-6",
     ]
     assert snap.get("carel") == []
+
+
+def test_snapshot_puts_ahu_cards_first(tmp_path: Path):
+    """F5 / E12: with a Carel present, devices[] starts with the AHU cards."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM1-1", {"temp_hdc1080": "20.0"})
+    _write(cache, "ce02m3-COM2-14", {"voltage_a": "230"})
+    _write_carel(cache, "carel-COM3-1", {
+        "plant_state": "run", "unit_on": "1", "alarm": "0", "alarm_count": "0",
+        "supply_temp": "26.5",
+    })
+    snap = live_snapshot(cache)
+    assert [d["id"] for d in snap["devices"]] == [
+        "carel-COM3-1", "dtv-COM1-1", "ce02m3-COM2-14",
+    ]
+    # The state group the archive needs is on the card (E1).
+    assert snap["carel"][0]["alarm_count"] == 0.0
 
 
 def _write_carel(

@@ -150,7 +150,8 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.38";
     const ce = Array.isArray(data.ce) ? data.ce : data.ce ? [data.ce] : [];
     const mr = Array.isArray(data.mr) ? data.mr : data.mr ? [data.mr] : [];
     const carel = Array.isArray(data.carel) ? data.carel : data.carel ? [data.carel] : [];
-    return [...dtv, ...ce, ...mr, ...carel];
+    // AHU cards first (Operator decision F5); mirrors stand_devices.live_snapshot.
+    return [...carel, ...dtv, ...ce, ...mr];
   }
 
   /* MR-02m analog card body: fixed grid of ai_count cells (a disabled channel
@@ -521,7 +522,7 @@ import { aiSensorLabel, aiUnitPrecision } from "./ai-sensors.js?v=1.0.6.38";
       `<span data-role="alerts"></span>` +
       `<span class="dev-head-right">` +
       `<span class="dev-pill ok" data-role="status">…</span>` +
-      (isMr
+      (isMr || isCarel
         ? ""
         : `<button type="button" class="dev-card-remove" data-role="remove" title="Удалить виджет (архив остановится, данные в БД сохранятся)" aria-label="Удалить виджет">×</button>`) +
       `</span>` +

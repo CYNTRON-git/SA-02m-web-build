@@ -3,6 +3,10 @@
 Удалённый виджет скрывается из UI и не пишется в архив SQLite;
 исторические строки в БД не трогаем. Повторное добавление — из списка
 ранее удалённых (и/или снова появившихся в MQTT).
+
+Снимаются только ДТВ и СЭ. Карточки MR-02m и Carel — display-only: они
+проходят мимо фильтра и в UI, и в архив (решение F2 от 2026-09-03: снятие
+карточки Carel остановило бы архив, ради которого её и завели).
 """
 
 from __future__ import annotations
@@ -113,6 +117,10 @@ def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
     return "dtv"
 
 
+# Kinds that never leave the grid or the archive (see the module docstring).
+_DISPLAY_ONLY_KINDS = frozenset({"mr", "carel"})
+
+
 def _catalog_entry(device: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(device.get("id") or ""),
@@ -135,6 +143,12 @@ def remove_widget(
     did = str(device_id or "").strip()
     if not did:
         return {"ok": False, "error": "device_id пуст"}
+    if _kind_name(device, did) in _DISPLAY_ONLY_KINDS:
+        return {
+            "ok": False,
+            "error": "Карточки Carel и MR-02m не снимаются: их архив ведётся всегда",
+            "id": did,
+        }
     cfg = load(path=path)
     ids = list(cfg.get("removed_ids") or [])
     if did not in ids:
@@ -194,26 +208,30 @@ def apply_widgets_view(
 
     dtv_all = [d for d in (out.get("dtv") or []) if isinstance(d, dict)]
     ce_all = [d for d in (out.get("ce") or []) if isinstance(d, dict)]
-    carel_all = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
     live_by_id = {
         str(d.get("id") or ""): d
-        for d in dtv_all + ce_all + carel_all
+        for d in dtv_all + ce_all
         if str(d.get("id") or "")
     }
 
     out["dtv"] = [d for d in dtv_all if str(d.get("id") or "") not in removed]
     out["ce"] = [d for d in ce_all if str(d.get("id") or "") not in removed]
-    out["carel"] = [d for d in carel_all if str(d.get("id") or "") not in removed]
-    # MR-02m analog cards are display-only (not removable), so they pass through
-    # unfiltered — but must stay in the rebuilt flat devices[] to match live[mr].
+    # MR-02m and Carel cards are display-only (not removable), so they pass
+    # through unfiltered — and must stay in the rebuilt flat devices[] to match
+    # live[mr] / live[carel]. AHU cards go FIRST (Operator decision F5).
     out["mr"] = [d for d in (out.get("mr") or []) if isinstance(d, dict)]
+    out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
     out["devices"] = (
-        list(out["dtv"]) + list(out["ce"]) + list(out["mr"]) + list(out["carel"])
+        list(out["carel"]) + list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
     )
 
     available: list[dict[str, Any]] = []
     seen: set[str] = set()
     for did in sorted(removed):
+        if _kind_name(catalog.get(did), did) in _DISPLAY_ONLY_KINDS:
+            # A widgets.json written while Carel cards were removable
+            # (1.0.6.35-38) may still list one: nothing to re-add, never shown.
+            continue
         if did in live_by_id:
             available.append(_device_brief(live_by_id[did], online=True))
             seen.add(did)
@@ -258,10 +276,7 @@ def filter_for_archive(
         for d in (out.get("ce") or [])
         if isinstance(d, dict) and str(d.get("id") or "") not in removed
     ]
-    out["carel"] = [
-        d
-        for d in (out.get("carel") or [])
-        if isinstance(d, dict) and str(d.get("id") or "") not in removed
-    ]
-    out["devices"] = list(out["dtv"]) + list(out["ce"]) + list(out["carel"])
+    # Carel (and MR) never leave the archive — a removed id is ignored here.
+    out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
+    out["devices"] = list(out["carel"]) + list(out["dtv"]) + list(out["ce"])
     return out

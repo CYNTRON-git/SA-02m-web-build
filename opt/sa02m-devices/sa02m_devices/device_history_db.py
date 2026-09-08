@@ -425,7 +425,48 @@ CAREL_METRIC_META: dict[str, tuple[str, str, int]] = {
     "fan_supply": ("Приток вент.", "%", 0),
     "fan_exhaust": ("Вытяжка", "%", 0),
     "fan_step": ("Ступень вент.", "", 0),
+    # State group — the fault-forensics half of the archive: WHEN the alarm
+    # appeared is read from these, not from the temperatures.
+    "alarm": ("Авария", "", 0),
+    "alarm_count": ("Тревог", "", 0),
+    "plant_state": ("Состояние", "", 0),
+    "unit_on": ("Установка вкл.", "", 0),
 }
+# `plant_state` is a WORD on the wire (sa02m_carel.carel_ahu.PLANT_*); the archive
+# stores its code so a bucket can be aggregated. Ordered so that max() paints the
+# worst state seen inside the bucket: stop < run < alarm.
+CAREL_PLANT_STATE_CODE: dict[str, int] = {"stop": 0, "run": 1, "alarm": 2}
+# Bucket aggregate per metric. A state flag averaged over a bucket turns a
+# 0→1→0 alarm into 0.33 and the rising edge is lost; max() keeps a bucket that
+# CONTAINED an alarm painted as alarm. Continuous metrics stay avg.
+CAREL_METRIC_AGG: dict[str, str] = {
+    "alarm": "max",
+    "alarm_count": "max",
+    "plant_state": "max",
+    "unit_on": "max",
+}
+
+
+def carel_plant_code(value: Any) -> int | None:
+    """`run`/`stop`/`alarm` (or an already-coded 0/1/2) → code; None on junk.
+
+    An unknown word writes NO row rather than a bogus code — the archive must
+    not invent a state the PLC never reported."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        word = value.strip().lower()
+        if word in CAREL_PLANT_STATE_CODE:
+            return CAREL_PLANT_STATE_CODE[word]
+        try:
+            value = float(word)
+        except ValueError:
+            return None
+    try:
+        code = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return code if code in CAREL_PLANT_STATE_CODE.values() else None
 
 
 # Per-sensor ДТВ archive columns (added to dtv_samples via idempotent ALTER-ADD,
@@ -761,6 +802,8 @@ def _insert_carel(conn: sqlite3.Connection, ts: float, carel: dict[str, Any]) ->
     rows: list[tuple[Any, ...]] = []
     for metric, (_label, unit, _dec) in CAREL_METRIC_META.items():
         val = carel.get(metric)
+        if metric == "plant_state":
+            val = carel_plant_code(val)
         if val is None or not _number_is_finite(val):
             continue
         try:
@@ -1368,12 +1411,21 @@ def _query_series_carel(
         sql = f"SELECT metric, ts, value FROM carel_samples{where} ORDER BY metric, ts"
         rows = conn.execute(sql, params).fetchall()
     else:
+        # Per-metric aggregate (CAREL_METRIC_AGG): state flags take max() so a
+        # bucket that contained an alarm stays painted; the rest average.
+        max_metrics = [m for m, agg in CAREL_METRIC_AGG.items() if agg == "max"]
+        agg_sql = (
+            "CASE WHEN metric IN (%s) THEN max(value) ELSE avg(value) END"
+            % ",".join("?" for _ in max_metrics)
+        )
         sql = (
-            "SELECT metric, cast(ts / ? as integer) * ? AS bucket, avg(value)"
+            f"SELECT metric, cast(ts / ? as integer) * ? AS bucket, {agg_sql}"
             f" FROM carel_samples{where}"
             " GROUP BY metric, bucket ORDER BY metric, bucket"
         )
-        rows = conn.execute(sql, [bucket_s, bucket_s, *params]).fetchall()
+        rows = conn.execute(
+            sql, [bucket_s, bucket_s, *max_metrics, *params]
+        ).fetchall()
     for row in rows:
         if row[2] is None:
             continue

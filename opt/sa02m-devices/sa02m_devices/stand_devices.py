@@ -600,7 +600,9 @@ def _carel_metric(
     return _f(controls.get(key))
 
 
-_CAREL_PLANT = {"run": "Работает", "stop": "Остановлена", "alarm": "Авария"}
+# Russian words for the wire plant_state (sa02m_carel PLANT_RUN/STOP/ALARM);
+# the events journal reads the same map for its «was → now» message.
+CAREL_PLANT_RU = {"run": "Работает", "stop": "Остановлена", "alarm": "Авария"}
 
 
 def _build_carel(
@@ -641,7 +643,7 @@ def _build_carel(
         "age_s": age,
         "age_label": _fmt_age(age),
         "plant_state": plant,
-        "plant_state_text": _CAREL_PLANT.get(
+        "plant_state_text": CAREL_PLANT_RU.get(
             plant, str(controls.get("unit_status_text") or plant or "—")
         ),
         "unit_on": _f(controls.get("unit_on")),
@@ -656,6 +658,7 @@ def _build_carel(
         "fan_exhaust": _carel_metric(controls, errors, "fan_exhaust"),
         "fan_step": _carel_metric(controls, errors, "fan_step"),
         "alarm": _f(controls.get("alarm")),
+        "alarm_count": _f(controls.get("alarm_count")),
         "alarm_text": str(controls.get("alarm_text") or ""),
         "alerts": [],
     }
@@ -710,7 +713,9 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     ce_list.sort(key=_sort_key)
     mr_list.sort(key=_sort_key)
     carel_list.sort(key=_sort_key)
-    devices = [*dtv_list, *ce_list, *mr_list, *carel_list]
+    # AHU cards first — the ones the Operator looks at daily (decision F5,
+    # 2026-09-03); the rest keep the additive dtv → ce → mr order.
+    devices = [*carel_list, *dtv_list, *ce_list, *mr_list]
     return {
         "ok": True,
         "ts": time.time(),

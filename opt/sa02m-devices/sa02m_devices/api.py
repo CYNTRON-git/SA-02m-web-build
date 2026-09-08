@@ -6,8 +6,8 @@
   GET  /api/devices/widgets
   POST /api/devices/widgets/remove
   POST /api/devices/widgets/add
-  GET  /api/devices/events
-  GET  /api/devices/history
+  GET  /api/devices/events           (?device_id=&limit=&t0=&t1=&kinds=a,b)
+  GET  /api/devices/history          (kind=carel carries events[] for t0..t1)
   GET  /api/devices/history/summary
   GET  /api/devices/history/export
   GET  /api/health
@@ -18,6 +18,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -123,9 +124,9 @@ def handle_widgets_remove(body: dict[str, Any], qs: dict[str, list[str]]) -> tup
         return {"ok": False, "error": "укажите id"}, 400
     snap = live_snapshot()
     device = None
-    for d in list(snap.get("dtv") or []) + list(snap.get("ce") or []) + list(
-        snap.get("carel") or []
-    ):
+    # ДТВ / СЭ only: MR-02m and Carel cards are display-only and remove_widget
+    # refuses them by kind/prefix (devices_widgets module docstring).
+    for d in list(snap.get("dtv") or []) + list(snap.get("ce") or []):
         if isinstance(d, dict) and str(d.get("id") or "") == device_id:
             device = d
             break
@@ -143,6 +144,33 @@ def handle_widgets_add(body: dict[str, Any], qs: dict[str, list[str]]) -> tuple[
     return result, (200 if result.get("ok") else 400)
 
 
+_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+
+
+def _events_filter_from_qs(
+    qs: dict[str, list[str]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """t0/t1 (epoch seconds) + kinds (comma list) → list_events kwargs, or an
+    error text. kinds is allow-listed by shape before it reaches SQL — bound as
+    placeholders there anyway, but a junk token is a client bug worth a 400."""
+    out: dict[str, Any] = {}
+    for key in ("t0", "t1"):
+        raw = _q1(qs, key)
+        if not raw:
+            continue
+        try:
+            out[key] = float(raw)
+        except ValueError:
+            return None, f"{key}: секунды epoch"
+    kinds_raw = _q1(qs, "kinds")
+    if kinds_raw:
+        kinds = [k.strip() for k in kinds_raw.split(",") if k.strip()]
+        if not kinds or any(not _KIND_RE.match(k) for k in kinds):
+            return None, "kinds: список имён через запятую"
+        out["kinds"] = kinds
+    return out, None
+
+
 def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
     limit_raw = _q1(qs, "limit")
     device_id = _q1(qs, "device_id") or None
@@ -152,7 +180,31 @@ def handle_events(qs: dict[str, list[str]]) -> tuple[Any, int]:
             limit = int(limit_raw)
         except ValueError:
             return {"ok": False, "error": "limit: целое число"}, 400
-    return device_events.list_events(limit=limit, device_id=device_id), 200
+    filt, err = _events_filter_from_qs(qs)
+    if err:
+        return {"ok": False, "error": err}, 400
+    return device_events.list_events(limit=limit, device_id=device_id, **filt), 200
+
+
+def _attach_carel_events(data: dict[str, Any]) -> dict[str, Any]:
+    """The kind=carel chart draws the fault moment from device_events, so the
+    rows ride in the same response as the series (same device, same window)."""
+    did = str(data.get("device_id") or "")
+    try:
+        listed = device_events.list_events(
+            device_id=did or None,
+            t0=data.get("t0"),
+            t1=data.get("t1"),
+            kinds=device_events.CAREL_EVENT_KINDS,
+            limit=500,
+        )
+        events = list(reversed(listed.get("events") or []))  # oldest first
+    except Exception as exc:  # noqa: BLE001
+        log.warning("carel events for history: %s", exc)
+        events = []
+    data["events"] = events
+    data["event_kinds"] = list(device_events.CAREL_EVENT_KINDS)
+    return data
 
 
 def _range_key_from_qs(qs: dict[str, list[str]]) -> str:
@@ -180,10 +232,12 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
         return device_history_db.history_mr_batch(device_id, range_key), 200
     if kind == "carel":
         if metric:
-            return device_history_db.history_carel(
+            data = device_history_db.history_carel(
                 device_id, range_key, metric=metric
-            ), 200
-        return device_history_db.history_carel_batch(device_id, range_key), 200
+            )
+        else:
+            data = device_history_db.history_carel_batch(device_id, range_key)
+        return _attach_carel_events(data), 200
     if group:
         return device_history_db.history_batch(
             range_key, group=group, device_id=device_id
