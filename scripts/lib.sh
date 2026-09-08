@@ -415,6 +415,33 @@ sa02m_harden_sudoers() {
 # own root-owned, world-readable package instead of a copy inside each. Called
 # from 04-flasher.sh, 05-mqtt.sh and update-www-only.sh; idempotent.
 # Contract: docs/contracts/carel-ahu.md.
+# Stamp "which release installed this runner": $STATEDIR/runner.version, read
+# FIRST by etc/sa02m-update-runner.sh and etc/sa02m-update-inspect.sh when
+# they report UPDATER_VERSION (the runner's UPDATER_VERSION block is the one
+# home of the reasoning; 1.0.6.40, item 6). Called by every install site right
+# after the runner binary lands, with the DELIVERED tree's VERSION file — never
+# the deployed /var/www copy, which a www-only delivery may already have moved
+# past the runner. Refuses to stamp an unparseable VERSION (the previous stamp,
+# if any, stays; a parse failure is a broken delivery, not an older release)
+# and returns 1 so the site can log it. Gate: .ai-dev/quality/checks/runner-version-stamp.sh.
+sa02m_stamp_runner_version() {
+    local version_file=$1
+    local statedir="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
+    local ver=""
+    if [ -f "$version_file" ]; then
+        ver=$(tr -d '\r' <"$version_file" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    fi
+    if [ -z "$ver" ]; then
+        log WARN "runner.version: в $version_file нет версии — штамп не записан"
+        return 1
+    fi
+    install -d -m 0755 "$statedir" || return 1
+    printf '%s\n' "$ver" >"$statedir/runner.version.tmp" || return 1
+    install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version" || return 1
+    rm -f "$statedir/runner.version.tmp"
+    log OK "runner.version = $ver"
+}
+
 sa02m_install_carel_pkg() {
     local repo_root=$1
     if [ -z "$repo_root" ]; then

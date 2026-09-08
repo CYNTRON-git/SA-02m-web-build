@@ -6,12 +6,16 @@ set -euo pipefail
 
 STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 PACKAGE="${1:-$STATEDIR/incoming/package.sa02m}"
-# The runner version this board reports is the release it came from - the
-# same derivation as sa02m-update-runner.sh (one rule in two files: the
-# runner is set -e apply-time code, this script is read-only). Assigned
-# below, once `installed` is known. Fallback = the floor the first runner
-# ever reported (audit 2026-09-08, D2).
+# The runner version this board reports is the release that installed the
+# runner - the same derivation as sa02m-update-runner.sh (one rule in two
+# files: the runner is set -e apply-time code, this script is read-only;
+# the runner's UPDATER_VERSION block is the one home of the reasoning):
+# the install-site stamp $STATEDIR/runner.version first, then the deployed
+# VERSION file (pre-1.0.6.40 board, no stamp yet), then the floor the first
+# runner ever reported (audit 2026-09-08, D2; item 6 of 1.0.6.40). Assigned
+# below, once `installed` is known.
 UPDATER_VERSION_FALLBACK=1.0.5.66
+RUNNER_VERSION_FILE="$STATEDIR/runner.version"
 VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.py}"
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
 
@@ -26,11 +30,14 @@ if [ ! -f "$PACKAGE" ]; then
     exit 1
 fi
 
-installed=""
-if [ -f "$VERSION_FILE" ]; then
-    installed=$(tr -d '\r' <"$VERSION_FILE" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
-fi
-UPDATER_VERSION="${SA02M_UPDATER_VERSION:-${installed:-$UPDATER_VERSION_FALLBACK}}"
+read_version_line() {  # $1=file → first "x.y[.z[.w]]" line, CRLF tolerated; empty when none
+    if [ -f "$1" ]; then
+        tr -d '\r' <"$1" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true
+    fi
+}
+installed=$(read_version_line "$VERSION_FILE")
+stamped=$(read_version_line "$RUNNER_VERSION_FILE")
+UPDATER_VERSION="${SA02M_UPDATER_VERSION:-${stamped:-${installed:-$UPDATER_VERSION_FALLBACK}}}"
 
 if [ -f "$VALIDATE_PY" ]; then
     PACKAGE="$PACKAGE" INSTALLED="${installed:-}" UPDATER="$UPDATER_VERSION" \

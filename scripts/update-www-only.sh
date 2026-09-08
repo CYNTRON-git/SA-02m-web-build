@@ -157,6 +157,7 @@ if [ -f "$REPO_ETC/sa02m-update-runner.sh" ]; then
     install -m 755 "$REPO_ETC/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     log OK "sa02m-update-runner установлен"
+    sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION" || true
 fi
 if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
     install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
