@@ -8,6 +8,46 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[MED] Six contracts have no validating registry row** (audit F17):
+  `module-config-ai.md`, `template-device.md`, `web-bus-mode-bacnet.md` (a web surface
+  that writes register 122 and drives BACnet MS/TP — gated by syntax rows only),
+  `devices-mr-history.md` (`py-unit-devices` covers the producer, not the contract nor
+  `devices.js`), `fmb-event-wire.md` (firmware seam), and `cloud-enrollment.md` is
+  origin-only (`py-unit-cloud` covers `opt/sa02m-cloud-agent/`, not `cloud.cgi` /
+  `sa02m-cloud-web-trigger.sh`). Wire a row per contract, or record in each contract's
+  header why it is deliberately unvalidated (the exemption-with-a-true-reason rule).
+- [OPEN] 2026-09-08 **[MED] `&r=<token>` cache-bust has no gate** (audit C11/F12). It is
+  the only bust for an intra-release JS change; `sync-app-version.py` rewrites `?v=` only
+  and `version-consistency` never checks a stale token. Documented in
+  `sa02m-domain.md ## Version discipline` (1.0.6.39); the gate — a changed served asset
+  must carry a changed `?v=`+`&r=` pair vs the previous release — is deferred. Design
+  choice pending: teach the script to manage `&r=`, or drop it for the `?v=` bump.
+- [OPEN] 2026-09-08 **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
+  A14). The rules store validates and persists both fields and nothing reads them; the
+  contract now says «accepted, not yet consumed». Either implement the exposure in the
+  Alice device registry (a scene the user marks «в Алису» becomes a device) or drop the
+  fields. Not derivable from canon — the Operator's call.
+- [OPEN] 2026-09-08 **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
+  module with a «Кнопка» DI** (+1 FC03 / 60 s) — doubles the per-poll transaction count of
+  a 6DO8DI module on a line shared with Carel (audit E7). The cost is now stated in
+  `docs/MQTT_TOPICS.md`; the single-FC04 read (695..727+max_ch−1, ≤46 regs) needs the
+  42-register-truncation bench measurement (`bridge_mr02m_map.py:41-44`) before adoption.
+- [OPEN] 2026-09-08 **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
+  the Carel plan recommended** (audit E13; plan §7 S1 under «Примени все рекомендации»).
+  ~300 lines of bespoke parallel path (`_query_series_carel`, `history_carel*`,
+  `collect_export_table_carel`) instead of the generic engine, no `group=ahu` overview.
+  Recorded divergence; migrate when the archive schema next changes.
+- [OPEN] 2026-09-08 **[LOW] `#web-upd-apply-btn[hidden] { display:none !important }` has no
+  driver** (audit C14): the CSS guard for the reported 1.0.6.37 bug is defence-in-depth
+  nothing exercises; `test-web-update-semver.mjs` covers the JS half only. Also
+  pre-existing: light `.btn-warn:hover` = 4.44:1 (`#b45309` on `#fff0cc`), just under AA;
+  `ui-layout` never measures hover.
+- [OPEN] 2026-09-08 **[LOW] Rules engine rewrites and fsyncs the whole store on every run
+  and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
+  write per second to eMMC/SD, and the mtime bump forces a reload on the next message.
+  Batch journal writes (timer / N records) and keep `runs` in a separate small file —
+  design change, measure first.
+
 - [OPEN] 2026-09-04 **[LOW] L4 flasher tape UI waits for hardware.** Backend
   (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3
   are ready; frontend tabs are not wired, and `scanner.py` still returns false
@@ -91,8 +131,10 @@ worklist collapsed into one home).
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
 
-- [OPEN] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
-  branch that already has a commit — a false-green shape.** It resolves the touched set
+- [RESOLVED] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
+  branch that already has a commit — a false-green shape.** → closed by `3a3e0ac`
+  (2026-08-28): the touched set is the committed diff ∪ the working tree
+  (`quality-gate-rigor.md` shape (d)); marked at the 2026-09-08 audit (F14). It resolves the touched set
   from `origin/main..HEAD` and only falls back to the unstaged working tree when that
   diff comes up EMPTY. A Builder handing back uncommitted work on a branch carrying at
   least the version-bump commit therefore gets a subset scoped to the committed diff
@@ -431,6 +473,12 @@ worklist collapsed into one home).
   relying on the fallback — which is why it was escalated rather than swept, and
   it has now been decided (above). Code
   deliberately unchanged.
+  **Widened 2026-09-08 (audit F13, incomplete-enumeration shape):** the same
+  factory default is also spelled out in `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md:14,15,62`
+  and `docs/OFFLINE_UPDATE_HW_TEST.md:58` (bench-access docs; the value is the
+  product's published default, `README.md:211`) — this accepted-risk record now
+  names those homes too. The fourth copy, `.cursor/rules/sa02m_agent_ssh.mdc`,
+  is cut in 1.0.6.39 (pointer only).
 - [OPEN] 2026-08-06 **[LOW] Bulk Russian code comments in shell scripts, against
   invariant 5.** `PROTOCOL.md` invariant 5 puts code comments on the
   machine-facing axis — always English; `docLanguage: ru` reaches only `docs/`
@@ -777,6 +825,13 @@ worklist collapsed into one home).
   backlog:461 says service-ctl is 1414 L (now 1582); backlog:667 defers `flasher.js` because
   "ES modules forbidden" — lifted by `docs/decisions/es-modules.md` on 2026-08-18, whose stated
   motivation IS that split.
+  **Sizes re-measured at the 2026-09-08 audit (F15/A18/B10/C15/E16), growth in
+  1.0.6.34–38:** `smarthome.js` 1017→1830, `config/api.py` 908→1304,
+  `device_history_db.py` 1918→2226 (its decompose was queued «AFTER» 1.0.6.35 by
+  Operator decision F4 and never cut), new `sa02m_rules/engine.py` 990; absolute
+  worst: `main.css` 5906, `flasher.js` 5795, `mqtt.js` 2775, `devices.js` 2609,
+  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910. 40 tracked files
+  over 800 lines. Each decompose is its own branch (`.ai-dev/procedures/decompose.md`).
 - [OPEN] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
   always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
   Every session is pointed at a missing home.
@@ -920,7 +975,7 @@ worklist collapsed into one home).
   guarantee)» (what the controller sends today and how the gateway rewrites it). Touches
   `client/sio_handlers.py` / `device_registry.apply_actions` — schedule after the 1.0.6.26
   revoke stand-down round, together with the optimistic-cache item above.
-- [OPEN] 2026-09-03 **[LOW] `py-unit-devices` is a clock-of-day flake: `tests/test_device_events.py::
+- [RESOLVED] 2026-09-03 → closed by `de54777` (2026-09-04, «the CE peak-event test no longer fails in the first hour after midnight»; marked at the 2026-09-08 audit, F14). **[LOW] `py-unit-devices` is a clock-of-day flake: `tests/test_device_events.py::
   test_voltage_jump_and_current_spike` fails in the first hour after local midnight.** The test
   seeds its baseline at `now − 3600 s` (yesterday) while `detect_ce_events` averages over the
   CALENDAR day (`_day_avg_current` → `_day_start_ts(ts)`), so between 00:00 and 01:00 local
