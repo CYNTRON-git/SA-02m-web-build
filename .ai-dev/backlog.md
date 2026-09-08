@@ -8,6 +8,15 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[LOW] Two more non-existent CSS tokens of the C5 class**, pre-existing:
+  `main.css:4351` `var(--err, #e55)` and `:4419,:4421` `var(--accent, #3a9bdc)` — neither
+  token is defined, so the hard-coded fallback ships identically in both themes (ship review
+  1.0.6.39, advisory). Fix like C5 (existing themed tokens, ratios stated); a gate for
+  `var(--x, #hex)` fallbacks whose token does not exist would close the class.
+- [OPEN] 2026-09-08 **[LOW] `detect_carel_events` opens SQLite twice per 1 Hz logger tick** on a
+  board with a Carel unit (`device_events.py` `ensure_schema()` + `_connect()` per call; boards
+  without one take the empty-list early return). Cost unmeasured (ship review advisory) —
+  measure on 1.135, then cache the schema check / reuse the connection per tick.
 - [RESOLVED] 2026-09-08 (1.0.6.39, audit E3) **`device_history_migrate` promote roster named
   `dtv_samples`/`ce_samples` only** — `mr_samples`, `carel_samples` and `device_events` were
   dropped on every eMMC→USB/SD promote (the Carel plan's D1, skipped in 1.0.6.35). One
