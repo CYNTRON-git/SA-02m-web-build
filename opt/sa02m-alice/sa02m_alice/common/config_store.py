@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import configparser
+import contextlib
 import json
 import os
 import stat as stat_module
 import tempfile
-from typing import Any, Dict, Tuple
+import threading
+from typing import Any, Dict, Iterator, Optional, Tuple
 
 from . import constants as C
+
+try:
+    import fcntl
+except ImportError:  # Windows dev host — the daemon and the CGI run on Linux
+    fcntl = None  # type: ignore[assignment]
+
+# Per-thread nesting depth of devices_lock(): flock(2) is per open file
+# description, so a second open+flock from the SAME thread would block on
+# itself. Nesting inside one writer is not a design, but a helper calling a
+# helper must not deadlock the daemon over it.
+_LOCK_DEPTH = threading.local()
 
 
 def _atomic_write(path: str, data: str, mode: int = 0o640) -> None:
@@ -178,6 +191,51 @@ def clear_unlink_marker() -> None:
     if not dropped:
         return  # nothing to clear — do not rewrite the file for a no-op
     save_ini(C.CLIENT_CONF, cfg)
+
+
+@contextlib.contextmanager
+def devices_lock(path: Optional[str] = None) -> Iterator[None]:
+    """Advisory exclusive lock around a load→modify→save of the device document.
+
+    Three processes write `sa02m-alice-devices.conf`: the CGI (www-data),
+    both client units (Socket.IO rename/rooms/groups) and the Yandex unit's
+    auto-provisioner. `_atomic_write` makes each replace atomic, not the
+    read-modify-write around it — two writers interleaving lost the earlier
+    edit silently. Every writer wraps its critical section in this.
+
+    The lock is `flock(LOCK_EX)` on the document's DIRECTORY fd, opened
+    read-only: `/etc/sa02m-alice` is 0770 root:www-data (scripts/06-alice.sh),
+    so root and www-data can both open it and no lock file has to be created
+    with permissions that suit both. flock on a directory is ordinary Linux
+    behaviour. Same-thread nesting is a no-op (see `_LOCK_DEPTH`); a missing
+    directory (fresh host before the first save's makedirs) or a host without
+    `fcntl` (Windows dev box) yields without locking — advisory, never a
+    reason the write cannot happen.
+    """
+    depth = getattr(_LOCK_DEPTH, "n", 0)
+    fd = None
+    if fcntl is not None and depth == 0:
+        directory = os.path.dirname(path or C.DEVICES_CONF) or "."
+        try:
+            fd = os.open(directory, os.O_RDONLY)
+        except OSError:
+            fd = None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                os.close(fd)
+                fd = None
+    _LOCK_DEPTH.n = depth + 1
+    try:
+        yield
+    finally:
+        _LOCK_DEPTH.n = depth
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 def empty_devices() -> Dict[str, Any]:

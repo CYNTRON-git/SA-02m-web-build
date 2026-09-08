@@ -1,4 +1,10 @@
-"""Append cloud-only AHU status + Carel extra readings on Carel bindings.
+"""Cloud-only AHU status + Carel extra readings on Carel bindings.
+
+Caller: `client/device_registry.py` — `DeviceRegistry.__init__` / `reload`
+run `prepare_catalogue_doc` on every catalogue build, IN MEMORY ONLY. The
+stored document (`/etc/sa02m-alice/sa02m-alice-devices.conf`) is never
+rewritten by this module: what the operator saved stays what the operator
+saved; what the cloud sees is the saved rows plus the ones below.
 
 Live documents saved before SH_VENT_ROWS included `plant_state` /
 `unit_status` / `alarm` have only `supply_temp`. The cloud tile then
@@ -13,12 +19,22 @@ hides an unpublished MQTT control). Outdoor and room are optional
 probes: bind them only when `live_controls` says that MQTT control
 is configured and has no `/meta/error`. A retained `0.0` with
 `error=r` is not a sensor — Alice would report it as a live °C.
+`live_controls` comes from the bridge's live cache
+(`/run/sa02m-modbus-mqtt/<mqtt_id>.json`: `controls` minus the names in
+`errors`) — the same file the «Устройства» tab reads, so the two answer
+the same about one input (docs/contracts/carel-ahu.md §5). A device with
+NO cache file is unknown, not dead: nothing optional is added and nothing
+hand-bound is dropped (the bridge may simply not be up yet at boot).
 
 Idempotent: a second pass is a no-op. Other devices are untouched.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+import copy
+import os
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+
+from . import inventory
 
 _CAREL_PREFIX = "/devices/carel-"
 
@@ -130,7 +146,13 @@ def drop_unfitted_ahu_probes(
     doc: Dict[str, Any],
     live_controls: Dict[str, Set[str]],
 ) -> bool:
-    """Drop outdoor/room rows whose MQTT control is dead or unconfigured."""
+    """Drop outdoor/room rows whose MQTT control is dead or unconfigured.
+
+    A device absent from `live_controls` (no live-cache file) is left alone:
+    unknown is not dead, and a hand-bound probe must survive a bridge that
+    has not flushed its cache yet. A present entry decides both ways — a
+    name missing from the set (unconfigured, or flagged in `errors`) drops.
+    """
     if not isinstance(doc, dict) or not isinstance(live_controls, dict):
         return False
     devices = doc.get("devices")
@@ -147,6 +169,8 @@ def drop_unfitted_ahu_probes(
         if not isinstance(props, list):
             continue
         mqtt_id = _mqtt_id_from_prefix(prefix)
+        if mqtt_id not in live_controls:
+            continue
         kept: List[Any] = []
         dropped = False
         for item in props:
@@ -216,3 +240,68 @@ def ensure_ahu_cloud_status(
             have.add(instance)
             changed = True
     return changed
+
+
+def carel_mqtt_ids(doc: Dict[str, Any]) -> List[str]:
+    """Every distinct `carel-COM<n>-<addr>` the document binds, in order."""
+    out: List[str] = []
+    devices = doc.get("devices") if isinstance(doc, dict) else None
+    for dev in devices if isinstance(devices, list) else []:
+        if not isinstance(dev, dict):
+            continue
+        prefix = _carel_controls_prefix(dev)
+        mid = _mqtt_id_from_prefix(prefix) if prefix else ""
+        if mid and mid not in out:
+            out.append(mid)
+    return out
+
+
+def live_controls_from_cache(
+    mqtt_ids: Iterable[str],
+    cache_dir: Optional[str] = None,
+) -> Dict[str, Set[str]]:
+    """`{mqtt_id: {control, …}}` from the bridge live cache — configured
+    controls minus those carrying a non-empty `errors[name]`.
+
+    A device whose cache file is absent or unreadable gets NO key (unknown);
+    a present file with no usable `controls` gets an empty set (nothing
+    live). One small JSON read per Carel device per catalogue build — a
+    document reload, not a poll path.
+    """
+    out: Dict[str, Set[str]] = {}
+    directory = cache_dir or inventory._live_dir()
+    for mid in mqtt_ids:
+        if not mid:
+            continue
+        data = inventory._read_json(os.path.join(directory, "%s.json" % mid))
+        if not isinstance(data, dict):
+            continue
+        controls = data.get("controls")
+        errors = data.get("errors")
+        names: Set[str] = set()
+        if isinstance(controls, dict):
+            names = {str(k) for k in controls}
+        if isinstance(errors, dict):
+            names -= {str(k) for k, v in errors.items() if v not in (None, "")}
+        out[mid] = names
+    return out
+
+
+def prepare_catalogue_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """The document the catalogue is built from: `doc` itself when it binds
+    no Carel unit, else a COPY carrying the AHU rows above.
+
+    The copy is what keeps this in-memory: the caller's dict — a test
+    fixture, or the object `load_devices` just returned — is never mutated,
+    and nothing here ever calls `save_devices`.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    mids = carel_mqtt_ids(doc)
+    if not mids:
+        return doc
+    live = live_controls_from_cache(mids)
+    out = copy.deepcopy(doc)
+    changed = ensure_ahu_cloud_status(out, live)
+    changed = drop_unfitted_ahu_probes(out, live) or changed
+    return out if changed else doc

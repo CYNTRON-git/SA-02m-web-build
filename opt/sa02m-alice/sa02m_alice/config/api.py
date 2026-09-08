@@ -31,6 +31,7 @@ from ..common.config_store import (
     default_client_cfg,
     empty_devices,
     gateway_urls,
+    devices_lock,
     load_devices,
     save_devices,
     set_client_enabled,
@@ -610,7 +611,7 @@ def unlink_controller() -> Dict[str, Any]:
             code = int(exc.code or 0)
             raw = exc.read() if exc.fp is not None else b""
         detail = _unlink_gateway_detail(raw)
-        if _gateway_already_unlinked(code, detail):
+        if _gateway_already_unlinked(code, _unlink_gateway_json_detail(raw), url):
             return _commit_local_unlink()
         if code >= 400:
             return {
@@ -633,7 +634,33 @@ def unlink_controller() -> Dict[str, Any]:
         }
 
 
+def _unlink_gateway_json_detail(raw: Any) -> str:
+    """The gateway's own `detail` — a str (or the first of a list) parsed
+    from a JSON object body — else "". Never the raw text: an HTML 404 page
+    or a proxy error that happens to contain the words is not the gateway
+    speaking, and only the gateway's word may confirm an unlink."""
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    else:
+        text = str(raw or "")
+    try:
+        data = json.loads(text.strip() or "null")
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    detail = data.get("detail")
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, list) and detail and isinstance(detail[0], str):
+        return detail[0]
+    return ""
+
+
 def _unlink_gateway_detail(raw: Any) -> str:
+    """The text shown to the operator on a refusal: the JSON `detail` when
+    there is one, else the first 240 chars of the body. Display only — the
+    unlink DECISION reads `_unlink_gateway_json_detail`."""
     if isinstance(raw, bytes):
         text = raw.decode("utf-8", errors="replace")
     else:
@@ -654,14 +681,22 @@ def _unlink_gateway_detail(raw: Any) -> str:
     return text[:240]
 
 
-def _gateway_already_unlinked(code: int, detail: str) -> bool:
+def _gateway_already_unlinked(code: int, json_detail: str, url: str) -> bool:
     """The live gateway answers HTTP 404 `controller not linked` when the
     cloud record is already gone. That is a confirmed unlink, not a missing
     route — urllib raises HTTPError 404 and the card used to show
-    `HTTP Error 404: Not Found` while leaving the mTLS files on disk."""
+    `HTTP Error 404: Not Found` while leaving the mTLS files on disk.
+
+    Honoured only over `https` (urlopen's default verifying TLS context is
+    what makes the 404 the gateway's: `[gateway] http_url` is
+    operator-settable, and a plain-http value would let a LAN peer answer
+    the unlink POST and wipe the enrollment) and only on the parsed JSON
+    `detail` (`_unlink_gateway_json_detail`), never the raw body."""
     if int(code or 0) != 404:
         return False
-    text = (detail or "").lower()
+    if urlparse(str(url or "")).scheme.lower() != "https":
+        return False
+    text = (json_detail or "").lower()
     return "not linked" in text or "already unlink" in text
 
 
@@ -771,39 +806,43 @@ def apply_groups(body: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(item, str) or not models._ID_RE.match(item.strip()):
                 return {"ok": False, "error": "invalid_device", "message": "invalid device id"}
             bind.append(item.strip())
-    doc = load_devices()
-    groups = doc.setdefault("groups", [])
-    existing = None
-    idx = None
-    for i, g in enumerate(groups):
-        if isinstance(g, dict) and g.get("id") == gid:
-            existing = g
-            idx = i
-            break
-    if body.get("id") and existing is None:
-        return {"ok": False, "error": "not_found", "message": "group not found"}
-    if bind is not None:
-        known = {
-            d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
-        }
-        for did in bind:
-            if did not in known:
-                return {"ok": False, "error": "not_found", "message": "device not found"}
-    row = {"id": gid, "name": name, "device_ids": list(bind) if bind is not None else (
-        list(existing.get("device_ids") or []) if existing else [])}
-    # Group tile icon (`light`/`ahu`, docs/contracts/alice-gateway.md §groups):
-    # set when the body carries a valid one, preserved from the stored group
-    # when the body omits it — same upsert rule as `device_ids`.
-    icon = body.get("icon")
-    if icon in ("light", "ahu"):
-        row["icon"] = icon
-    elif existing and existing.get("icon") in ("light", "ahu"):
-        row["icon"] = existing["icon"]
-    if existing is None:
-        groups.append(row)
-    else:
-        groups[idx] = row
-    save_devices(doc)
+    with devices_lock():
+        doc = load_devices()
+        groups = doc.setdefault("groups", [])
+        existing = None
+        idx = None
+        for i, g in enumerate(groups):
+            if isinstance(g, dict) and g.get("id") == gid:
+                existing = g
+                idx = i
+                break
+        if body.get("id") and existing is None:
+            return {"ok": False, "error": "not_found", "message": "group not found"}
+        if existing is None and len(groups) >= C.COLLECTION_CAP:
+            return {"ok": False, "error": "too_many",
+                    "message": "too many groups (cap %d)" % C.COLLECTION_CAP}
+        if bind is not None:
+            known = {
+                d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+            }
+            for did in bind:
+                if did not in known:
+                    return {"ok": False, "error": "not_found", "message": "device not found"}
+        row = {"id": gid, "name": name, "device_ids": list(bind) if bind is not None else (
+            list(existing.get("device_ids") or []) if existing else [])}
+        # Group tile icon (`light`/`ahu`, docs/contracts/alice-gateway.md §groups):
+        # set when the body carries a valid one, preserved from the stored group
+        # when the body omits it — same upsert rule as `device_ids`.
+        icon = body.get("icon")
+        if icon in ("light", "ahu"):
+            row["icon"] = icon
+        elif existing and existing.get("icon") in ("light", "ahu"):
+            row["icon"] = existing["icon"]
+        if existing is None:
+            groups.append(row)
+        else:
+            groups[idx] = row
+        save_devices(doc)
     group_out = {"id": row["id"], "name": row["name"],
                  "device_ids": list(row["device_ids"])}
     if "icon" in row:
@@ -813,15 +852,16 @@ def apply_groups(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def delete_group(group_id: str) -> Dict[str, Any]:
-    doc = load_devices()
-    before = len(doc.get("groups") or [])
-    doc["groups"] = [
-        g for g in (doc.get("groups") or [])
-        if not (isinstance(g, dict) and g.get("id") == group_id)
-    ]
-    if len(doc["groups"]) == before:
-        return {"ok": False, "error": "not_found", "message": "group not found"}
-    save_devices(doc)
+    with devices_lock():
+        doc = load_devices()
+        before = len(doc.get("groups") or [])
+        doc["groups"] = [
+            g for g in (doc.get("groups") or [])
+            if not (isinstance(g, dict) and g.get("id") == group_id)
+        ]
+        if len(doc["groups"]) == before:
+            return {"ok": False, "error": "not_found", "message": "group not found"}
+        save_devices(doc)
     return {"ok": True, "groups": _listed_groups(doc)}
 
 
@@ -888,50 +928,54 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
             if not isinstance(item, str) or not models._ID_RE.match(item.strip()):
                 return {"ok": False, "error": "invalid_device", "message": "invalid device id"}
             bind.append(item.strip())
-    doc = load_devices()
-    rooms = doc.setdefault("rooms", [])
-    existing = None
-    idx = None
-    for i, r in enumerate(rooms):
-        if isinstance(r, dict) and r.get("id") == cleaned["id"]:
-            existing = r
-            idx = i
-            break
-    if rid and existing is None:
-        return {"ok": False, "error": "not_found", "message": "room not found"}
-    if existing is None:
-        rooms.append(cleaned)
-        existing = cleaned
-        idx = len(rooms) - 1
-    else:
-        existing["name"] = cleaned["name"]
-        rooms[idx] = existing
-    if bind is not None:
-        known = {
-            d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
-        }
-        for did in bind:
-            if did not in known:
-                return {"ok": False, "error": "not_found", "message": "device not found"}
-        bind_set = set(bind)
-        for d in doc.get("devices") or []:
-            if not isinstance(d, dict):
-                continue
-            did = d.get("id")
-            if did in bind_set:
-                d["room_id"] = cleaned["id"]
-            elif d.get("room_id") == cleaned["id"]:
-                # Unassigned devices DROP the key (an empty string would still
-                # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
-                d.pop("room_id", None)
-        for r in rooms:
-            if not isinstance(r, dict):
-                continue
-            if r.get("id") == cleaned["id"]:
-                r["devices"] = list(bind)
-            elif isinstance(r.get("devices"), list):
-                r["devices"] = [x for x in r["devices"] if x not in bind_set]
-    save_devices(doc)
+    with devices_lock():
+        doc = load_devices()
+        rooms = doc.setdefault("rooms", [])
+        existing = None
+        idx = None
+        for i, r in enumerate(rooms):
+            if isinstance(r, dict) and r.get("id") == cleaned["id"]:
+                existing = r
+                idx = i
+                break
+        if rid and existing is None:
+            return {"ok": False, "error": "not_found", "message": "room not found"}
+        if existing is None and len(rooms) >= C.COLLECTION_CAP:
+            return {"ok": False, "error": "too_many",
+                    "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
+        if existing is None:
+            rooms.append(cleaned)
+            existing = cleaned
+            idx = len(rooms) - 1
+        else:
+            existing["name"] = cleaned["name"]
+            rooms[idx] = existing
+        if bind is not None:
+            known = {
+                d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+            }
+            for did in bind:
+                if did not in known:
+                    return {"ok": False, "error": "not_found", "message": "device not found"}
+            bind_set = set(bind)
+            for d in doc.get("devices") or []:
+                if not isinstance(d, dict):
+                    continue
+                did = d.get("id")
+                if did in bind_set:
+                    d["room_id"] = cleaned["id"]
+                elif d.get("room_id") == cleaned["id"]:
+                    # Unassigned devices DROP the key (an empty string would still
+                    # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
+                    d.pop("room_id", None)
+            for r in rooms:
+                if not isinstance(r, dict):
+                    continue
+                if r.get("id") == cleaned["id"]:
+                    r["devices"] = list(bind)
+                elif isinstance(r.get("devices"), list):
+                    r["devices"] = [x for x in r["devices"] if x not in bind_set]
+        save_devices(doc)
     room_out = {"id": cleaned["id"], "name": cleaned["name"]}
     return {
         "ok": True,
@@ -945,31 +989,36 @@ def upsert_room(room: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, err = models.validate_room(room)
     if err:
         return {"ok": False, "error": "invalid_room", "message": err}
-    doc = load_devices()
-    rooms = doc.setdefault("rooms", [])
-    for i, r in enumerate(rooms):
-        if isinstance(r, dict) and r.get("id") == cleaned["id"]:
-            rooms[i] = cleaned
-            save_devices(doc)
-            return {"ok": True, "room": cleaned}
-    rooms.append(cleaned)
-    save_devices(doc)
-    return {"ok": True, "room": cleaned}
+    with devices_lock():
+        doc = load_devices()
+        rooms = doc.setdefault("rooms", [])
+        for i, r in enumerate(rooms):
+            if isinstance(r, dict) and r.get("id") == cleaned["id"]:
+                rooms[i] = cleaned
+                save_devices(doc)
+                return {"ok": True, "room": cleaned}
+        if len(rooms) >= C.COLLECTION_CAP:
+            return {"ok": False, "error": "too_many",
+                    "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
+        rooms.append(cleaned)
+        save_devices(doc)
+        return {"ok": True, "room": cleaned}
 
 
 def delete_room(room_id: str) -> Dict[str, Any]:
-    doc = load_devices()
-    before = len(doc.get("rooms") or [])
-    doc["rooms"] = [
-        r for r in (doc.get("rooms") or [])
-        if not (isinstance(r, dict) and r.get("id") == room_id)
-    ]
-    if len(doc["rooms"]) == before:
-        return {"ok": False, "error": "not_found", "message": "room not found"}
-    for d in doc.get("devices") or []:
-        if isinstance(d, dict) and d.get("room_id") == room_id:
-            d.pop("room_id", None)
-    save_devices(doc)
+    with devices_lock():
+        doc = load_devices()
+        before = len(doc.get("rooms") or [])
+        doc["rooms"] = [
+            r for r in (doc.get("rooms") or [])
+            if not (isinstance(r, dict) and r.get("id") == room_id)
+        ]
+        if len(doc["rooms"]) == before:
+            return {"ok": False, "error": "not_found", "message": "room not found"}
+        for d in doc.get("devices") or []:
+            if isinstance(d, dict) and d.get("room_id") == room_id:
+                d.pop("room_id", None)
+        save_devices(doc)
     return {
         "ok": True,
         "rooms": _listed_rooms(doc),
@@ -981,25 +1030,26 @@ def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, err = models.validate_device(dev)
     if err:
         return {"ok": False, "error": "invalid_device", "message": err}
-    doc = load_devices()
-    devices = doc.setdefault("devices", [])
-    for i, d in enumerate(devices):
-        if isinstance(d, dict) and d.get("id") == cleaned["id"]:
-            devices[i] = cleaned
-            save_devices(doc)
-            return {"ok": True, "device": cleaned}
-    devices.append(cleaned)
-    # Attach to room.devices if room_id set
-    rid = cleaned.get("room_id")
-    if rid:
-        for r in doc.get("rooms") or []:
-            if isinstance(r, dict) and r.get("id") == rid:
-                ids = list(r.get("devices") or [])
-                if cleaned["id"] not in ids:
-                    ids.append(cleaned["id"])
-                r["devices"] = ids
-    save_devices(doc)
-    return {"ok": True, "device": cleaned}
+    with devices_lock():
+        doc = load_devices()
+        devices = doc.setdefault("devices", [])
+        for i, d in enumerate(devices):
+            if isinstance(d, dict) and d.get("id") == cleaned["id"]:
+                devices[i] = cleaned
+                save_devices(doc)
+                return {"ok": True, "device": cleaned}
+        devices.append(cleaned)
+        # Attach to room.devices if room_id set
+        rid = cleaned.get("room_id")
+        if rid:
+            for r in doc.get("rooms") or []:
+                if isinstance(r, dict) and r.get("id") == rid:
+                    ids = list(r.get("devices") or [])
+                    if cleaned["id"] not in ids:
+                        ids.append(cleaned["id"])
+                    r["devices"] = ids
+        save_devices(doc)
+        return {"ok": True, "device": cleaned}
 
 
 def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
@@ -1016,38 +1066,41 @@ def rename_device(device_id: str, name: Any) -> Dict[str, Any]:
     cleaned = name.strip()
     if not cleaned or not models._NAME_RE.match(cleaned):
         return {"ok": False, "error": "invalid_name", "message": "invalid device name"}
-    doc = load_devices()
-    for d in doc.get("devices") or []:
-        if isinstance(d, dict) and d.get("id") == did:
-            d["name"] = cleaned
-            save_devices(doc)
-            return {"ok": True, "name": cleaned}
+    with devices_lock():
+        doc = load_devices()
+        for d in doc.get("devices") or []:
+            if isinstance(d, dict) and d.get("id") == did:
+                d["name"] = cleaned
+                save_devices(doc)
+                return {"ok": True, "name": cleaned}
     return {"ok": False, "error": "not_found", "message": "device not found"}
 
 
 def delete_device(device_id: str) -> Dict[str, Any]:
-    doc = load_devices()
-    before = len(doc.get("devices") or [])
-    doc["devices"] = [
-        d for d in (doc.get("devices") or [])
-        if not (isinstance(d, dict) and d.get("id") == device_id)
-    ]
-    if len(doc["devices"]) == before:
-        return {"ok": False, "error": "not_found", "message": "device not found"}
-    for r in doc.get("rooms") or []:
-        if isinstance(r, dict) and isinstance(r.get("devices"), list):
-            r["devices"] = [x for x in r["devices"] if x != device_id]
-    for g in doc.get("groups") or []:
-        if isinstance(g, dict) and isinstance(g.get("device_ids"), list):
-            g["device_ids"] = [x for x in g["device_ids"] if x != device_id]
-    save_devices(doc)
+    with devices_lock():
+        doc = load_devices()
+        before = len(doc.get("devices") or [])
+        doc["devices"] = [
+            d for d in (doc.get("devices") or [])
+            if not (isinstance(d, dict) and d.get("id") == device_id)
+        ]
+        if len(doc["devices"]) == before:
+            return {"ok": False, "error": "not_found", "message": "device not found"}
+        for r in doc.get("rooms") or []:
+            if isinstance(r, dict) and isinstance(r.get("devices"), list):
+                r["devices"] = [x for x in r["devices"] if x != device_id]
+        for g in doc.get("groups") or []:
+            if isinstance(g, dict) and isinstance(g.get("device_ids"), list):
+                g["device_ids"] = [x for x in g["device_ids"] if x != device_id]
+        save_devices(doc)
     return {"ok": True}
 
 
 def reset_mappings() -> Dict[str, Any]:
     """Factory-reset helper: clear devices, keep certs, disable both clients
     (the cloud flag mirrors client_enabled — same conf, same policy row)."""
-    save_devices(empty_devices())
+    with devices_lock():
+        save_devices(empty_devices())
     set_client_enabled(False)
     set_cloud_control_enabled(False)
     return {

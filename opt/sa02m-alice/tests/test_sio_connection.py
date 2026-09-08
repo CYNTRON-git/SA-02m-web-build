@@ -22,6 +22,8 @@ from unittest import mock  # noqa: E402
 
 from sa02m_alice.client.sio_connection import (  # noqa: E402
     AliceSocketIO,
+    SioWaitTimeout,
+    _SIO_WAIT_TIMEOUT_MARK,
     connect_failure_status,
     is_sio_wait_timeout,
     reconnect_delay,
@@ -319,6 +321,138 @@ class TestCgiDispatchTimeout(unittest.TestCase):
         self.assertIn('timeout "$ALICE_CGI_TIMEOUT"', text)
         self.assertIn("alice_api_failed", text)
         self.assertIn("python dispatch failed or timed out", text)
+
+
+class TestTopicsCgiTimeout(unittest.TestCase):
+    """The topic-inventory CGI budget is pinned in two homes like its 18 s
+    sibling above — a bare `timeout 15` literal had no constant and no pin
+    (weekly audit 2026-09-08, B8). The body behaviour of that CGI is the
+    shell harness scripts/dev/test-alice-topics-cgi.sh."""
+
+    CGI = os.path.join(
+        os.path.dirname(os.path.dirname(ROOT)),
+        "www", "network_config", "cgi-bin", "sa02m_alice_topics.cgi",
+    )
+
+    def test_topics_budget_is_below_nginx_and_above_the_bench_measurement(self):
+        self.assertEqual(C.TOPICS_CGI_TIMEOUT_S, 15)
+        # ~40 KB inventory measured 1.1-2.4 s on bench 1.135 (CGI header);
+        # nginx /cgi-bin/ fastcgi_read_timeout is 20 s.
+        self.assertGreaterEqual(C.TOPICS_CGI_TIMEOUT_S, 5)
+        self.assertLess(C.TOPICS_CGI_TIMEOUT_S, 20)
+
+    def test_topics_shell_default_matches_constant(self):
+        with open(self.CGI, encoding="utf-8") as fh:
+            text = fh.read()
+        match = re.search(r"SA02M_ALICE_TOPICS_TIMEOUT:-(\d+)", text)
+        self.assertIsNotNone(match, "topics CGI default timeout missing")
+        self.assertEqual(int(match.group(1)), int(C.TOPICS_CGI_TIMEOUT_S))
+        self.assertIn('timeout "$TOPICS_CGI_TIMEOUT" python3 -', text)
+        self.assertIn("topics_failed", text)
+
+
+class TestWaitTimeoutIsTyped(unittest.TestCase):
+    """The wait-timeout discriminator is the exception TYPE, minted at the
+    one site that knows the library; the third-party wording is a hint.
+
+    Before 1.0.6.39 `is_sio_wait_timeout` was a substring match on a
+    python-socketio message that nothing pinned: reword it upstream and
+    every slow handshake becomes `gateway_unreachable` with the suite green
+    (weekly audit 2026-09-08, B5)."""
+
+    @staticmethod
+    def _lib(raise_with):
+        class _LibConnectionError(Exception):
+            pass
+
+        class _Exceptions:
+            ConnectionError = _LibConnectionError
+
+        class _FakeClient:
+            def __init__(self, **_kw):
+                pass
+
+            def event(self, fn):
+                return fn
+
+            def on(self, *_a, **_k):
+                pass
+
+            def connect(self, _url, **_kw):
+                raise raise_with(_LibConnectionError)
+
+            def get_sid(self):
+                return "sid"
+
+        class _FakeLib:
+            Client = _FakeClient
+            exceptions = _Exceptions
+
+        return _FakeLib, _LibConnectionError
+
+    def _connect(self, lib):
+        sio = AliceSocketIO(
+            profile=C.PROFILE_CLOUD, token_provider=lambda: "tok",
+            client_version="test",
+        )
+        with mock.patch(
+            "sa02m_alice.client.sio_connection.import_socketio", return_value=lib,
+        ), mock.patch.object(
+            sio, "_connect_target",
+            return_value=("wss://h", "control/socket.io", True, None),
+        ):
+            sio.connect()
+
+    def test_library_wait_timeout_is_reraised_as_our_own_type(self):
+        lib, _cls = self._lib(
+            lambda cls: cls("One or more namespaces failed to connect"))
+        with self.assertRaises(SioWaitTimeout) as ctx:
+            self._connect(lib)
+        self.assertTrue(is_sio_wait_timeout(ctx.exception))
+        self.assertEqual(connect_failure_status(ctx.exception, 1),
+                         (C.STATE_CONNECTING, ""))
+
+    def test_library_refusal_keeps_its_type_and_fails_closed(self):
+        # engineio wraps a refused/HTTP failure into the SAME library type
+        # with a different message — the type alone must not soften it.
+        lib, cls = self._lib(lambda cls: cls("Connection refused by the server"))
+        with self.assertRaises(cls) as ctx:
+            self._connect(lib)
+        self.assertNotIsInstance(ctx.exception, SioWaitTimeout)
+        self.assertFalse(is_sio_wait_timeout(ctx.exception))
+        self.assertEqual(connect_failure_status(ctx.exception, 1),
+                         (C.STATE_ERROR, "gateway_unreachable"))
+
+    def test_typed_timeout_needs_no_wording(self):
+        exc = SioWaitTimeout("reworded upstream")
+        self.assertTrue(is_sio_wait_timeout(exc))
+        self.assertEqual(connect_failure_status(exc, C.SIO_CONNECT_SOFT_FAILS),
+                         (C.STATE_CONNECTING, ""))
+        self.assertEqual(
+            connect_failure_status(exc, C.SIO_CONNECT_SOFT_FAILS + 1),
+            (C.STATE_ERROR, "gateway_unreachable"))
+
+    def test_foreign_type_with_the_wording_stays_a_hint(self):
+        # The secondary hint survives so a caller that never went through
+        # connect() (a test double, a wrapped exception) is still read.
+        self.assertTrue(is_sio_wait_timeout(
+            RuntimeError("One or more namespaces failed to connect")))
+
+    def test_wording_is_pinned_against_the_installed_library(self):
+        try:
+            import socketio  # type: ignore
+            import inspect
+        except ImportError:
+            self.skipTest(
+                "python-socketio is NOT installed on this host — the "
+                "wait-timeout wording hint (_SIO_WAIT_TIMEOUT_MARK) is "
+                "unpinned here; CI installs no socketio either, so run this "
+                "on the board or after `pip install python-socketio`")
+        source = inspect.getsource(socketio.Client.connect).lower()
+        self.assertIn(_SIO_WAIT_TIMEOUT_MARK, source,
+                      "python-socketio reworded its wait_timeout error; "
+                      "update _SIO_WAIT_TIMEOUT_MARK (the typed path in "
+                      "connect() keys on the same text)")
 
 
 if __name__ == "__main__":

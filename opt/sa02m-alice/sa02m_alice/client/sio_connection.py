@@ -23,13 +23,39 @@ class SocketIOUnavailable(RuntimeError):
     """python-socketio is not installed on this system."""
 
 
-# python-socketio raises ConnectionError with this text when wait_timeout
-# expires before the namespace confirms. That is a slow handshake, not a
-# dead hub — do not treat it as gateway_unreachable while soft retries remain.
+class SioWaitTimeout(ConnectionError):
+    """python-socketio's wait_timeout expired before the namespace confirmed.
+
+    Minted in `AliceSocketIO.connect` — the one place that holds the library
+    and can read its exception TYPE — so every consumer downstream
+    discriminates on OUR type, not on third-party wording. A slow handshake,
+    not a dead hub: `connect_failure_status` keeps it `connecting` while
+    soft retries remain.
+    """
+
+
+# python-socketio raises its `exceptions.ConnectionError` with this text when
+# wait_timeout expires before the namespace confirms. engineio wraps a
+# refused / HTTP failure into the SAME type with other text, so the type
+# alone cannot tell the two apart: connect() keys on type AND this text and
+# re-raises the timeout as SioWaitTimeout. Pinned against the installed
+# library by tests/test_sio_connection.py (TestWaitTimeoutIsTyped) — a
+# reworded upstream turns that test RED instead of silently making every slow
+# handshake `gateway_unreachable`. Below, the text is only a SECONDARY hint
+# for an exception that never went through connect().
 _SIO_WAIT_TIMEOUT_MARK = "namespaces failed to connect"
 
 
+def _library_connection_error(socketio: Any) -> Optional[type]:
+    """`socketio.exceptions.ConnectionError` when the library (or a test
+    double) exposes one as a real class, else None."""
+    cls = getattr(getattr(socketio, "exceptions", None), "ConnectionError", None)
+    return cls if isinstance(cls, type) and issubclass(cls, BaseException) else None
+
+
 def is_sio_wait_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, SioWaitTimeout):
+        return True
     return _SIO_WAIT_TIMEOUT_MARK in str(exc).lower()
 
 
@@ -405,12 +431,19 @@ class AliceSocketIO:
                 transports=["websocket"],
                 wait_timeout=C.SIO_CONNECT_TIMEOUT_S,
             )
-        except Exception:
+        except Exception as exc:
             log.warning(
                 "Socket.IO handshake failed after %.1f s (budget %.1f s)",
                 time.monotonic() - t0,
                 C.SIO_CONNECT_TIMEOUT_S,
             )
+            lib_error = _library_connection_error(socketio)
+            if (
+                lib_error is not None
+                and isinstance(exc, lib_error)
+                and _SIO_WAIT_TIMEOUT_MARK in str(exc).lower()
+            ):
+                raise SioWaitTimeout(str(exc)) from exc
             raise
         log.info(
             "Socket.IO handshake completed in %.1f s (budget %.1f s)",

@@ -1553,6 +1553,46 @@ class TestN3LocalUnlinkRefusals(_BindingBase):
         self.assertEqual(result["http_status"], 404)
         self.assert_nothing_erased(conf_before)
 
+    def test_404_not_linked_over_plain_http_wipes_nothing(self):
+        """`[gateway] http_url` is operator-settable: a plain-http value removes
+        the TLS half, and a LAN peer answering the unlink POST with
+        404 `controller not linked` would wipe the enrollment. 404-as-unlink
+        is honoured over https only (weekly audit 2026-09-08, B14)."""
+        self.seed_binding()
+        conf_before = self.read(C.CLIENT_CONF)
+        err = urllib.error.HTTPError(
+            "http://alice.lan/controller/unlink",
+            404, "Not Found", None, io.BytesIO(b'{"detail":"controller not linked"}'),
+        )
+        with mock.patch.object(api, "probe_gateway", return_value=PROBE_UP), \
+                mock.patch.object(api, "gateway_urls",
+                                  return_value=("ws://alice.lan/controller/socket.io",
+                                                "http://alice.lan", "/socket.io")), \
+                mock.patch.object(api.urllib.request, "urlopen", side_effect=err):
+            result = api.unlink_controller()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "unlink_failed")
+        self.assertEqual(result["http_status"], 404)
+        self.assert_nothing_erased(conf_before)
+
+    def test_404_not_linked_in_a_non_json_body_wipes_nothing(self):
+        """Only the parsed JSON `detail` may confirm an unlink — a raw body
+        (an HTML 404 page, a proxy error) that happens to contain the words
+        is not the gateway speaking."""
+        self.seed_binding()
+        conf_before = self.read(C.CLIENT_CONF)
+        err = urllib.error.HTTPError(
+            "https://alice.cyntron.ru/controller/unlink",
+            404, "Not Found", None,
+            io.BytesIO(b"<html><body>controller not linked here</body></html>"),
+        )
+        with mock.patch.object(api, "probe_gateway", return_value=PROBE_UP), \
+                mock.patch.object(api.urllib.request, "urlopen", side_effect=err):
+            result = api.unlink_controller()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["http_status"], 404)
+        self.assert_nothing_erased(conf_before)
+
     def test_transport_exception_refuses_and_wipes_nothing(self):
         self.seed_binding()
         conf_before = self.read(C.CLIENT_CONF)

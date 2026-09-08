@@ -111,6 +111,22 @@ GATEWAY_PROBE_TIMEOUT_S = 5.0
 # Keep the default in sa02m_alice_api.cgi (`SA02M_ALICE_CGI_TIMEOUT`) in lockstep
 # — tests/test_sio_connection.py TestCgiDispatchTimeout asserts both.
 CGI_DISPATCH_TIMEOUT_S = 18
+# CGI `timeout` around the topic-inventory python (sa02m_alice_topics.cgi).
+# File reads only — no gateway, no bus — but the `?format=inventory` answer is
+# ~40 KB and measured 1.1-2.4 s on bench 1.135; 15 s leaves headroom on a
+# loaded board and stays under nginx's 20 s. Fail-closed: the CGI answers the
+# topics_failed JSON — one object, never a trailing one — when exceeded.
+# Keep the default in sa02m_alice_topics.cgi (`SA02M_ALICE_TOPICS_TIMEOUT`) in
+# lockstep — tests/test_sio_connection.py TestTopicsCgiTimeout asserts both;
+# the CGI's body behaviour is scripts/dev/test-alice-topics-cgi.sh.
+TOPICS_CGI_TIMEOUT_S = 15
+# Ceiling on rooms AND on groups in the device document (one constant, both
+# collections). A cloud-side upsert without an `id` mints one and appends —
+# a looping or compromised hub must not grow /etc on the board's flash
+# without bound. Past the cap a NEW row is refused with `too_many`; updates
+# and deletes are unaffected (docs/contracts/alice-mqtt-mapping.md §Device
+# document; tests/test_collection_caps.py).
+COLLECTION_CAP = 64
 # Socket.IO namespace wait (python-socketio Client.connect wait_timeout).
 # Board 1.136, 2026-09-07, n=3 against wss://cloud.cyntron.ru/control/socket.io:
 # handshake 5.185 / 3.665 / 3.371 s (token mint 1.3–1.7 s is outside this

@@ -21,7 +21,8 @@ import re
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
-from ..common.config_store import load_devices, save_devices
+from ..common import constants as C
+from ..common.config_store import devices_lock, load_devices, save_devices
 from ..config import models
 from ..config.topics import YAML_CANDIDATES
 
@@ -398,14 +399,15 @@ def commit_provision(
     meta_name: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Load, append if needed, persist via `save_devices`. Empty = no-op."""
-    doc = load_devices(path)
     ids = set(yaml_ids) if yaml_ids is not None else yaml_mqtt_ids()
-    _doc, added = provision(
-        doc, mqtt_id, present_topics, yaml_ids=ids, meta_name=meta_name
-    )
-    if not added:
-        return []
-    save_devices(doc, path)
+    with devices_lock(path):
+        doc = load_devices(path)
+        _doc, added = provision(
+            doc, mqtt_id, present_topics, yaml_ids=ids, meta_name=meta_name
+        )
+        if not added:
+            return []
+        save_devices(doc, path)
     return added
 
 
@@ -424,14 +426,42 @@ class AutoProvisioner:
         clock: Callable[[], float] = time.monotonic,
         settle_s: float = _SETTLE_S,
         yaml_ids: Optional[Callable[[], Set[str]]] = None,
+        path: Optional[str] = None,
     ) -> None:
         self._load = load
         self._save = save
         self._clock = clock
         self._settle_s = float(settle_s)
         self._yaml_ids = yaml_ids if yaml_ids is not None else yaml_mqtt_ids
+        # The document `load` reads, for the mtime-keyed cache below; with no
+        # file behind an injected loader there is no key and no cache.
+        self._path = path or C.DEVICES_CONF
         self._pending: Dict[str, Dict[str, Any]] = {}
         self._done: Set[str] = set()
+        self._mapped_cache: Optional[Tuple[Tuple[int, int], Set[str]]] = None
+
+    def _document_stamp(self) -> Optional[Tuple[int, int]]:
+        try:
+            st = os.stat(self._path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _is_mapped(self, mid: str) -> bool:
+        """`already_mapped` against a cached id set keyed on the file's
+        (mtime, size): `note` runs per MQTT message, and a `/etc` JSON read
+        per retained `/meta/name` was the cost the audit measured. A save
+        (ours or the CGI's) changes the stamp and drops the cache."""
+        stamp = self._document_stamp()
+        if (
+            stamp is not None
+            and self._mapped_cache is not None
+            and self._mapped_cache[0] == stamp
+        ):
+            return mid in self._mapped_cache[1]
+        ids = mapped_mqtt_ids(self._load())
+        self._mapped_cache = (stamp, ids) if stamp is not None else None
+        return mid in ids
 
     def note(self, topic: str, payload: str) -> Optional[str]:
         """Record a discovery message. Returns an extra topic to subscribe, or None."""
@@ -445,7 +475,9 @@ class AutoProvisioner:
                 self._done.add(mid)
                 self._pending.pop(mid, None)
                 return None
-            if already_mapped(self._load(), mid):
+            # An id already pending was checked on its first message; tick()
+            # re-checks against the freshly loaded document before it commits.
+            if mid not in self._pending and self._is_mapped(mid):
                 self._done.add(mid)
                 return None
             rec = self._pending.setdefault(
@@ -484,41 +516,44 @@ class AutoProvisioner:
         ]
         if not ready:
             return False
-        doc = self._load()
-        yids = set(self._yaml_ids() or ())
-        changed = False
-        for mid in ready:
-            rec = self._pending.pop(mid, None)
-            if rec is None:
-                continue
-            if already_mapped(doc, mid):
-                self._done.add(mid)
-                continue
-            controls = rec["controls"]
-            name = rec.get("name") or None
-            if not may_provision(
-                mid, controls or None, meta_name=name, yaml_ids=yids
-            ):
-                self._done.add(mid)
-                continue
-            present: Optional[Set[str]]
-            if mid in yids and not controls:
-                present = None
-            else:
-                present = controls
-            _doc, added = provision(
-                doc, mid, present, yaml_ids=yids, meta_name=name
-            )
-            if added:
-                changed = True
-                self._done.add(mid)
-                log.info(
-                    "auto-provisioned %s → %d device(s)",
-                    mid,
-                    len(added),
+        # One critical section per commit: load, append, save — the CGI
+        # and the Socket.IO handlers write the same file (config_store).
+        with devices_lock():
+            doc = self._load()
+            yids = set(self._yaml_ids() or ())
+            changed = False
+            for mid in ready:
+                rec = self._pending.pop(mid, None)
+                if rec is None:
+                    continue
+                if already_mapped(doc, mid):
+                    self._done.add(mid)
+                    continue
+                controls = rec["controls"]
+                name = rec.get("name") or None
+                if not may_provision(
+                    mid, controls or None, meta_name=name, yaml_ids=yids
+                ):
+                    self._done.add(mid)
+                    continue
+                present: Optional[Set[str]]
+                if mid in yids and not controls:
+                    present = None
+                else:
+                    present = controls
+                _doc, added = provision(
+                    doc, mid, present, yaml_ids=yids, meta_name=name
                 )
-            else:
-                self._done.add(mid)
-        if changed:
-            self._save(doc)
+                if added:
+                    changed = True
+                    self._done.add(mid)
+                    log.info(
+                        "auto-provisioned %s → %d device(s)",
+                        mid,
+                        len(added),
+                    )
+                else:
+                    self._done.add(mid)
+            if changed:
+                self._save(doc)
         return changed

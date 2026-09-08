@@ -569,7 +569,9 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                 except Exception as exc:
                     log.error("auto-provision subscribe failed for %s: %s", extra, exc)
         if sender:
-            stubs = registry.take_unreachable_transitions()
+            # Gated inside the registry on the topic class: a value message
+            # never pays the catalogue sweep, only a `/meta/error` flag does.
+            stubs = registry.take_unreachable_transitions(topic)
             if stubs:
                 sender.offer_snapshot(stubs)
                 sender.flush_now()

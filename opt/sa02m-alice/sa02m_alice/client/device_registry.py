@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import constants as C
 from ..common.config_store import load_devices
+from ..config import ahu_status
 from . import converters
 
 _DEVICES_PREFIX = "/devices/"
@@ -73,6 +74,17 @@ def _control_error_target(topic: str) -> Optional[str]:
     return base
 
 
+def is_availability_topic(topic: str) -> bool:
+    """True for the poller flags that can change a device's reachability:
+    `/devices/<id>/meta/error` (slave offline) or `<control>/meta/error`
+    (channel dead). Only these can move a `query_devices()` answer between
+    reachable and DEVICE_UNREACHABLE, so only these earn a sweep."""
+    return (
+        _device_meta_error_id(topic) is not None
+        or _control_error_target(topic) is not None
+    )
+
+
 def _availability_topics_for(control_topic: str) -> Set[str]:
     """Poller availability topics that decide whether `control_topic` is live."""
     extra: Set[str] = set()
@@ -113,7 +125,13 @@ class DeviceRegistry:
         self._lock = threading.RLock()
         self._profile = profile
         self._clock = clock or time.monotonic
-        self._doc = devices_doc if devices_doc is not None else load_devices()
+        # Every catalogue build passes through ahu_status: a Carel binding
+        # gains its cloud-only status rows and keeps only the LIVE optional
+        # probes (bridge live cache) — in memory, the stored document is
+        # never rewritten. Same call in reload(): the two sites must agree.
+        self._doc = ahu_status.prepare_catalogue_doc(
+            devices_doc if devices_doc is not None else load_devices()
+        )
         self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._mqtt_ts: Dict[str, float] = {}
         self._mqtt_live: Dict[str, bool] = {}
@@ -172,7 +190,13 @@ class DeviceRegistry:
 
     def reload(self, devices_doc: Optional[Dict[str, Any]] = None) -> None:
         with self._lock:
-            self._doc = devices_doc if devices_doc is not None else load_devices()
+            # Load, then the AHU pass, then assign: a load that raises leaves
+            # the previous document and indexes untouched (reload_watch relies
+            # on that), and the live-cache read happens per reload so a probe
+            # that came alive since the last build is picked up.
+            self._doc = ahu_status.prepare_catalogue_doc(
+                devices_doc if devices_doc is not None else load_devices()
+            )
             self._rebuild_indexes()
 
     def mqtt_topics(self) -> Set[str]:
@@ -475,14 +499,25 @@ class DeviceRegistry:
                 out.append(entry)
         return out
 
-    def take_unreachable_transitions(self) -> List[Dict[str, Any]]:
+    def take_unreachable_transitions(
+        self, topic: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """One DEVICE_UNREACHABLE stub per device that just went down.
 
         Query already returns the stub when the poller raised `/meta/error`
         or the cache never saw a successful poll. Compact/list surfaces never query, so
         this down-edge is what the 30 s snapshot and the MQTT error path
         push once — not every cadence tick, not a retained flood.
+
+        `topic` is the MQTT message that prompted the call: the sweep below
+        is a full `query_devices()` (every device × item) and ran on EVERY
+        message before 1.0.6.39 — a catalogue walk per retained value on the
+        shared ARM SoC. Only an availability topic (`is_availability_topic`)
+        can change the answer, so any other topic returns at once. `None`
+        (the snapshot/reload path) always sweeps.
         """
+        if topic is not None and not is_availability_topic(topic):
+            return []
         entries = self.query_devices()
         out: List[Dict[str, Any]] = []
         with self._lock:

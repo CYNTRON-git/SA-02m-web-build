@@ -158,10 +158,20 @@ class TestCloudProfile(unittest.TestCase):
         self.reg = _registry(C.PROFILE_CLOUD)
 
     def test_discovery_carries_every_item(self):
+        # Since 1.0.6.39 the catalogue build (ahu_status, wired in
+        # DeviceRegistry) APPENDS the cloud-only status/extra rows a Carel
+        # binding is missing, after the operator's own rows; with no bridge
+        # live cache on this host no optional probe (outdoor/room) is added.
+        # The document's three items still lead, in order; the appended set
+        # is exact — tests/test_ahu_status_wiring.py covers the live half.
         dev = self.reg.discovery_devices(C.PROFILE_CLOUD)[0]
-        instances = sorted(p["parameters"]["instance"] for p in dev["properties"])
-        self.assertEqual(instances,
-                         ["plant_state", "return_water_temperature", "temperature"])
+        instances = [p["parameters"]["instance"] for p in dev["properties"]]
+        self.assertEqual(instances[:3],
+                         ["temperature", "return_water_temperature", "plant_state"])
+        self.assertEqual(
+            sorted(instances[3:]),
+            sorted(["unit_status", "alarm", "pump", "alarm_text",
+                    "heat_valve", "fan_speed", "fan_step"]))
 
     def test_cloud_only_topics_are_subscribed_and_answered(self):
         self.assertIn(TOPIC + "/return_water_temp", self.reg.mqtt_topics())
