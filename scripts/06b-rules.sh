@@ -42,10 +42,10 @@ fi
 systemctl daemon-reload
 # sa02m stack: first install enable+start; refresh never-widens an operator stop.
 sa02m_svc_apply sa02m-rules.service app on
-# sa02m-cloud-control держит в памяти тот же код сценарного канала
-# (sa02m_alice → sa02m_rules.store из /opt/sa02m-rules): без рестарта push
-# сценария из облака обрабатывается старым кодом (приёмка 1.0.6.37: молча
-# срезались trigger/end). Юнит opt-in — только рестарт активного, никогда
-# не стартовать остановленный.
+# sa02m-cloud-control holds the same scenario-channel code in memory
+# (sa02m_alice -> sa02m_rules.store from /opt/sa02m-rules): without a restart
+# a scenario pushed from the cloud is handled by the OLD code (1.0.6.37
+# acceptance: trigger/end were silently stripped). The unit is opt-in —
+# restart only an active one, never start a stopped one.
 sa02m_svc_restart_if_active sa02m-cloud-control.service
 log INFO "=== [06b-rules] готово ==="

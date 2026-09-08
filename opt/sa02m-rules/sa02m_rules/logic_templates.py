@@ -60,11 +60,6 @@ class LogicBase:
         self._keys.discard(key)
         self.rt.cancel(key)
 
-    def close(self) -> None:
-        for key in list(self._keys):
-            self.rt.cancel(key)
-        self._keys.clear()
-
     # ── engine callbacks ───────────────────────────────────────────────
     def on_boot(self) -> None:
         pass

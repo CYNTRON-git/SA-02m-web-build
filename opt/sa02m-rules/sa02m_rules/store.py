@@ -8,14 +8,28 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from sa02m_rules import http_guard
+
 NAME_RE = re.compile(r"^[\w \-./+]{1,64}$", re.UNICODE)
 ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+#: `cap` becomes an MQTT topic segment (`/devices/<id>/controls/<cap>/on`):
+#: no `/`, `+`, `#`, no whitespace (verdict A2 — a wildcard here crashed the
+#: publish out of on_boot into a restart loop).
+CAP_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,32}$")
 TEMPLATE_RE = re.compile(r"^[a-z0-9_]{2,32}$")
 BUTTON_INPUT_RE = re.compile(r"^di_\d{1,2}$")
 DEFAULT_PATH = os.environ.get("SA02M_RULES_PATH", "/etc/sa02m-rules/scenarios.json")
 RUNS_MAX = 50
 NOTIFY_MAX = 20
 PARAMS_MAX_BYTES = 4096
+#: Stored scenarios — every write path (replace, batch upsert, single upsert)
+#: refuses growth past this with `too_many` (contract §Store).
+SCENARIOS_MAX = 64
+#: Direct writes (`set`/`toggle`/`ramp`, and Hub.set in code) per scenario
+#: row AND per engine run — one constant, so the store refuses at validation
+#: (`too_many_writes`) exactly what the engine would abort at run time.
+MAX_WRITES = 8
+_WRITE_KINDS = ("set", "toggle", "ramp")
 #: Engine version reported to the cloud (control view `rules_engine`):
 #: 2 = end events, edge operators, day/night presets, button/every/presence.
 RULES_ENGINE = 2
@@ -53,6 +67,10 @@ def _atomic_write(path: str, data: str) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
+        # mkstemp is 0600 and os.replace carries the mode over — keep the
+        # installer's 0644 (scripts/06b-rules.sh) instead of discarding it
+        # on the first save.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -158,8 +176,11 @@ def _clean_trigger(raw: Any) -> Optional[List[Dict[str, Any]]]:
         if kind == "state":
             if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
                 continue
+            cap = _clean_cap(item.get("cap"))
+            if cap is None:
+                continue
             row["device"] = item["device"]
-            row["cap"] = str(item.get("cap") or "on_off")[:32]
+            row["cap"] = cap
             if not _clean_state_op(item, row):
                 continue
         elif kind == "time":
@@ -240,11 +261,10 @@ def _clean_condition(raw: Any) -> Dict[str, Any]:
         elif kind == "state":
             if not (isinstance(item.get("device"), str) and ID_RE.match(item["device"])):
                 continue
-            row = {
-                "kind": "state",
-                "device": item["device"],
-                "cap": str(item.get("cap") or "on_off")[:32],
-            }
+            cap = _clean_cap(item.get("cap"))
+            if cap is None:
+                continue
+            row = {"kind": "state", "device": item["device"], "cap": cap}
             # Conditions are level-only (contract: no `changed`); for_s asks
             # the level to hold steadily for N seconds. Edge/event ops keep
             # their steady-state level meaning («is above», «is inside the
@@ -289,8 +309,11 @@ def _clean_action(raw: Any, scene_only: bool = False) -> Optional[List[Dict[str,
         if kind in ("set", "toggle"):
             if not isinstance(item.get("device"), str) or not ID_RE.match(item["device"]):
                 continue
+            cap = _clean_cap(item.get("cap"))
+            if cap is None:
+                continue
             row["device"] = item["device"]
-            row["cap"] = str(item.get("cap") or "on_off")[:32]
+            row["cap"] = cap
             if kind == "set":
                 row["value"] = item.get("value")
                 try:
@@ -310,8 +333,11 @@ def _clean_action(raw: Any, scene_only: bool = False) -> Optional[List[Dict[str,
                 continue
             if not 1.0 <= seconds <= 300.0:
                 continue
+            cap = _clean_cap(item.get("cap"))
+            if cap is None:
+                continue
             row["device"] = item["device"]
-            row["cap"] = str(item.get("cap") or "on_off")[:32]
+            row["cap"] = cap
             row["to"] = item.get("to")
             row["seconds"] = seconds
         elif kind == "delay":
@@ -333,15 +359,23 @@ def _clean_action(raw: Any, scene_only: bool = False) -> Optional[List[Dict[str,
                 continue
             row["text"] = text
         elif kind == "http":
-            url = str(item.get("url") or "").strip()
-            if not (url.startswith("http://") or url.startswith("https://")):
+            url = str(item.get("url") or "").strip()[:http_guard.URL_MAX]
+            # Static half of the target policy (no DNS here); the engine
+            # resolves and re-checks at request time (http_guard).
+            if http_guard.check_url(url, resolve=False):
                 continue
-            row["url"] = url[:500]
+            row["url"] = url
             row["method"] = "POST" if str(item.get("method") or "").upper() == "POST" else "GET"
             if item.get("body") is not None:
                 row["body"] = str(item.get("body"))[:2000]
         out.append(row)
     return out
+
+
+def _clean_cap(raw: Any) -> Optional[str]:
+    """Capability short name; absent ⇒ `on_off`, bad charset ⇒ None (drop)."""
+    cap = str(raw or "on_off")
+    return cap if CAP_RE.match(cap) else None
 
 
 def _clean_end(raw: Any) -> Optional[Dict[str, Any]]:
@@ -411,6 +445,8 @@ def validate_row(body: Dict[str, Any], existing_id: Optional[str] = None) -> Tup
         "last_run": body.get("last_run"),
         "last_error": "",
     }
+    if sum(1 for a in row["action"] if a.get("kind") in _WRITE_KINDS) > MAX_WRITES:
+        return None, "too_many_writes"  # the engine would abort at MAX_WRITES anyway
     # `template` is stored even when this engine predates the name — the
     # catalog may be newer than the firmware; the ENGINE rejects unknown
     # names at run time with last_error="unknown template" (§Versioning).
@@ -484,7 +520,7 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         return _ok(doc)
     if body.get("replace") is True and isinstance(body.get("scenarios"), list):
         cleaned, ids = [], []
-        for raw in body["scenarios"][:64]:
+        for raw in body["scenarios"][:SCENARIOS_MAX]:
             if not isinstance(raw, dict):
                 continue
             row, err = validate_row(raw)
@@ -532,6 +568,8 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
                 row["id"] = _new_id([i for i in ids if isinstance(i, str)])
                 ids.append(row["id"])
             cleaned.append(row)
+        if len(set(i for i in ids if isinstance(i, str))) > SCENARIOS_MAX:
+            return {"ok": False, "error": "too_many"}  # post-merge total
         for row in cleaned:
             idx = next((i for i, s in enumerate(doc["scenarios"])
                         if isinstance(s, dict) and s.get("id") == row["id"]), None)
@@ -565,6 +603,8 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
         row["id"] = _new_id([i for i in ids if isinstance(i, str)])
     idx = next((i for i, s in enumerate(doc["scenarios"]) if isinstance(s, dict) and s.get("id") == row["id"]), None)
     if idx is None:
+        if len(doc["scenarios"]) >= SCENARIOS_MAX:
+            return {"ok": False, "error": "too_many"}
         doc["scenarios"].append(row)
     else:
         prev = doc["scenarios"][idx]

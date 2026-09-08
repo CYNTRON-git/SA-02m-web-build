@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import threading
+import types
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -69,6 +71,41 @@ class StoreTests(unittest.TestCase):
             fh.write("{broken")
         doc = store.load(self.path)
         self.assertEqual(doc["scenarios"], [])
+
+    def test_scenario_cap_holds_on_every_write_path(self):
+        """A10: the contracted 64 cap applies to the single upsert (the
+        primary path) and to the post-merge total of a batch upsert."""
+        for i in range(store.SCENARIOS_MAX):
+            r = store.apply_command({"name": "s%d" % i}, self.path)
+            self.assertTrue(r["ok"], r)
+        r = store.apply_command({"name": "one too many"}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many"})
+        # Updating an existing row is not growth.
+        r = store.apply_command({"id": "s1", "name": "renamed"}, self.path)
+        self.assertTrue(r["ok"], r)
+        r = store.apply_command({"upsert": [{"name": "batch new"}]}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many"})
+        r = store.apply_command({"upsert": [{"id": "s2", "name": "batch upd"}]}, self.path)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(len(store.load(self.path)["scenarios"]), store.SCENARIOS_MAX)
+
+    def test_more_than_max_writes_is_refused_at_validation(self):
+        """A13: store cap == engine cap; a 12-lamp scene is refused with an
+        explicit error instead of half-applying at run time."""
+        acts = [{"kind": "set", "device": "lamp%d" % i, "cap": "on_off", "value": 1}
+                for i in range(store.MAX_WRITES + 4)]
+        r = store.apply_command({"name": "night", "type": "scene", "action": acts},
+                                self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many_writes"})
+        mixed = acts[:store.MAX_WRITES - 2] + [
+            {"kind": "toggle", "device": "a", "cap": "on_off"},
+            {"kind": "ramp", "device": "b", "cap": "brightness", "to": 5, "seconds": 10},
+            {"kind": "notify", "text": "not a write"}]
+        r = store.apply_command({"name": "ok", "action": mixed}, self.path)
+        self.assertTrue(r["ok"], r)
+        r = store.apply_command({"name": "over", "action": mixed + [
+            {"kind": "toggle", "device": "c", "cap": "on_off"}]}, self.path)
+        self.assertEqual(r, {"ok": False, "error": "too_many_writes"})
 
 
 class EngineTests(unittest.TestCase):
@@ -161,6 +198,78 @@ class ServiceBootTests(unittest.TestCase):
         self.assertIs(app.state, app.engine.state)
 
 
+class ServiceSerialisationTests(unittest.TestCase):
+    """A12: paho's network thread only ENQUEUES; the engine mutates on the
+    main thread inside tick(), in arrival order."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        store.save({"scenarios": [{
+            "id": "s1", "name": "t", "enabled": True, "type": "block",
+            "trigger": [{"kind": "state", "device": "pir", "cap": "motion",
+                         "op": "motion_detected"}],
+            "condition": {},
+            "action": [{"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
+        }], "runs": [], "notify_queue": [], "library": "", "vars": {}}, self.path)
+
+        class FakeClient:
+            def __init__(self):
+                self.published = []
+
+            def publish(self, topic, payload, qos=0, retain=False):
+                self.published.append((topic, payload))
+
+        self.client = FakeClient()
+        self.app = rules_service.RulesApp(self.client, self.path)
+        self.client.published.clear()
+
+    def _msg(self, topic, payload):
+        return types.SimpleNamespace(topic=topic, payload=payload)
+
+    def test_messages_apply_on_tick_in_order(self):
+        msgs = [self._msg("/devices/pir/controls/motion", b"0"),
+                self._msg("/devices/pir/controls/motion", b"1")]
+
+        def deliver():
+            for m in msgs:
+                self.app.on_message(None, None, m)
+
+        t = threading.Thread(target=deliver)
+        t.start()
+        t.join()
+        # Nothing reached the engine from the network thread.
+        self.assertEqual(self.client.published, [])
+        self.assertIsNone(self.app.engine.state.get("pir"))
+        self.app.tick()
+        self.assertEqual(self.app.engine.state["pir"]["motion"], 1)
+        self.assertEqual(self.client.published, [("/devices/led/controls/on_off/on", "1")])
+
+    def test_inbox_is_bounded(self):
+        for i in range(rules_service.INBOX_MAX + 50):
+            self.app.on_message(None, None, self._msg("/devices/x/controls/c", b"%d" % i))
+        self.assertEqual(self.app._inbox.qsize(), rules_service.INBOX_MAX)
+        self.app.tick()
+        self.assertEqual(self.app._inbox.qsize(), 0)
+
+
+class ServiceStandbyTests(unittest.TestCase):
+    def test_missing_paho_is_intentional_standby(self):
+        """A17: no paho-mqtt (optional tier) => exit 0, not a 5 s restart storm
+        (sa02m-cloud-control parity)."""
+        saved = {k: sys.modules.get(k) for k in ("paho", "paho.mqtt", "paho.mqtt.client")}
+        sys.modules["paho"] = None  # makes `import paho.mqtt.client` raise ImportError
+        try:
+            self.assertEqual(rules_service.main(), 0)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+
+
 class MqttIndexTests(unittest.TestCase):
     def test_cap_maps_to_alice_topic(self):
         d = tempfile.TemporaryDirectory()
@@ -179,10 +288,14 @@ class MqttIndexTests(unittest.TestCase):
 
 
 class CodeTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+
     def test_hub_set_and_banned_import(self):
         pubs = []
         doc = {"notify_queue": [], "runs": []}
-        path = os.path.join(tempfile.gettempdir(), "sa02m-rules-code.json")
+        path = os.path.join(self.dir.name, "sa02m-rules-code.json")
         rec = code_runner.run_code(
             {"id": "c1", "name": "c", "code": "Hub.set('led','on_off',1)"},
             "", {}, lambda d, c, v: pubs.append((d, c, v)),
@@ -198,7 +311,7 @@ class CodeTests(unittest.TestCase):
     def test_vars_home_mode_and_cron_every(self):
         modes = []
         doc = {"notify_queue": [], "runs": []}
-        path = os.path.join(tempfile.gettempdir(), "sa02m-rules-code2.json")
+        path = os.path.join(self.dir.name, "sa02m-rules-code2.json")
         rec = code_runner.run_code(
             {"id": "c1", "name": "c",
              "code": "Vars.home_mode = 'away'\n"

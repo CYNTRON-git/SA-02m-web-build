@@ -12,20 +12,23 @@ from __future__ import annotations
 import heapq
 import math
 import time
-import urllib.error
-import urllib.request
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
+from sa02m_rules import http_guard
 from sa02m_rules.store import (
-    EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, append_run, enqueue_notify,
-    load, save)
+    CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, MAX_WRITES,
+    append_run, enqueue_notify, load, save)
 
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
-MAX_WRITES = 8            # direct writes per run
+# MAX_WRITES (direct writes per run) is the store's constant — validation
+# refuses what this engine would abort.
 MAX_ACTIONS = 20          # actions per run (continuations included)
-RUN_S = 30                # execution budget per run, scheduler waits excluded
+RUN_S = 30                # execution budget per run, scheduler waits excluded;
+                          # for type=code a hard deadline on the body itself
+BUTTON_COUNTER_MAX = 65535    # bridge press counters are uint16 input regs
+BUTTON_COUNTER_WRAP_SLACK = 8  # …→small after ≥ MAX-slack reads as one press
 WRITE_WINDOW_S = 10.0     # global MQTT write rate window …
 WRITE_WINDOW_MAX = 8      # … with at most this many writes inside it
 BUTTON_LONG_S = 0.5       # MR-02m firmware parity: long press threshold
@@ -150,30 +153,24 @@ def _edge_pred(op: str, value: Any, threshold: Any) -> bool:
 
 
 def _http(act: Dict[str, Any]) -> str:
-    req = urllib.request.Request(act["url"], method=act.get("method") or "GET")
-    if act.get("method") == "POST" and act.get("body") is not None:
-        data = str(act["body"]).encode("utf-8")
-        req.data = data
-        req.add_header("Content-Type", "text/plain; charset=utf-8")
+    """`http` action under the shared target policy (http_guard)."""
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            return "http %s" % resp.status
-    except urllib.error.HTTPError as exc:
-        return "http %s" % exc.code
-    except Exception as exc:
+        status, _n = http_guard.fetch(act.get("method") or "GET", act["url"],
+                                      act.get("body"))
+        return "http %s" % status
+    except http_guard.HttpRefused as exc:
         return "http err %s" % exc
 
 
 class _Run:
     """One scenario execution; survives across scheduler continuations."""
-    __slots__ = ("sid", "name", "depth", "chain", "writes", "actions",
+    __slots__ = ("sid", "name", "chain", "writes", "actions",
                  "spent", "snapshot", "turned_on", "source", "error", "root")
 
-    def __init__(self, sid: str, name: str, depth: int, chain: Tuple[str, ...],
+    def __init__(self, sid: str, name: str, chain: Tuple[str, ...],
                  source: str) -> None:
         self.sid = sid
         self.name = name
-        self.depth = depth
         self.chain = chain
         self.writes = 0
         self.actions = 0
@@ -409,14 +406,20 @@ class Engine:
 
     # ── writes ─────────────────────────────────────────────────────────
     def _write(self, device: Any, cap: Any, value: Any,
-               run: Optional[_Run], from_ramp: bool = False) -> bool:
-        if not isinstance(device, str) or not device or not isinstance(cap, str) or not cap:
+               run: Optional[_Run], from_ramp: bool = False,
+               force: bool = False) -> bool:
+        """Publish a control write. `force` skips the rate window (still
+        counted in it) — the `end` safety auto-off must land whatever
+        unrelated traffic filled the window (verdict A7)."""
+        if not isinstance(device, str) or not isinstance(cap, str):
             return False
+        if not ID_RE.match(device) or not CAP_RE.match(cap):
+            return False  # every caller's names reach an MQTT topic (A2)
         now = self._now()
         win = self._writes_win
         while win and now - win[0] > WRITE_WINDOW_S:
             win.popleft()
-        if len(win) >= WRITE_WINDOW_MAX:
+        if len(win) >= WRITE_WINDOW_MAX and not force:
             if run is not None:
                 run.error = "write cap"
             return False
@@ -517,9 +520,19 @@ class Engine:
         import re
         m = re.match(r"^(di_\d{1,2})_(short|long|double)$", cap)
         if m:
-            # Counter path: fire only on an observed increment (never on the
-            # first sight after boot — «never fire on service start»).
-            if prev is not None:
+            # Counter path: fire only on an observed INCREMENT (never on the
+            # first sight after boot — «never fire on service start»). A
+            # decrease is a counter reset (module reboot / firmware upgrade,
+            # verdict A8) and only re-baselines — except the uint16 wrap
+            # 65535→small, which is one real press.
+            if prev is None:
+                return
+            pn, vn = _as_num(prev), _as_num(value)
+            if pn is None or vn is None:
+                return
+            wrapped = (pn >= BUTTON_COUNTER_MAX - BUTTON_COUNTER_WRAP_SLACK
+                       and vn <= BUTTON_COUNTER_WRAP_SLACK)
+            if vn > pn or wrapped:
                 self._btn_counters[(device, m.group(1))] = self._now()
                 self._dispatch({"kind": "button", "device": device,
                                 "input": m.group(1),
@@ -768,14 +781,14 @@ class Engine:
     # ── runs ───────────────────────────────────────────────────────────
     def _run(self, s: Dict[str, Any], reason: str, source: str) -> Dict[str, Any]:
         sid = str(s.get("id"))
-        run = _Run(sid, str(s.get("name") or sid), 0, (sid,), source)
+        run = _Run(sid, str(s.get("name") or sid), (sid,), source)
         run.root = s
         # A re-trigger supersedes: pending continuation and end timer reset.
         self._cancel("%s:cont" % sid)
         self._cancel("%s:end" % sid)
         end = s.get("end")
         if isinstance(end, dict):
-            self._publish_tpl_state(sid, "remaining_s", 0)
+            self._publish_tpl_state(sid, "end_after_s", 0)
             if end.get("mode") == "restore":
                 run.snapshot = {}
         typ = s.get("type") or "block"
@@ -785,7 +798,7 @@ class Engine:
             rec = run_code(s, self.doc.get("library") or "", self.state,
                            self._pub, self._now(), self.lat, self.lon,
                            self.doc, self.path, self.doc["vars"],
-                           on_home_mode=self.set_home_mode)
+                           on_home_mode=self.set_home_mode, budget_s=RUN_S)
             run.spent += self._now() - started
             rec["source"] = source
             self._finish(run, s, rec.get("error") or "")
@@ -887,7 +900,7 @@ class Engine:
                 run.error = err
                 return None
         elif kind in ("scenario", "scene"):
-            if run.depth + len(frames) - 1 >= MAX_DEPTH:
+            if len(frames) - 1 >= MAX_DEPTH:
                 run.error = "depth"
                 return None
             child = self._scenario(act.get("id"))
@@ -916,13 +929,15 @@ class Engine:
                "error": err, "ok": not err, "source": run.source}
         self._journal(s, rec)
         end = s.get("end")
-        if isinstance(end, dict) and run.depth == 0:
+        if isinstance(end, dict):
             payload = {"sid": run.sid, "mode": end.get("mode"),
                        "turned_on": list(run.turned_on),
                        "snapshot": dict(run.snapshot) if run.snapshot is not None else None}
             self._schedule(float(end.get("after_s") or 60), "end",
                            "%s:end" % run.sid, payload)
-            self._publish_tpl_state(run.sid, "remaining_s",
+            # Published once when armed, 0 when fired/reset — it does not
+            # count down, hence the name (verdict A19).
+            self._publish_tpl_state(run.sid, "end_after_s",
                                     int(end.get("after_s") or 60))
 
     def _journal(self, s: Dict[str, Any], rec: Dict[str, Any]) -> None:
@@ -967,16 +982,27 @@ class Engine:
 
     # ── end event ──────────────────────────────────────────────────────
     def _end_fire(self, payload: Dict[str, Any]) -> None:
-        sid = payload.get("sid")
-        self._publish_tpl_state(str(sid), "remaining_s", 0)
+        sid = str(payload.get("sid"))
+        self._publish_tpl_state(sid, "end_after_s", 0)
+        refused = False
         if payload.get("mode") == "off":
             for device, cap in payload.get("turned_on") or []:
-                self._write(device, cap, 0, None)
+                refused |= not self._write(device, cap, 0, None, force=True)
         elif payload.get("mode") == "restore":
             snap = payload.get("snapshot") or {}
             for (device, cap), value in snap.items():
                 if value is not None:
-                    self._write(device, cap, value, None)
+                    refused |= not self._write(device, cap, value, None, force=True)
+        if refused:
+            # Never silent: the load stays on and the cloud must see why.
+            s = self._scenario(sid)
+            rec = {"ts": self._now(), "id": sid,
+                   "name": str((s or {}).get("name") or sid),
+                   "error": "end write refused", "ok": False, "source": "end"}
+            if s is not None:
+                self._journal(s, rec)
+            else:
+                append_run(self.doc, rec, self.path)
 
     # ── logic template status relay ────────────────────────────────────
     def logic_status_poll(self) -> None:

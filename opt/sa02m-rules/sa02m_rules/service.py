@@ -1,14 +1,24 @@
-"""MQTT loop: subscribe /devices/+/controls/+, publish .../on, no retain."""
+"""MQTT loop: subscribe /devices/+/controls/+, publish .../on, no retain.
+
+Threading: paho's network thread only ENQUEUES inbound messages; the main
+loop drains them inside tick(), so every Engine mutation (heap, trackers,
+doc adoption) happens on one thread (verdict A12 — the package holds no
+lock, and none is needed while this stays true).
+"""
 from __future__ import annotations
 
 import json
 import logging
 import os
+import queue
 import sys
 import time
 from typing import Any, Dict
 
 LOG = logging.getLogger("sa02m-rules")
+#: Inbound MQTT messages waiting for the next tick; a burst past this is
+#: dropped (counted in the log) rather than growing without bound.
+INBOX_MAX = 4096
 
 # Package lives next to this file when installed to /opt/sa02m-rules.
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -86,6 +96,8 @@ class RulesApp:
         self._by_dev_cap: Dict[Any, str] = {}
         self._by_topic: Dict[str, Any] = {}
         self._readonly = set()
+        self._inbox: "queue.Queue[tuple]" = queue.Queue(maxsize=INBOX_MAX)
+        self._dropped = 0
         self.reload_index()
         # Pre-create the mirror: Engine.__init__ adopts the existing doc and
         # may publish template state (rule_enabled) via pub_state, which
@@ -131,7 +143,7 @@ class RulesApp:
         payload = "1" if value in (True, 1, "1", "on", "true") else (
             "0" if value in (False, 0, "0", "off", "false") else str(value)
         )
-        self.client.publish(topic, payload, qos=1, retain=False)
+        self._publish(topic, payload, retain=False)
         self.state.setdefault(device, {})[short] = value
 
     def pub_state(self, device: str, cap: str, value: Any) -> None:
@@ -144,11 +156,39 @@ class RulesApp:
         payload = "1" if value in (True, 1, "1", "on", "true") else (
             "0" if value in (False, 0, "0", "off", "false") else str(value)
         )
-        self.client.publish(topic, payload, qos=1, retain=True)
+        self._publish(topic, payload, retain=True)
         self.state.setdefault(device, {})[short] = value
 
+    def _publish(self, topic: str, payload: str, retain: bool) -> None:
+        # A publish must never escape on_boot()/tick(): one stored row with
+        # a topic paho refuses (a wildcard) would otherwise exit the process
+        # into Restart=on-failure and re-fire on every boot (verdict A2).
+        try:
+            self.client.publish(topic, payload, qos=1, retain=retain)
+        except Exception as exc:
+            LOG.warning("publish %s refused: %s", topic, exc)
+
     def on_message(self, _c: Any, _u: Any, msg: Any) -> None:
+        """paho network thread: enqueue only (see module docstring)."""
         topic = getattr(msg, "topic", "") or ""
+        payload = msg.payload
+        raw = payload.decode("utf-8", "replace") if isinstance(payload, (bytes, bytearray)) else str(payload)
+        try:
+            self._inbox.put_nowait((topic, raw))
+        except queue.Full:
+            self._dropped += 1
+            if self._dropped in (1, 100, 1000) or self._dropped % 10000 == 0:
+                LOG.warning("inbox full: %d message(s) dropped", self._dropped)
+
+    def _drain_inbox(self) -> None:
+        while True:
+            try:
+                topic, raw = self._inbox.get_nowait()
+            except queue.Empty:
+                return
+            self._apply_message(topic, raw)
+
+    def _apply_message(self, topic: str, raw: str) -> None:
         parts = topic.strip("/").split("/")
         # devices / <id> / controls / <name>   — not .../on
         if len(parts) != 4 or parts[0] != "devices" or parts[2] != "controls":
@@ -159,7 +199,6 @@ class RulesApp:
             device, cap = mapped
         else:
             device, cap = parts[1], parts[3]
-        raw = msg.payload.decode("utf-8", "replace") if isinstance(msg.payload, (bytes, bytearray)) else str(msg.payload)
         try:
             value: Any = json.loads(raw)
         except ValueError:
@@ -183,6 +222,7 @@ class RulesApp:
 
     def tick(self) -> None:
         self.reload()
+        self._drain_inbox()
         self.engine.tick()
         self.engine.logic_status_poll()
         run_flag = self.path + ".run"
@@ -204,8 +244,11 @@ def main() -> int:
     try:
         import paho.mqtt.client as mqtt
     except ImportError:
-        LOG.error("paho-mqtt missing")
-        return 1
+        # Optional-tier dependency (scripts/06b-rules.sh): its absence is an
+        # intentional standby, not a failure — exit 0 so Restart=on-failure
+        # does not storm every 5 s (sa02m-cloud-control parity, verdict A17).
+        LOG.error("paho-mqtt missing — scenario engine in standby (exit 0)")
+        return 0
     lat, lon = _geo()
     client = mqtt.Client(client_id="sa02m-rules", clean_session=True)
     app = RulesApp(client, PATH, lat, lon)

@@ -164,6 +164,28 @@ class ButtonTests(unittest.TestCase):
         e.on_state("mr02m", "di_1_short", 6)   # increment → single
         self.assertEqual(pubs, [("led", "on_off", 1)])
 
+    def test_counter_reset_rebaselines_instead_of_firing(self):
+        """A8: an MR-02m counter reset (module reboot / firmware upgrade)
+        drops 42->0 — that is not a press."""
+        pubs = []
+        e, clock, td, _ = make_engine({"scenarios": [self.scenario("single")]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("mr02m", "di_1_short", 42)  # baseline
+        e.on_state("mr02m", "di_1_short", 0)   # reset -> re-baseline, no fire
+        self.assertEqual(pubs, [])
+        e.on_state("mr02m", "di_1_short", 1)   # first press after the reset
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+
+    def test_uint16_counter_wrap_is_one_press(self):
+        pubs = []
+        e, clock, td, _ = make_engine({"scenarios": [self.scenario("single")]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("mr02m", "di_1_short", 65535)
+        e.on_state("mr02m", "di_1_short", 0)   # wrap -> a single press
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+        e.on_state("mr02m", "di_1_short", 1)
+        self.assertEqual(len(pubs), 2)
+
     def test_classifier_fallback_long_and_release(self):
         pubs = []
         e, clock, td, _ = make_engine(
@@ -318,11 +340,11 @@ class EndEventTests(unittest.TestCase):
             end={"after_s": 60, "mode": "off"})]}, pubs)
         self.addCleanup(td.cleanup)
         e.on_state("x", "on_off", 1)
-        self.assertIn(("sa02m-rules-s1", "remaining_s", 60), tpl)
+        self.assertIn(("sa02m-rules-s1", "end_after_s", 60), tpl)
         clock[0] += 61
         e.tick()
         self.assertEqual(pubs[-1], ("led", "on_off", 0))
-        self.assertIn(("sa02m-rules-s1", "remaining_s", 0), tpl)
+        self.assertIn(("sa02m-rules-s1", "end_after_s", 0), tpl)
 
     def test_end_restore_reapplies_snapshot(self):
         pubs = []
@@ -357,6 +379,38 @@ class EndEventTests(unittest.TestCase):
         clock[0] += 31                 # +61 s from the second run
         e.tick()
         self.assertEqual(pubs.count(("led", "on_off", 0)), 1)
+
+
+    def test_end_off_bypasses_a_saturated_write_window(self):
+        """A7: the safety auto-off is not a write like the others — it must
+        land even when unrelated traffic has filled the 10 s window."""
+        pubs = []
+        e, clock, td, tpl = make_engine({"scenarios": [block(
+            "s1", [{"kind": "state", "device": "x", "cap": "on_off",
+                    "op": "==", "value": 1}],
+            [{"kind": "set", "device": "heater", "cap": "on_off", "value": 1}],
+            end={"after_s": 60, "mode": "off"})]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("x", "on_off", 1)
+        clock[0] += 60
+        for i in range(engine.WRITE_WINDOW_MAX):
+            self.assertTrue(e._write("other%d" % i, "on_off", 1, None))
+        self.assertFalse(e._write("blocked", "on_off", 1, None))  # window full
+        clock[0] += 1
+        e.tick()
+        self.assertEqual(pubs[-1], ("heater", "on_off", 0))
+        self.assertEqual(e.doc["scenarios"][0]["last_error"], "")
+
+    def test_refused_end_write_journals_last_error(self):
+        pubs = []
+        e, clock, td, tpl = make_engine({"scenarios": [block(
+            "s1", [], [], end={"after_s": 60, "mode": "off"})]}, pubs)
+        self.addCleanup(td.cleanup)
+        e._end_fire({"sid": "s1", "mode": "off",
+                     "turned_on": [("bad/device", "on_off")]})
+        self.assertEqual(e.doc["scenarios"][0]["last_error"], "end write refused")
+        self.assertEqual(e.doc["runs"][-1]["error"], "end write refused")
+        self.assertIn(("sa02m-rules-s1", "end_after_s", 0), tpl)
 
 
 class RampTests(unittest.TestCase):
