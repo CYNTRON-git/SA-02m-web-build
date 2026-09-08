@@ -13,8 +13,12 @@ set -o pipefail  # catch masked failures in pipes (Y7); set -u deferred pending 
 #                   operator's unit state (capture/apply, norestart — a docker
 #                   restart kills containers and no sa02m code lives in it);
 #   install       — full mode / --with-optional: packages via the thirdparty
-#                   tier, then the same overlay + unit apply (`app off` since
-#                   1.0.6.37 — docker is installed, not started).
+#                   tier, then the same overlay + unit apply (`app off`:
+#                   docker is installed, its unit disabled + stopped). Claimed
+#                   since 1.0.6.37, TRUE since 1.0.6.39: until then the capture
+#                   ran after the package install, so the postinst's
+#                   enable+start was preserved as "the operator's state"
+#                   (audit 2026-09-08, D3).
 #
 # Отключить: SA02M_SKIP_DOCKER=1 ./install.sh
 # Контракт: docs/contracts/installer-refresh-policy.md;
@@ -37,6 +41,19 @@ case "$_VERDICT" in
         exit 0
         ;;
 esac
+
+# Capture BEFORE the package lands. docker.io's postinst writes
+# /lib/systemd/system/docker.service and enables+starts it, and `absent` — the
+# ONLY first-install signal sa02m_svc_apply acts on — needs no unit file on
+# disk (scripts/lib.sh sa02m_svc_capture, three witnesses). A capture placed
+# after the install saw an existing enabled+active unit, took the preserve
+# branch and left the package's autostart in place: «Docker по умолчанию
+# выключен» was false on every fresh on-device install from 1.0.6.37 to
+# 1.0.6.38 (audit 2026-09-08, D3; order pinned by
+# scripts/dev/test-installer-svc-helpers.sh case 13). A refresh on an
+# installed docker captures the same thing it did before — the operator's
+# state, restored exactly by the apply below.
+sa02m_svc_capture docker.service
 
 if [ "$_VERDICT" = install ] && ! command -v docker >/dev/null 2>&1; then
     sa02m_apt_update
@@ -62,11 +79,9 @@ fi
 # NFT_COMPAT and mis-detected the 6.1.0-rc6 bench kernel as full-mode
 # (docs/contracts/kernel-conditional-services.md).
 if command -v docker >/dev/null 2>&1; then
-    # The unit's run-state belongs to the operator: capture BEFORE the overlay
-    # lands, apply after (first install ⇒ off since 1.0.6.37; docker gets
+    # The unit's run-state belongs to the operator: captured above, BEFORE the
+    # package and the overlay; applied after (first install ⇒ off; docker gets
     # `norestart` — see the header). A refresh never starts a stopped unit.
-    sa02m_svc_capture docker.service
-
     DOCKER_MODE=full
     KERNEL_CFG="/boot/config-$(uname -r)"
     for req in CONFIG_OVERLAY_FS CONFIG_BRIDGE CONFIG_NF_TABLES; do
