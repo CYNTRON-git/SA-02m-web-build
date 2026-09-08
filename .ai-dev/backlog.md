@@ -8,6 +8,26 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[LOW] LED window: PWM safe-state 503..506 not exposed.**
+  The daemon has no read/write path for the family safe-state AO block (plan
+  led-window-1.0.6.40 F4); the desktop page shows it. Add an FC03 of 4 to the PWM
+  poll + `pwm {channel, safe}` + tests when wanted.
+- [OPEN] 2026-09-08 **[LOW] LED window: EXFX upload has no tab.** Needs the
+  holding-4000+ upload protocol, a file path through nginx and a daemon job with
+  progress (F2) — a release of its own; the desktop's «Загрузить и пуск» is the
+  target.
+- [OPEN] 2026-09-08 **[LOW] LED window: weather-listen binds only in the spy
+  card.** The daemon reads 696..709 for effect 81 alone (F7); the desktop also shows
+  them on the weather card (fx 64). Add a read for fx 64 if operators ask.
+- [OPEN] 2026-09-08 **[LOW] Config windows: an F5 mid-write leaves the port's
+  pollers released.** The daemon finishes the write under the lease, but the reload
+  drops `configPortReleased`, so MPLC4/bridge stay stopped until the next
+  open/close of any config window (pre-existing class for every kind; noted in plan
+  led-window-1.0.6.40 §3).
+- [OPEN] 2026-09-08 **[LOW] `.flasher-config-form input { width: 100% }` stretches
+  checkbox/radio boxes.** Seen on the LED window's first render (label text pushed
+  off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
+  `.checkbox-line` rows sit under the same rule — check their screenshots.
 - [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
   (`--accent` ×3 at 1904/1905/4700, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
   `--text-muted` ×5) and silently inherit today — a monospace font that is not
@@ -72,7 +92,9 @@ worklist collapsed into one home).
   Batch journal writes (timer / N records) and keep `runs` in a separate small file —
   design change, measure first.
 
-- [OPEN] 2026-09-04 **[LOW] L4 flasher tape UI waits for hardware.** Backend
+- [RESOLVED 2026-09-08] 1.0.6.40: window wired (`static/js/flasher/led.js`, seam in
+  `flasher.js`); bench 1.135 COM3 19200 addr 13 is the acceptance target (plan §7).
+  **[LOW] L4 flasher tape UI waits for hardware.** Backend
   (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3
   are ready; frontend tabs are not wired, and `scanner.py` still returns false
   for `RGBW_WS2812` («окно ещё нет»). Bench has no type-120 on any COM. Do not

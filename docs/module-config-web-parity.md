@@ -2,6 +2,9 @@
 
 Эталон: desktop `MR-02m-flasher` (`module_config_window.py`, `module_profiles.py`, `docs/module-config-poll-write-tz.md`). Рабочая реализация: `www/network_config/static/js/flasher.js`, `device_config.py`, `module_profiles.py`, `service.py`.
 
+Окно ленты (kind `led`, 1.0.6.40) — паритет с десктопом описан в
+`docs/contracts/led-mb2ws.md` §3 «Окно фронтенда», не здесь.
+
 ## Sidebar order (MR)
 
 | # | Tab id   | Условие показа                         | Live-подпись (web)        |

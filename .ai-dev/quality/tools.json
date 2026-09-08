@@ -819,6 +819,15 @@
       "beat": "build",
       "covers": ["opt/sa02m-flasher/sa02m_flasher/device_config.py", "opt/sa02m-flasher/sa02m_flasher/bus_mode.py", "opt/sa02m-flasher/sa02m_flasher/service.py", "docs/contracts/web-bus-mode-bacnet.md", ".ai-dev/quality/checks/web-bus-mode-bacnet.sh"],
       "init": "bash + python3 + pyserial (the flasher package imports it) — same posture as py-unit-flasher"
+    },
+    {
+      "id": "js-unit-led-window",
+      "checks": "The LED strip (RGBW_WS2812, type 120) config window — static/js/flasher/led.js plus its seam in flasher.js — driven against a Map-backed DOM filled from the rendered markup, with the daemon's homes PARSED rather than re-typed. (1) deviceConfigKindFromSignature answers 'led' for every token of led_mb2ws_map.LED_SIGNATURE_ALIASES and for a prefix of the two long ones only — a 3-char LED prefix would steal the Wiren Board «ledGe»; Carel/MR/DTV/CE unchanged. (2) The tab ids EQUAL led_poll.LED_TABS (the daemon gates the 453/494/516/640 reads on those names), there is no EXFX tab, the scene tab's suffix is the play state, and a `panel` poll of the scene tab sends an EMPTY active_tab (base block only). (3) LED_ACTIONS equals device_config.LED_ACTIONS, every ledCommand('…') literal is in it and every action is reachable, and each collector (scene / strip / spy / text / weather / clock) emits exactly the contract's field names (led-mb2ws.md §3); ledCommand posts once to /device_config/led_write, bumps the poll generation, applies the reply, routes an error to the banner + toast and releases the busy flag either way. (4) Markup ⇄ patch per tab, and hide-don't-grey: cards by scene.visibility (fx 0/3/51/62/63/64/81, flash, pool), PWM channels by mode_visible, the channel-2 block by the line mode, an unlisted geometry shown as read, Scale never; a silent strip or an old daemon renders NO input. (5) The 1 s poll never overwrites a focused or dirty (dataset.ledDirty) field; a sentinel renders blank, never 0; only a changed skeleton rebuilds (renderKey). (6) A reply without the expensive blocks keeps the previous ones; an old daemon is named once. (7) i18n both ways: every Cyrillic LED_T label, authored literal, rendered text node and tab label has an i18n.js DICT row (the half i18n-dict-contract cannot see — this file uses neither uiT() nor markup), and every \"rgbw_…\" key the daemon can emit (led_mb2ws_map.py, led_mb2ws.py, led_poll.py; %02d/%d expanded) has a LED_T label. Non-vacuous: a missing source, fewer than 150 swept strings, fewer than 200 daemon keys, or a DICT under 500 keys FAILS.",
+      "config": null,
+      "run": "node scripts/dev/test-led-window.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/flasher/led.js", "www/network_config/static/js/flasher.js", "www/network_config/static/js/i18n.js", "opt/sa02m-flasher/sa02m_flasher/led_poll.py", "opt/sa02m-flasher/sa02m_flasher/device_config.py", "opt/sa02m-led/sa02m_led/led_mb2ws_map.py", "opt/sa02m-led/sa02m_led/led_mb2ws.py", "scripts/dev/test-led-window.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit rows."
     }
   ]
 }
