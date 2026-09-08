@@ -119,6 +119,27 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_seed_table(conn: sqlite3.Connection, path: Path | None, table: str) -> None:
+    """Make sure the history table a detector seeds from exists — WITHOUT a
+    second open on the steady state.
+
+    Both detectors run on every 1 Hz logger tick and used to call
+    `history_db.ensure_schema(path)` unconditionally — a full extra connect +
+    DDL + PK-migration probe per tick on top of their own `_connect()` (ship
+    review 1.0.6.39, advisory). One `sqlite_master` query on the connection we
+    already hold answers the question; `ensure_schema()` runs only when the
+    table is really absent (a brand-new file, a rotation, a direct call before
+    any sample landed), which keeps the fresh-file behaviour intact.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    if row is None:
+        from sa02m_devices.device_history_db import ensure_schema
+
+        ensure_schema(path)
+
+
 def _day_start_ts(now: float | None = None) -> float:
     t = float(now if now is not None else time.time())
     local = datetime.fromtimestamp(t, tz=_TZ)
@@ -259,10 +280,7 @@ def detect_ce_events(
     created: list[dict[str, Any]] = []
     conn = _connect(path)
     try:
-        # Нужна таблица ce_samples (создаётся history_db)
-        from sa02m_devices.device_history_db import ensure_schema
-
-        ensure_schema(path)
+        _ensure_seed_table(conn, path, "ce_samples")
         with conn:
             for ce in ce_list:
                 did = str(ce.get("id") or "").strip()
@@ -426,13 +444,11 @@ def detect_carel_events(
     if not carel_list:
         return []
 
-    from sa02m_devices.device_history_db import ensure_schema
-
-    ensure_schema(path)  # carel_samples must exist for the seed read
     key_path = str(db_path(path))
     created: list[dict[str, Any]] = []
     conn = _connect(path)
     try:
+        _ensure_seed_table(conn, path, "carel_samples")  # the seed read needs it
         with conn:
             for dev in carel_list:
                 did = str(dev.get("id") or "").strip()
