@@ -101,6 +101,16 @@ protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
   (`docs/decisions/es-modules.md` П2).
   `python3 scripts/sync-app-version.py` syncs all from the branch name;
   `--check` is the gate (quality row `version-consistency`).
+- **`&r=<token>` — the second, intra-release cache-bust** on the same
+  `index.html`/`login.html` asset URLs (`…?v=1.0.6.38&r=shpick1`). `?v=` changes
+  once per release; `&r=` is bumped by hand for EVERY served asset a change
+  touches (JS, CSS, SVG) so a board that already runs this `?v=` still refetches
+  the new bundle — it is the only bust for a change that ships without a
+  version bump, and a forgotten one ships a stale bundle against a new backend.
+  The token is any short slug (a change tag + digit, e.g. `updgate1`); the
+  syncer rewrites only the `?v=` group and leaves `&r=` intact. No gate checks
+  `&r=` yet (audit 2026-09-08 C11 — a changed served asset must carry a changed
+  `?v=`+`&r=` pair vs the previous release; backlog).
 - `CHANGELOG.md` gets a `## <version> - <summary> (<month>)` section per
   release branch, Russian, grouped by subsystem.
 - Devices self-update via «Обновление веб» (semver compare, `web_update_*.cgi`)
