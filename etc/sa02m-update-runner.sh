@@ -12,7 +12,6 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-UPDATER_VERSION="${SA02M_UPDATER_VERSION:-1.0.5.66}"
 STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 LOCKFILE="$STATEDIR/update.lock"
 TXN_FILE="$STATEDIR/transaction.json"
@@ -23,6 +22,30 @@ VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
 LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 RUNTIME_WDT_RESTORE="${SA02M_RUNTIME_WATCHDOG_SEC:-15s}"
+
+# UPDATER_VERSION — what this runner reports against a package's min_updater.
+# DERIVED from the deployed VERSION file, never stamped: the runner ships in the
+# same overlay as www/network_config/VERSION (install.sh, OTA and the offline
+# pack all deploy both), so that file names the release this runner came from.
+# The literal it replaces was a 1.0.5.66 stamp every board reported forever,
+# which made the packer's MIN_UPDATER unraisable (a bump would have E_COMPAT-
+# rejected every pack) and the services tier decorative (audit 2026-09-08, D2).
+# Read once at start: apply deploys the new VERSION later, but the process
+# running the compat gate is still the OLD runner, so the value is right.
+# Fallback = the floor the first runner ever reported; a board with no VERSION
+# file is a broken install, not an old one. Known over-report:
+# scripts/update-www-only.sh refreshes VERSION without the runner, so such a
+# board claims the www version (docs/deployment.md names it). The env override
+# stays for harnesses and the bench.
+UPDATER_VERSION_FALLBACK=1.0.5.66
+derive_updater_version() {
+    local v=""
+    if [ -f "$VERSION_FILE" ]; then
+        v=$(tr -d '\r' <"$VERSION_FILE" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    fi
+    printf '%s\n' "${v:-$UPDATER_VERSION_FALLBACK}"
+}
+UPDATER_VERSION="${SA02M_UPDATER_VERSION:-$(derive_updater_version)}"
 
 # Runner-owned preserve list (not in signed manifest) — plan §2.4.
 # shellcheck disable=SC2034
@@ -1130,10 +1153,74 @@ PY
             rm -rf "$tmp"
         fi
     fi
+    restart_after_rollback "$txn" || true
     txn_patch "stage=rolled_back" "result=rolled_back" "error_code=E_APPLY" \
         "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
     log "rollback complete"
+}
+
+# After the files are restored, the units restart_services_and_health bounced
+# are still running the NEW code from memory over the OLD files on disk — an
+# E_HEALTH rollback used to leave them that way until reboot (audit 2026-09-08,
+# D9; the bounced set since 1.0.6.37 is 8 units, not 4). Same discipline as the
+# apply path minus the health gate: daemon-reload, restart[] unconditionally
+# (nginx via -t + reload, as on apply), restart_if_active[] and
+# restart_if_changed{} only when active (never-widen — a rollback must not start
+# a unit the operator keeps off), the change gate read from the same journal the
+# restore just replayed (absent ⇒ changed). Every step is soft: a rollback that
+# restored the files never fails on a restart. No manifest (recover after a lost
+# staging) ⇒ logged, nothing bounced — the operator reboots.
+restart_after_rollback() {
+    local txn=$1 mf u prefix
+    mf=$(manifest_path "$txn" 2>/dev/null) || mf=""
+    if [ -z "$mf" ] || [ ! -f "$mf" ]; then
+        log "rollback: no manifest for txn=$txn — units NOT restarted (reboot to drop in-memory code)"
+        return 0
+    fi
+    log "rollback: daemon-reload + restart sets on the restored tree..."
+    _systemctl_bounded 60 daemon-reload || true
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        case "$u" in
+            nginx|nginx.service)
+                if nginx -t 2>/dev/null; then
+                    _systemctl_bounded 30 reload nginx || _systemctl_bounded 45 restart nginx || true
+                else
+                    log "rollback: nginx -t failed on the restored config"
+                fi
+                continue
+                ;;
+        esac
+        _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
+        log "restarted after rollback: $u"
+    done < <(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
+    print(u)
+' "$mf" 2>/dev/null || true)
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        if systemctl is-active --quiet "$u"; then
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after rollback (if-active): $u"
+        fi
+    done < <(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
+    print(u)
+' "$mf" 2>/dev/null || true)
+    while IFS=$'\t' read -r u prefix; do
+        [ -n "$u" ] && [ -n "${prefix:-}" ] || continue
+        _journal_has_dst_prefix "$txn" "$prefix" || continue
+        if systemctl is-active --quiet "$u"; then
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after rollback (changed, if-active): $u"
+        fi
+    done < <(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
+for u,p in m.items():
+    print(u+"\t"+p)
+' "$mf" 2>/dev/null || true)
+    return 0
 }
 
 # systemctl restart can block indefinitely when stop waits on busy CGI children

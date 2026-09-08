@@ -105,6 +105,43 @@ consumer: `-q`, `-l`, `-m N`, `head`) under `set -o pipefail`. Capture first,
 then match in-shell (a `case "$text" in *"$needle"*)` substring test needs no
 subprocess at all). The gate's `stripped_has` helper is the fixed form.
 
+## A row that runs everywhere but reads CRLF into a unit name — Windows CPython pipes
+
+Same class as the `sed | grep -q` row above: runs on both machines, opposite
+verdict. `update-conditional-restart` was **RED on this Windows box and GREEN on
+WSL** (audit 2026-09-08, D4) on the same bytes. The shipped runner feeds its
+service loops from `python3 -c 'print(u)'` through a process substitution;
+Windows CPython (`3.14 [MSC]`) writes text-mode stdout as **CRLF**, so
+`while IFS= read -r u` keeps a trailing `\r` in the unit name and
+`IFS=$'\t' read -r u prefix` puts it on the prefix. The harness's systemctl shim
+then answered `is-active` with `grep -qxF "$unit\r"` against a file of LF names
+(never a match → restart skipped) and the journal gate's `startswith("/opt/…/\r")`
+was always False. Not a runner defect — on the board (Linux CPython) the output
+is LF. A false comfort hid the cause: MSYS grep strips CR from *input lines* but
+not from the *pattern*, so `called "restart …"` still matched and the failure
+read as "loop missing".
+
+**Rule:** a harness that consumes the output of a shipped `python3 -c …` (or any
+text-mode producer) normalises CRLF at ITS read sites, never in the shipped
+code — a `python3` PATH shim (`| tr -d '\r'`, exit status via `PIPESTATUS`) for
+producer-side normalisation, and `${a%$'\r'}` on every argv word in a recording
+shim. The fixed form is in `scripts/dev/test-update-conditional-restart.sh`
+(header + the two shims). Where a Windows RED cannot be explained, run the row
+under WSL first: a Linux GREEN on the same bytes points at this class.
+
+**Sibling trap in the same harness — MSYS argv path conversion.** The CR fix
+alone left the `restart_if_changed` case RED: git-bash rewrites any argument
+that looks like a POSIX path when it spawns a NATIVE executable, so the change
+gate's `/opt/sa02m-modbus-mqtt/` prefix reached `python.exe` as
+`C:/Program Files/Git/opt/sa02m-modbus-mqtt/` and `startswith()` was always
+False (proven: `MSYS_NO_PATHCONV=1 python3 -c 'print(sys.argv[1])' /opt/x/`
+prints `/opt/x/`; without the variable, `C:/Program Files/Git/opt/x/`). Fix
+shape: `export MSYS_NO_PATHCONV=1` in the harness, and — because that also
+stops the conversion python needs for real files — every sandbox path python
+opens is handed over in mixed form (`cygpath -m`), while `PATH` keeps the MSYS
+form (a `C:/` PATH entry is not searched). Any harness that passes a literal
+absolute POSIX prefix to a shipped python snippet is exposed to this class.
+
 ## The general rule
 
 A local substitute for a skipping row is **evidence, not proof**. Say which

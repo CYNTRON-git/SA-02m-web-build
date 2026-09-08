@@ -6,7 +6,12 @@ set -euo pipefail
 
 STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 PACKAGE="${1:-$STATEDIR/incoming/package.sa02m}"
-UPDATER_VERSION="${SA02M_UPDATER_VERSION:-1.0.5.66}"
+# The runner version this board reports is the release it came from - the
+# same derivation as sa02m-update-runner.sh (one rule in two files: the
+# runner is set -e apply-time code, this script is read-only). Assigned
+# below, once `installed` is known. Fallback = the floor the first runner
+# ever reported (audit 2026-09-08, D2).
+UPDATER_VERSION_FALLBACK=1.0.5.66
 VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.py}"
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
 
@@ -25,6 +30,7 @@ installed=""
 if [ -f "$VERSION_FILE" ]; then
     installed=$(tr -d '\r' <"$VERSION_FILE" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
 fi
+UPDATER_VERSION="${SA02M_UPDATER_VERSION:-${installed:-$UPDATER_VERSION_FALLBACK}}"
 
 if [ -f "$VALIDATE_PY" ]; then
     PACKAGE="$PACKAGE" INSTALLED="${installed:-}" UPDATER="$UPDATER_VERSION" \
