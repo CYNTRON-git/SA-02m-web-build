@@ -169,6 +169,15 @@ legacy-кадры `configure_events` совпадают по длине и ра�
 неотличимость двух форм при `COUNT == 1` пинит
 `test_count_one_differs_only_in_the_type_byte`.
 
+## Проверка контракта
+
+`opt/sa02m-modbus-mqtt/tests/test_fmb_event_parsers.py` и `test_fmb_wire_wb.py`
+(в том числе `test_configured_ranges_never_yield_count_one`,
+`test_count_one_differs_only_in_the_type_byte`) — под строкой реестра `py-unit`,
+которая с 1.0.6.40 перечисляет этот файл в `covers`. Честный предел (аудит
+2026-09-08 F17): сторона прошивки отсюда не проверяема (см. выше) — сходимость
+двух грамматик с живым модулем подтверждает только стенд.
+
 ## 5. Что контракт не меняет
 
 Всё правее `_dispatch` — топики MQTT, имена контролов, форматы и единицы
