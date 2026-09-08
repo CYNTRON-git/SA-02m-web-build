@@ -8,6 +8,15 @@ worklist collapsed into one home).
 
 ## Open
 
+- [RESOLVED] 2026-09-08 (1.0.6.39, audit E3) **`device_history_migrate` promote roster named
+  `dtv_samples`/`ce_samples` only** — `mr_samples`, `carel_samples` and `device_events` were
+  dropped on every eMMC→USB/SD promote (the Carel plan's D1, skipped in 1.0.6.35). One
+  `HISTORY_TABLES` roster for `_db_has_rows()` + `merge_db_into()`;
+  `tests/test_device_history_migrate.py`.
+- [OPEN] 2026-09-08 **[LOW] Carel chart labels have no i18n DICT entries** (Приток, Обратка,
+  …, Авария, Тревог, Состояние, Установка вкл.) — server-side labels from
+  `CAREL_METRIC_META` render Russian in the EN UI (pre-existing for the 9 metrics, widened
+  by the 4 state metrics of 1.0.6.39). Home: `opt/sa02m-devices` labels → DICT or `uiT()`.
 - [OPEN] 2026-09-08 **[MED] Six contracts have no validating registry row** (audit F17):
   `module-config-ai.md`, `template-device.md`, `web-bus-mode-bacnet.md` (a web surface
   that writes register 122 and drives BACnet MS/TP — gated by syntax rows only),

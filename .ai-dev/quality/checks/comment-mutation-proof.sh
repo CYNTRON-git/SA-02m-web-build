@@ -122,6 +122,7 @@ mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pu
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
+no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
 rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
 web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check
