@@ -216,27 +216,29 @@ function cloudCtrlErrorText(token) {
   return ru ? uiT(ru) : String(token);
 }
 
-// Control-unit notices used to share the card with pairing via #cloud-ctrl-msg.
-// Same viewport toast as pairing so neither line grows .ctrl-card.
-let _cloudCtrlLastPollNotice = '';
+// Control-unit notices, by lifetime: ACTION feedback («Сохранено», a toggle
+// error) is a viewport toast like pairing's, so it never grows .ctrl-card; the
+// STANDING explanation of a locked or failed control — «Сначала привяжите
+// устройство к облаку», the error-state line — is owned by cloudRenderControl
+// and lives on the card in #cloud-ctrl-msg for as long as the state does
+// (1.0.6.38 regression, audit C2: a once-per-session toast left a locked
+// button whose only explanation was a hover-only title). Its own line, never
+// the card's #cloud-msg: the pairing actions own that one.
+// The standing card line. `ok` true/false tints it, null is a neutral hint.
+function cloudCtrlSetCardMsg(text, ok) {
+  const msg = $('cloud-ctrl-msg');
+  if (!msg) return;
+  if (!text) { cloudHideCardMsg('cloud-ctrl-msg'); return; }
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'cloud-msg' + (ok === null ? '' : (ok ? ' is-ok' : ' is-err'));
+}
 
-function cloudCtrlNotice(text, ok) {
-  cloudHideCardMsg('cloud-ctrl-msg');
+// Action feedback for the control — viewport toast.
+function cloudCtrlSetMsg(text, ok) {
   if (!text) return;
   if (typeof cardNotice === 'function') cardNotice(text, ok);
   else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
-}
-
-function cloudCtrlPollNoticeOnce(text, ok) {
-  const key = String(ok) + '\0' + String(text || '');
-  if (key === _cloudCtrlLastPollNotice) return;
-  _cloudCtrlLastPollNotice = key;
-  cloudCtrlNotice(text, ok);
-}
-
-function cloudCtrlSetMsg(text, ok) {
-  _cloudCtrlLastPollNotice = '';
-  cloudCtrlNotice(text, ok);
 }
 
 function cloudRenderControl(d) {
@@ -265,13 +267,13 @@ function cloudRenderControl(d) {
     btn.disabled = notEnrolled && !enabled;
     btn.title = notEnrolled ? uiT('Сначала привяжите устройство к облаку') : '';
   }
-  cloudHideCardMsg('cloud-ctrl-msg');
+  // Standing explanations on the card; the render owns the line each poll.
   if (notEnrolled && !enabled) {
-    cloudCtrlPollNoticeOnce(uiT('Сначала привяжите устройство к облаку'), null);
+    cloudCtrlSetCardMsg(uiT('Сначала привяжите устройство к облаку'), null);
   } else if (enabled && entry[1] === 'err' && cc.error) {
-    cloudCtrlPollNoticeOnce(uiT(entry[0]) + ': ' + cloudCtrlErrorText(cc.error), false);
+    cloudCtrlSetCardMsg(uiT(entry[0]) + ': ' + cloudCtrlErrorText(cc.error), false);
   } else {
-    _cloudCtrlLastPollNotice = '';
+    cloudCtrlSetCardMsg('', true);
   }
 }
 

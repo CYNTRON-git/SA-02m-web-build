@@ -17,21 +17,34 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
-// Ephemeral action/gateway notices go to the viewport toast (cardNotice, 5 s)
-// so #alice-msg never unhides and .ctrl-card height stays put. Standing errors
-// from the poll toast once (same text is not repeated every 5 s).
+// Two channels, by lifetime. ACTION feedback («Сохранено», a pairing error, a
+// gateway request failure) is ephemeral → the viewport toast (cardNotice, 5 s),
+// so it never grows .ctrl-card. A STANDING state explanation — the «Причина»
+// line of a stood-down board, the friendly gateway/client status — is owned by
+// aliceRender and lives ON the card (#alice-msg) for as long as the state does:
+// a toast shows it once and then never again (1.0.6.38 regression, audit C1;
+// the card line is what docs/contracts/alice-mqtt-mapping.md and
+// cloud-card-smoke read). The toast path therefore never touches #alice-msg.
 let _aliceLastPollNotice = '';
 
-function aliceHideCardMsg() {
+// The standing card line. `ok` true/false tints it, null is a neutral hint.
+function aliceSetCardMsg(text, ok) {
   const msg = $('alice-msg');
   if (!msg) return;
-  msg.hidden = true;
-  msg.textContent = '';
-  msg.className = 'cloud-msg';
+  if (!text) {
+    msg.hidden = true;
+    msg.textContent = '';
+    msg.className = 'cloud-msg';
+    return;
+  }
+  msg.hidden = false;
+  msg.textContent = text;
+  msg.className = 'cloud-msg' + (ok === null ? '' : (ok ? ' is-ok' : ' is-err'));
 }
 
+function aliceHideCardMsg() { aliceSetCardMsg('', true); }
+
 function aliceNotice(text, ok) {
-  aliceHideCardMsg();
   if (!text) return;
   if (typeof cardNotice === 'function') cardNotice(text, ok);
   else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
@@ -306,22 +319,31 @@ function aliceRender(d) {
     count.textContent = String(k);
   }
 
-  // Standing poll feedback used to land in #alice-msg and grow the card.
-  // Badges (Клиент/Шлюз/Соединение) stay; ephemeral copy is a 5 s viewport
-  // toast, once per distinct text. The reopen link sits in the status row.
-  aliceHideCardMsg();
+  // The card line is the render's: a STANDING explanation stays on the card for
+  // as long as the state does (contract §state, cloud-card-smoke), never a
+  // once-per-session toast. The «Причина» line for the two stand-down states
+  // is checked BEFORE the generic error branch, which would otherwise replace
+  // the explanation with a bare «Ошибка отвязки» (or «Шлюз недоступен» on a
+  // board that is unlinked AND offline) and leave the operator no reason at
+  // all. Unlike the «Облако» card it carries no timestamp: the Alice status
+  // file's `unlinked_at` is the durable marker's, and formatting it would
+  // duplicate cloud.js's relative-time helper across bundles. The friendly
+  // status is the raw-exception-free label only (Operator rule, 1.0.5.73).
+  // The reopen link sits in the status row (#alice-reg-link).
   if (ALICE_STAND_DOWN_STATES.indexOf(st) !== -1) {
     const raw = (d.status && d.status.reason) || '';
     const why = ALICE_REASON_MAP[raw] || ALICE_REASON_MAP[st] || '';
     aliceSetRegLink(null);
-    alicePollNoticeOnce(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
+    aliceSetCardMsg(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
   } else if (friendly.kind === 'err') {
     aliceSetRegLink(null);
-    alicePollNoticeOnce(uiT(friendly.text), false);
+    aliceSetCardMsg(uiT(friendly.text), false);
   } else if (enabled && pending && aliceRegUrl) {
     aliceSetRegLink(aliceRegUrl, uiT('Открыть ссылку привязки'));
+    aliceHideCardMsg();
   } else {
     aliceSetRegLink(null);
+    aliceHideCardMsg();
     if (!enabled) _aliceLastPollNotice = '';
   }
 
