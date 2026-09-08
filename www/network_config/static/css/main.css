@@ -4017,6 +4017,125 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   margin-top: 10px;
 }
 
+/* LED strip window (flasher/led.js, 1.0.6.40). Layout only — every colour is an
+   existing token, so no new contrast pair and nothing theme-specific: the range
+   and colour inputs take the form's tokens, the badge words reuse .badge-*.
+   .cfg-led-pair is the label+field pair of the config-form grid; `display:
+   contents` keeps the grid columns, and the [hidden] rule is needed because an
+   author `display` would otherwise override the UA's hidden⇒none (the line
+   selector reveals/hides pairs without a re-render). */
+.cfg-led-pair { display: contents; }
+.cfg-led-pair[hidden] { display: none; }
+.cfg-led-pair--full { grid-column: 1 / -1; display: block; }
+.cfg-led-pair--full[hidden] { display: none; }
+.cfg-led-pair--full .flasher-config-note { margin-top: 0; }
+.cfg-led-group-label {
+  display: block;
+  color: var(--text-sec);
+  font-size: .8rem;
+  margin-bottom: 6px;
+}
+.cfg-led-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.cfg-led-inline input[type="number"] { flex: 1 1 64px; min-width: 64px; }
+.cfg-led-inline-label { color: var(--text-sec); font-size: .78rem; white-space: nowrap; }
+.cfg-led-count { color: var(--text-sec); font-size: .78rem; white-space: nowrap; }
+.cfg-led-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}
+/* Checkbox / radio labels of the window. The form's `input { width: 100% }`
+   would stretch the box itself across the row (the label text then lands off
+   the card), so the box is pinned to its intrinsic size at a higher specificity. */
+.cfg-led-check,
+.cfg-led-radios label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: .85rem;
+  white-space: nowrap;
+}
+.cfg-led-inline .cfg-led-check { flex: 0 0 auto; }
+.flasher-config-form .cfg-led-check input,
+.flasher-config-form .cfg-led-radios input,
+.flasher-config-form .cfg-led-inline .cfg-led-check input {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--cyan);
+}
+.cfg-led-range { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.flasher-config-form .cfg-led-range input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--cyan);
+}
+.cfg-led-range output {
+  min-width: 3ch;
+  text-align: right;
+  color: var(--text);
+  font-size: .85rem;
+  font-variant-numeric: tabular-nums;
+}
+.flasher-config-form input[type="color"] {
+  width: 64px;
+  height: 34px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+.cfg-led-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.cfg-led-subhead {
+  color: var(--text-sec);
+  font-size: .78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin: 12px 0 8px;
+}
+.cfg-led-hints div { margin-top: 4px; }
+/* The spy slots table is wider than a phone: it scrolls sideways inside its
+   card instead of pushing the dialog past the viewport. */
+.flasher-config-scroll-x { overflow-x: auto; max-width: 100%; }
+.cfg-led-table {
+  border-collapse: collapse;
+  min-width: 640px;
+  font-size: .8rem;
+}
+.cfg-led-table--binds { min-width: 360px; }
+.cfg-led-table th, .cfg-led-table td {
+  padding: 4px 6px;
+  text-align: left;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.cfg-led-table th { color: var(--text-sec); font-weight: 600; }
+.cfg-led-table input, .cfg-led-table select {
+  width: 100%;
+  min-width: 64px;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border-md);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
 .form-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
 .form-row label { font-size: .78rem; color: var(--text-sec); }
 .checkbox-line { display: flex; align-items: flex-start; gap: 6px; color: var(--text); }

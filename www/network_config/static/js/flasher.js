@@ -1452,6 +1452,9 @@
     // функцию 17, а не из holding 290, и ни одна из них не должна попасть в
     // ветку модуля расширения (иначе строке предложат прошивку МР-02м).
     if (signatureLooksLikeCarel(n)) return 'carel';
+    // Лента — тоже до подсказок MP/MR: её сигнатура не проходит батч-прошивочный
+    // отбор, и без этой ветки строка не открывалась бы двойным кликом.
+    if (signatureLooksLikeLed(n)) return 'led';
     if (n.includes('SENSOR') || n.startsWith('SENS.') || n === 'SENS' || n.startsWith('SENS')) return 'dtv';
     if (n.includes('CE02M3') || n.includes('CE-02M-3') || n.includes('CE-02M3')) return 'ce';
     if (isMpModuleSignatureForFirmwareHint(raw)) return 'mr';
@@ -1466,6 +1469,7 @@
     if (kind === 'dtv') return 'Датчик Sens / DTV-RS-485';
     if (kind === 'ce') return 'Анализатор сети CE-02м-3';
     if (kind === 'carel') return 'Приточная установка Carel';
+    if (kind === 'led') return ledWindow().title();
     return String(sig || '').trim() || 'Модуль MR/MP-02м';
   }
 
@@ -1553,6 +1557,7 @@
       stub.network.writable = false;
       stub.carel = {};
     }
+    if (kind === 'led') stub.led = {};
     if (kind === 'mr') {
       const caps = capsFromSignature(sig) || [0, 0, 0, 0];
       stub.mr = {
@@ -2587,6 +2592,7 @@
 
   function patchConfigLiveReadouts(snap) {
     if (snap && snap.kind === 'carel') return patchCarelLiveReadouts(snap);
+    if (snap && snap.kind === 'led') return ledWindow().patch(snap);
     if (!snap || snap.kind !== 'mr') return;
     const mr = snap.mr || {};
     const mcu = mr.mcu || {};
@@ -2685,6 +2691,7 @@
 
   function configTabsForSnapshot(snap) {
     if (!snap) return [];
+    if (snap.kind === 'led') return ledWindow().tabs(snap);
     if (snap.kind === 'carel') {
       const alarms = ((snap.carel || {}).alarms || []).length;
       return [
@@ -3558,6 +3565,63 @@
     return Object.assign({}, snap, { carel: carel });
   }
 
+  /* ── Светодиодная лента LED (RGBW_WS2812, тип 120) ───────────────────────
+     Окно живёт в static/js/flasher/led.js (план led-window-1.0.6.40, F1): здесь
+     только шов — опознание строки, заголовки и маршрутизация вкладок/тела/
+     живых значений/событий в модуль через инжектированный host. */
+
+  /** Алиасы сигнатуры — зеркало sa02m_led.led_mb2ws_map.LED_SIGNATURE_ALIASES /
+      LED_SIGNATURE_PREFIXES (тест окна читает их из карты). «LED» и «RGBW» —
+      только точное совпадение: трёхбуквенный префикс LED крадёт сигнатуру
+      Wiren Board «ledGe» (урок зафиксирован в карте). */
+  const LED_SIGNATURE_ALIASES = ['RGBW_WS2812', 'RGBWWS2812', 'RGBW', 'LED'];
+  const LED_SIGNATURE_PREFIXES = ['RGBW_WS2812', 'RGBWWS2812'];
+
+  /** `n` — уже нормализованная сигнатура (без суффикса загрузчика, верхний регистр). */
+  function signatureLooksLikeLed(n) {
+    if (!n) return false;
+    if (LED_SIGNATURE_ALIASES.indexOf(n) >= 0) return true;
+    return LED_SIGNATURE_PREFIXES.some(function (p) { return n.startsWith(p); });
+  }
+
+  let _ledWindow = null;
+  /** Ленивая сборка модуля окна ленты: host — всё, что модулю нужно от модалки,
+      без обращений к window.* из него. */
+  function ledWindow() {
+    if (!_ledWindow) {
+      if (!window.sa02mLedWindow) throw new Error('flasher/led.js не загружен');
+      _ledWindow = window.sa02mLedWindow.create({
+        escapeHtml: escapeHtml,
+        t: t,
+        toast: toast,
+        configModalEl: configModalEl,
+        configApi: configApi,
+        getState: function () { return state; },
+        applyConfigSnapshot: applyConfigSnapshot,
+        setConfigBusy: setConfigBusy,
+        setConfigBanner: setConfigBanner,
+        clampInt: clampInt,
+        currentConfigDevice: currentConfigDevice,
+        currentPort: function () { return $('flasher-port').value; },
+        // Команда ленты поднимает поколение опроса: ответ уже летящего опроса
+        // не перерисует старое состояние поверх снимка, пришедшего с записью.
+        invalidatePolls: function () { ++_configPollSeq; },
+        activeElement: function () { return document.activeElement; },
+        refreshSnapshot: function () { return refreshConfigSnapshot(false, 'full'); },
+      });
+    }
+    return _ledWindow;
+  }
+
+  /** Тег вкладки для опроса. У ленты фоновый `panel`-такт вкладки «Сцена» идёт с
+      пустым active_tab — базовый блок 400×20 без дорогих 453/494/516/640
+      (план §8, F6); остальные виды шлют вкладку как есть. */
+  function configPollActiveTab(detail) {
+    const tab = state.configTab || '';
+    if (state.configSnapshot && state.configSnapshot.kind === 'led') return ledWindow().pollTab(tab, detail);
+    return tab;
+  }
+
   function renderCarelInfoTab(snap) {
     const info = snap.info || {};
     const line = info.line || {};
@@ -3988,6 +4052,7 @@
     let html = '';
     if (snap.kind === 'carel') html = renderCarelTab(snap);
     else if (state.configTab === 'network') html = renderNetworkTab(snap);
+    else if (snap.kind === 'led' && /^led_/.test(state.configTab)) html = ledWindow().render(snap, state.configTab);
     else if (state.configTab === 'relay' && snap.kind === 'mr') html = renderModuleRelayTab(snap);
     else if (snap.kind === 'mr' && /^do_\d+$/.test(state.configTab)) html = renderModuleDoTab(snap, parseInt(state.configTab.split('_')[1], 10));
     else if (snap.kind === 'mr' && /^di_\d+$/.test(state.configTab)) html = renderModuleDiTab(snap, parseInt(state.configTab.split('_')[1], 10));
@@ -4008,6 +4073,7 @@
      обновляются на месте. Иначе innerHTML раз в секунду сбрасывал бы прокрутку
      таблиц входов/выходов и ввод оператора. */
   function configBodyRenderKey(snap) {
+    if (snap && snap.kind === 'led') return ledWindow().renderKey(snap, state.configTab);
     if (!snap || snap.kind !== 'carel') return '';
     const c = carelBlock(snap);
     const counts = CAREL_IO_KEYS.concat(['alarms'])
@@ -4017,7 +4083,7 @@
   }
 
   function configBodyIsPatchable(snap) {
-    if (!snap || snap.kind !== 'carel' || !state.configBodyKey) return false;
+    if (!snap || (snap.kind !== 'carel' && snap.kind !== 'led') || !state.configBodyKey) return false;
     const host = configModalEl('flasher-config-body');
     if (!host || !host.firstChild) return false;
     return state.configBodyKey === configBodyRenderKey(snap);
@@ -4072,6 +4138,7 @@
       merged = mergeDeviceConfigSnapshot(state.configSnapshot, snap);
     }
     if (merged && merged.kind === 'carel') merged = mergeCarelSnapshot(state.configSnapshot, merged);
+    if (merged && merged.kind === 'led') merged = ledWindow().merge(state.configSnapshot, merged);
     if (merged && merged.mr) aiSensorReconcilePending(merged.mr);
     state.configSnapshot = merged;
     configDeviceFromSnapshot(merged);
@@ -4080,7 +4147,7 @@
     const sub = configModalEl('flasher-config-sub');
     const kicker = configModalEl('flasher-config-kicker');
     if (title) title.textContent = deviceConfigTitle(merged.kind, merged.info && merged.info.signature);
-    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : merged.kind === 'carel' ? 'Настройка приточной установки' : 'Настройка модуля расширения';
+    if (kicker) kicker.textContent = merged.kind === 'dtv' ? 'Настройка датчика' : merged.kind === 'ce' ? 'Настройка анализатора сети' : merged.kind === 'carel' ? 'Настройка приточной установки' : merged.kind === 'led' ? ledWindow().kicker() : 'Настройка модуля расширения';
     if (sub) {
       const info = merged.info || {};
       const line = `${info.address ?? '—'} адр. · ${(merged.network && merged.network.baudrate) || '—'} ${(merged.network && merged.network.parity) || 'N'}${(merged.network && merged.network.stopbits) || 1}`;
@@ -4116,7 +4183,7 @@
         port,
         device: dev,
         snapshot_detail: detail || 'full',
-        active_tab: state.configTab || '',
+        active_tab: configPollActiveTab(detail || 'full'),
       });
       if (mySeq !== _configPollSeq) return;
       applyConfigSnapshot(snap, !!silent);
@@ -4966,6 +5033,7 @@
     const body = configModalEl('flasher-config-body');
     if (!body) return;
     wireCarelBodyEvents(body);
+    if (state.configSnapshot && state.configSnapshot.kind === 'led') ledWindow().wire(body);
     const saveNet = body.querySelector('#cfg-net-save-btn');
     if (saveNet) saveNet.addEventListener('click', saveConfigNetwork);
     const refreshNet = body.querySelector('#cfg-net-refresh-btn');
