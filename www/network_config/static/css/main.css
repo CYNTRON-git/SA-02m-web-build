@@ -19,6 +19,10 @@
   --border:      #38383a;
   --border-md:   #48484a;
   --border-li:   #58585a;
+  /* Hairline row separator (MQTT device table / channel rows / topic monitor).
+     A token, not the rgba(255,255,255,.0x) fallbacks it replaces: white-alpha
+     is invisible on the light theme's white card (1.0.6.40, R2). */
+  --border-faint: #ffffff0f;
 
   --text:        #f2f2f7;
   /* #a5a5ac: контраст 6.3:1 на карточке (#242426) против 4.7:1 у прежнего #8e8e93 — WCAG AA */
@@ -170,6 +174,7 @@ html[data-theme="light"] {
   --border:      #d1d1d6;
   --border-md:   #c7c7cc;
   --border-li:   #aeaeb2;
+  --border-faint: #0000000f;
 
   --text:        #1c1c1e;
   --text-sec:    #636366;
@@ -4205,7 +4210,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 }
 .mqtt-device-table td {
   padding: 6px 8px;
-  border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.06));
+  border-bottom: 1px solid var(--border-faint);
 }
 .mqtt-device-table tr:last-child td { border-bottom: none; }
 .mqtt-device-table tr:hover { background: var(--bg-hover); }
@@ -4288,7 +4293,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   padding-right: 2px;
 }
 .mqtt-ch-widget .mqtt-ch-row {
-  border-bottom: 1px solid var(--border-faint, rgba(255, 255, 255, .05));
+  border-bottom: 1px solid var(--border-faint);
 }
 .mqtt-ch-widget .mqtt-ch-row:last-child {
   border-bottom: none;
@@ -4348,7 +4353,14 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   min-width: 1.5rem;
   flex-shrink: 0;
 }
-.mqtt-ch-live-err { color: var(--err, #e55); }
+/* Live value colours are themed tokens (1.0.6.40, R2 — `--err`/`--accent` never
+   existed, so #e55/#3a9bdc shipped in both themes: 4.48:1 / 3.04:1 on the
+   light card). 13 px / 600 is normal text → AA 4.5:1 floor, on --bg-card:
+   --red  dark #ff453a on #242426 = 4.55:1, light #c41e3a on #fff = 5.84:1;
+   --cyan dark #22d3ee on #242426 = 8.57:1; light --cyan #0891b2 is 3.68:1,
+   hence the --cyan-hover override below (#0e7490 on #fff = 5.36:1 — the
+   same light-link pattern as .alice-reg-link). */
+.mqtt-ch-live-err { color: var(--red); }
 /* Output toggle in a DO / DTV-coil channel row — the dashboard HW-block idiom
    (.btn.hw-active-blue when ON); only a size variant for the channel row here,
    colors are existing tokens. */
@@ -4416,9 +4428,12 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   cursor: pointer;
   box-sizing: border-box;
 }
-.mqtt-ao-step:hover:not(:disabled) { border-color: var(--accent, #3a9bdc); background: var(--bg-input, var(--bg-card)); }
+/* Hover ring is a non-text UI component (3:1 floor): --cyan on --bg-card is
+   8.57:1 dark / 3.68:1 light. */
+.mqtt-ao-step:hover:not(:disabled) { border-color: var(--cyan); background: var(--bg-input); }
 .mqtt-ao-step:disabled { opacity: .45; cursor: not-allowed; }
-.mqtt-ch-live-ok { color: var(--accent, #3a9bdc); }
+.mqtt-ch-live-ok { color: var(--cyan); }
+html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
 /* AI rows: static sizes matching type "0 — Выключен" one-line layout. */
 .mqtt-ch-row[data-ai-ch],
 .mqtt-ch-row-ai {
@@ -4550,7 +4565,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .mqtt-monitor-log {
   height: 240px;
   overflow-y: auto;
-  background: var(--bg-code, var(--bg));
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 10px;
@@ -4563,7 +4578,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
   grid-template-columns: 64px 1fr 120px;
   gap: 8px;
   padding: 2px 0;
-  border-bottom: 1px solid var(--border-faint, rgba(255,255,255,.04));
+  border-bottom: 1px solid var(--border-faint);
 }
 .mqtt-monitor-ts { color: var(--text-muted); }
 .mqtt-monitor-topic { color: var(--cyan); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
