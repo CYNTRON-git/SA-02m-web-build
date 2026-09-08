@@ -4628,7 +4628,7 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 .sh-title-row[data-edit] .sh-nin, .dev-modal-title-row[data-edit] .dev-nin { opacity: 1; pointer-events: auto; }
 .sh-title-row[data-edit] h3, .dev-modal-title-row[data-edit] h3 { opacity: 0; }
 .sh-nin:focus-visible, .dev-nin:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
-.sh-nin[aria-invalid="true"], .dev-nin[aria-invalid="true"] { outline: 2px solid var(--red, #ff453a); outline-offset: 2px; }
+.sh-nin[aria-invalid="true"], .dev-nin[aria-invalid="true"] { outline: 2px solid var(--red); outline-offset: 2px; }
 .sh-pen, .dev-pen {
   grid-column: 2; grid-row: 1; flex-shrink: 0;
   width: var(--tap); height: var(--tap); margin: 0; padding: 0;
@@ -5528,7 +5528,15 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 #tab-devices .dev-card--carel .dev-kpi-val { font-size: 1.7rem; }
 #tab-devices .dev-card--carel .dev-kpi-unit { font-size: 0.88rem; }
 #tab-devices .dev-card--carel .dev-kpi-lbl { font-size: 0.82rem; }
-#tab-devices .dev-card--carel.dev-has-alarm .dev-pill { background: var(--danger, #c0392b); }
+/* Carel alarm: a SOLID red pill (the state pill's other two looks are tinted),
+   inverse of .btn-danger's pair — --red-dim text on --red fill, both tokens
+   themed: 4.91:1 dark (#3a0f0f on #ff453a), 4.99:1 light (#fde8ec on #c41e3a),
+   AA at the pill's 0.68 rem / 600. Until 1.0.6.39 this read `var(--danger,
+   #c0392b)` — a token that does not exist, so the hard-coded fallback shipped
+   in both themes with every text token below 2.3:1 on it (audit C5). */
+#tab-devices .dev-card--carel.dev-has-alarm .dev-pill {
+  background: var(--red); border-color: var(--red); color: var(--red-dim);
+}
 /* MR-02m analog card. Cell layout: «AI<n>» index on top, value+unit, then a
    short sensor-type caption below — value-first (no order:-1 as with dev-kpi-lbl).
    Grid: 6AI6AO/6AI2AO → 3 cols × 2 rows (mr3), 12AI → 4 cols × 3 rows (mr4);
