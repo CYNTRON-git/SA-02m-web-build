@@ -8,6 +8,12 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
+  (`--accent` ×3 at 1904/1905/4700, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
+  `--text-muted` ×5) and silently inherit today — a monospace font that is not
+  monospace, a muted colour that is the full text colour. Reported (not gated) by
+  `css-token-fallback` since 1.0.6.40. Fixing them CHANGES rendering where a token was
+  never applied — the Operator decides; then flip the gate's report line to a failure.
 - [OPEN] 2026-09-08 **[LOW] Two more non-existent CSS tokens of the C5 class**, pre-existing:
   `main.css:4351` `var(--err, #e55)` and `:4419,:4421` `var(--accent, #3a9bdc)` — neither
   token is defined, so the hard-coded fallback ships identically in both themes (ship review
