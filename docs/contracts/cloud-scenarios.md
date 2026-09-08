@@ -9,8 +9,10 @@ names that live in the **cloud** repo (`docs/contracts/alice-gateway.md`)
 are cited, not restated.
 
 Landed 1.0.6.37. Validating tests: `opt/sa02m-alice/tests/test_scenario_events.py`,
-`opt/sa02m-alice/tests/test_cloud_control_api.py`,
-`opt/sa02m-rules/tests/test_engine.py`.
+`opt/sa02m-alice/tests/test_cloud_control_api.py` (row `py-unit-alice`) and
+`opt/sa02m-rules/tests/` — `test_engine.py`, `test_engine_v2.py`,
+`test_security.py`, `test_logic_templates.py` (row `py-unit-rules`, since
+1.0.6.39; before that no beat ran them).
 
 ---
 
@@ -74,12 +76,27 @@ cache patches from those keys.
 
 ## Store (`/etc/sa02m-rules/scenarios.json`)
 
-Atomic JSON (`os.replace` + fsync). Default path overridable via
-`SA02M_RULES_PATH`. Caps: 64 scenarios on `replace`, 16 on batch
-`upsert`, `params` ≤ 4 KiB, `runs` 50, `notify_queue` 20.
+Atomic JSON (`os.replace` + fsync, mode 0644). Default path overridable via
+`SA02M_RULES_PATH`. Caps (`sa02m_rules.store`): `SCENARIOS_MAX=64` stored
+scenarios on **every** write path — `replace` keeps the first 64, a batch
+`upsert` (≤16 rows per call) or a single upsert that would grow the store
+past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
+(`set`/`toggle`/`ramp`) per row — a row with more answers
+`too_many_writes` (the engine's per-run cap is the **same constant**, so a
+stored row can never half-apply; nested `scenario`/`scene` children count
+toward the run's cap); `params` ≤ 4 KiB; `runs` 50; `notify_queue` 20.
 
-`apply_command` verbs (same function the CGI path and the Socket.IO
-handler call — one write path):
+Names that become MQTT topic segments are charset-validated at the store:
+`device` matches `[A-Za-z0-9_.:-]{1,64}`, `cap` matches
+`[A-Za-z0-9_.:-]{1,32}` (absent ⇒ `on_off`); a trigger, condition or
+action failing either is dropped from the row. The engine re-checks both
+on every write, whatever the caller (block, scene, logic template, `end`,
+`Hub.set`), and the service never lets a refused publish escape
+`on_boot()`/`tick()` (logged, not fatal).
+
+`apply_command` verbs (the Socket.IO handler's single write path —
+`sio_handlers._on_scenarios` → `config/api.py`; there is no CGI scenario
+path):
 
 | Body | Effect |
 |---|---|
@@ -102,13 +119,28 @@ Listed row: `id`, `name`, `enabled`, `type`, `order`, `last_run`,
 Types: `block` | `code` | `logic` | `scene`. `scene` is set-only (no
 nested scenario/scene/delay that would recurse).
 
+`alice_expose` (scene only) and `captured_from {room_id, group_id}` are
+validated and persisted but **accepted, not yet consumed**: nothing on the
+board lists, exposes or reads them yet (open Operator decision, audit
+1.0.6.39 A14). The hub must not present a scene marked `alice_expose` as
+exposed to Alice.
+
 ---
 
 ## Engine v2
 
 Non-blocking scheduler (heap of timers, cancel-by-key generations).
-`RUN_S=30` counts **execution** only — scheduler waits are excluded.
-Memory: `MemoryMax=32M`, bounded heap/rings/trackers (`HEAP_MAX=4096`).
+`RUN_S=30` counts **execution** only — scheduler waits are excluded. For
+`type=code` it is a hard wall-clock deadline on the body itself
+(`code_runner._Deadline`: `signal.setitimer`/SIGALRM on the daemon's main
+thread, a `sys.settrace` clock elsewhere; it keeps raising once expired so
+a bare `except:` cannot ride it out): an expired body aborts with
+`last_error="timeout"` and the engine keeps ticking. Memory:
+`MemoryMax=32M`, bounded heap/rings/trackers (`HEAP_MAX=4096`).
+
+Threading: the service applies MQTT messages on its main thread — paho's
+network thread only enqueues (`INBOX_MAX=4096`; overflow is dropped and
+logged) and `tick()` drains the queue in arrival order before timers.
 
 Triggers (`kind`): `state`, `time`, `sun`, `boot`, `every` `{minutes}`,
 `button` `{device, input?, gesture}`, `presence` arrive/leave on
@@ -120,17 +152,54 @@ once per crossing); events `motion_detected` / `motion_cleared` /
 `opened` / `closed`.
 
 Button gestures: `single` / `long` / `double` from bridge counters
-`di_N_short` / `di_N_long` / `di_N_double` (`docs/MQTT_TOPICS.md`);
-edge-classifier fallback on `di_N` fronts (long ≥ 500 ms, double ≤ 400 ms;
-classifier muted 10 s after counters). `long_release` is classifier-only.
-No fire on service start.
+`di_N_short` / `di_N_long` / `di_N_double` (`docs/MQTT_TOPICS.md`) — a
+gesture fires only on an observed **increment**; a decrease is a counter
+reset (module reboot / firmware upgrade) and re-baselines silently; the
+uint16 wrap 65535→small counts as one press. Edge-classifier fallback on
+`di_N` fronts (long ≥ 500 ms, double ≤ 400 ms; classifier muted 10 s after
+counters). `long_release` is classifier-only. No fire on service start.
 
 Actions: `set` (optional `transition_s`), `toggle`, `ramp` (cancellable;
 a direct write cancels), `delay`, `scenario`, `scene {id}`, `mode`
-(sets persisted `Vars.home_mode`), `notify`, `http`.
+(sets persisted `Vars.home_mode`), `notify`, `http` (target policy below).
 
 End: `{after_s, mode: "off"|"restore"}`. `off` turns off what the run
 turned on; `restore` re-applies the pre-run snapshot; re-trigger resets.
+End writes bypass the global write-rate window (8 writes / 10 s) so the
+safety auto-off lands under unrelated traffic; a refused end write (bad
+name) is journaled as `last_error="end write refused"`, never dropped
+silently. The mirror control `end_after_s` carries `after_s` while the
+timer is armed and `0` once it fired or a re-trigger reset it — it does
+not count down (it was `remaining_s` in 1.0.6.37–38, a name that promised
+a countdown the engine never published).
+
+### Outbound HTTP (`http` action, sandbox `Http`)
+
+One policy for both (`sa02m_rules/http_guard.py`): `http`/`https` only; the
+host is resolved and **every** address must be public — loopback,
+link-local, RFC1918/ULA, reserved, multicast and unspecified are refused,
+as is a URL carrying `user:pass@`; a refusal is `last_error="http err
+refused: …"` and the request is never sent. The operator may list hosts
+that skip the address check in `/etc/sa02m-rules/http-allow.json`
+(`{"hosts": ["192.168.1.50", "hooks.example"]}`; absent/malformed ⇒ empty,
+override path `SA02M_RULES_HTTP_ALLOW`). The store applies the static half
+(literal addresses, userinfo) at validation and drops such rows; the engine
+re-checks with resolution at request time. Redirects: at most 3 hops, each
+re-checked; response bodies are read up to 64 KiB and never returned to a
+scenario (only the status); 5 s timeout. Known limit: the name is resolved
+once for the check and again by the connect — a DNS answer that changes
+between the two is not defended.
+
+### Restricted Python (`type=code`)
+
+Denylist sandbox on the AST: no import/class/lambda/async/yield/global,
+no `_`-prefixed name or attribute, no `open`/`exec`/`eval`/`getattr`
+family, and no `.format`/`.format_map` on any receiver (a format string
+walks attributes the AST cannot see — `'{0._state}'.format(Hub)` reached
+the whole object graph in 1.0.6.37–38; `%` formatting stays). Env:
+`Hub` (`get`/`set` — names charset-checked, `MAX_WRITES` per run), `Cron`,
+`Notify`, `Http` (policy above), `Vars`, `math` and a few builtins. Bound
+by the `RUN_S` deadline above. Empty `__builtins__`.
 
 Conditions: `time_window` presets `day`/`night` (sun), weekday
 `days`/`workday`/`weekend`, `mode` via `Vars.home_mode`, `state` `for_s`.
@@ -150,7 +219,7 @@ this tuple stay in the store and do not run.
 ## MQTT mirror
 
 Virtual device `/devices/sa02m-rules-<id>/controls/*` (retained state
-topics, never `/on`): `rule_enabled`, `remaining_s`,
+topics, never `/on`): `rule_enabled`, `end_after_s`,
 `blocked_by_switch`, plus template-specific fields. Writes from the
 engine to field devices go to `<topic>/on` with **no retain**, same
 rule as `mqtt_set.cgi`. Capabilities marked `writable: false` on the
@@ -159,6 +228,14 @@ Alice document are not written.
 ---
 
 ## Deploy / restart
+
+Unit (`etc/systemd/system/sa02m-rules.service`): `User=root`,
+`NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectSystem=strict` with
+`ReadWritePaths=/etc/sa02m-rules` (the store is the only writable tree),
+`MemoryMax=32M`; pinned by `test_security.py::UnitHardeningTests`. No
+`WatchdogSec=` — the daemon does not link systemd, the time bound on
+scenario code is in-process (above). A missing `paho-mqtt` (optional
+install tier) is an intentional standby: `exit 0`, no restart storm.
 
 `sa02m-rules` holds `/opt/sa02m-rules` in memory; `sa02m-cloud-control`
 and `sa02m-alice-client` import `sa02m_rules.store`. After a `/opt`
