@@ -153,6 +153,20 @@ class TestSiblingBlockReadDoesNotStampR(unittest.TestCase):
         self.assertIn(("mr02m-COM4-11", "r"), pub.device_errors)
         self.assertFalse(any(e[2] == "r" for e in pub.errors))
 
+    def test_failed_press_counter_block_does_not_paint_siblings(self):
+        """E6: the press-counter block (695/711/727) misses like the DO/DI
+        banks do on a shared COM — a bus event, not a per-channel fault. The
+        fail counter still counts and the device-level r still comes from
+        offline_after_fails."""
+        p, pub = _poller(do=0, di=8)
+        p._di_button = {1, 2}
+        p.read_input_registers = mock.Mock(side_effect=TimeoutError("press miss"))
+        p._poll_di_press_counters()
+        stamped = [e for e in pub.errors if e[2] == "r"]
+        self.assertEqual(stamped, [], stamped)
+        self.assertEqual(p._press_fails, 1)
+        self.assertEqual(pub.device_errors, [])
+
     def test_ai_hole_stamps_only_that_channel(self):
         p, pub = _poller(do=0, di=0, ao=0, ai=2)
         hole = [None] * 7

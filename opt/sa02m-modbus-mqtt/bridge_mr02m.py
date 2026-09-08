@@ -482,9 +482,10 @@ class MR02mPoller(DevicePoller):
                 # until the next mode refresh re-arms it.
                 self._press_disabled = True
             self.log.warning("DI press counters: %s", e)
-            for i in chs:
-                for suffix, _, _ in self._PRESS_CONTROLS:
-                    self.pub.pub_error(self.device_id, f"di_{i}_{suffix}", "r")
+            # Block-read miss (bus collision, Carel sharing the COM) -- the
+            # same shape _poll_do_di stopped painting on DO/DI/AO: no per-
+            # channel r; the fail counter above and device-level
+            # offline_after_fails are the only error signals.
             return
         self._press_fails = 0
         for i in chs:

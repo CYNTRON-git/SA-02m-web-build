@@ -185,7 +185,10 @@ class TestPressCounterPoll(unittest.TestCase):
                                  (bridge.MR_INP_DI_LONG_CNT_BASE, 5),
                                  (bridge.MR_INP_DI_DOUBLE_CNT_BASE, 5)])
 
-    def test_read_error_marks_controls_and_backs_off(self):
+    def test_read_error_backs_off_without_stamping_siblings(self):
+        # Assertion flipped by audit E6 (2026-09-08): the old test pinned a
+        # per-channel retained r on a block miss -- the exact shape e584647
+        # removed from DO/DI/AO. Back-off is the behaviour; r is not.
         pub = FakePub()
         p = _poller(pub)
         p._di_button = {1}
@@ -197,8 +200,7 @@ class TestPressCounterPoll(unittest.TestCase):
         for _ in range(3):
             p._poll_di_press_counters()
         self.assertTrue(p._press_disabled)
-        self.assertTrue(any(e[1] == "di_1_short" and e[2] == "r"
-                            for e in pub.errors))
+        self.assertFalse(any(e[2] == "r" for e in pub.errors), pub.errors)
         pub.controls.clear()
         p._poll_di_press_counters()   # disabled → silent
         self.assertEqual(pub.controls, [])
