@@ -8,6 +8,23 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
+  (offline full update 1.0.6.37 → 1.0.6.40, started 22:07, board rebooted ≈22:20 while
+  `04-flasher.sh` was writing units — `sa02m-flasher.service` left as a 0-byte file
+  (systemd reads it as masked), `/opt/sa02m-modbus-mqtt` new while `/opt/sa02m-led` old ⇒
+  the bridge crash-looped on `MB2WS_TEXT_BASE`). Neither `sa02m-userspace-watchdog`
+  (threshold 10 min) nor `sa02m-failure-monitor` logged a reboot decision; the
+  persistent journal lists one boot and the previous boot's kernel log is not
+  available, so the cause is UNKNOWN — the hardware watchdog (`sunxi-wdt`, 16 s, fed by
+  PID 1) is the leading hypothesis (PID 1 stalled under install I/O on the slower
+  board). 1.135 ran the identical update twice without a reset. Recovery: the update
+  re-run to completion (idempotent). Systemic questions (8D offered): (a) the
+  installer holds no watchdog off during its run and restarts services in an order
+  that leaves the bridge importing a package not yet refreshed (`05-mqtt.sh` before the
+  LED package? verify), (b) a unit file written non-atomically (`install` over the live
+  path), (c) `offline-full-update.sh`'s wrapper dies with the SSH session (needs
+  `setsid`), so its post-checks never ran. Bench-owner note: the 1.136 note says a
+  deploy there is agreed with the bench owner — this one was on the Operator's word.
 - [OPEN] 2026-09-08 **[LOW] LED window: PWM safe-state 503..506 not exposed.**
   The daemon has no read/write path for the family safe-state AO block (plan
   led-window-1.0.6.40 F4); the desktop page shows it. Add an FC03 of 4 to the PWM
