@@ -309,6 +309,64 @@ class TestManifestAndPackage(unittest.TestCase):
         self.assertTrue(repo_version)
         self.assertLessEqual(pack.semver_key(pack.MIN_UPDATER), pack.semver_key(repo_version))
 
+    def test_inspect_preflight_derives_the_same_version_as_the_runner(self) -> None:
+        # Review 1.0.6.39 F3: the D2 derivation lives in TWO shipped homes —
+        # the runner (apply-time compat gate) and sa02m-update-inspect.sh (the
+        # preflight the UI reads before apply). A bump of one fallback would
+        # leave the panel saying "compatible" where the runner refuses, or the
+        # reverse. Drives the SHIPPED inspect script against the runner's
+        # fixtures and pins the two fallback literals to each other.
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not on PATH — the inspect preflight's version derivation was NOT verified")
+        runner = _REPO / "etc" / "sa02m-update-runner.sh"
+        inspect = _REPO / "etc" / "sa02m-update-inspect.sh"
+
+        def fallback_literal(script: Path) -> str:
+            hits = [
+                line.split("=", 1)[1].strip()
+                for line in script.read_text(encoding="utf-8").splitlines()
+                if line.startswith("UPDATER_VERSION_FALLBACK=")
+            ]
+            self.assertEqual(len(hits), 1, "%s: expected exactly one fallback assignment" % script.name)
+            return hits[0]
+
+        self.assertEqual(fallback_literal(inspect), fallback_literal(runner))
+        self.assertEqual(fallback_literal(runner), "1.0.5.66")
+
+        def preflight(version_file: Path, package: Path, **extra: str) -> dict:
+            env = {k: v for k, v in os.environ.items() if k != "SA02M_UPDATER_VERSION"}
+            env["SA02M_WEB_VERSION_FILE"] = version_file.as_posix()
+            # No validator module => the script's bootstrap branch, which still
+            # derives UPDATER_VERSION first and prints it in its JSON.
+            env["SA02M_UPDATE_VALIDATE_PY"] = (package.parent / "no-validator-here.py").as_posix()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env.update(extra)
+            r = subprocess.run(
+                [bash, inspect.as_posix(), package.as_posix()],
+                env=env, capture_output=True, text=True, timeout=60,
+            )
+            out = json.loads(r.stdout.replace("\r", "").strip())
+            # A tiny file is refused at the trailer, i.e. AFTER the derivation —
+            # proves the value came through the whole preflight, not an early exit.
+            self.assertEqual(out["error_code"], "E_TRAILER", r.stderr)
+            return out
+
+        with tempfile.TemporaryDirectory() as d:
+            pkg = Path(d) / "package.sa02m"
+            pkg.write_bytes(b"not a package")
+            vf = Path(d) / "VERSION"
+            vf.write_bytes(b"# comment\r\n9.8.7.6\r\n")
+            out = preflight(vf, pkg)
+            self.assertEqual(out["updater_version"], "9.8.7.6")
+            self.assertEqual(out["installed_version"], "9.8.7.6")
+            out = preflight(Path(d) / "missing", pkg)
+            self.assertEqual(out["updater_version"], "1.0.5.66")
+            self.assertIsNone(out["installed_version"])
+            vf.write_bytes(b"garbage\n")
+            self.assertEqual(preflight(vf, pkg)["updater_version"], "1.0.5.66")
+            self.assertEqual(preflight(vf, pkg, SA02M_UPDATER_VERSION="7.7.7.7")["updater_version"], "7.7.7.7")
+
     def test_services_optional_keys_accepted(self) -> None:
         # The 1.0.6.37 packer manifest: enable (emitted since 1.0.5.69 — the
         # validator rejected it until the required/optional split) plus the
