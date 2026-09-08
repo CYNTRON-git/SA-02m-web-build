@@ -213,14 +213,34 @@ class TestFc17Gate(unittest.TestCase):
 
 
 class TestConfigWindowEligibility(unittest.TestCase):
-    def test_a_strip_row_is_not_offered_the_module_window_yet(self) -> None:
-        """L3 gives it a window; until then the row must not open one that fails."""
-        self.assertFalse(
-            scanner.device_is_mp02_product_line_for_config(_dev("RGBW_WS2812"))
-        )
-        self.assertFalse(
+    """REWRITTEN ON PURPOSE in L4 (1.0.6.40, plan led-window-1.0.6.40 §3).
+
+    Until L4 this class asserted the OPPOSITE — «a strip row is not offered the
+    module window yet» — because the backend existed (L3) but no frontend did,
+    and a double-click would have opened a window that fails. L4 wires the
+    window, so the predicate flips and the old assertion would now pin a defect.
+    The one sanctioned test edit of that plan; nothing else here changed.
+    """
+
+    def test_a_strip_row_is_offered_its_config_window(self) -> None:
+        """The JS side mirrors this through the alias list (deviceConfigKindFromSignature)."""
+        for sig in ("RGBW_WS2812", "RGBWWS2812", "RGBW", "LED", "RGBW_WS2812_v2"):
+            self.assertTrue(scanner.device_is_mp02_product_line_for_config(_dev(sig)), sig)
+        self.assertTrue(
             scanner.device_eligible_for_module_config_window(_dev("RGBW_WS2812", 12345))
         )
+
+    def test_a_strip_row_still_needs_a_complete_identity(self) -> None:
+        """Eligibility is the product-line predicate AND the identity check — a
+        strip with no serial is recognised but not double-clickable, like any
+        module of ours."""
+        self.assertFalse(
+            scanner.device_eligible_for_module_config_window(_dev("RGBW_WS2812", 0))
+        )
+
+    def test_a_foreign_led_signature_is_not_offered_the_window(self) -> None:
+        """«ledGe» is a Wiren Board device: the flip must not widen past the aliases."""
+        self.assertFalse(scanner.device_is_mp02_product_line_for_config(_dev("ledGe")))
 
     def test_our_own_modules_are_still_eligible(self) -> None:
         self.assertTrue(scanner.device_is_mp02_product_line_for_config(_dev("6AI6AO")))
