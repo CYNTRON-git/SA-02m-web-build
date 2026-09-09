@@ -51,7 +51,15 @@ def apply_on_off_inversion(value: bool, inverted: bool) -> bool:
 
     The rule: **the bus side holds the electrical value, the Yandex/cloud side
     holds the logical one**, and `inverted` says they are opposites — bus 0 =
-    logically on (the SA-02m `alarm_led` output sounds the buzzer at 0).
+    logically on. Typical case: a relay module whose coil input is active-low.
+
+    This example used to read "the SA-02m `alarm_led` output sounds the buzzer
+    at 0". That was a faithful record of a DEFECT, not of the hardware: the
+    telemetry daemon's channel map was shifted (alarm_led reached the buzzer's
+    pin) and its polarity inverted, so bus 0 on that topic really did sound the
+    buzzer. Both were fixed in 1.0.6.42 — the daemon now reads the pin map from
+    /etc/sa02m_hw.conf and publishes the LOGICAL level, so the SA-02m
+    controller channels need no `inverted` flag at all.
 
     It lives here once and only once because the transformation is its own
     inverse: `not` applied twice is identity, so the SAME call converts

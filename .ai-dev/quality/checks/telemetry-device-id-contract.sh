@@ -433,8 +433,16 @@ else
     if ! grep -q '[^[:space:]]' "$HW_CB"; then
         fail "C: could not extract _make_hw_cb — the gate cannot see whether a dropped command leaves a trace"
     else
-        grep -q 'command dropped' "$HW_CB" \
-            || fail "C: the not-ready hardware branch is silent again — a dropped command must leave a trace"
+        # TWO drop branches, pinned separately on their OWN wording. This used
+        # to be a single `grep -q 'command dropped'`, which 1.0.6.42 turned
+        # hollow the moment it added a second branch carrying that same phrase:
+        # commenting the first one out left the second matching and the gate
+        # stayed green. Each branch is now pinned on text only it carries, so
+        # silencing either one is RED (comment-mutation-proof cases both).
+        grep -q 'HW not ready' "$HW_CB" \
+            || fail "C: the not-ready hardware branch is silent again — a command arriving before init_hw must leave a trace"
+        grep -q 'no configured bit' "$HW_CB" \
+            || fail "C: the unconfigured-channel branch is silent — a command refused for want of a bit in /etc/sa02m_hw.conf must leave a trace, or driving the wrong pin becomes indistinguishable from doing nothing"
     fi
     [ "$FAIL" -eq 0 ] && ok "run() logs the id, inits HW before the clear, and never drops a command silently"
 fi

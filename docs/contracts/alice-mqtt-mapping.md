@@ -374,14 +374,25 @@ leak a non-Yandex field to the platform.
 ### Inverted (`on_off`, item level, never sent to Yandex) — 1.0.6.29
 
 An optional `inverted` sits beside `mqtt` on an **`on_off` capability**, for an
-**active-low output** — one where the bus value 0 energises the load. On the
-SA-02m the `alarm_led` output is such a case: bus 0 sounds the buzzer, bus 1 is
-silence.
+**active-low output** — one where the bus value 0 energises the load. Typical
+case: a relay module whose coil input is active-low, or an MR-02m discrete
+output wired through an inverting driver.
 
 ```json
-{"type":"devices.capabilities.on_off","mqtt":"/devices/SA-02m/controls/alarm_led",
+{"type":"devices.capabilities.on_off","mqtt":"/devices/mr02m-COM1-5/controls/do_1",
  "parameters":{"instance":"on"},"inverted":true}
 ```
+
+> **Not the SA-02m controller channels.** This section used to give
+> `/devices/SA-02m/controls/alarm_led` as the example, on the observation that
+> «bus 0 sounds the buzzer». That observation was real but it was recording a
+> **defect**, not the wiring: until 1.0.6.42 the telemetry daemon mapped
+> `alarm_led` onto the buzzer's pin and drove it at the wrong polarity. The
+> daemon now takes the pin map from `/etc/sa02m_hw.conf` and publishes the
+> LOGICAL level, so `do`, `beeper` and `alarm_led` need **no** `inverted` flag.
+> A profile that carries `inverted: true` on one of those three from before
+> 1.0.6.42 was compensating for the defect and now reads backwards — clear the
+> flag. See `docs/MQTT_TOPICS.md` § «Дискретный выход, пищалка и светодиод».
 
 **Which side holds which value — the direction, stated so it cannot be read
 backwards: the MQTT side of the seam holds the BUS (electrical) value, the

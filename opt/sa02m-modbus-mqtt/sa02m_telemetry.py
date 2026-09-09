@@ -2,8 +2,14 @@
 """SA-02m system telemetry → MQTT.
 
 Publishes CPU, RAM, temperature, uptime, RS-485 stats.
-Subscribes to /devices/<device-id>/controls/{do,beeper,alarm_led}/on
-and controls the PCA9536 I2C expander via i2cset (or hw_set.cgi).
+Subscribes to /devices/<device-id>/controls/{do,beeper,alarm_led}/on and drives
+the PCA9536 I2C expander via i2cset. Which pin each channel occupies, and its
+polarity, come from /etc/sa02m_hw.conf — the same file the web CGI reads. They
+are never hard-coded here: a second copy of that map is what made a `beeper`
+command switch the discrete output until 1.0.6.42. The expander is shared with
+the web CGI, the beeper override worker and MPLC4, so every access takes the
+same flock and honours the same owner gate they do — see the shared-bus section
+below.
 
 Device ID: the board name itself (the hostname, e.g. ``SA-02m``) — no prefix,
 resolved by :func:`_resolve_device_id`. Topic canon: docs/MQTT_TOPICS.md.
@@ -15,6 +21,7 @@ import os
 import re
 import sys
 import time
+import shutil
 import signal
 import socket
 import logging
@@ -22,6 +29,11 @@ import ipaddress
 import subprocess
 import threading
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:      # non-Linux dev host; see _with_bus_lock's fallback
+    fcntl = None
 
 try:
     import paho.mqtt.client as mqtt
@@ -304,7 +316,7 @@ def clear_legacy_retained(
     return result
 
 
-# ── Hardware control (PCA9536 via i2cget/i2cset or /etc/sa02m_hw.conf) ───────
+# ── Hardware control (PCA9536, wired per /etc/sa02m_hw.conf) ─────────────────
 def _i2cget(bus: int, addr: int, reg: int) -> int | None:
     try:
         result = subprocess.run(
@@ -329,43 +341,562 @@ def _i2cset(bus: int, addr: int, reg: int, value: int) -> bool:
         return False
 
 
-class PCA9536Control:
-    """PCA9536 I2C expander: DO=bit0, Beeper=bit1, AlarmLED=bit2.
+# ── The shared bus: the flock and the owner gate lib_hw.sh already runs ──────
+# 1.0.6.42. The PCA9536's output port is ONE byte with four owners: this
+# daemon, the web CGI (www/network_config/cgi-bin/lib_hw.sh), the beeper
+# override worker (etc/sa02m-beeper-override.sh) and MPLC4/KLogic. Driving one
+# channel is a read-modify-write, so two owners interleaving between the read
+# and the write lose one of the two commands outright — and one of the bits is
+# the discrete output that commutes real equipment. The CGI closes that with an
+# flock on SA02M_I2C_LOCK_FILE plus a refusal while an owner unit or process
+# holds the bus. This daemon took neither until now, so the widened window the
+# read-modify-write opened was a window nobody was guarding.
+#
+# Everything below mirrors that policy, function by function, and the values
+# come from the same one home, /etc/sa02m_hw.conf. The constants here are the
+# fallbacks for a board whose conf is absent or blank; they are lib_hw.sh's own
+# `:-` defaults, and tests/test_telemetry_hw_lock.py reads lib_hw.sh and fails
+# when they diverge — a copy that cannot drift unnoticed is the closest a
+# Python daemon gets to reading a shell file's defaults.
+HW_LOCK_FILE_DEFAULT = "/run/lock/sa02m-pca9536.lock"    # SA02M_I2C_LOCK_FILE
+HW_LOCK_WAIT_SEC_DEFAULT = 1.0                           # SA02M_I2C_LOCK_WAIT_SEC
+HW_OWNER_UNITS_DEFAULT = (                               # SA02M_I2C_OWNER_UNITS
+    "mplc.service", "mplc4.service", "klogic.service", "klogicd.service",
+)
+HW_OWNER_PROCS_DEFAULT = (                               # SA02M_I2C_OWNER_PROCS
+    "mplc", "mplc4", "klogic", "klogicd", "klogic-sa02",
+)
+# lib_hw.sh sa02m_hw_i2c_owner_active()'s literal case list, mirrored rather
+# than normalised: a conf reading `False` does not switch the gate off in the
+# shell either, and a daemon that lower-cased it would go quiet exactly where
+# the CGI still writes.
+HW_RESPECT_OWNER_OFF = ("0", "no", "false", "off", "OFF", "N")
+HW_OWNER_PROBE_TIMEOUT_S = 2.0
+# Python's flock() has no timeout and signal.alarm is main-thread-only, while
+# these calls run on paho's network thread — so the bounded wait is a poll.
+HW_LOCK_POLL_S = 0.02
 
-    SA-02m uses I2C bus 2, address 0x41.
-    Register 1 = output port, register 3 = direction (0=output).
+# Returned in place of a result when the bus lock could not be taken. A
+# sentinel rather than None: None is what a failed i2cget returns, and the two
+# refusals need different words in the journal.
+BUS_BUSY = object()
+
+_flock_missing_warned = False
+
+
+def _probe_available(tool: str) -> bool:
+    """Mirror of lib_hw.sh's `command -v <tool>` guards around the owner gate."""
+    return shutil.which(tool) is not None
+
+
+def _run_probe(argv: list[str]) -> int | None:
+    """Exit status of a short owner probe; None when it gave no answer.
+
+    No answer = the command could not be spawned, or it hung past
+    HW_OWNER_PROBE_TIMEOUT_S. What that means is the caller's to decide.
     """
-    BUS = 2
-    ADDR = 0x41
+    try:
+        return subprocess.run(argv, capture_output=True,
+                              timeout=HW_OWNER_PROBE_TIMEOUT_S).returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _hw_owner_active(profile: "HwProfile") -> str | None:
+    """The other owner holding the expander, or None when the bus is free.
+
+    Mirror of lib_hw.sh sa02m_hw_i2c_owner_active(): SA02M_I2C_RESPECT_OWNER
+    switches it off, units are matched with `systemctl is-active` and only when
+    the name ends in `.service`, processes with `pgrep -x`, first hit wins.
+
+    One deliberate divergence, in the safe direction: where the shell would sit
+    on a wedged systemctl, an unanswered probe returns a reason here and the
+    caller refuses. These writes run on paho's single network thread, so
+    blocking there takes MQTT down with them, and writing on a bus we could not
+    prove is free is the one outcome worse than refusing.
+    """
+    if not profile.respect_owner:
+        return None
+
+    if _probe_available("systemctl"):
+        for unit in profile.owner_units:
+            if not unit.endswith(".service"):
+                continue
+            rc = _run_probe(["systemctl", "is-active", "--quiet", unit])
+            if rc == 0:
+                return unit
+            if rc is None:
+                return f"systemctl is-active {unit} gave no answer"
+
+    if _probe_available("pgrep"):
+        for proc in profile.owner_procs:
+            if not proc:
+                continue
+            rc = _run_probe(["pgrep", "-x", proc])
+            if rc == 0:
+                return proc
+            if rc is None:
+                return f"pgrep -x {proc} gave no answer"
+
+    return None
+
+
+def _bus_busy_reason(profile: "HwProfile") -> str:
+    if profile.lock_wait_s is None:
+        return (f"unparseable SA02M_I2C_LOCK_WAIT_SEC in {profile.source} — "
+                "refusing rather than driving a shared bus on a guessed wait")
+    return (f"{profile.lock_file} stayed held by another owner for the whole "
+            f"{profile.lock_wait_s:g}s wait")
+
+
+def _open_lock_file(path: str) -> int | None:
+    """The lock file's fd, created if missing; None when it cannot be opened."""
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    except OSError:
+        pass
+    if not os.path.exists(path):
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o666))
+            os.chmod(path, 0o666)   # explicit: 0o666 above is cut by the umask
+        except OSError:
+            pass
+    try:
+        # Read-write and NEVER truncating, for the reason lib_hw.sh
+        # sa02m_hw_i2c_with_lock spells out at its own `exec 9<>`: /run/lock is
+        # a sticky tmpfs, so an O_TRUNC open of a lock file another uid created
+        # fails with EACCES — www-data's CGI and this root daemon share it.
+        return os.open(path, os.O_RDWR)
+    except OSError as exc:
+        log.warning("cannot open the I2C lock file %s: %s", path, exc)
+        return None
+
+
+def _flock_wait(fd: int, wait_s: float) -> bool:
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(HW_LOCK_POLL_S)
+
+
+def _with_bus_lock(profile: "HwProfile", fn):
+    """Run `fn` holding SA02M_I2C_LOCK_FILE; BUS_BUSY when it cannot be taken.
+
+    Mirror of lib_hw.sh sa02m_hw_i2c_with_lock(): the same file, a BOUNDED wait
+    of SA02M_I2C_LOCK_WAIT_SEC and then a refusal — never a longer wait, which
+    on this thread would stall the MQTT keepalive as well as the command.
+
+    `fn` runs ONCE with the lock held for the whole of it. That bracket is the
+    point: the read and the write of a read-modify-write must not be separable
+    by another owner, so the lock covers both or it covers nothing worth having.
+    """
+    if profile.lock_wait_s is None:
+        return BUS_BUSY
+
+    if fcntl is None:
+        # Same fail-open as lib_hw.sh when the `flock` binary is missing — but
+        # said out loud, once: an unlocked read-modify-write on this byte is a
+        # real risk, not a footnote. No board is in this state (the daemon runs
+        # on Linux); a dev host running the suite is.
+        global _flock_missing_warned
+        if not _flock_missing_warned:
+            _flock_missing_warned = True
+            log.warning("no flock on this host — the PCA9536 is driven UNLOCKED "
+                        "(%s); the web CGI, MPLC4 and the beeper worker can "
+                        "interleave with us on the same byte", profile.lock_file)
+        return fn()
+
+    fd = _open_lock_file(profile.lock_file)
+    if fd is None:
+        return BUS_BUSY
+    try:
+        if not _flock_wait(fd, profile.lock_wait_s):
+            return BUS_BUSY
+        try:
+            return fn()
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        os.close(fd)
+
+
+# ── The channel map: read from /etc/sa02m_hw.conf, never carried here ────────
+# 1.0.6.42. This daemon used to hold `{"do": 0, "beeper": 1, "alarm_led": 2}`
+# in code. The board is wired the other way round — bit0 = alarm LED, bit1 =
+# DO, bit2 = buzzer — so a `beeper` command switched the DISCRETE OUTPUT, the
+# one that commutes real equipment on an installation. It also drove the pin
+# HIGH for "on" while every other consumer treats these outputs as ACTIVE-LOW,
+# so each command was shifted AND inverted.
+#
+# The remedy is not a corrected constant — a second copy of the map is what
+# drifted in the first place. `/etc/sa02m_hw.conf` is the ONE home and
+# www/network_config/cgi-bin/lib_hw.sh is the reference consumer; the parsing
+# and validation below mirror it key for key (a Python daemon cannot source a
+# shell file, and lib_hw.sh cannot be imported).
+# The path override is spelled SA02M_HW_CONF, not lib_hw.sh's bare HW_CONF: a
+# long-lived daemon inherits its whole environment from systemd, and a name that
+# generic is one collision away from pointing this at the wrong file. Same
+# namespaced idiom as SA02M_TELEMETRY_CONF above. The default path is identical.
+HW_CONF_ENV = "SA02M_HW_CONF"
+HW_CONF_DEFAULT = "/etc/sa02m_hw.conf"
+HW_CHANNELS = ("do", "beeper", "alarm_led")
+# The polarity mask under `auto` is built from every declared channel, usb_power
+# included, exactly as lib_hw.sh sa02m_hw_i2c_output_mask_dec does.
+HW_MASK_CHANNELS = HW_CHANNELS + ("usb_power",)
+
+
+def _hw_conf_path() -> str:
+    return os.environ.get(HW_CONF_ENV) or HW_CONF_DEFAULT
+
+
+def _hw_parse_bit(raw: str) -> int | None:
+    """A PCA9536 has four pins. lib_hw.sh sa02m_hw_i2c_channel_mask: `^[0-3]$`.
+
+    Anything else — blank, a typo, an out-of-range index — returns None and the
+    channel is refused. There is deliberately no default: guessing a pin is the
+    defect this function exists to stop.
+    """
+    raw = (raw or "").strip()
+    if len(raw) == 1 and raw in "0123":
+        return int(raw)
+    return None
+
+
+def _hw_parse_mask(raw: str) -> int | None:
+    """Mirror of lib_hw.sh sa02m_hw_i2c_extra_output_mask_dec's accepted forms.
+
+    `0x` hex of one or two digits, or plain decimal 0..15; masked to the four
+    real pins. Unparseable returns None so the caller can refuse rather than
+    silently read it as 0 (which for a polarity mask means "active-high" — the
+    wrong direction to fail in).
+    """
+    raw = (raw or "").strip()
+    try:
+        if raw[:2].lower() == "0x" and 1 <= len(raw) - 2 <= 2:
+            return int(raw, 16) & 0x0F
+        if raw.isdigit() and 0 <= int(raw) <= 15:
+            return int(raw) & 0x0F
+    except ValueError:
+        pass
+    return None
+
+
+def _hw_parse_wait(raw: str) -> float | None:
+    """Seconds to wait for the bus lock; None when the conf value is unusable.
+
+    Blank — or an absent conf — is the shipped default, not an error. A value
+    that is not a non-negative number returns None and every bus operation is
+    refused with a line naming the key: `flock -w banana` fails the same way in
+    lib_hw.sh, and a wait we cannot read is not one to guess at.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return HW_LOCK_WAIT_SEC_DEFAULT
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _hw_parse_word_list(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """A whitespace-separated shell list; blank resolves to `default`.
+
+    lib_hw.sh can tell an absent key from an explicitly empty one — it defaults
+    BEFORE sourcing the conf — and _read_conf_value cannot. Blank therefore
+    means the default here, which is the fail-safe direction: the other reading
+    ("no owners") would let this daemon write on a bus MPLC4 holds. An
+    integrator who really wants no owner gate has the documented switch,
+    SA02M_I2C_RESPECT_OWNER=0, and both consumers honour it identically.
+    """
+    words = tuple((raw or "").split())
+    return words or default
+
+
+class HwProfile:
+    """What /etc/sa02m_hw.conf says about the expander, resolved once at start.
+
+    `bits` holds only the channels whose configuration parsed; `refusals` holds
+    the rest with the reason, so a command for one of them can be answered with
+    a log line naming what is wrong instead of a write to a guessed pin.
+    """
+
+    def __init__(self, backend, bus, addr, bits, active_low_mask, refusals,
+                 source, extra_output_mask=0, lock_file=HW_LOCK_FILE_DEFAULT,
+                 lock_wait_s=HW_LOCK_WAIT_SEC_DEFAULT,
+                 owner_units=HW_OWNER_UNITS_DEFAULT,
+                 owner_procs=HW_OWNER_PROCS_DEFAULT, respect_owner=True):
+        self.backend = backend
+        self.bus = bus
+        self.addr = addr
+        self.bits = bits
+        self.active_low_mask = active_low_mask
+        self.refusals = refusals
+        self.source = source
+        # Who else may be on the byte, and how we take our turn on it.
+        self.lock_file = lock_file
+        self.lock_wait_s = lock_wait_s
+        self.owner_units = owner_units
+        self.owner_procs = owner_procs
+        self.respect_owner = respect_owner
+        # bit3 = KLogic's blue LED: this daemon never drives it, but the
+        # direction register must not turn it back into an input.
+        self.extra_output_mask = extra_output_mask
+
+    def is_active_low(self, channel: str) -> bool:
+        return bool(self.active_low_mask & (1 << self.bits[channel]))
+
+    def output_mask(self) -> int:
+        """Every pin this board drives, for the direction register."""
+        mask = 0
+        for bit in self.bits.values():
+            mask |= 1 << bit
+        return mask & 0x0F
+
+    @classmethod
+    def load(cls, path: str | None = None) -> "HwProfile":
+        path = path or _hw_conf_path()
+        present = os.path.isfile(path)
+
+        def val(key: str) -> str:
+            # The file's own parser, reused rather than re-implemented: shell
+            # assignment semantics, last one wins, quotes stripped.
+            return _read_conf_value(path, key) if present else ""
+
+        backend = cls._resolve_backend(val)
+        # Bus and address address the chip, they do not select a pin: a wrong
+        # value here cannot mis-target a channel on THIS board, so the shipped
+        # defaults (bus 2, 0x41) are a safe fallback where a bit index is not.
+        bus_raw = (val("SA02M_I2C_EXP_BUS") or "").strip()
+        bus = int(bus_raw) if bus_raw.isdigit() else 2
+        try:
+            addr = int((val("SA02M_I2C_EXP_ADDR") or "0x41").strip(), 0)
+        except ValueError:
+            addr = 0x41
+
+        bits: dict[str, int] = {}
+        refusals: dict[str, str] = {}
+        raw_bits: dict[str, str] = {}
+        for ch in HW_MASK_CHANNELS:
+            raw = val("SA02M_I2C_BIT_" + ch.upper())
+            raw_bits[ch] = raw
+            bit = _hw_parse_bit(raw)
+            if bit is None:
+                if ch in HW_CHANNELS:
+                    refusals[ch] = (
+                        f"no usable bit in {path}: "
+                        f"SA02M_I2C_BIT_{ch.upper()}={raw!r}"
+                        if present else f"{path} is missing"
+                    )
+            else:
+                bits[ch] = bit
+
+        active_low = cls._resolve_active_low(val, bits, raw_bits)
+        if active_low is None:
+            for ch in HW_CHANNELS:
+                refusals.setdefault(
+                    ch, f"unparseable SA02M_I2C_ACTIVE_LOW_MASK in {path} — "
+                        "polarity unknown, refusing rather than guessing")
+            bits = {}
+            active_low = 0
+
+        # usb_power is not a telemetry channel; it contributed to the polarity
+        # mask above and is dropped here so it cannot be commanded from MQTT.
+        bits = {ch: b for ch, b in bits.items() if ch in HW_CHANNELS}
+        extra = _hw_parse_mask(val("SA02M_I2C_EXTRA_OUTPUT_MASK")) or 0
+        return cls(backend, bus, addr, bits, active_low, refusals,
+                   path if present else f"{path} (absent)", extra,
+                   lock_file=(val("SA02M_I2C_LOCK_FILE") or "").strip()
+                   or HW_LOCK_FILE_DEFAULT,
+                   lock_wait_s=_hw_parse_wait(val("SA02M_I2C_LOCK_WAIT_SEC")),
+                   owner_units=_hw_parse_word_list(
+                       val("SA02M_I2C_OWNER_UNITS"), HW_OWNER_UNITS_DEFAULT),
+                   owner_procs=_hw_parse_word_list(
+                       val("SA02M_I2C_OWNER_PROCS"), HW_OWNER_PROCS_DEFAULT),
+                   respect_owner=(val("SA02M_I2C_RESPECT_OWNER") or "1").strip()
+                   not in HW_RESPECT_OWNER_OFF)
+
+    @staticmethod
+    def _resolve_backend(val) -> str:
+        """Mirror of lib_hw.sh sa02m_hw_backend()."""
+        raw = (val("SA02M_HW_BACKEND") or "auto").strip()
+        if raw in ("off", "disabled", "none"):
+            return "disabled"
+        if raw in ("i2c", "i2c_expander"):
+            return "i2c_expander"
+        if raw in ("gpio", "gpio_sysfs"):
+            return "gpio_sysfs"
+        for ch in HW_MASK_CHANNELS:
+            if (val("SA02M_GPIO_" + ch.upper()) or "").strip().isdigit():
+                return "gpio_sysfs"
+        return "i2c_expander"
+
+    @staticmethod
+    def _resolve_active_low(val, bits, raw_bits) -> int | None:
+        """Mirror of lib_hw.sh sa02m_hw_i2c_active_low_mask_dec().
+
+        `auto` (the shipped value) means every declared output is active-low.
+        """
+        raw = (val("SA02M_I2C_ACTIVE_LOW_MASK") or "auto").strip()
+        if raw in ("auto", ""):
+            mask = _hw_parse_mask(val("SA02M_I2C_EXTRA_OUTPUT_MASK")) or 0
+            for bit in bits.values():
+                mask |= 1 << bit
+            return mask & 0x0F
+        return _hw_parse_mask(raw)
+
+
+class PCA9536Control:
+    """The PCA9536 output port, driven per an :class:`HwProfile`.
+
+    Which pin a channel occupies and whether it is active-low are properties of
+    the board, so they live in /etc/sa02m_hw.conf and arrive here in `profile`.
+    There is deliberately no raw `set_bit` any more: a caller that can name a
+    bit can name the wrong one, which is the whole 1.0.6.42 defect.
+
+    Register 1 = output port, register 3 = direction (0 = output).
+    """
     REG_OUT = 0x01
     REG_DIR = 0x03
 
-    def __init__(self):
+    def __init__(self, profile: HwProfile):
+        self._profile = profile
         self._lock = threading.Lock()
-        self._state = 0x00  # all low
+        # The direction register is applied under the bus lock too, so a busy
+        # bus at startup DEFERS it instead of disabling hardware control for the
+        # life of the process — init_hw() runs once, and MPLC4 already running
+        # when this service starts is the normal case, not the exception.
+        self._direction_applied = False
 
-    def init(self) -> bool:
-        # Set all pins as output
-        ok = _i2cset(self.BUS, self.ADDR, self.REG_DIR, 0x00)
-        if ok:
-            cur = _i2cget(self.BUS, self.ADDR, self.REG_OUT)
-            if cur is not None:
-                self._state = cur & 0x07
-        return ok
+    @property
+    def profile(self) -> HwProfile:
+        return self._profile
 
-    def get_bit(self, bit: int) -> int:
-        return (self._state >> bit) & 1
+    def channels(self) -> tuple[str, ...]:
+        """The channels this board can actually drive, in a stable order."""
+        return tuple(ch for ch in HW_CHANNELS if ch in self._profile.bits)
 
-    def set_bit(self, bit: int, value: bool) -> bool:
+    def init(self) -> tuple[bool, str]:
+        """Apply the direction register once, under the bus lock.
+
+        Returns (usable, detail). `usable` is False only for a real I/O
+        failure; a bus another owner holds leaves hardware control ENABLED with
+        the direction write deferred to the first command that gets the lock.
+        """
+        owner = _hw_owner_active(self._profile)
+        if owner is not None:
+            return True, f"deferred, {owner} holds the expander"
         with self._lock:
-            if value:
-                new_state = self._state | (1 << bit)
-            else:
-                new_state = self._state & ~(1 << bit)
-            if _i2cset(self.BUS, self.ADDR, self.REG_OUT, new_state & 0xFF):
-                self._state = new_state & 0xFF
-                return True
+            result = _with_bus_lock(self._profile,
+                                    self._apply_direction_unlocked)
+        if result is BUS_BUSY:
+            return True, "deferred, " + _bus_busy_reason(self._profile)
+        return (True, "") if result else (False, "the direction register would "
+                                                 "not take")
+
+    def _apply_direction_unlocked(self) -> bool:
+        if self._direction_applied:
+            return True
+        # Direction from the config's own output set, as lib_hw.sh
+        # sa02m_hw_i2c_config_mask_dec computes it: declared outputs low, the
+        # rest left as inputs. Forcing 0x00 here would claim a pin an
+        # integrator had deliberately narrowed out of the config.
+        outputs = self._profile.output_mask() | self._profile.extra_output_mask
+        config_mask = 0xF0 | ((~outputs) & 0x0F)
+        if not _i2cset(self._profile.bus, self._profile.addr,
+                       self.REG_DIR, config_mask):
             return False
+        self._direction_applied = True
+        return True
+
+    def _read_out(self) -> int | None:
+        return _i2cget(self._profile.bus, self._profile.addr, self.REG_OUT)
+
+    def read_channels(self) -> tuple[dict[str, int], str]:
+        """Every configured channel's LOGICAL level, from ONE locked port read.
+
+        One read for all of them, as lib_hw.sh sa02m_hw_i2c_read_output_dec
+        does: three separate reads can straddle another owner's write and
+        publish a state no single instant of the port ever had. Reading the
+        port rather than a cache is the same rule — MPLC4, KLogic and the
+        beeper worker move these bits without us.
+
+        The OWNER gate is deliberately not applied here, and this is the one
+        place the daemon does not mirror the CGI. lib_hw.sh refuses a read while
+        MPLC4 holds the bus so the panel can draw its «занято» badge: that
+        gate's product is a UI state, not bus safety. This service has no badge
+        — mirroring it would publish nothing for do/beeper/alarm_led on every
+        board that runs MPLC4, which is every production board, and the moment
+        the PLC is driving those pins is the moment their state is worth
+        publishing. A read cannot corrupt the byte, and under the lock it cannot
+        even observe a half-finished read-modify-write. What it can be is up to
+        one poll stale, which is the milder failure and an honest one: the
+        daemon publishes what it measured, it does not claim to have set it.
+
+        Returns (levels, reason). A non-empty reason means nothing was read.
+        """
+        with self._lock:
+            result = _with_bus_lock(self._profile, self._read_out)
+        if result is BUS_BUSY:
+            return {}, _bus_busy_reason(self._profile)
+        if result is None:
+            return {}, "the expander did not answer the read"
+        levels: dict[str, int] = {}
+        for channel in self.channels():
+            on = bool(result & (1 << self._profile.bits[channel]))
+            if self._profile.is_active_low(channel):
+                on = not on
+            levels[channel] = int(on)
+        return levels, ""
+
+    def set_channel(self, channel: str, on: bool) -> tuple[bool, str]:
+        """Drive one channel to a LOGICAL level. Returns (written, reason).
+
+        The whole read-modify-write runs under the bus lock. The byte carries
+        three other owners' bits, so a write that reads the port before someone
+        else's write and lands after it silently reverts their command — and
+        one of those bits is the discrete output.
+
+        A refusal — an owner holding the bus, a lock that did not come free
+        within the configured wait, a port that would not answer — comes back
+        with a reason for the caller to log. Never a silent no-op, and never a
+        write on a bus this daemon could not take.
+        """
+        if channel not in self._profile.bits:
+            return False, f"no bit for it in {self._profile.source}"
+        owner = _hw_owner_active(self._profile)
+        if owner is not None:
+            return False, f"{owner} holds the expander"
+        with self._lock:
+            result = _with_bus_lock(
+                self._profile, lambda: self._set_channel_unlocked(channel, on))
+        if result is BUS_BUSY:
+            return False, _bus_busy_reason(self._profile)
+        return result
+
+    def _set_channel_unlocked(self, channel: str, on: bool) -> tuple[bool, str]:
+        if not self._apply_direction_unlocked():
+            return False, "the direction register would not take"
+        reg = self._read_out()
+        if reg is None:
+            # Without the current byte we would be guessing the bits we were
+            # not asked to touch — and one of them is the discrete output.
+            return False, "the expander did not answer the read"
+        mask = 1 << self._profile.bits[channel]
+        high = on if not self._profile.is_active_low(channel) else not on
+        new = (reg | mask) if high else (reg & ~mask)
+        if not _i2cset(self._profile.bus, self._profile.addr,
+                       self.REG_OUT, new & 0xFF):
+            return False, "the expander refused the write"
+        return True, ""
 
 
 # ── System metrics ─────────────────────────────────────────────────────────────
@@ -524,22 +1055,32 @@ class TelemetryClient:
             self._client.message_callback_add(topic, self._make_hw_cb(ctrl))
 
     def _make_hw_cb(self, ctrl: str):
-        bit_map = {"do": 0, "beeper": 1, "alarm_led": 2}
-
         def cb(client, userdata, msg):
             if self._hw is None:
                 # Never silent: a dropped command that leaves no trace is the
                 # exact defect class this release exists to close.
                 log.warning("HW not ready — %s command dropped", ctrl)
                 return
+            if ctrl not in self._hw.channels():
+                # No bit for this channel in /etc/sa02m_hw.conf. Refusing is
+                # the point: driving a guessed pin is how `beeper` came to
+                # switch the discrete output (1.0.6.42).
+                log.warning(
+                    "HW %s has no configured bit — command dropped (%s)",
+                    ctrl, self._hw.profile.refusals.get(ctrl, "not configured"),
+                )
+                return
             val = msg.payload.decode().strip()
             on = val not in ("0", "false", "False", "")
-            bit = bit_map.get(ctrl, 0)
-            if self._hw.set_bit(bit, on):
+            written, why = self._hw.set_channel(ctrl, on)
+            if written:
                 self._pub(f"controls/{ctrl}", "1" if on else "0")
                 log.info("HW %s = %d", ctrl, on)
             else:
-                log.warning("HW %s write failed", ctrl)
+                # A refusal names who we yielded the shared bus to, or what
+                # would not answer. Publishing nothing here is the other half:
+                # a state we did not write must not be reported as written.
+                log.warning("HW %s not driven: %s", ctrl, why)
         return cb
 
     def _pub(self, suffix: str, value: str, retain: bool = True) -> None:
@@ -578,10 +1119,17 @@ class TelemetryClient:
         self._pub("controls/ram_pct", str(ram_pct()))
         self._pub("controls/uptime_s", str(uptime_s()))
 
-        # HW state
+        # HW state. Only the channels the config actually maps, and as the
+        # LOGICAL level — publishing the raw bit on an active-low output is how
+        # a retained `1` came to mean "off" and the app showed the opposite of
+        # the hardware. A channel we cannot read is left unpublished rather
+        # than reported as 0.
         if self._hw:
-            for ctrl, bit in [("do", 0), ("beeper", 1), ("alarm_led", 2)]:
-                self._pub(f"controls/{ctrl}", str(self._hw.get_bit(bit)))
+            levels, why = self._hw.read_channels()
+            if why:
+                log.warning("HW state not published this cycle: %s", why)
+            for ctrl, level in levels.items():
+                self._pub(f"controls/{ctrl}", str(level))
 
         # RS-485 stats
         for i in range(SERIAL_COUNT):
@@ -603,10 +1151,44 @@ class TelemetryClient:
                 time.sleep(5)
 
     def init_hw(self) -> None:
-        self._hw = PCA9536Control()
-        if not self._hw.init():
+        profile = HwProfile.load()
+        # Backend is honoured, not assumed (1.0.6.42). `disabled` is what an
+        # integrator sets to keep software off this expander; `gpio_sysfs`
+        # routes these channels to sysfs pins, which this daemon does not
+        # implement. Driving the PCA9536 in either case writes to hardware the
+        # operator explicitly took us off — so refuse, loudly, and leave the
+        # web UI (which does implement both) as the way to drive them.
+        if profile.backend != "i2c_expander":
+            log.warning(
+                "HW backend is %s (%s) — telemetry drives no outputs; "
+                "hardware control stays with the web UI",
+                profile.backend, profile.source,
+            )
+            self._hw = None
+            return
+        for ctrl, reason in sorted(profile.refusals.items()):
+            log.warning("HW %s unavailable: %s", ctrl, reason)
+        if not profile.bits:
+            log.warning("no usable hardware channel in %s — HW control disabled",
+                        profile.source)
+            self._hw = None
+            return
+        hw = PCA9536Control(profile)
+        usable, detail = hw.init()
+        if not usable:
             log.warning("PCA9536 init failed — HW control disabled")
             self._hw = None
+            return
+        self._hw = hw
+        if detail:
+            log.warning("PCA9536 direction register %s — it is applied by the "
+                        "first command that gets the bus", detail)
+        log.info(
+            "HW channels from %s: %s (active-low mask 0x%X, bus lock %s)",
+            profile.source,
+            ", ".join(f"{c}=bit{profile.bits[c]}" for c in hw.channels()),
+            profile.active_low_mask, profile.lock_file,
+        )
 
     def _clear_legacy_retained(self) -> None:
         """Once per process, off the _on_connect callback thread."""
