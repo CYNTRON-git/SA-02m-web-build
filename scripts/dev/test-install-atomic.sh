@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# comment-mutation-proof-exempt: behavioural harness — the helper's guarantee is asserted by RUNNING scripts/lib.sh sa02m_atomic_install in a sandbox with a failing `mv` / a torn `install` shim (files observed, not lines grepped), and the site pin delegates to the codemod's own `--check` sweep plus a drive-to-failure on a scratch copy; commenting a shipped install site out removes a call, which the codemod's non-vacuity floor (>= MIN_CONVERTED converted sites) and the module's own behaviour catch, not a needle grep here.
+# comment-mutation-proof-exempt: behavioural harness — the helper's guarantee is asserted by RUNNING scripts/lib.sh sa02m_atomic_install in a sandbox with a failing `mv` / a torn `install` shim (files observed, not lines grepped), and the site pin delegates to the codemod's own `--check` sweep plus a drive-to-failure on a scratch copy; commenting a shipped install site out removes a call, which the codemod's non-vacuity floor (>= MIN_CONVERTED converted sites) and the module's own behaviour catch, not a needle grep here; sections 8-9 hold the same property for the OTA apply path - the helper is EXTRACTED from the shipped file and RUN under the same shims, and its call sites are floored by a converted-call count (>= MIN_APPLY_CALLS) that a comment-out drops below, with 8g a negative control that requires the pre-fix shape to really break.
 # test-install-atomic.sh — regression harness for the atomic live-path write
 # (scripts/lib.sh sa02m_atomic_install) and for the rule that every live-path
 # `install -m` site in scripts/*.sh AND install.sh goes through it. Quality row
@@ -25,9 +25,26 @@
 # - install.sh carries zero install -m sites today, so 7c alone would leave the
 # "and install.sh" half of the claim unmeasured).
 #
+# Sections 8-9 do the same for the OTA apply path — etc/sa02m-web-update-apply.sh,
+# how a FIELD board updates itself. It cannot source scripts/lib.sh (scripts/ is
+# not deployed), so it carries its own atomic_install_script; the function is
+# EXTRACTED from the shipped file and run in the sandbox (the file itself cannot
+# be sourced — it locks, truncates its log and exec's at load). Its seven live
+# destinations are shell variables, which the codemod's literal-destination
+# sweep cannot classify, so the sites are pinned by an ALLOW-LIST of the two
+# raw destinations there that are NOT live paths, floored by the converted-call
+# count and driven to failure on a scratch copy.
+#
 # Drive-to-failure: SVC_HELPERS_LIB=<(git show 1.0.6.41~N:scripts/lib.sh) has
 # no sa02m_atomic_install — the source guard fails; revert one codemod site —
-# case 7 reports it.
+# case 7 reports it. RED for the OTA half, observed 2026-09-09 against the
+# pre-fix etc/sa02m-web-update-apply.sh: 4 FAILURES — "8 … defines no
+# atomic_install_script()", "9a 7 raw live-path 'install -m' site(s) still in
+# …" naming :274 :277 :280 :284 :288 :290 :306, "9b … only 0
+# atomic_install_script sites", "9c … no atomic_install_script site found to
+# revert"; and, on the converted tree with tmp="$dst" spliced into the extracted
+# helper (a scratch mutation, never shipped), 8c and 8d both RED with the live
+# file GONE — the incident class itself.
 #
 # Run: bash scripts/dev/test-install-atomic.sh   (bash + coreutils + python3)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,6 +194,179 @@ else
     else
         bad "7d a raw unit write planted in install.sh was NOT caught (rc=$rrc): $(printf '%s\n' "$red" | head -3 | tr '\n' ' ')"
     fi
+fi
+
+echo "── 8. the OTA apply path's own atomic helper (etc/sa02m-web-update-apply.sh) ──"
+# etc/ scripts run standalone on the board, where scripts/ is not deployed, so
+# sa02m_atomic_install is unreachable there and the OTA apply path carries its
+# own copy (atomic_install_script). The helper is EXTRACTED from the SHIPPED
+# file and run for real — the file itself cannot be sourced (it takes a lock,
+# truncates its log and exec's the shared runner at load).
+APPLY=etc/sa02m-web-update-apply.sh
+sed -n '/^atomic_install_script() {$/,/^}$/p' "$APPLY" > "$T/apply-helper.sh"
+if [ ! -s "$T/apply-helper.sh" ]; then
+    bad "8 $APPLY defines no atomic_install_script() — the fleet's self-update path still writes live paths with a bare 'install -m' (nothing to run)"
+else
+    ok "8 extracted atomic_install_script() from $APPLY ($(wc -l < "$T/apply-helper.sh") lines)"
+    # shellcheck disable=SC1090
+    source "$T/apply-helper.sh"
+    # the shipped helper appends tool stderr to the OTA log the script owns
+    export LOGFILE="$T/apply.log"; : > "$LOGFILE"
+    mkdir -p "$T/ota"
+    printf 'OLD auth lib\n' > "$T/ota/sa02m-web-auth-lib.sh"
+    # The repo copy a CRLF checkout hands the board — the strip is what the
+    # pre-fix shape ran as a SECOND write over the LIVE file.
+    printf '#!/bin/bash\r\nweb_auth_check() { :; }\r\n' > "$T/src/lib-crlf.sh"
+    printf '#!/bin/bash\nweb_auth_check() { :; }\n' > "$T/src/lib-lf.sh"
+    ota_tmp_left() { ls "$T/ota"/*.sa02m-tmp.* >/dev/null 2>&1; }
+
+    rc=0
+    atomic_install_script -m 644 "$T/src/lib-crlf.sh" "$T/ota/sa02m-web-auth-lib.sh" || rc=$?
+    if [ "$rc" -eq 0 ] && cmp -s "$T/src/lib-lf.sh" "$T/ota/sa02m-web-auth-lib.sh" && ! ota_tmp_left; then
+        ok "8a success: destination carries the NEW bytes with CRLF stripped, rc=0, no tmp left"
+    else
+        bad "8a success path: rc=$rc first-line='$(head -1 "$T/ota/sa02m-web-auth-lib.sh" 2>/dev/null | tr -d '\r')' bytes=$(wc -c < "$T/ota/sa02m-web-auth-lib.sh" 2>/dev/null) dir='$(ls "$T/ota" | tr '\n' ' ')'"
+    fi
+
+    # Mode. MSYS/Cygwin derives a file's mode from a heuristic (a `#!` body reads
+    # 755, anything else 644) and ignores chmod outright, so -m 644 and -m 755
+    # are indistinguishable on a Windows dev box — an assertion there could not
+    # fail, and decoration is not evidence (quality-gate-rigor.md). The host is
+    # PROBED and the case reports a SKIP rather than a pass when it cannot tell
+    # 0600 from 0644, the same call test-installer-svc-helpers.sh 14b makes
+    # (.ai-dev/notes/quality-gate-environment.md). Where modes are real, the
+    # assertion is both absolute (644/755 land) and equivalent to install(1),
+    # which is what the seven converted sites did before.
+    printf 'plain
+' > "$T/modeprobe"; chmod 600 "$T/modeprobe" 2>/dev/null
+    if [ "$(stat -c '%a' "$T/modeprobe" 2>/dev/null)" = "600" ]; then fidelity=real; else fidelity=heuristic-host; fi
+    if [ "$fidelity" != "real" ]; then
+        echo "SKIP  8b mode assertions (POSIX modes are not representable on $(uname -s): MSYS derives a mode from the file body and ignores chmod, so -m 644 and -m 755 are indistinguishable here) — CI is the authority"
+    else
+        mode_ok=1
+        for m in 644 755; do
+            install -m "$m" "$T/src/lib-crlf.sh" "$T/ota/ref-$m.sh" 2>/dev/null
+            atomic_install_script -m "$m" "$T/src/lib-crlf.sh" "$T/ota/new-$m.sh"
+            ref=$(stat -c '%a' "$T/ota/ref-$m.sh" 2>/dev/null || echo '?')
+            got=$(stat -c '%a' "$T/ota/new-$m.sh" 2>/dev/null || echo '??')
+            [ "$got" = "$m" ] && [ "$got" = "$ref" ]                 || { mode_ok=0; bad "8b mode -m $m: helper landed $got, install(1) lands $ref"; }
+        done
+        [ "$mode_ok" -eq 1 ] && ok "8b mode: -m 644 and -m 755 land 644/755, exactly what install(1) lands"
+    fi
+
+    printf 'OLD auth lib\n' > "$T/ota/sa02m-web-auth-lib.sh"
+    rc=0
+    ( PATH="$T/bin-nomv:$PATH"; atomic_install_script -m 644 "$T/src/lib-crlf.sh" "$T/ota/sa02m-web-auth-lib.sh" ) || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$(cat "$T/ota/sa02m-web-auth-lib.sh")" = "OLD auth lib" ] && ! ota_tmp_left; then
+        ok "8c failed rename: the live auth lib is still OLD, rc=$rc, tmp cleaned"
+    else
+        bad "8c failed rename: rc=$rc content='$(cat "$T/ota/sa02m-web-auth-lib.sh")' dir='$(ls "$T/ota" | tr '\n' ' ')'"
+    fi
+
+    # Torn STAGING copy: the helper stages its tmp with `sed` (the CRLF strip is
+    # folded into the copy), so the shim modelling "the copy is killed mid-body"
+    # is a sed that emits a prefix and dies.
+    mkdir -p "$T/bin-tornsed"
+    cat > "$T/bin-tornsed/sed" <<'SHIM'
+#!/bin/bash
+# model of a staging copy killed mid-body: emit 8 bytes of the source and die
+for last; do :; done
+head -c 8 "$last"
+exit 1
+SHIM
+    chmod +x "$T/bin-tornsed/sed"
+    printf 'OLD auth lib\n' > "$T/ota/sa02m-web-auth-lib.sh"
+    rc=0
+    ( PATH="$T/bin-tornsed:$PATH"; atomic_install_script -m 644 "$T/src/lib-crlf.sh" "$T/ota/sa02m-web-auth-lib.sh" ) || rc=$?
+    if [ "$rc" -ne 0 ] && [ "$(cat "$T/ota/sa02m-web-auth-lib.sh")" = "OLD auth lib" ] && ! ota_tmp_left; then
+        ok "8d torn staging copy: the live auth lib is still OLD (never empty, never half-converted), rc=$rc, tmp cleaned"
+    else
+        bad "8d torn staging copy: rc=$rc content='$(cat "$T/ota/sa02m-web-auth-lib.sh")' dir='$(ls "$T/ota" | tr '\n' ' ')'"
+    fi
+
+    printf 'OLD auth lib\n' > "$T/ota/sa02m-web-auth-lib.sh"
+    printf 'garbage' > "$T/ota/sa02m-web-auth-lib.sh.sa02m-tmp.999"
+    rc=0
+    atomic_install_script -m 644 "$T/src/lib-crlf.sh" "$T/ota/sa02m-web-auth-lib.sh" || rc=$?
+    if [ "$rc" -eq 0 ] && ! ota_tmp_left; then
+        ok "8e stale sa02m-tmp.999 from an earlier crash is removed by the next install"
+    else
+        bad "8e stale tmp: rc=$rc dir='$(ls "$T/ota" | tr '\n' ' ')'"
+    fi
+
+    rc=0; atomic_install_script -m 644 "$T/src/lib-crlf.sh" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then ok "8f argument floor: missing DST is refused (rc=$rc)"; else bad "8f helper accepted a single argument"; fi
+
+    # NEGATIVE CONTROL — the shims above are not decoration. Replay the PRE-FIX
+    # shape (`install -m` then a follow-up `sed -i` over the LIVE path) under the
+    # torn-copy shim of section 3 and require the live file to come out BROKEN.
+    # If this ever passes, 8c/8d assert nothing (quality-gate-rigor.md: an
+    # assertion that cannot fail is decoration, not evidence).
+    printf 'OLD auth lib\n' > "$T/ota/prefix.sh"
+    ( PATH="$T/bin-torn:$PATH"; install -m 644 "$T/src/lib-crlf.sh" "$T/ota/prefix.sh" && sed -i 's/\r$//' "$T/ota/prefix.sh" ) >/dev/null 2>&1
+    pfx_bytes=$(wc -c < "$T/ota/prefix.sh" 2>/dev/null || echo -1)
+    if [ "$(cat "$T/ota/prefix.sh" 2>/dev/null | tr -d '\r\n')" != "OLD auth lib" ] && [ "$pfx_bytes" -lt 20 ]; then
+        ok "8g negative control: the PRE-FIX 'install -m' + 'sed -i' shape leaves the live file truncated to $pfx_bytes bytes under the same shim — the failure 8c/8d assert against is real"
+    else
+        bad "8g negative control: the pre-fix shape survived the torn-copy shim ($pfx_bytes bytes) — 8c/8d model nothing"
+    fi
+fi
+
+echo "── 9. every live-path install site in the OTA apply path goes through the helper ──"
+# The rule is an ALLOW-LIST of the sanctioned raw sites, not a denylist of the
+# ones we thought of (quality-gate-rigor.md shape (b) — the mqtt-install-secret
+# lesson). Only TWO destinations in this file are not live paths:
+#   /etc/tmpfiles.d/*   — read by systemd-tmpfiles on demand, never mid-flight
+#   /etc/sudoers.d/*    — staged and `visudo -c`-validated first, re-read per sudo
+# Any other `install -m` here writes a live path on the fleet's self-update
+# path. Those destinations are SHELL VARIABLES ($tgt), which is why the
+# codemod's literal-destination sweep (section 7) cannot classify them and this
+# file is not in its FILES set — the sites are pinned here instead.
+MIN_APPLY_CALLS=7      # 7 live-path sites on 1.0.6.41
+MIN_APPLY_ALLOWED=2    # the two sanctioned raw sites above
+apply_raw_sites() {
+    local out
+    out=$(grep -n -E '(^|[^[:alnum:]_/.-])install[[:space:]]+-m[[:space:]]' "$1" 2>/dev/null || true)
+    printf '%s\n' "$out" | tr -d '\r' \
+        | grep -v -E '^[[:space:]]*[0-9]+:[[:space:]]*#' \
+        | grep -v -E '/etc/tmpfiles\.d/|/etc/sudoers\.d/' || true
+}
+apply_allowed_count() {
+    local out
+    out=$(grep -n -E '(^|[^[:alnum:]_/.-])install[[:space:]]+-m[[:space:]]' "$1" 2>/dev/null || true)
+    printf '%s\n' "$out" | tr -d '\r' | grep -c -E '/etc/tmpfiles\.d/|/etc/sudoers\.d/'
+}
+
+raw=$(apply_raw_sites "$APPLY" | sed '/^$/d')
+if [ -z "$raw" ]; then
+    ok "9a no unsanctioned raw 'install -m' site left in $APPLY"
+else
+    bad "9a $(printf '%s\n' "$raw" | wc -l) raw live-path 'install -m' site(s) still in $APPLY:"
+    printf '%s\n' "$raw" | head -20 | sed "s|^|        $APPLY:|"
+fi
+
+calls=$(grep -c -E '^[[:space:]]*atomic_install_script[[:space:]]+-m[[:space:]]' "$APPLY" || true)
+allowed=$(apply_allowed_count "$APPLY")
+if [ "$calls" -ge "$MIN_APPLY_CALLS" ] && [ "$allowed" -ge "$MIN_APPLY_ALLOWED" ]; then
+    ok "9b non-vacuity: $calls atomic_install_script sites and $allowed sanctioned raw sites are really there (floors $MIN_APPLY_CALLS / $MIN_APPLY_ALLOWED)"
+else
+    bad "9b non-vacuity: only $calls atomic_install_script sites and $allowed sanctioned raw sites (floors $MIN_APPLY_CALLS / $MIN_APPLY_ALLOWED) — the file was restructured and 9a has stopped watching the sites it names; update the floors, do not delete the check"
+fi
+
+# drive-to-failure: revert ONE converted site on a scratch copy → 9a's rule must
+# go RED naming that line. Without it, 9a is a sweep that has never seen a defect.
+mkdir -p "$T/scratch/etc"
+cp "$APPLY" "$T/scratch/etc/"
+aln=$(grep -n -E '^[[:space:]]*atomic_install_script[[:space:]]+-m[[:space:]]' "$APPLY" | head -1 | cut -d: -f1)
+if [ -n "${aln:-}" ] && sed -i "${aln}s/atomic_install_script -m /install -m /" "$T/scratch/etc/$(basename "$APPLY")"; then
+    red=$(apply_raw_sites "$T/scratch/etc/$(basename "$APPLY")" | sed '/^$/d')
+    if printf '%s\n' "$red" | grep -q "^${aln}:"; then
+        ok "9c drive-to-failure: reverting line $aln to a raw 'install -m' on a scratch copy turns 9a RED at that line"
+    else
+        bad "9c drive-to-failure: reverting line $aln was NOT caught — 9a is hollow (got: $(printf '%s\n' "$red" | head -3 | tr '\n' ' '))"
+    fi
+else
+    bad "9c drive-to-failure could not run: no atomic_install_script site found to revert"
 fi
 
 echo ""

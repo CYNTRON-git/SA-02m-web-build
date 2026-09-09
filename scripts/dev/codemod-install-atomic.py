@@ -27,23 +27,71 @@ Scope: scripts/*.sh + install.sh - every shell file that can reach
 sa02m_atomic_install, which lives in scripts/lib.sh and is sourced out of the
 EXTRACTED install tree (install.sh:77). scripts/ is never deployed to the
 device, so a script under etc/ - which runs standalone on the board, sourcing
-only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call the helper. Its
-live-path sites are therefore out of scope BY CONSTRUCTION, not by oversight,
-and this is their enumeration (verified 2026-09-09, ship review finding 3):
+only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call THIS helper. That
+is the only thing "out of scope" means here: a device-side script writes live
+paths atomically by carrying its OWN copy of the shape, and three already do
+(etc/sa02m-update-runner.sh:1006 atomic_install_file, tmp + fdatasync + mv +
+dir fsync; etc/sa02m-factory-reset-runner.sh:317 atomic_install_file, the same
+shape plus the wipe allow-list and rollback journal that file owns;
+etc/sa02m-web-update-apply.sh:59 atomic_install_script, the same shape with the
+CRLF normalisation folded into the staged copy). They are NOT byte-identical
+and there is no cmp pin between them - each is scoped to its own caller's
+duties, which is why a fourth copy is a decision, not a formality.
 
-    etc/sa02m-web-service-ctl.sh:1359  -> /etc/systemd/system/nodered.service
-    etc/sa02m-web-service-ctl.sh:895,898 -> /opt/mplc4/*.so
-    etc/sa02m-commit-web-env.sh:14     -> /etc/sa02m_web.env
-    etc/sa02m-web-update-apply.sh:316  -> /etc/tmpfiles.d/*
-    etc/sa02m-web-update-apply.sh:352  -> /etc/sudoers.d/sa02m-www
-    etc/sa02m-update-runner.sh:394
+Live-path `install -m` sites still under etc/, complete as of 1.0.6.41 (found
+by `grep -rn 'install -m' etc/` and resolving every destination, including the
+variable ones, to what it holds at run time):
 
-The unit write is the incident's own shape, so closing them is real work, not
-tidying: it needs the helper duplicated into a device-side lib (the shape the
-shared watchdog block already uses, with a cmp pin) and each site converted
-with its own drive-to-failure. Tracked in .ai-dev/backlog.md; do NOT widen
-FILES to etc/ before that lands, or every site there turns the sweep RED with
-no helper to convert it to.
+    etc/sa02m-web-service-ctl.sh:1359 -> /etc/systemd/system/nodered.service
+        A unit write - the incident's own shape. Survives because this file
+        carries no atomic helper yet; converting it means a fourth copy of the
+        shape (or a device-side lib the file already sources) plus its own
+        drive-to-failure. NOT closed, and not blocked by anything but the work.
+
+    etc/sa02m-update-runner.sh:1289 -> "$rel", an absolute path replayed from
+        the pre-update rollback archive; its members are the manifest's
+        deploy[].dst entries (build_rollback_archive, :968-985), so /usr/local/**
+        and /etc/systemd/system/** are exactly what it restores. Survives only
+        because nobody looked: this file DEFINES atomic_install_file 283 lines
+        above, so the conversion needs no new helper - and this is the site that
+        runs when the board is already mid-failure.
+
+Everything else under etc/ that matches `install -m` writes a destination that
+is not a live path, so it is outside the rule rather than an exception to it:
+
+    etc/sa02m-web-update-apply.sh:391   -> /etc/tmpfiles.d/*        (read by
+        systemd-tmpfiles on demand, never mid-flight)
+    etc/sa02m-web-update-apply.sh:427   -> /etc/sudoers.d/sa02m-www (staged and
+        visudo -c-validated first; re-read per sudo invocation)
+    etc/sa02m-web-service-ctl.sh:895,898 -> /opt/mplc4/*.so         (re-read on
+        MPLC4 restart, and the pack is stopped around the write)
+    etc/sa02m-commit-web-env.sh:14      -> /etc/sa02m_web.env
+    etc/sa02m-web-auth-lib.sh:113       -> "$f" = /etc/sa02m_web.env
+    etc/sa02m-hw-backend-guard.sh:62    -> /etc/sa02m_hw.conf
+    etc/sa02m-status-blocks-guard.sh:112,180 -> /etc/sa02m_status_blocks.conf
+    etc/sa02m-prepare-working-board.sh:58 -> "$file" = /etc/sa02m_{hw,status_blocks,storage}.conf
+    etc/sa02m-armbian-branding.sh:40,71 -> /etc/armbian{,-image}-release,
+        /etc/update-motd.d/10-armbian-header
+    etc/sa02m-update-runner.sh:122      -> "$STATEDIR/state/*"      (own state)
+    etc/sa02m-update-runner.sh:395      -> "$STATEDIR/runner/$txn/runner", a
+        per-transaction scratch self-copy that is exec'd immediately - not a
+        live path (this entry used to be recorded as ":394" and as live; both
+        were wrong)
+    etc/sa02m-update-runner.sh:1014,1015,1017 and
+    etc/sa02m-factory-reset-runner.sh:333 -> "$tmp", the staging file INSIDE
+        atomic_install_file - these are the atomic shape, not violations of it
+    etc/sa02m-check-service-perms.sh:63 -> `install -d`: a directory, not a
+        file write (the helper refuses -d for the same reason)
+
+FILES is deliberately NOT widened to etc/. Two independent reasons, either one
+sufficient: the rewrite mode would emit `sa02m_atomic_install`, a name no etc/
+script can resolve; and the seven converted sites in
+etc/sa02m-web-update-apply.sh write "$tgt", a shell variable, which
+destination() cannot classify - sweeping that file here would be a check that
+passes because it tested nothing. Those sites are pinned behaviourally instead,
+by scripts/dev/test-install-atomic.sh sections 8-9 (an allow-list of the two
+sanctioned raw destinations + a converted-call floor + a drive-to-failure).
+The two survivors above are tracked in .ai-dev/backlog.md.
 
 Line endings are preserved byte-for-byte (the tree is LF; a CRLF checkout
 stays CRLF). Run from the repo root: python3 scripts/dev/codemod-install-atomic.py

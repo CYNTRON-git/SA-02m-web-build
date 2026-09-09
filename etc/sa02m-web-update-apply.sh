@@ -31,6 +31,81 @@ chmod 755 "$STATEDIR"
 
 log() { local ts; ts=$(date '+%Y-%m-%d %H:%M:%S'); printf '%s %s\n' "$ts" "$*" | tee -a "$LOGFILE"; }
 
+# atomic_install_script -m MODE SRC DST
+# Land a LIVE-PATH shell file (a helper under /usr/local/{sbin,lib,libexec})
+# so a hard reset at ANY instant leaves DST either the OLD file or the NEW one
+# — never the 0-byte window `install -m` opens between its truncate and its
+# fill, and never the half-converted window a follow-up `sed -i` opened on top
+# of that. Bench 1.136 (2026-09-08) reset mid-install and booted with an empty
+# sa02m-flasher.service, which systemd reads as MASKED; the same shape on
+# /usr/local/lib/sa02m-web-auth-lib.sh takes out every CGI on the board, and
+# THIS script is how a field board updates itself.
+#
+# A third device-side copy of the shape by construction, not by choice: this
+# script runs standalone on the board, where scripts/ is not deployed, so it
+# cannot source scripts/lib.sh sa02m_atomic_install. The two device-side copies
+# that already exist are not reusable here and are not byte-identical to each
+# other: etc/sa02m-update-runner.sh atomic_install_file() fdatasyncs the tmp and
+# fsyncs the directory, etc/sa02m-factory-reset-runner.sh atomic_install_file()
+# adds the wipe allow-list and the rollback journal that runner owns, and
+# neither carries the CRLF normalisation these sites need. Flags mirror
+# sa02m_atomic_install (-m MODE SRC DST) so the family reads the same way.
+#
+# The CRLF strip is folded INTO the staged copy — `sed` writes the tmp — rather
+# than running `sed -i` over the live file afterwards, so the live path is
+# written exactly once, by the rename. Returns 0 only when DST carries the new
+# bytes; on any failure the tmp is removed and DST is left untouched.
+# Harness: scripts/dev/test-install-atomic.sh section 8.
+atomic_install_script() {
+    local mode="" src dst tmp
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -m) mode=${2:-}; shift 2 ;;
+            --) shift; break ;;
+            -*) log "ERROR: atomic_install_script: неизвестный ключ $1"; return 1 ;;
+            *)  break ;;
+        esac
+    done
+    if [ $# -ne 2 ] || [ -z "$mode" ]; then
+        log "ERROR: atomic_install_script: нужны -m MODE SRC DST (получено $#)"
+        return 1
+    fi
+    src=$1; dst=$2
+    if [ ! -f "$src" ]; then
+        log "ERROR: atomic_install_script: источник $src не найден"
+        return 1
+    fi
+    if ! mkdir -p "$(dirname "$dst")" 2>>"$LOGFILE"; then
+        log "ERROR: atomic_install_script: не удалось создать каталог для $dst"
+        return 1
+    fi
+    # A tmp left by an earlier crash is junk, never a decision — clear it first.
+    rm -f -- "$dst".sa02m-tmp.* 2>/dev/null
+    tmp="$dst.sa02m-tmp.$$"
+    # Stage + normalise line endings in ONE write, into the tmp.
+    if ! sed 's/\r$//' "$src" > "$tmp" 2>>"$LOGFILE"; then
+        rm -f -- "$tmp"
+        log "ERROR: atomic_install_script: не удалось записать $tmp (живой $dst не тронут)"
+        return 1
+    fi
+    if ! chmod "$mode" "$tmp" 2>>"$LOGFILE"; then
+        rm -f -- "$tmp"
+        log "ERROR: atomic_install_script: не удалось выставить режим $mode на $tmp"
+        return 1
+    fi
+    # coreutils >= 8.24: `sync FILE` = fsync(2) of that file; older ones take no
+    # operand — fall back to a full sync (slow, but never a torn rename). The
+    # data must be on disk BEFORE the rename: ext4 commit=600 on the board
+    # otherwise leaves a named-but-empty file after a reset.
+    sync -- "$tmp" 2>/dev/null || sync
+    if ! mv -f -- "$tmp" "$dst" 2>>"$LOGFILE"; then
+        rm -f -- "$tmp"
+        log "ERROR: atomic_install_script: не удалось переименовать $tmp → $dst (живой файл не тронут)"
+        return 1
+    fi
+    return 0
+}
+
 normalize_repo_url() {
     local u=$1
     u="${u%.git}"
@@ -271,23 +346,23 @@ for src in etc/sa02m-web-build-lib.sh etc/sa02m-web-update-check.sh etc/sa02m-we
         tgt="/usr/local/sbin/$(basename "${src%.sh}")"
         if [ "$src" = "etc/sa02m-web-auth-lib.sh" ]; then
             tgt="/usr/local/lib/sa02m-web-auth-lib.sh"
-            install -m 644 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-web-build-lib.sh" ]; then
             tgt="/usr/local/lib/sa02m-web-build-lib.sh"
-            install -m 644 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 644 "$TMPDIR/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-web-root-cmd.sh" ]; then
             tgt="/usr/local/sbin/sa02m-web-root-cmd.sh"
-            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-update-runner.sh" ]; then
             mkdir -p /usr/local/libexec
             tgt="/usr/local/libexec/sa02m-update-runner"
-            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         elif [ "$src" = "etc/sa02m-update-inspect.sh" ]; then
             mkdir -p /usr/local/libexec
             tgt="/usr/local/libexec/sa02m-update-inspect"
-            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         else
-            install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+            atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         fi
         log "Обновлён $tgt"
     fi
@@ -303,7 +378,7 @@ for src in usr/local/sbin/sa02m-gateway-config-apply.sh \
            usr/local/sbin/sa02m-cloud-web-trigger.sh; do
     if [ -f "$TMPDIR/repo/$src" ]; then
         tgt="/usr/local/sbin/$(basename "$src")"
-        install -m 755 "$TMPDIR/repo/$src" "$tgt" && sed -i 's/\r$//' "$tgt"
+        atomic_install_script -m 755 "$TMPDIR/repo/$src" "$tgt"
         log "Обновлён $tgt"
     fi
 done
