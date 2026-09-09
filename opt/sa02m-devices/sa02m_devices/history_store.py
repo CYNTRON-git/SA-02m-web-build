@@ -208,7 +208,9 @@ def _carel_is_long(conn: sqlite3.Connection) -> bool:
 # BEGIN IMMEDIATE takes the write lock up front, so the 1 Hz logger writing into
 # the same file either finished before the pivot or blocks on it (its own
 # `sqlite3.connect(timeout=30)`) and then writes into the wide table — a tick
-# lost to the busy timeout is one 10 s sample, retried by the next tick.
+# lost to the busy timeout is one 10 s sample, retried by the next tick. A third
+# outcome — an opener that decided to migrate before the winner committed and
+# reaches this script against an already-wide table — is handled by the caller.
 # `MAX(CASE …)` over the long PK `(ts, device_id, metric)` sees exactly one value
 # per cell, so the pivot is lossless; the old writer emitted every metric of a
 # tick under one `ts`, so grouping by `(ts, device_id)` rebuilds the tick.
@@ -242,10 +244,27 @@ COMMIT;
 def _migrate_carel_to_wide(conn: sqlite3.Connection) -> None:
     """Pivot a long `carel_samples` in place; keep the old table as the rollback.
 
-    Idempotent: a second open sees no `metric` column and returns. Runs on EVERY
-    file `_connect` opens — the active DB, a rotated archive on first read, an
-    eMMC staging before a promote. `carel_samples_v1` is the one-release rollback
-    (plan 1.0.6.41 fork F4; 1.0.6.42 drops it) and `purge_old` never touches it.
+    Idempotent both ways. Sequentially: a second open sees no `metric` column
+    and returns. CONCURRENTLY: every caller opens its own connection (a logger
+    tick, an archive read, an eMMC staging), so a second opener can evaluate the
+    check below while the winner is still inside its transaction, block on the
+    script's `BEGIN IMMEDIATE`, and take the write lock after the schema has
+    already changed — its `SELECT … WHERE metric = …` then hits a table with no
+    `metric` column. The loser's STALE DECISION is what is wrong there, not the
+    archive, so the outcome is decided by re-reading committed state after the
+    rollback: no `metric` column any more means the winner did our work.
+
+    Why not take the lock before the check instead: `executescript` COMMITs any
+    pending transaction before running its script (CPython sqlite3, verified on
+    3.14), so a `BEGIN IMMEDIATE` issued here would be released by the very call
+    it was meant to protect — holding it would mean driving the script's own
+    statements by hand and betting the migration on pysqlite's implicit-BEGIN
+    behaviour. The script's own `BEGIN IMMEDIATE` stays the one serialisation
+    point; only the loser's verdict is re-taken against what it serialised on.
+
+    Runs on EVERY file `_connect` opens. `carel_samples_v1` is the one-release
+    rollback (plan 1.0.6.41 fork F4; 1.0.6.42 drops it) and `purge_old` never
+    touches it.
     """
     if not _carel_is_long(conn):
         return
@@ -253,9 +272,17 @@ def _migrate_carel_to_wide(conn: sqlite3.Connection) -> None:
         conn.executescript(_MIGRATE_CAREL_SQL)
     except sqlite3.Error:
         # The script's own COMMIT never ran: drop the half-built wide table and
-        # leave the long archive exactly as it was. Raising (not swallowing) is
-        # deliberate — a reader skips this file, the logger logs the tick.
+        # leave the long archive exactly as it was.
         conn.rollback()
+        if not _carel_is_long(conn):
+            # Lost the race (or waited out the busy timeout while the winner
+            # committed): the archive IS wide now, which is all this call
+            # wanted. The connection stays open and usable.
+            log.info("carel_samples: already migrated by a concurrent opener")
+            return
+        # A genuine failure — the archive is still long. Raising (not
+        # swallowing) is deliberate: a reader skips this file, the logger logs
+        # the tick.
         conn.close()
         raise
     long_rows = conn.execute("SELECT count(*) FROM carel_samples_v1").fetchone()[0]

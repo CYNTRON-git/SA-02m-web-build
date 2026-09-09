@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from sa02m_devices import history_store
 from sa02m_devices.device_history_db import (
     CAREL_COLUMNS,
     CAREL_METRIC_META,
@@ -156,27 +157,142 @@ def test_a_failing_pivot_rolls_back_and_leaves_the_long_table_intact(tmp_path: P
     assert _rows(db, "SELECT count(*) FROM carel_samples")[0][0] == long_rows
 
 
-def test_the_pivot_of_a_board_sized_archive_stays_well_inside_the_api_timeout(
+def test_the_opener_that_loses_the_pivot_race_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Two openers, one long archive: the loser must find the work done, not crash.
+
+    `_migrate_carel_to_wide` decides (`_carel_is_long`) and acts
+    (`executescript`) in two steps, and EVERY caller opens its own connection —
+    the logger tick, an archive read, the eMMC staging. A second opener that
+    evaluated the check before the winner committed proceeds into the script,
+    blocks on its `BEGIN IMMEDIATE`, takes the write lock AFTER the schema
+    changed, and its `SELECT … WHERE metric = …` then reads a table that has no
+    `metric` column any more (`no such column: metric`). That is the ordinary
+    shape on a board, not a corner: on the bench 1.135 archive the window is
+    11,5 s wide (`docs/contracts/carel-ahu.md` §переход).
+
+    The interleaving is made deterministic by running the winner INSIDE the
+    loser's own check — the answer the loser then carries into the script is the
+    real one it computed on the still-long archive, not a fabricated flag.
+    Everything else is shipped code: two connections, the shipped SQL, real
+    SQLite.
+    """
+    db = tmp_path / "race.db"
+    base = float(int(time.time()) // 60 * 60) - 300
+    long_rows = _write_long(db, [
+        (base, _long_tick(0.0, 1.0)),
+        (base + 10.0, _long_tick(1.0, 2.0)),
+    ])
+
+    real_is_long = history_store._carel_is_long
+    winner_ran: list[bool] = []
+
+    def check_then_let_the_winner_commit(conn: sqlite3.Connection) -> bool:
+        answer = real_is_long(conn)
+        if answer and not winner_ran:
+            # Appended BEFORE the nested open, so the winner's own check takes
+            # the plain path and this stays one level deep.
+            winner_ran.append(True)
+            ensure_schema(db)  # opener A migrates and COMMITs
+        return answer  # opener B carries the answer it got on the long archive
+
+    monkeypatch.setattr(
+        history_store, "_carel_is_long", check_then_let_the_winner_commit
+    )
+
+    ensure_schema(db)  # opener B — the loser; must not raise
+
+    assert winner_ran, "the winner never ran — the race was not staged"
+    cols = {str(r[1]) for r in _rows(db, "PRAGMA table_info(carel_samples)")}
+    assert "metric" not in cols
+    # Exactly ONE pivot happened: the winner's. The loser neither re-pivoted the
+    # wide table nor clobbered the rollback copy.
+    assert _rows(db, "SELECT count(*) FROM carel_samples")[0][0] == 2
+    assert _rows(db, "SELECT count(*) FROM carel_samples_v1")[0][0] == long_rows
+    assert "carel_samples__wide" not in _names(db, "table")
+
+    # The loser's connection is left usable — the logger tick that lost the race
+    # goes on writing into the wide table instead of dying on it.
+    monkeypatch.setattr(history_store, "_carel_is_long", real_is_long)
+    insert_carel_sample(_snap(base + 20.0, alarm=0, plant_state="run"), path=db)
+    assert _rows(db, "SELECT count(*) FROM carel_samples")[0][0] == 3
+
+
+def _pivot_statements(db: Path) -> tuple[int, float]:
+    """Run the pivot on `db` and return (SQL statements executed, seconds).
+
+    The statement COUNT is what makes the cost shape assertable on any host: a
+    bulk pivot runs a fixed script whatever the archive holds, a per-row Python
+    loop runs one statement per tick. Wall-clock on a dev box cannot tell the
+    two apart (measured 2026-09-09: 1 µs/row either way on the 75 600-row
+    fixture below), which is why the retired «≤ 10 s» assertion was decoration.
+    """
+    conn = sqlite3.connect(str(db))
+    seen: list[str] = []
+    conn.set_trace_callback(seen.append)
+    try:
+        t0 = time.monotonic()
+        history_store._migrate_carel_to_wide(conn)
+        elapsed = time.monotonic() - t0
+    finally:
+        conn.set_trace_callback(None)
+        try:
+            conn.close()
+        except sqlite3.ProgrammingError:  # a failed pivot closes it itself
+            pass
+    return len(seen), elapsed
+
+
+def test_the_pivot_is_one_bulk_pass_whose_cost_does_not_scale_per_row(
     tmp_path: Path,
 ):
-    """Bench criterion (plan D step 2): ≤ 10 s on the 1.135-sized 75k-row copy,
-    the API's `sqlite3.connect(timeout=30)` being the wall. Synthetic stand-in
-    for the board measurement — same row count, same pivot, real SQLite."""
-    db = tmp_path / "big.db"
+    """The pivot's COST SHAPE — a fixed script, not a per-row loop.
+
+    This is deliberately NOT the bench criterion. What was measured on the board
+    (bench 1.135, 2026-09-09, the real archive; one home:
+    `docs/contracts/carel-ahu.md` §переход): 504 903 long rows, 11,5 s,
+    ~23 µs/row, linear — so the plan's «≤ 10 s» criterion was MISSED there, and
+    the wall that matters is the API's `sqlite3.connect(timeout=30)`, which the
+    same rate crosses at ~1,3 млн rows. A synthetic fixture on a dev host
+    measures none of that: this one is 75 600 long rows against the bench's
+    504 903, and its row count is not preserved by the pivot in any case — it is
+    a pivot (75 600 long rows in, 8 400 wide rows out).
+
+    So the wall-clock number here is REPORT-ONLY (printed beside the bench rate)
+    and the assertion is the shape instead: the same fixed number of SQL
+    statements on a 180-row archive and on a 75 600-row one. That fails RED on
+    the regression the retired bound only claimed to catch.
+    """
     base = time.time() - 30 * 86400
+    small = tmp_path / "small.db"
+    _write_long(small, [(base + i * 10.0, _long_tick(0.0, 1.0)) for i in range(20)])
+    big = tmp_path / "big.db"
     ticks = [(base + i * 10.0, _long_tick(float(i % 2), 1.0)) for i in range(8_400)]
-    long_rows = _write_long(db, ticks)  # 8400 × 9 = 75 600 long rows
+    long_rows = _write_long(big, ticks)  # 8400 × 9 = 75 600 long rows
 
-    t0 = time.monotonic()
-    ensure_schema(db)
-    elapsed = time.monotonic() - t0
+    n_small, _ = _pivot_statements(small)
+    n_big, elapsed = _pivot_statements(big)
 
-    assert _rows(db, "SELECT count(*) FROM carel_samples")[0][0] == len(ticks)
-    assert _rows(db, "SELECT count(*) FROM carel_samples_v1")[0][0] == long_rows
-    # A generous ceiling: the point is to catch a per-row Python loop or a
-    # missing index-free bulk INSERT (both blow past this by orders), not to
-    # measure this host. The observed number goes in the commit body.
-    assert elapsed < 30.0, f"pivot of {long_rows} long rows took {elapsed:.1f}s"
+    # Non-vacuity: both archives really were pivoted, so the counts are counts
+    # of a pivot that ran — not of an early return.
+    for db in (small, big):
+        cols = {str(r[1]) for r in _rows(db, "PRAGMA table_info(carel_samples)")}
+        assert "metric" not in cols and "supply_temp" in cols
+    assert 0 < n_small < 25, f"{n_small} statements is not a fixed script"
+
+    assert n_big == n_small, (
+        f"the pivot ran {n_big} statements on 75 600 rows against {n_small} on "
+        f"180 — the cost is per-row, not one bulk pass"
+    )
+    # Lossless at scale, and the rollback copy keeps every long row.
+    assert _rows(big, "SELECT count(*) FROM carel_samples")[0][0] == len(ticks)
+    assert _rows(big, "SELECT count(*) FROM carel_samples_v1")[0][0] == long_rows
+    print(
+        f"pivot cost (report-only, this host): {long_rows} long rows in "
+        f"{elapsed:.2f}s = {elapsed / long_rows * 1e6:.0f} µs/row in "
+        f"{n_big} statements; bench 1.135 measured 23 µs/row"
+    )
 
 
 # ── one home for the column list ─────────────────────────────────────
