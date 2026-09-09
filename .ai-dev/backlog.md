@@ -27,6 +27,16 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-09 **[MED, peer observation — not verified by me] `sa02m-cloud-control` on
+  bench 1.135 drops its connection with «lib:transport error» every 10-70 min all day, and at
+  13:04:47 systemd killed it on its stop timeout; load average ~6.** Reported by the peer session
+  «lighting-module-diagnostics» (cloud repo) while working read-only on 1.135. Recorded as
+  theirs, not re-derived here. Two notes: the 13:04:47 kill is the same window in which bench
+  1.136 lost power, and 1.135's install was restarting `sa02m-modbus-mqtt`, `sa02m-telemetry`,
+  `sa02m-alice-client` and `sa02m-cloud-control` between 13:03:44 and 13:04:22 — so the kill is
+  plausibly the install's own restart hitting a stop timeout rather than a standing defect. A
+  load average of 6 on a 491 MB board with no swap and no zram is worth its own look; part of
+  today's was mine (the Carel pivot measurements).
 - [OPEN] 2026-09-09 **[MED] The Carel long→wide pivot holds a write lock longer than the
   logger's 30 s timeout on a multi-million-row archive** — measured on bench 1.135 with its
   real archive (2026-09-09): the cost is linear at ~23 µs/row (125k → 2.8 s, 250k → 6.9 s,

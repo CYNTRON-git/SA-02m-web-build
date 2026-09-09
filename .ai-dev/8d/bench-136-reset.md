@@ -103,6 +103,45 @@ So the entries after ~13:01:37 were written into the page cache and died with th
 **There is no evidence of a wedge.** The system was probably running normally until the
 instant of the reset, and the run may well have progressed past 13:02:37 invisibly.
 
+#### D4 CLOSED — the Operator supplied the fact that was missing
+
+2026-09-09 ~19:50, from the Operator: **bench 1.136's power is fed from a discrete output of
+bench 1.135.** That is why every software reset path on 1.136 was excluded one after another —
+the cause was never on 1.136.
+
+Both losses land inside 1.135 restarting its Modbus/telemetry stack, the only software there
+that touches the PCA9536 outputs. Run 1: 1.135 «Деплой Modbus→MQTT моста» 10:24:57 → 1.136 boots
+~10:26:18. Run 2: 1.135 restarts `sa02m-modbus-mqtt` and `sa02m-telemetry` 13:03:44–13:03:47,
+then `sa02m-alice-client` and `sa02m-cloud-control` through 13:04:22 → 1.136 boots 13:04:36.
+**Independently corroborated** by the peer session «lighting-module-diagnostics», working 1.135
+read-only, which logged systemd killing `sa02m-cloud-control` on its stop timeout at 13:04:47.
+
+**The defect that makes this easy to trigger** — `opt/sa02m-modbus-mqtt/sa02m_telemetry.py`
+`_make_hw_cb` hard-codes `bit_map = {"do": 0, "beeper": 1, "alarm_led": 2}` and never reads
+`/etc/sa02m_hw.conf`, where the board (and `lib_hw.sh`, which does read it) says bit0 = alarm
+LED, **bit1 = DO**, bit2 = buzzer. So an MQTT `beeper` command switches the discrete output.
+Confirmed on the live board: register 0x01 reads `0x05` while the daemon publishes `do=1` — that
+bit is the LED. This is the D5 fix, on branch `1.0.6.42`; on an installation that output commutes
+real equipment, so it is not a bench curiosity.
+
+#### A second correction to my own reasoning — the size of the logging loss
+
+The addendum above says the last one to three minutes before a hard reset are unrecoverable, and
+proposes forcing a journal sync at the installer's module boundaries. **The loss is real but far
+smaller than that, and the reason I gave was wrong.** Measured on 1.136:
+
+- `vm.dirty_expire_centisecs = 3000` with `dirty_writeback_centisecs = 500`: the kernel writes a
+  dirty page back about 30 s after it is dirtied, whatever journald's own `SyncIntervalSec` says.
+  So the exposure is ~30 s of entries, not the 5 minutes that interval suggests.
+- The incident data agrees: the last surviving entry is 13:01:46.21 and the board booted at
+  13:04:36. The rest of that gap is not lost data — the board was simply OFF.
+- `journalctl --sync` costs **43-54 ms** on this board, even right after a 300-line burst — not
+  the ~2 s I extrapolated from a filesystem-wide `sync`.
+
+So the fix is still worth making and is nearly free, but its honest claim is «shrinks a ~30 s
+blind spot to ~0», not «recovers minutes». Thirty seconds is exactly the window that would show
+a power cut arriving, which is why it still matters here.
+
 #### What this leaves, and the honest verdict
 
 Every software reset path is now excluded by measurement. What remains is **power delivery
