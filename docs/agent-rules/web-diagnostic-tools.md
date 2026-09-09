@@ -112,6 +112,7 @@ ratios into the plan/review. Floors: `web-code-rigor.md ## CSS / UI floors`.
 | Status part | `curl -s 'http://<ip>/cgi-bin/status.cgi?part=priority'` | needs session cookie for protected endpoints: login via `login.cgi` first |
 | CGI syntax before deploy | `bash -n www/network_config/cgi-bin/<x>.cgi` | quality row runs all |
 | Flasher daemon state | `curl -s http://<ip>:<flasher-port>/status` | port lease semantics: `sa02m-domain.md ## Subsystems` |
+| Verify a DEPLOYED release on a board | `scp scripts/dev/verify-release-on-board.sh root@<ip>:/tmp/` then `ssh root@<ip> 'bash /tmp/verify-release-on-board.sh [X.Y.Z.W]'` | 13 checks: version homes, core units, 0-byte unit fragment + 0-byte served asset, runner stamp, the live scenario sandbox (deadline, HTTP target policy, runs journal, per-run cap read from its one home), an exposed scene as an Alice device, the Carel wide archive, the runtime watchdog, and this version's offline-update output. Version comes from the argument or the board's own `VERSION`. Board-only by design and deliberately NOT a quality row — in CI it could only skip; off a board it exits 2 with zero PASS lines. Skips are counted and printed as skips |
 
 ## Symptom → tool (quick dispatch)
 
