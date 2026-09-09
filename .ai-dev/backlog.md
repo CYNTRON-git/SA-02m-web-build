@@ -27,6 +27,19 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-09 **[MED] The Carel long→wide pivot holds a write lock longer than the
+  logger's 30 s timeout on a multi-million-row archive** — measured on bench 1.135 with its
+  real archive (2026-09-09): the cost is linear at ~23 µs/row (125k → 2.8 s, 250k → 6.9 s,
+  504 903 → 11.5 s), so `sqlite3.connect(timeout=30)` in `history_store._connect` covers an
+  archive up to roughly 1.3M rows. A full 30-day Carel archive is several million rows — the
+  figure this release's own CHANGELOG named — where the one-time migration would hold
+  `BEGIN IMMEDIATE` for ~1–1.5 min: the 1 Hz logger's writes raise `database is locked` and
+  those ticks are lost, and an archive read from the web UI fails in the same window. Not a
+  data-integrity risk: the pivot is atomic, `carel_samples_v1` is intact, and what is lost is
+  individual 10 s samples. Fix shape: migrate in bounded chunks (commit per N ticks, the
+  `metric` column staying the resume marker) so no single lock is long, or give the migration
+  window its own longer busy timeout. The measured bound is now stated in
+  `docs/contracts/carel-ahu.md` and `CHANGELOG.md` rather than promised away.
 - [OPEN] 2026-09-09 **[MED] Six live-path `install -m` sites under `etc/` are still the
   truncate-then-fill shape the 8D closed everywhere else** — `sa02m-web-service-ctl.sh:1359`
   writes `/etc/systemd/system/nodered.service`, the incident's own shape (a hard reset
