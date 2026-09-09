@@ -151,9 +151,13 @@ Types: `block` | `code` | `logic` | `scene`. `scene` is set-only (no
 nested scenario/scene/delay that would recurse).
 
 `alice_expose` (scene only) and `captured_from {room_id, group_id}` are
-validated and persisted but **accepted, not yet consumed**: nothing on the
-board lists, exposes or reads them yet (open Operator decision, audit
-1.0.6.39 A14). The hub must not present a scene marked `alice_expose` as
+**consumed since 1.0.6.41**: an exposed, enabled scene becomes a virtual
+switch in the Yandex account, placed in the room `captured_from.room_id`
+names. The projection, the device shape and the lifecycle are the Alice
+contract's (`alice-mqtt-mapping.md` §Scene devices) — one home; the store's
+job is unchanged (validate, persist, one writer). `captured_from.group_id`
+is still **stored and not read on the board**: it is cloud-side provenance of
+a group capture. The hub **may** present a scene marked `alice_expose` as
 exposed to Alice.
 
 ---
@@ -287,12 +291,38 @@ this tuple stay in the store and do not run.
 
 ## MQTT mirror
 
-Virtual device `/devices/sa02m-rules-<id>/controls/*` (retained state
-topics, never `/on`): `rule_enabled`, `end_after_s`,
-`blocked_by_switch`, plus template-specific fields. Writes from the
+Virtual device `/devices/sa02m-rules-<id>/controls/*`: retained STATE the
+engine publishes — `rule_enabled`, `end_after_s`, `blocked_by_switch`, plus
+template-specific fields — never written by anyone else. Writes from the
 engine to field devices go to `<topic>/on` with **no retain**, same
 rule as `mqtt_set.cgi`. Capabilities marked `writable: false` on the
 Alice document are not written.
+
+**`run` — the ONE command control (1.0.6.41).** `…/controls/run/on` (no
+retain) is the single inbound topic under this prefix and the seam the Alice
+scene switch commands through (`alice-mqtt-mapping.md` §Scene devices):
+
+| Payload | Effect |
+|---|---|
+| `1` / `on` / `true` | run the scene — `run_now`, `source="external"` |
+| anything else | switch off every `on_off` output the scene's definition sets to a truthy value, and cancel a pending `end` (`end_after_s` → 0) |
+
+Both verbs answer **only for a row that exists, is `scene`-typed and
+enabled** — a `block`/`logic`/`code` id, an unknown id or a disabled scene is
+a no-op, so the LAN reach of this topic is narrower than the cloud's
+type-agnostic `run_now`. Both spend the same `MAX_WRITES` / rate window as
+any run, and journal a record (`source="external"`; the off verb carries
+`reason: "off"`). Off does NOT replay a `restore`-mode scene's pre-run
+snapshot: that snapshot lives in the end timer this cancels, and «выключи»
+means off. `RulesApp.pub` **refuses** to publish any `/on` under
+`sa02m-rules-*`, so a stored action naming a scenario device cannot command
+the engine through the broker.
+
+**Availability gap, stated:** with `sa02m-rules` down, a `run/on` publish
+lands on the broker, nobody consumes it, and the caller (Alice) has already
+been told `DONE`. An LWT-backed `/devices/sa02m-rules-<id>/meta/error` is the
+fix; the device-level error flag is already honoured by the Alice registry,
+so the hook exists and only the publisher is missing.
 
 ---
 
