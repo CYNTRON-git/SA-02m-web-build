@@ -100,8 +100,23 @@ HA-автодискавери через WB). Это **аддитивно**: в�
 | Сценарий (виртуальный) | `sa02m-rules-{id}` | `sa02m-rules-s1` |
 
 Карты Carel / LED — `docs/contracts/carel-ahu.md`, `docs/contracts/led-mb2ws.md`.
-Виртуальные контролы сценария (`rule_enabled`, `end_after_s`, …) — retained
-state, без `/on`: `docs/contracts/cloud-scenarios.md` §MQTT mirror.
+
+Виртуальное устройство сценария `sa02m-rules-{id}` — не опрашиваемый прибор,
+а зеркало движка `sa02m-rules`: под ним живут retained-контролы состояния
+(`rule_enabled`, `end_after_s`, …), которые публикует только сам движок, без
+`/on`. Единственная команда — `run` (с 1.0.6.41):
+
+```bash
+# запустить сцену / выключить её выходы (без retain)
+mosquitto_pub -t /devices/sa02m-rules-s1/controls/run/on -m 1
+mosquitto_pub -t /devices/sa02m-rules-s1/controls/run/on -m 0
+```
+
+Этим же топиком командует выключатель сцены в Алисе. Полная семантика обоих
+глаголов и что движок принимает — `docs/contracts/cloud-scenarios.md`
+§MQTT mirror; проекция сцены в устройство Алисы —
+`docs/contracts/alice-mqtt-mapping.md` §Scene devices; поверхность из LAN —
+`docs/threat-model.md` §3.
 
 ---
 
