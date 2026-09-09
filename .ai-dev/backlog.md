@@ -27,6 +27,25 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-09 **[LOW] The telemetry daemon hard-codes its I2C subprocess timeout instead
+  of reading `SA02M_I2C_TIMEOUT_SEC`** — `_i2cget`/`_i2cset` pass `timeout=1`, a second copy of a
+  conf value that happens to equal the shipped default. A board that raised it would have the
+  CGI waiting 3 s and the daemon 1 s on the same bus. Found while fixing the channel map
+  (1.0.6.42); it is the same one-home defect class as the map itself, one layer down. Fix is to
+  read it where the rest of the profile is read.
+- [OPEN] 2026-09-09 **[LOW] The telemetry daemon does not read back after a hardware write.**
+  `lib_hw.sh` verifies the output register after writing it; the daemon publishes success on the
+  `i2cset` return code alone. On the byte that carries the discrete output, «the write returned
+  0» and «the pin moved» are not the same claim — this release's whole subject is the gap
+  between them. Found while fixing the channel map (1.0.6.42).
+- [OPEN] 2026-09-09 **[MED, product decision — the Operator's, not an agent's] An MQTT `beeper`
+  command is now REFUSED while MPLC4 holds the bus, where the web UI falls back to the 7 s
+  override file** (`/run/sa02m-hw-override/beeper.env`, `SA02M_BEEPER_WEB_OVERRIDE_SEC`). Taking
+  that same path in the daemon would make it a SECOND producer of that file, which is a design
+  change, not a bug fix — hence not decided by the Builder or by me. The refusal is honest and
+  logged, so nothing is silently lost today; the question is whether a cloud/Alice «beep» should
+  be able to pre-empt the PLC the way the panel's button can. Found while adding the bus lock
+  (1.0.6.42).
 - [OPEN] 2026-09-09 **[MED, peer observation — not verified by me] `sa02m-cloud-control` on
   bench 1.135 drops its connection with «lib:transport error» every 10-70 min all day, and at
   13:04:47 systemd killed it on its stop timeout; load average ~6.** Reported by the peer session
