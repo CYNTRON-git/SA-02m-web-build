@@ -65,11 +65,44 @@ skip() { echo "SKIP $1"; S=$((S + 1)); }
 
 # A python block prints its own PASS/FAIL/SKIP lines; tally them so the summary
 # counts every check, not only the shell ones.
+#
+# Non-vacuity: a block that DIES — an import error, an absent daemon, a
+# traceback — prints no verdict line at all, so a plain tally would add zero and
+# the run would exit 0 having verified nothing. That is the shape this whole
+# harness exists to catch, so the caller passes the number of verdict lines it
+# expects and a shortfall becomes a FAIL naming the block.
 tally() {
-    P=$((P + $(printf '%s\n' "$1" | grep -c '^PASS ')))
-    F=$((F + $(printf '%s\n' "$1" | grep -c '^FAIL ')))
-    S=$((S + $(printf '%s\n' "$1" | grep -c '^SKIP ')))
+    _p=$(printf '%s\n' "$1" | grep -c '^PASS ')
+    _f=$(printf '%s\n' "$1" | grep -c '^FAIL ')
+    _s=$(printf '%s\n' "$1" | grep -c '^SKIP ')
+    P=$((P + _p)); F=$((F + _f)); S=$((S + _s))
+    if [ -n "${2:-}" ] && [ $((_p + _f + _s)) -lt "$2" ]; then
+        no "${3:-python block}: printed $((_p + _f + _s)) verdict line(s), expected $2 — it died before reporting"
+    fi
 }
+
+# Everything this harness creates on the board is torn down here, on ANY exit —
+# a finished run, a Ctrl-C, a python block that dies. Without it an interrupt
+# leaves the counting listener bound to :9998 and the harness's own scenario
+# rows in the operator's store. Idempotent, and silent when there is nothing to
+# undo, so it is safe to run before anything has been created.
+LPID=""; LDIR=""
+cleanup() {
+    [ -n "$LPID" ] && kill "$LPID" 2>/dev/null
+    [ -n "$LDIR" ] && rm -rf "$LDIR"
+    [ -d /opt/sa02m-rules ] || return 0
+    python3 - <<'CLEAN' 2>/dev/null || true
+import sys
+sys.path.insert(0, "/opt/sa02m-rules")
+try:
+    from sa02m_rules import store
+    for sid in ("vtmo", "vcap", "vscn"):
+        store.apply_command({"id": sid, "delete": True}, store.DEFAULT_PATH)
+except Exception:
+    pass
+CLEAN
+}
+trap cleanup EXIT INT TERM
 
 LANIP=$(ip -4 addr show scope global 2>/dev/null | grep -oE 'inet [0-9.]+' | awk '{print $2}' | head -1)
 echo "== board $(hostname) ${LANIP:-<no LAN address>} — verifying $VER =="
@@ -118,7 +151,16 @@ if [ ! -d /opt/sa02m-rules ]; then
 else
     LOG=/tmp/verify-listener.log
     rm -f "$LOG"
-    setsid python3 -m http.server 9998 --bind 0.0.0.0 > "$LOG" 2>&1 < /dev/null &
+    # The listener exists only to COUNT the sandbox's outbound requests, so it
+    # serves an empty throwaway directory. Without --directory it would serve
+    # the invoking shell's cwd — under the documented
+    # `ssh root@<board> 'bash …'` form that is /root, unauthenticated, on the
+    # LAN, for the life of the run. The trap is what makes «only for the life
+    # of the run» true: an interrupt or an early exit must not leave the port
+    # open, and the scenario rows below must not be left on the board.
+    LDIR=$(mktemp -d)
+    setsid python3 -m http.server 9998 --bind 0.0.0.0 --directory "$LDIR" \
+        > "$LOG" 2>&1 < /dev/null &
     LPID=$!
     sleep 2
     OUT=$(python3 - "${LANIP:-127.0.0.1}" <<'PY'
@@ -209,8 +251,9 @@ finally:
 PY
 )
     printf '%s\n' "$OUT"
-    tally "$OUT"
+    tally "$OUT" 4 "checks 5-8 (scenario sandbox)"
     kill "$LPID" 2>/dev/null
+    rm -rf "$LDIR"
 
     CAP=$(printf '%s\n' "$OUT" | sed -n 's/^INFO 8-cap //p' | head -1)
     HITS=$(grep -c 'GET /p[0-9]' "$LOG" 2>/dev/null | tr -d '\r\n')
@@ -266,7 +309,7 @@ except Exception as e:
 PY
 )
     printf '%s\n' "$OUT"
-    tally "$OUT"
+    tally "$OUT" 1 "check 9 (scene as an Alice device)"
 fi
 
 # 10 the Carel archive is wide, the rollback copy is there, a read is quick
@@ -303,7 +346,7 @@ else:
 PY
 )
 printf '%s\n' "$OUT"
-tally "$OUT"
+tally "$OUT" 1 "check 10 (Carel wide archive)"
 
 # 11 the runtime watchdog is back after the install (the installer holds it off
 # during a run; a board left with it disabled is the regression)

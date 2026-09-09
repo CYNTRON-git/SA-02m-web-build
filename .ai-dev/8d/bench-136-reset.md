@@ -1,6 +1,12 @@
 # 8D — bench 1.136 hard reset mid `install.sh --refresh` (2026-09-08)
 
-Transient run-note (`.ai-dev/procedures/8d.md`; deleted at D8). Branch `1.0.6.41`.
+Run-note (`.ai-dev/procedures/8d.md`). Branch `1.0.6.41`. **Tracked, not transient:**
+twelve tracked files cite this path from code comments and gate headers, so deleting it
+at D8 would dangle every one of them. Per the rule that case bought
+(`8d.md` §Run-note), it graduates to `docs/bugs/bench-136-reset.md` at D8 with its
+citations re-pointed in the same commit — it is never simply deleted, and never left
+parked here as a permanent store. **This 8D is OPEN:** D4 is re-judged (see the
+addendum), D5-D8 are not done.
 Backlog: `.ai-dev/backlog.md` [HIGH] 2026-09-08 «Bench 1.136 reset in the middle of
 `install.sh --refresh`» → RESOLVED by this work. Facts below are the Orchestrator's SSH
 evidence; code facts are `file:line` at HEAD (1.0.6.40 content).
@@ -258,7 +264,9 @@ to the runner's own lock code (its hollow-guard question goes to the backlog if 
 
 ## D8 — Close
 
-Land A–F + D7 on `1.0.6.41`; delete this note after the PR is open.
+Land A–F + D7 on `1.0.6.41`. Do NOT delete this note when the PR opens: the 8D is still
+open (D4 re-judged, D5–D8 outstanding) and twelve tracked files cite it. It graduates to
+`docs/bugs/` at D8.
 
 ## Structural forks for the Operator (Orchestrator relays)
 

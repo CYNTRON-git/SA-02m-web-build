@@ -240,10 +240,15 @@ PY
 # `systemctl daemon-reexec` would also re-read the config and is deliberately
 # NOT used here: re-execing PID 1 mid-install is a PID-1 event during the very
 # window this hold protects, and there is no reason to add one when a runtime
-# override does the job. It is NOT the incident's leading cause - D4 excludes
-# it by timing and names the HW watchdog after a PID-1 stall as the leading row
-# (.ai-dev/8d/bench-136-reset.md D4). Measured on 1.136 on 2026-09-09: the
-# override SURVIVES a daemon-reexec, so 01-system.sh:762 does not undo the hold.
+# override does the job. It is NOT the incident's cause: D4 excludes it by
+# timing, and the row that USED to lead there - the HW watchdog after a PID-1
+# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
+# /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
+# then survives 40 s past its 16 s hardware timeout, and survives it again
+# across a daemon-reexec, which is also why 01-system.sh:762 cannot undo the
+# hold. So this helper is not what keeps the board alive during an install;
+# what it does keep is the report honest.
 sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
     local v=""
     command -v busctl >/dev/null 2>&1 || return 1

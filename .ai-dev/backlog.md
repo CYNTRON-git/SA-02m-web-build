@@ -58,15 +58,15 @@ worklist collapsed into one home).
 - [OPEN] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
   neither is blocked by a missing helper — **my earlier record here was false**: it claimed
   closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
-  already existed at `etc/sa02m-update-runner.sh:1010` (used `:1132`, `:1196`) and
-  `etc/sa02m-factory-reset-runner.sh:321` (used `:434`), and `etc/sa02m-web-update-apply.sh:59`
+  already existed at `etc/sa02m-update-runner.sh `atomic_install_file()`` (used its two callers) and
+  `etc/sa02m-factory-reset-runner.sh `atomic_install_file()`` (one caller), and `etc/sa02m-web-update-apply.sh:59`
   now carries a third. The three are NOT byte-identical and carry no `cmp` pin: each is scoped
   to its own caller's duties (the factory runner adds a destination allow-list and a rollback
   journal; the OTA one adds CRLF normalisation), which is why a further copy is a decision, not
   a formality.
   - `etc/sa02m-web-service-ctl.sh:1359` → `/etc/systemd/system/nodered.service` — the
     incident's own shape. Survives because this file carries no atomic helper yet.
-  - `etc/sa02m-update-runner.sh:1293` → `"$rel"`, an absolute path replayed from the
+  - `etc/sa02m-update-runner.sh `rollback_from_journal()`` → `"$rel"`, an absolute path replayed from the
     pre-update rollback archive, whose members are the manifest's `deploy[].dst` entries
     (`build_rollback_archive`, `:968-985`) — so `/usr/local/**` and `/etc/systemd/system/**`
     are exactly what it restores. **Survives only because nobody looked:** this file DEFINES
@@ -74,11 +74,14 @@ worklist collapsed into one home).
     the site that runs when the board is already mid-failure. Highest-value of the two.
   My earlier list was wrong in both directions. Not live paths, so outside the rule rather than
   exceptions to it: `sa02m-web-service-ctl.sh:895,898` → `/opt/mplc4/*.so`;
-  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`; `sa02m-web-update-apply.sh:391,427`
+  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`; `sa02m-web-update-apply.sh:396,432`
   (I recorded `:316,352`) → `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`. And
-  `sa02m-update-runner.sh:394` was wrong on both axes: the site is `:395`, and its destination
-  is `"$STATEDIR/runner/$txn/runner"`, a per-transaction scratch self-copy exec'd immediately —
-  not a live path at all. Full enumeration, including the sites that ARE the atomic staging
+  I also recorded `sa02m-update-runner.sh:394` as a live-path site; it was wrong on both axes.
+  The `install -m` is in `self_reexec_before_deploy()`, and its destination is
+  `"$STATEDIR/runner/$txn/runner"`, a per-transaction scratch self-copy exec'd immediately —
+  not a live path at all. **Cite the symbol, not the line:** every line number in this entry
+  went stale at least once while the entry was being corrected, twice inside the commit that
+  corrected it. Full enumeration, including the sites that ARE the atomic staging
   write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
   install sites are live-path».
 - [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**

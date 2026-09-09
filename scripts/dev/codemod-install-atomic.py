@@ -30,8 +30,8 @@ device, so a script under etc/ - which runs standalone on the board, sourcing
 only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call THIS helper. That
 is the only thing "out of scope" means here: a device-side script writes live
 paths atomically by carrying its OWN copy of the shape, and three already do
-(etc/sa02m-update-runner.sh:1010 atomic_install_file, tmp + fdatasync + mv +
-dir fsync; etc/sa02m-factory-reset-runner.sh:321 atomic_install_file, the same
+(etc/sa02m-update-runner.sh `atomic_install_file()` atomic_install_file, tmp + fdatasync + mv +
+dir fsync; etc/sa02m-factory-reset-runner.sh `atomic_install_file()` atomic_install_file, the same
 shape plus the wipe allow-list and rollback journal that file owns;
 etc/sa02m-web-update-apply.sh:59 atomic_install_script, the same shape with the
 CRLF normalisation folded into the staged copy). They are NOT byte-identical
@@ -48,7 +48,7 @@ variable ones, to what it holds at run time):
         shape (or a device-side lib the file already sources) plus its own
         drive-to-failure. NOT closed, and not blocked by anything but the work.
 
-    etc/sa02m-update-runner.sh:1293 -> "$rel", an absolute path replayed from
+    etc/sa02m-update-runner.sh `rollback_from_journal()` -> "$rel", an absolute path replayed from
         the pre-update rollback archive; its members are the manifest's
         deploy[].dst entries (build_rollback_archive, :968-985), so /usr/local/**
         and /etc/systemd/system/** are exactly what it restores. Survives only
@@ -59,9 +59,9 @@ variable ones, to what it holds at run time):
 Everything else under etc/ that matches `install -m` writes a destination that
 is not a live path, so it is outside the rule rather than an exception to it:
 
-    etc/sa02m-web-update-apply.sh:391   -> /etc/tmpfiles.d/*        (read by
+    etc/sa02m-web-update-apply.sh:396   -> /etc/tmpfiles.d/*        (read by
         systemd-tmpfiles on demand, never mid-flight)
-    etc/sa02m-web-update-apply.sh:427   -> /etc/sudoers.d/sa02m-www (staged and
+    etc/sa02m-web-update-apply.sh:432   -> /etc/sudoers.d/sa02m-www (staged and
         visudo -c-validated first; re-read per sudo invocation)
     etc/sa02m-web-service-ctl.sh:895,898 -> /opt/mplc4/*.so         (re-read on
         MPLC4 restart, and the pack is stopped around the write)
@@ -73,12 +73,12 @@ is not a live path, so it is outside the rule rather than an exception to it:
     etc/sa02m-armbian-branding.sh:40,71 -> /etc/armbian{,-image}-release,
         /etc/update-motd.d/10-armbian-header
     etc/sa02m-update-runner.sh:122      -> "$STATEDIR/state/*"      (own state)
-    etc/sa02m-update-runner.sh:399      -> "$STATEDIR/runner/$txn/runner", a
+    etc/sa02m-update-runner.sh `self_reexec_before_deploy()`      -> "$STATEDIR/runner/$txn/runner", a
         per-transaction scratch self-copy that is exec'd immediately - not a
         live path (this entry used to be recorded as ":394" and as live; both
         were wrong)
-    etc/sa02m-update-runner.sh:1018,1019,1021 and
-    etc/sa02m-factory-reset-runner.sh:337 -> "$tmp", the staging file INSIDE
+    etc/sa02m-update-runner.sh `atomic_install_file()` and
+    etc/sa02m-factory-reset-runner.sh `atomic_install_file()` -> "$tmp", the staging file INSIDE
         atomic_install_file - these are the atomic shape, not violations of it
     etc/sa02m-check-service-perms.sh:63 -> `install -d`: a directory, not a
         file write (the helper refuses -d for the same reason)
