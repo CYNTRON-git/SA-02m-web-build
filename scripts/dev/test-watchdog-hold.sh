@@ -1,10 +1,11 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
 # test-watchdog-hold.sh — regression harness for the runtime-watchdog hold
-# shared by install.sh and etc/sa02m-update-runner.sh. Quality row
-# `watchdog-hold`. 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md, D5 G).
+# shared by install.sh (scripts/lib.sh), etc/sa02m-update-runner.sh and
+# etc/sa02m-factory-reset-runner.sh. Quality row `watchdog-hold`.
+# 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md, D5 G).
 #
-# Why this exists: the runner's precedent guard was
+# Why this exists: the runners' precedent guard was
 # `systemctl set-property --runtime Manager RuntimeWatchdogSec=0 … || true`
 # followed by `log "… RuntimeWatchdogSec=0"` — it logged the guarantee without
 # ever checking it, the exact overclaim shape quality-gate-rigor.md is about.
@@ -19,21 +20,33 @@
 # `busctl` / `systemctl` shims backed by a state file, in three manager
 # flavours — writable (systemd >= 250), hollow (a write is accepted and
 # changes nothing — systemd < 250 / a refused polkit), and unreadable (no
-# busctl at all: a chroot / rootfs build). Then three wiring pins read
+# busctl at all: a chroot / rootfs build). Then the wiring pins, read
 # COMMENT-STRIPPED through .ai-dev/quality/checks/lib_check.sh: the shared
-# block is byte-identical in its two homes, install.sh holds and restores it,
-# and the runner's hollow one-liner is gone.
+# block is byte-identical in ALL THREE homes, install.sh holds and restores
+# it, neither runner keeps a hollow one-liner, and the factory-reset runner
+# releases the hold on an abort.
+#
+# Three homes, not two: the block cannot be sourced from one file — install.sh
+# reads scripts/lib.sh out of an extracted tree, while both runners execute
+# standalone on the device, where scripts/ is not deployed. Duplication by
+# construction, which is why case 7 pins the copies byte-for-byte.
 #
 # Drive-to-failure, measured 2026-09-09: delete the two read-back lines from
 # sa02m_runtime_watchdog_set on a scratch copy passed as SVC_HELPERS_LIB=,
 # and case 3 goes GREEN-on-a-lie → the harness reports it as a FAIL (it
-# asserts rc≠0 for the hollow manager); revert the runner to
+# asserts rc≠0 for the hollow manager); revert either runner to
 # `systemctl set-property --runtime Manager RuntimeWatchdogSec=0` and case 9
-# reports it; change one byte of either copy of the block and case 7 reports
-# the diff.
+# resp. 10 reports it; change one byte of any copy of the block and case 7
+# reports the diff.
 #
-# Comment-mutation: cases 7–9 pin live lines and are registered in
-# comment-mutation-proof (commenting the install.sh hold, its trap, or either
+# The 1.0.6.41 factory-reset pins, measured the same day on a scratch copy of
+# the tree (each mutation applied alone, the rest pristine): the unfixed
+# factory runner → 7c + 10a/10b + 11a–11d RED (7 failures); one byte changed in
+# its copy of the block → 7c; the `RuntimeWatchdogSec=0` one-liner put back →
+# 10a; `#trap on_exit EXIT` → 11a + 11c; `#trap 'exit 143' INT TERM` → 11b.
+#
+# Comment-mutation: cases 7–11 pin live lines and are registered in
+# comment-mutation-proof (commenting the install.sh hold, its trap, or any
 # BEGIN marker out turns 7/8 RED — each pin FAILS when its line is missing).
 #
 # Run: bash scripts/dev/test-watchdog-hold.sh   (bash + sed + coreutils)
@@ -42,6 +55,7 @@ set -u
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 LIB=${SVC_HELPERS_LIB:-scripts/lib.sh}
 RUNNER=etc/sa02m-update-runner.sh
+FACTORY=etc/sa02m-factory-reset-runner.sh
 BEGIN='# ── BEGIN sa02m-runtime-watchdog'
 END='# ── END sa02m-runtime-watchdog'
 
@@ -149,21 +163,27 @@ rc=0; sa02m_runtime_watchdog_set >/dev/null 2>&1 || rc=$?
 rc=0; sa02m_runtime_watchdog_set 15s >/dev/null 2>&1 || rc=$?
 [ "$rc" = 2 ] && ok "6b a non-µs argument (15s) → rc=2, never silently mis-set" || bad "6b '15s': rc=$rc (expected 2)"
 
-echo "── 7. one home: the shared block is byte-identical in both callers ──"
+echo "── 7. one home: the shared block is byte-identical in all THREE callers ──"
 block_of() {  # block_of <file> <out>
     awk -v b="$BEGIN" -v e="$END" 'index($0,b)==1{f=1} f{print} f&&index($0,e)==1{exit}' "$1" > "$2"
     [ -s "$2" ]
 }
 if ! block_of "$LIB" "$T/a"; then
-    bad "7a no shared watchdog block in $LIB"
-elif ! block_of "$RUNNER" "$T/b"; then
-    bad "7a no shared watchdog block in $RUNNER — the runner keeps its own guard"
-elif ! cmp -s "$T/a" "$T/b"; then
-    bad "7a the two copies have drifted:"; diff "$T/a" "$T/b" | head -10
+    bad "7a no shared watchdog block in $LIB — the reference copy is gone"
 else
     n=$(wc -l < "$T/a")
-    [ "$n" -ge 40 ] && ok "7a identical block in both homes ($n lines)" \
+    [ "$n" -ge 40 ] && ok "7a reference block in $LIB ($n lines)" \
                     || bad "7a block is only $n lines — the extraction stopped seeing the body"
+    for pair in "7b:$RUNNER" "7c:$FACTORY"; do
+        id=${pair%%:*}; f=${pair#*:}
+        if ! block_of "$f" "$T/b"; then
+            bad "$id no shared watchdog block in $f — it keeps its own guard"
+        elif ! cmp -s "$T/a" "$T/b"; then
+            bad "$id the copy in $f has drifted from $LIB:"; diff "$T/a" "$T/b" | head -10
+        else
+            ok "$id $f carries the block byte-identically"
+        fi
+    done
 fi
 
 echo "── 8. install.sh holds it and restores on EXIT ──"
@@ -183,29 +203,58 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_firs
         bad "8d the hold is not taken before the first module (hold=${hold:-none}, first module=${mod:-none})"
     fi
 
-    echo "── 9. the runner's hollow guard is gone ──"
-    # EXACTLY ONE live `set-property --runtime Manager` line may exist in the
+    echo "── 9/10. neither runner keeps a hollow guard ──"
+    # EXACTLY ONE live `set-property --runtime Manager` line may exist in a
     # runner: the shared helper's own `RuntimeWatchdogSec=${want}us`, whose
     # result is read back on the next line. Any other value — the literal 0,
     # the old `${RUNTIME_WDT_RESTORE}`, a hardcoded 15s — is an unchecked
     # write and fails here. (A first cut banned only `=0` / `=${UPPER}` and a
-    # re-introduced `=15s` slipped through it: measured 2026-09-09.)
-    sp_all=$(stripped_count "$RUNNER" 'set-property --runtime Manager')
-    sp_helper=$(stripped_count "$RUNNER" 'set-property --runtime Manager "RuntimeWatchdogSec=\$\{want\}us"')
-    hollow=$((sp_all - sp_helper))
-    [ "$sp_helper" = 1 ] || hollow=$((hollow + 1))   # the helper's own line must be there
-    r_read=$(stripped_count "$RUNNER" 'RUNTIME_WDT_PREV=\$\(sa02m_runtime_watchdog_usec')
-    r_hold=$(stripped_count "$RUNNER" 'sa02m_runtime_watchdog_set 0')
-    r_rest=$(stripped_count "$RUNNER" 'sa02m_runtime_watchdog_set "\$RUNTIME_WDT_PREV"')
-    [ "$hollow" = 0 ] && ok "9a the runner's only live set-property is the helper's read-back-checked one" \
-                      || bad "9a $RUNNER still carries $hollow unchecked set-property line(s) — the hollow guard is back"
-    if [ "$r_read" = 1 ] && [ "$r_hold" = 1 ] && [ "$r_rest" = 1 ]; then
-        ok "9b the runner reads back, holds and restores through the shared helper (1 site each)"
+    # re-introduced `=15s` slipped through it: measured 2026-09-09.) The
+    # factory-reset runner carried exactly that unchecked `=0` / `=15s` pair —
+    # on the longest single operation the board runs — until 1.0.6.41.
+    runner_pins() {   # $1=case number  $2=file
+        local id=$1 f=$2 sp_all sp_helper hollow r_read r_hold r_rest
+        sp_all=$(stripped_count "$f" 'set-property --runtime Manager')
+        sp_helper=$(stripped_count "$f" 'set-property --runtime Manager "RuntimeWatchdogSec=\$\{want\}us"')
+        hollow=$((sp_all - sp_helper))
+        [ "$sp_helper" = 1 ] || hollow=$((hollow + 1))   # the helper's own line must be there
+        r_read=$(stripped_count "$f" 'RUNTIME_WDT_PREV=\$\(sa02m_runtime_watchdog_usec')
+        r_hold=$(stripped_count "$f" 'sa02m_runtime_watchdog_set 0')
+        r_rest=$(stripped_count "$f" 'sa02m_runtime_watchdog_set "\$RUNTIME_WDT_PREV"')
+        [ "$hollow" = 0 ] && ok "${id}a $f: the only live set-property is the helper's read-back-checked one" \
+                          || bad "${id}a $f still carries $hollow unchecked set-property line(s) — the hollow guard is back"
+        if [ "$r_read" = 1 ] && [ "$r_hold" = 1 ] && [ "$r_rest" = 1 ]; then
+            ok "${id}b $f reads back, holds and restores through the shared helper (1 site each)"
+        else
+            bad "${id}b $f wiring: read=$r_read hold=$r_hold restore=$r_rest (expected 1/1/1)"
+        fi
+    }
+    runner_pins 9 "$RUNNER"
+    runner_pins 10 "$FACTORY"
+
+    echo "── 11. the factory reset releases the hold on an ABORT ──"
+    # A factory reset is the longest single-purpose operation on the board, so
+    # the path that matters most is the one that does NOT reach the end: the
+    # pre-1.0.6.41 script restored the watchdog only from cleanup_imaging_lock,
+    # reached by the ERR trap and by fail() — a SIGTERM (systemd stopping the
+    # job, an operator abort) left the manager's watchdog off with no owner.
+    f_trap=$(stripped_first_line "$FACTORY" '^trap on_exit EXIT$')
+    f_sig=$(stripped_first_line "$FACTORY" '^trap .* INT TERM$')
+    f_disp=$(stripped_first_line "$FACTORY" '^case "\$CMD" in$')
+    f_held=$(stripped_count "$FACTORY" '^[[:space:]]*IMAGING_HELD=1$')
+    [ -n "$f_trap" ] && ok "11a the factory runner arms an EXIT trap (l.$f_trap)" \
+                     || bad "11a no 'trap on_exit EXIT' in $FACTORY — an abort keeps the watchdog held off"
+    [ -n "$f_sig" ]  && ok "11b INT/TERM are turned into an exit so the EXIT trap runs (l.$f_sig)" \
+                     || bad "11b no INT/TERM trap in $FACTORY — bash kills the shell without running the EXIT trap"
+    if [ -n "$f_trap" ] && [ -n "$f_disp" ] && [ "$f_trap" -lt "$f_disp" ]; then
+        ok "11c the trap is armed (l.$f_trap) BEFORE the command dispatch (l.$f_disp)"
     else
-        bad "9b runner wiring: read=$r_read hold=$r_hold restore=$r_rest (expected 1/1/1)"
+        bad "11c the trap is not armed before the dispatch (trap=${f_trap:-none}, dispatch=${f_disp:-none})"
     fi
+    [ "$f_held" = 1 ] && ok "11d the hold is bookkept (IMAGING_HELD=1) so the trap restores only what it took" \
+                      || bad "11d IMAGING_HELD=1 appears $f_held time(s) in $FACTORY (expected 1)"
 else
-    bad "8/9 cannot source .ai-dev/quality/checks/lib_check.sh — the wiring pins did NOT run (a skip is not a pass)"
+    bad "8–11 cannot source .ai-dev/quality/checks/lib_check.sh — the wiring pins did NOT run (a skip is not a pass)"
 fi
 
 echo ""
