@@ -367,5 +367,98 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(modes, ["away"])
 
 
+class SceneCommandIntakeTests(unittest.TestCase):
+    """`/devices/sa02m-rules-<sid>/controls/run/on` — the ONE command control
+    of a scenario's virtual device (1.0.6.41, contract cloud-scenarios.md
+    §MQTT mirror). The Alice gateway publishes it for «включи/выключи
+    <сцена>»; any LAN client can too, exactly as it already can for any other
+    `/on` topic — the engine only ever runs a scenario that exists, is
+    `scene`-typed and enabled.
+    """
+
+    class _Client:
+        def __init__(self):
+            self.published = []
+            self.subscribed = []
+
+        def publish(self, topic, payload, qos=1, retain=False):
+            self.published.append((topic, payload, retain))
+
+        def subscribe(self, topic, qos=0):
+            self.subscribed.append(topic)
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        store.save({"scenarios": [
+            {"id": "s1", "name": "Вечер", "enabled": True, "type": "scene",
+             "trigger": [], "condition": {}, "alice_expose": True,
+             "action": [{"kind": "set", "device": "led", "cap": "on_off",
+                         "value": 1}]},
+            {"id": "b1", "name": "Блок", "enabled": True, "type": "block",
+             "trigger": [], "condition": {},
+             "action": [{"kind": "set", "device": "fan", "cap": "on_off",
+                         "value": 1}]},
+        ], "runs": [], "notify_queue": [], "library": "", "vars": {}}, self.path)
+        self.client = self._Client()
+        self.app = rules_service.RulesApp(self.client, self.path)
+        self.client.published = []
+
+    def sent(self):
+        return [(t, p) for t, p, _r in self.client.published]
+
+    def test_on_connect_subscribes_the_command_level(self):
+        rules_service.subscribe_all(self.client)
+        self.assertIn("/devices/+/controls/+", self.client.subscribed)
+        self.assertIn("/devices/+/controls/+/on", self.client.subscribed)
+
+    def test_run_on_runs_the_scene(self):
+        self.app._apply_message("/devices/sa02m-rules-s1/controls/run/on", "1")
+        self.assertEqual(self.sent(), [("/devices/led/controls/on_off/on", "1")])
+
+    def test_run_off_switches_the_scene_outputs_off(self):
+        self.app._apply_message("/devices/sa02m-rules-s1/controls/run/on", "0")
+        self.assertEqual(self.sent(), [("/devices/led/controls/on_off/on", "0")])
+
+    def test_every_other_on_topic_is_dropped_at_the_length_check(self):
+        for topic in ("/devices/led/controls/on_off/on",
+                      "/devices/sa02m-rules-s1/controls/rule_enabled/on",
+                      "/devices/sa02m-rules-s1/controls/run/off",
+                      "/devices/sa02m-rules-s1/controls/run/on/extra",
+                      "/devices/other-s1/controls/run/on",
+                      "/devices/sa02m-rules-/controls/run/on",
+                      "/devices/sa02m-rules-b1/controls/run/on",
+                      "/other/sa02m-rules-s1/controls/run/on"):
+            with self.subTest(topic=topic):
+                self.app._apply_message(topic, "1")
+        self.assertEqual(self.sent(), [])
+
+    def test_a_command_for_an_unknown_scene_is_a_no_op(self):
+        self.app._apply_message("/devices/sa02m-rules-nope/controls/run/on", "1")
+        self.assertEqual(self.sent(), [])
+
+    def test_the_engine_never_commands_its_own_virtual_device(self):
+        """No echo loop: a stored action naming a `sa02m-rules-*` device would
+        otherwise publish a command the intake above feeds straight back to
+        the engine. `pub_state` (retained state) stays the only writer there."""
+        self.app.pub("sa02m-rules-s1", "run", 1)
+        self.assertEqual(self.sent(), [])
+        self.app.pub_state("sa02m-rules-s1", "rule_enabled", 1)
+        self.assertEqual(
+            self.client.published,
+            [("/devices/sa02m-rules-s1/controls/rule_enabled", "1", True)])
+
+    def test_a_command_arrives_through_the_normal_inbox(self):
+        """The command path shares the network-thread/tick split (A12): a
+        publish must not happen on paho's thread."""
+        msg = types.SimpleNamespace(
+            topic="/devices/sa02m-rules-s1/controls/run/on", payload=b"1")
+        self.app.on_message(None, None, msg)
+        self.assertEqual(self.sent(), [])
+        self.app.tick()
+        self.assertEqual(self.sent(), [("/devices/led/controls/on_off/on", "1")])
+
+
 if __name__ == "__main__":
     unittest.main()

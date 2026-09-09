@@ -481,6 +481,73 @@ class Engine:
         self.flush_runs()
         return rec
 
+    def _live_scene(self, sid: Any) -> Optional[Dict[str, Any]]:
+        """The stored row for `sid` when it is an enabled SCENE, else None.
+
+        One home for the rule both voice verbs answer to: `run_now` is the
+        cloud's type-agnostic «run this scenario» verb, but the MQTT command
+        control is reachable from the LAN, so what it may start is narrowed
+        here — a `block`/`logic`/`code` row is not a scene and is not run.
+        """
+        s = self._scenario(sid)
+        if s is None or (s.get("type") or "block") != "scene" \
+                or s.get("enabled") is False:
+            return None
+        return s
+
+    def run_scene(self, sid: Any) -> Optional[Dict[str, Any]]:
+        """«Алиса, включи <сцена>» — `run_now` narrowed to an enabled scene."""
+        if self._live_scene(sid) is None:
+            return None
+        return self.run_now(sid)
+
+    def run_off(self, sid: Any) -> Optional[Dict[str, Any]]:
+        """«Алиса, выключи <сцена>» — switch off what the scene switches on.
+
+        Derived from the STORED DEFINITION, never from the last run's
+        bookkeeping: idempotent, and still correct after a reboot that lost
+        every in-memory run. Only `set` actions on `on_off` with a truthy
+        value are reversed — a brightness level has no «off», and an action
+        that already writes 0 needs none.
+
+        A `restore`-mode scene is NOT rolled back to its pre-run snapshot:
+        that snapshot lives in the end timer's payload, which this cancels,
+        and «выключи» means off (contract cloud-scenarios.md §Scene devices).
+
+        Writes go through `_write` under a `_Run`, so the same
+        `MAX_WRITES` / rate window bounds a spoken «выключи» as any other
+        run; a refusal is journaled (`last_error`), never silent. Journalled
+        directly rather than through `_finish`, which would RE-ARM the very
+        `end` timer this cancels.
+        """
+        s = self._live_scene(sid)
+        if s is None:
+            return None
+        run = _Run(str(s.get("id")), str(s.get("name") or sid), (str(sid),),
+                   "external")
+        run.root = s
+        self._cancel("%s:cont" % run.sid)
+        self._cancel("%s:end" % run.sid)
+        if isinstance(s.get("end"), dict):
+            self._publish_tpl_state(run.sid, "end_after_s", 0)
+        for act in s.get("action") or []:
+            if not isinstance(act, dict) or act.get("kind") != "set":
+                continue
+            if str(act.get("cap") or "on_off") != "on_off":
+                continue
+            if not _truthy(act.get("value")):
+                continue
+            if run.writes >= MAX_WRITES:
+                run.error = "write cap"
+                break
+            self._write(act.get("device"), "on_off", 0, run)
+            run.writes += 1
+        rec = {"ts": self._now(), "id": run.sid, "name": run.name,
+               "error": run.error, "ok": not run.error, "source": run.source,
+               "reason": "off"}
+        self._journal(s, rec)
+        return rec
+
     # ── journal flush ──────────────────────────────────────────────────
     def flush_runs(self) -> bool:
         return self.journal.flush(self.doc)
