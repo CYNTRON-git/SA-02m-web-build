@@ -26,7 +26,8 @@ REPO = os.path.abspath(os.path.join(ROOT, "..", ".."))
 UNIT = os.path.join(REPO, "etc", "systemd", "system", "sa02m-rules.service")
 
 
-def _run(code, path, pubs=None, state=None, budget=None, mechanism=None, doc=None):
+def _run(code, path, pubs=None, state=None, budget=None, mechanism=None, doc=None,
+         library=""):
     doc = doc if doc is not None else {"notify_queue": [], "runs": []}
     kw = {}
     if budget is not None:
@@ -34,7 +35,7 @@ def _run(code, path, pubs=None, state=None, budget=None, mechanism=None, doc=Non
     if mechanism is not None:
         kw["deadline_mechanism"] = mechanism
     return code_runner.run_code(
-        {"id": "c1", "name": "c", "code": code}, "", state or {},
+        {"id": "c1", "name": "c", "code": code}, library, state or {},
         lambda d, c, v: (pubs if pubs is not None else []).append((d, c, v)),
         1.0, 55.0, 37.0, doc, path, {}, **kw)
 
@@ -288,45 +289,152 @@ class SandboxFormatEscapeTests(unittest.TestCase):
         self.assertEqual(doc["notify_queue"][0]["text"], "lamp is 1")
 
 
-class HttpGuardTests(unittest.TestCase):
-    """A5: the board is not a request proxy into its own LAN."""
+class SandboxNamespaceTests(unittest.TestCase):
+    """S5: the body and the shared `library` run in ONE namespace.
 
-    def test_refuses_loopback_private_link_local_and_userinfo(self):
+    With separate globals/locals a `def` in the library saw neither the env
+    helpers nor its sibling functions — a function's global scope is the
+    globals mapping, and the helpers were only in locals, so calling it
+    raised `name 'Notify' is not defined` (reproduced by the cloud session).
+    The bans do not come from the split: they come from the AST walk and
+    from `__builtins__` being empty, both unchanged."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+
+    def test_a_library_function_reaches_the_env_helpers(self):
+        doc = {"notify_queue": [], "runs": []}
+        rec = _run("warn('too hot')\n", self.path, doc=doc,
+                   library="def warn(msg):\n    Notify.text(msg)\n")
+        self.assertTrue(rec["ok"], rec["error"])
+        self.assertEqual(doc["notify_queue"][0]["text"], "too hot")
+
+    def test_a_library_function_reaches_another_library_function(self):
+        pubs = []
+        rec = _run("Hub.set('lamp', 'on_off', level())\n", self.path, pubs=pubs,
+                   library=("def base():\n    return 7\n"
+                            "def level():\n    return base() + 1\n"))
+        self.assertTrue(rec["ok"], rec["error"])
+        self.assertEqual(pubs, [("lamp", "on_off", 8)])
+
+    def test_a_library_function_still_has_no_real_builtins(self):
+        """The merged namespace must not inherit CPython's builtins: a name
+        the env does not define stays undefined inside a library function."""
+        rec = _run("leak()\n", self.path,
+                   library="def leak():\n    return print\n")
+        self.assertFalse(rec["ok"])
+        self.assertIn("print", rec["error"])
+
+    def test_the_ast_bans_still_apply_to_library_code(self):
+        for library, expected in (
+                ("def peek():\n    return Hub._state\n", "banned attr"),
+                ("def peek():\n    return '{0._state}'.format(Hub)\n", "banned attr"),
+                ("def peek():\n    _x = 1\n    return _x\n", "banned name"),
+                ("def peek():\n    return getattr(Hub, 'set')\n", "banned getattr"),
+                ("import os\ndef peek():\n    return os\n", "banned Import")):
+            with self.subTest(library=library):
+                rec = _run("peek()\n", self.path, library=library)
+                self.assertEqual(rec["error"], expected)
+
+
+class HttpGuardTests(unittest.TestCase):
+    """A5: the board is not a request proxy into its own loopback services
+    or the metadata address. The LAN is reachable by design since the
+    2026-09-09 cloud-and-board decision — the module docstring is the one
+    home of the policy and its reason."""
+
+    def test_refuses_loopback_link_local_reserved_and_userinfo(self):
         for url in ("http://127.0.0.1:9999/cgi-bin/x",
-                    "http://192.168.1.1/",
-                    "http://10.0.0.5/",
-                    "http://172.16.3.4/",
                     "http://169.254.169.254/latest/meta-data",
                     "http://user:pass@example.com/",
                     "http://[::1]:1883/",
                     "http://[::ffff:127.0.0.1]/",
+                    "http://[fe80::1]/",
                     "http://0.0.0.0/",
+                    "http://0.0.0.1/",
+                    "http://[::]/",
+                    "http://224.0.0.1/",
+                    "http://240.0.0.1/",
                     "ftp://example.com/",
                     "http:///path"):
             with self.subTest(url=url):
                 self.assertNotEqual(http_guard.check_url(url, resolve=False), "")
+
+    def test_refuses_the_loopback_name_and_its_subdomains(self):
+        """A name, not an address: `localhost` never reaches the resolver
+        (RFC 6761 reserves the whole `.localhost` tree for loopback)."""
+        for url in ("http://localhost:9999/cgi-bin/x",
+                    "http://LocalHost/",
+                    "http://board.localhost/"):
+            with self.subTest(url=url):
+                self.assertNotEqual(http_guard.check_url(url, resolve=False), "")
+
+    def test_refuses_the_legacy_inet_aton_spellings_of_loopback(self):
+        """`ipaddress.ip_address` rejects these as hostnames while glibc's
+        resolver accepts them as 127.0.0.1 — the static half must catch the
+        spelling, not hand it to a resolver that would."""
+        for url in ("http://2130706433/", "http://0177.0.0.1/",
+                    "http://127.1/", "http://0x7f.1/", "http://127.0.1/"):
+            with self.subTest(url=url):
+                self.assertNotEqual(http_guard.check_url(url, resolve=False), "")
+
+    def test_refuses_a_url_past_the_length_cap_before_resolving(self):
+        long_url = "https://example.com/?q=" + "a" * http_guard.URL_MAX
+        with mock.patch.object(http_guard.socket, "getaddrinfo") as gai:
+            self.assertNotEqual(http_guard.check_url(long_url, resolve=True), "")
+        self.assertEqual(gai.call_count, 0)
+
+    def test_private_lan_targets_are_allowed(self):
+        """Cloud-and-board decision 2026-09-09: a scenario may reach the
+        operator's own LAN (a NAS, a panel); the two halves refuse the same
+        set, so a scenario the cloud accepts does not die silently here."""
+        for url in ("http://192.168.1.136:9999/login.html",
+                    "http://10.0.0.5/",
+                    "http://172.16.3.4/",
+                    "http://[fd00::1]/",
+                    "http://100.64.0.1/"):
+            with self.subTest(url=url):
+                self.assertEqual(http_guard.check_url(url, resolve=False), "")
 
     def test_public_literal_and_unresolved_hostname_pass_static_check(self):
         self.assertEqual(http_guard.check_url("https://8.8.8.8/", resolve=False), "")
         self.assertEqual(http_guard.check_url("https://example.com/", resolve=False), "")
 
     def test_resolution_catches_a_hostname_that_points_inside(self):
+        """The board's own fence, which the cloud half does not have: the
+        name is resolved and the ANSWER is judged, so a public-looking name
+        aimed at loopback is refused — a private answer now passes."""
         with mock.patch.object(http_guard.socket, "getaddrinfo",
                                return_value=[(2, 1, 6, "", ("127.0.0.1", 80))]):
             self.assertNotEqual(http_guard.check_url("http://evil.example/", resolve=True), "")
         with mock.patch.object(http_guard.socket, "getaddrinfo",
+                               return_value=[(2, 1, 6, "", ("169.254.169.254", 80))]):
+            self.assertNotEqual(http_guard.check_url("http://meta.example/", resolve=True), "")
+        with mock.patch.object(http_guard.socket, "getaddrinfo",
                                return_value=[(2, 1, 6, "", ("93.184.216.34", 80))]):
             self.assertEqual(http_guard.check_url("http://example.com/", resolve=True), "")
+        with mock.patch.object(http_guard.socket, "getaddrinfo",
+                               return_value=[(2, 1, 6, "", ("192.168.1.136", 80))]):
+            self.assertEqual(http_guard.check_url("http://nas.lan/", resolve=True), "")
 
-    def test_allow_list_admits_a_listed_host_only(self):
+    def test_allow_list_admits_a_listed_loopback_host_only(self):
+        """Since the LAN is allowed by default, the allow-list's remaining
+        job is the rare deliberate exemption: a loopback/link-local target
+        the operator names explicitly."""
         td = tempfile.TemporaryDirectory()
         self.addCleanup(td.cleanup)
         allow = os.path.join(td.name, "http-allow.json")
         with open(allow, "w", encoding="utf-8") as fh:
-            json.dump({"hosts": ["192.168.1.50"]}, fh)
+            json.dump({"hosts": ["127.0.0.1"]}, fh)
         with mock.patch.dict(os.environ, {"SA02M_RULES_HTTP_ALLOW": allow}):
-            self.assertEqual(http_guard.check_url("http://192.168.1.50/api", resolve=False), "")
-            self.assertNotEqual(http_guard.check_url("http://192.168.1.51/api", resolve=False), "")
+            self.assertEqual(http_guard.check_url("http://127.0.0.1:9999/api", resolve=False), "")
+            self.assertNotEqual(http_guard.check_url("http://127.0.0.2:9999/api", resolve=False), "")
+            self.assertNotEqual(http_guard.check_url("http://localhost:9999/api", resolve=False), "")
+            # An allow-listed host does NOT excuse credentials in the URL.
+            self.assertNotEqual(
+                http_guard.check_url("http://u:p@127.0.0.1/api", resolve=False), "")
         with mock.patch.dict(os.environ, {"SA02M_RULES_HTTP_ALLOW": os.path.join(td.name, "absent")}):
             self.assertEqual(http_guard.allowed_hosts(), set())
 
@@ -335,9 +443,30 @@ class HttpGuardTests(unittest.TestCase):
             "name": "probe",
             "action": [{"kind": "http", "url": "http://127.0.0.1:9999/cgi-bin/internal?secret=1"},
                        {"kind": "http", "url": "http://user:pass@10.0.0.5/"},
+                       {"kind": "http", "url": "http://localhost:9999/cgi-bin/x"},
+                       {"kind": "http", "url": "http://2130706433/cgi-bin/x"},
+                       {"kind": "http", "url": "http://192.168.1.136:9999/login.html"},
                        {"kind": "http", "url": "https://example.com/hook"}]})
         self.assertEqual(err, "")
-        self.assertEqual([a["url"] for a in row["action"]], ["https://example.com/hook"])
+        self.assertEqual([a["url"] for a in row["action"]],
+                         ["http://192.168.1.136:9999/login.html",
+                          "https://example.com/hook"])
+
+    def test_every_redirect_hop_is_re_checked(self):
+        """The hop-by-hop half of the board's fence: an allowed first target
+        cannot bounce the request onto a refused one."""
+        def to_metadata(h):
+            h.send_response(302)
+            h.send_header("Location", "http://169.254.169.254/latest/meta-data")
+            h.send_header("Content-Length", "0")
+            h.end_headers()
+        srv = _Server(to_metadata)
+        self.addCleanup(srv.close)
+        with mock.patch.object(http_guard, "allowed_hosts", return_value={"127.0.0.1"}):
+            with self.assertRaises(http_guard.HttpRefused) as cm:
+                http_guard.fetch("GET", srv.url("/start"))
+        self.assertIn("refused", str(cm.exception))
+        self.assertEqual(len(srv.seen), 1)
 
     def test_sandbox_http_does_not_reach_loopback(self):
         srv = _Server(_ok_200)
@@ -404,6 +533,74 @@ class HttpGuardTests(unittest.TestCase):
                        os.path.join(td.name, "s.json"))
         self.assertTrue(rec["ok"], rec["error"])
         self.assertEqual(srv.seen, [("POST", "/hook")])
+
+
+class HttpRunCapTests(unittest.TestCase):
+    """S1: a run cannot issue an unbounded number of outbound requests —
+    the `http` action and the sandbox `Http` share ONE per-run budget
+    (store.HTTP_PER_RUN_MAX), so a cloud-pushed scenario cannot turn a
+    board into a scanner or an amplifier by looping over targets."""
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        self.srv = _Server(_ok_200)
+        self.addCleanup(self.srv.close)
+
+    def test_sandbox_http_is_capped_per_run(self):
+        n = store.HTTP_PER_RUN_MAX + 3
+        code = "\n".join("Http.get('%s')" % self.srv.url("/p%d" % i)
+                         for i in range(n))
+        with mock.patch.object(http_guard, "allowed_hosts",
+                               return_value={"127.0.0.1"}):
+            rec = _run(code, self.path)
+        self.assertFalse(rec["ok"])
+        self.assertIn("http cap", rec["error"])
+        self.assertEqual(len(self.srv.seen), store.HTTP_PER_RUN_MAX)
+
+    def test_engine_http_action_is_capped_per_run(self):
+        acts = [{"kind": "http", "url": self.srv.url("/a%d" % i), "method": "GET"}
+                for i in range(store.HTTP_PER_RUN_MAX + 2)]
+        store.save({"scenarios": [{"id": "s1", "name": "s", "enabled": True,
+                                   "type": "block", "trigger": [], "condition": {},
+                                   "action": acts}],
+                    "runs": [], "notify_queue": [], "library": "", "vars": {}},
+                   self.path)
+        e = engine.Engine(lambda *_a: None, self.path)
+        with mock.patch.object(http_guard, "allowed_hosts",
+                               return_value={"127.0.0.1"}):
+            rec = e.run_now("s1")
+        self.assertIn("http cap", rec["error"])
+        self.assertEqual(len(self.srv.seen), store.HTTP_PER_RUN_MAX)
+        self.assertIn("http cap", e.doc["scenarios"][0]["last_error"])
+
+    def test_a_refused_target_spends_the_budget_too(self):
+        """The cap counts CALLS, not successes — else a run could probe the
+        LAN by looping over targets the policy refuses."""
+        code = ("for i in range(%d):\n"
+                "    try:\n"
+                "        Http.get('http://127.0.0.1/x')\n"
+                "    except:\n"
+                "        pass\n"
+                "Http.get('%s')\n"
+                % (store.HTTP_PER_RUN_MAX, self.srv.url("/after")))
+        with mock.patch.object(http_guard, "allowed_hosts", return_value=set()):
+            rec = _run(code, self.path)
+        self.assertEqual(rec["error"], "http cap")
+        self.assertEqual(self.srv.seen, [])
+
+    def test_the_budget_is_per_run_not_per_process(self):
+        """Two runs of the same scenario each get the full budget."""
+        code = "\n".join("Http.get('%s')" % self.srv.url("/q%d" % i)
+                         for i in range(store.HTTP_PER_RUN_MAX))
+        with mock.patch.object(http_guard, "allowed_hosts",
+                               return_value={"127.0.0.1"}):
+            first = _run(code, self.path)
+            second = _run(code, self.path)
+        self.assertTrue(first["ok"], first["error"])
+        self.assertTrue(second["ok"], second["error"])
+        self.assertEqual(len(self.srv.seen), 2 * store.HTTP_PER_RUN_MAX)
 
 
 class CapCharsetTests(unittest.TestCase):
@@ -474,6 +671,57 @@ class CapCharsetTests(unittest.TestCase):
         self.assertEqual(len(app.engine.doc["runs"]), 1)
 
 
+class ServicePubFenceTests(unittest.TestCase):
+    """S2: `RulesApp.pub` builds the MQTT topic — it is the LAST line before
+    the wire and the narrowing point BOTH the `code` and the `block` path
+    reach (Engine._write / Hub.set check upstream; this is the fence at the
+    wall). A `device`/`cap` failing ID_RE / CAP_RE is refused here whatever
+    let it through, so no caller can publish a wildcard or climb out of the
+    device subtree."""
+
+    class _Client:
+        def __init__(self):
+            self.sent = []
+
+        def publish(self, topic, payload, qos=1, retain=False):
+            self.sent.append((topic, payload, retain))
+
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        self.path = os.path.join(self.td.name, "scenarios.json")
+        store.save(store.empty_doc(), self.path)
+        self.client = self._Client()
+        self.app = rules_service.RulesApp(self.client, self.path)
+        self.client.sent = []
+
+    def test_pub_refuses_names_that_escape_the_topic_segment(self):
+        bad = (("x/controls/y/on/#", "on_off"),   # wildcard device
+               ("lamp", "on_off/#"),              # wildcard cap
+               ("../../sa02m-relay", "on_off"),   # traversal out of the subtree
+               ("lamp", "a b"),                   # whitespace in a topic segment
+               ("lamp", "a+b"),                   # single-level wildcard
+               ("x" * 65, "on_off"))              # past ID_RE's length
+        for device, cap in bad:
+            with self.subTest(device=device, cap=cap):
+                self.app.pub(device, cap, 1)
+        self.assertEqual(self.client.sent, [])
+        self.assertEqual(self.app.state, {})
+
+    def test_pub_still_publishes_a_valid_pair(self):
+        self.app.pub("lamp", "on_off", 1)
+        self.assertEqual(self.client.sent,
+                         [("/devices/lamp/controls/on_off/on", "1", False)])
+        self.assertEqual(self.app.state["lamp"]["on_off"], 1)
+
+    def test_pub_keeps_the_alice_long_cap_form(self):
+        """`cap_short` runs first: the long Alice form is validated in its
+        short shape, not refused for carrying dots the segment never sees."""
+        self.app.pub("lamp", "devices.capabilities.on_off", 0)
+        self.assertEqual(self.client.sent,
+                         [("/devices/lamp/controls/on_off/on", "0", False)])
+
+
 class UnitHardeningTests(unittest.TestCase):
     """A3: the one unit that executes remote-supplied Python carries at least
     its siblings' hardening block (sa02m-cloud-control / sa02m-alice-client)."""
@@ -485,7 +733,12 @@ class UnitHardeningTests(unittest.TestCase):
                      if ln.strip() and not ln.lstrip().startswith("#")]
         for needle in ("User=root", "NoNewPrivileges=true", "ProtectHome=true",
                        "PrivateTmp=true", "ProtectSystem=strict",
-                       "ReadWritePaths=/etc/sa02m-rules", "MemoryMax=32M"):
+                       "ReadWritePaths=/etc/sa02m-rules", "MemoryMax=32M",
+                       # S4: the deadline cannot interrupt a single long C
+                       # call, so the resource ceiling is what bounds the
+                       # damage of one — CPU share and process/thread count
+                       # beside the memory ceiling that already shipped.
+                       "CPUQuota=50%", "TasksMax=32"):
             self.assertIn(needle, lines, needle)
 
 

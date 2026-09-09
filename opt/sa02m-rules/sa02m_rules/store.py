@@ -48,6 +48,14 @@ SCENARIOS_MAX = 64
 #: (`too_many_writes`) exactly what the engine would abort at run time.
 MAX_WRITES = 8
 _WRITE_KINDS = ("set", "toggle", "ramp")
+#: Outbound HTTP requests per engine run — the `http` action and the sandbox
+#: `Http` share ONE counter per run, so a scenario cannot loop over targets
+#: and turn the board into a scanner or an amplifier. Run-time only, unlike
+#: MAX_WRITES: the budget spans the whole chain (nested `scenario`/`scene`
+#: children spend the parent's), so no single stored row can be validated
+#: against it. The 9th request raises HttpRefused("http cap") — journaled,
+#: never sent.
+HTTP_PER_RUN_MAX = 8
 #: Engine version reported to the cloud (control view `rules_engine`):
 #: 2 = end events, edge operators, day/night presets, button/every/presence.
 RULES_ENGINE = 2
@@ -74,6 +82,18 @@ LOGIC_TEMPLATES = (
 def empty_doc() -> Dict[str, Any]:
     return {"scenarios": [], "library": "", "runs": [], "notify_queue": [],
             "vars": {}}
+
+
+def charge_http(counter: List[int]) -> None:
+    """Charge one outbound request against a run's HTTP budget.
+
+    The one home of the per-run cap for both issuers (`Engine._do_action`'s
+    `http` action and the sandbox `Http`): they pass the SAME single-element
+    counter of the run, so the budget cannot be doubled by mixing paths.
+    Raises before the request is built, so nothing is sent past the cap."""
+    if counter[0] >= HTTP_PER_RUN_MAX:
+        raise http_guard.HttpRefused("http cap")
+    counter[0] += 1
 
 
 def _atomic_write(path: str, data: str) -> None:

@@ -27,7 +27,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from sa02m_rules.engine import Engine
-from sa02m_rules.store import DEFAULT_PATH, load
+from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("SA02M_MQTT_PORT", "1883"))
@@ -138,6 +138,13 @@ class RulesApp:
         if not device or not cap:
             return
         short = cap_short(cap)
+        # Last line before the wire: both scenario paths (block actions and
+        # the sandbox's Hub.set) end here, so this is where a name that
+        # escapes its topic segment — a wildcard, a `/`, whitespace — is
+        # stopped whatever let it through upstream. Regex home: store.
+        if not ID_RE.match(str(device)) or not CAP_RE.match(str(short)):
+            LOG.warning("publish refused: bad device/cap %r/%r", device, short)
+            return
         if (device, short) in self._readonly:
             return
         topic = self.mqtt_topic(device, cap) + "/on"

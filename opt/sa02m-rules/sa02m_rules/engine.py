@@ -18,7 +18,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from sa02m_rules import http_guard
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, MAX_WRITES,
-    Journal, load, migrate_journal, save)
+    Journal, charge_http, load, migrate_journal, save)
 
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
@@ -152,9 +152,11 @@ def _edge_pred(op: str, value: Any, threshold: Any) -> bool:
     return False
 
 
-def _http(act: Dict[str, Any]) -> str:
-    """`http` action under the shared target policy (http_guard)."""
+def _http(act: Dict[str, Any], calls: List[int]) -> str:
+    """`http` action under the shared target policy (http_guard) and the
+    run's shared request budget (store.charge_http)."""
     try:
+        charge_http(calls)
         status, _n = http_guard.fetch(act.get("method") or "GET", act["url"],
                                       act.get("body"))
         return "http %s" % status
@@ -164,7 +166,7 @@ def _http(act: Dict[str, Any]) -> str:
 
 class _Run:
     """One scenario execution; survives across scheduler continuations."""
-    __slots__ = ("sid", "name", "chain", "writes", "actions",
+    __slots__ = ("sid", "name", "chain", "writes", "http_calls", "actions",
                  "spent", "snapshot", "turned_on", "source", "error", "root")
 
     def __init__(self, sid: str, name: str, chain: Tuple[str, ...],
@@ -173,6 +175,9 @@ class _Run:
         self.name = name
         self.chain = chain
         self.writes = 0
+        # Single-element so store.charge_http can spend it — the same shape
+        # the sandbox passes to code_runner.Http (one home for the cap).
+        self.http_calls: List[int] = [0]
         self.actions = 0
         self.spent = 0.0
         self.snapshot: Optional[Dict[Tuple[str, str], Any]] = None
@@ -922,7 +927,8 @@ class Engine:
         elif kind == "notify":
             self._notify(str(act.get("text") or ""))
         elif kind == "http":
-            err = _http(act) if str(act.get("url") or "").startswith("http") else "bad url"
+            err = (_http(act, run.http_calls)
+                   if str(act.get("url") or "").startswith("http") else "bad url")
             if err.startswith("http err"):
                 run.error = err
                 return None

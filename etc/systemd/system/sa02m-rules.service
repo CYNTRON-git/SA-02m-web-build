@@ -12,6 +12,12 @@ Environment=PYTHONPATH=/opt/sa02m-rules
 Restart=on-failure
 RestartSec=5
 MemoryMax=32M
+# The in-process deadline cannot interrupt one long C call (a single
+# bytecode runs to completion), so the resource ceiling is what bounds the
+# damage of one: half a core, and a process/thread count a scenario has no
+# way to need. MPLC4/CODESYS/mosquitto share this SoC.
+CPUQuota=50%
+TasksMax=32
 Nice=10
 # Sibling parity (sa02m-cloud-control / sa02m-alice-client) plus a stricter
 # filesystem view: this unit executes cloud-supplied restricted Python as
