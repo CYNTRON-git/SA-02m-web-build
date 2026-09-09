@@ -6,9 +6,11 @@
 Машинная грамматика (маршруты, поля JSON, DDL) — на английском
 (`PROTOCOL.md` invariant 5); пояснения — на русском (`docLanguage: ru`).
 
-Реализация: `opt/sa02m-devices/sa02m_devices/device_history_db.py`
-(`mr_samples`, `insert_mr_sample`, `history_mr`, `history_mr_batch`,
-`collect_export_table_mr`), `sa02m_devices_logger.py` (запись каждые
+Реализация: `opt/sa02m-devices/sa02m_devices/history_mr.py` (`history_mr`,
+`history_mr_batch`, `collect_export_table_mr`; DDL `mr_samples` — `history_store.py`,
+`insert_mr_sample` — `history_write.py`; все имена реэкспортирует фасад
+`device_history_db.py`, через который и импортируют API, логгер и тесты),
+`sa02m_devices_logger.py` (запись каждые
 `STAND_DEVICES_MR_INTERVAL_S`, по умолчанию 10 с), `api.py` (`handle_history`
 ветка `kind=mr`, экспорт `kind=mr`). UI — `www/network_config/static/js/devices.js`
 (та же модалка/движок Canvas 2D, что у ДТВ; точность оси —

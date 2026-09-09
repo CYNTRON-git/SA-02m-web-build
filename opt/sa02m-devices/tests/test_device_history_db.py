@@ -717,11 +717,16 @@ def test_event_rows_outlive_samples_for_a_year(tmp_path: Path):
 
 def test_event_retention_is_its_own_env_knob():
     from sa02m_devices import device_history_db as m
+    from sa02m_devices import history_store
 
     assert m.EVENT_RETENTION_S == 365 * 86400
     assert m.RETENTION_S == 30 * 86400
-    # Both knobs read their env var at import, the same way.
-    src = Path(m.__file__).read_text(encoding="utf-8")
+    # Both knobs read their env var at import, the same way. The source read is
+    # re-pointed at history_store — the constants' home since the 1.0.6.41
+    # package split (plan A1 note): this test pins WHERE the knobs live, the
+    # home moved by design, and the façade only re-exports the values.
+    assert m.EVENT_RETENTION_S == history_store.EVENT_RETENTION_S
+    src = Path(history_store.__file__).read_text(encoding="utf-8")
     assert 'os.environ.get("STAND_DEVICES_EVENT_RETENTION_S"' in src
 
 
