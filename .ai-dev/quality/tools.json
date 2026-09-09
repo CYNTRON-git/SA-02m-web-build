@@ -170,7 +170,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-devices opt/sa02m-devices",
       "beat": "build",
-      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh", "www/network_config/static/js/i18n.js", "docs/contracts/devices-mr-history.md"],
+      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh", "www/network_config/static/js/i18n.js", "docs/contracts/devices-mr-history.md", "docs/contracts/carel-ahu.md"],
       "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
     },
     {

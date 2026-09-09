@@ -8,6 +8,13 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-09 **[LOW] `carel_samples_v1` is dropped in 1.0.6.42.** The wide-table
+  pivot of 1.0.6.41 keeps the old long table as a one-release rollback path; the drop
+  (plus the `CAREL_METRIC_AGG` vocabulary constant if it still has no reader) belongs to
+  the next release. Bench 1.135 carries ~75k rows of it.
+- [OPEN] 2026-09-09 **[LOW] The Carel wide pivot has no bench timing measurement.** The
+  synthetic 75 600-row pivot takes 0.110 s on the dev host; the ≤10 s criterion was
+  written for the board's eMMC. Measure on 1.135 before the next fleet rollout.
 - [OPEN] 2026-09-09 **[MED] The scenario sandbox is an AST denylist in front of a real
   CPython interpreter, not isolation.** Every known escape is closed (1.0.6.39 banned
   `.format`/`format_map` — the reproduction `'{0.text.__globals__}'.format(Notify)` now
@@ -110,7 +117,10 @@ worklist collapsed into one home).
   a 6DO8DI module on a line shared with Carel (audit E7). The cost is now stated in
   `docs/MQTT_TOPICS.md`; the single-FC04 read (695..727+max_ch−1, ≤46 regs) needs the
   42-register-truncation bench measurement (`bridge_mr02m_map.py:41-44`) before adoption.
-- [OPEN] 2026-09-08 **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (wide row per `(ts, device_id)`, one-time atomic
+  pivot with `carel_samples_v1` as the rollback, `ahu_` METRICS ids + `group=ahu`, the
+  bespoke path deleted, `kind=carel` response shape preserved by an adapter; 7 tests RED
+  on the long DDL) **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
   the Carel plan recommended** (audit E13; plan §7 S1 under «Примени все рекомендации»).
   ~300 lines of bespoke parallel path (`_query_series_carel`, `history_carel*`,
   `collect_export_table_carel`) instead of the generic engine, no `group=ahu` overview.
@@ -913,7 +923,10 @@ worklist collapsed into one home).
   `device_history_db.py` 1918→2226 (its decompose was queued «AFTER» 1.0.6.35 by
   Operator decision F4 and never cut), new `sa02m_rules/engine.py` 990; absolute
   worst: `main.css` 5906, `flasher.js` 5795, `mqtt.js` 2775, `devices.js` 2609,
-  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910. 40 tracked files
+  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910.
+  **`device_history_db.py` DONE in 1.0.6.41**: 2226 → a 133-line permanent façade over
+  eight responsibility modules (AST-multiset neutrality `0 differences`, id set identical).
+  Next by size: `main.css`, `flasher.js`, `mqtt.js`, `devices.js`, `app/status.js`. 40 tracked files
   over 800 lines. Each decompose is its own branch (`.ai-dev/procedures/decompose.md`).
 - [OPEN] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
   always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
