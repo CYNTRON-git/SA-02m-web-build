@@ -551,6 +551,10 @@ HW_CHANNELS = ("do", "beeper", "alarm_led")
 # The polarity mask under `auto` is built from every declared channel, usb_power
 # included, exactly as lib_hw.sh sa02m_hw_i2c_output_mask_dec does.
 HW_MASK_CHANNELS = HW_CHANNELS + ("usb_power",)
+# lib_hw.sh's `SA02M_I2C_EXTRA_OUTPUT_MASK:-0x08` — bit3, KLogic's blue LED.
+# Pinned against that line by tests/test_telemetry_hw_lock.py
+# TestTheFallbacksMatchTheCgi, like every other default this daemon mirrors.
+HW_EXTRA_OUTPUT_MASK_DEFAULT = 0x08
 
 
 def _hw_conf_path() -> str:
@@ -621,6 +625,26 @@ def _hw_parse_word_list(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return words or default
 
 
+def _hw_extra_output_mask(val) -> int:
+    """SA02M_I2C_EXTRA_OUTPUT_MASK: pins the conf declares as outputs that no
+    channel names.
+
+    Blank or absent is lib_hw.sh's `:-0x08`, NOT 0. The key first shipped in
+    1.0.5.64 and scripts/03-webserver.sh only writes the conf template when the
+    file is absent, so a board provisioned earlier reads this key as blank. A 0
+    there drops bit3 — KLogic's blue LED — out of the direction register, i.e.
+    this daemon turns a working output into an input while the CGI, which does
+    default to 0x08, turns it back on the next panel click.
+
+    An unparseable value still resolves to 0, exactly as
+    sa02m_hw_i2c_extra_output_mask_dec's `*)` branch prints 0.
+    """
+    raw = (val("SA02M_I2C_EXTRA_OUTPUT_MASK") or "").strip()
+    if not raw:
+        return HW_EXTRA_OUTPUT_MASK_DEFAULT
+    return _hw_parse_mask(raw) or 0
+
+
 class HwProfile:
     """What /etc/sa02m_hw.conf says about the expander, resolved once at start.
 
@@ -630,7 +654,8 @@ class HwProfile:
     """
 
     def __init__(self, backend, bus, addr, bits, active_low_mask, refusals,
-                 source, extra_output_mask=0, lock_file=HW_LOCK_FILE_DEFAULT,
+                 source, extra_output_mask=HW_EXTRA_OUTPUT_MASK_DEFAULT,
+                 lock_file=HW_LOCK_FILE_DEFAULT,
                  lock_wait_s=HW_LOCK_WAIT_SEC_DEFAULT,
                  owner_units=HW_OWNER_UNITS_DEFAULT,
                  owner_procs=HW_OWNER_PROCS_DEFAULT, respect_owner=True):
@@ -711,7 +736,7 @@ class HwProfile:
         # usb_power is not a telemetry channel; it contributed to the polarity
         # mask above and is dropped here so it cannot be commanded from MQTT.
         bits = {ch: b for ch, b in bits.items() if ch in HW_CHANNELS}
-        extra = _hw_parse_mask(val("SA02M_I2C_EXTRA_OUTPUT_MASK")) or 0
+        extra = _hw_extra_output_mask(val)
         return cls(backend, bus, addr, bits, active_low, refusals,
                    path if present else f"{path} (absent)", extra,
                    lock_file=(val("SA02M_I2C_LOCK_FILE") or "").strip()
@@ -747,7 +772,7 @@ class HwProfile:
         """
         raw = (val("SA02M_I2C_ACTIVE_LOW_MASK") or "auto").strip()
         if raw in ("auto", ""):
-            mask = _hw_parse_mask(val("SA02M_I2C_EXTRA_OUTPUT_MASK")) or 0
+            mask = _hw_extra_output_mask(val)
             for bit in bits.values():
                 mask |= 1 << bit
             return mask & 0x0F
