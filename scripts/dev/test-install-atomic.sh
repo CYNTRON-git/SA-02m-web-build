@@ -3,7 +3,7 @@
 # comment-mutation-proof-exempt: behavioural harness — the helper's guarantee is asserted by RUNNING scripts/lib.sh sa02m_atomic_install in a sandbox with a failing `mv` / a torn `install` shim (files observed, not lines grepped), and the site pin delegates to the codemod's own `--check` sweep plus a drive-to-failure on a scratch copy; commenting a shipped install site out removes a call, which the codemod's non-vacuity floor (>= MIN_CONVERTED converted sites) and the module's own behaviour catch, not a needle grep here.
 # test-install-atomic.sh — regression harness for the atomic live-path write
 # (scripts/lib.sh sa02m_atomic_install) and for the rule that every live-path
-# `install -m` site in scripts/*.sh goes through it. Quality row
+# `install -m` site in scripts/*.sh AND install.sh goes through it. Quality row
 # `install-atomic`. 8D bench-136 reset (.ai-dev/8d/bench-136-reset.md, D5 step A).
 #
 # Why this exists: a hard reset at 22:15 on bench 1.136 left
@@ -21,7 +21,9 @@
 # scripts/dev/codemod-install-atomic.py --check` (its sweep is the one home of
 # "which install sites are live-path"), floored by a converted-site count so an
 # empty sweep cannot pass, and driven to failure on a scratch copy with one
-# site reverted.
+# site reverted (case 7c) plus a planted raw unit write in install.sh (case 7d
+# - install.sh carries zero install -m sites today, so 7c alone would leave the
+# "and install.sh" half of the claim unmeasured).
 #
 # Drive-to-failure: SVC_HELPERS_LIB=<(git show 1.0.6.41~N:scripts/lib.sh) has
 # no sa02m_atomic_install — the source guard fails; revert one codemod site —
@@ -122,7 +124,7 @@ rc=0; sa02m_atomic_install -m 0644 "$T/src/x.service" >/dev/null 2>&1 || rc=$?
 rc=0; sa02m_atomic_install -d -m 0755 "$T/live/newdir" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] && [ ! -d "$T/live/newdir" ] && ok "6b -d is refused (a directory is not an atomic file write)" || bad "6b -d accepted"
 
-echo "── 7. every live-path install site in scripts/*.sh uses the helper ──"
+echo "── 7. every live-path install site in scripts/*.sh + install.sh uses the helper ──"
 if ! command -v python3 >/dev/null 2>&1; then
     bad "7 python3 not found — the site sweep did NOT run (a skip is not a pass)"
 else
@@ -148,13 +150,32 @@ else
     # drive-to-failure: revert one converted site on a scratch copy → --check must go RED
     mkdir -p "$T/scratch/scripts"
     cp scripts/*.sh "$T/scratch/scripts/"
+    # the sweep set is scripts/*.sh + install.sh; a missing member is rc=2 (an
+    # incomplete sweep), which must never be mistaken for a site RED below.
+    cp install.sh "$T/scratch/"
     first=$(printf '%s\n' "$listed" | grep '\[converted\]' | head -1)
     f=${first%%:*}; f=${f//\\//}; ln=${first#*:}; ln=${ln%%:*}
-    if [ -n "$f" ] && [ -n "$ln" ] && sed -i "${ln}s/sa02m_atomic_install -m /install -m /" "$T/scratch/$f" \
-       && ! (cd "$T/scratch" && python3 "$ROOT/$CODEMOD" --check >/dev/null 2>&1); then
-        ok "7c drive-to-failure: reverting $f:$ln on a scratch copy turns --check RED"
+    red=""; rrc=0
+    if [ -n "$f" ] && [ -n "$ln" ] && sed -i "${ln}s/sa02m_atomic_install -m /install -m /" "$T/scratch/$f"; then
+        red=$(cd "$T/scratch" && python3 "$ROOT/$CODEMOD" --check 2>&1); rrc=$?
+    fi
+    if [ "$rrc" -eq 1 ] && printf '%s\n' "$red" | tr -d '\r' | grep -q "^$f:$ln:"; then
+        ok "7c drive-to-failure: reverting $f:$ln on a scratch copy turns --check RED at that line"
     else
-        bad "7c drive-to-failure: --check stayed GREEN with $f:$ln reverted — the sweep is hollow"
+        bad "7c drive-to-failure: rc=$rrc with $f:$ln reverted (expected rc=1 naming it) — the sweep is hollow"
+    fi
+    # 7d proves the install.sh HALF of the row's claim. install.sh carries zero
+    # install -m sites today, so 7c can only ever exercise scripts/*.sh: without
+    # a planted site, "and install.sh" would be an unmeasured sentence again
+    # (quality-gate-rigor.md shape (b) — the very finding this widening closes).
+    sed -i "${ln}s/install -m /sa02m_atomic_install -m /" "$T/scratch/$f"
+    printf '%s\n' 'install -m 0644 "$s" /etc/systemd/system/planted.service' >> "$T/scratch/install.sh"
+    pln=$(wc -l < "$T/scratch/install.sh")
+    red=$(cd "$T/scratch" && python3 "$ROOT/$CODEMOD" --check 2>&1); rrc=$?
+    if [ "$rrc" -eq 1 ] && printf '%s\n' "$red" | tr -d '\r' | grep -q "^install.sh:$pln:"; then
+        ok "7d install.sh is really swept: a planted /etc/systemd/system/ write there turns --check RED (install.sh:$pln)"
+    else
+        bad "7d a raw unit write planted in install.sh was NOT caught (rc=$rrc): $(printf '%s\n' "$red" | head -3 | tr '\n' ' ')"
     fi
 fi
 

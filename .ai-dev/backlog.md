@@ -18,12 +18,32 @@ worklist collapsed into one home).
   writers (found while fixing the rename wipe, 1.0.6.41). Deliberately unchanged: which
   one is right is a contract call (does the cloud hub rely on create-by-id?), not a
   defect fix. `docs/contracts/alice-mqtt-mapping.md` §Room membership is the home.
-- [OPEN] 2026-09-09 **[MED] `etc/sa02m-factory-reset-runner.sh:41,45` still carries the
-  hollow watchdog guard** (`systemctl set-property --runtime Manager
-  RuntimeWatchdogSec=0 … || true` plus a log line claiming the guarantee) that the
-  update runner lost in 1.0.6.41 — port it to the shared read-back block;
-  `scripts/dev/test-watchdog-hold.sh` case 9 is the pattern. Found while building 8D
-  step G; that file was outside the D5/D7 named set.
+- [RESOLVED 2026-09-09, `5df1b89`] 2026-09-09 **[MED]
+  `etc/sa02m-factory-reset-runner.sh:41,45` still carries the hollow watchdog guard**
+  (`systemctl set-property --runtime Manager RuntimeWatchdogSec=0 … || true` plus a log
+  line claiming the guarantee) that the update runner lost in 1.0.6.41 — port it to the
+  shared read-back block; `scripts/dev/test-watchdog-hold.sh` case 9 is the pattern.
+  Found while building 8D step G; that file was outside the D5/D7 named set.
+  Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
+  file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
+  the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-09 **[MED] Six live-path `install -m` sites under `etc/` are still the
+  truncate-then-fill shape the 8D closed everywhere else** — `sa02m-web-service-ctl.sh:1359`
+  writes `/etc/systemd/system/nodered.service`, the incident's own shape (a hard reset
+  mid-write leaves a 0-byte unit systemd reads as masked); also `:895,898` → `/opt/mplc4/*.so`,
+  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`, `sa02m-web-update-apply.sh:316,352` →
+  `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`, `sa02m-update-runner.sh:394`. The 8D's
+  step A swept `scripts/` only; found by the 1.0.6.41 ship review, finding 3. **Why they were
+  not converted with the rest:** `sa02m_atomic_install` lives in `scripts/lib.sh`, which
+  `install.sh` sources out of the extracted tree — `scripts/` is never deployed, and every
+  `etc/` script runs standalone on the board sourcing only its own
+  `/usr/local/lib/sa02m-web-*-lib.sh` (verified 2026-09-09: the `scripts/lib.sh` mentions in
+  those files are comments, not `source` lines). Closing this needs the helper duplicated into
+  a device-side lib — the shape the shared watchdog block already uses, with a `cmp` pin — then
+  each site converted with its own drive-to-failure. The sudoers site is the delicate one: a
+  torn sudoers file is worse than a torn unit. Enumeration and reason also live in
+  `scripts/dev/codemod-install-atomic.py`'s docstring, the one home of «which install sites are
+  live-path».
 - [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**
   (the restore value is read back from the manager instead). An in-tree grep found no
   other user — confirm no deployment recipe or bench script sets it.

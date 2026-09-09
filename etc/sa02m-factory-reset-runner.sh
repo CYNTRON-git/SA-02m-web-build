@@ -43,13 +43,14 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # ── BEGIN sa02m-runtime-watchdog (shared block — keep BYTE-IDENTICAL) ──────
 # One home for "hold the systemd manager's hardware watchdog off while the
-# live filesystem is being rewritten". Two callers cannot share a file:
+# live filesystem is being rewritten". Three callers cannot share a file:
 # install.sh sources scripts/lib.sh out of an extracted tree, while
-# etc/sa02m-update-runner.sh runs standalone on the device, where scripts/ is
-# not deployed. So the block is duplicated by construction and pinned
-# byte-for-byte by scripts/dev/test-watchdog-hold.sh (the `cmp` idiom
+# etc/sa02m-update-runner.sh and etc/sa02m-factory-reset-runner.sh run
+# standalone on the device, where scripts/ is not deployed. So the block is
+# duplicated by construction and pinned byte-for-byte by
+# scripts/dev/test-watchdog-hold.sh (the `cmp` idiom
 # .ai-dev/quality/checks/watchdog-cap.sh already uses for the policy file).
-# Nothing here logs: the two callers have different log() signatures — each
+# Nothing here logs: the three callers have different log() signatures — each
 # logs what it got back.
 #
 # Policy home of the value being held off: etc/systemd/sa02m-watchdog.conf

@@ -2,9 +2,9 @@
 """Codemod: live-path `install -m` sites -> `sa02m_atomic_install -m` (scripts/lib.sh).
 
 Why a script (web-workflow.md, Rule of 500): the move touches dozens of sites
-across scripts/*.sh, so it must be re-runnable and reviewable as ONE rule, not
-as hand edits. The rule: an `install -m ...` command whose DESTINATION is a
-live path the running system reads without a restart — a systemd unit or
+across scripts/*.sh and install.sh, so it must be re-runnable and reviewable as
+ONE rule, not as hand edits. The rule: an `install -m ...` command whose
+DESTINATION is a live path the running system reads without a restart — a systemd unit or
 drop-in under /etc/systemd/system/, or a helper under /usr/local/{bin,sbin,
 lib,libexec}/ — is rewritten to the atomic helper, which lands the file as
 tmp + fsync + rename-over (old-or-new, never a 0-byte file). Everything else
@@ -23,15 +23,44 @@ Modes:
             evidence for the harness — the sweep sees files)
   (default) rewrite in place; prints the sites it changed
 
+Scope: scripts/*.sh + install.sh - every shell file that can reach
+sa02m_atomic_install, which lives in scripts/lib.sh and is sourced out of the
+EXTRACTED install tree (install.sh:77). scripts/ is never deployed to the
+device, so a script under etc/ - which runs standalone on the board, sourcing
+only its own /usr/local/lib/sa02m-web-*-lib.sh - cannot call the helper. Its
+live-path sites are therefore out of scope BY CONSTRUCTION, not by oversight,
+and this is their enumeration (verified 2026-09-09, ship review finding 3):
+
+    etc/sa02m-web-service-ctl.sh:1359  -> /etc/systemd/system/nodered.service
+    etc/sa02m-web-service-ctl.sh:895,898 -> /opt/mplc4/*.so
+    etc/sa02m-commit-web-env.sh:14     -> /etc/sa02m_web.env
+    etc/sa02m-web-update-apply.sh:316  -> /etc/tmpfiles.d/*
+    etc/sa02m-web-update-apply.sh:352  -> /etc/sudoers.d/sa02m-www
+    etc/sa02m-update-runner.sh:394
+
+The unit write is the incident's own shape, so closing them is real work, not
+tidying: it needs the helper duplicated into a device-side lib (the shape the
+shared watchdog block already uses, with a cmp pin) and each site converted
+with its own drive-to-failure. Tracked in .ai-dev/backlog.md; do NOT widen
+FILES to etc/ before that lands, or every site there turns the sweep RED with
+no helper to convert it to.
+
 Line endings are preserved byte-for-byte (the tree is LF; a CRLF checkout
 stays CRLF). Run from the repo root: python3 scripts/dev/codemod-install-atomic.py
 Harness: scripts/dev/test-install-atomic.sh.
 """
 import glob
+import os
 import re
 import sys
 
-FILES = sorted(glob.glob("scripts/*.sh"))
+# Separators are normalised to `/` so a site is named identically on every
+# platform: `glob` hands back `scripts\01-system.sh` on Windows, and the
+# harness's drive-to-failure cases compare the printed `file:line` against the
+# path they reverted. A backslash there made case 7c report a hollow sweep on a
+# Windows checkout while CI stayed green — the environment-split shape
+# .ai-dev/notes/quality-gate-environment.md exists for.
+FILES = sorted(p.replace("\\", "/") for p in glob.glob("scripts/*.sh")) + ["install.sh"]
 LIVE_PREFIXES = (
     "/etc/systemd/system/",
     "/usr/local/bin/",
@@ -135,8 +164,14 @@ def main(argv):
         else:
             sys.stderr.write("usage: codemod-install-atomic.py [--list [--all] | --check]\n")
             return 2
-    if not FILES:
-        sys.stderr.write("codemod-install-atomic: no scripts/*.sh found — run from the repo root\n")
+    # Non-vacuity: a file named in FILES that is not on disk means the sweep is
+    # running somewhere other than the repo root - it must FAIL, never silently
+    # check a smaller set (quality-gate-rigor.md: a missing target file FAILS).
+    missing = [p for p in FILES if not os.path.isfile(p)]
+    if len(FILES) < 2 or missing:
+        sys.stderr.write("codemod-install-atomic: incomplete sweep set"
+                         " (missing: %s) - run from the repo root\n"
+                         % (", ".join(missing) or "scripts/*.sh"))
         return 2
     remaining = 0
     for path in FILES:
