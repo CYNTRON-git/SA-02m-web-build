@@ -297,3 +297,30 @@ def cloud_agent_api_url(path: str | None = None) -> str:
 
 def cert_paths_present() -> bool:
     return os.path.isfile(C.CERT_FILE) and os.path.isfile(C.KEY_FILE)
+
+
+def controller_sn() -> str:
+    """This board's identity string: the cloud agent's serial, else the first
+    16 chars of the machine-id, else a constant.
+
+    Read by the gateway handshake header (`X-Controller-SN`), the pairing
+    claim, and the Alice id of an exposed scene — one home, so those three
+    can never disagree about which board this is. A cloned machine-id is the
+    imaging contract's problem (docs/contracts/image-identity-reset.md).
+    """
+    for path in (C.CLOUD_AGENT_CONF, "/etc/machine-id"):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read().strip()
+        except OSError:
+            continue
+        if path == C.CLOUD_AGENT_CONF:
+            for line in text.splitlines():
+                if line.strip().startswith("serial"):
+                    val = line.split("=", 1)[-1].strip().strip("\"'")
+                    if val:
+                        return val
+            continue
+        if text:
+            return text[:16]
+    return "sa02m"

@@ -214,6 +214,9 @@
     'Управление из облака': 'Cloud control',
     'Показывать в Алисе': 'Show in Alice',
     'скрыто из Алисы': 'hidden from Alice',
+    // Scenes exposed to Alice as virtual switches (1.0.6.41)
+    'сценарий': 'scene',
+    'Сценариев в Алисе': 'Scenes in Alice',
     'Комната': 'Room',
     'Комнаты': 'Rooms',
     'Новая комната': 'New room',

@@ -11,7 +11,6 @@ import logging
 import os
 import socketserver
 import stat
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +27,7 @@ from ..common.config_store import (
     clear_unlink_marker,
     client_enabled,
     cloud_control_enabled,
+    controller_sn,
     default_client_cfg,
     empty_devices,
     gateway_urls,
@@ -38,50 +38,25 @@ from ..common.config_store import (
     set_cloud_control_enabled,
 )
 from . import models
+from . import scene_devices
 from .inventory import build_mqtt_inventory
 from .topics import list_mqtt_topics
 
 log = logging.getLogger("sa02m_alice.config.api")
 
-# The on-board scenario engine package (opt/sa02m-rules) is a sibling install,
-# not a python dependency of sa02m_alice — resolve it lazily and treat its
-# absence as «scenarios unsupported», never as an import-time crash.
-RULES_DIR = os.environ.get("SA02M_RULES_DIR", "/opt/sa02m-rules")
-
 
 def _rules_store():
-    """sa02m_rules.store module, or None when the rules stack is absent."""
-    try:
-        from sa02m_rules import store as rules_store  # type: ignore
-        return rules_store
-    except ImportError:
-        pass
-    if RULES_DIR not in sys.path:
-        sys.path.insert(0, RULES_DIR)
-    try:
-        from sa02m_rules import store as rules_store  # type: ignore
-        return rules_store
-    except ImportError:
-        return None
+    """sa02m_rules.store module, or None when the rules stack is absent.
+
+    The lazy resolution lives in `scene_devices` (one home — the client
+    daemon resolves the same sibling install without importing this module).
+    """
+    return scene_devices.rules_store()
 
 
 def _controller_sn() -> str:
-    for path in ("/etc/sa02m-cloud/agent.conf", "/etc/machine-id"):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read().strip()
-            if path.endswith("agent.conf"):
-                for line in text.splitlines():
-                    if line.strip().startswith("serial"):
-                        val = line.split("=", 1)[-1].strip().strip("\"'")
-                        if val:
-                            return val
-                continue
-            if path.endswith("machine-id") and text:
-                return text[:16]
-        except OSError:
-            continue
-    return "sa02m"
+    """This board's identity — one home in `common.config_store`."""
+    return controller_sn()
 
 
 def _save_pending_claim(data: Dict[str, Any]) -> None:
@@ -344,6 +319,12 @@ def full_config() -> Dict[str, Any]:
             "key_file": C.KEY_FILE,
         },
         "status": status,
+        # Read-only: the scenes marked «в Алису» in the cloud editor, shown
+        # on the «Умный дом» card beside the bound devices. One 0644 JSON
+        # read per Alice poll, beside the gateway probe already here. An
+        # older cached bundle simply ignores the key; a newer bundle against
+        # an older CGI renders no rows (`(d.scene_devices || [])`).
+        "scene_devices": scene_devices.web_scene_rows(devices),
         # Second unit (sa02m-cloud-control, `--profile cloud`): enable flag,
         # its own status file, tri-state enrollment like mtls.cert_present.
         "cloud_control": cloud_control_block(cfg),

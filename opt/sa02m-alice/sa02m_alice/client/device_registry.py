@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..common import constants as C
 from ..common.config_store import load_devices
-from ..config import ahu_status
+from ..config import ahu_status, scene_devices
 from . import converters
 
 _DEVICES_PREFIX = "/devices/"
@@ -129,9 +129,7 @@ class DeviceRegistry:
         # gains its cloud-only status rows and keeps only the LIVE optional
         # probes (bridge live cache) — in memory, the stored document is
         # never rewritten. Same call in reload(): the two sites must agree.
-        self._doc = ahu_status.prepare_catalogue_doc(
-            devices_doc if devices_doc is not None else load_devices()
-        )
+        self._doc = self._catalogue_doc(devices_doc)
         self._mqtt_cache: Dict[str, str] = {}  # topic -> last value seen (retained included)
         self._mqtt_ts: Dict[str, float] = {}
         self._mqtt_live: Dict[str, bool] = {}
@@ -148,6 +146,24 @@ class DeviceRegistry:
         # snapshot — Yandex/cloud learn the loss without a flood.
         self._announced_down: Dict[str, bool] = {}
         self._rebuild_indexes()
+
+    def _catalogue_doc(
+        self, devices_doc: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """The document the catalogue is built from — the two build sites
+        (`__init__`, `reload`) MUST agree, hence one helper.
+
+        Both passes are IN MEMORY over a copy: `ahu_status` adds the Carel
+        cloud-only status rows, `scene_devices` the scenes marked «в Алису»
+        (Yandex profile only). The stored document is never rewritten — what
+        the operator saved stays what the operator saved.
+        """
+        return scene_devices.attach_exposed_scenes(
+            ahu_status.prepare_catalogue_doc(
+                devices_doc if devices_doc is not None else load_devices()
+            ),
+            self._profile,
+        )
 
     def _items(self, dev: Dict[str, Any], key: str) -> List[Dict[str, Any]]:
         """Items of a device visible to THIS profile.
@@ -194,9 +210,7 @@ class DeviceRegistry:
             # the previous document and indexes untouched (reload_watch relies
             # on that), and the live-cache read happens per reload so a probe
             # that came alive since the last build is picked up.
-            self._doc = ahu_status.prepare_catalogue_doc(
-                devices_doc if devices_doc is not None else load_devices()
-            )
+            self._doc = self._catalogue_doc(devices_doc)
             self._rebuild_indexes()
 
     def mqtt_topics(self) -> Set[str]:
@@ -262,6 +276,11 @@ class DeviceRegistry:
         past `STATUS_STALE_S` and may answer from retained when
         `age_retained` is false.
         """
+        if scene_devices.is_virtual_scene_topic(topic):
+            # A scenario `run` topic is a COMMAND: no poller stands behind it
+            # and nothing ever republishes it, so it neither ages nor carries
+            # a `/meta/error` flag. Answer from the cache as-is.
+            return self._mqtt_cache.get(topic)
         if self._slave_down(topic):
             return None
         if self._control_dead(topic):
@@ -447,6 +466,14 @@ class DeviceRegistry:
                 reachable = True
                 for item in cap_items:
                     topic = str(item.get("mqtt") or "")
+                    if scene_devices.is_virtual_scene_topic(topic):
+                        # `retrievable: false` — the board cannot know whether
+                        # a scene is «on». Report nothing AND do not let the
+                        # silence mark the device unreachable: a topic that was
+                        # never published is dead for a Modbus coil and normal
+                        # for a command, and the 60 s snapshot would otherwise
+                        # announce every scene switch DOWN in the Alice app.
+                        continue
                     raw = self._fresh_payload(
                         topic, age_retained=_modbus_slave_topic(topic)
                     )
@@ -605,8 +632,17 @@ class DeviceRegistry:
                     # A Modbus write goes out unless the slave itself is
                     # down. Sticky per-channel `r` (busy bus / scenario
                     # burst) must not refuse the command.
+                    #
+                    # A scenario `run` topic is exempt from the freshness half
+                    # entirely: the FIRST action marks it live, nothing ever
+                    # republishes a command topic, so every «включи» past
+                    # STATUS_STALE_S would be refused DEVICE_UNREACHABLE. The
+                    # slave-offline flag still applies — that is the hook a
+                    # future LWT availability signal hangs on.
+                    virtual = scene_devices.is_virtual_scene_topic(topic)
                     if self._slave_down(topic) or (
                         not polled
+                        and not virtual
                         and self._fresh_payload(topic, age_retained=False) is None
                         and (
                             self._control_dead(topic)
@@ -662,6 +698,11 @@ class DeviceRegistry:
             # Retained fills the query cache; only a live MQTT echo is a
             # reportable change (callback_state). A quiet Modbus coil must
             # not emit here or Yandex gets a retained-burst flood.
+            if scene_devices.is_virtual_scene_topic(topic):
+                # `reportable: false` — a stray publish on a scenario command
+                # topic must not become a device_state event for a switch
+                # whose position we do not know.
+                return out
             if _modbus_slave_topic(topic) and not self._mqtt_live.get(topic):
                 return out
             raw = self._fresh_payload(topic, age_retained=_modbus_slave_topic(topic))

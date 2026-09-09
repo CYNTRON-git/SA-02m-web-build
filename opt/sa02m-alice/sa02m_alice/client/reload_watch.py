@@ -24,6 +24,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Iterable, Optional, Set, Tuple
 
+from ..config import scene_devices
+
 Fingerprint = Tuple[int, int, int]
 
 
@@ -69,6 +71,72 @@ class DevicesWatcher:
     def arm(self) -> None:
         """Re-baseline without acting — used on the connect path, which
         subscribes from the document it just fingerprinted."""
+        self.changed()
+
+
+class RulesExposureWatcher:
+    """Polls the scenario store for a change to the EXPOSED-SCENE projection.
+
+    Sibling of `DevicesWatcher` with a second stage. The scenario store is
+    written by the cloud channel for reasons that have nothing to do with
+    Alice (a `library` edit, `vars`, a `mode` action), and rebuilding the
+    catalogue for each of those would churn the account's device list for
+    nothing. So: one `os.stat` per tick as before, and ONLY when that moves
+    do we parse the document and compare
+    `scene_devices.exposure_fingerprint`. Run records cost nothing either
+    way — since 1.0.6.41 they live in the sibling journal, which this path
+    never stats.
+
+    Yandex profile only — the cloud profile lists no scene devices (F4), so
+    the cloud unit constructs no watcher.
+    """
+
+    def __init__(self, path: Optional[str] = None,
+                 load: Optional[Callable[[str], Dict[str, Any]]] = None) -> None:
+        self._path = scene_devices.rules_store_path() if path is None else path
+        self._load = load or scene_devices.load_rules_doc
+        # Seed both stages at construction so a quiet first tick is not a change.
+        self._fp = devices_fingerprint(self._path) if self._path else None
+        self._exposure = self._read_exposure()
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def _read_exposure(self) -> Tuple[Any, ...]:
+        """The projection the catalogue depends on; never raises — this runs
+        on the watchdog tick and a hand-broken store must not kill the loop.
+        A store we cannot read projects nothing, which is what the catalogue
+        build does with it too (one behaviour, not two)."""
+        if not self._path:
+            return ()
+        try:
+            return scene_devices.exposure_fingerprint(self._load(self._path))
+        except Exception as exc:
+            log = logging.getLogger("sa02m_alice.client")
+            log.error("scenario store unreadable for exposure watch: %s", exc)
+            return ()
+
+    def changed(self) -> bool:
+        """True when the set/name/room of the scenes exposed to Alice moved.
+
+        Same commit-before-load ordering as `DevicesWatcher.changed` and for
+        the same reason: a write landing during our read is seen again on the
+        next tick — one redundant reload, never a missed one.
+        """
+        if not self._path:
+            return False
+        fp = devices_fingerprint(self._path)
+        previous, self._fp = self._fp, fp
+        if fp == previous:
+            return False
+        exposure = self._read_exposure()
+        was, self._exposure = self._exposure, exposure
+        return exposure != was
+
+    def arm(self) -> None:
+        """Re-baseline without acting — the connect path rebuilds the
+        catalogue itself and must not reload again on the next tick."""
         self.changed()
 
 
