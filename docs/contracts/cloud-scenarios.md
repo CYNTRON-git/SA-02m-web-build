@@ -119,8 +119,11 @@ Names that become MQTT topic segments are charset-validated at the store:
 `[A-Za-z0-9_.:-]{1,32}` (absent ⇒ `on_off`); a trigger, condition or
 action failing either is dropped from the row. The engine re-checks both
 on every write, whatever the caller (block, scene, logic template, `end`,
-`Hub.set`), and the service never lets a refused publish escape
-`on_boot()`/`tick()` (logged, not fatal).
+`Hub.set`), and the service re-checks them once more where the topic is
+actually built (`RulesApp.pub` — the last line before the wire, reached by
+both the `block` and the `code` path): a failing pair is logged and
+dropped, never published. A publish the broker refuses never escapes
+`on_boot()`/`tick()` either (logged, not fatal).
 
 `apply_command` verbs (the Socket.IO handler's single write path —
 `sio_handlers._on_scenarios` → `config/api.py`; there is no CGI scenario
@@ -206,20 +209,45 @@ a countdown the engine never published).
 
 ### Outbound HTTP (`http` action, sandbox `Http`)
 
-One policy for both (`sa02m_rules/http_guard.py`): `http`/`https` only; the
-host is resolved and **every** address must be public — loopback,
-link-local, RFC1918/ULA, reserved, multicast and unspecified are refused,
-as is a URL carrying `user:pass@`; a refusal is `last_error="http err
-refused: …"` and the request is never sent. The operator may list hosts
-that skip the address check in `/etc/sa02m-rules/http-allow.json`
-(`{"hosts": ["192.168.1.50", "hooks.example"]}`; absent/malformed ⇒ empty,
-override path `SA02M_RULES_HTTP_ALLOW`). The store applies the static half
-(literal addresses, userinfo) at validation and drops such rows; the engine
-re-checks with resolution at request time. Redirects: at most 3 hops, each
-re-checked; response bodies are read up to 64 KiB and never returned to a
-scenario (only the status); 5 s timeout. Known limit: the name is resolved
-once for the check and again by the connect — a DNS answer that changes
-between the two is not defended.
+One policy for both (`sa02m_rules/http_guard.py`), **aligned with the cloud
+half** (decision 2026-09-09 — the two must refuse the same set, or a
+scenario the cloud accepts dies silently on the board).
+
+**Refused** — the request is never sent, `last_error="http err refused: …"`:
+a scheme other than `http`/`https`; a URL longer than **500 characters**
+(judged before any resolve); `user:pass@` (whatever the target, including an
+allow-listed one); loopback, link-local (169.254.169.254 included),
+multicast, reserved, unspecified and `0.0.0.0/8` addresses; the name
+`localhost` and the whole `.localhost` tree. Addresses are recognised in
+every spelling a resolver accepts, so `2130706433`, `0177.0.0.1`, `127.1`,
+`[::1]` and `[::ffff:127.0.0.1]` are all caught as loopback.
+
+**Allowed:** the operator's own LAN — RFC1918 and IPv6 ULA targets (a NAS, a
+panel, another board). Reaching an unintended LAN service is accepted risk;
+the compensating fences are the ones below.
+
+**Fences the cloud half does not have:** the host is RESOLVED and the answer
+judged (a public name aimed at loopback is refused), and every redirect hop
+is re-checked — at most 3 hops. **At most 8 requests per engine run**
+(`store.HTTP_PER_RUN_MAX`), shared by the `http` action and the sandbox
+`Http` and spanning nested `scenario`/`scene` children: the 9th is refused
+with `last_error="http cap"` / `"http err http cap"`. Stated exactly: the
+cap counts *calls*, a policy-refused call spends the budget like any other
+(so a run cannot probe by looping over refused targets), and each call may
+still follow up to 3 redirect hops — 32 network requests is the arithmetic
+ceiling of one run. Response bodies are read up to 64 KiB and never
+returned to a scenario (only the status); 5 s timeout.
+
+The operator allow-list `/etc/sa02m-rules/http-allow.json`
+(`{"hosts": ["127.0.0.1", "hooks.example"]}`; absent/malformed ⇒ empty,
+override path `SA02M_RULES_HTTP_ALLOW`) is now the way to **permit** a
+refused target — a loopback or link-local host named deliberately.
+
+The store applies the static half (no DNS: literal addresses in any
+spelling, the loopback names, userinfo, length, scheme) at validation and
+drops such actions from the row; the engine re-checks with resolution at
+request time. Known limit: the name is resolved once for the check and again
+by the connect — a DNS answer that changes between the two is not defended.
 
 ### Restricted Python (`type=code`)
 
@@ -229,8 +257,15 @@ family, and no `.format`/`.format_map` on any receiver (a format string
 walks attributes the AST cannot see — `'{0._state}'.format(Hub)` reached
 the whole object graph in 1.0.6.37–38; `%` formatting stays). Env:
 `Hub` (`get`/`set` — names charset-checked, `MAX_WRITES` per run), `Cron`,
-`Notify`, `Http` (policy above), `Vars`, `math` and a few builtins. Bound
-by the `RUN_S` deadline above. Empty `__builtins__`.
+`Notify`, `Http` (policy above, `HTTP_PER_RUN_MAX` per run), `Vars`, `math`
+and a few builtins. Bound by the `RUN_S` deadline above. Empty
+`__builtins__`.
+
+The shared `library` and the scenario body execute in **one** namespace, so
+a function defined in the library sees the env (`Hub`, `Notify`, …) and the
+library's other functions — as does a comprehension in the body. Before
+1.0.6.41 they were separate globals/locals and any such call raised
+`name 'Notify' is not defined`.
 
 Conditions: `time_window` presets `day`/`night` (sun), weekday
 `days`/`workday`/`weekend`, `mode` via `Vars.home_mode`, `state` `for_s`.
