@@ -57,50 +57,84 @@ but a **torn 1.0.6.40 copy** (`04-flasher.sh:52` / `05-mqtt.sh:166` `install` + 
 | **HW watchdog (`sunxi-wdt`, 15 s, PID-1 fed)** after a PID-1 stall | fits a hard reset + minutes of writeback lag (I/O starvation: `rsync`/`install` bursts on eMMC, the tree in tmpfs eating RAM on a 1 GB board running mplc4 — 1.135 has a different memory profile; `daemon-reload` at `04-flasher.sh:91` and `sa02m_systemctl daemon-reload` in 05 make PID 1 read unit files from disk); nothing on record contradicts it | **leading** |
 | external power/reset | indistinguishable from the row above by the filesystem alone; bench 1.136 is shared (`docs/bench-board-target-state.md`) | **open** |
 
-### D4 addendum — the same board froze TWICE more on 2026-09-09, with the hold in force
+### D4 addendum — two more freezes on 2026-09-09, and what measurement excluded
 
 Verifying 1.0.6.41 reran the installer on 1.136 twice. **Both runs ended the same way:**
 every module completed, `=== [12] Docker: модуль завершён ===` was the last install-log
-line, and the board reset 2.5-4 min later. Run 1: last log 10:22:28, boot ~10:26. Run 2:
-last log 13:02:37, boot ~13:05.
+line, and the board came back on a fresh boot minutes later. Run 1: last log 10:22:28,
+boot ~10:26. Run 2: last log 13:02:37, boot 13:04:36 (`uptime -s`).
 
-New evidence run 2 gives that the original incident did not:
+**The reset was HARD, and every reset of this board has been.**
+`sa02m-shutdown-marker.service` is enabled and active and writes
+`/var/lib/sa02m-clean-shutdown` on any clean stop. That file **does not exist at all**, so
+no shutdown of this board has ever run its stop job.
 
-- **journald has NO entries between 13:01:46 and the 13:05 boot** — a two-minute blackout
-  on a system that logs every few seconds (the roster unit alone runs every ~9 s). The
-  system was WEDGED, not merely slow. The last entry is `sudo … i2cget -y 1 0x0068 0x05/0x06`,
-  i.e. a read of the DS3231 RTC on i2c-1. install.sh kept writing its own log file for
-  another 51 s after journald went silent, so userspace was still partly alive.
-- **The runtime-watchdog hold WAS in force**: `[12:53:15] Аппаратный watchdog systemd снят
-  на время установки (был 15000000 мкс)`, and install.sh never reached its EXIT trap, so
-  nothing restored it before the reset.
-- **`daemon-reexec` does not undo the hold** — probed directly on 1.136 (systemd 255.4):
-  set the override to 0, `systemctl daemon-reexec`, read back → still 0. This CONFIRMS the
-  D4 row "excluded by timing" for a second, independent reason.
+#### Excluded by measurement on the board (2026-09-09 evening)
 
-**What this does to the leading row.** «HW watchdog (sunxi-wdt, 15 s, PID-1 fed) after a
-PID-1 stall» predicts a reset when PID 1 stalls — but on run 2 the PID-1 feed was
-DISABLED for the whole install, and the board still reset after a PID-1 stall. So either
-something other than systemd's feeder holds `/dev/watchdog` open (a stale feeder unit, a
-bootloader-armed sunxi-wdt that magic-close never disarmed), or the reset is not the
-systemd watchdog at all. The row can no longer be called "nothing on record contradicts
-it" — this contradicts it. It is not promoted to excluded: a wedge deep enough to silence
-journald could also have prevented the hold from taking effect in the kernel.
+| Candidate | How it was excluded |
+|---|---|
+| **HW watchdog (`sunxi-wdt`, PID-1 fed)** — D4's former **leading** row | `/proc/1/fd` shows PID 1 holding `/dev/watchdog0` in normal operation; after `sa02m_runtime_watchdog_set 0` it holds **no** watchdog fd — systemd magic-closes the device, so the timer is DISARMED, not merely unfed. The board then survived **40 s**, well past its 16 s hardware timeout. Repeated across a `systemctl daemon-reexec`: property still 0, still no fd, still alive. The hold was taken at 12:53:15 and install.sh never reached its EXIT trap, so the watchdog was disarmed for the entire run. **This row is now excluded, not leading.** |
+| `daemon-reexec` (`01-system.sh:762`) stalling PID 1 | Already "excluded by timing"; now excluded a second way — the runtime override survives the re-exec (measured above), so the re-exec changes nothing about the watchdog. |
+| Kernel panic → reboot | `kernel.panic=0` and `panic_on_oom=0`: a panic on this board HANGS, it cannot reboot. |
+| Thermal critical trip | `cpu0-thermal` critical = 115 °C, GPU = 125 °C; idle 62 °C and 61–64 °C under a sustained write load. Zero thermal events in the journal. |
+| A long post-module `sync` stalling the board | Measured: a 120 MB burst leaves ~28 MB dirty and `sync` clears it in **2.06 s** (idle sync: 0.02 s). `vm.dirty_expire_centisecs=3000` bounds writeback to ~30 s — `commit=600` is the ext4 *journal* interval, not the page-writeback window. A post-module sync costs seconds, not minutes. |
 
-**Reproducibility is the new fact.** Three resets, all on 1.136, all in the same install
-phase, none on 1.135 running the identical archive. Whatever it is, it is a property of
-THIS board plus a full install, not of a particular release: run 2 carried the 1.0.6.41
-fences and they held (no 0-byte unit fragment, no failed unit, the board came back on
-1.0.6.41 and passed 12 of 13 direct probes — the one FAIL being the wrapper report that
-never got written).
+#### The correction that matters most — a claim in the first draft of this addendum was WRONG
 
-**Attempt ceiling reached.** Two runs, same symptom; a third install was NOT started. Next
-step is instrumentation, not repetition: `lsof /dev/watchdog` and
-`/sys/class/watchdog/*/state` sampled through an install, a serial console to catch what
-the kernel prints in the blackout, and `journalctl --flush` cadence so the last seconds
-survive the reset. Offered to the Operator as a fresh 8D.
+The first draft said: «journald has NO entries between 13:01:46 and the boot — the system
+was WEDGED, not busy». **That does not follow, and it is withdrawn.** Measured cause of the
+gap:
 
-**Verdict.** The reset was a hard reset; two causes remain (HW watchdog vs. power). The
+- journald's `SyncIntervalSec` is the compiled default **5 minutes**; nothing in
+  `/etc/systemd/journald.conf*` overrides it.
+- `/` is mounted `commit=600`, and the journal files' mtimes are **13:01:37 / 13:01:39** —
+  exactly where the readable entries stop.
+- The install log is a plain `>>` append, so **its tail lives in the page cache too**. Its
+  last visible line at 13:02:37 is therefore a lower bound on how far the run got, not the
+  moment it stopped.
+
+So the entries after ~13:01:37 were written into the page cache and died with the reset.
+**There is no evidence of a wedge.** The system was probably running normally until the
+instant of the reset, and the run may well have progressed past 13:02:37 invisibly.
+
+#### What this leaves, and the honest verdict
+
+Every software reset path is now excluded by measurement. What remains is **power delivery
+or an external reset** on this shared bench board — physical, and outside what the software
+can settle. 1.135 runs the identical archive and has never done this; 1.136 additionally
+carries Docker and MPLC4 on **491 MB with no swap and no zram**, and the PMIC gives no
+usable rail telemetry (`in_voltage0_raw` is pegged at full scale 4095, `in_current*_raw`
+reads 0), so a voltage sampler built in software would report a constant and prove nothing.
+Settling it needs a meter on the rail or a serial console.
+
+#### The finding that actually unblocks the next investigation
+
+**Three incidents have produced no root cause for the same reason each time: the last one to
+three minutes before a hard reset are not recoverable on this board.** The journal is
+fsynced every 5 minutes and the installer's own log is buffered, so the window that matters
+is exactly the window that is always lost. Until that changes, a fourth reset will teach us
+no more than the first three.
+
+That is cheap to fix — `sync` costs ~2 s after a 120 MB burst, and the installer already
+calls it at every module boundary. Forcing a **journal** sync there too (and fsyncing the
+install log) would cost roughly 25 s across a 13-minute install and would make the next
+post-mortem possible. Tracked as a fix, not a note.
+
+**Reproducibility is the other new fact.** Three resets, all on 1.136, all in the same
+install phase, none on 1.135 running the identical archive. Whatever it is, it is a property
+of THIS board plus a full install, not of a particular release: run 2 carried the 1.0.6.41
+fences and they held — no 0-byte unit fragment, no failed unit, the board came back on
+1.0.6.41 and passed 12 of 13 direct probes, the one FAIL being the installer report that was
+never written.
+
+**Attempt ceiling.** Two runs, same symptom; a third install was NOT started, and must not be
+until the logging window is closed and a serial console is attached — otherwise it produces
+the same absence of evidence.
+
+**Verdict.** The reset was a hard reset. **Superseded 2026-09-09 by the addendum above:**
+the two remaining causes were «HW watchdog vs. power»; the HW watchdog is now excluded on
+the board by measurement, so power delivery / external reset is what is left, and no
+software path remains. The
 installer's own defects made the reset an OUTAGE: non-atomic live-path writes (0-byte unit
 ⇒ flasher masked), dependency written after its consumer (`05-mqtt.sh:160` `bridge_led.py`
 before `:166` LED pkg), no `sync` at module boundaries (a 5-minute tear), and a capture

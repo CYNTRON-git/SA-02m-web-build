@@ -58,15 +58,15 @@ worklist collapsed into one home).
 - [OPEN] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
   neither is blocked by a missing helper — **my earlier record here was false**: it claimed
   closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
-  already existed at `etc/sa02m-update-runner.sh:1006` (used `:1128`, `:1192`) and
-  `etc/sa02m-factory-reset-runner.sh:317` (used `:430`), and `etc/sa02m-web-update-apply.sh:59`
+  already existed at `etc/sa02m-update-runner.sh:1010` (used `:1132`, `:1196`) and
+  `etc/sa02m-factory-reset-runner.sh:321` (used `:434`), and `etc/sa02m-web-update-apply.sh:59`
   now carries a third. The three are NOT byte-identical and carry no `cmp` pin: each is scoped
   to its own caller's duties (the factory runner adds a destination allow-list and a rollback
   journal; the OTA one adds CRLF normalisation), which is why a further copy is a decision, not
   a formality.
   - `etc/sa02m-web-service-ctl.sh:1359` → `/etc/systemd/system/nodered.service` — the
     incident's own shape. Survives because this file carries no atomic helper yet.
-  - `etc/sa02m-update-runner.sh:1289` → `"$rel"`, an absolute path replayed from the
+  - `etc/sa02m-update-runner.sh:1293` → `"$rel"`, an absolute path replayed from the
     pre-update rollback archive, whose members are the manifest's `deploy[].dst` entries
     (`build_rollback_archive`, `:968-985`) — so `/usr/local/**` and `/etc/systemd/system/**`
     are exactly what it restores. **Survives only because nobody looked:** this file DEFINES
@@ -97,10 +97,17 @@ worklist collapsed into one home).
 - [OPEN] 2026-09-09 **[LOW] `carel_samples_v1` is dropped in 1.0.6.42.** The wide-table
   pivot of 1.0.6.41 keeps the old long table as a one-release rollback path; the drop
   (plus the `CAREL_METRIC_AGG` vocabulary constant if it still has no reader) belongs to
-  the next release. Bench 1.135 carries ~75k rows of it.
-- [OPEN] 2026-09-09 **[LOW] The Carel wide pivot has no bench timing measurement.** The
-  synthetic 75 600-row pivot takes 0.110 s on the dev host; the ≤10 s criterion was
-  written for the board's eMMC. Measure on 1.135 before the next fleet rollout.
+  the next release. Bench 1.135 carries **504 903** rows of it (measured 2026-09-09,
+  `a88190e`); the earlier «~75k» here was a dev-host fixture figure, not the board.
+- [RESOLVED 2026-09-09, `a88190e`] 2026-09-09 **[LOW] The Carel wide pivot has no bench
+  timing measurement.** The synthetic 75 600-row pivot takes 0.110 s on the dev host; the
+  ≤10 s criterion was written for the board's eMMC. Measure on 1.135 before the next fleet
+  rollout. Measured on 1.135 against its REAL archive (`carel_samples_v1` staged back into a
+  scratch DB and run through the shipped `_migrate_carel_to_wide`): 125k → 2.79 s, 250k →
+  6.92 s, 504 903 → 11.51 s, i.e. ~23 µs/row with 4.04× the rows costing 4.13× the time.
+  **The ≤10 s criterion is NOT met on the real bench archive** — 11.5 s — and that is
+  recorded rather than quietly retired. The consequence the measurement exposed (the lock
+  outliving the logger's 30 s busy timeout past ~1.3M rows) is its own OPEN line above.
 - [OPEN] 2026-09-09 **[MED] The scenario sandbox is an AST denylist in front of a real
   CPython interpreter, not isolation.** Every known escape is closed (1.0.6.39 banned
   `.format`/`format_map` — the reproduction `'{0.text.__globals__}'.format(Notify)` now
