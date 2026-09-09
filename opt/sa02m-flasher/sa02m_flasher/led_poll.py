@@ -58,6 +58,88 @@ LED_TABS = (LED_TAB_PWM, LED_TAB_DI, LED_TAB_STRIP, LED_TAB_SCENE)
 STRIP_BLOCK_COUNT = 20
 
 
+def led_choices(lm: Any) -> Dict[str, Any]:
+    """Every choice list the web window renders — i18n KEYS, never labels.
+
+    The window (`static/js/flasher/led.js`) maps a key to its Russian label and
+    the i18n observer takes it to English; the CODES and their order come from
+    the shared map so the browser never restates a register enum. Part-number
+    labels (WS2812, GRB, 1200) are not keys and pass through as they are.
+
+    Three small lists have no home in the map because the desktop pages type
+    them inline (`specialized_pages_rgbw.py`): the channel-2 modes, the Spy work
+    port / mode / parity combos. They are assembled here from the map's
+    constants so the code side still has exactly one home.
+    """
+    pairs = lambda items: [[code, key] for code, key in items]  # noqa: E731
+    return {
+        "led_types": pairs(lm.rgbw_led_type_choices()),
+        "byte_orders": pairs(lm.rgbw_byte_order_choices()),
+        "pwm_modes": pairs(lm.rgbw_pwm_mode_choices()),
+        "line_ui": pairs(lm.rgbw_line_ui_choices()),
+        "scene_ui": pairs(lm.rgbw_scene_ui_choices()),
+        "tile_modes": pairs(lm.rgbw_tile_mode_choices()),
+        "tile_counts": pairs(lm.rgbw_tile_count_choices()),
+        "matrix_types": [[key, w, h] for key, w, h in lm.rgbw_matrix_types()],
+        "ch2_modes": [
+            [lm.MB2WS_CH2_OFF, "rgbw_ch2_off"],
+            [lm.MB2WS_CH2_SYNC, "rgbw_ch2_sync"],
+            [lm.MB2WS_CH2_INDEPENDENT, "rgbw_ch2_independent"],
+            [lm.MB2WS_CH2_MIRROR, "rgbw_ch2_mirror"],
+            [lm.MB2WS_CH2_CONTINUATION, "rgbw_ch2_continuation"],
+        ],
+        "text_lines": pairs(lm.rgbw_text_lines_choices()),
+        "wx_lines": pairs(lm.rgbw_wx_lines_choices()),
+        "text_max_chars": lm.MB2WS_TEXT_MAX_CHARS,
+        "text_2x_hint_args": list(lm.rgbw_text_2x_hint_args()),
+        "aux_colors": pairs(lm.RGBW_FX_AUX_COLOR_CHOICES),
+        "spy_ports": [[0, "rgbw_spy_port_off"], [1, "rgbw_spy_port_a"], [2, "rgbw_spy_port_b"]],
+        "spy_modes": [
+            [lm.MB2WS_SPY_MODE_OFF, "rgbw_spy_mode_off"],
+            [lm.MB2WS_SPY_MODE_SPY, "rgbw_spy_mode_spy"],
+            [lm.MB2WS_SPY_MODE_MASTER, "rgbw_spy_mode_master"],
+        ],
+        "spy_parity": [
+            [0, "rgbw_spy_parity_none"],
+            [1, "rgbw_spy_parity_odd"],
+            [2, "rgbw_spy_parity_even"],
+        ],
+        "spy_baud": pairs(lm.rgbw_spy_baud_choices()),
+        "spy_fc": pairs(lm.rgbw_spy_fc_choices()),
+        "spy_types": pairs(lm.rgbw_spy_type_choices()),
+        "spy_units": list(lm.rgbw_spy_unit_presets()),
+        "wx_spy_fields": list(lm.rgbw_wx_spy_field_keys()),
+        # Two-value enums the desktop pages type inline; listed here so the
+        # window still renders every option from the daemon's reply.
+        "di_modes": [[0, "rgbw_di_mode_btn"], [1, "rgbw_di_mode_sw"]],
+        "pixel_formats": [[0, "rgbw_strip_format_rgb"], [1, "rgbw_strip_format_rgbw"]],
+        # The APA102 code is chosen through the line selector (SPI mode), so the
+        # LED-type combo hides it — the window needs the code, not a label match.
+        "led_type_apa102": lm.MB2WS_LED_TYPE_APA102,
+        "fx_count": lm.RGBW_FX_MODE_COUNT,
+        "pwm_permille_max": lm.RGBW_PWM_PERMILLE_MAX,
+        "led_count0_max": lm.MB2WS_MAX_PX0_RGB,
+        "led_count1_max": lm.MB2WS_MAX_PX1_RGB,
+    }
+
+
+def _aux_spec_dict(lm: Any, fx_id: int) -> Dict[str, Any]:
+    """The reg-455 layout of ``fx_id`` as the window builds its widgets from it."""
+    spec = lm.rgbw_fx_aux_spec(fx_id)
+    return {
+        "low_kind": spec.low_kind,
+        "low_label_key": spec.low_label_key,
+        "low_choices": [[code, key] for code, key in spec.low_choices],
+        "low_min": spec.low_min,
+        "low_max": spec.low_max,
+        "flag_label_key": spec.flag_label_key,
+        "high_kind": spec.high_kind,
+        "high_label_key": spec.high_label_key,
+        "high_min": spec.high_min,
+        "high_max": spec.high_max,
+    }
+
+
 def _lm() -> Any:
     """The shared LED map through the package seam; without it there is no read."""
     lm = module_profiles.led_mb2ws()
@@ -102,11 +184,15 @@ def read_led_snapshot(
     slave: int,
     *,
     active_tab: Optional[str] = None,
+    include_choices: bool = True,
 ) -> Dict[str, Any]:
     """Live values of the strip, scoped to ``active_tab`` (see the module docstring).
 
     Always returns a dict; ``answered`` is False when the base block did not come
     back, so the window can say "нет связи" instead of rendering zeros.
+    ``include_choices`` adds the static choice lists (:func:`led_choices`); the
+    caller turns it off for the 1 s background poll, where they would only bloat
+    every reply with data the window already caches.
     """
     lm = _lm()
     tab = str(active_tab or "").strip().lower()
@@ -116,6 +202,8 @@ def read_led_snapshot(
         # 70-register Spy read by accident.
         tab = ""
     out: Dict[str, Any] = {"answered": False, "active_tab": tab or None}
+    if include_choices:
+        out["choices"] = led_choices(lm)
 
     base = _hold(send, slave, lm.MB2WS_REG_BASE, STRIP_BLOCK_COUNT, 800)
     if base is None:
@@ -123,13 +211,26 @@ def read_led_snapshot(
     out["answered"] = True
     out["strip"] = _decode_strip_block(lm, base)
     out["scene"] = _decode_scene_block(lm, base)
+    out["scene"]["aux_hint_keys"] = []
 
     if tab == LED_TAB_PWM:
         out["pwm"] = _read_pwm(lm, send, slave)
     elif tab == LED_TAB_DI:
         out["di"] = _read_di(lm, send, slave)
     elif tab == LED_TAB_SCENE:
-        out.update(_read_scene_extras(lm, send, slave, out["scene"]["fx_id"]))
+        fx_id = out["scene"]["fx_id"]
+        extras = _read_scene_extras(lm, send, slave, fx_id)
+        out.update(extras)
+        # The advisory text-style hints depend on three things only the scene
+        # tab reads (the style in 455, the marquee text, TextLines), so they are
+        # resolved here and are an empty list on every other tab.
+        md = extras.get("mode_data") or {}
+        style = int((md.get("fx_aux_fields") or {}).get("low", 0))
+        out["scene"]["aux_hint_keys"] = list(
+            lm.rgbw_fx_aux_hint_keys(
+                fx_id, style, extras.get("text") or "", int(extras.get("text_lines") or 1)
+            )
+        )
     return out
 
 
@@ -165,6 +266,15 @@ def _decode_strip_block(lm: Any, regs: List[int]) -> Dict[str, Any]:
         "matrix_tile_mode": lm.rgbw_matrix_layout_tilemode(layout),
         "matrix_tile_count": lm.rgbw_matrix_layout_tilecount(layout),
         "matrix_geometry": lm.rgbw_matrix_geometry_label(width, height),
+        # The four wiring bits of 418 as the checkboxes the window shows — the
+        # request side names them the same way (`strip {progressive, …}`), so no
+        # bit mask ever lives in the browser.
+        "matrix_wiring": {
+            "progressive": bool(layout & lm.MB2WS_MATRIX_LAYOUT_PROGRESSIVE),
+            "origin_bottom": bool(layout & lm.MB2WS_MATRIX_LAYOUT_ORIGIN_BOTTOM),
+            "mirror_x": bool(layout & lm.MB2WS_MATRIX_LAYOUT_MIRROR_X),
+            "swap_xy": bool(layout & lm.MB2WS_MATRIX_LAYOUT_SWAP_XY),
+        },
     }
 
 
@@ -197,6 +307,15 @@ def _decode_scene_block(lm: Any, regs: List[int]) -> Dict[str, Any]:
         "options": options,
         "loop": bool(options & lm.MB2WS_OPT_LOOP),
         "visibility": lm.rgbw_fx_control_visibility(fx_id),
+        # The 10 contiguous id blocks the effect picker groups by, and the
+        # reg-455 layout of the effect the DEVICE runs — both from the map, so
+        # the window's effect list and its per-effect widgets cannot drift from
+        # the firmware catalog.
+        "fx_groups": [
+            {"id": gid, "key": key, "first": first, "last": last}
+            for gid, key, first, last in lm.RGBW_FX_GROUP_RANGES
+        ],
+        "aux_spec": _aux_spec_dict(lm, fx_id),
     }
 
 
@@ -211,6 +330,9 @@ def _read_pwm(lm: Any, send: SendRtuFn, slave: int) -> Dict[str, Any]:
     levels = _hold(send, slave, lm.RGBW_PWM_HOLDING_BASE, lm.RGBW_PWM_CHANNELS, 800)
     if levels is not None:
         out["levels"] = [int(v) & 0xFFFF for v in levels[: lm.RGBW_PWM_CHANNELS]]
+        # The colour picker's value: the R/G/B triple through the permille bridge,
+        # not RGB565 (that path quantises and would show a different colour).
+        out["color_hex"] = lm.rgbw_pwm_permille_to_hex(*out["levels"][:3])
     mode = _hold(send, slave, lm.RGBW_PWM_STRIP_MODE_HOLDING, 1, 700)
     if mode is not None:
         code = int(mode[0]) & 0xFFFF
@@ -225,6 +347,10 @@ def _read_pwm(lm: Any, send: SendRtuFn, slave: int) -> Dict[str, Any]:
     if supply is not None:
         out["ntc_raw"] = int(supply[0]) & 0xFFFF
         out["vled_raw"] = int(supply[1]) & 0xFFFF
+        # Scaled in Python, where the family scale lives (one constant each in
+        # the map) — the window prints, it never converts.
+        out["ntc_c"] = lm.rgbw_ntc_celsius(out["ntc_raw"])
+        out["vled_v"] = lm.rgbw_vled_volts(out["vled_raw"])
     return out
 
 
@@ -298,8 +424,18 @@ def _read_scene_extras(
     if mode_regs is not None:
         decoded = lm.rgbw_mode_data_decode(mode_regs)
         if decoded is not None:
-            out["mode_data"] = dict(decoded._asdict())
-            out["mode_data"]["text_colors"] = list(decoded.text_colors)
+            md = dict(decoded._asdict())
+            md["text_colors"] = list(decoded.text_colors)
+            # Reg 455 unpacked by the effect the device RUNS (the resolved id),
+            # so the window's style / direction / colour widgets show the fields
+            # firmware reads for this mode and not another mode's byte layout.
+            low, flag, high = lm.rgbw_fx_aux_decompose(fx_id, decoded.fx_aux)
+            md["fx_aux_fields"] = {"low": int(low), "flag": bool(flag), "high": int(high)}
+            # RGB565 → '#RRGGBB' — the QUANTISED colour the device holds, which is
+            # what a colour input must show so a pick reads back byte-exact.
+            md["text_colors_hex"] = [lm.rgbw_rgb565_to_hex(v) for v in decoded.text_colors]
+            md["wx_temp_color_hex"] = lm.rgbw_rgb565_to_hex(decoded.wx_temp_color)
+            out["mode_data"] = md
 
     lines = _hold(send, slave, lm.MB2WS_TEXT_LINES, 1, 700)
     if lines is not None:

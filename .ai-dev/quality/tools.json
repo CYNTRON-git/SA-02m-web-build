@@ -56,7 +56,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-modbus-mqtt/tests -q; fi; done; echo py-unit: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-modbus-mqtt/", "opt/sa02m-led/", "opt/sa02m-alice/sa02m_alice/client/converters.py"],
+      "covers": ["opt/sa02m-modbus-mqtt/", "opt/sa02m-led/", "opt/sa02m-alice/sa02m_alice/client/converters.py", "docs/contracts/template-device.md", "docs/contracts/fmb-event-wire.md"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-syntax"
     },
     {
@@ -65,7 +65,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-cloud opt/sa02m-cloud-agent",
       "beat": "build",
-      "covers": ["opt/sa02m-cloud-agent/", "docs/contracts/cloud-agent-status.md", "www/network_config/static/js/cloud.js", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "covers": ["opt/sa02m-cloud-agent/", "docs/contracts/cloud-agent-status.md", "www/network_config/static/js/cloud.js", ".ai-dev/quality/checks/pytest-suite.sh", "docs/contracts/cloud-enrollment.md"],
       "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
     },
     {
@@ -75,7 +75,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-flasher/tests -t opt/sa02m-flasher -q; fi; done; echo py-unit-flasher: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-flasher/"],
+      "covers": ["opt/sa02m-flasher/", "docs/contracts/module-config-ai.md"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
@@ -166,11 +166,11 @@
     },
     {
       "id": "py-unit-devices",
-      "checks": "Functional regression for the «Устройства» daemon (sa02m_devices live snapshot / MR-AI / history-db / storage-path / device-events / widgets) — the :8765 API + the 1733-line device_history_db.py that 1.0.5.83-85 shipped through the gate gap; contract docs/contracts/devices-mr-history.md names test_api_mr.py + test_device_history_db.py as its validating tests — pytest-style tests that `unittest discover` SILENTLY SKIPS (plain test_ functions, not unittest.TestCase), so before this row the merge gate never executed them (36 tests). Runs `pytest opt/sa02m-devices/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (skips cleanly when pytest is absent — same skipped-locally/real-in-CI contract as shellcheck; CI installs the deps). Non-vacuous: a collection error or a failing test FAILS the run.",
+      "checks": "Functional regression for the «Устройства» daemon (sa02m_devices live snapshot / MR-AI / history-db / storage-path / device-events / widgets) — the :8765 API + the 1733-line device_history_db.py that 1.0.5.83-85 shipped through the gate gap; contract docs/contracts/devices-mr-history.md names test_api_mr.py + test_device_history_db.py as its validating tests — pytest-style tests that `unittest discover` SILENTLY SKIPS (plain test_ functions, not unittest.TestCase), so before this row the merge gate never executed them (36 tests). Runs `pytest opt/sa02m-devices/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (skips cleanly when pytest is absent — same skipped-locally/real-in-CI contract as shellcheck; CI installs the deps). Non-vacuous: a collection error or a failing test FAILS the run. Since 1.0.6.40 also: every Carel chart label in CAREL_METRIC_META has an EN entry in the i18n.js DICT (test_carel_labels_i18n.py — reads the served JS, hence the covers entry), and the CE/Carel edge detectors open SQLite once per call with a steady logger tick bounded at 3 opens (test_sqlite_opens_per_tick.py, counting double around sqlite3.connect).",
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-devices opt/sa02m-devices",
       "beat": "build",
-      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "covers": ["opt/sa02m-devices/", ".ai-dev/quality/checks/pytest-suite.sh", "www/network_config/static/js/i18n.js", "docs/contracts/devices-mr-history.md"],
       "init": "bash + python3 + pytest (pip install pytest) — installed in CI (web-quality.yml)"
     },
     {
@@ -193,7 +193,7 @@
     },
     {
       "id": "py-unit-update",
-      "checks": "Functional regression for the offline-update package validator + semver logic (atomic journal/stages, signature roundtrip, bad-trailer rejection). The tests (24 as of 1.0.6.39) are unittest.TestCase and were runnable by unittest discover, but NO registry row ran them at all — so the merge gate never gated them. Runs `pytest opt/sa02m-update/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (guards `cryptography`, which test_validate_package.py imports for the signature roundtrip; skips cleanly when pytest or cryptography is absent — CI installs both). Non-vacuous: a collection error or a failing test FAILS the run. Since 1.0.6.39 it also pins the packer's services tier rule (frozen v1 below SERVICES_OPTIONAL_SINCE, every optional key incl. sa02m-dns-ensure.service at/above it, the no-argument production site obeying the same rule), the pack-time frozen-v1 stderr note, and — by RUNNING the shipped runner's `version` subcommand — that UPDATER_VERSION is derived from the deployed VERSION file (CRLF tolerated; floor 1.0.5.66 when absent/unparseable; env override honoured) and that MIN_UPDATER never exceeds the tree's VERSION. The read-only preflight etc/sa02m-update-inspect.sh is driven over the same fixtures and must derive the same version, and the two scripts' UPDATER_VERSION_FALLBACK literals must be equal (ship review 1.0.6.39 F3/N1).",
+      "checks": "Functional regression for the offline-update package validator + semver logic (atomic journal/stages, signature roundtrip, bad-trailer rejection). The tests (24 as of 1.0.6.39) are unittest.TestCase and were runnable by unittest discover, but NO registry row ran them at all — so the merge gate never gated them. Runs `pytest opt/sa02m-update/tests` via the shared deps-guarded runner .ai-dev/quality/checks/pytest-suite.sh (guards `cryptography`, which test_validate_package.py imports for the signature roundtrip; skips cleanly when pytest or cryptography is absent — CI installs both). Non-vacuous: a collection error or a failing test FAILS the run. Since 1.0.6.39 it also pins the packer's services tier rule (frozen v1 below SERVICES_OPTIONAL_SINCE, every optional key incl. sa02m-dns-ensure.service at/above it, the no-argument production site obeying the same rule), the pack-time frozen-v1 stderr note, and — by RUNNING the shipped runner's `version` subcommand — that UPDATER_VERSION is derived stamp-first — $STATEDIR/runner.version written by every runner install site (1.0.6.40, item 6) wins over a newer VERSION file (the www-only-without-etc/ case), an absent or unparseable stamp falls through to VERSION (CRLF tolerated), both absent to the floor 1.0.5.66, and the env override wins over all and that MIN_UPDATER never exceeds the tree's VERSION. The read-only preflight etc/sa02m-update-inspect.sh is driven over the same fixtures and must derive the same version, and the two scripts' UPDATER_VERSION_FALLBACK literals must be equal (ship review 1.0.6.39 F3/N1).",
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-update opt/sa02m-update cryptography",
       "beat": "build",
@@ -408,7 +408,7 @@
     },
     {
       "id": "update-deploy-skip",
-      "checks": "Functional RED/GREEN regression for the deploy-skip guard in the update runner (etc/sa02m-update-runner.sh apply_deploy_items + its is_unchanged predicate) — a web update re-installed ALL ~344 deploy files every run (cp -a backup + install-to-tmp + 2x fsync + a python3 journal spawn PER FILE) even when a patch release changed only a handful (Operator: 'обновление ставит все 300+ файлов заново, даже если изменились единицы'). Extracts the SHIPPED is_unchanged / apply_deploy_items / journal_append / atomic_install_file / rollback_from_journal (literal-prefix awk slices, portable across mawk/gawk), stubs only txn (file-backed, survives the deploy loop's subshell) / log / manifest_path, and runs a mixed deploy against a sandbox manifest whose owner axis is the test user's own id (non-root). Asserts: an identical file (content AND mode AND owner) is SKIPPED — no journal line, no backup, dst inode+mtime untouched; a content-changed file still deploys with its replace journal line; a right-content wrong-mode file (0644-vs-0755) is RE-DEPLOYED (the over-skip tripwire); files_done==files_total with skips counted (the recover-verify invariant); and rollback restores the changed file while leaving the skipped file intact (the 1.0.6.2 recovery contract). No root, no device. Non-vacuous: a broken extraction FAILS; the guard-presence check keeps the drive-to-failure run (UPDATE_RUNNER_SRC=main) RED on the skip assertion while the changed-content/wrong-mode assertions stay the over-skip tripwires.",
+      "checks": "Functional RED/GREEN regression for the deploy-skip guard in the update runner (etc/sa02m-update-runner.sh apply_deploy_items + its is_unchanged predicate) — a web update re-installed ALL ~344 deploy files every run (cp -a backup + install-to-tmp + 2x fsync + a python3 journal spawn PER FILE) even when a patch release changed only a handful (Operator: 'обновление ставит все 300+ файлов заново, даже если изменились единицы'). Extracts the SHIPPED is_unchanged / apply_deploy_items / journal_append / atomic_install_file / rollback_from_journal (literal-prefix awk slices, portable across mawk/gawk), stubs only txn (file-backed, survives the deploy loop's subshell) / log / manifest_path, and runs a mixed deploy against a sandbox manifest whose owner axis is the test user's own id (non-root). Asserts: an identical file (content AND mode AND owner) is SKIPPED — no journal line, no backup, dst inode+mtime untouched; a content-changed file still deploys with its replace journal line; a right-content wrong-mode file (0644-vs-0755) is RE-DEPLOYED (the over-skip tripwire); files_done==files_total with skips counted (the recover-verify invariant); and rollback restores the changed file while leaving the skipped file intact (the 1.0.6.2 recovery contract). No root, no device. Non-vacuous: a broken extraction FAILS; the guard-presence check keeps the drive-to-failure run (UPDATE_RUNNER_SRC=main) RED on the skip assertion while the changed-content/wrong-mode assertions stay the over-skip tripwires. Since 1.0.6.40 (case 4b/5b): when the sandbox manifest deploys the runner binary, stamp_runner_version_after_deploy writes the manifest version to $RUNNER_VERSION_FILE through a journal record; a manifest without the runner leaves the stamp untouched; rollback restores the pre-update stamp — a pre-1.0.6.40 runner (no stamp function) FAILS 4b.",
       "config": null,
       "run": "bash scripts/dev/test-update-deploy-skip.sh",
       "beat": "build",
@@ -679,7 +679,7 @@
       "config": null,
       "run": "node scripts/dev/test-devices-rotation.mjs",
       "beat": "build",
-      "covers": ["www/network_config/static/js/devices.js", "scripts/dev/test-devices-rotation.mjs"],
+      "covers": ["www/network_config/static/js/devices.js", "scripts/dev/test-devices-rotation.mjs", "docs/contracts/devices-mr-history.md"],
       "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit row."
     },
     {
@@ -783,6 +783,51 @@
         "scripts/dev/sh-modal-layout-smoke.mjs"
       ],
       "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver and cloud-card-smoke reuse — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `sh-modal-layout-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the viewport and assertion named. Run on demand: npm run sh-modal-layout-smoke."
+    },
+    {
+      "id": "runner-version-stamp",
+      "checks": "The update runner's reported version has ONE home — the install-site stamp $STATEDIR/runner.version (1.0.6.40, item 6) — and every site that installs the runner writes it, else a board under-reports (a raised MIN_UPDATER then E_COMPAT-rejects a board that could apply). Static, comment-stripped through lib_check.sh: scripts/03-webserver.sh and scripts/update-www-only.sh call sa02m_stamp_runner_version within 3 lines AFTER the runner install line (order pin); scripts/lib.sh defines the helper targeting runner.version; the runner reads the stamp BEFORE the VERSION file (order pin) and cmd_apply calls stamp_runner_version_after_deploy (the OTA / offline-pack self-deploy path); the inspect preflight's env → stamp → VERSION → floor expansion is pinned literally. Behavioural: the shipped helper is awk-extracted and RUN in a sandbox (CRLF+comment VERSION stamps 9.8.7.6 at 0644; garbage VERSION returns 1 and leaves the previous stamp intact; the mode assertion prints skip where the FS cannot represent POSIX modes). The runner-side derivation and the journal ride of the apply-time stamp are proven by py-unit-update and update-deploy-skip (case 4b/5b), not restated here. Non-vacuous: a missing file, a helper that vanished, an install line the order pin cannot find, or a sandbox run that writes nothing FAILS. Cases registered in comment-mutation-proof.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/runner-version-stamp.sh",
+      "beat": "build",
+      "covers": ["scripts/03-webserver.sh", "scripts/update-www-only.sh", "scripts/lib.sh", "etc/sa02m-update-runner.sh", "etc/sa02m-update-inspect.sh", "docs/deployment.md", ".ai-dev/quality/checks/runner-version-stamp.sh"],
+      "init": "bash + awk + coreutils (present everywhere the project builds)"
+    },
+    {
+      "id": "css-token-fallback",
+      "checks": "Every var(--token, <fallback>) in www/network_config/static/css/main.css names a token DECLARED IN A :root BLOCK — an undefined token makes the hard-coded fallback ship in BOTH themes, bypassing the CSS/UI floor (audit 2026-09-08 C5; ship review 1.0.6.39 --err/--accent; this gate's first run found --bg-code and --border-faint x3 as well, 7 sites, all fixed in 1.0.6.40). python3, embedded: /* */ comments blanked keeping newlines (real line numbers); a declaration counts only when statement-initial (line start or after ;/{) so the `#`-prefixed comment-out mutation — an INVALID declaration the browser drops — is not read as a definition; a token declared only in html[data-theme=light] is undefined in dark and does not count. REPORT-ONLY (printed with lines, not gated): bare var(--x) references to undeclared tokens — 16 at 1.0.6.40 (--accent x3, --font-mono x5, --muted x2, --panel, --text-muted x5), each silently inheriting today; gating is a one-line change once those sites are fixed. Non-vacuous: missing stylesheet, a :root block declaring nothing, zero fallbacks swept, or an oracle that cannot see --cyan FAILS. Its comment-out case (the dark --yellow declaration → 3 FAILURE(S)) is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/css-token-fallback.sh",
+      "beat": "build",
+      "covers": ["www/network_config/static/css/main.css", ".ai-dev/quality/checks/css-token-fallback.sh"],
+      "init": "bash + python3 (stdlib re only) — same interpreter picker as version-consistency"
+    },
+    {
+      "id": "cache-bust-r",
+      "checks": "A served static asset whose bytes changed carries a changed ?v=+&r= pair on every URL naming it (index.html / login.html src+href, and ?v= ES-module import specifiers under static/js/**) versus a reference git state, so a board that cached the old URL refetches — the &r= intra-release bust documented in sa02m-domain.md (Version discipline) that sync-app-version.py never touches and nothing gated (audit 2026-09-08 C11/F12). Reference = the first that exists of origin/<VERSION> (the pushed state of THIS release branch — same ?v=, only &r= can bust: the check with teeth), origin/<VERSION-1>, origin/main; a remote-tracking ref is used as-is, else a bounded `git fetch --depth=1` (CACHE_BUST_R_NO_FETCH=1 disables); none reachable ⇒ printed as skip, exit 0. The WORKING TREE is compared (the Builder does not commit). HONESTY: CI's clean checkout equals its own pushed ref, so CI reports '0 with changed bytes' — non-vacuous but toothless there; the gate bites on the local build beat. Blobs via git hash-object vs <ref>:path; an asset the ref did not reference is new and skipped; a changed asset whose pair equals the ref's FAILS naming asset + file + token. Non-vacuous: unreadable VERSION, no git, zero asset URLs parsed, or zero assets comparable against the ref FAILS. Exempt from comment-mutation-proof by header marker (behavioural over git blobs; drive-to-failure = revert one &r= token).",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/cache-bust-r.sh",
+      "beat": "build",
+      "covers": ["www/network_config/", "scripts/sync-app-version.py", ".ai-dev/quality/checks/cache-bust-r.sh"],
+      "init": "bash + git + python3 + coreutils timeout; network only for the optional depth-1 fetch"
+    },
+    {
+      "id": "web-bus-mode-bacnet",
+      "checks": "docs/contracts/web-bus-mode-bacnet.md at the WRITE PATH: RUNS the shipped device_config.write_bus_mode with recording doubles for the transport (_open_transport/_device_slave/_read_live_identity/_resolve_kind/family_from_kind/_read_u16/write_single/snapshot_for_device) and asserts, from the contract's own text: a mode outside {0,1,2} (3, -1, 'x', None, 3.5 — int(v) then range, as bus_mode._coerce and test_bus_mode.py define it) is refused with ValueError BEFORE any transport opens; a family without the selector (ce/wb/bootloader) is refused after the identity read with NO FC06 and the transport closed; MR mode 2 issues exactly one FC06 to register 122 = 2 with reboot_pending and no snapshot; DTV mode 0 issues one FC06 122 = 0 with a fresh snapshot and the sanitised prior_mode; a transport error surfaces as RuntimeError (route → 409); device_config.REG_FAST_MODBUS == bus_mode.REG_BUS_MODE == 122. Static (lib_check.sh): service.py dispatches POST /bus_mode → _handle_bus_mode → device_config.write_bus_mode. test_bus_mode.py (py-unit-flasher) pins the pure value layer; before this row nothing exercised the function that opens the port and writes (audit 2026-09-08 F17). Runs python with a private PYTHONPYCACHEPREFIX (a same-length mutation restored within a second leaves a stale .pyc Python trusts — seen while proving RED). Non-vacuous: import failure or a missing file FAILS. Its comment-out case (the service.py dispatch return) is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/web-bus-mode-bacnet.sh",
+      "beat": "build",
+      "covers": ["opt/sa02m-flasher/sa02m_flasher/device_config.py", "opt/sa02m-flasher/sa02m_flasher/bus_mode.py", "opt/sa02m-flasher/sa02m_flasher/service.py", "docs/contracts/web-bus-mode-bacnet.md", ".ai-dev/quality/checks/web-bus-mode-bacnet.sh"],
+      "init": "bash + python3 + pyserial (the flasher package imports it) — same posture as py-unit-flasher"
+    },
+    {
+      "id": "js-unit-led-window",
+      "checks": "The LED strip (RGBW_WS2812, type 120) config window — static/js/flasher/led.js plus its seam in flasher.js — driven against a Map-backed DOM filled from the rendered markup, with the daemon's homes PARSED rather than re-typed. (1) deviceConfigKindFromSignature answers 'led' for every token of led_mb2ws_map.LED_SIGNATURE_ALIASES and for a prefix of the two long ones only — a 3-char LED prefix would steal the Wiren Board «ledGe»; Carel/MR/DTV/CE unchanged. (2) The tab ids EQUAL led_poll.LED_TABS (the daemon gates the 453/494/516/640 reads on those names), there is no EXFX tab, the scene tab's suffix is the play state, and a `panel` poll of the scene tab sends an EMPTY active_tab (base block only). (3) LED_ACTIONS equals device_config.LED_ACTIONS, every ledCommand('…') literal is in it and every action is reachable, and each collector (scene / strip / spy / text / weather / clock) emits exactly the contract's field names (led-mb2ws.md §3); ledCommand posts once to /device_config/led_write, bumps the poll generation, applies the reply, routes an error to the banner + toast and releases the busy flag either way. (4) Markup ⇄ patch per tab, and hide-don't-grey: cards by scene.visibility (fx 0/3/51/62/63/64/81, flash, pool), PWM channels by mode_visible, the channel-2 block by the line mode, an unlisted geometry shown as read, Scale never; a silent strip or an old daemon renders NO input. (5) The 1 s poll never overwrites a focused or dirty (dataset.ledDirty) field; a sentinel renders blank, never 0; only a changed skeleton rebuilds (renderKey). (6) A reply without the expensive blocks keeps the previous ones; an old daemon is named once. (7) i18n both ways: every Cyrillic LED_T label, authored literal, rendered text node and tab label has an i18n.js DICT row (the half i18n-dict-contract cannot see — this file uses neither uiT() nor markup), and every \"rgbw_…\" key the daemon can emit (led_mb2ws_map.py, led_mb2ws.py, led_poll.py; %02d/%d expanded) has a LED_T label. Non-vacuous: a missing source, fewer than 150 swept strings, fewer than 200 daemon keys, or a DICT under 500 keys FAILS.",
+      "config": null,
+      "run": "node scripts/dev/test-led-window.mjs",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/flasher/led.js", "www/network_config/static/js/flasher.js", "www/network_config/static/js/i18n.js", "opt/sa02m-flasher/sa02m_flasher/led_poll.py", "opt/sa02m-flasher/sa02m_flasher/device_config.py", "opt/sa02m-led/sa02m_led/led_mb2ws_map.py", "opt/sa02m-led/sa02m_led/led_mb2ws.py", "scripts/dev/test-led-window.mjs"],
+      "init": "Node 18+ (stdlib only), no extra dep — same posture as the js-unit rows."
     }
   ]
 }

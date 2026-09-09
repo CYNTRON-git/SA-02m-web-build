@@ -81,3 +81,12 @@ TLS, `O3`). Легаси одиночный fallback (`proxy_name`/`subdomain`/`
 `opt/sa02m-cloud-agent/tests/test_agent.py` — форма frpc.toml, send-only, отсутствие
 командного канала и WireGuard-остатков, `modules` verbatim из ростера.
 Облачная сторона (frps authz, backend `/api/v1/*`) проверяется в облачном репо.
+
+Честный предел (аудит 2026-09-08 F17): веб-триггер — `cgi-bin/cloud.cgi` →
+`usr/local/sbin/sa02m-cloud-web-trigger.sh` — **ни одна строка реестра не
+исполняет**; оба файла покрыты только синтаксисом (`bash-cgi-syntax`) и пином
+sudoers (`sudoers-pin-contract`), а `cloud-card-smoke` подменяет `cloud.cgi`
+заглушкой, не запускает его. Закрыл бы это bash-харнесс, запускающий `cloud.cgi`
+с подменённым `sudo`/триггером (по образцу `web-auth-behaviour`). Строка
+`py-unit-cloud` с 1.0.6.40 перечисляет этот файл в `covers` — только за
+агентскую сторону, которую её тесты действительно проверяют.

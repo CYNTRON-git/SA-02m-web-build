@@ -24,25 +24,36 @@ LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 RUNTIME_WDT_RESTORE="${SA02M_RUNTIME_WATCHDOG_SEC:-15s}"
 
 # UPDATER_VERSION — what this runner reports against a package's min_updater.
-# DERIVED from the deployed VERSION file, never stamped: the runner ships in the
-# same overlay as www/network_config/VERSION (install.sh, OTA and the offline
-# pack all deploy both), so that file names the release this runner came from.
-# The literal it replaces was a 1.0.5.66 stamp every board reported forever,
-# which made the packer's MIN_UPDATER unraisable (a bump would have E_COMPAT-
-# rejected every pack) and the services tier decorative (audit 2026-09-08, D2).
-# Read once at start: apply deploys the new VERSION later, but the process
-# running the compat gate is still the OLD runner, so the value is right.
-# Fallback = the floor the first runner ever reported; a board with no VERSION
-# file is a broken install, not an old one. Known over-report:
-# scripts/update-www-only.sh refreshes VERSION without the runner, so such a
-# board claims the www version (docs/deployment.md names it). The env override
-# stays for harnesses and the bench.
+# One home for "which release installed this runner": the stamp
+# $STATEDIR/runner.version, written by every site that installs the runner
+# binary — scripts/03-webserver.sh and scripts/update-www-only.sh
+# (sa02m_stamp_runner_version in scripts/lib.sh) and this runner itself when a
+# manifest deploys $RUNNER_BIN_DST (stamp_runner_version_after_deploy, below,
+# journalled so an E_APPLY/E_HEALTH rollback restores the old stamp with the
+# old binary). The stamp exists because the deployed VERSION file alone
+# over-reports: scripts/update-www-only.sh on a delivery WITHOUT etc/ refreshes
+# VERSION and not the runner, and such a board then claimed a runner it did
+# not have (ship review 1.0.6.39, item 6). Derivation order: stamp → VERSION
+# (a pre-1.0.6.40 board has no stamp yet; VERSION is right there because the
+# runner ships in the same overlay) → the literal floor the first runner ever
+# reported (a board with neither is a broken install, not an old one). The
+# literal the derivation replaced was a 1.0.5.66 stamp every board reported
+# forever, which made the packer's MIN_UPDATER unraisable (audit 2026-09-08,
+# D2). Read once at start: apply deploys the new VERSION and stamp later, but
+# the process running the compat gate is still the OLD runner, so the value is
+# right. The env override stays for harnesses and the bench.
 UPDATER_VERSION_FALLBACK=1.0.5.66
+RUNNER_VERSION_FILE="$STATEDIR/runner.version"
+RUNNER_BIN_DST="${SA02M_UPDATE_RUNNER_DST:-/usr/local/libexec/sa02m-update-runner}"
+read_version_line() {  # $1=file → first "x.y[.z[.w]]" line, CRLF tolerated; empty when none
+    if [ -f "$1" ]; then
+        tr -d '\r' <"$1" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true
+    fi
+}
 derive_updater_version() {
     local v=""
-    if [ -f "$VERSION_FILE" ]; then
-        v=$(tr -d '\r' <"$VERSION_FILE" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
-    fi
+    v=$(read_version_line "$RUNNER_VERSION_FILE")
+    [ -n "$v" ] || v=$(read_version_line "$VERSION_FILE")
     printf '%s\n' "${v:-$UPDATER_VERSION_FALLBACK}"
 }
 UPDATER_VERSION="${SA02M_UPDATER_VERSION:-$(derive_updater_version)}"
@@ -1059,6 +1070,55 @@ for it in json.load(open(sys.argv[1],encoding="utf-8")).get("deploy",[]):
     return 0
 }
 
+# Stamp "which release installed this runner" when THIS transaction deployed
+# the runner binary (the UPDATER_VERSION block at the top names the homes).
+# Goes THROUGH THE JOURNAL — a replace/create record with the old stamp backed
+# up — so rollback_from_journal (E_APPLY, E_HEALTH, recover after power loss)
+# restores the pre-update stamp together with the pre-update binary and a
+# board never reports a runner it rolled back from. A manifest that does not
+# deploy $RUNNER_BIN_DST (a www-only pack) leaves the stamp alone: that is the
+# case the stamp exists for. Soft on an unusable manifest version (no write,
+# one log line, apply continues — the stale stamp is at worst one release old
+# and the next runner deploy corrects it); hard on a failed write (caller rolls
+# back — the state dir is the transaction's own home, so it must be writable).
+# Called from cmd_apply, NOT from inside apply_deploy_items: the dev harnesses
+# extract that function as a single slice and must keep running it unchanged.
+stamp_runner_version_after_deploy() {
+    local txn=$1
+    local mf ver n src bak
+    mf=$(manifest_path "$txn")
+    n=$(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8"))
+print(sum(1 for it in m.get("deploy",[]) if it.get("dst")==sys.argv[2]))' "$mf" "$RUNNER_BIN_DST")
+    if [ "${n:-0}" -eq 0 ]; then
+        log "runner stamp: manifest does not deploy $RUNNER_BIN_DST - stamp unchanged"
+        return 0
+    fi
+    ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("version",""))' "$mf")
+    if ! [[ "$ver" =~ ^[0-9]+(\.[0-9]+){1,3}$ ]]; then
+        log "WARN: runner stamp: manifest version '$ver' unusable - stamp unchanged"
+        return 0
+    fi
+    src="$STATEDIR/staging/$txn/runner.version.new"
+    printf '%s\n' "$ver" >"$src"
+    if [ -e "$RUNNER_VERSION_FILE" ]; then
+        bak="$STATEDIR/staging/$txn/backups/$(printf '%s' "$RUNNER_VERSION_FILE" | sha256sum | awk '{print $1}')"
+        mkdir -p "$(dirname "$bak")"
+        cp -a "$RUNNER_VERSION_FILE" "$bak"
+        journal_append "$txn" "{\"op\":\"replace\",\"dst\":\"$RUNNER_VERSION_FILE\",\"backup\":\"$bak\",\"mode\":\"0644\",\"owner\":\"root:root\"}"
+    else
+        journal_append "$txn" "{\"op\":\"create\",\"dst\":\"$RUNNER_VERSION_FILE\",\"mode\":\"0644\",\"owner\":\"root:root\"}"
+    fi
+    if ! atomic_install_file "$src" "$RUNNER_VERSION_FILE" 0644 root:root; then
+        rm -f "$src"
+        log "ERROR: runner stamp: install of $RUNNER_VERSION_FILE failed"
+        return 1
+    fi
+    rm -f "$src"
+    log "runner stamp: $RUNNER_VERSION_FILE = $ver (manifest deployed $RUNNER_BIN_DST)"
+    return 0
+}
+
 apply_deletes() {
     local txn=$1
     local mf dpath bak
@@ -1532,6 +1592,11 @@ cmd_apply() {
     if ! apply_deploy_items "$txn"; then
         rollback_from_journal "$txn"
         log "ERROR [E_APPLY]: deploy failed (rolled back)"
+        exit 1
+    fi
+    if ! stamp_runner_version_after_deploy "$txn"; then
+        rollback_from_journal "$txn"
+        log "ERROR [E_APPLY]: runner stamp failed (rolled back)"
         exit 1
     fi
     cleanup_b1_deploy_artifacts

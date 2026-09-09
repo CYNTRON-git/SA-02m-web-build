@@ -191,7 +191,12 @@ else
         echo "STATUS_FILE_CLOUD=\"$CBOX/status-cloud.json\""
         echo "ALICE_UNIT=sa02m-alice-client.service"
         echo "CLOUD_UNIT=sa02m-cloud-control.service"
-        echo 'systemctl(){ return 0; }'
+        # restart = the client's own run: with CLIENT_WRITES set the shim writes the
+        # richer status.json the real client writes when it starts (C3 models the
+        # file appearing DURING the call — a pre-written file raced the 1-s mtime
+        # guard on a loaded box and made this case flake in the full suite).
+        echo 'systemctl(){ if [ "$1" = restart ] && [ -n "${CLIENT_WRITES:-}" ]; then printf '"'"'{"state":"disabled","ts":1,"config_watch": true,"client_enabled":false,"richer":true}
+'"'"' > "$STATUS_FILE"; fi; return 0; }'
         echo 'timeout(){ shift; "$@"; }'
         echo "logger(){ printf '%s\\n' \"\$*\" >> \"$CBOX/logger.log\"; }"
         printf '%s\n' "$fn_disable"
@@ -227,10 +232,10 @@ else
     [ -f "$CBOX/status.json" ] \
         && bad "(C2) cloud-control disable also wrote the YANDEX status file" \
         || ok "(C2) cloud-control disable touches only its own status file"
-    # (C3) a file the CLIENT wrote during the call (fresh mtime) is never clobbered
+    # (C3) a file the CLIENT wrote during the call (fresh mtime) is never clobbered —
+    # the shim writes it on `restart`, i.e. after `since` was captured, as the client does
     rm -f "$CBOX"/status*.json
-    printf '{"state":"disabled","ts":1,"config_watch": true,"client_enabled":false,"richer":true}\n' > "$CBOX/status.json"
-    run_disable sa02m-alice-client.service
+    CLIENT_WRITES=1 run_disable sa02m-alice-client.service
     grep -q '"richer":true' "$CBOX/status.json" \
         && ok "(C3) a status.json fresher than the call (the client's own write) is kept, not clobbered by the skeleton" \
         || bad "(C3) the client's fresher status.json was overwritten by the fallback skeleton"

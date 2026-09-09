@@ -408,6 +408,33 @@ sa02m_harden_sudoers() {
     return 0
 }
 
+# Stamp "which release installed this runner": $STATEDIR/runner.version, read
+# FIRST by etc/sa02m-update-runner.sh and etc/sa02m-update-inspect.sh when
+# they report UPDATER_VERSION (the runner's UPDATER_VERSION block is the one
+# home of the reasoning; 1.0.6.40, item 6). Called by every install site right
+# after the runner binary lands, with the DELIVERED tree's VERSION file — never
+# the deployed /var/www copy, which a www-only delivery may already have moved
+# past the runner. Refuses to stamp an unparseable VERSION (the previous stamp,
+# if any, stays; a parse failure is a broken delivery, not an older release)
+# and returns 1 so the site can log it. Gate: .ai-dev/quality/checks/runner-version-stamp.sh.
+sa02m_stamp_runner_version() {
+    local version_file=$1
+    local statedir="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
+    local ver=""
+    if [ -f "$version_file" ]; then
+        ver=$(tr -d '\r' <"$version_file" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    fi
+    if [ -z "$ver" ]; then
+        log WARN "runner.version: в $version_file нет версии — штамп не записан"
+        return 1
+    fi
+    install -d -m 0755 "$statedir" || return 1
+    printf '%s\n' "$ver" >"$statedir/runner.version.tmp" || return 1
+    install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version" || return 1
+    rm -f "$statedir/runner.version.tmp"
+    log OK "runner.version = $ver"
+}
+
 # Install the shared Carel register-map package (repo opt/sa02m-carel) to
 # /opt/sa02m-carel. Two services import it from two different trees under two
 # different users - the flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher)
@@ -433,7 +460,8 @@ sa02m_install_carel_pkg() {
     for f in "$src"/*.py; do
         [ -f "$f" ] || continue
         install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
-        sed -i 's/$//' "$dst/$(basename "$f")" 2>/dev/null || true
+        sed -i 's/
+$//' "$dst/$(basename "$f")" 2>/dev/null || true
     done
     # A stale .pyc from an older layout would shadow a removed module.
     rm -rf "$dst/__pycache__" 2>/dev/null || true
@@ -467,7 +495,8 @@ sa02m_install_led_pkg() {
     for f in "$src"/*.py; do
         [ -f "$f" ] || continue
         install -m 0644 -o root -g root "$f" "$dst/$(basename "$f")"
-        sed -i 's/$//' "$dst/$(basename "$f")" 2>/dev/null || true
+        sed -i 's/
+$//' "$dst/$(basename "$f")" 2>/dev/null || true
     done
     # A stale .pyc from an older layout would shadow a removed module.
     rm -rf "$dst/__pycache__" 2>/dev/null || true

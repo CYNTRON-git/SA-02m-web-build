@@ -161,3 +161,11 @@ ways the local machine cannot see.
   hollow-gate class cannot return through a newly added gate. A future gate that
   greps for a pinned line WILL be caught by `comment-mutation-proof` only if its case
   is registered there — adding a gate means adding its case.
+
+## Python bytecode cache can hide a same-second mutation
+
+A RED-first proof that mutates a `.py` file and re-runs within the same second,
+keeping the file length, can read the STALE `__pycache__` bytecode (mtime
+granularity), so the mutation appears not to bite. The `web-bus-mode-bacnet` gate
+sets a private `PYTHONPYCACHEPREFIX`; a hand-run proof should do the same or
+`find -name __pycache__ -exec rm -r` first (found 2026-09-08 while proving R6).

@@ -86,3 +86,13 @@ CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts ON mr_samples(device_id, ch, ts);
   меняется; MR-карточка до 1.0.5.85 клик не обрабатывала.
 - Изменение формы ответа `kind=mr`, DDL `mr_samples` или каденса — правка этого
   файла + тестов в одном PR.
+
+## Проверка контракта
+
+`opt/sa02m-devices/tests/test_api_mr.py` (`test_handle_history_mr_channel`,
+`test_handle_history_mr_overview_batch`, экспорт `kind=mr`, регресс без `kind=mr`)
+и `test_device_history_db.py` — под строкой `py-unit-devices`, которая с 1.0.6.40
+перечисляет этот файл в `covers`. Честный предел (аудит 2026-09-08 F17):
+`js-unit-devices` проверяет чистые помощники `devices.js` (зум, оси, карточки),
+а не разбор формы ответа — рендер `series`/`label` в UI подтверждает только
+headless-снимок или стенд.

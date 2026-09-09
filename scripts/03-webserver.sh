@@ -446,6 +446,7 @@ if [ -f "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" ]; then
     install -d -m 755 /usr/local/libexec
     install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
+    sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION" || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" ]; then
     install -d -m 755 /usr/local/libexec

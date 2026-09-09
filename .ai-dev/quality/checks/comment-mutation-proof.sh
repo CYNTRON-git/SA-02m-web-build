@@ -123,6 +123,12 @@ mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
+runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
+runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
+runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"
+runner-version-stamp|etc/sa02m-update-runner.sh|if ! stamp_runner_version_after_deploy "$txn"; then
+css-token-fallback|www/network_config/static/css/main.css|--yellow:      #ffd60a;
+web-bus-mode-bacnet|opt/sa02m-flasher/sa02m_flasher/service.py|return self._handle_bus_mode(ctx)
 html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
 rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
 web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check

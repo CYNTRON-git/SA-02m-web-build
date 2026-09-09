@@ -1161,5 +1161,176 @@ class TestPollerUsesTheSharedMapOnly(unittest.TestCase):
         self.assertNotIn("strip", snap)
 
 
+def _strip_with_fx(fx_id: int) -> FakeLedStrip:
+    plc = led_strip()
+    plc.holding[lm.MB2WS_FX_ID] = int(fx_id)
+    return plc
+
+
+class TestWindowFieldsL4(unittest.TestCase):
+    """L4 (1.0.6.40): what the web window renders from — nothing restated in JS.
+
+    The choice lists, the effect groups, the per-effect reg-455 layout and the
+    colour/telemetry conversions all come from the shared map through the daemon;
+    the browser only maps i18n KEYS to labels. Every pin here reads the snapshot
+    the window really receives, through the frame-level fake.
+    """
+
+    CHOICE_KEYS = (
+        "led_types", "byte_orders", "pwm_modes", "line_ui", "scene_ui",
+        "tile_modes", "tile_counts", "matrix_types", "ch2_modes", "text_lines",
+        "wx_lines", "aux_colors", "spy_ports", "spy_modes", "spy_parity",
+        "spy_baud", "spy_fc", "spy_types", "spy_units", "wx_spy_fields",
+        "di_modes", "pixel_formats",
+    )
+
+    def test_matrix_wiring_is_decoded_for_the_window(self) -> None:
+        # Fixture layout: PROGRESSIVE | TileCount 2 — one wiring bit set.
+        strip = _snapshot(led_strip(), LED_DEVICE)["led"]["strip"]
+        self.assertEqual(
+            strip["matrix_wiring"],
+            {"progressive": True, "origin_bottom": False, "mirror_x": False, "swap_xy": False},
+        )
+        self.assertEqual(strip["matrix_tile_count"], 2)
+        choices = _snapshot(led_strip(), LED_DEVICE)["led"]["choices"]
+        self.assertEqual(choices["led_type_apa102"], lm.MB2WS_LED_TYPE_APA102)
+
+    def test_choices_ride_every_snapshot_but_a_panel_poll(self) -> None:
+        plc = led_strip()
+        full = _snapshot(plc, LED_DEVICE, active_tab=led_poll.LED_TAB_STRIP)["led"]
+        choices = full.get("choices") or {}
+        for key in self.CHOICE_KEYS:
+            self.assertTrue(choices.get(key), "список «%s» пуст или отсутствует" % key)
+        self.assertEqual(
+            [c for c, _lab in choices["led_types"]],
+            [c for c, _lab in lm.rgbw_led_type_choices()],
+        )
+        self.assertEqual(choices["text_max_chars"], lm.MB2WS_TEXT_MAX_CHARS)
+        self.assertEqual(list(choices["text_2x_hint_args"]), list(lm.rgbw_text_2x_hint_args()))
+        # The 1 s background poll is the hot path on a shared line: the static
+        # lists must not ride it (the window caches them from the first snapshot).
+        panel = _snapshot(
+            plc, LED_DEVICE, snapshot_detail="panel", active_tab=led_poll.LED_TAB_STRIP
+        )["led"]
+        self.assertNotIn("choices", panel)
+
+    def test_fx_groups_tile_the_catalog_in_display_order(self) -> None:
+        groups = _snapshot(led_strip(), LED_DEVICE)["led"]["scene"]["fx_groups"]
+        ids: List[int] = []
+        for g in groups:
+            ids.extend(range(int(g["first"]), int(g["last"]) + 1))
+        self.assertEqual(ids, list(range(lm.RGBW_FX_MODE_COUNT)))
+        self.assertEqual([g["key"] for g in groups], [k for _g, k in lm.rgbw_fx_group_choices()])
+
+    def test_aux_spec_follows_the_current_effect(self) -> None:
+        expect = {
+            62: lm.RGBW_FX_AUX_LOW_STYLE,
+            51: lm.RGBW_FX_AUX_LOW_ESCORT,
+            70: lm.RGBW_FX_AUX_LOW_FLAG,
+            75: lm.RGBW_FX_AUX_LOW_LEVEL,
+            43: lm.RGBW_FX_AUX_LOW_PERCENT,
+            66: lm.RGBW_FX_AUX_LOW_DIRECTION,
+            0: lm.RGBW_FX_AUX_LOW_VARIANT,
+        }
+        for fx, kind in expect.items():
+            spec = _snapshot(_strip_with_fx(fx), LED_DEVICE)["led"]["scene"]["aux_spec"]
+            self.assertEqual(spec["low_kind"], kind, fx)
+        escort = _snapshot(_strip_with_fx(51), LED_DEVICE)["led"]["scene"]["aux_spec"]
+        self.assertEqual(escort["high_kind"], lm.RGBW_FX_AUX_HIGH_LENGTH)
+        text = _snapshot(_strip_with_fx(62), LED_DEVICE)["led"]["scene"]["aux_spec"]
+        self.assertEqual(len(text["low_choices"]), lm.MB2WS_FX_AUX_STYLE_MAX + 1)
+        self.assertEqual(text["high_kind"], lm.RGBW_FX_AUX_HIGH_COLOR)
+
+    def test_fx_aux_fields_decompose_by_the_effect_the_device_runs(self) -> None:
+        # The fixture holds 455 = 0x0102: style 2 + colour 1 for the marquee, colour
+        # code 2 + pool length 1 for Escort, and a plain variant with the high byte
+        # ignored for Static.
+        for fx, want in ((62, (2, False, 1)), (51, (2, False, 1)), (0, (2, False, 0))):
+            md = _snapshot(
+                _strip_with_fx(fx), LED_DEVICE, active_tab=led_poll.LED_TAB_SCENE
+            )["led"]["mode_data"]
+            fields = md["fx_aux_fields"]
+            self.assertEqual((fields["low"], fields["flag"], fields["high"]), want, fx)
+
+    def test_colour_hex_and_scaled_telemetry(self) -> None:
+        pwm = _snapshot(led_strip(), LED_DEVICE, active_tab=led_poll.LED_TAB_PWM)["led"]["pwm"]
+        self.assertEqual(pwm["color_hex"], lm.rgbw_pwm_permille_to_hex(250, 500, 750))
+        self.assertEqual(pwm["ntc_c"], lm.rgbw_ntc_celsius(315))
+        self.assertEqual(pwm["vled_v"], lm.rgbw_vled_volts(1198))
+        md = _snapshot(led_strip(), LED_DEVICE, active_tab=led_poll.LED_TAB_SCENE)["led"]["mode_data"]
+        self.assertEqual(len(md["text_colors_hex"]), 4)
+        self.assertEqual(
+            md["text_colors_hex"][0], lm.rgbw_rgb565_to_hex(lm.rgbw_hex_to_rgb565("#FF0000"))
+        )
+        self.assertEqual(
+            md["wx_temp_color_hex"], lm.rgbw_rgb565_to_hex(lm.rgbw_hex_to_rgb565("#00FF00"))
+        )
+
+    def test_aux_hint_keys_ride_the_scene_tab_only(self) -> None:
+        # Fixture: marquee (62), style 2, text «ЦИНТРОН», TextLines = 2 — so the
+        # two-line hint applies and the wide-text hint always does.
+        scene = _snapshot(led_strip(), LED_DEVICE, active_tab=led_poll.LED_TAB_SCENE)["led"]["scene"]
+        self.assertEqual(
+            list(scene["aux_hint_keys"]), list(lm.rgbw_fx_aux_hint_keys(62, 2, "ЦИНТРОН", 2))
+        )
+        self.assertIn("rgbw_fx_aux_style_hint_two_line", scene["aux_hint_keys"])
+        pwm = _snapshot(led_strip(), LED_DEVICE, active_tab=led_poll.LED_TAB_PWM)["led"]["scene"]
+        self.assertEqual(list(pwm["aux_hint_keys"]), [])
+
+
+class TestWindowActionsL4(unittest.TestCase):
+    """L4 (1.0.6.40): the two request shapes the window adds to the allow-list."""
+
+    def test_scene_aux_and_density_land_as_a_plain_second_op(self) -> None:
+        plc = led_strip()
+        _led_write(
+            plc, LED_DEVICE, "scene",
+            {"source": lm.RGBW_SCENE_UI_FX, "fx_id": 62,
+             "fx_aux": {"low": 5, "flag": False, "high": 3}, "fx_density": 77},
+        )
+        regs = plc.written_regs()
+        addrs = [a for a, _v in regs]
+        # 455/456 are NOT lock-gated: they follow the closing lock write, never
+        # sit inside the bracket (an aborted batch must not leave them half-written
+        # under an open lock either).
+        last_lock = len(addrs) - 1 - addrs[::-1].index(lm.MB2WS_LOCK)
+        self.assertGreater(addrs.index(lm.MB2WS_FX_AUX), last_lock)
+        self.assertGreater(addrs.index(lm.MB2WS_FX_DENSITY), last_lock)
+        writes = dict(regs)
+        self.assertEqual(writes[lm.MB2WS_FX_AUX], lm.rgbw_fx_aux_compose(62, low=5, flag=False, high=3))
+        self.assertEqual(writes[lm.MB2WS_FX_DENSITY], 77)
+
+    def test_scene_aux_high_byte_is_forced_zero_where_the_mode_ignores_it(self) -> None:
+        plc = led_strip()
+        _led_write(
+            plc, LED_DEVICE, "scene",
+            {"source": lm.RGBW_SCENE_UI_FX, "fx_id": 1, "fx_aux": {"low": 0, "high": 6}},
+        )
+        self.assertEqual(dict(plc.written_regs())[lm.MB2WS_FX_AUX] >> 8, 0)
+
+    def test_scene_without_aux_fields_writes_no_plain_op(self) -> None:
+        plc = led_strip()
+        _led_write(plc, LED_DEVICE, "scene", {"source": lm.RGBW_SCENE_UI_FX, "fx_id": 1})
+        self.assertNotIn(lm.MB2WS_FX_AUX, plc.written_addresses())
+        self.assertNotIn(lm.MB2WS_FX_DENSITY, plc.written_addresses())
+
+    def test_pwm_colour_writes_level_then_mirror_for_r_g_b(self) -> None:
+        plc = led_strip()
+        _led_write(plc, LED_DEVICE, "pwm", {"color": "#FF8000"})
+        r, g, b = lm.rgbw_hex_to_pwm_permille("#FF8000")
+        lvl, mir = lm.RGBW_PWM_HOLDING_BASE, lm.RGBW_PWM_MIRROR_BASE
+        self.assertEqual(
+            plc.written_regs(),
+            [(lvl, r), (mir, r), (lvl + 1, g), (mir + 1, g), (lvl + 2, b), (mir + 2, b)],
+        )
+
+    def test_pwm_bad_colour_is_refused_before_the_port_is_opened(self) -> None:
+        with patch.object(
+            device_config, "_open_transport", side_effect=AssertionError("порт открыт")
+        ):
+            with self.assertRaises(ValueError):
+                device_config.led_write("/dev/ttyS4", LED_DEVICE, "pwm", {"color": "red"})
+
+
 if __name__ == "__main__":
     unittest.main()

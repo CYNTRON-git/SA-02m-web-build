@@ -8,6 +8,49 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
+  (offline full update 1.0.6.37 → 1.0.6.40, started 22:07, board rebooted ≈22:20 while
+  `04-flasher.sh` was writing units — `sa02m-flasher.service` left as a 0-byte file
+  (systemd reads it as masked), `/opt/sa02m-modbus-mqtt` new while `/opt/sa02m-led` old ⇒
+  the bridge crash-looped on `MB2WS_TEXT_BASE`). Neither `sa02m-userspace-watchdog`
+  (threshold 10 min) nor `sa02m-failure-monitor` logged a reboot decision; the
+  persistent journal lists one boot and the previous boot's kernel log is not
+  available, so the cause is UNKNOWN — the hardware watchdog (`sunxi-wdt`, 16 s, fed by
+  PID 1) is the leading hypothesis (PID 1 stalled under install I/O on the slower
+  board). 1.135 ran the identical update twice without a reset. Recovery: the update
+  re-run to completion (idempotent). Systemic questions (8D offered): (a) the
+  installer holds no watchdog off during its run and restarts services in an order
+  that leaves the bridge importing a package not yet refreshed (`05-mqtt.sh` before the
+  LED package? verify), (b) a unit file written non-atomically (`install` over the live
+  path), (c) `offline-full-update.sh`'s wrapper dies with the SSH session (needs
+  `setsid`), so its post-checks never ran. Bench-owner note: the 1.136 note says a
+  deploy there is agreed with the bench owner — this one was on the Operator's word.
+- [OPEN] 2026-09-08 **[LOW] LED window: PWM safe-state 503..506 not exposed.**
+  The daemon has no read/write path for the family safe-state AO block (plan
+  led-window-1.0.6.40 F4); the desktop page shows it. Add an FC03 of 4 to the PWM
+  poll + `pwm {channel, safe}` + tests when wanted.
+- [OPEN] 2026-09-08 **[LOW] LED window: EXFX upload has no tab.** Needs the
+  holding-4000+ upload protocol, a file path through nginx and a daemon job with
+  progress (F2) — a release of its own; the desktop's «Загрузить и пуск» is the
+  target.
+- [OPEN] 2026-09-08 **[LOW] LED window: weather-listen binds only in the spy
+  card.** The daemon reads 696..709 for effect 81 alone (F7); the desktop also shows
+  them on the weather card (fx 64). Add a read for fx 64 if operators ask.
+- [OPEN] 2026-09-08 **[LOW] Config windows: an F5 mid-write leaves the port's
+  pollers released.** The daemon finishes the write under the lease, but the reload
+  drops `configPortReleased`, so MPLC4/bridge stay stopped until the next
+  open/close of any config window (pre-existing class for every kind; noted in plan
+  led-window-1.0.6.40 §3).
+- [OPEN] 2026-09-08 **[LOW] `.flasher-config-form input { width: 100% }` stretches
+  checkbox/radio boxes.** Seen on the LED window's first render (label text pushed
+  off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
+  `.checkbox-line` rows sit under the same rule — check their screenshots.
+- [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
+  (`--accent` ×3 at 1904/1905/4819, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
+  `--text-muted` ×5) and silently inherit today — a monospace font that is not
+  monospace, a muted colour that is the full text colour. Reported (not gated) by
+  `css-token-fallback` since 1.0.6.40. Fixing them CHANGES rendering where a token was
+  never applied — the Operator decides; then flip the gate's report line to a failure.
 - [OPEN] 2026-09-08 **[LOW] Two more non-existent CSS tokens of the C5 class**, pre-existing:
   `main.css:4351` `var(--err, #e55)` and `:4419,:4421` `var(--accent, #3a9bdc)` — neither
   token is defined, so the hard-coded fallback ships identically in both themes (ship review
@@ -66,7 +109,9 @@ worklist collapsed into one home).
   Batch journal writes (timer / N records) and keep `runs` in a separate small file —
   design change, measure first.
 
-- [OPEN] 2026-09-04 **[LOW] L4 flasher tape UI waits for hardware.** Backend
+- [RESOLVED] 2026-09-08 1.0.6.40: window wired (`static/js/flasher/led.js`, seam in
+  `flasher.js`); bench 1.135 COM3 19200 addr 13 is the acceptance target (plan §7).
+  **[LOW] L4 flasher tape UI waits for hardware.** Backend
   (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3
   are ready; frontend tabs are not wired, and `scanner.py` still returns false
   for `RGBW_WS2812` («окно ещё нет»). Bench has no type-120 on any COM. Do not

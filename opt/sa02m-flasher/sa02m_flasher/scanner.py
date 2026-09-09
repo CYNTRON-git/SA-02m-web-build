@@ -319,10 +319,12 @@ def device_is_mp02_product_line_for_config(dev: DeviceInfo) -> bool:
         # Опознанный ПЛК Carel — не наша линейка: ни прошивки, ни карты MP-02m.
         return False
     if code == module_profiles.RGBW_WS2812:
-        # Лента опознаётся, но окна настройки для неё ещё нет: строка станет
-        # доступной для двойного клика в шаге L3 этого релиза, вместе с kind
-        # «led» в device_config. Пока — не предлагать окно, которое упадёт.
-        return False
+        # Лента (kind «led» в device_config) — своё окно с 1.0.6.40. Решение
+        # «строка открывается двойным кликом» принимается и здесь, и в JS
+        # (flasher.js deviceConfigKindFromSignature) по ОДНОМУ списку алиасов —
+        # sa02m_led.led_mb2ws_map.LED_SIGNATURE_ALIASES, через
+        # module_profiles.code_from_signature; тест окна читает его оттуда же.
+        return True
     if code is not None:
         return True
     return False

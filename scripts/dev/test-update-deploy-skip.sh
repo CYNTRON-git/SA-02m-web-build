@@ -14,12 +14,16 @@
 # still deploys, and any doubt fails safe to deploying.
 #
 # Method: extract the SHIPPED apply_deploy_items / is_unchanged / atomic_install_file
-# / journal_append / rollback_from_journal (single-function slices, like
-# test-update-recover-rollback.sh), stub only the txn/log/manifest helpers, and run
-# a mixed deploy against a sandbox manifest whose owner axis is set to the test
-# user's own id (the harness runs NON-root). Nothing touches the real filesystem,
-# no root, no device. Requires python3 (the runner's own manifest/journal parsing
-# uses it, and so do the extracted journal_append / atomic_install_file).
+# / journal_append / rollback_from_journal / stamp_runner_version_after_deploy
+# (single-function slices, like test-update-recover-rollback.sh), stub only the
+# txn/log/manifest helpers, and run a mixed deploy against a sandbox manifest
+# whose owner axis is set to the test user's own id (the harness runs NON-root).
+# Nothing touches the real filesystem, no root, no device. Requires python3 (the
+# runner's own manifest/journal parsing uses it, and so do the extracted
+# journal_append / atomic_install_file). Case 4b/5b (1.0.6.40, item 6) rides
+# the same fixture: the runner stamp is written through the journal when the
+# manifest deploys the runner binary, left alone when it does not, and
+# restored by the rollback — a pre-1.0.6.40 runner (no stamp function) FAILS 4b.
 #
 # txn_patch/txn_get are FILE-backed here: the deploy loop runs in a `( subshell )`
 # under production shell options, so a shell-variable store would not survive to
@@ -90,8 +94,15 @@ extract() {
 HAS_GUARD=0
 grep -q '^is_unchanged() {' "$SRC" && HAS_GUARD=1
 
+# stamp_runner_version_after_deploy is the 1.0.6.40 runner-stamp step (item 6);
+# same extract-if-present rule: a pre-1.0.6.40 runner has none, and the
+# drive-to-failure run must FAIL the stamp assertions below, not abort here.
+HAS_STAMP=0
+grep -q '^stamp_runner_version_after_deploy() {' "$SRC" && HAS_STAMP=1
+
 funcs="apply_deploy_items journal_append atomic_install_file rollback_from_journal"
 [ "$HAS_GUARD" = "1" ] && funcs="is_unchanged $funcs"
+[ "$HAS_STAMP" = "1" ] && funcs="$funcs stamp_runner_version_after_deploy"
 for fn in $funcs; do
     extract "$fn" >> "$T/fn.sh"
     grep -q "^$fn() {" "$T/fn.sh" \
@@ -231,6 +242,38 @@ else
     bad "files_done/files_total wrong (done=$fd total=$ft) — skip broke progress accounting"
 fi
 
+# 4b. RUNNER STAMP RIDES THE JOURNAL (1.0.6.40, item 6). When the manifest
+#     deploys the runner binary, stamp_runner_version_after_deploy writes the
+#     manifest version to $RUNNER_VERSION_FILE THROUGH a journal record, so the
+#     rollback in 5 restores the pre-update stamp with the pre-update binary and
+#     a board never reports a runner it rolled back from. Item C stands in for
+#     the runner binary (RUNNER_BIN_DST names it); the two constants are the
+#     runner's top-level ones, defined here because only functions are extracted.
+RUNNER_BIN_DST="$LIVE/c.sh"
+RUNNER_VERSION_FILE="$STATEDIR/runner.version"
+printf '1.0.0.1\n' > "$RUNNER_VERSION_FILE"
+if [ "$HAS_STAMP" = "1" ]; then
+    ( set -euo pipefail; stamp_runner_version_after_deploy "$TXN" ) >/dev/null 2>&1 || :
+fi
+stamp_now=$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)
+if [ "$stamp_now" = "9.9.9.9" ] && [ "$(jrl "$RUNNER_VERSION_FILE")" -ge 1 ]; then
+    ok "runner stamp written from the manifest version and journalled"
+else
+    bad "runner stamp not written/journalled (stamp='$stamp_now') — a board keeps reporting the old runner after a self-deploy"
+fi
+#     A manifest that does NOT deploy the runner leaves the stamp alone — the
+#     www-only case the stamp exists for: point RUNNER_BIN_DST at a dst the
+#     manifest never names, run again, expect no change and no new journal line.
+stamp_lines=$(jrl "$RUNNER_VERSION_FILE")
+if [ "$HAS_STAMP" = "1" ]; then
+    ( set -euo pipefail; RUNNER_BIN_DST="$LIVE/not-deployed"; stamp_runner_version_after_deploy "$TXN" ) >/dev/null 2>&1 || :
+fi
+if [ "$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)" = "$stamp_now" ] && [ "$(jrl "$RUNNER_VERSION_FILE")" = "$stamp_lines" ]; then
+    ok "manifest without the runner binary leaves the stamp untouched (www-only case)"
+else
+    bad "stamp changed/journalled by a manifest that did not deploy the runner"
+fi
+
 # 5. ROLLBACK SURVIVES A SKIPPED FILE — drive rollback over the produced journal:
 #    the CHANGED file (B) restores to its pre-update content; the SKIPPED file (A)
 #    is untouched (no phantom replace entry restoring a non-existent backup over it).
@@ -242,6 +285,12 @@ if [ "$rb_ok" = "1" ]; then
     ok "rollback restores the changed file and leaves the skipped file intact (trap 5)"
 else
     bad "rollback mishandled a skipped file (changed not restored, or skipped clobbered)"
+fi
+# 5b. ...and the pre-update runner stamp comes back with the pre-update binary.
+if [ "$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)" = "1.0.0.1" ]; then
+    ok "rollback restores the pre-update runner stamp (4b's journal record)"
+else
+    bad "rollback left the NEW runner stamp behind (stamp='$(cat "$RUNNER_VERSION_FILE" 2>/dev/null)') — board over-reports a runner it rolled back from"
 fi
 
 echo "-----"

@@ -283,6 +283,9 @@ class TestManifestAndPackage(unittest.TestCase):
         def report(version_file: Path, **extra: str) -> str:
             env = {k: v for k, v in os.environ.items() if k != "SA02M_UPDATER_VERSION"}
             env["SA02M_WEB_VERSION_FILE"] = version_file.as_posix()
+            # The stamp lives at the DEFAULT $STATEDIR/runner.version — point the
+            # state dir at the fixture dir so the default derivation is what runs.
+            env["SA02M_UPDATE_STATEDIR"] = version_file.parent.as_posix()
             env.update(extra)
             r = subprocess.run(
                 [bash, runner, "version"], env=env, capture_output=True, text=True, timeout=60
@@ -297,6 +300,21 @@ class TestManifestAndPackage(unittest.TestCase):
             self.assertEqual(report(Path(d) / "missing"), "1.0.5.66")
             vf.write_bytes(b"garbage\n")
             self.assertEqual(report(vf), "1.0.5.66")
+            self.assertEqual(report(vf, SA02M_UPDATER_VERSION="7.7.7.7"), "7.7.7.7")
+            # 1.0.6.40 (item 6): every runner install site stamps the release
+            # that installed THIS runner into $STATEDIR/runner.version. A
+            # www-only delivery refreshes VERSION without the runner, so the
+            # stamp — not the newer VERSION — is what the board reports; an
+            # absent (pre-1.0.6.40 board) or unparseable stamp falls through
+            # to VERSION, and the env override still wins over both.
+            stamp = Path(d) / "runner.version"
+            vf.write_bytes(b"9.8.7.6\n")
+            stamp.write_bytes(b"1.2.3.4\r\n")
+            self.assertEqual(report(vf), "1.2.3.4")
+            stamp.write_bytes(b"not a version\n")
+            self.assertEqual(report(vf), "9.8.7.6")
+            stamp.write_bytes(b"1.2.3.4\n")
+            self.assertEqual(report(Path(d) / "missing"), "1.2.3.4")
             self.assertEqual(report(vf, SA02M_UPDATER_VERSION="7.7.7.7"), "7.7.7.7")
         # A pack built from this tree must stay applicable by the runner of the
         # release it updates: MIN_UPDATER never exceeds what this tree reports.
@@ -337,6 +355,7 @@ class TestManifestAndPackage(unittest.TestCase):
         def preflight(version_file: Path, package: Path, **extra: str) -> dict:
             env = {k: v for k, v in os.environ.items() if k != "SA02M_UPDATER_VERSION"}
             env["SA02M_WEB_VERSION_FILE"] = version_file.as_posix()
+            env["SA02M_UPDATE_STATEDIR"] = version_file.parent.as_posix()
             # No validator module => the script's bootstrap branch, which still
             # derives UPDATER_VERSION first and prints it in its JSON.
             env["SA02M_UPDATE_VALIDATE_PY"] = (package.parent / "no-validator-here.py").as_posix()
@@ -365,6 +384,20 @@ class TestManifestAndPackage(unittest.TestCase):
             self.assertIsNone(out["installed_version"])
             vf.write_bytes(b"garbage\n")
             self.assertEqual(preflight(vf, pkg)["updater_version"], "1.0.5.66")
+            self.assertEqual(preflight(vf, pkg, SA02M_UPDATER_VERSION="7.7.7.7")["updater_version"], "7.7.7.7")
+            # The stamp mirror (1.0.6.40, item 6): the preflight reports the
+            # stamped runner release, not the www-only-refreshed VERSION — while
+            # installed_version stays the VERSION file (the panel shows both).
+            stamp = Path(d) / "runner.version"
+            vf.write_bytes(b"9.8.7.6\n")
+            stamp.write_bytes(b"1.2.3.4\r\n")
+            out = preflight(vf, pkg)
+            self.assertEqual(out["updater_version"], "1.2.3.4")
+            self.assertEqual(out["installed_version"], "9.8.7.6")
+            stamp.write_bytes(b"not a version\n")
+            self.assertEqual(preflight(vf, pkg)["updater_version"], "9.8.7.6")
+            stamp.write_bytes(b"1.2.3.4\n")
+            self.assertEqual(preflight(Path(d) / "missing", pkg)["updater_version"], "1.2.3.4")
             self.assertEqual(preflight(vf, pkg, SA02M_UPDATER_VERSION="7.7.7.7")["updater_version"], "7.7.7.7")
 
     def test_services_optional_keys_accepted(self) -> None:
