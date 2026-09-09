@@ -134,6 +134,30 @@ https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
 and not restated here. Unknown ids are rejected. A missing tile icon
 falls back to `generic` and does not block save.
 
+### Room membership (`room_id`)
+
+Membership is stored on BOTH sides — the device's `room_id` and the room's
+`devices` list — and every writer keeps the two in agreement:
+
+- `upsert_device` writes both, on create AND on edit: a device moved to
+  another room leaves its previous room's list; an empty or absent `room_id`
+  drops the key (`validate_device`, like `icon` below — an empty string never
+  serialises) and the device joins no room's list.
+- `upsert_device` refuses a shape-valid `room_id` naming no existing room —
+  `{"ok": false, "error": "invalid_room", "message": "room not found"}` —
+  instead of storing a dangling reference whose room name the page cannot
+  resolve. Existence is the API's check, never `validate_device`'s: only the
+  loaded document knows which rooms exist.
+- `delete_device` drops the id from every room's `devices` (and every group's
+  `device_ids`); `delete_room` clears `room_id` on the devices it held. The
+  atomic full-membership rebind is the rooms channel's
+  (`docs/contracts/cloud-scenarios.md` §Rooms).
+
+A room stored before the list existed carries no `devices` key: joining it
+creates the list, a room nobody joined keeps its shape.
+Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
+`tests/test_models.py::TestRoomId`.
+
 ### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
 
 Two optional device-level keys beside `room_id`, validated by

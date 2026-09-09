@@ -377,10 +377,20 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
         if dtype not in OFFICIAL_DEVICE_TYPES:
             return None, "invalid device type"
         out["type"] = dtype
-    if "room_id" in out and out["room_id"] not in (None, ""):
-        if not _ID_RE.match(str(out["room_id"])):
+    # `room_id` is checked for SHAPE only here: this validator is pure and
+    # cannot know which rooms exist. `config/api.py::upsert_device` refuses a
+    # shape-valid id that names no room.
+    if "room_id" in out:
+        if out["room_id"] in (None, ""):
+            # "No room" DROPS the key, exactly like `icon` below: an empty
+            # string would serialise into the stored document, and the room
+            # editor already unassigns devices that way
+            # (docs/contracts/alice-mqtt-mapping.md §Room membership).
+            del out["room_id"]
+        elif not _ID_RE.match(str(out["room_id"])):
             return None, "invalid room_id"
-        out["room_id"] = str(out["room_id"])
+        else:
+            out["room_id"] = str(out["room_id"])
     # `alice_visible`: absent ⇒ true (every pre-existing document is unchanged
     # and stays visible). Only the Yandex discovery list reads it — a strict
     # bool so a stray "false" string can never hide a device by accident.

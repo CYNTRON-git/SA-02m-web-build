@@ -357,6 +357,102 @@ class TestApplyRooms(_CloudApiBase):
                       h.registry.listed_rooms())
 
 
+class TestUpsertDeviceRooms(_CloudApiBase):
+    """`upsert_device` keeps `room.devices` and `dev.room_id` in agreement.
+
+    Membership is stored on both sides (docs/contracts/alice-mqtt-mapping.md
+    §Room membership). The UPDATE branch used to return before the attach
+    block, so editing a device into another room left the old room still
+    listing it and the new room never naming it; and a shape-valid `room_id`
+    naming no room was stored as a dangling reference the UI cannot resolve.
+    """
+
+    LAMP = {
+        "id": "lamp", "name": "Лампа", "type": "devices.types.light",
+        "capabilities": [], "properties": [],
+    }
+
+    def setUp(self):
+        super().setUp()
+        save_devices({"rooms": [], "devices": [dict(self.LAMP)]})
+        # Both rooms come back carrying a `devices` list — `validate_room`
+        # always writes one. The pre-list document shape is its own case.
+        self.kitchen = api.apply_rooms({"name": "Кухня", "devices": ["lamp"]})["room"]["id"]
+        self.hall = api.apply_rooms({"name": "Зал"})["room"]["id"]
+
+    def _members(self):
+        return {r["id"]: list(r.get("devices") or []) for r in load_devices()["rooms"]}
+
+    def _socket(self, **extra):
+        dev = {"id": "sock", "name": "Розетка", "type": "devices.types.socket",
+               "capabilities": [], "properties": []}
+        dev.update(extra)
+        return dev
+
+    def test_update_moves_the_device_to_the_new_room(self):
+        r = api.upsert_device(dict(self.LAMP, room_id=self.hall))
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(load_devices()["devices"][0]["room_id"], self.hall)
+        members = self._members()
+        self.assertEqual(members[self.hall], ["lamp"])
+        self.assertEqual(members[self.kitchen], [])
+
+    def test_update_clearing_the_room_unassigns_everywhere(self):
+        r = api.upsert_device(dict(self.LAMP, room_id=""))
+        self.assertTrue(r["ok"], r)
+        stored = load_devices()["devices"][0]
+        self.assertNotIn("room_id", stored)
+        self.assertEqual(self._members()[self.kitchen], [])
+
+    def test_create_still_attaches(self):
+        r = api.upsert_device(self._socket(room_id=self.hall))
+        self.assertTrue(r["ok"], r)
+        members = self._members()
+        self.assertEqual(members[self.hall], ["sock"])
+        self.assertEqual(members[self.kitchen], ["lamp"])
+
+    def test_resaving_the_same_room_lists_the_device_once(self):
+        # The sync removes before it appends — an unchanged edit (the common
+        # case: a binding change) must not grow the room's list.
+        for _ in range(3):
+            self.assertTrue(api.upsert_device(dict(self.LAMP, room_id=self.kitchen))["ok"])
+        self.assertEqual(self._members()[self.kitchen], ["lamp"])
+
+    def test_unknown_room_refused_on_update_and_nothing_changes(self):
+        r = api.upsert_device(dict(self.LAMP, room_id="ghost"))
+        self.assertFalse(r["ok"], r)
+        self.assertEqual(r.get("error"), "invalid_room")
+        self.assertEqual(r.get("message"), "room not found")
+        self.assertEqual(load_devices()["devices"][0].get("room_id"), self.kitchen)
+        self.assertEqual(self._members()[self.kitchen], ["lamp"])
+
+    def test_unknown_room_refused_on_create(self):
+        r = api.upsert_device(self._socket(room_id="ghost"))
+        self.assertFalse(r["ok"], r)
+        self.assertEqual(r.get("error"), "invalid_room")
+        self.assertEqual([d["id"] for d in load_devices()["devices"]], ["lamp"])
+
+    def test_delete_device_leaves_no_dangling_membership(self):
+        # Already true on this line — `delete_device` strips both sides. A
+        # preservation pin, green before and after: the contract paragraph
+        # states it, so a check has to hold it.
+        self.assertTrue(api.delete_device("lamp")["ok"])
+        self.assertEqual(self._members()[self.kitchen], [])
+
+    def test_room_without_a_devices_key_keeps_its_shape(self):
+        # A document written before the list existed carries rooms with no
+        # `devices` key: joining one creates the list, a room nobody joined
+        # keeps its shape (no empty key appears out of nowhere).
+        save_devices({"rooms": [{"id": "r1", "name": "Кухня"},
+                                {"id": "r2", "name": "Зал"}],
+                      "devices": [dict(self.LAMP)]})
+        r = api.upsert_device(dict(self.LAMP, room_id="r1"))
+        self.assertTrue(r["ok"], r)
+        rooms = {x["id"]: x for x in load_devices()["rooms"]}
+        self.assertEqual(rooms["r1"].get("devices"), ["lamp"])
+        self.assertNotIn("devices", rooms["r2"])
+
+
 class TestApplyGroups(_CloudApiBase):
     def setUp(self):
         super().setUp()

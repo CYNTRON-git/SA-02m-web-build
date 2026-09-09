@@ -1026,28 +1026,56 @@ def delete_room(room_id: str) -> Dict[str, Any]:
     }
 
 
+def _sync_room_membership(doc: Dict[str, Any], device_id: str, room_id: str) -> None:
+    """Make every `room.devices` list agree with the device's `room_id`.
+
+    Membership is stored on BOTH sides (`apply_rooms` writes both), so a device
+    that moved rooms has to leave its old room's list as well as join the new
+    one; `room_id` empty means it joins none. A room that carries no `devices`
+    key keeps that shape unless it is the one being joined.
+    """
+    for r in doc.get("rooms") or []:
+        if not isinstance(r, dict):
+            continue
+        listed = r.get("devices")
+        joining = bool(room_id) and r.get("id") == room_id
+        if not isinstance(listed, list) and not joining:
+            continue
+        ids = [x for x in listed if x != device_id] if isinstance(listed, list) else []
+        if joining:
+            ids.append(device_id)
+        r["devices"] = ids
+
+
 def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, err = models.validate_device(dev)
     if err:
         return {"ok": False, "error": "invalid_device", "message": err}
     with devices_lock():
         doc = load_devices()
+        # `validate_device` can only check the id's SHAPE. A shape-valid id
+        # naming no room would leave the device in a room the UI cannot
+        # resolve (the name comes back empty) — refuse it instead of storing
+        # the dangling reference. Checked under the lock: only the loaded
+        # document knows which rooms exist.
+        rid = str(cleaned.get("room_id") or "")
+        if rid and not any(
+            isinstance(r, dict) and r.get("id") == rid for r in (doc.get("rooms") or [])
+        ):
+            return {"ok": False, "error": "invalid_room", "message": "room not found"}
         devices = doc.setdefault("devices", [])
+        replaced = False
         for i, d in enumerate(devices):
             if isinstance(d, dict) and d.get("id") == cleaned["id"]:
                 devices[i] = cleaned
-                save_devices(doc)
-                return {"ok": True, "device": cleaned}
-        devices.append(cleaned)
-        # Attach to room.devices if room_id set
-        rid = cleaned.get("room_id")
-        if rid:
-            for r in doc.get("rooms") or []:
-                if isinstance(r, dict) and r.get("id") == rid:
-                    ids = list(r.get("devices") or [])
-                    if cleaned["id"] not in ids:
-                        ids.append(cleaned["id"])
-                    r["devices"] = ids
+                replaced = True
+                break
+        if not replaced:
+            devices.append(cleaned)
+        # BOTH branches re-attach: the edit branch used to return above this
+        # point, so a device moved to another room stayed listed by its old
+        # one forever (docs/contracts/alice-mqtt-mapping.md §Room membership).
+        _sync_room_membership(doc, cleaned["id"], rid)
         save_devices(doc)
         return {"ok": True, "device": cleaned}
 
