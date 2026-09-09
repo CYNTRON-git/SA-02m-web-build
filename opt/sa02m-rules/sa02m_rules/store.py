@@ -1,4 +1,14 @@
-"""Atomic JSON store for scenarios. Stdlib only."""
+"""Atomic JSON store for scenarios. Stdlib only.
+
+Two files (contract §Store): the DOCUMENT (`scenarios.json` — scenarios,
+library, vars; written only when that content changes) and the JOURNAL
+(`runs.json` beside it — run records, the notify queue, per-scenario
+last_run/last_error; written by the engine's `Journal` buffer on a bounded
+cadence). Readers (`load`) merge the journal into the document view, so the
+cloud channel's `listed()` / `_ok()` shapes never changed when the split
+landed (1.0.6.41, audit A16: a 1 Hz motion rule was one whole-store
+fsync per second).
+"""
 from __future__ import annotations
 
 import json
@@ -6,7 +16,7 @@ import os
 import re
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sa02m_rules import http_guard
 
@@ -21,6 +31,14 @@ BUTTON_INPUT_RE = re.compile(r"^di_\d{1,2}$")
 DEFAULT_PATH = os.environ.get("SA02M_RULES_PATH", "/etc/sa02m-rules/scenarios.json")
 RUNS_MAX = 50
 NOTIFY_MAX = 20
+#: Journal flush cadence (engine buffer → runs.json): whichever comes
+#: first — this many seconds after the first unflushed record, or this many
+#: pending records. A crash loses at most RUNS_FLUSH_S seconds of records.
+RUNS_FLUSH_S = 5
+RUNS_FLUSH_MAX = 32
+JOURNAL_NAME = "runs.json"
+_JOURNAL_KEYS = ("runs", "notify_queue")
+_LAST_KEYS = ("last_run", "last_error")
 PARAMS_MAX_BYTES = 4096
 #: Stored scenarios — every write path (replace, batch upsert, single upsert)
 #: refuses growth past this with `too_many` (contract §Store).
@@ -30,6 +48,14 @@ SCENARIOS_MAX = 64
 #: (`too_many_writes`) exactly what the engine would abort at run time.
 MAX_WRITES = 8
 _WRITE_KINDS = ("set", "toggle", "ramp")
+#: Outbound HTTP requests per engine run — the `http` action and the sandbox
+#: `Http` share ONE counter per run, so a scenario cannot loop over targets
+#: and turn the board into a scanner or an amplifier. Run-time only, unlike
+#: MAX_WRITES: the budget spans the whole chain (nested `scenario`/`scene`
+#: children spend the parent's), so no single stored row can be validated
+#: against it. The 9th request raises HttpRefused("http cap") — journaled,
+#: never sent.
+HTTP_PER_RUN_MAX = 8
 #: Engine version reported to the cloud (control view `rules_engine`):
 #: 2 = end events, edge operators, day/night presets, button/every/presence.
 RULES_ENGINE = 2
@@ -58,6 +84,18 @@ def empty_doc() -> Dict[str, Any]:
             "vars": {}}
 
 
+def charge_http(counter: List[int]) -> None:
+    """Charge one outbound request against a run's HTTP budget.
+
+    The one home of the per-run cap for both issuers (`Engine._do_action`'s
+    `http` action and the sandbox `Http`): they pass the SAME single-element
+    counter of the run, so the budget cannot be doubled by mixing paths.
+    Raises before the request is built, so nothing is sent past the cap."""
+    if counter[0] >= HTTP_PER_RUN_MAX:
+        raise http_guard.HttpRefused("http cap")
+    counter[0] += 1
+
+
 def _atomic_write(path: str, data: str) -> None:
     directory = os.path.dirname(path) or "."
     os.makedirs(directory, exist_ok=True)
@@ -80,25 +118,222 @@ def _atomic_write(path: str, data: str) -> None:
         raise
 
 
-def load(path: str = DEFAULT_PATH) -> Dict[str, Any]:
+def _read_raw(path: str) -> Optional[Dict[str, Any]]:
+    """The document as stored, or None when unreadable / not an object."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
-        return empty_doc()
+        return None
+    return data if isinstance(data, dict) else None
+
+
+# ── journal ─────────────────────────────────────────────────────────────
+def journal_path(path: str = DEFAULT_PATH) -> str:
+    """`runs.json` beside the document: the unit's ReadWritePaths covers
+    exactly that directory (ProtectSystem=strict), so the journal needs no
+    second writable tree."""
+    return os.path.join(os.path.dirname(path) or ".", JOURNAL_NAME)
+
+
+def empty_journal() -> Dict[str, Any]:
+    return {"runs": [], "notify_queue": [], "last": {}}
+
+
+def _read_journal(jpath: str) -> Optional[Dict[str, Any]]:
+    """None when the file is absent; a corrupt/unreadable/odd-shaped journal
+    reads as EMPTY (it never blocks scenarios — the next flush rewrites it)."""
+    try:
+        with open(jpath, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return empty_journal()
     if not isinstance(data, dict):
+        return empty_journal()
+    out = empty_journal()
+    for key in _JOURNAL_KEYS:
+        out[key] = [r for r in (data.get(key) if isinstance(data.get(key), list) else [])
+                    if isinstance(r, dict)]
+    if isinstance(data.get("last"), dict):
+        out["last"] = {sid: v for sid, v in data["last"].items()
+                       if isinstance(sid, str) and isinstance(v, dict)}
+    return out
+
+
+def save_journal(journal: Dict[str, Any], jpath: str) -> None:
+    _atomic_write(jpath, json.dumps(journal, ensure_ascii=False, separators=(",", ":")))
+
+
+def _has_legacy_state(raw: Dict[str, Any]) -> bool:
+    """A pre-1.0.6.41 document carried runs/notify_queue/last_* inside."""
+    if any(key in raw for key in _JOURNAL_KEYS):
+        return True
+    return any(isinstance(s, dict) and any(k in s for k in _LAST_KEYS)
+               for s in raw.get("scenarios") or [])
+
+
+def migrate_journal(path: str = DEFAULT_PATH) -> bool:
+    """Move a pre-1.0.6.41 document's run state into the journal, once.
+
+    Journal first, then the stripped document: a crash between the two
+    leaves legacy fields in the document that `load` ignores as soon as the
+    journal exists (the journal is truth), and the next boot strips them.
+    The engine calls this at boot; a reader never migrates.
+    """
+    raw = _read_raw(path)
+    if raw is None or not _has_legacy_state(raw):
+        return False
+    jpath = journal_path(path)
+    if _read_journal(jpath) is None:
+        journal = empty_journal()
+        for key in _JOURNAL_KEYS:
+            journal[key] = [r for r in (raw.get(key) if isinstance(raw.get(key), list) else [])
+                            if isinstance(r, dict)]
+        del journal["runs"][:-RUNS_MAX]
+        del journal["notify_queue"][:-NOTIFY_MAX]
+        for s in raw.get("scenarios") or []:
+            if isinstance(s, dict) and isinstance(s.get("id"), str) \
+                    and any(k in s for k in _LAST_KEYS):
+                journal["last"][s["id"]] = {"last_run": s.get("last_run"),
+                                            "last_error": s.get("last_error") or ""}
+        save_journal(journal, jpath)
+    save(raw, path)
+    return True
+
+
+class Journal:
+    """The engine's write side: an in-memory delta of run records, notify
+    entries and per-scenario last_run/last_error, flushed to `runs.json`
+    read-modify-write — so a `take_notify` drain by the cloud channel's
+    process between two flushes is never resurrected — when `due()` (the
+    RUNS_FLUSH_S / RUNS_FLUSH_MAX cadence), on `run_now`, and at shutdown.
+    A failed flush keeps the (bounded) delta for the next attempt: the
+    scenario engine never dies on a journal write.
+    """
+
+    def __init__(self, path: str, now: Callable[[], float] = time.time) -> None:
+        self.path = journal_path(path)
+        self._now = now
+        self.pending_runs: List[Dict[str, Any]] = []
+        self.pending_notify: List[Dict[str, Any]] = []
+        self.pending_last: Dict[str, Dict[str, Any]] = {}
+        self._dirty_since: Optional[float] = None
+
+    @property
+    def dirty(self) -> bool:
+        return self._dirty_since is not None
+
+    def _touch(self) -> None:
+        if self._dirty_since is None:
+            self._dirty_since = self._now()
+
+    def append_run(self, doc: Dict[str, Any], rec: Dict[str, Any]) -> None:
+        runs = doc.setdefault("runs", [])
+        runs.append(rec)
+        del runs[:-RUNS_MAX]
+        self.pending_runs.append(rec)
+        del self.pending_runs[:-RUNS_MAX]
+        self._touch()
+
+    def set_last(self, s: Dict[str, Any], ts: Any, err: str) -> None:
+        s["last_run"] = ts
+        s["last_error"] = err
+        if isinstance(s.get("id"), str):
+            self.pending_last[s["id"]] = {"last_run": ts, "last_error": err}
+        self._touch()
+
+    def notify(self, doc: Dict[str, Any], text: str) -> None:
+        entry = {"ts": self._now(), "text": str(text)[:240]}
+        q = doc.setdefault("notify_queue", [])
+        q.append(entry)
+        del q[:-NOTIFY_MAX]
+        self.pending_notify.append(entry)
+        del self.pending_notify[:-NOTIFY_MAX]
+        self._touch()
+
+    def due(self) -> bool:
+        if self._dirty_since is None:
+            return False
+        if len(self.pending_runs) + len(self.pending_notify) >= RUNS_FLUSH_MAX:
+            return True
+        return self._now() - self._dirty_since >= RUNS_FLUSH_S
+
+    def overlay(self, doc: Dict[str, Any]) -> None:
+        """Re-apply the unflushed delta onto a freshly loaded document view
+        (hot reload adopted a doc whose journal merge predates the delta)."""
+        if self.pending_runs:
+            runs = doc.setdefault("runs", [])
+            runs.extend(self.pending_runs)
+            del runs[:-RUNS_MAX]
+        for s in doc.get("scenarios") or []:
+            if isinstance(s, dict) and s.get("id") in self.pending_last:
+                s.update(self.pending_last[s["id"]])
+
+    def flush(self, doc: Optional[Dict[str, Any]] = None) -> bool:
+        """Write the delta; True when nothing is left pending."""
+        if self._dirty_since is None:
+            return True
+        journal = _read_journal(self.path) or empty_journal()
+        journal["runs"] = (journal["runs"] + self.pending_runs)[-RUNS_MAX:]
+        journal["notify_queue"] = (journal["notify_queue"] + self.pending_notify)[-NOTIFY_MAX:]
+        journal["last"].update(self.pending_last)
+        if doc is not None:  # bounded: no last_* for a deleted scenario
+            live = {s.get("id") for s in doc.get("scenarios") or [] if isinstance(s, dict)}
+            journal["last"] = {sid: v for sid, v in journal["last"].items() if sid in live}
+        try:
+            save_journal(journal, self.path)
+        except OSError:
+            return False
+        self.pending_runs = []
+        self.pending_notify = []
+        self.pending_last = {}
+        self._dirty_since = None
+        return True
+
+
+# ── document ────────────────────────────────────────────────────────────
+def load(path: str = DEFAULT_PATH) -> Dict[str, Any]:
+    """The merged view: document + journal (journal present ⇒ it is the
+    truth for runs/notify/last_*; absent ⇒ the document's own fields, which
+    a pre-1.0.6.41 file still carries until the engine migrates it)."""
+    data = _read_raw(path)
+    if data is None:
         return empty_doc()
     data.setdefault("scenarios", [])
     data.setdefault("library", "")
-    data.setdefault("runs", [])
-    data.setdefault("notify_queue", [])
     if not isinstance(data.get("vars"), dict):
         data["vars"] = {}
+    journal = _read_journal(journal_path(path))
+    if journal is not None:
+        data["runs"] = journal["runs"]
+        data["notify_queue"] = journal["notify_queue"]
+        for s in data["scenarios"]:
+            if isinstance(s, dict) and s.get("id") in journal["last"]:
+                last = journal["last"][s["id"]]
+                s["last_run"] = last.get("last_run")
+                s["last_error"] = last.get("last_error") or ""
+    else:
+        for key in _JOURNAL_KEYS:
+            if not isinstance(data.get(key), list):
+                data[key] = []
     return data
 
 
+def _document_of(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """The document half: everything but the journal-homed state."""
+    out = {k: v for k, v in doc.items() if k not in _JOURNAL_KEYS}
+    out["scenarios"] = [
+        {k: v for k, v in s.items() if k not in _LAST_KEYS} if isinstance(s, dict) else s
+        for s in doc.get("scenarios") or []]
+    return out
+
+
 def save(doc: Dict[str, Any], path: str = DEFAULT_PATH) -> None:
-    _atomic_write(path, json.dumps(doc, ensure_ascii=False, separators=(",", ":")))
+    """Write the DOCUMENT only — run state never rides a content write."""
+    _atomic_write(path, json.dumps(_document_of(doc), ensure_ascii=False,
+                                   separators=(",", ":")))
 
 
 def listed(doc: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -634,21 +869,28 @@ def apply_command(body: Dict[str, Any], path: str = DEFAULT_PATH) -> Dict[str, A
 
 
 def append_run(doc: Dict[str, Any], rec: Dict[str, Any], path: str = DEFAULT_PATH) -> None:
-    runs = doc.setdefault("runs", [])
-    runs.append(rec)
-    del runs[:-RUNS_MAX]
-    save(doc, path)
+    """Unbuffered variant for a caller without an engine: journal write now."""
+    journal = Journal(path)
+    journal.append_run(doc, rec)
+    journal.flush(doc)
 
 
 def enqueue_notify(doc: Dict[str, Any], text: str, path: str = DEFAULT_PATH) -> None:
-    q = doc.setdefault("notify_queue", [])
-    q.append({"ts": time.time(), "text": text[:240]})
-    del q[:-NOTIFY_MAX]
-    save(doc, path)
+    """Unbuffered variant (code_runner without a sink): journal write now."""
+    journal = Journal(path)
+    journal.notify(doc, text)
+    journal.flush(doc)
 
 
 def take_notify(doc: Dict[str, Any], path: str = DEFAULT_PATH) -> List[Dict[str, Any]]:
+    """Drain the queue — on the journal, read-modify-write, so a run record
+    the engine flushed meanwhile is kept and the engine's next flush (which
+    re-reads the file) does not bring the drained entries back."""
     q = list(doc.get("notify_queue") or [])
     doc["notify_queue"] = []
-    save(doc, path)
+    jpath = journal_path(path)
+    journal = _read_journal(jpath)
+    if journal is not None and journal["notify_queue"]:
+        journal["notify_queue"] = []
+        save_journal(journal, jpath)
     return q

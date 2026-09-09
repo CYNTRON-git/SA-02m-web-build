@@ -86,13 +86,44 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 stored row can never half-apply; nested `scenario`/`scene` children count
 toward the run's cap); `params` ≤ 4 KiB; `runs` 50; `notify_queue` 20.
 
+**Two files, one view (1.0.6.41).** The document (`scenarios.json`) holds
+scenarios, library and vars and is written only when that content changes
+(a cloud command, a `mode` action / `Vars.home_mode`). Run state — `runs`,
+`notify_queue`, per-scenario `last_run` / `last_error` — lives in the
+sibling journal **`/etc/sa02m-rules/runs.json`** (`store.journal_path`; the
+unit's `ReadWritePaths` tree is the only writable one under
+`ProtectSystem=strict`, so the journal needs no second tree). The engine
+buffers run state in memory (`store.Journal`) and flushes the journal
+read-modify-write on whichever comes first — `RUNS_FLUSH_S=5` s after the
+first unflushed record or `RUNS_FLUSH_MAX=32` pending records — plus
+immediately after `run_now` (the cloud reads the store as soon as the
+`.run` flag is consumed) and at shutdown (SIGTERM / `RulesApp.stop()`). A
+scenario run therefore costs no document write, never bumps the document's
+mtime and never triggers the service's reload. **What a crash can lose:** at
+most the last `RUNS_FLUSH_S` seconds of run records / notify entries (a
+`run_now` result is already on disk). A journal that is missing, corrupt or
+unwritable never blocks scenarios: readers see empty `runs` /
+`notify_queue`, the engine keeps its bounded buffer and retries at the next
+cadence, the next successful flush rewrites the file. Readers (`load` →
+`listed()` / `_ok()`) merge the journal into the document view, so the
+cloud-facing shapes below are unchanged; the view lags the engine's buffer
+by at most `RUNS_FLUSH_S`. `ack_notify` drains the journal's queue in place
+and the engine's next flush re-reads the file, so drained entries do not
+come back. A pre-1.0.6.41 document still carrying `runs` / `notify_queue` /
+`last_*` inside is migrated once at engine boot (journal written first, then
+the stripped document); until then a reader shows the legacy fields, and the
+journal is truth once it exists.
+
 Names that become MQTT topic segments are charset-validated at the store:
 `device` matches `[A-Za-z0-9_.:-]{1,64}`, `cap` matches
 `[A-Za-z0-9_.:-]{1,32}` (absent ⇒ `on_off`); a trigger, condition or
 action failing either is dropped from the row. The engine re-checks both
 on every write, whatever the caller (block, scene, logic template, `end`,
-`Hub.set`), and the service never lets a refused publish escape
-`on_boot()`/`tick()` (logged, not fatal).
+`Hub.set`), and the service re-checks them once more where the topic is
+actually built (`RulesApp.pub` — the last line before the wire, reached by
+both the `block` and the `code` path): a failing pair is logged and
+dropped, never published. A publish the broker refuses never escapes
+`on_boot()`/`tick()` either (logged, not fatal).
 
 `apply_command` verbs (the Socket.IO handler's single write path —
 `sio_handlers._on_scenarios` → `config/api.py`; there is no CGI scenario
@@ -120,9 +151,13 @@ Types: `block` | `code` | `logic` | `scene`. `scene` is set-only (no
 nested scenario/scene/delay that would recurse).
 
 `alice_expose` (scene only) and `captured_from {room_id, group_id}` are
-validated and persisted but **accepted, not yet consumed**: nothing on the
-board lists, exposes or reads them yet (open Operator decision, audit
-1.0.6.39 A14). The hub must not present a scene marked `alice_expose` as
+**consumed since 1.0.6.41**: an exposed, enabled scene becomes a virtual
+switch in the Yandex account, placed in the room `captured_from.room_id`
+names. The projection, the device shape and the lifecycle are the Alice
+contract's (`alice-mqtt-mapping.md` §Scene devices) — one home; the store's
+job is unchanged (validate, persist, one writer). `captured_from.group_id`
+is still **stored and not read on the board**: it is cloud-side provenance of
+a group capture. The hub **may** present a scene marked `alice_expose` as
 exposed to Alice.
 
 ---
@@ -178,20 +213,48 @@ a countdown the engine never published).
 
 ### Outbound HTTP (`http` action, sandbox `Http`)
 
-One policy for both (`sa02m_rules/http_guard.py`): `http`/`https` only; the
-host is resolved and **every** address must be public — loopback,
-link-local, RFC1918/ULA, reserved, multicast and unspecified are refused,
-as is a URL carrying `user:pass@`; a refusal is `last_error="http err
-refused: …"` and the request is never sent. The operator may list hosts
-that skip the address check in `/etc/sa02m-rules/http-allow.json`
-(`{"hosts": ["192.168.1.50", "hooks.example"]}`; absent/malformed ⇒ empty,
-override path `SA02M_RULES_HTTP_ALLOW`). The store applies the static half
-(literal addresses, userinfo) at validation and drops such rows; the engine
-re-checks with resolution at request time. Redirects: at most 3 hops, each
-re-checked; response bodies are read up to 64 KiB and never returned to a
-scenario (only the status); 5 s timeout. Known limit: the name is resolved
-once for the check and again by the connect — a DNS answer that changes
-between the two is not defended.
+One policy for both (`sa02m_rules/http_guard.py`), **aligned with the cloud
+half** (decision 2026-09-09 — the two must refuse the same set, or a
+scenario the cloud accepts dies silently on the board).
+
+**Refused** — the request is never sent, `last_error="http err refused: …"`:
+a scheme other than `http`/`https`; a URL longer than **500 characters**
+(judged before any resolve); `user:pass@` (whatever the target, including an
+allow-listed one); loopback, link-local (169.254.169.254 included),
+multicast, reserved, unspecified and `0.0.0.0/8` addresses; the name
+`localhost` and the whole `.localhost` tree. Addresses are recognised in
+every spelling a resolver accepts, so `2130706433`, `0177.0.0.1`, `127.1`,
+`[::1]` and `[::ffff:127.0.0.1]` are all caught as loopback. An IPv6 form
+that CARRIES an IPv4 address — mapped, 6to4 (`2002::/16`) and Teredo
+(`2001::/32`) — is judged on the address it carries, so `[2002:7f00:1::]`
+is loopback while a wrapped LAN address stays allowed.
+
+**Allowed:** the operator's own LAN — RFC1918 and IPv6 ULA targets (a NAS, a
+panel, another board). Reaching an unintended LAN service is accepted risk;
+the compensating fences are the ones below.
+
+**Fences the cloud half does not have:** the host is RESOLVED and the answer
+judged (a public name aimed at loopback is refused), and every redirect hop
+is re-checked — at most 3 hops. **At most 8 requests per engine run**
+(`store.HTTP_PER_RUN_MAX`), shared by the `http` action and the sandbox
+`Http` and spanning nested `scenario`/`scene` children: the 9th is refused
+with `last_error="http cap"` / `"http err http cap"`. Stated exactly: the
+cap counts *calls*, a policy-refused call spends the budget like any other
+(so a run cannot probe by looping over refused targets), and each call may
+still follow up to 3 redirect hops — 32 network requests is the arithmetic
+ceiling of one run. Response bodies are read up to 64 KiB and never
+returned to a scenario (only the status); 5 s timeout.
+
+The operator allow-list `/etc/sa02m-rules/http-allow.json`
+(`{"hosts": ["127.0.0.1", "hooks.example"]}`; absent/malformed ⇒ empty,
+override path `SA02M_RULES_HTTP_ALLOW`) is now the way to **permit** a
+refused target — a loopback or link-local host named deliberately.
+
+The store applies the static half (no DNS: literal addresses in any
+spelling, the loopback names, userinfo, length, scheme) at validation and
+drops such actions from the row; the engine re-checks with resolution at
+request time. Known limit: the name is resolved once for the check and again
+by the connect — a DNS answer that changes between the two is not defended.
 
 ### Restricted Python (`type=code`)
 
@@ -201,8 +264,15 @@ family, and no `.format`/`.format_map` on any receiver (a format string
 walks attributes the AST cannot see — `'{0._state}'.format(Hub)` reached
 the whole object graph in 1.0.6.37–38; `%` formatting stays). Env:
 `Hub` (`get`/`set` — names charset-checked, `MAX_WRITES` per run), `Cron`,
-`Notify`, `Http` (policy above), `Vars`, `math` and a few builtins. Bound
-by the `RUN_S` deadline above. Empty `__builtins__`.
+`Notify`, `Http` (policy above, `HTTP_PER_RUN_MAX` per run), `Vars`, `math`
+and a few builtins. Bound by the `RUN_S` deadline above. Empty
+`__builtins__`.
+
+The shared `library` and the scenario body execute in **one** namespace, so
+a function defined in the library sees the env (`Hub`, `Notify`, …) and the
+library's other functions — as does a comprehension in the body. Before
+1.0.6.41 they were separate globals/locals and any such call raised
+`name 'Notify' is not defined`.
 
 Conditions: `time_window` presets `day`/`night` (sun), weekday
 `days`/`workday`/`weekend`, `mode` via `Vars.home_mode`, `state` `for_s`.
@@ -221,12 +291,38 @@ this tuple stay in the store and do not run.
 
 ## MQTT mirror
 
-Virtual device `/devices/sa02m-rules-<id>/controls/*` (retained state
-topics, never `/on`): `rule_enabled`, `end_after_s`,
-`blocked_by_switch`, plus template-specific fields. Writes from the
+Virtual device `/devices/sa02m-rules-<id>/controls/*`: retained STATE the
+engine publishes — `rule_enabled`, `end_after_s`, `blocked_by_switch`, plus
+template-specific fields — never written by anyone else. Writes from the
 engine to field devices go to `<topic>/on` with **no retain**, same
 rule as `mqtt_set.cgi`. Capabilities marked `writable: false` on the
 Alice document are not written.
+
+**`run` — the ONE command control (1.0.6.41).** `…/controls/run/on` (no
+retain) is the single inbound topic under this prefix and the seam the Alice
+scene switch commands through (`alice-mqtt-mapping.md` §Scene devices):
+
+| Payload | Effect |
+|---|---|
+| `1` / `on` / `true` | run the scene — `run_now`, `source="external"` |
+| anything else | switch off every `on_off` output the scene's definition sets to a truthy value, and cancel a pending `end` (`end_after_s` → 0) |
+
+Both verbs answer **only for a row that exists, is `scene`-typed and
+enabled** — a `block`/`logic`/`code` id, an unknown id or a disabled scene is
+a no-op, so the LAN reach of this topic is narrower than the cloud's
+type-agnostic `run_now`. Both spend the same `MAX_WRITES` / rate window as
+any run, and journal a record (`source="external"`; the off verb carries
+`reason: "off"`). Off does NOT replay a `restore`-mode scene's pre-run
+snapshot: that snapshot lives in the end timer this cancels, and «выключи»
+means off. `RulesApp.pub` **refuses** to publish any `/on` under
+`sa02m-rules-*`, so a stored action naming a scenario device cannot command
+the engine through the broker.
+
+**Availability gap, stated:** with `sa02m-rules` down, a `run/on` publish
+lands on the broker, nobody consumes it, and the caller (Alice) has already
+been told `DONE`. An LWT-backed `/devices/sa02m-rules-<id>/meta/error` is the
+fix; the device-level error flag is already honoured by the Alice registry,
+so the hook exists and only the publisher is missing.
 
 ---
 
@@ -234,7 +330,8 @@ Alice document are not written.
 
 Unit (`etc/systemd/system/sa02m-rules.service`): `User=root`,
 `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectSystem=strict` with
-`ReadWritePaths=/etc/sa02m-rules` (the store is the only writable tree),
+`ReadWritePaths=/etc/sa02m-rules` (the store — document and journal — is the
+only writable tree),
 `MemoryMax=32M`; pinned by `test_security.py::UnitHardeningTests`. No
 `WatchdogSec=` — the daemon does not link systemd, the time bound on
 scenario code is in-process (above). A missing `paho-mqtt` (optional

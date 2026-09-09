@@ -79,15 +79,21 @@ def test_logger_tick_lands_rows_in_every_sample_table(tmp_path: Path, monkeypatc
     assert _count(db, "dtv_samples") == 2
     assert _count(db, "ce_samples") == 2
     assert _count(db, "mr_samples") == 1
-    assert _count(db, "carel_samples") >= 5  # 9 continuous + 4 state keys present
+    # ONE row per tick since the wide table (1.0.6.41 B2) — the count pinned the
+    # long table's cells, so it now reads the tick it always meant.
+    assert _count(db, "carel_samples") == 1
     assert state.last_mr == 100.0
     conn = sqlite3.connect(str(db))
     try:
-        metrics = {r[0] for r in conn.execute("SELECT DISTINCT metric FROM carel_samples")}
+        row = conn.execute(
+            "SELECT alarm, plant_state, unit_on, alarm_count, supply_temp"
+            " FROM carel_samples"
+        ).fetchone()
         kinds = [r[0] for r in conn.execute("SELECT kind FROM device_events ORDER BY id")]
     finally:
         conn.close()
-    assert {"alarm", "plant_state", "unit_on", "alarm_count", "supply_temp"} <= metrics
+    # Same wiring assertion, read as columns: every metric of the tick archived.
+    assert all(v is not None for v in row), row
     # The 1 Hz edge detector ran on the tick that carried no Carel sample write.
     assert kinds == ["carel_alarm_on", "carel_plant_state"], kinds
 
@@ -107,4 +113,4 @@ def test_logger_tick_writes_mr_and_carel_again_after_the_interval(tmp_path: Path
     logger.logger_tick(target, state, now_m=100.0)
     logger.logger_tick(target, state, now_m=100.0 + logger.MR_INTERVAL_S)
     assert _count(db, "mr_samples") == 2
-    assert _count(db, "carel_samples") >= 10
+    assert _count(db, "carel_samples") == 2  # one wide row per Carel cadence tick

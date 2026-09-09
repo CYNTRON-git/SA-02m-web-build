@@ -16,12 +16,12 @@ log INFO "=== [02] Настройка сети ==="
 # Contract: docs/contracts/ethernet-iface-naming.md
 if [ -f "$ETC_DIR/sa02m-iface-canonical.sh" ]; then
     log INFO "Установка sa02m-iface-canonical.sh"
-    install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh" /usr/local/sbin/sa02m-iface-canonical.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-iface-canonical.sh" /usr/local/sbin/sa02m-iface-canonical.sh
 fi
 
 if [ -f "$ETC_DIR/systemd/sa02m-iface-canonical.service" ]; then
     log INFO "Установка sa02m-iface-canonical.service"
-    install -m 644 "$ETC_DIR/systemd/sa02m-iface-canonical.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/sa02m-iface-canonical.service" \
         /etc/systemd/system/sa02m-iface-canonical.service
 fi
 
@@ -161,52 +161,52 @@ fi
 if [ -f "$ETC_DIR/sa02m-eth-led-lib.sh" ]; then
     log INFO "Установка sa02m-eth-led-lib.sh"
     mkdir -p /usr/local/lib
-    install -m 644 "$ETC_DIR/sa02m-eth-led-lib.sh" /usr/local/lib/sa02m-eth-led-lib.sh
+    sa02m_atomic_install -m 644 "$ETC_DIR/sa02m-eth-led-lib.sh" /usr/local/lib/sa02m-eth-led-lib.sh
 fi
 
 if [ -f "$ETC_DIR/sa02m-eth0-led.sh" ]; then
     log INFO "Установка sa02m-eth0-led.sh"
-    install -m 755 "$ETC_DIR/sa02m-eth0-led.sh" /usr/local/bin/sa02m-eth0-led.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-eth0-led.sh" /usr/local/bin/sa02m-eth0-led.sh
 fi
 
 if [ -f "$ETC_DIR/fix-eth.sh" ]; then
     log INFO "Установка fix-eth.sh"
-    install -m 755 "$ETC_DIR/fix-eth.sh" /usr/local/bin/fix-eth.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/fix-eth.sh" /usr/local/bin/fix-eth.sh
 fi
 
 if [ -f "$ETC_DIR/net-watchdog.sh" ]; then
     log INFO "Установка net-watchdog.sh"
-    install -m 755 "$ETC_DIR/net-watchdog.sh" /usr/local/bin/net-watchdog.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/net-watchdog.sh" /usr/local/bin/net-watchdog.sh
 fi
 
 if [ -f "$ETC_DIR/inet-failover.sh" ]; then
     log INFO "Установка inet-failover.sh"
-    install -m 755 "$ETC_DIR/inet-failover.sh" /usr/local/bin/inet-failover.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/inet-failover.sh" /usr/local/bin/inet-failover.sh
 fi
 
 if [ -f "$ETC_DIR/fix-eth.service" ]; then
     log INFO "Установка fix-eth.service"
-    install -m 644 "$ETC_DIR/fix-eth.service" /etc/systemd/system/fix-eth.service
+    sa02m_atomic_install -m 644 "$ETC_DIR/fix-eth.service" /etc/systemd/system/fix-eth.service
 fi
 
 if [ -f "$ETC_DIR/fix-eth@.service" ]; then
     log INFO "Установка fix-eth@.service"
-    install -m 644 "$ETC_DIR/fix-eth@.service" /etc/systemd/system/fix-eth@.service
+    sa02m_atomic_install -m 644 "$ETC_DIR/fix-eth@.service" /etc/systemd/system/fix-eth@.service
 fi
 
 if [ -f "$ETC_DIR/net-watchdog.service" ]; then
     log INFO "Установка net-watchdog.service"
-    install -m 644 "$ETC_DIR/net-watchdog.service" /etc/systemd/system/net-watchdog.service
+    sa02m_atomic_install -m 644 "$ETC_DIR/net-watchdog.service" /etc/systemd/system/net-watchdog.service
 fi
 
 if [ -f "$ETC_DIR/sa02m-eth0-led-poll.sh" ]; then
     log INFO "Установка sa02m-eth0-led-poll.sh"
-    install -m 755 "$ETC_DIR/sa02m-eth0-led-poll.sh" /usr/local/bin/sa02m-eth0-led-poll.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-eth0-led-poll.sh" /usr/local/bin/sa02m-eth0-led-poll.sh
 fi
 
 if [ -f "$ETC_DIR/systemd/sa02m-eth0-led-poll.service" ]; then
     log INFO "Установка sa02m-eth0-led-poll.service"
-    install -m 644 "$ETC_DIR/systemd/sa02m-eth0-led-poll.service" /etc/systemd/system/sa02m-eth0-led-poll.service
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/sa02m-eth0-led-poll.service" /etc/systemd/system/sa02m-eth0-led-poll.service
 fi
 
 if [ -f "$ETC_DIR/99-lan-recovery.rules" ]; then
@@ -224,7 +224,7 @@ if [ -f "$ETC_DIR/98-sa02m-iface-canonical.rules" ]; then
 fi
 if [ -f "$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service" ]; then
     log INFO "Установка sa02m-iface-canonical-retry.service"
-    install -m 644 "$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/sa02m-iface-canonical-retry.service" \
         /etc/systemd/system/sa02m-iface-canonical-retry.service
 fi
 
@@ -240,25 +240,25 @@ fi
 # eth1.conf first existed (exposed by the canonical-naming bench run).
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-eth1-coldboot.sh" ]; then
     log INFO "Установка sa02m-eth1-coldboot.sh"
-    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth1-coldboot.sh" \
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth1-coldboot.sh" \
         /usr/local/sbin/sa02m-eth1-coldboot.sh
 fi
 
 if [ -f "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" ]; then
     log INFO "Установка sa02m-eth1-coldboot.service"
-    install -m 644 "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/sa02m-eth1-coldboot.service" \
         /etc/systemd/system/sa02m-eth1-coldboot.service
 fi
 
 # eth0+eth1 soft PHY cold-boot (replaces eth1-only path for LAN0 first-boot link).
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-eth-coldboot.sh" ]; then
     log INFO "Установка sa02m-eth-coldboot.sh"
-    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth-coldboot.sh" \
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-eth-coldboot.sh" \
         /usr/local/sbin/sa02m-eth-coldboot.sh
 fi
 if [ -f "$ETC_DIR/systemd/sa02m-eth-coldboot.service" ]; then
     log INFO "Установка sa02m-eth-coldboot.service"
-    install -m 644 "$ETC_DIR/systemd/sa02m-eth-coldboot.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/sa02m-eth-coldboot.service" \
         /etc/systemd/system/sa02m-eth-coldboot.service
 fi
 
@@ -268,17 +268,17 @@ fi
 # что ни один из них не может уронить ifup@ или networking.
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" ]; then
     log INFO "Установка sa02m-dns-ensure.sh"
-    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" \
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-dns-ensure.sh" \
         /usr/local/sbin/sa02m-dns-ensure.sh
 fi
 if [ -f "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" ]; then
     log INFO "Установка sa02m-wait-carrier.sh"
-    install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" \
+    sa02m_atomic_install -m 755 "$ETC_DIR/../usr/local/sbin/sa02m-wait-carrier.sh" \
         /usr/local/sbin/sa02m-wait-carrier.sh
 fi
 if [ -f "$ETC_DIR/systemd/system/sa02m-dns-ensure.service" ]; then
     log INFO "Установка sa02m-dns-ensure.service"
-    install -m 644 "$ETC_DIR/systemd/system/sa02m-dns-ensure.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/sa02m-dns-ensure.service" \
         /etc/systemd/system/sa02m-dns-ensure.service
 fi
 # Drop-in'ы к ЧУЖИМ юнитам (ifup@, networking) — тот же идиом, что и
@@ -287,19 +287,19 @@ fi
 if [ -f "$ETC_DIR/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf" ]; then
     log INFO "Установка drop-in ifup@.service.d/sa02m-carrier-wait.conf"
     install -d -m 755 "/etc/systemd/system/ifup@.service.d"
-    install -m 644 "$ETC_DIR/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf" \
         "/etc/systemd/system/ifup@.service.d/sa02m-carrier-wait.conf"
 fi
 if [ -f "$ETC_DIR/systemd/system/networking.service.d/sa02m-carrier-wait.conf" ]; then
     log INFO "Установка drop-in networking.service.d/sa02m-carrier-wait.conf"
     install -d -m 755 /etc/systemd/system/networking.service.d
-    install -m 644 "$ETC_DIR/systemd/system/networking.service.d/sa02m-carrier-wait.conf" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/networking.service.d/sa02m-carrier-wait.conf" \
         /etc/systemd/system/networking.service.d/sa02m-carrier-wait.conf
 fi
 
 if [ -f "$ETC_DIR/fix-eth1-internet.sh" ]; then
     log INFO "Установка fix-eth1-internet.sh"
-    install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/fix-eth1-internet.sh" /usr/local/sbin/fix-eth1-internet.sh
 fi
 
 # Grat-ARP burst unit: content refresh only, deliberately NO enable —
@@ -307,7 +307,7 @@ fi
 # has; a fresh device is unaffected. daemon-reload runs below with the rest.
 if [ -f "$ETC_DIR/systemd/system/sa02m-grat-arp@.service" ]; then
     log INFO "Установка sa02m-grat-arp@.service (обновление содержимого)"
-    install -m 644 "$ETC_DIR/systemd/system/sa02m-grat-arp@.service" \
+    sa02m_atomic_install -m 644 "$ETC_DIR/systemd/system/sa02m-grat-arp@.service" \
         /etc/systemd/system/sa02m-grat-arp@.service
 fi
 

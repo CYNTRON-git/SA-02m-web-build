@@ -17,8 +17,12 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+# The scenario engine is a sibling install on the board (/opt/sa02m-rules);
+# the exposure watcher reads its store, so the suite needs it importable.
+RULES_ROOT = os.path.abspath(os.path.join(ROOT, "..", "sa02m-rules"))
+for _p in (ROOT, RULES_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from sa02m_alice.client.device_registry import DeviceRegistry  # noqa: E402
 from sa02m_alice.client.reload_watch import (  # noqa: E402
@@ -329,6 +333,30 @@ class TestApplyReload(_DevicesFileCase):
         self.assertEqual(set(t for t, _q in mqtt.subscribed), want - {TOPIC_B})
 
 
+class TestRulesExposureWatcherIsWired(unittest.TestCase):
+    """The exposure watcher has a PRODUCTION caller.
+
+    `ahu_status` shipped with 266 lines of green unit tests and no caller
+    (audit 2026-09-08 B1) — the behaviour its commit claimed never reached a
+    catalogue. `main.run()` is one long loop around a live Socket.IO session,
+    so this is a SOURCE pin, not a behavioural one: it proves the watcher is
+    constructed for the Yandex profile and consulted in the watchdog loop. It
+    does NOT prove the reload does the right thing — that is
+    `TestRulesExposureWatcher` plus the registry wiring suite.
+    """
+
+    def test_main_constructs_and_polls_the_watcher(self):
+        path = os.path.join(ROOT, "sa02m_alice", "client", "main.py")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertGreater(len(src), 5000, "main.py sweep read nothing")
+        self.assertIn("RulesExposureWatcher", src)
+        self.assertIn("rules_watcher = None if cloud else RulesExposureWatcher()",
+                      src)
+        self.assertIn("rules_watcher.changed()", src)
+        self.assertIn("rules_watcher.arm()", src)
+
+
 class TestConfigWatchHandshake(unittest.TestCase):
     """The helper↔client capability string is a cross-language seam; the
     static gate (scripts/dev/test-alice-reload-handshake.sh) pins both sides.
@@ -353,6 +381,112 @@ class TestConfigWatchHandshake(unittest.TestCase):
 
         self.assertIs(payload.get("config_watch"), True)
         self.assertIn("ts", payload)
+
+
+class TestRulesExposureWatcher(unittest.TestCase):
+    """The Yandex unit reloads its catalogue when a scene's «в Алису» mark
+    changes — and NOT when the scenario engine merely journals a run.
+
+    Since 1.0.6.41 run state lives in a sibling journal (`runs.json`), so the
+    document's own mtime is quiet during normal engine work; this watcher
+    still compares the exposure projection rather than trusting that, because
+    a `mode` action / `Vars.home_mode` DOES rewrite the document.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._td.name, "scenarios.json")
+        self.write(self._scene())
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    @staticmethod
+    def _scene(**over):
+        row = {"id": "s1", "name": "Вечер", "type": "scene", "enabled": True,
+               "alice_expose": True, "captured_from": {"room_id": "r1"},
+               "action": []}
+        row.update(over)
+        return row
+
+    def write(self, *rows, **doc_extra):
+        doc = {"scenarios": list(rows), "library": "", "vars": {}}
+        doc.update(doc_extra)
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, ensure_ascii=False)
+
+    def watcher(self):
+        from sa02m_alice.client.reload_watch import RulesExposureWatcher
+        return RulesExposureWatcher(self.path)
+
+    def test_quiet_first_tick_is_not_a_change(self):
+        self.assertFalse(self.watcher().changed())
+
+    def test_a_journal_flush_does_not_rebuild_the_catalogue(self):
+        w = self.watcher()
+        journal = os.path.join(self._td.name, "runs.json")
+        with open(journal, "w", encoding="utf-8") as fh:
+            json.dump({"runs": [{"ts": 1, "id": "s1", "ok": True}],
+                       "notify_queue": [],
+                       "last": {"s1": {"last_run": 1.0, "last_error": ""}}},
+                      fh)
+        self.assertFalse(w.changed())
+
+    def test_an_unrelated_document_edit_does_not_rebuild(self):
+        w = self.watcher()
+        self.write(self._scene(), library="// a much longer library string")
+        self.assertFalse(w.changed())
+
+    def test_unmarking_the_scene_is_a_change(self):
+        w = self.watcher()
+        row = self._scene()
+        row.pop("alice_expose")
+        self.write(row)
+        self.assertTrue(w.changed())
+        self.assertFalse(w.changed())
+
+    def test_renaming_an_exposed_scene_is_a_change(self):
+        w = self.watcher()
+        self.write(self._scene(name="Поздний вечер"))
+        self.assertTrue(w.changed())
+
+    def test_disabling_and_adding_are_changes(self):
+        w = self.watcher()
+        self.write(self._scene(enabled=False))
+        self.assertTrue(w.changed())
+        self.write(self._scene(), self._scene(id="s2", name="Ночь"))
+        self.assertTrue(w.changed())
+
+    def test_arm_consumes_a_pending_change(self):
+        w = self.watcher()
+        self.write(self._scene(name="Другое"))
+        w.arm()
+        self.assertFalse(w.changed())
+
+    def test_an_absent_store_never_raises(self):
+        from sa02m_alice.client.reload_watch import RulesExposureWatcher
+        w = RulesExposureWatcher(os.path.join(self._td.name, "gone.json"))
+        self.assertFalse(w.changed())
+        self.assertFalse(w.changed())
+
+    def test_no_rules_stack_is_inert(self):
+        from sa02m_alice.client.reload_watch import RulesExposureWatcher
+        w = RulesExposureWatcher("")
+        self.assertFalse(w.changed())
+        w.arm()
+        self.assertFalse(w.changed())
+
+    def test_a_corrupt_store_drops_the_exposure_and_recovers(self):
+        """Fail closed, and identically to the catalogue build: a store we
+        cannot read exposes NO scenes (rather than keeping a device we can no
+        longer prove), and it never raises on the watchdog tick."""
+        w = self.watcher()
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write("{not json at all")
+        self.assertTrue(w.changed())
+        self.assertFalse(w.changed())
+        self.write(self._scene(name="Восстановлено"))
+        self.assertTrue(w.changed())
 
 
 if __name__ == "__main__":

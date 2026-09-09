@@ -36,8 +36,8 @@ log INFO "Устанавливаю sa02m-rs485-roster.service + .timer"
 # Capture BEFORE the unit files land (first-install signal); an operator-stopped
 # timer stays stopped (docs/contracts/installer-refresh-policy.md).
 sa02m_svc_capture sa02m-rs485-roster.timer
-install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.service" /etc/systemd/system/sa02m-rs485-roster.service
-install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.timer"   /etc/systemd/system/sa02m-rs485-roster.timer
+sa02m_atomic_install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.service" /etc/systemd/system/sa02m-rs485-roster.service
+sa02m_atomic_install -m 0644 -o root -g root "$ETC_SYSTEMD_DIR/sa02m-rs485-roster.timer"   /etc/systemd/system/sa02m-rs485-roster.timer
 systemctl daemon-reload
 
 # Populate the cache once now so the UI has data before the first timer tick.

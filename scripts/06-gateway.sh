@@ -51,7 +51,7 @@ sa02m_install_sudoers "$ETC_DIR/sudoers.d/sa02m-gateway" /etc/sudoers.d/sa02m-ga
 # репозитории, поэтому OTA и оффлайн-пакет кладут файл ровно туда, где его
 # вызывают sudoers и gateway_config.cgi.
 log INFO "Устанавливаю sa02m-gateway-config-apply.sh"
-install -m 0755 -o root -g root \
+sa02m_atomic_install -m 0755 -o root -g root \
     "$BASE_DIR/usr/local/sbin/sa02m-gateway-config-apply.sh" \
     /usr/local/sbin/sa02m-gateway-config-apply.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-gateway-config-apply.sh

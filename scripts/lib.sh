@@ -504,6 +504,141 @@ $//' "$dst/$(basename "$f")" 2>/dev/null || true
     return 0
 }
 
+# sa02m_atomic_install [-m MODE] [-o OWNER] [-g GROUP] SRC DST
+# Land a LIVE-PATH file (a systemd unit / drop-in under /etc/systemd/system, a
+# helper under /usr/local/*) so that a hard reset at ANY instant leaves DST
+# either old or new — never the 0-byte file `install -m` leaves between its
+# truncate and its fill. Bench 1.136 (2026-09-08) reset mid-install and booted
+# with an empty sa02m-flasher.service, which systemd reads as MASKED
+# (.ai-dev/8d/bench-136-reset.md). Shape: install to DST.sa02m-tmp.$$ in the
+# same directory, fsync the tmp (data on disk BEFORE the rename — ext4
+# commit=600 on the board otherwise leaves a named-but-empty file), then
+# `mv -f` over DST (a same-directory rename is atomic). DST given as a
+# directory (trailing slash or an existing dir) lands DST/basename(SRC), as
+# install(1) does. `-d` is refused: a directory is not a single-file write.
+# Returns 0 only when DST carries the new bytes; on any failure the tmp is
+# removed and DST is untouched. Call sites are rewritten by
+# scripts/dev/codemod-install-atomic.py; harness scripts/dev/test-install-atomic.sh.
+sa02m_atomic_install() {
+    local mode="" owner="" group="" src dst tmp
+    local -a opts=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            # A flag with no value must be refused BEFORE the shift: `shift 2`
+            # on a one-element "$@" fails, $# never decreases and the loop spins
+            # forever (ship review 1.0.6.41, finding 8). Harness case 6c.
+            -m) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -m без значения"; return 1; }
+                mode=$2; shift 2 ;;
+            -o) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -o без значения"; return 1; }
+                owner=$2; shift 2 ;;
+            -g) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -g без значения"; return 1; }
+                group=$2; shift 2 ;;
+            -d) log ERR "sa02m_atomic_install: -d не поддерживается (каталог — не атомарная запись файла)"; return 1 ;;
+            --) shift; break ;;
+            -*) log ERR "sa02m_atomic_install: неизвестный ключ $1"; return 1 ;;
+            *)  break ;;
+        esac
+    done
+    if [ $# -ne 2 ]; then
+        log ERR "sa02m_atomic_install: нужны SRC и DST (получено $#)"
+        return 1
+    fi
+    src=$1; dst=$2
+    if [ ! -f "$src" ]; then
+        log ERR "sa02m_atomic_install: источник $src не найден"
+        return 1
+    fi
+    case "$dst" in */) dst="${dst%/}/$(basename "$src")" ;; esac
+    [ -d "$dst" ] && dst="$dst/$(basename "$src")"
+    [ -n "$mode" ]  && opts+=(-m "$mode")
+    [ -n "$owner" ] && opts+=(-o "$owner")
+    [ -n "$group" ] && opts+=(-g "$group")
+    # A tmp left by an earlier crash is junk, never a decision — clear it first.
+    rm -f -- "$dst".sa02m-tmp.* 2>/dev/null
+    tmp="$dst.sa02m-tmp.$$"
+    if ! install "${opts[@]}" "$src" "$tmp" 2>>"$LOG_FILE"; then
+        rm -f -- "$tmp"
+        log ERR "sa02m_atomic_install: не удалось записать $tmp (живой $dst не тронут)"
+        return 1
+    fi
+    # coreutils >= 8.24: `sync FILE` = fsync(2) of that file; older ones take
+    # no operand — fall back to a full sync (slow, but never a torn rename).
+    sync -- "$tmp" 2>/dev/null || sync
+    if ! mv -f -- "$tmp" "$dst" 2>>"$LOG_FILE"; then
+        rm -f -- "$tmp"
+        log ERR "sa02m_atomic_install: не удалось переименовать $tmp → $dst (живой файл не тронут)"
+        return 1
+    fi
+    return 0
+}
+
+# ── BEGIN sa02m-runtime-watchdog (shared block — keep BYTE-IDENTICAL) ──────
+# One home for "hold the systemd manager's hardware watchdog off while the
+# live filesystem is being rewritten". Three callers cannot share a file:
+# install.sh sources scripts/lib.sh out of an extracted tree, while
+# etc/sa02m-update-runner.sh and etc/sa02m-factory-reset-runner.sh run
+# standalone on the device, where scripts/ is not deployed. So the block is
+# duplicated by construction and pinned byte-for-byte by
+# scripts/dev/test-watchdog-hold.sh (the `cmp` idiom
+# .ai-dev/quality/checks/watchdog-cap.sh already uses for the policy file).
+# Nothing here logs: the three callers have different log() signatures — each
+# logs what it got back.
+#
+# Policy home of the value being held off: etc/systemd/sa02m-watchdog.conf
+# `[Manager] RuntimeWatchdogSec=15s` → /etc/systemd/system.conf.d/. At runtime
+# the manager exposes it as the D-Bus property RuntimeWatchdogUSec (µs); on the
+# bench board it reads 15000000. That property is WRITABLE only on systemd
+# >= 250 — on an older manager `systemctl set-property --runtime Manager …`
+# and the bus write are both silent no-ops. Nothing here trusts a write: the
+# value is READ BACK and the caller is told what is really in force (the
+# previous guard, etc/sa02m-update-runner.sh:216 before 1.0.6.41, logged
+# «RuntimeWatchdogSec=0» without ever checking — quality-gate-rigor.md).
+# The bus write is an OVERRIDE, so it survives the `daemon-reload` the modules
+# do; restoring writes the previous value back as an override (the configured
+# policy applies again from the next boot).
+# `systemctl daemon-reexec` would also re-read the config and is deliberately
+# NOT used here: re-execing PID 1 mid-install is a PID-1 event during the very
+# window this hold protects, and there is no reason to add one when a runtime
+# override does the job. It is NOT the incident's cause: D4 excludes it by
+# timing, and the row that USED to lead there - the HW watchdog after a PID-1
+# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
+# /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
+# then survives 40 s past its 16 s hardware timeout, and survives it again
+# across a daemon-reexec, which is also why 01-system.sh:762 cannot undo the
+# hold. So this helper is not what keeps the board alive during an install;
+# what it does keep is the report honest.
+sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
+    local v=""
+    command -v busctl >/dev/null 2>&1 || return 1
+    v=$(busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager RuntimeWatchdogUSec 2>/dev/null) || return 1
+    v=${v##* }                      # "t 15000000" → "15000000"
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$v"
+}
+
+# <µs> → prints the value ACTUALLY in force after the attempt; rc=0 ONLY when
+# that equals the requested one, rc=1 when the manager cannot be read at all
+# (no busctl, chroot, dead D-Bus), rc=2 on a bad argument.
+sa02m_runtime_watchdog_set() {
+    local want=${1:-} now
+    case "$want" in ''|*[!0-9]*) return 2 ;; esac
+    now=$(sa02m_runtime_watchdog_usec) || return 1
+    if [ "$now" != "$want" ] && command -v busctl >/dev/null 2>&1; then
+        busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t "$want" >/dev/null 2>&1 || true
+        now=$(sa02m_runtime_watchdog_usec) || return 1
+    fi
+    if [ "$now" != "$want" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
+        now=$(sa02m_runtime_watchdog_usec) || return 1
+    fi
+    printf '%s\n' "$now"
+    [ "$now" = "$want" ]
+}
+# ── END sa02m-runtime-watchdog ─────────────────────────────────────────────
+
 # Install a sudoers drop-in from repo <src> to <dst>.
 # VALIDATE-then-ACTIVATE: a malformed drop-in breaks sudo globally, so never let
 # a file visudo rejects reach the live path. Validate a CRLF-stripped copy of the
@@ -702,13 +837,34 @@ _sa02m_unit_file_on_disk() {
     return 1
 }
 
+# Internal: 0 iff the unit's fragment in an /etc unit dir is a 0-byte REGULAR
+# file — a torn install, never an operator decision. systemd reads an empty
+# unit file as masked (systemd.unit(5)) but never CREATES a mask in /etc as a
+# regular file (a mask is a /dev/null symlink), so `masked` + this witness is
+# the shape a hard reset mid-`install -m` leaves (bench 1.136, 2026-09-08:
+# sa02m-flasher.service, 0 bytes — .ai-dev/8d/bench-136-reset.md). Only full
+# fragments are judged, never `.d/` drop-ins. SA02M_UNIT_FILE_DIRS is a test
+# seam (word-split deliberately, like SA02M_SYSV_RC_DIRS).
+_sa02m_unit_fragment_broken() {
+    local d f
+    # shellcheck disable=SC2086
+    for d in ${SA02M_UNIT_FILE_DIRS:-/etc/systemd/system}; do
+        f="$d/$1"
+        [ -L "$f" ] && continue
+        [ -f "$f" ] && [ ! -s "$f" ] && return 0
+    done
+    return 1
+}
+
 # sa02m_svc_capture <unit>...
 # Record each unit's enable state, active state and ActiveEnterTimestampMonotonic
 # BEFORE the installer (re)installs its files. Enable states: systemd's own words
 # (enabled|enabled-runtime|disabled|masked|masked-runtime|static|indirect|
-# generated|alias|linked|transient|…) plus two of ours: `absent` (the unit does
-# not exist — the ONLY first-install signal) and `timeout` (systemd did not
-# answer — never treated as new, so a wedged D-Bus cannot widen anything).
+# generated|alias|linked|transient|…) plus three of ours: `absent` (the unit
+# does not exist — the ONLY first-install signal), `timeout` (systemd did not
+# answer — never treated as new, so a wedged D-Bus cannot widen anything) and
+# `broken` (systemd says masked but the /etc fragment is a 0-byte regular file
+# — a torn install; the apply treats it as a first install, with a WARN).
 # `absent` needs THREE witnesses: is-enabled rc=1 with empty stdout, no unit
 # file on disk, and is-active answering a real state (the manager is alive).
 # Under SA02M_ROOTFS_BUILD everything is `absent` (a chroot has no manager).
@@ -734,6 +890,8 @@ sa02m_svc_capture() {
             else
                 en=timeout
             fi
+        elif [ "$en" = masked ] && _sa02m_unit_fragment_broken "$u"; then
+            en=broken
         fi
         ts=""
         case "$act" in
@@ -831,7 +989,14 @@ sa02m_svc_restart_if_active() {
     local u; u=$(_sa02m_unit_name "$1")
     SA02M_SVC_LAST_RESULT=kept
     [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
-    local _act; _act=$(_sa02m_svc_query is-active "$u")
+    # rc swallowed via `|| true` — is-active exits non-zero for every state that
+    # is not `active`, and 4 ("inactive") for a unit the manager does not know.
+    # A bare `_act=$(...)` gives that rc to the assignment and kills the CALLING
+    # MODULE under its `set -e` (bench 1.136, 2026-09-09: 11-devices.sh exited 4
+    # at this line and skipped its nginx /api/devices* block). Same reason as
+    # the `|| rc=$?` in sa02m_svc_capture; pinned by case 12d of
+    # scripts/dev/test-installer-svc-helpers.sh.
+    local _act; _act=$(_sa02m_svc_query is-active "$u") || true
     if [ "$_act" = active ]; then
         if _sa02m_svc_restart "$u"; then
             SA02M_SVC_LAST_RESULT=restarted
@@ -898,7 +1063,7 @@ _sa02m_svc_apply_app() {
         log WARN "$u: состояние до установки не снято — считаю существующим, автозапуск не расширяю"
         sa02m_svc_capture "$u"
         if [ "${SA02M_SVC_EN[$u]}" = absent ] || [ "${SA02M_SVC_EN[$u]}" = timeout ] \
-           || [ "${SA02M_SVC_ACT[$u]}" = timeout ]; then
+           || [ "${SA02M_SVC_EN[$u]}" = broken ] || [ "${SA02M_SVC_ACT[$u]}" = timeout ]; then
             SA02M_SVC_LAST_RESULT=uncaptured
             return 0
         fi
@@ -912,6 +1077,14 @@ _sa02m_svc_apply_app() {
         log WARN "$u: systemd не ответил до установки — состояние не трогаю"
         SA02M_SVC_LAST_RESULT=timeout
         return 0
+    fi
+
+    # A torn fragment (0-byte file systemd reports as masked) is a defect of a
+    # PAST install, not an operator's mask: the module has just reinstalled the
+    # file, so apply the first-install default instead of preserving the outage.
+    if [ "$en" = broken ]; then
+        log WARN "$u: файл юнита пуст (обрыв прошлой установки) — переустановлен, применяю дефолт первой установки"
+        en=absent
     fi
 
     # ── New unit: the module's first-install default ─────────────────────────
@@ -1078,9 +1251,13 @@ _sa02m_svc_apply_infra() {
     fi
     case "$now" in
         masked|masked-runtime)
-            # Historic masks on infra units are our own imaging/old-installer
-            # bugs — repaired unconditionally (the operator has no UI for them).
-            if sa02m_systemctl unmask "$u" >> "$LOG_FILE" 2>&1; then
+            if _sa02m_unit_fragment_broken "$u"; then
+                # A 0-byte fragment, not a mask symlink: `unmask` has nothing to
+                # remove — the file itself must be reinstalled by the module.
+                log WARN "$u: файл юнита пуст (обрыв прошлой установки) — маски нет, юнит нужно переустановить"
+            elif sa02m_systemctl unmask "$u" >> "$LOG_FILE" 2>&1; then
+                # Historic masks on infra units are our own imaging/old-installer
+                # bugs — repaired unconditionally (the operator has no UI for them).
                 changed="маска снята"
             else
                 log WARN "$u: не удалось снять маску"

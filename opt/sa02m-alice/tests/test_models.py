@@ -390,5 +390,30 @@ class TestDeviceName(unittest.TestCase):
             self.assertEqual(err, "invalid device name")
 
 
+class TestRoomId(unittest.TestCase):
+    """Shape-only here — existence is `api.upsert_device`'s job (it holds the
+    document). "No room" drops the key so an empty string never serialises
+    (docs/contracts/alice-mqtt-mapping.md §Room membership)."""
+
+    def test_valid_id_kept_as_str(self):
+        out, err = models.validate_device({"id": "lamp", "name": "Лампа", "room_id": "r1"})
+        self.assertIsNone(err)
+        self.assertEqual(out["room_id"], "r1")
+
+    def test_empty_and_none_drop_the_key(self):
+        for empty in ("", None):
+            out, err = models.validate_device(
+                {"id": "lamp", "name": "Лампа", "room_id": empty})
+            self.assertIsNone(err, empty)
+            self.assertNotIn("room_id", out)
+
+    def test_bad_shape_rejected(self):
+        for bad in ("bad room", "x" * 65, "r@1"):
+            out, err = models.validate_device(
+                {"id": "lamp", "name": "Лампа", "room_id": bad})
+            self.assertIsNone(out, bad)
+            self.assertEqual(err, "invalid room_id")
+
+
 if __name__ == "__main__":
     unittest.main()

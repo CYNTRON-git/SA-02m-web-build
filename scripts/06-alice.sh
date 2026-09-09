@@ -84,13 +84,13 @@ chmod 0660 /etc/sa02m-alice/sa02m-alice-client.conf \
 # (docs/contracts/installer-refresh-policy.md).
 sa02m_svc_capture sa02m-alice-config.service sa02m-alice-client.service sa02m-cloud-control.service
 
-install -m 0644 -o root -g root \
+sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-client.service" /etc/systemd/system/
-install -m 0644 -o root -g root \
+sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-alice-config.service" /etc/systemd/system/
 # Second profile of the same package (1.0.6.26): the cloud control entry.
 # Opt-in through the «Умный дом» card, same OFF-by-default policy.
-install -m 0644 -o root -g root \
+sa02m_atomic_install -m 0644 -o root -g root \
     "$UNIT_SRC/sa02m-cloud-control.service" /etc/systemd/system/
 systemctl daemon-reload
 
@@ -110,7 +110,7 @@ if [ ! -f /run/sa02m-alice/status.json ]; then
 fi
 
 # ── Privileged CGI helper + sudoers ────────────────────────────────────────
-install -m 0755 -o root -g root \
+sa02m_atomic_install -m 0755 -o root -g root \
     "$BASE_DIR/usr/local/sbin/sa02m-alice-web-trigger.sh" \
     /usr/local/sbin/sa02m-alice-web-trigger.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-alice-web-trigger.sh

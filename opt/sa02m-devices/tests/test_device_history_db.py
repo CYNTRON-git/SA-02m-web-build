@@ -632,7 +632,8 @@ def test_carel_state_group_archived_and_alarm_bucket_is_max(tmp_path: Path):
     bucket still paints that bucket as 1 (max), never 0.33 (avg); plant_state is
     archived as its code (stop 0 < run 1 < alarm 2) so the same max() rule holds.
     The DB is first written by the OLD 9-metric writer shape (no state keys) —
-    the long table needs no migration, and the new keys must coexist with it."""
+    in the wide table (1.0.6.41) that row simply carries NULL in the four state
+    columns, and the state metrics must still read only the ticks that had them."""
     db = tmp_path / "hist.db"
     base = float(int(time.time()) // 60 * 60) - 300  # bucket-aligned, in "1h"
     # Old-shape rows first (a DB the 1.0.6.35 writer left behind).
@@ -717,11 +718,16 @@ def test_event_rows_outlive_samples_for_a_year(tmp_path: Path):
 
 def test_event_retention_is_its_own_env_knob():
     from sa02m_devices import device_history_db as m
+    from sa02m_devices import history_store
 
     assert m.EVENT_RETENTION_S == 365 * 86400
     assert m.RETENTION_S == 30 * 86400
-    # Both knobs read their env var at import, the same way.
-    src = Path(m.__file__).read_text(encoding="utf-8")
+    # Both knobs read their env var at import, the same way. The source read is
+    # re-pointed at history_store — the constants' home since the 1.0.6.41
+    # package split (plan A1 note): this test pins WHERE the knobs live, the
+    # home moved by design, and the façade only re-exports the values.
+    assert m.EVENT_RETENTION_S == history_store.EVENT_RETENTION_S
+    src = Path(history_store.__file__).read_text(encoding="utf-8")
     assert 'os.environ.get("STAND_DEVICES_EVENT_RETENTION_S"' in src
 
 

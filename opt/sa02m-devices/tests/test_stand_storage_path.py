@@ -112,10 +112,17 @@ def test_promote_copy_and_merge(storage_roots):
 
 
 def test_rotate_keeps_archive(storage_roots, monkeypatch):
+    # rotate_if_needed reads the thresholds from ITS module — history_store
+    # since the 1.0.6.41 package split; the façade only re-exports the values,
+    # so the patch targets the home. Same drift class as
+    # test_event_retention_is_its_own_env_knob (plan A1 note): the pin moved
+    # with the constants, the assertions below are unchanged.
+    from sa02m_devices import history_store
+
     db = storage_roots["emmc"] / "devices_history.db"
     device_history_db.insert_sample(_snap(time.time()), path=db)
-    monkeypatch.setattr(device_history_db, "ROTATE_BYTES", 1)
-    monkeypatch.setattr(device_history_db, "ROTATE_HEADROOM", 1)
+    monkeypatch.setattr(history_store, "ROTATE_BYTES", 1)
+    monkeypatch.setattr(history_store, "ROTATE_HEADROOM", 1)
     r = device_history_db.rotate_if_needed(path=db)
     assert r["rotated"] is True
     archives = list((storage_roots["emmc"]).glob("devices_history_*.db"))

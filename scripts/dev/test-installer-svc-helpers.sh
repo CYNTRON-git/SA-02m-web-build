@@ -48,8 +48,10 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # State-file conventions: <u>.enabled holds the is-enabled word (missing file =
 # unit unknown: rc 1, no output; the literal `timeout` = exit 124); <u>.active
 # holds the is-active word (missing = rc 3 "inactive"? NO — missing means the
-# shim answers nothing rc 3; tests always seed it); <u>.ts / <u>.needreload
-# feed `show -p`.
+# shim answers nothing rc 3; tests always seed it; the literal `absent` = the
+# manager does not know this unit — real systemctl prints "inactive" on stdout
+# and exits 4, the shape measured on bench 1.136 on 2026-09-09); <u>.ts /
+# <u>.needreload feed `show -p`.
 cat > "$BIN/systemctl" <<SHIM
 #!/bin/bash
 ST="$ST"; CALLS="$CALLS"
@@ -76,6 +78,8 @@ case "$cmd" in
         [ -f "$f" ] || exit 3
         v=$(cat "$f")
         [ "$v" = timeout ] && exit 124
+        # unknown unit: stdout "inactive", rc 4 — NOT the rc 3 of a known unit.
+        [ "$v" = absent ] && { printf 'inactive\n'; exit 4; }
         printf '%s\n' "$v"
         [ "$v" = active ] && exit 0 || exit 3
         ;;
@@ -151,7 +155,8 @@ export LOG_FILE="$T/install.log"
 export SA02M_STACKS_CONF="$T/etc/sa02m_stacks.conf"
 export SA02M_STACK_PROBE_ROOT="$T/root"
 export SA02M_SYSV_RC_DIRS="$T/rc2.d $T/rc3.d"
-mkdir -p "$T/etc" "$T/root" "$T/rc2.d" "$T/rc3.d"
+export SA02M_UNIT_FILE_DIRS="$T/units"      # the /etc unit dir the `broken` witness reads (case 14)
+mkdir -p "$T/etc" "$T/root" "$T/rc2.d" "$T/rc3.d" "$T/units"
 : > "$T/py-ok"
 
 # shellcheck disable=SC1090
@@ -718,6 +723,55 @@ reset_case
 seed ria3.service enabled active 100
 SA02M_ROOTFS_BUILD=1 sa02m_svc_restart_if_active ria3.service
 [ -z "$(verbs ria3.service)" ]     && ok "restart-if-active: ROOTFS build ⇒ no runtime restart"     || bad "restart-if-active in ROOTFS made calls: '$(verbs ria3.service)'"
+# 12d. ABSENT unit ⇒ a LOGGED NO-OP the calling module survives. Measured on
+# bench 1.136 (2026-09-09): `systemctl is-active <unknown-unit>` prints
+# "inactive" and exits 4, and the helper's `local _act` / `_act=$(...)` split
+# handed that rc to the assignment — so under a module's `set -euo pipefail`
+# the HELPER aborted and took the whole module with it (rc=4). Three call sites
+# name a unit a field board does not have; scripts/11-devices.sh lost its nginx
+# /api/devices* block that way on every board without sa02m-stand-api.service.
+# The subshell below is the installer module: the statement AFTER the call must
+# run, and no systemctl verb may be issued (never-widen still holds).
+reset_case
+seed ria4.service - absent                  # not on disk; the manager answers
+rm -f "$T/ria4.survived" "$T/ria4.result" "$T/ria4.log"
+(
+    set -euo pipefail
+    sa02m_svc_restart_if_active ria4.service
+    printf '%s' "$SA02M_SVC_LAST_RESULT" > "$T/ria4.result"
+    printf '%s' "$LOGCAP" > "$T/ria4.log"
+    : > "$T/ria4.survived"                  # reached only if the caller survived
+)
+ria4_rc=$?
+if [ "$ria4_rc" -eq 0 ] && [ -e "$T/ria4.survived" ] && [ -z "$(verbs ria4.service)" ] \
+   && [ "$(cat "$T/ria4.result" 2>/dev/null)" = left-inactive ] \
+   && grep -q 'не активен' "$T/ria4.log" 2>/dev/null; then
+    ok "12d absent unit ⇒ logged no-op, zero calls, the set -e caller runs on"
+else
+    bad "12d absent unit KILLED the caller: subshell rc=$ria4_rc, next-statement-ran=$([ -e "$T/ria4.survived" ] && echo yes || echo NO), verbs='$(verbs ria4.service)', LAST_RESULT='$(cat "$T/ria4.result" 2>/dev/null)'"
+fi
+# 12e. The SAME abort, one rc lower and far more common in the field: a unit
+# that EXISTS and is simply stopped answers rc 3, not 4. 12b already proves the
+# never-widen behaviour for that unit, but it calls the helper from the harness,
+# which does not run under `set -e` — so before the fix 12b passed while a real
+# installer module died. Without this case the pin would cover only the rarer
+# absent-unit shape (ship review 1.0.6.41, round 2). scripts/06b-rules.sh:50
+# names sa02m-cloud-control.service, which is stopped on any un-enrolled board.
+reset_case
+seed ria5.service enabled inactive
+rm -f "$T/ria5.survived" "$T/ria5.result"
+(
+    set -euo pipefail
+    sa02m_svc_restart_if_active ria5.service
+    printf '%s' "$SA02M_SVC_LAST_RESULT" > "$T/ria5.result"
+    : > "$T/ria5.survived"
+)
+ria5_rc=$?
+if [ "$ria5_rc" -eq 0 ] && [ -e "$T/ria5.survived" ] && [ -z "$(verbs ria5.service)" ]    && [ "$(cat "$T/ria5.result" 2>/dev/null)" = left-inactive ]; then
+    ok "12e stopped unit (is-active rc 3) ⇒ the set -e caller runs on, still zero calls"
+else
+    bad "12e stopped unit KILLED the caller: subshell rc=$ria5_rc, next-statement-ran=$([ -e "$T/ria5.survived" ] && echo yes || echo NO), verbs='$(verbs ria5.service)', LAST_RESULT='$(cat "$T/ria5.result" 2>/dev/null)'"
+fi
 
 echo "── 13. first install of a package that lays AND starts its own unit (12-docker.sh order) ──"
 # docker.io's postinst writes the unit file and enables+starts it. `absent` —
@@ -757,6 +811,78 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_firs
 else
     bad "13c .ai-dev/quality/checks/lib_check.sh could not be sourced — the 12-docker.sh order was NOT verified (a skip is not a pass)"
 fi
+
+echo "── 14. a 0-byte unit fragment is BROKEN, not operator-masked ──"
+# Bench 1.136 (2026-09-08): a hard reset mid-install left
+# /etc/systemd/system/sa02m-flasher.service as an EMPTY regular file; systemd
+# reads that as `masked`, and the re-run's capture preserved it as an operator
+# decision (never-widen) — the flasher stayed dead until a hand repair.
+# systemd never masks a unit whose fragment lives in /etc (a mask is a symlink
+# to /dev/null), so `masked` + a 0-byte REGULAR file there is a torn install:
+# state `broken` ⇒ the module's first-install default, with a WARN naming it.
+# (.ai-dev/8d/bench-136-reset.md, D5 step C.)
+
+# 14a. masked + 0-byte regular fragment ⇒ en=broken; app on ⇒ enable + start
+reset_case
+seed svc-broken.service masked inactive
+: > "$T/units/svc-broken.service"
+sa02m_svc_capture svc-broken.service
+if [ "${SA02M_SVC_EN[svc-broken.service]-}" = broken ]; then
+    ok "14a capture reads masked + empty /etc fragment as en=broken"
+else
+    bad "14a capture: en='${SA02M_SVC_EN[svc-broken.service]-unset}' (expected broken)"
+fi
+# the module reinstalls the fragment and daemon-reloads before apply
+printf '[Service]\nExecStart=/bin/true\n' > "$T/units/svc-broken.service"; seed svc-broken.service disabled inactive
+sa02m_svc_apply svc-broken.service app on
+if [ "$(verbs svc-broken.service)" = "enable start" ] && [ "$SA02M_SVC_LAST_RESULT" = started ] \
+   && has_log "файл юнита пуст (обрыв прошлой установки)"; then
+    ok "14a broken app unit: enable + start (first-install default), LAST_RESULT=started, WARN names the torn install"
+else
+    bad "14a broken app unit: verbs='$(verbs svc-broken.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT log: $LOGCAP"
+fi
+rm -f "$T/units/svc-broken.service"
+
+# 14b. masked via a /dev/null SYMLINK in the same dir ⇒ still masked (1d holds)
+reset_case
+if ln -s /dev/null "$T/units/svc-sym.service" 2>/dev/null && [ -L "$T/units/svc-sym.service" ]; then
+    seed svc-sym.service masked inactive
+    sa02m_svc_capture svc-sym.service
+    sa02m_svc_apply svc-sym.service app on
+    if [ "${SA02M_SVC_EN[svc-sym.service]-}" = masked ] && [ -z "$(verbs svc-sym.service)" ] \
+       && [ "$SA02M_SVC_LAST_RESULT" = left-masked ]; then
+        ok "14b /dev/null symlink fragment stays masked: zero calls, left-masked (the operator's mask is a decision)"
+    else
+        bad "14b symlink mask: en='${SA02M_SVC_EN[svc-sym.service]-}' verbs='$(verbs svc-sym.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT"
+    fi
+else
+    echo "SKIP  14b this filesystem cannot create a symlink (Git Bash on Windows) — the symlink-mask case ran under WSL/Linux only"
+fi
+rm -f "$T/units/svc-sym.service"
+
+# 14c. masked + NON-empty regular fragment ⇒ masked as before (only a 0-byte file is torn)
+reset_case
+printf '[Service]\nExecStart=/bin/true\n' > "$T/units/svc-full.service"
+seed svc-full.service masked inactive
+sa02m_svc_capture svc-full.service
+if [ "${SA02M_SVC_EN[svc-full.service]-}" = masked ]; then
+    ok "14c a non-empty fragment reported masked stays masked (broken is the 0-byte case only)"
+else
+    bad "14c non-empty fragment: en='${SA02M_SVC_EN[svc-full.service]-}' (expected masked)"
+fi
+rm -f "$T/units/svc-full.service"
+
+# 14d. infra: masked + 0-byte fragment ⇒ no pointless unmask, WARN, then enable
+reset_case
+: > "$T/units/infra-broken.service"
+seed infra-broken.service masked inactive
+sa02m_svc_apply infra-broken.service infra
+if [ "$(verbs infra-broken.service)" = "enable" ] && has_log "файл юнита пуст"; then
+    ok "14d infra broken fragment: enable without unmask, WARN names the torn install"
+else
+    bad "14d infra broken fragment: verbs='$(verbs infra-broken.service)' log: $LOGCAP"
+fi
+rm -f "$T/units/infra-broken.service"
 
 echo ""
 if [ "$fails" -eq 0 ]; then

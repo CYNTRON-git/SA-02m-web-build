@@ -37,6 +37,16 @@ install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$CACHE_DIR"
 install -d -m 0755 -o "$FLASHER_USER" -g "$FLASHER_USER" "$SCAN_CACHE_DIR"
 install -d -m 0750 -o "$FLASHER_USER" -g "$FLASHER_USER" "$LOG_DIR"
 
+# ── Shared register maps BEFORE the daemon tree ───────────────────────────
+# Dependency before consumer: the packages are additive (an old daemon keeps
+# importing from a newer one), a daemon newer than its package fails at import
+# after a mid-install reset (bench 1.136, .ai-dev/8d/bench-136-reset.md D5 B;
+# order pinned by scripts/dev/test-installer-order.sh).
+# Carel: imported by the scan/config-window path.
+sa02m_install_carel_pkg "$BASE_DIR"
+# LED (RGBW_WS2812 / MB2WS): same path, same reason.
+sa02m_install_led_pkg "$BASE_DIR"
+
 # ── Код демона ────────────────────────────────────────────────────────────
 log INFO "Копирую $OPT_DIR → $INSTALL_DIR"
 rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
@@ -44,12 +54,6 @@ rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
 chown -R "$FLASHER_USER":"$FLASHER_USER" "$INSTALL_DIR"
 find "$INSTALL_DIR" -type d -exec chmod 0755 {} \;
 find "$INSTALL_DIR" -type f -exec chmod 0644 {} \;
-
-# Shared Carel register map (imported by the scan/config-window path).
-sa02m_install_carel_pkg "$BASE_DIR"
-
-# Shared LED (RGBW_WS2812 / MB2WS) register map — same path, same reason.
-sa02m_install_led_pkg "$BASE_DIR"
 
 # ── /etc конфигурация ────────────────────────────────────────────────────
 if [ ! -f /etc/sa02m_flasher.conf ]; then
@@ -80,7 +84,7 @@ sed -i 's/\r$//' /etc/logrotate.d/sa02m-flasher
 # restarted on fresh code (docs/contracts/installer-refresh-policy.md).
 sa02m_svc_capture sa02m-flasher.service
 log INFO "Устанавливаю systemd unit sa02m-flasher.service"
-install -m 0644 -o root -g root "$ETC_DIR/sa02m-flasher.service" /etc/systemd/system/sa02m-flasher.service
+sa02m_atomic_install -m 0644 -o root -g root "$ETC_DIR/sa02m-flasher.service" /etc/systemd/system/sa02m-flasher.service
 systemctl daemon-reload
 sa02m_svc_apply sa02m-flasher.service app on
 _FL_EXPECT_UP=0

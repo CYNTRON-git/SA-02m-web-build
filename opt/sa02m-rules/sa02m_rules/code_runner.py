@@ -24,7 +24,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from sa02m_rules import http_guard
 from sa02m_rules.engine import RUN_S, sun_times
-from sa02m_rules.store import CAP_RE, ID_RE, MAX_WRITES, enqueue_notify
+from sa02m_rules.store import (
+    CAP_RE, ID_RE, MAX_WRITES, charge_http, enqueue_notify)
 
 _BANNED = {
     "import", "Import", "ImportFrom", "Exec", "Eval", "ClassDef",
@@ -205,16 +206,25 @@ class Cron:
 
 
 class Notify:
-    def __init__(self, doc: Dict[str, Any], path: str):
+    def __init__(self, doc: Dict[str, Any], path: str,
+                 sink: Optional[Callable[[str], None]] = None):
         self._doc = doc
         self._path = path
+        self._sink = sink  # the engine's buffered journal; None ⇒ write now
 
     def text(self, message: str) -> None:
-        enqueue_notify(self._doc, str(message)[:240], self._path)
+        if self._sink is not None:
+            self._sink(str(message)[:240])
+        else:
+            enqueue_notify(self._doc, str(message)[:240], self._path)
 
 
 class Http:
-    """Outbound HTTP under the shared target policy (http_guard)."""
+    """Outbound HTTP under the shared target policy (http_guard) and the
+    run's shared request budget (store.charge_http)."""
+
+    def __init__(self, calls: list):
+        self._calls = calls
 
     def get(self, url: str) -> str:
         return self._do("GET", url, None)
@@ -223,6 +233,7 @@ class Http:
         return self._do("POST", url, body)
 
     def _do(self, method: str, url: str, body: Optional[str]) -> str:
+        charge_http(self._calls)
         status, _n = http_guard.fetch(method, str(url)[:http_guard.URL_MAX], body)
         return "http %s" % status
 
@@ -279,7 +290,8 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
              doc: Dict[str, Any], path: str, vars_bucket: Dict[str, Any],
              on_home_mode: Optional[Callable] = None,
              budget_s: float = RUN_S,
-             deadline_mechanism: Optional[str] = None) -> Dict[str, Any]:
+             deadline_mechanism: Optional[str] = None,
+             notify_sink: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     src = ((library or "") + "\n" + (s.get("code") or "")).strip()
     err = ""
     if not src:
@@ -293,23 +305,29 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
         if tree is not None:
             err = _walk_ok(tree)
         if not err and tree is not None:
-            writes = [0]
+            writes, http_calls = [0], [0]
             env = {
                 "Hub": Hub(state, pub, writes),
                 "Cron": Cron(now, lat, lon),
-                "Notify": Notify(doc, path),
-                "Http": Http(),
+                "Notify": Notify(doc, path, notify_sink),
+                "Http": Http(http_calls),
                 "Vars": Vars(vars_bucket, on_home_mode),
                 "math": math,
                 "True": True, "False": False, "None": None,
                 "abs": abs, "min": min, "max": max, "int": int, "float": float,
                 "str": str, "bool": bool, "len": len, "range": range,
             }
+            # ONE namespace, not globals+locals: a function's global scope is
+            # the globals mapping, so a `library` def executed with the env
+            # as LOCALS could see neither the helpers nor its siblings
+            # (`name 'Notify' is not defined`). The bans are unaffected —
+            # they are the AST walk plus this empty `__builtins__`.
+            env["__builtins__"] = {}
             dl = _Deadline(budget_s, deadline_mechanism)
             try:
                 compiled = compile(tree, _SCENARIO_FILENAME, "exec")
                 with dl:
-                    exec(compiled, {"__builtins__": {}}, env)  # noqa: S102 — sandbox
+                    exec(compiled, env)  # noqa: S102 — sandbox
             except ScenarioTimeout:
                 err = "timeout"
             except Exception as exc:

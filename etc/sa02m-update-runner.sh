@@ -5,7 +5,7 @@
 #   - no install.sh / scripts/0*.sh / apt-get / git clone
 #   - no rsync --delete on live trees
 #   - no tar -xf -C /  (rollback restores journal backup paths only)
-#   - imaging lock + RuntimeWatchdogSec=0 for the apply window
+#   - imaging lock + the runtime watchdog held off (read back) for the apply window
 #   - self-copy re-exec into $STATEDIR/runner/<txn>/runner before deploy
 #
 # Commands: apply (default) | recover
@@ -21,7 +21,11 @@ IMAGING_LOCK="${SA02M_IMAGING_LOCK:-/run/sa02m-imaging.lock}"
 VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.py}"
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
 LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
-RUNTIME_WDT_RESTORE="${SA02M_RUNTIME_WATCHDOG_SEC:-15s}"
+# RuntimeWatchdogUSec (µs) READ BACK from the manager before the apply window
+# held it off; empty = nothing was held, so nothing is restored. The old
+# SA02M_RUNTIME_WATCHDOG_SEC seam restored a HARDCODED 15s over whatever the
+# board really had, and only if the write worked at all (it never checked).
+RUNTIME_WDT_PREV=""
 
 # UPDATER_VERSION — what this runner reports against a package's min_updater.
 # One home for "which release installed this runner": the stamp
@@ -209,27 +213,112 @@ PY
 
 # --- imaging lock / watchdog (mandatory, plan §2.6) --------------------------
 
+# ── BEGIN sa02m-runtime-watchdog (shared block — keep BYTE-IDENTICAL) ──────
+# One home for "hold the systemd manager's hardware watchdog off while the
+# live filesystem is being rewritten". Three callers cannot share a file:
+# install.sh sources scripts/lib.sh out of an extracted tree, while
+# etc/sa02m-update-runner.sh and etc/sa02m-factory-reset-runner.sh run
+# standalone on the device, where scripts/ is not deployed. So the block is
+# duplicated by construction and pinned byte-for-byte by
+# scripts/dev/test-watchdog-hold.sh (the `cmp` idiom
+# .ai-dev/quality/checks/watchdog-cap.sh already uses for the policy file).
+# Nothing here logs: the three callers have different log() signatures — each
+# logs what it got back.
+#
+# Policy home of the value being held off: etc/systemd/sa02m-watchdog.conf
+# `[Manager] RuntimeWatchdogSec=15s` → /etc/systemd/system.conf.d/. At runtime
+# the manager exposes it as the D-Bus property RuntimeWatchdogUSec (µs); on the
+# bench board it reads 15000000. That property is WRITABLE only on systemd
+# >= 250 — on an older manager `systemctl set-property --runtime Manager …`
+# and the bus write are both silent no-ops. Nothing here trusts a write: the
+# value is READ BACK and the caller is told what is really in force (the
+# previous guard, etc/sa02m-update-runner.sh:216 before 1.0.6.41, logged
+# «RuntimeWatchdogSec=0» without ever checking — quality-gate-rigor.md).
+# The bus write is an OVERRIDE, so it survives the `daemon-reload` the modules
+# do; restoring writes the previous value back as an override (the configured
+# policy applies again from the next boot).
+# `systemctl daemon-reexec` would also re-read the config and is deliberately
+# NOT used here: re-execing PID 1 mid-install is a PID-1 event during the very
+# window this hold protects, and there is no reason to add one when a runtime
+# override does the job. It is NOT the incident's cause: D4 excludes it by
+# timing, and the row that USED to lead there - the HW watchdog after a PID-1
+# stall - is now excluded too, on the board (.ai-dev/8d/bench-136-reset.md, D4
+# addendum). Measured on 1.136, 2026-09-09: taking this hold makes PID 1 CLOSE
+# /dev/watchdog0, so the timer is disarmed rather than merely unfed - the board
+# then survives 40 s past its 16 s hardware timeout, and survives it again
+# across a daemon-reexec, which is also why 01-system.sh:762 cannot undo the
+# hold. So this helper is not what keeps the board alive during an install;
+# what it does keep is the report honest.
+sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
+    local v=""
+    command -v busctl >/dev/null 2>&1 || return 1
+    v=$(busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager RuntimeWatchdogUSec 2>/dev/null) || return 1
+    v=${v##* }                      # "t 15000000" → "15000000"
+    case "$v" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$v"
+}
+
+# <µs> → prints the value ACTUALLY in force after the attempt; rc=0 ONLY when
+# that equals the requested one, rc=1 when the manager cannot be read at all
+# (no busctl, chroot, dead D-Bus), rc=2 on a bad argument.
+sa02m_runtime_watchdog_set() {
+    local want=${1:-} now
+    case "$want" in ''|*[!0-9]*) return 2 ;; esac
+    now=$(sa02m_runtime_watchdog_usec) || return 1
+    if [ "$now" != "$want" ] && command -v busctl >/dev/null 2>&1; then
+        busctl set-property org.freedesktop.systemd1 /org/freedesktop/systemd1 \
+            org.freedesktop.systemd1.Manager RuntimeWatchdogUSec t "$want" >/dev/null 2>&1 || true
+        now=$(sa02m_runtime_watchdog_usec) || return 1
+    fi
+    if [ "$now" != "$want" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl set-property --runtime Manager "RuntimeWatchdogSec=${want}us" >/dev/null 2>&1 || true
+        now=$(sa02m_runtime_watchdog_usec) || return 1
+    fi
+    printf '%s\n' "$now"
+    [ "$now" = "$want" ]
+}
+# ── END sa02m-runtime-watchdog ─────────────────────────────────────────────
+
 install_imaging_lock() {
     date -Iseconds >"$IMAGING_LOCK"
     sync
     systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
-    systemctl set-property --runtime Manager RuntimeWatchdogSec=0 2>/dev/null || true
+    local now=""
+    RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
+    if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
+        if now=$(sa02m_runtime_watchdog_set 0); then
+            log "imaging lock installed ($IMAGING_LOCK); runtime watchdog held off (was ${RUNTIME_WDT_PREV}us, now ${now}us)"
+        else
+            RUNTIME_WDT_PREV=""
+            log "imaging lock installed ($IMAGING_LOCK); WARNING: runtime watchdog still ${now:-unknown}us — the manager refused the change, the apply runs with it armed"
+        fi
+    else
+        log "imaging lock installed ($IMAGING_LOCK); runtime watchdog ${RUNTIME_WDT_PREV:-unreadable} — nothing to hold off"
+    fi
     IMAGING_HELD=1
     txn_patch "imaging_lock=true" || true
-    log "imaging lock installed ($IMAGING_LOCK); RuntimeWatchdogSec=0"
 }
 
 cleanup_imaging_lock() {
     if [ "$IMAGING_HELD" != "1" ] && [ ! -f "$IMAGING_LOCK" ]; then
         return 0
     fi
-    systemctl set-property --runtime Manager "RuntimeWatchdogSec=${RUNTIME_WDT_RESTORE}" 2>/dev/null || true
+    local now="" wdt="не менялся"
+    if [ -n "$RUNTIME_WDT_PREV" ]; then
+        if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
+            wdt="restored to ${now}us"
+        else
+            wdt="RESTORE FAILED: wanted ${RUNTIME_WDT_PREV}us, in force ${now:-unknown}us"
+        fi
+        RUNTIME_WDT_PREV=""
+    fi
     systemctl start net-watchdog 2>/dev/null || true
     # sa02m-watchdog-feed is optional; leave stopped if it was inactive.
     rm -f "$IMAGING_LOCK"
     IMAGING_HELD=0
     txn_patch "imaging_lock=false" || true
-    log "imaging lock cleared; RuntimeWatchdogSec=${RUNTIME_WDT_RESTORE}"
+    log "imaging lock cleared; runtime watchdog $wdt"
 }
 
 # --- cancel / preflight ------------------------------------------------------
@@ -1729,7 +1818,7 @@ cmd_recover() {
     exit 0
 }
 
-# Trap: never leave RuntimeWatchdogSec=0 if we held the lock.
+# Trap: never leave the runtime watchdog held off if we held the lock.
 on_exit() {
     local ec=$?
     if [ "$IMAGING_HELD" = "1" ] && [ "$ec" -ne 0 ]; then

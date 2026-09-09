@@ -150,20 +150,27 @@ sa02m_svc_capture sa02m-modbus-mqtt.service sa02m-telemetry.service
 BRIDGE_DIR="/opt/sa02m-modbus-mqtt"
 install -d -m 0755 -o root -g root "$BRIDGE_DIR"
 
+# Shared register-map packages FIRST — dependency before consumer. A package
+# is additive (an old bridge keeps importing from a newer one), while a bridge
+# module newer than its package crash-loops: bench 1.136 reset mid-install and
+# came back with a 1.0.6.40 bridge_led.py (reads sa02m_led.MB2WS_TEXT_BASE at
+# import) over a torn /opt/sa02m-led — 119 restarts. Order pinned by
+# scripts/dev/test-installer-order.sh (.ai-dev/8d/bench-136-reset.md, D5 B).
+# Carel: imported by bridge_carel.py and mqtt_bus_scan.py; LED: by bridge_led.py.
+sa02m_install_carel_pkg "$BASE_DIR"
+sa02m_install_led_pkg "$BASE_DIR"
+
 # Копируем Python-скрипты
-# Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the old entry is
-# self-contained, so a device that crashes/restarts mid-copy still boots the
-# previous bridge until the final file lands — only the last copy switches the
-# composition. Keep this ordered list in sync with tests/test_entry_surface.py
-# EXPECTED_MODULES and scripts/update-www-only.sh.
+# Bridge modules FIRST, the entry modbus_mqtt_bridge.py LAST: the entry imports
+# every bridge_* module (bridge_led since 1.0.6.33), so a NEW entry over OLD
+# modules would fail at import, while the OLD entry over new modules keeps
+# running (module interfaces stay backward-compatible) — the last copy is the
+# one that switches the composition. Keep this ordered list in sync with
+# tests/test_entry_surface.py EXPECTED_MODULES and scripts/update-www-only.sh.
 for f in bridge_serial.py bridge_fmb.py bridge_meta.py bridge_mqtt.py bridge_mr02m_map.py \
          bridge_device.py bridge_mr02m.py bridge_dtv_ce.py bridge_template.py bridge_carel.py bridge_led.py; do
     install -m 0755 -o root -g root "$OPT_DIR/$f" "$BRIDGE_DIR/$f"
 done
-# Shared Carel register map (imported by bridge_carel.py and mqtt_bus_scan.py).
-sa02m_install_carel_pkg "$BASE_DIR"
-# Shared LED register map (imported by the type: led bridge poller).
-sa02m_install_led_pkg "$BASE_DIR"
 
 install -m 0755 -o root -g root "$OPT_DIR/modbus_mqtt_bridge.py" "$BRIDGE_DIR/modbus_mqtt_bridge.py"
 
@@ -191,17 +198,17 @@ fi
 # Источник — usr/local/sbin/ (не etc/): путь установки совпадает с путём в
 # репозитории, поэтому OTA и оффлайн-пакет кладут файл ровно туда, где его
 # вызывают sudoers и mqtt_config.cgi (audit B1 deploy-gap).
-install -m 0755 -o root -g root "$BASE_DIR/usr/local/sbin/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
+sa02m_atomic_install -m 0755 -o root -g root "$BASE_DIR/usr/local/sbin/sa02m-mqtt-config-apply.sh" /usr/local/sbin/sa02m-mqtt-config-apply.sh
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-config-apply.sh
-install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
+sa02m_atomic_install -m 0755 -o root -g root "$ETC_DIR/sa02m-mqtt-external-info.py" /usr/local/sbin/sa02m-mqtt-external-info.py
 sed -i 's/\r$//' /usr/local/sbin/sa02m-mqtt-external-info.py
 
 # Systemd units — refresh без зависимостей: юниты НЕ устанавливаются и не
 # трогаются (см. проверку импорта выше).
 if [ "$_MQTT_DEPS_OK" = 1 ]; then
-    install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
+    sa02m_atomic_install -m 0644 -o root -g root "$ETC_DIR/sa02m-modbus-mqtt.service" \
         /etc/systemd/system/sa02m-modbus-mqtt.service
-    install -m 0644 -o root -g root "$ETC_DIR/sa02m-telemetry.service" \
+    sa02m_atomic_install -m 0644 -o root -g root "$ETC_DIR/sa02m-telemetry.service" \
         /etc/systemd/system/sa02m-telemetry.service
     sa02m_systemctl daemon-reload
 

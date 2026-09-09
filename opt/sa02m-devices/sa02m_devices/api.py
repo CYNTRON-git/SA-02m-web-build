@@ -246,7 +246,7 @@ def handle_history(qs: dict[str, list[str]]) -> tuple[Any, int]:
         return device_history_db.history(metric, range_key, device_id=device_id), 200
     return {
         "ok": False,
-        "error": "укажите metric=… или group=climate|energy",
+        "error": "укажите metric=… или group=climate|energy|ahu",
         **device_history_db.storage_status(),
     }, 400
 

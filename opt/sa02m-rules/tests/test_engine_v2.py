@@ -606,5 +606,157 @@ class StoreV2Tests(unittest.TestCase):
         self.assertEqual(s.get("last_error"), "unknown template")
 
 
+def scene(sid, action, enabled=True, end=None, expose=True):
+    s = {"id": sid, "name": sid, "enabled": enabled, "type": "scene",
+         "trigger": [], "condition": {}, "action": action}
+    if end:
+        s["end"] = end
+    if expose:
+        s["alice_expose"] = True
+    return s
+
+
+class RunOffTests(unittest.TestCase):
+    """«Алиса, выключи <сцена>» — F2(a), 1.0.6.41.
+
+    «Off» is derived from the scene's stored DEFINITION, not from the last
+    run's bookkeeping: deterministic, idempotent, and still right after a
+    reboot that lost every in-memory run.
+    """
+
+    def test_off_turns_off_the_outputs_the_scene_switches_on(self):
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1},
+            {"kind": "set", "device": "fan", "cap": "on_off", "value": True},
+        ])]}, pubs)
+        self.addCleanup(td.cleanup)
+        rec = e.run_off("sc")
+        self.assertEqual(pubs, [("led", "on_off", 0), ("fan", "on_off", 0)])
+        self.assertTrue(rec["ok"])
+        self.assertEqual(rec["source"], "external")
+        self.assertEqual(rec["reason"], "off")
+
+    def test_off_skips_levels_and_already_off_actions(self):
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "brightness", "value": 80},
+            {"kind": "set", "device": "vent", "cap": "on_off", "value": 0},
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1},
+        ])]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.run_off("sc")
+        self.assertEqual(pubs, [("led", "on_off", 0)])
+
+    def test_off_cancels_a_pending_end_timer(self):
+        pubs = []
+        e, clock, td, tpl = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
+            end={"after_s": 60, "mode": "off"})]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.run_now("sc")
+        self.assertIn(("sa02m-rules-sc", "end_after_s", 60), tpl)
+        pubs.clear()
+        e.run_off("sc")
+        self.assertEqual(pubs, [("led", "on_off", 0)])
+        self.assertEqual(tpl[-1], ("sa02m-rules-sc", "end_after_s", 0))
+        clock[0] += 120
+        e.tick()
+        # The cancelled end must not fire a second auto-off, and must not be
+        # re-armed by the off run's own journalling.
+        self.assertEqual(pubs, [("led", "on_off", 0)])
+
+    def test_restore_mode_scene_is_switched_off_not_restored(self):
+        """The pre-run snapshot lives in the end timer's payload, which we
+        just cancelled — «выключи» means off, and the contract says so."""
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1}],
+            end={"after_s": 60, "mode": "restore"})]}, pubs)
+        self.addCleanup(td.cleanup)
+        e.on_state("led", "on_off", 1)
+        e.run_now("sc")
+        pubs.clear()
+        e.run_off("sc")
+        self.assertEqual(pubs, [("led", "on_off", 0)])
+
+    def test_off_journals_against_the_scene(self):
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1}])]},
+            pubs, now=4242.0)
+        self.addCleanup(td.cleanup)
+        e.run_off("sc")
+        self.assertEqual(e.doc["scenarios"][0]["last_run"], 4242.0)
+        self.assertEqual(e.doc["scenarios"][0]["last_error"], "")
+        last = e.doc["runs"][-1]
+        self.assertEqual(last["id"], "sc")
+        self.assertEqual(last["source"], "external")
+        self.assertEqual(last["reason"], "off")
+        self.assertTrue(last["ok"])
+
+    def test_off_refuses_a_disabled_absent_or_non_scene_row(self):
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [
+            scene("off_scene", [{"kind": "set", "device": "led",
+                                 "cap": "on_off", "value": 1}], enabled=False),
+            block("b1", [], [{"kind": "set", "device": "led",
+                              "cap": "on_off", "value": 1}]),
+        ]}, pubs)
+        self.addCleanup(td.cleanup)
+        self.assertIsNone(e.run_off("off_scene"))
+        self.assertIsNone(e.run_off("b1"))
+        self.assertIsNone(e.run_off("nope"))
+        self.assertIsNone(e.run_off(None))
+        self.assertEqual(pubs, [])
+
+    def test_off_is_bounded_by_the_write_rate_window(self):
+        """The same cap as any run: the off burst cannot become a bus flood,
+        and a refusal is journaled rather than silently dropped."""
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1}])]},
+            pubs)
+        self.addCleanup(td.cleanup)
+        for i in range(engine.WRITE_WINDOW_MAX):
+            self.assertTrue(e._write("other%d" % i, "on_off", 1, None))
+        pubs.clear()
+        rec = e.run_off("sc")
+        self.assertEqual(pubs, [])
+        self.assertEqual(rec["error"], "write cap")
+        self.assertEqual(e.doc["scenarios"][0]["last_error"], "write cap")
+
+    def test_run_scene_refuses_anything_that_is_not_a_live_scene(self):
+        """The LAN command control may start a SCENE and nothing else —
+        `run_now` stays the cloud's type-agnostic verb."""
+        pubs = []
+        e, _c, td, _ = make_engine({"scenarios": [
+            block("b1", [], [{"kind": "set", "device": "fan",
+                              "cap": "on_off", "value": 1}]),
+            scene("off_scene", [{"kind": "set", "device": "led",
+                                 "cap": "on_off", "value": 1}], enabled=False),
+            scene("sc", [{"kind": "set", "device": "led",
+                          "cap": "on_off", "value": 1}]),
+        ]}, pubs)
+        self.addCleanup(td.cleanup)
+        self.assertIsNone(e.run_scene("b1"))
+        self.assertIsNone(e.run_scene("off_scene"))
+        self.assertIsNone(e.run_scene("nope"))
+        self.assertEqual(pubs, [])
+        self.assertTrue(e.run_scene("sc")["ok"])
+        self.assertEqual(pubs, [("led", "on_off", 1)])
+
+    def test_off_is_idempotent(self):
+        pubs = []
+        e, clock, td, _ = make_engine({"scenarios": [scene("sc", [
+            {"kind": "set", "device": "led", "cap": "on_off", "value": 1}])]},
+            pubs)
+        self.addCleanup(td.cleanup)
+        e.run_off("sc")
+        clock[0] += 30
+        e.run_off("sc")
+        self.assertEqual(pubs, [("led", "on_off", 0), ("led", "on_off", 0)])
+
+
 if __name__ == "__main__":
     unittest.main()

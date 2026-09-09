@@ -133,14 +133,62 @@ if [ "$SA02M_INSTALL_MODE" = refresh ]; then
     log INFO "Режим refresh: сторонние стеки не ставятся и не включаются; состояние служб сохраняется; пакеты — только зависимости sa02m (при наличии сети)"
 fi
 
+# ── Hold the systemd runtime watchdog off for this run ─────────────────────
+# The board's PID 1 pings /dev/watchdog every ~8 s under a 15 s hardware
+# timeout (etc/systemd/sa02m-watchdog.conf). An installer that starves PID 1
+# — I/O bursts on eMMC with the update tree in tmpfs — is then a HARD RESET,
+# which is what left bench 1.136 with a 0-byte unit file and five minutes of
+# unwritten log (.ai-dev/8d/bench-136-reset.md D4). Steps A/B make the tree
+# survive such a reset; this makes the reset itself less likely.
+# Never fatal, always honest: the helper READS THE PROPERTY BACK, so a manager
+# that ignores the write (systemd < 250) is reported, not assumed.
+SA02M_WDT_PREV=""
+sa02m_restore_runtime_watchdog() {
+    local now=""
+    [ -n "$SA02M_WDT_PREV" ] || return 0
+    if now=$(sa02m_runtime_watchdog_set "$SA02M_WDT_PREV"); then
+        log INFO "Аппаратный watchdog systemd возвращён: ${now} мкс"
+    else
+        log WARN "Не удалось вернуть watchdog в ${SA02M_WDT_PREV} мкс (в силе: ${now:-неизвестно}) — перезагрузка восстановит политику"
+    fi
+    SA02M_WDT_PREV=""
+}
+trap sa02m_restore_runtime_watchdog EXIT
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    SA02M_WDT_PREV=$(sa02m_runtime_watchdog_usec) || SA02M_WDT_PREV=""
+    if [ -n "$SA02M_WDT_PREV" ] && [ "$SA02M_WDT_PREV" != 0 ]; then
+        if _wdt_now=$(sa02m_runtime_watchdog_set 0); then
+            log INFO "Аппаратный watchdog systemd снят на время установки (был ${SA02M_WDT_PREV} мкс)"
+        else
+            log WARN "Watchdog остался ${_wdt_now:-неизвестно} мкс — менеджер не принял изменение; установка продолжается со взведённым watchdog"
+            SA02M_WDT_PREV=""
+        fi
+    else
+        SA02M_WDT_PREV=""
+    fi
+fi
+
 # ── Run modules ────────────────────────────────────────────────────────────
-bash "$SCRIPT_DIR/scripts/01-system.sh"
-bash "$SCRIPT_DIR/scripts/02-network.sh"
-bash "$SCRIPT_DIR/scripts/03-webserver.sh"
-bash "$SCRIPT_DIR/scripts/04-flasher.sh"
-bash "$SCRIPT_DIR/scripts/05-cloud-agent.sh"
+# One runner for every module, with a `sync` after each: a hard reset mid-run
+# then tears at most ONE module's writes. Bench 1.136 (ext4 commit=600) lost
+# the last five minutes of installer writes to the page cache — the durable log
+# stopped at 22:14:43 while the run went on to 22:20
+# (.ai-dev/8d/bench-136-reset.md; order pinned by scripts/dev/test-installer-order.sh).
+# The module's exit code is returned unchanged: a mandatory module aborts the
+# installer under set -e, an optional one is `|| log WARN` at its call site.
+sa02m_run_module() {
+    local rc=0
+    bash "$SCRIPT_DIR/scripts/$1" || rc=$?
+    sync
+    return "$rc"
+}
+sa02m_run_module 01-system.sh
+sa02m_run_module 02-network.sh
+sa02m_run_module 03-webserver.sh
+sa02m_run_module 04-flasher.sh
+sa02m_run_module 05-cloud-agent.sh
 # Bus-free RS-485 module-roster aggregator (reads flasher scan cache + MQTT bridge).
-bash "$SCRIPT_DIR/scripts/10-rs485-roster.sh"
+sa02m_run_module 10-rs485-roster.sh
 
 # ── Optional stacks (MQTT / Gateway / Node-RED / CODESYS / MPLC / Docker) ─
 # Можно отключить по-отдельности:
@@ -152,47 +200,47 @@ bash "$SCRIPT_DIR/scripts/10-rs485-roster.sh"
 
 if [ "${SA02M_SKIP_MQTT:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/05-mqtt.sh" ]; then
     log INFO "──── Опциональный стек: MQTT (mosquitto + мосты) ────"
-    bash "$SCRIPT_DIR/scripts/05-mqtt.sh" || log WARN "05-mqtt.sh завершился с ошибкой"
+    sa02m_run_module 05-mqtt.sh || log WARN "05-mqtt.sh завершился с ошибкой"
 fi
 
 # Devices tab (DTV / CE-02m-3 widgets + history) — after MQTT so cache path exists
 if [ "${SA02M_SKIP_DEVICES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/11-devices.sh" ]; then
     log INFO "──── Устройства ДТВ/СЭ: API + logger ────"
-    bash "$SCRIPT_DIR/scripts/11-devices.sh" || log WARN "11-devices.sh завершился с ошибкой"
+    sa02m_run_module 11-devices.sh || log WARN "11-devices.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_GATEWAY:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-gateway.sh" ]; then
     log INFO "──── Опциональный стек: sa02m-serial-gateway ────"
-    bash "$SCRIPT_DIR/scripts/06-gateway.sh" || log WARN "06-gateway.sh завершился с ошибкой"
+    sa02m_run_module 06-gateway.sh || log WARN "06-gateway.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_ALICE:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-alice.sh" ]; then
     log INFO "──── Опциональный стек: Яндекс Алиса (sa02m-alice) ────"
-    bash "$SCRIPT_DIR/scripts/06-alice.sh" || log WARN "06-alice.sh завершился с ошибкой"
+    sa02m_run_module 06-alice.sh || log WARN "06-alice.sh завершился с ошибкой"
 fi
 if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh" ]; then
     log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
-    bash "$SCRIPT_DIR/scripts/06b-rules.sh" || log WARN "06b-rules.sh завершился с ошибкой"
+    sa02m_run_module 06b-rules.sh || log WARN "06b-rules.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then
     log INFO "──── Опциональный стек: Node-RED ────"
-    bash "$SCRIPT_DIR/scripts/07-nodered.sh" || log WARN "07-nodered.sh завершился с ошибкой"
+    sa02m_run_module 07-nodered.sh || log WARN "07-nodered.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_CODESYS:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/08-codesys.sh" ]; then
     log INFO "──── Опциональный стек: CODESYS Control (SL, armhf) ────"
-    bash "$SCRIPT_DIR/scripts/08-codesys.sh" || log WARN "08-codesys.sh завершился с ошибкой"
+    sa02m_run_module 08-codesys.sh || log WARN "08-codesys.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_MPLC:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/09-mplc.sh" ]; then
     log INFO "──── Опциональный стек: MasterSCADA MPLC 4D Runtime ────"
-    bash "$SCRIPT_DIR/scripts/09-mplc.sh" || log WARN "09-mplc.sh завершился с ошибкой"
+    sa02m_run_module 09-mplc.sh || log WARN "09-mplc.sh завершился с ошибкой"
 fi
 
 if [ "${SA02M_SKIP_DOCKER:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/12-docker.sh" ]; then
     log INFO "──── Опциональный стек: Docker CE (docker.io) ────"
-    bash "$SCRIPT_DIR/scripts/12-docker.sh" || log WARN "12-docker.sh завершился с ошибкой"
+    sa02m_run_module 12-docker.sh || log WARN "12-docker.sh завершился с ошибкой"
 fi
 
 # ── Migration: sa02m-mqtt-opcua northbound gateway port 4840 → 4841 ────────

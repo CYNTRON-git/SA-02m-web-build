@@ -23,25 +23,34 @@
 #      A token declared ONLY in `html[data-theme="light"]` is undefined in the
 #      dark theme, so the light block does not count as a definition.
 #   3. Every `var(--x, ...)` whose `--x` is not DEFINED FAILS, named with its
-#      line. The fallback form is the gated class (the plan's scope).
-#   4. REPORT-ONLY: bare `var(--x)` references to undefined tokens — the same
-#      defect (the property is dropped at computed-value time and silently
-#      inherits) but a wider pre-existing set; printed with counts, not gated,
-#      so the residual is visible every run instead of forgotten. Gating it is
-#      a one-line change once the sites are fixed.
+#      line. The fallback form was the first gated class (1.0.6.40).
+#   4. Every bare `var(--x)` whose `--x` is not DEFINED FAILS too, one FAILURE
+#      per site (1.0.6.41 — report-only before). The defect is quieter than the
+#      fallback form: the declaration is dropped at computed-value time, so an
+#      inherited property (`color`, `font-family`) silently takes the parent's
+#      value and a non-inherited one (`background`, `border`, `box-shadow`)
+#      resets to its initial — the rule's intent renders in NEITHER theme (an
+#      invisible spinner ring, a transparent alert box, sans where monospace
+#      was meant).
 #
 # NON-VACUOUS: a missing stylesheet, a `:root` block that declares nothing, a
-# sweep that finds zero `var(--x, ...)` fallbacks, or an oracle that cannot see
-# a known token (`--cyan`) FAILS the run.
+# sweep that finds zero `var(--x, ...)` fallbacks or zero bare `var(--x)`
+# references, or an oracle that cannot see a known token (`--cyan`) FAILS the
+# run.
 #
 # Proven RED (1.0.6.40): on the pre-fix main.css — 7 FAILURE(S), the five
 # undefined tokens named with their lines (`--err`, `--accent` x2, `--bg-code`,
-# `--border-faint` x3); ALL OK after the R2 fix. Comment-out mutation: a `#`
-# before the dark `--yellow: #ffd60a;` declaration → 3 FAILURE(S) (the three
-# `var(--yellow, ...)` fallbacks); that case is registered in
-# comment-mutation-proof. (The dark `--cyan` line also trips the oracle
-# self-check on top of its two fallbacks — a noisier RED, so `--yellow` is the
-# registered pin.)
+# `--border-faint` x3); ALL OK after the R2 fix.
+# Proven RED (1.0.6.41, the bare class): on the 1.0.6.40 main.css — 16
+# FAILURE(S), every site of the five undeclared tokens named with its line
+# (`--accent` x3, `--font-mono` x5, `--muted` x2, `--panel`, `--text-muted`
+# x5); ALL OK after the WP-CSS fix.
+# Comment-out mutation: a `#` before the dark `--yellow: #ffd60a;` declaration
+# → RED: the three `var(--yellow, ...)` fallbacks PLUS every bare
+# `var(--yellow)` site (the count is whatever main.css carries at that
+# revision — comment-mutation-proof asserts the RED, not a number); that case
+# is registered there. (The dark `--cyan` line also trips the oracle self-check
+# on top of its own sites — a noisier RED, so `--yellow` is the registered pin.)
 #
 # Run: bash .ai-dev/quality/checks/css-token-fallback.sh
 set -u
@@ -105,17 +114,16 @@ if missing:
 elif fallbacks:
     ok(f"{len(fallbacks)} var(--x, ...) fallbacks all name :root tokens")
 
-# 4. report-only: bare var(--x) references to undeclared tokens
-bare = {}
-for m in re.finditer(r"var\(\s*(--[A-Za-z0-9_-]+)\s*\)", text):
-    tok = m.group(1)
-    if tok not in defined:
-        bare.setdefault(tok, []).append(line_of(m.start()))
-if bare:
-    items = ", ".join(f"{t} x{len(ls)} (lines {', '.join(map(str, ls))})" for t, ls in sorted(bare.items()))
-    print(f"css-token-fallback: report {sum(len(v) for v in bare.values())} bare var(--x) reference(s) to undeclared tokens — NOT gated: {items}")
-else:
-    print("css-token-fallback: report 0 bare var(--x) references to undeclared tokens")
+# 4. gated: bare var(--x) must name a declared token — one FAILURE per site
+bare_refs = list(re.finditer(r"var\(\s*(--[A-Za-z0-9_-]+)\s*\)", text))
+if not bare_refs:
+    bad("zero bare var(--x) references found — the sweep is vacuous")
+bare_missing = [(line_of(m.start()), m.group(1)) for m in bare_refs if m.group(1) not in defined]
+if bare_missing:
+    for ln, tok in bare_missing:
+        bad(f"{path}:{ln}: var({tok}) — `{tok}` is not declared in :root; the declaration is dropped at computed-value time in BOTH themes")
+elif bare_refs:
+    ok(f"{len(bare_refs)} bare var(--x) references all name :root tokens")
 
 if fails:
     print(f"css-token-fallback: {fails} FAILURE(S)")

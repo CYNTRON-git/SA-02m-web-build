@@ -93,7 +93,7 @@ _mplc_install_overlay() {
     local _so
     if [ -f "$BASE_DIR/etc/systemd/mplc4.service" ] && [ -x /etc/init.d/mplc4 ]; then
         if ! cmp -s "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service 2>/dev/null; then
-            install -m 644 "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service
+            sa02m_atomic_install -m 644 "$BASE_DIR/etc/systemd/mplc4.service" /etc/systemd/system/mplc4.service
             systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
             _MPLC_OVERLAY_CHANGED=1
             log OK "mplc4.service (обёртка systemd) установлен"

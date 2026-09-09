@@ -1,4 +1,5 @@
-"""MQTT loop: subscribe /devices/+/controls/+, publish .../on, no retain.
+"""MQTT loop: subscribe the state mirror + our own command level, publish
+.../on, no retain.
 
 Threading: paho's network thread only ENQUEUES inbound messages; the main
 loop drains them inside tick(), so every Engine mutation (heap, trackers,
@@ -11,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import signal
 import sys
 import time
 from typing import Any, Dict
@@ -26,7 +28,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from sa02m_rules.engine import Engine
-from sa02m_rules.store import DEFAULT_PATH, load
+from sa02m_rules.store import CAP_RE, DEFAULT_PATH, ID_RE, load
 
 MQTT_HOST = os.environ.get("SA02M_MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.environ.get("SA02M_MQTT_PORT", "1883"))
@@ -35,6 +37,26 @@ LON = float(os.environ.get("SA02M_LON", "37.62"))
 PATH = os.environ.get("SA02M_RULES_PATH", DEFAULT_PATH)
 ALICE_DEVICES = os.environ.get(
     "SA02M_ALICE_DEVICES", "/etc/sa02m-alice/sa02m-alice-devices.conf")
+
+#: Our own virtual device per scenario (contract cloud-scenarios.md §MQTT
+#: mirror). `RUN_CONTROL` is its ONE command control: `<device>/controls/run/on`
+#: runs the scene (truthy) or switches its outputs off. Every other control
+#: under this prefix is retained state WE publish.
+RULES_DEVICE_PREFIX = "sa02m-rules-"
+RUN_CONTROL = "run"
+
+#: Subscribed on every (re)connect. The second level carries LAN COMMANDS —
+#: MQTT `+` cannot match a prefix, so every `/on` in the house arrives here and
+#: `_scene_command` drops all but ours at the length + prefix check. Commands
+#: are rare (a voice phrase, a button), and the inbox is bounded either way.
+SUBSCRIPTIONS = ("/devices/+/controls/+", "/devices/+/controls/+/on")
+
+
+def subscribe_all(client: Any) -> None:
+    """One home for the subscription set, so `on_connect` cannot drift from
+    what `_apply_message` knows how to handle."""
+    for topic in SUBSCRIPTIONS:
+        client.subscribe(topic, qos=1)
 
 
 def cap_short(raw: str) -> str:
@@ -137,6 +159,21 @@ class RulesApp:
         if not device or not cap:
             return
         short = cap_short(cap)
+        # Last line before the wire: both scenario paths (block actions and
+        # the sandbox's Hub.set) end here, so this is where a name that
+        # escapes its topic segment — a wildcard, a `/`, whitespace — is
+        # stopped whatever let it through upstream. Regex home: store.
+        if not ID_RE.match(str(device)) or not CAP_RE.match(str(short)):
+            LOG.warning("publish refused: bad device/cap %r/%r", device, short)
+            return
+        if str(device).startswith(RULES_DEVICE_PREFIX):
+            # Our own virtual devices are OURS: `pub_state` writes their
+            # retained state and nothing writes their `/on`. Without this a
+            # stored action naming `sa02m-rules-<id>` would publish a command
+            # the intake below hands straight back to the engine — a scenario
+            # able to re-trigger itself through the broker.
+            LOG.warning("publish refused: %s is a scenario device", device)
+            return
         if (device, short) in self._readonly:
             return
         topic = self.mqtt_topic(device, cap) + "/on"
@@ -188,9 +225,38 @@ class RulesApp:
                 return
             self._apply_message(topic, raw)
 
+    def _scene_command(self, parts: list, raw: str) -> None:
+        """`devices/sa02m-rules-<sid>/controls/run/on` → run / run_off.
+
+        The sid is LOOKED UP in the store, never interpolated into anything:
+        the engine answers only for a row that exists, is `scene`-typed and
+        enabled (`run_scene` / `run_off` share that gate), so an unknown or
+        crafted id — or a `block` someone hoped to start from the LAN — is a
+        no-op. `ID_RE` bounds the charset before the lookup all the same —
+        the same fence every other name in this file passes.
+        """
+        if (parts[0] != "devices" or parts[2] != "controls"
+                or parts[3] != RUN_CONTROL or parts[4] != "on"):
+            return
+        did = parts[1]
+        if not did.startswith(RULES_DEVICE_PREFIX) or not ID_RE.match(did):
+            return
+        sid = did[len(RULES_DEVICE_PREFIX):]
+        if not sid or not ID_RE.match(sid):
+            return
+        self.reload()
+        if raw.strip() in ("1", "on", "true", "True", "ON"):
+            self.engine.run_scene(sid)
+        else:
+            self.engine.run_off(sid)
+
     def _apply_message(self, topic: str, raw: str) -> None:
         parts = topic.strip("/").split("/")
-        # devices / <id> / controls / <name>   — not .../on
+        # devices / <id> / controls / <name> / on   — a command, ours only
+        if len(parts) == 5:
+            self._scene_command(parts, raw)
+            return
+        # devices / <id> / controls / <name>   — the state mirror
         if len(parts) != 4 or parts[0] != "devices" or parts[2] != "controls":
             return
         state_topic = "/" + "/".join(parts)
@@ -212,6 +278,8 @@ class RulesApp:
 
     def reload(self) -> None:
         self.reload_index()
+        # Watches the DOCUMENT only: run records go to the sibling journal
+        # (store.journal_path), so a scenario run never triggers a reload.
         try:
             mtime = os.path.getmtime(self.path)
         except OSError:
@@ -238,6 +306,10 @@ class RulesApp:
     def boot(self) -> None:
         self.engine.on_boot()
 
+    def stop(self) -> None:
+        """Shutdown: the buffered run records reach the journal."""
+        self.engine.flush_runs()
+
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s sa02m-rules %(message)s")
@@ -255,19 +327,26 @@ def main() -> int:
 
     def on_connect(c, _u, _f, rc):
         LOG.info("mqtt rc=%s", rc)
-        c.subscribe("/devices/+/controls/+", qos=1)
+        subscribe_all(c)
 
     client.on_connect = on_connect
     client.on_message = app.on_message
     client.connect(MQTT_HOST, MQTT_PORT, 30)
     client.loop_start()
     app.boot()
+
+    def _term(_signum, _frame):
+        raise SystemExit(0)  # systemd stop: unwind into the flush below
+
+    signal.signal(signal.SIGTERM, _term)
     try:
         while True:
             app.tick()
             time.sleep(1)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
+    finally:
+        app.stop()
     client.loop_stop()
     return 0
 

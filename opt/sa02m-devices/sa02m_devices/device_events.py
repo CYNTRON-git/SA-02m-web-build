@@ -119,9 +119,14 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_seed_table(conn: sqlite3.Connection, path: Path | None, table: str) -> None:
-    """Make sure the history table a detector seeds from exists — WITHOUT a
-    second open on the steady state.
+def _ensure_seed_table(
+    conn: sqlite3.Connection,
+    path: Path | None,
+    table: str,
+    column: str = "",
+) -> None:
+    """Make sure the history table a detector seeds from exists IN THE SHAPE the
+    seed reads — WITHOUT a second open on the steady state.
 
     Both detectors run on every 1 Hz logger tick and used to call
     `history_db.ensure_schema(path)` unconditionally — a full extra connect +
@@ -130,10 +135,23 @@ def _ensure_seed_table(conn: sqlite3.Connection, path: Path | None, table: str) 
     already hold answers the question; `ensure_schema()` runs only when the
     table is really absent (a brand-new file, a rotation, a direct call before
     any sample landed), which keeps the fresh-file behaviour intact.
+
+    `column` names a column the seed query needs, for a table whose SHAPE can be
+    older than this release: on a board upgrading from 1.0.6.40 `carel_samples`
+    exists but is still the long `(metric, value)` table, and the wide seed read
+    would raise into a silent `None` baseline — a cleared alarm losing its `off`
+    row on exactly the restart the seed exists for. `ensure_schema` migrates it.
     """
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
     ).fetchone()
+    if row is not None and column:
+        cols = {
+            str(r[1])
+            for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in cols:
+            row = None
     if row is None:
         from sa02m_devices.device_history_db import ensure_schema
 
@@ -402,12 +420,16 @@ def _carel_prev_from_archive(
 ) -> dict[str, float | None]:
     out: dict[str, float | None] = {"alarm": None, "plant_state": None}
     for metric in out:
+        # `metric` is a key of the literal above (an archive COLUMN since the
+        # wide table, 1.0.6.41), never request input. Last NON-NULL per column,
+        # not the last row: a tick whose alarm probe was unread archives NULL
+        # there and must not erase the baseline the restart compares against.
         try:
             row = conn.execute(
-                "SELECT value FROM carel_samples"
-                " WHERE device_id = ? AND metric = ? AND value IS NOT NULL"
+                f"SELECT {metric} FROM carel_samples"
+                f" WHERE device_id = ? AND {metric} IS NOT NULL"
                 " ORDER BY ts DESC LIMIT 1",
-                (device_id, metric),
+                (device_id,),
             ).fetchone()
         except sqlite3.Error:
             row = None
@@ -448,7 +470,8 @@ def detect_carel_events(
     created: list[dict[str, Any]] = []
     conn = _connect(path)
     try:
-        _ensure_seed_table(conn, path, "carel_samples")  # the seed read needs it
+        # `alarm` = the wide shape the seed reads (a 1.0.6.40 long table migrates).
+        _ensure_seed_table(conn, path, "carel_samples", column="alarm")
         with conn:
             for dev in carel_list:
                 did = str(dev.get("id") or "").strip()

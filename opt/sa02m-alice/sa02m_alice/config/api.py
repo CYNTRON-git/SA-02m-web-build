@@ -11,7 +11,6 @@ import logging
 import os
 import socketserver
 import stat
-import sys
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +27,7 @@ from ..common.config_store import (
     clear_unlink_marker,
     client_enabled,
     cloud_control_enabled,
+    controller_sn,
     default_client_cfg,
     empty_devices,
     gateway_urls,
@@ -38,50 +38,25 @@ from ..common.config_store import (
     set_cloud_control_enabled,
 )
 from . import models
+from . import scene_devices
 from .inventory import build_mqtt_inventory
 from .topics import list_mqtt_topics
 
 log = logging.getLogger("sa02m_alice.config.api")
 
-# The on-board scenario engine package (opt/sa02m-rules) is a sibling install,
-# not a python dependency of sa02m_alice — resolve it lazily and treat its
-# absence as «scenarios unsupported», never as an import-time crash.
-RULES_DIR = os.environ.get("SA02M_RULES_DIR", "/opt/sa02m-rules")
-
 
 def _rules_store():
-    """sa02m_rules.store module, or None when the rules stack is absent."""
-    try:
-        from sa02m_rules import store as rules_store  # type: ignore
-        return rules_store
-    except ImportError:
-        pass
-    if RULES_DIR not in sys.path:
-        sys.path.insert(0, RULES_DIR)
-    try:
-        from sa02m_rules import store as rules_store  # type: ignore
-        return rules_store
-    except ImportError:
-        return None
+    """sa02m_rules.store module, or None when the rules stack is absent.
+
+    The lazy resolution lives in `scene_devices` (one home — the client
+    daemon resolves the same sibling install without importing this module).
+    """
+    return scene_devices.rules_store()
 
 
 def _controller_sn() -> str:
-    for path in ("/etc/sa02m-cloud/agent.conf", "/etc/machine-id"):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read().strip()
-            if path.endswith("agent.conf"):
-                for line in text.splitlines():
-                    if line.strip().startswith("serial"):
-                        val = line.split("=", 1)[-1].strip().strip("\"'")
-                        if val:
-                            return val
-                continue
-            if path.endswith("machine-id") and text:
-                return text[:16]
-        except OSError:
-            continue
-    return "sa02m"
+    """This board's identity — one home in `common.config_store`."""
+    return controller_sn()
 
 
 def _save_pending_claim(data: Dict[str, Any]) -> None:
@@ -344,6 +319,12 @@ def full_config() -> Dict[str, Any]:
             "key_file": C.KEY_FILE,
         },
         "status": status,
+        # Read-only: the scenes marked «в Алису» in the cloud editor, shown
+        # on the «Умный дом» card beside the bound devices. One 0644 JSON
+        # read per Alice poll, beside the gateway probe already here. An
+        # older cached bundle simply ignores the key; a newer bundle against
+        # an older CGI renders no rows (`(d.scene_devices || [])`).
+        "scene_devices": scene_devices.web_scene_rows(devices),
         # Second unit (sa02m-cloud-control, `--profile cloud`): enable flag,
         # its own status file, tri-state enrollment like mtls.cert_present.
         "cloud_control": cloud_control_block(cfg),
@@ -888,6 +869,44 @@ def _listed_room_devices(doc: Dict[str, Any]) -> list:
     return out
 
 
+def _rebind_room_devices(doc: Dict[str, Any], room_id: str,
+                         bind: List[str]) -> Optional[Dict[str, Any]]:
+    """Rewrite BOTH sides of one room's membership; `bind` is the complete set.
+
+    Members get `room_id`, former members DROP the key (an empty string would
+    still serialise), the room's own list becomes `bind`, and every other room
+    loses the ids that just joined. Returns an error payload — nothing mutated
+    — when an id names no known device; `None` on success. One home for the
+    rebind: `apply_rooms` (the atomic room-editor path) and `upsert_room` (a
+    create/rename body that carries `devices`) both call it, so the two can
+    never drift (docs/contracts/alice-mqtt-mapping.md §Room membership).
+    """
+    known = {
+        d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+    }
+    for did in bind:
+        if did not in known:
+            return {"ok": False, "error": "not_found", "message": "device not found"}
+    bind_set = set(bind)
+    for d in doc.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        if d.get("id") in bind_set:
+            d["room_id"] = room_id
+        elif d.get("room_id") == room_id:
+            # Unassigned devices DROP the key (an empty string would still
+            # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
+            d.pop("room_id", None)
+    for r in doc.get("rooms") or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("id") == room_id:
+            r["devices"] = list(bind)
+        elif isinstance(r.get("devices"), list):
+            r["devices"] = [x for x in r["devices"] if x not in bind_set]
+    return None
+
+
 def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
     """One atomic write: upsert or delete a room and bind listed devices.
 
@@ -951,30 +970,9 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
             existing["name"] = cleaned["name"]
             rooms[idx] = existing
         if bind is not None:
-            known = {
-                d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
-            }
-            for did in bind:
-                if did not in known:
-                    return {"ok": False, "error": "not_found", "message": "device not found"}
-            bind_set = set(bind)
-            for d in doc.get("devices") or []:
-                if not isinstance(d, dict):
-                    continue
-                did = d.get("id")
-                if did in bind_set:
-                    d["room_id"] = cleaned["id"]
-                elif d.get("room_id") == cleaned["id"]:
-                    # Unassigned devices DROP the key (an empty string would still
-                    # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
-                    d.pop("room_id", None)
-            for r in rooms:
-                if not isinstance(r, dict):
-                    continue
-                if r.get("id") == cleaned["id"]:
-                    r["devices"] = list(bind)
-                elif isinstance(r.get("devices"), list):
-                    r["devices"] = [x for x in r["devices"] if x not in bind_set]
+            refused = _rebind_room_devices(doc, cleaned["id"], bind)
+            if refused is not None:
+                return refused
         save_devices(doc)
     room_out = {"id": cleaned["id"], "name": cleaned["name"]}
     return {
@@ -986,23 +984,51 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def upsert_room(room: Dict[str, Any]) -> Dict[str, Any]:
+    """Create or rename a room; membership follows the BODY, never the default.
+
+    `validate_room` fills `devices: []` when the body omits the key, so storing
+    the validated row wholesale wiped an existing room's membership on a plain
+    rename while every device kept a `room_id` naming it — the room side of the
+    desync class `upsert_device` had. So: a body that OMITS `devices` preserves
+    the stored list (and a pre-list room keeps its shape); a body that CARRIES
+    one rebinds both sides through the same helper the atomic room-editor path
+    uses (docs/contracts/alice-mqtt-mapping.md §Room membership).
+    """
     cleaned, err = models.validate_room(room)
     if err:
         return {"ok": False, "error": "invalid_room", "message": err}
+    # `validate_room` cannot tell the caller apart afterwards — it defaults the
+    # key — so the omitted-vs-carried question is asked of the raw body.
+    rebind = isinstance(room, dict) and room.get("devices") is not None
     with devices_lock():
         doc = load_devices()
         rooms = doc.setdefault("rooms", [])
-        for i, r in enumerate(rooms):
+        stored = None
+        for r in rooms:
             if isinstance(r, dict) and r.get("id") == cleaned["id"]:
-                rooms[i] = cleaned
-                save_devices(doc)
-                return {"ok": True, "room": cleaned}
-        if len(rooms) >= C.COLLECTION_CAP:
-            return {"ok": False, "error": "too_many",
-                    "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
-        rooms.append(cleaned)
+                stored = r
+                break
+        if stored is None:
+            if len(rooms) >= C.COLLECTION_CAP:
+                return {"ok": False, "error": "too_many",
+                        "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
+            stored = cleaned
+            rooms.append(stored)
+        else:
+            stored["name"] = cleaned["name"]
+        if rebind:
+            refused = _rebind_room_devices(doc, stored["id"], list(cleaned["devices"]))
+            if refused is not None:
+                return refused
         save_devices(doc)
-        return {"ok": True, "room": cleaned}
+        # The payload keeps its shape for the hub — `devices` was always
+        # present (it echoed the body); it now reports the row's real
+        # membership, `[]` for a room stored before the list existed.
+        listed = stored.get("devices")
+        return {"ok": True, "room": {
+            "id": stored["id"], "name": stored["name"],
+            "devices": list(listed) if isinstance(listed, list) else [],
+        }}
 
 
 def delete_room(room_id: str) -> Dict[str, Any]:
@@ -1026,28 +1052,56 @@ def delete_room(room_id: str) -> Dict[str, Any]:
     }
 
 
+def _sync_room_membership(doc: Dict[str, Any], device_id: str, room_id: str) -> None:
+    """Make every `room.devices` list agree with the device's `room_id`.
+
+    Membership is stored on BOTH sides (`apply_rooms` writes both), so a device
+    that moved rooms has to leave its old room's list as well as join the new
+    one; `room_id` empty means it joins none. A room that carries no `devices`
+    key keeps that shape unless it is the one being joined.
+    """
+    for r in doc.get("rooms") or []:
+        if not isinstance(r, dict):
+            continue
+        listed = r.get("devices")
+        joining = bool(room_id) and r.get("id") == room_id
+        if not isinstance(listed, list) and not joining:
+            continue
+        ids = [x for x in listed if x != device_id] if isinstance(listed, list) else []
+        if joining:
+            ids.append(device_id)
+        r["devices"] = ids
+
+
 def upsert_device(dev: Dict[str, Any]) -> Dict[str, Any]:
     cleaned, err = models.validate_device(dev)
     if err:
         return {"ok": False, "error": "invalid_device", "message": err}
     with devices_lock():
         doc = load_devices()
+        # `validate_device` can only check the id's SHAPE. A shape-valid id
+        # naming no room would leave the device in a room the UI cannot
+        # resolve (the name comes back empty) — refuse it instead of storing
+        # the dangling reference. Checked under the lock: only the loaded
+        # document knows which rooms exist.
+        rid = str(cleaned.get("room_id") or "")
+        if rid and not any(
+            isinstance(r, dict) and r.get("id") == rid for r in (doc.get("rooms") or [])
+        ):
+            return {"ok": False, "error": "invalid_room", "message": "room not found"}
         devices = doc.setdefault("devices", [])
+        replaced = False
         for i, d in enumerate(devices):
             if isinstance(d, dict) and d.get("id") == cleaned["id"]:
                 devices[i] = cleaned
-                save_devices(doc)
-                return {"ok": True, "device": cleaned}
-        devices.append(cleaned)
-        # Attach to room.devices if room_id set
-        rid = cleaned.get("room_id")
-        if rid:
-            for r in doc.get("rooms") or []:
-                if isinstance(r, dict) and r.get("id") == rid:
-                    ids = list(r.get("devices") or [])
-                    if cleaned["id"] not in ids:
-                        ids.append(cleaned["id"])
-                    r["devices"] = ids
+                replaced = True
+                break
+        if not replaced:
+            devices.append(cleaned)
+        # BOTH branches re-attach: the edit branch used to return above this
+        # point, so a device moved to another room stayed listed by its old
+        # one forever (docs/contracts/alice-mqtt-mapping.md §Room membership).
+        _sync_room_membership(doc, cleaned["id"], rid)
         save_devices(doc)
         return {"ok": True, "device": cleaned}
 

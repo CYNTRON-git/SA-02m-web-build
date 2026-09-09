@@ -125,6 +125,78 @@ Optional capability field `writable` (bool; **absent ⇒ `true`**).
 `not controllable` (`docs/contracts/cloud-device-control.md` in the
 cloud repo).
 
+### Device document id namespace
+
+Ids inside the stored document are the operator's (minted by the config API,
+`models._ID_RE`). The catalogue the Alice profiles serve adds rows the
+document does not carry, so the id space is shared and its two reserved
+prefixes are named here:
+
+| Prefix | Owner | Written to the document? |
+|---|---|---|
+| `scene-<board>-<sid>` | scene devices (below) | never — in memory per build |
+| everything else | the operator / auto-provision | yes |
+
+A saved device that already owns a generated id **wins**: the stored
+document is the operator's and an in-memory row never replaces it.
+
+### Scene devices (1.0.6.41)
+
+A scenario the cloud editor marked «в Алису» (`alice_expose: true` on an
+enabled `type: scene` row — store contract: `cloud-scenarios.md`) appears in
+the Yandex account as a switch. Projection home:
+`sa02m_alice/config/scene_devices.py`; validating:
+`tests/test_scene_devices.py`.
+
+```json
+{"id": "scene-<board>-<sid>", "name": "<scene name>",
+ "type": "devices.types.switch", "room_id": "<captured_from.room_id>",
+ "capabilities": [{"type": "devices.capabilities.on_off",
+   "mqtt": "/devices/sa02m-rules-<sid>/controls/run",
+   "retrievable": false, "reportable": false,
+   "parameters": {"split": true}}],
+ "properties": []}
+```
+
+- **In memory only.** Built on every catalogue build (`DeviceRegistry.__init__`
+  / `reload`) over a COPY, exactly like the Carel AHU rows. `save_devices` is
+  never called: the flag keeps its single writer, the cloud channel.
+- **Yandex profile only.** The cloud profile lists scenarios first-class
+  through its own channel; a second tile there would duplicate its own list.
+- **`retrievable`/`reportable` false, `split` true.** The board cannot know
+  whether a scene is currently «on» — it fired once and the room may have
+  been changed by hand since. So the switch never claims a state: `query`
+  answers `{id, capabilities: [], properties: []}` with **no `error_code`**,
+  and no `device_state` is ever emitted for it. Alice renders «включить» /
+  «выключить» rather than a toggle whose position we would have to invent.
+- **Never `DEVICE_UNREACHABLE` for silence.** A command topic has no poller
+  behind it and nothing republishes it, so the freshness rules that decide a
+  Modbus coil is dead do not apply: neither the unreachable-transition sweep
+  nor the action path may refuse a scene for a topic that was never seen or
+  has aged past `STATUS_STALE_S`. The device-level flag
+  `/devices/sa02m-rules-<sid>/meta/error` **is** still honoured — the hook for
+  a future rules-service availability signal (the gap named in
+  `cloud-scenarios.md` §MQTT mirror).
+- **Board-keyed id.** `<board>` is the controller serial (else machine-id[:16],
+  else `sa02m`), sanitised to the id charset and bounded to 24 chars: two
+  SA-02m under ONE Yandex account both mint scenario `s1` and would otherwise
+  collide on one device. A row whose id cannot be built inside `models._ID_RE`
+  is NOT exposed rather than truncated — a truncated id could collide with
+  another scene's.
+- **Room.** `captured_from.room_id` places the switch when it still names a
+  live room; a deleted room ⇒ no room. `captured_from.group_id` is not read.
+- **Lifecycle.** Rename ⇒ the id is stable, only the name changes at the
+  user's next «Обновить список устройств». Unmark / disable / delete ⇒ gone
+  from the next discovery; an action on a removed one answers
+  `DEVICE_UNREACHABLE` (the existing unknown-device branch) until the user
+  refreshes the list. Nothing restarts: the Yandex unit polls the store's
+  exposure projection (`RulesExposureWatcher`) and reloads the catalogue in
+  place — a store write that does not change the projection (a run journal
+  flush, a `vars` edit) costs no rebuild.
+- **Action.** `on` / `off` publish `"1"` / `"0"` to
+  `…/controls/run/on`, no retain, and answer `DONE` as any device does; what
+  the engine then executes is `cloud-scenarios.md` §MQTT mirror.
+
 ### Device type (`type`)
 
 `type` is a Yandex `devices.types.*` id. The official allow-list — picker
@@ -133,6 +205,38 @@ passthrough — is `sa02m_alice/config/device_types.py`, taken from
 https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
 and not restated here. Unknown ids are rejected. A missing tile icon
 falls back to `generic` and does not block save.
+
+### Room membership (`room_id`)
+
+Membership is stored on BOTH sides — the device's `room_id` and the room's
+`devices` list — and every writer keeps the two in agreement:
+
+- `upsert_device` writes both, on create AND on edit: a device moved to
+  another room leaves its previous room's list; an empty or absent `room_id`
+  drops the key (`validate_device`, like `icon` below — an empty string never
+  serialises) and the device joins no room's list.
+- `upsert_device` refuses a shape-valid `room_id` naming no existing room —
+  `{"ok": false, "error": "invalid_room", "message": "room not found"}` —
+  instead of storing a dangling reference whose room name the page cannot
+  resolve. Existence is the API's check, never `validate_device`'s: only the
+  loaded document knows which rooms exist.
+- `delete_device` drops the id from every room's `devices` (and every group's
+  `device_ids`); `delete_room` clears `room_id` on the devices it held. The
+  atomic full-membership rebind is the rooms channel's
+  (`docs/contracts/cloud-scenarios.md` §Rooms).
+- `upsert_room` is the create/rename path and membership follows the BODY, not
+  the validator's default: a body that OMITS `devices` **preserves** the stored
+  list (a rename unbinds nothing), a body that CARRIES it rebinds both sides
+  exactly like the atomic path — members get `room_id`, dropped members lose
+  the key, other rooms lose the joined ids, an id naming no device answers
+  `not_found` and stores nothing. Both writers rebind through the one helper
+  (`_rebind_room_devices`), so they cannot drift.
+
+A room stored before the list existed carries no `devices` key: joining it
+creates the list, a room nobody joined keeps its shape, and renaming it does
+not conjure one.
+Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
+`::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
 ### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
 
@@ -456,6 +560,10 @@ telemetry (no `-COM` in the device id) still age a **live** cache entry past
 `STATUS_STALE_S` (90 s) and still answer from retained. `action` writes a
 Modbus coil unless the **slave** is down; a per-channel `r` does not refuse
 the command (Yandex scenario: switch + socket on one module in one burst).
+A **scene device** (`/devices/sa02m-rules-…`) is outside all of this: it
+carries no readable state and its silence is never `DEVICE_UNREACHABLE`
+(§Scene devices) — only the device-level `/meta/error` flag can take one
+down.
 
 **Unreachable transition (one `device_state`).** When a catalog device
 crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one

@@ -31,6 +31,7 @@ from ..common import constants as C
 from ..common.config_store import (
     cert_paths_present,
     cloud_control_urls,
+    controller_sn,
     default_client_cfg,
     gateway_urls,
     load_devices,
@@ -42,7 +43,12 @@ from ..common.fw_version import HW_VARIANT, get_fw_version
 from .auto_provision import AutoProvisioner, WATCH_TOPICS
 from .device_registry import DeviceRegistry
 from .fleet_token import FleetTokenError, cloud_identity_present, mint_control_token, read_cloud_identity
-from .reload_watch import DevicesWatcher, RetainedGrace, apply_reload
+from .reload_watch import (
+    DevicesWatcher,
+    RetainedGrace,
+    RulesExposureWatcher,
+    apply_reload,
+)
 from .sio_connection import (
     AliceSocketIO,
     SocketIOUnavailable,
@@ -315,25 +321,6 @@ def _mqtt_client(host: str, port: int):
     return client
 
 
-def _controller_sn() -> str:
-    for path in ("/etc/sa02m-cloud/agent.conf", "/etc/machine-id"):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                text = fh.read().strip()
-            if path.endswith("agent.conf"):
-                for line in text.splitlines():
-                    if line.strip().startswith("serial"):
-                        val = line.split("=", 1)[-1].strip().strip("\"'")
-                        if val:
-                            return val
-                continue
-            if path.endswith("machine-id") and text:
-                return text[:16]
-        except OSError:
-            continue
-    return "sa02m"
-
-
 def _cloud_token_provider(token_url: str):
     """Mint a fresh control token from the cloud identity — called on EVERY
     connect by AliceSocketIO, never cached (the token lives 10 min)."""
@@ -475,6 +462,11 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
     # A binding edit rewrites the device document atomically; the watchdog loop
     # below notices and reloads in place instead of the unit being restarted.
     watcher = DevicesWatcher(C.DEVICES_CONF)
+    # Second trigger, Yandex unit only: a scene marked «в Алису» in the cloud
+    # editor changes the catalogue without touching the device document
+    # (docs/contracts/alice-mqtt-mapping.md §Scene devices). The cloud profile
+    # lists no scene devices, so it constructs no watcher.
+    rules_watcher = None if cloud else RulesExposureWatcher()
     grace = RetainedGrace()
     # One home: the same document both profiles read. Only the Yandex unit
     # writes auto-discovered DTV/CE rows — the cloud profile would race it.
@@ -619,7 +611,7 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
 
             sio = AliceSocketIO(
                 on_event=on_sio_event,
-                controller_sn="" if cloud else _controller_sn(),
+                controller_sn="" if cloud else controller_sn(),
                 client_version=__version__,
                 fw_version=get_fw_version(),
                 hw_variant=HW_VARIANT,
@@ -632,6 +624,8 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
             # fingerprinted. An edit made while we were reconnecting is picked
             # up here rather than being lost.
             watcher.arm()
+            if rules_watcher is not None:
+                rules_watcher.arm()
             try:
                 registry.reload()
             except Exception as exc:
@@ -669,7 +663,20 @@ def run(profile: str = C.PROFILE_YANDEX) -> int:
                         last_heartbeat = time.monotonic()
                         _emit_cache_snapshot(sender, registry)
                         last_snapshot = last_heartbeat
-                if watcher.changed():
+                # BOTH are polled every tick, never short-circuited: each
+                # watcher consumes its own fingerprint, and skipping one
+                # because the other already fired would leave it to fire
+                # again on the next tick for a change already applied.
+                doc_changed = watcher.changed()
+                scenes_changed = (rules_watcher is not None
+                                  and rules_watcher.changed())
+                if doc_changed or scenes_changed:
+                    # One reload path for both triggers: the catalogue is
+                    # rebuilt from the device document AND the scene
+                    # projection, so a mark/unmark diffs its `run` topic in
+                    # or out exactly like a binding edit. A pure rename adds
+                    # no topic — the new name reaches the app at the user's
+                    # next «Обновить список устройств», as Yandex requires.
                     added, removed = apply_reload(
                         registry, mqtt, grace, window_s=C.RETAINED_GRACE_S, log=log
                     )

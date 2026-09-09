@@ -8,7 +8,126 @@ worklist collapsed into one home).
 
 ## Open
 
-- [OPEN] 2026-09-08 **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
+- [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
+  The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
+  with the engine stopped the publish is simply lost and the user gets «сделано» for a
+  scene that never ran (1.0.6.41, scenes as devices). Fix direction: an LWT/availability
+  topic for the engine that the registry reads before answering.
+- [OPEN] 2026-09-09 **[LOW] `upsert_room` with an unknown `id` CREATES that room**, while
+  `apply_rooms` answers `not_found` for the same id — an asymmetry between the two room
+  writers (found while fixing the rename wipe, 1.0.6.41). Deliberately unchanged: which
+  one is right is a contract call (does the cloud hub rely on create-by-id?), not a
+  defect fix. `docs/contracts/alice-mqtt-mapping.md` §Room membership is the home.
+- [RESOLVED 2026-09-09, `5df1b89`] 2026-09-09 **[MED]
+  `etc/sa02m-factory-reset-runner.sh:41,45` still carries the hollow watchdog guard**
+  (`systemctl set-property --runtime Manager RuntimeWatchdogSec=0 … || true` plus a log
+  line claiming the guarantee) that the update runner lost in 1.0.6.41 — port it to the
+  shared read-back block; `scripts/dev/test-watchdog-hold.sh` case 9 is the pattern.
+  Found while building 8D step G; that file was outside the D5/D7 named set.
+  Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
+  file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
+  the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-09 **[MED] The Carel long→wide pivot holds a write lock longer than the
+  logger's 30 s timeout on a multi-million-row archive** — measured on bench 1.135 with its
+  real archive (2026-09-09): the cost is linear at ~23 µs/row (125k → 2.8 s, 250k → 6.9 s,
+  504 903 → 11.5 s), so `sqlite3.connect(timeout=30)` in `history_store._connect` covers an
+  archive up to roughly 1.3M rows. A full 30-day Carel archive is several million rows — the
+  figure this release's own CHANGELOG named — where the one-time migration would hold
+  `BEGIN IMMEDIATE` for ~1–1.5 min: the 1 Hz logger's writes raise `database is locked` and
+  those ticks are lost, and an archive read from the web UI fails in the same window. Not a
+  data-integrity risk: the pivot is atomic, `carel_samples_v1` is intact, and what is lost is
+  individual 10 s samples. Fix shape: migrate in bounded chunks (commit per N ticks, the
+  `metric` column staying the resume marker) so no single lock is long, or give the migration
+  window its own longer busy timeout. The measured bound is now stated in
+  `docs/contracts/carel-ahu.md` and `CHANGELOG.md` rather than promised away.
+- [RESOLVED 2026-09-09] 2026-09-09 **[MED] Seven live-path `install -m` sites in
+  `etc/sa02m-web-update-apply.sh` were the truncate-then-fill shape the 8D closed everywhere
+  else** — the OTA apply path a field board runs to update ITSELF, writing
+  `/usr/local/lib/sa02m-web-auth-lib.sh` (every CGI sources it),
+  `/usr/local/lib/sa02m-web-build-lib.sh`, `/usr/local/sbin/sa02m-web-root-cmd.sh`,
+  `/usr/local/libexec/sa02m-update-{runner,inspect}` and two `$(basename)` helpers under
+  `/usr/local/sbin/`. Worse than a plain truncate: the form was
+  `install -m … "$tgt" && sed -i 's/$//' "$tgt"` — two windows, not one. One of the seven
+  is `/usr/local/sbin/sa02m-web-update-apply` itself: the script overwrote its own running
+  image, and bash reads a script incrementally by byte offset, so that was a live
+  self-modification hazard independent of any reset. Converted to a local
+  `atomic_install_script -m MODE SRC DST` with the CRLF strip folded into the staged copy, so
+  the live path is touched exactly once, by the rename. Gated by
+  `scripts/dev/test-install-atomic.sh` sections 8–9. Found by the 1.0.6.41 ship review,
+  finding 1.
+- [OPEN] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
+  neither is blocked by a missing helper — **my earlier record here was false**: it claimed
+  closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
+  already existed at `etc/sa02m-update-runner.sh `atomic_install_file()`` (used its two callers) and
+  `etc/sa02m-factory-reset-runner.sh `atomic_install_file()`` (one caller), and `etc/sa02m-web-update-apply.sh:59`
+  now carries a third. The three are NOT byte-identical and carry no `cmp` pin: each is scoped
+  to its own caller's duties (the factory runner adds a destination allow-list and a rollback
+  journal; the OTA one adds CRLF normalisation), which is why a further copy is a decision, not
+  a formality.
+  - `etc/sa02m-web-service-ctl.sh:1359` → `/etc/systemd/system/nodered.service` — the
+    incident's own shape. Survives because this file carries no atomic helper yet.
+  - `etc/sa02m-update-runner.sh `rollback_from_journal()`` → `"$rel"`, an absolute path replayed from the
+    pre-update rollback archive, whose members are the manifest's `deploy[].dst` entries
+    (`build_rollback_archive`, `:968-985`) — so `/usr/local/**` and `/etc/systemd/system/**`
+    are exactly what it restores. **Survives only because nobody looked:** this file DEFINES
+    `atomic_install_file` 283 lines above, so the conversion needs no new helper — and this is
+    the site that runs when the board is already mid-failure. Highest-value of the two.
+  My earlier list was wrong in both directions. Not live paths, so outside the rule rather than
+  exceptions to it: `sa02m-web-service-ctl.sh:895,898` → `/opt/mplc4/*.so`;
+  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`; `sa02m-web-update-apply.sh:396,432`
+  (I recorded `:316,352`) → `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`. And
+  I also recorded `sa02m-update-runner.sh:394` as a live-path site; it was wrong on both axes.
+  The `install -m` is in `self_reexec_before_deploy()`, and its destination is
+  `"$STATEDIR/runner/$txn/runner"`, a per-transaction scratch self-copy exec'd immediately —
+  not a live path at all. **Cite the symbol, not the line:** every line number in this entry
+  went stale at least once while the entry was being corrected, twice inside the commit that
+  corrected it. Full enumeration, including the sites that ARE the atomic staging
+  write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
+  install sites are live-path».
+- [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**
+  (the restore value is read back from the manager instead). An in-tree grep found no
+  other user — confirm no deployment recipe or bench script sets it.
+- [OPEN] 2026-09-09 **[LOW] 8D step F (install lock) not built.** The installer does not
+  hold `/run/sa02m-imaging.lock` for its run, so the userspace watchdog is not told to
+  stand down. Class-level measure, not this incident's trigger (nothing in A–E/G
+  depends on it).
+- [OPEN] 2026-09-09 **[LOW] `scripts/update-www-only.sh`: the non-unit, non-`/usr/local`
+  `install -m` sites are still non-atomic** — widen the codemod's `LIVE_PREFIXES` or
+  record why those paths are not live-path.
+- [OPEN] 2026-09-09 **[LOW] The 1.136 `busctl` write is unverified.** 8D step G reports
+  the value in force rather than assuming it, so it is safe either way; read 6 of the
+  8D (does the manager accept `RuntimeWatchdogUSec`) is the only unconfirmed half.
+- [OPEN] 2026-09-09 **[LOW] `carel_samples_v1` is dropped in 1.0.6.42.** The wide-table
+  pivot of 1.0.6.41 keeps the old long table as a one-release rollback path; the drop
+  (plus the `CAREL_METRIC_AGG` vocabulary constant if it still has no reader) belongs to
+  the next release. Bench 1.135 carries **504 903** rows of it (measured 2026-09-09,
+  `a88190e`); the earlier «~75k» here was a dev-host fixture figure, not the board.
+- [RESOLVED 2026-09-09, `a88190e`] 2026-09-09 **[LOW] The Carel wide pivot has no bench
+  timing measurement.** The synthetic 75 600-row pivot takes 0.110 s on the dev host; the
+  ≤10 s criterion was written for the board's eMMC. Measure on 1.135 before the next fleet
+  rollout. Measured on 1.135 against its REAL archive (`carel_samples_v1` staged back into a
+  scratch DB and run through the shipped `_migrate_carel_to_wide`): 125k → 2.79 s, 250k →
+  6.92 s, 504 903 → 11.51 s, i.e. ~23 µs/row with 4.04× the rows costing 4.13× the time.
+  **The ≤10 s criterion is NOT met on the real bench archive** — 11.5 s — and that is
+  recorded rather than quietly retired. The consequence the measurement exposed (the lock
+  outliving the logger's 30 s busy timeout past ~1.3M rows) is its own OPEN line above.
+- [OPEN] 2026-09-09 **[MED] The scenario sandbox is an AST denylist in front of a real
+  CPython interpreter, not isolation.** Every known escape is closed (1.0.6.39 banned
+  `.format`/`format_map` — the reproduction `'{0.text.__globals__}'.format(Notify)` now
+  answers `banned attr`; 1.0.6.41 added the per-run HTTP cap, the `pub` fence and one
+  namespace), but a new introspection route without `_`, `format` or `getattr` is not
+  excluded: the body still runs as root in the daemon's own process. Deep options, both
+  the Operator's call: run `type=code` in a bounded child process (seccomp/`setrlimit`,
+  no network, IPC to the engine), or drop `type=code` in favour of the block/logic
+  templates the cloud editor already builds. Found with the cloud session, 2026-09-09.
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (8D `bench-136-reset`: A atomic live-path writes,
+  B dependency-before-consumer + per-module `sync`, C a 0-byte unit fragment is `broken`,
+  D the post-check fails on a masked core unit, E the wrapper launches in its own session,
+  G the installer holds the PID-1 watchdog with a read-back; each RED by mutation. Step F
+  (install lock) stays open below. Root cause: a hard reset — no watchdog logged a
+  decision and the pre-reset journal is torn — with the hardware watchdog the leading
+  hypothesis; the installer defects turned it into an outage and those are closed.)
+  **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
   (offline full update 1.0.6.37 → 1.0.6.40, started 22:07, board rebooted ≈22:20 while
   `04-flasher.sh` was writing units — `sa02m-flasher.service` left as a 0-byte file
   (systemd reads it as masked), `/opt/sa02m-modbus-mqtt` new while `/opt/sa02m-led` old ⇒
@@ -45,7 +164,10 @@ worklist collapsed into one home).
   checkbox/radio boxes.** Seen on the LED window's first render (label text pushed
   off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
   `.checkbox-line` rows sit under the same rule — check their screenshots.
-- [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (`--font-mono` declared; `--accent`→`--cyan`,
+  `--muted`/`--text-muted`→`--text-sec`, `--panel`→`--bg-panel`; the gate's bare-reference
+  pass now FAILS — 16 sites RED on 1.0.6.40, ALL OK after; ratios AA in both themes)
+  **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
   (`--accent` ×3 at 1904/1905/4819, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
   `--text-muted` ×5) and silently inherit today — a monospace font that is not
   monospace, a muted colour that is the full text colour. Reported (not gated) by
@@ -83,17 +205,28 @@ worklist collapsed into one home).
   `sa02m-domain.md ## Version discipline` (1.0.6.39); the gate — a changed served asset
   must carry a changed `?v=`+`&r=` pair vs the previous release — is deferred. Design
   choice pending: teach the script to manage `&r=`, or drop it for the `?v=` bump.
-- [OPEN] 2026-09-08 **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (implemented, not dropped: an exposed scene is a
+  `devices.types.switch` in Alice, board-keyed id `scene-<sn>-<sid>`, placed by
+  `captured_from.room_id`; `group_id` stays cloud-side provenance and the contract says so)
+  **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
   A14). The rules store validates and persists both fields and nothing reads them; the
   contract now says «accepted, not yet consumed». Either implement the exposure in the
   Alice device registry (a scene the user marks «в Алису» becomes a device) or drop the
   fields. Not derivable from canon — the Operator's call.
-- [OPEN] 2026-09-08 **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
+- [RESOLVED] 2026-09-09 (measured on bench 1.135, COM4 addr 10 «14DI» @115200, 60 cycles
+  per shape): one FC04 ×46 → 55/60 ok, 5 short (65–96 of 97 bytes); one ×32 → 55/60,
+  5 short at 65 bytes (30 regs); 32+16 → 56/60; three ×16 → **60/60**. The merged read is
+  REJECTED — the ~30-register truncation the map warns about is real on this line; the
+  three ×16 reads (≈200 ms/cycle) stay, the cost is stated in `docs/MQTT_TOPICS.md`.
+  **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
   module with a «Кнопка» DI** (+1 FC03 / 60 s) — doubles the per-poll transaction count of
   a 6DO8DI module on a line shared with Carel (audit E7). The cost is now stated in
   `docs/MQTT_TOPICS.md`; the single-FC04 read (695..727+max_ch−1, ≤46 regs) needs the
   42-register-truncation bench measurement (`bridge_mr02m_map.py:41-44`) before adoption.
-- [OPEN] 2026-09-08 **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (wide row per `(ts, device_id)`, one-time atomic
+  pivot with `carel_samples_v1` as the rollback, `ahu_` METRICS ids + `group=ahu`, the
+  bespoke path deleted, `kind=carel` response shape preserved by an adapter; 7 tests RED
+  on the long DDL) **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
   the Carel plan recommended** (audit E13; plan §7 S1 under «Примени все рекомендации»).
   ~300 lines of bespoke parallel path (`_query_series_carel`, `history_carel*`,
   `collect_export_table_carel`) instead of the generic engine, no `group=ahu` overview.
@@ -103,8 +236,11 @@ worklist collapsed into one home).
   nothing exercises; `test-web-update-semver.mjs` covers the JS half only. Also
   pre-existing: light `.btn-warn:hover` = 4.44:1 (`#b45309` on `#fff0cc`), just under AA;
   `ui-layout` never measures hover.
-- [OPEN] 2026-09-08 **[LOW] Rules engine rewrites and fsyncs the whole store on every run
-  and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (run state moved to the sibling journal
+  `/etc/sa02m-rules/runs.json`, buffered and flushed on 5 s / 32 records / `run_now` /
+  shutdown; the document is written only on a content change and the mtime watch never
+  sees a run; `tests/test_journal.py` RED 3 failures + 13 errors on 1.0.6.40) **[LOW] Rules
+  engine rewrites and fsyncs the whole store on every run and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
   write per second to eMMC/SD, and the mtime bump forces a reload on the next message.
   Batch journal writes (timer / N records) and keep `runs` in a separate small file —
   design change, measure first.
@@ -893,7 +1029,10 @@ worklist collapsed into one home).
   `device_history_db.py` 1918→2226 (its decompose was queued «AFTER» 1.0.6.35 by
   Operator decision F4 and never cut), new `sa02m_rules/engine.py` 990; absolute
   worst: `main.css` 5906, `flasher.js` 5795, `mqtt.js` 2775, `devices.js` 2609,
-  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910. 40 tracked files
+  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910.
+  **`device_history_db.py` DONE in 1.0.6.41**: 2226 → a 133-line permanent façade over
+  eight responsibility modules (AST-multiset neutrality `0 differences`, id set identical).
+  Next by size: `main.css`, `flasher.js`, `mqtt.js`, `devices.js`, `app/status.js`. 40 tracked files
   over 800 lines. Each decompose is its own branch (`.ai-dev/procedures/decompose.md`).
 - [OPEN] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
   always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).

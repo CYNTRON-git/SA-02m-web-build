@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/platform-Armbian%20%7C%20Linux%20ARM-orange?style=flat-square"/>
   <img src="https://img.shields.io/badge/stack-nginx%20%2B%20fcgiwrap%20%2B%20Bash%20CGI-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square"/>
-  <img src="https://img.shields.io/badge/version-1.0.6.40-cyan?style=flat-square"/>
+  <img src="https://img.shields.io/badge/version-1.0.6.41-cyan?style=flat-square"/>
 </p>
 
 Веб-интерфейс для **[сервера автоматизации СА-02м](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/servery_avtomatizatsii/)** производства [ЦИНТРОН](https://cyntron.ru) на базе процессорного модуля [A40i-2eth](https://cyntron.ru/catalog/ustroystva_avtomatizatsii/komplektuyushchie/7705/) (Allwinner A40i, Linux).
@@ -156,6 +156,7 @@ echo 'SA02M_HW_VARIANT=sa02m-2eth' > /etc/sa02m_hw_variant.conf
 ### Сценарии на плате
 - **Служба `sa02m-rules`** — движок сценариев на контроллере (`rules_engine=2`): расписание, пороги, кнопки MR-02м (`di_N_short/long/double`), присутствие, сцены, end off/restore. Store `/etc/sa02m-rules/scenarios.json`.
 - Ставится `scripts/06b-rules.sh` вместе с `install.sh` (отключить: `SA02M_SKIP_RULES=1`). Редактирование — из облака (`alice_devices_scenarios`), не отдельной вкладкой панели.
+- **Сцена голосом (с 1.0.6.41)** — сцена, помеченная «в Алису» в облачном редакторе, появляется в «Доме с Алисой» отдельным выключателем: «Алиса, включи <сцена>» запускает её, «выключи» гасит включённые ею выходы. На карточке «Умный дом» такие сцены видны строками только для чтения. Подробности: `docs/ALICE_INTEGRATION.md`, контракт `docs/contracts/alice-mqtt-mapping.md`.
 - После обновления файлов `/opt/sa02m-*` нужны рестарты `sa02m-rules` и активного Alice-семейства, иначе push сценария работает на старом коде (`docs/deployment.md`).
 
 ### Облако (удалённый доступ)

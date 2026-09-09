@@ -1272,11 +1272,16 @@ let shDevCache = {};
 let shRoomCache = {};
 let shRoomSig = '';
 
-function shCountsText(rooms, devices) {
+function shCountsText(rooms, devices, sceneDevices) {
   let inAlice = 0;
   devices.forEach(function (d) { if (shVisibleInAlice(d)) inAlice++; });
-  return uiT('Комнат') + ': ' + rooms.length + ' · ' + uiT('Устройств') + ': ' + devices.length +
+  let text = uiT('Комнат') + ': ' + rooms.length + ' · ' + uiT('Устройств') + ': ' + devices.length +
     ' · ' + uiT('в Алисе') + ': ' + inAlice;
+  // Only when there is at least one: the counts line must stay on one line
+  // at the card's width, and a «: 0» tells the operator nothing.
+  const scenes = (sceneDevices || []).length;
+  if (scenes) text += ' · ' + uiT('Сценариев в Алисе') + ': ' + scenes;
+  return text;
 }
 
 function shRenderRooms(rooms) {
@@ -1316,7 +1321,25 @@ function shRenderRooms(rooms) {
   sel.value = shRoomCache[keep] ? keep : '';
 }
 
-function shRenderDevices(devices, rooms) {
+// Read-only row for a scene the cloud editor marked «в Алису» (1.0.6.41).
+// NOT entered into shDevCache and carrying no data-id: the edit/delete
+// handlers resolve a row by that attribute, and a scene is owned by the
+// cloud scenario editor, not by this card.
+function shSceneRowHtml(scene) {
+  const room = shRoomCache[scene.room_id];
+  const meta = uiT('сценарий') + (room ? ' · ' + (room.name || room.id) : '');
+  return '<div class="sh-dev-row sh-dev-scene">' +
+    // Same icon the board's own type map gives `devices.types.switch` —
+    // which is exactly what the scene is published to Alice as.
+    '<svg class="sh-icon" aria-hidden="true"><use href="#i-' +
+    escAttr(shIconForType('devices.types.switch')) + '"></use></svg>' +
+    '<span class="mono text-sm">' + escHtml(scene.name || scene.scene_id || '') + '</span> ' +
+    '<span class="text-sm text-sec">' + escHtml(meta) + '</span>' +
+    ' <span class="badge badge-unk">' + escHtml(uiT('сценарий')) + '</span>' +
+    '</div>';
+}
+
+function shRenderDevices(devices, rooms, sceneDevices) {
   const list = $('sh-device-list');
   if (!list) return;
   shDevCache = {};
@@ -1328,10 +1351,12 @@ function shRenderDevices(devices, rooms) {
   // path on which the poll may reset #sh-rows, and only because the rows
   // describe a device that no longer exists.
   if (shEditId && !shDevCache[shEditId]) shCancelEdit();
-  if (!devices.length) {
+  const scenes = sceneDevices || [];
+  if (!devices.length && !scenes.length) {
     list.innerHTML = '<p class="field-hint">' + escHtml(uiT('Устройства ещё не добавлены')) + '</p>';
     return;
   }
+  const sceneHtml = scenes.map(shSceneRowHtml).join('');
   list.innerHTML = devices.map(function (dev) {
     const room = shRoomCache[dev.room_id];
     const meta = shDeviceTypeLabel(dev.type) + shReadingCount(dev) +
@@ -1346,7 +1371,7 @@ function shRenderDevices(devices, rooms) {
       '<button type="button" class="btn btn-sm" data-act="edit">' + escHtml(uiT('Изменить')) + '</button> ' +
       '<button type="button" class="btn btn-sm btn-danger" data-act="del">' + escHtml(uiT('Удалить')) + '</button>' +
       '</span></div>';
-  }).join('');
+  }).join('') + sceneHtml;
 }
 
 // Last poll payload, kept so a language switch can re-render the counts and
@@ -1360,9 +1385,12 @@ function shOnData(d) {
   _shLastData = d;
   const devices = (d.devices && d.devices.devices) || [];
   const rooms = (d.devices && d.devices.rooms) || [];
+  // Absent on an older CGI (or on a board with no scenario engine) — the
+  // rows and the count then simply do not appear, never a throw.
+  const sceneDevices = d.scene_devices || [];
   shRenderRooms(rooms);
-  shRenderDevices(devices, rooms);
-  const counts = shCountsText(rooms, devices);
+  shRenderDevices(devices, rooms, sceneDevices);
+  const counts = shCountsText(rooms, devices, sceneDevices);
   const card = $('sh-counts');
   if (card) card.textContent = counts;
   const modal = $('sh-modal-counts');
