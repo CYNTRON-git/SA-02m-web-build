@@ -152,11 +152,19 @@ Membership is stored on BOTH sides — the device's `room_id` and the room's
   `device_ids`); `delete_room` clears `room_id` on the devices it held. The
   atomic full-membership rebind is the rooms channel's
   (`docs/contracts/cloud-scenarios.md` §Rooms).
+- `upsert_room` is the create/rename path and membership follows the BODY, not
+  the validator's default: a body that OMITS `devices` **preserves** the stored
+  list (a rename unbinds nothing), a body that CARRIES it rebinds both sides
+  exactly like the atomic path — members get `room_id`, dropped members lose
+  the key, other rooms lose the joined ids, an id naming no device answers
+  `not_found` and stores nothing. Both writers rebind through the one helper
+  (`_rebind_room_devices`), so they cannot drift.
 
 A room stored before the list existed carries no `devices` key: joining it
-creates the list, a room nobody joined keeps its shape.
+creates the list, a room nobody joined keeps its shape, and renaming it does
+not conjure one.
 Validating: `tests/test_cloud_control_api.py::TestUpsertDeviceRooms`,
-`tests/test_models.py::TestRoomId`.
+`::TestUpsertRoomMembership`, `tests/test_models.py::TestRoomId`.
 
 ### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
 

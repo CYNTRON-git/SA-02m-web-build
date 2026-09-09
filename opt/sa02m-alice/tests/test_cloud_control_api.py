@@ -512,5 +512,121 @@ class TestApplyGroups(_CloudApiBase):
         self.assertTrue(all("groups" not in d for d in listed_devs))
 
 
+class TestUpsertRoomMembership(_CloudApiBase):
+    """`upsert_room` is the CREATE/RENAME path and never unbinds by omission.
+
+    `models.validate_room` fills `devices: []` when the body omits the key and
+    the handler stored the validated row wholesale, so a plain rename WIPED the
+    room's membership while every device kept a `room_id` naming it — the room
+    side of the desync class `upsert_device` had. A body that omits `devices`
+    preserves the stored list; a body that carries one rebinds BOTH sides
+    exactly like the atomic path `apply_rooms`
+    (docs/contracts/alice-mqtt-mapping.md §Room membership).
+    """
+
+    LAMP = {"id": "lamp", "name": "Лампа", "type": "devices.types.light",
+            "capabilities": [], "properties": []}
+    SOCK = {"id": "sock", "name": "Розетка", "type": "devices.types.socket",
+            "capabilities": [], "properties": []}
+
+    def setUp(self):
+        super().setUp()
+        save_devices({"rooms": [], "groups": [],
+                      "devices": [dict(self.LAMP), dict(self.SOCK)]})
+        self.kitchen = api.apply_rooms({"name": "Кухня", "devices": ["lamp"]})["room"]["id"]
+        self.hall = api.apply_rooms({"name": "Зал"})["room"]["id"]
+
+    def _members(self):
+        return {r["id"]: list(r.get("devices") or []) for r in load_devices()["rooms"]}
+
+    def _dev(self, device_id):
+        for d in load_devices()["devices"]:
+            if d.get("id") == device_id:
+                return d
+        self.fail("device %s vanished" % device_id)
+
+    def test_rename_preserves_the_stored_membership(self):
+        out = api.upsert_room({"id": self.kitchen, "name": "Кухня 2"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["room"]["name"], "Кухня 2")
+        self.assertEqual(out["room"].get("devices"), ["lamp"])
+        self.assertEqual(self._members()[self.kitchen], ["lamp"])
+        self.assertEqual(self._dev("lamp").get("room_id"), self.kitchen)
+
+    def test_rename_keeps_a_pre_list_room_shape(self):
+        # A document written before the list existed carries no `devices` key:
+        # a rename must not conjure one (`_sync_room_membership`'s rule).
+        save_devices({"rooms": [{"id": "r1", "name": "Кухня"}],
+                      "devices": [dict(self.LAMP, room_id="r1")]})
+        out = api.upsert_room({"id": "r1", "name": "Кухня 2"})
+        self.assertTrue(out["ok"], out)
+        # The response keeps its shape (`devices` always present) while the
+        # STORED row keeps its own — the two shapes are separate rules.
+        self.assertEqual(out["room"]["devices"], [])
+        stored = load_devices()["rooms"][0]
+        self.assertEqual(stored["name"], "Кухня 2")
+        self.assertNotIn("devices", stored)
+        self.assertEqual(self._dev("lamp").get("room_id"), "r1")
+
+    def test_a_carried_list_rebinds_both_sides(self):
+        out = api.upsert_room({"id": self.kitchen, "name": "Кухня",
+                               "devices": ["sock"]})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(self._members()[self.kitchen], ["sock"])
+        self.assertEqual(self._dev("sock").get("room_id"), self.kitchen)
+        # A dropped member loses the key outright — an empty string would still
+        # serialise into the stored document.
+        self.assertNotIn("room_id", self._dev("lamp"))
+
+    def test_a_carried_list_drops_the_id_from_its_previous_room(self):
+        out = api.upsert_room({"id": self.hall, "name": "Зал",
+                               "devices": ["lamp"]})
+        self.assertTrue(out["ok"], out)
+        members = self._members()
+        self.assertEqual(members[self.hall], ["lamp"])
+        self.assertEqual(members[self.kitchen], [])
+        self.assertEqual(self._dev("lamp").get("room_id"), self.hall)
+
+    def test_an_unknown_device_is_refused_and_nothing_is_stored(self):
+        before = load_devices()
+        out = api.upsert_room({"id": self.kitchen, "name": "Кухня 2",
+                               "devices": ["ghost"]})
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out.get("error"), "not_found")
+        self.assertEqual(load_devices(), before)
+
+    def test_create_with_devices_binds_them(self):
+        out = api.upsert_room({"name": "Спальня", "devices": ["sock"]})
+        self.assertTrue(out["ok"], out)
+        rid = out["room"]["id"]
+        self.assertEqual(self._members()[rid], ["sock"])
+        self.assertEqual(self._dev("sock").get("room_id"), rid)
+
+    def test_create_without_devices_binds_nobody(self):
+        # Preservation pin — green before and after.
+        out = api.upsert_room({"name": "Спальня"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(self._members()[out["room"]["id"]], [])
+        self.assertEqual(self._dev("lamp").get("room_id"), self.kitchen)
+
+    def test_delete_room_leaves_no_device_naming_it(self):
+        # Preservation pin: `delete_room` already clears `room_id`, and the
+        # contract paragraph asserts it — so a check has to hold it.
+        self.assertTrue(api.delete_room(self.kitchen)["ok"])
+        self.assertNotIn("room_id", self._dev("lamp"))
+        self.assertEqual([r["id"] for r in load_devices()["rooms"]], [self.hall])
+
+    def test_group_rename_preserves_its_device_ids(self):
+        # The neighbour checked for the same class: `apply_groups` is the only
+        # group writer and it already preserves `device_ids` when the body
+        # omits them. Preservation pin — green before and after.
+        gid = api.apply_groups({"name": "Свет",
+                                "device_ids": ["lamp", "sock"]})["group"]["id"]
+        out = api.apply_groups({"id": gid, "name": "Свет 2"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["group"]["device_ids"], ["lamp", "sock"])
+        self.assertEqual(load_devices()["groups"][0]["device_ids"], ["lamp", "sock"])
+
+
 if __name__ == "__main__":
     unittest.main()

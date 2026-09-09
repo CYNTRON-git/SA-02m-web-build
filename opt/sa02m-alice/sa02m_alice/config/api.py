@@ -888,6 +888,44 @@ def _listed_room_devices(doc: Dict[str, Any]) -> list:
     return out
 
 
+def _rebind_room_devices(doc: Dict[str, Any], room_id: str,
+                         bind: List[str]) -> Optional[Dict[str, Any]]:
+    """Rewrite BOTH sides of one room's membership; `bind` is the complete set.
+
+    Members get `room_id`, former members DROP the key (an empty string would
+    still serialise), the room's own list becomes `bind`, and every other room
+    loses the ids that just joined. Returns an error payload — nothing mutated
+    — when an id names no known device; `None` on success. One home for the
+    rebind: `apply_rooms` (the atomic room-editor path) and `upsert_room` (a
+    create/rename body that carries `devices`) both call it, so the two can
+    never drift (docs/contracts/alice-mqtt-mapping.md §Room membership).
+    """
+    known = {
+        d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
+    }
+    for did in bind:
+        if did not in known:
+            return {"ok": False, "error": "not_found", "message": "device not found"}
+    bind_set = set(bind)
+    for d in doc.get("devices") or []:
+        if not isinstance(d, dict):
+            continue
+        if d.get("id") in bind_set:
+            d["room_id"] = room_id
+        elif d.get("room_id") == room_id:
+            # Unassigned devices DROP the key (an empty string would still
+            # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
+            d.pop("room_id", None)
+    for r in doc.get("rooms") or []:
+        if not isinstance(r, dict):
+            continue
+        if r.get("id") == room_id:
+            r["devices"] = list(bind)
+        elif isinstance(r.get("devices"), list):
+            r["devices"] = [x for x in r["devices"] if x not in bind_set]
+    return None
+
+
 def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
     """One atomic write: upsert or delete a room and bind listed devices.
 
@@ -951,30 +989,9 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
             existing["name"] = cleaned["name"]
             rooms[idx] = existing
         if bind is not None:
-            known = {
-                d.get("id") for d in (doc.get("devices") or []) if isinstance(d, dict) and d.get("id")
-            }
-            for did in bind:
-                if did not in known:
-                    return {"ok": False, "error": "not_found", "message": "device not found"}
-            bind_set = set(bind)
-            for d in doc.get("devices") or []:
-                if not isinstance(d, dict):
-                    continue
-                did = d.get("id")
-                if did in bind_set:
-                    d["room_id"] = cleaned["id"]
-                elif d.get("room_id") == cleaned["id"]:
-                    # Unassigned devices DROP the key (an empty string would still
-                    # serialise into the stored doc — docs/contracts/cloud-scenarios.md).
-                    d.pop("room_id", None)
-            for r in rooms:
-                if not isinstance(r, dict):
-                    continue
-                if r.get("id") == cleaned["id"]:
-                    r["devices"] = list(bind)
-                elif isinstance(r.get("devices"), list):
-                    r["devices"] = [x for x in r["devices"] if x not in bind_set]
+            refused = _rebind_room_devices(doc, cleaned["id"], bind)
+            if refused is not None:
+                return refused
         save_devices(doc)
     room_out = {"id": cleaned["id"], "name": cleaned["name"]}
     return {
@@ -986,23 +1003,51 @@ def apply_rooms(body: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def upsert_room(room: Dict[str, Any]) -> Dict[str, Any]:
+    """Create or rename a room; membership follows the BODY, never the default.
+
+    `validate_room` fills `devices: []` when the body omits the key, so storing
+    the validated row wholesale wiped an existing room's membership on a plain
+    rename while every device kept a `room_id` naming it — the room side of the
+    desync class `upsert_device` had. So: a body that OMITS `devices` preserves
+    the stored list (and a pre-list room keeps its shape); a body that CARRIES
+    one rebinds both sides through the same helper the atomic room-editor path
+    uses (docs/contracts/alice-mqtt-mapping.md §Room membership).
+    """
     cleaned, err = models.validate_room(room)
     if err:
         return {"ok": False, "error": "invalid_room", "message": err}
+    # `validate_room` cannot tell the caller apart afterwards — it defaults the
+    # key — so the omitted-vs-carried question is asked of the raw body.
+    rebind = isinstance(room, dict) and room.get("devices") is not None
     with devices_lock():
         doc = load_devices()
         rooms = doc.setdefault("rooms", [])
-        for i, r in enumerate(rooms):
+        stored = None
+        for r in rooms:
             if isinstance(r, dict) and r.get("id") == cleaned["id"]:
-                rooms[i] = cleaned
-                save_devices(doc)
-                return {"ok": True, "room": cleaned}
-        if len(rooms) >= C.COLLECTION_CAP:
-            return {"ok": False, "error": "too_many",
-                    "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
-        rooms.append(cleaned)
+                stored = r
+                break
+        if stored is None:
+            if len(rooms) >= C.COLLECTION_CAP:
+                return {"ok": False, "error": "too_many",
+                        "message": "too many rooms (cap %d)" % C.COLLECTION_CAP}
+            stored = cleaned
+            rooms.append(stored)
+        else:
+            stored["name"] = cleaned["name"]
+        if rebind:
+            refused = _rebind_room_devices(doc, stored["id"], list(cleaned["devices"]))
+            if refused is not None:
+                return refused
         save_devices(doc)
-        return {"ok": True, "room": cleaned}
+        # The payload keeps its shape for the hub — `devices` was always
+        # present (it echoed the body); it now reports the row's real
+        # membership, `[]` for a room stored before the list existed.
+        listed = stored.get("devices")
+        return {"ok": True, "room": {
+            "id": stored["id"], "name": stored["name"],
+            "devices": list(listed) if isinstance(listed, list) else [],
+        }}
 
 
 def delete_room(room_id: str) -> Dict[str, Any]:
