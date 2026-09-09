@@ -78,14 +78,24 @@ def test_export_table_kind_from_the_metric_set_device(tmp_path: Path, monkeypatc
     db = tmp_path / "hist.db"
     _seed(db)
     # A metric whose device is not dtv/ce (the wide Carel table's shape, on a table
-    # that exists on this tree) must yield ITS device as the export kind.
+    # that exists on this tree) must yield ITS device as the export kind. TWO
+    # metrics, because a ONE-metric export is titled by that metric's own label
+    # (pinned below) — the group title needs a real group.
     monkeypatch.setitem(METRICS, "test_ahu_x", _max_entry(device="carel", label="X"))
-    monkeypatch.setitem(HISTORY_GROUPS, "ahu", ["test_ahu_x"])
+    monkeypatch.setitem(
+        METRICS, "test_ahu_y",
+        _max_entry(device="carel", label="Y", fields=["voltage_b"],
+                   labels={"voltage_b": "Ub"}),
+    )
+    monkeypatch.setitem(HISTORY_GROUPS, "ahu", ["test_ahu_x", "test_ahu_y"])
     t = collect_export_table("1h", group="ahu", device_id=_CE, path=db)
     assert t["ok"] and t["kind"] == "carel" and t["title"] == "Carel AHU"
+    # A single-metric export keeps its metric's label as the title (unchanged).
+    one = collect_export_table("1h", metric_id="test_ahu_x", device_id=_CE, path=db)
+    assert one["kind"] == "carel" and one["title"] == "X"
     # The entry's own aggregate reaches the export table too (the state group
     # exports its max, like the chart) — 240, not the 230 average.
-    assert t["rows"] == [[t["rows"][0][0], 240.0]]
+    assert t["rows"] == [[t["rows"][0][0], 240.0, 240.0]]
     # DTV/CE derivation unchanged: single-device → that device, mixed → mixed, and
     # the energy column keeps its explicit max (1.2) while the chart stays avg.
     assert collect_export_table("1h", group="energy", device_id=_CE, path=db)["kind"] == "ce"
