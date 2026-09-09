@@ -524,9 +524,15 @@ sa02m_atomic_install() {
     local -a opts=()
     while [ $# -gt 0 ]; do
         case "$1" in
-            -m) mode=${2:-}; shift 2 ;;
-            -o) owner=${2:-}; shift 2 ;;
-            -g) group=${2:-}; shift 2 ;;
+            # A flag with no value must be refused BEFORE the shift: `shift 2`
+            # on a one-element "$@" fails, $# never decreases and the loop spins
+            # forever (ship review 1.0.6.41, finding 8). Harness case 6c.
+            -m) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -m без значения"; return 1; }
+                mode=$2; shift 2 ;;
+            -o) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -o без значения"; return 1; }
+                owner=$2; shift 2 ;;
+            -g) [ $# -ge 2 ] || { log ERR "sa02m_atomic_install: ключ -g без значения"; return 1; }
+                group=$2; shift 2 ;;
             -d) log ERR "sa02m_atomic_install: -d не поддерживается (каталог — не атомарная запись файла)"; return 1 ;;
             --) shift; break ;;
             -*) log ERR "sa02m_atomic_install: неизвестный ключ $1"; return 1 ;;

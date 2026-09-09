@@ -60,7 +60,12 @@ atomic_install_script() {
     local mode="" src dst tmp
     while [ $# -gt 0 ]; do
         case "$1" in
-            -m) mode=${2:-}; shift 2 ;;
+            # Refused BEFORE the shift: `shift 2` on a one-element "$@" fails,
+            # $# never decreases and the loop spins forever — here that would
+            # wedge the board's self-update until reboot, since $LOCKFILE is
+            # only cleared from the EXIT trap (ship review 1.0.6.41, finding 8).
+            -m) [ $# -ge 2 ] || { log "ERROR: atomic_install_script: ключ -m без значения"; return 1; }
+                mode=$2; shift 2 ;;
             --) shift; break ;;
             -*) log "ERROR: atomic_install_script: неизвестный ключ $1"; return 1 ;;
             *)  break ;;

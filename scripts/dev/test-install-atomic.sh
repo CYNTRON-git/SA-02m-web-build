@@ -141,6 +141,26 @@ rc=0; sa02m_atomic_install -m 0644 "$T/src/x.service" >/dev/null 2>&1 || rc=$?
 rc=0; sa02m_atomic_install -d -m 0755 "$T/live/newdir" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] && [ ! -d "$T/live/newdir" ] && ok "6b -d is refused (a directory is not an atomic file write)" || bad "6b -d accepted"
 
+# 6c A VALUE-TAKING FLAG WITH NO VALUE. `-m` last on the line makes `shift 2`
+# fail; $# never decreases and `while [ $# -gt 0 ]` spins forever (ship review
+# 1.0.6.41 finding 8 — the same shape shipped in the OTA helper, case 8h). Run
+# under `timeout` so a regression FAILS here instead of hanging the suite.
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "SKIP  6c dangling flag (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
+else
+    for flag in -m -o -g; do
+        rc=0
+        timeout 5 bash -c '. "$1" >/dev/null 2>&1; sa02m_atomic_install "$2"' _ "$LIB" "$flag" >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -eq 124 ]; then
+            bad "6c dangling '$flag' HANGS the helper (rc=124, killed by timeout) — 'shift 2' fails and the argument loop never terminates"
+        elif [ "$rc" -eq 0 ]; then
+            bad "6c dangling '$flag' returned 0 — a flag with no value was accepted"
+        else
+            ok "6c dangling '$flag' (no value) is refused, not spun on (rc=$rc)"
+        fi
+    done
+fi
+
 echo "── 7. every live-path install site in scripts/*.sh + install.sh uses the helper ──"
 if ! command -v python3 >/dev/null 2>&1; then
     bad "7 python3 not found — the site sweep did NOT run (a skip is not a pass)"
@@ -310,6 +330,22 @@ SHIM
     else
         bad "8g negative control: the pre-fix shape survived the torn-copy shim ($pfx_bytes bytes) — 8c/8d model nothing"
     fi
+    # 8h the same dangling-flag hang, in the helper that runs while $LOCKFILE
+    # holds the board's self-update (finding 8 — a hang here wedges web-update
+    # until reboot, the lock being cleared only from the EXIT trap).
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "SKIP  8h dangling '-m' (no coreutils 'timeout' on this host to bound a hang) — CI is the authority"
+    else
+        rc=0
+        timeout 5 bash -c 'log() { :; }; LOGFILE=$2; . "$1"; atomic_install_script -m' _ "$T/apply-helper.sh" "$LOGFILE" >/dev/null 2>&1 || rc=$?
+        if [ "$rc" -eq 124 ]; then
+            bad "8h dangling '-m' HANGS atomic_install_script (rc=124, killed by timeout) — the OTA path would hold \$LOCKFILE forever"
+        elif [ "$rc" -eq 0 ]; then
+            bad "8h dangling '-m' returned 0 — a flag with no value was accepted"
+        else
+            ok "8h dangling '-m' (no value) is refused, not spun on (rc=$rc)"
+        fi
+    fi
 fi
 
 echo "── 9. every live-path install site in the OTA apply path goes through the helper ──"
@@ -324,17 +360,46 @@ echo "── 9. every live-path install site in the OTA apply path goes through 
 # file is not in its FILES set — the sites are pinned here instead.
 MIN_APPLY_CALLS=7      # 7 live-path sites on 1.0.6.41
 MIN_APPLY_ALLOWED=2    # the two sanctioned raw sites above
+# The allow-list matches the DESTINATION, not the line. A line-wide match reads
+# the same string in the SOURCE argument (:391 passes
+# "$TMPDIR/repo/etc/tmpfiles.d/$conf" as the source), so a future site with a
+# sanctioned-looking source and a LIVE destination would be excused by it —
+# ship review 1.0.6.41 finding 9, driven by case 9d. The destination is the
+# line's last word, stripped of a trailing line-continuation backslash (:427
+# ends in one) and of surrounding quotes, and it must start at /etc/… : a live
+# path is absolute, so an unresolved-variable prefix is never sanctioned.
+apply_sites() {
+    grep -n -E '(^|[^[:alnum:]_/.-])install[[:space:]]+-m[[:space:]]' "$1" 2>/dev/null \
+        | tr -d '\r' | grep -v -E '^[[:space:]]*[0-9]+:[[:space:]]*#' || true
+}
+apply_dst_is_sanctioned() {
+    local dst
+    # awk's fields ignore trailing whitespace; a line ending in a continuation
+    # backslash (:427) carries the destination one field earlier.
+    dst=$(printf '%s' "$1" | awk '{ print ($NF == "\\") ? $(NF - 1) : $NF }')
+    dst=${dst#[\"']}
+    dst=${dst%[\"']}
+    case "$dst" in
+        /etc/tmpfiles.d/*|/etc/sudoers.d/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 apply_raw_sites() {
-    local out
-    out=$(grep -n -E '(^|[^[:alnum:]_/.-])install[[:space:]]+-m[[:space:]]' "$1" 2>/dev/null || true)
-    printf '%s\n' "$out" | tr -d '\r' \
-        | grep -v -E '^[[:space:]]*[0-9]+:[[:space:]]*#' \
-        | grep -v -E '/etc/tmpfiles\.d/|/etc/sudoers\.d/' || true
+    local line
+    apply_sites "$1" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        apply_dst_is_sanctioned "$line" || printf '%s\n' "$line"
+    done
 }
 apply_allowed_count() {
-    local out
-    out=$(grep -n -E '(^|[^[:alnum:]_/.-])install[[:space:]]+-m[[:space:]]' "$1" 2>/dev/null || true)
-    printf '%s\n' "$out" | tr -d '\r' | grep -c -E '/etc/tmpfiles\.d/|/etc/sudoers\.d/'
+    local line n=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        apply_dst_is_sanctioned "$line" && n=$((n + 1))
+    done <<EOF
+$(apply_sites "$1")
+EOF
+    printf '%s\n' "$n"
 }
 
 raw=$(apply_raw_sites "$APPLY" | sed '/^$/d')
@@ -367,6 +432,27 @@ if [ -n "${aln:-}" ] && sed -i "${aln}s/atomic_install_script -m /install -m /" 
     fi
 else
     bad "9c drive-to-failure could not run: no atomic_install_script site found to revert"
+fi
+
+# 9d the excused shape: a SANCTIONED string in the SOURCE argument with a LIVE
+# destination. The old line-wide allow-list matched anywhere on the line, so
+# this site was silently excused (ship review 1.0.6.41 finding 9); the
+# destination rule must flag it — and must still excuse the two real sanctioned
+# sites, so the planted copy has to report EXACTLY one raw site.
+plant="$T/scratch/etc/plant-$(basename "$APPLY")"
+cp "$APPLY" "$plant"
+printf '    install -m 644 "$TMPDIR/repo/etc/tmpfiles.d/$conf" "$tgt"
+' >> "$plant"
+pln=$(wc -l < "$plant" | tr -d ' ')
+planted=$(apply_raw_sites "$plant" | sed '/^$/d')
+if [ "$(printf '%s
+' "$planted" | wc -l | tr -d ' ')" = "1" ]    && printf '%s
+' "$planted" | grep -q "^${pln}:"; then
+    ok "9d drive-to-failure: a site whose SOURCE is under etc/tmpfiles.d/ but whose DESTINATION is live is flagged at line $pln, and the two real sanctioned sites are still excused"
+else
+    bad "9d drive-to-failure: the planted source-looks-sanctioned/destination-live site at line $pln was NOT the single raw site reported (got: $(printf '%s
+' "$planted" | tr '
+' ' '))"
 fi
 
 echo ""
