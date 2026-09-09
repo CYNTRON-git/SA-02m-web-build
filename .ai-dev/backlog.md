@@ -8,6 +8,15 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-09 **[MED] The scenario sandbox is an AST denylist in front of a real
+  CPython interpreter, not isolation.** Every known escape is closed (1.0.6.39 banned
+  `.format`/`format_map` — the reproduction `'{0.text.__globals__}'.format(Notify)` now
+  answers `banned attr`; 1.0.6.41 added the per-run HTTP cap, the `pub` fence and one
+  namespace), but a new introspection route without `_`, `format` or `getattr` is not
+  excluded: the body still runs as root in the daemon's own process. Deep options, both
+  the Operator's call: run `type=code` in a bounded child process (seccomp/`setrlimit`,
+  no network, IPC to the engine), or drop `type=code` in favour of the block/logic
+  templates the cloud editor already builds. Found with the cloud session, 2026-09-09.
 - [OPEN] 2026-09-08 **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
   (offline full update 1.0.6.37 → 1.0.6.40, started 22:07, board rebooted ≈22:20 while
   `04-flasher.sh` was writing units — `sa02m-flasher.service` left as a 0-byte file
@@ -45,7 +54,10 @@ worklist collapsed into one home).
   checkbox/radio boxes.** Seen on the LED window's first render (label text pushed
   off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
   `.checkbox-line` rows sit under the same rule — check their screenshots.
-- [OPEN] 2026-09-08 **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (`--font-mono` declared; `--accent`→`--cyan`,
+  `--muted`/`--text-muted`→`--text-sec`, `--panel`→`--bg-panel`; the gate's bare-reference
+  pass now FAILS — 16 sites RED on 1.0.6.40, ALL OK after; ratios AA in both themes)
+  **[LOW] 16 bare `var(--x)` references in `main.css` name undeclared tokens**
   (`--accent` ×3 at 1904/1905/4819, `--font-mono` ×5, `--muted` ×2, `--panel` ×1,
   `--text-muted` ×5) and silently inherit today — a monospace font that is not
   monospace, a muted colour that is the full text colour. Reported (not gated) by
@@ -108,8 +120,11 @@ worklist collapsed into one home).
   nothing exercises; `test-web-update-semver.mjs` covers the JS half only. Also
   pre-existing: light `.btn-warn:hover` = 4.44:1 (`#b45309` on `#fff0cc`), just under AA;
   `ui-layout` never measures hover.
-- [OPEN] 2026-09-08 **[LOW] Rules engine rewrites and fsyncs the whole store on every run
-  and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (run state moved to the sibling journal
+  `/etc/sa02m-rules/runs.json`, buffered and flushed on 5 s / 32 records / `run_now` /
+  shutdown; the document is written only on a content change and the mtime watch never
+  sees a run; `tests/test_journal.py` RED 3 failures + 13 errors on 1.0.6.40) **[LOW] Rules
+  engine rewrites and fsyncs the whole store on every run and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
   write per second to eMMC/SD, and the mtime bump forces a reload on the next message.
   Batch journal writes (timer / N records) and keep `runs` in a separate small file —
   design change, measure first.
