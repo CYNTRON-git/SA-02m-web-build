@@ -629,12 +629,25 @@ def _hw_extra_output_mask(val) -> int:
     """SA02M_I2C_EXTRA_OUTPUT_MASK: pins the conf declares as outputs that no
     channel names.
 
-    Blank or absent is lib_hw.sh's `:-0x08`, NOT 0. The key first shipped in
-    1.0.5.64 and scripts/03-webserver.sh only writes the conf template when the
-    file is absent, so a board provisioned earlier reads this key as blank. A 0
-    there drops bit3 — KLogic's blue LED — out of the direction register, i.e.
-    this daemon turns a working output into an input while the CGI, which does
-    default to 0x08, turns it back on the next panel click.
+    ABSENT is lib_hw.sh's `:-0x08`, NOT 0. A 0 there drops bit3 — KLogic's blue
+    LED — out of the direction register, i.e. this daemon would turn a working
+    output into an input while the CGI, which does default to 0x08, turns it
+    back on the next panel click.
+
+    How a live board reaches that state: NOT through the full installer —
+    scripts/03-webserver.sh migrates the key in when it is missing. It is
+    scripts/update-www-only.sh, which ships and restarts this daemon while
+    carrying only the BACKEND migration, so a board last touched by that path
+    runs new code against a conf that predates the key (it first shipped in
+    1.0.5.64).
+
+    BLANK is not the same case and the two consumers still disagree on it:
+    lib_hw.sh applies its `:-0x08` at load and then SOURCES the conf, so an
+    explicitly empty assignment overwrites the default and its reader's
+    `${…:-0}` yields 0, while this function returns 0x08. Nothing shipped
+    writes an empty value, so no board is in that state; it is recorded in
+    .ai-dev/backlog.md rather than silently made to match, because whichever
+    way it is resolved it changes which consumer moves.
 
     An unparseable value still resolves to 0, exactly as
     sa02m_hw_i2c_extra_output_mask_dec's `*)` branch prints 0.
