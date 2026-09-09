@@ -380,6 +380,26 @@ class HttpGuardTests(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertNotEqual(http_guard.check_url(url, resolve=False), "")
 
+    def test_refuses_an_ipv4_loopback_wrapped_in_ipv6(self):
+        """6to4 (`2002::/16`) and Teredo (`2001::/32`) CARRY an IPv4 address.
+        Python reports a 6to4 address as `is_private` and NOT `is_loopback`,
+        so since the LAN allowance of 1.0.6.41 `http://[2002:7f00:1::]` —
+        127.0.0.1 in a 6to4 wrapper — would have been reached (found by the
+        cloud session's 55-URL sweep, 2026-09-09). The wrapper is judged on
+        the address it carries, so a wrapped LAN target stays allowed."""
+        for url in ("http://[2002:7f00:1::]/",              # 6to4 127.0.0.1
+                    "http://[2002:7f00:1::]:9999/cgi-bin/",
+                    "http://[2001:0:c000:201:0:ffff:80ff:fffe]/",  # Teredo 127.0.0.1
+                    "http://[::ffff:127.0.0.1]/"):          # mapped, already held
+            with self.subTest(url=url):
+                self.assertEqual(
+                    http_guard.check_url(url, resolve=False),
+                    "refused: loopback address")
+        for url in ("http://[2002:a00:5::]/",               # 6to4 10.0.0.5
+                    "http://[2001:0:c000:201:0:ffff:f5ff:fffa]/"):  # Teredo 10.0.0.5
+            with self.subTest(url=url):
+                self.assertEqual(http_guard.check_url(url, resolve=False), "")
+
     def test_refuses_a_url_past_the_length_cap_before_resolving(self):
         long_url = "https://example.com/?q=" + "a" * http_guard.URL_MAX
         with mock.patch.object(http_guard.socket, "getaddrinfo") as gai:

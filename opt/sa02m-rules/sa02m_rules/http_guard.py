@@ -71,8 +71,21 @@ def _address_refusal(addr: ipaddress._BaseAddress) -> str:
 
     Private (RFC1918 / ULA / CGNAT) is deliberately absent from the refused
     set — see the module docstring for the decision that put it there."""
-    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        addr = addr.ipv4_mapped
+    # Every IPv6 form that CARRIES an IPv4 address is judged on the address it
+    # carries: the mapped form, 6to4 (`2002::/16`) and Teredo (`2001::/32`).
+    # Python reports 6to4 as `is_private` and not `is_loopback`, so since the
+    # LAN allowance of 1.0.6.41 `http://[2002:7f00:1::]` — 127.0.0.1 in a 6to4
+    # wrapper — would otherwise be REACHED (found by the cloud session's
+    # 55-URL sweep, 2026-09-09; before the allowance it was refused only by
+    # accident, as "private").
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            addr = addr.ipv4_mapped
+        elif addr.sixtofour is not None:
+            addr = addr.sixtofour
+        elif addr.teredo is not None:
+            # (server, client) — the client is the host that would be reached.
+            addr = addr.teredo[1]
     if addr.is_loopback:
         return "refused: loopback address"
     if addr.is_link_local:

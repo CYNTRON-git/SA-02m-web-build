@@ -220,7 +220,10 @@ allow-listed one); loopback, link-local (169.254.169.254 included),
 multicast, reserved, unspecified and `0.0.0.0/8` addresses; the name
 `localhost` and the whole `.localhost` tree. Addresses are recognised in
 every spelling a resolver accepts, so `2130706433`, `0177.0.0.1`, `127.1`,
-`[::1]` and `[::ffff:127.0.0.1]` are all caught as loopback.
+`[::1]` and `[::ffff:127.0.0.1]` are all caught as loopback. An IPv6 form
+that CARRIES an IPv4 address — mapped, 6to4 (`2002::/16`) and Teredo
+(`2001::/32`) — is judged on the address it carries, so `[2002:7f00:1::]`
+is loopback while a wrapped LAN address stays allowed.
 
 **Allowed:** the operator's own LAN — RFC1918 and IPv6 ULA targets (a NAS, a
 panel, another board). Reaching an unintended LAN service is accepted risk;
