@@ -21,7 +21,11 @@ SAFETY -- this suite must never reach a real I2C bus. Bench 1.135's expander
 drives bench 1.136's power, so a stray write cuts a board. Two independent
 guards, not one: `_i2cget`/`_i2cset` are replaced by a fake register file, AND
 `subprocess.run` is replaced by a raiser, so a code path that ever bypassed
-the shims fails loudly instead of reaching `i2cset`.
+the shims fails loudly instead of reaching `i2cset`. The raiser raises
+RealSubprocessAttempt, a BaseException -- an AssertionError would be swallowed
+by those helpers' own `except Exception` and the bypass would come back as a
+quiet None/False. TestTheNoRealBusGuardFires runs the guard against the real
+helpers rather than asserting this paragraph.
 
 Stub idiom mirrors tests/test_telemetry_device_id.py -- sa02m_telemetry.py
 calls sys.exit() at import when paho is absent, so the paho stub is mandatory
@@ -56,6 +60,25 @@ except ImportError:
 
 import sa02m_telemetry as tel  # noqa: E402
 
+# The unshimmed helpers, captured before any patching: the guard proof below
+# has to call the code a bypassing path would call, not the fake register file.
+REAL_I2CGET = tel._i2cget
+REAL_I2CSET = tel._i2cset
+
+
+class RealSubprocessAttempt(BaseException):
+    """The no-real-bus guard's own exception, deliberately NOT an Exception.
+
+    `_i2cget`/`_i2cset` wrap their subprocess call in a blanket
+    `except Exception`, so an AssertionError raised by the guard is swallowed
+    and a bypassed shim comes back as a quiet None/False -- the guard reads as
+    silent approval of exactly the path it exists to catch. A BaseException
+    passes straight through that catch and unittest still records it as an
+    error, so "fails loudly" is true as written. TestTheNoRealBusGuardFires
+    proves it on the real helpers.
+    """
+
+
 # The shipped values, quoted from etc/sa02m_hw.conf. Not a second home: the
 # suite ASSERTS the tracked conf still carries them (TestShippedConfIsTheOneHome
 # below), so a change to the real file that this fixture did not follow turns
@@ -63,6 +86,7 @@ import sa02m_telemetry as tel  # noqa: E402
 SHIPPED_BIT_DO = 1
 SHIPPED_BIT_BEEPER = 2
 SHIPPED_BIT_ALARM_LED = 0
+SHIPPED_EXTRA_OUTPUT_MASK = "0x08"
 
 REG_OUT = 0x01
 REG_DIR = 0x03
@@ -75,8 +99,7 @@ SA02M_HW_BACKEND={backend}
 SA02M_I2C_EXP_BUS={bus}
 SA02M_I2C_EXP_ADDR={addr}
 SA02M_I2C_ACTIVE_LOW_MASK={active_low}
-SA02M_I2C_EXTRA_OUTPUT_MASK=0x08
-SA02M_I2C_BIT_DO={bit_do}
+{extra_output_mask_line}SA02M_I2C_BIT_DO={bit_do}
 SA02M_I2C_BIT_BEEPER={bit_beeper}
 SA02M_I2C_BIT_ALARM_LED={bit_alarm_led}
 SA02M_I2C_BIT_USB_POWER=
@@ -136,14 +159,17 @@ class HwTestCase(unittest.TestCase):
             mock.patch.object(tel, "_i2cget", self.exp.get),
             mock.patch.object(tel, "_i2cset", self.exp.set),
             mock.patch.object(tel, "_probe_available", lambda tool: False),
-            mock.patch.object(tel, "_run_probe", mock.Mock(side_effect=AssertionError(
-                "the owner gate probed a tool it had been told was absent"))),
+            mock.patch.object(tel, "_run_probe", mock.Mock(
+                side_effect=RealSubprocessAttempt(
+                    "the owner gate probed a tool it had been told was absent"))),
             # The second, independent guard: nothing in this suite may spawn a
             # process. If a path ever bypassed the shims above it would reach
-            # the real i2cset -- on bench 1.135 that cuts 1.136's power.
+            # the real i2cset -- on bench 1.135 that cuts 1.136's power. It
+            # raises RealSubprocessAttempt, not AssertionError, or the daemon's
+            # own `except Exception` would swallow it (see that class).
             mock.patch.object(
                 tel.subprocess, "run",
-                mock.Mock(side_effect=AssertionError(
+                mock.Mock(side_effect=RealSubprocessAttempt(
                     "a test tried to run a real i2c subprocess")),
             ),
         ]
@@ -154,11 +180,16 @@ class HwTestCase(unittest.TestCase):
     def write_conf(
         self, *, backend="i2c_expander", bus=2, addr="0x41", active_low="auto",
         bit_do=SHIPPED_BIT_DO, bit_beeper=SHIPPED_BIT_BEEPER,
-        bit_alarm_led=SHIPPED_BIT_ALARM_LED, extra="",
+        bit_alarm_led=SHIPPED_BIT_ALARM_LED,
+        extra_output_mask=SHIPPED_EXTRA_OUTPUT_MASK, extra="",
     ) -> Path:
+        """`extra_output_mask=None` omits the key, as a pre-1.0.5.64 conf does."""
+        mask_line = ("" if extra_output_mask is None
+                     else f"SA02M_I2C_EXTRA_OUTPUT_MASK={extra_output_mask}\n")
         body = CONF_TEMPLATE.format(
             backend=backend, bus=bus, addr=addr, active_low=active_low,
             bit_do=bit_do, bit_beeper=bit_beeper, bit_alarm_led=bit_alarm_led,
+            extra_output_mask_line=mask_line,
             lock_file=self.lock_path,
         ) + extra
         self.conf_path.write_text(body, encoding="utf-8")
@@ -430,6 +461,71 @@ class TestBusAddressComeFromTheConf(HwTestCase):
             self.assertEqual((bus, addr), (5, 0x42))
 
 
+class TestTheNoRealBusGuardFires(HwTestCase):
+    """This module's SAFETY paragraph, measured instead of asserted.
+
+    RED before the 1.0.6.42 review finding that produced it: with the raiser
+    raising AssertionError, `_i2cget` came back None and `_i2cset` came back
+    False -- their blanket `except Exception` ate the guard, so the claim
+    "fails loudly" was false while the suite printed ok.
+    """
+
+    def test_a_bypassed_i2cget_fails_loudly(self):
+        with self.assertRaises(RealSubprocessAttempt):
+            REAL_I2CGET(2, 0x41, REG_OUT)
+
+    def test_a_bypassed_i2cset_fails_loudly(self):
+        with self.assertRaises(RealSubprocessAttempt):
+            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF)
+
+    def test_the_shims_are_still_what_the_suite_actually_calls(self):
+        """Non-vacuity for the two cases above: the guard fires only on the
+        real helpers, and every other test in this file must still reach the
+        fake register file rather than that raiser."""
+        self.assertIsNot(tel._i2cget, REAL_I2CGET)
+        self.assertIsNot(tel._i2cset, REAL_I2CSET)
+        self.assertIsNone(tel._i2cget(2, 0x41, 0x99))   # unknown reg, no raise
+
+
+class TestTheDirectionRegisterFollowsTheConf(HwTestCase):
+    """Which pins the daemon declares as outputs, on the confs really deployed.
+
+    SA02M_I2C_EXTRA_OUTPUT_MASK first shipped in 1.0.5.64 and
+    scripts/03-webserver.sh writes the conf template only when the file is
+    absent, so a board provisioned before that reads the key as blank. bit3 is
+    KLogic's blue LED (etc/sa02m_hw.conf:34-36) and lib_hw.sh:34 defaults it to
+    an output; a daemon defaulting to 0 writes the SAME register with bit3 as
+    an INPUT, and the two owners then fight over the pin on every panel click.
+    """
+
+    def _direction_writes(self):
+        return [v for (_b, _a, reg, v) in self.exp.writes if reg == REG_DIR]
+
+    def test_a_conf_without_the_extra_mask_keeps_bit3_an_output(self):
+        """RED before the fix: 0xF8 -- bit3 handed back as an input."""
+        self.write_conf(extra_output_mask=None)
+        self.init_hw(self.make_client())
+        self.assertEqual(
+            self._direction_writes(), [0xF0],
+            "lib_hw.sh sa02m_hw_i2c_config_mask_dec writes 0xF0 on this conf "
+            "(bits 0-3 output); a daemon that writes 0xF8 has taken KLogic's "
+            "blue LED away")
+
+    def test_an_explicit_extra_mask_is_honoured_over_the_fallback(self):
+        """Non-vacuity for the case above: the fallback is a fallback, and a
+        conf that narrows the mask still narrows it."""
+        self.write_conf(extra_output_mask="0x00")
+        self.init_hw(self.make_client())
+        self.assertEqual(self._direction_writes(), [0xF8])
+
+    def test_an_unparseable_extra_mask_reads_as_zero_like_the_cgi(self):
+        """`*)` in sa02m_hw_i2c_extra_output_mask_dec prints 0 -- mirrored, so
+        a typo does not silently become the default."""
+        self.write_conf(extra_output_mask="banana")
+        self.init_hw(self.make_client())
+        self.assertEqual(self._direction_writes(), [0xF8])
+
+
 class TestShippedConfIsTheOneHome(unittest.TestCase):
     """Non-vacuity for this whole suite.
 
@@ -455,6 +551,12 @@ class TestShippedConfIsTheOneHome(unittest.TestCase):
         self.assertEqual(vals.get("SA02M_I2C_BIT_DO"), str(SHIPPED_BIT_DO))
         self.assertEqual(vals.get("SA02M_I2C_BIT_BEEPER"), str(SHIPPED_BIT_BEEPER))
         self.assertEqual(vals.get("SA02M_I2C_BIT_ALARM_LED"), str(SHIPPED_BIT_ALARM_LED))
+        mask = self._conf_values(
+            conf, r"^(SA02M_I2C_EXTRA_OUTPUT_MASK)=(\S*)\s*$")
+        self.assertEqual(mask.get("SA02M_I2C_EXTRA_OUTPUT_MASK"),
+                         SHIPPED_EXTRA_OUTPUT_MASK,
+                         "the fixture's extra-output mask no longer matches the "
+                         "shipped conf — bit3 is KLogic's blue LED")
 
     def test_cgi_defaults_match_the_shipped_conf(self):
         """The daemon and the web buttons must reach the same pin. lib_hw.sh is

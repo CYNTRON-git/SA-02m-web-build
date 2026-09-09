@@ -31,10 +31,13 @@ What is asserted here, and why each case exists:
 
 SAFETY -- this suite must never reach a real I2C bus. Same two independent
 guards as tests/test_telemetry_hw_map.py: `_i2cget`/`_i2cset` are replaced by a
-fake register file, AND `subprocess.run` is replaced by a raiser, so any path
-that bypassed the shims fails loudly instead of reaching `i2cset`. The owner
-probes are shimmed for the same reason (they spawn `systemctl`/`pgrep`), with
-the raiser left standing behind them.
+fake register file, AND `subprocess.run` is replaced by a raiser -- a
+BaseException, so the helpers' own `except Exception` cannot swallow it -- and
+any path that bypassed the shims fails loudly instead of reaching `i2cset`.
+TestTheNoRealBusGuardFires proves that on the real helpers -- each suite
+installs its own guard, so each proves its own rather than trusting the twin.
+The owner probes are shimmed for the same reason (they spawn
+`systemctl`/`pgrep`), with the raiser left standing behind them.
 
 PORTABILITY -- `fcntl` does not exist on a Windows dev host, and a suite that
 silently tests nothing there is the hollow-gate shape this project keeps
@@ -73,6 +76,24 @@ except ImportError:
     sys.modules["paho.mqtt.client"] = _paho_client
 
 import sa02m_telemetry as tel  # noqa: E402
+
+# The unshimmed helpers, captured before any patching (see the guard class).
+REAL_I2CGET = tel._i2cget
+REAL_I2CSET = tel._i2cset
+
+
+class RealSubprocessAttempt(BaseException):
+    """The no-real-bus guard's own exception, deliberately NOT an Exception.
+
+    `_i2cget`/`_i2cset` wrap their subprocess call in a blanket
+    `except Exception`, so an AssertionError raised by the guard is swallowed
+    and a bypassed shim comes back as a quiet None/False -- the guard reads as
+    silent approval of exactly the path it exists to catch. A BaseException
+    passes straight through that catch and unittest still records it as an
+    error, so "fails loudly" is true as written. TestTheNoRealBusGuardFires
+    proves it on the real helpers.
+    """
+
 
 REG_OUT = 0x01
 REG_DIR = 0x03
@@ -210,10 +231,12 @@ class LockTestCase(unittest.TestCase):
                               lambda tool: tool in self.available),
             # The second, independent guard: nothing here may spawn a process.
             # A path that bypassed the shims above would reach the real i2cset
-            # -- on bench 1.135 that cuts bench 1.136's power.
+            # -- on bench 1.135 that cuts bench 1.136's power. RealSubprocess-
+            # Attempt, not AssertionError: the daemon's blanket `except
+            # Exception` swallows the latter (see that class).
             mock.patch.object(
                 tel.subprocess, "run",
-                mock.Mock(side_effect=AssertionError(
+                mock.Mock(side_effect=RealSubprocessAttempt(
                     "a test tried to run a real subprocess")),
             ),
         ]
@@ -644,24 +667,99 @@ class TestDeferredDirectionRegister(LockTestCase):
         self.assertIsNone(stub._hw)
 
 
+
+class TestTheNoRealBusGuardFires(LockTestCase):
+    """This module's SAFETY paragraph, measured instead of asserted.
+
+    RED before the 1.0.6.42 review finding that produced it: with the raiser
+    raising AssertionError, `_i2cget` came back None and `_i2cset` False --
+    their blanket `except Exception` ate the guard, so "fails loudly" was
+    false while the suite printed ok. Twin of the case in
+    test_telemetry_hw_map.py, because the guard is installed per suite.
+    """
+
+    def test_a_bypassed_i2cget_fails_loudly(self):
+        with self.assertRaises(RealSubprocessAttempt):
+            REAL_I2CGET(2, 0x41, REG_OUT)
+
+    def test_a_bypassed_i2cset_fails_loudly(self):
+        with self.assertRaises(RealSubprocessAttempt):
+            REAL_I2CSET(2, 0x41, REG_OUT, ALL_OFF)
+
+    def test_the_shims_are_still_what_the_suite_actually_calls(self):
+        """Non-vacuity: every other case here must reach the fake register
+        file, not this raiser."""
+        self.assertIsNot(tel._i2cget, REAL_I2CGET)
+        self.assertIsNot(tel._i2cset, REAL_I2CSET)
+
+
 class TestTheFallbacksMatchTheCgi(unittest.TestCase):
-    """The drift alarm for the constants a Python daemon cannot source.
+    """The drift alarm for EVERY /etc/sa02m_hw.conf key this daemon reads.
 
     lib_hw.sh is the reference consumer and 1.0.6.42 deliberately does not
-    touch it. Its `:-` defaults are duplicated in sa02m_telemetry.py because no
-    Python process can source a shell file -- so they are pinned here, both
-    against lib_hw.sh and against the shipped conf. Non-vacuous: a pattern that
-    stops matching lib_hw.sh FAILS rather than passing on zero matches.
+    touch it. No Python process can source a shell file, so each `:-` default
+    it declares is duplicated in sa02m_telemetry.py -- and a duplicate that
+    drifts unnoticed is the defect this release exists to remove.
+
+    The first version of this pin covered the five lock/owner constants by
+    hand and MISSED SA02M_I2C_EXTRA_OUTPUT_MASK, whose daemon-side fallback of
+    0 dropped bit3 -- KLogic's blue LED -- out of the direction register on
+    every board whose conf predates 1.0.5.64, while the CGI kept writing it
+    back as an output. A hand-written list of five was the wrong shape, so the
+    ledger below is enumerated from the daemon's own SOURCE: a key it reads
+    that the ledger does not name FAILS, and a ledger row for a key it no
+    longer reads FAILS as stale (docs/agent-rules/quality-gate-rigor.md shapes
+    (b) and (g)).
+
+    Three halves per key, because none of them catches what the others do:
+
+      * the default DECLARED in lib_hw.sh is read out of that file and
+        compared -- never restated as a literal here;
+      * the daemon really READS the key: the probe conf carries a value that
+        is NOT the default and the loaded profile shows it. Without this the
+        drop-one case would pass for a key nothing consumes;
+      * dropping that key from the probe conf resolves to the CGI's default,
+        which is the divergence B1 actually was.
     """
 
     REPO = Path(__file__).resolve().parents[3]
     LIB_HW = "www/network_config/cgi-bin/lib_hw.sh"
+    DAEMON = "opt/sa02m-modbus-mqtt/sa02m_telemetry.py"
+
+    # The probe conf: every key set to something the CGI would NOT default to,
+    # so "the key was dropped" is observable rather than a coincidence.
+    PROBE_BITS = {"do": 1, "beeper": 2, "alarm_led": 0}
+    PROBE_EXTRA_MASK = 0x04
+    PROBE_LOCK_FILE = "/run/lock/probe-not-the-default.lock"
+    PROBE_VALUES = (
+        ("SA02M_HW_BACKEND", "disabled"),
+        ("SA02M_I2C_EXP_BUS", "5"),
+        ("SA02M_I2C_EXP_ADDR", "0x42"),
+        ("SA02M_I2C_ACTIVE_LOW_MASK", "0x02"),
+        ("SA02M_I2C_EXTRA_OUTPUT_MASK", "0x04"),
+        ("SA02M_I2C_LOCK_FILE", PROBE_LOCK_FILE),
+        ("SA02M_I2C_LOCK_WAIT_SEC", "4"),
+        ("SA02M_I2C_OWNER_UNITS", '"probe-a.service probe-b.service"'),
+        ("SA02M_I2C_OWNER_PROCS", '"probe-a probe-b"'),
+        ("SA02M_I2C_RESPECT_OWNER", "0"),
+        ("SA02M_I2C_BIT_DO", "1"),
+        ("SA02M_I2C_BIT_BEEPER", "2"),
+        ("SA02M_I2C_BIT_ALARM_LED", "0"),
+        ("SA02M_I2C_BIT_USB_POWER", ""),
+    )
+
+    # Keys the daemon reads by PREFIX, one per channel. Each is handled by its
+    # own case below rather than by the scalar ledger.
+    PREFIX_KEYS = ("SA02M_I2C_BIT_", "SA02M_GPIO_")
 
     def setUp(self):
         self.lib = self.REPO / self.LIB_HW
         self.assertTrue(self.lib.is_file(), f"{self.lib} is missing")
         self.text = self.lib.read_text(encoding="utf-8", errors="replace")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
 
+    # -- reading the reference ---------------------------------------------
     def _default(self, key: str) -> str:
         import re
         m = re.search(r'^%s="\$\{%s:-([^}]*)\}"\s*$' % (key, key),
@@ -672,6 +770,116 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
                f"FAILURE, not a pass")
         return m.group(1)
 
+    def _respect_owner_off_values(self) -> tuple[str, ...]:
+        import re
+        m = re.search(r'case "\$\{SA02M_I2C_RESPECT_OWNER:-1\}" in\s*\n\s*'
+                      r'([^)]*)\)\s*return 1', self.text)
+        self.assertIsNotNone(m, "lib_hw.sh no longer carries the "
+                                "SA02M_I2C_RESPECT_OWNER case list")
+        return tuple(m.group(1).split("|"))
+
+    # -- the ledger ---------------------------------------------------------
+    def _backend_for(self, default: str) -> str:
+        """lib_hw.sh sa02m_hw_backend(), on a conf declaring no GPIO line.
+
+        Mapped, not guessed: an unrecognised default fails the case rather
+        than falling through to i2c_expander, which is what the shell's `*)`
+        does and would hide a default we no longer understand.
+        """
+        table = {"off": "disabled", "disabled": "disabled", "none": "disabled",
+                 "i2c": "i2c_expander", "i2c_expander": "i2c_expander",
+                 "gpio": "gpio_sysfs", "gpio_sysfs": "gpio_sysfs",
+                 "auto": "i2c_expander", "": "i2c_expander"}
+        self.assertIn(default, table,
+                      "lib_hw.sh's SA02M_HW_BACKEND default is a value this "
+                      "pin does not know how to resolve")
+        return table[default]
+
+    def _active_low_for(self, default: str) -> int:
+        """lib_hw.sh sa02m_hw_i2c_active_low_mask_dec, on the probe conf."""
+        if default in ("auto", ""):
+            mask = self.PROBE_EXTRA_MASK
+            for bit in self.PROBE_BITS.values():
+                mask |= 1 << bit
+            return mask & 0x0F
+        return int(default, 0) & 0x0F
+
+    def _ledger(self) -> dict:
+        """key -> (probe, expected-from-lib-default, expected-on-probe-conf)."""
+        return {
+            "SA02M_HW_BACKEND": (
+                lambda p: p.backend, self._backend_for, "disabled"),
+            "SA02M_I2C_EXP_BUS": (
+                lambda p: p.bus, lambda d: int(d), 5),
+            "SA02M_I2C_EXP_ADDR": (
+                lambda p: p.addr, lambda d: int(d, 0), 0x42),
+            "SA02M_I2C_ACTIVE_LOW_MASK": (
+                lambda p: p.active_low_mask, self._active_low_for, 0x02),
+            "SA02M_I2C_EXTRA_OUTPUT_MASK": (
+                lambda p: p.extra_output_mask,
+                lambda d: int(d, 0) & 0x0F, 0x04),
+            "SA02M_I2C_LOCK_FILE": (
+                lambda p: p.lock_file, lambda d: d, self.PROBE_LOCK_FILE),
+            "SA02M_I2C_LOCK_WAIT_SEC": (
+                lambda p: p.lock_wait_s, lambda d: float(d), 4.0),
+            "SA02M_I2C_OWNER_UNITS": (
+                lambda p: p.owner_units, lambda d: tuple(d.split()),
+                ("probe-a.service", "probe-b.service")),
+            "SA02M_I2C_OWNER_PROCS": (
+                lambda p: p.owner_procs, lambda d: tuple(d.split()),
+                ("probe-a", "probe-b")),
+            "SA02M_I2C_RESPECT_OWNER": (
+                lambda p: p.respect_owner,
+                lambda d: d not in self._respect_owner_off_values(), False),
+        }
+
+    def _write_conf(self, *, drop: str = "") -> str:
+        lines = [f"{k}={v}" for k, v in self.PROBE_VALUES if k != drop]
+        path = Path(self._tmp.name) / f"hw{drop}.conf"
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    # -- the three halves ---------------------------------------------------
+    def test_every_conf_key_the_daemon_reads_is_in_this_ledger(self):
+        """The enumeration itself, so a seventh duplicated default cannot be
+        added without either a pin or a deliberate row here (B1's real cause:
+        the pin covered five of six keys while its description promised all)."""
+        import re
+        src = (self.REPO / self.DAEMON).read_text(encoding="utf-8",
+                                                  errors="replace")
+        found = set(re.findall(r'val\("(SA02M_[A-Z0-9_]*)"', src))
+        self.assertEqual(
+            found, set(self._ledger()) | set(self.PREFIX_KEYS),
+            "the set of /etc/sa02m_hw.conf keys sa02m_telemetry.py reads no "
+            "longer matches this ledger — a new one needs its pin, a removed "
+            "one needs its row deleted, and a regex that matched nothing at "
+            "all is a FAILURE, not a pass")
+
+    def test_the_probe_conf_is_read_key_by_key(self):
+        """Non-vacuity for the drop-one case: each key is really consumed, so
+        removing it below proves something."""
+        profile = tel.HwProfile.load(self._write_conf())
+        for key, (probe, _expect, on_probe_conf) in self._ledger().items():
+            with self.subTest(key=key):
+                self.assertEqual(probe(profile), on_probe_conf,
+                                 f"the daemon does not read {key} from the "
+                                 f"conf at all")
+
+    def test_each_absent_key_falls_back_to_the_cgi_default(self):
+        """The B1 case, generalised: a conf written before a key existed must
+        resolve exactly as lib_hw.sh resolves it on the same file."""
+        for key, (probe, expect, _alt) in self._ledger().items():
+            with self.subTest(key=key):
+                default = self._default(key)
+                profile = tel.HwProfile.load(self._write_conf(drop=key))
+                self.assertEqual(
+                    probe(profile), expect(default),
+                    f"{key} absent: the daemon resolves something other than "
+                    f"lib_hw.sh's `:-{default}` — the two consumers of ONE "
+                    f"register disagree on a board that simply predates the "
+                    f"key")
+
+    # -- the constants, pinned at their source too ---------------------------
     def test_lock_file_default_matches(self):
         self.assertEqual(self._default("SA02M_I2C_LOCK_FILE"),
                          tel.HW_LOCK_FILE_DEFAULT,
@@ -689,27 +897,58 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         self.assertEqual(tuple(self._default("SA02M_I2C_OWNER_PROCS").split()),
                          tel.HW_OWNER_PROCS_DEFAULT)
 
+    def test_extra_output_mask_default_matches(self):
+        """bit3 is KLogic's blue LED: a daemon defaulting to 0 here writes the
+        direction register with it as an INPUT (review finding B1)."""
+        self.assertEqual(int(self._default("SA02M_I2C_EXTRA_OUTPUT_MASK"), 0),
+                         tel.HW_EXTRA_OUTPUT_MASK_DEFAULT)
+
     def test_the_respect_owner_off_values_match(self):
         """Mirrored literally, not normalised: `False` does not switch the gate
         off in the shell either."""
-        import re
-        m = re.search(r'case "\$\{SA02M_I2C_RESPECT_OWNER:-1\}" in\s*\n\s*'
-                      r'([^)]*)\)\s*return 1', self.text)
-        self.assertIsNotNone(m, "lib_hw.sh no longer carries the "
-                                "SA02M_I2C_RESPECT_OWNER case list")
-        self.assertEqual(tuple(m.group(1).split("|")),
+        self.assertEqual(self._respect_owner_off_values(),
                          tel.HW_RESPECT_OWNER_OFF)
+
+    # -- the keys with no mirrored default, and why -------------------------
+    def test_a_missing_bit_is_refused_rather_than_defaulted(self):
+        """SA02M_I2C_BIT_* is the one prefix the daemon deliberately does NOT
+        mirror: lib_hw.sh defaults it (`:-1`, `:-2`, `:-0`) and this daemon
+        refuses instead, because a guessed pin is the 1.0.6.42 defect itself.
+        Pinned as behaviour so "deliberate" stays measurable — the CGI-side
+        values are pinned against the shipped conf in test_telemetry_hw_map.py
+        TestShippedConfIsTheOneHome.
+        """
+        for channel in ("do", "beeper", "alarm_led"):
+            with self.subTest(channel=channel):
+                key = "SA02M_I2C_BIT_" + channel.upper()
+                self.assertNotEqual(self._default(key), "",
+                                    f"{self.LIB_HW} no longer defaults {key} — "
+                                    f"this case would then pin nothing")
+                profile = tel.HwProfile.load(self._write_conf(drop=key))
+                self.assertNotIn(channel, profile.bits)
+                self.assertIn(channel, profile.refusals)
+
+    def test_the_gpio_keys_carry_no_default_on_either_side(self):
+        """SA02M_GPIO_* is read only to answer «is a sysfs line configured» in
+        `auto`. Empty on both sides, so there is no value to drift — pinned so
+        that stays true rather than assumed."""
+        for channel in tel.HW_MASK_CHANNELS:
+            with self.subTest(channel=channel):
+                self.assertEqual(self._default("SA02M_GPIO_" + channel.upper()),
+                                 "")
 
     def test_the_shipped_conf_sets_every_key_the_daemon_now_reads(self):
         """The fallbacks are a safety net, not the live values: on a shipped
-        board all five come from the conf, and this fails if one is dropped."""
+        board every ledger key comes from the conf, and this fails if one is
+        dropped. Derived from the ledger, so a new row is covered here too."""
+        import re
         conf = (self.REPO / "etc" / "sa02m_hw.conf").read_text(
             encoding="utf-8", errors="replace")
-        for key in ("SA02M_I2C_LOCK_FILE", "SA02M_I2C_LOCK_WAIT_SEC",
-                    "SA02M_I2C_OWNER_UNITS", "SA02M_I2C_OWNER_PROCS",
-                    "SA02M_I2C_RESPECT_OWNER"):
-            self.assertRegex(conf, r"(?m)^%s=\S" % key,
-                             f"etc/sa02m_hw.conf no longer sets {key}")
+        for key in self._ledger():
+            with self.subTest(key=key):
+                self.assertRegex(conf, r"(?m)^%s=\S" % key,
+                                 f"etc/sa02m_hw.conf no longer sets {key}")
+        self.assertTrue(re.search(r"(?m)^SA02M_I2C_BIT_DO=\S", conf))
 
 
 if __name__ == "__main__":
