@@ -26,6 +26,9 @@ def test_parse_and_label():
     assert m["kind"] == "ce" and m["port_num"] == 2 and m["addr"] == 14
     assert device_label("ce", 14, 2) == "СЭ-02м-3 № 14 порт 2"
     assert device_label("dtv", 3, 4) == "ДТВ-RS-485 № 3 порт 4"
+    c = parse_device_id("carel-COM3-1")
+    assert c["kind"] == "carel" and c["port_num"] == 3 and c["addr"] == 1
+    assert device_label("carel", 1, 3) == "Carel № 1 порт 3"
 
 
 def test_live_snapshot_maps_dtv_and_ce(tmp_path: Path):
@@ -436,7 +439,102 @@ def test_snapshot_mixes_all_kinds(tmp_path: Path):
     )
     snap = live_snapshot(cache)
     assert len(snap["dtv"]) == 1 and len(snap["ce"]) == 1 and len(snap["mr"]) == 1
-    # devices = dtv + ce + mr, in that order (additive)
+    # devices = carel + dtv + ce + mr (Operator decision F5, 2026-09-03: the
+    # AHU cards come FIRST in the grid; the rest keep their additive order).
     assert [d["id"] for d in snap["devices"]] == [
         "dtv-COM1-1", "ce02m3-COM2-14", "mr02m-COM4-6",
     ]
+    assert snap.get("carel") == []
+
+
+def test_snapshot_puts_ahu_cards_first(tmp_path: Path):
+    """F5 / E12: with a Carel present, devices[] starts with the AHU cards."""
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write(cache, "dtv-COM1-1", {"temp_hdc1080": "20.0"})
+    _write(cache, "ce02m3-COM2-14", {"voltage_a": "230"})
+    _write_carel(cache, "carel-COM3-1", {
+        "plant_state": "run", "unit_on": "1", "alarm": "0", "alarm_count": "0",
+        "supply_temp": "26.5",
+    })
+    snap = live_snapshot(cache)
+    assert [d["id"] for d in snap["devices"]] == [
+        "carel-COM3-1", "dtv-COM1-1", "ce02m3-COM2-14",
+    ]
+    # The state group the archive needs is on the card (E1).
+    assert snap["carel"][0]["alarm_count"] == 0.0
+
+
+def _write_carel(
+    cache: Path,
+    name: str,
+    controls: dict,
+    *,
+    errors: dict | None = None,
+    ok: bool = True,
+) -> None:
+    payload = {
+        "ok": ok,
+        "device": name,
+        "controls": controls,
+        "ts": time.time(),
+    }
+    if errors:
+        payload["errors"] = errors
+    (cache / f"{name}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+def test_live_snapshot_maps_carel_families_and_skips_unread(tmp_path: Path):
+    cache = tmp_path / "mqtt"
+    cache.mkdir()
+    _write_carel(
+        cache,
+        "carel-COM3-1",
+        {
+            "plant_state": "run",
+            "sys_mode": "heat",
+            "fan_supply": "45",
+            "fan_exhaust": "30",
+            "supply_temp": "26.5",
+            "return_water_temp": "75.1",
+            "setpoint": "27.2",
+            "room_temp": "0",
+            "outdoor_temp": "0",
+            "heat_valve": "12",
+        },
+        errors={"room_temp": "r", "outdoor_temp": "r"},
+    )
+    _write_carel(
+        cache,
+        "carel-COM3-2",
+        {
+            "plant_state": "stop",
+            "fan_step": "2",
+            "supply_temp": "27.2",
+            "return_water_temp": "43.56",
+            "setpoint": "22.0",
+            "outdoor_temp": "0",
+        },
+        errors={"outdoor_temp": "r"},
+    )
+    snap = live_snapshot(cache)
+    assert len(snap["carel"]) == 2
+    crst = next(d for d in snap["carel"] if d["id"] == "carel-COM3-1")
+    uaria = next(d for d in snap["carel"] if d["id"] == "carel-COM3-2")
+    assert crst["family"] == "crst" and crst["sku"] == "Carel c.pCOmini"
+    assert crst["label"] == "Carel c.pCOmini № 1 порт 3"
+    assert crst["plant_state_text"] == "Работает"
+    assert crst["supply_temp"] == 26.5
+    assert crst["return_water_temp"] == 75.1
+    assert crst["setpoint"] == 27.2
+    assert crst["room_temp"] is None and crst["outdoor_temp"] is None
+    assert uaria["family"] == "uaria" and uaria["sku"] == "Carel uAria"
+    assert uaria["label"] == "Carel uAria № 2 порт 3"
+    assert uaria["fan_step"] == 2.0
+    assert uaria["outdoor_temp"] is None
+    assert uaria["supply_temp"] == 27.2
+    ids = [d["id"] for d in snap["devices"]]
+    assert "carel-COM3-1" in ids and "carel-COM3-2" in ids

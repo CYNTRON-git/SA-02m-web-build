@@ -23,6 +23,55 @@ class SocketIOUnavailable(RuntimeError):
     """python-socketio is not installed on this system."""
 
 
+class SioWaitTimeout(ConnectionError):
+    """python-socketio's wait_timeout expired before the namespace confirmed.
+
+    Minted in `AliceSocketIO.connect` — the one place that holds the library
+    and can read its exception TYPE — so every consumer downstream
+    discriminates on OUR type, not on third-party wording. A slow handshake,
+    not a dead hub: `connect_failure_status` keeps it `connecting` while
+    soft retries remain.
+    """
+
+
+# python-socketio raises its `exceptions.ConnectionError` with this text when
+# wait_timeout expires before the namespace confirms. engineio wraps a
+# refused / HTTP failure into the SAME type with other text, so the type
+# alone cannot tell the two apart: connect() keys on type AND this text and
+# re-raises the timeout as SioWaitTimeout. Pinned against the installed
+# library by tests/test_sio_connection.py (TestWaitTimeoutIsTyped) — a
+# reworded upstream turns that test RED instead of silently making every slow
+# handshake `gateway_unreachable`. Below, the text is only a SECONDARY hint
+# for an exception that never went through connect().
+_SIO_WAIT_TIMEOUT_MARK = "namespaces failed to connect"
+
+
+def _library_connection_error(socketio: Any) -> Optional[type]:
+    """`socketio.exceptions.ConnectionError` when the library (or a test
+    double) exposes one as a real class, else None."""
+    cls = getattr(getattr(socketio, "exceptions", None), "ConnectionError", None)
+    return cls if isinstance(cls, type) and issubclass(cls, BaseException) else None
+
+
+def is_sio_wait_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, SioWaitTimeout):
+        return True
+    return _SIO_WAIT_TIMEOUT_MARK in str(exc).lower()
+
+
+def connect_failure_status(exc: BaseException, fail_count: int) -> Tuple[str, str]:
+    """Return ``(state, error)`` for a connect exception.
+
+    ``fail_count`` is 1-based and includes this failure. A wait_timeout inside
+    ``SIO_CONNECT_SOFT_FAILS`` stays ``connecting`` with no error token; a
+    real DNS/HTTP/refused error, or wait_timeouts past the soft window, is
+    ``gateway_unreachable``.
+    """
+    if is_sio_wait_timeout(exc) and fail_count <= C.SIO_CONNECT_SOFT_FAILS:
+        return C.STATE_CONNECTING, ""
+    return C.STATE_ERROR, "gateway_unreachable"
+
+
 def reconnect_delay(
     attempt: int,
     *,
@@ -150,9 +199,10 @@ class AliceSocketIO:
         enrollment; the cloud session has none, so it is NOT registered there
         — the event cannot reach the handler and cannot touch the Alice cert.
         """
-        base = (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION)
+        base = (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION,
+                C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_SCENARIOS)
         if self._profile == C.PROFILE_CLOUD:
-            return base
+            return base + (C.EVT_DEVICES_GROUPS,)
         return base + (C.EVT_CONTROLLER_UNLINK,)
 
     def _build_headers(self, token: str = "") -> Dict[str, str]:
@@ -372,12 +422,33 @@ class AliceSocketIO:
             self._register(name)
 
         headers = self._build_headers(token)
-        self._sio.connect(
-            url,
-            socketio_path=engine_path,
-            headers=headers,
-            transports=["websocket"],
-            wait_timeout=C.GATEWAY_PROBE_TIMEOUT_S,
+        t0 = time.monotonic()
+        try:
+            self._sio.connect(
+                url,
+                socketio_path=engine_path,
+                headers=headers,
+                transports=["websocket"],
+                wait_timeout=C.SIO_CONNECT_TIMEOUT_S,
+            )
+        except Exception as exc:
+            log.warning(
+                "Socket.IO handshake failed after %.1f s (budget %.1f s)",
+                time.monotonic() - t0,
+                C.SIO_CONNECT_TIMEOUT_S,
+            )
+            lib_error = _library_connection_error(socketio)
+            if (
+                lib_error is not None
+                and isinstance(exc, lib_error)
+                and _SIO_WAIT_TIMEOUT_MARK in str(exc).lower()
+            ):
+                raise SioWaitTimeout(str(exc)) from exc
+            raise
+        log.info(
+            "Socket.IO handshake completed in %.1f s (budget %.1f s)",
+            time.monotonic() - t0,
+            C.SIO_CONNECT_TIMEOUT_S,
         )
         if self._sid is None:
             # The connect callback runs on the background thread and normally

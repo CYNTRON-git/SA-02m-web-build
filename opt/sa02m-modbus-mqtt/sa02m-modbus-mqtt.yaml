@@ -157,3 +157,24 @@ devices:
   #   address: 30
   #   name: "Example (COM5 addr=30)"
   #   poll_s: 2
+
+  # ── Пример: адресная лента LED (RGBW_WS2812, type 120), COM3 addr=13 ──
+  # Заводская скорость 115200; на стенде с Carel на той же линии — 19200
+  # (смешанный baud на одном COM не поддерживается). power = PlayCtrl 416.
+  # - id: led-COM3-13
+  #   type: led
+  #   port: /dev/COM3
+  #   baudrate: 19200
+  #   address: 13
+  #   name: "LED (COM3 addr=13)"
+  #   poll_s: 2
+  #   poll_text_s: 30
+  #   # Стенд 4×16×16 (1.135): wiring 0x0408. Alice on/off = static fill, not FX 64.
+  #   # Один факт — одна форма. Слово 418 задаётся ЛИБО целиком (matrix_layout),
+  #   # ЛИБО полями tile_count / rotate_90_cw / mirror_x; при обоих matrix_layout
+  #   # побеждает, поля молча игнорируются (rgbw_layout_from_yaml). Так же reg 494:
+  #   # weather_lines побеждает text_lines (rgbw_text_lines_from_yaml).
+  #   matrix_layout: 0x0408   # TileCount=4 + SWAP_XY 90° CW, MIRROR_X off
+  #   text_lines: 1           # reg 494 = 1 (not two-line weather)
+  #   effect: 0               # STATIC — weather FX 64 is not restored
+  #   brightness: 255

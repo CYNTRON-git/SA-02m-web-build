@@ -5,6 +5,368 @@
 
 ---
 
+## [2026-09-07 23:05] branch: 1.0.6.38
+
+**Файл(ы):** `www/network_config/static/js/app/smarthome.js`, `scripts/dev/sh-modal-layout-smoke.mjs`
+**Тип:** Некорректное поведение
+**Описание:** В пикере канала на стенде 1.135 строки именованных каналов (группа «Показания и команды» драйвера `led-COM3-13`: `power`, `brightness`, `led_count`, и так же `unit_on` у Carel) выводились без подписи — только бейдж «чт/зп» и «занят: LED лента».
+**Причина:** `shPickChannelHtml` печатал заголовок только при `title !== tag && title !== ch.tag`. Колонка тега существует лишь для `<kind>_<n>` (`shChTagLabel` → `DO3`); у именованного канала тег пустой, а `title` равен `ch.tag` («power»), поэтому не печаталось ни то, ни другое.
+**Исправление:** Заголовок печатается всегда, когда он несёт то, чего нет в колонке тега: `named = !!title && title !== tag && !(tag && title === ch.tag)`. В smoke добавлен LED-фикстур (title == tag) и инвариант «у каждого предлагаемого канала есть подпись» по всем устройствам — проверено, что он краснеет на старом условии.
+
+---
+
+## [2026-09-07 22:30] branch: 1.0.6.38
+
+**Файл(ы):** `www/network_config/cgi-bin/sa02m_alice_topics.cgi`
+**Тип:** Некорректное поведение
+**Описание:** На стенде 1.135 `?format=inventory` периодически отдавал невалидный JSON: полный ответ (~39.7 КБ, `…"count":12}`), а сразу за ним второй объект `{"ok":false,"error":"topics_failed"}`. `JSON.parse` в пикере падал, и вкладка уходила в ручной ввод топика, хотя инвентарь был получен целиком.
+**Причина:** `timeout 5 python3 - <<PY || echo '{"ok":false,…}'` — fallback дописывался ПОСЛЕ уже выведенного тела, если python завершался ненулевым кодом в самом конце. Сборка инвентаря на плате измерена 1.1–2.4 с (12 устройств, live-кеш), под нагрузкой 5 с не оставляли запаса, и `timeout` убивал процесс уже после печати.
+**Исправление:** Ответ собирается в `TOPICS_JSON="$(timeout 15 python3 …)"` и печатается один раз; fallback ЗАМЕНЯЕТ ответ (`if … && [ -n … ]; then … else …`), а не следует за ним. Бюджет 15 с — ниже nginx `/cgi-bin/` 20 с.
+
+---
+
+## [2026-09-07 22:10] branch: 1.0.6.38
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/inventory.py`, `opt/sa02m-alice/tests/test_inventory.py`
+**Тип:** Логическая ошибка
+**Описание:** Устройство `led-COM3-13` (`type: led`, живое, публикует 21 control, включая 4 сухих контакта) полностью отсутствовало и в пикере, и в плоском списке топиков на стенде 1.135 — привязать ленту или её входы в «Умном доме» было нечем.
+**Причина:** `_device_entry` знал только `mr02m` / `dtv` / `ce02m3` / `carel` и явный `controls` в YAML. У `type: led` блока `controls` в YAML нет (мост берёт список из `sa02m_led.controls`), поэтому запись возвращала `None`, и устройство молча выпадало. Тот же провал был и у старой YAML-выборки — просто не был виден.
+**Исправление:** Таблица `LED_CONTROLS` / `LED_WRITABLE` (осознанная копия `opt/sa02m-led/sa02m_led/controls.py`, приколочена pin-тестом, читающим тот файл как текст) плюс общий fallback: семейство без офлайн-таблицы получает каналы из своего live-кеша. На плате: 248 → 269 топиков, LED = 4 DI + 17 именованных.
+
+---
+
+## [2026-09-07 21:18] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/cgi-bin/sa02m_alice_api.cgi`, `opt/sa02m-alice/sa02m_alice/common/constants.py`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Яндекс Алиса» на стенде 1.135 (`16554153d32a50ed`, клиент ON, шлюз доступен, 15 устройств) показывала `python dispatch failed or timed out`.
+**Причина:** CGI оборачивал `dispatch` в `timeout 8`. GET `full_config` каждый раз поднимает новый python (import ~1 с) и `probe_gateway` (до 5 с, на живом alice.cyntron.ru 1.5–2.1 с). При loadavg ~7 три GET сегодня вернули HTTP 200 с телом 99 байт (17:45, 19:02, 20:15 MSK). Unlink структурно ещё длиннее: probe 5 с + `/controller/unlink` 5 с (HEAD 405 — третий wait). Живой GET без пика: 3.3–3.7 с.
+**Исправление:** `CGI_DISPATCH_TIMEOUT_S=18` (ниже nginx `/cgi-bin/` 20 с); CGI `timeout "$ALICE_CGI_TIMEOUT"` с тем же дефолтом. JSON `alice_api_failed` при срыве сохранён.
+
+---
+
+## [2026-09-07 21:17] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/js/app.js`, `www/network_config/static/js/app/alice.js`, `www/network_config/static/js/cloud.js`, `www/network_config/static/css/main.css`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Баннеры привязки Алисы / Облака (`#alice-msg`, `#cloud-msg`, `#cloud-ctrl-msg`) вставлялись внутрь `.ctrl-card` и прыгала высота плитки (код сопряжения, ошибки отвязки, «python dispatch failed», «Сохранено»).
+**Причина:** Эфемерные notices писались в скрываемый `div.cloud-msg` внутри карточки; появление текста снимало `hidden` и растягивало flex-плитку.
+**Исправление:** Тот же `toast()` / `cardNotice` (`.toast-area` справа сверху, 5.0 с). Слоты в карточке принудительно `display:none`. Ссылка привязки Алисы — в строке «Статус». Строки Клиент/Шлюз/Соединение и `#cloud-unlink-info` не трогали. cache-bust `&r=toast5s1`.
+
+---
+
+## [2026-09-07 20:06] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/css/main.css`, `www/network_config/index.html`, `www/network_config/login.html`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Облако» (нет идентификации, серийный `165541530e336045`) показывала тонкую серую полоску шириной с кнопки между «Выключить» и «Отключить агент» — как обломок кнопки.
+**Причина:** `.ctrl-card-main { overflow-y: auto }` по спецификации CSS выставляет и `overflow-x: auto`. Узкий overflow (nowrap «Управление из облака» + бейдж, flex `min-width: auto`) рисовал кастомный горизонтальный thumb `::-webkit-scrollbar` (6 px, `#48484a`, pill) у нижнего края тела карточки — ровно между двумя красными кнопками.
+**Исправление:** `overflow-x: hidden` + `min-width: 0` на теле плитки и детях; `.cloud-ctrl-row` с `flex-wrap`. «Выключить» / «Отключить агент» не трогали. cache-bust `&r=cloudslv1`.
+
+---
+
+## [2026-09-07 15:41] branch: 1.0.6.37
+
+**Файл(ы):** `www/network_config/static/js/app/status.js`, `www/network_config/index.html`, `www/network_config/static/css/main.css`, `www/network_config/cgi-bin/web_update_apply.cgi`
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Обновление» показывала «Обновлений нет» (текущая 1.0.6.37, доступная 1.0.6.29), но кнопка «Применить» канала «Из интернета» оставалась кликабельной.
+**Причина:** JS ставил `hidden` на `#web-upd-apply-btn`, но `.btn { display:inline-flex }` перекрывал UA-правило `[hidden]`; `disabled` не выставлялся. Клик уходил в `web_update_apply.cgi`.
+**Исправление:** dotted-integer `compareSemver` (current ≥ available → нет обновления); интернет-Apply `disabled` + `pointer-events:none`; `applyWebUpdate()` / CGI `E_NO_UPDATE` не запускают GitHub OTA. Офлайн-пакет не трогали.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `etc/sa02m-update-runner.sh`
+**Тип:** Ошибка компиляции
+**Описание:** `pack-offline-update.py` отказывался собирать `.sa02m`: `deploy dst not allowlisted: /etc/default/sa02m-devices`. Карта и allowlist уже несли этот dest (устройства), regex пакера/валидатора/runner — нет.
+**Причина:** `DST_PREFIX_RE` / `_DST_PREFIX_RES` / `DST_RE` не обновлены, когда в deploy-map добавили `/etc/default/`.
+**Исправление:** закрытый префикс `/etc/default/sa02m-` и точный dest
+`/etc/dhcp/dhclient-exit-hooks.d/eth1-default-route` в regex пакера и
+валидатора (у runner хук уже был).
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/06b-rules.sh`, `scripts/11-devices.sh`
+**Тип:** Некорректное поведение
+**Описание:** `scripts/06b-rules.sh` падал на refresh (1.0.5.66 → 1.0.6.37) на обеих стендовых платах, хотя `sa02m-rules` в итоге был active. `install.sh` ловил ненулевой rc и писал WARN.
+**Причина:** сырой `systemctl enable` + `restart || start` под `set -e`: systemd мог вернуть non-zero (таймаут, start-limit, краткий crash до `Restart=on-failure`), скрипт выходил, юнит позже поднимался. Плюс нарушение installer-svc-policy-gate (widening verbs вне lib.sh).
+**Исправление:** `sa02m_svc_capture` до установки unit-файла, `sa02m_svc_apply sa02m-rules.service app on` после — never-widen, apply всегда rc 0. `11-devices.sh`: сырой restart стендового `sa02m-stand-api` заменён на `sa02m_svc_restart_if_active`.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `opt/sa02m-update/tests/test_validate_package.py`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** Пакет `out/SA-02m-update-1.0.6.37.sa02m` с HEAD 398c338 отклонялся валидатором на плате 1.0.5.66 (`E_MANIFEST` unknown keys `enable` / `restart_if_*`), хотя `MIN_VERSION`/`MIN_UPDATER` рекламировали 1.0.5.60 / 1.0.5.66.
+**Причина:** apply использует runner/валидатор *предыдущего* релиза; пакер писал опциональные ключи, которые 1.0.5.66 не знает (additionalProperties:false).
+**Исправление:** пакер эмитит замороженный v1 `services{}` (только обязательные ключи), пока `MIN_UPDATER` < 1.0.6.37; `sa02m-rules` остаётся в `restart[]`. Онлайн-генератор runner'а по-прежнему пишет полный набор. Тест: `test_packer_frozen_v1_for_min_updater_1_0_5_66` (с 1.0.6.39 — `test_packer_services_tier_rule`).
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `usr/local/sbin/sa02m-alice-web-trigger.sh`, `scripts/06-alice.sh`, `scripts/dev/test-alice-reload-handshake.sh`
+**Тип:** Некорректное поведение
+**Описание:** После disable на никогда не привязанной плате карточка/gold показывали `state=unknown`: `/run/sa02m-alice/status.json` не существовал (клиент ни разу не стартовал).
+**Причина:** `unit_disable` делал stop+restart и полагался на запись клиента; без успешного старта файла нет. Gold читает файл, не API-fallback.
+**Исправление:** хелпер пишет `state=disabled` после disable; `06-alice.sh` пишет тот же файл при первой установке, если его ещё нет. Регрессия в `test-alice-reload-handshake.sh` часть C.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/01-system.sh`
+**Тип:** Некорректное поведение
+**Описание:** На стендах Ubuntu/Armbian noble `apt` не находит `libgpiod2` (в логе E: / WARN зеркал). Пакет optional, модуль уже не abort'ился, но имя пакета на gpiod 2.x — `libgpiod3`.
+**Причина:** в `01-system.sh` зашито bookworm-имя `libgpiod2`; noble переименовал shared lib.
+**Исправление:** если `libgpiod2` не установлен — `sa02m_pkg_install_tier optional libgpiod3`. По-прежнему WARN + продолжение, без фейкового OK.
+
+---
+
+## [2026-09-07 15:30] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/08-codesys.sh`
+**Тип:** Некорректное поведение
+**Описание:** Refresh/overlay писал WARN «CODESYS Runtime работает в DEMO-режиме», хотя юнит уже был выключен (never-widen не ставит demo).
+**Причина:** grep по `/var/opt/codesys/codesyscontrol.log` без проверки, что runtime сейчас active — stale строка из прошлого запуска.
+**Исправление:** DEMO WARN только если `systemctl is-active codesyscontrol`.
+
+---
+
+## [2026-09-07 14:30] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/sa02m_alice/client/sio_connection.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`, `opt/sa02m-alice/tests/test_sio_connection.py`, `opt/sa02m-alice/tests/test_cloud_profile.py`, `opt/sa02m-alice/tests/test_binding_reset.py`
+**Тип:** Некорректное поведение
+**Описание:** После включения «Управление из облака» карточка показывала «сервер недоступен», хотя хаб живой. Journal: два `One or more namespaces failed to connect`, затем `Socket.IO connected` ≈ 38 с.
+**Причина:** `AliceSocketIO.connect` брал `wait_timeout=GATEWAY_PROBE_TIMEOUT_S` (5 с, бюджет HTTP `/v1.0/ping`). Замер на 1.136 (n=3, бюджет 60 с): handshake 5.185 / 3.665 / 3.371 с — первый > 5 с. Любой Exception писался как `state=error`, `error=gateway_unreachable`.
+**Исправление:** отдельный `SIO_CONNECT_TIMEOUT_S=15` (~3× измеренный max); HTTP probe остаётся 5 с. Wait_timeout внутри `SIO_CONNECT_SOFT_FAILS=3` пишет `connecting` без error-токена; DNS/HTTP/refused и исчерпание soft-окна — по-прежнему `gateway_unreachable`.
+
+---
+
+## [2026-09-07 13:55] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/api.py`, `opt/sa02m-alice/sa02m_alice/common/constants.py`, `opt/sa02m-alice/tests/test_binding_reset.py`
+**Тип:** Некорректное поведение
+**Описание:** Кнопка «Отвязать» Алисы на 1.136 (1.0.6.24) показывала `HTTP Error 404: Not Found` и не стирала сертификаты. Шлюз живой (`/v1.0/ping` 200); `POST /controller/unlink` с SN+claim_token отвечает 404 `{"detail":"controller not linked"}` — запись в облаке уже снята, локальные mTLS остались.
+**Причина:** urllib.raise HTTPError на любом 4xx; обработчик писал `str(exc)` (`HTTP Error 404: Not Found`) и по правилу never-wipe-on-refusal не трогал файлы. Ветка `if code >= 400` после `urlopen` в проде мёртвая — urlopen не возвращает 4xx.
+**Исправление:** HTTP 404 с `controller not linked` / `already unlink` трактуется как подтверждённая отвязка и вызывает тот же `stand_down`, что успешный 200. Прочие 4xx/5xx по-прежнему отказывают без wipe; `message` = `detail` шлюза. Регрессия в `test_binding_reset.py`.
+
+---
+
+## [2026-09-06 12:39] branch: 1.0.6.37
+
+**Файл(ы):** `etc/sa02m-update-runner.sh`, `scripts/pack-offline-update.py`, `opt/sa02m-update/lib/validate_package.py`, `opt/sa02m-update/tests/test_validate_package.py`, `scripts/dev/test-update-conditional-restart.sh`, `.ai-dev/quality/tools.json`, `docs/OFFLINE_UPDATE_PACKAGE_V1.md`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** OTA (github-overlay) и оффлайн-пакет деплоили код `/opt/sa02m-*` (движок сценариев, канал Алисы, облачный профиль, мост Modbus↔MQTT), но не рестартовали ни одну из держащих его в памяти служб: в `services.restart[]` манифеста не было ни `sa02m-rules`, ни Alice-семейства, ни моста — свежий движок подхватывался только после перезагрузки (тот же класс, что инцидент приёмки 1.0.6.37 со stale `trigger`/`end`, закрытый вручную в d2f9493 только для пути `06b-rules.sh`).
+**Причина:** OTA/offline updates deploy opt code without restarting the services that hold it in memory — а условного (never-widen) механизма рестарта в формате манифеста не существовало: `restart[]` исполняется как `restart || start`, что для opt-in юнитов (Alice-семейство ships `app off`) означало бы расширение состояния, а для моста — удар по port-lease RS-485.
+**Исправление:** restart set added to the update path: в манифест добавлены `services.restart_if_active[]` (рестарт только активного юнита: `sa02m-alice-client`, `sa02m-alice-config`, `sa02m-cloud-control`) и `services.restart_if_changed{unit→prefix}` (`sa02m-modbus-mqtt` → `/opt/sa02m-modbus-mqtt/`: рестарт активного моста, только когда журнал apply записал изменение под префиксом; журнал отсутствует ⇒ считается изменённым); `sa02m-rules` добавлен в `restart[]`. Оба генератора манифеста (онлайн в runner, оффлайн в packer) и валидатор обновлены согласованно; регрессия — `scripts/dev/test-update-conditional-restart.sh` (строка `update-conditional-restart`). Честный предел: обновление применяет runner предыдущего релиза — набор срабатывает со следующего после 1.0.6.37 обновления.
+
+---
+
+## [2026-09-06 12:39] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-update/lib/validate_package.py`
+**Тип:** Некорректное поведение
+**Описание:** Оффлайн-пакет, собранный `pack-offline-update.py` релизов 1.0.5.69–1.0.6.36, отклонялся на плате с `E_MANIFEST` («services: unknown keys: ['enable']»): оба генератора манифеста пишут `services.enable` с b9f3ad4, а валидатор этот ключ не знал — `_reject_unknown("services", …)` его отвергал (найдено при работе над `restart_if_*`: round-trip валидация пакера падала на собственном манифесте).
+**Причина:** При добавлении ключа `enable` в генераторы (1.0.5.69) `_SERVICES_KEYS` валидатора не обновили; один и тот же frozenset использовался и для `_reject_unknown`, и для `_require_keys`, так что любое расширение `services` было одновременно отклонено старым и обязательно для нового валидатора.
+**Исправление:** Набор ключей `services` разделён на обязательный (`daemon_reload`, `stop_before_apply`, `restart`, `health` — без изменений, старые манифесты по-прежнему валидны) и опциональный (`enable`, `restart_if_active`, `restart_if_changed` — принимаются, но не требуются); добавлены проверки типов опциональных ключей. Предел честности задокументирован в `docs/OFFLINE_UPDATE_PACKAGE_V1.md`: валидатор на плате обновляется самим обновлением, поэтому оффлайн-пакет ≥ 1.0.6.37 ставится на плату уже с ≥ 1.0.6.37.
+
+---
+
+## [2026-09-06 12:27] branch: 1.0.6.37
+
+**Файл(ы):** `scripts/06b-rules.sh`, `docs/deployment.md`
+**Тип:** Некорректное поведение
+**Описание:** На приёмке сценарных шаблонов push сценария из облака доезжал до стендовой платы с молча срезанными `trigger`/`end`: после деплоя обновлённых Python-файлов в `/opt` рестартовали `sa02m-rules` и `sa02m-alice-client`, но не `sa02m-cloud-control`; его рестарт починил путь.
+**Причина:** stale in-memory code: sa02m-cloud-control not restarted after /opt deploy — процесс держал в памяти код до поддержки `button`/`end` (тот же пакет `sa02m_alice` + импорт `sa02m_rules.store` из `/opt/sa02m-rules`).
+**Исправление:** `sa02m-cloud-control` добавлен в набор рестарта `scripts/06b-rules.sh` (через `sa02m_svc_restart_if_active` — юнит opt-in, остановленный не стартуем) + предложение в runbook `docs/deployment.md`: после обновления `/opt/sa02m-*` рестартовать `sa02m-rules`, `sa02m-alice-client`, `sa02m-modbus-mqtt` (если менялся мост) и `sa02m-cloud-control`.
+
+---
+
+## [2026-09-06 10:04] branch: 1.0.6.37
+
+**Файл(ы):** `opt/sa02m-alice/tests/test_reload_watch.py`
+**Тип:** Некорректное поведение (тест)
+**Описание:** `TestApplyReload.test_subscribe_failure_does_not_abort_the_rest` падал на чистой 1.0.6.36: `added` содержал лишний `/devices/dtv-COM3-1/controls/uptime_s`.
+**Причина:** Ожидание `want` не обновили после фикса 1.0.6.36 «Подписка на `uptime_s`» (COM-слейв жив, пока поллер шлёт `uptime_s`) — `subscribe_topics()` теперь включает топик живости, а тест pinning'овал старый набор.
+**Исправление:** В `want` добавлена константа `UPTIME` (`/devices/dtv-COM3-1/controls/uptime_s`); поведение кода не тронуто, тест соответствует задокументированному контракту `subscribe_topics`.
+
+---
+
+## [2026-09-06 09:45] branch: 1.0.6.27
+
+**Файл(ы):** `opt/sa02m-rules/sa02m_rules/service.py`
+**Тип:** Краш
+**Описание:** sa02m-rules падает на старте с `AttributeError: 'RulesApp' object has no attribute 'state'`, если scenarios.json уже содержит хотя бы один сценарий (на стенде 1.135 — s1/s2). На пустом сторе (и в тестах, где Engine создаётся напрямую) не воспроизводится.
+**Причина:** `RulesApp.__init__` создавал `Engine(...)` до присвоения `self.state`; `Engine.__init__` → `_adopt(force=True)` → `_publish_tpl_state(rule_enabled)` → `pub_state` → `self.state.setdefault(...)` — атрибута ещё нет.
+**Исправление:** `self.state = {}` создаётся до `Engine(...)`, после чего алиас `self.state = self.engine.state` переключает на канонический mirror. Регрессионный тест `ServiceBootTests.test_boot_with_existing_scenarios_no_crash` в `tests/test_engine.py`.
+
+---
+
+## [2026-09-04 20:10] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_tile_fields.py`
+**Тип:** Некорректное поведение
+**Описание:** Карандаш/облако видели выключатель `bench-switch-1` как управляемый; POST on_off не давал 400. В `devices.conf` `writable: false` был, в `alice_devices_list` — нет.
+**Причина:** `discovery_devices` не копировал `writable` в каталог (Yandex schema). Облако считает отсутствие writable = True.
+**Исправление:** Cloud-профиль кладёт `writable: false` в list. Yandex по-прежнему без поля.
+
+---
+
+## [2026-09-04 19:56] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_mr02m.py`, `opt/sa02m-modbus-mqtt/tests/test_mr02m_sibling_error.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** После записи на один DO поллер ставил retained `do_N/meta/error=r` на все соседние каналы модуля; device-level `/meta/error` оставался пустым, `uptime_s` жил. Alice/cloud видели ложный offline соседей.
+**Причина:** `_poll_do_di` / AO / DI-counters на исключении блок-чтения красили все каналы банка `r`.
+**Исправление:** Блок-промах больше не пишет per-control `r`. Канальный `r` только у реально мёртвого канала (дыра AI). Запись с ошибкой по-прежнему `w` на том канале. Device-level `r` после `offline_after_fails` валит весь слейв.
+
+---
+
+## [2026-09-04 16:05] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Четыре катушки `mr02m-COM3-10` (Свет 1/2, Спальня, Гостиная) иногда query=`DEVICE_UNREACHABLE`; сценарий Алисы «выключатель → розетка» и запись одной DO красили соседей «нет сети». Модуль при этом жив (`uptime_s` растёт, device-level `/meta/error` пуст).
+**Причина:** Поллер оставляет retained `controls/do_N/meta/error=r` на канале после записи/занятой шины. `_fresh_payload` считал любой control `r` смертью слейва; `apply_actions` отказывался писать. Клиент не слушал `uptime_s`.
+**Исправление:** Control `r` на `-COM` — UNREACHABLE только если нет live-опроса слейва (`uptime_s` или любая катушка). Device-level `r` по-прежнему валит все каналы. Action на Modbus уходит, пока слейв не down. Подписка на `uptime_s`.
+
+## [2026-09-04 15:42] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/auto_provision.py`, `opt/sa02m-alice/tests/test_auto_provision.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Auto-provision добавлял мусорные плитки `dtv-COM3-1` («ДТВ COM3 1») и `ce02m3-COM2-10` (три фазы) по одному retained `meta/name` «… test», без yaml и без живых `/controls/*`.
+**Причина:** `present_topics is None` (нет controls за settle) разворачивался в полный шаблон DTV/CE.
+**Исправление:** Provision только если id есть в `/etc/sa02m-modbus-mqtt.yaml` или пришёл живой `/controls/<name>`; `meta/name` с `test` игнорируется. На 1.135 каталог 19→15, retain junk-деревьев сброшен.
+
+## [2026-09-04 14:28] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Статусы выключателей/розеток доходили до Алисы (cloud write → live MQTT → callback_state), а управление из Алисы было серым: query по retained катушке MR-02m отдавал `DEVICE_UNREACHABLE`.
+**Причина:** `_fresh_payload(age_retained=True)` считал отсутствие live-перепубликации мёртвым слейвом. Поллер не шлёт unchanged coil; `apply_actions` так же резал запись при retained-only.
+**Исправление:** `DEVICE_UNREACHABLE` только при `/meta/error` или пустом кэше (нет успешного опроса). Retained/unchanged coil без ошибки → on_off в query и запись катушки в action.
+
+## [2026-09-04 13:50] branch: 1.0.6.34
+
+**Файл(ы):** `www/network_config/static/js/app/alice.js`, `opt/sa02m-alice/tests/test_api_offline.py`
+**Тип:** Некорректное поведение
+**Описание:** Карточка Алисы писала «нет интернета» при любом провале probe шлюза (в т.ч. после wipe сертификата). «Включить клиент» после unlink не должен трогать каталог.
+**Причина:** `statusVal` подменял честный статус на «нет интернета» когда `!gateway.available`.
+**Исправление:** статус всегда `statusText`; бейдж шлюза уже говорит «Недоступен». Тест: enable при unlinked-маркере не гасит клиент и не чистит devices.conf.
+
+## [2026-09-04 13:31] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/device_types.py`, `opt/sa02m-alice/sa02m_alice/config/models.py`, `www/network_config/static/js/app/smarthome.js`, `www/network_config/index.html`
+**Тип:** Некорректное поведение
+**Описание:** Пикер типа Алисы (`#sh-dev-type`) и `validate_device` знали только 12 `devices.types.*` (префикс `devices.types.` пропускал любой выдуманный id). Официальная страница Яндекса перечисляет 53 типа, включая уже используемый на стенде `smart_meter.electricity` и отсутствовавшие `cooking.kettle`, `pet_feeder`, `light.dimmable`.
+**Причина:** Каталог в `SH_DEV_TYPES` / HTML `<option>` был сокращённым списком, не официальным enum.
+**Исправление:** Один каталог `device_types.py` (53 id с той страницы). Пикер собирает `<select>` из него; валидатор принимает только официальные id, неизвестные отклоняет. Иконка без глифа → `generic`, сохранение не блокирует.
+
+## [2026-09-04 12:54] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** После подписки на `meta/error` Яндекс всё ещё отвечал on_off из retained катушки MR-02m: поллер не держал sticky `controls/do_*/meta/error=r` (uptime/`mark_ok` сбрасывал device-level `r`), Alice не старила retained-only capability.
+**Причина:** `_fresh_payload` старил только live-кэш; retained-only (как GPIO) отдавался как живой on_off.
+**Исправление:** capability на топике `/devices/<driver>-COM…/` без live-опроса → `DEVICE_UNREACHABLE`. GPIO и sensor properties по-прежнему из retained.
+
+---
+
+## [2026-09-04 12:48] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `main.py`, `reload_watch.py`, `docs/contracts/alice-mqtt-mapping.md`
+**Тип:** Некорректное поведение
+**Описание:** Модуль реле снят с RS-485, поллера нет, а Яндекс продолжал показывать «Свет 1/2» как живые (last on/off).
+**Причина:** `query_devices` отвечал из retained MQTT-кэша. Подписки не включали `/devices/<id>/meta/error` и `<mqtt>/meta/error`. На стенде отвал давал `controls/do_1/meta/error=r`, не device-level `r`.
+**Исправление:** подписка на оба `/meta/error`; query/action → `DEVICE_UNREACHABLE`, без on_off из retained. Живой топик старше `STATUS_STALE_S` (90 с) — то же. Retained-only (GPIO) не старится.
+
+---
+
+## [2026-09-04 12:40] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_led.py`, `opt/sa02m-modbus-mqtt/sa02m-modbus-mqtt.yaml`, стенд `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** Алиса on/off ленты оставляла метеостанцию (FX 64, 494=2): «вкл» не заливка, «выкл» не гасила кадр.
+**Причина:** YAML пиннил `effect: 64` / `weather_lines: 2`; `power` писал только PlayCtrl 416.
+**Исправление:** YAML `effect: 0`, `brightness: 255`, `weather_lines`/`text_lines`: 1. ON: RenderSource=FX + FxId 0 + Play. OFF: `rgbw_stop_blank_writes`. Layout `0x0408` не трогали.
+
+---
+
+## [2026-09-04 11:20] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, `opt/sa02m-modbus-mqtt/bridge_led.py`, `/etc/sa02m-modbus-mqtt.yaml`, стенд `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** Верная раскладка 4×16×16 (418 `0x0408`) не была в yaml; метеостанция шла в 1 строку (494=0).
+**Причина:** 494 по умолчанию 0 (одна строка). Поллер не пинил layout/строки.
+**Исправление:** 494=2 на проводе. YAML: `matrix_layout: 0x0408`, `rotate_90_cw`, `mirror_x: false`, `weather_lines: 2`, `effect: 64`. Поллер один раз восстанавливает, публикует `text_lines`.
+
+---
+
+## [2026-09-04 11:19] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-alice/sa02m_alice/config/api.py`, `www/network_config/static/js/app/smarthome.js`, `www/network_config/static/js/devices.js`
+**Тип:** Другое
+**Описание:** При открытии виджета не было карандаша у названия для переименования.
+**Причина:** Редактор Алисы и модалка истории показывали только статичный заголовок.
+**Исправление:** Карандаш справа от названия; Алиса — `rename_device` в каталог; вкладка «Устройства» — localStorage.
+
+---
+
+## [2026-09-04 11:15] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, стенд 192.168.1.135 `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** После MIRROR_X (418 `0x0404`) часы/дата на 4×16×16 всё ещё читались неверно; оператор просил 90° по часовой и затем выключить зеркало по X.
+**Причина:** 90° CW в прошивке — SWAP_XY (418 bit 3), не отдельный бит и не byte-swap 453/454/457. MIRROR_X — независимый RTL.
+**Исправление:** 418 = TileCount=4 + SWAP_XY, MIRROR_X сброшен (`0x0408`). Рецепт `rgbw_matrix_layout_4tiles_90cw()`. Поллер 418 не пишет.
+
+---
+
+## [2026-09-04 11:05] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, стенд 192.168.1.135 `led-COM3-13`
+**Тип:** Некорректное поведение
+**Описание:** На 4 матрицах 16×16 метеостанция (FX 64) показывала время и дату задом наперёд (11:00 как 00:11, 04.09 как 09.04).
+**Причина:** Упаковка регистров верная (453=часы, 454=минуты, 457=`(день<<8)|месяц`, прошивка 1.0.3.0). Холст без MIRROR_X читается справа налево — две группы цифр меняются местами.
+**Исправление:** Включён MIRROR_X (reg 418: `0x0400` → `0x0404`), 4×16×16 не трогали. В карте — один pack `rgbw_wx_date_pack`; тест фиксирует 11:05 / 04.09 без byte-swap.
+
+---
+
+## [2026-09-04 10:40] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/mqtt_bus_scan.py`, `www/network_config/static/js/mqtt.js`
+**Тип:** Некорректное поведение
+**Описание:** Скан COM3 19200 addr 13 отдавал type unknown (сигнатура «LED»); в списке типов не было LED, id получался mr02m-COM3-13.
+**Причина:** `detect_type` не знал IR0=120 и точные алиасы LED/RGBW_*; UI скана не имел `type: led`.
+**Исправление:** IR0=120 или сигнатура из sa02m_led → `type: led`; префикс id `led-`; poll_s 2. На стенде baud 19200 как у Carel на той же линии.
+
+---
+
+## [2026-09-04 09:45] branch: 1.0.6.35
+
+**Файл(ы):** `tools/imaging/ssh-flash-safe.sh`, `scripts/dev/test-alice-image-identity.sh`, `docs/contracts/image-identity-reset.md`
+**Тип:** Уязвимость (межарендная утечка)
+**Описание:** Прошивка через `ssh-flash-safe.sh` монтировала свежий rootfs только ради watchdog и не стирала облачную/Alice-идентичность исходного образа.
+**Причина:** Скрипт считался путём починки watchdog, не приёмником; контракт §4 явно исключал его.
+**Исправление:** На смонтированном `$MNT` вызываются те же offline-wipe, что у `patch-firstboot-image.sh` (`wipe_cloud_enrollment` / `wipe_alice_enrollment`). Площадка 5 контракта; гейт `alice-image-identity`.
+
+---
+
+## [2026-09-04 07:48] branch: 1.0.6.34
+
+**Файл(ы):** `scripts/11-devices.sh`; стенд `hardpy_tests/services/stand_web_api.py`
+**Тип:** Некорректное поведение
+**Описание:** На 1.135 карточка MR-02m 12АИ во вкладке «Устройства» живая (каналы 7–12 с °C), но клик открывает пустой график «Нет данных».
+**Причина:** Стенд отдаёт `/api/devices*` через gunicorn `sa02m-stand-api` (:8765), а не `sa02m-devices-api` (drop-in `10-stand-disable.conf`). `stand_web_api.devices_history` не читал `kind=mr` / `channel=` — фронт шлёт именно это, API отвечал HTTP 400 «укажите metric=…». В SQLite `mr_samples` 639k строк по `mr02m-COM4-12` уже были (логгер писал).
+**Исправление:** Маршрут `kind=mr` (+ `window_s`, экспорт `kind=`) в `stand_web_api.py`; тест `tests/test_devices_history_mr.py`. `11-devices.sh` перезапускает активный `sa02m-stand-api` после обновления пакета устройств.
+
+---
+
 ## [2026-08-30 12:56] branch: 1.0.6.25
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/state_sender.py`, `opt/sa02m-alice/sa02m_alice/client/main.py`

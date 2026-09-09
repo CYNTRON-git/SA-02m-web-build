@@ -69,8 +69,12 @@ a review; cite it.
 - **Null-safe DOM access** — helpers (`setText`, `setHtml`) already guard;
   raw `document.getElementById(x).foo` without a guard in new code is a
   finding (widgets are hidden per HW variant — the element may not exist).
-- **Escape before innerHTML** — any server- or user-originated string rendered
-  via `innerHTML` goes through `escHtml()`. `textContent` is the default.
+- **Escape before innerHTML, by context** — any server- or user-originated
+  string rendered via `innerHTML` goes through `escHtml()` in TEXT context and
+  `escAttr()` (app.js — also escapes `"` and `'`) inside a quoted ATTRIBUTE
+  (`title="…"`, `data-*="…"`, `value="…"`); `escHtml()` in an attribute is an
+  injection (audit 2026-09-08 C4) and the gate `no-eschtml-in-attr` fails on
+  it. `textContent` is the default.
 - **Re-render survival** — content inside containers that `render*` functions
   rebuild (services list, RS-485 grid, USB widget title) is owned by the
   renderer; static decorations live outside those nodes (see

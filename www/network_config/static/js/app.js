@@ -6,7 +6,7 @@
 'use strict';
 
 /** Версия веб-интерфейса — см. www/network_config/VERSION или scripts/sync-app-version.py */
-const APP_VERSION = '1.0.6.29';
+const APP_VERSION = '1.0.6.39';
 
 function uiT(s) {
   return window.sa02mI18n ? window.sa02mI18n.t(String(s)) : String(s);
@@ -223,6 +223,9 @@ function initNav() {
 }
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */
+/** Integration-card notices (Alice / Cloud): viewport toast, 5.0 s. */
+const CARD_NOTICE_MS = 5000;
+
 function toast(msg, type = 'info', ms = 4000) {
   const text = uiT(msg);
   let area = document.getElementById('toast-area');
@@ -238,6 +241,15 @@ function toast(msg, type = 'info', ms = 4000) {
   area.appendChild(t);
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .4s'; setTimeout(() => t.remove(), 400); }, ms);
 }
+
+/** Map the in-card ok/err flag onto the existing toast types. Empty text is a no-op. */
+function cardNotice(msg, ok) {
+  if (!msg) return;
+  const type = ok === false ? 'error' : (ok === true ? 'success' : 'info');
+  toast(msg, type, CARD_NOTICE_MS);
+}
+window.toast = toast;
+window.cardNotice = cardNotice;
 
 /* ── Utilities ────────────────────────────────────────────────────────────── */
 function fmtKB(kb) {
@@ -334,6 +346,16 @@ function setRtcReadout(local, utcRaw) {
 }
 function setStyle(id, prop, val) { const e = document.getElementById(id); if (e) e.style[prop] = val; }
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Attribute context (`title="…"`, `data-topic="…"`, `value="…"`): escHtml leaves
+// `"` alive, so a quoted value closes the attribute and the rest of the string
+// becomes new attributes (1.0.6.38 picker, audit C4 — an injected handler ran).
+// Gate: .ai-dev/quality/checks/no-eschtml-in-attr.mjs. Null-tolerant on purpose:
+// renderers pass absent fields.
+function escAttr(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 const PRIORITY_WARMUP_KEY = 'sa02m-priority-warmup';
 const PRIORITY_WARMUP_TTL_MS = 15000;
 

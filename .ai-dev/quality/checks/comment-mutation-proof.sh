@@ -113,11 +113,16 @@ watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchd
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
+carel-shared-home|scripts/05-mqtt.sh|sa02m_install_carel_pkg "$BASE_DIR"
+carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
+led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
+led-shared-home|scripts/update-www-only.sh|sa02m_install_led_pkg "$REPO_ROOT"
 gateway-acl-contract|www/network_config/cgi-bin/gateway_config.cgi|norm_allow_from(name, pcfg, all_errors)
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|timeout 5 mosquitto_pub
 mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
+no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 html-id-contract|www/network_config/index.html|id="nav-gateway-sub"
 rs485-roster-consumer|www/network_config/cgi-bin/status.cgi|modules_frag=
 web-auth-behaviour|www/network_config/cgi-bin/login.cgi|web_login_check
@@ -129,6 +134,7 @@ iface-dns-ensure|etc/fix-eth.sh|dns_ensure "$iface"
 uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" ||
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1
+binding-reset-parity|opt/sa02m-cloud-agent/binding_core.py|def stand_down(spec, cls, reason):
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

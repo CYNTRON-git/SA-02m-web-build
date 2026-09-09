@@ -69,7 +69,7 @@ function rs485ModuleChipHtml(m) {
     state = 'is-off';
   } else {
     state = 'is-scan';
-    titleAttr = ' title="' + escHtml(uiT('по последнему сканированию')) + '"';
+    titleAttr = ' title="' + escAttr(uiT('по последнему сканированию')) + '"';
   }
   const addr = (m && m.addr != null) ? (m.addr + '\u00b7') : '';
   const label = addr + ((m && m.model) ? m.model : uiT('модуль'));
@@ -100,7 +100,7 @@ function rs485ModulesHtml(mods) {
   }
   if (!live) {
     const dateStr = rs485ScanDateStr(mods.ts);
-    const titleAttr = dateStr ? (' title="' + escHtml(uiT('ростер по сканированию от') + ' ' + dateStr) + '"') : '';
+    const titleAttr = dateStr ? (' title="' + escAttr(uiT('ростер по сканированию от') + ' ' + dateStr) + '"') : '';
     html += '<div class="rs485-mods-note"' + titleAttr + '>' + escHtml(uiT('по последнему сканированию')) + '</div>';
   }
   if (total > 0) {
@@ -201,7 +201,7 @@ function renderRs485(ports) {
     const mods = (!absent && !disabled) ? rs485ModulesHtml(p.modules) : '';
 
     card.innerHTML =
-      '<div class="rs485-hdr"><span class="rs485-name">' + escHtml(uiT(rs485PortLabel(p.n))) + '</span><span class="rs485-dot ' + dotClass + '" title="' + escHtml(dotTitle) + '"></span></div>' +
+      '<div class="rs485-hdr"><span class="rs485-name">' + escAttr(uiT(rs485PortLabel(p.n))) + '</span><span class="rs485-dot ' + dotClass + '" title="' + escAttr(dotTitle) + '"></span></div>' +
       '<div class="rs485-dev">' + escHtml(devLabel) + '</div>' +
       rs485TxRxRowHtml(fmtNum(p.tx), fmtNum(p.rx)) +
       err +

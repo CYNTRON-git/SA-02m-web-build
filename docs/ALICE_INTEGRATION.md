@@ -3,6 +3,7 @@
 Один дом для native-пути через **Cyntron Alice Gateway**. Альтернатива
 Home Assistant + Yaha — в [ALICE_HA_YAHA_ALTERNATIVE.md](ALICE_HA_YAHA_ALTERNATIVE.md).
 Контракт MQTT-маппинга — [contracts/alice-mqtt-mapping.md](contracts/alice-mqtt-mapping.md).
+Облачный каталог и сценарии на плате — [contracts/cloud-scenarios.md](contracts/cloud-scenarios.md).
 
 ## Архитектура
 
@@ -59,6 +60,7 @@ sudo bash scripts/06-alice.sh
 | `sa02m-alice-client` | Socket.IO + MQTT, профиль `yandex` (шлюз Алисы, mTLS); standby exit 0 если выключен (`client_enabled`) |
 | `sa02m-cloud-control` | тот же пакет, профиль `cloud` (`--profile cloud`): вход управления на `cloud.cyntron.ru`, авторизация облачной идентичностью платы (`device_id` + `device_secret` агента облака), без mTLS; standby exit 0 если выключен (`cloud_control_enabled`). Алиса — один из потребителей: без неё всё работает |
 | `sa02m-alice-config` | локальный JSON API поверх AF_UNIX-сокета `/run/sa02m-alice/config.sock` (0600, владелец root; служба опциональна, по умолчанию выключена) |
+| `sa02m-rules` | движок сценариев на плате (`opt/sa02m-rules`, store `/etc/sa02m-rules/scenarios.json`); cloud-профиль пушит сценарии сюда. Контракт: `docs/contracts/cloud-scenarios.md` |
 
 Пакет `opt/sa02m-alice` — транспорт умного дома; `alice` в именах —
 историческое название, все машинные имена сохранены. Сим-контракт профилей:
@@ -77,7 +79,11 @@ MQTT-топикам (переключатели и датчики; одно ус
 «Показывать в Алисе» (скрытое устройство не попадает в список Алисы, но
 управляется из облака) и флажок «Инвертировать» для выхода, активного нулём
 (с 1.0.6.29; правило и его направление — `docs/contracts/alice-mqtt-mapping.md`
-§Inverted).
+§Inverted). Комнат и групп — не больше 64 каждых (с 1.0.6.39; попытка создать
+сверх лимита отвечает `too_many`, ничего не сохраняется). Привязка вентустановки
+Carel получает облачные показания состояния автоматически при сборке каталога,
+а датчики улицы/помещения — только пока мост видит их живыми (правило —
+контракт, §Carel AHU rows at catalogue build).
 
 **Управление → Облако**: привязка платы к `cloud.cyntron.ru` и, с 1.0.6.29,
 кнопка «Управление из облака» — включает/выключает `sa02m-cloud-control`;

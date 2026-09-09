@@ -10,6 +10,21 @@ from typing import Any
 
 from sa02m_devices.stand_storage_path import emmc_staging_path
 
+# THE roster of history tables a promote must carry — one home for both
+# `_db_has_rows()` («is there anything to promote?») and `merge_db_into()`
+# («copy every row»). A table added to the archive is added HERE, or the day
+# it lands its rows are silently dropped on every eMMC→USB promote (plan D1:
+# mr_samples and device_events were lost this way; carel_samples inherited it).
+# Value = columns to leave out of the merge: device_events.id is AUTOINCREMENT
+# and must be re-assigned by the destination, never copied.
+HISTORY_TABLES: dict[str, tuple[str, ...]] = {
+    "dtv_samples": (),
+    "ce_samples": (),
+    "mr_samples": (),
+    "carel_samples": (),
+    "device_events": ("id",),
+}
+
 
 def _checkpoint_and_close(path: Path) -> None:
     if not path.is_file():
@@ -39,10 +54,13 @@ def _db_has_rows(path: Path) -> bool:
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0)
         try:
-            for table in ("dtv_samples", "ce_samples"):
-                row = conn.execute(
-                    f"SELECT 1 FROM {table} LIMIT 1"
-                ).fetchone()
+            for table in HISTORY_TABLES:
+                try:
+                    row = conn.execute(
+                        f"SELECT 1 FROM {table} LIMIT 1"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    continue  # a staging file from before this table existed
                 if row:
                     return True
         finally:
@@ -52,7 +70,12 @@ def _db_has_rows(path: Path) -> bool:
     return False
 
 
-def _merge_table(dst: sqlite3.Connection, src: sqlite3.Connection, table: str) -> int:
+def _merge_table(
+    dst: sqlite3.Connection,
+    src: sqlite3.Connection,
+    table: str,
+    skip_cols: tuple[str, ...] = (),
+) -> int:
     cols_src = [
         r[1] for r in src.execute(f"PRAGMA table_info({table})").fetchall()
     ]
@@ -61,7 +84,7 @@ def _merge_table(dst: sqlite3.Connection, src: sqlite3.Connection, table: str) -
     ]
     if not cols_src or not cols_dst:
         return 0
-    cols = [c for c in cols_src if c in cols_dst]
+    cols = [c for c in cols_src if c in cols_dst and c not in skip_cols]
     if not cols:
         return 0
     col_list = ", ".join(cols)
@@ -77,21 +100,35 @@ def _merge_table(dst: sqlite3.Connection, src: sqlite3.Connection, table: str) -
     return n
 
 
+_MERGED_KEY = {
+    "dtv_samples": "dtv_merged",
+    "ce_samples": "ce_merged",
+    "mr_samples": "mr_merged",
+    "carel_samples": "carel_merged",
+    "device_events": "events_merged",
+}
+
+
 def merge_db_into(src_path: Path, dst_path: Path) -> dict[str, Any]:
-    """INSERT OR IGNORE всех строк src → dst. dst должен существовать (schema)."""
-    from sa02m_devices import device_history_db
+    """INSERT OR IGNORE всех строк src → dst по всему HISTORY_TABLES.
+
+    dst получает полную схему (таблицы выборок + device_events) ДО merge —
+    иначе PRAGMA table_info пуст и таблица молча пропускается."""
+    from sa02m_devices import device_events, device_history_db
 
     device_history_db.ensure_schema(dst_path)
+    device_events.ensure_events_schema(dst_path)
     _checkpoint_and_close(src_path)
     src = sqlite3.connect(str(src_path), timeout=60.0)
     dst = sqlite3.connect(str(dst_path), timeout=60.0)
     try:
+        report: dict[str, Any] = {"ok": True}
         with dst:
-            n_dtv = _merge_table(dst, src, "dtv_samples")
-            n_ce = _merge_table(dst, src, "ce_samples")
+            for table, skip in HISTORY_TABLES.items():
+                report[_MERGED_KEY[table]] = _merge_table(dst, src, table, skip)
         dst.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         dst.commit()
-        return {"ok": True, "dtv_merged": n_dtv, "ce_merged": n_ce}
+        return report
     finally:
         src.close()
         dst.close()

@@ -1,4 +1,4 @@
-"""Журнал событий СЭ: скачки напряжения и пики тока относительно суток."""
+"""Журнал событий: скачки напряжения / пики тока СЭ и фронты тревог Carel."""
 
 from __future__ import annotations
 
@@ -9,8 +9,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sa02m_devices.device_history_db import db_path
-from sa02m_devices.stand_devices import parse_device_id
+from sa02m_devices.device_history_db import (
+    CAREL_PLANT_STATE_CODE,
+    carel_plant_code,
+    db_path,
+)
+from sa02m_devices.stand_devices import CAREL_PLANT_RU, parse_device_id
 from sa02m_devices.stand_storage_path import journaling_for_fstype, mount_fstype
 
 try:
@@ -60,6 +64,16 @@ def events_limit_default() -> int:
 _PHASES = ("a", "b", "c")
 _PHASE_RU = {"a": "A", "b": "B", "c": "C"}
 
+# Carel AHU edge events (E2): the fault moment lives here, at the logger's 1 Hz
+# tick, not in the 10 s-averaged carel_samples series.
+CAREL_EVENT_KINDS = ("carel_alarm_on", "carel_alarm_off", "carel_plant_state")
+# Last seen (alarm, plant_state code) per (db path, device id). Keyed by the DB
+# path so two archives (tests, a promote mid-run) never share a baseline; seeded
+# from carel_samples on first sight so a restart compares against the last
+# ARCHIVED state instead of silently re-baselining.
+_CAREL_PREV: dict[tuple[str, str], dict[str, float | None]] = {}
+_CAREL_PLANT_WORD = {code: word for word, code in CAREL_PLANT_STATE_CODE.items()}
+
 _CREATE_EVENTS = """
 CREATE TABLE IF NOT EXISTS device_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +88,16 @@ CREATE TABLE IF NOT EXISTS device_events (
     message TEXT NOT NULL
 );
 """
+
+
+def ensure_events_schema(path: Path | None = None) -> Path:
+    """Create device_events (+ indexes) in the DB at `path`; return the path.
+
+    The migrate roster merges this table like the sample tables, and the
+    destination must carry the schema BEFORE the merge reads PRAGMA table_info."""
+    p = db_path(path)
+    _connect(p).close()
+    return p
 
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
@@ -132,14 +156,16 @@ def _insert_event(
     value: float | None,
     ref_value: float | None,
     message: str,
+    cooldown_s: float | None = None,
 ) -> bool:
+    """`cooldown_s` None → the CE spike cooldown; 0 → every edge lands (Carel)."""
     if _recent_exists(
         conn,
         device_id=device_id,
         kind=kind,
         phase=phase,
         ts=ts,
-        cooldown_s=event_cooldown_s(),
+        cooldown_s=event_cooldown_s() if cooldown_s is None else cooldown_s,
     ):
         return False
     conn.execute(
@@ -338,20 +364,191 @@ def detect_ce_events(
     return created
 
 
+def _f(val: Any) -> float | None:
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def reset_carel_event_state() -> None:
+    """Forget every in-memory Carel baseline (tests; a process restart does
+    this implicitly — the next tick re-seeds from carel_samples)."""
+    _CAREL_PREV.clear()
+
+
+def _carel_prev_from_archive(
+    conn: sqlite3.Connection, device_id: str
+) -> dict[str, float | None]:
+    out: dict[str, float | None] = {"alarm": None, "plant_state": None}
+    for metric in out:
+        try:
+            row = conn.execute(
+                "SELECT value FROM carel_samples"
+                " WHERE device_id = ? AND metric = ? AND value IS NOT NULL"
+                " ORDER BY ts DESC LIMIT 1",
+                (device_id, metric),
+            ).fetchone()
+        except sqlite3.Error:
+            row = None
+        out[metric] = float(row[0]) if row and row[0] is not None else None
+    return out
+
+
+def _plant_ru(code: float | int) -> str:
+    word = _CAREL_PLANT_WORD.get(int(code), "")
+    return CAREL_PLANT_RU.get(word, str(int(code)))
+
+
+def detect_carel_events(
+    snapshot: dict[str, Any],
+    *,
+    path: Path | None = None,
+    cooldown_s: float = 0.0,
+) -> list[dict[str, Any]]:
+    """Carel AHU edges → device_events: `alarm` 0→1 / 1→0 and every
+    `plant_state` change, at the tick's own ts.
+
+    Runs on EVERY logger tick (1 Hz on USB/SD), not on the 10 s archive cadence,
+    because the Operator reads the fault MOMENT from these rows. `cooldown_s`
+    defaults to 0 so a flap inside the CE cooldown still lands — dedup is by
+    edge, not by time. A device seen for the first time (no in-memory baseline
+    and nothing in carel_samples) only baselines; it never fabricates an edge.
+    """
+    ts = float(snapshot.get("ts") or time.time())
+    carel_list = [
+        d
+        for d in (snapshot.get("carel") or [])
+        if isinstance(d, dict) and str(d.get("id") or "").strip()
+    ]
+    if not carel_list:
+        return []
+
+    from sa02m_devices.device_history_db import ensure_schema
+
+    ensure_schema(path)  # carel_samples must exist for the seed read
+    key_path = str(db_path(path))
+    created: list[dict[str, Any]] = []
+    conn = _connect(path)
+    try:
+        with conn:
+            for dev in carel_list:
+                did = str(dev.get("id") or "").strip()
+                meta = parse_device_id(did)
+                alarm_now = _f(dev.get("alarm"))
+                plant_now = carel_plant_code(dev.get("plant_state"))
+                key = (key_path, did)
+                prev = _CAREL_PREV.get(key)
+                if prev is None:
+                    prev = _carel_prev_from_archive(conn, did)
+                alarm_prev = prev.get("alarm")
+                plant_prev = prev.get("plant_state")
+
+                if (
+                    alarm_now is not None
+                    and alarm_prev is not None
+                    and alarm_now != alarm_prev
+                ):
+                    rising = alarm_now > alarm_prev
+                    kind = "carel_alarm_on" if rising else "carel_alarm_off"
+                    codes = str(dev.get("alarm_text") or "").strip()
+                    if rising:
+                        msg = "Общая авария установки: появилась"
+                        if codes:
+                            msg += f" ({codes})"
+                    else:
+                        msg = "Общая авария установки: снята"
+                    if _insert_event(
+                        conn,
+                        ts=ts,
+                        device_id=did,
+                        kind=kind,
+                        phase="",
+                        port_num=meta.get("port_num"),
+                        addr=meta.get("addr"),
+                        value=alarm_now,
+                        ref_value=alarm_prev,
+                        message=msg,
+                        cooldown_s=cooldown_s,
+                    ):
+                        created.append(
+                            {"ts": ts, "device_id": did, "kind": kind,
+                             "phase": "", "message": msg}
+                        )
+
+                if (
+                    plant_now is not None
+                    and plant_prev is not None
+                    and plant_now != int(plant_prev)
+                ):
+                    kind = "carel_plant_state"
+                    msg = (
+                        f"Состояние установки: {_plant_ru(plant_prev)} → "
+                        f"{_plant_ru(plant_now)}"
+                    )
+                    if _insert_event(
+                        conn,
+                        ts=ts,
+                        device_id=did,
+                        kind=kind,
+                        phase="",
+                        port_num=meta.get("port_num"),
+                        addr=meta.get("addr"),
+                        value=float(plant_now),
+                        ref_value=float(plant_prev),
+                        message=msg,
+                        cooldown_s=cooldown_s,
+                    ):
+                        created.append(
+                            {"ts": ts, "device_id": did, "kind": kind,
+                             "phase": "", "message": msg}
+                        )
+
+                # A None reading (probe unread this tick) keeps the old baseline
+                # rather than erasing it — the next real value still compares.
+                _CAREL_PREV[key] = {
+                    "alarm": alarm_now if alarm_now is not None else alarm_prev,
+                    "plant_state": (
+                        float(plant_now) if plant_now is not None else plant_prev
+                    ),
+                }
+    finally:
+        conn.close()
+    return created
+
+
 def list_events(
     *,
     path: Path | None = None,
     limit: int | None = None,
     device_id: str | None = None,
+    t0: float | None = None,
+    t1: float | None = None,
+    kinds: tuple[str, ...] | list[str] | None = None,
 ) -> dict[str, Any]:
+    """Newest first. `t0`/`t1` (epoch s) window on ts; `kinds` restricts to a
+    kind set (the chart asks for CAREL_EVENT_KINDS only)."""
     lim = max(1, min(int(limit if limit is not None else events_limit_default()), 500))
     conn = _connect(path)
     try:
-        where = ""
+        clauses: list[str] = []
         params: list[Any] = []
         if device_id:
-            where = " WHERE device_id = ?"
+            clauses.append("device_id = ?")
             params.append(str(device_id).strip())
+        if t0 is not None:
+            clauses.append("ts >= ?")
+            params.append(float(t0))
+        if t1 is not None:
+            clauses.append("ts <= ?")
+            params.append(float(t1))
+        kind_list = [str(k) for k in (kinds or []) if str(k)]
+        if kind_list:
+            clauses.append("kind IN (%s)" % ",".join("?" for _ in kind_list))
+            params.extend(kind_list)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = conn.execute(
             "SELECT id, ts, device_id, kind, phase, port_num, addr,"
             " value, ref_value, message"

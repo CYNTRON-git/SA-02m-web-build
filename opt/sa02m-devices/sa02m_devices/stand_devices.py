@@ -1,7 +1,8 @@
-"""Live snapshot ДТВ / СЭ-02м-3 для вкладки «Устройства».
+"""Live snapshot ДТВ / СЭ-02м-3 / MR-02m AI / Carel для вкладки «Устройства».
 
 Источник: кэш sa02m-modbus-mqtt (`/run/sa02m-modbus-mqtt/<id>.json`).
-Все устройства dtv-* / ce02m3-* из кэша → виджеты; подпись «№ addr порт N».
+Все устройства dtv-* / ce02m3-* / carel-* из кэша → виджеты; MR — только AI.
+Подпись «№ addr порт N».
 """
 
 from __future__ import annotations
@@ -83,7 +84,7 @@ _DTV_EXT_MIN_C = -60.0     # sane external floor (below any table UNDER sentinel
 _DTV_EXT_MAX_C = 130.0     # sane external ceil (above any table OVER sentinel)
 
 _ID_RE = re.compile(
-    r"^(?P<prefix>dtv|ce02m3|mr02m)-COM(?P<port>\d+)-(?P<addr>\d+)$",
+    r"^(?P<prefix>dtv|ce02m3|mr02m|carel)-COM(?P<port>\d+)-(?P<addr>\d+)$",
     re.IGNORECASE,
 )
 
@@ -258,6 +259,8 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
         kind = "dtv"
     elif prefix == "mr02m":
         kind = "mr"
+    elif prefix == "carel":
+        kind = "carel"
     else:
         kind = "ce"
     return {
@@ -270,7 +273,14 @@ def parse_device_id(device_id: str) -> dict[str, Any]:
 
 def device_label(kind: str, addr: int | None, port_num: int | None) -> str:
     """Подпись виджета: ``СЭ-02м-3 № 14 порт 2``."""
-    sku = "ДТВ-RS-485" if kind == "dtv" else "СЭ-02м-3"
+    if kind == "dtv":
+        sku = "ДТВ-RS-485"
+    elif kind == "carel":
+        sku = "Carel"
+    elif kind == "mr":
+        sku = "MR-02m"
+    else:
+        sku = "СЭ-02м-3"
     a = "—" if addr is None else str(addr)
     p = "—" if port_num is None else str(port_num)
     return f"{sku} № {a} порт {p}"
@@ -574,8 +584,88 @@ def _build_mr(
     }
 
 
+def _carel_family(controls: dict[str, Any]) -> str:
+    """uAria publishes fan_step; c.pCOmini publishes sys_mode / fan_supply."""
+    if controls.get("fan_step") is not None and str(controls.get("fan_step")) != "":
+        return "uaria"
+    return "crst"
+
+
+def _carel_metric(
+    controls: dict[str, Any], errors: dict[str, Any], key: str
+) -> float | None:
+    """Skip a probe the PLC marked unread ('r') — unfitted outdoor/room."""
+    if errors.get(key):
+        return None
+    return _f(controls.get(key))
+
+
+# Russian words for the wire plant_state (sa02m_carel PLANT_RUN/STOP/ALARM);
+# the events journal reads the same map for its «was → now» message.
+CAREL_PLANT_RU = {"run": "Работает", "stop": "Остановлена", "alarm": "Авария"}
+
+
+def _build_carel(
+    raw: dict[str, Any] | None, *, fallback_id: str = ""
+) -> dict[str, Any] | None:
+    """Card for a Carel AHU (c.pCOmini / uAria) from the MQTT cache file."""
+    if not raw:
+        return None
+    controls = raw.get("controls") if isinstance(raw.get("controls"), dict) else {}
+    if not controls:
+        return None
+    errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
+    device_id = str(raw.get("device") or fallback_id or "")
+    meta = parse_device_id(device_id)
+    age = _age_s(raw.get("ts"), raw.get("_mtime"))
+    ok_raw = raw.get("ok", True)
+    ok_flag = (True if ok_raw is None else bool(ok_raw)) and bool(controls)
+    if age is not None and age > STALE_S:
+        ok_flag = False
+    family = _carel_family(controls)
+    sku = "Carel uAria" if family == "uaria" else "Carel c.pCOmini"
+    a = meta.get("addr")
+    p = meta.get("port_num")
+    label = f"{sku} № {'—' if a is None else a} порт {'—' if p is None else p}"
+    plant = str(controls.get("plant_state") or "").strip().lower()
+    return {
+        "id": device_id,
+        "kind": "carel",
+        "sku": sku,
+        "family": family,
+        "label": label,
+        "title": label,
+        "port_num": p,
+        "addr": a,
+        "com": meta.get("com") or "",
+        "ok": ok_flag,
+        "ts": raw.get("ts"),
+        "age_s": age,
+        "age_label": _fmt_age(age),
+        "plant_state": plant,
+        "plant_state_text": CAREL_PLANT_RU.get(
+            plant, str(controls.get("unit_status_text") or plant or "—")
+        ),
+        "unit_on": _f(controls.get("unit_on")),
+        "unit_status_text": str(controls.get("unit_status_text") or ""),
+        "supply_temp": _carel_metric(controls, errors, "supply_temp"),
+        "return_water_temp": _carel_metric(controls, errors, "return_water_temp"),
+        "room_temp": _carel_metric(controls, errors, "room_temp"),
+        "outdoor_temp": _carel_metric(controls, errors, "outdoor_temp"),
+        "setpoint": _carel_metric(controls, errors, "setpoint"),
+        "heat_valve": _carel_metric(controls, errors, "heat_valve"),
+        "fan_supply": _carel_metric(controls, errors, "fan_supply"),
+        "fan_exhaust": _carel_metric(controls, errors, "fan_exhaust"),
+        "fan_step": _carel_metric(controls, errors, "fan_step"),
+        "alarm": _f(controls.get("alarm")),
+        "alarm_count": _f(controls.get("alarm_count")),
+        "alarm_text": str(controls.get("alarm_text") or ""),
+        "alerts": [],
+    }
+
+
 def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
-    """Снимок для ``GET /api/devices`` — списки всех ДТВ/СЭ из кэша MQTT."""
+    """Снимок для ``GET /api/devices`` — списки всех ДТВ/СЭ/Carel из кэша MQTT."""
     root = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
     dtv_list: list[dict[str, Any]] = []
     for path in _list_device_files(root, "dtv"):
@@ -602,6 +692,15 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         built = _build_mr(raw, fallback_id=device_id)
         if built is not None:
             mr_list.append(built)
+    carel_list: list[dict[str, Any]] = []
+    for path in _list_device_files(root, "carel"):
+        raw = _load_cache(path)
+        device_id = path.stem
+        if raw is not None and not raw.get("device"):
+            raw = {**raw, "device": device_id}
+        built = _build_carel(raw, fallback_id=device_id)
+        if built is not None:
+            carel_list.append(built)
     # Сортировка: порт, затем адрес
     def _sort_key(d: dict[str, Any]) -> tuple:
         return (
@@ -613,7 +712,10 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
     dtv_list.sort(key=_sort_key)
     ce_list.sort(key=_sort_key)
     mr_list.sort(key=_sort_key)
-    devices = [*dtv_list, *ce_list, *mr_list]
+    carel_list.sort(key=_sort_key)
+    # AHU cards first — the ones the Operator looks at daily (decision F5,
+    # 2026-09-03); the rest keep the additive dtv → ce → mr order.
+    devices = [*carel_list, *dtv_list, *ce_list, *mr_list]
     return {
         "ok": True,
         "ts": time.time(),
@@ -622,6 +724,7 @@ def live_snapshot(cache_dir: Path | None = None) -> dict[str, Any]:
         "dtv": dtv_list,
         "ce": ce_list,
         "mr": mr_list,
+        "carel": carel_list,
         "devices": devices,
         "alerts": [],
     }

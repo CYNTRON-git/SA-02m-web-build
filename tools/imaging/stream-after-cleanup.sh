@@ -137,6 +137,13 @@ wipe_alice_enrollment() {
     for _f in /etc/sa02m-alice/sa02m-alice-client.conf \
               /etc/sa02m-alice-client.conf; do
         [ -f "$_f" ] || continue
+        # The stand-down marker is IDENTITY, not configuration (contract §2,
+        # mirroring the cloud half's §6): left in place, a clone taken from a
+        # donor that was ever unlinked boots with its card reading «отвязано в
+        # облаке» instead of «нет сертификата». Dropped BEFORE the
+        # client_enabled guard below, so a conf carrying only the marker is
+        # still cleaned.
+        sed -i '/^[[:space:]]*unlinked_at[[:space:]]*=/d;/^[[:space:]]*unlinked_reason[[:space:]]*=/d;/^[[:space:]]*unlinked_reason_text[[:space:]]*=/d' "$_f"
         grep -q 'client_enabled' "$_f" 2>/dev/null || continue
         sed -i 's/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/' "$_f"
     done

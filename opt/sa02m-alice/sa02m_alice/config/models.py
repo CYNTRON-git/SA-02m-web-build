@@ -7,6 +7,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..common import constants as C
+from .device_types import OFFICIAL_DEVICE_TYPES
 
 # Tile icon allow-list (docs/contracts/alice-mqtt-mapping.md §Device document).
 DEVICE_ICONS = frozenset(C.DEVICE_ICONS)
@@ -52,6 +53,33 @@ EVENT_INSTANCES = {
     "water_level": frozenset(("empty", "low", "normal")),
 }
 
+# Instances that exist for the CLOUD control page only and are never sent to
+# Yandex. A ventilation unit reports readings Yandex has no instance for — the
+# return-water temperature a service engineer needs, the room probe, the plant
+# status text, the alarm flag. Modelling them as separate sensor devices would
+# scatter one unit across several tiles; carrying them as extra items on the
+# unit's own device keeps the tile whole. They are admitted ONLY on an item
+# carrying `cloud_only: true`, and every path that feeds Yandex drops such an
+# item (client/device_registry.py). Widen deliberately: nothing downstream
+# re-checks these (docs/contracts/alice-mqtt-mapping.md).
+CLOUD_ONLY_FLOAT_INSTANCES = {
+    "supply_temperature",
+    "return_water_temperature",
+    "room_temperature",
+    "outdoor_temperature",
+    "heat_valve",
+    "fan_speed",
+    "fan_step",
+}
+
+CLOUD_ONLY_EVENT_INSTANCES = {
+    "plant_state": frozenset(("run", "stop", "alarm")),
+    "unit_status": None,      # free text from the PLC status table
+    "alarm": frozenset(("alarm", "normal")),
+    "pump": frozenset(("on", "off")),
+    "alarm_text": None,       # active alarm codes, free text
+}
+
 # Keeps the unit string forwarded to Yandex shell/JSON-safe by construction.
 # The digit class is load-bearing: without it `unit.density.mcg_m3` (tvoc,
 # PM densities) was rejected.
@@ -64,6 +92,52 @@ _SCALE_MAX = 1e6
 
 def new_id() -> str:
     return str(uuid.uuid4())
+
+
+def id_ok(value: Any) -> bool:
+    """Public read on `_ID_RE` for the config API (rename/rooms/groups)."""
+    return isinstance(value, str) and bool(_ID_RE.match(value))
+
+
+def name_ok(value: Any) -> bool:
+    """Public read on `_NAME_RE` for the config API (rename/rooms/groups)."""
+    return isinstance(value, str) and bool(_NAME_RE.match(value))
+
+
+def validate_group(group: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Cloud lighting/ventilation group: {id, name, device_ids, icon?}.
+
+    Membership lives ONLY on the group (never a field on each device) —
+    docs/contracts/alice-gateway.md `/controllers/{id}/groups`. `icon` is
+    `light` (default) or `ahu`.
+    """
+    if not isinstance(group, dict):
+        return None, "group must be an object"
+    gid = str(group.get("id") or new_id())
+    if not _ID_RE.match(gid):
+        return None, "invalid group id"
+    name = str(group.get("name") or "").strip()
+    if not name or not _NAME_RE.match(name):
+        return None, "invalid group name"
+    out: Dict[str, Any] = {"id": gid, "name": name, "device_ids": []}
+    raw_ids = group.get("device_ids")
+    if raw_ids is None:
+        raw_ids = group.get("devices")
+    if raw_ids is not None:
+        if not isinstance(raw_ids, list):
+            return None, "group.device_ids must be a list"
+        ids = []
+        for d in raw_ids:
+            s = str(d)
+            if not _ID_RE.match(s):
+                return None, "invalid device id in group"
+            if s not in ids:
+                ids.append(s)
+        out["device_ids"] = ids
+    icon = group.get("icon")
+    if icon in ("light", "ahu"):
+        out["icon"] = icon
+    return out, None
 
 
 def validate_room(room: Dict[str, Any], *, partial: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -105,7 +179,15 @@ def _validate_event_item(item: Dict[str, Any]) -> Optional[str]:
     if not isinstance(params, dict):
         return "event property requires parameters"
     instance = str(params.get("instance") or "")
-    allowed = EVENT_INSTANCES.get(instance)
+    cloud_only = item.get("cloud_only") is True
+    if cloud_only and instance in CLOUD_ONLY_EVENT_INSTANCES:
+        allowed = CLOUD_ONLY_EVENT_INSTANCES[instance]
+        if allowed is None:
+            # Free text (a PLC status line): no value list to declare, and the
+            # cloud renders it verbatim. Yandex never sees it.
+            return None
+    else:
+        allowed = EVENT_INSTANCES.get(instance)
     if allowed is None:
         return "invalid event property instance"
     events = params.get("events")
@@ -179,11 +261,18 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     mqtt = str(item.get("mqtt") or "").strip()
     if not mqtt or not _MQTT_RE.match(mqtt):
         return None, "invalid mqtt topic"
+    if "cloud_only" in item and not isinstance(item["cloud_only"], bool):
+        # Strict bool: a stray "false" string must never widen an allow-list.
+        return None, "invalid %s cloud_only" % kind
+    cloud_only = item.get("cloud_only") is True
     if t == "devices.properties.float":
         params = item.get("parameters")
         if not isinstance(params, dict):
             return None, "float property requires parameters"
-        if str(params.get("instance") or "") not in FLOAT_INSTANCES:
+        instance = str(params.get("instance") or "")
+        allowed = instance in FLOAT_INSTANCES or (
+            cloud_only and instance in CLOUD_ONLY_FLOAT_INSTANCES)
+        if not allowed:
             return None, "invalid float property instance"
         unit = params.get("unit")
         if not isinstance(unit, str) or not _UNIT_RE.match(unit):
@@ -192,6 +281,26 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
         err = _validate_event_item(item)
         if err:
             return None, err
+    elif t == "devices.capabilities.range":
+        # A range capability reaches Yandex verbatim; without min/max/precision
+        # the app has no slider to draw and the platform rejects discovery. It
+        # was unchecked here until a setpoint became the first real user.
+        params = item.get("parameters")
+        if not isinstance(params, dict):
+            return None, "range capability requires parameters"
+        if not str(params.get("instance") or ""):
+            return None, "range capability requires an instance"
+        rng = params.get("range")
+        if not isinstance(rng, dict):
+            return None, "range capability requires parameters.range"
+        for key in ("min", "max", "precision"):
+            value = rng.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, "invalid range %s" % key
+            if value != value or value in (float("inf"), float("-inf")):
+                return None, "invalid range %s" % key
+        if float(rng["min"]) >= float(rng["max"]) or float(rng["precision"]) <= 0:
+            return None, "invalid range bounds"
     err = _validate_inverted(item, kind)
     if err:
         return None, err
@@ -212,6 +321,36 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
     return out, None
 
 
+def _carel_mqtt_bound(dev: Dict[str, Any]) -> bool:
+    """True when any binding topic is a Carel AHU control (carel-COM…)."""
+    for key in ("capabilities", "properties"):
+        items = dev.get(key) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mqtt = str(item.get("mqtt") or "")
+            if mqtt.startswith("/devices/carel-"):
+                return True
+    return False
+
+
+def _led_mqtt_bound(dev: Dict[str, Any]) -> bool:
+    """True when any binding topic is an LED-strip control (led-COM…)."""
+    for key in ("capabilities", "properties"):
+        items = dev.get(key) or []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mqtt = str(item.get("mqtt") or "")
+            if mqtt.startswith("/devices/led-"):
+                return True
+    return False
+
+
 def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     if not isinstance(dev, dict):
         return None, "device must be an object"
@@ -228,7 +367,14 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
         out["name"] = name
     if "type" in out or not partial:
         dtype = str(out.get("type") or "devices.types.other")
-        if not dtype.startswith("devices.types."):
+        # Carel AHU bindings default to the ventilation tile (contract
+        # carel-ahu.md §6). A live other/generic widget must not come back
+        # after the next save — the board's type change is not in git.
+        if _carel_mqtt_bound(out) and dtype == "devices.types.other":
+            dtype = "devices.types.ventilation"
+        if _led_mqtt_bound(out) and dtype in ("devices.types.other", "devices.types.generic"):
+            dtype = "devices.types.light"
+        if dtype not in OFFICIAL_DEVICE_TYPES:
             return None, "invalid device type"
         out["type"] = dtype
     if "room_id" in out and out["room_id"] not in (None, ""):
@@ -272,4 +418,8 @@ def validate_device(dev: Dict[str, Any], *, partial: bool = False) -> Tuple[Opti
             out[key] = cleaned
         else:
             out.setdefault(key, [])
+    if _carel_mqtt_bound(out) and out.get("icon") in (None, "", "generic"):
+        out["icon"] = "fan"
+    if _led_mqtt_bound(out) and out.get("icon") in (None, "", "generic"):
+        out["icon"] = "bulb"
     return out, None

@@ -39,6 +39,15 @@ import time
 import urllib.request
 import urllib.error
 
+# The shared binding-reset core. This file IS its authoritative home
+# (opt/sa02m-cloud-agent/binding_core.py); the smart-home package carries a
+# byte-identical copy, and the `binding-reset-parity` quality row keeps them
+# equal. The explicit sys.path entry is what lets the tests load this agent by
+# file path (importlib.spec_from_file_location) as well as systemd running it
+# as a script — the script's own directory is only on sys.path in the latter.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import binding_core  # noqa: E402
+
 _handlers = [logging.StreamHandler(sys.stdout)]
 try:
     _handlers.append(logging.FileHandler("/var/log/sa02m-cloud-agent.log", mode="a"))
@@ -474,191 +483,58 @@ def classify_frps_marker(marker: str) -> str:
     return FRPS_REFUSALS.get((marker or "").strip().lower(), "")
 
 
-class RefusalTracker:
-    """Counts CONSECUTIVE refusal EVENTS of one class; any success resets.
+# The counter, the cursor and the whole stand-down live in binding_core.py —
+# ONE home for both doors (this agent and the smart-home client's Alice
+# profile). What stays here is this door's FACTS: which files are the binding,
+# which unit carries the tunnel, which strings the server may say, where the
+# marker and the status file live. Nothing below re-implements a shared rule;
+# the wrappers exist so the module surface (and every monkeypatch point the
+# suites use) is unchanged by the extraction.
+_MEM_CURSOR = binding_core._MEM_CURSOR
+_SINCE_FROM = binding_core._SINCE_FROM
+_WARNED = binding_core._WARNED
+_warn_once = binding_core._warn_once
+PENDING_STAND_DOWN = binding_core.PENDING_STAND_DOWN
+# The core leaves the one-shot journal window empty at import; this door seeds
+# it with its OWN start, which is the narrow window of the very first read.
+_SINCE_FROM["at"] = AGENT_STARTED_AT
 
-    An event is one refused heartbeat, or one NEW refusal line in the frpc
-    journal (the cursor guarantees a line is fed here once, never re-read on
-    the next tick). A refusal of a different class restarts the count at one
-    (three refusals are only meaningful when they all say the same thing).
-    On the heartbeat path a network error or a 5xx is neither a refusal nor a
-    success and leaves the count alone; on the frps path a tick with no new
-    refusal line IS a success.
+
+class RefusalTracker(binding_core.RefusalTracker):
+    """The core's counter with THIS door's default threshold.
+
+    Three, because this door reads evidence — a 403 reason, a journal marker —
+    on a channel with no command semantics, and three consecutive of one class
+    is what turns evidence into a verdict. The Alice door counts to one for the
+    opposite reason (it receives a verdict); the number is the parameter, the
+    counting is shared (`binding_core`).
     """
 
     def __init__(self, threshold: int = REFUSAL_STANDDOWN_COUNT):
-        self.threshold = int(threshold)
-        self.cls = ""
-        self.count = 0
-
-    def note_success(self):
-        self.cls = ""
-        self.count = 0
-
-    def note_refusal(self, cls: str) -> bool:
-        """Record one refusal; True when the threshold is reached."""
-        if not cls:
-            return False
-        if cls == self.cls:
-            self.count += 1
-        else:
-            self.cls = cls
-            self.count = 1
-        return self.count >= self.threshold
-
-
-# In-memory twin of CURSOR_FILE. Within one process it is always the NEWER
-# position (it moves before the file write), so _read_cursor prefers it; the
-# file matters only at process start. What this buys is "never re-COUNTED":
-# with the file unwritable the process keeps reading from the twin, and any
-# tick whose cursor could not be saved is clean, so a line can never add a
-# second count. Lost on restart — then /run's copy (if any) or the --since
-# window takes over.
-_MEM_CURSOR = {"cursor": ""}
-# The `--since` window used whenever no cursor is at hand. It is spent by a
-# read that yields a cursor and RE-ARMED by every read that does not (a failed
-# journalctl, an empty or footerless answer, a dropped stale cursor) — so
-# journalctl is invoked on every tick for the life of the process, never
-# once. Recount-safe: every re-arm follows a tick that returned "" and reset
-# the counter (review 1.0.6.26, round 10).
-_SINCE_FROM = {"at": AGENT_STARTED_AT}
-_WARNED = set()
-
-
-def _warn_once(key: str, msg: str, *args) -> None:
-    if key in _WARNED:
-        return
-    _WARNED.add(key)
-    log.warning(msg, *args)
+        binding_core.RefusalTracker.__init__(self, threshold)
 
 
 def _read_cursor(path: str = None) -> str:
-    if _MEM_CURSOR["cursor"]:
-        return _MEM_CURSOR["cursor"]
-    try:
-        with open(path or CURSOR_FILE) as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    return binding_core.read_cursor(path or CURSOR_FILE)
 
 
 def _save_cursor(cursor: str, path: str = None) -> bool:
-    """Persist the cursor; the in-memory twin moves first. False on a failed
-    write — the caller then treats the tick as CLEAN (B1): inability to save
-    the cursor must never turn into re-reading the same window."""
-    _MEM_CURSOR["cursor"] = cursor
-    p = path or CURSOR_FILE
-    try:
-        tmp = p + ".tmp"
-        with open(tmp, "w") as f:
-            f.write(cursor)
-        os.replace(tmp, p)
-        return True
-    except OSError as e:
-        _warn_once("save:" + p, "journal cursor not saved (%s): %s — the tick counts as "
-                   "clean; reads continue from the in-memory position, so nothing "
-                   "is counted twice", p, e)
-        return False
+    return binding_core.save_cursor(cursor, path or CURSOR_FILE)
 
 
 def _drop_cursor(path: str = None) -> None:
-    """A cursor journalctl refuses (its entry rotated out): drop it and re-arm
-    the one-shot window from NOW — nothing already counted can be re-read."""
-    _MEM_CURSOR["cursor"] = ""
-    try:
-        os.unlink(path or CURSOR_FILE)
-    except OSError:
-        pass
-    _SINCE_FROM["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    binding_core.drop_cursor(path or CURSOR_FILE)
 
 
 def frpc_reject_reason(unit: str = FRPC_UNIT) -> str:
     """Причина серверного отказа из НОВЫХ строк журнала frpc, или "".
 
-    Журнал читается по КУРСОРУ: `--after-cursor <последняя прочитанная строка>`
-    (`--show-cursor` даёт новый курсор — он сохраняется в CURSOR_FILE и в
-    памяти), а в самый первый раз — `--since <старт агента>`. Каждая строка
-    отказа видна ровно один раз; такт без НОВЫХ строк отказа — успех.
-
-    FAIL-CLOSED (ревью 1.0.6.26, B1 второго круга): любая невозможность
-    получить или сохранить курсор означает «новых отказов нет» — такт чистый.
-    Ответ journalctl без строки `-- cursor:` — чистый такт. Не сохранившийся
-    курсор — чистый такт, следующее чтение идёт от позиции в памяти.
-    НО журнал читается на КАЖДОМ такте (ревью, круг 10): окно `--since`
-    тратится только чтением, которое вернуло курсор, а каждый выход без
-    курсора (ошибка journalctl, пустой или без-футерный ответ, сброшенный
-    устаревший курсор) взводит окно заново — иначе одно неудачное первое
-    чтение глушило сигнал отвязки до перезапуска процесса. Повторного счёта
-    это не даёт: каждому повторному взведению предшествует такт, вернувший ""
-    и сбросивший счётчик. Лимита `-n` нет: на пути курсора окно и так
-    ограничено, а на пути `--since` каждое чтение всё равно чистое, пока не
-    появится курсор.
-
-    Честность важнее удобства: «отозвано» показываем ТОЛЬКО когда сервер прямо
-    это сказал. Недоступное облако, севшая сеть, упавший frpc или нечитаемый
-    журнал — это не отказ ("" — как «нет новых отказов»; в сторону стирания
-    привязки это никогда не ошибается)."""
-    cursor = _read_cursor()
-    since = ""
-    if cursor:
-        args = ["journalctl", "-u", unit, "--after-cursor", cursor,
-                "--show-cursor", "--no-pager"]
-    else:
-        since = _SINCE_FROM["at"] or time.strftime("%Y-%m-%d %H:%M:%S")
-        args = ["journalctl", "-u", unit, "--since", since,
-                "--show-cursor", "--no-pager"]
-        # Spent by THIS read; every exit below that yields no cursor puts it
-        # back, so the next tick reads again (same window — nothing in it was
-        # counted, so nothing can be counted twice).
-        _SINCE_FROM["at"] = ""
-
-    def _rearm():
-        if not cursor:
-            _SINCE_FROM["at"] = since
-
-    try:
-        r = subprocess.run(args, capture_output=True, text=True, timeout=10)
-    except Exception as e:
-        log.debug("journalctl unavailable: %s", e)
-        _rearm()
-        return ""
-    if r.returncode != 0:
-        if cursor:
-            # A stale cursor fails on every tick and would silently kill the
-            # only detach signal (L8): drop it, read from NOW next time.
-            log.warning("journalctl refused cursor %s (rc=%d) — dropping it, "
-                        "next read starts from now", cursor, r.returncode)
-            _drop_cursor()
-        else:
-            log.warning("journalctl failed (rc=%d): %s", r.returncode,
-                        (r.stderr or "").strip()[:200])
-            _rearm()
-        return ""
-    body = []
-    new_cursor = ""
-    for line in (r.stdout or "").splitlines():
-        if line.startswith("-- cursor:"):
-            new_cursor = line.split(":", 1)[1].strip()
-        else:
-            body.append(line)
-    if not new_cursor:
-        # An empty window (a connected, quiet frpc — the ordinary case on an
-        # agent restart) or a footerless answer: clean tick, read again next.
-        if body:
-            _warn_once("nofooter", "journalctl returned %d line(s) without a cursor "
-                       "footer — counted as clean", len(body))
-        _rearm()
-        return ""
-    if not _save_cursor(new_cursor):
-        return ""
-    text = "\n".join(body).lower()
-    # The LATEST refusal line wins when several new lines carry markers.
-    found, at = "", -1
-    for marker in FRPC_REJECT_MARKERS:
-        pos = text.rfind(marker)
-        if pos > at:
-            found, at = marker, pos
-    return found
+    Механика — курсор, окно `--since`, правило fail-closed «нет курсора ==
+    чистый такт» — живёт в `binding_core.journal_reject_reason` (один дом,
+    общий с дверью Алисы) и здесь не пересказывается. Дверные факты: юнит
+    frpc, таблица маркеров `FRPC_REJECT_MARKERS`, файл курсора `CURSOR_FILE`.
+    """
+    return binding_core.journal_reject_reason(unit, FRPC_REJECT_MARKERS, CURSOR_FILE)
 
 
 # The cloud binding, enumerated. The stand-down may erase THESE and nothing
@@ -671,24 +547,10 @@ def binding_files():
 
 
 def wipe_cloud_binding() -> dict:
-    """Delete the identity files. Idempotent; a missing file is reported as
-    `absent`, never hidden; any other OSError is logged and RAISED — a binding
-    that could not be erased must not read as erased."""
-    removed, absent = [], []
-    for path in binding_files():
-        name = os.path.basename(path)
-        try:
-            os.unlink(path)
-            removed.append(name)
-        except FileNotFoundError:
-            absent.append(name)
-        except OSError as e:
-            # A partial wipe: say what DID go before raising, or that record
-            # is lost with the exception.
-            log.error("stand-down: could not remove %s: %s (already removed: %s; absent: %s)",
-                      path, e, ", ".join(removed) or "nothing", ", ".join(absent) or "nothing")
-            raise
-    return {"removed": removed, "absent": absent}
+    """Erase the two identity files. Idempotence, the `absent` report and the
+    raise-on-any-other-OSError rule are the core's (`binding_core.wipe_binding`);
+    this door contributes only the clear-list above."""
+    return binding_core.wipe_binding(binding_files)
 
 
 def _status_state() -> str:
@@ -699,6 +561,96 @@ def _status_state() -> str:
         return ""
 
 
+def _stand_down_state(cls: str) -> str:
+    return "revoked" if cls == REFUSAL_CLASS_REVOKED else "unlinked"
+
+
+def _cloud_spec(cfg, config_path: str, classify=None, systemctl=None):
+    """This door's descriptor for the shared core — built per call, so a test
+    (or an operator override) that repoints a path or swaps `_systemctl`,
+    `_write_status`, `save_config` or `wipe_cloud_binding` repoints the
+    stand-down with it.
+
+    `classify` is per CHANNEL, not per door: this agent reads TWO evidence
+    channels — the heartbeat's 403 reason and the frpc journal's marker — each
+    with its own table and its own counter. Every other field is identical, so
+    one factory serves both.
+    """
+    run = systemctl or _systemctl
+
+    def stop_tunnel():
+        run("stop", FRPC_UNIT)
+        run("disable", FRPC_UNIT)
+
+    def read_marker():
+        # Nothing to restore while the board is enrolled: a marker beside a
+        # live binding is stale, not a verdict.
+        if cfg["cloud"].getboolean("enrolled", fallback=False):
+            return ("", "", "")
+        stamp = cfg["cloud"].get("unlinked_at", "").strip()
+        if not stamp:
+            return ("", "", "")
+        cls = cfg["cloud"].get("unlinked_reason", "").strip() or REFUSAL_CLASS_UNKNOWN
+        return (stamp, cls, cfg["cloud"].get("unlinked_reason_text", "").strip())
+
+    def write_marker(stamp: str, cls: str, reason: str):
+        # De-enrolled AND explained, in one save: `enrolled=false` plus an empty
+        # device_id are what put the standby loop back on the pairing trigger,
+        # and the three marker keys are what survive the tmpfs status file.
+        cfg["cloud"]["enrolled"] = "false"
+        cfg["cloud"]["device_id"] = ""
+        cfg["cloud"]["unlinked_at"] = stamp
+        cfg["cloud"]["unlinked_reason"] = cls
+        cfg["cloud"]["unlinked_reason_text"] = reason
+        save_config(config_path, cfg)
+
+    def clear_marker():
+        for key in STAND_DOWN_MARKER_KEYS:
+            cfg["cloud"].pop(key, None)
+        save_config(config_path, cfg)
+
+    def write_pending(cls: str, reason: str):
+        # An honest no-op, and a door fact rather than a branch in the core:
+        # on THIS door the retry runs in the process that failed. main() takes
+        # the "unlink_failed" return straight into retry_wipe_loop, so the
+        # in-memory record is never handed across a process boundary and a
+        # durable copy would buy nothing. Should this process die mid-retry the
+        # board is not stranded either: it comes back enrolled, dials, and the
+        # cloud restates the same refusal — this door reads EVIDENCE and can
+        # re-derive its verdict, which the Alice door (one delivered event)
+        # cannot. That asymmetry is why only the other door persists.
+        return None
+
+    def read_pending():
+        return ("", "")
+
+    def write_status(state: str, **kw):
+        _write_status(state, serial=cfg["device"]["serial"], **kw)
+
+    return binding_core.SourceSpec(
+        name="cloud",
+        threshold=REFUSAL_STANDDOWN_COUNT,
+        wipe=lambda: wipe_cloud_binding(),
+        stop_tunnel=stop_tunnel,
+        read_marker=read_marker,
+        write_marker=write_marker,
+        clear_marker=clear_marker,
+        write_pending=write_pending,
+        read_pending=read_pending,
+        write_status=write_status,
+        state_for_class=_stand_down_state,
+        states=("revoked", "unlinked", "unlink_failed"),
+        classify=classify or classify_refusal_evidence,
+    )
+
+
+def classify_refusal_evidence(evidence) -> str:
+    """The heartbeat channel's classifier in the core's one-argument shape:
+    the (status, error) pair `heartbeat_refusal()` leaves on the side channel."""
+    status, error = evidence
+    return classify_refusal(status, error)
+
+
 def stand_down(cfg, config_path: str, cls: str, reason: str, systemctl=None) -> str:
     """The cloud refused this board N times for one reason: de-enroll locally.
 
@@ -707,89 +659,36 @@ def stand_down(cfg, config_path: str, cls: str, reason: str, systemctl=None) -> 
     delete the device secret and frpc.toml, keep api_url / server_host, and
     leave a durable `unlinked_at` + reason in agent.conf. The status file gets
     `revoked` (owner revoked) or `unlinked` (detached / unknown) with the
-    reason and the time, so the «Облако» card can say so.
+    reason and the time, so the «Облако» card can say so. The sequence itself
+    is `binding_core.stand_down` — shared with the Alice door, not restated.
 
     Returns "repair": the caller drops to the standby loop, which polls the
     web UI's pairing trigger — «Привязать заново» is one button press away and
     needs no SSH. The process never exits (Restart=on-failure would not bring
-    it back).
+    it back). "unlink_failed" when the wipe itself failed; main() retries it.
     """
-    run = systemctl or _systemctl
-    log.error("cloud refused this device (%s: %s) — standing down: tunnel stopped, "
-              "binding erased, waiting for a new pairing", cls, reason)
-    run("stop", FRPC_UNIT)
-    run("disable", FRPC_UNIT)
-    try:
-        wiped = wipe_cloud_binding()
-    except OSError as e:
-        # The binding is STILL on disk: say so — never «Подключено», never
-        # «отвязано». main() retries the wipe from this state (low 2).
-        PENDING_STAND_DOWN.update({"cls": cls, "reason": reason})
-        log.error("stand-down: binding NOT erased: %s", e)
-        _write_status("unlink_failed", reason="wipe_failed", detail=str(e), reason_class=cls,
-                      refusal=reason, serial=cfg["device"]["serial"])
-        return "unlink_failed"
-    return _finish_stand_down(cfg, config_path, cls, reason, wiped)
-
-
-# (cls, reason) of a stand-down whose wipe failed — main() finishes it once the
-# wipe succeeds. Module-level because the failure crosses the loop boundary.
-PENDING_STAND_DOWN = {"cls": "", "reason": ""}
-
-
-def _stand_down_state(cls: str) -> str:
-    return "revoked" if cls == REFUSAL_CLASS_REVOKED else "unlinked"
+    return binding_core.stand_down(
+        _cloud_spec(cfg, config_path, systemctl=systemctl), cls, reason)
 
 
 def _finish_stand_down(cfg, config_path: str, cls: str, reason: str, wiped: dict) -> str:
     """Bookkeeping after a SUCCESSFUL wipe: config, durable marker, status."""
-    state = _stand_down_state(cls)
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    cfg["cloud"]["enrolled"] = "false"
-    cfg["cloud"]["device_id"] = ""
-    cfg["cloud"]["unlinked_at"] = stamp
-    cfg["cloud"]["unlinked_reason"] = cls
-    cfg["cloud"]["unlinked_reason_text"] = reason
-    save_config(config_path, cfg)
-    _write_status(state, reason=reason, reason_class=cls, unlinked_at=stamp,
-                  serial=cfg["device"]["serial"])
-    log.warning("cloud binding erased: removed %s; already absent %s",
-                ", ".join(wiped["removed"]) or "nothing",
-                ", ".join(wiped["absent"]) or "nothing")
-    return "repair"
+    return binding_core.finish_stand_down(
+        _cloud_spec(cfg, config_path), cls, reason, wiped)
 
 
 def retry_wipe_loop(cfg, config_path: str, sleep=time.sleep) -> str:
     """After a failed wipe: keep the error state on the card and retry the
     wipe every WATCHDOG_S until it succeeds, then finish the stand-down."""
-    cls, reason = PENDING_STAND_DOWN["cls"], PENDING_STAND_DOWN["reason"]
-    while True:
-        sleep(WATCHDOG_S)
-        try:
-            wiped = wipe_cloud_binding()
-        except OSError as e:
-            log.error("stand-down retry: binding still NOT erased: %s", e)
-            _write_status("unlink_failed", reason="wipe_failed", detail=str(e), reason_class=cls,
-                          refusal=reason, serial=cfg["device"]["serial"])
-            continue
-        PENDING_STAND_DOWN.update({"cls": "", "reason": ""})
-        return _finish_stand_down(cfg, config_path, cls, reason, wiped)
+    return binding_core.retry_wipe_loop(
+        _cloud_spec(cfg, config_path), WATCHDOG_S, sleep=sleep)
 
 
 def restore_stand_down_status(cfg) -> bool:
     """On start in the stand-down state rebuild the status file from the
     durable marker in agent.conf (/run is tmpfs — after a reboot the card
     would otherwise show a bare «Не подключено» for a revoked board)."""
-    if cfg["cloud"].getboolean("enrolled", fallback=False):
-        return False
-    stamp = cfg["cloud"].get("unlinked_at", "").strip()
-    if not stamp:
-        return False
-    cls = cfg["cloud"].get("unlinked_reason", "").strip() or REFUSAL_CLASS_UNKNOWN
-    reason = cfg["cloud"].get("unlinked_reason_text", "").strip() or cls
-    _write_status(_stand_down_state(cls), reason=reason, reason_class=cls,
-                  unlinked_at=stamp, serial=cfg["device"]["serial"], restored=True)
-    return True
+    return binding_core.restore_stand_down_status(_cloud_spec(cfg, DEFAULT_CONFIG))
 
 
 # ── Telemetry (heartbeat filler) ──────────────────────────────────────────────
@@ -1109,6 +1008,11 @@ def active_loop(cfg: configparser.ConfigParser, config_path: str = DEFAULT_CONFI
     cpu_snap       = None
     hb_refusals    = RefusalTracker()
     frps_refusals  = RefusalTracker()
+    # Two evidence channels, two counters, two classifiers — one descriptor
+    # factory. The counting itself is `binding_core.refusal_verdict`, shared
+    # with the Alice door, which passes the same way with a threshold of one.
+    hb_spec        = _cloud_spec(cfg, config_path, classify=classify_refusal_evidence)
+    frps_spec      = _cloud_spec(cfg, config_path, classify=classify_frps_marker)
     device_secret  = load_device_secret()
     log.info("per-device identity: %s",
              "present" if device_secret else "absent (legacy grace path)")
@@ -1128,8 +1032,8 @@ def active_loop(cfg: configparser.ConfigParser, config_path: str = DEFAULT_CONFI
             # saved (fail-closed — see frpc_reject_reason).
             marker = frpc_reject_reason()
             if marker:
-                cls = classify_frps_marker(marker)
-                if cls and frps_refusals.note_refusal(cls):
+                cls = binding_core.refusal_verdict(frps_spec, frps_refusals, marker)
+                if cls:
                     # Контракт §4: повторный отказ == снятие с учёта.
                     return stand_down(cfg, config_path, cls, marker)
             else:
@@ -1158,8 +1062,9 @@ def active_loop(cfg: configparser.ConfigParser, config_path: str = DEFAULT_CONFI
             if verdict["status"] == 200:
                 hb_refusals.note_success()
             else:
-                cls = classify_refusal(verdict["status"], verdict["error"])
-                if cls and hb_refusals.note_refusal(cls):
+                cls = binding_core.refusal_verdict(
+                    hb_spec, hb_refusals, (verdict["status"], verdict["error"]))
+                if cls:
                     return stand_down(cfg, config_path, cls, verdict["error"] or "")
             _write_status("active", device_id=device_id, tunnel=tunnel,
                           serial=cfg["device"]["serial"],

@@ -17,22 +17,20 @@ function aliceBadge(text, kind) {
   return '<span class="badge ' + cls + '">' + escHtml(String(text)) + '</span>';
 }
 
-// Transient success notices auto-clear; errors and the pending-link notice
-// (rendered by aliceSetMsgLink) stay until the state itself changes.
-const ALICE_MSG_TTL_MS = 5000;
-let _aliceMsgTimer = null;
+// Two channels, by lifetime. ACTION feedback («Сохранено», a pairing error, a
+// gateway request failure) is ephemeral → the viewport toast (cardNotice, 5 s),
+// so it never grows .ctrl-card. A STANDING state explanation — the «Причина»
+// line of a stood-down board, the friendly gateway/client status — is owned by
+// aliceRender and lives ON the card (#alice-msg) for as long as the state does:
+// a toast shows it once and then never again (1.0.6.38 regression, audit C1;
+// the card line is what docs/contracts/alice-mqtt-mapping.md and
+// cloud-card-smoke read). The toast path therefore never touches #alice-msg.
+let _aliceLastPollNotice = '';
 
-function aliceClearMsgTimer() {
-  if (_aliceMsgTimer) {
-    clearTimeout(_aliceMsgTimer);
-    _aliceMsgTimer = null;
-  }
-}
-
-function aliceSetMsgOn(id, text, ok) {
-  const msg = $(id);
+// The standing card line. `ok` true/false tints it, null is a neutral hint.
+function aliceSetCardMsg(text, ok) {
+  const msg = $('alice-msg');
   if (!msg) return;
-  if (id === 'alice-msg') aliceClearMsgTimer();
   if (!text) {
     msg.hidden = true;
     msg.textContent = '';
@@ -41,37 +39,52 @@ function aliceSetMsgOn(id, text, ok) {
   }
   msg.hidden = false;
   msg.textContent = text;
-  msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
-  if (id === 'alice-msg' && ok) {
-    _aliceMsgTimer = setTimeout(function () {
-      _aliceMsgTimer = null;
-      const el = $('alice-msg');
-      // Only clear what is still this notice — a newer message owns itself.
-      if (el && !el.hidden && el.textContent === text) aliceSetMsgOn('alice-msg', '', true);
-    }, ALICE_MSG_TTL_MS);
-  }
+  msg.className = 'cloud-msg' + (ok === null ? '' : (ok ? ' is-ok' : ' is-err'));
 }
 
-// Card-level status/link/enable feedback.
-function aliceSetMsg(text, ok) { aliceSetMsgOn('alice-msg', text, ok); }
+function aliceHideCardMsg() { aliceSetCardMsg('', true); }
 
-// Message + a real clickable link (DOM-built, no innerHTML). Needed because
-// window.open after an await is eaten by popup blockers — the operator must
-// always have the registration link ON the card while a claim is pending.
-function aliceSetMsgLink(text, url, label) {
-  const msg = $('alice-msg');
-  if (!msg) return;
-  aliceClearMsgTimer();  // the link notice lives as long as the claim does
-  msg.hidden = false;
-  msg.className = 'cloud-msg is-ok';
-  msg.textContent = '';
-  msg.appendChild(document.createTextNode(text + ' '));
-  const a = document.createElement('a');
+function aliceNotice(text, ok) {
+  if (!text) return;
+  if (typeof cardNotice === 'function') cardNotice(text, ok);
+  else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
+}
+
+function alicePollNoticeOnce(text, ok) {
+  const key = String(ok) + '\0' + String(text || '');
+  if (key === _aliceLastPollNotice) return;
+  _aliceLastPollNotice = key;
+  aliceNotice(text, ok);
+}
+
+// Card-level status/link/enable feedback — viewport toast, not an in-card banner.
+function aliceSetMsg(text, ok) {
+  _aliceLastPollNotice = '';
+  aliceNotice(text, ok);
+}
+
+// Compact reopen link lives in the existing status row (#alice-reg-link) so a
+// blocked popup still has a target without growing the card. The toast carries
+// the same wording for 5 s.
+function aliceSetRegLink(url, label) {
+  const a = $('alice-reg-link');
+  if (!a) return;
+  if (!url) {
+    a.hidden = true;
+    a.removeAttribute('href');
+    a.textContent = '';
+    return;
+  }
   a.href = url;
   a.target = '_blank';
   a.rel = 'noopener';
-  a.textContent = label;
-  msg.appendChild(a);
+  a.textContent = label || uiT('Открыть ссылку привязки');
+  a.hidden = false;
+}
+
+function aliceSetMsgLink(text, url, label) {
+  aliceSetRegLink(url, label);
+  aliceNotice(text, true);
 }
 
 // Registration URL of the pending claim: server-fed (link.registration_url
@@ -125,8 +138,29 @@ const ALICE_STATE_MAP = {
   error: ['Ошибка', 'err'],
   missing_deps: ['Нет зависимостей', 'err'],
   missing_cert: ['Нет сертификата', 'warn'],
+  // Distinct from missing_cert on purpose: the board WAS bound and the cloud
+  // unbound it, so the card must say why the certificate is gone instead of
+  // reading like a board that was never bound. Same wording as the «Облако»
+  // card's state of the same name — one vocabulary for one situation.
+  unlinked: ['Отвязано в облаке', 'warn'],
+  // Unlinked, but the binding files could NOT be erased — the client keeps
+  // retrying. Never «привязан», never «отвязано».
+  unlink_failed: ['Ошибка отвязки', 'err'],
   unknown: ['Нет данных', 'unk'],
 };
+
+// Client status state / reason code → human RU (DICT-translated), the twin of
+// cloud.js's CLOUD_REASON_MAP. Shown in the card's message line as
+// «Причина: …» for the two stand-down states and nothing else.
+const ALICE_REASON_MAP = {
+  unlinked: 'устройство отвязано в облаке',
+  wipe_failed: 'не удалось стереть файлы привязки в /var/lib/sa02m-alice — подробности в журнале клиента; попытка повторяется',
+  // The local «Отвязать» could not erase the binding AND could not hand the
+  // retry to the client (the same read-only filesystem, most likely) — nothing
+  // is retrying, so the card must ask for the action instead of implying one.
+  wipe_failed_not_recorded: 'не удалось стереть файлы привязки и передать повтор клиенту — нажмите «Отвязать» ещё раз',
+};
+const ALICE_STAND_DOWN_STATES = ['unlinked', 'unlink_failed'];
 
 // A raw gateway exception (str(URLError): "<urlopen error [SSL:
 // CERTIFICATE_VERIFY_FAILED] … self-signed certificate …>") is a TLS-trust
@@ -191,7 +225,7 @@ function aliceRender(d) {
   const st = (d.status && d.status.state) || (enabled ? 'unknown' : 'disabled');
   const entry = ALICE_STATE_MAP[st] || ALICE_STATE_MAP.unknown;
 
-  // Friendly overall status (never raw exception text) — surfaced in #alice-msg
+  // Friendly overall status (never raw exception text) — toast, not #alice-msg
   const friendly = aliceFriendlyStatus(d);
 
   aliceSetBadge($('alice-svc-state'), enabled ? 'Включен' : 'Выключен', enabled ? 'ok' : 'unk');
@@ -263,8 +297,10 @@ function aliceRender(d) {
     statusAction = 'link';
     statusLabel = 'Привязать';
   }
-  // Offline surfaces in the Status line itself (no separate «нет интернета» row).
-  if (statusVal) statusVal.textContent = avail ? uiT(statusText) : uiT('нет интернета');
+  // Gateway probe fail is «Шлюз недоступен» on the badge — not «нет интернета».
+  // The box can still have a default route (skill unlink wiped certs, TLS
+  // blip, hub 5xx). Only a dedicated offline note may use that phrase.
+  if (statusVal) statusVal.textContent = uiT(statusText);
   if (linkRow) linkRow.hidden = !enabled;
   if (linkBtn) {
     linkBtn.dataset.action = statusAction || '';
@@ -283,22 +319,32 @@ function aliceRender(d) {
     count.textContent = String(k);
   }
 
-  // Surface a gateway/client problem in the card as the FRIENDLY label only —
-  // never the raw urlopen/SSL exception string (Operator rule, 1.0.5.73). The
-  // mapping lives in aliceFriendlyStatus; a healthy state leaves any action
-  // feedback message («Сохранено» etc.) in place.
-  if (friendly.kind === 'err') {
-    aliceSetMsg(uiT(friendly.text), false);
+  // The card line is the render's: a STANDING explanation stays on the card for
+  // as long as the state does (contract §state, cloud-card-smoke), never a
+  // once-per-session toast. The «Причина» line for the two stand-down states
+  // is checked BEFORE the generic error branch, which would otherwise replace
+  // the explanation with a bare «Ошибка отвязки» (or «Шлюз недоступен» on a
+  // board that is unlinked AND offline) and leave the operator no reason at
+  // all. Unlike the «Облако» card it carries no timestamp: the Alice status
+  // file's `unlinked_at` is the durable marker's, and formatting it would
+  // duplicate cloud.js's relative-time helper across bundles. The friendly
+  // status is the raw-exception-free label only (Operator rule, 1.0.5.73).
+  // The reopen link sits in the status row (#alice-reg-link).
+  if (ALICE_STAND_DOWN_STATES.indexOf(st) !== -1) {
+    const raw = (d.status && d.status.reason) || '';
+    const why = ALICE_REASON_MAP[raw] || ALICE_REASON_MAP[st] || '';
+    aliceSetRegLink(null);
+    aliceSetCardMsg(uiT('Причина') + ': ' + (why ? uiT(why) : String(raw)), false);
+  } else if (friendly.kind === 'err') {
+    aliceSetRegLink(null);
+    aliceSetCardMsg(uiT(friendly.text), false);
   } else if (enabled && pending && aliceRegUrl) {
-    // Keep the reopen link visible for the whole pending window — a closed
-    // tab or a blocked popup must not strand the operator.
-    aliceSetMsgLink(
-      uiT('Откройте ссылку привязки, затем «Завершить привязку»:'),
-      aliceRegUrl,
-      uiT('Открыть ссылку привязки')
-    );
-  } else if (!enabled) {
-    aliceSetMsg('', true);
+    aliceSetRegLink(aliceRegUrl, uiT('Открыть ссылку привязки'));
+    aliceHideCardMsg();
+  } else {
+    aliceSetRegLink(null);
+    aliceHideCardMsg();
+    if (!enabled) _aliceLastPollNotice = '';
   }
 
   aliceNotify(d);
@@ -313,7 +359,7 @@ async function aliceRefresh() {
     aliceRender(d);
     return d;
   } catch (e) {
-    aliceSetMsg(uiT('Ошибка запроса API Алисы'), false);
+    alicePollNoticeOnce(uiT('Ошибка запроса API Алисы'), false);
     return null;
   }
 }
@@ -394,7 +440,11 @@ async function aliceUnlink() {
   try {
     const d = await aliceApi({ action: 'unlink' });
     if (!d.ok) {
-      aliceSetMsg(d.message || d.error || uiT('Отвязка не выполнена'), false);
+      // Prefer the mapped Russian phrase over the backend's English `message`:
+      // these two codes are the wipe-failure outcomes and the operator has to
+      // act on the difference between them.
+      const why = ALICE_REASON_MAP[d.error];
+      aliceSetMsg(why ? uiT(why) : (d.message || d.error || uiT('Отвязка не выполнена')), false);
     } else {
       aliceSetPending(false);
       aliceSetMsg(d.message || uiT('Отвязано'), true);

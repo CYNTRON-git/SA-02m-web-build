@@ -22,13 +22,16 @@ STOP_MAP = {1: serial.STOPBITS_ONE, 2: serial.STOPBITS_TWO}
 
 def _modbus_read_var_header_frame_len(data: bytes) -> int:
     """
-    Ожидаемая длина RTU-кадра для 0x01/0x02/0x03/0x04: [addr, func, byte_count, data…, crc].
+    Ожидаемая длина RTU-кадра для 0x01/0x02/0x03/0x04/0x11: [addr, func, byte_count, data…, crc].
     0 если заголовка недостаточно или функция другая. Проверка «буфер уже полон»: len(data) >= результат.
+
+    0x11 (Report Slave ID, Carel) обязателен здесь: ответ c.pCOmini — 206 байт,
+    без предсказания длины ранний выход не срабатывает и кадр обрезается по таймауту.
     """
     if len(data) < 3:
         return 0
     func = data[1]
-    if func not in (0x01, 0x02, 0x03, 0x04):
+    if func not in (0x01, 0x02, 0x03, 0x04, 0x11):
         return 0
     bc = data[2]
     return 3 + int(bc) + 2

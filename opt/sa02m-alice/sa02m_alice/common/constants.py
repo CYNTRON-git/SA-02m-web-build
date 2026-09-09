@@ -26,6 +26,11 @@ STATUS_FILE_CLOUD = os.environ.get(
 
 # Client profiles. `alice` is the package's historical name; the package is the
 # smart-home transport and the Yandex gateway is one consumer of it.
+# PROFILE_YANDEX is the mTLS session to the Alice gateway (alice.cyntron.ru) —
+# the only session that carries controller_unlink, and the one whose list
+# payload must stay Yandex-discovery-shaped. PROFILE_CLOUD is a plain cloud-hub
+# session (no enrolment to unlink; the list payload additionally carries
+# rooms/groups/scenarios for the cloud control view).
 PROFILE_YANDEX = "yandex"
 PROFILE_CLOUD = "cloud"
 PROFILES = (PROFILE_YANDEX, PROFILE_CLOUD)
@@ -57,8 +62,15 @@ SIO_PATH = "/socket.io"
 EVT_DEVICES_LIST = "alice_devices_list"
 EVT_DEVICES_QUERY = "alice_devices_query"
 EVT_DEVICES_ACTION = "alice_devices_action"
+EVT_DEVICES_RENAME = "alice_devices_rename"
+EVT_DEVICES_ROOMS = "alice_devices_rooms"
+EVT_DEVICES_GROUPS = "alice_devices_groups"
 EVT_DEVICE_STATE = "device_state"
 EVT_CONTROLLER_UNLINK = "controller_unlink"
+# Cloud catalogue/scenario channel (hub → board, request_id-bearing):
+# rename one device, upsert/delete a room or a lighting group, drive the
+# on-board scenario store (docs/contracts/cloud-scenarios.md §Channel).
+EVT_DEVICES_SCENARIOS = "alice_devices_scenarios"
 
 # `device_state.origin` (additive, both profiles): `live` = an MQTT-driven
 # report through StateSender.offer, `snapshot` = offer_snapshot (reconnect /
@@ -85,7 +97,46 @@ STATUS_ERROR = "ERROR"
 # Gateway probe / reconnect
 GATEWAY_PING_PATH = "/v1.0/ping"
 GATEWAY_ENROLL_PATH = "/controller/enroll"
+GATEWAY_UNLINK_PATH = "/controller/unlink"
+# HTTP /v1.0/ping and enroll/unlink urllib budgets. Do NOT reuse this for
+# Socket.IO wait_timeout — a live hub's websocket+namespace handshake from
+# the ARM board is slower than a HEAD ping.
 GATEWAY_PROBE_TIMEOUT_S = 5.0
+# CGI `timeout` around python dispatch (sa02m_alice_api.cgi). Slowest honest
+# path is unlink / enroll: probe + gateway POST, each GATEWAY_PROBE_TIMEOUT_S;
+# a HEAD 405 retry on probe adds a third urllib wait. Import + JSON of ~15
+# devices on a loaded ARM board adds ~1–3 s. Must stay below nginx
+# fastcgi_read_timeout for /cgi-bin/ (20 s). Fail-closed: the CGI still
+# returns alice_api_failed JSON when this budget is exceeded.
+# Keep the default in sa02m_alice_api.cgi (`SA02M_ALICE_CGI_TIMEOUT`) in lockstep
+# — tests/test_sio_connection.py TestCgiDispatchTimeout asserts both.
+CGI_DISPATCH_TIMEOUT_S = 18
+# CGI `timeout` around the topic-inventory python (sa02m_alice_topics.cgi).
+# File reads only — no gateway, no bus — but the `?format=inventory` answer is
+# ~40 KB and measured 1.1-2.4 s on bench 1.135; 15 s leaves headroom on a
+# loaded board and stays under nginx's 20 s. Fail-closed: the CGI answers the
+# topics_failed JSON — one object, never a trailing one — when exceeded.
+# Keep the default in sa02m_alice_topics.cgi (`SA02M_ALICE_TOPICS_TIMEOUT`) in
+# lockstep — tests/test_sio_connection.py TestTopicsCgiTimeout asserts both;
+# the CGI's body behaviour is scripts/dev/test-alice-topics-cgi.sh.
+TOPICS_CGI_TIMEOUT_S = 15
+# Ceiling on rooms AND on groups in the device document (one constant, both
+# collections). A cloud-side upsert without an `id` mints one and appends —
+# a looping or compromised hub must not grow /etc on the board's flash
+# without bound. Past the cap a NEW row is refused with `too_many`; updates
+# and deletes are unaffected (docs/contracts/alice-mqtt-mapping.md §Device
+# document; tests/test_collection_caps.py).
+COLLECTION_CAP = 64
+# Socket.IO namespace wait (python-socketio Client.connect wait_timeout).
+# Board 1.136, 2026-09-07, n=3 against wss://cloud.cyntron.ru/control/socket.io:
+# handshake 5.185 / 3.665 / 3.371 s (token mint 1.3–1.7 s is outside this
+# wait). 5.185 > 5.0 is why the cloud card flashed gateway_unreachable on a
+# live hub. 15 s ≈ 3× measured max.
+SIO_CONNECT_TIMEOUT_S = 15.0
+# Consecutive wait_timeouts that stay `connecting` (not gateway_unreachable).
+# The reconnect loop keeps going after this; the card just stops lying on
+# the first miss. A DNS / HTTP / refused error is still fail-closed immediately.
+SIO_CONNECT_SOFT_FAILS = 3
 SIO_RECONNECT_MIN_S = 2.0
 SIO_RECONNECT_MAX_S = 60.0
 SIO_WATCHDOG_S = 60.0
@@ -111,13 +162,13 @@ STATUS_HEARTBEAT_S = 30.0
 # falls back to a restart (3× the heartbeat). Read by the shell helper too —
 # usr/local/sbin/sa02m-alice-web-trigger.sh keeps the same value.
 STATUS_STALE_S = 90
-# While Socket.IO is up, push the MQTT cache through offer_snapshot this
-# often so Yandex Station graphs/history get a point even when the broker
-# is quiet (a steady reading is cached, not re-published). Same 30 s as
-# Yandex's own devices (~1 min) tightened to the Operator's 30 s choice.
-# Live on_off/event still uses the shorter rates in event_rates.json.
+# Cloud-profile cache flush. The hub marks a tile stale past 60 s, so
+# this must stay at 30 s on the cloud profile — never lengthened.
 # Home: docs/contracts/alice-mqtt-mapping.md (History snapshot).
 STATE_SNAPSHOT_S = 30.0
+# Yandex-profile history cadence: one graph point per minute. Graphs
+# read Callback state, not query; MQTT does not republish a steady float.
+STATE_SNAPSHOT_YANDEX_S = 60.0
 
 # Client status states written for the web UI
 STATE_DISABLED = "disabled"
@@ -130,3 +181,41 @@ STATE_MISSING_CERT = "missing_cert"
 # Cloud profile only: agent.conf has no device_id/serial or the device_secret
 # file is absent — standby, exit 0, the cloud twin of missing_cert.
 STATE_MISSING_IDENTITY = "missing_identity"
+# The gateway unlinked this controller: the binding was erased locally and the
+# board is claim-ready. Distinct from missing_cert (never bound) because the
+# card must explain WHY the certificate is gone. Yandex profile only — the
+# cloud profile holds no identity of its own and never stands down
+# (docs/contracts/alice-mqtt-mapping.md §Profiles).
+STATE_UNLINKED = "unlinked"
+# The unlink was confirmed but the binding could NOT be erased (a read-only
+# filesystem, a permission error). The board keeps retrying; the card must say
+# so and never «привязан», never «отвязано».
+STATE_UNLINK_FAILED = "unlink_failed"
+
+# Durable stand-down marker in the client INI — the same three keys the cloud
+# agent writes into agent.conf, so both doors restore the same explanation
+# after a reboot (/run is tmpfs). Never a file under VAR_DIR: the factory-image
+# build refuses any file in the identity dir but the shared CA
+# (docs/contracts/image-identity-reset.md §3), so a marker there would abort
+# image capture from a previously-unlinked donor. These keys are IDENTITY, not
+# configuration — the image sites clear them (§2, mirroring §6).
+KEY_UNLINKED_AT = "unlinked_at"
+KEY_UNLINKED_REASON = "unlinked_reason"
+KEY_UNLINKED_REASON_TEXT = "unlinked_reason_text"
+UNLINK_MARKER_KEYS = (KEY_UNLINKED_AT, KEY_UNLINKED_REASON, KEY_UNLINKED_REASON_TEXT)
+
+# The refusal class this door reports. One class only: the gateway's unlink
+# event does not distinguish an owner revoke from a detach, and the handler
+# deliberately does not read the optional payload — so `revoked` is N/A here
+# and the descriptor declares it unwritable.
+REFUSAL_CLASS_UNLINKED = "unlinked"
+# What the durable marker records as the refusal text on this door.
+UNLINK_REFUSAL = "controller_unlink"
+# Machine-facing status messages. The user-facing Russian lives once, in
+# ALICE_STATE_MAP (www/network_config/static/js/app/alice.js).
+UNLINKED_MESSAGE = (
+    "Cloud unlinked this controller; binding erased, ready to be claimed again"
+)
+UNLINK_FAILED_MESSAGE = (
+    "Cloud unlinked this controller but the binding could not be erased; retrying"
+)

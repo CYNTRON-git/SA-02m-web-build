@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Логгер телеметрии ДТВ / СЭ-02м-3 → SQLite (USB → SD → eMMC).
+"""Логгер телеметрии ДТВ / СЭ-02м-3 / MR-02m / Carel → SQLite (USB → SD → eMMC).
 
   python3 scripts/sa02m_devices_logger.py
   STAND_DEVICES_LOG_INTERVAL_S=1 STAND_DEVICES_PURGE_EVERY_S=3600 ...
+
+The per-tick body is `logger_tick()` — the one place every archive write is
+wired, and the one tests/test_logger_tick.py executes: an insert that falls
+out of it is a RED test, not a silent gap (audit 2026-09-08, E5).
 """
 
 from __future__ import annotations
@@ -11,19 +15,26 @@ import os
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from sa02m_devices.device_events import (  # noqa: E402
+    detect_carel_events,
+    detect_ce_events,
+)
 from sa02m_devices.device_history_db import (  # noqa: E402
+    insert_carel_sample,
     insert_mr_sample,
     insert_sample,
     purge_old,
     rotate_if_needed,
 )
 from sa02m_devices.device_history_migrate import promote_on_backend_change  # noqa: E402
+from sa02m_devices.devices_widgets import filter_for_archive  # noqa: E402
 from sa02m_devices.stand_devices import live_snapshot  # noqa: E402
 from sa02m_devices.stand_storage_path import (  # noqa: E402
     invalidate_resolve_cache,
@@ -46,12 +57,74 @@ def _on_term(signum, frame):  # noqa: ARG001
     _stop = True
 
 
+@dataclass
+class LoggerState:
+    """Cadence markers the tick body carries between calls (monotonic / wall)."""
+
+    last_mr: float = 0.0     # monotonic — MR + Carel sample cadence
+    last_purge: float = 0.0  # wall clock — purge_old cadence
+
+
+def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> None:
+    """One archive tick against `target.active_path`.
+
+    snapshot → filter removed widgets → dtv/ce rows (every tick) → MR + Carel
+    rows (MR_INTERVAL_S) → CE spike events + Carel alarm/state edges (every
+    tick, cooldown 0 — the fault moment is read from these) → rotate → purge.
+    Storage-target resolution and the eMMC promote stay in main(): they change
+    `target`, this body only writes to it.
+    """
+    now_m = time.monotonic() if now_m is None else now_m
+    snap = live_snapshot()
+    try:
+        snap = filter_for_archive(snap)
+    except Exception:  # noqa: BLE001
+        pass
+    insert_sample(snap, path=target.active_path)
+    # MR-02m AI and Carel on their own (slower) cadence — same already-built
+    # snap, no extra bus/MQTT I/O; only the SQLite write is added.
+    if now_m - state.last_mr >= MR_INTERVAL_S:
+        insert_mr_sample(snap, path=target.active_path)
+        insert_carel_sample(snap, path=target.active_path)
+        state.last_mr = now_m
+    try:
+        created = detect_ce_events(snap, path=target.active_path)
+        created += detect_carel_events(snap, path=target.active_path)
+        for ev in created[:5]:
+            print(f"event: {ev.get('message')}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"events error: {exc}", file=sys.stderr, flush=True)
+    rot = rotate_if_needed(path=target.active_path)
+    if rot.get("rotated"):
+        print(f"rotate: {rot}", flush=True)
+    elif rot.get("skipped"):
+        print(f"rotate skipped: {rot}", flush=True)
+
+    now = time.time()
+    if now - state.last_purge >= PURGE_EVERY_S:
+        stats = purge_old(path=target.active_path)
+        state.last_purge = now
+        if (
+            stats["dtv_deleted"]
+            or stats["ce_deleted"]
+            or stats.get("mr_deleted")
+            or stats.get("carel_deleted")
+            or stats.get("events_deleted")
+        ):
+            print(
+                f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']} "
+                f"mr={stats.get('mr_deleted', 0)} "
+                f"carel={stats.get('carel_deleted', 0)} "
+                f"events={stats.get('events_deleted', 0)}",
+                flush=True,
+            )
+
+
 def main() -> int:
     signal.signal(signal.SIGTERM, _on_term)
     signal.signal(signal.SIGINT, _on_term)
-    last_purge = 0.0
+    state = LoggerState()
     last_resolve = 0.0
-    last_mr = 0.0
     prev_backend: str | None = None
     prev_path: Path | None = None
     target = resolve_storage_target(force_refresh=True)
@@ -108,43 +181,7 @@ def main() -> int:
                 ):
                     print(f"promote: {report}", flush=True)
 
-            snap = live_snapshot()
-            try:
-                from sa02m_devices.devices_widgets import filter_for_archive
-
-                snap = filter_for_archive(snap)
-            except Exception:  # noqa: BLE001
-                pass
-            insert_sample(snap, path=target.active_path)
-            # MR-02m AI on its own (slower) cadence — same already-built snap,
-            # no extra bus/MQTT I/O; only the SQLite write is added.
-            if now_m - last_mr >= MR_INTERVAL_S:
-                insert_mr_sample(snap, path=target.active_path)
-                last_mr = now_m
-            try:
-                from sa02m_devices.device_events import detect_ce_events
-
-                created = detect_ce_events(snap, path=target.active_path)
-                for ev in created[:5]:
-                    print(f"event: {ev.get('message')}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"events error: {exc}", file=sys.stderr, flush=True)
-            rot = rotate_if_needed(path=target.active_path)
-            if rot.get("rotated"):
-                print(f"rotate: {rot}", flush=True)
-            elif rot.get("skipped"):
-                print(f"rotate skipped: {rot}", flush=True)
-
-            now = time.time()
-            if now - last_purge >= PURGE_EVERY_S:
-                stats = purge_old(path=target.active_path)
-                last_purge = now
-                if stats["dtv_deleted"] or stats["ce_deleted"] or stats.get("mr_deleted"):
-                    print(
-                        f"purge: dtv={stats['dtv_deleted']} ce={stats['ce_deleted']} "
-                        f"mr={stats.get('mr_deleted', 0)}",
-                        flush=True,
-                    )
+            logger_tick(target, state, now_m=now_m)
         except Exception as exc:  # noqa: BLE001
             print(f"logger error: {exc}", file=sys.stderr, flush=True)
             invalidate_resolve_cache()

@@ -8,6 +8,70 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-08 **[LOW] Two more non-existent CSS tokens of the C5 class**, pre-existing:
+  `main.css:4351` `var(--err, #e55)` and `:4419,:4421` `var(--accent, #3a9bdc)` — neither
+  token is defined, so the hard-coded fallback ships identically in both themes (ship review
+  1.0.6.39, advisory). Fix like C5 (existing themed tokens, ratios stated); a gate for
+  `var(--x, #hex)` fallbacks whose token does not exist would close the class.
+- [OPEN] 2026-09-08 **[LOW] `detect_carel_events` opens SQLite twice per 1 Hz logger tick** on a
+  board with a Carel unit (`device_events.py` `ensure_schema()` + `_connect()` per call; boards
+  without one take the empty-list early return). Cost unmeasured (ship review advisory) —
+  measure on 1.135, then cache the schema check / reuse the connection per tick.
+- [RESOLVED] 2026-09-08 (1.0.6.39, audit E3) **`device_history_migrate` promote roster named
+  `dtv_samples`/`ce_samples` only** — `mr_samples`, `carel_samples` and `device_events` were
+  dropped on every eMMC→USB/SD promote (the Carel plan's D1, skipped in 1.0.6.35). One
+  `HISTORY_TABLES` roster for `_db_has_rows()` + `merge_db_into()`;
+  `tests/test_device_history_migrate.py`.
+- [OPEN] 2026-09-08 **[LOW] Carel chart labels have no i18n DICT entries** (Приток, Обратка,
+  …, Авария, Тревог, Состояние, Установка вкл.) — server-side labels from
+  `CAREL_METRIC_META` render Russian in the EN UI (pre-existing for the 9 metrics, widened
+  by the 4 state metrics of 1.0.6.39). Home: `opt/sa02m-devices` labels → DICT or `uiT()`.
+- [OPEN] 2026-09-08 **[MED] Six contracts have no validating registry row** (audit F17):
+  `module-config-ai.md`, `template-device.md`, `web-bus-mode-bacnet.md` (a web surface
+  that writes register 122 and drives BACnet MS/TP — gated by syntax rows only),
+  `devices-mr-history.md` (`py-unit-devices` covers the producer, not the contract nor
+  `devices.js`), `fmb-event-wire.md` (firmware seam), and `cloud-enrollment.md` is
+  origin-only (`py-unit-cloud` covers `opt/sa02m-cloud-agent/`, not `cloud.cgi` /
+  `sa02m-cloud-web-trigger.sh`). Wire a row per contract, or record in each contract's
+  header why it is deliberately unvalidated (the exemption-with-a-true-reason rule).
+- [OPEN] 2026-09-08 **[MED] `&r=<token>` cache-bust has no gate** (audit C11/F12). It is
+  the only bust for an intra-release JS change; `sync-app-version.py` rewrites `?v=` only
+  and `version-consistency` never checks a stale token. Documented in
+  `sa02m-domain.md ## Version discipline` (1.0.6.39); the gate — a changed served asset
+  must carry a changed `?v=`+`&r=` pair vs the previous release — is deferred. Design
+  choice pending: teach the script to manage `&r=`, or drop it for the `?v=` bump.
+- [OPEN] 2026-09-08 **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
+  A14). The rules store validates and persists both fields and nothing reads them; the
+  contract now says «accepted, not yet consumed». Either implement the exposure in the
+  Alice device registry (a scene the user marks «в Алису» becomes a device) or drop the
+  fields. Not derivable from canon — the Operator's call.
+- [OPEN] 2026-09-08 **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
+  module with a «Кнопка» DI** (+1 FC03 / 60 s) — doubles the per-poll transaction count of
+  a 6DO8DI module on a line shared with Carel (audit E7). The cost is now stated in
+  `docs/MQTT_TOPICS.md`; the single-FC04 read (695..727+max_ch−1, ≤46 regs) needs the
+  42-register-truncation bench measurement (`bridge_mr02m_map.py:41-44`) before adoption.
+- [OPEN] 2026-09-08 **[LOW] `carel_samples` is a long table, not the wide `METRICS` shape
+  the Carel plan recommended** (audit E13; plan §7 S1 under «Примени все рекомендации»).
+  ~300 lines of bespoke parallel path (`_query_series_carel`, `history_carel*`,
+  `collect_export_table_carel`) instead of the generic engine, no `group=ahu` overview.
+  Recorded divergence; migrate when the archive schema next changes.
+- [OPEN] 2026-09-08 **[LOW] `#web-upd-apply-btn[hidden] { display:none !important }` has no
+  driver** (audit C14): the CSS guard for the reported 1.0.6.37 bug is defence-in-depth
+  nothing exercises; `test-web-update-semver.mjs` covers the JS half only. Also
+  pre-existing: light `.btn-warn:hover` = 4.44:1 (`#b45309` on `#fff0cc`), just under AA;
+  `ui-layout` never measures hover.
+- [OPEN] 2026-09-08 **[LOW] Rules engine rewrites and fsyncs the whole store on every run
+  and notify** (audit A16): `append_run` → `save`, a 1 Hz motion rule = one full-file
+  write per second to eMMC/SD, and the mtime bump forces a reload on the next message.
+  Batch journal writes (timer / N records) and keep `runs` in a separate small file —
+  design change, measure first.
+
+- [OPEN] 2026-09-04 **[LOW] L4 flasher tape UI waits for hardware.** Backend
+  (`led_poll.py`, `POST /device_config/led_write`) and contract `led-mb2ws.md` §3
+  are ready; frontend tabs are not wired, and `scanner.py` still returns false
+  for `RGBW_WS2812` («окно ещё нет»). Bench has no type-120 on any COM. Do not
+  invent a five-tab window against a missing module — verify on hardware first.
+
 - [OPEN] 2026-08-27 **[MED] The action path writes the commanded value into our own
   state cache, so a failed command is indistinguishable from a successful one.**
   `device_registry.apply_actions` does `self._mqtt_cache[topic] = payload` as it builds
@@ -37,14 +101,9 @@ worklist collapsed into one home).
   safe-state watchdog. Next step is a register comparison between addr=11 and addr=14
   in the MR-02m firmware project; do not guess at the register map from this repo.
 
-- [OPEN] 2026-08-27 **[MED] `ssh-flash-safe.sh` resets neither cloud nor Alice identity
-  (cloud-parity gap).** It loop-mounts a freshly written rootfs (`:119-179`) — the same
-  moment `patch-firstboot-image.sh` uses to clear enrollment — but performs no identity
-  reset at all. So a board flashed through THAT path inherits whatever the source image
-  carried, bypassing both the cloud twin's fix (2026-07-31) and the Alice one (1.0.6.20).
-  Deliberately left outside 1.0.6.20's fence (different script, different acceptance);
-  named by that build. Fix direction: call the same two wipes at the existing mount, or
-  state in the script header why the path is exempt.
+- [RESOLVED] 2026-09-04 **`ssh-flash-safe.sh` now wipes cloud and Alice identity**
+  on the loop-mounted rootfs after `dd` (same offline path set as
+  `patch-firstboot-image.sh`). Contract §4 site 5; gate `alice-image-identity`.
 - [OPEN] 2026-08-27 **[LOW] `cleanup-donor.sh:140` DENY bypass pattern.** The
   `--purge-update-state` branch carries a `case` arm `/etc/sa02m-update/trusted-keys|/*)`
   whose `|/*` alternative matches ANY absolute path, so the arm is far wider than its
@@ -90,8 +149,10 @@ worklist collapsed into one home).
   JS↔contract side. Fix direction: a small assertion in the headless driver (the
   linked-state card offers «Отвязать», never «Завершить привязку»).
 
-- [OPEN] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
-  branch that already has a commit — a false-green shape.** It resolves the touched set
+- [RESOLVED] 2026-08-27 **[MED] `run.mjs --touched` is blind to uncommitted work on a
+  branch that already has a commit — a false-green shape.** → closed by `3a3e0ac`
+  (2026-08-28): the touched set is the committed diff ∪ the working tree
+  (`quality-gate-rigor.md` shape (d)); marked at the 2026-09-08 audit (F14). It resolves the touched set
   from `origin/main..HEAD` and only falls back to the unstaged working tree when that
   diff comes up EMPTY. A Builder handing back uncommitted work on a branch carrying at
   least the version-bump commit therefore gets a subset scoped to the committed diff
@@ -251,17 +312,11 @@ worklist collapsed into one home).
   was rejected for exactly this; the password/sshpass path is the safe one); and the
   Alice check names `agent.conf` — current builds have
   `/etc/sa02m-alice/sa02m-alice-*.conf` (no agent.conf).
-- [OPEN] 2026-08-18 **[MED] STAND 1.135 serves `/api/devices` from `sa02m-stand-api`
-  (gunicorn `/opt/hardpy_tests/services/stand_web_api.py`), which a www-only deploy
-  does NOT restart** — so the stand runs stale imported `sa02m_devices` code until
-  `systemctl restart sa02m-stand-api`. `scripts/11-devices.sh` restarts
-  `sa02m-devices-api` (the standard-board unit, present but NOT the :8765 owner on
-  the stand → gunicorn is). Cost this session: the MR card looked "missing" on 1.135
-  after deploy until a manual stand-api restart (code was correct all along; the
-  running process was old). Fix direction: teach `update-www-only.sh` / `11-devices.sh`
-  to detect + restart whichever unit owns :8765 (check `sa02m-stand-api` presence),
-  OR document the stand's extra restart step in `docs/deployment.md`. Note in the
-  deploy runbook that the stand is a hardpy_tests host with its own API service.
+- [RESOLVED] 2026-09-01 **STAND 1.135 `/api/devices` via `sa02m-stand-api`.**
+  `scripts/11-devices.sh` now restarts an active `sa02m-stand-api` after the
+  devices package refresh. The empty 12AI chart (2026-09-01) was a second defect
+  in the same owner: `stand_web_api.devices_history` lacked `kind=mr` — fixed in
+  hardpy_tests (`services/stand_web_api.py` + `tests/test_devices_history_mr.py`).
 - [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
   homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
   and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to
@@ -436,6 +491,12 @@ worklist collapsed into one home).
   relying on the fallback — which is why it was escalated rather than swept, and
   it has now been decided (above). Code
   deliberately unchanged.
+  **Widened 2026-09-08 (audit F13, incomplete-enumeration shape):** the same
+  factory default is also spelled out in `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md:14,15,62`
+  and `docs/OFFLINE_UPDATE_HW_TEST.md:58` (bench-access docs; the value is the
+  product's published default, `README.md:211`) — this accepted-risk record now
+  names those homes too. The fourth copy, `.cursor/rules/sa02m_agent_ssh.mdc`,
+  is cut in 1.0.6.39 (pointer only).
 - [OPEN] 2026-08-06 **[LOW] Bulk Russian code comments in shell scripts, against
   invariant 5.** `PROTOCOL.md` invariant 5 puts code comments on the
   machine-facing axis — always English; `docLanguage: ru` reaches only `docs/`
@@ -782,6 +843,13 @@ worklist collapsed into one home).
   backlog:461 says service-ctl is 1414 L (now 1582); backlog:667 defers `flasher.js` because
   "ES modules forbidden" — lifted by `docs/decisions/es-modules.md` on 2026-08-18, whose stated
   motivation IS that split.
+  **Sizes re-measured at the 2026-09-08 audit (F15/A18/B10/C15/E16), growth in
+  1.0.6.34–38:** `smarthome.js` 1017→1830, `config/api.py` 908→1304,
+  `device_history_db.py` 1918→2226 (its decompose was queued «AFTER» 1.0.6.35 by
+  Operator decision F4 and never cut), new `sa02m_rules/engine.py` 990; absolute
+  worst: `main.css` 5906, `flasher.js` 5795, `mqtt.js` 2775, `devices.js` 2609,
+  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910. 40 tracked files
+  over 800 lines. Each decompose is its own branch (`.ai-dev/procedures/decompose.md`).
 - [OPEN] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
   always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
   Every session is pointed at a missing home.
@@ -925,7 +993,7 @@ worklist collapsed into one home).
   guarantee)» (what the controller sends today and how the gateway rewrites it). Touches
   `client/sio_handlers.py` / `device_registry.apply_actions` — schedule after the 1.0.6.26
   revoke stand-down round, together with the optimistic-cache item above.
-- [OPEN] 2026-09-03 **[LOW] `py-unit-devices` is a clock-of-day flake: `tests/test_device_events.py::
+- [RESOLVED] 2026-09-03 → closed by `de54777` (2026-09-04, «the CE peak-event test no longer fails in the first hour after midnight»; marked at the 2026-09-08 audit, F14). **[LOW] `py-unit-devices` is a clock-of-day flake: `tests/test_device_events.py::
   test_voltage_jump_and_current_spike` fails in the first hour after local midnight.** The test
   seeds its baseline at `now − 3600 s` (yesterday) while `detect_ce_events` averages over the
   CALENDAR day (`_day_avg_current` → `_day_start_ts(ts)`), so between 00:00 and 01:00 local
@@ -964,3 +1032,48 @@ worklist collapsed into one home).
   «найденный дефект назначается, а не заносится»): both overlays moved to the document root,
   `mqttTabDestroy` hides them on leaving the tab, and `sh-modal-layout-smoke` asserts both stay
   inside the viewport with the ancestor deliberately transformed.
+### [LOW] Тексты входов/выходов Carel не переведены на английский
+
+Строки таблиц «Входы/выходы» и расшифровки цифровых состояний живут в
+`opt/sa02m-carel/sa02m_carel/carel_ahu_map.py` только по-русски — у тревог там
+есть `text_en`, у остальных строк нет. В английском интерфейсе окна настройки
+контроллера эти две таблицы остаются русскими. Заметно только при переключении
+языка; чинится добавлением `text_en` в карту (её единственный дом) и
+использованием его в рендерере, как уже сделано для тревог.
+Найдено при сборке окна 1.0.6.31. OPEN.
+
+### [LOW] Граница уставки Carel в документе «Умного дома» одна на оба семейства
+
+`SH_KINDS.setpoint` в `smarthome.js` проставляет `parameters.range` = 0..99
+всем, тогда как потолок uAria — 50 °C (`SETPOINT_RANGE` в
+`opt/sa02m-carel/sa02m_carel/controls.py`). Мост зажимает значение при записи,
+поэтому агрегат в безопасности, но ползунок, построенный по документу,
+предложит недостижимые 50..99 и «отскочит» после первого отчёта.
+
+Причина: окно не знает семейства — топик уставки несёт порт и адрес, а
+инвентарь топиков отдаётся плоским списком строк. Чинится доведением семейства
+до окна: либо мост публикует его метой контрола, либо
+`sa02m_alice_topics.cgi` отдаёт карту «идентификатор устройства → семейство».
+Найдено ревью 1.0.6.31, зафиксировано в `docs/contracts/carel-ahu.md` §6. OPEN.
+
+### [MED] Опрос Carel теряет ~1,5 % кадров на «тихой паузе» внутри ответа
+
+Измерено на стенде 1.135, COM3 19200, оба ПЛК под опросом моста: ~9 записей
+`Short response` в минуту на два устройства (14 за 90 с при двух устройствах на
+линии). Значения при этом верные и свежие, `meta/error` пуст — повтор чтения
+восстанавливает кадр, устройство не уходит в offline. Доля — около 1,5 % от
+~600 чтений в минуту.
+
+Гипотеза «виноват фантом `mr02m-COM3-10`, которого нет на линии» ПРОВЕРЕНА И
+ОТВЕРГНУТА: со снятым фантомом частота на Carel та же (7+7 за 90 с). Причина в
+чтении: `bridge_serial.py` выходит из чтения по первой тихой паузе, не дожидаясь
+полной длины кадра (там же и комментарий про `frame_timeout` wb-mqtt-serial), а
+ПЛК Carel умеют паузу в середине ответа. Обрезаются оба размера: 11/13 байт
+(IR1..4 у c.pCOmini) и 72/77 (IR0..35 у uAria) — длина кадра тут ни при чём,
+таймаут 0,3 с обоим избыточен.
+
+Чинить надо адресно, не глобально: ранний выход по паузе существует ради МР-02м,
+и менять его для всех — это трогать тайминг шины всем поллерам сразу. Нужен
+поcимвольный добор до вычисленной длины кадра для Carel-транзакций (флаг
+транзакции либо свой допуск паузы), с повторным замером на стенде до и после.
+Найдено при приёмке 1.0.6.31 на железе. OPEN.

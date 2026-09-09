@@ -48,6 +48,35 @@ DTV_DEFAULT_CONTROLS = (
 )
 DTV_ACTUATOR_CONTROLS = ("buzzer", "leds")
 
+# Carel AHU controls (bridge `type: carel`). Same conscious duplication as the
+# DTV list above: the one home is `sa02m_carel.controls`, which the alice
+# package cannot import at runtime (it is deployed as its own root-owned tree).
+# The frozen copy is pinned against that home by
+# opt/sa02m-carel/tests/test_controls_pin.py, so a control renamed there fails
+# a gate instead of silently emptying the binding picker.
+CAREL_CONTROLS = (
+    "unit_on",
+    "unit_status",
+    "unit_status_text",
+    "plant_state",
+    "supply_temp",
+    "return_water_temp",
+    "room_temp",
+    "outdoor_temp",
+    "heat_valve",
+    "setpoint",
+    "setpoint_summer",
+    "net_enable",
+    "sys_mode",
+    "fan_supply",
+    "fan_exhaust",
+    "fan_step",
+    "pump",
+    "alarm",
+    "alarm_count",
+    "alarm_text",
+)
+
 # MR-02m channel kinds the bridge publishes as `<kind>_<ch>` controls, plus the
 # per-module diagnostics every module carries (docs/MQTT_TOPICS.md is the home
 # of the naming). `ai` on a 12AI module carries live sensor readings — bench
@@ -191,6 +220,13 @@ def _topics_from_yaml(doc: Any) -> List[str]:
         elif dtype == "ce02m3":
             for cname in CE02M3_CONTROLS:
                 out.add("/devices/%s/controls/%s" % (did, cname))
+        elif dtype == "carel" and not controls:
+            # A Carel entry carries no `controls` list either — the poller
+            # derives them from the family. Offer the superset: a control the
+            # family does not publish simply never reports, exactly like an
+            # absent DTV sensor.
+            for cname in CAREL_CONTROLS:
+                out.add("/devices/%s/controls/%s" % (did, cname))
         elif dtype == "mr02m" and not controls:
             # MR-02m modules publish per-channel controls named <kind>_<ch>
             # (the bridge's own naming — docs/MQTT_TOPICS.md). The analog
@@ -252,36 +288,36 @@ def _topics_from_roster(path: str) -> List[str]:
 
 
 def list_mqtt_topics() -> Dict[str, Any]:
-    """Return inventory; works fully offline (no gateway)."""
-    topics: List[str] = []
-    source = None
-    for path in YAML_CANDIDATES:
-        ap = os.path.abspath(path)
-        if os.path.isfile(ap):
-            doc = _load_yaml(ap)
-            topics = _topics_from_yaml(doc)
-            if topics:
-                source = ap
-                break
-    if not topics:
+    """Flat topic list; works fully offline (no gateway).
+
+    A PROJECTION of inventory.build_mqtt_inventory() since 1.0.6.38, so the
+    flat list and the structured picker can not disagree about what is
+    bindable — before that the two derivations would have had to be kept
+    equal by hand, and a module whose yaml carries no `channels` block was
+    offered one topic where it has fourteen channels.
+    """
+    from .inventory import build_mqtt_inventory, inventory_topics
+
+    inv = build_mqtt_inventory()
+    topics: List[str] = inventory_topics(inv)
+    source = inv.get("source")
+    # The controller entry is always present, so "the yaml told us nothing" is
+    # measured by the configured devices, not by the topic count.
+    configured = [
+        dev for dev in inv.get("devices") or []
+        if dev.get("type") != "controller"
+    ]
+    if not configured:
         for path in ROSTER_CANDIDATES:
             if os.path.isfile(path):
-                topics = _topics_from_roster(path)
-                if topics:
+                from_roster = _topics_from_roster(path)
+                if from_roster:
+                    topics = sorted(set(topics) | set(from_roster))
                     source = path
                     break
-    # Always include the onboard controls so the picker is never empty on a
-    # fresh board — DERIVED from the live id, so every offered topic is one the
-    # board actually serves.
-    controller = _controller_device_id()
-    builtins = [
-        "/devices/%s/controls/%s" % (controller, name)
-        for name in CONTROLLER_CONTROLS
-    ]
-    merged = sorted(set(topics) | set(builtins))
     return {
         "ok": True,
         "source": source,
-        "topics": merged,
-        "count": len(merged),
+        "topics": topics,
+        "count": len(topics),
     }

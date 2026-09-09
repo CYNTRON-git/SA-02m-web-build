@@ -48,12 +48,22 @@
    sites, or an i18n runtime that fails to load all FAIL. A gate that finds
    nothing to check has not passed.
 
+   C. (1.0.6.39) Every `label: '…'` property literal carrying Cyrillic in the
+      app/ cluster — the strings that reach uiT() THROUGH A TABLE
+      (`uiT(g.label)`), which half A cannot see. Scope and the measured,
+      deliberately unswept tables elsewhere: the half-C block below.
+
    PROVEN RED (1.0.6.24): deleting a DICT entry a `uiT()` site depends on ·
    deleting a DICT entry a markup string depends on · adding a new untranslated
    Russian `uiT()` literal · adding a new untranslated Russian widget title in
    index.html · a stale ledger entry (whitelisting a string that translates) ·
    an emptied DICT · a JS tree that stops being swept. Its comment-out case is
-   registered in `comment-mutation-proof`.
+   registered in `comment-mutation-proof`. PROVEN RED (1.0.6.39, half C on the
+   pre-fix i18n.js): 6 FAILURE(S) — the picker's «Дискретные входы»,
+   «Дискретные выходы», «Аналоговые входы», «Показания и команды»,
+   «Диагностика» and the «Все» chip (audit C8 counted seven; «Аналоговые
+   выходы» already translated), 17 label literals swept; GREEN with the six
+   DICT entries.
 
    Run: node .ai-dev/quality/checks/i18n-dict-contract.mjs
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -239,6 +249,41 @@ if (uitSites < 50) {
   bad(`only ${uitSites} distinct uiT() literal(s) found — the extraction is broken (expected >=50)`);
 } else {
   ok(`${uitSites} distinct uiT() literal(s) across ${JS.length} served JS file(s)`);
+}
+
+/* ── half C: label-table literals in the app/ cluster ─────────────────────
+   A string that reaches uiT() THROUGH A TABLE — `{ key: 'di', label:
+   'Дискретные входы' }` read as `uiT(g.label)` — is invisible to half A, which
+   sweeps literal call sites only. Seven picker strings shipped untranslated in
+   1.0.6.38 with this gate green (audit 2026-09-08 C8). Swept: every `label:
+   '…'` property literal carrying Cyrillic in www/…/static/js/app/*.js — the
+   cluster where the picker/kind tables live and every such label is rendered
+   via uiT(). Comment-stripped like half A.
+   DELIBERATELY NOT SWEPT (measured, not overlooked): the `label:`/`text:`
+   tables of flasher.js (59), mqtt.js (43) and ai-sensors.js (43) — their
+   consumers are per-file (js-unit-carel-window already covers flasher's
+   Carel tab); widening to them is a ledger of unknown size and its own
+   change. A sweep that finds no `label:` literal at all FAILS (non-vacuity). */
+const APP_DIR = join(JS_DIR, 'app');
+const LABEL = /\blabel\s*:\s*(['"])((?:\\.|(?!\1)[^\\\r\n])*)\1/g;
+let labelSites = 0;
+for (const f of JS.filter(p => p.startsWith(APP_DIR))) {
+  const lines = stripJsComments(readFileSync(f, 'utf8')).split('\n');
+  lines.forEach((line, i) => {
+    LABEL.lastIndex = 0;
+    let m;
+    while ((m = LABEL.exec(line))) {
+      const s = m[2];
+      if (!CYRILLIC.test(s)) continue;
+      labelSites++;
+      record(found, s, `${relative(ROOT, f).split(sep).join('/')}:${i + 1} (label:)`);
+    }
+  });
+}
+if (labelSites < 5) {
+  bad(`only ${labelSites} Cyrillic label: table literal(s) found under app/ — the table sweep is broken (expected >=5)`);
+} else {
+  ok(`${labelSites} Cyrillic label: table literal(s) swept under app/`);
 }
 
 /* ── half B: visible strings in the served markup ─────────────────────────── */

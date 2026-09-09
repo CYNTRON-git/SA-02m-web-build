@@ -1,0 +1,6 @@
+---
+description: Эталон служб стендовых SA-02m как на 192.168.1.136. Use when обновляешь другие платы «как 1.136» или выключаешь Docker/Alice extra.
+alwaysApply: false
+---
+
+Целевое состояние служб и карточек Cloud / Alice / Services — **`docs/bench-board-target-state.md`**. Таблицу оттуда не копировать. Плата 1.136 — read-only эталон. Доступ: `docs/AGENTS_SSH_AND_DEVICE_ACCESS.md`.

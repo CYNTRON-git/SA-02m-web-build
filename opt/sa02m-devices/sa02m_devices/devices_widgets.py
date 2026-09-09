@@ -3,6 +3,10 @@
 Удалённый виджет скрывается из UI и не пишется в архив SQLite;
 исторические строки в БД не трогаем. Повторное добавление — из списка
 ранее удалённых (и/или снова появившихся в MQTT).
+
+Снимаются только ДТВ и СЭ. Карточки MR-02m и Carel — display-only: они
+проходят мимо фильтра и в UI, и в архив (решение F2 от 2026-09-03: снятие
+карточки Carel остановило бы архив, ради которого её и завели).
 """
 
 from __future__ import annotations
@@ -99,10 +103,28 @@ def removed_set(path: Path | None = None) -> set[str]:
     return set(load(path=path).get("removed_ids") or [])
 
 
+def _kind_name(device: dict[str, Any] | None, device_id: str = "") -> str:
+    kind = str((device or {}).get("kind") or "")
+    if kind in ("ce", "mr", "carel", "dtv"):
+        return kind
+    did = str((device or {}).get("id") or device_id or "")
+    if did.startswith("ce"):
+        return "ce"
+    if did.startswith("mr"):
+        return "mr"
+    if did.startswith("carel"):
+        return "carel"
+    return "dtv"
+
+
+# Kinds that never leave the grid or the archive (see the module docstring).
+_DISPLAY_ONLY_KINDS = frozenset({"mr", "carel"})
+
+
 def _catalog_entry(device: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(device.get("id") or ""),
-        "kind": "ce" if device.get("kind") == "ce" else "dtv",
+        "kind": _kind_name(device),
         "label": str(device.get("label") or device.get("title") or device.get("id") or ""),
         "sku": str(device.get("sku") or ""),
         "port_num": device.get("port_num"),
@@ -121,6 +143,12 @@ def remove_widget(
     did = str(device_id or "").strip()
     if not did:
         return {"ok": False, "error": "device_id пуст"}
+    if _kind_name(device, did) in _DISPLAY_ONLY_KINDS:
+        return {
+            "ok": False,
+            "error": "Карточки Carel и MR-02m не снимаются: их архив ведётся всегда",
+            "id": did,
+        }
     cfg = load(path=path)
     ids = list(cfg.get("removed_ids") or [])
     if did not in ids:
@@ -131,7 +159,7 @@ def remove_widget(
     elif did not in catalog:
         catalog[did] = {
             "id": did,
-            "kind": "ce" if did.startswith("ce") else "dtv",
+            "kind": _kind_name(None, did),
             "label": did,
             "removed_at": time.time(),
         }
@@ -155,7 +183,7 @@ def add_widget(device_id: str, *, path: Path | None = None) -> dict[str, Any]:
 def _device_brief(d: dict[str, Any], *, online: bool) -> dict[str, Any]:
     return {
         "id": str(d.get("id") or ""),
-        "kind": "ce" if d.get("kind") == "ce" else "dtv",
+        "kind": _kind_name(d),
         "label": str(d.get("label") or d.get("title") or d.get("id") or ""),
         "sku": str(d.get("sku") or ""),
         "port_num": d.get("port_num"),
@@ -188,14 +216,22 @@ def apply_widgets_view(
 
     out["dtv"] = [d for d in dtv_all if str(d.get("id") or "") not in removed]
     out["ce"] = [d for d in ce_all if str(d.get("id") or "") not in removed]
-    # MR-02m analog cards are display-only (not removable), so they pass through
-    # unfiltered — but must stay in the rebuilt flat devices[] to match live[mr].
+    # MR-02m and Carel cards are display-only (not removable), so they pass
+    # through unfiltered — and must stay in the rebuilt flat devices[] to match
+    # live[mr] / live[carel]. AHU cards go FIRST (Operator decision F5).
     out["mr"] = [d for d in (out.get("mr") or []) if isinstance(d, dict)]
-    out["devices"] = list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
+    out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
+    out["devices"] = (
+        list(out["carel"]) + list(out["dtv"]) + list(out["ce"]) + list(out["mr"])
+    )
 
     available: list[dict[str, Any]] = []
     seen: set[str] = set()
     for did in sorted(removed):
+        if _kind_name(catalog.get(did), did) in _DISPLAY_ONLY_KINDS:
+            # A widgets.json written while Carel cards were removable
+            # (1.0.6.35-38) may still list one: nothing to re-add, never shown.
+            continue
         if did in live_by_id:
             available.append(_device_brief(live_by_id[did], online=True))
             seen.add(did)
@@ -205,7 +241,7 @@ def apply_widgets_view(
         else:
             available.append(
                 _device_brief(
-                    {"id": did, "kind": "ce" if did.startswith("ce") else "dtv"},
+                    {"id": did, "kind": _kind_name(None, did)},
                     online=False,
                 )
             )
@@ -240,5 +276,7 @@ def filter_for_archive(
         for d in (out.get("ce") or [])
         if isinstance(d, dict) and str(d.get("id") or "") not in removed
     ]
-    out["devices"] = list(out["dtv"]) + list(out["ce"])
+    # Carel (and MR) never leave the archive — a removed id is ignored here.
+    out["carel"] = [d for d in (out.get("carel") or []) if isinstance(d, dict)]
+    out["devices"] = list(out["carel"]) + list(out["dtv"]) + list(out["ce"])
     return out

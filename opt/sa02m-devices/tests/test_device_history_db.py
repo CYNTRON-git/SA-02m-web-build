@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -16,8 +17,11 @@ from sa02m_devices.device_history_db import (
     export_xlsx,
     history,
     history_batch,
+    history_carel,
+    history_carel_batch,
     history_mr,
     history_mr_batch,
+    insert_carel_sample,
     insert_mr_sample,
     insert_sample,
     period_summary_ce,
@@ -470,6 +474,58 @@ def test_mr_export(tmp_path: Path):
     assert raw[:2] == b"PK"
 
 
+def _carel_snap(
+    ts: float,
+    *,
+    device_id: str = "carel-COM3-1",
+    supply: float = 26.5,
+    room: float | None = None,
+    **state,
+) -> dict:
+    """`state` = the §8.1 state group as live_snapshot() emits it: `alarm` /
+    `unit_on` / `alarm_count` numeric, `plant_state` the wire WORD."""
+    return {
+        "ts": ts,
+        "carel": [{
+            "id": device_id,
+            "kind": "carel",
+            "supply_temp": supply,
+            "return_water_temp": 75.1,
+            "setpoint": 27.2,
+            "heat_valve": 12,
+            "fan_supply": 45,
+            "room_temp": room,
+            "outdoor_temp": None,
+            **state,
+        }],
+    }
+
+
+def test_carel_insert_history_purge_export(tmp_path: Path):
+    db = tmp_path / "hist.db"
+    now = time.time()
+    for i in range(4):
+        insert_carel_sample(_carel_snap(now - 30 + i * 5, supply=26.0 + i), path=db)
+    h = history_carel("carel-COM3-1", "1h", metric="supply_temp", path=db)
+    assert h["ok"] is True and h["device"] == "carel"
+    assert h["unit"] == "°C" and h["series"] and h["series"][0]["field"] == "supply_temp"
+    assert h["series"][0]["points"]
+    # Unfitted probes write no row.
+    h_room = history_carel("carel-COM3-1", "1h", metric="room_temp", path=db)
+    assert h_room["series"] == []
+    batch = history_carel_batch("carel-COM3-1", "1h", path=db)
+    assert batch["ok"] is True and batch["device"] == "carel"
+    fields = sorted(m["metric"] for m in batch["metrics"])
+    assert "supply_temp" in fields and "room_temp" not in fields
+    insert_carel_sample(_carel_snap(now - 40 * 86400), path=db)
+    purged = purge_old(path=db, now=now)
+    assert purged["carel_deleted"] >= 1
+    body, name = export_text("1h", device_id="carel-COM3-1", kind="carel", path=db)
+    assert name.startswith("carel_export_") and "Приток" in body
+    raw, xname = export_xlsx("1h", device_id="carel-COM3-1", kind="carel", path=db)
+    assert xname.startswith("carel_export_") and raw[:2] == b"PK"
+
+
 def test_resolve_mtd_and_month_and_export(tmp_path: Path):
     t0, t1, _ = resolve_time_range("mtd")
     assert t1 > t0
@@ -568,3 +624,125 @@ def test_custom_window_history_query(tmp_path: Path):
     # An out-of-range window is clamped, not rejected, and still returns ok.
     h2 = history("room_temp", "w:5", path=db, device_id="dtv-COM4-3")
     assert h2["ok"]
+
+
+def test_carel_state_group_archived_and_alarm_bucket_is_max(tmp_path: Path):
+    """E1: the fault-forensics half. `alarm` / `plant_state` / `unit_on` /
+    `alarm_count` land in carel_samples; a 0→1→0 alarm sequence inside ONE chart
+    bucket still paints that bucket as 1 (max), never 0.33 (avg); plant_state is
+    archived as its code (stop 0 < run 1 < alarm 2) so the same max() rule holds.
+    The DB is first written by the OLD 9-metric writer shape (no state keys) —
+    the long table needs no migration, and the new keys must coexist with it."""
+    db = tmp_path / "hist.db"
+    base = float(int(time.time()) // 60 * 60) - 300  # bucket-aligned, in "1h"
+    # Old-shape rows first (a DB the 1.0.6.35 writer left behind).
+    insert_carel_sample(_carel_snap(base - 60, supply=25.0), path=db)
+    seq = [
+        (0, "run", 1, 0),
+        (1, "alarm", 1, 2),
+        (0, "run", 1, 0),
+    ]
+    for i, (alarm, plant, unit_on, cnt) in enumerate(seq):
+        insert_carel_sample(
+            _carel_snap(
+                base + i * 10, alarm=alarm, plant_state=plant,
+                unit_on=unit_on, alarm_count=cnt,
+            ),
+            path=db,
+        )
+    h = history_carel("carel-COM3-1", "1h", metric="alarm", path=db, bucket_s=60.0)
+    assert h["ok"] and h["series"] and h["series"][0]["field"] == "alarm"
+    pts = h["series"][0]["points"]
+    assert len(pts) == 1 and pts[0][1] == 1.0, pts  # max, not avg
+    raw = history_carel("carel-COM3-1", "1h", metric="alarm", path=db, bucket_s=1.0)
+    assert [p[1] for p in raw["series"][0]["points"]] == [0.0, 1.0, 0.0]
+    ps = history_carel("carel-COM3-1", "1h", metric="plant_state", path=db, bucket_s=60.0)
+    assert ps["series"][0]["points"][0][1] == 2.0  # the alarm code wins the bucket
+    cnt = history_carel("carel-COM3-1", "1h", metric="alarm_count", path=db, bucket_s=60.0)
+    assert cnt["series"][0]["points"][0][1] == 2.0
+    # A continuous metric keeps avg (25, 26.5×3 → not the max).
+    sup = history_carel("carel-COM3-1", "1h", metric="supply_temp", path=db, bucket_s=3600.0)
+    assert sup["series"][0]["points"][0][1] < 26.5
+    batch = history_carel_batch("carel-COM3-1", "1h", path=db)
+    fields = {m["metric"] for m in batch["metrics"]}
+    assert {"alarm", "plant_state", "unit_on", "alarm_count"} <= fields
+    # An unknown plant word writes no row rather than a bogus code.
+    insert_carel_sample(_carel_snap(base + 40, plant_state="???"), path=db)
+    ps2 = history_carel("carel-COM3-1", "1h", metric="plant_state", path=db, bucket_s=1.0)
+    assert len(ps2["series"][0]["points"]) == 3
+
+
+def _seed_event(db: Path, ts: float, kind: str = "carel_alarm_on") -> None:
+    from sa02m_devices import device_events
+
+    conn = device_events._connect(db)
+    try:
+        with conn:
+            assert device_events._insert_event(
+                conn,
+                ts=ts,
+                device_id="carel-COM3-1",
+                kind=kind,
+                phase="",
+                port_num=3,
+                addr=1,
+                value=1.0,
+                ref_value=None,
+                message="E04",
+                cooldown_s=0,
+            )
+    finally:
+        conn.close()
+
+
+def test_event_rows_outlive_samples_for_a_year(tmp_path: Path):
+    """F10 / Operator decision F3 (Carel plan): a sample older than 30 d is
+    purged, an event of the same age is NOT — event rows live 365 d, because
+    losing them at 30 d would discard exactly the evidence the journal exists
+    to keep. A row past the year is still purged."""
+    from sa02m_devices.device_events import list_events
+
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_snap(now - 40 * 86400, temp=1.0), path=db)
+    _seed_event(db, now - 40 * 86400)
+    _seed_event(db, now - 400 * 86400, kind="carel_alarm_off")
+    purged = purge_old(path=db, now=now)
+    assert purged["dtv_deleted"] == 1
+    assert purged["events_deleted"] == 1, purged
+    left = list_events(path=db, device_id="carel-COM3-1")
+    assert [e["kind"] for e in left["events"]] == ["carel_alarm_on"]
+    assert left["events"][0]["ts"] == now - 40 * 86400
+
+
+def test_event_retention_is_its_own_env_knob():
+    from sa02m_devices import device_history_db as m
+
+    assert m.EVENT_RETENTION_S == 365 * 86400
+    assert m.RETENTION_S == 30 * 86400
+    # Both knobs read their env var at import, the same way.
+    src = Path(m.__file__).read_text(encoding="utf-8")
+    assert 'os.environ.get("STAND_DEVICES_EVENT_RETENTION_S"' in src
+
+
+def test_a_failing_event_purge_is_logged_not_swallowed(tmp_path: Path, monkeypatch, caplog):
+    """The old `except Exception: ev_deleted = 0` hid a broken events purge
+    behind a healthy-looking report; the failure now reaches the daemon's log."""
+    import logging
+
+    from sa02m_devices import device_events
+
+    def boom(**_kw):
+        raise sqlite3.OperationalError("device_events is locked")
+
+    monkeypatch.setattr(device_events, "purge_events", boom)
+    db = tmp_path / "hist.db"
+    now = time.time()
+    insert_sample(_snap(now - 40 * 86400, temp=1.0), path=db)
+    with caplog.at_level(logging.WARNING):
+        purged = purge_old(path=db, now=now)
+    assert purged["dtv_deleted"] == 1 and purged["events_deleted"] == 0
+    assert any(
+        "device_events is locked" in r.getMessage() and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]

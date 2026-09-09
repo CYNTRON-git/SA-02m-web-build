@@ -1,0 +1,29 @@
+[Unit]
+Description=SA-02m local scenario engine
+After=network.target mosquitto.service
+Wants=mosquitto.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -m sa02m_rules.service
+WorkingDirectory=/opt/sa02m-rules
+Environment=PYTHONPATH=/opt/sa02m-rules
+# paho-mqtt missing → exit 0 (standby); do not restart storm on it
+Restart=on-failure
+RestartSec=5
+MemoryMax=32M
+Nice=10
+# Sibling parity (sa02m-cloud-control / sa02m-alice-client) plus a stricter
+# filesystem view: this unit executes cloud-supplied restricted Python as
+# root, so the writable tree is exactly its own store. The time bound on
+# that code is in-process (code_runner._Deadline); no WatchdogSec= because
+# the daemon does not link systemd (no sd_notify keepalive to feed it).
+User=root
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/etc/sa02m-rules
+
+[Install]
+WantedBy=multi-user.target

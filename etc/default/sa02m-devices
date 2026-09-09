@@ -1,4 +1,10 @@
 # SA-02m Devices tab (DTV / CE-02m-3)
+# REPO-OWNED: scripts/11-devices.sh and every web update (OTA and the offline
+# pack — /etc/default/sa02m-* is OTA-deployable and NOT in the runner's
+# PRESERVE_PATHS) re-install this file as-is, so an edit made on the board does
+# not survive an update. Keep an operator override in a systemd drop-in
+# (Environment= under /etc/systemd/system/<unit>.service.d/), never here
+# (decision 2026-09-08, audit D16 — matches the installer's existing behaviour).
 # STAND_API_HOST=127.0.0.1
 # STAND_API_PORT=8765
 # STAND_DEVICES_HISTORY_DB=/var/lib/sa02m-stand/devices_history.db

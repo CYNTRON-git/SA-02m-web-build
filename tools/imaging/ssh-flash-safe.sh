@@ -123,6 +123,56 @@ PART=$(partx -g -o NR,TYPE '"$TARGET_DEV"' 2>/dev/null | awk '"'"'$2=="Linux"{pr
 MNT=$(mktemp -d /tmp/new-root-XXXXXX)
 mount '"$TARGET_DEV"'p${PART} "$MNT" 2>/dev/null || mount '"$TARGET_DEV"'2 "$MNT"
 
+# Offline copies of the identity wipes — same path set as patch-firstboot /
+# autorun (docs/contracts/image-identity-reset.md §4 site 5). extract_fn in
+# alice-image-identity requires `name() {` at column 0. No single quotes in
+# these bodies: this block is already inside an SSH '\''...'\'' string.
+wipe_cloud_enrollment() {
+    local root=$1
+    mkdir -p "$root/etc/sa02m-cloud"
+    chmod 750 "$root/etc/sa02m-cloud"
+    rm -f "$root/etc/sa02m-cloud/device_secret" \
+          "$root/etc/sa02m-cloud/frpc.toml" \
+          "$root/etc/sa02m-cloud"/frpc.toml.bak* \
+          "$root/etc/sa02m-cloud/pair_request" \
+          "$root/etc/sa02m-cloud/activation_token"
+    printf "%s\n" \
+      "[cloud]" \
+      "api_url = https://cloud.cyntron.ru/api/v1" \
+      "server_host = cloud.cyntron.ru" \
+      "enrolled = false" \
+      "device_id =" \
+      "heartbeat_interval = 30" \
+      "" \
+      "[device]" \
+      "serial =" \
+      "web_port = 9999" \
+      > "$root/etc/sa02m-cloud/agent.conf"
+    chmod 640 "$root/etc/sa02m-cloud/agent.conf"
+}
+
+wipe_alice_enrollment() {
+    local root=$1 f
+    rm -f "$root/var/lib/sa02m-alice/device.crt.pem" \
+          "$root/var/lib/sa02m-alice/device.key.pem" \
+          "$root/var/lib/sa02m-alice/pending_claim.json" \
+          "$root/var/lib/sa02m-alice"/*.tmp \
+          "$root/etc/sa02m-alice"/.alice-*
+    for f in "$root/etc/sa02m-alice/sa02m-alice-devices.conf" \
+             "$root/etc/sa02m-alice-devices.conf"; do
+        [ -f "$f" ] || continue
+        printf "%s\n" "{" "  \"rooms\": []," "  \"devices\": []" "}" > "$f"
+    done
+    for f in "$root/etc/sa02m-alice/sa02m-alice-client.conf" \
+             "$root/etc/sa02m-alice-client.conf"; do
+        [ -f "$f" ] || continue
+        sed -i "/^[[:space:]]*unlinked_at[[:space:]]*=/d;/^[[:space:]]*unlinked_reason[[:space:]]*=/d;/^[[:space:]]*unlinked_reason_text[[:space:]]*=/d" "$f"
+        grep -q client_enabled "$f" 2>/dev/null || continue
+        sed -i "s/^[[:space:]]*client_enabled[[:space:]]*=.*/client_enabled = false/" "$f"
+    done
+    rm -f "$root/etc/systemd/system/multi-user.target.wants/sa02m-alice-client.service"
+}
+
 # RuntimeWatchdogSec — 15s из эталона etc/systemd/sa02m-watchdog.conf (cap
 # sun4i-wdt = 16s). ВНИМАНИЕ: правим system.conf НАПРЯМУЮ, а не drop-in, — это
 # свежезаписанный dd-образ, каталога system.conf.d в нём может ещё не быть.
@@ -174,6 +224,9 @@ RemainAfterExit=yes
 WantedBy=multi-user.target
 EOF
 done
+
+wipe_cloud_enrollment "$MNT"
+wipe_alice_enrollment "$MNT"
 
 sync
 umount "$MNT"

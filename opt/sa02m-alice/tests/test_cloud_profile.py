@@ -102,9 +102,11 @@ class TestHandshakeSelection(unittest.TestCase):
     def test_cloud_profile_does_not_register_controller_unlink(self):
         self.assertNotIn(C.EVT_CONTROLLER_UNLINK, AliceSocketIO(profile=C.PROFILE_CLOUD)._events())
         self.assertIn(C.EVT_CONTROLLER_UNLINK, AliceSocketIO()._events())
-        # The three request events stay on both.
-        for ev in (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION):
+        # The request events stay on both.
+        for ev in (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION,
+                   C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_GROUPS):
             self.assertIn(ev, AliceSocketIO(profile=C.PROFILE_CLOUD)._events())
+        self.assertNotIn(C.EVT_DEVICES_GROUPS, AliceSocketIO()._events())
 
     def test_token_minted_inside_every_connect(self):
         calls = []
@@ -404,6 +406,44 @@ class TestMissingIdentityStandby(_TempIdentity):
         self.assertIn(C.STATE_ERROR, states)
         self.assertNotIn(C.STATE_MISSING_CERT, states)
         self.assertIn((C.STATE_ERROR, "file_not_found"), written)
+
+    def test_first_wait_timeout_stays_connecting_not_unreachable(self):
+        # Cloud-card UX: a single python-socketio wait_timeout must not paint
+        # gateway_unreachable («сервер недоступен») while retries remain.
+        self._conf("true")
+        self.write_conf("[cloud]\ndevice_id = sa02m-abc\n")
+        self.write_secret()
+        written = []
+        real_write = client_main._write_status
+
+        def spy(state, **kw):
+            written.append((state, kw.get("error")))
+            real_write(state, **kw)
+
+        class _TimeoutSio:
+            def __init__(self, **_kw):
+                self.connected = False
+
+            def connect(self):
+                raise RuntimeError("One or more namespaces failed to connect")
+
+            def disconnect(self):
+                pass
+
+        def fake_wait(_s):
+            self._conf("false")
+            return False
+
+        with mock.patch.object(client_main, "_write_status", side_effect=spy), \
+                mock.patch.object(client_main, "_mqtt_client", return_value=mock.Mock()), \
+                mock.patch.object(client_main, "AliceSocketIO", _TimeoutSio), \
+                mock.patch.object(client_main._stop, "wait", side_effect=fake_wait), \
+                mock.patch("sa02m_alice.client.sio_connection.import_socketio", return_value=mock.Mock()):
+            rc = client_main.run(C.PROFILE_CLOUD)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("gateway_unreachable", [e for _s, e in written])
+        self.assertIn(C.STATE_CONNECTING, [s for s, _e in written])
+        self.assertNotIn(C.STATE_ERROR, [s for s, _e in written])
 
     def test_no_identity_is_standby_then_exit_zero_on_disable(self):
         self._conf("true")

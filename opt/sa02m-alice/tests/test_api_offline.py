@@ -83,6 +83,43 @@ class TestApiOffline(unittest.TestCase):
         code, out = api.dispatch("POST", "/integrations/alice/enable_client", {"enabled": True})
         self.assertTrue(out["client_enabled"])
 
+    def test_enable_after_unlink_does_not_disable_or_empty_catalog(self):
+        """Skill/cabinet unlink must not make «Включить клиент» refuse or
+        wipe the device document. Enable writes the flag only."""
+        import sa02m_alice.common.config_store as store
+
+        catalog = {
+            "rooms": [{"id": "r1", "name": "Спальня"}],
+            "devices": [
+                {"id": "bench-switch-1", "name": "Свет 1", "type": "devices.types.switch"},
+                {"id": "bench-socket-2", "name": "Свет 2", "type": "devices.types.socket"},
+            ],
+        }
+        with open(api.C.DEVICES_CONF, "w", encoding="utf-8") as fh:
+            json.dump(catalog, fh)
+        store.set_unlink_marker(
+            "2026-09-04T10:25:08Z", "unlinked", "controller_unlink"
+        )
+        with mock.patch.object(
+            api,
+            "probe_gateway",
+            return_value={"ok": True, "available": False, "error": "gateway_unreachable"},
+        ):
+            code, out = api.dispatch(
+                "POST", "/", {"action": "enable"}
+            )
+        self.assertEqual(code, 200)
+        self.assertTrue(out.get("ok"))
+        self.assertTrue(out["client_enabled"])
+        self.assertTrue(store.client_enabled())
+        with open(api.C.DEVICES_CONF, encoding="utf-8") as fh:
+            after = json.load(fh)
+        self.assertEqual(after, catalog)
+        stamp, cls, reason = store.unlink_marker()
+        self.assertEqual(cls, "unlinked")
+        self.assertEqual(reason, "controller_unlink")
+        self.assertTrue(stamp)
+
     def test_client_main_exits_zero_when_disabled(self):
         from sa02m_alice.client import main as client_main
 

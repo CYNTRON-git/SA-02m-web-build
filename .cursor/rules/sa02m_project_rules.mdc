@@ -1,0 +1,17 @@
+---
+description: SA-02m — правила проекта для агентов (полы качества CGI/JS/CSS/installer, workflow, RED→GREEN гейты, домен, коммиты). Use when редактируешь ЛЮБОЙ файл репозитория или планируешь изменение.
+alwaysApply: true
+---
+
+Правила проекта живут в **одном доме** — `docs/agent-rules/`; порядок загрузки
+и полный список — `@`-импорты в `CLAUDE.md`. Здесь только указатель, ничего не
+дублировать (PROTOCOL.md invariant 6).
+
+Перед любой правкой прочитать: `web-code-rigor.md` (полы CGI / JS / CSS /
+installer), `web-workflow.md` (scope, pre-/post-edit, рецепт «—»),
+`quality-gate-rigor.md` (проверка не готова, пока не была RED),
+`sa02m-domain.md`, `git-commits.md`, `agent-tooling-map.md`, `web-diagnostic-tools.md`.
+
+Перед сдачей: `node .ai-dev/quality/run.mjs build --touched` — зелёный
+(`.ai-dev/quality/tools.json` — единственный дом «что значит зелёный»).
+Протокол ролей и инварианты: `.ai-dev/PROTOCOL.md`.

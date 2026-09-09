@@ -307,5 +307,88 @@ class TestDuplicateInstances(unittest.TestCase):
         self.assertEqual(len(out["properties"]), 6)
 
 
+class TestCarelVentilationDefault(unittest.TestCase):
+    """Carel MQTT bindings must not stay other/generic after validate."""
+
+    def test_other_generic_becomes_ventilation_fan(self):
+        dev = {
+            "id": "carel-pcomini",
+            "name": "Карел c.pCOmini",
+            "type": "devices.types.other",
+            "icon": "generic",
+            "capabilities": [{
+                "type": "devices.capabilities.on_off",
+                "mqtt": "/devices/carel-COM3-1/controls/unit_on",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {"instance": "on"},
+            }],
+            "properties": [{
+                "type": "devices.properties.float",
+                "mqtt": "/devices/carel-COM3-1/controls/supply_temp",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {
+                    "instance": "temperature",
+                    "unit": "unit.temperature.celsius",
+                },
+            }],
+        }
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.ventilation")
+        self.assertEqual(out["icon"], "fan")
+
+    def test_non_carel_other_untouched(self):
+        dev = _switch_device()
+        dev["type"] = "devices.types.other"
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.other")
+        self.assertNotIn("icon", out)
+
+
+class TestLedLightDefault(unittest.TestCase):
+    """LED MQTT bindings must not stay other/generic after validate."""
+
+    def test_other_generic_becomes_light_bulb(self):
+        dev = {
+            "id": "led-strip",
+            "name": "LED",
+            "type": "devices.types.other",
+            "icon": "generic",
+            "capabilities": [{
+                "type": "devices.capabilities.on_off",
+                "mqtt": "/devices/led-COM3-13/controls/power",
+                "retrievable": True,
+                "reportable": True,
+                "parameters": {"instance": "on"},
+            }],
+        }
+        out, err = models.validate_device(dev)
+        self.assertIsNone(err)
+        self.assertEqual(out["type"], "devices.types.light")
+        self.assertEqual(out["icon"], "bulb")
+
+
+
+class TestDeviceName(unittest.TestCase):
+    def test_cyrillic_spaces_plus_dot_slash(self):
+        out, err = models.validate_device({"id": "lamp", "name": "Лампа PV-1.2/A+"})
+        self.assertIsNone(err)
+        self.assertEqual(out["name"], "Лампа PV-1.2/A+")
+
+    def test_internal_spaces_kept(self):
+        out, err = models.validate_device({"id": "lamp", "name": "  Лампа  кухни  "})
+        self.assertIsNone(err)
+        self.assertEqual(out["name"], "Лампа  кухни")
+
+    def test_empty_and_at_and_too_long_rejected(self):
+        for name in ("", "   ", "bad@name", "x" * 65):
+            out, err = models.validate_device({"id": "lamp", "name": name})
+            self.assertIsNone(out, name)
+            self.assertEqual(err, "invalid device name")
+
+
 if __name__ == "__main__":
     unittest.main()

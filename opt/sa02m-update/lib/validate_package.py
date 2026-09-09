@@ -64,7 +64,9 @@ _DST_PREFIX_RES = (
     re.compile(r"^/etc/nginx/"),
     re.compile(r"^/etc/tmpfiles\.d/"),
     re.compile(r"^/etc/sudoers\.d/"),
+    re.compile(r"^/etc/default/sa02m-"),
     re.compile(r"^/etc/sa02m-update/trusted-keys/"),
+    re.compile(r"^/etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$"),
 )
 
 _DELETE_RE = re.compile(
@@ -102,7 +104,21 @@ _MANIFEST_TOP_KEYS = frozenset(
 _PAYLOAD_KEYS = frozenset({"size", "sha256", "uncompressed_size_max"})
 _PREFLIGHT_KEYS = frozenset({"commands", "free_bytes_min", "free_bytes_multiplier"})
 _DEPLOY_KEYS = frozenset({"src", "dst", "mode", "owner"})
-_SERVICES_KEYS = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+# services: the REQUIRED set is frozen at the v1 wire contract — a manifest
+# missing any of these is rejected. OPTIONAL keys are ones a newer packer may
+# add; they must NOT be required (manifests from an older packer stay valid
+# here) and they ARE rejected by older validators (additionalProperties: false
+# is the forward-compat posture). The packer emits frozen v1 services
+# (required keys only) while MIN_UPDATER is still 1.0.5.66 so boards on
+# the documented floor can apply the pack; optional keys are packed only
+# after MIN_UPDATER is raised to a validator that accepts them.
+# `enable` joined the generators in 1.0.5.69 but was never added here — every
+# offline pack since then failed on-device validation with E_MANIFEST until
+# this split (1.0.6.37). The packer freeze (same release) stops advertising
+# a pack that 1.0.5.66 always rejects.
+_SERVICES_KEYS_REQUIRED = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+_SERVICES_KEYS_OPTIONAL = frozenset({"enable", "restart_if_active", "restart_if_changed"})
+_SERVICES_KEYS = _SERVICES_KEYS_REQUIRED | _SERVICES_KEYS_OPTIONAL
 _HEALTH_KEYS = frozenset({"http_url", "units_active", "version_file"})
 _MIGRATION_KEYS = frozenset({"id", "min_from", "script", "sha256", "reversible"})
 
@@ -294,13 +310,32 @@ def validate_manifest_object(obj: Any) -> Dict[str, Any]:
     if not isinstance(services, dict):
         raise _type_err("services", "object", services)
     _reject_unknown("services", services, _SERVICES_KEYS)
-    _require_keys("services", services, _SERVICES_KEYS)
+    _require_keys("services", services, _SERVICES_KEYS_REQUIRED)
     if not isinstance(services["daemon_reload"], bool):
         raise PackageError("E_MANIFEST", "services.daemon_reload must be bool")
-    for list_key in ("stop_before_apply", "restart"):
-        arr = services[list_key]
+    for list_key in ("stop_before_apply", "restart", "enable", "restart_if_active"):
+        arr = services.get(list_key)
+        if arr is None:
+            continue  # optional key absent
         if not isinstance(arr, list) or not all(isinstance(x, str) and x for x in arr):
             raise PackageError("E_MANIFEST", f"services.{list_key} must be string array")
+    rifc = services.get("restart_if_changed")
+    if rifc is not None:
+        if not isinstance(rifc, dict):
+            raise _type_err("services.restart_if_changed", "object", rifc)
+        for unit, prefix in rifc.items():
+            if not isinstance(unit, str) or not unit:
+                raise PackageError("E_MANIFEST", "services.restart_if_changed: unit names must be non-empty strings")
+            if (
+                not isinstance(prefix, str)
+                or not prefix.startswith("/")
+                or not prefix.endswith("/")
+                or ".." in prefix.split("/")
+            ):
+                raise PackageError(
+                    "E_MANIFEST",
+                    f"services.restart_if_changed[{unit!r}] must be an absolute path prefix ending in '/'",
+                )
     health = services["health"]
     if not isinstance(health, dict):
         raise _type_err("services.health", "object", health)

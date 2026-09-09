@@ -18,6 +18,79 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
   connect AND the burst for a topic a reload newly subscribes (a bounded grace
   window per added topic, `RETAINED_GRACE_S`).
 
+### Binding inventory — what the picker may offer (1.0.6.38)
+
+`www/network_config/cgi-bin/sa02m_alice_topics.cgi` answers two shapes off the
+same builder, so they can not disagree about what is bindable:
+
+- no query → the flat `{ok, source, topics[], count}` every pre-1.0.6.38
+  caller expects (`sa02m_alice/config/topics.py: list_mqtt_topics`);
+- `?format=inventory` → the structured device/channel tree the «Умный дом»
+  channel picker groups by COM port → module → DI/DO/AI/AO
+  (`sa02m_alice/config/inventory.py: build_mqtt_inventory`).
+
+The flat list is a PROJECTION of the inventory (`inventory_topics`): every
+enabled channel and sub-channel, sorted. Both are file reads only — the bridge
+yaml plus the live cache (`/run/sa02m-modbus-mqtt/<id>.json`, `_roster.json`) —
+so the picker works with no gateway and no bus. Rules:
+
+- an MR-02m's channel set comes from its **`module_type`**, never from whether
+  the yaml author wrote a `channels` block (`MR02M_MODULE_TYPES`, a pinned copy
+  of the bridge's table);
+- a type the module itself reported **outranks** the yaml one, and the answer
+  says which it used (`model_source: detected|yaml`, plus `yaml_model`). Never
+  written back to the yaml — never-widen; the operator fixes the type;
+- a yaml channel beyond the type's count is kept (a mistyped `module_type` must
+  not hide a configured channel either);
+- `enabled: false` is offered in the picker, marked «отключён в MQTT», and left
+  OUT of the flat list (a flat consumer cannot show the mark);
+- every DI carries its pulse counter as a sub-channel; the «Кнопка»-mode press
+  counters are offered only while the live cache shows them;
+- the named-control families come from frozen tables (`DTV_*`, `CAREL_*`,
+  `CE02M3_*`, `CONTROLLER_*` in `topics.py`, `LED_*` in `inventory.py`, each
+  pinned to its home by tests). A family with no table falls back to the
+  controls its live cache carries — the bridge polls it, so what it publishes
+  is the truth;
+- the board's own four controls are always offered, so the picker is never
+  empty on a fresh board.
+
+**Budget and shape (1.0.6.39).** The CGI wraps its python in `timeout` at
+`TOPICS_CGI_TIMEOUT_S` (15 s, `constants.py`; shell default
+`SA02M_ALICE_TOPICS_TIMEOUT`, the two homes pinned by
+`tests/test_sio_connection.py TestTopicsCgiTimeout`) and emits **exactly one
+JSON object** whatever python does: the body when it exits 0 with output, the
+`topics_failed` fallback *in its place* on a non-zero exit, empty output or the
+budget — never both (the bench 1.135 double-object body that dropped the tab
+to manual entry). Harness: `scripts/dev/test-alice-topics-cgi.sh` (registry
+row `alice-topics-cgi`).
+
+Validating tests: `opt/sa02m-alice/tests/test_inventory.py`,
+`test_topics_inventory.py`, `scripts/dev/sh-modal-layout-smoke.mjs`.
+
+### Auto-provision (DTV / CE-02m-3)
+
+The Yandex-profile client watches `/devices/+/meta/name` and
+`/devices/+/meta/driver`. A new MQTT id whose prefix is `dtv-` or `ce02m3-`
+and that **no existing binding already maps** is appended to the same
+document (`save_devices`, atomic, mode/owner preserved) **only when**
+the id is listed in `/etc/sa02m-modbus-mqtt.yaml` **or** at least one
+live `/devices/<id>/controls/<name>` value has arrived (not `…/meta/*`).
+A `meta/name` containing `test` is ignored. Meta-only (no yaml row, no
+live control) is a no-op — it must not invent a tile from a stale
+retained name. Implementation: `sa02m_alice/client/auto_provision.py`.
+Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
+
+- `dtv-` → one `devices.types.sensor.climate` (temperature, humidity,
+  pressure, co2_level, tvoc, motion) using the first control that exists
+  on that slave (BME680 then BME280 for T/RH/P, same set as live «ДТВ цех»).
+- `ce02m3-` → three `devices.types.smart_meter.electricity` (фаза A/B/C):
+  voltage, amperage, power; `electricity_meter` from
+  `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics
+  exist, else total `energy_active_import` on phase C only.
+- A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
+- After persist the in-process registry reloads (same `apply_reload` path
+  as a CGI edit). The hub catalog is the next `alice_devices_list`.
+
 ## Device document (`/etc/sa02m-alice/sa02m-alice-devices.conf`)
 
 ```json
@@ -40,6 +113,27 @@ Machine-facing contract for `opt/sa02m-alice`. Human overview:
 }
 ```
 
+`rooms` and `groups` are each capped at `COLLECTION_CAP` (64, `constants.py`,
+one constant for both): a NEW row past the cap is refused with
+`error: too_many` and nothing is saved; an update or a delete at the cap works.
+Validating: `tests/test_collection_caps.py`.
+
+Optional capability field `writable` (bool; **absent ⇒ `true`**).
+`writable: false` is a latching discrete input: discovery still lists
+`on_off` (`retrievable` / `reportable` stay), `apply_actions` returns
+`INVALID_ACTION` and publishes no `/on`. Cloud POST is 400
+`not controllable` (`docs/contracts/cloud-device-control.md` in the
+cloud repo).
+
+### Device type (`type`)
+
+`type` is a Yandex `devices.types.*` id. The official allow-list — picker
+(`#sh-dev-type` on `/network_config/`) + `validate_device` + discovery
+passthrough — is `sa02m_alice/config/device_types.py`, taken from
+https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/device-types
+and not restated here. Unknown ids are rejected. A missing tile icon
+falls back to `generic` and does not block save.
+
 ### Tile fields (`alice_visible`, `icon`) — 1.0.6.26
 
 Two optional device-level keys beside `room_id`, validated by
@@ -61,6 +155,23 @@ Discovery per profile (`device_registry.discovery_devices(profile)`): the
 Yandex profile carries only the Yandex fields; the **cloud profile lists every
 device** and adds `alice_visible` + `icon` to each entry (additive — the cloud
 page is its only consumer).
+
+### Carel AHU rows at catalogue build (1.0.6.39)
+
+A Carel binding (`/devices/carel-…`) gains, **in memory at every catalogue
+build** (`DeviceRegistry.__init__` / `reload` →
+`config/ahu_status.prepare_catalogue_doc`), the cloud-only status events
+(`plant_state`, `unit_status`, `alarm`, `pump`, `alarm_text`) and extra floats
+(`return_water_temperature`, `heat_valve`, `fan_speed`, `fan_step`) it is
+missing. The optional probes `outdoor_temperature` / `room_temperature` are
+bound only when the bridge live cache (`/run/sa02m-modbus-mqtt/<id>.json`)
+lists the control with no `errors[name]`, and a stored row for a probe the
+cache marks dead or unconfigured is dropped from the catalogue — the same
+input answers the same on the «Устройства» card (`docs/contracts/carel-ahu.md`
+§5). No cache file for the device = unknown: nothing added, nothing dropped.
+The stored document is never rewritten; the Yandex profile sees none of it
+(`cloud_only`). Validating: `tests/test_ahu_status_wiring.py` (through the
+registry), `tests/test_ahu_status.py` (the helper).
 
 ### Float properties (sensor devices)
 
@@ -153,7 +264,8 @@ leak a non-Yandex field to the platform.
 - Validated as a finite number, `0 < |scale| ≤ 1e6`.
 - Applied ONCE, in `converters.mqtt_to_float_property`, and rounded to 3
   decimals. No other code multiplies a reading.
-- In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC).
+- In use: kPa → mmHg `7.50062` (DTV pressure), mg/m³ → µg/m³ `1000` (TVOC),
+  Wh → kWh `0.001` (CE `electricity_meter`).
 
 ### Inverted (`on_off`, item level, never sent to Yandex) — 1.0.6.29
 
@@ -268,6 +380,13 @@ in place, without restarting it and without dropping the Socket.IO session:
   API while a session is already live is not restarted, and that session keeps
   its previous cert until it drops — the SSL context is built in
   `sio_connection.connect()`.
+- **Writers serialise (1.0.6.39).** Every writer of the document — the CGI
+  dispatch (www-data), both units' Socket.IO rename / rooms / groups handlers,
+  the Yandex unit's auto-provisioner — holds one advisory `flock`
+  (`config_store.devices_lock`, taken on the conf directory so root and
+  www-data share it) around its load→modify→save; a concurrent edit waits
+  instead of being lost. Validating: `tests/test_devices_lock.py` (the real
+  contention case needs Linux; it skips loudly elsewhere).
 
 ## Socket.IO events (controller ↔ gateway, both profiles)
 
@@ -282,7 +401,25 @@ control entry with the **identical** event set.
 | G→C | `alice_devices_query` | `{request_id, devices:[{id}]}` |
 | G→C | `alice_devices_action` | `{request_id, payload:{devices:[…]}}` |
 | C→G | `device_state` | `{ts, origin, payload:{devices:[]}}` |
-| G→C | `controller_unlink` | `{}` — Yandex profile only; **not registered on the cloud profile** (it must never touch the mTLS cert) |
+| G→C | `controller_unlink` | необязательное тело (`{"reason":"unlinked"}` сегодня, `{}` до 0.6.0) — только профиль `yandex`; **на облачном профиле не зарегистрировано** (он не должен трогать mTLS-сертификат) |
+
+**`controller_unlink` — получение авторитетно независимо от формы тела.** Ветка
+обработчика стоит **выше** проверки «тело — словарь»: подлинность даёт
+проверенная mTLS-сессия, а не поле в теле (контракт доставки — соседний
+репозиторий `cloud`, `docs/contracts/alice-gateway.md`, «controller_unlink
+delivery semantics» — делает тело необязательным). Ниже этой проверки пустое
+тело молча отбрасывалось бы, и плата продолжала бы считать себя привязанной —
+исходный дефект 1.0.6.27.
+
+Что получение делает: это одна из двух **дверей** в общее ядро сброса привязки
+(`opt/sa02m-cloud-agent/binding_core.py`, побайтовая копия
+`sa02m_alice/common/binding_core.py`; строка реестра `binding-reset-parity`), с
+`threshold = 1` — здесь приходит **вердикт**, а не улика: шлюз рвёт соединение
+сразу после события, второго в той же сессии не будет. Список стираемого,
+долговечный маркер, состояния статуса и правило «никогда по сомнению» — ядра;
+здесь они **названы ссылкой, а не пересказаны**, потому что облачная дверь
+пользуется теми же. Решение и отвергнутая альтернатива:
+`docs/decisions/binding-reset-one-home.md`.
 
 `device_state.origin` (additive, 1.0.6.26; an older gateway ignores it):
 `"live"` = an MQTT-driven report through `StateSender.offer`, `"snapshot"` =
@@ -303,6 +440,35 @@ kept as defence in depth for a hub older than 0.8.1, which kept only the last
 `DEVICE_UNREACHABLE` | `INVALID_ACTION` | `INVALID_VALUE` | `INTERNAL_ERROR`
 
 Action capability result: `{status:"DONE"|"ERROR", error_code?}`.
+
+`query` returns `DEVICE_UNREACHABLE` when the Modbus **slave** is down
+(`/devices/<id>/meta/error` = `r`) or when a control's `/meta/error` = `r`
+**and** that slave has had no live poll (`uptime_s` or any coil) this
+session. A sticky per-channel `r` while `uptime_s` still advances is a busy
+bus (write + Carel on the same COM), not offline — query keeps the last
+successful coil. The MR-02m poller does **not** stamp sibling `do_N` /
+`di_N` / `ao_N` with `r` on a failed block read; only the channel that
+actually failed (AI hole, that channel's write = `w`) gets a per-control
+flag. Device-level `r` after `offline_after_fails` still kills every
+channel of a dead slave. A retained or unchanged coil on a Modbus slave
+(`/devices/<driver>-COM<n>-<addr>/…`) is **not** unreachable. GPIO and board
+telemetry (no `-COM` in the device id) still age a **live** cache entry past
+`STATUS_STALE_S` (90 s) and still answer from retained. `action` writes a
+Modbus coil unless the **slave** is down; a per-channel `r` does not refuse
+the command (Yandex scenario: switch + socket on one module in one burst).
+
+**Unreachable transition (one `device_state`).** When a catalog device
+crosses from reachable to `DEVICE_UNREACHABLE`, the client emits one
+`device_state` stub (`error_code` only) — on the MQTT `/meta/error` down-edge
+and at most once from the 30 s history snapshot. Already-down devices are
+not re-pushed every cadence. GPIO retained is unchanged. No extra
+`callback_state` flood. **The sweep is gated (1.0.6.39):** from the MQTT path
+the transition sweep (a full `query_devices()`) runs only for an availability
+topic (`/devices/<id>/meta/error`, `<control>/meta/error`) — a value message,
+the retained storm included, never pays it; the snapshot / reload path always
+sweeps. The auto-provisioner reads the document once per new id (an
+mtime-keyed cache), not per `/meta/*` message. Validating:
+`tests/test_mqtt_message_cost.py`.
 
 ## Rate limits (`event_rates.json`)
 
@@ -345,16 +511,36 @@ later, irrelevant for the cloud's 8 s confirm window. Validating tests:
 `offer`, rate-bypass, still stamps `_last_sent`) and `flush_now()`, so the
 first post-reconnect report leaves the board. Live MQTT still uses `offer`.
 Retained bursts stay cached-not-reported. A `query_devices()` entry with
-neither capabilities nor properties does not emit. No `callback/discovery`.
+neither capabilities nor properties does not emit unless it is a
+`DEVICE_UNREACHABLE` stub from `take_unreachable_transitions` (one per
+down-edge). No `callback/discovery`.
 
 **History snapshot.** While Socket.IO is connected, the same
-`offer_snapshot` + `flush_now` runs every `STATE_SNAPSHOT_S` (30 s) from the
-MQTT cache, so Yandex Station graphs/history receive a point even when the
+`offer_snapshot` + `flush_now` runs from the MQTT cache: every
+`STATE_SNAPSHOT_S` (30 s) on the **cloud** profile (hub stale bound — do not
+lengthen), and every `STATE_SNAPSHOT_YANDEX_S` (60 s) on the **Yandex**
+profile so Station graphs get about one point per minute even when the
 broker does not republish a steady reading. In-place document reload with
 added/removed topics also snapshots once. This is a cadence, not a replacement
 for live capability reports (0.75 s). The float `time_rate_s` of 300 s remains
 the floor between *MQTT-driven* reports of the same reading; the history
-snapshot bypasses it. Gateway Callback belt (30 POSTs / SN / 60 s) is unchanged.
+snapshot bypasses it.
+
+**Gateway Callback belt.** The gateway throttles its Callback/state POSTs to
+Yandex at **30 POSTs per controller SN per 60 s** (gateway side,
+`alice.cyntron.ru`; the belt's home is the `cloud` repo's
+`docs/contracts/alice-gateway.md` — nothing on the board changes it). The 60 s
+snapshot fits under it by construction on the board side: one `device_state`
+frame per cadence carrying every device (`state_sender._flush_unlocked` merges
+the devices into a single emit), so the cadence adds at most one frame per
+minute per SN; live reports stay bounded by the per-key windows above. What
+the gateway forwards from that frame is the gateway's: Yandex-visible
+float/event properties from `origin=snapshot` about once per 60 s (not on_off,
+not `cloud_only`) — how it splits one frame into Callback POSTs, and what it
+holds back when a controller's property count would exceed the belt, is
+decided there, not here. Honesty label: the 30 / SN / 60 s figure is the one
+this contract carried through 1.0.6.35 (dropped by mistake in 1.0.6.36), not
+re-measured on this branch.
 
 ## Offline / Phase 0
 
@@ -374,6 +560,32 @@ permission-blind and returns a false "absent").
   bool, config_watch: bool, …}` — `cert_present` is evaluated by the client on
   EVERY write (`sa02m_alice/client/main.py::_write_status`), so the file is the
   source of cert truth for unprivileged readers. Additive: older keys unchanged.
+- Перечень состояний — одна строка, один дом в этом документе (её читает
+  валидирующий тест; дом в коде — константы `STATE_*` в
+  `sa02m_alice/common/constants.py`):
+
+  `state ∈ disabled | offline | connecting | connected | error | missing_deps | missing_cert | missing_identity | unlinked | unlink_failed`
+
+  `missing_identity` пишет только облачный профиль (в свой файл), остальные —
+  оба. Подписи для карточек: `ALICE_STATE_MAP` (`app/alice.js`) и
+  `CLOUD_CTRL_STATE_MAP` (`cloud.js`); `unknown` есть только в картах — это
+  запасная подпись, клиент такого состояния не пишет.
+- **`unlinked` / `unlink_failed` (1.0.6.32)** — плата отвязана в облаке: привязка
+  стёрта локально, плата готова к новой привязке (`unlink_failed` — отвязка
+  подтверждена, но стереть файлы не удалось; клиент повторяет попытку). Форма
+  ключей `reason` / `reason_class` / `unlinked_at` / `restored` — **общий словарь
+  обеих дверей, его дом `docs/contracts/cloud-agent-status.md` §Поля stand-down**
+  (здесь не пересказывается). Долговечный маркер — три ключа `unlinked_at` /
+  `unlinked_reason` / `unlinked_reason_text` в `[client]`
+  `sa02m-alice-client.conf`; это **идентичность, а не конфигурация** — кто и
+  когда их стирает, `docs/contracts/image-identity-reset.md` §2/§6.
+  `client_enabled` при отвязке **остаётся включённым**: карточка прячет всю
+  строку привязки при выключенном клиенте, а именно её кнопка «Привязать» нужна
+  следующему владельцу; цикл и без флага замолкает — без сертификата клиент
+  уходит в мягкое ожидание на любом транспорте.
+  Осторожно, два разных пространства имён на одно слово: `unlink_failed` здесь —
+  **состояние статуса** (стереть не удалось), а в ответе API
+  `sa02m_alice_api.cgi` — **токен ошибки** отказа шлюза.
 - `config_watch` is `true` when the running client re-reads the device document
   without a restart. The privileged web trigger
   (`usr/local/sbin/sa02m-alice-web-trigger.sh`) reads it — together with unit
@@ -397,10 +609,22 @@ permission-blind and returns a false "absent").
 - `pending_claim.json` is KEPT after a successful issue (`issued: true`) — the
   gateway requires `claim_token` for `/controller/unlink`; the status/link view
   never reads it.
+- A gateway **404 whose JSON `detail` says `controller not linked` /
+  `already unlink…`** in answer to the operator's unlink is a confirmed unlink
+  and erases the local binding — honoured **only over `https`** (urlopen's
+  verifying TLS context is what makes that answer the gateway's;
+  `[gateway] http_url` is operator-settable, and over plain http a LAN peer
+  could answer the POST) and **only on the parsed JSON `detail`**, never on a
+  raw body (1.0.6.39). Validating: `test_binding_reset.py`
+  `TestN3LocalUnlinkRefusals` / `TestLocalUnlinkSuccess`.
 
 Validating tests: `opt/sa02m-alice/tests/test_cert_status.py`,
-`test_reload_watch.py`; the cross-language handshake is pinned by the
-`alice-reload-handshake` quality row.
+`test_reload_watch.py`; перечень состояний, константы, места записи и подписи
+обеих карточек сверяет как множества
+`opt/sa02m-alice/tests/test_status_contract.py::test_status_state_enum_matches_contract_and_cards`,
+а поведение сброса привязки — `test_binding_reset.py`; со стороны рендера то же
+состояние проверяет `scripts/dev/cloud-card-smoke.mjs` (строка реестра
+`cloud-card-smoke`). Cross-language handshake — строка `alice-reload-handshake`.
 
 ## Profiles (1.0.6.26) — one package, two units
 
@@ -421,6 +645,7 @@ Reconnect backoff, watchdog, in-place document reload, retained grace, the
 | Status file | `/run/sa02m-alice/status.json` | `/run/sa02m-alice/status-cloud.json`, same shape + `profile` + `identity_present` (the root client's answer — the www-data API reads it first, exactly like `cert_present`); states `disabled, connecting, connected, offline, error, missing_deps, missing_identity` |
 | Discovery | filtered on `alice_visible` | all devices + tile fields |
 | `controller_unlink` | handled | not registered, ignored |
+| Сброс привязки (stand-down) | да — общее ядро, `threshold = 1` | **нет, и это названный не-цель** (D4): профиль не несёт своей идентичности — он аутентифицируется `device_id` + `device_secret` облачного агента, и их стирает собственный stand-down агента. Второй писатель на одну привязку — это возвращённый класс «пересчёта», два процесса наперегонки стирают одну идентичность. Поведение при отказе не меняется: `error` с причиной флота и обычная лестница отступа |
 | Hub session key | controller serial | `cloud:<device_id>` — nothing on the board depends on it |
 
 The web API (`sa02m_alice_api.cgi`, one CGI for both cards) adds a

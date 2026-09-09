@@ -363,6 +363,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._handle_device_config_holding(ctx)
             if method == "POST" and p == "/device_config/coil":
                 return self._handle_device_config_coil(ctx)
+            if method == "POST" and p == "/device_config/carel_write":
+                return self._handle_device_config_carel_write(ctx)
+            if method == "POST" and p == "/device_config/led_write":
+                return self._handle_device_config_led_write(ctx)
             if method == "POST" and p == "/bus_mode":
                 return self._handle_bus_mode(ctx)
             if method == "POST" and p == "/bacnet/verify":
@@ -666,6 +670,57 @@ class Handler(BaseHTTPRequestHandler):
 
         snap = self._run_device_config_modbus(ctx, port, device_path, _work)
         _send_json(self, {"ok": True, **snap})
+
+    def _handle_device_config_carel_write(self, ctx: ServiceContext) -> None:
+        """POST /device_config/carel_write — команда приточной установки Carel.
+
+        Тот же арендованный сеанс порта, что и остальные device_config-маршруты:
+        пуск установки — последовательность записей, и MPLC/мост не должны
+        вклиниться между разрешением сети и командой пуска. Разбор действия и
+        сборка плана — в device_config.carel_write."""
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
+        action = str(data.get("action") or "").strip()
+        params = data.get("params")
+        if not isinstance(params, dict):
+            params = {}
+
+        def _work():
+            return device_config.carel_write(device_path, device, action, params)
+
+        result = self._run_device_config_modbus(ctx, port, device_path, _work)
+        _send_json(self, {"ok": True, **result})
+
+    def _handle_device_config_led_write(self, ctx: ServiceContext) -> None:
+        """POST /device_config/led_write — команда окна светодиодной ленты.
+
+        Тот же арендованный сеанс порта, что и остальные device_config-маршруты:
+        половина команд ленты — это последовательность «снять блокировку рег. 410
+        → записи по зависимостям → поставить блокировку», и MPLC/мост не должны
+        вклиниться внутрь неё, оставив блок настроек открытым. Разбор действия,
+        проверка параметров и сборка плана — в device_config.led_write.
+        """
+        data = _read_json_body(self)
+        device_path, device = self._device_config_request(ctx, data)
+        port = str(data.get("port") or "").strip()
+        action = str(data.get("action") or "").strip()
+        params = data.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        active_tab = data.get("active_tab")
+        if isinstance(active_tab, str):
+            active_tab = active_tab.strip() or None
+        else:
+            active_tab = None
+
+        def _work():
+            return device_config.led_write(
+                device_path, device, action, params, active_tab=active_tab
+            )
+
+        result = self._run_device_config_modbus(ctx, port, device_path, _work)
+        _send_json(self, {"ok": True, **result})
 
     def _handle_bus_mode(self, ctx: ServiceContext) -> None:
         """POST /bus_mode — 3-state field-bus selector write (§5.1).

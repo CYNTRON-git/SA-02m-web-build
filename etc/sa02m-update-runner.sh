@@ -12,7 +12,6 @@
 # shellcheck shell=bash
 set -euo pipefail
 
-UPDATER_VERSION="${SA02M_UPDATER_VERSION:-1.0.5.66}"
 STATEDIR="${SA02M_UPDATE_STATEDIR:-/var/lib/sa02m-update}"
 LOCKFILE="$STATEDIR/update.lock"
 TXN_FILE="$STATEDIR/transaction.json"
@@ -23,6 +22,30 @@ VALIDATE_PY="${SA02M_UPDATE_VALIDATE_PY:-/opt/sa02m-update/lib/validate_package.
 VERSION_FILE="${SA02M_WEB_VERSION_FILE:-/var/www/network_config/VERSION}"
 LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 RUNTIME_WDT_RESTORE="${SA02M_RUNTIME_WATCHDOG_SEC:-15s}"
+
+# UPDATER_VERSION — what this runner reports against a package's min_updater.
+# DERIVED from the deployed VERSION file, never stamped: the runner ships in the
+# same overlay as www/network_config/VERSION (install.sh, OTA and the offline
+# pack all deploy both), so that file names the release this runner came from.
+# The literal it replaces was a 1.0.5.66 stamp every board reported forever,
+# which made the packer's MIN_UPDATER unraisable (a bump would have E_COMPAT-
+# rejected every pack) and the services tier decorative (audit 2026-09-08, D2).
+# Read once at start: apply deploys the new VERSION later, but the process
+# running the compat gate is still the OLD runner, so the value is right.
+# Fallback = the floor the first runner ever reported; a board with no VERSION
+# file is a broken install, not an old one. Known over-report:
+# scripts/update-www-only.sh refreshes VERSION without the runner, so such a
+# board claims the www version (docs/deployment.md names it). The env override
+# stays for harnesses and the bench.
+UPDATER_VERSION_FALLBACK=1.0.5.66
+derive_updater_version() {
+    local v=""
+    if [ -f "$VERSION_FILE" ]; then
+        v=$(tr -d '\r' <"$VERSION_FILE" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
+    fi
+    printf '%s\n' "${v:-$UPDATER_VERSION_FALLBACK}"
+}
+UPDATER_VERSION="${SA02M_UPDATER_VERSION:-$(derive_updater_version)}"
 
 # Runner-owned preserve list (not in signed manifest) — plan §2.4.
 # shellcheck disable=SC2034
@@ -319,6 +342,7 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
+    r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
@@ -486,7 +510,42 @@ manifest = {
             # running until a reboot or `systemctl restart sa02m-telemetry`.
             # Must stay in step with scripts/pack-offline-update.py.
             "sa02m-telemetry",
+            # Scenario engine holds /opt/sa02m-rules in memory: an OTA that
+            # delivers new rules code must bounce it, or scenarios keep running
+            # the stale engine until reboot (1.0.6.37 bench incident class:
+            # cloud scenario push silently stripped trigger/end on stale code).
+            # Core unit — enabled+started by 06b-rules.sh on every full
+            # install, so the restart||start semantics of this list fits (same
+            # as sa02m-telemetry). Must stay in step with
+            # scripts/pack-offline-update.py.
+            "sa02m-rules",
         ],
+        # Conditional restarts (never-widen). `systemctl restart` on an INACTIVE
+        # unit STARTS it, so opt-in units must never go into restart[]: the
+        # Alice family ships disabled by default (scripts/06-alice.sh `app off`)
+        # and an OTA must not turn the board's Alice/cloud profile on. All three
+        # hold the scenario channel code in memory (sa02m_alice +
+        # sa02m_rules.store from /opt/sa02m-rules) — without the restart a
+        # deploy of new /opt code leaves them stale (the 1.0.6.37 incident).
+        # HONEST LIMIT (same as sa02m-telemetry above): built by the on-board
+        # runner, so these entries first bite on the update AFTER the one that
+        # delivers this runner. Must stay in step with
+        # scripts/pack-offline-update.py.
+        "restart_if_active": [
+            "sa02m-alice-client",
+            "sa02m-alice-config",
+            "sa02m-cloud-control",
+        ],
+        # Change-gated conditional restart: unit -> /opt prefix watched in the
+        # apply journal. sa02m-modbus-mqtt owns the RS-485 port lease: restart
+        # it only when the bridge code actually changed (a www-only patch must
+        # not bounce industrial polling) and only when it is already running —
+        # a stopped bridge may be stopped FOR a flasher lease, never start it
+        # (the port-lease invariant that keeps it out of restart[] above).
+        # Must stay in step with scripts/pack-offline-update.py.
+        "restart_if_changed": {
+            "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",
+        },
         "health": {
             "http_url": "http://127.0.0.1:9999/login.html",
             "units_active": ["nginx", "fcgiwrap", "sa02m-devices-api"],
@@ -586,6 +645,7 @@ DST_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
+    r"etc/default/sa02m-|"
     r"etc/sa02m-update/trusted-keys/|"
     r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
@@ -1093,10 +1153,74 @@ PY
             rm -rf "$tmp"
         fi
     fi
+    restart_after_rollback "$txn" || true
     txn_patch "stage=rolled_back" "result=rolled_back" "error_code=E_APPLY" \
         "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
     log "rollback complete"
+}
+
+# After the files are restored, the units restart_services_and_health bounced
+# are still running the NEW code from memory over the OLD files on disk — an
+# E_HEALTH rollback used to leave them that way until reboot (audit 2026-09-08,
+# D9; the bounced set since 1.0.6.37 is 8 units, not 4). Same discipline as the
+# apply path minus the health gate: daemon-reload, restart[] unconditionally
+# (nginx via -t + reload, as on apply), restart_if_active[] and
+# restart_if_changed{} only when active (never-widen — a rollback must not start
+# a unit the operator keeps off), the change gate read from the same journal the
+# restore just replayed (absent ⇒ changed). Every step is soft: a rollback that
+# restored the files never fails on a restart. No manifest (recover after a lost
+# staging) ⇒ logged, nothing bounced — the operator reboots.
+restart_after_rollback() {
+    local txn=$1 mf u prefix
+    mf=$(manifest_path "$txn" 2>/dev/null) || mf=""
+    if [ -z "$mf" ] || [ ! -f "$mf" ]; then
+        log "rollback: no manifest for txn=$txn — units NOT restarted (reboot to drop in-memory code)"
+        return 0
+    fi
+    log "rollback: daemon-reload + restart sets on the restored tree..."
+    _systemctl_bounded 60 daemon-reload || true
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        case "$u" in
+            nginx|nginx.service)
+                if nginx -t 2>/dev/null; then
+                    _systemctl_bounded 30 reload nginx || _systemctl_bounded 45 restart nginx || true
+                else
+                    log "rollback: nginx -t failed on the restored config"
+                fi
+                continue
+                ;;
+        esac
+        _systemctl_bounded 60 restart "$u" || _systemctl_bounded 45 start "$u" || true
+        log "restarted after rollback: $u"
+    done < <(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
+    print(u)
+' "$mf" 2>/dev/null || true)
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        if systemctl is-active --quiet "$u"; then
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after rollback (if-active): $u"
+        fi
+    done < <(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
+    print(u)
+' "$mf" 2>/dev/null || true)
+    while IFS=$'\t' read -r u prefix; do
+        [ -n "$u" ] && [ -n "${prefix:-}" ] || continue
+        _journal_has_dst_prefix "$txn" "$prefix" || continue
+        if systemctl is-active --quiet "$u"; then
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after rollback (changed, if-active): $u"
+        fi
+    done < <(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
+for u,p in m.items():
+    print(u+"\t"+p)
+' "$mf" 2>/dev/null || true)
+    return 0
 }
 
 # systemctl restart can block indefinitely when stop waits on busy CGI children
@@ -1109,6 +1233,36 @@ _systemctl_bounded() {
     else
         systemctl "$@" 2>/dev/null
     fi
+}
+
+# True when the apply journal recorded a deployed/replaced/deleted dst under
+# $prefix (skipped-unchanged files never reach the journal — apply_deploy_items
+# suppresses the journal line together with the install). Journal absent
+# (power-loss recover with tmpfs staging) => CHANGED: the failure mode this
+# gate exists for is STALE in-memory code, not a spare restart.
+_journal_has_dst_prefix() {
+    local txn=$1 prefix=$2
+    local j="$STATEDIR/staging/$txn/journal.jsonl"
+    [ -f "$j" ] || return 0
+    python3 - "$j" "$prefix" <<'PY'
+import json, sys
+j, p = sys.argv[1], sys.argv[2]
+found = False
+with open(j, encoding="utf-8") as f:
+    for ln in f:
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rec = json.loads(ln)
+        except Exception:
+            continue
+        d = rec.get("dst", "")
+        if isinstance(d, str) and d.startswith(p):
+            found = True
+            break
+sys.exit(0 if found else 1)
+PY
 }
 
 # Returns 0 on success, 1 on failure (does not exit — caller may rollback).
@@ -1171,6 +1325,48 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
     done < <(python3 -c 'import json,sys
 for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart",[]):
     print(u)
+' "$mf")
+
+    # restart_if_active[] — opt-in units (never-widen): `systemctl restart` on
+    # an INACTIVE unit STARTS it, so the plain restart[] loop above would widen
+    # an operator's OFF (the Alice family ships disabled — scripts/06-alice.sh
+    # `app off`). Here: restart ONLY a currently-active unit, never start one.
+    while IFS= read -r u; do
+        [ -n "$u" ] || continue
+        if systemctl is-active --quiet "$u"; then
+            log "health: restarting (if-active) $u..."
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after apply: $u"
+        else
+            log "health: $u not active — conditional restart skipped"
+        fi
+    done < <(python3 -c 'import json,sys
+for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_active",[]):
+    print(u)
+' "$mf")
+
+    # restart_if_changed{unit: prefix} — the same if-active discipline, plus a
+    # change gate on the unit's /opt tree: when every file under the prefix
+    # deployed skip-identical, the service must not be bounced (sa02m-modbus-mqtt
+    # holds the RS-485 port lease — a restart mid-polling is a bus hiccup the
+    # operator did not ask for when the update never touched the bridge).
+    while IFS=$'\t' read -r u prefix; do
+        [ -n "$u" ] && [ -n "${prefix:-}" ] || continue
+        if ! _journal_has_dst_prefix "$txn" "$prefix"; then
+            log "health: $u — $prefix unchanged, conditional restart skipped"
+            continue
+        fi
+        if systemctl is-active --quiet "$u"; then
+            log "health: restarting (changed, if-active) $u..."
+            _systemctl_bounded 60 restart "$u" || true
+            log "restarted after apply: $u"
+        else
+            log "health: $u not active — conditional restart skipped"
+        fi
+    done < <(python3 -c 'import json,sys
+m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_if_changed",{})
+for u,p in m.items():
+    print(u+"\t"+p)
 ' "$mf")
 
     local http_url version_want version_file

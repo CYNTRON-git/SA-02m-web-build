@@ -80,10 +80,10 @@ background set `storage,time,uptime,network,load,system,services,hardware`
 | Сведения (dashboard) | `app/status.js` apply*/render* | `status.cgi` parts | `/proc`, `sa02m-web-service-ctl.sh list` |
 | Сеть / Время | `app/forms.js` (static-IP toggles per iface) | `config.cgi`, `apply.cgi` | ifupdown/netplan per installer |
 | MQTT | `mqtt.js` | `mqtt_*.cgi` | mosquitto (1883 local / 1884 external+auth), `sa02m-modbus-mqtt` bridge |
-| Устройства (ДТВ / СЭ) | `devices.js` | nginx `/api/devices*` → `sa02m-devices-api` `:8765` | `opt/sa02m-devices` — live из MQTT-кэша, SQLite-архив (`sa02m-devices-logger`), графики / Excel / журнал пиков СЭ |
-| Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3 modules. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
+| Устройства (ДТВ / СЭ / MR AI / Carel / LED) | `devices.js` | nginx `/api/devices*` → `sa02m-devices-api` `:8765` (stand 1.135: gunicorn `sa02m-stand-api` owns the port; `11-devices.sh` restarts it when active) | `opt/sa02m-devices` — live from the MQTT cache, SQLite archive (`sa02m-devices-logger`); Carel `kind=carel`, LED type 120. Contracts: `devices-mr-history.md`, `carel-ahu.md`, `led-mb2ws.md`. |
+| Устройства RS-485 (flasher) | `flasher.js` (reconnect state via `sessionStorage`, irreversible-flash guard) | `flasher` daemon HTTP + CGI | `sa02m-flasher.service` (Python), MR-02m/DTV/CE-02m-3/Carel/LED. LED settings window backend exists; the flasher tab UI is not drawn yet. Bus-mode/BACnet ops (register 122 selector, MS/TP verify, in-band recover — 1.0.5.65) run as daemon jobs under the same COM lease; contract `docs/contracts/web-bus-mode-bacnet.md`, firmware seam in the sibling MR-02m/DTV `bus-protocol.md`. |
 | Шлюз RS-485 | `gateway.js` (builds its own DOM; COM1..COM5 sub-nav dots) | `gateway_*.cgi` | `sa02m-gateway.yaml` (Modbus TCP / RTU-over-TCP / transparent) |
-| Управление (+ карточки «Яндекс Алиса», «Облако») | `app/services.js`, `app/misc.js`, `app/alice.js`, `cloud.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi`, `sa02m_alice_*.cgi`, `cloud.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only) |
+| Управление (+ карточки «Яндекс Алиса», «Облако», «Умный дом») | `app/services.js`, `app/misc.js`, `app/alice.js`, `app/smarthome.js`, `cloud.js` | `services_ctrl.cgi`, `kernel_ctrl.cgi`, `cpu_profile.cgi`, `web_update_*.cgi`, `web_creds.cgi`, `sa02m_alice_*.cgi`, `cloud.cgi` | systemd + SysV (mplc4, codesys), `sa02m-kernel-select.sh` (RT/SMP zImage swap → reboot), `sa02m-cpu-profile.sh` (CPU profiles SMP-only). Cloud-profile catalogue + on-board scenarios: `sa02m-cloud-control` + `sa02m-rules` (`docs/contracts/cloud-scenarios.md`). |
 
 Port-sharing invariant: RS-485 lines are shared between MPLC4 polling, the
 MQTT bridge, and the flasher — the flasher takes a **port lease**
@@ -101,6 +101,16 @@ protocol (CHANGELOG 1.0.3.35 documents the prior regressions).
   (`docs/decisions/es-modules.md` П2).
   `python3 scripts/sync-app-version.py` syncs all from the branch name;
   `--check` is the gate (quality row `version-consistency`).
+- **`&r=<token>` — the second, intra-release cache-bust** on the same
+  `index.html`/`login.html` asset URLs (`…?v=1.0.6.38&r=shpick1`). `?v=` changes
+  once per release; `&r=` is bumped by hand for EVERY served asset a change
+  touches (JS, CSS, SVG) so a board that already runs this `?v=` still refetches
+  the new bundle — it is the only bust for a change that ships without a
+  version bump, and a forgotten one ships a stale bundle against a new backend.
+  The token is any short slug (a change tag + digit, e.g. `updgate1`); the
+  syncer rewrites only the `?v=` group and leaves `&r=` intact. No gate checks
+  `&r=` yet (audit 2026-09-08 C11 — a changed served asset must carry a changed
+  `?v=`+`&r=` pair vs the previous release; backlog).
 - `CHANGELOG.md` gets a `## <version> - <summary> (<month>)` section per
   release branch, Russian, grouped by subsystem.
 - Devices self-update via «Обновление веб» (semver compare, `web_update_*.cgi`)

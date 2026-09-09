@@ -161,7 +161,10 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
         log WARN "codesyscontrol отсутствует в dpkg — установка не удалась, см. $LOG_FILE"
     fi
 
-    if [ -r /var/opt/codesys/codesyscontrol.log ]; then
+    # Stale demo lines in the vendor log survive after the unit is off.
+    # Refresh/overlay must not paint a WARN for a runtime that is not running.
+    if [ -r /var/opt/codesys/codesyscontrol.log ] \
+       && systemctl is-active --quiet codesyscontrol 2>/dev/null; then
         if grep -q 'running in demo mode' /var/opt/codesys/codesyscontrol.log; then
             log WARN "CODESYS Runtime работает в DEMO-режиме (~2 часа)."
             log INFO "Для полной лицензии Standard S:"

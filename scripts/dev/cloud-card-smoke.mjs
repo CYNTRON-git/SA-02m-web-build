@@ -29,6 +29,15 @@
    `cloud_control` block, and really rendered from the Alice poll that carries
    it.
 
+   A third pass (runAliceStandDown, 1.0.6.32) does for the «Яндекс Алиса» card
+   what the first does for «Облако»: every state of ITS contract's `state ∈ …`
+   line (docs/contracts/alice-mqtt-mapping.md) rendered for real, the «Причина»
+   line present exactly in `unlinked` / `unlink_failed`, and — the Operator-
+   visible half of that change — the «Привязать» row still VISIBLE after an
+   unlink, because the local button no longer switches the client off. One home
+   for card smoke, not a second driver; see that function's own header for its
+   declared elsewhere-labelled state and its mutation proof.
+
    Exit codes (the runner has no skip signal distinct from success):
      0  every assertion passed (never without a real render);
      1  an assertion failed (state + assertion named), the contract line is
@@ -306,6 +315,163 @@ async function runControlPlacement(browser, base) {
   return renders;
 }
 
+/* ── The «Яндекс Алиса» card's stand-down states ───────────────────────────
+   Same driver, same page, one more pass — this is the one home for card smoke,
+   not a second harness. What it closes: the class the cloud half already paid
+   for, a state the CLIENT writes that no card labels, which falls through to
+   «Нет данных» and leaves the Operator with a blank where the explanation
+   should be. `unlinked` / `unlink_failed` (1.0.6.32) are exactly that shape.
+
+   Per state and both themes it asserts, after really reaching the state:
+     * the «Соединение» badge carries that state's label (the precondition —
+       a fallback to «Нет данных» fails here, not silently);
+     * the «Причина» line is present in the two stand-down states and carries
+       a mapped human phrase, and is absent (or at least not a «Причина» line)
+       in every other state;
+     * in `unlinked`: the «Привязать» row is VISIBLE and its button reads
+       «Привязать», and «Сертификат» reads «Нет». That row is the Operator-
+       visible point of the whole change: the local «Отвязать» no longer
+       switches the client off, so отвязать → привязать заново works from the
+       card. app/alice.js hides the row whenever the client is off.
+   Mutation proof: put `client_enabled: false` back into the unlinked payload
+   (what reverting the API change would produce) -> the link row is hidden and
+   the assertion FAILS.
+
+   The fixture set is compared BOTH WAYS against the contract's `state ∈ …`
+   line, minus one declared exception: `missing_identity` is written only by
+   the cloud profile into its own status file and is labelled on the «Облако»
+   card (CLOUD_CTRL_STATE_MAP), never on this one. The exception is itself
+   checked — if the contract ever stops documenting it, this pass FAILS rather
+   than carrying a stale excuse. */
+const ALICE_CONTRACT = join(REPO, 'docs', 'contracts', 'alice-mqtt-mapping.md');
+const ALICE_CARD_ONLY_ELSEWHERE = ['missing_identity'];
+const ALICE_BASE = {
+  ok: true,
+  client_enabled: true,
+  gateway: { available: true, wss_url: 'wss://alice.cyntron.ru/controller/socket.io', http_url: 'https://alice.cyntron.ru' },
+  mtls: { cert_present: false },
+  devices: { devices: [], rooms: [] },
+  link: { linked: false, pending: false, registration_url: null, state: 'unknown' },
+};
+const ALICE_FIXTURES = {
+  disabled:        { client_enabled: false, status: { state: 'disabled' }, label: 'Отключено' },
+  offline:         { status: { state: 'offline' }, label: 'Шлюз недоступен' },
+  connecting:      { status: { state: 'connecting' }, label: 'Подключение' },
+  connected:       { mtls: { cert_present: true }, status: { state: 'connected' }, label: 'Подключено' },
+  error:           { status: { state: 'error', error: 'gateway_unreachable' }, label: 'Ошибка' },
+  missing_deps:    { status: { state: 'missing_deps', error: 'missing_deps' }, label: 'Нет зависимостей' },
+  missing_cert:    { status: { state: 'missing_cert', error: 'missing_cert' }, label: 'Нет сертификата' },
+  unlinked:        { status: { state: 'unlinked', reason: 'controller_unlink', reason_class: 'unlinked', unlinked_at: '2026-09-03T10:00:00Z' }, label: 'Отвязано в облаке' },
+  unlink_failed:   { status: { state: 'unlink_failed', reason: 'wipe_failed', detail: "[Errno 30] Read-only file system: '/var/lib/sa02m-alice/device.key.pem'", reason_class: 'unlinked' }, label: 'Ошибка отвязки' },
+};
+const ALICE_REASON_LINE = new Set(['unlinked', 'unlink_failed']);
+
+function aliceDocumentedStates() {
+  if (!existsSync(ALICE_CONTRACT)) die(1, `${TAG}: ERROR — contract not found: ${ALICE_CONTRACT}`);
+  const m = readFileSync(ALICE_CONTRACT, 'utf8').match(/`state ∈ ([^`]+)`/);
+  const list = m ? m[1].split('|').map((s) => s.trim()).filter(Boolean) : [];
+  if (!m || list.length === 0) {
+    die(1, `${TAG}: ERROR — ${ALICE_CONTRACT} has no \`state ∈ …\` line; refusing to run on an empty state list`);
+  }
+  return list;
+}
+
+async function readAliceCard(page) {
+  return page.evaluate(() => {
+    const vis = (id) => {
+      const el = document.getElementById(id);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const cs = getComputedStyle(el);
+      return r.height > 0 && r.width > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+    };
+    const txt = (id) => (document.getElementById(id) || {}).textContent || '';
+    const msg = document.getElementById('alice-msg');
+    return {
+      conn: txt('alice-conn-state').trim(),
+      cert: txt('alice-cert-state').trim(),
+      linkRowVisible: vis('alice-link-row'),
+      linkBtnText: txt('alice-btn-link').trim(),
+      linkStatus: txt('alice-link-status-val').trim(),
+      msgVisible: !!(msg && !msg.hidden && msg.textContent.trim()),
+      msgText: msg ? msg.textContent.trim() : '',
+    };
+  });
+}
+
+async function runAliceStandDown(browser, base) {
+  const documented = aliceDocumentedStates();
+  const fixtured = Object.keys(ALICE_FIXTURES);
+  for (const s of ALICE_CARD_ONLY_ELSEWHERE) {
+    check(documented.includes(s), `alice: the declared elsewhere-labelled state "${s}" is still documented (no stale exception)`);
+  }
+  const expected = documented.filter((s) => !ALICE_CARD_ONLY_ELSEWHERE.includes(s));
+  for (const s of expected) check(fixtured.includes(s), `alice: contract state "${s}" has a card fixture`);
+  for (const s of fixtured) check(expected.includes(s), `alice: fixture "${s}" is a documented contract state (no drift)`);
+
+  let renders = 0;
+  for (const theme of THEMES) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+    await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    let alice = { ...ALICE_BASE, mtls: { cert_present: true }, status: { state: 'connected' }, link: { ...ALICE_BASE.link, linked: true, state: 'connected' } };
+    await page.route('**/cgi-bin/**', (r) => {
+      const url = r.request().url();
+      const body = /cloud\.cgi/.test(url) ? JSON.stringify(FIXTURES.active)
+        : /sa02m_alice_api\.cgi/.test(url) ? JSON.stringify(alice) : '{}';
+      return r.fulfill({ status: 200, contentType: 'application/json', body });
+    });
+    await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+    if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+    await page.evaluate(() => {
+      document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
+      document.getElementById('tab-system').classList.add('active');
+    });
+    // Reached state, never a bare timeout: the card is rendered from its poll.
+    await page.waitForFunction(() => document.getElementById('alice-conn-state').textContent.trim() === 'Подключено', null, { timeout: 12000 });
+    console.log(`\n[${theme}] «Яндекс Алиса» card states`);
+    for (const name of expected) {
+      const f = ALICE_FIXTURES[name];
+      alice = {
+        ...ALICE_BASE,
+        ...f,
+        link: { ...ALICE_BASE.link, state: name, linked: name === 'connected' },
+      };
+      delete alice.label;
+      await page.waitForFunction(
+        (want) => document.getElementById('alice-conn-state').textContent.trim() === want,
+        f.label, { timeout: 12000 },
+      );
+      await page.waitForTimeout(120);
+      renders++;
+      const s = await readAliceCard(page);
+      check(s.conn === f.label, `alice/${name}: state reached — «Соединение» reads "${s.conn}"`);
+      if (ALICE_REASON_LINE.has(name)) {
+        check(s.msgVisible && /^Причина: /.test(s.msgText) && s.msgText.length > 'Причина: '.length,
+          `alice/${name}: «Причина» line present ("${s.msgText}")`);
+        check(!/Errno/.test(s.msgText) && !/wipe_failed/.test(s.msgText),
+          `alice/${name}: no raw errno / reason code on the card ("${s.msgText}")`);
+      } else {
+        check(!/^Причина: /.test(s.msgText),
+          `alice/${name}: no «Причина» line outside the stand-down states ("${s.msgText}")`);
+      }
+      if (name === 'unlinked') {
+        // The Operator-visible half of the change.
+        check(s.linkRowVisible, 'alice/unlinked: the «Привязать» row is VISIBLE (client_enabled stays ON)');
+        check(s.linkBtnText === 'Привязать', `alice/unlinked: the button reads «${s.linkBtnText}»`);
+        check(s.cert === 'Нет', `alice/unlinked: «Сертификат» reads «${s.cert}»`);
+        check(s.linkStatus === 'не привязан', `alice/unlinked: «Статус» reads «${s.linkStatus}»`);
+      }
+    }
+    check(errors.length === 0, `alice: no page errors (${errors.join(' | ')})`);
+    await page.locator('#alice-card').screenshot({ path: join(SHOTS, `alice-card-unlinked-${theme}.png`) });
+    await ctx.close();
+  }
+  return renders;
+}
+
 async function run() {
   const srv = await listen();
   const base = `http://127.0.0.1:${srv.address().port}`;
@@ -386,6 +552,7 @@ async function run() {
       }
     }
     rendered += await runControlPlacement(browser, base);
+    rendered += await runAliceStandDown(browser, base);
   } finally {
     await browser.close();
     srv.close();
@@ -394,7 +561,7 @@ async function run() {
   for (const m of matrix) console.log(`  ${m.theme.padEnd(5)} ${m.state.padEnd(16)} ${m.label.padEnd(18)} ${m.tunnel} ${m.ts}`);
   if (rendered === 0) die(1, `${TAG}: ERROR — nothing was rendered; a pass without a render is not a pass`);
   if (failures) die(1, `\n${TAG}: ${failures} FAILURE(S) across ${documented.length} states × ${THEMES.length} themes`);
-  console.log(`\n${TAG}: PASS — ${assertions} assertions across ${documented.length} contract states + the «Управление из облака» placement pass × ${THEMES.length} themes (in-page transitions, ${rendered} renders)`);
+  console.log(`\n${TAG}: PASS — ${assertions} assertions across ${documented.length} «Облако» contract states + the «Управление из облака» placement pass + the «Яндекс Алиса» stand-down pass × ${THEMES.length} themes (in-page transitions, ${rendered} renders)`);
   process.exit(0);
 }
 

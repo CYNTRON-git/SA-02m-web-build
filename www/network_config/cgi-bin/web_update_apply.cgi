@@ -6,7 +6,9 @@
 # shellcheck disable=SC1091
 . "$(dirname "$0")/lib_web_auth.sh"
 
-LEGACY_STATEDIR=/var/lib/sa02m-web-build
+# Env-overridable ONLY for the harness (scripts/dev/test-web-update-apply-guard.sh);
+# the same variable name etc/sa02m-update-runner.sh honours. nginx/fcgiwrap set nothing.
+LEGACY_STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 LEGACY_LOCKFILE="$LEGACY_STATEDIR/update.lock"
 LEGACY_STATUS_FILE="$LEGACY_STATEDIR/update_status"
 LEGACY_LOGFILE="$LEGACY_STATEDIR/update.log"
@@ -328,6 +330,72 @@ if ! web_csrf_validate; then
   printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
   exit 0
 fi
+
+# Internet Apply only (this branch; file-package apply uses confirm_version
+# above). FAIL-CLOSED guard — docs/contracts/web-update.md is the one home of
+# the table: the ONLY way to the root launch below is a readable, FRESH
+# check.json that says the remote is newer. Until 1.0.6.39 every error path
+# here (no file, no python3, unparseable JSON) *permitted* the launch, and a
+# stale file was read as current truth (audit C10). Exit codes of the probe:
+# 0 = newer available (launch), 2 = nothing newer (E_NO_UPDATE), anything
+# else = cannot tell (E_CHECK_STALE). The state dir is env-overridable for the
+# harness only (scripts/dev/test-web-update-apply-guard.sh).
+WEB_UPD_CHECK_MAX_AGE_S=86400
+CHECK_JSON="$LEGACY_STATEDIR/check.json"
+guard_rc=3
+if [ -f "$CHECK_JSON" ] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$CHECK_JSON" "$WEB_UPD_CHECK_MAX_AGE_S" <<'PY'
+import datetime, json, re, sys, time
+try:
+    j = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    raise SystemExit(3)
+if not isinstance(j, dict):
+    raise SystemExit(3)
+# Freshness: checked_at is the checker's UTC stamp (etc/sa02m-web-update-check.sh).
+try:
+    t = datetime.datetime.strptime(str(j.get("checked_at")), "%Y-%m-%dT%H:%M:%SZ")
+    t = t.replace(tzinfo=datetime.timezone.utc).timestamp()
+except Exception:
+    raise SystemExit(3)
+age = time.time() - t
+if age > int(sys.argv[2]) or age < -3600:
+    raise SystemExit(3)
+
+def parse(v):
+    if v is None:
+        return None
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?", str(v).strip())
+    if not m:
+        return None
+    return [int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4) or 0)]
+
+# Same precedence as the frontend's webUpdResolveAvailable (app/status.js):
+# a version compare wins, else the checker's own flag, else unknowable.
+dep, rem = parse(j.get("deployed_version")), parse(j.get("remote_version"))
+if dep is not None and rem is not None:
+    raise SystemExit(2 if dep >= rem else 0)
+if j.get("update_available") is False:
+    raise SystemExit(2)
+if j.get("update_available") is True:
+    raise SystemExit(0)
+raise SystemExit(3)
+PY
+  guard_rc=$?
+fi
+case "$guard_rc" in
+  0) : ;;
+  2)
+    _json_headers
+    printf '{"ok":false,"status":"error","error":"no_update","error_code":"E_NO_UPDATE","log":"Обновлений нет"}\n'
+    exit 0
+    ;;
+  *)
+    _json_headers
+    printf '{"ok":false,"status":"error","error":"check_stale","error_code":"E_CHECK_STALE","log":"Сведения об обновлении устарели — нажмите «Проверить»"}\n'
+    exit 0
+    ;;
+esac
 
 _json_headers
 

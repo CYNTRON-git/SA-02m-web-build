@@ -1,6 +1,6 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves.
+# comment-mutation-proof-exempt: behavioural harness - every guarantee is asserted by RUNNING the shipped code in a sandbox (files written, shim invocations, exit codes), so a commented-out line changes the measured behaviour instead of hiding behind a needle grep; its source-text greps are extraction/retarget sanity guards on its own scratch copy, which abort the run when the shipped block moves. One deliberate static pin outside that rule: case 13c reads the ORDER of two live lines in scripts/12-docker.sh (capture before the package install) comment-stripped through lib_check.sh; commenting either line out is already RED under installer-svc-policy-gate (d) / the module's own apply, and an order has no comment-out form, so no case is registered for it.
 # test-installer-svc-helpers.sh — regression harness for the installer's
 # service-state helpers (scripts/lib.sh: sa02m_svc_capture / sa02m_svc_apply /
 # sa02m_svc_kick / sa02m_pkg_install_tier thirdparty / sa02m_pip_install) and
@@ -718,6 +718,45 @@ reset_case
 seed ria3.service enabled active 100
 SA02M_ROOTFS_BUILD=1 sa02m_svc_restart_if_active ria3.service
 [ -z "$(verbs ria3.service)" ]     && ok "restart-if-active: ROOTFS build ⇒ no runtime restart"     || bad "restart-if-active in ROOTFS made calls: '$(verbs ria3.service)'"
+
+echo "── 13. first install of a package that lays AND starts its own unit (12-docker.sh order) ──"
+# docker.io's postinst writes the unit file and enables+starts it. `absent` —
+# the only first-install signal — needs no unit file on disk, so the capture
+# must run BEFORE the package install; a capture after it sees enabled+active
+# and the never-widen preserve branch keeps the package's autostart (audit
+# 2026-09-08, D3: «Docker по умолчанию выключен» was false on fresh installs).
+# 13a. capture BEFORE the package: absent → app off ⇒ disable + stop
+reset_case
+seed pkg.service - inactive                 # nothing on disk yet
+sa02m_svc_capture pkg.service
+seed pkg.service enabled active 100         # the package lands: postinst enabled + started it
+sa02m_svc_apply pkg.service app off norestart --stack=DOCKER
+[ "$(verbs pkg.service)" = "disable stop" ] && [ "$SA02M_SVC_LAST_RESULT" = left-inactive ] \
+    && has_log "первая установка — выключен по умолчанию" \
+    && ok "13a first install, capture BEFORE the package: app off ⇒ disable+stop, LAST_RESULT=left-inactive" \
+    || bad "13a capture-before-package: verbs='$(verbs pkg.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT (log: $LOGCAP)"
+# 13b. the defect shape — capture AFTER the package ⇒ preserve branch, autostart kept
+reset_case
+seed pkg2.service enabled active 100
+sa02m_svc_capture pkg2.service
+sa02m_svc_apply pkg2.service app off norestart --stack=DOCKER
+if [ -z "$(verbs pkg2.service)" ] && [ "$SA02M_SVC_LAST_RESULT" = kept ]; then
+    ok "13b capture AFTER the package: apply preserves enabled+active (zero calls) — why the order in 12-docker.sh matters"
+else
+    bad "13b capture-after-package: verbs='$(verbs pkg2.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT"
+fi
+# 13c. the shipped module keeps that order: capture line precedes the package install line
+if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_first_line >/dev/null; then
+    cap_line=$(stripped_first_line scripts/12-docker.sh 'sa02m_svc_capture docker\.service')
+    pkg_line=$(stripped_first_line scripts/12-docker.sh 'sa02m_pkg_install_tier thirdparty docker\.io')
+    if [ -n "$cap_line" ] && [ -n "$pkg_line" ] && [ "$cap_line" -lt "$pkg_line" ]; then
+        ok "13c scripts/12-docker.sh captures docker.service (line $cap_line) BEFORE the package install (line $pkg_line)"
+    else
+        bad "13c scripts/12-docker.sh order: capture line='$cap_line' package-install line='$pkg_line' — a first install cannot end disabled"
+    fi
+else
+    bad "13c .ai-dev/quality/checks/lib_check.sh could not be sourced — the 12-docker.sh order was NOT verified (a skip is not a pass)"
+fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then

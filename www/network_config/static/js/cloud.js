@@ -97,18 +97,24 @@ let _cloudCopyToastTimer = null;
 // first poll. Gates the online connect actions — see cloudApplyReachability.
 let _cloudReachable = null;
 
-function cloudSetMsg(text, ok) {
-  const msg = $('cloud-msg');
+function cloudHideCardMsg(id) {
+  const msg = $(id);
   if (!msg) return;
-  if (!text) {
-    msg.hidden = true;
-    msg.textContent = '';
-    msg.className = 'cloud-msg';
-    return;
-  }
-  msg.hidden = false;
-  msg.textContent = text;
-  msg.className = 'cloud-msg ' + (ok ? 'is-ok' : 'is-err');
+  msg.hidden = true;
+  msg.textContent = '';
+  msg.className = 'cloud-msg';
+}
+
+function cloudNotice(text, ok) {
+  cloudHideCardMsg('cloud-msg');
+  if (!text) return;
+  if (typeof cardNotice === 'function') cardNotice(text, ok);
+  else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
+}
+
+// Pairing / agent / token action feedback — viewport toast, never #cloud-msg.
+function cloudSetMsg(text, ok) {
+  cloudNotice(text, ok);
 }
 
 function cloudSetBadgeEl(el, text, kind) {
@@ -210,34 +216,29 @@ function cloudCtrlErrorText(token) {
   return ru ? uiT(ru) : String(token);
 }
 
-// Its own line (#cloud-ctrl-msg), never the card's #cloud-msg: the pairing
-// actions own that one and the two would overwrite each other. Transient
-// success notices auto-clear, errors stay until the state changes, `ok === null`
-// is a neutral hint - the behaviour that came with the control.
-const CLOUD_CTRL_MSG_TTL_MS = 5000;
-let _cloudCtrlMsgTimer = null;
-
-function cloudCtrlSetMsg(text, ok) {
+// Control-unit notices, by lifetime: ACTION feedback («Сохранено», a toggle
+// error) is a viewport toast like pairing's, so it never grows .ctrl-card; the
+// STANDING explanation of a locked or failed control — «Сначала привяжите
+// устройство к облаку», the error-state line — is owned by cloudRenderControl
+// and lives on the card in #cloud-ctrl-msg for as long as the state does
+// (1.0.6.38 regression, audit C2: a once-per-session toast left a locked
+// button whose only explanation was a hover-only title). Its own line, never
+// the card's #cloud-msg: the pairing actions own that one.
+// The standing card line. `ok` true/false tints it, null is a neutral hint.
+function cloudCtrlSetCardMsg(text, ok) {
   const msg = $('cloud-ctrl-msg');
   if (!msg) return;
-  if (_cloudCtrlMsgTimer) { clearTimeout(_cloudCtrlMsgTimer); _cloudCtrlMsgTimer = null; }
-  if (!text) {
-    msg.hidden = true;
-    msg.textContent = '';
-    msg.className = 'cloud-msg';
-    return;
-  }
+  if (!text) { cloudHideCardMsg('cloud-ctrl-msg'); return; }
   msg.hidden = false;
   msg.textContent = text;
   msg.className = 'cloud-msg' + (ok === null ? '' : (ok ? ' is-ok' : ' is-err'));
-  if (ok === true) {
-    _cloudCtrlMsgTimer = setTimeout(function () {
-      _cloudCtrlMsgTimer = null;
-      const el = $('cloud-ctrl-msg');
-      // Only clear what is still this notice - a newer message owns itself.
-      if (el && !el.hidden && el.textContent === text) cloudCtrlSetMsg('', true);
-    }, CLOUD_CTRL_MSG_TTL_MS);
-  }
+}
+
+// Action feedback for the control — viewport toast.
+function cloudCtrlSetMsg(text, ok) {
+  if (!text) return;
+  if (typeof cardNotice === 'function') cardNotice(text, ok);
+  else if (typeof toast === 'function') toast(text, ok === false ? 'error' : (ok === true ? 'success' : 'info'), 5000);
 }
 
 function cloudRenderControl(d) {
@@ -266,14 +267,13 @@ function cloudRenderControl(d) {
     btn.disabled = notEnrolled && !enabled;
     btn.title = notEnrolled ? uiT('Сначала привяжите устройство к облаку') : '';
   }
+  // Standing explanations on the card; the render owns the line each poll.
   if (notEnrolled && !enabled) {
-    cloudCtrlSetMsg(uiT('Сначала привяжите устройство к облаку'), null);
+    cloudCtrlSetCardMsg(uiT('Сначала привяжите устройство к облаку'), null);
   } else if (enabled && entry[1] === 'err' && cc.error) {
-    cloudCtrlSetMsg(uiT(entry[0]) + ': ' + cloudCtrlErrorText(cc.error), false);
+    cloudCtrlSetCardMsg(uiT(entry[0]) + ': ' + cloudCtrlErrorText(cc.error), false);
   } else {
-    const msg = $('cloud-ctrl-msg');
-    // Leave a transient «Сохранено» in place; clear only our own hint/error.
-    if (msg && !msg.classList.contains('is-ok')) cloudCtrlSetMsg('', true);
+    cloudCtrlSetCardMsg('', true);
   }
 }
 

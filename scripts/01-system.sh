@@ -111,6 +111,12 @@ sa02m_pkg_install_tier required nginx fcgiwrap openssl
 sa02m_pkg_install_tier optional net-tools psmisc exfatprogs \
     i2c-tools gpiod libgpiod2 python3-libgpiod \
     python3-paho-mqtt python3-yaml python3-serial
+# Ubuntu 24.04 / gpiod 2.x renamed the shared lib (libgpiod2 → libgpiod3).
+# A missing name is optional WARN, not a module abort; try the successor
+# only when the bookworm/bullseye package is absent.
+if ! dpkg -l libgpiod2 2>/dev/null | grep -q "^ii"; then
+    sa02m_pkg_install_tier optional libgpiod3
+fi
 
 # ── User hmi ──────────────────────────────────────────────────────────────
 if ! id hmi &>/dev/null; then

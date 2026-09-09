@@ -1,6 +1,6 @@
 /* SA-02m MQTT tab — v1.0 */
 
-import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.29';
+import { AI_SENSOR_LABELS } from './ai-sensors.js?v=1.0.6.39';
 
 
 function uiT(s) {
@@ -122,6 +122,7 @@ function scanShortName(scanDev, type) {
   }
   if (type === 'dtv') return 'ДТВ-RS-485';
   if (type === 'ce02m3') return 'СЭ-02м-3';
+  if (type === 'led') return 'LED';
   if (scanDev.signature) return String(scanDev.signature).trim();
   return `Устройство ${addr}`;
 }
@@ -155,6 +156,7 @@ function scanTypeHint(dev) {
   }
   if (dev.type === 'dtv') return 'ДТВ-RS-485';
   if (dev.type === 'ce02m3') return 'СЭ-02м-3';
+  if (dev.type === 'led') return 'LED';
   const tn = (dev.type_name || '').trim();
   const sig = (dev.signature || '').trim();
   if (tn && tn !== 'unknown' && sig && normalizeSigKey(tn) !== normalizeSigKey(sig)) {
@@ -348,6 +350,7 @@ function makeDeviceId(type, port, addr) {
   let prefix;
   if (type === 'dtv') prefix = 'dtv';
   else if (type === 'ce02m3') prefix = 'ce02m3';
+  else if (type === 'led') prefix = 'led';
   else if (type === 'template') {
     // Prefix by the picked template name so the id reads like the device family.
     const tEl = document.getElementById('mqtt-add-template');
@@ -1212,9 +1215,47 @@ async function prefetchDeviceLive(devId) {
   const dev = (_config.devices || []).find(d => d.id === devId);
   if (dev) refreshAiTypeSelects(dev);
   refreshLiveCellsForDevice(devId);
+  if (dev) renderModuleTypeMismatch(dev);
   sweepDoPending(devId);
   sweepAoPending(devId);
   return data;
+}
+
+/** Тип модуля, о котором сообщил сам модуль: мост публикует control
+    `module_type` сигнатурой («6DO8DI») после автодетекта по input-регистру 0. */
+function detectedModuleTypeCode(devId) {
+  const rec = _liveByDevice[devId] && _liveByDevice[devId].module_type;
+  const raw = rec && !rec.isError ? rec.value : '';
+  if (!raw) return null;
+  const n = Number(raw);
+  if (n && MR02M_TYPES[n]) return n;
+  return inferModuleTypeFromName(raw);
+}
+
+/** Плашка о расхождении YAML и опроса — случай mr02m-COM3-10 на стенде 1.135
+    (YAML 16ДО, модуль ответил 6ДО 8ДИ): каналы вкладки рисуются по YAML, и без
+    этой строки расхождение выглядит как «у модуля нет ДО». Автозаписи нет
+    (never-widen): тип правит оператор. Текст сравнивается перед вставкой —
+    live-опрос идёт каждые 1,5 с и не должен перерисовывать плашку. */
+function renderModuleTypeMismatch(dev) {
+  const body = document.getElementById(`acc-body-${dev.id}`);
+  if (!body) return;
+  const existing = body.querySelector('.mqtt-mt-warn');
+  const detected = dev.type === 'mr02m' ? detectedModuleTypeCode(dev.id) : null;
+  const yamlCode = getModuleTypeCode(dev);
+  if (!detected || detected === yamlCode || !MR02M_TYPES[detected]) {
+    if (existing) existing.remove();
+    return;
+  }
+  const name = (code) => (MR02M_TYPES[code] ? MR02M_TYPES[code].name : String(code));
+  const text = `${uiT('Тип модуля в YAML')}: ${mr02mTypeLabelRu(yamlCode)} (${name(yamlCode)}); ` +
+    `${uiT('модуль ответил')}: ${mr02mTypeLabelRu(detected)} (${name(detected)}). ` +
+    uiT('Каналы ниже нарисованы по YAML — исправьте тип модуля и сохраните.');
+  if (existing) {
+    if (existing.textContent !== text) existing.textContent = text;
+    return;
+  }
+  body.insertBefore(h('div', {'class': 'mqtt-mt-warn', 'role': 'status'}, text), body.firstChild);
 }
 
 function stopUptimeTick() {
@@ -1674,7 +1715,7 @@ function onPollConfigChanged(devId) {
 }
 
 function deviceTypeBadge(type) {
-  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', template:'Шаблон'};
+  const labels = {mr02m:'МР-02м', dtv:'ДТВ-RS-485', ce02m3:'СЭ-02м-3', led:'LED', template:'Шаблон'};
   return h('span', {'class':'badge badge-info'}, labels[type] || type);
 }
 
@@ -2236,7 +2277,7 @@ function renderScanResults(port, baud, devices) {
   for (const dev of devices) {
     const devType = (dev.type === 'unknown') ? 'mr02m' : (dev.type || 'mr02m');
     const typeSelect = h('select', {'class': 'mqtt-select-small'});
-    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3']]) {
+    for (const [val, lbl] of [['mr02m','МР-02м'], ['dtv','ДТВ-RS-485'], ['ce02m3','СЭ-02м-3'], ['led','LED']]) {
       const opt = h('option', {value: val}, lbl);
       if (val === devType) opt.selected = true;
       typeSelect.appendChild(opt);
@@ -2331,6 +2372,11 @@ function addDeviceFromScan(scanDev, type, name, port, baud) {
     dev.fast_modbus = false;
     dev.poll_power_s = 1; dev.poll_energy_s = 60; dev.poll_diag_s = 120;
     dev.ct_ratio = 4000; dev.phases = ['A','B','C']; dev.channels_enabled = {};
+  } else if (type === 'led') {
+    // PlayCtrl 416 + colour; text block is slower. Same baud as the COM's
+    // other devices — mixed baud on one port is unsupported.
+    dev.poll_s = 2;
+    dev.poll_text_s = 30;
   }
 
   _config.devices.push(dev);
@@ -2484,6 +2530,9 @@ function confirmAddDevice() {
     dev.ct_ratio = 4000;
     dev.phases = ['A','B','C'];
     dev.channels_enabled = {};
+  } else if (type === 'led') {
+    dev.poll_s = 2;
+    dev.poll_text_s = 30;
   }
 
   _config.devices.push(dev);

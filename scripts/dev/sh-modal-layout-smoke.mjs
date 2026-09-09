@@ -73,6 +73,27 @@
    `inverted: true`, unticked drops the KEY (never `false`). Rationale and its
    two hand-run mutations are at the pass itself.
 
+   Fifth (inside runPicker, 1.0.6.39, audit C4): a channel whose topic carries
+   `"` and the audit's verbatim onfocus/autofocus payload (INJECT_TAG) is
+   rendered, picked and rebuilt through shAddRow — asserted on the PARSED DOM:
+   one button, exact data-topic and title, no onfocus/autofocus anywhere in the
+   two modals, window.__PWNED never set. PROVEN RED against the pristine
+   1.0.6.38 bundles (SH_MODAL_SMOKE_WWW=<git archive HEAD copy>): 4 failures —
+   data-topic truncated to `…/controls/x` (0 buttons match), 2 onfocus/
+   autofocus attributes parsed inside the modals, and both round-trips lost
+   the tail of the topic. The handler itself did not fire in this flow (an
+   autofocus on a node inserted after load does not focus); the audit's PoC
+   fired it by focusing — the parsed attributes are the defect either way.
+   GREEN once every attribute site uses escAttr() (app.js). The static half
+   is the registry row no-eschtml-in-attr.
+
+   Sixth (runInventoryHang, 1.0.6.39, audit C7): the inventory route is never
+   fulfilled; the default binding row must still be seeded (at the fetch
+   budget, measured) and the picker must fall back to hand entry. PROVEN RED
+   on the same pristine copy: no row after 12 014 ms (the fallback check is
+   then unreachable); GREEN with fetchWithTimeout + the seed in a `finally`
+   (smarthome.js shTopics / shOpenModal).
+
    Harness: the standing Playwright install under scripts/dev (npm run
    ui-layout:install — the same chromium ui-layout and cloud-card-smoke reuse;
    no new dependency). Dev-only; never shipped to the device.
@@ -126,8 +147,12 @@ if (ROOMS.length !== ROOM_COUNT) die(1, `${TAG}: ERROR — the room fixture drif
 // prefix every board offers — the reason the topic select's width is a
 // legibility floor and not a taste call.
 const TOPIC_A = '/devices/SA-02m/controls/alarm_led';
-const TOPIC_B = '/devices/SA-02m/controls/relay2';
+const TOPIC_B = '/devices/SA-02m/controls/do';
 if (TOPIC_A === TOPIC_B) die(1, `${TAG}: ERROR — the two topic fixtures are identical; the legibility check would be vacuous`);
+// The bench module and the one channel of it that is already bound — so the
+// picker's «занят» marking is proven against a real stored binding.
+const MODULE_ID = 'mr02m-COM3-10';
+const BUSY_TOPIC = '/devices/' + MODULE_ID + '/controls/do_1';
 const DEVICES = Array.from({ length: DEVICE_COUNT }, (_, i) => ({
   id: 'dev' + (i + 1),
   // Device 1 is the bench siren: a real on/off binding with the stored
@@ -140,6 +165,11 @@ const DEVICES = Array.from({ length: DEVICE_COUNT }, (_, i) => ({
   capabilities: [i === 0
     ? { type: 'devices.capabilities.on_off', mqtt: TOPIC_A, parameters: { instance: 'on' }, inverted: true }
     : { type: 'devices.capabilities.on_off', topic: '/devices/SA-02m/controls/relay' + i }],
+  // Device 2 holds the module's DO1 — the stored binding the picker marks as
+  // «занят» (a managed item, so shDetectRows really sees it).
+  properties: i === 1
+    ? [{ type: 'devices.properties.float', mqtt: BUSY_TOPIC, parameters: { instance: 'temperature', unit: 'unit.temperature.celsius' } }]
+    : [],
 }));
 // The status payload app/alice.js polls; smarthome.js rides it (sa02mAliceOnData).
 const ALICE = {
@@ -151,6 +181,98 @@ const ALICE = {
   devices: { devices: DEVICES, rooms: ROOMS },
 };
 const TOPICS = { topics: [TOPIC_A, TOPIC_B] };
+// The STRUCTURED inventory the picker asks for (`?format=inventory`) — the
+// bench 1.135 case: `mr02m-COM3-10` is declared 16DO in the bridge yaml and
+// answered 6DO8DI at register 0, so the picker must offer 6 DO + 8 DI (the
+// yaml alone offered ONE topic for the whole module) and say which type it
+// followed. Plus the board's own four controls, always present.
+const CH = (tag, title, rw, extra) => Object.assign(
+  { tag, topic: '/devices/mr02m-COM3-10/controls/' + tag, title, rw, enabled: true, sub: [] },
+  extra || {});
+const CTRL_CH = (tag, title, rw) => ({
+  tag, topic: '/devices/SA-02m/controls/' + tag, title, rw, enabled: true, sub: [],
+});
+const LED_ID = 'led-COM3-13';
+const LED_CH = (tag, title, rw) => ({
+  tag, topic: '/devices/' + LED_ID + '/controls/' + tag, title, rw, enabled: true, sub: [],
+});
+const MODULE_DO = 6;
+const MODULE_DI = 8;
+// A topic carrying `"` (audit 2026-09-08 C4): the inventory's strings come from
+// the bridge's live cache, which the LAN broker feeds — so the picker MUST treat
+// them as attribute-hostile. This tag is the verbatim attribute-injection
+// payload the audit executed against the 1.0.6.38 escHtml() picker: rendered
+// into `data-topic="…"` unescaped it closes the attribute and adds onfocus +
+// autofocus, and Chromium runs the handler.
+const INJECT_TAG = 'x" onfocus="window.__PWNED=1" autofocus="y';
+const INJECT_TOPIC = '/devices/SA-02m/controls/' + INJECT_TAG;
+const INVENTORY = {
+  ok: true,
+  source: '/etc/sa02m-modbus-mqtt.yaml',
+  devices: [
+    {
+      id: MODULE_ID, name: '', type: 'mr02m',
+      model: '6DO8DI', model_ru: '6ДО 8ДИ',
+      model_source: 'detected', yaml_model: '16DO',
+      port: 'COM3', address: 10,
+      channels: {
+        di: Array.from({ length: MODULE_DI }, (_, i) => CH('di_' + (i + 1), 'DI' + (i + 1), 'r', {
+          sub: [{
+            tag: 'di_' + (i + 1) + '_count',
+            topic: '/devices/' + MODULE_ID + '/controls/di_' + (i + 1) + '_count',
+            title: 'DI' + (i + 1) + ': счётчик импульсов', rw: 'r', enabled: true, sub: [],
+          }],
+        })),
+        do: Array.from({ length: MODULE_DO }, (_, i) => CH('do_' + (i + 1), 'DO' + (i + 1), 'rw')),
+        ai: [], ao: [], other: [],
+        diag: [CH('mcu_temp', 'Температура МК', 'r')],
+      },
+    },
+    // The LED driver, exactly as the board serves it: its controls carry NO
+    // human title (there is no offline Russian name for `power` / `led_count`),
+    // so `title === tag` and the tag is not a `<kind>_<n>` one. That pair is
+    // what rendered anonymous rows on bench 1.135 — hence LED_ANON below.
+    {
+      id: LED_ID, name: 'LED (COM3 addr=13)', type: 'led',
+      model: 'LED', model_ru: '', model_source: '', yaml_model: '',
+      port: 'COM3', address: 13,
+      channels: {
+        di: [1, 2, 3, 4].map((n) => LED_CH('di_' + n, 'DI' + n, 'r')),
+        do: [], ai: [], ao: [],
+        other: [
+          LED_CH('power', 'power', 'rw'),
+          LED_CH('brightness', 'brightness', 'rw'),
+          LED_CH('led_count', 'led_count', 'r'),
+        ],
+        diag: [],
+      },
+    },
+    {
+      id: 'SA-02m', name: 'Контроллер SA-02m', type: 'controller',
+      model: 'SA-02m', model_ru: '', model_source: '', yaml_model: '',
+      port: '', address: null,
+      channels: {
+        di: [], do: [], ai: [], ao: [],
+        other: [
+          CTRL_CH('do', 'Дискретный выход', 'rw'),
+          CTRL_CH('beeper', 'Пищалка контроллера', 'rw'),
+          CTRL_CH('alarm_led', 'Светодиод «Авария»', 'rw'),
+          CTRL_CH('temp_c', 'Температура платы', 'r'),
+          CTRL_CH(INJECT_TAG, 'Реле "A" (кавычки в имени)', 'rw'),
+        ],
+        diag: [],
+      },
+    },
+  ],
+  count: 3,
+};
+function stubBody(url) {
+  if (/sa02m_alice_api\.cgi/.test(url)) return JSON.stringify(ALICE);
+  if (/sa02m_alice_topics\.cgi/.test(url)) {
+    return JSON.stringify(/format=inventory/.test(url) ? INVENTORY : TOPICS);
+  }
+  return '{}';
+}
 
 let failures = 0;
 let assertions = 0;
@@ -340,6 +462,64 @@ async function runMqttAnchoring(browser, base) {
   return renders;
 }
 
+/* ── Shared picker helpers ────────────────────────────────────────────────── */
+// The row's binding button as the operator sees it: its label, the part of
+// that label the button can actually SHOW at its own font and content width,
+// and the topic the hidden input carries.
+function readBinding(page, index = 0) {
+  return page.evaluate((i) => {
+    const row = document.querySelectorAll('#sh-rows .sh-bind-row')[i];
+    const btn = row && row.querySelector('.sh-row-bind');
+    const input = row && row.querySelector('.sh-row-topic');
+    if (!btn) return null;
+    const cs = getComputedStyle(btn);
+    const inner = btn.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ctx2d = document.createElement('canvas').getContext('2d');
+    ctx2d.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const label = (btn.textContent || '').trim();
+    let visible = '';
+    for (const ch of label) {
+      if (ctx2d.measureText(visible + ch).width > inner) break;
+      visible += ch;
+    }
+    return {
+      label, visible,
+      width: +btn.getBoundingClientRect().width.toFixed(1),
+      inner: +inner.toFixed(1),
+      topic: input ? input.value : '',
+      unknown: btn.classList.contains('is-unknown'),
+    };
+  }, index);
+}
+
+async function openPicker(page, index = 0) {
+  await page.evaluate((i) => {
+    document.querySelectorAll('#sh-rows .sh-bind-row')[i].querySelector('.sh-row-bind').click();
+  }, index);
+  await page.waitForFunction(
+    () => !document.getElementById('sh-pick-modal').hasAttribute('hidden'), null, { timeout: 8000 });
+  await page.waitForSelector('#sh-pick-list', { state: 'attached' });
+}
+
+// A REAL click on the channel row, expanding its device card first if the
+// picker did not open on it — the operator's path, not a JS assignment.
+async function pickTopic(page, topic, index = 0) {
+  await openPicker(page, index);
+  await page.evaluate((t) => {
+    const sel = '#sh-pick-list button[data-act="ch"][data-topic="' + t + '"]';
+    if (!document.querySelector(sel)) {
+      const owner = t.split('/')[2];
+      const head = document.querySelector('.sh-pick-dev[data-id="' + owner + '"] button[data-act="dev"]');
+      if (head) head.click();
+    }
+    const btn = document.querySelector(sel);
+    if (!btn) throw new Error('channel not offered by the picker: ' + t);
+    btn.click();
+  }, topic);
+  await page.waitForFunction(
+    () => document.getElementById('sh-pick-modal').hasAttribute('hidden'), null, { timeout: 8000 });
+}
+
 /* ── The add/edit form: pane fit AND topic legibility, gated together ──────
    These two pull against each other, and gating only one is how the 1.0.6.29
    review found a regression: «Инвертировать» started life on the binding row,
@@ -351,9 +531,12 @@ async function runMqttAnchoring(browser, base) {
    here, in the TALLEST state (editing an on/off device: icon picker and the
    invert field both showing):
      * the actions pane needs no scroll and «Сохранить» sits inside its box;
-     * two different real topics render DIFFERENTLY in the closed select — the
-       visible prefix is measured with canvas measureText at the select's own
-       computed font, inside its real content box.
+     * two different real bindings render DIFFERENTLY on the row's binding
+       BUTTON (a <select> of raw paths until 1.0.6.38) — the visible prefix is
+       measured with canvas measureText at the button's own computed font,
+       inside its real content box, and the label must not be the raw topic:
+       the two fixtures share the 25-character `/devices/SA-02m/controls/`
+       prefix, which is exactly what made the old select unreadable.
    Mutation proof — run by hand, SEEN RED (1.0.6.29 review round): put the
    checkbox back on the binding row (the `.sh-bind-row` label markup plus
    `.sh-row-inv { flex: 1 1 100% }`) → exit 1, 4 failures, one per wide viewport
@@ -373,12 +556,9 @@ async function runActionsForm(browser, base) {
       const page = await ctx.newPage();
       const errors = [];
       page.on('pageerror', (e) => errors.push(String(e)));
-      await page.route('**/cgi-bin/**', (r) => {
-        const url = r.request().url();
-        const body = /sa02m_alice_api\.cgi/.test(url) ? JSON.stringify(ALICE)
-          : /sa02m_alice_topics\.cgi/.test(url) ? JSON.stringify(TOPICS) : '{}';
-        return r.fulfill({ status: 200, contentType: 'application/json', body });
-      });
+      await page.route('**/cgi-bin/**', (r) => r.fulfill({
+        status: 200, contentType: 'application/json', body: stubBody(r.request().url()),
+      }));
       await page.goto(`${base}/index.html`, { waitUntil: 'load' });
       if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
       await page.evaluate(() => window.shOpenModal());
@@ -389,8 +569,8 @@ async function runActionsForm(browser, base) {
       await page.waitForTimeout(200);
       renders++;
 
-      console.log(`\n[${vp.name} ${vp.width}x${vp.height} ${theme}] add/edit form — pane fit + topic legibility`);
-      const g = await page.evaluate(([a, b]) => {
+      console.log(`\n[${vp.name} ${vp.width}x${vp.height} ${theme}] add/edit form — pane fit + binding legibility`);
+      const g = await page.evaluate(() => {
         const act = document.querySelector('#sh-modal .sh-col-actions');
         const save = document.getElementById('sh-dev-save');
         const inv = document.getElementById('sh-inv-field');
@@ -401,18 +581,6 @@ async function runActionsForm(browser, base) {
         if (!act || !save || !inv || !topic) return { missing: true };
         const ar = act.getBoundingClientRect();
         const sr = save.getBoundingClientRect();
-        const tr = topic.getBoundingClientRect();
-        const cs = getComputedStyle(topic);
-        // What the CLOSED select can actually show, at its own font: the arrow
-        // and the horizontal padding are not text space.
-        const inner = topic.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 18;
-        const ctx2d = document.createElement('canvas').getContext('2d');
-        ctx2d.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-        const visible = (s) => {
-          let out = '';
-          for (const ch of s) { if (ctx2d.measureText(out + ch).width > inner) break; out += ch; }
-          return out;
-        };
         // scrollHeight FLOORS at clientHeight, so it can only say "fits" — never
         // by how much. The true extent is the last laid-out child's bottom (plus
         // its margin) against the pane's content top; that is what shows whether
@@ -430,10 +598,8 @@ async function runActionsForm(browser, base) {
           invVisible: !inv.hidden && inv.getBoundingClientRect().height > 0,
           invChecked: !!(invBox && invBox.checked),
           kind: kind ? kind.value : '',
-          topicWidth: +tr.width.toFixed(1), topicInner: +inner.toFixed(1),
-          visibleA: visible(a), visibleB: visible(b),
         };
-      }, [TOPIC_A, TOPIC_B]);
+      });
       check(!g.missing, 'the add/edit form and its controls are present');
       if (!g.missing) {
         check(g.kind === 'switch' && g.invVisible && g.invChecked,
@@ -443,8 +609,22 @@ async function runActionsForm(browser, base) {
         check(g.paneHeadroom >= PANE_HEADROOM_MIN,
           `the fit has a real margin, not a pixel: ${g.paneHeadroom} px headroom (floor ${PANE_HEADROOM_MIN})`);
         check(g.saveInside, '«Сохранить» is inside the pane without scrolling');
-        check(g.visibleA !== g.visibleB,
-          `two real topics are distinguishable in the CLOSED select (${g.topicWidth} px wide): "${g.visibleA}" vs "${g.visibleB}"`);
+        // What the BUTTON can show at its own font and real content width —
+        // the same question the closed select used to be asked.
+        const a = await readBinding(page);
+        check(!!a && a.topic === TOPIC_A,
+          `precondition — the row is bound to the stored topic (${a && a.topic})`);
+        check(!!a && a.label.indexOf('/devices/') !== 0 && a.label.length > 0,
+          `the button names the channel, not the raw path ("${a && a.label}")`);
+        // Re-bind through the real picker: TOPIC_B is another control of the
+        // same device, so both labels share their leading words — the honest
+        // hard case for a one-line button.
+        await pickTopic(page, TOPIC_B);
+        const b = await readBinding(page);
+        check(!!b && b.topic === TOPIC_B,
+          `the picker really re-bound the row (${b && b.topic})`);
+        check(!!a && !!b && a.visible !== b.visible,
+          `two real bindings are distinguishable on the button (${b && b.width} px wide): "${a && a.visible}" vs "${b && b.visible}"`);
       }
       check(errors.length === 0, `add/edit form: no page errors (${errors.join(' | ')})`);
       await page.locator('#sh-modal .sh-col-actions').screenshot({ path: join(SHOTS, `sh-modal-form-${vp.name}-${theme}.png`) });
@@ -501,9 +681,7 @@ async function runInvertSave(browser, base) {
         return r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
       }
     }
-    const body = isApi ? JSON.stringify(ALICE)
-      : /sa02m_alice_topics\.cgi/.test(url) ? JSON.stringify(TOPICS) : '{}';
-    return r.fulfill({ status: 200, contentType: 'application/json', body });
+    return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
   });
   await page.goto(`${base}/index.html`, { waitUntil: 'load' });
   await page.evaluate(() => window.shOpenModal());
@@ -561,6 +739,328 @@ async function runInvertSave(browser, base) {
   return 1;
 }
 
+/* ── The channel picker (#sh-pick-modal) ──────────────────────────────────
+   What it closes: the bench 1.135 defect this pass was written for — the
+   binding row was a <select> of raw topic paths, filled from the bridge yaml
+   ALONE. `mr02m-COM3-10` carries no `channels` block there and a wrong
+   `module_type: 2` (16DO), while the module answers 6DO8DI: the operator was
+   offered ONE option (`mcu_temp`) for a module with 6 DO and 8 DI, and the
+   two DO bindings that did work were only selectable because the row appended
+   the already-stored topic to the list.
+
+   Asserted on the SHIPPED bundles, against the inventory the CGI now serves:
+     * the module's full channel set is offered — 6 DO and 8 DI, from the
+       DETECTED type, not the yaml's 16DO — and the card says which it
+       followed («YAML: 16DO · обнаружено: 6DO8DI»);
+     * groups render in the DI → DO → AI → AO order inside a device, with the
+       reading kind's preferred group first and «Диагностика» collapsed;
+     * one device is expanded at a time (opening the second collapses the
+       first) — the phone behaviour, one tap back;
+     * search flattens the tree and matches the module, the COM/address and
+       the channel number;
+     * an already-bound channel is MARKED «занят» and stays clickable;
+     * a stored topic outside the inventory keeps its own label and is not
+       silently dropped (the round-trip invariant);
+     * `ok:false` from the CGI falls back to hand entry with the binding
+       intact (fail-closed), never to an empty picker.
+   Geometry-free, so it runs once, at the first wide viewport. */
+async function runPicker(browser, base) {
+  const vp = VIEWPORTS.find((v) => v.wide) || VIEWPORTS[0];
+  const ctx = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+  await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  let inventoryOk = true;
+  await page.route('**/cgi-bin/**', (r) => {
+    const url = r.request().url();
+    if (!inventoryOk && /format=inventory/.test(url)) {
+      return r.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":false,"error":"topics_failed"}' });
+    }
+    return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
+  });
+  await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+  await page.evaluate(() => window.shOpenModal());
+  await page.waitForFunction((n) => document.querySelectorAll('#sh-device-list .sh-dev-row').length === n,
+    DEVICE_COUNT, { timeout: 8000 });
+  // Edit the siren: a real stored binding, so the picker opens on its device.
+  await page.evaluate(() => document.querySelector('#sh-device-list .sh-dev-row[data-id="dev1"] button[data-act="edit"]').click());
+  await page.waitForTimeout(150);
+
+  console.log(`\n[${vp.name} ${vp.width}x${vp.height}] channel picker — inventory, grouping, search, «занят»`);
+  await openPicker(page);
+  const tree = await page.evaluate((mod) => {
+    const cards = [...document.querySelectorAll('.sh-pick-dev')];
+    const head = document.querySelector('.sh-pick-dev[data-id="' + mod + '"] button[data-act="dev"]');
+    head.click();
+    const card = document.querySelector('.sh-pick-dev[data-id="' + mod + '"]');
+    const groups = [...card.querySelectorAll('.sh-pick-group')].map((g) => ({
+      label: g.querySelector('.sh-pick-group-head').textContent.trim(),
+      pref: !!g.querySelector('.sh-pick-pref'),
+      collapsed: g.classList.contains('is-collapsed'),
+      tags: [...g.querySelectorAll(':scope > .sh-pick-group-body > .sh-pick-ch-wrap > .sh-pick-ch-line > button[data-act="ch"]')]
+        .map((b) => (b.getAttribute('data-topic') || '').split('/').pop()),
+    }));
+    return {
+      cards: cards.map((c) => c.getAttribute('data-id')),
+      expanded: [...document.querySelectorAll('.sh-pick-dev.is-open')].map((c) => c.getAttribute('data-id')),
+      mismatch: (card.querySelector('.sh-pick-mismatch') || {}).textContent || '',
+      badges: [...card.querySelectorAll('.sh-pick-badge')].map((b) => b.textContent.trim()),
+      groups,
+      busy: [...card.querySelectorAll('button[data-act="ch"].is-busy')]
+        .map((b) => (b.getAttribute('data-topic') || '')),
+      busyText: (card.querySelector('.sh-pick-ch-busy') || {}).textContent || '',
+      subToggles: card.querySelectorAll('.sh-pick-subs-toggle').length,
+    };
+  }, MODULE_ID);
+  const byKey = (k) => tree.groups.find((g) => g.tags.some((t) => t.indexOf(k + '_') === 0));
+  const dos = byKey('do');
+  const dis = byKey('di');
+  check(tree.cards.length === INVENTORY.devices.length,
+    `precondition — every inventory device has a card (${tree.cards.join(', ')})`);
+  check(tree.expanded.length === 1 && tree.expanded[0] === MODULE_ID,
+    `one device expanded at a time — the module, and only it (${tree.expanded.join(', ') || 'none'})`);
+  check(!!dos && dos.tags.length === MODULE_DO,
+    `the DETECTED type's ${MODULE_DO} DO channels are offered, not the yaml's 16 (${dos ? dos.tags.join(',') : 'no DO group'})`);
+  check(!!dis && dis.tags.length === MODULE_DI,
+    `all ${MODULE_DI} DI channels are offered (${dis ? dis.tags.length : 0})`);
+  check(/16DO/.test(tree.mismatch) && /6DO8DI/.test(tree.mismatch),
+    `the card names the yaml/detected disagreement ("${tree.mismatch.trim()}")`);
+  check(tree.badges.some((b) => /6 DO/.test(b)) && tree.badges.some((b) => /8 DI/.test(b)),
+    `the collapsed card already says what the module is (${tree.badges.join(' · ')})`);
+  check(!!dos && dos.tags.join(',') === Array.from({ length: MODULE_DO }, (_, i) => 'do_' + (i + 1)).join(','),
+    `channels ascend inside a group (${dos ? dos.tags.join(',') : ''})`);
+  // The order is the terminal block's, DI first — fixed, whatever the kind is.
+  check(tree.groups.length >= 3
+    && /входы/i.test(tree.groups[0].label) && /выходы/i.test(tree.groups[1].label)
+    && /Диагностика/i.test(tree.groups[2].label),
+    `groups keep the fixed DI → DO → … order (${tree.groups.map((g) => g.label.replace(/[▾▸]/g, '').trim()).join(' | ')})`);
+  // The edited row is an on/off binding: DI and DO are its groups, and the
+  // kind marks them without reordering or hiding anything.
+  check(tree.groups[0].pref && tree.groups[1].pref && !tree.groups[2].pref,
+    `the kind marks DI/DO «рекомендуется» and leaves diagnostics unmarked (${tree.groups.map((g) => g.pref).join(',')})`);
+  check(tree.groups.some((g) => /Диагностика/i.test(g.label) && g.collapsed),
+    'the diagnostics group is collapsed');
+  check(tree.busy.length === 1 && tree.busy[0] === BUSY_TOPIC && /занят/.test(tree.busyText),
+    `the channel bound elsewhere is marked and still clickable ("${tree.busyText.trim()}")`);
+  check(tree.subToggles === MODULE_DI,
+    `every DI offers its counters as a collapsed sub-list (${tree.subToggles})`);
+
+  // A row the operator cannot read is not an offer. The tag column exists only
+  // for `<kind>_<n>` channels, so a named control's title is its ONLY label —
+  // print neither and the row is an anonymous «чт/зп» (bench 1.135: the LED
+  // driver's command group). Checked across EVERY device, expanded.
+  const anon = await page.evaluate(async () => {
+    const out = [];
+    const ids = [...document.querySelectorAll('.sh-pick-dev')].map((c) => c.getAttribute('data-id'));
+    for (const id of ids) {
+      // Expanding re-renders the whole list, so the card is re-queried by id:
+      // a click on a detached node never reaches the list's own listener, and
+      // a collapsed card renders no channels — the check would read as passing.
+      const sel = '.sh-pick-dev[data-id="' + id + '"]';
+      if (!document.querySelector(sel).classList.contains('is-open')) {
+        document.querySelector(sel + ' button[data-act="dev"]').click();
+        await new Promise((r) => setTimeout(r, 30));
+      }
+      const open = document.querySelector(sel);
+      const rows = open.querySelectorAll('button[data-act="ch"]');
+      if (!rows.length) out.push(id + ': not expanded');
+      for (const b of rows) {
+        const label = [...b.querySelectorAll('.sh-pick-ch-tag, .sh-pick-ch-title')]
+          .map((s) => s.textContent.trim()).join(' ').trim();
+        if (!label) out.push(b.getAttribute('data-topic'));
+      }
+    }
+    return out;
+  });
+  check(anon.length === 0,
+    `every offered channel carries a label (${anon.length ? anon.join(', ') : 'all named'})`);
+
+  // Attribute context (audit C4): every card is expanded here, so the `"`-
+  // bearing channel is rendered. What is asserted is the PARSED result — the
+  // attributes Chromium actually gave the button, the exact data-topic and
+  // title, and that nothing ran — not the source text of the escaper.
+  const inj = await page.evaluate((t) => {
+    const btns = [...document.querySelectorAll('#sh-pick-list button[data-act="ch"]')]
+      .filter((b) => b.dataset.topic === t);
+    const b = btns[0];
+    return {
+      matches: btns.length,
+      title: b ? b.getAttribute('title') : null,
+      attrs: b ? [...b.attributes].map((a) => a.name).sort().join(' ') : '(no button)',
+      leaked: document.querySelectorAll('#sh-modal [onfocus], #sh-modal [autofocus], #sh-pick-modal [onfocus], #sh-pick-modal [autofocus]').length,
+      executed: window.__PWNED !== undefined,
+    };
+  }, INJECT_TOPIC);
+  check(inj.matches === 1 && inj.title === INJECT_TOPIC,
+    `a topic carrying «"» renders as ONE channel with its exact topic in data-topic and title (${inj.matches} match, title ${JSON.stringify(inj.title)})`);
+  check(inj.leaked === 0 && !inj.executed,
+    `no attribute escapes the quoted value — parsed [${inj.attrs}], onfocus/autofocus in the modals: ${inj.leaked}, handler executed: ${inj.executed}`);
+  await page.locator('#sh-pick-modal .mqtt-modal-dialog').screenshot({ path: join(SHOTS, 'sh-pick-modal.png') });
+
+  // Search: the tree flattens, and the query reaches the COM/address and the
+  // channel number — the words on the module's label plate.
+  const hits = await page.evaluate(async () => {
+    const input = document.getElementById('sh-pick-search');
+    const set = (v) => {
+      input.value = v;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return [...document.querySelectorAll('#sh-pick-list button[data-act="ch"]')]
+        .map((b) => b.getAttribute('data-topic'));
+    };
+    const flat = () => document.querySelectorAll('#sh-pick-list .sh-pick-hit').length;
+    const cards = () => document.querySelectorAll('#sh-pick-list .sh-pick-dev').length;
+    const com = set('COM3 do_4');
+    const comFlat = flat();
+    const addr = set('10');
+    const none = set('нетакогоканала');
+    set('');
+    return { com, comFlat, addr, none, treeCards: cards(), treeFlat: flat() };
+  });
+  check(hits.com.length === 1 && /do_4$/.test(hits.com[0]) && hits.comFlat === 1,
+    `search by COM + channel gives ONE flat hit, not a tree (${hits.com.join(', ')})`);
+  check(hits.addr.length > 1, `search by address matches the module's channels (${hits.addr.length})`);
+  check(hits.none.length === 0, 'a query with no match shows no channels');
+  check(hits.treeCards === INVENTORY.devices.length && hits.treeFlat === 0,
+    `clearing the query returns to the tree (${hits.treeCards} cards, ${hits.treeFlat} flat hits)`);
+
+  // A stored topic no inventory knows: the label keeps it and says so.
+  await page.evaluate(() => window.shPickClose());
+  const ghost = await page.evaluate(() => {
+    const row = document.querySelector('#sh-rows .sh-bind-row');
+    row.querySelector('.sh-row-topic').value = '/devices/gone-away/controls/do_9';
+    window.shAddRow('switch', '/devices/gone-away/controls/do_9', null);
+    const rows = document.querySelectorAll('#sh-rows .sh-bind-row');
+    const btn = rows[rows.length - 1].querySelector('.sh-row-bind');
+    return { label: btn.textContent.trim(), unknown: btn.classList.contains('is-unknown') };
+  });
+  check(/gone-away/.test(ghost.label) && ghost.unknown,
+    `a stored topic outside the inventory keeps its own label ("${ghost.label}")`);
+
+  // The `"`-bearing topic ROUND-TRIPS: picked from the tree it lands verbatim
+  // in the row's hidden input (the value shBindButtonHtml writes into
+  // value="…"), and a row built for it by shAddRow renders the same value
+  // with no attribute leaking out of the binding row either.
+  await openPicker(page);
+  // Reached through the SEARCH (the reopened picker collapses every card, and
+  // a flat hit is the other attribute site the audit named). A truncated
+  // data-topic (the defect) means no hit matches: recorded as a failure
+  // below, never an exception that hides the later passes.
+  const clicked = await page.evaluate((t) => {
+    const input = document.getElementById('sh-pick-search');
+    input.value = 'кавычки';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const b = [...document.querySelectorAll('#sh-pick-list .sh-pick-hit[data-act="ch"]')]
+      .find((x) => x.dataset.topic === t);
+    if (b) b.click();
+    return !!b;
+  }, INJECT_TOPIC);
+  if (clicked) {
+    await page.waitForFunction(
+      () => document.getElementById('sh-pick-modal').hasAttribute('hidden'), null, { timeout: 8000 });
+  } else {
+    await page.evaluate(() => window.shPickClose());
+  }
+  const trip = await page.evaluate((t) => {
+    const first = document.querySelector('#sh-rows .sh-bind-row');
+    window.shAddRow('switch', t, null);
+    const rows = document.querySelectorAll('#sh-rows .sh-bind-row');
+    const added = rows[rows.length - 1];
+    return {
+      picked: first.querySelector('.sh-row-topic').value,
+      pickedTitle: first.querySelector('.sh-row-bind').title,
+      built: added.querySelector('.sh-row-topic').value,
+      leaked: document.querySelectorAll('#sh-rows [onfocus], #sh-rows [autofocus]').length,
+      executed: window.__PWNED !== undefined,
+    };
+  }, INJECT_TOPIC);
+  check(trip.picked === INJECT_TOPIC && trip.pickedTitle === INJECT_TOPIC,
+    `picking the «"» topic stores it verbatim (${JSON.stringify(trip.picked)})`);
+  check(trip.built === INJECT_TOPIC && trip.leaked === 0 && !trip.executed,
+    `a binding row built for the «"» topic keeps it verbatim and leaks no attribute (value ${JSON.stringify(trip.built)}, leaked ${trip.leaked}, executed ${trip.executed})`);
+
+  // Fail-closed: the CGI cannot answer → hand entry, binding intact.
+  inventoryOk = false;
+  await page.evaluate(() => { window.shCloseModal(); window.shOpenModal(); });
+  await page.waitForTimeout(300);
+  await page.evaluate(() => document.querySelector('#sh-device-list .sh-dev-row[data-id="dev1"] button[data-act="edit"]').click());
+  await page.waitForTimeout(150);
+  await openPicker(page);
+  const failClosed = await page.evaluate(() => {
+    const manual = document.getElementById('sh-pick-manual');
+    const input = document.getElementById('sh-pick-manual-in');
+    return {
+      manualShown: !!manual && !manual.hidden,
+      prefilled: input ? input.value : '',
+      bound: document.querySelector('#sh-rows .sh-bind-row .sh-row-topic').value,
+      channels: document.querySelectorAll('#sh-pick-list button[data-act="ch"]').length,
+    };
+  });
+  check(failClosed.manualShown && failClosed.prefilled === TOPIC_A && failClosed.channels === 0,
+    `inventory outage falls back to hand entry, prefilled with the binding ("${failClosed.prefilled}")`);
+  check(failClosed.bound === TOPIC_A,
+    `the binding survives the outage untouched (${failClosed.bound})`);
+
+  check(errors.length === 0, `picker: no page errors (${errors.join(' | ')})`);
+  await ctx.close();
+  return 1;
+}
+
+/* ── The inventory that never answers (audit C7) ──────────────────────────
+   shOpenModal() awaits the inventory before seeding the default binding row.
+   Until 1.0.6.39 that fetch had no timeout, so a hung sa02m_alice_topics.cgi
+   (its budget is 15 s under nginx's 20 s) left the operator a «Комнаты и
+   устройства» with NO binding row and NO error — the 500 / auth / bad-JSON
+   paths were handled, only the hang was not. Here the inventory route is
+   simply never fulfilled; the row must appear within the fetch budget plus
+   slack (smarthome.js SH_TOPICS_TIMEOUT_MS, 8 s) and the picker must offer
+   hand entry, the same fail-closed shape the outage case above proves.
+   Non-vacuous: the elapsed time is measured — a row that appears before the
+   budget would mean the harness did not really hang the fetch. */
+const HANG_BUDGET_MS = 8000;
+async function runInventoryHang(browser, base) {
+  const vp = VIEWPORTS.find((v) => v.wide) || VIEWPORTS[0];
+  const ctx = await browser.newContext({ viewport: { width: vp.width, height: vp.height } });
+  await ctx.addCookies([{ name: 'session_token', value: 'test', domain: '127.0.0.1', path: '/' }]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(String(e)));
+  const pending = [];
+  await page.route('**/cgi-bin/**', (r) => {
+    const url = r.request().url();
+    if (/format=inventory/.test(url)) { pending.push(r); return; }   // never answered
+    return r.fulfill({ status: 200, contentType: 'application/json', body: stubBody(url) });
+  });
+  await page.goto(`${base}/index.html`, { waitUntil: 'load' });
+  console.log(`\n[${vp.name} ${vp.width}x${vp.height}] inventory that never answers — the modal still seeds its row`);
+  const t0 = Date.now();
+  // Not awaited on purpose: on the pre-fix bundle this promise never settles.
+  await page.evaluate(() => { window.shOpenModal(); return 0; });
+  let seeded = false;
+  try {
+    await page.waitForFunction(() => document.querySelectorAll('#sh-rows .sh-bind-row').length >= 1,
+      null, { timeout: HANG_BUDGET_MS + 4000 });
+    seeded = true;
+  } catch (e) { /* reported below */ }
+  const elapsed = Date.now() - t0;
+  check(seeded, `the default binding row is seeded although the inventory never answered (after ${elapsed} ms)`);
+  check(!seeded || (elapsed >= HANG_BUDGET_MS - 500 && elapsed <= HANG_BUDGET_MS + 4000),
+    `the row arrives at the fetch budget, not before it (${elapsed} ms vs ${HANG_BUDGET_MS} ms) — the hang was real`);
+  if (seeded) {
+    await openPicker(page);
+    const fb = await page.evaluate(() => ({
+      manualShown: !(document.getElementById('sh-pick-manual') || { hidden: true }).hidden,
+      channels: document.querySelectorAll('#sh-pick-list button[data-act="ch"]').length,
+    }));
+    check(fb.manualShown && fb.channels === 0,
+      `the picker falls back to hand entry (manual ${fb.manualShown}, channels ${fb.channels})`);
+  }
+  check(errors.length === 0, `inventory hang: no page errors (${errors.join(' | ')})`);
+  for (const r of pending) { try { await r.abort(); } catch (e) { /* context closing */ } }
+  await ctx.close();
+  return 1;
+}
+
 async function run() {
   const srv = await listen();
   const base = `http://127.0.0.1:${srv.address().port}`;
@@ -587,12 +1087,9 @@ async function run() {
         const page = await ctx.newPage();
         const errors = [];
         page.on('pageerror', (e) => errors.push(String(e)));
-        await page.route('**/cgi-bin/**', (r) => {
-          const url = r.request().url();
-          const body = /sa02m_alice_api\.cgi/.test(url) ? JSON.stringify(ALICE)
-            : /sa02m_alice_topics\.cgi/.test(url) ? JSON.stringify(TOPICS) : '{}';
-          return r.fulfill({ status: 200, contentType: 'application/json', body });
-        });
+        await page.route('**/cgi-bin/**', (r) => r.fulfill({
+          status: 200, contentType: 'application/json', body: stubBody(r.request().url()),
+        }));
         await page.goto(`${base}/index.html`, { waitUntil: 'load' });
         if (theme === 'light') await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
         await page.evaluate(() => window.shOpenModal());
@@ -690,8 +1187,10 @@ async function run() {
       }
     }
     rendered += await runActionsForm(browser, base);
+    rendered += await runPicker(browser, base);
     rendered += await runInvertSave(browser, base);
     rendered += await runMqttAnchoring(browser, base);
+    rendered += await runInventoryHang(browser, base);
   } finally {
     await browser.close();
     srv.close();
@@ -700,7 +1199,7 @@ async function run() {
   for (const m of matrix) console.log(`  ${m.label.padEnd(28)} ${m.cols.padEnd(14)} ${m.scrolled}`);
   if (rendered === 0) die(1, `${TAG}: ERROR — nothing was rendered; a pass without a render is not a pass`);
   if (failures) die(1, `\n${TAG}: ${failures} FAILURE(S) across ${VIEWPORTS.length} viewports × ${THEMES.length} themes`);
-  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the invert flag's save side and the MQTT-dialog viewport anchoring (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
+  console.log(`\n${TAG}: PASS — ${assertions} assertions: the «Комнаты и устройства» panes across ${VIEWPORTS.length} viewports × ${THEMES.length} themes plus the channel picker (with a «"»-bearing topic), the invert flag's save side, the MQTT-dialog viewport anchoring and the inventory hang (${rendered} renders, ${DEVICE_COUNT} devices / ${ROOM_COUNT} rooms)`);
   process.exit(0);
 }
 

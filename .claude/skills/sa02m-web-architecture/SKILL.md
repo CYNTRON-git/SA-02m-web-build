@@ -18,6 +18,7 @@ browser ── static ──▶ nginx ──▶ /var/www/network_config (index.h
         ── /cgi-bin/*.cgi ──▶ nginx ▶ fcgiwrap ▶ bash CGI ▶ device scripts //proc
         ── /api/flasher/* ──▶ sa02m-flasher.service (Python daemon)
         ── /api/devices*  ──▶ sa02m-devices-api :8765 (Python daemon)
+                                 stand 1.135: sa02m-stand-api (gunicorn)
 ```
 
 - Auth: `login.cgi` sets `session_token` cookie; `app.js` top guard redirects

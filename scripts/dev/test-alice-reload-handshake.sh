@@ -51,7 +51,7 @@ restart_branch="$(sed -n '/^  restart)/,/^    ;;/p' "$HELPER")"
 if [ -z "$restart_branch" ]; then
     bad "(2) the restart branch could not be extracted — helper changed shape"
 elif printf '%s\n' "$restart_branch" \
-        | grep -Eq 'systemctl restart sa02m-alice-client\.service'; then
+        | grep -Eq 'systemctl restart ("\$ALICE_UNIT"|sa02m-alice-client\.service)'; then
     ok "(2) the restart verb still falls back to systemctl restart"
 else
     bad "(2) no systemctl restart fallback in the restart branch — a client that cannot reload would never be updated"
@@ -167,6 +167,95 @@ else
     got="$(verdict "absent status file" 0)"
     [ "$got" = "RESTART" ] && ok "(B) absent status file -> RESTART" \
         || bad "(B) absent status file -> $got (expected RESTART)"
+fi
+
+echo
+echo "C. behavioural — disable writes status.json (never-linked board), both profiles"
+
+# unit_disable + write_disabled_status: a never-started client leaves no
+# status file; gold then reads state=unknown. The helper must write
+# state=disabled itself so the card is honest without a successful restart —
+# for BOTH units (different file, profile and flag key: the card reads the
+# flag, so the key is asserted, not just the state), and only as a FALLBACK:
+# a file the client wrote during the call is never clobbered, a stale one is.
+fn_disable="$(sed -n '/^write_disabled_status() {/,/^}/p' "$HELPER")"
+fn_unit="$(sed -n '/^unit_disable() {/,/^}/p' "$HELPER")"
+if [ -z "$fn_disable" ] || [ -z "$fn_unit" ]; then
+    bad "(C) write_disabled_status/unit_disable could not be extracted"
+else
+    CBOX="$(mktemp -d)"
+    # sandbox_prelude <status-file> — the constants + shims the extracted
+    # functions read; logger is captured so a failure LOG can be asserted.
+    sandbox_prelude() {
+        echo "STATUS_FILE=\"$1\""
+        echo "STATUS_FILE_CLOUD=\"$CBOX/status-cloud.json\""
+        echo "ALICE_UNIT=sa02m-alice-client.service"
+        echo "CLOUD_UNIT=sa02m-cloud-control.service"
+        echo 'systemctl(){ return 0; }'
+        echo 'timeout(){ shift; "$@"; }'
+        echo "logger(){ printf '%s\\n' \"\$*\" >> \"$CBOX/logger.log\"; }"
+        printf '%s\n' "$fn_disable"
+        printf '%s\n' "$fn_unit"
+    }
+    run_disable() {  # run_disable <unit> — runs the SHIPPED unit_disable in the sandbox
+        { sandbox_prelude "$CBOX/status.json"; echo "unit_disable \"$1\""; } > "$CBOX/disable.sh"
+        bash "$CBOX/disable.sh" >/dev/null 2>&1 || true
+    }
+    # (C1) Yandex unit: file + state + the flag key the card reads
+    rm -f "$CBOX"/status*.json
+    run_disable sa02m-alice-client.service
+    if [ -f "$CBOX/status.json" ] && grep -q '"state":"disabled"' "$CBOX/status.json" \
+       && grep -q '"client_enabled":false' "$CBOX/status.json" \
+       && grep -q '"profile":"yandex"' "$CBOX/status.json"; then
+        ok "(C1) alice-client disable writes status.json: state=disabled, client_enabled=false, profile=yandex"
+    else
+        bad "(C1) alice-client disable left no/incomplete status.json: $(cat "$CBOX/status.json" 2>/dev/null)"
+    fi
+    [ -f "$CBOX/status-cloud.json" ] \
+        && bad "(C1) alice-client disable also wrote the CLOUD status file" \
+        || ok "(C1) alice-client disable touches only its own status file"
+    # (C2) cloud unit: its own file, profile and flag key
+    rm -f "$CBOX"/status*.json
+    run_disable sa02m-cloud-control.service
+    if [ -f "$CBOX/status-cloud.json" ] && grep -q '"state":"disabled"' "$CBOX/status-cloud.json" \
+       && grep -q '"cloud_control_enabled":false' "$CBOX/status-cloud.json" \
+       && grep -q '"profile":"cloud"' "$CBOX/status-cloud.json"; then
+        ok "(C2) cloud-control disable writes status-cloud.json: state=disabled, cloud_control_enabled=false, profile=cloud"
+    else
+        bad "(C2) cloud-control disable left no/incomplete status-cloud.json: $(cat "$CBOX/status-cloud.json" 2>/dev/null)"
+    fi
+    [ -f "$CBOX/status.json" ] \
+        && bad "(C2) cloud-control disable also wrote the YANDEX status file" \
+        || ok "(C2) cloud-control disable touches only its own status file"
+    # (C3) a file the CLIENT wrote during the call (fresh mtime) is never clobbered
+    rm -f "$CBOX"/status*.json
+    printf '{"state":"disabled","ts":1,"config_watch": true,"client_enabled":false,"richer":true}\n' > "$CBOX/status.json"
+    run_disable sa02m-alice-client.service
+    grep -q '"richer":true' "$CBOX/status.json" \
+        && ok "(C3) a status.json fresher than the call (the client's own write) is kept, not clobbered by the skeleton" \
+        || bad "(C3) the client's fresher status.json was overwritten by the fallback skeleton"
+    # (C4) a STALE file (older than the call) is replaced — the stuck-card case
+    rm -f "$CBOX"/status*.json
+    printf '{"state":"connected","ts":1,"config_watch": true}\n' > "$CBOX/status.json"
+    touch -t 200001010000 "$CBOX/status.json"
+    run_disable sa02m-alice-client.service
+    grep -q '"state":"disabled"' "$CBOX/status.json" \
+        && ok "(C4) a stale pre-existing status.json is replaced with state=disabled" \
+        || bad "(C4) stale status.json survived the disable — the card keeps showing 'connected'"
+    # (C5) an unwritable target is LOGGED, never silent, and never fails the caller:
+    # a DIRECTORY sits where the temp file must go, so printf fails on every OS
+    # (a read-only parent would not fail under git-bash on Windows, and a
+    # directory at the FINAL path lets mv move the temp file INTO it).
+    rm -rf "$CBOX/ro"; mkdir -p "$CBOX/ro/status.json.tmp"
+    { sandbox_prelude "$CBOX/ro/status.json"; echo 'unit_disable sa02m-alice-client.service; echo RC=$?'; } > "$CBOX/fail.sh"
+    : > "$CBOX/logger.log"
+    out="$(bash "$CBOX/fail.sh" 2>/dev/null)"
+    if [ "$out" = "RC=0" ] && grep -q 'write_disabled_status' "$CBOX/logger.log"; then
+        ok "(C5) a failed status write is logged via logger and the caller still returns 0"
+    else
+        bad "(C5) failed write: out='$out' logger='$(cat "$CBOX/logger.log" 2>/dev/null)' — silent failure or a failed caller"
+    fi
+    rm -rf "$CBOX"
 fi
 
 echo

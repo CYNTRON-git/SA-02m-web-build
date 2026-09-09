@@ -5,6 +5,9 @@ import base64
 import hashlib
 import io
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -12,6 +15,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_REPO = Path(__file__).resolve().parents[3]
 from lib import PackageError  # noqa: E402
 from lib import transaction as txn  # noqa: E402
 from lib import upload_receive as ur  # noqa: E402
@@ -181,6 +185,230 @@ class TestManifestAndPackage(unittest.TestCase):
         with self.assertRaises(PackageError) as cm:
             vp.validate_manifest_object(m)
         self.assertEqual(cm.exception.code, "E_MANIFEST")
+
+    def test_services_required_only_manifest_ok(self) -> None:
+        # Pre-1.0.6.37 manifest shape (no optional services keys) stays valid:
+        # the optional keys must never become required (older packers).
+        vp.validate_manifest_object(_sample_manifest())
+
+    @staticmethod
+    def _load_packer():
+        import importlib.util
+
+        pack_path = _REPO / "scripts" / "pack-offline-update.py"
+        spec = importlib.util.spec_from_file_location("pack_offline_update", pack_path)
+        pack = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(pack)
+        return pack
+
+    def test_packer_services_tier_rule(self) -> None:
+        # CONSCIOUS REWRITE (1.0.6.39, audit 2026-09-08 D6). The case this
+        # replaces (test_packer_frozen_v1_for_min_updater_1_0_5_66) pinned the
+        # regression GREEN: it asserted `enable` is absent from the packed
+        # block, i.e. that no offline pack ever enables sa02m-dns-ensure.service
+        # (contract docs/contracts/boot-network-dns.md), and it never touched
+        # the production call site. What is pinned now is the TIER RULE:
+        #   * below SERVICES_OPTIONAL_SINCE the block is frozen v1 — required
+        #     keys only, sa02m-rules still in restart[] — and validates;
+        #   * at/above it the block carries every optional key, the belt unit
+        #     is in enable[], and it validates too;
+        #   * build_services_block() with NO argument (what build_manifest
+        #     calls) obeys the same rule for the module's own MIN_UPDATER —
+        #     the branch the old test never exercised, which is how the tier
+        #     stayed decorative (D2).
+        pack = self._load_packer()
+        legacy_keys = frozenset({"daemon_reload", "stop_before_apply", "restart", "health"})
+        optional_keys = frozenset(pack.SERVICES_OPTIONAL_KEYS)
+        self.assertEqual(optional_keys, vp._SERVICES_KEYS_OPTIONAL)
+
+        frozen = pack.build_services_block("1.0.6.36")
+        self.assertEqual(set(frozen), legacy_keys)
+        self.assertIn("sa02m-rules", frozen["restart"])
+        m = _sample_manifest()
+        m["services"] = frozen
+        vp.validate_manifest_object(m)
+
+        full = pack.build_services_block(pack.SERVICES_OPTIONAL_SINCE)
+        self.assertEqual(set(full), legacy_keys | optional_keys)
+        self.assertIn("sa02m-dns-ensure.service", full["enable"])
+        m = _sample_manifest()
+        m["services"] = full
+        vp.validate_manifest_object(m)
+
+        self.assertFalse(pack.emit_optional_service_keys("1.0.6.36"))
+        self.assertTrue(pack.emit_optional_service_keys(pack.SERVICES_OPTIONAL_SINCE))
+
+        # The production site: no argument ⇒ the module's MIN_UPDATER decides.
+        tier_on = pack.semver_key(pack.MIN_UPDATER) >= pack.semver_key(pack.SERVICES_OPTIONAL_SINCE)
+        self.assertEqual(pack.emit_optional_service_keys(pack.MIN_UPDATER), tier_on)
+        self.assertEqual(pack.build_services_block(), full if tier_on else frozen)
+        manifest = pack.build_manifest(
+            version="9.9.9.9",
+            commit="a" * 40,
+            key_id="release-2026-08",
+            payload_gz=b"x",
+            uncompressed_size=1,
+            deploy=[],
+        )
+        self.assertEqual(manifest["services"], pack.build_services_block())
+        self.assertEqual(manifest["min_updater"], pack.MIN_UPDATER)
+
+    def test_packer_frozen_note_names_the_omitted_keys(self) -> None:
+        # D7: the honest limit reaches the pack-time output, not only the docs.
+        pack = self._load_packer()
+        note = pack.frozen_services_note("1.0.6.36")
+        self.assertTrue(note.startswith("note: services block is frozen v1"))
+        for key in pack.SERVICES_OPTIONAL_KEYS:
+            self.assertIn(key, note)
+        self.assertIn("sa02m-dns-ensure.service", note)
+        self.assertEqual(pack.frozen_services_note(pack.SERVICES_OPTIONAL_SINCE), "")
+        # The production call prints exactly what the module's MIN_UPDATER earns.
+        self.assertEqual(bool(pack.frozen_services_note()), not pack.emit_optional_service_keys(pack.MIN_UPDATER))
+
+    def test_runner_reports_the_deployed_version_not_a_stamp(self) -> None:
+        # D2: the advertised min_updater (packer MIN_UPDATER) and the version a
+        # board reports (runner UPDATER_VERSION) must not be able to diverge
+        # silently. Before 1.0.6.39 the runner stamped 1.0.5.66, so any
+        # MIN_UPDATER bump would have E_COMPAT-rejected every board. Runs the
+        # SHIPPED runner's `version` subcommand: it must report the VERSION
+        # file it was deployed with (CRLF tolerated), the documented floor when
+        # the file is absent or unparseable, and the explicit env override.
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not on PATH — the runner's version derivation was NOT verified")
+        runner = (_REPO / "etc" / "sa02m-update-runner.sh").as_posix()
+        pack = self._load_packer()
+
+        def report(version_file: Path, **extra: str) -> str:
+            env = {k: v for k, v in os.environ.items() if k != "SA02M_UPDATER_VERSION"}
+            env["SA02M_WEB_VERSION_FILE"] = version_file.as_posix()
+            env.update(extra)
+            r = subprocess.run(
+                [bash, runner, "version"], env=env, capture_output=True, text=True, timeout=60
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout.strip()
+
+        with tempfile.TemporaryDirectory() as d:
+            vf = Path(d) / "VERSION"
+            vf.write_bytes(b"# comment\r\n9.8.7.6\r\n")
+            self.assertEqual(report(vf), "9.8.7.6")
+            self.assertEqual(report(Path(d) / "missing"), "1.0.5.66")
+            vf.write_bytes(b"garbage\n")
+            self.assertEqual(report(vf), "1.0.5.66")
+            self.assertEqual(report(vf, SA02M_UPDATER_VERSION="7.7.7.7"), "7.7.7.7")
+        # A pack built from this tree must stay applicable by the runner of the
+        # release it updates: MIN_UPDATER never exceeds what this tree reports.
+        repo_version = ""
+        for line in (_REPO / "www" / "network_config" / "VERSION").read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                repo_version = line
+                break
+        self.assertTrue(repo_version)
+        self.assertLessEqual(pack.semver_key(pack.MIN_UPDATER), pack.semver_key(repo_version))
+
+    def test_inspect_preflight_derives_the_same_version_as_the_runner(self) -> None:
+        # Review 1.0.6.39 F3: the D2 derivation lives in TWO shipped homes —
+        # the runner (apply-time compat gate) and sa02m-update-inspect.sh (the
+        # preflight the UI reads before apply). A bump of one fallback would
+        # leave the panel saying "compatible" where the runner refuses, or the
+        # reverse. Drives the SHIPPED inspect script against the runner's
+        # fixtures and pins the two fallback literals to each other.
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash not on PATH — the inspect preflight's version derivation was NOT verified")
+        runner = _REPO / "etc" / "sa02m-update-runner.sh"
+        inspect = _REPO / "etc" / "sa02m-update-inspect.sh"
+
+        def fallback_literal(script: Path) -> str:
+            hits = [
+                line.split("=", 1)[1].strip()
+                for line in script.read_text(encoding="utf-8").splitlines()
+                if line.startswith("UPDATER_VERSION_FALLBACK=")
+            ]
+            self.assertEqual(len(hits), 1, "%s: expected exactly one fallback assignment" % script.name)
+            return hits[0]
+
+        self.assertEqual(fallback_literal(inspect), fallback_literal(runner))
+        self.assertEqual(fallback_literal(runner), "1.0.5.66")
+
+        def preflight(version_file: Path, package: Path, **extra: str) -> dict:
+            env = {k: v for k, v in os.environ.items() if k != "SA02M_UPDATER_VERSION"}
+            env["SA02M_WEB_VERSION_FILE"] = version_file.as_posix()
+            # No validator module => the script's bootstrap branch, which still
+            # derives UPDATER_VERSION first and prints it in its JSON.
+            env["SA02M_UPDATE_VALIDATE_PY"] = (package.parent / "no-validator-here.py").as_posix()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env.update(extra)
+            r = subprocess.run(
+                [bash, inspect.as_posix(), package.as_posix()],
+                env=env, capture_output=True, text=True, timeout=60,
+            )
+            out = json.loads(r.stdout.replace("\r", "").strip())
+            # A tiny file is refused at the trailer, i.e. AFTER the derivation —
+            # proves the value came through the whole preflight, not an early exit.
+            self.assertEqual(out["error_code"], "E_TRAILER", r.stderr)
+            return out
+
+        with tempfile.TemporaryDirectory() as d:
+            pkg = Path(d) / "package.sa02m"
+            pkg.write_bytes(b"not a package")
+            vf = Path(d) / "VERSION"
+            vf.write_bytes(b"# comment\r\n9.8.7.6\r\n")
+            out = preflight(vf, pkg)
+            self.assertEqual(out["updater_version"], "9.8.7.6")
+            self.assertEqual(out["installed_version"], "9.8.7.6")
+            out = preflight(Path(d) / "missing", pkg)
+            self.assertEqual(out["updater_version"], "1.0.5.66")
+            self.assertIsNone(out["installed_version"])
+            vf.write_bytes(b"garbage\n")
+            self.assertEqual(preflight(vf, pkg)["updater_version"], "1.0.5.66")
+            self.assertEqual(preflight(vf, pkg, SA02M_UPDATER_VERSION="7.7.7.7")["updater_version"], "7.7.7.7")
+
+    def test_services_optional_keys_accepted(self) -> None:
+        # The 1.0.6.37 packer manifest: enable (emitted since 1.0.5.69 — the
+        # validator rejected it until the required/optional split) plus the
+        # conditional-restart sets for the /opt code freshness fix.
+        m = _sample_manifest()
+        m["services"]["enable"] = ["sa02m-devices-api.service"]
+        m["services"]["restart_if_active"] = [
+            "sa02m-alice-client",
+            "sa02m-alice-config",
+            "sa02m-cloud-control",
+        ]
+        m["services"]["restart_if_changed"] = {"sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/"}
+        vp.validate_manifest_object(m)  # must not raise
+
+    def test_services_unknown_key_still_rejected(self) -> None:
+        m = _sample_manifest()
+        m["services"]["bogus"] = []
+        with self.assertRaises(PackageError) as cm:
+            vp.validate_manifest_object(m)
+        self.assertEqual(cm.exception.code, "E_MANIFEST")
+
+    def test_services_restart_if_active_must_be_string_array(self) -> None:
+        for bad in ("sa02m-rules", ["sa02m-rules", 5], [""]):
+            m = _sample_manifest()
+            m["services"]["restart_if_active"] = bad
+            with self.assertRaises(PackageError) as cm:
+                vp.validate_manifest_object(m)
+            self.assertEqual(cm.exception.code, "E_MANIFEST")
+
+    def test_services_restart_if_changed_shape(self) -> None:
+        for bad in (
+            ["not-a-dict"],
+            {"sa02m-modbus-mqtt": "opt/relative/"},
+            {"sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt"},  # no trailing slash
+            {"sa02m-modbus-mqtt": "/opt/../etc/"},
+            {"": "/opt/x/"},
+        ):
+            m = _sample_manifest()
+            m["services"]["restart_if_changed"] = bad
+            with self.assertRaises(PackageError) as cm:
+                vp.validate_manifest_object(m)
+            self.assertEqual(cm.exception.code, "E_MANIFEST")
 
     def test_reject_preserve_dst(self) -> None:
         m = _sample_manifest()

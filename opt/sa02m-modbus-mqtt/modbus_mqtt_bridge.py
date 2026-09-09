@@ -78,6 +78,9 @@ from bridge_mr02m_map import (  # noqa: F401
     _canonical_mr02m_device_name, resolve_ai_read_chunk_regs,
     MR_MCU_HOLD_OP_DAYS, MR_MCU_HOLD_POWER_TEMP, MR_INP_MCU_UPTIME_LO,
     MR_INP_DI_CNT_BASE, MR_INP_MCU_DIAG_START, MR_RESET_REASON_LABELS,
+    MR_REG_DI_MODE_BASE, MR_DI_MODE_BUTTON,
+    MR_INP_DI_SHORT_CNT_BASE, MR_INP_DI_LONG_CNT_BASE,
+    MR_INP_DI_DOUBLE_CNT_BASE,
     MR02M_SYS_CONTROLS, AI_RTD_CODES_3_WIRE, AI_TC_K_CODE,
     AI_SENSOR_LEGACY_ENUM_MIGRATION, AI_SENSOR_SCHEMA_MODBUS,
     _migrate_legacy_ai_sensor_code, _ai_register_is_legacy_enum,
@@ -89,6 +92,8 @@ from bridge_device import (  # noqa: F401
 )
 from bridge_mr02m import MR02mPoller  # noqa: F401
 from bridge_dtv_ce import DTVPoller, CE02M3Poller  # noqa: F401
+from bridge_carel import CarelPoller
+from bridge_led import LedPoller
 from bridge_template import TemplatePoller  # noqa: F401
 
 
@@ -116,6 +121,8 @@ POLLER_CLASSES: dict[str, type] = {
     "dtv":      DTVPoller,
     "ce02m3":   CE02M3Poller,
     "template": TemplatePoller,
+    "carel":    CarelPoller,
+    "led":      LedPoller,
 }
 _pollers:  list[DevicePoller] = []
 _port_schedulers: list[PortCycleScheduler] = []
@@ -164,6 +171,35 @@ def _roster_model_name(dev_type: str, module_type: int) -> str:
     if dev_type == "ce02m3":
         return "CE-02m-3"
     return ""
+
+
+def mixed_baud_port_conflicts(port_keys) -> dict:
+    """{port_path: [baud, …]} for every physical port configured at 2+ bauds.
+
+    There is no cross-baud arbitration on one RS-485 line and there cannot be a
+    cheap one: serial handles are pooled by `port:baud` (bridge_serial.get_port),
+    each key gets its own PortCycleScheduler thread, and ModbusSerial opens the
+    tty with `exclusive=True` — so the second baud is a second exclusive open on
+    a device already held, not a shared line. The symptom on the board is one
+    whole port silently dead with every device on it "offline", which reads as a
+    wiring fault. Naming the conflict at composition is the difference between a
+    five-minute fix and a bench session.
+
+    Reported, never fatal: refusing to start would take down the ports that ARE
+    consistent over a typo in one entry. Pure — the caller logs.
+    """
+    bauds: dict[str, list[int]] = {}
+    for key in port_keys:
+        path, _sep, baud_s = str(key).rpartition(":")
+        if not path:
+            continue
+        try:
+            baud = int(baud_s)
+        except ValueError:
+            continue
+        if baud not in bauds.setdefault(path, []):
+            bauds[path].append(baud)
+    return {p: sorted(b) for p, b in bauds.items() if len(b) > 1}
 
 
 def _com_key_from_port(port_path: str) -> str:
@@ -254,6 +290,13 @@ def main() -> None:
                     poller.address, poller.device_id, ranges,
                     poller.fmb_dispatch, poller=poller, dev_type=dev_type,
                     wire_mode=str(dev_cfg.get("fmb_event_wire", "auto")))
+
+    for path, bauds in mixed_baud_port_conflicts(by_port).items():
+        log.error("%s is configured at several baud rates (%s) — one physical "
+                  "line cannot serve them: the handles are exclusive per "
+                  "port:baud and all but one will fail to open. Put the odd "
+                  "device on its own COM port or change its baud.",
+                  path, ", ".join(str(b) for b in bauds))
 
     # One thread per port — EVENTS+POLLING interleaved (wb-mqtt-serial).
     for port_key, pollers in by_port.items():

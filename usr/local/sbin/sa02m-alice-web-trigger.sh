@@ -28,7 +28,7 @@ STATUS_STALE_S=90
 # 0755 root and status.json is written 0644 by the root client. Nothing here
 # evaluates the file's contents — two fixed patterns and one integer range.
 alice_reload_capable() {
-    local unit="${1:-sa02m-alice-client.service}" file="${2:-$STATUS_FILE}"
+    local unit="${1:-$ALICE_UNIT}" file="${2:-$STATUS_FILE}"
     # 1. The unit is actually running (stopped/failed/crashed => restart).
     timeout 5 systemctl is-active --quiet "$unit" || return 1
 
@@ -98,11 +98,56 @@ unit_enable() {
     timeout 10 systemctl restart "$1" || true
 }
 
+# Write the gold `disabled` status even when the client never started
+# (never-linked board: no status.json → card showed state=unknown).
+# The client's own write on a successful restart is the richer payload, so
+# this is the FALLBACK: written only when the file is absent or older than
+# the disable call ($4 = the call's start epoch) — a client that restarted
+# with the flag false exits 0 at once and writes `disabled` itself, and this
+# skeleton must not clobber it. A failed write is LOGGED (logger -t; the
+# script has no other channel): the card then keeps showing the previous
+# state, the exact symptom this function exists to remove, so it must not be
+# silent (audit 2026-09-08, D14/D15). Never fails the caller.
+write_disabled_status() {
+    local file="$1" profile="$2" flag="$3" since="${4:-0}"
+    local dir now mtime
+    if [ -f "$file" ]; then
+        mtime=$(stat -c %Y "$file" 2>/dev/null) || mtime=0
+        case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+        [ "$mtime" -lt "$since" ] || return 0
+    fi
+    dir=$(dirname "$file")
+    mkdir -p "$dir" 2>/dev/null || true
+    now=$(date +%s 2>/dev/null) || now=0
+    if ! printf '{"state":"disabled","ts":%s,"profile":"%s","%s":false,"message":"%s client disabled (%s=false)"}\n' \
+        "$now" "$profile" "$flag" "$profile" "$flag" > "${file}.tmp" 2>/dev/null; then
+        logger -t sa02m-alice-web-trigger -- "write_disabled_status: cannot write ${file}.tmp — the card keeps its previous state" 2>/dev/null || true
+        return 0
+    fi
+    chmod 0644 "${file}.tmp" 2>/dev/null || true
+    if ! mv -f "${file}.tmp" "$file" 2>/dev/null; then
+        logger -t sa02m-alice-web-trigger -- "write_disabled_status: cannot rename ${file}.tmp to $file — the card keeps its previous state" 2>/dev/null || true
+        rm -f "${file}.tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # Stop, then restart: with the flag false the client exits 0 at once, and that
-# run is what writes the `disabled` status the card shows.
+# run is what writes the `disabled` status the card shows. If the unit never
+# ran, write the file here so the card is honest without waiting for a start.
 unit_disable() {
+    local since
+    since=$(date +%s 2>/dev/null) || since=0
     timeout 10 systemctl stop "$1" >/dev/null 2>&1 || true
     timeout 10 systemctl restart "$1" >/dev/null 2>&1 || true
+    case "$1" in
+        "$ALICE_UNIT")
+            write_disabled_status "$STATUS_FILE" "yandex" "client_enabled" "$since"
+            ;;
+        "$CLOUD_UNIT")
+            write_disabled_status "$STATUS_FILE_CLOUD" "cloud" "cloud_control_enabled" "$since"
+            ;;
+    esac
 }
 
 ACTION="${1:-}"
@@ -145,7 +190,7 @@ case "$ACTION" in
     if alice_reload_capable; then
         applied=reload
     else
-        timeout 10 systemctl restart sa02m-alice-client.service || true
+        timeout 10 systemctl restart "$ALICE_UNIT" || true
         applied=restart
     fi
     cloud_applied=skipped

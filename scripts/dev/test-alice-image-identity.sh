@@ -12,7 +12,7 @@
 # Contract (the one home of the clear-list): docs/contracts/image-identity-reset.md
 #
 # Part A — static pins (the wiring a behavioural run cannot see):
-#   A1 all four sites carry the wipe; fewer than four = FAIL (non-vacuity)
+#   A1 all five sites carry the wipe; fewer than five = FAIL (non-vacuity)
 #   A1c each site actually CALLS it — a defined-but-uninvoked wipe is inert,
 #      and the two receivers are the only defence for a pre-fix stick
 #   A2 each site's path set EQUALS the contract set for its form (offline sites
@@ -28,7 +28,7 @@
 #   A6 the factory-reset floor is intact — capture and factory reset are
 #      OPPOSITE policies and this change must not unify them
 #   A7 every systemctl in the on-device wipes is timeout-bounded
-#   A8 cloud parity — the four cloud sites still carry their own wipe
+#   A8 cloud parity — the six cloud sites still carry their own wipe
 #
 # Part B — behavioural: the SHIPPED wipe functions are extracted and run
 #   against a sandboxed fake rootfs seeded as a LINKED donor. A grep cannot see
@@ -58,6 +58,7 @@ STREAM_SRC="${STREAM_SRC:-$HERE/tools/imaging/stream-after-cleanup.sh}"
 PATCH_SRC="${PATCH_SRC:-$HERE/tools/imaging/patch-firstboot-image.sh}"
 AUTORUN_SRC="${AUTORUN_SRC:-$HERE/tools/imaging/autorun.sh}"
 AUTORUN_FEL_SRC="${AUTORUN_FEL_SRC:-$HERE/tools/imaging/autorun-fel.sh}"
+SSH_FLASH_SRC="${SSH_FLASH_SRC:-$HERE/tools/imaging/ssh-flash-safe.sh}"
 CLEANUP="${CLEANUP_SRC:-$HERE/tools/imaging/cleanup-donor.sh}"
 PRESERVE="${PRESERVE_SRC:-$HERE/etc/sa02m-factory-defaults/lists/preserve.list}"
 FACTORY="${FACTORY_SRC:-$HERE/etc/sa02m-factory-reset-runner.sh}"
@@ -69,8 +70,8 @@ ok(){ printf '  ok    %s\n' "$1"; }
 bad(){ printf '  FAIL  %s\n' "$1"; fails=$((fails+1)); }
 
 for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
-         "$AUTORUN_FEL_SRC" "$CLEANUP" "$PRESERVE" "$FACTORY" "$CONTRACT" \
-         "$CLOUD_RESET"; do
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC" "$CLEANUP" "$PRESERVE" \
+         "$FACTORY" "$CONTRACT" "$CLOUD_RESET"; do
     [ -r "$f" ] || { echo "alice-image-identity: cannot read $f"; exit 1; }
 done
 
@@ -124,19 +125,20 @@ OFFLINE_SET="$(printf '%s\n' \
 
 echo "A. static pins"
 
-# ── A1 — all four sites carry the wipe ────────────────────────────────────
+# ── A1 — all five sites carry the wipe ────────────────────────────────────
 site_count=0
-for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
+for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
     if [ -n "$(extract_fn "$f" wipe_alice_enrollment)" ]; then
         site_count=$((site_count + 1))
     else
         bad "(A1) no wipe_alice_enrollment() in ${f#"$HERE"/} — that site ships the donor's identity"
     fi
 done
-if [ "$site_count" -eq 5 ]; then
-    ok "(A1) all five files of the four sites carry wipe_alice_enrollment()"
+if [ "$site_count" -eq 6 ]; then
+    ok "(A1) all six files of the five sites carry wipe_alice_enrollment()"
 else
-    bad "(A1) only $site_count/5 files carry the wipe — the enumeration is incomplete (contract §4)"
+    bad "(A1) only $site_count/6 files carry the wipe — the enumeration is incomplete (contract §4)"
 fi
 
 # The clear-list must have a documented home, or the four copies have no anchor.
@@ -169,10 +171,12 @@ check_set "stream-after-cleanup.sh (on-device)"   "$STREAM_SRC"  "$ONDEVICE_SET"
 check_set "patch-firstboot-image.sh (offline)"    "$PATCH_SRC"   "$OFFLINE_SET"
 check_set "autorun.sh (offline)"                  "$AUTORUN_SRC" "$OFFLINE_SET"
 check_set "autorun-fel.sh (offline)"              "$AUTORUN_FEL_SRC" "$OFFLINE_SET"
+check_set "ssh-flash-safe.sh (offline)"           "$SSH_FLASH_SRC" "$OFFLINE_SET"
 
 # ── A3 — the over-wipe tripwire ───────────────────────────────────────────
 overwipe=0
-for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
+for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
     body="$(extract_fn "$f" wipe_alice_enrollment | sed 's/#.*$//')"
     if printf '%s\n' "$body" | grep -q 'ca\.crt\.pem'; then
         bad "(A3) ${f#"$HERE"/} names ca.crt.pem inside the wipe — that is the SHARED gateway CA; removing it silently breaks every clone's client"
@@ -205,7 +209,8 @@ done
 : > "$globdir/etc/sa02m-alice/sa02m-alice-server.conf"
 : > "$globdir/etc/sa02m-alice/.alice-Ab3xQ1"
 glob_seen=0; glob_bad=0
-for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
+for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
     for g in $(paths_of "$f" | grep -F '*'); do
         glob_seen=$((glob_seen + 1))
         # Unquoted on purpose: this is the pathname expansion under test. No
@@ -222,8 +227,8 @@ for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SR
     done
 done
 rm -rf "$globdir"
-if [ "$glob_seen" -lt 5 ]; then
-    bad "(A3c) only $glob_seen glob(s) seen across the five sites — the sidecar rows are missing (F1: device.key.pem.tmp would clone)"
+if [ "$glob_seen" -lt 6 ]; then
+    bad "(A3c) only $glob_seen glob(s) seen across the six files — the sidecar rows are missing (F1: device.key.pem.tmp would clone)"
 elif [ "$glob_bad" -eq 0 ]; then
     ok "(A3c) all $glob_seen sidecar globs expand clear of ca.crt.pem (real expansion)"
 fi
@@ -260,6 +265,8 @@ call_pin "autorun.sh (in apply_firstboot_wiring)" "$AUTORUN_SRC" "apply_firstboo
     '^[[:space:]]*wipe_alice_enrollment[[:space:]]+"\$root"[[:space:]]*$'
 call_pin "autorun-fel.sh (in apply_firstboot_wiring)" "$AUTORUN_FEL_SRC" "apply_firstboot_wiring" \
     '^[[:space:]]*wipe_alice_enrollment[[:space:]]+"\$root"[[:space:]]*$'
+call_pin "ssh-flash-safe.sh (on written rootfs)" "$SSH_FLASH_SRC" "-" \
+    '^[[:space:]]*wipe_alice_enrollment[[:space:]]+"\$MNT"[[:space:]]*$'
 # …and one level up: the receivers' enclosing function must itself be invoked
 # on the freshly written rootfs, or the whole block is dead code.
 for f in "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
@@ -363,10 +370,11 @@ done
 
 # ── A8 — cloud parity (protects the shipped 2026-07-31 fix at zero cost) ──
 cloud_ok=1
-for f in "$CLOUD_RESET" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" "$AUTORUN_FEL_SRC"; do
+for f in "$CLOUD_RESET" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
     grep -q 'device_secret' "$f" || { cloud_ok=0; bad "(A8) ${f#"$HERE"/} lost its cloud enrollment wipe (the twin defect, fixed 2026-07-31)"; }
 done
-[ "$cloud_ok" -eq 1 ] && ok "(A8) all five cloud-wipe sites intact"
+[ "$cloud_ok" -eq 1 ] && ok "(A8) all six cloud-wipe sites intact"
 
 echo
 echo "B. behavioural — the shipped wipes against a sandboxed linked donor"
@@ -415,12 +423,19 @@ seed_donor() { # <root> — a board LINKED to the gateway, with bench bindings
   ]
 }
 EOF
+    # The stand-down marker of a donor that was unlinked in the cloud before
+    # the image was taken. IDENTITY, not configuration (contract §2, the twin
+    # of the cloud half's §6): carried into a clone it makes every board's card
+    # read «отвязано в облаке» instead of «нет сертификата».
     cat > "$r/etc/sa02m-alice/sa02m-alice-client.conf" <<'EOF'
 [client]
 client_enabled = true
 log_level = INFO
 mqtt_host = 127.0.0.1
 mqtt_port = 1883
+unlinked_at = 2026-09-02T10:00:00Z
+unlinked_reason = unlinked
+unlinked_reason_text = controller_unlink
 EOF
     # The legacy flat layout, which the factory-reset and update runners still know.
     cp "$r/etc/sa02m-alice/sa02m-alice-devices.conf" "$r/etc/sa02m-alice-devices.conf"
@@ -554,6 +569,16 @@ assert_wiped() { # <label> <root> <form: ondevice|offline>
         else
             bad "(B/$lbl) the wipe damaged configuration keys in ${f#"$r"}"
         fi
+        # The stand-down marker: identity, so it must be GONE. Non-vacuous —
+        # seed_donor writes all three keys and B3 below proves the seed carries
+        # them, so an assertion that passed on an unseeded file would fail there.
+        left="$(grep -cE '^[[:space:]]*unlinked_(at|reason|reason_text)[[:space:]]*=' "$f")"
+        if [ "${left:-0}" -eq 0 ]; then
+            ok "(B/$lbl) the stand-down marker is gone from ${f#"$r"} (identity, contract §2)"
+        else
+            bad "(B/$lbl) $left stand-down marker key(s) survived in ${f#"$r"} — every clone
+  would boot with the donor's «отвязано в облаке» instead of «нет сертификата»"
+        fi
     done
 
     if [ "$(cat "$r/etc/sa02m-alice/sa02m-alice-server.conf" 2>/dev/null)" = "$SERVER_CONF" ]; then
@@ -646,15 +671,48 @@ run_site() { # <label> <src> <form>
     fi
 }
 
+# ── B3 — the seed itself carries what B asserts is removed ────────────────
+# Without this the marker assertion above could pass on a file that never had a
+# marker: a check that passes because it tested nothing is the defect.
+seedprobe="$SANDBOX/seedcheck"
+rm -rf "$seedprobe"; mkdir -p "$seedprobe"; seed_donor "$seedprobe"
+seeded=0
+for f in "$seedprobe/etc/sa02m-alice/sa02m-alice-client.conf"          "$seedprobe/etc/sa02m-alice-client.conf"; do
+    n="$(grep -cE '^[[:space:]]*unlinked_(at|reason|reason_text)[[:space:]]*=' "$f" 2>/dev/null || echo 0)"
+    [ "${n:-0}" -eq 3 ] && seeded=$((seeded + 1))
+done
+if [ "$seeded" -eq 2 ]; then
+    ok "(B3) the donor fixture really carries the three stand-down marker keys in both layouts"
+else
+    bad "(B3) the donor fixture seeds the marker in only $seeded/2 client.conf layouts — the removal assertion would pass vacuously"
+fi
+
 run_site reset  "$RESET_SRC"       ondevice
 run_site stream "$STREAM_SRC"      ondevice
 run_site patch  "$PATCH_SRC"       offline
 run_site autorun "$AUTORUN_SRC"    offline
 run_site autorunfel "$AUTORUN_FEL_SRC" offline
+run_site sshflash "$SSH_FLASH_SRC" offline
 
 # ── B2 — the shipped ASSERTION, run for real ──────────────────────────────
 # The belt itself: it must PASS a wiped rootfs and DIE on one that still holds
 # the donor's key (a capture that ran with --no-id-reset, or a pre-fix stream).
+# ── A9 — every site drops the stand-down marker (static, all six files) ──
+marker_sites=0
+for f in "$RESET_SRC" "$STREAM_SRC" "$PATCH_SRC" "$AUTORUN_SRC" \
+         "$AUTORUN_FEL_SRC" "$SSH_FLASH_SRC"; do
+    body="$(extract_fn "$f" wipe_alice_enrollment | sed 's/#.*$//')"
+    if printf '%s
+' "$body" | grep -q 'unlinked_at'        && printf '%s
+' "$body" | grep -q 'unlinked_reason'        && printf '%s
+' "$body" | grep -q 'unlinked_reason_text'; then
+        marker_sites=$((marker_sites + 1))
+    else
+        bad "(A9) ${f#"$HERE"/} does not drop all three stand-down marker keys — a clone from an unlinked donor inherits its «отвязано в облаке»"
+    fi
+done
+[ "$marker_sites" -eq 6 ] && ok "(A9) all six sites drop the stand-down marker keys"
+
 echo
 echo "B2. the shipped fail-closed assertion (patch site)"
 abody="$(extract_fn "$PATCH_SRC" assert_alice_enrollment_clean)"

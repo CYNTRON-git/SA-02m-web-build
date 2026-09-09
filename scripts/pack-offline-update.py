@@ -43,6 +43,25 @@ DEFAULT_OUT_DIR = ROOT / "out"
 DEFAULT_KEY_ID = "release-2026-08"
 MIN_UPDATER = "1.0.5.66"
 MIN_VERSION = "1.0.5.60"
+# First on-device validator that accepts services.enable / restart_if_*
+# (commit 1295837). Packs that advertise a MIN_UPDATER below it MUST emit
+# frozen v1 services (required keys only): apply uses the PREVIOUS
+# runner/validator, and the validators of 1.0.5.69-1.0.6.36 reject unknown
+# keys with E_MANIFEST (a runner < 1.0.5.69 has no validator and skips the
+# check: opt/sa02m-update/ and the runner were both born in b9f3ad4 = 1.0.5.69;
+# validate_package.py's comment is the one home of that window).
+# Raising MIN_UPDATER to SERVICES_OPTIONAL_SINCE or later is what turns the
+# tier on. That is executable since 1.0.6.39: the runner derives
+# UPDATER_VERSION from the deployed VERSION file, whereas before every board
+# reported a stamped 1.0.5.66 and a bump would have E_COMPAT-rejected all of
+# them. Raise it only once the fleet you must reach runs >= 1.0.6.39. Until
+# then an offline pack enables NOTHING, and the DNS belt unit reaches an
+# offline-updated board through the one-time bootstrap shim in
+# usr/local/sbin/sa02m-eth-coldboot.sh (pinned by test-iface-dns-ensure.sh).
+SERVICES_OPTIONAL_SINCE = "1.0.6.37"
+# The keys the freeze withholds — named once so the pack-time note and the
+# tests read the same list as build_services_block().
+SERVICES_OPTIONAL_KEYS = ("enable", "restart_if_active", "restart_if_changed")
 # Wire footer is 21 bytes (plan text "+20" was a miscount of the 19-byte magic).
 FOOTER_MAGIC = b"SA02M_UPDATE_END_V1"
 FOOTER = FOOTER_MAGIC + b"\0\0"
@@ -54,7 +73,9 @@ DST_PREFIX_RE = re.compile(
     r"opt/sa02m-[a-z0-9-]+/|opt/mplc4/(mplc_cyntron|mplc_protocol_fast_modbus)\.so|"
     r"etc/systemd/system/sa02m-|"
     r"etc/nginx/|etc/tmpfiles\.d/|etc/sudoers\.d/|"
-    r"etc/sa02m-update/trusted-keys/)"
+    r"etc/default/sa02m-|"
+    r"etc/sa02m-update/trusted-keys/|"
+    r"etc/dhcp/dhclient-exit-hooks\.d/eth1-default-route$)"
 )
 
 # Mapping table (kept in sync with offline-update-deploy-map.json):
@@ -487,6 +508,100 @@ def sign_manifest(manifest: dict[str, Any], key_path: Path, openssl: str) -> byt
             pass
 
 
+def semver_key(v: str) -> tuple[int, ...]:
+    parts = [int(p) for p in v.split(".")]
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts)
+
+
+def emit_optional_service_keys(min_updater: str) -> bool:
+    """True only when the advertised min_updater already accepts optional keys."""
+    return semver_key(min_updater) >= semver_key(SERVICES_OPTIONAL_SINCE)
+
+
+def frozen_services_note(min_updater: str = MIN_UPDATER) -> str:
+    """One line for stderr when the pack ships a frozen v1 services block.
+
+    Empty when the tier is on. The docs carry the honest limit; a release
+    engineer reading only the tool's output saw `Wrote ...` and nothing about
+    the keys this pack does not carry (audit 2026-09-08, D7).
+    """
+    if emit_optional_service_keys(min_updater):
+        return ""
+    return (
+        f"note: services block is frozen v1 (min_updater={min_updater} < "
+        f"{SERVICES_OPTIONAL_SINCE}): omitted keys {', '.join(SERVICES_OPTIONAL_KEYS)}; "
+        "this pack enables NO unit (sa02m-dns-ensure.service relies on the "
+        "coldboot bootstrap shim) and runs no Alice/bridge conditional restart"
+    )
+
+
+def build_services_block(min_updater: str = MIN_UPDATER) -> dict[str, Any]:
+    """services{} for the packed manifest.
+
+    Frozen v1 (required keys only) while MIN_UPDATER is still 1.0.5.66 so
+    boards on the documented floor can apply the pack. Optional keys
+    (enable, restart_if_active, restart_if_changed) are emitted only when
+    min_updater is already a validator that accepts them. sa02m-rules stays
+    in restart[] — that list is required v1 and the 1.0.5.66 runner executes
+    it. Alice/modbus conditional restarts first bite on the pack AFTER
+    MIN_UPDATER is raised (honest limit: apply uses the previous runner).
+    The online generator in etc/sa02m-update-runner.sh still emits the
+    optional keys: that manifest is built ON the board by the runner
+    already installed there.
+    """
+    services: dict[str, Any] = {
+        "daemon_reload": True,
+        "stop_before_apply": ["sa02m-flasher"],
+        "restart": [
+            "fcgiwrap",
+            "nginx",
+            "sa02m-devices-api",
+            "sa02m-devices-logger",
+            # Telemetry owns its own device id + legacy-retained clear
+            # (1.0.6.22) — the new .py does nothing until the process
+            # restarts. This generator runs on the dev host, so unlike the
+            # online path the entry is live in the very package that
+            # delivers the change. Must stay in step with the online
+            # generator's list in etc/sa02m-update-runner.sh.
+            "sa02m-telemetry",
+            # Scenario engine holds /opt/sa02m-rules in memory — bounce it
+            # on deploy or scenarios keep running the stale engine until
+            # reboot (1.0.6.37 bench incident class). Core unit, enabled by
+            # 06b-rules.sh on every full install — restart||start semantics
+            # fit. Must stay in step with etc/sa02m-update-runner.sh.
+            "sa02m-rules",
+        ],
+        "health": {
+            "http_url": "http://127.0.0.1:9999/login.html",
+            "units_active": ["nginx", "fcgiwrap", "sa02m-devices-api"],
+            "version_file": "/var/www/network_config/VERSION",
+        },
+    }
+    if not emit_optional_service_keys(min_updater):
+        return services
+    # Optional keys — only when min_updater already understands them.
+    services["enable"] = [
+        "sa02m-devices-api.service",
+        "sa02m-devices-logger.service",
+        # Must stay in step with the online generator's list in
+        # etc/sa02m-update-runner.sh — an entry in one path only means
+        # the offline and online updates disagree about what runs at
+        # the next boot. See docs/contracts/boot-network-dns.md.
+        "sa02m-dns-ensure.service",
+    ]
+    services["restart_if_active"] = [
+        "sa02m-alice-client",
+        "sa02m-alice-config",
+        "sa02m-cloud-control",
+    ]
+    services["restart_if_changed"] = {
+        "sa02m-modbus-mqtt": "/opt/sa02m-modbus-mqtt/",
+    }
+    return services
+
+
 def build_manifest(
     *,
     version: str,
@@ -533,37 +648,7 @@ def build_manifest(
             "free_bytes_multiplier": 3,
         },
         "deploy": deploy,
-        "services": {
-            "daemon_reload": True,
-            "stop_before_apply": ["sa02m-flasher"],
-            "enable": [
-                "sa02m-devices-api.service",
-                "sa02m-devices-logger.service",
-                # Must stay in step with the online generator's list in
-                # etc/sa02m-update-runner.sh — an entry in one path only means
-                # the offline and online updates disagree about what runs at
-                # the next boot. See docs/contracts/boot-network-dns.md.
-                "sa02m-dns-ensure.service",
-            ],
-            "restart": [
-                "fcgiwrap",
-                "nginx",
-                "sa02m-devices-api",
-                "sa02m-devices-logger",
-                # Telemetry owns its own device id + legacy-retained clear
-                # (1.0.6.22) — the new .py does nothing until the process
-                # restarts. This generator runs on the dev host, so unlike the
-                # online path the entry is live in the very package that
-                # delivers the change. Must stay in step with the online
-                # generator's list in etc/sa02m-update-runner.sh.
-                "sa02m-telemetry",
-            ],
-            "health": {
-                "http_url": "http://127.0.0.1:9999/login.html",
-                "units_active": ["nginx", "fcgiwrap", "sa02m-devices-api"],
-                "version_file": "/var/www/network_config/VERSION",
-            },
-        },
+        "services": build_services_block(MIN_UPDATER),
         "delete": [],
         "migrations": [],
     }
@@ -644,6 +729,12 @@ def main() -> int:
         help="Allow packing with a dirty git worktree (bench/CI only; not for release)",
     )
     args = ap.parse_args()
+
+    # Before any gate: a pack that dies on a dirty tree still tells the release
+    # engineer what the services block would have withheld.
+    note = frozen_services_note(MIN_UPDATER)
+    if note:
+        print(note, file=sys.stderr)
 
     ensure_sync_app_version()
     if not args.allow_dirty:

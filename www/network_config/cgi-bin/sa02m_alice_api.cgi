@@ -5,7 +5,7 @@
 # GET  → full config + link/probe status (+ cloud_control block)
 # POST {"action":"enable"|"disable"|"cloud_control_enable"|"cloud_control_disable"|
 #               "link"|"unlink"|"upsert_room"|"delete_room"|
-#               "upsert_device"|"delete_device"|"available"|"mqtt_topics"|"status", ...}
+#               "upsert_device"|"delete_device"|"rename_device"|"available"|"mqtt_topics"|"status", ...}
 # The action allow-list is the Python dispatch (unknown ⇒ not_found); the sudo
 # nudges below fire only on the exact verbs the sudoers pin grants.
 
@@ -71,7 +71,12 @@ export SA02M_ALICE_PATH="${PATH_INFO:-/integrations/alice/}"
 
 # Result captured (still printed verbatim below) so the post-dispatch nudge
 # can act only on a successful mutation.
-RESULT=$(timeout 8 python3 - <<'PY'
+# Budget: sa02m_alice.common.constants.CGI_DISPATCH_TIMEOUT_S (18). Covers
+# unlink/enroll (probe + gateway POST, each 5 s) and a HEAD 405 retry, plus
+# import/JSON on a loaded ARM board. Must stay below nginx /cgi-bin/
+# fastcgi_read_timeout (20 s). Override: SA02M_ALICE_CGI_TIMEOUT.
+ALICE_CGI_TIMEOUT="${SA02M_ALICE_CGI_TIMEOUT:-18}"
+RESULT=$(timeout "$ALICE_CGI_TIMEOUT" python3 - <<'PY'
 import json, os, sys
 method = os.environ.get("SA02M_ALICE_METHOD", "GET")
 path = os.environ.get("SA02M_ALICE_PATH") or "/integrations/alice/"
@@ -132,7 +137,7 @@ if [ "$METHOD" = "POST" ]; then
     # the same document: the trigger's `restart` verb covers each enabled one
     # (a connected client is reloaded in place, never restarted).
     case "$ACTION" in
-        upsert_device|delete_device|upsert_room|delete_room)
+        upsert_device|delete_device|rename_device|upsert_room|delete_room)
             case "$RESULT" in
                 *'"ok": true'*|*'"ok":true'*)
                     if grep -Eq '^\s*(client_enabled|cloud_control_enabled)\s*=\s*[Tt]rue' /etc/sa02m-alice/sa02m-alice-client.conf 2>/dev/null; then

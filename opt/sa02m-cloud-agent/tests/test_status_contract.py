@@ -20,6 +20,16 @@ _spec.loader.exec_module(agent)
 with open(AGENT_PATH, encoding="utf-8") as _f:
     AGENT_SOURCE = _f.read()
 
+# Since 1.0.6.32 the stand-down itself lives in the shared binding-reset core,
+# so the agent file is no longer the only home of the state literals this
+# contract enumerates. `covers` names what can BREAK the guarantee, not only
+# where it started (docs/agent-rules/quality-gate-rigor.md (b), «incomplete
+# enumeration»): scan BOTH homes. Missing core file = FAIL, never a quiet pass.
+CORE_PATH = os.path.join(AGENT_DIR, "binding_core.py")
+with open(CORE_PATH, encoding="utf-8") as _f:
+    CORE_SOURCE = _f.read()
+STATE_SOURCES = AGENT_SOURCE + "\n" + CORE_SOURCE
+
 
 def _read(*parts):
     with open(os.path.join(REPO, *parts), encoding="utf-8") as f:
@@ -36,7 +46,10 @@ def test_status_state_enum_matches_contract_and_card():
     documented = {x.strip() for x in m.group(1).split("|")}
     assert documented == enum, "contract enum != agent.STATUS_STATES: %s" % sorted(documented ^ enum)
 
-    written = set(re.findall(r'_write_status\("([a-z_]+)"', AGENT_SOURCE))
+    # `write_status("…")` matches both the agent's own `_write_status(` and the
+    # core's `spec.write_status(` — one pattern, both homes, strictly wider than
+    # the agent-only scan it replaces.
+    written = set(re.findall(r'write_status\("([a-z_]+)"', STATE_SOURCES))
     written |= {agent._stand_down_state(c) for c in ("revoked", "unlinked", "unknown")}
     assert written == enum, "states the agent writes != STATUS_STATES: %s" % sorted(written ^ enum)
 

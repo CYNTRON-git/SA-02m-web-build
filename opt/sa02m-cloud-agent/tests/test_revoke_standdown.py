@@ -542,6 +542,34 @@ def test_footerless_read_is_clean_and_the_window_is_rearmed(cloud_fs, monkeypatc
     assert len([c for c in journal.calls if c[0] == "journalctl"]) == 2
 
 
+def test_the_rearm_restores_the_window_itself_not_merely_a_window(cloud_fs, monkeypatch):
+    """The re-arm, pinned WITHOUT a clock coincidence (1.0.6.32).
+
+    Measured while extracting this reader into the shared core: making `_rearm`
+    a no-op leaves the whole suite GREEN. `test_footerless_read_is_clean_and_the
+    _window_is_rearmed` compares the two `--since` VALUES, and the reader's
+    `or time.strftime(...)` fallback produces "now" at second resolution — equal
+    to the original window whenever both reads land in the same second, which
+    they do on any fast host. So that pin passes by timing, not by the re-arm.
+
+    The difference is real on a real journal: a window re-armed to the ORIGINAL
+    position still covers lines the unit emitted between the two ticks, while a
+    fresh "now" window silently skips them — an under-count, the direction in
+    which a genuine detach stops triggering. Assert the position itself.
+    """
+    journal = _FakeJournal([MARK], footer=False)
+    monkeypatch.setattr(agent.subprocess, "run", journal)
+    assert agent.frpc_reject_reason() == ""
+    assert agent._SINCE_FROM["at"] == agent.AGENT_STARTED_AT, (
+        "the one-shot window was not re-armed to its original position")
+    # And a read that FAILS (rc != 0) with no cursor re-arms the same way.
+    agent._SINCE_FROM["at"] = agent.AGENT_STARTED_AT
+    failing = _FlakyFirstJournal([], first="rc1")
+    monkeypatch.setattr(agent.subprocess, "run", failing)
+    assert agent.frpc_reject_reason() == ""
+    assert agent._SINCE_FROM["at"] == agent.AGENT_STARTED_AT
+
+
 def test_stale_cursor_is_dropped_and_the_next_read_starts_from_now(cloud_fs, monkeypatch):
     agent._save_cursor("s=old")
     journal = _FakeJournal([MARK], refuse_cursor=True)

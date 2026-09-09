@@ -36,6 +36,11 @@ log INFO "Копирую агент в $AGENT_DST..."
 mkdir -p "$AGENT_DST"
 cp "$AGENT_SRC/sa02m-cloud-agent.py"    "$AGENT_DST/"
 cp "$AGENT_SRC/sa02m-cloud-activate.py" "$AGENT_DST/"
+# Общее ядро сброса привязки: авторитетный исходник, лежащий рядом с агентом.
+# Побайтовую копию в пакете умного дома привозит rsync в 06-alice.sh, равенство
+# держит строка реестра binding-reset-parity. Почему копии, а не общий модуль —
+# docs/decisions/binding-reset-one-home.md (здесь не пересказывается).
+cp "$AGENT_SRC/binding_core.py"         "$AGENT_DST/"
 chmod +x "$AGENT_DST/sa02m-cloud-agent.py"
 chmod +x "$AGENT_DST/sa02m-cloud-activate.py"
 
