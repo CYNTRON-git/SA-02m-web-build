@@ -105,7 +105,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-rules/tests -t opt/sa02m-rules -q; fi; done; echo py-unit-rules: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-rules/", "etc/systemd/system/sa02m-rules.service"],
+      "covers": ["opt/sa02m-rules/", "etc/systemd/system/sa02m-rules.service", "docs/contracts/cloud-scenarios.md"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
@@ -133,7 +133,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-alice/tests -t opt/sa02m-alice -q; fi; done; echo py-unit-alice: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-alice/", "docs/contracts/alice-mqtt-mapping.md", "www/network_config/static/js/app/alice.js", "www/network_config/static/js/app/smarthome.js", "www/network_config/static/js/cloud.js", "www/network_config/cgi-bin/sa02m_alice_api.cgi", "www/network_config/cgi-bin/sa02m_alice_topics.cgi", "opt/sa02m-modbus-mqtt/bridge_mr02m_map.py", "opt/sa02m-led/sa02m_led/controls.py", "docs/MQTT_TOPICS.md", "www/network_config/static/js/mqtt.js"],
+      "covers": ["opt/sa02m-alice/", "docs/contracts/alice-mqtt-mapping.md", "www/network_config/static/js/app/alice.js", "www/network_config/static/js/app/smarthome.js", "www/network_config/static/js/cloud.js", "www/network_config/cgi-bin/sa02m_alice_api.cgi", "www/network_config/cgi-bin/sa02m_alice_topics.cgi", "opt/sa02m-modbus-mqtt/bridge_mr02m_map.py", "opt/sa02m-led/sa02m_led/controls.py", "docs/MQTT_TOPICS.md", "www/network_config/static/js/mqtt.js", "opt/sa02m-rules/"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {

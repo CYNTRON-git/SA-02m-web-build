@@ -8,6 +8,11 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
+  The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
+  with the engine stopped the publish is simply lost and the user gets «сделано» for a
+  scene that never ran (1.0.6.41, scenes as devices). Fix direction: an LWT/availability
+  topic for the engine that the registry reads before answering.
 - [OPEN] 2026-09-09 **[LOW] `upsert_room` with an unknown `id` CREATES that room**, while
   `apply_rooms` answers `not_found` for the same id — an asymmetry between the two room
   writers (found while fixing the rename wipe, 1.0.6.41). Deliberately unchanged: which
@@ -133,7 +138,10 @@ worklist collapsed into one home).
   `sa02m-domain.md ## Version discipline` (1.0.6.39); the gate — a changed served asset
   must carry a changed `?v=`+`&r=` pair vs the previous release — is deferred. Design
   choice pending: teach the script to manage `&r=`, or drop it for the `?v=` bump.
-- [OPEN] 2026-09-08 **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (implemented, not dropped: an exposed scene is a
+  `devices.types.switch` in Alice, board-keyed id `scene-<sn>-<sid>`, placed by
+  `captured_from.room_id`; `group_id` stays cloud-side provenance and the contract says so)
+  **[MED] Operator decision — `alice_expose` / `captured_from`** (audit
   A14). The rules store validates and persists both fields and nothing reads them; the
   contract now says «accepted, not yet consumed». Either implement the exposure in the
   Alice device registry (a scene the user marks «в Алису» becomes a device) or drop the
