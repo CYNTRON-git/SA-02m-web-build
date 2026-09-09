@@ -88,7 +88,12 @@ worklist collapsed into one home).
   contract now says «accepted, not yet consumed». Either implement the exposure in the
   Alice device registry (a scene the user marks «в Алису» becomes a device) or drop the
   fields. Not derivable from canon — the Operator's call.
-- [OPEN] 2026-09-08 **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
+- [RESOLVED] 2026-09-09 (measured on bench 1.135, COM4 addr 10 «14DI» @115200, 60 cycles
+  per shape): one FC04 ×46 → 55/60 ok, 5 short (65–96 of 97 bytes); one ×32 → 55/60,
+  5 short at 65 bytes (30 regs); 32+16 → 56/60; three ×16 → **60/60**. The merged read is
+  REJECTED — the ~30-register truncation the map warns about is real on this line; the
+  three ×16 reads (≈200 ms/cycle) stay, the cost is stated in `docs/MQTT_TOPICS.md`.
+  **[LOW] Press-counter polling costs 3 extra FC04 per poll cycle per
   module with a «Кнопка» DI** (+1 FC03 / 60 s) — doubles the per-poll transaction count of
   a 6DO8DI module on a line shared with Carel (audit E7). The cost is now stated in
   `docs/MQTT_TOPICS.md`; the single-FC04 read (695..727+max_ch−1, ≤46 regs) needs the
