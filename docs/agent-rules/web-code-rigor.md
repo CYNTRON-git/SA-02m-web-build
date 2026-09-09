@@ -122,6 +122,22 @@ a review; cite it.
 - `etc/*.sh` and `install.sh` changes state their idempotency: re-running the
   installer or a boot script on an already-configured device must not corrupt
   state (the installer is the upgrade path).
+- **A live-path file is written atomically** — a systemd unit or drop-in under
+  `/etc/systemd/system/`, a helper under `/usr/local/{bin,sbin,lib,libexec}/`
+  lands through `sa02m_atomic_install` (`scripts/lib.sh`: tmp + fsync +
+  rename-over), never a bare `install -m` that truncates the live path first.
+  A hard reset between truncate and fill leaves a 0-byte file, and systemd
+  reads an empty unit as **masked** — bench 1.136 booted with the flasher
+  silently masked that way (2026-09-08).
+- **A shared dependency lands before its first consumer** — a package every
+  bridge/daemon imports (`sa02m_install_carel_pkg`, `sa02m_install_led_pkg`)
+  is installed BEFORE the files that import it, in every module that installs
+  both, so a torn run leaves {new package, old consumer} (which still runs)
+  and never {new consumer, old package} (which crash-loops).
+- **A 0-byte unit fragment in `/etc` is breakage, not an operator decision** —
+  systemd masks with a `/dev/null` symlink, so an empty regular file there can
+  only be a torn install: the capture reports `broken` and the module
+  reinstalls with its first-install default, never «маска сохранена».
 - A new systemd unit names its ordering/deps (`After=`, `Wants=`) and its
   failure mode; anything touching RS-485 ports respects the port-lease
   protocol (`sa02m-domain.md ## Subsystems`).
