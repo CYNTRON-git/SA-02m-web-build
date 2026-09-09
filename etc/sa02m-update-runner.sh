@@ -238,8 +238,12 @@ PY
 # do; restoring writes the previous value back as an override (the configured
 # policy applies again from the next boot).
 # `systemctl daemon-reexec` would also re-read the config and is deliberately
-# NOT used here: re-execing PID 1 mid-install is the leading hard-reset
-# candidate of the 8D run-note (.ai-dev/8d/bench-136-reset.md D4).
+# NOT used here: re-execing PID 1 mid-install is a PID-1 event during the very
+# window this hold protects, and there is no reason to add one when a runtime
+# override does the job. It is NOT the incident's leading cause - D4 excludes
+# it by timing and names the HW watchdog after a PID-1 stall as the leading row
+# (.ai-dev/8d/bench-136-reset.md D4). Measured on 1.136 on 2026-09-09: the
+# override SURVIVES a daemon-reexec, so 01-system.sh:762 does not undo the hold.
 sa02m_runtime_watchdog_usec() {   # prints RuntimeWatchdogUSec in µs; rc=1 when unreadable
     local v=""
     command -v busctl >/dev/null 2>&1 || return 1

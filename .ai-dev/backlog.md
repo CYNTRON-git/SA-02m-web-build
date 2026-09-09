@@ -40,23 +40,47 @@ worklist collapsed into one home).
   `metric` column staying the resume marker) so no single lock is long, or give the migration
   window its own longer busy timeout. The measured bound is now stated in
   `docs/contracts/carel-ahu.md` and `CHANGELOG.md` rather than promised away.
-- [OPEN] 2026-09-09 **[MED] Six live-path `install -m` sites under `etc/` are still the
-  truncate-then-fill shape the 8D closed everywhere else** — `sa02m-web-service-ctl.sh:1359`
-  writes `/etc/systemd/system/nodered.service`, the incident's own shape (a hard reset
-  mid-write leaves a 0-byte unit systemd reads as masked); also `:895,898` → `/opt/mplc4/*.so`,
-  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`, `sa02m-web-update-apply.sh:316,352` →
-  `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`, `sa02m-update-runner.sh:394`. The 8D's
-  step A swept `scripts/` only; found by the 1.0.6.41 ship review, finding 3. **Why they were
-  not converted with the rest:** `sa02m_atomic_install` lives in `scripts/lib.sh`, which
-  `install.sh` sources out of the extracted tree — `scripts/` is never deployed, and every
-  `etc/` script runs standalone on the board sourcing only its own
-  `/usr/local/lib/sa02m-web-*-lib.sh` (verified 2026-09-09: the `scripts/lib.sh` mentions in
-  those files are comments, not `source` lines). Closing this needs the helper duplicated into
-  a device-side lib — the shape the shared watchdog block already uses, with a `cmp` pin — then
-  each site converted with its own drive-to-failure. The sudoers site is the delicate one: a
-  torn sudoers file is worse than a torn unit. Enumeration and reason also live in
-  `scripts/dev/codemod-install-atomic.py`'s docstring, the one home of «which install sites are
-  live-path».
+- [RESOLVED 2026-09-09] 2026-09-09 **[MED] Seven live-path `install -m` sites in
+  `etc/sa02m-web-update-apply.sh` were the truncate-then-fill shape the 8D closed everywhere
+  else** — the OTA apply path a field board runs to update ITSELF, writing
+  `/usr/local/lib/sa02m-web-auth-lib.sh` (every CGI sources it),
+  `/usr/local/lib/sa02m-web-build-lib.sh`, `/usr/local/sbin/sa02m-web-root-cmd.sh`,
+  `/usr/local/libexec/sa02m-update-{runner,inspect}` and two `$(basename)` helpers under
+  `/usr/local/sbin/`. Worse than a plain truncate: the form was
+  `install -m … "$tgt" && sed -i 's/$//' "$tgt"` — two windows, not one. One of the seven
+  is `/usr/local/sbin/sa02m-web-update-apply` itself: the script overwrote its own running
+  image, and bash reads a script incrementally by byte offset, so that was a live
+  self-modification hazard independent of any reset. Converted to a local
+  `atomic_install_script -m MODE SRC DST` with the CRLF strip folded into the staged copy, so
+  the live path is touched exactly once, by the rename. Gated by
+  `scripts/dev/test-install-atomic.sh` sections 8–9. Found by the 1.0.6.41 ship review,
+  finding 1.
+- [OPEN] 2026-09-09 **[MED] Two live-path `install -m` sites under `etc/` remain**, and
+  neither is blocked by a missing helper — **my earlier record here was false**: it claimed
+  closing them «needs the helper duplicated into a device-side lib», but `atomic_install_file()`
+  already existed at `etc/sa02m-update-runner.sh:1006` (used `:1128`, `:1192`) and
+  `etc/sa02m-factory-reset-runner.sh:317` (used `:430`), and `etc/sa02m-web-update-apply.sh:59`
+  now carries a third. The three are NOT byte-identical and carry no `cmp` pin: each is scoped
+  to its own caller's duties (the factory runner adds a destination allow-list and a rollback
+  journal; the OTA one adds CRLF normalisation), which is why a further copy is a decision, not
+  a formality.
+  - `etc/sa02m-web-service-ctl.sh:1359` → `/etc/systemd/system/nodered.service` — the
+    incident's own shape. Survives because this file carries no atomic helper yet.
+  - `etc/sa02m-update-runner.sh:1289` → `"$rel"`, an absolute path replayed from the
+    pre-update rollback archive, whose members are the manifest's `deploy[].dst` entries
+    (`build_rollback_archive`, `:968-985`) — so `/usr/local/**` and `/etc/systemd/system/**`
+    are exactly what it restores. **Survives only because nobody looked:** this file DEFINES
+    `atomic_install_file` 283 lines above, so the conversion needs no new helper — and this is
+    the site that runs when the board is already mid-failure. Highest-value of the two.
+  My earlier list was wrong in both directions. Not live paths, so outside the rule rather than
+  exceptions to it: `sa02m-web-service-ctl.sh:895,898` → `/opt/mplc4/*.so`;
+  `sa02m-commit-web-env.sh:14` → `/etc/sa02m_web.env`; `sa02m-web-update-apply.sh:391,427`
+  (I recorded `:316,352`) → `/etc/tmpfiles.d/*` and `/etc/sudoers.d/sa02m-www`. And
+  `sa02m-update-runner.sh:394` was wrong on both axes: the site is `:395`, and its destination
+  is `"$STATEDIR/runner/$txn/runner"`, a per-transaction scratch self-copy exec'd immediately —
+  not a live path at all. Full enumeration, including the sites that ARE the atomic staging
+  write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
+  install sites are live-path».
 - [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**
   (the restore value is read back from the manager instead). An in-tree grep found no
   other user — confirm no deployment recipe or bench script sets it.

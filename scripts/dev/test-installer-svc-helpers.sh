@@ -750,6 +750,28 @@ if [ "$ria4_rc" -eq 0 ] && [ -e "$T/ria4.survived" ] && [ -z "$(verbs ria4.servi
 else
     bad "12d absent unit KILLED the caller: subshell rc=$ria4_rc, next-statement-ran=$([ -e "$T/ria4.survived" ] && echo yes || echo NO), verbs='$(verbs ria4.service)', LAST_RESULT='$(cat "$T/ria4.result" 2>/dev/null)'"
 fi
+# 12e. The SAME abort, one rc lower and far more common in the field: a unit
+# that EXISTS and is simply stopped answers rc 3, not 4. 12b already proves the
+# never-widen behaviour for that unit, but it calls the helper from the harness,
+# which does not run under `set -e` — so before the fix 12b passed while a real
+# installer module died. Without this case the pin would cover only the rarer
+# absent-unit shape (ship review 1.0.6.41, round 2). scripts/06b-rules.sh:50
+# names sa02m-cloud-control.service, which is stopped on any un-enrolled board.
+reset_case
+seed ria5.service enabled inactive
+rm -f "$T/ria5.survived" "$T/ria5.result"
+(
+    set -euo pipefail
+    sa02m_svc_restart_if_active ria5.service
+    printf '%s' "$SA02M_SVC_LAST_RESULT" > "$T/ria5.result"
+    : > "$T/ria5.survived"
+)
+ria5_rc=$?
+if [ "$ria5_rc" -eq 0 ] && [ -e "$T/ria5.survived" ] && [ -z "$(verbs ria5.service)" ]    && [ "$(cat "$T/ria5.result" 2>/dev/null)" = left-inactive ]; then
+    ok "12e stopped unit (is-active rc 3) ⇒ the set -e caller runs on, still zero calls"
+else
+    bad "12e stopped unit KILLED the caller: subshell rc=$ria5_rc, next-statement-ran=$([ -e "$T/ria5.survived" ] && echo yes || echo NO), verbs='$(verbs ria5.service)', LAST_RESULT='$(cat "$T/ria5.result" 2>/dev/null)'"
+fi
 
 echo "── 13. first install of a package that lays AND starts its own unit (12-docker.sh order) ──"
 # docker.io's postinst writes the unit file and enables+starts it. `absent` —
