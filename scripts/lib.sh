@@ -973,7 +973,14 @@ sa02m_svc_restart_if_active() {
     local u; u=$(_sa02m_unit_name "$1")
     SA02M_SVC_LAST_RESULT=kept
     [ -n "${SA02M_ROOTFS_BUILD:-}" ] && return 0
-    local _act; _act=$(_sa02m_svc_query is-active "$u")
+    # rc swallowed via `|| true` — is-active exits non-zero for every state that
+    # is not `active`, and 4 ("inactive") for a unit the manager does not know.
+    # A bare `_act=$(...)` gives that rc to the assignment and kills the CALLING
+    # MODULE under its `set -e` (bench 1.136, 2026-09-09: 11-devices.sh exited 4
+    # at this line and skipped its nginx /api/devices* block). Same reason as
+    # the `|| rc=$?` in sa02m_svc_capture; pinned by case 12d of
+    # scripts/dev/test-installer-svc-helpers.sh.
+    local _act; _act=$(_sa02m_svc_query is-active "$u") || true
     if [ "$_act" = active ]; then
         if _sa02m_svc_restart "$u"; then
             SA02M_SVC_LAST_RESULT=restarted

@@ -48,8 +48,10 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # State-file conventions: <u>.enabled holds the is-enabled word (missing file =
 # unit unknown: rc 1, no output; the literal `timeout` = exit 124); <u>.active
 # holds the is-active word (missing = rc 3 "inactive"? NO — missing means the
-# shim answers nothing rc 3; tests always seed it); <u>.ts / <u>.needreload
-# feed `show -p`.
+# shim answers nothing rc 3; tests always seed it; the literal `absent` = the
+# manager does not know this unit — real systemctl prints "inactive" on stdout
+# and exits 4, the shape measured on bench 1.136 on 2026-09-09); <u>.ts /
+# <u>.needreload feed `show -p`.
 cat > "$BIN/systemctl" <<SHIM
 #!/bin/bash
 ST="$ST"; CALLS="$CALLS"
@@ -76,6 +78,8 @@ case "$cmd" in
         [ -f "$f" ] || exit 3
         v=$(cat "$f")
         [ "$v" = timeout ] && exit 124
+        # unknown unit: stdout "inactive", rc 4 — NOT the rc 3 of a known unit.
+        [ "$v" = absent ] && { printf 'inactive\n'; exit 4; }
         printf '%s\n' "$v"
         [ "$v" = active ] && exit 0 || exit 3
         ;;
@@ -719,6 +723,33 @@ reset_case
 seed ria3.service enabled active 100
 SA02M_ROOTFS_BUILD=1 sa02m_svc_restart_if_active ria3.service
 [ -z "$(verbs ria3.service)" ]     && ok "restart-if-active: ROOTFS build ⇒ no runtime restart"     || bad "restart-if-active in ROOTFS made calls: '$(verbs ria3.service)'"
+# 12d. ABSENT unit ⇒ a LOGGED NO-OP the calling module survives. Measured on
+# bench 1.136 (2026-09-09): `systemctl is-active <unknown-unit>` prints
+# "inactive" and exits 4, and the helper's `local _act` / `_act=$(...)` split
+# handed that rc to the assignment — so under a module's `set -euo pipefail`
+# the HELPER aborted and took the whole module with it (rc=4). Three call sites
+# name a unit a field board does not have; scripts/11-devices.sh lost its nginx
+# /api/devices* block that way on every board without sa02m-stand-api.service.
+# The subshell below is the installer module: the statement AFTER the call must
+# run, and no systemctl verb may be issued (never-widen still holds).
+reset_case
+seed ria4.service - absent                  # not on disk; the manager answers
+rm -f "$T/ria4.survived" "$T/ria4.result" "$T/ria4.log"
+(
+    set -euo pipefail
+    sa02m_svc_restart_if_active ria4.service
+    printf '%s' "$SA02M_SVC_LAST_RESULT" > "$T/ria4.result"
+    printf '%s' "$LOGCAP" > "$T/ria4.log"
+    : > "$T/ria4.survived"                  # reached only if the caller survived
+)
+ria4_rc=$?
+if [ "$ria4_rc" -eq 0 ] && [ -e "$T/ria4.survived" ] && [ -z "$(verbs ria4.service)" ] \
+   && [ "$(cat "$T/ria4.result" 2>/dev/null)" = left-inactive ] \
+   && grep -q 'не активен' "$T/ria4.log" 2>/dev/null; then
+    ok "12d absent unit ⇒ logged no-op, zero calls, the set -e caller runs on"
+else
+    bad "12d absent unit KILLED the caller: subshell rc=$ria4_rc, next-statement-ran=$([ -e "$T/ria4.survived" ] && echo yes || echo NO), verbs='$(verbs ria4.service)', LAST_RESULT='$(cat "$T/ria4.result" 2>/dev/null)'"
+fi
 
 echo "── 13. first install of a package that lays AND starts its own unit (12-docker.sh order) ──"
 # docker.io's postinst writes the unit file and enables+starts it. `absent` —

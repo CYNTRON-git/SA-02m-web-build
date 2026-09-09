@@ -82,8 +82,12 @@ fi
 # serving /api/devices* (12AI history kind=mr lives in that process).
 # Never-widen: only bounce a running stand API (1.135 owns :8765).
 # The unit is bench-only and NOT in this tree (no etc/systemd/ fragment): a
-# field board has no such unit and the helper is a logged no-op there. Its one
-# home is the bench runbook docs/bench-board-target-state.md.
+# field board has no such unit and the helper is a logged no-op there. That
+# no-op is a MEASURED guarantee, not an assumption — until 1.0.6.41 the absent
+# unit aborted this module rc=4 here (bench 1.136, 2026-09-09) and everything
+# below, the nginx block included, was skipped; pinned by case 12d of
+# scripts/dev/test-installer-svc-helpers.sh. Its one home is the bench runbook
+# docs/bench-board-target-state.md.
 sa02m_svc_restart_if_active sa02m-stand-api.service
 
 # nginx proxy /api/devices* (если в репо есть полный conf)
