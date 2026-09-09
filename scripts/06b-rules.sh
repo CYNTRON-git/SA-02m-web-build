@@ -37,7 +37,7 @@ fi
 # Capture BEFORE (re)installing the unit — first-install vs restore-exact.
 sa02m_svc_capture sa02m-rules.service
 if [ -f "$UNIT_SRC/sa02m-rules.service" ]; then
-    install -m 0644 "$UNIT_SRC/sa02m-rules.service" /etc/systemd/system/sa02m-rules.service
+    sa02m_atomic_install -m 0644 "$UNIT_SRC/sa02m-rules.service" /etc/systemd/system/sa02m-rules.service
 fi
 systemctl daemon-reload
 # sa02m stack: first install enable+start; refresh never-widens an operator stop.

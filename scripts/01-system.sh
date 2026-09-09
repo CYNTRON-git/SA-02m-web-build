@@ -13,7 +13,7 @@ log INFO "=== [01] Системная настройка ==="
 
 # ── Armbian board branding (MOTD / release metadata) ───────────────────────
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ] && [ -f "$ETC_REPO/sa02m-armbian-branding.sh" ]; then
-    install -m 755 "$ETC_REPO/sa02m-armbian-branding.sh" /usr/local/sbin/sa02m-armbian-branding
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-armbian-branding.sh" /usr/local/sbin/sa02m-armbian-branding
     sed -i 's/\r$//' /usr/local/sbin/sa02m-armbian-branding
     /usr/local/sbin/sa02m-armbian-branding >> "$LOG_FILE" 2>&1 \
         && log OK "Armbian branding: CYNTRON SA-02m" \
@@ -44,11 +44,11 @@ timedatectl set-timezone Europe/Moscow >> "$LOG_FILE" 2>&1 || true
 
 # ── SSH: direct service mode instead of socket activation ──────────────────
 if [ -f "$ETC_REPO/sa02m-ssh-direct.sh" ]; then
-    install -m 755 "$ETC_REPO/sa02m-ssh-direct.sh" /usr/local/sbin/sa02m-ssh-direct
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-ssh-direct.sh" /usr/local/sbin/sa02m-ssh-direct
     /usr/local/sbin/sa02m-ssh-direct >> "$LOG_FILE" 2>&1 || log WARN "Не удалось перевести SSH в direct service mode"
 fi
 if [ -f "$ETC_REPO/sa02m-dbus-recover.sh" ]; then
-    install -m 755 "$ETC_REPO/sa02m-dbus-recover.sh" /usr/local/sbin/sa02m-dbus-recover
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-dbus-recover.sh" /usr/local/sbin/sa02m-dbus-recover
 fi
 
 # ── Persist hardware variant ───────────────────────────────────────────────
@@ -241,11 +241,11 @@ fi
 # ── USB / microSD: udev + storage-mount (exFAT при пустой ФС или NTFS) ─────
 if [ -f "$ETC_REPO/storage-mount.sh" ]; then
     log INFO "Установка storage-mount (USB / microSD)"
-    install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
-    install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
+    sa02m_atomic_install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
     # Репозиторий часто синхронизируется с Windows: удаляем CRLF у shebang helper-скрипта.
     sed -i 's/\r$//' /usr/local/sbin/sa02m-set-storage-auto-format
-    install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
     install -m 644 "$ETC_REPO/udev/99-storage.rules" /etc/udev/rules.d/99-storage.rules
     if [ ! -f /etc/sa02m_storage.conf ]; then
         install -m 644 "$ETC_REPO/sa02m_storage.conf" /etc/sa02m_storage.conf
@@ -292,7 +292,7 @@ fi
 
 # Сервис DHCP для CDC-ethernet модемов.
 if [ -f "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" ]; then
-    install -m 644 "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" \
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-modem-dhcp@.service" \
         /etc/systemd/system/sa02m-modem-dhcp@.service
     # Migration: the unit is event-driven only (udev 99-modem.rules); a
     # statically ENABLED instance (a one-off manual `systemctl enable` on a
@@ -305,7 +305,7 @@ fi
 
 # Сервис PPP для ttyUSB-модемов (не запускаем автоматически — только по udev).
 if [ -f "$ETC_REPO/systemd/sa02m-modem-ppp.service" ]; then
-    install -m 644 "$ETC_REPO/systemd/sa02m-modem-ppp.service" \
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-modem-ppp.service" \
         /etc/systemd/system/sa02m-modem-ppp.service
 fi
 
@@ -349,9 +349,9 @@ log OK "USB-модем: пакеты, udev, сервисы установлен�
 # ── Ранний PRE-START: USB, RTC (DS3231 при отсутствии rtc1), PCA9536 ────────
 if [ -f "$ETC_REPO/sa02m-pre-start.sh" ]; then
     log INFO "Установка sa02m-pre-start.service"
-    install -m 755 "$ETC_REPO/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
     if [ -f "$ETC_REPO/systemd/sa02m-pre-start.service" ]; then
-        install -m 644 "$ETC_REPO/systemd/sa02m-pre-start.service" /etc/systemd/system/sa02m-pre-start.service
+        sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-pre-start.service" /etc/systemd/system/sa02m-pre-start.service
     fi
     # NOTE: the mplc4.service unit install + enable moved to scripts/09-mplc.sh
     # (behind the stack verdict) — it used to leak past SA02M_SKIP_MPLC here.
@@ -368,7 +368,7 @@ fi
 # без ручного «reset питания» из web-панели.
 if [ -f "$ETC_REPO/systemd/sa02m-usb-vbus.service" ]; then
     log INFO "Установка sa02m-usb-vbus.service (гарантированное VBUS ON после boot)"
-    install -m 644 "$ETC_REPO/systemd/sa02m-usb-vbus.service" /etc/systemd/system/sa02m-usb-vbus.service
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-usb-vbus.service" /etc/systemd/system/sa02m-usb-vbus.service
     systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
     sa02m_svc_apply sa02m-usb-vbus.service infra
     log OK "sa02m-usb-vbus установлен и включён"
@@ -380,16 +380,16 @@ fi
 # idempotent — safe on installer re-runs and on codesys-less devices.
 if [ -f "$ETC_REPO/sa02m-kernel-service-guard.sh" ]; then
     log INFO "Установка sa02m-kernel-service-guard (kernel-политика служб)"
-    install -m 755 "$ETC_REPO/sa02m-kernel-service-guard.sh" \
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-kernel-service-guard.sh" \
         /usr/local/sbin/sa02m-kernel-service-guard.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-kernel-service-guard.sh
     if [ -f "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service" ]; then
-        install -m 644 "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service" \
+        sa02m_atomic_install -m 644 "$ETC_REPO/systemd/system/sa02m-kernel-service-guard.service" \
             /etc/systemd/system/sa02m-kernel-service-guard.service
     fi
     if [ -f "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf" ]; then
         install -d -m 755 /etc/systemd/system/docker.service.d
-        install -m 644 "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf" \
+        sa02m_atomic_install -m 644 "$ETC_REPO/systemd/system/docker.service.d/sa02m-kernel-guard.conf" \
             /etc/systemd/system/docker.service.d/sa02m-kernel-guard.conf
     fi
     sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
@@ -406,13 +406,13 @@ fi
 #             fake-hwclock.service ExecStop → fake-hwclock.data ← система
 if [ -f "$ETC_REPO/sa02m-rtc-sync.sh" ]; then
     log INFO "Установка sa02m-rtc-sync (DS3231 periodic sync)"
-    install -m 755 "$ETC_REPO/sa02m-rtc-sync.sh" /usr/local/sbin/sa02m-rtc-sync.sh
-    install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.service" /etc/systemd/system/sa02m-rtc-sync.service
-    install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.timer"   /etc/systemd/system/sa02m-rtc-sync.timer
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-rtc-sync.sh" /usr/local/sbin/sa02m-rtc-sync.sh
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.service" /etc/systemd/system/sa02m-rtc-sync.service
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-rtc-sync.timer"   /etc/systemd/system/sa02m-rtc-sync.timer
     WWW_RTC_LIB="$SCRIPT_DIR/../www/network_config/cgi-bin/lib_rtc.sh"
     if [ -f "$WWW_RTC_LIB" ]; then
         install -d -m 755 /usr/local/lib
-        install -m 755 "$WWW_RTC_LIB" /usr/local/lib/sa02m-lib-rtc.sh
+        sa02m_atomic_install -m 755 "$WWW_RTC_LIB" /usr/local/lib/sa02m-lib-rtc.sh
         log OK "sa02m-lib-rtc.sh установлен в /usr/local/lib"
     fi
     sa02m_systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
@@ -434,10 +434,10 @@ fi
 
 # ca_02m.service (After=network.target) заменён ранним sa02m-pre-start — отключаем дубль
 if [ -f "$ETC_REPO/ca_02m.sh" ]; then
-    install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/sbin/ca_02m.sh
-    [ -f /usr/local/bin/ca_02m.sh ] && install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/bin/ca_02m.sh
+    sa02m_atomic_install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/sbin/ca_02m.sh
+    [ -f /usr/local/bin/ca_02m.sh ] && sa02m_atomic_install -m 755 "$ETC_REPO/ca_02m.sh" /usr/local/bin/ca_02m.sh
     if [ -f "$ETC_REPO/systemd/ca_02m.service" ]; then
-        install -m 644 "$ETC_REPO/systemd/ca_02m.service" /etc/systemd/system/ca_02m.service
+        sa02m_atomic_install -m 644 "$ETC_REPO/systemd/ca_02m.service" /etc/systemd/system/ca_02m.service
     fi
     systemctl disable --now ca_02m.service >> "$LOG_FILE" 2>&1 || true
     log OK "ca_02m: no-op, сервис отключён (индикация в sa02m-pre-start)"
@@ -591,8 +591,8 @@ done
 # first-boot сеть (udev settle / ifupdown-pre / PHY).
 if [ -f "$ETC_REPO/sa02m-rootfs-expand.sh" ]; then
     log INFO "Установка sa02m-rootfs-expand (first-boot eMMC resize)"
-    install -m 755 "$ETC_REPO/sa02m-rootfs-expand.sh" /usr/local/sbin/sa02m-rootfs-expand.sh
-    install -m 644 "$ETC_REPO/systemd/sa02m-rootfs-expand.service" /etc/systemd/system/sa02m-rootfs-expand.service
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-rootfs-expand.sh" /usr/local/sbin/sa02m-rootfs-expand.sh
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-rootfs-expand.service" /etc/systemd/system/sa02m-rootfs-expand.service
     sa02m_systemctl stop armbian-resize-filesystem.service 2>/dev/null || true
     sa02m_systemctl disable armbian-resize-filesystem.service 2>/dev/null || true
     sa02m_systemctl mask armbian-resize-filesystem.service 2>/dev/null || true

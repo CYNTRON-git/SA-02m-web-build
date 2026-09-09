@@ -124,15 +124,15 @@ if systemctl is-active --quiet fcgiwrap 2>/dev/null; then
 fi
 
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" ]; then
-    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-build-lib.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
 fi
 
@@ -154,32 +154,32 @@ if [ -d "$REPO_OPT_UPDATE/lib" ]; then
 fi
 install -d -m 0755 /usr/local/libexec
 if [ -f "$REPO_ETC/sa02m-update-runner.sh" ]; then
-    install -m 755 "$REPO_ETC/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     log OK "sa02m-update-runner установлен"
     sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION" || true
 fi
 if [ -f "$REPO_ETC/sa02m-update-inspect.sh" ]; then
-    install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
     log OK "sa02m-update-inspect установлен"
 fi
 if [ -f "$REPO_ETC/sa02m-factory-reset-runner.sh" ]; then
-    install -m 755 "$REPO_ETC/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
 fi
 if [ -f "$REPO_SBIN_TREE/sa02m-web-backup.sh" ]; then
-    install -m 755 "$REPO_SBIN_TREE/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sa02m_atomic_install -m 755 "$REPO_SBIN_TREE/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
 elif [ -f "$REPO_ETC/sa02m-web-backup.sh" ]; then
-    install -m 755 "$REPO_ETC/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
 fi
 if [ -f "$REPO_SBIN_TREE/sa02m-restore-backup.sh" ]; then
-    install -m 755 "$REPO_SBIN_TREE/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sa02m_atomic_install -m 755 "$REPO_SBIN_TREE/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
 elif [ -f "$REPO_ETC/sa02m-restore-backup.sh" ]; then
-    install -m 755 "$REPO_ETC/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sa02m_atomic_install -m 755 "$REPO_ETC/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
 fi
 if [ -d "$REPO_ETC/sa02m-update/trusted-keys" ]; then
@@ -212,7 +212,7 @@ fi
 _upd_daemon_reload=0
 for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
-        install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sa02m_atomic_install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
         _upd_daemon_reload=1
     fi
@@ -225,37 +225,37 @@ if [ -f /etc/systemd/system/sa02m-update-recover.service ]; then
 fi
 
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
-    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
     /usr/local/sbin/sa02m-repair-web-env 2>/dev/null || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-pre-start.sh" /usr/local/sbin/sa02m-pre-start.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi
 
 # USB / microSD: storage-mount (как в scripts/01-system.sh), чтобы веб «Автоформат» работал без полного install.sh
 ETC_REPO="$SCRIPT_DIR/../etc"
 if [ -f "$ETC_REPO/storage-mount.sh" ] && [ -f "$ETC_REPO/sa02m-set-storage-auto-format" ]; then
     log INFO "Синхронизация storage-mount из $ETC_REPO"
-    install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
-    install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
+    sa02m_atomic_install -m 755 "$ETC_REPO/storage-mount.sh" /usr/local/bin/storage-mount.sh
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-set-storage-auto-format" /usr/local/sbin/sa02m-set-storage-auto-format
     # Репозиторий часто синхронизируется с Windows: удаляем CRLF у shebang helper-скрипта.
     sed -i 's/\r$//' /usr/local/sbin/sa02m-set-storage-auto-format
     if [ -f "$ETC_REPO/systemd/storage-mount@.service" ]; then
-        install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
+        sa02m_atomic_install -m 644 "$ETC_REPO/systemd/storage-mount@.service" /etc/systemd/system/storage-mount@.service
     fi
     if [ -f "$ETC_REPO/udev/99-storage.rules" ]; then
         install -m 644 "$ETC_REPO/udev/99-storage.rules" /etc/udev/rules.d/99-storage.rules
@@ -287,7 +287,7 @@ sa02m_install_sudoers "$REPO_ETC/sudoers.d/sa02m-www" /etc/sudoers.d/sa02m-www
 # rm/root-cmd pins).
 for _h in sa02m-iface-conf-write.sh sa02m-ensure-eth1-dhcp-hook.sh sa02m-usb-power.sh sa02m-conf-rm.sh sa02m-web-root-cmd.sh; do
     if [ -f "$REPO_ETC/$_h" ]; then
-        install -m 755 "$REPO_ETC/$_h" "/usr/local/sbin/$_h"
+        sa02m_atomic_install -m 755 "$REPO_ETC/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
     fi
 done
@@ -301,7 +301,7 @@ if [ -f "$REPO_ETC/dhcp/dhclient-exit-hooks.d/eth1-default-route" ]; then
 fi
 sa02m_cleanup_b1_deploy_artifacts
 if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
 fi
 
 # MPLC RT plugins from firmware/mplc4 (authoritative ABI). Web OTA also maps
@@ -333,7 +333,7 @@ fi
 REPO_ETC="$SCRIPT_DIR/../etc"
 REPO_SBIN="$SCRIPT_DIR/../usr/local/sbin"
 if [ -f "$REPO_SBIN/sa02m-cloud-web-trigger.sh" ]; then
-    install -m 755 "$REPO_SBIN/sa02m-cloud-web-trigger.sh" /usr/local/sbin/sa02m-cloud-web-trigger.sh
+    sa02m_atomic_install -m 755 "$REPO_SBIN/sa02m-cloud-web-trigger.sh" /usr/local/sbin/sa02m-cloud-web-trigger.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
     log OK "sa02m-cloud-web-trigger.sh обновлён"
 fi
@@ -344,7 +344,7 @@ fi
 # depth (security review 1.0.6.24, F4). Deliver the two together, always.
 for _h in sa02m-gateway-config-apply.sh sa02m-mqtt-config-apply.sh; do
     if [ -f "$REPO_SBIN/$_h" ]; then
-        install -m 755 -o root -g root "$REPO_SBIN/$_h" "/usr/local/sbin/$_h"
+        sa02m_atomic_install -m 755 -o root -g root "$REPO_SBIN/$_h" "/usr/local/sbin/$_h"
         sed -i 's/\r$//' "/usr/local/sbin/$_h"
         log OK "$_h обновлён"
     fi

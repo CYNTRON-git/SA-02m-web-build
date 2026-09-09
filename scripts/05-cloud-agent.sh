@@ -88,7 +88,7 @@ chmod 750 /etc/sa02m-cloud
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" ]; then
-    install -m 755 "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" \
+    sa02m_atomic_install -m 755 "$REPO_ROOT/usr/local/sbin/sa02m-cloud-web-trigger.sh" \
         /usr/local/sbin/sa02m-cloud-web-trigger.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cloud-web-trigger.sh
     log OK "sa02m-cloud-web-trigger.sh установлен"

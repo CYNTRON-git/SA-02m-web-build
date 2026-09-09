@@ -57,7 +57,7 @@ install -d -m 0755 /var/lib/sa02m-stand
 sa02m_svc_capture sa02m-devices-api.service sa02m-devices-logger.service
 for unit in sa02m-devices-api.service sa02m-devices-logger.service; do
     if [ -f "$ETC_DIR/systemd/$unit" ]; then
-        install -m 644 "$ETC_DIR/systemd/$unit" "/etc/systemd/system/$unit"
+        sa02m_atomic_install -m 644 "$ETC_DIR/systemd/$unit" "/etc/systemd/system/$unit"
         sed -i 's/\r$//' "/etc/systemd/system/$unit"
     fi
 done

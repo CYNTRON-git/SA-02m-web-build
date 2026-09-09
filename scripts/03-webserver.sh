@@ -185,7 +185,7 @@ chmod 644 "$WEB_ROOT/index.html" "$WEB_ROOT/login.html"
 chown -R www-data:www-data "$WEB_ROOT"
 
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-root-cmd.sh" /usr/local/sbin/sa02m-web-root-cmd.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-root-cmd.sh
 else
     log WARN "Нет etc/sa02m-web-root-cmd.sh — root-режим командной строки недоступен"
@@ -271,31 +271,31 @@ if [ ! -f /etc/sa02m_status_blocks.conf ] && [ -f "$ETC_DIR/sa02m_status_blocks.
 fi
 
 if [ -f "$ETC_DIR/sa02m-hw-backend-guard.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-hw-backend-guard.sh" /usr/local/sbin/sa02m-hw-backend-guard
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-hw-backend-guard.sh" /usr/local/sbin/sa02m-hw-backend-guard
 fi
 if [ -f "$ETC_DIR/sa02m-status-blocks-guard.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-status-blocks-guard.sh" /usr/local/sbin/sa02m-status-blocks-guard
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-status-blocks-guard.sh" /usr/local/sbin/sa02m-status-blocks-guard
 fi
 if [ -f "$ETC_DIR/sa02m-prepare-working-board.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-prepare-working-board.sh" /usr/local/sbin/sa02m-prepare-working-board
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-prepare-working-board.sh" /usr/local/sbin/sa02m-prepare-working-board
 fi
 if [ -f "$ETC_DIR/sa02m-failure-monitor.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-failure-monitor.sh" /usr/local/sbin/sa02m-failure-monitor
 fi
 # Keeps the extension: the sudoers below grants this exact path, and apply.cgi
 # falls back to retire-to-comments while the helper is absent (older deploys).
 if [ -f "$ETC_DIR/sa02m-conf-rm.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-conf-rm.sh" /usr/local/sbin/sa02m-conf-rm.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-conf-rm.sh" /usr/local/sbin/sa02m-conf-rm.sh
 fi
 # Pinned root-write / GPIO helpers (audit B1): the only file-write and GPIO
 # capability www-data holds via sudoers — replaces the former raw tee/gpioset/
 # kill grants. CRLF-strip because the repo often transits Windows.
 if [ -f "$ETC_DIR/sa02m-iface-conf-write.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-iface-conf-write.sh" /usr/local/sbin/sa02m-iface-conf-write.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-iface-conf-write.sh" /usr/local/sbin/sa02m-iface-conf-write.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-iface-conf-write.sh
 fi
 if [ -f "$ETC_DIR/sa02m-ensure-eth1-dhcp-hook.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-ensure-eth1-dhcp-hook.sh" /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-ensure-eth1-dhcp-hook.sh" /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-ensure-eth1-dhcp-hook.sh
 fi
 if [ -f "$ETC_DIR/dhcp/dhclient-exit-hooks.d/eth1-default-route" ]; then
@@ -305,14 +305,14 @@ if [ -f "$ETC_DIR/dhcp/dhclient-exit-hooks.d/eth1-default-route" ]; then
     sed -i 's/\r$//' /etc/dhcp/dhclient-exit-hooks.d/eth1-default-route
 fi
 if [ -f "$ETC_DIR/sa02m-usb-power.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-usb-power.sh" /usr/local/sbin/sa02m-usb-power.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-usb-power.sh
 fi
 if [ -f "$ETC_DIR/sa02m_failure_monitor.conf" ] && [ ! -f /etc/sa02m_failure_monitor.conf ]; then
     install -m 644 "$ETC_DIR/sa02m_failure_monitor.conf" /etc/sa02m_failure_monitor.conf
 fi
 if [ -f "$ETC_DIR/sa02m-failure-monitor.service" ]; then
-    install -m 644 "$ETC_DIR/sa02m-failure-monitor.service" /etc/systemd/system/sa02m-failure-monitor.service
+    sa02m_atomic_install -m 644 "$ETC_DIR/sa02m-failure-monitor.service" /etc/systemd/system/sa02m-failure-monitor.service
 fi
 
 # ── util-linux-extra (hwclock) ────────────────────────────────────────────
@@ -364,7 +364,7 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-web-login.conf" ]; then
 fi
 
 if [ -f "$ETC_DIR/sa02m-beeper-override.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-beeper-override.sh" /usr/local/sbin/sa02m-beeper-override.sh
 fi
 
 # ── /dev/i2c-* доступ для www-data (PCA9536 / hw_set.cgi без sudo) ───────
@@ -393,43 +393,43 @@ sa02m_cleanup_b1_deploy_artifacts
 
 # ── Учётные данные веб-интерфейса (/etc/sa02m_web.env) ─────────────────────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" ]; then
-    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-auth-lib.sh" /usr/local/lib/sa02m-web-auth-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-auth-lib.sh
 else
     log WARN "Нет etc/sa02m-web-auth-lib.sh — безопасная запись sa02m_web.env недоступна"
 fi
 # ── Политика сторонних стеков (общая lib для установщика и service-ctl) ────
 if [ -f "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" ]; then
-    install -m 644 "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-stacks-policy.sh" /usr/local/lib/sa02m-stacks-policy.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-stacks-policy.sh
 else
     log WARN "Нет etc/sa02m-stacks-policy.sh — service-ctl не будет записывать /etc/sa02m_stacks.conf"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-repair-web-env.sh" /usr/local/sbin/sa02m-repair-web-env
     sed -i 's/\r$//' /usr/local/sbin/sa02m-repair-web-env
 else
     log WARN "Нет etc/sa02m-repair-web-env.sh — repair sa02m_web.env недоступен"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-commit-web-env.sh" /usr/local/sbin/sa02m-commit-web-env
 else
     log WARN "Нет etc/sa02m-commit-web-env.sh — смена пароля через веб будет недоступна"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-check.sh" /usr/local/sbin/sa02m-web-update-check
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-check
 else
     log WARN "Нет etc/sa02m-web-update-check.sh — таймер проверки обновлений веб-UI недоступен"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" ]; then
-    install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
+    sa02m_atomic_install -m 644 "$SCRIPT_DIR/../etc/sa02m-web-build-lib.sh" /usr/local/lib/sa02m-web-build-lib.sh
     sed -i 's/\r$//' /usr/local/lib/sa02m-web-build-lib.sh
 else
     log WARN "Нет etc/sa02m-web-build-lib.sh — авто-ветка для проверки обновлений недоступна"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-update-apply.sh" /usr/local/sbin/sa02m-web-update-apply
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-update-apply
 else
     log WARN "Нет etc/sa02m-web-update-apply.sh — применение обновлений веб-UI из GitHub недоступно"
@@ -444,25 +444,25 @@ if [ -d "$SCRIPT_DIR/../opt/sa02m-update" ]; then
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" ]; then
     install -d -m 755 /usr/local/libexec
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION" || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" ]; then
     install -d -m 755 /usr/local/libexec
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-backup.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-backup.sh" /usr/local/sbin/sa02m-web-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-restore-backup.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-restore-backup.sh" /usr/local/sbin/sa02m-restore-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-factory-reset-runner.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
 fi
 mkdir -p /etc/sa02m-update/trusted-keys
@@ -471,7 +471,7 @@ if [ -d "$SCRIPT_DIR/../etc/sa02m-update/trusted-keys" ]; then
 fi
 for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
-        install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
     fi
 done
@@ -514,29 +514,29 @@ if [ -d "$UPDATE_OPT_SRC/lib" ]; then
 fi
 install -d -m 0755 /usr/local/libexec
 if [ -f "$ETC_DIR/sa02m-update-runner.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-update-runner.sh" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     log OK "sa02m-update-runner → /usr/local/libexec/sa02m-update-runner"
 elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-update-runner" ]; then
-    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-runner" /usr/local/libexec/sa02m-update-runner
+    sa02m_atomic_install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-runner" /usr/local/libexec/sa02m-update-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-runner
     log OK "sa02m-update-runner → /usr/local/libexec/sa02m-update-runner"
 fi
 if [ -f "$ETC_DIR/sa02m-update-inspect.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-update-inspect.sh" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
     log OK "sa02m-update-inspect → /usr/local/libexec/sa02m-update-inspect"
 elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-update-inspect" ]; then
-    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-inspect" /usr/local/libexec/sa02m-update-inspect
+    sa02m_atomic_install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-update-inspect" /usr/local/libexec/sa02m-update-inspect
     sed -i 's/\r$//' /usr/local/libexec/sa02m-update-inspect
     log OK "sa02m-update-inspect → /usr/local/libexec/sa02m-update-inspect"
 fi
 if [ -f "$ETC_DIR/sa02m-factory-reset-runner.sh" ]; then
-    install -m 755 "$ETC_DIR/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
+    sa02m_atomic_install -m 755 "$ETC_DIR/sa02m-factory-reset-runner.sh" /usr/local/libexec/sa02m-factory-reset-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
     log OK "sa02m-factory-reset-runner → /usr/local/libexec/sa02m-factory-reset-runner"
 elif [ -f "$REPO_ROOT/usr/local/libexec/sa02m-factory-reset-runner" ]; then
-    install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-factory-reset-runner" /usr/local/libexec/sa02m-factory-reset-runner
+    sa02m_atomic_install -m 755 "$REPO_ROOT/usr/local/libexec/sa02m-factory-reset-runner" /usr/local/libexec/sa02m-factory-reset-runner
     sed -i 's/\r$//' /usr/local/libexec/sa02m-factory-reset-runner
 fi
 _backup_src=""
@@ -546,7 +546,7 @@ elif [ -f "$ETC_DIR/sa02m-web-backup.sh" ]; then
     _backup_src="$ETC_DIR/sa02m-web-backup.sh"
 fi
 if [ -n "$_backup_src" ]; then
-    install -m 755 "$_backup_src" /usr/local/sbin/sa02m-web-backup.sh
+    sa02m_atomic_install -m 755 "$_backup_src" /usr/local/sbin/sa02m-web-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-web-backup.sh
     log OK "sa02m-web-backup.sh → /usr/local/sbin/sa02m-web-backup.sh"
 fi
@@ -557,7 +557,7 @@ elif [ -f "$ETC_DIR/sa02m-restore-backup.sh" ]; then
     _restore_src="$ETC_DIR/sa02m-restore-backup.sh"
 fi
 if [ -n "$_restore_src" ]; then
-    install -m 755 "$_restore_src" /usr/local/sbin/sa02m-restore-backup.sh
+    sa02m_atomic_install -m 755 "$_restore_src" /usr/local/sbin/sa02m-restore-backup.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-restore-backup.sh
     log OK "sa02m-restore-backup.sh → /usr/local/sbin/sa02m-restore-backup.sh"
 fi
@@ -585,7 +585,7 @@ if [ -f "$ETC_DIR/tmpfiles.d/sa02m-update.conf" ]; then
 fi
 for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_DIR/$_upd_unit" ]; then
-        install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
+        sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"
         log OK "unit $_upd_unit"
     fi
@@ -601,23 +601,23 @@ if [ -f /usr/local/lib/sa02m-web-build-lib.sh ]; then
     fi
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-reboot.sh" /usr/local/sbin/sa02m-web-reboot.sh
 else
     log WARN "Нет etc/sa02m-web-reboot.sh — перезагрузка из веб может не сработать при сбое systemd"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-restart-services.sh" /usr/local/sbin/sa02m-web-restart-services.sh
 else
     log WARN "Нет etc/sa02m-web-restart-services.sh — перезапуск служб из веб без расширенных fallback"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-web-service-ctl.sh" /usr/local/sbin/sa02m-web-service-ctl.sh
 else
     log WARN "Нет etc/sa02m-web-service-ctl.sh — управление прикладными службами из веб недоступно"
 fi
 # ── MPLC4 project deploy («Обновление проекта MPLC»): helper + Python module ──
 if [ -f "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" /usr/local/sbin/sa02m-mplc-project-deploy.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-mplc-project-deploy.sh" /usr/local/sbin/sa02m-mplc-project-deploy.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-mplc-project-deploy.sh
     log OK "sa02m-mplc-project-deploy.sh → /usr/local/sbin"
 else
@@ -636,7 +636,7 @@ if [ -d "$SCRIPT_DIR/../opt/sa02m-mplc/lib" ]; then
     find /opt/sa02m-mplc -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" /usr/local/sbin/sa02m-kernel-select.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-kernel-select.sh" /usr/local/sbin/sa02m-kernel-select.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-kernel-select.sh
     mkdir -p /usr/local/share/sa02m/kernel
     if [ -x /usr/local/sbin/sa02m-kernel-select.sh ]; then
@@ -647,18 +647,18 @@ else
     log WARN "Нет etc/sa02m-kernel-select.sh — переключение ядра из веб недоступно"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-cpu-profile.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-cpu-profile.sh" /usr/local/sbin/sa02m-cpu-profile.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-cpu-profile.sh" /usr/local/sbin/sa02m-cpu-profile.sh
     sed -i 's/\r$//' /usr/local/sbin/sa02m-cpu-profile.sh
 else
     log WARN "Нет etc/sa02m-cpu-profile.sh — управление частотой CPU из веб недоступно"
 fi
 if [ -f "$SCRIPT_DIR/../etc/sa02m-set-cpu-profile" ]; then
-    install -m 755 "$SCRIPT_DIR/../etc/sa02m-set-cpu-profile" /usr/local/sbin/sa02m-set-cpu-profile
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/../etc/sa02m-set-cpu-profile" /usr/local/sbin/sa02m-set-cpu-profile
     sed -i 's/\r$//' /usr/local/sbin/sa02m-set-cpu-profile
 fi
 for _cpu_unit in sa02m-cpu-profile.service; do
     if [ -f "$SYSTEMD_DIR/$_cpu_unit" ]; then
-        install -m 644 "$SYSTEMD_DIR/$_cpu_unit" "/etc/systemd/system/$_cpu_unit"
+        sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_cpu_unit" "/etc/systemd/system/$_cpu_unit"
         sa02m_svc_apply "$_cpu_unit" infra
     fi
 done
@@ -666,13 +666,13 @@ if [ -x /usr/local/sbin/sa02m-cpu-profile.sh ]; then
     /usr/local/sbin/sa02m-cpu-profile.sh init >> "$LOG_FILE" 2>&1 || true
 fi
 if [ -f "$SCRIPT_DIR/sa02m-rs485-stats.sh" ]; then
-    install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
+    sa02m_atomic_install -m 755 "$SCRIPT_DIR/sa02m-rs485-stats.sh" /usr/local/sbin/sa02m-rs485-stats.sh
 else
     log WARN "Нет scripts/sa02m-rs485-stats.sh — RS-485 TX/RX в дашборде без sudo-helper"
 fi
 for _wu_unit in sa02m-web-update-check.service sa02m-web-update-check.timer; do
     if [ -f "$SYSTEMD_DIR/$_wu_unit" ]; then
-        install -m 644 "$SYSTEMD_DIR/$_wu_unit" "/etc/systemd/system/$_wu_unit"
+        sa02m_atomic_install -m 644 "$SYSTEMD_DIR/$_wu_unit" "/etc/systemd/system/$_wu_unit"
     fi
 done
 if [ ! -f /etc/sa02m_web.env ]; then
@@ -703,7 +703,7 @@ fi
 
 # ── fcgiwrap: prefork service вместо узкого socket-activation ──────────────
 if [ -f "$SYSTEMD_DIR/fcgiwrap.service" ]; then
-    install -m 644 "$SYSTEMD_DIR/fcgiwrap.service" /etc/systemd/system/fcgiwrap.service
+    sa02m_atomic_install -m 644 "$SYSTEMD_DIR/fcgiwrap.service" /etc/systemd/system/fcgiwrap.service
     # Останавливаем ВСЕ варианты stock socket-activation (Ubuntu/Debian),
     # чтобы их сокет-файлы (/run/fcgiwrap.socket) исчезли до старта нашего сервиса.
     for _sock_unit in fcgiwrap.socket fcgiwrap@.socket; do

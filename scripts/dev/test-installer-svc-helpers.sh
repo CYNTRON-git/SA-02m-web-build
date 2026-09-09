@@ -151,7 +151,8 @@ export LOG_FILE="$T/install.log"
 export SA02M_STACKS_CONF="$T/etc/sa02m_stacks.conf"
 export SA02M_STACK_PROBE_ROOT="$T/root"
 export SA02M_SYSV_RC_DIRS="$T/rc2.d $T/rc3.d"
-mkdir -p "$T/etc" "$T/root" "$T/rc2.d" "$T/rc3.d"
+export SA02M_UNIT_FILE_DIRS="$T/units"      # the /etc unit dir the `broken` witness reads (case 14)
+mkdir -p "$T/etc" "$T/root" "$T/rc2.d" "$T/rc3.d" "$T/units"
 : > "$T/py-ok"
 
 # shellcheck disable=SC1090
@@ -757,6 +758,78 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_firs
 else
     bad "13c .ai-dev/quality/checks/lib_check.sh could not be sourced — the 12-docker.sh order was NOT verified (a skip is not a pass)"
 fi
+
+echo "── 14. a 0-byte unit fragment is BROKEN, not operator-masked ──"
+# Bench 1.136 (2026-09-08): a hard reset mid-install left
+# /etc/systemd/system/sa02m-flasher.service as an EMPTY regular file; systemd
+# reads that as `masked`, and the re-run's capture preserved it as an operator
+# decision (never-widen) — the flasher stayed dead until a hand repair.
+# systemd never masks a unit whose fragment lives in /etc (a mask is a symlink
+# to /dev/null), so `masked` + a 0-byte REGULAR file there is a torn install:
+# state `broken` ⇒ the module's first-install default, with a WARN naming it.
+# (.ai-dev/8d/bench-136-reset.md, D5 step C.)
+
+# 14a. masked + 0-byte regular fragment ⇒ en=broken; app on ⇒ enable + start
+reset_case
+seed svc-broken.service masked inactive
+: > "$T/units/svc-broken.service"
+sa02m_svc_capture svc-broken.service
+if [ "${SA02M_SVC_EN[svc-broken.service]-}" = broken ]; then
+    ok "14a capture reads masked + empty /etc fragment as en=broken"
+else
+    bad "14a capture: en='${SA02M_SVC_EN[svc-broken.service]-unset}' (expected broken)"
+fi
+# the module reinstalls the fragment and daemon-reloads before apply
+printf '[Service]\nExecStart=/bin/true\n' > "$T/units/svc-broken.service"; seed svc-broken.service disabled inactive
+sa02m_svc_apply svc-broken.service app on
+if [ "$(verbs svc-broken.service)" = "enable start" ] && [ "$SA02M_SVC_LAST_RESULT" = started ] \
+   && has_log "файл юнита пуст (обрыв прошлой установки)"; then
+    ok "14a broken app unit: enable + start (first-install default), LAST_RESULT=started, WARN names the torn install"
+else
+    bad "14a broken app unit: verbs='$(verbs svc-broken.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT log: $LOGCAP"
+fi
+rm -f "$T/units/svc-broken.service"
+
+# 14b. masked via a /dev/null SYMLINK in the same dir ⇒ still masked (1d holds)
+reset_case
+if ln -s /dev/null "$T/units/svc-sym.service" 2>/dev/null && [ -L "$T/units/svc-sym.service" ]; then
+    seed svc-sym.service masked inactive
+    sa02m_svc_capture svc-sym.service
+    sa02m_svc_apply svc-sym.service app on
+    if [ "${SA02M_SVC_EN[svc-sym.service]-}" = masked ] && [ -z "$(verbs svc-sym.service)" ] \
+       && [ "$SA02M_SVC_LAST_RESULT" = left-masked ]; then
+        ok "14b /dev/null symlink fragment stays masked: zero calls, left-masked (the operator's mask is a decision)"
+    else
+        bad "14b symlink mask: en='${SA02M_SVC_EN[svc-sym.service]-}' verbs='$(verbs svc-sym.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT"
+    fi
+else
+    echo "SKIP  14b this filesystem cannot create a symlink (Git Bash on Windows) — the symlink-mask case ran under WSL/Linux only"
+fi
+rm -f "$T/units/svc-sym.service"
+
+# 14c. masked + NON-empty regular fragment ⇒ masked as before (only a 0-byte file is torn)
+reset_case
+printf '[Service]\nExecStart=/bin/true\n' > "$T/units/svc-full.service"
+seed svc-full.service masked inactive
+sa02m_svc_capture svc-full.service
+if [ "${SA02M_SVC_EN[svc-full.service]-}" = masked ]; then
+    ok "14c a non-empty fragment reported masked stays masked (broken is the 0-byte case only)"
+else
+    bad "14c non-empty fragment: en='${SA02M_SVC_EN[svc-full.service]-}' (expected masked)"
+fi
+rm -f "$T/units/svc-full.service"
+
+# 14d. infra: masked + 0-byte fragment ⇒ no pointless unmask, WARN, then enable
+reset_case
+: > "$T/units/infra-broken.service"
+seed infra-broken.service masked inactive
+sa02m_svc_apply infra-broken.service infra
+if [ "$(verbs infra-broken.service)" = "enable" ] && has_log "файл юнита пуст"; then
+    ok "14d infra broken fragment: enable without unmask, WARN names the torn install"
+else
+    bad "14d infra broken fragment: verbs='$(verbs infra-broken.service)' log: $LOGCAP"
+fi
+rm -f "$T/units/infra-broken.service"
 
 echo ""
 if [ "$fails" -eq 0 ]; then
