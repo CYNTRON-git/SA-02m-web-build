@@ -8,6 +8,11 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-09 **[LOW] `upsert_room` with an unknown `id` CREATES that room**, while
+  `apply_rooms` answers `not_found` for the same id — an asymmetry between the two room
+  writers (found while fixing the rename wipe, 1.0.6.41). Deliberately unchanged: which
+  one is right is a contract call (does the cloud hub rely on create-by-id?), not a
+  defect fix. `docs/contracts/alice-mqtt-mapping.md` §Room membership is the home.
 - [OPEN] 2026-09-09 **[MED] `etc/sa02m-factory-reset-runner.sh:41,45` still carries the
   hollow watchdog guard** (`systemctl set-property --runtime Manager
   RuntimeWatchdogSec=0 … || true` plus a log line claiming the guarantee) that the
