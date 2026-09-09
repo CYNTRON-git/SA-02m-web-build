@@ -212,8 +212,23 @@ row() {   # row PASS|FAIL <name> <detail>
     local w=$((34 - ${#2})); [ "$w" -ge 1 ] || w=1
     say "$(printf '  %-4s  %s%*s%s' "$1" "$2" "$w" '' "${3:-}")"
 }
+ofu_unit_fragment_empty() {   # 0 iff the unit's /etc fragment is a 0-byte regular file
+    # The shape a hard reset leaves mid-`install -m`: the file exists, is
+    # empty, and systemd reads an empty unit as MASKED (systemd.unit(5)).
+    # Bench 1.136 booted with sa02m-flasher.service at 0 bytes and the
+    # re-run's post-checks called it «состояние сохранено»
+    # (.ai-dev/8d/bench-136-reset.md, D5 step D). A mask systemd itself made
+    # is a /dev/null SYMLINK — never judged here. SA02M_OFU_UNIT_DIR is the
+    # harness seam (scripts/dev/test-offline-update-postcheck.sh).
+    local d=${SA02M_OFU_UNIT_DIR:-/etc/systemd/system} f
+    for f in "$d/$1" "$d/$1.service"; do
+        [ -L "$f" ] && continue
+        [ -f "$f" ] && [ ! -s "$f" ] && return 0
+    done
+    return 1
+}
 post_checks() {   # $1 = install.sh exit code or "" when unknown (--status re-attach)
-    local rc=${1:-} out code ver svc st branch rv dv ua prev
+    local rc=${1:-} out code ver svc st en branch rv dv ua prev
     say ""; log INFO "Пост-проверки (docs/deployment.md, шаг 7):"
     if grep -q 'Установка завершена' "$LOG" 2>/dev/null; then
         row PASS "install.sh завершён" "финальный баннер в логе${rc:+, rc=$rc}"
@@ -241,6 +256,20 @@ post_checks() {   # $1 = install.sh exit code or "" when unknown (--status re-at
     [ -n "$out" ] && while IFS= read -r line; do say "        $line"; done <<< "$out"
     for svc in $CORE_SERVICES; do
         st="$(systemctl is-active "$svc" 2>/dev/null || true)"
+        en="$(systemctl is-enabled "$svc" 2>/dev/null || true)"
+        # A broken unit is a FAIL whatever the pre-update snapshot said: a
+        # masked or 0-byte unit can never come back on its own, so
+        # «состояние сохранено» would describe a dead service (the 1.136
+        # re-run printed exactly that over the torn sa02m-flasher.service).
+        if ofu_unit_fragment_empty "$svc"; then
+            row FAIL "служба $svc" "файл юнита пуст (обрыв установки) — переустановите модулем"
+            continue
+        fi
+        case "$en" in
+            masked|masked-runtime)
+                row FAIL "служба $svc" "юнит замаскирован (${st:-unknown}) — сам не поднимется"
+                continue ;;
+        esac
         if [ "$st" = active ]; then row PASS "служба $svc" "active"
         else
             # Preserved operator stop (refresh guarantee) is a PASS: only a
@@ -343,6 +372,17 @@ else log ERR "install.sh: синтаксическая ошибка — уста
 # the command word; after nohup they would become its program name. The same
 # launch serves --unattended: the PID file lets an SSH `--status` observe the
 # bridge's install, and `wait` gives the exit code in both modes.
+# `setsid` + `</dev/null`: nohup alone only ignores SIGHUP — install.sh stayed
+# in the wrapper's session, so a transport that tears the session down (a
+# paramiko exec_command whose channel closes, the 1.136 launch at 22:07) can
+# still signal the whole session, and an inherited dead stdin turns any read
+# into an error. Its own session + a real /dev/null stdin is the form that ran
+# 1.136 to completion at 22:48 (.ai-dev/8d/bench-136-reset.md D2/D5 E; the
+# non-tty runbook paragraph is docs/deployment.md «Офлайн-вариант»).
+# $! stays install.sh's own PID: this script is non-interactive (no job
+# control), so the background child is NOT a process-group leader and setsid
+# execs in place instead of forking. Pinned by
+# scripts/dev/test-offline-update-wrapper.sh.
 # Launch env: ALWAYS refresh (the mode's one home for wrapper+bridge is here —
 # the bridge launcher calls this wrapper without a mode and inherits it).
 # --with-optional passes the explicit third-party opt-in through.
@@ -358,7 +398,7 @@ if [ "$DRY_RUN" = 1 ]; then
     # Test hook for the bridge chain (no board): same path up to the launch,
     # then report instead of act; the status contract still ends in `done`.
     log WARN "DRY-RUN: install.sh не запускался"
-    log INFO "DRY-RUN: выполнил бы: (cd $REPO_ROOT && nohup env ${LAUNCH_ENV[*]} bash install.sh > $LOG 2>&1 &), PID-файл $PIDFILE, unattended=$UNATTENDED"
+    log INFO "DRY-RUN: выполнил бы: (cd $REPO_ROOT && nohup setsid env ${LAUNCH_ENV[*]} bash install.sh </dev/null > $LOG 2>&1 &), PID-файл $PIDFILE, unattended=$UNATTENDED"
     log INFO "DRY-RUN: затем пост-проверки (таблица PASS/FAIL), статус-файл: ${STATUS_FILE:-нет}, доп. лог: ${EXTRA_LOG:-нет}"
     exit 0
 fi
@@ -368,7 +408,7 @@ fi
 for svc in $CORE_SERVICES; do
     printf '%s %s\n' "$svc" "$(systemctl is-active "$svc" 2>/dev/null || true)"
 done > "$SVC_BEFORE" 2>/dev/null || true
-nohup env "${LAUNCH_ENV[@]}" bash install.sh > "$LOG" 2>&1 &
+nohup setsid env "${LAUNCH_ENV[@]}" bash install.sh </dev/null > "$LOG" 2>&1 &
 INSTALL_PID=$!
 echo "$INSTALL_PID" > "$PIDFILE"
 poll_install "$INSTALL_PID"
