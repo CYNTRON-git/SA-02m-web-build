@@ -8,6 +8,25 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-09 **[MED] `etc/sa02m-factory-reset-runner.sh:41,45` still carries the
+  hollow watchdog guard** (`systemctl set-property --runtime Manager
+  RuntimeWatchdogSec=0 … || true` plus a log line claiming the guarantee) that the
+  update runner lost in 1.0.6.41 — port it to the shared read-back block;
+  `scripts/dev/test-watchdog-hold.sh` case 9 is the pattern. Found while building 8D
+  step G; that file was outside the D5/D7 named set.
+- [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**
+  (the restore value is read back from the manager instead). An in-tree grep found no
+  other user — confirm no deployment recipe or bench script sets it.
+- [OPEN] 2026-09-09 **[LOW] 8D step F (install lock) not built.** The installer does not
+  hold `/run/sa02m-imaging.lock` for its run, so the userspace watchdog is not told to
+  stand down. Class-level measure, not this incident's trigger (nothing in A–E/G
+  depends on it).
+- [OPEN] 2026-09-09 **[LOW] `scripts/update-www-only.sh`: the non-unit, non-`/usr/local`
+  `install -m` sites are still non-atomic** — widen the codemod's `LIVE_PREFIXES` or
+  record why those paths are not live-path.
+- [OPEN] 2026-09-09 **[LOW] The 1.136 `busctl` write is unverified.** 8D step G reports
+  the value in force rather than assuming it, so it is safe either way; read 6 of the
+  8D (does the manager accept `RuntimeWatchdogUSec`) is the only unconfirmed half.
 - [OPEN] 2026-09-09 **[LOW] `carel_samples_v1` is dropped in 1.0.6.42.** The wide-table
   pivot of 1.0.6.41 keeps the old long table as a one-release rollback path; the drop
   (plus the `CAREL_METRIC_AGG` vocabulary constant if it still has no reader) belongs to
@@ -24,7 +43,14 @@ worklist collapsed into one home).
   the Operator's call: run `type=code` in a bounded child process (seccomp/`setrlimit`,
   no network, IPC to the engine), or drop `type=code` in favour of the block/logic
   templates the cloud editor already builds. Found with the cloud session, 2026-09-09.
-- [OPEN] 2026-09-08 **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
+- [RESOLVED] 2026-09-08 → 1.0.6.41 (8D `bench-136-reset`: A atomic live-path writes,
+  B dependency-before-consumer + per-module `sync`, C a 0-byte unit fragment is `broken`,
+  D the post-check fails on a masked core unit, E the wrapper launches in its own session,
+  G the installer holds the PID-1 watchdog with a read-back; each RED by mutation. Step F
+  (install lock) stays open below. Root cause: a hard reset — no watchdog logged a
+  decision and the pre-reset journal is torn — with the hardware watchdog the leading
+  hypothesis; the installer defects turned it into an outage and those are closed.)
+  **[HIGH] Bench 1.136 reset in the middle of `install.sh --refresh`**
   (offline full update 1.0.6.37 → 1.0.6.40, started 22:07, board rebooted ≈22:20 while
   `04-flasher.sh` was writing units — `sa02m-flasher.service` left as a 0-byte file
   (systemd reads it as masked), `/opt/sa02m-modbus-mqtt` new while `/opt/sa02m-led` old ⇒

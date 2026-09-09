@@ -123,6 +123,9 @@ mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
+installer-order|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
+offline-update-wrapper|scripts/offline-full-update.sh|nohup setsid env
+watchdog-hold|install.sh|trap sa02m_restore_runtime_watchdog EXIT
 runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
 runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
 runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"
