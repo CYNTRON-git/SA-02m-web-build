@@ -86,6 +86,34 @@ past 64 answers `too_many`; `MAX_WRITES=8` direct write actions
 stored row can never half-apply; nested `scenario`/`scene` children count
 toward the run's cap); `params` ≤ 4 KiB; `runs` 50; `notify_queue` 20.
 
+**Two files, one view (1.0.6.41).** The document (`scenarios.json`) holds
+scenarios, library and vars and is written only when that content changes
+(a cloud command, a `mode` action / `Vars.home_mode`). Run state — `runs`,
+`notify_queue`, per-scenario `last_run` / `last_error` — lives in the
+sibling journal **`/etc/sa02m-rules/runs.json`** (`store.journal_path`; the
+unit's `ReadWritePaths` tree is the only writable one under
+`ProtectSystem=strict`, so the journal needs no second tree). The engine
+buffers run state in memory (`store.Journal`) and flushes the journal
+read-modify-write on whichever comes first — `RUNS_FLUSH_S=5` s after the
+first unflushed record or `RUNS_FLUSH_MAX=32` pending records — plus
+immediately after `run_now` (the cloud reads the store as soon as the
+`.run` flag is consumed) and at shutdown (SIGTERM / `RulesApp.stop()`). A
+scenario run therefore costs no document write, never bumps the document's
+mtime and never triggers the service's reload. **What a crash can lose:** at
+most the last `RUNS_FLUSH_S` seconds of run records / notify entries (a
+`run_now` result is already on disk). A journal that is missing, corrupt or
+unwritable never blocks scenarios: readers see empty `runs` /
+`notify_queue`, the engine keeps its bounded buffer and retries at the next
+cadence, the next successful flush rewrites the file. Readers (`load` →
+`listed()` / `_ok()`) merge the journal into the document view, so the
+cloud-facing shapes below are unchanged; the view lags the engine's buffer
+by at most `RUNS_FLUSH_S`. `ack_notify` drains the journal's queue in place
+and the engine's next flush re-reads the file, so drained entries do not
+come back. A pre-1.0.6.41 document still carrying `runs` / `notify_queue` /
+`last_*` inside is migrated once at engine boot (journal written first, then
+the stripped document); until then a reader shows the legacy fields, and the
+journal is truth once it exists.
+
 Names that become MQTT topic segments are charset-validated at the store:
 `device` matches `[A-Za-z0-9_.:-]{1,64}`, `cap` matches
 `[A-Za-z0-9_.:-]{1,32}` (absent ⇒ `on_off`); a trigger, condition or
@@ -234,7 +262,8 @@ Alice document are not written.
 
 Unit (`etc/systemd/system/sa02m-rules.service`): `User=root`,
 `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectSystem=strict` with
-`ReadWritePaths=/etc/sa02m-rules` (the store is the only writable tree),
+`ReadWritePaths=/etc/sa02m-rules` (the store — document and journal — is the
+only writable tree),
 `MemoryMax=32M`; pinned by `test_security.py::UnitHardeningTests`. No
 `WatchdogSec=` — the daemon does not link systemd, the time bound on
 scenario code is in-process (above). A missing `paho-mqtt` (optional
