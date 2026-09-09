@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import signal
 import sys
 import time
 from typing import Any, Dict
@@ -212,6 +213,8 @@ class RulesApp:
 
     def reload(self) -> None:
         self.reload_index()
+        # Watches the DOCUMENT only: run records go to the sibling journal
+        # (store.journal_path), so a scenario run never triggers a reload.
         try:
             mtime = os.path.getmtime(self.path)
         except OSError:
@@ -238,6 +241,10 @@ class RulesApp:
     def boot(self) -> None:
         self.engine.on_boot()
 
+    def stop(self) -> None:
+        """Shutdown: the buffered run records reach the journal."""
+        self.engine.flush_runs()
+
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s sa02m-rules %(message)s")
@@ -262,12 +269,19 @@ def main() -> int:
     client.connect(MQTT_HOST, MQTT_PORT, 30)
     client.loop_start()
     app.boot()
+
+    def _term(_signum, _frame):
+        raise SystemExit(0)  # systemd stop: unwind into the flush below
+
+    signal.signal(signal.SIGTERM, _term)
     try:
         while True:
             app.tick()
             time.sleep(1)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
+    finally:
+        app.stop()
     client.loop_stop()
     return 0
 

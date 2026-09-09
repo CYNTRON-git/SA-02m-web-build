@@ -18,7 +18,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from sa02m_rules import http_guard
 from sa02m_rules.store import (
     CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, MAX_WRITES,
-    append_run, enqueue_notify, load, save)
+    Journal, load, migrate_journal, save)
 
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
@@ -226,7 +226,7 @@ class LogicRuntime:
         self._e.set_home_mode(mode)
 
     def notify(self, text: str) -> None:
-        enqueue_notify(self._e.doc, str(text)[:240], self._e.path)
+        self._e._notify(text)
 
     def publish_status(self, control: str, value: Any) -> None:
         self._e._publish_tpl_state(self.sid, control, value)
@@ -246,6 +246,11 @@ class Engine:
         self._now = now
         self.lat, self.lon = lat, lon
         self.state: Dict[str, Dict[str, Any]] = {}
+        # Run state is buffered here and flushed to runs.json (store.Journal);
+        # a pre-1.0.6.41 document still carrying it is migrated once, before
+        # the first load.
+        migrate_journal(path)
+        self.journal = Journal(path, now)
         self.doc = load(path)
         if not isinstance(self.doc.get("vars"), dict):
             self.doc["vars"] = {}
@@ -302,8 +307,11 @@ class Engine:
     @staticmethod
     def _fingerprint_of(doc: Dict[str, Any]) -> str:
         import json
-        return json.dumps([doc.get("scenarios") or [], doc.get("library") or "",
-                           doc.get("vars") or {}],
+        # Content only: last_run/last_error are journal state, and a merged
+        # view may carry an older copy than this engine's own buffer.
+        rows = [{k: v for k, v in s.items() if k not in ("last_run", "last_error")}
+                if isinstance(s, dict) else s for s in doc.get("scenarios") or []]
+        return json.dumps([rows, doc.get("library") or "", doc.get("vars") or {}],
                           ensure_ascii=False, sort_keys=True, default=str)
 
     def adopt(self, doc: Dict[str, Any]) -> None:
@@ -318,6 +326,7 @@ class Engine:
         self.doc = doc
         if not isinstance(self.doc.get("vars"), dict):
             self.doc["vars"] = {}
+        self.journal.overlay(self.doc)  # the loaded view predates our buffer
         self._fingerprint = self._fingerprint_of(doc)
         new_ids = set()
         for s in doc.get("scenarios") or []:
@@ -368,7 +377,7 @@ class Engine:
                           LogicRuntime(self, s["id"]),
                           s.get("params") if isinstance(s.get("params"), dict) else {})
         if inst is None:
-            s["last_error"] = "unknown template"
+            self.journal.set_last(s, s.get("last_run"), "unknown template")
         else:
             inst.on_boot()
         return inst
@@ -461,7 +470,23 @@ class Engine:
         s = self._scenario(sid)
         if s is None or s.get("enabled") is False:
             return None
-        return self._run(s, "run_now", source="external")
+        rec = self._run(s, "run_now", source="external")
+        # The cloud channel reads the store right after its .run flag is
+        # consumed (store._wait_run_flag): the record must be on disk now.
+        self.flush_runs()
+        return rec
+
+    # ── journal flush ──────────────────────────────────────────────────
+    def flush_runs(self) -> bool:
+        return self.journal.flush(self.doc)
+
+    def _flush_if_due(self) -> None:
+        if self.journal.due():
+            self.flush_runs()
+
+    def _notify(self, text: str) -> None:
+        self.journal.notify(self.doc, str(text)[:240])
+        self._flush_if_due()
 
     # ── trigger dispatch ───────────────────────────────────────────────
     def _scenario(self, sid: Any) -> Optional[Dict[str, Any]]:
@@ -695,6 +720,7 @@ class Engine:
                 continue  # cancelled
             self._fire_timer(due, kind, key, payload)
         self._scan_clock_triggers(now)
+        self._flush_if_due()
 
     def _fire_timer(self, due: float, kind: str, key: str, payload: Any) -> None:
         if kind == "every":
@@ -798,7 +824,8 @@ class Engine:
             rec = run_code(s, self.doc.get("library") or "", self.state,
                            self._pub, self._now(), self.lat, self.lon,
                            self.doc, self.path, self.doc["vars"],
-                           on_home_mode=self.set_home_mode, budget_s=RUN_S)
+                           on_home_mode=self.set_home_mode, budget_s=RUN_S,
+                           notify_sink=self._notify)
             run.spent += self._now() - started
             rec["source"] = source
             self._finish(run, s, rec.get("error") or "")
@@ -893,7 +920,7 @@ class Engine:
         elif kind == "mode":
             self.set_home_mode(str(act.get("value") or ""))
         elif kind == "notify":
-            enqueue_notify(self.doc, str(act.get("text") or ""), self.path)
+            self._notify(str(act.get("text") or ""))
         elif kind == "http":
             err = _http(act) if str(act.get("url") or "").startswith("http") else "bad url"
             if err.startswith("http err"):
@@ -941,9 +968,9 @@ class Engine:
                                     int(end.get("after_s") or 60))
 
     def _journal(self, s: Dict[str, Any], rec: Dict[str, Any]) -> None:
-        s["last_run"] = rec["ts"]
-        s["last_error"] = rec.get("error") or ""
-        append_run(self.doc, rec, self.path)
+        self.journal.set_last(s, rec["ts"], rec.get("error") or "")
+        self.journal.append_run(self.doc, rec)
+        self._flush_if_due()
 
     # ── ramp ───────────────────────────────────────────────────────────
     def _start_ramp(self, run: Optional[_Run], device: str, cap: str,
@@ -1002,7 +1029,8 @@ class Engine:
             if s is not None:
                 self._journal(s, rec)
             else:
-                append_run(self.doc, rec, self.path)
+                self.journal.append_run(self.doc, rec)
+                self._flush_if_due()
 
     # ── logic template status relay ────────────────────────────────────
     def logic_status_poll(self) -> None:

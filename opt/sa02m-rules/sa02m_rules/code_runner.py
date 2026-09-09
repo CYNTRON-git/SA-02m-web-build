@@ -205,12 +205,17 @@ class Cron:
 
 
 class Notify:
-    def __init__(self, doc: Dict[str, Any], path: str):
+    def __init__(self, doc: Dict[str, Any], path: str,
+                 sink: Optional[Callable[[str], None]] = None):
         self._doc = doc
         self._path = path
+        self._sink = sink  # the engine's buffered journal; None ⇒ write now
 
     def text(self, message: str) -> None:
-        enqueue_notify(self._doc, str(message)[:240], self._path)
+        if self._sink is not None:
+            self._sink(str(message)[:240])
+        else:
+            enqueue_notify(self._doc, str(message)[:240], self._path)
 
 
 class Http:
@@ -279,7 +284,8 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
              doc: Dict[str, Any], path: str, vars_bucket: Dict[str, Any],
              on_home_mode: Optional[Callable] = None,
              budget_s: float = RUN_S,
-             deadline_mechanism: Optional[str] = None) -> Dict[str, Any]:
+             deadline_mechanism: Optional[str] = None,
+             notify_sink: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
     src = ((library or "") + "\n" + (s.get("code") or "")).strip()
     err = ""
     if not src:
@@ -297,7 +303,7 @@ def run_code(s: Dict[str, Any], library: str, state: Dict[str, Dict[str, Any]],
             env = {
                 "Hub": Hub(state, pub, writes),
                 "Cron": Cron(now, lat, lon),
-                "Notify": Notify(doc, path),
+                "Notify": Notify(doc, path, notify_sink),
                 "Http": Http(),
                 "Vars": Vars(vars_bucket, on_home_mode),
                 "math": math,
