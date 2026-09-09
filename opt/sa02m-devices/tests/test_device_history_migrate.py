@@ -76,7 +76,8 @@ def test_promote_merge_carries_mr_carel_and_events(tmp_path: Path):
 
     r = migrate.promote_to_media(src, dst)
     assert r["ok"] and r["action"] == "merge", r
-    assert r["carel_merged"] >= 4 and r["mr_merged"] == 1 and r["events_merged"] == 2
+    # 2 Carel TICKS, not 4+ metric cells — the wide table (1.0.6.41 B2).
+    assert r["carel_merged"] == 2 and r["mr_merged"] == 1 and r["events_merged"] == 2
     assert not src.is_file()
 
     h = hdb.history_carel("carel-COM3-1", "1h", metric="alarm", path=dst, bucket_s=1.0)

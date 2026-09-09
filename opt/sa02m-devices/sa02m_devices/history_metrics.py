@@ -142,6 +142,134 @@ METRICS: dict[str, dict[str, Any]] = {
         "device": "ce",
         "decimals": 1,  # Wh/1000 → кВт·ч, UI 1 знак
     },
+    # Carel AHU (`carel_samples`, one wide row per 10 s tick). The id carries an
+    # `ahu_` prefix because the METRICS key space is GLOBAL and ДТВ already owns
+    # `room_temp` — unprefixed, a Carel chart would silently serve ДТВ data. The
+    # wire names the frontend and docs/contracts/carel-ahu.md §7 use are these
+    # ids minus the prefix; the kind=carel adapter (history_query) translates.
+    # `agg: max` on the state group: a 0→1→0 alarm averaged over a bucket becomes
+    # 0.33 and the rising edge is lost.
+    "ahu_supply_temp": {
+        "table": "carel_samples",
+        "fields": ["supply_temp"],
+        "labels": {"supply_temp": "Приток"},
+        "label": "Приток",
+        "unit": "°C",
+        "device": "carel",
+        "decimals": 1,
+    },
+    "ahu_return_water_temp": {
+        "table": "carel_samples",
+        "fields": ["return_water_temp"],
+        "labels": {"return_water_temp": "Обратка"},
+        "label": "Обратка",
+        "unit": "°C",
+        "device": "carel",
+        "decimals": 1,
+    },
+    "ahu_room_temp": {
+        "table": "carel_samples",
+        "fields": ["room_temp"],
+        "labels": {"room_temp": "Помещение"},
+        "label": "Помещение",
+        "unit": "°C",
+        "device": "carel",
+        "decimals": 1,
+    },
+    "ahu_outdoor_temp": {
+        "table": "carel_samples",
+        "fields": ["outdoor_temp"],
+        "labels": {"outdoor_temp": "Улица"},
+        "label": "Улица",
+        "unit": "°C",
+        "device": "carel",
+        "decimals": 1,
+    },
+    "ahu_setpoint": {
+        "table": "carel_samples",
+        "fields": ["setpoint"],
+        "labels": {"setpoint": "Уставка"},
+        "label": "Уставка",
+        "unit": "°C",
+        "device": "carel",
+        "decimals": 1,
+    },
+    "ahu_heat_valve": {
+        "table": "carel_samples",
+        "fields": ["heat_valve"],
+        "labels": {"heat_valve": "Клапан"},
+        "label": "Клапан",
+        "unit": "%",
+        "device": "carel",
+        "decimals": 0,
+    },
+    "ahu_fan_supply": {
+        "table": "carel_samples",
+        "fields": ["fan_supply"],
+        "labels": {"fan_supply": "Приток вент."},
+        "label": "Приток вент.",
+        "unit": "%",
+        "device": "carel",
+        "decimals": 0,
+    },
+    "ahu_fan_exhaust": {
+        "table": "carel_samples",
+        "fields": ["fan_exhaust"],
+        "labels": {"fan_exhaust": "Вытяжка"},
+        "label": "Вытяжка",
+        "unit": "%",
+        "device": "carel",
+        "decimals": 0,
+    },
+    "ahu_fan_step": {
+        "table": "carel_samples",
+        "fields": ["fan_step"],
+        "labels": {"fan_step": "Ступень вент."},
+        "label": "Ступень вент.",
+        "unit": "",
+        "device": "carel",
+        "decimals": 0,
+    },
+    "ahu_alarm": {
+        "table": "carel_samples",
+        "fields": ["alarm"],
+        "labels": {"alarm": "Авария"},
+        "label": "Авария",
+        "unit": "",
+        "device": "carel",
+        "decimals": 0,
+        "agg": "max",
+    },
+    "ahu_alarm_count": {
+        "table": "carel_samples",
+        "fields": ["alarm_count"],
+        "labels": {"alarm_count": "Тревог"},
+        "label": "Тревог",
+        "unit": "",
+        "device": "carel",
+        "decimals": 0,
+        "agg": "max",
+    },
+    "ahu_plant_state": {
+        "table": "carel_samples",
+        "fields": ["plant_state"],
+        "labels": {"plant_state": "Состояние"},
+        "label": "Состояние",
+        "unit": "",
+        "device": "carel",
+        "decimals": 0,
+        "agg": "max",
+    },
+    "ahu_unit_on": {
+        "table": "carel_samples",
+        "fields": ["unit_on"],
+        "labels": {"unit_on": "Установка вкл."},
+        "label": "Установка вкл.",
+        "unit": "",
+        "device": "carel",
+        "decimals": 0,
+        "agg": "max",
+    },
 }
 
 HISTORY_GROUPS: dict[str, list[str]] = {
@@ -152,6 +280,15 @@ HISTORY_GROUPS: dict[str, list[str]] = {
     "energy": [
         "voltage", "current", "power", "frequency_hz", "energy_kwh_import",
     ],
+    # Chart/export order of the Carel overview; also the archive COLUMN order.
+    "ahu": [
+        "ahu_supply_temp", "ahu_return_water_temp", "ahu_room_temp",
+        "ahu_outdoor_temp", "ahu_setpoint", "ahu_heat_valve", "ahu_fan_supply",
+        "ahu_fan_exhaust", "ahu_fan_step",
+        # State group — the fault-forensics half of the archive: WHEN the alarm
+        # appeared is read from these, not from the temperatures.
+        "ahu_alarm", "ahu_alarm_count", "ahu_plant_state", "ahu_unit_on",
+    ],
 }
 
 
@@ -159,35 +296,37 @@ HISTORY_GROUPS: dict[str, list[str]] = {
 DEFAULT_KWH_RUB = float(os.environ.get("STAND_DEVICES_KWH_RUB", "10.50"))
 
 
+# The `ahu_` METRICS ids above are the ONE home of every Carel metric fact
+# (label, unit, decimals, bucket aggregate, presence in the archive). The three
+# names below are DERIVED views on it, kept because the wire — the JSON
+# `metric`, the archive column, docs/contracts/carel-ahu.md §7 — speaks the
+# UNPREFIXED name. Adding a Carel metric = one METRICS entry + one group line;
+# the DDL, the writer and the pivot all read CAREL_COLUMNS.
+AHU_PREFIX = "ahu_"
+AHU_GROUP = "ahu"
+
+CAREL_COLUMNS: tuple[str, ...] = tuple(
+    mid[len(AHU_PREFIX):] for mid in HISTORY_GROUPS[AHU_GROUP]
+)
 CAREL_METRIC_META: dict[str, tuple[str, str, int]] = {
-    "supply_temp": ("Приток", "°C", 1),
-    "return_water_temp": ("Обратка", "°C", 1),
-    "room_temp": ("Помещение", "°C", 1),
-    "outdoor_temp": ("Улица", "°C", 1),
-    "setpoint": ("Уставка", "°C", 1),
-    "heat_valve": ("Клапан", "%", 0),
-    "fan_supply": ("Приток вент.", "%", 0),
-    "fan_exhaust": ("Вытяжка", "%", 0),
-    "fan_step": ("Ступень вент.", "", 0),
-    # State group — the fault-forensics half of the archive: WHEN the alarm
-    # appeared is read from these, not from the temperatures.
-    "alarm": ("Авария", "", 0),
-    "alarm_count": ("Тревог", "", 0),
-    "plant_state": ("Состояние", "", 0),
-    "unit_on": ("Установка вкл.", "", 0),
+    col: (
+        str(METRICS[AHU_PREFIX + col]["label"]),
+        str(METRICS[AHU_PREFIX + col]["unit"]),
+        int(METRICS[AHU_PREFIX + col]["decimals"]),
+    )
+    for col in CAREL_COLUMNS
 }
 # `plant_state` is a WORD on the wire (sa02m_carel.carel_ahu.PLANT_*); the archive
 # stores its code so a bucket can be aggregated. Ordered so that max() paints the
 # worst state seen inside the bucket: stop < run < alarm.
 CAREL_PLANT_STATE_CODE: dict[str, int] = {"stop": 0, "run": 1, "alarm": 2}
-# Bucket aggregate per metric. A state flag averaged over a bucket turns a
-# 0→1→0 alarm into 0.33 and the rising edge is lost; max() keeps a bucket that
-# CONTAINED an alarm painted as alarm. Continuous metrics stay avg.
+# Which Carel metrics take max() over a bucket, by wire name. No in-tree reader
+# since 1.0.6.41 — the engine reads `agg` off the METRICS entry itself; kept as
+# the documented derived vocabulary of docs/contracts/carel-ahu.md §7.
 CAREL_METRIC_AGG: dict[str, str] = {
-    "alarm": "max",
-    "alarm_count": "max",
-    "plant_state": "max",
-    "unit_on": "max",
+    col: str(METRICS[AHU_PREFIX + col]["agg"])
+    for col in CAREL_COLUMNS
+    if METRICS[AHU_PREFIX + col].get("agg")
 }
 
 

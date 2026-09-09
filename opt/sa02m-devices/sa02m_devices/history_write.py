@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from sa02m_devices.history_metrics import (
-    CAREL_METRIC_META,
+    CAREL_COLUMNS,
     _DTV_SENSOR_COLUMNS,
     _DTV_SENSOR_LIST_COLS,
     carel_plant_code,
@@ -187,26 +187,35 @@ def insert_mr_sample(snapshot: dict[str, Any], path: Path | None = None) -> None
         conn.close()
 
 
+_CAREL_INSERT_SQL = (
+    "INSERT OR REPLACE INTO carel_samples"
+    f"(ts, device_id, {', '.join(CAREL_COLUMNS)})"
+    f" VALUES (?,?,{','.join('?' for _ in CAREL_COLUMNS)})"
+)
+
+
 def _insert_carel(conn: sqlite3.Connection, ts: float, carel: dict[str, Any]) -> None:
-    """Одна строка на именованную метрику с конечным значением."""
+    """Одна широкая строка на такт: колонка на метрику, NULL — не снято.
+
+    An unfitted probe, a non-finite reading and an unknown `plant_state` word all
+    archive NULL rather than an invented value; a tick where EVERY metric is
+    absent writes no row at all (what the long writer did with no rows to write).
+    """
     device_id = str(carel.get("id") or "")
-    rows: list[tuple[Any, ...]] = []
-    for metric, (_label, unit, _dec) in CAREL_METRIC_META.items():
-        val = carel.get(metric)
-        if metric == "plant_state":
+    values: list[float | None] = []
+    for col in CAREL_COLUMNS:
+        val = carel.get(col)
+        if col == "plant_state":
             val = carel_plant_code(val)
         if val is None or not _number_is_finite(val):
+            values.append(None)
             continue
         try:
-            rows.append((ts, device_id, metric, float(val), unit))
+            values.append(float(val))
         except (TypeError, ValueError):
-            continue
-    if rows:
-        conn.executemany(
-            "INSERT OR REPLACE INTO carel_samples(ts, device_id, metric, value, unit)"
-            " VALUES (?,?,?,?,?)",
-            rows,
-        )
+            values.append(None)
+    if any(v is not None for v in values):
+        conn.execute(_CAREL_INSERT_SQL, (ts, device_id, *values))
 
 
 def insert_carel_sample(snapshot: dict[str, Any], path: Path | None = None) -> None:

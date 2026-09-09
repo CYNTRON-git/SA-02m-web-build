@@ -113,11 +113,16 @@ def merge_db_into(src_path: Path, dst_path: Path) -> dict[str, Any]:
     """INSERT OR IGNORE всех строк src → dst по всему HISTORY_TABLES.
 
     dst получает полную схему (таблицы выборок + device_events) ДО merge —
-    иначе PRAGMA table_info пуст и таблица молча пропускается."""
+    иначе PRAGMA table_info пуст и таблица молча пропускается. src получает её
+    тоже: `_merge_table` копирует ПЕРЕСЕЧЕНИЕ колонок, поэтому длинная
+    (1.0.6.40) `carel_samples` в staging против широкой на носителе пересеклась
+    бы только по `{ts, device_id}` и перенесла бы строки без единого значения —
+    архив, ради которого перенос и делается, оказался бы пуст."""
     from sa02m_devices import device_events, device_history_db
 
     device_history_db.ensure_schema(dst_path)
     device_events.ensure_events_schema(dst_path)
+    device_history_db.ensure_schema(src_path)
     _checkpoint_and_close(src_path)
     src = sqlite3.connect(str(src_path), timeout=60.0)
     dst = sqlite3.connect(str(dst_path), timeout=60.0)

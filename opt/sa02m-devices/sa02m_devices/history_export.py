@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from sa02m_devices.history_metrics import HISTORY_GROUPS, METRICS
-from sa02m_devices.history_query import history
+from sa02m_devices.history_query import history, history_carel_batch
 from sa02m_devices.history_ranges import (
     _TZ,
     _normalize_range,
@@ -70,7 +70,7 @@ def collect_export_table(
     else:
         return {
             "ok": False,
-            "error": "укажите metric=… или group=climate|energy",
+            "error": "укажите metric=… или group=climate|energy|ahu",
             "headers": ["Время"],
             "rows": [],
             "device_id": did,
@@ -143,6 +143,69 @@ def collect_export_table(
             if len(metric_ids) == 1
             else _GROUP_TITLES.get(str(group), "Данные")
         ),
+    }
+
+
+def collect_export_table_carel(
+    range_key: str = "1h",
+    *,
+    device_id: str | None = None,
+    path: Path | None = None,
+) -> dict[str, Any]:
+    """Таблица экспорта Carel (время × метрики) — форма как collect_export_table_mr().
+
+    Колонки берутся из ПРИСУТСТВУЮЩИХ метрик (адаптер уже отбросил неснятые
+    пробы), а не из всей группы `ahu`: неукомплектованный датчик не должен
+    добавлять в Excel пустой столбец — то же правило, что и на карточке (§7).
+    """
+    range_key = _normalize_range(range_key)
+    bucket = export_bucket_s(range_key)
+    batch = history_carel_batch(device_id, range_key, path=path, bucket_s=bucket)
+    did = str(batch.get("device_id") or (device_id or "").strip())
+    t0 = float(batch.get("t0") or 0.0)
+    t1 = float(batch.get("t1") or 0.0)
+
+    col_fields: list[str] = []
+    col_titles: list[str] = []
+    by_ts: dict[int, dict[str, float]] = {}
+    for metric in batch.get("metrics") or []:
+        unit = str(metric.get("unit") or "").strip()
+        for ser in metric.get("series") or []:
+            field = str(ser.get("field") or "")
+            if not field:
+                continue
+            label = str(ser.get("label") or field)
+            col_fields.append(field)
+            col_titles.append(f"{label}, {unit}" if unit else label)
+            for ts_ms, val in ser.get("points") or []:
+                try:
+                    by_ts.setdefault(int(ts_ms), {})[field] = float(val)
+                except (TypeError, ValueError):
+                    continue
+
+    headers = ["Время"] + col_titles
+    rows: list[list[Any]] = []
+    for ts_ms in sorted(by_ts):
+        cells: list[Any] = [_fmt_export_ts(ts_ms / 1000.0, bucket)]
+        vals = by_ts[ts_ms]
+        for field in col_fields:
+            v = vals.get(field)
+            cells.append(None if v is None else float(v))
+        rows.append(cells)
+
+    return {
+        "ok": True,
+        "error": "",
+        "headers": headers,
+        "rows": rows,
+        "device_id": did,
+        "range": range_key,
+        "bucket_s": bucket,
+        "t0": t0,
+        "t1": t1,
+        "metric_ids": col_fields,
+        "kind": "carel",
+        "title": _GROUP_TITLES["ahu"],
     }
 
 
@@ -270,7 +333,6 @@ def export_xlsx(
     path: Path | None = None,
 ) -> tuple[bytes, str]:
     """Выгрузка в Excel (.xlsx) с таблицей. Возвращает (bytes, filename)."""
-    from sa02m_devices.history_carel import collect_export_table_carel
     from sa02m_devices.history_mr import collect_export_table_mr
     from io import BytesIO
 
@@ -377,7 +439,6 @@ def export_text(
     path: Path | None = None,
 ) -> tuple[str, str]:
     """Текстовая выгрузка (TSV) — совместимость; основной формат: export_xlsx."""
-    from sa02m_devices.history_carel import collect_export_table_carel
     from sa02m_devices.history_mr import collect_export_table_mr
     if kind == "mr":
         table = collect_export_table_mr(range_key, device_id=device_id, path=path)

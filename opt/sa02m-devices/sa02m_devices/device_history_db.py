@@ -11,12 +11,14 @@ history_* modules re-exported below, one responsibility each:
   history_write    live_snapshot → rows, purge
   history_query    generic wide-table engine + CE summary
   history_mr       MR-02m long-table path (docs/contracts/devices-mr-history.md)
-  history_carel    Carel long-table path (docs/contracts/carel-ahu.md §7)
   history_export   tables → TSV / xlsx
 
-DTV/CE are wide tables, PK (ts, device_id), written every tick (1 Hz USB/SD,
-5 s eMMC); MR-02m AI and Carel are long tables (ts, device_id, key, value,
-unit) on their own 10 s cadence. Path: USB → SD → eMMC (stand_storage_path).
+DTV/CE and Carel are wide tables, PK (ts, device_id): DTV/CE written every tick
+(1 Hz USB/SD, 5 s eMMC), Carel on its own 10 s cadence through the METRICS
+engine and the `kind=carel` adapter in history_query (docs/contracts/
+carel-ahu.md §7). MR-02m AI stays long — its channel count and per-sample unit
+are dynamic (docs/contracts/devices-mr-history.md). Path: USB → SD → eMMC
+(stand_storage_path).
 
 Re-exports are explicit and permanent (plan 1.0.6.41, fork F3): the
 underscored names are the ones tests and device_events reach.
@@ -52,6 +54,9 @@ from sa02m_devices.history_ranges import (  # noqa: F401
 from sa02m_devices.history_metrics import (  # noqa: F401
     METRICS,
     HISTORY_GROUPS,
+    AHU_PREFIX,
+    AHU_GROUP,
+    CAREL_COLUMNS,
     CAREL_METRIC_META,
     CAREL_PLANT_STATE_CODE,
     CAREL_METRIC_AGG,
@@ -76,6 +81,8 @@ from sa02m_devices.history_store import (  # noqa: F401
     storage_status,
     _needs_pk_migration,
     _migrate_table,
+    _carel_is_long,
+    _migrate_carel_to_wide,
     ensure_schema,
     _connect,
     _read_paths,
@@ -103,6 +110,8 @@ from sa02m_devices.history_query import (  # noqa: F401
     _first_device_id,
     history,
     history_batch,
+    history_carel,
+    history_carel_batch,
     period_summary_ce,
 )
 from sa02m_devices.history_mr import (  # noqa: F401
@@ -114,18 +123,12 @@ from sa02m_devices.history_mr import (  # noqa: F401
     history_mr_batch,
     collect_export_table_mr,
 )
-from sa02m_devices.history_carel import (  # noqa: F401
-    _query_series_carel,
-    _carel_series_over_dbs,
-    history_carel,
-    history_carel_batch,
-    collect_export_table_carel,
-)
 from sa02m_devices.history_export import (  # noqa: F401
     _fmt_export_ts,
     _export_bucket_label,
     _export_col_title,
     collect_export_table,
+    collect_export_table_carel,
     _xml_escape,
     _export_xlsx_minimal,
     export_xlsx,

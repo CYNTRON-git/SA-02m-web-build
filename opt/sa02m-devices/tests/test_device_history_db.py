@@ -632,7 +632,8 @@ def test_carel_state_group_archived_and_alarm_bucket_is_max(tmp_path: Path):
     bucket still paints that bucket as 1 (max), never 0.33 (avg); plant_state is
     archived as its code (stop 0 < run 1 < alarm 2) so the same max() rule holds.
     The DB is first written by the OLD 9-metric writer shape (no state keys) —
-    the long table needs no migration, and the new keys must coexist with it."""
+    in the wide table (1.0.6.41) that row simply carries NULL in the four state
+    columns, and the state metrics must still read only the ticks that had them."""
     db = tmp_path / "hist.db"
     base = float(int(time.time()) // 60 * 60) - 300  # bucket-aligned, in "1h"
     # Old-shape rows first (a DB the 1.0.6.35 writer left behind).

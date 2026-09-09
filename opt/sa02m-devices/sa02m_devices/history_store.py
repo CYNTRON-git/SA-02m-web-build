@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sa02m_devices.history_metrics import _DTV_SENSOR_COLUMNS
+from sa02m_devices.history_metrics import CAREL_COLUMNS, _DTV_SENSOR_COLUMNS
 
 
 try:
@@ -97,14 +97,19 @@ _CREATE_MR = """
         PRIMARY KEY (ts, device_id, ch)
     );
 """
-_CREATE_CAREL = """
+# Carel AHU: a WIDE row per (ts, device_id), like dtv/ce — one row per 10 s tick
+# instead of 13. Unlike MR channels the metric set is FIXED and its unit is a
+# constant per metric (CAREL_METRIC_META), so there is no `unit` column: the long
+# table's last-wins unit could never differ from the meta. The column list is
+# built from CAREL_COLUMNS (code constants, never request input) so a metric
+# added to METRICS reaches the table with no second edit here.
+_CAREL_COL_DDL = ",\n        ".join(f"{c} REAL" for c in CAREL_COLUMNS)
+_CREATE_CAREL = f"""
     CREATE TABLE IF NOT EXISTS carel_samples (
         ts REAL NOT NULL,
         device_id TEXT NOT NULL DEFAULT '',
-        metric TEXT NOT NULL,
-        value REAL,
-        unit TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY (ts, device_id, metric)
+        {_CAREL_COL_DDL},
+        PRIMARY KEY (ts, device_id)
     );
 """
 
@@ -189,6 +194,77 @@ def _migrate_table(conn: sqlite3.Connection, table: str, create_sql: str) -> Non
     )
 
 
+def _carel_is_long(conn: sqlite3.Connection) -> bool:
+    """A 1.0.6.40-and-older archive: `carel_samples` still has a `metric` column."""
+    return "metric" in {
+        str(r[1]) for r in conn.execute("PRAGMA table_info(carel_samples)").fetchall()
+    }
+
+
+# One-time long → wide pivot. Written as ONE script that opens its OWN
+# transaction: `executescript` runs DDL in AUTOCOMMIT otherwise (which is why
+# the legacy PK migration above is not atomic — do not copy it), and a crash or
+# a full medium halfway would leave a board with a half-migrated archive.
+# BEGIN IMMEDIATE takes the write lock up front, so the 1 Hz logger writing into
+# the same file either finished before the pivot or blocks on it (its own
+# `sqlite3.connect(timeout=30)`) and then writes into the wide table — a tick
+# lost to the busy timeout is one 10 s sample, retried by the next tick.
+# `MAX(CASE …)` over the long PK `(ts, device_id, metric)` sees exactly one value
+# per cell, so the pivot is lossless; the old writer emitted every metric of a
+# tick under one `ts`, so grouping by `(ts, device_id)` rebuilds the tick.
+# Metric/column names come from CAREL_COLUMNS — code constants, not request input.
+_MIGRATE_CAREL_SQL = """
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS carel_samples__wide;
+CREATE TABLE carel_samples__wide (
+    ts REAL NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    {col_ddl},
+    PRIMARY KEY (ts, device_id)
+);
+INSERT OR REPLACE INTO carel_samples__wide (ts, device_id, {cols})
+    SELECT ts, device_id, {pivot}
+    FROM carel_samples GROUP BY ts, device_id;
+DROP TABLE IF EXISTS carel_samples_v1;
+ALTER TABLE carel_samples RENAME TO carel_samples_v1;
+ALTER TABLE carel_samples__wide RENAME TO carel_samples;
+DROP INDEX IF EXISTS idx_carel_device_metric_ts;
+COMMIT;
+""".format(
+    col_ddl=_CAREL_COL_DDL,
+    cols=", ".join(CAREL_COLUMNS),
+    pivot=",\n           ".join(
+        f"MAX(CASE WHEN metric = '{c}' THEN value END)" for c in CAREL_COLUMNS
+    ),
+)
+
+
+def _migrate_carel_to_wide(conn: sqlite3.Connection) -> None:
+    """Pivot a long `carel_samples` in place; keep the old table as the rollback.
+
+    Idempotent: a second open sees no `metric` column and returns. Runs on EVERY
+    file `_connect` opens — the active DB, a rotated archive on first read, an
+    eMMC staging before a promote. `carel_samples_v1` is the one-release rollback
+    (plan 1.0.6.41 fork F4; 1.0.6.42 drops it) and `purge_old` never touches it.
+    """
+    if not _carel_is_long(conn):
+        return
+    try:
+        conn.executescript(_MIGRATE_CAREL_SQL)
+    except sqlite3.Error:
+        # The script's own COMMIT never ran: drop the half-built wide table and
+        # leave the long archive exactly as it was. Raising (not swallowing) is
+        # deliberate — a reader skips this file, the logger logs the tick.
+        conn.rollback()
+        conn.close()
+        raise
+    long_rows = conn.execute("SELECT count(*) FROM carel_samples_v1").fetchone()[0]
+    wide_rows = conn.execute("SELECT count(*) FROM carel_samples").fetchone()[0]
+    log.info(
+        "carel_samples: migrated %s long rows → %s wide", long_rows, wide_rows
+    )
+
+
 def ensure_schema(path: Path | None = None) -> Path:
     """Создать файл БД и схему; вернуть путь."""
     p = db_path(path)
@@ -205,6 +281,8 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute(f"PRAGMA journal_mode={journal}")
     conn.execute(f"PRAGMA synchronous={sync}")
     conn.executescript(_CREATE_DTV + _CREATE_CE + _CREATE_MR + _CREATE_CAREL)
+    # Before the `with conn:` block: the pivot script owns its own transaction.
+    _migrate_carel_to_wide(conn)
     with conn:
         if _needs_pk_migration(conn, "dtv_samples"):
             _migrate_table(conn, "dtv_samples", _CREATE_DTV)
@@ -226,9 +304,11 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
             "CREATE INDEX IF NOT EXISTS idx_mr_device_ch_ts "
             "ON mr_samples(device_id, ch, ts)"
         )
+        # Wide since 1.0.6.41: the read path is (device_id, ts) — one device's
+        # window, every metric in the row (like dtv/ce).
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_carel_device_metric_ts "
-            "ON carel_samples(device_id, metric, ts)"
+            "CREATE INDEX IF NOT EXISTS idx_carel_device_ts "
+            "ON carel_samples(device_id, ts)"
         )
     return conn
 

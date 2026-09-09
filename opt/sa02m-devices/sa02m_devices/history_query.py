@@ -7,7 +7,13 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from sa02m_devices.history_metrics import DEFAULT_KWH_RUB, HISTORY_GROUPS, METRICS
+from sa02m_devices.history_metrics import (
+    AHU_GROUP,
+    AHU_PREFIX,
+    DEFAULT_KWH_RUB,
+    HISTORY_GROUPS,
+    METRICS,
+)
 from sa02m_devices.history_ranges import _normalize_range, resolve_time_range
 from sa02m_devices.history_store import _connect, _read_paths, storage_status
 from sa02m_devices.history_write import _number_is_finite
@@ -228,7 +234,7 @@ def history_batch(
     else:
         return {
             "ok": False,
-            "error": "specify group=climate|energy or metrics=…",
+            "error": "specify group=climate|energy|ahu or metrics=…",
         }
     out_metrics: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -273,6 +279,113 @@ def history_batch(
         "errors": errors,
         **status,
     }
+
+
+# ── kind=carel adapter over the generic engine ───────────────────────
+#
+# `carel_samples` is a plain METRICS table since 1.0.6.41, so the Carel chart is
+# served by `history()`/`history_batch()` like ДТВ and СЭ. What survives is a
+# translation layer, because the WIRE name (`/api/devices/history?kind=carel&
+# metric=supply_temp`, docs/contracts/carel-ahu.md §7, devices.js) is the
+# UNPREFIXED metric while the METRICS id carries `ahu_` (the key space is global
+# — ДТВ owns `room_temp`). The adapter also re-attaches `unit` to each series
+# row: the long table archived a per-sample unit, the wide one takes it from the
+# metric meta, and devices.js falls back on the series-level field.
+
+
+def _ahu_series(
+    series: list[dict[str, Any]], unit: str
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "field": s["field"],
+            "label": s.get("label", s["field"]),
+            "unit": unit,
+            "points": s.get("points") or [],
+        }
+        for s in series
+    ]
+
+
+def history_carel(
+    device_id: str | None,
+    range_key: str = "1h",
+    metric: str | None = None,
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """История одной метрики Carel — форма ответа как у history().
+
+    Пустая или неизвестная метрика отвечает `ok:false, "unknown metric"`
+    (HTTP 200): имя метрики теперь ключ словаря METRICS, то есть allow-list по
+    построению. `api.handle_history` вызывает это только с непустой метрикой.
+    """
+    mid = str(metric or "").strip()
+    one = history(
+        f"{AHU_PREFIX}{mid}",
+        range_key,
+        path=path,
+        device_id=device_id,
+        bucket_s=bucket_s,
+    )
+    if not one.get("ok"):
+        return {**one, "metric": mid}
+    return {
+        **one,
+        "metric": mid,
+        "series": _ahu_series(one.get("series") or [], str(one.get("unit") or "")),
+    }
+
+
+def history_carel_batch(
+    device_id: str | None,
+    range_key: str = "1h",
+    path: Path | None = None,
+    *,
+    bucket_s: float | None = None,
+) -> dict[str, Any]:
+    """Все метрики Carel как metrics[] — форма как history_batch()."""
+    batch = history_batch(
+        range_key,
+        group=AHU_GROUP,
+        path=path,
+        device_id=device_id,
+        bucket_s=bucket_s,
+    )
+    metrics: list[dict[str, Any]] = []
+    for one in batch.get("metrics") or []:
+        # An unfitted probe archives NULL in its column, so its series is empty;
+        # §7 says it is absent from the overview, not present and flat.
+        if not one.get("series"):
+            continue
+        unit = str(one.get("unit") or "")
+        metrics.append({
+            "metric": str(one["metric"])[len(AHU_PREFIX):],
+            "label": one.get("label"),
+            "unit": unit,
+            "decimals": one.get("decimals"),
+            "device": "carel",
+            "device_id": one.get("device_id") or "",
+            "series": _ahu_series(one.get("series") or [], unit),
+        })
+    # history_batch echoes the REQUESTED device_id; the Carel shape reports the
+    # one actually read, so an empty request still names the auto-picked device.
+    did = str(batch.get("device_id") or "")
+    if not did:
+        did = next((m["device_id"] for m in metrics if m["device_id"]), "")
+        for one in metrics:
+            one["device_id"] = did
+    out = {
+        k: v for k, v in batch.items() if k not in ("metrics", "errors", "group")
+    }
+    out.update({
+        "group": "all",
+        "device": "carel",
+        "device_id": did,
+        "metrics": metrics,
+    })
+    return out
 
 
 def _first_device_id(
