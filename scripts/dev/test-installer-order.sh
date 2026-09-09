@@ -1,6 +1,8 @@
 #!/bin/bash
 # ═══════════════════════════════════════════════════════════════════════════
-# comment-mutation-proof-exempt: every pin here is an ORDER between two live lines (a shared package before the first consumer copy; the module-runner's `sync` right after its `bash` line) read comment-stripped through lib_check.sh — an order has no comment-out form: commenting either line out is already RED here (the pin then finds no line and FAILS on non-vacuity) and RED under installer-svc-policy-gate (f)/(g) for install.sh; the one fail-IF-PRESENT pin (the retired "self-contained" claim) wants the line ABSENT, so a comment-out cannot defeat it.
+# Registered in comment-mutation-proof (CASES): commenting out
+# `sa02m_install_led_pkg "$BASE_DIR"` in scripts/05-mqtt.sh turns case 1a RED —
+# measured, so this harness is CASED, not exempt.
 # test-installer-order.sh — regression harness for the install ORDER the
 # 8D bench-136 reset requires (.ai-dev/8d/bench-136-reset.md, D5 step B).
 # Quality row `installer-order`.
