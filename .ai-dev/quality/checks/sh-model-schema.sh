@@ -28,10 +28,14 @@
 # durable equivalent AND lets the negative cases run in one process. Same
 # guarantee, future-proof invocation.
 #
-# comment-mutation-proof: N/A - this row runs a real validator (a
-# schema+examples check), not a source-line grep; a commented-out assertion
-# below disappears as a missing check, which the non-vacuity guard (positive
-# MUST pass AND every negative MUST be rejected, else exit 1) catches.
+# NON-VACUITY. The first version of this header claimed a comment-out could not
+# hurt because "the non-vacuity guard catches it". That was false and is the
+# shape quality-gate-rigor.md warns about - plausible about the KIND of check,
+# untrue of this one: commenting out a `negatives.append(...)` silently dropped
+# a guarantee and the run stayed GREEN, printing "2 broken variants" instead of
+# 3. The floor below fixes that: the negative set must be exactly the three the
+# registry row names, so a dropped variant FAILS instead of shrinking quietly.
+# Registered in comment-mutation-proof's CASES against that line.
 set -u
 
 ROW="sh-model-schema"
@@ -89,6 +93,17 @@ negatives.append(("point carries an unknown field (additionalProperties:false)",
 
 m = copy.deepcopy(example); del m["functions"][0]["points"][0]["binding"]
 negatives.append(("physical-function point missing 'binding'", m))
+
+# Non-vacuity floor: the registry row PROMISES three specific broken variants.
+# Without this, commenting out any `negatives.append(...)` above drops that
+# guarantee and the run still exits 0 - the collection-shrinks-quietly shape
+# (quality-gate-rigor.md (e)). The count is pinned, not merely reported.
+EXPECTED_NEGATIVES = 3
+if len(negatives) != EXPECTED_NEGATIVES:
+    print(f"{row}: FAIL - the negative set is {len(negatives)}, expected "
+          f"{EXPECTED_NEGATIVES}; a broken-variant case was dropped, so this "
+          f"row would pass while proving less than its registry row claims")
+    sys.exit(1)
 
 failures = []
 for label, mut in negatives:
