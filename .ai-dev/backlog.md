@@ -27,6 +27,36 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-10 **[MED] A machine-rate `beeper` spawns one override worker per accepted
+  command, with nothing collapsing them.** Each accepted command on a held bus starts
+  `sa02m-beeper-override.sh` detached; N commands inside one 7 s TTL leave N concurrent shell
+  loops polling i2c every 0.2 s on a shared ARM target that also runs MPLC4 and CODESYS. It
+  MIRRORS the reference — `sa02m_hw_beeper_override_start_worker` does the same — but the
+  reference is driven by a human clicking a button, and this path is driven by the cloud, Alice
+  and scenarios, i.e. machine-rate. Not anonymously reachable (1883 is loopback-only, 1884 needs
+  auth), so this is load, not a security hole. **The obvious fix is forbidden by the accepted
+  design:** the daemon must not assume it is the only producer, so it cannot track «my worker»
+  and skip. Any real fix is a change to the worker's own contract — e.g. it takes a lock and a
+  second instance exits — which is `etc/sa02m-beeper-override.sh`'s to make, not the daemon's.
+  Recorded because it is an ACCEPTANCE nobody had written down. Found by the 1.0.6.43 ship review.
+- [OPEN] 2026-09-10 **[LOW] The daemon's `makedirs` fallback could root-own the shared override
+  directory.** If `/run/sa02m-hw-override` is ever missing when the telemetry daemon writes the
+  beeper override, root creates it and the www-data CGI can no longer stage its temp file there —
+  the PANEL's own override would start failing, having been broken by the daemon. Unreachable on
+  any board that has the feature: `scripts/03-webserver.sh` installs a tmpfiles.d entry
+  `d /run/sa02m-hw-override 0775 www-data www-data`, recreated every boot. The Builder mirrored
+  the CGI rather than hard-coding a second home for that ownership and recorded the consequence
+  at the site. Found while building 1.0.6.43. **The 1.0.6.43 review sharpened this:** the
+  «unreachable» reasoning is true today but NOTHING KEEPS IT TRUE — delete that tmpfiles.d line
+  and this finding goes live with every quality row still green. Whoever closes this should
+  either pin the tmpfiles.d entry or stop depending on it.
+- [OPEN] 2026-09-10 **[LOW, Operator's call] After taking the override path the daemon publishes
+  the COMMANDED `controls/beeper` value, not a measured one.** It did not drive the pin — the
+  worker does, later — so the retained value is a claim about a byte this process never wrote.
+  Mitigations already in place: the journal line is deliberately distinct (`via the override
+  file … holds the expander`), the CGI returns success on the same path, and the ≤30 s poll
+  republishes the measured level. Publishing nothing instead is a one-line change; which is
+  right is a product question, not a defect. Found while building 1.0.6.43.
 - [OPEN] 2026-09-10 **[LOW] An explicitly BLANK `SA02M_I2C_EXTRA_OUTPUT_MASK` resolves to 0 in
   the CGI and 0x08 in the daemon** — the 1.0.6.42 fight in reverse, at a different boundary.
   `lib_hw.sh:34` applies its `:-0x08` and `:36` then SOURCES the conf, so an empty assignment
@@ -58,7 +88,7 @@ worklist collapsed into one home).
   `i2cset` return code alone. On the byte that carries the discrete output, «the write returned
   0» and «the pin moved» are not the same claim — this release's whole subject is the gap
   between them. Found while fixing the channel map (1.0.6.42).
-- [OPEN] 2026-09-09 **[MED, product decision — the Operator's, not an agent's] An MQTT `beeper`
+- [RESOLVED 2026-09-10, 1.0.6.43] 2026-09-09 **[MED, product decision — the Operator's, not an agent's] An MQTT `beeper`
   command is now REFUSED while MPLC4 holds the bus, where the web UI falls back to the 7 s
   override file** (`/run/sa02m-hw-override/beeper.env`, `SA02M_BEEPER_WEB_OVERRIDE_SEC`). Taking
   that same path in the daemon would make it a SECOND producer of that file, which is a design

@@ -9,7 +9,9 @@ are never hard-coded here: a second copy of that map is what made a `beeper`
 command switch the discrete output until 1.0.6.42. The expander is shared with
 the web CGI, the beeper override worker and MPLC4, so every access takes the
 same flock and honours the same owner gate they do — see the shared-bus section
-below.
+below. One channel does not simply refuse when that gate says the bus is held:
+since 1.0.6.43 a `beeper` command falls back to the override file the panel
+button has always used, so a cloud «beep» sounds while the PLC keeps the bus.
 
 Device ID: the board name itself (the hostname, e.g. ``SA-02m``) — no prefix,
 resolved by :func:`_resolve_device_id`. Topic canon: docs/MQTT_TOPICS.md.
@@ -376,6 +378,22 @@ HW_OWNER_PROBE_TIMEOUT_S = 2.0
 # these calls run on paho's network thread — so the bounded wait is a poll.
 HW_LOCK_POLL_S = 0.02
 
+# ── The one channel that pre-empts a busy bus (1.0.6.43) ────────────────────
+# The Operator's decision, not an agent's: a cloud/Alice «beep» takes the same
+# fallback the panel button has always taken. While an owner holds the
+# expander, a `beeper` command is written to SA02M_BEEPER_OVERRIDE_FILE and
+# SA02M_BEEPER_OVERRIDE_WORKER is started to apply it under the bus lock, so
+# the buzzer sounds without this daemon touching the PLC's byte. Mirror of
+# lib_hw.sh sa02m_hw_i2c_write_channel_web / _beeper_override_write /
+# _beeper_override_start_worker; these defaults are that file's `:-` values and
+# the drift alarm in tests/test_telemetry_hw_lock.py fails when they diverge.
+# ONLY `beeper`: `do` commutes real equipment and `alarm_led` is not a 7 s
+# pulse, and the panel refuses both of them on a held bus too.
+HW_BEEPER_CHANNEL = "beeper"
+HW_BEEPER_OVERRIDE_SEC_DEFAULT = 7        # SA02M_BEEPER_WEB_OVERRIDE_SEC
+HW_BEEPER_OVERRIDE_FILE_DEFAULT = "/run/sa02m-hw-override/beeper.env"
+HW_BEEPER_OVERRIDE_WORKER_DEFAULT = "/usr/local/sbin/sa02m-beeper-override.sh"
+
 # Returned in place of a result when the bus lock could not be taken. A
 # sentinel rather than None: None is what a failed i2cget returns, and the two
 # refusals need different words in the journal.
@@ -447,6 +465,100 @@ def _bus_busy_reason(profile: "HwProfile") -> str:
                 "refusing rather than driving a shared bus on a guessed wait")
     return (f"{profile.lock_file} stayed held by another owner for the whole "
             f"{profile.lock_wait_s:g}s wait")
+
+
+def _beeper_override_write(profile: "HwProfile", on: bool) -> tuple[bool, str]:
+    """Stage the buzzer's override file and swap it in. (ok, detail-on-failure).
+
+    Mirror of lib_hw.sh sa02m_hw_beeper_override_write: `value=<0|1>` and
+    `expires_at=<now+ttl>`, written under a temp name in the SAME directory and
+    renamed over the live path.
+
+    The atomicity is not decoration. Since 1.0.6.43 this file has TWO
+    producers — the web CGI and this daemon — and one consumer that SOURCES it
+    (etc/sa02m-beeper-override.sh). A reader catching a half-written file would
+    take a `value=` with no `expires_at`, which its own validation reads as
+    «no override» — a beep that silently never sounds. os.replace is the same
+    rename-over-in-place the CGI's `mv -f` performs.
+
+    Last writer wins, carrying its own TTL: a cloud beep landing during a panel
+    beep replaces it, and neither corrupts the other. This daemon never reads
+    the file back — the value it just wrote proves nothing about the pin — and
+    never deletes it; expiry is the worker's business, by the timestamp.
+    """
+    path = profile.beeper_override_file
+    directory = os.path.dirname(path) or "."
+    # The directory's real home is the tmpfiles.d entry in
+    # scripts/03-webserver.sh (`d /run/sa02m-hw-override 0775 www-data
+    # www-data`), which recreates it on every boot of a board that has the
+    # feature at all. This makedirs is the CGI's own fallback, mirrored: if it
+    # ever fires here the directory ends up root-owned, and www-data's CGI
+    # would then be unable to stage its temp file in it.
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        return False, f"{path}: {exc}"
+    try:
+        os.chmod(directory, 0o775)
+    except OSError:
+        pass
+    expires_at = int(time.time()) + profile.beeper_override_sec
+    # The CGI's temp name is `${file}.$$` — unique because every request is its
+    # own process. In one long-lived daemon the pid is shared, so the thread id
+    # joins it: two commands staging the same name would have one of them
+    # renaming a file the other had already moved away.
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("value=%d\n" % (1 if on else 0))
+            fh.write("expires_at=%d\n" % expires_at)
+        # Before the rename, not after: os.replace carries the temp file's mode
+        # onto the live path, so in this order the file is never VISIBLE with
+        # root's umask-narrowed 0644. The reason is the reader, not the other
+        # writer: www-data replaces this file by rename (which needs the
+        # DIRECTORY, and that is 0775 www-data), so it is never blocked by the
+        # file's own mode — but anything that only READS the override, now or
+        # later, would be, and a 0644 window is exactly the kind of transient
+        # nobody reproduces. The CGI chmods after its `mv` and leaves that
+        # window open; this is deliberately narrower.
+        os.chmod(tmp, 0o664)
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False, f"{path}: {exc}"
+    return True, ""
+
+
+def _beeper_override_start_worker(profile: "HwProfile") -> bool:
+    """Start the override worker detached. True when it was spawned.
+
+    Mirror of lib_hw.sh sa02m_hw_beeper_override_start_worker, including its
+    `[ -x "$worker" ] || return 0`: an absent worker is NOT an error. The file
+    is already on disk, so a worker installed later — or the panel's next
+    click — applies it; failing the command instead would report a defect the
+    operator cannot act on from the cloud side.
+
+    Detached (`start_new_session` = the shell's `nohup … & disown`): these
+    callbacks run on paho's network thread, and a child in this process group
+    would be killed with the service on the next restart, leaving the buzzer
+    latched with nobody left to honour its TTL.
+    """
+    worker = profile.beeper_override_worker
+    if not os.path.isfile(worker) or not os.access(worker, os.X_OK):
+        return False
+    try:
+        subprocess.Popen(
+            [worker], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("the beeper override worker %s would not start: %s",
+                    worker, exc)
+        return False
+    return True
 
 
 def _open_lock_file(path: str) -> int | None:
@@ -611,6 +723,23 @@ def _hw_parse_wait(raw: str) -> float | None:
     return value if value >= 0 else None
 
 
+def _hw_parse_override_sec(raw: str) -> int:
+    """The buzzer override's TTL in seconds; never None, exactly as the CGI.
+
+    lib_hw.sh: `ttl=${SA02M_BEEPER_WEB_OVERRIDE_SEC:-7}` and then
+    `[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=7`, so blank AND unparseable both resolve
+    to 7. Unlike the bus-lock wait there is nothing to refuse here: an override
+    written with a garbage expiry is a buzzer the worker either ignores
+    outright or never stops, and both are worse than a 7 s pulse.
+    """
+    raw = (raw or "").strip()
+    # isascii() as well as isdigit(): the shell's `^[0-9]+$` does not accept
+    # the non-ASCII digits Python's isdigit() would.
+    if raw.isascii() and raw.isdigit():
+        return int(raw)
+    return HW_BEEPER_OVERRIDE_SEC_DEFAULT
+
+
 def _hw_parse_word_list(raw: str, default: tuple[str, ...]) -> tuple[str, ...]:
     """A whitespace-separated shell list; blank resolves to `default`.
 
@@ -671,7 +800,10 @@ class HwProfile:
                  lock_file=HW_LOCK_FILE_DEFAULT,
                  lock_wait_s=HW_LOCK_WAIT_SEC_DEFAULT,
                  owner_units=HW_OWNER_UNITS_DEFAULT,
-                 owner_procs=HW_OWNER_PROCS_DEFAULT, respect_owner=True):
+                 owner_procs=HW_OWNER_PROCS_DEFAULT, respect_owner=True,
+                 beeper_override_sec=HW_BEEPER_OVERRIDE_SEC_DEFAULT,
+                 beeper_override_file=HW_BEEPER_OVERRIDE_FILE_DEFAULT,
+                 beeper_override_worker=HW_BEEPER_OVERRIDE_WORKER_DEFAULT):
         self.backend = backend
         self.bus = bus
         self.addr = addr
@@ -685,6 +817,10 @@ class HwProfile:
         self.owner_units = owner_units
         self.owner_procs = owner_procs
         self.respect_owner = respect_owner
+        # The buzzer's way past a bus we may not take, shared with the CGI.
+        self.beeper_override_sec = beeper_override_sec
+        self.beeper_override_file = beeper_override_file
+        self.beeper_override_worker = beeper_override_worker
         # bit3 = KLogic's blue LED: this daemon never drives it, but the
         # direction register must not turn it back into an input.
         self.extra_output_mask = extra_output_mask
@@ -760,7 +896,15 @@ class HwProfile:
                    owner_procs=_hw_parse_word_list(
                        val("SA02M_I2C_OWNER_PROCS"), HW_OWNER_PROCS_DEFAULT),
                    respect_owner=(val("SA02M_I2C_RESPECT_OWNER") or "1").strip()
-                   not in HW_RESPECT_OWNER_OFF)
+                   not in HW_RESPECT_OWNER_OFF,
+                   beeper_override_sec=_hw_parse_override_sec(
+                       val("SA02M_BEEPER_WEB_OVERRIDE_SEC")),
+                   beeper_override_file=(
+                       val("SA02M_BEEPER_OVERRIDE_FILE") or "").strip()
+                   or HW_BEEPER_OVERRIDE_FILE_DEFAULT,
+                   beeper_override_worker=(
+                       val("SA02M_BEEPER_OVERRIDE_WORKER") or "").strip()
+                   or HW_BEEPER_OVERRIDE_WORKER_DEFAULT)
 
     @staticmethod
     def _resolve_backend(val) -> str:
@@ -895,8 +1039,28 @@ class PCA9536Control:
             levels[channel] = int(on)
         return levels, ""
 
+    def _beeper_override(self, on: bool, owner: str) -> tuple[bool, str]:
+        """The buzzer's path past an expander we may not take (1.0.6.43).
+
+        No bus, no lock: the file is a request, and the worker applies it under
+        the same flock everyone else takes. The worker is started AFTER the
+        file lands, never before — the other order gives a worker with nothing
+        to read, which it answers by exiting.
+        """
+        written, detail = _beeper_override_write(self._profile, on)
+        if not written:
+            return False, f"the beeper override could not be written: {detail}"
+        started = _beeper_override_start_worker(self._profile)
+        return True, (
+            f"via the override file {self._profile.beeper_override_file} "
+            f"for {self._profile.beeper_override_sec}s "
+            f"({owner} holds the expander"
+            + ("" if started else
+               f"; {self._profile.beeper_override_worker} is not installed, so "
+               f"another owner of the file applies it") + ")")
+
     def set_channel(self, channel: str, on: bool) -> tuple[bool, str]:
-        """Drive one channel to a LOGICAL level. Returns (written, reason).
+        """Drive one channel to a LOGICAL level. Returns (accepted, detail).
 
         The whole read-modify-write runs under the bus lock. The byte carries
         three other owners' bits, so a write that reads the port before someone
@@ -907,11 +1071,28 @@ class PCA9536Control:
         within the configured wait, a port that would not answer — comes back
         with a reason for the caller to log. Never a silent no-op, and never a
         write on a bus this daemon could not take.
+
+        `detail` is that reason on a refusal. On an ACCEPTED command it is
+        empty for a plain bus write and names the path taken when the command
+        went to the beeper override instead (1.0.6.43) — the journal must not
+        read «HW beeper = 1» for a pin this daemon did not drive itself.
         """
         if channel not in self._profile.bits:
             return False, f"no bit for it in {self._profile.source}"
         owner = _hw_owner_active(self._profile)
         if owner is not None:
+            # The one widening (1.0.6.43), and it is exactly one channel wide.
+            # `do` commutes real equipment and `alarm_led` is a steady
+            # indicator, not a 7 s pulse; the panel refuses both here too.
+            #
+            # Deliberately NARROWER than lib_hw.sh in one respect: the CGI
+            # takes this branch before it needs a bit at all, so a conf with no
+            # SA02M_I2C_BIT_BEEPER still gets an override file — which the
+            # worker then applies to its own `:-2` fallback pin. This daemon
+            # refuses a channel with no configured bit above, and keeps doing
+            # so here: driving a guessed pin is the 1.0.6.42 defect itself.
+            if channel == HW_BEEPER_CHANNEL:
+                return self._beeper_override(on, owner)
             return False, f"{owner} holds the expander"
         with self._lock:
             result = _with_bus_lock(
@@ -1110,10 +1291,13 @@ class TelemetryClient:
                 return
             val = msg.payload.decode().strip()
             on = val not in ("0", "false", "False", "")
-            written, why = self._hw.set_channel(ctrl, on)
-            if written:
+            accepted, why = self._hw.set_channel(ctrl, on)
+            if accepted:
                 self._pub(f"controls/{ctrl}", "1" if on else "0")
-                log.info("HW %s = %d", ctrl, on)
+                # `why` is empty for a plain bus write and names the override
+                # path when the command went there instead (1.0.6.43): the
+                # journal never claims a byte this daemon did not put out.
+                log.info("HW %s = %d%s", ctrl, on, f" {why}" if why else "")
             else:
                 # A refusal names who we yielded the shared bus to, or what
                 # would not answer. Publishing nothing here is the other half:

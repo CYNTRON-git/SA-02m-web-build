@@ -114,6 +114,9 @@ SA02M_I2C_BIT_ALARM_LED=0
 SA02M_I2C_BIT_USB_POWER=
 SA02M_I2C_LOCK_FILE={lock_file}
 SA02M_I2C_LOCK_WAIT_SEC={lock_wait}
+SA02M_BEEPER_WEB_OVERRIDE_SEC={override_sec}
+SA02M_BEEPER_OVERRIDE_FILE={override_file}
+SA02M_BEEPER_OVERRIDE_WORKER={override_worker}
 """
 
 
@@ -214,6 +217,13 @@ class LockTestCase(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.conf_path = Path(self._tmp.name) / "sa02m_hw.conf"
         self.lock_path = Path(self._tmp.name) / "pca9536.lock"
+        # The beeper override lives in the sandbox too: NOTHING here may touch
+        # a real /run path, for the same reason nothing may reach a real bus.
+        self.override_dir = Path(self._tmp.name) / "hw-override"
+        self.override_path = self.override_dir / "beeper.env"
+        self.worker_path = Path(self._tmp.name) / "sa02m-beeper-override.sh"
+        self.worker_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        os.chmod(self.worker_path, 0o755)
 
         self.probe_calls: list[list[str]] = []
         self.available: set[str] = set()
@@ -223,7 +233,24 @@ class LockTestCase(unittest.TestCase):
             self.probe_calls.append(list(argv))
             return self.probe_rc.get(" ".join(argv), 1)
 
+        # The override worker is SPAWNED, not run to completion, so it is the
+        # one path that reaches subprocess.Popen rather than .run. The shim is
+        # the observation point AND the third no-real-bus guard: an argv that
+        # points anywhere outside this sandbox fails loudly, so a test can
+        # never launch the real /usr/local/sbin worker (which drives the
+        # expander, and on bench 1.135 that byte carries bench 1.136's power).
+        self.spawns: list[tuple[list[str], dict]] = []
+
+        def fake_popen(argv, **kwargs):
+            self.spawns.append(([str(a) for a in argv], kwargs))
+            if not str(argv[0]).startswith(self._tmp.name):
+                raise RealSubprocessAttempt(
+                    f"a test tried to spawn something outside the sandbox: "
+                    f"{argv}")
+            return types.SimpleNamespace(pid=4242)
+
         patches = [
+            mock.patch.object(tel.subprocess, "Popen", fake_popen),
             mock.patch.object(tel, "_i2cget", self.exp.get),
             mock.patch.object(tel, "_i2cset", self.exp.set),
             mock.patch.object(tel, "_run_probe", fake_probe),
@@ -246,11 +273,18 @@ class LockTestCase(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def write_conf(self, *, lock_file=None, lock_wait="1", extra="") -> Path:
+    def write_conf(self, *, lock_file=None, lock_wait="1", extra="",
+                   override_sec="7", override_file=None,
+                   override_worker=None) -> Path:
         self.conf_path.write_text(
             CONF_TEMPLATE.format(
                 lock_file=lock_file if lock_file is not None else self.lock_path,
                 lock_wait=lock_wait,
+                override_sec=override_sec,
+                override_file=(override_file if override_file is not None
+                               else self.override_path),
+                override_worker=(override_worker if override_worker is not None
+                                 else self.worker_path),
             ) + extra,
             encoding="utf-8",
         )
@@ -286,7 +320,19 @@ class LockTestCase(unittest.TestCase):
         self.exp.writes.clear()
         self.exp.reads.clear()
         self.probe_calls.clear()
+        self.spawns.clear()
         return stub
+
+    def read_override(self) -> dict:
+        """The override file parsed the way etc/sa02m-beeper-override.sh reads
+        it: shell `key=value` lines, sourced."""
+        parsed = {}
+        for line in self.override_path.read_text(
+                encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                parsed[key.strip()] = value.strip()
+        return parsed
 
     def send(self, stub, ctrl: str, payload: bytes = b"1"):
         cb = tel.TelemetryClient._make_hw_cb(stub, ctrl)
@@ -556,6 +602,306 @@ class TestTheOwnerGate(LockTestCase):
         self.assertTrue(any("site-plc" in line for line in caught.output))
 
 
+class TestTheBeeperOverridePreEmptsABusyBus(LockTestCase):
+    """1.0.6.43, the Operator's decision: a cloud «beep» pre-empts the PLC.
+
+    1.0.6.42 made this daemon refuse EVERY hardware command while MPLC4 holds
+    the expander. The web panel does something different for exactly one
+    channel — `lib_hw.sh sa02m_hw_i2c_write_channel_web` writes
+    SA02M_BEEPER_OVERRIDE_FILE and starts SA02M_BEEPER_OVERRIDE_WORKER, so the
+    buzzer sounds while the PLC keeps the bus. The daemon now mirrors that, and
+    ONLY for `beeper`: `do` carries real equipment (on bench 1.135, bench
+    1.136's power) and `alarm_led` is not a 7 s pulse, so a widening that
+    leaked to either is the defect these cases exist to catch — hence the
+    one-channel-wide pin below sits beside the success pin, not after it.
+
+    The file now has TWO producers, this daemon and the CGI. What that costs is
+    pinned here too: the write is temp + rename (no reader ever sees half a
+    file), the last writer wins carrying its own TTL, and the daemon neither
+    reads its own value back as proof nor deletes the file.
+    """
+
+    def _busy_client(self, **conf):
+        stub = self.ready_client(**conf)
+        self.owner_unit_active("mplc4.service")
+        return stub
+
+    def test_a_beeper_command_on_a_busy_bus_writes_the_override_file(self):
+        """RED before 1.0.6.43: the command was refused and no file appeared."""
+        stub = self._busy_client()
+        before = int(time.time())
+
+        self.send(stub, "beeper", b"1")
+
+        self.assertTrue(self.override_path.is_file(),
+                        "no override file was written for a beeper command on "
+                        "a bus MPLC4 holds")
+        fields = self.read_override()
+        self.assertEqual(fields.get("value"), "1")
+        expires = int(fields["expires_at"])
+        self.assertGreaterEqual(expires, before + 7)
+        self.assertLessEqual(expires, int(time.time()) + 7,
+                             "expires_at is not now + the configured TTL")
+
+    def test_the_override_path_touches_no_byte_on_the_held_bus(self):
+        """The point of the override: the PLC keeps the bus. A daemon that
+        wrote the expander here would be the 1.0.6.42 defect with extra steps."""
+        stub = self._busy_client()
+
+        self.send(stub, "beeper", b"1")
+
+        self.assertEqual(self.exp.writes, [], "a byte went out on a held bus")
+        self.assertEqual(self.exp.reads, [], "even the read went out")
+        self.assertEqual(self.timeline, [], "the bus lock was taken at all")
+
+    def test_the_worker_is_started_detached(self):
+        """`nohup … & disown` in the CGI. Not detached, the worker dies with
+        the paho callback thread's process group on the next restart — and the
+        buzzer stays on until the TTL nobody is enforcing any more."""
+        stub = self._busy_client()
+
+        self.send(stub, "beeper", b"1")
+
+        self.assertEqual([argv for argv, _kw in self.spawns],
+                         [[str(self.worker_path)]],
+                         "the override worker was not started exactly once")
+        _argv, kwargs = self.spawns[0]
+        self.assertTrue(kwargs.get("start_new_session"),
+                        "the worker was not detached from this process group")
+        for stream in ("stdin", "stdout", "stderr"):
+            self.assertEqual(kwargs.get(stream), tel.subprocess.DEVNULL,
+                             f"the worker's {stream} was left attached")
+
+    def test_an_absent_worker_is_not_an_error(self):
+        """The CGI's `[ -x "$worker" ] || return 0`. A board whose worker was
+        not installed still gets the file — the next panel click's worker, or
+        the next install, applies it — and no WARNING is logged for it."""
+        missing = Path(self._tmp.name) / "nowhere" / "worker.sh"
+        stub = self._busy_client(override_worker=missing)
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            self.send(stub, "beeper", b"1")
+
+        self.assertTrue(self.override_path.is_file())
+        self.assertEqual(self.spawns, [])
+        self.assertEqual([line for line in caught.output
+                          if line.startswith("WARNING")], [],
+                         f"an absent worker was reported as a failure: "
+                         f"{caught.output}")
+
+    def test_the_command_is_accepted_and_the_journal_names_the_override(self):
+        """A success that reads like a plain bus write in the journal would
+        hide the one fact an operator needs: the pin was NOT driven by us."""
+        stub = self._busy_client()
+
+        with self.assertLogs(tel.log, level="INFO") as caught:
+            self.send(stub, "beeper", b"1")
+
+        joined = " ".join(caught.output)
+        self.assertIn("override", joined,
+                      f"the journal does not say the command took the override "
+                      f"path: {caught.output}")
+        self.assertIn("mplc4.service", joined,
+                      f"the journal does not name the owner we yielded the bus "
+                      f"to: {caught.output}")
+        self.assertIn(("controls/beeper", "1"), stub.published,
+                      "an accepted command published no state")
+
+    def test_a_beeper_off_writes_value_zero(self):
+        stub = self._busy_client()
+
+        self.send(stub, "beeper", b"0")
+
+        self.assertEqual(self.read_override().get("value"), "0")
+        self.assertIn(("controls/beeper", "0"), stub.published)
+
+    def test_the_ttl_comes_from_the_conf(self):
+        stub = self._busy_client(override_sec="3")
+        before = int(time.time())
+
+        self.send(stub, "beeper", b"1")
+
+        expires = int(self.read_override()["expires_at"])
+        self.assertGreaterEqual(expires, before + 3)
+        self.assertLessEqual(expires, int(time.time()) + 3)
+
+    def test_a_non_numeric_ttl_falls_back_to_the_cgi_default(self):
+        """`[[ "$ttl" =~ ^[0-9]+$ ]] || ttl=7` in lib_hw.sh. A garbage TTL must
+        not become an expires_at the worker reads as already expired (silence)
+        or as never expiring (a buzzer nobody stops)."""
+        stub = self._busy_client(override_sec="banana")
+        before = int(time.time())
+
+        self.send(stub, "beeper", b"1")
+
+        expires = int(self.read_override()["expires_at"])
+        self.assertGreaterEqual(expires, before + 7)
+        self.assertLessEqual(expires, int(time.time()) + 7)
+
+    def test_the_file_is_written_by_temp_and_rename(self):
+        """The file has two producers now. A reader — the worker, or the other
+        producer's next read — must never see half of it, so the bytes land
+        under a temp name in the same directory and arrive by one rename."""
+        stub = self._busy_client()
+        renames: list[tuple[str, str, str]] = []
+        real_replace = tel.os.replace
+
+        def watched_replace(src, dst):
+            renames.append((str(src), str(dst),
+                            Path(src).read_text(encoding="utf-8")))
+            return real_replace(src, dst)
+
+        with mock.patch.object(tel.os, "replace", watched_replace):
+            self.send(stub, "beeper", b"1")
+
+        self.assertEqual(len(renames), 1, "the file did not arrive by rename")
+        src, dst, staged = renames[0]
+        self.assertEqual(dst, str(self.override_path))
+        self.assertNotEqual(src, dst, "the temp name IS the live path")
+        self.assertEqual(Path(src).parent, self.override_path.parent,
+                         "a rename across filesystems is not atomic")
+        self.assertIn("value=1", staged)
+        self.assertIn("expires_at=", staged,
+                      "the rename staged an incomplete file")
+        self.assertEqual(
+            sorted(p.name for p in self.override_dir.iterdir()),
+            [self.override_path.name], "a temp file was left behind")
+
+    def test_the_daemon_does_not_delete_or_read_back_a_foreign_override(self):
+        """Last writer wins, carrying its own TTL — the accepted cost of the
+        second producer. The panel's file is REPLACED by ours, never removed,
+        and our own value is never read back as proof that anything happened."""
+        stub = self._busy_client()
+        self.override_dir.mkdir(parents=True, exist_ok=True)
+        self.override_path.write_text("value=0\nexpires_at=99999999999\n",
+                                      encoding="utf-8")
+
+        self.send(stub, "beeper", b"1")
+
+        fields = self.read_override()
+        self.assertEqual(fields.get("value"), "1",
+                         "the daemon did not win as the last writer")
+        self.assertLess(int(fields["expires_at"]), 99999999999,
+                        "the daemon carried the other producer's TTL")
+
+    def test_a_refused_channel_leaves_a_foreign_override_alone(self):
+        """A `do` refusal must not touch the buzzer's file — the panel may have
+        a beep in flight while the cloud is being told no."""
+        stub = self._busy_client()
+        self.override_dir.mkdir(parents=True, exist_ok=True)
+        self.override_path.write_text("value=1\nexpires_at=99999999999\n",
+                                      encoding="utf-8")
+
+        with self.assertLogs(tel.log, level="WARNING"):
+            self.send(stub, "do", b"1")
+
+        self.assertEqual(self.read_override(),
+                         {"value": "1", "expires_at": "99999999999"},
+                         "a refused channel rewrote the beeper's override")
+
+    def test_do_and_alarm_led_on_a_busy_bus_still_refuse(self):
+        """The widening is EXACTLY one channel wide. `do` commutes real
+        equipment — on bench 1.135 it carries bench 1.136's power — and the
+        panel refuses both of these on a held bus too."""
+        for channel in ("do", "alarm_led"):
+            with self.subTest(channel=channel):
+                stub = self._busy_client()
+
+                # Every substantive assertion sits INSIDE the assertLogs block,
+                # for the reason TestASecondHolderIsNotOverridden states: a
+                # widening that reached this channel writes the override file
+                # and logs INFO, so a block ending on "no WARNING" would report
+                # the missing log line and bury the fact that `do` just took
+                # the buzzer's path.
+                with self.assertLogs(tel.log, level="WARNING") as caught:
+                    self.send(stub, channel, b"1")
+                    self.assertFalse(
+                        self.override_path.exists(),
+                        f"a {channel} command took the beeper's override path")
+                    self.assertEqual(self.spawns, [],
+                                     f"a {channel} command started the beeper "
+                                     f"worker")
+                    self.assertEqual(stub.published, [],
+                                     f"a refused {channel} published state")
+                    self.assertEqual(self.exp.writes, [],
+                                     "a byte went out on a held bus")
+
+                self.assertTrue(
+                    any("mplc4.service" in line for line in caught.output),
+                    f"the refusal must still name the owner: {caught.output}")
+
+    def test_a_free_bus_still_drives_the_beeper_on_the_bus(self):
+        """Non-vacuity, and the branch order: the override is the BUSY-bus
+        path only. A daemon that always took it would stop driving the buzzer
+        on the boards that have no PLC at all."""
+        stub = self.ready_client()
+
+        self.send(stub, "beeper", b"1")
+
+        self.assertEqual(self.exp.out_writes, [ALL_OFF & ~(1 << BIT_BEEPER)])
+        self.assertFalse(self.override_path.exists(),
+                         "a free bus was answered with an override file")
+        self.assertEqual(self.spawns, [])
+
+    def test_an_unwritable_override_is_a_refusal_not_a_silent_success(self):
+        """The CGI's `|| return "$SA02M_HW_RC_IO"`. Publishing «on» for a file
+        that never landed is the retained-lie shape 1.0.6.42 removed."""
+        stub = self._busy_client()
+
+        with mock.patch.object(tel.os, "replace",
+                               mock.Mock(side_effect=OSError(13, "denied"))):
+            with self.assertLogs(tel.log, level="WARNING") as caught:
+                self.send(stub, "beeper", b"1")
+
+        self.assertEqual(stub.published, [],
+                         "a failed override published state anyway")
+        self.assertEqual(self.spawns, [],
+                         "the worker was started for a file that never landed")
+        self.assertTrue(
+            any(str(self.override_path) in line for line in caught.output),
+            f"the refusal must name the file it could not write: "
+            f"{caught.output}")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes only")
+    def test_the_file_and_its_directory_carry_the_modes_the_cgi_declares(self):
+        """664 / 775, so the OTHER producer — www-data's CGI — can still
+        replace a file this root daemon wrote, and the worker can read it."""
+        stub = self._busy_client()
+
+        self.send(stub, "beeper", b"1")
+
+        self.assertEqual(self.override_path.stat().st_mode & 0o777, 0o664)
+        self.assertEqual(self.override_dir.stat().st_mode & 0o777, 0o775)
+
+
+class TestTheOverrideFileMatchesItsConsumer(unittest.TestCase):
+    """The file's shape is a contract with etc/sa02m-beeper-override.sh.
+
+    The worker is the CONSUMER and it is not touched by this branch, so the
+    keys it validates are read out of it rather than restated here: a rename on
+    either side must fail this, not ship a file the worker silently rejects
+    (`read_override` returning 1 = the buzzer simply never sounds, with no
+    error anywhere). Shape (c) of docs/agent-rules/quality-gate-rigor.md — the
+    file that can BREAK this guarantee is the one that is read.
+    """
+
+    REPO = Path(__file__).resolve().parents[3]
+    WORKER = "etc/sa02m-beeper-override.sh"
+
+    def test_the_worker_validates_exactly_the_keys_the_daemon_writes(self):
+        text = (self.REPO / self.WORKER).read_text(encoding="utf-8",
+                                                   errors="replace")
+        self.assertIn('case "$value" in 0|1', text,
+                      f"{self.WORKER} no longer validates `value` as 0|1 — the "
+                      f"key the daemon writes may have been renamed")
+        self.assertIn('case "$expires_at" in', text,
+                      f"{self.WORKER} no longer validates `expires_at`")
+        self.assertIn(tel.HW_BEEPER_OVERRIDE_FILE_DEFAULT, text,
+                      f"{self.WORKER} and the daemon default to DIFFERENT "
+                      f"override files — the worker would poll a path nobody "
+                      f"writes")
+
+
 class TestTheReadPath(LockTestCase):
     """Locked, single-shot, and deliberately not owner-gated."""
 
@@ -731,6 +1077,8 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
     PROBE_BITS = {"do": 1, "beeper": 2, "alarm_led": 0}
     PROBE_EXTRA_MASK = 0x04
     PROBE_LOCK_FILE = "/run/lock/probe-not-the-default.lock"
+    PROBE_OVERRIDE_FILE = "/run/probe-not-the-default/beeper.env"
+    PROBE_OVERRIDE_WORKER = "/usr/local/sbin/probe-not-the-default.sh"
     PROBE_VALUES = (
         ("SA02M_HW_BACKEND", "disabled"),
         ("SA02M_I2C_EXP_BUS", "5"),
@@ -742,6 +1090,9 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         ("SA02M_I2C_OWNER_UNITS", '"probe-a.service probe-b.service"'),
         ("SA02M_I2C_OWNER_PROCS", '"probe-a probe-b"'),
         ("SA02M_I2C_RESPECT_OWNER", "0"),
+        ("SA02M_BEEPER_WEB_OVERRIDE_SEC", "3"),
+        ("SA02M_BEEPER_OVERRIDE_FILE", PROBE_OVERRIDE_FILE),
+        ("SA02M_BEEPER_OVERRIDE_WORKER", PROBE_OVERRIDE_WORKER),
         ("SA02M_I2C_BIT_DO", "1"),
         ("SA02M_I2C_BIT_BEEPER", "2"),
         ("SA02M_I2C_BIT_ALARM_LED", "0"),
@@ -831,6 +1182,20 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
             "SA02M_I2C_RESPECT_OWNER": (
                 lambda p: p.respect_owner,
                 lambda d: d not in self._respect_owner_off_values(), False),
+            # 1.0.6.43: the beeper override, now written by this daemon too.
+            # Read through the SAME `val("…")` idiom the enumeration above
+            # scans for, deliberately — the ledger's known blind spot (a
+            # `_read_conf_value` call, a single-quoted val) is recorded in
+            # .ai-dev/backlog.md, and adding keys it cannot see is the defect
+            # that entry exists to prevent.
+            "SA02M_BEEPER_WEB_OVERRIDE_SEC": (
+                lambda p: p.beeper_override_sec, lambda d: int(d), 3),
+            "SA02M_BEEPER_OVERRIDE_FILE": (
+                lambda p: p.beeper_override_file, lambda d: d,
+                self.PROBE_OVERRIDE_FILE),
+            "SA02M_BEEPER_OVERRIDE_WORKER": (
+                lambda p: p.beeper_override_worker, lambda d: d,
+                self.PROBE_OVERRIDE_WORKER),
         }
 
     def _write_conf(self, *, drop: str = "") -> str:
@@ -902,6 +1267,19 @@ class TestTheFallbacksMatchTheCgi(unittest.TestCase):
         direction register with it as an INPUT (review finding B1)."""
         self.assertEqual(int(self._default("SA02M_I2C_EXTRA_OUTPUT_MASK"), 0),
                          tel.HW_EXTRA_OUTPUT_MASK_DEFAULT)
+
+    def test_the_beeper_override_defaults_match(self):
+        """The two producers must agree on the PATH above all: a daemon writing
+        one file while the worker polls another is a buzzer that never sounds,
+        with no error on either side. The TTL is the same class one step down —
+        a 7 s pulse from the panel and a 30 s one from the cloud would be two
+        products."""
+        self.assertEqual(int(self._default("SA02M_BEEPER_WEB_OVERRIDE_SEC")),
+                         tel.HW_BEEPER_OVERRIDE_SEC_DEFAULT)
+        self.assertEqual(self._default("SA02M_BEEPER_OVERRIDE_FILE"),
+                         tel.HW_BEEPER_OVERRIDE_FILE_DEFAULT)
+        self.assertEqual(self._default("SA02M_BEEPER_OVERRIDE_WORKER"),
+                         tel.HW_BEEPER_OVERRIDE_WORKER_DEFAULT)
 
     def test_the_respect_owner_off_values_match(self):
         """Mirrored literally, not normalised: `False` does not switch the gate
