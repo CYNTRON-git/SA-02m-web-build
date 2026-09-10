@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-09-10 20:26] branch: 1.0.6.46
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_mr02m.py`
+**Тип:** Некорректное поведение
+**Описание:** На стенде 1.135 свет из облака (группа «Освещение», `bench-light-4` → `mr02m-COM3-10` `do_1`) не переключался: хаб отвечал DONE, MQTT `/on` уходил, катушка на COM6 оставалась 0, в журнале моста не было writeback. После рестарта `sa02m-modbus-mqtt` запись заработала. Прямая запись FC05 с ПК COM6 @19200 подтверждала железо.
+**Причина:** `_setup_writeback` подписывал только `range(1, self._do+1)`. Если `_init_module` не успевал за 60 попыток, `_do` оставался 0 и подписок не было; FMB/uptime при этом продолжали публиковать состояние (в т.ч. retained). Повторный init после setup не вызывался.
+**Исправление:** счёт каналов для writeback — как у FMB (`_layout_counts`: железо после init, иначе YAML); повторный init в `poll_slow_if_due`; подписка один раз (`_wb_ready`).
+
+## [2026-09-10 20:26] branch: 1.0.6.46
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_fmb.py`, `opt/sa02m-modbus-mqtt/bridge_mr02m.py`
+**Тип:** Некорректная конфигурация / логическая ошибка
+**Описание:** `mr02m-COM3-10` в YAML был `module_type: 2` (16ДО), модуль отвечает IR0=1 (6DO8DI). FMB при старте конфигурировал `coil start=1 count=16`.
+**Причина:** `fmb_event_ranges()` всегда брал YAML; `register_device` замораживал эти диапазоны до `setup()`/`_init_module`.
+**Исправление:** после init диапазоны с железа; `configure_all` вызывает `_refresh_ranges_from_poller`. На плате YAML исправлен на `module_type: 1`.
+
 ## [2026-09-08 22:20] branch: 1.0.6.41 — аппаратный сброс посреди `install.sh --refresh` (стенд 1.136)
 
 **Файл(ы):** `scripts/lib.sh`, `install.sh`, `scripts/0*.sh`, `scripts/1*.sh`, `scripts/offline-full-update.sh`, `etc/sa02m-update-runner.sh`

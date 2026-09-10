@@ -55,6 +55,7 @@ class RecPub:
         self.errors: list[tuple[str, str, str]] = []
         self.controls: list[tuple[str, str, str]] = []
         self.device_errors: list[tuple[str, str]] = []
+        self.wb: list[tuple[str, str]] = []
 
     def pub_control(self, device_id, name, value, force=False):
         self.controls.append((device_id, name, value))
@@ -77,8 +78,8 @@ class RecPub:
     def pub_control_units(self, *a, **k):
         pass
 
-    def subscribe_writeback(self, *a, **k):
-        pass
+    def subscribe_writeback(self, device_id, name, callback):
+        self.wb.append((device_id, name))
 
 
 def _poller(do=6, di=8, ao=0, ai=0, fails=3):
@@ -176,6 +177,27 @@ class TestSiblingBlockReadDoesNotStampR(unittest.TestCase):
         stamped = [e for e in pub.errors if e[2] == "r"]
         self.assertEqual([e[1] for e in stamped], ["ai_1"])
         self.assertIn(("mr02m-COM4-11", "ai_2", ""), pub.errors)
+
+    def test_writeback_uses_yaml_when_init_never_ran(self):
+        """Failed init used to leave _do=0 and subscribe nothing."""
+        p, pub = _poller(do=0, di=0)
+        p._do = p._di = p._ao = p._ai = 0
+        p._mod_type = None
+        p._setup_writeback()
+        names = [n for _d, n in pub.wb]
+        self.assertEqual(names, [f"do_{i}" for i in range(1, 7)])
+        self.assertTrue(p._wb_ready)
+        p._setup_writeback()
+        self.assertEqual(len(pub.wb), 6)
+
+    def test_writeback_follows_hardware_type_after_init(self):
+        p, pub = _poller(do=0, di=0)
+        p.cfg["module_type"] = 2
+        p._mod_type = 1
+        p._do, p._di, p._ao, p._ai = 6, 8, 0, 0
+        p._setup_writeback()
+        names = [n for _d, n in pub.wb]
+        self.assertEqual(names, [f"do_{i}" for i in range(1, 7)])
 
 
 if __name__ == "__main__":

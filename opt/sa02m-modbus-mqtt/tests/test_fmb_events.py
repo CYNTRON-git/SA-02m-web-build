@@ -242,6 +242,17 @@ class TestMr02mDispatch(unittest.TestCase):
         p.fmb_dispatch(bridge.FMB_EVT_COIL, 1, 1)
         self.assertIn((p.device_id, "do_1", "1"), pub.controls)
 
+    def test_hardware_type_overrides_yaml(self):
+        # Bench 1.135 COM3-10: YAML 16DO, module answers 6DO8DI.
+        p = make_mr02m(FakePub(), 2)
+        self.assertEqual(p.fmb_event_ranges()[0], (bridge.FMB_EVT_COIL, 1, 16))
+        p._mod_type = 1
+        p._do, p._di, p._ao, p._ai = 6, 8, 0, 0
+        self.assertEqual(p.fmb_event_ranges(), [
+            (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_INPUT, 18, 8),
+        ])
+
 
 # ── 5. Manager: per-range graceful configure + generic dispatch ──────────────
 class TestManagerConfigurePerRange(unittest.TestCase):
@@ -286,6 +297,24 @@ class TestManagerConfigurePerRange(unittest.TestCase):
         mgr._dispatch(15, bridge.FMB_EVT_REBOOT, 0, -1)   # generic, no callback
         mgr._dispatch(99, bridge.FMB_EVT_COIL, 1, 1)      # unregistered slave
         self.assertEqual(events, [])
+
+    def test_refresh_ranges_from_poller_after_init(self):
+        mgr = bridge.FastModbusEventPortManager("/dev/COMT", 115200)
+        poller = make_mr02m(FakePub(), 2)
+        mgr.register_device(
+            10, "mr02m-COM3-10", poller.fmb_event_ranges(),
+            lambda *a: None, poller=poller, dev_type="mr02m")
+        dev = mgr._devices[10]
+        self.assertEqual(dev["ranges"][0], (bridge.FMB_EVT_COIL, 1, 16))
+        poller._mod_type = 1
+        poller._do, poller._di, poller._ao, poller._ai = 6, 8, 0, 0
+        mgr._refresh_ranges_from_poller(dev)
+        self.assertEqual(dev["ranges"], [
+            (bridge.FMB_EVT_COIL, 1, 6),
+            (bridge.FMB_EVT_INPUT, 18, 8),
+        ])
+        self.assertEqual(dev["pending"], dev["ranges"])
+        self.assertFalse(dev["configured"])
 
 
 if __name__ == "__main__":

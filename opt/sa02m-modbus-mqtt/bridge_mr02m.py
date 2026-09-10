@@ -58,18 +58,25 @@ class MR02mPoller(DevicePoller):
         self._press_disabled = False  # older firmware w/o regs 695+ (until retry)
         self._t_diag        = 0.0
         self._t_uptime      = 0.0
-        # FMB event counts, cached by fmb_event_ranges() from yaml module_type.
-        # NOT self._do etc. (0 until _init_module succeeds) — events must work
-        # before/without a successful init, as before the manager generalization.
+        # FMB event counts, cached by fmb_event_ranges(). YAML until
+        # _init_module succeeds; hardware type after that (YAML on the
+        # bench can name 16DO while the module is 6DO8DI).
         self._fmb_do = self._fmb_di = self._fmb_ao = self._fmb_ai = 0
+        self._wb_ready = False
 
     # --- Fast Modbus events (layout owned here; manager is device-agnostic) ---
 
-    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
-        # Counts from yaml module_type: registration runs before _init_module
-        # can read the device (same source main() used pre-generalization).
+    def _layout_counts(self) -> tuple[int, int, int, int]:
+        """DO/DI/AO/AI counts: hardware type after init, else YAML."""
+        if self._mod_type is not None:
+            return self._do, self._di, self._ao, self._ai
         mt = self.cfg.get("module_type", 1)
-        do, di, ao, ai = MR02M_MODULE_TYPES.get(mt, (6, 8, 0, 0))
+        return MR02M_MODULE_TYPES.get(mt, (6, 8, 0, 0))
+
+    def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
+        # Registration runs before _init_module, so the first call is YAML.
+        # configure_all re-reads this after setup() — hardware type wins then.
+        do, di, ao, ai = self._layout_counts()
         self._fmb_do, self._fmb_di, self._fmb_ao, self._fmb_ai = do, di, ao, ai
         ranges: list[tuple[int, int, int]] = []
         if do > 0:
@@ -682,7 +689,15 @@ class MR02mPoller(DevicePoller):
     def _setup_writeback(self) -> None:
         # Callback paho лишь парсит и ставит запись в очередь (A1):
         # Modbus write выполняет WritebackWorker, не сетевой цикл MQTT.
-        for i in range(1, self._do + 1):
+        # Counts from hardware after init, else YAML — same as FMB. A failed
+        # 60-try init used to leave _do=0 and subscribe nothing, so /on
+        # published by Alice never wrote a coil (bench COM3-10, 2026-09-10).
+        if self._wb_ready:
+            return
+        do, _di, ao, _ai = self._layout_counts()
+        if do == 0 and ao == 0:
+            return
+        for i in range(1, do + 1):
             def make_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on при рестарте моста не переигрывается (A4):
@@ -700,7 +715,7 @@ class MR02mPoller(DevicePoller):
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"do_{i}", make_cb(i))
 
-        for i in range(1, self._ao + 1):
+        for i in range(1, ao + 1):
             def make_ao_cb(ch: int):
                 def cb(client, userdata, msg):
                     # Retained /on не переигрывается при рестарте (A4).
@@ -715,6 +730,8 @@ class MR02mPoller(DevicePoller):
                         f"ao_{ch}", lambda: self._writeback_ao(ch, v))
                 return cb
             self.pub.subscribe_writeback(self.device_id, f"ao_{i}", make_ao_cb(i))
+        self._wb_ready = True
+        self.log.info("writeback subscribed do=%d ao=%d", do, ao)
 
     def setup(self) -> None:
         for _ in range(60):
@@ -741,6 +758,9 @@ class MR02mPoller(DevicePoller):
 
     def poll_slow_if_due(self, now: float) -> None:
         flushed = False
+        if self._mod_type is None:
+            if self._init_module():
+                self._setup_writeback()
         if now - self._t_uptime >= self._poll_uptime_s:
             self._poll_uptime()
             self._t_uptime = now

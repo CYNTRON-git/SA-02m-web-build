@@ -425,6 +425,30 @@ class FastModbusEventPortManager:
             return
         dev["dispatch"](evt_type, reg, val)
 
+    def _refresh_ranges_from_poller(self, dev: dict) -> None:
+        """Re-read fmb_event_ranges after setup() so hardware type wins.
+
+        Registration runs before _init_module. A YAML 16DO on a 6DO8DI
+        module would otherwise configure 16 coil events forever.
+        """
+        poller = dev.get("poller")
+        if poller is None or not hasattr(poller, "fmb_event_ranges"):
+            return
+        new = list(poller.fmb_event_ranges() or [])
+        old = list(dev.get("ranges") or [])
+        if new == old:
+            return
+        self._log.info(
+            "FMB ranges refreshed %s: %s -> %s",
+            dev.get("id"), old, new)
+        dev["ranges"] = new
+        if not dev.get("configured"):
+            dev["pending"] = list(new)
+        else:
+            # Already armed with the stale map — re-run configure.
+            dev["configured"] = False
+            dev["pending"] = list(new)
+
     def configure_all(self, *, only_ready: bool = False) -> None:
         """EnableEvents for registered devices.
 
@@ -435,6 +459,7 @@ class FastModbusEventPortManager:
             return
         ser = _get_port(self._port_path, self._baudrate)
         for addr, dev in self._devices.items():
+            self._refresh_ranges_from_poller(dev)
             if dev.get("configured") and not dev.get("pending"):
                 continue
             poller = dev.get("poller")
