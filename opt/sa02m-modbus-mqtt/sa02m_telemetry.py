@@ -513,9 +513,14 @@ def _beeper_override_write(profile: "HwProfile", on: bool) -> tuple[bool, str]:
             fh.write("value=%d\n" % (1 if on else 0))
             fh.write("expires_at=%d\n" % expires_at)
         # Before the rename, not after: os.replace carries the temp file's mode
-        # onto the live path, so doing it in this order means the file is never
-        # visible with root's umask-narrowed 0644 — which the other producer,
-        # www-data, could not overwrite in place.
+        # onto the live path, so in this order the file is never VISIBLE with
+        # root's umask-narrowed 0644. The reason is the reader, not the other
+        # writer: www-data replaces this file by rename (which needs the
+        # DIRECTORY, and that is 0775 www-data), so it is never blocked by the
+        # file's own mode — but anything that only READS the override, now or
+        # later, would be, and a 0644 window is exactly the kind of transient
+        # nobody reproduces. The CGI chmods after its `mv` and leaves that
+        # window open; this is deliberately narrower.
         os.chmod(tmp, 0o664)
         os.replace(tmp, path)
     except OSError as exc:

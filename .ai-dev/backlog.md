@@ -27,6 +27,18 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-10 **[MED] A machine-rate `beeper` spawns one override worker per accepted
+  command, with nothing collapsing them.** Each accepted command on a held bus starts
+  `sa02m-beeper-override.sh` detached; N commands inside one 7 s TTL leave N concurrent shell
+  loops polling i2c every 0.2 s on a shared ARM target that also runs MPLC4 and CODESYS. It
+  MIRRORS the reference — `sa02m_hw_beeper_override_start_worker` does the same — but the
+  reference is driven by a human clicking a button, and this path is driven by the cloud, Alice
+  and scenarios, i.e. machine-rate. Not anonymously reachable (1883 is loopback-only, 1884 needs
+  auth), so this is load, not a security hole. **The obvious fix is forbidden by the accepted
+  design:** the daemon must not assume it is the only producer, so it cannot track «my worker»
+  and skip. Any real fix is a change to the worker's own contract — e.g. it takes a lock and a
+  second instance exits — which is `etc/sa02m-beeper-override.sh`'s to make, not the daemon's.
+  Recorded because it is an ACCEPTANCE nobody had written down. Found by the 1.0.6.43 ship review.
 - [OPEN] 2026-09-10 **[LOW] The daemon's `makedirs` fallback could root-own the shared override
   directory.** If `/run/sa02m-hw-override` is ever missing when the telemetry daemon writes the
   beeper override, root creates it and the www-data CGI can no longer stage its temp file there —
@@ -34,7 +46,10 @@ worklist collapsed into one home).
   any board that has the feature: `scripts/03-webserver.sh` installs a tmpfiles.d entry
   `d /run/sa02m-hw-override 0775 www-data www-data`, recreated every boot. The Builder mirrored
   the CGI rather than hard-coding a second home for that ownership and recorded the consequence
-  at the site. Found while building 1.0.6.43.
+  at the site. Found while building 1.0.6.43. **The 1.0.6.43 review sharpened this:** the
+  «unreachable» reasoning is true today but NOTHING KEEPS IT TRUE — delete that tmpfiles.d line
+  and this finding goes live with every quality row still green. Whoever closes this should
+  either pin the tmpfiles.d entry or stop depending on it.
 - [OPEN] 2026-09-10 **[LOW, Operator's call] After taking the override path the daemon publishes
   the COMMANDED `controls/beeper` value, not a measured one.** It did not drive the pin — the
   worker does, later — so the retained value is a claim about a byte this process never wrote.
