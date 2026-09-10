@@ -51,7 +51,12 @@ def apply_on_off_inversion(value: bool, inverted: bool) -> bool:
 
     The rule: **the bus side holds the electrical value, the Yandex/cloud side
     holds the logical one**, and `inverted` says they are opposites — bus 0 =
-    logically on (the SA-02m `alarm_led` output sounds the buzzer at 0).
+    logically on. Typical case: a relay module whose coil input is active-low.
+
+    The SA-02m controller's own do/beeper/alarm_led channels need NO flag: the
+    telemetry daemon publishes their logical level already (why, and what an
+    integrator does with a profile that still carries `inverted: true`:
+    docs/contracts/alice-mqtt-mapping.md § Inverted).
 
     It lives here once and only once because the transformation is its own
     inverse: `not` applied twice is identity, so the SAME call converts

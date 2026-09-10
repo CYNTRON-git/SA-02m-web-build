@@ -27,6 +27,55 @@ worklist collapsed into one home).
   Fixed on the 1.0.6.41 branch: `5df1b89` ported the shared read-back block into the
   file (its only `set-property` calls now sit inside the helper), and `2dc6da1` added
   the file to `watchdog-hold`'s `covers`. Closed by the 1.0.6.41 ship review, finding 4.
+- [OPEN] 2026-09-10 **[LOW] An explicitly BLANK `SA02M_I2C_EXTRA_OUTPUT_MASK` resolves to 0 in
+  the CGI and 0x08 in the daemon** — the 1.0.6.42 fight in reverse, at a different boundary.
+  `lib_hw.sh:34` applies its `:-0x08` and `:36` then SOURCES the conf, so an empty assignment
+  overwrites the default and `sa02m_hw_i2c_extra_output_mask_dec`'s `${…:-0}` yields 0; the
+  daemon's `_hw_extra_output_mask` returns the 0x08 default for blank as well as absent. Nothing
+  shipped writes an empty value, so no board is in that state — which is why it was recorded
+  rather than silently made to match after the release was stamped. Resolving it is a choice
+  about which consumer moves: matching the CGI drops bit3 (KLogic's blue LED) on both when a
+  conf carries a blank line, matching the daemon keeps it. Found by the 1.0.6.42 round-2 review.
+- [OPEN] 2026-09-10 **[MED] The daemon's conf-key ledger is a TEXT SCAN for one idiom, not an
+  enumeration — and the next queued fix walks straight into its blind spot.** The pin added in
+  `680ebe7` finds keys with `re.findall(r'val\("(SA02M_[A-Z0-9_]*)"', src)`. The 1.0.6.42 round-2
+  reviewer defeated it three ways, each leaving the ledger GREEN: `_read_conf_value(path,
+  "SA02M_…")` directly, `val('…')` with single quotes, and a key assembled in a variable. **No
+  key is unpinned today** — the only `_read_conf_value` call sites are the two the `val` closure
+  wraps — which is why this did not block 1.0.6.42. The trap is the entry below: `_i2cget` and
+  `_i2cset` are module-level and cannot see the `val` closure, so reading
+  `SA02M_I2C_TIMEOUT_SEC` there naturally uses `_read_conf_value` — a seventh mirrored default
+  that the ledger would not see while the registry still promises coverage. **Fix the two
+  together, on one branch**, and make the scan see every read idiom (or make the code use one).
+- [OPEN] 2026-09-09 **[LOW] The telemetry daemon hard-codes its I2C subprocess timeout instead
+  of reading `SA02M_I2C_TIMEOUT_SEC`** — `_i2cget`/`_i2cset` pass `timeout=1`, a second copy of a
+  conf value that happens to equal the shipped default. A board that raised it would have the
+  CGI waiting 3 s and the daemon 1 s on the same bus. Found while fixing the channel map
+  (1.0.6.42); it is the same one-home defect class as the map itself, one layer down. Fix is to
+  read it where the rest of the profile is read.
+- [OPEN] 2026-09-09 **[LOW] The telemetry daemon does not read back after a hardware write.**
+  `lib_hw.sh` verifies the output register after writing it; the daemon publishes success on the
+  `i2cset` return code alone. On the byte that carries the discrete output, «the write returned
+  0» and «the pin moved» are not the same claim — this release's whole subject is the gap
+  between them. Found while fixing the channel map (1.0.6.42).
+- [OPEN] 2026-09-09 **[MED, product decision — the Operator's, not an agent's] An MQTT `beeper`
+  command is now REFUSED while MPLC4 holds the bus, where the web UI falls back to the 7 s
+  override file** (`/run/sa02m-hw-override/beeper.env`, `SA02M_BEEPER_WEB_OVERRIDE_SEC`). Taking
+  that same path in the daemon would make it a SECOND producer of that file, which is a design
+  change, not a bug fix — hence not decided by the Builder or by me. The refusal is honest and
+  logged, so nothing is silently lost today; the question is whether a cloud/Alice «beep» should
+  be able to pre-empt the PLC the way the panel's button can. Found while adding the bus lock
+  (1.0.6.42).
+- [OPEN] 2026-09-09 **[MED, peer observation — not verified by me] `sa02m-cloud-control` on
+  bench 1.135 drops its connection with «lib:transport error» every 10-70 min all day, and at
+  13:04:47 systemd killed it on its stop timeout; load average ~6.** Reported by the peer session
+  «lighting-module-diagnostics» (cloud repo) while working read-only on 1.135. Recorded as
+  theirs, not re-derived here. Two notes: the 13:04:47 kill is the same window in which bench
+  1.136 lost power, and 1.135's install was restarting `sa02m-modbus-mqtt`, `sa02m-telemetry`,
+  `sa02m-alice-client` and `sa02m-cloud-control` between 13:03:44 and 13:04:22 — so the kill is
+  plausibly the install's own restart hitting a stop timeout rather than a standing defect. A
+  load average of 6 on a 491 MB board with no swap and no zram is worth its own look; part of
+  today's was mine (the Carel pivot measurements).
 - [OPEN] 2026-09-09 **[MED] The Carel long→wide pivot holds a write lock longer than the
   logger's 30 s timeout on a multi-million-row archive** — measured on bench 1.135 with its
   real archive (2026-09-09): the cost is linear at ~23 µs/row (125k → 2.8 s, 250k → 6.9 s,

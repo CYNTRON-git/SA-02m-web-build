@@ -112,6 +112,7 @@ nodered-pin-consistency|scripts/dev/build-nodered-payload.sh|--omit=optional
 watchdog-cap|scripts/01-system.sh|install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf"
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|self._clear_legacy_retained()
 telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW not ready — %s command dropped"
+telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW %s has no configured bit — command dropped (%s)"
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
 carel-shared-home|scripts/05-mqtt.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
