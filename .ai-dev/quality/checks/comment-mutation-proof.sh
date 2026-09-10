@@ -124,6 +124,7 @@ mqtt-set-contract|www/network_config/cgi-bin/mqtt_set.cgi|web_csrf_validate
 web-update-csrf-contract|www/network_config/cgi-bin/web_update_apply.cgi|web_csrf_validate
 i18n-dict-contract|www/network_config/static/js/i18n.js|'"'"'Сеть'"'"': '"'"'Network'"'"',
 no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
+sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
 installer-order|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 offline-update-wrapper|scripts/offline-full-update.sh|nohup setsid env
 watchdog-hold|install.sh|trap sa02m_restore_runtime_watchdog EXIT
