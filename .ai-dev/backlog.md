@@ -8,6 +8,7 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-16 **[LOW] Reviewer advisories of the 1.0.6.48 review — next fixup.** (1) the verdict file may carry `NOCSUM`/`ERR` besides `OK|BAD` (`etc/sa02m-rootfs-expand.sh` `write_result`, `sb_csum_of_block`), but `docs/deployment.md` §12 / CHANGELOG / BUGLOG describe only `OK | BAD` — one clause in §12. (2) a `.result.tmp` can survive a power cut between the temp write and the rename commit and nothing removes it later — `rm -f "$RESULT.tmp"` at `start`. (3) CHANGELOG/§12 do not say the flash→cut→boot re-run of the verdict file is deferred to the next golden capture. (4) the bench cause is restated in six places pointing to BUGLOG 16:40 — collapse the script/harness headers to one clause + pointer. (5) `.ai-dev/notes/quality-gate-environment.md` lacks rows for `cloud-card-smoke` / `sh-modal-layout-smoke`, which FAIL (not skip) without playwright. Source: `.ai-dev/reviews/1.0.6.48_review.md` (transient).
 - [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
   «ext4: fix bad checksum after online resize»** (Baokun Li, 2022-11-16, `fs/ext4/resize.c`
   `ext4_update_super`; Fixes: de394a86658f). The 1.0.6.47 `ensure_primary_sb_checksum()`
