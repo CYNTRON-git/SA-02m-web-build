@@ -8,6 +8,7 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-16 **[LOW] Reviewer advisories of the 1.0.6.48 review — next fixup.** (1) the verdict file may carry `NOCSUM`/`ERR` besides `OK|BAD` (`etc/sa02m-rootfs-expand.sh` `write_result`, `sb_csum_of_block`), but `docs/deployment.md` §12 / CHANGELOG / BUGLOG describe only `OK | BAD` — one clause in §12. (2) a `.result.tmp` can survive a power cut between the temp write and the rename commit and nothing removes it later — `rm -f "$RESULT.tmp"` at `start`. (3) CHANGELOG/§12 do not say the flash→cut→boot re-run of the verdict file is deferred to the next golden capture. (4) the bench cause is restated in six places pointing to BUGLOG 16:40 — collapse the script/harness headers to one clause + pointer. (5) `.ai-dev/notes/quality-gate-environment.md` lacks rows for `cloud-card-smoke` / `sh-modal-layout-smoke`, which FAIL (not skip) without playwright. Source: `.ai-dev/reviews/1.0.6.48_review.md` (transient).
 - [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
   «ext4: fix bad checksum after online resize»** (Baokun Li, 2022-11-16, `fs/ext4/resize.c`
   `ext4_update_super`; Fixes: de394a86658f). The 1.0.6.47 `ensure_primary_sb_checksum()`
@@ -16,8 +17,21 @@ worklist collapsed into one home).
   eMMC) re-opens the power-cut window until the kernel carries the fix. Durable fix = the
   kernel line (RT and SMP zImages both, `sa02m-kernel-select.sh` swaps them). Evidence and
   the field symptom: `docs/bugs/BUGLOG.md` 2026-09-16.
-- [OPEN] 2026-09-16 **[LOW] Reviewer advisories A1–A5 of the 1.0.6.47 review — queued as the next
-  fixup branch (Operator shipped on the approved tree; not deferred to nowhere).** A1
+- [OPEN] 2026-09-16 **[HIGH] Root fs `commit=600` + superblock default `journal_data_writeback`:
+  up to ~10 min of unsynced writes are lost on a power cut.** Bench 2026-09-16 (reflashed
+  clone, cut at 15:21): `/var/log/sa02m-rootfs-expand.log`, `/var/log/sa02m-reboot-reason.log`
+  and the persistent journal files under `/var/log.hdd/journal/<machine-id>/` all came back
+  0 bytes («truncated, ignoring file»), journald fell back to `/run/log/journal`. Not
+  logrotate (no rule for these files). Web-saved configs (`/etc/sa02m_*.conf`, MQTT/gateway
+  YAML, Alice/cloud state) are exposed the same way unless their writers fsync — a config
+  saved and power-cut inside the window silently reverts or truncates. 1.0.6.48 made the
+  first-boot verdict durable by targeted `sync FILE`; the policy itself is the Operator's
+  decision: wear vs durability — `commit=5..30` and/or `data=ordered` in the image's fstab /
+  `tune2fs -o` defaults, or targeted fsync in every config writer (the
+  `sa02m_atomic_install` shape, BUGLOG 2026-09-08). Record: `docs/bugs/BUGLOG.md` 2026-09-16 16:40.
+- [RESOLVED 2026-09-16, branch 1.0.6.48] 2026-09-16 **[MED] On a golden clone the first-boot diagnostics are unreadable: `/var/log/sa02m-rootfs-expand.log` and `/var/log/sa02m-reboot-reason.log` come back EMPTY on the first and second boot, and `journalctl -b` for the same boot says `Journal file …/system.journal is truncated, ignoring file` (both boards flashed 2026-09-16, images golden-20260915 and -fb1.0.6.47).** The 1.0.6.47 guard's verdict therefore had to be proven from the unit's exit status + an O_DIRECT re-read, not from its own log line `primary superblock checksum OK`, which `docs/deployment.md` §12 tells the operator to look for. Real cause (bench, same day): NOT the image cleanup and NOT journald — `/` is mounted `commit=600` with the superblock default `journal_data_writeback`, so file data and size written in the last ≤10 min and never fsync'd are lost on the power cut (the files existed and were non-empty before the cut). Resolved for the guard's own evidence in 1.0.6.48: the verdict goes to `/var/lib/sa02m-rootfs-expand.result` via temp + `sync FILE` + rename, and the script fsyncs verdict + `DONE` + its log as its last act; §12 now points the operator at the verdict. The journal / other logs remain exposed — that is the [HIGH] mount-policy item above.
+- [RESOLVED 2026-09-16, branch 1.0.6.48] 2026-09-16 **[LOW] Reviewer advisories A1–A5 of the 1.0.6.47 review — queued as the next
+  fixup branch (Operator shipped on the approved tree; not deferred to nowhere).** All five landed in 1.0.6.48: A1 §12 «after the `done:` line»; A2 the branch writes `>&2` (both copies); A3 the marker comment names its real consumers (repair tool, audit, human); A4 imaging guide §12 shows `sa02m-rootfs-expand.service` + pointer; A5 `tail -n 1`. A1
   `docs/deployment.md` §12 «≈T+30 с» contradicts the unit's own «resize2fs 1–3 min» on the resize
   path — say "after the `done:` line". A2 `etc/sa02m-rootfs-expand.sh` "root may still be frozen"
   branch logs via `tee` onto that root (unreachable today; `>&2` is safe by construction; mirror

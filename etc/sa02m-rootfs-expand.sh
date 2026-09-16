@@ -7,17 +7,43 @@
 # verify its checksum ON DISK (see ensure_primary_sb_checksum) — the board
 # kernel leaves it stale after an online resize, and a power cut before the
 # first clean reboot then bricks the clone (docs/bugs/BUGLOG.md 2026-09-16).
+# Evidence that must outlive a power cut — the verdict file, DONE, the log —
+# is fsync'd explicitly (sync_files): / is mounted commit=600 with the
+# superblock default journal_data_writeback, so a write not fsync'd within
+# ~10 min is simply gone after a cut (bench 2026-09-16: every first-boot log
+# and the persistent journal came back 0 bytes; BUGLOG.md 2026-09-16 16:40).
 set -euo pipefail
 
 LOG=/var/log/sa02m-rootfs-expand.log
 DONE=/var/lib/sa02m-rootfs-expand.done
 CSUM_BAD=/var/lib/sa02m-rootfs-expand.csum-bad
+RESULT=/var/lib/sa02m-rootfs-expand.result
 ROOT_PART="${SA02M_ROOT_PART:-/dev/mmcblk2p2}"
 ROOT_DISK="${SA02M_ROOT_DISK:-/dev/mmcblk2}"
 PART_NUM="${SA02M_ROOT_PART_NUM:-2}"
 WATCHDOGS="sa02m-userspace-watchdog sa02m-failure-monitor net-watchdog"
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+
+# Push FILEs (or directories) to the medium: coreutils `sync FILE` fsyncs
+# each one (Debian bookworm, coreutils 9.x); a sync without FILE support
+# falls back to a global sync. Never fails — the verdict is already decided,
+# durability is best-effort on top of it.
+sync_files() {
+    sync "$@" 2>/dev/null || sync || true
+}
+
+# The durable verdict: ONE line, rewritten never appended, staged in a temp
+# file that is fsync'd BEFORE the rename over the previous one, so a cut at
+# any instant leaves the old line or the new — never a 0-byte file (the
+# `install -m` lesson, BUGLOG.md 2026-09-08). Consumers: the repair tool's
+# evidence copy (tools/imaging/autorun-repair-rootfs.sh), the audit, a human
+# reading docs/deployment.md §12. No daemon watches it.
+write_result() {  # $1=verdict text: "<OK|BAD|NOCSUM|ERR> … attempts=N"
+    printf '%s %s\n' "$(date '+%FT%T%z')" "$1" > "$RESULT.tmp"
+    sync_files "$RESULT.tmp"
+    mv -f "$RESULT.tmp" "$RESULT"
+}
 
 need_expand() {
     local part_bytes disk_bytes
@@ -135,28 +161,37 @@ force_primary_sb_rewrite() {
         return 1
     fi
     if ! timeout 20 fsfreeze -u /; then
-        log "ERROR: fsfreeze -u / failed — root may still be frozen"
+        # Not log(): its tee would write onto the root this branch says may
+        # still be frozen. stderr reaches the journal through the unit's
+        # socket, never the filesystem.
+        echo "[$(date '+%F %T')] ERROR: fsfreeze -u / failed — root may still be frozen" >&2
         return 1
     fi
     sync
     log "freeze/unfreeze cycle done: primary superblock rewritten by the kernel"
 }
 
-# Rewrite, verify on disk, retry once. Still not OK: loud ERROR, marker file
-# for the failure monitor/audit, return 1 — the caller still sets DONE so the
-# next boot is not delayed by a resize that already happened.
+# Rewrite, verify on disk, retry once; the last attempt's verdict goes to
+# $RESULT (durable, see write_result). Still not OK: loud ERROR, the $CSUM_BAD
+# marker, return 1 — the caller still sets DONE so the next boot is not delayed
+# by a resize that already happened. Nothing watches the marker (the failure
+# monitor does not read it): like the verdict line, it is evidence for the
+# repair tool's copy, the audit and a human.
 ensure_primary_sb_checksum() {
     local attempt state rc
     for attempt in 1 2; do
         force_primary_sb_rewrite || true   # ERROR already logged; verify anyway
         rc=0
         state=$(primary_sb_checksum "$ROOT_PART") || rc=$?
-        log "primary superblock checksum ${state:-ERR (no output)} (attempt $attempt)"
+        state=${state:-ERR (no output)}
+        log "primary superblock checksum $state (attempt $attempt)"
         if [ "$rc" -eq 0 ]; then
+            write_result "$state attempts=$attempt"
             rm -f "$CSUM_BAD"
             return 0
         fi
     done
+    write_result "$state attempts=2"
     log "ERROR: primary superblock checksum still not OK after 2 freeze cycles — a power cut before the next clean reboot will brick this board (marker: $CSUM_BAD)"
     touch "$CSUM_BAD"
     return 1
@@ -171,6 +206,9 @@ finish_firstboot() {
           /etc/systemd/system/basic.target.wants/sa02m-rootfs-expand.service \
           2>/dev/null || true
     log "firstboot finish: DONE set; watchdogs will start via Before= ordering"
+    # LAST act: nothing is written after this, so one fsync covers the verdict,
+    # DONE, every log line above, and the directory entries (marker included).
+    sync_files "$RESULT" "$DONE" "$LOG" "$(dirname "$DONE")"
 }
 
 case "${1:-start}" in

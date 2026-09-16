@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-09-16 16:40] branch: 1.0.6.48
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh` (и его копия `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh`), `docs/deployment.md` §12
+**Тип:** Потеря диагностики (улики первого старта не переживают снятие питания)
+**Описание:** Перезалитый клон (стенд, 2026-09-16): гарантия 1.0.6.47 сработала — юнит завершился с кодом 0, маркера `csum-bad` нет, повторное чтение суперблока O_DIRECT — OK, холодный старт после снятия питания на T+2:43 прошёл. Но после снятия питания в 15:21 `/var/log/sa02m-rootfs-expand.log` — 0 байт, `/var/log/sa02m-reboot-reason.log` — 0 байт, файлы persistent-журнала в `/var/log.hdd/journal/<machine-id>/` — 0 байт («Journal file … is truncated, ignoring file»), journald ушёл в `/run/log/journal`. Строка `primary superblock checksum OK`, по которой §12 велел оператору судить о гарантии, не пережила именно тот сценарий, который удостоверяет.
+**Причина:** `/proc/mounts`: `/dev/root / ext4 rw,noatime,errors=remount-ro,commit=600`; в суперблоке — default mount options `journal_data_writeback`. Данные и размер файла, записанные за последние ≤10 мин и не сброшенные `fsync`, при снятии питания теряются: журнал метаданных откатывает inode к нулевой длине, данные так и не дошли до носителя. Исключено: logrotate (правил для этих файлов нет), cleanup образа (файлы были непустыми до снятия питания). Затронуто всё, что пишется без `fsync`, — в том числе конфиги, сохранённые из веб-интерфейса.
+**Исправление:** скрипт пишет вердикт последней попытки одной строкой в `/var/lib/sa02m-rootfs-expand.result` (`<ISO-время> OK|BAD stored=… computed=… attempts=N`) через временный файл + `sync FILE` + rename (никогда не 0 байт) и последним действием `finish_firstboot` сбрасывает `sync FILE`-ом вердикт, `DONE`, свой лог и их каталог (fallback на голый `sync`, если `sync` не принимает файлы). Инструмент восстановления копирует вердикт в улики; §12 велит проверять вердикт, а не лог, и честно говорит, что `/var/log` и журнал снятие питания не переживают. Смена политики монтирования (`commit`, `data=ordered`) или `fsync` в писателях конфигов — решение Оператора (бэклог [HIGH] 2026-09-16). Гейт `firstboot-sb-csum`: новые пины и поведенческие случаи, RED-first записан в заголовке `scripts/dev/test-firstboot-sb-csum.sh`.
+
 ## [2026-09-16 12:40] branch: 1.0.6.47
 
 **Файл(ы):** `etc/sa02m-rootfs-expand.sh` (и его копия `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh`), ядро платы `6.1.0-rc6`
