@@ -771,6 +771,12 @@ cd tools/imaging/netinstall
 
 ## 12. Первая загрузка клона
 
+Гарантия суперблока при первом старте, вердикт
+`/var/lib/sa02m-rootfs-expand.result` и восстановление «кирпича» после снятия
+питания описаны в одном месте — `docs/deployment.md`, раздел 12 «Первая загрузка
+клона: гарантия суперблока и восстановление „кирпича“»; здесь только схема
+старта и чек-лист.
+
 После успешной заливки и reboot:
 
 ```
@@ -788,11 +794,13 @@ cd tools/imaging/netinstall
      ▼
   systemd multi-user.target
      │
-     ├─► armbian-resize-filesystem.service
-     │      (если /root/.not_logged_in_yet)
-     │      growpart /dev/mmcblk2 2
-     │      resize2fs /dev/mmcblk2p2
+     ├─► sa02m-rootfs-expand.service
+     │      (пока нет /var/lib/sa02m-rootfs-expand.done;
+     │       armbian-resize-filesystem.service маскируется — не он)
+     │      parted resizepart + resize2fs /dev/mmcblk2p2
      │      → rootfs ≈ 7.0 GiB
+     │      fsfreeze -f/-u + проверка суперблока на eMMC
+     │      → /var/lib/sa02m-rootfs-expand.result (OK | BAD), fsync
      │
      ├─► regen-ssh-host-keys.service
      │      (если нет /etc/ssh/ssh_host_ed25519_key)
@@ -810,6 +818,7 @@ cd tools/imaging/netinstall
 ssh -o StrictHostKeyChecking=accept-new root@<IP_КЛОНА>
 
 df -h /                    # rootfs ≈ 7.0G, Used ≈ 1.2G
+cat /var/lib/sa02m-rootfs-expand.result   # «… OK stored=… computed=… attempts=1» — суперблок проверен на eMMC
 ls -la /etc/ssh/ssh_host_* # ключи созданы
 cat /etc/machine-id        # не пустой, уникальный
 systemctl status nginx fcgiwrap
