@@ -873,6 +873,15 @@
       "beat": "build",
       "covers": ["docs/contracts/sh-model.md", "docs/contracts/sh-model.schema.json", "docs/contracts/sh-model.example.json", ".ai-dev/quality/checks/sh-model-schema.sh"],
       "init": "python3 + jsonschema (pip install jsonschema)"
+    },
+    {
+      "id": "firstboot-sb-csum",
+      "checks": "First-boot primary superblock checksum guard in etc/sa02m-rootfs-expand.sh (+ its byte-identical firstboot-overlay copy). Two boards flashed from the 20260915 golden image booted once, were power-cut minutes later and never came back: the board kernel 6.1.0-rc6 predates upstream «ext4: fix bad checksum after online resize», so after the first-boot resize2fs the ON-DISK root primary superblock carries a stale crc32c until the kernel next rewrites it; a cold boot before the first clean shutdown then fails mount and panics before networking (docs/bugs/BUGLOG.md 2026-09-16). The guard freezes/unfreezes / under `timeout` so the kernel rewrites the superblock, then verifies the bytes on the medium (dd iflag=direct, crc32c in stdlib python3). Four layers: (1) the two shipped copies are byte-identical; (2) comment-stripped wiring pins via lib_check.sh — the freeze cycle under timeout, the O_DIRECT read, the guard called in BOTH start paths before finish_firstboot, `exit \"$csum_rc\"` in both, the marker path, no live systemctl; (3) the SHIPPED verifier run against two 4 KiB blocks captured on the bricked board (scripts/dev/fixtures/sb-bad.bin: stored 0x8c9e9dcb vs computed 0xe6961c00 MUST read BAD; sb-good.bin after e2fsck, 0xf8449046, MUST read OK) plus a short read (ERR), metadata_csum off (NOCSUM) and a one-bit body corruption (BAD); (4) the whole guard and the `start` dispatcher on a sandbox-retargeted copy through PATH shims (dd/fsfreeze/timeout/sync/blockdev/parted/resize2fs): OK first time; BAD-then-OK retries exactly once; BAD twice -> ERROR + marker + rc 1 while DONE is STILL set; fsfreeze missing still verifies; a failed -f still issues -u; nothing is logged between -f and -u (a tee onto a frozen root hangs the boot); the resize path freezes AFTER resize2fs and BEFORE DONE. Non-vacuous: a missing/empty copy, a fixture not exactly 4096 bytes, a lost function, an incompletely retargeted copy (never run) or a pin matching no live line FAILS. Proven RED (recipe + counts in the harness header): fixtures swapped 14, compare inverted 11, freeze line commented 2a + extraction floor, guard call dropped 3, HEAD's pre-fix script 10 pins + floor.",
+      "config": null,
+      "run": "bash scripts/dev/test-firstboot-sb-csum.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-rootfs-expand.sh", "tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh", "scripts/dev/test-firstboot-sb-csum.sh", "scripts/dev/fixtures/sb-bad.bin", "scripts/dev/fixtures/sb-good.bin"],
+      "init": "bash + coreutils + python3 (stdlib only, no deps) — run on demand: bash scripts/dev/test-firstboot-sb-csum.sh"
     }
   ]
 }
