@@ -33,7 +33,8 @@
 #        flag a superblock it has just replaced); the second pass runs the
 #        full check on the now-valid primary and exits 0/1;
 #     4. verdict = `e2fsck -n -f` AFTER the repair (0 = clean), then the fs
-#        is mounted READ-ONLY to copy the systemd journal and the first-boot
+#        is mounted READ-ONLY to copy the systemd journal, the guard's durable
+#        verdict (var/lib/sa02m-rootfs-expand.result) and the first-boot
 #        markers into the evidence dir, and unmounted;
 #     5. sync, exit. Power-cycle the board without the FEL media; it boots
 #        into the same rootfs it had.
@@ -48,6 +49,8 @@
 #  where the receiver's busybox provides it (it does on ours; a busybox
 #  built without the applet runs unbounded — logged once at start).
 #  Line endings: LF only (.gitattributes) — a CR breaks busybox sh.
+#  `tail -n 1`, never `tail -1`: a busybox built without FANCY_TAIL rejects
+#  the short form (reviewer A5, 1.0.6.47).
 # ═══════════════════════════════════════════════════════════════════════════
 set -u
 
@@ -92,23 +95,23 @@ dd if="$P2" bs=4096 skip=$BACKUP_SB_BLOCK count=2 2>/dev/null > "$OUT/p2-backup-
 ( bounded $SHORT_T dumpe2fs -h "$P2" 2>&1 ) > "$OUT/dumpe2fs-primary.before.txt" || true
 ( bounded $SHORT_T dumpe2fs -h -o superblock=$BACKUP_SB_BLOCK -o blocksize=4096 "$P2" 2>&1 ) > "$OUT/dumpe2fs-backup.before.txt" || true
 sync
-log "before: e2fsck -n $(tail -1 "$OUT/e2fsck-n.before.txt")"
+log "before: e2fsck -n $(tail -n 1 "$OUT/e2fsck-n.before.txt")"
 
 # ── repair: two passes (see HOW, step 3) ───────────────────────────────────
 log "e2fsck -fy $P2 (pass 1: primary superblock from backup)"
 ( bounded $FSCK_T e2fsck -fy "$P2" 2>&1; echo "exit=$?" ) > "$OUT/e2fsck-fy.pass1.txt" || true
 sync
-log "pass 1: $(tail -1 "$OUT/e2fsck-fy.pass1.txt")"
+log "pass 1: $(tail -n 1 "$OUT/e2fsck-fy.pass1.txt")"
 log "e2fsck -fy $P2 (pass 2: full check on the rewritten primary)"
 ( bounded $FSCK_T e2fsck -fy "$P2" 2>&1; echo "exit=$?" ) > "$OUT/e2fsck-fy.pass2.txt" || true
 sync
-log "pass 2: $(tail -1 "$OUT/e2fsck-fy.pass2.txt")"
+log "pass 2: $(tail -n 1 "$OUT/e2fsck-fy.pass2.txt")"
 
 # ── evidence AFTER repair + the verdict ────────────────────────────────────
 dd if="$P2" bs=4096 count=64 2>/dev/null > "$OUT/p2-head-256k.after.bin" || true
 ( bounded $FSCK_T e2fsck -n -f "$P2" 2>&1; echo "exit=$?" ) > "$OUT/e2fsck-n.after.txt" || true
 ( bounded $SHORT_T dumpe2fs -h "$P2" 2>&1 ) > "$OUT/dumpe2fs-primary.after.txt" || true
-verdict=$(tail -1 "$OUT/e2fsck-n.after.txt")
+verdict=$(tail -n 1 "$OUT/e2fsck-n.after.txt")
 if [ "$verdict" = "exit=0" ]; then
     log "REPAIRED: e2fsck -n -f is clean (exit=0)"
 else
@@ -121,9 +124,13 @@ if bounded $SHORT_T mount -o ro "$P2" /tmp/p2 2>>"$OUT/collector.log"; then
     log "p2 mounted ro"
     mkdir -p "$OUT/journal"
     bounded $FSCK_T cp -a /tmp/p2/var/log/journal/. "$OUT/journal/" 2>>"$OUT/collector.log" || true
-    for f in var/log/sa02m-rootfs-expand.log var/log/sa02m-reboot-reason.log var/log/syslog var/log/kern.log \
-             etc/machine-id etc/fake-hwclock.data var/lib/sa02m-rootfs-expand.done \
+    # sa02m-rootfs-expand.result is the guard's fsync'd verdict — the one
+    # first-boot record that survives a power cut (the logs and the journal
+    # are commit=600 writeback data and come back 0 bytes; BUGLOG 2026-09-16).
+    for f in var/lib/sa02m-rootfs-expand.result var/lib/sa02m-rootfs-expand.done \
              var/lib/sa02m-rootfs-expand.csum-bad var/lib/sa02m-clean-shutdown \
+             var/log/sa02m-rootfs-expand.log var/log/sa02m-reboot-reason.log var/log/syslog var/log/kern.log \
+             etc/machine-id etc/fake-hwclock.data \
              etc/ssh/ssh_host_ed25519_key.pub; do
         [ -e "/tmp/p2/$f" ] && { mkdir -p "$OUT/files/$(dirname "$f")"; cp -a "/tmp/p2/$f" "$OUT/files/$f" 2>/dev/null || true; }
     done
