@@ -5,6 +5,22 @@
 
 ---
 
+## [2026-09-16 12:40] branch: 1.0.6.47
+
+**Файл(ы):** `etc/sa02m-rootfs-expand.sh` (и его копия `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh`), ядро платы `6.1.0-rc6`
+**Тип:** Потеря загрузки (кирпич после отключения питания)
+**Описание:** Две платы, залитые образом `SA-02m-golden-20260915-136`, загрузились один раз (ping есть), через несколько минут питание сняли — следующая загрузка молчит: нет линка, нет консоли. Мягкий `systemctl reboot` так не ломает никогда. Воспроизведено 2/2.
+**Причина:** Post-mortem через FEL: SPL, MBR и p1 байт-в-байт равны образу; первичный суперблок ext4 корня структурно цел и совпадает с резервной копией группы 1, но хранимая crc32c устарела (`0x8c9e9dcb` при вычисленной `0xe6961c00`). Ядро при монтировании: `Superblock checksum does not match` → EINVAL → panic до сети. Механизм — ошибка ядра ext4, исправленная в upstream патчем Baokun Li «ext4: fix bad checksum after online resize» (2022-11-16, `fs/ext4/resize.c` `ext4_update_super`; Fixes: de394a86658f «update s_overhead_clusters during an on-line resize»): контрольная сумма считалась ДО обновления `s_overhead_clusters`. Наш первый старт делает `resize2fs` на смонтированном корне, после чего первичный суперблок на диске несёт устаревшую сумму до следующей перезаписи ядром (чистое размонтирование / freeze). Чистая перезагрузка это скрывает; отключение питания до первого чистого завершения работы — кирпич. Исключено с доказательствами: boot.scr/threadirqs, u-boot/SPL, e2fsck и часы, потеря маркера rootfs-expand, watchdog'и, PHY, шторм I2C.
+**Исправление:** `ensure_primary_sb_checksum()` в обоих путях `start` до `finish_firstboot`: `sync` → `timeout 20 fsfreeze -f /` + `-u /` (ядро переписывает суперблок в `ext4_freeze`/`ext4_unfreeze`, журнал сброшен) → проверка суперблока НА НОСИТЕЛЕ (`dd iflag=direct` + crc32c на python3 stdlib); при `BAD` — повтор один раз, затем громкий ERROR, маркер `/var/lib/sa02m-rootfs-expand.csum-bad`, юнит failed, но `DONE` выставлен. Гейт `firstboot-sb-csum` (`scripts/dev/test-firstboot-sb-csum.sh`) гоняет проверяющую функцию на блоках с кирпича (`scripts/dev/fixtures/sb-bad.bin` → BAD, `sb-good.bin` после e2fsck → OK). Восстановление уже окирпиченной платы без перезаливки — `tools/imaging/autorun-repair-rootfs.sh` через FEL (процедура: `docs/deployment.md` «Первая загрузка клона»). Долговременное исправление — пересборка ядра с upstream-патчем (бэклог).
+
+## [2026-09-15 14:15] branch: 1.0.6.46
+
+**Файл(ы):** `/etc/sa02m-alice/sa02m-alice-devices.conf` на 192.168.1.135 (`bench-lamp`)
+**Тип:** Некорректное поведение
+**Описание:** Карточка «Умный дом» «Сирена стенд» включала красный светодиод «Авария», а не пищалку.
+**Причина:** Плитка была привязана к `/devices/SA-02m/controls/alarm_led` с `inverted: true`. До 1.0.6.42 демон телеметрии писал `alarm_led` в бит зуммера (сдвинутая карта + обратная полярность) — привязка казалась верной. С 1.0.6.42 карта читается из `/etc/sa02m_hw.conf`: `alarm_led` — светодиод, `beeper` — пищалка; флаг `inverted` на этих трёх каналах больше не нужен.
+**Исправление:** mqtt → `/devices/SA-02m/controls/beeper`, `inverted` снят. Бэкап `sa02m-alice-devices.conf.bak-siren-beeper-20260915`.
+
 ## [2026-09-10 20:26] branch: 1.0.6.46
 
 **Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_mr02m.py`
