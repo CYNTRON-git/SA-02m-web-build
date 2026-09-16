@@ -170,6 +170,7 @@ sh /mnt/autorun.sh
 | [`prepare-imageusb.sh`](prepare-imageusb.sh) | хост | распаковка .img.xz → .img для ImageUSB (Windows) |
 | [`flash-receiver.sh`](flash-receiver.sh) | приёмник | sha256 → `xz -dc \| dd /dev/mmcblk2` → reboot |
 | [`autorun-fel.sh`](autorun-fel.sh) / [`autorun.sh`](autorun.sh) | USB + buildroot | `sdcard.img` → `dd` eMMC + watchdog mask до reboot |
+| [`autorun-repair-rootfs.sh`](autorun-repair-rootfs.sh) | приёмник FEL (ручной запуск) | ремонт окирпиченного клона на месте: `e2fsck -fy` ×2 + улики, образ не пишет; процедура — `docs/deployment.md` «Первая загрузка клона» |
 | [`stand/start-stand.ps1`](stand/start-stand.ps1) | хост Windows | запуск стенда (usbipd + WSL provisioner/FEL/QA) |
 | [`stand/fel-agent.py`](stand/fel-agent.py) | WSL | детект FEL → `sunxi-fel uboot` |
 | [`stand/postflash-monitor.py`](stand/postflash-monitor.py) | WSL | SSH/web QA → DONE/FAIL |
