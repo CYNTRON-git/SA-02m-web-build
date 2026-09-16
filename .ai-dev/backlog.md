@@ -8,6 +8,14 @@ worklist collapsed into one home).
 
 ## Open
 
+- [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
+  «ext4: fix bad checksum after online resize»** (Baokun Li, 2022-11-16, `fs/ext4/resize.c`
+  `ext4_update_super`; Fixes: de394a86658f). The 1.0.6.47 `ensure_primary_sb_checksum()`
+  freeze/verify in `etc/sa02m-rootfs-expand.sh` is a userspace workaround for the first-boot
+  case only; ANY future online resize on the board (a manual `resize2fs`, a re-imaged larger
+  eMMC) re-opens the power-cut window until the kernel carries the fix. Durable fix = the
+  kernel line (RT and SMP zImages both, `sa02m-kernel-select.sh` swaps them). Evidence and
+  the field symptom: `docs/bugs/BUGLOG.md` 2026-09-16.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
