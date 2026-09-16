@@ -21,6 +21,11 @@
 #      `start` paths BEFORE finish_firstboot, the status reaching systemd
 #      (`exit "$csum_rc"`) in both, the marker path, and NO live `systemctl`
 #      (the script's hot-path constraint, kept true rather than asserted);
+#      since 1.0.6.48 also the durable-evidence wiring: the verdict path
+#      /var/lib/sa02m-rootfs-expand.result, the fsync of verdict + DONE + log
+#      as the LAST line of finish_firstboot (after its own log line), and the
+#      «root may still be frozen» branch writing to stderr, not through log()
+#      (a tee onto a root that may be frozen — reviewer A2, 1.0.6.47);
 #   3. BEHAVIOUR of the shipped crc32c verifier against two 4 KiB blocks
 #      captured on the bench (scripts/dev/fixtures/): sb-bad.bin is the first
 #      block of a bricked board's root partition — stored 0x8c9e9dcb, computed
@@ -35,7 +40,21 @@
 #      is STILL set (the boot must not be delayed again); a missing fsfreeze
 #      still verifies; a failed `-f` still issues `-u`; nothing writes the log
 #      between -f and -u (a tee onto a frozen root would hang the boot); the
-#      resize path freezes AFTER resize2fs and BEFORE DONE.
+#      resize path freezes AFTER resize2fs and BEFORE DONE; and (1.0.6.48)
+#      the durable verdict: after OK / BAD twice / BAD-then-OK the result file
+#      holds exactly ONE line `<ISO time> <OK|BAD> stored=… computed=…
+#      attempts=N`, staged through a temp file that is sync'd before the
+#      rename (no .tmp left behind), rewritten not appended on a re-run, still
+#      written when `sync FILE` is rejected (the bare-sync fallback), and in
+#      every `start` path the LAST recorded call is the fsync of verdict +
+#      DONE + log + their directory — on the failing path too.
+#
+# Why the durable layer exists: on the bench (2026-09-16, reflashed clone,
+# power cut at T+15 min) the guard had worked, yet /var/log/sa02m-rootfs-
+# expand.log, the reboot-reason log and the persistent journal all came back
+# 0 bytes — / is mounted commit=600 with journal_data_writeback, so nothing
+# not fsync'd survives a cut. The only evidence the operator can read
+# afterwards is what the script fsync'd itself (docs/deployment.md §12).
 #
 # Non-vacuous: a missing/empty script copy, a fixture that is not exactly
 # 4096 bytes, an extraction that lost a function, a retargeted copy that still
@@ -53,9 +72,22 @@
 # longer parses (extraction floor FAILS); the guard call dropped from the
 # already-uses-eMMC path -> 2e/6a/6b RED (3); HEAD's pre-fix script ->
 # 2a-2f + 2h RED (10 pins) then the extraction floor FAILS (no verifier).
+# Measured RED, 2026-09-16 (1.0.6.48, the durable-evidence layer; each
+# mutation alone, the rest pristine): the final `sync_files "$RESULT" "$DONE"
+# "$LOG"` line deleted -> 2j/6a/6b/6c RED (4); the same line commented out ->
+# the same 4 (comment-safe); both write_result calls dropped ->
+# 5a/5f/5h/5i/5j/5k/6a/6b/6c RED (9); the failed-unfreeze branch back to
+# log() -> 2k/5g RED (2); the verdict appended in place instead of
+# staged+synced+renamed -> 5a/5f/5h/5j/5k RED (5); the bare-sync fallback
+# removed -> 5k RED (1); the sync moved above the finish log line -> 2j RED
+# (1); HEAD's 1.0.6.47 script -> 2d×2 + 2i/2j/2k RED (5 pins) then the
+# extraction floor FAILS (no sync_files).
 #
-# Comment-mutation: the `timeout 20 fsfreeze -f /` line is registered in
-# comment-mutation-proof.
+# Comment-mutation: the `timeout 20 fsfreeze -f /` line and the
+# `sync_files "$RESULT" "$DONE" "$LOG"` line are registered in
+# comment-mutation-proof. That row mutates the etc copy alone, which layer 1
+# (identity) also catches — so each pin's OWN proof is the SRC recipe above
+# (the mutated copy judged by pins + behaviour, never by the identity check).
 #
 # Run: bash scripts/dev/test-firstboot-sb-csum.sh   (bash + coreutils + python3)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -111,7 +143,7 @@ stripped_has_inline "$SRC" 'timeout 20 fsfreeze -u /' \
 stripped_matches_inline "$SRC" 'dd if="\$1" bs=4096 count=1 iflag=direct' \
     && ok "2c on-disk read bypasses the page cache (dd … iflag=direct)" \
     || bad "2c no 'dd if=\"\$1\" bs=4096 count=1 iflag=direct' — a buffered read is answered by the page cache and cannot see the stale on-disk checksum"
-for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum; do
+for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum sync_files write_result; do
     stripped_matches "$SRC" "^${fn}\(\) \{" \
         && ok "2d ${fn}() defined" \
         || bad "2d ${fn}() not defined in $SRC"
@@ -137,11 +169,31 @@ n_s=$(stripped_count "$SRC" 'systemctl')
     || bad "2g $n_s live systemctl line(s) — the script's own header forbids it (D-Bus seconds at boot, cancelled watchdog starts)"
 stripped_has_inline "$SRC" '/var/lib/sa02m-rootfs-expand.csum-bad' \
     && ok "2h failure marker path present" \
-    || bad "2h '/var/lib/sa02m-rootfs-expand.csum-bad' not found — the failure monitor/audit has no signal"
+    || bad "2h '/var/lib/sa02m-rootfs-expand.csum-bad' not found — the repair tool's evidence copy and the audit have no signal"
+stripped_has_inline "$SRC" '/var/lib/sa02m-rootfs-expand.result' \
+    && ok "2i durable verdict path present (/var/lib/sa02m-rootfs-expand.result)" \
+    || bad "2i '/var/lib/sa02m-rootfs-expand.result' not found — the only first-boot evidence that survives a power cut is gone"
+# The fsync is the LAST line of finish_firstboot: after its own log line, so
+# every log line is covered, and nothing may follow it.
+ERE_SYNC='^[[:space:]]+sync_files "\$RESULT" "\$DONE" "\$LOG"'
+ERE_FIN_LOG='^[[:space:]]+log "firstboot finish: DONE set'
+s_line=$(stripped_first_line "$SRC" "$ERE_SYNC"); l_line=$(stripped_first_line "$SRC" "$ERE_FIN_LOG")
+n_sync=$(stripped_count "$SRC" "$ERE_SYNC")
+if [ "$n_sync" = 1 ] && [ -n "$l_line" ] && [ "$l_line" -lt "$s_line" ]; then
+    ok "2j verdict + DONE + log fsync'd once, after the finish log line (lines $l_line<$s_line)"
+else
+    bad "2j sync_files \"\$RESULT\" \"\$DONE\" \"\$LOG\": count=$n_sync line='$s_line', finish log line='$l_line' — expected exactly one, after the log line (the evidence is not made durable, or a later write is left unsynced)"
+fi
+if stripped_matches "$SRC" '^[[:space:]]+echo .*root may still be frozen" >&2$' \
+   && ! stripped_matches "$SRC" 'log "ERROR: fsfreeze -u / failed'; then
+    ok "2k the «root may still be frozen» branch writes to stderr, never through log() onto that root"
+else
+    bad "2k the failed-unfreeze branch must be an 'echo … >&2' and not a log() call — a tee onto a possibly frozen root blocks the boot"
+fi
 
 # ── Extraction: the shipped functions without the dispatcher ────────────────
 sed '/^case "\${1:-start}" in/,$d' "$SRC" > "$T/lib.sh"
-for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum log; do
+for fn in sb_csum_of_block primary_sb_checksum force_primary_sb_rewrite ensure_primary_sb_checksum log sync_files write_result; do
     bash -c "source '$T/lib.sh'; declare -F $fn >/dev/null" 2>/dev/null \
         || { echo "FAIL  extraction lost ${fn}() — the sourced copy defines nothing to test (non-vacuity)"; exit 1; }
 done
@@ -194,9 +246,21 @@ cat >> "$T/bin/timeout" <<'SHIM'
 printf 'timeout %s\n' "$*" >> "$T/calls"
 shift; exec "$@"
 SHIM
-for s in sync partprobe udevadm resize2fs; do
+for s in partprobe udevadm resize2fs; do
     printf '#!/bin/bash\nprintf "%s %%s\\n" "$*" >> "%s"\nexit 0\n' "$s" "$CALLS" > "$T/bin/$s"
 done
+# sync: records; $T/sync.mode=nofile plays a sync without FILE support (a lean
+# busybox / pre-8.24 coreutils) — any argument is rejected, so the script's
+# bare-sync fallback is what gets exercised.
+cat > "$T/bin/sync" <<SHIM
+#!/bin/bash
+T="$T"
+SHIM
+cat >> "$T/bin/sync" <<'SHIM'
+printf 'sync %s\n' "$*" >> "$T/calls"
+[ "$(cat "$T/sync.mode" 2>/dev/null || echo ok)" = nofile ] && [ $# -gt 0 ] && exit 1
+exit 0
+SHIM
 # blockdev: --getsize64 <part|disk> -> the numbers in $T/blockdev.part / .disk
 cat > "$T/bin/blockdev" <<SHIM
 #!/bin/bash
@@ -221,8 +285,10 @@ export PATH="$T/bin:$PATH"
 
 reset_shims() {  # $@ = dd sequence (fixture paths)
     : > "$CALLS"; rm -f "$T/dd.n" "$T/frozen-logsize" "$T/done-before-freeze" "$T/wrote-while-frozen" "$T/log" \
-                     "$T/var/lib/sa02m-rootfs-expand.done" "$T/var/lib/sa02m-rootfs-expand.csum-bad"
+                     "$T/var/lib/sa02m-rootfs-expand.done" "$T/var/lib/sa02m-rootfs-expand.csum-bad" \
+                     "$T/var/lib/sa02m-rootfs-expand.result" "$T/var/lib/sa02m-rootfs-expand.result.tmp"
     printf 'ok\n' > "$T/fsfreeze.mode"
+    printf 'ok\n' > "$T/sync.mode"
     : > "$T/dd.seq"
     local a
     for a; do   # absolute, so the shim finds the fixture from any cwd
@@ -236,8 +302,15 @@ log_flat() { tr '\n' '|' < "$1" 2>/dev/null; }
 # Run a snippet inside the sourced copy with the state paths pointed at the
 # sandbox; stdin passes through.
 run_fn() {  # $1 = shell snippet
-    bash -c "source '$T/lib.sh'; LOG='$T/log'; DONE='$T/var/lib/sa02m-rootfs-expand.done'; CSUM_BAD='$T/var/lib/sa02m-rootfs-expand.csum-bad'; ROOT_PART=/dev/sa02m-fake-p2; $1"
+    bash -c "source '$T/lib.sh'; LOG='$T/log'; DONE='$T/var/lib/sa02m-rootfs-expand.done'; CSUM_BAD='$T/var/lib/sa02m-rootfs-expand.csum-bad'; RESULT='$T/var/lib/sa02m-rootfs-expand.result'; ROOT_PART=/dev/sa02m-fake-p2; $1"
 }
+RES="$T/var/lib/sa02m-rootfs-expand.result"
+# The verdict line: ISO time with offset, the verifier's own word and sums, the attempt count.
+result_matches() {  # $1=ERE for the part after the timestamp
+    [ -f "$RES" ] && [ "$(wc -l < "$RES")" = 1 ] && [ ! -e "$RES.tmp" ] \
+        && grep -qE "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} $1\$" "$RES"
+}
+result_flat() { if [ -f "$RES" ]; then tr '\n' '|' < "$RES"; else echo '<absent>'; fi; }
 
 # ── 3. the crc32c verifier against the bench blocks ─────────────────────────
 echo "── 3. sb_csum_of_block: bench fixtures ──"
@@ -308,10 +381,10 @@ MARK="$T/var/lib/sa02m-rootfs-expand.csum-bad"
 
 reset_shims "$GOOD_FX"
 run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
-want='sync ;timeout 20 fsfreeze -f /;fsfreeze -f /;timeout 20 fsfreeze -u /;fsfreeze -u /;sync ;dd if=/dev/sa02m-fake-p2 bs=4096 count=1 iflag=direct;'
+want="sync ;timeout 20 fsfreeze -f /;fsfreeze -f /;timeout 20 fsfreeze -u /;fsfreeze -u /;sync ;dd if=/dev/sa02m-fake-p2 bs=4096 count=1 iflag=direct;sync $RES.tmp;"
 if [ "$rc" = 0 ] && [ "$(seq_of)" = "$want" ] && grep -q 'primary superblock checksum OK stored=0xf8449046 computed=0xf8449046 (attempt 1)' "$T/log" \
    && [ ! -e "$MARK" ] && [ ! -e "$T/wrote-while-frozen" ]; then
-    ok "5a OK first time: sync → freeze → unfreeze → sync → O_DIRECT verify, rc=0, log line, no marker, nothing logged while frozen"
+    ok "5a OK first time: sync → freeze → unfreeze → sync → O_DIRECT verify → verdict staged+synced, rc=0, log line, no marker, nothing logged while frozen"
 else
     bad "5a rc=$rc seq='$(seq_of)' log='$(log_flat "$T/log")' marker=$(has_file "$MARK") frozen-write=$(has_file "$T/wrote-while-frozen")"
 fi
@@ -359,7 +432,7 @@ reset_shims "$GOOD_FX"
 printf 'fail-f\n' > "$T/fsfreeze.mode"
 run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
 if [ "$rc" = 0 ] && grep -q 'ERROR: fsfreeze -f / failed' "$T/log" \
-   && [ "$(seq_of)" = 'sync ;timeout 20 fsfreeze -f /;fsfreeze -f /;timeout 20 fsfreeze -u /;fsfreeze -u /;dd if=/dev/sa02m-fake-p2 bs=4096 count=1 iflag=direct;' ]; then
+   && [ "$(seq_of)" = "sync ;timeout 20 fsfreeze -f /;fsfreeze -f /;timeout 20 fsfreeze -u /;fsfreeze -u /;dd if=/dev/sa02m-fake-p2 bs=4096 count=1 iflag=direct;sync $RES.tmp;" ]; then
     ok "5f a failed -f still issues -u (a half-applied freeze must not stay), then verifies"
 else
     bad "5f rc=$rc seq='$(seq_of)' log='$(log_flat "$T/log")'"
@@ -367,10 +440,52 @@ fi
 
 reset_shims "$GOOD_FX"
 printf 'fail-u\n' > "$T/fsfreeze.mode"
+err=$(run_fn ensure_primary_sb_checksum 2>&1 >/dev/null); rc=$?
+if case "$err" in *"ERROR: fsfreeze -u / failed — root may still be frozen"*) true ;; *) false ;; esac \
+   && ! grep -q 'fsfreeze -u / failed' "$T/log"; then
+    ok "5g a failed -u is a loud ERROR on stderr and NOT in the log (that root may be frozen), rc=$rc from the on-disk state"
+else
+    bad "5g rc=$rc stderr='$err' log='$(log_flat "$T/log")' (expected the ERROR on stderr only)"
+fi
+
+# ── 5h–5k. the durable verdict file ─────────────────────────────────────────
+reset_shims "$GOOD_FX"
 run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
-grep -q 'ERROR: fsfreeze -u / failed' "$T/log" \
-    && ok "5g a failed -u is a loud ERROR (root may still be frozen), rc=$rc from the on-disk state" \
-    || bad "5g log='$(log_flat "$T/log")'"
+tail_seq=$(grep -E '^(dd|sync)' "$CALLS" | tail -n 2 | tr '\n' ';')
+if [ "$rc" = 0 ] && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' \
+   && [ "$tail_seq" = "dd if=/dev/sa02m-fake-p2 bs=4096 count=1 iflag=direct;sync $RES.tmp;" ]; then
+    ok "5h OK: one verdict line '<ISO time> OK … attempts=1', staged .tmp synced after the read, no .tmp left"
+else
+    bad "5h rc=$rc result='$(result_flat)' tmp=$(has_file "$RES.tmp") tail='$tail_seq'"
+fi
+
+reset_shims "$BAD_FX"
+run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
+if [ "$rc" = 1 ] && result_matches 'BAD stored=0x8c9e9dcb computed=0xe6961c00 attempts=2' && [ -e "$MARK" ]; then
+    ok "5i BAD twice: the verdict line says BAD … attempts=2 next to the marker (the failing outcome is durable too)"
+else
+    bad "5i rc=$rc result='$(result_flat)' marker=$(has_file "$MARK")"
+fi
+
+reset_shims "$BAD_FX" "$GOOD_FX"
+printf 'STALE verdict from a previous run\n' > "$RES"
+run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
+if [ "$rc" = 0 ] && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=2' && ! grep -q STALE "$RES"; then
+    ok "5j BAD then OK: verdict OK … attempts=2, and a stale file is REWRITTEN (one line, not appended)"
+else
+    bad "5j rc=$rc result='$(result_flat)'"
+fi
+
+reset_shims "$GOOD_FX"
+printf 'nofile\n' > "$T/sync.mode"
+run_fn ensure_primary_sb_checksum >/dev/null 2>&1; rc=$?
+tail_seq=$(grep -E '^sync' "$CALLS" | tail -n 2 | tr '\n' ';')
+if [ "$rc" = 0 ] && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' \
+   && [ "$tail_seq" = "sync $RES.tmp;sync ;" ]; then
+    ok "5k a sync without FILE support: the rejected 'sync FILE' falls back to a bare sync, verdict still written"
+else
+    bad "5k rc=$rc result='$(result_flat)' syncs='$(grep '^sync' "$CALLS" | tr '\n' ';')' (expected 'sync <tmp>' then a bare 'sync ')"
+fi
 
 # ── 6. the `start` dispatcher on a sandbox-retargeted copy ──────────────────
 echo "── 6. start paths (retargeted copy, fail-closed) ──"
@@ -391,25 +506,29 @@ if [ -n "$leftover" ]; then
 else
     : > "$T/dev/p2"; : > "$T/dev/disk"
     run_start() { bash "$T/start.sh" start >"$T/start.out" 2>&1; }
+    FINAL_SYNC="sync $RES $DONE_F $SLOG $T/var/lib"
+    last_call() { tail -n 1 "$CALLS"; }
 
     # 6a already uses eMMC (no resize): guard runs, DONE set, rc 0
     reset_shims "$GOOD_FX"; printf '8000000000\n' > "$T/blockdev.part"; printf '8000000000\n' > "$T/blockdev.disk"
     run_start; rc=$?
     if [ "$rc" = 0 ] && [ -e "$DONE_F" ] && grep -q 'nothing to resize' "$SLOG" \
        && grep -q 'primary superblock checksum OK' "$SLOG" && [ "$(count_calls '^fsfreeze -f /')" = 1 ] \
-       && [ ! -e "$T/done-before-freeze" ] && [ "$(count_calls '^resize2fs')" = 0 ]; then
-        ok "6a already-uses-eMMC path: guard ran (freeze before DONE), DONE set, rc=0"
+       && [ ! -e "$T/done-before-freeze" ] && [ "$(count_calls '^resize2fs')" = 0 ] \
+       && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' && [ "$(last_call)" = "$FINAL_SYNC" ]; then
+        ok "6a already-uses-eMMC path: guard ran (freeze before DONE), DONE set, rc=0, verdict OK, LAST call = fsync of verdict+DONE+log+dir"
     else
-        bad "6a rc=$rc done=$(has_file "$DONE_F") freezes=$(count_calls '^fsfreeze -f /') done-before-freeze=$(has_file "$T/done-before-freeze") out='$(log_flat "$T/start.out")'"
+        bad "6a rc=$rc done=$(has_file "$DONE_F") freezes=$(count_calls '^fsfreeze -f /') done-before-freeze=$(has_file "$T/done-before-freeze") result='$(result_flat)' last='$(last_call)' out='$(log_flat "$T/start.out")'"
     fi
 
     # 6b same path, checksum BAD twice: rc 1 AND DONE still set (no re-run next boot), marker set
     reset_shims "$BAD_FX"
     run_start; rc=$?
-    if [ "$rc" = 1 ] && [ -e "$DONE_F" ] && [ -e "$MARK" ] && grep -q 'checksum BAD stored=0x8c9e9dcb .* (attempt 2)' "$SLOG"; then
-        ok "6b BAD twice: unit fails (rc=1) but DONE is still set and the marker is on disk"
+    if [ "$rc" = 1 ] && [ -e "$DONE_F" ] && [ -e "$MARK" ] && grep -q 'checksum BAD stored=0x8c9e9dcb .* (attempt 2)' "$SLOG" \
+       && result_matches 'BAD stored=0x8c9e9dcb computed=0xe6961c00 attempts=2' && [ "$(last_call)" = "$FINAL_SYNC" ]; then
+        ok "6b BAD twice: unit fails (rc=1) but DONE is still set, marker + BAD verdict on disk, and the final fsync still runs"
     else
-        bad "6b rc=$rc done=$(has_file "$DONE_F") marker=$(has_file "$MARK") out='$(log_flat "$T/start.out")'"
+        bad "6b rc=$rc done=$(has_file "$DONE_F") marker=$(has_file "$MARK") result='$(result_flat)' last='$(last_call)' out='$(log_flat "$T/start.out")'"
     fi
 
     # 6c resize path: resize2fs, THEN the freeze cycle, THEN DONE
@@ -417,17 +536,18 @@ else
     run_start; rc=$?
     order=$(grep -E '^(resize2fs|fsfreeze -f)' "$CALLS" | tr '\n' ';')
     if [ "$rc" = 0 ] && [ "$order" = "resize2fs $T/dev/p2;fsfreeze -f /;" ] && [ -e "$DONE_F" ] \
-       && [ ! -e "$T/done-before-freeze" ] && grep -q 'primary superblock checksum OK' "$SLOG"; then
-        ok "6c resize path: resize2fs → freeze cycle → verify OK → DONE, rc=0"
+       && [ ! -e "$T/done-before-freeze" ] && grep -q 'primary superblock checksum OK' "$SLOG" \
+       && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' && [ "$(last_call)" = "$FINAL_SYNC" ]; then
+        ok "6c resize path: resize2fs → freeze cycle → verify OK → DONE → final fsync (last call), rc=0"
     else
-        bad "6c rc=$rc order='$order' done=$(has_file "$DONE_F") out='$(log_flat "$T/start.out")'"
+        bad "6c rc=$rc order='$order' done=$(has_file "$DONE_F") result='$(result_flat)' last='$(last_call)' out='$(log_flat "$T/start.out")'"
     fi
 
     # 6d DONE present: nothing runs (idempotent re-run)
     reset_shims "$GOOD_FX"; : > "$DONE_F"
     run_start; rc=$?
-    [ "$rc" = 0 ] && [ "$(count_calls '^fsfreeze')" = 0 ] && [ "$(count_calls '^dd ')" = 0 ] \
-        && ok "6d DONE already set: no freeze, no read, rc=0 (re-run is a no-op)" \
+    [ "$rc" = 0 ] && [ "$(count_calls '^fsfreeze')" = 0 ] && [ "$(count_calls '^dd ')" = 0 ] && [ ! -e "$RES" ] \
+        && ok "6d DONE already set: no freeze, no read, no verdict written, rc=0 (re-run is a no-op)" \
         || bad "6d rc=$rc calls='$(tr '\n' ';' < "$CALLS")'"
 fi
 
