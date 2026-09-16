@@ -16,6 +16,17 @@ worklist collapsed into one home).
   eMMC) re-opens the power-cut window until the kernel carries the fix. Durable fix = the
   kernel line (RT and SMP zImages both, `sa02m-kernel-select.sh` swaps them). Evidence and
   the field symptom: `docs/bugs/BUGLOG.md` 2026-09-16.
+- [OPEN] 2026-09-16 **[LOW] Reviewer advisories A1–A5 of the 1.0.6.47 review — queued as the next
+  fixup branch (Operator shipped on the approved tree; not deferred to nowhere).** A1
+  `docs/deployment.md` §12 «≈T+30 с» contradicts the unit's own «resize2fs 1–3 min» on the resize
+  path — say "after the `done:` line". A2 `etc/sa02m-rootfs-expand.sh` "root may still be frozen"
+  branch logs via `tee` onto that root (unreachable today; `>&2` is safe by construction; mirror
+  the overlay copy). A3 the `csum-bad` marker is described as a signal "for the failure monitor"
+  but `etc/sa02m-failure-monitor.sh` never reads it — reword or wire it. A4
+  `docs/SA02M_IMAGING_GUIDE.md` §12 has no pointer to deployment.md §12 and still shows
+  `armbian-resize-filesystem.service` doing the resize. A5 `tools/imaging/autorun-repair-rootfs.sh`
+  `tail -1` → `tail -n 1` (busybox `FANCY_TAIL`). Source: `.ai-dev/reviews/1.0.6.47_review.md`
+  (transient; deleted at ship — the list above is the durable copy).
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
