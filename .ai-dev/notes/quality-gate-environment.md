@@ -16,7 +16,9 @@ by design — a missing optional tool must not block a dev machine — but it me
 | Row | Skips when | Real authority |
 |---|---|---|
 | `shellcheck` | `shellcheck` not on `PATH` | Linux CI |
-| `ui-layout` | playwright not installed | `npm run ui-layout:install` |
+| `ui-layout` | playwright not installed (the skip is a dev-box courtesy; install locally with `npm run ui-layout:install`) | Linux CI — installs the scripts/dev harness + chromium since 1.0.6.49 (`web-quality.yml`) |
+| `cloud-card-smoke` | **never — it does NOT skip**: exit 2 RED without playwright/chromium (deliberate, never a vacuous green); local install = `npm run ui-layout:install` | Linux CI (same install step) |
+| `sh-modal-layout-smoke` | **never — it does NOT skip**: exit 2 RED without playwright/chromium (deliberate); local install = `npm run ui-layout:install` | Linux CI (same install step) |
 | `i18n-dict-contract` | never (node only) | Linux CI |
 | `html-id-contract` | never (node only) | Linux CI |
 | `web-auth-behaviour` | two POSIX-mode asserts skip off Linux | Linux CI |
