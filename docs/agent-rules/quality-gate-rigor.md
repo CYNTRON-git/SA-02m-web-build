@@ -20,8 +20,8 @@ did not have — the count is not the point and goes stale, the recurrence is. T
 gates were defeated by putting `#` in front of them; 0 after the fix**
 (`4686bf3`). Others: the gate `docs/threat-model.md` cited as proof that root
 escalation was closed while it read one of six grant homes (audit 2026-08-28,
-the «escalation gate reads 1 of the 6 homes» record in `.ai-dev/backlog.md`;
-widened in `373a2f9`); the runner itself (`3a3e0ac`); and — in the very branch
+«escalation gate reads 1 of the 6 homes» — the record is the commit that
+widened it, `373a2f9`); the runner itself (`3a3e0ac`); and — in the very branch
 that built the mechanical registration below — a new row claiming a mutation
 case that did not exist, in the one directory that enforcement did not yet
 enumerate.
@@ -55,8 +55,8 @@ offline allow-list (the pack silently drops the MPLC RT plugin),
 `#web_csrf_require` in `mplc_project_deploy.cgi` (CSRF gone from an endpoint
 that launches a root helper) — both GREEN. The audit found five by mutation;
 measuring the whole set found six more it had missed and one gate that was
-half-safe (audit 2026-08-28, the «five safety gates are defeated by a comment
-mark» record in `.ai-dev/backlog.md`; fixed `4686bf3`).
+half-safe (audit 2026-08-28, «five safety gates are defeated by a comment
+mark» — the record is the fixing commit, `4686bf3`).
 
 **(b) Incomplete enumeration — the check reads one home of many.**
 `sudoers-pin-contract` read `etc/sudoers.d/sa02m-www` while `www-data` root
@@ -75,8 +75,9 @@ not a denylist of the sinks you thought of.
 `py-unit-roster` covers `opt/sa02m-rs485-roster/`; the contracted `modules`
 block is assembled by the consumer in `status.cgi`, which the audit found
 covered by nothing but bash syntax — deleting it broke the contract with every
-gate green (audit 2026-08-28, the «rs485-roster contract is validated
-producer-side only» record in `.ai-dev/backlog.md`). `covers` names every file
+gate green (audit 2026-08-28, «rs485-roster contract is validated
+producer-side only» — the record is the consumer-side row `rs485-roster-consumer`
+in `.ai-dev/quality/tools.json`). `covers` names every file
 that can BREAK the guarantee, not only the file that defines it.
 
 **(d) The runner never selects the work.** `--touched` resolved the touched set
@@ -161,9 +162,9 @@ that a comment-out **does** turn RED, and both are cased now.
   and unexamined, because a doc said a gate held it.
 - Same class, smaller: `mqtt_set.cgi`'s «asserted by the contract check»
   comment named a row that did not exist; the guarantee was live but unguarded,
-  and the comment is what made it look guarded (audit 2026-08-28, the «one
-  endpoint that switches real relay outputs is guarded only by a comment»
-  record in `.ai-dev/backlog.md`; row added in `3b44f24`).
+  and the comment is what made it look guarded (audit 2026-08-28, «one
+  endpoint that switches real relay outputs is guarded only by a comment» — the
+  record is the commit that added the row, `3b44f24`).
 - A skipped row is reported as **skipped**, never as passed; a local substitute
   for a CI-authoritative row is evidence, not proof
   (`.ai-dev/notes/quality-gate-environment.md`).
