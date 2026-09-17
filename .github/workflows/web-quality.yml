@@ -4,7 +4,11 @@ name: web-quality
 # to main is gated on the same checks the Builder/Reviewer run locally.
 # The registry is the one home for the row list — this workflow invokes the
 # runner wholesale (both beats) and never re-lists individual tools.
-# ubuntu-latest already provides bash + python3; only Node needs setting up.
+# ubuntu-latest already provides bash + python3; Node, the Python test deps and
+# — since 1.0.6.49 — the scripts/dev Playwright harness + chromium are set up
+# here, so the three headless review rows (ui-layout, cloud-card-smoke,
+# sh-modal-layout-smoke) run for real instead of skipping or exiting 2
+# (audit 2026-09-16, H3).
 
 # push->main deliberately absent: each shipped feature otherwise costs two
 # identical runs (PR + post-squash re-validation of the same tree) against a
@@ -26,6 +30,18 @@ jobs:
           node-version: '20'
       - name: Install Python test deps (make the py-unit-* pytest rows real, not skipped)
         run: python3 -m pip install --quiet pytest pyserial pyyaml cryptography jsonschema
+      - name: Cache Playwright browsers (review-beat chromium; ci-budget.md)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('scripts/dev/package-lock.json') }}
+      # `npm ci` (lockfile-exact) instead of the root `ui-layout:install` script's
+      # `npm install`: CI must run the pinned harness, the dev box may float.
+      # `--with-deps` adds the Ubuntu shared libs chromium needs (runner sudo).
+      - name: Install the dev harness + chromium (the three headless rows — ui-layout, cloud-card-smoke, sh-modal-layout-smoke)
+        run: |
+          npm --prefix scripts/dev ci
+          node scripts/dev/node_modules/playwright/cli.js install --with-deps chromium
       - name: Build-beat gate (full registry, build beat)
         run: node .ai-dev/quality/run.mjs build
       - name: Review-beat gate (full registry, review beat)

@@ -85,6 +85,10 @@ chmod +x *.sh
 
 На носителе: `sa02m-shrunk.img.xz`, `.sha256`, `flash-receiver.sh`, `autorun.sh` → symlink.
 
+На диске оператора каждый набор живёт в своём каталоге `golden-<YYYYMMDD>/`
+(патченый `.img`, `.img.xz` + `.sha256`, `manifest.json`, `flash-media/` — то, что
+копируется на носитель); один каталог = один проверенный набор (`docs/deployment.md` §11–12).
+
 **Вариант B — ImageUSB (Windows, FEL/USB → запись .img на eMMC):**
 
 ```bash

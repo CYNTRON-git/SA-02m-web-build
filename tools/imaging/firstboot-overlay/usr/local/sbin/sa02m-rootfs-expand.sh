@@ -4,14 +4,11 @@
 # Watchdogs ordered After this unit — do NOT systemctl stop them (that cancels
 # their queued start for the whole boot).
 # Before finish: force the kernel to rewrite the root primary superblock and
-# verify its checksum ON DISK (see ensure_primary_sb_checksum) — the board
-# kernel leaves it stale after an online resize, and a power cut before the
-# first clean reboot then bricks the clone (docs/bugs/BUGLOG.md 2026-09-16).
-# Evidence that must outlive a power cut — the verdict file, DONE, the log —
-# is fsync'd explicitly (sync_files): / is mounted commit=600 with the
-# superblock default journal_data_writeback, so a write not fsync'd within
-# ~10 min is simply gone after a cut (bench 2026-09-16: every first-boot log
-# and the persistent journal came back 0 bytes; BUGLOG.md 2026-09-16 16:40).
+# verify its checksum ON DISK (ensure_primary_sb_checksum) — the board kernel
+# leaves it stale after an online resize and a power cut then bricks the clone.
+# The verdict, DONE and the log are fsync'd (sync_files): / is mounted
+# commit=600 + journal_data_writeback, so nothing else survives a cut.
+# Bench evidence and history: docs/bugs/BUGLOG.md 2026-09-16 (12:40, 16:40).
 set -euo pipefail
 
 LOG=/var/log/sa02m-rootfs-expand.log
@@ -214,6 +211,10 @@ finish_firstboot() {
 case "${1:-start}" in
     start)
         mkdir -p "$(dirname "$LOG")" "$(dirname "$DONE")"
+        # A cut between write_result's temp write and its rename leaves the
+        # temp file, and nothing else removes it — before the DONE check, so
+        # the no-op re-run path clears it too (1.0.6.48 review, A2).
+        rm -f "$RESULT.tmp"
         [ -f "$DONE" ] && exit 0
         [ -b "$ROOT_PART" ] && [ -b "$ROOT_DISK" ] || exit 0
         csum_rc=0

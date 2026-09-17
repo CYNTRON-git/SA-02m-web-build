@@ -8,22 +8,31 @@ web_session_check_cookie || {
   exit 0
 }
 
-STATEDIR=/var/lib/sa02m-web-build
+# SA02M_WEB_BUILD_STATEDIR / SA02M_INSTALL_LOG: the behavioural harness
+# (scripts/dev/test-cgi-csrf-behaviour.sh) redirects the cache and the log
+# into a sandbox. Process environment only — nginx/fcgiwrap set no SA02M_*
+# name, so a client cannot choose either path (same names as
+# web_update_apply.cgi / etc/sa02m-update-runner.sh).
+STATEDIR="${SA02M_WEB_BUILD_STATEDIR:-/var/lib/sa02m-web-build}"
 CHECK_JSON="$STATEDIR/check.json"
+INSTALL_LOG="${SA02M_INSTALL_LOG:-/var/log/sa02m_install.log}"
 
 METHOD="${REQUEST_METHOD:-GET}"
-QS="${QUERY_STRING:-}"
+# The root check runs on POST only. A GET never forces — `?force=1` on a GET
+# used to run the helper too, a Lax-defeating CSRF vector (top-level navigation
+# sends the session cookie); the panel POSTs `?force=1`, so the query part is
+# inert now. policy: docs/decisions/selective-csrf-policy.md; gate: cgi-csrf-policy.
 FORCE=0
 if [ "$METHOD" = "POST" ]; then
   FORCE=1
 fi
-case "$QS" in
-  *force=1*) FORCE=1 ;;
-esac
 
 if [ "$FORCE" = "1" ]; then
-  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n /usr/local/sbin/sa02m-web-update-check --manual >>/var/log/sa02m_install.log 2>&1; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') web_update_check.cgi: sudo sa02m-web-update-check failed" >>/var/log/sa02m_install.log 2>&1 || true
+  # CSRF BEFORE the mutation; headers are not emitted yet, so web_csrf_require
+  # prints its own headers + the shared E_CSRF body and exits on failure.
+  web_csrf_require
+  if ! command -v sudo >/dev/null 2>&1 || ! sudo -n /usr/local/sbin/sa02m-web-update-check --manual >>"$INSTALL_LOG" 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') web_update_check.cgi: sudo sa02m-web-update-check failed" >>"$INSTALL_LOG" 2>&1 || true
   fi
 fi
 
