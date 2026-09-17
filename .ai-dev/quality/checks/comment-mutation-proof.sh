@@ -79,9 +79,15 @@
 # scripts/, tools/imaging/ and install.sh, so an edit to any of those can move a
 # pin and make a case vacuous — and `covers` must name what can BREAK the check,
 # not only where the check lives (docs/agent-rules/quality-gate-rigor.md (c)).
-# The cost is that a `--touched` review run almost always includes this row's
-# ~3.5 min (29 mutations plus one green baseline per gate; it was ~60 s at 20
-# cases). That is the fail-safe direction, and CI runs the full set regardless.
+# The cost is that a `--touched` review run almost always includes this row,
+# and it is the slowest one here: every case is a full gate run, twice (one
+# green baseline per gate, then the mutation), so the wall time grows with the
+# table and with the cost of the slowest gate in it — a behavioural gate that
+# executes a script, like beeper-override-no-exec, costs far more per case than
+# a grep. Do not restate the figure here; it drifted from 29 to 48 cases
+# unnoticed, which is the count-goes-stale trap
+# docs/agent-rules/quality-gate-rigor.md names. `time` this row when the number
+# matters. Slow is the fail-safe direction, and CI runs the full set regardless.
 #
 # NOT COVERED, and why: a gate whose pins are all fail-IF-PRESENT sweeps
 # (no-retired-session-token, the negative halves of installer-svc-policy-gate)
@@ -146,6 +152,7 @@ uboot-bootscr-format|tools/imaging/make-image.sh|run_firstboot_patch "$RAW_IMG" 
 storage-automount-decision|etc/storage-mount.sh|mount -t ntfs3 -o rw,noatime
 storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || return 1
 binding-reset-parity|opt/sa02m-cloud-agent/binding_core.py|def stand_down(spec, cls, reason):
+beeper-override-no-exec|etc/sa02m-beeper-override.sh|# any other line: refuse the file
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

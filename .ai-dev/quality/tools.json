@@ -873,6 +873,15 @@
       "beat": "build",
       "covers": ["docs/contracts/sh-model.md", "docs/contracts/sh-model.schema.json", "docs/contracts/sh-model.example.json", ".ai-dev/quality/checks/sh-model-schema.sh"],
       "init": "python3 + jsonschema (pip install jsonschema)"
+    },
+    {
+      "id": "beeper-override-no-exec",
+      "checks": "The beeper override file is DATA and etc/sa02m-beeper-override.sh must never execute a byte of it. Behavioural, not textual: the worker is really RUN in a temp sandbox over an override file carrying a planted payload (a marker-file write inside that same sandbox), and the row FAILS when the marker appears. Five payload shapes — an extra command line, $( ) inside value, backticks inside expires_at, a payload ahead of the first key, assignment-plus-command — plus the shape half: exactly {value=<0|1>, expires_at=<digits>} is accepted, and an unknown key, a quoted value, a non-numeric or expired TTL, or a missing key is refused. Accept vs refuse is observed from an `sh -x` trace (`flock` appears iff read_override returned 0), because the worker's i2c tool paths are absolute and cannot be shimmed; every accept case asserts the token IS present, so the observation cannot go vacuous. Nothing privileged is touched, and the bus is neutralised EXPLICITLY (the sandbox points SA02M_I2C_EXP_BUS at a name no adapter can carry) so the row stays safe to run ON a board, where i2cget exists and an accepted case would otherwise drive the live buzzer; temp HW_CONF, temp override path, temp lock file, no real /run path. `covers` names both PRODUCERS because they can break the guarantee from outside the worker — the parser now takes exactly two keys, so section D reads lib_hw.sh's and sa02m_telemetry.py's write functions and fails when either emits a key set other than {value, expires_at}, in either direction and non-vacuously. Written against the real 1.0.6.45 defect: sourcing the file gave www-data (which owns the file's 0775 directory) arbitrary code execution inside the root daemon that spawns this worker since 1.0.6.43.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/beeper-override-no-exec.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-beeper-override.sh", "www/network_config/cgi-bin/lib_hw.sh", "opt/sa02m-modbus-mqtt/sa02m_telemetry.py", ".ai-dev/quality/checks/beeper-override-no-exec.sh"],
+      "init": "bash + sh + timeout + grep/awk/sed (no board, no i2c, no root) — run on demand: bash .ai-dev/quality/checks/beeper-override-no-exec.sh"
     }
   ]
 }

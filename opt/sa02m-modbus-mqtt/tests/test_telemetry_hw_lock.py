@@ -325,7 +325,10 @@ class LockTestCase(unittest.TestCase):
 
     def read_override(self) -> dict:
         """The override file parsed the way etc/sa02m-beeper-override.sh reads
-        it: shell `key=value` lines, sourced."""
+        it: `key=value` lines, read as DATA. Until 1.0.6.45 the worker sourced
+        the file instead, which is what made a www-data write into it root code
+        execution; the grammar it now accepts is exercised by running the real
+        worker in the quality row beeper-override-no-exec."""
         parsed = {}
         for line in self.override_path.read_text(
                 encoding="utf-8").splitlines():
@@ -877,8 +880,8 @@ class TestTheBeeperOverridePreEmptsABusyBus(LockTestCase):
 class TestTheOverrideFileMatchesItsConsumer(unittest.TestCase):
     """The file's shape is a contract with etc/sa02m-beeper-override.sh.
 
-    The worker is the CONSUMER and it is not touched by this branch, so the
-    keys it validates are read out of it rather than restated here: a rename on
+    The worker is the CONSUMER, so the keys it validates are read out of it
+    rather than restated here: a rename on
     either side must fail this, not ship a file the worker silently rejects
     (`read_override` returning 1 = the buzzer simply never sounds, with no
     error anywhere). Shape (c) of docs/agent-rules/quality-gate-rigor.md — the
