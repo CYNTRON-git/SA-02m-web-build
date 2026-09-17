@@ -5,6 +5,34 @@
 
 ---
 
+## [2026-09-05 16:55] branch: integrate-1.0.6.34
+
+**Файл(ы):** `opt/sa02m-rules/`, `opt/sa02m-alice/sa02m_alice/client/sio_handlers.py`, `scripts/06b-rules.sh`
+**Тип:** Другое
+**Описание:** На плате не было локального движка сценариев.
+**Причина:** Правила жили только в справочниках Sprut; облако не могло их исполнять офлайн.
+**Исправление:** `sa02m-rules` + `alice_devices_scenarios` + атомарный JSON. Не в `REQUIRED_PROCS`. COM3 19200 не трогали.
+
+---
+
+## [2026-09-05 09:16] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-led/sa02m_led/led_mb2ws.py`, `opt/sa02m-led/sa02m_led/controls.py`, `opt/sa02m-modbus-mqtt/bridge_led.py`, `docs/contracts/led-mb2ws.md`
+**Тип:** Некорректное поведение
+**Описание:** MQTT `/devices/led-COM3-13/controls/color` принимал `#RRGGBB` и эхо приходило, но адресная лента цвет не меняла.
+**Причина:** `color` писал аналоговый ШИМ 33..35 (Port-A permille). Прошивка STATIC/FX красит пиксели из RGB565 holding **434** (`MB2WS_REG_USER_COLOR_BASE`, `rgbw_sync_fx_from_mb2ws`).
+**Исправление:** `color` читает и пишет регистр 434 (RGB565, не lock-gated). 0 = белый (unset). ШИМ 33..35 остаётся только для канала `white`. Топик MQTT тот же `#RRGGBB`.
+**Область:** worktree `1.0.6.36`. Не деплоить `1.0.6.27`. CE-02m-3 не трогали.
+
+## [2026-09-04 23:00] branch: 1.0.6.36
+
+**Файл(ы):** `opt/sa02m-modbus-mqtt/bridge_dtv_ce.py`, `opt/sa02m-alice/sa02m_alice/config/models.py`, `opt/sa02m-alice/sa02m_alice/client/auto_provision.py`
+**Тип:** Некорректное поведение
+**Описание:** Alice/MQTT показывали застывшие 196 Вт на CE-02m-3 при живых U/I. Fast MB подписывался только на 500–502 / 510–513; мощность шла раз в 5 с и не сдвигалась, пока прошивка держала кэш. Частоты не было в облачном виджете. Счётчик кВт·ч нельзя было подогнать под коммерческий.
+**Причина:** Карта FMB опросчика отставала от прошивки 1.0.7.6; `frequency` не в `CLOUD_ONLY_FLOAT_INSTANCES`; у CE нет holding на запись накопителя.
+**Исправление:** FMB ranges/dispatch собирают int32 P/Q/S 518–541, Гц 542, PF 543–546. Смещение кВт·ч в `/var/lib/sa02m-modbus-mqtt/ce_energy_offset.json`, MQTT `energy_kwh_set`. `frequency` — cloud_only float. Фаза C с суммарной энергией — cloud_only range на `energy_kwh_set`.
+**Область:** только worktree `1.0.6.36`. Не деплоить `1.0.6.27`.
+
 ## [2026-09-04 20:10] branch: 1.0.6.36
 
 **Файл(ы):** `opt/sa02m-alice/sa02m_alice/client/device_registry.py`, `opt/sa02m-alice/tests/test_tile_fields.py`

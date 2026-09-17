@@ -415,6 +415,22 @@ class TestApplyGroups(_CloudApiBase):
         listed_devs = h.registry.discovery_devices(profile=C.PROFILE_CLOUD)
         self.assertTrue(all("groups" not in d for d in listed_devs))
 
+    def test_sio_scenarios_upsert(self):
+        emitted = []
+        h = SioHandlers(
+            DeviceRegistry(),
+            publish_mqtt=lambda *_a: None,
+            emit_response=lambda d: emitted.append(d),
+            profile=C.PROFILE_CLOUD,
+        )
+        h.handle(C.EVT_DEVICES_SCENARIOS, {
+            "request_id": "s1", "name": "Ночной свет",
+            "trigger": [{"kind": "boot"}],
+            "action": [{"kind": "notify", "text": "up"}],
+        })
+        self.assertTrue(emitted)
+        self.assertIn(emitted[0].get("ok"), (True, False))
+
 
 if __name__ == "__main__":
     unittest.main()

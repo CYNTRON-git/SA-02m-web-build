@@ -36,6 +36,7 @@ def _ce_topics(mid: str, *, per_phase_energy: bool = True):
         if per_phase_energy:
             out.add("/devices/%s/controls/energy_active_import_%s" % (mid, ph))
     out.add("/devices/%s/controls/energy_active_import" % mid)
+    out.add("/devices/%s/controls/frequency" % mid)
     return out
 
 
@@ -342,7 +343,12 @@ class TestProvisionNew(unittest.TestCase):
         )
         for dev, ph in zip(added, "abc"):
             self.assertEqual(dev["type"], "devices.types.smart_meter.electricity")
-            self.assertEqual(_insts(dev), ["amperage", "power", "voltage", "electricity_meter"])
+            self.assertEqual(
+                _insts(dev),
+                ["amperage", "power", "voltage", "electricity_meter", "frequency"],
+            )
+            freq = [p for p in dev["properties"] if (p.get("parameters") or {}).get("instance") == "frequency"][0]
+            self.assertTrue(freq.get("cloud_only"))
             meter = [p for p in dev["properties"] if (p.get("parameters") or {}).get("instance") == "electricity_meter"][0]
             self.assertEqual(meter["scale"], 0.001)
             self.assertTrue(meter["mqtt"].endswith("energy_active_import_%s" % ph))
@@ -356,9 +362,15 @@ class TestProvisionNew(unittest.TestCase):
         self.assertNotIn("electricity_meter", _insts(added[0]))
         self.assertNotIn("electricity_meter", _insts(added[1]))
         self.assertIn("electricity_meter", _insts(added[2]))
+        self.assertIn("frequency", _insts(added[2]))
         meter = [p for p in added[2]["properties"] if (p.get("parameters") or {}).get("instance") == "electricity_meter"][0]
         self.assertTrue(meter["mqtt"].endswith("energy_active_import"))
         self.assertFalse(meter["mqtt"].endswith("energy_active_import_c"))
+        caps = added[2].get("capabilities") or []
+        self.assertEqual(len(caps), 1)
+        self.assertEqual(caps[0]["type"], "devices.capabilities.range")
+        self.assertTrue(caps[0].get("cloud_only"))
+        self.assertTrue(caps[0]["mqtt"].endswith("energy_kwh_set"))
 
     def test_second_pass_is_noop(self):
         mid = "dtv-COM9-99"

@@ -184,6 +184,14 @@ MB2WS_MATRIX_LAYOUT_PRESERVE_MASK = (
     MB2WS_MATRIX_LAYOUT_TILEMODE_MASK | MB2WS_MATRIX_LAYOUT_TILECOUNT_MASK
 )
 
+# FX base colour (Operator 2026-08-13, rgbw_app.c rgbw_sync_fx_from_mb2ws):
+# STATIC and every colour-based effect read color1/color2 from these RGB565
+# words. 0 = unset → engine white. NOT lock-gated (pixel-data class).
+# Analog PWM 33..35 does NOT drive the addressable tape.
+MB2WS_USER_COLOR1 = 434
+MB2WS_USER_COLOR2 = 435
+MB2WS_USER_COLOR_LAST = 449
+
 MB2WS_CMD = 430
 MB2WS_CMD_STATUS = 431
 # Scale: accepted and read back, but NEVER consumed by rendering — the UI control
@@ -250,7 +258,7 @@ MB2WS_TEXT_REF_CANVAS_W_PX = 64
 # (RGBW_WS2812 MODBUS_VARIABLES). Relocated off legacy holes: dimmer
 # 1500–1579→50–101, DI cfg 1400–1499→135–186, press counters 364/464…→220–237
 # (svc_rgbw_dimmer.h / svc_rgbw_di_ctrl.h).
-RGBW_PWM_HOLDING_BASE = 33  # R,G,B,W permille 0..1000
+RGBW_PWM_HOLDING_BASE = 33  # analog Port-A R,G,B,W permille 0..1000 — NOT the tape
 RGBW_PWM_CHANNELS = 4
 RGBW_PWM_MIRROR_BASE = 1  # write 0=off, >0 enable+brightness
 RGBW_PWM_SAFE_BASE = 503  # family safe-state AO block 503..506 — see MB2WS_TEXT_BASE
@@ -1147,6 +1155,14 @@ def rgbw_rgb565_to_hex(v: int) -> str:
     """RGB565 u16 → '#RRGGBB' — the QUANTISED colour the device actually holds."""
     r, g, b = rgbw_rgb565_to_rgb8(v)
     return "#%02X%02X%02X" % (r, g, b)
+
+
+def rgbw_user_color_to_hex(v: int) -> str:
+    """Reg 434/435 → '#RRGGBB'. Firmware 0 is unset → engine white, not black."""
+    word = int(v) & 0xFFFF
+    if word == 0:
+        return "#FFFFFF"
+    return rgbw_rgb565_to_hex(word)
 
 
 def rgbw_permille_to_rgb8(value: int) -> int:

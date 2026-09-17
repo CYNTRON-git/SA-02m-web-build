@@ -37,13 +37,12 @@ CONTROLS: Tuple[Tuple[str, str, str, bool, Optional[int]], ...] = (
     ("effect_group", "text",   "",  True,  None),
     ("speed",        "range",  "",  False, lm.MB2WS_FX_SPEED),
     ("scene_source", "value",  "",  False, lm.MB2WS_RENDER_SOURCE),
-    # --- power PWM channels (product low map, permille 0..1000) ---------------
-    # `color` carries the R/G/B triple of holdings 33..35 as `#RRGGBB`, the form
-    # the Alice bridge's mqtt_to_color_setting() already accepts
-    # (opt/sa02m-alice/.../converters.py). The W channel is NOT part of an RGB
-    # triple, so it keeps its own control rather than a fourth hex byte nothing
-    # downstream would parse.
-    ("color",        "rgb",    "",  False, lm.RGBW_PWM_HOLDING_BASE),
+    # --- FX tape colour vs analog PWM -----------------------------------------
+    # `color` is holding 434 (RGB565 color1). STATIC and every colour-based
+    # effect read it (`rgbw_sync_fx_from_mb2ws`). Analog PWM 33..35 is Port-A
+    # analog, not the WS2812 tape — writing it updates MQTT and leaves the
+    # pixels unchanged. The W channel stays on PWM 36 (permille).
+    ("color",        "rgb",    "",  False, lm.MB2WS_USER_COLOR1),
     ("white",        "range",  "",  False, lm.RGBW_PWM_HOLDING_BASE + 3),
     ("pwm_mode",     "value",  "",  True,  lm.RGBW_PWM_STRIP_MODE_HOLDING),
     # --- marquee text ---------------------------------------------------------

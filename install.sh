@@ -171,6 +171,11 @@ if [ "${SA02M_SKIP_ALICE:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06-alice.sh"
     bash "$SCRIPT_DIR/scripts/06-alice.sh" || log WARN "06-alice.sh завершился с ошибкой"
 fi
 
+if [ "${SA02M_SKIP_RULES:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/06b-rules.sh" ]; then
+    log INFO "──── Опциональный стек: сценарии (sa02m-rules) ────"
+    bash "$SCRIPT_DIR/scripts/06b-rules.sh" || log WARN "06b-rules.sh завершился с ошибкой"
+fi
+
 if [ "${SA02M_SKIP_NODERED:-0}" != "1" ] && [ -f "$SCRIPT_DIR/scripts/07-nodered.sh" ]; then
     log INFO "──── Опциональный стек: Node-RED ────"
     bash "$SCRIPT_DIR/scripts/07-nodered.sh" || log WARN "07-nodered.sh завершился с ошибкой"

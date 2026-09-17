@@ -344,6 +344,12 @@ async function aliceRefresh() {
   try {
     const d = await aliceApi(null);
     if (d && d.error === 'unauthorized') return null;
+    // A failed CGI payload has no client_enabled — do not paint that as
+    // «Выключен» / 0 devices (the process may still be connected).
+    if (d && d.ok === false) {
+      aliceSetMsg(uiT(d.message || d.error || 'Ошибка запроса API Алисы'), false);
+      return null;
+    }
     aliceRender(d);
     return d;
   } catch (e) {

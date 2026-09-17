@@ -48,6 +48,7 @@ class TestNonNegotiable1UnlockOrderLock(unittest.TestCase):
             lm.MB2WS_CMD, lm.MB2WS_TOD_HOURS, lm.MB2WS_FX_AUX, lm.MB2WS_FX_DENSITY,
             lm.MB2WS_SCALE, lm.MB2WS_WX_TEMP_COLOR, lm.MB2WS_TEXT_LINES,
             lm.MB2WS_TEXT_BASE, lm.MB2WS_PIXEL_POOL_BASE,
+            lm.MB2WS_USER_COLOR1, lm.MB2WS_USER_COLOR2,
         ):
             self.assertFalse(lm.rgbw_reg_is_lock_gated(reg), reg)
 
@@ -415,6 +416,12 @@ class TestPwmColourBridge(unittest.TestCase):
         # The text-colour path deliberately keeps the other behaviour.
         self.assertEqual(lm.rgbw_hex_to_rgb565("nope"), 0)
 
+    def test_user_color_zero_is_engine_white(self):
+        """Firmware 434=0 is unset → white, not a black tape."""
+        self.assertEqual(lm.rgbw_user_color_to_hex(0), "#FFFFFF")
+        self.assertEqual(lm.MB2WS_USER_COLOR1, 434)
+        self.assertEqual(lm.MB2WS_USER_COLOR2, 435)
+
 
 class TestLiveAnalogInputs(unittest.TestCase):
     """UNVERIFIED family scales — pinned so a bench correction is one edit."""
@@ -590,6 +597,8 @@ class TestControls(unittest.TestCase):
         self.assertEqual(cc.register_for("effect"), lm.MB2WS_FX_ID)
         self.assertEqual(cc.register_for("speed"), lm.MB2WS_FX_SPEED)
         self.assertEqual(cc.register_for("power"), lm.MB2WS_PLAY_CTRL)
+        self.assertEqual(cc.register_for("color"), lm.MB2WS_USER_COLOR1)
+        self.assertEqual(lm.MB2WS_USER_COLOR1, 434)
         self.assertIsNone(cc.register_for("di_1"))
 
     def test_power_is_a_lock_gated_register(self):

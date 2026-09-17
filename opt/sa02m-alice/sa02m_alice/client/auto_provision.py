@@ -316,14 +316,34 @@ def ce_devices(mqtt_id: str, present: Optional[Iterable[str]] = None) -> List[Di
                     _CE_ENERGY_SCALE,
                 )
             )
+        if _has(names, "frequency"):
+            freq = _float_prop(mqtt_id, "frequency", "frequency", "unit.hertz", None)
+            freq["cloud_only"] = True
+            props.append(freq)
         if not props:
             continue
+        caps: List[Dict[str, Any]] = []
+        if energy_ctrl == "energy_active_import":
+            caps.append(
+                {
+                    "type": "devices.capabilities.range",
+                    "mqtt": "/devices/%s/controls/energy_kwh_set" % mqtt_id,
+                    "retrievable": True,
+                    "reportable": True,
+                    "cloud_only": True,
+                    "parameters": {
+                        "instance": "electricity_meter",
+                        "unit": "unit.kilowatt_hour",
+                        "range": {"min": 0, "max": 99999999, "precision": 0.001},
+                    },
+                }
+            )
         out.append(
             {
                 "id": models.new_id(),
                 "name": ce_name(mqtt_id, letter),
                 "type": "devices.types.smart_meter.electricity",
-                "capabilities": [],
+                "capabilities": caps,
                 "properties": props,
             }
         )

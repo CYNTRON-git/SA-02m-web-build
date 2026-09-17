@@ -2,6 +2,8 @@
 """CE-02m-3 power poll interval + MR display-name canonicalize."""
 from __future__ import annotations
 
+import json
+import os
 import sys
 import types
 import unittest
@@ -133,6 +135,9 @@ class TestCE02FmbEvents(unittest.TestCase):
         self.assertEqual(p.fmb_event_ranges(), [
             (bridge.FMB_EVT_INPUT, 500, 3),
             (bridge.FMB_EVT_INPUT, 510, 4),
+            (bridge.FMB_EVT_INPUT, 518, 24),
+            (bridge.FMB_EVT_INPUT, 542, 1),
+            (bridge.FMB_EVT_INPUT, 543, 4),
         ])
 
     def test_dispatch_voltage_and_current(self):
@@ -149,6 +154,14 @@ class TestCE02FmbEvents(unittest.TestCase):
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_a", "1.234")
         p.fmb_dispatch(bridge.FMB_EVT_INPUT, 512, 200)  # stand sample Ic
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_c", "0.2")
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 522, 48)   # Pc LSW
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 523, 0)    # Pc MSW
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_c", "48")
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 524, 48)
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 525, 0)
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_total", "48")
+        p.fmb_dispatch(bridge.FMB_EVT_INPUT, 542, 5001)
+        pub.pub_control.assert_any_call("ce02m3-COM2-14", "frequency", "50.01")
 
     def test_poll_power_current_no_double_ct(self):
         pub = mock.Mock()
@@ -172,6 +185,50 @@ class TestCE02FmbEvents(unittest.TestCase):
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "current_c", "0.2")
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_c", "29")
         pub.pub_control.assert_any_call("ce02m3-COM2-14", "power_total", "29")
+
+
+class TestCE02EnergyOffset(unittest.TestCase):
+    def test_import_wh_applies_persisted_offset(self):
+        pub = mock.Mock()
+        import tempfile
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.unlink(name)
+        Path(name).write_text(
+            '{"ce02m3-COM2-14": {"offset_wh": 1000, "target_kwh": 6.408}}',
+            encoding="utf-8")
+        try:
+            with mock.patch.dict(os.environ, {"SA02M_CE_ENERGY_OFFSET": name}):
+                p = bridge.CE02M3Poller({
+                    "id": "ce02m3-COM2-14", "type": "ce02m3",
+                    "port": "/dev/COM2", "address": 14,
+                }, pub)
+                p._publish_import_wh(5408000)
+            pub.pub_control.assert_any_call(
+                "ce02m3-COM2-14", "energy_active_import", "5409000")
+        finally:
+            Path(name).unlink(missing_ok=True)
+
+    def test_kwh_set_computes_offset(self):
+        pub = mock.Mock()
+        import tempfile
+        fd, name = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        os.unlink(name)
+        try:
+            with mock.patch.dict(os.environ, {"SA02M_CE_ENERGY_OFFSET": name}):
+                p = bridge.CE02M3Poller({
+                    "id": "ce02m3-COM2-14", "type": "ce02m3",
+                    "port": "/dev/COM2", "address": 14,
+                }, pub)
+                p._last_raw_wh = 5408000
+                p._on_energy_kwh_set("5500")
+            pub.pub_control.assert_any_call(
+                "ce02m3-COM2-14", "energy_active_import", "5500000", force=True)
+            saved = json.loads(Path(name).read_text(encoding="utf-8"))
+            self.assertEqual(saved["ce02m3-COM2-14"]["offset_wh"], 92000)
+        finally:
+            Path(name).unlink(missing_ok=True)
 
 
 class TestFmbWbStyleInsurance(unittest.TestCase):

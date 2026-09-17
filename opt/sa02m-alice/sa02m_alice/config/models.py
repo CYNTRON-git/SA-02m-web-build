@@ -70,6 +70,7 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
     "heat_valve",
     "fan_speed",
     "fan_step",
+    "frequency",
 }
 
 CLOUD_ONLY_EVENT_INSTANCES = {

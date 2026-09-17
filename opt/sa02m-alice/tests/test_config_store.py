@@ -49,6 +49,26 @@ class AtomicWritePreservesMode(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o640)
 
 
+class LoadDevicesUnreadable(unittest.TestCase):
+    def test_unreadable_devices_conf_is_empty_not_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            constants, cs = _load_config_store(td)
+            path = constants.DEVICES_CONF
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"devices":[{"id":"x"}],"rooms":[],"groups":[]}\n')
+            real_open = open
+
+            def _open(name, *a, **k):
+                if os.path.abspath(name) == os.path.abspath(path):
+                    raise PermissionError("denied")
+                return real_open(name, *a, **k)
+
+            with mock.patch("builtins.open", _open):
+                doc = cs.load_devices()
+            self.assertEqual(doc["devices"], [])
+            self.assertEqual(doc["rooms"], [])
+
+
 class SetClientEnabledKeepsSettings(unittest.TestCase):
     def test_operator_keys_survive_toggle(self) -> None:
         with tempfile.TemporaryDirectory() as td:

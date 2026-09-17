@@ -9,7 +9,10 @@ audits).
 
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 
 from bridge_device import DevicePoller
 from bridge_fmb import FMB_INSURANCE_POLL_S
@@ -346,6 +349,9 @@ class CE02M3Poller(DevicePoller):
         self._en_pf    = ch.get("power_factor", True)
         self._en_freq  = ch.get("frequency", True)
         self._en_ener  = ch.get("energy", True)
+        self._fmb_words: dict[int, int] = {}
+        self._last_raw_wh: int | None = None
+        self._offset_wh = self._load_energy_offset()
 
     @staticmethod
     def _s16(v: int) -> int:
@@ -394,6 +400,79 @@ class CE02M3Poller(DevicePoller):
             ("energy_apparent", "VAh"),
         ):
             self.pub.pub_control_units(self.device_id, ename, eunit)
+        # Absolute kWh target to match a commercial meter. Offset lives on
+        # this board — CE has no holding that writes ATM90 accumulators.
+        self.pub.pub_control_meta(self.device_id, "energy_kwh_set", "readonly", "0")
+        self.pub.pub_control_units(self.device_id, "energy_kwh_set", "kWh")
+
+        def _wb_kwh(_client, _userdata, msg):
+            if getattr(msg, "retain", False):
+                return
+            try:
+                payload = msg.payload.decode().strip()
+            except UnicodeDecodeError:
+                return
+            self._on_energy_kwh_set(payload)
+
+        self.pub.subscribe_writeback(self.device_id, "energy_kwh_set", _wb_kwh)
+
+    @staticmethod
+    def _energy_offset_path() -> Path:
+        return Path(os.environ.get(
+            "SA02M_CE_ENERGY_OFFSET",
+            "/var/lib/sa02m-modbus-mqtt/ce_energy_offset.json"))
+
+    def _load_energy_offset(self) -> int:
+        try:
+            data = json.loads(self._energy_offset_path().read_text(encoding="utf-8"))
+            row = data.get(self.device_id) if isinstance(data, dict) else None
+            if isinstance(row, dict):
+                return int(row.get("offset_wh", 0))
+        except (OSError, ValueError, TypeError):
+            pass
+        return 0
+
+    def _save_energy_offset(self, offset_wh: int, target_kwh: float) -> None:
+        path = self._energy_offset_path()
+        data: dict = {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        data[self.device_id] = {"offset_wh": offset_wh, "target_kwh": target_kwh}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8")
+
+    def _on_energy_kwh_set(self, payload: str) -> None:
+        try:
+            target_kwh = float(str(payload).replace(",", ".").strip())
+        except (TypeError, ValueError):
+            return
+        if target_kwh < 0 or target_kwh > 1e9:
+            return
+        if self._last_raw_wh is None:
+            return
+        offset = int(round(target_kwh * 1000.0) - self._last_raw_wh)
+        self._offset_wh = offset
+        try:
+            self._save_energy_offset(offset, target_kwh)
+        except OSError as e:
+            self.log.warning("energy offset persist: %s", e)
+        adj = self._last_raw_wh + offset
+        self.pub.pub_control(self.device_id, "energy_active_import", str(adj),
+                             force=True)
+        self.pub.pub_control(self.device_id, "energy_kwh_set",
+                             str(round(adj / 1000.0, 3)), force=True)
+
+    def _publish_import_wh(self, raw_wh: int) -> None:
+        self._last_raw_wh = raw_wh
+        adj = raw_wh + self._offset_wh
+        self.pub.pub_control(self.device_id, "energy_active_import", str(adj))
+        self.pub.pub_control(self.device_id, "energy_kwh_set",
+                             str(round(adj / 1000.0, 3)))
 
     def _read_power_input_block(self) -> list[int]:
         """Regs 500-547 (48). One FC04 of 101 B often truncates on COM2 (OE/short).
@@ -488,6 +567,9 @@ class CE02M3Poller(DevicePoller):
             total_s = self._int32(regs[40], regs[41])
             self.pub.pub_control(self.device_id, "apparent_total", str(total_s))
 
+        for i, raw in enumerate(regs):
+            self._fmb_words[500 + i] = raw & 0xFFFF
+
         if self._en_freq:
             # 542: freq ×0.01 Hz
             self.pub.pub_control(self.device_id, "frequency",
@@ -504,25 +586,53 @@ class CE02M3Poller(DevicePoller):
             self.pub.pub_control(self.device_id, "asic_temp",
                                  str(self._s16(regs[47])))
 
-    # Fast Modbus events (CE-02m-3 firmware EN_METER set, 2026-07-18):
-    # U phases Input 500-502 (V×10), I phases+N Input 510-513 (A×1000).
-    # Priority via configure_events (0x18); without it push_input_reg is no-op.
+    # Fast Modbus events (CE-02m-3 1.0.7.6): U 500-502, I 510-513,
+    # P/Q/S int32 words 518-541, freq 542, PF 543-546.
     CE_FMB_U_START = 500
     CE_FMB_U_COUNT = 3
     CE_FMB_I_START = 510
     CE_FMB_I_COUNT = 4
+    CE_FMB_PQS_START = 518
+    CE_FMB_PQS_COUNT = 24
+    CE_FMB_FREQ = 542
+    CE_FMB_PF_START = 543
+    CE_FMB_PF_COUNT = 4
 
     def fmb_event_ranges(self) -> list[tuple[int, int, int]]:
         return [
             (FMB_EVT_INPUT, self.CE_FMB_U_START, self.CE_FMB_U_COUNT),
             (FMB_EVT_INPUT, self.CE_FMB_I_START, self.CE_FMB_I_COUNT),
+            (FMB_EVT_INPUT, self.CE_FMB_PQS_START, self.CE_FMB_PQS_COUNT),
+            (FMB_EVT_INPUT, self.CE_FMB_FREQ, 1),
+            (FMB_EVT_INPUT, self.CE_FMB_PF_START, self.CE_FMB_PF_COUNT),
         ]
+
+    def _fmb_publish_pqs_pair(self, lsw_reg: int) -> None:
+        lsw = self._fmb_words.get(lsw_reg)
+        msw = self._fmb_words.get(lsw_reg + 1)
+        if lsw is None or msw is None:
+            return
+        w = self._int32(lsw, msw)
+        pair = (lsw_reg - self.CE_FMB_PQS_START) // 2
+        names_p = ("power_a", "power_b", "power_c", "power_total")
+        names_q = ("reactive_a", "reactive_b", "reactive_c", "reactive_total")
+        names_s = ("apparent_a", "apparent_b", "apparent_c", "apparent_total")
+        if pair < 4:
+            if self._en_pact:
+                self.pub.pub_control(self.device_id, names_p[pair], str(w))
+        elif pair < 8:
+            if self._en_preac:
+                self.pub.pub_control(self.device_id, names_q[pair - 4], str(w))
+        elif pair < 12:
+            if self._en_papp:
+                self.pub.pub_control(self.device_id, names_s[pair - 8], str(w))
 
     def fmb_dispatch(self, evt_type: int, reg: int, val: int) -> None:
         if evt_type != FMB_EVT_INPUT:
             self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
             return
         ph3 = ["a", "b", "c"]
+        word = val & 0xFFFF
         if self.CE_FMB_U_START <= reg < self.CE_FMB_U_START + self.CE_FMB_U_COUNT:
             if not self._en_volt:
                 return
@@ -530,19 +640,37 @@ class CE02M3Poller(DevicePoller):
             if ph.upper() not in self._phases:
                 return
             self.pub.pub_control(self.device_id, f"voltage_{ph}",
-                                 str(round(val * 0.1, 1)))
+                                 str(round(word * 0.1, 1)))
             return
         if self.CE_FMB_I_START <= reg < self.CE_FMB_I_START + self.CE_FMB_I_COUNT:
             if not self._en_curr:
                 return
             # Primary A×1000 from CE FW — do not apply ct_ratio again
-            amps = round(self._s16(val) * 0.001, 3)
+            amps = round(self._s16(word) * 0.001, 3)
             idx = reg - self.CE_FMB_I_START
             if idx < 3:
                 self.pub.pub_control(self.device_id, f"current_{ph3[idx]}",
                                      str(amps))
             else:
                 self.pub.pub_control(self.device_id, "current_n", str(amps))
+            return
+        if self.CE_FMB_PQS_START <= reg < self.CE_FMB_PQS_START + self.CE_FMB_PQS_COUNT:
+            self._fmb_words[reg] = word
+            self._fmb_publish_pqs_pair(reg if (reg - self.CE_FMB_PQS_START) % 2 == 0
+                                       else reg - 1)
+            return
+        if reg == self.CE_FMB_FREQ:
+            if self._en_freq:
+                self.pub.pub_control(self.device_id, "frequency",
+                                     str(round(word * 0.01, 2)))
+            return
+        if self.CE_FMB_PF_START <= reg < self.CE_FMB_PF_START + self.CE_FMB_PF_COUNT:
+            if not self._en_pf:
+                return
+            names = ("pf_a", "pf_b", "pf_c", "pf_total")
+            pf = round(self._s16(word) * 0.001, 3)
+            self.pub.pub_control(self.device_id, names[reg - self.CE_FMB_PF_START],
+                                 str(pf))
             return
         self.log.debug("FMB event ignored type=%02X reg=%d", evt_type, reg)
 
@@ -557,7 +685,10 @@ class CE02M3Poller(DevicePoller):
                      "energy_apparent"]
             for i, name in enumerate(names):
                 val = self._uint64(regs[i*4], regs[i*4+1], regs[i*4+2], regs[i*4+3])
-                self.pub.pub_control(self.device_id, name, str(val))
+                if name == "energy_active_import":
+                    self._publish_import_wh(val)
+                else:
+                    self.pub.pub_control(self.device_id, name, str(val))
         except Exception as e:
             self.log.debug("energy poll: %s", e)
 

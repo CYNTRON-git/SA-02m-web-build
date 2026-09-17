@@ -38,6 +38,10 @@ Validating tests: `opt/sa02m-alice/tests/test_auto_provision.py`.
   voltage, amperage, power; `electricity_meter` from
   `energy_active_import_a|b|c` (`scale` 0.001 Wh→kWh) when those topics
   exist, else total `energy_active_import` on phase C only.
+  `frequency` is a `cloud_only` float (`unit.hertz`) — Yandex has no Hz
+  instance. Phase C with total energy also gets a `cloud_only` range
+  capability on `energy_kwh_set` (absolute kWh to match a commercial meter;
+  offset is persisted on the SA-02m board).
 - A second pass is a no-op. Lights, Carel, sirens and other bindings stay.
 - After persist the in-process registry reloads (same `apply_reload` path
   as a CGI edit). The hub catalog is the next `alice_devices_list`.

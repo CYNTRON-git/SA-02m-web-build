@@ -11,8 +11,8 @@ Why a poller of its own rather than a `type: template` entry:
     device while the ack reads normal: the strip keeps playing and MQTT reports
     it off. That fail-open is the whole reason `power` is not a template row;
   * the marquee text is a 64-register cp1251 block write, not a value;
-  * `color` is three registers (PWM R/G/B permille) presented as one control,
-    written in ONE FC16 so a half-applied colour never reaches the LEDs.
+  * `color` is holding 434 (RGB565 color1). Analog PWM 33..35 is a different
+    surface and does not paint the addressable tape.
 
 The register map is NOT here: it lives in `sa02m_led` (installed to /opt/sa02m-led,
 shared with the flasher daemon). Control inventory: `sa02m_led.controls`.
@@ -87,7 +87,6 @@ DEFAULT_TEXT_POLL_S = 30.0
 # a future control table asks for it.
 _LEGAL_BLOCK_WRITES = {
     lm.MB2WS_TEXT_BASE: lm.MB2WS_TEXT_REG_COUNT,
-    lm.RGBW_PWM_HOLDING_BASE: 3,          # the R/G/B triple of `color`
 }
 
 _TRUE_WORDS = ("1", "true", "on", "yes")
@@ -205,6 +204,8 @@ class LedPoller(DevicePoller):
         out: dict = {"base": [int(v) & 0xFFFF for v in base]}
         out["pwm"] = self._read_optional(
             "holding", lm.RGBW_PWM_HOLDING_BASE, lm.RGBW_PWM_CHANNELS)
+        out["fx_color"] = self._read_optional(
+            "holding", lm.MB2WS_USER_COLOR1, 2)
         # 33..36 and 49 are separated by addresses this product's low map does
         # not document as mapped, and one unmapped address fails a whole block.
         mode = self._read_optional(
@@ -247,10 +248,18 @@ class LedPoller(DevicePoller):
             None if raw_lines is None
             else str(lm.rgbw_text_lines_ui_code(raw_lines))
         )
+        out.update(self._color_controls(snap))
         out.update(self._pwm_controls(snap))
         out.update(self._supply_controls(snap))
         out.update(self._di_controls(snap))
         return out
+
+    @staticmethod
+    def _color_controls(snap: dict) -> dict:
+        raw = snap.get("fx_color")
+        if raw is None or len(raw) < 1:
+            return {"color": None}
+        return {"color": lm.rgbw_user_color_to_hex(int(raw[0]) & 0xFFFF)}
 
     @staticmethod
     def _pwm_controls(snap: dict) -> dict:
@@ -258,12 +267,9 @@ class LedPoller(DevicePoller):
         mode = snap.get("pwm_mode")
         out = {"pwm_mode": None if mode is None else str(mode)}
         if pwm is None or len(pwm) < lm.RGBW_PWM_CHANNELS:
-            out["color"] = None
             out["white"] = None
             return out
-        r, g, b, w = (int(v) & 0xFFFF for v in pwm[:lm.RGBW_PWM_CHANNELS])
-        out["color"] = lm.rgbw_pwm_permille_to_hex(r, g, b)
-        out["white"] = str(w)
+        out["white"] = str(int(pwm[3]) & 0xFFFF)
         return out
 
     @staticmethod
@@ -490,16 +496,14 @@ class LedPoller(DevicePoller):
         self._wb_done("white", str(value))
 
     def _wb_color(self, payload: str) -> None:
-        """The R/G/B triple 33..35 in ONE FC16.
-
-        Three FC06 writes would put a wrong colour on the LEDs between frames;
-        one transaction cannot.
-        """
-        triple = _parse_color(payload)
-        if triple is None:
+        """FX color1 at 434 (RGB565). Not lock-gated; not analog PWM 33..35."""
+        word = _parse_color(payload)
+        if word is None:
             raise ValueError("unparseable colour payload %r" % (payload,))
-        self._write_block(lm.RGBW_PWM_HOLDING_BASE, triple)
-        self._wb_done("color", lm.rgbw_pwm_permille_to_hex(*triple))
+        self._wb_write_retry(
+            lambda: self.write_register(
+                self.address, lm.MB2WS_USER_COLOR1, int(word) & 0xFFFF))
+        self._wb_done("color", lm.rgbw_user_color_to_hex(word))
 
     def _wb_text(self, payload: str) -> None:
         """The marquee window — always the full 64 registers at the CURRENT base.
@@ -539,18 +543,16 @@ def _bool_payload(payload: str) -> bool:
 
 
 def _parse_color(payload: str):
-    """Colour payload → the PWM permille triple, or None when unparseable.
+    """Colour payload → RGB565 word for reg 434, or None when unparseable.
 
-    THREE forms are accepted and the choice is not cosmetic — see
-    docs/MQTT_TOPICS.md «Формат `color`»:
+    THREE forms are accepted:
 
       * `#RRGGBB` — the form this poller PUBLISHES, and the one the Alice bridge
         already reads (sa02m_alice.client.converters.mqtt_to_color_setting);
       * a decimal 24-bit integer — what that same Alice bridge WRITES BACK
         (yandex_to_color_setting emits `str(int(value))`). Refusing it would
         break the round trip in the one consumer this control has;
-      * `R;G;B` 0..255 — the Wiren Board convention for a control of type `rgb`,
-        so a wb-rules script or a WB-aware client is not silently misread.
+      * `R;G;B` 0..255 — the Wiren Board convention for a control of type `rgb`.
 
     Bare `RRGGBB` without the `#` is NOT hex here: it is ambiguous with the
     decimal form (`255000` is a valid value in both) and the Alice reader draws
@@ -569,13 +571,20 @@ def _parse_color(payload: str):
             return None
         if any(v < 0 or v > 255 for v in rgb):
             return None
-        return tuple(lm.rgbw_rgb8_to_permille(v) for v in rgb)
+        return lm.rgbw_rgb565_from_rgb8(rgb[0], rgb[1], rgb[2])
     if t.startswith("#"):
-        return lm.rgbw_hex_to_pwm_permille(t)
+        if len(t) != 7:
+            return None
+        try:
+            return lm.rgbw_rgb565_from_rgb8(
+                int(t[1:3], 16), int(t[3:5], 16), int(t[5:7], 16))
+        except ValueError:
+            return None
     try:
         packed = int(float(t))
     except ValueError:
         return None
     if packed < 0 or packed > 0xFFFFFF:
         return None
-    return lm.rgbw_hex_to_pwm_permille("#%06X" % packed)
+    return lm.rgbw_rgb565_from_rgb8(
+        (packed >> 16) & 255, (packed >> 8) & 255, packed & 255)

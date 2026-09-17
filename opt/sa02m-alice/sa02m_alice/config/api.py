@@ -8,6 +8,7 @@ from __future__ import annotations
 import configparser
 import json
 import os
+import sys
 import socketserver
 import stat
 import time
@@ -1136,6 +1137,44 @@ def serve_unix(sock_path: str = "/run/sa02m-alice/config.sock") -> None:
     except OSError:
         pass
     httpd.serve_forever()
+
+
+def _rules_store():
+    """Load sa02m_rules.store if the engine package is installed beside alice."""
+    opt = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))))
+    root = os.path.join(opt, "sa02m-rules")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        from sa02m_rules import store as rules_store  # type: ignore
+        return rules_store
+    except ImportError:
+        return None
+
+
+def listed_scenarios() -> Optional[Dict[str, Any]]:
+    """None when the engine is absent — list payload then omits `scenarios`."""
+    mod = _rules_store()
+    if mod is None:
+        return None
+    doc = mod.load()
+    return {
+        "scenarios": mod.listed(doc),
+        "runs": list(doc.get("runs") or [])[-20:],
+        "notify_queue": list(doc.get("notify_queue") or []),
+        "library": doc.get("library") or "",
+    }
+
+
+def apply_scenarios(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Cloud `alice_devices_scenarios` → /etc/sa02m-rules/scenarios.json."""
+    mod = _rules_store()
+    if mod is None:
+        return {"ok": False, "error": "unsupported"}
+    if not isinstance(body, dict):
+        return {"ok": False, "error": "bad json"}
+    return mod.apply_command(body)
 
 
 def main() -> int:

@@ -5,6 +5,13 @@
 
 ---
 
+## Unreleased
+
+### Smart home / devices
+- **On-board scenarios (`sa02m-rules`).** `/etc/sa02m-rules/scenarios.json`,
+  systemd `sa02m-rules.service`, Socket.IO `alice_devices_scenarios`.
+  Block / code / logic / scene. No SSH. Not in `REQUIRED_PROCS`.
+
 ## 1.0.6.36 - LED type-120 on the MQTT scan, Alice light tile (сентябрь 2026)
 
 ### Smart home / devices

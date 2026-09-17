@@ -39,6 +39,21 @@ def _atomic_write(path: str, data: str, mode: int = 0o640) -> None:
                     pass  # non-root writer keeps its own uid; group suffices
         else:
             os.chmod(tmp, mode)
+        # Heal root:root on a shared etc dir. Preserving a previous root:root
+        # (today's deploy) left devices.conf unreadable to the www-data CGI,
+        # so the Alice card painted «Выключен» / 0 devices while the client
+        # was connected. Take the directory group when we can.
+        try:
+            dst = os.stat(directory)
+            if dst.st_gid and hasattr(os, "chown"):
+                cur = os.stat(tmp)
+                if cur.st_gid != dst.st_gid:
+                    os.chown(tmp, cur.st_uid, dst.st_gid)
+                mode_now = stat_module.S_IMODE(os.stat(tmp).st_mode)
+                if (mode_now & 0o040) == 0:
+                    os.chmod(tmp, mode_now | 0o060)
+        except OSError:
+            pass
         os.replace(tmp, path)
     except Exception:
         try:
@@ -188,8 +203,14 @@ def load_devices(path: str | None = None) -> Dict[str, Any]:
     p = path or C.DEVICES_CONF
     if not os.path.exists(p):
         return empty_devices()
-    with open(p, encoding="utf-8") as fh:
-        data = json.load(fh)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except OSError:
+        # Unreadable (root:root after a root deploy) — do not crash the CGI
+        # into «клиент выключен». The card still shows enable/gateway/cert
+        # from the INI + status file; devices stay empty until perms heal.
+        return empty_devices()
     if not isinstance(data, dict):
         return empty_devices()
     data.setdefault("rooms", [])

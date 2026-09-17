@@ -104,9 +104,11 @@ class TestHandshakeSelection(unittest.TestCase):
         self.assertIn(C.EVT_CONTROLLER_UNLINK, AliceSocketIO()._events())
         # The request events stay on both.
         for ev in (C.EVT_DEVICES_LIST, C.EVT_DEVICES_QUERY, C.EVT_DEVICES_ACTION,
-                   C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_GROUPS):
+                   C.EVT_DEVICES_RENAME, C.EVT_DEVICES_ROOMS, C.EVT_DEVICES_GROUPS,
+                   C.EVT_DEVICES_SCENARIOS):
             self.assertIn(ev, AliceSocketIO(profile=C.PROFILE_CLOUD)._events())
         self.assertNotIn(C.EVT_DEVICES_GROUPS, AliceSocketIO()._events())
+        self.assertNotIn(C.EVT_DEVICES_SCENARIOS, AliceSocketIO()._events())
 
     def test_token_minted_inside_every_connect(self):
         calls = []

@@ -108,6 +108,8 @@ class FakeSerial:
 # ── the invented bank (see the honesty label above) ──────────────────────────
 
 BANK_COLOR_HEX = "#FF8000"
+BANK_COLOR_565 = lm.rgbw_hex_to_rgb565(BANK_COLOR_HEX)
+BANK_COLOR_PUB = lm.rgbw_user_color_to_hex(BANK_COLOR_565)
 BANK_TEXT = "ЦИНТРОН"
 
 
@@ -125,7 +127,9 @@ def led_bank():
     regs[("h", lm.MB2WS_LINE_MODE)] = lm.MB2WS_LINE_SINGLE_WS
     regs[("h", lm.MB2WS_PLAY_CTRL)] = lm.MB2WS_PLAY_PLAY
     regs[("h", lm.MB2WS_TEXT_LINES)] = 0
-    # PWM triple + W (permille), and the strip mode on its own read.
+    # FX color1 434 (RGB565) — the tape. Analog PWM W still on 36.
+    regs[("h", lm.MB2WS_USER_COLOR1)] = BANK_COLOR_565
+    regs[("h", lm.MB2WS_USER_COLOR2)] = 0
     r, g, b = lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)
     for i, v in enumerate((r, g, b, 250)):
         regs[("h", lm.RGBW_PWM_HOLDING_BASE + i)] = v
@@ -205,8 +209,8 @@ class TestPoll(unittest.TestCase):
         p.poll_io()
         self.assertEqual(_published(pub)["effect"], "62")
 
-    def test_colour_is_published_as_hex_from_the_pwm_triple(self):
-        self.assertEqual(self.values["color"], BANK_COLOR_HEX)
+    def test_colour_is_published_from_register_434(self):
+        self.assertEqual(self.values["color"], BANK_COLOR_PUB)
         self.assertEqual(self.values["white"], "250")
 
     def test_the_analog_inputs_carry_their_scale(self):
@@ -264,7 +268,8 @@ class TestOptionalBlocks(unittest.TestCase):
         p, pub, _s = _poller(blind=[("i", lm.RGBW_DI_INPUT_BASE),
                                     ("i", lm.RGBW_IREG_NTC),
                                     ("h", lm.RGBW_PWM_HOLDING_BASE),
-                                    ("h", lm.RGBW_PWM_STRIP_MODE_HOLDING)])
+                                    ("h", lm.RGBW_PWM_STRIP_MODE_HOLDING),
+                                    ("h", lm.MB2WS_USER_COLOR1)])
         p.poll_io()
         self.assertTrue(p._online)
         self.assertEqual(p._fail_count, 0)
@@ -339,10 +344,10 @@ class TestBlockWriteGuard(unittest.TestCase):
             p._write_block(lm.MB2WS_TEXT_BASE, [0] * 8)
         self.assertEqual(ser.writes, [])
 
-    def test_only_the_two_sanctioned_blocks_are_writable(self):
+    def test_only_the_text_block_is_a_sanctioned_block_write(self):
         self.assertEqual(
             set(bridge_led._LEGAL_BLOCK_WRITES),
-            {lm.MB2WS_TEXT_BASE, lm.RGBW_PWM_HOLDING_BASE})
+            {lm.MB2WS_TEXT_BASE})
 
 
 class TestLockBracket(unittest.TestCase):
@@ -488,8 +493,9 @@ class TestColourForm(unittest.TestCase):
         p, pub, _s = _poller()
         p.poll_io()
         published = _published(pub)["color"]
+        self.assertEqual(published, BANK_COLOR_PUB)
         block = alice_cv.mqtt_to_color_setting(published, {"instance": "rgb"})
-        self.assertEqual(block["state"]["value"], 0xFF8000)
+        self.assertEqual(block["state"]["value"], int(BANK_COLOR_PUB[1:], 16))
 
     def test_what_the_alice_bridge_writes_back_is_accepted(self):
         """`yandex_to_color_setting` emits a DECIMAL int, not the hex it reads.
@@ -504,16 +510,14 @@ class TestColourForm(unittest.TestCase):
         p, pub, ser = _poller()
         p._writeback("color", payload)
         self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE,
-                           list(lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)))])
-        self.assertEqual(_published(pub)["color"], BANK_COLOR_HEX)
+                         [("reg", lm.MB2WS_USER_COLOR1, BANK_COLOR_565)])
+        self.assertEqual(_published(pub)["color"], BANK_COLOR_PUB)
 
     def test_the_wiren_board_triple_form_is_accepted(self):
         p, _pub, ser = _poller()
         p._writeback("color", "255;128;0")
         self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE,
-                           list(lm.rgbw_hex_to_pwm_permille(BANK_COLOR_HEX)))])
+                         [("reg", lm.MB2WS_USER_COLOR1, BANK_COLOR_565)])
 
     def test_a_bare_six_digit_payload_is_decimal_not_hex(self):
         """`255000` is valid in both forms; the `#` is what disambiguates.
@@ -523,27 +527,26 @@ class TestColourForm(unittest.TestCase):
         """
         p, _pub, ser = _poller()
         p._writeback("color", "255000")
-        expected = lm.rgbw_hex_to_pwm_permille("#%06X" % 255000)
+        want = lm.rgbw_hex_to_rgb565("#%06X" % 255000)
         self.assertEqual(ser.writes,
-                         [("regs", lm.RGBW_PWM_HOLDING_BASE, list(expected))])
+                         [("reg", lm.MB2WS_USER_COLOR1, want)])
 
-    def test_the_colour_is_one_transaction(self):
-        """Three FC06 would put a wrong colour on the LEDs between frames."""
+    def test_the_colour_is_one_unlocked_register(self):
+        """434 is pixel-data class — no lock bracket, not analog PWM 33..35."""
         p, _pub, ser = _poller()
         p._writeback("color", "#102030")
-        self.assertEqual(len(ser.writes), 1)
-        self.assertEqual(ser.writes[0][0], "regs")
+        self.assertEqual(ser.writes,
+                         [("reg", lm.MB2WS_USER_COLOR1,
+                           lm.rgbw_hex_to_rgb565("#102030"))])
 
-    def test_an_eight_bit_colour_survives_the_round_trip(self):
-        """Written hex → permille → published hex must be the SAME hex.
-
-        Otherwise every poll after a write would contradict the echo and the
-        writeback-protection window would just be hiding a drift.
-        """
+    def test_colour_echo_is_the_quantised_rgb565_the_device_holds(self):
+        """RGB565 is lossy; the echo is the word that lands in 434, as hex."""
         for hexs in ("#000000", "#FFFFFF", "#FF8000", "#123456", "#010203"):
             p, pub, _s = _poller()
             p._writeback("color", hexs)
-            self.assertEqual(_published(pub)["color"], hexs)
+            word = lm.rgbw_hex_to_rgb565(hexs)
+            self.assertEqual(_published(pub)["color"],
+                             lm.rgbw_user_color_to_hex(word))
 
     def test_a_malformed_colour_reaches_no_write(self):
         for bad in ("", "nope", "#12345", "300;0;0", "1;2", "#GGGGGG",

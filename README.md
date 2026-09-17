@@ -280,6 +280,7 @@ chmod +x install.sh scripts/*.sh etc/*.sh
 | `11-devices.sh` | Вкладка «Устройства»: `sa02m-devices-api` + logger (после MQTT) | `SA02M_SKIP_DEVICES=1` |
 | `06-gateway.sh` | RS-485→Ethernet шлюз, gateway CGI, systemd unit | `SA02M_SKIP_GATEWAY=1` |
 | `06-alice.sh` | Яндекс Алиса: `opt/sa02m-alice`, обе службы **выключены** по умолчанию | `SA02M_SKIP_ALICE=1` |
+| `06b-rules.sh` | Сценарии на плате: `opt/sa02m-rules` (`Restart=on-failure`, не в watchdog) | `SA02M_SKIP_RULES=1` |
 | `07-nodered.sh` | Node.js LTS + Node-RED, `nodered.service`, UI на порту 1880 | `SA02M_SKIP_NODERED=1` |
 | `08-codesys.sh` | CODESYS Control SL (только при наличии vendor-payload) | `SA02M_SKIP_CODESYS=1` |
 | `09-mplc.sh` | MasterSCADA MPLC 4D Runtime (только при наличии vendor-payload) | `SA02M_SKIP_MPLC=1` |

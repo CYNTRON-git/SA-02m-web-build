@@ -60,6 +60,7 @@ EVT_DEVICES_ACTION = "alice_devices_action"
 EVT_DEVICES_RENAME = "alice_devices_rename"
 EVT_DEVICES_ROOMS = "alice_devices_rooms"
 EVT_DEVICES_GROUPS = "alice_devices_groups"
+EVT_DEVICES_SCENARIOS = "alice_devices_scenarios"
 EVT_DEVICE_STATE = "device_state"
 EVT_CONTROLLER_UNLINK = "controller_unlink"
 
