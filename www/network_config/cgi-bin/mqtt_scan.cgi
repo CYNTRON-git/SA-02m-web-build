@@ -12,23 +12,29 @@ check_auth() {
 }
 if ! check_auth; then echo '{"ok":false,"error":"unauthorized","devices":[]}'; exit 0; fi
 
-SCAN_PY="/opt/sa02m-modbus-mqtt/mqtt_bus_scan.py"
+# SA02M_MQTT_SCAN_PY: the behavioural harness (scripts/dev/test-cgi-csrf-behaviour.sh)
+# points it at a fixture. Process environment only — nginx/fcgiwrap set no
+# SA02M_* name, so a client cannot choose the path (the SA02M_WEB_BUILD_STATEDIR
+# precedent in web_update_apply.cgi).
+SCAN_PY="${SA02M_MQTT_SCAN_PY:-/opt/sa02m-modbus-mqtt/mqtt_bus_scan.py}"
 TMP=$(mktemp /tmp/sa02m-mqttscan.XXXXXX)
 trap "rm -f '$TMP'" EXIT
 
-if [ "${REQUEST_METHOD:-GET}" = "POST" ]; then
-    dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP"
-else
-    # GET fallback: ?port=/dev/COM1&baudrate=115200&max_addr=32
-    python3 - "$QUERY_STRING" "$TMP" <<'PYEOF'
-import json, sys, urllib.parse as up
-qs = sys.argv[1] if len(sys.argv) > 1 else ""
-out = sys.argv[2] if len(sys.argv) > 2 else "/dev/null"
-params = {k: v for k, v in up.parse_qsl(qs)} if qs else {}
-with open(out, "w", encoding="utf-8") as f:
-    json.dump(params, f)
-PYEOF
+# POST-only — a GET scan is a Lax-defeating CSRF vector (top-level navigation
+# still sends the session cookie) that puts root traffic on a live RS-485 bus.
+# policy: docs/decisions/selective-csrf-policy.md; gate: cgi-csrf-policy.
+if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
+    echo '{"ok":false,"error":"method_not_allowed","devices":[]}'
+    exit 0
 fi
+# CSRF BEFORE the mutation. Headers are already on the wire, so validate inline
+# and print the shared shape (web_csrf_require would re-emit them into the body).
+if ! web_csrf_validate; then
+    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF","devices":[]}'
+    exit 0
+fi
+
+dd bs=1 count="${CONTENT_LENGTH:-0}" 2>/dev/null > "$TMP"
 
 # Validate the scan params BEFORE handing the file to the root scanner:
 # port must be a /dev serial path, baudrate/max_addr bounded integers. The

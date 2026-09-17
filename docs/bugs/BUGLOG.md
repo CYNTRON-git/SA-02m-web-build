@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-09-17 08:30] branch: 1.0.6.49
+
+**Файл(ы):** `www/network_config/cgi-bin/mqtt_scan.cgi`, `www/network_config/cgi-bin/web_update_check.cgi`, `docs/threat-model.md` §4
+**Тип:** Безопасность (CSRF: мутация по GET и root-хелпер без токена `X-SA02M-CSRF`)
+**Описание:** Аудит 2026-09-16 (M2). `mqtt_scan.cgi` запускал `sudo python3 mqtt_bus_scan.py` (трафик в живую шину RS-485 от root) по POST **и по GET** `?port=…` без проверки токена; `web_update_check.cgi` запускал `sudo sa02m-web-update-check --manual` по POST и по GET `?force=1` без токена. Кросс-сайтовая top-level GET-навигация с cookie `SameSite=Lax` — реальный обход (класс, закрытый для `reboot`/`restart` в 1.0.5.72). Модель угроз при этом писала «держится (1.0.5.72)»; реестр гейтил один эндпоинт (`web-update-csrf-contract`).
+**Причина:** Политика 1.0.5.72 применена к инвентарю PR #107; два эндпоинта в него не попали, а механической проверки «каждый sudo-CGI несёт POST-only + токен» не было — новый мутирующий CGI проходил все ряды.
+**Исправление:** Оба CGI — POST-only + `web_csrf_validate`/`web_csrf_require` до запуска хелпера; GET-ветки не мутируют (скан — `method_not_allowed`, проверка — только чтение кэша). Ряд `cgi-csrf-policy`: перечень всех CGI с sudo/мутацией и якорь мутации на каждом (25 мутирующих, 3 read-only-sudo, исключение `logout`), open-world-свип по примитивам (`sudo` — включая запись `["sudo", …]` в python-списке, `mosquitto_pub`, `systemctl start|…`, запись в `/etc`, примитивы записи `hw_set`); RED на дереве 1.0.6.48 — ровно два файла. Ряд `cgi-csrf-behaviour`: реальные CGI в песочнице (GET/POST × с токеном/без, 10 случаев), RED на 1.0.6.48 — 8 случаев (5 отсутствующих отказов + 3 ненаблюдаемых запуска/кэша на env-слепых старых CGI), GREEN — 10/10. Панель не менялась: она шлёт POST с токеном с 1.0.5.72. Внешние клиенты через эти CGI не ходят (`docs/decisions/selective-csrf-policy.md`).
+
 ## [2026-09-16 16:40] branch: 1.0.6.48
 
 **Файл(ы):** `etc/sa02m-rootfs-expand.sh` (и его копия `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh`), `docs/deployment.md` §12
