@@ -47,14 +47,15 @@
 #      rename (no .tmp left behind), rewritten not appended on a re-run, still
 #      written when `sync FILE` is rejected (the bare-sync fallback), and in
 #      every `start` path the LAST recorded call is the fsync of verdict +
-#      DONE + log + their directory — on the failing path too.
+#      DONE + log + their directory — on the failing path too; and (1.0.6.49)
+#      a stale `$RESULT.tmp` (a cut between the temp write and the rename
+#      commit) is removed at `start` BEFORE the DONE check, so the no-op
+#      re-run path clears it too (6e — the only path where nothing else
+#      would consume it; 6f shows the live paths overwrite it anyway).
 #
-# Why the durable layer exists: on the bench (2026-09-16, reflashed clone,
-# power cut at T+15 min) the guard had worked, yet /var/log/sa02m-rootfs-
-# expand.log, the reboot-reason log and the persistent journal all came back
-# 0 bytes — / is mounted commit=600 with journal_data_writeback, so nothing
-# not fsync'd survives a cut. The only evidence the operator can read
-# afterwards is what the script fsync'd itself (docs/deployment.md §12).
+# Why the durable layer exists: nothing not fsync'd survives a cut on this
+# root (commit=600 + journal_data_writeback) — bench evidence and the operator
+# reading: docs/bugs/BUGLOG.md 2026-09-16 (12:40, 16:40), docs/deployment.md §12.
 #
 # Non-vacuous: a missing/empty script copy, a fixture that is not exactly
 # 4096 bytes, an extraction that lost a function, a retargeted copy that still
@@ -81,7 +82,10 @@
 # staged+synced+renamed -> 5a/5f/5h/5j/5k RED (5); the bare-sync fallback
 # removed -> 5k RED (1); the sync moved above the finish log line -> 2j RED
 # (1); HEAD's 1.0.6.47 script -> 2d×2 + 2i/2j/2k RED (5 pins) then the
-# extraction floor FAILS (no sync_files).
+# extraction floor FAILS (no sync_files). Measured RED, 2026-09-17 (1.0.6.49,
+# the stale-temp case): the 1.0.6.48 script (git archive origin/main as SRC)
+# -> 6e RED (`tmp-left=yes`), 6f holds on both trees; the `rm -f
+# "$RESULT.tmp"` line is registered in comment-mutation-proof.
 #
 # Comment-mutation: the `timeout 20 fsfreeze -f /` line and the
 # `sync_files "$RESULT" "$DONE" "$LOG"` line are registered in
@@ -549,6 +553,24 @@ else
     [ "$rc" = 0 ] && [ "$(count_calls '^fsfreeze')" = 0 ] && [ "$(count_calls '^dd ')" = 0 ] && [ ! -e "$RES" ] \
         && ok "6d DONE already set: no freeze, no read, no verdict written, rc=0 (re-run is a no-op)" \
         || bad "6d rc=$rc calls='$(tr '\n' ';' < "$CALLS")'"
+
+    # 6e a stale verdict temp file (a cut between the temp write and the rename
+    # commit) with DONE already set: removed at start, the rest still a no-op —
+    # the ONLY path where nothing else would ever consume it (1.0.6.48 review A2)
+    reset_shims "$GOOD_FX"; : > "$DONE_F"; printf 'stale\n' > "$RES.tmp"
+    run_start; rc=$?
+    [ "$rc" = 0 ] && [ ! -e "$RES.tmp" ] && [ "$(count_calls '^fsfreeze')" = 0 ] && [ ! -e "$RES" ] \
+        && ok "6e stale .result.tmp + DONE set: the temp file is removed at start, no freeze, no verdict, rc=0" \
+        || bad "6e rc=$rc tmp-left=$(has_file "$RES.tmp") freezes=$(count_calls '^fsfreeze') result='$(result_flat)'"
+
+    # 6f the same stale temp file on the already-uses-eMMC path: gone afterwards,
+    # the verdict still one line (holds on both trees — write_result overwrites
+    # and renames it; kept so the rm cannot be moved past the DONE check)
+    reset_shims "$GOOD_FX"; printf 'stale\n' > "$RES.tmp"; printf '8000000000\n' > "$T/blockdev.part"
+    run_start; rc=$?
+    [ "$rc" = 0 ] && [ ! -e "$RES.tmp" ] && result_matches 'OK stored=0xf8449046 computed=0xf8449046 attempts=1' \
+        && ok "6f stale .result.tmp on the no-resize path: gone, verdict OK on one line, rc=0" \
+        || bad "6f rc=$rc tmp-left=$(has_file "$RES.tmp") result='$(result_flat)'"
 fi
 
 echo

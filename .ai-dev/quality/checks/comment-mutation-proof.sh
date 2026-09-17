@@ -148,6 +148,11 @@ storage-automount-decision|etc/storage-mount.sh|label_fits_exfat "${LABEL}" || r
 binding-reset-parity|opt/sa02m-cloud-agent/binding_core.py|def stand_down(spec, cls, reason):
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|timeout 20 fsfreeze -f /
 firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|sync_files "$RESULT" "$DONE" "$LOG"
+cgi-csrf-policy|www/network_config/cgi-bin/mqtt_scan.cgi|web_csrf_validate
+cgi-csrf-policy|www/network_config/cgi-bin/web_update_check.cgi|web_csrf_require
+cgi-csrf-policy|www/network_config/cgi-bin/services_ctrl.cgi|web_csrf_require
+firstboot-overlay-parity|tools/imaging/firstboot-overlay/usr/local/bin/fix-eth.sh|dns_ensure "$iface"
+firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

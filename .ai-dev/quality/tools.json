@@ -75,7 +75,7 @@
       "config": null,
       "run": "bash -c 'for p in python3 python py; do if \"$p\" -c \"import sys\"; then exec \"$p\" -m unittest discover -s opt/sa02m-flasher/tests -t opt/sa02m-flasher -q; fi; done; echo py-unit-flasher: no working python interpreter; exit 1'",
       "beat": "build",
-      "covers": ["opt/sa02m-flasher/", "docs/contracts/module-config-ai.md"],
+      "covers": ["opt/sa02m-flasher/", "docs/contracts/module-config-ai.md", "docs/contracts/flasher-health.md"],
       "init": "Python 3.10+ (stdlib unittest, no extra deps) — same interpreter picker as py-unit"
     },
     {
@@ -179,7 +179,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/pytest-suite.sh py-unit-gateway opt/sa02m-serial-gateway serial yaml",
       "beat": "build",
-      "covers": ["opt/sa02m-serial-gateway/", ".ai-dev/quality/checks/pytest-suite.sh"],
+      "covers": ["opt/sa02m-serial-gateway/", ".ai-dev/quality/checks/pytest-suite.sh", "docs/contracts/gateway-network-access.md"],
       "init": "bash + python3 + pytest (pip install pytest pyserial pyyaml) — installed in CI (web-quality.yml)"
     },
     {
@@ -206,7 +206,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/mplc-project-deploy-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/mplc_project_deploy.cgi", "etc/sa02m-mplc-project-deploy.sh", "opt/sa02m-mplc/", "scripts/03-webserver.sh", "etc/sudoers.d/sa02m-www", ".ai-dev/quality/checks/mplc-project-deploy-contract.sh"],
+      "covers": ["www/network_config/cgi-bin/mplc_project_deploy.cgi", "etc/sa02m-mplc-project-deploy.sh", "opt/sa02m-mplc/", "scripts/03-webserver.sh", "etc/sudoers.d/sa02m-www", ".ai-dev/quality/checks/mplc-project-deploy-contract.sh", "docs/contracts/mplc-project-deploy.md"],
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
@@ -215,7 +215,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/iface-naming-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/", "etc/", "scripts/02-network.sh", "install.sh", ".ai-dev/quality/checks/iface-naming-contract.sh"],
+      "covers": ["www/network_config/cgi-bin/", "etc/", "scripts/02-network.sh", "install.sh", ".ai-dev/quality/checks/iface-naming-contract.sh", "docs/contracts/ethernet-iface-naming.md"],
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
@@ -277,7 +277,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/kernel-policy-contract.sh",
       "beat": "build",
-      "covers": ["etc/", "scripts/", "install.sh", "opt/sa02m-mqtt-opcua/", ".ai-dev/quality/checks/kernel-policy-contract.sh"],
+      "covers": ["etc/", "scripts/", "install.sh", "opt/sa02m-mqtt-opcua/", ".ai-dev/quality/checks/kernel-policy-contract.sh", "docs/contracts/kernel-conditional-services.md"],
       "init": "bash + grep (present everywhere the project builds)"
     },
     {
@@ -367,7 +367,7 @@
       "config": null,
       "run": "bash scripts/dev/test-uboot-bootscr.sh",
       "beat": "build",
-      "covers": ["tools/imaging/uboot-script.py", "tools/imaging/patch-firstboot-image.sh", "tools/imaging/make-image.sh", "tools/debian-rootfs/pack-sa02m-image.sh", "etc/boot.cmd.sa02m", "etc/boot.cmd.sa02m.min", "scripts/dev/test-uboot-bootscr.sh"],
+      "covers": ["tools/imaging/uboot-script.py", "tools/imaging/patch-firstboot-image.sh", "tools/imaging/make-image.sh", "tools/debian-rootfs/pack-sa02m-image.sh", "etc/boot.cmd.sa02m", "etc/boot.cmd.sa02m.min", "scripts/dev/test-uboot-bootscr.sh", "docs/contracts/uboot-boot-script.md"],
       "init": "bash + Python 3 as python3/python/py (stdlib only, no deps) — run on demand: bash scripts/dev/test-uboot-bootscr.sh"
     },
     {
@@ -376,7 +376,7 @@
       "config": null,
       "run": "bash scripts/dev/test-installer-svc-helpers.sh",
       "beat": "build",
-      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "covers": ["scripts/lib.sh", "etc/sa02m-stacks-policy.sh", "scripts/dev/test-installer-svc-helpers.sh", "scripts/12-docker.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/installer-refresh-policy.md"],
       "init": "bash (stdlib only, no deps) — run on demand: bash scripts/dev/test-installer-svc-helpers.sh"
     },
     {
@@ -385,7 +385,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/installer-svc-policy-gate.sh",
       "beat": "build",
-      "covers": ["install.sh", "scripts/", ".ai-dev/quality/checks/installer-svc-policy-gate.sh"],
+      "covers": ["install.sh", "scripts/", ".ai-dev/quality/checks/installer-svc-policy-gate.sh", "docs/contracts/installer-refresh-policy.md"],
       "init": "bash + grep + awk (present everywhere the project builds)"
     },
     {
@@ -533,7 +533,7 @@
       "config": null,
       "run": "bash .ai-dev/quality/checks/gateway-acl-contract.sh",
       "beat": "build",
-      "covers": ["www/network_config/cgi-bin/gateway_config.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/static/js/gateway.js", ".ai-dev/quality/checks/gateway-acl-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
+      "covers": ["www/network_config/cgi-bin/gateway_config.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "www/network_config/static/js/gateway.js", ".ai-dev/quality/checks/gateway-acl-contract.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/gateway-network-access.md"],
       "init": "bash + python3 with PyYAML (the endpoint itself needs it) — installed in CI (web-quality.yml)"
     },
     {
@@ -553,6 +553,24 @@
       "beat": "build",
       "covers": ["www/network_config/cgi-bin/web_update_apply.cgi", ".ai-dev/quality/checks/web-update-csrf-contract.sh", ".ai-dev/quality/checks/lib_check.sh"],
       "init": "bash + coreutils — no device"
+    },
+    {
+      "id": "cgi-csrf-policy",
+      "checks": "SET-WIDE static gate for docs/decisions/selective-csrf-policy.md (audit 2026-09-16 M2): every session-authed CGI that runs a root helper or mutates state is POST-only and checks X-SA02M-CSRF BEFORE the mutation. A ledger inside the script (the one home for the inventory) names each mutating CGI with a literal on its MUTATING line (the sudo / mosquitto_pub / I2C write / upload receive) plus the read-only-sudo, exception (logout) and excluded (login, index) files with reasons. Per mutating row, read COMMENT-STRIPPED via lib_check.sh: >=1 live web_csrf_validate/require line, >=1 live REQUEST_METHOD line, the first csrf line BEFORE the anchor line, the anchor matching exactly one live line (a moved anchor FAILS naming the file). Open-world sweep: every *.cgi carrying a trigger token (a `sudo` word incl. the python-list spelling, mosquitto_pub, systemctl start|stop|restart|reload|enable|disable|mask|unmask, a redirect/tee into /etc/, the hw_set write primitives) must be ledgered — a new mutating CGI cannot pass the registry without the token. Non-vacuous: a ledger row naming an absent file, a MUTATING count under 25, a READ_ONLY_SUDO count under 3, an empty cgi-bin sweep, or a missing lib_check.sh FAILS. What it does NOT prove: that the POST branch is the ONLY branch reaching the anchor (control flow is invisible to a static pin — cgi-csrf-behaviour proves it for the two fixed endpoints; reading covers the rest), and a mutation through a primitive outside the trigger set is caught only by review. Overlaps web-update-csrf-contract (kept: its region check is stricter). RED on the 1.0.6.48 cgi-bin: exactly mqtt_scan.cgi + web_update_check.cgi.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/cgi-csrf-policy.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/", ".ai-dev/quality/checks/cgi-csrf-policy.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/decisions/selective-csrf-policy.md"],
+      "init": "bash + coreutils — no device. CGI_DIR=<dir> judges another copy of cgi-bin (the RED recipe)."
+    },
+    {
+      "id": "cgi-csrf-behaviour",
+      "checks": "Functional RED/GREEN harness for the two CGIs the 2026-09-16 audit (M2) found outside the CSRF policy — www/network_config/cgi-bin/mqtt_scan.cgi (root bus scanner) and web_update_check.cgi (root update check) — proving what the static row cannot: the POST+token branch is the ONLY branch reaching the root helper. Runs the REAL CGIs in a sandbox (session + X-SA02M-CSRF minted through the shipped lib_web_auth.sh into SA02M_SESSION_DIR, a PATH-shimmed `sudo` whose argv is the observable, the scanner path via SA02M_MQTT_SCAN_PY, the check cache/log via SA02M_WEB_BUILD_STATEDIR / SA02M_INSTALL_LOG). Ten cases, each asserting the body AND whether sudo was called: GET scan → method_not_allowed; POST without / with a wrong token → E_CSRF; POST + token + valid params → sudo launched with the fixture path; port=../etc → the allow-list still refuses; check GET and GET ?force=1 → the cached body only, no helper; check POST without a token → E_CSRF; POST + token → the helper runs, then the cache body; no session → unauthorized before any gate on both. Non-vacuous: the launch cases FAIL unless the shim really recorded the helper. RED on the 1.0.6.48 CGIs: 8 of 10 (the five policy refusals absent; the launch/cache unobservable on the env-blind pre-fix CGIs). Does NOT cover the real HTTP path (nginx/fcgiwrap) — that is the bench curl matrix.",
+      "config": null,
+      "run": "bash scripts/dev/test-cgi-csrf-behaviour.sh",
+      "beat": "build",
+      "covers": ["www/network_config/cgi-bin/mqtt_scan.cgi", "www/network_config/cgi-bin/web_update_check.cgi", "www/network_config/cgi-bin/lib_web_auth.sh", "scripts/dev/test-cgi-csrf-behaviour.sh", "docs/contracts/web-update.md"],
+      "init": "bash + python3 + coreutils (present everywhere the project builds) — run on demand: bash scripts/dev/test-cgi-csrf-behaviour.sh; CGI_DIR=<dir> drives another copy (the RED recipe)."
     },
     {
       "id": "web-auth-behaviour",
@@ -744,7 +762,7 @@
       "run": "node .ai-dev/quality/checks/ui-layout.mjs",
       "beat": "review",
       "covers": ["www/network_config/static/", "www/network_config/index.html", ".ai-dev/quality/checks/ui-layout.mjs"],
-      "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). Absent chromium/playwright -> the row skips (exit 0), so CI (no browser) stays green; it is an on-demand real-layer layout check, not a headless-less CI gate. Run on demand: npm run ui-layout."
+      "init": "npm run ui-layout:install (installs the scripts/dev playwright harness + chromium, reused by the driver). CI installs the harness + chromium since 1.0.6.49 (web-quality.yml: `npm --prefix scripts/dev ci` + `playwright install --with-deps chromium`), so on Linux CI this row RUNS; absent chromium/playwright the row skips (exit 0) — a dev-box courtesy only, never the CI state (a skip is reported as a skip, .ai-dev/notes/quality-gate-environment.md). Run on demand: npm run ui-layout."
     },
     {
       "id": "cloud-card-smoke",
@@ -765,7 +783,7 @@
         "www/network_config/static/js/i18n.js",
         "scripts/dev/cloud-card-smoke.mjs"
       ],
-      "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver reuses — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `cloud-card-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the error. CI stays red on the review beat until playwright lands in web-quality.yml (the backlog entry «CI runs the `ui-layout` review gate VACUOUSLY…», 2026-09-02) — intended pressure. Run on demand: npm run cloud-card-smoke."
+      "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver reuses — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `cloud-card-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the error. CI installs the harness + chromium (web-quality.yml, 1.0.6.49), so on Linux CI this row runs for real. Run on demand: npm run cloud-card-smoke."
     },
     {
       "id": "sh-modal-layout-smoke",
@@ -782,7 +800,7 @@
         "www/network_config/static/js/mqtt.js",
         "scripts/dev/sh-modal-layout-smoke.mjs"
       ],
-      "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver and cloud-card-smoke reuse — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `sh-modal-layout-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the viewport and assertion named. Run on demand: npm run sh-modal-layout-smoke."
+      "init": "npm run ui-layout:install (the same scripts/dev playwright harness + chromium the ui-layout driver and cloud-card-smoke reuse — no new dependency). This row REQUIRES chromium and goes RED without it — deliberately, never a vacuous green: exit 2 with `sh-modal-layout-smoke: chromium/playwright missing — run: npm run ui-layout:install` (the second line says which is absent: the playwright package under scripts/dev/node_modules, or the chromium browser in playwright's cache). Any other failure exits 1 with the viewport and assertion named. CI installs the harness + chromium (web-quality.yml, 1.0.6.49), so on Linux CI this row runs for real. Run on demand: npm run sh-modal-layout-smoke."
     },
     {
       "id": "runner-version-stamp",
@@ -882,6 +900,24 @@
       "beat": "build",
       "covers": ["etc/sa02m-rootfs-expand.sh", "tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-rootfs-expand.sh", "scripts/dev/test-firstboot-sb-csum.sh", "scripts/dev/fixtures/sb-bad.bin", "scripts/dev/fixtures/sb-good.bin"],
       "init": "bash + coreutils + python3 (stdlib only, no deps) — run on demand: bash scripts/dev/test-firstboot-sb-csum.sh"
+    },
+    {
+      "id": "firstboot-overlay-parity",
+      "checks": "Every file under tools/imaging/firstboot-overlay/ is BYTE-IDENTICAL to its repo home (15 declared pairs: the two boot-network scripts, the expand script, the two watchdog daemons, net-watchdog, their confs and the six systemd units) — tools/imaging/autorun.sh copies the overlay over a freshly written rootfs, so a stale copy is what a clone actually boots (audit 2026-09-16 M1: sa02m-eth-coldboot.sh and fix-eth.sh were behind their homes and every such clone lost docs/contracts/boot-network-dns.md). `cmp` per pair; FAIL on any byte difference, a missing home or a missing overlay file. Open-world: an overlay file not in the PAIRS table FAILS (declared, not discovered). Non-vacuous: fewer than 15 pairs or an empty overlay sweep FAILS. Overlaps firstboot-sb-csum layer 1 for the expand script (kept there: that harness's contract includes it). Does NOT check that the overlay is complete (e.g. sa02m-dns-ensure.sh is absent from it — backlog). RED on the pre-sync tree: exactly the two stale pairs.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/firstboot-overlay-parity.sh",
+      "beat": "build",
+      "covers": ["tools/imaging/firstboot-overlay/", "usr/local/sbin/sa02m-eth-coldboot.sh", "etc/fix-eth.sh", "etc/sa02m-rootfs-expand.sh", "etc/sa02m-failure-monitor.sh", "etc/sa02m-userspace-watchdog.sh", "etc/net-watchdog.sh", "etc/sa02m_failure_monitor.conf", "etc/sa02m_userspace_watchdog.conf", "etc/systemd/sa02m-watchdog.conf", "etc/fix-eth@.service", "etc/net-watchdog.service", "etc/systemd/sa02m-eth-coldboot.service", "etc/sa02m-failure-monitor.service", "etc/systemd/sa02m-rootfs-expand.service", "etc/systemd/sa02m-userspace-watchdog.service", ".ai-dev/quality/checks/firstboot-overlay-parity.sh"],
+      "init": "bash + cmp + diff (coreutils/diffutils, present everywhere the project builds)"
+    },
+    {
+      "id": "transient-hygiene",
+      "checks": "Surfaces ORPHANED transient artifacts under .ai-dev/plans, .ai-dev/reviews and .ai-dev/audit — a shipped feature's plan / review stamp / audit run-note the ship beat should have deleted (audit 2026-09-16 L4). A file whose topic slug (basename minus _review.md / .md) is neither the current branch name nor mentioned in .ai-dev/state/current.md is printed as a CANDIDATE for the auditor to confirm; the row NEVER deletes. FAILS only when a candidate is older than 14 days. INERT by design when none of the three (gitignored) directories exists — a clean checkout or CI prints `inert: no transient dirs` and exits 0; that is the honest state, not a vacuous pass (nothing to sweep). Hand-observed RED in the script header (a back-dated stray plan file).",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/transient-hygiene.sh",
+      "beat": "review",
+      "covers": [".ai-dev/quality/checks/transient-hygiene.sh"],
+      "init": "bash + git + coreutils (stat, find, date); transients are gitignored, so only the script itself is a coverable path"
     }
   ]
 }
