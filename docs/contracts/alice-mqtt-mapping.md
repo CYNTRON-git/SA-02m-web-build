@@ -308,6 +308,14 @@ A sensor binding is a device whose `properties` carry one
   class is load-bearing for `unit.density.mcg_m3`). A capability's
   `type` must start `devices.capabilities.`, a property's
   `devices.properties.` — a cross-typed item is rejected.
+- `devices.capabilities.mode` (since 1.0.6.50, the Carel fan speed) is the
+  fifth capability type the converters handle and the validator checks:
+  `parameters.instance` ∈ `MODE_INSTANCES` (`fan_speed` today) and
+  `parameters.modes` a non-empty list of `{"value": …}` drawn from that
+  instance's set, without duplicates. Vocabulary and the read/write
+  asymmetry: `docs/contracts/carel-ahu.md` §6. The item carries the local
+  field `carel_family` beside `mqtt` — never inside `parameters`, which
+  discovery copies to Yandex verbatim (the `scale` / `inverted` rule).
 - UI kinds (`app/alice.js` `ALICE_KINDS`): temperature/humidity/pressure/
   co2/tvoc → `devices.types.sensor.climate`; voltage/amperage/power →
   `devices.types.sensor`; motion → `devices.types.sensor.motion`. The
