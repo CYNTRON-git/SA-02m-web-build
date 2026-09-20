@@ -22,9 +22,11 @@
 # every pin FAILS when a line is missing (non-vacuity), never passes on zero.
 #
 # Drive-to-failure: swap the sa02m_install_led_pkg call below the bridge loop
-# in scripts/05-mqtt.sh (the 1.0.6.40 order) — case 1 goes RED; replace a
-# `sa02m_run_module 01-system.sh` call in install.sh with the bare
-# `bash "$SCRIPT_DIR/scripts/01-system.sh"` — case 3 goes RED.
+# in scripts/05-mqtt.sh (the 1.0.6.40 order) — case 1 goes RED; move the
+# sa02m_install_carel_pkg call in scripts/06-alice.sh below its rsync — case 3
+# goes RED (measured 1.0.6.50); replace a `sa02m_run_module 01-system.sh` call
+# in install.sh with the bare `bash "$SCRIPT_DIR/scripts/01-system.sh"` —
+# case 4 goes RED.
 #
 # Run: bash scripts/dev/test-installer-order.sh   (bash + sed + grep)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -37,7 +39,7 @@ declare -F stripped_first_line >/dev/null || { echo "FAIL  lib_check.sh lacks st
 fails=0
 ok()  { printf 'ok    %s\n' "$1"; }
 bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
-for f in scripts/05-mqtt.sh scripts/04-flasher.sh install.sh; do
+for f in scripts/05-mqtt.sh scripts/04-flasher.sh scripts/06-alice.sh install.sh; do
     [ -f "$f" ] || { echo "FAIL  missing $f"; exit 1; }
 done
 
@@ -74,25 +76,33 @@ echo "── 2. 04-flasher.sh: shared packages land before the daemon tree ─�
 order_pin scripts/04-flasher.sh "2a LED pkg → rsync"   '^[[:space:]]*sa02m_install_led_pkg '   '^[[:space:]]*rsync '
 order_pin scripts/04-flasher.sh "2b Carel pkg → rsync" '^[[:space:]]*sa02m_install_carel_pkg ' '^[[:space:]]*rsync '
 
-echo "── 3. install.sh: every module runs through sa02m_run_module, which syncs ──"
+echo "── 3. 06-alice.sh: the Carel package lands before the tree that imports it ──"
+# Since 1.0.6.50 the Alice client reads sa02m_carel.carel_fan (the cloud fan
+# vocabulary), so 06-alice.sh is the third module installing a shared package
+# beside its consumer. The import is fail-soft, so a tear degrades rather than
+# crash-loops — but the ORDER is the same floor as the other two, and until
+# this pin it was guarded only by the comment at the call site.
+order_pin scripts/06-alice.sh "3a Carel pkg → alice rsync" '^[[:space:]]*sa02m_install_carel_pkg ' '^[[:space:]]*rsync '
+
+echo "── 4. install.sh: every module runs through sa02m_run_module, which syncs ──"
 raw_bash=$(stripped_count install.sh '^[[:space:]]*bash "\$SCRIPT_DIR/scripts/')
 fn_line=$(stripped_first_line install.sh '^sa02m_run_module\(\)')
 bash_line=$(stripped_first_line install.sh '^[[:space:]]*bash "\$SCRIPT_DIR/scripts/')
 sync_line=$(stripped_first_line install.sh '^[[:space:]]*sync$')
 calls=$(stripped_count install.sh '^[[:space:]]*sa02m_run_module [0-9]')
 if [ -z "$fn_line" ]; then
-    bad "3a install.sh has no sa02m_run_module() — modules run with no sync between them"
+    bad "4a install.sh has no sa02m_run_module() — modules run with no sync between them"
 elif [ "$raw_bash" -ne 1 ] || [ -z "$bash_line" ] || [ "$bash_line" -lt "$fn_line" ]; then
-    bad "3a install.sh runs a module outside sa02m_run_module ($raw_bash raw bash lines; function at $fn_line, first bash line at ${bash_line:-none})"
+    bad "4a install.sh runs a module outside sa02m_run_module ($raw_bash raw bash lines; function at $fn_line, first bash line at ${bash_line:-none})"
 elif [ -z "$sync_line" ] || [ "$sync_line" -le "$bash_line" ] || [ $((sync_line - bash_line)) -gt 3 ]; then
-    bad "3a sa02m_run_module: no sync within 3 lines after its bash line (bash at $bash_line, sync at ${sync_line:-none})"
+    bad "4a sa02m_run_module: no sync within 3 lines after its bash line (bash at $bash_line, sync at ${sync_line:-none})"
 else
-    ok "3a install.sh: one bash line (l.$bash_line) inside sa02m_run_module (l.$fn_line), sync at l.$sync_line"
+    ok "4a install.sh: one bash line (l.$bash_line) inside sa02m_run_module (l.$fn_line), sync at l.$sync_line"
 fi
 if [ "$calls" -ge 12 ]; then
-    ok "3b non-vacuity: $calls sa02m_run_module call lines (floor 12)"
+    ok "4b non-vacuity: $calls sa02m_run_module call lines (floor 12)"
 else
-    bad "3b non-vacuity: only $calls sa02m_run_module call lines — the module list stopped going through the runner"
+    bad "4b non-vacuity: only $calls sa02m_run_module call lines — the module list stopped going through the runner"
 fi
 
 echo ""

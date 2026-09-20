@@ -12,18 +12,28 @@
 #      bridge but never the flasher tree, so a device updated that way would
 #      run a new `bridge_carel.py` against an absent `sa02m_carel` and the
 #      poller would die on import — green everywhere in CI, dead on the board.
-#      All three paths (04-flasher.sh, 05-mqtt.sh, update-www-only.sh) must
-#      call the one installer helper.
+#      All four paths (04-flasher.sh, 05-mqtt.sh, 06-alice.sh,
+#      update-www-only.sh) must call the one installer helper. 06-alice.sh
+#      joined them in 1.0.6.50: the Alice catalogue reads the shared fan
+#      vocabulary (sa02m_carel.carel_fan) to declare and drive the cloud
+#      fan-speed control.
 #   2. SOMEONE COPIES THE MAP. The cheapest way to "fix" an import error is to
 #      paste carel_ahu.py into the consumer that cannot see it. Then the two
 #      copies drift and the register a firmware bump moved is right in one and
 #      wrong in the other. So the load-bearing addresses may appear in exactly
-#      one place in the tree.
+#      one place in the tree. The FAN limits are swept for the same reason and
+#      one more: the cloud fan ladder is DERIVED from them, so a restated
+#      100.0 next to that derivation would be a table that merely looks
+#      derived (the behavioural half of that proof is py-unit-carel's
+#      monkeypatch case — a grep cannot tell a consumed constant from a
+#      coincidentally equal literal, and that case cannot tell a second home
+#      from the first; both halves are needed).
 #
 # METHOD. Read through lib_check.sh so a commented-out installer call cannot
 # satisfy a pin (the comment-blindness class, docs/agent-rules/quality-gate-rigor.md).
-# Duplicate detection greps the whole tree for the address constants and
-# subtracts the legitimate homes; the count, not a name list, is what fails —
+# Duplicate detection greps the whole tree for the address constants and then
+# CONFIRMS each hit through the same comment-stripping (the raw grep is a
+# pre-filter, never the verdict); the count, not a name list, is what fails —
 # a copy under any new path is caught.
 #
 # NON-VACUOUS: a missing package, a missing deploy script, an installer helper
@@ -36,6 +46,14 @@
 #   * commenting out the call in update-www-only.sh  -> case 3 FAIL
 #   * deleting the helper body from lib.sh           -> case 4 FAIL
 #   * copying carel_ahu.py into opt/sa02m-flasher/   -> case 5 FAIL
+# Proven RED again (1.0.6.50) by three more, on the widened half:
+#   * commenting out the call in 06-alice.sh         -> case 3 FAIL
+#   * pasting `FAN_PCT_MAX = 100.0` into carel_fan.py-> case 5 FAIL
+#   * commenting out `FAN_PCT_MIN = 20.0` in its own
+#     home (the non-vacuity half: the sweep must find
+#     the package before it can find a copy)         -> case 5 FAIL
+# The third one was GREEN before this release and is what exposed the raw-grep
+# hole described under METHOD; it is RED now.
 #
 # Run: bash .ai-dev/quality/checks/carel-shared-home.sh
 set -u
@@ -54,12 +72,14 @@ ok()  { printf 'carel-shared-home: ok    %s\n' "$1"; }
 bad() { printf 'carel-shared-home: FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 
 # ── non-vacuity: the things every case below reads must exist ───────────────
-for f in "$PKG/carel_ahu.py" "$PKG/carel_ahu_map.py" "$PKG/controls.py" "$LIB" \
-         scripts/04-flasher.sh scripts/05-mqtt.sh scripts/update-www-only.sh; do
+for f in "$PKG/carel_ahu.py" "$PKG/carel_ahu_map.py" "$PKG/controls.py" \
+         "$PKG/carel_fan.py" "$LIB" \
+         scripts/04-flasher.sh scripts/05-mqtt.sh scripts/06-alice.sh \
+         scripts/update-www-only.sh; do
     [ -f "$f" ] || { echo "carel-shared-home: FAIL — missing $f"; exit 1; }
 done
 
-# ── cases 1-3: every deploy path installs the package ──────────────────────
+# ── cases 1-4: every deploy path installs the package ──────────────────────
 case_installer() {  # $1=script  $2=case label
     if stripped_has "$1" "$HELPER"; then
         ok "$2 installs the shared package"
@@ -69,29 +89,50 @@ case_installer() {  # $1=script  $2=case label
 }
 case_installer scripts/04-flasher.sh      "1 flasher install"
 case_installer scripts/05-mqtt.sh         "2 bridge install"
-case_installer scripts/update-www-only.sh "3 www/bridge refresh"
+case_installer scripts/06-alice.sh        "3 alice install"
+case_installer scripts/update-www-only.sh "4 www/bridge refresh"
 
-# ── case 4: the helper itself is real, and installs into the shared path ────
+# ── case 4b: the helper itself is real, and installs into the shared path ───
 helper_text=$(stripped_text "$LIB")
 if text_has "$helper_text" "$HELPER() {" && text_has "$helper_text" "/opt/sa02m-carel"; then
-    ok "4 helper defined in $LIB and targets /opt/sa02m-carel"
+    ok "4b helper defined in $LIB and targets /opt/sa02m-carel"
 else
-    bad "4 $LIB has no working $HELPER definition targeting /opt/sa02m-carel"
+    bad "4b $LIB has no working $HELPER definition targeting /opt/sa02m-carel"
 fi
 
 # ── case 5: the map lives in exactly one place ─────────────────────────────
-# Two addresses picked because they are meaningless outside the Carel map and
-# would travel with any copy of it: the CRST BMS on/off coil and the uAria
-# local-terminal coil we must never write.
+# Needles picked because they are meaningless outside the Carel map and would
+# travel with any copy of it: the CRST BMS on/off coil, the uAria
+# local-terminal coil we must never write, and the two fan clamps with their
+# minimums — the cloud fan ladder is derived from the maximums, so a restated
+# one is both a second home AND a ladder that only looks derived.
+#
+# The raw grep is a PRE-FILTER only; every hit is confirmed through
+# lib_check.sh. Measured 1.0.6.50: `grep -rlF` counts `#FAN_PCT_MIN = 20.0` as
+# a definition, so commenting the constant out in its own home left this case
+# GREEN — the non-vacuity half ("the sweep still finds the package") could not
+# be turned RED by the one mutation it exists to survive, and a commented-out
+# copy elsewhere was reported as a live second home. Confirming through
+# stripped_has fixes both directions.
 dup=0
-for needle in 'COIL_BMS_OFF_ON = 65' 'COIL_UARIA_LOCAL = 30'; do
-    hits=$(grep -rlF "$needle" --include='*.py' opt/ www/ scripts/ tools/ etc/ usr/ firmware/ 2>/dev/null | sort || true)
-    if ! printf '%s\n' "$hits" | grep -qx "$PKG/carel_ahu.py"; then
+for needle in 'COIL_BMS_OFF_ON = 65' 'COIL_UARIA_LOCAL = 30' \
+              'FAN_PCT_MIN = 20.0' 'FAN_PCT_MAX = 100.0' \
+              'UARIA_FAN_STEP_MIN = 1' 'UARIA_FAN_STEP_MAX = 10'; do
+    candidates=$(grep -rlF "$needle" --include='*.py' opt/ www/ scripts/ tools/ etc/ usr/ firmware/ 2>/dev/null | sort || true)
+    hits=""
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        if stripped_has "$candidate" "$needle"; then
+            hits="$hits$candidate
+"
+        fi
+    done <<< "$candidates"
+    if ! printf '%s' "$hits" | grep -qx "$PKG/carel_ahu.py"; then
         bad "5 sweep for '$needle' no longer finds the package — the check reads nothing"
         dup=1
         continue
     fi
-    extra=$(printf '%s\n' "$hits" | grep -vx "$PKG/carel_ahu.py" | grep -v '^$' || true)
+    extra=$(printf '%s' "$hits" | grep -vx "$PKG/carel_ahu.py" | grep -v '^$' || true)
     if [ -n "$extra" ]; then
         bad "5 second home of the Carel map: $(printf '%s' "$extra" | tr '\n' ' ')"
         dup=1
@@ -102,8 +143,12 @@ done
 # ── case 6: the consumers import it rather than restating it ───────────────
 # Skipped until the consumers land (they arrive in the same release); once a
 # consumer file exists it must import the package, never define the addresses.
+# The Alice consumer is the fail-soft import shim, not ahu_status.py: the
+# shim is the ONE file in that tree that names the package, and both the
+# catalogue and the converters reach the map through it.
 for consumer in opt/sa02m-modbus-mqtt/bridge_carel.py \
-                opt/sa02m-flasher/sa02m_flasher/carel_poll.py; do
+                opt/sa02m-flasher/sa02m_flasher/carel_poll.py \
+                opt/sa02m-alice/sa02m_alice/common/carel_import.py; do
     [ -f "$consumer" ] || continue
     if stripped_has "$consumer" "sa02m_carel"; then
         ok "6 $(basename "$consumer") imports the shared package"
