@@ -340,8 +340,31 @@ class CarelPoller(DevicePoller):
                 return
             handler(payload)
         except Exception as e:
-            self.log.warning("carel writeback %s: %s", name, e)
+            # The payload belongs in the refusal line too: «the fan did not
+            # move and we do not know why» is as unresolvable as the opposite.
+            self.log.warning("carel writeback %s %s: %s",
+                             name, _audit_payload(payload), _audit_text(e))
             self.pub.pub_error(self.device_id, name, "w")
+
+    def _wb_audit(self, name: str, requested: str, applied, target: str) -> None:
+        """One journal line per ACCEPTED write: what was asked, what was
+        written after the clamp, and where.
+
+        Why this exists: until 1.0.6.50 a Carel write left no trace at all,
+        and on a line running frame loss «the fan moved and we do not know
+        why» could not be told from «it did not». It covers every Carel write
+        handler, not only the fan — `unit_on` starts an air handler.
+
+        `applied` is printed only when it differs from what was requested,
+        i.e. exactly when the clamp changed the command. One line per write,
+        none per poll: the producer is a human tapping an app.
+        """
+        shown = _audit_payload(requested)
+        if applied is None or _same_value(requested, applied):
+            self.log.info("writeback %s: requested %s -> %s", name, shown, target)
+        else:
+            self.log.info("writeback %s: requested %s, applied %s -> %s",
+                          name, shown, applied, target)
 
     def _wb_unit_on(self, payload: str) -> None:
         on = payload not in ("0", "false", "False", "")
@@ -356,6 +379,8 @@ class CarelPoller(DevicePoller):
             self.pub.pub_error(self.device_id, "unit_on", "w")
             return
         self._apply_plan(writes)
+        self._wb_audit("unit_on", payload, "1" if on else "0",
+                       _write_targets(writes))
         self._wb_done("unit_on", "1" if on else "0")
 
     def _apply_plan(self, writes) -> None:
@@ -389,6 +414,8 @@ class CarelPoller(DevicePoller):
             raw = ca.phys_to_raw_x10(value, lo, hi)
             self._wb_write_retry(
                 lambda: self.write_register(self.address, crst_reg, raw))
+        reg = uaria_reg if self.family == cc.FAMILY_UARIA else crst_reg
+        self._wb_audit(name, payload, _num(value), "register %d" % reg)
         self._wb_done(name, _num(value))
 
     def _wb_setpoint(self, payload: str) -> None:
@@ -403,18 +430,23 @@ class CarelPoller(DevicePoller):
         w = ca.net_enable_write(self.family, on)
         self._wb_write_retry(
             lambda: self.get_port().write_coil(self.address, w.address, bool(w.value)))
+        self._wb_audit("net_enable", payload, "1" if on else "0",
+                       "coil %d" % w.address)
         self._wb_done("net_enable", "1" if on else "0")
 
     def _wb_sys_mode(self, payload: str) -> None:
         mode = ca.clamp_sys_mode(int(float(payload)))
         self._wb_write_retry(
             lambda: self.write_register(self.address, ca.HR_SYS_MODE, mode))
+        self._wb_audit("sys_mode", payload, mode,
+                       "register %d" % ca.HR_SYS_MODE)
         self._wb_done("sys_mode", str(mode))
 
     def _wb_fan(self, name: str, payload: str, reg: int) -> None:
         value = max(ca.FAN_PCT_MIN, min(ca.FAN_PCT_MAX, float(payload)))
         raw = ca.phys_to_raw_x10(value, ca.FAN_PCT_MIN, ca.FAN_PCT_MAX)
         self._wb_write_retry(lambda: self.write_register(self.address, reg, raw))
+        self._wb_audit(name, payload, _num(value), "register %d" % reg)
         self._wb_done(name, _num(value))
 
     def _wb_fan_supply(self, payload: str) -> None:
@@ -428,10 +460,70 @@ class CarelPoller(DevicePoller):
                    min(ca.UARIA_FAN_STEP_MAX, int(float(payload))))
         self._wb_write_retry(
             lambda: self.write_register(self.address, ca.HR_UARIA_FAN_SP, step))
+        self._wb_audit("fan_step", payload, step,
+                       "register %d" % ca.HR_UARIA_FAN_SP)
         self._wb_done("fan_step", str(step))
 
 
 # --- small helpers -----------------------------------------------------------
+
+AUDIT_PAYLOAD_MAX = 32
+AUDIT_REASON_MAX = 120
+
+
+def _audit_clip(value, limit: int) -> str:
+    r"""`repr`, truncated to `limit` characters of the original.
+
+    The MQTT payload is attacker-influenced on the LAN (1883 is
+    loopback-only and 1884 needs auth, but it is still untrusted data
+    reaching a log sink): `repr` turns a newline into the two characters
+    `\n`, so it cannot forge a second journal line, and the truncation stops
+    a long payload flooding the journal. One line, bounded, always.
+    """
+    text = str(value)
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return repr(text)
+
+
+def _audit_payload(payload) -> str:
+    """The MQTT payload as it goes into a journal line."""
+    return _audit_clip(payload, AUDIT_PAYLOAD_MAX)
+
+
+def _audit_text(reason) -> str:
+    """A driver's error message as it goes into a journal line.
+
+    Clipped by the same rule and for the same reason: the message a
+    conversion or a bus error raises can quote the payload verbatim, so
+    escaping our own field alone would not make the LINE newline-free.
+    Longer limit because an error message is the thing being read.
+    """
+    return _audit_clip(reason, AUDIT_REASON_MAX)
+
+
+def _same_value(requested, applied) -> bool:
+    """True when the clamp changed nothing.
+
+    Compared NUMERICALLY where both sides are numbers: a percent write of
+    `"75"` is applied as `75.0`, and a string comparison would report every
+    such write as clamped — «applied» would then mean nothing on the one
+    line that exists to say what the clamp did.
+    """
+    try:
+        return float(str(requested).strip()) == float(str(applied).strip())
+    except (TypeError, ValueError):
+        return str(applied) == str(requested).strip()
+
+
+def _write_targets(writes) -> str:
+    """`coil 130+coil 65` — the registers/coils a write plan touched."""
+    parts = []
+    for w in writes:
+        kind = "coil" if w.kind == ca.KIND_COIL else "register"
+        parts.append("%s %d" % (kind, w.address))
+    return "+".join(parts) if parts else "nothing"
+
 
 def _s16(raw: int) -> int:
     v = int(raw) & 0xFFFF
