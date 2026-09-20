@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
+import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sa02m_alice.config import models  # noqa: E402
+from sa02m_alice.config import inventory, models  # noqa: E402
 from sa02m_alice.config.ahu_status import (  # noqa: E402
+    carel_family,
     drop_unfitted_ahu_probes,
     ensure_ahu_cloud_status,
+    prepare_catalogue_doc,
 )
 
 # Configured MQTT analogues — outdoor/room only when these names are live.
@@ -260,6 +267,220 @@ class TestEnsureAhuCloudStatus(unittest.TestCase):
         self.assertNotIn("room_temperature", _insts(by_id["carel-pcomini"]))
         self.assertNotIn("outdoor_temperature", _insts(by_id["carel-uaria"]))
         self.assertNotIn("room_temperature", _insts(by_id["carel-uaria"]))
+
+
+# -- family-true declaration (contract carel-ahu.md 6) ----------------------
+# The control key sets below are the ones `sa02m_carel.controls.controls_for`
+# gives each family: a c.pCOmini never publishes `fan_step`, a uAria never
+# publishes `fan_supply` / `sys_mode` / `room_temp`.
+_CRST_CONTROLS = {
+    "unit_on": "1", "unit_status": "1", "unit_status_text": "Работает",
+    "plant_state": "run", "supply_temp": "19.5", "return_water_temp": "44.1",
+    "room_temp": "21.7", "outdoor_temp": "0.0", "heat_valve": "37",
+    "setpoint": "21.0", "setpoint_summer": "24.0", "net_enable": "1",
+    "sys_mode": "1", "fan_supply": "80", "fan_exhaust": "80",
+    "pump": "1", "alarm": "0", "alarm_count": "0", "alarm_text": "",
+}
+_UARIA_CONTROLS = {
+    "unit_on": "1", "unit_status": "1", "unit_status_text": "Работает",
+    "plant_state": "run", "supply_temp": "19.5", "return_water_temp": "44.1",
+    "outdoor_temp": "0.0", "heat_valve": "37", "setpoint": "21.0",
+    "setpoint_summer": "24.0", "net_enable": "1", "fan_step": "7",
+    "pump": "1", "alarm": "0", "alarm_count": "0", "alarm_text": "",
+}
+_MODE_TYPE = "devices.capabilities.mode"
+
+
+class _LiveCache:
+    """A bridge live-cache directory (`/run/sa02m-modbus-mqtt/<id>.json`)."""
+
+    def __init__(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = self._tmp.name
+        self._env = mock.patch.dict(
+            os.environ, {inventory.LIVE_CACHE_DIR_ENV: self.dir}
+        )
+        self._env.start()
+
+    def close(self) -> None:
+        self._env.stop()
+        self._tmp.cleanup()
+
+    def write(self, mid: str, controls: dict, errors: dict = None) -> None:
+        payload = {
+            "ok": True, "device": mid, "source": "cache",
+            "controls": controls, "units": {}, "errors": errors or {},
+            "sensor_types": {}, "ts": 1.0,
+        }
+        with open(os.path.join(self.dir, "%s.json" % mid), "w",
+                  encoding="utf-8") as fh:
+            json.dump(payload, fh)
+
+
+def _caps(dev: dict, cap_type: str) -> list:
+    return [c for c in (dev.get("capabilities") or [])
+            if isinstance(c, dict) and c.get("type") == cap_type]
+
+
+class TestFanRowFollowsTheFamily(unittest.TestCase):
+    """A Carel device declares the fan control ITS controller has, and one
+    `mode`/`fan_speed` beside it. Driven through `prepare_catalogue_doc` and
+    the real live cache on disk, the path a catalogue build actually takes.
+
+    RED FIRST, observed on the unfixed tree (1.0.6.50, before the narrowing):
+    five of these six cases FAILED — «'fan_speed' unexpectedly found in […]»
+    on the uAria, «'fan_step' unexpectedly found» on the c.pCOmini, and
+    «0 != 1: one mode capability» on both. The sixth (unknown family) passed
+    at HEAD by construction: it is the pin that today's declaration survives
+    bit-for-bit where the family cannot be resolved.
+    """
+
+    def setUp(self):
+        self.cache = _LiveCache()
+        self.addCleanup(self.cache.close)
+
+    def _prepared(self) -> dict:
+        out = prepare_catalogue_doc(_fixture())
+        return {d["id"]: d for d in out["devices"]}
+
+    def test_uaria_declares_the_step_row_and_no_percent_row(self):
+        self.cache.write("carel-COM3-1", _CRST_CONTROLS)
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS)
+        ua = self._prepared()["carel-uaria"]
+        insts = _insts(ua)
+        self.assertIn("fan_step", insts)
+        self.assertNotIn("fan_speed", insts,
+                         "a uAria has no percent fan register to report")
+        self.assertEqual(_mqtt_for(ua, "fan_step"),
+                         "/devices/carel-COM3-2/controls/fan_step")
+
+    def test_crst_declares_the_percent_row_and_no_step_row(self):
+        self.cache.write("carel-COM3-1", _CRST_CONTROLS)
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS)
+        pco = self._prepared()["carel-pcomini"]
+        insts = _insts(pco)
+        self.assertIn("fan_speed", insts)
+        self.assertNotIn("fan_step", insts,
+                         "a c.pCOmini has no step register to report")
+        self.assertEqual(_mqtt_for(pco, "fan_speed"),
+                         "/devices/carel-COM3-1/controls/fan_supply")
+
+    def test_the_family_comes_from_the_raw_controls_not_the_live_ones(self):
+        """A transient read error on `fan_step` must not re-read a uAria as a
+        c.pCOmini: `live_controls` subtracts the errored names, so the family
+        signal is the RAW key set.
+        """
+        self.cache.write("carel-COM3-1", _CRST_CONTROLS)
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS, {"fan_step": "r"})
+        ua = self._prepared()["carel-uaria"]
+        self.assertIn("fan_step", _insts(ua))
+        self.assertNotIn("fan_speed", _insts(ua))
+
+    def test_each_family_carries_one_fan_mode_capability(self):
+        self.cache.write("carel-COM3-1", _CRST_CONTROLS)
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS)
+        by_id = self._prepared()
+        for did, mid, control in (("carel-pcomini", "carel-COM3-1", "fan_supply"),
+                                  ("carel-uaria", "carel-COM3-2", "fan_step")):
+            dev = by_id[did]
+            caps = _caps(dev, _MODE_TYPE)
+            self.assertEqual(len(caps), 1, "%s: one mode capability" % did)
+            cap = caps[0]
+            self.assertEqual(cap["mqtt"],
+                             "/devices/%s/controls/%s" % (mid, control))
+            self.assertEqual(cap["parameters"]["instance"], "fan_speed")
+            self.assertEqual([m["value"] for m in cap["parameters"]["modes"]],
+                             ["low", "medium", "high", "turbo"])
+            # This one must REACH Yandex: it is the control, not a reading.
+            self.assertNotIn("cloud_only", cap)
+            # `carel_family` is ours; discovery copies `parameters` verbatim.
+            self.assertNotIn("carel_family", cap["parameters"])
+            self.assertEqual(cap.get("carel_family"),
+                             "uaria" if control == "fan_step" else "crst")
+            out, err = models.validate_device(dev)
+            self.assertIsNone(err, err)
+            self.assertIsNotNone(out)
+
+    def test_a_second_build_appends_no_duplicate_capability(self):
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS)
+        doc = prepare_catalogue_doc(_fixture())
+        again = prepare_catalogue_doc(doc)
+        by_id = {d["id"]: d for d in again["devices"]}
+        self.assertEqual(len(_caps(by_id["carel-uaria"], _MODE_TYPE)), 1)
+        out, err = models.validate_device(by_id["carel-uaria"])
+        self.assertIsNone(err, err)
+        self.assertIsNotNone(out)
+
+    def test_an_unknown_family_declares_both_rows_and_no_mode(self):
+        """No cache file yet (the bridge is not up at boot): unknown is not
+        dead. Today's declaration is preserved bit-for-bit and only the live
+        control, the one that must never be wrong, is withheld.
+        """
+        by_id = self._prepared()
+        for did in ("carel-pcomini", "carel-uaria"):
+            insts = _insts(by_id[did])
+            self.assertIn("fan_speed", insts)
+            self.assertIn("fan_step", insts)
+            self.assertEqual(_caps(by_id[did], _MODE_TYPE), [])
+
+
+class TestCarelFamilyRule(unittest.TestCase):
+    def test_the_rule_reads_the_control_key_set(self):
+        self.assertEqual(carel_family({"fan_step", "supply_temp"}), "uaria")
+        self.assertEqual(carel_family({"fan_supply", "supply_temp"}), "crst")
+        self.assertEqual(carel_family({"sys_mode", "supply_temp"}), "crst")
+        self.assertIsNone(carel_family({"supply_temp"}))
+        self.assertIsNone(carel_family(set()))
+
+
+class TestFamilyRuleParityWithTheDevicesTree(unittest.TestCase):
+    """The «Устройства» tab and this module must not disagree about a family.
+
+    The devices API owns the rule the tab renders
+    (`sa02m_devices.stand_devices._carel_family`, published as `family`); this
+    module owns the rule the Alice document declares. The two trees deploy
+    separately and cannot import each other, so the copy is read as TEXT
+    (the `opt/sa02m-carel/tests/test_controls_pin.py` precedent).
+
+    Proven RED by drifting each side in turn: pointing the devices tree at
+    `fan_supply` FAILS the text half alone; pointing THIS tree at another
+    control FAILS seven cases across both classes. Either direction is
+    caught — which is the point of a parity pin.
+    """
+
+    SOURCE = (Path(__file__).resolve().parents[3]
+              / "opt/sa02m-devices/sa02m_devices/stand_devices.py")
+
+    def _body(self) -> str:
+        self.assertTrue(self.SOURCE.is_file(), "not found: %s" % self.SOURCE)
+        text = self.SOURCE.read_text(encoding="utf-8")
+        m = re.search(r"\ndef _carel_family\(.*?\n(.*?)(?=\ndef )", text, re.S)
+        self.assertIsNotNone(m, "stand_devices.py no longer defines _carel_family")
+        body = m.group(1)
+        self.assertIn("return", body,
+                      "the extracted body is empty - this pin reads nothing")
+        return body
+
+    def test_both_trees_discriminate_on_the_same_control(self):
+        body = self._body()
+        read = set(re.findall(r'controls\.get\("([a-z0-9_]+)"\)', body))
+        self.assertEqual(read, {"fan_step"},
+                         "the devices tree now decides the family on %s" % sorted(read))
+        self.assertIn('return "uaria"', body)
+        self.assertIn('return "crst"', body)
+        # ...and this tree answers the same for the cases both of them define.
+        self.assertEqual(carel_family({"fan_step"}), "uaria")
+        self.assertEqual(carel_family({"fan_supply"}), "crst")
+
+    def test_the_one_deliberate_divergence_is_the_unknown_case(self):
+        """The tab must name a family to draw a card at all, so the devices
+        tree falls back to `crst`. A DECLARATION is under no such pressure:
+        an unknown family here withholds the control instead of guessing it.
+        """
+        body = self._body()
+        self.assertTrue(body.rstrip().endswith('return "crst"'),
+                        "the devices tree no longer falls back to crst")
+        self.assertIsNone(carel_family(set()))
 
 
 if __name__ == "__main__":
