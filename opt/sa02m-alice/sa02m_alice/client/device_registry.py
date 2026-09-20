@@ -39,6 +39,19 @@ def _item_inverted(item: Dict[str, Any]) -> bool:
     return inverted is True
 
 
+def _item_carel_family(item: Dict[str, Any]) -> Optional[str]:
+    """Item-level Carel family (`crst` / `uaria`); absent or non-str ⇒ None.
+
+    Beside `mqtt` for the same reason `scale` and `inverted` are: discovery
+    copies `parameters` verbatim to Yandex and must not leak a local field.
+    Read here and handed to the converters, which own the mapping. It must
+    reach EVERY capability converter call site — a family passed at two of
+    the three gives a uAria that reads right and writes a percent.
+    """
+    family = item.get("carel_family")
+    return family if isinstance(family, str) and family else None
+
+
 def _mqtt_device_id(topic: str) -> Optional[str]:
     """Wiren Board `/devices/<id>/…` → `<id>`, or None when the topic is not one."""
     if not topic.startswith(_DEVICES_PREFIX):
@@ -483,6 +496,7 @@ class DeviceRegistry:
                     block = converters.capability_mqtt_to_yandex(
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
+                        family=_item_carel_family(item),
                     )
                     if block:
                         caps.append(block)
@@ -665,6 +679,7 @@ class DeviceRegistry:
                         current_raw=current,
                         parameters=local.get("parameters"),
                         inverted=_item_inverted(local),
+                        family=_item_carel_family(local),
                     )
                     if err or payload is None:
                         cap_results.append(
@@ -713,6 +728,7 @@ class DeviceRegistry:
                     block = converters.capability_mqtt_to_yandex(
                         str(item.get("type") or ""), raw, item.get("parameters"),
                         _item_inverted(item),
+                        family=_item_carel_family(item),
                     )
                     if block:
                         out.append({"id": did, "capabilities": [block], "properties": []})

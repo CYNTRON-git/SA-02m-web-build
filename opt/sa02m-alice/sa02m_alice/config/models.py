@@ -72,6 +72,37 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
     "fan_step",
 }
 
+# Mode-capability instances → the values Yandex accepts. Unlike the cloud-only
+# rows above, a mode capability REACHES the platform, and an out-of-schema
+# Discovery does not fail one device: it makes every device on the account
+# vanish. So the item is checked here, where the document is written.
+#
+# This is the platform's recommended set for `fan_speed`, verified at source
+# 2026-09-20:
+#   https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance
+#   https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance-modes
+# The per-instance lists are ADVISORY — the docs state that any combination of
+# modes may be used without restriction — so this allowlist is a guard of ours
+# against a typo, not a transcription of a schema that would refuse us.
+#
+# `auto` is in that set and we still never DECLARE it: a c.pCOmini has no auto
+# fan register, so declaring it would promise a mode we cannot honour. That is
+# a PRODUCT choice, not a schema limit. `quiet` went the other way — it was in
+# our own declared vocabulary until 1.0.6.50 and is the one value outside the
+# recommended set, so we stopped declaring it but still accept it here.
+#
+# What we DECLARE is pinned in `sa02m_carel.carel_fan.MODES`; this list is
+# deliberately wider, the same way FLOAT_INSTANCES and EVENT_INSTANCES are.
+# The residual, stated rather than waved away: being wider costs nothing in
+# what WE send, but for a HAND-EDITED document it is not free — an item we
+# accept and the platform refuses is the account-wide-vanish case named two
+# paragraphs above. The advisory-list rule is what makes that unlikely here,
+# not the width of this set. Widen deliberately.
+MODE_INSTANCES = {
+    "fan_speed": frozenset(
+        ("auto", "quiet", "low", "medium", "high", "turbo")),
+}
+
 CLOUD_ONLY_EVENT_INSTANCES = {
     "plant_state": frozenset(("run", "stop", "alarm")),
     "unit_status": None,      # free text from the PLC status table
@@ -301,6 +332,30 @@ def _validate_mqtt_item(item: Dict[str, Any], kind: str) -> Tuple[Optional[Dict[
                 return None, "invalid range %s" % key
         if float(rng["min"]) >= float(rng["max"]) or float(rng["precision"]) <= 0:
             return None, "invalid range bounds"
+    elif t == "devices.capabilities.mode":
+        # Shaped like the range branch above, and for the same reason: the
+        # parameters reach Yandex verbatim, so a mode with no values is a
+        # control the app cannot draw and the platform refuses.
+        params = item.get("parameters")
+        if not isinstance(params, dict):
+            return None, "mode capability requires parameters"
+        instance = str(params.get("instance") or "")
+        allowed = MODE_INSTANCES.get(instance)
+        if allowed is None:
+            return None, "invalid mode capability instance"
+        modes = params.get("modes")
+        if not isinstance(modes, list) or not modes:
+            return None, "mode capability requires a non-empty parameters.modes"
+        seen_modes = set()
+        for mode in modes:
+            if not isinstance(mode, dict):
+                return None, "invalid mode entry"
+            value = mode.get("value")
+            if not isinstance(value, str) or value not in allowed:
+                return None, "invalid mode value"
+            if value in seen_modes:
+                return None, "duplicate mode value: %s" % value
+            seen_modes.add(value)
     err = _validate_inverted(item, kind)
     if err:
         return None, err
