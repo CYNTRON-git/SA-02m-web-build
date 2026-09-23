@@ -1779,10 +1779,19 @@ health_check() {
             # A unit whose own Condition*= says no (the 1.135 stand drop-in sets
             # ConditionPathExists=!…stand_web_api.py) is not started by systemd
             # on any restart either — the board's declared configuration, not a
-            # regression. Same never-widen skip.
+            # regression. Same never-widen skip. ConditionResult alone is not
+            # enough: systemd reports `no` for a unit whose start was never
+            # attempted this boot too (the result is false until a start
+            # evaluates the conditions), and such an enabled required unit IS a
+            # regression — so the skip also requires the condition to have been
+            # evaluated (ConditionTimestampMonotonic != 0).
+            local _cts
             _cond=$(systemctl show -p ConditionResult --value "$u" 2>/dev/null || true)
             _cond=${_cond%%[[:space:]]*}
-            if [ "$_cond" = no ]; then
+            _cts=$(systemctl show -p ConditionTimestampMonotonic --value "$u" 2>/dev/null || true)
+            _cts=${_cts%%[[:space:]]*}
+            case "$_cts" in ''|*[!0-9]*) _cts=0 ;; esac
+            if [ "$_cond" = no ] && [ "$_cts" -ne 0 ]; then
                 log "health: $u not started by its own Condition (operator-configured) — not required active"
                 continue
             fi
@@ -2092,9 +2101,12 @@ cmd_recover() {
 
 # Hand a complete-but-unverified tree to sa02m-update-verify.service (static;
 # After=nginx fcgiwrap sa02m-devices-api). Fallback on an older tree without
-# the unit file: a transient unit with the same ordering. When neither can be
-# scheduled the transaction is LEFT at verifying — the next boot retries and
-# the panel reports it stale (lib_web_update.sh) — never rolled back.
+# the unit file: a transient unit with the same ordering — enqueued with
+# --no-block, because its start job waits for nginx, whose start job waits for
+# THIS unit (recover is Before=nginx): a blocking systemd-run could only time
+# out here. When neither can be scheduled the transaction is LEFT at verifying
+# — the next boot retries and the panel reports it stale (lib_web_update.sh)
+# — never rolled back.
 schedule_boot_verify() {
     local txn=$1 unit="sa02m-update-verify-${txn:0:8}"
     txn_patch "stage=verifying" "progress_pct=85" "boot_verify_pending=true"
@@ -2104,7 +2116,7 @@ schedule_boot_verify() {
     fi
     log "recover: sa02m-update-verify.service unavailable - trying a transient unit $unit"
     if command -v systemd-run >/dev/null 2>&1 \
-        && timeout 30 systemd-run --unit="$unit" --collect --quiet \
+        && timeout 30 systemd-run --unit="$unit" --collect --quiet --no-block \
             -p After=nginx.service -p After=fcgiwrap.service -p After=sa02m-devices-api.service \
             --setenv=SA02M_UPDATE_STATEDIR="$STATEDIR" "$RUNNER_BIN_DST" verify; then
         log "recover: transient unit $unit scheduled"

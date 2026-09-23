@@ -75,13 +75,16 @@ apply, который этот запуск открывает (раннер, re
 **Тест живости** (одно место — `cgi-bin/lib_web_update.sh`
 `web_upd_runner_alive`, читается без привилегий; root-копия того же теста — в
 `etc/sa02m-web-update-apply.sh`, потому что root-хелпер не должен source'ить
-файл, который может писать `www-data`): pid из
-`/var/lib/sa02m-update/update.lock` существует **и** его `cmdline` содержит
-`sa02m-update-runner` или `/sa02m-update/runner/` (переиспользованный pid не
-считается), **или** жив pid из легаси-лока хелпера
-(`/var/lib/sa02m-web-build/update.lock` — фаза клонирования до того, как
-раннер взял свой лок), **или** активен `sa02m-update.service` /
-`sa02m-update-verify.service`, **или** запущен transient-юнит
+файл, который может писать `www-data`). Основной детектор — **pid лока**:
+каждая точка входа раннера берёт лок первой, и pid из
+`/var/lib/sa02m-update/update.lock` считается живым, когда процесс существует
+**и** его `cmdline` содержит `sa02m-update-runner` или `/sa02m-update/runner/`
+(переиспользованный pid не считается). Дополнительно — на моменты до лока:
+жив pid из легаси-лока хелпера (`/var/lib/sa02m-web-build/update.lock` — фаза
+клонирования), **или** `sa02m-update.service` / `sa02m-update-verify.service`
+имеет `ActiveState` ∈ `active|activating|reloading` (оба — `Type=oneshot`, у
+которых `activating` и есть состояние «выполняется»; `is-active` для них
+всегда отвечал бы «нет»), **или** запущен transient-юнит
 `sa02m-update-apply-*.service`. Нет `systemctl` — эта половина `false`.
 
 При `stale = true`: `status`/`legacy.status` = `"error"`; `error_code` =
@@ -103,7 +106,7 @@ update <N>s ago) — reboot the board; verification completes at boot`. CGI
 | Этап | Кто выполняет | Что гарантируется | Чем проверено |
 |---|---|---|---|
 | Запуск из панели | `web_update_apply.cgi` → `sudo -n sa02m-web-update-apply` из воркера fcgiwrap → `exec` раннера | **G1.** Раннер, запущенный из панели, переживает каждый перезапуск служб, который делает его же health-gate: в самом начале `cmd_apply` он читает `/proc/self/cgroup` и, оказавшись в `fcgiwrap.service` (`KillMode=mixed` — `restart fcgiwrap` убивает всю cgroup SIGKILL'ом), перезапускает себя transient-юнитом `sa02m-update-apply-<txn8>` (`systemd-run`, `KillMode=process`), передаёт лок и выходит. Для доставляющего обновления это происходит в НОВОМ раннере сразу после `exec` старого — до первого записанного файла. Офлайн-путь и запуск по SSH не затрагиваются. Отказ `systemd-run` — «продолжить на месте» (в журнале), не отказ от обновления | `update-cgroup-escape`; на стенде — `systemctl status 'sa02m-update-apply-*'` в состоянии `running` во время `health: restarting fcgiwrap...` |
-| Health-gate после deploy | раннер, `health_check` | **G3.** Требуемый юнит считается живым после **двух подряд** `active` в окне `SA02M_UPDATE_HEALTH_SETTLE_SEC` = 30 с (шаг 2 с) — `activating` ждёт, crash-loop (`activating`↔`active`) не проходит на одном сэмпле; `masked`/`disabled`/`ConditionResult=no` — не требуется; при отказе в журнал идут последнее состояние и выдержка `systemctl status`, причина попадает в `error_message` (`E_HEALTH`) | `update-conditional-restart` run 6, `health-gate-operator-disabled` |
+| Health-gate после deploy | раннер, `health_check` | **G3.** Требуемый юнит считается живым после **двух подряд** `active` в окне `SA02M_UPDATE_HEALTH_SETTLE_SEC` = 30 с (шаг 2 с) — `activating` ждёт, crash-loop (`activating`↔`active`) не проходит на одном сэмпле; `masked`/`disabled`, а также `ConditionResult=no` **при `ConditionTimestampMonotonic != 0`** (условие реально проверялось в эту загрузку; для юнита, старт которого не пытались выполнить, systemd тоже отвечает `no`, и такой enabled-юнит — регрессия, а не выбор оператора) — не требуется; при отказе в журнал идут последнее состояние и выдержка `systemctl status`, причина попадает в `error_message` (`E_HEALTH`) | `update-conditional-restart` run 6, `health-gate-operator-disabled` |
 | Recover при загрузке | `sa02m-update-recover.service` (`Before=nginx fcgiwrap`) | **G2.** Целое дерево (`files_done == files_total`, `VERSION` = `target_version`) на `verifying`/`committing` **никогда не откатывается по причине порядка загрузки**: recover не перезапускает и не проверяет ничего сам — ставит `boot_verify_pending=true` и запускает `sa02m-update-verify.service` (`--no-block`; fallback — transient-юнит с теми же `After=`); если запустить некого — транзакция остаётся на `verifying` (следующая загрузка повторит, панель покажет `stale`). Неполное дерево откатывается как раньше (`E_POWER` + причина); откат из recover не трогает `nginx`/`fcgiwrap` — systemd поднимет их сам на восстановленном дереве | `update-recover-boot` R1–R3, R5, U1 |
 | Проверка после загрузки | `sa02m-update-verify.service` (`After=recover nginx fcgiwrap sa02m-devices-api`, static — без `[Install]`) → `runner verify` | Только `enable[]` + tmpfiles + health-gate, **без** restart-наборов (всё уже стартовало с задеплоенного дерева). Успех → `done`; отказ → откат с `E_HEALTH` и причиной. Идемпотентно: терминальная стадия — no-op, потеря питания посреди verify — повтор при следующей загрузке | `update-recover-boot` R4 |
 | Статус для панели | `web_update_apply.cgi` GET | **G4.** Транзакция без живого раннера сообщается как `stale` не позже 120 с после последнего `updated_at` (поля выше); панель останавливает опрос и называет следующий шаг | `web-update-apply-guard` секция G, `test-web-update-semver` раздел F |
@@ -111,13 +114,10 @@ update <N>s ago) — reboot the board; verification completes at boot`. CGI
 | «Перезагрузка» в панели | `reboot.cgi` | Живой раннер на `applying|verifying|committing|rolling_back` → `{"ok":false,"error_code":"E_UPDATE_RUNNING","error_message":"update in progress (stage=…)"}`, тост «Идёт обновление — перезагрузка отложена»; **`stale`-транзакция остаётся перезагружаемой** — перезагрузка и есть её путь восстановления. CSRF по-прежнему проверяется раньше | `web-update-apply-guard` секция R, `cgi-csrf-policy` |
 | Второе «Применить» | `sa02m-web-update-apply` | Шаг 5 выше: живая транзакция не перезаписывается | `web-update-launcher-guard` |
 
-Что остаётся вне гарантий (названо, не скрыто): у доставляющего обновления
-(старый раннер 1.0.6.49 на плате) окно clone → prepare → backup (≈1–2 мин)
-по-прежнему идёт внутри cgroup fcgiwrap; `systemctl restart fcgiwrap` в это
-окно (кнопка «Перезапуск служб», второе OTA) убивает старый раннер на
-`validating`/`backing_up` → recover при загрузке чисто откатывает → повтор.
-Что из 1.0.6.52 действует уже в доставляющем обновлении — таблица в
-`docs/deployment.md` «Пути деплоя».
+Что остаётся вне гарантий у доставляющего обновления (старый раннер на плате
+— окно до выхода из cgroup) и что из 1.0.6.52 действует уже в нём — одно
+место: `docs/deployment.md` «Пути деплоя», «Что из 1.0.6.52 действует уже в
+доставляющем OTA».
 
 Схема `transaction.json` **новых стадий не получает** (валидатор
 `opt/sa02m-update/lib/transaction.py` отвергает неизвестные стадии и пропускает

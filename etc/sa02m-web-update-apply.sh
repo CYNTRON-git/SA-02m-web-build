@@ -191,8 +191,12 @@ update_runner_alive() {
         fi
     fi
     if command -v systemctl >/dev/null 2>&1; then
-        timeout 5 systemctl is-active --quiet sa02m-update.service 2>/dev/null && return 0
-        timeout 5 systemctl is-active --quiet sa02m-update-verify.service 2>/dev/null && return 0
+        # Both oneshot: `activating` is their running state (is-active would say rc 3).
+        local u st
+        for u in sa02m-update.service sa02m-update-verify.service; do
+            st=$(timeout 5 systemctl show -p ActiveState --value "$u" 2>/dev/null) || st=""
+            case "${st%%[[:space:]]*}" in active|activating|reloading) return 0 ;; esac
+        done
         units=$(timeout 5 systemctl list-units --plain --no-legend 'sa02m-update-apply-*.service' 2>/dev/null) || units=""
         case "$units" in *" running"*) return 0 ;; esac
     fi

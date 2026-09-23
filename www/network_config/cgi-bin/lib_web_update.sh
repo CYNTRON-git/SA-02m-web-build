@@ -11,16 +11,19 @@
 # polled «Проверка сервисов…» for 40 minutes with no error at all.
 #
 # Everything here is READ-ONLY and unprivileged (www-data): the runner's lock
-# pid + its /proc cmdline, and `systemctl is-active` / `list-units`. The CGI
-# never repairs a transaction — that is recover/verify at boot.
+# pid + its /proc cmdline, and `systemctl show` / `list-units`. The CGI never
+# repairs a transaction — that is recover/verify at boot.
 #
-# Alive =
+# Alive = (the lock pid is the primary detector — every runner entry point
+# takes the lock first; the unit reads are the belt for the moments before it)
 #   the pid in $STATEDIR/update.lock exists AND its cmdline names the runner
 #   (`sa02m-update-runner` — the installed binary or the self-copy under
 #   /var/lib/sa02m-update/runner/<txn>/runner; a reused pid never matches),
 #   OR the legacy launcher (sa02m-web-update-apply — the clone/handoff phase,
 #   before the runner has taken its own lock) is alive on ITS lock pid,
-#   OR sa02m-update.service / sa02m-update-verify.service is active,
+#   OR sa02m-update.service / sa02m-update-verify.service has ActiveState
+#   active|activating|reloading (both are oneshot: `activating` IS their
+#   running state, which is why `is-active --quiet` cannot be used here),
 #   OR a transient sa02m-update-apply-<txn8>.service (the cgroup escape,
 #   etc/sa02m-update-runner.sh escape_foreign_cgroup) is running.
 # `systemctl` absent ⇒ that half is false. Every systemctl call is bounded.
@@ -57,8 +60,14 @@ web_upd_runner_alive() {
   _web_upd_pid_cmdline_matches "$WEB_UPD_STATEDIR/update.lock" '*sa02m-update-runner*' '*/sa02m-update/runner/*' && return 0
   _web_upd_pid_cmdline_matches "$WEB_UPD_LEGACY_STATEDIR/update.lock" '*sa02m-web-update-apply*' && return 0
   if command -v systemctl >/dev/null 2>&1; then
-    timeout 5 systemctl is-active --quiet sa02m-update.service 2>/dev/null && return 0
-    timeout 5 systemctl is-active --quiet sa02m-update-verify.service 2>/dev/null && return 0
+    # Both units are Type=oneshot: ActiveState is `activating` for the whole run
+    # of their ExecStart, so `is-active --quiet` (rc 3) would never fire for
+    # them — read the state and accept the running forms.
+    local u st
+    for u in sa02m-update.service sa02m-update-verify.service; do
+      st=$(timeout 5 systemctl show -p ActiveState --value "$u" 2>/dev/null) || st=""
+      case "${st%%[[:space:]]*}" in active|activating|reloading) return 0 ;; esac
+    done
     # Capture, then match in-shell (quality-gate-rigor.md shape f).
     local units
     units=$(timeout 5 systemctl list-units --plain --no-legend 'sa02m-update-apply-*.service' 2>/dev/null) || units=""
