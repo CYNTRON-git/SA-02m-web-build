@@ -31,6 +31,18 @@
 # probe prints nothing to stdout (exit code only), and every body read below is
 # stripped of \r (.ai-dev/notes/quality-gate-environment.md).
 #
+# Section G (1.0.6.52, field incident: a runner SIGKILLed at the health gate left
+# the panel polling «Проверка сервисов…» 85 % forever): the GET status answer
+# carries `runner_alive` / `stale` and turns a running-stage transaction whose
+# runner is gone into status «error» + E_RUNNER_LOST after WEB_UPD_STALE_AFTER_S
+# (120 s) — contract: docs/contracts/web-update.md «GET — состояние». The state
+# dir is SA02M_UPDATE_STATEDIR (the runner's own seam); liveness is the pid in
+# $STATEDIR/update.lock (alive AND its cmdline names the runner) or an active
+# sa02m-update / sa02m-update-verify / sa02m-update-apply-* unit (systemctl
+# shimmed here: everything inactive). The live-runner fixture is a real process
+# whose argv[0] is `sa02m-update-runner` (exec -a); the dead one is pid 2^22-1,
+# above every pid_max this project meets. RED recorded in the section header.
+#
 # Run: bash scripts/dev/test-web-update-apply-guard.sh
 #      WEB_UPDATE_APPLY_CGI=<path> to drive another copy (the RED run).
 set -uo pipefail
@@ -162,6 +174,88 @@ rm -f "$T/sudo.calls"
 body=$(run_cgi "0000000000000000000000000000000000000000000000000000000000000000" "$CSRF")
 if printf '%s' "$body" | grep -q '"error":"unauthorized"' && ! sudo_called; then ok "11 unknown session → unauthorized, no launch"
 else bad "11 unknown session → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
+
+# ═══ G. GET status: a dead runner is reported as stale (1.0.6.52) ═══════════
+# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 8 FAILED (G1–G5 incl. both runner_alive reads) —
+# the CGI reads a hard-coded /var/lib/sa02m-update (absent on the host), so the
+# sandbox transaction is invisible (status «idle»), and it prints no
+# runner_alive / stale field at all; on the board the same code answered
+# «running» for a transaction whose runner had been SIGKILLed 40 min earlier.
+echo
+echo "── G. GET status: runner liveness + stale transaction ──"
+UPD="$T/upd"; mkdir -p "$UPD"
+export SA02M_UPDATE_STATEDIR="$UPD"
+# systemctl shim: no update unit is active, no transient apply unit is loaded.
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  list-units) exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+# A live runner: a process whose argv[0] names the runner (what the lock pid's
+# /proc/<pid>/cmdline shows on the board). Killed on exit.
+bash -c 'exec -a sa02m-update-runner sleep 30' &
+LIVE_PID=$!
+# A live process that is NOT the runner: a reused pid must not read as alive.
+sleep 30 &
+OTHER_PID=$!
+trap 'kill "$LIVE_PID" "$OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+sleep 0.3
+DEAD_PID=4194303   # 2^22-1: above every pid_max this project meets
+
+run_get() {
+  REQUEST_METHOD=GET QUERY_STRING='' HTTP_COOKIE="session_token=$TOK" \
+    bash "$CGI" </dev/null 2>/dev/null | tr -d '\r'
+}
+# json_field BODY KEY → the value as python prints it (True/False/None/str).
+json_field() {
+  printf '%s' "${1##*$'\n\n'}" | python3 -c 'import json,sys
+d=json.load(sys.stdin); v=d.get(sys.argv[1], "<absent>"); print(v)' "$2" 2>/dev/null
+}
+write_txn() {  # $1=stage $2=updated_at
+  printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","operation":"update","source":"github","stage":"%s","progress_pct":85,"files_total":3,"files_done":3,"result":"pending","error_code":null,"error_message":null,"target_version":"9.9.9.9","updated_at":"%s"}\n' "$1" "$2" > "$UPD/transaction.json"
+}
+expect_get() {  # label stale status code
+  local label="$1" want_stale="$2" want_status="$3" want_code="$4" body stale status code
+  body=$(run_get)
+  stale=$(json_field "$body" stale); status=$(json_field "$body" status); code=$(json_field "$body" error_code)
+  if [ "$stale" = "$want_stale" ] && [ "$status" = "$want_status" ] && [ "$code" = "$want_code" ]; then
+    ok "$label → stale=$stale status=$status error_code=$code"
+  else
+    bad "$label → stale=$stale status=$status error_code=$code (want stale=$want_stale status=$want_status code=$want_code) — body: ${body##*$'\n\n'}"
+  fi
+}
+OLD_TS=$(date -u -d '-600 seconds' +%Y-%m-%dT%H:%M:%SZ)
+
+# G1 verifying, last update 600 s ago, lock pid dead → stale, error, E_RUNNER_LOST
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G1 verifying, 600 s old, lock pid dead" True error E_RUNNER_LOST
+body=$(run_get)
+[ "$(json_field "$body" runner_alive)" = "False" ] && ok "G1 runner_alive=false reported" \
+  || bad "G1 runner_alive: $(json_field "$body" runner_alive) (want False)"
+# G2 same transaction, lock pid = a live runner → not stale, running
+printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+expect_get "G2 verifying, 600 s old, lock pid alive (runner cmdline)" False running None
+body=$(run_get)
+[ "$(json_field "$body" runner_alive)" = "True" ] && ok "G2 runner_alive=true reported" \
+  || bad "G2 runner_alive: $(json_field "$body" runner_alive) (want True)"
+# G2b lock pid alive but its cmdline is not the runner (pid reuse) → stale
+printf '%s\n' "$OTHER_PID" > "$UPD/update.lock"
+expect_get "G2b verifying, lock pid alive but not a runner (pid reuse)" True error E_RUNNER_LOST
+# G3 dead pid but updated_at = now → inside the grace window, not stale
+write_txn verifying "$(now_utc)"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G3 verifying, updated just now, lock pid dead (grace)" False running None
+# G4 terminal stage → never stale, status done
+write_txn done "$OLD_TS"
+expect_get "G4 stage=done, 600 s old, lock pid dead" False done None
+# G5 a transaction that already carries a code keeps it when it goes stale
+printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","stage":"rolling_back","progress_pct":90,"result":"pending","error_code":"E_HEALTH","error_message":"unit not active: nginx (inactive)","updated_at":"%s"}\n' "$OLD_TS" > "$UPD/transaction.json"
+expect_get "G5 rolling_back, 600 s old, dead pid, own code" True error E_HEALTH
+rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
+unset SA02M_UPDATE_STATEDIR
 
 echo
 if [ "$fails" -eq 0 ]; then
