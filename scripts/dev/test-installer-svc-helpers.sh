@@ -46,7 +46,11 @@ bad() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
 # ── Shims (PATH-first) ─────────────────────────────────────────────────────
 # systemctl: records "$*" to CALLS and answers queries from $ST/<unit>.<key>.
 # State-file conventions: <u>.enabled holds the is-enabled word (missing file =
-# unit unknown: rc 1, no output; the literal `timeout` = exit 124); <u>.active
+# unit unknown: rc 1, no output — the systemd <250 shape; the literal
+# `not-found` = unit unknown in the systemd >=250 shape: stdout `not-found`,
+# exit 4, measured on bench 1.135 (systemd 255) on 2026-09-23 — `cat` of it
+# exits 1 and enable/start/restart of it fail, as the real manager does; the
+# literal `timeout` = exit 124); <u>.active
 # holds the is-active word (missing = rc 3 "inactive"? NO — missing means the
 # shim answers nothing rc 3; tests always seed it; the literal `absent` = the
 # manager does not know this unit — real systemctl prints "inactive" on stdout
@@ -70,6 +74,7 @@ case "$cmd" in
         v=$(cat "$f")
         [ "$v" = timeout ] && exit 124
         printf '%s\n' "$v"
+        [ "$v" = not-found ] && exit 4
         [ "$v" = enabled ] && exit 0 || exit 1
         ;;
     is-active)
@@ -101,9 +106,18 @@ case "$cmd" in
         ;;
     cat)
         u=$1
-        [ -f "$ST/$u.enabled" ] && exit 0 || exit 1
+        [ -f "$ST/$u.enabled" ] || exit 1
+        [ "$(cat "$ST/$u.enabled")" = not-found ] && exit 1
+        exit 0
         ;;
-    enable|disable|start|stop|restart|unmask|daemon-reload)
+    enable|start|restart)
+        # the manager refuses a unit it does not know (systemd >=250 shape)
+        for u in "$@"; do
+            [ -f "$ST/$u.enabled" ] && [ "$(cat "$ST/$u.enabled")" = not-found ] && exit 1
+        done
+        exit 0
+        ;;
+    disable|stop|unmask|daemon-reload)
         exit 0
         ;;
     *)
@@ -883,6 +897,59 @@ else
     bad "14d infra broken fragment: verbs='$(verbs infra-broken.service)' log: $LOGCAP"
 fi
 rm -f "$T/units/infra-broken.service"
+
+echo "── 15. an absent unit in the systemd >=250 shape (is-enabled: stdout not-found, rc 4) ──"
+# Bench 1.135 (systemd 255, 2026-09-23): `systemctl is-enabled <unknown>` prints
+# `not-found` and exits 4, where systemd <250 printed nothing and exited 1. The
+# absent witness read only the old shape, so capture recorded `not-found` (an
+# EXISTING unit — a first install of an app unit left disabled and stopped) and
+# the infra apply tried to enable a unit that is not there and WARNed «не
+# удалось включить автозапуск» on every refresh (sa02m-userspace-watchdog on a
+# refresh-born board). Case 4e keeps the old shape covered.
+
+# 15a. capture: not-found/rc 4 + manager alive + no file on disk ⇒ absent
+reset_case
+seed svc-nf.service not-found absent
+sa02m_svc_capture svc-nf.service
+if [ "${SA02M_SVC_EN[svc-nf.service]-}" = absent ]; then
+    ok "15a capture reads is-enabled 'not-found' rc 4 as en=absent"
+else
+    bad "15a capture: en='${SA02M_SVC_EN[svc-nf.service]-unset}' (expected absent)"
+fi
+
+# 15b. infra apply of a not-found unit ⇒ nothing, LAST_RESULT=absent, no WARN
+reset_case
+seed infra-nf.service not-found absent
+sa02m_svc_apply infra-nf.service infra start
+if [ -z "$(verbs infra-nf.service)" ] && [ "$SA02M_SVC_LAST_RESULT" = absent ] \
+   && ! has_log "[WARN]"; then
+    ok "15b not-found infra unit: nothing asserted, LAST_RESULT=absent, no WARN"
+else
+    bad "15b not-found infra unit: verbs='$(verbs infra-nf.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT log: $LOGCAP"
+fi
+
+# 15c. app first install: captured not-found, the module lays the unit ⇒ enable + start
+reset_case
+seed svc-nf2.service not-found absent
+sa02m_svc_capture svc-nf2.service
+seed svc-nf2.service disabled inactive     # the module installed the fragment + daemon-reload
+sa02m_svc_apply svc-nf2.service app on
+if [ "$(verbs svc-nf2.service)" = "enable start" ] && [ "$SA02M_SVC_LAST_RESULT" = started ] \
+   && has_log "первая установка — включён и запущен"; then
+    ok "15c not-found app unit: first-install branch — enable + start, LAST_RESULT=started"
+else
+    bad "15c not-found app unit: verbs='$(verbs svc-nf2.service)' LAST_RESULT=$SA02M_SVC_LAST_RESULT log: $LOGCAP"
+fi
+
+# 15d. not-found but the manager did not answer is-active ⇒ timeout, never absent
+reset_case
+seed svc-nf3.service not-found timeout
+sa02m_svc_capture svc-nf3.service
+if [ "${SA02M_SVC_EN[svc-nf3.service]-}" = timeout ]; then
+    ok "15d not-found with a silent manager is en=timeout (a wedged D-Bus is never a first install)"
+else
+    bad "15d not-found + is-active timeout: en='${SA02M_SVC_EN[svc-nf3.service]-unset}' (expected timeout)"
+fi
 
 echo ""
 if [ "$fails" -eq 0 ]; then
