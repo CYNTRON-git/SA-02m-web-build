@@ -1951,12 +1951,40 @@ function applyWebUpdate() {
       } else if (j.status === 'running' || j.status === 'idle' || _webUpdIsBusy(j)) {
         _webUpdStartPolling();
       } else {
-        _webUpdFinish(j.status || j.stage || 'error', j.log || '');
+        _webUpdConfirmError(j.status || j.stage || 'error', j.log || '');
       }
     })
     .catch(function () {
-      _webUpdFinish('error', 'Нет ответа от сервера');
+      _webUpdConfirmError('error', 'Нет ответа от сервера');
     });
+}
+
+// A code-less «error» from the launch POST, or no answer at all (timeout /
+// network), is NOT believed on the spot: one status GET after a short pause
+// decides. A fast clone lets the launcher hand off to the runner inside the
+// CGI's 1 s window with nothing for it to point at (bench 2026-09-23 —
+// «Ошибка обновления» painted over a good OTA, a reload showed the progress),
+// and a POST that timed out may still have launched. Busy → paint the answer
+// and hand over to the poll loop; anything else → the error the answer named.
+// Refusals with a code (webUpdApplyRefusal) never come here. Contract:
+// docs/contracts/web-update.md «POST — ответ после запуска».
+var WEB_UPD_ERROR_RECHECK_MS = 1500;
+function _webUpdConfirmError(status, log) {
+  setTimeout(function () {
+    fetchWithTimeout('cgi-bin/web_update_apply.cgi', {
+      credentials: 'same-origin', cache: 'no-store'
+    }, 8000)
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j2) {
+        if (j2 && _webUpdIsBusy(j2)) {
+          _webUpdApplyTxnUI(j2);
+          _webUpdStartPolling();
+          return;
+        }
+        _webUpdFinish(status, log);
+      })
+      .catch(function () { _webUpdFinish(status, log); });
+  }, WEB_UPD_ERROR_RECHECK_MS);
 }
 
 // A refused launch is not a failed update: no error toast, the CGI's own line
