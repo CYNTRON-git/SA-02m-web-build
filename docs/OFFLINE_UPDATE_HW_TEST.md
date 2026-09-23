@@ -175,7 +175,12 @@ sa02m-update-verify -b` после nginx: `verify: post-boot verification`, дл
 after boot`; `transaction.json` `stage=done`; watchdog `t 15000000` (fallback
 политики — hold брал код 1.0.6.49, поля нет); imaging-lock снят; `sa02m-flasher`
 и `net-watchdog` active; VERSION 1.0.6.52. Вариант без перезагрузки —
-`scripts/sa02m-update-remedy.sh` вместо «Перезагрузки». Сам выход из cgroup
+`scripts/sa02m-update-remedy.sh` вместо «Перезагрузки»: ожидается `runner
+supports reclaim`, в `update.log` — `recover: stage=verifying … context=runtime`,
+`health: restarting fcgiwrap...` и `restarted after apply: …` (наборы
+перезапусков, до которых старый раннер не дошёл), `sa02m-update-verify.service
+scheduled`, затем журнал verify как выше; это первый прогон ветки `reclaim` на
+плате. Сам выход из cgroup
 (`runner cgroup: …`, `re-launching as transient unit`, `systemctl status
 'sa02m-update-apply-*'` = running сквозь `restarting fcgiwrap...`,
 `restarted after apply: …`, `DONE: update applied successfully` без

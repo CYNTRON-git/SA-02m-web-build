@@ -9,13 +9,19 @@
 #   /run/sa02m-imaging.lock   present
 #   RuntimeWatchdogUSec   0   — the HARDWARE WATCHDOG IS OFF
 #   net-watchdog, sa02m-flasher   stopped
-# with no runner process alive. Verified on 1.135 in exactly that state: the
-# rollback finishes in ~24 s at runtime (no boot ordering), stage=rolled_back,
-# lock gone, watchdog 15000000, net-watchdog/flasher active, no failed units.
+# with no runner process alive. Verified on 1.135 in exactly that state — the
+# OLD-runner branch (step 1b, `recover` at runtime): the rollback finished in
+# ~24 s, stage=rolled_back, lock gone, watchdog 15000000, net-watchdog/flasher
+# active, no failed units. The `reclaim` branch (step 1a, runner ≥ 1.0.6.52)
+# has NOT run on a board yet — it is covered by the harness only
+# (scripts/dev/test-update-recover-boot.sh R8, M) until the next bench run.
 #
 # Runtime state ONLY — no repo-owned file is edited (invariant 4). Safe to
 # re-run: every step is idempotent. REFUSES to do anything while an update
-# runner is alive (exit 2) — a live runner owns the lock and the watchdog hold.
+# runner is alive (exit 2) — a live runner owns the lock and the watchdog hold;
+# and STOPS (exit 2) when `reclaim` itself refuses (rc 3: a runner took the
+# lock after the pgrep) — never arms the watchdog or starts the flasher under
+# a live runner.
 #
 # What it runs, in order:
 #   1. runner ≥ 1.0.6.52 → `sa02m-update-runner reclaim` (the same recovery as
@@ -53,19 +59,24 @@ wd() { busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1 or
 act() { systemctl is-active "$1" 2>/dev/null || true; }
 lock_state() { if [ -f "$LOCK" ]; then echo yes; else echo no; fi; }
 runner_alive() { pgrep -f '/sa02m-update/runner/|sa02m-update-runner (apply|recover|verify|reclaim)' >/dev/null 2>&1; }
-# Policy → µs (RuntimeWatchdogSec=15s → 15000000); empty when unparsable.
+# Policy → µs (RuntimeWatchdogSec=15s → 15000000); rc 1 when unparsable.
+# A deliberate second copy of etc/sa02m-update-runner.sh runtime_wdt_policy_usec
+# (the one home of the parsing): this script must set the watchdog on a board
+# whose INSTALLED runner is older than that function. Keep the unit table in
+# step with it.
 policy_usec() {
     local raw num unit
     [ -r "$POLICY" ] || return 1
     raw=$(grep -E '^[[:space:]]*RuntimeWatchdogSec=' "$POLICY" | tail -n1) || true
     raw=${raw#*=}; raw=$(printf '%s' "$raw" | tr -d '[:space:]\r')
+    [ -n "$raw" ] || return 1
     num=${raw%%[!0-9]*}; unit=${raw#"$num"}
     [ -n "$num" ] || return 1
     case "$unit" in
-        ''|s|sec) echo $((num * 1000000)) ;;
-        ms|msec)  echo $((num * 1000)) ;;
-        us|usec)  echo "$num" ;;
-        m|min)    echo $((num * 60000000)) ;;
+        ''|s|sec|seconds) echo $((num * 1000000)) ;;
+        ms|msec)          echo $((num * 1000)) ;;
+        us|usec)          echo "$num" ;;
+        m|min|minutes)    echo $((num * 60000000)) ;;
         *) return 1 ;;
     esac
 }
@@ -80,7 +91,11 @@ fi
 systemctl reset-failed sa02m-update-recover.service 2>/dev/null || true
 if grep -q '^cmd_reclaim() {' "$R" 2>/dev/null; then
     echo "runner supports reclaim — finishing the abandoned transaction at runtime..."
-    "$R" reclaim; echo "reclaim rc=$?"
+    "$R" reclaim; rc=$?; echo "reclaim rc=$rc"
+    if [ "$rc" -eq 3 ]; then
+        echo "reclaim REFUSED: an update runner holds the lock — stopping here (nothing else done)"
+        exit 2
+    fi
 else
     case "$(st)" in
         rolling_back*|verifying*|committing*|applying*)

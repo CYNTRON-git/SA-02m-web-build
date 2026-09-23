@@ -401,21 +401,26 @@ install_imaging_lock() {
     txn_patch "imaging_lock=true" "runtime_wdt_prev_usec=${RUNTIME_WDT_PREV:-}" || true
 }
 
-# Put the held-off value back; prints the outcome for the caller's log line.
-# Shared by cleanup_imaging_lock and the EXIT trap (which keeps the lock file
-# at a rolling stage but must never leave the hardware watchdog off).
+# Put the held-off value back; the outcome text lands in WDT_RESTORE_MSG (not
+# printed: a `$(…)` caller would run this in a subshell and the clearing of
+# RUNTIME_WDT_PREV would never reach it). Shared by cleanup_imaging_lock and
+# the EXIT trap (which keeps the lock file at a rolling stage but must never
+# leave the hardware watchdog off). Clears RUNTIME_WDT_PREV once restored so a
+# later cleanup on the same process does not restore twice.
+WDT_RESTORE_MSG=""
 restore_runtime_wdt() {
     local now=""
     if [ -z "$RUNTIME_WDT_PREV" ]; then
-        printf 'не менялся\n'
+        WDT_RESTORE_MSG='не менялся'
         return 0
     fi
     if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
-        printf 'restored to %sus\n' "$now"
+        WDT_RESTORE_MSG="restored to ${now}us"
     else
-        printf 'RESTORE FAILED: wanted %sus, in force %sus\n' "$RUNTIME_WDT_PREV" "${now:-unknown}"
+        WDT_RESTORE_MSG="RESTORE FAILED: wanted ${RUNTIME_WDT_PREV}us, in force ${now:-unknown}us"
     fi
     RUNTIME_WDT_PREV=""
+    return 0
 }
 
 cleanup_imaging_lock() {
@@ -423,8 +428,11 @@ cleanup_imaging_lock() {
         return 0
     fi
     local wdt
-    wdt=$(restore_runtime_wdt)
-    systemctl start net-watchdog 2>/dev/null || true
+    restore_runtime_wdt
+    wdt=$WDT_RESTORE_MSG
+    # --no-block: at boot (recover, DefaultDependencies=no) the network is not
+    # up yet and a blocking start would sit inside recover's own timeout.
+    _systemctl_bounded 20 start --no-block net-watchdog || true
     # sa02m-watchdog-feed is optional; leave stopped if it was inactive.
     rm -f "$IMAGING_LOCK"
     IMAGING_HELD=0
@@ -2066,8 +2074,11 @@ cmd_recover() {
 cmd_reclaim() {
     ensure_dirs
     if ! try_lock; then
-        log "reclaim: an update runner holds $LOCKFILE — nothing to reclaim"
-        exit 0
+        # Distinct exit code: the remedy script must STOP here (it would
+        # otherwise arm the watchdog and start the flasher under a live runner
+        # that took the lock after its own liveness check).
+        log "reclaim: an update runner holds $LOCKFILE — refused (rc 3)"
+        exit 3
     fi
     if ! txn_exists; then
         if [ -f "$IMAGING_LOCK" ]; then
@@ -2139,6 +2150,20 @@ recover_transaction() {
                     && [ "$files_done" = "$files_total" ] \
                     && [ -n "$ver_want" ] && [ "$ver_got" = "$ver_want" ]; then
                     log "recover: $stage with deploy complete ($files_done/$files_total, VERSION=$ver_got) - post-boot verification"
+                    if [ "${RUNNER_CONTEXT:-}" != boot ]; then
+                        # At RUNTIME (reclaim) nothing restarted the daemons
+                        # after the deploy — the dead runner never reached
+                        # its restart sets — so old code is still in memory.
+                        # Run the same sets the apply would have (fcgiwrap,
+                        # nginx -t + reload, restart[] …) before the health
+                        # gate; at boot every unit already started from the
+                        # deployed tree and this must stay off (R1/R9).
+                        if ! services_restart_sets "$txn"; then
+                            log "recover: restart sets failed at runtime - rollback"
+                            rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-restart sets failed}"
+                            return 0
+                        fi
+                    fi
                     schedule_boot_verify "$txn"
                 else
                     log "recover: $stage incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
@@ -2258,7 +2283,8 @@ on_exit() {
         stage=$(txn_get stage 2>/dev/null || echo error)
         case "$stage" in
             applying|verifying|rolling_back|committing)
-                log "exit $ec at stage=$stage: imaging lock kept for recover/reclaim; runtime watchdog $(restore_runtime_wdt)"
+                restore_runtime_wdt
+                log "exit $ec at stage=$stage: imaging lock kept for recover/reclaim; runtime watchdog $WDT_RESTORE_MSG"
                 ;;
             *) cleanup_imaging_lock || true ;;
         esac

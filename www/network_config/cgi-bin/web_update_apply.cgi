@@ -147,6 +147,9 @@ prefer_new = stage in running_stages or stage in ("done", "error", "rolled_back"
 # `log` to the event log and prints the generic «Ошибка обновления» — this is
 # the only channel through which a board on ≤1.0.6.51 (the delivering OTA
 # freezes at 85 % under the old runner) can tell the operator what to do.
+# The labels mirror WEB_UPD_STAGE_UI in static/js/app/status.js (the one home
+# for the panel's stage wording) minus the trailing ellipsis — a second copy by
+# necessity: the CGI cannot read the bundle. Keep in step.
 STAGE_RU = {
     "uploaded": "Проверка пакета", "validating": "Проверка пакета",
     "backing_up": "Создание резервной копии", "applying": "Установка",
