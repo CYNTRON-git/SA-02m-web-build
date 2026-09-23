@@ -383,6 +383,21 @@ else
     fi
 fi
 
+# 14 the journal is persistent: the Armbian RAM-log hooks are off (their cron
+# moved the journal to /run every 15 min — header of etc/default/armbian-ramlog),
+# nothing is left in the runtime journal, and the EFFECTIVE journald config
+# syncs every minute (etc/systemd/sa02m-journald.conf). After an OTA-only update
+# this FAILs until the next reboot, by design (deploy-map note).
+RL=$(grep -E '^ENABLED=' /etc/default/armbian-ramlog 2>/dev/null | tail -1)
+NRUN=$(find /run/log/journal -name '*.journal' 2>/dev/null | wc -l | tr -d ' ')
+SYNC=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null \
+       | grep -E '^[[:space:]]*SyncIntervalSec=' | tail -1 | tr -d ' ')
+if [ "$RL" = "ENABLED=false" ] && [ "$NRUN" = 0 ] && [ "$SYNC" = "SyncIntervalSec=1m" ]; then
+    ok "14 journal persistent: armbian-ramlog ENABLED=false, 0 runtime journal files, SyncIntervalSec=1m in force"
+else
+    no "14 journal persistent: armbian-ramlog '${RL:-unset}', $NRUN runtime journal file(s) under /run/log/journal, effective '${SYNC:-SyncIntervalSec unread}'"
+fi
+
 echo "== $VER on $(hostname): $P PASS / $F FAIL / $S SKIP =="
 [ "$F" -eq 0 ] || exit 1
 exit 0
