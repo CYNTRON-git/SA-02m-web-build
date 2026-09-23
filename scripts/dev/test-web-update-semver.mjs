@@ -19,7 +19,12 @@
    text instead of clobbering it with the generic «Ошибка обновления. См.
    Журнал событий.». PROVEN RED on 6ba943d (1.0.6.50): 7 FAIL — stale ignored
    by _webUpdIsTerminal/_webUpdStageText/_webUpdApplyTxnUI, rolled_back text
-   fixed, _webUpdFinish clobbers. */
+   fixed, _webUpdFinish clobbers.
+   (G, 1.0.6.53 bench incident) a code-less «error» from the launch POST — or a
+   timed-out POST — is re-checked ONCE by a status GET before the panel shows
+   «Ошибка обновления»; a busy board hands over to the poll loop. PROVEN RED
+   on 91157d5 (1.0.6.52): 9 FAIL — G1/G3 finish('error') on the first answer
+   with no GET, G2 no re-check, G7 no _webUpdConfirmError. */
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
@@ -384,6 +389,132 @@ function makeTxnCtx(els) {
   const txn2 = makeTxnCtx(els2);
   txn2._webUpdFinish('error', '');
   eq('F7 finish(error) without a text → the generic line', els2['web-upd-status'].textContent, 'Ошибка обновления. См. Журнал событий.');
+}
+
+process.stdout.write('G. a launch answer of «error» with no code is re-checked ONCE before it is believed (1.0.6.53)\n');
+// Bench 1.135, 2026-09-23: a fast clone let the launcher hand off to the runner
+// inside the CGI's 1 s, the POST answered {status:"error"} and the panel wrote
+// «Ошибка обновления. См. Журнал событий.» over a running update (a reload
+// showed the progress). applyWebUpdate now routes a code-less «error» — and the
+// timeout/network .catch — through _webUpdConfirmError: ONE status GET, busy →
+// hand over to the poll loop, else the error the answer named. Refusals with a
+// code (E_NO_UPDATE / E_CHECK_STALE) and a «running» answer are untouched.
+// Contract: docs/contracts/web-update.md «POST — ответ после запуска».
+// fetchWithTimeout is a scripted stub (one answer per call, in order; 'reject'
+// = timeout); the poll loop, finish and txn-UI are spies. PROVEN RED on
+// 91157d5 (1.0.6.52): G1/G3 finish('error') on the first answer with no GET,
+// G7 no _webUpdConfirmError in status.js.
+
+function makeApplyEls() {
+  const els = makeTxnEls();
+  els['web-upd-apply-btn'].disabled = false;
+  els['web-upd-check-btn'] = { disabled: false };
+  return els;
+}
+
+function makeApplyCtx(els, script) {
+  const calls = [];
+  const spies = { startPolling: 0, finish: [], txnUI: 0, refused: [] };
+  const ctx = {
+    _webUpdTxnActive: false,
+    _webUpdLastCheck: { deployed_version: '1.0.6.29', remote_version: '1.0.6.53', update_available: true },
+    _webUpdOnlineCanApply: true,
+    _webUpdPollTimer: null,
+    _webUpdPollInFlight: false,
+    _webUpdInspect: null,
+    _webUpdOfflineReady: false,
+    WEB_UPD_ERROR_RECHECK_MS: 0,
+    uiT: (s) => s,
+    toast: () => {},
+    setText: () => {},
+    withCsrfHeaders: (h) => Object.assign({}, h || {}),   // app.js helper, not under test here
+    setTimeout: (fn) => { fn(); return 1; },
+    clearTimeout: () => {},
+    document: { getElementById: (id) => els[id] || null },
+    fetchWithTimeout: (url, init) => {
+      calls.push({ url, method: (init && init.method) || 'GET' });
+      const a = script.shift();
+      if (a === undefined || a === 'reject') return Promise.reject(new Error('timeout'));
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(a) });
+    },
+    _webUpdStartPolling: () => { spies.startPolling++; },
+    _webUpdFinish: (st, log, text) => { spies.finish.push({ st, log, text }); },
+    _webUpdApplyTxnUI: () => { spies.txnUI++; },
+    _webUpdFinishRefused: (r) => { spies.refused.push(r); }
+  };
+  const code = [
+    'compareSemver',
+    'webUpdResolveAvailable',
+    'webUpdOnlineApplyAllowed',
+    'webUpdSetOnlineApplyEnabled',
+    'webUpdShouldPostApply',
+    'webUpdApplyRefusal',
+    '_webUpdSetStatus',
+    '_webUpdShowLog',
+    '_webUpdLegacyStatus',
+    '_webUpdIsBusy',
+    'applyWebUpdate'
+  ].map(extractFn).concat([extractFnOpt('_webUpdConfirmError')]).join('\n\n');
+  vm.runInNewContext(code, ctx, { filename: 'status.js-apply-extract' });
+  return { ctx, calls, spies };
+}
+
+// The apply chain is promise-based: let the microtasks (and the stubbed
+// re-check timer, fired synchronously) settle before reading the spies.
+const settle = () => new Promise((r) => setTimeout(r, 30));
+
+async function runApply(script) {
+  const { ctx, calls, spies } = makeApplyCtx(makeApplyEls(), script);
+  ctx.applyWebUpdate();
+  await settle();
+  return { calls, spies };
+}
+
+{
+  // G1 the bench case: POST says «error» (no code) while the board is busy.
+  const { calls, spies } = await runApply([{ ok: false, status: 'error', log: '' }, { ok: true, stage: 'applying', status: 'running' }]);
+  eq('G1 code-less error → ONE status GET follows the POST', calls.length, 2);
+  eq('G1 the re-check is a GET of the apply CGI', calls[1] && calls[1].method + ' ' + calls[1].url, 'GET cgi-bin/web_update_apply.cgi');
+  eq('G1 board busy → the poll loop takes over', spies.startPolling, 1);
+  eq('G1 the busy answer is painted before polling', spies.txnUI, 1);
+  eq('G1 no error is shown', spies.finish.length, 0);
+}
+{
+  // G2 the answer was honest: nothing is running behind it.
+  const { calls, spies } = await runApply([{ ok: false, status: 'error', log: 'boom' }, { ok: true, status: 'idle' }]);
+  eq('G2 code-less error + idle board → the error stands', spies.finish.length === 1 && spies.finish[0].st, 'error');
+  eq('G2 the error keeps the POST log', spies.finish[0] && spies.finish[0].log, 'boom');
+  eq('G2 exactly one re-check', calls.length, 2);
+  eq('G2 no polling', spies.startPolling, 0);
+}
+{
+  // G3 the POST timed out (the other branch of the same symptom) — same belt.
+  const { calls, spies } = await runApply(['reject', { ok: true, stage: 'verifying' }]);
+  eq('G3 POST timeout → one status GET', calls.length, 2);
+  eq('G3 board busy → polling, not «Нет ответа от сервера»', spies.startPolling === 1 && spies.finish.length, 0);
+}
+{
+  // G4 the POST timed out and the re-check failed too → the timeout error.
+  const { spies } = await runApply(['reject', 'reject']);
+  eq('G4 timeout + failed re-check → error with the timeout text',
+    spies.finish.length === 1 && spies.finish[0].st === 'error' && spies.finish[0].log, 'Нет ответа от сервера');
+}
+{
+  // G5 a refusal with a code is never re-checked (section E path unchanged).
+  const { calls, spies } = await runApply([{ ok: false, status: 'error', error: 'no_update', error_code: 'E_NO_UPDATE', log: 'Обновлений нет' }]);
+  eq('G5 E_NO_UPDATE → the refusal path, no GET', calls.length === 1 && spies.refused.length, 1);
+  eq('G5 no polling, no generic error', spies.startPolling + spies.finish.length, 0);
+}
+{
+  // G6 a «running» answer is believed as before (no extra GET).
+  const { calls, spies } = await runApply([{ ok: true, status: 'running', legacy: { status: 'running' } }]);
+  eq('G6 running → polling straight away', spies.startPolling, 1);
+  eq('G6 no re-check on a running answer', calls.length, 1);
+}
+{
+  // G7 non-vacuity: the belt exists by name (a renamed helper is a defect).
+  const { ctx } = makeApplyCtx(makeApplyEls(), []);
+  eq('G7 _webUpdConfirmError is defined in status.js', typeof ctx._webUpdConfirmError, 'function');
 }
 
 if (fails) {
