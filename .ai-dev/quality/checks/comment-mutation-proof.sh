@@ -116,6 +116,7 @@ telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW %s has
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
 carel-shared-home|scripts/05-mqtt.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/06-alice.sh|sa02m_install_carel_pkg "$BASE_DIR"
+carel-shared-home|scripts/04-flasher.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
 carel-shared-home|opt/sa02m-carel/sa02m_carel/carel_ahu.py|FAN_PCT_MIN = 20.0
 led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
