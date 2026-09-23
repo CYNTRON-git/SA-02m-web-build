@@ -474,6 +474,76 @@ preflight_space() {
     fi
 }
 
+# --- leave a foreign cgroup before anything destructive ---------------------
+#
+# Launched from the web panel («Применить» → web_update_apply.cgi →
+# `nohup sudo -n sa02m-web-update-apply &`) this runner lives in
+# 0::/system.slice/fcgiwrap.service: sudo's PAM stack on the board carries no
+# pam_systemd, so nothing moves the process out (measured on bench 1.135,
+# 2026-09-23). The health gate's first step after stage=verifying is
+# `systemctl restart fcgiwrap`, and fcgiwrap.service is KillMode=mixed — once
+# the main process exits every remaining member of the cgroup is SIGKILLed,
+# this runner included: no EXIT trap, transaction.json frozen at verifying/85,
+# imaging lock and watchdog hold left behind, nginx serving the new tree from
+# disk (the Skolkovo incident, six boards). The runner therefore re-launches
+# ITSELF as a transient system unit (systemd-run, KillMode=process) as soon as
+# it starts, hands the lock over and exits 0 — for the delivering update this
+# happens in the NEW runner right after the old one's exec, before the first
+# file is written; for every later update at the very start, before
+# prepare/backup. Runner-side rather than launcher-side on purpose: the
+# launcher on the field boards is the OLD one. The offline path
+# (sa02m-update.service) and an SSH launch (session scope) never match and
+# are only logged. Failure mode is «continue in place» (logged): a board with a
+# broken systemd-run still updates and is now recoverable by recover→verify at
+# boot. Harness: scripts/dev/test-update-cgroup-escape.sh.
+ESCAPED=0
+ESCAPE_UNIT=""
+escape_foreign_cgroup() {
+    local txn=$1 cgfile="${SA02M_UPDATE_CGROUP_FILE:-/proc/self/cgroup}" cg unit rc v self
+    local -a args
+    cg=$(tr '\n' ' ' <"$cgfile" 2>/dev/null) || cg=""
+    cg=${cg% }
+    log "runner cgroup: ${cg:-unreadable}"
+    [ "${SA02M_UPDATE_ESCAPED:-0}" = 1 ] && return 0
+    case "$cg " in
+        */fcgiwrap.service\ *) ;;
+        *) return 0 ;;
+    esac
+    if ! command -v systemd-run >/dev/null 2>&1; then
+        log "WARN: systemd-run missing — continuing inside $cg (a fcgiwrap restart will kill this runner; a reboot then completes the update)"
+        return 0
+    fi
+    unit="sa02m-update-apply-${txn:0:8}"
+    log "re-launching as transient unit $unit: fcgiwrap KillMode=mixed SIGKILLs this cgroup when the health gate restarts fcgiwrap"
+    args=(--unit="$unit" --collect --quiet
+          -p Nice=5 -p IOSchedulingClass=best-effort -p IOSchedulingPriority=6
+          -p KillMode=process -p TimeoutStopSec=30
+          --setenv=SA02M_UPDATE_ESCAPED=1
+          --setenv=SA02M_UPDATE_STATEDIR="$STATEDIR"
+          --setenv=SA02M_UPDATE_REEXEC="${SA02M_UPDATE_REEXEC:-0}")
+    for v in SA02M_IMAGING_LOCK SA02M_UPDATE_VALIDATE_PY SA02M_WEB_VERSION_FILE \
+             SA02M_WEB_BUILD_STATEDIR SA02M_UPDATER_VERSION SA02M_UPDATE_RUNNER_DST; do
+        if [ -n "${!v:-}" ]; then
+            args+=(--setenv="$v=${!v}")
+        fi
+    done
+    self=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+    # Release the lock so the new process can take it (acquire_lock waits 15 s
+    # on the other side); re-take it if the launch fails — nobody else contends.
+    exec 9>&-
+    LOCK_HELD=0
+    if timeout 30 systemd-run "${args[@]}" "$self" apply; then
+        ESCAPED=1
+        ESCAPE_UNIT=$unit
+        return 0
+    else
+        rc=$?
+    fi
+    log "WARN: systemd-run failed (rc=$rc) — continuing in place"
+    acquire_lock
+    return 0
+}
+
 # --- self-copy re-exec before deploy -----------------------------------------
 
 self_reexec_before_deploy() {
@@ -1805,7 +1875,9 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("s
 cmd_apply() {
     ensure_dirs
     migrate_legacy_state
-    acquire_lock
+    # After a cgroup handover the previous process has just closed its lock fd:
+    # wait for it instead of failing on the race.
+    acquire_lock "${SA02M_UPDATE_ESCAPED:+15}"
 
     if ! txn_exists; then
         log "apply: no transaction.json — no-op"
@@ -1821,6 +1893,13 @@ cmd_apply() {
             exit 0
             ;;
     esac
+
+    # Before anything destructive: out of fcgiwrap's cgroup (see the function).
+    escape_foreign_cgroup "$(txn_get id)"
+    if [ "$ESCAPED" = 1 ]; then
+        log "handed over to $ESCAPE_UNIT"
+        exit 0
+    fi
 
     honour_cancel_if_early
 
