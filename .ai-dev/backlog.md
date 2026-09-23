@@ -210,23 +210,35 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
      in the cloud team's repo, where readers of this contract may have met it; A3 two lines over
      80 columns (cosmetic, no limit configured). Also carried: `test_device_registry.py` is ~1000
      lines, a split candidate.
-- [OPEN] 2026-09-23 **[HIGH] The journal the repo calls persistent is RAM-only until midnight —
-  a power cut loses the day, and `journalctl -b -1` shows nothing of it.**
-  `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh:455`) sets
-  `Storage=persistent` and justifies it with «журнал переживает перезагрузку; `journalctl -b -1` —
-  штатный приём разбора полётов». The base image's Armbian ramlog, which the repo does not own,
-  defeats that: measured on 1.135, `/etc/default/armbian-ramlog` ENABLED (50M), cron
-  `armbian-truncate-logs` every 15 min runs `journalctl --relinquish-var` (volatile logging to
-  `/run/log/journal`, capped 16M) and the persistent files are written only at the midnight flush.
-  So: (a) a power cut or brick loses everything since the last midnight — exactly the post-mortem
-  the drop-in promises; (b) under a noisy bus the runtime cap drops all but the last ~5–6 h even
-  without a cut. Not measured: whether the golden image / field boards carry the same ramlog
-  (likely — same Armbian base — unverified). Practical note for any field board brought back for
-  analysis (e.g. the boards silent since 7–8 Sep): check first whether a journal for those days
-  exists at all; do not rely on it. Fix is a product trade-off (eMMC wear vs. surviving
-  post-mortem): disable ramlog, or keep it and make the repo own it with an honest comment and a
-  more frequent sync. The drop-in's comment is an overclaim either way (quality-gate-rigor
-  honesty). Operator decides.
+- [OPEN] 2026-09-23 **[FEATURE, Operator-approved 2026-09-23] Alice dims the «LED лента» —
+  its own release, after the 1.0.6.52+ fix series.** Today brightness and colour are bound
+  `cloud_only`, so Alice only switches the strip on/off. The brightness row on bench 1.135 is
+  `range` 0..255 with `unit.percent`, which is board data, not repo code, and Yandex would not
+  accept it (percent is 0..100). Needs a percent↔raw scale on `range` bindings: validator,
+  converters, the «Умный дом» window, `docs/contracts/alice-mqtt-mapping.md`, and
+  `led-mb2ws.md` where it applies. Design and evidence: the 1.0.6.51 plan's F-C5(b); the plan
+  is transient, so re-derive.
+- [OPEN] 2026-09-23 **[LOW] `scripts/sync-app-version.py` writes CRLF on Windows.** It calls
+  `write_text` without `newline="\n"`, so a version sync run from a Windows checkout leaves the
+  version homes (VERSION, index.html, login.html, three bundles) CRLF in the working tree. On
+  1.0.6.51 the Builder converted them back to LF by hand. Git normalises on commit, but any local
+  gate that reads the working tree, and any pscp-style delivery, sees CRLF. Fix: pass
+  `newline="\n"` on every write, and add a harness case that runs the syncer and asserts LF.
+  Queued for R58 (gates and tools).
+- [OPEN] 2026-09-23 **[MED] Armbian's log hooks move the journal to RAM every 15 min and
+  truncate it — the repo's `Storage=persistent` promise does not hold for `journalctl -b -1`.**
+  `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh`) promises the journal
+  survives a reboot. Measured on 1.135: `armbian-ramlog.service` is DISABLED and `/var/log` is on
+  the eMMC (ext4), but the cron hook `armbian-truncate-logs` still runs every 15 min, calls
+  `journalctl --relinquish-var` (journal goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`)
+  and vacuums; the persistent journal is written back only at the midnight flush. Result: the
+  journal loses the middle of the day under a noisy bus (gaps 22 Sep 00:00→18:37, 23 Sep
+  00:00→06:00), and a power cut loses the day FROM THE JOURNAL VIEW. The text `/var/log/syslog`
+  on the eMMC still has every line (5,196 lines for 22 Sep 12:00), so the data is not lost. Only
+  the `journalctl -b -1` post-mortem the drop-in advertises is. (First filed 2026-09-23 as [HIGH]
+  «RAM-only until midnight, a power cut loses the day»; that premise was wrong. Corrected the
+  same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix planned
+  in 1.0.6.51; the direction is the Operator's fork.
 - [OPEN] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
   the flood caps journal retention at ~1.5 days.** Measured after the 1.0.6.50 deploy, rate unchanged
   across it (not caused by it): carel-COM3-1/-2, mr02m-COM3-10, led-COM3-13 all log `Short response`
@@ -395,7 +407,7 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   The daemon has no read/write path for the family safe-state AO block (plan
   led-window-1.0.6.40 F4); the desktop page shows it. Add an FC03 of 4 to the PWM
   poll + `pwm {channel, safe}` + tests when wanted.
-- [OPEN] 2026-09-08 **[LOW] LED window: EXFX upload has no tab.** Needs the
+- [OPEN] 2026-09-08 **[LOW, DEFERRED by the Operator 2026-09-23 until a customer needs it] LED window: EXFX upload has no tab.** Needs the
   holding-4000+ upload protocol, a file path through nginx and a daemon job with
   progress (F2) — a release of its own; the desktop's «Загрузить и пуск» is the
   target.
@@ -837,20 +849,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   Deliberately left alone in the watchdog-cap change (value unified to 15s + an
   explanatory comment); restructuring it to the drop-in convention is the real
   fix. Plan `watchdog-cap.md` §6.4.
-- [OPEN] 2026-08-05 **[LOW] `firstboot-overlay` watchdog conf has no packer
-  step.** `tools/imaging/firstboot-overlay/etc/systemd/system.conf.d/sa02m-watchdog.conf`
-  is a shipped media artifact kept byte-identical to `etc/systemd/sa02m-watchdog.conf`
-  by a `cmp` pin, not generated from it. True dedup = a packer step copying from
-  `etc/` at image-build time; deferred because it changes the imaging flow. Plan
-  `watchdog-cap.md` §11.3 option B.
-- [OPEN] 2026-07-28 **[LOW] KLogic coexistence — deliberately deferred pieces.**
-  From `docs/contracts/ethernet-iface-naming.md §5.5`: the panel does not
-  *repair* a stripped vendor hook (writing vendor code into a root-executed conf
-  from a web form is a refused capability — manual procedure is in the contract);
-  KLogic's `set-route` does `route del default` and can fight the panel's
-  `gateway` and `inet-failover.sh` metrics; the live panel↔KLogic write race is
-  inherent to two writers and is not closed from our side; VLAN sub-interfaces
-  (`eth0.1`/`eth0.2` in KLogic's table) are neither created nor migrated.
 - [OPEN] 2026-07-17 **[MED→Phase-4, cross-repo] Cloud identity: fleet-shared FRP
   token → per-device mTLS.** v1 uses one shared `FRP_TOKEN` across the fleet
   (`CYNTRON-git/cloud` `config/frps.toml.template`); extract it from one device's
@@ -885,12 +883,6 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
 - [OPEN] 2026-07-14 **[LOW] MR-02m firmware trust chain unknown (threat §6).** Is
   the `.fw` cryptographically signed/validated, or format-only? Owner: the MR-02m
   repo. Confirm before treating flasher supply-chain (S3) as mitigated.
-- [OPEN] 2026-07-14 **[LOW] CTL-list resolution phase still per-unit (perf, optional).**
-  1.0.5.2 batched the `systemctl show`/`is-enabled` calls in `cmd_list` (~28→9
-  forks, 3.9→3.0 s, byte-identical). The residual ~3 s is the unit-RESOLUTION phase
-  (per-candidate `service_present`/`unit_exists` systemctl) — batchable too but the
-  resolution logic (candidates/masked/init.d) is entangled; higher risk for ~1 s.
-  Defer unless the full services path needs to be faster still.
 - [OPEN] 2026-08-05 **[LOW] `cmd_exec.cgi` uncontracted.** The 1.0.5.64 command
   line (`www/network_config/cgi-bin/cmd_exec.cgi`) is a request/response CGI
   surface with no `docs/contracts/` entry; today it is UI-only (no external
