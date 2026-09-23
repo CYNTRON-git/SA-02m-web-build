@@ -683,6 +683,15 @@
       "init": "bash + grep + find (present everywhere the project builds)"
     },
     {
+      "id": "flasher-auth-header-strip",
+      "checks": "nginx never forwards a CLIENT-supplied X-SA02M-Auth to the flasher daemon: every location block in etc/nginx/network_config.conf whose proxy_pass targets sa02m-flasher/flasher.sock carries a live `proxy_set_header X-SA02M-Auth \"\"` (nginx drops an empty header). The daemon (opt/sa02m-flasher/sa02m_flasher/service.py _check_auth) accepts a request whose X-SA02M-Auth equals INTERNAL_TOKEN (/etc/sa02m_flasher.conf) — documented as an nginx<->daemon shared secret, yet nginx neither set nor stripped it, so a browser- or cloud-supplied value reached the daemon verbatim (cloud team review, 2026-09-23; inert today: INTERNAL_TOKEN defaults to empty and auth_request gates both locations, but a trust header must never be reachable from the client side — docs/contracts/cloud-panel-proxy.md). Comment-stripped via lib_check.sh; blocks split by brace depth. Non-vacuous: >= 2 flasher blocks must be found (a moved socket or a dropped location FAILS), and service.py must still read the header (else retire the gate). RED on ee27494: 2 FAIL (both flasher blocks). Its comment-out case (the strip line) is registered in comment-mutation-proof.",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/flasher-auth-header-strip.sh",
+      "beat": "build",
+      "covers": ["etc/nginx/network_config.conf", "opt/sa02m-flasher/sa02m_flasher/service.py", ".ai-dev/quality/checks/flasher-auth-header-strip.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/cloud-panel-proxy.md"],
+      "init": "bash + awk + grep (present everywhere the project builds)"
+    },
+    {
       "id": "no-eschtml-in-attr",
       "checks": "Served JS never builds a quoted HTML attribute from escHtml() — the TEXT-context escaper (& < > only) that leaves `\"` alive, so an inventory/broker string closes the attribute and adds its own (1.0.6.38 picker: an injected onfocus handler ran in headless Chromium with the operator's session — audit 2026-09-08 C4). Sweeps every bundle under www/network_config/static/js, comment-stripped, for the OPENER (`=\"' + escHtml(`, `=\"prefix' + escHtml(`, `=\"${escHtml(` and the quote-swapped / backslash-escaped spellings) and the CLOSER (an escHtml() call whose next literal carries a `\"` before any `<`) of a concatenated attribute value; a value built from three or more escHtml() parts leaves the middle part unseen (stated limit). Presence floors a comment-out turns RED: app.js must define escAttr() and it is CALLED to prove it escapes \" ' < > & (a helper that stops escaping quotes fails the run even with zero sites left); >=5 files swept, >=20 escHtml() sites seen, >=5 escAttr() attribute sites present. PROVEN RED on the pre-fix bundles: 25 failures (22 call sites in smarthome.js/rs485.js + the two floors); the parsed-DOM half is the «\"»-bearing topic case in sh-modal-layout-smoke. Its comment-out case (`function escAttr(` in app.js) is registered in comment-mutation-proof.",
       "config": null,

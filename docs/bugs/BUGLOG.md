@@ -5,6 +5,14 @@
 
 ---
 
+## [2026-09-23 22:10] branch: 1.0.6.53
+
+**Файл(ы):** `etc/nginx/network_config.conf` (две flasher-локации), `.ai-dev/quality/checks/flasher-auth-header-strip.sh` (новый), комментарии в `opt/sa02m-flasher/sa02m_flasher/{service,auth,config}.py` и `etc/sa02m_flasher.conf`
+**Тип:** Безопасность (доверительный заголовок достижим из клиентского запроса; латентно)
+**Описание:** Ревью облачной команды (2026-09-23, при переходе их прокси на пересылку всего семейства `X-SA02M-`): демон flasher принимает запрос, если `X-SA02M-Auth` равен `INTERNAL_TOKEN` (`service.py:_check_auth`), заголовок описан как «общий секрет nginx↔демон», но nginx его ни ставил, ни срезал — клиентское значение доходило до демона дословно.
+**Причина:** `proxy_pass` пересылает все заголовки запроса, которые не переопределены `proxy_set_header`; секрет edge-стороны был задокументирован, но edge о нём не знал. Не эксплуатировалось: `INTERNAL_TOKEN` пуст по умолчанию (проверка инертна), обе локации за `auth_request` (без сессии до демона не дойти), сокет unix.
+**Исправление:** `proxy_set_header X-SA02M-Auth "";` на обеих flasher-локациях (nginx срезает пустой заголовок); документация демона/конфига переписана: секрет — для локального вызывающего на сокете, не клиентский credential. Гейт `flasher-auth-header-strip`: блоки `location` по глубине скобок, каждый с `proxy_pass` на `flasher.sock` обязан нести живую строку-срез; floor ≥2 блоков; пин на чтение заголовка в `service.py` (иначе гейт устарел). RED на ee27494 — 2 FAILED (обе локации); GREEN после правки; comment-out строки — в `comment-mutation-proof`. Контракт `docs/contracts/cloud-panel-proxy.md` дополнен (семейство содержит доверительный заголовок — edge его срезает, пересылка префикса ничего не стоит); `docs/threat-model.md` §4 — новая строка. Класс у других демонов: нет (`sa02m-devices-api` — только `auth_request`, без собственной auth; Alice config API — root-only сокет; `upload_receive` — парсер за CGI).
+
 ## [2026-09-23 21:30] branch: 1.0.6.53
 
 **Файл(ы):** `www/network_config/cgi-bin/lib_web_auth.sh`, `cgi-bin/csrf_token.cgi` (новый), 16 inline-сайтов `E_CSRF` в `cgi-bin/*.cgi`, `static/js/app.js`, `static/js/app/init.js`, `static/js/i18n.js`, `docs/contracts/cloud-panel-proxy.md` (новый)

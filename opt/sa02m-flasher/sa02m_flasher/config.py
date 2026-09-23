@@ -49,7 +49,7 @@ DEFAULT_MPLC_STOP_SERVICES: List[str] = ["mplc.service", "sa02m-modbus-mqtt.serv
 # Лимиты и тайминги.
 DEFAULT_MAX_JOB_SECONDS = 1800       # страховка на одну задачу (до 30 мин)
 DEFAULT_SESSION_DIR = "/run/sa02m-web-sessions"  # серверные веб-сессии (создаёт login.cgi)
-DEFAULT_INTERNAL_TOKEN = ""          # общий секрет между nginx и демоном (если пусто — проверка только по cookie)
+DEFAULT_INTERNAL_TOKEN = ""          # секрет для локального вызывающего на сокете (X-SA02M-Auth); nginx его не ставит и клиентское значение срезает; пусто — проверка только по cookie
 
 
 @dataclass

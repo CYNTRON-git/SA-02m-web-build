@@ -9,8 +9,12 @@
     bash:   printf '%s' "$tok" | sha256sum
     python: hashlib.sha256(tok.encode()).hexdigest()
 
-Дополнительно — общий секрет между nginx и демоном через header X-SA02M-Auth
-(если задан INTERNAL_TOKEN в /etc/sa02m_flasher.conf).
+Дополнительно — общий секрет для локального вызывающего на unix-сокете через
+header X-SA02M-Auth (если задан INTERNAL_TOKEN в /etc/sa02m_flasher.conf).
+nginx этот заголовок сам НЕ ставит и клиентское значение НЕ пропускает: на
+обеих flasher-локациях он перезаписан пустым (etc/nginx/network_config.conf,
+гейт flasher-auth-header-strip) — заголовок не является клиентским
+credential'ом и из браузера/облака до демона не доходит.
 """
 from __future__ import annotations
 
