@@ -262,14 +262,16 @@ class ModbusSerial:
                 self._ser.close()
             self._ser = None
 
-    def _transact(self, request: bytes, expected: int) -> bytes:
+    def _transact(self, request: bytes, expected: int,
+                  timeout: float | None = None) -> bytes:
+        """timeout: this transaction's read deadline (None = the port's)."""
         ser = self._ensure_open()
         try:
             self._bus_gap()
             ser.reset_input_buffer()
             ser.write(request)
             ser.flush()
-            resp = self._read_rtu_response(ser, request)
+            resp = self._read_rtu_response(ser, request, timeout=timeout)
             if len(resp) < expected:
                 raise IOError(f"Short response: {len(resp)}/{expected} bytes")
             recv_crc = resp[-2] | (resp[-1] << 8)
@@ -357,23 +359,18 @@ class ModbusSerial:
         """FC17 payload (identity blob), or b"" when the device does not answer.
 
         The reply is long (a c.pCOmini sends ~206 bytes = ~118 ms of wire time at
-        19200) so the read timeout is raised for this one transaction; the caller
-        gets bytes, never an exception, because "no FC17" is the normal answer
-        for every device that is not a Carel.
+        19200) so this one transaction reads with its own deadline, handed to
+        the frame reader (the pyserial timeout never bounded that read); the
+        caller gets bytes, never an exception, because "no FC17" is the normal
+        answer for every device that is not a Carel.
         """
         self._yield_to_writer()
         with self._lock:
-            saved = self._ser.timeout if self._ser is not None else None
             try:
-                self._ensure_open()
-                if self._ser is not None:
-                    self._ser.timeout = max(float(saved or 0.0), float(timeout))
-                resp = self._transact(build_report_slave_id(addr), 5)
+                resp = self._transact(build_report_slave_id(addr), 5,
+                                      timeout=max(self._timeout, float(timeout)))
             except Exception:
                 return b""
-            finally:
-                if self._ser is not None and saved is not None:
-                    self._ser.timeout = saved
         if len(resp) < 5 or resp[1] != 0x11:
             return b""
         return bytes(resp[3 : 3 + resp[2]])
