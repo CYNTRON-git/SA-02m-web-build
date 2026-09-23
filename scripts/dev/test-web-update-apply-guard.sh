@@ -202,11 +202,13 @@ esac
 SHIM
 chmod +x "$BIN/systemctl"
 # A live runner: a process whose argv[0] names the runner (what the lock pid's
-# /proc/<pid>/cmdline shows on the board). Killed on exit.
-bash -c 'exec -a sa02m-update-runner sleep 30' &
+# /proc/<pid>/cmdline shows on the board). Killed on exit. 900 s, not 30: under
+# quality-runner load section R reached R1 44–50 s after the spawn and the
+# fixture was already gone — a false RED (review round 4, 1.0.6.52).
+bash -c 'exec -a sa02m-update-runner sleep 900' &
 LIVE_PID=$!
 # A live process that is NOT the runner: a reused pid must not read as alive.
-sleep 30 &
+sleep 900 &
 OTHER_PID=$!
 trap 'kill "$LIVE_PID" "$OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
 sleep 0.3
