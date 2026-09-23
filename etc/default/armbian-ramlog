@@ -1,7 +1,11 @@
 # SA-02m: Armbian RAM logging is OFF — this file is repo-owned
-# (etc/default/armbian-ramlog, installed by scripts/01-system.sh and by the OTA
-# deploy map). Installed over Armbian's own copy; an armbian-bsp upgrade may
-# flag it to dpkg as a modified conffile — keep this version.
+# (etc/default/armbian-ramlog, installed by scripts/01-system.sh: install.sh,
+# refresh, offline full update, and the golden image built from such a donor).
+# NOT in the OTA deploy map, on purpose: OTA restarts nothing, so flipping the
+# hooks off there would also stop the nightly flush while the cron-relinquished
+# journal stays in /run until reboot — worse than before. Installed over
+# Armbian's own copy; an armbian-bsp upgrade may flag it to dpkg as a modified
+# conffile — keep this version.
 #
 # Why off. On SA-02m the RAM log was never really on: the tmpfs is not mounted
 # (armbian-ramlog.service disabled, /var/log on the eMMC root). Only the hooks
