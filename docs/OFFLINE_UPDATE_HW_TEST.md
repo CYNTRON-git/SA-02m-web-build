@@ -116,6 +116,65 @@ py -3 tools/update/hw_acceptance_update.py
 При наличии сети: **Проверить** / **Применить** интернет-OTA; убедиться, что
 общий runner не сломан.
 
+#### 3.5.1 Воспроизведение полевого инцидента 1.0.6.52 (OTA с локального репозитория)
+
+Полный рецепт RED (старый код, откат исправного обновления после перезагрузки)
+→ GREEN (1.0.6.52) на стенде без зависимости от интернета. Гарантии, которые
+он подтверждает, — `docs/contracts/web-update.md` «Жизненный цикл apply».
+
+**Рабочая станция.** `git clone --bare <repo> C:\bench\SA-02m-web-build.git`;
+ветку под тестом положить как `main` в этот bare-репозиторий (`git push
+C:\bench\SA-02m-web-build.git <sha>:refs/heads/main --force` — это стендовый
+bare-репозиторий, не origin; `docs/decisions/no-force-push-version-branches.md`
+про origin); отдать его `git daemon --export-all --base-path=C:\bench
+--enable=upload-pack --listen=<ws-ip> --port=9418 --reuseaddr` (TCP 9418 открыть
+в брандмауэре). Dumb HTTP не годится: хелпер клонирует `--depth=1`.
+
+**Плата (каждая запись — с ведома Оператора).** Единственный шов URL хелпера —
+окружение процесса (`SA02M_WEB_BUILD_REPO_URL` / `…_ALLOWLIST` в
+`etc/sa02m-web-update-apply.sh`; `/etc/sa02m_web_build.conf` несёт только
+ветку), поэтому:
+
+| # | Запись | Откат |
+|---|---|---|
+| W1 | `/etc/systemd/system/fcgiwrap.service.d/zz-bench-ota.conf`: `[Service]` `Environment=SA02M_WEB_BUILD_REPO_URL=git://<ws-ip>/SA-02m-web-build.git` `Environment=SA02M_WEB_BUILD_REPO_ALLOWLIST=git://<ws-ip>/SA-02m-web-build.git` + `daemon-reload` + `restart fcgiwrap` | `rm` + `daemon-reload` + `restart fcgiwrap` |
+| W2 | `/etc/sudoers.d/zz-bench-ota-env` (0440, `visudo -c`): `Defaults:www-data env_keep += "SA02M_WEB_BUILD_REPO_URL SA02M_WEB_BUILD_REPO_ALLOWLIST"` | `rm` |
+| W3 | Даунгрейд до 1.0.6.49: `git archive --format=tar.gz -o SA-02m-full-1.0.6.49.tar.gz b46895b` → `/tmp` платы → `bash /tmp/sa02m-upd/scripts/offline-full-update.sh --force` (≈10 мин) | GREEN-прогон оставляет плату на новой версии |
+
+`check.json` при живом интернете не трогать (часовая проверка видит GitHub
+main новее 1.0.6.49 — охранник Apply пропускает, хелпер клонирует уже со
+стенда); без интернета — записать вручную (`checked_at` сейчас UTC,
+`deployed_version` 1.0.6.49, `remote_version` новее, `update_available` true).
+
+**RED (стендовый `main` = 6ba943d, плата 1.0.6.49).** «Проверить» →
+«Применить». Ожидается: deploy ≈10–15 мин; затем `pgrep -f '/sa02m-update/runner/'`
+пуст, `transaction.json` `stage=verifying progress_pct=85`, `/run/sa02m-imaging.lock`
+есть, `busctl get-property org.freedesktop.systemd1 /org/freedesktop/systemd1
+org.freedesktop.systemd1.Manager RuntimeWatchdogUSec` = `t 0`, `sa02m-flasher` /
+`net-watchdog` неактивны, `update.log` кончается `health: restarting fcgiwrap...`,
+панель «Проверка сервисов…» 85 %, `GET web_update_apply.cgi` → `status:"running"`.
+«Перезагрузка» (web) → измерить секунды до ответа `/login.html` (ожидается ≥180),
+`update.log` показывает recover → таймауты fcgiwrap/nginx → `unit not active:
+nginx` → откат, `VERSION` = 1.0.6.49.
+
+**GREEN (стендовый `main` = ветка 1.0.6.52, плата снова 1.0.6.49).** «Проверить»
+→ «Применить». В `update.log`: `runner cgroup: 0::/system.slice/fcgiwrap.service`,
+`re-launching as transient unit sa02m-update-apply-…`; во время deploy
+`systemctl status 'sa02m-update-apply-*'` = running; `health: restarting fcgiwrap...`
+и за ним `restarted after apply: …`, для `sa02m-devices-api` на стенде — строка
+про Condition вместо `unit not active`; `DONE: update applied successfully`;
+`transaction.json` `stage=done`; watchdog `t 15000000` (fallback политики — hold
+брал код 1.0.6.49); imaging-lock снят; `sa02m-flasher` active; панель «Обновление
+установлено». Затем W6: `transaction.json` вручную на `stage=verifying`,
+`files_done=files_total`, `target_version=<новая>`, `updated_at` старый;
+`date -Iseconds > /run/sa02m-imaging.lock`; `GET web_update_apply.cgi` →
+`stale:true, error_code:E_RUNNER_LOST`; «Перезагрузка» → страница входа в
+обычное время (< 90 с), `journalctl -u sa02m-update-verify -b` после nginx,
+`transaction.json` `stage=done`, версия не откатилась, watchdog 15000000. Один
+раз повторить W6 с переименованным `sa02m-update-verify.service`, чтобы
+проверить fallback `systemd-run -p After=` на systemd 255; файл вернуть.
+Очистка: W1, W2 снять.
+
 ### 3.6 Factory reset (осторожно)
 
 1. Пройти UI: предупреждения → обязательный backup → ввод `SA02M-RESET`.

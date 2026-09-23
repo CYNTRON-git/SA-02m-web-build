@@ -23,6 +23,7 @@ by design — a missing optional tool must not block a dev machine — but it me
 | `html-id-contract` | never (node only) | Linux CI |
 | `web-auth-behaviour` | two POSIX-mode asserts skip off Linux | Linux CI |
 | `install-atomic` | case 8b only: MSYS derives a mode from the file body (a `#!` first line reads 755, anything else 644) and ignores `chmod`, so `-m 644` and `-m 755` are indistinguishable | Linux CI |
+| `update-cgroup-escape` | E5's «lock held again» assert only: git-bash has no `flock`, so the harness shims it as a no-op and prints SKIP for that one line | Linux CI |
 
 When reporting results, say "skipped", never "passed". A reviewer that reports a
 skipped row as a pass is making a false claim about verification.

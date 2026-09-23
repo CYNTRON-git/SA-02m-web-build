@@ -27,11 +27,34 @@
 |---|---|---|
 | **www-only** | изменения только в `www/` (frontend + CGI) | `scripts/update-www-only.sh` |
 | **full install** | новое устройство, или менялись `etc/`/`opt/`/systemd/демон | `install.sh` (на настроенной плате — `install.sh --refresh`, «Режим обновления» ниже) |
-| **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии |
+| **web-update (OTA)** | штатное самообновление с интернетом | вкладка «Обновление» → GitHub (`web_update_*.cgi`, semver); apply через shared runner при наличии. С 1.0.6.52 раннер работает transient-юнитом `sa02m-update-apply-<txn8>` (не в cgroup fcgiwrap), а перезагрузка платы на `verifying` **завершает** обновление (`sa02m-update-verify.service` после nginx), а не откатывает его — гарантии G1–G5 в `docs/contracts/web-update.md` «Жизненный цикл apply»; что из этого действует уже в доставляющем обновлении — таблица ниже |
 | **offline package** | обновление без интернета платы **≥ 1.0.5.60** (runner ≥ 1.0.5.66 — `MIN_VERSION`/`MIN_UPDATER` в `scripts/pack-offline-update.py`) | вкладка «Обновление» → файл `.sa02m`; packer на ПК: `python scripts/pack-offline-update.py` |
 | **offline full update** | плата **< 1.0.5.60** (старый updater, `.sa02m` не примется) или любой разрыв `etc/`/`opt/` с текущим релизом, без интернета | полный архив `origin/main` в `/tmp` платы + `scripts/offline-full-update.sh` — «Офлайн-вариант» в разделе «Полный деплой» (запускает `install.sh --refresh`) |
 | ~~self-upgrade bridge~~ **(ОТМЕНЁН — не использовать)** | плата **< 1.0.5.75** без интернета/по SSH | **вместо моста — «offline full update» выше.** Мост переписывал боевые version-ветки force-push'ем и ОТКЛОНЁН: `docs/decisions/no-force-push-version-branches.md` |
 | **vendor-payload** | доставка/обновление опционального стека (Node-RED) вне релиза веб-интерфейса | процедура «Доставка vendor-payload Node-RED» ниже |
+
+### Что из 1.0.6.52 действует уже в доставляющем OTA (плата на ≤ 1.0.6.51)
+
+Последовательность доставляющего обновления: СТАРЫЙ CGI → СТАРЫЙ хелпер →
+clone 1.0.6.52 → СТАРЫЙ раннер (`prepare_github_overlay` со старой картой и
+старым `services{}`, backup, imaging-lock — без поля `runtime_wdt_prev_usec`) →
+`exec` НОВОГО раннера в cgroup fcgiwrap → дальше новый код.
+
+| Часть | Действует в доставляющем обновлении? | Почему |
+|---|---|---|
+| Выход из cgroup fcgiwrap (transient-юнит) | **да** — на входе `cmd_apply` нового раннера, до первого записанного файла | код в перезапущенном раннере |
+| Окно ожидания health-gate / пропуск `ConditionResult=no` / причина отказа | **да** | код health-gate нового раннера; список `units_active` — из старого манифеста (он и так не менялся) |
+| Восстановление runtime-watchdog | **да, через политику** `sa02m-watchdog.conf` (поле в транзакции отсутствует — hold брал старый код) | явный fallback |
+| Причина отката в транзакции (`E_HEALTH`/`E_POWER` + сообщение) | **да** | новый раннер |
+| `sa02m-update-verify.service` + новый recover | **да со следующей загрузки** — старая карта `map_dst` уже несёт `etc/systemd/*sa02m-*.service` в `/etc/systemd/system/`, первый шаг health-gate — `daemon-reload`, при загрузке systemd читает файлы с диска | recover запускает уже задеплоенный `/usr/local/libexec/sa02m-update-runner` |
+| `stale` в статусе CGI | **сразу после того, как файл CGI лёг на диск** (каждый запрос исполняет файл с диска) | ещё до health-gate |
+| Текст `stale` в панели | после перезагрузки бандла (`?v=1.0.6.52`); старый кэш видит `status:"error"` и останавливается по легаси-пути | кэш браузера |
+| Защита хелпера от второго «Применить» | **только со следующего обновления** — первым бежит старый хелпер | старый хелпер |
+
+Остаточное окно доставляющего обновления: clone → prepare → backup (≈1–2 мин)
+всё ещё идёт в cgroup fcgiwrap под старым кодом; `systemctl restart fcgiwrap`
+в это окно («Перезапуск служб», второе OTA) убивает старый раннер на
+`validating`/`backing_up` → recover при загрузке чисто откатывает → повтор.
 
 ### Чего OTA/офлайн-пакет не делает никогда
 
