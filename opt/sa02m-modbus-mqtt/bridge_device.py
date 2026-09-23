@@ -110,10 +110,18 @@ class DevicePoller:
     def _wb_write_retry(self, write_fn) -> None:
         """D4 аудита: одна повторная попытка записи после короткой паузы
         сглаживает единичную коллизию шины (wb-mqtt-serial ретраит transient
-        ошибки записи в фоне до MaxWriteFailTime)."""
+        ошибки записи в фоне до MaxWriteFailTime).
+
+        The retry is logged HERE because this is the only place that knows it
+        happened: the caller sees a plain success and the journal would
+        otherwise show a clean write on a line that needed two attempts —
+        exactly the signal an intermittent bus needs. Base class, so every
+        driver gets it. Nothing is logged on the poll loop.
+        """
         try:
             write_fn()
-        except Exception:
+        except Exception as e:
+            self.log.warning("writeback retry after %s", e)
             time.sleep(0.1)
             write_fn()
 

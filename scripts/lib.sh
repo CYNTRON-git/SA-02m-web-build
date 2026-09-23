@@ -436,12 +436,18 @@ sa02m_stamp_runner_version() {
 }
 
 # Install the shared Carel register-map package (repo opt/sa02m-carel) to
-# /opt/sa02m-carel. Two services import it from two different trees under two
-# different users - the flasher daemon (sa02m-flasher, PYTHONPATH=/opt/sa02m-flasher)
-# and the Modbus-MQTT bridge (root, /opt/sa02m-modbus-mqtt) - so it lives in its
-# own root-owned, world-readable package instead of a copy inside each. Called
-# from 04-flasher.sh, 05-mqtt.sh and update-www-only.sh; idempotent.
-# Contract: docs/contracts/carel-ahu.md.
+# /opt/sa02m-carel. THREE services import it from three different trees under
+# different users - the flasher daemon (sa02m-flasher,
+# PYTHONPATH=/opt/sa02m-flasher), the Modbus-MQTT bridge (root,
+# /opt/sa02m-modbus-mqtt) and, since 1.0.6.50, the Alice client (root,
+# PYTHONPATH=/opt/sa02m-alice), which reads the cloud fan vocabulary
+# sa02m_carel.carel_fan - so it lives in its own root-owned, world-readable
+# package instead of a copy inside each. Called from ALL FOUR delivery paths:
+# 04-flasher.sh, 05-mqtt.sh, 06-alice.sh and update-www-only.sh; idempotent.
+# The Alice-side import is fail-soft (a board without this package withholds
+# the fan control and keeps running); the other two are hard - there the
+# package IS the register map.
+# Contract: docs/contracts/carel-ahu.md §2. Gate: carel-shared-home (cases 1-4).
 sa02m_install_carel_pkg() {
     local repo_root=$1
     if [ -z "$repo_root" ]; then

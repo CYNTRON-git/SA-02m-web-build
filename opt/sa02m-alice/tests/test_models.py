@@ -415,5 +415,118 @@ class TestRoomId(unittest.TestCase):
             self.assertEqual(err, "invalid room_id")
 
 
+MODE_ITEM_TYPE = "devices.capabilities.mode"
+
+
+def _mode_device(parameters):
+    """A ventilation unit carrying the Carel fan-speed mode capability."""
+    cap = {
+        "type": MODE_ITEM_TYPE,
+        "mqtt": "/devices/carel-COM3-2/controls/fan_step",
+        "retrievable": True,
+        "reportable": True,
+    }
+    if parameters is not None:
+        cap["parameters"] = parameters
+    return {
+        "id": "ahu1",
+        "name": "Вентустановка",
+        "type": "devices.types.ventilation",
+        "capabilities": [cap],
+        "properties": [],
+    }
+
+
+_SETTLED_MODES = [{"value": v} for v in ("low", "medium", "high", "turbo")]
+
+
+class TestModeCapabilityValidation(unittest.TestCase):
+    """`devices.capabilities.mode` reaches Yandex verbatim.
+
+    A malformed mode item is refused here, where the document is written,
+    rather than discovered on the account. What it would cost there, and how
+    well that is sourced, is recorded once in docs/contracts/carel-ahu.md §6.
+    These cases exist because the guard is cheap.
+
+    RED FIRST: run on the unfixed tree, where `_validate_mqtt_item` had no
+    `mode` branch, all eight «is refused» cases FAILED with «AssertionError:
+    unexpectedly None» — every malformed fixture, including a mode item with
+    no `parameters` at all, validated OK. The two «is accepted» cases passed
+    at HEAD (nothing was checked) and are the regression pins.
+    """
+
+    def test_the_settled_fan_speed_item_is_accepted(self):
+        out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed", "modes": _SETTLED_MODES}))
+        self.assertIsNone(err, err)
+        self.assertEqual(out["capabilities"][0]["parameters"]["modes"],
+                         _SETTLED_MODES)
+
+    def test_a_hand_edited_auto_is_accepted(self):
+        """We never declare `auto` (the c.pCOmini has no auto register), but
+        it IS in the platform's recommended set, so the validator must not
+        refuse a document an integrator hand-edited to it."""
+        modes = [{"value": "auto"}] + _SETTLED_MODES
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed", "modes": modes}))
+        self.assertIsNone(err, err)
+
+    def test_a_hand_edited_quiet_is_still_accepted(self):
+        """`quiet` left OUR vocabulary in 1.0.6.50 and stays in the
+        allowlist: the per-instance lists are advisory, so a document using
+        it is legitimate even though we no longer declare it. The narrowing
+        happened in what we DECLARE (`carel_fan.MODES`), not in what a
+        hand-edited document may say."""
+        modes = [{"value": "quiet"}] + _SETTLED_MODES
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed", "modes": modes}))
+        self.assertIsNone(err, err)
+
+    def test_no_parameters_at_all_is_refused(self):
+        _out, err = models.validate_device(_mode_device(None))
+        self.assertIsNotNone(err)
+
+    def test_parameters_without_an_instance_is_refused(self):
+        _out, err = models.validate_device(_mode_device({"modes": _SETTLED_MODES}))
+        self.assertIsNotNone(err)
+
+    def test_an_unknown_instance_is_refused(self):
+        _out, err = models.validate_device(
+            _mode_device({"instance": "not_an_instance", "modes": _SETTLED_MODES}))
+        self.assertIsNotNone(err)
+
+    def test_modes_absent_is_refused(self):
+        _out, err = models.validate_device(_mode_device({"instance": "fan_speed"}))
+        self.assertIsNotNone(err)
+
+    def test_modes_empty_is_refused(self):
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed", "modes": []}))
+        self.assertIsNotNone(err)
+
+    def test_a_value_outside_the_instance_set_is_refused(self):
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed",
+                          "modes": _SETTLED_MODES + [{"value": "hurricane"}]}))
+        self.assertIsNotNone(err)
+
+    def test_a_mode_that_is_not_an_object_is_refused(self):
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed", "modes": ["high"]}))
+        self.assertIsNotNone(err)
+
+    def test_a_duplicate_value_is_refused(self):
+        _out, err = models.validate_device(
+            _mode_device({"instance": "fan_speed",
+                          "modes": _SETTLED_MODES + [{"value": "high"}]}))
+        self.assertIsNotNone(err)
+
+    def test_a_mode_item_is_not_a_property(self):
+        dev = _mode_device({"instance": "fan_speed", "modes": _SETTLED_MODES})
+        dev["properties"] = dev.pop("capabilities")
+        _out, err = models.validate_device(dev)
+        self.assertIsNotNone(err)
+
+
 if __name__ == "__main__":
     unittest.main()

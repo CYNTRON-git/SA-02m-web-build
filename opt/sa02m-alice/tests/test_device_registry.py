@@ -10,6 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from sa02m_alice.client import state_sender  # noqa: E402
 from sa02m_alice.client.device_registry import DeviceRegistry  # noqa: E402
 from sa02m_alice.common import constants as C  # noqa: E402
 
@@ -817,6 +818,182 @@ class TestCarelAhuUnreachable(unittest.TestCase):
         out = reg.query_devices(["cpu"])
         self.assertEqual(out[0]["properties"][0]["state"]["value"], 48.0)
         self.assertNotIn("error_code", out[0])
+
+
+# -- the Carel fan-speed mode, on all three converter paths -----------------
+UARIA_FAN_TOPIC = "/devices/carel-COM3-2/controls/fan_step"
+CRST_FAN_TOPIC = "/devices/carel-COM3-1/controls/fan_supply"
+_MODE_TYPE = "devices.capabilities.mode"
+_FAN_MODES = [{"value": v} for v in ("low", "medium", "high", "turbo")]
+
+
+def _fan_mode_device(did, topic, family):
+    return {
+        "id": did,
+        "name": "Вентустановка %s" % family,
+        "type": "devices.types.ventilation",
+        "capabilities": [{
+            "type": _MODE_TYPE,
+            "mqtt": topic,
+            "carel_family": family,
+            "retrievable": True,
+            "reportable": True,
+            "parameters": {"instance": "fan_speed", "modes": _FAN_MODES},
+        }],
+        "properties": [],
+    }
+
+
+FAN_MODE_DOC = {
+    "rooms": [],
+    "devices": [
+        _fan_mode_device("ahu-uaria", UARIA_FAN_TOPIC, "uaria"),
+        _fan_mode_device("ahu-crst", CRST_FAN_TOPIC, "crst"),
+    ],
+}
+
+
+class TestFanModeReachesEveryConverterCallSite(unittest.TestCase):
+    """Three call sites read the capability converters; a family passed at two
+    of them gives a uAria that READS right and WRITES a percent.
+
+    The witness value is `7`: a uAria step 7 IS the `high` rung, while 7 %
+    on a c.pCOmini is `low` (nearest rung 20). A site that loses the family
+    produces no block at all, so each case fails on its own.
+
+    RED FIRST on the unfixed tree: all three mapping cases FAILED (no mode
+    branch at all). Then, per site, with the family argument removed at ONE
+    call site and the other two intact — the defect a single-site test would
+    miss: query only -> `test_query_maps_…` alone; action only ->
+    `test_an_action_writes_…` + `test_an_unknown_mode_word_…`; state block
+    only -> `test_a_state_block_maps_…` alone.
+    """
+
+    def setUp(self):
+        self.reg = DeviceRegistry(FAN_MODE_DOC)
+
+    def test_query_maps_the_raw_value_through_the_item_family(self):
+        self.reg.note_mqtt(UARIA_FAN_TOPIC, "7")
+        self.reg.note_mqtt(CRST_FAN_TOPIC, "7")
+        out = {e["id"]: e for e in self.reg.query_devices(["ahu-uaria", "ahu-crst"])}
+        ua = [c for c in out["ahu-uaria"]["capabilities"] if c["type"] == _MODE_TYPE]
+        crst = [c for c in out["ahu-crst"]["capabilities"] if c["type"] == _MODE_TYPE]
+        self.assertEqual(len(ua), 1, out["ahu-uaria"])
+        self.assertEqual(ua[0]["state"], {"instance": "fan_speed", "value": "high"})
+        self.assertEqual(len(crst), 1, out["ahu-crst"])
+        self.assertEqual(crst[0]["state"], {"instance": "fan_speed", "value": "low"})
+
+    def test_an_action_writes_the_family_value_not_a_percent(self):
+        self.reg.note_mqtt(UARIA_FAN_TOPIC, "7")
+        self.reg.note_mqtt(CRST_FAN_TOPIC, "75")
+        results, pubs = self.reg.apply_actions([
+            {"id": "ahu-uaria", "capabilities": [
+                {"type": _MODE_TYPE,
+                 "state": {"instance": "fan_speed", "value": "medium"}}]},
+            {"id": "ahu-crst", "capabilities": [
+                {"type": _MODE_TYPE,
+                 "state": {"instance": "fan_speed", "value": "medium"}}]},
+        ])
+        for entry in results:
+            self.assertEqual(entry["capabilities"][0]["status"], C.STATUS_DONE,
+                             entry)
+        self.assertEqual(pubs, [(UARIA_FAN_TOPIC + "/on", "4"),
+                                (CRST_FAN_TOPIC + "/on", "40")])
+
+    def test_a_state_block_maps_through_the_item_family(self):
+        self.reg.note_mqtt(UARIA_FAN_TOPIC, "7")
+        blocks = self.reg.state_blocks_for_topic(UARIA_FAN_TOPIC)
+        self.assertEqual(len(blocks), 1, blocks)
+        self.assertEqual(blocks[0]["capabilities"][0]["state"],
+                         {"instance": "fan_speed", "value": "high"})
+        self.reg.note_mqtt(CRST_FAN_TOPIC, "7")
+        blocks = self.reg.state_blocks_for_topic(CRST_FAN_TOPIC)
+        self.assertEqual(blocks[0]["capabilities"][0]["state"],
+                         {"instance": "fan_speed", "value": "low"})
+
+    def test_discovery_does_not_leak_the_family_field(self):
+        """`carel_family` is ours: discovery copies `parameters` verbatim, so
+        the field lives at item level — the `scale` / `inverted` precedent."""
+        for entry in self.reg.discovery_devices():
+            for block in entry["capabilities"]:
+                self.assertNotIn("carel_family", block)
+                self.assertNotIn("carel_family", block.get("parameters") or {})
+
+    def test_an_unknown_mode_word_is_refused_not_guessed(self):
+        self.reg.note_mqtt(UARIA_FAN_TOPIC, "7")
+        results, pubs = self.reg.apply_actions([
+            {"id": "ahu-uaria", "capabilities": [
+                {"type": _MODE_TYPE,
+                 "state": {"instance": "fan_speed", "value": "hurricane"}}]},
+        ])
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_ERROR)
+        self.assertEqual(results[0]["capabilities"][0]["error_code"],
+                         C.ERR_INVALID_VALUE)
+        self.assertEqual(pubs, [])
+
+    def test_a_fan_change_rides_a_live_device_state_frame(self):
+        """A fan-speed change goes out towards the gateway on a LIVE frame,
+        not only via the catalogue and the cadence snapshot.
+
+        What is proven is emission to the send callback; the socket and the
+        gateway are not exercised. This is the whole board-side chain with
+        nothing replaced but that callback:
+
+            MQTT message -> note_mqtt -> state_blocks_for_topic
+                         -> StateSender.offer -> the emitted device_state
+
+        `_stopped = False` without `start()` is the suite's own idiom
+        (test_state_sender.py): it runs the sender without its cadence thread
+        so `flush_now()` is the only thing that emits.
+        """
+        frames = []
+        clock = {"t": 1000.0}
+        sender = state_sender.StateSender(frames.append, clock=lambda: clock["t"])
+        sender._stopped = False
+
+        for topic, payload, did, expected in (
+            (UARIA_FAN_TOPIC, "6", "ahu-uaria", "high"),
+            (CRST_FAN_TOPIC, "70", "ahu-crst", "high"),
+        ):
+            clock["t"] += 10.0        # past every per-instance rate window
+            self.assertTrue(self.reg.note_mqtt(topic, payload), topic)
+            blocks = self.reg.state_blocks_for_topic(topic)
+            self.assertTrue(blocks, topic)
+            sender.offer(blocks)
+            sender.flush_now()
+            self.assertTrue(frames, "no device_state frame was emitted at all")
+            frame = frames[-1]
+            self.assertEqual(frame["origin"], C.ORIGIN_LIVE)
+            caps = [c for dev in frame["payload"]["devices"]
+                    if dev["id"] == did
+                    for c in dev.get("capabilities") or []
+                    if c.get("type") == _MODE_TYPE]
+            self.assertEqual(len(caps), 1, frame)
+            # The mapped WORD travels, not the raw register value: step 6 is
+            # `high` by the uneven ladder's distance rule, live end to end.
+            self.assertEqual(caps[0]["state"],
+                             {"instance": "fan_speed", "value": expected})
+
+    def test_an_item_with_no_family_reports_nothing_rather_than_guessing(self):
+        """A device whose family could not be resolved carries no mode item at
+        all; if one reaches the converters anyway, it must not invent a scale.
+        """
+        doc = {"rooms": [], "devices": [
+            _fan_mode_device("ahu-unknown", UARIA_FAN_TOPIC, "uaria")]}
+        doc["devices"][0]["capabilities"][0].pop("carel_family")
+        reg = DeviceRegistry(doc)
+        reg.note_mqtt(UARIA_FAN_TOPIC, "7")
+        out = reg.query_devices(["ahu-unknown"])
+        self.assertEqual([c for c in out[0]["capabilities"]
+                          if c["type"] == _MODE_TYPE], [])
+        self.assertEqual(reg.state_blocks_for_topic(UARIA_FAN_TOPIC), [])
+        results, pubs = reg.apply_actions([
+            {"id": "ahu-unknown", "capabilities": [
+                {"type": _MODE_TYPE,
+                 "state": {"instance": "fan_speed", "value": "medium"}}]},
+        ])
+        self.assertEqual(results[0]["capabilities"][0]["status"], C.STATUS_ERROR)
+        self.assertEqual(pubs, [])
 
 
 if __name__ == "__main__":

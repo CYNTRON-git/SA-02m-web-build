@@ -49,6 +49,7 @@ except ImportError:
 
 import bridge_carel  # noqa: E402
 from sa02m_carel import carel_ahu as ca  # noqa: E402
+from sa02m_carel import controls as cc  # noqa: E402
 
 
 class FakeSerial:
@@ -389,6 +390,155 @@ class TestWriteback(unittest.TestCase):
             self.assertEqual(submit.call_args_list, [])
             cb(None, None, types.SimpleNamespace(retain=False, payload=b"1"))
             self.assertEqual(len(submit.call_args_list), 1)
+
+
+class TestWritebackAuditTrail(unittest.TestCase):
+    """Every accepted write leaves one journal line.
+
+    A Carel write used to be silent: on a line running ~1.5 % frame loss,
+    «the fan moved and we do not know why» and «it did not move and we do
+    not know why» were equally unresolvable. The trail is not narrower than
+    the fan — `unit_on` starts an air handler, a larger unexplained movement
+    than a fan step.
+
+    RED FIRST on the unfixed tree: every case FAILED with «AssertionError: no
+    logs of level INFO or higher triggered on dev.carel-COM3-1» — four writes
+    across both families left nothing in the journal at all (measured on
+    bench 1.135, 2026-09-20). Two of these cases were WRITTEN WRONG first and
+    the implementation is what corrected them: a refusal is two lines, not
+    one (the retry line is wanted), and the payload also reaches the journal
+    quoted inside the error a failed conversion raises — so clipping our own
+    field alone did not make the line newline-free.
+    """
+
+    def _logs(self, p, name, payload, level="INFO"):
+        with self.assertLogs(p.log.name, level=level) as caught:
+            with mock.patch.object(bridge_carel.time, "sleep"):
+                p._writeback(name, payload)
+        return caught.output
+
+    def test_an_accepted_write_names_the_control_payload_and_register(self):
+        p, _pub, ser = _poller("uaria", uaria_bank(), address=2)
+        lines = [ln for ln in self._logs(p, "fan_step", "6") if ":fan_step" in ln
+                 or "fan_step" in ln]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("'6'", lines[0])
+        self.assertIn(str(ca.HR_UARIA_FAN_SP), lines[0])
+        self.assertEqual(ser.writes, [("reg", ca.HR_UARIA_FAN_SP, 6)])
+
+    def test_a_clamped_write_records_what_was_actually_written(self):
+        p, _pub, _ser = _poller("uaria", uaria_bank(), address=2)
+        line = self._logs(p, "fan_step", "12")[0]
+        self.assertIn("'12'", line)
+        self.assertIn(str(ca.UARIA_FAN_STEP_MAX), line)
+        self.assertIn("applied", line)
+
+    def test_the_percent_family_is_audited_too(self):
+        p, _pub, _ser = _poller("crst", crst_bank())
+        line = self._logs(p, "fan_supply", "75")[0]
+        self.assertIn("'75'", line)
+        self.assertIn(str(ca.HR_FAN_SUPPLY), line)
+        # «applied» appears only when the clamp actually moved the value:
+        # a percent is written as 75.0, and a string comparison would have
+        # reported every unclamped write as clamped.
+        self.assertNotIn("applied", line)
+
+    def test_a_clamped_percent_still_reports_what_was_written(self):
+        p, _pub, _ser = _poller("crst", crst_bank())
+        line = self._logs(p, "fan_supply", "5")[0]
+        self.assertIn("applied", line)
+        self.assertIn(str(ca.FAN_PCT_MIN), line)
+
+    def test_starting_the_unit_is_audited_with_its_coils(self):
+        p, _pub, _ser = _poller("crst", crst_bank())
+        line = self._logs(p, "unit_on", "1")[0]
+        self.assertIn("unit_on", line)
+        self.assertIn(str(ca.COIL_MA18), line)
+        self.assertIn(str(ca.COIL_BMS_OFF_ON), line)
+
+    def test_every_carel_write_handler_is_audited(self):
+        """Not a sample: each writable control of each family leaves a line.
+
+        The roster comes from the control inventory, so a writable control
+        whose write path leaves no audit line FAILS here — including a
+        control added to the inventory with no handler at all.
+
+        The assertion matches `requested`, NOT `writeback`. Review finding
+        R2, measured: `_writeback`'s own refusal line «carel writeback: no
+        handler for %s» carries the word `writeback`, so the wider match was
+        satisfied by the REFUSAL of a control that was never implemented —
+        a brand-new writable control with no handler and no audit left the
+        suite 42/42 green. `requested` appears only in `_wb_audit`'s own
+        accepted-write line, so only a real audit can satisfy it.
+        """
+        for family, address, bank in (("crst", 1, crst_bank()),
+                                      ("uaria", 2, uaria_bank())):
+            for name in cc.writable_names(family):
+                p, _pub, _ser = _poller(family, bank, address=address)
+                lines = self._logs(p, name, "1")
+                self.assertTrue(
+                    any("requested" in ln for ln in lines),
+                    "%s/%s wrote to the bus without an audit line: %s"
+                    % (family, name, lines),
+                )
+
+    def test_a_bus_retry_is_recorded_once(self):
+        p, _pub, ser = _poller("uaria", uaria_bank(), address=2)
+        calls = {"n": 0}
+        real = ser.write_register
+
+        def flaky(addr, reg, value):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("bus collision")
+            return real(addr, reg, value)
+
+        ser.write_register = flaky
+        lines = self._logs(p, "fan_step", "6", level="WARNING")
+        retries = [ln for ln in lines if "retry" in ln]
+        self.assertEqual(len(retries), 1, lines)
+        self.assertIn("bus collision", retries[0])
+
+    def test_a_refused_write_records_the_payload_it_refused(self):
+        p, _pub, ser = _poller("uaria", uaria_bank(), address=2)
+
+        def dead(*_a, **_kw):
+            raise OSError("no response")
+
+        ser.write_register = dead
+        lines = self._logs(p, "fan_step", "6", level="WARNING")
+        # A refusal is TWO lines, and both are wanted: the bus was retried
+        # once (base class) and the write still failed.
+        self.assertEqual(len([ln for ln in lines if "retry" in ln]), 1, lines)
+        refused = [ln for ln in lines if "carel writeback" in ln]
+        self.assertEqual(len(refused), 1, lines)
+        self.assertIn("'6'", refused[0])
+        self.assertIn("no response", refused[0])
+
+    def test_no_payload_can_forge_or_flood_a_journal_line(self):
+        """The MQTT payload is attacker-influenced on the LAN, and it reaches
+        the journal twice: in our own field, and quoted inside the message a
+        failed conversion raises. BOTH are repr'd and clipped, so no line
+        this module writes can carry a raw newline or grow unbounded.
+        """
+        p, _pub, _ser = _poller("crst", crst_bank())
+        forge = "80\nSep 20 00:00:00 board sshd[1]: Accepted password for root"
+        # Unparseable on purpose: a 5000-digit NUMBER is accepted (it clamps),
+        # and it is the REFUSAL path that quotes the payload back.
+        flood = "8" * 5000 + "x"
+
+        # Accepted write: the payload is parsed, so only our field carries it.
+        line = self._logs(p, "fan_supply", forge)[0]
+        self.assertNotIn("\n", line)
+        self.assertIn("\\n", line)
+        self.assertIn("…", line)
+
+        # Refused write: the ValueError quotes the payload back at us.
+        for evil in (forge + "x", flood):
+            p, _pub, _ser = _poller("crst", crst_bank())
+            for line in self._logs(p, "fan_supply", evil, level="WARNING"):
+                self.assertNotIn("\n", line)
+                self.assertLess(len(line), 400, line)
 
 
 class TestFamilyResolution(unittest.TestCase):

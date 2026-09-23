@@ -30,7 +30,14 @@ PCO = "carel-COM3-1"
 UARIA = "carel-COM3-2"
 
 _STATUS = ["plant_state", "unit_status", "alarm", "pump", "alarm_text"]
-_ALWAYS = ["return_water_temperature", "heat_valve", "fan_speed", "fan_step"]
+_COMMON = ["return_water_temperature", "heat_valve"]
+# Since 1.0.6.50 the fan reading follows the family: a c.pCOmini declares the
+# percent row, a uAria the step row, and an unknown family (no cache file yet)
+# still declares both. docs/contracts/carel-ahu.md §6.
+_CRST_FAN = ["fan_speed"]
+_UARIA_FAN = ["fan_step"]
+_BOTH_FANS = _CRST_FAN + _UARIA_FAN
+_MODE_TYPE = "devices.capabilities.mode"
 
 
 def _carel(did: str, mid: str, extra_props=None) -> dict:
@@ -122,15 +129,25 @@ class _LiveCache:
             json.dump(payload, fh)
 
 
-_FULL_CONTROLS = {
+# One controller publishes ONE fan control; the pre-1.0.6.50 fixture gave the
+# same device both, which no unit on the bus can do — and the family is read
+# off exactly this key set.
+_CRST_CONTROLS = {
     "unit_on": "1", "setpoint": "21.0", "supply_temp": "19.5",
     "return_water_temp": "44.1", "heat_valve": "37", "fan_supply": "60",
-    "fan_step": "2", "plant_state": "run", "unit_status_text": "Run",
+    "sys_mode": "1", "plant_state": "run", "unit_status_text": "Run",
     "alarm": "0", "pump": "1", "alarm_text": "",
     # Unfitted analogue: the poller publishes a retained 0.0 with error=r.
     "outdoor_temp": "0.0",
     # Fitted analogue: a real reading and no error flag.
     "room_temp": "21.7",
+}
+_UARIA_CONTROLS = {
+    "unit_on": "1", "setpoint": "21.0", "supply_temp": "19.5",
+    "return_water_temp": "44.1", "heat_valve": "37", "fan_step": "2",
+    "plant_state": "run", "unit_status_text": "Run",
+    "alarm": "0", "pump": "1", "alarm_text": "",
+    "outdoor_temp": "0.0",
 }
 
 
@@ -140,14 +157,16 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
         self.addCleanup(self.cache.close)
 
     def test_dead_probe_dropped_live_probe_bound_status_rows_added(self):
-        self.cache.write(PCO, _FULL_CONTROLS, {"outdoor_temp": "r"})
+        self.cache.write(PCO, _CRST_CONTROLS, {"outdoor_temp": "r"})
         doc = {"rooms": [], "devices": [_light(1), _carel("pco", PCO)]}
         reg = DeviceRegistry(doc, profile=C.PROFILE_CLOUD)
 
         by_id = {d["id"]: d for d in reg.discovery_devices(C.PROFILE_CLOUD)}
         insts = _instances(by_id["pco"])
-        for inst in ["temperature"] + _STATUS + _ALWAYS:
+        for inst in ["temperature"] + _STATUS + _COMMON + _CRST_FAN:
             self.assertIn(inst, insts)
+        self.assertNotIn("fan_step", insts,
+                         "a c.pCOmini declares no step reading")
         self.assertIn("room_temperature", insts, "live room probe must bind")
         self.assertNotIn("outdoor_temperature", insts,
                          "error=r probe must not become a reported °C")
@@ -160,7 +179,7 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
         self.assertEqual(_instances(by_id["light-1"]), [])
 
     def test_yandex_profile_sees_none_of_the_cloud_only_rows(self):
-        self.cache.write(PCO, _FULL_CONTROLS, {})
+        self.cache.write(PCO, _CRST_CONTROLS, {})
         doc = {"rooms": [], "devices": [_carel("pco", PCO)]}
         reg = DeviceRegistry(doc, profile=C.PROFILE_YANDEX)
         entry = reg.discovery_devices(C.PROFILE_YANDEX)[0]
@@ -169,6 +188,20 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
         self.assertNotIn("/devices/%s/controls/room_temp" % PCO, topics)
         self.assertNotIn("/devices/%s/controls/plant_state" % PCO, topics)
 
+    def test_the_fan_control_is_the_one_row_that_does_reach_yandex(self):
+        """Every other row this module adds is `cloud_only`; the fan-speed
+        mode is a control, and it must survive the Yandex profile — in
+        discovery AND in the MQTT subscription that feeds its state."""
+        self.cache.write(PCO, _CRST_CONTROLS, {})
+        doc = {"rooms": [], "devices": [_carel("pco", PCO)]}
+        reg = DeviceRegistry(doc, profile=C.PROFILE_YANDEX)
+        entry = reg.discovery_devices(C.PROFILE_YANDEX)[0]
+        modes = [c for c in entry["capabilities"] if c["type"] == _MODE_TYPE]
+        self.assertEqual(len(modes), 1, entry["capabilities"])
+        self.assertEqual(modes[0]["parameters"]["instance"], "fan_speed")
+        self.assertIn("/devices/%s/controls/fan_supply" % PCO,
+                      reg.subscribe_topics())
+
     def test_no_live_cache_is_unknown_not_dead(self):
         """Bridge not running yet (boot order): a hand-bound probe stays,
         nothing optional is invented, the status rows still appear."""
@@ -176,16 +209,23 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
             _carel("ua", UARIA, [_hand_bound_outdoor(UARIA)]),
         ]}
         reg = DeviceRegistry(doc, profile=C.PROFILE_CLOUD)
-        insts = _instances(reg.discovery_devices(C.PROFILE_CLOUD)[0])
+        entry = reg.discovery_devices(C.PROFILE_CLOUD)[0]
+        insts = _instances(entry)
         self.assertIn("outdoor_temperature", insts)
         self.assertNotIn("room_temperature", insts)
-        for inst in _STATUS + _ALWAYS:
+        for inst in _STATUS + _COMMON + _BOTH_FANS:
             self.assertIn(inst, insts)
+        self.assertEqual(
+            [c for c in entry["capabilities"] if c["type"] == _MODE_TYPE], [],
+            "an unknown family must not be given a fan control to write")
 
     def test_cache_saying_dead_drops_a_hand_bound_probe(self):
-        self.cache.write(UARIA, _FULL_CONTROLS, {"outdoor_temp": "r"})
+        # On the c.pCOmini: `room_temp` is a crst-only control
+        # (sa02m_carel.controls), and the probe rule under test is the same
+        # on either family.
+        self.cache.write(PCO, _CRST_CONTROLS, {"outdoor_temp": "r"})
         doc = {"rooms": [], "devices": [
-            _carel("ua", UARIA, [_hand_bound_outdoor(UARIA)]),
+            _carel("ua", PCO, [_hand_bound_outdoor(PCO)]),
         ]}
         reg = DeviceRegistry(doc, profile=C.PROFILE_CLOUD)
         insts = _instances(reg.discovery_devices(C.PROFILE_CLOUD)[0])
@@ -195,7 +235,7 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
     def test_unconfigured_control_is_not_bound(self):
         """A cache without the control name at all (the family has no such
         point) binds nothing for it — configured AND error-free is the rule."""
-        controls = {k: v for k, v in _FULL_CONTROLS.items()
+        controls = {k: v for k, v in _CRST_CONTROLS.items()
                     if k not in ("outdoor_temp", "room_temp")}
         self.cache.write(PCO, controls, {})
         doc = {"rooms": [], "devices": [_carel("pco", PCO)]}
@@ -207,21 +247,21 @@ class TestAhuRowsReachTheCatalogue(unittest.TestCase):
     def test_the_stored_document_object_is_never_rewritten(self):
         """In-memory catalogue only: the operator's document (and any dict a
         caller handed in) keeps exactly the rows the operator saved."""
-        self.cache.write(PCO, _FULL_CONTROLS, {})
+        self.cache.write(PCO, _CRST_CONTROLS, {})
         doc = {"rooms": [], "devices": [_carel("pco", PCO)]}
         before = copy.deepcopy(doc)
         DeviceRegistry(doc, profile=C.PROFILE_CLOUD)
         self.assertEqual(doc, before)
 
     def test_reload_re_reads_the_live_cache(self):
-        self.cache.write(PCO, _FULL_CONTROLS, {"outdoor_temp": "r", "room_temp": "r"})
+        self.cache.write(PCO, _CRST_CONTROLS, {"outdoor_temp": "r", "room_temp": "r"})
         doc = {"rooms": [], "devices": [_carel("pco", PCO)]}
         reg = DeviceRegistry(doc, profile=C.PROFILE_CLOUD)
         insts = _instances(reg.discovery_devices(C.PROFILE_CLOUD)[0])
         self.assertNotIn("room_temperature", insts)
         # The probe came alive; the next catalogue build (a document reload)
         # must pick it up.
-        self.cache.write(PCO, _FULL_CONTROLS, {"outdoor_temp": "r"})
+        self.cache.write(PCO, _CRST_CONTROLS, {"outdoor_temp": "r"})
         reg.reload(copy.deepcopy(doc))
         insts = _instances(reg.discovery_devices(C.PROFILE_CLOUD)[0])
         self.assertIn("room_temperature", insts)

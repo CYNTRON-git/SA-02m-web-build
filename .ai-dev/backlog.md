@@ -44,6 +44,174 @@ branch stay marked until the next prune).
   decision: wear vs durability — `commit=5..30` and/or `data=ordered` in the image's fstab /
   `tune2fs -o` defaults, or targeted fsync in every config writer (the
   `sa02m_atomic_install` shape, BUGLOG 2026-09-08). Record: `docs/bugs/BUGLOG.md` 2026-09-16 16:40.
+- [RESOLVED 1.0.6.50] 2026-09-20 **[MED] Every Carel device declares a fan binding its controller cannot have.**
+  `opt/sa02m-alice/sa02m_alice/config/ahu_status.py` `_FLOAT_ROWS` emits BOTH
+  `("fan_speed","fan_supply","unit.percent")` and `("fan_step","fan_step","unit.step")` for every
+  `kind=carel` device, while `docs/contracts/carel-ahu.md` §5 says `fan_supply` exists only on crst
+  (c.pCOmini) and `fan_step` only on uAria. Measured on bench 1.135: COM3-1 (crst) publishes
+  fan_supply 80.0 / no fan_step, COM3-2 (uaria) publishes fan_step 7 / no fan_supply — the DATA is
+  family-correct, only the declaration is not. Inert today (both rows `cloud_only`, the absent one
+  reports `present:false`), and it becomes a live defect when the Alice fan capability ships: a uAria
+  would declare a percent control nothing publishes and `_wb_fan` cannot write (no `HR_FAN_SUPPLY`).
+  FIX: make the two fan rows family-aware — `_OPTIONAL_FLOAT_ROWS` (:62-65) is the existing
+  mechanism — and correct the contract in the same change.
+  **Second finding, same root:** `carel-ahu.md` §7 claims the Devices tab picks the family by the
+  PRESENCE of `fan_step`. It does not: `www/network_config/static/js/devices.js:698` branches on
+  `d.family === "uaria"`, and `bridge_carel.py:69` resolves that field from the YAML entry or the
+  FC17 signature. The tab is correct today; the CONTRACT is wrong and is what sent the cloud session
+  hunting a symptom that does not exist. No `devices.js` change is needed.
+  **Hard constraint from the cloud session — do NOT drop the float rows:** `fan_speed`/`fan_step` are
+  not valid Yandex float instances, so both rows must keep `cloud_only: true`; an out-of-schema
+  Discovery response makes every device on that account vanish from the app.
+  **[SUPERSEDED — see «CLAIM RETRACTED» below: that last clause is not true as written.]**
+  The float-row instruction itself stands; only the stated consequence was withdrawn. Shipment 2 adds ONE
+  `devices.capabilities.mode` (instance `fan_speed`) BESIDE them, percent-backed on c.pCOmini and
+  step-backed on uAria. Open on the cloud side: the value vocabulary (per-family vs shared) — their
+  Operator's product call.
+  Honest note for the CHANGELOG when this ships: the narrowing alone changes nothing a user sees
+  (`present:false` and «absent» render identically); its value is a truthful declaration and a safe
+  shipment 2. Scope of any config write: bench 1.135 ONLY (six Skolkovo boards are on 1.0.6.37 and
+  10 of 13 enrolled devices have been offline since 09-07/08). Deploy order: board → cloud.
+  **UPDATE 2026-09-20 — the cloud Operator merged the two shipments into one and settled the
+  vocabulary.** One release: family-aware float rows AND the Alice capability, verified on the bench
+  in one pass. One shared vocabulary for both families, `devices.capabilities.mode` instance
+  `fan_speed`, five values — quiet/low/medium/high/turbo = 20/40/60/80/100 % on crst and
+  steps 2/4/6/8/10 on uAria. `auto` deliberately absent (no auto register on c.pCOmini).
+  Read-back clamps to NEAREST, ties round up. Constants VERIFIED here, and note the path their brief
+  gives is wrong — they live in `opt/sa02m-carel/sa02m_carel/carel_ahu.py`, not under
+  `opt/sa02m-modbus-mqtt/`: `FAN_PCT_MIN=20.0` (:103), `FAN_PCT_MAX=100.0` (:104),
+  `UARIA_FAN_STEP_MIN=1` (:105), `UARIA_FAN_STEP_MAX=10` (:106), `HR_FAN_SUPPLY=53` (:44),
+  `HR_UARIA_FAN_SP=197` (:69, USINT steps 1..10). Their caveat is correct: step 1 = 10 % is below
+  anything a c.pCOmini accepts, so the unified scale starts at 20 %.
+  **Wart to record in the plan, inherent to 5 names over a continuous range:** read-back and set are
+  asymmetric at off-vocabulary values — a uAria at step 1 reports `quiet`, but tapping `quiet`
+  writes step 2 and MOVES the fan; a c.pCOmini at 73 % reports `high`, tapping `high` writes 80.
+  Acceptable, but it must be stated, not discovered by a customer.
+  Note for the Builder: `.ai-dev/quality/checks/carel-shared-home.sh` gates the one-home rule for the
+  Carel register map — the new mapping module must not open a second home for these constants.
+  **SETTLED 2026-09-20 (cloud Operator).** The read/write asymmetry is ACCEPTED AS DESIGNED —
+  nearest-clamp on read, unconditional write on set — chosen over the per-family `quiet`=step 1
+  alternative because that one fixes a single case and buys back the cross-family divergence the
+  «приведи к единому виду» instruction existed to remove. **Binding: this is contract text, not a
+  code comment** — it goes into `docs/contracts/carel-ahu.md` beside the mapping table, in
+  customer-facing wording («выбор режима, в котором устройство уже показано, всё равно записывает
+  значение этого режима; на промежуточных значениях это сдвинет вентилятор»). Without it the first
+  support ticket becomes an investigation, which is the cost the decision was made to avoid.
+  Final brief: one shipment; one `devices.capabilities.mode`/`fan_speed` BESIDE the float rows
+  (which keep `cloud_only: true`); five values 20/40/60/80/100 % ≡ steps 2/4/6/8/10; no `auto`;
+  constants CONSUMED from `opt/sa02m-carel/sa02m_carel/carel_ahu.py` (a restated 20 or 10 is a second
+  home and turns `carel-shared-home` red); `_FLOAT_ROWS` narrowed per family first; §5/§7 corrections
+  ride along; config write on bench 1.135 only; deploy board → cloud. Joint bench pass agreed:
+  COM3-2 `fan_step` 7→6→7, then COM3-1 `fan_supply` 80→75→80 (both off-vocabulary on purpose —
+  they exercise nearest-clamp while proving the raw value still reaches the cloud intact).
+  **BENCH PASS DONE 2026-09-20 17:48-17:52 (joint, cloud session drove the writes, this session
+  watched the wire).** uAria COM3-2 `fan_step` 7→6→7 and c.pCOmini COM3-1 `fan_supply` 80→75→80,
+  both confirmed by two independent watches; unit stayed running, supply temp unchanged; the
+  off-vocabulary 6 and 75.0 reached the cache EXACT, so nearest-clamp is a presentation rule only —
+  measured, not inferred. Line behaviour: a write costs ~5 extra frame errors per 2-min window and
+  zero offline events on COM3-1; COM3-2's two offline events sat inside its own rate (9 per 80 min).
+  Recorded as «bus disturbance NOT SUPPORTED» rather than «ruled out» — one clean pair of windows is
+  evidence, not proof. NOT exercised today (nothing to exercise yet): the Alice capability, the
+  mapping, a tap from the app.
+  **NEW REQUIREMENT that ships WITH the capability — write-backs are silent in the journal.** Four
+  writes across both families left zero trace: no arriving topic/payload, no resolved register, no
+  clamped value, no retry count, no outcome. `_wb_done`/`_wb_write_retry` in `bridge_carel.py` carry
+  no logging. Tolerable while only a deliberate MQTT publish reaches the path; unacceptable once a
+  customer's app button moves a real fan on a line that loses ~1.5 % of frames — both «it moved and
+  we do not know why» and «it did not move and we do not know why» become unanswerable, and the log
+  is what keeps the ACCEPTED read/write asymmetry cheap to support. Log spec (cloud session's
+  wording, better than ours): arriving topic + payload, resolved register + clamped value, whether
+  the retry wrapper fired and how many attempts, outcome. Write path only — do not add noise to the
+  poll loop, which already logs its own failures.
+  **Deploy risk lowered:** the cloud half is labels-only (`fan_step` gets «Ступень вентилятора» /
+  «Ступ.», `unit.step` keeps its empty suffix) and is independent of ours in BOTH directions, so
+  board → cloud is a preference for coherence, not a dependency — if our release lands first their
+  page simply keeps its current labels. **Offered and ACCEPTED for ship time:** before/after the
+  1.135 config write they re-run their bench chain against our build (board conf → hub catalogue →
+  built function, byte-compared) — the check that catches a mapping module quietly changing what the
+  catalogue publishes.
+  Operator's go given 2026-09-20 (full cycle + bench pass). Branch `1.0.6.50` cut; planning under way.
+  **CLAIM RETRACTED 2026-09-20 (cloud session), superseding the «Hard constraint» paragraph above.**
+  «An out-of-schema Discovery response makes every device on that account vanish from the app» is
+  NOT established: it lived in their repo as two docstrings with no primary source, no recorded
+  observation, and nobody had measured it. **Their research has since CONCLUDED (2026-09-20)**;
+  the conclusion, attributed to them and with its missing citations stated, is recorded once in
+  `docs/contracts/carel-ahu.md` §6. The BEHAVIOUR the retracted claim was used to justify is
+  unchanged — `cloud_only` on both float rows, the mode item validated at write time — and now
+  rests on the cost that conclusion names (one rejected device until the next Discovery), not on
+  the retracted one. The verified fact that should carry the weight instead: Discovery
+  is ON DEMAND, so nothing reaches an app until the user taps «Обновить список устройств» (their
+  `docs/yandex-smart-home-rules.md` §5; our own record of the same behaviour is in
+  `docs/contracts/alice-mqtt-mapping.md`). Every site where THIS repo stated the claim as fact was
+  introduced on branch 1.0.6.50 and is corrected in it (`config/models.py`, `config/ahu_status.py`,
+  `tests/test_models.py`, `docs/contracts/carel-ahu.md`); `git show origin/main` carries none of it.
+  **RESOLVED in 1.0.6.50.** Family-true fan rows + one `devices.capabilities.mode`/`fan_speed`
+  (shared four-name ladder, positions written once, the percent side DERIVED from the map limits,
+  in the new one-home module
+  `opt/sa02m-carel/sa02m_carel/carel_fan.py`), the write-back audit trail across every Carel
+  handler, the mode schema closed in `models.py`, and the contract corrected — §6 (not §5: §5 was
+  already right) plus the §7 layer clarification. Two further findings fixed in the same change,
+  both recorded here because the next sweep would otherwise re-derive them:
+  (1) the brief's claim that «a restated 20 or 10 turns `carel-shared-home` red» was FALSE at HEAD —
+  case 5 swept two coil needles, neither a fan constant; widened, and the registry text corrected in
+  the same change;
+  (2) that same sweep was COMMENT-BLIND — `grep -rlF` counted `#FAN_PCT_MIN = 20.0` as a definition,
+  so its non-vacuity half could not be turned RED by the one mutation it exists to survive, and a
+  commented-out copy elsewhere read as a live second home. Every hit is now confirmed through
+  `lib_check.sh`, and the case is registered in `comment-mutation-proof`.
+  STILL OPEN, carried out of this entry into its own line below: the `comment-mutation-proof`
+  enumeration gap for `04-flasher.sh` (plan F4), and the exact official Yandex value set for
+  `devices.capabilities.mode` instance `fan_speed` (plan F5 — we admit auto/quiet/low/medium/high/
+  turbo and declare only the five; the set was NOT verified against a canonical source).
+- [OPEN] 2026-09-20 **[LOW] `comment-mutation-proof` does not case `carel-shared-home` for
+  `04-flasher.sh`.** Cases exist for `05-mqtt.sh`, `06-alice.sh` and `update-www-only.sh`, though
+  case 1 of the gate pins `04-flasher.sh` identically — so a commented-out installer call there is
+  the one of the four the mutation proof does not measure. Same shape as the widening done in
+  1.0.6.50; deliberately left out of that change, which already carried two structural forks.
+  FIX: one CASES row plus the run that proves it RED. Own branch.
+- [RESOLVED 1.0.6.50] 2026-09-20 **[LOW] The Yandex value set for `devices.capabilities.mode` /
+  `fan_speed` is unverified.** Verified at source during review round 2: `auto` IS in the
+  recommended set, and the per-instance lists are ADVISORY («Допускается использовать любые
+  комбинации режимов работы и функций без ограничений»), so a wider allowlist is not a hole.
+  `models.MODE_INSTANCES` keeps auto/quiet/low/medium/high/turbo and the comment now cites
+  https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode-instance and .../mode-instance-modes
+  instead of «unverified». Excluding `auto` from what we DECLARE is a product choice (no auto fan
+  register on a c.pCOmini), not a schema limit. Same round: the vocabulary itself became the
+  recommended four (low/medium/high/turbo = 20/40/70/100 % = steps 2/4/7/10); `quiet` was the one
+  value outside the recommended set and was dropped.
+- [OPEN] 2026-09-23 **[LOW] Follow-ups found while shipping 1.0.6.50 (Carel fan) — none is in that
+  release, each is its own change.**
+  1. **Observability: the Alice client logs no POSITIVE line when it builds a catalogue.** After an
+     install, the only board-side evidence that the new code runs is indirect: the client's
+     restart time, the ABSENCE of the fail-soft «sa02m_carel not importable» warning, and re-running
+     the Discovery generator against the installed /opt trees. Those prove the running process
+     loads the right code, not that it emitted the control. A one-line INFO on catalogue build
+     (device count, capability types per device) would make post-install verification direct.
+  2. **The «Умный дом» window writes an undocumented `parameters: {"instance": "on"}` on every
+     `on_off`** (9 of 12 capabilities on bench 1.135). Yandex's Discovery schema defines one
+     optional `on_off` parameter, `split`; `instance` belongs in the STATE object. The Operator's
+     app check on 2026-09-23 shows Yandex tolerates it silently (15 of 15 devices visible,
+     control works), so this is cleanup, not an outage. Fix centrally in `discovery_devices` so
+     documents already saved on boards are covered too.
+  3. **Setpoint `range` is 0..99 for both Carel families; uAria's real ceiling is 50 °C.** The
+     bridge clamps at write time (70 is written as 50), so this is presentational: the top of the
+     slider maps to one setpoint. It was unfixable while the window could not tell the family;
+     1.0.6.50 introduces the family resolver, so the window can now narrow it. Same window as 2 —
+     one branch. `random_access` is the documented key if the setpoint should step, not jump.
+  4. **`ui-layout` binds a fixed port (8902, `UI_LAYOUT_PORT`).** Two concurrent quality runs on
+     one machine make the second fail with EADDRINUSE, reported as a red `ui-layout` row that is
+     indistinguishable at a glance from a layout regression (hit 2026-09-20). Either pick a free
+     port or report a bind failure as an infrastructure error, not a gate FAIL.
+  5. **«LED лента» brightness and colour are `cloud_only`**, so Alice can only switch it on/off.
+     Likely deliberate, but brightness is bound as `range` 0..255 with `unit.percent`, which
+     Yandex would not accept as-is (percent is 0..100). Operator's call whether Alice should dim it.
+  6. **Wording advisories from the 1.0.6.50 final review** (`.ai-dev/reviews/1.0.6.50_review.md`,
+     transient): A1 `carel-ahu.md` §6 «установлено независимо» carries a recovery clause its cited
+     page does not support — end the sentence earlier or point it at the cloud conclusion; A2 the
+     stated reason for keeping the §6 retraction is weak — the strong reason is that the claim lives
+     in the cloud team's repo, where readers of this contract may have met it; A3 two lines over
+     80 columns (cosmetic, no limit configured). Also carried: `test_device_registry.py` is ~1000
+     lines, a split candidate.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a

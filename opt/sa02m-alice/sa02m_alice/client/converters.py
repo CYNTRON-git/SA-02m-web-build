@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
+from ..common import carel_import
 from ..common import constants as C
 
 
@@ -276,16 +277,78 @@ def yandex_to_color_setting(state: Dict[str, Any]) -> Tuple[Optional[str], Optio
     return None, C.ERR_INVALID_ACTION
 
 
+def mqtt_to_mode(
+    raw: str, parameters: Optional[Dict[str, Any]] = None, *,
+    family: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Bus payload → the mode name Yandex shows.
+
+    The whole mapping belongs to `sa02m_carel.carel_fan` (one home, derived
+    from the register map). Nothing is invented here: an unknown family, a
+    missing package or an unreadable payload yields NO block, the same "omit
+    rather than fabricate" rule the float converter follows.
+    """
+    carel_fan = carel_import.carel_fan()
+    if carel_fan is None:
+        return None
+    mode = carel_fan.mode_from_value(family, raw)
+    if mode is None:
+        return None
+    params = parameters or {}
+    instance = str(params.get("instance") or "fan_speed")
+    return {
+        "type": "devices.capabilities.mode",
+        "state": {"instance": instance, "value": mode},
+    }
+
+
+def yandex_to_mode(
+    state: Dict[str, Any], *,
+    parameters: Optional[Dict[str, Any]] = None,
+    family: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Mode name → the bus payload. Return (mqtt_payload, error_code).
+
+    Unconditional by design: choosing the name a unit is already shown at
+    still writes that name's value (docs/contracts/carel-ahu.md §6). An
+    unknown WORD is INVALID_VALUE — the app asked for something real that we
+    cannot express; an unusable family or a missing package is
+    INVALID_ACTION — this device has no such control at all.
+    """
+    if not isinstance(state, dict):
+        return None, C.ERR_INVALID_VALUE
+    params = parameters or {}
+    instance = str(params.get("instance") or "fan_speed")
+    if str(state.get("instance") or instance) != instance:
+        return None, C.ERR_INVALID_ACTION
+    carel_fan = carel_import.carel_fan()
+    if carel_fan is None or not carel_fan.modes_for(family):
+        return None, C.ERR_INVALID_ACTION
+    value = state.get("value")
+    if not isinstance(value, str):
+        return None, C.ERR_INVALID_VALUE
+    payload = carel_fan.payload_for_mode(family, value)
+    if payload is None:
+        return None, C.ERR_INVALID_VALUE
+    return payload, None
+
+
 def capability_mqtt_to_yandex(
     cap_type: str,
     raw: str,
     parameters: Optional[Dict[str, Any]] = None,
     inverted: bool = False,
+    *,
+    family: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    """`family` is KEYWORD-ONLY on purpose: `inverted` is passed positionally
+    at every existing call site, and a positional family would bind to it."""
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return mqtt_to_on_off(raw, parameters, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return mqtt_to_range(raw, parameters)
+    if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
+        return mqtt_to_mode(raw, parameters, family=family)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
         return mqtt_to_color_setting(raw, parameters)
     return None
@@ -308,11 +371,14 @@ def capability_yandex_to_mqtt(
     current_raw: Optional[str] = None,
     parameters: Optional[Dict[str, Any]] = None,
     inverted: bool = False,
+    family: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     if cap_type.endswith("on_off") or cap_type == "devices.capabilities.on_off":
         return yandex_to_on_off(state, inverted=inverted)
     if cap_type.endswith("range") or cap_type == "devices.capabilities.range":
         return yandex_to_range(state, current_raw=current_raw, parameters=parameters)
+    if cap_type.endswith("mode") or cap_type == "devices.capabilities.mode":
+        return yandex_to_mode(state, parameters=parameters, family=family)
     if cap_type.endswith("color_setting") or cap_type == "devices.capabilities.color_setting":
         return yandex_to_color_setting(state)
     return None, C.ERR_INVALID_ACTION

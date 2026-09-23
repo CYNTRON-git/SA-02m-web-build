@@ -30,6 +30,15 @@ python3 -c "import paho.mqtt" 2>/dev/null || sa02m_pkg_install_tier optional pyt
 python3 -c "import yaml"      2>/dev/null || sa02m_pkg_install_tier optional python3-yaml
 sa02m_pip_install socketio "python-socketio[client]"
 
+# ── Shared Carel package, BEFORE the Alice tree that imports it ────────────
+# The catalogue and the converters read the cloud fan vocabulary from
+# sa02m_carel.carel_fan (docs/contracts/carel-ahu.md §6). Ordered first so a
+# torn run leaves {new package, old client} — which still runs — and never
+# {new client, no package}. The client's import is fail-soft either way: it
+# withholds the fan-speed control and keeps running. Pinned by the quality row
+# `carel-shared-home` (case 3).
+sa02m_install_carel_pkg "$BASE_DIR"
+
 # ── Package tree ───────────────────────────────────────────────────────────
 install -d -m 0755 -o root -g root "$INSTALL_DIR"
 log INFO "Копирую $OPT_SRC → $INSTALL_DIR"
