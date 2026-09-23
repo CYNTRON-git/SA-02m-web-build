@@ -11,6 +11,7 @@ across three audits); the entry module re-exports every public name.
 from __future__ import annotations
 
 import os
+import re
 import struct
 import time
 import threading
@@ -38,6 +39,84 @@ FMB_EVT_DISCRETE = 0x01   # DI discrete, 1 byte payload
 FMB_EVT_HOLDING  = 0x02   # AO holding, 2 bytes payload (BE)
 FMB_EVT_INPUT    = 0x03   # DI/AI input, 2 bytes payload (BE)
 FMB_EVT_REBOOT   = 0x0F   # device rebooted, 0 bytes payload
+
+
+# ── UART error counters (/proc/tty/driver/serial) ─────────────────────────────
+# Line-level evidence for RS-485 errors: framing (fe), break (brk) and overrun
+# (oe) counts per 8250 UART. Bench 1.135 (2026-09-23): only COM3 (ttyS4) counts
+# fe/brk — a line-level signature the transaction errors alone cannot show.
+UART_PROC_PATH = "/proc/tty/driver/serial"
+_UART_KEYS = ("fe", "brk", "oe")
+_UART_NUM_RE = re.compile(r"\b(fe|brk|oe):(\d+)\b")
+
+
+def parse_uart_counters(text: str, index: int) -> dict[str, int] | None:
+    """Counters of UART line `index` from /proc/tty/driver/serial text.
+
+    A key the kernel omits (it prints only non-zero counters) is 0; a line
+    that is not there at all is None (unreadable, never a silent zero).
+    """
+    prefix = "%d:" % index
+    for line in (text or "").splitlines():
+        if line.startswith(prefix):
+            vals = dict.fromkeys(_UART_KEYS, 0)
+            for key, num in _UART_NUM_RE.findall(line):
+                vals[key] = int(num)
+            return vals
+    return None
+
+
+def uart_line_index(port_path: str) -> int | None:
+    """/dev/COM3 → /dev/ttyS4 → 4; None for a port that is not an 8250 ttyS
+    (a USB adapter has no line in /proc/tty/driver/serial)."""
+    m = re.fullmatch(r"ttyS(\d+)", os.path.basename(os.path.realpath(port_path)))
+    return int(m.group(1)) if m else None
+
+
+class UartCounterDelta:
+    """Per-port `uart fe=+N brk=+N oe=+N` suffix for the port stats line:
+    deltas since the previous call (the first baseline is read at creation).
+    One /proc read per call; unreadable → empty suffix and one DEBUG line,
+    never an exception (polling must not break on a missing /proc)."""
+
+    def __init__(self, port_path: str, reader=None, logger=None):
+        self._port_path = port_path
+        self._reader = reader or self._read_proc
+        self._log = logger or log
+        self._index = uart_line_index(port_path)
+        self._warned = False
+        self._prev = self._read()
+
+    @staticmethod
+    def _read_proc() -> str:
+        with open(UART_PROC_PATH, encoding="ascii", errors="replace") as f:
+            return f.read()
+
+    def _read(self) -> dict[str, int] | None:
+        vals = None
+        why = ""
+        if self._index is None:
+            why = "not an 8250 ttyS port"
+        else:
+            try:
+                vals = parse_uart_counters(self._reader(), self._index)
+                if vals is None:
+                    why = "line %d: absent" % self._index
+            except Exception as e:
+                why = str(e)
+        if vals is None and not self._warned:
+            self._warned = True
+            self._log.debug("uart counters unavailable for %s (%s)",
+                            self._port_path, why)
+        return vals
+
+    def suffix(self) -> str:
+        cur = self._read()
+        prev, self._prev = self._prev, cur
+        if cur is None or prev is None:
+            return ""
+        return " uart " + " ".join(
+            "%s=+%d" % (k, max(0, cur[k] - prev[k])) for k in _UART_KEYS)
 
 
 # ── CRC16 & Modbus frame builders ──────────────────────────────────────────────
@@ -179,6 +258,11 @@ class ModbusSerial:
         self._inter_frame_delay_s = max(0.0, float(inter_frame_delay_s))
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()
+        # Timing of the last frame read (_read_rtu_response): ms from the
+        # reader's start (right after write+flush) to the first and the last
+        # byte, the largest gap between two arrivals, and the raw byte count.
+        # Read by _transact to explain a failed transaction.
+        self._last_rx: dict | None = None
         # Приоритет записей над поллом: threading.Lock не fair, и поток
         # непрерывного полла перехватывает лок обратно раньше ожидающего
         # writeback-worker'а (+2-3 транзакции ≈ +0.3-0.5 с к echo DO).
@@ -202,6 +286,16 @@ class ModbusSerial:
         tlim = timeout if timeout is not None else self._timeout
         char_time = _rtu_char_time_s(self._baudrate)
         post_send = max(0.001, min(0.02, char_time * 3.5 + 0.002))
+        t_start = time.monotonic()
+        rx = {"first": None, "last": None, "gap": 0.0, "n": 0}
+
+        def done(frame: bytes) -> bytes:
+            ms = (lambda t: None if t is None else (t - t_start) * 1000.0)
+            self._last_rx = {"first_ms": ms(rx["first"]),
+                             "last_ms": ms(rx["last"]),
+                             "gap_ms": rx["gap"] * 1000.0, "n": rx["n"]}
+            return frame
+
         time.sleep(post_send)
         deadline = time.monotonic() + tlim
         buf = b""
@@ -209,30 +303,51 @@ class ModbusSerial:
         silence = max(0.02, char_time * 3.5)
         while time.monotonic() < deadline:
             if ser.in_waiting:
-                buf += ser.read(ser.in_waiting)
+                chunk = ser.read(ser.in_waiting)
+                buf += chunk
                 last_recv = time.monotonic()
+                if rx["last"] is not None:
+                    rx["gap"] = max(rx["gap"], last_recv - rx["last"])
+                if rx["first"] is None:
+                    rx["first"] = last_recv
+                rx["last"] = last_recv
+                rx["n"] += len(chunk)
                 if (len(request) > 0 and len(buf) > len(request)
                         and buf[:len(request)] == request):
                     buf = buf[len(request):]
                 flen = _modbus_read_frame_len(buf)
                 if flen and len(buf) >= flen:
-                    return buf[:flen]
+                    return done(buf[:flen])
             elif buf and (time.monotonic() - last_recv) >= silence:
                 if (len(request) > 0 and len(buf) > len(request)
                         and buf[:len(request)] == request):
                     buf = buf[len(request):]
                 flen = _modbus_read_frame_len(buf)
                 if flen and len(buf) >= flen:
-                    return buf[:flen]
+                    return done(buf[:flen])
                 # Кадр «замолчал», а длина не распознана — битый ответ;
                 # не жечь остаток таймаута (как frame_timeout wb-mqtt-serial).
                 if (time.monotonic() - last_recv) >= max(0.06, silence * 3):
-                    return buf
+                    return done(buf)
             time.sleep(0.001)
         if (len(request) > 0 and len(buf) > len(request)
                 and buf[:len(request)] == request):
             buf = buf[len(request):]
-        return buf
+        return done(buf)
+
+    def _rx_evidence(self, resp: bytes) -> str:
+        """` [rx first=… last=… gap=… head=… tail=…]` for a failed transaction:
+        a late first byte → timeout; a gap inside the reply → the slave paused
+        mid-frame; leading junk in head → the line (see UartCounterDelta)."""
+        rx = self._last_rx or {}
+
+        def ms(key: str) -> str:
+            v = rx.get(key)
+            return "-" if v is None else "%.0fms" % v
+
+        return " [rx first=%s last=%s gap=%s head=%s tail=%s]" % (
+            ms("first_ms"), ms("last_ms"), ms("gap_ms"),
+            bytes(resp[:8]).hex(), bytes(resp[-8:]).hex() if resp else "")
 
     def _ensure_open(self) -> serial.Serial:
         if self._ser is None or not self._ser.is_open:
@@ -271,17 +386,21 @@ class ModbusSerial:
             ser.reset_input_buffer()
             ser.write(request)
             ser.flush()
+            self._last_rx = None
             resp = self._read_rtu_response(ser, request, timeout=timeout)
             if len(resp) < expected:
-                raise IOError(f"Short response: {len(resp)}/{expected} bytes")
+                raise IOError(f"Short response: {len(resp)}/{expected} bytes"
+                              + self._rx_evidence(resp))
             recv_crc = resp[-2] | (resp[-1] << 8)
             if crc16(resp[:-2]) != recv_crc:
-                raise IOError(f"CRC mismatch on FC{request[1]:02X}")
+                raise IOError(f"CRC mismatch on FC{request[1]:02X}"
+                              + self._rx_evidence(resp))
             # Как wb-mqtt-serial (TUnexpectedResponseError): при коллизии на
             # шине чужой валидный кадр не должен сойти за ответ (D5 аудита).
             if resp[0] != request[0]:
                 raise IOError(
-                    f"Slave id mismatch: sent {request[0]}, got {resp[0]}")
+                    f"Slave id mismatch: sent {request[0]}, got {resp[0]}"
+                    + self._rx_evidence(resp))
             if resp[1] & 0x80:
                 raise IOError(
                     f"Modbus exception {resp[2]} on FC{request[1] & 0x7F:02X}")
