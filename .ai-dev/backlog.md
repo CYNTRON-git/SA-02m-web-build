@@ -230,15 +230,17 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh`) promises the journal
   survives a reboot. Measured on 1.135: `armbian-ramlog.service` is DISABLED and `/var/log` is on
   the eMMC (ext4), but the cron hook `armbian-truncate-logs` still runs every 15 min, calls
-  `journalctl --relinquish-var` (journal goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`)
-  and vacuums; the persistent journal is written back only at the midnight flush. Result: the
+  `journalctl --relinquish-var` (journal goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`);
+  it truncates and vacuums only at ≥75 % disk use (1.135 is at 64 %). The persistent journal is
+  written back only at the midnight flush (logrotate's `armbian-ramlog write`). Result: the
   journal loses the middle of the day under a noisy bus (gaps 22 Sep 00:00→18:37, 23 Sep
   00:00→06:00), and a power cut loses the day FROM THE JOURNAL VIEW. The text `/var/log/syslog`
   on the eMMC still has every line (5,196 lines for 22 Sep 12:00), so the data is not lost. Only
   the `journalctl -b -1` post-mortem the drop-in advertises is. (First filed 2026-09-23 as [HIGH]
   «RAM-only until midnight, a power cut loses the day»; that premise was wrong. Corrected the
-  same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix planned
-  in 1.0.6.51; the direction is the Operator's fork.
+  same day by the 1.0.6.51 planner's measurement and re-checked by the orchestrator.) Fix in
+  1.0.6.51 (Operator decision A-1: Armbian hooks off, journal persistent, 1-min sync; reaches a
+  board only via a full install or the next golden image, not OTA).
 - [OPEN] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
   the flood caps journal retention at ~1.5 days.** Measured after the 1.0.6.50 deploy, rate unchanged
   across it (not caused by it): carel-COM3-1/-2, mr02m-COM3-10, led-COM3-13 all log `Short response`
@@ -246,16 +248,14 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   holds `/dev/ttyS4`; mplc4 holds no tty, the flasher is idle — so no second master ON THE BOARD.
   Open: a master elsewhere on the wire, termination/wiring, or one babbling device (unplug-one-at-a-
   time settles it). Consequence for 1.0.6.50: the write-back audit line lives in a journal that
-  loses the middle of each day. Measured config: Armbian ramlog (`/etc/default/armbian-ramlog`
-  ENABLED, 50M), `armbian-truncate-logs` every 15 min runs `journalctl --relinquish-var` (logging
-  goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`, 15M in use) and vacuums; the persistent
-  journal (`SystemMaxUse=20M`) is written at the midnight flush (archived files all stamped
-  00:00:16–00:00:23). Inferred, fits both observed gaps (22 Sep 00:00:18→18:37, 23 Sep 00:00→06:00):
-  at ~6,460 lines/h the 16M runtime journal holds only ~5–6 h, so everything older than that at the
-  next flush is gone. A write-back audit line therefore survives ~5–6 h under this flood, not a day.
-  Operator decides: fix the bus first (also shrinks the flood), size the runtime/ramlog journal,
-  or a separate audit sink. «22 Sep 18:00» is a retention edge, not the onset (cloud session +
-  re-checked here).
+  loses the middle of each day — the mechanism and its correction are in the journal entry above
+  (armbian-ramlog is DISABLED; the 15-min `armbian-truncate-logs` hook relinquishes the journal to
+  `/run`, `RuntimeMaxUse=16M`; midnight flush). Inferred, fits both observed gaps (22 Sep
+  00:00:18→18:37, 23 Sep 00:00→06:00): at ~6,460 lines/h the 16M runtime journal holds ~5–6 h, so
+  a write-back audit line survives ~5–6 h under this flood, not a day. Journal side fixed in
+  1.0.6.51 (A-1); the bus itself: Operator decision «data first» — B3 diagnostics ship in
+  1.0.6.51, the COM3 fix follows in 1.0.6.52 on 1 h of bench data. «22 Sep 18:00» is a retention
+  edge, not the onset (cloud session + re-checked here).
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
