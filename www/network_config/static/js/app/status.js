@@ -1551,6 +1551,18 @@ function _webUpdLegacyStatus(j) {
 function _webUpdStageText(j) {
   if (!j || typeof j !== 'object') return '';
   var stage = String(j.stage || '').trim();
+  if (j.stale === true) {
+    // The CGI saw no live runner for the transaction (docs/contracts/web-update.md
+    // «GET — состояние»): say where it stopped and what the operator does next —
+    // recover at boot hands a complete tree to sa02m-update-verify, so the reboot
+    // finishes the update instead of rolling it back (1.0.6.52).
+    var stageLabel = WEB_UPD_STAGE_UI[stage] || stage || '—';
+    return 'Обновление прервано на этапе «' + uiT(stageLabel) + '». Перезагрузите плату — при загрузке проверка завершится сама.';
+  }
+  if (stage === 'rolled_back') {
+    var rm = j.error_message != null ? String(j.error_message) : '';
+    return rm ? ('Выполнен откат: ' + rm) : WEB_UPD_STAGE_UI.rolled_back;
+  }
   if (stage === 'applying') {
     var done = Number(j.files_done);
     var total = Number(j.files_total);
@@ -1587,6 +1599,7 @@ function _webUpdShowLog(log) {
 }
 
 function _webUpdIsTerminal(j) {
+  if (j && j.stale === true) return true;   // the runner is gone — nothing will move this
   var stage = String((j && j.stage) || '').trim();
   if (stage === 'done' || stage === 'error' || stage === 'cancelled' ||
       stage === 'rolled_back') return true;
@@ -1966,14 +1979,16 @@ function _webUpdApplyTxnUI(j) {
   var stage = String(j.stage || '');
   var kind = 'is-warn';
   if (stage === 'done' || _webUpdLegacyStatus(j) === 'done') kind = 'is-ok';
-  else if (stage === 'error' || _webUpdLegacyStatus(j) === 'error') kind = 'is-err';
+  else if (stage === 'error' || _webUpdLegacyStatus(j) === 'error' || j.stale === true) kind = 'is-err';
   if (txt) _webUpdSetStatus(txt, kind);
   var pct = j.progress_pct;
   if (pct == null && j.files_total > 0) {
     pct = Math.round((Number(j.files_done) / Number(j.files_total)) * 100);
   }
   // Stage text lives in #web-upd-status only — do not repeat it under the bar.
-  if (_webUpdIsBusy(j) || pct != null) {
+  if (j.stale === true) {
+    _webUpdSetProgress(null, '');   // a frozen 85 % bar is the symptom, not information
+  } else if (_webUpdIsBusy(j) || pct != null) {
     var progLab = (pct != null && Number.isFinite(Number(pct)))
       ? (Math.max(0, Math.min(100, Math.round(Number(pct)))) + '%')
       : '';
@@ -2010,9 +2025,11 @@ function _webUpdPollOnce() {
       _webUpdApplyTxnUI(j);
       if (_webUpdIsTerminal(j)) {
         _webUpdPollInFlight = false;
+        var keepText = (j.stale === true || j.stage === 'rolled_back') ? _webUpdStageText(j) : '';
         _webUpdFinish(
           (j.stage === 'done' || _webUpdLegacyStatus(j) === 'done') ? 'done' : 'error',
-          j.log || j.error_message || ''
+          j.log || j.error_message || '',
+          keepText
         );
         return;
       }
@@ -2037,7 +2054,7 @@ function _webUpdStartPolling() {
   _webUpdPollOnce();
 }
 
-function _webUpdFinish(status, log) {
+function _webUpdFinish(status, log, text) {
   var checkBtn = document.getElementById('web-upd-check-btn');
   var fileApply = document.getElementById('web-upd-file-apply-btn');
   var cancelBtn = document.getElementById('web-upd-file-cancel-btn');
@@ -2056,7 +2073,9 @@ function _webUpdFinish(status, log) {
     toast('Обновление применено успешно', 'success');
     setTimeout(function () { location.reload(); }, 5000);
   } else {
-    _webUpdSetStatus('Ошибка обновления. См. Журнал событий.', 'is-err');
+    // `text` — a specific terminal line (stale / rolled back with a reason)
+    // that must survive the finish; the generic line only when there is none.
+    _webUpdSetStatus(text || 'Ошибка обновления. См. Журнал событий.', 'is-err');
     _webUpdSetProgress(null, '');
     webUpdSetOnlineApplyEnabled(webUpdOnlineApplyAllowed(_webUpdLastCheck));
     toast('Ошибка обновления', 'error');

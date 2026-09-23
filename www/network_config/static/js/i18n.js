@@ -1646,6 +1646,8 @@
     [/^Обновление отменено$/u, 'Update cancelled'],
     [/^Откат…$/u, 'Rolling back…'],
     [/^Выполнен откат$/u, 'Rolled back'],
+    [/^Выполнен откат: (.+)$/u, 'Rolled back: $1'],
+    [/^Обновление прервано на этапе «(.+)»\. Перезагрузите плату — при загрузке проверка завершится сама\.$/u, 'Update interrupted at stage “$1”. Reboot the board — verification completes at boot.'],
     [/^Пакет загружен$/u, 'Package uploaded'],
     [/^Резервная копия скачана$/u, 'Backup downloaded'],
     [/^Отмена запрошена$/u, 'Cancel requested'],
