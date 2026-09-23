@@ -443,6 +443,15 @@
       "init": "bash + coreutils (systemd-run is shimmed; flock optional — its absence prints one SKIP) — run on demand: bash scripts/dev/test-update-cgroup-escape.sh"
     },
     {
+      "id": "web-update-launcher-guard",
+      "checks": "Functional RED/GREEN harness for the GitHub OTA launcher's running-transaction guard (etc/sa02m-web-update-apply.sh, `sudo -n sa02m-web-update-apply` from the panel) — plan 1.0.6.52 F5b / premise P2: the offline POST path answers E_LOCK busy on a running stage but the GitHub POST path had no such check, so a second «Применить» cloned again and its handoff OVERWROTE transaction.json under the live runner. Runs the REAL launcher end to end in a sandbox (SA02M_WEB_BUILD_STATEDIR — the legacy lock/status/log dir, the same seam the CGI honours — and SA02M_UPDATE_STATEDIR), a PATH-first git shim that records its argv and FAILS the clone so every run stops right after the guard, a systemctl shim answering inactive, and a live-runner fixture whose argv[0] is sa02m-update-runner. Asserts: L1 a transaction at applying with a live runner → exit 1, NO clone, update_status=error, the refusal logged; L2 a dead runner (stale transaction) → the launch proceeds to the clone (re-apply is a recovery path); L3 no transaction → proceeds; L4 stage=done with a live pid in a stale lock → proceeds; L5 the pre-existing legacy launcher lock still refuses a second launcher. Liveness is the same test as cgi-bin/lib_web_update.sh — a second copy by necessity (a root helper must not source a www-data-writable file); keep the two in step. RED observed 2026-09-23 on 6ba943d (L1 clones; the pre-fix launcher also ignores SA02M_WEB_BUILD_STATEDIR): recorded in the header. Non-vacuous: an unreadable launcher FAILS.",
+      "config": null,
+      "run": "bash scripts/dev/test-web-update-launcher-guard.sh",
+      "beat": "build",
+      "covers": ["etc/sa02m-web-update-apply.sh", "scripts/dev/test-web-update-launcher-guard.sh"],
+      "init": "bash + python3 + coreutils (git/systemctl are shimmed) — run on demand: bash scripts/dev/test-web-update-launcher-guard.sh"
+    },
+    {
       "id": "imaging-samefile-guard",
       "checks": "Static gate for tools/imaging/make-image.sh: the KEEP_RAW_IMG publish path must not cp/rm a file onto/of itself. FINAL_IMG_WORK and FINAL_IMG_KEEP resolve to the SAME $WORK/<name>.img path (and FINAL_IMG can after a keep/rescue reassignment), so an unguarded cp errors 'are the same file' and aborts under set -e (observed on the 2026-08-20 golden capture: .img.xz published but the raw .img cp crashed), and an unguarded trailing rm would delete the kept raw image. Asserts (a) safe_publish_to_out early-returns on src -ef dst; (b) the raw self-copy is -ef guarded; (c) the trailing FINAL_IMG_WORK rm is -ef FINAL_IMG guarded; (d) the KEEP_RAW_IMG block still exists. Non-vacuous: removing a guard FAILS the gate. COMMENT-SAFE (1.0.6.24): every needle is matched against comment-stripped text (.ai-dev/quality/checks/lib_check.sh), so commenting a pinned line out FAILS the gate instead of satisfying it; proven per gate by the comment-mutation-proof row.",
       "config": null,

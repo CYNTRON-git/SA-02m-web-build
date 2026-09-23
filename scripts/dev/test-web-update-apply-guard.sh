@@ -254,6 +254,60 @@ expect_get "G4 stage=done, 600 s old, lock pid dead" False done None
 # G5 a transaction that already carries a code keeps it when it goes stale
 printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","stage":"rolling_back","progress_pct":90,"result":"pending","error_code":"E_HEALTH","error_message":"unit not active: nginx (inactive)","updated_at":"%s"}\n' "$OLD_TS" > "$UPD/transaction.json"
 expect_get "G5 rolling_back, 600 s old, dead pid, own code" True error E_HEALTH
+# ═══ R. reboot.cgi refuses while a LIVE runner works, reboots a stale one ═══
+# (1.0.6.52, F5a) A hard reset mid-apply was one click away: reboot.cgi ran
+# `reboot -f` with no look at the transaction. Now: applying / verifying /
+# committing / rolling_back AND a live runner → E_UPDATE_RUNNING, no sudo; a
+# STALE transaction (runner gone) stays rebootable — the reboot IS its recovery
+# path (recover → sa02m-update-verify at boot). The sudo chain of reboot.cgi
+# runs inside a nohup'd `sh -c` whose stdout is redirected into
+# /var/log/sa02m_install.log — absent on a dev host, so the shell never starts
+# it there and «sudo called» is observable only as an ABSENCE; the ok:true body
+# is the positive observable for the rebootable cases.
+# RED, observed 2026-09-23 on the 1.0.6.50 reboot.cgi: R1 answers ok:true (it
+# refuses nothing); R2–R4 hold on both trees.
+echo
+echo "── R. reboot.cgi vs a running update ──"
+REBOOT_CGI="$(dirname "$CGI")/reboot.cgi"
+[ -f "$REBOOT_CGI" ] || { bad "R reboot.cgi not found beside the CGI: $REBOOT_CGI"; }
+export SA02M_UPDATE_STATEDIR="$UPD"
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+run_reboot() {  # [csrf]
+  rm -f "$T/sudo.calls"
+  printf '{}' | REQUEST_METHOD=POST CONTENT_LENGTH=2 QUERY_STRING='' \
+    HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="${1:-$CSRF}" \
+    bash "$REBOOT_CGI" 2>/dev/null | tr -d '\r'
+}
+# R1 live runner at applying → refused, no sudo
+write_txn applying "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+body=$(run_reboot); sleep 1.5
+if printf '%s' "$body" | grep -q '"error_code":"E_UPDATE_RUNNING"' && printf '%s' "$body" | grep -q '"ok":false' && ! sudo_called; then
+  ok "R1 live runner at applying → E_UPDATE_RUNNING, no reboot"
+else
+  bad "R1 live runner at applying → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no) (want E_UPDATE_RUNNING, no sudo)"
+fi
+# R2 stale transaction (runner gone) → rebootable
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+body=$(run_reboot)
+printf '%s' "$body" | grep -q '"ok":true' && ok "R2 stale transaction (dead runner) → reboot allowed (the recovery path)" \
+  || bad "R2 stale transaction → body: ${body##*$'\n\n'} (want ok:true)"
+# R3 terminal stage with a live pid in the lock → rebootable
+write_txn done "$(now_utc)"; printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
+body=$(run_reboot)
+printf '%s' "$body" | grep -q '"ok":true' && ok "R3 stage=done → reboot allowed" \
+  || bad "R3 stage=done → body: ${body##*$'\n\n'} (want ok:true)"
+# R4 CSRF still first: wrong token → E_CSRF, no sudo, even with a live runner
+write_txn applying "$(now_utc)"
+body=$(run_reboot "wrong-token"); sleep 1.5
+if printf '%s' "$body" | grep -q '"error_code":"E_CSRF"' && ! sudo_called; then ok "R4 wrong CSRF → E_CSRF before the update guard, no reboot"
+else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
 rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
 unset SA02M_UPDATE_STATEDIR
 

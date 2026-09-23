@@ -655,10 +655,19 @@ function doReboot() {
         throw new Error((t || '').trim().slice(0, 120) || ('HTTP ' + r.status));
       }
       const j = await r.json().catch(() => ({}));
-      if (j && j.ok === false) throw new Error(j.error || 'отклонено');
+      if (j && j.ok === false) {
+        // A live update runner: the board postponed the reboot (reboot.cgi
+        // E_UPDATE_RUNNING, 1.0.6.52) — not an error, the update finishes first.
+        if (j.error_code === 'E_UPDATE_RUNNING') return null;
+        throw new Error(j.error || 'отклонено');
+      }
       return j;
     })
-    .then(() => {
+    .then((j) => {
+      if (j === null) {
+        toast('Идёт обновление — перезагрузка отложена', 'info', 8000);
+        return;
+      }
       toast('Перезагрузка… страница обновится через 60 с', 'info', 65000);
       setTimeout(() => location.reload(), 60000);
     })

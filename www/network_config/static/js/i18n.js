@@ -667,6 +667,7 @@
     'Проверить': 'Check',
     // web_update_apply.cgi E_CHECK_STALE (docs/contracts/web-update.md).
     'Сведения об обновлении устарели — нажмите «Проверить»': 'Update information is stale — click Check',
+    'Идёт обновление — перезагрузка отложена': 'Update in progress — reboot postponed',
     'Загрузка': 'Loading',
     'Обновить список': 'Refresh List',
     'Командная строка': 'Command Line',
