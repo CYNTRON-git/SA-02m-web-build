@@ -122,8 +122,13 @@ def logger_tick(target, state: LoggerState, *, now_m: float | None = None) -> No
 
 def _sleep_until(end: float, stopped) -> None:
     """Sleep in <=0.2 s slices until monotonic `end` or until `stopped()`."""
-    while not stopped() and time.monotonic() < end:
-        time.sleep(min(0.2, end - time.monotonic()))
+    while not stopped():
+        # One clock read per slice: a second read could land past `end` and
+        # hand sleep() a negative length (ValueError — the 1.135 crash loop).
+        rem = end - time.monotonic()
+        if rem <= 0:
+            break
+        time.sleep(min(0.2, rem))
 
 
 def main() -> int:
