@@ -258,7 +258,11 @@ Two optional device-level keys beside `room_id`, validated by
 Discovery per profile (`device_registry.discovery_devices(profile)`): the
 Yandex profile carries only the Yandex fields; the **cloud profile lists every
 device** and adds `alice_visible` + `icon` to each entry (additive — the cloud
-page is its only consumer).
+page is its only consumer). An `on_off` capability's stored `parameters` may
+carry `instance` (the window writes `{"instance": "on"}`); the Yandex profile
+sends only a bool `split` and omits `parameters` when nothing is left, so
+`instance` never reaches Yandex (1.0.6.51); the cloud profile sends the stored
+`parameters` unchanged. Validating: `tests/test_discovery_on_off.py`.
 
 ### Carel AHU rows at catalogue build (1.0.6.39)
 

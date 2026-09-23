@@ -423,8 +423,16 @@ class DeviceRegistry:
                         "retrievable": bool(item.get("retrievable", True)),
                         "reportable": bool(item.get("reportable", True)),
                     }
-                    if item.get("parameters"):
-                        block["parameters"] = item["parameters"]
+                    params = item.get("parameters")
+                    if (not cloud and params
+                            and item.get("type") == "devices.capabilities.on_off"):
+                        # Yandex documents one on_off parameter, bool `split`;
+                        # the window stores `instance: on` too — never sent
+                        # (docs/contracts/alice-mqtt-mapping.md, Discovery).
+                        split = params.get("split") if isinstance(params, dict) else None
+                        params = {"split": split} if isinstance(split, bool) else None
+                    if params:
+                        block["parameters"] = params
                     # Cloud catalogue only: Yandex has no `writable`. Absent
                     # stays omitted (fleet treats missing as True). Explicit
                     # false is a latching DI — the fleet 400s on_off.
