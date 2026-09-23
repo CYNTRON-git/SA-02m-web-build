@@ -185,7 +185,9 @@ fi
 # POST, and mint the file when it is missing (the same self-scoped act login.cgi
 # performs). RED on 91157d5 (1.0.6.52): the CGI does not exist — the file check
 # above exits 1 («FAIL not found: …/csrf_token.cgi»).
-token_of() { printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"csrf":"\([a-f0-9]*\)".*/\1/p' | head -1; }
+# Capture, then take the first line in-shell (quality-gate-rigor.md shape f: no
+# producer piped into an early-exit consumer under pipefail).
+token_of() { local v; v=$(printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"csrf":"\([a-f0-9]*\)".*/\1/p'); printf '%s' "${v%%$'\n'*}"; }
 
 # ═══ 11. GET with a live session → ok:true + the lib's token for THAT session ═
 body=$(run_cgi "$TOKEN" GET '' '' "$TOK" '')

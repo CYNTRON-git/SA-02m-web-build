@@ -418,7 +418,8 @@ exit 0
 SHIM
   chmod +x "$BIN/sudo"
 }
-status_of() { printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p' | head -1; }
+# Capture, then take the first line in-shell (quality-gate-rigor.md shape f).
+status_of() { local v; v=$(printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p'); printf '%s' "${v%%$'\n'*}"; }
 sudo_count() { if [ -f "$T/sudo.calls" ]; then wc -l < "$T/sudo.calls" | tr -d ' '; else echo 0; fi; }
 
 # H1 fast handoff: the launcher is gone, the runner it exec'd holds its lock → running
