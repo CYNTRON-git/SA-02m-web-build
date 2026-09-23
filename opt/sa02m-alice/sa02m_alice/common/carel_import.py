@@ -1,8 +1,9 @@
 """Fail-soft access to the shared Carel package (`/opt/sa02m-carel`).
 
 The Alice catalogue and the Alice converters need the cloud fan vocabulary
-(`sa02m_carel.carel_fan`), which lives with the register map it is derived
-from — one home, shared with the flasher daemon and the Modbus-MQTT bridge
+(`sa02m_carel.carel_fan`) and the catalogue needs the family setpoint bounds
+(`sa02m_carel.controls.SETPOINT_RANGE`), which live with the register map
+they are derived from — one home, shared with the flasher daemon and the Modbus-MQTT bridge
 (docs/contracts/carel-ahu.md §2). That package is on no service's PYTHONPATH,
 so the path dance is the `bridge_carel._import_carel()` one; what is different
 here is that a failure must NOT be fatal.
@@ -34,6 +35,8 @@ _CAREL_DIR_DEFAULT = "/opt/sa02m-carel"
 
 _resolved = False
 _carel_fan: Optional[Any] = None
+_controls_resolved = False
+_carel_controls: Optional[Any] = None
 
 
 def _candidates() -> list:
@@ -78,8 +81,34 @@ def carel_fan() -> Optional[Any]:
     return _carel_fan
 
 
+def carel_controls() -> Optional[Any]:
+    """`sa02m_carel.controls`, or None when the package is not installed.
+
+    Same resolve-once, fail-soft path as `carel_fan()` — which it goes
+    through first, so the sys.path dance and the one WARNING for a missing
+    package stay in one place.
+    """
+    global _controls_resolved, _carel_controls
+    if _controls_resolved:
+        return _carel_controls
+    _controls_resolved = True
+    if carel_fan() is None:
+        _carel_controls = None
+        return None
+    try:
+        from sa02m_carel import controls as module
+        _carel_controls = module
+    except ImportError as exc:
+        log.warning("sa02m_carel.controls not importable (%s) — the Carel "
+                    "setpoint keeps its stored range", exc)
+        _carel_controls = None
+    return _carel_controls
+
+
 def _reset_for_tests() -> None:
     """Forget the resolution. Tests only — the one-shot cache is the point."""
-    global _resolved, _carel_fan
+    global _resolved, _carel_fan, _controls_resolved, _carel_controls
     _resolved = False
     _carel_fan = None
+    _controls_resolved = False
+    _carel_controls = None

@@ -185,7 +185,13 @@ c.pCOmini их две (сменилась с программы 2.02.xx.52, вы
 
 - `devices.capabilities.on_off` → `unit_on`;
 - `devices.capabilities.range`, instance `temperature` → `setpoint`
-  (границы обязательны: crst 0..99, uaria 0..50, шаг 0,5);
+  (границы обязательны: crst 0..99, uaria 0..50, шаг 0,5). Окно пишет 0..99
+  для любого Carel, поэтому документ на плате может хранить 0..99 и у uAria;
+  границы семейства (`sa02m_carel.controls.SETPOINT_RANGE`) применяет сборка
+  каталога — в памяти, только сужая (с 1.0.6.51): Алиса видит у uAria 0..50,
+  а сохранённый документ не переписывается. Неизвестное семейство или плата без
+  пакета `sa02m-carel` — остаётся сохранённый диапазон. Проверка —
+  `opt/sa02m-alice/tests/test_carel_setpoint_range.py`;
 - `devices.properties.float`, instance `temperature` → `supply_temp` —
   единственная температура, которую видит Алиса;
 - **облачные элементы** с флагом `cloud_only: true`: `return_water_temperature`,
