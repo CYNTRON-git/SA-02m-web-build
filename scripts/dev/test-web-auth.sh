@@ -275,6 +275,37 @@ else
     bad "30 web_csrf_require did not stop the request: $out"
 fi
 
+# 30a–30d (1.0.6.53): a refusal NAMES its reason — `reason` ∈ no_header |
+# mismatch | no_token_file | no_session — so the panel can tell a proxy that
+# strips the header (cloud.cyntron.ru, 2026-09-23) from a session that lost its
+# token, and stop logging the user out over a transit failure. The decision
+# itself is unchanged (cases 23–29 above); the reason is metadata on the deny.
+# RED on 91157d5 (1.0.6.52): no `reason` field in the body, WEB_CSRF_FAIL_REASON unset.
+csrf_reason() {   # <label> <cookie> <header> <expected reason> — via web_csrf_require's body
+    local label="$1" out
+    out=$( HTTP_COOKIE="$2" HTTP_X_SA02M_CSRF="$3" \
+           bash -c ". '$LIB'; web_csrf_require; echo REACHED_BODY" 2>/dev/null )
+    if [[ "$out" == *'"error_code":"E_CSRF"'* && "$out" == *"\"reason\":\"$4\""* && "$out" != *REACHED_BODY* ]]; then
+        ok "$label -> reason $4"
+    else
+        bad "$label -> expected reason '$4' in the E_CSRF body, got: ${out##*$'\n\n'}"
+    fi
+}
+csrf_reason "30a header absent"           "session_token=$TOK"  ""        no_header
+csrf_reason "30b wrong token"             "session_token=$TOK"  deadbeef  mismatch
+csrf_reason "30c .csrf file missing"      "session_token=$TOK2" "$CSRF2"  no_token_file
+csrf_reason "30d no session cookie"       ""                    "$CSRF"   no_session
+# The reason is also exposed to an inline caller (web_csrf_validate + its own
+# JSON): the variable the CGI reads after a deny.
+HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="deadbeef" web_csrf_validate
+[ "${WEB_CSRF_FAIL_REASON:-}" = mismatch ] \
+    && ok "30e web_csrf_validate leaves WEB_CSRF_FAIL_REASON=mismatch for an inline caller" \
+    || bad "30e WEB_CSRF_FAIL_REASON after a wrong token is '${WEB_CSRF_FAIL_REASON:-<unset>}', expected mismatch"
+HTTP_COOKIE="session_token=$TOK" HTTP_X_SA02M_CSRF="$CSRF" web_csrf_validate
+[ -z "${WEB_CSRF_FAIL_REASON:-}" ] \
+    && ok "30f a valid token clears WEB_CSRF_FAIL_REASON" \
+    || bad "30f WEB_CSRF_FAIL_REASON is '${WEB_CSRF_FAIL_REASON}' after a VALID token — a stale reason would be printed on the next deny"
+
 # Sample the store's high-water mark HERE, while both sessions and their CSRF
 # files are still live: §4 below revokes everything, so a count taken at the end
 # would be zero on a perfectly healthy run. This is the non-vacuity floor case 56

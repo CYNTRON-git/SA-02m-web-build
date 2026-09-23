@@ -45,8 +45,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
 CGI_DIR="${CGI_DIR:-www/network_config/cgi-bin}"
 SCAN="$CGI_DIR/mqtt_scan.cgi"
 CHECK="$CGI_DIR/web_update_check.cgi"
+TOKEN="$CGI_DIR/csrf_token.cgi"
 LIB="$CGI_DIR/lib_web_auth.sh"
-for f in "$SCAN" "$CHECK" "$LIB"; do
+for f in "$SCAN" "$CHECK" "$TOKEN" "$LIB"; do
   [ -f "$f" ] || { echo "FAIL  not found: $f"; exit 1; }
 done
 
@@ -174,6 +175,68 @@ if has "$b1" '"error":"unauthorized"' && [ "$s1" = no ] && has "$b2" '"error":"u
   ok "10 unknown session → unauthorized on both, no launch (auth first)"
 else
   bad "10 unknown session → scan: $b1 (sudo $s1); check: $b2 (sudo $s2)"
+fi
+
+# ═══ 11–14. csrf_token.cgi (1.0.6.53): the session's own token, GET-only ═════
+# The panel refreshes its X-SA02M-CSRF value through this endpoint instead of
+# logging the user out on E_CSRF (a session older than the sa02m_csrf cookie —
+# the upgrade window — or a token file gone). It must hand the token ONLY to
+# the session named by the cookie (web_session_check_cookie first), never on a
+# POST, and mint the file when it is missing (the same self-scoped act login.cgi
+# performs). RED on 91157d5 (1.0.6.52): the CGI does not exist — the file check
+# above exits 1 («FAIL not found: …/csrf_token.cgi»).
+token_of() { printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"csrf":"\([a-f0-9]*\)".*/\1/p' | head -1; }
+
+# ═══ 11. GET with a live session → ok:true + the lib's token for THAT session ═
+body=$(run_cgi "$TOKEN" GET '' '' "$TOK" '')
+if has "$(body_tail "$body")" '"ok":true' && [ "$(token_of "$body")" = "$CSRF" ] && ! sudo_called; then
+  ok "11 token GET + session → ok:true, csrf == the session's token, no sudo"
+else
+  bad "11 token GET + session → want ok:true + csrf=$CSRF; got: $(body_tail "$body"); sudo: $(sudo_state)"
+fi
+# The headers it promises: JSON, never cached, not sniffable (the token must not
+# be script-embeddable from another origin).
+hdrs=$(REQUEST_METHOD=GET QUERY_STRING='' CONTENT_LENGTH=0 HTTP_COOKIE="session_token=$TOK" bash "$TOKEN" </dev/null 2>/dev/null | tr -d '\r' | sed '/^$/q')
+if has "$hdrs" 'Cache-Control: no-store' && has "$hdrs" 'X-Content-Type-Options: nosniff' && has "$hdrs" 'application/json'; then
+  ok "11b token GET → Content-type JSON, Cache-Control no-store, nosniff"
+else
+  bad "11b token GET headers → got: $(printf '%s' "$hdrs" | tr '\n' '|')"
+fi
+
+# ═══ 12. no / unknown session → unauthorized, no token, nothing minted ═══════
+body=$(run_cgi "$TOKEN" GET '' '' "$NOSESSION" '')
+if has "$(body_tail "$body")" '"error":"unauthorized"' && [ -z "$(token_of "$body")" ] && ! has "$(body_tail "$body")" '"csrf"'; then
+  ok "12 token GET, unknown session → unauthorized, no csrf field"
+else
+  bad "12 token GET, unknown session → got: $(body_tail "$body")"
+fi
+
+# ═══ 13. a session whose .csrf file is gone: the GET mints one, a POST with it validates ═
+TOK3=$(web_session_create admin)
+rm -f "$SA02M_SESSION_DIR/$(printf '%s' "$TOK3" | sha256sum | cut -d' ' -f1).csrf"
+body=$(run_cgi "$CHECK" POST 'force=1' '' "$TOK3" 'anything')
+expect_refused "13a POST with a token-less session (upgrade window) → E_CSRF, no launch" "$body" '"error_code":"E_CSRF"'
+body=$(run_cgi "$TOKEN" GET '' '' "$TOK3" '')
+NEWTOK=$(token_of "$body")
+if [[ "$NEWTOK" =~ ^[a-f0-9]{64}$ ]] && [ "$NEWTOK" != "$CSRF" ]; then
+  ok "13b token GET mints a fresh per-session token for the token-less session"
+else
+  bad "13b token GET for the token-less session → got: $(body_tail "$body")"
+fi
+printf '%s\n' "$FIXTURE_CHECK" > "$STATE/check.json"
+body=$(run_cgi "$CHECK" POST 'force=1' '' "$TOK3" "$NEWTOK")
+if sudo_called && has "$(body_tail "$body")" '"fixture":"csrf-behaviour"'; then
+  ok "13c the minted token validates the next POST (the helper runs)"
+else
+  bad "13c POST with the minted token → want the launch; sudo: $(sudo_state); body: $(body_tail "$body")"
+fi
+
+# ═══ 14. POST to the token endpoint → method_not_allowed, no token ══════════
+body=$(run_cgi "$TOKEN" POST '' '{}' "$TOK" '')
+if has "$(body_tail "$body")" '"error":"method_not_allowed"' && ! has "$(body_tail "$body")" '"csrf"'; then
+  ok "14 token POST → method_not_allowed, no token"
+else
+  bad "14 token POST → got: $(body_tail "$body")"
 fi
 
 echo
