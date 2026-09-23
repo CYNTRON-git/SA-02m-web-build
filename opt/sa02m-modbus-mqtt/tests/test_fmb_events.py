@@ -4,7 +4,9 @@ Pure-unit: no serial port, no MQTT broker — fakes only. Pins:
   * DTVPoller / MR02mPoller event-range maps (the MR-02m one is the
     regression pin for the manager-generalization move, 1.0.5.12);
   * dispatch semantics (writeback grace, signed/0x8000, reg→channel maps);
-  * per-range graceful configure_events.
+  * per-range graceful configure_events;
+  * the configure retry backoff for a slave that answers classic polls but
+    never ACKs configure_events (1.0.6.51, the COM2 storm on bench 1.135).
 
 Run dev-side:  python -m unittest discover opt/sa02m-modbus-mqtt/tests
           or:  python -m pytest opt/sa02m-modbus-mqtt/tests
@@ -315,6 +317,129 @@ class TestManagerConfigurePerRange(unittest.TestCase):
         ])
         self.assertEqual(dev["pending"], dev["ranges"])
         self.assertFalse(dev["configured"])
+
+
+# ── 6. Manager: backoff for a slave that never ACKs configure_events ─────────
+class _ReadyPoller:
+    """Classic reads done (the only_ready gate passes); records coverage."""
+
+    device_id = "ce02m3-ut-14"
+
+    def __init__(self):
+        self.covered: list[bool] = []
+
+    def classic_ready_for_fmb(self, min_ok: int = 2) -> bool:
+        return True
+
+    def set_fmb_io_covered(self, covered: bool) -> None:
+        self.covered.append(covered)
+
+    def poll_io(self) -> None:
+        pass
+
+
+class TestManagerUnsupportedBackoff(unittest.TestCase):
+    """Bench 1.135, 2026-09-23: ce02m3-COM2-14 (fast_modbus: true) answers
+    classic polls but never ACKs its two INPUT ranges, so has_configured()
+    stayed False and the run loop's 15 s retry re-ran the full configure pass
+    (3 attempts x 2 ranges x 0.4 s) forever — ~3.4 s of every 15 s of COM2 and
+    1,673 journal lines/h, re-sending the 0x18 frame CHANGELOG 1.0.5.46 records
+    wedging a CE. The retry must back off 15 s → doubling → 15 min."""
+
+    ADDR = 14
+    RANGES = [(bridge.FMB_EVT_INPUT, 500, 3), (bridge.FMB_EVT_INPUT, 510, 4)]
+
+    def setUp(self):
+        import bridge_fmb
+        from unittest import mock
+        self.clock = [1000.0]
+        self.ser = FakeSerial(set())            # nothing is ever ACKed
+        patches = [
+            mock.patch.object(bridge_fmb.time, "monotonic",
+                              lambda: self.clock[0]),
+            mock.patch.object(bridge_fmb.time, "sleep", lambda s: None),
+            mock.patch.object(bridge, "get_port", lambda *a, **k: self.ser),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.mgr = bridge.FastModbusEventPortManager("/dev/COMT", 19200)
+        self.poller = _ReadyPoller()
+        self.mgr.register_device(self.ADDR, "ce02m3-ut-14", list(self.RANGES),
+                                 lambda *a: None, poller=self.poller,
+                                 dev_type="ce02m3")
+        self.dev = self.mgr._devices[self.ADDR]
+
+    def _pass_at(self, t: float) -> int:
+        """Run the run loop's retry at clock t; return frames sent."""
+        self.clock[0] = t
+        n0 = len(self.ser.sent)
+        self.mgr.retry_unconfigured()
+        return len(self.ser.sent) - n0
+
+    def test_retry_escalates_from_15s_doubling_to_900s(self):
+        t0 = 1000.0
+        self.assertGreater(self._pass_at(t0), 0, "first pass must try")
+        expected_gaps = [15, 30, 60, 120, 240, 480, 900, 900]
+        t = t0
+        for gap in expected_gaps:
+            # the run loop calls every 15 s: nothing may reach the bus early
+            probe = t + 15.0
+            while probe < t + gap:
+                self.assertEqual(self._pass_at(probe), 0,
+                                 "configure re-sent %.0f s after the last "
+                                 "failed pass (backoff %d s)" % (probe - t, gap))
+                probe += 15.0
+            t = t + gap
+            self.assertGreater(self._pass_at(t), 0,
+                               "no attempt at +%d s — backoff overshoots" % gap)
+
+    def test_rejected_warning_only_on_the_first_failed_pass(self):
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self._pass_at(1000.0)
+        first = [r for r in cm.records if "rejected" in r.getMessage()]
+        self.assertTrue(first)
+        self.assertTrue(all(r.levelname == "WARNING" for r in first))
+        with self.assertLogs("fmb.COMT", level="DEBUG") as cm:
+            self._pass_at(1015.0)
+        second = [r for r in cm.records if "rejected" in r.getMessage()]
+        self.assertTrue(second, "the second pass must still log (at DEBUG)")
+        self.assertTrue(all(r.levelname == "DEBUG" for r in second),
+                        [r.levelname for r in second])
+
+    def test_config_failed_warning_names_next_attempt_and_pass(self):
+        with self.assertLogs("fmb.COMT", level="WARNING") as cm:
+            self._pass_at(1000.0)
+        msgs = [r.getMessage() for r in cm.records
+                if "config failed" in r.getMessage()]
+        self.assertEqual(len(msgs), 1, msgs)
+        self.assertIn("next attempt in 15 s (pass 1)", msgs[0])
+
+    def test_reboot_event_resets_backoff_to_immediate(self):
+        self._pass_at(1000.0)
+        self._pass_at(1015.0)                   # 2nd failure: next at +30 s
+        self.assertEqual(self._pass_at(1020.0), 0)
+        self.mgr._dispatch(self.ADDR, bridge.FMB_EVT_REBOOT, 0, -1)
+        self.assertEqual(self.dev["fail_passes"], 0)
+        self.assertGreater(self._pass_at(1020.0), 0,
+                           "a reboot event must re-arm configure at once")
+
+    def test_success_resets_fail_passes(self):
+        self._pass_at(1000.0)
+        self._pass_at(1015.0)
+        self.assertEqual(self.dev["fail_passes"], 2)
+        self.ser.ack_types = {bridge.FMB_EVT_INPUT}
+        self._pass_at(1045.0)
+        self.assertTrue(self.dev["configured"])
+        self.assertEqual(self.dev["fail_passes"], 0)
+
+    def test_reconfigure_pending_uses_the_same_backoff(self):
+        # A rebooted-then-silent device on the event-cycle path escalates too.
+        self.dev["fail_passes"] = 3             # already failed 3 passes
+        self.clock[0] = 2000.0
+        self.mgr.reconfigure_pending()
+        self.assertEqual(self.dev["fail_passes"], 4)
+        self.assertEqual(self.dev["retry_at"], 2000.0 + 120.0)
 
 
 if __name__ == "__main__":
