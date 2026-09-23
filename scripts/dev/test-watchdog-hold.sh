@@ -24,7 +24,10 @@
 # COMMENT-STRIPPED through .ai-dev/quality/checks/lib_check.sh: the shared
 # block is byte-identical in ALL THREE homes, install.sh holds and restores
 # it, neither runner keeps a hollow one-liner, and the factory-reset runner
-# releases the hold on an abort.
+# releases the hold on an abort. Since 1.0.6.51 (8D step F): install.sh also
+# holds the USERSPACE watchdog off through /run/sa02m-imaging.lock — taken only
+# when absent, released only when owned, from the same EXIT handler that
+# restores the runtime watchdog (case 12).
 #
 # Three homes, not two: the block cannot be sourced from one file — install.sh
 # reads scripts/lib.sh out of an extracted tree, while both runners execute
@@ -45,9 +48,11 @@
 # its copy of the block → 7c; the `RuntimeWatchdogSec=0` one-liner put back →
 # 10a; `#trap on_exit EXIT` → 11a + 11c; `#trap 'exit 143' INT TERM` → 11b.
 #
-# Comment-mutation: cases 7–11 pin live lines and are registered in
+# Comment-mutation: cases 7–12 pin live lines and are registered in
 # comment-mutation-proof (commenting the install.sh hold, its trap, or any
-# BEGIN marker out turns 7/8 RED — each pin FAILS when its line is missing).
+# BEGIN marker out turns 7/8 RED; the imaging-lock take, its ownership mark,
+# the owned-only release or the handler's restore call turns 12 RED — each pin
+# FAILS when its line is missing).
 #
 # Run: bash scripts/dev/test-watchdog-hold.sh   (bash + sed + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -190,11 +195,21 @@ echo "── 8. install.sh holds it and restores on EXIT ──"
 # shellcheck source=/dev/null
 if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_first_line >/dev/null; then
     hold=$(stripped_first_line install.sh '^[[:space:]]*if _wdt_now=\$\(sa02m_runtime_watchdog_set 0\)')
-    trapl=$(stripped_first_line install.sh '^trap sa02m_restore_runtime_watchdog EXIT$')
+    trapl=$(stripped_first_line install.sh '^trap sa02m_install_exit EXIT$')
+    # The EXIT handler's body, comment-stripped: from `sa02m_install_exit() {`
+    # to the first column-0 `}`. Case 8b and case 12 read it.
+    # Captured first, then read from a here-string: an early-exit awk fed by a
+    # pipe is shape (f) of quality-gate-rigor.md.
+    inst_text=$(stripped_text install.sh)
+    exit_body=$(awk '/^sa02m_install_exit\(\) \{/{f=1; next} f && /^\}/{exit} f{print}' <<<"$inst_text")
     restore=$(stripped_first_line install.sh 'sa02m_runtime_watchdog_set "\$SA02M_WDT_PREV"')
     mod=$(stripped_first_line install.sh '^sa02m_run_module 01-system\.sh$')
     [ -n "$hold" ]    && ok "8a install.sh takes the hold (l.$hold)"            || bad "8a install.sh never calls sa02m_runtime_watchdog_set 0"
-    [ -n "$trapl" ]   && ok "8b EXIT trap restores it (l.$trapl)"               || bad '8b install.sh has no `trap sa02m_restore_runtime_watchdog EXIT` line'
+    if [ -n "$trapl" ] && text_matches "$exit_body" '^[[:space:]]*sa02m_restore_runtime_watchdog \|\| true$'; then
+        ok "8b EXIT trap (l.$trapl) runs sa02m_install_exit, which restores it"
+    else
+        bad "8b install.sh EXIT path does not restore the runtime watchdog (trap line='${trapl:-none}', handler calls restore: $(text_matches "$exit_body" '^[[:space:]]*sa02m_restore_runtime_watchdog \|\| true$' && echo yes || echo NO))"
+    fi
     [ -n "$restore" ] && ok "8c the restore path writes the READ-BACK previous value (l.$restore)" \
                       || bad "8c install.sh restores something other than the captured value"
     if [ -n "$hold" ] && [ -n "$mod" ] && [ "$hold" -lt "$mod" ]; then
@@ -253,8 +268,38 @@ if . .ai-dev/quality/checks/lib_check.sh 2>/dev/null && declare -F stripped_firs
     fi
     [ "$f_held" = 1 ] && ok "11d the hold is bookkept (IMAGING_HELD=1) so the trap restores only what it took" \
                       || bad "11d IMAGING_HELD=1 appears $f_held time(s) in $FACTORY (expected 1)"
+
+    echo "── 12. install.sh pauses the USERSPACE watchdog (imaging lock, 8D step F) ──"
+    # The userspace watchdog (etc/sa02m-userspace-watchdog.sh) reboots a board
+    # whose nginx/sshd/login page stays down for 10 min — exactly what an
+    # install that restarts them looks like — and pauses only while
+    # /run/sa02m-imaging.lock exists. The runners take that lock; install.sh
+    # (the offline full update, a refresh) did not.
+    l_path=$(stripped_first_line install.sh '^SA02M_IMAGING_LOCK=/run/sa02m-imaging\.lock$')
+    l_take=$(stripped_first_line install.sh '^[[:space:]]*if \( set -C; date -Iseconds > "\$SA02M_IMAGING_LOCK" \)')
+    l_own=$(stripped_count install.sh '^[[:space:]]*SA02M_OWN_IMAGING_LOCK=1$')
+    l_rm_all=$(stripped_count install.sh 'rm -f "\$SA02M_IMAGING_LOCK"')
+    wd_path=$(stripped_count etc/sa02m-userspace-watchdog.sh 'IMAGING_LOCK="\$\{IMAGING_LOCK:-/run/sa02m-imaging\.lock\}"')
+    if [ -n "$l_path" ] && [ "$wd_path" = 1 ]; then
+        ok "12a install.sh takes /run/sa02m-imaging.lock (l.$l_path) — the path the userspace watchdog reads"
+    else
+        bad "12a lock path: install.sh line='${l_path:-none}', watchdog default pin count=$wd_path (expected 1) — the two sides name different files"
+    fi
+    if [ -n "$l_take" ] && [ -n "$mod" ] && [ "$l_take" -lt "$mod" ]; then
+        ok "12b the lock is created only when absent (noclobber, l.$l_take), before the first module (l.$mod)"
+    else
+        bad "12b no noclobber create of the lock before the first module (take=${l_take:-none}, first module=${mod:-none})"
+    fi
+    [ "$l_own" = 1 ] && ok "12c ownership is recorded (SA02M_OWN_IMAGING_LOCK=1, one site)" \
+                     || bad "12c SA02M_OWN_IMAGING_LOCK=1 appears $l_own time(s) in install.sh (expected 1)"
+    if text_matches "$exit_body" '^[[:space:]]*if \[ "\$SA02M_OWN_IMAGING_LOCK" = 1 \]; then$' \
+       && text_matches "$exit_body" '^[[:space:]]*rm -f "\$SA02M_IMAGING_LOCK"$' && [ "$l_rm_all" = 1 ]; then
+        ok "12d the EXIT handler removes the lock, only when owned, and nothing else in install.sh removes it"
+    else
+        bad "12d owned-only release: handler guard/rm present=$(text_matches "$exit_body" '^[[:space:]]*if \[ "\$SA02M_OWN_IMAGING_LOCK" = 1 \]; then$' && echo yes || echo NO)/$(text_matches "$exit_body" '^[[:space:]]*rm -f "\$SA02M_IMAGING_LOCK"$' && echo yes || echo NO), rm sites in install.sh=$l_rm_all (expected 1)"
+    fi
 else
-    bad "8–11 cannot source .ai-dev/quality/checks/lib_check.sh — the wiring pins did NOT run (a skip is not a pass)"
+    bad "8–12 cannot source .ai-dev/quality/checks/lib_check.sh — the wiring pins did NOT run (a skip is not a pass)"
 fi
 
 echo ""

@@ -116,6 +116,7 @@ telemetry-device-id-contract|opt/sa02m-modbus-mqtt/sa02m_telemetry.py|"HW %s has
 sudoers-pin-contract|etc/sudoers.d/sa02m-www|/usr/local/sbin/sa02m-mplc-project-deploy.sh *
 carel-shared-home|scripts/05-mqtt.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/06-alice.sh|sa02m_install_carel_pkg "$BASE_DIR"
+carel-shared-home|scripts/04-flasher.sh|sa02m_install_carel_pkg "$BASE_DIR"
 carel-shared-home|scripts/update-www-only.sh|sa02m_install_carel_pkg "$REPO_ROOT"
 carel-shared-home|opt/sa02m-carel/sa02m_carel/carel_ahu.py|FAN_PCT_MIN = 20.0
 led-shared-home|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
@@ -129,7 +130,11 @@ no-eschtml-in-attr|www/network_config/static/js/app.js|function escAttr(
 sh-model-schema|.ai-dev/quality/checks/sh-model-schema.sh|negatives.append(("point missing required
 installer-order|scripts/05-mqtt.sh|sa02m_install_led_pkg "$BASE_DIR"
 offline-update-wrapper|scripts/offline-full-update.sh|nohup setsid env
-watchdog-hold|install.sh|trap sa02m_restore_runtime_watchdog EXIT
+watchdog-hold|install.sh|trap sa02m_install_exit EXIT
+watchdog-hold|install.sh|sa02m_restore_runtime_watchdog || true
+watchdog-hold|install.sh|set -C; date -Iseconds > "$SA02M_IMAGING_LOCK"
+watchdog-hold|install.sh|SA02M_OWN_IMAGING_LOCK=1
+watchdog-hold|install.sh|rm -f "$SA02M_IMAGING_LOCK"
 runner-version-stamp|scripts/03-webserver.sh|sa02m_stamp_runner_version "$SCRIPT_DIR/../www/network_config/VERSION"
 runner-version-stamp|scripts/update-www-only.sh|sa02m_stamp_runner_version "$REPO_ROOT/www/network_config/VERSION"
 runner-version-stamp|scripts/lib.sh|install -m 0644 "$statedir/runner.version.tmp" "$statedir/runner.version"

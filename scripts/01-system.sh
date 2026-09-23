@@ -448,6 +448,33 @@ for unit in apt-daily.timer apt-daily-upgrade.timer; do
     systemctl mask "$unit" 2>/dev/null || true
 done
 
+# ── Armbian RAM logging: OFF (repo-owned /etc/default/armbian-ramlog) ──────
+# Why it is off, with the bench measurements: the header of
+# etc/default/armbian-ramlog (one home). Must run BEFORE the journald block:
+# the journal can only stay persistent with the Armbian hooks off.
+# A real ramlog tmpfs (seen on no board yet, but an image could carry one) is
+# synced to disk first, while ENABLED is still true — ENABLED=false makes the
+# shutdown sync skip, so the tmpfs contents would otherwise be lost at reboot.
+# Idempotent: a re-run writes the same bytes, disable is a no-op, and the
+# findmnt check is false on a disk /var/log.
+if [ -f "$ETC_REPO/default/armbian-ramlog" ]; then
+    if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+        _varlog_src=$(findmnt -n -o SOURCE,FSTYPE --target /var/log 2>/dev/null || true)
+        case "$_varlog_src" in
+            *armbian-ramlog*|*tmpfs*|/dev/zram*)
+                if [ -x /usr/lib/armbian/armbian-ramlog ]; then
+                    timeout 120 /usr/lib/armbian/armbian-ramlog write >>"$LOG_FILE" 2>&1 \
+                        || log WARN "armbian-ramlog write завершился с ошибкой — часть логов из ОЗУ могла не попасть на диск"
+                fi
+                log WARN "ramlog tmpfs активен ($_varlog_src) — логи сброшены на диск; перезагрузите плату, чтобы выйти из RAM-журналирования"
+                ;;
+        esac
+    fi
+    sa02m_atomic_install -m 644 "$ETC_REPO/default/armbian-ramlog" /etc/default/armbian-ramlog
+    sa02m_systemctl disable armbian-ramlog.service >>"$LOG_FILE" 2>&1 || true
+    log OK "Armbian RAM-журналирование выключено (/etc/default/armbian-ramlog: ENABLED=false)"
+fi
+
 # ── journald: предел размера журнала ───────────────────────────────────────
 # До этой версии предел журнала репозиторием не владелся: на плате он держался
 # только потому, что его задал базовый образ. Ставим свой drop-in (не правку
@@ -455,7 +482,7 @@ done
 # Значения и их обоснование живут ТОЛЬКО в etc/systemd/sa02m-journald.conf.
 if [ -f "$ETC_REPO/systemd/sa02m-journald.conf" ]; then
     install -d -m 755 /etc/systemd/journald.conf.d
-    install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf" \
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf" \
         /etc/systemd/journald.conf.d/sa02m-journald.conf
     # journald перечитывает конфиг только при рестарте (SIGUSR2 — это ротация,
     # не перечитывание). Рестарт безопасен: сокет /run/systemd/journal/* держит
@@ -466,6 +493,13 @@ if [ -f "$ETC_REPO/systemd/sa02m-journald.conf" ]; then
             log OK "journald: политика размера применена (drop-in sa02m-journald.conf)"
         else
             log WARN "journald: рестарт не удался — политика применится после перезагрузки"
+        fi
+        # A journal the Armbian cron relinquished to /run stays there until
+        # something flushes it: bring it back to /var now, not at the next boot.
+        if timeout 30 journalctl --flush >>"$LOG_FILE" 2>&1; then
+            log OK "journald: журнал переведён на диск (journalctl --flush)"
+        else
+            log WARN "journald: journalctl --flush не удался — журнал вернётся на диск после перезагрузки"
         fi
     else
         log OK "journald: drop-in sa02m-journald.conf установлен (rootfs build — без рестарта)"
@@ -561,7 +595,7 @@ if [ ! -f "$ETC_REPO/systemd/sa02m-watchdog.conf" ]; then
     exit 1
 fi
 install -d -m 755 /etc/systemd/system.conf.d
-install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
+sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
     /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
 # Уменьшаем умолчательный stop-timeout сервисов: иначе при reboot, если
@@ -619,13 +653,36 @@ log OK "sa02m-net-autolink отключён; link-файлы удалены — 
 # (иначе после прошивки образа пинг появляется только после re-plug кабеля).
 # RuntimeWatchdogSec (systemd PID1) — отдельно, в system.conf.d.
 log INFO "Не маскируем watchdogs навсегда; first-boot mask — только в sa02m-rootfs-expand"
+# sa02m-userspace-watchdog: installed by every install path since 1.0.6.51 —
+# before, only the golden image laid it (tools/imaging/patch-firstboot-image.sh),
+# so refresh-born boards ran without it. Script and unit are atomic live-path
+# writes; the conf is the operator's override file, laid only when absent.
+# What protects an install: install.sh holds /run/sa02m-imaging.lock for the
+# whole run, and the watchdog pauses its reboot checks while that file exists.
+# Nothing else does: its 180 s grace counts from BOOT (/proc/uptime), so on a
+# board that has been up for days it is already spent. Once the run ends and
+# the lock is gone, an install that leaves nginx/sshd/the login page down gets
+# the board rebooted after 10 min — docs/deployment.md «Программный сторож после
+# установки (с 1.0.6.51)» names the resulting reboot loop and the way out.
+if [ -f "$ETC_REPO/sa02m-userspace-watchdog.sh" ] && [ -f "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" ]; then
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-userspace-watchdog.sh" /usr/local/sbin/sa02m-userspace-watchdog
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" /etc/systemd/system/sa02m-userspace-watchdog.service
+    if [ ! -e /etc/sa02m_userspace_watchdog.conf ] && [ -f "$ETC_REPO/sa02m_userspace_watchdog.conf" ]; then
+        sa02m_atomic_install -m 644 "$ETC_REPO/sa02m_userspace_watchdog.conf" /etc/sa02m_userspace_watchdog.conf
+    fi
+    sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+fi
 for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watchdog.service; do
     # Снять stale mask от старых инсталляторов / FEL autorun.
     if [ -L "/etc/systemd/system/$u" ] \
        && [ "$(readlink -f "/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
         rm -f "/etc/systemd/system/$u"
     fi
-    sa02m_svc_apply "$u" infra
+    if [ "$u" = sa02m-userspace-watchdog.service ]; then
+        sa02m_svc_apply "$u" infra start
+    else
+        sa02m_svc_apply "$u" infra
+    fi
 done
 
 # ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──

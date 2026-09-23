@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -10,6 +11,8 @@ from ..common import constants as C
 from ..common.config_store import load_devices
 from ..config import ahu_status, scene_devices
 from . import converters
+
+log = logging.getLogger("sa02m_alice.registry")
 
 _DEVICES_PREFIX = "/devices/"
 _CONTROL_ERROR_SUFFIX = "/meta/error"
@@ -159,6 +162,7 @@ class DeviceRegistry:
         # snapshot — Yandex/cloud learn the loss without a flood.
         self._announced_down: Dict[str, bool] = {}
         self._rebuild_indexes()
+        self._log_catalogue()
 
     def _catalogue_doc(
         self, devices_doc: Optional[Dict[str, Any]]
@@ -225,6 +229,20 @@ class DeviceRegistry:
             # that came alive since the last build is picked up.
             self._doc = self._catalogue_doc(devices_doc)
             self._rebuild_indexes()
+            self._log_catalogue()
+
+    def _log_catalogue(self) -> None:
+        """One INFO line per catalogue build: what THIS profile will serve —
+        device ids in document order with their capability types (short
+        form), as `_items` filters them. The positive after-install evidence
+        that the client picked the document up."""
+        parts = []
+        for did, dev in self._devices_by_id.items():
+            kinds = [str(item.get("type") or "?").rsplit(".", 1)[-1]
+                     for item in self._items(dev, "capabilities")]
+            parts.append("%s[%s]" % (did, ",".join(kinds)))
+        log.info("catalogue built (%s): %d devices — %s",
+                 self._profile, len(parts), " ".join(parts))
 
     def mqtt_topics(self) -> Set[str]:
         with self._lock:
@@ -405,8 +423,16 @@ class DeviceRegistry:
                         "retrievable": bool(item.get("retrievable", True)),
                         "reportable": bool(item.get("reportable", True)),
                     }
-                    if item.get("parameters"):
-                        block["parameters"] = item["parameters"]
+                    params = item.get("parameters")
+                    if (not cloud and params
+                            and item.get("type") == "devices.capabilities.on_off"):
+                        # Yandex documents one on_off parameter, bool `split`;
+                        # the window stores `instance: on` too — never sent
+                        # (docs/contracts/alice-mqtt-mapping.md, Discovery).
+                        split = params.get("split") if isinstance(params, dict) else None
+                        params = {"split": split} if isinstance(split, bool) else None
+                    if params:
+                        block["parameters"] = params
                     # Cloud catalogue only: Yandex has no `writable`. Absent
                     # stays omitted (fleet treats missing as True). Explicit
                     # false is a latching DI — the fleet 400s on_off.

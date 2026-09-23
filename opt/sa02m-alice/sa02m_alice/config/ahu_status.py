@@ -310,6 +310,47 @@ def _ensure_fan_mode_capability(
     return True
 
 
+def _narrow_setpoint_range(
+    dev: Dict[str, Any], prefix: str, family: Optional[str]
+) -> bool:
+    """Clamp the setpoint binding's declared range to the family's own.
+
+    The window writes 0..99 for every Carel; a uAria accepts 0..50
+    (`sa02m_carel.controls.SETPOINT_RANGE`, the clamps carel_ahu applies —
+    docs/contracts/carel-ahu.md §6). Narrow only: the result is the
+    intersection, so a narrower stored range is never widened. Unknown family
+    or no shared package → untouched. `doc` here is the catalogue's in-memory
+    copy (`prepare_catalogue_doc`); the stored document is never rewritten.
+    """
+    if not family:
+        return False
+    controls = carel_import.carel_controls()
+    bounds = getattr(controls, "SETPOINT_RANGE", {}).get(family) if controls else None
+    if not bounds:
+        return False
+    precision = getattr(controls, "SETPOINT_PRECISION", None)
+    changed = False
+    for item in dev.get("capabilities") or []:
+        if not isinstance(item, dict) or item.get("mqtt") != prefix + "/setpoint":
+            continue
+        params = item.get("parameters")
+        rng = params.get("range") if isinstance(params, dict) else None
+        if not isinstance(rng, dict):
+            continue
+        try:
+            lo, hi = float(rng["min"]), float(rng["max"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        new_lo, new_hi = max(lo, float(bounds[0])), min(hi, float(bounds[1]))
+        if (new_lo, new_hi) == (lo, hi) or new_lo > new_hi:
+            continue
+        rng["min"], rng["max"] = new_lo, new_hi
+        if precision is not None:
+            rng["precision"] = precision
+        changed = True
+    return changed
+
+
 def ensure_ahu_cloud_status(
     doc: Dict[str, Any],
     live_controls: Optional[Dict[str, Set[str]]] = None,
@@ -358,6 +399,8 @@ def ensure_ahu_cloud_status(
             have.add(instance)
             changed = True
         if _ensure_fan_mode_capability(dev, prefix, family):
+            changed = True
+        if _narrow_setpoint_range(dev, prefix, family):
             changed = True
         for instance, control, unit in _OPTIONAL_FLOAT_ROWS:
             if instance in have:

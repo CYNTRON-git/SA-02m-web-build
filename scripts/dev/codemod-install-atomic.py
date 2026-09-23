@@ -5,11 +5,20 @@ Why a script (web-workflow.md, Rule of 500): the move touches dozens of sites
 across scripts/*.sh and install.sh, so it must be re-runnable and reviewable as
 ONE rule, not as hand edits. The rule: an `install -m ...` command whose
 DESTINATION is a live path the running system reads without a restart — a systemd unit or
-drop-in under /etc/systemd/system/, or a helper under /usr/local/{bin,sbin,
-lib,libexec}/ — is rewritten to the atomic helper, which lands the file as
-tmp + fsync + rename-over (old-or-new, never a 0-byte file). Everything else
-(/etc confs, udev rules, logrotate, sudoers, /opt payloads, variable targets)
-is left alone: those have their own guards or are re-read only at boot.
+drop-in under /etc/systemd/system/, a manager or journald drop-in under
+/etc/systemd/system.conf.d/ or /etc/systemd/journald.conf.d/ (since 1.0.6.51:
+the watchdog and journal policy drop-ins, read by PID 1 / journald on the
+next re-exec or restart — which 01-system.sh itself triggers mid-install), or
+a helper under /usr/local/{bin,sbin,lib,libexec}/ — is rewritten to the atomic
+helper, which lands the file as tmp + fsync + rename-over (old-or-new, never a
+0-byte file). Everything else (/etc confs, udev rules, logrotate, sudoers,
+/opt payloads, variable targets) is left alone: those have their own guards or
+are re-read only at boot.
+
+Heredoc writes (`cat > /etc/systemd/system.conf.d/sa02m-timeouts.conf <<…`)
+into the same live prefixes are NOT `install -m` commands, so this sweep does
+not see them: the rule and its gate cover `install -m` sites only, and a
+heredoc site is outside the measurement, not proven atomic.
 
 Continuation lines (`install -m 755 "$SRC" \\` + `    /usr/local/sbin/x`) are
 joined for classification; only the FIRST physical line is rewritten. Options
@@ -111,6 +120,8 @@ import sys
 FILES = sorted(p.replace("\\", "/") for p in glob.glob("scripts/*.sh")) + ["install.sh"]
 LIVE_PREFIXES = (
     "/etc/systemd/system/",
+    "/etc/systemd/journald.conf.d/",
+    "/etc/systemd/system.conf.d/",
     "/usr/local/bin/",
     "/usr/local/sbin/",
     "/usr/local/lib/",

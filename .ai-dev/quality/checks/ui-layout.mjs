@@ -114,8 +114,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 const WWW_ROOT = join(REPO_ROOT, 'www', 'network_config');
 const SHOTS_DIR = join(REPO_ROOT, '.ai-dev', 'quality', 'screenshots');
-const PORT = Number(process.env.UI_LAYOUT_PORT || 8902);
-const BASE = `http://127.0.0.1:${PORT}`;
+// Port 0 = an ephemeral port the OS picks, so a second run (or any other
+// listener on a fixed port) cannot make this row RED. UI_LAYOUT_PORT pins one
+// for a human who wants a stable URL; a bind failure is an INFRA error, exit 3,
+// never a layout verdict.
+const PORT = Number(process.env.UI_LAYOUT_PORT || 0);
+let BASE = '';   // set from the bound port inside startServer()
 
 // ── Geometry constants ──────────────────────────────────────────────────────
 const TOUCH_MIN = 44;   // WCAG 2.5.5 / platform minimum target, CSS px.
@@ -293,7 +297,14 @@ function startServer() {
         res.end(cgiBody(req.url));
       }
     });
-    srv.listen(PORT, '127.0.0.1', () => ok(srv));
+    srv.on('error', (err) => {
+      console.error(`ui-layout: INFRA ERROR — cannot bind 127.0.0.1:${PORT} (${err.code || err.message}) — not a layout result`);
+      process.exit(3);
+    });
+    srv.listen(PORT, '127.0.0.1', () => {
+      BASE = `http://127.0.0.1:${srv.address().port}`;
+      ok(srv);
+    });
   });
 }
 

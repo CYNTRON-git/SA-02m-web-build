@@ -1,0 +1,34 @@
+# SA-02m: Armbian RAM logging is OFF — this file is repo-owned
+# (etc/default/armbian-ramlog, installed by scripts/01-system.sh: install.sh,
+# refresh, offline full update, and the golden image built from such a donor).
+# NOT in the OTA deploy map, on purpose: OTA restarts nothing, so flipping the
+# hooks off there would also stop the nightly flush while the cron-relinquished
+# journal stays in /run until reboot — worse than before. Installed over
+# Armbian's own copy; an armbian-bsp upgrade may flag it to dpkg as a modified
+# conffile — keep this version.
+#
+# Why off. On SA-02m the RAM log was never really on: the tmpfs is not mounted
+# (armbian-ramlog.service disabled, /var/log on the eMMC root). Only the hooks
+# ran, against a disk /var/log, and each one did harm (bench 1.135, 2026-09-23):
+#   1. The cron armbian-truncate-logs (every 15 min) ran
+#      `journalctl --relinquish-var`: the journal lived in /run (RAM) except
+#      at the nightly flush, so a power cut lost the day's journal.
+#   2. logrotate.service ExecStartPre=armbian-ramlog write rsynced /var/log/
+#      into /var/log.hdd/ on the SAME eMMC every midnight (82 MB on 23 Sep;
+#      /var/log.hdd held 478 MB of duplicates).
+#   3. Its ExecStartPost=armbian-ramlog postrotate copied the pre-rotation
+#      files back over the fresh logs: nginx/sa02m_access.log, rotated at
+#      00:00 on 23 Sep, again held 20-22 Sep — rotation defeated for every log.
+#   4. At >=75 % rootfs use the same cron truncates every *.log under /var/log
+#      and deletes rotated files, every 15 min (1.135 was at 64 %).
+# ENABLED=false makes the Armbian scripts exit before any of that.
+#
+# The journal policy itself (persistent storage, sync interval, size) has one
+# home: etc/systemd/sa02m-journald.conf.
+#
+# The other keys are Armbian's, kept as on 1.135 so a re-enable is a one-word
+# change.
+ENABLED=false
+SIZE=50M
+USE_RSYNC=true
+XTRA_RSYNC_FROM=()

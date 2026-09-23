@@ -356,6 +356,9 @@ class PortCycleScheduler:
         cyc_busy_max = 0.0
         cyc_busy_sum = 0.0
         stats_t = now
+        # UART fe/brk/oe deltas per stats line — line-level evidence next to
+        # the transaction errors (one /proc read per port per 60 s).
+        uart = bridge_serial.UartCounterDelta(self._port_path, logger=self._log)
 
         while not self._stop.is_set():
             now = time.monotonic()
@@ -438,9 +441,9 @@ class PortCycleScheduler:
 
             if time.monotonic() - stats_t >= 60 and cyc_n:
                 self._log.info(
-                    "poll cycles: n=%d avg=%.0f ms max=%.0f ms fmb=%s",
+                    "poll cycles: n=%d avg=%.0f ms max=%.0f ms fmb=%s%s",
                     cyc_n, cyc_busy_sum / cyc_n * 1000, cyc_busy_max * 1000,
-                    "on" if has_fmb else "off")
+                    "on" if has_fmb else "off", uart.suffix())
                 cyc_n = 0
                 cyc_busy_max = cyc_busy_sum = 0.0
                 stats_t = time.monotonic()

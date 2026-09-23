@@ -871,8 +871,12 @@ _sa02m_unit_fragment_broken() {
 # answer — never treated as new, so a wedged D-Bus cannot widen anything) and
 # `broken` (systemd says masked but the /etc fragment is a 0-byte regular file
 # — a torn install; the apply treats it as a first install, with a WARN).
-# `absent` needs THREE witnesses: is-enabled rc=1 with empty stdout, no unit
+# `absent` needs THREE witnesses: is-enabled saying "unknown unit", no unit
 # file on disk, and is-active answering a real state (the manager is alive).
+# "Unknown unit" has two shapes: systemd <250 exits 1 with empty stdout,
+# systemd >=250 prints `not-found` and exits 4 (measured on bench 1.135,
+# systemd 255). A witness that read one shape recorded the other as an
+# EXISTING unit — no first-install default, an infra WARN on every refresh.
 # Under SA02M_ROOTFS_BUILD everything is `absent` (a chroot has no manager).
 sa02m_svc_capture() {
     local u en act ts rc
@@ -890,8 +894,9 @@ sa02m_svc_capture() {
         rc=0; en=$(_sa02m_svc_query is-enabled "$u") || rc=$?
         if [ "$rc" -eq 124 ]; then
             en=timeout
-        elif [ -z "$en" ]; then
-            if [ "$rc" -eq 1 ] && [ "$act" != timeout ] && ! _sa02m_unit_file_on_disk "$u"; then
+        elif [ -z "$en" ] || [ "$en" = not-found ]; then
+            if { { [ "$rc" -eq 1 ] && [ -z "$en" ]; } || { [ "$rc" -eq 4 ] && [ "$en" = not-found ]; }; } \
+               && [ "$act" != timeout ] && ! _sa02m_unit_file_on_disk "$u"; then
                 en=absent
             else
                 en=timeout
@@ -1249,9 +1254,11 @@ _sa02m_svc_apply_infra() {
         SA02M_SVC_LAST_RESULT=timeout
         return 0
     fi
-    if [ -z "$now" ] && ! _sa02m_unit_file_on_disk "$u" && ! sa02m_unit_exists "$u"; then
+    if { [ -z "$now" ] || [ "$now" = not-found ]; } && ! _sa02m_unit_file_on_disk "$u" && ! sa02m_unit_exists "$u"; then
         # The unit genuinely is not there (an optional infra piece not shipped
-        # on this variant) — nothing to assert.
+        # on this variant) — nothing to assert. Both "unknown unit" shapes of
+        # is-enabled: empty (systemd <250) and `not-found` (>=250, see
+        # sa02m_svc_capture).
         SA02M_SVC_LAST_RESULT=absent
         return 0
     fi
