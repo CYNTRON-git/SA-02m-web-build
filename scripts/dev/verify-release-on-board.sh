@@ -386,8 +386,10 @@ fi
 # 14 the journal is persistent: the Armbian RAM-log hooks are off (their cron
 # moved the journal to /run every 15 min — header of etc/default/armbian-ramlog),
 # nothing is left in the runtime journal, and the EFFECTIVE journald config
-# syncs every minute (etc/systemd/sa02m-journald.conf). After an OTA-only update
-# this FAILs until the next reboot, by design (deploy-map note).
+# syncs every minute (etc/systemd/sa02m-journald.conf). Both files arrive only
+# with a full install of >=1.0.6.51 (install.sh / offline full update) or a
+# golden image built after it — OTA carries neither — so on a board that has not
+# had such an install this check FAILs, and a full install fixes it.
 RL=$(grep -E '^ENABLED=' /etc/default/armbian-ramlog 2>/dev/null | tail -1)
 NRUN=$(find /run/log/journal -name '*.journal' 2>/dev/null | wc -l | tr -d ' ')
 SYNC=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null \

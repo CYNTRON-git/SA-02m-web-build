@@ -657,8 +657,13 @@ log INFO "Не маскируем watchdogs навсегда; first-boot mask �
 # before, only the golden image laid it (tools/imaging/patch-firstboot-image.sh),
 # so refresh-born boards ran without it. Script and unit are atomic live-path
 # writes; the conf is the operator's override file, laid only when absent.
-# install.sh holds /run/sa02m-imaging.lock for the whole run, so the `start`
-# below cannot reboot the board mid-install (plus the script's 180 s grace).
+# What protects an install: install.sh holds /run/sa02m-imaging.lock for the
+# whole run, and the watchdog pauses its reboot checks while that file exists.
+# Nothing else does: its 180 s grace counts from BOOT (/proc/uptime), so on a
+# board that has been up for days it is already spent. Once the run ends and
+# the lock is gone, an install that leaves nginx/sshd/the login page down gets
+# the board rebooted after 10 min — docs/deployment.md «Полный деплой» names the
+# resulting reboot loop and the way out.
 if [ -f "$ETC_REPO/sa02m-userspace-watchdog.sh" ] && [ -f "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" ]; then
     sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-userspace-watchdog.sh" /usr/local/sbin/sa02m-userspace-watchdog
     sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" /etc/systemd/system/sa02m-userspace-watchdog.service
