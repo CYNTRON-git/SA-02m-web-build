@@ -9,7 +9,7 @@
 # through the shipped lib (SA02M_SESSION_DIR sandboxed), REQUEST_METHOD=POST
 # with no body (the legacy internet-Apply branch), the state dir redirected via
 # SA02M_WEB_BUILD_STATEDIR, and `sudo` replaced by a PATH shim that records its
-# call and sleeps so the CGI's own `kill -0` sees it running. The observable is
+# call and holds the launcher's lock the way the real helper does. The observable is
 # TWO-fold on every case: the body's error_code AND whether sudo was called —
 # the root launch is the thing the guard exists to withhold.
 #
@@ -64,11 +64,19 @@ STATE="$T/state"; mkdir -p "$STATE"
 export SA02M_WEB_BUILD_STATEDIR="$STATE"
 export SA02M_SESSION_DIR="$T/sessions"
 
-# ── sudo shim: records the call, stays alive so the CGI reports «running» ──
+# ── sudo shim: records the call and, like the launcher's first act
+# (etc/sa02m-web-update-apply.sh: `printf '%s' "$$" > "$LOCKFILE"` before any
+# clone), holds the legacy lock for ~1.2 s so the CGI's verdict at t≈1 s sees
+# a live launch. Until 1.0.6.53 the shim merely slept and the CGI read its
+# liveness from `kill -0 $!` — a test that answers EPERM for the real
+# sudo→root child, so the fixture modelled a mechanism the board never had
+# (section H below records the class). ──────────────────────────────────────
 cat > "$BIN/sudo" <<SHIM
 #!/bin/bash
 printf '%s\n' "\$*" >> "$T/sudo.calls"
-sleep 3
+printf '%s' "\$\$" > "$STATE/update.lock"
+sleep 1.2
+rm -f "$STATE/update.lock"
 exit 0
 SHIM
 chmod +x "$BIN/sudo"
