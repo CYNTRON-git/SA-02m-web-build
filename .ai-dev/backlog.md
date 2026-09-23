@@ -575,6 +575,13 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
+  checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
+  printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while
+  `cloud-card-smoke` and `sh-modal-layout-smoke` in the same state correctly FAILED with «chromium/
+  playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
+  passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
+  run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
 - [OPEN] 2026-09-23 **[LOW] Known limit: the delivering OTA's pre-escape window.** On a board
   running a runner older than 1.0.6.52 the clone → prepare → backup phase (≈1–2 min) of the
   delivering update still runs inside fcgiwrap's cgroup under the OLD code; a
