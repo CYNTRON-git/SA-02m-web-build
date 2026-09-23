@@ -14,8 +14,11 @@ apply, который этот запуск открывает (раннер, re
 1. Cookie `session_token` — невалидная сессия → `{"error":"unauthorized","ok":false}`,
    выход до любой работы.
 2. Заголовок `X-SA02M-CSRF` — `web_csrf_validate` (политика
-   `docs/decisions/selective-csrf-policy.md`); отсутствует/неверен → `E_CSRF`.
-   Проверка `web-update-csrf-contract` пинит эту строку.
+   `docs/decisions/selective-csrf-policy.md`); отсутствует/неверен →
+   `{"ok":false,"error":"csrf","error_code":"E_CSRF","reason":"<r>"}`, где
+   `reason` ∈ `no_header | mismatch | no_token_file | no_session` (с 1.0.6.53;
+   поле аддитивное — старый бандл его игнорирует). Проверка
+   `web-update-csrf-contract` пинит эту строку.
 3. **Охранник «есть ли что применять»** — читает `check.json`
    (`/var/lib/sa02m-web-build/check.json`, пишет `sa02m-web-update-check`,
    таймер `hourly`) и **отказывает во всём, чего не может доказать** (с 1.0.6.39,
@@ -50,7 +53,7 @@ apply, который этот запуск открывает (раннер, re
   `?force=1` проверку не запускает — только отдаёт кэш) пересобирает файл;
   после неё Apply снова доступен, если есть что применять. Гейты:
   `cgi-csrf-policy` (статически) и `cgi-csrf-behaviour` (реальный CGI в
-  песочнице).
+  песочнице — с 1.0.6.53 там же `csrf_token.cgi`, случаи 11–14).
 - Оба кода — **новые ошибки на мутирующем эндпоинте**, фронтенд обрабатывает
   их явно (`app/status.js` `webUpdApplyRefusal`): своя строка статуса, кнопка
   «Применить» остаётся выключенной; в общий путь «Ошибка обновления. См.
