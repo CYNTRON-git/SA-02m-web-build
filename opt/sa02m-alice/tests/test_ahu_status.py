@@ -389,8 +389,13 @@ class TestFanRowFollowsTheFamily(unittest.TestCase):
             self.assertEqual(cap["mqtt"],
                              "/devices/%s/controls/%s" % (mid, control))
             self.assertEqual(cap["parameters"]["instance"], "fan_speed")
-            self.assertEqual([m["value"] for m in cap["parameters"]["modes"]],
-                             ["low", "medium", "high", "turbo"])
+            # The VALUES, as a set. Their ORDER is a platform rule with its
+            # own named home — TestTheModeOrderIsStableAcrossBuilds below —
+            # so it is asserted there and not restated here: two copies of
+            # one pin drift, and a reader who breaks the order should land
+            # on the case that explains why it matters.
+            self.assertEqual({m["value"] for m in cap["parameters"]["modes"]},
+                             {"low", "medium", "high", "turbo"})
             # This one must REACH Yandex: it is the control, not a reading.
             self.assertNotIn("cloud_only", cap)
             # `carel_family` is ours; discovery copies `parameters` verbatim.
@@ -422,6 +427,83 @@ class TestFanRowFollowsTheFamily(unittest.TestCase):
             self.assertIn("fan_speed", insts)
             self.assertIn("fan_step", insts)
             self.assertEqual(_caps(by_id[did], _MODE_TYPE), [])
+
+
+class TestTheModeOrderIsStableAcrossBuilds(unittest.TestCase):
+    """The `modes` array keeps the SAME ORDER on every Discovery.
+
+    Platform constraint. Yandex Smart Home documentation, «Описание умения» ->
+    «Параметры умения», the `modes` parameter, alert «Ограничение»,
+    verified at source 2026-09-23:
+    https://yandex.ru/dev/dialogs/smart-home/doc/ru/concepts/mode
+
+        «При повторной отправке массива объектов `mode`, для одного и того
+        же устройства, необходимо соблюдать порядок режимов. Он должен
+        совпадать с предыдущим отправленным вариантом.»
+
+    The documentation does not say what happens when the order changes, so
+    the vocabulary must never be rebuilt through a set, a dict, a `sorted()`
+    or a derivation from the rungs.
+
+    This class is the single home of the ORDER assertion. The case above,
+    `test_each_family_carries_one_fan_mode_capability`, asserts the value
+    SET; this class asserts the exact sequence, the repeat across builds,
+    and the agreement between the two families. It asserts the array AS
+    EMITTED IN THE DOCUMENT, not `carel_fan.MODES`: a correct constant does
+    not prove that `ahu_status.fan_mode_item` preserves it.
+
+    What catches what (measured at review, 2026-09-23):
+      * reordering the emitted array — reversed, `sorted()`, `set()` —
+        fails exactly one test:
+        `test_the_emitted_order_is_exactly_this_sequence`;
+      * reversing `carel_fan.MODES` itself is caught far more widely,
+        16 tests across both suites, because the step-to-word mapping
+        follows the tuple's order;
+      * `set()` is caught in most processes but not all: string hashing is
+        randomised per process, so the order is not reproducible across
+        processes and occasionally comes out right by luck (2 of 24 runs
+        passed in the review's sample). That irreproducibility is exactly
+        what the constraint forbids.
+    `test_a_repeated_build_emits_the_identical_sequence` does not catch
+    `set()` — within one process a set iterates the same way twice — and
+    instead covers a builder that changes the order from one call to the
+    next.
+    """
+
+    EXPECTED = ["low", "medium", "high", "turbo"]
+
+    def setUp(self):
+        self.cache = _LiveCache()
+        self.addCleanup(self.cache.close)
+        self.cache.write("carel-COM3-1", _CRST_CONTROLS)
+        self.cache.write("carel-COM3-2", _UARIA_CONTROLS)
+
+    def _emitted(self, doc: dict) -> dict:
+        out = prepare_catalogue_doc(doc)
+        return {
+            dev["id"]: [m["value"] for m in _caps(dev, _MODE_TYPE)[0]
+                        ["parameters"]["modes"]]
+            for dev in out["devices"] if _caps(dev, _MODE_TYPE)
+        }
+
+    def test_the_emitted_order_is_exactly_this_sequence(self):
+        emitted = self._emitted(_fixture())
+        self.assertEqual(sorted(emitted), ["carel-pcomini", "carel-uaria"])
+        for did, modes in emitted.items():
+            self.assertEqual(modes, self.EXPECTED, did)
+
+    def test_a_repeated_build_emits_the_identical_sequence(self):
+        """The rule is about the REPEAT, so the repeat is what is measured:
+        the array a second catalogue build sends must equal the first."""
+        first = self._emitted(_fixture())
+        for _ in range(3):
+            self.assertEqual(self._emitted(_fixture()), first)
+
+    def test_both_families_emit_the_same_words_in_the_same_order(self):
+        """One vocabulary, one order — a per-family ordering would make the
+        two units disagree about a rule that is per-device."""
+        emitted = self._emitted(_fixture())
+        self.assertEqual(emitted["carel-pcomini"], emitted["carel-uaria"])
 
 
 class TestCarelFamilyRule(unittest.TestCase):

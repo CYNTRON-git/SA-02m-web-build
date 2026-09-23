@@ -10,6 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from sa02m_alice.client import state_sender  # noqa: E402
 from sa02m_alice.client.device_registry import DeviceRegistry  # noqa: E402
 from sa02m_alice.common import constants as C  # noqa: E402
 
@@ -929,6 +930,49 @@ class TestFanModeReachesEveryConverterCallSite(unittest.TestCase):
         self.assertEqual(results[0]["capabilities"][0]["error_code"],
                          C.ERR_INVALID_VALUE)
         self.assertEqual(pubs, [])
+
+    def test_a_fan_change_rides_a_live_device_state_frame(self):
+        """A fan-speed change goes out towards the gateway on a LIVE frame,
+        not only via the catalogue and the cadence snapshot.
+
+        What is proven is emission to the send callback; the socket and the
+        gateway are not exercised. This is the whole board-side chain with
+        nothing replaced but that callback:
+
+            MQTT message -> note_mqtt -> state_blocks_for_topic
+                         -> StateSender.offer -> the emitted device_state
+
+        `_stopped = False` without `start()` is the suite's own idiom
+        (test_state_sender.py): it runs the sender without its cadence thread
+        so `flush_now()` is the only thing that emits.
+        """
+        frames = []
+        clock = {"t": 1000.0}
+        sender = state_sender.StateSender(frames.append, clock=lambda: clock["t"])
+        sender._stopped = False
+
+        for topic, payload, did, expected in (
+            (UARIA_FAN_TOPIC, "6", "ahu-uaria", "high"),
+            (CRST_FAN_TOPIC, "70", "ahu-crst", "high"),
+        ):
+            clock["t"] += 10.0        # past every per-instance rate window
+            self.assertTrue(self.reg.note_mqtt(topic, payload), topic)
+            blocks = self.reg.state_blocks_for_topic(topic)
+            self.assertTrue(blocks, topic)
+            sender.offer(blocks)
+            sender.flush_now()
+            self.assertTrue(frames, "no device_state frame was emitted at all")
+            frame = frames[-1]
+            self.assertEqual(frame["origin"], C.ORIGIN_LIVE)
+            caps = [c for dev in frame["payload"]["devices"]
+                    if dev["id"] == did
+                    for c in dev.get("capabilities") or []
+                    if c.get("type") == _MODE_TYPE]
+            self.assertEqual(len(caps), 1, frame)
+            # The mapped WORD travels, not the raw register value: step 6 is
+            # `high` by the uneven ladder's distance rule, live end to end.
+            self.assertEqual(caps[0]["state"],
+                             {"instance": "fan_speed", "value": expected})
 
     def test_an_item_with_no_family_reports_nothing_rather_than_guessing(self):
         """A device whose family could not be resolved carries no mode item at
