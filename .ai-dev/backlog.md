@@ -2,9 +2,8 @@
 
 Recorded findings and deferred work (`.ai-dev/procedures/backlog.md` owns the
 format). One status per finding: `- [OPEN|RESOLVED] <date> <item>`. Resolved
-entries are pruned (history lives in git); last prune 2026-09-16 (1.0.6.49 — the 20
-entries resolved between 2026-08-27 and 2026-09-16 removed; the items closed on that
-branch stay marked until the next prune).
+entries are pruned (history lives in git); last prune 2026-09-23 (1.0.6.51 — 34 entries
+verified fixed by the whole-backlog triage removed; evidence per entry in that commit's body).
 
 ## Open
 
@@ -23,7 +22,6 @@ branch stay marked until the next prune).
 - [RESOLVED 2026-09-16, 1.0.6.49 — (1) §12 NOCSUM/ERR, (2) `rm -f "$RESULT.tmp"` at start + harness 6e, (3) CHANGELOG, (4) headers collapsed, (5) two smoke rows in the environment note] 2026-09-16 **[LOW] Reviewer advisories of the 1.0.6.48 review — next fixup.** (1) the verdict file may carry `NOCSUM`/`ERR` besides `OK|BAD` (`etc/sa02m-rootfs-expand.sh` `write_result`, `sb_csum_of_block`), but `docs/deployment.md` §12 / CHANGELOG / BUGLOG describe only `OK | BAD` — one clause in §12. (2) a `.result.tmp` can survive a power cut between the temp write and the rename commit and nothing removes it later — `rm -f "$RESULT.tmp"` at `start`. (3) CHANGELOG/§12 do not say the flash→cut→boot re-run of the verdict file is deferred to the next golden capture. (4) the bench cause is restated in six places pointing to BUGLOG 16:40 — collapse the script/harness headers to one clause + pointer. (5) `.ai-dev/notes/quality-gate-environment.md` lacks rows for `cloud-card-smoke` / `sh-modal-layout-smoke`, which FAIL (not skip) without playwright. Source: `.ai-dev/reviews/1.0.6.48_review.md` (transient).
 - [OPEN] 2026-09-16 **[LOW] `tools/imaging/_run_reset_cloud.py` — keep or retire (Operator).** Tracked via the `.gitignore` exception (`:89-93`) since 1.0.5.64; used only by hand against the bench (audit L2).
 - [OPEN] 2026-09-16 **[LOW] The firstboot overlay carries the DNS-belt callers but not the belt.** `tools/imaging/firstboot-overlay/` has `sa02m-eth-coldboot.sh` and `fix-eth.sh` with `dns_ensure` (synced 1.0.6.49) but no `usr/local/sbin/sa02m-dns-ensure.sh`; `dns_ensure` guards on `-x`, so a clone flashed from a pre-1.0.6.6 image gets the guard, not the belt. Fix: add the helper to the overlay + its PAIRS row in `firstboot-overlay-parity` (audit M1 follow-up).
-- [OPEN] 2026-09-16 **[LOW] Workspace hygiene (audit 2026-09-16, the orchestrator's dimension).** 9 git worktrees (3 nested under `carel-smart-home-support-3e146c/.ai-dev/worktrees/`, 4 `claude/*` on stale commits), local branches without upstream (`1.0.6.33–36`, `fix/alice-room-membership`), local `main` behind origin. Pruning declined by the Operator 2026-09-16 — re-offer at the next audit (`gc`).
 - [OPEN] 2026-09-16 **[HIGH] Rebuild the board kernel `6.1.0-rc6` with the upstream ext4 patch
   «ext4: fix bad checksum after online resize»** (Baokun Li, 2022-11-16, `fs/ext4/resize.c`
   `ext4_update_super`; Fixes: de394a86658f). The 1.0.6.47 `ensure_primary_sb_checksum()`
@@ -212,6 +210,40 @@ branch stay marked until the next prune).
      in the cloud team's repo, where readers of this contract may have met it; A3 two lines over
      80 columns (cosmetic, no limit configured). Also carried: `test_device_registry.py` is ~1000
      lines, a split candidate.
+- [OPEN] 2026-09-23 **[HIGH] The journal the repo calls persistent is RAM-only until midnight —
+  a power cut loses the day, and `journalctl -b -1` shows nothing of it.**
+  `etc/systemd/sa02m-journald.conf` (installed by `scripts/01-system.sh:455`) sets
+  `Storage=persistent` and justifies it with «журнал переживает перезагрузку; `journalctl -b -1` —
+  штатный приём разбора полётов». The base image's Armbian ramlog, which the repo does not own,
+  defeats that: measured on 1.135, `/etc/default/armbian-ramlog` ENABLED (50M), cron
+  `armbian-truncate-logs` every 15 min runs `journalctl --relinquish-var` (volatile logging to
+  `/run/log/journal`, capped 16M) and the persistent files are written only at the midnight flush.
+  So: (a) a power cut or brick loses everything since the last midnight — exactly the post-mortem
+  the drop-in promises; (b) under a noisy bus the runtime cap drops all but the last ~5–6 h even
+  without a cut. Not measured: whether the golden image / field boards carry the same ramlog
+  (likely — same Armbian base — unverified). Practical note for any field board brought back for
+  analysis (e.g. the boards silent since 7–8 Sep): check first whether a journal for those days
+  exists at all; do not rely on it. Fix is a product trade-off (eMMC wear vs. surviving
+  post-mortem): disable ramlog, or keep it and make the repo own it with an honest comment and a
+  more frequent sync. The drop-in's comment is an overclaim either way (quality-gate-rigor
+  honesty). Operator decides.
+- [OPEN] 2026-09-23 **[MED] Bench 1.135 COM3 answers ~500 short/CRC polls per hour, bus-wide, and
+  the flood caps journal retention at ~1.5 days.** Measured after the 1.0.6.50 deploy, rate unchanged
+  across it (not caused by it): carel-COM3-1/-2, mr02m-COM3-10, led-COM3-13 all log `Short response`
+  / `CRC mismatch`; COM1/2/4/5 together log ~11/h. Only the bridge (PID of `modbus_mqtt_bridge.py`)
+  holds `/dev/ttyS4`; mplc4 holds no tty, the flasher is idle — so no second master ON THE BOARD.
+  Open: a master elsewhere on the wire, termination/wiring, or one babbling device (unplug-one-at-a-
+  time settles it). Consequence for 1.0.6.50: the write-back audit line lives in a journal that
+  loses the middle of each day. Measured config: Armbian ramlog (`/etc/default/armbian-ramlog`
+  ENABLED, 50M), `armbian-truncate-logs` every 15 min runs `journalctl --relinquish-var` (logging
+  goes volatile to `/run/log/journal`, `RuntimeMaxUse=16M`, 15M in use) and vacuums; the persistent
+  journal (`SystemMaxUse=20M`) is written at the midnight flush (archived files all stamped
+  00:00:16–00:00:23). Inferred, fits both observed gaps (22 Sep 00:00:18→18:37, 23 Sep 00:00→06:00):
+  at ~6,460 lines/h the 16M runtime journal holds only ~5–6 h, so everything older than that at the
+  next flush is gone. A write-back audit line therefore survives ~5–6 h under this flood, not a day.
+  Operator decides: fix the bus first (also shrinks the flood), size the runtime/ramlog journal,
+  or a separate audit sink. «22 Sep 18:00» is a retention edge, not the onset (cloud session +
+  re-checked here).
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
@@ -335,9 +367,6 @@ branch stay marked until the next prune).
   corrected it. Full enumeration, including the sites that ARE the atomic staging
   write: the docstring of `scripts/dev/codemod-install-atomic.py`, the one home of «which
   install sites are live-path».
-- [OPEN] 2026-09-09 **[MED] The runner's `SA02M_RUNTIME_WATCHDOG_SEC` env seam is gone**
-  (the restore value is read back from the manager instead). An in-tree grep found no
-  other user — confirm no deployment recipe or bench script sets it.
 - [OPEN] 2026-09-09 **[LOW] 8D step F (install lock) not built.** The installer does not
   hold `/run/sa02m-imaging.lock` for its run, so the userspace watchdog is not told to
   stand down. Class-level measure, not this incident's trigger (nothing in A–E/G
@@ -382,33 +411,6 @@ branch stay marked until the next prune).
   checkbox/radio boxes.** Seen on the LED window's first render (label text pushed
   off the card); the LED rows now use `.cfg-led-check`. The Carel/MR windows'
   `.checkbox-line` rows sit under the same rule — check their screenshots.
-- [OPEN] 2026-09-08 **[LOW] Two more non-existent CSS tokens of the C5 class**, pre-existing:
-  `main.css:4351` `var(--err, #e55)` and `:4419,:4421` `var(--accent, #3a9bdc)` — neither
-  token is defined, so the hard-coded fallback ships identically in both themes (ship review
-  1.0.6.39, advisory). Fix like C5 (existing themed tokens, ratios stated); a gate for
-  `var(--x, #hex)` fallbacks whose token does not exist would close the class.
-- [OPEN] 2026-09-08 **[LOW] `detect_carel_events` opens SQLite twice per 1 Hz logger tick** on a
-  board with a Carel unit (`device_events.py` `ensure_schema()` + `_connect()` per call; boards
-  without one take the empty-list early return). Cost unmeasured (ship review advisory) —
-  measure on 1.135, then cache the schema check / reuse the connection per tick.
-- [OPEN] 2026-09-08 **[LOW] Carel chart labels have no i18n DICT entries** (Приток, Обратка,
-  …, Авария, Тревог, Состояние, Установка вкл.) — server-side labels from
-  `CAREL_METRIC_META` render Russian in the EN UI (pre-existing for the 9 metrics, widened
-  by the 4 state metrics of 1.0.6.39). Home: `opt/sa02m-devices` labels → DICT or `uiT()`.
-- [OPEN] 2026-09-08 **[MED] Six contracts have no validating registry row** (audit F17):
-  `module-config-ai.md`, `template-device.md`, `web-bus-mode-bacnet.md` (a web surface
-  that writes register 122 and drives BACnet MS/TP — gated by syntax rows only),
-  `devices-mr-history.md` (`py-unit-devices` covers the producer, not the contract nor
-  `devices.js`), `fmb-event-wire.md` (firmware seam), and `cloud-enrollment.md` is
-  origin-only (`py-unit-cloud` covers `opt/sa02m-cloud-agent/`, not `cloud.cgi` /
-  `sa02m-cloud-web-trigger.sh`). Wire a row per contract, or record in each contract's
-  header why it is deliberately unvalidated (the exemption-with-a-true-reason rule).
-- [OPEN] 2026-09-08 **[MED] `&r=<token>` cache-bust has no gate** (audit C11/F12). It is
-  the only bust for an intra-release JS change; `sync-app-version.py` rewrites `?v=` only
-  and `version-consistency` never checks a stale token. Documented in
-  `sa02m-domain.md ## Version discipline` (1.0.6.39); the gate — a changed served asset
-  must carry a changed `?v=`+`&r=` pair vs the previous release — is deferred. Design
-  choice pending: teach the script to manage `&r=`, or drop it for the `?v=` bump.
 - [OPEN] 2026-09-08 **[LOW] `#web-upd-apply-btn[hidden] { display:none !important }` has no
   driver** (audit C14): the CSS guard for the reported 1.0.6.37 bug is defence-in-depth
   nothing exercises; `test-web-update-semver.mjs` covers the JS half only. Also
@@ -432,19 +434,6 @@ branch stay marked until the next prune).
   reports the PREVIOUS bus value, never the commanded one, in `query`/`device_state`; the cloud's
   three-condition confirm (`live_ts` newer than the command AND live value == target AND current
   value == target) then works without lying, and a module that reverts simply never confirms.
-- [OPEN] 2026-08-27 **[MED, NOT OURS — route to the MR-02m project] The 16DO module at
-  COM4 addr=11 drops its own output seconds after it is set.** Bench 1.135, verified
-  from both sides: the command reaches the bus, the bridge writes it
-  (`writeback DO1=1`, 33-43 ms), the output really does go to 1 — and then returns to 0
-  with nothing re-commanding it (no second writeback; the bridge only publishes what it
-  reads). **The identical module at addr=14 holds** under the identical command, and the
-  board's local I²C output holds too, so it is that module, not the bus/bridge/Alice/
-  cloud. Hold time measured twice with different sampling: ours (2 s interval) showed
-  the drop within 2-4 s; the cloud session's (1 s interval) showed a hold of 8 s then a
-  drop between t+8 and t+10 — a ~10 s round number looks like a configured comms/
-  safe-state watchdog. Next step is a register comparison between addr=11 and addr=14
-  in the MR-02m firmware project; do not guess at the register map from this repo.
-
 - [OPEN] 2026-08-27 **[LOW] `cleanup-donor.sh:140` DENY bypass pattern.** The
   `--purge-update-state` branch carries a `case` arm `/etc/sa02m-update/trusted-keys|/*)`
   whose `|/*` alternative matches ANY absolute path, so the arm is far wider than its
@@ -574,21 +563,6 @@ branch stay marked until the next prune).
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
-- [OPEN] 2026-08-26 **[MED] Prior-audit coverage findings never dispatched (audit M3):**
-  C-2/C-3/C-5 from 2026-08-21 (their run-notes are now deleted; recover detail from git
-  history of `.ai-dev/audit/`).
-- [OPEN] 2026-08-26 **[LOW] `reachable` is never derived for sensor-only devices (audit
-  L1).** `opt/sa02m-alice/sa02m_alice/client/device_registry.py:127-136` sets it in the
-  capabilities loop only, so a property-only device reads reachable regardless of
-  freshness. One-line follow-up (reviewer advisory, 1.0.6.15).
-- [OPEN] 2026-08-26 **[LOW] `cleanup_b1_deploy_artifacts` skips `sa02m-alice` sudoers
-  0440-hardening (audit L5).** Low impact today — that file is install-only, not
-  OTA-deployed; act if alice sudoers ever enters the OTA set.
-- [OPEN] 2026-08-26 **[LOW] GitHub Actions did not fire the `pull_request` event on
-  first PR open** for #153 AND #154 (close/reopen re-armed it both times). Workflow
-  triggers verified correct in-repo; recorded as observed-unexplained (delivery-side).
-  Watch on the next ship; escalate to GitHub support if it recurs.
-
 - [OPEN] 2026-08-20 **[LOW] Functional test for the update-runner health-gate operator-disabled
   skip (deferred).** The skip logic (masked/masked-runtime/disabled required units are skipped,
   enabled-but-down still fails — `etc/sa02m-update-runner.sh` restart_services_and_health) is
@@ -600,16 +574,6 @@ branch stay marked until the next prune).
   four is-enabled branches through a stubbed systemctl (masked/disabled → rc0 skip, enabled-down
   → rc1 fail) — likely needs a Linux/WSL runner, not Git-Bash. Surfaced by the health-gate
   Reviewer (F1 advisory).
-- [OPEN] 2026-08-19 **[MED] Gateway mode for RS-485 flashing/scan — UI must steer to
-  transparent.** Fixed in 1.0.5.86: WB/fast-modbus replies (`0xFF` arbitration) are no
-  longer truncated, so scan works in `rtu_over_tcp`. BUT the PC flasher / a fast-modbus
-  device scan through the gateway works ONLY in `transparent` (best) or `rtu_over_tcp`;
-  `modbus_tcp` cannot carry it (MBAP can't wrap the `FD 46` fast-modbus / raw-RTU frames,
-  and `fast_modbus_probe` answers the WB probe locally). Verified live on 1.135 (DTV+MR
-  on COM4, СЭ on COM2): transparent + rtu_over_tcp scan all devices; modbus_tcp drops raw
-  RTU. Follow-up: the «Шлюз RS-485» / flasher UI should warn (or auto-set) transparent @
-  the device baud when a port is used for flashing, instead of leaving the modbus_tcp
-  default as a trap; document in `docs/deployment.md` gateway section + the flasher hint.
 - [OPEN] 2026-08-19 **[LOW] `tools/update-bridge/` is deprecated (unused) — remove at
   next cleanup.** The self-upgrade bridge (force-push a launcher onto fielded version
   branches) was REJECTED — see `docs/decisions/no-force-push-version-branches.md`. Old
@@ -642,14 +606,6 @@ branch stay marked until the next prune).
   was rejected for exactly this; the password/sshpass path is the safe one); and the
   Alice check names `agent.conf` — current builds have
   `/etc/sa02m-alice/sa02m-alice-*.conf` (no agent.conf).
-- [OPEN] 2026-08-18 **[LOW] Bridge module deploy list lives in 3 manually-synced
-  homes with only 1 gate (audit 2026-08-18 LOW-2).** `scripts/05-mqtt.sh:137-138`
-  and `scripts/update-www-only.sh:378-379` each list the `bridge_*.py` modules to
-  install; `opt/sa02m-modbus-mqtt/tests/test_entry_surface.py:54` freezes the
-  import SET (asserted `:135`) but nothing enforces the two shell deploy lists
-  match it. A future module added to the test + one script only would ship a board
-  missing a module with no gate firing. Fix: a quality-registry check that both
-  shell lists equal the frozen import set.
 - [OPEN] 2026-08-18 **[LOW→follow-up] Configurable serial parity/stopbits for
   `type:template` (8N2 support).** The honesty/doc half of audit-2026-08-18 MED-1
   is DONE in **1.0.5.78** (corrected the wrong "9600 8N2" comment → 8N1-only;
@@ -739,15 +695,6 @@ branch stay marked until the next prune).
   Found by the reviewer as a fourth mutation during the backlog sweep, after the
   builder's own three were confirmed.
 
-- [OPEN] 2026-08-06 **[LOW] «Время с RTC» in the panel now reads 3 hours behind
-  «Текущее время», and both are unlabelled.** `index.html:429-438` shows system
-  time (local) directly above chip time (UTC, since `fbeac21`). On MSK the RTC
-  row is correct but looks like a defect and will generate support reports —
-  this may well be what the original 3-hour report was actually seeing. Fixing
-  it is a label or a conversion in `status.js`/`forms.js` plus an i18n DICT
-  entry plus `index.html`: a `www/` change with its own `?v=`/`APP_VERSION`
-  bump flow, so it is a separate decision, not a slip-in. Surfaced by the
-  builder during the rtc-utc-convention work.
 - [OPEN] 2026-08-06 **[LOW] `/etc/adjtime` is an inherited default this repo
   never writes.** A repo-wide sweep of `etc/ scripts/ tools/ opt/ www/
   install.sh` finds zero writes to `/etc/adjtime` and no
@@ -896,11 +843,6 @@ branch stay marked until the next prune).
   by a `cmp` pin, not generated from it. True dedup = a packer step copying from
   `etc/` at image-build time; deferred because it changes the imaging flow. Plan
   `watchdog-cap.md` §11.3 option B.
-- [OPEN] 2026-07-28 **[LOW] `read_iface_conf` reports `enabled:false` for a DHCP
-  interface.** `config.cgi:51` sets `enabled=true` only for `inet static`, so a
-  DHCP-configured Ethernet shows the toggle off with empty fields. Pre-existing,
-  unrelated to the 1.0.5.49 naming work (F8) — recorded so it is not attributed
-  to that diff.
 - [OPEN] 2026-07-28 **[LOW] KLogic coexistence — deliberately deferred pieces.**
   From `docs/contracts/ethernet-iface-naming.md §5.5`: the panel does not
   *repair* a stripped vendor hook (writing vendor code into a root-executed conf
@@ -922,12 +864,6 @@ branch stay marked until the next prune).
   device (frpc); confirm the cloud frps side enforces/accepts TLS on the control
   leg (`CYNTRON-git/cloud` `config/frps.toml.template` has no explicit
   `transport.tls.force`). Cloud-repo verification item.
-- [OPEN] 2026-07-17 **[LOW] Cloud contracts — residual.** 1.0.5.15 landed
-  `docs/contracts/cloud-enrollment.md` (device mirror of the claim/enroll/
-  heartbeat + frpc-profile seam). Residual: the `cloud.cgi` status JSON shape
-  (frontend `#cloud-card` consumer) is still uncontracted — freeze its field
-  names in a small contract entry on the next cloud UI touch. (Threat-model
-  cloud section shipped 1.0.5.14; the audit-F1/F2 items are resolved.)
 - [OPEN] 2026-07-22 **[LOW] Bridge `PortCycleScheduler` loop untested.**
   The per-port scheduling loop (classic/event balancing, warmup gate, the
   A1 reconfigure-backoff *path selection*) has no direct unit coverage —
@@ -981,22 +917,6 @@ branch stay marked until the next prune).
   the port-lease change by scope. Land it with the next `www/` touch. Operator
   workaround meanwhile: stopping `sa02m-flasher.service` removes the socket,
   which reads as "not busy". Reason is logged to `/var/log/sa02m_install.log`.
-- [OPEN] 2026-07-13 **[LOW] F10 — decompose the god-files.** `app.js` DONE:
-  a UI characterization harness (`scripts/dev/`, headless Chromium over every
-  tab×theme×variant; globals + new-errors + DOM-skeleton gate) captured a
-  baseline, then app.js was peeled section-by-section into 7 plain global-scope
-  scripts `static/js/app/*.js` (app.js is now the ~389-line core) — one file per
-  commit, oracle PASS after each. `flasher.js` DEFERRED (follow-up): it is a
-  single cohesive IIFE — 230 closure-private functions threaded through one
-  shared mutable `state` (260 refs), only 5 `window.*` exports. The 2026-07 reason
-  for deferring it (no ES modules ⇒ the split would mean promoting `state` and the
-  whole fn set to global scope — a semantic rewrite that recreates the god-object)
-  is **VOID since 2026-08-18**: `docs/decisions/es-modules.md` lifted the ban and
-  names this split as its motivation, and `mqtt.js`/`devices.js` already ship as
-  modules. The live entry is the 2026-08-28 decomposition worklist (item 1) — do
-  not re-argue it here. Still OPEN for app.js:
-  on-device click-through before deploy (headless is necessary, not sufficient
-  for a global-scope reorg).
 - [OPEN] 2026-07-12 **[LOW] Y7-b — `set -u` in installer modules.** `set -o pipefail`
   landed; bare `set -u` deferred — an unset-var abort mid-provision could brick a
   fresh install. Add only with an on-device install run.
@@ -1035,31 +955,14 @@ branch stay marked until the next prune).
   root cause confirmed independently by its reviewer; deliberately left outside
   that branch's fence.
 - [OPEN] 2026-08-24 **[MED] carrier-wait drop-ins are not OTA-reachable — the DNS boot-race fix reaches field boards only half-way.** `etc/systemd/system/ifup@.service.d/` + `networking.service.d/` drop-ins (1.0.6.6) install only via `scripts/02-network.sh` / a fresh image, not web update. HARDWARE-CONFIRMED 2026-08-24 (FR-CABLE via Keenetic on the OTA'd bench board): the belt restores DNS, but with no carrier-wait a no-carrier boot did NOT recover the interface until a reboot. Field boards need a NEW image built from ≥1.0.6.8 (or a reinstall) to get carrier-wait. The current golden image is 1.0.6.4 (pre-fix).
-- [OPEN] 2026-08-24 **[MED] firstboot-overlay carries stale twins of two ladder scripts (audit A1).** `tools/imaging/firstboot-overlay/usr/local/sbin/sa02m-eth-coldboot.sh` and `.../fix-eth.sh` were byte-identical to `main` before 1.0.6.6 and were NOT updated by that branch. `autorun.sh` mirrors that dir onto a freshly flashed rootfs, so a FEL/USB-imaged board silently reverts the 1.0.6.6 ladder call sites. Sync the overlay twins (or replace with a symlink/build step) before the next image capture.
 - [OPEN] 2026-08-24 **[LOW] HW-variant auto-detect flake (1eth ↔ 2eth).** The 2-eth bench board reported `SA02M_HW_VARIANT=sa02m-1eth` on one boot and `sa02m-2eth` on the next (both eth0+eth1 present physically). Detect-by-physical-eth-count is racing something at boot. Investigate the detection ordering vs PHY/link readiness.
 - [OPEN] 2026-08-24 **[MED] make-image.sh strands the donor after capture.** It strips SSH host keys as its last pre-`dd` step but never reboots the donor in the still-live session, so post-capture the board is unreachable (sshd has no host keys, panel stopped) until a manual power cycle — a problem on a remote bench. One line: schedule a detached reboot at the end of the stream session (rc.local already regenerates keys at boot).
-- [OPEN] 2026-08-24 **[BLOCKER→in-progress 1.0.6.11] B1 (1.0.6.10) is a no-op on OTA/upgraded boards.** Hardware-verified on the 2-eth bench (OTA'd to 1.0.6.10): (1) a legacy `/etc/sudoers.d/www-data` file (pre-rename name, raw `tee`/`ifup`/`reboot` grant) survives — nothing in the current repo writes or removes it — so `sudo -n tee /etc/sudoers.d/zz`→root is STILL open (PoC created `/etc/sudoers.d/zzhack`). (2) OTA `map_dst` strips `.sh` from the two new B1 helpers, so they land as `/usr/local/sbin/sa02m-{iface-conf-write,usb-power}` while the sudoers grants the `.sh` path → network-apply + USB-power break once the legacy grant is removed. Also the stale `sa02m-www.fragment` survived OTA. B1's validator/pinning LOGIC is correct (reviewer-confirmed); this is purely the deploy/cleanup layer. Fix = installer+updater+OTA+offline remove the known-obsolete legacy sudoers names (allow-list, never blanket) + deploy the helpers WITH `.sh` on all three paths + a RED→GREEN gate. Plan `.ai-dev/plans/b1-deploy-gap.md`. **FIX IN BRANCH 1.0.6.11** — hardware acceptance pending.
 - [OPEN] 2026-08-27 **[MED] «Время без опроса» accepts a value that silently breaks outputs, with no warning.** MR-02m holding 134 clears ALL of a module's outputs after N seconds without a frame that resets its inactivity counter (five reset sites, only one of them address-matched — the table is in the note named below). The module-config window (`flasher.js`, `saveMrGlobalInactivity` + the per-AO field + the bulk template-apply path at ~4322) offers the raw range 0–255 with no guidance, so a value shorter than one bus sweep — 1 s on a line the bridge polls round-robin — makes every output fall by itself during normal operation. Cost a full firmware-update cycle and hours of bus tracing on bench 1.135 before the register was read (root cause + the A/B/A proof: `.ai-dev/notes/mr02m-inactivity-timeout.md`). Fix candidates: warn (do not block) below a threshold derived from the port's device count and poll period; surface the current value in the module card next to the DO states; make the template-apply path name this field explicitly in its confirmation, since it copies it onto other modules. Fold in round-1 finding 10 while there: neither `docs/agent-rules/web-diagnostic-tools.md` nor `docs/agent-rules/sa02m-domain.md` points at the note, so the symptom->tool dispatch still cannot route "an output falls by itself".
 
 <!-- Whole-project audit 2026-08-28 at 1.0.6.23 (3 parallel auditors: contracts,
      security, docs). Suite was GREEN (build 47/47, review 6/6) and branch
      protection verified live — every finding below is what green does NOT cover. -->
 
-- [OPEN] 2026-08-28 **[BLOCKER] Root code injection in the gateway config helper.**
-  `etc/sa02m-gateway-config-apply.sh:16` opens the Python heredoc UNQUOTED and
-  interpolates `open("$TMP_SRC")` into the Python source; `scripts/06-gateway.sh:47`
-  grants `www-data` NOPASSWD on that helper with NO argument pinning. A logged-in panel
-  user reaches root (`cmd_exec.cgi` is an authenticated `www-data` shell by design).
-  Orchestrator-verified at both lines. Fix: quote the heredoc delimiter + pass the path as
-  argv, and pin the grant. Every other privileged helper already uses the quoted form —
-  this is the lone exception.
-- [OPEN] 2026-08-28 **[BLOCKER] Root sed injection in the cloud pairing helper.**
-  `usr/local/sbin/sa02m-cloud-web-trigger.sh:48` interpolates `$SERVER` into a `sed -i`
-  substitution under a comment asserting the CALLER validated it; `etc/sudoers.d/sa02m-cloud:2-3`
-  is unpinned, so the caller is bypassable. A pipe character terminates the expression; GNU
-  sed's `e`/`w` flags then execute/write as root. Precondition: `/etc/sa02m-cloud/agent.conf`
-  exists (post-enrolment). Orchestrator-verified. Fix: validate INSIDE the helper (never trust
-  the caller) + pin the grant.
 - [RESOLVED 2026-09-16, `373a2f9` — all six grant homes read] 2026-08-28 **[HIGH] The B1 escalation gate reads 1 of the 6 homes that grant
   www-data root — hollow ratchet #9, on a security-load-bearing claim.**
   `.ai-dev/quality/checks/sudoers-pin-contract.sh:29` reads only `etc/sudoers.d/sa02m-www`.
@@ -1069,15 +972,6 @@ branch stay marked until the next prune).
   single-home" grant list — false. This is why the two BLOCKERs above are green today, and why
   `docs/threat-model.md` still says the escalation class is closed (B1). Fix: extend the gate to
   all six homes and prove it RED against the two injections BEFORE fixing them.
-- [OPEN] 2026-08-28 **[HIGH] Two shipped daemons put process control on the LAN with no auth
-  at all, and neither is in the threat model.** `opt/sa02m-mqtt-opcua/sa02m-mqtt-opcua.py:180`
-  sets the NoSecurity policy, bound `0.0.0.0:4841` (`:157`), with WRITABLE nodes (`:284`) polled
-  back into MQTT (`:309-319`); `UserManager` is imported at `:33` and never used.
-  `opt/sa02m-serial-gateway/serial_gateway.py:413,564,642` — all three modes bind hardcoded
-  `0.0.0.0` (ports 502-506/8502-8506/9502-9506) with no bind-address, IP allow-list or key in the
-  config schema. Both ship DISABLED and are Operator-enabled per port — but the Operator enables
-  them without being told what they expose. Fix: bind-address + allow-list options, and a
-  threat-model row so the trade is visible at the moment of enabling.
 - [RESOLVED 2026-09-16, `4686bf3` + row `comment-mutation-proof`] 2026-08-28 **[HIGH] Five safety gates are defeated by putting a comment mark in front
   of a line.** Mutation-proven GREEN on comment-out (16 of 22 mutations correctly went RED;
   these 5 did not): `mplc-ota-deploy-contract.sh:20`, `mplc-project-deploy-contract.sh:36`,
@@ -1097,17 +991,6 @@ branch stay marked until the next prune).
   minting/validation, password hashing, credential-file repair), sourced by every mutating
   endpoint — is reached only by `bash -n` and CI shellcheck. A mistake in the code deciding
   "is this person logged in" ships green. Harness pattern already in-repo: `test-subnet-validate.sh`.
-- [OPEN] 2026-08-28 **[HIGH] README is 2-3 subsystems behind while its version badge reads
-  current.** Zero mentions of Alice (6 of the last 9 releases) or the devices tab;
-  `README.md:392-474` lists `scripts/` 01-07 (tree has 01-12+85), `opt/` 5 (tree 11), 4 JS
-  bundles (index.html loads 16); `:1456` claims a complete CGI list — 26 of 42 absent.
-- [OPEN] 2026-08-28 **[HIGH] The deploy runbook documents a step that aborts, and one deploy
-  rule lives only in a gitignored file.** `docs/deployment.md:78-80` says the www-only path
-  deliberately omits `etc/`, but `scripts/lib.sh:500` sources `../etc/sa02m-stacks-policy.sh`
-  unconditionally, so that path fails (hit live 2026-08-26, backlog:234) with no warning in the
-  runbook. And the rule "Alice reaches a board ONLY via install.sh/06-alice.sh — never OTA"
-  exists ONLY in `.ai-dev/state/current.md:58-60` (gitignored, dies on a state reset); its home
-  is `docs/deployment.md:24-38`.
 - [RESOLVED 2026-09-16, script + baseline gone from the tree; the headless rows are `ui-layout` / `cloud-card-smoke` / `sh-modal-layout-smoke`] 2026-08-28 **[MED-HIGH] `headless-smoke` is a dormant row over a stale baseline.**
   `headless-smoke.sh:12` skips unless playwright AND `SA02M_WEB_PASS` are present; CI provides
   neither, so it has no environment where it runs. Its committed baseline
@@ -1121,70 +1004,18 @@ branch stay marked until the next prune).
   rows; it has 53.** `web-code-rigor.md:142`, `web-diagnostic-tools.md:96-97`,
   `web-workflow.md:78-79`, `sa02m-web-testing/SKILL.md:64-65`. The registry is the one home —
   the prose should point at it, not enumerate.
-- [OPEN] 2026-08-28 **[MED] MQTT password written to a web-served log.** `scripts/05-mqtt.sh:55`
-  logs the generated password via `scripts/lib.sh:20` into `/var/log/sa02m_install.log`, served
-  verbatim by `log_export.cgi:18` and `log.cgi:21`. The same secret is 0600 in
-  `/etc/sa02m_mqtt.env`; the log is never chmod'd. It opens :1884 with readwrite on all device
-  topics. Related: `scripts/05-mqtt.sh:52` fallback password is a timestamp-derived string —
-  predictable.
-- [OPEN] 2026-08-28 **[MED] `session_token` is not HttpOnly, and login has no brute-force
-  protection.** `login.cgi:54` (deliberate — the `app.js` guard reads `document.cookie`), but the
-  JS-readable `sa02m_csrf` mirror at `:58` shows the guard could key off a non-session cookie
-  instead. Any XSS then reaches `cmd_exec.cgi` and (via the two BLOCKERs) root. Separately
-  `login.cgi` has no counter, lockout or delay against a single shared password over plain HTTP.
-- [OPEN] 2026-08-28 **[MED] The Alice config API is an unauthenticated root API, and its
-  function name lies.** `opt/sa02m-alice/sa02m_alice/config/api.py:640-653` — `serve_unix` binds
-  TCP, not a unix socket — serves enable/disable/link/unlink/upsert_device/delete_device
-  (`:580-603`) with no authn under `User=root`. Loopback + opt-in, so reach is any local process
-  including `www-data` (no session, no CSRF).
 - [RESOLVED 2026-09-16, row `web-update-csrf-contract` (1.0.6.24); set-wide since 1.0.6.49 (`cgi-csrf-policy`)] 2026-08-28 **[MED] CSRF gap on the legacy OTA endpoint contradicts our own canon.**
   `web_update_apply.cgi:318-330` runs the update helper marked "no CSRF", while
   `docs/decisions/selective-csrf-policy.md` names only `logout` as an exception and the threat
   model requires CSRF on ALL mutating endpoints. SameSite=Lax still holds, so this is broken
   defence-in-depth plus false canon — fix the endpoint or amend the decision, not neither.
-- [OPEN] 2026-08-28 **[MED] Default credential `cyntron` is committed in 8 places and nothing
-  forces a change.** `install.sh:28`, `scripts/03-webserver.sh:15`,
-  `tools/debian-rootfs/create-sa02m-rootfs.sh:20,35`, `tools/imaging/make-image.sh:20`,
-  `tools/ssh/sa02m-check-perms.py:22`, `tools/ssh/sa02m_remote.py:16,56`; the password hash in
-  `etc/sa02m-factory-defaults/templates/etc/sa02m_web.env:2`; and in clear as a password hint in
-  the factory manifest. `etc/ssh/sshd_config.d/10-sa02m.conf:30-32` leaves password SSH enabled
-  with that note.
-- [OPEN] 2026-08-28 **[MED] GitHub OTA installs unsigned code as root.**
-  `etc/sa02m-update-runner.sh:509-511` allows unsigned artifacts for the github source, skipping
-  the Ed25519 check the upload path requires (`:657-664`). Deliberate — but the threat model
-  carries no supply-chain row for it, so the trade is invisible.
-- [OPEN] 2026-08-28 **[MED] Two shipped daemons have no tests at all.** `opt/sa02m-mqtt-opcua`
-  (451 L, OPC UA server on 4841) and `opt/sa02m-mqtt-snmp` (427 L) have no `tests/` and no
-  `py-unit-*` row; every other `opt/` package has one.
 - [RESOLVED 2026-09-16, 1.0.6.49 — audit H3: `web-quality.yml` installs the harness + chromium] 2026-08-28 **[MED] `ui-layout` never runs in CI** — the workflow installs Python deps
   only, no playwright, so layout / mobile KPI centring / clipping / the WCAG contrast ledger are
   dev-box-only. Honestly labelled (`tools.json:482`, `.ai-dev/notes/quality-gate-environment.md`),
   so this is coverage, not dishonesty.
-- [OPEN] 2026-08-28 **[MED] Backlog and pointer carry shipped work as open, and the decompose
-  worklist is stale in 4 homes.** backlog:88 (golden-image Alice identity) shipped as 1.0.6.20 —
-  and `current.md:36-40` still ASKS the Operator whether to take it; backlog:240 shipped as
-  1.0.6.15/18; `current.md:19-20` contradicts `current.md:66-67` on the audit-cadence count.
-  Worklist: backlog:604 names `modbus_mqtt_bridge.py` at 3422 L (now 298 — already split);
-  backlog:461 says service-ctl is 1414 L (now 1582); backlog:667 defers `flasher.js` because
-  "ES modules forbidden" — lifted by `docs/decisions/es-modules.md` on 2026-08-18, whose stated
-  motivation IS that split.
-  **Sizes re-measured at the 2026-09-08 audit (F15/A18/B10/C15/E16), growth in
-  1.0.6.34–38:** `smarthome.js` 1017→1830, `config/api.py` 908→1304,
-  `device_history_db.py` 1918→2226 (its decompose was queued «AFTER» 1.0.6.35 by
-  Operator decision F4 and never cut), new `sa02m_rules/engine.py` 990; absolute
-  worst: `main.css` 5906, `flasher.js` 5795, `mqtt.js` 2775, `devices.js` 2609,
-  `app/status.js` 2555, `status.cgi` 2538, `led_mb2ws.py` 1910.
-  **`device_history_db.py` DONE in 1.0.6.41**: 2226 → a 133-line permanent façade over
-  eight responsibility modules (AST-multiset neutrality `0 differences`, id set identical).
-  Next by size: `main.css`, `flasher.js`, `mqtt.js`, `devices.js`, `app/status.js`. 40 tracked files
-  over 800 lines. Each decompose is its own branch (`.ai-dev/procedures/decompose.md`).
 - [RESOLVED 2026-09-16, the pointer stub exists; filling it is its own OPEN entry] 2026-08-28 **[MED] `docs/architecture.md` does not exist yet is cited 12x in
   always-loaded files** (`PROTOCOL.md` 6x, `.claude/ai-dev.md` 3x, `.ai-dev/notes/README.md:4,9,20`).
   Every session is pointed at a missing home.
-- [OPEN] 2026-08-28 **[MED] Two homes for the polling architecture, one of them declaring itself
-  the single home.** `sa02m-web-architecture/SKILL.md:25-51` restates cadences, `statusPauseUntil`,
-  warmup and renderer-owned DOM from `sa02m-domain.md:56-72` while `:7` claims "One home".
-  (Split 2026-09-16: the bundle-list half is the RESOLVED sibling below.)
 - [RESOLVED 2026-09-16, `sa02m-domain.md` now says «do not keep a bundle list here» — `index.html` + `ls` are the inventory] 2026-08-28 **[MED] `sa02m-domain.md:28` named 5 JS bundles while the tree had 8 + the `app/` cluster** and contradicted its own tab table. (Split from the polling-architecture entry above; the SKILL restatement half stays OPEN.)
 - [RESOLVED 2026-09-16, rows `i18n-dict-contract` + `html-id-contract`] 2026-08-28 **[MED-LOW] Two declared reviewer floors have no mechanical row** — i18n
   completeness and the HTML-id contract are named as floors in `web-code-rigor.md` but nothing
@@ -1196,13 +1027,6 @@ branch stay marked until the next prune).
   the 55-row registry, deps floor-pinned with no lock · 42 of 48 systemd units run root with zero
   hardening, including the four that parse hostile input · `docs/threat-model.md` says the frpc
   port allow-list is absent — it exists (`sa02m-cloud-agent.py:66`).
-- [OPEN] 2026-08-28 **[LOW] Docs long tail.** Durable docs citing deleted transient plans
-  (`selective-csrf-policy.md:48`, `web-bus-mode-bacnet.md:24`, `mplc-driver-build.md:233`) · an
-  unbuilt 2026-07 plan with no status marker (`storage-benchmark-plan.md`) · `CLAUDE.md:5` says
-  "six docs", seven are imported · superseded wording kept as archaeology
-  (`TZ_PRE_PRODUCTION_DONOR_CLEANUP.md:180-185`) · `docs/audits/AUDIT_1.0.4.0.md` not marked
-  historical · `docs/contracts/web-bus-mode-bacnet.md` names no validating test though coverage
-  exists (`test_bus_mode.py`, `test_bacnet_mstp.py` under `py-unit-flasher`).
 - [OPEN] 2026-08-28 **[MED] `docs/architecture.md` is a pointer stub — the real doc-bootstrap
   pass is still owed.** 1.0.6.24 created the file so no session is sent to a missing home, but
   deliberately only as a map ("куда идти за чем"); it says so in its own text. A real
@@ -1275,6 +1099,12 @@ branch stay marked until the next prune).
   the enable call in `scripts/` and make it match reality (drop it or ship the
   unit). Every refresh currently logs a WARN the runbook tells the operator to
   review by hand.
+  **Premise corrected 2026-09-23 (1.0.6.50 refresh of 1.135, same WARN):** the unit
+  DOES exist — `etc/systemd/sa02m-userspace-watchdog.service`, installed by the imaging
+  path (`patch-firstboot-image.sh`, `compress-bin.sh`, `tools/system-hardening/
+  install.sh`) — but `install.sh` never installs it, so `scripts/01-system.sh:622`
+  enables a unit only image-born boards have. Refresh-updated boards run without this
+  reboot-watchdog. Installing it changes board behaviour (forces reboots) — Operator's call.
 - [OPEN] 2026-09-02 **[LOW] The image-identity reset leaves the cloud-control profile's
   traces on a cloned board.** `tools/imaging/*` and `docs/contracts/image-identity-reset.md`
   clear the Alice identity but neither remove `/run/sa02m-alice/status-cloud.json` nor
