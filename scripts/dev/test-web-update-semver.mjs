@@ -24,7 +24,10 @@
    timed-out POST — is re-checked ONCE by a status GET before the panel shows
    «Ошибка обновления»; a busy board hands over to the poll loop. PROVEN RED
    on 91157d5 (1.0.6.52): 9 FAIL — G1/G3 finish('error') on the first answer
-   with no GET, G2 no re-check, G7 no _webUpdConfirmError. */
+   with no GET, G2 no re-check, G7 no _webUpdConfirmError. G8/G8b (review
+   1.0.6.53 finding 2): E_CSRF is the widget's own line, never re-checked, no
+   second toast — PROVEN RED on cda6687: 8 FAIL (E_CSRF fell into the re-check
+   path; _webUpdFinishRefused toasted unconditionally). */
 import fs from 'fs';
 import path from 'path';
 import vm from 'vm';
@@ -515,6 +518,42 @@ async function runApply(script) {
   // G7 non-vacuity: the belt exists by name (a renamed helper is a defect).
   const { ctx } = makeApplyCtx(makeApplyEls(), []);
   eq('G7 _webUpdConfirmError is defined in status.js', typeof ctx._webUpdConfirmError, 'function');
+}
+{
+  // G8 (review 1.0.6.53, finding 2) E_CSRF is a refusal with a code: the
+  // app.js fetch wrapper has ALREADY reacted to it (proxy toast / refresh +
+  // retry / logout) by the time the body reaches applyWebUpdate, so the widget
+  // shows its own honest line — no status re-check, no generic «Ошибка
+  // обновления», no second toast. Apply follows the last check's data.
+  // PROVEN RED on cda6687: webUpdApplyRefusal returned null for E_CSRF → one
+  // GET → _webUpdFinish('error') (G8: refused 0, calls 2, finish 1).
+  const { calls, spies } = await runApply([{ ok: false, error: 'csrf', error_code: 'E_CSRF', reason: 'no_header' }]);
+  eq('G8 E_CSRF → the refusal path, no status GET', calls.length === 1 && spies.refused.length, 1);
+  const r = spies.refused[0];
+  eq('G8 the line names the session-protection error', !!(r && /защиты сессии/.test(r.status)), true);
+  eq('G8 error tone', r && r.tone, 'is-err');
+  eq('G8 Apply follows the last check (data said newer → stays enabled)', r && r.canApply, true);
+  eq('G8 the widget adds no second toast', r && r.toast, false);
+  eq('G8 no polling, no generic error', spies.startPolling + spies.finish.length, 0);
+}
+{
+  // G8b _webUpdFinishRefused honours toast:false (the app.js layer owns the
+  // E_CSRF toast) and still toasts a refusal that does not opt out.
+  const toasts = [];
+  const els = makeApplyEls();
+  const ctx = {
+    _webUpdTxnActive: true, _webUpdOfflineReady: false, _webUpdOnlineCanApply: false,
+    _webUpdLastCheck: null,
+    uiT: (s) => s, toast: (m) => toasts.push(String(m)),
+    setOfflineUpdateEnabled: () => {}, _webUpdShowLog: () => {}, _webUpdSetStatus: () => {},
+    _webUpdSetProgress: () => {}, webUpdSetOnlineApplyEnabled: () => {},
+    document: { getElementById: (id) => els[id] || null }
+  };
+  vm.runInNewContext(extractFn('_webUpdFinishRefused'), ctx, { filename: 'status.js-refused-extract' });
+  ctx._webUpdFinishRefused({ status: 'x', tone: 'is-err', canApply: false, toast: false }, '');
+  eq('G8b toast:false → no widget toast', toasts.length, 0);
+  ctx._webUpdFinishRefused({ status: 'Обновлений нет', tone: 'is-ok', canApply: false }, '');
+  eq('G8b a refusal without the opt-out still toasts', toasts.join('|'), 'Обновлений нет');
 }
 
 if (fails) {
