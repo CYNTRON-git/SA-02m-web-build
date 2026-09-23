@@ -674,6 +674,15 @@
       "init": "Node 18+ (stdlib only). Run on demand: node scripts/dev/test-app-csrf-recovery.mjs; APP_JS=<path> drives another copy (the RED recipe)."
     },
     {
+      "id": "no-absolute-api-paths",
+      "checks": "The served JS names the board's own HTTP surface by RELATIVE path only — no string literal opening on /api/, /cgi-bin/ or /static/ in any bundle under www/network_config/static/js (comment-stripped via lib_check.sh; a doc URL such as https://…/api/v1 does not open on the prefix and is not a hit). Behind cloud.cyntron.ru the panel lives under /devcfg/<id>/: a relative api/devices reaches the board, an absolute /api/devices resolves against the cloud root and works only through the proxy's Referer-based 307 bounce (a Referer-less request → 404). devices.js kept the last eight absolute sites (1.0.6.53, F-B3; contract docs/contracts/cloud-panel-proxy.md). Non-vacuous: the sweep must see >=5 bundles, and devices.js must carry >=4 relative \"api/devices… sites (the presence floor a comment-out turns RED — cased in comment-mutation-proof). RED on 91157d5: 9 failures (8 absolute sites, floor at 0).",
+      "config": null,
+      "run": "bash .ai-dev/quality/checks/no-absolute-api-paths.sh",
+      "beat": "build",
+      "covers": ["www/network_config/static/js/", ".ai-dev/quality/checks/no-absolute-api-paths.sh", ".ai-dev/quality/checks/lib_check.sh", "docs/contracts/cloud-panel-proxy.md"],
+      "init": "bash + grep + find (present everywhere the project builds)"
+    },
+    {
       "id": "no-eschtml-in-attr",
       "checks": "Served JS never builds a quoted HTML attribute from escHtml() — the TEXT-context escaper (& < > only) that leaves `\"` alive, so an inventory/broker string closes the attribute and adds its own (1.0.6.38 picker: an injected onfocus handler ran in headless Chromium with the operator's session — audit 2026-09-08 C4). Sweeps every bundle under www/network_config/static/js, comment-stripped, for the OPENER (`=\"' + escHtml(`, `=\"prefix' + escHtml(`, `=\"${escHtml(` and the quote-swapped / backslash-escaped spellings) and the CLOSER (an escHtml() call whose next literal carries a `\"` before any `<`) of a concatenated attribute value; a value built from three or more escHtml() parts leaves the middle part unseen (stated limit). Presence floors a comment-out turns RED: app.js must define escAttr() and it is CALLED to prove it escapes \" ' < > & (a helper that stops escaping quotes fails the run even with zero sites left); >=5 files swept, >=20 escHtml() sites seen, >=5 escAttr() attribute sites present. PROVEN RED on the pre-fix bundles: 25 failures (22 call sites in smarthome.js/rs485.js + the two floors); the parsed-DOM half is the «\"»-bearing topic case in sh-modal-layout-smoke. Its comment-out case (`function escAttr(` in app.js) is registered in comment-mutation-proof.",
       "config": null,
