@@ -575,6 +575,11 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
+  panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
+  read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
+  with a plain error instead of the 1.0.6.53 refresh-once-retry-once path. Route them through the
+  same reaction or document the difference in `docs/contracts/cloud-panel-proxy.md`.
 - [OPEN] 2026-09-23 **[LOW, honesty] `ui-layout` reports PASS when Playwright is absent.** In a
   checkout without `scripts/dev/node_modules` (a fresh git worktree, 2026-09-23) the review beat
   printed `ui-layout: skipped — playwright not installed` followed by `PASS  ui-layout`, while
