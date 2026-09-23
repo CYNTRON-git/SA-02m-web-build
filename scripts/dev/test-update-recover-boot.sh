@@ -52,13 +52,15 @@
 #   restart+health path and rolls back), R3 (reload nginx from boot context),
 #   R4/R5 (no cmd_verify, no handoff), W1/W2 (no persistence) go RED. PINNED ref
 #   (6ba943d = main at 1.0.6.50, the field boards' runner), not `main`.
-#   RED observed 2026-09-23 on that tree: 41 FAIL — R1 «recover bounced
+#   RED observed 2026-09-23 on that tree: 38 FAIL — R1 «recover bounced
 #   nginx/fcgiwrap from a Before=nginx unit: systemctl restart fcgiwrap;
 #   systemctl reload nginx» and «stage=rolled_back (want verifying) — a good
 #   tree was rolled_back», R2 the same on committing, R3 «error_code=E_APPLY
 #   (want E_POWER)» + empty message, R4 rc=127 (no cmd_verify), R5 no
 #   systemd-run and rolled_back, W1/W2 field absent / nothing restored, U1 unit
-#   file and the three lists missing.
+#   file and the three lists missing. (38 after review 1.0.6.52 finding 1 added
+#   the R5a --no-block assert — which was also RED on the first fixed tree:
+#   «fallback systemd-run lacks --no-block».)
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -329,6 +331,11 @@ write_txn verifying 3 3
 run_recover
 called_re "^systemd-run .*--unit=sa02m-update-verify-abcdef12 " && ok "R5a fallback: systemd-run --unit=sa02m-update-verify-<txn8>" \
     || bad "R5a no systemd-run fallback with the txn-named unit: $(grep systemd-run "$CALLS" | tr '\n' ';')"
+# --no-block is load-bearing: without it systemd-run waits for the transient
+# unit's start job, which is ordered after nginx, which is ordered after the
+# recover unit this code runs in — a guaranteed 30 s timeout and a false E_CMD.
+called_re "^systemd-run .*--no-block " && ok "R5a fallback is --no-block (a blocking start deadlocks against recover's own Before=nginx)" \
+    || bad "R5a fallback systemd-run lacks --no-block — it can only time out from inside recover: $(grep systemd-run "$CALLS" | tr '\n' ';')"
 called_re "^systemd-run .*-p After=nginx\.service " && ok "R5a fallback orders the transient unit After=nginx.service" \
     || bad "R5a fallback lacks -p After=nginx.service"
 called_re "^systemd-run .* $RUNNER_BIN_DST verify$" && ok "R5a fallback runs '<runner> verify'" \

@@ -71,7 +71,7 @@
 #   excerpt — the systemctl shim answers `is-active` from a per-unit state
 #   SEQUENCE file and `is-enabled` / `show -p ConditionResult` from per-unit
 #   answer files (see SHIM_STATE). Against a pre-split runner it runs the
-#   monolithic restart_services_and_health and goes RED on 6a/6b/6c/6e.
+#   monolithic restart_services_and_health and goes RED on 6a/6b/6c/6e/6g.
 #
 # Run: bash scripts/dev/test-update-conditional-restart.sh   (bash + python3 +
 #   coreutils; no systemd — the shims replace it).
@@ -215,9 +215,17 @@ case "$cmd" in
         if [ -f "$SHIM_STATE/enabled.$u" ]; then cat "$SHIM_STATE/enabled.$u"; else echo enabled; fi
         ;;
     show)
-        # systemctl show -p ConditionResult --value <unit>
+        # systemctl show -p <Property> --value <unit>; answered per property:
+        # ConditionResult from cond.<unit> (default yes), ConditionTimestampMonotonic
+        # from condts.<unit> (default 0 — never evaluated this boot, as systemd
+        # reports for a unit whose start was never attempted).
         u=""; for a in "$@"; do u=$a; done
-        if [ -f "$SHIM_STATE/cond.$u" ]; then cat "$SHIM_STATE/cond.$u"; else echo yes; fi
+        prop=""; for a in "$@"; do case "$a" in -p) ;; --value) ;; *) [ -z "$prop" ] && prop=$a ;; esac; done
+        case "$prop" in
+            ConditionResult) if [ -f "$SHIM_STATE/cond.$u" ]; then cat "$SHIM_STATE/cond.$u"; else echo yes; fi ;;
+            ConditionTimestampMonotonic) if [ -f "$SHIM_STATE/condts.$u" ]; then cat "$SHIM_STATE/condts.$u"; else echo 0; fi ;;
+            *) echo "" ;;
+        esac
         ;;
     status)
         echo "● ${1:-}: shim status excerpt"
@@ -395,10 +403,14 @@ fi
 # masked/disabled unit (the existing skip, functional at last — backlog
 # 2026-08-20) AND a unit whose ConditionResult is `no`; and log the last state
 # plus a `systemctl status` excerpt on a real failure.
-# RED on the pre-split runner (6ba943d), observed 2026-09-23: 6 FAIL — 6a (one
+# RED on the pre-split runner (6ba943d), observed 2026-09-23: 7 FAIL — 6a (one
 # probe → rc 1, 1 probe recorded), 6b (no status excerpt), 6c (a single active
 # sample PASSED the crash loop), 6e (no Condition skip, ConditionResult never
-# read). 6d/6f hold on both trees.
+# read), 6g (ConditionTimestampMonotonic never read; its rc 1 holds there by
+# accident — the old gate failed every inactive unit). 6d/6f hold on both
+# trees. 6g against the FIRST fixed tree (ConditionResult alone): «a
+# never-started enabled required unit was waved through as Condition-off
+# (rc=0)» — review 1.0.6.52, finding 2.
 echo "── run 6: health gate settle window / Condition-off skip ──"
 HEALTH_FN=restart_services_and_health
 [ "$HAS_HEALTH_SPLIT" = "1" ] && HEALTH_FN=health_check
@@ -454,15 +466,32 @@ printf 'disabled\n' > "$SHIM_STATE/enabled.u-off"
 run_units_health u-off
 [ "$run_rc" -eq 0 ] && ok "6d an operator-disabled (is-enabled=disabled) required unit is skipped, not a failure" \
                     || bad "6d disabled unit rolled the update back (rc=$run_rc) — never-widen violated"
-# 6e Condition-off: inactive, enabled, ConditionResult=no → skipped, rc 0
+# 6e Condition-off: inactive, enabled, ConditionResult=no AND the condition was
+# really evaluated this boot (ConditionTimestampMonotonic != 0) → skipped, rc 0
 printf '%s\n' inactive > "$SHIM_STATE/seq.u-cond"
 printf 'no\n' > "$SHIM_STATE/cond.u-cond"
+printf '4823917\n' > "$SHIM_STATE/condts.u-cond"
 run_units_health u-cond
-[ "$run_rc" -eq 0 ] && ok "6e a unit kept off by its own Condition*= (ConditionResult=no) is skipped" \
+[ "$run_rc" -eq 0 ] && ok "6e a unit kept off by its own Condition*= (ConditionResult=no, evaluated) is skipped" \
                     || bad "6e a Condition-off unit (the 1.135 stand drop-in shape) FAILED the gate (rc=$run_rc)"
 called "show -p ConditionResult --value u-cond" \
     && ok "6e the gate consulted ConditionResult" \
     || bad "6e ConditionResult was never read"
+# 6g the over-broad twin (review 1.0.6.52, finding 2): systemd reports
+# ConditionResult=no for a unit whose start was NEVER attempted this boot
+# (condition_result is false until unit_test_condition runs), with
+# ConditionTimestampMonotonic=0. An enabled required unit in that state is a
+# regression (its start job was cancelled/never queued), not an operator
+# choice — it must FAIL the gate.
+printf '%s\n' inactive > "$SHIM_STATE/seq.u-never"
+printf 'no\n' > "$SHIM_STATE/cond.u-never"
+printf '0\n' > "$SHIM_STATE/condts.u-never"
+run_units_health u-never
+[ "$run_rc" -ne 0 ] && ok "6g a never-started enabled unit (ConditionResult=no, ConditionTimestampMonotonic=0) still FAILS the gate" \
+                    || bad "6g a never-started enabled required unit was waved through as Condition-off (rc=$run_rc) — the skip is over-broad"
+called "show -p ConditionTimestampMonotonic --value u-never" \
+    && ok "6g the gate consulted ConditionTimestampMonotonic" \
+    || bad "6g ConditionTimestampMonotonic was never read — evaluated-false and never-evaluated are indistinguishable"
 # 6f enabled, no Condition, inactive → still fails (the fail path is preserved)
 printf '%s\n' inactive > "$SHIM_STATE/seq.u-down"
 run_units_health u-down

@@ -176,11 +176,14 @@ if printf '%s' "$body" | grep -q '"error":"unauthorized"' && ! sudo_called; then
 else bad "11 unknown session → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
 
 # ═══ G. GET status: a dead runner is reported as stale (1.0.6.52) ═══════════
-# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 8 FAILED (G1–G5 incl. both runner_alive reads) —
+# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 9 FAILED (G1–G6 incl. both runner_alive reads) —
 # the CGI reads a hard-coded /var/lib/sa02m-update (absent on the host), so the
 # sandbox transaction is invisible (status «idle»), and it prints no
 # runner_alive / stale field at all; on the board the same code answered
 # «running» for a transaction whose runner had been SIGKILLed 40 min earlier.
+# G6 was RED on the first fixed lib as well («stale=True … want stale=False»:
+# its `is-active --quiet` clause cannot fire for a oneshot unit — review
+# 1.0.6.52, finding 3).
 echo
 echo "── G. GET status: runner liveness + stale transaction ──"
 UPD="$T/upd"; mkdir -p "$UPD"
@@ -254,6 +257,25 @@ expect_get "G4 stage=done, 600 s old, lock pid dead" False done None
 # G5 a transaction that already carries a code keeps it when it goes stale
 printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000001","stage":"rolling_back","progress_pct":90,"result":"pending","error_code":"E_HEALTH","error_message":"unit not active: nginx (inactive)","updated_at":"%s"}\n' "$OLD_TS" > "$UPD/transaction.json"
 expect_get "G5 rolling_back, 600 s old, dead pid, own code" True error E_HEALTH
+# G6 the unit half of the liveness test must FIRE for a oneshot unit while its
+# ExecStart runs: systemd reports ActiveState=activating (is-active rc 3) for
+# the whole run of sa02m-update-verify.service, so an `is-active --quiet`
+# clause never returns 0 (review 1.0.6.52, finding 3). Dead lock pid, old
+# updated_at, the verify unit activating → alive, not stale.
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show)
+    u=""; for a in "$@"; do u=$a; done
+    case "$*" in *ActiveState*) if [ "$u" = sa02m-update-verify.service ]; then echo activating; else echo inactive; fi ;; esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_txn verifying "$OLD_TS"; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+expect_get "G6 verifying, 600 s old, dead pid, sa02m-update-verify.service activating (oneshot mid-run)" False running None
 # ═══ R. reboot.cgi refuses while a LIVE runner works, reboots a stale one ═══
 # (1.0.6.52, F5a) A hard reset mid-apply was one click away: reboot.cgi ran
 # `reboot -f` with no look at the transaction. Now: applying / verifying /

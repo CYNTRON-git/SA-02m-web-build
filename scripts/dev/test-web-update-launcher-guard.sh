@@ -31,11 +31,14 @@
 #   bash scripts/dev/test-web-update-launcher-guard.sh   → L1 RED (the
 #   pre-fix launcher clones over the live transaction; it also ignores
 #   SA02M_WEB_BUILD_STATEDIR, so its status file lands outside the sandbox).
-#   PINNED ref. RED observed 2026-09-23 on that tree: 3 FAIL — L1 «rc=1,
+#   PINNED ref. RED observed 2026-09-23 on that tree: 4 FAIL — L1 «rc=1,
 #   cloned: yes, status=''» (it clones over the live transaction; status lands
 #   outside the sandbox), L1 no log line, and L5 (the seam is missing, so the
 #   pre-fix launcher's legacy lock is /var/lib/…, not the sandbox one — an
-#   artefact of the seam, not a behaviour difference). L2–L4 hold on both trees.
+#   artefact of the seam, not a behaviour difference), L6 (no unit clause at
+#   all). L2–L4 hold on both trees. L6 was RED on the first fixed tree too
+#   («cloned: yes» — its is-active clause never fires for a oneshot unit;
+#   review 1.0.6.52, finding 3).
 #
 # Run: bash scripts/dev/test-web-update-launcher-guard.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -120,6 +123,26 @@ run_launcher_locked() {
 run_launcher_locked
 [ "$rc" -ne 0 ] && ! cloned && ok "L5 the legacy launcher lock (live pid) still refuses a second launcher" \
   || bad "L5 legacy lock held by a live pid → rc=$rc, cloned: $(cloned && echo yes || echo no)"
+
+# ── L6: no lock pid, but the verify unit is mid-run (oneshot: ActiveState=activating) → refused ─
+# `is-active --quiet` answers rc 3 for a oneshot unit for the whole run of its
+# ExecStart, so a clause built on it never fires (review 1.0.6.52, finding 3);
+# the unit half of the liveness test must read ActiveState.
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  show) case "$*" in *ActiveState*sa02m-update-verify.service*) echo activating ;; *ActiveState*) echo inactive ;; esac; exit 0 ;;
+  *) exit 0 ;;
+esac
+SHIM
+write_txn verifying; rm -f "$UPD/update.lock"
+run_launcher
+if [ "$rc" -ne 0 ] && ! cloned && status_is error; then
+  ok "L6 verify unit activating (oneshot mid-run), no lock pid → refused, no clone"
+else
+  bad "L6 verify unit activating → rc=$rc, cloned: $(cloned && echo yes || echo no) — the unit half of the liveness test does not fire for a oneshot unit"
+fi
 
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0

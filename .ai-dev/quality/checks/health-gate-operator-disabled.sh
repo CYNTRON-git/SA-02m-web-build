@@ -53,6 +53,12 @@ text_matches "$fn" 'systemctl show -p ConditionResult --value "\$u"' \
     && ok "(c2) the branch reads ConditionResult (a Condition-off unit is operator-configured)" \
     || bad "(c2) no ConditionResult read — a unit kept off by its own Condition rolls the update back"
 
+# (c3) ...and only together with an EVALUATED condition: ConditionResult=no is
+#     also what a never-started unit reports (review 1.0.6.52, finding 2)
+text_matches "$fn" 'systemctl show -p ConditionTimestampMonotonic --value "\$u"' \
+    && ok "(c3) the branch reads ConditionTimestampMonotonic (never-started ≠ Condition-off)" \
+    || bad "(c3) no ConditionTimestampMonotonic read — a never-started enabled unit is waved through as Condition-off"
+
 # (d) the skip 'continue' appears BEFORE the 'unit not active' + return 1 (fail path)
 #     within the branch — an ENABLED-but-down unit must still fail.
 blk="$(printf '%s\n' "$fn" | sed -n '/if ! unit_settled "\$u"; then/,/^        fi$/p')"
