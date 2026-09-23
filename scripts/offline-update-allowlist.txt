@@ -58,6 +58,9 @@ etc/tmpfiles.d/sa02m-web-login.conf
 # Devices tab (DTV / CE) optional env overrides
 etc/default/sa02m-devices
 
+# Armbian RAM-log hooks OFF (repo-owned; effective after the next reboot)
+etc/default/armbian-ramlog
+
 # systemd units / drop-ins owned by SA-02m (not third-party unit names)
 etc/systemd/sa02m-*
 etc/systemd/system/sa02m-*

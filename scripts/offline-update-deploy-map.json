@@ -93,6 +93,12 @@
       "owner": "root:root",
       "note": "Optional env for Devices API/logger (history path, intervals)."
     },
+    "etc/default/armbian-ramlog": {
+      "dst": "/etc/default/armbian-ramlog",
+      "mode": "0644",
+      "owner": "root:root",
+      "note": "Armbian RAM-log hooks OFF (ENABLED=false; why: the file's header). Effective after the next reboot: the boot-time flush brings the journal back to disk; OTA restarts nothing for it."
+    },
     "scripts/sa02m-rs485-stats.sh": {
       "dst": "/usr/local/sbin/sa02m-rs485-stats.sh",
       "mode": "0755",
