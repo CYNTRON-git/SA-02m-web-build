@@ -344,6 +344,109 @@ else bad "R4 wrong CSRF → body: ${body##*$'\n\n'}, sudo called: $(sudo_called 
 rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock"
 unset SA02M_UPDATE_STATEDIR
 
+# ═══ H. POST verdict after the launch: the handoff race (1.0.6.53) ═══════════
+# Bench 1.135, 2026-09-23 20:30: «Применить» against a LOCAL git server answered
+# «Ошибка обновления. См. Журнал событий.» while the runner was alive and a
+# page reload showed the progress. The CGI judged the launch 1 s later by
+# «legacy lock still present OR kill -0 $BGPID»: a fast clone lets the launcher
+# remove its lock and exec the runner in < 1 s, and `kill -0` on the sudo→root
+# child answers EPERM to www-data (never «alive»). It then wrote `error` into
+# update_status — a file the launcher owns — so the next GET replayed the lie.
+# Now the verdict comes from the ONE liveness home (lib_web_update.sh:
+# launcher lock pid + cmdline, runner lock pid + cmdline, units) or a fresh
+# running-stage transaction, and the CGI writes no status file. Contract:
+# docs/contracts/web-update.md «POST — ответ после запуска».
+# The sudo shim here EXITS IMMEDIATELY (BGPID dead before the CGI's sleep 1) —
+# observationally identical to the EPERM case, which this harness cannot
+# reproduce (its shim is not root; kill -0 on a same-uid pid succeeds).
+# RED, observed 2026-09-23 against the 1.0.6.52 CGI (91157d5,
+# WEB_UPDATE_APPLY_CGI=<git show copy> + its libs beside it): H1 answers
+# «error» with a live runner behind it; H1b the same on the fresh transaction;
+# H2 writes update_status=error (the launcher's file); H3b answers «running»
+# WITHOUT launching on a reused pid (`kill -0` says alive, the cmdline says it
+# is a `sleep`). H3 holds on both trees (a same-uid launcher pid passes kill -0
+# too — the EPERM half is the board's, asserted by reading, not here).
+echo
+echo "── H. POST verdict after the launch: fast handoff / no false update_status ──"
+export SA02M_UPDATE_STATEDIR="$UPD"
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update.lock" "$STATE/update_status"
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in
+  is-active) exit 3 ;;
+  *) exit 0 ;;
+esac
+SHIM
+chmod +x "$BIN/systemctl"
+write_check "{\"checked_at\":\"$(now_utc)\",\"deployed_version\":\"1.0.6.29\",\"remote_version\":\"1.0.6.38\",\"update_available\":true}"
+# H's own live fixtures (G's may have expired by now): a runner-shaped pid for
+# the runner lock, a launcher-shaped pid for the legacy lock (argv[0] = the
+# helper's name), and a plain `sleep` for the pid-reuse case.
+bash -c 'exec -a sa02m-update-runner sleep 60' &
+H_RUNNER_PID=$!
+bash -c 'exec -a sa02m-web-update-apply sleep 60' &
+LAUNCHER_PID=$!
+sleep 60 &
+H_OTHER_PID=$!
+trap 'kill "$LIVE_PID" "$OTHER_PID" "$H_RUNNER_PID" "$LAUNCHER_PID" "$H_OTHER_PID" 2>/dev/null; rm -rf "$T"' EXIT
+sleep 0.3
+# shim_handoff MODE — the sudo shim for H: records the call, then behaves like a
+# launcher that already handed off: `txn` leaves a fresh validating transaction
+# + the runner's lock naming a live runner pid; `txn-deadpid` the same
+# transaction with a dead lock pid; `nothing` leaves no trace. Exits at once.
+shim_handoff() {
+  cat > "$BIN/sudo" <<SHIM
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T/sudo.calls"
+case "$1" in
+  txn)
+    printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000053","operation":"update","source":"github","stage":"validating","progress_pct":0,"result":"pending","error_code":null,"error_message":null,"target_version":"1.0.6.38","updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
+    printf '%s\n' "$H_RUNNER_PID" > "$UPD/update.lock" ;;
+  txn-deadpid)
+    printf '{"schema_version":1,"id":"abcdef12-0000-4000-8000-000000000053","operation":"update","source":"github","stage":"validating","progress_pct":0,"result":"pending","error_code":null,"error_message":null,"target_version":"1.0.6.38","updated_at":"%s"}\n' "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$UPD/transaction.json"
+    printf '%s\n' "$DEAD_PID" > "$UPD/update.lock" ;;
+esac
+exit 0
+SHIM
+  chmod +x "$BIN/sudo"
+}
+status_of() { printf '%s' "${1##*$'\n\n'}" | sed -n 's/.*"status":"\([a-z_]*\)".*/\1/p' | head -1; }
+sudo_count() { if [ -f "$T/sudo.calls" ]; then wc -l < "$T/sudo.calls" | tr -d ' '; else echo 0; fi; }
+
+# H1 fast handoff: the launcher is gone, the runner it exec'd holds its lock → running
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update_status"
+shim_handoff txn
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && [ "$(sudo_count)" = 1 ]; then ok "H1 fast handoff, runner lock pid alive → status running, one launch"
+else bad "H1 fast handoff → status '$(status_of "$body")', sudo calls $(sudo_count) (want running, 1) — body: ${body##*$'\n\n'}"; fi
+# H1b the transaction alone: fresh running stage, lock pid dead → still running (grace, as GET G3)
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update_status"
+shim_handoff txn-deadpid
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && [ "$(sudo_count)" = 1 ]; then ok "H1b fast handoff, fresh validating transaction, lock pid dead → status running"
+else bad "H1b fresh transaction, dead pid → status '$(status_of "$body")', sudo calls $(sudo_count) (want running, 1) — body: ${body##*$'\n\n'}"; fi
+# H2 nothing alive, no transaction → error, and update_status is NOT written by the CGI
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update_status"
+shim_handoff nothing
+body=$(run_cgi)
+if [ "$(status_of "$body")" = error ] && [ ! -e "$STATE/update_status" ] && [ "$(sudo_count)" = 1 ]; then ok "H2 launcher died leaving nothing → status error, update_status untouched (the launcher's file)"
+else bad "H2 nothing alive → status '$(status_of "$body")', update_status $([ -e "$STATE/update_status" ] && echo "WRITTEN: $(cat "$STATE/update_status")" || echo absent), sudo calls $(sudo_count) (want error, absent, 1)"; fi
+# H3 legacy lock naming a live LAUNCHER pid, no transaction → running without a second launch
+rm -f "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update_status"
+printf '%s\n' "$LAUNCHER_PID" > "$STATE/update.lock"
+shim_handoff nothing
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && ! sudo_called; then ok "H3 legacy lock → live launcher pid (cmdline sa02m-web-update-apply) → running, no second launch"
+else bad "H3 live launcher lock → status '$(status_of "$body")', sudo called: $(sudo_called && echo yes || echo no) (want running, no launch)"; fi
+# H3b legacy lock naming a live pid that is NOT the launcher (pid reuse) → not «running»: launch
+printf '%s\n' "$H_OTHER_PID" > "$STATE/update.lock"
+shim_handoff txn
+body=$(run_cgi)
+if [ "$(status_of "$body")" = running ] && [ "$(sudo_count)" = 1 ]; then ok "H3b legacy lock → live pid but not the launcher (pid reuse) → launched (kill -0 is not a liveness test)"
+else bad "H3b reused pid in the legacy lock → status '$(status_of "$body")', sudo calls $(sudo_count) (want running via the launch, 1)"; fi
+rm -f "$BIN/systemctl" "$UPD/transaction.json" "$UPD/update.lock" "$STATE/update.lock" "$STATE/update_status"
+unset SA02M_UPDATE_STATEDIR
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "test-web-update-apply-guard: ALL OK — the guard refuses everything it cannot prove and launches only on a fresh, newer check"
