@@ -22,7 +22,7 @@ if [ "${REQUEST_METHOD:-GET}" != "POST" ]; then
     exit 0
 fi
 if ! web_csrf_validate; then
-    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    web_csrf_error_body
     exit 0
 fi
 

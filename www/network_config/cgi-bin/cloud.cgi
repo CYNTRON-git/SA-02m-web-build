@@ -97,7 +97,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     # and print the shared error-JSON shape (web_csrf_require would re-emit
     # headers into the body). Mirrors web_update_apply.cgi's CSRF check.
     if ! web_csrf_validate; then
-        echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+        web_csrf_error_body
         exit 0
     fi
 

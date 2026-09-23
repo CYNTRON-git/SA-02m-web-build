@@ -264,7 +264,7 @@ if [ -n "$CONFIRM" ]; then
   # Offline file apply — CSRF required (headers not yet sent).
   if ! web_csrf_validate; then
     _json_headers
-    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+    web_csrf_error_body
     exit 0
   fi
 
@@ -413,7 +413,7 @@ fi
 # cached bundle without the token gets E_CSRF and the app.js wrapper re-logs in.
 if ! web_csrf_validate; then
   _json_headers
-  printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+  web_csrf_error_body
   exit 0
 fi
 

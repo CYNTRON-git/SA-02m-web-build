@@ -30,7 +30,8 @@ fi
 # CSRF BEFORE the mutation. Headers are already on the wire, so validate inline
 # and print the shared shape (web_csrf_require would re-emit them into the body).
 if ! web_csrf_validate; then
-    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF","devices":[]}'
+    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF","reason":"%s","devices":[]}
+' "$(web_csrf_fail_reason)"
     exit 0
 fi
 

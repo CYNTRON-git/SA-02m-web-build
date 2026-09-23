@@ -118,23 +118,49 @@ web_csrf_get_or_create() {
 }
 
 # Validate X-SA02M-CSRF against the session's .csrf file. Fail closed.
+# On a deny the reason is left in WEB_CSRF_FAIL_REASON (1.0.6.53) — metadata,
+# never a decision: no_session (no cookie token) · no_token_file (no <hash>.csrf
+# or it is empty) · no_header (X-SA02M-CSRF absent/empty) · mismatch. The panel
+# needs it to tell a proxy that strips the header (cloud.cyntron.ru, 2026-09-23)
+# from a session that lost its token, instead of logging the user out on both
+# (docs/decisions/selective-csrf-policy.md «Реакция панели»).
+WEB_CSRF_FAIL_REASON=""
 web_csrf_validate() {
     local tok hash f stored got
-    tok=$(web_session__cookie_token) || return 1
-    hash=$(web_session__hash "$tok") || return 1
+    WEB_CSRF_FAIL_REASON=""
+    tok=$(web_session__cookie_token) || { WEB_CSRF_FAIL_REASON=no_session; return 1; }
+    hash=$(web_session__hash "$tok") || { WEB_CSRF_FAIL_REASON=no_session; return 1; }
     f=$(web_csrf__path_for_hash "$hash")
-    [ -f "$f" ] || return 1
-    IFS= read -r stored < "$f" 2>/dev/null || return 1
+    [ -f "$f" ] || { WEB_CSRF_FAIL_REASON=no_token_file; return 1; }
+    IFS= read -r stored < "$f" 2>/dev/null || { WEB_CSRF_FAIL_REASON=no_token_file; return 1; }
     stored="${stored//$'\r'/}"
-    [ -n "$stored" ] || return 1
+    [ -n "$stored" ] || { WEB_CSRF_FAIL_REASON=no_token_file; return 1; }
     got="${HTTP_X_SA02M_CSRF:-}"
-    [ -n "$got" ] || return 1
+    [ -n "$got" ] || { WEB_CSRF_FAIL_REASON=no_header; return 1; }
     # Constant-time-ish compare via salted hashes (same pattern as web_auth_verify).
     local s h1 h2
     s=$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')
     h1=$(printf '%s' "${s}:$got" | sha256sum | cut -d' ' -f1)
     h2=$(printf '%s' "${s}:$stored" | sha256sum | cut -d' ' -f1)
-    [ "$h1" = "$h2" ]
+    [ "$h1" = "$h2" ] && return 0
+    WEB_CSRF_FAIL_REASON=mismatch
+    return 1
+}
+
+# The reason of the last deny as one of the four enum words (or `unknown`) —
+# a closed set, so it is safe to interpolate into JSON without an escaper.
+web_csrf_fail_reason() {
+    case "${WEB_CSRF_FAIL_REASON:-}" in
+        no_session|no_token_file|no_header|mismatch) printf '%s' "$WEB_CSRF_FAIL_REASON" ;;
+        *) printf 'unknown' ;;
+    esac
+}
+
+# The shared E_CSRF body (one home): every inline `web_csrf_validate` site
+# prints this after its own headers; web_csrf_require prints it after the
+# lib's. `reason` is additive — an older bundle ignores it.
+web_csrf_error_body() {
+    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF","reason":"%s"}\n' "$(web_csrf_fail_reason)"
 }
 
 # JSON error + exit if CSRF invalid. Call after session check on mutating POSTs.
@@ -144,7 +170,7 @@ web_csrf_require() {
     fi
     printf 'Content-type: application/json; charset=UTF-8\r\n'
     printf 'Cache-Control: no-store\r\n\r\n'
-    printf '{"ok":false,"error":"csrf","error_code":"E_CSRF"}\n'
+    web_csrf_error_body
     exit 0
 }
 

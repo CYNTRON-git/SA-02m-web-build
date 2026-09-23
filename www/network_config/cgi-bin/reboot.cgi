@@ -17,7 +17,7 @@ echo ""
 # CSRF BEFORE the mutation (defense-in-depth on top of POST+SameSite=Lax).
 # Headers already emitted, so validate inline and print the shared shape.
 if ! web_csrf_validate; then
-    echo '{"ok":false,"error":"csrf","error_code":"E_CSRF"}'
+    web_csrf_error_body
     exit 0
 fi
 # A LIVE update runner (applying / verifying / committing / rolling_back) is
