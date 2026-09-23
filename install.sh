@@ -153,7 +153,23 @@ sa02m_restore_runtime_watchdog() {
     fi
     SA02M_WDT_PREV=""
 }
-trap sa02m_restore_runtime_watchdog EXIT
+# The userspace watchdog (etc/sa02m-userspace-watchdog.sh) reboots the board
+# after 10 min of nginx/sshd/the login page being down — which is what a long
+# install restarting them looks like — and pauses only while this lock exists
+# (the update and factory-reset runners take it too). Taken below only when
+# absent, released only when owned.
+SA02M_IMAGING_LOCK=/run/sa02m-imaging.lock
+SA02M_OWN_IMAGING_LOCK=0
+# One EXIT handler for both holds; `|| true` so a failed restore under set -e
+# cannot skip the lock release.
+sa02m_install_exit() {
+    sa02m_restore_runtime_watchdog || true
+    if [ "$SA02M_OWN_IMAGING_LOCK" = 1 ]; then
+        rm -f "$SA02M_IMAGING_LOCK"
+        SA02M_OWN_IMAGING_LOCK=0
+    fi
+}
+trap sa02m_install_exit EXIT
 if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
     SA02M_WDT_PREV=$(sa02m_runtime_watchdog_usec) || SA02M_WDT_PREV=""
     if [ -n "$SA02M_WDT_PREV" ] && [ "$SA02M_WDT_PREV" != 0 ]; then
@@ -165,6 +181,22 @@ if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
         fi
     else
         SA02M_WDT_PREV=""
+    fi
+fi
+
+# ── Hold the userspace watchdog off for this run (8D step F) ───────────────
+# noclobber makes the create atomic: a lock another process already holds is
+# never overwritten, and then never removed by us. /run is tmpfs, so a run
+# killed with SIGKILL leaves a stale lock until the next reboot — the failure
+# direction is a PAUSED watchdog (fewer reboots), never a missing pause.
+if [ -z "${SA02M_ROOTFS_BUILD:-}" ]; then
+    if ( set -C; date -Iseconds > "$SA02M_IMAGING_LOCK" ) 2>/dev/null; then
+        SA02M_OWN_IMAGING_LOCK=1
+        log INFO "Программный watchdog приостановлен на время установки ($SA02M_IMAGING_LOCK)"
+    elif [ -e "$SA02M_IMAGING_LOCK" ]; then
+        log WARN "$SA02M_IMAGING_LOCK уже держит другой процесс — не беру и не снимаю"
+    else
+        log WARN "Не удалось создать $SA02M_IMAGING_LOCK — программный watchdog не приостановлен"
     fi
 fi
 

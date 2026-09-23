@@ -95,6 +95,16 @@ refresh) гарантирует:
   `systemctl enable|start|unmask|restart|reload-or-restart` и inline
   `apt-get/pip/npm install`; ужесточающие глаголы (`stop`, `disable`, `mask`,
   `reset-failed`, `daemon-reload`, `reload`, `try-restart`) остаются сырыми.
+- Сторожа на время прогона (с 1.0.6.51, 8D шаг F): `install.sh` вне
+  `SA02M_ROOTFS_BUILD` снимает runtime-watchdog systemd (с проверкой обратным
+  чтением) и создаёт `/run/sa02m-imaging.lock` — только если файла нет
+  (noclobber), запоминая, что создал его сам. Пока файл есть, программный
+  сторож `sa02m-userspace-watchdog` плату не перезагружает. Один обработчик
+  EXIT возвращает runtime-watchdog и удаляет файл, только если прогон создал
+  его сам; чужую блокировку (runner обновления, сброс к заводским) не трогает.
+  Прогон, убитый SIGKILL, оставляет файл до перезагрузки (`/run` — tmpfs):
+  сторож остаётся на паузе, то есть отказ — в сторону «меньше перезагрузок».
+  Проверка — quality-строка `watchdog-hold` (случаи 8 и 12).
 
 ## 3. Файл политики `/etc/sa02m_stacks.conf`
 
