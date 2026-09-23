@@ -163,6 +163,7 @@ firstboot-sb-csum|etc/sa02m-rootfs-expand.sh|rm -f "$RESULT.tmp"
 update-recover-boot|etc/systemd/sa02m-update-verify.service|ExecStart=/usr/local/libexec/sa02m-update-runner verify
 update-recover-boot|scripts/update-www-only.sh|sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service
 update-recover-boot|scripts/pack-offline-update.py|"sa02m-update-verify.service"
+update-recover-boot|etc/sa02m-update-runner.sh|trap '"'"'exit 143'"'"' INT TERM
 '
 
 command -v git >/dev/null 2>&1 || { echo "comment-mutation-proof: FAIL — git is required to build the pristine copy"; exit 1; }

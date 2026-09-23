@@ -61,6 +61,15 @@
 #   file and the three lists missing. (38 after review 1.0.6.52 finding 1 added
 #   the R5a --no-block assert — which was also RED on the first fixed tree:
 #   «fallback systemd-run lacks --no-block».)
+#   Round 2 (bench 1.135 RED run, 2026-09-23 — recover killed by its own
+#   TimeoutStartSec=300 mid-rollback, stage rolling_back + lock + watchdog 0
+#   left behind): R3 now requires NO restarts in boot context, R6 (the residue
+#   converges on one boot), R7 (on_exit restores the watchdog on a non-zero
+#   exit at a rolling stage; INT/TERM trap), R8 (`runner reclaim`), W3 (a new
+#   hold over a residue-0 manager keeps the policy value), M (the field remedy
+#   script). RED on the round-1 tree: 12 FAIL — R3 «issued restarts: systemctl
+#   restart sa02m-rules», R6 same, R7 «left the watchdog at 0» + «no INT/TERM
+#   trap», R8 rc=127 (no cmd_reclaim), W3 «runtime_wdt_prev_usec='0'».
 #
 # Run: bash scripts/dev/test-update-recover-boot.sh   (bash + python3 + coreutils)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -99,7 +108,7 @@ for fn in cmd_recover rollback_from_journal _systemctl_bounded install_imaging_l
 done
 # Present on the fixed side only — extract-if-present (the drive-to-failure run
 # must reach and FAIL the assertions).
-for fn in restart_after_rollback _journal_has_dst_prefix cmd_verify schedule_boot_verify load_runtime_wdt_prev runtime_wdt_policy_usec; do
+for fn in restart_after_rollback _journal_has_dst_prefix cmd_verify schedule_boot_verify load_runtime_wdt_prev runtime_wdt_policy_usec restore_runtime_wdt on_exit cmd_reclaim recover_transaction; do
     grep -q "^$fn() {" "$SRC" && extract "$fn" >> "$T/fn.sh"
 done
 [ "$(tail -n1 "$T/fn.sh")" = "}" ] || { echo "FAIL  extraction did not stop at a closing brace"; exit 1; }
@@ -141,6 +150,7 @@ utc_now()                      { echo 1970-01-01T00:00:00Z; }
 ensure_dirs()                  { mkdir -p "$STATEDIR/staging" "$STATEDIR/rollback" "$STATEDIR/state"; }
 migrate_legacy_state()         { :; }
 acquire_lock()                 { printf '%s\n' "$$" > "$LOCKFILE"; LOCK_HELD=1; }
+try_lock()                     { printf '%s\n' "$$" > "$LOCKFILE"; LOCK_HELD=1; }
 manifest_path()                { printf '%s\n' "$STAGE/meta/manifest.json"; }
 wipe_incoming_staging()        { :; }
 commit_markers()               { : > "$T/commit.marker"; }
@@ -269,8 +279,18 @@ write_txn verifying 2 3
 run_recover
 [ "$(txn_field stage)" = rolled_back ] && ok "R3 incomplete tree is still rolled back" \
     || bad "R3 incomplete tree: stage=$(txn_field stage) (want rolled_back)"
-called "systemctl restart sa02m-rules" && ok "R3 rollback re-bounces restart[] (sa02m-rules)" \
-    || bad "R3 sa02m-rules not restarted after the boot rollback"
+# Bench 1.135 RED run (2026-09-23): recover's restart set at boot ran into its
+# own TimeoutStartSec=300 and was SIGKILLed mid-rollback (stage rolling_back,
+# imaging lock + watchdog 0 left behind). At boot every unit starts from the
+# restored files anyway: a boot-context rollback restarts NOTHING.
+unit_restarts() { grep -E '^systemctl (restart|start|reload) ' "$CALLS" 2>/dev/null | grep -v 'start net-watchdog'; }
+if [ -n "$(unit_restarts)" ]; then
+    bad "R3 boot-context rollback issued restarts (each bounded 60 s — enough to hit recover's 300 s timeout): $(unit_restarts | tr '\n' ';')"
+else
+    ok "R3 boot-context rollback restarts nothing (boot starts every unit from the restored tree)"
+fi
+called "systemctl daemon-reload" && ok "R3 boot-context rollback still daemon-reloads the restored unit files" \
+    || bad "R3 no daemon-reload after the boot rollback"
 no_web_restart && ok "R3 boot-context rollback skips nginx/fcgiwrap (systemd starts them on the restored tree)" \
     || bad "R3 boot-context rollback bounced nginx/fcgiwrap: $(grep -E 'nginx|fcgiwrap' "$CALLS" | tr '\n' ';')"
 [ "$(txn_field error_code)" = E_POWER ] && ok "R3 rollback reason recorded as E_POWER (power loss during verifying)" \
@@ -354,6 +374,113 @@ logged "rollback from journal" && bad "R5b a complete tree was rolled back becau
 logged "cannot schedule post-boot verification" && ok "R5b the failure is logged with its cause" \
     || bad "R5b no 'cannot schedule post-boot verification' log line"
 
+# ── R6: the field residue — stage rolling_back, lock + watchdog 0, dead runner ─
+# The state bench 1.135 (and most likely the Skolkovo boards) sit in after the
+# RED run: recover killed by its own timeout mid-rollback. One boot must
+# converge: replay the journal, no restarts (boot), lock cleared, watchdog back
+# from the POLICY (the 1.0.6.49 transaction carries no runtime_wdt_prev_usec).
+echo "── R6: recover on rolling_back with lock + watchdog-0 residue ──"
+reset_run; printf '1\n' > "$T/health.rc"
+write_txn rolling_back 3 3
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
+run_recover
+[ "$rc" -eq 0 ] && ok "R6 recover exits 0" || bad "R6 recover rc=$rc"
+[ "$(txn_field stage)" = rolled_back ] && ok "R6 rolling_back → rolled_back" || bad "R6 stage=$(txn_field stage) (want rolled_back)"
+[ "$(txn_field error_code)" = E_POWER ] && [ -n "$(txn_field error_message)" ] && ok "R6 E_POWER + reason recorded: $(txn_field error_message)" \
+    || bad "R6 error_code=$(txn_field error_code) message='$(txn_field error_message)'"
+[ ! -f "$IMAGING_LOCK" ] && ok "R6 imaging lock cleared" || bad "R6 imaging lock still present"
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R6 watchdog restored to 15000000 from the policy (no field in the old transaction)" \
+    || bad "R6 watchdog NOT restored: $(grep busctl "$CALLS" | tr '\n' ';')"
+called "systemctl start net-watchdog" && ok "R6 net-watchdog started again" || bad "R6 net-watchdog not started"
+called_re '^systemctl (restart|start|reload) (nginx|fcgiwrap|sa02m-rules)' && bad "R6 restarts issued from boot context: $(grep -E 'restart|reload' "$CALLS" | tr '\n' ';')" \
+    || ok "R6 no unit restarts from boot context"
+
+# ── R7: the EXIT trap on a non-zero exit mid-rollback keeps the lock but ──────
+# restores the watchdog — SIGTERM (recover's timeout) must not leave the board
+# without a hardware watchdog until the next boot.
+echo "── R7: on_exit at a rolling stage ──"
+reset_run
+write_txn rolling_back 3 3 runtime_wdt_prev_usec=15000000
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+( set +e; IMAGING_HELD=1; RUNTIME_WDT_PREV=15000000; false; on_exit ) >/dev/null 2>&1
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R7 on_exit (ec≠0, stage rolling_back) restores the watchdog" \
+    || bad "R7 on_exit left the watchdog at 0 on a non-zero exit mid-rollback: $(grep busctl "$CALLS" | tr '\n' ';')"
+[ -f "$IMAGING_LOCK" ] && ok "R7 on_exit keeps the imaging lock at a rolling stage (the next boot finishes)" || bad "R7 on_exit removed the lock mid-rollback"
+stripped_matches "$SRC" "^trap 'exit 143' INT TERM" && ok "R7 INT/TERM are turned into an exit so the EXIT trap runs (the timeout SIGTERM)" \
+    || bad "R7 no INT/TERM trap — a SIGTERM from recover's timeout skips on_exit"
+
+# ── R8: runner reclaim — the residue on a board that neither reboots nor applies ─
+echo "── R8: runner reclaim ──"
+run_reclaim() { ( set -euo pipefail; cmd_reclaim ) >/dev/null 2>&1; rc=$?; }
+# (a) terminal stage + leftover lock + watchdog 0 + no field → lock cleared, policy restored
+reset_run
+write_txn rolled_back 3 3
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
+run_reclaim
+[ "$rc" -eq 0 ] && [ ! -f "$IMAGING_LOCK" ] && ok "R8a reclaim on a terminal stage clears the leftover lock (rc 0)" \
+    || bad "R8a reclaim rc=$rc lock present: $([ -f "$IMAGING_LOCK" ] && echo yes || echo no)"
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R8a reclaim restores the watchdog from the policy" \
+    || bad "R8a watchdog not restored: $(grep busctl "$CALLS" | tr '\n' ';')"
+[ "$(txn_field stage)" = rolled_back ] && ok "R8a the terminal stage is untouched" || bad "R8a stage=$(txn_field stage)"
+# (b) rolling_back with a dead runner → the rollback is finished (non-boot: restarts allowed)
+reset_run
+write_txn rolling_back 3 3
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+run_reclaim
+[ "$(txn_field stage)" = rolled_back ] && [ "$(txn_field error_code)" = E_POWER ] && ok "R8b reclaim finishes a rollback the runner died in (rolled_back, E_POWER)" \
+    || bad "R8b stage=$(txn_field stage) error_code=$(txn_field error_code)"
+[ ! -f "$IMAGING_LOCK" ] && called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R8b lock cleared, watchdog restored" \
+    || bad "R8b lock present: $([ -f "$IMAGING_LOCK" ] && echo yes || echo no), busctl: $(grep busctl "$CALLS" | tr '\n' ';')"
+called "systemctl restart sa02m-rules" && ok "R8b outside boot the rollback re-bounces restart[] (web is up)" \
+    || bad "R8b restart[] not re-bounced outside boot context"
+# (c) nothing to reclaim → no-op
+reset_run
+write_txn done 3 3
+run_reclaim
+[ "$rc" -eq 0 ] && ! called_re '^busctl set-property' && [ "$(txn_field stage)" = done ] && ok "R8c no lock, terminal stage → no-op" \
+    || bad "R8c rc=$rc calls: $(tr '\n' ';' < "$CALLS")"
+
+# ── R9: the delivering OTA's exact residue on a ≤1.0.6.51 board ──────────────
+# self_reexec_before_deploy copies the INSTALLED (old) runner and execs the
+# copy, so the whole delivering apply — the health gate included — runs under
+# the OLD code and dies at `restart fcgiwrap`. What the NEW recover/verify
+# then find at the next boot: stage=verifying, files complete, VERSION = the
+# new one, imaging lock present, RuntimeWatchdogUSec=0 with NO
+# runtime_wdt_prev_usec field (old code wrote none), net-watchdog /
+# sa02m-flasher stopped by the old runner (both enabled — boot starts them;
+# nothing here may stop them again), the failed recover unit of the previous
+# boot, the old CGI's legacy update_status=running. One boot must end with
+# stage=done, lock gone, watchdog 15000000 (policy fallback), units untouched.
+echo "── R9: the old runner's residue → recover → verify ──"
+reset_run; printf '0\n' > "$T/health.rc"
+write_txn verifying 3 3                      # no runtime_wdt_prev_usec, no boot_verify_pending
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
+run_recover
+[ "$rc" -eq 0 ] && called "systemctl start --no-block sa02m-update-verify.service" && ok "R9 recover hands the complete tree to the verify unit" \
+    || bad "R9 recover rc=$rc calls: $(tr '\n' ';' < "$CALLS")"
+logged "rollback from journal" && bad "R9 recover rolled the delivered tree back" || ok "R9 no rollback"
+[ "$(txn_field runtime_wdt_prev_usec)" = 15000000 ] && ok "R9 recover persisted the POLICY value (old transaction had no field, manager at 0)" \
+    || bad "R9 runtime_wdt_prev_usec='$(txn_field runtime_wdt_prev_usec)' (want 15000000)"
+called_re '^systemctl stop .*(sa02m-flasher|nginx|fcgiwrap)' && bad "R9 recover stopped a unit boot must start: $(grep 'stop' "$CALLS" | tr '\n' ';')" \
+    || ok "R9 recover stops nothing boot must start (net-watchdog stop is the hold's own, a no-op at boot)"
+[ -f "$IMAGING_LOCK" ] && ok "R9 imaging lock kept for verify" || bad "R9 lock released before verification"
+# …the verify unit runs (after nginx/fcgiwrap; the health gate passes)
+: > "$CALLS"; : > "$LOG"; RUNTIME_WDT_PREV=""; IMAGING_HELD=0
+run_verify
+[ "$rc" -eq 0 ] && [ "$(txn_field stage)" = done ] && [ "$(txn_field result)" = success ] && ok "R9 verify → done/success" \
+    || bad "R9 verify rc=$rc stage=$(txn_field stage) result=$(txn_field result)"
+[ ! -f "$IMAGING_LOCK" ] && ok "R9 imaging lock gone" || bad "R9 imaging lock still present after verify"
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "R9 watchdog 15000000 restored (policy fallback carried through the transaction)" \
+    || bad "R9 watchdog not restored: $(grep busctl "$CALLS" | tr '\n' ';')"
+called "systemctl start net-watchdog" && ok "R9 net-watchdog started by verify" || bad "R9 net-watchdog not started"
+called_re '^systemctl stop ' && bad "R9 verify stopped a unit: $(grep 'stop' "$CALLS" | tr '\n' ';')" || ok "R9 verify stops nothing (sa02m-flasher/net-watchdog stay up)"
+called_re '^fn (services_restart_sets|restart_services_and_health) ' && bad "R9 verify re-ran the restart sets" || ok "R9 verify: enable+tmpfiles + health only"
+[ -z "$(txn_field error_code)" ] && ok "R9 error_code cleared" || bad "R9 error_code=$(txn_field error_code)"
+[ -f "$T/commit.marker" ] && ok "R9 commit markers written (deployed_version for the panel)" || bad "R9 no commit markers"
+
 # ── W1/W2: the watchdog hold value survives the handover (F6) ────────────────
 echo "── W: runtime watchdog value persistence ──"
 reset_run
@@ -385,6 +512,74 @@ rm -f "$SA02M_WATCHDOG_POLICY_FILE"
 called_re '^busctl set-property' && bad "W2b no policy file → a value was invented: $(grep busctl "$CALLS" | tr '\n' ';')" \
     || ok "W2b no policy file → nothing restored (never invents a value)"
 logged "WARN" && ok "W2b the unknown value is logged as a WARN" || bad "W2b no WARN logged for the unknown value"
+# W3 a NEW apply on a board carrying the residue (live 0, no hold of its own):
+# install_imaging_lock must not "hold off 0" and later "restore 0" — a 0 under a
+# configured policy can only be an earlier hold's residue.
+reset_run
+write_txn applying 0 3
+printf '0\n' > "$T/wdt.value"
+printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
+( set -euo pipefail; install_imaging_lock ) >/dev/null 2>&1
+[ "$(txn_field runtime_wdt_prev_usec)" = 15000000 ] && ok "W3 a fresh hold over a residue-0 manager persists the POLICY value, not 0" \
+    || bad "W3 runtime_wdt_prev_usec='$(txn_field runtime_wdt_prev_usec)' (want 15000000) — a new apply would restore 0 at the end"
+: > "$CALLS"
+( set -euo pipefail; RUNTIME_WDT_PREV=""; load_runtime_wdt_prev; IMAGING_HELD=1; cleanup_imaging_lock ) >/dev/null 2>&1
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "W3 …and the end of that apply restores 15000000" \
+    || bad "W3 the end of the apply left the watchdog at 0: $(grep busctl "$CALLS" | tr '\n' ';')"
+
+# ── M: scripts/sa02m-update-remedy.sh — the field entry point for R8 ─────────
+# Driven with a FAKE runner (records argv; carries the `cmd_reclaim() {` marker
+# or not), a pgrep shim (rc from $T/pgrep.rc: 0 = a runner is alive), the
+# busctl/systemctl shims above, and a real JSON transaction in the sandbox.
+echo "── M: sa02m-update-remedy.sh ──"
+REMEDY=scripts/sa02m-update-remedy.sh
+FAKE_RUNNER="$TW/fake-runner"
+cat > "$T/bin/pgrep" <<'SH'
+#!/bin/bash
+exit "$(cat "${PGREP_RC_FILE:-/dev/null}" 2>/dev/null || echo 1)"
+SH
+chmod 755 "$T/bin/pgrep"
+export PGREP_RC_FILE="$T/pgrep.rc"
+write_fake_runner() {  # $1 = with|without the reclaim marker
+    {
+        printf '#!/bin/bash\nprintf '"'"'runner %%s\\n'"'"' "$*" >> "$CALLS"\nexit 0\n'
+        [ "$1" = with ] && printf 'cmd_reclaim() { :; }\n'
+    } > "$FAKE_RUNNER"
+    chmod 755 "$FAKE_RUNNER"
+}
+run_remedy() {
+    : > "$CALLS"
+    ( export SA02M_UPDATE_RUNNER="$FAKE_RUNNER" SA02M_UPDATE_STATEDIR="$STATEDIR" \
+             SA02M_IMAGING_LOCK="$IMAGING_LOCK" SA02M_WEB_VERSION_FILE="$VERSION_FILE"
+      bash "$REMEDY" ) > "$T/remedy.out" 2>&1; rc=$?
+}
+write_json_txn() { printf '{"schema_version":1,"id":"%s","stage":"%s","result":"pending"}\n' "$TXN" "$1" > "$STATEDIR/transaction.json"; }
+# Ma live runner → exit 2, nothing touched
+printf '0\n' > "$T/pgrep.rc"; write_fake_runner with; write_json_txn rolling_back
+date -Iseconds > "$IMAGING_LOCK"; printf '0\n' > "$T/wdt.value"
+run_remedy
+[ "$rc" -eq 2 ] && [ -f "$IMAGING_LOCK" ] && ! grep -q '^runner ' "$CALLS" && ! called_re '^busctl set-property' \
+    && ok "Ma a live runner → remedy refuses (rc 2), runner not invoked, lock and watchdog untouched" \
+    || bad "Ma live runner → rc=$rc lock present: $([ -f "$IMAGING_LOCK" ] && echo yes || echo no) calls: $(tr '\n' ';' < "$CALLS")"
+# Mb no runner, runner ≥ 1.0.6.52 → reclaim, watchdog from policy, lock gone, units started
+printf '1\n' > "$T/pgrep.rc"
+printf '[Manager]\nRuntimeWatchdogSec=15s\n' > "$SA02M_WATCHDOG_POLICY_FILE"
+run_remedy
+grep -q '^runner reclaim$' "$CALLS" && ok "Mb runner ≥ 1.0.6.52 → \`runner reclaim\` invoked" || bad "Mb reclaim not invoked: $(tr '\n' ';' < "$CALLS")"
+called_re '^busctl set-property .* RuntimeWatchdogUSec t 15000000$' && ok "Mb watchdog set to the policy value explicitly" || bad "Mb watchdog not set: $(grep busctl "$CALLS" | tr '\n' ';')"
+[ ! -f "$IMAGING_LOCK" ] && ok "Mb leftover imaging lock removed" || bad "Mb imaging lock still present"
+called "systemctl start net-watchdog" && called "systemctl start sa02m-flasher" && ok "Mb net-watchdog + sa02m-flasher started" || bad "Mb units not started: $(grep start "$CALLS" | tr '\n' ';')"
+grep -q '^after:' "$T/remedy.out" && ok "Mb prints the after: line" || bad "Mb no after: line: $(tail -3 "$T/remedy.out" | tr '\n' ';')"
+# Mc old runner (no reclaim) on a stuck stage → recover at runtime
+write_fake_runner without; write_json_txn rolling_back; date -Iseconds > "$IMAGING_LOCK"
+run_remedy
+grep -q '^runner recover$' "$CALLS" && ok "Mc runner < 1.0.6.52 on rolling_back → \`runner recover\` at runtime" || bad "Mc recover not invoked: $(tr '\n' ';' < "$CALLS")"
+# Md old runner, terminal stage → no recover, still tidies the residue
+write_json_txn done; date -Iseconds > "$IMAGING_LOCK"
+run_remedy
+! grep -q '^runner ' "$CALLS" && [ ! -f "$IMAGING_LOCK" ] && ok "Md old runner on a terminal stage → no recover, leftover lock still removed" \
+    || bad "Md calls: $(tr '\n' ';' < "$CALLS") lock present: $([ -f "$IMAGING_LOCK" ] && echo yes || echo no)"
+rm -f "$STATEDIR/transaction.json" "$T/bin/pgrep"
 
 # ── U: the units and the installer/packer lists (static, comment-stripped) ──
 echo "── U: unit files + installer lists ──"

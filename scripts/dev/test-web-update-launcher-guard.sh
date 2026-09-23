@@ -144,6 +144,16 @@ else
   bad "L6 verify unit activating → rc=$rc, cloned: $(cloned && echo yes || echo no) — the unit half of the liveness test does not fire for a oneshot unit"
 fi
 
+# ── L7: the field residue — rolling_back, dead runner (stale lock) → re-apply allowed ─
+cat > "$BIN/systemctl" <<'SHIM'
+#!/bin/bash
+case "${1:-}" in is-active) exit 3 ;; *) exit 0 ;; esac
+SHIM
+write_txn rolling_back; printf '%s\n' "$DEAD_PID" > "$UPD/update.lock"
+run_launcher
+cloned && ok "L7 rolling_back with a dead runner (the bench residue) → «Применить» proceeds (clone attempted)" \
+  || bad "L7 rolling_back + dead runner → clone NOT attempted (rc=$rc) — a stuck board could never re-apply"
+
 echo "-----"
 if [ "$fails" -eq 0 ]; then echo "PASS (all checks)"; exit 0
 else echo "FAIL ($fails check(s))"; exit 1; fi

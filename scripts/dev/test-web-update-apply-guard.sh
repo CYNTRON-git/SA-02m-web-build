@@ -176,7 +176,7 @@ if printf '%s' "$body" | grep -q '"error":"unauthorized"' && ! sudo_called; then
 else bad "11 unknown session → body: ${body##*$'\n\n'}, sudo called: $(sudo_called && echo yes || echo no)"; fi
 
 # ═══ G. GET status: a dead runner is reported as stale (1.0.6.52) ═══════════
-# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 9 FAILED (G1–G6 incl. both runner_alive reads) —
+# RED, observed 2026-09-23 against the 1.0.6.50 CGI (6ba943d): 10 FAILED (G1–G6 incl. both runner_alive reads and the G1 log line) —
 # the CGI reads a hard-coded /var/lib/sa02m-update (absent on the host), so the
 # sandbox transaction is invisible (status «idle»), and it prints no
 # runner_alive / stale field at all; on the board the same code answered
@@ -188,6 +188,9 @@ echo
 echo "── G. GET status: runner liveness + stale transaction ──"
 UPD="$T/upd"; mkdir -p "$UPD"
 export SA02M_UPDATE_STATEDIR="$UPD"
+# The CGI's python prints Russian text (the stale line for the old bundle):
+# pin UTF-8 on both sides of the pipe — a Windows CPython defaults to cp1251.
+export PYTHONIOENCODING=utf-8
 # systemctl shim: no update unit is active, no transient apply unit is loaded.
 cat > "$BIN/systemctl" <<'SHIM'
 #!/bin/bash
@@ -239,6 +242,12 @@ expect_get "G1 verifying, 600 s old, lock pid dead" True error E_RUNNER_LOST
 body=$(run_get)
 [ "$(json_field "$body" runner_alive)" = "False" ] && ok "G1 runner_alive=false reported" \
   || bad "G1 runner_alive: $(json_field "$body" runner_alive) (want False)"
+# The OLD cached bundle never reads `stale`; it shows `log` in the event log —
+# the only channel a ≤1.0.6.51 board has for «what now» (round 2, item 4).
+case "$(json_field "$body" log)" in
+  "Обновление прервано на этапе «Проверка сервисов»: перезагрузите плату"*) ok "G1 log carries the human line for the old cached bundle" ;;
+  *) bad "G1 log does not start with the human «Обновление прервано…» line: $(json_field "$body" log | head -1)" ;;
+esac
 # G2 same transaction, lock pid = a live runner → not stale, running
 printf '%s\n' "$LIVE_PID" > "$UPD/update.lock"
 expect_get "G2 verifying, 600 s old, lock pid alive (runner cmdline)" False running None

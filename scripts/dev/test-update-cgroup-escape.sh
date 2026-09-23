@@ -15,8 +15,10 @@
 # included. No EXIT trap runs; transaction.json stays verifying/85, the
 # imaging lock stays, the watchdog stays held, nginx keeps serving the new
 # tree from disk. That is «прогресс-бар завис на 85 %» on six boards. The fix
-# is runner-side (effective in the DELIVERING update, at the new runner's
-# cmd_apply entry right after the old runner's exec): read /proc/self/cgroup,
+# is runner-side, at cmd_apply entry (NOT effective in the update that delivers
+# it: self_reexec_before_deploy execs a copy of the INSTALLED runner, so that
+# first OTA runs under the old code and completes at the next boot via
+# recover → verify — see docs/deployment.md): read /proc/self/cgroup,
 # and when a line ends in /fcgiwrap.service re-launch this runner as a
 # transient unit `sa02m-update-apply-<txn8>` via systemd-run (KillMode=process,
 # the SA02M_* seams passed with --setenv), hand the lock over and exit 0. The
@@ -65,6 +67,9 @@ extract() {
 : > "$T/fn.sh"
 extract acquire_lock >> "$T/fn.sh"
 grep -q '^acquire_lock() {' "$T/fn.sh" || { echo "FAIL  could not extract acquire_lock() from $SRC — the marker moved; fix this harness, do not delete it"; exit 1; }
+# acquire_lock delegates to try_lock since round 2 (reclaim needs a non-exiting
+# form); extract it when present.
+grep -q '^try_lock() {' "$SRC" && extract try_lock >> "$T/fn.sh"
 HAS_ESCAPE=0
 if grep -q '^escape_foreign_cgroup() {' "$SRC"; then
     HAS_ESCAPE=1
