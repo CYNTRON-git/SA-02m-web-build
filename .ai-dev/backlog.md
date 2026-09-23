@@ -62,7 +62,9 @@ branch stay marked until the next prune).
   hunting a symptom that does not exist. No `devices.js` change is needed.
   **Hard constraint from the cloud session — do NOT drop the float rows:** `fan_speed`/`fan_step` are
   not valid Yandex float instances, so both rows must keep `cloud_only: true`; an out-of-schema
-  Discovery response makes every device on that account vanish from the app. Shipment 2 adds ONE
+  Discovery response makes every device on that account vanish from the app.
+  **[SUPERSEDED — see «CLAIM RETRACTED» below: that last clause is not true as written.]**
+  The float-row instruction itself stands; only the stated consequence was withdrawn. Shipment 2 adds ONE
   `devices.capabilities.mode` (instance `fan_speed`) BESIDE them, percent-backed on c.pCOmini and
   step-backed on uAria. Open on the cloud side: the value vocabulary (per-family vs shared) — their
   Operator's product call.
@@ -129,8 +131,23 @@ branch stay marked until the next prune).
   built function, byte-compared) — the check that catches a mapping module quietly changing what the
   catalogue publishes.
   Operator's go given 2026-09-20 (full cycle + bench pass). Branch `1.0.6.50` cut; planning under way.
+  **CLAIM RETRACTED 2026-09-20 (cloud session), superseding the «Hard constraint» paragraph above.**
+  «An out-of-schema Discovery response makes every device on that account vanish from the app» is
+  NOT established: it lived in their repo as two docstrings with no primary source, no recorded
+  observation, and nobody had measured it. **Their research has since CONCLUDED (2026-09-20)**;
+  the conclusion, attributed to them and with its missing citations stated, is recorded once in
+  `docs/contracts/carel-ahu.md` §6. The BEHAVIOUR the retracted claim was used to justify is
+  unchanged — `cloud_only` on both float rows, the mode item validated at write time — and now
+  rests on the cost that conclusion names (one rejected device until the next Discovery), not on
+  the retracted one. The verified fact that should carry the weight instead: Discovery
+  is ON DEMAND, so nothing reaches an app until the user taps «Обновить список устройств» (their
+  `docs/yandex-smart-home-rules.md` §5; our own record of the same behaviour is in
+  `docs/contracts/alice-mqtt-mapping.md`). Every site where THIS repo stated the claim as fact was
+  introduced on branch 1.0.6.50 and is corrected in it (`config/models.py`, `config/ahu_status.py`,
+  `tests/test_models.py`, `docs/contracts/carel-ahu.md`); `git show origin/main` carries none of it.
   **RESOLVED in 1.0.6.50.** Family-true fan rows + one `devices.capabilities.mode`/`fan_speed`
-  (shared five-name ladder, DERIVED from the map limits in the new one-home module
+  (shared four-name ladder, positions written once, the percent side DERIVED from the map limits,
+  in the new one-home module
   `opt/sa02m-carel/sa02m_carel/carel_fan.py`), the write-back audit trail across every Carel
   handler, the mode schema closed in `models.py`, and the contract corrected — §6 (not §5: §5 was
   already right) plus the §7 layer clarification. Two further findings fixed in the same change,
@@ -162,6 +179,39 @@ branch stay marked until the next prune).
   register on a c.pCOmini), not a schema limit. Same round: the vocabulary itself became the
   recommended four (low/medium/high/turbo = 20/40/70/100 % = steps 2/4/7/10); `quiet` was the one
   value outside the recommended set and was dropped.
+- [OPEN] 2026-09-23 **[LOW] Follow-ups found while shipping 1.0.6.50 (Carel fan) — none is in that
+  release, each is its own change.**
+  1. **Observability: the Alice client logs no POSITIVE line when it builds a catalogue.** After an
+     install, the only board-side evidence that the new code runs is indirect: the client's
+     restart time, the ABSENCE of the fail-soft «sa02m_carel not importable» warning, and re-running
+     the Discovery generator against the installed /opt trees. Those prove the running process
+     loads the right code, not that it emitted the control. A one-line INFO on catalogue build
+     (device count, capability types per device) would make post-install verification direct.
+  2. **The «Умный дом» window writes an undocumented `parameters: {"instance": "on"}` on every
+     `on_off`** (9 of 12 capabilities on bench 1.135). Yandex's Discovery schema defines one
+     optional `on_off` parameter, `split`; `instance` belongs in the STATE object. The Operator's
+     app check on 2026-09-23 shows Yandex tolerates it silently (15 of 15 devices visible,
+     control works), so this is cleanup, not an outage. Fix centrally in `discovery_devices` so
+     documents already saved on boards are covered too.
+  3. **Setpoint `range` is 0..99 for both Carel families; uAria's real ceiling is 50 °C.** The
+     bridge clamps at write time (70 is written as 50), so this is presentational: the top of the
+     slider maps to one setpoint. It was unfixable while the window could not tell the family;
+     1.0.6.50 introduces the family resolver, so the window can now narrow it. Same window as 2 —
+     one branch. `random_access` is the documented key if the setpoint should step, not jump.
+  4. **`ui-layout` binds a fixed port (8902, `UI_LAYOUT_PORT`).** Two concurrent quality runs on
+     one machine make the second fail with EADDRINUSE, reported as a red `ui-layout` row that is
+     indistinguishable at a glance from a layout regression (hit 2026-09-20). Either pick a free
+     port or report a bind failure as an infrastructure error, not a gate FAIL.
+  5. **«LED лента» brightness and colour are `cloud_only`**, so Alice can only switch it on/off.
+     Likely deliberate, but brightness is bound as `range` 0..255 with `unit.percent`, which
+     Yandex would not accept as-is (percent is 0..100). Operator's call whether Alice should dim it.
+  6. **Wording advisories from the 1.0.6.50 final review** (`.ai-dev/reviews/1.0.6.50_review.md`,
+     transient): A1 `carel-ahu.md` §6 «установлено независимо» carries a recovery clause its cited
+     page does not support — end the sentence earlier or point it at the cloud conclusion; A2 the
+     stated reason for keeping the §6 retraction is weak — the strong reason is that the claim lives
+     in the cloud team's repo, where readers of this contract may have met it; A3 two lines over
+     80 columns (cosmetic, no limit configured). Also carried: `test_device_registry.py` is ~1000
+     lines, a split candidate.
 - [OPEN] 2026-09-09 **[MED] An Alice «включи» is answered DONE while `sa02m-rules` is down.**
   The registry publishes `/devices/sa02m-rules-<sid>/controls/run/on` and reports success;
   with the engine stopped the publish is simply lost and the user gets «сделано» for a
