@@ -210,7 +210,7 @@ if [ -f "$REPO_ETC/tmpfiles.d/sa02m-alice.conf" ]; then
     fi
 fi
 _upd_daemon_reload=0
-for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-factory-reset.service; do
+for _upd_unit in sa02m-update.service sa02m-update-recover.service sa02m-update-verify.service sa02m-factory-reset.service; do
     if [ -f "$SYSTEMD_SRC/$_upd_unit" ]; then
         sa02m_atomic_install -m 644 "$SYSTEMD_SRC/$_upd_unit" "/etc/systemd/system/$_upd_unit"
         sed -i 's/\r$//' "/etc/systemd/system/$_upd_unit"

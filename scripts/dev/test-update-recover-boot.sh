@@ -97,7 +97,7 @@ for fn in cmd_recover rollback_from_journal _systemctl_bounded install_imaging_l
 done
 # Present on the fixed side only — extract-if-present (the drive-to-failure run
 # must reach and FAIL the assertions).
-for fn in restart_after_rollback _journal_has_dst_prefix cmd_verify load_runtime_wdt_prev runtime_wdt_policy_usec; do
+for fn in restart_after_rollback _journal_has_dst_prefix cmd_verify schedule_boot_verify load_runtime_wdt_prev runtime_wdt_policy_usec; do
     grep -q "^$fn() {" "$SRC" && extract "$fn" >> "$T/fn.sh"
 done
 [ "$(tail -n1 "$T/fn.sh")" = "}" ] || { echo "FAIL  extraction did not stop at a closing brace"; exit 1; }

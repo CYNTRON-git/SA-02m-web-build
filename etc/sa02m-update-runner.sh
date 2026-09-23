@@ -8,7 +8,8 @@
 #   - imaging lock + the runtime watchdog held off (read back) for the apply window
 #   - self-copy re-exec into $STATEDIR/runner/<txn>/runner before deploy
 #
-# Commands: apply (default) | recover
+# Commands: apply (default) | recover | verify (post-boot health gate,
+#           sa02m-update-verify.service) | version
 # shellcheck shell=bash
 set -euo pipefail
 
@@ -82,6 +83,14 @@ PRESERVE_PATHS=(
 CMD="${1:-apply}"
 IMAGING_HELD=0
 LOCK_HELD=0
+# `boot` while cmd_recover runs: sa02m-update-recover.service is ordered
+# Before=nginx fcgiwrap, so a restart/reload job on either can never complete
+# from inside it — restart_after_rollback skips them in this context.
+RUNNER_CONTEXT=""
+# The last deploy-side failure, for the transaction's error_message (1.0.6.52:
+# rollback_from_journal used to stamp E_APPLY and no message on EVERY rollback,
+# so the panel could not say why a board rolled back).
+APPLY_FAIL_REASON=""
 
 log() {
     local ts
@@ -127,14 +136,27 @@ migrate_legacy_state() {
     chmod 644 "$STATEDIR/state/updater_version" 2>/dev/null || true
 }
 
+# acquire_lock [WAIT_SECS] — the lock file's content is this process's pid; the
+# status CGI reads it (lib_web_update.sh) to tell a live runner from a dead one.
+# Opened for APPEND so a contender never truncates the holder's pid line; the
+# pid is written only once the lock is ours. A wait is given by the two entry
+# points that follow a handover: the cgroup-escaped runner (the handing-over
+# process closes fd 9 just before systemd-run) and `verify` (recover may still
+# be releasing).
 acquire_lock() {
+    local wait=${1:-}
     mkdir -p "$STATEDIR"
-    exec 9>"$LOCKFILE"
-    if ! flock -n 9; then
+    exec 9>>"$LOCKFILE"
+    if [ -n "$wait" ]; then
+        if ! flock -w "$wait" 9; then
+            log "ERROR [E_LOCK]: another update holds $LOCKFILE (waited ${wait}s)"
+            exit 1
+        fi
+    elif ! flock -n 9; then
         log "ERROR [E_LOCK]: another update holds $LOCKFILE"
         exit 1
     fi
-    printf '%s\n' "$$" >&9
+    printf '%s\n' "$$" >"$LOCKFILE"
     LOCK_HELD=1
 }
 
@@ -159,6 +181,15 @@ elif isinstance(v,(dict,list)):
 else:
   print(v)
 ' "$TXN_FILE" "$key" 2>/dev/null || true
+}
+
+txn_has_key() {  # rc 0 when the transaction carries the key (even null/empty)
+    python3 -c 'import json,sys
+try:
+  d=json.load(open(sys.argv[1],encoding="utf-8"))
+except Exception:
+  sys.exit(1)
+sys.exit(0 if sys.argv[2] in d else 1)' "$TXN_FILE" "$1" 2>/dev/null
 }
 
 txn_patch() {
@@ -280,12 +311,66 @@ sa02m_runtime_watchdog_set() {
 }
 # ── END sa02m-runtime-watchdog ─────────────────────────────────────────────
 
+# The value held off for the apply window lives in THREE processes at least —
+# the launching runner, its self-copy after `exec`, the cgroup-escaped copy —
+# and across a reboot into recover/verify. A shell variable survives none of
+# that: until 1.0.6.52 every runner-path apply left RuntimeWatchdogUSec=0
+# until the next reboot (field incident, H5). So the value is persisted in the
+# transaction (runtime_wdt_prev_usec, empty when nothing was held) and every
+# entry point that inherits an existing imaging lock reloads it here first.
+# The configured policy is the fallback for a transaction an OLDER launcher
+# wrote (no field) while the live value is 0 — the delivering update's shape.
+runtime_wdt_policy_usec() {   # prints the policy RuntimeWatchdogSec in µs; rc=1 when unparseable
+    local f="${SA02M_WATCHDOG_POLICY_FILE:-/etc/systemd/system.conf.d/sa02m-watchdog.conf}" raw num unit
+    [ -r "$f" ] || return 1
+    raw=$(grep -E '^[[:space:]]*RuntimeWatchdogSec=' "$f" | tail -n1) || true
+    raw=${raw#*=}
+    raw=$(printf '%s' "$raw" | tr -d '[:space:]\r')
+    [ -n "$raw" ] || return 1
+    num=${raw%%[!0-9]*}
+    unit=${raw#"$num"}
+    [ -n "$num" ] || return 1
+    case "$unit" in
+        ''|s|sec|seconds) printf '%s\n' $((num * 1000000)) ;;
+        ms|msec)          printf '%s\n' $((num * 1000)) ;;
+        us|usec)          printf '%s\n' "$num" ;;
+        m|min|minutes)    printf '%s\n' $((num * 60000000)) ;;
+        *) return 1 ;;
+    esac
+}
+
+load_runtime_wdt_prev() {
+    local v live policy
+    v=$(txn_get runtime_wdt_prev_usec)
+    case "$v" in ''|*[!0-9]*) v="" ;; esac
+    if [ -n "$v" ]; then
+        RUNTIME_WDT_PREV=$v
+        return 0
+    fi
+    # Field present but empty: the earlier process found nothing to hold off.
+    txn_has_key runtime_wdt_prev_usec && return 0
+    live=$(sa02m_runtime_watchdog_usec 2>/dev/null) || live=""
+    [ "$live" = "0" ] || return 0
+    if policy=$(runtime_wdt_policy_usec); then
+        RUNTIME_WDT_PREV=$policy
+        log "runtime watchdog: previous value unknown (older launcher) — restoring the configured policy ${policy}us"
+    else
+        log "WARN: runtime watchdog: previous value unknown (older launcher) and no parsable policy file — left at 0 until reboot"
+    fi
+    return 0
+}
+
 install_imaging_lock() {
     date -Iseconds >"$IMAGING_LOCK"
     sync
     systemctl stop net-watchdog sa02m-watchdog-feed 2>/dev/null || true
     local now=""
-    RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
+    # A value reloaded from the transaction (load_runtime_wdt_prev) wins: the
+    # manager already reads 0 once a hold is in force, and "held off 0" would
+    # restore 0.
+    if [ -z "$RUNTIME_WDT_PREV" ]; then
+        RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
+    fi
     if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
         if now=$(sa02m_runtime_watchdog_set 0); then
             log "imaging lock installed ($IMAGING_LOCK); runtime watchdog held off (was ${RUNTIME_WDT_PREV}us, now ${now}us)"
@@ -297,7 +382,7 @@ install_imaging_lock() {
         log "imaging lock installed ($IMAGING_LOCK); runtime watchdog ${RUNTIME_WDT_PREV:-unreadable} — nothing to hold off"
     fi
     IMAGING_HELD=1
-    txn_patch "imaging_lock=true" || true
+    txn_patch "imaging_lock=true" "runtime_wdt_prev_usec=${RUNTIME_WDT_PREV:-}" || true
 }
 
 cleanup_imaging_lock() {
@@ -1114,6 +1199,7 @@ apply_deploy_items() {
         src_abs="$overlay/$src_rel"
         if [ ! -f "$src_abs" ]; then
             log "ERROR: missing staged src: $src_rel"
+            APPLY_FAIL_REASON="missing staged src: $src_rel"
             return 1
         fi
         bak=""
@@ -1136,6 +1222,7 @@ apply_deploy_items() {
             fi
             if ! atomic_install_file "$src_abs" "$dst" "$mode" "$owner"; then
                 log "ERROR: atomic install failed: $dst"
+                APPLY_FAIL_REASON="atomic install failed: $dst"
                 return 1
             fi
         fi
@@ -1223,6 +1310,7 @@ apply_deletes() {
                 rm -f "$dpath"
             else
                 log "ERROR: delete target not a regular file: $dpath"
+                APPLY_FAIL_REASON="delete target not a regular file: $dpath"
                 return 1
             fi
         fi
@@ -1254,10 +1342,13 @@ run_migrations() {
     return 0
 }
 
+# rollback_from_journal TXN [CODE] [MESSAGE] — CODE/MESSAGE land in the
+# transaction (default E_APPLY, the pre-1.0.6.52 blanket); the health gate
+# passes E_HEALTH + its reason, recover passes E_POWER + the stage.
 rollback_from_journal() {
-    local txn=$1
+    local txn=$1 code=${2:-E_APPLY} message=${3:-}
     local j="$STATEDIR/staging/$txn/journal.jsonl"
-    log "rollback from journal txn=$txn"
+    log "rollback from journal txn=$txn (${code}${message:+: $message})"
     txn_patch "stage=rolling_back" "result=pending"
     if [ -f "$j" ]; then
         python3 - "$j" <<'PY'
@@ -1303,8 +1394,8 @@ PY
         fi
     fi
     restart_after_rollback "$txn" || true
-    txn_patch "stage=rolled_back" "result=rolled_back" "error_code=E_APPLY" \
-        "finished_at=$(utc_now)"
+    txn_patch "stage=rolled_back" "result=rolled_back" "error_code=$code" \
+        "error_message=${message:-null}" "finished_at=$(utc_now)"
     cleanup_imaging_lock || true
     log "rollback complete"
 }
@@ -1331,6 +1422,16 @@ restart_after_rollback() {
     _systemctl_bounded 60 daemon-reload || true
     while IFS= read -r u; do
         [ -n "$u" ] || continue
+        case "$u" in
+            nginx|nginx.service|fcgiwrap|fcgiwrap.service)
+                # From sa02m-update-recover.service (Before=nginx fcgiwrap) a
+                # job on either can only time out — they have not started yet.
+                if [ "${RUNNER_CONTEXT:-}" = boot ]; then
+                    log "rollback: $u is ordered after recover — systemd starts it on the restored tree after recover exits"
+                    continue
+                fi
+                ;;
+        esac
         case "$u" in
             nginx|nginx.service)
                 if nginx -t 2>/dev/null; then
@@ -1771,41 +1872,43 @@ cmd_apply() {
         self_reexec_before_deploy
     fi
 
-    # Post re-exec (or if re-exec was skipped somehow)
+    # Post re-exec (or if re-exec was skipped somehow). An inherited lock means
+    # an earlier process took the watchdog hold — reload its value (F6).
     if [ ! -f "$IMAGING_LOCK" ]; then
         install_imaging_lock
     else
         IMAGING_HELD=1
+        load_runtime_wdt_prev
     fi
 
     txn_patch "stage=applying" "progress_pct=40"
     # Extract already done before re-exec; deploy now.
     if ! apply_deploy_items "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-deploy failed}"
         log "ERROR [E_APPLY]: deploy failed (rolled back)"
         exit 1
     fi
     if ! stamp_runner_version_after_deploy "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "runner stamp failed"
         log "ERROR [E_APPLY]: runner stamp failed (rolled back)"
         exit 1
     fi
     cleanup_b1_deploy_artifacts
     if ! apply_deletes "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "${APPLY_FAIL_REASON:-delete failed}"
         log "ERROR [E_APPLY]: delete failed (rolled back)"
         exit 1
     fi
     if ! run_migrations "$txn"; then
-        rollback_from_journal "$txn"
+        rollback_from_journal "$txn" E_APPLY "migrations failed"
         log "ERROR [E_APPLY]: migrations failed (rolled back)"
         exit 1
     fi
 
     txn_patch "stage=verifying" "progress_pct=85"
     if ! restart_services_and_health "$txn"; then
-        rollback_from_journal "$txn"
-        log "ERROR [E_HEALTH]: health gate failed (rolled back)"
+        rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
+        log "ERROR [E_HEALTH]: health gate failed (rolled back): ${HEALTH_FAIL_REASON:-}"
         exit 1
     fi
 
@@ -1833,6 +1936,10 @@ cmd_recover() {
     stage=$(txn_get stage)
     txn=$(txn_get id)
     log "recover: stage=$stage txn=$txn"
+    RUNNER_CONTEXT=boot
+    # The hold (if any) was taken before the reboot; reload its value before
+    # install_imaging_lock reads a manager that already says 0 (F6).
+    load_runtime_wdt_prev
 
     case "$stage" in
         uploaded|validating|cancelled)
@@ -1844,7 +1951,7 @@ cmd_recover() {
             local archive
             archive=$(txn_get rollback_archive)
             if [ -n "$archive" ] && [ -f "$archive" ]; then
-                rollback_from_journal "$txn"
+                rollback_from_journal "$txn" E_POWER "power loss during backup"
             else
                 txn_patch "stage=error" "result=failed" "error_code=E_POWER" \
                     "error_message=power loss during backup" "finished_at=$(utc_now)"
@@ -1853,12 +1960,19 @@ cmd_recover() {
             ;;
         applying)
             install_imaging_lock || true
-            rollback_from_journal "$txn"
+            rollback_from_journal "$txn" E_POWER "power loss during apply (deploy incomplete)"
             ;;
-        verifying)
-            # Deploy finished (files on disk) but health/restart aborted — prefer
-            # completing like committing, not rolling back a good tree. Fall back
-            # to rollback only when the health gate still fails.
+        verifying|committing)
+            # Deploy finished (files on disk) but the health gate never
+            # completed — the runner died (SIGKILL, power loss, hard reset).
+            # A COMPLETE tree is never rolled back here: this unit is ordered
+            # Before=nginx fcgiwrap, so every restart/reload job the health
+            # path would queue on them can only time out, `units_active` would
+            # then find nginx down, and a good update would be rolled back
+            # after ≈3–4 min without web (field incident 2026-09-23 — six
+            # Skolkovo boards). The health gate runs instead from
+            # sa02m-update-verify.service, ordered AFTER the web stack
+            # (schedule_boot_verify); only a real failure there rolls back.
             install_imaging_lock || true
             if [ -n "$txn" ] && [ -f "$(manifest_path "$txn")" ]; then
                 local files_done files_total ver_got ver_want
@@ -1869,42 +1983,19 @@ cmd_recover() {
                 if [ -n "$files_total" ] && [ "$files_total" -gt 0 ] 2>/dev/null \
                     && [ "$files_done" = "$files_total" ] \
                     && [ -n "$ver_want" ] && [ "$ver_got" = "$ver_want" ]; then
-                    log "recover: verifying with deploy complete ($files_done/$files_total, VERSION=$ver_got) - finish health"
-                    if restart_services_and_health "$txn"; then
-                        commit_markers "$txn"
-                        txn_patch "stage=done" "result=success" "progress_pct=100" \
-                            "finished_at=$(utc_now)"
-                        cleanup_imaging_lock || true
-                    else
-                        log "recover: health still failing after complete deploy - rollback"
-                        rollback_from_journal "$txn"
-                    fi
+                    log "recover: $stage with deploy complete ($files_done/$files_total, VERSION=$ver_got) - post-boot verification"
+                    schedule_boot_verify "$txn"
                 else
-                    log "recover: verifying incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
-                    rollback_from_journal "$txn"
+                    log "recover: $stage incomplete (done=$files_done total=$files_total ver=$ver_got want=$ver_want) - rollback"
+                    rollback_from_journal "$txn" E_POWER "power loss during $stage (deploy incomplete: $files_done/$files_total, VERSION=$ver_got)"
                 fi
             else
-                rollback_from_journal "$txn"
-            fi
-            ;;
-        committing)
-            # Health OK → complete markers; else rollback.
-            if [ -n "$txn" ] && [ -f "$(manifest_path "$txn")" ]; then
-                if restart_services_and_health "$txn"; then
-                    commit_markers "$txn"
-                    txn_patch "stage=done" "result=success" "progress_pct=100" \
-                        "finished_at=$(utc_now)"
-                    cleanup_imaging_lock || true
-                else
-                    rollback_from_journal "$txn"
-                fi
-            else
-                rollback_from_journal "$txn"
+                rollback_from_journal "$txn" E_POWER "power loss during $stage (manifest missing)"
             fi
             ;;
         rolling_back)
             install_imaging_lock || true
-            rollback_from_journal "$txn"
+            rollback_from_journal "$txn" E_POWER "power loss during rollback"
             ;;
         done|error|idle|rolled_back)
             log "recover: no-op for stage=$stage"
@@ -1917,6 +2008,82 @@ cmd_recover() {
             cleanup_imaging_lock || true
             ;;
     esac
+    exit 0
+}
+
+# Hand a complete-but-unverified tree to sa02m-update-verify.service (static;
+# After=nginx fcgiwrap sa02m-devices-api). Fallback on an older tree without
+# the unit file: a transient unit with the same ordering. When neither can be
+# scheduled the transaction is LEFT at verifying — the next boot retries and
+# the panel reports it stale (lib_web_update.sh) — never rolled back.
+schedule_boot_verify() {
+    local txn=$1 unit="sa02m-update-verify-${txn:0:8}"
+    txn_patch "stage=verifying" "progress_pct=85" "boot_verify_pending=true"
+    if _systemctl_bounded 30 start --no-block sa02m-update-verify.service; then
+        log "recover: sa02m-update-verify.service scheduled (runs after nginx/fcgiwrap)"
+        return 0
+    fi
+    log "recover: sa02m-update-verify.service unavailable - trying a transient unit $unit"
+    if command -v systemd-run >/dev/null 2>&1 \
+        && timeout 30 systemd-run --unit="$unit" --collect --quiet \
+            -p After=nginx.service -p After=fcgiwrap.service -p After=sa02m-devices-api.service \
+            --setenv=SA02M_UPDATE_STATEDIR="$STATEDIR" "$RUNNER_BIN_DST" verify; then
+        log "recover: transient unit $unit scheduled"
+        return 0
+    fi
+    cleanup_imaging_lock || true
+    log "ERROR [E_CMD]: cannot schedule post-boot verification — stage left at verifying (next boot retries; the panel reports the transaction as stale)"
+    return 0
+}
+
+# `runner verify` — the health gate after boot, from sa02m-update-verify.service
+# (After=nginx fcgiwrap). Idempotent: a second run on a terminal stage is a
+# no-op; a power loss mid-verify leaves `verifying` and the next boot repeats
+# recover → verify. No restart sets: every unit already started from the
+# deployed tree; enable[] + tmpfiles are the two things a boot does not do.
+cmd_verify() {
+    ensure_dirs
+    acquire_lock 60
+
+    if ! txn_exists; then
+        log "verify: no transaction — no-op"
+        exit 0
+    fi
+    local stage txn
+    stage=$(txn_get stage)
+    txn=$(txn_get id)
+    case "$stage" in
+        verifying|committing) ;;
+        *)
+            log "verify: stage=$stage — no-op"
+            exit 0
+            ;;
+    esac
+    if [ -z "$txn" ] || [ ! -f "$(manifest_path "$txn")" ]; then
+        log "ERROR [E_INTERNAL]: verify: manifest missing for txn=$txn — stage left at $stage (the panel reports it stale; a reboot retries)"
+        exit 1
+    fi
+    log "verify: post-boot verification txn=$txn stage=$stage"
+    load_runtime_wdt_prev
+    if [ -f "$IMAGING_LOCK" ]; then
+        IMAGING_HELD=1
+    else
+        install_imaging_lock
+    fi
+    txn_patch "stage=verifying" "boot_verify_pending=false"
+    services_enable_and_tmpfiles "$txn"
+    if ! health_check "$txn"; then
+        rollback_from_journal "$txn" E_HEALTH "${HEALTH_FAIL_REASON:-health gate failed}"
+        log "ERROR [E_HEALTH]: post-boot health failed (rolled back): ${HEALTH_FAIL_REASON:-}"
+        exit 1
+    fi
+    txn_patch "stage=committing" "progress_pct=95"
+    commit_markers "$txn"
+    txn_patch "stage=done" "result=success" "progress_pct=100" "error_code=null" \
+        "error_message=null" "finished_at=$(utc_now)"
+    cleanup_imaging_lock
+    sync
+    log "DONE: update verified after boot txn=$txn"
     exit 0
 }
 
@@ -1938,9 +2105,10 @@ trap on_exit EXIT
 case "$CMD" in
     apply) cmd_apply ;;
     recover) cmd_recover ;;
+    verify) cmd_verify ;;
     version) printf '%s\n' "$UPDATER_VERSION" ;;
     *)
-        echo "usage: $0 apply|recover|version" >&2
+        echo "usage: $0 apply|recover|verify|version" >&2
         exit 2
         ;;
 esac

@@ -1,0 +1,15 @@
+[Unit]
+Description=SA-02m update post-boot verification (health gate after recover)
+Documentation=file:///usr/local/libexec/sa02m-update-runner
+# Static on purpose (no [Install]): sa02m-update-recover.service starts it only
+# when a complete-but-unverified tree is found at boot. Recover is ordered
+# Before=nginx fcgiwrap, so the health gate cannot run there; it runs here,
+# after the web stack, and rolls back only on a real failure.
+After=sa02m-update-recover.service nginx.service fcgiwrap.service sa02m-devices-api.service network.target
+Conflicts=sa02m-update.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/sa02m-update-runner verify
+TimeoutStartSec=900
+Nice=5
