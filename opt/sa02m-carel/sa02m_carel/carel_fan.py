@@ -58,7 +58,12 @@ from .controls import FAMILY_CRST, FAMILY_UARIA
 # check that can tell a CONSUMED constant from a coincidentally equal one —
 # would pass on a hard-coded table.
 
-# Ascending. The Yandex `fan_speed` mode values we declare. `auto` is in the
+# Ascending, and the ORDER IS LOAD-BEARING: a platform constraint requires the
+# `modes` array to keep the same order on every repeated Discovery for a
+# device, so never sort, set-ify, or derive this from the rungs. Source and
+# pin: opt/sa02m-alice/tests/test_ahu_status.py TestTheModeOrderIsStableAcrossBuilds.
+#
+# The Yandex `fan_speed` mode values we declare. `auto` is in the
 # platform's recommended set and is still NOT declared: that is a product
 # choice, not a schema limit — a c.pCOmini has no auto fan register, and we do
 # not declare a mode we cannot honour. `quiet` was ours until 1.0.6.50 and was

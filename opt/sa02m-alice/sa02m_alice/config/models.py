@@ -73,9 +73,14 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
 }
 
 # Mode-capability instances → the values Yandex accepts. Unlike the cloud-only
-# rows above, a mode capability REACHES the platform, and an out-of-schema
-# Discovery does not fail one device: it makes every device on the account
-# vanish. So the item is checked here, where the document is written.
+# rows above, a mode capability REACHES the platform, so a malformed one is
+# refused HERE, where the document is written, rather than discovered on the
+# account. What a malformed item costs once it is in a Discovery response —
+# and which part of that is attributed rather than sourced — has one home:
+# docs/contracts/carel-ahu.md §6. The guard does not depend on the answer: it
+# costs one refused write we can fix, and Discovery is on demand, so nothing it
+# lets through reaches an app before the user refreshes the list
+# (docs/contracts/alice-mqtt-mapping.md § Device document).
 #
 # This is the platform's recommended set for `fan_speed`, verified at source
 # 2026-09-20:
@@ -94,10 +99,10 @@ CLOUD_ONLY_FLOAT_INSTANCES = {
 # What we DECLARE is pinned in `sa02m_carel.carel_fan.MODES`; this list is
 # deliberately wider, the same way FLOAT_INSTANCES and EVENT_INSTANCES are.
 # The residual, stated rather than waved away: being wider costs nothing in
-# what WE send, but for a HAND-EDITED document it is not free — an item we
-# accept and the platform refuses is the account-wide-vanish case named two
-# paragraphs above. The advisory-list rule is what makes that unlikely here,
-# not the width of this set. Widen deliberately.
+# what WE send, but for a HAND-EDITED document it is not free — we would be
+# passing through a value whose acceptance we have not checked (what a
+# rejected item costs: carel-ahu.md §6). The advisory-list rule is what makes
+# that unlikely here, not the width of this set. Widen deliberately.
 MODE_INSTANCES = {
     "fan_speed": frozenset(
         ("auto", "quiet", "low", "medium", "high", "turbo")),

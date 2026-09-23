@@ -79,10 +79,11 @@ _COMMON_FLOAT_ROWS: Tuple[Tuple[str, str, str], ...] = (
     ("heat_valve", "heat_valve", "unit.percent"),
 )
 
-# The fan reading, one row per family. Both keep `cloud_only: True`: neither
-# `fan_speed` nor `fan_step` is a valid Yandex float instance, and an
-# out-of-schema Discovery does not fail one device — it makes every device on
-# the account vanish. That flag does not move.
+# The fan reading, one row per family. Both keep `cloud_only: True`, and that
+# flag does not move: neither `fan_speed` nor `fan_step` is a valid Yandex
+# float instance, so sending either would put an unknown instance into a
+# Discovery response. What that costs, and how well that is sourced, has one
+# home: docs/contracts/carel-ahu.md §6. The flag is free either way.
 _FAN_ROW_BY_FAMILY: Dict[str, Tuple[str, str, str]] = {
     FAMILY_CRST: ("fan_speed", "fan_supply", "unit.percent"),
     FAMILY_UARIA: ("fan_step", "fan_step", "unit.step"),
@@ -170,6 +171,10 @@ def fan_mode_item(prefix: str, family: str, control: str, modes) -> Dict[str, An
         "reportable": True,
         "parameters": {
             "instance": _FAN_MODE_INSTANCE,
+            # Order preserved from `carel_fan.MODES` on purpose: a platform
+            # constraint (the same order on every repeated Discovery for a
+            # device). Source, and the pin on this EMITTED array:
+            # tests/test_ahu_status.py TestTheModeOrderIsStableAcrossBuilds.
             "modes": [{"value": mode} for mode in modes],
         },
     }

@@ -443,9 +443,10 @@ _SETTLED_MODES = [{"value": v} for v in ("low", "medium", "high", "turbo")]
 class TestModeCapabilityValidation(unittest.TestCase):
     """`devices.capabilities.mode` reaches Yandex verbatim.
 
-    An out-of-schema Discovery does not fail one device — it makes every
-    device on the account vanish, so a malformed mode item has to be refused
-    here, where the document is written, and not discovered on the account.
+    A malformed mode item is refused here, where the document is written,
+    rather than discovered on the account. What it would cost there, and how
+    well that is sourced, is recorded once in docs/contracts/carel-ahu.md §6.
+    These cases exist because the guard is cheap.
 
     RED FIRST: run on the unfixed tree, where `_validate_mqtt_item` had no
     `mode` branch, all eight «is refused» cases FAILED with «AssertionError:
