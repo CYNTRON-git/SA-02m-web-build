@@ -575,6 +575,14 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   by the CGI), `/etc/sa02m-alice` 0770 group-write, the argument-unrestricted sudoers
   trigger with enable/disable/restart verbs, the CGI nudges — is homed only in review
   stamps that ship-beat deletion removes. Give it a durable home.
+- [OPEN] 2026-09-23 **[MED] `sa02m-devices-api` listens on `127.0.0.1:8765` with no auth of its
+  own.** `opt/sa02m-devices/sa02m_devices/api.py` reads only Content-Length and relies entirely on
+  nginx's `auth_request` in front of `/api/devices*`; any local process or user on the board can
+  open the loopback port and bypass the panel's session. Found while sweeping the `X-SA02M-Auth`
+  class (1.0.6.53): a different class (unauthenticated loopback TCP), the same shape the Alice config
+  API had before it moved to a root-only unix socket (1.0.6.24, `88032f4`). Fix direction: the same
+  move (AF_UNIX socket, 0660 root:www-data) or a shared local secret set by nginx only. Threat model
+  row to add with the fix.
 - [OPEN] 2026-09-23 **[LOW] XHR upload paths have no CSRF refresh-and-retry of their own.** The
   panel's two XMLHttpRequest uploads (`status.js` ~:1756 and ~:2318, offline package / MPLC project)
   read the refreshed token but bypass the fetch wrapper, so an E_CSRF there still ends the upload
