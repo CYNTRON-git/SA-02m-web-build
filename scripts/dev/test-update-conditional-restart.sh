@@ -402,7 +402,10 @@ fi
 echo "── run 6: health gate settle window / Condition-off skip ──"
 HEALTH_FN=restart_services_and_health
 [ "$HAS_HEALTH_SPLIT" = "1" ] && HEALTH_FN=health_check
-export SA02M_UPDATE_HEALTH_SETTLE_SEC=3 SA02M_UPDATE_HEALTH_SETTLE_STEP=1
+# 6 s window at a 1 s step: 6a needs four samples (~3 s) and must not sit on the
+# deadline — under the quality runner other rows load the box and SECONDS is
+# whole-second granular, so a 3 s window failed 6a there while passing alone.
+export SA02M_UPDATE_HEALTH_SETTLE_SEC=6 SA02M_UPDATE_HEALTH_SETTLE_STEP=1
 write_units_manifest() {  # $1 = unit name for units_active
     cat > "$STAGE/meta/manifest.json" <<JSON
 {

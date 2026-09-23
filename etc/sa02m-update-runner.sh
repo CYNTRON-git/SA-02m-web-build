@@ -1414,8 +1414,16 @@ sys.exit(0 if found else 1)
 PY
 }
 
-# Returns 0 on success, 1 on failure (does not exit — caller may rollback).
-restart_services_and_health() {
+# --- post-deploy: enable + tmpfiles, restart sets, health gate --------------
+# Three named halves since 1.0.6.52, because the post-boot verification unit
+# (cmd_verify) needs enable+tmpfiles and the health gate WITHOUT the restart
+# sets — at boot every unit already started from the deployed tree, and a
+# restart job on nginx/fcgiwrap from inside a unit ordered BEFORE them can never
+# complete (the field rollback class, cmd_recover). restart_services_and_health
+# stays as the composition the apply path and the harnesses call by name.
+
+# daemon-reload, the named tmpfiles confs, services.enable[]. Idempotent.
+services_enable_and_tmpfiles() {
     local txn=$1
     local mf
     mf=$(manifest_path "$txn")
@@ -1446,9 +1454,21 @@ restart_services_and_health() {
 for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("enable",[]):
     print(u)
 ' "$mf")
+    return 0
+}
+
+# fcgiwrap → nginx -t && reload → restart[] → restart_if_active[] →
+# restart_if_changed{}. Returns 1 only when `nginx -t` rejects the config.
+services_restart_sets() {
+    local txn=$1
+    local mf
+    mf=$(manifest_path "$txn")
     # Ordered: fcgiwrap → nginx -t && reload → other restart[] (e.g. sa02m-flasher).
     # Bound fcgiwrap restart: UI polling keeps CGI children alive and can stall
     # an unbounded systemctl restart for many minutes (looks like "stuck on verifying").
+    # This restart is the one that used to SIGKILL the runner itself: launched
+    # from the web panel it lived in fcgiwrap's cgroup (KillMode=mixed) — since
+    # 1.0.6.52 escape_foreign_cgroup moves it out before the first file is written.
     log "health: restarting fcgiwrap..."
     if ! _systemctl_bounded 45 restart fcgiwrap \
         && ! _systemctl_bounded 45 restart fcgiwrap.service; then
@@ -1461,6 +1481,7 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("e
         _systemctl_bounded 30 reload nginx || _systemctl_bounded 45 restart nginx || true
     else
         log "health: nginx -t failed"
+        HEALTH_FAIL_REASON="nginx -t failed on the deployed config"
         return 1
     fi
     while IFS= read -r u; do
@@ -1517,7 +1538,50 @@ m=json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("restart_
 for u,p in m.items():
     print(u+"\t"+p)
 ' "$mf")
+    return 0
+}
 
+# Settle probe for one required unit: rc 0 on TWO CONSECUTIVE `active` samples
+# within HEALTH_SETTLE_SEC (every HEALTH_SETTLE_STEP s), rc 1 on timeout with
+# HEALTH_LAST_STATE = the last state seen. One sample is not enough in either
+# direction: `systemctl restart` on a Type=simple unit returns at exec, so the
+# unit is still `activating` when a single probe would read it as DOWN (the
+# 1.135 sample of 2026-08-20 rolled a good update back on sa02m-devices-api that
+# way), and a Restart=always crash loop alternates activating↔active, so a
+# single `active` would wave a dying unit through.
+HEALTH_SETTLE_SEC=""
+HEALTH_LAST_STATE=""
+HEALTH_FAIL_REASON=""
+unit_settled() {
+    local u=$1 state consecutive=0 start step
+    # Resolved here, not at file top: the harnesses extract this function alone.
+    HEALTH_SETTLE_SEC="${SA02M_UPDATE_HEALTH_SETTLE_SEC:-30}"
+    step="${SA02M_UPDATE_HEALTH_SETTLE_STEP:-2}"
+    start=$SECONDS
+    HEALTH_LAST_STATE=""
+    while :; do
+        state=$(systemctl is-active "$u" 2>/dev/null || true)
+        state=${state%%[[:space:]]*}
+        HEALTH_LAST_STATE=${state:-unknown}
+        if [ "$state" = active ]; then
+            consecutive=$((consecutive + 1))
+            [ "$consecutive" -ge 2 ] && return 0
+        else
+            consecutive=0
+        fi
+        [ $((SECONDS - start)) -lt "$HEALTH_SETTLE_SEC" ] || return 1
+        sleep "$step"
+    done
+}
+
+# The health gate proper: units_active (settled), the http probe, the version
+# file. Returns 1 with HEALTH_FAIL_REASON set — the reason lands in
+# transaction.json (rollback_from_journal E_HEALTH) and in the panel.
+health_check() {
+    local txn=$1
+    local mf
+    mf=$(manifest_path "$txn")
+    HEALTH_FAIL_REASON=""
     local http_url version_want version_file
     http_url=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("http_url",""))' "$mf")
     version_file=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("health",{}).get("version_file","/var/www/network_config/VERSION"))' "$mf")
@@ -1525,22 +1589,40 @@ for u,p in m.items():
 
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        if ! systemctl is-active --quiet "$u"; then
+        if ! unit_settled "$u"; then
             # An operator-disabled required unit is NOT a health failure: the
             # operator deliberately took it out of service (never-widen). A shared
             # HardPy stand masks sa02m-devices-api because the stand app serves
             # :8765 instead — requiring it active would wrongly roll back every
             # update there. masked / masked-runtime / disabled ⇒ skip; an ENABLED
             # unit that is merely down still fails (a real regression).
-            local _en_state
+            local _en_state _cond
             _en_state=$(systemctl is-enabled "$u" 2>/dev/null || true)
+            _en_state=${_en_state%%[[:space:]]*}
             case "$_en_state" in
                 masked|masked-runtime|disabled)
                     log "health: $u is $_en_state (operator-disabled) — not required active"
                     continue
                     ;;
             esac
-            log "health: unit not active: $u"
+            # A unit whose own Condition*= says no (the 1.135 stand drop-in sets
+            # ConditionPathExists=!…stand_web_api.py) is not started by systemd
+            # on any restart either — the board's declared configuration, not a
+            # regression. Same never-widen skip.
+            _cond=$(systemctl show -p ConditionResult --value "$u" 2>/dev/null || true)
+            _cond=${_cond%%[[:space:]]*}
+            if [ "$_cond" = no ]; then
+                log "health: $u not started by its own Condition (operator-configured) — not required active"
+                continue
+            fi
+            log "health: unit not active: $u (state=$HEALTH_LAST_STATE after ${HEALTH_SETTLE_SEC}s)"
+            local _excerpt _line
+            _excerpt=$(_systemctl_bounded 15 status --no-pager -n 5 "$u" | head -12 || true)
+            while IFS= read -r _line; do
+                [ -n "$_line" ] || continue
+                log "health:   status | $_line"
+            done <<< "$_excerpt"
+            HEALTH_FAIL_REASON="unit not active: $u ($HEALTH_LAST_STATE)"
             return 1
         fi
     done < <(python3 -c 'import json,sys
@@ -1550,8 +1632,19 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("h
 
     if [ -n "$http_url" ]; then
         if command -v curl >/dev/null 2>&1; then
-            if ! curl -fsS -o /dev/null --max-time 10 "$http_url"; then
+            # nginx was just reloaded: three attempts 3 s apart before the
+            # probe counts as a failure.
+            local _try _http_ok=0
+            for _try in 1 2 3; do
+                if curl -fsS -o /dev/null --max-time 10 "$http_url"; then
+                    _http_ok=1
+                    break
+                fi
+                [ "$_try" -lt 3 ] && sleep 3
+            done
+            if [ "$_http_ok" != 1 ]; then
                 log "health: http failed: $http_url"
+                HEALTH_FAIL_REASON="http failed: $http_url"
                 return 1
             fi
         fi
@@ -1561,10 +1654,19 @@ for u in json.load(open(sys.argv[1],encoding="utf-8")).get("services",{}).get("h
         got=$(tr -d '\r' <"$version_file" | grep -E '^[0-9]+(\.[0-9]+){1,3}$' | head -1 || true)
         if [ -n "$version_want" ] && [ "$got" != "$version_want" ]; then
             log "health: version_file=$got want=$version_want"
+            HEALTH_FAIL_REASON="version_file=$got want=$version_want"
             return 1
         fi
     fi
     return 0
+}
+
+# Returns 0 on success, 1 on failure (does not exit — caller may rollback).
+restart_services_and_health() {
+    local txn=$1
+    services_enable_and_tmpfiles "$txn"
+    services_restart_sets "$txn" || return 1
+    health_check "$txn"
 }
 
 commit_markers() {
