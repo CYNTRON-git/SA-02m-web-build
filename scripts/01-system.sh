@@ -619,13 +619,31 @@ log OK "sa02m-net-autolink отключён; link-файлы удалены — 
 # (иначе после прошивки образа пинг появляется только после re-plug кабеля).
 # RuntimeWatchdogSec (systemd PID1) — отдельно, в system.conf.d.
 log INFO "Не маскируем watchdogs навсегда; first-boot mask — только в sa02m-rootfs-expand"
+# sa02m-userspace-watchdog: installed by every install path since 1.0.6.51 —
+# before, only the golden image laid it (tools/imaging/patch-firstboot-image.sh),
+# so refresh-born boards ran without it. Script and unit are atomic live-path
+# writes; the conf is the operator's override file, laid only when absent.
+# install.sh holds /run/sa02m-imaging.lock for the whole run, so the `start`
+# below cannot reboot the board mid-install (plus the script's 180 s grace).
+if [ -f "$ETC_REPO/sa02m-userspace-watchdog.sh" ] && [ -f "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" ]; then
+    sa02m_atomic_install -m 755 "$ETC_REPO/sa02m-userspace-watchdog.sh" /usr/local/sbin/sa02m-userspace-watchdog
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-userspace-watchdog.service" /etc/systemd/system/sa02m-userspace-watchdog.service
+    if [ ! -e /etc/sa02m_userspace_watchdog.conf ] && [ -f "$ETC_REPO/sa02m_userspace_watchdog.conf" ]; then
+        sa02m_atomic_install -m 644 "$ETC_REPO/sa02m_userspace_watchdog.conf" /etc/sa02m_userspace_watchdog.conf
+    fi
+    sa02m_systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
+fi
 for u in sa02m-userspace-watchdog.service sa02m-failure-monitor.service net-watchdog.service; do
     # Снять stale mask от старых инсталляторов / FEL autorun.
     if [ -L "/etc/systemd/system/$u" ] \
        && [ "$(readlink -f "/etc/systemd/system/$u" 2>/dev/null)" = "/dev/null" ]; then
         rm -f "/etc/systemd/system/$u"
     fi
-    sa02m_svc_apply "$u" infra
+    if [ "$u" = sa02m-userspace-watchdog.service ]; then
+        sa02m_svc_apply "$u" infra start
+    else
+        sa02m_svc_apply "$u" infra
+    fi
 done
 
 # ── Маскировка NetworkManager: не управляет ни eth0 (ifupdown), ни can0,    ──
