@@ -49,9 +49,14 @@ FMB_EVENT_BURST_S = 0.10          # MAX_POLL_TIME
 FMB_INSURANCE_POLL_S = 0.5        # DEFAULT_SPORADIC_ONLY_READ_RATE_LIMIT
 FMB_BALANCING_THRESHOLD_S = 0.5   # BALANCING_THRESHOLD
 FMB_MAX_POLL_TIME_S = 0.10        # MAX_POLL_TIME (events + classic slice)
-FMB_RECONFIGURE_BACKOFF_S = 15.0  # rebooted-then-silent device retry window
+FMB_RECONFIGURE_BACKOFF_S = 15.0  # first retry after a failed configure pass
                                   # (same order as the initial-offline
                                   # next_fmb_retry throttle in the run loop)
+FMB_UNSUPPORTED_BACKOFF_MAX_S = 900.0  # ceiling of the doubling backoff: a
+                                  # slave that answers classic polls but never
+                                  # ACKs configure_events costs one pass per
+                                  # 15 min, not per 15 s (bench 1.135 COM2,
+                                  # docs/contracts/fmb-event-wire.md §2)
 FMB_UNPARSED_LOG_PERIOD_S = 10.0  # unparsable-frame log throttle: the burst
                                   # loop runs at 20 Hz, so an unthrottled line
                                   # would write ~20 journal records/s per port
@@ -124,6 +129,7 @@ class FastModbusEventPortManager:
             "wire_mode": mode,
             "configured": False,
             "retry_at": 0.0,
+            "fail_passes": 0,
         }
         # A module reflashed since the last registration may have swapped
         # generations — start from "nothing known", let the handshake decide.
@@ -200,7 +206,11 @@ class FastModbusEventPortManager:
                     "— %s contract", addr, evt_type, start_reg, count, used)
             else:
                 still_pending.append((evt_type, start_reg, count))
-                self._log.warning(
+                # Loud once; a slave that never ACKs would otherwise repeat
+                # this per range on every backed-off pass.
+                self._log.log(
+                    logging.WARNING if not dev.get("fail_passes")
+                    else logging.DEBUG,
                     "configure_events addr=%d type=0x%02X start=%d count=%d "
                     "rejected%s — classic polling covers this range",
                     addr, evt_type, start_reg, count, err)
@@ -418,7 +428,7 @@ class FastModbusEventPortManager:
             self._wb_frame_slaves.pop(slave_id, None)
             # The reboot event proves the device is talking — reconfigure
             # immediately, regardless of a backoff from an earlier silence.
-            dev["retry_at"] = 0.0
+            self._note_success(dev)
             poller = dev.get("poller")
             if poller is not None:
                 poller.set_fmb_io_covered(False)
@@ -449,6 +459,23 @@ class FastModbusEventPortManager:
             dev["configured"] = False
             dev["pending"] = list(new)
 
+    def _note_failed_pass(self, dev: dict, now: float) -> float:
+        """Escalate the retry window after a configure pass left the device
+        unconfigured: 15 s, doubling per failed pass, capped at
+        FMB_UNSUPPORTED_BACKOFF_MAX_S. Returns the window in seconds.
+        Single-threaded per port (PortCycleScheduler owns the manager)."""
+        n = dev.get("fail_passes", 0) + 1
+        dev["fail_passes"] = n
+        delay = min(FMB_RECONFIGURE_BACKOFF_S * (2 ** min(n - 1, 16)),
+                    FMB_UNSUPPORTED_BACKOFF_MAX_S)
+        dev["retry_at"] = now + delay
+        return delay
+
+    @staticmethod
+    def _note_success(dev: dict) -> None:
+        dev["fail_passes"] = 0
+        dev["retry_at"] = 0.0
+
     def configure_all(self, *, only_ready: bool = False) -> None:
         """EnableEvents for registered devices.
 
@@ -457,10 +484,14 @@ class FastModbusEventPortManager:
         """
         if not self._devices:
             return
+        now = time.monotonic()
         ser = _get_port(self._port_path, self._baudrate)
         for addr, dev in self._devices.items():
             self._refresh_ranges_from_poller(dev)
             if dev.get("configured") and not dev.get("pending"):
+                continue
+            # Backed off after a failed pass — no bus time until the window ends.
+            if now < dev.get("retry_at", 0.0):
                 continue
             poller = dev.get("poller")
             if only_ready and poller is not None:
@@ -471,6 +502,7 @@ class FastModbusEventPortManager:
                     break
                 time.sleep(0.5)
             if dev["configured"]:
+                self._note_success(dev)
                 acked = [r for r in dev["ranges"] if r not in dev["pending"]]
                 self._log.info(
                     "FMB events configured addr=%d (%s) ranges=%s%s",
@@ -486,8 +518,11 @@ class FastModbusEventPortManager:
                         self._log.debug("post-configure poll %s: %s",
                                         poller.device_id, e)
             else:
+                delay = self._note_failed_pass(dev, now)
                 self._log.warning(
-                    "FMB events config failed addr=%d — polling only", addr)
+                    "FMB events config failed addr=%d — polling only; "
+                    "next attempt in %.0f s (pass %d)",
+                    addr, delay, dev["fail_passes"])
                 if poller is not None:
                     poller.set_fmb_io_covered(False)
         if not self.has_configured() and not only_ready:
@@ -509,6 +544,7 @@ class FastModbusEventPortManager:
             if ser is None:
                 ser = _get_port(self._port_path, self._baudrate)
             if self._configure_device(ser, addr, dev) and dev["configured"]:
+                self._note_success(dev)
                 poller = dev.get("poller")
                 if poller is not None:
                     poller.set_fmb_io_covered(True)
@@ -516,7 +552,7 @@ class FastModbusEventPortManager:
                     "FMB events re-configured addr=%d (%s) after reboot",
                     addr, dev["id"])
             if not dev["configured"]:
-                dev["retry_at"] = now + FMB_RECONFIGURE_BACKOFF_S
+                self._note_failed_pass(dev, now)
 
     def retry_unconfigured(self) -> bool:
         """Quiet retry when first configure_all failed (device was offline)."""
