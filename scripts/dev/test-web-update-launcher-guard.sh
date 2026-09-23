@@ -36,7 +36,11 @@
 #   outside the sandbox), L1 no log line, and L5 (the seam is missing, so the
 #   pre-fix launcher's legacy lock is /var/lib/…, not the sandbox one — an
 #   artefact of the seam, not a behaviour difference), L6 (no unit clause at
-#   all). L2–L4 hold on both trees. L6 was RED on the first fixed tree too
+#   all). L2–L4 hold on both trees, and so does L7 — it has NO RED tree by
+#   construction: it pins that the guard does not over-refuse the dead-runner
+#   rolling_back residue (a non-regression pin, added when the residue was
+#   found on bench 1.135), never a behaviour the pre-fix launcher lacked.
+#   L6 was RED on the first fixed tree too
 #   («cloned: yes» — its is-active clause never fires for a oneshot unit;
 #   review 1.0.6.52, finding 3).
 #
