@@ -1378,6 +1378,15 @@ function webUpdApplyRefusal(j) {
   if (code === 'E_CHECK_STALE') {
     return { status: 'Сведения об обновлении устарели — нажмите «Проверить»', tone: 'is-warn', canApply: false };
   }
+  if (code === 'E_CSRF') {
+    // The app.js fetch wrapper has ALREADY reacted to this body (proxy toast /
+    // token refresh + retry / logout — selective-csrf-policy.md «Реакция
+    // панели»); here it is only the widget's honest line: no status re-check
+    // (the launch never ran), Apply per the last check's data, and no second
+    // toast (toast:false — _webUpdFinishRefused honours it).
+    return { status: 'Ошибка защиты сессии — повторите действие', tone: 'is-err',
+             canApply: webUpdOnlineApplyAllowed(_webUpdLastCheck), toast: false };
+  }
   return null;
 }
 
@@ -1998,7 +2007,7 @@ function _webUpdFinishRefused(refusal, log) {
   _webUpdSetStatus(refusal.status, refusal.tone);
   _webUpdSetProgress(null, '');
   webUpdSetOnlineApplyEnabled(refusal.canApply);
-  toast(refusal.status, 'info');
+  if (refusal.toast !== false) toast(refusal.status, 'info');
 }
 
 function _webUpdApplyTxnUI(j) {
