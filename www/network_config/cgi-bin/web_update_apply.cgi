@@ -143,6 +143,20 @@ if txn:
             age_txt = "unknown" if age is None else "%d" % int(age)
 
 prefer_new = stage in running_stages or stage in ("done", "error", "rolled_back", "cancelled")
+# The human line for the OLD cached bundle: it never reads `stale`, it routes
+# `log` to the event log and prints the generic «Ошибка обновления» — this is
+# the only channel through which a board on ≤1.0.6.51 (the delivering OTA
+# freezes at 85 % under the old runner) can tell the operator what to do.
+STAGE_RU = {
+    "uploaded": "Проверка пакета", "validating": "Проверка пакета",
+    "backing_up": "Создание резервной копии", "applying": "Установка",
+    "verifying": "Проверка сервисов", "committing": "Проверка сервисов",
+    "rolling_back": "Откат",
+}
+stale_line = ""
+if stale:
+    stale_line = ("Обновление прервано на этапе «%s»: перезагрузите плату — при загрузке "
+                  "проверка завершится сама." % STAGE_RU.get(stage, stage))
 log_path = (statedir / "update.log") if prefer_new and (statedir / "update.log").is_file() else log_file
 log_tail = ""
 if log_path.is_file():
@@ -154,7 +168,7 @@ if log_path.is_file():
 out = {
     "ok": True,
     "status": legacy_status,
-    "log": log_tail,
+    "log": (stale_line + "\n" + log_tail).strip() if stale_line else log_tail,
     "legacy": {"status": legacy_status},
     "runner_alive": runner_alive,
     "stale": stale,

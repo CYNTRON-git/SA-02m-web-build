@@ -155,17 +155,32 @@ org.freedesktop.systemd1.Manager RuntimeWatchdogUSec` = `t 0`, `sa02m-flasher` /
 панель «Проверка сервисов…» 85 %, `GET web_update_apply.cgi` → `status:"running"`.
 «Перезагрузка» (web) → измерить секунды до ответа `/login.html` (ожидается ≥180),
 `update.log` показывает recover → таймауты fcgiwrap/nginx → `unit not active:
-nginx` → откат, `VERSION` = 1.0.6.49.
+nginx` → откат, `VERSION` = 1.0.6.49. Измерено 2026-09-23: 311 с, и recover
+был убит своим `TimeoutStartSec=300` посреди отката (`Result=timeout`) —
+плата осталась на `stage=rolling_back` с `/run/sa02m-imaging.lock` и
+`RuntimeWatchdogUSec=0`; перед GREEN-прогоном её чинит
+`scripts/sa02m-update-remedy.sh` (`docs/deployment.md`).
 
 **GREEN (стендовый `main` = ветка 1.0.6.52, плата снова 1.0.6.49).** «Проверить»
-→ «Применить». В `update.log`: `runner cgroup: 0::/system.slice/fcgiwrap.service`,
-`re-launching as transient unit sa02m-update-apply-…`; во время deploy
-`systemctl status 'sa02m-update-apply-*'` = running; `health: restarting fcgiwrap...`
-и за ним `restarted after apply: …`, для `sa02m-devices-api` на стенде — строка
-про Condition вместо `unit not active`; `DONE: update applied successfully`;
-`transaction.json` `stage=done`; watchdog `t 15000000` (fallback политики — hold
-брал код 1.0.6.49); imaging-lock снят; `sa02m-flasher` active; панель «Обновление
-установлено». Затем W6: `transaction.json` вручную на `stage=verifying`,
+→ «Применить». Это доставляющее обновление — весь apply идёт под раннером
+1.0.6.49 (он `exec`'ит копию себя), поэтому ожидается ТО ЖЕ замирание:
+`update.log` кончается `health: restarting fcgiwrap...`, панель «Проверка
+сервисов…» 85 %; через 120 с новый CGI (уже на диске) отдаёт `stale:true,
+error_code:E_RUNNER_LOST`, старый бандл пишет в журнал событий «Обновление
+прервано на этапе …: перезагрузите плату». «Перезагрузка» (web) → страница
+входа в обычное время (< 90 с), `journalctl -u sa02m-update-recover -b`: `post-boot
+verification`, `sa02m-update-verify.service scheduled`; `journalctl -u
+sa02m-update-verify -b` после nginx: `verify: post-boot verification`, для
+`sa02m-devices-api` на стенде — строка про Condition; `DONE: update verified
+after boot`; `transaction.json` `stage=done`; watchdog `t 15000000` (fallback
+политики — hold брал код 1.0.6.49, поля нет); imaging-lock снят; `sa02m-flasher`
+и `net-watchdog` active; VERSION 1.0.6.52. Вариант без перезагрузки —
+`scripts/sa02m-update-remedy.sh` вместо «Перезагрузки». Сам выход из cgroup
+(`runner cgroup: …`, `re-launching as transient unit`, `systemctl status
+'sa02m-update-apply-*'` = running сквозь `restarting fcgiwrap...`,
+`restarted after apply: …`, `DONE: update applied successfully` без
+перезагрузки) доказывается только следующим OTA — например, стендовый `main`
+на `1.0.6.52` + один коммит с поднятой версией. Затем W6: `transaction.json` вручную на `stage=verifying`,
 `files_done=files_total`, `target_version=<новая>`, `updated_at` старый;
 `date -Iseconds > /run/sa02m-imaging.lock`; `GET web_update_apply.cgi` →
 `stale:true, error_code:E_RUNNER_LOST`; «Перезагрузка» → страница входа в

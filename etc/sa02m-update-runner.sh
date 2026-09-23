@@ -9,7 +9,8 @@
 #   - self-copy re-exec into $STATEDIR/runner/<txn>/runner before deploy
 #
 # Commands: apply (default) | recover | verify (post-boot health gate,
-#           sa02m-update-verify.service) | version
+#           sa02m-update-verify.service) | reclaim (recover at runtime for a
+#           transaction whose runner is gone) | version
 # shellcheck shell=bash
 set -euo pipefail
 
@@ -143,21 +144,26 @@ migrate_legacy_state() {
 # points that follow a handover: the cgroup-escaped runner (the handing-over
 # process closes fd 9 just before systemd-run) and `verify` (recover may still
 # be releasing).
-acquire_lock() {
+try_lock() {  # [WAIT_SECS] — rc 1 when another runner holds the lock
     local wait=${1:-}
     mkdir -p "$STATEDIR"
     exec 9>>"$LOCKFILE"
     if [ -n "$wait" ]; then
-        if ! flock -w "$wait" 9; then
-            log "ERROR [E_LOCK]: another update holds $LOCKFILE (waited ${wait}s)"
-            exit 1
-        fi
-    elif ! flock -n 9; then
-        log "ERROR [E_LOCK]: another update holds $LOCKFILE"
-        exit 1
+        flock -w "$wait" 9 || return 1
+    else
+        flock -n 9 || return 1
     fi
     printf '%s\n' "$$" >"$LOCKFILE"
     LOCK_HELD=1
+    return 0
+}
+
+acquire_lock() {
+    local wait=${1:-}
+    if ! try_lock "$wait"; then
+        log "ERROR [E_LOCK]: another update holds $LOCKFILE${wait:+ (waited ${wait}s)}"
+        exit 1
+    fi
 }
 
 # --- transaction.json helpers (temp → fdatasync → rename) --------------------
@@ -371,6 +377,16 @@ install_imaging_lock() {
     if [ -z "$RUNTIME_WDT_PREV" ]; then
         RUNTIME_WDT_PREV=$(sa02m_runtime_watchdog_usec 2>/dev/null) || RUNTIME_WDT_PREV=""
     fi
+    # A manager already at 0 under a configured policy is an earlier hold's
+    # residue (a killed recover, bench 1.135 2026-09-23), not a board without a
+    # watchdog: holding off 0 would "restore" 0 at the end. Hold the policy value.
+    if [ "$RUNTIME_WDT_PREV" = 0 ]; then
+        local _policy
+        if _policy=$(runtime_wdt_policy_usec); then
+            log "runtime watchdog already 0 under a configured policy — an earlier hold's residue; ${_policy}us will be restored"
+            RUNTIME_WDT_PREV=$_policy
+        fi
+    fi
     if [ -n "$RUNTIME_WDT_PREV" ] && [ "$RUNTIME_WDT_PREV" != 0 ]; then
         if now=$(sa02m_runtime_watchdog_set 0); then
             log "imaging lock installed ($IMAGING_LOCK); runtime watchdog held off (was ${RUNTIME_WDT_PREV}us, now ${now}us)"
@@ -385,19 +401,29 @@ install_imaging_lock() {
     txn_patch "imaging_lock=true" "runtime_wdt_prev_usec=${RUNTIME_WDT_PREV:-}" || true
 }
 
+# Put the held-off value back; prints the outcome for the caller's log line.
+# Shared by cleanup_imaging_lock and the EXIT trap (which keeps the lock file
+# at a rolling stage but must never leave the hardware watchdog off).
+restore_runtime_wdt() {
+    local now=""
+    if [ -z "$RUNTIME_WDT_PREV" ]; then
+        printf 'не менялся\n'
+        return 0
+    fi
+    if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
+        printf 'restored to %sus\n' "$now"
+    else
+        printf 'RESTORE FAILED: wanted %sus, in force %sus\n' "$RUNTIME_WDT_PREV" "${now:-unknown}"
+    fi
+    RUNTIME_WDT_PREV=""
+}
+
 cleanup_imaging_lock() {
     if [ "$IMAGING_HELD" != "1" ] && [ ! -f "$IMAGING_LOCK" ]; then
         return 0
     fi
-    local now="" wdt="не менялся"
-    if [ -n "$RUNTIME_WDT_PREV" ]; then
-        if now=$(sa02m_runtime_watchdog_set "$RUNTIME_WDT_PREV"); then
-            wdt="restored to ${now}us"
-        else
-            wdt="RESTORE FAILED: wanted ${RUNTIME_WDT_PREV}us, in force ${now:-unknown}us"
-        fi
-        RUNTIME_WDT_PREV=""
-    fi
+    local wdt
+    wdt=$(restore_runtime_wdt)
     systemctl start net-watchdog 2>/dev/null || true
     # sa02m-watchdog-feed is optional; leave stopped if it was inactive.
     rm -f "$IMAGING_LOCK"
@@ -487,11 +513,14 @@ preflight_space() {
 # imaging lock and watchdog hold left behind, nginx serving the new tree from
 # disk (the Skolkovo incident, six boards). The runner therefore re-launches
 # ITSELF as a transient system unit (systemd-run, KillMode=process) as soon as
-# it starts, hands the lock over and exits 0 — for the delivering update this
-# happens in the NEW runner right after the old one's exec, before the first
-# file is written; for every later update at the very start, before
-# prepare/backup. Runner-side rather than launcher-side on purpose: the
-# launcher on the field boards is the OLD one. The offline path
+# it starts, hands the lock over and exits 0 — at the very start of cmd_apply,
+# before prepare/backup. HONEST LIMIT: self_reexec_before_deploy copies the
+# INSTALLED runner (`readlink -f "$0"`) and execs the copy, so the update that
+# DELIVERS this code to a ≤1.0.6.51 board runs entirely under the old runner —
+# the escape first bites on the update after it; that first OTA still freezes
+# at «Проверка сервисов 85 %» and completes at the next boot (recover → verify)
+# or via `runner reclaim`. Runner-side rather than launcher-side on purpose: the
+# launcher on the field boards is the OLD one too. The offline path
 # (sa02m-update.service) and an SSH launch (session scope) never match and
 # are only logged. Failure mode is «continue in place» (logged): a board with a
 # broken systemd-run still updates and is now recoverable by recover→verify at
@@ -1488,20 +1517,22 @@ restart_after_rollback() {
         log "rollback: no manifest for txn=$txn — units NOT restarted (reboot to drop in-memory code)"
         return 0
     fi
+    if [ "${RUNNER_CONTEXT:-}" = boot ]; then
+        # From sa02m-update-recover.service (Before=nginx fcgiwrap multi-user)
+        # nothing has started yet: a job on nginx/fcgiwrap can only time out,
+        # and every other unit starts from the restored files the moment
+        # recover exits. Bench 1.135, 2026-09-23: the restart set here (60 s
+        # bounds each) ran recover into its own TimeoutStartSec=300 and it was
+        # SIGKILLed mid-rollback — stage rolling_back, imaging lock and a
+        # watchdog held at 0 left behind. Boot context: daemon-reload only.
+        log "rollback: boot context — daemon-reload only; every unit starts from the restored tree when recover exits"
+        _systemctl_bounded 60 daemon-reload || true
+        return 0
+    fi
     log "rollback: daemon-reload + restart sets on the restored tree..."
     _systemctl_bounded 60 daemon-reload || true
     while IFS= read -r u; do
         [ -n "$u" ] || continue
-        case "$u" in
-            nginx|nginx.service|fcgiwrap|fcgiwrap.service)
-                # From sa02m-update-recover.service (Before=nginx fcgiwrap) a
-                # job on either can only time out — they have not started yet.
-                if [ "${RUNNER_CONTEXT:-}" = boot ]; then
-                    log "rollback: $u is ordered after recover — systemd starts it on the restored tree after recover exits"
-                    continue
-                fi
-                ;;
-        esac
         case "$u" in
             nginx|nginx.service)
                 if nginx -t 2>/dev/null; then
@@ -2019,12 +2050,48 @@ cmd_recover() {
         log "recover: no transaction — no-op"
         exit 0
     fi
+    RUNNER_CONTEXT=boot
+    recover_transaction
+    exit 0
+}
 
+# `runner reclaim` — the same recovery at RUNTIME, for a transaction whose
+# runner is gone while the board never rebooted: a recover killed by its own
+# timeout mid-rollback (bench 1.135, 2026-09-23) leaves stage=rolling_back,
+# the imaging lock and the hardware watchdog at 0 until the next boot. Refuses
+# to touch anything while a runner holds the lock. Outside boot context the
+# rollback restarts its sets as usual (the web stack is up) and a complete
+# verifying/committing tree is handed to sa02m-update-verify.service, which
+# runs at once. Field entry point: scripts/sa02m-update-remedy.sh.
+cmd_reclaim() {
+    ensure_dirs
+    if ! try_lock; then
+        log "reclaim: an update runner holds $LOCKFILE — nothing to reclaim"
+        exit 0
+    fi
+    if ! txn_exists; then
+        if [ -f "$IMAGING_LOCK" ]; then
+            log "reclaim: leftover imaging lock with no transaction — clearing"
+            load_runtime_wdt_prev
+            IMAGING_HELD=1
+            cleanup_imaging_lock || true
+        else
+            log "reclaim: nothing to reclaim (no transaction)"
+        fi
+        exit 0
+    fi
+    RUNNER_CONTEXT=runtime
+    recover_transaction
+    exit 0
+}
+
+# Shared by cmd_recover (boot) and cmd_reclaim (runtime); RUNNER_CONTEXT tells
+# restart_after_rollback whether restarts can complete.
+recover_transaction() {
     local stage txn
     stage=$(txn_get stage)
     txn=$(txn_get id)
-    log "recover: stage=$stage txn=$txn"
-    RUNNER_CONTEXT=boot
+    log "recover: stage=$stage txn=$txn context=${RUNNER_CONTEXT:-runtime}"
     # The hold (if any) was taken before the reboot; reload its value before
     # install_imaging_lock reads a manager that already says 0 (F6).
     load_runtime_wdt_prev
@@ -2096,7 +2163,7 @@ cmd_recover() {
             cleanup_imaging_lock || true
             ;;
     esac
-    exit 0
+    return 0
 }
 
 # Hand a complete-but-unverified tree to sa02m-update-verify.service (static;
@@ -2182,24 +2249,34 @@ cmd_verify() {
 on_exit() {
     local ec=$?
     if [ "$IMAGING_HELD" = "1" ] && [ "$ec" -ne 0 ]; then
-        # Failed mid-apply: keep imaging lock only if still rolling; otherwise clear.
+        # Failed mid-apply: keep the imaging lock only if still rolling (the
+        # next boot / `reclaim` finishes); otherwise clear. Either way the
+        # hardware watchdog goes back: recover's own TimeoutStartSec SIGTERMed a
+        # rollback on bench 1.135 (2026-09-23) and the board then ran with the
+        # watchdog held at 0 until someone noticed.
         local stage
         stage=$(txn_get stage 2>/dev/null || echo error)
         case "$stage" in
-            applying|verifying|rolling_back|committing) ;;
+            applying|verifying|rolling_back|committing)
+                log "exit $ec at stage=$stage: imaging lock kept for recover/reclaim; runtime watchdog $(restore_runtime_wdt)"
+                ;;
             *) cleanup_imaging_lock || true ;;
         esac
     fi
 }
 trap on_exit EXIT
+# A SIGTERM (systemd's TimeoutStartSec, a `systemctl stop`) becomes an exit so
+# the EXIT trap above runs; bash would otherwise die without it.
+trap 'exit 143' INT TERM
 
 case "$CMD" in
     apply) cmd_apply ;;
     recover) cmd_recover ;;
     verify) cmd_verify ;;
+    reclaim) cmd_reclaim ;;
     version) printf '%s\n' "$UPDATER_VERSION" ;;
     *)
-        echo "usage: $0 apply|recover|verify|version" >&2
+        echo "usage: $0 apply|recover|verify|reclaim|version" >&2
         exit 2
         ;;
 esac

@@ -582,13 +582,15 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   playwright missing». quality-gate-rigor.md: a skipped row is reported as skipped, never as
   passed. Fix: exit non-zero (or the runner's SKIP status, if it has one) when the driver cannot
   run; add the case to `run.test.mjs`. Queued for R58 (gates and tools).
-- [OPEN] 2026-09-23 **[LOW] Known limit: the delivering OTA's pre-escape window.** On a board
-  running a runner older than 1.0.6.52 the clone → prepare → backup phase (≈1–2 min) of the
-  delivering update still runs inside fcgiwrap's cgroup under the OLD code; a
-  `systemctl restart fcgiwrap` in that window (the panel's «Перезапуск служб», a second OTA)
-  kills the old runner at `validating`/`backing_up` → recover at boot rolls back cleanly →
-  retry. Closes itself once every board runs ≥ 1.0.6.52 (the escape then happens at
-  `cmd_apply` entry). Named in `docs/deployment.md` «Пути деплоя»; no fix planned.
+- [OPEN] 2026-09-23 **[LOW] Known limit: the delivering GitHub OTA on a ≤1.0.6.51 board still
+  freezes at 85 %.** `self_reexec_before_deploy` copies the INSTALLED runner and execs the copy,
+  so the whole delivering apply (health gate included) runs under the OLD code and dies at
+  `restart fcgiwrap`; the NEW runner, verify unit and CGI are on disk, so the panel says
+  «Обновление прервано … перезагрузите плату» after 120 s and the next boot (or
+  `scripts/sa02m-update-remedy.sh`) completes it — every update after that runs whole. No
+  lever in the old code (no fcgiwrap drop-in route in the old map, empty migrations, fixed
+  restart[]). Named in `docs/deployment.md` «Пути деплоя»; closes itself once every board
+  runs ≥ 1.0.6.52. Alternative for a visited board: offline full update or a `.sa02m` package.
 - [OPEN] 2026-08-19 **[LOW] `tools/update-bridge/` is deprecated (unused) — remove at
   next cleanup.** The self-upgrade bridge (force-push a launcher onto fielded version
   branches) was REJECTED — see `docs/decisions/no-force-push-version-branches.md`. Old
