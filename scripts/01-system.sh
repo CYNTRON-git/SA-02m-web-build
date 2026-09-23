@@ -455,7 +455,7 @@ done
 # Значения и их обоснование живут ТОЛЬКО в etc/systemd/sa02m-journald.conf.
 if [ -f "$ETC_REPO/systemd/sa02m-journald.conf" ]; then
     install -d -m 755 /etc/systemd/journald.conf.d
-    install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf" \
+    sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-journald.conf" \
         /etc/systemd/journald.conf.d/sa02m-journald.conf
     # journald перечитывает конфиг только при рестарте (SIGUSR2 — это ротация,
     # не перечитывание). Рестарт безопасен: сокет /run/systemd/journal/* держит
@@ -561,7 +561,7 @@ if [ ! -f "$ETC_REPO/systemd/sa02m-watchdog.conf" ]; then
     exit 1
 fi
 install -d -m 755 /etc/systemd/system.conf.d
-install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
+sa02m_atomic_install -m 644 "$ETC_REPO/systemd/sa02m-watchdog.conf" \
     /etc/systemd/system.conf.d/sa02m-watchdog.conf
 
 # Уменьшаем умолчательный stop-timeout сервисов: иначе при reboot, если
