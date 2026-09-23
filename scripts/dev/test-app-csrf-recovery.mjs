@@ -25,8 +25,8 @@
    same region), so the RED below is behaviour, not «function missing».
 
    PROVEN RED on 91157d5 (1.0.6.52, `git show` copy through APP_JS=<path>):
-   cases 1, 2, 4b, 6, 7 FAIL — immediate logout on every E_CSRF, no refresh
-   GET, no retry, no bootstrap; 3, 4, 5, 8, 9 hold on both trees (a failed
+   22 FAIL — cases 1, 2, 4b, 6, 7 and the attempt counts of 3 and 4: immediate logout on every E_CSRF, no refresh
+   GET, no retry, no bootstrap; the verdicts of 3, 4, 5, 8, 9 hold on both trees (a failed
    refresh and a second mismatch still log out; GET bodies were never
    inspected; the 401 path is untouched; a non-JSON body is returned as is).
 

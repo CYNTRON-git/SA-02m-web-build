@@ -1603,6 +1603,9 @@
     'Команда ленты:': 'Strip command:',
     '- Пуск': '- Start',
     '- Стоп': '- Stop',
+    // CSRF reaction toasts (app.js, 1.0.6.53)
+    'Прокси не пропускает заголовок X-SA02M-CSRF — действие через этот путь невозможно. Откройте панель по локальному адресу или обновите облачный сервис.': 'The proxy strips the X-SA02M-CSRF header — this action cannot be performed through this path. Open the panel at its local address or update the cloud service.',
+    'Токен защиты сессии обновлён — повторите действие': 'Session protection token refreshed — please repeat the action',
   };
 
   const REGEX = [

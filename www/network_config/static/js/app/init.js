@@ -7,6 +7,10 @@
    INIT
    ══════════════════════════════════════════════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', () => {
+  // A session older than the sa02m_csrf mirror cookie has no CSRF token in
+  // the browser: fetch it once now (app.js), a no-op when the cookie exists.
+  if (typeof sa02mBootstrapCsrfToken === 'function') sa02mBootstrapCsrfToken();
+
   const verEl = document.getElementById('app-version');
   if (verEl) {
     verEl.textContent = 'v' + APP_VERSION;  // immediate baked fallback

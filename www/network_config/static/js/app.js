@@ -86,11 +86,127 @@ function withCsrfHeaders(headers) {
    out over one of those. So on a 401 we re-check with one lightweight authed
    call: only a confirmed 401 clears the cookie and redirects; a transient one
    is swallowed by silently retrying the original GET (POSTs are left to their
-   caller, to avoid re-applying a non-idempotent action). */
-(function () {
-  if (window.location.pathname.includes('login')) return;
+   caller, to avoid re-applying a non-idempotent action).
+
+   E_CSRF (1.0.6.53). The CGI layer answers a CSRF refusal as HTTP 200 with
+   error_code "E_CSRF" and, since 1.0.6.53, a `reason`. Until then every E_CSRF
+   meant «session lost → re-login» — which through cloud.cyntron.ru logged the
+   user out on every mutating POST: the proxy dropped the X-SA02M-CSRF request
+   header, a transit failure the panel misread as a session one. Now a header
+   we SENT that the board reports absent (reason no_header, token in hand) is a
+   transit strip → say so, keep the session, no retry; anything else → refresh
+   the token once (GET cgi-bin/csrf_token.cgi, session-bound) and re-issue the
+   request exactly once; a failed refresh (the session is really gone) or a
+   second non-transit refusal → the login page, as before. Safe by
+   construction: every ledgered CGI answers E_CSRF BEFORE its mutation
+   (cgi-csrf-policy), so the refused request never ran. Harness:
+   scripts/dev/test-app-csrf-recovery.mjs; policy:
+   docs/decisions/selective-csrf-policy.md «Реакция панели». */
+
+/* The X-SA02M-CSRF value a fetch() call carried — from its init headers or a
+   Request object; '' when none. */
+function sa02mSentCsrfToken(args) {
+  try {
+    const init = args[1];
+    if (init && init.headers) {
+      const h = init.headers;
+      if (typeof h.get === 'function') return h.get('X-SA02M-CSRF') || '';
+      return h['X-SA02M-CSRF'] || h['x-sa02m-csrf'] || '';
+    }
+    const a0 = args[0];
+    if (a0 && typeof a0 === 'object' && a0.headers && typeof a0.headers.get === 'function') {
+      return a0.headers.get('X-SA02M-CSRF') || '';
+    }
+  } catch (e) { /* no token */ }
+  return '';
+}
+
+/* GET the session's own token. Resolves the hex token — also stored in
+   window.SA02M_CSRF, where getSa02mCsrfToken reads first — or '' when the
+   session is gone or the answer is not a token. `rawFetch` is the unwrapped
+   fetch, so the refresh itself is never re-inspected by the guard. */
+function sa02mRefreshCsrfToken(rawFetch) {
+  const f = rawFetch || window.fetch;
+  return f('cgi-bin/csrf_token.cgi', { credentials: 'same-origin', cache: 'no-store' })
+    .then(function (r) { return r && r.ok ? r.json() : null; })
+    .then(function (j) {
+      if (j && j.ok === true && typeof j.csrf === 'string' && /^[a-f0-9]{64}$/.test(j.csrf)) {
+        window.SA02M_CSRF = j.csrf;
+        return j.csrf;
+      }
+      return '';
+    })
+    .catch(function () { return ''; });
+}
+
+/* Page load: a session older than the sa02m_csrf mirror cookie (the upgrade
+   window) has no token in the browser — fetch it once, so the first mutating
+   POST does not have to. Zero cost when the cookie is there. */
+function sa02mBootstrapCsrfToken() {
+  if (getSa02mCsrfToken()) return null;
+  return sa02mRefreshCsrfToken();
+}
+
+function sa02mNoteCsrfTransitStrip() {
+  window.SA02M_CSRF_BLOCKED = 'no_header';
+  if (typeof toast === 'function') {
+    toast(uiT('Прокси не пропускает заголовок X-SA02M-CSRF — действие через этот путь невозможно. Откройте панель по локальному адресу или обновите облачный сервис.'), 'error', 8000);
+  }
+}
+
+/* The E_CSRF decision. `res` is the refused response, `body` its parsed JSON,
+   `args` the original fetch arguments, `ctx` = { fetch: the raw fetch,
+   logout: clear the cookie + login.html }. Resolves the response the caller
+   should see — the original, or the retry's. */
+function sa02mHandleCsrfRejection(res, body, args, ctx) {
+  const reason = body && typeof body.reason === 'string' ? body.reason : '';
+  const sent = sa02mSentCsrfToken(args);
+  if (reason === 'no_header' && sent) {              // the proxy stripped it: transit, not session
+    sa02mNoteCsrfTransitStrip();
+    return Promise.resolve(res);
+  }
+  return sa02mRefreshCsrfToken(ctx.fetch).then(function (tok) {
+    if (!tok) { ctx.logout(); return res; }            // the session is really gone
+    const a0 = args[0];
+    const init = args[1];
+    const retryable = (typeof a0 === 'string' || (typeof URL !== 'undefined' && a0 instanceof URL)) &&
+      !(init && init.body && typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream);
+    if (!retryable) {                                   // a Request object cannot be re-read safely
+      if (typeof toast === 'function') toast(uiT('Токен защиты сессии обновлён — повторите действие'), 'warn', 6000);
+      return res;
+    }
+    const init2 = Object.assign({}, init || {});
+    init2.headers = withCsrfHeaders(init2.headers);     // picks up the refreshed window.SA02M_CSRF
+    // Exactly one re-issue, through the RAW fetch: the retry's own E_CSRF is
+    // judged here and never handed back to the wrapper (no second refresh).
+    return ctx.fetch(a0, init2).then(function (res2) {
+      if (!res2 || !res2.ok) return res2;
+      return res2.clone().json().then(function (j2) {
+        if (j2 && j2.error_code === 'E_CSRF') {
+          if (j2.reason === 'no_header') sa02mNoteCsrfTransitStrip();   // token in hand, still stripped
+          else ctx.logout();
+        }
+        return res2;
+      }, function () { return res2; });
+    });
+  });
+}
+
+function sa02mInstallFetchGuard() {
   const _fetch = window.fetch;
   let redirecting = false;
+  const ctx = {
+    fetch: function () { return _fetch.apply(window, arguments); },
+    logout: function () {
+      if (redirecting) return;
+      redirecting = true;
+      // Cookie can linger (10-day Max-Age) after the server session dies;
+      // clear it so login.html doesn't bounce us back to the dashboard.
+      // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
+      clearSessionCookie();
+      window.location.replace('login.html');
+    }
+  };
   window.fetch = function () {
     const self = this, args = arguments;
     let method = 'GET';
@@ -104,19 +220,17 @@ function withCsrfHeaders(headers) {
     return _fetch.apply(self, args).then(function (res) {
       // E_CSRF is returned as HTTP 200 with error_code:"E_CSRF" in the body
       // (project idiom — the CGI layer never uses a 401 status), so the
-      // status===401 path below cannot catch it. A stale/absent CSRF token means
-      // the session predates the sa02m_csrf cookie (upgraded device) or was
-      // revoked — surface the SAME "session expired → re-login" path. Peek a
-      // clone so the caller's body stays readable; only mutating methods can get
-      // E_CSRF, so GET/HEAD polling skips the extra parse.
+      // status===401 path below cannot catch it. Peek a clone so the caller's
+      // body stays readable; only mutating methods can get E_CSRF, so GET/HEAD
+      // polling skips the extra parse. The wrapper resolves to the FINAL
+      // response — the retry's, when sa02mHandleCsrfRejection ran one.
       if (res && res.ok && !redirecting && method !== 'GET' && method !== 'HEAD') {
-        res.clone().json().then(function (j) {
+        return res.clone().json().then(function (j) {
           if (j && j.error_code === 'E_CSRF' && !redirecting) {
-            redirecting = true;
-            clearSessionCookie();
-            window.location.replace('login.html');
+            return sa02mHandleCsrfRejection(res, j, args, ctx);
           }
-        }).catch(function () { /* non-JSON body (e.g. 504 HTML) — ignore */ });
+          return res;
+        }, function () { return res; });   // non-JSON body (e.g. 504 HTML) — as is
       }
       if (!res || res.status !== 401 || redirecting) return res;
       // Re-check via the canonical auth endpoint — NOT status.cgi (it serves a
@@ -124,12 +238,7 @@ function withCsrfHeaders(headers) {
       return _fetch('cgi-bin/auth_check.cgi', { credentials: 'same-origin', cache: 'no-store' })
         .then(function (chk) {
           if (chk && chk.status === 401) {
-            redirecting = true;
-            // Cookie can linger (10-day Max-Age) after the server session dies;
-            // clear it so login.html doesn't bounce us back to the dashboard.
-            // Clear at every path prefix — the cloud scopes it to /devcfg/<id>.
-            clearSessionCookie();
-            window.location.replace('login.html');
+            ctx.logout();
             return res;
           }
           return method === 'GET' ? _fetch.apply(self, args) : res;
@@ -137,6 +246,11 @@ function withCsrfHeaders(headers) {
         .catch(function () { return res; });
     });
   };
+}
+
+(function () {
+  if (window.location.pathname.includes('login')) return;
+  sa02mInstallFetchGuard();
 })();
 
 /* ── Navigation ──────────────────────────────────────────────────────────── */
