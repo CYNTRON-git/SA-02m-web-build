@@ -2698,8 +2698,13 @@ html[data-theme="light"] .alice-reg-link { color: var(--cyan-hover); }
 /* The services control card needs room for the strict 4-column control row
    (name + reserved toggle slot + manage slot + status badge); a single ~230px
    auto-fill track clips the name/badge. Span two tracks where the grid has
-   them — auto-fill clamps the span to 1 on a viewport with a single column, so
-   it degrades safely. */
+   them. A `span` is NOT clamped on a one-track grid: when the auto-fill
+   template resolves to a single column (viewport ≤ ~502px) the span creates an
+   IMPLICIT second column (grid-auto-columns: auto, stretched to the leftover
+   width) and every auto-placed tile then flows into it — the 1.0.6.53 phone
+   defect (two ~60/35 % tiles per row, labels clipped). The ≤560 breakpoint
+   block below therefore pins the grid to one explicit column and this card to
+   `1 / -1`; the ui-layout gate (i) measures the rendered tile widths. */
 .system-manage-grid > .system-manage-services-card {
   grid-column: span 2;
 }
@@ -5346,6 +5351,15 @@ html[data-theme="light"] .mqtt-ch-live-ok { color: var(--cyan-hover); }
   .dash-grid { grid-template-columns: repeat(2, 1fr); gap: 10px; }
   .dash-span-top4 { grid-column: 1 / -1; }
   .dash-wide { grid-column: 1 / -1; }
+  /* «Управление» — ONE column on phone-portrait (Operator, 2026-09-23, F-B2):
+     the desktop `.dash-grid.system-manage-grid` rule (specificity 0,2,0) wins
+     over the 2-column `.dash-grid` line above, so the tab is pinned here at the
+     same specificity, later in the file. An explicit single track — not
+     auto-fill — because the Службы card's `span 2` would otherwise mint an
+     implicit second column (see its rule); `1 / -1` keeps that card on the one
+     track. Gate: ui-layout (i) one column ≤560 + (h) no intra-card clipping. */
+  .dash-grid.system-manage-grid { grid-template-columns: minmax(0, 1fr); }
+  .system-manage-grid > .system-manage-services-card { grid-column: 1 / -1; }
   .dash-grid > .widget.widget-svc,
   .dash-grid > .widget.dash-eth {
     height: auto;

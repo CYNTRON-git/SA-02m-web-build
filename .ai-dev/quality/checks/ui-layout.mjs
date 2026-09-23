@@ -164,8 +164,9 @@ const HCLIP_EPS = 2;    // px of HORIZONTAL surplus an overflow-x:hidden box may
 // 1eth/2eth) — (i) 10 of 11 tiles at 230px or 88px in a 332px grid (tracks
 // `230px 88px`; only the `span 2` Службы card filled the row) and (h) three
 // card bodies (`.ctrl-card-main` of Действия / Яндекс Алиса / MPLC-проект,
-// clientWidth 50) hiding 23–48px of their content. The dashboard was clean at
-// every width and both surfaces were clean under (h) at 800/768/1440. GREEN
+// clientWidth 50) hiding 23–48px of their content. Both surfaces were clean
+// under (h) at 800/768/1440; the dashboard at 360 printed one report-only hit
+// (the Температура KPI tile hides 3px, pre-existing, below the floor). GREEN
 // (0 failures) once main.css took `grid-template-columns: minmax(0, 1fr)` +
 // Службы `1 / -1` at ≤560.
 const MANAGE_ONE_COL_MAX_W = 560;
