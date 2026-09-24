@@ -94,11 +94,18 @@ RUNNER_CONTEXT=""
 APPLY_FAIL_REASON=""
 
 log() {
-    local ts
-    ts=$(date '+%Y-%m-%d %H:%M:%S')
-    mkdir -p "$STATEDIR" 2>/dev/null || true
-    printf '%s %s\n' "$ts" "$*" | tee -a "$LOGFILE" >/dev/null
-    printf '%s %s\n' "$ts" "$*" >&2
+    local ts line
+    # No forks: `date` + `mkdir` + `tee` per line were three processes on each
+    # of the ~500 lines a deploy writes (1.0.6.54). Same `YYYY-MM-DD HH:MM:SS `
+    # prefix (the panel tails this file). The state dir is created on demand —
+    # the first line can precede ensure_dirs — and a log write never fails the
+    # caller.
+    printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+    line="$ts $*"
+    { printf '%s\n' "$line" >>"$LOGFILE"; } 2>/dev/null \
+        || { mkdir -p "$STATEDIR" && printf '%s\n' "$line" >>"$LOGFILE"; } 2>/dev/null \
+        || true
+    printf '%s\n' "$line" >&2
 }
 
 die() {
@@ -610,13 +617,17 @@ prepare_github_overlay() {
     [ -n "$overlay_src" ] && [ -d "$overlay_src" ] || die E_TAR "github overlay_path missing"
     local stage_dir="$STATEDIR/staging/$txn"
     mkdir -p "$stage_dir/overlay" "$stage_dir/backups" "$stage_dir/meta"
-    # Materialize overlay (repo checkout) into staging for per-file deploy.
+    # Materialize overlay (repo checkout) into staging for per-file deploy. The
+    # clone's own .git/ (the pack — ~6 MB, 1,100+ objects) is never deployed
+    # (map_dst below maps nothing under it), so it is left out of the copy and
+    # of the manifest rglob (1.0.6.54).
     if command -v rsync >/dev/null 2>&1; then
-        rsync -a --delete "$overlay_src/" "$stage_dir/overlay/" || die E_APPLY "rsync overlay failed"
+        rsync -a --delete --exclude=/.git "$overlay_src/" "$stage_dir/overlay/" || die E_APPLY "rsync overlay failed"
     else
         rm -rf "$stage_dir/overlay"
         mkdir -p "$stage_dir/overlay"
         cp -a "$overlay_src/." "$stage_dir/overlay/" || die E_APPLY "cp overlay failed"
+        rm -rf "$stage_dir/overlay/.git"
     fi
     OVERLAY="$stage_dir/overlay" META="$stage_dir/meta" \
     TARGET_VER="$(txn_get target_version)" TARGET_COMMIT="$(txn_get target_commit)" \
