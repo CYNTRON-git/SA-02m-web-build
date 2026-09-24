@@ -7,6 +7,18 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
 
 ## Open
 
+- [OPEN] 2026-09-24 **[MED] `install.sh --port N` is not persisted — the next re-render resets nginx to
+  9999.** `scripts/03-webserver.sh:12` and `scripts/11-devices.sh:18` default `PORT` to 9999 and render
+  `etc/nginx/network_config.conf` with it; `scripts/update-www-only.sh` never sets it, and nothing saves
+  the port chosen at install time. A board installed with `--port N` is switched back to 9999 by the
+  next www-only deploy (or refresh without `--port`). Found by the 1.0.6.53 fixup review (round 5),
+  verified by grep. Fix direction: persist the port (e.g. `/etc/sa02m_web.env` `SA02M_WEB_PORT`) at
+  install and read it in both renderers; harness case.
+- [OPEN] 2026-09-24 **[LOW] 1.0.6.53 review advisories left open.** A8: `docs/deployment.md` (nginx
+  lanes bullet) cites `11-devices.sh:94-101` for the `nginx -t` + reload, which sit at `:102-108` — cite
+  `:94-108`. A10: the backlog entry «The GitHub-OTA runner never deploys the nginx site config» mixes
+  English and Russian (options (a)/(b)); make it one language (English, machine-facing backlog).
+
 - [OPEN] 2026-09-16 **[HIGH] Audit 2026-09-16 (whole tree at 1.0.6.48) — H1: branch-protection floor half-wired and already bypassed.** Live `gh api …/branches/main/protection`: `quality` is required but `enforce_admins:false`, `strict:false`, no review rule; `1dfa503` (2026-09-10, «1.0.6.46», 13 files incl. `bridge_fmb.py`/`bridge_mr02m.py`) sits on `main` with NO PR (direct push, no review stamp evidence). `.ai-dev/notes/ci-budget.md:32` claims `enforce_admins: true` — false. Fix: set `enforce_admins=true` + `strict=true` on the forge (Operator's word), correct the note, retroactive Reviewer pass over 1.0.6.46's diff.
 - [OPEN] 2026-09-16 **[HIGH] Audit H2: GitHub Actions billing-locked since 1.0.6.24 (2026-08-28 20:47, run 33209713129), not 1.0.6.40.** Last green = 1.0.6.23. 25 releases + 3 side branches merged with the required check never executed; the substitute (local suite) runs on Windows where `shellcheck`, `ui-layout`, two `web-auth-behaviour` asserts and `install-atomic` 8b skip. Not recorded durably until now. Operator action: unlock billing; until then run the substitute under WSL/Linux where possible (node is absent in WSL today).
 - [RESOLVED 2026-09-16, 1.0.6.49 — the workflow installs the harness + chromium; the first real run is the proof (CI billing-locked, H2)] 2026-09-16 **[HIGH] Audit H3: CI cannot go green even after unlock** — `.github/workflows/web-quality.yml` installs no playwright/chromium while review rows `cloud-card-smoke` (`scripts/dev/cloud-card-smoke.mjs:47,143`) and `sh-modal-layout-smoke` (`:33,292`) exit 2 without it. Latent since 1.0.6.28. Fix: `npm run ui-layout:install` (+ chromium deps) in the workflow.
@@ -591,6 +603,9 @@ verified fixed by the whole-backlog triage removed; evidence per entry in that c
   `/etc/nginx/sites-available/network_config`; `nginx -t` + `reload` раннер уже выполняет в health-gate
   и rollback, так что добавляется только рендер — и решение Оператора, что GitHub-OTA получает право
   переписывать конфиг edge (security surface).
+  Cloud team's note (2026-09-24): with the cloud forwarding the whole `X-SA02M-` family, the one case
+  where that forwarding stops being harmless is a board updated ONLY through the panel OTA (no nginx
+  strip) on which someone set a non-empty `INTERNAL_TOKEN` for the flasher — weigh it in this fork.
   (b) Оставить как есть и держать одним домом в `docs/deployment.md`: site-файл nginx приезжает полной
   установкой (`03-webserver.sh`), www-only из чекаута с `etc/` + `opt/sa02m-devices/`
   (`update-www-only.sh` → `11-devices.sh`), офлайн-пакетом и образом — никогда GitHub-OTA; правка
