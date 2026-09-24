@@ -63,10 +63,14 @@ TYPES = ("block", "code", "logic", "scene")
 TRIGGER_KINDS = ("state", "time", "sun", "boot", "every", "button", "presence")
 ACTION_KINDS = ("set", "toggle", "ramp", "delay", "scenario", "scene",
                 "mode", "notify", "http")
-LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=", "changed")
+LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=")
+#: `changed` fires on a transition, like the edge ops (contract «## Engine
+#: v2»), but compares no threshold — so it is not in EDGE_OPS, whose members
+#: the engine evaluates through a threshold predicate (engine._edge_pred).
+CHANGE_OPS = ("changed",)
 EDGE_OPS = ("rises_above", "drops_below", "enters_range", "leaves_range")
 EVENT_OPS = ("motion_detected", "motion_cleared", "opened", "closed")
-STATE_OPS = LEVEL_OPS + EDGE_OPS + EVENT_OPS
+STATE_OPS = LEVEL_OPS + CHANGE_OPS + EDGE_OPS + EVENT_OPS
 GESTURES = ("single", "double", "long", "long_release")
 HOME_MODES = ("home", "away", "night", "holiday")
 #: Logic templates this engine executes (synced with the cloud catalog's

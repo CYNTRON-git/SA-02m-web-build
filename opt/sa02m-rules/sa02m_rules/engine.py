@@ -13,12 +13,12 @@ import heapq
 import math
 import time
 from collections import deque
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 
 from sa02m_rules import http_guard
 from sa02m_rules.store import (
-    CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, MAX_WRITES,
-    Journal, charge_http, load, migrate_journal, save)
+    CAP_RE, EDGE_OPS, EVENT_OPS, GESTURES, HOME_MODES, ID_RE, LEVEL_OPS,
+    MAX_WRITES, Journal, charge_http, load, migrate_journal, save)
 
 Pub = Callable[[str, str, Any], None]
 MAX_DEPTH = 3
@@ -37,8 +37,6 @@ BUTTON_COUNTER_HOLD_S = 10.0  # counters seen this recently mute the classifier
 HEAP_MAX = 4096
 SNAPSHOT_MAX = 16
 
-# «changed» is evaluated before these in _triggered (it needs a previous value).
-_LEVEL_OPS = ("==", "!=", ">", "<", ">=", "<=")
 _COUNTER_SUFFIX = {"short": "single", "long": "long", "double": "double"}
 
 
@@ -265,6 +263,12 @@ class Engine:
         self._seq = 0
         self._writes_win: Deque[float] = deque()
         self._trig_prev: Dict[Tuple[str, int], Any] = {}
+        # (device, cap) keys that have reached on_state at least once — the
+        # «changed» baseline. Only observed values count: `_write` also updates
+        # self.state, and a boot scenario's write followed by the retained
+        # snapshot used to read as a change (review 1.0.6.54 R4-2). Never
+        # reset by _adopt, so a hot-reloaded scenario keeps the baseline.
+        self._observed: Set[Tuple[str, str]] = set()
         self._btn: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._btn_counters: Dict[Tuple[str, str], float] = {}
         self._for_s: Dict[Tuple[str, int], float] = {}
@@ -460,6 +464,10 @@ class Engine:
     def on_state(self, device: str, cap: str, value: Any) -> None:
         prev = state_get(self.state, device, cap)
         self.state.setdefault(device, {})[cap] = value
+        # Marked before the repeat filter: a first value equal to what the
+        # engine already wrote is still the first observation.
+        observed = (device, cap) in self._observed
+        self._observed.add((device, cap))
         if prev == value:
             return
         self._for_s_touch(device, cap, value)
@@ -467,7 +475,7 @@ class Engine:
         for inst in list(self._logic.values()):
             inst.on_state(device, cap, value, prev)
         self._dispatch({"kind": "state", "device": device, "cap": cap,
-                        "value": value, "prev": prev})
+                        "value": value, "prev": prev, "observed": observed})
 
     def on_boot(self) -> None:
         self._dispatch({"kind": "boot"})
@@ -596,13 +604,14 @@ class Engine:
                     # 2026-09-24: a «changed» scenario switched the beeper on
                     # after every start/update/reboot). on_state already drops
                     # repeats, so any later event here is a real change. The
-                    # baseline is the engine's own last value, not a
+                    # baseline is an OBSERVED value (on_state), never the
+                    # engine's own write, and it is the engine's, not a
                     # per-trigger one, so a scenario added by a hot reload
                     # still fires on the first real change.
-                    if event.get("prev") is not None:
+                    if event.get("observed"):
                         return True
                     continue
-                if op in _LEVEL_OPS:
+                if op in LEVEL_OPS:
                     if cmp_op(event.get("value"), op, tr.get("value")):
                         return True
                 else:  # edge / sensor-event: fire once on the crossing
