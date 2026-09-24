@@ -29,9 +29,9 @@
 # under production shell options, so a shell-variable store would not survive to
 # the files_done/files_total assertion — the file does.
 #
-# 1.0.6.54 (fast OTA, plan fast-ota-research §6 R-a1..R-a4) — the 35-minute
-# deploy was ~2,100 python3 starts, four per manifest item to read four JSON
-# fields plus three per changed file. Cases added on the same extraction:
+# 1.0.6.54 (fast OTA — CHANGELOG 1.0.6.54) — the 35-minute deploy was ~2,100
+# python3 starts, four per manifest item to read four JSON fields plus three per
+# changed file. Cases added on the same extraction:
 #   4c/4d  progress cadence is TIME-based (SA02M_UPDATE_PROGRESS_S, exported 0
 #          here so every item patches) and the final files_done==files_total
 #          patch is issued exactly once, after the loop;
@@ -44,7 +44,18 @@
 #   8      a 100-item manifest (90 unchanged, 10 changed) under a counting
 #          python3 PATH shim starts python3 at most twice in apply_deploy_items
 #          (the loop starts none per item) — the info line prints the count and
-#          the wall time on this host for the record.
+#          the wall time on this host for the record;
+#   9a/9b  a failed `install` / `mv -f` inside atomic_install_file FAILS the apply
+#          (rc=1, `ERROR: atomic install failed: <dst>` logged, files_done stays
+#          below files_total, no tmp left behind) and the journal written before
+#          the failure rolls the earlier items back. Pre-existing on main (review
+#          1.0.6.54 F1): the function's status was that of its last `sync … ||
+#          sync`, always 0, so a disk-full/EACCES install was counted done and the
+#          update committed over a mixed tree;
+#   10     a NUL inside a manifest field is refused by the NUL-list emitter before
+#          any file is touched (rc≠0, nothing deployed, the reason on stderr) —
+#          otherwise the field list shifts and the last item lands with a garbage
+#          dst/mode (review 1.0.6.54 F2).
 #
 # Drive-to-failure: UPDATE_RUNNER_SRC=<(git show main:etc/sa02m-update-runner.sh) \
 #   bash scripts/dev/test-update-deploy-skip.sh   → the skip assertion goes RED
@@ -90,6 +101,24 @@ SRC="$T/runner.sh"
 # failures — the same posture as the python3 guard above. Run it under WSL/Linux
 # (or in CI on the device toolchain) for the full RED->GREEN coverage. The probe is
 # `install -m 0755` -> mode 755, the exact operation assertion 3 verifies.
+# Cases 9a/9b — failure injection for atomic_install_file. `install` and `mv` are
+# resolved by name inside the extracted function, so a same-named shell function
+# can refuse ONE destination (the gate variables name a substring of the LAST
+# argument) and forward everything else to the real binary. Defined here, above
+# the first `install` call of this file (the mode probe below), so every later
+# call — the probe included — goes through the forwarder. `mv` also feeds the
+# case-6 trace.
+INSTALL_FAIL_ON=""; MV_FAIL_ON=""
+install() {
+    if [ -n "$INSTALL_FAIL_ON" ] && [[ "${*: -1}" == *"$INSTALL_FAIL_ON"* ]]; then return 1; fi
+    command install "$@"
+}
+mv() {
+    printf 'mv %s\n' "$*" >> "${TRACE:-/dev/null}"
+    if [ -n "$MV_FAIL_ON" ] && [[ "${*: -1}" == *"$MV_FAIL_ON"* ]]; then return 1; fi
+    command mv "$@"
+}
+
 _probe="$T/.mode-probe"; printf 'x' > "$_probe.src"
 install -m 0755 "$_probe.src" "$_probe.dst" 2>/dev/null
 if [ "$(stat -c '%a' "$_probe.dst" 2>/dev/null)" != "755" ]; then
@@ -145,7 +174,8 @@ STATEDIR="$T/state"
 TXN="TXN"
 JOURNAL="$STATEDIR/staging/$TXN/journal.jsonl"
 TXNVARS_F="$T/txnvars"; : > "$TXNVARS_F"
-log()                  { :; }
+LOG="$T/runner.log"; : > "$LOG"
+log()                  { printf '%s\n' "$*" >> "$LOG"; }
 utc_now()              { echo 1970-01-01T00:00:00Z; }
 cleanup_imaging_lock() { :; }
 manifest_path()        { printf '%s\n' "$STATEDIR/staging/$1/meta/manifest.json"; }
@@ -164,7 +194,7 @@ txn_get()   {
 # fsyncs through python3 (pre-1.0.6.54) leaves this trace EMPTY — the RED.
 TRACE="$T/fsync.trace"; : > "$TRACE"
 sync() { printf 'sync %s\n' "$*" >> "$TRACE"; command sync "$@"; }
-mv()   { printf 'mv %s\n' "$*"   >> "$TRACE"; command mv "$@"; }
+# (`mv` is the forwarder defined above the mode probe; it traces into $TRACE.)
 # Case 4c/4d — time-based progress cadence: 0 s ⇒ every item patches, so the
 # patch sequence is deterministic here whatever the host's speed.
 export SA02M_UPDATE_PROGRESS_S=0
@@ -424,7 +454,7 @@ fi
 #    and 10 changed, under a python3 PATH shim that counts its own starts and
 #    execs the real interpreter. The deploy loop must start none per item: the
 #    whole apply_deploy_items is allowed 2 (one manifest emit + slack). The
-#    pre-1.0.6.54 loop starts 4 per item + 3 per changed file (+2 up front) = 442
+#    pre-1.0.6.54 loop starts 4 per item + 3 per changed file (+2 up front) = 432
 #    here, and on the Cortex-A7 that was the 33 minutes. The wall time printed is
 #    this host's, for the record — not the board's.
 TXN3="TXN3"; OV3="$STATEDIR/staging/$TXN3/overlay"; LIVE3="$T/live3"
@@ -460,6 +490,74 @@ if [ "$py_n" -le 2 ]; then
     ok "deploy loop starts no python3 per item ($py_n start(s) for 100 items, limit 2)"
 else
     bad "deploy loop starts python3 per item: $py_n starts for 100 items (limit 2) — the 33-minute class"
+fi
+
+# 9. A FAILED install / mv FAILS THE APPLY (review 1.0.6.54 F1). Three changed
+#    items; the forwarder refuses the SECOND one's destination. Expected: rc=1,
+#    the `ERROR: atomic install failed: <dst>` line, files_done < files_total (the
+#    first item's patch only, at SA02M_UPDATE_PROGRESS_S=0), no `*.tmp.*` left in
+#    the live dir, and rollback_from_journal restoring item 1 (its journal line
+#    was written before the failure) while items 2 and 3 are still OLD.
+#    On main / the first 1.0.6.54 build the function's last command was
+#    `sync … || sync` (always 0) — the failure was swallowed: rc=0, files_done=3.
+run_fail_case() {   # <txn> <live dir> <install-gate> <mv-gate> <label>
+    local txn=$1 live=$2 label=$5 ov="$STATEDIR/staging/$1/overlay" i
+    mkdir -p "$ov" "$live" "$STATEDIR/staging/$txn/meta" "$STATEDIR/staging/$txn/backups"
+    for i in 1 2 3; do
+        printf 'g%s NEW\n' "$i" > "$ov/g$i.conf"; chmod 644 "$ov/g$i.conf"
+        printf 'g%s OLD\n' "$i" > "$live/g$i.conf"; chmod 644 "$live/g$i.conf"
+    done
+    python3 - "$live" "$STATEDIR/staging/$txn/meta/manifest.json" "$OWNER" <<'PY'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "g%d.conf" % i, "dst": "%s/g%d.conf" % (live, i), "mode": "0644", "owner": owner} for i in (1, 2, 3)]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PY
+    : > "$TXNVARS_F"; : > "$LOG"
+    ( set -euo pipefail; INSTALL_FAIL_ON=$3; MV_FAIL_ON=$4; apply_deploy_items "$txn" ) >/dev/null 2>&1
+    local rc=$? fd tmps
+    fd=$(txn_get files_done)
+    tmps=$(find "$live" -name '*.tmp.*' 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$rc" -ne 0 ] && grep -qF "ERROR: atomic install failed: $live/g2.conf" "$LOG" \
+       && [ -n "$fd" ] && [ "$fd" -lt 3 ] && [ "$tmps" = "0" ] \
+       && [ "$(cat "$live/g1.conf")" = "g1 NEW" ] && [ "$(cat "$live/g2.conf")" = "g2 OLD" ] && [ "$(cat "$live/g3.conf")" = "g3 OLD" ]; then
+        ok "$label: apply FAILS (rc=$rc, error logged, files_done=$fd<3, no tmp left, item 3 never touched)"
+    else
+        bad "$label: failure swallowed or mishandled (rc=$rc, files_done='$fd', tmp-left=$tmps, g1='$(cat "$live/g1.conf")', g2='$(cat "$live/g2.conf")', g3='$(cat "$live/g3.conf")', log-line=$(grep -cF 'atomic install failed' "$LOG"))"
+    fi
+    ( set -euo pipefail; rollback_from_journal "$txn" ) >/dev/null 2>&1
+    if [ "$(cat "$live/g1.conf")" = "g1 OLD" ] && [ "$(cat "$live/g2.conf")" = "g2 OLD" ] && [ "$(cat "$live/g3.conf")" = "g3 OLD" ]; then
+        ok "$label: rollback over the partial journal restores item 1, items 2-3 intact"
+    else
+        bad "$label: rollback after the failed item left g1='$(cat "$live/g1.conf")' g2='$(cat "$live/g2.conf")' g3='$(cat "$live/g3.conf")'"
+    fi
+}
+run_fail_case TXN4 "$T/live4" "g2.conf.tmp." "" "9a install fails on item 2"
+run_fail_case TXN5 "$T/live5" "" "g2.conf" "9b mv fails on item 2"
+
+# 10. NUL INSIDE A MANIFEST FIELD IS REFUSED UP FRONT (review 1.0.6.54 F2). The
+#     emitter writes NUL-separated fields, so a `\u0000` inside the LAST item's dst
+#     would shift the list and land that item with a garbage dst/mode. Expected:
+#     apply rc≠0 before ANY file is touched (item 1 still OLD) and the reason on
+#     stderr. Without the guard: item 1 deployed, then the shifted last item.
+TXN6="TXN6"; OV6="$STATEDIR/staging/$TXN6/overlay"; LIVE6="$T/live6"
+mkdir -p "$OV6" "$LIVE6" "$STATEDIR/staging/$TXN6/meta" "$STATEDIR/staging/$TXN6/backups"
+printf 'n1 NEW\n' > "$OV6/n1.conf"; printf 'n1 OLD\n' > "$LIVE6/n1.conf"; chmod 644 "$OV6/n1.conf" "$LIVE6/n1.conf"
+printf 'n2 NEW\n' > "$OV6/n2.conf"; chmod 644 "$OV6/n2.conf"
+python3 - "$LIVE6" "$STATEDIR/staging/$TXN6/meta/manifest.json" "$OWNER" <<'PY'
+import json, sys
+live, mf, owner = sys.argv[1], sys.argv[2], sys.argv[3]
+deploy = [{"src": "n1.conf", "dst": live + "/n1.conf", "mode": "0644", "owner": owner},
+          {"src": "n2.conf", "dst": live + "/n2\u0000.conf", "mode": "0644", "owner": owner}]
+open(mf, "w", encoding="utf-8").write(json.dumps({"schema_version": 1, "version": "9.9.9.9", "deploy": deploy}) + "\n")
+PY
+: > "$TXNVARS_F"
+( set -euo pipefail; apply_deploy_items "$TXN6" ) >/dev/null 2>"$T/nul.err"
+rc6=$?
+if [ "$rc6" -ne 0 ] && [ "$(cat "$LIVE6/n1.conf")" = "n1 OLD" ] && grep -qi 'NUL' "$T/nul.err"; then
+    ok "NUL in a manifest field refused before any file is touched (rc=$rc6, reason on stderr)"
+else
+    bad "NUL in a manifest field not refused up front (rc=$rc6, n1='$(cat "$LIVE6/n1.conf")', stderr='$(tr -d '\n' < "$T/nul.err" | cut -c1-120)')"
 fi
 
 echo "-----"

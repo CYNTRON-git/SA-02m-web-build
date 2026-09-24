@@ -1209,9 +1209,11 @@ PY
 }
 
 # journal_append TXN KEY=VALUE... — one JSON object per line, keys in argument
-# order, values escaped as json.dumps(ensure_ascii=False) escapes them (`\`, `"`,
-# the C0 controls); the readers are rollback_from_journal / _journal_has_dst_prefix
-# (json.loads per line). Built in bash and made durable with fdatasync BEFORE the
+# order, values escaped so that json.loads returns the original string (`\`, `"`,
+# and every [[:cntrl:]] character — the C0 set as json.dumps(ensure_ascii=False)
+# writes it; DEL and, under a UTF-8 locale, the C1 set as `\u00XX`, which python
+# would leave raw: parse-equal, not byte-equal, for those); the readers are
+# rollback_from_journal / _journal_has_dst_prefix (json.loads per line). Built in bash and made durable with fdatasync BEFORE the
 # caller renames the file the line describes (1.0.6.54): the python3 one-liner it
 # replaces cost one interpreter start per changed file, raised on a dst carrying
 # a `"` (the caller interpolated it raw), and never synced the journal — a power
@@ -1255,12 +1257,18 @@ atomic_install_file() {
     dstdir=$(dirname "$dst")
     mkdir -p "$dstdir"
     tmp="${dst}.tmp.$$"
+    # Every caller runs this under `if ! atomic_install_file …`, which suspends
+    # set -e inside, and the last command below is `sync … || sync` (always 0) —
+    # so a failed install/rename MUST return explicitly or it is counted done:
+    # until 1.0.6.54 a disk-full/EACCES/bad-mode install was swallowed, files_done
+    # reached files_total and the update committed over a mixed tree (review
+    # 1.0.6.54 F1; gate: update-deploy-skip 9a/9b). The caller logs the dst.
     # install copies mode/owner when possible
     if [ -n "$owner" ]; then
         install -m "$mode" -o "${owner%:*}" -g "${owner#*:}" "$src" "$tmp" 2>/dev/null \
-            || install -m "$mode" "$src" "$tmp"
+            || install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
     else
-        install -m "$mode" "$src" "$tmp"
+        install -m "$mode" "$src" "$tmp" || { rm -f "$tmp"; return 1; }
     fi
     # fdatasync(tmp) BEFORE the rename, fsync(dir) after it, through coreutils
     # `sync -d FILE` / `sync DIR` (>= 8.24; the boards run 9.4) with bare `sync`
@@ -1268,7 +1276,7 @@ atomic_install_file() {
     # 1.0.6.54 both were python3 one-liners (coreutils ships no `fdatasync`
     # binary, so that branch never ran): two interpreter starts per changed file.
     sync -d -- "$tmp" 2>/dev/null || sync
-    mv -f "$tmp" "$dst"
+    mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
     sync -- "$dstdir" 2>/dev/null || sync
 }
 
@@ -1338,7 +1346,8 @@ cleanup_b1_deploy_artifacts() {
 # prints the count; the loop reads them with `read -d ''`. Until 1.0.6.54 every
 # item paid FOUR interpreter starts to read its four fields (plus three per
 # changed file in journal_append/atomic_install_file) — 2,134 starts for a
-# 505-item tree, 33 minutes on the Cortex-A7 (plan fast-ota-research §1).
+# 505-item tree, 33 minutes on the Cortex-A7 (bench 1.135, 2026-09-23; CHANGELOG
+# 1.0.6.54).
 # Gate: update-deploy-skip case 8 (a python3 PATH shim counts the starts).
 apply_deploy_items() {
     local txn=$1
@@ -1352,8 +1361,15 @@ mf, out = sys.argv[1], sys.argv[2]
 deploy = json.load(open(mf, encoding="utf-8")).get("deploy", [])
 with open(out, "wb") as f:
     for it in deploy:
-        for v in (it.get("src", ""), it.get("dst", ""), it.get("mode", "0644"), it.get("owner", "")):
-            f.write(str(v).encode("utf-8") + b"\0")
+        for k in ("src", "dst", "mode", "owner"):
+            s = str(it.get(k, "0644" if k == "mode" else ""))
+            # NUL is the field separator: one inside a value would shift every
+            # field after it (the last item landing with a garbage dst/mode).
+            # Unreachable from a real path or a signed manifest — refused anyway,
+            # before any file is touched (review 1.0.6.54 F2; gate: case 10).
+            if "\0" in s:
+                sys.exit("deploy.items: NUL inside manifest field %r of item %r" % (k, it.get("dst")))
+            f.write(s.encode("utf-8") + b"\0")
 print(len(deploy))
 PY
 )
